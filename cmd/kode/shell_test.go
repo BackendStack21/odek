@@ -151,10 +151,17 @@ func TestShellTool_Call_DockerExec_Integration(t *testing.T) {
 		t.Skip("docker not available")
 	}
 
-	// Create a test container
+	// Create a test container with /workspace directory.
+	// Use a fixed path that Docker can access in CI environments.
 	containerName := "kode-test-shell"
+	tmpDir, err := os.MkdirTemp("", "kode-test-")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
 	createCmd := exec.Command("docker", "run",
 		"--rm", "--detach", "--name", containerName,
+		"-v", tmpDir+":/workspace",
 		"alpine:latest", "sleep", "infinity",
 	)
 	if out, err := createCmd.CombinedOutput(); err != nil {

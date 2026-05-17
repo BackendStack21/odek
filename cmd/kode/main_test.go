@@ -2,6 +2,8 @@ package main
 
 import (
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"strings"
@@ -358,20 +360,27 @@ func TestRun_SandboxNoDocker(t *testing.T) {
 	}
 }
 
-// Test run() with API key in env: kode.New succeeds, then agent.Run fails
-// because the fake API key is rejected by the real API.
-func TestRun_WithAPIKey(t *testing.T) {
+// Test run() with a mocked LLM endpoint — no real API calls.
+func TestRun_WithMockModel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"mocked response"}}]}`))
+	}))
+	defer server.Close()
+
 	origDS := os.Getenv("DEEPSEEK_API_KEY")
 	origOAI := os.Getenv("OPENAI_API_KEY")
-	os.Setenv("DEEPSEEK_API_KEY", "sk-test-fake")
+	os.Setenv("DEEPSEEK_API_KEY", "sk-mock")
+	os.Unsetenv("OPENAI_API_KEY")
 	defer func() {
 		os.Setenv("DEEPSEEK_API_KEY", origDS)
 		os.Setenv("OPENAI_API_KEY", origOAI)
 	}()
 
-	err := run([]string{"test task"})
-	if err == nil {
-		t.Fatal("expected error from agent.Run with fake API key")
+	// Use the mock server as the API endpoint
+	err := run([]string{"--base-url", server.URL, "test task"})
+	if err != nil {
+		t.Fatalf("run() with mock model should succeed, got: %v", err)
 	}
 }
 
