@@ -67,7 +67,6 @@ func (e Event) String() string {
 
 const (
 	reset   = "\033[0m"
-	bold    = "\033[1m"
 	dim     = "\033[2m"
 	italic  = "\033[3m"
 	red     = "\033[31m"
@@ -125,7 +124,7 @@ func (r *Renderer) Start(task string) {
 	if r.model != "" {
 		prefix += " · " + r.model
 	}
-	fmt.Fprintln(r.w, r.style(bold+blue, prefix))
+	fmt.Fprintln(r.w, r.style(blue, prefix))
 	fmt.Fprintln(r.w, r.style(gray, "   "+preview))
 	fmt.Fprintln(r.w)
 }
@@ -145,7 +144,7 @@ func (r *Renderer) Iteration(n, maxN int) {
 	rule := strings.Repeat("═", 3)
 	line := fmt.Sprintf("%s %s %s", rule, prefix, rule)
 	fmt.Fprintln(r.w)
-	fmt.Fprintln(r.w, r.style(bold+blue, line))
+	fmt.Fprintln(r.w, r.style(blue, line))
 }
 
 // Thinking prints the model's reasoning text with a brain emoji.
@@ -161,7 +160,7 @@ func (r *Renderer) ToolCall(name, args string) {
 	if r.disable() {
 		return
 	}
-	header := r.style(cyan+bold, "🔧 "+name)
+	header := r.style(cyan, "🔧 "+name)
 	argStr := r.style(gray, "─── "+r.truncate(args, 100))
 	fmt.Fprintf(r.w, "%s %s\n", header, argStr)
 }
@@ -188,7 +187,7 @@ func (r *Renderer) FinalAnswer(text string) {
 		return
 	}
 	fmt.Fprintln(r.w)
-	fmt.Fprintln(r.w, r.style(bold+green, "✅ "+text))
+	fmt.Fprintln(r.w, r.style(green, "✅ "+text))
 	fmt.Fprintln(r.w)
 }
 
