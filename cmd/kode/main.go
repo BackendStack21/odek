@@ -170,7 +170,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Println(result)
+	_ = result // rendered by the loop engine via Renderer
 	return nil
 }
 
