@@ -43,7 +43,7 @@ func (t *shellTool) Call(args string) (string, error) {
 
 	var cmd *exec.Cmd
 	if t.containerName != "" {
-		cmd = exec.Command("docker", "exec", t.containerName, "sh", "-c", input.Command)
+		cmd = exec.Command("docker", "exec", "-w", "/workspace", t.containerName, "sh", "-c", input.Command)
 	} else {
 		cmd = exec.Command("sh", "-c", input.Command)
 	}

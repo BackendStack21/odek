@@ -119,7 +119,7 @@ done:
 			"--security-opt", "no-new-privileges",   // no privilege escalation
 			"--network", "none",                     // no network
 			"--tmpfs", "/tmp:noexec",                // no executable temp files
-			"-v", wd+":/workspace:ro",               // working dir read-only
+			"-v", wd+":/workspace",                    // working dir (read-write inside sandbox)
 			"alpine:latest",
 			"sleep", "infinity",
 		)
