@@ -50,6 +50,14 @@ type Config struct {
 	// Falls back to DEEPSEEK_API_KEY, then OPENAI_API_KEY env vars.
 	APIKey string
 
+	// Thinking controls the model's reasoning depth. Provider-specific:
+	//
+	//   Deepseek: "enabled" or "disabled" → {"type": "enabled"}
+	//   OpenAI o-series: "low", "medium", "high" → {"reasoning_effort": "low"}
+	//
+	// Leave empty for provider default behavior.
+	Thinking string
+
 	// Tools available to the agent.
 	Tools []Tool
 
@@ -95,7 +103,7 @@ func New(cfg Config) (*Agent, error) {
 	}
 
 	registry := tool.NewRegistry(tools)
-	client := llm.New(cfg.BaseURL, cfg.APIKey, cfg.Model)
+	client := llm.New(cfg.BaseURL, cfg.APIKey, cfg.Model, cfg.Thinking)
 	engine := loop.New(client, registry, cfg.MaxIterations, cfg.SystemMessage)
 
 	return &Agent{

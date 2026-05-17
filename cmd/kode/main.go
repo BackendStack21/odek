@@ -45,13 +45,14 @@ Flags:
   --model <name>       LLM model (default: deepseek-chat)
   --base-url <url>     API endpoint (default: https://api.deepseek.com/v1)
   --max-iter <n>       Max think->act cycles (default: 90)
+  --thinking <level>   Reasoning depth: enabled|disabled (Deepseek) or low|medium|high (OpenAI o-series)
   --sandbox            Run in isolated Docker container
   --system <prompt>    System prompt override`)
 }
 
 func runCmd() {
 	args := os.Args[2:]
-	var model, baseURL, system string
+	var model, baseURL, system, thinking string
 	maxIter := 90
 	sandbox := false
 
@@ -69,6 +70,9 @@ func runCmd() {
 			i += 2
 		case "--system":
 			system = args[i+1]
+			i += 2
+		case "--thinking":
+			thinking = args[i+1]
 			i += 2
 		case "--sandbox":
 			sandbox = true
@@ -97,6 +101,7 @@ done:
 		BaseURL:       baseURL,
 		MaxIterations: maxIter,
 		SystemMessage: system,
+		Thinking:      thinking,
 		Tools:         builtinTools(),
 	})
 	if err != nil {

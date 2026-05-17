@@ -14,19 +14,21 @@ import (
 
 // Client sends chat completion requests to any OpenAI-compatible endpoint.
 type Client struct {
-	BaseURL string
-	APIKey  string
-	Model   string
-	http    *http.Client
+	BaseURL  string
+	APIKey   string
+	Model    string
+	Thinking string // "enabled", "disabled", "low", "medium", "high", or empty
+	http     *http.Client
 }
 
 // New creates a Client with sensible defaults.
-func New(baseURL, apiKey, model string) *Client {
+func New(baseURL, apiKey, model, thinking string) *Client {
 	return &Client{
-		BaseURL: strings.TrimRight(baseURL, "/"),
-		APIKey:  apiKey,
-		Model:   model,
-		http:    &http.Client{Timeout: 120 * time.Second},
+		BaseURL:  strings.TrimRight(baseURL, "/"),
+		APIKey:   apiKey,
+		Model:    model,
+		Thinking: thinking,
+		http:     &http.Client{Timeout: 120 * time.Second},
 	}
 }
 
@@ -65,10 +67,17 @@ type FunctionDef struct {
 
 // CallParams is the request body for /chat/completions.
 type CallParams struct {
-	Model    string    `json:"model"`
-	Messages []Message `json:"messages"`
-	Tools    []ToolDef `json:"tools,omitempty"`
-	Stream   bool      `json:"stream"`
+	Model          string          `json:"model"`
+	Messages       []Message       `json:"messages"`
+	Tools          []ToolDef       `json:"tools,omitempty"`
+	Stream         bool            `json:"stream"`
+	Thinking       *ThinkingConfig `json:"thinking,omitempty"`
+	ReasoningEffort string         `json:"reasoning_effort,omitempty"`
+}
+
+// ThinkingConfig controls Deepseek's extended thinking feature.
+type ThinkingConfig struct {
+	Type string `json:"type"` // "enabled" or "disabled"
 }
 
 // CallResult is the parsed response from /chat/completions.
@@ -87,6 +96,13 @@ func (c *Client) Call(ctx context.Context, messages []Message, tools []ToolDef) 
 		Messages: messages,
 		Tools:    tools,
 		Stream:   false,
+	}
+
+	switch c.Thinking {
+	case "enabled", "disabled":
+		body.Thinking = &ThinkingConfig{Type: c.Thinking}
+	case "low", "medium", "high":
+		body.ReasoningEffort = c.Thinking
 	}
 
 	reqBytes, err := json.Marshal(body)
