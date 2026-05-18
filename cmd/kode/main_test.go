@@ -6,8 +6,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/BackendStack21/kode/internal/config"
 )
 
 func TestGetVersion_LdFlagsOverride(t *testing.T) {
@@ -63,6 +66,12 @@ func TestParseRunFlags_AllFlags(t *testing.T) {
 		"--system", "You are a bot.",
 		"--thinking", "enabled",
 		"--sandbox",
+		"--sandbox-image", "node:20-alpine",
+		"--sandbox-network", "bridge",
+		"--sandbox-readonly",
+		"--sandbox-memory", "512m",
+		"--sandbox-cpus", "2",
+		"--sandbox-user", "1000:1000",
 		"do the thing",
 	})
 	if err != nil {
@@ -85,6 +94,24 @@ func TestParseRunFlags_AllFlags(t *testing.T) {
 	}
 	if f.Sandbox == nil || !*f.Sandbox {
 		t.Error("Sandbox should be true")
+	}
+	if f.SandboxImage != "node:20-alpine" {
+		t.Errorf("SandboxImage = %q", f.SandboxImage)
+	}
+	if f.SandboxNetwork != "bridge" {
+		t.Errorf("SandboxNetwork = %q", f.SandboxNetwork)
+	}
+	if f.SandboxReadonly == nil || !*f.SandboxReadonly {
+		t.Error("SandboxReadonly should be true")
+	}
+	if f.SandboxMemory != "512m" {
+		t.Errorf("SandboxMemory = %q", f.SandboxMemory)
+	}
+	if f.SandboxCPUs != "2" {
+		t.Errorf("SandboxCPUs = %q", f.SandboxCPUs)
+	}
+	if f.SandboxUser != "1000:1000" {
+		t.Errorf("SandboxUser = %q", f.SandboxUser)
 	}
 	if f.Task != "do the thing" {
 		t.Errorf("Task = %q", f.Task)
@@ -217,6 +244,18 @@ func TestPrintUsage(t *testing.T) {
 		"KODE_MODEL",
 		"KODE_API_KEY",
 		"KODE_SANDBOX",
+		"SANDBOX_IMAGE",
+		"SANDBOX_NETWORK",
+		"SANDBOX_READONLY",
+		"SANDBOX_MEMORY",
+		"SANDBOX_CPUS",
+		"SANDBOX_USER",
+		"--sandbox-image",
+		"--sandbox-network",
+		"--sandbox-readonly",
+		"--sandbox-memory",
+		"--sandbox-cpus",
+		"--sandbox-user",
 	}
 	for _, req := range required {
 		if !strings.Contains(output, req) {
@@ -472,6 +511,12 @@ func TestParseRunFlags_EdgeCases(t *testing.T) {
 				"--thinking", "high",
 				"--system", "be helpful",
 				"--sandbox",
+				"--sandbox-image", "python:3.12",
+				"--sandbox-network", "none",
+				"--sandbox-readonly",
+				"--sandbox-memory", "1g",
+				"--sandbox-cpus", "4",
+				"--sandbox-user", "1001:1001",
 				"explain code",
 			},
 			check: func(t *testing.T, f runFlags) {
@@ -492,6 +537,24 @@ func TestParseRunFlags_EdgeCases(t *testing.T) {
 				}
 				if f.Sandbox == nil || !*f.Sandbox {
 					t.Error("Sandbox should be true")
+				}
+				if f.SandboxImage != "python:3.12" {
+					t.Errorf("SandboxImage = %q", f.SandboxImage)
+				}
+				if f.SandboxNetwork != "none" {
+					t.Errorf("SandboxNetwork = %q", f.SandboxNetwork)
+				}
+				if f.SandboxReadonly == nil || !*f.SandboxReadonly {
+					t.Error("SandboxReadonly should be true")
+				}
+				if f.SandboxMemory != "1g" {
+					t.Errorf("SandboxMemory = %q", f.SandboxMemory)
+				}
+				if f.SandboxCPUs != "4" {
+					t.Errorf("SandboxCPUs = %q", f.SandboxCPUs)
+				}
+				if f.SandboxUser != "1001:1001" {
+					t.Errorf("SandboxUser = %q", f.SandboxUser)
 				}
 				if f.Task != "explain code" {
 					t.Errorf("Task = %q", f.Task)
@@ -754,5 +817,193 @@ func TestInitConfig_ShortFlags(t *testing.T) {
 	// Verify
 	if _, err := os.Stat(dir + "/kode/config.json"); err != nil {
 		t.Errorf("global config should exist after -g -f: %v", err)
+	}
+}
+
+// ── Sandbox Tests ────────────────────────────────────────────────────
+
+func TestResolveSandboxImage_Default(t *testing.T) {
+	// No image configured, no Dockerfile.kode → alpine:latest
+	dir := t.TempDir()
+	cwd, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(cwd)
+
+	image, err := resolveSandboxImage(sandboxConfig{})
+	if err != nil {
+		t.Fatalf("resolveSandboxImage error: %v", err)
+	}
+	if image != "alpine:latest" {
+		t.Errorf("image = %q, want %q", image, "alpine:latest")
+	}
+}
+
+func TestResolveSandboxImage_Explicit(t *testing.T) {
+	// Explicit image set → use it directly, ignore any Dockerfile.kode
+	dir := t.TempDir()
+	cwd, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(cwd)
+
+	// Even with a Dockerfile.kode, explicit should win
+	os.WriteFile("Dockerfile.kode", []byte("FROM alpine"), 0644)
+
+	image, err := resolveSandboxImage(sandboxConfig{Image: "node:20-alpine"})
+	if err != nil {
+		t.Fatalf("resolveSandboxImage error: %v", err)
+	}
+	if image != "node:20-alpine" {
+		t.Errorf("image = %q, want %q", image, "node:20-alpine")
+	}
+}
+
+func TestResolveSandboxImage_DockerfileKode(t *testing.T) {
+	if !dockerAvailable() {
+		t.Skip("docker not available")
+	}
+
+	// No explicit image, Dockerfile.kode exists → build it
+	dir := t.TempDir()
+	cwd, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(cwd)
+
+	// Create a minimal Dockerfile.kode that doesn't need to pull
+	if err := os.WriteFile("Dockerfile.kode", []byte("FROM scratch\nCMD []"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	image, err := resolveSandboxImage(sandboxConfig{})
+	if err != nil {
+		t.Fatalf("resolveSandboxImage error: %v", err)
+	}
+
+	// Should return a kode-sandbox:<hash> tag
+	if !strings.HasPrefix(image, "kode-sandbox:") {
+		t.Errorf("image = %q, want prefix 'kode-sandbox:'", image)
+	}
+}
+
+func TestResolveSandboxImage_DockerfileKodeCached(t *testing.T) {
+	if !dockerAvailable() {
+		t.Skip("docker not available")
+	}
+
+	// Same content → same hash → cached build
+	dir := t.TempDir()
+	cwd, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(cwd)
+
+	content := "FROM scratch\nCMD []"
+	os.WriteFile("Dockerfile.kode", []byte(content), 0644)
+
+	img1, err := resolveSandboxImage(sandboxConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Recreate with same content
+	os.Remove("Dockerfile.kode")
+	os.WriteFile("Dockerfile.kode", []byte(content), 0644)
+
+	img2, err := resolveSandboxImage(sandboxConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Provided docker is available, the image was built and cached.
+	// The hash is deterministic based on content.
+	if img1 != img2 {
+		t.Errorf("same Dockerfile.kode content should produce same hash, got %q vs %q", img1, img2)
+	}
+}
+
+// Test that sandbox env vars flow through config.LoadConfig
+func TestLoadConfig_SandboxEnvVars(t *testing.T) {
+	os.Setenv("KODE_SANDBOX_IMAGE", "python:3.12-slim")
+	os.Setenv("KODE_SANDBOX_NETWORK", "bridge")
+	os.Setenv("KODE_SANDBOX_READONLY", "true")
+	os.Setenv("KODE_SANDBOX_MEMORY", "1g")
+	os.Setenv("KODE_SANDBOX_CPUS", "4")
+	os.Setenv("KODE_SANDBOX_USER", "1000:1000")
+	defer func() {
+		os.Unsetenv("KODE_SANDBOX_IMAGE")
+		os.Unsetenv("KODE_SANDBOX_NETWORK")
+		os.Unsetenv("KODE_SANDBOX_READONLY")
+		os.Unsetenv("KODE_SANDBOX_MEMORY")
+		os.Unsetenv("KODE_SANDBOX_CPUS")
+		os.Unsetenv("KODE_SANDBOX_USER")
+	}()
+
+	cfg := config.LoadConfig(config.CLIFlags{})
+	if cfg.SandboxImage != "python:3.12-slim" {
+		t.Errorf("SandboxImage = %q", cfg.SandboxImage)
+	}
+	if cfg.SandboxNetwork != "bridge" {
+		t.Errorf("SandboxNetwork = %q", cfg.SandboxNetwork)
+	}
+	if !cfg.SandboxReadonly {
+		t.Error("SandboxReadonly should be true")
+	}
+	if cfg.SandboxMemory != "1g" {
+		t.Errorf("SandboxMemory = %q", cfg.SandboxMemory)
+	}
+	if cfg.SandboxCPUs != "4" {
+		t.Errorf("SandboxCPUs = %q", cfg.SandboxCPUs)
+	}
+	if cfg.SandboxUser != "1000:1000" {
+		t.Errorf("SandboxUser = %q", cfg.SandboxUser)
+	}
+}
+
+// Test that sandbox config file fields flow through LoadConfig
+func TestLoadConfig_SandboxFileConfig(t *testing.T) {
+	dir := t.TempDir()
+	prevHome := os.Getenv("HOME")
+	os.Setenv("HOME", dir)
+	defer os.Setenv("HOME", prevHome)
+
+	// Create ~/kode/config.json with sandbox settings
+	cfgDir := filepath.Join(dir, "kode")
+	os.MkdirAll(cfgDir, 0755)
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.json"), []byte(`{
+		"sandbox_image": "golang:1.24-alpine",
+		"sandbox_network": "none",
+		"sandbox_readonly": true,
+		"sandbox_memory": "2g",
+		"sandbox_cpus": "8",
+		"sandbox_user": "1001:1001",
+		"sandbox_env": {"GOCACHE": "/tmp/cache"},
+		"sandbox_volumes": ["/cache:/cache"]
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.LoadConfig(config.CLIFlags{})
+	if cfg.SandboxImage != "golang:1.24-alpine" {
+		t.Errorf("SandboxImage = %q", cfg.SandboxImage)
+	}
+	if cfg.SandboxNetwork != "none" {
+		t.Errorf("SandboxNetwork = %q", cfg.SandboxNetwork)
+	}
+	if !cfg.SandboxReadonly {
+		t.Error("SandboxReadonly should be true")
+	}
+	if cfg.SandboxMemory != "2g" {
+		t.Errorf("SandboxMemory = %q", cfg.SandboxMemory)
+	}
+	if cfg.SandboxCPUs != "8" {
+		t.Errorf("SandboxCPUs = %q", cfg.SandboxCPUs)
+	}
+	if cfg.SandboxUser != "1001:1001" {
+		t.Errorf("SandboxUser = %q", cfg.SandboxUser)
+	}
+	if cfg.SandboxEnv == nil || cfg.SandboxEnv["GOCACHE"] != "/tmp/cache" {
+		t.Errorf("SandboxEnv = %v", cfg.SandboxEnv)
+	}
+	vols := cfg.SandboxVolumes
+	if len(vols) != 1 || vols[0] != "/cache:/cache" {
+		t.Errorf("SandboxVolumes = %v", vols)
 	}
 }
