@@ -587,6 +587,8 @@ func run(args []string) error {
 		if err != nil {
 			return fmt.Errorf("save session: %w", err)
 		}
+		sess.Sandbox = resolved.Sandbox
+		store.Save(sess)
 		fmt.Fprintf(os.Stderr, "kode: session %s saved — continue with: kode continue \"...\"\n", sess.ID)
 	} else {
 		// Single-shot mode (default)
@@ -784,6 +786,12 @@ func continueCmd(args []string) error {
 
 	// Resolve config (no CLI flags for continue — uses session's model)
 	resolved := config.LoadConfig(config.CLIFlags{Model: sess.Model})
+
+	// Auto-apply sandbox if session was sandboxed (even if config changed)
+	if sess.Sandbox && !resolved.Sandbox {
+		resolved.Sandbox = true
+		fmt.Fprintf(os.Stderr, "kode: session was sandboxed — enabling sandbox for this continuation\n")
+	}
 
 	systemMessage := resolved.System
 	if systemMessage == "" {

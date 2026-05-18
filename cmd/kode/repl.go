@@ -31,11 +31,26 @@ func replCmd(args []string) error {
 		return fmt.Errorf("session store: %w", err)
 	}
 
-	// Resolve config
+	// Load or create session first — needed to know sandbox state
+	var sess *session.Session
+	if sessionID != "" {
+		sess, err = store.Load(sessionID)
+		if err != nil {
+			return fmt.Errorf("load session %q: %w", sessionID, err)
+		}
+	}
+
+	// Resolve config (before session creation so Session.Sandbox is set)
 	resolved := config.LoadConfig(config.CLIFlags{})
 	systemMessage := resolved.System
 	if systemMessage == "" {
 		systemMessage = defaultSystem
+	}
+
+	// Auto-apply sandbox if resuming a sandboxed session
+	if sess != nil && sess.Sandbox && !resolved.Sandbox {
+		resolved.Sandbox = true
+		fmt.Fprintf(os.Stderr, "kode: session was sandboxed — enabling sandbox\n")
 	}
 
 	// Build tools
@@ -85,15 +100,8 @@ func replCmd(args []string) error {
 	}
 	defer agent.Close()
 
-	// Load or create session
-	var sess *session.Session
-	if sessionID != "" {
-		sess, err = store.Load(sessionID)
-		if err != nil {
-			return fmt.Errorf("load session %q: %w", sessionID, err)
-		}
-	} else {
-		// Start fresh session with just the system message
+	// Create session if not resuming one
+	if sess == nil {
 		sess, err = store.Create(
 			[]llm.Message{{Role: "system", Content: systemMessage}},
 			resolved.Model,
@@ -102,6 +110,8 @@ func replCmd(args []string) error {
 		if err != nil {
 			return fmt.Errorf("create session: %w", err)
 		}
+		sess.Sandbox = resolved.Sandbox
+		store.Save(sess)
 	}
 
 	fmt.Fprintf(os.Stderr, "\nkode ⚡ %s · session %s\n\n", modelLabel, sess.ID)
@@ -178,6 +188,9 @@ func handleREPLCommand(input string, sess *session.Session) bool {
 		fmt.Fprintf(os.Stderr, "Session: %s\n", sess.ID)
 		fmt.Fprintf(os.Stderr, "Model:   %s\n", sess.Model)
 		fmt.Fprintf(os.Stderr, "Turns:   %d\n", sess.Turns)
+		if sess.Sandbox {
+			fmt.Fprintf(os.Stderr, "Sandbox: yes\n")
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s  (/help for commands)\n", input)
 	}

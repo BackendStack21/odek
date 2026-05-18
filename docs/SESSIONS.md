@@ -115,3 +115,19 @@ Sessions are stored as JSON at `~/.kode/sessions/<id>.json`:
 ```
 
 The `Session` struct has all public fields, enabling direct manipulation. This makes advanced operations (editing, truncating, merging) trivial — load, mutate, save.
+
+## Sandbox persistence
+
+When a session is created with `--sandbox`, the `sandbox` flag is stored in the session file. On resume (`kode continue` or `kode repl --id <id>`), the sandbox is automatically re-enabled even if the current config has it disabled:
+
+```bash
+kode run --session --sandbox "Install deps and build"
+# → session saved with sandbox=true
+
+# Later, in a different terminal without sandbox config:
+kode continue "Run the test suite"
+# → kode: session was sandboxed — enabling sandbox for this continuation
+```
+
+This prevents accidentally escaping the sandbox on resume. The sandbox image/network/memory still come from the **current** config — only the toggle bit is persisted. To force-disable sandbox on resume, pass `kode continue` in a project with `"sandbox": false` in `./kode.json` and the session flag will be overridden by the explicit config.
+
