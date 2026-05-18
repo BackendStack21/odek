@@ -213,7 +213,7 @@ func printUsage() {
   kode run [flags] <task>
   kode run --session [flags] <task>
   kode continue [--id <id>] <task>
-  kode session <list|show [id]|delete <id>>
+  kode session <list|show [id]|trim <id> <n>|delete <id>>
   kode init [--global | -g] [--force | -f]
   kode version
 
@@ -869,8 +869,10 @@ func sessionCmd(args []string) error {
 		return showSession(store, args[1:])
 	case "delete":
 		return deleteSession(store, args[1:])
+	case "trim":
+		return trimSession(store, args[1:])
 	default:
-		return fmt.Errorf("unknown session command %q (use list, show, delete)", args[0])
+		return fmt.Errorf("unknown session command %q (use list, show, trim, delete)", args[0])
 	}
 }
 
@@ -949,6 +951,64 @@ func deleteSession(store *session.Store, args []string) error {
 		return fmt.Errorf("delete session: %w", err)
 	}
 	fmt.Printf("Deleted session %s\n", args[0])
+	return nil
+}
+
+// trimSession keeps only the most recent n messages from a session,
+// always preserving the system prompt if present.
+// Usage: kode session trim <id> <n>
+func trimSession(store *session.Store, args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: kode session trim <id> <n>")
+	}
+	id := args[0]
+	var n int
+	if _, err := fmt.Sscanf(args[1], "%d", &n); err != nil || n < 2 {
+		return fmt.Errorf("n must be at least 2 (system + at least 1 message), got %q", args[1])
+	}
+
+	sess, err := store.Load(id)
+	if err != nil {
+		return fmt.Errorf("load session: %w", err)
+	}
+
+	originalLen := len(sess.Messages)
+	if n >= originalLen {
+		fmt.Printf("Session %s already has %d messages (≤ %d), nothing to trim.\n", id, originalLen, n)
+		return nil
+	}
+
+	// Always keep the system message if it's first
+	hasSystem := len(sess.Messages) > 0 && sess.Messages[0].Role == "system"
+
+	if hasSystem {
+		// Keep system message + last (n-1) messages
+		keep := n - 1
+		if keep > len(sess.Messages)-1 {
+			keep = len(sess.Messages) - 1
+		}
+		system := sess.Messages[:1]
+		tail := sess.Messages[len(sess.Messages)-keep:]
+		sess.Messages = append(system, tail...)
+	} else {
+		// Keep last n messages
+		sess.Messages = sess.Messages[len(sess.Messages)-n:]
+	}
+
+	// Recompute turn count
+	sess.Turns = 0
+	for _, m := range sess.Messages {
+		if m.Role == "user" {
+			sess.Turns++
+		}
+	}
+
+	if err := store.Save(sess); err != nil {
+		return fmt.Errorf("save session: %w", err)
+	}
+
+	dropped := originalLen - len(sess.Messages)
+	fmt.Printf("Trimmed session %s: %d → %d messages (%d dropped)\n", id, originalLen, len(sess.Messages), dropped)
 	return nil
 }
 
