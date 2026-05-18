@@ -69,7 +69,14 @@ type Config struct {
 	MaxIterations int
 
 	// SystemMessage is the system prompt injected at the start of every run.
+	// If AGENTS.md exists in the working directory, its content is appended
+	// automatically. Set NoProjectFile to true to skip this.
 	SystemMessage string
+
+	// NoProjectFile disables automatic loading of AGENTS.md from the
+	// working directory. By default, kode reads AGENTS.md and appends
+	// its content to the system message with a "Project Instructions" header.
+	NoProjectFile bool
 
 	// SandboxCleanup, if set, is called by Agent.Close() to destroy the
 	// Docker sandbox container. Set by the CLI when --sandbox is active.
@@ -179,6 +186,25 @@ func ProfileLabel(model string) string {
 	return model
 }
 
+// ── Project File (AGENTS.md) ─────────────────────────────────────────
+
+// ProjectFileName is the name of the project-level instructions file
+// that kode automatically loads from the working directory.
+const ProjectFileName = "AGENTS.md"
+
+// LoadProjectFile reads ProjectFileName from the current working directory.
+// Returns the file content (trimmed) if it exists and is readable.
+// Returns empty string if the file doesn't exist or can't be read.
+// The content is intended to be appended to the system message with a
+// clear header — use it for project conventions, architecture notes, etc.
+func LoadProjectFile() string {
+	data, err := os.ReadFile(ProjectFileName)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
 // ── Defaults ──────────────────────────────────────────────────────────
 
 const (
@@ -238,6 +264,17 @@ func New(cfg Config) (*Agent, error) {
 	tools := make([]tool.Tool, len(cfg.Tools))
 	for i, t := range cfg.Tools {
 		tools[i] = &toolAdapter{t}
+	}
+
+	// Load AGENTS.md from the working directory and append to system message
+	if !cfg.NoProjectFile {
+		if projectContent := LoadProjectFile(); projectContent != "" {
+			if cfg.SystemMessage != "" {
+				cfg.SystemMessage += "\n\n# Project Instructions\n\n" + projectContent
+			} else {
+				cfg.SystemMessage = "# Project Instructions\n\n" + projectContent
+			}
+		}
 	}
 
 	registry := tool.NewRegistry(tools)

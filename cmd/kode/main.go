@@ -55,6 +55,7 @@ type runFlags struct {
 	MaxIter  int
 	Sandbox  bool
 	NoColor  bool
+	NoAgents bool
 	Task     string
 }
 
@@ -88,6 +89,9 @@ func parseRunFlags(args []string) (runFlags, error) {
 		case "--no-color":
 			f.NoColor = true
 			i++
+		case "--no-agents":
+			f.NoAgents = true
+			i++
 		default:
 			// Not a flag — treat remaining as the task
 			goto done
@@ -117,6 +121,7 @@ Flags:
                        Empty = profile default = provider default.
   --sandbox            Run in isolated Docker container
   --no-color           Disable colored terminal output
+  --no-agents          Skip loading AGENTS.md from working directory
   --system <prompt>    System prompt override`)
 }
 
@@ -157,6 +162,7 @@ func run(args []string) error {
 		BaseURL:        f.BaseURL,
 		MaxIterations:  f.MaxIter,
 		SystemMessage:  f.System,
+		NoProjectFile:  f.NoAgents,
 		Thinking:       f.Thinking,
 		Tools:          tools,
 		SandboxCleanup: sandboxCleanup,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -523,5 +524,123 @@ func TestProfileMaxContext_Unknown(t *testing.T) {
 	p := LookupProfile("gpt-4o")
 	if p != nil {
 		t.Errorf("LookupProfile for unknown model = %v, want nil", p)
+	}
+}
+
+
+// ── Project File (AGENTS.md) Tests ───────────────────────────────────
+
+func TestLoadProjectFile_Missing(t *testing.T) {
+	// No AGENTS.md in current dir — should return empty
+	content := LoadProjectFile()
+	if content != "" {
+		t.Errorf("LoadProjectFile() with no file = %q, want empty", content)
+	}
+}
+
+func TestLoadProjectFile_WithFile(t *testing.T) {
+	dir := t.TempDir()
+	cwd, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(cwd)
+
+	if err := os.WriteFile("AGENTS.md", []byte("This project uses Go 1.24."), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	content := LoadProjectFile()
+	if content != "This project uses Go 1.24." {
+		t.Errorf("LoadProjectFile() = %q, want %q", content, "This project uses Go 1.24.")
+	}
+}
+
+func TestLoadProjectFile_TrimsWhitespace(t *testing.T) {
+	dir := t.TempDir()
+	cwd, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(cwd)
+
+	if err := os.WriteFile("AGENTS.md", []byte("  \n  project instructions  \n  "), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	content := LoadProjectFile()
+	if content != "project instructions" {
+		t.Errorf("LoadProjectFile() = %q, want %q", content, "project instructions")
+	}
+}
+
+func TestNew_ProjectFileAppended(t *testing.T) {
+	dir := t.TempDir()
+	cwd, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(cwd)
+
+	if err := os.WriteFile("AGENTS.md", []byte("Use tabs, not spaces."), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Config{
+		APIKey:        "sk-test",
+		SystemMessage: "You are a bot.",
+	}
+	agent, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(agent.config.SystemMessage, "Use tabs, not spaces.") {
+		t.Errorf("SystemMessage should contain AGENTS.md content, got: %q", agent.config.SystemMessage)
+	}
+	if !strings.Contains(agent.config.SystemMessage, "Project Instructions") {
+		t.Errorf("SystemMessage should have 'Project Instructions' header, got: %q", agent.config.SystemMessage)
+	}
+	if !strings.Contains(agent.config.SystemMessage, "You are a bot.") {
+		t.Errorf("SystemMessage should keep original content, got: %q", agent.config.SystemMessage)
+	}
+}
+
+func TestNew_ProjectFileWithNoOriginalSystem(t *testing.T) {
+	dir := t.TempDir()
+	cwd, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(cwd)
+
+	if err := os.WriteFile("AGENTS.md", []byte("Just these instructions."), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Config{
+		APIKey: "sk-test",
+	}
+	agent, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent.config.SystemMessage != "# Project Instructions\n\nJust these instructions." {
+		t.Errorf("SystemMessage = %q, want 'Project Instructions' + content", agent.config.SystemMessage)
+	}
+}
+
+func TestNew_NoProjectFileOptOut(t *testing.T) {
+	dir := t.TempDir()
+	cwd, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(cwd)
+
+	if err := os.WriteFile("AGENTS.md", []byte("Should not appear."), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Config{
+		APIKey:        "sk-test",
+		SystemMessage: "Only this.",
+		NoProjectFile: true,
+	}
+	agent, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent.config.SystemMessage != "Only this." {
+		t.Errorf("SystemMessage = %q, want original only (no project file)", agent.config.SystemMessage)
 	}
 }

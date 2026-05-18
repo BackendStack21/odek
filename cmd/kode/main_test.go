@@ -200,6 +200,8 @@ func TestPrintUsage(t *testing.T) {
 		"--thinking",
 		"profile default",
 		"--sandbox",
+		"--no-color",
+		"--no-agents",
 		"--system",
 	}
 	for _, req := range required {

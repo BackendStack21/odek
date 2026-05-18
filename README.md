@@ -87,6 +87,8 @@ kode run --model gpt-4o "Write a Go test for the loop engine"
 | `--max-iter <n>` | int | `90` | Maximum think→act cycles before giving up |
 | `--thinking <level>` | string | profile default | Reasoning depth — see [Thinking Levels](#thinking-levels). Leave empty for profile/provider default. |
 | `--sandbox` | bool | false | Run all shell commands inside an isolated Docker container |
+| `--no-color` | bool | false | Disable colored terminal output |
+| `--no-agents` | bool | false | Skip loading AGENTS.md from working directory |
 | `--system <prompt>` | string | built-in | Override the system prompt |
 
 ### Examples
@@ -494,6 +496,37 @@ kode run --system "Answer with only the code. No explanations." "Sort a slice of
 
 ---
 
+## Project Instructions (AGENTS.md)
+
+kode automatically loads `AGENTS.md` from the working directory and appends it to the system prompt with a `# Project Instructions` header. Use this file to document project conventions, architecture, style rules, or any context the agent should know.
+
+```markdown
+# Project Conventions
+
+- Use tabs, not spaces
+- Module: github.com/myorg/myproject
+- All errors must be handled, never ignored
+- Go 1.24+, stdlib only
+```
+
+### How it works
+
+1. When `kode.New()` is called, kode looks for `AGENTS.md` in `os.Getwd()`
+2. If found, the content is **appended** to the system message
+3. The default system prompt is preserved — `AGENTS.md` adds project context on top
+4. Programmatic API users also get this automatically
+
+### Skipping AGENTS.md
+
+```bash
+# Ignore AGENTS.md for this one-off task
+kode run --no-agents "Quick status check"
+```
+
+Set `Config.NoProjectFile = true` to skip programmatically.
+
+---
+
 ## Architecture
 
 ```
@@ -568,7 +601,7 @@ Requires Go 1.24+. Zero external test dependencies — tests use `httptest`, `te
 
 | Package | Tests | Focus |
 |---------|-------|-------|
-| `kode` | 25 | Config defaults, API key fallback, thinking passthrough, system message, model profiles, lookup, label, timeout |
+| `kode` | 31 | Config defaults, API key fallback, thinking passthrough, system message, model profiles, lookup, label, timeout, project file (AGENTS.md) |
 | `internal/llm` | 14 | JSON marshaling, thinking/reasoning_effort fields, response parsing, custom timeout |
 | `internal/loop` | 7 | ReAct engine with httptest mock (simple answer, tool calls, max iter, cancellation) |
 | `internal/tool` | 7 | Registry CRUD, Get (found/not found), duplicate detection |
