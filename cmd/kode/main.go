@@ -374,7 +374,7 @@ func initConfig(args []string) error {
 	fmt.Println("    sandbox_env     Extra env vars (object)")
 	fmt.Println("    sandbox_volumes Extra volume mounts (array)")
 	fmt.Println()
-	fmt.Println("  See SANDBOXING.md for full sandbox documentation.")
+	fmt.Println("  See docs/SANDBOXING.md for full sandbox documentation.")
 	fmt.Println("  Priority: config file < KODE_* env < CLI flags")
 	return nil
 }

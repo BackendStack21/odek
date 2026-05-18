@@ -20,7 +20,7 @@ kode run --sandbox "protoc --version"
 
 ## Config reference
 
-All sandbox settings are available in `~/kode/config.json`, `./kode.json`, `KODE_*` env vars, and CLI flags, following the same [priority chain](README.md#configuration).
+All sandbox settings are available in `~/kode/config.json`, `./kode.json`, `KODE_*` env vars, and CLI flags, following the same [priority chain](CONFIG.md).
 
 ### Config file fields
 
@@ -108,8 +108,6 @@ kode run --sandbox --sandbox-image golang:1.24-alpine "go test ./..."
 kode run --sandbox --sandbox-image nvidia/cuda:12.2-runtime "nvidia-smi"
 ```
 
-Image resolution follows the Docker CLI convention — any valid `docker run IMAGE` argument works.
-
 ### 2. `Dockerfile.kode` (advanced)
 
 Place a `Dockerfile.kode` in your working directory for **project-specific, pre-baked tooling**. kode auto-detects it and builds an image with a content-hash tag.
@@ -128,7 +126,6 @@ WORKDIR /workspace
 ```
 
 Build behavior:
-
 - kode checks for `Dockerfile.kode` in the working directory
 - If found and no explicit `sandbox_image` is configured, kode builds it
 - The image is tagged as `kode-sandbox:<sha256[:12]>` based on file content hash
@@ -159,13 +156,9 @@ kode run --sandbox --sandbox-readonly "ls -la /workspace"   # can read
 kode run --sandbox --sandbox-readonly "touch /workspace/x"  # fails
 ```
 
-The agent can still write to `/tmp` (which is a writable tmpfs mount) — useful for temporary files and build artifacts that don't need to persist.
-
-> **Why `false` by default?** Most agent tasks involve editing files — fixing bugs, writing code, refactoring. Read-only mode blocks those workflows. Enable it when running untrusted or exploratory tasks.
-
 ## Security guarantees
 
-kode's sandbox follows the principle of **least privilege with progressive opt-in**. Every hardening measure can be relaxed if the task requires it.
+kode's sandbox follows the principle of **least privilege with progressive opt-in**.
 
 ### Default (no sandbox config overrides)
 
@@ -180,28 +173,15 @@ kode's sandbox follows the principle of **least privilege with progressive opt-i
 
 ### With `--sandbox-network none`
 
-Adds to the defaults above:
-
 | Hardening | How it's enforced |
 |-----------|------------------|
 | **No network** | `--network none` — container cannot reach internet or LAN |
 
 ### With `--sandbox-readonly`
 
-Adds to the defaults above:
-
 | Hardening | How it's enforced |
 |-----------|------------------|
 | **Read-only workspace** | `-v $PWD:/workspace:ro` — agent can read but not modify project files |
-
-### What you give up by relaxing defaults
-
-| Relaxation | You lose |
-|------------|----------|
-| `network: bridge` (default) | Full network isolation |
-| `network: host` | All network isolation — container can access `localhost` services |
-| `readonly: false` (default) | Protection against accidental file modification |
-| `memory: ""` (default) | Protection against OOM on the host |
 
 ## Use case patterns
 
@@ -251,18 +231,6 @@ Adds to the defaults above:
   }
 }
 ```
-
-### GPU workload
-
-```json
-{
-  "sandbox": true,
-  "sandbox_image": "nvidia/cuda:12.2-runtime",
-  "sandbox_network": "bridge"
-}
-```
-
-Run with `--gpus all` (currently requires manual `docker run` args — see [limitations](#limitations) below).
 
 ## Limitations
 
