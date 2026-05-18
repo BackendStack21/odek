@@ -108,9 +108,13 @@ func printUsage() {
 
 Flags:
   --model <name>       LLM model (default: deepseek-chat)
+                       Known profiles: deepseek-v4-flash, deepseek-v4-pro
+                       Profiles auto-set thinking/timeout defaults.
   --base-url <url>     API endpoint (default: https://api.deepseek.com/v1)
   --max-iter <n>       Max think->act cycles (default: 90)
-  --thinking <level>   Reasoning depth: enabled|disabled (Deepseek) or low|medium|high (OpenAI o-series)
+  --thinking <level>   Reasoning depth: enabled|disabled (Deepseek)
+                       or low|medium|high (OpenAI o-series).
+                       Empty = profile default = provider default.
   --sandbox            Run in isolated Docker container
   --no-color           Disable colored terminal output
   --system <prompt>    System prompt override`)
@@ -141,12 +145,12 @@ func run(args []string) error {
 	}
 
 	// Create terminal renderer for colored step-by-step output.
-	modelName := f.Model
-	if modelName == "" {
-		modelName = "deepseek-chat"
+	modelLabel := kode.ProfileLabel(f.Model)
+	if modelLabel == "" {
+		modelLabel = "deepseek-chat"
 	}
 	color := !f.NoColor && render.ColorEnabled()
-	rend := render.New(os.Stderr, color)
+	rend := render.New(os.Stderr, color).WithModel(modelLabel)
 
 	agent, err := kode.New(kode.Config{
 		Model:          f.Model,
@@ -156,7 +160,7 @@ func run(args []string) error {
 		Thinking:       f.Thinking,
 		Tools:          tools,
 		SandboxCleanup: sandboxCleanup,
-		Renderer:       rend.WithModel(modelName),
+		Renderer:       rend,
 	})
 	if err != nil {
 		return err

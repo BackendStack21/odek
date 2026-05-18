@@ -336,3 +336,192 @@ func TestNew_WithTools(t *testing.T) {
 		t.Errorf("tool name = %q, want %q", tools[0].Name(), "test_tool")
 	}
 }
+
+// ── Model Profile Tests ───────────────────────────────────────────────
+
+func TestLookupProfile_ExactMatch(t *testing.T) {
+	p := LookupProfile("deepseek-v4-flash")
+	if p == nil {
+		t.Fatal("LookupProfile(\"deepseek-v4-flash\") returned nil")
+	}
+	if p.Label != "DeepSeek v4 Flash" {
+		t.Errorf("Label = %q, want %q", p.Label, "DeepSeek v4 Flash")
+	}
+	if p.DefaultThinking != "" {
+		t.Errorf("DefaultThinking = %q, want empty", p.DefaultThinking)
+	}
+	if p.Timeout != 90 {
+		t.Errorf("Timeout = %d, want 90", p.Timeout)
+	}
+}
+
+func TestLookupProfile_ProExactMatch(t *testing.T) {
+	p := LookupProfile("deepseek-v4-pro")
+	if p == nil {
+		t.Fatal("LookupProfile(\"deepseek-v4-pro\") returned nil")
+	}
+	if p.Label != "DeepSeek v4 Pro" {
+		t.Errorf("Label = %q, want %q", p.Label, "DeepSeek v4 Pro")
+	}
+	if p.DefaultThinking != "enabled" {
+		t.Errorf("DefaultThinking = %q, want %q", p.DefaultThinking, "enabled")
+	}
+	if p.Timeout != 180 {
+		t.Errorf("Timeout = %d, want 180", p.Timeout)
+	}
+}
+
+func TestLookupProfile_LongestPrefixMatch(t *testing.T) {
+	// "deepseek-v4-flash-custom" should match "deepseek-v4-flash" not "deepseek-"
+	p := LookupProfile("deepseek-v4-flash-custom-v2")
+	if p == nil {
+		t.Fatal("LookupProfile returned nil")
+	}
+	if p.Label != "DeepSeek v4 Flash" {
+		t.Errorf("Label = %q, want %q", p.Label, "DeepSeek v4 Flash")
+	}
+}
+
+func TestLookupProfile_FallbackMatch(t *testing.T) {
+	// Any other deepseek-* model should match the generic "deepseek-" profile
+	p := LookupProfile("deepseek-coder")
+	if p == nil {
+		t.Fatal("LookupProfile(\"deepseek-coder\") returned nil")
+	}
+	if p.Label != "DeepSeek (generic)" {
+		t.Errorf("Label = %q, want %q", p.Label, "DeepSeek (generic)")
+	}
+}
+
+func TestLookupProfile_NoMatch(t *testing.T) {
+	p := LookupProfile("gpt-4o")
+	if p != nil {
+		t.Errorf("LookupProfile(\"gpt-4o\") = %v, want nil", p)
+	}
+}
+
+func TestProfileLabel_Known(t *testing.T) {
+	if label := ProfileLabel("deepseek-v4-pro"); label != "DeepSeek v4 Pro" {
+		t.Errorf("ProfileLabel = %q, want %q", label, "DeepSeek v4 Pro")
+	}
+}
+
+func TestProfileLabel_Unknown(t *testing.T) {
+	if label := ProfileLabel("gpt-4o"); label != "gpt-4o" {
+		t.Errorf("ProfileLabel should return model name for unknown models, got %q", label)
+	}
+}
+
+func TestNew_ProfileDefaultThinking_Pro(t *testing.T) {
+	// deepseek-v4-pro has DefaultThinking="enabled" — applied when empty
+	cfg := Config{
+		APIKey: "sk-test",
+		Model:  "deepseek-v4-pro",
+	}
+	agent, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent.config.Thinking != "enabled" {
+		t.Errorf("Thinking = %q, want %q (profile default)", agent.config.Thinking, "enabled")
+	}
+}
+
+func TestNew_ProfileDefaultThinking_Flash(t *testing.T) {
+	// deepseek-v4-flash has no DefaultThinking — field stays empty
+	cfg := Config{
+		APIKey: "sk-test",
+		Model:  "deepseek-v4-flash",
+	}
+	agent, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent.config.Thinking != "" {
+		t.Errorf("Thinking = %q, want empty (Flash has no thinking default)", agent.config.Thinking)
+	}
+}
+
+func TestNew_ExplicitThinkingOverridesProfile(t *testing.T) {
+	// Explicit Thinking should win over profile default
+	cfg := Config{
+		APIKey:   "sk-test",
+		Model:    "deepseek-v4-pro",
+		Thinking: "disabled", // override profile's "enabled"
+	}
+	agent, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent.config.Thinking != "disabled" {
+		t.Errorf("Thinking = %q, want %q (explicit should override profile)", agent.config.Thinking, "disabled")
+	}
+}
+
+func TestNew_ProfileTimeout_Pro(t *testing.T) {
+	// Verify the profile timeout is passed to the LLM client.
+	// We can't directly inspect the client's timeout, but we can verify
+	// the agent was created without error.
+	cfg := Config{
+		APIKey: "sk-test",
+		Model:  "deepseek-v4-pro",
+	}
+	_, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() with deepseek-v4-pro should succeed: %v", err)
+	}
+}
+
+func TestNew_DefaultModelNoProfile(t *testing.T) {
+	// deepseek-chat is not in KnownProfiles — no profile defaults applied
+	cfg := Config{
+		APIKey: "sk-test",
+		Model:  "deepseek-chat",
+	}
+	agent, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent.config.Thinking != "" {
+		t.Errorf("Thinking = %q, want empty for default model", agent.config.Thinking)
+	}
+}
+
+func TestKnownProfiles_NotEmpty(t *testing.T) {
+	if len(KnownProfiles) == 0 {
+		t.Error("KnownProfiles should not be empty")
+	}
+	// Verify all profiles have prefixes
+	for _, p := range KnownProfiles {
+		if p.Prefix == "" {
+			t.Error("Found profile with empty prefix")
+		}
+	}
+}
+
+func TestProfileMaxContext_Pro(t *testing.T) {
+	p := LookupProfile("deepseek-v4-pro")
+	if p == nil {
+		t.Fatal("profile not found")
+	}
+	if p.MaxContext != 1_000_000 {
+		t.Errorf("MaxContext = %d, want 1_000_000", p.MaxContext)
+	}
+}
+
+func TestProfileMaxContext_Flash(t *testing.T) {
+	p := LookupProfile("deepseek-v4-flash")
+	if p == nil {
+		t.Fatal("profile not found")
+	}
+	if p.MaxContext != 131_072 {
+		t.Errorf("MaxContext = %d, want 131_072", p.MaxContext)
+	}
+}
+
+func TestProfileMaxContext_Unknown(t *testing.T) {
+	p := LookupProfile("gpt-4o")
+	if p != nil {
+		t.Errorf("LookupProfile for unknown model = %v, want nil", p)
+	}
+}

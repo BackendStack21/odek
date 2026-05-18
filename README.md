@@ -82,10 +82,10 @@ kode run --model gpt-4o "Write a Go test for the loop engine"
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--model <name>` | string | `deepseek-chat` | LLM model identifier |
+| `--model <name>` | string | `deepseek-chat` | LLM model identifier. Known profiles auto-set thinking/timeout — see [Model Profiles](#model-profiles). |
 | `--base-url <url>` | string | `https://api.deepseek.com/v1` | OpenAI-compatible API endpoint |
 | `--max-iter <n>` | int | `90` | Maximum think→act cycles before giving up |
-| `--thinking <level>` | string | (none) | Reasoning depth — see [Thinking Levels](#thinking-levels) |
+| `--thinking <level>` | string | profile default | Reasoning depth — see [Thinking Levels](#thinking-levels). Leave empty for profile/provider default. |
 | `--sandbox` | bool | false | Run all shell commands inside an isolated Docker container |
 | `--system <prompt>` | string | built-in | Override the system prompt |
 
@@ -151,9 +151,101 @@ Any endpoint that accepts `POST /chat/completions` with an OpenAI-compatible JSO
 
 ---
 
+## Model Profiles
+
+kode ships with built-in **model profiles** that automatically apply sensible defaults (thinking mode, request timeout) based on the model name. Profiles are matched by longest prefix — adding a new model is one entry.
+
+| Model | Family | Default Thinking | Timeout | Max Context | Best For |
+|-------|--------|-----------------|---------|-------------|----------|
+| `deepseek-chat` | DeepSeek (legacy) | (provider default) | 120s | 128K | General purpose |
+| `deepseek-v4-flash` | DeepSeek v4 Flash | — (faster/cheaper) | 90s | 128K | Quick tasks, coding |
+| `deepseek-v4-pro` | DeepSeek v4 Pro | `enabled` | 180s | **1M** | Deep reasoning, analysis |
+| *(any other)* | Generic | (profile default) | 120s | (no limit) | Custom models |
+
+### How profiles work
+
+1. When you set `--model deepseek-v4-pro`, kode matches the profile and **automatically sets `thinking=enabled`** and a **180s timeout**.
+2. Explicit `--thinking` always wins — profile defaults only apply when you don't specify.
+3. Unknown models get no profile overrides (provider default behavior).
+
+### Adding a new profile
+
+Profiles live in `kode.go` as the `KnownProfiles` slice. Adding a new model is a single entry:
+
+```go
+{
+    Prefix: "claude-sonnet-4",
+    Profile: ModelProfile{
+        Label:           "Claude Sonnet 4",
+        DefaultThinking: "",  // no extended thinking
+        Timeout:         180, // generous for reasoning
+        MaxContext:      200_000, // 200K context window
+    },
+},
+```
+
+No changes to the LLM client, loop engine, or CLI parsing needed — the rest of kode consumes `KnownProfiles` automatically.
+
+```bash
+# DeepSeek v4 Pro — thinking enabled automatically, 180s timeout, 1M context
+kode run --model deepseek-v4-pro "Design a distributed consensus algorithm"
+
+# DeepSeek v4 Flash — no extended thinking, 90s timeout, 128K context
+kode run --model deepseek-v4-flash "List the files"
+
+# Override profile default explicitly
+kode run --model deepseek-v4-pro --thinking disabled "Quick status check"
+```
+
+---
+
+## Context Window Management
+
+kode automatically manages the conversation history to stay within each model's context window. When a model profile defines a `MaxContext` value, the loop engine estimates token usage and trims old messages before they fill the window.
+
+### How it works
+
+1. **Token estimation**: kode uses a conservative heuristic (~4 chars/token + structural overhead) — no tokenizer needed.
+2. **Safety margin**: 75% of `MaxContext` is reserved for input; the remaining 25% is left for the model's output.
+3. **Trim strategy**: Before each LLM call, if estimated tokens exceed the budget, the oldest non-essential messages (tool call → tool result pairs) are dropped, preserving:
+   - The **system prompt** (always first)
+   - The **original task message** (first user message)
+4. **No limit = no trimming**: Models with `MaxContext: 0` (or no profile) have no context enforcement — the full history is sent every time.
+
+### Example
+
+```
+Messages before trim (6 messages, ~250K estimated tokens, budget=200K):
+  [system] You are kode...
+  [user]   Refactor this module...
+  [assistant]"               ← DROPPED
+  [tool]                      ← DROPPED
+  [assistant] Let me check... ← KEPT
+  [tool]  File: main.go...    ← KEPT
+
+Messages after trim (4 messages, ~180K estimated tokens):
+  [system] You are kode...
+  [user]   Refactor this module...
+  [assistant] Let me check...
+  [tool]  File: main.go...
+```
+
+### Token estimation accuracy
+
+| Content | Estimated | Actual (approx) | Notes |
+|---------|-----------|-----------------|-------|
+| "hello" | 2 tokens | ~1 token | Overestimates short text |
+| 1000 chars of text | 250 tokens | ~200-300 tokens | Accurate range |
+| Code/JSON | Variable | 2-3 chars/token | Conservative overestimate |
+| Message JSON overhead | 50 per msg | ~30-50 | Margin for nested fields |
+
+The estimator is intentionally conservative — it overestimates to prevent context limit errors. In practice, the model never sees a `context_length_exceeded` error because trimming happens proactively at 75% of the limit.
+
+---
+
 ## Thinking Levels
 
-The `--thinking` flag controls how deeply the model reasons before responding. kode automatically maps your value to the provider's native format.
+The `--thinking` flag controls how deeply the model reasons before responding. kode automatically maps your value to the provider's native format. When the flag is not set, the [model profile](#model-profiles) default is applied (if any).
 
 | Value | Deepseek sends | OpenAI o-series sends | Description |
 |-------|---------------|----------------------|-------------|
@@ -165,14 +257,17 @@ The `--thinking` flag controls how deeply the model reasons before responding. k
 | (empty) | (not sent) | (not sent) | Provider default behavior |
 
 ```bash
-# Deepseek — enable extended thinking
-kode run --model deepseek-chat --thinking enabled "Explain monads"
+# DeepSeek v4 Pro — profile auto-enables thinking
+kode run --model deepseek-v4-pro "Explain monads"
 
-# Deepseek — disable (faster, cheaper)
-kode run --model deepseek-chat --thinking disabled "List files"
+# DeepSeek v4 Flash — profile default: no thinking (faster, cheaper)
+kode run --model deepseek-v4-flash "List files"
 
 # OpenAI o1 — deep reasoning for hard problems
 kode run --model o1 --base-url https://api.openai.com/v1 --thinking high "Optimize this distributed consensus algorithm"
+
+# Override profile default with explicit flag
+kode run --model deepseek-v4-pro --thinking disabled "Quick status check"
 
 # Default (no thinking field sent) — let the provider decide
 kode run "What time is it?"
@@ -351,10 +446,10 @@ func main() {
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `Model` | string | `"deepseek-chat"` | LLM model ID |
+| `Model` | string | `"deepseek-chat"` | LLM model ID — triggers [model profile](#model-profiles) defaults |
 | `BaseURL` | string | `"https://api.deepseek.com/v1"` | API endpoint |
 | `APIKey` | string | `$DEEPSEEK_API_KEY` or `$OPENAI_API_KEY` | Auth token |
-| `Thinking` | string | `""` | Reasoning depth — see [Thinking Levels](#thinking-levels) |
+| `Thinking` | string | profile default (if any) | Reasoning depth — see [Thinking Levels](#thinking-levels) |
 | `Tools` | `[]Tool` | `nil` | Available tools |
 | `MaxIterations` | int | `90` | Max think→act cycles |
 | `SystemMessage` | string | built-in | System prompt |
@@ -380,7 +475,8 @@ The API key can also be set programmatically via `Config.APIKey` — explicit co
 | Model | `deepseek-chat` |
 | Base URL | `https://api.deepseek.com/v1` |
 | Max iterations | `90` |
-| Thinking | (not sent — provider default) |
+| Thinking | Profile default (if known model), else provider default) |
+| HTTP timeout | Profile default (120s for unknown models) |
 
 ---
 
@@ -472,8 +568,8 @@ Requires Go 1.24+. Zero external test dependencies — tests use `httptest`, `te
 
 | Package | Tests | Focus |
 |---------|-------|-------|
-| `kode` | 11 | Config defaults, API key fallback, thinking passthrough, system message |
-| `internal/llm` | 11 | JSON marshaling, thinking/reasoning_effort fields, response parsing |
+| `kode` | 25 | Config defaults, API key fallback, thinking passthrough, system message, model profiles, lookup, label, timeout |
+| `internal/llm` | 14 | JSON marshaling, thinking/reasoning_effort fields, response parsing, custom timeout |
 | `internal/loop` | 7 | ReAct engine with httptest mock (simple answer, tool calls, max iter, cancellation) |
 | `internal/tool` | 7 | Registry CRUD, Get (found/not found), duplicate detection |
 

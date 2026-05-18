@@ -192,9 +192,13 @@ func TestPrintUsage(t *testing.T) {
 		"kode run",
 		"kode version",
 		"--model",
+		"Known profiles",
+		"deepseek-v4-flash",
+		"deepseek-v4-pro",
 		"--base-url",
 		"--max-iter",
 		"--thinking",
+		"profile default",
 		"--sandbox",
 		"--system",
 	}

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestCallParamsMarshaling_NoThinking(t *testing.T) {
@@ -330,7 +331,7 @@ func TestClient_ThinkingSwitch(t *testing.T) {
 }
 
 func TestClient_New(t *testing.T) {
-	c := New("https://api.example.com/v1", "sk-key", "gpt-4", "enabled")
+	c := New("https://api.example.com/v1", "sk-key", "gpt-4", "enabled", 0)
 	if c.BaseURL != "https://api.example.com/v1" {
 		t.Errorf("BaseURL = %q", c.BaseURL)
 	}
@@ -346,9 +347,23 @@ func TestClient_New(t *testing.T) {
 }
 
 func TestClient_New_TrailingSlash(t *testing.T) {
-	c := New("https://api.example.com/v1/", "sk-key", "model", "")
+	c := New("https://api.example.com/v1/", "sk-key", "model", "", 0)
 	if c.BaseURL != "https://api.example.com/v1" {
 		t.Errorf("BaseURL should trim trailing slash, got %q", c.BaseURL)
+	}
+}
+
+func TestClient_New_CustomTimeout(t *testing.T) {
+	c := New("https://api.example.com", "sk-key", "model", "", 30*time.Second)
+	if c.http.Timeout != 30*time.Second {
+		t.Errorf("Timeout = %v, want 30s", c.http.Timeout)
+	}
+}
+
+func TestClient_New_ZeroTimeoutUsesDefault(t *testing.T) {
+	c := New("https://api.example.com", "sk-key", "model", "", 0)
+	if c.http.Timeout != 120*time.Second {
+		t.Errorf("Timeout = %v, want 120s", c.http.Timeout)
 	}
 }
 
@@ -366,7 +381,7 @@ func TestClient_Call_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := New(server.URL, "sk-test", "test-model", "")
+	c := New(server.URL, "sk-test", "test-model", "", 0)
 	result, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
@@ -383,7 +398,7 @@ func TestClient_Call_HTTPError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := New(server.URL, "sk-test", "test-model", "")
+	c := New(server.URL, "sk-test", "test-model", "", 0)
 	_, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
 	if err == nil {
 		t.Fatal("expected error for 500 response")
@@ -399,7 +414,7 @@ func TestClient_Call_WithThinking(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := New(server.URL, "sk-test", "deepseek-chat", "enabled")
+	c := New(server.URL, "sk-test", "deepseek-chat", "enabled", 0)
 	result, err := c.Call(context.Background(), []Message{{Role: "user", Content: "think"}}, nil)
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
@@ -427,7 +442,7 @@ func TestClient_Call_WithReasoningEffort(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := New(server.URL, "sk-test", "o1", "high")
+	c := New(server.URL, "sk-test", "o1", "high", 0)
 	result, err := c.Call(context.Background(), []Message{{Role: "user", Content: "reason"}}, nil)
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
@@ -442,7 +457,7 @@ func TestClient_Call_WithReasoningEffort(t *testing.T) {
 }
 
 func TestClient_Call_InvalidEndpoint(t *testing.T) {
-	c := New("http://127.0.0.1:1", "sk-test", "model", "")
+	c := New("http://127.0.0.1:1", "sk-test", "model", "", 0)
 	_, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
 	if err == nil {
 		t.Fatal("expected connection error")
@@ -457,7 +472,7 @@ func TestClient_Call_WithTools(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := New(server.URL, "sk-test", "test-model", "")
+	c := New(server.URL, "sk-test", "test-model", "", 0)
 	tools := []ToolDef{
 		{
 			Type: "function",
@@ -485,7 +500,7 @@ func TestClient_Call_Unauthorized(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := New(server.URL, "sk-bad", "test-model", "")
+	c := New(server.URL, "sk-bad", "test-model", "", 0)
 	_, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
 	if err == nil {
 		t.Fatal("expected error for 401 response")
@@ -500,7 +515,7 @@ func TestClient_Call_InvalidJSONResponse(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := New(server.URL, "sk-test", "test-model", "")
+	c := New(server.URL, "sk-test", "test-model", "", 0)
 	_, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON response")

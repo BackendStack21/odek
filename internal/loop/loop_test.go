@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/BackendStack21/kode/internal/llm"
@@ -36,9 +37,9 @@ func TestEngine_Run_SimpleAnswer(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "")
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0)
 	registry := tool.NewRegistry(nil)
-	engine := New(client, registry, 10, "", nil)
+	engine := New(client, registry, 10, "", nil, 0)
 
 	result, err := engine.Run(context.Background(), "Say hello")
 	if err != nil {
@@ -79,8 +80,8 @@ func TestEngine_Run_ToolCallLoop(t *testing.T) {
 
 	echoTool := &fakeTool{name: "echo", description: "echoes input", output: "hello output"}
 	registry := tool.NewRegistry([]tool.Tool{echoTool})
-	client := llm.New(server.URL, "sk-test", "test-model", "")
-	engine := New(client, registry, 10, "", nil)
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0)
+	engine := New(client, registry, 10, "", nil, 0)
 
 	result, err := engine.Run(context.Background(), "Echo hello")
 	if err != nil {
@@ -116,8 +117,8 @@ func TestEngine_Run_MaxIterations(t *testing.T) {
 
 	echoTool := &fakeTool{name: "echo", description: "echo", output: "ok"}
 	registry := tool.NewRegistry([]tool.Tool{echoTool})
-	client := llm.New(server.URL, "sk-test", "test-model", "")
-	engine := New(client, registry, 3, "", nil)
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0)
+	engine := New(client, registry, 3, "", nil, 0)
 
 	_, err := engine.Run(context.Background(), "Loop forever")
 	if err == nil {
@@ -131,8 +132,8 @@ func TestEngine_Run_ContextCancellation(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "")
-	engine := New(client, tool.NewRegistry(nil), 10, "", nil)
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0)
+	engine := New(client, tool.NewRegistry(nil), 10, "", nil, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
@@ -165,8 +166,8 @@ func TestEngine_Run_SystemMessage(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "")
-	engine := New(client, tool.NewRegistry(nil), 10, "You are a test bot.", nil)
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0)
+	engine := New(client, tool.NewRegistry(nil), 10, "You are a test bot.", nil, 0)
 
 	result, err := engine.Run(context.Background(), "hi")
 	if err != nil {
@@ -197,8 +198,8 @@ func TestEngine_Run_ToolNotFound(t *testing.T) {
 	defer server.Close()
 
 	// No tools registered — the tool call will fail
-	client := llm.New(server.URL, "sk-test", "test-model", "")
-	engine := New(client, tool.NewRegistry(nil), 10, "", nil)
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0)
+	engine := New(client, tool.NewRegistry(nil), 10, "", nil, 0)
 
 	// The loop should handle the missing tool gracefully — the tool error
 	// is fed back to the model as a tool response message. The test server
@@ -214,7 +215,7 @@ func TestEngine_BuildToolDefs(t *testing.T) {
 	t2 := &fakeTool{name: "write", description: "write files"}
 	registry := tool.NewRegistry([]tool.Tool{t1, t2})
 
-	engine := New(nil, registry, 10, "", nil)
+	engine := New(nil, registry, 10, "", nil, 0)
 	defs := engine.buildToolDefs()
 
 	if len(defs) != 2 {
@@ -239,7 +240,7 @@ func TestEngine_BuildToolDefs_StringSchema(t *testing.T) {
 	st := &stringSchemaTool{name: "custom", description: "custom tool", schemaStr: `{"type":"object"}`}
 	registry := tool.NewRegistry([]tool.Tool{st})
 
-	engine := New(nil, registry, 10, "", nil)
+	engine := New(nil, registry, 10, "", nil, 0)
 	defs := engine.buildToolDefs()
 
 	if len(defs) != 1 {
@@ -254,7 +255,7 @@ func TestEngine_BuildToolDefs_EmptyStringSchema(t *testing.T) {
 	st := &stringSchemaTool{name: "empty", description: "empty", schemaStr: ""}
 	registry := tool.NewRegistry([]tool.Tool{st})
 
-	engine := New(nil, registry, 10, "", nil)
+	engine := New(nil, registry, 10, "", nil, 0)
 	defs := engine.buildToolDefs()
 
 	if len(defs) != 1 {
@@ -303,8 +304,8 @@ func TestEngine_Run_ContextCancelDuringLoop(t *testing.T) {
 
 	echoTool := &fakeTool{name: "echo", description: "echo", output: "ok"}
 	registry := tool.NewRegistry([]tool.Tool{echoTool})
-	client := llm.New(server.URL, "sk-test", "test-model", "")
-	engine := New(client, registry, 10, "", nil)
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0)
+	engine := New(client, registry, 10, "", nil, 0)
 
 	_, err := engine.Run(ctx, "task")
 	if err == nil {
@@ -334,8 +335,8 @@ func TestEngine_Run_ToolCallError(t *testing.T) {
 
 	failingTool := &errorTool{name: "failing", description: "always fails"}
 	registry := tool.NewRegistry([]tool.Tool{failingTool})
-	client := llm.New(server.URL, "sk-test", "test-model", "")
-	engine := New(client, registry, 10, "", nil)
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0)
+	engine := New(client, registry, 10, "", nil, 0)
 
 	// Tool error is fed back as a tool response; server only returns one
 	// response, so we hit max iterations.
@@ -355,3 +356,218 @@ func (e *errorTool) Name() string                     { return e.name }
 func (e *errorTool) Description() string              { return e.description }
 func (e *errorTool) Schema() any                      { return map[string]any{"type": "object"} }
 func (e *errorTool) Call(args string) (string, error) { return "", fmt.Errorf("tool error") }
+
+// ═════════════════════════════════════════════════════════════════════
+// Context Trimming Tests
+// ═════════════════════════════════════════════════════════════════════
+
+func TestEstimateTokens_Empty(t *testing.T) {
+	if n := estimateTokens(""); n != 0 {
+		t.Errorf("estimateTokens('') = %d, want 0", n)
+	}
+}
+
+func TestEstimateTokens_Short(t *testing.T) {
+	// "hello" is 5 chars → (5+3)/4 = 2 tokens (conservative overestimate)
+	if n := estimateTokens("hello"); n != 2 {
+		t.Errorf("estimateTokens('hello') = %d, want 2", n)
+	}
+}
+
+func TestEstimateTokens_Long(t *testing.T) {
+	// ~4 chars per token — 1000 chars should be ~250 tokens
+	n := estimateTokens(strings.Repeat("x", 1000))
+	if n < 200 || n > 300 {
+		t.Errorf("estimateTokens(1000 chars) = %d, want ~250", n)
+	}
+}
+
+func TestEstimateMessages_Empty(t *testing.T) {
+	if n := estimateMessages(nil); n != 0 {
+		t.Errorf("estimateMessages(nil) = %d, want 0", n)
+	}
+}
+
+func TestEstimateMessages_Single(t *testing.T) {
+	msg := []llm.Message{{Role: "user", Content: "hello"}}
+	n := estimateMessages(msg)
+	// 50 overhead + 2 tokens for "hello" = 52
+	if n < 50 || n > 55 {
+		t.Errorf("estimateMessages(single) = %d, want ~52", n)
+	}
+}
+
+func TestEstimateMessages_WithToolCalls(t *testing.T) {
+	msg := []llm.Message{{
+		Role:    "assistant",
+		Content: "Let me check",
+		ToolCalls: []llm.ToolCall{{
+			ID:   "call_1",
+			Type: "function",
+			Function: struct {
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+			}{Name: "shell", Arguments: `{"cmd":"ls"}`},
+		}},
+	}}
+	n := estimateMessages(msg)
+	if n < 80 {
+		t.Errorf("estimateMessages(with tool call) = %d, want >80", n)
+	}
+}
+
+func TestContextBudget_NoLimit(t *testing.T) {
+	if n := contextBudget(0); n != 0 {
+		t.Errorf("contextBudget(0) = %d, want 0", n)
+	}
+}
+
+func TestContextBudget_WithLimit(t *testing.T) {
+	// 131072 * 0.75 = 98304
+	if n := contextBudget(131072); n != 98304 {
+		t.Errorf("contextBudget(131072) = %d, want 98304", n)
+	}
+}
+
+func TestTrimContext_NoLimit(t *testing.T) {
+	engine := &Engine{maxContext: 0}
+	msgs := []llm.Message{
+		{Role: "system", Content: "You are a bot."},
+		{Role: "user", Content: "hello"},
+	}
+	result := engine.trimContext(msgs, nil)
+	if len(result) != 2 {
+		t.Errorf("trimContext with no limit should not change messages, got %d", len(result))
+	}
+}
+
+func TestTrimContext_UnderBudget(t *testing.T) {
+	// Large budget — messages fit easily
+	engine := &Engine{maxContext: 1_000_000}
+	msgs := []llm.Message{
+		{Role: "system", Content: "You are a bot."},
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "Hi there", ToolCalls: nil},
+		{Role: "tool", Content: "result", ToolCallID: "call_1"},
+	}
+	result := engine.trimContext(msgs, nil)
+	if len(result) != 4 {
+		t.Errorf("trimContext under budget should keep all messages, got %d", len(result))
+	}
+}
+
+func TestTrimContext_OverBudget(t *testing.T) {
+	// Very tight budget — forces trimming
+	engine := &Engine{maxContext: 200}
+	msgs := []llm.Message{
+		{Role: "system", Content: "You are a helpful assistant. Be concise."},
+		{Role: "user", Content: "Explain how the quantum fourier transform works in detail"},
+		{Role: "assistant", Content: strings.Repeat("thinking about this... ", 20)},
+		{Role: "tool", Content: strings.Repeat("some result data ", 20), ToolCallID: "call_1"},
+		{Role: "assistant", Content: strings.Repeat("more reasoning... ", 20)},
+		{Role: "tool", Content: strings.Repeat("more data ", 20), ToolCallID: "call_2"},
+		{Role: "assistant", Content: strings.Repeat("final reasoning... ", 20)},
+		{Role: "tool", Content: strings.Repeat("final data ", 20), ToolCallID: "call_3"},
+	}
+	result := engine.trimContext(msgs, nil)
+
+	// Should have preserved system + task (first user)
+	if len(result) < 2 {
+		t.Errorf("trimContext should keep at least system + task, got %d", len(result))
+	}
+	if result[0].Role != "system" {
+		t.Errorf("trimContext should keep system message first, got role=%q", result[0].Role)
+	}
+	if result[1].Role != "user" {
+		t.Errorf("trimContext should keep task message second, got role=%q", result[1].Role)
+	}
+
+	// Should have fewer messages than original
+	if len(result) >= len(msgs) {
+		t.Errorf("trimContext should reduce messages, got %d >= %d", len(result), len(msgs))
+	}
+}
+
+func TestTrimContext_VeryTightBudget(t *testing.T) {
+	// Extremely tight budget — still should keep system + task
+	engine := &Engine{maxContext: 100}
+	msgs := []llm.Message{
+		{Role: "system", Content: "You are a bot."},
+		{Role: "user", Content: "Hello world, this is a task message that is somewhat long"},
+		{Role: "assistant", Content: strings.Repeat("data ", 50)},
+		{Role: "tool", Content: strings.Repeat("result ", 50), ToolCallID: "call_1"},
+	}
+	result := engine.trimContext(msgs, nil)
+
+	// Must keep system + task at minimum
+	if len(result) < 2 {
+		t.Errorf("trimContext(VeryTight) should keep system + task, got %d", len(result))
+	}
+	if result[0].Role != "system" {
+		t.Errorf("trimContext(VeryTight) should keep system first")
+	}
+	if result[1].Role != "user" {
+		t.Errorf("trimContext(VeryTight) should keep task second, got %q", result[1].Role)
+	}
+}
+
+func TestTrimContext_NoSystemMessage(t *testing.T) {
+	engine := &Engine{maxContext: 150}
+	msgs := []llm.Message{
+		{Role: "user", Content: "This is a long task message that takes up many tokens"},
+		{Role: "assistant", Content: strings.Repeat("data ", 30)},
+		{Role: "tool", Content: strings.Repeat("result ", 30), ToolCallID: "call_1"},
+	}
+	result := engine.trimContext(msgs, nil)
+
+	// Without system, keep at least the task
+	if len(result) < 1 {
+		t.Errorf("trimContext(no system) should keep task, got %d", len(result))
+	}
+	if result[0].Role != "user" {
+		t.Errorf("trimContext(no system) should keep task first, got %q", result[0].Role)
+	}
+}
+
+func TestEstimateToolDefs_Empty(t *testing.T) {
+	if n := estimateToolDefs(nil); n != 0 {
+		t.Errorf("estimateToolDefs(nil) = %d, want 0", n)
+	}
+}
+
+func TestEstimateToolDefs_Single(t *testing.T) {
+	defs := []llm.ToolDef{{
+		Type: "function",
+		Function: llm.FunctionDef{
+			Name:        "shell",
+			Description: "run a shell command",
+		},
+	}}
+	n := estimateToolDefs(defs)
+	if n < 30 {
+		t.Errorf("estimateToolDefs(single) = %d, want >30", n)
+	}
+}
+
+func TestTrimContext_IncludesToolDefTokens(t *testing.T) {
+	// Budget that forces trimming when tool defs are included
+	engine := &Engine{maxContext: 300}
+	msgs := []llm.Message{
+		{Role: "system", Content: "You are a bot."},
+		{Role: "user", Content: "do the thing"},
+		{Role: "assistant", Content: strings.Repeat("long thinking ", 30)},
+		{Role: "tool", Content: strings.Repeat("long result ", 30), ToolCallID: "call_1"},
+	}
+	defs := []llm.ToolDef{{
+		Type: "function",
+		Function: llm.FunctionDef{
+			Name:        "shell",
+			Description: strings.Repeat("very long description that takes up tokens ", 10),
+		},
+	}}
+
+	result := engine.trimContext(msgs, defs)
+	if len(result) >= len(msgs) {
+		t.Errorf("trimContext with tool defs should trim, got %d >= %d", len(result), len(msgs))
+	}
+}

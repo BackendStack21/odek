@@ -21,14 +21,19 @@ type Client struct {
 	http     *http.Client
 }
 
-// New creates a Client with sensible defaults.
-func New(baseURL, apiKey, model, thinking string) *Client {
+// New creates a Client with the given timeout. Pass 0 to use the default
+// (120s). The timeout applies per HTTP request — the agent loop may have
+// multiple requests; set a generous timeout for deep-reasoning models.
+func New(baseURL, apiKey, model, thinking string, timeout time.Duration) *Client {
+	if timeout <= 0 {
+		timeout = 120 * time.Second
+	}
 	return &Client{
 		BaseURL:  strings.TrimRight(baseURL, "/"),
 		APIKey:   apiKey,
 		Model:    model,
 		Thinking: thinking,
-		http:     &http.Client{Timeout: 120 * time.Second},
+		http:     &http.Client{Timeout: timeout},
 	}
 }
 
