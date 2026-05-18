@@ -96,6 +96,65 @@ type CallResult struct {
 // toolChoiceNone forces the model to not call tools.
 var toolChoiceNone = "none"
 
+// SimpleCall sends a single-turn chat completion request and returns the
+// text response. No tools, no streaming, no thinking config. Used for
+// lightweight LLM calls like skill risk assessment.
+func (c *Client) SimpleCall(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
+	messages := []Message{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: userPrompt},
+	}
+
+	body := CallParams{
+		Model:    c.Model,
+		Messages: messages,
+		Stream:   false,
+	}
+
+	reqBytes, err := json.Marshal(body)
+	if err != nil {
+		return "", fmt.Errorf("llm: marshal request: %w", err)
+	}
+
+	url := c.BaseURL + "/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBytes))
+	if err != nil {
+		return "", fmt.Errorf("llm: create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("llm: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("llm: read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("llm: %s (status %d): %s", resp.Status, resp.StatusCode, string(respBytes))
+	}
+
+	var raw struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(respBytes, &raw); err != nil {
+		return "", fmt.Errorf("llm: parse response: %w", err)
+	}
+	if len(raw.Choices) == 0 {
+		return "", fmt.Errorf("llm: empty response")
+	}
+	return raw.Choices[0].Message.Content, nil
+}
+
 // Call sends a chat completion request and returns the result.
 func (c *Client) Call(ctx context.Context, messages []Message, tools []ToolDef) (*CallResult, error) {
 	body := CallParams{

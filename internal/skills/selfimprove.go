@@ -179,7 +179,106 @@ func DetectExplicitInstruction(userMessages []string, calls []ToolCall) []SkillS
 	return nil
 }
 
-//── Builders ───────────────────────────────────────────────────────────
+//── ExtractToolCalls ─────────────────────────────────────────────────────
+//
+// ExtractToolCalls parses llm message history and extracts ToolCall structs
+// for heuristic analysis. Each assistant tool call is paired with its
+// corresponding tool result message.
+
+func ExtractToolCalls(messages []LlmMessage) []ToolCall {
+	var calls []ToolCall
+
+	for i := 0; i < len(messages); i++ {
+		msg := messages[i]
+
+		// Look for assistant messages with tool calls
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			for _, tc := range msg.ToolCalls {
+				call := ToolCall{
+					Tool:     tc.Function.Name,
+					Input:    tc.Function.Arguments,
+					ExitCode: 0, // assume success by default
+					Turn:     i,
+				}
+
+				// Find the corresponding tool result message
+				for j := i + 1; j < len(messages); j++ {
+					if messages[j].Role == "tool" && messages[j].ToolCallID == tc.ID {
+						output := messages[j].Content
+						if strings.Contains(output, "error:") {
+							call.ExitCode = 1
+						}
+						if len(output) > 500 {
+							output = output[:500]
+						}
+						call.Output = output
+						break
+					}
+				}
+
+				calls = append(calls, call)
+			}
+		}
+	}
+
+	return calls
+}
+
+// LlmMessage is a subset of llm.Message used for extraction.
+// We define it here to avoid importing the llm package.
+type LlmMessage struct {
+	Role       string
+	Content    string
+	Name       string
+	ToolCallID string
+	ToolCalls  []LlmToolCall
+}
+
+// LlmToolCall is a subset of llm.ToolCall used for extraction.
+type LlmToolCall struct {
+	ID       string
+	Function struct {
+		Name      string
+		Arguments string
+	}
+}
+
+// ── RunAllHeuristics ──────────────────────────────────────────────────
+//
+// RunAllHeuristics runs all 5 self-improvement heuristics on a session's
+// message history and returns deduplicated suggestions.
+
+func RunAllHeuristics(messages []LlmMessage, userMessages []string) []SkillSuggestion {
+	calls := ExtractToolCalls(messages)
+	if len(calls) == 0 {
+		return nil
+	}
+
+	var suggestions []SkillSuggestion
+	seen := make(map[string]bool) // dedup by heuristic type
+
+	// Run each heuristic
+	all := [][]SkillSuggestion{
+		DetectMultiStepProcedure(calls),
+		DetectErrorRecovery(calls),
+		DetectCorrection(calls, userMessages),
+		DetectRepeatedAction(calls),
+		DetectExplicitInstruction(userMessages, calls),
+	}
+
+	for _, list := range all {
+		for _, s := range list {
+			if !seen[s.Heuristic] {
+				seen[s.Heuristic] = true
+				suggestions = append(suggestions, s)
+			}
+		}
+	}
+
+	return suggestions
+}
+
+// ── Builders ───────────────────────────────────────────────────────────
 
 func buildSuggestionFromSequence(seq []ToolCall, heuristic string) *SkillSuggestion {
 	if len(seq) < 4 {
@@ -318,4 +417,88 @@ func normalizeCommand(cmd string) string {
 		cleaned = append(cleaned, w)
 	}
 	return strings.Join(cleaned, " ")
+}
+
+// ── User-Facing Helpers ──────────────────────────────────────────────
+
+// FormatSuggestion formats a SkillSuggestion for display to the user.
+func FormatSuggestion(s SkillSuggestion) string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("📝 Skill suggestion: %s\n", s.Name))
+	b.WriteString(fmt.Sprintf("   %s\n", s.Description))
+	b.WriteString(fmt.Sprintf("   Detected by: %s\n", s.Heuristic))
+	if len(s.CommandLog) > 0 {
+		b.WriteString("   Commands:\n")
+		for _, cmd := range s.CommandLog {
+			if len(cmd) > 80 {
+				cmd = cmd[:80] + "..."
+			}
+			b.WriteString(fmt.Sprintf("     • %s\n", cmd))
+		}
+	}
+	return b.String()
+}
+
+// SaveSuggestion saves a SkillSuggestion as a SKILL.md in the given directory.
+func SaveSuggestion(dir string, s SkillSuggestion) error {
+	skill := Skill{
+		Name:        s.Name,
+		Description: s.Description,
+		Version:     "1.0.0",
+		Author:      "kode",
+		Quality:     QualityDraft,
+		AutoLoad:    false,
+		Body:        s.Body,
+	}
+	if len(s.CommandLog) > 0 {
+		// Derive trigger keywords from body
+		topics, actions := DeriveKeywords(s.Body)
+		if len(topics) == 0 {
+			topics = extractTopicKeywords(s.CommandLog)
+		}
+		if len(actions) == 0 {
+			actions = extractActionKeywords(s.CommandLog)
+		}
+		skill.Trigger = SkillTrigger{
+			TopicKeywords:  topics,
+			ActionKeywords: actions,
+		}
+	}
+	return WriteSkill(dir, skill)
+}
+
+// extractTopicKeywords extracts topic keywords from command logs.
+func extractTopicKeywords(cmds []string) []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, cmd := range cmds {
+		t := extractTopic(cmd)
+		if t != "" && t != "unknown" && !seen[t] {
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// extractActionKeywords extracts action keywords from command logs.
+func extractActionKeywords(cmds []string) []string {
+	actionWords := map[string]bool{
+		"build": true, "run": true, "test": true, "deploy": true,
+		"install": true, "config": true, "setup": true, "create": true,
+		"fix": true, "debug": true, "optimize": true, "review": true,
+	}
+	seen := make(map[string]bool)
+	var out []string
+	for _, cmd := range cmds {
+		words := strings.Fields(cmd)
+		for _, w := range words {
+			w = strings.ToLower(strings.Trim(w, "\"'`"))
+			if actionWords[w] && !seen[w] {
+				seen[w] = true
+				out = append(out, w)
+			}
+		}
+	}
+	return out
 }

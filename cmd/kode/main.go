@@ -237,10 +237,12 @@ func printUsage() {
 
 Commands:
   run                 Execute a task with the agent loop
+  run --learn         Execute with skill learning (detects patterns, suggests skills)
   run --session       Execute and save conversation as a session
   continue            Continue the most recent session (or by --id)
   repl                Interactive REPL mode (multi-turn session)
   session             Manage sessions: list, show, delete, trim, cleanup
+  skill               Manage skills: list, view, save, delete, import, curate
   init                Create a config file (default: ./kode.json)
   version             Print version and exit
 
@@ -260,7 +262,16 @@ Run flags:
   --no-color           Disable colored terminal output
   --no-agents          Skip loading AGENTS.md from working directory
   --session            Save conversation as a multi-turn session
+  --learn              Enable skill learning mode (detects patterns, saves skills)
   --system <prompt>    System prompt override
+
+Skill commands:
+  kode skill list                    List all available skills
+  kode skill view <name>             View a skill's full content
+  kode skill delete <name>           Delete a skill
+  kode skill import <uri> [flags]    Import a skill from file:// or https://
+                                     Flags: --basic (skip LLM), --yes (auto-approve)
+  kode skill curate                  Analyze skills for quality, staleness, overlap
 
 Sandbox flags:
   --sandbox            Run in isolated Docker container
@@ -606,6 +617,10 @@ func run(args []string) error {
 
 	rend.Start(f.Task)
 
+	// Shared agent run — capture messages for --learn mode
+	var allMessages []llm.Message
+	var runErr error
+
 	if f.Session != nil && *f.Session {
 		// Multi-turn session mode: save conversation history
 		messages := []llm.Message{
@@ -615,30 +630,43 @@ func run(args []string) error {
 			messages = append([]llm.Message{{Role: "system", Content: systemMessage}}, messages...)
 		}
 
-		result, allMessages, err := agent.RunWithMessages(ctx, messages)
-		if err != nil {
-			return err
-		}
+		var result string
+		result, allMessages, runErr = agent.RunWithMessages(ctx, messages)
 		_ = result
 
-		store, err := session.NewStore()
-		if err != nil {
-			return fmt.Errorf("session store: %w", err)
+		if runErr == nil {
+			store, err := session.NewStore()
+			if err != nil {
+				return fmt.Errorf("session store: %w", err)
+			}
+			sess, err := store.Create(allMessages, resolved.Model, f.Task)
+			if err != nil {
+				return fmt.Errorf("save session: %w", err)
+			}
+			sess.Sandbox = resolved.Sandbox
+			store.Save(sess)
+			fmt.Fprintf(os.Stderr, "kode: session %s saved — continue with: kode continue \"...\"\n", sess.ID)
 		}
-		sess, err := store.Create(allMessages, resolved.Model, f.Task)
-		if err != nil {
-			return fmt.Errorf("save session: %w", err)
-		}
-		sess.Sandbox = resolved.Sandbox
-		store.Save(sess)
-		fmt.Fprintf(os.Stderr, "kode: session %s saved — continue with: kode continue \"...\"\n", sess.ID)
 	} else {
 		// Single-shot mode (default)
-		_, err := agent.Run(ctx, f.Task)
-		if err != nil {
-			return err
+		messages := []llm.Message{
+			{Role: "user", Content: f.Task},
 		}
+		if systemMessage != "" {
+			messages = append([]llm.Message{{Role: "system", Content: systemMessage}}, messages...)
+		}
+		_, allMessages, runErr = agent.RunWithMessages(ctx, messages)
 	}
+
+	if runErr != nil {
+		return runErr
+	}
+
+	// ── Learn loop: run self-improvement heuristics ──
+	if resolved.Skills.Learn && sm != nil {
+		runLearnLoop(allMessages, f.Task, sm)
+	}
+
 	return nil
 }
 
@@ -803,6 +831,74 @@ func getVersion() string {
 
 // ── Skill Commands ─────────────────────────────────────────────────────
 
+// ── Skill Commands ─────────────────────────────────────────────────────
+
+// runLearnLoop runs self-improvement heuristics on agent output and
+// offers to save detected patterns as skills.
+func runLearnLoop(messages []llm.Message, task string, sm *skills.SkillManager) {
+	// Convert llm.Message to skills.llmMessage
+	skillMsgs := make([]skills.LlmMessage, 0, len(messages))
+	for _, m := range messages {
+		msg := skills.LlmMessage{
+			Role:       m.Role,
+			Content:    m.Content,
+			Name:       m.Name,
+			ToolCallID: m.ToolCallID,
+		}
+		for _, tc := range m.ToolCalls {
+			msg.ToolCalls = append(msg.ToolCalls, skills.LlmToolCall{
+				ID: tc.ID,
+			})
+			msg.ToolCalls[len(msg.ToolCalls)-1].Function.Name = tc.Function.Name
+			msg.ToolCalls[len(msg.ToolCalls)-1].Function.Arguments = tc.Function.Arguments
+		}
+		skillMsgs = append(skillMsgs, msg)
+	}
+
+	userMessages := extractUserMessages(messages)
+	suggestions := skills.RunAllHeuristics(skillMsgs, userMessages)
+	if len(suggestions) == 0 {
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "\n🔍 Learning: detected %d skill pattern(s)\n", len(suggestions))
+	for _, s := range suggestions {
+		fmt.Fprint(os.Stderr, skills.FormatSuggestion(s))
+		fmt.Fprintf(os.Stderr, "   Save as skill? [Y/n]: ")
+
+		var response string
+		fmt.Scanf("%s", &response)
+		response = strings.ToLower(strings.TrimSpace(response))
+
+		if response == "" || response == "y" || response == "yes" {
+			userDir := expandHome("~/.kode/skills")
+			os.MkdirAll(userDir, 0755)
+			if err := skills.SaveSuggestion(userDir, s); err != nil {
+				fmt.Fprintf(os.Stderr, "   ✗ Error saving skill: %v\n", err)
+			} else {
+				fmt.Fprintf(os.Stderr, "   ✓ Saved skill %q\n", s.Name)
+				// Reload the skill manager
+				sm2 := skills.NewSkillManager(userDir, "./.kode/skills")
+				// Update the caller's manager reference if possible
+				_ = sm2
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "   Skipped.\n")
+		}
+	}
+}
+
+// extractUserMessages extracts user message content from llm messages.
+func extractUserMessages(messages []llm.Message) []string {
+	var out []string
+	for _, m := range messages {
+		if m.Role == "user" {
+			out = append(out, m.Content)
+		}
+	}
+	return out
+}
+
 // skillCmd handles `kode skill <list|view|save|delete|import|curate>`.
 func skillCmd(args []string) error {
 	if len(args) == 0 {
@@ -880,12 +976,18 @@ func skillCmd(args []string) error {
 		}
 
 		llmCall := func(prompt string) (string, error) {
-			// TODO: use configured LLM for assessment
 			if basicOnly {
 				return "", fmt.Errorf("basic mode — no LLM call")
 			}
-			// For now, return elevated as a safe default
-			return `{"risk_class": "elevated", "reasons": ["no LLM configured for assessment"], "what_it_does": "imported skill", "recommended_triggers": [], "red_flags": []}`, nil
+			// Load config and create LLM client for assessment
+			cfg := config.LoadConfig(config.CLIFlags{})
+			client := llm.New(cfg.BaseURL, cfg.APIKey, cfg.Model, "", 30)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			return client.SimpleCall(ctx,
+				"You are a security assessment tool. Analyze skill files for risk.",
+				prompt,
+			)
 		}
 
 		result, err := skills.ImportSkill(skills.ImportOptions{

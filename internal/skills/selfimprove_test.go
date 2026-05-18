@@ -166,3 +166,161 @@ func TestNormalizeCommand(t *testing.T) {
 		}
 	}
 }
+
+func TestExtractToolCalls_Empty(t *testing.T) {
+	calls := ExtractToolCalls(nil)
+	if len(calls) != 0 {
+		t.Errorf("expected 0 calls, got %d", len(calls))
+	}
+}
+
+func TestExtractToolCalls_NoToolCalls(t *testing.T) {
+	msgs := []LlmMessage{
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "hi there"},
+	}
+	calls := ExtractToolCalls(msgs)
+	if len(calls) != 0 {
+		t.Errorf("expected 0 calls, got %d", len(calls))
+	}
+}
+
+func TestExtractToolCalls_WithToolCalls(t *testing.T) {
+	msgs := []LlmMessage{
+		{Role: "user", Content: "list files"},
+		{
+			Role: "assistant",
+			ToolCalls: []LlmToolCall{
+				{
+					ID: "call1",
+					Function: struct {
+						Name      string
+						Arguments string
+					}{Name: "shell", Arguments: `{"command": "ls -la"}`},
+				},
+			},
+		},
+		{Role: "tool", ToolCallID: "call1", Name: "shell", Content: "file1.txt\nfile2.txt"},
+	}
+
+	calls := ExtractToolCalls(msgs)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	if calls[0].Tool != "shell" {
+		t.Errorf("Tool = %q, want shell", calls[0].Tool)
+	}
+	if calls[0].ExitCode != 0 {
+		t.Errorf("ExitCode = %d, want 0", calls[0].ExitCode)
+	}
+}
+
+func TestExtractToolCalls_ErrorExitCode(t *testing.T) {
+	msgs := []LlmMessage{
+		{Role: "user", Content: "run"},
+		{
+			Role: "assistant",
+			ToolCalls: []LlmToolCall{
+				{
+					ID: "call1",
+					Function: struct {
+						Name      string
+						Arguments string
+					}{Name: "shell", Arguments: `{"command": "bad-command"}`},
+				},
+			},
+		},
+		{Role: "tool", ToolCallID: "call1", Name: "shell", Content: "error: command not found"},
+	}
+
+	calls := ExtractToolCalls(msgs)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	if calls[0].ExitCode != 1 {
+		t.Errorf("ExitCode = %d, want 1", calls[0].ExitCode)
+	}
+}
+
+func TestFormatSuggestion(t *testing.T) {
+	s := SkillSuggestion{
+		Name:        "test-skill",
+		Description: "A test",
+		Heuristic:   "multi-step",
+		CommandLog:  []string{"cmd1", "cmd2"},
+	}
+	output := FormatSuggestion(s)
+	if !contains(output, "test-skill") {
+		t.Errorf("expected skill name in output: %s", output)
+	}
+	if !contains(output, "multi-step") {
+		t.Errorf("expected heuristic in output")
+	}
+	if !contains(output, "cmd1") {
+		t.Errorf("expected command in output")
+	}
+}
+
+func TestSaveSuggestion(t *testing.T) {
+	dir := t.TempDir()
+	s := SkillSuggestion{
+		Name:        "test-skill",
+		Description: "A test skill",
+		Heuristic:   "multi-step",
+		CommandLog:  []string{"docker build .", "docker push"},
+		Body:        "## Overview\n\nTest\n\n## Common Pitfalls\n\n- None\n\n## Verification\n\n- Check. This needs to be long enough to pass the 300 char threshold. Adding more text. And more. And still more. Almost there. Just a bit more now. Yes this should be more than enough.",
+	}
+
+	err := SaveSuggestion(dir, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify the skill was saved
+	sm := NewSkillManager(dir, "")
+	found := false
+	for _, sk := range sm.Result.Lazy {
+		if sk.Name == "test-skill" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("saved skill not found in scan")
+	}
+}
+
+func TestExtractTopicKeywords(t *testing.T) {
+	cmds := []string{"docker build .", "docker push image"}
+	result := extractTopicKeywords(cmds)
+	if len(result) == 0 {
+		t.Fatal("expected keywords")
+	}
+	// "docker" should be one of the topics
+	found := false
+	for _, k := range result {
+		if k == "docker" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'docker' in topics, got %v", result)
+	}
+}
+
+func TestExtractActionKeywords(t *testing.T) {
+	cmds := []string{"npm build", "docker push"}
+	result := extractActionKeywords(cmds)
+	if len(result) == 0 {
+		t.Fatal("expected action keywords")
+	}
+	found := false
+	for _, a := range result {
+		if a == "build" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'build' in actions, got %v", result)
+	}
+}
