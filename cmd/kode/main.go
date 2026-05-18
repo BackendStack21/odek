@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime/debug"
 	"strings"
 
@@ -54,6 +55,11 @@ func main() {
 		}
 	case "version":
 		fmt.Println("kode", getVersion())
+	case "init":
+		if err := initConfig(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "kode: %v\n", err)
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "kode: unknown command %q\n", os.Args[1])
 		printUsage()
@@ -127,9 +133,19 @@ done:
 func printUsage() {
 	fmt.Println(`Usage:
   kode run [flags] <task>
+  kode init [--global | -g] [--force | -f]
   kode version
 
-Flags:
+Commands:
+  run                 Execute a task with the agent loop
+  init                Create a config file (default: ./kode.json)
+  version             Print version and exit
+
+Init flags:
+  --global, -g        Create global config at ~/kode/config.json
+  --force, -f         Overwrite existing file without prompting
+
+Run flags:
   --model <name>       LLM model (default: deepseek-chat)
                        Known profiles: deepseek-v4-flash, deepseek-v4-pro
                        Profiles auto-set thinking/timeout defaults.
@@ -160,6 +176,81 @@ Environment variables:
   KODE_NO_AGENTS       true/false — skip AGENTS.md
   KODE_SYSTEM          System prompt override`)
 }
+
+// ── Init ──────────────────────────────────────────────────────────────
+
+const defaultConfigTemplate = `{
+  "model": "deepseek-v4-flash",
+  "base_url": "https://api.deepseek.com/v1",
+  "api_key": "${DEEPSEEK_API_KEY}",
+  "thinking": "",
+  "max_iterations": 90,
+  "sandbox": false,
+  "no_color": false,
+  "no_agents": false,
+  "system": ""
+}`
+
+func initConfig(args []string) error {
+	global := false
+	force := false
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--global", "-g":
+			global = true
+		case "--force", "-f":
+			force = true
+		default:
+			return fmt.Errorf("unknown flag %q for init", args[i])
+		}
+	}
+
+	var configPath string
+	var scope string
+	if global {
+		configPath = config.GlobalConfigPath()
+		scope = "global"
+	} else {
+		configPath = config.ProjectConfigPath()
+		scope = "local"
+	}
+
+	// Check if file already exists
+	if _, err := os.Stat(configPath); err == nil && !force {
+		fmt.Fprintf(os.Stderr, "kode: %s config already exists at %s\n", scope, configPath)
+		fmt.Fprintf(os.Stderr, "  Use --force to overwrite.\n")
+		return nil
+	}
+
+	// Create parent directory (os.MkdirAll on "." is a no-op — fine for local)
+	dir := filepath.Dir(configPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("create directory %s: %w", dir, err)
+	}
+
+	if err := os.WriteFile(configPath, []byte(defaultConfigTemplate+"\n"), 0644); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+
+	fmt.Printf("✓ Created %s config: %s\n", scope, configPath)
+	fmt.Println()
+	fmt.Println("  Edit this file to set your preferences. Available fields:")
+	fmt.Println("    model           LLM model name")
+	fmt.Println("    base_url        API endpoint URL")
+	fmt.Println("    api_key         API key (supports ${VAR} substitution)")
+	fmt.Println("    thinking        Reasoning depth (enabled/disabled/low/medium/high)")
+	fmt.Println("    max_iterations  Max think->act cycles")
+	fmt.Println("    sandbox         Run in Docker sandbox (true/false)")
+	fmt.Println("    no_color        Disable colored output (true/false)")
+	fmt.Println("    no_agents       Skip AGENTS.md (true/false)")
+	fmt.Println("    system          System prompt override")
+	fmt.Println()
+	fmt.Println("  Priority: config file < KODE_* env < CLI flags")
+	return nil
+}
+
+// ── Run ───────────────────────────────────────────────────────────────
 
 // run executes the `kode run` command and returns an error on failure.
 // The caller is responsible for printing the error and calling os.Exit.

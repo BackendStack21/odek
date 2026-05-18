@@ -196,7 +196,9 @@ func TestPrintUsage(t *testing.T) {
 
 	required := []string{
 		"kode run",
+		"kode init",
 		"kode version",
+		"Commands:",
 		"--model",
 		"Known profiles",
 		"deepseek-v4-flash",
@@ -209,6 +211,8 @@ func TestPrintUsage(t *testing.T) {
 		"--no-color",
 		"--no-agents",
 		"--system",
+		"--global",
+		"--force",
 		"~/kode/config.json",
 		"KODE_MODEL",
 		"KODE_API_KEY",
@@ -620,4 +624,135 @@ func TestRun_WithProjectConfig(t *testing.T) {
 func dockerAvailable() bool {
 	_, err := exec.LookPath("docker")
 	return err == nil
+}
+
+// ── Init Config Tests ─────────────────────────────────────────────────
+
+func TestInitConfig_Local(t *testing.T) {
+	dir := t.TempDir()
+	cwd, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(cwd)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", t.TempDir()) // isolate from any global config
+	defer os.Setenv("HOME", origHome)
+
+	if err := initConfig([]string{}); err != nil {
+		t.Fatalf("initConfig() error: %v", err)
+	}
+
+	// Verify the file was created
+	data, err := os.ReadFile("kode.json")
+	if err != nil {
+		t.Fatalf("kode.json not created: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "deepseek-v4-flash") {
+		t.Errorf("config should contain deepseek-v4-flash, got: %s", content)
+	}
+	if !strings.Contains(content, "api_key") {
+		t.Errorf("config should contain api_key field, got: %s", content)
+	}
+}
+
+func TestInitConfig_Global(t *testing.T) {
+	dir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", dir)
+	defer os.Setenv("HOME", origHome)
+
+	if err := initConfig([]string{"--global"}); err != nil {
+		t.Fatalf("initConfig() --global error: %v", err)
+	}
+
+	// Verify the file was created
+	data, err := os.ReadFile(dir + "/kode/config.json")
+	if err != nil {
+		t.Fatalf("global config not created: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "deepseek-v4-flash") {
+		t.Errorf("config should contain deepseek-v4-flash, got: %s", content)
+	}
+}
+
+func TestInitConfig_LocalExists(t *testing.T) {
+	dir := t.TempDir()
+	cwd, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(cwd)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", t.TempDir())
+	defer os.Setenv("HOME", origHome)
+
+	// Create existing config
+	os.WriteFile("kode.json", []byte(`{"model": "existing"}`), 0644)
+
+	// Should warn, not overwrite
+	if err := initConfig([]string{}); err != nil {
+		t.Fatalf("initConfig() error: %v", err)
+	}
+
+	// Content should be unchanged
+	data, _ := os.ReadFile("kode.json")
+	if !strings.Contains(string(data), "existing") {
+		t.Error("config should not have been overwritten")
+	}
+}
+
+func TestInitConfig_LocalForce(t *testing.T) {
+	dir := t.TempDir()
+	cwd, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(cwd)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", t.TempDir())
+	defer os.Setenv("HOME", origHome)
+
+	// Create existing config
+	os.WriteFile("kode.json", []byte(`{"model": "old"}`), 0644)
+
+	// Force overwrite
+	if err := initConfig([]string{"--force"}); err != nil {
+		t.Fatalf("initConfig() --force error: %v", err)
+	}
+
+	// Content should be the template
+	data, _ := os.ReadFile("kode.json")
+	if strings.Contains(string(data), "old") {
+		t.Error("config should have been overwritten")
+	}
+	if !strings.Contains(string(data), "deepseek-v4-flash") {
+		t.Errorf("config should contain template, got: %s", string(data))
+	}
+}
+
+func TestInitConfig_UnknownFlag(t *testing.T) {
+	err := initConfig([]string{"--unknown"})
+	if err == nil {
+		t.Fatal("expected error for unknown flag")
+	}
+	if !strings.Contains(err.Error(), "unknown flag") {
+		t.Errorf("error should mention unknown flag, got: %v", err)
+	}
+}
+
+func TestInitConfig_ShortFlags(t *testing.T) {
+	// Test -g and -f short flags
+	dir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", dir)
+	defer os.Setenv("HOME", origHome)
+
+	if err := initConfig([]string{"-g", "-f"}); err != nil {
+		t.Fatalf("initConfig() -g -f error: %v", err)
+	}
+
+	// Verify
+	if _, err := os.Stat(dir + "/kode/config.json"); err != nil {
+		t.Errorf("global config should exist after -g -f: %v", err)
+	}
 }
