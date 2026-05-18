@@ -399,19 +399,37 @@ func normalizeCommand(cmd string) string {
 	words := strings.Fields(cmd)
 	// Remove variable parts: paths, versions, flags with values
 	var cleaned []string
-	skipNext := false
+	var skipNext bool
 	for _, w := range words {
 		if skipNext {
-			skipNext = false
-			continue
+			// The previous token was a flag with a value. If this token
+			// is also a flag (starts with -), it wasn't really a value —
+			// the previous flag was boolean. Fall through to process it.
+			if strings.HasPrefix(w, "-") {
+				skipNext = false
+			} else {
+				skipNext = false
+				continue
+			}
 		}
 		if strings.HasPrefix(w, "-") {
-			// This is a flag — skip both flag and its value
+			// Flag with embedded value (e.g. --count=1): keep token as-is
+			if strings.Contains(w, "=") {
+				parts := strings.SplitN(w, "=", 2)
+				val := parts[1]
+				if strings.Contains(val, "/") || strings.Contains(val, "\\") || val == "." || val == ".." {
+					val = "<path>"
+				}
+				cleaned = append(cleaned, parts[0]+"="+val)
+				continue
+			}
+			// Boolean flag — skip the flag itself, and tentatively skip
+			// the next token as a value. If the next token is also a flag,
+			// the skipNext guard above will correct.
 			skipNext = true
 			continue
 		}
 		if strings.Contains(w, "/") || strings.Contains(w, "\\") || w == "." || w == ".." {
-			// Normalize paths
 			w = "<path>"
 		}
 		cleaned = append(cleaned, w)

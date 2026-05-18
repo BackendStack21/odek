@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // ── Frontmatter Parsing ───────────────────────────────────────────────
@@ -291,7 +290,6 @@ func scanDir(dir string) []Skill {
 			Dir:  dir,
 			Path: skillPath,
 		}
-		s.LastUsed = time.Now().UTC()
 		skills = append(skills, *s)
 	}
 	return skills

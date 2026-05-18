@@ -331,6 +331,7 @@ func New(cfg Config) (*Agent, error) {
 			}
 			var context string
 			for _, sk := range matched {
+				sm.RecordUsage(sk.Name)
 				context += "\n" + skills.FormatAsContext(sk)
 			}
 			return context

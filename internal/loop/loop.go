@@ -27,6 +27,7 @@ type Engine struct {
 	system      string
 	maxContext  int // max context tokens (0 = no limit)
 	skillLoader SkillLoader // optional: loads matching skills
+	lastSkillMsg string     // last user message that triggered skill loading (dedup)
 }
 
 // New creates a new loop Engine.
@@ -201,10 +202,11 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		// Trim context to stay within model's context window
 		messages = e.trimContext(messages, tools)
 
-		// Load relevant skills based on latest user input
+		// Load relevant skills based on latest user input (once per message)
 		if e.skillLoader != nil {
-			if userMsg := lastUserMessage(messages); userMsg != "" {
+			if userMsg := lastUserMessage(messages); userMsg != "" && userMsg != e.lastSkillMsg {
 				if skillContext := e.skillLoader(userMsg); skillContext != "" {
+					e.lastSkillMsg = userMsg
 					// Inject skill context as a system message right before the user message
 					insertIdx := len(messages)
 					for j := len(messages) - 1; j >= 0; j-- {

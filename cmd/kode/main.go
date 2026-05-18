@@ -892,10 +892,8 @@ func runLearnLoop(messages []llm.Message, task string, sm *skills.SkillManager) 
 				fmt.Fprintf(os.Stderr, "   ✗ Error saving skill: %v\n", err)
 			} else {
 				fmt.Fprintf(os.Stderr, "   ✓ Saved skill %q\n", s.Name)
-				// Reload the skill manager
-				sm2 := skills.NewSkillManager(userDir, "./.kode/skills")
-				// Update the caller's manager reference if possible
-				_ = sm2
+				// Reload the skill manager to pick up the new skill
+				sm.Reload()
 			}
 		} else {
 			fmt.Fprintf(os.Stderr, "   Skipped.\n")
@@ -953,12 +951,6 @@ func skillCmd(args []string) error {
 		}
 		fmt.Println(result)
 		return nil
-
-	case "save":
-		if len(subArgs) < 3 {
-			return fmt.Errorf("usage: kode skill save --name <name> --description <desc> --body <body>")
-		}
-		return fmt.Errorf("interactive save not yet supported — use the agent's skill_save tool")
 
 	case "delete":
 		if len(subArgs) == 0 {

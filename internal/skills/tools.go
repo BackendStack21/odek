@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // ── Agent Tools ────────────────────────────────────────────────────────
@@ -35,13 +36,13 @@ func NewSkillManager(userDir, projectDir string) *SkillManager {
 		UserDir:    userDir,
 		ProjectDir: projectDir,
 	}
-	sm.reload()
+	sm.Reload()
 	return sm
 }
 
-// reload rescans skill directories and rebuilds the trigger index.
-// Must be called with the write lock held or when no concurrent access exists.
-func (sm *SkillManager) reload() {
+// Reload rescans skill directories and rebuilds the trigger index.
+// Call after saving or deleting skills to keep the manager in sync.
+func (sm *SkillManager) Reload() {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.reloadLocked()
@@ -74,6 +75,27 @@ func (sm *SkillManager) GetTrieIndex() *triggerIndex {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 	return sm.TrieIndex
+}
+
+// RecordUsage marks a skill as used, updating LastUsed and UsageCount.
+// Safe for concurrent access. Called when a skill is loaded into context.
+func (sm *SkillManager) RecordUsage(name string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	for i := range sm.Result.AutoLoad {
+		if sm.Result.AutoLoad[i].Name == name {
+			sm.Result.AutoLoad[i].LastUsed = time.Now().UTC()
+			sm.Result.AutoLoad[i].UsageCount++
+			return
+		}
+	}
+	for i := range sm.Result.Lazy {
+		if sm.Result.Lazy[i].Name == name {
+			sm.Result.Lazy[i].LastUsed = time.Now().UTC()
+			sm.Result.Lazy[i].UsageCount++
+			return
+		}
+	}
 }
 
 // ── skill_load ─────────────────────────────────────────────────────────
@@ -338,7 +360,7 @@ func (t *SkillSaveTool) Call(args string) (string, error) {
 	}
 
 	// Reload to pick up the new skill
-	t.Manager.reload()
+	t.Manager.Reload()
 
 	result := fmt.Sprintf("✓ Saved skill %q to %s\n", skill.Name, t.Manager.UserDir)
 	if len(warnings) > 0 {
@@ -421,7 +443,7 @@ func (t *SkillPatchTool) Call(args string) (string, error) {
 		return "", fmt.Errorf("skill_patch: write: %w", err)
 	}
 
-	t.Manager.reload()
+	t.Manager.Reload()
 	return fmt.Sprintf("✓ Patched skill %q: replaced %d characters", input.Name, len(input.OldText)), nil
 }
 
@@ -487,7 +509,7 @@ func (t *SkillDeleteTool) Call(args string) (string, error) {
 		return "", fmt.Errorf("skill_delete: remove: %w", err)
 	}
 
-	t.Manager.reload()
+	t.Manager.Reload()
 	return fmt.Sprintf("✓ Deleted skill %q", input.Name), nil
 }
 

@@ -571,3 +571,68 @@ func TestTrimContext_IncludesToolDefTokens(t *testing.T) {
 		t.Errorf("trimContext with tool defs should trim, got %d >= %d", len(result), len(msgs))
 	}
 }
+
+func TestEngine_SkillLoader_CalledOncePerInput(t *testing.T) {
+	// Regression: SkillLoader must fire only once per unique user message,
+	// not once per iteration. Verifies the skill injection leak fix.
+	skillLoadCount := 0
+	var loadedInput string
+
+	skillLoader := func(userInput string) string {
+		skillLoadCount++
+		loadedInput = userInput
+		return "injected skill content"
+	}
+
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			// First iteration: request a tool call
+			fmt.Fprint(w, `{
+				"choices":[{
+					"message":{
+						"content":"Let me think.",
+						"tool_calls":[{
+							"id":"call_1",
+							"function":{
+								"name":"echo",
+								"arguments":"{}"
+							}
+						}]
+					}
+				}]
+			}`)
+		} else {
+			// Second iteration: final answer
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"done"}}]}`)
+		}
+	}))
+	defer server.Close()
+
+	echoTool := &fakeTool{name: "echo", description: "echo", output: "ok"}
+	registry := tool.NewRegistry([]tool.Tool{echoTool})
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0)
+	engine := New(client, registry, 10, "", nil, 0)
+	engine.SetSkillLoader(skillLoader)
+
+	result, err := engine.Run(context.Background(), "do the task")
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if result != "done" {
+		t.Errorf("result = %q, want %q", result, "done")
+	}
+
+	// SkillLoader should have been called exactly once,
+	// not once per iteration (which would be 2+)
+	if skillLoadCount != 1 {
+		t.Errorf("SkillLoader called %d times, want 1 (should dedup per input)", skillLoadCount)
+	}
+	if loadedInput != "do the task" {
+		t.Errorf("loadedInput = %q, want %q", loadedInput, "do the task")
+	}
+	if callCount != 2 {
+		t.Errorf("LLM called %d times, want 2", callCount)
+	}
+}

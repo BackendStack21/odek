@@ -332,7 +332,10 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	// Skills env vars
 	if v := envString("SKILLS_LEARN"); v != "" {
 		b, _ := strconv.ParseBool(v)
-		cfg.Skills = &SkillsConfig{Learn: &b}
+		if cfg.Skills == nil {
+			cfg.Skills = &SkillsConfig{}
+		}
+		cfg.Skills.Learn = &b
 	}
 
 	// Layer 4: CLI flags (highest priority)
@@ -358,7 +361,10 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		cfg.NoAgents = cli.NoAgents
 	}
 	if cli.Learn != nil {
-		cfg.Skills = &SkillsConfig{Learn: cli.Learn}
+		if cfg.Skills == nil {
+			cfg.Skills = &SkillsConfig{}
+		}
+		cfg.Skills.Learn = cli.Learn
 	}
 	if cli.System != "" {
 		cfg.System = cli.System

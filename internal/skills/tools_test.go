@@ -126,7 +126,7 @@ func TestSkillDeleteTool(t *testing.T) {
 	}
 
 	// Verify it's gone
-	sm.reload()
+	sm.Reload()
 	if len(sm.Result.Lazy)+len(sm.Result.AutoLoad) != 0 {
 		t.Error("skill should be gone after deletion")
 	}
@@ -143,4 +143,84 @@ func containsStr(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestRecordUsage_UpdatesLastUsedAndUsageCount(t *testing.T) {
+	// Regression: LastUsed was always set to time.Now() during scan,
+	// making staleness detection impossible. RecordUsage should be the
+	// only path that sets LastUsed and increments UsageCount.
+	dir := t.TempDir()
+	writeTestSkill(t, dir, "used-skill", "## Overview\nTest\n## Common Pitfalls\n- None\n## Verification\n- Check")
+
+	sm := NewSkillManager(dir, "")
+
+	// After scan, LastUsed should be zero (skill was scanned, not used)
+	for _, s := range sm.Result.Lazy {
+		if s.Name == "used-skill" {
+			if !s.LastUsed.IsZero() {
+				t.Error("LastUsed should be zero after scan (not actually used yet)")
+			}
+			if s.UsageCount != 0 {
+				t.Errorf("UsageCount = %d, want 0 after scan", s.UsageCount)
+			}
+		}
+	}
+
+	// Record usage
+	sm.RecordUsage("used-skill")
+
+	// After RecordUsage, LastUsed should be non-zero and UsageCount incremented
+	for _, s := range sm.Result.Lazy {
+		if s.Name == "used-skill" {
+			if s.LastUsed.IsZero() {
+				t.Error("LastUsed should be non-zero after RecordUsage")
+			}
+			if s.UsageCount != 1 {
+				t.Errorf("UsageCount = %d, want 1 after RecordUsage", s.UsageCount)
+			}
+		}
+	}
+
+	// Record again — increments
+	sm.RecordUsage("used-skill")
+	for _, s := range sm.Result.Lazy {
+		if s.Name == "used-skill" {
+			if s.UsageCount != 2 {
+				t.Errorf("UsageCount = %d, want 2 after second RecordUsage", s.UsageCount)
+			}
+		}
+	}
+
+	// Non-existent skill — no panic
+	sm.RecordUsage("nonexistent")
+}
+
+func TestRecordUsage_Concurrent(t *testing.T) {
+	// Records to the same skill concurrently should not race.
+	dir := t.TempDir()
+	writeTestSkill(t, dir, "concurrent-skill", "## Overview\nTest\n## Common Pitfalls\n- None\n## Verification\n- Check")
+
+	sm := NewSkillManager(dir, "")
+
+	done := make(chan bool)
+	for i := 0; i < 10; i++ {
+		go func() {
+			sm.RecordUsage("concurrent-skill")
+			done <- true
+		}()
+	}
+	for i := 0; i < 10; i++ {
+		<-done
+	}
+
+	for _, s := range sm.Result.Lazy {
+		if s.Name == "concurrent-skill" {
+			if s.UsageCount != 10 {
+				t.Errorf("UsageCount = %d, want 10 after concurrent RecordUsage", s.UsageCount)
+			}
+			if s.LastUsed.IsZero() {
+				t.Error("LastUsed should be non-zero after RecordUsage")
+			}
+		}
+	}
 }

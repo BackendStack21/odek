@@ -517,3 +517,78 @@ func TestClassify_Tokenize(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+func TestIsSystemPath(t *testing.T) {
+	// Regression: verify the extracted isSystemPath helper works correctly.
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"/etc/hosts", true},
+		{"/usr/local/bin/go", true},
+		{"/bin/sh", true},
+		{"/lib/x86_64-linux-gnu/libc.so", true},
+		{"/var/log/syslog", true},
+		{"/opt/app/config", true},
+		{"/boot/vmlinuz", true},
+		{"/sbin/init", true},
+		{"/home/user/file", false},
+		{"/tmp/scratch", false},
+		{"/workspace/src", false},
+		{"./local/file", false},
+		{"file.go", false},
+		{"/root/.bashrc", false},
+		{"/usr", false},              // no trailing slash — must be a directory prefix
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			got := isSystemPath(tt.path)
+			if got != tt.want {
+				t.Errorf("isSystemPath(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClassify_ForkBomb_StillDetected(t *testing.T) {
+	// Regression: fork bomb detection is now centralized in isRawBlocked.
+	// Ensure it still works.
+	tests := []struct {
+		cmd string
+		cls RiskClass
+	}{
+		{":(){ :|:& };:", Blocked},
+		// Variant with spaces in different places
+		{"  :(){ :|:& };:  ", Blocked},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			got := Classify(tt.cmd)
+			if got != tt.cls {
+				t.Errorf("Classify(%q) = %s, want %s", tt.cmd, got, tt.cls)
+			}
+		})
+	}
+}
+
+func TestClassify_SystemRedirectTarget(t *testing.T) {
+	// Regression: isSystemWrite and hasSystemRedirectTarget now share
+	// isSystemPath. Verify system path redirect detection works.
+	tests := []struct {
+		cmd string
+		cls RiskClass
+	}{
+		{"echo bad > /etc/hosts", SystemWrite},
+		{"cat data >> /usr/local/etc/app.conf", SystemWrite},
+		{"echo ok > /tmp/safe.txt", LocalWrite},
+		{"echo ok > ./local.conf", LocalWrite},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			got := Classify(tt.cmd)
+			if got != tt.cls {
+				t.Errorf("Classify(%q) = %s, want %s", tt.cmd, got, tt.cls)
+			}
+		})
+	}
+}

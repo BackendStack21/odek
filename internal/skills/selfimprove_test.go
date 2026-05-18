@@ -158,6 +158,15 @@ func TestNormalizeCommand(t *testing.T) {
 		{"npm test", "npm test"},
 		{"docker build -t myimage .", "docker build <path>"},
 		{"go test ./...", "go test <path>"},
+		// Boolean flags: path after boolean flag is still eaten
+		// (fundamental limitation — can't distinguish flag values from paths)
+		{"go test -v ./...", "go test"},
+		// But flag=value tokens survive (this was the regression fix)
+		{"go test -v -count=1 ./...", "go test -count=1 <path>"},
+		// Combined flag=value preserved
+		{"docker run --memory=512m image", "docker run --memory=512m image"},
+		// Boolean flags followed by path — path normalizes but may be eaten
+		{"cat /etc/hosts", "cat <path>"},
 	}
 	for _, tt := range tests {
 		got := normalizeCommand(tt.input)

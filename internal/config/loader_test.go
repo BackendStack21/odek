@@ -414,3 +414,91 @@ func TestProjectConfigPath(t *testing.T) {
 		t.Errorf("ProjectConfigPath() = %q, want absolute path", path)
 	}
 }
+
+func TestLoadConfig_SkillsLearnEnvDoesNotClobberSkillsConfig(t *testing.T) {
+	// Regression: KODE_SKILLS_LEARN env var should merge Learn into
+	// existing skills config from files, not replace the entire struct.
+	dir := t.TempDir()
+
+	prevHome := os.Getenv("HOME")
+	os.Setenv("HOME", dir)
+	defer os.Setenv("HOME", prevHome)
+
+	// Create project file with skills settings
+	cwd, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(cwd)
+
+	if err := os.WriteFile(filepath.Join(dir, "kode.json"), []byte(`{
+		"skills": {
+			"max_auto_load": 5,
+			"max_lazy_slots": 10,
+			"dirs": ["/custom/skills"],
+			"import": {
+				"max_size_bytes": 524288,
+				"timeout_seconds": 10,
+				"require_https": true
+			},
+			"curation": {
+				"staleness_days": 60,
+				"auto_prune": true
+			}
+		}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Set KODE_SKILLS_LEARN — should NOT clobber other skills fields
+	os.Setenv("KODE_SKILLS_LEARN", "true")
+	defer os.Unsetenv("KODE_SKILLS_LEARN")
+
+	cfg := LoadConfig(CLIFlags{})
+	if !cfg.Skills.Learn {
+		t.Error("Skills.Learn should be true from env")
+	}
+	if cfg.Skills.MaxAutoLoad != 5 {
+		t.Errorf("Skills.MaxAutoLoad = %d, want 5 (survives env override)", cfg.Skills.MaxAutoLoad)
+	}
+	if cfg.Skills.MaxLazySlots != 10 {
+		t.Errorf("Skills.MaxLazySlots = %d, want 10", cfg.Skills.MaxLazySlots)
+	}
+	if len(cfg.Skills.Dirs) != 1 || cfg.Skills.Dirs[0] != "/custom/skills" {
+		t.Errorf("Skills.Dirs = %v, want [\"/custom/skills\"]", cfg.Skills.Dirs)
+	}
+	if !cfg.Skills.Import.RequireHTTPS {
+		t.Error("Skills.Import.RequireHTTPS should be true")
+	}
+	if cfg.Skills.Curation.StalenessDays != 60 {
+		t.Errorf("Skills.Curation.StalenessDays = %d, want 60", cfg.Skills.Curation.StalenessDays)
+	}
+}
+
+func TestLoadConfig_SkillsLearnCLIDoesNotClobberSkillsConfig(t *testing.T) {
+	// Regression: --learn CLI flag should merge, not replace.
+	dir := t.TempDir()
+
+	cwd, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(cwd)
+
+	if err := os.WriteFile(filepath.Join(dir, "kode.json"), []byte(`{
+		"skills": {
+			"max_auto_load": 7,
+			"curation": {"staleness_days": 30}
+		}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	b := true
+	cfg := LoadConfig(CLIFlags{Learn: &b})
+	if !cfg.Skills.Learn {
+		t.Error("Skills.Learn should be true from CLI")
+	}
+	if cfg.Skills.MaxAutoLoad != 7 {
+		t.Errorf("Skills.MaxAutoLoad = %d, want 7 (survives CLI override)", cfg.Skills.MaxAutoLoad)
+	}
+	if cfg.Skills.Curation.StalenessDays != 30 {
+		t.Errorf("Skills.Curation.StalenessDays = %d, want 30", cfg.Skills.Curation.StalenessDays)
+	}
+}

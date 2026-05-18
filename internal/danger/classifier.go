@@ -85,8 +85,8 @@ var defaultActions = map[RiskClass]Action{
 // ActionFor returns the configured action for the given risk class.
 // Falls back to defaults for unknown classes and unconfigured classes.
 func (c *DangerousConfig) ActionFor(cls RiskClass) Action {
-	// Built-in safety: Safe and LocalWrite always allow at minimum
-	// (user can't accidentally make "ls" or "echo > file" require approval)
+	// If the user explicitly configured an action for this class, use it.
+	// Falls back to built-in defaults for unconfigured classes.
 	if c.Classes != nil {
 		if a, ok := c.Classes[cls]; ok {
 			return a
@@ -435,11 +435,6 @@ func classifySegment(tokens []string) RiskClass {
 // ── Detection helpers ──────────────────────────────────────────────────
 
 func isBlocked(tokens []string) bool {
-	// Fork bomb
-	cmd := strings.Join(tokens, " ")
-	if cmd == ":(){ :|:& };:" {
-		return true
-	}
 	// dd to block device
 	if len(tokens) >= 4 && tokens[0] == "dd" {
 		for i, tok := range tokens {
@@ -515,10 +510,7 @@ func isSystemWrite(first string, tokens []string) bool {
 		if tok == ">" || tok == ">>" {
 			continue
 		}
-		if strings.HasPrefix(tok, "/etc/") || strings.HasPrefix(tok, "/usr/") ||
-			strings.HasPrefix(tok, "/bin/") || strings.HasPrefix(tok, "/lib/") ||
-			strings.HasPrefix(tok, "/var/") || strings.HasPrefix(tok, "/opt/") ||
-			strings.HasPrefix(tok, "/boot/") || strings.HasPrefix(tok, "/sbin/") {
+		if isSystemPath(tok) {
 			// Check if it's a redirect target (token follows > or >>)
 			for i, t := range tokens {
 				if (t == ">" || t == ">>") && i+1 < len(tokens) && tokens[i+1] == tok {
@@ -679,10 +671,19 @@ func hasSystemRedirectTarget(tokens []string) bool {
 		if tok == ">" || tok == ">>" {
 			continue
 		}
-		if strings.HasPrefix(tok, "/etc/") || strings.HasPrefix(tok, "/usr/") ||
-			strings.HasPrefix(tok, "/bin/") || strings.HasPrefix(tok, "/lib/") ||
-			strings.HasPrefix(tok, "/var/") || strings.HasPrefix(tok, "/opt/") ||
-			strings.HasPrefix(tok, "/boot/") || strings.HasPrefix(tok, "/sbin/") {
+		if isSystemPath(tok) {
+			return true
+		}
+	}
+	return false
+}
+
+// isSystemPath returns true if the path targets a system directory.
+var systemPathPrefixes = []string{"/etc/", "/usr/", "/bin/", "/lib/", "/var/", "/opt/", "/boot/", "/sbin/"}
+
+func isSystemPath(path string) bool {
+	for _, p := range systemPathPrefixes {
+		if strings.HasPrefix(path, p) {
 			return true
 		}
 	}
