@@ -19,6 +19,7 @@ import (
 	"github.com/BackendStack21/kode/internal/llm"
 	"github.com/BackendStack21/kode/internal/render"
 	"github.com/BackendStack21/kode/internal/session"
+	"github.com/BackendStack21/kode/internal/skills"
 )
 
 // version is set at build time via ldflags: -ldflags "-X main.version=v0.2.1"
@@ -106,6 +107,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "kode: %v\n", err)
 			os.Exit(1)
 		}
+	case "skill":
+		if err := skillCmd(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "kode: %v\n", err)
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "kode: unknown command %q\n", os.Args[1])
 		printUsage()
@@ -134,6 +140,7 @@ type runFlags struct {
 	NoColor  *bool // nil = not set
 	NoAgents *bool // nil = not set
 	Session  *bool // nil = not set; true = save session after run
+	Learn    *bool // nil = not set; true = enable skills learning mode
 	Task     string
 
 	// Sandbox-specific CLI flags
@@ -174,6 +181,9 @@ func parseRunFlags(args []string) (runFlags, error) {
 			i += 2
 		case "--sandbox":
 			f.Sandbox = boolPtr(true)
+			i++
+		case "--learn":
+			f.Learn = boolPtr(true)
 			i++
 		case "--no-color":
 			f.NoColor = boolPtr(true)
@@ -507,6 +517,7 @@ func run(args []string) error {
 		Sandbox:  f.Sandbox,
 		NoColor:  f.NoColor,
 		NoAgents: f.NoAgents,
+		Learn:    f.Learn,
 		System:   f.System,
 		Task:     f.Task,
 
@@ -536,9 +547,18 @@ func run(args []string) error {
 		Volumes:  resolved.SandboxVolumes,
 	}
 
+	// Skills setup
+	var sm *skills.SkillManager
+	if resolved.Skills.Learn {
+		sm = skills.NewSkillManager(
+			expandHome("~/.kode/skills"),
+			"./.kode/skills",
+		)
+	}
+
 	// Sandbox setup
 	var sandboxCleanup func() error
-	tools := builtinTools(resolved.Dangerous)
+	tools := builtinTools(resolved.Dangerous, sm)
 
 	if resolved.Sandbox {
 		cleanup, err := setupSandbox(tools, sbCfg)
@@ -556,6 +576,12 @@ func run(args []string) error {
 	color := !resolved.NoColor && render.ColorEnabled()
 	rend := render.New(os.Stderr, color).WithModel(modelLabel)
 
+	// Resolve skills config pointer (only when learn mode is enabled)
+	var skillsCfg *skills.SkillsConfig
+	if resolved.Skills.Learn {
+		skillsCfg = &resolved.Skills
+	}
+
 	agent, err := kode.New(kode.Config{
 		Model:          resolved.Model,
 		BaseURL:        resolved.BaseURL,
@@ -567,6 +593,8 @@ func run(args []string) error {
 		Tools:          tools,
 		SandboxCleanup: sandboxCleanup,
 		Renderer:       rend,
+		Skills:         skillsCfg,
+		SkillManager:   sm,
 	})
 	if err != nil {
 		return err
@@ -720,12 +748,24 @@ func setupSandbox(tools []kode.Tool, cfg sandboxConfig) (func() error, error) {
 	return cleanup, nil
 }
 
-func builtinTools(dc danger.DangerousConfig) []kode.Tool {
-	return []kode.Tool{
+func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager) []kode.Tool {
+	tools := []kode.Tool{
 		&shellTool{
 			dangerousConfig: dc,
 		},
 	}
+
+	if sm != nil {
+		tools = append(tools,
+			&skills.SkillLoadTool{Manager: sm},
+			&skills.SkillListTool{Manager: sm},
+			&skills.SkillSaveTool{Manager: sm},
+			&skills.SkillPatchTool{Manager: sm},
+			&skills.SkillDeleteTool{Manager: sm},
+		)
+	}
+
+	return tools
 }
 
 // getVersion returns the version string. Resolution order:
@@ -759,6 +799,170 @@ func getVersion() string {
 		return revision
 	}
 	return "dev"
+}
+
+// ── Skill Commands ─────────────────────────────────────────────────────
+
+// skillCmd handles `kode skill <list|view|save|delete|import|curate>`.
+func skillCmd(args []string) error {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "Usage: kode skill <list|view|save|delete|import|curate> [args]\n")
+		return nil
+	}
+
+	userDir := expandHome("~/.kode/skills")
+	os.MkdirAll(userDir, 0755)
+
+	// The first argument is the subcommand
+	sub := args[0]
+	subArgs := args[1:]
+
+	switch sub {
+	case "list":
+		sm := skills.NewSkillManager(userDir, "./.kode/skills")
+		tool := &skills.SkillListTool{}
+		tool.Manager = sm
+		result, err := tool.Call("{}")
+		if err != nil {
+			return err
+		}
+		fmt.Println(result)
+		return nil
+
+	case "view":
+		if len(subArgs) == 0 {
+			return fmt.Errorf("usage: kode skill view <name>")
+		}
+		sm := skills.NewSkillManager(userDir, "./.kode/skills")
+		tool := &skills.SkillLoadTool{}
+		tool.Manager = sm
+		result, err := tool.Call(`{"name": "` + subArgs[0] + `"}`)
+		if err != nil {
+			return err
+		}
+		fmt.Println(result)
+		return nil
+
+	case "save":
+		if len(subArgs) < 3 {
+			return fmt.Errorf("usage: kode skill save --name <name> --description <desc> --body <body>")
+		}
+		return fmt.Errorf("interactive save not yet supported — use the agent's skill_save tool")
+
+	case "delete":
+		if len(subArgs) == 0 {
+			return fmt.Errorf("usage: kode skill delete <name>")
+		}
+		sm := skills.NewSkillManager(userDir, "./.kode/skills")
+		tool := &skills.SkillDeleteTool{}
+		tool.Manager = sm
+		result, err := tool.Call(`{"name": "` + subArgs[0] + `"}`)
+		if err != nil {
+			return err
+		}
+		fmt.Println(result)
+		return nil
+
+	case "import":
+		if len(subArgs) == 0 {
+			return fmt.Errorf("usage: kode skill import <uri> [--basic] [--yes]")
+		}
+		uri := subArgs[0]
+		basicOnly := false
+		autoYes := false
+		for _, a := range subArgs[1:] {
+			switch a {
+			case "--basic":
+				basicOnly = true
+			case "--yes":
+				autoYes = true
+			}
+		}
+
+		llmCall := func(prompt string) (string, error) {
+			// TODO: use configured LLM for assessment
+			if basicOnly {
+				return "", fmt.Errorf("basic mode — no LLM call")
+			}
+			// For now, return elevated as a safe default
+			return `{"risk_class": "elevated", "reasons": ["no LLM configured for assessment"], "what_it_does": "imported skill", "recommended_triggers": [], "red_flags": []}`, nil
+		}
+
+		result, err := skills.ImportSkill(skills.ImportOptions{
+			URI:       uri,
+			MaxBytes:  1_048_576,
+			Timeout:   5,
+			BasicOnly: basicOnly,
+			AutoYes:   autoYes,
+			UserDir:   userDir,
+		}, func(assessment *skills.ImportAssessment) bool {
+			if autoYes {
+				return true
+			}
+
+			fmt.Fprintf(os.Stderr, "\n📦 Skill Import\n")
+			fmt.Fprintf(os.Stderr, "━━━━━━━━━━━━━━━\n")
+			if assessment != nil {
+				riskSymbol := "🟢"
+				if assessment.RiskClass == "elevated" {
+					riskSymbol = "🟡"
+				} else if assessment.RiskClass == "dangerous" {
+					riskSymbol = "🔴"
+				}
+				fmt.Fprintf(os.Stderr, "Risk: %s %s\n", riskSymbol, assessment.RiskClass)
+				fmt.Fprintf(os.Stderr, "What: %s\n", assessment.WhatItDoes)
+				if len(assessment.Reasons) > 0 {
+					fmt.Fprintf(os.Stderr, "Why:\n")
+					for _, r := range assessment.Reasons {
+						fmt.Fprintf(os.Stderr, "  • %s\n", r)
+					}
+				}
+				if len(assessment.RedFlags) > 0 {
+					fmt.Fprintf(os.Stderr, "Red flags:\n")
+					for _, r := range assessment.RedFlags {
+						fmt.Fprintf(os.Stderr, "  • %s\n", r)
+					}
+				}
+			}
+			fmt.Fprintf(os.Stderr, "\nImport this skill? [Y/n]: ")
+
+			var response string
+			fmt.Scanf("%s", &response)
+			response = strings.ToLower(strings.TrimSpace(response))
+			return response == "" || response == "y" || response == "yes"
+		}, llmCall)
+		if err != nil {
+			return err
+		}
+
+		fmt.Printf("✓ Imported %q from %s\n", result.Skill.Name, uri)
+		fmt.Printf("  Location: %s\n", result.Path)
+		return nil
+
+	case "curate":
+		sm := skills.NewSkillManager(userDir, "./.kode/skills")
+		allSkills := append(sm.Result.AutoLoad, sm.Result.Lazy...)
+		report := skills.CurateSkills(allSkills, skills.CurateOptions{
+			StalenessDays: 90,
+			Apply:         false,
+		})
+		fmt.Print(skills.FormatCurationReport(report))
+		return nil
+
+	default:
+		return fmt.Errorf("unknown skill command %q (use list, view, save, delete, import, curate)", sub)
+	}
+}
+
+// expandHome replaces the leading ~/ with the user's home directory.
+func expandHome(path string) string {
+	if strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			return strings.Replace(path, "~/", home+"/", 1)
+		}
+	}
+	return path
 }
 
 // ── Continue (Multi-Turn) ─────────────────────────────────────────────
@@ -806,7 +1010,14 @@ func continueCmd(args []string) error {
 	}
 
 	// Build tools
-	tools := builtinTools(resolved.Dangerous)
+	var sm *skills.SkillManager
+	if resolved.Skills.Learn {
+		sm = skills.NewSkillManager(
+			expandHome("~/.kode/skills"),
+			"./.kode/skills",
+		)
+	}
+	tools := builtinTools(resolved.Dangerous, sm)
 	var sandboxCleanup func() error
 
 	systemMessage := resolved.System
@@ -839,6 +1050,12 @@ func continueCmd(args []string) error {
 	color := !resolved.NoColor && render.ColorEnabled()
 	rend := render.New(os.Stderr, color).WithModel(modelLabel)
 
+	// Resolve skills config pointer (only when learn mode is enabled)
+	var skillsCfg *skills.SkillsConfig
+	if resolved.Skills.Learn {
+		skillsCfg = &resolved.Skills
+	}
+
 	agent, err := kode.New(kode.Config{
 		Model:          resolved.Model,
 		BaseURL:        resolved.BaseURL,
@@ -850,6 +1067,8 @@ func continueCmd(args []string) error {
 		Tools:          tools,
 		SandboxCleanup: sandboxCleanup,
 		Renderer:       rend,
+		Skills:         skillsCfg,
+		SkillManager:   sm,
 	})
 	if err != nil {
 		return err

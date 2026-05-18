@@ -29,6 +29,7 @@ import (
 	"github.com/BackendStack21/kode/internal/llm"
 	"github.com/BackendStack21/kode/internal/loop"
 	"github.com/BackendStack21/kode/internal/render"
+	"github.com/BackendStack21/kode/internal/skills"
 	"github.com/BackendStack21/kode/internal/tool"
 )
 
@@ -88,6 +89,13 @@ type Config struct {
 	// Renderer, if set, produces colored terminal output for each phase
 	// of the agent loop. When nil, the agent runs silently (programmatic API).
 	Renderer *render.Renderer
+
+	// Skills configures the skill system. When nil, skills are disabled.
+	Skills *skills.SkillsConfig
+
+	// SkillManager holds the loaded skill state. Passed by the CLI layer;
+	// when nil, New() auto-loads from default directories.
+	SkillManager *skills.SkillManager
 }
 
 // Agent is the agent loop runtime.
@@ -96,6 +104,7 @@ type Agent struct {
 	engine         *loop.Engine
 	registry       *tool.Registry
 	sandboxCleanup func() error // destroys the sandbox container on Close()
+	skillManager   *skills.SkillManager
 }
 
 // ── Model Profiles ────────────────────────────────────────────────────
@@ -282,13 +291,58 @@ func New(cfg Config) (*Agent, error) {
 
 	registry := tool.NewRegistry(tools)
 	client := llm.New(cfg.BaseURL, cfg.APIKey, cfg.Model, cfg.Thinking, time.Duration(timeout)*time.Second)
+
+	// Load skills and inject auto-load skills into system message
+	var sm *skills.SkillManager
+	if cfg.Skills != nil {
+		sm = cfg.SkillManager
+		if sm == nil {
+			sm = skills.NewSkillManager(
+				expandHome("~/.kode/skills"),
+				"./.kode/skills",
+			)
+		}
+
+		// Append auto-load skills to system message
+		var skillContext string
+		count := 0
+		for _, s := range sm.Result.AutoLoad {
+			if count >= cfg.Skills.MaxAutoLoad {
+				break
+			}
+			skillContext += "\n\n" + skills.FormatAsContext(s)
+			count++
+		}
+		if skillContext != "" {
+			cfg.SystemMessage += "\n\n# Loaded Skills\n\n" + skillContext
+		}
+	}
+
 	engine := loop.New(client, registry, cfg.MaxIterations, cfg.SystemMessage, cfg.Renderer, maxContext)
+
+	// Set the skill loader for trigger-based lazy loading
+	if sm != nil && sm.TrieIndex != nil && cfg.Skills != nil && cfg.Skills.MaxLazySlots > 0 {
+		maxSlots := cfg.Skills.MaxLazySlots
+		trie := sm.TrieIndex
+		engine.SetSkillLoader(func(userInput string) string {
+			matched := trie.MatchSkills(userInput, maxSlots)
+			if len(matched) == 0 {
+				return ""
+			}
+			var context string
+			for _, sk := range matched {
+				context += "\n" + skills.FormatAsContext(sk)
+			}
+			return context
+		})
+	}
 
 	return &Agent{
 		config:         cfg,
 		engine:         engine,
 		registry:       registry,
 		sandboxCleanup: cfg.SandboxCleanup,
+		skillManager:   sm,
 	}, nil
 }
 
@@ -316,6 +370,17 @@ func (a *Agent) Close() error {
 		return a.sandboxCleanup()
 	}
 	return nil
+}
+
+// expandHome replaces the leading ~/ with the user's home directory.
+func expandHome(path string) string {
+	if strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			return strings.Replace(path, "~/", home+"/", 1)
+		}
+	}
+	return path
 }
 
 // toolAdapter bridges kode.Tool to internal/tool.Tool.

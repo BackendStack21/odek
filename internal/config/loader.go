@@ -18,6 +18,7 @@ import (
 	"strconv"
 
 	"github.com/BackendStack21/kode/internal/danger"
+	"github.com/BackendStack21/kode/internal/skills"
 )
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -41,6 +42,7 @@ type CLIFlags struct {
 	Sandbox  *bool // nil = not set
 	NoColor  *bool // nil = not set
 	NoAgents *bool // nil = not set
+	Learn    *bool // nil = not set
 	Task     string
 
 	// Sandbox-specific
@@ -50,6 +52,16 @@ type CLIFlags struct {
 	SandboxCPUs     string
 	SandboxUser     string
 	SandboxReadonly *bool // nil = not set
+}
+
+// SkillsConfig holds the skills configuration section from JSON files.
+type SkillsConfig struct {
+	MaxAutoLoad  *int                        `json:"max_auto_load,omitempty"`
+	MaxLazySlots *int                        `json:"max_lazy_slots,omitempty"`
+	Learn        *bool                       `json:"learn,omitempty"`
+	Dirs         []string                    `json:"dirs,omitempty"`
+	Import       *skills.ImportConfig        `json:"import,omitempty"`
+	Curation     *skills.CurationConfig      `json:"curation,omitempty"`
 }
 
 // FileConfig is the JSON schema used by ~/kode/config.json and ./kode.json.
@@ -80,6 +92,9 @@ type FileConfig struct {
 
 	// Dangerous operation approval settings.
 	Dangerous *danger.DangerousConfig `json:"dangerous,omitempty"`
+
+	// Skills section (see internal/skills package).
+	Skills *SkillsConfig `json:"skills,omitempty"`
 }
 
 // ResolvedConfig is the fully merged result. Every field has a concrete
@@ -139,6 +154,9 @@ type ResolvedConfig struct {
 	// Dangerous is the resolved dangerous operations config.
 	// Uses danger.DangerousConfig defaults for any unset fields.
 	Dangerous danger.DangerousConfig
+
+	// Skills is the resolved skills config with default values.
+	Skills skills.SkillsConfig
 }
 
 // ── Defaults ───────────────────────────────────────────────────────────
@@ -309,6 +327,12 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		cfg.SandboxUser = v
 	}
 
+	// Skills env vars
+	if v := envString("SKILLS_LEARN"); v != "" {
+		b, _ := strconv.ParseBool(v)
+		cfg.Skills = &SkillsConfig{Learn: &b}
+	}
+
 	// Layer 4: CLI flags (highest priority)
 	if cli.Model != "" {
 		cfg.Model = cli.Model
@@ -330,6 +354,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	}
 	if cli.NoAgents != nil {
 		cfg.NoAgents = cli.NoAgents
+	}
+	if cli.Learn != nil {
+		cfg.Skills = &SkillsConfig{Learn: cli.Learn}
 	}
 	if cli.System != "" {
 		cfg.System = cli.System
@@ -369,6 +396,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		SandboxUser:    cfg.SandboxUser,
 		SandboxEnv:     cfg.SandboxEnv,
 		SandboxVolumes: cfg.SandboxVolumes,
+		Skills:         resolveSkills(cfg.Skills),
 		Dangerous:      resolveDangerous(cfg.Dangerous),
 	}
 
@@ -403,6 +431,42 @@ func ifZero(s, def string) string {
 		return def
 	}
 	return s
+}
+
+// resolveSkills merges file-level skills config with defaults.
+func resolveSkills(cfg *SkillsConfig) skills.SkillsConfig {
+	def := skills.DefaultSkillsConfig()
+	if cfg == nil {
+		return def
+	}
+	if cfg.MaxAutoLoad != nil {
+		def.MaxAutoLoad = *cfg.MaxAutoLoad
+	}
+	if cfg.MaxLazySlots != nil {
+		def.MaxLazySlots = *cfg.MaxLazySlots
+	}
+	if cfg.Learn != nil {
+		def.Learn = *cfg.Learn
+	}
+	if len(cfg.Dirs) > 0 {
+		def.Dirs = cfg.Dirs
+	}
+	if cfg.Import != nil {
+		if cfg.Import.MaxSizeBytes > 0 {
+			def.Import.MaxSizeBytes = cfg.Import.MaxSizeBytes
+		}
+		if cfg.Import.TimeoutSecs > 0 {
+			def.Import.TimeoutSecs = cfg.Import.TimeoutSecs
+		}
+		def.Import.RequireHTTPS = cfg.Import.RequireHTTPS
+	}
+	if cfg.Curation != nil {
+		if cfg.Curation.StalenessDays > 0 {
+			def.Curation.StalenessDays = cfg.Curation.StalenessDays
+		}
+		def.Curation.AutoPrune = cfg.Curation.AutoPrune
+	}
+	return def
 }
 
 // resolveDangerous merges file-level and potential env-level dangerous config.
@@ -476,6 +540,9 @@ func overlayFile(base, override FileConfig) FileConfig {
 	}
 	if override.Dangerous != nil {
 		base.Dangerous = override.Dangerous
+	}
+	if override.Skills != nil {
+		base.Skills = override.Skills
 	}
 	return base
 }

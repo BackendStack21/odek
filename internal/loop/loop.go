@@ -12,14 +12,21 @@ import (
 	"github.com/BackendStack21/kode/internal/tool"
 )
 
+// SkillLoader is an optional callback that the loop engine calls before each
+// LLM invocation to discover contextually relevant skills. The callback
+// receives the latest user input and returns additional system context
+// (formatted skill content) to inject, or empty string if no skills match.
+type SkillLoader func(userInput string) string
+
 // Engine runs the agent loop: observe → think → act → repeat.
 type Engine struct {
-	client     *llm.Client
-	registry   *tool.Registry
-	renderer   *render.Renderer // optional: colored terminal output
-	maxIter    int
-	system     string
-	maxContext int // max context tokens (0 = no limit)
+	client      *llm.Client
+	registry    *tool.Registry
+	renderer    *render.Renderer // optional: colored terminal output
+	maxIter     int
+	system      string
+	maxContext  int // max context tokens (0 = no limit)
+	skillLoader SkillLoader // optional: loads matching skills
 }
 
 // New creates a new loop Engine.
@@ -27,14 +34,17 @@ type Engine struct {
 // Pass 0 for no limit enforcement.
 func New(client *llm.Client, registry *tool.Registry, maxIterations int, systemMessage string, renderer *render.Renderer, maxContext int) *Engine {
 	return &Engine{
-		client:     client,
-		registry:   registry,
-		renderer:   renderer,
-		maxIter:    maxIterations,
-		system:     systemMessage,
+		client:    client,
+		registry:  registry,
+		renderer:  renderer,
+		maxIter:   maxIterations,
+		system:    systemMessage,
 		maxContext: maxContext,
 	}
 }
+
+// SetSkillLoader sets the optional skill loader callback.
+func (e *Engine) SetSkillLoader(sl SkillLoader) { e.skillLoader = sl }
 
 // ── Token Estimation ─────────────────────────────────────────────────
 //
@@ -191,6 +201,24 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		// Trim context to stay within model's context window
 		messages = e.trimContext(messages, tools)
 
+		// Load relevant skills based on latest user input
+		if e.skillLoader != nil {
+			if userMsg := lastUserMessage(messages); userMsg != "" {
+				if skillContext := e.skillLoader(userMsg); skillContext != "" {
+					// Inject skill context as a system message right before the user message
+					insertIdx := len(messages)
+					for j := len(messages) - 1; j >= 0; j-- {
+						if messages[j].Role == "system" && j != 0 {
+							insertIdx = j + 1
+							break
+						}
+					}
+					skillMsg := llm.Message{Role: "system", Content: "# Relevant Skill\n\n" + skillContext}
+					messages = append(messages[:insertIdx], append([]llm.Message{skillMsg}, messages[insertIdx:]...)...)
+				}
+			}
+		}
+
 		// THINK (timed)
 		start := time.Now()
 		result, err := e.client.Call(ctx, messages, tools)
@@ -262,6 +290,18 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 	}
 
 	return "", messages, fmt.Errorf("reached max iterations (%d) without final answer", e.maxIter)
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────
+
+// lastUserMessage returns the content of the most recent user message.
+func lastUserMessage(messages []llm.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			return messages[i].Content
+		}
+	}
+	return ""
 }
 
 // buildToolDefs converts the registry's tools to LLM-compatible definitions.
