@@ -726,7 +726,27 @@ func setupSandbox(tools []kode.Tool, cfg sandboxConfig) (func() error, error) {
 		return nil, fmt.Errorf("getwd: %w", err)
 	}
 
-	// Build docker run args
+	args := buildSandboxArgs(cfg, containerName, wd, image)
+
+	createCmd := exec.Command("docker", args...)
+	createCmd.Stderr = os.Stderr
+	if err := createCmd.Run(); err != nil {
+		return nil, fmt.Errorf("failed to create container: %w", err)
+	}
+
+	cleanup := func() error {
+		fmt.Fprintf(os.Stderr, "kode: destroying sandbox container %s...\n", containerName)
+		return exec.Command("docker", "rm", "-f", containerName).Run()
+	}
+
+	// Wire the shell tool to execute commands inside the sandbox.
+	tools[0].(*shellTool).containerName = containerName
+	return cleanup, nil
+}
+
+// buildSandboxArgs builds the docker run arguments from a sandboxConfig.
+// Exported for testing. Does not execute docker — just returns the arg slice.
+func buildSandboxArgs(cfg sandboxConfig, containerName, workdir, image string) []string {
 	args := []string{
 		"run",
 		"--rm",     // destroy on exit
@@ -740,7 +760,7 @@ func setupSandbox(tools []kode.Tool, cfg sandboxConfig) (func() error, error) {
 	args = append(args, "--network", cfg.Network)
 
 	// Read-only mount?
-	volume := wd + ":/workspace"
+	volume := workdir + ":/workspace"
 	if cfg.Readonly {
 		volume += ":ro"
 	}
@@ -774,21 +794,7 @@ func setupSandbox(tools []kode.Tool, cfg sandboxConfig) (func() error, error) {
 
 	// Image and command
 	args = append(args, image, "sleep", "infinity")
-
-	createCmd := exec.Command("docker", args...)
-	createCmd.Stderr = os.Stderr
-	if err := createCmd.Run(); err != nil {
-		return nil, fmt.Errorf("failed to create container: %w", err)
-	}
-
-	cleanup := func() error {
-		fmt.Fprintf(os.Stderr, "kode: destroying sandbox container %s...\n", containerName)
-		return exec.Command("docker", "rm", "-f", containerName).Run()
-	}
-
-	// Wire the shell tool to execute commands inside the sandbox.
-	tools[0].(*shellTool).containerName = containerName
-	return cleanup, nil
+	return args
 }
 
 func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager) []kode.Tool {
@@ -1059,7 +1065,7 @@ func skillCmd(args []string) error {
 		return nil
 
 	default:
-		return fmt.Errorf("unknown skill command %q (use list, view, save, delete, import, curate)", sub)
+		return fmt.Errorf("unknown skill command %q (use list, view, delete, import, curate)", sub)
 	}
 }
 
@@ -1143,6 +1149,8 @@ func continueCmd(args []string) error {
 			Memory:   resolved.SandboxMemory,
 			CPUs:     resolved.SandboxCPUs,
 			User:     resolved.SandboxUser,
+			Env:      resolved.SandboxEnv,
+			Volumes:  resolved.SandboxVolumes,
 		}
 		cleanup, err := setupSandbox(tools, sbCfg)
 		if err != nil {

@@ -1014,3 +1014,70 @@ func TestLoadConfig_SandboxFileConfig(t *testing.T) {
 		t.Errorf("SandboxVolumes = %v", vols)
 	}
 }
+
+func TestBuildSandboxArgs_EnvAndVolumes(t *testing.T) {
+	// Regression: continueCmd was missing Env and Volumes from sandboxConfig.
+	// Verify that buildSandboxArgs correctly includes both.
+	cfg := sandboxConfig{
+		Image:   "alpine:latest",
+		Network: "bridge",
+		Env: map[string]string{
+			"GOCACHE":   "/tmp/gocache",
+			"NODE_ENV":  "test",
+		},
+		Volumes: []string{"/host/cache:/container/cache", "/host/data:/data:ro"},
+	}
+	args := buildSandboxArgs(cfg, "kode-test", "/tmp/workdir", cfg.Image)
+
+	// Must contain env vars as "-e KEY=VALUE" pairs
+	if !hasArgPair(args, "-e", "GOCACHE=/tmp/gocache") {
+		t.Error("missing env var GOCACHE=/tmp/gocache in docker args")
+	}
+	if !hasArgPair(args, "-e", "NODE_ENV=test") {
+		t.Error("missing env var NODE_ENV=test in docker args")
+	}
+
+	// Must contain volume mounts as "-v HOST:CONTAINER" pairs
+	if !hasArgPair(args, "-v", "/host/cache:/container/cache") {
+		t.Error("missing volume /host/cache:/container/cache in docker args")
+	}
+	if !hasArgPair(args, "-v", "/host/data:/data:ro") {
+		t.Error("missing volume /host/data:/data:ro in docker args")
+	}
+}
+
+func TestBuildSandboxArgs_EmptyEnvAndVolumes(t *testing.T) {
+	// Verify buildSandboxArgs works with empty Env/Volumes (nil maps/slices).
+	cfg := sandboxConfig{
+		Image:   "alpine:latest",
+		Network: "bridge",
+	}
+	args := buildSandboxArgs(cfg, "kode-test", "/tmp/workdir", cfg.Image)
+
+	// Should not contain any -e or extra -v beyond the workspace mount
+	for i, a := range args {
+		if a == "-e" {
+			t.Errorf("unexpected -e at position %d with empty env", i)
+		}
+	}
+	// Count -v occurrences (should be exactly 1: workspace mount)
+	vCount := 0
+	for _, a := range args {
+		if a == "-v" {
+			vCount++
+		}
+	}
+	if vCount != 1 {
+		t.Errorf("expected 1 -v flag (workspace mount), got %d", vCount)
+	}
+}
+
+// hasArgPair checks that args contains flag followed by expected value.
+func hasArgPair(args []string, flag, value string) bool {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == flag && args[i+1] == value {
+			return true
+		}
+	}
+	return false
+}

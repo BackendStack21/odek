@@ -3,9 +3,13 @@ package kode
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/BackendStack21/kode/internal/llm"
 )
 
 func TestConfigDefaults(t *testing.T) {
@@ -642,5 +646,82 @@ func TestNew_NoProjectFileOptOut(t *testing.T) {
 	}
 	if agent.config.SystemMessage != "Only this." {
 		t.Errorf("SystemMessage = %q, want original only (no project file)", agent.config.SystemMessage)
+	}
+}
+
+func TestExpandHome(t *testing.T) {
+	home := os.Getenv("HOME")
+	if home == "" {
+		t.Skip("HOME not set")
+	}
+	got := expandHome("~/projects/test")
+	expected := home + "/projects/test"
+	if got != expected {
+		t.Errorf("expandHome = %q, want %q", got, expected)
+	}
+	if got := expandHome("/absolute/path"); got != "/absolute/path" {
+		t.Errorf("expandHome(/absolute) = %q", got)
+	}
+	if got := expandHome("./relative"); got != "./relative" {
+		t.Errorf("expandHome(./relative) = %q", got)
+	}
+}
+
+func TestAgent_Close_NoCleanup(t *testing.T) {
+	agent := &Agent{}
+	if err := agent.Close(); err != nil {
+		t.Errorf("Close with no cleanup: %v", err)
+	}
+}
+
+func TestAgent_Close_WithCleanup(t *testing.T) {
+	called := false
+	agent := &Agent{sandboxCleanup: func() error { called = true; return nil }}
+	if err := agent.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+	if !called {
+		t.Error("cleanup not called")
+	}
+}
+
+func TestAgent_RunWithMessages(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"agent response"}}]}`))
+	}))
+	defer server.Close()
+
+	agent, err := New(Config{
+		Model:         "test",
+		BaseURL:       server.URL,
+		APIKey:        "sk-test",
+		MaxIterations: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer agent.Close()
+
+	msgs := []llm.Message{
+		{Role: "user", Content: "task"},
+	}
+	result, _, err := agent.RunWithMessages(context.Background(), msgs)
+	if err != nil {
+		t.Fatalf("RunWithMessages: %v", err)
+	}
+	if result != "agent response" {
+		t.Errorf("result = %q", result)
+	}
+}
+
+func TestLoadProjectFile_NotFound(t *testing.T) {
+	dir := t.TempDir()
+	cwd, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(cwd)
+	content := LoadProjectFile()
+	if content != "" {
+		t.Errorf("LoadProjectFile in empty dir = %q, want empty", content)
 	}
 }

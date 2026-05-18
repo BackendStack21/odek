@@ -1,13 +1,75 @@
 package skills
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestFetchLocal(t *testing.T) {
+func TestFetchHTTP(t *testing.T) {
+	// Create a test HTTP server serving valid SKILL.md content
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/markdown")
+		w.Write([]byte(`---
+name: http-skill
+description: HTTP test
+version: "1.0"
+---
+
+## Overview
+
+HTTP fetched skill.
+
+## Common Pitfalls
+
+- None
+
+## Verification
+
+- Works`))
+	}))
+	defer server.Close()
+
+	result, err := fetchHTTP(server.URL, 1048576, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Content == "" {
+		t.Error("fetchHTTP returned empty content")
+	}
+	if !strings.Contains(result.Content, "http-skill") {
+		t.Error("fetchHTTP should return skill content")
+	}
+}
+
+func TestFetchHTTP_ErrorStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	_, err := fetchHTTP(server.URL, 1048576, 5)
+	if err == nil {
+		t.Error("expected error for 404")
+	}
+}
+
+func TestFetchHTTP_TooLarge(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(strings.Repeat("x", 2000)))
+	}))
+	defer server.Close()
+
+	_, err := fetchHTTP(server.URL, 100, 5)
+	if err == nil {
+		t.Error("expected error for oversized response")
+	}
+}
+
+func TestFetchFromURI(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test-skill.md")
 	content := "---\nname: test\n---\n\nBody"

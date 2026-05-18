@@ -608,3 +608,48 @@ func TestClient_Call_ReturnsUsage(t *testing.T) {
 		t.Errorf("OutputTokens = %d, want 10", result.OutputTokens)
 	}
 }
+
+func TestClient_SimpleCall_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"simple response"}}]}`))
+	}))
+	defer server.Close()
+
+	c := New(server.URL, "sk-test", "test-model", "", 0)
+	result, err := c.SimpleCall(context.Background(), "You are a bot.", "say hi")
+	if err != nil {
+		t.Fatalf("SimpleCall() error: %v", err)
+	}
+	if result != "simple response" {
+		t.Errorf("result = %q, want %q", result, "simple response")
+	}
+}
+
+func TestClient_SimpleCall_HTTPError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error":"bad request"}`))
+	}))
+	defer server.Close()
+
+	c := New(server.URL, "sk-test", "test-model", "", 0)
+	_, err := c.SimpleCall(context.Background(), "bot", "hi")
+	if err == nil {
+		t.Fatal("expected error for 400 response")
+	}
+}
+
+func TestClient_SimpleCall_EmptyResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[]}`))
+	}))
+	defer server.Close()
+
+	c := New(server.URL, "sk-test", "test-model", "", 0)
+	_, err := c.SimpleCall(context.Background(), "bot", "hi")
+	if err == nil {
+		t.Fatal("expected error for empty choices")
+	}
+}

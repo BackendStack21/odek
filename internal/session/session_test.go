@@ -1,6 +1,7 @@
 package session
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -300,4 +301,22 @@ func newTestStore(t *testing.T) *Store {
 		t.Fatalf("NewStore() error: %v", err)
 	}
 	return store
+}
+
+func TestList_Limit(t *testing.T) {
+	store := newTestStore(t)
+	for i := 0; i < 3; i++ {
+		msgs := []llm.Message{{Role: "user", Content: fmt.Sprintf("task %d", i)}}
+		sess, _ := store.Create(msgs, "test", fmt.Sprintf("task %d", i))
+		// Stagger times so ordering is deterministic
+		sess.UpdatedAt = time.Now().Add(time.Duration(i) * time.Hour)
+		store.Save(sess)
+	}
+	sessions, err := store.List(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 2 {
+		t.Errorf("List(2) returned %d sessions, want 2", len(sessions))
+	}
 }

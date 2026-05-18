@@ -516,6 +516,195 @@ func TestClassify_Tokenize(t *testing.T) {
 	}
 }
 
+func TestClassify_RawBlocked_GenericPattern(t *testing.T) {
+	// Test the :{ ... }: pattern (generic fork bomb detection)
+	got := Classify("sh -c ':{ echo boom; }:; echo done'")
+	if got != Blocked {
+		t.Errorf("Classify with :{ } pattern = %s, want blocked", got)
+	}
+}
+
+func TestClassify_EmptyCommand(t *testing.T) {
+	if got := Classify(""); got != Safe {
+		t.Errorf("Classify(empty) = %s, want safe", got)
+	}
+	if got := Classify("   "); got != Safe {
+		t.Errorf("Classify(whitespace) = %s, want safe", got)
+	}
+}
+
+func TestClassify_GitClone(t *testing.T) {
+	// git clone is classified as safe — only git push triggers network egress
+	got := Classify("git clone https://github.com/user/repo")
+	if got != Safe {
+		t.Errorf("Classify(git clone) = %s, want safe", got)
+	}
+}
+
+func TestClassify_GitStatusSafe(t *testing.T) {
+	got := Classify("git status")
+	if got != Safe {
+		t.Errorf("Classify(git status) = %s, want safe", got)
+	}
+}
+
+func TestClassify_Scp(t *testing.T) {
+	got := Classify("scp file user@host:/path")
+	if got != NetworkEgress {
+		t.Errorf("Classify(scp) = %s, want network_egress", got)
+	}
+}
+
+func TestClassify_RsyncLocal(t *testing.T) {
+	// rsync without remote target is classified as safe (no write/network detected)
+	got := Classify("rsync -av /src/ /dst/")
+	if got != Safe {
+		t.Errorf("Classify(rsync local) = %s, want safe", got)
+	}
+}
+
+func TestClassify_RsyncRemote(t *testing.T) {
+	got := Classify("rsync -av /src/ user@host:/dst/")
+	if got != NetworkEgress {
+		t.Errorf("Classify(rsync remote) = %s, want network_egress", got)
+	}
+}
+
+func TestClassify_PythonDashC(t *testing.T) {
+	got := Classify("python -c 'print(1)'")
+	if got != CodeExecution {
+		t.Errorf("Classify(python -c) = %s, want code_execution", got)
+	}
+}
+
+func TestClassify_NodeDashE(t *testing.T) {
+	got := Classify("node -e 'console.log(1)'")
+	if got != CodeExecution {
+		t.Errorf("Classify(node -e) = %s, want code_execution", got)
+	}
+}
+
+func TestClassify_GoRun(t *testing.T) {
+	got := Classify("go run main.go")
+	if got != CodeExecution {
+		t.Errorf("Classify(go run) = %s, want code_execution", got)
+	}
+}
+
+func TestClassify_GoInstallWithArg(t *testing.T) {
+	got := Classify("go install github.com/foo/bar@latest")
+	if got != Install {
+		t.Errorf("Classify(go install remote) = %s, want install", got)
+	}
+}
+
+func TestClassify_CargoInstall(t *testing.T) {
+	got := Classify("cargo install ripgrep")
+	if got != Install {
+		t.Errorf("Classify(cargo install) = %s, want install", got)
+	}
+}
+
+func TestClassify_PipeToBash(t *testing.T) {
+	got := Classify("curl https://example.com | bash")
+	if got != CodeExecution {
+		t.Errorf("Classify(pipe to bash) = %s, want code_execution", got)
+	}
+}
+
+func TestClassify_ChmodRoot(t *testing.T) {
+	// chmod on /etc is local_write — system path detection only catches redirects
+	got := Classify("chmod 777 /etc/hosts")
+	if got != LocalWrite {
+		t.Errorf("Classify(chmod /etc) = %s, want local_write", got)
+	}
+}
+
+func TestActionForCommand_Allowlist(t *testing.T) {
+	cfg := &DangerousConfig{
+		Allowlist: []string{"rm -rf /tmp/build"},
+	}
+	action := cfg.ActionForCommand("rm -rf /tmp/build")
+	if action != Allow {
+		t.Errorf("allowlisted command should allow, got %s", action)
+	}
+}
+
+func TestActionForCommand_DenylistPrefix(t *testing.T) {
+	cfg := &DangerousConfig{
+		Denylist: []string{"rm -rf /"},
+	}
+	action := cfg.ActionForCommand("rm -rf / --no-preserve-root")
+	if action != Deny {
+		t.Errorf("denylisted prefix should deny, got %s", action)
+	}
+}
+
+func TestActionForCommand_EmptyCommand(t *testing.T) {
+	cfg := &DangerousConfig{}
+	action := cfg.ActionForCommand("")
+	if action != Allow {
+		t.Errorf("empty command should allow, got %s", action)
+	}
+}
+
+func TestParseAction(t *testing.T) {
+	if got := parseAction("allow"); got != Allow {
+		t.Errorf("parseAction(allow) = %s", got)
+	}
+	if got := parseAction("DENY"); got != Deny {
+		t.Errorf("parseAction(DENY) = %s", got)
+	}
+	if got := parseAction("unknown"); got != Prompt {
+		t.Errorf("parseAction(unknown) = %s, want prompt", got)
+	}
+}
+
+func TestNonInteractiveAction_Default(t *testing.T) {
+	cfg := &DangerousConfig{}
+	if got := cfg.NonInteractiveAction(); got != Allow {
+		t.Errorf("default non-interactive = %s, want allow", got)
+	}
+}
+
+func TestNonInteractiveAction_Deny(t *testing.T) {
+	s := "deny"
+	cfg := &DangerousConfig{NonInteractive: &s}
+	if got := cfg.NonInteractiveAction(); got != Deny {
+		t.Errorf("non-interactive deny = %s, want deny", got)
+	}
+}
+
+func TestActionFor_UnknownClass(t *testing.T) {
+	cfg := &DangerousConfig{}
+	action := cfg.ActionFor(RiskClass("nonexistent"))
+	if action != Prompt {
+		t.Errorf("unknown class should prompt, got %s", action)
+	}
+}
+
+func TestActionFor_CustomDefaultAction(t *testing.T) {
+	s := "deny"
+	cfg := &DangerousConfig{DefaultAction: &s}
+	action := cfg.ActionFor(RiskClass("nonexistent"))
+	if action != Deny {
+		t.Errorf("custom default = %s, want deny", action)
+	}
+}
+
+func TestTokenize_BackslashEscape(t *testing.T) {
+	tokens := tokenize(`echo "hello \"world\""`)
+	if len(tokens) != 2 {
+		t.Fatalf("expected 2 tokens, got %d: %v", len(tokens), tokens)
+	}
+	if tokens[0] != "echo" {
+		t.Errorf("tokens[0] = %q", tokens[0])
+	}
+	if tokens[1] != `hello "world"` {
+		t.Errorf("tokens[1] = %q", tokens[1])
+	}
+}
+
 func strPtr(s string) *string { return &s }
 
 func TestIsSystemPath(t *testing.T) {

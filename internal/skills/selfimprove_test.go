@@ -4,6 +4,84 @@ import (
 	"testing"
 )
 
+func TestRunAllHeuristics(t *testing.T) {
+	calls := []ToolCall{
+		{Tool: "terminal", Input: "git clone repo", ExitCode: 0, Turn: 0},
+		{Tool: "terminal", Input: "cd repo", ExitCode: 0, Turn: 1},
+		{Tool: "terminal", Input: "npm install", ExitCode: 0, Turn: 2},
+		{Tool: "terminal", Input: "npm test", ExitCode: 0, Turn: 3},
+	}
+	userMsgs := []string{"build the project"}
+	msgs := make([]LlmMessage, 0)
+	for _, c := range calls {
+		msgs = append(msgs, LlmMessage{
+			Role: "assistant",
+			ToolCalls: []LlmToolCall{{
+				ID: "call_1",
+				Function: struct {
+					Name      string
+					Arguments string
+				}{Name: c.Tool, Arguments: c.Input},
+			}},
+		})
+		msgs = append(msgs, LlmMessage{Role: "tool", Content: "ok", ToolCallID: "call_1"})
+	}
+	suggestions := RunAllHeuristics(msgs, userMsgs)
+	if len(suggestions) == 0 {
+		t.Error("RunAllHeuristics should return suggestions")
+	}
+}
+
+func TestRunAllHeuristics_Empty(t *testing.T) {
+	suggestions := RunAllHeuristics(nil, nil)
+	if len(suggestions) != 0 {
+		t.Errorf("expected 0 suggestions for empty input, got %d", len(suggestions))
+	}
+}
+
+func TestDefaultSkillsConfig(t *testing.T) {
+	cfg := DefaultSkillsConfig()
+	if cfg.MaxAutoLoad != 3 {
+		t.Errorf("MaxAutoLoad = %d", cfg.MaxAutoLoad)
+	}
+	if cfg.MaxLazySlots != 5 {
+		t.Errorf("MaxLazySlots = %d", cfg.MaxLazySlots)
+	}
+	if cfg.Learn {
+		t.Error("Learn should default to false")
+	}
+	if cfg.Import.MaxSizeBytes != 1048576 {
+		t.Errorf("Import.MaxSizeBytes = %d", cfg.Import.MaxSizeBytes)
+	}
+	if cfg.Curation.StalenessDays != 90 {
+		t.Errorf("Curation.StalenessDays = %d", cfg.Curation.StalenessDays)
+	}
+}
+
+func TestUserSkillsDir(t *testing.T) {
+	dir := UserSkillsDir()
+	if dir != "~/.kode/skills" {
+		t.Errorf("UserSkillsDir = %q", dir)
+	}
+}
+
+func TestProjectSkillsDir(t *testing.T) {
+	dir := ProjectSkillsDir()
+	if dir != "./.kode/skills" {
+		t.Errorf("ProjectSkillsDir = %q", dir)
+	}
+}
+
+func TestActiveQualities(t *testing.T) {
+	active := ActiveQualities()
+	if !active[QualityDraft] || !active[QualityVerified] || !active[QualityImported] || !active[QualityManual] {
+		t.Error("ActiveQualities missing expected quality states")
+	}
+	if active[QualityStale] {
+		t.Error("QualityStale should not be active")
+	}
+}
+
 func TestDetectMultiStepProcedure_EnoughCalls(t *testing.T) {
 	calls := []ToolCall{
 		{Tool: "terminal", Input: "git clone repo", ExitCode: 0, Turn: 0},

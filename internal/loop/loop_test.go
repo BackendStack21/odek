@@ -210,6 +210,51 @@ func TestEngine_Run_ToolNotFound(t *testing.T) {
 	}
 }
 
+func TestLastUserMessage_NoMessages(t *testing.T) {
+	result := lastUserMessage(nil)
+	if result != "" {
+		t.Errorf("lastUserMessage(nil) = %q, want empty", result)
+	}
+	result = lastUserMessage([]llm.Message{})
+	if result != "" {
+		t.Errorf("lastUserMessage([]) = %q, want empty", result)
+	}
+}
+
+func TestLastUserMessage_FindsLatest(t *testing.T) {
+	msgs := []llm.Message{
+		{Role: "user", Content: "first"},
+		{Role: "assistant", Content: "answer"},
+		{Role: "user", Content: "second"},
+	}
+	result := lastUserMessage(msgs)
+	if result != "second" {
+		t.Errorf("lastUserMessage = %q, want %q", result, "second")
+	}
+}
+
+func TestEngine_RunWithMessages(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"used RunWithMessages"}}]}`)
+	}))
+	defer server.Close()
+
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0)
+	engine := New(client, tool.NewRegistry(nil), 10, "", nil, 0)
+
+	msgs := []llm.Message{
+		{Role: "system", Content: "bot"},
+		{Role: "user", Content: "task"},
+	}
+	result, _, err := engine.RunWithMessages(context.Background(), msgs)
+	if err != nil {
+		t.Fatalf("RunWithMessages error: %v", err)
+	}
+	if result != "used RunWithMessages" {
+		t.Errorf("result = %q, want %q", result, "used RunWithMessages")
+	}
+}
+
 func TestEngine_BuildToolDefs(t *testing.T) {
 	t1 := &fakeTool{name: "read", description: "read files"}
 	t2 := &fakeTool{name: "write", description: "write files"}

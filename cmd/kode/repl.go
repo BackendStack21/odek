@@ -13,6 +13,7 @@ import (
 	"github.com/BackendStack21/kode/internal/llm"
 	"github.com/BackendStack21/kode/internal/render"
 	"github.com/BackendStack21/kode/internal/session"
+	"github.com/BackendStack21/kode/internal/skills"
 )
 
 // ── REPL ──────────────────────────────────────────────────────────────
@@ -54,7 +55,14 @@ func replCmd(args []string) error {
 	}
 
 	// Build tools
-	tools := builtinTools(resolved.Dangerous, nil)
+	var sm *skills.SkillManager
+	if resolved.Skills.Learn {
+		sm = skills.NewSkillManager(
+			expandHome("~/.kode/skills"),
+			"./.kode/skills",
+		)
+	}
+	tools := builtinTools(resolved.Dangerous, sm)
 	var sandboxCleanup func() error
 
 	if resolved.Sandbox {
@@ -83,6 +91,12 @@ func replCmd(args []string) error {
 	color := !resolved.NoColor && render.ColorEnabled()
 	rend := render.New(os.Stderr, color).WithModel(modelLabel)
 
+	// Resolve skills config pointer (only when learn mode is enabled)
+	var skillsCfg *skills.SkillsConfig
+	if resolved.Skills.Learn {
+		skillsCfg = &resolved.Skills
+	}
+
 	agent, err := kode.New(kode.Config{
 		Model:          resolved.Model,
 		BaseURL:        resolved.BaseURL,
@@ -94,6 +108,8 @@ func replCmd(args []string) error {
 		Tools:          tools,
 		SandboxCleanup: sandboxCleanup,
 		Renderer:       rend,
+		Skills:         skillsCfg,
+		SkillManager:   sm,
 	})
 	if err != nil {
 		return err

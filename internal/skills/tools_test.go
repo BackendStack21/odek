@@ -5,6 +5,148 @@ import (
 	"testing"
 )
 
+func TestSkillLoadTool_NameDescSchema(t *testing.T) {
+	tool := &SkillLoadTool{}
+	if tool.Name() != "skill_load" {
+		t.Errorf("Name = %q", tool.Name())
+	}
+	if tool.Description() == "" {
+		t.Error("Description should not be empty")
+	}
+	if tool.Schema() == nil {
+		t.Error("Schema should not be nil")
+	}
+}
+
+func TestSkillListTool_NameDescSchema(t *testing.T) {
+	tool := &SkillListTool{}
+	if tool.Name() != "skill_list" {
+		t.Errorf("Name = %q", tool.Name())
+	}
+	if tool.Description() == "" {
+		t.Error("Description should not be empty")
+	}
+	if tool.Schema() == nil {
+		t.Error("Schema should not be nil")
+	}
+}
+
+func TestSkillSaveTool_NameDescSchema(t *testing.T) {
+	tool := &SkillSaveTool{}
+	if tool.Name() != "skill_save" {
+		t.Errorf("Name = %q", tool.Name())
+	}
+	if tool.Description() == "" {
+		t.Error("Description should not be empty")
+	}
+	if tool.Schema() == nil {
+		t.Error("Schema should not be nil")
+	}
+}
+
+func TestSkillPatchTool_NameDescSchema(t *testing.T) {
+	tool := &SkillPatchTool{}
+	if tool.Name() != "skill_patch" {
+		t.Errorf("Name = %q", tool.Name())
+	}
+	if tool.Description() == "" {
+		t.Error("Description should not be empty")
+	}
+	if tool.Schema() == nil {
+		t.Error("Schema should not be nil")
+	}
+}
+
+func TestSkillDeleteTool_NameDescSchema(t *testing.T) {
+	tool := &SkillDeleteTool{}
+	if tool.Name() != "skill_delete" {
+		t.Errorf("Name = %q", tool.Name())
+	}
+	if tool.Description() == "" {
+		t.Error("Description should not be empty")
+	}
+	if tool.Schema() == nil {
+		t.Error("Schema should not be nil")
+	}
+}
+
+func TestGetResult_ReturnsCopy(t *testing.T) {
+	dir := t.TempDir()
+	writeTestSkill(t, dir, "get-skill", "## Overview\nTest\n## Common Pitfalls\n- None\n## Verification\n- Check")
+	sm := NewSkillManager(dir, "")
+	result := sm.GetResult()
+	if result == nil {
+		t.Fatal("GetResult returned nil")
+	}
+	if len(result.Lazy) == 0 {
+		t.Error("GetResult should include skills")
+	}
+}
+
+func TestGetTrieIndex(t *testing.T) {
+	dir := t.TempDir()
+	writeTestSkill(t, dir, "trie-skill", "## Overview\nDocker build\n## Common Pitfalls\n- None\n## Verification\n- Check")
+	sm := NewSkillManager(dir, "")
+	idx := sm.GetTrieIndex()
+	if idx == nil {
+		t.Fatal("GetTrieIndex returned nil")
+	}
+}
+
+func TestSkillLoadTool_EmptyName(t *testing.T) {
+	tool := &SkillLoadTool{Manager: &SkillManager{}}
+	_, err := tool.Call(`{"name": ""}`)
+	if err == nil {
+		t.Error("expected error for empty name")
+	}
+}
+
+func TestSkillPatchTool_EmptyOldText(t *testing.T) {
+	tool := &SkillPatchTool{Manager: &SkillManager{}}
+	_, err := tool.Call(`{"name": "x", "old_text": ""}`)
+	if err == nil {
+		t.Error("expected error for empty old_text")
+	}
+}
+
+func TestSkillDeleteTool_EmptyName(t *testing.T) {
+	tool := &SkillDeleteTool{Manager: &SkillManager{}}
+	_, err := tool.Call(`{"name": ""}`)
+	if err == nil {
+		t.Error("expected error for empty name")
+	}
+}
+
+func TestSkillSaveTool_OversizeBody(t *testing.T) {
+	sm := NewSkillManager(t.TempDir(), "")
+	tool := &SkillSaveTool{Manager: sm}
+	// Body over 1MB
+	bigBody := strings.Repeat("x", MaxSkillBodySize+1)
+	_, err := tool.Call(`{"name":"big","description":"too big","body":"` + bigBody + `"}`)
+	if err == nil {
+		t.Error("expected error for oversized body")
+	}
+}
+
+func TestSkillListTool_Filter(t *testing.T) {
+	dir := t.TempDir()
+	writeTestSkill(t, dir, "docker-build", "## Overview\nBuild Docker images\n## Common Pitfalls\n- Cache misses\n## Verification\n- Check image\nExtra padding to reach 300 char minimum for the body. Docker is great for containerization. More text here to ensure we pass validation. And a bit more. Almost there. Done.")
+	writeTestSkill(t, dir, "npm-publish", "## Overview\nPublish npm packages\n## Common Pitfalls\n- Version conflicts\n## Verification\n- Check registry\nExtra padding to reach 300 char minimum. npm is the node package manager. More filler text here to ensure we pass the validation check. And more. Done.")
+	sm := NewSkillManager(dir, "")
+	tool := &SkillListTool{Manager: sm}
+
+	result, err := tool.Call(`{"filter": "docker"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "docker-build") {
+		t.Errorf("filter should include docker-build: %s", result)
+	}
+	if strings.Contains(result, "npm-publish") {
+		t.Error("filter should exclude npm-publish")
+	}
+}
+
 func TestSkillLoadTool(t *testing.T) {
 	dir := t.TempDir()
 	writeTestSkill(t, dir, "test-skill", "## Overview\n\nTest content\n\n## Common Pitfalls\n\n- None\n\n## Verification\n\n- Check")
