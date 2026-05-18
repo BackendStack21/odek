@@ -338,6 +338,21 @@ const defaultConfigTemplate = `{
     },
     "allowlist": [],
     "denylist": []
+  },
+  "skills": {
+    "max_auto_load": 3,
+    "max_lazy_slots": 5,
+    "learn": false,
+    "dirs": [],
+    "import": {
+      "max_size_bytes": 1048576,
+      "timeout_seconds": 5,
+      "require_https": false
+    },
+    "curation": {
+      "staleness_days": 90,
+      "auto_prune": false
+    }
   }
 }`
 

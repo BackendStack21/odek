@@ -139,7 +139,7 @@ func (s *Store) Save(sess *Session) error {
 	if err != nil {
 		return fmt.Errorf("session: marshal: %w", err)
 	}
-	if err := os.WriteFile(s.path(sess.ID), data, 0644); err != nil {
+	if err := os.WriteFile(s.path(sess.ID), data, 0600); err != nil {
 		return fmt.Errorf("session: write: %w", err)
 	}
 	return nil

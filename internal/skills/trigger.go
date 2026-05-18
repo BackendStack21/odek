@@ -213,41 +213,9 @@ func tokenize(input string) []string {
 
 	words := strings.Fields(cleaned)
 
-	// Filter stopwords
-	stopwords := map[string]bool{
-		"the": true, "a": true, "an": true, "is": true, "are": true,
-		"was": true, "were": true, "be": true, "been": true, "being": true,
-		"have": true, "has": true, "had": true, "do": true, "does": true,
-		"did": true, "will": true, "would": true, "could": true, "should": true,
-		"may": true, "might": true, "can": true, "shall": true,
-		"this": true, "that": true, "these": true, "those": true,
-		"i": true, "you": true, "he": true, "she": true, "it": true,
-		"we": true, "they": true, "me": true, "him": true, "her": true,
-		"us": true, "them": true, "my": true, "your": true, "his": true,
-		"its": true, "our": true, "their": true, "mine": true, "yours": true,
-		"hers": true, "theirs": true, "and": true, "but": true, "or": true,
-		"nor": true, "not": true, "if": true, "then": true, "else": true,
-		"of": true, "at": true, "by": true, "for": true, "with": true,
-		"about": true, "into": true, "through": true, "during": true,
-		"before": true, "after": true, "above": true, "below": true,
-		"to": true, "from": true, "up": true, "down": true, "in": true,
-		"out": true, "on": true, "off": true, "over": true, "under": true,
-		"again": true, "further": true, "once": true, "here": true,
-		"there": true, "when": true, "where": true, "why": true, "how": true,
-		"all": true, "each": true, "every": true, "both": true, "few": true,
-		"more": true, "most": true, "other": true, "some": true, "such": true,
-		"no": true, "only": true, "own": true, "same": true, "so": true,
-		"than": true, "too": true, "very": true, "just": true,
-		"because": true, "as": true, "until": true, "while": true,
-		"please": true, "help": true, "need": true, "want": true,
-		"like": true, "get": true, "make": true, "take": true, "use": true,
-		"put": true, "set": true, "let": true, "come": true,
-		"see": true, "know": true, "think": true, "tell": true,
-	}
-
 	var out []string
 	for _, w := range words {
-		if !stopwords[w] {
+		if !IsStopword(w) {
 			out = append(out, w)
 		}
 	}

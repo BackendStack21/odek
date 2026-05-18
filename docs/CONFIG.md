@@ -62,6 +62,7 @@ Every config knob has a `KODE_*` counterpart:
 | `KODE_NO_COLOR` | `--no-color` | bool |
 | `KODE_NO_AGENTS` | `--no-agents` | bool |
 | `KODE_SYSTEM` | `--system` | string |
+| `KODE_SKILLS_LEARN` | `skills.learn` | bool |
 | `KODE_SANDBOX_IMAGE` | `--sandbox-image` | string |
 | `KODE_SANDBOX_NETWORK` | `--sandbox-network` | string |
 | `KODE_SANDBOX_READONLY` | `--sandbox-readonly` | bool |
@@ -72,6 +73,42 @@ Every config knob has a `KODE_*` counterpart:
 ## API key fallback order
 
 `KODE_API_KEY` → `DEEPSEEK_API_KEY` → `OPENAI_API_KEY`
+
+## Skills configuration
+
+The `skills` section controls the skill system:
+
+```json
+{
+  "skills": {
+    "max_auto_load": 3,
+    "max_lazy_slots": 5,
+    "learn": false,
+    "dirs": [],
+    "import": {
+      "max_size_bytes": 1048576,
+      "timeout_seconds": 5,
+      "require_https": false
+    },
+    "curation": {
+      "staleness_days": 90,
+      "auto_prune": false
+    }
+  }
+}
+```
+
+| Field | Env var | Default | Description |
+|-------|---------|---------|-------------|
+| `max_auto_load` | — | 3 | Max skills injected into system prompt on start |
+| `max_lazy_slots` | — | 5 | Max skills loaded per user input via trigger matching |
+| `learn` | `KODE_SKILLS_LEARN` | false | Enable skill learning mode (detects patterns, suggests skills) |
+| `dirs` | — | [] | Extra skill directories beyond `~/.kode/skills` and `./.kode/skills` |
+| `import.max_size_bytes` | — | 1048576 (1MB) | Max size for fetched skill content |
+| `import.timeout_seconds` | — | 5 | HTTP timeout for skill URI fetch |
+| `import.require_https` | — | false | Reject http:// URIs when true |
+| `curation.staleness_days` | — | 90 | Days without use before flagging as stale |
+| `curation.auto_prune` | — | false | Auto-delete stale skills on curate (no prompt) |
 
 ## kode init
 
@@ -101,6 +138,9 @@ kode run "quick status"
 
 # Env var override for one-off
 KODE_SANDBOX=true kode run "run untrusted script"
+
+# Enable skill learning via env var
+KODE_SKILLS_LEARN=true kode run "set up CI"
 
 # CLI flag always wins
 kode run --model gpt-4o --base-url https://api.openai.com/v1 "task"

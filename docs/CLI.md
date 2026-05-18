@@ -6,6 +6,7 @@
 |---------|-------------|
 | `kode run [flags] <task>` | Execute a task with the agent loop (single-shot by default) |
 | `kode run --session [flags] <task>` | Execute and save conversation as a multi-turn session |
+| `kode run --learn [flags] <task>` | Execute with skill learning (detects patterns, suggests skills) |
 | `kode continue [--id <id>] <task>` | Continue the most recent session (or by `--id`) |
 | `kode repl [--id <id>]` | Interactive REPL mode (persistent multi-turn session) |
 | `kode session list` | List sessions |
@@ -13,6 +14,11 @@
 | `kode session delete <id>` | Delete a session |
 | `kode session trim <id> <n>` | Keep only the `n` most recent messages |
 | `kode session cleanup <days>` | Delete sessions older than N days |
+| `kode skill list` | List all available skills |
+| `kode skill view <name>` | View a skill's full content |
+| `kode skill delete <name>` | Delete a skill |
+| `kode skill import <uri> [flags]` | Import a skill from file:// or https:// |
+| `kode skill curate` | Analyze skills for quality, staleness, trigger overlap |
 | `kode init [--global] [--force]` | Create a config file template |
 | `kode version` | Print version and exit |
 
@@ -28,6 +34,7 @@
 | `--no-color` | bool | false | Disable colored terminal output |
 | `--no-agents` | bool | false | Skip loading AGENTS.md |
 | `--session` | bool | false | Save conversation as a multi-turn session |
+| `--learn` | bool | false | Enable skill learning mode (detects patterns, saves skills) |
 | `--system <prompt>` | string | built-in | Override system prompt |
 
 ## Shell tool schema
@@ -52,8 +59,8 @@ When running without `--sandbox`, kode classifies every shell command by risk an
 | 🟠 system_write | **prompt** | `sudo`, `apt install`, writes to `/etc/` |
 | 🔴 destructive | **deny** | `rm -rf /`, `dd if=/dev/zero`, `mkfs` |
 | 🔴 network_egress | **prompt** | `curl`, `git push`, `ssh`, `scp` |
-| 🔴 code_execution | **prompt** | `curl url \| bash`, `eval`, `node -e` |
-| 🟠 install | **prompt** | `npm install`, `pip install`, `go install <remote>` |
+| 🔴 code_execution | **prompt** | `curl url \| bash`, `eval`, `node -e`, `go run` |
+| 🟠 install | **prompt** | `npm install`, `pip install`, `go install <path>` |
 | ⬛ blocked | **deny** | Fork bombs, `dd` to block devices |
 
 The approval prompt accepts:
@@ -81,6 +88,87 @@ Configurable via `dangerous` section in `~/kode/config.json` or `./kode.json`:
 ```
 
 See [docs/SECURITY.md](docs/SECURITY.md) for details.
+
+## Skills
+
+The **skills system** provides just-in-time domain knowledge to the agent. Skills are SKILL.md files
+with YAML frontmatter that define trigger keywords, quality metadata, and markdown body content.
+
+### How skills work
+
+1. Skills are stored in `~/.kode/skills/<name>/SKILL.md` (user-global) or `./.kode/skills/<name>/SKILL.md` (project)
+2. Skills with `auto_load: true` are injected into the system prompt on start
+3. Lazy skills are loaded on demand when the user's input matches their trigger keywords (topic × action)
+4. The `--learn` flag detects reusable patterns during a run and prompts to save as a draft skill
+
+### Skill commands
+
+```bash
+# List all skills
+kode skill list
+
+# View a skill's full content
+kode skill view docker-build
+
+# Delete a skill
+kode skill delete docker-build
+
+# Import a skill from a file or URL
+kode skill import ./skills/my-skill.md
+kode skill import https://example.com/skills/deploy.md
+
+# Import with flags
+kode skill import https://example.com/skills/deploy.md --basic   # skip LLM risk assessment
+kode skill import https://example.com/skills/deploy.md --yes     # auto-approve (scripting)
+
+# Run curation (quality, staleness, overlap checks)
+kode skill curate
+```
+
+### Skill file format
+
+```yaml
+---
+name: docker-build
+description: Build and optimize Docker images
+version: 1.0.0
+author: kode
+kode:
+  trigger:
+    topic: docker container image
+    action: build optimize
+  auto_load: false
+  quality: verified
+---
+## Overview
+
+Procedure for building optimized Docker images.
+
+## Step-by-Step
+
+1. Write a `.dockerignore` file
+2. Use multi-stage builds
+3. Run `docker build -t <name> .`
+
+## Common Pitfalls
+
+- Forgetting `.dockerignore` leads to large build contexts
+- Not pinning base image versions causes build drift
+
+## Verification
+
+- `docker build` exits with code 0
+- `docker images` shows the new image
+```
+
+### Curation
+
+The `kode skill curate` command runs four quality passes:
+
+- **Staleness** — flags skills unused for 90+ days (configurable via `skill.curation.staleness_days`)
+- **Trigger overlap** — detects skills with 2+ shared topic keywords that may need merging
+- **Quality audit** — checks for missing sections, short bodies, long descriptions
+- **Body dedup** — detects skills with identical body content by SHA256 hash
 
 ## Sandbox flags
 
@@ -144,6 +232,9 @@ kode run --sandbox --sandbox-image node:20-alpine "node --version"
 
 # Custom system prompt
 kode run --system "You are a Go expert. Answer with code only." "Write HTTP server"
+
+# Run with skill learning
+kode run --learn "Set up CI with GitHub Actions"
 ```
 
 ## Config priority

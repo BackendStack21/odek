@@ -59,6 +59,9 @@ func parseSkillContent(content, sourcePath string) *Skill {
 	if name == "" {
 		return nil
 	}
+	if err := ValidateSkillName(name); err != nil {
+		return nil // reject names with path traversal at load time
+	}
 
 	desc, _ := fm["description"].(string)
 	version, _ := fm["version"].(string)
@@ -310,8 +313,12 @@ func FormatAsContext(s Skill) string {
 // ── Writing ───────────────────────────────────────────────────────────
 
 // WriteSkill writes a skill to the given directory as <name>/SKILL.md.
-// Creates the directory if it doesn't exist.
+// Creates the directory if it doesn't exist. Returns an error if the
+// skill name is unsafe for filesystem use (path traversal, etc.).
 func WriteSkill(dir string, s Skill) error {
+	if err := ValidateSkillName(s.Name); err != nil {
+		return fmt.Errorf("write skill: %w", err)
+	}
 	skillDir := filepath.Join(dir, s.Name)
 	if err := os.MkdirAll(skillDir, 0755); err != nil {
 		return fmt.Errorf("create skill dir: %w", err)

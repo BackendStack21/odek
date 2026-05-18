@@ -16,6 +16,7 @@ package skills
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -115,6 +116,28 @@ func UserSkillsDir() string { return "~/.kode/skills" }
 func ProjectSkillsDir() string { return "./.kode/skills" }
 
 // ── Helpers ────────────────────────────────────────────────────────────
+
+// ValidateSkillName checks that a skill name is safe for filesystem use.
+// Returns an error if the name contains path separators, relative components,
+// or hidden-file prefixes.
+func ValidateSkillName(name string) error {
+	if name == "" {
+		return fmt.Errorf("skill name is empty")
+	}
+	if strings.Contains(name, "/") || strings.Contains(name, "\\") {
+		return fmt.Errorf("skill name %q contains path separators", name)
+	}
+	if strings.Contains(name, "..") {
+		return fmt.Errorf("skill name %q contains path traversal (..)", name)
+	}
+	if name == "." || name == ".." {
+		return fmt.Errorf("skill name is a relative path (%q)", name)
+	}
+	if strings.HasPrefix(name, ".") {
+		return fmt.Errorf("skill name %q starts with a dot (hidden)", name)
+	}
+	return nil
+}
 
 // HashBody returns a sha256 hex digest of the body text.
 func HashBody(body string) string {

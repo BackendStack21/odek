@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // ── Agent Tools ────────────────────────────────────────────────────────
@@ -13,13 +14,18 @@ import (
 // These are the tools exposed to the kode agent for skill management.
 // Each tool implements a Name/Description/Schema/Call contract.
 
+// MaxSkillBodySize is the maximum allowed body size for a skill, in bytes.
+const MaxSkillBodySize = 1_048_576 // 1MB
+
 // SkillManager holds the state needed by skill management tools.
 // It wraps the skill store and provides access to the scan result.
+// Thread-safe: use GetResult/GetTrieIndex for concurrent access.
 type SkillManager struct {
 	UserDir    string
 	ProjectDir string
 	Result     *ScanResult
 	TrieIndex  *triggerIndex
+	mu         sync.RWMutex
 }
 
 // NewSkillManager creates a SkillManager with the given directories.
@@ -34,12 +40,40 @@ func NewSkillManager(userDir, projectDir string) *SkillManager {
 }
 
 // reload rescans skill directories and rebuilds the trigger index.
+// Must be called with the write lock held or when no concurrent access exists.
 func (sm *SkillManager) reload() {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.reloadLocked()
+}
+
+// reloadLocked rescans without acquiring the lock. Caller must hold sm.mu.
+func (sm *SkillManager) reloadLocked() {
 	var extraDirs []string
 	sm.Result = ScanDirs(sm.ProjectDir, sm.UserDir, extraDirs)
 
 	// Build index from all lazy skills only (auto-load skills are always in context)
 	sm.TrieIndex = BuildTriggerIndex(sm.Result.Lazy)
+}
+
+// GetResult returns a read-locked copy of the scan result.
+func (sm *SkillManager) GetResult() *ScanResult {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	if sm.Result == nil {
+		return nil
+	}
+	// Return a shallow copy so callers can iterate safely
+	cp := *sm.Result
+	return &cp
+}
+
+// GetTrieIndex returns the trigger index for read-only use.
+// The caller must not modify the returned index.
+func (sm *SkillManager) GetTrieIndex() *triggerIndex {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.TrieIndex
 }
 
 // ── skill_load ─────────────────────────────────────────────────────────
@@ -244,10 +278,13 @@ func (t *SkillSaveTool) Call(args string) (string, error) {
 	if len(input.Body) < 300 {
 		return "", fmt.Errorf("skill_save: body too short (%d chars, minimum 300)", len(input.Body))
 	}
+	if len(input.Body) > MaxSkillBodySize {
+		return "", fmt.Errorf("skill_save: body too large (%d bytes, maximum %d)", len(input.Body), MaxSkillBodySize)
+	}
 
 	// Run quality gate
 	var warnings []string
-	if !strings.Contains(input.Body, "## Overview") && !strings.Contains(input.Body, "## Overview") {
+	if !strings.Contains(input.Body, "## Overview") {
 		warnings = append(warnings, "missing ## Overview section")
 	}
 	if !strings.Contains(input.Body, "## Common Pitfalls") {
@@ -379,7 +416,7 @@ func (t *SkillPatchTool) Call(args string) (string, error) {
 		return "", fmt.Errorf("skill_patch: text %q not found in skill %q", input.OldText, input.Name)
 	}
 
-	newBody := strings.Replace(body, input.OldText, input.NewText, 1)
+	newBody := strings.Replace(body, input.OldText, input.NewText, 1) // n=1: unique match enforced above
 	if err := os.WriteFile(skill.Source.Path, []byte(newBody), 0644); err != nil {
 		return "", fmt.Errorf("skill_patch: write: %w", err)
 	}

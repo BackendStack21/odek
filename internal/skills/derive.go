@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"sort"
 	"strings"
 )
 
@@ -113,13 +114,9 @@ func extractFromHeadwords(words []string) []string {
 
 // sortScored sorts scored words by score descending.
 func sortScored(items []scoredWord) {
-	for i := 0; i < len(items)-1; i++ {
-		for j := i + 1; j < len(items); j++ {
-			if items[j].score > items[i].score {
-				items[i], items[j] = items[j], items[i]
-			}
-		}
-	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[j].score < items[i].score
+	})
 }
 
 // ── Stopword Helpers ──────────────────────────────────────────────────

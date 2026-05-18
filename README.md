@@ -21,6 +21,7 @@ kode run "Fix the OOM bug in default-hooks.js"
 - **Single binary** — `go build` → one file. Drop it anywhere.
 - **Multi-turn** — `kode run --session` and `kode continue` for persistent conversations
 - **Configurable** — 4-layer config (global → project → env → CLI), `${VAR}` substitution
+- **Skills system** — On-demand knowledge through trigger‑matched SKILL.md files. Auto‑learn patterns with `--learn`. Import skills from URIs with LLM risk assessment.
 
 ## Install
 
@@ -68,6 +69,9 @@ kode run --model gpt-4o --base-url https://api.openai.com/v1 "Explain this code"
 
 # Sandboxed execution
 kode run --sandbox "npm test"
+
+# Enable skill learning (auto-detects patterns, suggests skills)
+kode run --learn "Set up a Go project with CI"
 ```
 
 ## Documentation
@@ -80,6 +84,7 @@ kode run --sandbox "npm test"
 | **Multi-Turn Sessions** | [docs/SESSIONS.md](docs/SESSIONS.md) — save, continue, list, trim, cleanup |
 | **Sandboxing** | [docs/SANDBOXING.md](docs/SANDBOXING.md) — Docker isolation, security, config |
 | **Security** | [docs/SECURITY.md](docs/SECURITY.md) — prompt injection, sandbox model |
+| **Skills** | [docs/CLI.md#skills](docs/CLI.md#skills) — learn, list, save, import, curate |
 | **Development** | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — building, testing, contributing |
 
 ## Quick reference
@@ -87,6 +92,7 @@ kode run --sandbox "npm test"
 ```bash
 # Commands
 kode run [flags] <task>                        # Single-shot task
+kode run --learn [flags] <task>                # Run with skill learning
 kode run --session [flags] <task>              # Save as session
 kode continue [--id <id>] <task>               # Continue a session
 kode session list                               # List sessions
@@ -94,6 +100,11 @@ kode session show [id]                          # Show session transcript
 kode session delete <id>                        # Delete a session
 kode session trim <id> <n>                     # Keep last n messages
 kode session cleanup <days>                    # Delete old sessions
+kode skill list                                 # List available skills
+kode skill view <name>                          # View a skill
+kode skill delete <name>                        # Delete a skill
+kode skill import <uri> [--basic --yes]         # Import skill from URI
+kode skill curate                               # Quality/overlap audit
 kode init [--global] [--force]                  # Create config file
 kode version                                    # Print version
 
@@ -102,6 +113,7 @@ kode version                                    # Print version
 --base-url <url>       # API endpoint
 --sandbox              # Docker sandbox mode
 --thinking <level>     # enabled/disabled/low/medium/high
+--learn                # Enable skill learning mode
 --system <prompt>      # System prompt override
 --no-agents            # Skip AGENTS.md
 ```
@@ -123,7 +135,7 @@ result, err := agent.Run(context.Background(), "Summarize this codebase")
 
 ```bash
 go test ./...
-# 108+ tests, all pass, zero external dependencies
+# 140+ tests, all pass, zero external dependencies
 ```
 
 ## License

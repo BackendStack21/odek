@@ -22,6 +22,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // ── Events ────────────────────────────────────────────────────────────
@@ -222,12 +223,14 @@ func (r *Renderer) style(code, text string) string {
 	return code + text + reset
 }
 
-// truncate limits s to n chars, adding "…" if truncated.
+// truncate limits s to n characters (not bytes), adding "…" if truncated.
 func (r *Renderer) truncate(s string, n int) string {
-	if len(s) <= n {
+	if utf8.RuneCountInString(s) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	// Convert to runes, truncate, then convert back
+	runes := []rune(s)
+	return string(runes[:n]) + "…"
 }
 
 // ── Auto-detection ────────────────────────────────────────────────────

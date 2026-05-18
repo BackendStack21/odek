@@ -13,6 +13,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -202,7 +203,8 @@ func loadFile(path string) FileConfig {
 	}
 	var cfg FileConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return FileConfig{} // invalid JSON = empty (silent)
+		fmt.Fprintf(os.Stderr, "kode: warning: config %s: invalid JSON — ignoring file: %v\n", path, err)
+		return FileConfig{} // invalid JSON = empty
 	}
 	// Expand environment variables in all string fields
 	cfg.Model = expandEnv(cfg.Model)
@@ -536,7 +538,7 @@ func overlayFile(base, override FileConfig) FileConfig {
 		}
 	}
 	if override.SandboxVolumes != nil {
-		base.SandboxVolumes = append([]string{}, override.SandboxVolumes...)
+		base.SandboxVolumes = append(base.SandboxVolumes, override.SandboxVolumes...)
 	}
 	if override.Dangerous != nil {
 		base.Dangerous = override.Dangerous

@@ -266,20 +266,8 @@ func tokenize(input string) []string {
 }
 
 // ── Safe command prefixes ──────────────────────────────────────────────
-
-var safePrefixes = map[string]bool{
-	"ls": true, "cat": true, "head": true, "tail": true,
-	"less": true, "more": true, "pwd": true, "which": true,
-	"find": true, "grep": true, "egrep": true, "fgrep": true,
-	"wc": true, "sort": true, "uniq": true, "diff": true, "cmp": true,
-	"date": true, "env": true, "printenv": true, "cd": true,
-	"go": true, // prefix-checked below for subcommands
-}
-
-// safeGoSubcommands are go subcommands with no side effects.
-var safeGoSubcommands = map[string]bool{
-	"build": true, "vet": true, "fmt": true, "mod": true, "test": true,
-}
+// (Unused — classification falls through to Safe by default. Kept as
+// documentation of what's considered read-only.)
 
 var writePrefixes = map[string]bool{
 	"echo": true, "sed": true, "awk": true, "tee": true,
@@ -597,6 +585,14 @@ func isCodeExecution(first string, tokens []string) bool {
 	}
 
 	if !codeEvalPrefixes[first] {
+		// Check go run / go tool — compiles and executes code
+		if first == "go" {
+			for _, tok := range tokens[1:] {
+				if tok == "run" || tok == "tool" || tok == "generate" {
+					return true
+				}
+			}
+		}
 		return false
 	}
 
@@ -634,21 +630,19 @@ func isInstall(first string, tokens []string) bool {
 		return hasArgAfter(tokens, "cargo", "install")
 	}
 
-	// go install <remote>
+	// go install <remote> OR go install <local-path>
 	if first == "go" {
-		// go install with no args = local build (safe)
-		// go install <path>@<version> = remote install
 		hasInstall := false
 		for _, tok := range tokens[1:] {
 			if tok == "install" {
 				hasInstall = true
 				continue
 			}
-			if hasInstall && strings.Contains(tok, "@") {
-				return true
+			if hasInstall {
+				return true // go install <something> downloads deps
 			}
 		}
-		return false
+		return false // bare "go install" = local build only
 	}
 
 	// brew install
