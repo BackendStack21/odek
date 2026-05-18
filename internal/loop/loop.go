@@ -154,19 +154,38 @@ func (e *Engine) Run(ctx context.Context, task string) (string, error) {
 	if e.system != "" {
 		messages = append([]llm.Message{{Role: "system", Content: e.system}}, messages...)
 	}
+	result, _, err := e.runLoop(ctx, messages)
+	return result, err
+}
 
+// RunWithMessages executes the agent loop starting from a pre-built
+// message history. The messages must include the system prompt (if any),
+// all prior conversation turns, and the new user message as the last
+// entry. Returns the final answer plus the full updated message history
+// so callers can persist it (e.g. to a session file).
+//
+// Use this for multi-turn conversations: load the session, append the
+// new user message, call RunWithMessages, then save the returned messages.
+func (e *Engine) RunWithMessages(ctx context.Context, messages []llm.Message) (string, []llm.Message, error) {
+	return e.runLoop(ctx, messages)
+}
+
+// runLoop is the shared core of Run and RunWithMessages.
+// It runs the ReAct loop on the given messages and returns the final
+// answer plus the complete updated message history.
+func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, []llm.Message, error) {
 	tools := e.buildToolDefs()
 
 	for i := 0; i < e.maxIter; i++ {
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return "", messages, ctx.Err()
 		default:
 		}
 
 		// Render iteration header (1-indexed for humans)
 		if e.renderer != nil {
-			e.renderer.Iteration(i+1, e.maxIter, 0, 0, 0)
+			e.renderer.Iteration(i+1, e.maxIter, 0, 0, 0, 0)
 		}
 
 		// Trim context to stay within model's context window
@@ -177,12 +196,12 @@ func (e *Engine) Run(ctx context.Context, task string) (string, error) {
 		result, err := e.client.Call(ctx, messages, tools)
 		latency := time.Since(start)
 		if err != nil {
-			return "", fmt.Errorf("iteration %d: %w", i, err)
+			return "", messages, fmt.Errorf("iteration %d: %w", i, err)
 		}
 
 		// Render turn statistics (re-draw iteration header with stats)
 		if e.renderer != nil {
-			e.renderer.Iteration(i+1, e.maxIter, latency, result.InputTokens, result.OutputTokens)
+			e.renderer.Iteration(i+1, e.maxIter, latency, result.InputTokens, result.OutputTokens, 0)
 		}
 
 		// No tool calls = final answer
@@ -190,7 +209,7 @@ func (e *Engine) Run(ctx context.Context, task string) (string, error) {
 			if e.renderer != nil {
 				e.renderer.FinalAnswer(result.Content)
 			}
-			return result.Content, nil
+			return result.Content, messages, nil
 		}
 
 		// Render the model's thinking (reasoning before tool calls)
@@ -242,7 +261,7 @@ func (e *Engine) Run(ctx context.Context, task string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("reached max iterations (%d) without final answer", e.maxIter)
+	return "", messages, fmt.Errorf("reached max iterations (%d) without final answer", e.maxIter)
 }
 
 // buildToolDefs converts the registry's tools to LLM-compatible definitions.

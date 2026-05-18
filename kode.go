@@ -297,6 +297,18 @@ func (a *Agent) Run(ctx context.Context, task string) (string, error) {
 	return a.engine.Run(ctx, task)
 }
 
+// RunWithMessages executes the agent loop starting from a pre-built
+// message history. Use this for multi-turn conversations where the
+// full conversation context (system prompt, prior turns) has been
+// loaded from a session file and the new user message appended.
+//
+// Returns the final answer plus the complete updated message history.
+// The caller should persist the history (e.g. to a session file) so
+// the conversation can be continued in a future call.
+func (a *Agent) RunWithMessages(ctx context.Context, messages []llm.Message) (string, []llm.Message, error) {
+	return a.engine.RunWithMessages(ctx, messages)
+}
+
 // Close cleans up resources. If a sandbox container was created, it is
 // destroyed. Always call Close() when done with the agent.
 func (a *Agent) Close() error {

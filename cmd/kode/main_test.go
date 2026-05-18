@@ -223,6 +223,8 @@ func TestPrintUsage(t *testing.T) {
 
 	required := []string{
 		"kode run",
+		"kode continue",
+		"kode session",
 		"kode init",
 		"kode version",
 		"Commands:",
@@ -237,6 +239,7 @@ func TestPrintUsage(t *testing.T) {
 		"--sandbox",
 		"--no-color",
 		"--no-agents",
+		"--session",
 		"--system",
 		"--global",
 		"--force",

@@ -14,7 +14,9 @@ import (
 
 	"github.com/BackendStack21/kode"
 	"github.com/BackendStack21/kode/internal/config"
+	"github.com/BackendStack21/kode/internal/llm"
 	"github.com/BackendStack21/kode/internal/render"
+	"github.com/BackendStack21/kode/internal/session"
 )
 
 // version is set at build time via ldflags: -ldflags "-X main.version=v0.2.1"
@@ -87,6 +89,16 @@ func main() {
 			fmt.Fprintf(os.Stderr, "kode: %v\n", err)
 			os.Exit(1)
 		}
+	case "continue":
+		if err := continueCmd(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "kode: %v\n", err)
+			os.Exit(1)
+		}
+	case "session":
+		if err := sessionCmd(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "kode: %v\n", err)
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "kode: unknown command %q\n", os.Args[1])
 		printUsage()
@@ -114,6 +126,7 @@ type runFlags struct {
 	Sandbox  *bool // nil = not set
 	NoColor  *bool // nil = not set
 	NoAgents *bool // nil = not set
+	Session  *bool // nil = not set; true = save session after run
 	Task     string
 
 	// Sandbox-specific CLI flags
@@ -161,6 +174,9 @@ func parseRunFlags(args []string) (runFlags, error) {
 		case "--no-agents":
 			f.NoAgents = boolPtr(true)
 			i++
+		case "--session":
+			f.Session = boolPtr(true)
+			i++
 		case "--sandbox-image":
 			f.SandboxImage = args[i+1]
 			i += 2
@@ -195,11 +211,17 @@ done:
 func printUsage() {
 	fmt.Println(`Usage:
   kode run [flags] <task>
+  kode run --session [flags] <task>
+  kode continue [--id <id>] <task>
+  kode session <list|show [id]|delete <id>>
   kode init [--global | -g] [--force | -f]
   kode version
 
 Commands:
   run                 Execute a task with the agent loop
+  run --session       Execute and save conversation as a session
+  continue            Continue the most recent session (or by --id)
+  session             Manage sessions: list, show, delete
   init                Create a config file (default: ./kode.json)
   version             Print version and exit
 
@@ -218,6 +240,7 @@ Run flags:
                        Empty = profile default = provider default.
   --no-color           Disable colored terminal output
   --no-agents          Skip loading AGENTS.md from working directory
+  --session            Save conversation as a multi-turn session
   --system <prompt>    System prompt override
 
 Sandbox flags:
@@ -532,11 +555,38 @@ func run(args []string) error {
 	defer cancel()
 
 	rend.Start(f.Task)
-	result, err := agent.Run(ctx, f.Task)
-	if err != nil {
-		return err
+
+	if f.Session != nil && *f.Session {
+		// Multi-turn session mode: save conversation history
+		messages := []llm.Message{
+			{Role: "user", Content: f.Task},
+		}
+		if systemMessage != "" {
+			messages = append([]llm.Message{{Role: "system", Content: systemMessage}}, messages...)
+		}
+
+		result, allMessages, err := agent.RunWithMessages(ctx, messages)
+		if err != nil {
+			return err
+		}
+		_ = result
+
+		store, err := session.NewStore()
+		if err != nil {
+			return fmt.Errorf("session store: %w", err)
+		}
+		sess, err := store.Create(allMessages, resolved.Model, f.Task)
+		if err != nil {
+			return fmt.Errorf("save session: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "kode: session %s saved — continue with: kode continue \"...\"\n", sess.ID)
+	} else {
+		// Single-shot mode (default)
+		_, err := agent.Run(ctx, f.Task)
+		if err != nil {
+			return err
+		}
 	}
-	_ = result // rendered by the loop engine via Renderer
 	return nil
 }
 
@@ -683,4 +733,240 @@ func getVersion() string {
 		return revision
 	}
 	return "dev"
+}
+
+// ── Continue (Multi-Turn) ─────────────────────────────────────────────
+
+// continueCmd handles `kode continue [--id <id>] <task>`.
+// It loads an existing session (latest or by ID), appends the new task,
+// runs the agent with full history, and saves the updated session.
+func continueCmd(args []string) error {
+	sessionID := ""
+	i := 0
+	for i < len(args)-1 && args[i] == "--id" {
+		sessionID = args[i+1]
+		i += 2
+	}
+	if i >= len(args) {
+		return fmt.Errorf("no task provided for continue")
+	}
+	task := strings.Join(args[i:], " ")
+
+	store, err := session.NewStore()
+	if err != nil {
+		return fmt.Errorf("session store: %w", err)
+	}
+
+	var sess *session.Session
+	if sessionID != "" {
+		sess, err = store.Load(sessionID)
+	} else {
+		sess, err = store.Latest()
+	}
+	if err != nil {
+		return fmt.Errorf("load session: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "kode: continuing session %s (turn %d → %d)\n",
+		sess.ID, sess.Turns, sess.Turns+1)
+
+	// Build tools
+	tools := builtinTools()
+	var sandboxCleanup func() error
+
+	// Resolve config (no CLI flags for continue — uses session's model)
+	resolved := config.LoadConfig(config.CLIFlags{Model: sess.Model})
+
+	systemMessage := resolved.System
+	if systemMessage == "" {
+		systemMessage = defaultSystem
+	}
+
+	// Sandbox (if enabled in config)
+	if resolved.Sandbox {
+		sbCfg := sandboxConfig{
+			Image:    resolved.SandboxImage,
+			Network:  resolved.SandboxNetwork,
+			Readonly: resolved.SandboxReadonly,
+			Memory:   resolved.SandboxMemory,
+			CPUs:     resolved.SandboxCPUs,
+			User:     resolved.SandboxUser,
+		}
+		cleanup, err := setupSandbox(tools, sbCfg)
+		if err != nil {
+			return fmt.Errorf("sandbox: %w", err)
+		}
+		sandboxCleanup = cleanup
+	}
+
+	// Renderer
+	modelLabel := kode.ProfileLabel(resolved.Model)
+	if modelLabel == "" {
+		modelLabel = "deepseek-chat"
+	}
+	color := !resolved.NoColor && render.ColorEnabled()
+	rend := render.New(os.Stderr, color).WithModel(modelLabel)
+
+	agent, err := kode.New(kode.Config{
+		Model:          resolved.Model,
+		BaseURL:        resolved.BaseURL,
+		APIKey:         resolved.APIKey,
+		MaxIterations:  resolved.MaxIter,
+		SystemMessage:  systemMessage,
+		NoProjectFile:  resolved.NoAgents,
+		Thinking:       resolved.Thinking,
+		Tools:          tools,
+		SandboxCleanup: sandboxCleanup,
+		Renderer:       rend,
+	})
+	if err != nil {
+		return err
+	}
+	defer agent.Close()
+
+	// Build message history: session messages + new user message
+	// The system message is already in the session
+	messages := sess.GetMessages()
+	messages = append(messages, llm.Message{Role: "user", Content: task})
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	rend.Start(task)
+	result, allMessages, err := agent.RunWithMessages(ctx, messages)
+	if err != nil {
+		return err
+	}
+	_ = result
+
+	// Save updated session
+	if err := store.Append(sess.ID, allMessages[len(sess.GetMessages()):]); err != nil {
+		return fmt.Errorf("save session: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "kode: session %s saved (%d turns)\n", sess.ID, sess.Turns+1)
+	return nil
+}
+
+// ── Session Management ────────────────────────────────────────────────
+
+// sessionCmd handles `kode session <list|show|delete> [args]`.
+func sessionCmd(args []string) error {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "Usage: kode session <list|show [id]|delete <id>>\n")
+		return nil
+	}
+
+	store, err := session.NewStore()
+	if err != nil {
+		return fmt.Errorf("session store: %w", err)
+	}
+
+	switch args[0] {
+	case "list":
+		return listSessions(store)
+	case "show":
+		return showSession(store, args[1:])
+	case "delete":
+		return deleteSession(store, args[1:])
+	default:
+		return fmt.Errorf("unknown session command %q (use list, show, delete)", args[0])
+	}
+}
+
+func listSessions(store *session.Store) error {
+	sessions, err := store.List(20)
+	if err != nil {
+		return fmt.Errorf("list sessions: %w", err)
+	}
+	if len(sessions) == 0 {
+		fmt.Println("No sessions found.")
+		return nil
+	}
+
+	fmt.Printf("%-22s %-5s %-30s %s\n", "ID", "Turns", "Model", "Task")
+	fmt.Println(strings.Repeat("─", 80))
+	for _, s := range sessions {
+		task := shorten(s.Task, 30)
+		model := shorten(s.Model, 20)
+		fmt.Printf("%-22s %-5d %-30s %s\n", s.ID, s.Turns, model, task)
+	}
+	return nil
+}
+
+func showSession(store *session.Store, args []string) error {
+	var id string
+	if len(args) > 0 {
+		id = args[0]
+	} else {
+		sess, err := store.Latest()
+		if err != nil {
+			return fmt.Errorf("no sessions found: %w", err)
+		}
+		id = sess.ID
+	}
+
+	sess, err := store.Load(id)
+	if err != nil {
+		return fmt.Errorf("load session: %w", err)
+	}
+
+	fmt.Printf("Session: %s\n", sess.ID)
+	fmt.Printf("Model:   %s\n", sess.Model)
+	fmt.Printf("Turns:   %d\n", sess.Turns)
+	fmt.Printf("Created: %s\n", sess.CreatedAt.Format("2006-01-02 15:04:05 UTC"))
+	fmt.Printf("Updated: %s\n", sess.UpdatedAt.Format("2006-01-02 15:04:05 UTC"))
+	fmt.Printf("Task:    %s\n", sess.Task)
+	fmt.Println()
+
+	for i, msg := range sess.Messages {
+		content := strings.TrimSpace(msg.Content)
+		switch msg.Role {
+		case "system":
+			fmt.Printf("── [SYSTEM] ──\n%s\n\n", content)
+		case "user":
+			fmt.Printf("── [USER Turn %d] ──\n%s\n\n", countUserTurnsUpTo(sess.Messages, i), content)
+		case "assistant":
+			if len(msg.ToolCalls) > 0 {
+				for _, tc := range msg.ToolCalls {
+					fmt.Printf("── [TOOL CALL: %s] ──\n%s\n\n", tc.Function.Name, tc.Function.Arguments)
+				}
+			} else {
+				fmt.Printf("── [ASSISTANT] ──\n%s\n\n", content)
+			}
+		case "tool":
+			fmt.Printf("── [TOOL RESULT: %s] ──\n%s\n\n", msg.Name, shorten(content, 200))
+		}
+	}
+	return nil
+}
+
+func deleteSession(store *session.Store, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: kode session delete <id>")
+	}
+	if err := store.Delete(args[0]); err != nil {
+		return fmt.Errorf("delete session: %w", err)
+	}
+	fmt.Printf("Deleted session %s\n", args[0])
+	return nil
+}
+
+// countUserTurnsUpTo counts user messages up to (but not including) index n.
+func countUserTurnsUpTo(messages []llm.Message, n int) int {
+	count := 0
+	for i := 0; i < n && i < len(messages); i++ {
+		if messages[i].Role == "user" {
+			count++
+		}
+	}
+	return count
+}
+
+// shorten truncates s to n chars, adding "…" if truncated.
+func shorten(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }

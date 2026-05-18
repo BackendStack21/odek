@@ -130,10 +130,11 @@ func (r *Renderer) Start(task string) {
 	fmt.Fprintln(r.w)
 }
 
-// Iteration prints the cycle header with optional turn statistics.
+// Iteration prints the cycle header with optional turn statistics and
+// turn number. When turn > 0, shows "Turn N" in the header.
 // When latency > 0 or tokens are reported, a compact stats suffix
 // appears on the same line: [1,247 in · 342 out · 4.1s]
-func (r *Renderer) Iteration(n, maxN int, latency time.Duration, inTokens, outTokens int) {
+func (r *Renderer) Iteration(n, maxN int, latency time.Duration, inTokens, outTokens int, turn int) {
 	if r.disable() {
 		return
 	}
@@ -142,6 +143,10 @@ func (r *Renderer) Iteration(n, maxN int, latency time.Duration, inTokens, outTo
 		prefix = fmt.Sprintf("Iter %d/%d · %s", n, maxN, r.model)
 	} else {
 		prefix = fmt.Sprintf("Iter %d/%d", n, maxN)
+	}
+	// Turn counter when in multi-turn session mode
+	if turn > 0 {
+		prefix += fmt.Sprintf(" · Turn %d", turn)
 	}
 	// Build stats suffix only when data is available
 	stats := ""

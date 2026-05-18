@@ -44,7 +44,7 @@ func TestRenderer_Iteration(t *testing.T) {
 	var buf bytes.Buffer
 	r := New(&buf, true).WithModel("deepseek-chat")
 
-	r.Iteration(3, 90, 0, 0, 0)
+	r.Iteration(3, 90, 0, 0, 0, 0)
 
 	out := buf.String()
 	if !strings.Contains(out, "Iter 3/90") {
@@ -59,7 +59,7 @@ func TestRenderer_Iteration_NoModel(t *testing.T) {
 	var buf bytes.Buffer
 	r := New(&buf, true)
 
-	r.Iteration(1, 10, 0, 0, 0)
+	r.Iteration(1, 10, 0, 0, 0, 0)
 
 	out := buf.String()
 	if !strings.Contains(out, "Iter 1/10") {
@@ -261,7 +261,7 @@ func TestRenderer_NoColor(t *testing.T) {
 	var buf bytes.Buffer
 	r := New(&buf, false)
 
-	r.Iteration(1, 5, 0, 0, 0)
+	r.Iteration(1, 5, 0, 0, 0, 0)
 
 	out := buf.String()
 	if strings.Contains(out, "\033[") {
@@ -277,7 +277,7 @@ func TestRenderer_NilWriter(t *testing.T) {
 
 	// None of these should panic
 	r.Start("task")
-	r.Iteration(1, 5, 0, 0, 0)
+	r.Iteration(1, 5, 0, 0, 0, 0)
 	r.Thinking("hello")
 	r.ToolCall("shell", "{}")
 	r.ToolResult("output")
@@ -290,7 +290,7 @@ func TestRenderer_NilRenderer(t *testing.T) {
 
 	// None of these should panic on nil receiver
 	r.Start("task")
-	r.Iteration(1, 5, 0, 0, 0)
+	r.Iteration(1, 5, 0, 0, 0, 0)
 	r.Thinking("hello")
 	r.ToolCall("shell", "{}")
 	r.ToolResult("output")
@@ -304,11 +304,11 @@ func TestRenderer_FullCycle(t *testing.T) {
 
 	// Simulate one full session
 	r.Start("what files are here?")
-	r.Iteration(1, 90, 0, 0, 0)
+	r.Iteration(1, 90, 0, 0, 0, 0)
 	r.Thinking("I need to read the file to understand its contents.")
 	r.ToolCall("shell", `{"command": "cat main.go"}`)
 	r.ToolResult("package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hello\")\n}")
-	r.Iteration(2, 90, 0, 0, 0)
+	r.Iteration(2, 90, 0, 0, 0, 0)
 	r.FinalAnswer("The file contains a simple Go program that prints 'hello'.")
 
 	out := buf.String()
@@ -360,7 +360,7 @@ func TestRenderer_Iteration_WithStats(t *testing.T) {
 	var buf bytes.Buffer
 	r := New(&buf, true).WithModel("deepseek-v4-pro")
 
-	r.Iteration(3, 90, 5*time.Second, 1247, 342)
+	r.Iteration(3, 90, 5*time.Second, 1247, 342, 0)
 
 	out := buf.String()
 	if !strings.Contains(out, "Iter 3/90") {
@@ -384,7 +384,7 @@ func TestRenderer_Iteration_StatsSuppressedWhenZero(t *testing.T) {
 	var buf bytes.Buffer
 	r := New(&buf, true).WithModel("test")
 
-	r.Iteration(1, 10, 0, 0, 0)
+	r.Iteration(1, 10, 0, 0, 0, 0)
 
 	out := buf.String()
 	// Check that the stats pattern (with "in ·") doesn't appear.
@@ -398,7 +398,7 @@ func TestRenderer_Iteration_WithoutModel(t *testing.T) {
 	var buf bytes.Buffer
 	r := New(&buf, true)
 
-	r.Iteration(1, 10, time.Second, 100, 50)
+	r.Iteration(1, 10, time.Second, 100, 50, 0)
 
 	out := buf.String()
 	if !strings.Contains(out, "Iter 1/10") {
@@ -411,5 +411,5 @@ func TestRenderer_Iteration_WithoutModel(t *testing.T) {
 
 func TestRenderer_Iteration_NilSafe(t *testing.T) {
 	var r *Renderer
-	r.Iteration(1, 10, time.Second, 100, 50) // should not panic
+	r.Iteration(1, 10, time.Second, 100, 50, 0) // should not panic
 }
