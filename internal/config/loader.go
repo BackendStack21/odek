@@ -16,6 +16,8 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+
+	"github.com/BackendStack21/kode/internal/danger"
 )
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -67,19 +69,17 @@ type FileConfig struct {
 	System string `json:"system,omitempty"`
 
 	// Sandbox-specific fields.
-	// These follow the standard priority chain and support ${VAR} substitution
-	// in all string values. sandbox_env and sandbox_volumes are file-only
-	// (too complex for flat env vars or CLI flags; use project config files).
-	//
-	// For field-level docs, see SANDBOXING.md or the ResolvedConfig equivalents.
-	SandboxImage    string            `json:"sandbox_image,omitempty"`
-	SandboxNetwork  string            `json:"sandbox_network,omitempty"`
-	SandboxReadonly *bool             `json:"sandbox_readonly,omitempty"`
-	SandboxMemory   string            `json:"sandbox_memory,omitempty"`
-	SandboxCPUs     string            `json:"sandbox_cpus,omitempty"`
-	SandboxUser     string            `json:"sandbox_user,omitempty"`
+	SandboxImage    string `json:"sandbox_image,omitempty"`
+	SandboxNetwork  string `json:"sandbox_network,omitempty"`
+	SandboxReadonly *bool  `json:"sandbox_readonly,omitempty"`
+	SandboxMemory   string `json:"sandbox_memory,omitempty"`
+	SandboxCPUs     string `json:"sandbox_cpus,omitempty"`
+	SandboxUser     string `json:"sandbox_user,omitempty"`
 	SandboxEnv      map[string]string `json:"sandbox_env,omitempty"`
 	SandboxVolumes  []string          `json:"sandbox_volumes,omitempty"`
+
+	// Dangerous operation approval settings.
+	Dangerous *danger.DangerousConfig `json:"dangerous,omitempty"`
 }
 
 // ResolvedConfig is the fully merged result. Every field has a concrete
@@ -135,6 +135,10 @@ type ResolvedConfig struct {
 	// File-only — no env var or CLI mapping.
 	// Config: sandbox_volumes.
 	SandboxVolumes []string
+
+	// Dangerous is the resolved dangerous operations config.
+	// Uses danger.DangerousConfig defaults for any unset fields.
+	Dangerous danger.DangerousConfig
 }
 
 // ── Defaults ───────────────────────────────────────────────────────────
@@ -365,6 +369,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		SandboxUser:    cfg.SandboxUser,
 		SandboxEnv:     cfg.SandboxEnv,
 		SandboxVolumes: cfg.SandboxVolumes,
+		Dangerous:      resolveDangerous(cfg.Dangerous),
 	}
 
 	// Booleans: default to false if not set
@@ -393,13 +398,20 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 }
 
 // ifZero returns the default value if s is empty, otherwise returns s.
-// Used to apply a field-level default when the user hasn't provided any
-// value through any config layer.
 func ifZero(s, def string) string {
 	if s == "" {
 		return def
 	}
 	return s
+}
+
+// resolveDangerous merges file-level and potential env-level dangerous config.
+// If no config is provided, returns an empty DangerousConfig (safe defaults).
+func resolveDangerous(cfg *danger.DangerousConfig) danger.DangerousConfig {
+	if cfg != nil {
+		return *cfg
+	}
+	return danger.DangerousConfig{}
 }
 
 // overlayFile overlays a higher-priority FileConfig onto a lower-priority one.
@@ -461,6 +473,9 @@ func overlayFile(base, override FileConfig) FileConfig {
 	}
 	if override.SandboxVolumes != nil {
 		base.SandboxVolumes = append([]string{}, override.SandboxVolumes...)
+	}
+	if override.Dangerous != nil {
+		base.Dangerous = override.Dangerous
 	}
 	return base
 }

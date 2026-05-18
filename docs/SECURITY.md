@@ -64,6 +64,67 @@ See [Sandboxing](SANDBOXING.md) for the full reference.
 
 API keys are read from environment variables or explicit config. kode never logs, stores, or transmits your key beyond the HTTPS request to the LLM endpoint.
 
+---
+
+## Dangerous Operations Approval
+
+When running **without** `--sandbox`, kode's shell tool classifies every command by risk level and can prompt for user approval before executing high-risk operations.
+
+### How it works
+
+1. The shell tool receives a command from the agent (JSON with `command` and optional `description`)
+2. The command is tokenized and classified into one of 8 risk classes (see [CLI.md](CLI.md#dangerous-operations))
+3. If the class is configured to `prompt` (default for system_write, network_egress, code_execution, install), the tool opens `/dev/tty` and shows:
+
+```
+⚠️  Risk: system_write
+   Run:  sudo rm /var/log/nginx/access.log
+   Why:  Rotate nginx logs before restart
+
+   [A]pprove  [D]eny  [?] Context  [T]rust session:
+```
+
+4. The user responds with a single keypress (no Enter needed):
+   - `A` — Run this command once
+   - `D` — Deny (agent receives error "operation denied by user")
+   - `T` — Trust all commands of this risk class for this session
+   - `?` — Show full command context, then re-prompt
+
+### Configuration
+
+See `dangerous` section in [CLI.md](CLI.md#dangerous-operations) for the full config schema.
+
+```json
+{
+  "dangerous": {
+    "non_interactive": "allow",
+    "classes": {
+      "network_egress": "deny",
+      "code_execution": "prompt"
+    },
+    "allowlist": ["npm run deploy"],
+    "denylist": ["rm -rf /"]
+  }
+}
+```
+
+### Session trust
+
+When you press `T`, the risk class is cached in memory for the lifetime of the kode process. Subsequent commands of the same class skip approval. Trust is **not persisted to disk** — every new `kode run` or `kode continue` starts fresh.
+
+### Non-interactive mode
+
+When `/dev/tty` is not available (piped stdin, CI environments), the configured `non_interactive` action is used:
+- `"allow"` (default) — run all commands without prompting
+- `"deny"` — block all prompted operations
+
+### Allowlist vs Denylist
+
+- **Allowlist** entries (exact command match) bypass all checks — the command runs without prompt even if it would normally be denied
+- **Denylist** entries (exact command match) are always blocked, even if the class is set to `allow`
+
+Allowlist takes priority over denylist.
+
 ## AGENTS.md
 
 When a `AGENTS.md` file exists in the working directory, kode appends it to the system prompt. This is project-specific context, not a user instruction — identity anchoring and anti-injection rules still apply on top of it. Use `--no-agents` to skip loading.

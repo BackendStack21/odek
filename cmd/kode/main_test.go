@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/BackendStack21/kode/internal/config"
+	"github.com/BackendStack21/kode/internal/danger"
 )
 
 func TestGetVersion_LdFlagsOverride(t *testing.T) {
@@ -193,7 +194,7 @@ func TestRun_NoAPIKey(t *testing.T) {
 }
 
 func TestBuiltinTools(t *testing.T) {
-	tools := builtinTools()
+	tools := builtinTools(danger.DangerousConfig{})
 	if len(tools) == 0 {
 		t.Fatal("builtinTools() returned empty slice")
 	}

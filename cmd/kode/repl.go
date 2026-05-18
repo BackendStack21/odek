@@ -54,7 +54,7 @@ func replCmd(args []string) error {
 	}
 
 	// Build tools
-	tools := builtinTools()
+	tools := builtinTools(resolved.Dangerous)
 	var sandboxCleanup func() error
 
 	if resolved.Sandbox {

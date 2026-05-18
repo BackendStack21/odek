@@ -15,6 +15,7 @@ import (
 
 	"github.com/BackendStack21/kode"
 	"github.com/BackendStack21/kode/internal/config"
+	"github.com/BackendStack21/kode/internal/danger"
 	"github.com/BackendStack21/kode/internal/llm"
 	"github.com/BackendStack21/kode/internal/render"
 	"github.com/BackendStack21/kode/internal/session"
@@ -303,7 +304,20 @@ const defaultConfigTemplate = `{
   "sandbox_cpus": "",
   "sandbox_user": "",
   "sandbox_env": {},
-  "sandbox_volumes": []
+  "sandbox_volumes": [],
+  "dangerous": {
+    "action": "prompt",
+    "non_interactive": "allow",
+    "classes": {
+      "destructive": "deny",
+      "network_egress": "prompt",
+      "code_execution": "prompt",
+      "install": "prompt",
+      "system_write": "prompt"
+    },
+    "allowlist": [],
+    "denylist": []
+  }
 }`
 
 // initConfig creates a new config file (local ./kode.json or global ~/kode/config.json).
@@ -524,7 +538,7 @@ func run(args []string) error {
 
 	// Sandbox setup
 	var sandboxCleanup func() error
-	tools := builtinTools()
+	tools := builtinTools(resolved.Dangerous)
 
 	if resolved.Sandbox {
 		cleanup, err := setupSandbox(tools, sbCfg)
@@ -706,9 +720,11 @@ func setupSandbox(tools []kode.Tool, cfg sandboxConfig) (func() error, error) {
 	return cleanup, nil
 }
 
-func builtinTools() []kode.Tool {
+func builtinTools(dc danger.DangerousConfig) []kode.Tool {
 	return []kode.Tool{
-		&shellTool{},
+		&shellTool{
+			dangerousConfig: dc,
+		},
 	}
 }
 
@@ -780,10 +796,6 @@ func continueCmd(args []string) error {
 	fmt.Fprintf(os.Stderr, "kode: continuing session %s (turn %d → %d)\n",
 		sess.ID, sess.Turns, sess.Turns+1)
 
-	// Build tools
-	tools := builtinTools()
-	var sandboxCleanup func() error
-
 	// Resolve config (no CLI flags for continue — uses session's model)
 	resolved := config.LoadConfig(config.CLIFlags{Model: sess.Model})
 
@@ -792,6 +804,10 @@ func continueCmd(args []string) error {
 		resolved.Sandbox = true
 		fmt.Fprintf(os.Stderr, "kode: session was sandboxed — enabling sandbox for this continuation\n")
 	}
+
+	// Build tools
+	tools := builtinTools(resolved.Dangerous)
+	var sandboxCleanup func() error
 
 	systemMessage := resolved.System
 	if systemMessage == "" {

@@ -30,6 +30,58 @@
 | `--session` | bool | false | Save conversation as a multi-turn session |
 | `--system <prompt>` | string | built-in | Override system prompt |
 
+## Shell tool schema
+
+The shell tool accepts an optional `description` field in addition to `command`:
+
+```json
+{
+  "command": "rm -rf /var/log",
+  "description": "Clear stale nginx logs before restarting"
+}
+```
+
+## Dangerous operations
+
+When running without `--sandbox`, kode classifies every shell command by risk and prompts for high-risk operations:
+
+| Class | Default | Examples |
+|-------|---------|----------|
+| 🟢 safe | allow | `ls`, `cat`, `grep`, `go build` |
+| 🟡 local_write | allow | `rm file`, `mv`, `echo > file` |
+| 🟠 system_write | **prompt** | `sudo`, `apt install`, writes to `/etc/` |
+| 🔴 destructive | **deny** | `rm -rf /`, `dd if=/dev/zero`, `mkfs` |
+| 🔴 network_egress | **prompt** | `curl`, `git push`, `ssh`, `scp` |
+| 🔴 code_execution | **prompt** | `curl url \| bash`, `eval`, `node -e` |
+| 🟠 install | **prompt** | `npm install`, `pip install`, `go install <remote>` |
+| ⬛ blocked | **deny** | Fork bombs, `dd` to block devices |
+
+The approval prompt accepts:
+
+- `A` — Approve once
+- `D` — Deny (returns error to agent)
+- `T` — Trust all commands of this class for this session
+- `?` — Show full context
+
+Configurable via `dangerous` section in `~/kode/config.json` or `./kode.json`:
+
+```json
+{
+  "dangerous": {
+    "action": "prompt",
+    "non_interactive": "allow",
+    "classes": {
+      "destructive": "prompt",
+      "network_egress": "allow"
+    },
+    "allowlist": ["git push origin main"],
+    "denylist": ["rm -rf /"]
+  }
+}
+```
+
+See [docs/SECURITY.md](docs/SECURITY.md) for details.
+
 ## Sandbox flags
 
 | Flag | Default | Description |
