@@ -224,6 +224,7 @@ func TestPrintUsage(t *testing.T) {
 	required := []string{
 		"kode run",
 		"kode continue",
+		"kode repl",
 		"kode session",
 		"trim",
 		"cleanup",

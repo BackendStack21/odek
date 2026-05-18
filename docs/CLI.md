@@ -7,6 +7,7 @@
 | `kode run [flags] <task>` | Execute a task with the agent loop (single-shot by default) |
 | `kode run --session [flags] <task>` | Execute and save conversation as a multi-turn session |
 | `kode continue [--id <id>] <task>` | Continue the most recent session (or by `--id`) |
+| `kode repl [--id <id>]` | Interactive REPL mode (persistent multi-turn session) |
 | `kode session list` | List sessions |
 | `kode session show [id]` | Show session details (default: latest) |
 | `kode session delete <id>` | Delete a session |

@@ -100,6 +100,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "kode: %v\n", err)
 			os.Exit(1)
 		}
+	case "repl":
+		if err := replCmd(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "kode: %v\n", err)
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "kode: unknown command %q\n", os.Args[1])
 		printUsage()
@@ -215,6 +220,7 @@ func printUsage() {
   kode run --session [flags] <task>
   kode continue [--id <id>] <task>
   kode session <list|show [id]|trim <id> <n>|delete <id>|cleanup <days>>
+  kode repl [--id <id>]
   kode init [--global | -g] [--force | -f]
   kode version
 
@@ -222,6 +228,7 @@ Commands:
   run                 Execute a task with the agent loop
   run --session       Execute and save conversation as a session
   continue            Continue the most recent session (or by --id)
+  repl                Interactive REPL mode (multi-turn session)
   session             Manage sessions: list, show, delete, trim, cleanup
   init                Create a config file (default: ./kode.json)
   version             Print version and exit
