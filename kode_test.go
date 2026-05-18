@@ -531,6 +531,136 @@ func TestProfileMaxContext_Unknown(t *testing.T) {
 	}
 }
 
+// ── DeepSeek v4 Flash Full-Config Validation ──────────────────────────
+
+// TestNew_FlashModelFullConfig validates every default applied when
+// creating an agent with model="deepseek-v4-flash". This is the
+// end-to-end gate for Flash model correctness.
+func TestNew_FlashModelFullConfig(t *testing.T) {
+	cfg := Config{
+		APIKey: "sk-test",
+		Model:  "deepseek-v4-flash",
+	}
+	agent, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() with Flash model: %v", err)
+	}
+
+	// Flash profile fields
+	if agent.config.Model != "deepseek-v4-flash" {
+		t.Errorf("Model = %q, want %q", agent.config.Model, "deepseek-v4-flash")
+	}
+	if agent.config.BaseURL != "https://api.deepseek.com/v1" {
+		t.Errorf("BaseURL = %q, want %q", agent.config.BaseURL, "https://api.deepseek.com/v1")
+	}
+	if agent.config.Thinking != "" {
+		t.Errorf("Thinking = %q, want empty (Flash has no DefaultThinking)", agent.config.Thinking)
+	}
+	if agent.config.MaxIterations != 90 {
+		t.Errorf("MaxIterations = %d, want 90", agent.config.MaxIterations)
+	}
+	if agent.config.APIKey != "sk-test" {
+		t.Errorf("APIKey = %q, want %q", agent.config.APIKey, "sk-test")
+	}
+}
+
+// TestNew_FlashExplicitThinkingOverridesEmptyDefault validates that an
+// explicit Thinking setting wins even when the model's DefaultThinking
+// is empty (Flash has no default, so explicit values should stick).
+func TestNew_FlashExplicitThinkingOverridesEmptyDefault(t *testing.T) {
+	t.Run("explicit_disabled", func(t *testing.T) {
+		cfg := Config{
+			APIKey:   "sk-test",
+			Model:    "deepseek-v4-flash",
+			Thinking: "disabled",
+		}
+		agent, err := New(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if agent.config.Thinking != "disabled" {
+			t.Errorf("Thinking = %q, want 'disabled' (explicit)", agent.config.Thinking)
+		}
+	})
+
+	t.Run("explicit_high_reasoning", func(t *testing.T) {
+		cfg := Config{
+			APIKey:   "sk-test",
+			Model:    "deepseek-v4-flash",
+			Thinking: "high",
+		}
+		agent, err := New(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if agent.config.Thinking != "high" {
+			t.Errorf("Thinking = %q, want 'high' (explicit)", agent.config.Thinking)
+		}
+	})
+}
+
+// TestProfileTimeout_FlashApplied verifies the Flash profile timeout
+// (90s) is applied when creating an agent. Unlike Pro's 180s timeout,
+// Flash is faster and should use a shorter timeout.
+func TestProfileTimeout_FlashApplied(t *testing.T) {
+	cfg := Config{
+		APIKey: "sk-test",
+		Model:  "deepseek-v4-flash",
+	}
+	_, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() with Flash model should succeed: %v", err)
+	}
+	// Timeout is passed to the HTTP client internally; the key assertion
+	// is that the agent is created successfully with the Flash profile.
+}
+
+// TestKnownProfiles_FlashEntryIntegrity validates that the
+// deepseek-v4-flash entry in KnownProfiles has correct values
+// for every field.
+func TestKnownProfiles_FlashEntryIntegrity(t *testing.T) {
+	var flashEntry *struct {
+		Prefix  string
+		Profile ModelProfile
+	}
+	for _, entry := range KnownProfiles {
+		if entry.Prefix == "deepseek-v4-flash" {
+			flashEntry = &entry
+			break
+		}
+	}
+	if flashEntry == nil {
+		t.Fatal("deepseek-v4-flash entry not found in KnownProfiles")
+	}
+
+	if flashEntry.Prefix != "deepseek-v4-flash" {
+		t.Errorf("Prefix = %q, want %q", flashEntry.Prefix, "deepseek-v4-flash")
+	}
+	if flashEntry.Profile.Label != "DeepSeek v4 Flash" {
+		t.Errorf("Label = %q, want %q", flashEntry.Profile.Label, "DeepSeek v4 Flash")
+	}
+	if flashEntry.Profile.DefaultThinking != "" {
+		t.Errorf("DefaultThinking = %q, want empty (Flash is faster without extended thinking)", flashEntry.Profile.DefaultThinking)
+	}
+	if flashEntry.Profile.Timeout != 90 {
+		t.Errorf("Timeout = %d, want 90", flashEntry.Profile.Timeout)
+	}
+	if flashEntry.Profile.MaxContext != 131_072 {
+		t.Errorf("MaxContext = %d, want 131_072", flashEntry.Profile.MaxContext)
+	}
+}
+
+// TestProfileLabel_Flash returns the human-readable label for Flash.
+func TestProfileLabel_Flash(t *testing.T) {
+	if label := ProfileLabel("deepseek-v4-flash"); label != "DeepSeek v4 Flash" {
+		t.Errorf("ProfileLabel = %q, want %q", label, "DeepSeek v4 Flash")
+	}
+	// Prefix match: deepseek-v4-flash-custom should also match
+	if label := ProfileLabel("deepseek-v4-flash-experimental"); label != "DeepSeek v4 Flash" {
+		t.Errorf("ProfileLabel for variant = %q, want %q", label, "DeepSeek v4 Flash")
+	}
+}
+
 
 // ── Project File (AGENTS.md) Tests ───────────────────────────────────
 

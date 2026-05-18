@@ -653,3 +653,96 @@ func TestClient_SimpleCall_EmptyResponse(t *testing.T) {
 		t.Fatal("expected error for empty choices")
 	}
 }
+
+// ── DeepSeek v4 Flash Model Validation ────────────────────────────────
+
+// TestClient_Call_FlashModelNoThinkingField validates that when using
+// deepseek-v4-flash (which has no DefaultThinking), the request body
+// does NOT include a "thinking" field. Flash is faster/cheaper by
+// skipping extended reasoning — this test guards against accidentally
+// sending thinking config to Flash.
+func TestClient_Call_FlashModelNoThinkingField(t *testing.T) {
+	var receivedBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&receivedBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"flash response"}}]}`))
+	}))
+	defer server.Close()
+
+	// Flash: model=deepseek-v4-flash, thinking="" (the default)
+	c := New(server.URL, "sk-test", "deepseek-v4-flash", "", 0)
+	result, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
+	if err != nil {
+		t.Fatalf("Flash Call() error: %v", err)
+	}
+	if result.Content != "flash response" {
+		t.Errorf("Content = %q, want %q", result.Content, "flash response")
+	}
+
+	// Verify model name is correct in the request
+	model, ok := receivedBody["model"]
+	if !ok || model != "deepseek-v4-flash" {
+		t.Errorf("model = %v, want %q", model, "deepseek-v4-flash")
+	}
+
+	// Verify NO thinking field (Flash doesn't use extended thinking)
+	if _, ok := receivedBody["thinking"]; ok {
+		t.Error("Flash request should NOT contain 'thinking' field")
+	}
+	if _, ok := receivedBody["reasoning_effort"]; ok {
+		t.Error("Flash request should NOT contain 'reasoning_effort' field")
+	}
+}
+
+// TestClient_Call_FlashVsProThinkingContrast validates that Flash and Pro
+// models are handled differently at the HTTP level:
+//   - Flash: no thinking field (faster, cheaper)
+//   - Pro:   thinking{type:"enabled"} by default (full reasoning)
+func TestClient_Call_FlashVsProThinkingContrast(t *testing.T) {
+	t.Run("flash_no_thinking", func(t *testing.T) {
+		var body map[string]any
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			json.NewDecoder(r.Body).Decode(&body)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+		}))
+		defer server.Close()
+
+		c := New(server.URL, "sk-test", "deepseek-v4-flash", "", 0)
+		_, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := body["thinking"]; ok {
+			t.Error("Flash: thinking field should be absent")
+		}
+	})
+
+	t.Run("pro_thinking_enabled", func(t *testing.T) {
+		var body map[string]any
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			json.NewDecoder(r.Body).Decode(&body)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+		}))
+		defer server.Close()
+
+		c := New(server.URL, "sk-test", "deepseek-v4-pro", "enabled", 0)
+		_, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		thinking, ok := body["thinking"]
+		if !ok {
+			t.Fatal("Pro: thinking field should be present")
+		}
+		thinkingMap, ok := thinking.(map[string]any)
+		if !ok {
+			t.Fatal("Pro: thinking should be an object")
+		}
+		if thinkingMap["type"] != "enabled" {
+			t.Errorf("Pro: thinking.type = %v, want 'enabled'", thinkingMap["type"])
+		}
+	})
+}
