@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -827,6 +829,62 @@ func TestInitConfig_ShortFlags(t *testing.T) {
 	}
 }
 
+// TestInitConfig_RestrictivePermissions verifies that config files
+// containing API keys are created with 0600 (owner read/write only),
+// not 0644 (world-readable).
+func TestInitConfig_RestrictivePermissions(t *testing.T) {
+	dir := t.TempDir()
+	cwd, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(cwd)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", t.TempDir())
+	defer os.Setenv("HOME", origHome)
+
+	if err := initConfig([]string{}); err != nil {
+		t.Fatalf("initConfig() error: %v", err)
+	}
+
+	// Check file permissions
+	info, err := os.Stat("kode.json")
+	if err != nil {
+		t.Fatalf("kode.json not found: %v", err)
+	}
+	perm := info.Mode().Perm()
+	if perm != 0600 {
+		t.Errorf("config file permissions = %04o, want 0600 (owner read/write only, no world/group read)", perm)
+	}
+}
+
+// TestJsonMarshalName verifies that skill names with special characters
+// (quotes, backslashes) are properly escaped in JSON output, preventing
+// JSON injection in kode skill view/delete commands.
+func TestJsonMarshalName(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		contains string
+	}{
+		{"plain", "my-skill", `"name":"my-skill"`},
+		{"with_quote", `skill"with"quotes`, `"name":"skill\"with\"quotes"`},
+		{"with_backslash", `path\to\skill`, `"name":"path\\to\\skill"`},
+		{"injection_attempt", `","evil":"true","x":"`, `"name":"\",\"evil\":\"true\",\"x\":\""`},
+	}
+	for _, tt := range tests {
+		result := jsonMarshalName(tt.input)
+		// Must be valid JSON (json.Unmarshal succeeds)
+		var m map[string]string
+		if err := json.Unmarshal([]byte(result), &m); err != nil {
+			t.Errorf("jsonMarshalName(%q) produced invalid JSON: %v\nOutput: %s", tt.input, err, result)
+			continue
+		}
+		if m["name"] != tt.input {
+			t.Errorf("jsonMarshalName(%q): name = %q, want original input", tt.input, m["name"])
+		}
+	}
+}
+
 // ── Sandbox Tests ────────────────────────────────────────────────────
 
 func TestResolveSandboxImage_Default(t *testing.T) {
@@ -1080,4 +1138,329 @@ func hasArgPair(args []string, flag, value string) bool {
 		}
 	}
 	return false
+}
+
+// ── REPL Flag Parsing Tests ───────────────────────────────────────────
+
+func TestParseReplFlags_Defaults(t *testing.T) {
+	f, err := parseReplFlags([]string{})
+	if err != nil {
+		t.Fatalf("parseReplFlags error: %v", err)
+	}
+	if f.ID != "" {
+		t.Errorf("ID = %q, want empty", f.ID)
+	}
+	if f.Model != "" {
+		t.Errorf("Model = %q, want empty (no CLI default)", f.Model)
+	}
+	if f.Thinking != "" {
+		t.Errorf("Thinking = %q, want empty", f.Thinking)
+	}
+	if f.Sandbox != nil {
+		t.Errorf("Sandbox = %v, want nil (not set via CLI)", *f.Sandbox)
+	}
+}
+
+func TestParseReplFlags_SessionID(t *testing.T) {
+	f, err := parseReplFlags([]string{"--id", "abc123"})
+	if err != nil {
+		t.Fatalf("parseReplFlags error: %v", err)
+	}
+	if f.ID != "abc123" {
+		t.Errorf("ID = %q, want %q", f.ID, "abc123")
+	}
+}
+
+func TestParseReplFlags_SandboxOnly(t *testing.T) {
+	f, err := parseReplFlags([]string{"--sandbox"})
+	if err != nil {
+		t.Fatalf("parseReplFlags error: %v", err)
+	}
+	if f.Sandbox == nil || !*f.Sandbox {
+		t.Error("Sandbox should be true when --sandbox flag present")
+	}
+}
+
+func TestParseReplFlags_AllSandboxFlags(t *testing.T) {
+	f, err := parseReplFlags([]string{
+		"--sandbox",
+		"--sandbox-image", "node:20-alpine",
+		"--sandbox-network", "bridge",
+		"--sandbox-readonly",
+		"--sandbox-memory", "512m",
+		"--sandbox-cpus", "2",
+		"--sandbox-user", "1000:1000",
+	})
+	if err != nil {
+		t.Fatalf("parseReplFlags error: %v", err)
+	}
+	if f.Sandbox == nil || !*f.Sandbox {
+		t.Error("Sandbox should be true")
+	}
+	if f.SandboxImage != "node:20-alpine" {
+		t.Errorf("SandboxImage = %q", f.SandboxImage)
+	}
+	if f.SandboxNetwork != "bridge" {
+		t.Errorf("SandboxNetwork = %q", f.SandboxNetwork)
+	}
+	if f.SandboxReadonly == nil || !*f.SandboxReadonly {
+		t.Error("SandboxReadonly should be true")
+	}
+	if f.SandboxMemory != "512m" {
+		t.Errorf("SandboxMemory = %q", f.SandboxMemory)
+	}
+	if f.SandboxCPUs != "2" {
+		t.Errorf("SandboxCPUs = %q", f.SandboxCPUs)
+	}
+	if f.SandboxUser != "1000:1000" {
+		t.Errorf("SandboxUser = %q", f.SandboxUser)
+	}
+}
+
+func TestParseReplFlags_ModelAndThinking(t *testing.T) {
+	f, err := parseReplFlags([]string{
+		"--model", "deepseek-v4-pro",
+		"--thinking", "enabled",
+	})
+	if err != nil {
+		t.Fatalf("parseReplFlags error: %v", err)
+	}
+	if f.Model != "deepseek-v4-pro" {
+		t.Errorf("Model = %q, want %q", f.Model, "deepseek-v4-pro")
+	}
+	if f.Thinking != "enabled" {
+		t.Errorf("Thinking = %q, want %q", f.Thinking, "enabled")
+	}
+}
+
+func TestParseReplFlags_Combined(t *testing.T) {
+	f, err := parseReplFlags([]string{
+		"--id", "sess-001",
+		"--sandbox",
+		"--sandbox-image", "alpine:3.19",
+		"--model", "deepseek-v4-flash",
+		"--thinking", "disabled",
+	})
+	if err != nil {
+		t.Fatalf("parseReplFlags error: %v", err)
+	}
+	if f.ID != "sess-001" {
+		t.Errorf("ID = %q", f.ID)
+	}
+	if f.Sandbox == nil || !*f.Sandbox {
+		t.Error("Sandbox should be true")
+	}
+	if f.SandboxImage != "alpine:3.19" {
+		t.Errorf("SandboxImage = %q", f.SandboxImage)
+	}
+	if f.Model != "deepseek-v4-flash" {
+		t.Errorf("Model = %q", f.Model)
+	}
+	if f.Thinking != "disabled" {
+		t.Errorf("Thinking = %q", f.Thinking)
+	}
+}
+
+func TestParseReplFlags_ExtraArgsIgnored(t *testing.T) {
+	// Extra unrecognized arguments should not cause errors
+	f, err := parseReplFlags([]string{"--sandbox", "extra", "positional", "args"})
+	if err != nil {
+		t.Fatalf("parseReplFlags should not error on extra args: %v", err)
+	}
+	if f.Sandbox == nil || !*f.Sandbox {
+		t.Error("Sandbox should be true even with extra args")
+	}
+}
+
+// ── Self-Learning E2E Tests ───────────────────────────────────────────
+
+// multiTurnServer returns an httptest server that simulates a multi-turn
+// conversation: n terminal tool calls followed by a final text response.
+// Each tool call executes echo step N (safe, no side effects).
+func multiTurnServer(t *testing.T, terminalCalls int) *httptest.Server {
+	t.Helper()
+	callCount := 0
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		if callCount <= terminalCalls {
+			fmt.Fprintf(w, `{"choices":[{"message":{"content":"Running step %d.","tool_calls":[{"id":"call_%d","function":{"name":"shell","arguments":"{\"command\":\"echo step %d\"}"}}]}}]}`,
+				callCount, callCount, callCount)
+		} else {
+			w.Write([]byte(`{"choices":[{"message":{"content":"All steps completed successfully."}}]}`))
+		}
+	}))
+}
+
+// TestRunLearn_MultiStepProcedure is an end-to-end test of the
+// --learn pipeline: mock LLM simulates 4 terminal calls → multi-step
+// heuristic fires → user accepts → skill file saved on disk.
+func TestRunLearn_MultiStepProcedure(t *testing.T) {
+	server := multiTurnServer(t, 4)
+	defer server.Close()
+
+	homeDir := t.TempDir()
+	origDS := os.Getenv("DEEPSEEK_API_KEY")
+	origOAI := os.Getenv("OPENAI_API_KEY")
+	origHome := os.Getenv("HOME")
+	os.Setenv("DEEPSEEK_API_KEY", "sk-mock")
+	os.Unsetenv("OPENAI_API_KEY")
+	os.Setenv("HOME", homeDir)
+	defer func() {
+		os.Setenv("DEEPSEEK_API_KEY", origDS)
+		os.Setenv("OPENAI_API_KEY", origOAI)
+		os.Setenv("HOME", origHome)
+	}()
+
+	// Simulate stdin: "y" to accept the suggestion
+	oldStdin := os.Stdin
+	inR, inW, _ := os.Pipe()
+	os.Stdin = inR
+	defer func() { os.Stdin = oldStdin }()
+	go func() {
+		inW.Write([]byte("y\n"))
+	}()
+
+	// Capture stderr
+	oldStderr := os.Stderr
+	errR, errW, _ := os.Pipe()
+	os.Stderr = errW
+	defer func() { os.Stderr = oldStderr }()
+
+	err := run([]string{"--learn", "--base-url", server.URL, "multi step task"})
+	errW.Close()
+	errOutput, _ := io.ReadAll(errR)
+
+	if err != nil {
+		t.Fatalf("run() error: %v", err)
+	}
+
+	stderrStr := string(errOutput)
+
+	// Heuristic fired
+	if !strings.Contains(stderrStr, "Learning: detected") {
+		t.Error("expected 'Learning: detected' in stderr")
+	}
+	if !strings.Contains(stderrStr, "Save as skill?") {
+		t.Error("expected 'Save as skill?' prompt")
+	}
+	if !strings.Contains(stderrStr, "Saved skill") {
+		t.Error("expected 'Saved skill' confirmation")
+	}
+	if !strings.Contains(stderrStr, "multi-step") {
+		t.Error("expected 'multi-step' heuristic in output")
+	}
+
+	// Skill file written to disk
+	skillDir := filepath.Join(homeDir, ".kode", "skills", "procedure-echo")
+	skillFile := filepath.Join(skillDir, "SKILL.md")
+	if _, err := os.Stat(skillFile); os.IsNotExist(err) {
+		t.Errorf("expected skill file at %s", skillFile)
+	}
+}
+
+// TestRunLearn_RejectSuggestion verifies that when the user declines
+// a skill suggestion, no file is written.
+func TestRunLearn_RejectSuggestion(t *testing.T) {
+	server := multiTurnServer(t, 4)
+	defer server.Close()
+
+	homeDir := t.TempDir()
+	origDS := os.Getenv("DEEPSEEK_API_KEY")
+	origOAI := os.Getenv("OPENAI_API_KEY")
+	origHome := os.Getenv("HOME")
+	os.Setenv("DEEPSEEK_API_KEY", "sk-mock")
+	os.Unsetenv("OPENAI_API_KEY")
+	os.Setenv("HOME", homeDir)
+	defer func() {
+		os.Setenv("DEEPSEEK_API_KEY", origDS)
+		os.Setenv("OPENAI_API_KEY", origOAI)
+		os.Setenv("HOME", origHome)
+	}()
+
+	// Simulate stdin: "n" to reject
+	oldStdin := os.Stdin
+	inR, inW, _ := os.Pipe()
+	os.Stdin = inR
+	defer func() { os.Stdin = oldStdin }()
+	go func() {
+		inW.Write([]byte("n\n"))
+	}()
+
+	oldStderr := os.Stderr
+	errR, errW, _ := os.Pipe()
+	os.Stderr = errW
+	defer func() { os.Stderr = oldStderr }()
+
+	err := run([]string{"--learn", "--base-url", server.URL, "multi step task"})
+	errW.Close()
+	errOutput, _ := io.ReadAll(errR)
+
+	if err != nil {
+		t.Fatalf("run() error: %v", err)
+	}
+
+	stderrStr := string(errOutput)
+
+	if !strings.Contains(stderrStr, "Learning: detected") {
+		t.Error("expected detection to fire")
+	}
+	if !strings.Contains(stderrStr, "Skipped") {
+		t.Error("expected 'Skipped' when user rejects")
+	}
+	if strings.Contains(stderrStr, "Saved skill") {
+		t.Error("should NOT contain 'Saved skill' when rejected")
+	}
+
+	// Verify no skill file written
+	skillDir := filepath.Join(homeDir, ".kode", "skills", "procedure-echo")
+	skillFile := filepath.Join(skillDir, "SKILL.md")
+	if _, err := os.Stat(skillFile); !os.IsNotExist(err) {
+		t.Errorf("skill file should NOT exist after rejection: %s", skillFile)
+	}
+}
+
+// TestRunLearn_NoSuggestions verifies that when the agent produces
+// only text (no tool calls), no learning suggestions are generated.
+func TestRunLearn_NoSuggestions(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"Here is a text-only response with no commands."}}]}`))
+	}))
+	defer server.Close()
+
+	homeDir := t.TempDir()
+	origDS := os.Getenv("DEEPSEEK_API_KEY")
+	origOAI := os.Getenv("OPENAI_API_KEY")
+	origHome := os.Getenv("HOME")
+	os.Setenv("DEEPSEEK_API_KEY", "sk-mock")
+	os.Unsetenv("OPENAI_API_KEY")
+	os.Setenv("HOME", homeDir)
+	defer func() {
+		os.Setenv("DEEPSEEK_API_KEY", origDS)
+		os.Setenv("OPENAI_API_KEY", origOAI)
+		os.Setenv("HOME", origHome)
+	}()
+
+	oldStderr := os.Stderr
+	errR, errW, _ := os.Pipe()
+	os.Stderr = errW
+	defer func() { os.Stderr = oldStderr }()
+
+	err := run([]string{"--learn", "--base-url", server.URL, "text only task"})
+	errW.Close()
+	errOutput, _ := io.ReadAll(errR)
+
+	if err != nil {
+		t.Fatalf("run() error: %v", err)
+	}
+
+	stderrStr := string(errOutput)
+
+	if strings.Contains(stderrStr, "Learning: detected") {
+		t.Error("should NOT detect learning patterns for text-only response")
+	}
+	if strings.Contains(stderrStr, "Save as skill?") {
+		t.Error("should NOT show save prompt when no patterns detected")
+	}
 }

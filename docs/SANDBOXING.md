@@ -75,6 +75,7 @@ KODE_SANDBOX_USER=1000:1000 \
 ### CLI flag examples
 
 ```bash
+# Run (single-shot)
 kode run \
   --sandbox \
   --sandbox-image node:20-alpine \
@@ -84,6 +85,13 @@ kode run \
   --sandbox-cpus 2 \
   --sandbox-user 1000:1000 \
   "run build"
+
+# REPL (interactive multi-turn)
+kode repl \
+  --sandbox \
+  --sandbox-image golang:1.24-alpine \
+  --sandbox-memory 2g \
+  --model deepseek-v4-pro
 ```
 
 ## Docker image control

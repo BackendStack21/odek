@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -28,6 +29,12 @@ type SkillSuggestion struct {
 	CommandLog  []string // commands that were executed (for context)
 }
 
+// isTerminalTool returns true if the tool name represents a shell/terminal tool.
+// The agent's shell tool is named "shell"; tests and older call patterns use "terminal".
+func isTerminalTool(name string) bool {
+	return name == "shell" || name == "terminal"
+}
+
 // DetectMultiStepProcedure detects 4+ sequential terminal calls on related topics.
 func DetectMultiStepProcedure(calls []ToolCall) []SkillSuggestion {
 	if len(calls) < 4 {
@@ -38,9 +45,9 @@ func DetectMultiStepProcedure(calls []ToolCall) []SkillSuggestion {
 	var sequences [][]ToolCall
 	var current []ToolCall
 	for _, c := range calls {
-		if c.Tool == "terminal" && c.ExitCode == 0 {
+		if isTerminalTool(c.Tool) && c.ExitCode == 0 {
 			current = append(current, c)
-		} else if c.Tool == "terminal" && c.ExitCode != 0 {
+		} else if isTerminalTool(c.Tool) && c.ExitCode != 0 {
 			// failed call breaks the sequence
 			if len(current) >= 4 {
 				sequences = append(sequences, current)
@@ -68,9 +75,9 @@ func DetectMultiStepProcedure(calls []ToolCall) []SkillSuggestion {
 // DetectErrorRecovery detects a terminal failure → retry → success pattern.
 func DetectErrorRecovery(calls []ToolCall) []SkillSuggestion {
 	for i := 0; i < len(calls)-2; i++ {
-		if calls[i].Tool == "terminal" && calls[i].ExitCode != 0 &&
-			calls[i+1].Tool == "terminal" && calls[i+1].ExitCode == 0 &&
-			calls[i+2].Tool == "terminal" && calls[i+2].ExitCode == 0 {
+		if isTerminalTool(calls[i].Tool) && calls[i].ExitCode != 0 &&
+			isTerminalTool(calls[i+1].Tool) && calls[i+1].ExitCode == 0 &&
+			isTerminalTool(calls[i+2].Tool) && calls[i+2].ExitCode == 0 {
 
 			// Extract the fix from the retry command
 			oldCmd := calls[i].Input
@@ -106,8 +113,8 @@ func DetectCorrection(calls []ToolCall, userMessages []string) []SkillSuggestion
 			if strings.Contains(lower, word) {
 				// Found a correction — check if the next terminal sequence succeeded
 				for i := len(calls) - 1; i >= 2; i-- {
-					if calls[i].Tool == "terminal" && calls[i].ExitCode == 0 &&
-						calls[i-1].Tool == "terminal" && calls[i-1].ExitCode == 0 {
+				if isTerminalTool(calls[i].Tool) && calls[i].ExitCode == 0 &&
+					isTerminalTool(calls[i-1].Tool) && calls[i-1].ExitCode == 0 {
 						return []SkillSuggestion{
 							{
 								Name:        "corrected-" + extractTopic(calls[i].Input),
@@ -134,7 +141,7 @@ func DetectRepeatedAction(calls []ToolCall) []SkillSuggestion {
 	// Simple: check if the same command pattern appears more than once
 	seen := make(map[string]int)
 	for _, c := range calls {
-		if c.Tool == "terminal" && c.ExitCode == 0 {
+		if isTerminalTool(c.Tool) && c.ExitCode == 0 {
 			// Normalize: remove args that change (file paths, versions)
 			normalized := normalizeCommand(c.Input)
 			seen[normalized]++
@@ -194,9 +201,21 @@ func ExtractToolCalls(messages []LlmMessage) []ToolCall {
 		// Look for assistant messages with tool calls
 		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
 			for _, tc := range msg.ToolCalls {
+				input := tc.Function.Arguments
+				// For shell/terminal tools, extract the command from JSON args
+				// e.g., {"command":"echo hello"} → "echo hello"
+				if tc.Function.Name == "shell" || tc.Function.Name == "terminal" {
+					var shellArgs struct {
+						Command string `json:"command"`
+					}
+					if err := json.Unmarshal([]byte(input), &shellArgs); err == nil && shellArgs.Command != "" {
+						input = shellArgs.Command
+					}
+				}
+
 				call := ToolCall{
 					Tool:     tc.Function.Name,
-					Input:    tc.Function.Arguments,
+					Input:    input,
 					ExitCode: 0, // assume success by default
 					Turn:     i,
 				}
@@ -372,7 +391,7 @@ func extractNameFromMessage(msg string) string {
 func extractCommands(calls []ToolCall) string {
 	var cmds []string
 	for _, c := range calls {
-		if c.Tool == "terminal" {
+		if isTerminalTool(c.Tool) {
 			cmds = append(cmds, c.Input)
 		}
 	}
@@ -385,7 +404,7 @@ func extractCommands(calls []ToolCall) string {
 func extractCommandLog(calls []ToolCall) []string {
 	var cmds []string
 	for _, c := range calls {
-		if c.Tool == "terminal" {
+		if isTerminalTool(c.Tool) {
 			cmds = append(cmds, c.Input)
 		}
 	}

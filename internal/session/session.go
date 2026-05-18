@@ -89,6 +89,24 @@ func hexEncode(b []byte) string {
 
 // ── Path helpers ───────────────────────────────────────────────────────
 
+// ValidateSessionID validates that a session ID is safe for filesystem use.
+// Rejects empty strings, path separators, traversal patterns, and dot names.
+func ValidateSessionID(id string) error {
+	if id == "" {
+		return fmt.Errorf("session: invalid ID %q: empty", id)
+	}
+	if id == "." || id == ".." {
+		return fmt.Errorf("session: invalid ID %q: reserved name", id)
+	}
+	if strings.Contains(id, "/") || strings.Contains(id, "\\") {
+		return fmt.Errorf("session: invalid ID %q: path separators not allowed", id)
+	}
+	if strings.Contains(id, "..") {
+		return fmt.Errorf("session: invalid ID %q: traversal not allowed", id)
+	}
+	return nil
+}
+
 func (s *Store) path(id string) string {
 	return filepath.Join(s.dir, id+".json")
 }
@@ -148,6 +166,9 @@ func (s *Store) Save(sess *Session) error {
 // Load reads a session from disk by ID. Returns an error if the file
 // doesn't exist or can't be parsed.
 func (s *Store) Load(id string) (*Session, error) {
+	if err := ValidateSessionID(id); err != nil {
+		return nil, err
+	}
 	data, err := os.ReadFile(s.path(id))
 	if err != nil {
 		return nil, fmt.Errorf("session: load %q: %w", id, err)
@@ -222,6 +243,9 @@ func (s *Store) List(limit int) ([]Session, error) {
 // Delete removes a session file from disk. Returns nil if the file
 // doesn't exist (idempotent delete).
 func (s *Store) Delete(id string) error {
+	if err := ValidateSessionID(id); err != nil {
+		return err
+	}
 	err := os.Remove(s.path(id))
 	if os.IsNotExist(err) {
 		return nil

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -70,6 +71,11 @@ Tool output handling:
 // sandbox_image is configured, kode builds a content-hash-cached
 // Docker image from it. See buildFromDockerfile() and SANDBOXING.md.
 const dockerfileName = "Dockerfile.kode"
+
+// forbiddenMountPrefixes lists host paths that sandbox volume mounts
+// may not target. Mounting /, /etc, /proc, /sys would give the sandbox
+// container access to the host filesystem, defeating isolation.
+var forbiddenMountPrefixes = []string{"/", "/etc", "/proc", "/sys", "/boot", "/dev"}
 
 func boolPtr(b bool) *bool { return &b }
 
@@ -225,13 +231,93 @@ done:
 	return f, nil
 }
 
+// ── REPL Flag Parsing ──────────────────────────────────────────────────
+
+// replFlags holds the parsed CLI flags for `kode repl`.
+// Same resolution model as runFlags: zero/nil = not set,
+// config loader merges file → env → CLI.
+type replFlags struct {
+	ID       string // session ID to resume
+	Model    string
+	Thinking string
+	Sandbox  *bool // nil = not set
+
+	// Sandbox-specific CLI flags
+	SandboxImage    string
+	SandboxNetwork  string
+	SandboxReadonly *bool
+	SandboxMemory   string
+	SandboxCPUs     string
+	SandboxUser     string
+}
+
+// parseReplFlags parses `kode repl` arguments and returns the parsed flags.
+// Exported for testing. Unlike parseRunFlags, there is no required task argument;
+// unrecognized flags or trailing args are silently ignored.
+func parseReplFlags(args []string) (replFlags, error) {
+	var f replFlags
+	if len(args) == 0 {
+		return f, nil
+	}
+
+	i := 0
+	for i < len(args) {
+		if i == len(args)-1 {
+			// Last arg — can only be a boolean flag (no value pair needed)
+			switch args[i] {
+			case "--sandbox":
+				f.Sandbox = boolPtr(true)
+			case "--sandbox-readonly":
+				f.SandboxReadonly = boolPtr(true)
+			}
+			break
+		}
+		switch args[i] {
+		case "--id":
+			f.ID = args[i+1]
+			i += 2
+		case "--model":
+			f.Model = args[i+1]
+			i += 2
+		case "--thinking":
+			f.Thinking = args[i+1]
+			i += 2
+		case "--sandbox":
+			f.Sandbox = boolPtr(true)
+			i++
+		case "--sandbox-image":
+			f.SandboxImage = args[i+1]
+			i += 2
+		case "--sandbox-network":
+			f.SandboxNetwork = args[i+1]
+			i += 2
+		case "--sandbox-readonly":
+			f.SandboxReadonly = boolPtr(true)
+			i++
+		case "--sandbox-memory":
+			f.SandboxMemory = args[i+1]
+			i += 2
+		case "--sandbox-cpus":
+			f.SandboxCPUs = args[i+1]
+			i += 2
+		case "--sandbox-user":
+			f.SandboxUser = args[i+1]
+			i += 2
+		default:
+			// Unrecognized flag or positional — skip it
+			i++
+		}
+	}
+	return f, nil
+}
+
 func printUsage() {
 	fmt.Println(`Usage:
   kode run [flags] <task>
   kode run --session [flags] <task>
   kode continue [--id <id>] <task>
   kode session <list|show [id]|trim <id> <n>|delete <id>|cleanup <days>>
-  kode repl [--id <id>]
+  kode repl [flags]
   kode init [--global | -g] [--force | -f]
   kode version
 
@@ -241,6 +327,8 @@ Commands:
   run --session       Execute and save conversation as a session
   continue            Continue the most recent session (or by --id)
   repl                Interactive REPL mode (multi-turn session)
+                       Accepts --model, --thinking, --sandbox, and
+                       --sandbox-* flags just like kode run.
   session             Manage sessions: list, show, delete, trim, cleanup
   skill               Manage skills: list, view, save, delete, import, curate
   init                Create a config file (default: ./kode.json)
@@ -406,7 +494,7 @@ func initConfig(args []string) error {
 		return fmt.Errorf("create directory %s: %w", dir, err)
 	}
 
-	if err := os.WriteFile(configPath, []byte(defaultConfigTemplate+"\n"), 0644); err != nil {
+	if err := os.WriteFile(configPath, []byte(defaultConfigTemplate+"\n"), 0600); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 
@@ -789,7 +877,22 @@ func buildSandboxArgs(cfg sandboxConfig, containerName, workdir, image string) [
 
 	// Extra volume mounts
 	for _, vol := range cfg.Volumes {
-		args = append(args, "-v", vol)
+		// Validate: reject mounts to sensitive host paths
+		reject := false
+		parts := strings.SplitN(vol, ":", 2)
+		if len(parts) > 0 {
+			hostPath := filepath.Clean(parts[0])
+			for _, forbidden := range forbiddenMountPrefixes {
+				if hostPath == forbidden || strings.HasPrefix(hostPath, forbidden+"/") {
+					fmt.Fprintf(os.Stderr, "kode: WARNING: rejecting forbidden volume mount %q (host path %s)\n", vol, hostPath)
+					reject = true
+					break
+				}
+			}
+		}
+		if !reject {
+			args = append(args, "-v", vol)
+		}
 	}
 
 	// Image and command
@@ -951,7 +1054,7 @@ func skillCmd(args []string) error {
 		sm := skills.NewSkillManager(userDir, "./.kode/skills")
 		tool := &skills.SkillLoadTool{}
 		tool.Manager = sm
-		result, err := tool.Call(`{"name": "` + subArgs[0] + `"}`)
+		result, err := tool.Call(jsonMarshalName(subArgs[0]))
 		if err != nil {
 			return err
 		}
@@ -965,7 +1068,7 @@ func skillCmd(args []string) error {
 		sm := skills.NewSkillManager(userDir, "./.kode/skills")
 		tool := &skills.SkillDeleteTool{}
 		tool.Manager = sm
-		result, err := tool.Call(`{"name": "` + subArgs[0] + `"}`)
+		result, err := tool.Call(jsonMarshalName(subArgs[0]))
 		if err != nil {
 			return err
 		}
@@ -988,12 +1091,13 @@ func skillCmd(args []string) error {
 			}
 		}
 
+		// Load config once for both RequireHTTPS and LLM assessment
+		cfg := config.LoadConfig(config.CLIFlags{})
+
 		llmCall := func(prompt string) (string, error) {
 			if basicOnly {
 				return "", fmt.Errorf("basic mode — no LLM call")
 			}
-			// Load config and create LLM client for assessment
-			cfg := config.LoadConfig(config.CLIFlags{})
 			client := llm.New(cfg.BaseURL, cfg.APIKey, cfg.Model, "", 30)
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
@@ -1004,12 +1108,13 @@ func skillCmd(args []string) error {
 		}
 
 		result, err := skills.ImportSkill(skills.ImportOptions{
-			URI:       uri,
-			MaxBytes:  1_048_576,
-			Timeout:   5,
-			BasicOnly: basicOnly,
-			AutoYes:   autoYes,
-			UserDir:   userDir,
+			URI:          uri,
+			MaxBytes:     1_048_576,
+			Timeout:      5,
+			BasicOnly:    basicOnly,
+			AutoYes:      autoYes,
+			RequireHTTPS: cfg.Skills.Import.RequireHTTPS,
+			UserDir:      userDir,
 		}, func(assessment *skills.ImportAssessment) bool {
 			if autoYes {
 				return true
@@ -1423,4 +1528,16 @@ func shorten(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// ── JSON Injection Prevention ─────────────────────────────────────────
+
+// jsonMarshalName safely marshals a skill name into a JSON object
+// {"name":"<escaped>"}. Uses json.Marshal to prevent JSON injection
+// from names containing quotes, backslashes, or control characters.
+func jsonMarshalName(name string) string {
+	b, _ := json.Marshal(struct {
+		Name string `json:"name"`
+	}{Name: name})
+	return string(b)
 }

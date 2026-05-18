@@ -8,7 +8,7 @@
 | `kode run --session [flags] <task>` | Execute and save conversation as a multi-turn session |
 | `kode run --learn [flags] <task>` | Execute with skill learning (detects patterns, suggests skills) |
 | `kode continue [--id <id>] <task>` | Continue the most recent session (or by `--id`) |
-| `kode repl [--id <id>]` | Interactive REPL mode (persistent multi-turn session) |
+| `kode repl [flags]` | Interactive REPL mode (persistent multi-turn session). Accepts `--model`, `--thinking`, `--sandbox`, and `--sandbox-*` flags. |
 | `kode session list` | List sessions |
 | `kode session show [id]` | Show session details (default: latest) |
 | `kode session delete <id>` | Delete a session |
@@ -229,6 +229,15 @@ kode run --sandbox "npm test"
 
 # Custom sandbox image
 kode run --sandbox --sandbox-image node:20-alpine "node --version"
+
+# Interactive REPL with sandbox
+kode repl --sandbox --model deepseek-v4-pro
+
+# Sandbox REPL with custom image and no network
+kode repl --sandbox --sandbox-image node:20-alpine --sandbox-network none
+
+# Resume a sandboxed session in REPL mode
+kode repl --id 20260518-abc123
 
 # Custom system prompt
 kode run --system "You are a Go expert. Answer with code only." "Write HTTP server"

@@ -320,3 +320,53 @@ func TestList_Limit(t *testing.T) {
 		t.Errorf("List(2) returned %d sessions, want 2", len(sessions))
 	}
 }
+
+// ── Security: Session ID Validation ──────────────────────────────────
+
+func TestValidateSessionID_Valid(t *testing.T) {
+	valid := []string{"20260518-abc123", "sess-001", "abcdef", "x"}
+	for _, id := range valid {
+		if err := ValidateSessionID(id); err != nil {
+			t.Errorf("ValidateSessionID(%q) = %v, want nil", id, err)
+		}
+	}
+}
+
+func TestValidateSessionID_PathTraversal(t *testing.T) {
+	invalid := []string{
+		"../../etc/passwd",
+		"../sessions/evil",
+		"foo/bar",
+		"foo\\bar",
+		".",
+		"..",
+		"",
+	}
+	for _, id := range invalid {
+		if err := ValidateSessionID(id); err == nil {
+			t.Errorf("ValidateSessionID(%q) = nil, want error", id)
+		}
+	}
+}
+
+func TestStore_Load_PathTraversalRejected(t *testing.T) {
+	store := newTestStore(t)
+	_, err := store.Load("../../etc/passwd")
+	if err == nil {
+		t.Error("Load() with path traversal should return error")
+	}
+	if !strings.Contains(err.Error(), "invalid ID") {
+		t.Errorf("error should mention 'invalid ID', got: %v", err)
+	}
+}
+
+func TestStore_Delete_PathTraversalRejected(t *testing.T) {
+	store := newTestStore(t)
+	err := store.Delete("../../etc/passwd")
+	if err == nil {
+		t.Error("Delete() with path traversal should return error")
+	}
+	if !strings.Contains(err.Error(), "invalid ID") {
+		t.Errorf("error should mention 'invalid session', got: %v", err)
+	}
+}

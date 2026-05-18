@@ -18,14 +18,16 @@ import (
 
 // ── REPL ──────────────────────────────────────────────────────────────
 
-// replCmd handles `kode repl [--id <id>]`.
+// replCmd handles `kode repl [flags]`.
 // It starts (or resumes) an interactive multi-turn session.
+// Accepts --model, --thinking, --sandbox, and --sandbox-* flags
+// just like `kode run`, plus --id to resume a specific session.
 func replCmd(args []string) error {
-	sessionID := ""
-	for i := 0; i < len(args)-1 && args[i] == "--id"; {
-		sessionID = args[i+1]
-		i += 2
+	f, err := parseReplFlags(args)
+	if err != nil {
+		return err
 	}
+	sessionID := f.ID
 
 	store, err := session.NewStore()
 	if err != nil {
@@ -42,7 +44,18 @@ func replCmd(args []string) error {
 	}
 
 	// Resolve config (before session creation so Session.Sandbox is set)
-	resolved := config.LoadConfig(config.CLIFlags{})
+	resolved := config.LoadConfig(config.CLIFlags{
+		Model:    f.Model,
+		Thinking: f.Thinking,
+		Sandbox:  f.Sandbox,
+
+		SandboxImage:    f.SandboxImage,
+		SandboxNetwork:  f.SandboxNetwork,
+		SandboxReadonly: f.SandboxReadonly,
+		SandboxMemory:   f.SandboxMemory,
+		SandboxCPUs:     f.SandboxCPUs,
+		SandboxUser:     f.SandboxUser,
+	})
 	systemMessage := resolved.System
 	if systemMessage == "" {
 		systemMessage = defaultSystem

@@ -42,7 +42,8 @@ type FetchResult struct {
 }
 
 // FetchFromURI fetches skill content from a file:// or https:// URI.
-func FetchFromURI(uri string, maxBytes int, timeoutSecs int) (*FetchResult, error) {
+// When requireHTTPS is true, http:// URIs are rejected.
+func FetchFromURI(uri string, maxBytes int, timeoutSecs int, requireHTTPS bool) (*FetchResult, error) {
 	u, err := url.Parse(uri)
 	if err != nil {
 		return nil, fmt.Errorf("invalid URI: %w", err)
@@ -51,7 +52,12 @@ func FetchFromURI(uri string, maxBytes int, timeoutSecs int) (*FetchResult, erro
 	switch u.Scheme {
 	case "file", "":
 		return fetchLocal(u.Path, maxBytes)
-	case "http", "https":
+	case "http":
+		if requireHTTPS {
+			return nil, fmt.Errorf("HTTP imports are blocked (require_https is enabled in config)")
+		}
+		return fetchHTTP(uri, maxBytes, timeoutSecs)
+	case "https":
 		return fetchHTTP(uri, maxBytes, timeoutSecs)
 	default:
 		return nil, fmt.Errorf("unsupported URI scheme %q (use file:// or https://)", u.Scheme)
@@ -102,6 +108,11 @@ func fetchHTTP(urlStr string, maxBytes int, timeoutSecs int) (*FetchResult, erro
 		CheckRedirect: func(r *http.Request, via []*http.Request) error {
 			if len(via) >= 1 {
 				return fmt.Errorf("too many redirects")
+			}
+			// Block redirects to private/internal IPs
+			host := r.URL.Hostname()
+			if isPrivateHost(host) {
+				return fmt.Errorf("redirect to private IP blocked: %s", host)
 			}
 			return nil
 		},
@@ -225,12 +236,13 @@ func extractJSON(s string) string {
 
 // ImportOptions controls the import flow.
 type ImportOptions struct {
-	URI       string // the URI to import from
-	MaxBytes  int    // max bytes for fetched content
-	Timeout   int    // HTTP timeout in seconds
-	BasicOnly bool   // skip LLM assessment, use basic validation only
-	AutoYes   bool   // skip approval prompt (for scripting, shows warning)
-	UserDir   string // where to save the skill
+	URI          string // the URI to import from
+	MaxBytes     int    // max bytes for fetched content
+	Timeout      int    // HTTP timeout in seconds
+	BasicOnly    bool   // skip LLM assessment, use basic validation only
+	AutoYes      bool   // skip approval prompt (for scripting, shows warning)
+	RequireHTTPS bool   // reject http:// URIs (enforce HTTPS)
+	UserDir      string // directory to save the skill into
 }
 
 // ImportResult holds the result of a successful import.
@@ -245,7 +257,7 @@ type ImportResult struct {
 // The llmCall fn is called to assess risk. Set to nil for basic mode.
 func ImportSkill(opts ImportOptions, confirmFn func(assessment *ImportAssessment) bool, llmCall func(string) (string, error)) (*ImportResult, error) {
 	// 1. Fetch
-	result, err := FetchFromURI(opts.URI, opts.MaxBytes, opts.Timeout)
+	result, err := FetchFromURI(opts.URI, opts.MaxBytes, opts.Timeout, opts.RequireHTTPS)
 	if err != nil {
 		return nil, fmt.Errorf("fetch: %w", err)
 	}
@@ -305,4 +317,23 @@ func ImportSkill(opts ImportOptions, confirmFn func(assessment *ImportAssessment
 		Assessment: assessment,
 		Path:       filepath.Join(opts.UserDir, skill.Name, "SKILL.md"),
 	}, nil
+}
+
+// isPrivateHost returns true if the hostname is a private/internal IP
+// or localhost. Blocks SSRF via redirect in skill import.
+func isPrivateHost(host string) bool {
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" ||
+		host == "169.254.169.254" || host == "0.0.0.0" {
+		return true
+	}
+	// RFC 1918 private ranges
+	for _, prefix := range []string{"10.", "172.16.", "172.17.", "172.18.",
+		"172.19.", "172.20.", "172.21.", "172.22.", "172.23.",
+		"172.24.", "172.25.", "172.26.", "172.27.", "172.28.",
+		"172.29.", "172.30.", "172.31.", "192.168."} {
+		if strings.HasPrefix(host, prefix) {
+			return true
+		}
+	}
+	return false
 }

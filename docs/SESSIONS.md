@@ -131,3 +131,20 @@ kode continue "Run the test suite"
 
 This prevents accidentally escaping the sandbox on resume. The sandbox image/network/memory still come from the **current** config — only the toggle bit is persisted. To force-disable sandbox on resume, pass `kode continue` in a project with `"sandbox": false` in `./kode.json` and the session flag will be overridden by the explicit config.
 
+### REPL sandbox flags
+
+`kode repl` accepts the same sandbox CLI flags as `kode run`. You can start a sandboxed REPL session directly from the command line:
+
+```bash
+# Start a sandboxed REPL session
+kode repl --sandbox
+
+# With custom image and network isolation
+kode repl --sandbox --sandbox-image node:20-alpine --sandbox-network none
+
+# Resume a sandboxed session (sandbox auto-enabled)
+kode repl --id 20260518-abc123
+```
+
+Sandbox state is saved with the session — resuming via `--id` auto-enables the sandbox container on startup.
+

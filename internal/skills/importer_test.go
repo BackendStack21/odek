@@ -264,3 +264,30 @@ func TestImportSkill_UserCancel(t *testing.T) {
 		t.Error("expected error for cancelled import")
 	}
 }
+
+// TestFetchFromURI_RequireHTTPS verifies that HTTP URIs are rejected
+// when RequireHTTPS is enabled in the import options.
+func TestFetchFromURI_RequireHTTPS(t *testing.T) {
+	// HTTP blocked when requireHTTPS=true
+	_, err := FetchFromURI("http://example.com/skill.md", 1024*1024, 5, true)
+	if err == nil {
+		t.Fatal("expected error for HTTP URI with requireHTTPS=true")
+	}
+	if !strings.Contains(err.Error(), "HTTP imports are blocked") {
+		t.Errorf("error should mention blocked HTTP, got: %v", err)
+	}
+
+	// HTTP allowed when requireHTTPS=false (but will fail to connect in test)
+	// Just verify the error is NOT the "blocked" message
+	_, err2 := FetchFromURI("http://example.com/skill.md", 1024*1024, 5, false)
+	if err2 != nil && strings.Contains(err2.Error(), "HTTP imports are blocked") {
+		t.Error("HTTP should be allowed when requireHTTPS=false")
+	}
+
+	// HTTPS unaffected regardless of flag
+	// (will fail to connect in test, that's fine)
+	_, err3 := FetchFromURI("https://example.com/skill.md", 1024*1024, 5, true)
+	if err3 != nil && strings.Contains(err3.Error(), "HTTP imports are blocked") {
+		t.Error("HTTPS should never be blocked by requireHTTPS flag")
+	}
+}

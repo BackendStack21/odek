@@ -21,6 +21,9 @@ type Client struct {
 	http     *http.Client
 }
 
+// maxResponseSize limits the LLM response body read to prevent DoS/OOM.
+const maxResponseSize = 50 * 1024 * 1024 // 50 MB
+
 // New creates a Client with the given timeout. Pass 0 to use the default
 // (120s). The timeout applies per HTTP request — the agent loop may have
 // multiple requests; set a generous timeout for deep-reasoning models.
@@ -130,13 +133,16 @@ func (c *Client) SimpleCall(ctx context.Context, systemPrompt, userPrompt string
 	}
 	defer resp.Body.Close()
 
-	respBytes, err := io.ReadAll(resp.Body)
+	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
 	if err != nil {
 		return "", fmt.Errorf("llm: read response: %w", err)
 	}
+	if len(respBytes) > maxResponseSize {
+		return "", fmt.Errorf("llm: response exceeds maximum size (%d bytes)", maxResponseSize)
+	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("llm: %s (status %d): %s", resp.Status, resp.StatusCode, string(respBytes))
+		return "", fmt.Errorf("llm: %s (status %d)", resp.Status, resp.StatusCode)
 	}
 
 	var raw struct {
@@ -190,13 +196,16 @@ func (c *Client) Call(ctx context.Context, messages []Message, tools []ToolDef) 
 	}
 	defer resp.Body.Close()
 
-	respBytes, err := io.ReadAll(resp.Body)
+	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
 	if err != nil {
 		return nil, fmt.Errorf("llm: read response: %w", err)
 	}
+	if len(respBytes) > maxResponseSize {
+		return nil, fmt.Errorf("llm: response exceeds maximum size (%d bytes)", maxResponseSize)
+	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("llm: %s (status %d): %s", resp.Status, resp.StatusCode, string(respBytes))
+		return nil, fmt.Errorf("llm: %s (status %d)", resp.Status, resp.StatusCode)
 	}
 
 	return parseResponse(respBytes)
@@ -222,7 +231,7 @@ func parseResponse(data []byte) (*CallResult, error) {
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("llm: parse response: %w (body: %s)", err, string(data))
+		return nil, fmt.Errorf("llm: parse response: %w", err)
 	}
 	if len(raw.Choices) == 0 {
 		return nil, fmt.Errorf("llm: no choices in response")
