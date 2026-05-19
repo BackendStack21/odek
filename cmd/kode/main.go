@@ -763,9 +763,26 @@ func run(args []string) error {
 			messages = append([]llm.Message{{Role: "system", Content: systemMessage}}, messages...)
 		}
 
+		// Append user input to buffer
+		if mm := agent.Memory(); mm != nil {
+			mm.AppendBuffer("user", shorten(f.Task, 100))
+		}
+
 		var result string
 		result, allMessages, runErr = agent.RunWithMessages(ctx, messages)
 		_ = result
+
+		// Append agent response to buffer
+		if runErr == nil && len(allMessages) > 0 {
+			if mm := agent.Memory(); mm != nil {
+				for i := len(allMessages) - 1; i >= 0; i-- {
+					if allMessages[i].Role == "assistant" && allMessages[i].Content != "" {
+						mm.AppendBuffer("agent", shorten(allMessages[i].Content, 100))
+						break
+					}
+				}
+			}
+		}
 
 		if runErr == nil {
 			store, err := session.NewStore()
@@ -777,6 +794,10 @@ func run(args []string) error {
 				return fmt.Errorf("save session: %w", err)
 			}
 			sess.Sandbox = resolved.Sandbox
+			// Persist buffer to session
+			if mm := agent.Memory(); mm != nil {
+				sess.Buffer = mm.GetBuffer()
+			}
 			store.Save(sess)
 			fmt.Fprintf(os.Stderr, "kode: session %s saved — continue with: kode continue \"...\"\n", sess.ID)
 		}
@@ -798,6 +819,19 @@ func run(args []string) error {
 	// ── Learn loop: run self-improvement heuristics ──
 	if resolved.Skills.Learn && sm != nil {
 		runLearnLoop(allMessages, f.Task, sm)
+	}
+
+	// ── Session end — extract episode if enough turns ──
+	if mm := agent.Memory(); mm != nil && f.Session != nil && *f.Session {
+		// We need the session for OnSessionEnd. Re-create it from the stored data.
+		sess, err := session.NewStore()
+		if err == nil {
+			latest, err := sess.Latest()
+			if err == nil {
+				msgStrs := makeSessionMessageStrings(latest)
+				mm.OnSessionEnd(latest.ID, latest.Turns, msgStrs)
+			}
+		}
 	}
 
 	return nil
@@ -1337,10 +1371,20 @@ func continueCmd(args []string) error {
 	}
 	defer agent.Close()
 
+	// Restore buffer from session
+	if mm := agent.Memory(); mm != nil && len(sess.Buffer) > 0 {
+		mm.RestoreBuffer(sess.Buffer)
+	}
+
 	// Build message history: session messages + new user message
 	// The system message is already in the session
 	messages := sess.GetMessages()
 	messages = append(messages, llm.Message{Role: "user", Content: task})
+
+	// Append user input to buffer
+	if mm := agent.Memory(); mm != nil {
+		mm.AppendBuffer("user", shorten(task, 100))
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
@@ -1352,12 +1396,40 @@ func continueCmd(args []string) error {
 	}
 	_ = result
 
-	// Save updated session
-	if err := store.Append(sess.ID, allMessages[len(sess.GetMessages()):]); err != nil {
+	// Append agent response to buffer
+	if len(allMessages) > 0 {
+		if mm := agent.Memory(); mm != nil {
+			for i := len(allMessages) - 1; i >= 0; i-- {
+				if allMessages[i].Role == "assistant" && allMessages[i].Content != "" {
+					mm.AppendBuffer("agent", shorten(allMessages[i].Content, 100))
+					break
+				}
+			}
+		}
+	}
+
+	// Save updated session — persist messages AND buffer
+	newMsgs := allMessages[len(sess.GetMessages()):]
+	if err := store.Append(sess.ID, newMsgs); err != nil {
 		return fmt.Errorf("save session: %w", err)
+	}
+	// Re-load session to persist buffer (Append reads from disk)
+	if mm := agent.Memory(); mm != nil {
+		updated, err := store.Load(sess.ID)
+		if err == nil {
+			updated.Buffer = mm.GetBuffer()
+			store.Save(updated)
+		}
 	}
 
 	fmt.Fprintf(os.Stderr, "kode: session %s saved (%d turns)\n", sess.ID, sess.Turns+1)
+
+	// ── Session end — extract episode ──
+	if mm := agent.Memory(); mm != nil {
+		msgStrs := makeSessionMessageStrings(sess)
+		mm.OnSessionEnd(sess.ID, sess.Turns+1, msgStrs)
+	}
+
 	return nil
 }
 
