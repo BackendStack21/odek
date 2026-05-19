@@ -29,7 +29,7 @@ var uiFS embed.FS
 // ── Serve Command ───────────────────────────────────────────────────────
 
 func serveCmd(args []string) error {
-	addr := ":8080"
+	addr := "127.0.0.1:8080"
 	openBrowser := false
 
 	for i := 0; i < len(args); i++ {
@@ -47,7 +47,7 @@ func serveCmd(args []string) error {
 Start the Kode web UI server.
 
 Flags:
-  --addr :8080    Listen address (default :8080)
+  --addr 127.0.0.1:8080    Listen address (default 127.0.0.1:8080)
   --open          Open browser automatically
   --help, -h      Show this help`)
 			return nil
