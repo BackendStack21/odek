@@ -82,6 +82,7 @@ body {
   flex: 1;
   overflow-y: auto;
   padding: 20px;
+  contain: content; /* isolate layout — no reflow outside */
 }
 .msg { margin-bottom: 16px; }
 .msg .header { font-size: 12px; font-weight: 600; margin-bottom: 4px; font-family: var(--font-mono); }
@@ -318,19 +319,49 @@ body {
 // ── State ──
 let ws = null;
 let sessionId = null;
-let messagesEl = document.getElementById('messages');
-let promptEl = document.getElementById('prompt');
-let sendBtn = document.getElementById('send-btn');
-let completionEl = document.getElementById('completion');
-let statusEl = document.getElementById('ws-status');
-let modelLabel = document.getElementById('model-label');
-let sessionList = document.getElementById('session-list');
-let emptyState = document.getElementById('empty-state');
 let busy = false;
 let history = JSON.parse(localStorage.getItem('kode_history') || '[]');
 let historyIdx = -1;
-let resourceIndex = [];
-let compSelected = -1;
+
+// ── DOM refs ──
+const messagesEl = document.getElementById('messages');
+const promptEl = document.getElementById('prompt');
+const sendBtn = document.getElementById('send-btn');
+const completionEl = document.getElementById('completion');
+const statusEl = document.getElementById('ws-status');
+const modelLabel = document.getElementById('model-label');
+const sessionListEl = document.getElementById('session-list');
+
+// ── Streaming state ──
+let streamTextEl = null;   // .stream-text span for current assistant message
+let streamBuffer = '';     // raw markdown accumulated since last raf render
+let streamRAF = null;      // raf handle for batch-rendering stream tokens
+
+// ── Tool call state ──
+let currentToolEl = null;
+let currentToolResultEl = null;
+
+// ── Scroll throttling ──
+let scrollRAF = null;
+function scrollBottom() {
+  if (scrollRAF) return;
+  scrollRAF = requestAnimationFrame(() => {
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    scrollRAF = null;
+  });
+}
+
+// ── Message cap — keep DOM bounded ──
+const MAX_MESSAGES = 100;
+function pruneMessages() {
+  const msgs = messagesEl.querySelectorAll(':scope > .msg, :scope > .tool-block');
+  if (msgs.length > MAX_MESSAGES) {
+    const toRemove = msgs.length - MAX_MESSAGES;
+    for (let i = 0; i < toRemove; i++) {
+      msgs[i].remove();
+    }
+  }
+}
 
 // ── Auto-resize textarea ──
 promptEl.addEventListener('input', () => {
@@ -370,27 +401,30 @@ function connect() {
         break;
 
       case 'token':
-        addStreamToken(event.content);
+        streamToken(event.content);
         break;
 
       case 'thinking':
-        addStreamToken(event.content, 'thinking');
+        streamToken(event.content);
         break;
 
       case 'tool_call':
-        addToolCall(event.name, event.command, '');
+        streamFlush(); // flush any buffered tokens first
+        addToolCall(event.name, event.command);
         break;
 
       case 'tool_result':
-        addToolResult(event.name, event.output);
+        addToolResult(event.output);
         break;
 
       case 'done':
+        streamFlush();
         endStream();
         if (sessionId) loadSessions();
         break;
 
       case 'error':
+        streamFlush();
         endStream();
         addMessage('system', 'Error: ' + event.message);
         break;
@@ -398,16 +432,51 @@ function connect() {
   };
 }
 
-// ── Message rendering ──
-let currentMsgEl = null;
-let currentToolEl = null;
+// ── Streaming — batched via requestAnimationFrame ──
+function streamToken(content) {
+  streamBuffer += content;
+  if (!streamRAF) {
+    streamRAF = requestAnimationFrame(streamFlushRAF);
+  }
+}
 
+function streamFlushRAF() {
+  streamRAF = null;
+  if (!streamBuffer) return;
+  const text = streamBuffer;
+  streamBuffer = '';
+  appendStreamText(text);
+}
+
+function streamFlush() {
+  if (streamRAF) {
+    cancelAnimationFrame(streamRAF);
+    streamRAF = null;
+  }
+  if (streamBuffer) {
+    appendStreamText(streamBuffer);
+    streamBuffer = '';
+  }
+}
+
+function appendStreamText(text) {
+  if (!streamTextEl) {
+    startStream();
+  }
+  // Use insertAdjacentHTML instead of innerHTML +=
+  // insertAdjacentHTML is faster because it doesn't re-parse the full element
+  streamTextEl.insertAdjacentHTML('beforeend', markdownToHtml(text));
+  scrollBottom();
+}
+
+// ── Message rendering ──
 function addMessage(role, content) {
   hideEmptyState();
   const el = document.createElement('div');
   el.className = 'msg ' + role;
   el.innerHTML = '<div class="header">' + role + '</div><div class="content">' + escapeHtml(content) + '</div>';
   messagesEl.appendChild(el);
+  pruneMessages();
   scrollBottom();
 }
 
@@ -430,65 +499,75 @@ function startStream() {
   el.className = 'msg assistant';
   el.innerHTML = '<div class="header">assistant</div><div class="content"><span class="stream-text"></span><span class="cursor"></span></div>';
   messagesEl.appendChild(el);
-  currentMsgEl = el.querySelector('.stream-text');
+  streamTextEl = el.querySelector('.stream-text');
   scrollBottom();
 }
 
-function addStreamToken(content, type) {
-  if (!currentMsgEl) {
-    startStream();
-  }
-  currentMsgEl.innerHTML += markdownToHtml(content);
-  scrollBottom();
-}
-
-function addToolCall(name, command, result) {
-  if (currentMsgEl) {
-    // Close the streaming text, add tool block after it
-    currentMsgEl.parentElement.innerHTML = currentMsgEl.parentElement.innerHTML.replace('<span class="cursor"></span>', '');
+function addToolCall(name, command) {
+  if (streamTextEl) {
+    // Remove cursor from previous stream message
+    const cursor = streamTextEl.parentElement.querySelector('.cursor');
+    if (cursor) cursor.remove();
+    streamTextEl = null;
   }
 
   const el = document.createElement('div');
   el.className = 'tool-block';
-  el.innerHTML = `
-    <div class="tool-header" onclick="this.nextElementSibling.classList.toggle('open'); this.querySelector('.tool-arrow').classList.toggle('open')">
-      <span class="tool-arrow">▶</span> 🔧 ${escapeHtml(name)}
-    </div>
-    <div class="tool-body">${escapeHtml(command)}</div>
-    ${result ? '<div class="tool-result">' + escapeHtml(result) + '</div>' : ''}
-  `;
+  el.innerHTML =
+    '<div class="tool-header">' +
+      '<span class="tool-arrow">▶</span> 🔧 ' + escapeHtml(name) +
+    '</div>' +
+    '<div class="tool-body">' + escapeHtml(command) + '</div>';
+
+  // Delegate collapse via event bubbling (attached once)
   messagesEl.appendChild(el);
   currentToolEl = el;
-  currentMsgEl = null;
+  currentToolResultEl = null;
+  pruneMessages();
   scrollBottom();
 }
 
-function addToolResult(name, output) {
-  if (currentToolEl) {
-    let resultEl = currentToolEl.querySelector('.tool-result');
-    if (!resultEl) {
-      resultEl = document.createElement('div');
-      resultEl.className = 'tool-result';
-      currentToolEl.appendChild(resultEl);
-    }
-    resultEl.textContent = output;
+function addToolResult(output) {
+  if (!currentToolEl) return;
+  let resultEl = currentToolEl.querySelector('.tool-result');
+  if (!resultEl) {
+    resultEl = document.createElement('div');
+    resultEl.className = 'tool-result';
+    currentToolEl.appendChild(resultEl);
   }
+  resultEl.textContent = output;  // textContent — safe, no parse
   currentToolEl = null;
   scrollBottom();
 }
 
 function endStream() {
-  if (currentMsgEl) {
-    currentMsgEl.parentElement.innerHTML = currentMsgEl.parentElement.innerHTML.replace('<span class="cursor"></span>', '');
+  if (streamTextEl) {
+    const cursor = streamTextEl.parentElement.querySelector('.cursor');
+    if (cursor) cursor.remove();
   }
-  currentMsgEl = null;
+  streamTextEl = null;
   currentToolEl = null;
+  currentToolResultEl = null;
   busy = false;
   sendBtn.disabled = !ws || ws.readyState !== WebSocket.OPEN;
   promptEl.disabled = false;
   promptEl.focus();
 }
 
+// ── Event delegation: tool block collapse ──
+messagesEl.addEventListener('click', (e) => {
+  const header = e.target.closest('.tool-header');
+  if (!header) return;
+  const block = header.closest('.tool-block');
+  if (!block) return;
+  const body = block.querySelector('.tool-body');
+  const arrow = header.querySelector('.tool-arrow');
+  if (body) body.classList.toggle('open');
+  if (arrow) arrow.classList.toggle('open');
+});
+
+// ── Hide empty state (one-time) ──
+let emptyState = document.getElementById('empty-state');
 function hideEmptyState() {
   if (emptyState && emptyState.parentNode) {
     emptyState.remove();
@@ -496,16 +575,11 @@ function hideEmptyState() {
   }
 }
 
-function scrollBottom() {
-  messagesEl.scrollTop = messagesEl.scrollHeight;
-}
-
 // ── Send ──
 function send() {
   const text = promptEl.value.trim();
   if (!text || busy || !ws || ws.readyState !== WebSocket.OPEN) return;
 
-  // Save to history
   history.push(text);
   if (history.length > 100) history.shift();
   localStorage.setItem('kode_history', JSON.stringify(history));
@@ -528,22 +602,22 @@ function send() {
 
 // ── Input handlers ──
 promptEl.addEventListener('keydown', (e) => {
-  // Ctrl+Enter to send
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
     e.preventDefault();
     send();
     return;
   }
 
-  // Enter alone = newline
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     send();
     return;
   }
 
-  // History up/down
-  if (e.key === 'ArrowUp' && !e.shiftKey && completionEl.classList.contains('visible') === false) {
+  // History up/down (only when completion is hidden)
+  if (completionEl.classList.contains('visible')) return;
+
+  if (e.key === 'ArrowUp') {
     if (historyIdx > 0) {
       e.preventDefault();
       historyIdx--;
@@ -552,7 +626,7 @@ promptEl.addEventListener('keydown', (e) => {
     }
     return;
   }
-  if (e.key === 'ArrowDown' && !e.shiftKey && completionEl.classList.contains('visible') === false) {
+  if (e.key === 'ArrowDown') {
     if (historyIdx < history.length - 1) {
       e.preventDefault();
       historyIdx++;
@@ -570,46 +644,66 @@ promptEl.addEventListener('keydown', (e) => {
     selectCompletion();
     return;
   }
-
-  // @ detection
-  setTimeout(checkCompletion, 10);
 });
 
+// Debounced @ completion — fires at most every 150ms
+let completionTimer = null;
 promptEl.addEventListener('input', () => {
-  setTimeout(checkCompletion, 10);
+  if (completionTimer) clearTimeout(completionTimer);
+  completionTimer = setTimeout(checkCompletion, 150);
 });
 
-// ── @ Completion ──
+promptEl.addEventListener('keydown', (e) => {
+  if (e.key === '@') {
+    if (completionTimer) clearTimeout(completionTimer);
+    completionTimer = setTimeout(checkCompletion, 150);
+  }
+});
+
+// ── @ Completion (event delegation on #completion) ──
+completionEl.addEventListener('click', (e) => {
+  const item = e.target.closest('.comp-item');
+  if (!item) return;
+  replaceCompletion(item.dataset.id);
+  completionEl.classList.remove('visible');
+});
+
+let lastAtIdx = -1;
+let lastCursor = -1;
+let compQuery = '';
+
 async function checkCompletion() {
   const val = promptEl.value;
   const cursor = promptEl.selectionStart;
   const before = val.slice(0, cursor);
 
-  // Find @ starting from cursor going backwards
   const atIdx = before.lastIndexOf('@');
   if (atIdx < 0) {
     completionEl.classList.remove('visible');
-    completionEl.innerHTML = '';
-    compSelected = -1;
     return;
   }
 
   const query = before.slice(atIdx + 1).split(/\s/)[0];
-  if (query === undefined) {
+  if (!query) {
     completionEl.classList.remove('visible');
     return;
   }
 
+  // Cache position for completion replacement
+  lastAtIdx = atIdx;
+  lastCursor = cursor;
+  compQuery = query;
+
   try {
     const resp = await fetch('/api/resources?q=' + encodeURIComponent(query) + '&limit=8');
     const results = await resp.json();
-    if (results.length === 0) {
+    if (!results || results.length === 0) {
       completionEl.classList.remove('visible');
       return;
     }
 
     completionEl.innerHTML = results.map((r, i) =>
-      `<div class="comp-item${i === 0 ? ' selected' : ''}" data-id="${escapeAttr(r.id)}" data-label="${escapeAttr(r.label)}">
+      `<div class="comp-item${i === 0 ? ' selected' : ''}" data-id="${escapeAttr(r.id)}">
         <span class="type">${escapeAttr(r.type)}</span>
         <span>${escapeHtml(r.label)}</span>
         <span class="detail">${escapeHtml(r.detail || '')}</span>
@@ -617,15 +711,6 @@ async function checkCompletion() {
     ).join('');
 
     completionEl.classList.add('visible');
-    compSelected = 0;
-
-    // Click handler
-    completionEl.querySelectorAll('.comp-item').forEach((item) => {
-      item.addEventListener('click', () => {
-        replaceAt(atIdx, cursor, item.dataset.id);
-        completionEl.classList.remove('visible');
-      });
-    });
   } catch {
     completionEl.classList.remove('visible');
   }
@@ -634,19 +719,13 @@ async function checkCompletion() {
 function selectCompletion() {
   const selected = completionEl.querySelector('.selected');
   if (!selected) return;
-
-  const val = promptEl.value;
-  const cursor = promptEl.selectionStart;
-  const before = val.slice(0, cursor);
-  const atIdx = before.lastIndexOf('@');
-
-  replaceAt(atIdx, cursor, selected.dataset.id);
+  replaceCompletion(selected.dataset.id);
   completionEl.classList.remove('visible');
 }
 
-function replaceAt(start, end, replacement) {
-  promptEl.value = promptEl.value.slice(0, start) + replacement + ' ' + promptEl.value.slice(end);
-  const newPos = start + replacement.length + 1;
+function replaceCompletion(id) {
+  promptEl.value = promptEl.value.slice(0, lastAtIdx) + id + ' ' + promptEl.value.slice(lastCursor);
+  const newPos = lastAtIdx + id.length + 1;
   promptEl.selectionStart = promptEl.selectionEnd = newPos;
   promptEl.focus();
 }
@@ -655,27 +734,28 @@ function escapeAttr(s) {
   return s.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-// ── Sessions ──
+// ── Sessions (event delegation on #session-list) ──
+sessionListEl.addEventListener('click', (e) => {
+  const item = e.target.closest('.session-item');
+  if (!item) return;
+  sessionListEl.querySelectorAll('.session-item').forEach(s => s.classList.remove('active'));
+  item.classList.add('active');
+  // Future: resume session by ID
+});
+
 async function loadSessions() {
   try {
     const resp = await fetch('/api/sessions');
     const sessions = await resp.json();
+    if (!sessions || !Array.isArray(sessions)) return;
 
-    sessionList.innerHTML = sessions.map(s =>
+    sessionListEl.innerHTML = sessions.map(s =>
       `<div class="session-item${s.id === sessionId ? ' active' : ''}" data-id="${escapeAttr(s.id)}">
         <div class="id">${escapeHtml(s.id)}</div>
         <div class="task">${escapeHtml(s.task || '')}</div>
         <div class="meta">${s.turns || 0} turns · ${escapeHtml(s.model || '')}</div>
       </div>`
     ).join('');
-
-    sessionList.querySelectorAll('.session-item').forEach(el => {
-      el.addEventListener('click', () => {
-        // For now, just highlight — resuming session by ID is future work
-        sessionList.querySelectorAll('.session-item').forEach(s => s.classList.remove('active'));
-        el.classList.add('active');
-      });
-    });
   } catch { /* ignore */ }
 }
 
