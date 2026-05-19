@@ -73,7 +73,12 @@ func NewMemoryManager(memoryDir string, llc LLMClient, cfg MemoryConfig) *Memory
 	episodesDir := memoryDir
 
 	factStore := NewFactStore(factsDir, cfg.FactsLimitUser, cfg.FactsLimitEnv)
-	episodeStore := NewEpisodeStore(episodesDir, nil)
+	// Use LLM-based episode ranker when an LLM client is available
+	var rankFn RankStrategy
+	if llc != nil {
+		rankFn = NewLLMRanker(llc)
+	}
+	episodeStore := NewEpisodeStore(episodesDir, rankFn)
 	mergeDetector := NewMergeDetector(0) // default 256 dims
 
 	return &MemoryManager{
