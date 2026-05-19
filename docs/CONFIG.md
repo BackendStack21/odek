@@ -171,9 +171,40 @@
    167|| `timeout_seconds` | 120 | Default timeout per sub-agent (overridden by `--timeout`) |
    168|| `max_iterations` | 15 | Default max think→act cycles per sub-agent (overridden by `--max-iter`) |
    169|
-   170|This section is optional. Omitted fields inherit sensible defaults.
-   171|
-   172|## kode init
+This section is optional. Omitted fields inherit sensible defaults.
+
+## MCP server configuration
+
+Connect to **external MCP servers** and expose their tools to the agent.
+Any MCP server that works with Claude Code works with kode — same config format.
+
+```json
+{
+  "mcp_servers": {
+    "playwright": {
+      "command": "npx",
+      "args": ["@playwright/mcp"]
+    },
+    "fetch": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"]
+    }
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `command` | The executable to run |
+| `args` | Optional command-line arguments |
+| `env` | Optional environment variable overrides (empty string removes from env) |
+
+Tools are registered as `<server_name>__<tool_name>` (e.g., `playwright__navigate`)
+and are available in `kode run`, `kode repl`, `kode continue`, and `kode serve`.
+
+See [docs/MCP.md](docs/MCP.md#kode-as-mcp-client) for detailed instructions.
+
+## kode init
    173|
    174|Create a config file template:
    175|

@@ -1,0 +1,232 @@
+package main
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/BackendStack21/kode/internal/mcpclient"
+)
+
+// ── E2E: MCP Client with a real MCP server subprocess ──────────────────
+//
+// These tests start a real MCP server subprocess, discover tools, call
+// them, and verify the full ToolAdapter round-trip. Gated by KODE_E2E=true
+// since they spawn external processes.
+
+// fakeMCPPath returns the path to the pre-compiled fake MCP server binary.
+// The test runs inside cmd/kode/, so we go up two levels to reach the repo root.
+func fakeMCPPath(t *testing.T) string {
+	t.Helper()
+	return filepath.Join("..", "..", "internal", "mcpclient", "testdata", "fakeserver")
+}
+
+func skipIfNoMCPE2E(t *testing.T) {
+	t.Helper()
+	if os.Getenv("KODE_E2E") == "" {
+		t.Skip("KODE_E2E not set — skipping MCP E2E test")
+	}
+}
+
+func TestMCPClientE2E_DiscoverTools(t *testing.T) {
+	skipIfNoMCPE2E(t)
+
+	client, err := mcpclient.New("e2e-test", mcpclient.ServerConfig{
+		Command: fakeMCPPath(t),
+		Env: map[string]string{
+			"FAKE_TOOLS": `[{"name":"fetch","description":"Fetch a URL"},{"name":"search","description":"Search the web"}]`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer client.Close()
+
+	tools, err := client.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(tools) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(tools))
+	}
+	if tools[0].Name != "fetch" {
+		t.Errorf("tool[0].Name = %q, want %q", tools[0].Name, "fetch")
+	}
+	if tools[1].Name != "search" {
+		t.Errorf("tool[1].Name = %q, want %q", tools[1].Name, "search")
+	}
+}
+
+func TestMCPClientE2E_CallTool(t *testing.T) {
+	skipIfNoMCPE2E(t)
+
+	client, err := mcpclient.New("e2e-call", mcpclient.ServerConfig{
+		Command: fakeMCPPath(t),
+		Env:     map[string]string{"FAKE_TOOLS": `[{"name":"echo","description":"Echo"}]`},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.Discover(context.Background()); err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+
+	result, err := client.CallTool(context.Background(), "echo", `{"text":"hello"}`)
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if result != "ok" {
+		t.Errorf("result = %q, want %q", result, "ok")
+	}
+}
+
+func TestMCPClientE2E_ToolAdapter(t *testing.T) {
+	skipIfNoMCPE2E(t)
+
+	client, err := mcpclient.New("e2e-adapter", mcpclient.ServerConfig{
+		Command: fakeMCPPath(t),
+		Env:     map[string]string{"FAKE_TOOLS": `[{"name":"my_tool","description":"Test tool"}]`},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.Discover(context.Background()); err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+
+	// Verify ToolAdapter implements kode.Tool-compatible interface
+	adapter := &mcpclient.ToolAdapter{
+		Client:   client,
+		ToolName: "my_tool",
+		Desc:     "Test tool",
+		ParamSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"input": map[string]any{"type": "string"},
+			},
+		},
+	}
+
+	if adapter.Name() != "e2e-adapter__my_tool" {
+		t.Errorf("Name = %q, want %q", adapter.Name(), "e2e-adapter__my_tool")
+	}
+
+	// Verify Schema returns proper JSON
+	schema, ok := adapter.Schema().(map[string]any)
+	if !ok {
+		t.Fatal("Schema() did not return map")
+	}
+	if schema["type"] != "object" {
+		t.Errorf("schema type = %v, want 'object'", schema["type"])
+	}
+
+	// Verify Call works
+	result, err := adapter.Call(`{"input":"world"}`)
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if result != "ok" {
+		t.Errorf("Call result = %q, want %q", result, "ok")
+	}
+}
+
+func TestMCPClientE2E_LoadMCPToolsIntegration(t *testing.T) {
+	skipIfNoMCPE2E(t)
+
+	// Test the full loadMCPTools → ToolAdapter flow that main.go uses
+	servers := map[string]mcpclient.ServerConfig{
+		"test-server": {
+			Command: fakeMCPPath(t),
+			Env: map[string]string{
+				"FAKE_TOOLS": `[{"name":"fetch","description":"Fetch tool"},{"name":"query","description":"Query tool"}]`,
+			},
+		},
+	}
+
+	var tools []interface {
+		Name() string
+		Description() string
+		Schema() any
+		Call(args string) (string, error)
+	}
+
+	// We can't call loadMCPTools directly because it takes []kode.Tool,
+	// so we test at the mcpclient level instead
+	client, err := mcpclient.New("test-server", servers["test-server"])
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer client.Close()
+
+	defs, err := client.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+
+	// Create ToolAdapters (same as loadMCPTools does)
+	for _, def := range defs {
+		tools = append(tools, &mcpclient.ToolAdapter{
+			Client:      client,
+			ToolName:    def.Name,
+			Desc:        def.Description,
+			ParamSchema: def.InputSchema,
+		})
+	}
+
+	if len(tools) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(tools))
+	}
+	if tools[0].Name() != "test-server__fetch" {
+		t.Errorf("tools[0].Name() = %q, want %q", tools[0].Name(), "test-server__fetch")
+	}
+	if tools[1].Name() != "test-server__query" {
+		t.Errorf("tools[1].Name() = %q, want %q", tools[1].Name(), "test-server__query")
+	}
+
+	// Verify we can call both tools
+	result, err := tools[0].Call(`{}`)
+	if err != nil {
+		t.Fatalf("Call fetch: %v", err)
+	}
+	if result != "ok" {
+		t.Errorf("fetch result = %q, want %q", result, "ok")
+	}
+
+	result, err = tools[1].Call(`{}`)
+	if err != nil {
+		t.Fatalf("Call query: %v", err)
+	}
+	if result != "ok" {
+		t.Errorf("query result = %q, want %q", result, "ok")
+	}
+}
+
+func TestMCPClientE2E_ServerError(t *testing.T) {
+	skipIfNoMCPE2E(t)
+
+	client, err := mcpclient.New("e2e-error", mcpclient.ServerConfig{
+		Command: fakeMCPPath(t),
+		Env: map[string]string{
+			"FAKE_TOOLS":         `[{"name":"borked","description":"Broken tool"}]`,
+			"FAKE_ERROR_ON_CALL": "internal failure",
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.Discover(context.Background()); err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+
+	_, err = client.CallTool(context.Background(), "borked", `{}`)
+	if err == nil {
+		t.Fatal("expected error for error-returning tool")
+	}
+}
