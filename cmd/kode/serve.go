@@ -84,6 +84,7 @@ Flags:
 	})
 	mux.HandleFunc("/api/resources", handleResourceSearch(resourceReg))
 	mux.HandleFunc("/api/sessions", handleSessionList(store))
+	mux.HandleFunc("/api/sessions/", handleSessionDelete(store))
 
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -497,6 +498,29 @@ func handleSessionList(store *session.Store) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(sessions)
+	}
+}
+
+func handleSessionDelete(store *session.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		// Extract session ID from path: /api/sessions/{id}
+		id := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
+		if id == "" {
+			http.Error(w, "missing session id", http.StatusBadRequest)
+			return
+		}
+
+		if err := store.Delete(id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
