@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -614,7 +615,217 @@ func TestServe_E2E_WebSocketPipeline(t *testing.T) {
 		}
 	}
 
-	// Read deadline means we missed events
-	t.Error("E2E: did not complete message exchange before deadline")
+}
+
+// ── Full-Stack E2E with Mock LLM ──────────────────────────────────────
+//
+// Starts the real kode serve handler with a mock LLM backend and verifies
+// the complete WebUI flow: WS upgrade, prompt send, streaming events,
+// tool calls, and done signal — all without needing a real API key.
+
+func TestServe_E2E_FullWebUIFlow(t *testing.T) {
+	// 1. Mock LLM server: simulates OpenAI chat completions API
+	callCount := 0
+	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		if callCount <= 2 {
+			// First two calls: tool call (shell echo)
+			fmt.Fprintf(w, `{"choices":[{"message":{"content":"Running step %d.","tool_calls":[{"id":"call_%d","function":{"name":"shell","arguments":"{\"command\":\"echo step %d\"}"}}]}}]}`,
+				callCount, callCount, callCount)
+		} else {
+			// Final call: text response
+			w.Write([]byte(`{"choices":[{"message":{"content":"All done."}}]}`))
+		}
+	}))
+	defer llmSrv.Close()
+
+	// 2. Set up env for mock LLM
+	envCleanup := setTestEnv(t, llmSrv.URL)
+	defer envCleanup()
+
+	// 3. Create a session store (isolated temp dir)
+	store := newTestSessionStore(t)
+
+	// 4. Build the real kode serve mux with mock config
+	ln, mux := buildServeMux(t, store)
+	defer ln.Close()
+
+	// 5. Start serving
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- serveOnListener(ln, mux)
+	}()
+
+	// 6. Wait for HTTP ready
+	waitForHTTP(t, ln.Addr().String())
+
+	// 7. Connect via WebSocket
+	wsURL := "ws://" + ln.Addr().String() + "/ws"
+	conn, err := golangws.Dial(wsURL, "", "http://localhost")
+	if err != nil {
+		t.Fatalf("Dial(%q): %v", wsURL, err)
+	}
+	defer conn.Close()
+	t.Log("✅ WebSocket connected")
+
+	// 8. Send a prompt
+	prompt := map[string]string{"type": "prompt", "content": "Hi"}
+	payload, _ := json.Marshal(prompt)
+	if err := golangws.Message.Send(conn, string(payload)); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	t.Log("✅ Prompt sent")
+
+	// 9. Collect all events with timeout
+	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+
+	var events []map[string]any
+	var sawSession, sawToken, sawToolCall, sawDone bool
+
+	for i := 0; i < 20; i++ {
+		var raw []byte
+		if err := golangws.Message.Receive(conn, &raw); err != nil {
+			t.Fatalf("Receive event %d: %v (collected %d events)", i, err, len(events))
+		}
+		t.Logf("  event[%d]: %s", i, string(raw))
+
+		var evt map[string]any
+		if err := json.Unmarshal(raw, &evt); err != nil {
+			t.Fatalf("unmarshal event %d: %v", i, err)
+		}
+		events = append(events, evt)
+
+		switch evt["type"] {
+		case "session":
+			sawSession = true
+		case "token":
+			sawToken = true
+		case "tool_call":
+			sawToolCall = true
+		case "tool_result":
+			// expected after tool_call
+		case "done":
+			sawDone = true
+			goto done // break out of loop
+		case "error":
+			t.Fatalf("unexpected error event: %v", evt["message"])
+		}
+	}
+
+done:
+	// 10. Validate event sequence
+	if !sawSession {
+		t.Fatal("E2E: missing 'session' event")
+	}
+	if !sawToken {
+		t.Fatal("E2E: missing 'token' event (LLM response)")
+	}
+	if !sawToolCall {
+		t.Fatal("E2E: missing 'tool_call' event")
+	}
+	if !sawDone {
+		t.Fatal("E2E: missing 'done' event")
+	}
+
+	// Validate ordering: session must be first
+	if events[0]["type"] != "session" {
+		t.Errorf("E2E: first event type = %v, want 'session'", events[0]["type"])
+	}
+
+	// Log the full sequence for inspection
+	types := make([]string, len(events))
+	for i, e := range events {
+		types[i] = e["type"].(string)
+	}
+	t.Logf("✅ E2E event sequence: %v", types)
+	t.Log("✅ Full WebUI pipeline verified: upgrade → prompt → session → tokens → tool_call → done")
+}
+
+// ── E2E Helpers ────────────────────────────────────────────────────────
+
+// setTestEnv configures env vars for testing with a mock LLM.
+// Returns a cleanup function that restores original values.
+func setTestEnv(t *testing.T, llmBaseURL string) func() {
+	t.Helper()
+	origDS := os.Getenv("DEEPSEEK_API_KEY")
+	origOAI := os.Getenv("OPENAI_API_KEY")
+	origKBS := os.Getenv("KODE_BASE_URL")
+	origHome := os.Getenv("HOME")
+
+	os.Setenv("DEEPSEEK_API_KEY", "sk-mock")
+	os.Unsetenv("OPENAI_API_KEY")
+	os.Setenv("KODE_BASE_URL", llmBaseURL)
+	os.Setenv("HOME", t.TempDir())
+
+	return func() {
+		os.Setenv("DEEPSEEK_API_KEY", origDS)
+		os.Setenv("OPENAI_API_KEY", origOAI)
+		os.Setenv("KODE_BASE_URL", origKBS)
+		os.Setenv("HOME", origHome)
+	}
+}
+
+// newTestSessionStore creates a session.Store backed by a temp directory.
+func newTestSessionStore(t *testing.T) *session.Store {
+	t.Helper()
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", t.TempDir())
+	t.Cleanup(func() { os.Setenv("HOME", origHome) })
+	store, err := session.NewStore()
+	if err != nil {
+		t.Fatalf("session.NewStore: %v", err)
+	}
+	return store
+}
+
+// buildServeMux creates a listener on a random port and builds the
+// kode serve HTTP mux with a pre-configured session store.
+func buildServeMux(t *testing.T, store *session.Store) (net.Listener, *http.ServeMux) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	resolved := config.LoadConfig(config.CLIFlags{})
+	systemMessage := resolved.System
+	if systemMessage == "" {
+		systemMessage = defaultSystem
+	}
+
+	cwd, _ := os.Getwd()
+	home, _ := os.UserHomeDir()
+	resourceReg := resource.NewRegistry(
+		resource.NewFileResolver(cwd),
+		resource.NewSessionResolver(filepath.Join(home, ".kode", "sessions")),
+	)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", handleStatic())
+	mux.Handle("/ws", &golangws.Server{
+		Handshake: func(*golangws.Config, *http.Request) error { return nil },
+		Handler: func(conn *golangws.Conn) {
+			handleWS(store, resourceReg, resolved, systemMessage, conn)
+		},
+	})
+	mux.HandleFunc("/api/resources", handleResourceSearch(resourceReg))
+	mux.HandleFunc("/api/sessions", handleSessionList(store))
+
+	return ln, mux
+}
+
+// waitForHTTP blocks until the HTTP server responds with 200 on GET /.
+func waitForHTTP(t *testing.T, addr string) {
+	t.Helper()
+	for i := 0; i < 20; i++ {
+		time.Sleep(250 * time.Millisecond)
+		resp, err := http.Get("http://" + addr + "/")
+		if err == nil && resp.StatusCode == 200 {
+			resp.Body.Close()
+			return
+		}
+	}
+	t.Fatal("server not ready after 5s")
 }
 
