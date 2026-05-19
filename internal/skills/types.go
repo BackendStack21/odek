@@ -73,6 +73,8 @@ type SkillsConfig struct {
 	Dirs         []string       `json:"dirs,omitempty"`
 	Import       ImportConfig   `json:"import"`
 	Curation     CurationConfig `json:"curation"`
+	LLMLearn     bool           `json:"llm_learn"`
+	LLMCurate    bool           `json:"llm_curate"`
 }
 
 // ImportConfig controls the URI import flow.
@@ -104,6 +106,8 @@ func DefaultSkillsConfig() SkillsConfig {
 			StalenessDays: 90,
 			AutoPrune:     false,
 		},
+		LLMLearn:  true,
+		LLMCurate: true,
 	}
 }
 

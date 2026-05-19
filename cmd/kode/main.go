@@ -818,7 +818,9 @@ func run(args []string) error {
 
 	// ── Learn loop: run self-improvement heuristics ──
 	if resolved.Skills.Learn && sm != nil {
-		runLearnLoop(allMessages, f.Task, sm)
+		// Create LLM client for skill enhancement
+		skillsLLM := llm.New(resolved.BaseURL, resolved.APIKey, resolved.Model, "", 30*time.Second)
+		runLearnLoop(allMessages, f.Task, sm, skillsLLM, resolved.Skills.LLMLearn)
 	}
 
 	// ── Session end — extract episode if enough turns ──
@@ -1033,7 +1035,8 @@ func getVersion() string {
 
 // runLearnLoop runs self-improvement heuristics on agent output and
 // offers to save detected patterns as skills.
-func runLearnLoop(messages []llm.Message, task string, sm *skills.SkillManager) {
+func runLearnLoop(messages []llm.Message, task string, sm *skills.SkillManager, llmClient skills.LLMClient, llmLearn bool) {
+	// Convert llm.Message to skills.llmMessage
 	// Convert llm.Message to skills.llmMessage
 	skillMsgs := make([]skills.LlmMessage, 0, len(messages))
 	for _, m := range messages {
@@ -1061,6 +1064,16 @@ func runLearnLoop(messages []llm.Message, task string, sm *skills.SkillManager) 
 
 	fmt.Fprintf(os.Stderr, "\n🔍 Learning: detected %d skill pattern(s)\n", len(suggestions))
 	for _, s := range suggestions {
+		// Try LLM enhancement (generates better name, description, body, triggers)
+		if llmLearn && llmClient != nil {
+			calls := skills.ExtractToolCalls(skillMsgs)
+			if enhanced := skills.GenerateSkillWithLLM(llmClient, calls, userMessages, s.Heuristic); enhanced != nil {
+				enhanced.CommandLog = s.CommandLog // preserve original command log
+				enhanced.Heuristic = s.Heuristic    // preserve original heuristic tag
+				s = *enhanced
+			}
+		}
+
 		fmt.Fprint(os.Stderr, skills.FormatSuggestion(s))
 		fmt.Fprintf(os.Stderr, "   Save as skill? [Y/n]: ")
 
