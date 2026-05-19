@@ -87,6 +87,7 @@ docs/                         Documentation
   SUBAGENTS.md                Task decomposition + sub-agents + delegate_tasks tool
   SECURITY.md                 Prompt injection, security model
   SANDBOXING.md               Sandbox configuration
+  MCP.md                      MCP server over stdio (Model Context Protocol)
   DEVELOPMENT.md              This file
 ```
 

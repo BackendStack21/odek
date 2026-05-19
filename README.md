@@ -140,6 +140,7 @@ kode repl
 | [Sub-Agents](docs/SUBAGENTS.md) | Task decomposition, delegation tool, subagent protocol |
 | [Web UI](docs/WEBUI.md) | `kode serve`, WebSocket protocol, `@` resource resolution |
 | [Skills](docs/CLI.md#skills) | Trigger-matched skills, learning, import, curation |
+| [MCP](docs/MCP.md) | MCP server over stdio — use kode tools from Claude Code |
 | [Development](docs/DEVELOPMENT.md) | Building, testing, contributing, project structure |
 
 ---

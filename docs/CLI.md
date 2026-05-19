@@ -22,6 +22,7 @@
 | `kode serve [--addr :8080] [--open]` | Web UI server with WebSocket streaming, `@` resource completion, session history |
 | `kode subagent --goal <string> [flags]` | Run a focused sub-task; outputs JSON on stdout. Spawned by `delegate_tasks` tool |
 | `kode init [--global] [--force]` | Create a config file template |
+| `kode mcp [--sandbox]` | Start MCP server over stdio — exposes tools for Claude Code |
 | `kode version` | Print version and exit |
 
 ## Run flags

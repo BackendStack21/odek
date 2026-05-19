@@ -133,6 +133,11 @@ func main() {
 			})
 			os.Exit(3)
 		}
+	case "mcp":
+		if err := mcpCmd(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "kode: %v\n", err)
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "kode: unknown command %q\n", os.Args[1])
 		printUsage()
@@ -340,6 +345,7 @@ func printUsage() {
   kode subagent --goal <string> [--context <string>] [flags]
   kode init [--global | -g] [--force | -f]
   kode skill <list|view|save|delete|import|curate>
+  kode mcp [--sandbox]
   kode version
 
 Commands:
@@ -358,6 +364,8 @@ Commands:
                        Accepts --goal, --context, --task, --timeout, --max-iter.
   session             Manage sessions: list, show, delete, trim, cleanup
   skill               Manage skills: list, view, save, delete, import, curate
+  mcp                 Start MCP server (Model Context Protocol) over stdio
+                        Exposes all built-in tools for Claude Code, Cursor, etc.
   init                Create a config file (default: ./kode.json)
   version             Print version and exit
 
