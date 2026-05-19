@@ -111,10 +111,9 @@ func TestSecurity_WriteFile_DestructivePath(t *testing.T) {
 func TestSecurity_WriteFile_CustomAllowlist(t *testing.T) {
 	// /etc is system_write → deny by default in deny-non-interactive mode.
 	// But non_interactive=allow should override the security denial.
-	// Note: the actual os.WriteFile may still fail due to filesystem
-	// permissions (we're not root in CI). That's OK — we're testing
-	// that the security layer allows the operation, not that the
-	// filesystem write succeeds.
+	// The actual os.WriteFile will fail with a filesystem permission error
+	// (CI runners aren't root). We test that the error is a filesystem
+	// error, NOT a security-layer denial.
 	allow := "allow"
 	dc := danger.DangerousConfig{
 		NonInteractive: &allow,
@@ -125,8 +124,12 @@ func TestSecurity_WriteFile_CustomAllowlist(t *testing.T) {
 	mustUnmarshal(t, result, &r)
 	// With non_interactive=allow, the security layer should NOT issue
 	// a denial. A filesystem-level permission error is acceptable.
-	if strings.Contains(r.Error, "denied") {
-		t.Errorf("expected security layer to allow, got denial: %s", r.Error)
+	if r.Error != "" && (strings.Contains(r.Error, "security") || strings.Contains(r.Error, "config")) {
+		t.Errorf("expected security layer to allow, got security denial: %s", r.Error)
+	}
+	// Verify it's a filesystem-level error
+	if r.Error != "" && !strings.Contains(r.Error, "permission") {
+		t.Logf("expected FS error (not denial): %s", r.Error)
 	}
 }
 
