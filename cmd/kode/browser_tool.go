@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+
+	"github.com/BackendStack21/kode/internal/danger"
 )
 
 // ── Regex helpers for HTML parsing (zero-dep) ─────────────────────────
@@ -55,14 +57,17 @@ type browserState struct {
 // ── Browser Tool ──────────────────────────────────────────────────────
 
 type browserTool struct {
-	state *browserState
-	client *http.Client
+	state          *browserState
+	client         *http.Client
+	dangerousConfig danger.DangerousConfig
+	trustedClasses  map[danger.RiskClass]bool
 }
 
-func newBrowserTool() *browserTool {
+func newBrowserTool(dc danger.DangerousConfig) *browserTool {
 	return &browserTool{
-		state:  &browserState{nextRef: 1},
-		client: &http.Client{},
+		state:          &browserState{nextRef: 1},
+		client:         &http.Client{},
+		dangerousConfig: dc,
 	}
 }
 
@@ -168,6 +173,14 @@ func (t *browserTool) doNavigate(rawURL string) (string, error) {
 	}
 	req.Header.Set("User-Agent", "kode-browser/0.1")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+
+	// Security: classify and check browser operation
+	risk := danger.ClassifyURL(rawURL)
+	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
+		Name: "browser", Resource: rawURL, Risk: risk,
+	}, t.trustedClasses); err != nil {
+		return jsonError(err.Error())
+	}
 
 	resp, err := t.client.Do(req)
 	if err != nil {

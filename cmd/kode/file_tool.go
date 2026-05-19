@@ -9,13 +9,17 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/BackendStack21/kode/internal/danger"
 )
 
 // ── ReadFile Tool ──────────────────────────────────────────────────────
 
 const maxLines = 2000
 
-type readFileTool struct{}
+type readFileTool struct {
+	dangerousConfig danger.DangerousConfig
+}
 
 func (t *readFileTool) Name() string { return "read_file" }
 
@@ -82,6 +86,14 @@ func (t *readFileTool) Call(argsJSON string) (string, error) {
 		args.Limit = maxLines
 	}
 
+	// Security: check if this path requires approval
+	risk := danger.ClassifyPath(args.Path)
+	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
+		Name: "read_file", Resource: args.Path, Risk: risk,
+	}, nil); err != nil {
+		return jsonError(err.Error())
+	}
+
 	// Check file exists and is not a directory
 	info, err := os.Stat(args.Path)
 	if err != nil {
@@ -127,7 +139,10 @@ func (t *readFileTool) Call(argsJSON string) (string, error) {
 
 // ── WriteFile Tool ─────────────────────────────────────────────────────
 
-type writeFileTool struct{}
+type writeFileTool struct {
+	dangerousConfig danger.DangerousConfig
+	trustedClasses map[danger.RiskClass]bool
+}
 
 func (t *writeFileTool) Name() string { return "write_file" }
 
@@ -174,6 +189,14 @@ func (t *writeFileTool) Call(argsJSON string) (string, error) {
 		return jsonError("path is required")
 	}
 
+	// Security: classify and check write operation
+	risk := danger.ClassifyPath(args.Path)
+	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
+		Name: "write_file", Resource: args.Path, Risk: risk,
+	}, t.trustedClasses); err != nil {
+		return jsonError(err.Error())
+	}
+
 	// Create parent directories
 	dir := filepath.Dir(args.Path)
 	if dir != "." && dir != "/" {
@@ -196,7 +219,9 @@ func (t *writeFileTool) Call(argsJSON string) (string, error) {
 
 const maxMatches = 50
 
-type searchFilesTool struct{}
+type searchFilesTool struct {
+	dangerousConfig danger.DangerousConfig
+}
 
 func (t *searchFilesTool) Name() string { return "search_files" }
 
@@ -272,6 +297,14 @@ func (t *searchFilesTool) Call(argsJSON string) (string, error) {
 	}
 	if args.Limit <= 0 {
 		args.Limit = maxMatches
+	}
+
+	// Security: check search path
+	risk := danger.ClassifyPath(args.Path)
+	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
+		Name: "search_files", Resource: args.Path, Risk: risk,
+	}, nil); err != nil {
+		return jsonError(err.Error())
 	}
 
 	switch args.Target {
@@ -423,7 +456,10 @@ func (t *searchFilesTool) searchFiles(args searchFilesArgs) (string, error) {
 
 // ── Patch Tool ─────────────────────────────────────────────────────────
 
-type patchTool struct{}
+type patchTool struct {
+	dangerousConfig danger.DangerousConfig
+	trustedClasses  map[danger.RiskClass]bool
+}
 
 func (t *patchTool) Name() string { return "patch" }
 
@@ -481,6 +517,14 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 	}
 	if args.OldString == "" {
 		return jsonError("old_string is required")
+	}
+
+	// Security: classify and check patch operation
+	risk := danger.ClassifyPath(args.Path)
+	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
+		Name: "patch", Resource: args.Path, Risk: risk,
+	}, t.trustedClasses); err != nil {
+		return jsonError(err.Error())
 	}
 
 	// Read the file

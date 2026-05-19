@@ -8,6 +8,10 @@
 package danger
 
 import (
+	"bufio"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -35,6 +39,65 @@ const (
 	Prompt Action = "prompt"
 	Deny   Action = "deny"
 )
+
+// ── Tool Operation ─────────────────────────────────────────────────────
+
+// ToolOperation describes a native tool call for approval checking.
+type ToolOperation struct {
+	Name     string
+	Resource string
+	Risk     RiskClass
+}
+
+// ── Path-based classification ──────────────────────────────────────────
+
+// ClassifyPath returns a RiskClass for a filesystem path.
+// /tmp/*, working directory → local_write; /etc/*, /root/* → system_write;
+// /boot/*, /dev/*, /sys/* → destructive; home sensitive dirs → system_write.
+func ClassifyPath(path string) RiskClass {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return SystemWrite
+	}
+	abs = filepath.Clean(abs)
+
+	for _, prefix := range []string{"/boot", "/dev", "/proc", "/sys", "/mnt", "/media"} {
+		if strings.HasPrefix(abs, prefix) {
+			return Destructive
+		}
+	}
+	for _, prefix := range []string{"/etc", "/root", "/var", "/run", "/lib", "/usr"} {
+		if strings.HasPrefix(abs, prefix) {
+			return SystemWrite
+		}
+	}
+	home, _ := os.UserHomeDir()
+	if home != "" {
+		for _, sub := range []string{"/.ssh", "/.config", "/.gnupg", "/.aws", "/.kube",
+			"/.docker", "/.gitconfig", "/.env"} {
+			if strings.HasPrefix(abs, home+sub) {
+				return SystemWrite
+			}
+		}
+	}
+	return LocalWrite
+}
+
+// ClassifyURL returns a RiskClass for a browser URL.
+// Internal IPs → system_write; external → network_egress.
+func ClassifyURL(rawURL string) RiskClass {
+	for _, prefix := range []string{
+		"http://127.0.0.1", "http://localhost", "http://10.",
+		"http://172.", "http://192.168.", "http://[::1]",
+		"https://127.0.0.1", "https://localhost",
+		"https://10.", "https://172.", "https://192.168.",
+	} {
+		if strings.HasPrefix(rawURL, prefix) {
+			return SystemWrite
+		}
+	}
+	return NetworkEgress
+}
 
 // ── Config ─────────────────────────────────────────────────────────────
 
@@ -136,6 +199,24 @@ func (c *DangerousConfig) NonInteractiveAction() Action {
 	return Allow
 }
 
+// CheckOperation checks whether a tool operation is allowed, denied,
+// or needs approval. Returns nil on allow, error on deny, and prompts
+// the user on prompt.
+func (c *DangerousConfig) CheckOperation(op ToolOperation, trustedClasses map[RiskClass]bool) error {
+	action := c.ActionFor(op.Risk)
+	switch action {
+	case Allow:
+		return nil
+	case Deny:
+		return fmt.Errorf("operation denied by configuration: %s %s (risk: %s)",
+			op.Name, op.Resource, op.Risk)
+	case Prompt:
+		return promptForOperation(op, trustedClasses, c.NonInteractiveAction())
+	default:
+		return nil
+	}
+}
+
 func parseAction(s string) Action {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "allow":
@@ -144,6 +225,47 @@ func parseAction(s string) Action {
 		return Deny
 	default:
 		return Prompt
+	}
+}
+
+// promptForOperation reads user approval from /dev/tty for native tool ops.
+// Returns nil on approve/trust, error on deny or TTY failure.
+func promptForOperation(op ToolOperation, trustedClasses map[RiskClass]bool, nonInteractive Action) error {
+	if trustedClasses != nil && trustedClasses[op.Risk] {
+		return nil
+	}
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		if nonInteractive == Deny {
+			return fmt.Errorf("operation denied (non-interactive mode): %s %s (risk: %s)",
+				op.Name, op.Resource, op.Risk)
+		}
+		return nil
+	}
+	defer tty.Close()
+
+	fmt.Fprintf(os.Stderr, "\n⚠️  \033[1mTool:\033[0m  %s\n", op.Name)
+	fmt.Fprintf(os.Stderr, "   \033[1mRisk:\033[0m  %s\n", op.Risk)
+	fmt.Fprintf(os.Stderr, "   \033[1mTarget:\033[0m %s\n", op.Resource)
+	fmt.Fprint(os.Stderr, "\n   [A]pprove  [D]eny  [T]rust session: ")
+
+	reader := bufio.NewReader(tty)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("approval prompt error: %w", err)
+	}
+	line = strings.TrimSpace(strings.ToLower(line))
+
+	switch line {
+	case "a", "approve":
+		return nil
+	case "t", "trust":
+		if trustedClasses != nil {
+			trustedClasses[op.Risk] = true
+		}
+		return nil
+	default:
+		return fmt.Errorf("operation denied by user: %s %s", op.Name, op.Resource)
 	}
 }
 
