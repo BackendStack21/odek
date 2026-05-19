@@ -118,6 +118,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "kode: %v\n", err)
 			os.Exit(1)
 		}
+	case "serve":
+		if err := serveCmd(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "kode: %v\n", err)
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "kode: unknown command %q\n", os.Args[1])
 		printUsage()
@@ -318,7 +323,9 @@ func printUsage() {
   kode continue [--id <id>] <task>
   kode session <list|show [id]|trim <id> <n>|delete <id>|cleanup <days>>
   kode repl [flags]
+  kode serve [--addr :8080] [--open]
   kode init [--global | -g] [--force | -f]
+  kode skill <list|view|save|delete|import|curate>
   kode version
 
 Commands:
@@ -329,6 +336,10 @@ Commands:
   repl                Interactive REPL mode (multi-turn session)
                        Accepts --model, --thinking, --sandbox, and
                        --sandbox-* flags just like kode run.
+  serve               Web UI server with WebSocket streaming
+                       Open http://localhost:8080 in your browser.
+                       Features: @ resource completion, session history,
+                       streaming agent responses.
   session             Manage sessions: list, show, delete, trim, cleanup
   skill               Manage skills: list, view, save, delete, import, curate
   init                Create a config file (default: ./kode.json)
