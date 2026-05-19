@@ -829,3 +829,118 @@ func waitForHTTP(t *testing.T, addr string) {
 	t.Fatal("server not ready after 5s")
 }
 
+// TestServe_E2E_MultiToolCall verifies the WebUI event sequence when
+// the agent makes multiple tool calls in a single turn. This exercises
+// the same code path the WebUI uses for sub-agent delegation rendering.
+func TestServe_E2E_MultiToolCall(t *testing.T) {
+	// Mock LLM: make two shell tool calls, then a final response.
+	callCount := 0
+	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		if callCount <= 2 {
+			fmt.Fprintf(w, `{"choices":[{"message":{"content":"Running step %d.","tool_calls":[{"id":"call_%d","function":{"name":"shell","arguments":"{\"command\":\"echo step %d\"}"}}]}}]}`,
+				callCount, callCount, callCount)
+		} else {
+			w.Write([]byte(`{"choices":[{"message":{"content":"All done."}}]}`))
+		}
+	}))
+	defer llmSrv.Close()
+
+	envCleanup := setTestEnv(t, llmSrv.URL)
+	defer envCleanup()
+
+	store := newTestSessionStore(t)
+	ln, mux := buildServeMux(t, store)
+	defer ln.Close()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- serveOnListener(ln, mux) }()
+	waitForHTTP(t, ln.Addr().String())
+
+	wsURL := "ws://" + ln.Addr().String() + "/ws"
+	conn, err := golangws.Dial(wsURL, "", "http://localhost")
+	if err != nil {
+		t.Fatalf("Dial(%q): %v", wsURL, err)
+	}
+	defer conn.Close()
+	t.Log("✅ WebSocket connected")
+
+	// Send a prompt
+	prompt := map[string]string{"type": "prompt", "content": "run multiple steps"}
+	payload, _ := json.Marshal(prompt)
+	if err := golangws.Message.Send(conn, string(payload)); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	t.Log("✅ Prompt sent")
+
+	// Collect all events
+	conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+
+	var events []map[string]any
+	var sawSession, sawToken, sawToolCall, sawToolResult, sawDone bool
+	var toolCallCount, toolResultCount int
+
+	for i := 0; i < 15; i++ {
+		var raw []byte
+		if err := golangws.Message.Receive(conn, &raw); err != nil {
+			t.Fatalf("Receive event %d: %v (collected %d events)", i, err, len(events))
+		}
+		t.Logf("  event[%d]: %s", i, string(raw))
+
+		var evt map[string]any
+		if err := json.Unmarshal(raw, &evt); err != nil {
+			t.Fatalf("unmarshal event %d: %v", i, err)
+		}
+		events = append(events, evt)
+
+		switch evt["type"] {
+		case "session":
+			sawSession = true
+		case "token":
+			sawToken = true
+		case "tool_call":
+			sawToolCall = true
+			toolCallCount++
+		case "tool_result":
+			sawToolResult = true
+			toolResultCount++
+		case "done":
+			sawDone = true
+			goto multiDone
+		case "error":
+			t.Fatalf("unexpected error: %v", evt["message"])
+		}
+	}
+
+multiDone:
+	if !sawSession {
+		t.Fatal("E2E: missing session event")
+	}
+	if !sawToken {
+		t.Fatal("E2E: missing token event")
+	}
+	if !sawToolCall {
+		t.Fatal("E2E: missing tool_call event")
+	}
+	if !sawToolResult {
+		t.Fatal("E2E: missing tool_result event")
+	}
+	if toolCallCount < 2 {
+		t.Errorf("E2E: expected at least 2 tool_calls, got %d", toolCallCount)
+	}
+	if toolResultCount < 2 {
+		t.Errorf("E2E: expected at least 2 tool_results, got %d", toolResultCount)
+	}
+	if !sawDone {
+		t.Fatal("E2E: missing done event")
+	}
+
+	types := make([]string, len(events))
+	for i, e := range events {
+		types[i] = e["type"].(string)
+	}
+	t.Logf("✅ Multi-tool E2E event sequence: %v", types)
+	t.Log("✅ Multi-tool pipeline verified: session → tokens → tool_call → tool_result → (repeat) → done")
+}
+
