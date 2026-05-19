@@ -71,10 +71,18 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 ### Client → Server
 
 ```jsonc
+// Prompt — send a task to the agent
 {
   "type": "prompt",
   "content": "What files are in src/?",
   "session_id": "20260519-abc123"  // optional — omit for new session
+}
+
+// Approval response — answer a security prompt
+{
+  "type": "approval_response",
+  "id": "apr-a1b2c3d4",
+  "action": "approve"  // "approve" | "deny" | "trust"
 }
 ```
 
@@ -88,6 +96,7 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 | `tool_result` | Tool returns output | `name`, `output` (truncated to 500 chars) |
 | `done` | Agent finishes | `latency` (seconds) |
 | `error` | Agent or server error | `message` |
+| `approval_request` | Agent needs user approval for dangerous operation | `id`, `risk` (class name), `command` (or resource), `description`, `is_operation` |
 
 Example event sequence:
 

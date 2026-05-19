@@ -68,13 +68,22 @@ API keys are read from environment variables or explicit config. kode never logs
 
 ## Dangerous Operations Approval
 
-When running **without** `--sandbox`, kode's shell tool classifies every command by risk level and can prompt for user approval before executing high-risk operations.
+When running **without** `--sandbox`, kode's shell tool and native tools (read_file, write_file, browser, etc.) classify every operation by risk level and can prompt for user approval before executing high-risk operations.
 
-### How it works
+The approval mechanism uses a unified **Approver** interface with two implementations:
+
+| Mode | Approver | How it works |
+|------|----------|-------------|
+| **CLI** (`kode run`, `kode repl`) | `TTYApprover` | Opens `/dev/tty` — the same keypress-based prompt described below |
+| **Web UI** (`kode serve`) | `WSApprover` | Sends `approval_request` via WebSocket — the browser shows a modal with Approve / Deny / Trust buttons |
+
+Both provide the **same three actions**: approve once, deny, or trust for the session. The experience is identical regardless of how you interact with kode.
+
+### How it works (CLI mode)
 
 1. The shell tool receives a command from the agent (JSON with `command` and optional `description`)
 2. The command is tokenized and classified into one of 8 risk classes (see [CLI.md](CLI.md#dangerous-operations))
-3. If the class is configured to `prompt` (default for system_write, network_egress, code_execution, install), the tool opens `/dev/tty` and shows:
+3. If the class is configured to `prompt` (default for system_write, network_egress, code_execution, install), the tool shows:
 
 ```
 ⚠️  Risk: system_write
@@ -114,9 +123,11 @@ When you press `T`, the risk class is cached in memory for the lifetime of the k
 
 ### Non-interactive mode
 
-When `/dev/tty` is not available (piped stdin, CI environments), the configured `non_interactive` action is used:
+When `/dev/tty` is not available (piped stdin, CI environments, or when no custom approver is configured), the configured `non_interactive` action is used:
 - `"allow"` (default) — run all commands without prompting
 - `"deny"` — block all prompted operations
+
+> **Note:** In `kode serve` (Web UI) mode, this fallback is never hit — a WebSocket-based approver (`WSApprover`) is automatically injected, giving you interactive approval dialogs in the browser. The `non_interactive` setting only matters for CLI sessions without a TTY.
 
 ### Allowlist vs Denylist
 

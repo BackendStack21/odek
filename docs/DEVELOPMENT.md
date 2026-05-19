@@ -43,6 +43,7 @@ internal/
   danger/
     classifier.go             Command/URL classification for security gating
     classifier_test.go        209 tests, 8 risk classes, config overrides
+    approver.go               Approver interface + TTYApprover (CLI /dev/tty)
   memory/
     memory.go                 MemoryManager orchestrator (facts, buffer, episodes)
     facts.go                  FactStore with caps, dedup, substring CRUD
@@ -71,6 +72,7 @@ cmd/kode/
   serve.go                    Web UI server (HTTP + WebSocket)
   subagent.go                 Sub-agent command (--goal, --context, --task, JSON stdout)
   subagent_tool.go            delegate_tasks built-in tool
+  wsapprover.go               WSApprover — WebSocket-based approval for serve mode
   subagent_test.go            Tests (flag parsing, JSON stdout, exit codes, tool schema)
   subagent_contract_test.go   Contract tests (flag parsing, stdout protocol, exit codes)
   subagent_e2e_test.go        E2E tests (16 — KODE_E2E=true, real subprocess spawning)
