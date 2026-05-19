@@ -38,8 +38,8 @@ kode is not a framework. It's a **runtime** — the smallest possible surface ar
 ### 🧩 Sub-Agent Delegation
 Parallel OS-process sub-agents via `delegate_tasks`. True isolation — each sub-agent is a fresh `kode subagent` process with its own config, tools, and termination timeout. Up to 8 concurrent workers. [docs/SUBAGENTS.md](docs/SUBAGENTS.md)
 
-### 🧠 Skill System
-Trigger-matched `SKILL.md` files load on-demand. Auto-learn from patterns with `--learn`. Import skills from any URI with automatic LLM risk assessment before installation. [docs/CLI.md#skills](docs/CLI.md#skills)
+### 🧠 Skill System (on by default)
+Trigger-matched `SKILL.md` files load on-demand. Auto-learns from patterns every session — detects multi-step procedures, error recoveries, repeated actions, and user corrections. **LLM-enhanced**: detected patterns are enriched with better names, descriptions, and structured content. Use `--no-learn` to disable. Import skills from any URI with automatic LLM risk assessment. [docs/CLI.md#skills](docs/CLI.md#skills)
 
 ### 💾 Persistent Memory
 Three tiers: **facts** (agent-managed durable entries), **session buffer** (auto-appended turn summaries), **episodes** (LLM-extracted knowledge from past sessions). Merge-on-write via go-vector RandomProjections — cosine >0.7 auto-merges, <0.3 auto-adds. Saves ~80% LLM calls. [docs/MEMORY.md](docs/MEMORY.md)
@@ -77,8 +77,8 @@ kode run --sandbox "npm audit"
 # Different model
 kode run --model gpt-4o --base-url https://api.openai.com/v1 "Explain this"
 
-# With skill learning
-kode run --learn "Set up a Go project with CI"
+# With skill learning (on by default — use --no-learn to disable)
+kode run "Set up a Go project with CI"
 
 # Interactive REPL
 kode repl
@@ -119,7 +119,7 @@ kode repl
 | `--base-url <url>` | API endpoint URL |
 | `--sandbox` | Run in Docker sandbox |
 | `--thinking <level>` | Reasoning depth (enabled/disabled/low/medium/high) |
-| `--learn` | Enable skill learning mode |
+| `--no-learn` | Disable skill learning mode (on by default) |
 | `--system <prompt>` | Override system prompt |
 | `--max-iter <n>` | Max think→act cycles (default 90) |
 | `--no-agents` | Skip AGENTS.md project file |

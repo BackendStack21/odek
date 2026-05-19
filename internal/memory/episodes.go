@@ -210,43 +210,43 @@ func NewLLMRanker(llm LLMClient) RankStrategy {
 		b.WriteString("Format: a single line of comma-separated numbers, e.g. \"3,0,1\"\n")
 		b.WriteString("If none are relevant, return \"none\".")
 
-		resp, err := llm.SimpleCall(context.Background(),
-			"You are a relevance ranking system. Given a query and a list of items, return the indices of the most relevant items ordered by relevance. Return only a comma-separated list of numbers or the word 'none'.",
-			b.String(),
-		)
-		if err != nil {
-			return defaultRanker(query, episodes)
-		}
-
-		resp = strings.TrimSpace(resp)
-		if resp == "" || resp == "none" {
-			return nil, nil
-		}
-
-		// Parse "3,0,1" or "3, 0, 1" into indices
-		parts := strings.Split(resp, ",")
-		seen := make(map[int]bool)
-		var ranked []EpisodeMeta
-		for _, p := range parts {
-			p = strings.TrimSpace(p)
-			if p == "" {
-				continue
-			}
-			idx := 0
-			for _, c := range p {
-				if c >= '0' && c <= '9' {
-					idx = idx*10 + int(c-'0')
-				}
-			}
-			if idx >= 0 && idx < len(episodes) && !seen[idx] {
-				ranked = append(ranked, episodes[idx])
-				seen[idx] = true
-			}
-		}
-
-		if len(ranked) == 0 {
-			return defaultRanker(query, episodes)
-		}
-		return ranked, nil
+	resp, err := llm.SimpleCall(context.Background(),
+		"You are a relevance ranking system. Given a query and a list of items, return the indices of the most relevant items ordered by relevance. Return only a comma-separated list of numbers or the word 'none'.",
+		b.String(),
+	)
+	if err != nil || strings.TrimSpace(resp) == "" {
+		return defaultRanker(query, episodes)
 	}
+
+	resp = strings.TrimSpace(resp)
+	if resp == "none" {
+		return nil, nil
+	}
+
+	// Parse "3,0,1" or "3, 0, 1" into indices
+	parts := strings.Split(resp, ",")
+	seen := make(map[int]bool)
+	var ranked []EpisodeMeta
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		idx := 0
+		for _, c := range p {
+			if c >= '0' && c <= '9' {
+				idx = idx*10 + int(c-'0')
+			}
+		}
+		if idx >= 0 && idx < len(episodes) && !seen[idx] {
+			ranked = append(ranked, episodes[idx])
+			seen[idx] = true
+		}
+	}
+
+	if len(ranked) == 0 {
+		return defaultRanker(query, episodes)
+	}
+	return ranked, nil
+}
 }

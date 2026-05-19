@@ -208,3 +208,99 @@ func TestEpisodeStoreLargeSummaryTruncation(t *testing.T) {
 		t.Error("truncated summary should end with ...")
 	}
 }
+
+func TestNewLLMRanker_EmptyEpisodes(t *testing.T) {
+	llm := &mockLLM{}
+	ranker := NewLLMRanker(llm)
+	results, err := ranker("query", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for empty episodes, got %d", len(results))
+	}
+}
+
+func TestNewLLMRanker_LLMFailure(t *testing.T) {
+	// LLM returns empty string (simulates failure)
+	llm := &mockLLM{responses: map[string]string{}}
+	ranker := NewLLMRanker(llm)
+
+	eps := []EpisodeMeta{
+		{SessionID: "sess-001", Summary: "auth bug fix", Turns: 5},
+		{SessionID: "sess-002", Summary: "database optimization", Turns: 3},
+	}
+
+	results, err := ranker("auth", eps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Should fall back to recency ordering
+	if len(results) != 2 {
+		t.Errorf("expected 2 results on LLM failure, got %d", len(results))
+	}
+}
+
+func TestNewLLMRanker_ParsesRanking(t *testing.T) {
+	llm := &mockLLM{responses: map[string]string{
+		"Rank these memory": "1,0",
+	}}
+	ranker := NewLLMRanker(llm)
+
+	eps := []EpisodeMeta{
+		{SessionID: "sess-001", Summary: "auth bug fix", Turns: 5},
+		{SessionID: "sess-002", Summary: "database optimization", Turns: 3},
+		{SessionID: "sess-003", Summary: "frontend styling", Turns: 2},
+	}
+
+	results, err := ranker("database", eps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	// sess-002 should be first (index 1), then sess-001 (index 0)
+	if results[0].SessionID != "sess-002" {
+		t.Errorf("expected sess-002 first, got %s", results[0].SessionID)
+	}
+}
+
+func TestNewLLMRanker_NoneRelevant(t *testing.T) {
+	llm := &mockLLM{responses: map[string]string{
+		"Rank these memory": "none",
+	}}
+	ranker := NewLLMRanker(llm)
+
+	eps := []EpisodeMeta{
+		{SessionID: "sess-001", Summary: "auth bug fix", Turns: 5},
+	}
+
+	results, err := ranker("irrelevant", eps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for 'none', got %d", len(results))
+	}
+}
+
+func TestNewLLMRanker_DeduplicatesIndices(t *testing.T) {
+	llm := &mockLLM{responses: map[string]string{
+		"Rank these memory": "0,0,1",
+	}}
+	ranker := NewLLMRanker(llm)
+
+	eps := []EpisodeMeta{
+		{SessionID: "sess-001", Summary: "first", Turns: 3},
+		{SessionID: "sess-002", Summary: "second", Turns: 3},
+	}
+
+	results, err := ranker("test", eps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 deduplicated results, got %d", len(results))
+	}
+}

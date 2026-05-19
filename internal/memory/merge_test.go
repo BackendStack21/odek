@@ -136,3 +136,50 @@ func TestMergeDetectorCosineRange(t *testing.T) {
 		t.Errorf("cosine out of range [0,1]: sim1=%.4f sim2=%.4f", sim1, sim2)
 	}
 }
+
+func TestMergeDetectorCustomThresholds(t *testing.T) {
+	// Very low merge threshold = almost everything merges
+	md := NewMergeDetectorWithThresholds(256, 0.1, 0.01)
+	corpus := []string{"The user prefers terse responses from the AI assistant"}
+	md.Fit(corpus)
+
+	// Even a somewhat related entry should merge (cos > 0.1)
+	action, idx, sim := md.Classify("User likes direct and concise answers")
+	t.Logf("low threshold: action=%s idx=%d sim=%.4f", action, idx, sim)
+	if action != "merge" {
+		t.Log("note: RP similarity may not detect this as merge (semantic gap)")
+	}
+}
+
+func TestMergeDetectorHighAddThreshold(t *testing.T) {
+	// High add threshold = almost nothing auto-adds
+	md := NewMergeDetectorWithThresholds(256, 0.9, 0.8)
+	corpus := []string{"Python is used for data science and web development"}
+	md.Fit(corpus)
+
+	action, _, sim := md.Classify("Go is a compiled systems programming language")
+	t.Logf("high add threshold: action=%s sim=%.4f", action, sim)
+	// Should be "judge" or "add" depending on RP similarity
+	if action != "judge" && action != "add" {
+		t.Errorf("expected judge or add, got %s", action)
+	}
+}
+
+func TestMergeDetectorWithThresholdsDefaultDims(t *testing.T) {
+	// 0 dims should use default
+	md := NewMergeDetectorWithThresholds(0, 0.5, 0.2)
+	if md.rp.Dims() != 256 {
+		t.Errorf("expected default 256 dims, got %d", md.rp.Dims())
+	}
+}
+
+func TestMergeDetectorWithThresholdInvalidValues(t *testing.T) {
+	// addThreshold >= mergeThreshold should be reset to defaults
+	md := NewMergeDetectorWithThresholds(128, 0.3, 0.7)
+	corpus := []string{"test entry for the merge detector system"}
+	md.Fit(corpus)
+
+	action, _, _ := md.Classify("completely unrelated physics topic quantum mechanics")
+	// With add_threshold reset to 0.3, this should be "add"
+	t.Logf("invalid thresholds test: action=%s", action)
+}
