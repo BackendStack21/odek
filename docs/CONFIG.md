@@ -123,7 +123,12 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
     "buffer_lines": 20,
     "buffer_enabled": true,
     "merge_on_write": true,
-    "extract_on_end": true
+    "extract_on_end": true,
+    "llm_search": true,
+    "llm_extract": true,
+    "llm_consolidate": true,
+    "merge_threshold": 0.7,
+    "add_threshold": 0.3
   }
 }
 ```
@@ -137,6 +142,11 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
 | `buffer_enabled` | true | Enable the turn-level buffer |
 | `merge_on_write` | true | Use go-vector RP similarity to auto-merge related entries |
 | `extract_on_end` | true | Extract durable facts via LLM at session end (≥3 turns) |
+| `llm_search` | true | Use LLM to rank episode search results by relevance |
+| `llm_extract` | true | Use LLM for end-of-session fact extraction |
+| `llm_consolidate` | true | Use LLM to merge related fact entries |
+| `merge_threshold` | 0.7 | go-vector cosine threshold for auto-merge (0.0–1.0) |
+| `add_threshold` | 0.3 | go-vector cosine threshold for auto-add (0.0–1.0) |
 
 ## Sub-agent configuration
 

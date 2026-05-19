@@ -15,13 +15,18 @@ const defaultBufferLines = 20
 // MemoryConfig holds configuration for the memory system.
 // Mirrors the JSON config section.
 type MemoryConfig struct {
-	Enabled        bool `json:"enabled"`
-	FactsLimitUser int  `json:"facts_limit_user"`
-	FactsLimitEnv  int  `json:"facts_limit_env"`
-	BufferLines    int  `json:"buffer_lines"`
-	BufferEnabled  bool `json:"buffer_enabled"`
-	MergeOnWrite   bool `json:"merge_on_write"`
-	ExtractOnEnd   bool `json:"extract_on_end"`
+	Enabled        bool    `json:"enabled"`
+	FactsLimitUser int     `json:"facts_limit_user"`
+	FactsLimitEnv  int     `json:"facts_limit_env"`
+	BufferLines    int     `json:"buffer_lines"`
+	BufferEnabled  bool    `json:"buffer_enabled"`
+	MergeOnWrite   bool    `json:"merge_on_write"`
+	ExtractOnEnd   bool    `json:"extract_on_end"`
+	LLMSearch      bool    `json:"llm_search"`
+	LLMExtract     bool    `json:"llm_extract"`
+	LLMConsolidate bool    `json:"llm_consolidate"`
+	MergeThreshold float32 `json:"merge_threshold"`
+	AddThreshold   float32 `json:"add_threshold"`
 }
 
 // DefaultMemoryConfig returns sensible defaults.
@@ -34,6 +39,11 @@ func DefaultMemoryConfig() MemoryConfig {
 		BufferEnabled:  true,
 		MergeOnWrite:   true,
 		ExtractOnEnd:   true,
+		LLMSearch:      true,
+		LLMExtract:     true,
+		LLMConsolidate: true,
+		MergeThreshold: MergeThreshold,
+		AddThreshold:   AddThreshold,
 	}
 }
 
@@ -68,18 +78,24 @@ func NewMemoryManager(memoryDir string, llc LLMClient, cfg MemoryConfig) *Memory
 	if cfg.BufferLines <= 0 {
 		cfg.BufferLines = defaultBufferLines
 	}
+	if cfg.MergeThreshold <= 0 {
+		cfg.MergeThreshold = MergeThreshold
+	}
+	if cfg.AddThreshold <= 0 {
+		cfg.AddThreshold = AddThreshold
+	}
 
 	factsDir := memoryDir
 	episodesDir := memoryDir
 
 	factStore := NewFactStore(factsDir, cfg.FactsLimitUser, cfg.FactsLimitEnv)
-	// Use LLM-based episode ranker when an LLM client is available
+	// Use LLM-based episode ranker when an LLM client is available and enabled
 	var rankFn RankStrategy
-	if llc != nil {
+	if llc != nil && cfg.LLMSearch {
 		rankFn = NewLLMRanker(llc)
 	}
 	episodeStore := NewEpisodeStore(episodesDir, rankFn)
-	mergeDetector := NewMergeDetector(0) // default 256 dims
+	mergeDetector := NewMergeDetectorWithThresholds(0, cfg.MergeThreshold, cfg.AddThreshold)
 
 	return &MemoryManager{
 		facts:    factStore,
@@ -206,12 +222,13 @@ func (m *MemoryManager) ReadFacts() (userContent, envContent string, err error) 
 }
 
 // Consolidate uses the LLM to merge related entries in a target file
-// for better density. Falls back to no-op if no LLM is available.
+// for better density. Falls back to no-op if LLM is unavailable or
+// LLMConsolidate is disabled in config.
 func (m *MemoryManager) Consolidate(target string) error {
 	if !m.cfg.Enabled {
 		return fmt.Errorf("memory: disabled")
 	}
-	if m.llm == nil {
+	if m.llm == nil || !m.cfg.LLMConsolidate {
 		return fmt.Errorf("memory: consolidation requires LLM client")
 	}
 
@@ -288,7 +305,7 @@ func (m *MemoryManager) ClearBuffer() {
 // OnSessionEnd is called when a session ends. If turns >= threshold,
 // extracts durable facts using the LLM and stores them as an episode.
 func (m *MemoryManager) OnSessionEnd(sessionID string, turns int, messages []string) {
-	if !m.cfg.ExtractOnEnd || m.llm == nil || turns < 3 || len(messages) == 0 {
+	if !m.cfg.ExtractOnEnd || !m.cfg.LLMExtract || m.llm == nil || turns < 3 || len(messages) == 0 {
 		return
 	}
 

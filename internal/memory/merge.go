@@ -29,22 +29,43 @@ const (
 //  2. Fit(corpus) — builds vocabulary from existing entries
 //  3. Classify(entry) → action + similarIdx + similarity
 //  4. After facts change → Fit(newCorpus) to rebuild vocabulary
+//
+// Thresholds control the classification:
+//   - mergeThreshold: cosine above this → auto-merge (default 0.7)
+//   - addThreshold: cosine below this → auto-add (default 0.3)
+//   - Between thresholds: "judge" — requires LLM to decide
 type MergeDetector struct {
-	rp     *vector.RandomProjections
-	corpus []string
-	vecs   []vector.Vector // precomputed embeddings of corpus
-	dims   int
+	rp             *vector.RandomProjections
+	corpus         []string
+	vecs           []vector.Vector // precomputed embeddings of corpus
+	dims           int
+	mergeThreshold float32
+	addThreshold   float32
 }
 
 // NewMergeDetector creates a MergeDetector with the given output
 // dimensionality for the RP embedder. Pass 0 for default (256).
+// Uses default thresholds (0.7 merge, 0.3 add).
 func NewMergeDetector(dims int) *MergeDetector {
+	return NewMergeDetectorWithThresholds(dims, MergeThreshold, AddThreshold)
+}
+
+// NewMergeDetectorWithThresholds creates a MergeDetector with custom thresholds.
+func NewMergeDetectorWithThresholds(dims int, mergeThreshold, addThreshold float32) *MergeDetector {
 	if dims <= 0 {
 		dims = defaultOutputDim
 	}
+	if mergeThreshold <= 0 {
+		mergeThreshold = MergeThreshold
+	}
+	if addThreshold <= 0 || addThreshold >= mergeThreshold {
+		addThreshold = AddThreshold
+	}
 	return &MergeDetector{
-		rp:   vector.NewRandomProjections(dims),
-		dims: dims,
+		rp:             vector.NewRandomProjections(dims),
+		dims:           dims,
+		mergeThreshold: mergeThreshold,
+		addThreshold:   addThreshold,
 	}
 }
 
@@ -111,9 +132,9 @@ func (m *MergeDetector) Classify(entry string) (action string, similarIdx int, s
 	similarIdx = bestIdx
 
 	switch {
-	case bestSim >= MergeThreshold:
+	case bestSim >= m.mergeThreshold:
 		return "merge", bestIdx, bestSim
-	case bestSim <= AddThreshold:
+	case bestSim <= m.addThreshold:
 		return "add", bestIdx, bestSim
 	default:
 		return "judge", bestIdx, bestSim
