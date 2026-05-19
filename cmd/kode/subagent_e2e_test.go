@@ -415,3 +415,80 @@ func TestE2E_StdErrCaptureInTool(t *testing.T) {
 		t.Errorf("result should label Task 1, got: %s", result)
 	}
 }
+
+// ── 6. Custom System Prompt ─────────────────────────────────────────
+
+// TestE2E_CustomSystemPrompt verifies that delegate_tasks accepts a
+// per-task system prompt and threads it through to the subprocess.
+func TestE2E_CustomSystemPrompt(t *testing.T) {
+	skipIfNoE2E(t)
+
+	tool := &delegateTasksTool{
+		maxConcurrency: 1,
+		kodePath:       e2eBinary,
+		timeout:        30 * time.Second,
+	}
+
+	input := `{"tasks":[{"goal":"create JWT middleware","context":"use gin","system":"You are a security engineer reviewing auth code. Focus on token validation."}]}`
+	result, err := tool.Call(input)
+	if err != nil {
+		t.Fatalf("tool.Call returned unexpected error: %v", err)
+	}
+
+	if !strings.Contains(result, "Task 1") {
+		t.Errorf("result should label Task 1, got: %s", result)
+	}
+	if !strings.Contains(result, "JWT") && !strings.Contains(result, "create") {
+		t.Errorf("result should reflect the task goal, got: %s", result)
+	}
+}
+
+// TestE2E_CustomSystemPromptWithEmpty verifies that empty system prompts
+// are handled gracefully (fall back to classifyGoal).
+func TestE2E_CustomSystemPromptWithEmpty(t *testing.T) {
+	skipIfNoE2E(t)
+
+	tool := &delegateTasksTool{
+		maxConcurrency: 1,
+		kodePath:       e2eBinary,
+		timeout:        30 * time.Second,
+	}
+
+	input := `{"tasks":[{"goal":"create JWT middleware","context":"use gin","system":""}]}`
+	result, err := tool.Call(input)
+	if err != nil {
+		t.Fatalf("tool.Call returned unexpected error: %v", err)
+	}
+
+	if !strings.Contains(result, "Task 1") {
+		t.Errorf("result should label Task 1 even with empty system prompt, got: %s", result)
+	}
+}
+
+// TestE2E_MixedSystemPrompts verifies mixing tasks with and without
+// custom system prompts works correctly.
+func TestE2E_MixedSystemPrompts(t *testing.T) {
+	skipIfNoE2E(t)
+
+	tool := &delegateTasksTool{
+		maxConcurrency: 2,
+		kodePath:       e2eBinary,
+		timeout:        30 * time.Second,
+	}
+
+	input := `{"tasks":[
+		{"goal":"review auth middleware","system":"You are a security engineer."},
+		{"goal":"fix bug in parser","system":"","context":"parser.go has nil pointer bug"},
+		{"goal":"create user model"}
+	]}`
+	result, err := tool.Call(input)
+	if err != nil {
+		t.Fatalf("tool.Call returned unexpected error: %v", err)
+	}
+
+	for i := 1; i <= 3; i++ {
+		if !strings.Contains(result, fmt.Sprintf("Task %d", i)) {
+			t.Errorf("missing Task %d in results", i)
+		}
+	}
+}

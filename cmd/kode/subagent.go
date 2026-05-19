@@ -16,11 +16,12 @@ import (
 	"github.com/BackendStack21/kode/internal/skills"
 )
 
-// ── Subagent System Prompt ────────────────────────────────────────────
+// ── Sub-agent System Prompts ────────────────────────────────────────
 //
-// Minimal prompt — ~120 tokens. The subagent doesn't need identity
-// anchoring or anti-injection rules (it can't be prompted by its parent).
-// Just enough instruction to complete the task and report back.
+// Sub-agents receive a system prompt matched to their task's category.
+// The parent agent can also provide a custom system prompt via the
+// `system` field in delegate_tasks. When neither is provided, use
+// classifyGoal() to pick the best category.
 
 const subagentSystem = `You are kode working on a single focused sub-task.
 Complete the assigned goal and report what you did.
@@ -28,6 +29,76 @@ Do not expand scope. Do not ask questions.
 Use the shell tool when you need information or to make changes.
 Report: what you built, what files changed, any issues encountered.
 Be concise. Output your answer, then stop.`
+
+// Category-specific system prompts.
+// Each is optimized for a different task type.
+
+const buildSystem = `You are kode — an expert engineer building production code.
+Architect and implement with confidence. Consider edge cases, error handling,
+and maintainability from the start. Write clean, idiomatic code that another
+engineer can read and extend. Report what you built and what files changed.`
+
+const debugSystem = `You are kode — an expert debugger.
+Find the root cause. Isolate the bug before you write any fix. Prove the fix
+works by reasoning through the normal and edge cases. Report what was broken,
+the root cause, and how you fixed it.`
+
+const testSystem = `You are kode — an expert in testing and quality.
+Write thorough tests. Cover the happy path, edge cases, and failure modes.
+Use table-driven tests where appropriate. Tests should be readable and
+maintainable. Report what you tested and the coverage pattern.`
+
+const reviewSystem = `You are kode — a senior engineer reviewing code.
+Read every line critically. Look for logic errors, security vulnerabilities,
+performance issues, and style problems. Be constructive — propose specific
+improvements. Report all findings with file:line references.`
+
+const refactorSystem = `You are kode — an expert in code architecture.
+Preserve behavior. Change structure only. Clean up technical debt while
+ensuring nothing breaks. Report what you changed and why the new structure
+is better.`
+
+const configSystem = `You are kode — a DevOps engineer configuring systems.
+Make every change reproducible and documented. Use minimal permissions.
+Test the configuration after changing it. Report what you set up and how
+to verify it works.`
+
+const researchSystem = `You are kode — a technical researcher.
+Explore thoroughly. Read source code, docs, and examples before concluding.
+Cite your sources. Synthesize findings into a clear recommendation.
+Report what you found and your recommended action.`
+
+// classifyGoal returns a system prompt matched to the task's category
+// by analyzing the goal text. Falls back to the default subagentSystem
+// when no strong signal is detected.
+func classifyGoal(goal string) string {
+	lower := strings.ToLower(goal)
+	switch {
+	case containsAny(lower, "fix", "bug", "error", "crash", "broken", "incorrect", "wrong", "fail"):
+		return debugSystem
+	case containsAny(lower, "test", "spec", "coverage", "assert", "unit test", "integration test"):
+		return testSystem
+	case containsAny(lower, "review", "audit", "check", "inspect", "verify", "validate"):
+		return reviewSystem
+	case containsAny(lower, "refactor", "clean up", "simplify", "rename", "extract", "restructure", "reorganize"):
+		return refactorSystem
+	case containsAny(lower, "setup", "config", "install", "docker", "ci", "deploy", "provision"):
+		return configSystem
+	case containsAny(lower, "research", "explain", "compare", "understand", "find", "investigate", "analyze"):
+		return researchSystem
+	default:
+		return buildSystem // greenfield / build tasks
+	}
+}
+
+func containsAny(s string, substrs ...string) bool {
+	for _, sub := range substrs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
+}
 
 // subagentResult is the JSON contract written to stdout.
 type subagentResult struct {
@@ -160,7 +231,8 @@ func subagentCmd(args []string) error {
 		return fmt.Errorf("either --goal or --task is required")
 	}
 
-	// Load task from file if --task is provided
+	// Load task from file if --task is provided, including optional system prompt
+	var taskSystem string // system prompt from task file (if any)
 	if hasTaskFile {
 		data, err := os.ReadFile(cfg.taskFile)
 		if err != nil {
@@ -169,12 +241,14 @@ func subagentCmd(args []string) error {
 		var task struct {
 			Goal    string `json:"goal"`
 			Context string `json:"context"`
+			System  string `json:"system,omitempty"`
 		}
 		if err := json.Unmarshal(data, &task); err != nil {
 			return fmt.Errorf("parse task file: %w", err)
 		}
 		cfg.goal = task.Goal
 		cfg.context = task.Context
+		taskSystem = task.System
 		// Clean up temp file
 		os.Remove(cfg.taskFile)
 	}
@@ -196,18 +270,15 @@ func subagentCmd(args []string) error {
 	// Resolve config (inherits everything from normal chain)
 	resolved := config.LoadConfig(config.CLIFlags{})
 
-	// Override defaults for subagent
-	systemMsg := subagentSystem
-	if resolved.System != "" {
-		// Only use user's system override if subagent config doesn't have one
-		saCfg := parseSubagentConfig("") // just gets defaults
-		_ = saCfg
-		if resolved.System != "" {
-			systemMsg = resolved.System
-		}
+	// Resolve system prompt for this sub-agent.
+	// Priority: 1) task file override  2) user config override  3) classifyGoal  4) default
+	systemMsg := classifyGoal(cfg.goal)
+	switch {
+	case taskSystem != "":
+		systemMsg = taskSystem
+	case resolved.System != "":
+		systemMsg = resolved.System
 	}
-	_ = systemMsg
-	systemMsg = subagentSystem
 
 	// Build tools
 	var sm *skills.SkillManager
@@ -259,7 +330,7 @@ func subagentCmd(args []string) error {
 		BaseURL:        resolved.BaseURL,
 		APIKey:         resolved.APIKey,
 		MaxIterations:  cfg.maxIter,
-		SystemMessage:  subagentSystem,
+		SystemMessage:  systemMsg,
 		NoProjectFile:  resolved.NoAgents,
 		Thinking:       resolved.Thinking,
 		Tools:          tools,
@@ -276,7 +347,7 @@ func subagentCmd(args []string) error {
 	// Run
 	start := time.Now()
 	_, allMessages, err := agent.RunWithMessages(sigCtx, []llm.Message{
-		{Role: "system", Content: subagentSystem},
+		{Role: "system", Content: systemMsg},
 		{Role: "user", Content: prompt},
 	})
 	latency := time.Since(start)

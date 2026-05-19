@@ -78,10 +78,14 @@ func (t *delegateTasksTool) Schema() any {
 							"type":        "string",
 							"description": "Required. The specific goal for this sub-agent. Be precise: what to build, where, and key constraints.",
 						},
-						"context": map[string]any{
-							"type":        "string",
-							"description": "Optional. Background context: file paths, architecture decisions, API contracts.",
-						},
+					"context": map[string]any{
+						"type":        "string",
+						"description": "Optional. Background context: file paths, architecture decisions, API contracts.",
+					},
+					"system": map[string]any{
+						"type":        "string",
+						"description": "Optional. System prompt for this sub-agent. Tailor the approach: \"You are a security engineer reviewing auth code\" for reviews, \"Find the root cause first\" for debugging.",
+					},
 					},
 					"required": []string{"goal"},
 				},
@@ -100,6 +104,7 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 		Tasks       []struct {
 			Goal    string `json:"goal"`
 			Context string `json:"context"`
+			System  string `json:"system,omitempty"`
 		} `json:"tasks"`
 		Description string `json:"description,omitempty"`
 	}
@@ -120,13 +125,13 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 
 	for i, task := range input.Tasks {
 		sem <- struct{}{}
-		go func(i int, goal, ctx string) {
+		go func(i int, goal, ctx, sys string) {
 			defer func() { <-sem }()
-			r := t.runTask(goal, ctx)
+			r := t.runTask(goal, ctx, sys)
 			mu.Lock()
 			results[i] = r
 			mu.Unlock()
-		}(i, task.Goal, task.Context)
+		}(i, task.Goal, task.Context, task.System)
 	}
 
 	// Drain semaphore = wait for all goroutines
@@ -145,7 +150,7 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 	return buf.String(), nil
 }
 
-func (t *delegateTasksTool) runTask(goal, taskContext string) string {
+func (t *delegateTasksTool) runTask(goal, taskContext, system string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), t.timeout)
 	defer cancel()
 
@@ -159,6 +164,7 @@ func (t *delegateTasksTool) runTask(goal, taskContext string) string {
 	task := map[string]string{
 		"goal":    goal,
 		"context": taskContext,
+		"system":  system,
 	}
 	if err := json.NewEncoder(taskFile).Encode(task); err != nil {
 		taskFile.Close()

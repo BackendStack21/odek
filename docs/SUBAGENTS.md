@@ -77,7 +77,8 @@ The `delegate_tasks` tool is available in all kode modes (CLI, REPL, Web UI). Th
         "type": "object",
         "properties": {
           "goal":    { "type": "string" },  // Required. Specific goal for this sub-agent.
-          "context": { "type": "string" }   // Optional. Background: file paths, API contracts.
+          "context": { "type": "string" },  // Optional. Background: file paths, API contracts.
+          "system":  { "type": "string" }   // Optional. System prompt for this sub-agent.
         },
         "required": ["goal"]
       }
@@ -208,9 +209,56 @@ Emoji-prefixed progress for terminal users:
 
 Suppressed with `--quiet`.
 
-## Sub-agent system prompt
+## Dynamic system prompts
 
-Sub-agents use a **minimal system prompt** (~120 tokens) compared to the parent's ~500 tokens:
+Every sub-agent receives a system prompt **tailored to its task** — not a one-size-fits-all default.
+
+### Three-tier resolution
+
+| Priority | Source | When |
+|----------|--------|------|
+| 1 (highest) | `system` field in `delegate_tasks` | Parent explicitly provides a custom prompt |
+| 2 | `KODE_SYSTEM` / config file `system` | User-configured global override |
+| 3 | `classifyGoal()` auto-detection | Fallback — analyses the goal text |
+
+### Parent-crafted prompts
+
+The parent agent (kode) is instructed to write system prompts for each sub-task. This is the recommended path — the parent understands the task domain and can set the right tone:
+
+```jsonc
+{
+  "tasks": [
+    {
+      "goal": "Create user model with GORM",
+      "system": "You are an expert Go engineer building production code. Consider edge cases, error handling, and maintainability from the start."
+    },
+    {
+      "goal": "Review middleware/auth.go for security issues",
+      "system": "You are a security engineer reviewing auth code. Look for: token validation gaps, timing attacks, secret exposure."
+    }
+  ]
+}
+```
+
+### Auto-classified prompts
+
+When no `system` field is provided, `classifyGoal()` analyzes the goal text and picks a matching category:
+
+| Category | Trigger keywords | Prompt persona |
+|----------|-----------------|----------------|
+| **build** (default) | *(no match)* | Expert engineer building production code |
+| **debug** | fix, bug, error, crash, broken, incorrect | Expert debugger — find root cause first |
+| **test** | test, spec, coverage, assert, unit test | Testing & quality expert |
+| **review** | review, audit, check, inspect, verify | Senior engineer reading every line critically |
+| **refactor** | refactor, clean up, simplify, rename, extract | Code architecture expert — preserve behavior |
+| **config** | setup, config, install, docker, ci, deploy | DevOps engineer — reproducible, minimal permissions |
+| **research** | research, explain, compare, understand, find | Technical researcher — explore thoroughly |
+
+Each category prompt is a focused ~80-100 tokens with a distinct persona and methodology.
+
+### Default fallback
+
+The original `subagentSystem` constant (~120 tokens) is retained as the ultimate fallback:
 
 ```
 You are kode working on a single focused sub-task.
@@ -221,10 +269,19 @@ Report: what you built, what files changed, any issues encountered.
 Be concise. Output your answer, then stop.
 ```
 
-This is intentionally stripped to:
-- **Prevent scope creep** — sub-agents do ONE thing
-- **No anti-injection rules** — sub-agents can't be prompted by the parent (they receive task via file or CLI args, not user input)
-- **No identity anchoring** — not needed; the sub-agent has no illusion of being someone else
+### Task file format
+
+The temp file written by `delegate_tasks` carries the system prompt:
+
+```json
+{
+  "goal": "Create a user registration endpoint in handlers/user.go",
+  "context": "Uses gin. DB connection at internal/db/db.go.",
+  "system": "You are an expert Go engineer building production code. Consider edge cases..."
+}
+```
+
+When invoked directly via `kode subagent --goal "..."`, the `--goal` path uses `classifyGoal()` (no manual override) while `--task <file>` reads the `system` field from the JSON file.
 
 ## Configuration
 
@@ -262,8 +319,8 @@ The sub-agent system has three test layers:
 
 | Layer | Tests | Runner | What's verified |
 |-------|-------|--------|-----------------|
-| **Contract tests** | 30 | `go test ./cmd/kode/` | Flag parsing, JSON stdout protocol, exit codes, tool schema, config parsing, system prompt |
-| **E2E tests** | 13 | `KODE_E2E=true go test ./cmd/kode/ -run "TestE2E_"` | Real subprocess spawning, tool → binary pipeline, stderr protocol, concurrency, timeouts |
+| **Contract tests** | 48 | `go test ./cmd/kode/` | Flag parsing, JSON stdout protocol, exit codes, tool schema, config parsing, classifyGoal categories, system prompt length/empty checks |
+| **E2E tests** | 16 | `KODE_E2E=true go test ./cmd/kode/ -run "TestE2E_"` | Real subprocess spawning, tool → binary pipeline, stderr protocol, concurrency, timeouts, custom system prompt threading |
 | **Full suite** | All | `go test -race ./...` | 12 packages, race-detector clean |
 
 E2E tests:

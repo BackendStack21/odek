@@ -390,6 +390,21 @@ func TestDelegateTasksTool_HasSchema(t *testing.T) {
 	if tasksMap["maxItems"] != 8 {
 		t.Errorf("tasks.maxItems must be 8, got %v (type %T)", tasksMap["maxItems"], tasksMap["maxItems"])
 	}
+
+	// Verify items.properties has system (new) field
+	itemsProps, ok := items["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("tasks.items.properties must be object")
+	}
+	if _, ok := itemsProps["system"]; !ok {
+		t.Error("tasks.items.properties should include optional 'system' field")
+	}
+	if _, ok := itemsProps["context"]; !ok {
+		t.Error("tasks.items.properties should include 'context' field")
+	}
+	if _, ok := itemsProps["goal"]; !ok {
+		t.Error("tasks.items.properties should include 'goal' field")
+	}
 }
 
 func TestDelegateTasksTool_Description(t *testing.T) {
@@ -576,7 +591,95 @@ func TestSubagentSystemPrompt_Minimal(t *testing.T) {
 	}
 }
 
-// ── 9. Integration ─────────────────────────────────────────────────
+// ── 9. classifyGoal ─────────────────────────────────────────────────
+
+func TestClassifyGoal_Build(t *testing.T) {
+	got := classifyGoal("Create a user model with CRUD")
+	if got != buildSystem {
+		t.Errorf("classifyGoal('Create...') = %q..., want buildSystem", truncate(got, 40))
+	}
+}
+
+func TestClassifyGoal_Debug(t *testing.T) {
+	for _, goal := range []string{"fix OOM bug in parser", "crash in websocket handler", "broken import path"} {
+		got := classifyGoal(goal)
+		if got != debugSystem {
+			t.Errorf("classifyGoal(%q) = %q..., want debugSystem", goal, truncate(got, 40))
+		}
+	}
+}
+
+func TestClassifyGoal_Test(t *testing.T) {
+	for _, goal := range []string{"write unit tests for auth", "add coverage for models", "create integration test for API"} {
+		got := classifyGoal(goal)
+		if got != testSystem {
+			t.Errorf("classifyGoal(%q) = %q..., want testSystem", goal, truncate(got, 40))
+		}
+	}
+}
+
+func TestClassifyGoal_Review(t *testing.T) {
+	got := classifyGoal("review PR #42 for security issues")
+	if got != reviewSystem {
+		t.Errorf("classifyGoal('review...') = %q..., want reviewSystem", truncate(got, 40))
+	}
+}
+
+func TestClassifyGoal_Refactor(t *testing.T) {
+	got := classifyGoal("refactor the monolith into handlers")
+	if got != refactorSystem {
+		t.Errorf("classifyGoal('refactor...') = %q..., want refactorSystem", truncate(got, 40))
+	}
+}
+
+func TestClassifyGoal_Config(t *testing.T) {
+	got := classifyGoal("setup Docker CI pipeline")
+	if got != configSystem {
+		t.Errorf("classifyGoal('setup...') = %q..., want configSystem", truncate(got, 40))
+	}
+}
+
+func TestClassifyGoal_Research(t *testing.T) {
+	got := classifyGoal("research Go HTTP router performance")
+	if got != researchSystem {
+		t.Errorf("classifyGoal('research...') = %q..., want researchSystem", truncate(got, 40))
+	}
+}
+
+func TestClassifyGoal_FallbackToBuild(t *testing.T) {
+	got := classifyGoal("do something random")
+	if got != buildSystem {
+		t.Errorf("classifyGoal('do something random') = %q..., want buildSystem", truncate(got, 40))
+	}
+}
+
+// ── 10. Category System Prompts ──────────────────────────────────────
+
+func TestCategoryPrompts_NotEmpty(t *testing.T) {
+	prompts := []struct {
+		name string
+		p    string
+	}{
+		{"buildSystem", buildSystem},
+		{"debugSystem", debugSystem},
+		{"testSystem", testSystem},
+		{"reviewSystem", reviewSystem},
+		{"refactorSystem", refactorSystem},
+		{"configSystem", configSystem},
+		{"researchSystem", researchSystem},
+		{"subagentSystem", subagentSystem},
+	}
+	for _, sp := range prompts {
+		if sp.p == "" {
+			t.Errorf("%s must not be empty", sp.name)
+		}
+		if len(sp.p) > 800 {
+			t.Errorf("%s too long: %d chars (max 800)", sp.name, len(sp.p))
+		}
+	}
+}
+
+// ── 11. Integration ─────────────────────────────────────────────────
 
 func TestDelegateTasks_PipesStderr(t *testing.T) {
 	tool := &delegateTasksTool{

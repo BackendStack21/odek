@@ -139,7 +139,7 @@ result, err := agent.Run(context.Background(), "Summarize this codebase")
 
 ```bash
 go test ./...
-# 140+ tests, all pass, zero external dependencies
+# 220+ tests, all pass, zero external dependencies
 ```
 
 ## License
