@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>kode · 5 MB zero-dependency Go agent runtime</title>
+  <meta name="description" content="kode — the fastest, minimal, zero-dependency Go autonomous agent runtime. One binary. One loop. Zero frameworks.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0a0a0b;
+      --bg2: #121214;
+      --bg3: #1a1a1e;
+      --border: #252529;
+      --text: #e4e4e7;
+      --text2: #a1a1aa;
+      --accent: #38bdf8;
+      --accent2: #818cf8;
+      --green: #4ade80;
+      --amber: #fbbf24;
+      --red: #f87171;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+    .container { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+
+    /* ── Nav ── */
+    nav {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 24px; max-width: 1008px; margin: 0 auto;
+    }
+    nav .logo { font-weight: 700; font-size: 1.25rem; color: var(--accent); }
+    nav .logo span { color: var(--text2); font-weight: 400; }
+    nav a { color: var(--text2); text-decoration: none; font-size: 0.875rem; transition: color .15s; margin-left: 24px; }
+    nav a:hover { color: var(--text); }
+
+    /* ── Hero ── */
+    .hero {
+      text-align: center; padding: 80px 0 60px;
+      background: radial-gradient(ellipse at 50% 0%, rgba(56,189,248,.08) 0%, transparent 60%);
+    }
+    .hero h1 {
+      font-size: 3.5rem; font-weight: 800; letter-spacing: -.03em;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .hero .sub {
+      font-size: 1.15rem; color: var(--text2); margin-top: 16px; max-width: 600px; margin-inline: auto;
+    }
+    .hero .install {
+      margin-top: 36px;
+      background: var(--bg3); border: 1px solid var(--border); border-radius: 12px;
+      display: inline-flex; align-items: center; padding: 4px 4px 4px 20px;
+      font-family: 'JetBrains Mono', monospace; font-size: 0.875rem;
+    }
+    .hero .install code { color: var(--green); }
+    .hero .install .btn {
+      margin-left: 16px; background: var(--accent); color: #000; border: none;
+      padding: 10px 20px; border-radius: 8px; font-weight: 600; font-size: 0.8125rem;
+      cursor: pointer; transition: opacity .15s; text-decoration: none;
+    }
+    .hero .install .btn:hover { opacity: .85; }
+    .hero .stats {
+      display: flex; justify-content: center; gap: 48px; margin-top: 48px;
+    }
+    .hero .stats .stat { text-align: center; }
+    .hero .stats .stat .num { font-size: 1.75rem; font-weight: 700; color: var(--text); }
+    .hero .stats .stat .lbl { font-size: 0.8125rem; color: var(--text2); margin-top: 2px; }
+
+    /* ── Sections ── */
+    section { padding: 64px 0; }
+    section + section { border-top: 1px solid var(--border); }
+    h2 {
+      font-size: 1.75rem; font-weight: 700; margin-bottom: 24px;
+      letter-spacing: -.02em;
+    }
+    h2 .hl { color: var(--accent); }
+    h3 {
+      font-size: 1.125rem; font-weight: 600; margin-bottom: 8px; margin-top: 28px;
+    }
+    p, li { color: var(--text2); font-size: 0.9375rem; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ── Five Whys ── */
+    .whys { list-style: none; }
+    .whys li {
+      padding: 20px 0; border-bottom: 1px solid var(--border);
+      display: flex; gap: 16px; align-items: flex-start;
+    }
+    .whys li:last-child { border-bottom: none; }
+    .whys li .q { font-weight: 700; color: var(--accent); min-width: 60px; font-size: 1rem; }
+    .whys li .a { color: var(--text2); }
+    .whys li .a strong { color: var(--text); }
+
+    /* ── Feature grid ── */
+    .features { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .features .card {
+      background: var(--bg2); border: 1px solid var(--border); border-radius: 12px;
+      padding: 24px;
+    }
+    .features .card .icon { font-size: 1.5rem; margin-bottom: 8px; }
+    .features .card h4 { font-size: 1rem; font-weight: 600; margin-bottom: 6px; }
+    .features .card p { font-size: 0.8125rem; line-height: 1.5; }
+
+    /* ── Examples ── */
+    .cmd-list { list-style: none; }
+    .cmd-list li {
+      padding: 10px 0; display: flex; gap: 16px;
+      border-bottom: 1px solid var(--border); font-family: 'JetBrains Mono', monospace; font-size: 0.8125rem;
+    }
+    .cmd-list li:last-child { border-bottom: none; }
+    .cmd-list li .cmd { color: var(--green); white-space: nowrap; min-width: 220px; }
+    .cmd-list li .desc { color: var(--text2); }
+
+    /* ── Table comparison ── */
+    .compare { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+    .compare th, .compare td {
+      text-align: left; padding: 12px 16px; border-bottom: 1px solid var(--border);
+    }
+    .compare th { color: var(--text2); font-weight: 500; }
+    .compare td:first-child { font-weight: 500; color: var(--text); }
+    .compare .win { color: var(--green); font-weight: 600; }
+
+    /* ── Install steps ── */
+    .steps { list-style: none; }
+    .steps li {
+      padding: 16px 0; border-bottom: 1px solid var(--border);
+      display: flex; gap: 16px;
+    }
+    .steps li:last-child { border-bottom: none; }
+    .steps li .n {
+      background: var(--accent); color: #000; width: 28px; height: 28px;
+      border-radius: 50%; display: flex; align-items: center; justify-content: center;
+      font-weight: 700; font-size: 0.8125rem; flex-shrink: 0; margin-top: 2px;
+    }
+    .steps li code {
+      background: var(--bg3); padding: 2px 8px; border-radius: 4px;
+      font-family: 'JetBrains Mono', monospace; font-size: 0.8125rem;
+    }
+
+    /* ── Code blocks ── */
+    pre {
+      background: var(--bg3); border: 1px solid var(--border); border-radius: 10px;
+      padding: 20px; overflow-x: auto; font-size: 0.8125rem; margin: 16px 0;
+    }
+    pre code { font-family: 'JetBrains Mono', monospace; color: var(--text); }
+    .hljs-comment { color: #6b7280; }
+    .hljs-string { color: var(--green); }
+    .hljs-keyword { color: var(--accent); }
+    .hljs-number { color: var(--amber); }
+
+    /* ── Doc links ── */
+    .doc-links { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+    .doc-links a {
+      background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+      padding: 14px 16px; font-size: 0.8125rem; font-weight: 500; transition: border-color .15s;
+    }
+    .doc-links a:hover { border-color: var(--accent); text-decoration: none; }
+    .doc-links a span { display: block; font-weight: 400; color: var(--text2); font-size: 0.75rem; margin-top: 2px; }
+
+    /* ── Footer ── */
+    footer {
+      border-top: 1px solid var(--border); padding: 32px 0; text-align: center;
+      color: var(--text2); font-size: 0.8125rem;
+    }
+    footer a { color: var(--accent); }
+
+    @media (max-width: 700px) {
+      .hero h1 { font-size: 2.25rem; }
+      .hero .install { flex-direction: column; padding: 16px; gap: 12px; }
+      .hero .install .btn { margin-left: 0; }
+      .hero .stats { gap: 24px; flex-wrap: wrap; }
+      .features { grid-template-columns: 1fr; }
+      .doc-links { grid-template-columns: 1fr; }
+      .cmd-list li { flex-direction: column; gap: 2px; }
+      .cmd-list li .cmd { min-width: 0; }
+    }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="logo">kode<span>.21no.de</span></div>
+  <div>
+    <a href="#five-whys">Why</a>
+    <a href="#features">Features</a>
+    <a href="#install">Install</a>
+    <a href="#cheatsheet">Cheatsheet</a>
+    <a href="https://github.com/BackendStack21/kode" target="_blank">GitHub</a>
+  </div>
+</nav>
+
+<section class="hero">
+  <div class="container">
+    <h1>kode</h1>
+    <p class="sub">The fastest, minimal, zero-dependency Go agent runtime.<br>Think, therefore act.</p>
+
+    <div class="install">
+      <code>go install github.com/BackendStack21/kode/cmd/kode@latest</code>
+      <a class="btn" href="#install">Get Started →</a>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><div class="num">5 MB</div><div class="lbl">Binary</div></div>
+      <div class="stat"><div class="num">1</div><div class="lbl">Dependency</div></div>
+      <div class="stat"><div class="num">888</div><div class="lbl">Tests</div></div>
+      <div class="stat"><div class="num">79%</div><div class="lbl">Coverage</div></div>
+      <div class="stat"><div class="num">15</div><div class="lbl">Packages</div></div>
+    </div>
+  </div>
+</section>
+
+<div class="container">
+
+<!-- ═══ Five Whys ═══ -->
+<section id="five-whys">
+  <h2>The <span class="hl">Five Whys</span></h2>
+  <ul class="whys">
+    <li>
+      <span class="q">Why?</span>
+      <span class="a">Because every AI agent framework today ships a <strong>200-package dependency tree</strong> and a 200 MB Python venv. kode is a <strong>5 MB static binary</strong> with one indirect dependency.</span>
+    </li>
+    <li>
+      <span class="q">Why?</span>
+      <span class="a">Because you shouldn't need a PhD in Python packaging just to run <code>go test</code>. kode installs in <strong>5 seconds</strong> with a single <code>go install</code> command — no Docker, no venv, no npm, no sagas.</span>
+    </li>
+    <li>
+      <span class="q">Why?</span>
+      <span class="a">Because locking into one LLM provider is a strategic mistake. kode is <strong>provider-agnostic</strong> — Deepseek, OpenAI, Anthropic, Ollama, vLLM, Groq, Together, Fireworks. Any OpenAI-compatible endpoint.</span>
+    </li>
+    <li>
+      <span class="q">Why?</span>
+      <span class="a">Because agents need <strong>real tools</strong>, not abstractions on top of abstractions. kode gives you read_file, write_file, patch, search_files, shell, and browser — all gated by a unified security layer. No plugins. No SDKs. No class hierarchies.</span>
+    </li>
+    <li>
+      <span class="q">Why?</span>
+      <span class="a">Because the agent ecosystem has split into two worlds — tools that <strong>serve</strong> MCP (Claude Code, Cursor) and tools that <strong>consume</strong> MCP. kode does <strong>both</strong> in one binary. Serve your tools to any MCP client, or connect to external MCP servers for Playwright, Fetch, databases, and more.</span>
+    </li>
+  </ul>
+</section>
+
+<!-- ═══ Features ═══ -->
+<section id="features">
+  <h2>What you <span class="hl">get</span></h2>
+
+  <div class="features">
+
+    <div class="card">
+      <div class="icon">🔒</div>
+      <h4>Sandboxed Execution</h4>
+      <p><code>kode run --sandbox</code> — every session spawns an isolated Docker container. No network, no host mounts beyond the working directory, zero capabilities, destroyed on exit.</p>
+    </div>
+
+    <div class="card">
+      <div class="icon">🧩</div>
+      <h4>Sub-Agent Delegation</h4>
+      <p>Parallel OS-process sub-agents via <code>delegate_tasks</code>. True isolation — each sub-agent is a fresh process with its own config, tools, and timeout. Up to 8 concurrent workers.</p>
+    </div>
+
+    <div class="card">
+      <div class="icon">🧠</div>
+      <h4>Self-Learning Skills</h4>
+      <p>Detects multi-step procedures, error recoveries, and corrections during your sessions. Saves them as reusable <code>SKILL.md</code> files. On by default — <code>--no-learn</code> to disable.</p>
+    </div>
+
+    <div class="card">
+      <div class="icon">💾</div>
+      <h4>Persistent Memory</h4>
+      <p>Three tiers: facts, session buffer, and episodes. Merge-on-write via go-vector cosine similarity. Saves ~80% LLM calls on repeated topics.</p>
+    </div>
+
+    <div class="card">
+      <div class="icon">🔗</div>
+      <h4>MCP Two-Way</h4>
+      <p><strong>Server:</strong> <code>kode mcp</code> exposes native tools to Claude Code, Cursor, any MCP client. <strong>Client:</strong> kode connects to external MCP servers and makes their tools available to the agent.</p>
+    </div>
+
+    <div class="card">
+      <div class="icon">🌐</div>
+      <h4>Web UI</h4>
+      <p><code>kode serve</code> — browser-based agent with <code>@</code> resource completion, WebSocket streaming, and a full IDE-style console. Built from Go's embed — zero npm.</p>
+    </div>
+
+    <div class="card">
+      <div class="icon">🏗️</div>
+      <h4>Layerable Config</h4>
+      <p>Four-layer priority chain: global → project → <code>KODE_*</code> env vars → CLI flags. <code>${VAR}</code> substitution in config files. Sensible defaults at every layer.</p>
+    </div>
+
+    <div class="card">
+      <div class="icon">🔍</div>
+      <h4>Native Tools</h4>
+      <p>Built-in read_file, write_file, search_files, patch, shell, and browser. All gated by a unified security layer — classify operations as allow / deny / prompt per risk class.</p>
+    </div>
+
+  </div>
+</section>
+
+<!-- ═══ Comparison ═══ -->
+<section>
+  <h2>kode vs <span class="hl">the rest</span></h2>
+
+  <table class="compare">
+    <thead>
+      <tr><th></th><th>kode</th><th>Python agents</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Dependencies</td><td class="win">Zero. stdlib only.</td><td>200+ packages</td></tr>
+      <tr><td>Binary size</td><td class="win">~5 MB static</td><td>50–200 MB (venv)</td></tr>
+      <tr><td>Startup</td><td class="win">Instant</td><td>2–10 seconds</td></tr>
+      <tr><td>Sandbox</td><td class="win"><code>--sandbox</code> flag</td><td>Manual Docker setup</td></tr>
+      <tr><td>Tool interface</td><td class="win">One interface, one method</td><td>Class hierarchies + decorators</td></tr>
+      <tr><td>MCP</td><td class="win">Bidirectional (server + client)</td><td>Client-only or adapter needed</td></tr>
+      <tr><td>Language</td><td class="win">Go — native binary</td><td>Python — interpreter required</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ═══ Install ═══ -->
+<section id="install">
+  <h2>Install in <span class="hl">5 seconds</span></h2>
+
+  <ul class="steps">
+    <li>
+      <span class="n">1</span>
+      <span>Have <strong>Go 1.24+</strong> installed. If not: <code>brew install go</code> or <a href="https://go.dev/dl/" target="_blank">download</a>.</span>
+    </li>
+    <li>
+      <span class="n">2</span>
+      <span>Run: <code>go install github.com/BackendStack21/kode/cmd/kode@latest</code></span>
+    </li>
+    <li>
+      <span class="n">3</span>
+      <span>Set your API key: <code>export DEEPSEEK_API_KEY=sk-...</code> or <code>OPENAI_API_KEY</code></span>
+    </li>
+    <li>
+      <span class="n">4</span>
+      <span>Run your first task: <code>kode run "How many lines in go.mod?"</code></span>
+    </li>
+  </ul>
+
+  <pre><code><span class="hljs-comment"># Results instantly</span>
+$ kode run <span class="hljs-string">"How many lines in go.mod?"</span>
+<span class="hljs-number">3</span> lines
+
+<span class="hljs-comment"># With session persistence</span>
+$ kode run --session <span class="hljs-string">"Refactor the auth module"</span>
+$ kode continue <span class="hljs-string">"Now add error handling"</span>
+
+<span class="hljs-comment"># Different provider, same binary</span>
+$ kode run --model gpt-4o --base-url https://api.openai.com/v1 <span class="hljs-string">"Explain this"</span></code></pre>
+</section>
+
+<!-- ═══ Cheatsheet ═══ -->
+<section id="cheatsheet">
+  <h2>Cheatsheet</h2>
+
+  <h3>Commands</h3>
+  <ul class="cmd-list">
+    <li><span class="cmd">kode run &lt;task&gt;</span><span class="desc">Single-shot task</span></li>
+    <li><span class="cmd">kode run --session &lt;task&gt;</span><span class="desc">Save conversation as session</span></li>
+    <li><span class="cmd">kode continue [--id &lt;id&gt;] &lt;task&gt;</span><span class="desc">Resume a saved session</span></li>
+    <li><span class="cmd">kode repl</span><span class="desc">Interactive multi-turn REPL</span></li>
+    <li><span class="cmd">kode session list</span><span class="desc">List recent sessions</span></li>
+    <li><span class="cmd">kode session show [id]</span><span class="desc">View session transcript</span></li>
+    <li><span class="cmd">kode session delete &lt;id&gt;</span><span class="desc">Delete a session</span></li>
+    <li><span class="cmd">kode session cleanup &lt;days&gt;</span><span class="desc">Delete old sessions</span></li>
+    <li><span class="cmd">kode skill list</span><span class="desc">List available skills</span></li>
+    <li><span class="cmd">kode skill import &lt;uri&gt;</span><span class="desc">Import skill from URL or file</span></li>
+    <li><span class="cmd">kode skill curate</span><span class="desc">Audit skill quality and overlap</span></li>
+    <li><span class="cmd">kode serve [--addr :8080]</span><span class="desc">Start Web UI server</span></li>
+    <li><span class="cmd">kode subagent --goal &lt;s&gt;</span><span class="desc">Run a focused sub-task</span></li>
+    <li><span class="cmd">kode mcp [--sandbox]</span><span class="desc">Start MCP server</span></li>
+    <li><span class="cmd">kode init [--global]</span><span class="desc">Create config file</span></li>
+  </ul>
+
+  <h3>Key Flags</h3>
+  <ul class="cmd-list">
+    <li><span class="cmd">--model &lt;name&gt;</span><span class="desc">LLM model (deepseek-v4-flash, gpt-4o, etc.)</span></li>
+    <li><span class="cmd">--base-url &lt;url&gt;</span><span class="desc">API endpoint URL</span></li>
+    <li><span class="cmd">--sandbox</span><span class="desc">Run in Docker sandbox</span></li>
+    <li><span class="cmd">--thinking &lt;level&gt;</span><span class="desc">Reasoning depth (enabled/disabled/low/medium/high)</span></li>
+    <li><span class="cmd">--learn</span><span class="desc">Enable skill learning (on by default)</span></li>
+    <li><span class="cmd">--no-learn</span><span class="desc">Disable skill learning</span></li>
+    <li><span class="cmd">--max-iter &lt;n&gt;</span><span class="desc">Max think→act cycles (default 90)</span></li>
+    <li><span class="cmd">--system &lt;prompt&gt;</span><span class="desc">Override system prompt</span></li>
+    <li><span class="cmd">--no-color</span><span class="desc">Disable colored output</span></li>
+  </ul>
+</section>
+
+<!-- ═══ Docs ═══ -->
+<section>
+  <h2>Everything else is <span class="hl">documented</span></h2>
+  <p style="margin-bottom:20px">Deep-dive docs for every subsystem. Real detail, no fluff.</p>
+
+  <div class="doc-links">
+    <a href="CLI.md">CLI Reference<span>All commands, subcommands, flags, examples</span></a>
+    <a href="CONFIG.md">Configuration<span>Config files, env vars, priority chain</span></a>
+    <a href="PROVIDERS.md">Providers & Models<span>Deepseek, OpenAI, Anthropic, Ollama, vLLM, more</span></a>
+    <a href="MCP.md">MCP (Two-Way)<span>Serve tools + connect to external MCP servers</span></a>
+    <a href="MEMORY.md">Memory System<span>Three-tier facts, buffer, episodes</span></a>
+    <a href="SESSIONS.md">Multi-Turn Sessions<span>Save, resume, list, trim, cleanup</span></a>
+    <a href="SANDBOXING.md">Sandboxing<span>Docker isolation, config, security model</span></a>
+    <a href="SECURITY.md">Security<span>Prompt injection defense, threat model</span></a>
+    <a href="SUBAGENTS.md">Sub-Agents<span>Task decomposition, delegation protocol</span></a>
+    <a href="LEARNING.md">Self-Learning<span>Skill detection, LLM enhancement, curation</span></a>
+    <a href="WEBUI.md">Web UI<span>kode serve, WebSocket protocol, @ resources</span></a>
+    <a href="DEVELOPMENT.md">Development<span>Building, testing, contributing</span></a>
+  </div>
+</section>
+
+<!-- ═══ CTA ═══ -->
+<section style="text-align:center; padding-bottom: 80px;">
+  <h2>Ship <span class="hl">it</span></h2>
+  <p style="max-width:500px; margin:0 auto 24px">
+    One binary. One loop. Zero frameworks.<br>
+    Go install and go.
+  </p>
+  <div class="install" style="margin-top:0;display:inline-flex;">
+    <code>go install github.com/BackendStack21/kode/cmd/kode@latest</code>
+    <a class="btn" href="https://github.com/BackendStack21/kode" target="_blank" style="margin-left:16px;">GitHub →</a>
+  </div>
+</section>
+
+</div><!-- /container -->
+
+<footer>
+  <div class="container">
+    <a href="https://21no.de">21no.de</a> &middot; MIT License &middot;
+    <a href="https://github.com/BackendStack21/kode">GitHub</a>
+  </div>
+</footer>
+
+</body>
+</html>
