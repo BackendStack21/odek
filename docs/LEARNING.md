@@ -1,6 +1,6 @@
 # Self-Learning System
 
-kode can **learn reusable skills** from your agent sessions. When `--learn` is active, kode analyzes the full agent conversation and detects repeatable patterns — then offers to save them as skills for future runs.
+kode can **learn reusable skills** from your agent sessions. Learning is **on by default** — every `kode run` automatically scans the conversation for reusable patterns. Use `--no-learn` to disable.
 
 ## Architecture
 
@@ -46,14 +46,17 @@ kode run --learn "set up CI with GitHub Actions"
 ## CLI Usage
 
 ```bash
-# Run with learning enabled
-kode run --learn "Set up a Docker-based CI pipeline"
+# Learning is on by default — no flag needed
+kode run "Set up a Docker-based CI pipeline"
+
+# Disable learning for this run
+kode run --no-learn "Quick status check"
 
 # With a specific model
-kode run --learn --model deepseek-v4-pro "Refactor auth module"
+kode run --model deepseek-v4-pro "Refactor auth module"
 
 # In sandbox (learning works inside containers too)
-kode run --learn --sandbox "Install and configure nginx"
+kode run --sandbox "Install and configure nginx"
 ```
 
 After the agent finishes, kode scans the transcript and prints any detected patterns:
@@ -232,7 +235,7 @@ Multi-step procedure detected during a kode session.
 ### Basic: Let kode learn from a session
 
 ```bash
-kode run --learn "Set up PostgreSQL with Docker"
+kode run "Set up PostgreSQL with Docker"
 ```
 
 After the agent completes:
@@ -260,7 +263,7 @@ kode skill list
 ### Multiple suggestions (accept some, reject others)
 
 ```bash
-kode run --learn "Build and deploy the app"
+kode run "Build and deploy the app"
 ```
 
 ```
@@ -289,7 +292,7 @@ kode run --learn "Build and deploy the app"
 - **Max 5 suggestions total** — one per heuristic type.
 - **No content deduplication** — if you already have a similar skill, the new one is still suggested. Run `kode skill curate` periodically to detect overlaps.
 - **Command-only** — the heuristics work on terminal (`shell`) tool calls. Other tools (read_file, write_file) are visible in the transcript but aren't analyzed for patterns.
-- **No REPL integration** — learning currently only works with `kode run --learn`, not in REPL mode.
+- **No REPL integration** — learning currently only works with `kode run`, not in REPL mode.
 
 ## Related
 

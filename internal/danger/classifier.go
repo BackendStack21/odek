@@ -8,7 +8,6 @@
 package danger
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -131,6 +130,12 @@ type DangerousConfig struct {
 	// NonInteractive specifies what to do when running without a TTY.
 	// "allow" (default) — run everything, "deny" — block all prompted ops.
 	NonInteractive *string `json:"non_interactive,omitempty"`
+
+	// Approver handles interactive approval prompts for dangerous operations.
+	// When set, all Prompt-class operations use this instead of /dev/tty.
+	// Tools can inject their own approver (e.g., WebSocket-based for kode serve).
+	// When nil, CheckOperation falls back to /dev/tty (CLI-compatible default).
+	Approver Approver `json:"-"`
 }
 
 // defaultActions defines the base per-class behavior.
@@ -201,7 +206,8 @@ func (c *DangerousConfig) NonInteractiveAction() Action {
 
 // CheckOperation checks whether a tool operation is allowed, denied,
 // or needs approval. Returns nil on allow, error on deny, and prompts
-// the user on prompt.
+// the user on prompt. Uses the configured Approver when set; falls back
+// to /dev/tty (TTYApprover) when no approver is configured.
 func (c *DangerousConfig) CheckOperation(op ToolOperation, trustedClasses map[RiskClass]bool) error {
 	action := c.ActionFor(op.Risk)
 	switch action {
@@ -211,7 +217,16 @@ func (c *DangerousConfig) CheckOperation(op ToolOperation, trustedClasses map[Ri
 		return fmt.Errorf("operation denied by configuration: %s %s (risk: %s)",
 			op.Name, op.Resource, op.Risk)
 	case Prompt:
-		return promptForOperation(op, trustedClasses, c.NonInteractiveAction())
+		// Use configured approver, or fall back to TTY
+		approver := c.Approver
+		if approver == nil {
+			approver = NewTTYApprover(c)
+		}
+		// Build a TTYApprover for trustedClasses tracking if needed
+		if tty, ok := approver.(*TTYApprover); ok && trustedClasses != nil {
+			tty.TrustedClasses = trustedClasses
+		}
+		return approver.PromptOperation(op)
 	default:
 		return nil
 	}
@@ -225,47 +240,6 @@ func parseAction(s string) Action {
 		return Deny
 	default:
 		return Prompt
-	}
-}
-
-// promptForOperation reads user approval from /dev/tty for native tool ops.
-// Returns nil on approve/trust, error on deny or TTY failure.
-func promptForOperation(op ToolOperation, trustedClasses map[RiskClass]bool, nonInteractive Action) error {
-	if trustedClasses != nil && trustedClasses[op.Risk] {
-		return nil
-	}
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
-	if err != nil {
-		if nonInteractive == Deny {
-			return fmt.Errorf("operation denied (non-interactive mode): %s %s (risk: %s)",
-				op.Name, op.Resource, op.Risk)
-		}
-		return nil
-	}
-	defer tty.Close()
-
-	fmt.Fprintf(os.Stderr, "\n⚠️  \033[1mTool:\033[0m  %s\n", op.Name)
-	fmt.Fprintf(os.Stderr, "   \033[1mRisk:\033[0m  %s\n", op.Risk)
-	fmt.Fprintf(os.Stderr, "   \033[1mTarget:\033[0m %s\n", op.Resource)
-	fmt.Fprint(os.Stderr, "\n   [A]pprove  [D]eny  [T]rust session: ")
-
-	reader := bufio.NewReader(tty)
-	line, err := reader.ReadString('\n')
-	if err != nil {
-		return fmt.Errorf("approval prompt error: %w", err)
-	}
-	line = strings.TrimSpace(strings.ToLower(line))
-
-	switch line {
-	case "a", "approve":
-		return nil
-	case "t", "trust":
-		if trustedClasses != nil {
-			trustedClasses[op.Risk] = true
-		}
-		return nil
-	default:
-		return fmt.Errorf("operation denied by user: %s %s", op.Name, op.Resource)
 	}
 }
 

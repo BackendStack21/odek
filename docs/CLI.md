@@ -6,7 +6,7 @@
 |---------|-------------|
 | `kode run [flags] <task>` | Execute a task with the agent loop (single-shot by default) |
 | `kode run --session [flags] <task>` | Execute and save conversation as a multi-turn session |
-| `kode run --learn [flags] <task>` | Execute with skill learning (detects patterns, suggests skills) |
+| `kode run [--no-learn] [flags] <task>` | Execute with skill learning (on by default, use --no-learn to disable) |
 | `kode continue [--id <id>] <task>` | Continue the most recent session (or by `--id`) |
 | `kode repl [flags]` | Interactive REPL mode (persistent multi-turn session). Accepts `--model`, `--thinking`, `--sandbox`, and `--sandbox-*` flags. |
 | `kode session list` | List sessions |
@@ -36,7 +36,8 @@
 | `--no-color` | bool | false | Disable colored terminal output |
 | `--no-agents` | bool | false | Skip loading AGENTS.md |
 | `--session` | bool | false | Save conversation as a multi-turn session |
-| `--learn` | bool | false | Enable skill learning mode (detects patterns, saves skills) |
+| `--learn` | bool | `true` | Enable skill learning mode (detects patterns, saves skills). On by default |
+| `--no-learn` | bool | `false` | Disable skill learning mode (overrides config/default) |
 | `--system <prompt>` | string | built-in | Override system prompt |
 
 ## Shell tool schema
@@ -244,8 +245,8 @@ kode repl --id 20260518-abc123
 # Custom system prompt
 kode run --system "You are a Go expert. Answer with code only." "Write HTTP server"
 
-# Run with skill learning
-kode run --learn "Set up CI with GitHub Actions"
+# Run with skill learning (on by default — use --no-learn to disable)
+kode run "Set up CI with GitHub Actions"
 ```
 
 ## Config priority

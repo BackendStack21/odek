@@ -1,11 +1,9 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 
@@ -38,7 +36,9 @@ import (
 //   - Error output is merged into stdout (stderr follows stdout in output).
 //   - Empty output returns "(no output)" so the LLM always gets a response.
 //   - Commands are classified by risk (see internal/danger). High-risk
-//     commands in non-sandboxed mode prompt the user for approval via /dev/tty.
+//     commands in non-sandboxed mode prompt the user for approval.
+//     The approval mechanism uses the configured Approver — TTY in CLI mode,
+//     WebSocket in serve mode — ensuring the same experience everywhere.
 type shellTool struct {
 	// containerName, when set, routes commands through "docker exec"
 	// into this container. Set by setupSandbox() when --sandbox is active.
@@ -48,12 +48,16 @@ type shellTool struct {
 	// dangerousConfig controls per-class actions and allow/denylists.
 	dangerousConfig danger.DangerousConfig
 
+	// approver handles interactive approval prompts. When nil, falls back
+	// to TTYApprover (CLI-compatible default).
+	approver danger.Approver
+
 	// trustedClasses caches user-approved risk classes for this process.
 	// Set when user presses T (trust this session) at the prompt.
 	trustedClasses map[danger.RiskClass]bool
 
 	// ttyPath is the path to the terminal device for approval prompts.
-	// Overridden in tests to mock user input.
+	// Overridden in tests to mock user input. Only used when approver is nil.
 	ttyPath string
 }
 
@@ -146,69 +150,32 @@ func (t *shellTool) checkApproval(cmd, description string) error {
 	}
 }
 
-// promptUser opens /dev/tty and asks the user to approve the command.
+// promptUser classifies the command and asks the user to approve it.
+// Delegates to the configured Approver, or falls back to TTYApprover.
 func (t *shellTool) promptUser(cmd, description string) error {
 	cls := danger.Classify(cmd)
 
-	// Check session trust cache
-	if t.trustedClasses != nil && t.trustedClasses[cls] {
-		return nil
-	}
-
-	// Open /dev/tty for interactive approval
-	ttyPath := t.ttyPath
-	if ttyPath == "" {
-		ttyPath = "/dev/tty"
-	}
-	tty, err := os.OpenFile(ttyPath, os.O_RDWR, 0)
-	if err != nil {
-		// Non-interactive: use configured fallback
-		action := t.dangerousConfig.NonInteractiveAction()
-		if action == danger.Deny {
-			return fmt.Errorf("operation denied (non-interactive mode): %s", cmd)
+	// Get or create the approver
+	approver := t.approver
+	if approver == nil {
+		ttyApprover := danger.NewTTYApprover(&t.dangerousConfig)
+		if t.trustedClasses != nil {
+			ttyApprover.TrustedClasses = t.trustedClasses
 		}
-		return nil
-	}
-	defer tty.Close()
-
-	// Build the prompt
-	fmt.Fprintf(os.Stderr, "\n⚠️  \033[1mRisk:\033[0m %s\n", cls)
-	fmt.Fprintf(os.Stderr, "   \033[1mRun:\033[0m  %s\n", cmd)
-	if description != "" {
-		fmt.Fprintf(os.Stderr, "   \033[1mWhy:\033[0m  %s\n", description)
-	}
-	fmt.Fprint(os.Stderr, "\n   [A]pprove  [D]eny  [?] Context  [T]rust session: ")
-
-	// Read a single line of input from the TTY
-	reader := bufio.NewReader(tty)
-	line, err := reader.ReadString('\n')
-	if err != nil {
-		return fmt.Errorf("approval prompt error: %w", err)
-	}
-	line = strings.TrimSpace(strings.ToLower(line))
-
-	switch line {
-	case "a", "approve":
-		return nil
-	case "t", "trust":
-		// Cache this risk class for the session
-		if t.trustedClasses == nil {
-			t.trustedClasses = make(map[danger.RiskClass]bool)
+		if t.ttyPath != "" {
+			ttyApprover.TTYPath = t.ttyPath
 		}
-		t.trustedClasses[cls] = true
-		return nil
-	case "?", "context":
-		fmt.Fprintf(tty, "\n  Command: %s\n", cmd)
-		fmt.Fprintf(tty, "  Risk class: %s\n", cls)
-		if description != "" {
-			fmt.Fprintf(tty, "  Description: %s\n", description)
-		}
-		fmt.Fprintf(tty, "  Trust this class: %v\n", t.trustedClasses[cls])
-		// Re-prompt
-		return t.promptUser(cmd, description)
-	default:
-		return fmt.Errorf("operation denied by user: %s", cmd)
+		approver = ttyApprover
 	}
+
+	err := approver.PromptCommand(cls, cmd, description)
+	if err == nil {
+		// Sync trusted classes back if using TTYApprover
+		if tty, ok := approver.(*danger.TTYApprover); ok {
+			t.trustedClasses = tty.TrustedClasses
+		}
+	}
+	return err
 }
 
 // buildCmd constructs the exec.Cmd for the given shell command.

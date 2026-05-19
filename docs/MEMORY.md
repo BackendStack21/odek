@@ -124,8 +124,12 @@ Subagents do NOT get a `memory` tool — they cannot modify parent memory.
     "buffer_lines": 20,
     "buffer_enabled": true,
     "merge_on_write": true,
-    "extract_threshold": 3,
-    "project_facts": false
+    "extract_on_end": true,
+    "llm_search": true,
+    "llm_extract": true,
+    "llm_consolidate": true,
+    "merge_threshold": 0.7,
+    "add_threshold": 0.3
   }
 }
 ```

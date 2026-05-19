@@ -344,7 +344,6 @@ func printUsage() {
 
 Commands:
   run                 Execute a task with the agent loop
-  run --learn         Execute with skill learning (detects patterns, suggests skills)
   run --session       Execute and save conversation as a session
   continue            Continue the most recent session (or by --id)
   repl                Interactive REPL mode (multi-turn session)
@@ -378,7 +377,8 @@ Run flags:
   --no-color           Disable colored terminal output
   --no-agents          Skip loading AGENTS.md from working directory
   --session            Save conversation as a multi-turn session
-  --learn              Enable skill learning mode (detects patterns, saves skills)
+  --learn              Enable skill learning mode — on by default, no flag needed
+  --no-learn           Disable skill learning mode (overrides config/default)
   --system <prompt>    System prompt override
 
 Skill commands:
@@ -458,7 +458,9 @@ const defaultConfigTemplate = `{
   "skills": {
     "max_auto_load": 3,
     "max_lazy_slots": 5,
-    "learn": false,
+    "learn": true,
+    "llm_learn": true,
+    "llm_curate": true,
     "dirs": [],
     "import": {
       "max_size_bytes": 1048576,
@@ -705,7 +707,7 @@ func run(args []string) error {
 
 	// Sandbox setup
 	var sandboxCleanup func() error
-	tools := builtinTools(resolved.Dangerous, sm)
+	tools := builtinTools(resolved.Dangerous, sm, nil)
 
 	if resolved.Sandbox {
 		cleanup, err := setupSandbox(tools, sbCfg)
@@ -969,10 +971,11 @@ func buildSandboxArgs(cfg sandboxConfig, containerName, workdir, image string) [
 	return args
 }
 
-func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager) []kode.Tool {
+func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver danger.Approver) []kode.Tool {
 	tools := []kode.Tool{
 		&shellTool{
 			dangerousConfig: dc,
+			approver:        approver,
 		},
 		&delegateTasksTool{
 			maxConcurrency: 3,
@@ -1327,7 +1330,7 @@ func continueCmd(args []string) error {
 			"./.kode/skills",
 		)
 	}
-	tools := builtinTools(resolved.Dangerous, sm)
+	tools := builtinTools(resolved.Dangerous, sm, nil)
 	var sandboxCleanup func() error
 
 	systemMessage := resolved.System

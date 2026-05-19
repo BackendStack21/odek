@@ -75,7 +75,7 @@ func replCmd(args []string) error {
 			"./.kode/skills",
 		)
 	}
-	tools := builtinTools(resolved.Dangerous, sm)
+	tools := builtinTools(resolved.Dangerous, sm, nil)
 	var sandboxCleanup func() error
 
 	if resolved.Sandbox {

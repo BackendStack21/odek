@@ -304,7 +304,7 @@ func TestSubagent_ExitCodeThree(t *testing.T) {
 // ── 4. delegate_tasks Tool Schema ───────────────────────────────────
 
 func TestDelegateTasksTool_Exists(t *testing.T) {
-	tools := builtinTools(danger.DangerousConfig{}, nil)
+	tools := builtinTools(danger.DangerousConfig{}, nil, nil)
 
 	found := false
 	for _, tool := range tools {
@@ -319,7 +319,7 @@ func TestDelegateTasksTool_Exists(t *testing.T) {
 }
 
 func TestDelegateTasksTool_HasSchema(t *testing.T) {
-	tools := builtinTools(danger.DangerousConfig{}, nil)
+	tools := builtinTools(danger.DangerousConfig{}, nil, nil)
 
 	var tool kode.Tool
 	for _, t2 := range tools {
@@ -408,7 +408,7 @@ func TestDelegateTasksTool_HasSchema(t *testing.T) {
 }
 
 func TestDelegateTasksTool_Description(t *testing.T) {
-	tools := builtinTools(danger.DangerousConfig{}, nil)
+	tools := builtinTools(danger.DangerousConfig{}, nil, nil)
 
 	var tool kode.Tool
 	for _, t2 := range tools {

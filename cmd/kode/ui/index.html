@@ -428,7 +428,41 @@ function connect() {
         endStream();
         addMessage('system', 'Error: ' + event.message);
         break;
+
+      case 'approval_request':
+        showApprovalDialog(event);
+        break;
     }
+  };
+
+  // ── Approval Dialog ──
+  var _approvalId = null;
+
+  window.showApprovalDialog = function(event) {
+    _approvalId = event.id;
+    var riskEl = document.getElementById('approval-risk');
+    riskEl.textContent = event.risk;
+    riskEl.className = event.risk;
+    document.getElementById('approval-command').textContent = event.command;
+    var descEl = document.getElementById('approval-desc');
+    if (event.description) {
+      descEl.textContent = event.description;
+      descEl.style.display = 'block';
+    } else {
+      descEl.style.display = 'none';
+    }
+    document.getElementById('approval-overlay').classList.add('active');
+  };
+
+  window.sendApproval = function(action) {
+    if (!_approvalId) return;
+    ws.send(JSON.stringify({
+      type: 'approval_response',
+      id: _approvalId,
+      action: action
+    }));
+    document.getElementById('approval-overlay').classList.remove('active');
+    _approvalId = null;
   };
 }
 
@@ -766,5 +800,19 @@ promptEl.focus();
 
 })();
 </script>
+<!-- Approval Dialog -->
+<div id="approval-overlay">
+  <div id="approval-dialog">
+    <h3>Security Approval Required</h3>
+    <div id="approval-risk"></div>
+    <div id="approval-command"></div>
+    <div id="approval-desc"></div>
+    <div id="approval-actions">
+      <button class="deny" onclick="sendApproval('deny')">Deny</button>
+      <button class="trust" onclick="sendApproval('trust')">Trust Session</button>
+      <button class="approve" onclick="sendApproval('approve')">Approve</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>

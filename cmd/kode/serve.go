@@ -98,7 +98,7 @@ Flags:
 
 // ── Agent Builder ──────────────────────────────────────────────────────
 
-func newServeAgent(resolved config.ResolvedConfig, system string) (*kode.Agent, func() error, error) {
+func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v any) error) (*kode.Agent, func() error, *wsApprover, error) {
 	var sm *skills.SkillManager
 	if resolved.Skills.Learn {
 		sm = skills.NewSkillManager(
@@ -107,7 +107,11 @@ func newServeAgent(resolved config.ResolvedConfig, system string) (*kode.Agent, 
 		)
 	}
 
-	tools := builtinTools(resolved.Dangerous, sm)
+	// Create WebSocket approver for dangerous operations approval
+	approver := newWSApprover(sendFn)
+	resolved.Dangerous.Approver = approver
+
+	tools := builtinTools(resolved.Dangerous, sm, approver)
 	var sandboxCleanup func() error
 
 	if resolved.Sandbox {
@@ -123,7 +127,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string) (*kode.Agent, 
 		}
 		cleanup, err := setupSandbox(tools, cfg)
 		if err != nil {
-			return nil, nil, fmt.Errorf("sandbox: %w", err)
+			return nil, nil, nil, fmt.Errorf("sandbox: %w", err)
 		}
 		sandboxCleanup = cleanup
 	}
@@ -144,10 +148,10 @@ func newServeAgent(resolved config.ResolvedConfig, system string) (*kode.Agent, 
 		MemoryConfig:   resolved.Memory,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
-	return agent, sandboxCleanup, nil
+	return agent, sandboxCleanup, approver, nil
 }
 
 // ── WebSocket Types ────────────────────────────────────────────────────
@@ -171,7 +175,10 @@ func handleWebSocket(store *session.Store, resources *resource.Registry, resolve
 
 		// Create ONE agent per WebSocket connection — provides buffer
 		// continuity across turns within the same session.
-		agent, sandboxCleanup, err := newServeAgent(resolved, system)
+		agent, sandboxCleanup, approver, err := newServeAgent(resolved, system, func(v any) error {
+			writeWSJSON(conn, v)
+			return nil
+		})
 		if err != nil {
 			writeWSError(conn, fmt.Sprintf("agent: %v", err))
 			return
@@ -196,13 +203,35 @@ func handleWebSocket(store *session.Store, resources *resource.Registry, resolve
 				continue
 			}
 
+			// Peek at the message type without full unmarshal
+			var msgType struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal(data, &msgType); err != nil {
+				continue
+			}
+
+			// Handle approval responses separately (non-blocking, from the browser)
+			if msgType.Type == "approval_response" {
+				var resp approvalResponse
+				if err := json.Unmarshal(data, &resp); err == nil {
+					approver.HandleResponse(resp.ID, resp.Action)
+				}
+				continue
+			}
+
+			// Only process prompt messages
+			if msgType.Type != "prompt" {
+				continue
+			}
+
 			var msg wsClientMsg
 			if err := json.Unmarshal(data, &msg); err != nil {
 				writeWSError(conn, "invalid JSON")
 				continue
 			}
 
-			if msg.Type != "prompt" || msg.Content == "" {
+			if msg.Content == "" {
 				continue
 			}
 
