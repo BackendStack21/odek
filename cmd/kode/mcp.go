@@ -57,6 +57,18 @@ Flags:
 		systemMessage = defaultSystem
 	}
 
+	// Build sandbox config from resolved settings
+	sbCfg := sandboxConfig{
+		Image:    resolved.SandboxImage,
+		Network:  resolved.SandboxNetwork,
+		Readonly: resolved.SandboxReadonly,
+		Memory:   resolved.SandboxMemory,
+		CPUs:     resolved.SandboxCPUs,
+		User:     resolved.SandboxUser,
+		Env:      resolved.SandboxEnv,
+		Volumes:  resolved.SandboxVolumes,
+	}
+
 	// Build skills manager (for skill tools)
 	var sm *skills.SkillManager
 	if resolved.Skills.Learn {
@@ -68,6 +80,17 @@ Flags:
 
 	// Build tools
 	toolSet := builtinTools(resolved.Dangerous, sm, nil)
+
+	// Sandbox setup (must happen after tools are created)
+	var sandboxCleanup func() error
+	if resolved.Sandbox {
+		cleanup, err := setupSandbox(toolSet, sbCfg)
+		if err != nil {
+			return fmt.Errorf("sandbox: %w", err)
+		}
+		sandboxCleanup = cleanup
+		defer sandboxCleanup()
+	}
 
 	// Convert to MCP NativeTool slice
 	var callers []mcp.ToolCaller
