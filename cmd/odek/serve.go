@@ -498,6 +498,9 @@ func handlePrompt(
 
 	contextTokens := agent.TotalInputTokens()
 	outputTokens := agent.TotalOutputTokens()
+	cacheCreate := agent.TotalCacheCreationTokens()
+	cacheRead := agent.TotalCacheReadTokens()
+	cached := agent.TotalCachedTokens()
 	*sessionInputTokens += contextTokens
 	*sessionOutputTokens += outputTokens
 
@@ -506,6 +509,9 @@ func handlePrompt(
 		"latency":             latency.Seconds(),
 		"contextTokens":       contextTokens,
 		"outputTokens":        outputTokens,
+		"cacheCreationTokens": cacheCreate,
+		"cacheReadTokens":     cacheRead,
+		"cachedTokens":        cached,
 		"sessionContextTokens": *sessionInputTokens,
 		"sessionOutputTokens": *sessionOutputTokens,
 	})

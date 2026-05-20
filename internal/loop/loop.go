@@ -207,6 +207,9 @@ func (e *Engine) RunWithMessages(ctx context.Context, messages []llm.Message) (s
 	// Reset token accounting for this run
 	e.TotalInputTokens = 0
 	e.TotalOutputTokens = 0
+	e.TotalCacheCreationTokens = 0
+	e.TotalCacheReadTokens = 0
+	e.TotalCachedTokens = 0
 	return e.runLoop(ctx, messages)
 }
 
@@ -281,6 +284,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		e.TotalOutputTokens += result.OutputTokens
 
 		// Accumulate cache metrics
+		// Accumulate cache metrics across iterations
 		e.TotalCacheCreationTokens += result.CacheCreationTokens
 		e.TotalCacheReadTokens += result.CacheReadTokens
 		e.TotalCachedTokens += result.CachedTokens
@@ -289,6 +293,13 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		if len(result.ToolCalls) == 0 {
 			if e.renderer != nil {
 				e.renderer.FinalAnswer(result.Content)
+				e.renderer.Summary(
+					e.TotalInputTokens,
+					e.TotalOutputTokens,
+					e.TotalCacheCreationTokens,
+					e.TotalCacheReadTokens,
+					e.TotalCachedTokens,
+				)
 			}
 			// Append final assistant message so callers (e.g. WebUI) get
 			// the final text in the messages slice and can stream it.

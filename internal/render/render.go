@@ -204,6 +204,33 @@ func (r *Renderer) FinalAnswer(text string) {
 	fmt.Fprintln(r.w)
 }
 
+// Summary prints a run summary line with total token and cache statistics.
+// Emitted after the final answer when at least one stat is non-zero.
+// Shows: total input/output tokens, cache creation/read/cached tokens.
+func (r *Renderer) Summary(inTokens, outTokens, cacheCreate, cacheRead, cached int) {
+	if r.disable() {
+		return
+	}
+	if inTokens == 0 && outTokens == 0 {
+		return
+	}
+	parts := []string{
+		fmt.Sprintf("⌂ %d in", inTokens),
+		fmt.Sprintf("⎇ %d out", outTokens),
+	}
+	if cacheCreate > 0 {
+		parts = append(parts, fmt.Sprintf("⊕ %d created", cacheCreate))
+	}
+	if cacheRead > 0 {
+		parts = append(parts, fmt.Sprintf("⊙ %d read", cacheRead))
+	}
+	if cached > 0 {
+		parts = append(parts, fmt.Sprintf("⊡ %d cached", cached))
+	}
+	fmt.Fprintln(r.w, r.style(gray, "── "+strings.Join(parts, " · ")))
+	fmt.Fprintln(r.w)
+}
+
 // Error prints a non-fatal loop error with a cross emoji.
 func (r *Renderer) Error(err error) {
 	if r.disable() || err == nil {

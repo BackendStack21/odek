@@ -1399,6 +1399,10 @@ function connect() {
             parts.push('⚡ ' + (event.latency < 1 ? (event.latency * 1000).toFixed(0) + 'ms' : event.latency.toFixed(1) + 's'));
             if (event.contextTokens != null) parts.push('⌂ ' + formatNum(event.contextTokens));
             if (event.outputTokens != null) parts.push('⎇ ' + formatNum(event.outputTokens));
+            // Cache metrics — show only when non-zero
+            if (event.cacheCreationTokens > 0) parts.push('⊕ ' + formatNum(event.cacheCreationTokens));
+            if (event.cacheReadTokens > 0) parts.push('⊙ ' + formatNum(event.cacheReadTokens));
+            if (event.cachedTokens > 0) parts.push('⊡ ' + formatNum(event.cachedTokens));
             stats.textContent = parts.join('  ·  ');
             lastAssistant.appendChild(stats);
           }
@@ -1406,7 +1410,22 @@ function connect() {
         // Update session-level token stats in top bar
         const sessionStatsEl = document.getElementById('session-stats');
         if (event.sessionContextTokens != null && event.sessionOutputTokens != null) {
-          sessionStatsEl.textContent = '∑ ⌂ ' + formatNum(event.sessionContextTokens) + '  ·  ⎇ ' + formatNum(event.sessionOutputTokens);
+          const sessParts = ['∑ ⌂ ' + formatNum(event.sessionContextTokens) + '  ·  ⎇ ' + formatNum(event.sessionOutputTokens)];
+          if (event.cacheReadTokens > 0 || event.cacheCreationTokens > 0 || event.cachedTokens > 0) {
+            // Count total session cache stats (accumulated across the session)
+            // We store cache totals on the session-stats element's dataset
+            const el = document.getElementById('session-stats');
+            const cc = (parseInt(el.dataset.cacheCreate || '0') + (event.cacheCreationTokens || 0));
+            const cr = (parseInt(el.dataset.cacheRead || '0') + (event.cacheReadTokens || 0));
+            const cd = (parseInt(el.dataset.cached || '0') + (event.cachedTokens || 0));
+            el.dataset.cacheCreate = cc;
+            el.dataset.cacheRead = cr;
+            el.dataset.cached = cd;
+            if (cr > 0) sessParts.push('⊙ ' + formatNum(cr));
+            if (cc > 0) sessParts.push('⊕ ' + formatNum(cc));
+            if (cd > 0) sessParts.push('⊡ ' + formatNum(cd));
+          }
+          sessionStatsEl.textContent = sessParts.join('  ·  ');
           sessionStatsEl.classList.add('visible');
         }
         if (sessionId) loadSessions();
