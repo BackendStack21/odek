@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>kode · 5 MB zero-dependency Go agent runtime</title>
+  <title>kode · ~8 MB zero-dependency Go agent runtime</title>
   <meta name="description" content="kode — the fastest, minimal, zero-dependency Go autonomous agent runtime. One binary. One loop. Zero frameworks.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -56,19 +56,31 @@
       font-size: 1.15rem; color: var(--text2); margin-top: 16px; max-width: 600px; margin-inline: auto;
     }
     .hero .sub .size { color: var(--green); font-weight: 600; }
-    .hero .install {
+    .hero .install-block {
       margin-top: 36px;
       background: var(--bg3); border: 1px solid var(--border); border-radius: 12px;
       display: inline-flex; align-items: center; padding: 4px 4px 4px 20px;
       font-family: 'JetBrains Mono', monospace; font-size: 0.875rem;
+      position: relative;
     }
-    .hero .install code { color: var(--green); }
-    .hero .install .btn {
+    .hero .install-block code { color: var(--green); }
+    .hero .install-block .btn {
       margin-left: 16px; background: var(--accent); color: #000; border: none;
       padding: 10px 20px; border-radius: 8px; font-weight: 600; font-size: 0.8125rem;
       cursor: pointer; transition: opacity .15s; text-decoration: none;
     }
-    .hero .install .btn:hover { opacity: .85; }
+    .hero .install-block .btn:hover { opacity: .85; }
+
+    /* ── Copy button ── */
+    .copy-btn {
+      background: transparent; border: 1px solid var(--border); color: var(--text2);
+      padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 0.75rem;
+      font-family: 'Outfit', sans-serif; transition: all .15s; margin-left: 12px;
+      white-space: nowrap; line-height: 1;
+    }
+    .copy-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .copy-btn.copied { border-color: var(--green); color: var(--green); }
+    .copy-btn.ok { border-color: var(--green); color: var(--green); }
 
     /* ── Sections ── */
     section { padding: 64px 0; }
@@ -106,24 +118,69 @@
     .features .card h4 { font-size: 1rem; font-weight: 600; margin-bottom: 6px; }
     .features .card p { font-size: 0.8125rem; line-height: 1.5; }
 
-    /* ── Examples ── */
-    .cmd-list { list-style: none; }
-    .cmd-list li {
-      padding: 10px 0; display: flex; gap: 16px;
-      border-bottom: 1px solid var(--border); font-family: 'JetBrains Mono', monospace; font-size: 0.8125rem;
+    /* ── Terminal carousel ── */
+    .carousel {
+      background: #0d0d11; border: 1px solid var(--border); border-radius: 12px;
+      overflow: hidden; margin: 20px 0;
     }
-    .cmd-list li:last-child { border-bottom: none; }
-    .cmd-list li .cmd { color: var(--green); white-space: nowrap; min-width: 220px; }
-    .cmd-list li .desc { color: var(--text2); }
+    .carousel .bar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 16px; background: var(--bg2);
+      border-bottom: 1px solid var(--border);
+    }
+    .carousel .bar .dot { width: 10px; height: 10px; border-radius: 50%; }
+    .carousel .bar .dot:nth-child(1) { background: #ff5f56; }
+    .carousel .bar .dot:nth-child(2) { background: #ffbd2e; }
+    .carousel .bar .dot:nth-child(3) { background: #27c93f; }
+    .carousel .bar .label {
+      margin-left: auto; font-size: 0.75rem; color: var(--text2);
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .carousel .slides {
+      position: relative; min-height: 280px;
+    }
+    .carousel .slide {
+      position: absolute; inset: 0; padding: 20px 24px;
+      opacity: 0; transition: opacity .6s ease;
+      font-family: 'JetBrains Mono', monospace; font-size: 0.8125rem;
+      line-height: 1.7; overflow-y: auto;
+      pointer-events: none;
+    }
+    .carousel .slide.active { opacity: 1; position: relative; pointer-events: auto; }
+    .carousel .slide .prompt { color: var(--green); }
+    .carousel .slide .output { color: var(--text2); }
+    .carousel .slide .info { color: #6b7280; font-style: italic; }
+    .carousel .nav {
+      display: flex; justify-content: center; gap: 8px;
+      padding: 8px 0 16px;
+    }
+    .carousel .nav button {
+      background: var(--bg3); border: 1px solid var(--border); color: var(--text2);
+      width: 32px; height: 32px; border-radius: 50%; cursor: pointer;
+      font-size: 0.75rem; transition: all .15s;
+    }
+    .carousel .nav button:hover { border-color: var(--accent); color: var(--accent); }
+    .carousel .nav button.active { background: var(--accent); color: #000; border-color: var(--accent); }
 
-    /* ── Table comparison ── */
-    .compare { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
-    .compare th, .compare td {
-      text-align: left; padding: 12px 16px; border-bottom: 1px solid var(--border);
+    /* ── Binary downloads ── */
+    .downloads {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 20px 0;
     }
-    .compare th { color: var(--text2); font-weight: 500; }
-    .compare td:first-child { font-weight: 500; color: var(--text); }
-    .compare .win { color: var(--green); font-weight: 600; }
+    .downloads .dl-card {
+      background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
+      padding: 16px 20px; display: flex; align-items: center; justify-content: space-between;
+      transition: border-color .15s;
+    }
+    .downloads .dl-card:hover { border-color: var(--accent); }
+    .downloads .dl-card .info .os { font-weight: 600; font-size: 0.9375rem; }
+    .downloads .dl-card .info .arch { color: var(--text2); font-size: 0.8125rem; }
+    .downloads .dl-card .info .size { color: var(--text2); font-size: 0.75rem; margin-top: 2px; }
+    .downloads .dl-card .dl-btn {
+      background: var(--accent); color: #000; border: none;
+      padding: 8px 16px; border-radius: 6px; font-weight: 600; font-size: 0.75rem;
+      cursor: pointer; transition: opacity .15s; text-decoration: none; white-space: nowrap;
+    }
+    .downloads .dl-card .dl-btn:hover { opacity: .85; }
 
     /* ── Install steps ── */
     .steps { list-style: none; }
@@ -146,12 +203,51 @@
     pre {
       background: var(--bg3); border: 1px solid var(--border); border-radius: 10px;
       padding: 20px; overflow-x: auto; font-size: 0.8125rem; margin: 16px 0;
+      position: relative;
     }
     pre code { font-family: 'JetBrains Mono', monospace; color: var(--text); }
+    pre .clip {
+      position: absolute; top: 12px; right: 12px;
+      background: var(--bg2); border: 1px solid var(--border); color: var(--text2);
+      padding: 4px 10px; border-radius: 5px; cursor: pointer; font-size: 0.6875rem;
+      font-family: 'Outfit', sans-serif; transition: all .15s;
+    }
+    pre .clip:hover { border-color: var(--accent); color: var(--accent); }
+    pre .clip.copied { border-color: var(--green); color: var(--green); }
     .hljs-comment { color: #6b7280; }
     .hljs-string { color: var(--green); }
     .hljs-keyword { color: var(--accent); }
     .hljs-number { color: var(--amber); }
+
+    /* ── Platform tags ── */
+    .platform-tags {
+      display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px;
+    }
+    .platform-tags .tag {
+      background: var(--bg3); border: 1px solid var(--border); border-radius: 6px;
+      padding: 6px 12px; font-size: 0.75rem; font-family: 'JetBrains Mono', monospace;
+      color: var(--text2);
+    }
+    .platform-tags .tag .ok { color: var(--green); }
+
+    /* ── Table comparison ── */
+    .compare { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+    .compare th, .compare td {
+      text-align: left; padding: 12px 16px; border-bottom: 1px solid var(--border);
+    }
+    .compare th { color: var(--text2); font-weight: 500; }
+    .compare td:first-child { font-weight: 500; color: var(--text); }
+    .compare .win { color: var(--green); font-weight: 600; }
+
+    /* ── Command list ── */
+    .cmd-list { list-style: none; }
+    .cmd-list li {
+      padding: 10px 0; display: flex; gap: 16px;
+      border-bottom: 1px solid var(--border); font-family: 'JetBrains Mono', monospace; font-size: 0.8125rem;
+    }
+    .cmd-list li:last-child { border-bottom: none; }
+    .cmd-list li .cmd { color: var(--green); white-space: nowrap; min-width: 220px; }
+    .cmd-list li .desc { color: var(--text2); }
 
     /* ── Doc links ── */
     .doc-links { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
@@ -171,13 +267,13 @@
 
     @media (max-width: 700px) {
       .hero h1 { font-size: 2.25rem; }
-      .hero .install { flex-direction: column; padding: 16px; gap: 12px; }
-      .hero .install .btn { margin-left: 0; }
+      .hero .install-block { flex-direction: column; padding: 16px; gap: 12px; }
+      .hero .install-block .btn { margin-left: 0; }
       .hero .stats { gap: 24px; flex-wrap: wrap; }
       .features { grid-template-columns: 1fr; }
+      .downloads { grid-template-columns: 1fr; }
       .doc-links { grid-template-columns: 1fr; }
-      .cmd-list li { flex-direction: column; gap: 2px; }
-      .cmd-list li .cmd { min-width: 0; }
+      .carousel .slide { font-size: 0.75rem; padding: 14px 16px; }
     }
   </style>
 </head>
@@ -190,6 +286,7 @@
     <a href="#features">Features</a>
     <a href="#install">Install</a>
     <a href="#cheatsheet">Cheatsheet</a>
+    <a href="#demos">Demos</a>
     <a href="https://github.com/BackendStack21/kode" target="_blank">GitHub</a>
   </div>
 </nav>
@@ -197,10 +294,11 @@
 <section class="hero">
   <div class="container">
     <h1>kode</h1>
-    <p class="sub"><span class="size">5 MB</span> zero-dependency Go agent runtime.<br>Think, therefore act.</p>
+    <p class="sub"><span class="size">~8 MB</span> · zero direct dependencies.<br>Think, therefore act.</p>
 
-    <div class="install">
+    <div class="install-block">
       <code>go install github.com/BackendStack21/kode/cmd/kode@latest</code>
+      <button class="copy-btn" onclick="copyText(this,'go install github.com/BackendStack21/kode/cmd/kode@latest')">📋 Copy</button>
       <a class="btn" href="#install">Get Started →</a>
     </div>
   </div>
@@ -214,7 +312,7 @@
   <ul class="whys">
     <li>
       <span class="q">Why?</span>
-      <span class="a">Because every AI agent framework today ships a <strong>200-package dependency tree</strong> and a 200 MB Python venv. kode is a <strong>5 MB static binary</strong> with one indirect dependency.</span>
+      <span class="a">Because every AI agent framework today ships a <strong>200-package dependency tree</strong> and a 200 MB Python venv. kode is an <strong>~8 MB static binary</strong> with <strong>2 indirect dependencies</strong> — <code>go-vector</code> and <code>golang.org/x/net</code>.</span>
     </li>
     <li>
       <span class="q">Why?</span>
@@ -233,6 +331,110 @@
       <span class="a">Because the agent ecosystem has split into two worlds — tools that <strong>serve</strong> MCP (Claude Code, Cursor) and tools that <strong>consume</strong> MCP. kode does <strong>both</strong> in one binary. Serve your tools to any MCP client, or connect to external MCP servers for Playwright, Fetch, databases, and more.</span>
     </li>
   </ul>
+</section>
+
+<!-- ═══ Terminal Demos Carousel ═══ -->
+<section id="demos">
+  <h2>See it in <span class="hl">action</span></h2>
+  <p style="margin-bottom:20px;color:var(--text2);font-size:0.9375rem">
+    Real terminal output from real runs. Click through the examples.
+  </p>
+
+  <div class="carousel" id="carousel">
+    <div class="bar">
+      <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+      <span class="label">kode — agent loop</span>
+    </div>
+    <div class="slides">
+
+      <!-- Slide 1 -->
+      <div class="slide active">
+        <span class="info"># Quick file query</span><br>
+        <span class="prompt">$ kode run "How many lines in go.mod?"</span><br>
+        <span class="info">═══ Iter 1/15 ═══  [456 in · 21 out · 0.8s]</span><br>
+        <span class="output">The <strong>go.mod</strong> file has 3 lines:</span><br>
+        <span class="output">module github.com/BackendStack21/kode</span><br>
+        <span class="output">go 1.24</span><br>
+        <span class="output">require ( ... )</span><br>
+        <span class="info">✅ Done in 0.8s</span>
+      </div>
+
+      <!-- Slide 2 -->
+      <div class="slide">
+        <span class="info"># Multi-turn session</span><br>
+        <span class="prompt">$ kode run --session "Refactor the auth module"</span><br>
+        <span class="info">═══ Iter 1/8 ═══  [521 in · 342 out · 3.2s]</span><br>
+        <span class="output">I'll refactor the auth module. Let me start by reading the current code:</span><br>
+        <span class="info">🔧 shell read_file auth.go</span><br>
+        <span class="info">📄 auth.go (142 lines) loaded</span><br>
+        <span class="output">The module uses basic JWT without refresh tokens.</span><br>
+        <span class="output">I'll add: refresh token rotation,</span><br>
+        <span class="output">         rate-limited login, session revocation.</span><br>
+        <span class="info">✅ Session saved: 20260520-a1b2c3</span>
+      </div>
+
+      <!-- Slide 3 -->
+      <div class="slide">
+        <span class="info"># Sandbox mode</span><br>
+        <span class="prompt">$ kode run --sandbox "Check if curl is installed"</span><br>
+        <span class="info">🔒 Sandbox: ephemeral container started</span><br>
+        <span class="info">═══ Iter 1/4 ═══  [389 in · 156 out · 2.1s]</span><br>
+        <span class="output">Running inside a fresh Docker container:</span><br>
+        <span class="prompt">$ which curl</span><br>
+        <span class="output">/usr/bin/curl</span><br>
+        <span class="prompt">$ curl --version</span><br>
+        <span class="output">curl 8.5.0 (x86_64-pc-linux-musl)</span><br>
+        <span class="info">🔒 Container destroyed</span>
+      </div>
+
+      <!-- Slide 4 -->
+      <div class="slide">
+        <span class="info"># Parallel sub-agents</span><br>
+        <span class="prompt">$ kode run "Audit all Go files for security issues"</span><br>
+        <span class="info">🔄 Delegating 3 sub-agents...</span><br>
+        <span class="info">  └─ agent-1: scan imports (os/exec, crypto, net)</span><br>
+        <span class="info">  └─ agent-2: check error handling</span><br>
+        <span class="info">  └─ agent-3: inspect file permissions</span><br>
+        <span class="info">═══ Parallel · 3 children · 4.7s</span><br>
+        <span class="output">Results:</span><br>
+        <span class="output">  • 2 missing defer file.Close()</span><br>
+        <span class="output">  • 1 hardcoded secret in config.go</span><br>
+        <span class="output">  • All permissions: 0644 ✓</span>
+      </div>
+
+      <!-- Slide 5 -->
+      <div class="slide">
+        <span class="info"># MCP server mode</span><br>
+        <span class="prompt">$ kode mcp</span><br>
+        <span class="info">kode mcp ⚡  MCP server starting (v0.14.2)</span><br>
+        <span class="output">Connected by Claude Code. Exposing 8 tools:</span><br>
+        <span class="output">  • read_file    — read files with line numbers</span><br>
+        <span class="output">  • write_file   — write files safely</span><br>
+        <span class="output">  • search_files — ripgrep-backed search</span><br>
+        <span class="output">  • shell        — execute commands</span><br>
+        <span class="output">  • patch        — find-and-replace edits</span><br>
+        <span class="output">  — MCP stdio —</span>
+      </div>
+
+      <!-- Slide 6 -->
+      <div class="slide">
+        <span class="info"># Web UI with token stats</span><br>
+        <span class="prompt">$ kode serve --addr :8080</span><br>
+        <span class="info">kode serve ⚡  http://[::]:8080</span><br>
+        <span class="output">Open in browser. @-completion for files.</span><br>
+        <span class="info">┌─ Session: 20260520-xyz ───────────────────────┐</span><br>
+        <span class="info">│  ∑ ⌂ 1,248 context · ⎇ 342 output            │</span><br>
+        <span class="info">├───────────────────────────────────────────────┤</span><br>
+        <span class="output">│  User: What's in src/?                         │</span><br>
+        <span class="info">│  ⚡ Thinking...                                │</span><br>
+        <span class="output">│  Agent: Let me check the source directory.     │</span><br>
+        <span class="output">│         ⚡ 2.1s · ⌂ 456 · ⎇ 89                │</span><br>
+        <span class="info">└───────────────────────────────────────────────┘</span>
+      </div>
+
+    </div>
+    <div class="nav" id="carousel-nav"></div>
+  </div>
 </section>
 
 <!-- ═══ Features ═══ -->
@@ -274,7 +476,7 @@
     <div class="card">
       <div class="icon">🌐</div>
       <h4>Web UI</h4>
-      <p><code>kode serve</code> — browser-based agent with <code>@</code> resource completion, WebSocket streaming, and a full IDE-style console. Built from Go's embed — zero npm.</p>
+      <p><code>kode serve</code> — browser-based agent with <code>@</code> resource completion, WebSocket streaming, token economics, inline loading, and a full IDE-style console. Built from Go's embed — zero npm.</p>
     </div>
 
     <div class="card">
@@ -301,8 +503,8 @@
       <tr><th></th><th>kode</th><th>Python agents</th></tr>
     </thead>
     <tbody>
-      <tr><td>Dependencies</td><td class="win">Zero. stdlib only.</td><td>200+ packages</td></tr>
-      <tr><td>Binary size</td><td class="win">~5 MB static</td><td>50–200 MB (venv)</td></tr>
+      <tr><td>Direct dependencies</td><td class="win">Zero. stdlib only.</td><td>200+ packages</td></tr>
+      <tr><td>Binary size</td><td class="win">~8 MB static</td><td>50–200 MB (venv)</td></tr>
       <tr><td>Startup</td><td class="win">Instant</td><td>2–10 seconds</td></tr>
       <tr><td>Sandbox</td><td class="win"><code>--sandbox</code> flag</td><td>Manual Docker setup</td></tr>
       <tr><td>Tool interface</td><td class="win">One interface, one method</td><td>Class hierarchies + decorators</td></tr>
@@ -323,7 +525,12 @@
     </li>
     <li>
       <span class="n">2</span>
-      <span>Run: <code>go install github.com/BackendStack21/kode/cmd/kode@latest</code></span>
+      <span>
+        Install:
+        <button class="copy-btn" onclick="copyText(this,'go install github.com/BackendStack21/kode/cmd/kode@latest')" style="margin-left:8px;">📋 Copy</button>
+        <br>
+        <code style="margin-top:6px;display:inline-block;">go install github.com/BackendStack21/kode/cmd/kode@latest</code>
+      </span>
     </li>
     <li>
       <span class="n">3</span>
@@ -335,6 +542,54 @@
     </li>
   </ul>
 
+  <h3>Binary downloads</h3>
+  <p style="color:var(--text2);font-size:0.875rem;margin-bottom:16px">
+    No Go toolchain? Grab a pre-built binary for your platform:
+  </p>
+
+  <div class="downloads">
+    <div class="dl-card">
+      <div class="info">
+        <div class="os">🐧 Linux</div>
+        <div class="arch">AMD64 · x86_64</div>
+        <div class="size">~7.7 MB</div>
+      </div>
+      <a class="dl-btn" href="https://github.com/BackendStack21/kode/releases/latest/download/kode-linux-amd64" target="_blank">Download ↓</a>
+    </div>
+    <div class="dl-card">
+      <div class="info">
+        <div class="os">🐧 Linux</div>
+        <div class="arch">ARM64 · aarch64</div>
+        <div class="size">~7.1 MB</div>
+      </div>
+      <a class="dl-btn" href="https://github.com/BackendStack21/kode/releases/latest/download/kode-linux-arm64" target="_blank">Download ↓</a>
+    </div>
+    <div class="dl-card">
+      <div class="info">
+        <div class="os">🍎 macOS</div>
+        <div class="arch">Intel (AMD64)</div>
+        <div class="size">~8 MB</div>
+      </div>
+      <a class="dl-btn" href="https://github.com/BackendStack21/kode/releases/latest/download/kode-darwin-amd64" target="_blank">Download ↓</a>
+    </div>
+    <div class="dl-card">
+      <div class="info">
+        <div class="os">🍎 macOS</div>
+        <div class="arch">Apple Silicon (ARM64)</div>
+        <div class="size">~8 MB</div>
+      </div>
+      <a class="dl-btn" href="https://github.com/BackendStack21/kode/releases/latest/download/kode-darwin-arm64" target="_blank">Download ↓</a>
+    </div>
+  </div>
+
+  <div class="platform-tags">
+    <span class="tag">go install <span class="ok">✓</span></span>
+    <span class="tag">no root required <span class="ok">✓</span></span>
+    <span class="tag">static binary <span class="ok">✓</span></span>
+    <span class="tag">no runtime deps <span class="ok">✓</span></span>
+    <span class="tag">works offline <span class="ok">✓</span></span>
+  </div>
+
   <pre><code><span class="hljs-comment"># Results instantly</span>
 $ kode run <span class="hljs-string">"How many lines in go.mod?"</span>
 <span class="hljs-number">3</span> lines
@@ -344,7 +599,9 @@ $ kode run --session <span class="hljs-string">"Refactor the auth module"</span>
 $ kode continue <span class="hljs-string">"Now add error handling"</span>
 
 <span class="hljs-comment"># Different provider, same binary</span>
-$ kode run --model gpt-4o --base-url https://api.openai.com/v1 <span class="hljs-string">"Explain this"</span></code></pre>
+$ kode run --model gpt-4o --base-url https://api.openai.com/v1 <span class="hljs-string">"Explain this"</span></code>
+<button class="clip" onclick="copyText(this,'$ kode run \"How many lines in go.mod?\"\n3 lines\n\n$ kode run --session \"Refactor the auth module\"\n$ kode continue \"Now add error handling\"\n\n$ kode run --model gpt-4o --base-url https://api.openai.com/v1 \"Explain this\"')">📋 Copy</button>
+</pre>
 </section>
 
 <!-- ═══ Cheatsheet ═══ -->
@@ -412,8 +669,9 @@ $ kode run --model gpt-4o --base-url https://api.openai.com/v1 <span class="hljs
     One binary. One loop. Zero frameworks.<br>
     Go install and go.
   </p>
-  <div class="install" style="margin-top:0;display:inline-flex;">
+  <div class="install-block" style="margin-top:0;display:inline-flex;">
     <code>go install github.com/BackendStack21/kode/cmd/kode@latest</code>
+    <button class="copy-btn" onclick="copyText(this,'go install github.com/BackendStack21/kode/cmd/kode@latest')">📋 Copy</button>
     <a class="btn" href="https://github.com/BackendStack21/kode" target="_blank" style="margin-left:16px;">GitHub →</a>
   </div>
 </section>
@@ -426,6 +684,66 @@ $ kode run --model gpt-4o --base-url https://api.openai.com/v1 <span class="hljs
     <a href="https://github.com/BackendStack21/kode">GitHub</a>
   </div>
 </footer>
+
+<script>
+// ── Copy to clipboard ──
+function copyText(btn, text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      btn.textContent = 'Copied ✓';
+      btn.classList.add('copied');
+      setTimeout(() => {
+        btn.textContent = '📋 Copy';
+        btn.classList.remove('copied');
+      }, 2000);
+    }).catch(() => fallbackCopy(btn, text));
+  } else {
+    fallbackCopy(btn, text);
+  }
+}
+function fallbackCopy(btn, text) {
+  const ta = document.createElement('textarea');
+  ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.select();
+  try { document.execCommand('copy');
+    btn.textContent = 'Copied ✓';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = '📋 Copy'; btn.classList.remove('copied'); }, 2000);
+  } catch(e) {}
+  document.body.removeChild(ta);
+}
+
+// ── Carousel ──
+(function() {
+  const carousel = document.getElementById('carousel');
+  const slides = carousel.querySelectorAll('.slide');
+  const nav = document.getElementById('carousel-nav');
+  let current = 0;
+
+  slides.forEach((_, i) => {
+    const btn = document.createElement('button');
+    btn.textContent = i + 1;
+    btn.addEventListener('click', () => goTo(i));
+    if (i === 0) btn.classList.add('active');
+    nav.appendChild(btn);
+  });
+
+  function goTo(i) {
+    slides[current].classList.remove('active');
+    nav.children[current].classList.remove('active');
+    current = i;
+    slides[current].classList.add('active');
+    nav.children[current].classList.add('active');
+  }
+
+  // Auto-advance every 8s
+  let timer = setInterval(() => goTo((current + 1) % slides.length), 8000);
+  carousel.addEventListener('mouseenter', () => clearInterval(timer));
+  carousel.addEventListener('mouseleave', () => {
+    timer = setInterval(() => goTo((current + 1) % slides.length), 8000);
+  });
+})();
+</script>
 
 </body>
 </html>
