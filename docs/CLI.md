@@ -40,10 +40,54 @@
 | `--learn` | bool | `true` | Enable skill learning mode (detects patterns, saves skills). On by default |
 | `--no-learn` | bool | `false` | Disable skill learning mode (overrides config/default) |
 | `--system <prompt>` | string | built-in | Override system prompt |
+| `--ctx <files>` / `-c` | string | — | Attach comma-separated files as context blocks |
+
+## File attachments
+
+Attach files to any task prompt to provide the agent with context — no tool calls needed. File content is injected as **context blocks** before the prompt.
+
+### `--ctx` / `-c` (CLI)
+
+```bash
+# Single file
+odek run --ctx data.csv "analyze this"
+
+# Multiple files (comma-separated)
+odek run --ctx main.go,lib.go "compare these files"
+
+# Short flag
+odek run -c config.json "validate"
+
+# With session persistence
+odek run --session --ctx schema.sql "design the migration"
+```
+
+### `@file` inline references
+
+Reference files directly in the task text — works in `odek run`, `odek continue`, REPL, and Web UI:
+
+```bash
+odek run "@README.md summarize this project"
+odek run --session "@auth.go review the security"
+odek continue "@auth.go now add rate limiting" --id 20260518-abc123
+```
+
+When `@ref` resolution fails (file not found), the reference is left as-is in the prompt.
+
+### Web UI
+
+In `odek serve`:
+- **Paperclip button** next to the input to pick files
+- **Drag-and-drop** files onto the chat area
+- **Attached file chips** show filename, size, and a remove button
+- **`@` autocomplete** dropdown for files and sessions
+- 5 MB per file, 10 MB total per prompt
+
+### Implementation
+
+Files are read client-side in the Web UI and server-side in the CLI through `enrichTask()` in the `cmd/odek/refs.go` package. The `resource` package handles resolution: file content is wrapped in `--- filename ---` / `--- end filename ---` markers and prepended to the task.
 
 ## Shell tool schema
-
-The shell tool accepts an optional `description` field in addition to `command`:
 
 ```json
 {
@@ -248,6 +292,11 @@ odek run --system "You are a Go expert. Answer with code only." "Write HTTP serv
 
 # Run with skill learning (on by default — use --no-learn to disable)
 odek run "Set up CI with GitHub Actions"
+
+# File attachments
+odek run --ctx go.mod "check go version"
+odek run -c main.go,util.go "refactor both files"
+odek run "@schema.sql design a migration plan"
 ```
 
 ## Config priority

@@ -54,7 +54,10 @@ Four-layer priority chain: `global (~/.odek/config.json)` → `project (./odek.j
 Any OpenAI-compatible endpoint: Deepseek, OpenAI, Anthropic, Ollama, vLLM, Groq, Together, Fireworks — anything that speaks `/chat/completions`. Per-model profiles for thinking depth and context windows. [docs/PROVIDERS.md](docs/PROVIDERS.md)
 
 ### 🌐 Web UI
-`odek serve` — browser-based agent with `@` resource completion (`@file.go`, `@sess:abc123`), WebSocket streaming, and a full IDE-style console. [docs/WEBUI.md](docs/WEBUI.md)
+`odek serve` — browser-based agent with `@` resource completion (`@file.go`, `@sess:abc123`), **drag-and-drop file attachments**, WebSocket streaming, and a full IDE-style console. [docs/WEBUI.md](docs/WEBUI.md)
+
+### 📎 File Attachments
+Attach files to any prompt with `--ctx` / `-c` (CLI), `@filename` inline references (CLI + REPL + Web UI), or drag-and-drop (Web UI). File content is injected as context blocks before the task — no tool calls needed. Comma-separate multiple files: `--ctx main.go,lib.go`. [docs/CLI.md#file-attachments](docs/CLI.md#file-attachments)
 
 ### 🔗 MCP (Two-Way)
 **Server** (`odek mcp`) — expose odek's native tools (shell, read/write/search files, patch, browser) to Claude Code, Cursor, and any MCP client. **Client** (`mcp_servers` config) — odek connects to external MCP servers (Playwright, Fetch, GitHub, SQLite, etc.) and makes their tools available to the agent as `<server>__<tool>`. Both directions in one binary. [docs/MCP.md](docs/MCP.md)
@@ -85,6 +88,11 @@ odek run "Set up a Go project with CI"
 
 # Interactive REPL
 odek repl
+
+# Attach files for context
+odek run --ctx data.csv "analyze this"
+odek run --ctx main.go,lib.go "compare these files"
+odek run "@README.md what does this project do?"
 ```
 
 ---
@@ -128,6 +136,7 @@ odek repl
 | `--system <prompt>` | Override system prompt |
 | `--max-iter <n>` | Max think→act cycles (default 90) |
 | `--no-color` | Disable colored output |
+| `--ctx <files>` / `-c` | Attach files as context blocks (comma-separated) |
 | `--no-agents` | Skip AGENTS.md project file |
 
 ---

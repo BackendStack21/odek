@@ -4,6 +4,8 @@
 
 ```bash
 odek run "build a REST API"          # Single-shot task
+odek run --ctx schema.sql "query"     # Single-shot with file context
+odek run -c main.go,lib.go "compare"  # Multiple files via short flag
 odek repl                            # Interactive session
 odek repl --id <uuid>                # Resume session
 odek serve                           # Web UI (http://127.0.0.1:8080)
@@ -177,6 +179,7 @@ odek mcp --sse-addr :8081                   # SSE transport
 | `ODEK_NO_COLOR` | no_color |
 | `ODEK_NO_AGENTS` | no_agents |
 | `ODEK_MAX_CONCURRENCY` | max_concurrency |
+| `ODEK_CTX` | ctx (comma-separated file paths) |
 | `DEEPSEEK_API_KEY` | api_key (fallback) |
 | `OPENAI_API_KEY` | api_key (final fallback) |
 

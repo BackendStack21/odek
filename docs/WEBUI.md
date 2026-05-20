@@ -36,8 +36,11 @@ The server uses a **custom WebSocket implementation** (`internal/ws/`) — ~200 
 - **Streaming responses** — tokens are rendered in real-time via `requestAnimationFrame`-batched updates
 - **Tool call blocks** — each tool invocation is rendered as a collapsible block showing the command and its output
 - **History navigation** — `↑`/`↓` arrows cycle through your previous prompts (stored in `localStorage`)
+- **File attachments** — drag-and-drop files onto the chat area, or use the paperclip button next to the input. Attached files appear as chips with filename, size, and a remove button. 5 MB per file, 10 MB total per prompt. File content is injected as context blocks.
 
 ### @ resource completion
+
+Type `@` followed by a filename to see an autocomplete dropdown. odek resolves matching files and sessions:
 
 ### Token economics
 

@@ -495,7 +495,13 @@
     <div class="card">
       <div class="icon">🌐</div>
       <h4>Web UI</h4>
-      <p><code>odek serve</code> — browser-based agent with <code>@</code> resource completion, WebSocket streaming, token economics, inline loading, and a full IDE-style console. Built from Go's embed — zero npm.</p>
+      <p><code>odek serve</code> — browser-based agent with <code>@</code> resource completion, WebSocket streaming, token economics, inline loading, drag-and-drop file attachments, and a full IDE-style console. Built from Go's embed — zero npm.</p>
+    </div>
+
+    <div class="card">
+      <div class="icon">📎</div>
+      <h4>File Attachments</h4>
+      <p>Attach files to any prompt with <code>--ctx</code> / <code>-c</code> (CLI), <code>@file</code> inline references (REPL), or drag-and-drop (Web UI). File content is injected as context blocks — no tool calls needed.</p>
     </div>
 
     <div class="card">
@@ -590,7 +596,11 @@ $ odek run --session <span class="hljs-string">"Refactor the auth module"</span>
 $ odek continue <span class="hljs-string">"Now add error handling"</span>
 
 <span class="hljs-comment"># Different provider, same binary</span>
-$ odek run --model gpt-4o --base-url https://api.openai.com/v1 <span class="hljs-string">"Explain this"</span></code>
+$ odek run --model gpt-4o --base-url https://api.openai.com/v1 <span class="hljs-string">"Explain this"</span>
+
+<span class="hljs-comment"># Attach files for context</span>
+$ odek run --ctx data.csv <span class="hljs-string">"analyze trends"</span>
+$ odek run <span class="hljs-string">"@README.md summarize this project"</span>
 <button class="clip" onclick="copyText(this,'$ odek run \"How many lines in go.mod?\"\n3 lines\n\n$ odek run --session \"Refactor the auth module\"\n$ odek continue \"Now add error handling\"\n\n$ odek run --model gpt-4o --base-url https://api.openai.com/v1 \"Explain this\"')">📋 Copy</button>
 </pre>
 </section>
@@ -622,6 +632,7 @@ $ odek run --model gpt-4o --base-url https://api.openai.com/v1 <span class="hljs
     <li><span class="cmd">--learn</span><span class="desc">Enable skill learning (on by default)</span></li>
     <li><span class="cmd">--no-learn</span><span class="desc">Disable skill learning</span></li>
     <li><span class="cmd">--max-iter &lt;n&gt;</span><span class="desc">Max think→act cycles (default 90)</span></li>
+    <li><span class="cmd">--ctx &lt;files&gt; / -c</span><span class="desc">Attach files as context blocks (comma-separated)</span></li>
     <li><span class="cmd">--system &lt;prompt&gt;</span><span class="desc">Override system prompt</span></li>
     <li><span class="cmd">--no-color</span><span class="desc">Disable colored output</span></li>
   </ul>
