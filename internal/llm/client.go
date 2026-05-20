@@ -70,6 +70,7 @@ type Message struct {
 	Name        string       `json:"name,omitempty"`        // tool name (for tool role)
 	ToolCallID  string       `json:"tool_call_id,omitempty"`
 	ToolCalls   []ToolCall   `json:"tool_calls,omitempty"`  // required for assistant role with tool calls
+	ReasoningContent string  `json:"reasoning_content,omitempty"` // DeepSeek reasoning tokens, must be echoed back
 	CacheControl *CacheControl `json:"cache_control,omitempty"` // Anthropic prompt caching marker
 }
 
@@ -116,8 +117,9 @@ type ThinkingConfig struct {
 
 // CallResult is the parsed response from /chat/completions.
 type CallResult struct {
-	Content      string     // assistant text
-	ToolCalls    []ToolCall // tool calls requested by the model
+	Content          string     // assistant text
+	ReasoningContent string     // DeepSeek reasoning/thinking tokens
+	ToolCalls        []ToolCall // tool calls requested by the model
 	InputTokens  int        // prompt_tokens from API usage (0 = not reported)
 	OutputTokens int        // completion_tokens from API usage (0 = not reported)
 
@@ -295,6 +297,10 @@ func (c *Client) Call(ctx context.Context, messages []Message, systemBlocks []Sy
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		body := strings.TrimSpace(string(respBytes))
+		if body != "" {
+			return nil, fmt.Errorf("llm: %s (status %d): %s", resp.Status, resp.StatusCode, body)
+		}
 		return nil, fmt.Errorf("llm: %s (status %d)", resp.Status, resp.StatusCode)
 	}
 
@@ -305,7 +311,8 @@ func parseResponse(data []byte) (*CallResult, error) {
 	var raw struct {
 		Choices []struct {
 			Message struct {
-				Content   string `json:"content"`
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
 				ToolCalls []struct {
 					ID       string `json:"id"`
 					Function struct {
@@ -336,7 +343,8 @@ func parseResponse(data []byte) (*CallResult, error) {
 
 	msg := raw.Choices[0].Message
 	result := &CallResult{
-		Content: msg.Content,
+		Content:          msg.Content,
+		ReasoningContent: msg.ReasoningContent,
 	}
 	if raw.Usage != nil {
 		result.InputTokens = raw.Usage.PromptTokens

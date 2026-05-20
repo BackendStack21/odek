@@ -304,8 +304,9 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 			// Append final assistant message so callers (e.g. WebUI) get
 			// the final text in the messages slice and can stream it.
 			messages = append(messages, llm.Message{
-				Role:    "assistant",
-				Content: result.Content,
+				Role:             "assistant",
+				Content:          result.Content,
+				ReasoningContent: result.ReasoningContent,
 			})
 			return result.Content, messages, nil
 		}
@@ -317,9 +318,10 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 
 		// Build assistant message with tool calls
 		assistantMsg := llm.Message{
-			Role:      "assistant",
-			Content:   result.Content,
-			ToolCalls: result.ToolCalls,
+			Role:             "assistant",
+			Content:          result.Content,
+			ReasoningContent: result.ReasoningContent,
+			ToolCalls:        result.ToolCalls,
 		}
 		messages = append(messages, assistantMsg)
 
