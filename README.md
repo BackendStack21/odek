@@ -177,7 +177,7 @@ The full `Config` struct supports: `BaseURL`, `Thinking`, `SandboxCleanup`, `Ren
 ```bash
 go test ./...                  # all pass (no setup required)
 go test -race ./...           # race detector clean
-go test -cover ./...          # 79%+ average coverage
+go test -cover ./...          # measure coverage
 ```
 
 Everything runs with `go test` — no Docker, no network, no external services required for unit tests.
