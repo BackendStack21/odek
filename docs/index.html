@@ -162,26 +162,6 @@
     .carousel .nav button:hover { border-color: var(--accent); color: var(--accent); }
     .carousel .nav button.active { background: var(--accent); color: #000; border-color: var(--accent); }
 
-    /* ── Binary downloads ── */
-    .downloads {
-      display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 20px 0;
-    }
-    .downloads .dl-card {
-      background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
-      padding: 16px 20px; display: flex; align-items: center; justify-content: space-between;
-      transition: border-color .15s;
-    }
-    .downloads .dl-card:hover { border-color: var(--accent); }
-    .downloads .dl-card .info .os { font-weight: 600; font-size: 0.9375rem; }
-    .downloads .dl-card .info .arch { color: var(--text2); font-size: 0.8125rem; }
-    .downloads .dl-card .info .size { color: var(--text2); font-size: 0.75rem; margin-top: 2px; }
-    .downloads .dl-card .dl-btn {
-      background: var(--accent); color: #000; border: none;
-      padding: 8px 16px; border-radius: 6px; font-weight: 600; font-size: 0.75rem;
-      cursor: pointer; transition: opacity .15s; text-decoration: none; white-space: nowrap;
-    }
-    .downloads .dl-card .dl-btn:hover { opacity: .85; }
-
     /* ── Install steps ── */
     .steps { list-style: none; }
     .steps li {
@@ -271,7 +251,6 @@
       .hero .install-block .btn { margin-left: 0; }
       .hero .stats { gap: 24px; flex-wrap: wrap; }
       .features { grid-template-columns: 1fr; }
-      .downloads { grid-template-columns: 1fr; }
       .doc-links { grid-template-columns: 1fr; }
       .carousel .slide { font-size: 0.75rem; padding: 14px 16px; }
     }
@@ -542,49 +521,21 @@
     </li>
   </ul>
 
-  <h3>Binary downloads</h3>
+  <h3>One-line binary install</h3>
   <p style="color:var(--text2);font-size:0.875rem;margin-bottom:16px">
-    No Go toolchain? Grab a pre-built binary for your platform:
+    No Go toolchain? Auto-detects your OS and architecture:
   </p>
 
-  <div class="downloads">
-    <div class="dl-card">
-      <div class="info">
-        <div class="os">🐧 Linux</div>
-        <div class="arch">AMD64 · x86_64</div>
-        <div class="size">~7.7 MB</div>
-      </div>
-      <a class="dl-btn" href="https://github.com/BackendStack21/kode/releases/latest/download/kode-linux-amd64" target="_blank">Download ↓</a>
-    </div>
-    <div class="dl-card">
-      <div class="info">
-        <div class="os">🐧 Linux</div>
-        <div class="arch">ARM64 · aarch64</div>
-        <div class="size">~7.1 MB</div>
-      </div>
-      <a class="dl-btn" href="https://github.com/BackendStack21/kode/releases/latest/download/kode-linux-arm64" target="_blank">Download ↓</a>
-    </div>
-    <div class="dl-card">
-      <div class="info">
-        <div class="os">🍎 macOS</div>
-        <div class="arch">Intel (AMD64)</div>
-        <div class="size">~8 MB</div>
-      </div>
-      <a class="dl-btn" href="https://github.com/BackendStack21/kode/releases/latest/download/kode-darwin-amd64" target="_blank">Download ↓</a>
-    </div>
-    <div class="dl-card">
-      <div class="info">
-        <div class="os">🍎 macOS</div>
-        <div class="arch">Apple Silicon (ARM64)</div>
-        <div class="size">~8 MB</div>
-      </div>
-      <a class="dl-btn" href="https://github.com/BackendStack21/kode/releases/latest/download/kode-darwin-arm64" target="_blank">Download ↓</a>
-    </div>
-  </div>
+  <pre><code><span class="hljs-comment"># Download to /usr/local/bin (may need sudo)</span>
+curl -sfLo /usr/local/bin/kode https://github.com/BackendStack21/kode/releases/latest/download/kode-$(uname -s | tr <span class="hljs-string">'[:upper:]'</span> <span class="hljs-string">'[:lower:]'</span>)-$(uname -m | sed <span class="hljs-string">'s/x86_64/amd64/;s/aarch64/arm64/'</span>) && chmod +x /usr/local/bin/kode
+
+<span class="hljs-comment"># Or to current directory</span>
+curl -sfLO https://github.com/BackendStack21/kode/releases/latest/download/kode-$(uname -s | tr <span class="hljs-string">'[:upper:]'</span> <span class="hljs-string">'[:lower:]'</span>)-$(uname -m | sed <span class="hljs-string">'s/x86_64/amd64/;s/aarch64/arm64/'</span>) && chmod +x kode-* && ./kode-* version</code>
+<button class="clip" onclick="copyText(this,'curl -sfLo /usr/local/bin/kode https://github.com/BackendStack21/kode/releases/latest/download/kode-$(uname -s | tr \'[:upper:]\' \'[:lower:]\')-$(uname -m | sed \'s/x86_64/amd64/;s/aarch64/arm64/\') && chmod +x /usr/local/bin/kode')">📋 Copy</button>
+</pre>
 
   <div class="platform-tags">
-    <span class="tag">go install <span class="ok">✓</span></span>
-    <span class="tag">no root required <span class="ok">✓</span></span>
+    <span class="tag">auto-detect OS/arch <span class="ok">✓</span></span>
     <span class="tag">static binary <span class="ok">✓</span></span>
     <span class="tag">no runtime deps <span class="ok">✓</span></span>
     <span class="tag">works offline <span class="ok">✓</span></span>
