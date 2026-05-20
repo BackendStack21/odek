@@ -147,7 +147,7 @@ odek run "@README.md what does this project do?"
 |-----|--------|
 | [CLI Reference](docs/CLI.md) | All commands, subcommands, flags, error codes |
 | [Configuration](docs/CONFIG.md) | Config files, env vars, priority chain, all sections |
-| [Programmatic API](docs/API.md) | Go library: Tool interface, Config, Agent, Run, model profiles |
+| [Programmatic API](docs/API.md) | **SDK Guide**: import, Agent lifecycle, Tool interface, multi-turn sessions, memory system, model profiles, complete examples |
 | [Providers & Models](docs/PROVIDERS.md) | Supported providers, thinking config, context windows |
 | [Memory](docs/MEMORY.md) | Three-tier design, go-vector merge-on-write, `memory` tool |
 | [Sessions](docs/SESSIONS.md) | Multi-turn conversations, save/resume/trim/cleanup |
