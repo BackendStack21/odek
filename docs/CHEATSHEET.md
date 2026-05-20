@@ -182,7 +182,7 @@ odek mcp --sse-addr :8081                   # SSE transport
 
 ## Key Design Properties
 
-- **Zero external Go deps** (go-vector + x/net for WebSocket — both zero-dep Go packages)
+- **Minimal Go dependencies** — all zero-dep Go packages from 21no.de
 - **~11 MB static binary**
 - **One loop, one interface** — tool implementers write `func Call(args string) (string, error)`
 - **File-based config** — no YAML, no DSL, no schema generation
