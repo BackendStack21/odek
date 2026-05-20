@@ -804,13 +804,3 @@ require github.com/BackendStack21/kode v0.16.1
 
 All `internal/` packages (`internal/llm`, `internal/memory`, `internal/skills`, `internal/config`, `internal/session`, `internal/danger`, `internal/resource`, `internal/render`, `internal/ws`) are not importable outside the module due to Go's `internal` package visibility rules.
 
----
-
-## Migration Guide (from v0.14.x)
-
-| Old | New | Notes |
-|-----|-----|-------|
-| `agent.Run(ctx, task)` | `agent.Run(ctx, task)` | Unchanged |
-| `agent.RunWithMessages(ctx, msgs)` | `agent.RunWithMessages(ctx, msgs)` | Unchanged |
-| `New(Config{...})` | `New(Config{...})` | `MaxIterations` > 0 required; negative = default (90) |
-| `Tool` interface | `Tool` interface | `Schema()` changed from `map[string]any` return to `any` in v0.15 (accepts both) |
