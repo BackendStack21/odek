@@ -169,6 +169,7 @@ type runFlags struct {
 	Session  *bool // nil = not set; true = save session after run
 	Learn    *bool // nil = not set; true = enable skills learning mode
 	Task     string
+	Ctx      []string // --ctx files to attach
 
 	// Sandbox-specific CLI flags
 	SandboxImage    string // Docker image (e.g. "node:20-alpine")
@@ -241,6 +242,9 @@ func parseRunFlags(args []string) (runFlags, error) {
 			i += 2
 		case "--sandbox-user":
 			f.SandboxUser = args[i+1]
+			i += 2
+		case "--ctx", "-c":
+			f.Ctx = strings.Split(args[i+1], ",")
 			i += 2
 		default:
 			// Not a flag — treat remaining as the task
@@ -686,6 +690,14 @@ func run(args []string) error {
 		SandboxCPUs:     f.SandboxCPUs,
 		SandboxUser:     f.SandboxUser,
 	})
+
+	// Resolve @references and --ctx file attachments in the task
+	cwd, _ := os.Getwd()
+	enriched, err := enrichTask(f.Task, f.Ctx, cwd)
+	if err != nil {
+		return err
+	}
+	f.Task = enriched
 
 	// Determine system message: CLI/project/env override, or default
 	systemMessage := resolved.System
@@ -1361,6 +1373,13 @@ func continueCmd(args []string) error {
 		return fmt.Errorf("no task provided for continue")
 	}
 	task := strings.Join(args[i:], " ")
+
+	// Resolve @references in the continue task
+	cwd, _ := os.Getwd()
+	enriched, err := enrichTask(task, nil, cwd)
+	if err == nil {
+		task = enriched
+	}
 
 	store, err := session.NewStore()
 	if err != nil {

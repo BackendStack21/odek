@@ -205,6 +205,12 @@ func replCmd(args []string) error {
 			continue
 		}
 
+		// Resolve @references in REPL input
+		cwd, _ := os.Getwd()
+		if enriched, err := enrichTask(input, nil, cwd); err == nil {
+			input = enriched
+		}
+
 		// Build message history: session messages + new user input
 		messages := sess.GetMessages()
 		origLen := len(messages)
