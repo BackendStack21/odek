@@ -117,6 +117,40 @@ See `dangerous` section in [CLI.md](CLI.md#dangerous-operations) for the full co
 }
 ```
 
+### YOLO mode (`"action": "allow"`)
+
+Set `"action": "allow"` to skip all prompts — everything runs without approval:
+
+```json
+{"dangerous": { "action": "allow" }}
+```
+
+This makes every risk class (`system_write`, `destructive`, `network_egress`, `code_execution`, `install`) return `allow`. The only exceptions are:
+
+- **Blocked class** — fork bombs, `dd` to block devices — always denied regardless of config
+- **Per-class overrides** — explicit `classes` entries still win over the global default
+
+```json
+{
+  "dangerous": {
+    "action": "allow",
+    "classes": {
+      "destructive": "deny"     // still deny destructive commands
+    }
+  }
+}
+```
+
+Use YOLO mode for:
+
+- **Automated scripts / CI pipelines** — no TTY, no prompts expected
+- **Trusted sandboxed sessions** — `odek run --sandbox --sandbox-network none` keeps risk contained
+- **Power users** who have reviewed the risk model and want full speed
+
+Set `"action": "deny"` for the opposite — lockdown mode — where every operation is denied unless explicitly allowed via `allowlist` or per-class override.
+
+> **Note:** These are the semantics of the `action` field (mapped to `DefaultAction` in code). It overrides all built-in defaults (system_write→prompt, destructive→deny, etc.) but not per-class entries in the `classes` map. Prior to v0.17 this field only applied to unknown risk classes — the v0.17 change makes `"action":"allow"` a true one-liner YOLO mode.
+
 ### Session trust
 
 When you press `T`, the risk class is cached in memory for the lifetime of the odek process. Subsequent commands of the same class skip approval. Trust is **not persisted to disk** — every new `odek run` or `odek continue` starts fresh.

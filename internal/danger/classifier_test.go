@@ -386,8 +386,8 @@ func TestClassify_Config_DefaultAction(t *testing.T) {
 	}
 
 	cfg2 := DangerousConfig{DefaultAction: strPtr("deny")}
-	if got := cfg2.ActionFor(Safe); got != Allow {
-		t.Errorf("ActionFor(safe) with default=deny should still be allow (safe defaults always allow)")
+	if got := cfg2.ActionFor(Safe); got != Deny {
+		t.Errorf("ActionFor(safe) with default=deny = %s, want deny (global default overrides)", got)
 	}
 }
 

@@ -122,9 +122,11 @@ type DangerousConfig struct {
 	// regardless of their risk classification. Exact match only.
 	Denylist []string `json:"denylist,omitempty"`
 
-	// DefaultAction is used when no /dev/tty is available (non-interactive mode).
-	// Values: "allow" (default), "deny", "prompt"
-	// "prompt" in non-interactive mode falls back to "allow".
+	// DefaultAction is the global default action applied to ALL risk classes
+	// when set. Per-class overrides in Classes still win.
+	// "allow" → YOLO mode (everything runs without prompt)
+	// "deny" → lockdown (everything denied unless explicitly allowed)
+	// Not set → uses built-in defaults per class
 	DefaultAction *string `json:"action,omitempty"`
 
 	// NonInteractive specifies what to do when running without a TTY.
@@ -151,22 +153,29 @@ var defaultActions = map[RiskClass]Action{
 }
 
 // ActionFor returns the configured action for the given risk class.
-// Falls back to defaults for unknown classes and unconfigured classes.
+// Per-class overrides in Classes win first, then the global default
+// action (the "action" field), then built-in defaults, then Prompt.
 func (c *DangerousConfig) ActionFor(cls RiskClass) Action {
 	// If the user explicitly configured an action for this class, use it.
-	// Falls back to built-in defaults for unconfigured classes.
 	if c.Classes != nil {
 		if a, ok := c.Classes[cls]; ok {
 			return a
 		}
 	}
+	// Blocked is always denied regardless of global default action.
+	// This covers commands like "rm -rf /" that are hardcoded as
+	// unrecoverable even in YOLO mode.
+	if cls == Blocked {
+		return Deny
+	}
+	// Global default action overrides all built-in defaults.
+	// Set "action": "allow" for YOLO mode, "action": "deny" for lockdown.
+	if c.DefaultAction != nil {
+		return parseAction(*c.DefaultAction)
+	}
 	// Fallback to built-in defaults
 	if a, ok := defaultActions[cls]; ok {
 		return a
-	}
-	// Unknown class: use default action from config, or prompt
-	if c.DefaultAction != nil {
-		return parseAction(*c.DefaultAction)
 	}
 	return Prompt
 }
