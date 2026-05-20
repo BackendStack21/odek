@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>odek · ~11 MB zero-dependency Go agent runtime</title>
-  <meta name="description" content="odek — the fastest, minimal, zero-dependency Go autonomous agent runtime. One binary. One loop. Zero frameworks.">
+  <title>odek · ~11 MB, 2 external deps Go agent runtime</title>
+  <meta name="description" content="odek — the fastest, minimal Go autonomous agent runtime. One binary. One loop. Zero frameworks.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
@@ -298,7 +298,7 @@
 <section class="hero">
   <div class="container">
     <h1>odek</h1>
-    <p class="sub"><span class="size">~11 MB</span> · zero direct dependencies.<br>Think, therefore act.</p>
+    <p class="sub"><span class="size">~11 MB</span> · 2 external dependencies.<br>Think, therefore act.</p>
 
     <div class="install-block">
       <code>go install github.com/BackendStack21/kode/cmd/odek@latest</code>
@@ -316,7 +316,7 @@
   <ul class="whys">
     <li>
       <span class="q">Why?</span>
-      <span class="a">Because every AI agent framework today ships a <strong>200-package dependency tree</strong> and a 200 MB Python venv. odek is an <strong>~11 MB static binary</strong> with <strong>2 indirect dependencies</strong> — <code>go-vector</code> and <code>golang.org/x/net</code>.</span>
+      <span class="a">Because every AI agent framework today ships a <strong>200-package dependency tree</strong> and a 200 MB Python venv. odek is an <strong>~11 MB static binary</strong> with <strong>2 external dependencies</strong> — <code>go-vector</code> and <code>golang.org/x/net</code>.</span>
     </li>
     <li>
       <span class="q">Why?</span>
@@ -507,7 +507,7 @@
       <tr><th></th><th>odek</th><th>Python agents</th></tr>
     </thead>
     <tbody>
-      <tr><td>Direct dependencies</td><td class="win">Zero. stdlib only.</td><td>200+ packages</td></tr>
+      <tr><td>Direct dependencies</td><td class="win">2 — go-vector, x/net</td><td>200+ packages</td></tr>
       <tr><td>Binary size</td><td class="win">~11 MB static</td><td>50–200 MB (venv)</td></tr>
       <tr><td>Startup</td><td class="win">Instant</td><td>2–10 seconds</td></tr>
       <tr><td>Sandbox</td><td class="win"><code>--sandbox</code> flag</td><td>Manual Docker setup</td></tr>
