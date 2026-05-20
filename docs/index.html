@@ -246,13 +246,36 @@
     footer a { color: var(--accent); }
 
     @media (max-width: 700px) {
-      .hero h1 { font-size: 2.25rem; }
-      .hero .install-block { flex-direction: column; padding: 16px; gap: 12px; }
-      .hero .install-block .btn { margin-left: 0; }
+      .hero h1 { font-size: 2rem; }
+      .hero .sub { font-size: 1rem; }
+      .hero .install-block {
+        flex-direction: column; padding: 16px; gap: 12px; width: 100%;
+        font-size: 0.75rem; overflow: hidden;
+      }
+      .hero .install-block code { word-break: break-all; }
+      .hero .install-block .btn { margin-left: 0; width: 100%; text-align: center; }
       .hero .stats { gap: 24px; flex-wrap: wrap; }
+      nav { flex-wrap: wrap; gap: 8px; justify-content: center; }
+      nav div { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px; }
+      nav a { margin-left: 0; font-size: 0.8125rem; padding: 4px 8px; }
+      h2 { font-size: 1.4rem; }
       .features { grid-template-columns: 1fr; }
       .doc-links { grid-template-columns: 1fr; }
-      .carousel .slide { font-size: 0.75rem; padding: 14px 16px; }
+      .carousel .slides { min-height: 360px; }
+      .carousel .slide { font-size: 0.6875rem; padding: 12px; line-height: 1.6; }
+      .carousel .bar .label { font-size: 0.65rem; }
+      .whys li { flex-direction: column; gap: 4px; }
+      .whys li .q { min-width: 0; }
+      .cmd-list li { flex-direction: column; gap: 2px; }
+      .cmd-list li .cmd { min-width: 0; white-space: normal; word-break: break-all; }
+      .steps li { flex-direction: column; gap: 8px; }
+      .steps li .n { align-self: flex-start; }
+      pre { padding: 14px; font-size: 0.75rem; }
+      pre .clip { top: 8px; right: 8px; font-size: 0.625rem; padding: 3px 8px; }
+      .compare { font-size: 0.75rem; }
+      .compare th, .compare td { padding: 8px 10px; }
+      .container { padding: 0 16px; }
+      section { padding: 40px 0; }
     }
   </style>
 </head>
@@ -598,18 +621,18 @@ $ kode run --model gpt-4o --base-url https://api.openai.com/v1 <span class="hljs
   <p style="margin-bottom:20px">Deep-dive docs for every subsystem. Real detail, no fluff.</p>
 
   <div class="doc-links">
-    <a href="CLI.md">CLI Reference<span>All commands, subcommands, flags, examples</span></a>
-    <a href="CONFIG.md">Configuration<span>Config files, env vars, priority chain</span></a>
-    <a href="PROVIDERS.md">Providers & Models<span>Deepseek, OpenAI, Anthropic, Ollama, vLLM, more</span></a>
-    <a href="MCP.md">MCP (Two-Way)<span>Serve tools + connect to external MCP servers</span></a>
-    <a href="MEMORY.md">Memory System<span>Three-tier facts, buffer, episodes</span></a>
-    <a href="SESSIONS.md">Multi-Turn Sessions<span>Save, resume, list, trim, cleanup</span></a>
-    <a href="SANDBOXING.md">Sandboxing<span>Docker isolation, config, security model</span></a>
-    <a href="SECURITY.md">Security<span>Prompt injection defense, threat model</span></a>
-    <a href="SUBAGENTS.md">Sub-Agents<span>Task decomposition, delegation protocol</span></a>
-    <a href="LEARNING.md">Self-Learning<span>Skill detection, LLM enhancement, curation</span></a>
-    <a href="WEBUI.md">Web UI<span>kode serve, WebSocket protocol, @ resources</span></a>
-    <a href="DEVELOPMENT.md">Development<span>Building, testing, contributing</span></a>
+    <a href="https://github.com/BackendStack21/kode/blob/main/docs/CLI.md">CLI Reference<span>All commands, subcommands, flags, examples</span></a>
+    <a href="https://github.com/BackendStack21/kode/blob/main/docs/CONFIG.md">Configuration<span>Config files, env vars, priority chain</span></a>
+    <a href="https://github.com/BackendStack21/kode/blob/main/docs/PROVIDERS.md">Providers & Models<span>Deepseek, OpenAI, Anthropic, Ollama, vLLM, more</span></a>
+    <a href="https://github.com/BackendStack21/kode/blob/main/docs/MCP.md">MCP (Two-Way)<span>Serve tools + connect to external MCP servers</span></a>
+    <a href="https://github.com/BackendStack21/kode/blob/main/docs/MEMORY.md">Memory System<span>Three-tier facts, buffer, episodes</span></a>
+    <a href="https://github.com/BackendStack21/kode/blob/main/docs/SESSIONS.md">Multi-Turn Sessions<span>Save, resume, list, trim, cleanup</span></a>
+    <a href="https://github.com/BackendStack21/kode/blob/main/docs/SANDBOXING.md">Sandboxing<span>Docker isolation, config, security model</span></a>
+    <a href="https://github.com/BackendStack21/kode/blob/main/docs/SECURITY.md">Security<span>Prompt injection defense, threat model</span></a>
+    <a href="https://github.com/BackendStack21/kode/blob/main/docs/SUBAGENTS.md">Sub-Agents<span>Task decomposition, delegation protocol</span></a>
+    <a href="https://github.com/BackendStack21/kode/blob/main/docs/LEARNING.md">Self-Learning<span>Skill detection, LLM enhancement, curation</span></a>
+    <a href="https://github.com/BackendStack21/kode/blob/main/docs/WEBUI.md">Web UI<span>kode serve, WebSocket protocol, @ resources</span></a>
+    <a href="https://github.com/BackendStack21/kode/blob/main/docs/DEVELOPMENT.md">Development<span>Building, testing, contributing</span></a>
   </div>
 </section>
 
