@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>odek · ~8 MB zero-dependency Go agent runtime</title>
+  <title>odek · ~11 MB zero-dependency Go agent runtime</title>
   <meta name="description" content="odek — the fastest, minimal, zero-dependency Go autonomous agent runtime. One binary. One loop. Zero frameworks.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -298,7 +298,7 @@
 <section class="hero">
   <div class="container">
     <h1>odek</h1>
-    <p class="sub"><span class="size">~8 MB</span> · zero direct dependencies.<br>Think, therefore act.</p>
+    <p class="sub"><span class="size">~11 MB</span> · zero direct dependencies.<br>Think, therefore act.</p>
 
     <div class="install-block">
       <code>go install github.com/BackendStack21/kode/cmd/odek@latest</code>
@@ -316,7 +316,7 @@
   <ul class="whys">
     <li>
       <span class="q">Why?</span>
-      <span class="a">Because every AI agent framework today ships a <strong>200-package dependency tree</strong> and a 200 MB Python venv. odek is an <strong>~8 MB static binary</strong> with <strong>2 indirect dependencies</strong> — <code>go-vector</code> and <code>golang.org/x/net</code>.</span>
+      <span class="a">Because every AI agent framework today ships a <strong>200-package dependency tree</strong> and a 200 MB Python venv. odek is an <strong>~11 MB static binary</strong> with <strong>2 indirect dependencies</strong> — <code>go-vector</code> and <code>golang.org/x/net</code>.</span>
     </li>
     <li>
       <span class="q">Why?</span>
@@ -410,7 +410,7 @@
       <div class="slide">
         <span class="info"># MCP server mode</span><br>
         <span class="prompt">$ odek mcp</span><br>
-        <span class="info">odek mcp ⚡  MCP server starting (v0.14.2)</span><br>
+        <span class="info">odek mcp ⚡  MCP server starting (v0.14.3)</span><br>
         <span class="output">Connected by Claude Code. Exposing 8 tools:</span><br>
         <span class="output">  • read_file    — read files with line numbers</span><br>
         <span class="output">  • write_file   — write files safely</span><br>
@@ -456,7 +456,7 @@
     <div class="card">
       <div class="icon">🧩</div>
       <h4>Sub-Agent Delegation</h4>
-      <p>Parallel OS-process sub-agents via <code>delegate_tasks</code>. True isolation — each sub-agent is a fresh process with its own config, tools, and timeout. Up to 8 concurrent workers.</p>
+      <p>Parallel OS-process sub-agents via <code>delegate_tasks</code>. True isolation — each sub-agent is a fresh process with its own config, tools, and timeout. Up to 3 concurrent workers.</p>
     </div>
 
     <div class="card">
@@ -486,7 +486,7 @@
     <div class="card">
       <div class="icon">🏗️</div>
       <h4>Layerable Config</h4>
-      <p>Four-layer priority chain: global → project → <code>KODE_*</code> env vars → CLI flags. <code>${VAR}</code> substitution in config files. Sensible defaults at every layer.</p>
+      <p>Four-layer priority chain: global → project → <code>ODEK_*</code> env vars → CLI flags. <code>${VAR}</code> substitution in config files. Sensible defaults at every layer.</p>
     </div>
 
     <div class="card">
@@ -508,7 +508,7 @@
     </thead>
     <tbody>
       <tr><td>Direct dependencies</td><td class="win">Zero. stdlib only.</td><td>200+ packages</td></tr>
-      <tr><td>Binary size</td><td class="win">~8 MB static</td><td>50–200 MB (venv)</td></tr>
+      <tr><td>Binary size</td><td class="win">~11 MB static</td><td>50–200 MB (venv)</td></tr>
       <tr><td>Startup</td><td class="win">Instant</td><td>2–10 seconds</td></tr>
       <tr><td>Sandbox</td><td class="win"><code>--sandbox</code> flag</td><td>Manual Docker setup</td></tr>
       <tr><td>Tool interface</td><td class="win">One interface, one method</td><td>Class hierarchies + decorators</td></tr>
@@ -525,7 +525,7 @@
   <ul class="steps">
     <li>
       <span class="n">1</span>
-      <span>Have <strong>Go 1.24+</strong> installed. If not: <code>brew install go</code> or <a href="https://go.dev/dl/" target="_blank">download</a>.</span>
+      <span>Have <strong>Go 1.25+</strong> installed. If not: <code>brew install go</code> or <a href="https://go.dev/dl/" target="_blank">download</a>.</span>
     </li>
     <li>
       <span class="n">2</span>
