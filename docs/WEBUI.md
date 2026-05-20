@@ -1,10 +1,10 @@
-# Web UI (`kode serve`)
+# Web UI (`odek serve`)
 
-kode ships with a **single-page web UI** built entirely from Go's `embed` and zero external dependencies (no npm, no React, no build step). It's served from the same binary that runs on your terminal.
+odek ships with a **single-page web UI** built entirely from Go's `embed` and zero external dependencies (no npm, no React, no build step). It's served from the same binary that runs on your terminal.
 
 ```bash
-kode serve
-# → kode serve ⚡  http://[::]:8080
+odek serve
+# → odek serve ⚡  http://[::]:8080
 #   WebSocket: ws://[::]:8080/ws
 #   Type @ in the input to reference files and sessions.
 ```

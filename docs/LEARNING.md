@@ -1,11 +1,11 @@
 # Self-Learning System
 
-kode can **learn reusable skills** from your agent sessions. Learning is **on by default** — every `kode run` automatically scans the conversation for reusable patterns. Use `--no-learn` to disable.
+odek can **learn reusable skills** from your agent sessions. Learning is **on by default** — every `odek run` automatically scans the conversation for reusable patterns. Use `--no-learn` to disable.
 
 ## Architecture
 
 ```
-kode run --learn "set up CI with GitHub Actions"
+odek run --learn "set up CI with GitHub Actions"
          │
          ▼
    ┌─────────────┐
@@ -47,19 +47,19 @@ kode run --learn "set up CI with GitHub Actions"
 
 ```bash
 # Learning is on by default — no flag needed
-kode run "Set up a Docker-based CI pipeline"
+odek run "Set up a Docker-based CI pipeline"
 
 # Disable learning for this run
-kode run --no-learn "Quick status check"
+odek run --no-learn "Quick status check"
 
 # With a specific model
-kode run --model deepseek-v4-pro "Refactor auth module"
+odek run --model deepseek-v4-pro "Refactor auth module"
 
 # In sandbox (learning works inside containers too)
-kode run --sandbox "Install and configure nginx"
+odek run --sandbox "Install and configure nginx"
 ```
 
-After the agent finishes, kode scans the transcript and prints any detected patterns:
+After the agent finishes, odek scans the transcript and prints any detected patterns:
 
 ```
 🔍 Learning: detected 2 skill pattern(s)
@@ -180,7 +180,7 @@ Agent runs "go test ./..." 3 times across different iterations
 
 ### 5. Explicit Instruction (`explicit-instruction`)
 
-Detects when you **explicitly ask** kode to save something as a skill.
+Detects when you **explicitly ask** odek to save something as a skill.
 
 **What triggers it:**
 - User message contains one of these phrases:
@@ -232,10 +232,10 @@ Multi-step procedure detected during a kode session.
 
 ## Examples
 
-### Basic: Let kode learn from a session
+### Basic: Let odek learn from a session
 
 ```bash
-kode run "Set up PostgreSQL with Docker"
+odek run "Set up PostgreSQL with Docker"
 ```
 
 After the agent completes:
@@ -256,14 +256,14 @@ After the agent completes:
 
 Now the skill is available for future runs:
 ```bash
-kode skill list
+odek skill list
 # procedure-docker  Multi-step procedure: docker  draft
 ```
 
 ### Multiple suggestions (accept some, reject others)
 
 ```bash
-kode run "Build and deploy the app"
+odek run "Build and deploy the app"
 ```
 
 ```
@@ -290,9 +290,9 @@ kode run "Build and deploy the app"
 - **Purely heuristic** — no LLM assessment. The system detects patterns mechanically; it doesn't judge skill quality.
 - **Max 1 per heuristic** — if an agent session has 10 multi-step sequences, only the first is suggested.
 - **Max 5 suggestions total** — one per heuristic type.
-- **No content deduplication** — if you already have a similar skill, the new one is still suggested. Run `kode skill curate` periodically to detect overlaps.
+- No content deduplication — if you already have a similar skill, the new one is still suggested. Run `odek skill curate` periodically to detect overlaps.
 - **Command-only** — the heuristics work on terminal (`shell`) tool calls. Other tools (read_file, write_file) are visible in the transcript but aren't analyzed for patterns.
-- **No REPL integration** — learning currently only works with `kode run`, not in REPL mode.
+- **No REPL integration** — learning currently only works with `odek run`, not in REPL mode.
 
 ## Related
 

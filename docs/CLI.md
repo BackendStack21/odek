@@ -4,26 +4,26 @@
 
 | Command | Description |
 |---------|-------------|
-| `kode run [flags] <task>` | Execute a task with the agent loop (single-shot by default) |
-| `kode run --session [flags] <task>` | Execute and save conversation as a multi-turn session |
-| `kode run [--no-learn] [flags] <task>` | Execute with skill learning (on by default, use --no-learn to disable) |
-| `kode continue [--id <id>] <task>` | Continue the most recent session (or by `--id`) |
-| `kode repl [flags]` | Interactive REPL mode (persistent multi-turn session). Accepts `--model`, `--thinking`, `--sandbox`, and `--sandbox-*` flags. |
-| `kode session list` | List sessions |
-| `kode session show [id]` | Show session details (default: latest) |
-| `kode session delete <id>` | Delete a session |
-| `kode session trim <id> <n>` | Keep only the `n` most recent messages |
-| `kode session cleanup <days>` | Delete sessions older than N days |
-| `kode skill list` | List all available skills |
-| `kode skill view <name>` | View a skill's full content |
-| `kode skill delete <name>` | Delete a skill |
-| `kode skill import <uri> [flags]` | Import a skill from file:// or https:// |
-| `kode skill curate` | Analyze skills for quality, staleness, trigger overlap |
-| `kode serve [--addr :8080] [--open]` | Web UI server with WebSocket streaming, `@` resource completion, session history |
-| `kode subagent --goal <string> [flags]` | Run a focused sub-task; outputs JSON on stdout. Spawned by `delegate_tasks` tool |
-| `kode init [--global] [--force]` | Create a config file template |
-| `kode mcp [--sandbox]` | Start MCP server (expose tools to Claude Code) or connect to external MCP servers (via `mcp_servers` config) |
-| `kode version` | Print version and exit |
+| `odek run [flags] <task>` | Execute a task with the agent loop (single-shot by default) |
+| `odek run --session [flags] <task>` | Execute and save conversation as a multi-turn session |
+| `odek run [--no-learn] [flags] <task>` | Execute with skill learning (on by default, use --no-learn to disable) |
+| `odek continue [--id <id>] <task>` | Continue the most recent session (or by `--id`) |
+| `odek repl [flags]` | Interactive REPL mode (persistent multi-turn session). Accepts `--model`, `--thinking`, `--sandbox`, and `--sandbox-*` flags. |
+| `odek session list` | List sessions |
+| `odek session show [id]` | Show session details (default: latest) |
+| `odek session delete <id>` | Delete a session |
+| `odek session trim <id> <n>` | Keep only the `n` most recent messages |
+| `odek session cleanup <days>` | Delete sessions older than N days |
+| `odek skill list` | List all available skills |
+| `odek skill view <name>` | View a skill's full content |
+| `odek skill delete <name>` | Delete a skill |
+| `odek skill import <uri> [flags]` | Import a skill from file:// or https:// |
+|| `odek skill curate` | Analyze skills for quality, staleness, trigger overlap |
+|| `odek serve [--addr :8080] [--open]` | Web UI server with WebSocket streaming, `@` resource completion, session history |
+|| `odek subagent --goal <string> [flags]` | Run a focused sub-task; outputs JSON on stdout. Spawned by `delegate_tasks` tool |
+| `odek init [--global] [--force]` | Create a config file template |
+| `odek mcp [--sandbox]` | Start MCP server (expose tools to Claude Code) or connect to external MCP servers (via `mcp_servers` config) |
+| `odek version` | Print version and exit |
 
 ## Run flags
 
@@ -74,7 +74,7 @@ The approval prompt accepts:
 - `T` — Trust all commands of this class for this session
 - `?` — Show full context
 
-Configurable via `dangerous` section in `~/kode/config.json` or `./kode.json`:
+Configurable via `dangerous` section in `~/kode/config.json` or `./odek.json`:
 
 ```json
 {
@@ -109,24 +109,24 @@ with YAML frontmatter that define trigger keywords, quality metadata, and markdo
 
 ```bash
 # List all skills
-kode skill list
+odek skill list
 
 # View a skill's full content
-kode skill view docker-build
+odek skill view docker-build
 
 # Delete a skill
-kode skill delete docker-build
+odek skill delete docker-build
 
 # Import a skill from a file or URL
-kode skill import ./skills/my-skill.md
-kode skill import https://example.com/skills/deploy.md
+odek skill import ./skills/my-skill.md
+odek skill import https://example.com/skills/deploy.md
 
 # Import with flags
-kode skill import https://example.com/skills/deploy.md --basic   # skip LLM risk assessment
-kode skill import https://example.com/skills/deploy.md --yes     # auto-approve (scripting)
+odek skill import https://example.com/skills/deploy.md --basic   # skip LLM risk assessment
+odek skill import https://example.com/skills/deploy.md --yes     # auto-approve (scripting)
 
 # Run curation (quality, staleness, overlap checks)
-kode skill curate
+odek skill curate
 ```
 
 ### Skill file format
@@ -196,58 +196,58 @@ The `kode skill curate` command runs four quality passes:
 
 ```bash
 # Quick task (single-shot, no session saved)
-kode run "How many Go files in this project?"
+odek run "How many Go files in this project?"
 
 # Save as session for follow-up
-kode run --session "Refactor the auth module"
+odek run --session "Refactor the auth module"
 
 # Continue a session
-kode continue "Now add error handling to the refactored auth"
+odek continue "Now add error handling to the refactored auth"
 
 # Continue a specific session by ID
-kode continue --id 20260518-abc123 "Add unit tests"
+odek continue --id 20260518-abc123 "Add unit tests"
 
 # List all sessions
-kode session list
+odek session list
 
 # Show latest session transcript
-kode session show
+odek session show
 
 # Show a specific session
-kode session show 20260518-abc123
+odek session show 20260518-abc123
 
 # Trim session to last 10 messages (preserves system prompt)
-kode session trim 20260518-abc123 10
+odek session trim 20260518-abc123 10
 
 # Delete sessions older than 30 days
-kode session cleanup 30
+odek session cleanup 30
 
 # Wipe all sessions
-kode session cleanup 0
+odek session cleanup 0
 
 # OpenAI
-kode run --model gpt-4o --base-url https://api.openai.com/v1 "Explain this code"
+odek run --model gpt-4o --base-url https://api.openai.com/v1 "Explain this code"
 
 # Sandboxed execution
-kode run --sandbox "npm test"
+odek run --sandbox "npm test"
 
 # Custom sandbox image
-kode run --sandbox --sandbox-image node:20-alpine "node --version"
+odek run --sandbox --sandbox-image node:20-alpine "node --version"
 
 # Interactive REPL with sandbox
-kode repl --sandbox --model deepseek-v4-pro
+odek repl --sandbox --model deepseek-v4-pro
 
 # Sandbox REPL with custom image and no network
-kode repl --sandbox --sandbox-image node:20-alpine --sandbox-network none
+odek repl --sandbox --sandbox-image node:20-alpine --sandbox-network none
 
 # Resume a sandboxed session in REPL mode
-kode repl --id 20260518-abc123
+odek repl --id 20260518-abc123
 
 # Custom system prompt
-kode run --system "You are a Go expert. Answer with code only." "Write HTTP server"
+odek run --system "You are a Go expert. Answer with code only." "Write HTTP server"
 
 # Run with skill learning (on by default — use --no-learn to disable)
-kode run "Set up CI with GitHub Actions"
+odek run "Set up CI with GitHub Actions"
 ```
 
 ## Config priority
@@ -256,7 +256,7 @@ Config sources from lowest to highest priority:
 
 ```
 1.  ~/kode/config.json    ← Global defaults
-2.  ./kode.json           ← Project overrides
+2.  ./odek.json           ← Project overrides
 3.  KODE_* env vars       ← Runtime overrides
 4.  CLI flags             ← Explicit invocation (highest)
 ```

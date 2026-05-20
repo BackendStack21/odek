@@ -1,21 +1,21 @@
 # Sandboxing
 
-kode runs agent shell commands inside an **isolated Docker container** when `--sandbox` is active. This document covers all configuration options, the `Dockerfile.kode` build system, security guarantees, and best practices.
+odek runs agent shell commands inside an **isolated Docker container** when `--sandbox` is active. This document covers all configuration options, the `Dockerfile.kode` build system, security guarantees, and best practices.
 
 ## Quick start
 
 ```bash
 # Enable sandbox with internet access (default network: bridge)
-kode run --sandbox "npm install && npm test"
+odek run --sandbox "npm install && npm test"
 
 # Use a specific base image
-kode run --sandbox --sandbox-image node:20-alpine "echo hello"
+odek run --sandbox --sandbox-image node:20-alpine "echo hello"
 
 # Custom Dockerfile for project-specific tooling
 echo 'FROM golang:1.24-alpine
 RUN apk add --no-cache protobuf
 WORKDIR /workspace' > Dockerfile.kode
-kode run --sandbox "protoc --version"
+odek run --sandbox "protoc --version"
 ```
 
 ## Config reference
@@ -69,14 +69,14 @@ KODE_SANDBOX_READONLY=true \
 KODE_SANDBOX_MEMORY=1g \
 KODE_SANDBOX_CPUS=4 \
 KODE_SANDBOX_USER=1000:1000 \
-  kode run "process untrusted data"
+  odek run "process untrusted data"
 ```
 
 ### CLI flag examples
 
 ```bash
 # Run (single-shot)
-kode run \
+odek run \
   --sandbox \
   --sandbox-image node:20-alpine \
   --sandbox-network bridge \
@@ -87,7 +87,7 @@ kode run \
   "run build"
 
 # REPL (interactive multi-turn)
-kode repl \
+odek repl \
   --sandbox \
   --sandbox-image golang:1.24-alpine \
   --sandbox-memory 2g \
@@ -104,16 +104,16 @@ Pick any public or private Docker image:
 
 ```bash
 # Node.js
-kode run --sandbox --sandbox-image node:20-alpine "npm run build"
+odek run --sandbox --sandbox-image node:20-alpine "npm run build"
 
 # Python
-kode run --sandbox --sandbox-image python:3.12-slim "pytest"
+odek run --sandbox --sandbox-image python:3.12-slim "pytest"
 
 # Go
-kode run --sandbox --sandbox-image golang:1.24-alpine "go test ./..."
+odek run --sandbox --sandbox-image golang:1.24-alpine "go test ./..."
 
 # GPU workload
-kode run --sandbox --sandbox-image nvidia/cuda:12.2-runtime "nvidia-smi"
+odek run --sandbox --sandbox-image nvidia/cuda:12.2-runtime "nvidia-smi"
 ```
 
 ### 2. `Dockerfile.kode` (advanced)
@@ -134,8 +134,8 @@ WORKDIR /workspace
 ```
 
 Build behavior:
-- kode checks for `Dockerfile.kode` in the working directory
-- If found and no explicit `sandbox_image` is configured, kode builds it
+- odek check for `Dockerfile.kode` in the working directory
+- If found and no explicit `sandbox_image` is configured, odek builds it
 - The image is tagged as `kode-sandbox:<sha256[:12]>` based on file content hash
 - **Cached:** the image is only rebuilt when `Dockerfile.kode` changes
 - First build takes ~5–30s depending on the image; subsequent runs are instant
@@ -160,13 +160,13 @@ Build behavior:
 When `sandbox_readonly` is `true`, the working directory is mounted **read-only** inside the container:
 
 ```bash
-kode run --sandbox --sandbox-readonly "ls -la /workspace"   # can read
-kode run --sandbox --sandbox-readonly "touch /workspace/x"  # fails
+odek run --sandbox --sandbox-readonly "ls -la /workspace"   # can read
+odek run --sandbox --sandbox-readonly "touch /workspace/x"  # fails
 ```
 
 ## Security guarantees
 
-kode's sandbox follows the principle of **least privilege with progressive opt-in**.
+odek's sandbox follows the principle of **least privilege with progressive opt-in**.
 
 ### Default (no sandbox config overrides)
 

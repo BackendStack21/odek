@@ -712,7 +712,7 @@ func TestDelegateTasks_PipesStderr(t *testing.T) {
 func skipIfNoBinary(t *testing.T) {
 	t.Helper()
 	if kodeBinary == "" {
-		t.Skip("kode binary not found — set KODE_E2E=true or build first")
+		t.Skip("odek binary not found — set KODE_E2E=true or build first")
 	}
 }
 

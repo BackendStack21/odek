@@ -88,45 +88,45 @@ func main() {
 	switch os.Args[1] {
 	case "run":
 		if err := run(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "kode: %v\n", err)
+			fmt.Fprintf(os.Stderr, "odek: %v\n", err)
 			os.Exit(1)
 		}
 	case "version":
-		fmt.Println("kode", getVersion())
+		fmt.Println("odek", getVersion())
 	case "init":
 		if err := initConfig(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "kode: %v\n", err)
+			fmt.Fprintf(os.Stderr, "odek: %v\n", err)
 			os.Exit(1)
 		}
 	case "continue":
 		if err := continueCmd(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "kode: %v\n", err)
+			fmt.Fprintf(os.Stderr, "odek: %v\n", err)
 			os.Exit(1)
 		}
 	case "session":
 		if err := sessionCmd(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "kode: %v\n", err)
+			fmt.Fprintf(os.Stderr, "odek: %v\n", err)
 			os.Exit(1)
 		}
 	case "repl":
 		if err := replCmd(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "kode: %v\n", err)
+			fmt.Fprintf(os.Stderr, "odek: %v\n", err)
 			os.Exit(1)
 		}
 	case "skill":
 		if err := skillCmd(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "kode: %v\n", err)
+			fmt.Fprintf(os.Stderr, "odek: %v\n", err)
 			os.Exit(1)
 		}
 	case "serve":
 		if err := serveCmd(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "kode: %v\n", err)
+			fmt.Fprintf(os.Stderr, "odek: %v\n", err)
 			os.Exit(1)
 		}
 	case "subagent":
 		if err := subagentCmd(os.Args[2:]); err != nil {
 			// Print error to stderr (human-readable)
-			fmt.Fprintf(os.Stderr, "kode: %v\n", err)
+			fmt.Fprintf(os.Stderr, "odek: %v\n", err)
 			// Always output JSON to stdout for the parent to parse
 			json.NewEncoder(os.Stdout).Encode(subagentResult{
 				Status: "error",
@@ -136,11 +136,11 @@ func main() {
 		}
 	case "mcp":
 		if err := mcpCmd(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "kode: %v\n", err)
+			fmt.Fprintf(os.Stderr, "odek: %v\n", err)
 			os.Exit(1)
 		}
 	default:
-		fmt.Fprintf(os.Stderr, "kode: unknown command %q\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "odek: unknown command %q\n", os.Args[1])
 		printUsage()
 		os.Exit(1)
 	}
@@ -337,17 +337,17 @@ func parseReplFlags(args []string) (replFlags, error) {
 
 func printUsage() {
 	fmt.Println(`Usage:
-  kode run [flags] <task>
-  kode run --session [flags] <task>
-  kode continue [--id <id>] <task>
-  kode session <list|show [id]|trim <id> <n>|delete <id>|cleanup <days>>
-  kode repl [flags]
-  kode serve [--addr :8080] [--open]
-  kode subagent --goal <string> [--context <string>] [flags]
-  kode init [--global | -g] [--force | -f]
-  kode skill <list|view|save|delete|import|curate>
-  kode mcp [--sandbox]
-  kode version
+  odek run [flags] <task>
+  odek run --session [flags] <task>
+  odek continue [--id <id>] <task>
+  odek session <list|show [id]|trim <id> <n>|delete <id>|cleanup <days>>
+  odek repl [flags]
+  odek serve [--addr :8080] [--open]
+  odek subagent --goal <string> [--context <string>] [flags]
+  odek init [--global | -g] [--force | -f]
+  odek skill <list|view|save|delete|import|curate>
+  odek mcp [--sandbox]
+  odek version
 
 Commands:
   run                 Execute a task with the agent loop
@@ -355,7 +355,7 @@ Commands:
   continue            Continue the most recent session (or by --id)
   repl                Interactive REPL mode (multi-turn session)
                        Accepts --model, --thinking, --sandbox, and
-                       --sandbox-* flags just like kode run.
+                       --sandbox-* flags just like odek run.
   serve               Web UI server with WebSocket streaming
                        Open http://localhost:8080 in your browser.
                        Features: @ resource completion, session history,
@@ -391,12 +391,12 @@ Run flags:
   --system <prompt>    System prompt override
 
 Skill commands:
-  kode skill list                    List all available skills
-  kode skill view <name>             View a skill's full content
-  kode skill delete <name>           Delete a skill
-  kode skill import <uri> [flags]    Import a skill from file:// or https://
+  odek skill list                    List all available skills
+  odek skill view <name>             View a skill's full content
+  odek skill delete <name>           Delete a skill
+  odek skill import <uri> [flags]    Import a skill from file:// or https://
                                      Flags: --basic (skip LLM), --yes (auto-approve)
-  kode skill curate                  Analyze skills for quality, staleness, overlap
+  odek skill curate                  Analyze skills for quality, staleness, overlap
 
 Sandbox flags:
   --sandbox            Run in isolated Docker container
@@ -527,7 +527,7 @@ func initConfig(args []string) error {
 
 	// Check if file already exists
 	if _, err := os.Stat(configPath); err == nil && !force {
-		fmt.Fprintf(os.Stderr, "kode: %s config already exists at %s\n", scope, configPath)
+		fmt.Fprintf(os.Stderr, "odek: %s config already exists at %s\n", scope, configPath)
 		fmt.Fprintf(os.Stderr, "  Use --force to overwrite.\n")
 		return nil
 	}
@@ -631,14 +631,14 @@ func buildFromDockerfile() (string, error) {
 
 	// Only build if not already cached
 	if _, err := exec.Command("docker", "image", "inspect", tag).CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "kode: building sandbox image from %s...\n", dockerfileName)
+		fmt.Fprintf(os.Stderr, "odek: building sandbox image from %s...\n", dockerfileName)
 		build := exec.Command("docker", "build", "-t", tag, "-f", dockerfileName, ".")
 		build.Stderr = os.Stderr
 		build.Stdout = os.Stderr
 		if err := build.Run(); err != nil {
 			return "", fmt.Errorf("docker build failed: %w", err)
 		}
-		fmt.Fprintf(os.Stderr, "kode: built image %s\n", tag)
+		fmt.Fprintf(os.Stderr, "odek: built image %s\n", tag)
 	}
 
 	return tag, nil
@@ -824,7 +824,7 @@ func run(args []string) error {
 				sess.Buffer = mm.GetBuffer()
 			}
 			store.Save(sess)
-			fmt.Fprintf(os.Stderr, "kode: session %s saved — continue with: kode continue \"...\"\n", sess.ID)
+			fmt.Fprintf(os.Stderr, "odek: session %s saved — continue with: odek continue \"...\"\n", sess.ID)
 		}
 	} else {
 		// Single-shot mode (default)
@@ -898,7 +898,7 @@ func setupSandbox(tools []kode.Tool, cfg sandboxConfig) (func() error, error) {
 	}
 
 	containerName := fmt.Sprintf("kode-%d", os.Getpid())
-	fmt.Fprintf(os.Stderr, "kode: starting sandbox container %s (image: %s)...\n", containerName, image)
+	fmt.Fprintf(os.Stderr, "odek: starting sandbox container %s (image: %s)...\n", containerName, image)
 
 	wd, err := os.Getwd()
 	if err != nil {
@@ -914,7 +914,7 @@ func setupSandbox(tools []kode.Tool, cfg sandboxConfig) (func() error, error) {
 	}
 
 	cleanup := func() error {
-		fmt.Fprintf(os.Stderr, "kode: destroying sandbox container %s...\n", containerName)
+		fmt.Fprintf(os.Stderr, "odek: destroying sandbox container %s...\n", containerName)
 		return exec.Command("docker", "rm", "-f", containerName).Run()
 	}
 
@@ -975,7 +975,7 @@ func buildSandboxArgs(cfg sandboxConfig, containerName, workdir, image string) [
 			hostPath := filepath.Clean(parts[0])
 			for _, forbidden := range forbiddenMountPrefixes {
 				if hostPath == forbidden || strings.HasPrefix(hostPath, forbidden+"/") {
-					fmt.Fprintf(os.Stderr, "kode: WARNING: rejecting forbidden volume mount %q (host path %s)\n", vol, hostPath)
+					fmt.Fprintf(os.Stderr, "odek: WARNING: rejecting forbidden volume mount %q (host path %s)\n", vol, hostPath)
 					reject = true
 					break
 				}
@@ -1057,7 +1057,7 @@ func loadMCPTools(servers map[string]mcpclient.ServerConfig, tools *[]kode.Tool)
 
 		cleaners = append(cleaners, func() {
 			if err := client.Close(); err != nil {
-				fmt.Fprintf(os.Stderr, "kode: warning: mcp client %q close: %v\n", name, err)
+				fmt.Fprintf(os.Stderr, "odek: warning: mcp client %q close: %v\n", name, err)
 			}
 		})
 	}
@@ -1184,7 +1184,7 @@ func extractUserMessages(messages []llm.Message) []string {
 // skillCmd handles `kode skill <list|view|save|delete|import|curate>`.
 func skillCmd(args []string) error {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "Usage: kode skill <list|view|save|delete|import|curate> [args]\n")
+		fmt.Fprintf(os.Stderr, "Usage: odek skill <list|view|save|delete|import|curate> [args]\n")
 		return nil
 	}
 
@@ -1209,7 +1209,7 @@ func skillCmd(args []string) error {
 
 	case "view":
 		if len(subArgs) == 0 {
-			return fmt.Errorf("usage: kode skill view <name>")
+			return fmt.Errorf("usage: odek skill view <name>")
 		}
 		sm := skills.NewSkillManager(userDir, "./.kode/skills")
 		tool := &skills.SkillLoadTool{}
@@ -1223,7 +1223,7 @@ func skillCmd(args []string) error {
 
 	case "delete":
 		if len(subArgs) == 0 {
-			return fmt.Errorf("usage: kode skill delete <name>")
+			return fmt.Errorf("usage: odek skill delete <name>")
 		}
 		sm := skills.NewSkillManager(userDir, "./.kode/skills")
 		tool := &skills.SkillDeleteTool{}
@@ -1237,7 +1237,7 @@ func skillCmd(args []string) error {
 
 	case "import":
 		if len(subArgs) == 0 {
-			return fmt.Errorf("usage: kode skill import <uri> [--basic] [--yes]")
+			return fmt.Errorf("usage: odek skill import <uri> [--basic] [--yes]")
 		}
 		uri := subArgs[0]
 		basicOnly := false
@@ -1377,7 +1377,7 @@ func continueCmd(args []string) error {
 		return fmt.Errorf("load session: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "kode: continuing session %s (turn %d → %d)\n",
+	fmt.Fprintf(os.Stderr, "odek: continuing session %s (turn %d → %d)\n",
 		sess.ID, sess.Turns, sess.Turns+1)
 
 	// Resolve config (no CLI flags for continue — uses session's model)
@@ -1386,7 +1386,7 @@ func continueCmd(args []string) error {
 	// Auto-apply sandbox if session was sandboxed (even if config changed)
 	if sess.Sandbox && !resolved.Sandbox {
 		resolved.Sandbox = true
-		fmt.Fprintf(os.Stderr, "kode: session was sandboxed — enabling sandbox for this continuation\n")
+		fmt.Fprintf(os.Stderr, "odek: session was sandboxed — enabling sandbox for this continuation\n")
 	}
 
 	// Build tools
@@ -1519,7 +1519,7 @@ func continueCmd(args []string) error {
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "kode: session %s saved (%d turns)\n", sess.ID, sess.Turns+1)
+	fmt.Fprintf(os.Stderr, "odek: session %s saved (%d turns)\n", sess.ID, sess.Turns+1)
 
 	// ── Session end — extract episode ──
 	if mm := agent.Memory(); mm != nil {
@@ -1535,7 +1535,7 @@ func continueCmd(args []string) error {
 // sessionCmd handles `kode session <list|show|delete> [args]`.
 func sessionCmd(args []string) error {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "Usage: kode session <list|show [id]|delete <id>>\n")
+		fmt.Fprintf(os.Stderr, "Usage: odek session <list|show [id]|delete <id>>\n")
 		return nil
 	}
 
@@ -1629,7 +1629,7 @@ func showSession(store *session.Store, args []string) error {
 
 func deleteSession(store *session.Store, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: kode session delete <id>")
+		return fmt.Errorf("usage: odek session delete <id>")
 	}
 	if err := store.Delete(args[0]); err != nil {
 		return fmt.Errorf("delete session: %w", err)
@@ -1643,7 +1643,7 @@ func deleteSession(store *session.Store, args []string) error {
 // Usage: kode session trim <id> <n>
 func trimSession(store *session.Store, args []string) error {
 	if len(args) < 2 {
-		return fmt.Errorf("usage: kode session trim <id> <n>")
+		return fmt.Errorf("usage: odek session trim <id> <n>")
 	}
 	id := args[0]
 	var n int
@@ -1700,7 +1700,7 @@ func trimSession(store *session.Store, args []string) error {
 // Usage: kode session cleanup <days>
 func cleanupSessions(store *session.Store, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: kode session cleanup <days>")
+		return fmt.Errorf("usage: odek session cleanup <days>")
 	}
 	var days int
 	if _, err := fmt.Sscanf(args[0], "%d", &days); err != nil || days < 0 {

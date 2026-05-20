@@ -1,19 +1,19 @@
 # MCP
 
-kode has **two-way** Model Context Protocol support:
+odek has **two-way** Model Context Protocol support:
 
-- **kode as MCP server** (`kode mcp`) — other agents (Claude Code, Cursor) use kode's tools
-- **kode as MCP client** (config) — kode connects to external MCP servers and uses their tools
+- **odek as MCP server** (`odek mcp`) — other agents (Claude Code, Cursor) use odek's tools
+- **odek as MCP client** (config) — odek connects to external MCP servers and uses their tools
 
 ---
 
-## kode as MCP Server (`kode mcp`)
+## odek as MCP Server (`odek mcp`)
 
-Start kode as an MCP server over stdio. This lets Claude Code, Cursor, and other
-MCP-compatible clients use kode's built-in tools.
+Start odek as an MCP server over stdio. This lets Claude Code, Cursor, and other
+MCP-compatible clients use odek's built-in tools.
 
 ```bash
-kode mcp
+odek mcp
 ```
 
 ### Claude Code setup
@@ -23,8 +23,8 @@ Add to `~/.claude/claude_dotfiles/claude.json` or your project's `.claude/settin
 ```json
 {
   "mcpServers": {
-    "kode": {
-      "command": "kode",
+    "odek": {
+      "command": "odek",
       "args": ["mcp"]
     }
   }
@@ -45,12 +45,12 @@ For **Cursor**, add the same entry in Cursor Settings → MCP Servers.
 | `browser` | Navigate web pages, take snapshots, click elements |
 
 The `delegate_tasks` and `memory` tools are **not** exposed via MCP — they are
-specific to kode's own agent loop.
+specific to odek's own agent loop.
 
 ### Sandbox
 
 ```bash
-kode mcp --sandbox
+odek mcp --sandbox
 ```
 
 All shell commands run inside a Docker container with `--cap-drop ALL`,
@@ -58,8 +58,8 @@ All shell commands run inside a Docker container with `--cap-drop ALL`,
 
 ### Security
 
-Same `DangerousConfig` as `kode run`. No TTY in MCP mode → `non_interactive`
-fallback applies (default: allow). Configure per-class overrides in `kode.json`:
+Same `DangerousConfig` as `odek run`. No TTY in MCP mode → `non_interactive`
+fallback applies (default: allow). Configure per-class overrides in `odek.json`:
 
 ```json
 {
@@ -87,14 +87,14 @@ Logging goes to stderr; stdin/stdout are reserved for the MCP protocol.
 
 ---
 
-## kode as MCP Client
+## odek as MCP Client
 
-kode can connect to **external MCP servers** and expose their tools to the agent
-during `kode run`, `kode repl`, `kode serve`, and `kode mcp`.
+odek can connect to **external MCP servers** and expose their tools to the agent
+during `odek run`, `odek repl`, `odek serve`, and `odek mcp`.
 
 ### Configuration
 
-Add `mcp_servers` to `kode.json` (project-level) or `~/kode/config.json` (global):
+Add `mcp_servers` to `odek.json` (project-level) or `~/kode/config.json` (global):
 
 ```json
 {
@@ -124,11 +124,11 @@ Each server is defined by:
 - `env` — optional environment variable overrides (empty string removes the variable)
 
 The format matches Claude Code's `mcpServers` config — any MCP server you use
-with Claude Code can be added to kode's config.
+with Claude Code can be added to odek's config.
 
 ### How it works
 
-On startup, kode:
+On startup, odek:
 1. Spawns each configured MCP server as a subprocess
 2. Performs the MCP handshake (`initialize`)
 3. Discovers all tools via `tools/list`
@@ -158,21 +158,21 @@ Any server that implements the MCP stdio transport with `tools/list` and
 
 ### Lifecycle
 
-MCP server processes are spawned when kode starts and killed when kode exits
+MCP server processes are spawned when odek starts and killed when odek exits
 (via `defer`). Each process gets its own stdin/stdout pipes — stderr from
-MCP servers is shown in the kode console.
+MCP servers is shown in the odek console.
 
 ### Logging
 
-kode logs MCP server connections to stderr:
+odek logs MCP server connections to stderr:
 
 ```
-kode: connected MCP server "playwright" (5 tools)
-kode: connected MCP server "fetch" (1 tool)
+odek: connected MCP server "playwright" (5 tools)
+odek: connected MCP server "fetch" (1 tool)
 ```
 
 Errors during discovery are reported at startup — the server is skipped and
-kode continues with the remaining servers.
+odek continues with the remaining servers.
 
 ### Config reference
 

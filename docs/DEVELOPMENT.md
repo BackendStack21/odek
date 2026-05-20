@@ -8,7 +8,7 @@
 ## Building
 
 ```bash
-go build -o kode ./cmd/kode
+go build -o odek ./cmd/kode
 ```
 
 ## Source layout
@@ -150,7 +150,7 @@ See [docs/WEBUI.md](docs/WEBUI.md) for the WebSocket protocol and full documenta
 
 ### Sub-agents (`cmd/kode/subagent.go` + `cmd/kode/subagent_tool.go`)
 
-- **subagent.go**: CLI handler for `kode subagent --goal <string>`. Parses flags, creates agent, runs with minimal system prompt, outputs JSON to stdout
+- **subagent.go**: CLI handler for `odek subagent --goal <string>`. Parses flags, creates agent, runs with minimal system prompt, outputs JSON to stdout
 - **subagent_tool.go**: `delegate_tasks` built-in tool. Spawns real OS processes via `exec.Command` with temp files for task data
 
 See [docs/SUBAGENTS.md](docs/SUBAGENTS.md) for full documentation.

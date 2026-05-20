@@ -42,9 +42,9 @@ func serveCmd(args []string) error {
 		case "--open":
 			openBrowser = true
 		case "--help", "-h":
-			fmt.Println(`Usage: kode serve [flags]
+			fmt.Println(`Usage: odek serve [flags]
 
-Start the Kode web UI server.
+Start the odek web UI server.
 
 Flags:
   --addr 127.0.0.1:8080    Listen address (default 127.0.0.1:8080)
@@ -91,7 +91,7 @@ Flags:
 		return fmt.Errorf("listen: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "kode serve ⚡  http://%s\n", listener.Addr())
+	fmt.Fprintf(os.Stderr, "odek serve ⚡  http://%s\n", listener.Addr())
 	fmt.Fprintf(os.Stderr, "  WebSocket: ws://%s/ws\n", listener.Addr())
 	fmt.Fprintf(os.Stderr, "  Type @ in the input to reference files and sessions.\n")
 

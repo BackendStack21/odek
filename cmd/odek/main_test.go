@@ -225,14 +225,14 @@ func TestPrintUsage(t *testing.T) {
 	output := string(data)
 
 	required := []string{
-		"kode run",
-		"kode continue",
-		"kode repl",
-		"kode session",
+		"odek run",
+		"odek continue",
+		"odek repl",
+		"odek session",
 		"trim",
 		"cleanup",
-		"kode init",
-		"kode version",
+		"odek init",
+		"odek version",
 		"Commands:",
 		"--model",
 		"Known profiles",
@@ -376,8 +376,8 @@ func TestCaptureStdout(t *testing.T) {
 	output := captureStdout(func() {
 		printUsage()
 	})
-	if !strings.Contains(output, "kode run") {
-		t.Error("captured output should contain 'kode run'")
+	if !strings.Contains(output, "odek run") {
+		t.Error("captured output should contain 'odek run'")
 	}
 }
 

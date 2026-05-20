@@ -64,7 +64,7 @@ func replCmd(args []string) error {
 	// Auto-apply sandbox if resuming a sandboxed session
 	if sess != nil && sess.Sandbox && !resolved.Sandbox {
 		resolved.Sandbox = true
-		fmt.Fprintf(os.Stderr, "kode: session was sandboxed — enabling sandbox\n")
+		fmt.Fprintf(os.Stderr, "odek: session was sandboxed — enabling sandbox\n")
 	}
 
 	// Build tools
@@ -162,7 +162,7 @@ func replCmd(args []string) error {
 		store.Save(sess)
 	}
 
-	fmt.Fprintf(os.Stderr, "\nkode ⚡ %s · session %s\n\n", modelLabel, sess.ID)
+	fmt.Fprintf(os.Stderr, "\nodek ⚡ %s · session %s\n\n", modelLabel, sess.ID)
 	fmt.Fprintf(os.Stderr, "  Type /help for commands, /exit to quit.\n\n")
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -208,7 +208,7 @@ func replCmd(args []string) error {
 		rend.Start(input)
 		_, allMessages, err := agent.RunWithMessages(ctx, messages)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "kode: agent error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "odek: agent error: %v\n", err)
 			continue
 		}
 
@@ -226,7 +226,7 @@ func replCmd(args []string) error {
 		// Save new messages to session
 		newMsgs := allMessages[origLen:]
 		if err := store.Append(sess.ID, newMsgs); err != nil {
-			fmt.Fprintf(os.Stderr, "kode: save error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "odek: save error: %v\n", err)
 		}
 
 		// Reload session to get updated turn count + persist buffer
@@ -260,7 +260,7 @@ func replCmd(args []string) error {
 func handleREPLCommand(input string, sess *session.Session) bool {
 	switch strings.ToLower(input) {
 	case "/exit", "/quit":
-		fmt.Fprintf(os.Stderr, "Session %s saved. Continue later with: kode repl --id %s\n", sess.ID, sess.ID)
+		fmt.Fprintf(os.Stderr, "Session %s saved. Continue later with: odek repl --id %s\n", sess.ID, sess.ID)
 		return true
 	case "/help":
 		fmt.Fprint(os.Stderr, `Commands:

@@ -1,6 +1,6 @@
 # Memory System
 
-kode has a **three-tier file-based memory** system. Zero external dependencies beyond go-vector (which is also zero-dep).
+odek has a **three-tier file-based memory** system. Zero external dependencies beyond go-vector (which is also zero-dep).
 
 ## Three Tiers
 
@@ -96,10 +96,10 @@ When `facts/user.md` and `facts/env.md` are empty (fresh install), no RP vocabul
 
 ## Subagent Memory
 
-Subagents (separate OS processes via `kode subagent`) inherit a **read-only snapshot** of facts:
+Subagents (separate OS processes via `odek subagent`) inherit a **read-only snapshot** of facts:
 
 ```
-kode subagent --memory-snapshot /tmp/kode-mem-<rand>.json
+odek subagent --memory-snapshot /tmp/kode-mem-<rand>.json
 ```
 
 The subagent's system prompt includes:

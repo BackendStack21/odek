@@ -2,7 +2,7 @@
 
 ## Prompt Injection Defense
 
-kode includes layered defenses against prompt injection — attempts to override agent instructions through file content, command output, or user messages.
+odek includes layered defenses against prompt injection — attempts to override agent instructions through file content, command output, or user messages.
 
 ### Defense layers
 
@@ -74,8 +74,8 @@ The approval mechanism uses a unified **Approver** interface with two implementa
 
 | Mode | Approver | How it works |
 |------|----------|-------------|
-| **CLI** (`kode run`, `kode repl`) | `TTYApprover` | Opens `/dev/tty` — the same keypress-based prompt described below |
-| **Web UI** (`kode serve`) | `WSApprover` | Sends `approval_request` via WebSocket — the browser shows a modal with Approve / Deny / Trust buttons |
+| **CLI** (`odek run`, `odek repl`) | `TTYApprover` | Opens `/dev/tty` — the same keypress-based prompt described below |
+| **Web UI** (`odek serve`) | `WSApprover` | Sends `approval_request` via WebSocket — the browser shows a modal with Approve / Deny / Trust buttons |
 
 Both provide the **same three actions**: approve once, deny, or trust for the session. The experience is identical regardless of how you interact with kode.
 
@@ -119,7 +119,7 @@ See `dangerous` section in [CLI.md](CLI.md#dangerous-operations) for the full co
 
 ### Session trust
 
-When you press `T`, the risk class is cached in memory for the lifetime of the kode process. Subsequent commands of the same class skip approval. Trust is **not persisted to disk** — every new `kode run` or `kode continue` starts fresh.
+When you press `T`, the risk class is cached in memory for the lifetime of the kode process. Subsequent commands of the same class skip approval. Trust is **not persisted to disk** — every new `odek run` or `odek continue` starts fresh.
 
 ### Non-interactive mode
 
@@ -127,7 +127,7 @@ When `/dev/tty` is not available (piped stdin, CI environments, or when no custo
 - `"allow"` (default) — run all commands without prompting
 - `"deny"` — block all prompted operations
 
-> **Note:** In `kode serve` (Web UI) mode, this fallback is never hit — a WebSocket-based approver (`WSApprover`) is automatically injected, giving you interactive approval dialogs in the browser. The `non_interactive` setting only matters for CLI sessions without a TTY.
+> **Note:** In `odek serve` (Web UI) mode, this fallback is never hit — a WebSocket-based approver (`WSApprover`) is automatically injected, giving you interactive approval dialogs in the browser. The `non_interactive` setting only matters for CLI sessions without a TTY.
 
 ### Allowlist vs Denylist
 

@@ -8,7 +8,7 @@ Each layer overrides the one below it. Unset fields inherit from the layer below
 
 ```
 1.  ~/kode/config.json    ← Global defaults (shared across projects)
-2.  ./kode.json           ← Project-specific overrides
+2.  ./odek.json           ← Project-specific overrides
 3.  KODE_* env vars       ← Runtime/environment overrides
 4.  CLI flags             ← Explicit invocation (highest priority)
 ```
@@ -33,7 +33,7 @@ Shared across all projects:
 }
 ```
 
-### Project overrides (`./kode.json`)
+### Project overrides (`./odek.json`)
 
 Same schema as global. Only set the fields you want to override:
 
@@ -173,7 +173,7 @@ The `subagent` section controls task decomposition and parallel sub-agent execut
 
 This section is optional. Omitted fields inherit sensible defaults.
 
-> **Note**: The `subagent` section is currently read only from `kode.json` by the `kode subagent` command in test code. Runtime values (`max_concurrency`, `timeout_seconds`) are hardcoded in production `kode run`/`kode serve`. This may be wired up fully in a future release.
+> **Note**: The `subagent` section is currently read only from `odek.json` by the `odek subagent` command in test code. Runtime values (`max_concurrency`, `timeout_seconds`) are hardcoded in production `odek run`/`odek serve`. This may be wired up fully in a future release.
 
 ## MCP server configuration
 
@@ -206,19 +206,19 @@ and are available in `kode run`, `kode repl`, `kode continue`, and `kode serve`.
 
 See [docs/MCP.md](docs/MCP.md#kode-as-mcp-client) for detailed instructions.
 
-## kode init
+## odek init
 
 Create a config file template:
 
 ```bash
-# Local project config (./kode.json)
-kode init
+# Local project config (./odek.json)
+odek init
 
 # Global config (~/kode/config.json)
-kode init --global
+odek init --global
 
 # Overwrite existing file
-kode init --force
+odek init --force
 ```
 
 ## Quick examples
@@ -226,21 +226,21 @@ kode init --force
 ```bash
 # Global config
 echo '{"api_key": "${DEEPSEEK_API_KEY}", "model": "deepseek-v4-flash"}' > ~/kode/config.json
-kode run "list files"
+odek run "list files"
 
 # Per-project override
-echo '{"max_iterations": 30}' > ./kode.json
-kode run "quick status"
+echo '{"max_iterations": 30}' > ./odek.json
+odek run "quick status"
 
 # Env var override for one-off
-KODE_SANDBOX=true kode run "run untrusted script"
+KODE_SANDBOX=true odek run "run untrusted script"
 
 # Enable skill learning via env var
-KODE_SKILLS_LEARN=true kode run "set up CI"
+KODE_SKILLS_LEARN=true odek run "set up CI"
 
 # Sub-agent config (project-level)
-echo '{"subagent": {"max_concurrency": 5, "timeout_seconds": 300}}' > ./kode.json
+echo '{"subagent": {"max_concurrency": 5, "timeout_seconds": 300}}' > ./odek.json
 
 # CLI flag always wins
-kode run --model gpt-4o --base-url https://api.openai.com/v1 "task"
+odek run --model gpt-4o --base-url https://api.openai.com/v1 "task"
 ```

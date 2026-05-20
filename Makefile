@@ -1,4 +1,4 @@
-# kode — the fastest, minimalistic autonomous ReAct agent CLI in Go.
+# odek — the fastest, minimalistic autonomous ReAct agent CLI in Go.
 # https://github.com/BackendStack21/kode
 
 GO      := go
@@ -6,6 +6,7 @@ GOLINT  := $(shell command -v golangci-lint 2>/dev/null)
 GIT_TAG := $(shell git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0-dev")
 LDFLAGS := -s -w -X main.version=$(GIT_TAG)
 COVER   := coverage.out
+BINARY  := odek
 
 .PHONY: all
 all: test build
@@ -13,19 +14,19 @@ all: test build
 # ── Build ──────────────────────────────────────────────────────────────
 
 .PHONY: build
-build: ## Build the kode binary
-	$(GO) build -ldflags "$(LDFLAGS)" -o bin/kode ./cmd/kode
+build: ## Build the odek binary
+	$(GO) build -ldflags "$(LDFLAGS)" -o bin/$(BINARY) ./cmd/$(BINARY)
 
 .PHONY: install
-install: ## Install kode to $GOPATH/bin
-	$(GO) install -ldflags "$(LDFLAGS)" ./cmd/kode
+install: ## Install odek to $GOPATH/bin
+	$(GO) install -ldflags "$(LDFLAGS)" ./cmd/$(BINARY)
 
 .PHONY: build-all
 build-all: ## Cross-compile for linux, darwin (amd64 + arm64)
-	GOOS=linux   GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o bin/kode-linux-amd64   ./cmd/kode
-	GOOS=linux   GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o bin/kode-linux-arm64   ./cmd/kode
-	GOOS=darwin  GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o bin/kode-darwin-amd64  ./cmd/kode
-	GOOS=darwin  GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o bin/kode-darwin-arm64  ./cmd/kode
+	GOOS=linux   GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o bin/$(BINARY)-linux-amd64   ./cmd/$(BINARY)
+	GOOS=linux   GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o bin/$(BINARY)-linux-arm64   ./cmd/$(BINARY)
+	GOOS=darwin  GOARCH=amd64 $(GO) build -ldflags "$(LDFLAGS)" -o bin/$(BINARY)-darwin-amd64  ./cmd/$(BINARY)
+	GOOS=darwin  GOARCH=arm64 $(GO) build -ldflags "$(LDFLAGS)" -o bin/$(BINARY)-darwin-arm64  ./cmd/$(BINARY)
 
 # ── Test (no LLM) ──────────────────────────────────────────────────────
 

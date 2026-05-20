@@ -31,13 +31,13 @@ func mcpCmd(args []string) error {
 		case "--sandbox":
 			cliFlags.Sandbox = boolPtr(true)
 		case "--help", "-h":
-			fmt.Println(`Usage: kode mcp [flags]
+			fmt.Println(`Usage: odek mcp [flags]
 
-Start kode as an MCP server over stdio.
+Start odek as an MCP server over stdio.
 
-kode exposes all its built-in tools (shell, read/write files, search,
+odek exposes all its built-in tools (shell, read/write files, search,
 patch, browser) via the Model Context Protocol. Connect any MCP client
-(Claude Code, Cursor, etc.) to use kode's tools.
+(Claude Code, Cursor, etc.) to use odek's tools.
 
 Flags:
   --sandbox    Run shell commands inside Docker sandbox
@@ -115,7 +115,7 @@ Flags:
 	server := mcp.NewServer(version, nativeTools, os.Stdin, os.Stdout)
 
 	// Log startup to stderr (stdin/stdout are for MCP protocol)
-	fmt.Fprintf(os.Stderr, "kode mcp ⚡  MCP server starting (v%s)\n", version)
+	fmt.Fprintf(os.Stderr, "odek mcp ⚡  MCP server starting (v%s)\n", version)
 	fmt.Fprint(os.Stderr, "  Tools: ")
 	for i, t := range nativeTools {
 		if i > 0 {

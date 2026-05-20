@@ -1,6 +1,6 @@
 # Multi-Turn Sessions
 
-kode supports **multi-turn conversations** — save a session, continue it later, and maintain full conversation history across multiple agent runs.
+odek supports **multi-turn conversations** — save a session, continue it later, and maintain full conversation history across multiple agent runs.
 
 ## Session basics
 
@@ -10,24 +10,24 @@ Each session is stored as a JSON file in `~/.kode/sessions/<id>.json` with the f
 
 ```bash
 # Save the conversation as a session
-kode run --session "Refactor the auth module to use JWT"
+odek run --session "Refactor the auth module to use JWT"
 ```
 
 ### Continuing a session
 
 ```bash
 # Continue the most recent session
-kode continue "Now add refresh token support"
+odek continue "Now add refresh token support"
 
 # Continue a specific session by ID
-kode continue --id 20260518-abc123 "Add unit tests"
+odek continue --id 20260518-abc123 "Add unit tests"
 ```
 
 ### Session listing
 
 ```bash
 # List recent sessions (max 20)
-kode session list
+odek session list
 
 # Example output:
 # ID                     Turns Model                          Task
@@ -40,17 +40,17 @@ kode session list
 
 ```bash
 # Show the most recent session transcript
-kode session show
+odek session show
 
 # Show a specific session
-kode session show 20260518-abc123
+odek session show 20260518-abc123
 ```
 
 ### Deleting a session
 
 ```bash
 # Delete a single session
-kode session delete 20260518-abc123
+odek session delete 20260518-abc123
 ```
 
 ### Trimming a session
@@ -59,7 +59,7 @@ Keeps only the `n` most recent messages, always preserving the system prompt:
 
 ```bash
 # Keep last 10 messages (system + 9)
-kode session trim 20260518-abc123 10
+odek session trim 20260518-abc123 10
 # → Trimmed session 20260518-abc123: 50 → 10 messages (40 dropped)
 ```
 
@@ -69,11 +69,11 @@ Deletes all sessions whose `UpdatedAt` timestamp is older than N days:
 
 ```bash
 # Remove sessions untouched in 30+ days
-kode session cleanup 30
+odek session cleanup 30
 # → Cleaned up 3 session(s) older than 30 days.
 
 # Wipe every session
-kode session cleanup 0
+odek session cleanup 0
 # → Cleaned up 12 session(s) older than 0 days.
 ```
 
@@ -118,32 +118,32 @@ The `Session` struct has all public fields, enabling direct manipulation. This m
 
 ## Sandbox persistence
 
-When a session is created with `--sandbox`, the `sandbox` flag is stored in the session file. On resume (`kode continue` or `kode repl --id <id>`), the sandbox is automatically re-enabled even if the current config has it disabled:
+When a session is created with `--sandbox`, the `sandbox` flag is stored in the session file. On resume (`odek continue` or `odek repl --id <id>`), the sandbox is automatically re-enabled even if the current config has it disabled:
 
 ```bash
-kode run --session --sandbox "Install deps and build"
+odek run --session --sandbox "Install deps and build"
 # → session saved with sandbox=true
 
 # Later, in a different terminal without sandbox config:
-kode continue "Run the test suite"
+odek continue "Run the test suite"
 # → kode: session was sandboxed — enabling sandbox for this continuation
 ```
 
-This prevents accidentally escaping the sandbox on resume. The sandbox image/network/memory still come from the **current** config — only the toggle bit is persisted. To force-disable sandbox on resume, pass `kode continue` in a project with `"sandbox": false` in `./kode.json` and the session flag will be overridden by the explicit config.
+This prevents accidentally escaping the sandbox on resume. The sandbox image/network/memory still come from the **current** config — only the toggle bit is persisted. To force-disable sandbox on resume, pass `odek continue` in a project with `"sandbox": false` in `./odek.json` and the session flag will be overridden by the explicit config.
 
 ### REPL sandbox flags
 
-`kode repl` accepts the same sandbox CLI flags as `kode run`. You can start a sandboxed REPL session directly from the command line:
+`odek repl` accepts the same sandbox CLI flags as `odek run`. You can start a sandboxed REPL session directly from the command line:
 
 ```bash
 # Start a sandboxed REPL session
-kode repl --sandbox
+odek repl --sandbox
 
 # With custom image and network isolation
-kode repl --sandbox --sandbox-image node:20-alpine --sandbox-network none
+odek repl --sandbox --sandbox-image node:20-alpine --sandbox-network none
 
 # Resume a sandboxed session (sandbox auto-enabled)
-kode repl --id 20260518-abc123
+odek repl --id 20260518-abc123
 ```
 
 Sandbox state is saved with the session — resuming via `--id` auto-enables the sandbox container on startup.

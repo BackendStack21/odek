@@ -302,8 +302,8 @@
     <p class="sub"><span class="size">~8 MB</span> · zero direct dependencies.<br>Think, therefore act.</p>
 
     <div class="install-block">
-      <code>go install github.com/BackendStack21/kode/cmd/kode@latest</code>
-      <button class="copy-btn" onclick="copyText(this,'go install github.com/BackendStack21/kode/cmd/kode@latest')">📋 Copy</button>
+      <code>go install github.com/BackendStack21/kode/cmd/odek@latest</code>
+      <button class="copy-btn" onclick="copyText(this,'go install github.com/BackendStack21/kode/cmd/odek@latest')">📋 Copy</button>
       <a class="btn" href="#install">Get Started →</a>
     </div>
   </div>
@@ -355,7 +355,7 @@
       <!-- Slide 1 -->
       <div class="slide active">
         <span class="info"># Quick file query</span><br>
-        <span class="prompt">$ kode run "How many lines in go.mod?"</span><br>
+        <span class="prompt">$ odek run "How many lines in go.mod?"</span><br>
         <span class="info">═══ Iter 1/15 ═══  [456 in · 21 out · 0.8s]</span><br>
         <span class="output">The <strong>go.mod</strong> file has 3 lines:</span><br>
         <span class="output">module github.com/BackendStack21/kode</span><br>
@@ -367,7 +367,7 @@
       <!-- Slide 2 -->
       <div class="slide">
         <span class="info"># Multi-turn session</span><br>
-        <span class="prompt">$ kode run --session "Refactor the auth module"</span><br>
+        <span class="prompt">$ odek run --session "Refactor the auth module"</span><br>
         <span class="info">═══ Iter 1/8 ═══  [521 in · 342 out · 3.2s]</span><br>
         <span class="output">I'll refactor the auth module. Let me start by reading the current code:</span><br>
         <span class="info">🔧 shell read_file auth.go</span><br>
@@ -381,7 +381,7 @@
       <!-- Slide 3 -->
       <div class="slide">
         <span class="info"># Sandbox mode</span><br>
-        <span class="prompt">$ kode run --sandbox "Check if curl is installed"</span><br>
+        <span class="prompt">$ odek run --sandbox "Check if curl is installed"</span><br>
         <span class="info">🔒 Sandbox: ephemeral container started</span><br>
         <span class="info">═══ Iter 1/4 ═══  [389 in · 156 out · 2.1s]</span><br>
         <span class="output">Running inside a fresh Docker container:</span><br>
@@ -395,7 +395,7 @@
       <!-- Slide 4 -->
       <div class="slide">
         <span class="info"># Parallel sub-agents</span><br>
-        <span class="prompt">$ kode run "Audit all Go files for security issues"</span><br>
+        <span class="prompt">$ odek run "Audit all Go files for security issues"</span><br>
         <span class="info">🔄 Delegating 3 sub-agents...</span><br>
         <span class="info">  └─ agent-1: scan imports (os/exec, crypto, net)</span><br>
         <span class="info">  └─ agent-2: check error handling</span><br>
@@ -410,8 +410,8 @@
       <!-- Slide 5 -->
       <div class="slide">
         <span class="info"># MCP server mode</span><br>
-        <span class="prompt">$ kode mcp</span><br>
-        <span class="info">kode mcp ⚡  MCP server starting (v0.14.2)</span><br>
+        <span class="prompt">$ odek mcp</span><br>
+        <span class="info">odek mcp ⚡  MCP server starting (v0.14.2)</span><br>
         <span class="output">Connected by Claude Code. Exposing 8 tools:</span><br>
         <span class="output">  • read_file    — read files with line numbers</span><br>
         <span class="output">  • write_file   — write files safely</span><br>
@@ -424,8 +424,8 @@
       <!-- Slide 6 -->
       <div class="slide">
         <span class="info"># Web UI with token stats</span><br>
-        <span class="prompt">$ kode serve --addr :8080</span><br>
-        <span class="info">kode serve ⚡  http://[::]:8080</span><br>
+        <span class="prompt">$ odek serve --addr :8080</span><br>
+        <span class="info">odek serve ⚡  http://[::]:8080</span><br>
         <span class="output">Open in browser. @-completion for files.</span><br>
         <span class="info">┌─ Session: 20260520-xyz ───────────────────────┐</span><br>
         <span class="info">│  ∑ ⌂ 1,248 context · ⎇ 342 output            │</span><br>
@@ -451,7 +451,7 @@
     <div class="card">
       <div class="icon">🔒</div>
       <h4>Sandboxed Execution</h4>
-      <p><code>kode run --sandbox</code> — every session spawns an isolated Docker container. No network, no host mounts beyond the working directory, zero capabilities, destroyed on exit.</p>
+      <p><code>odek run --sandbox</code> — every session spawns an isolated Docker container. No network, no host mounts beyond the working directory, zero capabilities, destroyed on exit.</p>
     </div>
 
     <div class="card">
@@ -475,13 +475,13 @@
     <div class="card">
       <div class="icon">🔗</div>
       <h4>MCP Two-Way</h4>
-      <p><strong>Server:</strong> <code>kode mcp</code> exposes native tools to Claude Code, Cursor, any MCP client. <strong>Client:</strong> kode connects to external MCP servers and makes their tools available to the agent.</p>
+      <p><strong>Server:</strong> <code>odek mcp</code> exposes native tools to Claude Code, Cursor, any MCP client. <strong>Client:</strong> kode connects to external MCP servers and makes their tools available to the agent.</p>
     </div>
 
     <div class="card">
       <div class="icon">🌐</div>
       <h4>Web UI</h4>
-      <p><code>kode serve</code> — browser-based agent with <code>@</code> resource completion, WebSocket streaming, token economics, inline loading, and a full IDE-style console. Built from Go's embed — zero npm.</p>
+      <p><code>odek serve</code> — browser-based agent with <code>@</code> resource completion, WebSocket streaming, token economics, inline loading, and a full IDE-style console. Built from Go's embed — zero npm.</p>
     </div>
 
     <div class="card">
@@ -532,9 +532,9 @@
       <span class="n">2</span>
       <span>
         Install:
-        <button class="copy-btn" onclick="copyText(this,'go install github.com/BackendStack21/kode/cmd/kode@latest')" style="margin-left:8px;">📋 Copy</button>
+        <button class="copy-btn" onclick="copyText(this,'go install github.com/BackendStack21/kode/cmd/odek@latest')" style="margin-left:8px;">📋 Copy</button>
         <br>
-        <code style="margin-top:6px;display:inline-block;">go install github.com/BackendStack21/kode/cmd/kode@latest</code>
+        <code style="margin-top:6px;display:inline-block;">go install github.com/BackendStack21/kode/cmd/odek@latest</code>
       </span>
     </li>
     <li>
@@ -543,7 +543,7 @@
     </li>
     <li>
       <span class="n">4</span>
-      <span>Run your first task: <code>kode run "How many lines in go.mod?"</code></span>
+      <span>Run your first task: <code>odek run "How many lines in go.mod?"</code></span>
     </li>
   </ul>
 
@@ -553,11 +553,11 @@
   </p>
 
   <pre><code><span class="hljs-comment"># Download to /usr/local/bin (may need sudo)</span>
-curl -sfLo /usr/local/bin/kode https://github.com/BackendStack21/kode/releases/latest/download/kode-$(uname -s | tr <span class="hljs-string">'[:upper:]'</span> <span class="hljs-string">'[:lower:]'</span>)-$(uname -m | sed <span class="hljs-string">'s/x86_64/amd64/;s/aarch64/arm64/'</span>) && chmod +x /usr/local/bin/kode
+curl -sfLo /usr/local/bin/odek https://github.com/BackendStack21/kode/releases/latest/download/odek-$(uname -s | tr <span class="hljs-string">'[:upper:]'</span> <span class="hljs-string">'[:lower:]'</span>)-$(uname -m | sed <span class="hljs-string">'s/x86_64/amd64/;s/aarch64/arm64/'</span>) && chmod +x /usr/local/bin/odek
 
 <span class="hljs-comment"># Or to current directory</span>
-curl -sfLO https://github.com/BackendStack21/kode/releases/latest/download/kode-$(uname -s | tr <span class="hljs-string">'[:upper:]'</span> <span class="hljs-string">'[:lower:]'</span>)-$(uname -m | sed <span class="hljs-string">'s/x86_64/amd64/;s/aarch64/arm64/'</span>) && chmod +x kode-* && ./kode-* version</code>
-<button class="clip" onclick="copyText(this,'curl -sfLo /usr/local/bin/kode https://github.com/BackendStack21/kode/releases/latest/download/kode-$(uname -s | tr \'[:upper:]\' \'[:lower:]\')-$(uname -m | sed \'s/x86_64/amd64/;s/aarch64/arm64/\') && chmod +x /usr/local/bin/kode')">📋 Copy</button>
+curl -sfLO https://github.com/BackendStack21/kode/releases/latest/download/odek-$(uname -s | tr <span class="hljs-string">'[:upper:]'</span> <span class="hljs-string">'[:lower:]'</span>)-$(uname -m | sed <span class="hljs-string">'s/x86_64/amd64/;s/aarch64/arm64/'</span>) && chmod +x odek-* && ./odek-* version</code>
+<button class="clip" onclick="copyText(this,'curl -sfLo /usr/local/bin/odek https://github.com/BackendStack21/kode/releases/latest/download/odek-$(uname -s | tr \'[:upper:]\' \'[:lower:]\')-$(uname -m | sed \'s/x86_64/amd64/;s/aarch64/arm64/\') && chmod +x /usr/local/bin/odek')">📋 Copy</button>
 </pre>
 
   <div class="platform-tags">
@@ -568,16 +568,16 @@ curl -sfLO https://github.com/BackendStack21/kode/releases/latest/download/kode-
   </div>
 
   <pre><code><span class="hljs-comment"># Results instantly</span>
-$ kode run <span class="hljs-string">"How many lines in go.mod?"</span>
+$ odek run <span class="hljs-string">"How many lines in go.mod?"</span>
 <span class="hljs-number">3</span> lines
 
 <span class="hljs-comment"># With session persistence</span>
-$ kode run --session <span class="hljs-string">"Refactor the auth module"</span>
-$ kode continue <span class="hljs-string">"Now add error handling"</span>
+$ odek run --session <span class="hljs-string">"Refactor the auth module"</span>
+$ odek continue <span class="hljs-string">"Now add error handling"</span>
 
 <span class="hljs-comment"># Different provider, same binary</span>
-$ kode run --model gpt-4o --base-url https://api.openai.com/v1 <span class="hljs-string">"Explain this"</span></code>
-<button class="clip" onclick="copyText(this,'$ kode run \"How many lines in go.mod?\"\n3 lines\n\n$ kode run --session \"Refactor the auth module\"\n$ kode continue \"Now add error handling\"\n\n$ kode run --model gpt-4o --base-url https://api.openai.com/v1 \"Explain this\"')">📋 Copy</button>
+$ odek run --model gpt-4o --base-url https://api.openai.com/v1 <span class="hljs-string">"Explain this"</span></code>
+<button class="clip" onclick="copyText(this,'$ odek run \"How many lines in go.mod?\"\n3 lines\n\n$ odek run --session \"Refactor the auth module\"\n$ odek continue \"Now add error handling\"\n\n$ odek run --model gpt-4o --base-url https://api.openai.com/v1 \"Explain this\"')">📋 Copy</button>
 </pre>
 </section>
 
@@ -587,21 +587,21 @@ $ kode run --model gpt-4o --base-url https://api.openai.com/v1 <span class="hljs
 
   <h3>Commands</h3>
   <ul class="cmd-list">
-    <li><span class="cmd">kode run &lt;task&gt;</span><span class="desc">Single-shot task</span></li>
-    <li><span class="cmd">kode run --session &lt;task&gt;</span><span class="desc">Save conversation as session</span></li>
-    <li><span class="cmd">kode continue [--id &lt;id&gt;] &lt;task&gt;</span><span class="desc">Resume a saved session</span></li>
-    <li><span class="cmd">kode repl</span><span class="desc">Interactive multi-turn REPL</span></li>
-    <li><span class="cmd">kode session list</span><span class="desc">List recent sessions</span></li>
-    <li><span class="cmd">kode session show [id]</span><span class="desc">View session transcript</span></li>
-    <li><span class="cmd">kode session delete &lt;id&gt;</span><span class="desc">Delete a session</span></li>
-    <li><span class="cmd">kode session cleanup &lt;days&gt;</span><span class="desc">Delete old sessions</span></li>
-    <li><span class="cmd">kode skill list</span><span class="desc">List available skills</span></li>
-    <li><span class="cmd">kode skill import &lt;uri&gt;</span><span class="desc">Import skill from URL or file</span></li>
-    <li><span class="cmd">kode skill curate</span><span class="desc">Audit skill quality and overlap</span></li>
-    <li><span class="cmd">kode serve [--addr :8080]</span><span class="desc">Start Web UI server</span></li>
-    <li><span class="cmd">kode subagent --goal &lt;s&gt;</span><span class="desc">Run a focused sub-task</span></li>
-    <li><span class="cmd">kode mcp [--sandbox]</span><span class="desc">Start MCP server</span></li>
-    <li><span class="cmd">kode init [--global]</span><span class="desc">Create config file</span></li>
+    <li><span class="cmd">odek run &lt;task&gt;</span><span class="desc">Single-shot task</span></li>
+    <li><span class="cmd">odek run --session &lt;task&gt;</span><span class="desc">Save conversation as session</span></li>
+    <li><span class="cmd">odek continue [--id &lt;id&gt;] &lt;task&gt;</span><span class="desc">Resume a saved session</span></li>
+    <li><span class="cmd">odek repl</span><span class="desc">Interactive multi-turn REPL</span></li>
+    <li><span class="cmd">odek session list</span><span class="desc">List recent sessions</span></li>
+    <li><span class="cmd">odek session show [id]</span><span class="desc">View session transcript</span></li>
+    <li><span class="cmd">odek session delete &lt;id&gt;</span><span class="desc">Delete a session</span></li>
+    <li><span class="cmd">odek session cleanup &lt;days&gt;</span><span class="desc">Delete old sessions</span></li>
+    <li><span class="cmd">odek skill list</span><span class="desc">List available skills</span></li>
+    <li><span class="cmd">odek skill import &lt;uri&gt;</span><span class="desc">Import skill from URL or file</span></li>
+    <li><span class="cmd">odek skill curate</span><span class="desc">Audit skill quality and overlap</span></li>
+    <li><span class="cmd">odek serve [--addr :8080]</span><span class="desc">Start Web UI server</span></li>
+    <li><span class="cmd">odek subagent --goal &lt;s&gt;</span><span class="desc">Run a focused sub-task</span></li>
+    <li><span class="cmd">odek mcp [--sandbox]</span><span class="desc">Start MCP server</span></li>
+    <li><span class="cmd">odek init [--global]</span><span class="desc">Create config file</span></li>
   </ul>
 
   <h3>Key Flags</h3>
@@ -634,7 +634,7 @@ $ kode run --model gpt-4o --base-url https://api.openai.com/v1 <span class="hljs
     <a href="https://raw.githubusercontent.com/BackendStack21/kode/main/docs/SECURITY.md">Security<span>Prompt injection defense, threat model</span></a>
     <a href="https://raw.githubusercontent.com/BackendStack21/kode/main/docs/SUBAGENTS.md">Sub-Agents<span>Task decomposition, delegation protocol</span></a>
     <a href="https://raw.githubusercontent.com/BackendStack21/kode/main/docs/LEARNING.md">Self-Learning<span>Skill detection, LLM enhancement, curation</span></a>
-    <a href="https://raw.githubusercontent.com/BackendStack21/kode/main/docs/WEBUI.md">Web UI<span>kode serve, WebSocket protocol, @ resources</span></a>
+    <a href="https://raw.githubusercontent.com/BackendStack21/kode/main/docs/WEBUI.md">Web UI<span>odek serve, WebSocket protocol, @ resources</span></a>
     <a href="https://raw.githubusercontent.com/BackendStack21/kode/main/docs/DEVELOPMENT.md">Development<span>Building, testing, contributing</span></a>
   </div>
 </section>
@@ -647,8 +647,8 @@ $ kode run --model gpt-4o --base-url https://api.openai.com/v1 <span class="hljs
     Go install and go.
   </p>
   <div class="install-block cta-block">
-    <code>go install github.com/BackendStack21/kode/cmd/kode@latest</code>
-    <button class="copy-btn" onclick="copyText(this,'go install github.com/BackendStack21/kode/cmd/kode@latest')">📋 Copy</button>
+    <code>go install github.com/BackendStack21/kode/cmd/odek@latest</code>
+    <button class="copy-btn" onclick="copyText(this,'go install github.com/BackendStack21/kode/cmd/odek@latest')">📋 Copy</button>
     <a class="btn" href="https://github.com/BackendStack21/kode" target="_blank">GitHub →</a>
   </div>
 </section>

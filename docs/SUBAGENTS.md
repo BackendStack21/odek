@@ -1,10 +1,10 @@
 # Task Decomposition & Sub-Agents
 
-kode can **spawn focused sub-agent OS processes** for parallel, isolated work on independent sub-tasks. Each sub-agent is its own operating system process — not a goroutine, not a lightweight thread — with its own heap, its own config, and its own context window.
+odek can **spawn focused sub-agent OS processes** for parallel, isolated work on independent sub-tasks. Each sub-agent is its own operating system process — not a goroutine, not a lightweight thread — with its own heap, its own config, and its own context window.
 
 ```bash
 # Spawn a sub-agent directly
-kode subagent --goal "Build JWT auth middleware in internal/middleware/auth.go" \
+odek subagent --goal "Build JWT auth middleware in internal/middleware/auth.go" \
   --context "Uses gin, user model at internal/models/user.go"
 
 # Machine-readable JSON on stdout, human-readable progress on stderr
@@ -36,7 +36,7 @@ Sub-agents use OS processes (`os/exec`) — real isolation without Docker overhe
 │   ────────────────────           │
 │   • Writes each task to temp     │
 │     file (avoids CLI arg limits) │
-│   • Spawns kode subagent         │
+│   • Spawns odek subagent         │
 │     per task via exec.Command    │
 │   • Semaphore for concurrency    │
 │   • Collects JSON from stdout    │
@@ -61,7 +61,7 @@ Each sub-agent gets a **fresh context** — no parent history, no conversation s
 
 ## Tool: `delegate_tasks`
 
-The `delegate_tasks` tool is available in all kode modes (CLI, REPL, Web UI). The agent calls it automatically when it identifies independent sub-tasks.
+The `delegate_tasks` tool is available in all odek modes (CLI, REPL, Web UI). The agent calls it automatically when it identifies independent sub-tasks.
 
 ### Schema
 
@@ -118,34 +118,34 @@ On failure:
 
 1. **Deserializes** the task array from the LLM's tool call
 2. **Validates**: rejects empty, >8 tasks, or malformed JSON
-3. **Writes** each task to a temp file (`kode-task-*.json`) — avoids CLI argument length limits (useful for 100KB+ context)
-4. **Spawns** `kode subagent --task <file> --quiet` for each task
+3. **Writes** each task to a temp file (`odek-task-*.json`) — avoids CLI argument length limits (useful for 100KB+ context)
+4. **Spawns** `odek subagent --task <file> --quiet` for each task
 5. **Limits concurrency** via a buffered channel semaphore (default: 3, max: configurable)
 6. **Collects** JSON result from each subprocess stdout
 7. **Returns** a formatted summary with all sub-agent results tagged by task number
 
-## CLI: `kode subagent`
+## CLI: `odek subagent`
 
 Direct invocation for testing and debugging:
 
 ```bash
 # Basic
-kode subagent --goal "List files in /tmp"
+odek subagent --goal "List files in /tmp"
 
 # With context
-kode subagent --goal "Build auth middleware" --context "Uses gin framework"
+odek subagent --goal "Build auth middleware" --context "Uses gin framework"
 
 # From file (for large context)
-kode subagent --task /path/to/task.json
+odek subagent --task /path/to/task.json
 
 # With timeout and iteration limits
-kode subagent --goal "Refactor main.go" --timeout 60 --max-iter 10
+odek subagent --goal "Refactor main.go" --timeout 60 --max-iter 10
 
 # Silent mode (suppresses emoji progress on stderr)
-kode subagent --goal "Run tests" --quiet
+odek subagent --goal "Run tests" --quiet
 
 # With parent session ID (for cross-session context)
-kode subagent --goal "Continue refactoring" --parent-session "20260519-abc123"
+odek subagent --goal "Continue refactoring" --parent-session "20260519-abc123"
 ```
 
 ### Exit codes
@@ -290,11 +290,11 @@ The temp file written by `delegate_tasks` carries the system prompt:
 }
 ```
 
-When invoked directly via `kode subagent --goal "..."`, the `--goal` path uses `buildSubagentPrompt()` (no manual override) while `--task <file>` reads the `system` field from the JSON file.
+When invoked directly via `odek subagent --goal "..."`, the `--goal` path uses `buildSubagentPrompt()` (no manual override) while `--task <file>` reads the `system` field from the JSON file.
 
 ## Configuration
 
-Config in `kode.json`:
+Config in `odek.json`:
 
 ```json
 {
@@ -360,9 +360,9 @@ delegate_tasks({ tasks: [
 
 3 sub-agents run in parallel:
 
-  SA1: kode subagent --task /tmp/kode-task-001.json --quiet
-  SA2: kode subagent --task /tmp/kode-task-002.json --quiet
-  SA3: kode subagent --task /tmp/kode-task-003.json --quiet
+  SA1: odek subagent --task /tmp/kode-task-001.json --quiet
+  SA2: odek subagent --task /tmp/kode-task-002.json --quiet
+  SA3: odek subagent --task /tmp/kode-task-003.json --quiet
 
 All complete in ~5s (2 batches of 2, max_concurrency=3):
 

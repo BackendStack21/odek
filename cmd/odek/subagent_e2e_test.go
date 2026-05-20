@@ -55,7 +55,7 @@ func TestMain(m *testing.M) {
 	cmd := exec.Command("go", "build",
 		"-ldflags", "-X main.version=v0.0.0-e2e",
 		"-o", e2eBinary,
-		"/root/projects/kode/cmd/kode/",
+			"/root/projects/kode/cmd/odek/",
 	)
 	cmd.Dir = "/root/projects/kode"
 	stderr := &bytes.Buffer{}
@@ -103,11 +103,11 @@ func TestE2E_BinaryExists(t *testing.T) {
 
 	output := outBuf.String() + errBuf.String()
 	if !strings.Contains(output, "subagent") {
-		t.Fatalf("kode usage should mention subagent, output:\n%s", output)
+		t.Fatalf("odek usage should mention subagent, output:\n%s", output)
 	}
 	// Must exit non-zero when no subcommand given
 	if err == nil {
-		t.Error("kode without args should exit non-zero")
+		t.Error("odek without args should exit non-zero")
 	}
 }
 

@@ -10,7 +10,7 @@ go install github.com/BackendStack21/kode/cmd/kode@latest
 
 # Use (set DEEPSEEK_API_KEY or OPENAI_API_KEY)
 export DEEPSEEK_API_KEY=sk-...
-kode run "How many lines in go.mod?"
+odek run "How many lines in go.mod?"
 # → 3 lines
 ```
 
@@ -33,10 +33,10 @@ kode is not a framework. It's a **runtime** — the smallest possible surface ar
 ## Strategic Features
 
 ### 🔒 Sandboxed Execution
-`kode run --sandbox` — every session spawns an isolated Docker container. No network, no host mounts beyond the working directory, zero capabilities, destroyed on exit. Full security model in [docs/SANDBOXING.md](docs/SANDBOXING.md).
+`odek run --sandbox` — every session spawns an isolated Docker container. No network, no host mounts beyond the working directory, zero capabilities, destroyed on exit. Full security model in [docs/SANDBOXING.md](docs/SANDBOXING.md).
 
 ### 🧩 Sub-Agent Delegation
-Parallel OS-process sub-agents via `delegate_tasks`. True isolation — each sub-agent is a fresh `kode subagent` process with its own config, tools, and termination timeout. Up to 8 concurrent workers. [docs/SUBAGENTS.md](docs/SUBAGENTS.md)
+Parallel OS-process sub-agents via `delegate_tasks`. True isolation — each sub-agent is a fresh `odek subagent` process with its own config, tools, and termination timeout. Up to 8 concurrent workers. [docs/SUBAGENTS.md](docs/SUBAGENTS.md)
 
 ### 🧠 Skill System (on by default)
 Skill-matched `SKILL.md` files load on-demand. Auto-learns from patterns every session — detects multi-step procedures, error recoveries, repeated actions, and user corrections. **LLM-enhanced**: each detected pattern is enriched with an LLM-generated name, description, trigger keywords, and structured body with overview, steps, pitfalls, and verification sections. Use `--no-learn` to disable. Import skills from any URI with automatic LLM risk assessment. [docs/CLI.md#skills](docs/CLI.md#skills)
@@ -45,19 +45,19 @@ Skill-matched `SKILL.md` files load on-demand. Auto-learns from patterns every s
 Three tiers: **facts** (agent-managed durable entries), **session buffer** (auto-appended turn summaries), **episodes** (LLM-extracted knowledge from past sessions). Merge-on-write via go-vector RandomProjections — cosine >0.7 auto-merges, <0.3 auto-adds. Saves ~80% LLM calls. [docs/MEMORY.md](docs/MEMORY.md)
 
 ### 🔧 Multi-Turn Sessions
-Save, resume, list, trim, and clean up conversations. Sessions persist as JSON in `~/.kode/sessions/`. Continue any session with `kode continue`. [docs/SESSIONS.md](docs/SESSIONS.md)
+Save, resume, list, trim, and clean up conversations. Sessions persist as JSON in `~/.kode/sessions/`. Continue any session with `odek continue`. [docs/SESSIONS.md](docs/SESSIONS.md)
 
 ### 🏗️ Layerable Config
-Four-layer priority chain: `global (~/kode/config.json)` → `project (./kode.json)` → `KODE_*` env vars → CLI flags. `${VAR}` substitution in config files. [docs/CONFIG.md](docs/CONFIG.md)
+Four-layer priority chain: `global (~/kode/config.json)` → `project (./odek.json)` → `KODE_*` env vars → CLI flags. `${VAR}` substitution in config files. [docs/CONFIG.md](docs/CONFIG.md)
 
 ### 🔌 LLM-Agnostic
 Any OpenAI-compatible endpoint: Deepseek, OpenAI, Anthropic, Ollama, vLLM, Groq, Together, Fireworks — anything that speaks `/chat/completions`. Per-model profiles for thinking depth and context windows. [docs/PROVIDERS.md](docs/PROVIDERS.md)
 
 ### 🌐 Web UI
-`kode serve` — browser-based agent with `@` resource completion (`@file.go`, `@sess:abc123`), WebSocket streaming, and a full IDE-style console. [docs/WEBUI.md](docs/WEBUI.md)
+`odek serve` — browser-based agent with `@` resource completion (`@file.go`, `@sess:abc123`), WebSocket streaming, and a full IDE-style console. [docs/WEBUI.md](docs/WEBUI.md)
 
 ### 🔗 MCP (Two-Way)
-**Server** (`kode mcp`) — expose kode's native tools (shell, read/write/search files, patch, browser) to Claude Code, Cursor, and any MCP client. **Client** (`mcp_servers` config) — kode connects to external MCP servers (Playwright, Fetch, GitHub, SQLite, etc.) and makes their tools available to the agent as `<server>__<tool>`. Both directions in one binary. [docs/MCP.md](docs/MCP.md)
+**Server** (`odek mcp`) — expose kode's native tools (shell, read/write/search files, patch, browser) to Claude Code, Cursor, and any MCP client. **Client** (`mcp_servers` config) — kode connects to external MCP servers (Playwright, Fetch, GitHub, SQLite, etc.) and makes their tools available to the agent as `<server>__<tool>`. Both directions in one binary. [docs/MCP.md](docs/MCP.md)
 
 ### 🔍 Native Tools
 Built-in `read_file`, `write_file`, `search_files`, `patch`, `shell`, and `browser` tools. All gated by a unified security layer (`dangerous` config) — classify operations as `allow` / `deny` / `prompt` per risk class. No third-party dependencies. [docs/SECURITY.md](docs/SECURITY.md)
@@ -68,23 +68,23 @@ Built-in `read_file`, `write_file`, `search_files`, `patch`, `shell`, and `brows
 
 ```bash
 # Single-shot task
-kode run "List the files"
+odek run "List the files"
 
 # With session persistence
-kode run --session "Refactor auth module"
-kode continue "Add rate limiting"
+odek run --session "Refactor auth module"
+odek continue "Add rate limiting"
 
 # Sandboxed (Docker isolation)
-kode run --sandbox "npm audit"
+odek run --sandbox "npm audit"
 
 # Different model
-kode run --model gpt-4o --base-url https://api.openai.com/v1 "Explain this"
+odek run --model gpt-4o --base-url https://api.openai.com/v1 "Explain this"
 
 # With skill learning (on by default — use --no-learn to disable)
-kode run "Set up a Go project with CI"
+odek run "Set up a Go project with CI"
 
 # Interactive REPL
-kode repl
+odek repl
 ```
 
 ---
@@ -95,25 +95,25 @@ kode repl
 
 | Command | What it does |
 |---------|-------------|
-| `kode run <task>` | Single-shot task |
-| `kode run --session <task>` | Save conversation as session |
-| `kode continue [--id <id>] <task>` | Resume a saved session |
-| `kode repl` | Interactive multi-turn REPL |
-| `kode session list` | List recent sessions |
-| `kode session show [id]` | View session transcript |
-| `kode session delete <id>` | Delete a session |
-| `kode session trim <id> <n>` | Keep last n messages |
-| `kode session cleanup <days>` | Delete old sessions |
-| `kode skill list` | List available skills |
-| `kode skill view <name>` | View skill content |
-| `kode skill delete <name>` | Delete a skill |
-| `kode skill import <uri>` | Import skill from URL |
-| `kode skill curate` | Audit skill quality/overlap |
-| `kode serve [--addr :8080]` | Start Web UI server |
-| `kode subagent --goal <string>` | Run a focused sub-task |
-| `kode init [--global]` | Create config file |
-| `kode mcp [--sandbox]` | Start MCP server — expose tools to Claude Code |
-| `kode version` | Print version |
+| `odek run <task>` | Single-shot task |
+| `odek run --session <task>` | Save conversation as session |
+| `odek continue [--id <id>] <task>` | Resume a saved session |
+| `odek repl` | Interactive multi-turn REPL |
+| `odek session list` | List recent sessions |
+| `odek session show [id]` | View session transcript |
+| `odek session delete <id>` | Delete a session |
+| `odek session trim <id> <n>` | Keep last n messages |
+| `odek session cleanup <days>` | Delete old sessions |
+| `odek skill list` | List available skills |
+| `odek skill view <name>` | View skill content |
+| `odek skill delete <name>` | Delete a skill |
+| `odek skill import <uri>` | Import skill from URL |
+| `odek skill curate` | Audit skill quality/overlap |
+| `odek serve [--addr :8080]` | Start Web UI server |
+| `odek subagent --goal <string>` | Run a focused sub-task |
+| `odek init [--global]` | Create config file |
+| `odek mcp [--sandbox]` | Start MCP server — expose tools to Claude Code |
+| `odek version` | Print version |
 
 ### Key Flags
 
@@ -144,7 +144,7 @@ kode repl
 | [Sandboxing](docs/SANDBOXING.md) | Docker isolation model, config, security hardening |
 | [Security](docs/SECURITY.md) | Threat model, prompt injection defense, sandbox model |
 | [Sub-Agents](docs/SUBAGENTS.md) | Task decomposition, delegation tool, subagent protocol |
-| [Web UI](docs/WEBUI.md) | `kode serve`, WebSocket protocol, `@` resource resolution |
+| [Web UI](docs/WEBUI.md) | `odek serve`, WebSocket protocol, `@` resource resolution |
 | [Skills](docs/CLI.md#skills) | Trigger-matched skills, learning, import, curation |
 | [MCP](docs/MCP.md) | Serve tools to Claude Code + connect to external MCP servers |
 | [Development](docs/DEVELOPMENT.md) | Building, testing, contributing, project structure |

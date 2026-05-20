@@ -1,35 +1,35 @@
 # Providers & Models
 
-kode is provider-agnostic. Any endpoint that speaks the OpenAI `/chat/completions` protocol works.
+odek is provider-agnostic. Any endpoint that speaks the OpenAI `/chat/completions` protocol works.
 
 ## Deepseek
 
 ```bash
 export DEEPSEEK_API_KEY=sk-...
-kode run --model deepseek-chat "task"
+odek run --model deepseek-chat "task"
 ```
 
 ## OpenAI
 
 ```bash
 export OPENAI_API_KEY=sk-...
-kode run --model gpt-4o --base-url https://api.openai.com/v1 "task"
+odek run --model gpt-4o --base-url https://api.openai.com/v1 "task"
 ```
 
 ## Custom / self-hosted
 
-Any endpoint that accepts `POST /chat/completions` with an OpenAI-compatible JSON body works — Ollama, vLLM, LiteLLM, etc. No provider-specific code in kode.
+Any endpoint that accepts `POST /chat/completions` with an OpenAI-compatible JSON body works — Ollama, vLLM, LiteLLM, etc. No provider-specific code in odek.
 
 ```bash
 export OPENAI_API_KEY=not-needed
-kode run --model llama3 --base-url http://localhost:11434/v1 "task"
+odek run --model llama3 --base-url http://localhost:11434/v1 "task"
 ```
 
 ---
 
 ## Model Profiles
 
-kode ships with built-in **model profiles** that automatically apply sensible defaults based on the model name. Profiles are matched by longest prefix.
+odek ships with built-in **model profiles** that automatically apply sensible defaults based on the model name. Profiles are matched by longest prefix.
 
 | Model | Family | Default Thinking | Timeout | Max Context | Best For |
 |-------|--------|-----------------|---------|-------------|----------|
@@ -66,20 +66,20 @@ No changes to the LLM client, loop, or CLI parsing needed.
 
 ```bash
 # DeepSeek v4 Pro — thinking enabled, 180s timeout, 1M context
-kode run --model deepseek-v4-pro "Design a distributed consensus algorithm"
+odek run --model deepseek-v4-pro "Design a distributed consensus algorithm"
 
 # DeepSeek v4 Flash — no thinking, 90s timeout, 128K
-kode run --model deepseek-v4-flash "List the files"
+odek run --model deepseek-v4-flash "List the files"
 
 # Override profile default
-kode run --model deepseek-v4-pro --thinking disabled "Quick status check"
+odek run --model deepseek-v4-pro --thinking disabled "Quick status check"
 ```
 
 ---
 
 ## Thinking Levels
 
-The `--thinking` flag controls reasoning depth. kode auto-maps to the provider's native format.
+The `--thinking` flag controls reasoning depth. odek auto-maps to the provider's native format.
 
 | Value | Deepseek sends | OpenAI o-series sends |
 |-------|---------------|----------------------|
@@ -92,17 +92,17 @@ The `--thinking` flag controls reasoning depth. kode auto-maps to the provider's
 
 ```bash
 # DeepSeek v4 Pro — profile auto-enables thinking
-kode run --model deepseek-v4-pro "Explain monads"
+odek run --model deepseek-v4-pro "Explain monads"
 
 # OpenAI o1 — deep reasoning
-kode run --model o1 --base-url https://api.openai.com/v1 --thinking high "Optimize this algorithm"
+odek run --model o1 --base-url https://api.openai.com/v1 --thinking high "Optimize this algorithm"
 ```
 
 ---
 
 ## Context Window Management
 
-kode automatically trims conversation history to stay within each model's context window.
+odek automatically trims conversation history to stay within each model's context window.
 
 ### How it works
 
