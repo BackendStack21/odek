@@ -752,13 +752,17 @@ func setTestEnv(t *testing.T, llmBaseURL string) func() {
 	origOAI := os.Getenv("OPENAI_API_KEY")
 	origKBS := os.Getenv("ODEK_BASE_URL")
 	origHome := os.Getenv("HOME")
+	homeDir := t.TempDir()
 
 	os.Setenv("DEEPSEEK_API_KEY", "sk-mock")
 	os.Unsetenv("OPENAI_API_KEY")
 	os.Setenv("ODEK_BASE_URL", llmBaseURL)
-	os.Setenv("HOME", t.TempDir())
+	os.Setenv("HOME", homeDir)
 
 	return func() {
+		// Clean up session files before Go removes the temp dir
+		sessionDir := filepath.Join(homeDir, ".odek", "sessions")
+		os.RemoveAll(sessionDir)
 		os.Setenv("DEEPSEEK_API_KEY", origDS)
 		os.Setenv("OPENAI_API_KEY", origOAI)
 		os.Setenv("ODEK_BASE_URL", origKBS)
@@ -770,8 +774,14 @@ func setTestEnv(t *testing.T, llmBaseURL string) func() {
 func newTestSessionStore(t *testing.T) *session.Store {
 	t.Helper()
 	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", t.TempDir())
-	t.Cleanup(func() { os.Setenv("HOME", origHome) })
+	homeDir := t.TempDir()
+	os.Setenv("HOME", homeDir)
+	t.Cleanup(func() {
+		// Clean up session files before Go removes the temp dir
+		sessionDir := filepath.Join(homeDir, ".odek", "sessions")
+		os.RemoveAll(sessionDir)
+		os.Setenv("HOME", origHome)
+	})
 	store, err := session.NewStore()
 	if err != nil {
 		t.Fatalf("session.NewStore: %v", err)
