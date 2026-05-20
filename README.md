@@ -33,7 +33,7 @@ odek is not a framework. It's a **runtime** — the smallest possible surface ar
 ## Strategic Features
 
 ### 🔒 Sandboxed Execution
-`odek run --sandbox` — every session spawns an isolated Docker container. No network, no host mounts beyond the working directory, zero capabilities, destroyed on exit. Full security model in [docs/SANDBOXING.md](docs/SANDBOXING.md).
+`odek run --sandbox` — every session spawns an isolated Docker container. No network, no host mounts beyond the working directory, zero capabilities, destroyed on exit. `--ctx` files are automatically injected into the container at `/workspace/`. Full security model in [docs/SANDBOXING.md](docs/SANDBOXING.md).
 
 ### 🧩 Sub-Agent Delegation
 Parallel OS-process sub-agents via `delegate_tasks`. True isolation — each sub-agent is a fresh `odek subagent` process with its own config, tools, and termination timeout. Up to 8 concurrent workers. [docs/SUBAGENTS.md](docs/SUBAGENTS.md)

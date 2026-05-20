@@ -87,6 +87,10 @@ In `odek serve`:
 
 Files are read client-side in the Web UI and server-side in the CLI through `enrichTask()` in the `cmd/odek/refs.go` package. The `resource` package handles resolution: file content is wrapped in `--- filename ---` / `--- end filename ---` markers and prepended to the task.
 
+### Sandbox file injection
+
+When `--sandbox` is active, `--ctx` files are automatically **copied into the sandbox container** via `docker cp`, placed at `/workspace/<relative-path>`. Files outside the working directory use their basename. This means the agent can use tools (`read_file`, `shell cat`, `patch`) on the same files it sees in context — no "content visible but file doesn't exist" gap. Directories and missing files are silently skipped.
+
 ## Shell tool schema
 
 ```json

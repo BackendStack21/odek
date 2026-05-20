@@ -155,6 +155,17 @@ Build behavior:
 
 **Security note:** `bridge` gives the container internet access but isolates it from the host's network stack (no access to `localhost:port` on the host, no access to your LAN). `host` mode removes that isolation — use only when you need to connect to a service on the host.
 
+## File injection
+
+When running with `--sandbox --ctx <file>`, odek copies the ctx files into the container via `docker cp`:
+
+- Files within the working directory preserve their relative path (`--ctx subdir/file.txt` → `/workspace/subdir/file.txt`)
+- Files outside the working directory use their basename (`--ctx /etc/hosts` → `/workspace/hosts`)
+- Missing files and directories are silently skipped
+- In read-only mode, injection still works (docker cp writes to the container's overlay, not the volume bind-mount)
+
+This ensures the agent can both see the file content in its context **and** operate on the physical file using `read_file`, `patch`, `shell cat`, etc. without any "content visible but file doesn't exist" gap.
+
 ## Read-only mode
 
 When `sandbox_readonly` is `true`, the working directory is mounted **read-only** inside the container:
