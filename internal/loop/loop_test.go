@@ -736,3 +736,71 @@ func TestEngine_SkillLoader_CalledOncePerInput(t *testing.T) {
 		t.Errorf("LLM called %d times, want 2", callCount)
 	}
 }
+
+func TestEngine_ToolEventHandler(t *testing.T) {
+	// Verify that ToolEventHandler fires tool_call before and tool_result
+	// after each tool invocation, and does so live (during the loop).
+	var events []string
+	var eventData []string
+	eventHandler := func(event, name, data string) {
+		events = append(events, event)
+		eventData = append(eventData, name)
+	}
+
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			// First iteration: request a tool call
+			fmt.Fprint(w, `{
+				"choices":[{
+					"message":{
+						"content":"Checking.",
+						"tool_calls":[{
+							"id":"call_1",
+							"function":{
+								"name":"echo",
+								"arguments":"{}"
+							}
+						}]
+					}
+				}]
+			}`)
+		} else {
+			// Final answer
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"done"}}]}`)
+		}
+	}))
+	defer server.Close()
+
+	echoTool := &fakeTool{name: "echo", description: "echo", output: "ok"}
+	registry := tool.NewRegistry([]tool.Tool{echoTool})
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0)
+	engine := New(client, registry, 10, "", nil, 0)
+	engine.SetToolEventHandler(eventHandler)
+
+	result, err := engine.Run(context.Background(), "do it")
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if result != "done" {
+		t.Errorf("result = %q, want %q", result, "done")
+	}
+
+	// Must have exactly: tool_call → tool_result
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events (tool_call, tool_result), got %d: %v", len(events), events)
+	}
+	if events[0] != "tool_call" {
+		t.Errorf("event[0] = %q, want 'tool_call'", events[0])
+	}
+	if events[1] != "tool_result" {
+		t.Errorf("event[1] = %q, want 'tool_result'", events[1])
+	}
+	if eventData[0] != "echo" {
+		t.Errorf("event[0] name = %q, want 'echo'", eventData[0])
+	}
+	if eventData[1] != "echo" {
+		t.Errorf("event[1] name = %q, want 'echo'", eventData[1])
+	}
+}

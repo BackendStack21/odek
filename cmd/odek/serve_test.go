@@ -1274,3 +1274,103 @@ sessionCheck:
 	t.Log("✅ Token stats verified: turn-level + session-level accumulation")
 }
 
+// TestServe_E2E_LiveToolEvents verifies that tool_call and tool_result
+// events stream LIVE via ToolEventHandler (before the done event).
+// This confirms the live streaming pipeline works.
+func TestServe_E2E_LiveToolEvents(t *testing.T) {
+	// Mock LLM: one tool call, then final answer.
+	callCount := 0
+	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		if callCount == 1 {
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"Running.","tool_calls":[{"id":"c_1","function":{"name":"shell","arguments":"{\"command\":\"echo ok\"}"}}]}}],"usage":{"prompt_tokens":100,"completion_tokens":20}}`)
+		} else {
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"All done."}}],"usage":{"prompt_tokens":200,"completion_tokens":40}}`)
+		}
+	}))
+	defer llmSrv.Close()
+
+	envCleanup := setTestEnv(t, llmSrv.URL)
+	defer envCleanup()
+
+	store := newTestSessionStore(t)
+	ln, mux := buildServeMux(t, store)
+	defer ln.Close()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- serveOnListener(ln, mux) }()
+	waitForHTTP(t, ln.Addr().String())
+
+	wsURL := "ws://" + ln.Addr().String() + "/ws"
+	conn, err := golangws.Dial(wsURL, "", "http://localhost")
+	if err != nil {
+		t.Fatalf("Dial(%q): %v", wsURL, err)
+	}
+	defer conn.Close()
+
+	// Send prompt
+	payload, _ := json.Marshal(map[string]string{"type": "prompt", "content": "run a step"})
+	if err := golangws.Message.Send(conn, string(payload)); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+
+	var toolCallTime, toolResultTime, doneTime int
+	var eventOrder []string
+
+	for i := 0; i < 10; i++ {
+		var raw []byte
+		if err := golangws.Message.Receive(conn, &raw); err != nil {
+			t.Fatalf("Receive event %d: %v", i, err)
+		}
+
+		var evt map[string]any
+		if err := json.Unmarshal(raw, &evt); err != nil {
+			t.Fatalf("unmarshal event %d: %v", i, err)
+		}
+
+		typ, _ := evt["type"].(string)
+		eventOrder = append(eventOrder, typ)
+
+		switch typ {
+		case "tool_call":
+			toolCallTime = i
+		case "tool_result":
+			toolResultTime = i
+			// Verify tool_result data is present (not empty)
+			if data, ok := evt["data"]; !ok || data == "" {
+				t.Errorf("tool_result missing 'data' field, got: %v", evt)
+			}
+		case "done":
+			doneTime = i
+			goto doneCheck
+		case "error":
+			t.Fatalf("unexpected error: %v", evt["message"])
+		}
+	}
+
+doneCheck:
+	t.Logf("Event order: %v", eventOrder)
+
+	if toolCallTime == 0 {
+		t.Fatal("missing tool_call event")
+	}
+	if toolResultTime == 0 {
+		t.Fatal("missing tool_result event")
+	}
+	if doneTime == 0 {
+		t.Fatal("missing done event")
+	}
+
+	// Tool events should arrive BEFORE done (live streaming)
+	if toolCallTime > doneTime {
+		t.Error("tool_call should arrive before done (live streaming)")
+	}
+	if toolResultTime > doneTime {
+		t.Error("tool_result should arrive before done (live streaming)")
+	}
+
+	t.Log("✅ Live tool events verified: tool_call + tool_result arrive before done")
+}

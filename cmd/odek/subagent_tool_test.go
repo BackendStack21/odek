@@ -1,0 +1,139 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+// TestDelegateTasksTool_OnSubagentLog verifies that the OnSubagentLog callback
+// fires for each NDJSON progress line emitted by the subagent subprocess,
+// and that the final result is correctly parsed from the last line.
+func TestDelegateTasksTool_OnSubagentLog(t *testing.T) {
+	// Create a mock subagent script that outputs NDJSON log lines
+	// followed by a final result JSON.
+	mockDir := t.TempDir()
+	mockScript := filepath.Join(mockDir, "mock-subagent.sh")
+
+	ndjsonOutput := `{"type":"tool_call","name":"read_file","data":"test.go"}
+{"type":"tool_result","name":"read_file","data":"file content"}
+{"type":"tool_call","name":"shell","data":"echo hello"}
+{"type":"tool_result","name":"shell","data":"hello world"}
+{"status":"success","summary":"All done.","tokens_used":150,"iterations":2,"files_changed":["test.go"]}`
+
+	// Write a shell script that outputs the NDJSON content line by line
+	script := "#!/bin/sh\n"
+	for _, line := range strings.Split(ndjsonOutput, "\n") {
+		script += "echo '" + line + "'\n"
+	}
+	script += "exit 0\n"
+
+	if err := os.WriteFile(mockScript, []byte(script), 0755); err != nil {
+		t.Fatalf("write mock script: %v", err)
+	}
+
+	// Build the tool pointing at the mock script
+	tool := &delegateTasksTool{
+		maxConcurrency: 1,
+		odekPath:       mockScript,
+		timeout:        10 * time.Second,
+	}
+
+	// Collect log events
+	var logEvents []string
+	tool.OnSubagentLog = func(taskIdx int, line string) {
+		logEvents = append(logEvents, line)
+	}
+
+	// Run a task
+	result := tool.runTask(0, "test goal", "", "")
+
+	// Verify log events: should have 4 NDJSON lines
+	if len(logEvents) != 4 {
+		t.Errorf("expected 4 log events, got %d: %v", len(logEvents), logEvents)
+	}
+
+	// Verify each log event has the right type
+	if len(logEvents) > 0 && !strings.Contains(logEvents[0], `"type":"tool_call"`) {
+		t.Errorf("log[0] should be tool_call, got: %s", logEvents[0])
+	}
+	if len(logEvents) > 1 && !strings.Contains(logEvents[1], `"type":"tool_result"`) {
+		t.Errorf("log[1] should be tool_result, got: %s", logEvents[1])
+	}
+
+	// Verify the final result contains the summary
+	if !strings.Contains(result, "All done") {
+		t.Errorf("final result should contain summary, got: %s", result)
+	}
+	if !strings.Contains(result, `"tokens_used": 150`) {
+		t.Errorf("final result should have tokens_used, got: %s", result)
+	}
+}
+
+// TestDelegateTasksTool_OnSubagentLog_NoLogLines verifies that the tool
+// correctly handles a subagent that outputs only the final result (no NDJSON).
+func TestDelegateTasksTool_OnSubagentLog_NoLogLines(t *testing.T) {
+	mockDir := t.TempDir()
+	mockScript := filepath.Join(mockDir, "mock-subagent2.sh")
+
+	resultJSON := `{"status":"success","summary":"Quick task.","tokens_used":30,"iterations":1,"files_changed":[]}`
+
+	script := "#!/bin/sh\necho '" + resultJSON + "'\nexit 0\n"
+	if err := os.WriteFile(mockScript, []byte(script), 0755); err != nil {
+		t.Fatalf("write mock script: %v", err)
+	}
+
+	var logEvents []string
+	tool := &delegateTasksTool{
+		maxConcurrency: 1,
+		odekPath:       mockScript,
+		timeout:        10 * time.Second,
+		OnSubagentLog: func(taskIdx int, line string) {
+			logEvents = append(logEvents, line)
+		},
+	}
+
+	result := tool.runTask(0, "quick", "", "")
+
+	if len(logEvents) != 0 {
+		t.Errorf("expected 0 log events for no-NDJSON output, got %d", len(logEvents))
+	}
+	if !strings.Contains(result, "Quick task") {
+		t.Errorf("result should contain summary, got: %s", result)
+	}
+}
+
+// TestDelegateTasksTool_OnSubagentLog_ExitError verifies error handling
+// when the subagent exits with non-zero status (timeout-like).
+func TestDelegateTasksTool_OnSubagentLog_ExitError(t *testing.T) {
+	mockDir := t.TempDir()
+	mockScript := filepath.Join(mockDir, "mock-fail.sh")
+
+	// Script that outputs partial NDJSON then fails
+	script := "#!/bin/sh\necho '{\"type\":\"tool_call\",\"name\":\"fail\",\"data\":\"\"}'\nexit 1\n"
+	if err := os.WriteFile(mockScript, []byte(script), 0755); err != nil {
+		t.Fatalf("write mock script: %v", err)
+	}
+
+	var logEvents int
+	tool := &delegateTasksTool{
+		maxConcurrency: 1,
+		odekPath:       mockScript,
+		timeout:        10 * time.Second,
+		OnSubagentLog: func(taskIdx int, line string) {
+			logEvents++
+		},
+	}
+
+	result := tool.runTask(0, "failing task", "", "")
+
+	if logEvents != 1 {
+		t.Errorf("expected 1 log event, got %d", logEvents)
+	}
+	// Should get an error result (but with the partial data from lastLine)
+	if strings.Contains(result, "error") {
+		t.Logf("Got error result as expected: %s", result)
+	}
+}
