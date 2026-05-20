@@ -801,6 +801,8 @@ body {
   letter-spacing: 0.2px;
   user-select: none;
 }
+.msg-stats span { cursor: help; border-bottom: 1px dotted transparent; transition: border-color 0.15s; }
+.msg-stats span:hover { border-bottom-color: var(--text-tertiary); }
 .msg.assistant .msg-stats { border-top-color: rgba(255,255,255,0.06); }
 
 /* ── Session Stats (top bar) ── */
@@ -1395,22 +1397,22 @@ function connect() {
           if (lastAssistant) {
             const stats = document.createElement('div');
             stats.className = 'msg-stats';
-            const parts = [];
-            parts.push('⚡ ' + (event.latency < 1 ? (event.latency * 1000).toFixed(0) + 'ms' : event.latency.toFixed(1) + 's'));
-            if (event.contextTokens != null) parts.push(formatNum(event.contextTokens) + ' in');
-            if (event.outputTokens != null) parts.push(formatNum(event.outputTokens) + ' out');
+            const spans = [];
+            spans.push('<span title="Response time">⚡ ' + (event.latency < 1 ? (event.latency * 1000).toFixed(0) + 'ms' : event.latency.toFixed(1) + 's') + '</span>');
+            if (event.contextTokens != null) spans.push('<span title="Input tokens (prompt)">' + formatNum(event.contextTokens) + ' in</span>');
+            if (event.outputTokens != null) spans.push('<span title="Output tokens (completion)">' + formatNum(event.outputTokens) + ' out</span>');
             // Cache metrics — show only when non-zero
-            if (event.cacheCreationTokens > 0) parts.push(formatNum(event.cacheCreationTokens) + ' stored');
-            if (event.cacheReadTokens > 0) parts.push(formatNum(event.cacheReadTokens) + ' read');
-            if (event.cachedTokens > 0) parts.push(formatNum(event.cachedTokens) + ' cached');
-            stats.textContent = parts.join('  ·  ');
+            if (event.cacheCreationTokens > 0) spans.push('<span title="Cache write: tokens stored on first cache-controlled request">' + formatNum(event.cacheCreationTokens) + ' stored</span>');
+            if (event.cacheReadTokens > 0) spans.push('<span title="Cache hit: tokens served from cache on subsequent requests">' + formatNum(event.cacheReadTokens) + ' read</span>');
+            if (event.cachedTokens > 0) spans.push('<span title="Cached tokens (automatic prefix match)">' + formatNum(event.cachedTokens) + ' cached</span>');
+            stats.innerHTML = spans.join('  ·  ');
             lastAssistant.appendChild(stats);
           }
         }
         // Update session-level token stats in top bar
         const sessionStatsEl = document.getElementById('session-stats');
         if (event.sessionContextTokens != null && event.sessionOutputTokens != null) {
-          const sessParts = ['∑ ' + formatNum(event.sessionContextTokens) + ' in  ·  ' + formatNum(event.sessionOutputTokens) + ' out'];
+          const sessSpans = ['<span title="Session total input tokens">∑ ' + formatNum(event.sessionContextTokens) + ' in</span>', '<span title="Session total output tokens">' + formatNum(event.sessionOutputTokens) + ' out</span>'];
           if (event.cacheReadTokens > 0 || event.cacheCreationTokens > 0 || event.cachedTokens > 0) {
             // Count total session cache stats (accumulated across the session)
             // We store cache totals on the session-stats element's dataset
@@ -1421,11 +1423,11 @@ function connect() {
             el.dataset.cacheCreate = cc;
             el.dataset.cacheRead = cr;
             el.dataset.cached = cd;
-            if (cr > 0) sessParts.push('⊙ ' + formatNum(cr));
-            if (cc > 0) sessParts.push('⊕ ' + formatNum(cc));
-            if (cd > 0) sessParts.push('⊡ ' + formatNum(cd));
+            if (cr > 0) sessSpans.push('<span title="Session total cache hits">' + formatNum(cr) + ' read</span>');
+            if (cc > 0) sessSpans.push('<span title="Session total cache writes">' + formatNum(cc) + ' stored</span>');
+            if (cd > 0) sessSpans.push('<span title="Session total cached tokens (automatic)">' + formatNum(cd) + ' cached</span>');
           }
-          sessionStatsEl.textContent = sessParts.join('  ·  ');
+          sessionStatsEl.innerHTML = sessSpans.join('  ·  ');
           sessionStatsEl.classList.add('visible');
         }
         if (sessionId) loadSessions();
