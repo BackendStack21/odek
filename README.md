@@ -175,7 +175,7 @@ The full `Config` struct supports: `BaseURL`, `Thinking`, `SandboxCleanup`, `Ren
 ## Test
 
 ```bash
-go test ./...                  # 880 tests, all pass
+go test ./...                  # all pass (no setup required)
 go test -race ./...           # race detector clean
 go test -cover ./...          # 79%+ average coverage
 ```
