@@ -18,6 +18,11 @@ import (
 // (formatted skill content) to inject, or empty string if no skills match.
 type SkillLoader func(userInput string) string
 
+// ToolEventHandler is an optional callback invoked for each tool execution
+// during the agent loop — fires before (tool_call) and after (tool_result)
+// each tool invocation. Used by the WebUI for live streaming of tool events.
+type ToolEventHandler func(event string, name string, data string)
+
 // Engine runs the agent loop: observe → think → act → repeat.
 type Engine struct {
 	client      *llm.Client
@@ -28,6 +33,8 @@ type Engine struct {
 	maxContext  int // max context tokens (0 = no limit)
 	skillLoader SkillLoader // optional: loads matching skills
 	lastSkillMsg string     // last user message that triggered skill loading (dedup)
+
+	toolEventHandler ToolEventHandler // optional: fires during tool execution
 
 	// Token accounting — accumulated across all iterations of the most recent run.
 	// Reset on each Run/RunWithMessages call and read by callers (e.g. WebUI).
@@ -51,6 +58,9 @@ func New(client *llm.Client, registry *tool.Registry, maxIterations int, systemM
 
 // SetSkillLoader sets the optional skill loader callback.
 func (e *Engine) SetSkillLoader(sl SkillLoader) { e.skillLoader = sl }
+
+// SetToolEventHandler sets the optional tool event callback for live streaming.
+func (e *Engine) SetToolEventHandler(cb ToolEventHandler) { e.toolEventHandler = cb }
 
 // ── Token Estimation ─────────────────────────────────────────────────
 //
@@ -278,6 +288,9 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 			if e.renderer != nil {
 				e.renderer.ToolCall(tc.Function.Name, tc.Function.Arguments)
 			}
+			if e.toolEventHandler != nil {
+				e.toolEventHandler("tool_call", tc.Function.Name, tc.Function.Arguments)
+			}
 
 			t := e.registry.Get(tc.Function.Name)
 			output := fmt.Sprintf("error: tool %q not found", tc.Function.Name)
@@ -292,6 +305,9 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 
 			if e.renderer != nil {
 				e.renderer.ToolResult(output)
+			}
+			if e.toolEventHandler != nil {
+				e.toolEventHandler("tool_result", tc.Function.Name, output)
 			}
 
 			// Wrap tool output in clear delimiters so the model treats

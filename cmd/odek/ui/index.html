@@ -393,6 +393,8 @@ body {
 .subagent-card .sa-details.open { display: block; animation: fadeIn 0.2s ease-out; }
 .subagent-card .sa-meta { font-size: 11px; color: var(--text-tertiary); font-family: var(--font-mono); display: flex; gap: 12px; margin-bottom: 6px; }
 .subagent-card .sa-summary { font-size: 12px; color: var(--text-secondary); line-height: 1.5; white-space: pre-wrap; }
+.subagent-card .sa-log { margin-bottom: 6px; }
+.subagent-card .sa-log .log-line { font-size: 11px; color: var(--text-tertiary); font-family: var(--font-mono); line-height: 1.4; padding: 1px 0; }
 .subagent-card .sa-files { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .subagent-card .sa-files .file-chip { font-size: 11px; padding: 1px 6px; }
 
@@ -1366,17 +1368,21 @@ function connect() {
         streamFlush();
         endThinking();
         if (event.name === 'delegate_tasks') {
-          addSubagentGroup(event.command);
+          addSubagentGroup(event.data);
         } else {
-          addToolCall(event.name, event.command);
+          addToolCall(event.name, event.data);
         }
         break;
 
       case 'tool_result':
         if (event.name === 'delegate_tasks' && subagentGroup) {
-          completeSubagents(event.output);
+          completeSubagents(event.data);
         }
-        addToolResult(event.name, event.output);
+        addToolResult(event.name, event.data);
+        break;
+
+      case 'subagent_log':
+        appendSubagentLog(event.task_idx, event);
         break;
 
       case 'done':
@@ -1766,6 +1772,47 @@ function completeSubagents(output) {
 window.toggleSaDetails = function(el) {
   el.classList.toggle('open');
 };
+
+function appendSubagentLog(taskIdx, event) {
+  if (!subagentGroup) return;
+  const cards = subagentGroup.querySelectorAll('.subagent-card');
+  const card = cards[taskIdx];
+  if (!card) return;
+
+  // Ensure details are open
+  const details = card.querySelector('.sa-details');
+  if (!details) return;
+  const summaryEl = details.querySelector('.sa-summary');
+
+  // Format the log line
+  let text = '';
+  if (event.event === 'tool_call') {
+    text = '🔧 ' + event.name + (event.data ? '(' + truncateStr(event.data, 60) + ')' : '');
+  } else if (event.event === 'tool_result') {
+    text = '📄 ' + truncateStr(event.data || '', 100);
+  }
+  if (!text) return;
+
+  // Append to existing summary content (or create a log container)
+  let logContainer = card.querySelector('.sa-log');
+  if (!logContainer) {
+    logContainer = document.createElement('div');
+    logContainer.className = 'sa-log';
+    details.insertBefore(logContainer, summaryEl);
+  }
+  const lineEl = document.createElement('div');
+  lineEl.className = 'log-line';
+  lineEl.textContent = text;
+  logContainer.appendChild(lineEl);
+
+  details.classList.add('open');
+  scrollBottom();
+}
+
+function truncateStr(s, n) {
+  if (!s) return '';
+  return s.length > n ? s.substring(0, n) + '…' : s;
+}
 
 // ── Approval ──
 let approvalId = null;

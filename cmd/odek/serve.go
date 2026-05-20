@@ -178,6 +178,34 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 	resolved.Dangerous.Approver = approver
 
 	tools := builtinTools(resolved.Dangerous, sm, approver, resolved.MaxConcurrency)
+
+	// Find the delegateTasksTool to wire up sub-agent log streaming
+	var subagentTool *delegateTasksTool
+	for _, t := range tools {
+		if dt, ok := t.(*delegateTasksTool); ok {
+			subagentTool = dt
+			break
+		}
+	}
+	if subagentTool != nil {
+		subagentTool.OnSubagentLog = func(taskIdx int, line string) {
+			var event struct {
+				Type string `json:"type"`
+				Name string `json:"name,omitempty"`
+				Data string `json:"data,omitempty"`
+			}
+			if err := json.Unmarshal([]byte(line), &event); err != nil {
+				return
+			}
+			sendFn(map[string]any{
+				"type":     "subagent_log",
+				"task_idx": taskIdx,
+				"name":     event.Name,
+				"event":    event.Type,
+				"data":     event.Data,
+			})
+		}
+	}
 	var sandboxCleanup func() error
 
 	// MCP server tools
@@ -224,6 +252,13 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 		Skills:         &resolved.Skills,
 		SkillManager:   sm,
 		MemoryConfig:   resolved.Memory,
+		ToolEventHandler: func(event, name, data string) {
+			sendFn(map[string]any{
+				"type":  event,
+				"name":  name,
+				"data":  data,
+			})
+		},
 	})
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -437,26 +472,16 @@ func handlePrompt(
 		newMsgs = newMsgs[origLen:]
 	}
 
-	// Stream the assistant's response
+	// Stream the assistant's response (tool events are streamed live via ToolEventHandler)
 	for _, msg := range newMsgs {
 		if msg.Role == "assistant" {
 			if msg.Content != "" {
 				writeWSJSON(conn, map[string]any{"type": "token", "content": msg.Content})
 			}
-			for _, tc := range msg.ToolCalls {
-				writeWSJSON(conn, map[string]any{
-					"type":    "tool_call",
-					"name":    tc.Function.Name,
-					"command": tc.Function.Arguments,
-				})
-			}
+			// tool_call events are streamed live via ToolEventHandler — skip here
 		}
 		if msg.Role == "tool" {
-			writeWSJSON(conn, map[string]any{
-				"type":   "tool_result",
-				"name":   msg.Name,
-				"output": shorten(msg.Content, 500),
-			})
+			// tool_result events are streamed live via ToolEventHandler — skip here
 		}
 	}
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -24,6 +25,11 @@ type delegateTasksTool struct {
 	maxConcurrency int
 	odekPath       string // path to the odek binary
 	timeout        time.Duration
+
+	// OnSubagentLog, if set, is called with each NDJSON progress line
+	// emitted by a sub-agent. taskIdx is the index within the current
+	// batch. Used by the WebUI for live log streaming.
+	OnSubagentLog func(taskIdx int, line string)
 }
 
 func (t *delegateTasksTool) Name() string { return "delegate_tasks" }
@@ -112,7 +118,7 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 		sem <- struct{}{}
 		go func(i int, goal, ctx, sys string) {
 			defer func() { <-sem }()
-			r := t.runTask(goal, ctx, sys)
+			r := t.runTask(i, goal, ctx, sys)
 			mu.Lock()
 			results[i] = r
 			mu.Unlock()
@@ -135,7 +141,7 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 	return buf.String(), nil
 }
 
-func (t *delegateTasksTool) runTask(goal, taskContext, system string) string {
+func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, system string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), t.timeout)
 	defer cancel()
 
@@ -163,6 +169,7 @@ func (t *delegateTasksTool) runTask(goal, taskContext, system string) string {
 		"subagent",
 		"--task", taskPath,
 		"--quiet",
+		"--stream",
 	)
 
 	stdout, err := cmd.StdoutPipe()
@@ -178,18 +185,37 @@ func (t *delegateTasksTool) runTask(goal, taskContext, system string) string {
 		return fmt.Sprintf(`{"error":"start: %v"}`, err)
 	}
 
+	// Read stdout line-by-line — NDJSON progress lines followed by final JSON result
 	var result map[string]any
-	if err := json.NewDecoder(stdout).Decode(&result); err != nil {
-		// Wait for process to finish, then check for timeout
-		cmd.Wait()
-		if ctx.Err() != nil {
-			return fmt.Sprintf(`{"error":"timeout after %v"}`, t.timeout)
+	var lastLine string
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		line := scanner.Text()
+		lastLine = line
+
+		// Check if this is a progress line (NDJSON with "type":"tool_call" or "type":"tool_result")
+		var event struct {
+			Type string `json:"type"`
 		}
-		return fmt.Sprintf(`{"error":"parse result: %v"}`, err)
+		if err := json.Unmarshal([]byte(line), &event); err == nil {
+			if event.Type == "tool_call" || event.Type == "tool_result" {
+				if t.OnSubagentLog != nil {
+					t.OnSubagentLog(taskIdx, line)
+				}
+				continue
+			}
+		}
+
+		// Not a progress line — parse as result JSON
+		var r map[string]any
+		if err := json.Unmarshal([]byte(line), &r); err == nil {
+			result = r
+		}
 	}
+	scannerErr := scanner.Err()
 
 	if err := cmd.Wait(); err != nil {
-		// Process exited with error — result may still be valid JSON
+		// Process exited with error — result may still be valid
 		if result != nil {
 			summary, _ := json.MarshalIndent(result, "", "  ")
 			return string(summary)
@@ -197,11 +223,27 @@ func (t *delegateTasksTool) runTask(goal, taskContext, system string) string {
 		if ctx.Err() != nil {
 			return fmt.Sprintf(`{"error":"timeout after %v"}`, t.timeout)
 		}
+		if scannerErr != nil {
+			return fmt.Sprintf(`{"error":"read stdout: %v"}`, scannerErr)
+		}
 		return fmt.Sprintf(`{"error":"exit: %v"}`, err)
 	}
 
-	summary, _ := json.MarshalIndent(result, "", "  ")
-	return string(summary)
+	if result != nil {
+		summary, _ := json.MarshalIndent(result, "", "  ")
+		return string(summary)
+	}
+
+	// Last resort: try parsing the last line as JSON
+	if lastLine != "" {
+		var r map[string]any
+		if err := json.Unmarshal([]byte(lastLine), &r); err == nil {
+			summary, _ := json.MarshalIndent(r, "", "  ")
+			return string(summary)
+		}
+	}
+
+	return fmt.Sprintf(`{"error":"no result from sub-agent"}`)
 }
 
 // Ensure delegateTasksTool implements odek.Tool

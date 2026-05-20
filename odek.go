@@ -91,6 +91,11 @@ type Config struct {
 	// of the agent loop. When nil, the agent runs silently (programmatic API).
 	Renderer *render.Renderer
 
+	// ToolEventHandler, if set, is invoked for each tool call and result
+	// during the agent loop. Fires "tool_call" before and "tool_result"
+	// after each tool invocation. Used by the WebUI for live streaming.
+	ToolEventHandler func(event string, name string, data string)
+
 	// Skills configures the skill system. When nil, skills are disabled.
 	Skills *skills.SkillsConfig
 
@@ -366,6 +371,11 @@ func New(cfg Config) (*Agent, error) {
 			}
 			return context
 		})
+	}
+
+	// Wire tool event handler for live streaming
+	if cfg.ToolEventHandler != nil {
+		engine.SetToolEventHandler(cfg.ToolEventHandler)
 	}
 
 	agent.engine = engine

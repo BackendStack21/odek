@@ -173,6 +173,7 @@ func subagentCmd(args []string) error {
 		timeout       int
 		maxIter       int
 		quiet         bool
+		stream        bool
 		parentSession string
 	}
 
@@ -207,6 +208,8 @@ func subagentCmd(args []string) error {
 			}
 		case "--quiet":
 			cfg.quiet = true
+		case "--stream":
+			cfg.stream = true
 		case "--parent-session":
 			i++
 			if i < len(args) {
@@ -335,7 +338,8 @@ func subagentCmd(args []string) error {
 	// Create agent — silent renderer for stderr
 	rend := render.New(os.Stderr, !cfg.quiet)
 
-	agent, err := odek.New(odek.Config{
+	// Build agent config, optionally with streaming
+	aCfg := odek.Config{
 		Model:          resolved.Model,
 		BaseURL:        resolved.BaseURL,
 		APIKey:         resolved.APIKey,
@@ -349,7 +353,19 @@ func subagentCmd(args []string) error {
 		Skills:         &resolved.Skills,
 		SkillManager:   sm,
 		MemoryConfig:   resolved.Memory,
-	})
+	}
+	if cfg.stream {
+		aCfg.ToolEventHandler = func(event, name, data string) {
+			line, _ := json.Marshal(map[string]string{
+				"type": event,
+				"name": name,
+				"data": data,
+			})
+			os.Stdout.Write(line)
+			os.Stdout.Write([]byte("\n"))
+		}
+	}
+	agent, err := odek.New(aCfg)
 	if err != nil {
 		return fmt.Errorf("create agent: %w", err)
 	}
