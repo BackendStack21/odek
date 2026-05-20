@@ -39,6 +39,32 @@ The server uses a **custom WebSocket implementation** (`internal/ws/`) — ~200 
 
 ### @ resource completion
 
+### Token economics
+
+Each response shows **per-message token stats** appended to the assistant bubble:
+
+- ⚡ **Latency**: wall-clock time for the agent loop
+- ⌂ **Context tokens**: cumulative prompt tokens across all iterations
+- ⎇ **Output tokens**: cumulative completion tokens
+
+The **top bar** displays **session-level totals** (∑ ⌂ context · ⎇ output), reset when you start a new session.
+
+### Inline loading indicator
+
+When you send a prompt, a compact **`.loading-indicator`** appears below your message (not a full-screen overlay). It shows:
+
+- An animated spinner
+- Cycling status messages every 2s: *"⚡ Thinking..."*, *"🔬 Analyzing..."*, *"🧪 Running diagnostics..."*, etc.
+- 8 rotating messages keep you informed without blocking the UI
+
+The indicator is removed automatically when the first `token` event arrives or on error.
+
+### Smart autoscroll
+
+The chat **only auto-scrolls when you're near the bottom** (within 60px). If you scroll up to read previous content while the agent responds, the page **does not steal your scroll position**. When you send a new message, it force-scrolls to the latest response.
+
+This uses `requestAnimationFrame` batching to avoid layout thrashing during high-frequency token updates.
+
 Type `@` followed by a filename to see an autocomplete dropdown. kode resolves matching files and sessions:
 
 | Prefix | Source | Example |
@@ -94,7 +120,7 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 | `token` | Streamed text content | `content` (markdown) |
 | `tool_call` | Agent invokes a tool | `name`, `command` |
 | `tool_result` | Tool returns output | `name`, `output` (truncated to 500 chars) |
-| `done` | Agent finishes | `latency` (seconds) |
+| `done` | Agent finishes | `latency` (seconds), `contextTokens`, `outputTokens`, `sessionContextTokens`, `sessionOutputTokens` |
 | `error` | Agent or server error | `message` |
 | `approval_request` | Agent needs user approval for dangerous operation | `id`, `risk` (class name), `command` (or resource), `description`, `is_operation` |
 
@@ -132,7 +158,7 @@ Example event sequence:
 
 ### Frontend (`cmd/kode/ui/index.html`)
 
-- ~770 lines: single file with embedded CSS and vanilla JS (no frameworks)
+- ~1,200 lines: single file with embedded CSS and vanilla JS (no frameworks)
 - **Design system**: loaded from `https://assets.21no.de/css/tokens.css` — dark theme with CSS custom properties (`--bg-primary`, `--accent`, `--text-primary`, etc.)
 - **Typeface**: loaded from `https://assets.21no.de/fonts/fonts.css` — uses `var(--font-sans)` and `var(--font-mono)`
 - **Streaming**: token content is batch-rendered via `requestAnimationFrame` to avoid layout thrashing

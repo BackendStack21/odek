@@ -104,8 +104,8 @@ The `skills` section controls the skill system:
 | `max_auto_load` | — | 3 | Max skills injected into system prompt on start |
 | `max_lazy_slots` | — | 5 | Max skills loaded per user input via trigger matching |
 | `learn` | `KODE_SKILLS_LEARN` | `true` | Enable skill learning mode (detects patterns, suggests skills). On by default |
-| `llm_learn` | — | `true` | Use LLM to enrich detected patterns with better names, descriptions, and structured content |
-| `llm_curate` | — | `true` | Use LLM for curation quality assessment and improvement suggestions |
+| `llm_learn` | — | `true` | Use LLM to enrich detected patterns. **Template-only** — set via `kode init`, not parsed from JSON at runtime |
+| `llm_curate` | — | `true` | Use LLM for curation quality assessment. **Template-only** — set via `kode init`, not parsed from JSON at runtime |
 | `dirs` | — | [] | Extra skill directories beyond `~/.kode/skills` and `./.kode/skills` |
 | `import.max_size_bytes` | — | 1048576 (1MB) | Max size for fetched skill content |
 | `import.timeout_seconds` | — | 5 | HTTP timeout for skill URI fetch |
@@ -172,6 +172,8 @@ The `subagent` section controls task decomposition and parallel sub-agent execut
 | `max_iterations` | 15 | Default max think→act cycles per sub-agent (overridden by `--max-iter`) |
 
 This section is optional. Omitted fields inherit sensible defaults.
+
+> **Note**: The `subagent` section is currently read only from `kode.json` by the `kode subagent` command in test code. Runtime values (`max_concurrency`, `timeout_seconds`) are hardcoded in production `kode run`/`kode serve`. This may be wired up fully in a future release.
 
 ## MCP server configuration
 
