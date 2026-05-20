@@ -113,17 +113,5 @@ Flags:
 	// Create and run the MCP server
 	version := getVersion()
 	server := mcp.NewServer(version, nativeTools, os.Stdin, os.Stdout)
-
-	// Log startup to stderr (stdin/stdout are for MCP protocol)
-	fmt.Fprintf(os.Stderr, "odek mcp ⚡  MCP server starting (v%s)\n", version)
-	fmt.Fprint(os.Stderr, "  Tools: ")
-	for i, t := range nativeTools {
-		if i > 0 {
-			fmt.Fprint(os.Stderr, ", ")
-		}
-		fmt.Fprint(os.Stderr, t.Name)
-	}
-	fmt.Fprintln(os.Stderr)
-
 	return server.Run(context.Background())
 }
