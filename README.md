@@ -1,6 +1,6 @@
 # odek
 
-**The fastest, minimal, zero-dependency Go autonomous agent runtime.**
+**Minimal Go autonomous agent runtime — 5 deps, ~11 MB, instant startup.**
 
 One binary. One loop. Zero frameworks. ReAct (Reasoning + Acting) — think, therefore act.
 
@@ -22,8 +22,8 @@ odek is not a framework. It's a **runtime** — the smallest possible surface ar
 
 | | odek | Python agents (LangChain, CrewAI, etc.) |
 |---|---|---|
-| Dependencies | **Zero.** stdlib only | 200+ packages |
-| Binary size | ~5 MB static | 50-200 MB with venv |
+| Dependencies | **5.** 3× stdlib, 2× 21no.de | 200+ packages |
+| Binary size | ~11 MB static | 50-200 MB with venv |
 | Startup | **Instant** | 2-10s (Python imports) |
 | Sandbox | `--sandbox` flag | Requires manual Docker setup |
 | Tool interface | One interface, one method | Class hierarchies + decorators |
@@ -147,6 +147,7 @@ odek run "@README.md what does this project do?"
 | Doc | Covers |
 |-----|--------|
 | [CLI Reference](docs/CLI.md) | All commands, subcommands, flags, error codes |
+| [Cheat Sheet](docs/CHEATSHEET.md) | CLI quick reference, key flags, config snippets |
 | [Configuration](docs/CONFIG.md) | Config files, env vars, priority chain, all sections |
 | [Programmatic API](docs/API.md) | **SDK Guide**: import, Agent lifecycle, Tool interface, multi-turn sessions, memory system, model profiles, complete examples |
 | [Providers & Models](docs/PROVIDERS.md) | Supported providers, thinking config, context windows |
@@ -157,6 +158,7 @@ odek run "@README.md what does this project do?"
 | [Security](docs/SECURITY.md) | Threat model, prompt injection defense, sandbox model |
 | [Sub-Agents](docs/SUBAGENTS.md) | Task decomposition, delegation tool, subagent protocol |
 | [Web UI](docs/WEBUI.md) | `odek serve`, WebSocket protocol, `@` resource resolution |
+| [Self-Learning](docs/LEARNING.md) | LLM-enhanced skill learning, pattern detection, auto-curation |
 | [Skills](docs/CLI.md#skills) | Trigger-matched skills, learning, import, curation |
 | [MCP](docs/MCP.md) | Serve tools to Claude Code + connect to external MCP servers |
 | [Development](docs/DEVELOPMENT.md) | Building, testing, contributing, project structure |

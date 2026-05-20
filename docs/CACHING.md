@@ -70,6 +70,32 @@ agent.TotalCachedTokens()         // OpenAI: cached prompt tokens
 
 These are accumulated across all iterations of the most recent run. Zero values mean the provider didn't return cache metrics (either caching is not enabled, or the provider doesn't report them).
 
+### UI Display
+
+Cache stats appear automatically in both the **terminal** and **Web UI** — no extra flags needed:
+
+**Terminal** — gray summary line after each final answer:
+```
+── 5,432 in · 890 out · 320 stored · 2,100 read
+```
+
+Only non-zero metrics are shown. Labels:
+- `stored` — tokens written to populate the cache (Anthropic, first request)
+- `read` — tokens served from cache hit (Anthropic, subsequent requests)
+- `cached` — tokens matched by automatic prefix caching (OpenAI/DeepSeek)
+
+**Web UI** — per-message stats at the bottom of each assistant bubble:
+```
+⚡ 2.4s  ·  5.4k in  ·  890 out  ·  320 stored  ·  2.1k read
+```
+
+And session-level totals in the top bar:
+```
+∑ 8.2k in  ·  1.8k out  ·  3.4k read  ·  650 stored
+```
+
+Hover over any stat for a tooltip explanation.
+
 ## How It Works
 
 1. **Before each LLM call**, if `PromptCaching` is enabled, the loop calls `llm.ApplyCacheMarkers(messages)` which:
