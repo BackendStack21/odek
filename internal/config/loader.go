@@ -111,9 +111,14 @@ type FileConfig struct {
 	//	  "playwright": {
 	//	    "command": "npx",
 	//	    "args": ["@playwright/mcp"]
-	//	  }
-	//	}
+	//\t  }
+	//\t}
 	MCPServers map[string]mcpclient.ServerConfig `json:"mcp_servers,omitempty"`
+
+	// MaxConcurrency limits how many sub-agent tasks run in parallel.
+	// Config: max_concurrency, ODEK_MAX_CONCURRENCY.
+	// Default: 3.
+	MaxConcurrency int `json:"max_concurrency,omitempty"`
 }
 
 // ResolvedConfig is the fully merged result. Every field has a concrete
@@ -183,6 +188,11 @@ type ResolvedConfig struct {
 	// MCPServers maps server names to external MCP server configurations.
 	// Populated from the mcp_servers section of odek.json.
 	MCPServers map[string]mcpclient.ServerConfig
+
+	// MaxConcurrency limits how many sub-agent tasks run in parallel.
+	// Config: max_concurrency, ODEK_MAX_CONCURRENCY.
+	// Default: 3.
+	MaxConcurrency int
 }
 
 // ── Defaults ───────────────────────────────────────────────────────────
@@ -363,6 +373,11 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		cfg.Skills.Learn = &b
 	}
 
+	// MaxConcurrency env var
+	if v := envInt("MAX_CONCURRENCY"); v > 0 {
+		cfg.MaxConcurrency = v
+	}
+
 	// Layer 4: CLI flags (highest priority)
 	if cli.Model != "" {
 		cfg.Model = cli.Model
@@ -433,6 +448,13 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		Dangerous:      resolveDangerous(cfg.Dangerous),
 		Memory:         resolveMemory(cfg.Memory),
 		MCPServers:     cfg.MCPServers,
+	}
+
+	// MaxConcurrency: default to 3 if not set
+	if cfg.MaxConcurrency > 0 {
+		resolved.MaxConcurrency = cfg.MaxConcurrency
+	} else {
+		resolved.MaxConcurrency = 3
 	}
 
 	// Booleans: default to false if not set

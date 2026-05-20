@@ -1,6 +1,4 @@
 github.com/BackendStack21/go-vector v1.1.1 h1:sycI+a/ifT2DD3kdH0HleWtjKmIVNutvL/pgOL9qTA8=
 github.com/BackendStack21/go-vector v1.1.1/go.mod h1:+IzfAFO4m6xrjsOhZsiTAbMbm8+hX0d9C1uD0SGPzHc=
-golang.org/x/net v0.23.0 h1:7EYJ93RZ9vYSZAIb2x3lnuvqO5zneoD6IvWjuhfxjTs=
-golang.org/x/net v0.23.0/go.mod h1:JKghWKKOSdJwpW2GEx0Ja7fmaKnMsbu+MWVZTokSYmg=
 golang.org/x/net v0.54.0 h1:2zJIZAxAHV/OHCDTCOHAYehQzLfSXuf/5SoL/Dv6w/w=
 golang.org/x/net v0.54.0/go.mod h1:Sj4oj8jK6XmHpBZU/zWHw3BV3abl4Kvi+Ut7cQcY+cQ=

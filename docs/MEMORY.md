@@ -90,9 +90,30 @@ This saves ~80% of LLM calls on memory writes.
 
 **Implementation:** `internal/memory/merge.go` imports `github.com/BackendStack21/go-vector/pkg/vector` for `RandomProjections` and `Cosine`. The RP embedder is fit on existing facts when the detector is created, and re-fit whenever facts change.
 
+### Durability & Statefulness
+
+Key design property: **facts persist as text; go-vector RP is ephemeral.**
+
+| Component | Persists to disk? | Source of truth |
+|-----------|-------------------|-----------------|
+| Fact text (`user.md`, `env.md`) | ✅ Yes — plain markdown | The text *is* the durable state |
+| Episode summaries (`episodes/*.md`) | ✅ Yes — markdown files | Durable |
+| Episode index (`episodes/index.json`) | ✅ Yes — JSON | Durable |
+| go-vector RP vocabulary + vectors | ❌ No — ephemeral | Rebuilt from text via `Fit()` |
+
+**Why this is safe:** `RandomProjections` is a stateless model. `Fit(corpus)` builds vocabulary from the input text deterministically — same text always produces the same `(word → random vector)` mappings. On every `AddFact` / `Replace` / `Remove`, `MergeDetector.Fit(entries)` is called, reading all facts from disk and recomputing embeddings. No persistent state needs to be saved or restored.
+
+**On restart:**
+1. Fact text loads from disk (durable)
+2. `MergeDetector` starts with empty corpus + fresh RP
+3. First fact mutation triggers `Fit()` with all persisted facts — full merge protection restored
+4. Between restart and first mutation, `Classify()` returns `"nobody"` (empty corpus) → entry is added directly without merge checks
+
+This is fine because `MergeDetector` is an optimization (avoids ~80% of LLM calls), not a correctness requirement. Should you want eager initialization, call `memory(action: "read")` on startup — that reads both fact files without side effects while the system prompt already has the frozen snapshot.
+
 ### Cold Start
 
-When `facts/user.md` and `facts/env.md` are empty (fresh install), no RP vocabulary exists. The merge detector gracefully returns "no corpus" and all adds pass through to SimpleCall. After the first few facts are written, the detector self-trains on re-fit.
+When `facts/user.md` and `facts/env.md` are empty (fresh install), `Fit()` produces an empty corpus. `Classify()` returns `"nobody"` and the entry is added directly — no merge checks, no SimpleCall. After the first few facts are written, subsequent mutations trigger `Fit()` with the growing corpus, and the detector self-trains.
 
 ## Subagent Memory
 

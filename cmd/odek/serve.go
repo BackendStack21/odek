@@ -32,6 +32,11 @@ func serveCmd(args []string) error {
 	addr := "127.0.0.1:8080"
 	openBrowser := false
 
+	// Sandbox CLI flags (nil pointers = not set)
+	var sandbox *bool
+	var sandboxReadonly *bool
+	var sandboxImage, sandboxNetwork, sandboxMemory, sandboxCPUs, sandboxUser string
+
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--addr":
@@ -42,21 +47,51 @@ func serveCmd(args []string) error {
 		case "--open":
 			openBrowser = true
 		case "--help", "-h":
-			fmt.Println(`Usage: odek serve [flags]
-
-Start the odek web UI server.
-
-Flags:
-  --addr 127.0.0.1:8080    Listen address (default 127.0.0.1:8080)
-  --open          Open browser automatically
-  --help, -h      Show this help`)
+			printServeHelp()
 			return nil
+		case "--sandbox":
+			sandbox = boolPtr(true)
+		case "--sandbox-image":
+			i++
+			if i < len(args) {
+				sandboxImage = args[i]
+			}
+		case "--sandbox-network":
+			i++
+			if i < len(args) {
+				sandboxNetwork = args[i]
+			}
+		case "--sandbox-readonly":
+			sandboxReadonly = boolPtr(true)
+		case "--sandbox-memory":
+			i++
+			if i < len(args) {
+				sandboxMemory = args[i]
+			}
+		case "--sandbox-cpus":
+			i++
+			if i < len(args) {
+				sandboxCPUs = args[i]
+			}
+		case "--sandbox-user":
+			i++
+			if i < len(args) {
+				sandboxUser = args[i]
+			}
 		default:
 			return fmt.Errorf("unknown flag %q for serve", args[i])
 		}
 	}
 
-	resolved := config.LoadConfig(config.CLIFlags{})
+	resolved := config.LoadConfig(config.CLIFlags{
+		Sandbox:         sandbox,
+		SandboxImage:    sandboxImage,
+		SandboxNetwork:  sandboxNetwork,
+		SandboxReadonly: sandboxReadonly,
+		SandboxMemory:   sandboxMemory,
+		SandboxCPUs:     sandboxCPUs,
+		SandboxUser:     sandboxUser,
+	})
 	systemMessage := resolved.System
 	if systemMessage == "" {
 		systemMessage = defaultSystem
@@ -102,6 +137,25 @@ Flags:
 	return serveOnListener(listener, mux)
 }
 
+// printServeHelp prints the serve command help text.
+func printServeHelp() {
+	fmt.Println(`Usage: odek serve [flags]
+
+Start the odek web UI server.
+
+Flags:
+  --addr 127.0.0.1:8080    Listen address (default 127.0.0.1:8080)
+  --open                   Open browser automatically
+  --sandbox                Enable Docker sandbox for agent tool execution
+  --sandbox-image image    Docker image (default: alpine:latest or Dockerfile.odek)
+  --sandbox-network net    Docker network mode (default: bridge)
+  --sandbox-readonly       Mount working directory read-only
+  --sandbox-memory limit   Container memory limit (e.g. 512m, 2g)
+  --sandbox-cpus limit     Container CPU limit (e.g. 0.5, 2, 4)
+  --sandbox-user user      Container user (e.g. 1000:1000)
+  --help, -h               Show this help`)
+}
+
 // serveOnListener serves the odek Web UI on a pre-created listener.
 // Extracted for testing — allows E2E tests to pass a listener on a known port.
 func serveOnListener(listener net.Listener, mux *http.ServeMux) error {
@@ -123,7 +177,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 	approver := newWSApprover(sendFn)
 	resolved.Dangerous.Approver = approver
 
-	tools := builtinTools(resolved.Dangerous, sm, approver)
+	tools := builtinTools(resolved.Dangerous, sm, approver, resolved.MaxConcurrency)
 	var sandboxCleanup func() error
 
 	// MCP server tools

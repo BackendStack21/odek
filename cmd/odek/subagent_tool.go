@@ -35,7 +35,7 @@ Example: decomposing "build a REST API" into "create user model", "create auth m
 
 Key rules:
 - Each sub-agent has a fresh context (no parent history)
-- All sub-agents run in parallel (up to 3 at a time)
+- All sub-agents run in parallel (configurable via max_concurrency)
 - Each sub-agent has 120s to complete
 - Sub-agents can use all tools (shell, read/write files, etc.)
 - After all complete, synthesize the results into a cohesive answer

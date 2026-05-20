@@ -829,6 +829,158 @@ func waitForHTTP(t *testing.T, addr string) {
 	t.Fatal("server not ready after 5s")
 }
 
+// ── Flag Parsing Tests ───────────────────────────────────────────────────
+
+// serveSandboxFlags returns the sandbox CLI flags parsed by serveCmd.
+// Used by tests to verify flag parsing without starting the server.
+func serveSandboxFlags(args []string) (addr string, open bool, sb *bool, sbr *bool, sbi, sbn, sbm, sbc, sbu string, err error) {
+	addr = "127.0.0.1:8080"
+	open = false
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--addr":
+			i++
+			if i < len(args) {
+				addr = args[i]
+			}
+		case "--open":
+			open = true
+		case "--help", "-h":
+			return
+		case "--sandbox":
+			sb = boolPtr(true)
+		case "--sandbox-image":
+			i++
+			if i < len(args) {
+				sbi = args[i]
+			}
+		case "--sandbox-network":
+			i++
+			if i < len(args) {
+				sbn = args[i]
+			}
+		case "--sandbox-readonly":
+			sbr = boolPtr(true)
+		case "--sandbox-memory":
+			i++
+			if i < len(args) {
+				sbm = args[i]
+			}
+		case "--sandbox-cpus":
+			i++
+			if i < len(args) {
+				sbc = args[i]
+			}
+		case "--sandbox-user":
+			i++
+			if i < len(args) {
+				sbu = args[i]
+			}
+		default:
+			err = fmt.Errorf("unknown flag %q for serve", args[i])
+			return
+		}
+	}
+	return
+}
+
+func TestServeCmd_Help(t *testing.T) {
+	err := serveCmd([]string{"--help"})
+	if err != nil {
+		t.Fatalf("serveCmd --help: %v", err)
+	}
+}
+
+func TestServeCmd_SandboxFlags(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		check func(t *testing.T, addr string, open bool, sb, sbr *bool, sbi, sbn, sbm, sbc, sbu string)
+	}{
+		{
+			name: "sandbox only",
+			args: []string{"--sandbox"},
+			check: func(t *testing.T, addr string, open bool, sb, sbr *bool, sbi, sbn, sbm, sbc, sbu string) {
+				if sb == nil || !*sb {
+					t.Error("--sandbox should be true")
+				}
+			},
+		},
+		{
+			name: "sandbox-readonly",
+			args: []string{"--sandbox", "--sandbox-readonly"},
+			check: func(t *testing.T, addr string, open bool, sb, sbr *bool, sbi, sbn, sbm, sbc, sbu string) {
+				if sbr == nil || !*sbr {
+					t.Error("--sandbox-readonly should be true")
+				}
+			},
+		},
+		{
+			name: "sandbox-image",
+			args: []string{"--sandbox", "--sandbox-image", "ubuntu:22.04"},
+			check: func(t *testing.T, addr string, open bool, sb, sbr *bool, sbi, sbn, sbm, sbc, sbu string) {
+				if sbi != "ubuntu:22.04" {
+					t.Errorf("sandbox-image = %q, want 'ubuntu:22.04'", sbi)
+				}
+			},
+		},
+		{
+			name: "sandbox-network",
+			args: []string{"--sandbox", "--sandbox-network", "none"},
+			check: func(t *testing.T, addr string, open bool, sb, sbr *bool, sbi, sbn, sbm, sbc, sbu string) {
+				if sbn != "none" {
+					t.Errorf("sandbox-network = %q, want 'none'", sbn)
+				}
+			},
+		},
+		{
+			name: "sandbox-memory",
+			args: []string{"--sandbox", "--sandbox-memory", "512m"},
+			check: func(t *testing.T, addr string, open bool, sb, sbr *bool, sbi, sbn, sbm, sbc, sbu string) {
+				if sbm != "512m" {
+					t.Errorf("sandbox-memory = %q, want '512m'", sbm)
+				}
+			},
+		},
+		{
+			name: "sandbox-cpus",
+			args: []string{"--sandbox", "--sandbox-cpus", "2"},
+			check: func(t *testing.T, addr string, open bool, sb, sbr *bool, sbi, sbn, sbm, sbc, sbu string) {
+				if sbc != "2" {
+					t.Errorf("sandbox-cpus = %q, want '2'", sbc)
+				}
+			},
+		},
+		{
+			name: "sandbox-user",
+			args: []string{"--sandbox", "--sandbox-user", "1000:1000"},
+			check: func(t *testing.T, addr string, open bool, sb, sbr *bool, sbi, sbn, sbm, sbc, sbu string) {
+				if sbu != "1000:1000" {
+					t.Errorf("sandbox-user = %q, want '1000:1000'", sbu)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			addr, open, sb, sbr, sbi, sbn, sbm, sbc, sbu, err := serveSandboxFlags(tt.args)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			tt.check(t, addr, open, sb, sbr, sbi, sbn, sbm, sbc, sbu)
+		})
+	}
+}
+
+func TestServeCmd_UnknownFlag(t *testing.T) {
+	_, _, _, _, _, _, _, _, _, err := serveSandboxFlags([]string{"--bogus"})
+	if err == nil {
+		t.Fatal("expected error for unknown flag")
+	}
+}
+
 // TestServe_E2E_MultiToolCall verifies the WebUI event sequence when
 // the agent makes multiple tool calls in a single turn. This exercises
 // the same code path the WebUI uses for sub-agent delegation rendering.

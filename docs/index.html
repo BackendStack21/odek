@@ -468,7 +468,7 @@
     <div class="card">
       <div class="icon">💾</div>
       <h4>Persistent Memory</h4>
-      <p>Three tiers: facts, session buffer, and episodes. Merge-on-write via go-vector cosine similarity. Saves ~80% LLM calls on repeated topics.</p>
+      <p>Three tiers: facts (markdown on disk), session buffer, and searchable episodes. Merge-on-write via go-vector cosine similarity saves ~80% LLM calls. go-vector RP is ephemeral &mdash; rebuilt from text on every write, no embedding state to persist.</p>
     </div>
 
     <div class="card">
@@ -587,19 +587,14 @@ $ odek run --model gpt-4o --base-url https://api.openai.com/v1 <span class="hljs
   <h3>Commands</h3>
   <ul class="cmd-list">
     <li><span class="cmd">odek run &lt;task&gt;</span><span class="desc">Single-shot task</span></li>
-    <li><span class="cmd">odek run --session &lt;task&gt;</span><span class="desc">Save conversation as session</span></li>
-    <li><span class="cmd">odek continue [--id &lt;id&gt;] &lt;task&gt;</span><span class="desc">Resume a saved session</span></li>
+    <li><span class="cmd">odek run --sandbox &lt;task&gt;</span><span class="desc">Run in Docker sandbox</span></li>
     <li><span class="cmd">odek repl</span><span class="desc">Interactive multi-turn REPL</span></li>
-    <li><span class="cmd">odek session list</span><span class="desc">List recent sessions</span></li>
-    <li><span class="cmd">odek session show [id]</span><span class="desc">View session transcript</span></li>
-    <li><span class="cmd">odek session delete &lt;id&gt;</span><span class="desc">Delete a session</span></li>
-    <li><span class="cmd">odek session cleanup &lt;days&gt;</span><span class="desc">Delete old sessions</span></li>
-    <li><span class="cmd">odek skill list</span><span class="desc">List available skills</span></li>
-    <li><span class="cmd">odek skill import &lt;uri&gt;</span><span class="desc">Import skill from URL or file</span></li>
-    <li><span class="cmd">odek skill curate</span><span class="desc">Audit skill quality and overlap</span></li>
-    <li><span class="cmd">odek serve [--addr :8080]</span><span class="desc">Start Web UI server</span></li>
+    <li><span class="cmd">odek repl --id &lt;uuid&gt;</span><span class="desc">Resume a saved session</span></li>
+    <li><span class="cmd">odek serve</span><span class="desc">Start Web UI (http://127.0.0.1:8080)</span></li>
+    <li><span class="cmd">odek serve --sandbox</span><span class="desc">Web UI with Docker sandbox</span></li>
     <li><span class="cmd">odek subagent --goal &lt;s&gt;</span><span class="desc">Run a focused sub-task</span></li>
-    <li><span class="cmd">odek mcp [--sandbox]</span><span class="desc">Start MCP server</span></li>
+    <li><span class="cmd">odek mcp</span><span class="desc">Start MCP server (stdio)</span></li>
+    <li><span class="cmd">odek mcp --sse-addr :8081</span><span class="desc">Start MCP server (SSE)</span></li>
     <li><span class="cmd">odek init [--global]</span><span class="desc">Create config file</span></li>
   </ul>
 
@@ -624,6 +619,7 @@ $ odek run --model gpt-4o --base-url https://api.openai.com/v1 <span class="hljs
 
   <div class="doc-links">
     <a href="https://raw.githubusercontent.com/BackendStack21/kode/main/docs/CLI.md">CLI Reference<span>All commands, subcommands, flags, examples</span></a>
+    <a href="https://raw.githubusercontent.com/BackendStack21/kode/main/docs/CHEATSHEET.md">Cheat Sheet<span>Quick reference: commands, config, memory, subagents, env vars</span></a>
     <a href="https://raw.githubusercontent.com/BackendStack21/kode/main/docs/CONFIG.md">Configuration<span>Config files, env vars, priority chain</span></a>
     <a href="https://raw.githubusercontent.com/BackendStack21/kode/main/docs/PROVIDERS.md">Providers & Models<span>Deepseek, OpenAI, Anthropic, Ollama, vLLM, more</span></a>
     <a href="https://raw.githubusercontent.com/BackendStack21/kode/main/docs/MCP.md">MCP (Two-Way)<span>Serve tools + connect to external MCP servers</span></a>
