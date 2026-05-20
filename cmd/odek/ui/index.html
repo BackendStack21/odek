@@ -105,6 +105,7 @@ body {
   padding: 20px 24px;
   contain: content;
   scroll-behavior: smooth;
+  position: relative;
 }
 
 /* ── Message Bubbles ── */
@@ -869,6 +870,48 @@ body {
   letter-spacing: 0.3px;
 }
 
+/* ── File Attachments ── */
+#attach-btn {
+  background: transparent; border: 1px solid var(--border-subtle); border-radius: 8px;
+  color: var(--text-tertiary); cursor: pointer; font-size: 16px; line-height: 1;
+  padding: 6px 8px; transition: all 0.15s; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+#attach-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-subtle); }
+#attach-btn:active { transform: scale(0.95); }
+#attach-btn svg { width: 16px; height: 16px; }
+
+#file-chips {
+  display: flex; gap: 6px; flex-wrap: wrap; padding: 4px 12px 0;
+}
+.file-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--accent-subtle); border: 1px solid rgba(56,189,248,0.15);
+  border-radius: 6px; padding: 3px 8px; font-size: 11px; font-family: var(--font-mono);
+  color: var(--accent); animation: chipEnter 0.2s ease-out;
+}
+@keyframes chipEnter {
+  from { opacity: 0; transform: scale(0.9); }
+  to { opacity: 1; transform: scale(1); }
+}
+.file-chip .chip-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-chip .chip-size { color: var(--text-tertiary); font-size: 10px; }
+.file-chip .chip-remove {
+  cursor: pointer; opacity: 0.5; font-size: 14px; line-height: 1; padding: 0 2px;
+  transition: opacity 0.1s;
+}
+.file-chip .chip-remove:hover { opacity: 1; color: #ef4444; }
+
+/* Drag-over state */
+#messages.drag-over { outline: 2px dashed var(--accent); outline-offset: -8px; }
+#messages.drag-over::after {
+  content: 'Drop files to attach'; position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; color: var(--text-secondary);
+  background: rgba(10,10,11,0.6); backdrop-filter: blur(4px);
+  z-index: 100; pointer-events: none;
+}
+
 /* Input area top border gradient */
 #input-area {
   border-top: none;
@@ -1046,8 +1089,13 @@ body {
 
     <!-- Input -->
     <div id="input-area">
+      <div id="file-chips"></div>
       <div id="completion"></div>
       <div id="input-row">
+        <button id="attach-btn" title="Attach files">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+        </button>
+        <input type="file" id="file-input" multiple style="display:none"/>
         <div id="input-wrap">
           <textarea id="prompt" rows="1" placeholder="Ask odek to do something... (@ to reference)"></textarea>
         </div>
@@ -1121,6 +1169,7 @@ let sessionId = null;
 let busy = false;
 let history = JSON.parse(localStorage.getItem('kode_history') || '[]');
 let historyIdx = -1;
+let attachedFiles = []; // {name, size, content}
 
 // ── DOM ──
 const messagesEl = document.getElementById('messages');
@@ -1886,7 +1935,17 @@ window.copyCode = function(el) {
 
 // ── Send ──
 function send() {
-  const text = promptEl.value.trim();
+  let text = promptEl.value.trim();
+
+  // Prepend attached file content
+  if (attachedFiles.length > 0) {
+    const blocks = attachedFiles.map(f =>
+      '--- ' + f.name + ' (' + formatFileSize(f.size) + ') ---\n' + f.content + '\n--- end ' + f.name + ' ---'
+    );
+    text = blocks.join('\n\n') + '\n\n' + text;
+    clearAttachedFiles();
+  }
+
   if (!text || busy || !ws || ws.readyState !== WebSocket.OPEN) return;
 
   history.push(text);
@@ -1924,6 +1983,105 @@ function send() {
     session_id: sessionId
   }));
 }
+
+// ── File Attachments ──
+const fileInput = document.getElementById('file-input');
+const attachBtn = document.getElementById('attach-btn');
+const fileChips = document.getElementById('file-chips');
+
+function formatFileSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
+  return (bytes/(1024*1024)).toFixed(1) + ' MB';
+}
+
+function addAttachedFile(file) {
+  // Check total size (max 10MB total)
+  const totalSize = attachedFiles.reduce((s, f) => s + f.size, 0) + file.size;
+  if (totalSize > 10 * 1024 * 1024) {
+    showToast('Total attachment size exceeds 10 MB');
+    return;
+  }
+  attachedFiles.push(file);
+  renderFileChips();
+}
+
+function removeAttachedFile(index) {
+  attachedFiles.splice(index, 1);
+  renderFileChips();
+}
+
+function clearAttachedFiles() {
+  attachedFiles = [];
+  renderFileChips();
+}
+
+function renderFileChips() {
+  if (attachedFiles.length === 0) {
+    fileChips.innerHTML = '';
+    return;
+  }
+  fileChips.innerHTML = attachedFiles.map((f, i) =>
+    '<span class="file-chip">' +
+      '<span class="chip-name">' + escapeHtml(f.name) + '</span>' +
+      '<span class="chip-size">' + formatFileSize(f.size) + '</span>' +
+      '<span class="chip-remove" onclick="removeAttachedFile(' + i + ')">✕</span>' +
+    '</span>'
+  ).join('');
+}
+
+function readFileAsText(file) {
+  return new Promise((resolve, reject) => {
+    // Limit individual files to 5MB
+    if (file.size > 5 * 1024 * 1024) {
+      reject(new Error('File too large (max 5 MB): ' + file.name));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsText(file);
+  });
+}
+
+function handleFiles(fileList) {
+  const promises = [];
+  for (let i = 0; i < fileList.length; i++) {
+    const file = fileList[i];
+    promises.push(
+      readFileAsText(file).then(content => {
+        addAttachedFile({name: file.name, size: file.size, content});
+      }).catch(err => {
+        showToast(err.message);
+      })
+    );
+  }
+  return Promise.all(promises);
+}
+
+// Attach button
+attachBtn.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', () => {
+  handleFiles(fileInput.files);
+  fileInput.value = '';
+});
+
+// Drag and drop on messages area
+messagesEl.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  messagesEl.classList.add('drag-over');
+});
+messagesEl.addEventListener('dragleave', () => {
+  messagesEl.classList.remove('drag-over');
+});
+messagesEl.addEventListener('drop', (e) => {
+  e.preventDefault();
+  messagesEl.classList.remove('drag-over');
+  if (e.dataTransfer.files.length > 0) {
+    handleFiles(e.dataTransfer.files);
+    promptEl.focus();
+  }
+});
 
 // ── Input handlers ──
 promptEl.addEventListener('keydown', (e) => {

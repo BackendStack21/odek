@@ -128,7 +128,7 @@ func serveCmd(args []string) error {
 
 	fmt.Fprintf(os.Stderr, "odek serve ⚡  http://%s\n", listener.Addr())
 	fmt.Fprintf(os.Stderr, "  WebSocket: ws://%s/ws\n", listener.Addr())
-	fmt.Fprintf(os.Stderr, "  Type @ in the input to reference files and sessions.\n")
+	fmt.Fprintf(os.Stderr, "  Type @ to reference files, drop or attach files inline.\n")
 
 	if openBrowser {
 		openInBrowser("http://" + listener.Addr().String())
