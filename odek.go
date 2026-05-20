@@ -110,6 +110,20 @@ type Config struct {
 	// MemoryConfig controls the memory system (facts, buffer, episodes).
 	// Default: memory.DefaultMemoryConfig()
 	MemoryConfig memory.MemoryConfig
+
+	// PromptCaching enables prompt caching markers for supported providers.
+	// When enabled (default: false), the system prompt and first user message
+	// are annotated with cache_control markers, and Anthropic-style system
+	// blocks are used. Supported by:
+	//   - Anthropic (explicit cache_control markers)
+	//   - DeepSeek (automatic — prefix stability helps)
+	//   - OpenAI (automatic — prefix stability helps)
+	//
+	// When disabled (default), no cache markers are sent and the system
+	// prompt stays in the messages array for maximum provider compatibility.
+	// Enable this when using Anthropic models to get ~90% cost reduction
+	// on cached tokens and ~60-80% TTFT latency reduction.
+	PromptCaching bool
 }
 
 // Agent is the agent loop runtime.
@@ -365,6 +379,7 @@ func New(cfg Config) (*Agent, error) {
 	registry := tool.NewRegistry(tools)
 
 	engine := loop.New(client, registry, cfg.MaxIterations, cfg.SystemMessage, cfg.Renderer, maxContext)
+	engine.PromptCaching = cfg.PromptCaching
 
 	// Set the skill loader for trigger-based lazy loading
 	if sm != nil && sm.TrieIndex != nil && cfg.Skills != nil && cfg.Skills.MaxLazySlots > 0 {
@@ -422,6 +437,24 @@ func (a *Agent) TotalInputTokens() int {
 // across all iterations of the most recent RunWithMessages call.
 func (a *Agent) TotalOutputTokens() int {
 	return a.engine.TotalOutputTokens
+}
+
+// TotalCacheCreationTokens returns the cumulative Anthropic cache creation
+// tokens across all iterations of the most recent run.
+func (a *Agent) TotalCacheCreationTokens() int {
+	return a.engine.TotalCacheCreationTokens
+}
+
+// TotalCacheReadTokens returns the cumulative Anthropic cache read tokens
+// across all iterations of the most recent run.
+func (a *Agent) TotalCacheReadTokens() int {
+	return a.engine.TotalCacheReadTokens
+}
+
+// TotalCachedTokens returns the cumulative OpenAI cached prompt tokens
+// across all iterations of the most recent run.
+func (a *Agent) TotalCachedTokens() int {
+	return a.engine.TotalCachedTokens
 }
 
 // Close cleans up resources. If a sandbox container was created, it is

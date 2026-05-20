@@ -382,7 +382,7 @@ func TestClient_Call_Success(t *testing.T) {
 	defer server.Close()
 
 	c := New(server.URL, "sk-test", "test-model", "", 0)
-	result, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
+	result, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, nil)
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
 	}
@@ -399,7 +399,7 @@ func TestClient_Call_HTTPError(t *testing.T) {
 	defer server.Close()
 
 	c := New(server.URL, "sk-test", "test-model", "", 0)
-	_, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
+	_, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for 500 response")
 	}
@@ -415,7 +415,7 @@ func TestClient_Call_WithThinking(t *testing.T) {
 	defer server.Close()
 
 	c := New(server.URL, "sk-test", "deepseek-chat", "enabled", 0)
-	result, err := c.Call(context.Background(), []Message{{Role: "user", Content: "think"}}, nil)
+	result, err := c.Call(context.Background(), []Message{{Role: "user", Content: "think"}}, nil, nil)
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
 	}
@@ -443,7 +443,7 @@ func TestClient_Call_WithReasoningEffort(t *testing.T) {
 	defer server.Close()
 
 	c := New(server.URL, "sk-test", "o1", "high", 0)
-	result, err := c.Call(context.Background(), []Message{{Role: "user", Content: "reason"}}, nil)
+	result, err := c.Call(context.Background(), []Message{{Role: "user", Content: "reason"}}, nil, nil)
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
 	}
@@ -458,7 +458,7 @@ func TestClient_Call_WithReasoningEffort(t *testing.T) {
 
 func TestClient_Call_InvalidEndpoint(t *testing.T) {
 	c := New("http://127.0.0.1:1", "sk-test", "model", "", 0)
-	_, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
+	_, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, nil)
 	if err == nil {
 		t.Fatal("expected connection error")
 	}
@@ -483,7 +483,7 @@ func TestClient_Call_WithTools(t *testing.T) {
 			},
 		},
 	}
-	result, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, tools)
+	result, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, tools)
 	if err != nil {
 		t.Fatalf("Call() with tools error: %v", err)
 	}
@@ -501,7 +501,7 @@ func TestClient_Call_Unauthorized(t *testing.T) {
 	defer server.Close()
 
 	c := New(server.URL, "sk-bad", "test-model", "", 0)
-	_, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
+	_, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for 401 response")
 	}
@@ -516,7 +516,7 @@ func TestClient_Call_InvalidJSONResponse(t *testing.T) {
 	defer server.Close()
 
 	c := New(server.URL, "sk-test", "test-model", "", 0)
-	_, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
+	_, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON response")
 	}
@@ -597,7 +597,7 @@ func TestClient_Call_ReturnsUsage(t *testing.T) {
 	defer server.Close()
 
 	c := New(server.URL, "sk-test", "test-model", "", 0)
-	result, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
+	result, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -672,7 +672,7 @@ func TestClient_Call_FlashModelNoThinkingField(t *testing.T) {
 
 	// Flash: model=deepseek-v4-flash, thinking="" (the default)
 	c := New(server.URL, "sk-test", "deepseek-v4-flash", "", 0)
-	result, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
+	result, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, nil)
 	if err != nil {
 		t.Fatalf("Flash Call() error: %v", err)
 	}
@@ -710,7 +710,7 @@ func TestClient_Call_FlashVsProThinkingContrast(t *testing.T) {
 		defer server.Close()
 
 		c := New(server.URL, "sk-test", "deepseek-v4-flash", "", 0)
-		_, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
+		_, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -729,7 +729,7 @@ func TestClient_Call_FlashVsProThinkingContrast(t *testing.T) {
 		defer server.Close()
 
 		c := New(server.URL, "sk-test", "deepseek-v4-pro", "enabled", 0)
-		_, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
+		_, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -745,4 +745,207 @@ func TestClient_Call_FlashVsProThinkingContrast(t *testing.T) {
 			t.Errorf("Pro: thinking.type = %v, want 'enabled'", thinkingMap["type"])
 		}
 	})
+}
+
+func TestParseResponse_AnthropicCacheMetrics(t *testing.T) {
+	raw := `{
+		"choices": [{"message": {"content": "cached response"}}],
+		"usage": {
+			"prompt_tokens": 500,
+			"completion_tokens": 50,
+			"cache_creation_input_tokens": 400,
+			"cache_read_input_tokens": 100
+		}
+	}`
+	result, err := parseResponse([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CacheCreationTokens != 400 {
+		t.Errorf("CacheCreationTokens = %d, want 400", result.CacheCreationTokens)
+	}
+	if result.CacheReadTokens != 100 {
+		t.Errorf("CacheReadTokens = %d, want 100", result.CacheReadTokens)
+	}
+}
+
+func TestParseResponse_OpenAICacheMetrics(t *testing.T) {
+	raw := `{
+		"choices": [{"message": {"content": "openai response"}}],
+		"usage": {
+			"prompt_tokens": 300,
+			"completion_tokens": 30,
+			"prompt_tokens_details": {"cached_tokens": 200}
+		}
+	}`
+	result, err := parseResponse([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CachedTokens != 200 {
+		t.Errorf("CachedTokens = %d, want 200", result.CachedTokens)
+	}
+}
+
+func TestApplyCacheMarkers_WithSystemPrompt(t *testing.T) {
+	messages := []Message{
+		{Role: "system", Content: "You are a helpful assistant."},
+		{Role: "user", Content: "List the files."},
+	}
+
+	annotated, system := ApplyCacheMarkers(messages)
+
+	for _, m := range annotated {
+		if m.Role == "system" {
+			t.Error("system message should be removed from messages array")
+		}
+	}
+
+	if len(system) != 1 {
+		t.Fatalf("expected 1 system block, got %d", len(system))
+	}
+	if system[0].Type != "text" {
+		t.Errorf("SystemBlock.Type = %q, want 'text'", system[0].Type)
+	}
+	if system[0].Text != "You are a helpful assistant." {
+		t.Errorf("SystemBlock.Text = %q", system[0].Text)
+	}
+	if system[0].CacheControl == nil || system[0].CacheControl.Type != "ephemeral" {
+		t.Error("system block should have cache_control: ephemeral")
+	}
+
+	if len(annotated) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(annotated))
+	}
+	if annotated[0].CacheControl == nil || annotated[0].CacheControl.Type != "ephemeral" {
+		t.Error("first user message should have cache_control: ephemeral")
+	}
+}
+
+func TestApplyCacheMarkers_NoSystemPrompt(t *testing.T) {
+	messages := []Message{
+		{Role: "user", Content: "Hello!"},
+	}
+
+	annotated, system := ApplyCacheMarkers(messages)
+
+	if len(system) != 0 {
+		t.Errorf("expected 0 system blocks, got %d", len(system))
+	}
+	if len(annotated) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(annotated))
+	}
+	if annotated[0].CacheControl == nil || annotated[0].CacheControl.Type != "ephemeral" {
+		t.Error("first user message should have cache_control: ephemeral")
+	}
+}
+
+func TestApplyCacheMarkers_OnlyFirstUserGetsMarker(t *testing.T) {
+	messages := []Message{
+		{Role: "system", Content: "system prompt"},
+		{Role: "user", Content: "first request"},
+		{Role: "assistant", Content: "thinking..."},
+		{Role: "user", Content: "follow-up"},
+	}
+
+	annotated, _ := ApplyCacheMarkers(messages)
+
+	if len(annotated) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(annotated))
+	}
+
+	if annotated[0].CacheControl == nil || annotated[0].CacheControl.Type != "ephemeral" {
+		t.Error("first user message should have cache_control: ephemeral")
+	}
+
+	if annotated[2].CacheControl != nil {
+		t.Error("second user message should NOT have cache_control")
+	}
+}
+
+func TestCallParamsMarshaling_WithSystemField(t *testing.T) {
+	body := CallParams{
+		Model: "claude-sonnet-4",
+		Messages: []Message{
+			{Role: "user", Content: "hello", CacheControl: &CacheControl{Type: "ephemeral"}},
+		},
+		System: []SystemBlock{
+			{Type: "text", Text: "system prompt", CacheControl: &CacheControl{Type: "ephemeral"}},
+		},
+		MaxTokens: 4096,
+		Stream:    false,
+	}
+
+	data, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+
+	if v, ok := result["max_tokens"]; !ok || v != float64(4096) {
+		t.Errorf("max_tokens = %v, want 4096", v)
+	}
+
+	sys, ok := result["system"]
+	if !ok {
+		t.Fatal("system field should be present")
+	}
+	sysArr, ok := sys.([]any)
+	if !ok || len(sysArr) != 1 {
+		t.Fatalf("system should be an array with 1 element, got %v", sys)
+	}
+	sysMap := sysArr[0].(map[string]any)
+	if sysMap["type"] != "text" {
+		t.Errorf("system[0].type = %q", sysMap["type"])
+	}
+	if sysMap["text"] != "system prompt" {
+		t.Errorf("system[0].text = %q", sysMap["text"])
+	}
+
+	msgs := result["messages"].([]any)
+	firstMsg := msgs[0].(map[string]any)
+	cc, ok := firstMsg["cache_control"]
+	if !ok {
+		t.Fatal("first message should have cache_control")
+	}
+	ccMap := cc.(map[string]any)
+	if ccMap["type"] != "ephemeral" {
+		t.Errorf("cache_control.type = %q", ccMap["type"])
+	}
+}
+
+func TestCallParamsMarshaling_SystemOmitEmpty(t *testing.T) {
+	body := CallParams{
+		Model:    "deepseek-chat",
+		Messages: []Message{{Role: "user", Content: "hi"}},
+	}
+
+	data, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var result map[string]any
+	json.Unmarshal(data, &result)
+
+	if _, ok := result["system"]; ok {
+		t.Error("system field should be omitted when empty")
+	}
+	if _, ok := result["max_tokens"]; ok {
+		t.Error("max_tokens should be omitted when 0")
+	}
+}
+
+func TestClient_NewWithMaxTokens(t *testing.T) {
+	c := NewWithMaxTokens("https://api.example.com", "sk-key", "model", "", 8192, 0)
+	if c.MaxTokens != 8192 {
+		t.Errorf("MaxTokens = %d, want 8192", c.MaxTokens)
+	}
+	if c.BaseURL != "https://api.example.com" {
+		t.Errorf("BaseURL = %q", c.BaseURL)
+	}
 }

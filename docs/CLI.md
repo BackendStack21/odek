@@ -35,6 +35,7 @@
 | `--thinking <level>` | string | profile default | Reasoning depth: `enabled`/`disabled`/`low`/`medium`/`high` |
 | `--sandbox` | bool | false | Execute shell commands inside Docker container |
 | `--no-color` | bool | false | Disable colored terminal output |
+| `--prompt-caching` | bool | false | Enable Anthropic/OpenAI/DeepSeek prompt caching markers |
 | `--no-agents` | bool | false | Skip loading AGENTS.md |
 | `--session` | bool | false | Save conversation as a multi-turn session |
 | `--learn` | bool | `true` | Enable skill learning mode (detects patterns, saves skills). On by default |

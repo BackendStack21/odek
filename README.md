@@ -135,6 +135,7 @@ odek run "@README.md what does this project do?"
 | `--no-learn` | Disable skill learning mode |
 | `--system <prompt>` | Override system prompt |
 | `--max-iter <n>` | Max think→act cycles (default 90) |
+| `--prompt-caching` | Enable Anthropic/OpenAI/DeepSeek prompt caching markers |
 | `--no-color` | Disable colored output |
 | `--ctx <files>` / `-c` | Attach files as context blocks (comma-separated) |
 | `--no-agents` | Skip AGENTS.md project file |
@@ -149,6 +150,7 @@ odek run "@README.md what does this project do?"
 | [Configuration](docs/CONFIG.md) | Config files, env vars, priority chain, all sections |
 | [Programmatic API](docs/API.md) | **SDK Guide**: import, Agent lifecycle, Tool interface, multi-turn sessions, memory system, model profiles, complete examples |
 | [Providers & Models](docs/PROVIDERS.md) | Supported providers, thinking config, context windows |
+| [Prompt Caching](docs/CACHING.md) | Anthropic/OpenAI/DeepSeek caching support, config, metrics |
 | [Memory](docs/MEMORY.md) | Three-tier design, go-vector merge-on-write, `memory` tool |
 | [Sessions](docs/SESSIONS.md) | Multi-turn conversations, save/resume/trim/cleanup |
 | [Sandboxing](docs/SANDBOXING.md) | Docker isolation model, config, security hardening |

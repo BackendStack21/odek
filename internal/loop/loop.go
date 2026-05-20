@@ -36,10 +36,21 @@ type Engine struct {
 
 	toolEventHandler ToolEventHandler // optional: fires during tool execution
 
+	// PromptCaching enables Anthropic/OpenAI/DeepSeek prompt caching markers.
+	// When enabled, the system prompt and first user message are annotated
+	// with cache_control markers, and the system prompt is moved to the
+	// dedicated "system" field for Anthropic compatibility.
+	PromptCaching bool
+
 	// Token accounting — accumulated across all iterations of the most recent run.
 	// Reset on each Run/RunWithMessages call and read by callers (e.g. WebUI).
 	TotalInputTokens  int
 	TotalOutputTokens int
+
+	// Cache metrics accumulated across all iterations.
+	TotalCacheCreationTokens int // Anthropic: tokens written to cache
+	TotalCacheReadTokens     int // Anthropic: tokens read from cache
+	TotalCachedTokens        int // OpenAI: cached prompt tokens
 }
 
 // New creates a new loop Engine.
@@ -246,7 +257,15 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 
 		// THINK (timed)
 		start := time.Now()
-		result, err := e.client.Call(ctx, messages, tools)
+
+		// Apply prompt caching markers when enabled
+		var systemBlocks []llm.SystemBlock
+		callMsgs := messages
+		if e.PromptCaching {
+			callMsgs, systemBlocks = llm.ApplyCacheMarkers(messages)
+		}
+
+		result, err := e.client.Call(ctx, callMsgs, systemBlocks, tools)
 		latency := time.Since(start)
 		if err != nil {
 			return "", messages, fmt.Errorf("iteration %d: %w", i, err)
@@ -260,6 +279,11 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		// Accumulate token usage across iterations
 		e.TotalInputTokens += result.InputTokens
 		e.TotalOutputTokens += result.OutputTokens
+
+		// Accumulate cache metrics
+		e.TotalCacheCreationTokens += result.CacheCreationTokens
+		e.TotalCacheReadTokens += result.CacheReadTokens
+		e.TotalCachedTokens += result.CachedTokens
 
 		// No tool calls = final answer
 		if len(result.ToolCalls) == 0 {
