@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -489,5 +490,140 @@ func TestRecordUsage_Concurrent(t *testing.T) {
 				t.Error("LastUsed should be non-zero after RecordUsage")
 			}
 		}
+	}
+}
+
+// ── Notifier Integration Tests ─────────────────────────────────────────
+
+func TestRecordUsage_FiresNotifierEvent(t *testing.T) {
+	dir := t.TempDir()
+	writeTestSkill(t, dir, "notify-test", "## Overview\nTest\n## Common Pitfalls\n- None\n## Verification\n- Check")
+
+	sm := NewSkillManager(dir, "")
+
+	var events []SkillEvent
+	cb := &callbackNotifier{fn: func(e SkillEvent) { events = append(events, e) }}
+	sm.SetNotifier(cb)
+
+	sm.RecordUsage("notify-test")
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Type != "used" {
+		t.Errorf("expected type 'used', got %q", events[0].Type)
+	}
+	if events[0].SkillName != "notify-test" {
+		t.Errorf("expected skill name 'notify-test', got %q", events[0].SkillName)
+	}
+	if events[0].Timestamp.IsZero() {
+		t.Error("timestamp should be non-zero")
+	}
+}
+
+func TestSkillDelete_FiresNotifierEvent(t *testing.T) {
+	dir := t.TempDir()
+	writeTestSkill(t, dir, "to-delete", "## Overview\nTest\n## Common Pitfalls\n- None\n## Verification\n- Check")
+
+	sm := NewSkillManager(dir, "")
+
+	var events []SkillEvent
+	cb := &callbackNotifier{fn: func(e SkillEvent) { events = append(events, e) }}
+	sm.SetNotifier(cb)
+
+	tool := &SkillDeleteTool{Manager: sm}
+	result, err := tool.Call(`{"name": "to-delete"}`)
+	if err != nil {
+		t.Fatalf("delete failed: %v", err)
+	}
+	if !strings.Contains(result, "Deleted") {
+		t.Errorf("unexpected result: %q", result)
+	}
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Type != "deleted" {
+		t.Errorf("expected type 'deleted', got %q", events[0].Type)
+	}
+	if events[0].SkillName != "to-delete" {
+		t.Errorf("expected skill name 'to-delete', got %q", events[0].SkillName)
+	}
+}
+
+func TestSkillSave_FiresNotifierEvent(t *testing.T) {
+	dir := t.TempDir()
+
+	sm := NewSkillManager(dir, "")
+
+	var events []SkillEvent
+	cb := &callbackNotifier{fn: func(e SkillEvent) { events = append(events, e) }}
+	sm.SetNotifier(cb)
+
+	tool := &SkillSaveTool{Manager: sm}
+	// Build a valid JSON body — use fmt.Sprintf with proper escaping
+	body := strings.ReplaceAll(`## Overview
+This is a test skill for notifier validation.
+
+## Step-by-Step
+
+1. Run echo hello
+2. Verify output matches
+
+## Common Pitfalls
+
+- None — this is a test skill only
+
+## Verification
+
+- Check that the output matches the expected result string exactly.
+- Run the command again and confirm idempotent behavior.
+- This extra text is just to reach the minimum 300 character body length requirement for skill_save.`, "\n", "\\n")
+	args := fmt.Sprintf(`{"name": "test-save", "description": "A test skill for notifier", "body": "%s"}`, body)
+	result, err := tool.Call(args)
+	if err != nil {
+		t.Fatalf("save failed: %v", err)
+	}
+	if !strings.Contains(result, "Saved") {
+		t.Errorf("unexpected result: %q", result)
+	}
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Type != "saved" {
+		t.Errorf("expected type 'saved', got %q", events[0].Type)
+	}
+	if events[0].SkillName != "test-save" {
+		t.Errorf("expected skill name 'test-save', got %q", events[0].SkillName)
+	}
+}
+
+func TestSetNotifier_Nil(t *testing.T) {
+	dir := t.TempDir()
+	sm := NewSkillManager(dir, "")
+	sm.SetNotifier(nil)
+	// Should not panic — defaults to NoopNotifier
+	sm.RecordUsage("non-existent")
+}
+
+func TestSetNotifier_MultiNotifier(t *testing.T) {
+	dir := t.TempDir()
+	writeTestSkill(t, dir, "multi-test", "## Overview\nTest\n## Common Pitfalls\n- None\n## Verification\n- Check")
+
+	sm := NewSkillManager(dir, "")
+
+	var events1, events2 []SkillEvent
+	n1 := &callbackNotifier{fn: func(e SkillEvent) { events1 = append(events1, e) }}
+	n2 := &callbackNotifier{fn: func(e SkillEvent) { events2 = append(events2, e) }}
+
+	sm.SetNotifier(NewMultiNotifier(n1, n2))
+	sm.RecordUsage("multi-test")
+
+	if len(events1) != 1 || len(events2) != 1 {
+		t.Fatalf("both notifiers should receive events: n1=%d, n2=%d", len(events1), len(events2))
+	}
+	if events1[0].Type != "used" || events2[0].Type != "used" {
+		t.Error("both notifiers should receive 'used' event")
 	}
 }

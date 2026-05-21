@@ -22,11 +22,14 @@ const MaxSkillBodySize = 1_048_576 // 1MB
 // It wraps the skill store and provides access to the scan result.
 // Thread-safe: use GetResult/GetTrieIndex for concurrent access.
 type SkillManager struct {
-	UserDir    string
-	ProjectDir string
-	Result     *ScanResult
-	TrieIndex  *triggerIndex
-	mu         sync.RWMutex
+	UserDir       string
+	ProjectDir    string
+	Result        *ScanResult
+	TrieIndex     *triggerIndex    // kept for backward compat (GetTrieIndex)
+	VectorMatcher *VectorMatcher   // semantic vector matcher (go-vector RP)
+	ScoredMatcher *ScoredMatcher   // NEW: scoring-based matcher (replaces trie by default)
+	Notifier      SkillNotifier    // receives skill lifecycle events
+	mu            sync.RWMutex
 }
 
 // NewSkillManager creates a SkillManager with the given directories.
@@ -35,9 +38,20 @@ func NewSkillManager(userDir, projectDir string) *SkillManager {
 	sm := &SkillManager{
 		UserDir:    userDir,
 		ProjectDir: projectDir,
+		Notifier:   &NoopNotifier{},
 	}
 	sm.Reload()
 	return sm
+}
+
+// SetNotifier replaces the current notifier. If n is nil, a NoopNotifier is used.
+func (sm *SkillManager) SetNotifier(n SkillNotifier) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if n == nil {
+		n = &NoopNotifier{}
+	}
+	sm.Notifier = n
 }
 
 // Reload rescans skill directories and rebuilds the trigger index.
@@ -55,6 +69,12 @@ func (sm *SkillManager) reloadLocked() {
 
 	// Build index from all lazy skills only (auto-load skills are always in context)
 	sm.TrieIndex = BuildTriggerIndex(sm.Result.Lazy)
+
+	// Build scoring-based matcher (fixes AND-lock, adds stemming + synonyms)
+	sm.ScoredMatcher = NewScoredMatcher(sm.Result.Lazy, DefaultScoredConfig())
+
+	// Build vector matcher for semantic skill matching (go-vector RP)
+	sm.VectorMatcher = NewVectorMatcher(sm.Result.Lazy, DefaultMatcherConfig)
 }
 
 // GetResult returns a read-locked copy of the scan result.
@@ -81,20 +101,33 @@ func (sm *SkillManager) GetTrieIndex() *triggerIndex {
 // Safe for concurrent access. Called when a skill is loaded into context.
 func (sm *SkillManager) RecordUsage(name string) {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
+	found := false
 	for i := range sm.Result.AutoLoad {
 		if sm.Result.AutoLoad[i].Name == name {
 			sm.Result.AutoLoad[i].LastUsed = time.Now().UTC()
 			sm.Result.AutoLoad[i].UsageCount++
-			return
+			found = true
+			break
 		}
 	}
-	for i := range sm.Result.Lazy {
-		if sm.Result.Lazy[i].Name == name {
-			sm.Result.Lazy[i].LastUsed = time.Now().UTC()
-			sm.Result.Lazy[i].UsageCount++
-			return
+	if !found {
+		for i := range sm.Result.Lazy {
+			if sm.Result.Lazy[i].Name == name {
+				sm.Result.Lazy[i].LastUsed = time.Now().UTC()
+				sm.Result.Lazy[i].UsageCount++
+				break
+			}
 		}
+	}
+	notifier := sm.Notifier
+	sm.mu.Unlock()
+
+	if notifier != nil {
+		notifier.Notify(SkillEvent{
+			Type:      "used",
+			SkillName: name,
+			Timestamp: time.Now().UTC(),
+		})
 	}
 }
 
@@ -362,6 +395,15 @@ func (t *SkillSaveTool) Call(args string) (string, error) {
 	// Reload to pick up the new skill
 	t.Manager.Reload()
 
+	// Fire saved event
+	if t.Manager.Notifier != nil {
+		t.Manager.Notifier.Notify(SkillEvent{
+			Type:      "saved",
+			SkillName: skill.Name,
+			Timestamp: time.Now().UTC(),
+		})
+	}
+
 	result := fmt.Sprintf("✓ Saved skill %q to %s\n", skill.Name, t.Manager.UserDir)
 	if len(warnings) > 0 {
 		result += fmt.Sprintf("⚠  Quality warnings:\n  - %s\n", strings.Join(warnings, "\n  - "))
@@ -510,6 +552,16 @@ func (t *SkillDeleteTool) Call(args string) (string, error) {
 	}
 
 	t.Manager.Reload()
+
+	// Fire deletion event
+	if t.Manager.Notifier != nil {
+		t.Manager.Notifier.Notify(SkillEvent{
+			Type:      "deleted",
+			SkillName: input.Name,
+			Timestamp: time.Now().UTC(),
+		})
+	}
+
 	return fmt.Sprintf("✓ Deleted skill %q", input.Name), nil
 }
 

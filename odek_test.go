@@ -1,15 +1,19 @@
 package odek
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/BackendStack21/kode/internal/llm"
+	"github.com/BackendStack21/kode/internal/render"
+	"github.com/BackendStack21/kode/internal/skills"
 )
 
 func TestConfigDefaults(t *testing.T) {
@@ -960,5 +964,119 @@ func TestAgent_Memory_Configured(t *testing.T) {
 	mem := agent.Memory()
 	if mem == nil {
 		t.Log("Memory() returned nil (memory not configured — acceptable)")
+	}
+}
+
+// ── Skill Event Handler Integration Tests ──────────────────────────────
+
+func TestAgent_SkillEventHandler_AutoLoad(t *testing.T) {
+	// Create a temp dir with an auto-load skill
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "auto-skill")
+	os.MkdirAll(skillDir, 0755)
+	content := "---\nname: auto-skill\nodek:\n  auto_load: true\n  trigger:\n    topic: test\n---\n\n## Overview\nThis is an auto-load test skill.\n\n## Common Pitfalls\n- None\n\n## Verification\n- Check"
+	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0644)
+
+	sm := skills.NewSkillManager(dir, "")
+
+	var events []skills.SkillEvent
+	cfg := Config{
+		APIKey:             "sk-test",
+		Skills:             &skills.SkillsConfig{MaxAutoLoad: 3, MaxLazySlots: 5},
+		SkillManager:       sm,
+		SkillEventHandler: func(event skills.SkillEvent) {
+			events = append(events, event)
+		},
+	}
+
+	agent, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer agent.Close()
+
+	// Should have fired "autoloaded" event
+	if len(events) == 0 {
+		t.Fatal("expected at least 1 event (autoloaded), got 0")
+	}
+
+	foundAuto := false
+	for _, e := range events {
+		if e.Type == "autoloaded" {
+			foundAuto = true
+			if len(e.Skills) != 1 || e.Skills[0] != "auto-skill" {
+				t.Errorf("autoloaded: expected [auto-skill], got %v", e.Skills)
+			}
+		}
+	}
+	if !foundAuto {
+		t.Errorf("no 'autoloaded' event found among events: %+v", events)
+	}
+}
+
+func TestAgent_SkillEventHandler_FiresViaMultiNotifier(t *testing.T) {
+	// Verify that both SkillEventHandler and Renderer receive events.
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "multi-skill")
+	os.MkdirAll(skillDir, 0755)
+	content := "---\nname: multi-skill\nodek:\n  auto_load: true\n  trigger:\n    topic: test\n---\n\n## Overview\nTest.\n\n## Common Pitfalls\n- None\n\n## Verification\n- Check"
+	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0644)
+
+	sm := skills.NewSkillManager(dir, "")
+
+	var skillEvents []skills.SkillEvent
+	var buf bytes.Buffer
+	rend := render.New(&buf, false)
+
+	cfg := Config{
+		APIKey:       "sk-test",
+		Skills:       &skills.SkillsConfig{MaxAutoLoad: 3, MaxLazySlots: 5},
+		SkillManager: sm,
+		Renderer:     rend,
+		SkillEventHandler: func(event skills.SkillEvent) {
+			skillEvents = append(skillEvents, event)
+		},
+	}
+
+	agent, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer agent.Close()
+
+	// SkillEventHandler should fire
+	if len(skillEvents) == 0 {
+		t.Fatal("SkillEventHandler should have received autoloaded event")
+	}
+
+	// Renderer should also have produced output
+	out := buf.String()
+	if !strings.Contains(out, "Auto-loaded") {
+		t.Errorf("renderer output should contain 'Auto-loaded', got: %q", out)
+	}
+	if !strings.Contains(out, "multi-skill") {
+		t.Errorf("renderer output should contain 'multi-skill', got: %q", out)
+	}
+}
+
+func TestAgent_SkillEventHandler_NilSkills(t *testing.T) {
+	// When Skills is nil, no SkillManager is created, so no events.
+	var events []skills.SkillEvent
+	cfg := Config{
+		APIKey: "sk-test",
+		Skills: nil,
+		SkillEventHandler: func(event skills.SkillEvent) {
+			events = append(events, event)
+		},
+	}
+
+	agent, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer agent.Close()
+
+	if len(events) != 0 {
+		t.Errorf("expected 0 events when skills disabled, got %d", len(events))
 	}
 }

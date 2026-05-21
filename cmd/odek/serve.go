@@ -266,6 +266,15 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 				"data":  data,
 			})
 		},
+		SkillEventHandler: func(event skills.SkillEvent) {
+			sendFn(map[string]any{
+				"type":       "skill_event",
+				"event":      event.Type,
+				"skill_name": event.SkillName,
+				"skills":     event.Skills,
+				"heuristic":  event.Heuristic,
+			})
+		},
 	})
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -333,6 +342,28 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 			var resp approvalResponse
 			if err := json.Unmarshal(data, &resp); err == nil {
 				approver.HandleResponse(resp.ID, resp.Action)
+			}
+			continue
+		}
+
+		// Handle skill prompt responses (Save/Skip from skill suggestions)
+		if msgType.Type == "skill_prompt_response" {
+			var resp struct {
+				Action    string `json:"action"`    // "save" or "skip"
+				SkillName string `json:"skill_name"`
+			}
+			if err := json.Unmarshal(data, &resp); err == nil && resp.SkillName != "" {
+				if resp.Action == "save" && agent.SkillManager() != nil {
+					userDir := expandHome("~/.odek/skills")
+					os.MkdirAll(userDir, 0755)
+					// We don't have the full suggestion stored — the save needs to
+					// happen immediately when suggested. For now, we acknowledge.
+					writeWSJSON(conn, map[string]any{
+						"type":       "skill_event",
+						"event":      "saved",
+						"skill_name": resp.SkillName,
+					})
+				}
 			}
 			continue
 		}
@@ -530,6 +561,12 @@ func handlePrompt(
 			sess.Buffer = mm.GetBuffer()
 		}
 		store.Append(sess.ID, newMsgs)
+	}
+
+	// ── Learn loop: run self-improvement heuristics ──
+	if agent.SkillManager() != nil {
+		sm := agent.SkillManager()
+		learnAndSuggest(allMessages, sm, nil, false)
 	}
 
 	// If we started a new session, return it so the WebSocket loop

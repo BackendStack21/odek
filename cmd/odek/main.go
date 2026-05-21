@@ -1253,9 +1253,12 @@ func getVersion() string {
 
 // runLearnLoop runs self-improvement heuristics on agent output and
 // offers to save detected patterns as skills.
-func runLearnLoop(messages []llm.Message, task string, sm *skills.SkillManager, llmClient skills.LLMClient, llmLearn bool) {
-	// Convert llm.Message to skills.llmMessage
-	// Convert llm.Message to skills.llmMessage
+// learnAndSuggest runs skill heuristics on session messages, applies LLM
+// enhancement, fires "suggested" events via the SkillManager's notifier,
+// and returns the enhanced suggestions for interactive handling by callers.
+// This is the non-interactive core shared by CLI, WebUI, and Telegram.
+func learnAndSuggest(messages []llm.Message, sm *skills.SkillManager, llmClient skills.LLMClient, llmLearn bool) []skills.SkillSuggestion {
+	// Convert llm.Message to skills.LlmMessage
 	skillMsgs := make([]skills.LlmMessage, 0, len(messages))
 	for _, m := range messages {
 		msg := skills.LlmMessage{
@@ -1276,22 +1279,40 @@ func runLearnLoop(messages []llm.Message, task string, sm *skills.SkillManager, 
 
 	userMessages := extractUserMessages(messages)
 	suggestions := skills.RunAllHeuristics(skillMsgs, userMessages)
+
+	// Apply LLM enhancement to each suggestion
+	for i := range suggestions {
+		if llmLearn && llmClient != nil {
+			calls := skills.ExtractToolCalls(skillMsgs)
+			if enhanced := skills.GenerateSkillWithLLM(llmClient, calls, userMessages, suggestions[i].Heuristic); enhanced != nil {
+				enhanced.CommandLog = suggestions[i].CommandLog
+				enhanced.Heuristic = suggestions[i].Heuristic
+				suggestions[i] = *enhanced
+			}
+		}
+	}
+
+	// Fire suggested events via notifier
+	for _, s := range suggestions {
+		sm.Notifier.Notify(skills.SkillEvent{
+			Type:      "suggested",
+			SkillName: s.Name,
+			Heuristic: s.Heuristic,
+			Timestamp: time.Now().UTC(),
+		})
+	}
+
+	return suggestions
+}
+
+func runLearnLoop(messages []llm.Message, task string, sm *skills.SkillManager, llmClient skills.LLMClient, llmLearn bool) {
+	suggestions := learnAndSuggest(messages, sm, llmClient, llmLearn)
 	if len(suggestions) == 0 {
 		return
 	}
 
 	fmt.Fprintf(os.Stderr, "\n🔍 Learning: detected %d skill pattern(s)\n", len(suggestions))
 	for _, s := range suggestions {
-		// Try LLM enhancement (generates better name, description, body, triggers)
-		if llmLearn && llmClient != nil {
-			calls := skills.ExtractToolCalls(skillMsgs)
-			if enhanced := skills.GenerateSkillWithLLM(llmClient, calls, userMessages, s.Heuristic); enhanced != nil {
-				enhanced.CommandLog = s.CommandLog // preserve original command log
-				enhanced.Heuristic = s.Heuristic    // preserve original heuristic tag
-				s = *enhanced
-			}
-		}
-
 		fmt.Fprint(os.Stderr, skills.FormatSuggestion(s))
 		fmt.Fprintf(os.Stderr, "   Save as skill? [Y/n]: ")
 

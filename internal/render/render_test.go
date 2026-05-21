@@ -583,3 +583,129 @@ func TestRenderer_Summary_NoColor(t *testing.T) {
 		t.Errorf("missing cache read: %q", out)
 	}
 }
+
+// ── Skill Event Tests ──────────────────────────────────────────────────
+
+func TestRenderer_SkillLoaded(t *testing.T) {
+	var buf bytes.Buffer
+	r := New(&buf, true)
+
+	r.SkillLoaded([]string{"docker-build", "go-test"})
+	out := buf.String()
+	if !strings.Contains(out, "📚") {
+		t.Errorf("missing book emoji: %q", out)
+	}
+	if !strings.Contains(out, "Loaded skill") {
+		t.Errorf("missing 'Loaded skill': %q", out)
+	}
+	if !strings.Contains(out, "docker-build") {
+		t.Errorf("missing skill name: %q", out)
+	}
+	if !strings.Contains(out, "go-test") {
+		t.Errorf("missing second skill name: %q", out)
+	}
+}
+
+func TestRenderer_SkillLoaded_Empty(t *testing.T) {
+	var buf bytes.Buffer
+	r := New(&buf, true)
+	r.SkillLoaded(nil)
+	if buf.Len() != 0 {
+		t.Errorf("expected no output for empty names, got: %q", buf.String())
+	}
+	r.SkillLoaded([]string{})
+	if buf.Len() != 0 {
+		t.Errorf("expected no output for empty slice, got: %q", buf.String())
+	}
+}
+
+func TestRenderer_SkillAutoLoaded(t *testing.T) {
+	var buf bytes.Buffer
+	r := New(&buf, true)
+
+	r.SkillAutoLoaded([]string{"ci-pipeline", "git-workflow"})
+	out := buf.String()
+	if !strings.Contains(out, "Auto-loaded 2 skill(s)") {
+		t.Errorf("missing count: %q", out)
+	}
+	if !strings.Contains(out, "ci-pipeline") {
+		t.Errorf("missing skill name: %q", out)
+	}
+}
+
+func TestRenderer_SkillSuggested(t *testing.T) {
+	var buf bytes.Buffer
+	r := New(&buf, true)
+
+	r.SkillSuggested("procedure-docker", "multi-step")
+	out := buf.String()
+	if !strings.Contains(out, "🔍") {
+		t.Errorf("missing magnifying glass: %q", out)
+	}
+	if !strings.Contains(out, "Skill suggestion") {
+		t.Errorf("missing 'Skill suggestion': %q", out)
+	}
+	if !strings.Contains(out, "procedure-docker") {
+		t.Errorf("missing skill name: %q", out)
+	}
+	if !strings.Contains(out, "multi-step") {
+		t.Errorf("missing heuristic name: %q", out)
+	}
+}
+
+func TestRenderer_SkillSaved(t *testing.T) {
+	var buf bytes.Buffer
+	r := New(&buf, true)
+
+	r.SkillSaved("my-skill")
+	out := buf.String()
+	if !strings.Contains(out, "✓") {
+		t.Errorf("missing checkmark: %q", out)
+	}
+	if !strings.Contains(out, "Saved skill") {
+		t.Errorf("missing 'Saved skill': %q", out)
+	}
+	if !strings.Contains(out, "my-skill") {
+		t.Errorf("missing skill name: %q", out)
+	}
+}
+
+func TestRenderer_SkillDeleted(t *testing.T) {
+	var buf bytes.Buffer
+	r := New(&buf, true)
+
+	r.SkillDeleted("old-skill")
+	out := buf.String()
+	if !strings.Contains(out, "✗") {
+		t.Errorf("missing cross: %q", out)
+	}
+	if !strings.Contains(out, "Deleted skill") {
+		t.Errorf("missing 'Deleted skill': %q", out)
+	}
+	if !strings.Contains(out, "old-skill") {
+		t.Errorf("missing skill name: %q", out)
+	}
+}
+
+func TestRenderer_SkillEvents_NilSafe(t *testing.T) {
+	var r *Renderer // nil
+	r.SkillLoaded([]string{"test"})   // should not panic
+	r.SkillAutoLoaded([]string{"test"}) // should not panic
+	r.SkillSuggested("x", "h")       // should not panic
+	r.SkillSaved("x")                // should not panic
+	r.SkillDeleted("x")              // should not panic
+}
+
+func TestRenderer_SkillEvents_NoColor(t *testing.T) {
+	var buf bytes.Buffer
+	r := New(&buf, false)
+
+	r.SkillLoaded([]string{"docker-build"})
+	out := buf.String()
+	if strings.Contains(out, "\033[") {
+		t.Errorf("NoColor should strip ANSI codes, got: %q", out)
+	}
+	if !strings.Contains(out, "docker-build") {
+		t.Errorf("missing skill name in no-color: %q", out)
+	}
+}

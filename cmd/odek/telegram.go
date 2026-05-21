@@ -19,6 +19,7 @@ import (
 	"github.com/BackendStack21/kode/internal/loop"
 	"github.com/BackendStack21/kode/internal/render"
 	"github.com/BackendStack21/kode/internal/session"
+	"github.com/BackendStack21/kode/internal/skills"
 	"github.com/BackendStack21/kode/internal/telegram"
 	toolpkg "github.com/BackendStack21/kode/internal/tool"
 )
@@ -36,6 +37,10 @@ var chatCancels sync.Map // map[int64]context.CancelFunc
 // every agent loop iteration. Used by /stop to report a summary of the
 // interrupted task.
 var chatRunInfos sync.Map // map[int64]loop.IterationInfo
+
+// pendingSuggestions stores SkillSuggestion values keyed by skill name,
+// awaiting user approval via inline keyboard callbacks.
+var pendingSuggestions sync.Map // map[string]skills.SkillSuggestion
 
 // getChatMutex returns the per-chat mutex for the given chat ID.
 func getChatMutex(chatID int64) *sync.Mutex {
@@ -134,7 +139,13 @@ func telegramCmd(args []string) error {
 		systemMessage += fmt.Sprintf("- Source code: %s\n", resolved.GithubRepoUrl)
 	}
 	systemMessage += "- Binary name: odek (repo is called kode on GitHub)\n"
-	systemMessage += "- Language: Go, minimal dependencies, ~11 MB binary"
+	systemMessage += "- Language: Go, minimal dependencies, ~11 MB binary\n"
+	systemMessage += "\n"
+	systemMessage += "Tool failure recovery:\n"
+	systemMessage += "- If a tool fails with 'no such file' or returns empty, check pwd first.\n"
+	systemMessage += "- NEVER run 'find /' or recursive searches from root — they hang.\n"
+	systemMessage += "- A single failure means the path or assumption was wrong — fix that,\n"
+	systemMessage += "  don't escalate to a broader search. Narrow, don't widen."
 
 	// Set working directory to the configured repo directory.
 	// This ensures tools like search_files scan the project, not /root.
@@ -352,6 +363,30 @@ func telegramCmd(args []string) error {
 			}
 			return "✅ Got it, thanks!", nil
 		}
+
+		// Route skill suggestion callbacks — Save or Skip.
+		if strings.HasPrefix(data, "skill_save:") {
+			skillName := strings.TrimPrefix(data, "skill_save:")
+			userDir := expandHome("~/.odek/skills")
+			os.MkdirAll(userDir, 0755)
+			// Find and save the suggestion from the pending suggestions map
+			if s, ok := pendingSuggestions.Load(skillName); ok {
+				if suggestion, ok := s.(skills.SkillSuggestion); ok {
+					if err := skills.SaveSuggestion(userDir, suggestion); err != nil {
+						return fmt.Sprintf("✗ Error saving skill: %v", err), nil
+					}
+					pendingSuggestions.Delete(skillName)
+					return fmt.Sprintf("✓ Saved skill %q", skillName), nil
+				}
+			}
+			return "⚠️ Suggestion no longer available.", nil
+		}
+		if strings.HasPrefix(data, "skill_skip:") {
+			skillName := strings.TrimPrefix(data, "skill_skip:")
+			pendingSuggestions.Delete(skillName)
+			return fmt.Sprintf("⏭ Skipped %q", skillName), nil
+		}
+
 		return "", nil // approval callbacks are routed by the approver
 	}
 
@@ -630,6 +665,12 @@ func handleChatMessage(
 		}
 	}))
 
+	// Resolve skills config (same logic as main.go run command).
+	var skillsCfg *skills.SkillsConfig
+	if resolved.Skills.Learn {
+		skillsCfg = &resolved.Skills
+	}
+
 	agentCfg := odek.Config{
 		Model:         resolved.Model,
 		BaseURL:       resolved.BaseURL,
@@ -637,6 +678,7 @@ func handleChatMessage(
 		MaxIterations: resolved.MaxIter,
 		SystemMessage: systemMessage,
 		NoProjectFile: resolved.NoAgents,
+		Skills:        skillsCfg,
 		Thinking:      resolved.Thinking,
 		Tools:         agentTools,
 		Renderer:      rend,
@@ -689,6 +731,36 @@ func handleChatMessage(
 			// to report a summary of the interrupted task.
 			runInfo = info
 			chatRunInfos.Store(chatID, info)
+		},
+		SkillEventHandler: func(event skills.SkillEvent) {
+			switch event.Type {
+			case "loaded":
+				names := strings.Join(event.Skills, ", ")
+				go bot.SendMessage(chatID, "📚 Loaded skill: "+names, nil)
+			case "autoloaded":
+				names := strings.Join(event.Skills, ", ")
+				go bot.SendMessage(chatID, "📚 Auto-loaded skills: "+names, nil)
+			case "saved":
+				go bot.SendMessage(chatID, fmt.Sprintf("✓ Saved skill %q", event.SkillName), nil)
+			case "deleted":
+				go bot.SendMessage(chatID, fmt.Sprintf("✗ Deleted skill %q", event.SkillName), nil)
+			case "suggested":
+				// Store the suggestion for later retrieval when user clicks Save/Skip.
+				// We only have the name and heuristic here — the full suggestion
+				// is stored separately by the learnAndSuggest caller.
+				replyMarkup := &telegram.InlineKeyboardMarkup{
+					InlineKeyboard: [][]telegram.InlineKeyboardButton{
+						{
+							{Text: "💾 Save", CallbackData: "skill_save:" + event.SkillName},
+							{Text: "⏭ Skip", CallbackData: "skill_skip:" + event.SkillName},
+						},
+					},
+				}
+				msg := fmt.Sprintf("🔍 *Skill suggestion:* %s\n_%s_",
+					event.SkillName, event.Heuristic)
+				go bot.SendMessage(chatID, msg,
+					&telegram.SendOpts{ReplyMarkup: replyMarkup, ParseMode: "Markdown"})
+			}
 		},
 	}
 
@@ -761,6 +833,16 @@ func handleChatMessage(
 			}
 		} else {
 			fmt.Fprintf(os.Stderr, "odek telegram: stats skipped (runInfo.Turn=%d)\n", runInfo.Turn)
+		}
+	}
+
+	// ── Learn loop: run self-improvement heuristics ──
+	if skillsCfg != nil && skillsCfg.Learn && agent.SkillManager() != nil {
+		sm := agent.SkillManager()
+		suggestions := learnAndSuggest(cs.Messages, sm, nil, false)
+		// Store suggestions for inline keyboard callback handling
+		for _, s := range suggestions {
+			pendingSuggestions.Store(s.Name, s)
 		}
 	}
 }

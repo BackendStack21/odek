@@ -286,6 +286,50 @@ func (r *Renderer) Error(err error) {
 	fmt.Fprintln(r.w, r.style(red, "❌ "+err.Error()))
 }
 
+// ── Skill Events ──────────────────────────────────────────────────────
+
+// SkillLoaded prints a notification about lazy-loaded skills.
+func (r *Renderer) SkillLoaded(names []string) {
+	if r.disable() || len(names) == 0 {
+		return
+	}
+	joined := strings.Join(names, ", ")
+	fmt.Fprintln(r.w, r.style(cyan, "📚 Loaded skill: "+joined))
+}
+
+// SkillAutoLoaded prints a notification about auto-loaded skills at startup.
+func (r *Renderer) SkillAutoLoaded(names []string) {
+	if r.disable() || len(names) == 0 {
+		return
+	}
+	joined := strings.Join(names, ", ")
+	fmt.Fprintln(r.w, r.style(dim, fmt.Sprintf("📚 Auto-loaded %d skill(s): %s", len(names), joined)))
+}
+
+// SkillSuggested prints a skill suggestion from the learning system.
+func (r *Renderer) SkillSuggested(name, heuristic string) {
+	if r.disable() || name == "" {
+		return
+	}
+	fmt.Fprintln(r.w, r.style(yellow, "🔍 Skill suggestion: "+name+" ("+heuristic+")"))
+}
+
+// SkillSaved prints confirmation of a saved skill.
+func (r *Renderer) SkillSaved(name string) {
+	if r.disable() || name == "" {
+		return
+	}
+	fmt.Fprintln(r.w, r.style(green, "✓ Saved skill \""+name+"\""))
+}
+
+// SkillDeleted prints confirmation of a deleted skill.
+func (r *Renderer) SkillDeleted(name string) {
+	if r.disable() || name == "" {
+		return
+	}
+	fmt.Fprintln(r.w, r.style(red, "✗ Deleted skill \""+name+"\""))
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────
 
 // style wraps text in ANSI codes. Returns plain text when color is off.

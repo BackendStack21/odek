@@ -129,6 +129,11 @@ type Config struct {
 	// Enable this when using Anthropic models to get ~90% cost reduction
 	// on cached tokens and ~60-80% TTFT latency reduction.
 	PromptCaching bool
+
+	// SkillEventHandler, if set, is invoked when a skill lifecycle event
+	// occurs (loaded, autoloaded, saved, deleted, etc.). Used by WebUI
+	// (WebSocket streaming) and Telegram (inline messages).
+	SkillEventHandler func(event skills.SkillEvent)
 }
 
 // Agent is the agent loop runtime.
@@ -347,18 +352,41 @@ func New(cfg Config) (*Agent, error) {
 			)
 		}
 
+		// Build a MultiNotifier from SkillEventHandler + Renderer (if set)
+		var notifiers []skills.SkillNotifier
+		if cfg.SkillEventHandler != nil {
+			notifiers = append(notifiers, &skillEventHandlerAdapter{fn: cfg.SkillEventHandler})
+		}
+		if cfg.Renderer != nil {
+			notifiers = append(notifiers, &renderNotifier{r: cfg.Renderer})
+		}
+		if len(notifiers) > 0 {
+			sm.SetNotifier(skills.NewMultiNotifier(notifiers...))
+		}
+
 		// Append auto-load skills to system message
 		var skillContext string
+		var autoLoadNames []string
 		count := 0
 		for _, s := range sm.Result.AutoLoad {
 			if count >= cfg.Skills.MaxAutoLoad {
 				break
 			}
 			skillContext += "\n\n" + skills.FormatAsContext(s)
+			autoLoadNames = append(autoLoadNames, s.Name)
 			count++
 		}
 		if skillContext != "" {
 			cfg.SystemMessage += "\n\n# Loaded Skills\n\n" + skillContext
+		}
+
+		// Fire autoloaded event
+		if len(autoLoadNames) > 0 {
+			sm.Notifier.Notify(skills.SkillEvent{
+				Type:      "autoloaded",
+				Skills:    autoLoadNames,
+				Timestamp: time.Now().UTC(),
+			})
 		}
 	}
 
@@ -386,22 +414,46 @@ func New(cfg Config) (*Agent, error) {
 	engine := loop.New(client, registry, cfg.MaxIterations, cfg.SystemMessage, cfg.Renderer, maxContext)
 	engine.PromptCaching = cfg.PromptCaching
 
-	// Set the skill loader for trigger-based lazy loading
-	if sm != nil && sm.TrieIndex != nil && cfg.Skills != nil && cfg.Skills.MaxLazySlots > 0 {
+	// Set the skill loader for lazy loading
+	// Uses scoring matcher (fixes AND-lock, adds stemming + synonyms) when available.
+	// Falls back to vector matcher, then trie only.
+	if sm != nil && cfg.Skills != nil && cfg.Skills.MaxLazySlots > 0 {
 		maxSlots := cfg.Skills.MaxLazySlots
-		trie := sm.TrieIndex
-		engine.SetSkillLoader(func(userInput string) string {
-			matched := trie.MatchSkills(userInput, maxSlots)
-			if len(matched) == 0 {
-				return ""
-			}
-			var context string
-			for _, sk := range matched {
-				sm.RecordUsage(sk.Name)
-				context += "\n" + skills.FormatAsContext(sk)
-			}
-			return context
-		})
+
+		// Prefer scoring matcher, then vector, then trie
+		var matcher func(string, int) []skills.Skill
+		if sm.ScoredMatcher != nil {
+			matcher = sm.ScoredMatcher.MatchSkills
+		} else if sm.VectorMatcher != nil {
+			matcher = sm.VectorMatcher.MatchSkills
+		} else if sm.TrieIndex != nil {
+			matcher = sm.TrieIndex.MatchSkills
+		}
+
+		if matcher != nil {
+			engine.SetSkillLoader(func(userInput string) string {
+				matched := matcher(userInput, maxSlots)
+				if len(matched) == 0 {
+					return ""
+				}
+				var context string
+				names := make([]string, 0, len(matched))
+				for _, sk := range matched {
+					sm.RecordUsage(sk.Name)
+					context += "\n" + skills.FormatAsContext(sk)
+					names = append(names, sk.Name)
+				}
+
+				// Fire loaded event
+				sm.Notifier.Notify(skills.SkillEvent{
+					Type:      "loaded",
+					Skills:    names,
+					Timestamp: time.Now().UTC(),
+				})
+
+				return context
+			})
+		}
 	}
 
 	// Wire tool event handler for live streaming
@@ -486,6 +538,16 @@ func (a *Agent) Memory() *memory.MemoryManager {
 	return a.memoryManager
 }
 
+// SkillManager returns the agent's skill manager. Used by the CLI,
+// WebUI, and Telegram layers to run learning heuristics after agent
+// completion. Returns nil if skills are disabled.
+func (a *Agent) SkillManager() *skills.SkillManager {
+	if a == nil {
+		return nil
+	}
+	return a.skillManager
+}
+
 // expandHome replaces the leading ~/ with the user's home directory.
 func expandHome(path string) string {
 	if strings.HasPrefix(path, "~/") {
@@ -507,4 +569,37 @@ func (a *toolAdapter) Description() string { return a.t.Description() }
 func (a *toolAdapter) Schema() any         { return a.t.Schema() }
 func (a *toolAdapter) Call(args string) (string, error) {
 	return a.t.Call(args)
+}
+
+// ── Skill Event Adapters ──────────────────────────────────────────────
+
+// skillEventHandlerAdapter bridges Config.SkillEventHandler to skills.SkillNotifier.
+type skillEventHandlerAdapter struct {
+	fn func(event skills.SkillEvent)
+}
+
+func (a *skillEventHandlerAdapter) Notify(event skills.SkillEvent) {
+	if a.fn != nil {
+		a.fn(event)
+	}
+}
+
+// renderNotifier bridges *render.Renderer to skills.SkillNotifier.
+type renderNotifier struct {
+	r *render.Renderer
+}
+
+func (n *renderNotifier) Notify(event skills.SkillEvent) {
+	switch event.Type {
+	case "loaded":
+		n.r.SkillLoaded(event.Skills)
+	case "autoloaded":
+		n.r.SkillAutoLoaded(event.Skills)
+	case "suggested":
+		n.r.SkillSuggested(event.SkillName, event.Heuristic)
+	case "saved":
+		n.r.SkillSaved(event.SkillName)
+	case "deleted":
+		n.r.SkillDeleted(event.SkillName)
+	}
 }
