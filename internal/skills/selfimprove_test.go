@@ -411,3 +411,20 @@ func TestExtractActionKeywords(t *testing.T) {
 		t.Errorf("expected 'build' in actions, got %v", result)
 	}
 }
+
+func TestExtractRelevantChange(t *testing.T) {
+	tests := []struct {
+		oldCmd, newCmd, expected string
+	}{
+		{"docker run --name app nginx", "docker run --name app alpine", "   Key change: 'nginx' → 'alpine'"},
+		{"go build -o bin", "go build -o dist", "   Key change: 'bin' → 'dist'"},
+		{"short", "short too", ""}, // too few words
+		{"a b c d", "a b c d", ""}, // no changes
+	}
+	for _, tt := range tests {
+		got := extractRelevantChange(tt.oldCmd, tt.newCmd)
+		if got != tt.expected {
+			t.Errorf("extractRelevantChange(%q, %q) = %q, want %q", tt.oldCmd, tt.newCmd, got, tt.expected)
+		}
+	}
+}

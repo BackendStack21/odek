@@ -401,3 +401,29 @@ func TestFetchLocal_ReadFileError(t *testing.T) {
 	}
 }
 
+func TestIsPrivateHost(t *testing.T) {
+	tests := []struct {
+		host  string
+		isPvt bool
+	}{
+		{"localhost", true},
+		{"127.0.0.1", true},
+		{"::1", true},
+		{"169.254.169.254", true},
+		{"0.0.0.0", true},
+		{"10.0.0.1", true},
+		{"172.16.0.1", true},
+		{"172.31.255.255", true},
+		{"192.168.1.1", true},
+		{"8.8.8.8", false},
+		{"example.com", false},
+		{"172.32.0.1", false},
+	}
+	for _, tt := range tests {
+		got := isPrivateHost(tt.host)
+		if got != tt.isPvt {
+			t.Errorf("isPrivateHost(%q) = %v, want %v", tt.host, got, tt.isPvt)
+		}
+	}
+}
+

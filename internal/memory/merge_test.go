@@ -183,3 +183,107 @@ func TestMergeDetectorWithThresholdInvalidValues(t *testing.T) {
 	// With add_threshold reset to 0.3, this should be "add"
 	t.Logf("invalid thresholds test: action=%s", action)
 }
+
+func TestMergeDetectorReplaceEntry(t *testing.T) {
+	md := NewMergeDetector(128)
+	corpus := []string{"first entry", "second entry", "third entry"}
+	md.Fit(corpus)
+
+	// Replace at valid index
+	md.ReplaceEntry(1, "replaced second entry")
+	if len(md.Corpus()) != 3 {
+		t.Fatalf("corpus length = %d, want 3", len(md.Corpus()))
+	}
+	if md.Corpus()[1] != "replaced second entry" {
+		t.Errorf("corpus[1] = %q, want %q", md.Corpus()[1], "replaced second entry")
+	}
+
+	// Replace at invalid index (negative) — should be a no-op.
+	md.ReplaceEntry(-1, "never added")
+	if len(md.Corpus()) != 3 {
+		t.Errorf("corpus length changed after negative index replace: %d", len(md.Corpus()))
+	}
+
+	// Replace at out-of-bounds index — should be a no-op.
+	md.ReplaceEntry(10, "never added")
+	if len(md.Corpus()) != 3 {
+		t.Errorf("corpus length changed after OOB replace: %d", len(md.Corpus()))
+	}
+}
+
+func TestMergeDetectorCorpus(t *testing.T) {
+	md := NewMergeDetector(128)
+	corpus := []string{"a", "b", "c"}
+	md.Fit(corpus)
+
+	got := md.Corpus()
+	if len(got) != 3 {
+		t.Fatalf("Corpus() = %d, want 3", len(got))
+	}
+	if got[0] != "a" || got[1] != "b" || got[2] != "c" {
+		t.Errorf("Corpus() = %v, want %v", got, corpus)
+	}
+
+	// Verify it's a copy (not the original slice)
+	got[0] = "modified"
+	if md.Corpus()[0] != "a" {
+		t.Error("Corpus() did not return a copy")
+	}
+}
+
+func TestMergeDetectorAppendEntry(t *testing.T) {
+	md := NewMergeDetector(128)
+	corpus := []string{"existing entry"}
+	md.Fit(corpus)
+
+	md.AppendEntry("new entry")
+	if len(md.Corpus()) != 2 {
+		t.Fatalf("corpus length = %d, want 2", len(md.Corpus()))
+	}
+	if md.Corpus()[1] != "new entry" {
+		t.Errorf("corpus[1] = %q, want %q", md.Corpus()[1], "new entry")
+	}
+}
+
+func TestMergeDetectorNilVecs(t *testing.T) {
+	md := NewMergeDetector(128)
+	md.Fit([]string{"test entry"})
+
+	// Force vecs[0] to nil to test the skip-nil path in Classify.
+	md.vecs[0] = nil
+
+	action, idx, sim := md.Classify("something different")
+	if action != "nobody" {
+		t.Errorf("expected 'nobody' when all vecs are nil, got %q", action)
+	}
+	if idx != -1 {
+		t.Errorf("expected idx -1, got %d", idx)
+	}
+	if sim != 0 {
+		t.Errorf("expected sim 0, got %f", sim)
+	}
+}
+
+func TestMergeDetectorWithThresholdsZeroMerge(t *testing.T) {
+	// mergeThreshold <= 0 should use default.
+	md := NewMergeDetectorWithThresholds(128, 0, 0.1)
+	if md.mergeThreshold != 0.7 {
+		t.Errorf("mergeThreshold = %f, want 0.7", md.mergeThreshold)
+	}
+}
+
+func TestMergeDetectorWithThresholdsZeroAdd(t *testing.T) {
+	// addThreshold <= 0 should use default.
+	md := NewMergeDetectorWithThresholds(128, 0.9, 0)
+	if md.addThreshold != 0.3 {
+		t.Errorf("addThreshold = %f, want 0.3", md.addThreshold)
+	}
+}
+
+func TestMergeDetectorWithThresholdsAddGEMerge(t *testing.T) {
+	// addThreshold >= mergeThreshold should use default add.
+	md := NewMergeDetectorWithThresholds(128, 0.5, 0.8)
+	if md.addThreshold != 0.3 {
+		t.Errorf("addThreshold = %f, want 0.3 (reset when >= mergeThreshold)", md.addThreshold)
+	}
+}

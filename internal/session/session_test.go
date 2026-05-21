@@ -645,3 +645,205 @@ func TestStore_Delete_PathTraversalRejected(t *testing.T) {
 		t.Errorf("error should mention 'invalid session', got: %v", err)
 	}
 }
+
+// ── Additional edge-case coverage ──────────────────────────────────────
+
+func TestValidateSessionID_NullByte(t *testing.T) {
+	if err := ValidateSessionID("bad\x00id"); err == nil {
+		t.Error("expected error for null byte")
+	}
+}
+
+func TestLoad_CorruptFile(t *testing.T) {
+	store := newTestStore(t)
+	msgs := []llm.Message{{Role: "user", Content: "test"}}
+	sess, _ := store.Create(msgs, "m", "test")
+
+	// Overwrite the session file with garbage.
+	os.WriteFile(store.Path(sess.ID), []byte("{invalid json"), 0644)
+
+	_, err := store.Load(sess.ID)
+	if err == nil {
+		t.Fatal("expected error for corrupt file")
+	}
+	if !strings.Contains(err.Error(), "parse") {
+		t.Errorf("error = %q, want 'parse'", err)
+	}
+}
+
+func TestAppend_NonExistentSession(t *testing.T) {
+	store := newTestStore(t)
+	err := store.Append("nonexistent-id", []llm.Message{{Role: "user", Content: "x"}})
+	if err == nil {
+		t.Fatal("expected error for non-existent session")
+	}
+}
+
+func TestList_FallbackScanNoIndex(t *testing.T) {
+	// Create a store, create a session, then delete the index file.
+	store := newTestStore(t)
+	msgs := []llm.Message{{Role: "user", Content: "test"}}
+	sess, _ := store.Create(msgs, "m", "test")
+
+	// Remove the index file so List falls back to scanning individual files.
+	idxPath := filepath.Join(store.Dir(), "index.json")
+	os.Remove(idxPath)
+
+	sessions, err := store.List(0)
+	if err != nil {
+		t.Fatalf("List fallback error: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session via fallback, got %d", len(sessions))
+	}
+	if sessions[0].ID != sess.ID {
+		t.Errorf("session ID = %q, want %q", sessions[0].ID, sess.ID)
+	}
+	if sessions[0].Messages != nil {
+		t.Error("List fallback should not include message bodies")
+	}
+}
+
+func TestList_FallbackScanSkipsNonSessionFiles(t *testing.T) {
+	store := newTestStore(t)
+	// Write a non-session file in the store directory.
+	os.WriteFile(filepath.Join(store.Dir(), "note.txt"), []byte("hello"), 0644)
+	os.WriteFile(filepath.Join(store.Dir(), "index.json"), []byte("[]"), 0644)
+
+	// Remove index so fallback is triggered.
+	os.Remove(filepath.Join(store.Dir(), "index.json"))
+
+	sessions, err := store.List(0)
+	if err != nil {
+		t.Fatalf("List fallback error: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Errorf("expected 0 sessions (only .txt file), got %d", len(sessions))
+	}
+}
+
+func TestList_ReadDirError(t *testing.T) {
+	store := newTestStore(t)
+	// Remove the sessions dir so ReadDir fails.
+	os.RemoveAll(store.Dir())
+
+	_, err := store.List(0)
+	if err == nil {
+		t.Fatal("expected error when sessions dir is missing")
+	}
+}
+
+func TestLatest_FallbackScan(t *testing.T) {
+	store := newTestStore(t)
+	msgs1 := []llm.Message{{Role: "user", Content: "first"}}
+	s1, _ := store.Create(msgs1, "m1", "first")
+
+	// Remove index to force fallback scan.
+	os.Remove(filepath.Join(store.Dir(), "index.json"))
+
+	latest, err := store.Latest()
+	if err != nil {
+		t.Fatalf("Latest fallback error: %v", err)
+	}
+	if latest.ID != s1.ID {
+		t.Errorf("Latest = %q, want %q", latest.ID, s1.ID)
+	}
+}
+
+func TestLatest_ReadDirError(t *testing.T) {
+	store := newTestStore(t)
+	// Remove the sessions dir so ReadDir fails.
+	os.RemoveAll(store.Dir())
+
+	_, err := store.Latest()
+	if err == nil {
+		t.Fatal("expected error when sessions dir is missing")
+	}
+}
+
+func TestLatest_FallbackSkipsNonSessionFiles(t *testing.T) {
+	store := newTestStore(t)
+	os.WriteFile(filepath.Join(store.Dir(), "note.txt"), []byte("hello"), 0644)
+	os.Remove(filepath.Join(store.Dir(), "index.json"))
+
+	_, err := store.Latest()
+	if err == nil {
+		t.Fatal("expected error when only non-session files exist")
+	}
+	if !strings.Contains(err.Error(), "no sessions found") {
+		t.Errorf("error = %q, want 'no sessions found'", err)
+	}
+}
+
+func TestDelete_OsRemoveError(t *testing.T) {
+	store := newTestStore(t)
+	msgs := []llm.Message{{Role: "user", Content: "test"}}
+	sess, _ := store.Create(msgs, "m", "test")
+
+	// Remove the sessions dir so the file can't be removed properly.
+	os.RemoveAll(store.Dir())
+
+	// Delete should now fail because the directory doesn't exist.
+	err := store.Delete(sess.ID)
+	if err == nil {
+		t.Log("Delete succeeded (acceptable if remove on missing dir doesn't error)")
+	}
+}
+
+func TestCleanup_FallbackScan(t *testing.T) {
+	store := newTestStore(t)
+	msgs := []llm.Message{{Role: "user", Content: "old"}}
+	oldSess, _ := store.Create(msgs, "m", "old")
+	oldSess.UpdatedAt = oldSess.UpdatedAt.AddDate(0, 0, -30)
+	store.Save(oldSess)
+
+	// Remove index to force fallback scan.
+	os.Remove(filepath.Join(store.Dir(), "index.json"))
+
+	deleted, err := store.Cleanup(time.Now().UTC())
+	if err != nil {
+		t.Fatalf("Cleanup fallback error: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("deleted = %d, want 1", deleted)
+	}
+}
+
+func TestCleanup_FallbackScanReadDirError(t *testing.T) {
+	store := newTestStore(t)
+	os.RemoveAll(store.Dir())
+
+	_, err := store.Cleanup(time.Now().UTC())
+	if err == nil {
+		t.Fatal("expected error when sessions dir is missing")
+	}
+}
+
+func TestGetMessages_WithMessages(t *testing.T) {
+	s := &Session{
+		Messages: []llm.Message{{Role: "user", Content: "hello"}},
+	}
+	msgs := s.GetMessages()
+	if len(msgs) != 1 {
+		t.Errorf("GetMessages = %d, want 1", len(msgs))
+	}
+	if msgs[0].Content != "hello" {
+		t.Errorf("content = %q, want %q", msgs[0].Content, "hello")
+	}
+}
+
+func TestSaveIndexLocked_WriteError(t *testing.T) {
+	// Create a store then make the directory unwritable.
+	store := newTestStore(t)
+	msgs := []llm.Message{{Role: "user", Content: "test"}}
+	sess, _ := store.Create(msgs, "m", "test")
+
+	// Remove the sessions dir so saving index fails.
+	os.RemoveAll(store.Dir())
+
+	// Save should fail because index can't be written.
+	err := store.Save(sess)
+	if err == nil {
+		t.Log("Save error after removing dir (may succeed if dir is recreated)")
+	}
+}

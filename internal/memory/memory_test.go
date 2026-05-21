@@ -449,3 +449,38 @@ func TestMemoryManagerMergeOnWrite(t *testing.T) {
 		t.Logf("entries after merge-on-write: %v", entries)
 	}
 }
+
+// ── Helper function tests ──────────────────────────────────────────────
+
+func TestMergeEntries(t *testing.T) {
+	tests := []struct {
+		a, b     string
+		expected string
+	}{
+		{"User likes Go", "User likes Go", "User likes Go"},
+		{"User likes Go and Rust", "User likes Go", "User likes Go and Rust"},
+		{"User likes Go", "User likes Go and Rust", "User likes Go and Rust"},
+		{"User likes Go", "User likes Python", "User likes Go. User likes Python"},
+	}
+	for _, tt := range tests {
+		got := mergeEntries(tt.a, tt.b)
+		if got != tt.expected {
+			t.Errorf("mergeEntries(%q, %q) = %q, want %q", tt.a, tt.b, got, tt.expected)
+		}
+	}
+}
+
+func TestMin(t *testing.T) {
+	if got := min(3, 5); got != 3 {
+		t.Errorf("min(3, 5) = %d, want 3", got)
+	}
+	if got := min(5, 3); got != 3 {
+		t.Errorf("min(5, 3) = %d, want 3", got)
+	}
+	if got := min(-1, 2); got != -1 {
+		t.Errorf("min(-1, 2) = %d, want -1", got)
+	}
+	if got := min(0, 0); got != 0 {
+		t.Errorf("min(0, 0) = %d, want 0", got)
+	}
+}
