@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 )
 
 // ─── Config ────────────────────────────────────────────────────────────────
@@ -24,11 +25,10 @@ type Handler struct {
 	Bot    *Bot
 	Config HandlerConfig
 
-	// Approver handles inline keyboard approval requests for dangerous
-	// operations. When non-nil, callback queries with approval prefixes
-	// (apr:/den:/trs:) are routed to Approver.HandleCallback before
-	// reaching OnCallbackQuery.
-	Approver *TelegramApprover
+	// approvers maps chatID → *TelegramApprover for inline keyboard approval
+	// requests. Protected by sync.Map for concurrent read/write from the
+	// update loop (reads) and agent goroutines (writes).
+	approvers sync.Map
 
 	// OnTextMessage is called when a plain text message is received.
 	// Returns the response text (may be empty).
@@ -59,6 +59,29 @@ type Handler struct {
 
 	// OnError is called when a processing error occurs.
 	OnError func(chatID int64, err error)
+}
+
+// SetApprover stores a TelegramApprover for the given chat ID.
+// Thread-safe: safe to call from any goroutine.
+func (h *Handler) SetApprover(chatID int64, a *TelegramApprover) {
+	h.approvers.Store(chatID, a)
+}
+
+// GetApprover retrieves the TelegramApprover for the given chat ID.
+// Returns nil if no approver is registered. Thread-safe.
+func (h *Handler) GetApprover(chatID int64) *TelegramApprover {
+	v, ok := h.approvers.Load(chatID)
+	if !ok {
+		return nil
+	}
+	a, _ := v.(*TelegramApprover)
+	return a
+}
+
+// DeleteApprover removes the TelegramApprover for the given chat ID.
+// Thread-safe. Used when a session is reset or ends.
+func (h *Handler) DeleteApprover(chatID int64) {
+	h.approvers.Delete(chatID)
 }
 
 // NewHandler creates a Handler with the given bot and default settings.
@@ -233,8 +256,12 @@ func (h *Handler) handleCommand(msg *Message) {
 
 // handleCallback processes a callback query from an inline keyboard.
 func (h *Handler) handleCallback(cq *CallbackQuery) {
-	// Route approval callbacks to the TelegramApprover first.
-	if h.Approver != nil && h.Approver.HandleCallback(cq.Data) {
+	if cq.Message == nil || cq.Message.Chat == nil {
+		return
+	}
+
+	// Route approval callbacks to the per-chat TelegramApprover.
+	if a := h.GetApprover(cq.Message.Chat.ID); a != nil && a.HandleCallback(cq.Data) {
 		// Answer the callback (remove loading state on button).
 		if err := h.Bot.AnswerCallbackQuery(cq.ID, "", false); err != nil {
 			if h.OnError != nil {

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -16,6 +17,17 @@ import (
 	"github.com/BackendStack21/kode/internal/session"
 	"github.com/BackendStack21/kode/internal/telegram"
 )
+
+// chatMu serializes agent processing per chat to prevent same-chat message
+// racing. Each chat gets its own mutex; messages from the same chat are
+// processed sequentially, preserving session history integrity.
+var chatMu sync.Map // map[int64]*sync.Mutex
+
+// getChatMutex returns the per-chat mutex for the given chat ID.
+func getChatMutex(chatID int64) *sync.Mutex {
+	v, _ := chatMu.LoadOrStore(chatID, &sync.Mutex{})
+	return v.(*sync.Mutex)
+}
 
 // telegramCmd is the entry point for "odek telegram".
 func telegramCmd(args []string) error {
@@ -85,8 +97,8 @@ func telegramCmd(args []string) error {
 		// Handle /new — clear session and reset trust in the approver.
 		if cmdName == "new" {
 			sessionManager.Delete(chatID)
-			if handler.Approver != nil {
-				handler.Approver.ResetTrust()
+			if a := handler.GetApprover(chatID); a != nil {
+				a.ResetTrust()
 			}
 		}
 
@@ -164,9 +176,16 @@ func handleChatMessage(
 	resolved	config.ResolvedConfig,
 	systemMessage string,
 ) {
+	// Serialize per chat: only one agent loop runs per chat at a time.
+	// Prevents same-chat message racing that would corrupt session history.
+	mu := getChatMutex(chatID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	// Create a per-chat TelegramApprover for inline keyboard approval.
 	approver := telegram.NewTelegramApprover(bot, chatID)
-	handler.Approver = approver
+	handler.SetApprover(chatID, approver)
+	defer handler.DeleteApprover(chatID)
 
 	// Get or create the session for this chat.
 	cs, err := sessionManager.GetOrCreate(chatID)

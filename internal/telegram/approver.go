@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -217,13 +216,4 @@ func (a *TelegramApprover) ResetTrust() {
 	a.mu.Lock()
 	a.trusted = make(map[danger.RiskClass]bool)
 	a.mu.Unlock()
-}
-
-// ── File descriptor check ──────────────────────────────────────────────────
-
-// ensureApproverHasFD is a no-op on Telegram (no TTY needed).
-// Kept for interface compatibility — never called directly.
-var _ = func() string {
-	// Satisfy the os import
-	return os.DevNull
 }
