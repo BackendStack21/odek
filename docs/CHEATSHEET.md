@@ -141,12 +141,15 @@ Default network: `bridge` (internet access). Set `none` for air-gapped execution
 ## Telegram Bot
 
 - Requires `ODEK_TELEGRAM_BOT_TOKEN` env var
-- Slash commands: `/start`, `/help`, `/new`, `/plan`, `/plans`, `/plan-view`, `/plan-delete`, `/sessions`, `/resume`, `/prune`, `/stats`, `/stop`, `/mode`, `/restart`
+- Slash commands: `/start`, `/help`, `/new`, `/plan`, `/plans`, `/plan_view`, `/plan_delete`, `/plan_resume`, `/sessions`, `/resume`, `/prune`, `/stats`, `/stop`, `/mode`, `/restart`
+- Plans: stored as `~/.odek/plans/<slug>.md`; `/plan` generates via agent, `/plan_resume` injects most recent plan into session
 - Voice messages: automatically processed via `DownloadVoice` → OGG files in `~/.odek/media/`
 - Photos: automatically processed via `DownloadPhoto` → JPG files in `~/.odek/media/`
 - Conversations persist across bot restarts (`tg-<chatID>` sessions)
 - Session TTL: 24h default (configurable)
 - Daily token budget tracking in `~/.odek/telegram_token_usage_<date>`
+- Spawn+exit restart: SIGHUP spawns child process then exits — no binary overwrite races, fresh connections
+- Singleton lock: PID file (`~/.odek/telegram.pid`) kills stale instances on startup, prevents 409 conflicts
 - Fallback API URLs for regions where `api.telegram.org` is blocked
 - Access control: restrict by chat ID or user ID
 - Logging: configurable log level and log file

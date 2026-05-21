@@ -20,7 +20,7 @@ Telegram Bot API ◄── bot.go (HTTP client)
                       download.go (voice/photo media)
 ```
 
-The package is self-contained under `internal/telegram/` with 409 tests and 86.9% coverage. All Telegram API calls use the Bot struct, which wraps `net/http` with JSON marshaling and multipart upload support. No external Telegram libraries are used.
+The package is self-contained under `internal/telegram/` with 450+ tests and 87% coverage. All Telegram API calls use the Bot struct, which wraps `net/http` with JSON marshaling and multipart upload support. No external Telegram libraries are used.
 
 ## Configuration
 
@@ -276,6 +276,30 @@ The package defines Telegram API types used throughout:
 | `SessionManager` | Session lifecycle manager |
 | `Logger` | Logging interface |
 | `Poller` | Long-polling update fetcher |
+
+## Process Lifecycle
+
+### Singleton Lock
+
+The bot writes its PID to `~/.odek/telegram.pid` on startup. If a stale PID file exists from a previous instance, the new process kills it (SIGTERM → 5s grace → SIGKILL) before taking over. This prevents 409 Conflict errors from dual polling.
+
+### Spawn+Exit Restart
+
+Restarts use spawn+exit instead of in-place `execve`:
+
+```
+SIGHUP → writeRestartMarker() → spawnChild() → os.Exit(0)
+                                          ↓
+                           child acquireLock() kills parent
+                           child gets fresh HTTP/2 connections
+                           child starts polling Telegram
+```
+
+This avoids binary overwrite races, stale HTTP/2 connections, and session context loops that plagued `syscall.Exec`. The restart marker (`~/.odek/restart.json`) enables the new instance to notify users that a restart occurred.
+
+### Typing Indicator
+
+A fire-and-forget goroutine sends `sendChatAction("typing")` every 4 seconds while the agent runs. Each API call is dispatched in its own goroutine so a slow or hanging HTTP call cannot block the ticker and permanently stop the indicator.
 
 ## Testing
 

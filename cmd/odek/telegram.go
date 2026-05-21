@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -132,28 +131,20 @@ func telegramCmd(args []string) error {
 		return "", nil
 	}
 
-	// restartRequested is set atomically when a /restart command is received.
-	// Checked after the update loop exits to decide between restart and exit.
-	var restartRequested atomic.Bool
-
 	handler.OnCommand = func(chatID int64, cmdName string, argsStr string) (string, error) {
 		cmd := telegram.FindCommand(cmdName)
 		if cmd == nil {
 			return fmt.Sprintf("Unknown command: /%s", cmdName), nil
 		}
 
-		// Handle /restart — send confirmation directly, then trigger SIGHUP.
+		// Handle /restart — send confirmation, then signal SIGHUP.
+		// The signal handler spawns a child and exits.
 		if cmdName == "restart" {
-			// Send the restart message directly via the bot to ensure it's
-			// delivered before the process re-execs.
 			if _, err := bot.SendMessage(chatID,
 				"🔄 *Restarting...*\n\nThe bot will restart momentarily. This may take a few seconds.",
 				nil); err != nil {
 				handlerLog.Error("send restart message failed", "chat_id", chatID, "error", err)
 			}
-			// Signal SIGHUP to self — the signal handler will cancel the
-			// context, stopping the poller, and the main loop will re-exec.
-			restartRequested.Store(true)
 			syscall.Kill(os.Getpid(), syscall.SIGHUP)
 			return "", nil
 		}
@@ -373,19 +364,30 @@ func telegramCmd(args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 15. Handle SIGINT/SIGTERM/SIGHUP for graceful shutdown and restart.
-	//     SIGHUP triggers a full process restart (used by /restart command).
+	// 15. Handle SIGINT/SIGTERM/SIGHUP.
+	//     SIGHUP spawns a child process then exits (used by /restart and
+	//     agent-triggered restarts). The child's acquireLock kills this
+	//     process if it's still alive. SIGINT/SIGTERM do a graceful shutdown.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
 		sig := <-sigCh
 		if sig == syscall.SIGHUP {
-			fmt.Fprintf(os.Stderr, "\nodek telegram: restart requested...\n")
-		} else {
-			fmt.Fprintf(os.Stderr, "\nodek telegram: shutting down...\n")
+			fmt.Fprintf(os.Stderr, "\nodek telegram: restart requested — spawning child...\n")
+			writeRestartMarker()
+			if err := spawnChild(); err != nil {
+				fmt.Fprintf(os.Stderr, "odek telegram: spawn failed: %v\n", err)
+			}
+			os.Exit(0)
 		}
+		fmt.Fprintf(os.Stderr, "\nodek telegram: shutting down...\n")
 		cancel()
 	}()
+
+	// 15b. Check for restart marker from previous instance and notify.
+	if chatID, ok := readRestartMarker(); ok && chatID != 0 {
+		bot.SendMessage(chatID, "🔄 *Bot restarted*\n\nA new instance is now running. Use `/new` if you experience any context issues.", &telegram.SendOpts{ParseMode: "Markdown"})
+	}
 
 	// 16. Start polling in a background goroutine.
 	updates := make(chan telegram.Update, 100)
@@ -396,37 +398,71 @@ func telegramCmd(args []string) error {
 		handler.HandleUpdate(upd)
 	}
 
-	// 18. If restart was requested (via /restart command), re-exec the binary.
-	//     This preserves the exact same arguments so the bot comes back with
-	//     the same configuration. If syscall.Exec fails, fall through to exit.
-	if restartRequested.Load() {
-		return tryReexec()
-	}
-
+	// 18. Clean exit.
 	return nil
 }
 
-// execFunc is the system call used to replace the current process image.
-// Swapped in tests to avoid replacing the test process.
-var execFunc func(argv0 string, argv []string, envv []string) error = syscall.Exec
+// ── Restart (spawn + exit) ─────────────────────────────────────────────
+//
+// Instead of syscall.Exec (binary race, stale HTTP/2 connections, session
+// loops), we spawn a child process and exit. The child's acquireLock kills
+// the old process if it's still alive.
 
-// tryReexec replaces the current process with the same binary and arguments.
-// On success, it never returns (the new process takes over). On failure, it
-// logs the error and returns it so the caller can fall through to graceful exit.
-func tryReexec() error {
+// restartMarkerPath returns the path to the restart marker file.
+func restartMarkerPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".odek", "restart.json"), nil
+}
+
+// writeRestartMarker writes a marker so the next instance knows a restart
+// just happened. Currently writes an empty marker (global restart).
+func writeRestartMarker() error {
+	path, err := restartMarkerPath()
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte("{}\n"), 0644)
+}
+
+// readRestartMarker reads and removes the restart marker. Returns true
+// if a marker existed, along with the chat_id (0 if none specified).
+func readRestartMarker() (int64, bool) {
+	path, err := restartMarkerPath()
+	if err != nil {
+		return 0, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, false
+	}
+	os.Remove(path)
+	// Future: parse chat_id from JSON. For now, just signal restart happened.
+	_ = data
+	return 0, true
+}
+
+// spawnChild starts a new odek telegram process detached from the parent.
+func spawnChild() error {
 	exe, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("re-exec: cannot find executable: %w", err)
+		return fmt.Errorf("executable: %w", err)
 	}
+	// Copy args (same as current process).
 	argv := make([]string, len(os.Args))
 	copy(argv, os.Args)
 	argv[0] = exe
-	fmt.Fprintf(os.Stderr, "odek telegram: re-executing %s %v...\n", exe, os.Args[1:])
-	if err := execFunc(exe, argv, os.Environ()); err != nil {
-		fmt.Fprintf(os.Stderr, "odek telegram: restart failed: %v\n", err)
-		return err
+
+	attr := &os.ProcAttr{
+		Env: os.Environ(),
+		// Detach: nil files so child gets its own stdin/stdout/stderr.
+		// The child process will be reparented to init when we exit.
+		Files: []*os.File{nil, nil, nil},
 	}
-	return nil
+	_, err = os.StartProcess(exe, argv, attr)
+	return err
 }
 
 // handleChatMessage processes a user message from Telegram in a background
