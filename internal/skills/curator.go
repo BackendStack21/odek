@@ -161,24 +161,96 @@ func countDupBodies(skills []Skill) int {
 
 // ── Post-Session Micro-Curation ──────────────────────────────────────
 
+// MicroCurationResult reports actions taken by MicroCuration.
+type MicroCurationResult struct {
+	Merged    []string // skill names that were merged (kept, removed)
+	Flagged   []string // skills flagged as stale
+	Deleted   []string // skills deleted (duplicates, skip-threshold)
+	Notes     []string // informational messages
+}
+
 // MicroCuration runs lightweight curation after a session.
-// Returns a message if actions were taken, empty string otherwise.
-func MicroCuration(userDir string, newSkills []Skill, allSkills []Skill) string {
-	var notes []string
+// Returns a result describing actions taken.
+func MicroCuration(userDir string, newSkills []Skill, allSkills []Skill, cfg CurationConfig) *MicroCurationResult {
+	result := &MicroCurationResult{}
 
 	// Check for exact duplicates against existing skills
 	for _, newS := range newSkills {
 		for _, existing := range allSkills {
 			if existing.BodyHash == newS.BodyHash && existing.Name != newS.Name {
-				notes = append(notes, fmt.Sprintf("duplicate %q has same body as %q", newS.Name, existing.Name))
+				result.Merged = append(result.Merged, existing.Name, newS.Name)
+				result.Notes = append(result.Notes,
+					fmt.Sprintf("duplicate %q has same body as %q", newS.Name, existing.Name))
 			}
 		}
 	}
 
-	if len(notes) == 0 {
+	// Check for overlapping trigger keywords → flag for merge
+	overlaps := findOverlapGroups(allSkills)
+	for _, g := range overlaps {
+		// Only auto-merge if both are draft quality from self-improvement
+		canMerge := true
+		for _, name := range g.Skills {
+			for _, s := range allSkills {
+				if s.Name == name && s.Quality != QualityDraft {
+					canMerge = false
+					break
+				}
+			}
+		}
+		if canMerge && len(g.Skills) >= 2 {
+			result.Merged = append(result.Merged, g.Skills...)
+			result.Notes = append(result.Notes,
+				fmt.Sprintf("overlapping skills share %d keywords: %s",
+					len(g.Shared), strings.Join(g.Skills, " + ")))
+		}
+	}
+
+	// Check staleness
+	if cfg.AutoPrune || cfg.AutoCurate {
+		now := time.Now().UTC()
+		for _, s := range allSkills {
+			if s.LastUsed.IsZero() {
+				continue
+			}
+			daysSinceUse := int(now.Sub(s.LastUsed).Hours() / 24)
+			if daysSinceUse >= cfg.StalenessDays && s.Quality != QualityManual {
+				result.Flagged = append(result.Flagged, s.Name)
+				result.Notes = append(result.Notes,
+					fmt.Sprintf("flagged %q as stale (%d days unused)", s.Name, daysSinceUse))
+				if cfg.AutoPrune {
+					result.Deleted = append(result.Deleted, s.Name)
+				}
+			}
+		}
+	}
+
+	return result
+}
+
+// FormatMicroCurationResult formats a MicroCurationResult for display.
+func FormatMicroCurationResult(r *MicroCurationResult) string {
+	if r == nil || (len(r.Merged) == 0 && len(r.Flagged) == 0 && len(r.Deleted) == 0) {
 		return ""
 	}
-	return fmt.Sprintf("Micro-curation: %s", strings.Join(notes, "; "))
+	var b strings.Builder
+	b.WriteString("🔧 Micro-curation: ")
+	var parts []string
+	if len(r.Merged) > 0 {
+		parts = append(parts, fmt.Sprintf("merged %s", strings.Join(r.Merged, " + ")))
+	}
+	if len(r.Flagged) > 0 {
+		parts = append(parts, fmt.Sprintf("flagged %s", strings.Join(r.Flagged, ", ")))
+	}
+	if len(r.Deleted) > 0 {
+		parts = append(parts, fmt.Sprintf("deleted %s", strings.Join(r.Deleted, ", ")))
+	}
+	b.WriteString(strings.Join(parts, "; "))
+	b.WriteString("\n")
+	for _, note := range r.Notes {
+		b.WriteString(fmt.Sprintf("   %s\n", note))
+	}
+	return b.String()
 }
 
 // ── Format Report ─────────────────────────────────────────────────────

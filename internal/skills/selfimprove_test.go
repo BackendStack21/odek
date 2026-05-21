@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"fmt"
 	"testing"
 )
 
@@ -336,7 +337,7 @@ func TestFormatSuggestion(t *testing.T) {
 		Heuristic:   "multi-step",
 		CommandLog:  []string{"cmd1", "cmd2"},
 	}
-	output := FormatSuggestion(s)
+	output := FormatSuggestion(s, false)
 	if !contains(output, "test-skill") {
 		t.Errorf("expected skill name in output: %s", output)
 	}
@@ -426,5 +427,145 @@ func TestExtractRelevantChange(t *testing.T) {
 		if got != tt.expected {
 			t.Errorf("extractRelevantChange(%q, %q) = %q, want %q", tt.oldCmd, tt.newCmd, got, tt.expected)
 		}
+	}
+}
+
+func TestFormatSuggestion_WithPreview(t *testing.T) {
+	s := SkillSuggestion{
+		Name:        "test-skill",
+		Description: "A test skill for preview",
+		Heuristic:   "multi-step",
+		CommandLog:  []string{"cmd1"},
+		Body:        "## Overview\n\nTest body content.\n\n## Common Pitfalls\n\n- None\n\n## Verification\n\n- Check output",
+	}
+	output := FormatSuggestion(s, true)
+	if !contains(output, "test-skill") {
+		t.Errorf("expected skill name in output: %s", output)
+	}
+	if !contains(output, "Overview") {
+		t.Errorf("expected body preview in output: %s", output)
+	}
+	if !contains(output, "Preview") {
+		t.Errorf("expected 'Preview' section: %s", output)
+	}
+
+	// Without preview
+	outputNoPreview := FormatSuggestion(s, false)
+	if contains(outputNoPreview, "Preview") || contains(outputNoPreview, "Overview") {
+		t.Errorf("unexpected preview content: %s", outputNoPreview)
+	}
+}
+
+func TestPassesQualityGate(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"too short", "## Overview\n\nToo short.", false},
+		{"missing overview", "## Common Pitfalls\n\n- None\n\nSome more text to reach the 200 char minimum because we need more content here. Let me keep typing to ensure we cross that threshold. Almost there now.", false},
+		{"missing pitfalls", "## Overview\n\nThis has overview but no pitfalls section. Let me add enough text to reach the 200 character minimum which requires quite a bit of padding actually. Still going. Almost there now yes.", false},
+		{"passes", "## Overview\n\nThis is a good skill body with proper structure.\n\n## Step-by-Step\n\n1. Do this\n2. Do that\n\n## Common Pitfalls\n\n- Watch out for X\n\n## Verification\n\n- Run the command. Adding more text to reach the 200 char minimum. Still more text needed for the threshold check.", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := SkillSuggestion{Body: tt.body}
+			got := PassesQualityGate(s)
+			if got != tt.want {
+				t.Errorf("PassesQualityGate() = %v, want %v (body len=%d)", got, tt.want, len(tt.body))
+			}
+		})
+	}
+}
+
+func TestAutoSaveSuggestions_WithHeuristics(t *testing.T) {
+	dir := t.TempDir()
+	body := "## Overview\n\nTest with enough body text to pass the quality gate minimum of 200 characters. Adding more padding here to ensure we cross that threshold. Still going with more text content for the body length requirement.\n\n## Step-by-Step\n\n1. Step one\n\n## Common Pitfalls\n\n- Pitfall\n\n## Verification\n\n- Run command"
+	suggestions := []SkillSuggestion{
+		{Name: "skill-a", Heuristic: "multi-step", Body: body},
+		{Name: "skill-b", Heuristic: "error-recovery", Body: body},
+	}
+
+	cfg := DefaultSkillsConfig()
+	cfg.AutoSave.MaxPerRun = 5
+	result := AutoSaveSuggestions(suggestions, dir, cfg)
+
+	if len(result.Saved) != 2 {
+		t.Fatalf("expected 2 saved, got %d", len(result.Saved))
+	}
+	if result.Heuristics["skill-a"] != "multi-step" {
+		t.Errorf("Heuristics[skill-a] = %q, want multi-step", result.Heuristics["skill-a"])
+	}
+	if result.Heuristics["skill-b"] != "error-recovery" {
+		t.Errorf("Heuristics[skill-b] = %q, want error-recovery", result.Heuristics["skill-b"])
+	}
+}
+
+func TestAutoSaveSuggestions_QualityGateFails(t *testing.T) {
+	dir := t.TempDir()
+	suggestions := []SkillSuggestion{
+		{Name: "bad-skill", Body: "Too short body"},
+	}
+
+	cfg := DefaultSkillsConfig()
+	result := AutoSaveSuggestions(suggestions, dir, cfg)
+
+	if len(result.Saved) != 0 {
+		t.Errorf("expected 0 saved, got %d", len(result.Saved))
+	}
+	if len(result.Failed) != 1 {
+		t.Errorf("expected 1 failed, got %d", len(result.Failed))
+	}
+}
+
+func TestAutoSaveSuggestions_MaxPerRun(t *testing.T) {
+	dir := t.TempDir()
+	body := "## Overview\n\nTest with enough body text to pass the quality gate minimum of 200 characters. Adding more padding here to ensure we cross that threshold. Still going with more text content for the body length requirement.\n\n## Step-by-Step\n\n1. Step\n\n## Common Pitfalls\n\n- Pitfall\n\n## Verification\n\n- Run command"
+	var suggestions []SkillSuggestion
+	for i := 0; i < 5; i++ {
+		suggestions = append(suggestions, SkillSuggestion{
+			Name: fmt.Sprintf("skill-%d", i), Body: body,
+		})
+	}
+
+	cfg := DefaultSkillsConfig()
+	cfg.AutoSave.MaxPerRun = 2
+	result := AutoSaveSuggestions(suggestions, dir, cfg)
+
+	if len(result.Saved) != 2 {
+		t.Errorf("expected 2 saved (max per run), got %d", len(result.Saved))
+	}
+}
+
+func TestDefaultSkipThreshold(t *testing.T) {
+	cfg := DefaultSkillsConfig()
+	if cfg.Curation.SkipThreshold != 1 {
+		t.Errorf("SkipThreshold = %d, want 1 (one skip should be enough)", cfg.Curation.SkipThreshold)
+	}
+	if !cfg.AutoSave.Enabled {
+		t.Error("AutoSave.Enabled should default to true")
+	}
+	if !cfg.Curation.AutoCurate {
+		t.Error("AutoCurate should default to true")
+	}
+}
+
+func TestFormatSuggestionPreview(t *testing.T) {
+	s := SkillSuggestion{
+		Body: "## Overview\n\nTest body.\n\n## Step-by-Step\n\n1. Do this.\n\n## Common Pitfalls\n\n- None\n\n## Verification\n\n- Check.",
+	}
+	preview := FormatSuggestionPreview(s)
+	if preview == "" {
+		t.Error("expected non-empty preview")
+	}
+	if !contains(preview, "Overview") {
+		t.Errorf("expected 'Overview' in preview: %s", preview)
+	}
+
+	// Empty body
+	s2 := SkillSuggestion{Body: ""}
+	if FormatSuggestionPreview(s2) != "" {
+		t.Error("expected empty preview for empty body")
 	}
 }

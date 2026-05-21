@@ -136,9 +136,12 @@ func TestIntersectKeywords(t *testing.T) {
 }
 
 func TestMicroCuration_NoDuplicates(t *testing.T) {
-	msg := MicroCuration("", nil, nil)
-	if msg != "" {
-		t.Errorf("expected empty, got %q", msg)
+	result := MicroCuration("", nil, nil, CurationConfig{StalenessDays: 90})
+	if result == nil {
+		t.Error("expected non-nil result")
+	}
+	if len(result.Merged) > 0 || len(result.Flagged) > 0 {
+		t.Errorf("expected empty result, got merged=%v flagged=%v", result.Merged, result.Flagged)
 	}
 }
 

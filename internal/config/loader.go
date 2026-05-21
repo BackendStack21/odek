@@ -72,6 +72,9 @@ type SkillsConfig struct {
 	Dirs         []string                    `json:"dirs,omitempty"`
 	Import       *skills.ImportConfig        `json:"import,omitempty"`
 	Curation     *skills.CurationConfig      `json:"curation,omitempty"`
+	AutoSave     *skills.AutoSaveConfig      `json:"auto_save,omitempty"`
+	LLMLearn     *bool                       `json:"llm_learn,omitempty"`
+	LLMCurate    *bool                       `json:"llm_curate,omitempty"`
 }
 
 // FileConfig is the JSON schema used by ~/.odek/config.json and ./odek.json.
@@ -583,6 +586,26 @@ func resolveSkills(cfg *SkillsConfig) skills.SkillsConfig {
 			def.Curation.StalenessDays = cfg.Curation.StalenessDays
 		}
 		def.Curation.AutoPrune = cfg.Curation.AutoPrune
+		if cfg.Curation.SkipThreshold > 0 {
+			def.Curation.SkipThreshold = cfg.Curation.SkipThreshold
+		}
+		if cfg.Curation.SkipResetDays > 0 {
+			def.Curation.SkipResetDays = cfg.Curation.SkipResetDays
+		}
+		def.Curation.AutoCurate = cfg.Curation.AutoCurate
+	}
+	if cfg.AutoSave != nil {
+		def.AutoSave.Enabled = cfg.AutoSave.Enabled
+		if cfg.AutoSave.MaxPerRun > 0 {
+			def.AutoSave.MaxPerRun = cfg.AutoSave.MaxPerRun
+		}
+		def.AutoSave.RequireLLM = cfg.AutoSave.RequireLLM
+	}
+	if cfg.LLMLearn != nil {
+		def.LLMLearn = *cfg.LLMLearn
+	}
+	if cfg.LLMCurate != nil {
+		def.LLMCurate = *cfg.LLMCurate
 	}
 	return def
 }

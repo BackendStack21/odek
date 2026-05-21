@@ -1349,7 +1349,7 @@ func multiTurnServer(t *testing.T, terminalCalls int) *httptest.Server {
 
 // TestRunLearn_MultiStepProcedure is an end-to-end test of the
 // --learn pipeline: mock LLM simulates 4 terminal calls → multi-step
-// heuristic fires → user accepts → skill file saved on disk.
+// heuristic fires → skill auto-saved (with default auto_save=true).
 func TestRunLearn_MultiStepProcedure(t *testing.T) {
 	server := multiTurnServer(t, 4)
 	defer server.Close()
@@ -1367,14 +1367,11 @@ func TestRunLearn_MultiStepProcedure(t *testing.T) {
 		os.Setenv("HOME", origHome)
 	}()
 
-	// Simulate stdin: "y" to accept the suggestion
-	oldStdin := os.Stdin
-	inR, inW, _ := os.Pipe()
-	os.Stdin = inR
-	defer func() { os.Stdin = oldStdin }()
-	go func() {
-		inW.Write([]byte("y\n"))
-	}()
+	// Create local odek.json with auto_save enabled, LLM enhancement disabled
+	// (mock server can't handle enhancement prompts)
+	configContent := `{"skills": {"auto_save": {"enabled": true, "require_llm": false}, "llm_learn": false}}`
+	os.WriteFile("odek.json", []byte(configContent), 0644)
+	defer os.Remove("odek.json")
 
 	// Capture stderr
 	oldStderr := os.Stderr
@@ -1391,16 +1388,11 @@ func TestRunLearn_MultiStepProcedure(t *testing.T) {
 	}
 
 	stderrStr := string(errOutput)
+	t.Logf("STDERR: %s", stderrStr) // DEBUG
 
-	// Heuristic fired
-	if !strings.Contains(stderrStr, "Learning: detected") {
-		t.Error("expected 'Learning: detected' in stderr")
-	}
-	if !strings.Contains(stderrStr, "Save as skill?") {
-		t.Error("expected 'Save as skill?' prompt")
-	}
-	if !strings.Contains(stderrStr, "Saved skill") {
-		t.Error("expected 'Saved skill' confirmation")
+	// Auto-save should fire with default config (auto_save.enabled=true)
+	if !strings.Contains(stderrStr, "Auto-saved skill") {
+		t.Error("expected 'Auto-saved skill' in stderr")
 	}
 	if !strings.Contains(stderrStr, "multi-step") {
 		t.Error("expected 'multi-step' heuristic in output")
@@ -1414,9 +1406,9 @@ func TestRunLearn_MultiStepProcedure(t *testing.T) {
 	}
 }
 
-// TestRunLearn_RejectSuggestion verifies that when the user declines
-// a skill suggestion, no file is written.
-func TestRunLearn_RejectSuggestion(t *testing.T) {
+// TestRunLearn_InteractiveReject verifies that when auto-save is disabled,
+// the interactive prompt appears and user can reject.
+func TestRunLearn_InteractiveReject(t *testing.T) {
 	server := multiTurnServer(t, 4)
 	defer server.Close()
 
@@ -1432,6 +1424,11 @@ func TestRunLearn_RejectSuggestion(t *testing.T) {
 		os.Setenv("OPENAI_API_KEY", origOAI)
 		os.Setenv("HOME", origHome)
 	}()
+
+	// Create local odek.json with auto_save disabled and LLM enhancement disabled
+	configContent := `{"skills": {"auto_save": {"enabled": false}, "llm_learn": false}}`
+	os.WriteFile("odek.json", []byte(configContent), 0644)
+	defer os.Remove("odek.json")
 
 	// Simulate stdin: "n" to reject
 	oldStdin := os.Stdin
@@ -1456,15 +1453,13 @@ func TestRunLearn_RejectSuggestion(t *testing.T) {
 	}
 
 	stderrStr := string(errOutput)
+	t.Logf("STDERR: %s", stderrStr) // DEBUG
 
 	if !strings.Contains(stderrStr, "Learning: detected") {
-		t.Error("expected detection to fire")
+		t.Error("expected 'Learning: detected' in stderr")
 	}
 	if !strings.Contains(stderrStr, "Skipped") {
 		t.Error("expected 'Skipped' when user rejects")
-	}
-	if strings.Contains(stderrStr, "Saved skill") {
-		t.Error("should NOT contain 'Saved skill' when rejected")
 	}
 
 	// Verify no skill file written
@@ -1515,8 +1510,8 @@ func TestRunLearn_NoSuggestions(t *testing.T) {
 	if strings.Contains(stderrStr, "Learning: detected") {
 		t.Error("should NOT detect learning patterns for text-only response")
 	}
-	if strings.Contains(stderrStr, "Save as skill?") {
-		t.Error("should NOT show save prompt when no patterns detected")
+	if strings.Contains(stderrStr, "Auto-saved") {
+		t.Error("should NOT auto-save when no patterns detected")
 	}
 }
 

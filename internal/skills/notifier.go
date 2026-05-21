@@ -12,6 +12,7 @@ type SkillEvent struct {
 	SkillName string    // single skill name (for saved/deleted/used)
 	Skills    []string  // list of skill names (for batch load events)
 	Heuristic string    // for "suggested" events (multi-step, error-recovery, etc.)
+	Body      string    // for "suggested" events: the full skill body (for preview)
 	Timestamp time.Time // when the event occurred (UTC)
 }
 

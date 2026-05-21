@@ -459,21 +459,39 @@ func normalizeCommand(cmd string) string {
 // ── User-Facing Helpers ──────────────────────────────────────────────
 
 // FormatSuggestion formats a SkillSuggestion for display to the user.
-func FormatSuggestion(s SkillSuggestion) string {
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("📝 Skill suggestion: %s\n", s.Name))
-	b.WriteString(fmt.Sprintf("   %s\n", s.Description))
-	b.WriteString(fmt.Sprintf("   Detected by: %s\n", s.Heuristic))
-	if len(s.CommandLog) > 0 {
-		b.WriteString("   Commands:\n")
-		for _, cmd := range s.CommandLog {
-			if len(cmd) > 80 {
-				cmd = cmd[:80] + "..."
-			}
-			b.WriteString(fmt.Sprintf("     • %s\n", cmd))
+// When preview is true, includes the first 400 chars (or first 8 lines) of the Body.
+func FormatSuggestion(s SkillSuggestion, preview bool) string {
+	if preview && len(s.Body) > 0 {
+		return FormatSuggestionWithPreview(s, true, 400)
+	}
+	return FormatSuggestionWithPreview(s, false, 0)
+}
+
+// FormatSuggestionPreview returns just the body preview string
+// (first 400 chars or first 8 lines, whichever is shorter).
+func FormatSuggestionPreview(s SkillSuggestion) string {
+	return bodyPreview(s.Body)
+}
+
+// bodyPreview extracts the first 400 chars or first 8 lines of body,
+// whichever is shorter.
+func bodyPreview(body string) string {
+	if body == "" {
+		return ""
+	}
+	lines := strings.Split(body, "\n")
+	if len(lines) > 8 {
+		lines = lines[:8]
+	}
+	result := strings.Join(lines, "\n")
+	if len(result) > 400 {
+		result = result[:400]
+		// Try to break at a newline
+		if lastNL := strings.LastIndexByte(result, '\n'); lastNL > 200 {
+			result = result[:lastNL]
 		}
 	}
-	return b.String()
+	return result
 }
 
 // SaveSuggestion saves a SkillSuggestion as a SKILL.md in the given directory.
@@ -538,4 +556,103 @@ func extractActionKeywords(cmds []string) []string {
 		}
 	}
 	return out
+}
+
+// ── Quality Gate ──────────────────────────────────────────────────────
+
+// PassesQualityGate checks if a suggestion meets the minimum bar for auto-save.
+// Requires: body ≥ 200 chars, has ## Overview section, has ## Common Pitfalls section.
+func PassesQualityGate(s SkillSuggestion) bool {
+	if len(s.Body) < 200 {
+		return false
+	}
+	if !strings.Contains(s.Body, "## Overview") && !strings.Contains(s.Body, "# Overview") {
+		return false
+	}
+	if !strings.Contains(s.Body, "## Common Pitfalls") {
+		return false
+	}
+	return true
+}
+
+// ── Auto-Save ─────────────────────────────────────────────────────────
+
+// AutoSaveResult reports what auto-save did.
+type AutoSaveResult struct {
+	Saved      []string // names of auto-saved skills
+	Skipped    int      // count of suggestions filtered by skip list
+	Failed     []string // names that failed quality gate
+	Heuristics map[string]string // heuristic labels for saved skills
+}
+
+// AutoSaveSuggestions runs auto-save logic on a set of suggestions.
+// It filters skipped suggestions, then auto-saves those that pass the
+// quality gate (up to maxPerRun), recording the rest as Failed.
+func AutoSaveSuggestions(suggestions []SkillSuggestion, userDir string, cfg SkillsConfig) AutoSaveResult {
+	result := AutoSaveResult{Heuristics: make(map[string]string)}
+
+	// Load skip list and filter
+	sl := LoadSkipList(userDir)
+	eligible := make([]SkillSuggestion, 0, len(suggestions))
+	for _, s := range suggestions {
+		if sl.ShouldSkip(s.Name, cfg.Curation.SkipThreshold, cfg.Curation.SkipResetDays) {
+			result.Skipped++
+			continue
+		}
+		eligible = append(eligible, s)
+	}
+
+	// Auto-save eligible suggestions that pass quality gate
+	saved := 0
+	for _, s := range eligible {
+		if saved >= cfg.AutoSave.MaxPerRun {
+			break
+		}
+		if PassesQualityGate(s) {
+			if err := SaveSuggestion(userDir, s); err == nil {
+				result.Saved = append(result.Saved, s.Name)
+				result.Heuristics[s.Name] = s.Heuristic
+				saved++
+			}
+		} else {
+			result.Failed = append(result.Failed, s.Name)
+		}
+	}
+
+	return result
+}
+
+// ── Enhanced Preview ──────────────────────────────────────────────────
+
+// FormatSuggestionWithPreview formats a suggestion with optional body preview.
+func FormatSuggestionWithPreview(s SkillSuggestion, preview bool, previewLen int) string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("📝 Skill suggestion: %s\n", s.Name))
+	b.WriteString(fmt.Sprintf("   %s\n", s.Description))
+	b.WriteString(fmt.Sprintf("   Detected by: %s\n", s.Heuristic))
+	if len(s.CommandLog) > 0 {
+		b.WriteString("   Commands:\n")
+		for _, cmd := range s.CommandLog {
+			if len(cmd) > 80 {
+				cmd = cmd[:80] + "..."
+			}
+			b.WriteString(fmt.Sprintf("     • %s\n", cmd))
+		}
+	}
+	if preview && len(s.Body) > 0 {
+		body := s.Body
+		if previewLen > 0 && len(body) > previewLen {
+			body = body[:previewLen]
+			// Try to break at a newline
+			if lastNL := strings.LastIndexByte(body, '\n'); lastNL > previewLen/2 {
+				body = body[:lastNL]
+			}
+			body += "\n   ... (truncated)"
+		}
+		b.WriteString("   ── Preview ──\n")
+		for _, line := range strings.Split(body, "\n") {
+			b.WriteString(fmt.Sprintf("   %s\n", line))
+		}
+	}
+	return b.String()
 }

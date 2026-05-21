@@ -16,7 +16,10 @@ package skills
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -73,6 +76,7 @@ type SkillsConfig struct {
 	Dirs         []string       `json:"dirs,omitempty"`
 	Import       ImportConfig   `json:"import"`
 	Curation     CurationConfig `json:"curation"`
+	AutoSave     AutoSaveConfig `json:"auto_save"`
 	LLMLearn     bool           `json:"llm_learn"`
 	LLMCurate    bool           `json:"llm_curate"`
 }
@@ -88,6 +92,16 @@ type ImportConfig struct {
 type CurationConfig struct {
 	StalenessDays int  `json:"staleness_days"`
 	AutoPrune     bool `json:"auto_prune"`
+	AutoCurate    bool `json:"auto_curate"`
+	SkipThreshold int  `json:"skip_threshold"`
+	SkipResetDays int  `json:"skip_reset_days"`
+}
+
+// AutoSaveConfig controls automatic skill saving behavior.
+type AutoSaveConfig struct {
+	Enabled     bool `json:"enabled"`
+	RequireLLM  bool `json:"require_llm"`
+	MaxPerRun   int  `json:"max_per_run"`
 }
 
 // DefaultSkillsConfig returns sensible defaults for the skills system.
@@ -105,10 +119,127 @@ func DefaultSkillsConfig() SkillsConfig {
 		Curation: CurationConfig{
 			StalenessDays: 90,
 			AutoPrune:     false,
+			AutoCurate:    true,
+			SkipThreshold: 1,
+			SkipResetDays: 30,
+		},
+		AutoSave: AutoSaveConfig{
+			Enabled:    true,
+			RequireLLM: true,
+			MaxPerRun:  3,
 		},
 		LLMLearn:  true,
 		LLMCurate: true,
 	}
+}
+
+// ── Skip List ────────────────────────────────────────────────────────
+
+// SkippedEntry records a skill suggestion that the user chose to skip.
+type SkippedEntry struct {
+	SkippedAt    time.Time `json:"skipped_at"`
+	Heuristic    string    `json:"heuristic"`
+	TimesSkipped int       `json:"times_skipped"`
+}
+
+// SkipList is the persistent record of skipped skill suggestions.
+type SkipList struct {
+	Skipped map[string]SkippedEntry `json:"skipped"`
+}
+
+// skipListPath returns the path to the skip list file.
+func skipListPath(userDir string) string {
+	return filepath.Join(userDir, ".skipped.json")
+}
+
+// LoadSkipList reads the skip list from disk or returns an empty one.
+func LoadSkipList(userDir string) *SkipList {
+	sl := &SkipList{Skipped: make(map[string]SkippedEntry)}
+	data, err := os.ReadFile(skipListPath(userDir))
+	if err != nil {
+		return sl
+	}
+	json.Unmarshal(data, sl)
+	if sl.Skipped == nil {
+		sl.Skipped = make(map[string]SkippedEntry)
+	}
+	return sl
+}
+
+// SaveSkipList writes the skip list to disk.
+func (sl *SkipList) Save(userDir string) error {
+	data, err := json.MarshalIndent(sl, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal skip list: %w", err)
+	}
+	if err := os.MkdirAll(userDir, 0755); err != nil {
+		return fmt.Errorf("create skills dir: %w", err)
+	}
+	return os.WriteFile(skipListPath(userDir), data, 0644)
+}
+
+// ShouldSkip returns true if the suggestion should be suppressed.
+// A suggestion is skipped if it has been skipped >= threshold times and
+// the last skip was within resetDays, OR if it was skipped at all and
+// the threshold is 1 (skip-once mode).
+func (sl *SkipList) ShouldSkip(name string, threshold, resetDays int) bool {
+	entry, ok := sl.Skipped[name]
+	if !ok {
+		return false
+	}
+	if threshold <= 1 {
+		return true // skip-once: suppress after first skip
+	}
+	if entry.TimesSkipped >= threshold {
+		// Check if the skip has expired
+		if resetDays > 0 {
+			expiry := entry.SkippedAt.AddDate(0, 0, resetDays)
+			if time.Now().UTC().After(expiry) {
+				// Skip expired, allow re-suggestion
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// RecordSkip records a skipped suggestion and persists the skip list.
+func (sl *SkipList) RecordSkip(userDir, name, heuristic string) error {
+	entry := sl.Skipped[name]
+	entry.SkippedAt = time.Now().UTC()
+	entry.Heuristic = heuristic
+	entry.TimesSkipped++
+	sl.Skipped[name] = entry
+	return sl.Save(userDir)
+}
+
+// ClearSkip removes a specific entry from the skip list and persists.
+func (sl *SkipList) ClearSkip(userDir, name string) error {
+	delete(sl.Skipped, name)
+	return sl.Save(userDir)
+}
+
+// ClearAllSkips removes all entries and persists.
+func (sl *SkipList) ClearAllSkips(userDir string) error {
+	sl.Skipped = make(map[string]SkippedEntry)
+	return sl.Save(userDir)
+}
+
+// FilterSkipped removes suggestions that should be skipped from a slice.
+// Returns the filtered slice and the number that were filtered out.
+func FilterSkipped(suggestions []SkillSuggestion, userDir string, threshold, resetDays int) ([]SkillSuggestion, int) {
+	sl := LoadSkipList(userDir)
+	filtered := make([]SkillSuggestion, 0, len(suggestions))
+	skipped := 0
+	for _, s := range suggestions {
+		if sl.ShouldSkip(s.Name, threshold, resetDays) {
+			skipped++
+			continue
+		}
+		filtered = append(filtered, s)
+	}
+	return filtered, skipped
 }
 
 // ── Default Skill Dirs ────────────────────────────────────────────────

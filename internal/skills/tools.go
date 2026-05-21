@@ -131,6 +131,19 @@ func (sm *SkillManager) RecordUsage(name string) {
 	}
 }
 
+// AllSkills returns a copy of all loaded skills (auto-load + lazy).
+// Thread-safe.
+func (sm *SkillManager) AllSkills() []Skill {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	var all []Skill
+	if sm.Result != nil {
+		all = append(all, sm.Result.AutoLoad...)
+		all = append(all, sm.Result.Lazy...)
+	}
+	return all
+}
+
 // ── skill_load ─────────────────────────────────────────────────────────
 
 // SkillLoadTool lets the agent load a skill's full content by name.

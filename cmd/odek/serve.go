@@ -566,7 +566,25 @@ func handlePrompt(
 	// ── Learn loop: run self-improvement heuristics ──
 	if agent.SkillManager() != nil {
 		sm := agent.SkillManager()
-		learnAndSuggest(allMessages, sm, nil, false)
+		suggestions := learnAndSuggest(allMessages, sm, nil, false, resolved.Skills.AutoSave.Enabled)
+		if len(suggestions) > 0 {
+			userDir := expandHome("~/.odek/skills")
+			os.MkdirAll(userDir, 0755)
+			filtered, skipped := skills.FilterSkipped(suggestions, userDir,
+				resolved.Skills.Curation.SkipThreshold, resolved.Skills.Curation.SkipResetDays)
+			_ = skipped
+			if resolved.Skills.AutoSave.Enabled {
+				result := skills.AutoSaveSuggestions(filtered, userDir, resolved.Skills)
+				for _, name := range result.Saved {
+					sm.Notifier.Notify(skills.SkillEvent{
+						Type: "saved", SkillName: name, Timestamp: time.Now().UTC(),
+					})
+				}
+				if len(result.Saved) > 0 {
+					sm.Reload()
+				}
+			}
+		}
 	}
 
 	// If we started a new session, return it so the WebSocket loop

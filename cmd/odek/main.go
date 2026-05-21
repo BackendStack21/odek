@@ -942,7 +942,7 @@ func run(args []string) error {
 	if resolved.Skills.Learn && sm != nil {
 		// Create LLM client for skill enhancement
 		skillsLLM := llm.New(resolved.BaseURL, resolved.APIKey, resolved.Model, "", 30*time.Second)
-		runLearnLoop(allMessages, f.Task, sm, skillsLLM, resolved.Skills.LLMLearn)
+		runLearnLoop(allMessages, f.Task, sm, skillsLLM, resolved.Skills)
 	}
 
 	// ── Session end — extract episode if enough turns ──
@@ -1263,7 +1263,9 @@ func getVersion() string {
 // enhancement, fires "suggested" events via the SkillManager's notifier,
 // and returns the enhanced suggestions for interactive handling by callers.
 // This is the non-interactive core shared by CLI, WebUI, and Telegram.
-func learnAndSuggest(messages []llm.Message, sm *skills.SkillManager, llmClient skills.LLMClient, llmLearn bool) []skills.SkillSuggestion {
+// When suppressSuggested is true, "suggested" notifier events are skipped
+// (caller handles presentation, e.g. when auto-save is enabled).
+func learnAndSuggest(messages []llm.Message, sm *skills.SkillManager, llmClient skills.LLMClient, llmLearn, suppressSuggested bool) []skills.SkillSuggestion {
 	// Convert llm.Message to skills.LlmMessage
 	skillMsgs := make([]skills.LlmMessage, 0, len(messages))
 	for _, m := range messages {
@@ -1298,47 +1300,112 @@ func learnAndSuggest(messages []llm.Message, sm *skills.SkillManager, llmClient 
 		}
 	}
 
-	// Fire suggested events via notifier
-	for _, s := range suggestions {
-		sm.Notifier.Notify(skills.SkillEvent{
-			Type:      "suggested",
-			SkillName: s.Name,
-			Heuristic: s.Heuristic,
-			Timestamp: time.Now().UTC(),
-		})
+	// Fire suggested events via notifier (unless suppressed)
+	if !suppressSuggested {
+		for _, s := range suggestions {
+			sm.Notifier.Notify(skills.SkillEvent{
+				Type:      "suggested",
+				SkillName: s.Name,
+				Heuristic: s.Heuristic,
+				Body:      s.Body,
+				Timestamp: time.Now().UTC(),
+			})
+		}
 	}
 
 	return suggestions
 }
 
-func runLearnLoop(messages []llm.Message, task string, sm *skills.SkillManager, llmClient skills.LLMClient, llmLearn bool) {
-	suggestions := learnAndSuggest(messages, sm, llmClient, llmLearn)
+func runLearnLoop(messages []llm.Message, task string, sm *skills.SkillManager, llmClient skills.LLMClient, skillsCfg skills.SkillsConfig) {
+	suggestions := learnAndSuggest(messages, sm, llmClient, skillsCfg.LLMLearn, true)
 	if len(suggestions) == 0 {
 		return
 	}
 
-	fmt.Fprintf(os.Stderr, "\n🔍 Learning: detected %d skill pattern(s)\n", len(suggestions))
-	for _, s := range suggestions {
-		fmt.Fprint(os.Stderr, skills.FormatSuggestion(s))
-		fmt.Fprintf(os.Stderr, "   Save as skill? [Y/n]: ")
+	userDir := expandHome("~/.odek/skills")
+	os.MkdirAll(userDir, 0755)
+
+	// Filter out previously-skipped suggestions
+	filtered, skipped := skills.FilterSkipped(suggestions, userDir,
+		skillsCfg.Curation.SkipThreshold, skillsCfg.Curation.SkipResetDays)
+	if skipped > 0 {
+		fmt.Fprintf(os.Stderr, "   (%d suggestion(s) previously skipped, suppressed)\n", skipped)
+	}
+	if len(filtered) == 0 {
+		return
+	}
+
+	// Auto-save if enabled
+	if skillsCfg.AutoSave.Enabled {
+		if !skillsCfg.AutoSave.RequireLLM || skillsCfg.LLMLearn {
+			result := skills.AutoSaveSuggestions(filtered, userDir, skillsCfg)
+			for _, name := range result.Saved {
+				heuristic := result.Heuristics[name]
+				if heuristic != "" {
+					fmt.Fprintf(os.Stderr, "   ✓ Auto-saved skill %q (%s)\n", name, heuristic)
+				} else {
+					fmt.Fprintf(os.Stderr, "   ✓ Auto-saved skill %q\n", name)
+				}
+				sm.Notifier.Notify(skills.SkillEvent{
+					Type: "saved", SkillName: name, Timestamp: time.Now().UTC(),
+				})
+			}
+			if result.Skipped > 0 {
+				fmt.Fprintf(os.Stderr, "   (%d previously skipped, suppressed)\n", result.Skipped)
+			}
+			for _, name := range result.Failed {
+				fmt.Fprintf(os.Stderr, "   ⚠ Quality gate failed for %q (use --no-auto-save to review manually)\n", name)
+			}
+			if len(result.Saved) > 0 {
+				sm.Reload()
+				// Run micro-curation after auto-save
+				runMicroCuration(userDir, sm, skillsCfg)
+			}
+			return
+		}
+	}
+
+	// Interactive fallback: show preview and prompt
+	fmt.Fprintf(os.Stderr, "\n🔍 Learning: detected %d skill pattern(s)\n", len(filtered))
+	for _, s := range filtered {
+		fmt.Fprint(os.Stderr, skills.FormatSuggestionWithPreview(s, true, 400))
+		fmt.Fprintf(os.Stderr, "   Save as skill? [Y/n/s=skip always]: ")
 
 		var response string
 		fmt.Scanf("%s", &response)
 		response = strings.ToLower(strings.TrimSpace(response))
 
 		if response == "" || response == "y" || response == "yes" {
-			userDir := expandHome("~/.odek/skills")
-			os.MkdirAll(userDir, 0755)
 			if err := skills.SaveSuggestion(userDir, s); err != nil {
 				fmt.Fprintf(os.Stderr, "   ✗ Error saving skill: %v\n", err)
 			} else {
 				fmt.Fprintf(os.Stderr, "   ✓ Saved skill %q\n", s.Name)
-				// Reload the skill manager to pick up the new skill
 				sm.Reload()
 			}
+		} else if response == "s" || response == "skip" {
+			sl := skills.LoadSkipList(userDir)
+			sl.RecordSkip(userDir, s.Name, s.Heuristic)
+			fmt.Fprintf(os.Stderr, "   Skipped permanently. Use `odek skill reset-skips` to re-enable.\n")
 		} else {
+			sl := skills.LoadSkipList(userDir)
+			sl.RecordSkip(userDir, s.Name, s.Heuristic)
 			fmt.Fprintf(os.Stderr, "   Skipped.\n")
 		}
+	}
+}
+
+// runMicroCuration triggers micro-curation after auto-save.
+func runMicroCuration(userDir string, sm *skills.SkillManager, cfg skills.SkillsConfig) {
+	allSkills := sm.AllSkills()
+	var newSkills []skills.Skill
+	for _, s := range allSkills {
+		if s.Quality == skills.QualityDraft {
+			newSkills = append(newSkills, s)
+		}
+	}
+	result := skills.MicroCuration(userDir, newSkills, allSkills, cfg.Curation)
+	if msg := skills.FormatMicroCurationResult(result); msg != "" {
+		fmt.Fprint(os.Stderr, msg)
 	}
 }
 
@@ -1353,10 +1420,10 @@ func extractUserMessages(messages []llm.Message) []string {
 	return out
 }
 
-// skillCmd handles `odek skill <list|view|save|delete|import|curate>`.
+// skillCmd handles `odek skill <list|view|save|delete|import|curate|reset-skips>`.
 func skillCmd(args []string) error {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "Usage: odek skill <list|view|save|delete|import|curate> [args]\n")
+		fmt.Fprintf(os.Stderr, "Usage: odek skill <list|view|save|delete|import|curate|reset-skips> [args]\n")
 		return nil
 	}
 
@@ -1501,8 +1568,24 @@ func skillCmd(args []string) error {
 		fmt.Print(skills.FormatCurationReport(report))
 		return nil
 
+	case "reset-skips":
+		sl := skills.LoadSkipList(userDir)
+		if len(subArgs) == 0 {
+			if err := sl.ClearAllSkips(userDir); err != nil {
+				return fmt.Errorf("reset all skips: %w", err)
+			}
+			fmt.Println("✓ Cleared all skipped suggestions.")
+		} else {
+			name := subArgs[0]
+			if err := sl.ClearSkip(userDir, name); err != nil {
+				return fmt.Errorf("reset skip %q: %w", name, err)
+			}
+			fmt.Printf("✓ Cleared skip for %q.\n", name)
+		}
+		return nil
+
 	default:
-		return fmt.Errorf("unknown skill command %q (use list, view, delete, import, curate)", sub)
+		return fmt.Errorf("unknown skill command %q (use list, view, delete, import, curate, reset-skips)", sub)
 	}
 }
 
