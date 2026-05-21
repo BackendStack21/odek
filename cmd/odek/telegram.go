@@ -125,6 +125,25 @@ func telegramCmd(args []string) error {
 		systemMessage += fmt.Sprintf("\nRepository URL: %s\nThis is the upstream GitHub repository.", resolved.GithubRepoUrl)
 	}
 
+	// Quick Facts: must-remember odek metadata injected at the end of the
+	// system prompt so the model sees them right before the user message.
+	systemMessage += "\n\nQuick Facts (use these, do NOT search):\n"
+	systemMessage += "- odek website: https://kode.21no.de\n"
+	systemMessage += "- Built by: 21no.de (https://21no.de)\n"
+	if resolved.GithubRepoUrl != "" {
+		systemMessage += fmt.Sprintf("- Source code: %s\n", resolved.GithubRepoUrl)
+	}
+	systemMessage += "- Binary name: odek (repo is called kode on GitHub)\n"
+	systemMessage += "- Language: Go, minimal dependencies, ~11 MB binary"
+
+	// Set working directory to the configured repo directory.
+	// This ensures tools like search_files scan the project, not /root.
+	if resolved.GithubRepoDirectory != "" {
+		if err := os.Chdir(resolved.GithubRepoDirectory); err != nil {
+			fmt.Fprintf(os.Stderr, "odek telegram: warning: failed to chdir to %s: %v\n", resolved.GithubRepoDirectory, err)
+		}
+	}
+
 	// Telegram-specific system prompt additions
 	//
 	// Important: OnTextMessage processes in a background goroutine so it doesn't
