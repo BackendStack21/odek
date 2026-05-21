@@ -14,17 +14,19 @@ import (
 
 // Bot represents a Telegram Bot API client.
 type Bot struct {
-	Token   string
-	BaseURL string
-	Client  *http.Client
+	Token       string
+	BaseURL     string
+	FileBaseURL string
+	Client      *http.Client
 }
 
 // NewBot creates a new Bot with the given token and a default HTTP client
 // with a 30-second timeout.
 func NewBot(token string) *Bot {
 	return &Bot{
-		Token:   token,
-		BaseURL: fmt.Sprintf("https://api.telegram.org/bot%s", token),
+		Token:       token,
+		BaseURL:     fmt.Sprintf("https://api.telegram.org/bot%s", token),
+		FileBaseURL: fmt.Sprintf("https://api.telegram.org/file/bot%s", token),
 		Client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -248,7 +250,7 @@ func (b *Bot) GetFile(fileID string) (*File, error) {
 
 // DownloadFile downloads a file from Telegram's file server and returns its raw bytes.
 func (b *Bot) DownloadFile(filePath string) ([]byte, error) {
-	url := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", b.Token, filePath)
+	url := fmt.Sprintf("%s/%s", b.FileBaseURL, filePath)
 
 	resp, err := b.Client.Get(url)
 	if err != nil {

@@ -1,0 +1,281 @@
+package telegram
+
+import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/BackendStack21/kode/internal/danger"
+)
+
+// ── Test NewTelegramApprover ───────────────────────────────────────────────
+
+func TestNewTelegramApprover(t *testing.T) {
+	ts := testServer(t, nil)
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	a := NewTelegramApprover(bot, 12345)
+	if a == nil {
+		t.Fatal("NewTelegramApprover returned nil")
+	}
+	if a.ChatID != 12345 {
+		t.Errorf("ChatID = %d, want %d", a.ChatID, 12345)
+	}
+	if a.bot != bot {
+		t.Error("bot not set correctly")
+	}
+	if len(a.pending) != 0 {
+		t.Errorf("pending map should be empty, got %d", len(a.pending))
+	}
+}
+
+// ── Test HandleCallback ────────────────────────────────────────────────────
+
+func TestHandleCallback_Approve(t *testing.T) {
+	ts := testServer(t, nil)
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	a := NewTelegramApprover(bot, 1)
+	id := a.newID()
+
+	// Register a pending request manually.
+	resp := make(chan string, 1)
+	a.pending[id] = resp
+
+	// Handle an approve callback.
+	handled := a.HandleCallback(cbPrefixApprove + id)
+	if !handled {
+		t.Fatal("HandleCallback should return true for approval callback")
+	}
+
+	// Check the response channel received the action.
+	action := <-resp
+	if action != "approve" {
+		t.Errorf("response action = %q, want %q", action, "approve")
+	}
+}
+
+func TestHandleCallback_Deny(t *testing.T) {
+	ts := testServer(t, nil)
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	a := NewTelegramApprover(bot, 1)
+	id := a.newID()
+
+	resp := make(chan string, 1)
+	a.pending[id] = resp
+
+	handled := a.HandleCallback(cbPrefixDeny + id)
+	if !handled {
+		t.Fatal("HandleCallback should return true for deny callback")
+	}
+
+	action := <-resp
+	if action != "deny" {
+		t.Errorf("response action = %q, want %q", action, "deny")
+	}
+}
+
+func TestHandleCallback_Trust(t *testing.T) {
+	ts := testServer(t, nil)
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	a := NewTelegramApprover(bot, 1)
+	id := a.newID()
+
+	resp := make(chan string, 1)
+	a.pending[id] = resp
+
+	handled := a.HandleCallback(cbPrefixTrust + id)
+	if !handled {
+		t.Fatal("HandleCallback should return true for trust callback")
+	}
+
+	action := <-resp
+	if action != "trust" {
+		t.Errorf("response action = %q, want %q", action, "trust")
+	}
+}
+
+func TestHandleCallback_UnknownPrefix(t *testing.T) {
+	ts := testServer(t, nil)
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	a := NewTelegramApprover(bot, 1)
+
+	// Callback with an unknown prefix should not be handled.
+	handled := a.HandleCallback("unknown:something")
+	if handled {
+		t.Fatal("HandleCallback should return false for unknown prefix")
+	}
+}
+
+func TestHandleCallback_UnknownID(t *testing.T) {
+	ts := testServer(t, nil)
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	a := NewTelegramApprover(bot, 1)
+
+	// Valid prefix but unknown ID — should return true (recognition)
+	// but not panic (no channel to send to).
+	handled := a.HandleCallback(cbPrefixApprove + "nonexistent")
+	if !handled {
+		t.Fatal("HandleCallback should return true for known prefix even with unknown ID")
+	}
+}
+
+// ── Test IsTrusted / ResetTrust ────────────────────────────────────────────
+
+func TestIsTrusted_Initial(t *testing.T) {
+	ts := testServer(t, nil)
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	a := NewTelegramApprover(bot, 1)
+	if a.IsTrusted(danger.SystemWrite) {
+		t.Error("IsTrusted(SystemWrite) should be false initially")
+	}
+}
+
+func TestResetTrust(t *testing.T) {
+	ts := testServer(t, nil)
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	a := NewTelegramApprover(bot, 1)
+
+	// Manually set a trusted class.
+	a.mu.Lock()
+	a.trusted[danger.SystemWrite] = true
+	a.mu.Unlock()
+
+	if !a.IsTrusted(danger.SystemWrite) {
+		t.Error("IsTrusted(SystemWrite) should be true after manual set")
+	}
+
+	a.ResetTrust()
+	if a.IsTrusted(danger.SystemWrite) {
+		t.Error("IsTrusted(SystemWrite) should be false after ResetTrust")
+	}
+}
+
+// ── Test newID uniqueness ──────────────────────────────────────────────────
+
+func TestNewID_Unique(t *testing.T) {
+	ts := testServer(t, nil)
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	a := NewTelegramApprover(bot, 1)
+	ids := make(map[string]bool)
+	for i := 0; i < 100; i++ {
+		id := a.newID()
+		if ids[id] {
+			t.Fatal("duplicate ID generated")
+		}
+		ids[id] = true
+	}
+
+	// Check ID prefix.
+	id := a.newID()
+	if len(id) != 16 {
+		t.Errorf("ID length = %d, want 16 (8 bytes hex)", len(id))
+	}
+}
+
+// ── Test PromptCommand with trust cache ────────────────────────────────────
+
+func TestPromptCommand_TrustedClass(t *testing.T) {
+	ts := testServer(t, nil)
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	a := NewTelegramApprover(bot, 1)
+	a.mu.Lock()
+	a.trusted[danger.Safe] = true
+	a.mu.Unlock()
+
+	// Should return nil immediately without sending a message.
+	err := a.PromptCommand(danger.Safe, "echo hello", "")
+	if err != nil {
+		t.Errorf("PromptCommand for trusted class should return nil, got: %v", err)
+	}
+}
+
+// ── Test PromptCommand with network error ──────────────────────────────────
+
+func TestPromptCommand_SendError(t *testing.T) {
+	// Use a server that returns 400 for sendMessage.
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintf(w, `{"ok":false,"description":"Bad Request","error_code":400}`)
+	}
+	ts := httptest.NewServer(http.HandlerFunc(handler))
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	a := NewTelegramApprover(bot, 1)
+
+	// Should return an error (can't send the prompt).
+	err := a.PromptCommand(danger.SystemWrite, "rm -rf /", "dangerous")
+	if err == nil {
+		t.Fatal("PromptCommand should return error when send fails")
+	}
+}
+
+// ── Test PromptOperation ───────────────────────────────────────────────────
+
+func TestPromptOperation_TrustedClass(t *testing.T) {
+	ts := testServer(t, nil)
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	a := NewTelegramApprover(bot, 1)
+	a.mu.Lock()
+	a.trusted[danger.LocalWrite] = true
+	a.mu.Unlock()
+
+	err := a.PromptOperation(danger.ToolOperation{
+		Name:     "write_file",
+		Resource: "/tmp/test.txt",
+		Risk:     danger.LocalWrite,
+	})
+	if err != nil {
+		t.Errorf("PromptOperation for trusted class should return nil, got: %v", err)
+	}
+}
+
+// ── Test concurrency safety ────────────────────────────────────────────────
+
+func TestApprover_ConcurrentAccess(t *testing.T) {
+	ts := testServer(t, nil)
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	a := NewTelegramApprover(bot, 1)
+
+	// Set trust from multiple goroutines.
+	done := make(chan bool, 10)
+	for i := 0; i < 10; i++ {
+		go func() {
+			a.mu.Lock()
+			a.trusted[danger.SystemWrite] = true
+			a.mu.Unlock()
+			done <- true
+		}()
+	}
+	for i := 0; i < 10; i++ {
+		<-done
+	}
+
+	if !a.IsTrusted(danger.SystemWrite) {
+		t.Error("IsTrusted should be true after concurrent sets")
+	}
+}

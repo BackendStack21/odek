@@ -24,12 +24,21 @@ type Handler struct {
 	Bot    *Bot
 	Config HandlerConfig
 
+	// Approver handles inline keyboard approval requests for dangerous
+	// operations. When non-nil, callback queries with approval prefixes
+	// (apr:/den:/trs:) are routed to Approver.HandleCallback before
+	// reaching OnCallbackQuery.
+	Approver *TelegramApprover
+
 	// OnTextMessage is called when a plain text message is received.
 	// Returns the response text (may be empty).
+	// Should run asynchronously if it starts the agent loop — callers
+	// should dispatch to a goroutine to avoid blocking the update loop.
 	OnTextMessage func(chatID int64, text string) (string, error)
 
-	// OnCallbackQuery is called when a callback query is received.
-	// Returns the response text (may be empty).
+	// OnCallbackQuery is called when a callback query is received and
+	// it was NOT handled by the TelegramApprover. Returns the response
+	// text (may be empty).
 	OnCallbackQuery func(chatID int64, callbackData string) (string, error)
 
 	// OnCommand is called when a bot command (e.g. /start) is received.
@@ -38,10 +47,14 @@ type Handler struct {
 
 	// OnVoiceMessage is called when a voice message is received.
 	// Returns the response text (may be empty).
+	// fileID is the Telegram file ID of the voice message in OGG format.
+	// Callers should use DownloadVoice to save the file locally.
 	OnVoiceMessage func(chatID int64, fileID string) (string, error)
 
 	// OnPhotoMessage is called when a photo message is received.
 	// Returns the response text (may be empty).
+	// fileIDs contains all available sizes (last = largest).
+	// Callers should use DownloadPhoto with the last element.
 	OnPhotoMessage func(chatID int64, fileIDs []string) (string, error)
 
 	// OnError is called when a processing error occurs.
@@ -58,8 +71,8 @@ func NewHandler(bot *Bot) *Handler {
 		OnTextMessage:   defaultTextHandler(),
 		OnCallbackQuery: defaultCallbackHandler(),
 		OnCommand:       defaultCommandHandler(),
-		OnVoiceMessage:  defaultVoiceHandler(),
-		OnPhotoMessage:  defaultPhotoHandler(),
+		OnVoiceMessage:  defaultVoiceHandler(bot),
+		OnPhotoMessage:  defaultPhotoHandler(bot),
 	}
 }
 
@@ -84,17 +97,27 @@ func defaultCommandHandler() func(int64, string, string) (string, error) {
 	}
 }
 
-// defaultVoiceHandler returns a default OnVoiceMessage callback.
-func defaultVoiceHandler() func(int64, string) (string, error) {
-	return func(_ int64, _ string) (string, error) {
-		return "Not implemented yet: voice message", nil
+// defaultVoiceHandler returns a default OnVoiceMessage callback that downloads
+// the voice file and returns a MEDIA: response.
+func defaultVoiceHandler(bot *Bot) func(int64, string) (string, error) {
+	return func(chatID int64, fileID string) (string, error) {
+		path, err := DownloadVoice(bot, fileID)
+		if err != nil {
+			return "", fmt.Errorf("telegram handler: download voice: %w", err)
+		}
+		return fmt.Sprintf("MEDIA:voice:%s", path), nil
 	}
 }
 
-// defaultPhotoHandler returns a default OnPhotoMessage callback.
-func defaultPhotoHandler() func(int64, []string) (string, error) {
-	return func(_ int64, _ []string) (string, error) {
-		return "Not implemented yet: photo message", nil
+// defaultPhotoHandler returns a default OnPhotoMessage callback that downloads
+// the largest photo size and returns a MEDIA: response.
+func defaultPhotoHandler(bot *Bot) func(int64, []string) (string, error) {
+	return func(chatID int64, fileIDs []string) (string, error) {
+		path, err := DownloadPhoto(bot, fileIDs)
+		if err != nil {
+			return "", fmt.Errorf("telegram handler: download photo: %w", err)
+		}
+		return fmt.Sprintf("MEDIA:photo:%s", path), nil
 	}
 }
 
@@ -210,6 +233,17 @@ func (h *Handler) handleCommand(msg *Message) {
 
 // handleCallback processes a callback query from an inline keyboard.
 func (h *Handler) handleCallback(cq *CallbackQuery) {
+	// Route approval callbacks to the TelegramApprover first.
+	if h.Approver != nil && h.Approver.HandleCallback(cq.Data) {
+		// Answer the callback (remove loading state on button).
+		if err := h.Bot.AnswerCallbackQuery(cq.ID, "", false); err != nil {
+			if h.OnError != nil {
+				h.OnError(cq.Message.Chat.ID, err)
+			}
+		}
+		return
+	}
+
 	// Answer the callback query to remove the loading state on the button.
 	if err := h.Bot.AnswerCallbackQuery(cq.ID, "", false); err != nil {
 		if h.OnError != nil {

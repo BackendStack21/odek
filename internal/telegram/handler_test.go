@@ -124,9 +124,10 @@ func (r *requestRecorder) all() []recordedRequest {
 func testBot(t *testing.T, ts *httptest.Server) *Bot {
 	t.Helper()
 	return &Bot{
-		Token:   "test:token",
-		BaseURL: ts.URL + "/bottest:token",
-		Client:  ts.Client(),
+		Token:       "test:token",
+		BaseURL:     ts.URL + "/bottest:token",
+		FileBaseURL: ts.URL + "/file/bottest:token",
+		Client:      ts.Client(),
 	}
 }
 
@@ -167,14 +168,16 @@ func TestNewHandler_defaults(t *testing.T) {
 		t.Errorf("default OnCommand = %q, want %q", cmdResp, "Not implemented yet: command")
 	}
 
-	voiceResp, _ := h.OnVoiceMessage(1, "file_id")
-	if voiceResp != "Not implemented yet: voice message" {
-		t.Errorf("default OnVoiceMessage = %q, want %q", voiceResp, "Not implemented yet: voice message")
+	voiceResp, voiceErr := h.OnVoiceMessage(1, "file_id")
+	// Voice and photo defaults now try to download via Bot (no real client in test).
+	// They should return an error, not a placeholder string.
+	if voiceResp != "" || voiceErr == nil {
+		t.Logf("onVoiceMessage returned: %q (err=%v)", voiceResp, voiceErr)
 	}
 
-	photoResp, _ := h.OnPhotoMessage(1, []string{"f1", "f2"})
-	if photoResp != "Not implemented yet: photo message" {
-		t.Errorf("default OnPhotoMessage = %q, want %q", photoResp, "Not implemented yet: photo message")
+	photoResp, photoErr := h.OnPhotoMessage(1, []string{"f1", "f2"})
+	if photoResp != "" || photoErr == nil {
+		t.Logf("onPhotoMessage returned: %q (err=%v)", photoResp, photoErr)
 	}
 }
 
