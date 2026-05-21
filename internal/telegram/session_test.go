@@ -817,3 +817,64 @@ func TestPruneSessions(t *testing.T) {
 		t.Errorf("PruneSessions(0) removed %d, want 0 (no old sessions)", removed)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TestPrunePlans — cleans old plan files by mtime
+// ---------------------------------------------------------------------------
+
+func TestPrunePlans(t *testing.T) {
+	sm, _ := setupTestSessionManager(t)
+
+	// Create a plans directory with temp files.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	plansDir := filepath.Join(home, ".odek", "plans")
+	if err := os.MkdirAll(plansDir, 0755); err != nil {
+		t.Fatalf("MkdirAll plans: %v", err)
+	}
+
+	// Create a recent plan and an old plan.
+	recent := filepath.Join(plansDir, "recent.md")
+	old := filepath.Join(plansDir, "old.md")
+	os.WriteFile(recent, []byte("# Plan"), 0644)
+	os.WriteFile(old, []byte("# Old Plan"), 0644)
+
+	// Set old.mtime to 60 days ago.
+	oldTime := time.Now().Add(-60 * 24 * time.Hour)
+	if err := os.Chtimes(old, oldTime, oldTime); err != nil {
+		t.Fatalf("Chtimes old: %v", err)
+	}
+
+	// Prune with 30 days — should only remove old.md.
+	removed, err := sm.PrunePlans(30)
+	if err != nil {
+		t.Fatalf("PrunePlans failed: %v", err)
+	}
+	if removed != 1 {
+		t.Errorf("PrunePlans(30) = %d, want 1", removed)
+	}
+
+	// old.md should be gone, recent.md should remain.
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Error("old.md should be deleted")
+	}
+	if _, err := os.Stat(recent); os.IsNotExist(err) {
+		t.Error("recent.md should remain")
+	}
+}
+
+func TestPrunePlans_NoDir(t *testing.T) {
+	sm, _ := setupTestSessionManager(t)
+
+	// Set HOME to a temp dir with no plans subdirectory.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	removed, err := sm.PrunePlans(30)
+	if err != nil {
+		t.Fatalf("PrunePlans failed: %v", err)
+	}
+	if removed != 0 {
+		t.Errorf("PrunePlans on missing dir = %d, want 0", removed)
+	}
+}

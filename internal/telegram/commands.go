@@ -3,6 +3,7 @@ package telegram
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // CommandDescriptor describes a slash command and its handler.
@@ -69,6 +70,31 @@ func init() {
 			Description: "Clean up old sessions (default: 30 days)",
 			Handler:     pruneHandler,
 		},
+		{
+			Command:     "plan",
+			Description: "Create a new plan from a description",
+			Handler:     planHandler,
+		},
+		{
+			Command:     "plans",
+			Description: "List all saved plans",
+			Handler:     plansHandler,
+		},
+		{
+			Command:     "plan_view",
+			Description: "View a plan's full content by slug",
+			Handler:     planViewHandler,
+		},
+		{
+			Command:     "plan_delete",
+			Description: "Delete a plan by slug",
+			Handler:     planDeleteHandler,
+		},
+		{
+			Command:     "plan_resume",
+			Description: "Resume the most recent plan",
+			Handler:     planResumeHandler,
+		},
 	}
 }
 
@@ -134,6 +160,65 @@ func pruneHandler(args string) (string, error) {
 	return "🧹 *Prune* — Session cleanup is handled inline.", nil
 }
 
+// ── Plan Command Handlers ──────────────────────────────────────────────
+
+func planHandler(args string) (string, error) {
+	return "📝 *Plan* — Plan creation is handled inline.", nil
+}
+
+func plansHandler(args string) (string, error) {
+	infos, err := ListPlans(20)
+	if err != nil {
+		return fmt.Sprintf("❌ Failed to list plans: %v", err), nil
+	}
+	if len(infos) == 0 {
+		return "📋 *Plans* — No plans found.\n\nCreate one with `/plan <description>`", nil
+	}
+	var b strings.Builder
+	b.WriteString("📋 *Plans*\n\n")
+	for _, p := range infos {
+		ago := time.Since(p.ModTime).Round(time.Minute)
+		fmt.Fprintf(&b, "`%s` — %s ago\n", p.Slug, ago)
+		if p.Preview != "" {
+			fmt.Fprintf(&b, "  _%s_\n", truncateStr(p.Preview, 60))
+		}
+	}
+	b.WriteString("\nUse `/plan_view <slug>` to read a plan.")
+	return b.String(), nil
+}
+
+func planViewHandler(args string) (string, error) {
+	slug := strings.TrimSpace(args)
+	if slug == "" {
+		return "❗ Usage: `/plan_view <slug>`\n\nUse `/plans` to see available plans.", nil
+	}
+	matched, content, err := ReadPlan(slug)
+	if err != nil {
+		return fmt.Sprintf("❌ %v", err), nil
+	}
+	// Telegram messages have a 4096 char limit. Truncate if needed.
+	if len(content) > 3900 {
+		content = content[:3900] + "\n\n… _(truncated — plan too long for Telegram)_"
+	}
+	return fmt.Sprintf("📄 *Plan: `%s`*\n\n%s", matched, content), nil
+}
+
+func planDeleteHandler(args string) (string, error) {
+	slug := strings.TrimSpace(args)
+	if slug == "" {
+		return "❗ Usage: `/plan_delete <slug>`\n\nUse `/plans` to see available plans.", nil
+	}
+	matched, err := DeletePlan(slug)
+	if err != nil {
+		return fmt.Sprintf("❌ %v", err), nil
+	}
+	return fmt.Sprintf("🗑️ *Plan deleted*: `%s`", matched), nil
+}
+
+func planResumeHandler(args string) (string, error) {
+	return "📋 *Plan Resume* — Handled inline.", nil
+}
+
 // FindCommand returns the command descriptor with the matching name, or nil.
 func FindCommand(name string) *CommandDescriptor {
 	for i := range DefaultCommands {
@@ -155,4 +240,12 @@ func CommandDescriptors() []BotCommand {
 		}
 	}
 	return descs
+}
+
+// truncateStr shortens s to maxLen, appending "…" if trimmed.
+func truncateStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "…"
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/BackendStack21/kode/internal/render"
 	"github.com/BackendStack21/kode/internal/session"
 	"github.com/BackendStack21/kode/internal/telegram"
+	toolpkg "github.com/BackendStack21/kode/internal/tool"
 )
 
 // chatMu serializes agent processing per chat to prevent same-chat message
@@ -197,30 +198,103 @@ func telegramCmd(args []string) error {
 			), nil
 		}
 
-		// Handle /prune [days] — clean up old sessions.
+		// Handle /prune [days] — clean up old sessions and plans.
 		if cmdName == "prune" {
 			days := 30
 			if strings.TrimSpace(argsStr) != "" {
 				if d, err := strconv.Atoi(strings.TrimSpace(argsStr)); err == nil && d > 0 {
 					days = d
 				} else {
-					return "❗ Usage: `/prune [days]`\n\nExample: `/prune 7` to remove sessions older than 7 days.", nil
+					return "❗ Usage: `/prune [days]`\n\nExample: `/prune 7` to remove sessions and plans older than 7 days.", nil
 				}
 			}
-			removed, err := sessionManager.PruneSessions(days)
+			sessionsRemoved, err := sessionManager.PruneSessions(days)
 			if err != nil {
 				return fmt.Sprintf("❌ Failed to prune sessions: %v", err), nil
 			}
-			if removed == 0 {
-				return fmt.Sprintf("📋 *Prune* — No sessions older than %d days found.", days), nil
+			plansRemoved, err := sessionManager.PrunePlans(days)
+			if err != nil {
+				return fmt.Sprintf("❌ Failed to prune plans: %v", err), nil
 			}
-			return fmt.Sprintf("🧹 *Pruned* — Removed %d session(s) older than %d days.", removed, days), nil
+			total := sessionsRemoved + plansRemoved
+			if total == 0 {
+				return fmt.Sprintf("📋 *Prune* — Nothing older than %d days found.", days), nil
+			}
+			var b strings.Builder
+			b.WriteString(fmt.Sprintf("🧹 *Pruned* — Removed items older than %d days:\n\n", days))
+			if sessionsRemoved > 0 {
+				b.WriteString(fmt.Sprintf("• %d session(s)\n", sessionsRemoved))
+			}
+			if plansRemoved > 0 {
+				b.WriteString(fmt.Sprintf("• %d plan(s)\n", plansRemoved))
+			}
+			return b.String(), nil
+		}
+
+		// Handle /plan <description> — dispatch to agent for plan generation.
+		if cmdName == "plan" {
+			description := strings.TrimSpace(argsStr)
+			if description == "" {
+				return "❗ Usage: `/plan <description>`\n\nExample: `/plan Add user authentication with OAuth2`", nil
+			}
+			slug := telegram.Slugify(description)
+			prompt := fmt.Sprintf(
+				"Create a detailed implementation plan for: %s\n\n"+
+					"Save the plan as a markdown file to `~/.odek/plans/%s.md`. "+
+					"The plan should include:\n"+
+					"- Overview and goals\n"+
+					"- Architecture / design\n"+
+					"- Implementation steps (bite-sized tasks)\n"+
+					"- File paths and key code locations\n"+
+					"- Testing strategy\n\n"+
+					"Use your write_file tool to save the plan.",
+				description, slug,
+			)
+			go handleChatMessage(chatID, prompt, bot, handler, sessionManager,
+				resolved, systemMessage, handlerLog)
+			return fmt.Sprintf("📝 *Planning* `%s`…\n\n_Generating plan for: %s_", slug, description), nil
+		}
+
+		// Handle /plan-resume — inject most recent plan into session context.
+		if cmdName == "plan_resume" {
+			slug, content, err := telegram.MostRecentPlan()
+			if err != nil {
+				return fmt.Sprintf("❌ %v", err), nil
+			}
+			// Inject the plan as a system-level context message.
+			cs, err := sessionManager.GetOrCreate(chatID)
+			if err != nil {
+				return fmt.Sprintf("❌ Failed to get session: %v", err), nil
+			}
+			contextMsg := fmt.Sprintf(
+				"[Plan loaded: %s]\n\n%s\n\n---\nContinue working on this plan. "+
+					"Use your tools to implement the next step.",
+				slug, content,
+			)
+			cs.Messages = append(cs.Messages, llm.Message{Role: "user", Content: contextMsg})
+			cs.LastActive = time.Now()
+			if err := sessionManager.Save(chatID, cs.Messages); err != nil {
+				return fmt.Sprintf("❌ Failed to save session: %v", err), nil
+			}
+			return fmt.Sprintf("📋 *Plan loaded*: `%s`\n\n_Injected into session context. Send a message to continue._", slug), nil
 		}
 
 		return cmd.Handler(argsStr)
 	}
 
 	handler.OnCallbackQuery = func(chatID int64, data string) (string, error) {
+		// Route clarify callbacks — the user clicked Yes/No on a clarify question.
+		if strings.HasPrefix(data, "clarify:") {
+			answer := strings.TrimPrefix(data, "clarify:")
+			if ch, ok := sessionManager.GetClarifyChannel(chatID); ok {
+				select {
+				case ch <- answer:
+				default:
+					// Channel full or closed — clarify already resolved.
+				}
+			}
+			return "✅ Got it, thanks!", nil
+		}
 		return "", nil // approval callbacks are routed by the approver
 	}
 
@@ -362,7 +436,8 @@ func handleChatMessage(
 
 	// ── Typing Indicator ────────────────────────────────────────────
 	// Send "typing" action every 4s while the agent runs (Telegram shows
-	// it for ~5s). Stops when the goroutine's context is cancelled.
+	// it for ~5s). Fire-and-forget so a hanging HTTP call doesn't block
+	// the ticker and permanently stop the indicator.
 	typingDone := make(chan struct{})
 	defer close(typingDone)
 	go func() {
@@ -371,7 +446,7 @@ func handleChatMessage(
 		for {
 			select {
 			case <-ticker.C:
-				bot.SendChatAction(chatID, "typing")
+				go bot.SendChatAction(chatID, "typing")
 			case <-typingDone:
 				return
 			}
@@ -399,6 +474,41 @@ func handleChatMessage(
 	var allToolsMu sync.Mutex
 	allTools := make(map[string]int)
 
+	// ── Clarify Tool ───────────────────────────────────────────────
+	// Wire the clarify tool with a Telegram-native answer function.
+	// When the agent calls clarify(question), the bot sends an inline
+	// keyboard message and blocks until the user responds.
+	agentTools := append([]odek.Tool{}, tools...)
+	agentTools = append(agentTools, toolpkg.NewClarifyTool(func(question string) (string, error) {
+		ch := make(chan string, 1)
+		sessionManager.SetClarifyChannel(chatID, ch)
+		defer sessionManager.DeleteClarifyChannel(chatID)
+
+		// Send the question with Yes/No buttons.
+		replyMarkup := &telegram.InlineKeyboardMarkup{
+			InlineKeyboard: [][]telegram.InlineKeyboardButton{
+				{
+					{Text: "Yes", CallbackData: "clarify:yes"},
+					{Text: "No", CallbackData: "clarify:no"},
+				},
+			},
+		}
+		if _, err := bot.SendMessage(chatID, "❓ "+question,
+			&telegram.SendOpts{ReplyMarkup: replyMarkup, ParseMode: "Markdown"}); err != nil {
+			return "", fmt.Errorf("clarify: send message: %w", err)
+		}
+
+		// Wait for the user to click a button (or timeout).
+		select {
+		case answer := <-ch:
+			return answer, nil
+		case <-time.After(10 * time.Minute):
+			return "", fmt.Errorf("clarify: timed out waiting for response")
+		case <-typingDone:
+			return "", fmt.Errorf("clarify: task cancelled by /stop")
+		}
+	}))
+
 	agentCfg := odek.Config{
 		Model:         resolved.Model,
 		BaseURL:       resolved.BaseURL,
@@ -407,7 +517,7 @@ func handleChatMessage(
 		SystemMessage: systemMessage,
 		NoProjectFile: resolved.NoAgents,
 		Thinking:      resolved.Thinking,
-		Tools:         tools,
+		Tools:         agentTools,
 		Renderer:      rend,
 		ToolEventHandler: func(event string, name string, data string) {
 			traceMu.Lock()

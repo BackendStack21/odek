@@ -3,6 +3,8 @@ package telegram
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -17,11 +19,12 @@ import (
 // session.Store. Each Telegram chat gets its own session identified by
 // "tg-<chatID>". An in-memory cache avoids redundant disk reads.
 type SessionManager struct {
-	Store    *session.Store
-	Cache    map[int64]*ChatSession
-	Mu       sync.RWMutex
-	BaseDir  string
-	SessionTTL time.Duration
+	Store          *session.Store
+	Cache          map[int64]*ChatSession
+	Mu             sync.RWMutex
+	BaseDir        string
+	SessionTTL     time.Duration
+	clarifyChannels sync.Map // map[int64]chan string — per-chat clarify response channels
 }
 
 // ChatSession represents a single Telegram chat's agent conversation.
@@ -187,6 +190,31 @@ func (sm *SessionManager) AppendMessage(chatID int64, role string, content strin
 
 // ── Session Management ─────────────────────────────────────────────────
 
+// ClarifyChannel methods manage per-chat response channels for the clarify
+// tool. When the agent calls clarify, it blocks on a channel; the Telegram
+// callback handler sends the user's response to unblock it.
+
+// SetClarifyChannel stores a clarify response channel for the given chat.
+func (sm *SessionManager) SetClarifyChannel(chatID int64, ch chan string) {
+	sm.clarifyChannels.Store(chatID, ch)
+}
+
+// GetClarifyChannel retrieves the clarify response channel for a chat.
+// Returns false if no channel is set (clarify not in progress).
+func (sm *SessionManager) GetClarifyChannel(chatID int64) (chan string, bool) {
+	v, ok := sm.clarifyChannels.Load(chatID)
+	if !ok {
+		return nil, false
+	}
+	return v.(chan string), true
+}
+
+// DeleteClarifyChannel removes the clarify channel for a chat (called after
+// clarify completes or times out).
+func (sm *SessionManager) DeleteClarifyChannel(chatID int64) {
+	sm.clarifyChannels.Delete(chatID)
+}
+
 // SessionInfo is a lightweight summary of a session for listing.
 type SessionInfo struct {
 	ID        string    // session ID (e.g. "tg-12345")
@@ -273,4 +301,46 @@ func (sm *SessionManager) PruneSessions(days int) (int, error) {
 	}
 	before := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
 	return sm.Store.Cleanup(before)
+}
+
+// PrunePlans deletes plan files (~/.odek/plans/*.md) older than `days` days.
+// Plans don't have a formal store yet — this scans the directory and checks
+// file modification times. Returns the number of plan files removed. If the
+// plans directory doesn't exist, returns 0, nil.
+func (sm *SessionManager) PrunePlans(days int) (int, error) {
+	if days <= 0 {
+		days = 30
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return 0, nil
+	}
+	plansDir := filepath.Join(home, ".odek", "plans")
+	entries, err := os.ReadDir(plansDir)
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("prune plans: read dir: %w", err)
+	}
+
+	before := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+	var removed int
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(before) {
+			path := filepath.Join(plansDir, e.Name())
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return removed, fmt.Errorf("prune plans: remove %q: %w", e.Name(), err)
+			}
+			removed++
+		}
+	}
+	return removed, nil
 }
