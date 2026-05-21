@@ -56,6 +56,9 @@ Any OpenAI-compatible endpoint: Deepseek, OpenAI, Anthropic, Ollama, vLLM, Groq,
 ### 🌐 Web UI
 `odek serve` — browser-based agent with `@` resource completion (`@file.go`, `@sess:abc123`), **drag-and-drop file attachments**, WebSocket streaming, and a full IDE-style console. [docs/WEBUI.md](docs/WEBUI.md)
 
+### 🤖 Telegram Bot
+Run agent tasks directly from Telegram via long-polling. Supports slash commands (`/plan`, `/sessions`, `/resume`, `/prune`, `/help`, etc.), voice message transcription, photo analysis, conversation persistence across restarts, saved plan files, and daily token budgeting. No external Telegram libraries — built on stdlib `net/http`. [docs/TELEGRAM.md](docs/TELEGRAM.md)
+
 ### 📎 File Attachments
 Attach files to any prompt with `--ctx` / `-c` (CLI), `@filename` inline references (CLI + REPL + Web UI), or drag-and-drop (Web UI). File content is injected as context blocks before the task — no tool calls needed. Comma-separate multiple files: `--ctx main.go,lib.go`. [docs/CLI.md#file-attachments](docs/CLI.md#file-attachments)
 
@@ -154,6 +157,7 @@ odek run "@README.md what does this project do?"
 | [Prompt Caching](docs/CACHING.md) | Anthropic/OpenAI/DeepSeek caching support, config, metrics |
 | [Memory](docs/MEMORY.md) | Three-tier design, go-vector merge-on-write, `memory` tool |
 | [Sessions](docs/SESSIONS.md) | Multi-turn conversations, save/resume/trim/cleanup |
+| [Telegram Bot](docs/TELEGRAM.md) | Telegram integration: bot client, slash commands, session management, plans, media downloads |
 | [Sandboxing](docs/SANDBOXING.md) | Docker isolation model, config, security hardening |
 | [Security](docs/SECURITY.md) | Threat model, prompt injection defense, sandbox model |
 | [Sub-Agents](docs/SUBAGENTS.md) | Task decomposition, delegation tool, subagent protocol |
