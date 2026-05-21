@@ -100,8 +100,8 @@ func TestRenderer_ToolCall(t *testing.T) {
 	r.ToolCall("shell", `{"command": "ls -la"}`)
 
 	out := buf.String()
-	if !strings.Contains(out, "🔧") {
-		t.Errorf("ToolCall() missing wrench emoji: %q", out)
+	if !strings.Contains(out, "💻") {
+		t.Errorf("ToolCall() missing shell emoji (shell): %q", out)
 	}
 	if !strings.Contains(out, "shell") {
 		t.Errorf("ToolCall() missing tool name: %q", out)
@@ -314,7 +314,7 @@ func TestRenderer_FullCycle(t *testing.T) {
 	out := buf.String()
 
 	// Verify each phase is present via its emoji
-	emojis := []string{"🧠", "🔧", "✅"}
+	emojis := []string{"🧠", "💻", "✅"}
 	for _, emoji := range emojis {
 		if !strings.Contains(out, emoji) {
 			t.Errorf("FullCycle missing emoji %q in output:\n%s", emoji, out)
@@ -332,6 +332,61 @@ func TestRenderer_FullCycle(t *testing.T) {
 	// Verify ANSI codes present
 	if !strings.Contains(out, "\033[") {
 		t.Error("FullCycle should contain ANSI color codes")
+	}
+}
+
+func TestToolEmoji(t *testing.T) {
+	tests := []struct {
+		name string
+		want string
+	}{
+		// File / code
+		{"read_file", "📝"},
+		{"write_file", "📝"},
+		{"search_files", "📝"},
+		{"patch", "📝"},
+		{"execute_code", "📝"},
+		// Shell / process
+		{"shell", "💻"},
+		{"terminal", "💻"},
+		{"process", "💻"},
+		// Web / browser
+		{"web_search", "🌐"},
+		{"web_extract", "🌐"},
+		{"browser_navigate", "🌐"},
+		{"browser_click", "🌐"},
+		{"browser_snapshot", "🌐"},
+		// Memory
+		{"memory", "🧠"},
+		{"session_search", "🧠"},
+		// Vision
+		{"vision_analyze", "👁️"},
+		// Messaging
+		{"send_message", "💬"},
+		// Delegation
+		{"delegate_task", "👥"},
+		{"delegate_tasks", "👥"},
+		// Cron
+		{"cronjob", "⏰"},
+		// Skills / meta
+		{"todo", "➕"},
+		{"skill_view", "➕"},
+		{"skill_manage", "➕"},
+		{"skills_list", "➕"},
+		{"clarify", "➕"},
+		// Default fallback
+		{"unknown_tool", "🔧"},
+		{"random_name", "🔧"},
+		{"", "🔧"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := toolEmoji(tt.name)
+			if got != tt.want {
+				t.Errorf("toolEmoji(%q) = %q, want %q", tt.name, got, tt.want)
+			}
+		})
 	}
 }
 

@@ -168,12 +168,58 @@ func (r *Renderer) Thinking(text string) {
 	fmt.Fprintln(r.w, r.style(dim+italic, "🧠 "+text))
 }
 
-// ToolCall prints a tool invocation with wrench emoji, name, and compact args.
+// toolEmoji returns an emoji that visually signals the tool category.
+// Each tool gets an icon matching its domain so users can scan tool traces
+// at a glance without reading every label.
+// ToolEmoji returns an emoji for the given tool name based on its category.
+// Exported so non-renderer consumers (e.g., Telegram bot) can use the same mapping.
+func ToolEmoji(name string) string {
+	return toolEmoji(name)
+}
+
+func toolEmoji(name string) string {
+	switch {
+	// File / code operations
+	case name == "read_file" || name == "write_file" || name == "search_files" ||
+		name == "patch" || name == "execute_code":
+		return "📝"
+	// Shell / process operations
+	case name == "shell" || name == "terminal" || name == "process":
+		return "💻"
+	// Web / browser operations
+	case name == "web_search" || name == "web_extract" ||
+		strings.HasPrefix(name, "browser_"):
+		return "🌐"
+	// Memory / knowledge
+	case name == "memory" || name == "session_search":
+		return "🧠"
+	// Vision
+	case name == "vision_analyze":
+		return "👁️"
+	// Messaging
+	case name == "send_message":
+		return "💬"
+	// Delegation / subagents
+	case name == "delegate_task" || name == "delegate_tasks":
+		return "👥"
+	// Cron / scheduling
+	case name == "cronjob":
+		return "⏰"
+	// Skills / meta
+	case name == "todo" || name == "skill_view" || name == "skill_manage" ||
+		name == "skills_list" || name == "clarify":
+		return "➕"
+	default:
+		return "🔧"
+	}
+}
+
+// ToolCall prints a tool invocation with a category emoji, name, and compact args.
 func (r *Renderer) ToolCall(name, args string) {
 	if r.disable() {
 		return
 	}
-	header := r.style(cyan, "🔧 "+name)
+	header := r.style(cyan, toolEmoji(name)+" "+name)
 	argStr := r.style(gray, "─── "+r.truncate(args, 100))
 	fmt.Fprintf(r.w, "%s %s\n", header, argStr)
 }

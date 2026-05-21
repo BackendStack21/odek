@@ -275,6 +275,25 @@ func handleChatMessage(
 
 	rend := render.New(os.Stderr, false).WithModel(modelLabel)
 
+	// ── Tool Tracing ───────────────────────────────────────────────
+	// Single editable message showing live tool execution progress.
+	var traceMsgID int
+	var traceMu sync.Mutex
+	traceLines := make([]string, 0, 8)
+
+	// Send initial thinking message.
+	if initMsg, err := bot.SendMessage(chatID, "🤔 Thinking...", nil); err == nil {
+		traceMsgID = initMsg.ID
+	}
+
+	// truncate shortens a string for display, appending "…" if trimmed.
+	truncate := func(s string, max int) string {
+		if len(s) > max {
+			return s[:max] + "…"
+		}
+		return s
+	}
+
 	// Collect agent run stats via the iteration callback.
 	var runInfo loop.IterationInfo
 	var allToolsMu sync.Mutex
@@ -290,6 +309,34 @@ func handleChatMessage(
 		Thinking:      resolved.Thinking,
 		Tools:         tools,
 		Renderer:      rend,
+		ToolEventHandler: func(event string, name string, data string) {
+			traceMu.Lock()
+			defer traceMu.Unlock()
+			if traceMsgID == 0 {
+				return
+			}
+
+			switch event {
+			case "tool_call":
+				args := truncate(data, 150)
+				line := fmt.Sprintf("%s %s(%s)  ⏳", render.ToolEmoji(name), name, args)
+				traceLines = append(traceLines, line)
+				bot.EditMessageText(chatID, traceMsgID, strings.Join(traceLines, "\n"), nil)
+
+			case "tool_result":
+				// Replace the last line's ⏳ with a completion marker
+				// and the result size instead of the actual content.
+				sizeLabel := fmt.Sprintf("%dB", len(data))
+				if len(data) > 1024 {
+					sizeLabel = fmt.Sprintf("%dKB", len(data)/1024)
+				}
+				if len(traceLines) > 0 {
+					last := traceLines[len(traceLines)-1]
+					traceLines[len(traceLines)-1] = strings.Replace(last, " ⏳", " ✅ ("+sizeLabel+")", 1)
+					bot.EditMessageText(chatID, traceMsgID, strings.Join(traceLines, "\n"), nil)
+				}
+			}
+		},
 		IterationCallback: func(info loop.IterationInfo) {
 			allToolsMu.Lock()
 			for _, name := range info.ToolNames {
