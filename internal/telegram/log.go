@@ -78,10 +78,10 @@ func NewNopLogger() Logger {
 // nopLogger silently discards all log messages.
 type nopLogger struct{}
 
-func (nopLogger) Debug(_ string, _ ...any) {}
-func (nopLogger) Info(_ string, _ ...any)  {}
-func (nopLogger) Warn(_ string, _ ...any)  {}
-func (nopLogger) Error(_ string, _ ...any) {}
+func (nopLogger) Debug(_ string, _ ...any) { _ = struct{}{} }
+func (nopLogger) Info(_ string, _ ...any)  { _ = struct{}{} }
+func (nopLogger) Warn(_ string, _ ...any)  { _ = struct{}{} }
+func (nopLogger) Error(_ string, _ ...any) { _ = struct{}{} }
 func (n nopLogger) With(_ ...any) Logger   { return n }
 
 // Log implements the core logging for fileLogger.
