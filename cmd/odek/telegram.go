@@ -48,6 +48,12 @@ func telegramCmd(args []string) error {
 
 	// 4. Create bot client.
 	bot := telegram.NewBot(cfg.Token)
+	bot.SetDailyTokenBudget(cfg.DailyTokenBudget)
+
+	// 4b. Configure fallback Telegram API endpoints if provided.
+	if len(cfg.FallbackURLs) > 0 {
+		bot.SetFallbackURLs(cfg.FallbackURLs)
+	}
 
 	// 5. Create session store on disk (~/.odek/sessions/).
 	store, err := session.NewStore()
@@ -230,6 +236,20 @@ func handleChatMessage(
 	response, updatedMessages, err := agent.RunWithMessages(context.Background(), cs.Messages)
 	if err != nil {
 		reportError(bot, chatID, "Agent error: "+err.Error())
+		return
+	}
+
+	// Check daily token budget.
+	totalTokens := int64(agent.TotalInputTokens() + agent.TotalOutputTokens())
+	if err := bot.CheckDailyBudget(totalTokens); err != nil {
+		fmt.Fprintf(os.Stderr, "odek telegram: %v\n", err)
+		reportError(bot, chatID, "Daily token budget exceeded. Usage for today has been tracked and will be enforced going forward.")
+		// Still save the session so the conversation isn't lost.
+		cs.Messages = updatedMessages
+		cs.TurnCount++
+		if err := sessionManager.Save(chatID, cs.Messages); err != nil {
+			fmt.Fprintf(os.Stderr, "odek telegram: session save: %v\n", err)
+		}
 		return
 	}
 

@@ -9,15 +9,17 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 )
 
 // Bot represents a Telegram Bot API client.
 type Bot struct {
-	Token       string
-	BaseURL     string
-	FileBaseURL string
-	Client      *http.Client
+	Token            string
+	BaseURL          string
+	FileBaseURL      string
+	Client           *http.Client
+	DailyTokenBudget int64
 }
 
 // NewBot creates a new Bot with the given token and a default HTTP client
@@ -285,6 +287,84 @@ func (b *Bot) SetMyCommands(commands []BotCommand) error {
 		"commands": commands,
 	}
 	return b.doJSON("setMyCommands", params, nil)
+}
+
+// SetFallbackURLs configures fallback Telegram API endpoints to try if the
+// primary endpoint is unreachable. Each URL should be a base API URL such as
+// "https://api.telegram.org" (without the /bot<token> suffix). The fallback
+// transport rewrites the host on each request, keeping the original path
+// (which includes the token).
+func (b *Bot) SetFallbackURLs(urls []string) {
+	if len(urls) == 0 {
+		return
+	}
+	ft := NewFallbackTransport(urls)
+	ft.WrapBot(b)
+}
+
+// SetDailyTokenBudget sets the daily token usage budget for the bot.
+// When non-zero, CheckDailyBudget will reject token usage that exceeds
+// this limit within a calendar day.
+func (b *Bot) SetDailyTokenBudget(budget int64) {
+	b.DailyTokenBudget = budget
+}
+
+// budgetFilePath returns the path to the daily token usage tracking file.
+// The file is scoped to the current date so budgets reset each day.
+func budgetFilePath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "."
+	}
+	date := time.Now().Format("2006-01-02")
+	return filepath.Join(home, ".odek", "telegram_token_usage_"+date)
+}
+
+// CheckDailyBudget reads the current daily token usage tracking file,
+// adds the given number of tokens, and returns an error if the total
+// exceeds the configured DailyTokenBudget. If the budget is zero (unset),
+// no check is performed and nil is returned.
+func (b *Bot) CheckDailyBudget(tokens int64) error {
+	if b.DailyTokenBudget <= 0 {
+		return nil // budget not configured
+	}
+	if tokens <= 0 {
+		return nil // nothing to track
+	}
+
+	path := budgetFilePath()
+
+	// Ensure the parent .odek directory exists.
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("telegram: create budget dir: %w", err)
+	}
+
+	// Read current usage (file may not exist yet — that's fine).
+	var current int64
+	data, err := os.ReadFile(path)
+	if err == nil {
+		if parsed, err := strconv.ParseInt(string(data), 10, 64); err == nil {
+			current = parsed
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("telegram: read budget file: %w", err)
+	}
+
+	total := current + tokens
+	if total > b.DailyTokenBudget {
+		return fmt.Errorf(
+			"daily token budget exceeded: %d used + %d new = %d total, limit is %d",
+			current, tokens, total, b.DailyTokenBudget,
+		)
+	}
+
+	// Write the updated count.
+	if err := os.WriteFile(path, []byte(strconv.FormatInt(total, 10)), 0644); err != nil {
+		return fmt.Errorf("telegram: write budget file: %w", err)
+	}
+
+	return nil
 }
 
 // GetMe returns basic information about the bot (useful as a health check).
