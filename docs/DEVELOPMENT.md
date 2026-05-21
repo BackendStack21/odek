@@ -28,7 +28,7 @@ internal/
     loop_test.go              Engine tests with mock server
   session/
     session.go                Session store (CRUD, trim, cleanup)
-    session_test.go           Session tests
+    session_test.go           Session tests (42 tests, 89.7% coverage)
   render/
     render.go                 Terminal output with model label and color
   resource/
@@ -40,21 +40,24 @@ internal/
   tool/
     registry.go               Thread-safe tool registry
     registry_test.go          Registry tests
+    clarify.go                Clarify tool — ask user questions with Answer function injection
+    clarify_test.go           Clarify tool tests (11 tests, 100% coverage)
   danger/
     classifier.go             Command/URL classification for security gating
     classifier_test.go        209 tests, 8 risk classes, config overrides
     approver.go               Approver interface + TTYApprover (CLI /dev/tty)
   memory/
     memory.go                 MemoryManager orchestrator (facts, buffer, episodes)
+    merge.go                  go-vector RP merge-on-write detector
     facts.go                  FactStore with caps, dedup, substring CRUD
     buffer.go                 Ring buffer for turn summaries
-    merge.go                  go-vector RP merge-on-write detector
     episodes.go               EpisodeStore with search + LLM ranking
     scan.go                   Security scan (invisible Unicode, injection, credentials)
     tool.go                   memory tool for the agent (6 actions)
-    *_test.go                 95 tests across all subsystems
+    *_test.go                 144 tests across all subsystems
   skills/
-    types.go                  Skill/skill manager types, DefaultSkillsConfig
+    types.go                  Skill/skill manager types, DefaultSkillsConfig, ValidateSkillName
+    types_test.go             ValidateSkillName tests
     loader.go                 Skill loader + trie trigger index
     derive.go                 Keyword derivation from skill body
     trigger.go                Trigger matching
@@ -63,7 +66,17 @@ internal/
     llm_enhance.go            LLM enrichment for learning + curation
     importer.go               URI import with LLM risk assessment
     tools.go                  Skill CRUD tools (list/view/save/patch/delete/load)
-    *_test.go                 106 tests across all subsystems
+    *_test.go                 127 tests across all subsystems (86.3% coverage)
+  telegram/
+    bot.go                    Telegram bot client (getFile, download, sendMessage, sendDocument)
+    config.go                 Bot config from environment
+    poller.go                 Long-polling update fetcher
+    handler.go                Message dispatcher + command router
+    commands.go               Command handlers (/start, /run, /plan, /sessions, etc.)
+    session.go                Telegram session store (chat → odek session mapping)
+    plan.go                   Plan management (Slugify, ListPlans, ReadPlan, DeletePlan, MostRecentPlan)
+    download.go               Media download (voice, photo → file on disk)
+    *_test.go                 409 tests across all subsystems (86.9% coverage)
 cmd/odek/
   main.go                     CLI entry point, flag parsing, commands, sandbox
   main_test.go                CLI tests (flag parsing, version, init)
@@ -117,7 +130,7 @@ Zero external test dependencies — tests use `httptest`, `testing`, and the sta
 
 | Layer | Runner | Tests | What's tested |
 |-------|--------|-------|---------------|
-| **Unit** | `go test ./...` | 859+ | All 13 packages — config, LLM client, loop, sessions, renderer, tools, WS, resources, memory, skills, danger, security |
+| **Unit** | `go test ./...` | 1890+ | All 14 packages — config, LLM client, loop, sessions, renderer, tools, WS, resources, memory, skills, telegram, danger, security, mcp |
 | **Contract** | `go test ./cmd/odek/` | 60+ | Sub-agent flag parsing, JSON stdout, exit codes, tool schema, config, serve, shell |
 | **E2E** | `KODE_E2E=true go test -run 'TestE2E_'` | 16 | Real subprocess spawning, tool→binary pipeline, concurrency, timeouts, custom prompts |
 
@@ -125,19 +138,20 @@ Zero external test dependencies — tests use `httptest`, `testing`, and the sta
 
 | Package | Tests | Focus |
 |---------|-------|-------|
-| `odek` | 54 | Config defaults, API key fallback, thinking passthrough, model profiles, AGENTS.md, Close lifecycle |
+| `odek` | 62 | Config defaults, API key fallback, thinking passthrough, model profiles, AGENTS.md, Close lifecycle, token tracking, Memory() nil-safety |
 | `internal/config` | 19 | Config file loading, env vars, merge chain, var expansion |
-| `internal/llm` | 40 | JSON marshaling, thinking fields, response parsing, usage statistics, SimpleCall |
-| `internal/loop` | 31 | ReAct engine with httptest mock server, context budgeting, skill loader |
-| `internal/session` | 22 | CRUD, trim, cleanup, list, latest, edge cases, path traversal protection |
-| `internal/tool` | 7 | Registry CRUD, lookup, duplicate detection |
-| `internal/ws` | 13 | WebSocket upgrade, framing, ping/pong, large messages |
-| `internal/resource` | 24 | @-reference parsing, file resolution, session resolution, security |
-| `internal/render` | 26 | Terminal output, no-color mode, nil safety, tool call/result rendering |
-| `internal/danger` | 209 | Command classification (8 risk classes), config overrides, allow/denylist |
-| `internal/memory` | 95 | Facts CRUD, buffer ring, episodes, merge detector (go-vector), memory tool, security scan, LLM ranking |
-| `internal/skills` | 106 | Loading, triggers, self-improvement (5 heuristics), curation, LLM-enhanced generation, import, tools |
-| `cmd/odek` | 213 | Flag parsing, init, version, sandbox setup, subagent, serve, security E2E, shell tool danger, browser tool, contract tests |
+| `internal/llm` | 50 | JSON marshaling, thinking fields, response parsing, usage statistics, SimpleCall |
+| `internal/loop` | 37 | ReAct engine with httptest mock server, context budgeting, skill loader |
+| `internal/session` | 42 | CRUD, trim, cleanup, list, latest, fallback scan, corrupt data, path traversal protection, concurrent safety, atomic writes |
+| `internal/tool` | 17 | Registry CRUD, duplicate detection, ClarifyTool (Name, Description, Schema, Call with all error paths) |
+| `internal/ws` | 1 | WebSocket constant verification |
+| `internal/resource` | 45 | @-reference parsing, file resolution, session resolution, security |
+| `internal/render` | 62 | Terminal output, no-color mode, nil safety, tool call/result rendering |
+| `internal/danger` | 281 | Command classification (8 risk classes), config overrides, allow/denylist |
+| `internal/memory` | 144 | Facts CRUD, buffer ring, episodes, merge detector (go-vector), ReplaceEntry, AppendEntry, memory tool, security scan, LLM ranking |
+| `internal/skills` | 127 | Loading, triggers, self-improvement (5 heuristics), curation, LLM-enhanced generation, import, tools, ValidateSkillName, isPrivateHost, extractRelevantChange |
+| `internal/telegram` | 409 | Bot client, long-polling, command handlers, session management, plan CRUD, voice/photo download, media dir management |
+| `cmd/odek` | 441 | Flag parsing, init, version, sandbox setup, subagent, serve, security E2E, shell tool danger, browser tool, contract tests |
 
 ## Key packages
 

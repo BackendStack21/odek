@@ -189,12 +189,14 @@ The full `Config` struct supports: `BaseURL`, `Thinking`, `SandboxCleanup`, `Ren
 ## Test
 
 ```bash
-go test ./...                  # all pass (no setup required)
+go test ./...                  # 1760+ tests, all pass (no setup required)
 go test -race ./...           # race detector clean
-go test -cover ./...          # measure coverage
+go test -cover ./...          # overall coverage ~85%
 ```
 
 Everything runs with `go test` — no Docker, no network, no external services required for unit tests.
+
+Coverage highlights: `internal/tool` 100%, `internal/llm` 87.9%, `internal/loop` 89.4%, `internal/session` 89.7%, `internal/telegram` 86.9%, `internal/memory` 86.2%, `internal/skills` 86.3%.
 
 ---
 
