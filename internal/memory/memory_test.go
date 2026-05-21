@@ -94,7 +94,7 @@ func TestMemoryManagerRemoveFact(t *testing.T) {
 
 func TestMemoryManagerDisabled(t *testing.T) {
 	cfg := DefaultMemoryConfig()
-	cfg.Enabled = false
+	cfg.Enabled = boolPtr(false)
 	mm := NewMemoryManager(t.TempDir(), nil, cfg)
 
 	err := mm.AddFact("user", "something")
@@ -247,12 +247,12 @@ func TestNewMemoryManagerWithZeroDefaults(t *testing.T) {
 	// When MemoryConfig has zero values for BufferLines, MergeThreshold, and AddThreshold,
 	// NewMemoryManager must apply the built-in defaults instead of crashing.
 	cfg := MemoryConfig{
-		Enabled:        true,
+		Enabled:        boolPtr(true),
 		FactsLimitUser: 1000,
 		FactsLimitEnv:  1000,
 		BufferLines:    0,
-		BufferEnabled:  true,
-		MergeOnWrite:   true,
+		BufferEnabled:  boolPtr(true),
+		MergeOnWrite:   boolPtr(true),
 		MergeThreshold: 0,
 		AddThreshold:   0,
 	}
@@ -294,7 +294,7 @@ func TestNewMemoryManagerWithZeroDefaults(t *testing.T) {
 
 func TestMemoryManagerReplaceFactDisabled(t *testing.T) {
 	cfg := DefaultMemoryConfig()
-	cfg.Enabled = false
+	cfg.Enabled = boolPtr(false)
 	mm := NewMemoryManager(t.TempDir(), nil, cfg)
 
 	err := mm.ReplaceFact("user", "old", "new")
@@ -309,7 +309,7 @@ func TestMemoryManagerReplaceFactDisabled(t *testing.T) {
 func TestMemoryManagerReplaceFactWithMergeOnWrite(t *testing.T) {
 	dir := t.TempDir()
 	cfg := DefaultMemoryConfig()
-	cfg.MergeOnWrite = true
+	cfg.MergeOnWrite = boolPtr(true)
 	mm := NewMemoryManager(dir, nil, cfg)
 
 	// Add a fact first
@@ -333,7 +333,7 @@ func TestMemoryManagerReplaceFactWithMergeOnWrite(t *testing.T) {
 
 func TestMemoryManagerRestoreBufferDisabled(t *testing.T) {
 	cfg := DefaultMemoryConfig()
-	cfg.BufferEnabled = false
+	cfg.BufferEnabled = boolPtr(false)
 	mm := NewMemoryManager(t.TempDir(), nil, cfg)
 
 	// RestoreBuffer should be a no-op when BufferEnabled is false
@@ -368,7 +368,7 @@ func TestMemoryManagerClearBuffer(t *testing.T) {
 
 func TestMemoryManagerOnSessionEndExtractOnEndFalse(t *testing.T) {
 	cfg := DefaultMemoryConfig()
-	cfg.ExtractOnEnd = false
+	cfg.ExtractOnEnd = boolPtr(false)
 	mm := NewMemoryManager(t.TempDir(), nil, cfg)
 
 	// Should return early without error (no LLM needed)
@@ -382,7 +382,7 @@ func TestMemoryManagerOnSessionEndExtractOnEndFalse(t *testing.T) {
 
 func TestMemoryManagerOnSessionEndLLMExtractFalse(t *testing.T) {
 	cfg := DefaultMemoryConfig()
-	cfg.LLMExtract = false
+	cfg.LLMExtract = boolPtr(false)
 	mm := NewMemoryManager(t.TempDir(), nil, cfg)
 
 	mm.OnSessionEnd("sess-001", 10, []string{"msg1", "msg2", "msg3"})
@@ -395,8 +395,8 @@ func TestMemoryManagerOnSessionEndLLMExtractFalse(t *testing.T) {
 
 func TestMemoryManagerOnSessionEndLLMNil(t *testing.T) {
 	cfg := DefaultMemoryConfig()
-	cfg.ExtractOnEnd = true
-	cfg.LLMExtract = true
+	cfg.ExtractOnEnd = boolPtr(true)
+	cfg.LLMExtract = boolPtr(true)
 	mm := NewMemoryManager(t.TempDir(), nil, cfg) // nil LLM
 
 	mm.OnSessionEnd("sess-001", 10, []string{"msg1", "msg2", "msg3"})
@@ -463,9 +463,9 @@ func TestMergeEntries(t *testing.T) {
 		{"User likes Go", "User likes Python", "User likes Go. User likes Python"},
 	}
 	for _, tt := range tests {
-		got := mergeEntries(tt.a, tt.b)
+		got := mergeEntries(nil, tt.a, tt.b)
 		if got != tt.expected {
-			t.Errorf("mergeEntries(%q, %q) = %q, want %q", tt.a, tt.b, got, tt.expected)
+			t.Errorf("mergeEntries(nil, %q, %q) = %q, want %q", tt.a, tt.b, got, tt.expected)
 		}
 	}
 }

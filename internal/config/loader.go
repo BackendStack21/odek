@@ -597,11 +597,51 @@ func resolveDangerous(cfg *danger.DangerousConfig) danger.DangerousConfig {
 }
 
 // resolveMemory merges file-level memory config with defaults.
+// Starts from DefaultMemoryConfig and overlays any non-zero/non-nil
+// fields from cfg. This means a partial config like {"buffer_lines": 10}
+// won't silently disable all the boolean features.
 func resolveMemory(cfg *memory.MemoryConfig) memory.MemoryConfig {
-	if cfg != nil {
-		return *cfg
+	def := memory.DefaultMemoryConfig()
+	if cfg == nil {
+		return def
 	}
-	return memory.DefaultMemoryConfig()
+	if cfg.Enabled != nil {
+		def.Enabled = cfg.Enabled
+	}
+	if cfg.BufferEnabled != nil {
+		def.BufferEnabled = cfg.BufferEnabled
+	}
+	if cfg.MergeOnWrite != nil {
+		def.MergeOnWrite = cfg.MergeOnWrite
+	}
+	if cfg.ExtractOnEnd != nil {
+		def.ExtractOnEnd = cfg.ExtractOnEnd
+	}
+	if cfg.LLMSearch != nil {
+		def.LLMSearch = cfg.LLMSearch
+	}
+	if cfg.LLMExtract != nil {
+		def.LLMExtract = cfg.LLMExtract
+	}
+	if cfg.LLMConsolidate != nil {
+		def.LLMConsolidate = cfg.LLMConsolidate
+	}
+	if cfg.FactsLimitUser > 0 {
+		def.FactsLimitUser = cfg.FactsLimitUser
+	}
+	if cfg.FactsLimitEnv > 0 {
+		def.FactsLimitEnv = cfg.FactsLimitEnv
+	}
+	if cfg.BufferLines > 0 {
+		def.BufferLines = cfg.BufferLines
+	}
+	if cfg.MergeThreshold > 0 {
+		def.MergeThreshold = cfg.MergeThreshold
+	}
+	if cfg.AddThreshold > 0 {
+		def.AddThreshold = cfg.AddThreshold
+	}
+	return def
 }
 
 // resolveTelegram merges file-level telegram config with defaults.
@@ -718,6 +758,9 @@ func overlayFile(base, override FileConfig) FileConfig {
 	}
 	if override.Skills != nil {
 		base.Skills = override.Skills
+	}
+	if override.Memory != nil {
+		base.Memory = override.Memory
 	}
 	if override.Telegram != nil {
 		base.Telegram = override.Telegram

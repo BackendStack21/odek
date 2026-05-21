@@ -14,34 +14,41 @@ const defaultBufferLines = 20
 
 // MemoryConfig holds configuration for the memory system.
 // Mirrors the JSON config section.
+// Bool fields use *bool so that JSON omitempty can distinguish
+// "not set" (nil) from "explicitly false" (pointer to false).
 type MemoryConfig struct {
-	Enabled        bool    `json:"enabled"`
-	FactsLimitUser int     `json:"facts_limit_user"`
-	FactsLimitEnv  int     `json:"facts_limit_env"`
-	BufferLines    int     `json:"buffer_lines"`
-	BufferEnabled  bool    `json:"buffer_enabled"`
-	MergeOnWrite   bool    `json:"merge_on_write"`
-	ExtractOnEnd   bool    `json:"extract_on_end"`
-	LLMSearch      bool    `json:"llm_search"`
-	LLMExtract     bool    `json:"llm_extract"`
-	LLMConsolidate bool    `json:"llm_consolidate"`
-	MergeThreshold float32 `json:"merge_threshold"`
-	AddThreshold   float32 `json:"add_threshold"`
+	Enabled        *bool   `json:"enabled,omitempty"`
+	FactsLimitUser int     `json:"facts_limit_user,omitempty"`
+	FactsLimitEnv  int     `json:"facts_limit_env,omitempty"`
+	BufferLines    int     `json:"buffer_lines,omitempty"`
+	BufferEnabled  *bool   `json:"buffer_enabled,omitempty"`
+	MergeOnWrite   *bool   `json:"merge_on_write,omitempty"`
+	ExtractOnEnd   *bool   `json:"extract_on_end,omitempty"`
+	LLMSearch      *bool   `json:"llm_search,omitempty"`
+	LLMExtract     *bool   `json:"llm_extract,omitempty"`
+	LLMConsolidate *bool   `json:"llm_consolidate,omitempty"`
+	MergeThreshold float32 `json:"merge_threshold,omitempty"`
+	AddThreshold   float32 `json:"add_threshold,omitempty"`
 }
+
+// BoolPtr returns a pointer to a bool value.
+func BoolPtr(b bool) *bool { return &b }
+
+func boolPtr(b bool) *bool { return BoolPtr(b) }
 
 // DefaultMemoryConfig returns sensible defaults.
 func DefaultMemoryConfig() MemoryConfig {
 	return MemoryConfig{
-		Enabled:        true,
+		Enabled:        boolPtr(true),
 		FactsLimitUser: defaultFactsLimitUser,
 		FactsLimitEnv:  defaultFactsLimitEnv,
 		BufferLines:    defaultBufferLines,
-		BufferEnabled:  true,
-		MergeOnWrite:   true,
-		ExtractOnEnd:   true,
-		LLMSearch:      true,
-		LLMExtract:     true,
-		LLMConsolidate: true,
+		BufferEnabled:  boolPtr(true),
+		MergeOnWrite:   boolPtr(true),
+		ExtractOnEnd:   boolPtr(true),
+		LLMSearch:      boolPtr(true),
+		LLMExtract:     boolPtr(true),
+		LLMConsolidate: boolPtr(true),
 		MergeThreshold: MergeThreshold,
 		AddThreshold:   AddThreshold,
 	}
@@ -69,21 +76,46 @@ type MemoryManager struct {
 // If llc is nil, LLM-dependent features (consolidation, episode search)
 // degrade gracefully (no LLM call, fallback behavior).
 func NewMemoryManager(memoryDir string, llc LLMClient, cfg MemoryConfig) *MemoryManager {
-	if cfg.FactsLimitUser <= 0 {
-		cfg.FactsLimitUser = defaultFactsLimitUser
+	// Merge with defaults: start from DefaultMemoryConfig, overlay any
+	// non-zero values from cfg so partial user config works correctly.
+	def := DefaultMemoryConfig()
+	if cfg.Enabled != nil {
+		def.Enabled = cfg.Enabled
 	}
-	if cfg.FactsLimitEnv <= 0 {
-		cfg.FactsLimitEnv = defaultFactsLimitEnv
+	if cfg.BufferEnabled != nil {
+		def.BufferEnabled = cfg.BufferEnabled
 	}
-	if cfg.BufferLines <= 0 {
-		cfg.BufferLines = defaultBufferLines
+	if cfg.MergeOnWrite != nil {
+		def.MergeOnWrite = cfg.MergeOnWrite
 	}
-	if cfg.MergeThreshold <= 0 {
-		cfg.MergeThreshold = MergeThreshold
+	if cfg.ExtractOnEnd != nil {
+		def.ExtractOnEnd = cfg.ExtractOnEnd
 	}
-	if cfg.AddThreshold <= 0 {
-		cfg.AddThreshold = AddThreshold
+	if cfg.LLMSearch != nil {
+		def.LLMSearch = cfg.LLMSearch
 	}
+	if cfg.LLMExtract != nil {
+		def.LLMExtract = cfg.LLMExtract
+	}
+	if cfg.LLMConsolidate != nil {
+		def.LLMConsolidate = cfg.LLMConsolidate
+	}
+	if cfg.FactsLimitUser > 0 {
+		def.FactsLimitUser = cfg.FactsLimitUser
+	}
+	if cfg.FactsLimitEnv > 0 {
+		def.FactsLimitEnv = cfg.FactsLimitEnv
+	}
+	if cfg.BufferLines > 0 {
+		def.BufferLines = cfg.BufferLines
+	}
+	if cfg.MergeThreshold > 0 {
+		def.MergeThreshold = cfg.MergeThreshold
+	}
+	if cfg.AddThreshold > 0 {
+		def.AddThreshold = cfg.AddThreshold
+	}
+	cfg = def
 
 	factsDir := memoryDir
 	episodesDir := memoryDir
@@ -91,7 +123,7 @@ func NewMemoryManager(memoryDir string, llc LLMClient, cfg MemoryConfig) *Memory
 	factStore := NewFactStore(factsDir, cfg.FactsLimitUser, cfg.FactsLimitEnv)
 	// Use LLM-based episode ranker when an LLM client is available and enabled
 	var rankFn RankStrategy
-	if llc != nil && cfg.LLMSearch {
+	if llc != nil && cfg.LLMSearch != nil && *cfg.LLMSearch {
 		rankFn = NewLLMRanker(llc)
 	}
 	episodeStore := NewEpisodeStore(episodesDir, rankFn)
@@ -116,7 +148,7 @@ func NewMemoryManager(memoryDir string, llc LLMClient, cfg MemoryConfig) *Memory
 //  4. Fits the merge detector after mutation (incrementally — only re-embeds
 //     the changed entry instead of all entries, avoiding a double disk-read).
 func (m *MemoryManager) AddFact(target, content string) error {
-	if !m.cfg.Enabled {
+	if m.cfg.Enabled == nil || !*m.cfg.Enabled {
 		return fmt.Errorf("memory: disabled")
 	}
 
@@ -130,7 +162,7 @@ func (m *MemoryManager) AddFact(target, content string) error {
 	var entries []string
 
 	// Merge-on-write: check similarity against existing entries
-	if m.cfg.MergeOnWrite {
+	if m.cfg.MergeOnWrite != nil && *m.cfg.MergeOnWrite {
 		var err error
 		entries, err = m.facts.Entries(target)
 		if err != nil {
@@ -143,7 +175,7 @@ func (m *MemoryManager) AddFact(target, content string) error {
 			switch action {
 			case "merge":
 				// Auto-merge: replace similar entry with merged content
-				merged := mergeEntries(entries[similarIdx], content)
+				merged := mergeEntries(m.llm, entries[similarIdx], content)
 				if err := m.facts.Replace(target, entries[similarIdx][:min(30, len(entries[similarIdx]))], merged); err != nil {
 					return err
 				}
@@ -156,7 +188,7 @@ func (m *MemoryManager) AddFact(target, content string) error {
 					decision, err := m.judgeMerge(target, entries[similarIdx], content)
 					if err == nil {
 						if decision == "merge" {
-							merged := mergeEntries(entries[similarIdx], content)
+							merged := mergeEntries(m.llm, entries[similarIdx], content)
 							if err := m.facts.Replace(target, entries[similarIdx][:min(30, len(entries[similarIdx]))], merged); err != nil {
 								return err
 							}
@@ -186,7 +218,7 @@ func (m *MemoryManager) AddFact(target, content string) error {
 	// Incrementally update merge detector instead of re-reading + re-embedding all.
 	// Check dedup: if content already existed in the entries we read at the top,
 	// m.facts.Add silently no-oped and the corpus hasn't changed.
-	if m.cfg.MergeOnWrite {
+	if m.cfg.MergeOnWrite != nil && *m.cfg.MergeOnWrite {
 		if entries == nil {
 			// We didn't read entries above (MergeOnWrite just got enabled, or
 			// Entries returned an error). Read fresh to stay correct.
@@ -211,7 +243,7 @@ func (m *MemoryManager) AddFact(target, content string) error {
 
 // ReplaceFact replaces an existing fact entry.
 func (m *MemoryManager) ReplaceFact(target, oldText, content string) error {
-	if !m.cfg.Enabled {
+	if m.cfg.Enabled == nil || !*m.cfg.Enabled {
 		return fmt.Errorf("memory: disabled")
 	}
 	if err := ScanContent(content); err != nil {
@@ -221,7 +253,7 @@ func (m *MemoryManager) ReplaceFact(target, oldText, content string) error {
 		return err
 	}
 	// Re-fit merge detector
-	if m.cfg.MergeOnWrite {
+	if m.cfg.MergeOnWrite != nil && *m.cfg.MergeOnWrite {
 		entries, _ := m.facts.Entries(target)
 		m.merge.Fit(entries)
 	}
@@ -230,14 +262,14 @@ func (m *MemoryManager) ReplaceFact(target, oldText, content string) error {
 
 // RemoveFact removes a fact entry by substring.
 func (m *MemoryManager) RemoveFact(target, oldText string) error {
-	if !m.cfg.Enabled {
+	if m.cfg.Enabled == nil || !*m.cfg.Enabled {
 		return fmt.Errorf("memory: disabled")
 	}
 	if err := m.facts.Remove(target, oldText); err != nil {
 		return err
 	}
 	// Re-fit merge detector
-	if m.cfg.MergeOnWrite {
+	if m.cfg.MergeOnWrite != nil && *m.cfg.MergeOnWrite {
 		entries, _ := m.facts.Entries(target)
 		m.merge.Fit(entries)
 	}
@@ -261,10 +293,10 @@ func (m *MemoryManager) ReadFacts() (userContent, envContent string, err error) 
 // for better density. Falls back to no-op if LLM is unavailable or
 // LLMConsolidate is disabled in config.
 func (m *MemoryManager) Consolidate(target string) error {
-	if !m.cfg.Enabled {
+	if m.cfg.Enabled == nil || !*m.cfg.Enabled {
 		return fmt.Errorf("memory: disabled")
 	}
-	if m.llm == nil || !m.cfg.LLMConsolidate {
+	if m.llm == nil || m.cfg.LLMConsolidate == nil || !*m.cfg.LLMConsolidate {
 		return fmt.Errorf("memory: consolidation requires LLM client")
 	}
 
@@ -305,7 +337,7 @@ Entries for %s:
 
 // AppendBuffer adds a turn summary to the in-memory ring buffer.
 func (m *MemoryManager) AppendBuffer(role, message string) {
-	if !m.cfg.BufferEnabled {
+	if m.cfg.BufferEnabled == nil || !*m.cfg.BufferEnabled {
 		return
 	}
 	line := FormatBufferLine(role, message)
@@ -314,7 +346,7 @@ func (m *MemoryManager) AppendBuffer(role, message string) {
 
 // GetBuffer returns the current buffer lines (for system prompt injection).
 func (m *MemoryManager) GetBuffer() []string {
-	if !m.cfg.BufferEnabled {
+	if m.cfg.BufferEnabled == nil || !*m.cfg.BufferEnabled {
 		return nil
 	}
 	return m.buffer.Lines()
@@ -322,7 +354,7 @@ func (m *MemoryManager) GetBuffer() []string {
 
 // RestoreBuffer loads buffer lines from a saved slice (e.g., from session).
 func (m *MemoryManager) RestoreBuffer(lines []string) {
-	if !m.cfg.BufferEnabled {
+	if m.cfg.BufferEnabled == nil || !*m.cfg.BufferEnabled {
 		return
 	}
 	m.buffer.Clear()
@@ -341,7 +373,7 @@ func (m *MemoryManager) ClearBuffer() {
 // OnSessionEnd is called when a session ends. If turns >= threshold,
 // extracts durable facts using the LLM and stores them as an episode.
 func (m *MemoryManager) OnSessionEnd(sessionID string, turns int, messages []string) {
-	if !m.cfg.ExtractOnEnd || !m.cfg.LLMExtract || m.llm == nil || turns < 3 || len(messages) == 0 {
+	if m.cfg.ExtractOnEnd == nil || !*m.cfg.ExtractOnEnd || m.cfg.LLMExtract == nil || !*m.cfg.LLMExtract || m.llm == nil || turns < 3 || len(messages) == 0 {
 		return
 	}
 
@@ -379,7 +411,7 @@ func (m *MemoryManager) SearchEpisodes(query string, limit int) ([]EpisodeMeta, 
 // section is prefixed with an explicit warning that the content is data, not
 // instructions. Even clean content is wrapped with anti-injection framing.
 func (m *MemoryManager) BuildSystemPrompt() string {
-	if !m.cfg.Enabled {
+	if m.cfg.Enabled == nil || !*m.cfg.Enabled {
 		return ""
 	}
 
@@ -487,13 +519,32 @@ Reply with exactly one word: "merge" or "add"`, target, existing, newEntry)
 }
 
 // mergeEntries combines two related entries into one.
-func mergeEntries(a, b string) string {
+// When an LLM client is available, uses semantic merging for higher quality.
+// Falls back to simple string logic when LLM is unavailable.
+func mergeEntries(llm LLMClient, a, b string) string {
 	if strings.Contains(a, b) {
 		return a
 	}
 	if strings.Contains(b, a) {
 		return b
 	}
+
+	// Use LLM for semantic merge if available
+	if llm != nil {
+		prompt := fmt.Sprintf(
+			"Merge these two related memory entries into a single concise fact. Remove redundancy. Output only the merged entry.\n\nENTRY 1: %s\nENTRY 2: %s",
+			a, b,
+		)
+		merged, err := llm.SimpleCall(context.Background(),
+			"You are a memory deduplication system. Merge two related facts into one concise fact. Remove redundancy. Output only the merged fact.",
+			prompt,
+		)
+		if err == nil && strings.TrimSpace(merged) != "" {
+			return strings.TrimSpace(merged)
+		}
+	}
+
+	// Fallback: simple concatenation
 	return a + ". " + b
 }
 

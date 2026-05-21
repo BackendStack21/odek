@@ -218,3 +218,97 @@ func TestMemoryToolDescription(t *testing.T) {
 		t.Errorf("description should mention memory, got %q", desc)
 	}
 }
+
+func TestMemoryToolViewEpisode(t *testing.T) {
+	dir := t.TempDir()
+	es := NewEpisodeStore(dir, nil)
+	es.Write("sess-view", "full episode content here", 5)
+
+	mm := NewMemoryManager(dir, nil, DefaultMemoryConfig())
+	mm.episodes = es
+	tool := NewMemoryTool(mm)
+
+	// View existing episode
+	result, err := tool.Call(`{"action":"view","target":"episodes","query":"sess-view"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "true") {
+		t.Errorf("expected success, got %q", result)
+	}
+	if !strings.Contains(result, "full episode content here") {
+		t.Errorf("expected episode content, got %q", result)
+	}
+
+	// View missing episode
+	result, err = tool.Call(`{"action":"view","target":"episodes","query":"nonexistent"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "false") {
+		t.Errorf("expected failure for missing episode, got %q", result)
+	}
+
+	// View with wrong target
+	result, err = tool.Call(`{"action":"view","target":"user","query":"sess-view"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "false") {
+		t.Errorf("expected failure for non-episodes target, got %q", result)
+	}
+
+	// View with empty query
+	result, err = tool.Call(`{"action":"view","target":"episodes"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "false") {
+		t.Errorf("expected failure for empty query, got %q", result)
+	}
+}
+
+func TestMemoryToolAddReturnsEntries(t *testing.T) {
+	mm := NewMemoryManager(t.TempDir(), nil, DefaultMemoryConfig())
+	tool := NewMemoryTool(mm)
+
+	result, err := tool.Call(`{"action":"add","target":"user","content":"fact one"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "true") {
+		t.Errorf("expected success, got %q", result)
+	}
+	if !strings.Contains(result, `"entries"`) {
+		t.Errorf("expected entries field in response, got %q", result)
+	}
+	if !strings.Contains(result, "fact one") {
+		t.Errorf("expected fact in entries, got %q", result)
+	}
+}
+
+func TestMergeEntriesWithLLM(t *testing.T) {
+	// Test LLM path: mock returns a merged entry
+	mock := &mockLLM{
+		responses: map[string]string{
+			"Merge these two": "The user prefers short responses",
+		},
+	}
+	got := mergeEntries(mock, "User likes terse answers", "User prefers short replies")
+	if got != "The user prefers short responses" {
+		t.Errorf("mergeEntries with LLM = %q, want %q", got, "The user prefers short responses")
+	}
+
+	// Test fallback when LLM returns empty
+	mock2 := &mockLLM{responses: map[string]string{}}
+	got2 := mergeEntries(mock2, "User likes Go", "User likes Python")
+	if got2 != "User likes Go. User likes Python" {
+		t.Errorf("mergeEntries fallback = %q, want concatenation", got2)
+	}
+
+	// Test with nil LLM (should concatenate)
+	got3 := mergeEntries(nil, "A", "B")
+	if got3 != "A. B" {
+		t.Errorf("mergeEntries nil LLM = %q, want 'A. B'", got3)
+	}
+}

@@ -13,13 +13,13 @@ var memoryToolSchema = map[string]any{
 	"properties": map[string]any{
 		"action": map[string]any{
 			"type":        "string",
-			"enum":        []string{"add", "replace", "remove", "consolidate", "read", "search"},
+			"enum":        []string{"add", "replace", "remove", "consolidate", "read", "search", "view"},
 			"description": "What to do with memory",
 		},
 		"target": map[string]any{
 			"type":        "string",
-			"enum":        []string{"user", "env"},
-			"description": "Which fact file to modify (for add/replace/remove/consolidate)",
+			"enum":        []string{"user", "env", "episodes"},
+			"description": "Which fact file to modify (for add/replace/remove/consolidate), or 'episodes' for view",
 		},
 		"content": map[string]any{
 			"type":        "string",
@@ -76,6 +76,8 @@ func (t *MemoryTool) Call(args string) (string, error) {
 		return t.handleRead()
 	case "search":
 		return t.handleSearch(params.Query)
+	case "view":
+		return t.handleView(params.Target, params.Query)
 	default:
 		return errorJSON(fmt.Sprintf("unknown action: %q", params.Action)), nil
 	}
@@ -88,7 +90,8 @@ func (t *MemoryTool) handleAdd(target, content string) (string, error) {
 	if err := t.manager.AddFact(target, content); err != nil {
 		return errorJSON(err.Error()), nil
 	}
-	return successJSON(fmt.Sprintf("added to %s: %s", target, truncate(content, 60))), nil
+	entries, _ := t.manager.facts.Entries(target)
+	return successJSONWithEntries(fmt.Sprintf("added to %s: %s", target, truncate(content, 60)), entries), nil
 }
 
 func (t *MemoryTool) handleReplace(target, oldText, content string) (string, error) {
@@ -98,7 +101,8 @@ func (t *MemoryTool) handleReplace(target, oldText, content string) (string, err
 	if err := t.manager.ReplaceFact(target, oldText, content); err != nil {
 		return errorJSON(err.Error()), nil
 	}
-	return successJSON(fmt.Sprintf("replaced in %s: %s", target, truncate(content, 60))), nil
+	entries, _ := t.manager.facts.Entries(target)
+	return successJSONWithEntries(fmt.Sprintf("replaced in %s: %s", target, truncate(content, 60)), entries), nil
 }
 
 func (t *MemoryTool) handleRemove(target, oldText string) (string, error) {
@@ -108,7 +112,8 @@ func (t *MemoryTool) handleRemove(target, oldText string) (string, error) {
 	if err := t.manager.RemoveFact(target, oldText); err != nil {
 		return errorJSON(err.Error()), nil
 	}
-	return successJSON(fmt.Sprintf("removed from %s matching %q", target, oldText)), nil
+	entries, _ := t.manager.facts.Entries(target)
+	return successJSONWithEntries(fmt.Sprintf("removed from %s matching %q", target, oldText), entries), nil
 }
 
 func (t *MemoryTool) handleConsolidate(target string) (string, error) {
@@ -122,7 +127,9 @@ func (t *MemoryTool) handleConsolidate(target string) (string, error) {
 	if err := t.manager.Consolidate(target); err != nil {
 		return errorJSON(err.Error()), nil
 	}
-	return successJSON(fmt.Sprintf("consolidated %s (%d → ? entries)", target, len(entries))), nil
+	// Read back to report actual new count
+	newEntries, _ := t.manager.facts.Entries(target)
+	return successJSON(fmt.Sprintf("consolidated %s (%d → %d entries)", target, len(entries), len(newEntries))), nil
 }
 
 func (t *MemoryTool) handleRead() (string, error) {
@@ -165,12 +172,35 @@ func (t *MemoryTool) handleSearch(query string) (string, error) {
 	return successJSON(b.String()), nil
 }
 
+func (t *MemoryTool) handleView(target, query string) (string, error) {
+	if target != "episodes" {
+		return errorJSON("view target must be 'episodes'"), nil
+	}
+	if query == "" {
+		return errorJSON("query (session_id) is required for view"), nil
+	}
+	content, err := t.manager.episodes.Read(query)
+	if err != nil {
+		return errorJSON(err.Error()), nil
+	}
+	return successJSON(content), nil
+}
+
 // ── JSON helpers ────────────────────────────────────────────────────
 
 func successJSON(msg string) string {
 	data, _ := json.Marshal(map[string]any{
 		"success": true,
 		"message": msg,
+	})
+	return string(data)
+}
+
+func successJSONWithEntries(msg string, entries []string) string {
+	data, _ := json.Marshal(map[string]any{
+		"success": true,
+		"message": msg,
+		"entries": entries,
 	})
 	return string(data)
 }

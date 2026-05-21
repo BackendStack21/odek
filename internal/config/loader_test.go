@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/BackendStack21/kode/internal/memory"
 )
 
 func boolPtr(b bool) *bool { return &b }
@@ -501,5 +503,191 @@ func TestLoadConfig_SkillsLearnCLIDoesNotClobberSkillsConfig(t *testing.T) {
 	}
 	if cfg.Skills.Curation.StalenessDays != 30 {
 		t.Errorf("Skills.Curation.StalenessDays = %d, want 30", cfg.Skills.Curation.StalenessDays)
+	}
+}
+
+func TestLoadConfig_MemoryDefaults(t *testing.T) {
+	// When no memory section is configured, the resolved config must have
+	// sensible defaults (Enabled=true, all features on).
+	cfg := LoadConfig(CLIFlags{})
+	mem := cfg.Memory
+	if mem.Enabled == nil || !*mem.Enabled {
+		t.Error("Memory.Enabled should default to true")
+	}
+	if mem.BufferEnabled == nil || !*mem.BufferEnabled {
+		t.Error("Memory.BufferEnabled should default to true")
+	}
+	if mem.MergeOnWrite == nil || !*mem.MergeOnWrite {
+		t.Error("Memory.MergeOnWrite should default to true")
+	}
+	if mem.ExtractOnEnd == nil || !*mem.ExtractOnEnd {
+		t.Error("Memory.ExtractOnEnd should default to true")
+	}
+	if mem.LLMSearch == nil || !*mem.LLMSearch {
+		t.Error("Memory.LLMSearch should default to true")
+	}
+	if mem.LLMExtract == nil || !*mem.LLMExtract {
+		t.Error("Memory.LLMExtract should default to true")
+	}
+	if mem.LLMConsolidate == nil || !*mem.LLMConsolidate {
+		t.Error("Memory.LLMConsolidate should default to true")
+	}
+	if mem.BufferLines != 20 {
+		t.Errorf("Memory.BufferLines = %d, want 20", mem.BufferLines)
+	}
+}
+
+func TestLoadConfig_MemoryFromGlobalFile(t *testing.T) {
+	dir := t.TempDir()
+	prevHome := os.Getenv("HOME")
+	os.Setenv("HOME", dir)
+	defer os.Setenv("HOME", prevHome)
+
+	cfgDir := filepath.Join(dir, ".odek")
+	os.MkdirAll(cfgDir, 0755)
+	cfgPath := filepath.Join(cfgDir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{
+		"memory": {
+			"enabled": true,
+			"facts_limit_user": 800,
+			"buffer_lines": 15,
+			"merge_on_write": false
+		}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	mem := cfg.Memory
+
+	// Explicitly set values
+	if mem.Enabled == nil || !*mem.Enabled {
+		t.Error("Memory.Enabled should be true (from file)")
+	}
+	if mem.FactsLimitUser != 800 {
+		t.Errorf("Memory.FactsLimitUser = %d, want 800", mem.FactsLimitUser)
+	}
+	if mem.BufferLines != 15 {
+		t.Errorf("Memory.BufferLines = %d, want 15", mem.BufferLines)
+	}
+	if mem.MergeOnWrite == nil || *mem.MergeOnWrite {
+		t.Error("Memory.MergeOnWrite should be false (from file)")
+	}
+
+	// Unset fields must get defaults
+	if mem.ExtractOnEnd == nil || !*mem.ExtractOnEnd {
+		t.Error("Memory.ExtractOnEnd should default to true")
+	}
+	if mem.LLMSearch == nil || !*mem.LLMSearch {
+		t.Error("Memory.LLMSearch should default to true")
+	}
+}
+
+func TestLoadConfig_MemoryProjectOverridesGlobal(t *testing.T) {
+	dir := t.TempDir()
+	prevHome := os.Getenv("HOME")
+	os.Setenv("HOME", dir)
+	defer os.Setenv("HOME", prevHome)
+
+	// Global config with memory section
+	globalDir := filepath.Join(dir, ".odek")
+	os.MkdirAll(globalDir, 0755)
+	if err := os.WriteFile(filepath.Join(globalDir, "config.json"), []byte(`{
+		"memory": {
+			"facts_limit_user": 500,
+			"buffer_lines": 10,
+			"merge_on_write": true
+		}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Project config overrides some memory fields
+	cwd, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(cwd)
+
+	if err := os.WriteFile(filepath.Join(dir, "odek.json"), []byte(`{
+		"memory": {
+			"facts_limit_user": 1200,
+			"buffer_lines": 25
+		}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	mem := cfg.Memory
+
+	// Project overrides
+	if mem.FactsLimitUser != 1200 {
+		t.Errorf("Memory.FactsLimitUser = %d, want 1200 (project overrides global)", mem.FactsLimitUser)
+	}
+	if mem.BufferLines != 25 {
+		t.Errorf("Memory.BufferLines = %d, want 25 (project overrides global)", mem.BufferLines)
+	}
+
+	// Global value preserved (not overridden by project)
+	if mem.MergeOnWrite == nil || !*mem.MergeOnWrite {
+		t.Error("Memory.MergeOnWrite should be true (preserved from global)")
+	}
+
+	// Defaults for fields not set in either file
+	if mem.Enabled == nil || !*mem.Enabled {
+		t.Error("Memory.Enabled should default to true")
+	}
+}
+
+func TestResolveMemoryMergesDefaults(t *testing.T) {
+	// resolveMemory must overlay user config onto DefaultMemoryConfig
+	// so partial configs don't zero out boolean features.
+	cfg := &memory.MemoryConfig{
+		FactsLimitUser: 300,
+		BufferLines:    5,
+	}
+	resolved := resolveMemory(cfg)
+
+	if resolved.FactsLimitUser != 300 {
+		t.Errorf("FactsLimitUser = %d, want 300", resolved.FactsLimitUser)
+	}
+	if resolved.BufferLines != 5 {
+		t.Errorf("BufferLines = %d, want 5", resolved.BufferLines)
+	}
+	// Bool defaults must be preserved
+	if resolved.Enabled == nil || !*resolved.Enabled {
+		t.Error("Enabled should default to true when not explicitly set")
+	}
+	if resolved.ExtractOnEnd == nil || !*resolved.ExtractOnEnd {
+		t.Error("ExtractOnEnd should default to true")
+	}
+}
+
+func TestResolveMemoryExplicitFalse(t *testing.T) {
+	// When user explicitly sets a bool to false, it must stay false.
+	cfg := &memory.MemoryConfig{
+		Enabled: memory.BoolPtr(false),
+	}
+	resolved := resolveMemory(cfg)
+
+	if resolved.Enabled == nil || *resolved.Enabled {
+		t.Error("Enabled should be false when explicitly set to false")
+	}
+	// Other bools still get defaults
+	if resolved.ExtractOnEnd == nil || !*resolved.ExtractOnEnd {
+		t.Error("ExtractOnEnd should default to true")
+	}
+}
+
+func TestLoadConfig_MemoryNotSetReturnsDefaults(t *testing.T) {
+	// When memory key is absent from all config layers, resolveMemory(nil)
+	// must return DefaultMemoryConfig.
+	resolved := resolveMemory(nil)
+	def := memory.DefaultMemoryConfig()
+
+	if resolved.FactsLimitUser != def.FactsLimitUser {
+		t.Errorf("FactsLimitUser = %d, want %d (default)", resolved.FactsLimitUser, def.FactsLimitUser)
+	}
+	if resolved.Enabled == nil || *resolved.Enabled != *def.Enabled {
+		t.Error("Enabled should match default")
 	}
 }

@@ -402,7 +402,10 @@ func New(cfg Config) (*Agent, error) {
 		memoryManager:  memoryManager,
 	}
 
-	// Inject memory system prompt block
+	// Wire per-turn memory injection so the agent sees the latest facts
+	// even after mutating memory during a session.
+	// The initial system message gets the current memory snapshot,
+	// and the loop engine refreshes it before each LLM call.
 	if memoryBlock := memoryManager.BuildSystemPrompt(); memoryBlock != "" {
 		cfg.SystemMessage += memoryBlock
 	}
@@ -413,6 +416,11 @@ func New(cfg Config) (*Agent, error) {
 
 	engine := loop.New(client, registry, cfg.MaxIterations, cfg.SystemMessage, cfg.Renderer, maxContext)
 	engine.PromptCaching = cfg.PromptCaching
+
+	// Set per-turn memory refresh callback
+	engine.SetMemoryPromptFunc(func() string {
+		return memoryManager.BuildSystemPrompt()
+	})
 
 	// Set the skill loader for lazy loading
 	// Uses scoring matcher (fixes AND-lock, adds stemming + synonyms) when available.

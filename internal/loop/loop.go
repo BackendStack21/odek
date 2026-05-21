@@ -49,14 +49,20 @@ type Engine struct {
 	renderer    *render.Renderer // optional: colored terminal output
 	maxIter     int
 	system      string
-	maxContext  int // max context tokens (0 = no limit)
-	skillLoader SkillLoader // optional: loads matching skills
-	lastSkillMsg string     // last user message that triggered skill loading (dedup)
+	baseSystem  string            // original system message without memory/skills
+	maxContext  int               // max context tokens (0 = no limit)
+	skillLoader SkillLoader       // optional: loads matching skills
+	lastSkillMsg string           // last user message that triggered skill loading (dedup)
 
 	toolEventHandler ToolEventHandler // optional: fires during tool execution
 
 	// iterationCallback is an optional callback fired after each iteration.
 	iterationCallback IterationCallback
+
+	// memoryPromptFunc is called before each LLM invocation to get fresh
+	// memory content. This ensures memory mutations during a session
+	// are visible to the agent on the next turn.
+	memoryPromptFunc func() string
 
 	// PromptCaching enables Anthropic/OpenAI/DeepSeek prompt caching markers.
 	// When enabled, the system prompt and first user message are annotated
@@ -91,6 +97,17 @@ func New(client *llm.Client, registry *tool.Registry, maxIterations int, systemM
 
 // SetSkillLoader sets the optional skill loader callback.
 func (e *Engine) SetSkillLoader(sl SkillLoader) { e.skillLoader = sl }
+
+// SetMemoryPromptFunc sets the optional memory prompt callback.
+// When set, it is called before each LLM invocation to get fresh memory
+// content. This ensures the agent sees the latest facts even if it
+// modifies memory during a session.
+func (e *Engine) SetMemoryPromptFunc(fn func() string) {
+	e.memoryPromptFunc = fn
+	if fn != nil {
+		e.baseSystem = e.system
+	}
+}
 
 // SetToolEventHandler sets the optional tool event callback for live streaming.
 func (e *Engine) SetToolEventHandler(cb ToolEventHandler) { e.toolEventHandler = cb }
@@ -303,6 +320,18 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 					newMsgs = append(newMsgs, skillMsg)
 					newMsgs = append(newMsgs, messages[insertIdx:]...)
 					messages = newMsgs
+				}
+			}
+		}
+
+		// Refresh memory content before each LLM call so the agent sees
+		// the latest facts even if it mutated memory during this session.
+		if e.memoryPromptFunc != nil {
+			if memBlock := e.memoryPromptFunc(); memBlock != "" {
+				e.system = e.baseSystem + memBlock
+				// Update messages[0] if it's the system message
+				if len(messages) > 0 && messages[0].Role == "system" {
+					messages[0].Content = e.system
 				}
 			}
 		}
