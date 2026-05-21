@@ -3,3 +3,5 @@ bin/
 *.test
 coverage.out
 odek-bin
+.plans/
+.hermes/
