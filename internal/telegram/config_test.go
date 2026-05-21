@@ -53,7 +53,7 @@ func TestConfigFromEnv_noEnvVars(t *testing.T) {
 	unsetAllEnvVars(t)
 	defer unsetAllEnvVars(t)
 
-	cfg := ConfigFromEnv()
+	cfg := ConfigFromEnv(DefaultConfig())
 	want := DefaultConfig()
 
 	// Compare field by field because structs containing slices cannot use ==.
@@ -91,7 +91,7 @@ func TestConfigFromEnv_noEnvVars(t *testing.T) {
 
 func TestConfigFromEnv_token(t *testing.T) {
 	t.Setenv("ODEK_TELEGRAM_BOT_TOKEN", "my-secret-token:123")
-	cfg := ConfigFromEnv()
+	cfg := ConfigFromEnv(DefaultConfig())
 	if cfg.Token != "my-secret-token:123" {
 		t.Errorf("Token = %q, want %q", cfg.Token, "my-secret-token:123")
 	}
@@ -104,7 +104,7 @@ func TestConfigFromEnv_token(t *testing.T) {
 func TestConfigFromEnv_emptyTokenIgnored(t *testing.T) {
 	// Empty env var should not override the default (which is "").
 	t.Setenv("ODEK_TELEGRAM_BOT_TOKEN", "")
-	cfg := ConfigFromEnv()
+	cfg := ConfigFromEnv(DefaultConfig())
 	if cfg.Token != "" {
 		t.Errorf("Token = %q, want empty", cfg.Token)
 	}
@@ -112,7 +112,7 @@ func TestConfigFromEnv_emptyTokenIgnored(t *testing.T) {
 
 func TestConfigFromEnv_allowedChats(t *testing.T) {
 	t.Setenv("ODEK_TELEGRAM_ALLOWED_CHATS", "  -100123 , 42 , 99 ")
-	cfg := ConfigFromEnv()
+	cfg := ConfigFromEnv(DefaultConfig())
 	want := []int64{-100123, 42, 99}
 	if !equalInt64Slice(cfg.AllowedChats, want) {
 		t.Errorf("AllowedChats = %v, want %v", cfg.AllowedChats, want)
@@ -121,7 +121,7 @@ func TestConfigFromEnv_allowedChats(t *testing.T) {
 
 func TestConfigFromEnv_allowedChatsEmpty(t *testing.T) {
 	t.Setenv("ODEK_TELEGRAM_ALLOWED_CHATS", "")
-	cfg := ConfigFromEnv()
+	cfg := ConfigFromEnv(DefaultConfig())
 	if cfg.AllowedChats != nil {
 		t.Errorf("AllowedChats = %v, want nil", cfg.AllowedChats)
 	}
@@ -129,7 +129,7 @@ func TestConfigFromEnv_allowedChatsEmpty(t *testing.T) {
 
 func TestConfigFromEnv_allowedChatsInvalidSkips(t *testing.T) {
 	t.Setenv("ODEK_TELEGRAM_ALLOWED_CHATS", "abc,  -100123, 12.5, 99,")
-	cfg := ConfigFromEnv()
+	cfg := ConfigFromEnv(DefaultConfig())
 	want := []int64{-100123, 99}
 	if !equalInt64Slice(cfg.AllowedChats, want) {
 		t.Errorf("AllowedChats = %v, want %v", cfg.AllowedChats, want)
@@ -138,7 +138,7 @@ func TestConfigFromEnv_allowedChatsInvalidSkips(t *testing.T) {
 
 func TestConfigFromEnv_allowedUsers(t *testing.T) {
 	t.Setenv("ODEK_TELEGRAM_ALLOWED_USERS", "  111 , 222 ")
-	cfg := ConfigFromEnv()
+	cfg := ConfigFromEnv(DefaultConfig())
 	want := []int64{111, 222}
 	if !equalInt64Slice(cfg.AllowedUsers, want) {
 		t.Errorf("AllowedUsers = %v, want %v", cfg.AllowedUsers, want)
@@ -147,7 +147,7 @@ func TestConfigFromEnv_allowedUsers(t *testing.T) {
 
 func TestConfigFromEnv_botUsername(t *testing.T) {
 	t.Setenv("ODEK_TELEGRAM_BOT_USERNAME", "MyAwesomeBot")
-	cfg := ConfigFromEnv()
+	cfg := ConfigFromEnv(DefaultConfig())
 	if cfg.BotUsername != "MyAwesomeBot" {
 		t.Errorf("BotUsername = %q, want %q", cfg.BotUsername, "MyAwesomeBot")
 	}
@@ -155,7 +155,7 @@ func TestConfigFromEnv_botUsername(t *testing.T) {
 
 func TestConfigFromEnv_pollInterval(t *testing.T) {
 	t.Setenv("ODEK_TELEGRAM_POLL_INTERVAL", "5")
-	cfg := ConfigFromEnv()
+	cfg := ConfigFromEnv(DefaultConfig())
 	if cfg.PollInterval != 5 {
 		t.Errorf("PollInterval = %d, want 5", cfg.PollInterval)
 	}
@@ -164,7 +164,7 @@ func TestConfigFromEnv_pollInterval(t *testing.T) {
 func TestConfigFromEnv_pollIntervalInvalid(t *testing.T) {
 	// Invalid (non-numeric) values should be silently ignored.
 	t.Setenv("ODEK_TELEGRAM_POLL_INTERVAL", "not-a-number")
-	cfg := ConfigFromEnv()
+	cfg := ConfigFromEnv(DefaultConfig())
 	if cfg.PollInterval != 1 {
 		t.Errorf("PollInterval = %d, want default 1", cfg.PollInterval)
 	}
@@ -172,7 +172,7 @@ func TestConfigFromEnv_pollIntervalInvalid(t *testing.T) {
 
 func TestConfigFromEnv_pollIntervalEmpty(t *testing.T) {
 	t.Setenv("ODEK_TELEGRAM_POLL_INTERVAL", "")
-	cfg := ConfigFromEnv()
+	cfg := ConfigFromEnv(DefaultConfig())
 	if cfg.PollInterval != 1 {
 		t.Errorf("PollInterval = %d, want default 1", cfg.PollInterval)
 	}
@@ -180,7 +180,7 @@ func TestConfigFromEnv_pollIntervalEmpty(t *testing.T) {
 
 func TestConfigFromEnv_pollTimeout(t *testing.T) {
 	t.Setenv("ODEK_TELEGRAM_POLL_TIMEOUT", "45")
-	cfg := ConfigFromEnv()
+	cfg := ConfigFromEnv(DefaultConfig())
 	if cfg.PollTimeout != 45 {
 		t.Errorf("PollTimeout = %d, want 45", cfg.PollTimeout)
 	}
@@ -188,7 +188,7 @@ func TestConfigFromEnv_pollTimeout(t *testing.T) {
 
 func TestConfigFromEnv_pollTimeoutInvalid(t *testing.T) {
 	t.Setenv("ODEK_TELEGRAM_POLL_TIMEOUT", "abc")
-	cfg := ConfigFromEnv()
+	cfg := ConfigFromEnv(DefaultConfig())
 	if cfg.PollTimeout != 30 {
 		t.Errorf("PollTimeout = %d, want default 30", cfg.PollTimeout)
 	}
@@ -196,7 +196,7 @@ func TestConfigFromEnv_pollTimeoutInvalid(t *testing.T) {
 
 func TestConfigFromEnv_pollTimeoutEmpty(t *testing.T) {
 	t.Setenv("ODEK_TELEGRAM_POLL_TIMEOUT", "")
-	cfg := ConfigFromEnv()
+	cfg := ConfigFromEnv(DefaultConfig())
 	if cfg.PollTimeout != 30 {
 		t.Errorf("PollTimeout = %d, want default 30", cfg.PollTimeout)
 	}
@@ -204,7 +204,7 @@ func TestConfigFromEnv_pollTimeoutEmpty(t *testing.T) {
 
 func TestConfigFromEnv_maxMsgLength(t *testing.T) {
 	t.Setenv("ODEK_TELEGRAM_MAX_MSG_LENGTH", "1024")
-	cfg := ConfigFromEnv()
+	cfg := ConfigFromEnv(DefaultConfig())
 	if cfg.MaxMsgLength != 1024 {
 		t.Errorf("MaxMsgLength = %d, want 1024", cfg.MaxMsgLength)
 	}
@@ -212,7 +212,7 @@ func TestConfigFromEnv_maxMsgLength(t *testing.T) {
 
 func TestConfigFromEnv_maxMsgLengthInvalid(t *testing.T) {
 	t.Setenv("ODEK_TELEGRAM_MAX_MSG_LENGTH", "xyz")
-	cfg := ConfigFromEnv()
+	cfg := ConfigFromEnv(DefaultConfig())
 	if cfg.MaxMsgLength != 4096 {
 		t.Errorf("MaxMsgLength = %d, want default 4096", cfg.MaxMsgLength)
 	}
@@ -220,7 +220,7 @@ func TestConfigFromEnv_maxMsgLengthInvalid(t *testing.T) {
 
 func TestConfigFromEnv_dailyTokenBudget(t *testing.T) {
 	t.Setenv("ODEK_TELEGRAM_DAILY_TOKEN_BUDGET", "500000")
-	cfg := ConfigFromEnv()
+	cfg := ConfigFromEnv(DefaultConfig())
 	if cfg.DailyTokenBudget != 500000 {
 		t.Errorf("DailyTokenBudget = %d, want 500000", cfg.DailyTokenBudget)
 	}
@@ -228,7 +228,7 @@ func TestConfigFromEnv_dailyTokenBudget(t *testing.T) {
 
 func TestConfigFromEnv_dailyTokenBudgetInvalid(t *testing.T) {
 	t.Setenv("ODEK_TELEGRAM_DAILY_TOKEN_BUDGET", "not-a-number")
-	cfg := ConfigFromEnv()
+	cfg := ConfigFromEnv(DefaultConfig())
 	if cfg.DailyTokenBudget != 1000000 {
 		t.Errorf("DailyTokenBudget = %d, want default 1000000", cfg.DailyTokenBudget)
 	}
@@ -236,7 +236,7 @@ func TestConfigFromEnv_dailyTokenBudgetInvalid(t *testing.T) {
 
 func TestConfigFromEnv_sessionTTL(t *testing.T) {
 	t.Setenv("ODEK_TELEGRAM_SESSION_TTL_HOURS", "48")
-	cfg := ConfigFromEnv()
+	cfg := ConfigFromEnv(DefaultConfig())
 	if cfg.SessionTTL != 48 {
 		t.Errorf("SessionTTL = %d, want 48", cfg.SessionTTL)
 	}
@@ -244,7 +244,7 @@ func TestConfigFromEnv_sessionTTL(t *testing.T) {
 
 func TestConfigFromEnv_sessionTTLInvalid(t *testing.T) {
 	t.Setenv("ODEK_TELEGRAM_SESSION_TTL_HOURS", "bad")
-	cfg := ConfigFromEnv()
+	cfg := ConfigFromEnv(DefaultConfig())
 	if cfg.SessionTTL != 24 {
 		t.Errorf("SessionTTL = %d, want default 24", cfg.SessionTTL)
 	}
@@ -252,7 +252,7 @@ func TestConfigFromEnv_sessionTTLInvalid(t *testing.T) {
 
 func TestConfigFromEnv_sessionTTLEmpty(t *testing.T) {
 	t.Setenv("ODEK_TELEGRAM_SESSION_TTL_HOURS", "")
-	cfg := ConfigFromEnv()
+	cfg := ConfigFromEnv(DefaultConfig())
 	if cfg.SessionTTL != 24 {
 		t.Errorf("SessionTTL = %d, want default 24", cfg.SessionTTL)
 	}
@@ -260,7 +260,7 @@ func TestConfigFromEnv_sessionTTLEmpty(t *testing.T) {
 
 func TestConfigFromEnv_fallbackURLs(t *testing.T) {
 	t.Setenv("ODEK_TELEGRAM_FALLBACK_URLS", "https://a.com, https://b.com")
-	cfg := ConfigFromEnv()
+	cfg := ConfigFromEnv(DefaultConfig())
 	want := []string{"https://a.com", "https://b.com"}
 	if !equalStringSlice(cfg.FallbackURLs, want) {
 		t.Errorf("FallbackURLs = %v, want %v", cfg.FallbackURLs, want)
@@ -269,7 +269,7 @@ func TestConfigFromEnv_fallbackURLs(t *testing.T) {
 
 func TestConfigFromEnv_fallbackURLsEmpty(t *testing.T) {
 	t.Setenv("ODEK_TELEGRAM_FALLBACK_URLS", "")
-	cfg := ConfigFromEnv()
+	cfg := ConfigFromEnv(DefaultConfig())
 	if cfg.FallbackURLs != nil {
 		t.Errorf("FallbackURLs = %v, want nil", cfg.FallbackURLs)
 	}
@@ -277,7 +277,7 @@ func TestConfigFromEnv_fallbackURLsEmpty(t *testing.T) {
 
 func TestConfigFromEnv_fallbackURLsTrimsEmptyEntries(t *testing.T) {
 	t.Setenv("ODEK_TELEGRAM_FALLBACK_URLS", "https://a.com, , https://b.com,")
-	cfg := ConfigFromEnv()
+	cfg := ConfigFromEnv(DefaultConfig())
 	want := []string{"https://a.com", "https://b.com"}
 	if !equalStringSlice(cfg.FallbackURLs, want) {
 		t.Errorf("FallbackURLs = %v, want %v", cfg.FallbackURLs, want)
@@ -291,7 +291,7 @@ func TestConfigFromEnv_multipleOverrides(t *testing.T) {
 	t.Setenv("ODEK_TELEGRAM_POLL_INTERVAL", "3")
 	t.Setenv("ODEK_TELEGRAM_MAX_MSG_LENGTH", "2048")
 
-	cfg := ConfigFromEnv()
+	cfg := ConfigFromEnv(DefaultConfig())
 
 	if cfg.Token != "token:multi" {
 		t.Errorf("Token = %q", cfg.Token)

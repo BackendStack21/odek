@@ -16,10 +16,11 @@ import (
 // session.Store. Each Telegram chat gets its own session identified by
 // "tg-<chatID>". An in-memory cache avoids redundant disk reads.
 type SessionManager struct {
-	Store   *session.Store
-	Cache   map[int64]*ChatSession
-	Mu      sync.RWMutex
-	BaseDir string
+	Store    *session.Store
+	Cache    map[int64]*ChatSession
+	Mu       sync.RWMutex
+	BaseDir  string
+	SessionTTL time.Duration
 }
 
 // ChatSession represents a single Telegram chat's agent conversation.
@@ -31,18 +32,20 @@ type ChatSession struct {
 	TurnCount  int
 }
 
-// sessionExpiry is the TTL for cached sessions. After 24h of inactivity
-// the cache entry is expired and re-fetched from disk (or re-created).
-const sessionExpiry = 24 * time.Hour
-
 // ── Constructor ────────────────────────────────────────────────────────
 
 // NewSessionManager creates a new SessionManager backed by the given store.
+// The ttl parameter controls how long a session is considered active since
+// its last use. If ttl is 0, a default of 24h is used.
 // The cache map is initialized to empty.
-func NewSessionManager(store *session.Store) *SessionManager {
+func NewSessionManager(store *session.Store, ttl time.Duration) *SessionManager {
+	if ttl == 0 {
+		ttl = 24 * time.Hour
+	}
 	return &SessionManager{
-		Store: store,
-		Cache: make(map[int64]*ChatSession),
+		Store:      store,
+		Cache:      make(map[int64]*ChatSession),
+		SessionTTL: ttl,
 	}
 }
 
@@ -57,7 +60,7 @@ func (sm *SessionManager) GetOrCreate(chatID int64) (*ChatSession, error) {
 	cs, ok := sm.Cache[chatID]
 	sm.Mu.RUnlock()
 
-	if ok && time.Since(cs.LastActive) < sessionExpiry {
+	if ok && time.Since(cs.LastActive) < sm.SessionTTL {
 		return cs, nil
 	}
 

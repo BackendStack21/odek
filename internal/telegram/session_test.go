@@ -26,7 +26,7 @@ func setupTestSessionManager(t *testing.T) (*SessionManager, *session.Store) {
 		t.Fatalf("session.NewStore() failed: %v", err)
 	}
 
-	sm := NewSessionManager(st)
+	sm := NewSessionManager(st, 24*time.Hour)
 	return sm, st
 }
 

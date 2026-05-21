@@ -40,7 +40,7 @@ func telegramCmd(args []string) error {
 	}
 
 	// 3. Load and validate Telegram config.
-	cfg := telegram.ConfigFromEnv()
+	cfg := resolved.Telegram
 	if err := telegram.ValidateConfig(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "odek telegram: %v\n", err)
 		return err
@@ -56,8 +56,9 @@ func telegramCmd(args []string) error {
 		return err
 	}
 
-	// 6. Create session manager (per-chat Telegram session cache).
-	sessionManager := telegram.NewSessionManager(store)
+	// 6. Create session manager (per-chat Telegram session cache)
+	//    with the configured session TTL (default 24h).
+	sessionManager := telegram.NewSessionManager(store, time.Duration(cfg.SessionTTL)*time.Hour)
 
 	// 7. Create handler.
 	handler := telegram.NewHandler(bot)

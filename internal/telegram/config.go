@@ -33,9 +33,9 @@ func DefaultConfig() TelegramConfig {
 }
 
 // ConfigFromEnv reads configuration from environment variables, starting with
-// DefaultConfig and overriding any values that are set in the environment.
-func ConfigFromEnv() TelegramConfig {
-	cfg := DefaultConfig()
+// the given base config and overriding any values that are set in the environment.
+func ConfigFromEnv(base TelegramConfig) TelegramConfig {
+	cfg := base
 
 	if v := os.Getenv("ODEK_TELEGRAM_BOT_TOKEN"); v != "" {
 		cfg.Token = v

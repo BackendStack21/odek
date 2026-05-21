@@ -22,6 +22,7 @@ import (
 	"github.com/BackendStack21/kode/internal/mcpclient"
 	"github.com/BackendStack21/kode/internal/memory"
 	"github.com/BackendStack21/kode/internal/skills"
+	"github.com/BackendStack21/kode/internal/telegram"
 )
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -119,6 +120,9 @@ type FileConfig struct {
 	// Config: max_concurrency, ODEK_MAX_CONCURRENCY.
 	// Default: 3.
 	MaxConcurrency int `json:"max_concurrency,omitempty"`
+
+	// Telegram configures the Telegram bot integration.
+	Telegram *telegram.TelegramConfig `json:"telegram,omitempty"`
 }
 
 // ResolvedConfig is the fully merged result. Every field has a concrete
@@ -193,6 +197,9 @@ type ResolvedConfig struct {
 	// Config: max_concurrency, ODEK_MAX_CONCURRENCY.
 	// Default: 3.
 	MaxConcurrency int
+
+	// Telegram is the resolved Telegram bot configuration.
+	Telegram telegram.TelegramConfig
 }
 
 // ── Defaults ───────────────────────────────────────────────────────────
@@ -378,6 +385,14 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		cfg.MaxConcurrency = v
 	}
 
+	// Telegram env overrides: merge env vars on top of file config.
+	baseTelegram := telegram.DefaultConfig()
+	if cfg.Telegram != nil {
+		baseTelegram = *cfg.Telegram
+	}
+	mergedTelegram := telegram.ConfigFromEnv(baseTelegram)
+	cfg.Telegram = &mergedTelegram
+
 	// Layer 4: CLI flags (highest priority)
 	if cli.Model != "" {
 		cfg.Model = cli.Model
@@ -448,6 +463,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		Dangerous:      resolveDangerous(cfg.Dangerous),
 		Memory:         resolveMemory(cfg.Memory),
 		MCPServers:     cfg.MCPServers,
+		Telegram:       resolveTelegram(cfg.Telegram),
 	}
 
 	// MaxConcurrency: default to 3 if not set
@@ -543,6 +559,14 @@ func resolveMemory(cfg *memory.MemoryConfig) memory.MemoryConfig {
 	return memory.DefaultMemoryConfig()
 }
 
+// resolveTelegram merges file-level telegram config with defaults.
+func resolveTelegram(cfg *telegram.TelegramConfig) telegram.TelegramConfig {
+	if cfg != nil {
+		return *cfg
+	}
+	return telegram.DefaultConfig()
+}
+
 // overlayFile overlays a higher-priority FileConfig onto a lower-priority one.
 // Only fields that are explicitly set (non-zero for scalars, non-nil for
 // pointers) override the base value.
@@ -608,6 +632,9 @@ func overlayFile(base, override FileConfig) FileConfig {
 	}
 	if override.Skills != nil {
 		base.Skills = override.Skills
+	}
+	if override.Telegram != nil {
+		base.Telegram = override.Telegram
 	}
 	return base
 }
