@@ -63,6 +63,15 @@ func (ft *FallbackTransport) tryURLs(req *http.Request) (*http.Response, error) 
 	// Include query parameters in the attempt.
 	rawQuery := req.URL.RawQuery
 
+	// Use a dedicated HTTP client that does NOT use this transport
+	// to prevent infinite recursion when RoundTrip calls tryURLs.
+	directClient := &http.Client{
+		Timeout: ft.Timeout,
+		Transport: &http.Transport{
+			DisableKeepAlives: true,
+		},
+	}
+
 	firstErr := error(nil)
 	for _, base := range ft.allURLs() {
 		baseURL, err := url.Parse(base)
@@ -85,7 +94,7 @@ func (ft *FallbackTransport) tryURLs(req *http.Request) (*http.Response, error) 
 		// Ensure the Host header matches.
 		clone.Host = baseURL.Host
 
-		resp, err := ft.httpClient().Do(clone)
+		resp, err := directClient.Do(clone)
 		if err == nil {
 			return resp, nil
 		}
