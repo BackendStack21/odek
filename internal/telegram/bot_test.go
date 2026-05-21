@@ -1124,6 +1124,62 @@ func TestBot_CheckDailyBudget_Exceeded(t *testing.T) {
 	}
 }
 
+func TestBot_CheckDailyBudget_PreflightPattern(t *testing.T) {
+	// This test verifies the exact pattern used by handleChatMessage:
+	// call CheckDailyBudget(1) to detect if the budget is already exhausted
+	// before running the agent (avoids wasting an API call).
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	bot := NewBot("testtoken")
+	bot.SetDailyTokenBudget(10_000)
+
+	// Pre-flight check with 1 token — should succeed (no usage yet).
+	if err := bot.CheckDailyBudget(1); err != nil {
+		t.Fatalf("pre-flight CheckDailyBudget(1) should succeed: %v", err)
+	}
+
+	// Simulate an agent run that used 9,999 tokens.
+	if err := bot.CheckDailyBudget(9999); err != nil {
+		t.Fatalf("CheckDailyBudget(9999) under 10000 limit: %v", err)
+	}
+
+	// Next pre-flight check with 1 token — should fail (budget exhausted).
+	if err := bot.CheckDailyBudget(1); err == nil {
+		t.Fatal("pre-flight CheckDailyBudget(1) should fail when budget is exhausted")
+	}
+}
+
+func TestBot_CheckDailyBudget_SequentialBillings(t *testing.T) {
+	// Simulates the production pattern: multiple agent runs, each billing
+	// actual input+output tokens against the daily budget.
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	bot := NewBot("testtoken")
+	bot.SetDailyTokenBudget(50_000)
+
+	// Agent run 1: used 12,000 tokens
+	if err := bot.CheckDailyBudget(12000); err != nil {
+		t.Fatalf("run 1: CheckDailyBudget(12000): %v", err)
+	}
+
+	// Agent run 2: used 8,000 tokens (running total: 20,000)
+	if err := bot.CheckDailyBudget(8000); err != nil {
+		t.Fatalf("run 2: CheckDailyBudget(8000): %v", err)
+	}
+
+	// Agent run 3: used 30,000 tokens (running total: 50,000 — exactly at limit)
+	if err := bot.CheckDailyBudget(30000); err != nil {
+		t.Fatalf("run 3: CheckDailyBudget(30000) at exact limit: %v", err)
+	}
+
+	// Agent run 4: used 1 token (running total: 50,001 — exceeds limit)
+	if err := bot.CheckDailyBudget(1); err == nil {
+		t.Fatal("run 4: expected error for exceeded budget")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // SendChatAction
 // ---------------------------------------------------------------------------

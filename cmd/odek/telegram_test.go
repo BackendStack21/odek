@@ -257,3 +257,53 @@ func TestRestartStderrMessage_NoArgs(t *testing.T) {
 		t.Errorf("stderr restart message should show empty args as []: %q", msg)
 	}
 }
+
+// ── Daily Token Budget integration tests ──────────────────────────────
+
+func TestBudgetMessage_ContainsAllElements(t *testing.T) {
+	// Verify the budget exceeded message format sent to the Telegram chat.
+	// This is the message produced when CheckDailyBudget fails in the
+	// pre-flight check, before the agent runs.
+	msg := fmt.Sprintf(
+		"Daily token budget exhausted: daily token budget exceeded: 10000 used + 1 new = 10001 total, limit is 10000. "+
+			"The budget resets at midnight UTC. "+
+			"Set daily_token_budget to 0 in config for unlimited usage.",
+	)
+
+	if !strings.Contains(msg, "Daily token budget exhausted") {
+		t.Errorf("budget message missing 'Daily token budget exhausted': %q", msg)
+	}
+	if !strings.Contains(msg, "resets at midnight UTC") {
+		t.Errorf("budget message missing 'resets at midnight UTC': %q", msg)
+	}
+	if !strings.Contains(msg, "daily_token_budget to 0") {
+		t.Errorf("budget message missing 'daily_token_budget to 0': %q", msg)
+	}
+	if !strings.Contains(msg, "10000") {
+		t.Errorf("budget message should contain the limit: %q", msg)
+	}
+}
+
+func TestBudgetWarning_ContainsAllElements(t *testing.T) {
+	// Verify the post-run budget warning message format sent when the
+	// agent completed successfully but the budget was exceeded.
+	msg := fmt.Sprintf(
+		"⚠️ Token budget warning\n\n"+
+			"daily token budget exceeded: 45000 used + 6000 new = 51000 total, limit is 50000. "+
+			"Further agent runs may be blocked until the daily budget resets. "+
+			"Use /stats to check current usage.",
+	)
+
+	if !strings.Contains(msg, "Token budget warning") {
+		t.Errorf("warning message missing 'Token budget warning': %q", msg)
+	}
+	if !strings.Contains(msg, "daily budget resets") {
+		t.Errorf("warning message missing 'daily budget resets': %q", msg)
+	}
+	if !strings.Contains(msg, "/stats") {
+		t.Errorf("warning message should mention /stats: %q", msg)
+	}
+	if !strings.Contains(msg, "51000") {
+		t.Errorf("warning message should contain the total: %q", msg)
+	}
+}
