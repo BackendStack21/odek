@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,6 +29,15 @@ import (
 // processed sequentially, preserving session history integrity.
 var chatMu sync.Map // map[int64]*sync.Mutex
 
+// chatCancels stores per-chat cancel functions. When /stop is received, the
+// cancel function is called to interrupt the running agent loop.
+var chatCancels sync.Map // map[int64]context.CancelFunc
+
+// chatRunInfos stores the latest IterationInfo for each chat, updated on
+// every agent loop iteration. Used by /stop to report a summary of the
+// interrupted task.
+var chatRunInfos sync.Map // map[int64]loop.IterationInfo
+
 // getChatMutex returns the per-chat mutex for the given chat ID.
 func getChatMutex(chatID int64) *sync.Mutex {
 	v, _ := chatMu.LoadOrStore(chatID, &sync.Mutex{})
@@ -36,6 +46,13 @@ func getChatMutex(chatID int64) *sync.Mutex {
 
 // telegramCmd is the entry point for "odek telegram".
 func telegramCmd(args []string) error {
+	// 0. Acquire singleton lock — kill any stale previous instance.
+	lock, err := acquireLock()
+	if err != nil {
+		return fmt.Errorf("telegram: %w", err)
+	}
+	defer lock.release()
+
 	// 1. Load config from all sources (file → env).
 	resolved := config.LoadConfig(config.CLIFlags{})
 
@@ -285,6 +302,24 @@ func telegramCmd(args []string) error {
 			return fmt.Sprintf("📋 *Plan loaded*: `%s`\n\n_Injected into session context. Send a message to continue._", slug), nil
 		}
 
+		// Handle /stop — cancel the running agent task and report a summary.
+		if cmdName == "stop" {
+			// Cancel the running agent context, if any.
+			if cancelVal, ok := chatCancels.LoadAndDelete(chatID); ok {
+				cancel := cancelVal.(context.CancelFunc)
+				cancel()
+			}
+			// Retrieve the latest run info for a summary of what was interrupted.
+			var summary string
+			if infoVal, ok := chatRunInfos.LoadAndDelete(chatID); ok {
+				info := infoVal.(loop.IterationInfo)
+				summary = formatStopSummary(info)
+			} else {
+				summary = "⏹️ No active task to stop."
+			}
+			return summary, nil
+		}
+
 		return cmd.Handler(argsStr)
 	}
 
@@ -467,7 +502,11 @@ func handleChatMessage(
 		for {
 			select {
 			case <-ticker.C:
-				go bot.SendChatAction(chatID, "typing")
+				go func() {
+					if err := bot.SendChatAction(chatID, "typing"); err != nil {
+						fmt.Fprintf(os.Stderr, "odek telegram: sendChatAction failed: %v\n", err)
+					}
+				}()
 			case <-typingDone:
 				return
 			}
@@ -585,9 +624,10 @@ func handleChatMessage(
 			}
 			allToolsMu.Unlock()
 
-			if info.HasFinalAnswer {
-				runInfo = info
-			}
+			// Always capture the latest iteration info — used by /stop
+			// to report a summary of the interrupted task.
+			runInfo = info
+			chatRunInfos.Store(chatID, info)
 		},
 	}
 
@@ -598,8 +638,17 @@ func handleChatMessage(
 	}
 	defer agent.Close()
 
+	// Create a cancellable context so /stop can interrupt the agent loop.
+	agentCtx, agentCancel := context.WithCancel(context.Background())
+	chatCancels.Store(chatID, agentCancel)
+	defer func() {
+		agentCancel()
+		chatCancels.LoadAndDelete(chatID)
+		chatRunInfos.LoadAndDelete(chatID)
+	}()
+
 	// Run the agent with the full message history (multi-turn).
-	response, updatedMessages, err := agent.RunWithMessages(context.Background(), cs.Messages)
+	response, updatedMessages, err := agent.RunWithMessages(agentCtx, cs.Messages)
 	if err != nil {
 		reportError(bot, chatID, "Agent error: "+err.Error())
 		return
@@ -710,10 +759,108 @@ func formatTelegramStats(info loop.IterationInfo, toolList []string) string {
 	)
 }
 
+// formatStopSummary formats a summary of an interrupted task for the /stop
+// command response. It includes turns completed, tokens consumed, tools used,
+// and total wall-clock time before cancellation.
+func formatStopSummary(info loop.IterationInfo) string {
+	toolStr := "none"
+	if len(info.ToolNames) > 0 {
+		// Deduplicate and sort tool names for a clean display.
+		seen := make(map[string]struct{}, len(info.ToolNames))
+		unique := make([]string, 0, len(info.ToolNames))
+		for _, name := range info.ToolNames {
+			if _, ok := seen[name]; !ok {
+				seen[name] = struct{}{}
+				unique = append(unique, name)
+			}
+		}
+		sort.Strings(unique)
+		toolStr = strings.Join(unique, ", ")
+	}
+
+	latency := info.TotalLatency.Truncate(time.Second)
+	iters := fmt.Sprintf("%d turn", info.Turn)
+	if info.Turn != 1 {
+		iters += "s"
+	}
+
+	return fmt.Sprintf(
+		"⏹️ *Task Interrupted*\n\n"+
+			"%s · %d in / %d out · %s — tools: %s",
+		iters, info.InputTokens, info.OutputTokens, latency.String(), toolStr,
+	)
+}
+
 // reportError sends an error message to the given chat and logs to stderr.
 func reportError(bot *telegram.Bot, chatID int64, msg string) {
 	fmt.Fprintf(os.Stderr, "odek telegram: %s\n", msg)
 	if _, err := bot.SendMessage(chatID, "❌ "+msg, nil); err != nil {
 		fmt.Fprintf(os.Stderr, "odek telegram: send error message: %v\n", err)
 	}
+}
+
+// ── Singleton Lock ─────────────────────────────────────────────────────
+//
+// Prevents two bot instances from polling Telegram simultaneously (which
+// causes 409 Conflict errors). Uses a PID file at ~/.odek/telegram.pid.
+// On startup, if a stale PID file exists, the old process is killed before
+// the new one starts.
+
+type instanceLock struct {
+	pidFile string
+}
+
+// acquireLock reads any existing PID file, kills the old process if still
+// alive, then writes the current PID. Returns the lock for deferred release.
+func acquireLock() (*instanceLock, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("home dir: %w", err)
+	}
+	pidFile := filepath.Join(home, ".odek", "telegram.pid")
+
+	// Ensure parent dir exists.
+	if err := os.MkdirAll(filepath.Dir(pidFile), 0755); err != nil {
+		return nil, fmt.Errorf("mkdir pid: %w", err)
+	}
+
+	// Read stale PID and kill it.
+	if data, err := os.ReadFile(pidFile); err == nil {
+		oldPID := strings.TrimSpace(string(data))
+		if oldPID != "" {
+			// Check if it's an odek telegram process.
+			procPath := filepath.Join("/proc", oldPID, "cmdline")
+			if cmdline, err := os.ReadFile(procPath); err == nil {
+				if strings.Contains(string(cmdline), "odek") &&
+					strings.Contains(string(cmdline), "telegram") {
+					pid, _ := strconv.Atoi(oldPID)
+					if pid > 1 {
+						fmt.Fprintf(os.Stderr, "odek telegram: killing stale instance (PID %d)\n", pid)
+						syscall.Kill(pid, syscall.SIGTERM)
+						// Wait up to 5s for graceful shutdown.
+						for i := 0; i < 50; i++ {
+							time.Sleep(100 * time.Millisecond)
+							if err := syscall.Kill(pid, 0); err != nil {
+								break // process gone
+							}
+						}
+						// Force kill if still alive.
+						syscall.Kill(pid, syscall.SIGKILL)
+					}
+				}
+			}
+		}
+	}
+
+	// Write our PID.
+	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())+"\n"), 0644); err != nil {
+		return nil, fmt.Errorf("write pid: %w", err)
+	}
+
+	return &instanceLock{pidFile: pidFile}, nil
+}
+
+// release removes the PID file on clean shutdown.
+func (l *instanceLock) release() {
+	os.Remove(l.pidFile)
 }
