@@ -223,3 +223,227 @@ func TestMediaDir_AlreadyExists(t *testing.T) {
 		t.Fatal("MediaDir() returned empty path")
 	}
 }
+
+// ── Error path tests ───────────────────────────────────────────────────
+
+func TestMediaDir_MkdirAllError(t *testing.T) {
+	tmp := t.TempDir()
+	// Create a file where .odek/media/ should be, so MkdirAll fails.
+	odekDir := filepath.Join(tmp, ".odek")
+	if err := os.MkdirAll(odekDir, 0755); err != nil {
+		t.Fatalf("mkdir .odek: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(odekDir, "media"), []byte("not-a-dir"), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	t.Setenv("HOME", tmp)
+
+	_, err := MediaDir()
+	if err == nil {
+		t.Fatal("expected error when media path is blocked by a file")
+	}
+}
+
+func TestDownloadVoice_DownloadFileError(t *testing.T) {
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.String(), "getFile") {
+			fmt.Fprintf(w, `{"ok":true,"result":{"file_id":"v1","file_path":"voice/clip.oga"}}`)
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}
+	ts := httptest.NewServer(http.HandlerFunc(handler))
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	_, err := DownloadVoice(bot, "v1")
+	if err == nil {
+		t.Fatal("expected error when download fails")
+	}
+}
+
+func TestDownloadVoice_EmptyExtensionFallback(t *testing.T) {
+	var callCount int
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		switch {
+		case strings.Contains(r.URL.String(), "getFile"):
+			// File path with no extension → should default to .ogg
+			fmt.Fprintf(w, `{"ok":true,"result":{"file_id":"v1","file_path":"voicedata"}}`)
+		default:
+			w.Write([]byte("audio-data"))
+		}
+	}
+	ts := httptest.NewServer(http.HandlerFunc(handler))
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	path, err := DownloadVoice(bot, "v1")
+	if err != nil {
+		t.Fatalf("DownloadVoice error: %v", err)
+	}
+	if !strings.HasSuffix(path, ".ogg") {
+		t.Errorf("expected .ogg fallback extension, got %q", path)
+	}
+	os.Remove(path)
+}
+
+func TestDownloadVoice_ShortFileIDSuffix(t *testing.T) {
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.String(), "getFile") {
+			fmt.Fprintf(w, `{"ok":true,"result":{"file_id":"short","file_path":"voice/clip.ogg"}}`)
+		} else {
+			w.Write([]byte("data"))
+		}
+	}
+	ts := httptest.NewServer(http.HandlerFunc(handler))
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	path, err := DownloadVoice(bot, "short")
+	if err != nil {
+		t.Fatalf("DownloadVoice error: %v", err)
+	}
+	if !strings.Contains(path, "voice_short") {
+		t.Errorf("expected short fileID in path, got %q", path)
+	}
+	os.Remove(path)
+}
+
+func TestDownloadPhoto_EmptyExtensionFallback(t *testing.T) {
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.String(), "getFile") {
+			fmt.Fprintf(w, `{"ok":true,"result":{"file_id":"p1","file_path":"photodata"}}`)
+		} else {
+			w.Write([]byte("jpg-data"))
+		}
+	}
+	ts := httptest.NewServer(http.HandlerFunc(handler))
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	path, err := DownloadPhoto(bot, []string{"p1"})
+	if err != nil {
+		t.Fatalf("DownloadPhoto error: %v", err)
+	}
+	if !strings.HasSuffix(path, ".jpg") {
+		t.Errorf("expected .jpg fallback extension, got %q", path)
+	}
+	os.Remove(path)
+}
+
+func TestDownloadPhoto_DownloadFileError(t *testing.T) {
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.String(), "getFile") {
+			fmt.Fprintf(w, `{"ok":true,"result":{"file_id":"p1","file_path":"photos/img.jpg"}}`)
+		} else {
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}
+	ts := httptest.NewServer(http.HandlerFunc(handler))
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	_, err := DownloadPhoto(bot, []string{"p1"})
+	if err == nil {
+		t.Fatal("expected error when download fails")
+	}
+}
+
+func TestDownloadPhoto_FilePathEmpty(t *testing.T) {
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"ok":true,"result":{"file_id":"p1","file_path":""}}`)
+	}
+	ts := httptest.NewServer(http.HandlerFunc(handler))
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	_, err := DownloadPhoto(bot, []string{"p1"})
+	if err == nil {
+		t.Fatal("expected error for empty file_path")
+	}
+}
+
+func TestDownloadVoice_LongFileIDTruncation(t *testing.T) {
+	// A fileID longer than 16 chars should be truncated in the filename.
+	longID := "abcdefghijklmnopqrstuvwxyz1234567890"
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.String(), "getFile") {
+			fmt.Fprintf(w, `{"ok":true,"result":{"file_id":"%s","file_path":"voice/clip.oga"}}`, longID)
+		} else {
+			w.Write([]byte("data"))
+		}
+	}
+	ts := httptest.NewServer(http.HandlerFunc(handler))
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	path, err := DownloadVoice(bot, longID)
+	if err != nil {
+		t.Fatalf("DownloadVoice error: %v", err)
+	}
+	// The filename should contain a truncated (16-char) suffix.
+	if !strings.Contains(path, longID[:16]) {
+		t.Errorf("expected truncated fileID in path, got %q", path)
+	}
+	os.Remove(path)
+}
+
+func TestDownloadPhoto_LongFileIDTruncation(t *testing.T) {
+	longID := "abcdefghijklmnopqrstuvwxyz1234567890"
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.String(), "getFile") {
+			fmt.Fprintf(w, `{"ok":true,"result":{"file_id":"%s","file_path":"photos/img.jpg"}}`, longID)
+		} else {
+			w.Write([]byte("data"))
+		}
+	}
+	ts := httptest.NewServer(http.HandlerFunc(handler))
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	path, err := DownloadPhoto(bot, []string{longID})
+	if err != nil {
+		t.Fatalf("DownloadPhoto error: %v", err)
+	}
+	if !strings.Contains(path, longID[:16]) {
+		t.Errorf("expected truncated fileID in path, got %q", path)
+	}
+	os.Remove(path)
+}
+
+func TestDownloadVoice_MediaDirError(t *testing.T) {
+	// Set HOME to a path that can't have .odek/media created.
+	tmp := t.TempDir()
+	odekDir := filepath.Join(tmp, ".odek")
+	if err := os.MkdirAll(odekDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Place a file where media/ should be.
+	if err := os.WriteFile(filepath.Join(odekDir, "media"), []byte("x"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	t.Setenv("HOME", tmp)
+
+	_, err := DownloadVoice(&Bot{BaseURL: "http://example.com"}, "fid")
+	if err == nil {
+		t.Fatal("expected error when MediaDir fails")
+	}
+}
+
+func TestDownloadPhoto_MediaDirError(t *testing.T) {
+	tmp := t.TempDir()
+	odekDir := filepath.Join(tmp, ".odek")
+	if err := os.MkdirAll(odekDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(odekDir, "media"), []byte("x"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	t.Setenv("HOME", tmp)
+
+	_, err := DownloadPhoto(&Bot{BaseURL: "http://example.com"}, []string{"fid"})
+	if err == nil {
+		t.Fatal("expected error when MediaDir fails")
+	}
+}

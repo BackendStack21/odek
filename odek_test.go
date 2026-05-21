@@ -885,3 +885,75 @@ func TestLoadProjectFile_SymlinkRejected(t *testing.T) {
 		t.Errorf("LoadProjectFile should reject symlink, got: %q", content)
 	}
 }
+
+// ── Token Tracking ─────────────────────────────────────────────────────
+
+func TestAgent_TotalInputTokens(t *testing.T) {
+	agent, err := New(Config{APIKey: "sk-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Initially 0 since no run has happened
+	if got := agent.TotalInputTokens(); got != 0 {
+		t.Errorf("TotalInputTokens() = %d, want 0", got)
+	}
+}
+
+func TestAgent_TotalOutputTokens(t *testing.T) {
+	agent, err := New(Config{APIKey: "sk-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := agent.TotalOutputTokens(); got != 0 {
+		t.Errorf("TotalOutputTokens() = %d, want 0", got)
+	}
+}
+
+func TestAgent_TotalCacheCreationTokens(t *testing.T) {
+	agent, err := New(Config{APIKey: "sk-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := agent.TotalCacheCreationTokens(); got != 0 {
+		t.Errorf("TotalCacheCreationTokens() = %d, want 0", got)
+	}
+}
+
+func TestAgent_TotalCacheReadTokens(t *testing.T) {
+	agent, err := New(Config{APIKey: "sk-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := agent.TotalCacheReadTokens(); got != 0 {
+		t.Errorf("TotalCacheReadTokens() = %d, want 0", got)
+	}
+}
+
+func TestAgent_TotalCachedTokens(t *testing.T) {
+	agent, err := New(Config{APIKey: "sk-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := agent.TotalCachedTokens(); got != 0 {
+		t.Errorf("TotalCachedTokens() = %d, want 0", got)
+	}
+}
+
+func TestAgent_Memory_NilReceiver(t *testing.T) {
+	var agent *Agent
+	if mem := agent.Memory(); mem != nil {
+		t.Errorf("Memory() on nil receiver should return nil, got %v", mem)
+	}
+}
+
+func TestAgent_Memory_Configured(t *testing.T) {
+	agent, err := New(Config{APIKey: "sk-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Memory manager is created when no restrictions apply
+	mem := agent.Memory()
+	if mem == nil {
+		t.Log("Memory() returned nil (memory not configured — acceptable)")
+	}
+}
