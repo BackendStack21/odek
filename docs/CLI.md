@@ -19,6 +19,9 @@
 | `odek skill delete <name>` | Delete a skill |
 | `odek skill import <uri> [flags]` | Import a skill from file:// or https:// |
 || `odek skill curate` | Analyze skills for quality, staleness, trigger overlap |
+|| `odek skill curate --apply` | Apply all curation suggestions (merge, delete, prune) |
+|| `odek skill curate --interactive` | Review each suggestion one-by-one |
+|| `odek skill reset-skips [name]` | Reset skip list (all or specific skill) |
 || `odek serve [--addr :8080] [--open]` | Web UI server with WebSocket streaming, `@` resource completion, session history |
 || `odek subagent --goal <string> [flags]` | Run a focused sub-task; outputs JSON on stdout. Spawned by `delegate_tasks` tool |
 | `odek init [--global] [--force]` | Create a config file template |
@@ -174,8 +177,18 @@ odek skill import https://example.com/skills/deploy.md
 odek skill import https://example.com/skills/deploy.md --basic   # skip LLM risk assessment
 odek skill import https://example.com/skills/deploy.md --yes     # auto-approve (scripting)
 
-# Run curation (quality, staleness, overlap checks)
+# Run curation (quality, staleness, overlap, dedup checks)
 odek skill curate
+
+# Apply all curation suggestions automatically
+odek skill curate --apply
+
+# Review curation suggestions one-by-one
+odek skill curate --interactive
+
+# Reset skip list (re-enable suppressed suggestions)
+odek skill reset-skips              # clear all
+odek skill reset-skips procedure-grep  # clear specific skill
 ```
 
 ### Skill file format
@@ -218,10 +231,19 @@ Procedure for building optimized Docker images.
 
 The `odek skill curate` command runs four quality passes:
 
-- **Staleness** — flags skills unused for 90+ days (configurable via `skill.curation.staleness_days`)
+- **Staleness** — flags skills unused for 90+ days (configurable via `skills.curation.staleness_days`)
 - **Trigger overlap** — detects skills with 2+ shared topic keywords that may need merging
 - **Quality audit** — checks for missing sections, short bodies, long descriptions
 - **Body dedup** — detects skills with identical body content by SHA256 hash
+
+**Auto-curation** runs after every session where skills are auto-saved (`skills.curation.auto_curate: true` by default):
+
+- **Merge** — overlapping draft-quality skills are automatically merged (union keywords, concatenated bodies)
+- **Skip deletion** — skills skipped ≥ `skip_threshold` times are auto-deleted
+- **Stale pruning** — if `auto_prune: true`, stale skills are deleted automatically
+
+Run `odek skill curate --apply` to manually trigger the full curation pipeline with merge execution.
+Use `odek skill reset-skips` to clear the skip list and re-enable suppressed suggestions.
 
 ## Sandbox flags
 

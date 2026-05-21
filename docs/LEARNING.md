@@ -1,6 +1,6 @@
 # Self-Learning System
 
-odek can **learn reusable skills** from your agent sessions. Learning is **on by default** — every `odek run` automatically scans the conversation for reusable patterns. Use `--no-learn` to disable.
+odek can **learn reusable skills** from your agent sessions. Learning is **on by default** — every `odek run` automatically scans the conversation for reusable patterns, auto-saves quality suggestions, and runs micro-curation to keep skills healthy. Use `--no-learn` to disable.
 
 ## Architecture
 
@@ -13,9 +13,9 @@ odek run --learn "set up CI with GitHub Actions"
    └──────┬──────┘
           │ allMessages (full transcript)
           ▼
-   ┌──────────────┐
-   │ runLearnLoop │  Converts messages, extracts user input
-   └──────┬───────┘
+   ┌──────────────────┐
+   │ learnAndSuggest  │  Converts messages, extracts user input
+   └──────┬───────────┘
           │ userMessages + toolCalls
           ▼
    ┌────────────────────┐
@@ -27,21 +27,36 @@ odek run --learn "set up CI with GitHub Actions"
    │ 4. repeated-action │  Detects same command run ≥2 times
    │ 5. explicit-instr  │  Detects "save this as a skill" requests
    └──────┬─────────────┘
-          │ []SkillSuggestion (deduplicated, max 1 per heuristic)
+          │ []SkillSuggestion
           ▼
    ┌──────────────────┐
-   │ Display & Prompt │  Shows each suggestion, asks Save as skill? [Y/n]
+   │ LLM Enhancement  │  (optional) LLM enriches name, description, body
    └──────┬───────────┘
-          │ user confirms (y/yes)
+          │
+          ▼
+   ┌──────────────────────┐
+   │ FilterSkipped         │  Suppress previously-skipped suggestions
+   └──────┬───────────────┘
+          │
+          ▼
+   ┌──────────────────────┐
+   │ AutoSaveSuggestions  │  Auto-save if enabled + quality gate passes
+   │  OR                  │  OR show interactive preview + prompt
+   │  Interactive prompt  │
+   └──────┬───────────────┘
+          │ saved skills
           ▼
    ┌──────────────────┐
-   │ SaveSuggestion   │  Writes SKILL.md to ~/.odek/skills/<name>/
-   │ SkillManager     │  Reloads to pick up new skill immediately
-   │   .Reload()      │
+   │ RunAutoCurate    │  Merge overlaps, delete duplicates,
+   │                  │  prune stale, delete skip-threshold skills
    └──────────────────┘
 ```
 
-**Key design decision:** The learn loop is **purely heuristic** — zero LLM calls. It runs after the agent completes, adding no latency or cost to the agent run itself.
+**Key design decisions:**
+- **Auto-save is default** — quality suggestions are saved automatically (no prompt). Set `auto_save.enabled: false` to require manual approval.
+- **LLM enhancement is optional** — when enabled, the LLM enriches heuristic output with better names, structured bodies, and accurate keywords.
+- **One skip = permanent suppression** — skip a suggestion once and it won't appear again. Use `odek skill reset-skips` to re-enable.
+- **Auto-curation runs silently** — after every session where skills were saved, overlaps are merged, duplicates removed, and stale skills pruned.
 
 ## CLI Usage
 
@@ -52,17 +67,31 @@ odek run "Set up a Docker-based CI pipeline"
 # Disable learning for this run
 odek run --no-learn "Quick status check"
 
-# With a specific model
-odek run --model deepseek-v4-pro "Refactor auth module"
+# Disable auto-save (require manual approval for each suggestion)
+# Set in odek.json: {"skills": {"auto_save": {"enabled": false}}}
 
-# In sandbox (learning works inside containers too)
-odek run --sandbox "Install and configure nginx"
+# Reset skipped suggestions (re-enable suppressed patterns)
+odek skill reset-skips
+odek skill reset-skips procedure-git
+
+# Run manual curation
+odek skill curate --apply
 ```
 
-After the agent finishes, odek scans the transcript and prints any detected patterns:
+**Auto-save (default):** Quality suggestions are saved silently after each session:
 
 ```
-🔍 Learning: detected 2 skill pattern(s)
+   ✓ Auto-saved skill "procedure-docker" (multi-step)
+   ✓ Auto-saved skill "error-pip" (error-recovery)
+
+🔧 Micro-curation: merged procedure-docker + docker-deploy
+   overlapping skills share 2 keywords: docker, container
+```
+
+**Interactive mode** (when `auto_save.enabled: false`): suggestions show a body preview and prompt for confirmation:
+
+```
+🔍 Learning: detected 1 skill pattern(s)
 
 📝 Skill suggestion: procedure-docker
    Multi-step procedure: docker (4 steps)
@@ -72,10 +101,50 @@ After the agent finishes, odek scans the transcript and prints any detected patt
      • docker tag app registry.example.com/app
      • docker push registry.example.com/app
      • kubectl rollout restart deployment/app
-   Save as skill? [Y/n]:
+   ── Preview ──
+   ## Overview
+   Procedure for: docker
+   ## Step-by-Step
+   1. docker build -t app .
+   2. docker tag app registry.example.com/app
+   3. docker push registry.example.com/app
+   4. kubectl rollout restart deployment/app
+   ## Common Pitfalls
+   - Verify each step's output before proceeding
+   - Exit code 0 means success
+
+   Save as skill? [Y/n/s=skip always]:
 ```
 
-Type `y` (or just press Enter) to save, `n` to skip.
+Type `y` (or Enter) to save, `n` to skip (temporarily), `s` to skip permanently.
+
+### Skip Persistence
+
+Skip decisions are persisted to `~/.odek/skills/.skipped.json`. A suggestion skipped once is permanently suppressed (default `skip_threshold: 1`). After `skip_reset_days` (default 30), skips expire and suggestions re-appear.
+
+```bash
+# View skip list
+cat ~/.odek/skills/.skipped.json
+
+# Clear all skips
+odek skill reset-skips
+
+# Clear a specific skill
+odek skill reset-skips procedure-grep
+```
+
+### Auto-Curation
+
+After each session where skills were saved, micro-curation runs automatically:
+
+| Action | Trigger |
+|--------|---------|
+| **Merge** | Two draft-quality skills share ≥2 topic keywords |
+| **Dedup** | Two skills have identical body hash |
+| **Skip-delete** | Skill has been skipped ≥ `skip_threshold` times |
+| **Stale-prune** | Skill unused ≥ `staleness_days` (requires `auto_prune: true`) |
+
+Merged skills combine trigger keywords and body content. The older skill (alphabetically) is kept; the newer is deleted.
 
 ## The Five Heuristics
 
@@ -232,7 +301,20 @@ Multi-step procedure detected during a odek session.
 
 ## Examples
 
-### Basic: Let odek learn from a session
+### Basic: Let odek learn from a session (auto-save enabled)
+
+```bash
+odek run "Set up PostgreSQL with Docker"
+```
+
+After the agent completes (with auto-save default):
+```
+   ✓ Auto-saved skill "procedure-docker" (multi-step)
+```
+
+### Interactive mode (auto-save disabled)
+
+In `odek.json`: `{"skills": {"auto_save": {"enabled": false}}}`
 
 ```bash
 odek run "Set up PostgreSQL with Docker"
@@ -250,7 +332,11 @@ After the agent completes:
      • docker run -d --name pg -e POSTGRES_PASSWORD=secret postgres:16-alpine
      • docker exec pg psql -U postgres -c "CREATE DATABASE myapp"
      • docker exec pg psql -U postgres -c "SELECT 1"
-   Save as skill? [Y/n]: y
+   ── Preview ──
+   ## Overview
+   Procedure for: docker
+   ...
+   Save as skill? [Y/n/s=skip always]: y
    ✓ Saved skill "procedure-docker"
 ```
 
@@ -260,39 +346,66 @@ odek skill list
 # procedure-docker  Multi-step procedure: docker  draft
 ```
 
-### Multiple suggestions (accept some, reject others)
+### Skip and re-enable
+
+```
+📝 Skill suggestion: repeated-ls
+   ...
+   Save as skill? [Y/n/s=skip always]: s
+   Skipped permanently. Use `odek skill reset-skips` to re-enable.
+```
 
 ```bash
-odek run "Build and deploy the app"
-```
-
-```
-🔍 Learning: detected 3 skill pattern(s)
-
-📝 Skill suggestion: procedure-docker
-   ...
-   Save as skill? [Y/n]: y
-   ✓ Saved skill "procedure-docker"
-
-📝 Skill suggestion: error-npm
-   ...
-   Save as skill? [Y/n]: n
-   Skipped.
-
-📝 Skill suggestion: repeated-go-test
-   ...
-   Save as skill? [Y/n]: y
-   ✓ Saved skill "repeated-go-test"
+# Later, re-enable the suggestion
+odek skill reset-skips repeated-ls
 ```
 
 ## Limitations
 
-- **Purely heuristic** — no LLM assessment. The system detects patterns mechanically; it doesn't judge skill quality.
+- **Heuristic detection is deterministic** — same tool calls always produce the same suggestions. Skip persistence prevents repeats (one skip = permanent suppression).
 - **Max 1 per heuristic** — if an agent session has 10 multi-step sequences, only the first is suggested.
 - **Max 5 suggestions total** — one per heuristic type.
-- No content deduplication — if you already have a similar skill, the new one is still suggested. Run `odek skill curate` periodically to detect overlaps.
+- **Auto-curation handles dedup** — overlapping skills are automatically merged after each session.
 - **Command-only** — the heuristics work on terminal (`shell`) tool calls. Other tools (read_file, write_file) are visible in the transcript but aren't analyzed for patterns.
+- **LLM enhancement requires API calls** — when `llm_learn: true`, each suggestion triggers an LLM call for enrichment. Set to `false` for zero-cost heuristic-only mode.
 - **No REPL integration** — learning currently only works with `odek run`, not in REPL mode.
+
+## Configuration
+
+```json
+{
+  "skills": {
+    "learn": true,
+    "llm_learn": true,
+    "llm_curate": true,
+    "auto_save": {
+      "enabled": true,
+      "require_llm": true,
+      "max_per_run": 3
+    },
+    "curation": {
+      "staleness_days": 90,
+      "auto_prune": false,
+      "auto_curate": true,
+      "skip_threshold": 1,
+      "skip_reset_days": 30
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `learn` | `true` | Enable skill learning |
+| `llm_learn` | `true` | Use LLM to enhance detected patterns |
+| `llm_curate` | `true` | Use LLM for curation suggestions |
+| `auto_save.enabled` | `true` | Auto-save without prompting |
+| `auto_save.require_llm` | `true` | Only auto-save LLM-enhanced skills |
+| `auto_save.max_per_run` | `3` | Max skills to auto-save per session |
+| `curation.auto_curate` | `true` | Run auto-curation after sessions |
+| `curation.skip_threshold` | `1` | Skips needed for permanent suppression |
+| `curation.skip_reset_days` | `30` | Days before skip expires |
+| `curation.auto_prune` | `false` | Auto-delete stale skills |
 
 ## Related
 

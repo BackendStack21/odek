@@ -93,7 +93,15 @@ The `skills` section controls the skill system:
     },
     "curation": {
       "staleness_days": 90,
-      "auto_prune": false
+      "auto_prune": false,
+      "auto_curate": true,
+      "skip_threshold": 1,
+      "skip_reset_days": 30
+    },
+    "auto_save": {
+      "enabled": true,
+      "require_llm": true,
+      "max_per_run": 3
     }
   }
 }
@@ -112,6 +120,12 @@ The `skills` section controls the skill system:
 | `import.require_https` | — | false | Reject http:// URIs when true |
 | `curation.staleness_days` | — | 90 | Days without use before flagging as stale |
 | `curation.auto_prune` | — | false | Auto-delete stale skills on curate (no prompt) |
+| `curation.auto_curate` | — | true | Run auto-curation after sessions (merge, dedup, prune) |
+| `curation.skip_threshold` | — | 1 | Times a skill must be skipped before permanent suppression |
+| `curation.skip_reset_days` | — | 30 | Days after which a skip expires (re-allows suggestion) |
+| `auto_save.enabled` | — | true | Auto-save quality skill suggestions without prompting |
+| `auto_save.require_llm` | — | true | Only auto-save if LLM enhancement was applied |
+| `auto_save.max_per_run` | — | 3 | Max skills to auto-save per session |
 
 ## Memory configuration
 
