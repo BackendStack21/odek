@@ -708,6 +708,104 @@ func TestTokenize_BackslashEscape(t *testing.T) {
 
 func strPtr(s string) *string { return &s }
 
+func TestHasSystemRedirectTarget(t *testing.T) {
+	tests := []struct {
+		name   string
+		tokens []string
+		want   bool
+	}{
+		{
+			name:   "redirect_to_system_path",
+			tokens: []string{"echo", "hi", ">", "/etc/hosts"},
+			want:   true,
+		},
+		{
+			name:   "redirect_to_non_system_path",
+			tokens: []string{"echo", "hi", ">", "/tmp/file"},
+			want:   false,
+		},
+		{
+			name:   "no_redirect_tokens",
+			tokens: []string{"ls", "-la"},
+			want:   false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := hasSystemRedirectTarget(tt.tokens)
+			if got != tt.want {
+				t.Errorf("hasSystemRedirectTarget(%v) = %v, want %v", tt.tokens, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHasArgAfter(t *testing.T) {
+	tests := []struct {
+		name   string
+		tokens []string
+		after  string
+		target string
+		want   bool
+	}{
+		{
+			name:   "after_followed_by_target",
+			tokens: []string{"brew", "install", "pkg"},
+			after:  "brew",
+			target: "install",
+			want:   true,
+		},
+		{
+			name:   "after_at_end",
+			tokens: []string{"git", "push"},
+			after:  "push",
+			target: "",
+			want:   false,
+		},
+		{
+			name:   "after_not_found",
+			tokens: []string{"ls", "-la"},
+			after:  "push",
+			target: "",
+			want:   false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := hasArgAfter(tt.tokens, tt.after, tt.target)
+			if got != tt.want {
+				t.Errorf("hasArgAfter(%v, %q, %q) = %v, want %v", tt.tokens, tt.after, tt.target, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRank(t *testing.T) {
+	tests := []struct {
+		name string
+		cls  RiskClass
+		want int
+	}{
+		{"safe", Safe, 1},
+		{"local_write", LocalWrite, 2},
+		{"install", Install, 3},
+		{"network_egress", NetworkEgress, 4},
+		{"code_execution", CodeExecution, 5},
+		{"system_write", SystemWrite, 6},
+		{"destructive", Destructive, 7},
+		{"blocked", Blocked, 8},
+		{"unknown_class", RiskClass("unknown"), 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := rank(tt.cls)
+			if got != tt.want {
+				t.Errorf("rank(%s) = %d, want %d", tt.cls, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsSystemPath(t *testing.T) {
 	// Regression: verify the extracted isSystemPath helper works correctly.
 	tests := []struct {

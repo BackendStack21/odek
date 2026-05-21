@@ -333,6 +333,71 @@ func TestBrowser_ExtractsInteractiveElements(t *testing.T) {
 	}
 }
 
+// ── URL Resolution Tests ───────────────────────────────────────────────
+
+func TestResolveURL_RelativeURL(t *testing.T) {
+	// Relative URL should resolve against base
+	result := resolveURL("/page2", "https://example.com")
+	if result != "https://example.com/page2" {
+		t.Errorf("resolveURL('/page2', 'https://example.com') = %q, want 'https://example.com/page2'", result)
+	}
+}
+
+func TestResolveURL_RelativePath(t *testing.T) {
+	// Relative path without leading slash
+	result := resolveURL("page2", "https://example.com/base/")
+	if result != "https://example.com/base/page2" {
+		t.Errorf("resolveURL('page2', 'https://example.com/base/') = %q, want 'https://example.com/base/page2'", result)
+	}
+}
+
+func TestResolveURL_AbsoluteURL(t *testing.T) {
+	// Absolute URL should be returned as-is
+	result := resolveURL("https://other.com/page", "https://example.com")
+	if result != "https://other.com/page" {
+		t.Errorf("resolveURL('https://other.com/page', ...) = %q, want 'https://other.com/page'", result)
+	}
+}
+
+func TestResolveURL_AlreadyAbsolute(t *testing.T) {
+	result := resolveURL("http://example.com/page", "https://base.com")
+	if result != "http://example.com/page" {
+		t.Errorf("resolveURL('http://example.com/page', ...) = %q, want 'http://example.com/page'", result)
+	}
+}
+
+func TestResolveURL_EmptyBase(t *testing.T) {
+	// When base is empty, the href should be returned as-is
+	result := resolveURL("/some-path", "")
+	if result != "/some-path" {
+		t.Errorf("resolveURL('/some-path', '') = %q, want '/some-path'", result)
+	}
+}
+
+func TestResolveURL_InvalidBase(t *testing.T) {
+	// When base is invalid, fall back to href
+	result := resolveURL("/path", "://invalid-url")
+	if result != "/path" {
+		t.Errorf("resolveURL('/path', '://invalid-url') = %q, want '/path'", result)
+	}
+}
+
+func TestResolveURL_FragmentURL(t *testing.T) {
+	// Fragment-only URL should resolve to the base page
+	result := resolveURL("#section", "https://example.com/page")
+	if !strings.Contains(result, "#section") {
+		t.Errorf("resolveURL('#section', ...) = %q, want to include '#section'", result)
+	}
+}
+
+func TestResolveURL_SameDirRelative(t *testing.T) {
+	result := resolveURL("other.html", "https://example.com/dir/page.html")
+	want := "https://example.com/dir/other.html"
+	if result != want {
+		t.Errorf("resolveURL('other.html', 'https://example.com/dir/page.html') = %q, want %q", result, want)
+	}
+}
+
 // ── Browser Bad Action Parameters ─────────────────────────────────────
 
 func TestBrowser_Navigate_BadJSON(t *testing.T) {

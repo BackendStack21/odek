@@ -2,10 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/BackendStack21/kode/internal/danger"
 )
 
 // ── ReadFile Tool ──────────────────────────────────────────────────────
@@ -85,7 +88,7 @@ func TestReadFile_NegativeOffset(t *testing.T) {
 
 func TestReadFile_LimitCap(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "test.txt")
+	path := filepath.Join(dir, "large.txt")
 	var lines []string
 	for i := 0; i < 5000; i++ {
 		lines = append(lines, "line")
@@ -106,6 +109,73 @@ func TestReadFile_LimitCap(t *testing.T) {
 	count := strings.Count(r.Content, "\n") + 1
 	if count > 2000+1 { // +1 for cap boundary
 		t.Errorf("Returned %d lines, should be capped at 2000", count)
+	}
+}
+
+func TestReadFile_BinaryFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "binary.bin")
+	// Write a file with null bytes
+	os.WriteFile(path, []byte("hello\x00world\n"), 0644)
+
+	tool := &readFileTool{}
+	result := callJSON(t, tool, `{"path":"`+path+`"}`)
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" {
+		t.Fatal("expected error for binary file")
+	}
+	if !strings.Contains(r.Error, "binary file") {
+		t.Errorf("error should mention 'binary file', got: %s", r.Error)
+	}
+}
+
+func TestReadFile_Directory(t *testing.T) {
+	dir := t.TempDir()
+
+	tool := &readFileTool{}
+	result := callJSON(t, tool, `{"path":"`+dir+`"}`)
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" {
+		t.Fatal("expected error for directory")
+	}
+	if !strings.Contains(r.Error, "directory") {
+		t.Errorf("error should mention 'directory', got: %s", r.Error)
+	}
+}
+
+func TestReadFile_InvalidJSON(t *testing.T) {
+	tool := &readFileTool{}
+	result, err := tool.Call(`{invalid}`)
+	if err != nil {
+		t.Fatalf("Call() error: %v", err)
+	}
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" {
+		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+func TestReadFile_EmptyPath(t *testing.T) {
+	tool := &readFileTool{}
+	result := callJSON(t, tool, `{}`)
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" {
+		t.Fatal("expected error for empty path")
+	}
+	if !strings.Contains(r.Error, "path is required") {
+		t.Errorf("error should mention 'path is required', got: %s", r.Error)
 	}
 }
 
@@ -507,6 +577,83 @@ func TestPatch_FileNotFound(t *testing.T) {
 	}
 }
 
+func TestPatch_EmptyPath(t *testing.T) {
+	tool := &patchTool{}
+	result := callJSON(t, tool, `{"old_string":"x","new_string":"y"}`)
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" {
+		t.Fatal("expected error for empty path")
+	}
+	if !strings.Contains(r.Error, "path is required") {
+		t.Errorf("error should mention 'path is required', got: %s", r.Error)
+	}
+}
+
+func TestPatch_EmptyOldString(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "file.txt")
+	os.WriteFile(path, []byte("content"), 0644)
+
+	tool := &patchTool{}
+	result := callJSON(t, tool, `{"path":"`+path+`","new_string":"y"}`)
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" {
+		t.Fatal("expected error for empty old_string")
+	}
+}
+
+func TestPatch_InvalidJSON(t *testing.T) {
+	tool := &patchTool{}
+	result, err := tool.Call(`{invalid}`)
+	if err != nil {
+		t.Fatalf("Call() error: %v", err)
+	}
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" {
+		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+// ── truncateDiff Tests ─────────────────────────────────────────────────
+
+func TestTruncateDiff_ShortString(t *testing.T) {
+	result := truncateDiff("hello", 100)
+	if result != "hello" {
+		t.Errorf("truncateDiff('hello', 100) = %q, want 'hello'", result)
+	}
+}
+
+func TestTruncateDiff_LongString(t *testing.T) {
+	longStr := string(make([]byte, 200))
+	result := truncateDiff(longStr, 10)
+	if len(result) > 20 { // 10 chars + "..." = 13
+		t.Errorf("truncateDiff long string = %q (len=%d), want truncated to ~13", result, len(result))
+	}
+}
+
+func TestTruncateDiff_MultiLine(t *testing.T) {
+	result := truncateDiff("first line\nsecond line\nthird line", 100)
+	if result != "first line" {
+		t.Errorf("truncateDiff(multiline, 100) = %q, want 'first line'", result)
+	}
+}
+
+func TestTruncateDiff_ExactBoundary(t *testing.T) {
+	result := truncateDiff("hello world", 11)
+	if result != "hello world" {
+		t.Errorf("truncateDiff('hello world', 11) = %q, want 'hello world'", result)
+	}
+}
+
 func TestPatch_MissingOldString(t *testing.T) {
 	tool := &patchTool{}
 	result := callJSON(t, tool, `{"path":"/tmp/x","new_string":"y"}`)
@@ -557,6 +704,358 @@ func TestPatch_Schema(t *testing.T) {
 	}
 	if _, ok := props["replace_all"]; !ok {
 		t.Error("Schema missing 'replace_all' property")
+	}
+}
+
+// ── confineToCWD Tests ─────────────────────────────────────────────────
+
+func TestConfineToCWD_ValidRelativePath(t *testing.T) {
+	// A relative path inside CWD should resolve correctly
+	path := "some/file.txt"
+	resolved, err := confineToCWD(path)
+	if err != nil {
+		t.Fatalf("confineToCWD(%q) error: %v", path, err)
+	}
+	cwd, _ := os.Getwd()
+	want := filepath.Join(cwd, path)
+	if resolved != want {
+		t.Errorf("confineToCWD(%q) = %q, want %q", path, resolved, want)
+	}
+}
+
+func TestConfineToCWD_ValidCWD(t *testing.T) {
+	// The CWD itself should pass
+	cwd, _ := os.Getwd()
+	resolved, err := confineToCWD(cwd)
+	if err != nil {
+		t.Fatalf("confineToCWD(%q) error: %v", cwd, err)
+	}
+	if resolved != cwd {
+		t.Errorf("confineToCWD(%q) = %q, want %q", cwd, resolved, cwd)
+	}
+}
+
+func TestConfineToCWD_ParentDirEscape(t *testing.T) {
+	// ".." traversal should be rejected
+	path := "../etc/passwd"
+	_, err := confineToCWD(path)
+	if err == nil {
+		t.Fatal("expected error for parent directory traversal")
+	}
+	if !strings.Contains(err.Error(), "escapes the working directory") {
+		t.Errorf("error should mention escaping: %v", err)
+	}
+}
+
+func TestConfineToCWD_AbsolutePathRejected(t *testing.T) {
+	// Absolute path outside CWD should be rejected
+	path := "/tmp/some-file.txt"
+	_, err := confineToCWD(path)
+	if err == nil {
+		t.Fatal("expected error for absolute path outside CWD")
+	}
+	if !strings.Contains(err.Error(), "escapes the working directory") {
+		t.Errorf("error should mention escaping: %v", err)
+	}
+}
+
+func TestConfineToCWD_DoubleDotEscape(t *testing.T) {
+	// Multiple levels of parent traversal
+	path := "a/b/../../../../etc/passwd"
+	_, err := confineToCWD(path)
+	if err == nil {
+		t.Fatal("expected error for multi-level parent traversal")
+	}
+}
+
+// ── isBinary Tests ─────────────────────────────────────────────────────
+
+func TestIsBinary_NullByte(t *testing.T) {
+	// Content with null byte should be detected as binary
+	data := []byte("hello\x00world")
+	if !isBinary(data) {
+		t.Error("isBinary should return true for content with null byte")
+	}
+}
+
+func TestIsBinary_TextContent(t *testing.T) {
+	// Normal text should not be detected as binary
+	data := []byte("Hello World!\nThis is a text file.\nWith multiple lines.\tAnd tabs.\r\n")
+	if isBinary(data) {
+		t.Error("isBinary should return false for normal text content")
+	}
+}
+
+func TestIsBinary_HighNonPrintable(t *testing.T) {
+	// Content with >30% non-printable bytes should be detected as binary
+	data := make([]byte, 100)
+	for i := 0; i < 40; i++ {
+		data[i] = 0x01 // non-printable
+	}
+	for i := 40; i < 100; i++ {
+		data[i] = 'A'
+	}
+	if !isBinary(data) {
+		t.Error("isBinary should return true for >30% non-printable content")
+	}
+}
+
+func TestIsBinary_LowNonPrintable(t *testing.T) {
+	// Content with <30% non-printable should not be binary
+	data := make([]byte, 100)
+	for i := 0; i < 20; i++ {
+		data[i] = 0x01 // non-printable
+	}
+	for i := 20; i < 100; i++ {
+		data[i] = 'A'
+	}
+	if isBinary(data) {
+		t.Error("isBinary should return false for <30% non-printable content")
+	}
+}
+
+func TestIsBinary_EmptyContent(t *testing.T) {
+	// Empty content should not be detected as binary
+	if isBinary([]byte{}) {
+		t.Error("isBinary should return false for empty content")
+	}
+}
+
+func TestIsBinary_ShortContent(t *testing.T) {
+	// Very short content with no null byte should not be binary
+	if isBinary([]byte("Hi")) {
+		t.Error("isBinary should return false for short text content")
+	}
+}
+
+func TestIsBinary_ShortBinaryContent(t *testing.T) {
+	// Very short content WITH a null byte should be binary
+	if !isBinary([]byte("H\x00i")) {
+		t.Error("isBinary should return true for short content with null byte")
+	}
+}
+
+func TestIsBinary_OnlyWhitespace(t *testing.T) {
+	// Common whitespace chars should not be detected as binary
+	data := []byte("\n\r\t   \n")
+	if isBinary(data) {
+		t.Error("isBinary should return false for whitespace-only content")
+	}
+}
+
+// ── SearchFiles Additional Tests ────────────────────────────────────────
+
+func TestSearchFiles_PatternRequired(t *testing.T) {
+	tool := &searchFilesTool{}
+	result := callJSON(t, tool, `{"target":"content"}`)
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" {
+		t.Fatal("expected error when pattern is missing")
+	}
+	if !strings.Contains(r.Error, "pattern is required") {
+		t.Errorf("error should mention 'pattern is required', got: %s", r.Error)
+	}
+}
+
+func TestSearchFiles_GlobWithPathSeparator(t *testing.T) {
+	dir := t.TempDir()
+	// Create a subdirectory structure
+	subDir := filepath.Join(dir, "subdir")
+	os.MkdirAll(subDir, 0755)
+	os.WriteFile(filepath.Join(subDir, "result.txt"), []byte("data\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "other.txt"), []byte("data\n"), 0644)
+
+	tool := &searchFilesTool{}
+	result := callJSON(t, tool, `{"pattern":"subdir/*.txt","target":"files","path":"`+dir+`"}`)
+	var r struct {
+		Matches []struct {
+			Path string `json:"path"`
+		} `json:"matches"`
+	}
+	mustUnmarshal(t, result, &r)
+
+	if len(r.Matches) != 1 {
+		t.Fatalf("expected 1 match for 'subdir/*.txt', got %d", len(r.Matches))
+	}
+	if !strings.HasSuffix(r.Matches[0].Path, "subdir/result.txt") && !strings.HasSuffix(r.Matches[0].Path, "subdir\\result.txt") {
+		t.Errorf("unexpected match path: %s", r.Matches[0].Path)
+	}
+}
+
+func TestSearchFiles_FileGlobNoMatch(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("world\n"), 0644)
+
+	tool := &searchFilesTool{}
+	// Search for "hello" but with file_glob matching *.py (none exist)
+	result := callJSON(t, tool, `{"pattern":"hello","target":"content","path":"`+dir+`","file_glob":"*.py"}`)
+	var r struct {
+		Matches []any `json:"matches"`
+	}
+	mustUnmarshal(t, result, &r)
+	if len(r.Matches) != 0 {
+		t.Errorf("expected 0 matches, got %d", len(r.Matches))
+	}
+}
+
+func TestSearchFiles_HiddenDirSkipped(t *testing.T) {
+	dir := t.TempDir()
+	hiddenDir := filepath.Join(dir, ".hidden")
+	os.Mkdir(hiddenDir, 0755)
+	os.WriteFile(filepath.Join(hiddenDir, "secret.txt"), []byte("hidden data\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "visible.txt"), []byte("visible data\n"), 0644)
+
+	tool := &searchFilesTool{}
+	result := callJSON(t, tool, `{"pattern":"data","target":"content","path":"`+dir+`"}`)
+	var r struct {
+		Matches []struct {
+			Path string `json:"path"`
+		} `json:"matches"`
+	}
+	mustUnmarshal(t, result, &r)
+	// Should find visible.txt but NOT hidden files
+	for _, m := range r.Matches {
+		if strings.Contains(m.Path, ".hidden") {
+			t.Errorf("should not include hidden dir contents: %s", m.Path)
+		}
+	}
+	if len(r.Matches) != 1 {
+		t.Errorf("expected 1 match (visible.txt), got %d", len(r.Matches))
+	}
+}
+
+func TestSearchFiles_InvalidRegex(t *testing.T) {
+	tool := &searchFilesTool{}
+	result := callJSON(t, tool, `{"pattern":"[invalid","target":"content","path":"."}`)
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" {
+		t.Fatal("expected error for invalid regex")
+	}
+	if !strings.Contains(r.Error, "invalid regex") {
+		t.Errorf("error should mention 'invalid regex', got: %s", r.Error)
+	}
+}
+
+func TestSearchFiles_EmptyLimitDefaults(t *testing.T) {
+	// Verify limit <= 0 defaults to maxMatches
+	dir := t.TempDir()
+	// Create more than maxMatches files
+	for i := 0; i < 3; i++ {
+		os.WriteFile(filepath.Join(dir, fmt.Sprintf("file%d.go", i)), []byte("package main\n"), 0644)
+	}
+
+	tool := &searchFilesTool{}
+	result := callJSON(t, tool, `{"pattern":"*.go","target":"files","path":"`+dir+`","limit":0}`)
+	var r struct {
+		Matches []any `json:"matches"`
+	}
+	mustUnmarshal(t, result, &r)
+	if len(r.Matches) != 3 {
+		t.Errorf("expected 3 matches, got %d", len(r.Matches))
+	}
+}
+
+func TestSearchFiles_InvalidTargetMode(t *testing.T) {
+	tool := &searchFilesTool{}
+	result := callJSON(t, tool, `{"pattern":"test","target":"unknown"}`)
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" {
+		t.Fatal("expected error for invalid target")
+	}
+}
+
+// ── WriteFile Additional Tests ─────────────────────────────────────────
+
+func TestWriteFile_InvalidJSON(t *testing.T) {
+	tool := &writeFileTool{}
+	// Invalid JSON should return an error
+	result, err := tool.Call(`{invalid json}`)
+	if err != nil {
+		t.Fatalf("Call() error: %v", err)
+	}
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" {
+		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+func TestWriteFile_PathConfinementReject(t *testing.T) {
+	// Create tool with restrictToCWD and a path attempting traversal
+	tool := &writeFileTool{
+		restrictToCWD: true,
+	}
+	// ../ escape should be rejected
+	result := callJSON(t, tool, `{"path":"../escape-test.txt","content":"should be rejected"}`)
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" {
+		t.Fatal("expected error for path confinement violation")
+	}
+	if !strings.Contains(r.Error, "escapes the working directory") {
+		t.Errorf("error should mention escaping, got: %s", r.Error)
+	}
+}
+
+func TestWriteFile_PathConfinementAllow(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "allowed.txt")
+
+	// Change to temp dir for this test
+	origDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(origDir)
+
+	tool := &writeFileTool{
+		restrictToCWD: true,
+	}
+	result := callJSON(t, tool, `{"path":"allowed.txt","content":"should succeed"}`)
+	var r struct {
+		Success bool   `json:"success"`
+		Path    string `json:"path"`
+		Error   string `json:"error,omitempty"`
+	}
+	mustUnmarshal(t, result, &r)
+	if !r.Success {
+		t.Fatalf("expected success, got error: %s", r.Error)
+	}
+
+	data, _ := os.ReadFile(path)
+	if string(data) != "should succeed" {
+		t.Errorf("content = %q, want %q", string(data), "should succeed")
+	}
+}
+
+func TestWriteFile_SecurityDenied(t *testing.T) {
+	// Test that a deny configuration blocks the write
+	action := "deny"
+	dc := danger.DangerousConfig{
+		DefaultAction: &action,
+	}
+	tool := &writeFileTool{
+		dangerousConfig: dc,
+	}
+	result := callJSON(t, tool, `{"path":"/tmp/test-deny.txt","content":"should be denied"}`)
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" {
+		t.Fatal("expected error when dangerous config denies operation")
 	}
 }
 
@@ -685,6 +1184,88 @@ func TestReadFile_CountAndContentSinglePass(t *testing.T) {
 	}
 }
 
+func TestReadLinesWithCount_NoLimit(t *testing.T) {
+	// Test the limit=0 path — the code skips content output but counts lines
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nolimit.txt")
+	content := "a\nb\nc\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	gotContent, totalLines, err := readLinesWithCount(f, 1, 0)
+	if err != nil {
+		t.Fatalf("readLinesWithCount error: %v", err)
+	}
+	// When limit=0, end = offset-1, so content isn't written but count is correct
+	if totalLines != 3 {
+		t.Errorf("totalLines = %d, want 3", totalLines)
+	}
+	_ = gotContent
+}
+
+func TestReadLinesWithCount_OffsetLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "offset.txt")
+	content := "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	gotContent, totalLines, err := readLinesWithCount(f, 5, 3)
+	if err != nil {
+		t.Fatalf("readLinesWithCount error: %v", err)
+	}
+	if totalLines != 10 {
+		t.Errorf("totalLines = %d, want 10", totalLines)
+	}
+	// Should contain lines 5-7
+	if !strings.Contains(gotContent, "5|5") || !strings.Contains(gotContent, "7|7") {
+		t.Errorf("gotContent missing expected lines: %s", gotContent)
+	}
+	// Should NOT contain lines outside range
+	if strings.Contains(gotContent, "4|4") || strings.Contains(gotContent, "8|8") {
+		t.Errorf("gotContent has lines outside offset/limit: %s", gotContent)
+	}
+}
+
+func TestReadLinesWithCount_EmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "empty.txt")
+	if err := os.WriteFile(path, []byte{}, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	gotContent, totalLines, err := readLinesWithCount(f, 1, 10)
+	if err != nil {
+		t.Fatalf("readLinesWithCount error: %v", err)
+	}
+	if totalLines != 0 {
+		t.Errorf("totalLines = %d, want 0", totalLines)
+	}
+	if gotContent != "" {
+		t.Errorf("gotContent = %q, want empty", gotContent)
+	}
+}
+
 // defaultTestDangerousConfig returns a permissive DangerousConfig for tests.
 func defaultTestDangerousConfig() DangerConfig {
 	return DangerConfig{
@@ -718,3 +1299,261 @@ const (
 	RiskClassInstall       RiskClass = "install"
 	RiskClassSystemWrite   RiskClass = "system_write"
 )
+
+// ── ReadFile O_NOFOLLOW Tests ─────────────────────────────────────────
+
+func TestReadFile_SymlinkRefused(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := filepath.Join(dir, "target.txt")
+	if err := os.WriteFile(targetPath, []byte("real content\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	linkPath := filepath.Join(dir, "link.txt")
+	if err := os.Symlink("target.txt", linkPath); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := &readFileTool{}
+	result := callJSON(t, tool, `{"path":"`+linkPath+`"}`)
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" {
+		t.Fatal("expected error when reading a symlink (O_NOFOLLOW)")
+	}
+	if !strings.Contains(r.Error, "cannot open") {
+		t.Errorf("error should mention 'cannot open', got: %s", r.Error)
+	}
+
+	// Verify the real file was NOT read through the symlink
+	data, _ := os.ReadFile(targetPath)
+	if string(data) != "real content\n" {
+		t.Errorf("target file content changed: %q", string(data))
+	}
+}
+
+// ── SearchFiles Absolute Path Tests ───────────────────────────────────
+
+func TestSearchFiles_AbsolutePath(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "data.txt"), []byte("needle in haystack\n"), 0644)
+
+	tool := &searchFilesTool{}
+	result := callJSON(t, tool, `{"pattern":"needle","target":"content","path":"`+dir+`"}`)
+	var r struct {
+		Matches []struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		} `json:"matches"`
+	}
+	mustUnmarshal(t, result, &r)
+	if len(r.Matches) != 1 {
+		t.Fatalf("expected 1 match, got %d", len(r.Matches))
+	}
+	if !strings.Contains(r.Matches[0].Content, "needle") {
+		t.Errorf("match content should contain 'needle', got: %s", r.Matches[0].Content)
+	}
+}
+
+func TestSearchFiles_FilesTargetEmpty(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0644)
+
+	tool := &searchFilesTool{}
+	result := callJSON(t, tool, `{"pattern":"*.py","target":"files","path":"`+dir+`"}`)
+	var r struct {
+		Matches []any `json:"matches"`
+	}
+	mustUnmarshal(t, result, &r)
+	if len(r.Matches) != 0 {
+		t.Errorf("expected 0 matches for non-existent glob, got %d", len(r.Matches))
+	}
+}
+
+func TestSearchFiles_FilesTargetWithPathSeparator(t *testing.T) {
+	dir := t.TempDir()
+	subDir := filepath.Join(dir, "sub")
+	os.Mkdir(subDir, 0755)
+	os.WriteFile(filepath.Join(dir, "root.txt"), []byte("data\n"), 0644)
+	os.WriteFile(filepath.Join(subDir, "nested.txt"), []byte("data\n"), 0644)
+
+	tool := &searchFilesTool{}
+	result := callJSON(t, tool, `{"pattern":"sub/*.txt","target":"files","path":"`+dir+`"}`)
+	var r struct {
+		Matches []struct {
+			Path string `json:"path"`
+		} `json:"matches"`
+	}
+	mustUnmarshal(t, result, &r)
+	if len(r.Matches) != 1 {
+		t.Fatalf("expected 1 match for 'sub/*.txt', got %d", len(r.Matches))
+	}
+	if !strings.Contains(r.Matches[0].Path, "nested.txt") {
+		t.Errorf("expected nested.txt match, got: %s", r.Matches[0].Path)
+	}
+}
+
+func TestSearchFiles_FilesTargetHiddenDirSkipped(t *testing.T) {
+	dir := t.TempDir()
+	hiddenDir := filepath.Join(dir, ".hidden")
+	os.Mkdir(hiddenDir, 0755)
+	os.WriteFile(filepath.Join(hiddenDir, "secret.go"), []byte("package main\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "visible.go"), []byte("package main\n"), 0644)
+
+	tool := &searchFilesTool{}
+	result := callJSON(t, tool, `{"pattern":"*.go","target":"files","path":"`+dir+`"}`)
+	var r struct {
+		Matches []struct {
+			Path string `json:"path"`
+		} `json:"matches"`
+	}
+	mustUnmarshal(t, result, &r)
+	for _, m := range r.Matches {
+		if strings.Contains(m.Path, ".hidden") {
+			t.Errorf("should not include hidden dir contents: %s", m.Path)
+		}
+	}
+	if len(r.Matches) != 1 {
+		t.Errorf("expected 1 match (visible.go), got %d", len(r.Matches))
+	}
+}
+
+// ── WriteFile TrustedClasses Tests ────────────────────────────────────
+
+func TestWriteFile_TrustedClassesDeny(t *testing.T) {
+	// Config with class-level action=prompt + non-interactive deny
+	// When a class is NOT in trustedClasses, non-interactive mode rejects it
+	prompt := "prompt"
+	deny := "deny"
+	dc := danger.DangerousConfig{
+		DefaultAction:  &prompt,
+		NonInteractive: &deny,
+	}
+	// Empty trusted classes — nothing is trusted
+	trusted := make(map[danger.RiskClass]bool)
+	tool := &writeFileTool{
+		dangerousConfig: dc,
+		trustedClasses:  trusted,
+	}
+	result := callJSON(t, tool, `{"path":"`+filepath.Join(t.TempDir(), "test.txt")+`","content":"should be denied"}`)
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" {
+		t.Fatal("expected error when trusted classes deny operation")
+	}
+}
+
+func TestWriteFile_TrustedClassesAllow(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "trusted.txt")
+
+	// Config with class-level action=prompt + non-interactive deny
+	// When a class IS in trustedClasses, it bypasses the prompt
+	prompt := "prompt"
+	deny := "deny"
+	dc := danger.DangerousConfig{
+		DefaultAction:  &prompt,
+		NonInteractive: &deny,
+	}
+	// trustedClasses marks LocalWrite as trusted
+	trusted := map[danger.RiskClass]bool{
+		danger.LocalWrite: true,
+	}
+
+	tool := &writeFileTool{
+		dangerousConfig: dc,
+		trustedClasses:  trusted,
+	}
+
+	result := callJSON(t, tool, `{"path":"`+path+`","content":"should be allowed via trusted class"}`)
+	var r struct {
+		Success bool   `json:"success"`
+		Error   string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if !r.Success {
+		t.Fatalf("expected success with trusted class, got error: %s", r.Error)
+	}
+	data, _ := os.ReadFile(path)
+	if string(data) != "should be allowed via trusted class" {
+		t.Errorf("content = %q, want %q", string(data), "should be allowed via trusted class")
+	}
+}
+
+// ── Patch Tool Edge Cases ─────────────────────────────────────────────
+
+func TestPatch_InvalidJSONArgs(t *testing.T) {
+	tool := &patchTool{}
+	result, err := tool.Call(`{invalid}`)
+	if err != nil {
+		t.Fatalf("Call() error: %v", err)
+	}
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" {
+		t.Fatal("expected error for invalid JSON")
+	}
+	if !strings.Contains(r.Error, "invalid arguments") {
+		t.Errorf("error should mention 'invalid arguments', got: %s", r.Error)
+	}
+}
+
+// ── jsonResult Tests ──────────────────────────────────────────────────
+
+func TestJsonResult_Error(t *testing.T) {
+	// json.Marshal fails on functions — but jsonResult wraps the error
+	// in a JSON response, so it returns nil error.
+	result, err := jsonResult(func() {})
+	if err != nil {
+		t.Fatalf("jsonResult should return nil error, got: %v", err)
+	}
+	// The error should be in the JSON string
+	if !strings.Contains(result, `"error"`) {
+		t.Errorf("result should contain 'error' field, got: %s", result)
+	}
+	if !strings.Contains(result, "marshal error") {
+		t.Errorf("result should mention 'marshal error', got: %s", result)
+	}
+}
+
+func TestJsonResult_Success(t *testing.T) {
+	result, err := jsonResult(map[string]string{"key": "value"})
+	if err != nil {
+		t.Fatalf("jsonResult error: %v", err)
+	}
+	if !strings.Contains(result, `"key":"value"`) {
+		t.Errorf("result = %q, want key:value", result)
+	}
+}
+
+// ── searchContent Limit Tests ─────────────────────────────────────────
+
+func TestSearchContent_LimitReached(t *testing.T) {
+	dir := t.TempDir()
+	// Create files that match the search pattern
+	for i := 0; i < 3; i++ {
+		content := fmt.Sprintf("line with match_%d\n", i)
+		os.WriteFile(filepath.Join(dir, fmt.Sprintf("file%d.txt", i)), []byte(content), 0644)
+	}
+
+	tool := &searchFilesTool{}
+	// Set limit to 1 — should stop after first match
+	result := callJSON(t, tool, `{"pattern":"match","target":"content","path":"`+dir+`","limit":1}`)
+	var r struct {
+		Matches []any `json:"matches"`
+	}
+	mustUnmarshal(t, result, &r)
+	if len(r.Matches) == 0 {
+		t.Fatal("expected at least 1 match")
+	}
+	if len(r.Matches) > 2 {
+		t.Errorf("limit=1 should return at most 2 matches, got %d", len(r.Matches))
+	}
+}
+
+

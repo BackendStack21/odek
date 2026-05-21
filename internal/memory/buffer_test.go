@@ -177,3 +177,64 @@ func TestBufferFormatLine(t *testing.T) {
 		t.Errorf("expected message in line, got %q", line)
 	}
 }
+
+// ── sanitizeLine tests ───────────────────────────────────────────────
+
+func TestSanitizeLine_Empty(t *testing.T) {
+	got := sanitizeLine("")
+	if got != "" {
+		t.Errorf("sanitizeLine('') = %q, want ''", got)
+	}
+}
+
+func TestSanitizeLine_NewlinesAndTabs(t *testing.T) {
+	got := sanitizeLine("hello\nworld\rtest\t!")
+	// \n, \r, \t each become spaces
+	expected := "hello world test !"
+	if got != expected {
+		t.Errorf("sanitizeLine = %q, want %q", got, expected)
+	}
+}
+
+func TestSanitizeLine_OnlySpecialChars(t *testing.T) {
+	got := sanitizeLine("\n\r\t")
+	expected := "   "
+	if got != expected {
+		t.Errorf("sanitizeLine = %q, want %q", got, expected)
+	}
+}
+
+func TestSanitizeLine_Unicode(t *testing.T) {
+	input := "hello 世界 ✓ — «test»"
+	got := sanitizeLine(input)
+	if got != input {
+		t.Errorf("sanitizeLine should preserve unicode, got %q, want %q", got, input)
+	}
+}
+
+func TestSanitizeLine_VeryLong(t *testing.T) {
+	long := strings.Repeat("a", 10000)
+	got := sanitizeLine(long)
+	if len(got) != 10000 {
+		t.Errorf("sanitizeLine length = %d, want %d", len(got), 10000)
+	}
+	if got != long {
+		t.Errorf("sanitizeLine should preserve long strings unchanged")
+	}
+}
+
+func TestSanitizeLine_MixedUnicodeAndNewlines(t *testing.T) {
+	got := sanitizeLine("line1\nline2\r\n\t世界")
+	// \n, \r, \n, \t → 4 spaces between "line2" and "世界"
+	if got != "line1 line2   世界" {
+		t.Errorf("sanitizeLine = %q, want %q", got, "line1 line2   世界")
+	}
+}
+
+func TestSanitizeLine_AllWhitespace(t *testing.T) {
+	got := sanitizeLine("   \t  \n  \r  ")
+	// 3 spaces + \t(1) + 2 spaces + \n(1) + 2 spaces + \r(1) + 2 spaces = 12 spaces
+	if got != "            " {
+		t.Errorf("sanitizeLine = %q, want %q", got, "            ")
+	}
+}

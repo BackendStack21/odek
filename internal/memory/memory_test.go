@@ -243,6 +243,192 @@ func TestMemoryManagerOnSessionEndTooShort(t *testing.T) {
 	}
 }
 
+func TestNewMemoryManagerWithZeroDefaults(t *testing.T) {
+	// When MemoryConfig has zero values for BufferLines, MergeThreshold, and AddThreshold,
+	// NewMemoryManager must apply the built-in defaults instead of crashing.
+	cfg := MemoryConfig{
+		Enabled:        true,
+		FactsLimitUser: 1000,
+		FactsLimitEnv:  1000,
+		BufferLines:    0,
+		BufferEnabled:  true,
+		MergeOnWrite:   true,
+		MergeThreshold: 0,
+		AddThreshold:   0,
+	}
+	mm := NewMemoryManager(t.TempDir(), nil, cfg)
+	if mm == nil {
+		t.Fatal("NewMemoryManager returned nil")
+	}
+
+	// Verify defaults were applied: buffer should have defaultBufferLines capacity,
+	// merge detector should use MergeThreshold/AddThreshold constants.
+	mm.AppendBuffer("user", "hello")
+	mm.AppendBuffer("agent", "world")
+	lines := mm.GetBuffer()
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 buffer lines, got %d", len(lines))
+	}
+	if !strings.Contains(lines[0], "hello") {
+		t.Errorf("expected buffer line to contain 'hello', got %q", lines[0])
+	}
+
+	// Add facts and read them back to confirm the manager is fully functional
+	if err := mm.AddFact("user", "User wants concise answers"); err != nil {
+		t.Fatal(err)
+	}
+	user, _, err := mm.ReadFacts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(user, "concise") {
+		t.Errorf("expected fact to contain 'concise', got %q", user)
+	}
+
+	// BuildSystemPrompt should also work
+	prompt := mm.BuildSystemPrompt()
+	if !strings.Contains(prompt, "concise") {
+		t.Errorf("expected prompt to contain fact, got %q", prompt)
+	}
+}
+
+func TestMemoryManagerReplaceFactDisabled(t *testing.T) {
+	cfg := DefaultMemoryConfig()
+	cfg.Enabled = false
+	mm := NewMemoryManager(t.TempDir(), nil, cfg)
+
+	err := mm.ReplaceFact("user", "old", "new")
+	if err == nil {
+		t.Fatal("expected error when memory disabled")
+	}
+	if err.Error() != "memory: disabled" {
+		t.Errorf("expected 'memory: disabled', got %q", err.Error())
+	}
+}
+
+func TestMemoryManagerReplaceFactWithMergeOnWrite(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultMemoryConfig()
+	cfg.MergeOnWrite = true
+	mm := NewMemoryManager(dir, nil, cfg)
+
+	// Add a fact first
+	if err := mm.AddFact("user", "User prefers concise answers"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Replace it
+	if err := mm.ReplaceFact("user", "concise", "User prefers detailed explanations"); err != nil {
+		t.Fatal(err)
+	}
+
+	user, _, _ := mm.ReadFacts()
+	if !strings.Contains(user, "detailed") {
+		t.Errorf("expected new text, got %q", user)
+	}
+	if strings.Contains(user, "concise") {
+		t.Errorf("old text should be replaced, got %q", user)
+	}
+}
+
+func TestMemoryManagerRestoreBufferDisabled(t *testing.T) {
+	cfg := DefaultMemoryConfig()
+	cfg.BufferEnabled = false
+	mm := NewMemoryManager(t.TempDir(), nil, cfg)
+
+	// RestoreBuffer should be a no-op when BufferEnabled is false
+	lines := []string{"should", "not", "appear"}
+	mm.RestoreBuffer(lines)
+
+	got := mm.GetBuffer()
+	if got != nil {
+		t.Errorf("expected nil buffer when disabled, got %v", got)
+	}
+}
+
+func TestMemoryManagerClearBuffer(t *testing.T) {
+	dir := t.TempDir()
+	mm := NewMemoryManager(dir, nil, DefaultMemoryConfig())
+
+	mm.AppendBuffer("user", "first turn")
+	mm.AppendBuffer("agent", "second turn")
+
+	lines := mm.GetBuffer()
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines before clear, got %d", len(lines))
+	}
+
+	mm.ClearBuffer()
+
+	lines = mm.GetBuffer()
+	if len(lines) != 0 {
+		t.Errorf("expected 0 lines after clear, got %d", len(lines))
+	}
+}
+
+func TestMemoryManagerOnSessionEndExtractOnEndFalse(t *testing.T) {
+	cfg := DefaultMemoryConfig()
+	cfg.ExtractOnEnd = false
+	mm := NewMemoryManager(t.TempDir(), nil, cfg)
+
+	// Should return early without error (no LLM needed)
+	mm.OnSessionEnd("sess-001", 10, []string{"msg1", "msg2", "msg3"})
+
+	_, err := mm.episodes.Read("sess-001")
+	if err == nil {
+		t.Error("episode should not exist when ExtractOnEnd is false")
+	}
+}
+
+func TestMemoryManagerOnSessionEndLLMExtractFalse(t *testing.T) {
+	cfg := DefaultMemoryConfig()
+	cfg.LLMExtract = false
+	mm := NewMemoryManager(t.TempDir(), nil, cfg)
+
+	mm.OnSessionEnd("sess-001", 10, []string{"msg1", "msg2", "msg3"})
+
+	_, err := mm.episodes.Read("sess-001")
+	if err == nil {
+		t.Error("episode should not exist when LLMExtract is false")
+	}
+}
+
+func TestMemoryManagerOnSessionEndLLMNil(t *testing.T) {
+	cfg := DefaultMemoryConfig()
+	cfg.ExtractOnEnd = true
+	cfg.LLMExtract = true
+	mm := NewMemoryManager(t.TempDir(), nil, cfg) // nil LLM
+
+	mm.OnSessionEnd("sess-001", 10, []string{"msg1", "msg2", "msg3"})
+
+	_, err := mm.episodes.Read("sess-001")
+	if err == nil {
+		t.Error("episode should not exist when llm is nil")
+	}
+}
+
+func TestMemoryManagerOnSessionEndTurnsLessThan3(t *testing.T) {
+	mm := NewMemoryManager(t.TempDir(), nil, DefaultMemoryConfig())
+
+	mm.OnSessionEnd("sess-001", 2, []string{"msg1", "msg2"})
+
+	_, err := mm.episodes.Read("sess-001")
+	if err == nil {
+		t.Error("episode should not exist when turns < 3")
+	}
+}
+
+func TestMemoryManagerOnSessionEndEmptyMessages(t *testing.T) {
+	mm := NewMemoryManager(t.TempDir(), nil, DefaultMemoryConfig())
+
+	mm.OnSessionEnd("sess-001", 5, []string{})
+
+	_, err := mm.episodes.Read("sess-001")
+	if err == nil {
+		t.Error("episode should not exist when messages are empty")
+	}
+}
+
 func TestMemoryManagerMergeOnWrite(t *testing.T) {
 	dir := t.TempDir()
 	mm := NewMemoryManager(dir, nil, DefaultMemoryConfig())

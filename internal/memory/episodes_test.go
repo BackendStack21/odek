@@ -342,3 +342,43 @@ func TestEpisodeStore_SkipShortSessions(t *testing.T) {
 		t.Errorf("file should not exist for skipped session: %s", path)
 	}
 }
+
+// ── Write error path tests ───────────────────────────────────────────
+
+func TestEpisodeStore_Write_ReadOnlyDir(t *testing.T) {
+	dir := t.TempDir()
+	es := NewEpisodeStore(dir, nil)
+
+	// Pre-create a directory at the target path so WriteFile fails
+	targetPath := filepath.Join(dir, "sess-001.md")
+	if err := os.MkdirAll(targetPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := es.Write("sess-001", "summary", 5)
+	if err == nil {
+		t.Error("expected error when target path is a directory (WriteFile should fail)")
+	}
+	if !strings.Contains(err.Error(), "write episode") {
+		t.Errorf("expected 'write episode' in error, got: %v", err)
+	}
+}
+
+func TestEpisodeStore_Write_InvalidDirPath(t *testing.T) {
+	dir := t.TempDir()
+	// Create a file where the episodes dir should be — MkdirAll will fail
+	badPath := filepath.Join(dir, "episodes")
+	if err := os.WriteFile(badPath, []byte("not a directory"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	es := NewEpisodeStore(badPath, nil)
+
+	err := es.Write("sess-001", "summary", 5)
+	if err == nil {
+		t.Error("expected error when episode path is a file (MkdirAll should fail)")
+	}
+	if !strings.Contains(err.Error(), "mkdir") {
+		t.Errorf("expected 'mkdir' in error, got: %v", err)
+	}
+}

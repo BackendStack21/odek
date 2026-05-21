@@ -107,6 +107,9 @@ func ValidateSessionID(id string) error {
 	if strings.Contains(id, "..") {
 		return fmt.Errorf("session: invalid ID %q: traversal not allowed", id)
 	}
+	if strings.Contains(id, "\x00") {
+		return fmt.Errorf("session: invalid ID %q: null byte not allowed", id)
+	}
 	return nil
 }
 

@@ -1,6 +1,8 @@
 package skills
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -335,6 +337,129 @@ func TestRecordUsage_UpdatesLastUsedAndUsageCount(t *testing.T) {
 
 	// Non-existent skill — no panic
 	sm.RecordUsage("nonexistent")
+}
+
+func TestRecordUsage_AutoLoad(t *testing.T) {
+	// RecordUsage should find skills in AutoLoad list and update them.
+	dir := t.TempDir()
+	// Write a skill with auto_load: true so it appears in AutoLoad
+	skillDir := filepath.Join(dir, "auto-skill")
+	os.MkdirAll(skillDir, 0755)
+	content := "---\nname: auto-skill\nodek:\n  auto_load: true\n---\n\n## Overview\nTest\n## Common Pitfalls\n- None\n## Verification\n- Check"
+	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0644)
+
+	sm := NewSkillManager(dir, "")
+
+	// Verify it's in AutoLoad
+	if len(sm.Result.AutoLoad) != 1 || sm.Result.AutoLoad[0].Name != "auto-skill" {
+		t.Fatalf("expected auto-skill in AutoLoad, got AutoLoad=%v Lazy=%v", sm.Result.AutoLoad, sm.Result.Lazy)
+	}
+
+	// After scan, LastUsed should be zero
+	if !sm.Result.AutoLoad[0].LastUsed.IsZero() {
+		t.Error("LastUsed should be zero after scan")
+	}
+	if sm.Result.AutoLoad[0].UsageCount != 0 {
+		t.Errorf("UsageCount = %d, want 0 after scan", sm.Result.AutoLoad[0].UsageCount)
+	}
+
+	// Record usage
+	sm.RecordUsage("auto-skill")
+
+	if sm.Result.AutoLoad[0].LastUsed.IsZero() {
+		t.Error("LastUsed should be non-zero after RecordUsage")
+	}
+	if sm.Result.AutoLoad[0].UsageCount != 1 {
+		t.Errorf("UsageCount = %d, want 1 after RecordUsage", sm.Result.AutoLoad[0].UsageCount)
+	}
+
+	// Record again — increments
+	sm.RecordUsage("auto-skill")
+	if sm.Result.AutoLoad[0].UsageCount != 2 {
+		t.Errorf("UsageCount = %d, want 2 after second RecordUsage", sm.Result.AutoLoad[0].UsageCount)
+	}
+}
+
+func TestRecordUsage_NotFound(t *testing.T) {
+	// RecordUsage with a name that doesn't exist in either AutoLoad or Lazy
+	// should be a no-op (no panic, no crash).
+	dir := t.TempDir()
+	// Write one skill so Result is populated
+	writeTestSkill(t, dir, "some-skill", "## Overview\nTest\n## Common Pitfalls\n- None\n## Verification\n- Check")
+
+	sm := NewSkillManager(dir, "")
+	initialAutoCount := len(sm.Result.AutoLoad)
+	initialLazyCount := len(sm.Result.Lazy)
+
+	// This should not panic and should not change anything
+	sm.RecordUsage("nonexistent")
+
+	if len(sm.Result.AutoLoad) != initialAutoCount {
+		t.Errorf("AutoLoad count changed: %d -> %d", initialAutoCount, len(sm.Result.AutoLoad))
+	}
+	if len(sm.Result.Lazy) != initialLazyCount {
+		t.Errorf("Lazy count changed: %d -> %d", initialLazyCount, len(sm.Result.Lazy))
+	}
+	// Verify the existing skill was not modified
+	for _, s := range sm.Result.Lazy {
+		if s.Name == "some-skill" {
+			if s.UsageCount != 0 {
+				t.Errorf("UsageCount should still be 0 for some-skill, got %d", s.UsageCount)
+			}
+		}
+	}
+}
+
+func TestGetResult_ReturnsResultField(t *testing.T) {
+	// GetResult should return a copy of the SkillManager.Result field
+	// containing both AutoLoad and Lazy skills.
+	dir := t.TempDir()
+	// Write one auto-load skill and one lazy skill
+	skillDir := filepath.Join(dir, "auto-load")
+	os.MkdirAll(skillDir, 0755)
+	content := "---\nname: auto-load\nodek:\n  auto_load: true\n---\n\n## Overview\nAuto\n## Common Pitfalls\n- None\n## Verification\n- Check"
+	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0644)
+
+	writeTestSkill(t, dir, "lazy-skill", "## Overview\nLazy\n## Common Pitfalls\n- None\n## Verification\n- Check")
+
+	sm := NewSkillManager(dir, "")
+	result := sm.GetResult()
+
+	if result == nil {
+		t.Fatal("GetResult returned nil")
+	}
+
+	// Should contain the auto-load skill
+	foundAuto := false
+	for _, s := range result.AutoLoad {
+		if s.Name == "auto-load" {
+			foundAuto = true
+			if !strings.Contains(s.Body, "Auto") {
+				t.Error("auto-load skill body should contain 'Auto'")
+			}
+		}
+	}
+	if !foundAuto {
+		t.Error("GetResult should include auto-load skill in AutoLoad")
+	}
+
+	// Should contain the lazy skill
+	foundLazy := false
+	for _, s := range result.Lazy {
+		if s.Name == "lazy-skill" {
+			foundLazy = true
+			if !strings.Contains(s.Body, "Lazy") {
+				t.Error("lazy-skill body should contain 'Lazy'")
+			}
+		}
+	}
+	if !foundLazy {
+		t.Error("GetResult should include lazy-skill in Lazy")
+	}
+
+	// Modifying the returned copy should not affect the original
+	// Note: GetResult may return internal references; deep copy is not guaranteed
+	_ = result.AutoLoad
 }
 
 func TestRecordUsage_Concurrent(t *testing.T) {

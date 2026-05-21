@@ -20,6 +20,32 @@ func TestFactStore_ReadMissing(t *testing.T) {
 	}
 }
 
+func TestFactStore_ReadInvalidTarget(t *testing.T) {
+	dir := t.TempDir()
+	fs := NewFactStore(dir, 5000, 5000)
+
+	_, err := fs.Read("invalid")
+	if err == nil {
+		t.Fatal("expected error for invalid target")
+	}
+}
+
+func TestFactStore_ReadDirectory(t *testing.T) {
+	dir := t.TempDir()
+	fs := NewFactStore(dir, 5000, 5000)
+
+	// Create a directory at the target path so os.ReadFile returns EISDIR
+	targetPath := fs.path("user")
+	if err := os.MkdirAll(targetPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := fs.Read("user")
+	if err == nil {
+		t.Fatal("expected error for read failure on directory")
+	}
+}
+
 func TestFactStore_AddAndRead(t *testing.T) {
 	dir := t.TempDir()
 	fs := NewFactStore(dir, 5000, 5000)

@@ -21,6 +21,44 @@ func TestNewStore(t *testing.T) {
 	}
 }
 
+func TestNewStore_NoHomeEnv(t *testing.T) {
+	// Unset HOME so os.UserHomeDir() fails — covering the error path at
+	// line 60-63 of session.go.
+	origHome := os.Getenv("HOME")
+	os.Unsetenv("HOME")
+	defer os.Setenv("HOME", origHome)
+
+	_, err := NewStore()
+	if err == nil {
+		t.Error("expected error when HOME is unset")
+	}
+	if !strings.Contains(err.Error(), "home dir") {
+		t.Errorf("expected 'home dir' in error, got: %v", err)
+	}
+}
+
+func TestNewStore_InvalidDir(t *testing.T) {
+	// Set HOME to a file path so MkdirAll fails when creating ~/.odek/sessions
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+
+	dir := t.TempDir()
+	// Create a file at the HOME path (so MkdirAll can't create a dir there)
+	homeFile := filepath.Join(dir, "homefile")
+	if err := os.WriteFile(homeFile, []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+	os.Setenv("HOME", homeFile)
+
+	_, err := NewStore()
+	if err == nil {
+		t.Error("expected error when HOME is a file (MkdirAll should fail)")
+	}
+	if !strings.Contains(err.Error(), "create dir") {
+		t.Errorf("expected 'create dir' in error, got: %v", err)
+	}
+}
+
 func TestStore_CreateAndLoad(t *testing.T) {
 	store := newTestStore(t)
 	msgs := []llm.Message{
@@ -495,6 +533,105 @@ func TestStore_Load_PathTraversalRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "invalid ID") {
 		t.Errorf("error should mention 'invalid ID', got: %v", err)
+	}
+}
+
+func TestValidateSessionID_NullBytes(t *testing.T) {
+	// Null bytes (\x00) are not valid in filenames on Unix because
+	// the OS uses null-terminated strings for paths. Even though
+	// Go strings can contain null bytes, they should be rejected.
+	ids := []string{"abc\x00def", "20260518-\x00abc123", "\x00evil"}
+	for _, id := range ids {
+		err := ValidateSessionID(id)
+		if err == nil {
+			t.Errorf("ValidateSessionID(%q) = nil, want error (null byte not allowed)", id)
+		}
+	}
+}
+
+func TestGenerateID_Format(t *testing.T) {
+	id := generateID()
+	// Format: YYYYMMDD-xxxxxx (8 digits, dash, 6 hex chars)
+	if len(id) != 15 {
+		t.Errorf("generateID() length = %d, want 15 (got %q)", len(id), id)
+	}
+	// Prefix must be 8 digits
+	if id[0:8] != id[0:8] { // always true, but check digits
+	}
+	for i := 0; i < 8; i++ {
+		if id[i] < '0' || id[i] > '9' {
+			t.Errorf("generateID() prefix char %d = %q, want digit (got %q)", i, id[i], id)
+		}
+	}
+	// Dash at position 8
+	if id[8] != '-' {
+		t.Errorf("generateID() char 8 = %q, want '-' (got %q)", id[8], id)
+	}
+	// Suffix must be 6 hex chars
+	suffix := id[9:]
+	if len(suffix) != 6 {
+		t.Errorf("generateID() suffix length = %d, want 6 (got %q)", len(suffix), id)
+	}
+	for i, c := range suffix {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			t.Errorf("generateID() suffix char %d = %q, want hex digit (got %q)", i, c, id)
+		}
+	}
+}
+
+func TestStore_Latest_NoIndex(t *testing.T) {
+	store := newTestStore(t)
+
+	// Create a session (this writes both the session file and index.json)
+	msgs := []llm.Message{{Role: "user", Content: "test"}}
+	sess, err := store.Create(msgs, "m", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Delete the index file to force the fallback path in Latest()
+	idxPath := store.indexPath()
+	if err := os.Remove(idxPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// Latest() should still work via directory scanning
+	latest, err := store.Latest()
+	if err != nil {
+		t.Fatalf("Latest() after index deletion: %v", err)
+	}
+	if latest.ID != sess.ID {
+		t.Errorf("Latest() = %q, want %q", latest.ID, sess.ID)
+	}
+	if latest.Task != "test" {
+		t.Errorf("Latest().Task = %q, want %q", latest.Task, "test")
+	}
+}
+
+func TestStore_Latest_SingleSession(t *testing.T) {
+	store := newTestStore(t)
+
+	msgs := []llm.Message{{Role: "user", Content: "only one"}}
+	sess, err := store.Create(msgs, "m1", "only one")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	latest, err := store.Latest()
+	if err != nil {
+		t.Fatalf("Latest() error: %v", err)
+	}
+	if latest == nil {
+		t.Fatal("Latest() returned nil")
+	}
+	if latest.ID != sess.ID {
+		t.Errorf("Latest() = %q, want %q", latest.ID, sess.ID)
+	}
+	if latest.Task != "only one" {
+		t.Errorf("Latest().Task = %q, want %q", latest.Task, "only one")
+	}
+	if latest.Turns != 1 {
+		t.Errorf("Latest().Turns = %d, want 1", latest.Turns)
 	}
 }
 

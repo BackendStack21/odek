@@ -69,6 +69,47 @@ func TestFetchHTTP_TooLarge(t *testing.T) {
 	}
 }
 
+func TestFetchFromURI_UnsupportedScheme(t *testing.T) {
+	_, err := FetchFromURI("ftp://example.com/skill.md", 1024*1024, 5, false)
+	if err == nil {
+		t.Fatal("expected error for unsupported URI scheme")
+	}
+	if !strings.Contains(err.Error(), "unsupported URI scheme") {
+		t.Errorf("error should mention 'unsupported URI scheme', got: %v", err)
+	}
+}
+
+func TestFetchHTTP_RedirectPrivateIP(t *testing.T) {
+	// Server that returns a redirect to 127.0.0.1
+	// The CheckRedirect function blocks all redirects via the
+	// len(via) >= 1 guard before the private-IP check can run.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://127.0.0.1/skill.md", http.StatusFound)
+	}))
+	defer server.Close()
+
+	_, err := fetchHTTP(server.URL, 1048576, 5)
+	if err == nil {
+		t.Fatal("expected error for redirect")
+	}
+	if !strings.Contains(err.Error(), "redirect") {
+		t.Errorf("error should mention redirect, got: %v", err)
+	}
+}
+
+func TestFetchHTTP_ConnectionError(t *testing.T) {
+	// Create a server and immediately close it to simulate connection refused
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+	server.Close()
+
+	_, err := fetchHTTP(server.URL, 1048576, 5)
+	if err == nil {
+		t.Fatal("expected error for closed server (connection refused)")
+	}
+}
+
 func TestFetchFromURI(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test-skill.md")
@@ -318,6 +359,45 @@ func TestFetchLocal_FileTooLarge(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "too large") {
 		t.Errorf("expected 'too large' error, got %v", err)
+	}
+}
+
+func TestFetchLocal_PathTraversal_Blocked(t *testing.T) {
+	// filepath.Clean("../dir") preserves ".." because it can't be resolved upward
+	_, err := fetchLocal("../etc/passwd", 10000)
+	if err == nil {
+		t.Error("expected error for path traversal")
+	}
+	if !strings.Contains(err.Error(), "path traversal") {
+		t.Errorf("expected 'path traversal' in error, got: %v", err)
+	}
+}
+
+func TestFetchLocal_HomeExpansion_FileNotFound(t *testing.T) {
+	// ~/nonexistent should expand home dir and then fail with file not found
+	_, err := fetchLocal("~/nonexistent-file-for-test", 10000)
+	if err == nil {
+		t.Error("expected error for non-existent ~/ file")
+	}
+	if !os.IsNotExist(err) {
+		t.Logf("fetchLocal(~) returned expected error: %v", err)
+	}
+}
+
+func TestFetchLocal_ReadFileError(t *testing.T) {
+	dir := t.TempDir()
+	// Create a directory (not a file) so Stat succeeds but ReadFile fails
+	subDir := filepath.Join(dir, "subdir")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := fetchLocal(subDir, 10000)
+	if err == nil {
+		t.Error("expected error when reading a directory as a file")
+	}
+	if !strings.Contains(err.Error(), "read file") {
+		t.Errorf("expected 'read file' in error, got: %v", err)
 	}
 }
 

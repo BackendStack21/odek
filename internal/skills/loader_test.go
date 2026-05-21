@@ -244,6 +244,60 @@ func TestParseQualityFlag(t *testing.T) {
 	}
 }
 
+func TestParseSkillFile_NonExistent(t *testing.T) {
+	s := parseSkillFile("/nonexistent/path/SKILL.md")
+	if s != nil {
+		t.Error("expected nil for non-existent file")
+	}
+}
+
+func TestParseSkillFile_Valid(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "my-skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := `---
+name: my-skill
+description: A test skill
+odek:
+  trigger:
+    topic: test go
+    action: run verify
+  quality: draft
+---
+## Overview
+
+Test body content.
+`
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := parseSkillFile(filepath.Join(skillDir, "SKILL.md"))
+	if s == nil {
+		t.Fatal("expected parsed skill, got nil")
+	}
+	if s.Name != "my-skill" {
+		t.Errorf("Name = %q, want %q", s.Name, "my-skill")
+	}
+	if s.Description != "A test skill" {
+		t.Errorf("Description = %q", s.Description)
+	}
+	if s.Quality != QualityDraft {
+		t.Errorf("Quality = %q, want draft", s.Quality)
+	}
+	if !strings.Contains(s.Body, "Test body content") {
+		t.Error("Body should contain content")
+	}
+	if len(s.Trigger.TopicKeywords) != 2 || s.Trigger.TopicKeywords[0] != "test" {
+		t.Errorf("TopicKeywords = %v", s.Trigger.TopicKeywords)
+	}
+	if s.AutoLoad {
+		t.Error("AutoLoad should be false")
+	}
+}
+
 func writeTestSkill(t *testing.T, dir, name, body string) {
 	t.Helper()
 	skillDir := filepath.Join(dir, name)

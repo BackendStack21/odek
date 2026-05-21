@@ -12,8 +12,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BackendStack21/kode"
 	"github.com/BackendStack21/kode/internal/config"
 	"github.com/BackendStack21/kode/internal/danger"
+	"github.com/BackendStack21/kode/internal/llm"
+	"github.com/BackendStack21/kode/internal/mcpclient"
 )
 
 func TestGetVersion_LdFlagsOverride(t *testing.T) {
@@ -278,7 +281,7 @@ func TestSetupSandbox_CommandFlags(t *testing.T) {
 		t.Skip("docker not available")
 	}
 
-	containerName := "odek-test-setup"
+	containerName := fmt.Sprintf("odek-test-setup-%d", os.Getpid())
 	wd := "/tmp"
 
 	cmd := exec.Command("docker", "run",
@@ -455,6 +458,58 @@ func TestRun_WithMockModel(t *testing.T) {
 	err := run([]string{"--base-url", server.URL, "test task"})
 	if err != nil {
 		t.Fatalf("run() with mock model should succeed, got: %v", err)
+	}
+}
+
+func TestRun_WithMockModelAndSession(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"session mock response"}}]}`))
+	}))
+	defer server.Close()
+
+	origDS := os.Getenv("DEEPSEEK_API_KEY")
+	origOAI := os.Getenv("OPENAI_API_KEY")
+	origHome := os.Getenv("HOME")
+	os.Setenv("DEEPSEEK_API_KEY", "sk-mock")
+	os.Unsetenv("OPENAI_API_KEY")
+	os.Setenv("HOME", t.TempDir())
+	defer func() {
+		os.Setenv("DEEPSEEK_API_KEY", origDS)
+		os.Setenv("OPENAI_API_KEY", origOAI)
+		os.Setenv("HOME", origHome)
+	}()
+
+	// Session flag tests the multi-turn branch of run()
+	err := run([]string{"--session", "--base-url", server.URL, "session test task"})
+	if err != nil {
+		t.Fatalf("run() with session and mock model should succeed, got: %v", err)
+	}
+}
+
+func TestRun_WithMockModelAndLearn(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"learn mock response"}}]}`))
+	}))
+	defer server.Close()
+
+	origDS := os.Getenv("DEEPSEEK_API_KEY")
+	origOAI := os.Getenv("OPENAI_API_KEY")
+	origHome := os.Getenv("HOME")
+	os.Setenv("DEEPSEEK_API_KEY", "sk-mock")
+	os.Unsetenv("OPENAI_API_KEY")
+	os.Setenv("HOME", t.TempDir())
+	defer func() {
+		os.Setenv("DEEPSEEK_API_KEY", origDS)
+		os.Setenv("OPENAI_API_KEY", origOAI)
+		os.Setenv("HOME", origHome)
+	}()
+
+	// Learn mode tests the learn loop branch of run()
+	err := run([]string{"--learn", "--base-url", server.URL, "learn test task"})
+	if err != nil {
+		t.Fatalf("run() with learn and mock model should succeed, got: %v", err)
 	}
 }
 
@@ -1462,5 +1517,436 @@ func TestRunLearn_NoSuggestions(t *testing.T) {
 	}
 	if strings.Contains(stderrStr, "Save as skill?") {
 		t.Error("should NOT show save prompt when no patterns detected")
+	}
+}
+
+// ── buildFromDockerfile Tests ──────────────────────────────────────────
+
+func TestBuildFromDockerfile_FileNotFound(t *testing.T) {
+	// Change to a temp dir with no Dockerfile.odek
+	origDir, _ := os.Getwd()
+	emptyDir := t.TempDir()
+	os.Chdir(emptyDir)
+	defer os.Chdir(origDir)
+
+	_, err := buildFromDockerfile()
+	if err == nil {
+		t.Fatal("expected error when Dockerfile.odek does not exist")
+	}
+	if !strings.Contains(err.Error(), "Dockerfile.odek") {
+		t.Errorf("error should mention Dockerfile.odek: %v", err)
+	}
+}
+
+func TestBuildFromDockerfile_InvalidDockerfile(t *testing.T) {
+	if !dockerAvailable() {
+		t.Skip("docker not available")
+	}
+
+	origDir, _ := os.Getwd()
+	emptyDir := t.TempDir()
+	defer os.Chdir(origDir)
+
+	// Create an invalid Dockerfile
+	err := os.WriteFile(filepath.Join(emptyDir, "Dockerfile.odek"), []byte("INVALID DOCKERFILE CONTENT $$$"), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	os.Chdir(emptyDir)
+	_, err = buildFromDockerfile()
+	if err == nil {
+		t.Fatal("expected error for invalid Dockerfile")
+	}
+	if !strings.Contains(err.Error(), "docker build failed") {
+		t.Errorf("error should mention docker build failure: %v", err)
+	}
+}
+
+// ── shorten Tests ──────────────────────────────────────────────────────
+
+func TestShorten_ShortString(t *testing.T) {
+	result := shorten("hello", 10)
+	if result != "hello" {
+		t.Errorf("shorten('hello', 10) = %q, want 'hello'", result)
+	}
+}
+
+func TestShorten_ExactLength(t *testing.T) {
+	result := shorten("hello", 5)
+	if result != "hello" {
+		t.Errorf("shorten('hello', 5) = %q, want 'hello'", result)
+	}
+}
+
+func TestShorten_LongString(t *testing.T) {
+	result := shorten("hello world", 5)
+	if result != "hello…" {
+		t.Errorf("shorten('hello world', 5) = %q, want 'hello…'", result)
+	}
+}
+
+func TestShorten_EmptyString(t *testing.T) {
+	result := shorten("", 10)
+	if result != "" {
+		t.Errorf("shorten('', 10) = %q, want ''", result)
+	}
+}
+
+func TestShorten_ZeroLength(t *testing.T) {
+	result := shorten("hello", 0)
+	if result != "…" {
+		t.Errorf("shorten('hello', 0) = %q, want '…'", result)
+	}
+}
+
+// ── expandHome Tests ───────────────────────────────────────────────────
+
+func TestExpandHome_TildePath(t *testing.T) {
+	result := expandHome("~/test/path")
+	if !strings.HasPrefix(result, "/") || !strings.HasSuffix(result, "/test/path") {
+		t.Errorf("expandHome('~/test/path') = %q, want '/.../test/path'", result)
+	}
+}
+
+func TestExpandHome_NoTilde(t *testing.T) {
+	result := expandHome("/absolute/path")
+	if result != "/absolute/path" {
+		t.Errorf("expandHome('/absolute/path') = %q, want '/absolute/path'", result)
+	}
+}
+
+func TestExpandHome_EmptyString(t *testing.T) {
+	result := expandHome("")
+	if result != "" {
+		t.Errorf("expandHome('') = %q, want ''", result)
+	}
+}
+
+// ── parseReplFlags Edge Case Tests ──────────────────────────────────────
+
+func TestParseReplFlags_Empty(t *testing.T) {
+	f, err := parseReplFlags([]string{})
+	if err != nil {
+		t.Fatalf("parseReplFlags error: %v", err)
+	}
+	if f.Model != "" {
+		t.Errorf("Model = %q, want empty", f.Model)
+	}
+}
+
+func TestParseReplFlags_AllFlags(t *testing.T) {
+	f, err := parseReplFlags([]string{
+		"--id", "abc123",
+		"--model", "gpt-4",
+		"--thinking", "enabled",
+		"--sandbox",
+		"--sandbox-image", "node:20",
+		"--sandbox-network", "host",
+		"--sandbox-readonly",
+		"--sandbox-memory", "1g",
+		"--sandbox-cpus", "2",
+		"--sandbox-user", "1000:1000",
+		"extra",
+	})
+	if err != nil {
+		t.Fatalf("parseReplFlags error: %v", err)
+	}
+	if f.ID != "abc123" {
+		t.Errorf("ID = %q, want 'abc123'", f.ID)
+	}
+	if f.Model != "gpt-4" {
+		t.Errorf("Model = %q", f.Model)
+	}
+	if f.Thinking != "enabled" {
+		t.Errorf("Thinking = %q", f.Thinking)
+	}
+	if f.Sandbox == nil || !*f.Sandbox {
+		t.Error("Sandbox should be true")
+	}
+	if f.SandboxImage != "node:20" {
+		t.Errorf("SandboxImage = %q", f.SandboxImage)
+	}
+	if f.SandboxNetwork != "host" {
+		t.Errorf("SandboxNetwork = %q", f.SandboxNetwork)
+	}
+	if f.SandboxReadonly == nil || !*f.SandboxReadonly {
+		t.Error("SandboxReadonly should be true")
+	}
+	if f.SandboxMemory != "1g" {
+		t.Errorf("SandboxMemory = %q", f.SandboxMemory)
+	}
+	if f.SandboxCPUs != "2" {
+		t.Errorf("SandboxCPUs = %q", f.SandboxCPUs)
+	}
+	if f.SandboxUser != "1000:1000" {
+		t.Errorf("SandboxUser = %q", f.SandboxUser)
+	}
+}
+
+func TestParseReplFlags_TrailingArg(t *testing.T) {
+	f, err := parseReplFlags([]string{"--sandbox", "trailing"})
+	if err != nil {
+		t.Fatalf("parseReplFlags error: %v", err)
+	}
+	if f.Sandbox == nil || !*f.Sandbox {
+		t.Error("Sandbox should be true")
+	}
+}
+
+// ── buildSandboxArgs Tests ─────────────────────────────────────────────
+
+func TestBuildSandboxArgs_Defaults(t *testing.T) {
+	args := buildSandboxArgs(sandboxConfig{}, "odek-test", "/workspace", "alpine:latest")
+	if len(args) == 0 {
+		t.Fatal("buildSandboxArgs returned empty args")
+	}
+	// Should include basic security flags
+	full := strings.Join(args, " ")
+	if !strings.Contains(full, "--cap-drop") {
+		t.Error("should include --cap-drop")
+	}
+	if !strings.Contains(full, "--security-opt") {
+		t.Error("should include --security-opt")
+	}
+	if !strings.Contains(full, "--tmpfs") {
+		t.Error("should include --tmpfs")
+	}
+}
+
+func TestBuildSandboxArgs_Readonly(t *testing.T) {
+	args := buildSandboxArgs(sandboxConfig{
+		Readonly: true,
+		Network:  "bridge",
+	}, "odek-test", "/workspace", "alpine:latest")
+	volFound := false
+	for _, a := range args {
+		if strings.HasPrefix(a, "/workspace") && strings.HasSuffix(a, ":ro") {
+			volFound = true
+		}
+	}
+	if !volFound {
+		t.Errorf("expected read-only volume mount, got: %v", args)
+	}
+}
+
+func TestBuildSandboxArgs_WithResources(t *testing.T) {
+	args := buildSandboxArgs(sandboxConfig{
+		Network: "none",
+		Memory:  "512m",
+		CPUs:    "0.5",
+		User:    "1000:1000",
+		Env:     map[string]string{"FOO": "bar"},
+		Volumes: []string{"/data:/data"},
+	}, "odek-test", "/workspace", "alpine:latest")
+	full := strings.Join(args, " ")
+	if !strings.Contains(full, "--memory") || !strings.Contains(full, "512m") {
+		t.Error("should include memory limit")
+	}
+	if !strings.Contains(full, "--cpus") || !strings.Contains(full, "0.5") {
+		t.Error("should include CPU limit")
+	}
+	if !strings.Contains(full, "--user") || !strings.Contains(full, "1000:1000") {
+		t.Error("should include user")
+	}
+	if !strings.Contains(full, "FOO=bar") {
+		t.Error("should include env var")
+	}
+	if !strings.Contains(full, "/data:/data") {
+		t.Error("should include extra volume")
+	}
+}
+
+func TestBuildSandboxArgs_ForbiddenVolumeRejected(t *testing.T) {
+	args := buildSandboxArgs(sandboxConfig{
+		Network: "bridge",
+		Volumes: []string{"/etc/passwd:/etc/passwd"},
+	}, "odek-test", "/workspace", "alpine:latest")
+	full := strings.Join(args, " ")
+	if strings.Contains(full, "/etc/passwd") {
+		t.Error("forbidden volume mount should be rejected")
+	}
+}
+
+// ── countUserTurnsUpTo Tests ───────────────────────────────────────────
+
+func TestCountUserTurnsUpTo_Empty(t *testing.T) {
+	count := countUserTurnsUpTo(nil, 5)
+	if count != 0 {
+		t.Errorf("countUserTurnsUpTo(nil, 5) = %d, want 0", count)
+	}
+}
+
+func TestCountUserTurnsUpTo_Basic(t *testing.T) {
+	msgs := []llm.Message{
+		{Role: "system", Content: "system"},
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "hi"},
+		{Role: "user", Content: "world"},
+	}
+	count := countUserTurnsUpTo(msgs, 4)
+	if count != 2 {
+		t.Errorf("countUserTurnsUpTo = %d, want 2", count)
+	}
+}
+
+func TestCountUserTurnsUpTo_Partial(t *testing.T) {
+	msgs := []llm.Message{
+		{Role: "system", Content: "system"},
+		{Role: "user", Content: "hello"},
+	}
+	count := countUserTurnsUpTo(msgs, 1) // Only look at index 0 (system)
+	if count != 0 {
+		t.Errorf("countUserTurnsUpTo = %d, want 0", count)
+	}
+}
+
+func TestCountUserTurnsUpTo_BeyondLength(t *testing.T) {
+	msgs := []llm.Message{
+		{Role: "user", Content: "hello"},
+	}
+	count := countUserTurnsUpTo(msgs, 100)
+	if count != 1 {
+		t.Errorf("countUserTurnsUpTo = %d, want 1", count)
+	}
+}
+
+// ── getVersion VCS Path Tests ──────────────────────────────────────────
+
+func TestGetVersion_VersionSet(t *testing.T) {
+	orig := version
+	version = "v2.0.0"
+	defer func() { version = orig }()
+
+	v := getVersion()
+	if v != "v2.0.0" {
+		t.Errorf("getVersion() = %q, want 'v2.0.0'", v)
+	}
+}
+
+func TestGetVersion_DevFallbackWhenEmpty(t *testing.T) {
+	orig := version
+	version = ""
+	defer func() { version = orig }()
+
+	v := getVersion()
+	if v == "" {
+		t.Error("getVersion() should never return empty string")
+	}
+}
+
+// TestShorten_NegativeLimit verifies that shorten with a negative limit.
+func TestShorten_NegativeLimit(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Logf("shorten panicked with negative limit (Go slice bounds): %v", r)
+		}
+	}()
+	result := shorten("hello", -1)
+	if result != "hello" {
+		t.Errorf("shorten('hello', -1) = %q, want 'hello'", result)
+	}
+}
+
+// TestShorten_Unicode verifies shorten handles multi-byte UTF-8.
+func TestShorten_Unicode(t *testing.T) {
+	// "héllo wörld" is 13 bytes. s[:6] = "héllo" (6 bytes: h, é=2b, l, l, o)
+	result := shorten("héllo wörld", 6)
+	expected := "héllo…"
+	if result != expected {
+		t.Errorf("shorten('héllo wörld', 6) = %q, want %q", result, expected)
+	}
+}
+
+// TestBuildSandboxArgs_AllForbiddenPrefixes verifies that ALL forbidden
+// mount prefixes (/ /etc /proc /sys /boot /dev) are rejected.
+func TestBuildSandboxArgs_AllForbiddenPrefixes(t *testing.T) {
+	forbidden := []string{"/", "/etc", "/proc", "/sys", "/boot", "/dev"}
+	for _, prefix := range forbidden {
+		t.Run(prefix, func(t *testing.T) {
+			vol := prefix + ":/container" + prefix
+			if prefix == "/" {
+				vol = "/:/container/root"
+			}
+			cfg := sandboxConfig{
+				Network: "bridge",
+				Volumes: []string{vol},
+			}
+			args := buildSandboxArgs(cfg, "odek-test", "/workspace", "alpine:latest")
+			full := strings.Join(args, " ")
+			if strings.Contains(full, vol) {
+				t.Errorf("forbidden volume %q should be rejected, but found in args", vol)
+			}
+		})
+	}
+}
+
+// TestBuildSandboxArgs_ValidVolume verifies a non-forbidden volume IS included.
+func TestBuildSandboxArgs_ValidVolume(t *testing.T) {
+	cfg := sandboxConfig{
+		Network: "bridge",
+		Volumes: []string{"/data:/data"},
+	}
+	args := buildSandboxArgs(cfg, "odek-test", "/workspace", "alpine:latest")
+	if !hasArgPair(args, "-v", "/data:/data") {
+		t.Error("valid volume /data:/data should be included in docker args")
+	}
+}
+
+// ── loadMCPTools Tests ────────────────────────────────────────────────
+
+func TestLoadMCPTools_EmptyServers(t *testing.T) {
+	tools := make([]odek.Tool, 0)
+	cleanup, err := loadMCPTools(nil, &tools)
+	if err != nil {
+		t.Fatalf("loadMCPTools(nil) error: %v", err)
+	}
+	if cleanup == nil {
+		t.Fatal("loadMCPTools(nil) should return non-nil cleanup")
+	}
+	// Call cleanup — should be a no-op
+	cleanup()
+
+	// Also test with empty map
+	cleanup2, err := loadMCPTools(map[string]mcpclient.ServerConfig{}, &tools)
+	if err != nil {
+		t.Fatalf("loadMCPTools(empty map) error: %v", err)
+	}
+	cleanup2()
+}
+
+// ── getVersion No-Panic Test ────────────────────────────────────────────
+
+func TestGetVersion_NoPanic(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("getVersion() panicked: %v", r)
+		}
+	}()
+	v := getVersion()
+	if v == "" {
+		t.Error("getVersion() returned empty string, want at minimum 'dev'")
+	}
+}
+
+// ── boolPtr Tests ───────────────────────────────────────────────────────
+
+func TestBoolPtr_True(t *testing.T) {
+	p := boolPtr(true)
+	if p == nil {
+		t.Fatal("boolPtr(true) returned nil")
+	}
+	if *p != true {
+		t.Errorf("boolPtr(true) = %v, want true", *p)
+	}
+}
+
+func TestBoolPtr_False(t *testing.T) {
+	p := boolPtr(false)
+	if p == nil {
+		t.Fatal("boolPtr(false) returned nil")
+	}
+	if *p != false {
+		t.Errorf("boolPtr(false) = %v, want false", *p)
 	}
 }

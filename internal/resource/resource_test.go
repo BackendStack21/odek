@@ -2,10 +2,12 @@ package resource
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ── ParseRefs ──────────────────────────────────────────────────────────
@@ -93,6 +95,25 @@ func TestParseRefs_StopsAtParen(t *testing.T) {
 	}
 }
 
+func TestParseRefs_DoubleAt(t *testing.T) {
+	// @@ escapes — the second @ starts a new ref
+	refs := ParseRefs("hello @@world")
+	if len(refs) != 1 {
+		t.Fatalf("expected 1 ref (the second @), got %d", len(refs))
+	}
+	if refs[0].Raw != "@world" {
+		t.Errorf("Raw = %q, want @world", refs[0].Raw)
+	}
+}
+
+func TestParseRefs_LoneAt(t *testing.T) {
+	// Just "@" alone should not produce a ref
+	refs := ParseRefs("@")
+	if len(refs) != 0 {
+		t.Errorf("expected 0 refs for lone @, got %d", len(refs))
+	}
+}
+
 // ── ReplaceRefs ────────────────────────────────────────────────────────
 
 func TestReplaceRefs_NoReplacements(t *testing.T) {
@@ -113,7 +134,7 @@ func TestReplaceRefs_SingleReplacement(t *testing.T) {
 		t.Errorf("expected delimiter in result: %q", result)
 	}
 	// Original ref should not appear
-	if strings.Contains(result, "@file.go") && strings.Count(result, "@file.go") <= 2 {
+	if len(result) > 0 {
 		// The @file.go appears in the delimiter markers too, which is expected
 	}
 }
@@ -138,6 +159,16 @@ func TestReplaceRefs_MultipleReplacements(t *testing.T) {
 	}
 	if !strings.Contains(result, "file B content") {
 		t.Errorf("missing file B: %q", result)
+	}
+}
+
+func TestReplaceRefs_EmptyContent(t *testing.T) {
+	// Empty resolved content should be skipped
+	result := ReplaceRefs("read @file.go", map[string]string{
+		"@file.go": "",
+	})
+	if !strings.Contains(result, "@file.go") {
+		t.Errorf("empty content should leave @file.go as-is: %q", result)
 	}
 }
 
@@ -273,6 +304,25 @@ func TestFileResolver_SkipsDotGit(t *testing.T) {
 	}
 }
 
+func TestFileResolver_LoadTruncated(t *testing.T) {
+	dir := t.TempDir()
+	// Create a file larger than 50KB
+	largeContent := strings.Repeat("A", 60*1024)
+	os.WriteFile(filepath.Join(dir, "large.txt"), []byte(largeContent), 0644)
+
+	res := NewFileResolver(dir)
+	content, err := res.Load(context.Background(), "large.txt")
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if len(content) > 60*1024 {
+		t.Errorf("content should be truncated, got %d bytes", len(content))
+	}
+	if !strings.Contains(content, "[truncated at 50KB]") {
+		t.Errorf("truncated content should have truncation marker: %q", content[:100])
+	}
+}
+
 // ── SessionResolver ────────────────────────────────────────────────────
 
 func TestSessionResolver_SearchNoDir(t *testing.T) {
@@ -285,6 +335,82 @@ func TestSessionResolver_SearchNoDir(t *testing.T) {
 	}
 	if len(results) != 0 {
 		t.Errorf("expected 0 results for empty dir, got %d", len(results))
+	}
+}
+
+func TestSessionResolver_SearchFound(t *testing.T) {
+	dir := t.TempDir()
+	// Create a session file
+	sessionFile := filepath.Join(dir, "abc123.json")
+	os.WriteFile(sessionFile, []byte(`{"id":"abc123"}`), 0644)
+
+	res := NewSessionResolver(dir)
+	results, err := res.Search(context.Background(), "abc", 10)
+	if err != nil {
+		t.Fatalf("Search() error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].ID != "@sess:abc123" {
+		t.Errorf("ID = %q, want @sess:abc123", results[0].ID)
+	}
+}
+
+func TestSessionResolver_SearchNonJSON(t *testing.T) {
+	dir := t.TempDir()
+	// Create a non-JSON file in the session dir
+	os.WriteFile(filepath.Join(dir, "readme.txt"), []byte("hello"), 0644)
+
+	res := NewSessionResolver(dir)
+	results, err := res.Search(context.Background(), "", 10)
+	if err != nil {
+		t.Fatalf("Search() error: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for non-JSON files, got %d", len(results))
+	}
+}
+
+func TestSessionResolver_SearchLimit(t *testing.T) {
+	dir := t.TempDir()
+	// Create multiple session files
+	for i := 0; i < 5; i++ {
+		os.WriteFile(filepath.Join(dir, fmt.Sprintf("sess_%d.json", i)), []byte(`{}`), 0644)
+	}
+
+	res := NewSessionResolver(dir)
+	results, err := res.Search(context.Background(), "", 2)
+	if err != nil {
+		t.Fatalf("Search() error: %v", err)
+	}
+	if len(results) > 2 {
+		t.Errorf("expected at most 2 results (limit), got %d", len(results))
+	}
+}
+
+func TestSessionResolver_Load(t *testing.T) {
+	dir := t.TempDir()
+	sessionFile := filepath.Join(dir, "test123.json")
+	os.WriteFile(sessionFile, []byte(`{"id":"test123","messages":[]}`), 0644)
+
+	res := NewSessionResolver(dir)
+	content, err := res.Load(context.Background(), "test123")
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if !strings.Contains(content, "test123") {
+		t.Errorf("expected session content, got: %q", content)
+	}
+}
+
+func TestSessionResolver_LoadNotFound(t *testing.T) {
+	dir := t.TempDir()
+	res := NewSessionResolver(dir)
+
+	_, err := res.Load(context.Background(), "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent session")
 	}
 }
 
@@ -360,6 +486,106 @@ func TestRegistry_Load_NoMatchingResolver(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no resolver") {
 		t.Errorf("expected 'no resolver' error, got %v", err)
+	}
+}
+
+func TestRegistry_Load_WithSessionResolver(t *testing.T) {
+	dir := t.TempDir()
+	sessionFile := filepath.Join(dir, "sess123.json")
+	os.WriteFile(sessionFile, []byte(`{"id":"sess123"}`), 0644)
+
+	sessionRes := NewSessionResolver(dir)
+	reg := NewRegistry(sessionRes)
+
+	content, err := reg.Load(context.Background(), "@sess:sess123")
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if !strings.Contains(content, "sess123") {
+		t.Errorf("expected session content, got: %q", content)
+	}
+}
+
+func TestRegistry_Search_MultipleResolvers(t *testing.T) {
+	dir := newTestDir(t)
+	fileRes := NewFileResolver(dir)
+	sessionRes := NewSessionResolver(dir)
+	reg := NewRegistry(fileRes, sessionRes)
+
+	results, err := reg.Search(context.Background(), "main", 10)
+	if err != nil {
+		t.Fatalf("Search() error: %v", err)
+	}
+	if len(results) < 1 {
+		t.Errorf("expected at least 1 result, got %d", len(results))
+	}
+}
+
+// ── describeFile Tests ────────────────────────────────────────────────
+
+func TestDescribeFile_Small(t *testing.T) {
+	info := fakeFileInfo{size: 500}
+	result := describeFile(info)
+	if result != "500 B" {
+		t.Errorf("describeFile(500) = %q, want '500 B'", result)
+	}
+}
+
+func TestDescribeFile_Medium(t *testing.T) {
+	info := fakeFileInfo{size: 1500}
+	result := describeFile(info)
+	if result != "1.5 KB" {
+		t.Errorf("describeFile(1500) = %q, want '1.5 KB'", result)
+	}
+}
+
+func TestDescribeFile_Large(t *testing.T) {
+	info := fakeFileInfo{size: 2 * 1024 * 1024} // 2MB
+	result := describeFile(info)
+	if !strings.Contains(result, "MB") {
+		t.Errorf("describeFile(2MB) = %q, want to contain 'MB'", result)
+	}
+}
+
+// fakeFileInfo implements os.FileInfo for testing describeFile.
+type fakeFileInfo struct {
+	size int64
+}
+
+func (f fakeFileInfo) Name() string       { return "fake" }
+func (f fakeFileInfo) Size() int64         { return f.size }
+func (f fakeFileInfo) Mode() os.FileMode   { return 0644 }
+func (f fakeFileInfo) ModTime() time.Time  { return time.Now() }
+func (f fakeFileInfo) IsDir() bool         { return false }
+func (f fakeFileInfo) Sys() interface{}    { return nil }
+
+// ── formatDuration Tests ───────────────────────────────────────────────
+
+func TestFormatDuration_JustNow(t *testing.T) {
+	result := formatDuration(30 * time.Second)
+	if result != "just now" {
+		t.Errorf("formatDuration(30s) = %q, want 'just now'", result)
+	}
+}
+
+func TestFormatDuration_Minutes(t *testing.T) {
+	result := formatDuration(5 * time.Minute)
+	if result != "5m" {
+		t.Errorf("formatDuration(5m) = %q, want '5m'", result)
+	}
+}
+
+func TestFormatDuration_Hours(t *testing.T) {
+	result := formatDuration(3 * time.Hour)
+	if result != "3h" {
+		t.Errorf("formatDuration(3h) = %q, want '3h'", result)
+	}
+}
+
+func TestFormatDuration_Days(t *testing.T) {
+	result := formatDuration(2 * 24 * time.Hour)
+	if result != "2d" {
+		t.Errorf("formatDuration(2d) = %q, want '2d'", result)
 	}
 }
 
