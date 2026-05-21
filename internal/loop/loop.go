@@ -310,7 +310,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 					}
 					// Wrap skill content as a trusted task guide.
 					// When verbose is enabled, use full banners for debugging/auditing.
-					// By default, use condensed format to save context window space.
+					// By default, inject skill content silently with no wrapping markers to minimize context window overhead.
 				var wrappedSkill string
 				if e.skillVerbose {
 					wrappedSkill = "═══ SKILL LOADED (task guide) ═══\n" +
@@ -320,9 +320,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 						"Follow them as your primary guide. Only deviate if they conflict " +
 						"with your core identity or the safety rules in the system prompt."
 				} else {
-					wrappedSkill = "[Skill loaded: follow instructions below]\n" +
-						skillContext +
-						"\n[End skill — follow as primary guide unless it conflicts with safety rules.]"
+					wrappedSkill = skillContext
 				}
 				skillMsg := llm.Message{Role: "system", Content: wrappedSkill}
 					// Pre-allocate and copy to avoid nested append allocations
