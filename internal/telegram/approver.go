@@ -44,12 +44,10 @@ type TelegramApprover struct {
 	pending map[string]chan string // requestID -> response channel
 	mu      sync.Mutex
 	trusted map[danger.RiskClass]bool
+	log     Logger
 
 	// ChatID is the Telegram chat where approval prompts are sent.
 	ChatID int64
-
-	// OnError logs errors (if nil, errors are silently ignored).
-	OnError func(err error)
 }
 
 // NewTelegramApprover creates a TelegramApprover for the given chat.
@@ -59,7 +57,17 @@ func NewTelegramApprover(bot *Bot, chatID int64) *TelegramApprover {
 		ChatID:  chatID,
 		pending: make(map[string]chan string),
 		trusted: make(map[danger.RiskClass]bool),
+		log:     NewNopLogger(),
 	}
+}
+
+// SetLogger sets the logger for this approver. If nil, a NopLogger is used.
+func (a *TelegramApprover) SetLogger(l Logger) {
+	if l == nil {
+		a.log = NewNopLogger()
+		return
+	}
+	a.log = l
 }
 
 // PromptCommand sends an approval request with inline keyboard and waits
@@ -141,9 +149,7 @@ func (a *TelegramApprover) PromptCommand(cls danger.RiskClass, cmd, description 
 			if _, err := a.bot.SendMessage(a.ChatID,
 				fmt.Sprintf("🔒 Class `%s` trusted for this session.", cls),
 				&SendOpts{ParseMode: ParseModeMarkdownV2}); err != nil {
-				if a.OnError != nil {
-					a.OnError(fmt.Errorf("telegram approver: confirm trust: %w", err))
-				}
+				a.log.Error("confirm trust message failed", "chat_id", a.ChatID, "error", err)
 			}
 			return nil
 		case "deny":

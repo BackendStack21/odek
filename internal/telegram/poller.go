@@ -2,8 +2,6 @@ package telegram
 
 import (
 	"context"
-	"fmt"
-	"os"
 	"time"
 )
 
@@ -13,6 +11,7 @@ type Poller struct {
 	Offset   int
 	Interval time.Duration
 	Timeout  int
+	log      Logger
 }
 
 // NewPoller creates a new Poller with sensible defaults.
@@ -23,7 +22,17 @@ func NewPoller(bot *Bot) *Poller {
 		Offset:   0,
 		Interval: 1 * time.Second,
 		Timeout:  30,
+		log:      NewNopLogger(),
 	}
+}
+
+// SetLogger sets the logger for this poller. If nil, a NopLogger is used.
+func (p *Poller) SetLogger(l Logger) {
+	if l == nil {
+		p.log = NewNopLogger()
+		return
+	}
+	p.log = l
 }
 
 // Poll performs a single long-poll cycle.
@@ -79,7 +88,7 @@ func (p *Poller) Start(ctx context.Context, updates chan<- Update) error {
 			default:
 			}
 
-			fmt.Fprintf(os.Stderr, "telegram: poll error: %v\n", err)
+			p.log.Error("poll error", "error", err)
 
 			backoff := 5 * p.Interval
 			select {

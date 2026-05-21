@@ -128,6 +128,7 @@ func testBot(t *testing.T, ts *httptest.Server) *Bot {
 		BaseURL:     ts.URL + "/bottest:token",
 		FileBaseURL: ts.URL + "/file/bottest:token",
 		Client:      ts.Client(),
+		log:         NewNopLogger(),
 	}
 }
 

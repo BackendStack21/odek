@@ -19,6 +19,8 @@ type TelegramConfig struct {
 	DailyTokenBudget int64    `json:"daily_token_budget"` // default 1000000
 	SessionTTL       int      `json:"session_ttl_hours"`  // hours, default 24
 	FallbackURLs     []string `json:"fallback_urls"`
+	LogLevel         string   `json:"log_level"` // "debug","info","warn","error" (default "info")
+	LogFile          string   `json:"log_file"`  // path or empty for stderr
 }
 
 // DefaultConfig returns a TelegramConfig with sensible defaults.
@@ -76,6 +78,12 @@ func ConfigFromEnv(base TelegramConfig) TelegramConfig {
 	}
 	if v := os.Getenv("ODEK_TELEGRAM_FALLBACK_URLS"); v != "" {
 		cfg.FallbackURLs = splitAndTrim(v)
+	}
+	if v := os.Getenv("ODEK_TELEGRAM_LOG_LEVEL"); v != "" {
+		cfg.LogLevel = v
+	}
+	if v := os.Getenv("ODEK_TELEGRAM_LOG_FILE"); v != "" {
+		cfg.LogFile = v
 	}
 
 	return cfg

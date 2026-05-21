@@ -50,7 +50,16 @@ func telegramCmd(args []string) error {
 	bot := telegram.NewBot(cfg.Token)
 	bot.SetDailyTokenBudget(cfg.DailyTokenBudget)
 
-	// 4b. Configure fallback Telegram API endpoints if provided.
+	// 4b. Create logger.
+	level := telegram.ParseLogLevel(cfg.LogLevel)
+	rootLog := telegram.NewFileLogger(level, cfg.LogFile)
+	botLog := rootLog.With("component", "bot")
+	handlerLog := rootLog.With("component", "handler")
+	pollerLog := rootLog.With("component", "poller")
+
+	bot.SetLogger(botLog)
+
+	// 4c. Configure fallback Telegram API endpoints if provided.
 	if len(cfg.FallbackURLs) > 0 {
 		bot.SetFallbackURLs(cfg.FallbackURLs)
 	}
@@ -68,6 +77,7 @@ func telegramCmd(args []string) error {
 
 	// 7. Create handler.
 	handler := telegram.NewHandler(bot)
+	handler.SetLogger(handlerLog)
 
 	// 8. Set handler config from cfg.
 	handler.Config = telegram.HandlerConfig{
@@ -129,19 +139,20 @@ func telegramCmd(args []string) error {
 	}
 
 	handler.OnError = func(chatID int64, err error) {
-		fmt.Fprintf(os.Stderr, "odek telegram: error for chat %d: %v\n", chatID, err)
+		handlerLog.Error("handler error", "chat_id", chatID, "error", err)
 	}
 
 	// 11. Set command list via Telegram API.
 	if err := bot.SetMyCommands(telegram.CommandDescriptors()); err != nil {
-		fmt.Fprintf(os.Stderr, "odek telegram: warning: set commands failed: %v\n", err)
+		handlerLog.Warn("set commands failed", "error", err)
 	}
 
 	// 12. Print startup banner.
-	fmt.Fprintf(os.Stderr, "odek telegram bot started\n")
+	handlerLog.Info("telegram bot started")
 
 	// 13. Create poller.
 	poller := telegram.NewPoller(bot)
+	poller.SetLogger(pollerLog)
 	poller.Interval = time.Duration(cfg.PollInterval) * time.Second
 	poller.Timeout = cfg.PollTimeout
 

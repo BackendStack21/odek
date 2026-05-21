@@ -20,6 +20,7 @@ type Bot struct {
 	FileBaseURL      string
 	Client           *http.Client
 	DailyTokenBudget int64
+	log              Logger
 }
 
 // NewBot creates a new Bot with the given token and a default HTTP client
@@ -32,7 +33,17 @@ func NewBot(token string) *Bot {
 		Client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		log: NewNopLogger(),
 	}
+}
+
+// SetLogger sets the logger for this bot. If nil, a NopLogger is used (no-op).
+func (b *Bot) SetLogger(l Logger) {
+	if l == nil {
+		b.log = NewNopLogger()
+		return
+	}
+	b.log = l
 }
 
 // url builds the full API endpoint URL for the given method.
@@ -48,6 +59,7 @@ func (b *Bot) doJSON(method string, body any, dest any) error {
 		var err error
 		reqBody, err = json.Marshal(body)
 		if err != nil {
+			b.log.Error("marshal request failed", "method", method, "error", err)
 			return fmt.Errorf("telegram: marshal request: %w", err)
 		}
 	}
@@ -55,12 +67,14 @@ func (b *Bot) doJSON(method string, body any, dest any) error {
 	url := b.url(method)
 	resp, err := b.Client.Post(url, "application/json", bytes.NewReader(reqBody))
 	if err != nil {
+		b.log.Error("http post failed", "method", method, "error", err)
 		return fmt.Errorf("telegram: post %s: %w", method, err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		b.log.Error("read response body failed", "method", method, "error", err)
 		return fmt.Errorf("telegram: read response: %w", err)
 	}
 
@@ -71,15 +85,18 @@ func (b *Bot) doJSON(method string, body any, dest any) error {
 		ErrorCode   int               `json:"error_code"`
 	}
 	if err := json.Unmarshal(respBody, &apiResp); err != nil {
+		b.log.Error("unmarshal response failed", "method", method, "error", err)
 		return fmt.Errorf("telegram: unmarshal response: %w", err)
 	}
 
 	if !apiResp.OK {
+		b.log.Error("api error", "method", method, "description", apiResp.Description, "error_code", apiResp.ErrorCode)
 		return fmt.Errorf("telegram: %s failed: %s (code %d)", method, apiResp.Description, apiResp.ErrorCode)
 	}
 
 	if dest != nil && len(apiResp.Result) > 0 {
 		if err := json.Unmarshal(apiResp.Result, dest); err != nil {
+			b.log.Error("unmarshal result failed", "method", method, "error", err)
 			return fmt.Errorf("telegram: unmarshal result: %w", err)
 		}
 	}
@@ -91,6 +108,7 @@ func (b *Bot) doJSON(method string, body any, dest any) error {
 func (b *Bot) doUpload(method string, field string, path string, params map[string]any, dest any) error {
 	file, err := os.Open(path)
 	if err != nil {
+		b.log.Error("open file failed", "method", method, "path", path, "error", err)
 		return fmt.Errorf("telegram: open file %s: %w", path, err)
 	}
 	defer file.Close()
@@ -101,9 +119,11 @@ func (b *Bot) doUpload(method string, field string, path string, params map[stri
 	// Write the file part.
 	part, err := writer.CreateFormFile(field, filepath.Base(path))
 	if err != nil {
+		b.log.Error("create form file failed", "method", method, "field", field, "error", err)
 		return fmt.Errorf("telegram: create form file: %w", err)
 	}
 	if _, err := io.Copy(part, file); err != nil {
+		b.log.Error("copy file content failed", "method", method, "path", path, "error", err)
 		return fmt.Errorf("telegram: copy file content: %w", err)
 	}
 
@@ -111,32 +131,38 @@ func (b *Bot) doUpload(method string, field string, path string, params map[stri
 	for key, val := range params {
 		jsonVal, err := json.Marshal(val)
 		if err != nil {
+			b.log.Error("marshal param failed", "method", method, "key", key, "error", err)
 			return fmt.Errorf("telegram: marshal param %s: %w", key, err)
 		}
 		if err := writer.WriteField(key, string(jsonVal)); err != nil {
+			b.log.Error("write field failed", "method", method, "key", key, "error", err)
 			return fmt.Errorf("telegram: write field %s: %w", key, err)
 		}
 	}
 
 	if err := writer.Close(); err != nil {
+		b.log.Error("close multipart writer failed", "method", method, "error", err)
 		return fmt.Errorf("telegram: close multipart writer: %w", err)
 	}
 
 	url := b.url(method)
 	req, err := http.NewRequest(http.MethodPost, url, &buf)
 	if err != nil {
+		b.log.Error("create request failed", "method", method, "error", err)
 		return fmt.Errorf("telegram: create request: %w", err)
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	resp, err := b.Client.Do(req)
 	if err != nil {
+		b.log.Error("http post failed", "method", method, "error", err)
 		return fmt.Errorf("telegram: post %s: %w", method, err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		b.log.Error("read response body failed", "method", method, "error", err)
 		return fmt.Errorf("telegram: read response: %w", err)
 	}
 
@@ -147,15 +173,18 @@ func (b *Bot) doUpload(method string, field string, path string, params map[stri
 		ErrorCode   int               `json:"error_code"`
 	}
 	if err := json.Unmarshal(respBody, &apiResp); err != nil {
+		b.log.Error("unmarshal response failed", "method", method, "error", err)
 		return fmt.Errorf("telegram: unmarshal response: %w", err)
 	}
 
 	if !apiResp.OK {
+		b.log.Error("api error", "method", method, "description", apiResp.Description, "error_code", apiResp.ErrorCode)
 		return fmt.Errorf("telegram: %s failed: %s (code %d)", method, apiResp.Description, apiResp.ErrorCode)
 	}
 
 	if dest != nil && len(apiResp.Result) > 0 {
 		if err := json.Unmarshal(apiResp.Result, dest); err != nil {
+			b.log.Error("unmarshal result failed", "method", method, "error", err)
 			return fmt.Errorf("telegram: unmarshal result: %w", err)
 		}
 	}

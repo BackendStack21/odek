@@ -14,7 +14,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestNewPoller_defaults(t *testing.T) {
-	bot := &Bot{Token: "test:token"}
+	bot := &Bot{Token: "test:token", log: NewNopLogger()}
 	p := NewPoller(bot)
 
 	if p.Bot != bot {
@@ -80,6 +80,7 @@ func TestPoller_Poll_withUpdates(t *testing.T) {
 		Token:   "test:token",
 		BaseURL: ts.URL + "/bottest:token",
 		Client:  ts.Client(),
+		log:     NewNopLogger(),
 	}
 
 	p := NewPoller(bot)
@@ -129,6 +130,7 @@ func TestPoller_Poll_emptyResponse(t *testing.T) {
 		Token:   "test:token",
 		BaseURL: ts.URL + "/bottest:token",
 		Client:  ts.Client(),
+		log:     NewNopLogger(),
 	}
 
 	p := NewPoller(bot)
@@ -255,6 +257,7 @@ func TestPoller_Poll_offsetAdvanceInSequence(t *testing.T) {
 		Token:   "test:token",
 		BaseURL: ts.URL + "/bottest:token",
 		Client:  ts.Client(),
+		log:     NewNopLogger(),
 	}
 
 	p := NewPoller(bot)
@@ -323,6 +326,7 @@ func TestPoller_Poll_updatesOutOfOrder(t *testing.T) {
 		Token:   "test:token",
 		BaseURL: ts.URL + "/bottest:token",
 		Client:  ts.Client(),
+		log:     NewNopLogger(),
 	}
 
 	p := NewPoller(bot)
@@ -367,6 +371,7 @@ func TestPoller_Poll_singleUpdate(t *testing.T) {
 		Token:   "test:token",
 		BaseURL: ts.URL + "/bottest:token",
 		Client:  ts.Client(),
+		log:     NewNopLogger(),
 	}
 
 	p := NewPoller(bot)
@@ -411,6 +416,7 @@ func TestPoller_Poll_serverError(t *testing.T) {
 		Token:   "test:token",
 		BaseURL: ts.URL + "/bottest:token",
 		Client:  ts.Client(),
+		log:     NewNopLogger(),
 	}
 
 	p := NewPoller(bot)

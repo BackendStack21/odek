@@ -24,6 +24,7 @@ type HandlerConfig struct {
 type Handler struct {
 	Bot    *Bot
 	Config HandlerConfig
+	log    Logger
 
 	// approvers maps chatID → *TelegramApprover for inline keyboard approval
 	// requests. Protected by sync.Map for concurrent read/write from the
@@ -91,12 +92,22 @@ func NewHandler(bot *Bot) *Handler {
 		Config: HandlerConfig{
 			MaxMsgLength: 4096,
 		},
+		log: NewNopLogger(),
 		OnTextMessage:   defaultTextHandler(),
 		OnCallbackQuery: defaultCallbackHandler(),
 		OnCommand:       defaultCommandHandler(),
 		OnVoiceMessage:  defaultVoiceHandler(bot),
 		OnPhotoMessage:  defaultPhotoHandler(bot),
 	}
+}
+
+// SetLogger sets the logger for this handler. If nil, a NopLogger is used.
+func (h *Handler) SetLogger(l Logger) {
+	if l == nil {
+		h.log = NewNopLogger()
+		return
+	}
+	h.log = l
 }
 
 // defaultTextHandler returns a default OnTextMessage callback.
@@ -154,7 +165,7 @@ func (h *Handler) HandleUpdate(upd Update) {
 	case upd.CallbackQuery != nil:
 		h.handleCallback(upd.CallbackQuery)
 	default:
-		fmt.Fprintf(os.Stderr, "telegram: ignoring unsupported update type (id=%d)\n", upd.ID)
+		h.log.Warn("ignoring unsupported update type", "update_id", upd.ID)
 	}
 }
 
@@ -175,6 +186,7 @@ func (h *Handler) handleMessage(msg *Message) {
 		if h.OnVoiceMessage != nil {
 			resp, err := h.OnVoiceMessage(msg.Chat.ID, msg.Voice.FileID)
 			if err != nil {
+				h.log.Error("voice message handler failed", "chat_id", msg.Chat.ID, "error", err)
 				if h.OnError != nil {
 					h.OnError(msg.Chat.ID, err)
 				}
@@ -192,6 +204,7 @@ func (h *Handler) handleMessage(msg *Message) {
 			}
 			resp, err := h.OnPhotoMessage(msg.Chat.ID, fileIDs)
 			if err != nil {
+				h.log.Error("photo message handler failed", "chat_id", msg.Chat.ID, "error", err)
 				if h.OnError != nil {
 					h.OnError(msg.Chat.ID, err)
 				}
@@ -205,6 +218,7 @@ func (h *Handler) handleMessage(msg *Message) {
 		if h.OnTextMessage != nil {
 			resp, err := h.OnTextMessage(msg.Chat.ID, msg.Text)
 			if err != nil {
+				h.log.Error("text message handler failed", "chat_id", msg.Chat.ID, "error", err)
 				if h.OnError != nil {
 					h.OnError(msg.Chat.ID, err)
 				}
@@ -243,6 +257,7 @@ func (h *Handler) handleCommand(msg *Message) {
 	if h.OnCommand != nil {
 		resp, err := h.OnCommand(msg.Chat.ID, cmd, args)
 		if err != nil {
+			h.log.Error("command handler failed", "chat_id", msg.Chat.ID, "command", cmd, "error", err)
 			if h.OnError != nil {
 				h.OnError(msg.Chat.ID, err)
 			}
@@ -264,6 +279,7 @@ func (h *Handler) handleCallback(cq *CallbackQuery) {
 	if a := h.GetApprover(cq.Message.Chat.ID); a != nil && a.HandleCallback(cq.Data) {
 		// Answer the callback (remove loading state on button).
 		if err := h.Bot.AnswerCallbackQuery(cq.ID, "", false); err != nil {
+			h.log.Error("answer callback query (approval) failed", "chat_id", cq.Message.Chat.ID, "error", err)
 			if h.OnError != nil {
 				h.OnError(cq.Message.Chat.ID, err)
 			}
@@ -273,6 +289,7 @@ func (h *Handler) handleCallback(cq *CallbackQuery) {
 
 	// Answer the callback query to remove the loading state on the button.
 	if err := h.Bot.AnswerCallbackQuery(cq.ID, "", false); err != nil {
+		h.log.Error("answer callback query failed", "chat_id", cq.Message.Chat.ID, "error", err)
 		if h.OnError != nil {
 			h.OnError(cq.Message.Chat.ID, err)
 		}
@@ -282,6 +299,7 @@ func (h *Handler) handleCallback(cq *CallbackQuery) {
 	if h.OnCallbackQuery != nil {
 		resp, err := h.OnCallbackQuery(cq.Message.Chat.ID, cq.Data)
 		if err != nil {
+			h.log.Error("callback query handler failed", "chat_id", cq.Message.Chat.ID, "data", cq.Data, "error", err)
 			if h.OnError != nil {
 				h.OnError(cq.Message.Chat.ID, err)
 			}
@@ -311,6 +329,7 @@ func (h *Handler) SendResponse(chatID int64, text string) {
 	// Split into chunks via FormatResponse.
 	chunks, err := FormatResponse(text)
 	if err != nil {
+		h.log.Error("format response failed", "chat_id", chatID, "error", err)
 		if h.OnError != nil {
 			h.OnError(chatID, fmt.Errorf("telegram: format response: %w", err))
 		}
@@ -340,6 +359,7 @@ func (h *Handler) sendMedia(chatID int64, text string) {
 
 	// Check if file exists.
 	if _, err := os.Stat(filePath); err != nil {
+		h.log.Error("media file not found", "chat_id", chatID, "path", filePath, "error", err)
 		if h.OnError != nil {
 			h.OnError(chatID, fmt.Errorf("telegram: media file not found: %s: %w", filePath, err))
 		}
@@ -353,6 +373,7 @@ func (h *Handler) sendMedia(chatID int64, text string) {
 	case "voice":
 		_, err = h.Bot.SendVoice(chatID, filePath, "")
 	default:
+		h.log.Error("unknown media type", "chat_id", chatID, "media_type", mediaType)
 		if h.OnError != nil {
 			h.OnError(chatID, fmt.Errorf("telegram: unknown media type: %s", mediaType))
 		}
@@ -360,6 +381,7 @@ func (h *Handler) sendMedia(chatID int64, text string) {
 	}
 
 	if err != nil {
+		h.log.Error("send media failed", "chat_id", chatID, "media_type", mediaType, "path", filePath, "error", err)
 		if h.OnError != nil {
 			h.OnError(chatID, fmt.Errorf("telegram: send media: %w", err))
 		}
@@ -382,6 +404,7 @@ func (h *Handler) sendChunk(chatID int64, chunk string) {
 	}
 
 	if err != nil {
+		h.log.Error("send message failed", "chat_id", chatID, "error", err)
 		if h.OnError != nil {
 			h.OnError(chatID, fmt.Errorf("telegram: send message: %w", err))
 		}
