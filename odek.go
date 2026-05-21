@@ -410,12 +410,31 @@ func New(cfg Config) (*Agent, error) {
 		cfg.SystemMessage += memoryBlock
 	}
 
+	// Auto-search relevant past episodes and inject them into the system
+	// prompt so the agent has context from previous sessions without
+	// needing an explicit memory(search=...) tool call.
+	if episodes, err := memoryManager.SearchEpisodes("session context", 3); err == nil && len(episodes) > 0 {
+		var epBlock strings.Builder
+		epBlock.WriteString("\n═══ RELEVANT PAST SESSIONS ═══\n")
+		epBlock.WriteString("Below are summaries of past sessions relevant to this conversation.\n")
+		for _, ep := range episodes {
+			fmt.Fprintf(&epBlock, "• [%s] (%d turns): %s\n", ep.SessionID, ep.Turns, ep.Summary)
+		}
+		epBlock.WriteString("─────────────────────────────────\n")
+		cfg.SystemMessage += epBlock.String()
+	}
+
 	// Append memory tool to registry
 	tools = append(tools, &toolAdapter{memory.NewMemoryTool(memoryManager)})
 	registry := tool.NewRegistry(tools)
 
 	engine := loop.New(client, registry, cfg.MaxIterations, cfg.SystemMessage, cfg.Renderer, maxContext)
 	engine.PromptCaching = cfg.PromptCaching
+
+	// Set skill verbosity: condensed by default, full banners when verbose.
+	if cfg.Skills != nil {
+		engine.SetSkillVerbose(cfg.Skills.Verbose)
+	}
 
 	// Set per-turn memory refresh callback
 	engine.SetMemoryPromptFunc(func() string {

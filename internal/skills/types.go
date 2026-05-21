@@ -79,6 +79,7 @@ type SkillsConfig struct {
 	AutoSave     AutoSaveConfig `json:"auto_save"`
 	LLMLearn     bool           `json:"llm_learn"`
 	LLMCurate    bool           `json:"llm_curate"`
+	Verbose      bool           `json:"verbose"` // show full skill banners when loaded
 }
 
 // ImportConfig controls the URI import flow.
@@ -130,6 +131,7 @@ func DefaultSkillsConfig() SkillsConfig {
 		},
 		LLMLearn:  true,
 		LLMCurate: true,
+		Verbose:   false,
 	}
 }
 

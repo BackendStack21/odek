@@ -35,7 +35,7 @@ type Handler struct {
 	// Returns the response text (may be empty).
 	// Should run asynchronously if it starts the agent loop — callers
 	// should dispatch to a goroutine to avoid blocking the update loop.
-	OnTextMessage func(chatID int64, text string) (string, error)
+	OnTextMessage func(chatID int64, messageID int, text string) (string, error)
 
 	// OnCallbackQuery is called when a callback query is received and
 	// it was NOT handled by the TelegramApprover. Returns the response
@@ -44,19 +44,19 @@ type Handler struct {
 
 	// OnCommand is called when a bot command (e.g. /start) is received.
 	// Returns the response text (may be empty).
-	OnCommand func(chatID int64, command string, args string) (string, error)
+	OnCommand func(chatID int64, messageID int, command string, args string) (string, error)
 
 	// OnVoiceMessage is called when a voice message is received.
 	// Returns the response text (may be empty).
 	// fileID is the Telegram file ID of the voice message in OGG format.
 	// Callers should use DownloadVoice to save the file locally.
-	OnVoiceMessage func(chatID int64, fileID string) (string, error)
+	OnVoiceMessage func(chatID int64, messageID int, fileID string) (string, error)
 
 	// OnPhotoMessage is called when a photo message is received.
 	// Returns the response text (may be empty).
 	// fileIDs contains all available sizes (last = largest).
 	// Callers should use DownloadPhoto with the last element.
-	OnPhotoMessage func(chatID int64, fileIDs []string) (string, error)
+	OnPhotoMessage func(chatID int64, messageID int, fileIDs []string) (string, error)
 
 	// OnError is called when a processing error occurs.
 	OnError func(chatID int64, err error)
@@ -111,8 +111,8 @@ func (h *Handler) SetLogger(l Logger) {
 }
 
 // defaultTextHandler returns a default OnTextMessage callback.
-func defaultTextHandler() func(int64, string) (string, error) {
-	return func(_ int64, _ string) (string, error) {
+func defaultTextHandler() func(int64, int, string) (string, error) {
+	return func(_ int64, _ int, _ string) (string, error) {
 		return "Not implemented yet: text", nil
 	}
 }
@@ -125,16 +125,16 @@ func defaultCallbackHandler() func(int64, string) (string, error) {
 }
 
 // defaultCommandHandler returns a default OnCommand callback.
-func defaultCommandHandler() func(int64, string, string) (string, error) {
-	return func(_ int64, _, _ string) (string, error) {
+func defaultCommandHandler() func(int64, int, string, string) (string, error) {
+	return func(_ int64, _ int, _ string, _ string) (string, error) {
 		return "Not implemented yet: command", nil
 	}
 }
 
 // defaultVoiceHandler returns a default OnVoiceMessage callback that downloads
 // the voice file and returns a MEDIA: response.
-func defaultVoiceHandler(bot *Bot) func(int64, string) (string, error) {
-	return func(chatID int64, fileID string) (string, error) {
+func defaultVoiceHandler(bot *Bot) func(int64, int, string) (string, error) {
+	return func(chatID int64, _ int, fileID string) (string, error) {
 		path, err := DownloadVoice(bot, fileID)
 		if err != nil {
 			return "", fmt.Errorf("telegram handler: download voice: %w", err)
@@ -145,8 +145,8 @@ func defaultVoiceHandler(bot *Bot) func(int64, string) (string, error) {
 
 // defaultPhotoHandler returns a default OnPhotoMessage callback that downloads
 // the largest photo size and returns a MEDIA: response.
-func defaultPhotoHandler(bot *Bot) func(int64, []string) (string, error) {
-	return func(chatID int64, fileIDs []string) (string, error) {
+func defaultPhotoHandler(bot *Bot) func(int64, int, []string) (string, error) {
+	return func(chatID int64, _ int, fileIDs []string) (string, error) {
 		path, err := DownloadPhoto(bot, fileIDs)
 		if err != nil {
 			return "", fmt.Errorf("telegram handler: download photo: %w", err)
@@ -184,7 +184,7 @@ func (h *Handler) handleMessage(msg *Message) {
 		h.handleCommand(msg)
 	case msg.Voice != nil:
 		if h.OnVoiceMessage != nil {
-			resp, err := h.OnVoiceMessage(msg.Chat.ID, msg.Voice.FileID)
+			resp, err := h.OnVoiceMessage(msg.Chat.ID, msg.ID, msg.Voice.FileID)
 			if err != nil {
 				h.log.Error("voice message handler failed", "chat_id", msg.Chat.ID, "error", err)
 				if h.OnError != nil {
@@ -193,7 +193,7 @@ func (h *Handler) handleMessage(msg *Message) {
 				return
 			}
 			if resp != "" {
-				h.SendResponse(msg.Chat.ID, resp)
+				h.SendResponse(msg.Chat.ID, resp, msg.ID)
 			}
 		}
 	case msg.Photo != nil:
@@ -202,7 +202,7 @@ func (h *Handler) handleMessage(msg *Message) {
 			for i, p := range msg.Photo {
 				fileIDs[i] = p.FileID
 			}
-			resp, err := h.OnPhotoMessage(msg.Chat.ID, fileIDs)
+			resp, err := h.OnPhotoMessage(msg.Chat.ID, msg.ID, fileIDs)
 			if err != nil {
 				h.log.Error("photo message handler failed", "chat_id", msg.Chat.ID, "error", err)
 				if h.OnError != nil {
@@ -211,12 +211,12 @@ func (h *Handler) handleMessage(msg *Message) {
 				return
 			}
 			if resp != "" {
-				h.SendResponse(msg.Chat.ID, resp)
+				h.SendResponse(msg.Chat.ID, resp, msg.ID)
 			}
 		}
 	case msg.Text != "":
 		if h.OnTextMessage != nil {
-			resp, err := h.OnTextMessage(msg.Chat.ID, msg.Text)
+			resp, err := h.OnTextMessage(msg.Chat.ID, msg.ID, msg.Text)
 			if err != nil {
 				h.log.Error("text message handler failed", "chat_id", msg.Chat.ID, "error", err)
 				if h.OnError != nil {
@@ -225,7 +225,7 @@ func (h *Handler) handleMessage(msg *Message) {
 				return
 			}
 			if resp != "" {
-				h.SendResponse(msg.Chat.ID, resp)
+				h.SendResponse(msg.Chat.ID, resp, msg.ID)
 			}
 		}
 	default:
@@ -255,7 +255,7 @@ func (h *Handler) handleCommand(msg *Message) {
 	}
 
 	if h.OnCommand != nil {
-		resp, err := h.OnCommand(msg.Chat.ID, cmd, args)
+		resp, err := h.OnCommand(msg.Chat.ID, msg.ID, cmd, args)
 		if err != nil {
 			h.log.Error("command handler failed", "chat_id", msg.Chat.ID, "command", cmd, "error", err)
 			if h.OnError != nil {
@@ -264,7 +264,7 @@ func (h *Handler) handleCommand(msg *Message) {
 			return
 		}
 		if resp != "" {
-			h.SendResponse(msg.Chat.ID, resp)
+			h.SendResponse(msg.Chat.ID, resp, msg.ID)
 		}
 	}
 }
@@ -306,7 +306,7 @@ func (h *Handler) handleCallback(cq *CallbackQuery) {
 			return
 		}
 		if resp != "" {
-			h.SendResponse(cq.Message.Chat.ID, resp)
+			h.SendResponse(cq.Message.Chat.ID, resp, cq.Message.ID)
 		}
 	}
 }
@@ -315,14 +315,15 @@ func (h *Handler) handleCallback(cq *CallbackQuery) {
 
 // SendResponse sends a response text to the given chat.
 // It handles MEDIA: prefix, chunking, MarkdownV2 formatting, and retry logic.
-func (h *Handler) SendResponse(chatID int64, text string) {
+// If replyToMessageID is non-zero, the response is sent as a reply to that message.
+func (h *Handler) SendResponse(chatID int64, text string, replyToMessageID int) {
 	if text == "" {
 		return
 	}
 
 	// Check for MEDIA: prefix.
 	if strings.HasPrefix(text, "MEDIA:") {
-		h.sendMedia(chatID, text)
+		h.sendMedia(chatID, text, replyToMessageID)
 		return
 	}
 
@@ -340,13 +341,14 @@ func (h *Handler) SendResponse(chatID int64, text string) {
 		if chunk == "" {
 			continue
 		}
-		h.sendChunk(chatID, chunk)
+		h.sendChunk(chatID, chunk, replyToMessageID)
 	}
 }
 
 // sendMedia handles a MEDIA: prefixed response.
 // Format: "MEDIA:photo:/path/to/file.jpg" or "MEDIA:voice:/path/to/file.ogg"
-func (h *Handler) sendMedia(chatID int64, text string) {
+// If replyToMessageID is non-zero, the media is sent as a reply to that message.
+func (h *Handler) sendMedia(chatID int64, text string, replyToMessageID int) {
 	// Strip the "MEDIA:" prefix.
 	rest := strings.TrimPrefix(text, "MEDIA:")
 	parts := strings.SplitN(rest, ":", 2)
@@ -369,9 +371,17 @@ func (h *Handler) sendMedia(chatID int64, text string) {
 	var err error
 	switch mediaType {
 	case "photo":
-		_, err = h.Bot.SendPhoto(chatID, filePath, "")
+		var opts *SendOpts
+		if replyToMessageID != 0 {
+			opts = &SendOpts{ReplyToMessageID: replyToMessageID}
+		}
+		_, err = h.Bot.SendPhoto(chatID, filePath, "", opts)
 	case "voice":
-		_, err = h.Bot.SendVoice(chatID, filePath, "")
+		var opts *SendOpts
+		if replyToMessageID != 0 {
+			opts = &SendOpts{ReplyToMessageID: replyToMessageID}
+		}
+		_, err = h.Bot.SendVoice(chatID, filePath, "", opts)
 	default:
 		h.log.Error("unknown media type", "chat_id", chatID, "media_type", mediaType)
 		if h.OnError != nil {
@@ -389,9 +399,13 @@ func (h *Handler) sendMedia(chatID int64, text string) {
 }
 
 // sendChunk sends a single text chunk, retrying with plain text on parse errors.
-func (h *Handler) sendChunk(chatID int64, chunk string) {
+// If replyToMessageID is non-zero, the chunk is sent as a reply to that message.
+func (h *Handler) sendChunk(chatID int64, chunk string, replyToMessageID int) {
 	// Try with MarkdownV2 first.
 	opts := &SendOpts{ParseMode: ParseModeMarkdownV2}
+	if replyToMessageID != 0 {
+		opts.ReplyToMessageID = replyToMessageID
+	}
 	_, err := h.Bot.SendMessage(chatID, chunk, opts)
 	if err == nil {
 		return
@@ -400,7 +414,11 @@ func (h *Handler) sendChunk(chatID int64, chunk string) {
 	// If it's a "Can't parse entities" error, retry with plain text.
 	errStr := err.Error()
 	if strings.Contains(errStr, "Can't parse entities") || strings.Contains(errStr, "can't parse") {
-		_, err = h.Bot.SendMessage(chatID, chunk, nil)
+		plainOpts := &SendOpts{}
+		if replyToMessageID != 0 {
+			plainOpts.ReplyToMessageID = replyToMessageID
+		}
+		_, err = h.Bot.SendMessage(chatID, chunk, plainOpts)
 	}
 
 	if err != nil {

@@ -572,7 +572,7 @@ func TestSendPhoto_Success(t *testing.T) {
 	bot := NewBot("x")
 	bot.BaseURL = ts.URL
 
-	msg, err := bot.SendPhoto(123, photoPath, "nice photo")
+	msg, err := bot.SendPhoto(123, photoPath, "nice photo", nil)
 	if err != nil {
 		t.Fatalf("SendPhoto: %v", err)
 	}
@@ -605,7 +605,7 @@ func TestSendPhoto_NoCaption(t *testing.T) {
 	bot := NewBot("x")
 	bot.BaseURL = ts.URL
 
-	msg, err := bot.SendPhoto(456, photoPath, "")
+	msg, err := bot.SendPhoto(456, photoPath, "", nil)
 	if err != nil {
 		t.Fatalf("SendPhoto(no caption): %v", err)
 	}
@@ -617,7 +617,7 @@ func TestSendPhoto_NoCaption(t *testing.T) {
 func TestSendPhoto_FileNotFound(t *testing.T) {
 	bot := NewBot("x")
 	// No server needed — the file doesn't exist locally.
-	_, err := bot.SendPhoto(1, "/nonexistent/path.jpg", "")
+	_, err := bot.SendPhoto(1, "/nonexistent/path.jpg", "", nil)
 	if err == nil {
 		t.Fatal("expected error for missing file, got nil")
 	}
@@ -1241,7 +1241,7 @@ func TestBot_SendVoice_NoCaption(t *testing.T) {
 	bot := NewBot("x")
 	bot.BaseURL = ts.URL
 
-	msg, err := bot.SendVoice(789, voicePath, "")
+	msg, err := bot.SendVoice(789, voicePath, "", nil)
 	if err != nil {
 		t.Fatalf("SendVoice(no caption): %v", err)
 	}

@@ -12,23 +12,27 @@ const defaultMemoryDir = "memory"
 // Default buffer size (lines).
 const defaultBufferLines = 20
 
+// Default minimum turns before episode extraction triggers.
+const defaultMinTurnsForExtraction = 3
+
 // MemoryConfig holds configuration for the memory system.
 // Mirrors the JSON config section.
 // Bool fields use *bool so that JSON omitempty can distinguish
 // "not set" (nil) from "explicitly false" (pointer to false).
 type MemoryConfig struct {
-	Enabled        *bool   `json:"enabled,omitempty"`
-	FactsLimitUser int     `json:"facts_limit_user,omitempty"`
-	FactsLimitEnv  int     `json:"facts_limit_env,omitempty"`
-	BufferLines    int     `json:"buffer_lines,omitempty"`
-	BufferEnabled  *bool   `json:"buffer_enabled,omitempty"`
-	MergeOnWrite   *bool   `json:"merge_on_write,omitempty"`
-	ExtractOnEnd   *bool   `json:"extract_on_end,omitempty"`
-	LLMSearch      *bool   `json:"llm_search,omitempty"`
-	LLMExtract     *bool   `json:"llm_extract,omitempty"`
-	LLMConsolidate *bool   `json:"llm_consolidate,omitempty"`
-	MergeThreshold float32 `json:"merge_threshold,omitempty"`
-	AddThreshold   float32 `json:"add_threshold,omitempty"`
+	Enabled              *bool   `json:"enabled,omitempty"`
+	FactsLimitUser       int     `json:"facts_limit_user,omitempty"`
+	FactsLimitEnv        int     `json:"facts_limit_env,omitempty"`
+	BufferLines          int     `json:"buffer_lines,omitempty"`
+	BufferEnabled        *bool   `json:"buffer_enabled,omitempty"`
+	MergeOnWrite         *bool   `json:"merge_on_write,omitempty"`
+	ExtractOnEnd         *bool   `json:"extract_on_end,omitempty"`
+	LLMSearch            *bool   `json:"llm_search,omitempty"`
+	LLMExtract           *bool   `json:"llm_extract,omitempty"`
+	LLMConsolidate       *bool   `json:"llm_consolidate,omitempty"`
+	MergeThreshold       float32 `json:"merge_threshold,omitempty"`
+	AddThreshold         float32 `json:"add_threshold,omitempty"`
+	MinTurnsForExtraction int    `json:"min_turns_for_extraction,omitempty"`
 }
 
 // BoolPtr returns a pointer to a bool value.
@@ -39,18 +43,19 @@ func boolPtr(b bool) *bool { return BoolPtr(b) }
 // DefaultMemoryConfig returns sensible defaults.
 func DefaultMemoryConfig() MemoryConfig {
 	return MemoryConfig{
-		Enabled:        boolPtr(true),
-		FactsLimitUser: defaultFactsLimitUser,
-		FactsLimitEnv:  defaultFactsLimitEnv,
-		BufferLines:    defaultBufferLines,
-		BufferEnabled:  boolPtr(true),
-		MergeOnWrite:   boolPtr(true),
-		ExtractOnEnd:   boolPtr(true),
-		LLMSearch:      boolPtr(true),
-		LLMExtract:     boolPtr(true),
-		LLMConsolidate: boolPtr(true),
-		MergeThreshold: MergeThreshold,
-		AddThreshold:   AddThreshold,
+		Enabled:              boolPtr(true),
+		FactsLimitUser:       defaultFactsLimitUser,
+		FactsLimitEnv:        defaultFactsLimitEnv,
+		BufferLines:          defaultBufferLines,
+		BufferEnabled:        boolPtr(true),
+		MergeOnWrite:         boolPtr(true),
+		ExtractOnEnd:         boolPtr(true),
+		LLMSearch:            boolPtr(true),
+		LLMExtract:           boolPtr(true),
+		LLMConsolidate:       boolPtr(true),
+		MergeThreshold:       MergeThreshold,
+		AddThreshold:         AddThreshold,
+		MinTurnsForExtraction: defaultMinTurnsForExtraction,
 	}
 }
 
@@ -114,6 +119,9 @@ func NewMemoryManager(memoryDir string, llc LLMClient, cfg MemoryConfig) *Memory
 	}
 	if cfg.AddThreshold > 0 {
 		def.AddThreshold = cfg.AddThreshold
+	}
+	if cfg.MinTurnsForExtraction > 0 {
+		def.MinTurnsForExtraction = cfg.MinTurnsForExtraction
 	}
 	cfg = def
 
@@ -373,7 +381,11 @@ func (m *MemoryManager) ClearBuffer() {
 // OnSessionEnd is called when a session ends. If turns >= threshold,
 // extracts durable facts using the LLM and stores them as an episode.
 func (m *MemoryManager) OnSessionEnd(sessionID string, turns int, messages []string) {
-	if m.cfg.ExtractOnEnd == nil || !*m.cfg.ExtractOnEnd || m.cfg.LLMExtract == nil || !*m.cfg.LLMExtract || m.llm == nil || turns < 3 || len(messages) == 0 {
+	minTurns := m.cfg.MinTurnsForExtraction
+	if minTurns <= 0 {
+		minTurns = defaultMinTurnsForExtraction
+	}
+	if m.cfg.ExtractOnEnd == nil || !*m.cfg.ExtractOnEnd || m.cfg.LLMExtract == nil || !*m.cfg.LLMExtract || m.llm == nil || turns < minTurns || len(messages) == 0 {
 		return
 	}
 

@@ -79,7 +79,7 @@ func TestE2E_FullTextMessageFlow(t *testing.T) {
 		capturedChatID int64
 		capturedText   string
 	)
-	handler.OnTextMessage = func(chatID int64, text string) (string, error) {
+	handler.OnTextMessage = func(chatID int64, messageID int, text string) (string, error) {
 		capturedChatID = chatID
 		capturedText = text
 		return "Hello back!", nil
@@ -204,7 +204,7 @@ func TestE2E_FullCommandFlow(t *testing.T) {
 		capturedCmd    string
 		capturedArgs   string
 	)
-	handler.OnCommand = func(chatID int64, cmd string, args string) (string, error) {
+	handler.OnCommand = func(chatID int64, messageID int, cmd string, args string) (string, error) {
 		capturedChatID = chatID
 		capturedCmd = cmd
 		capturedArgs = args
@@ -453,7 +453,7 @@ func TestE2E_PollThenHandlerFlow(t *testing.T) {
 		textChatID    int64
 		textContent   string
 	)
-	handler.OnTextMessage = func(chatID int64, text string) (string, error) {
+	handler.OnTextMessage = func(chatID int64, messageID int, text string) (string, error) {
 		textCallCount++
 		textChatID = chatID
 		textContent = text
@@ -616,7 +616,7 @@ func TestE2E_MediaFlow(t *testing.T) {
 	handler := NewHandler(bot)
 
 	// OnTextMessage returns a MEDIA:photo response.
-	handler.OnTextMessage = func(chatID int64, text string) (string, error) {
+	handler.OnTextMessage = func(chatID int64, messageID int, text string) (string, error) {
 		return "MEDIA:photo:" + tmpPath, nil
 	}
 
@@ -716,7 +716,7 @@ func TestE2E_VoiceMediaFlow(t *testing.T) {
 	poller.Timeout = 0
 	handler := NewHandler(bot)
 
-	handler.OnTextMessage = func(chatID int64, text string) (string, error) {
+	handler.OnTextMessage = func(chatID int64, messageID int, text string) (string, error) {
 		return "MEDIA:voice:" + tmpPath, nil
 	}
 
@@ -806,7 +806,7 @@ func TestE2E_PollEmptyThenMessage(t *testing.T) {
 	handler := NewHandler(bot)
 
 	var messagesReceived []string
-	handler.OnTextMessage = func(chatID int64, text string) (string, error) {
+	handler.OnTextMessage = func(chatID int64, messageID int, text string) (string, error) {
 		messagesReceived = append(messagesReceived, text)
 		return "Response to: " + text, nil
 	}
@@ -926,7 +926,7 @@ func TestE2E_InlineKeyboardResponse(t *testing.T) {
 	poller.Timeout = 0
 	handler := NewHandler(bot)
 
-	handler.OnCommand = func(chatID int64, cmd string, args string) (string, error) {
+	handler.OnCommand = func(chatID int64, messageID int, cmd string, args string) (string, error) {
 		return "Here are your options:", nil
 	}
 

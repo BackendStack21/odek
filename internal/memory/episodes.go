@@ -76,11 +76,11 @@ func (e *EpisodeStore) Write(sessionID, summary string, turns int) error {
 	})
 }
 
-// WriteIfEnough calls Write only if turns >= extractThreshold (3).
+// WriteIfEnough calls Write only if turns >= threshold.
 // Returns nil without writing if the threshold isn't met.
 func (e *EpisodeStore) WriteIfEnough(sessionID, summary string, turns int) error {
-	const extractThreshold = 3
-	if turns < extractThreshold {
+	const defaultThreshold = 3
+	if turns < defaultThreshold {
 		return nil
 	}
 	return e.Write(sessionID, summary, turns)

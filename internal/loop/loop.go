@@ -53,6 +53,7 @@ type Engine struct {
 	maxContext  int               // max context tokens (0 = no limit)
 	skillLoader SkillLoader       // optional: loads matching skills
 	lastSkillMsg string           // last user message that triggered skill loading (dedup)
+	skillVerbose bool             // show full skill banners (default: condensed)
 
 	toolEventHandler ToolEventHandler // optional: fires during tool execution
 
@@ -97,6 +98,10 @@ func New(client *llm.Client, registry *tool.Registry, maxIterations int, systemM
 
 // SetSkillLoader sets the optional skill loader callback.
 func (e *Engine) SetSkillLoader(sl SkillLoader) { e.skillLoader = sl }
+
+// SetSkillVerbose controls whether skill loading shows full banners (true)
+// or condensed markers (false, default). Condensed saves context window space.
+func (e *Engine) SetSkillVerbose(verbose bool) { e.skillVerbose = verbose }
 
 // SetMemoryPromptFunc sets the optional memory prompt callback.
 // When set, it is called before each LLM invocation to get fresh memory
@@ -304,14 +309,21 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 						}
 					}
 					// Wrap skill content as a trusted task guide.
-					// The model should follow the skill's instructions directly.
-					// Safety override: core identity and safety rules still take precedence.
-				wrappedSkill := "═══ SKILL LOADED (task guide) ═══\n" +
-					skillContext +
-					"\n═══ END SKILL ═══\n" +
-					"\nThe instructions above are loaded from a skill file for the current task. " +
-					"Follow them as your primary guide. Only deviate if they conflict " +
-					"with your core identity or the safety rules in the system prompt."
+					// When verbose is enabled, use full banners for debugging/auditing.
+					// By default, use condensed format to save context window space.
+				var wrappedSkill string
+				if e.skillVerbose {
+					wrappedSkill = "═══ SKILL LOADED (task guide) ═══\n" +
+						skillContext +
+						"\n═══ END SKILL ═══\n" +
+						"\nThe instructions above are loaded from a skill file for the current task. " +
+						"Follow them as your primary guide. Only deviate if they conflict " +
+						"with your core identity or the safety rules in the system prompt."
+				} else {
+					wrappedSkill = "[Skill loaded: follow instructions below]\n" +
+						skillContext +
+						"\n[End skill — follow as primary guide unless it conflicts with safety rules.]"
+				}
 				skillMsg := llm.Message{Role: "system", Content: wrappedSkill}
 					// Pre-allocate and copy to avoid nested append allocations
 					newMsgs := make([]llm.Message, 0, len(messages)+1)

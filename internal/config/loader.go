@@ -75,6 +75,7 @@ type SkillsConfig struct {
 	AutoSave     *skills.AutoSaveConfig      `json:"auto_save,omitempty"`
 	LLMLearn     *bool                       `json:"llm_learn,omitempty"`
 	LLMCurate    *bool                       `json:"llm_curate,omitempty"`
+	Verbose      *bool                       `json:"verbose,omitempty"`
 }
 
 // FileConfig is the JSON schema used by ~/.odek/config.json and ./odek.json.
@@ -607,6 +608,9 @@ func resolveSkills(cfg *SkillsConfig) skills.SkillsConfig {
 	if cfg.LLMCurate != nil {
 		def.LLMCurate = *cfg.LLMCurate
 	}
+	if cfg.Verbose != nil {
+		def.Verbose = *cfg.Verbose
+	}
 	return def
 }
 
@@ -663,6 +667,9 @@ func resolveMemory(cfg *memory.MemoryConfig) memory.MemoryConfig {
 	}
 	if cfg.AddThreshold > 0 {
 		def.AddThreshold = cfg.AddThreshold
+	}
+	if cfg.MinTurnsForExtraction > 0 {
+		def.MinTurnsForExtraction = cfg.MinTurnsForExtraction
 	}
 	return def
 }

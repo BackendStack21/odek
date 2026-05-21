@@ -317,7 +317,7 @@ func TestOnCommandStop_NoActiveTask(t *testing.T) {
 	h := newTestHandler(bot)
 
 	var result string
-	h.OnCommand = func(chatID int64, cmdName string, argsStr string) (string, error) {
+	h.OnCommand = func(chatID int64, messageID int, cmdName string, argsStr string) (string, error) {
 		if cmdName == "stop" {
 			// Replicate the stop logic from telegramCmd.
 			chatCancels.LoadAndDelete(chatID)
@@ -327,7 +327,7 @@ func TestOnCommandStop_NoActiveTask(t *testing.T) {
 		return "", nil
 	}
 
-	result, _ = h.OnCommand(chatID, "stop", "")
+	result, _ = h.OnCommand(chatID, 0, "stop", "")
 	if !strings.Contains(result, "No active task to stop") {
 		t.Errorf("expected 'No active task to stop', got: %q", result)
 	}
@@ -360,7 +360,7 @@ func TestOnCommandStop_WithActiveTask(t *testing.T) {
 	h := newTestHandler(bot)
 
 	var result string
-	h.OnCommand = func(chatID int64, cmdName string, argsStr string) (string, error) {
+	h.OnCommand = func(chatID int64, messageID int, cmdName string, argsStr string) (string, error) {
 		if cmdName == "stop" {
 			chatCancels.LoadAndDelete(chatID)
 			if infoVal, ok := chatRunInfos.LoadAndDelete(chatID); ok {
@@ -372,7 +372,7 @@ func TestOnCommandStop_WithActiveTask(t *testing.T) {
 		return "", nil
 	}
 
-	result, _ = h.OnCommand(chatID, "stop", "")
+	result, _ = h.OnCommand(chatID, 0, "stop", "")
 	if !strings.Contains(result, "Task Interrupted") {
 		t.Errorf("expected 'Task Interrupted', got: %q", result)
 	}
@@ -407,7 +407,7 @@ func TestOnCommandStop_CancelsContext(t *testing.T) {
 
 	cancelled := false
 	h := newTestHandler(newTestBot(t))
-	h.OnCommand = func(chatID int64, cmdName string, argsStr string) (string, error) {
+	h.OnCommand = func(chatID int64, messageID int, cmdName string, argsStr string) (string, error) {
 		if cmdName == "stop" {
 			if cancelVal, ok := chatCancels.LoadAndDelete(chatID); ok {
 				c := cancelVal.(context.CancelFunc)
@@ -420,7 +420,7 @@ func TestOnCommandStop_CancelsContext(t *testing.T) {
 		return "", nil
 	}
 
-	h.OnCommand(chatID, "stop", "")
+	h.OnCommand(chatID, 0, "stop", "")
 
 	if !cancelled {
 		t.Error("/stop should call the stored cancel function")
@@ -451,7 +451,7 @@ func TestOnCommandStop_NoRunInfoWhenTaskCancelledEarly(t *testing.T) {
 
 	h := newTestHandler(newTestBot(t))
 	var result string
-	h.OnCommand = func(chatID int64, cmdName string, argsStr string) (string, error) {
+	h.OnCommand = func(chatID int64, messageID int, cmdName string, argsStr string) (string, error) {
 		if cmdName == "stop" {
 			chatCancels.LoadAndDelete(chatID)
 			if _, ok := chatRunInfos.LoadAndDelete(chatID); ok {
@@ -462,7 +462,7 @@ func TestOnCommandStop_NoRunInfoWhenTaskCancelledEarly(t *testing.T) {
 		return "", nil
 	}
 
-	result, _ = h.OnCommand(chatID, "stop", "")
+	result, _ = h.OnCommand(chatID, 0, "stop", "")
 	if !strings.Contains(result, "No active task to stop") {
 		t.Errorf("expected 'No active task to stop' when no run info, got: %q", result)
 	}

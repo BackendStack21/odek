@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -154,7 +155,7 @@ func TestNewHandler_defaults(t *testing.T) {
 	}
 
 	// Verify default callbacks return appropriate messages.
-	textResp, _ := h.OnTextMessage(1, "hi")
+	textResp, _ := h.OnTextMessage(1, 0, "hi")
 	if textResp != "Not implemented yet: text" {
 		t.Errorf("default OnTextMessage = %q, want %q", textResp, "Not implemented yet: text")
 	}
@@ -164,19 +165,19 @@ func TestNewHandler_defaults(t *testing.T) {
 		t.Errorf("default OnCallbackQuery = %q, want %q", cbResp, "Not implemented yet: callback query")
 	}
 
-	cmdResp, _ := h.OnCommand(1, "start", "")
+	cmdResp, _ := h.OnCommand(1, 0, "start", "")
 	if cmdResp != "Not implemented yet: command" {
 		t.Errorf("default OnCommand = %q, want %q", cmdResp, "Not implemented yet: command")
 	}
 
-	voiceResp, voiceErr := h.OnVoiceMessage(1, "file_id")
+	voiceResp, voiceErr := h.OnVoiceMessage(1, 0, "file_id")
 	// Voice and photo defaults now try to download via Bot (no real client in test).
 	// They should return an error, not a placeholder string.
 	if voiceResp != "" || voiceErr == nil {
 		t.Logf("onVoiceMessage returned: %q (err=%v)", voiceResp, voiceErr)
 	}
 
-	photoResp, photoErr := h.OnPhotoMessage(1, []string{"f1", "f2"})
+	photoResp, photoErr := h.OnPhotoMessage(1, 0, []string{"f1", "f2"})
 	if photoResp != "" || photoErr == nil {
 		t.Logf("onPhotoMessage returned: %q (err=%v)", photoResp, photoErr)
 	}
@@ -186,15 +187,17 @@ func TestNewHandler_defaults(t *testing.T) {
 
 func TestHandleUpdate_TextMessage(t *testing.T) {
 	var (
-		capturedChatID int64
-		capturedText   string
+		capturedChatID    int64
+		capturedMessageID int
+		capturedText      string
 	)
 	ts := testServer(t, nil)
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
-	h.OnTextMessage = func(chatID int64, text string) (string, error) {
+	h.OnTextMessage = func(chatID int64, messageID int, text string) (string, error) {
 		capturedChatID = chatID
+		capturedMessageID = messageID
 		capturedText = text
 		return "response text", nil
 	}
@@ -202,6 +205,7 @@ func TestHandleUpdate_TextMessage(t *testing.T) {
 	upd := Update{
 		ID: 1,
 		Message: &Message{
+			ID:   42,
 			Chat: &Chat{ID: 123},
 			From: &User{ID: 456},
 			Text: "hello world",
@@ -212,6 +216,9 @@ func TestHandleUpdate_TextMessage(t *testing.T) {
 
 	if capturedChatID != 123 {
 		t.Errorf("OnTextMessage chatID = %d, want 123", capturedChatID)
+	}
+	if capturedMessageID != 42 {
+		t.Errorf("OnTextMessage messageID = %d, want 42", capturedMessageID)
 	}
 	if capturedText != "hello world" {
 		t.Errorf("OnTextMessage text = %q, want %q", capturedText, "hello world")
@@ -265,7 +272,7 @@ func TestHandleUpdate_Command(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
-	h.OnCommand = func(chatID int64, cmd string, args string) (string, error) {
+	h.OnCommand = func(chatID int64, messageID int, cmd string, args string) (string, error) {
 		capturedChatID = chatID
 		capturedCmd = cmd
 		capturedArgs = args
@@ -306,7 +313,7 @@ func TestHandleUpdate_VoiceMessage(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
-	h.OnVoiceMessage = func(chatID int64, fileID string) (string, error) {
+	h.OnVoiceMessage = func(chatID int64, messageID int, fileID string) (string, error) {
 		capturedChatID = chatID
 		capturedFileID = fileID
 		return "voice received", nil
@@ -344,7 +351,7 @@ func TestHandleUpdate_PhotoMessage(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
-	h.OnPhotoMessage = func(chatID int64, fileIDs []string) (string, error) {
+	h.OnPhotoMessage = func(chatID int64, messageID int, fileIDs []string) (string, error) {
 		capturedChatID = chatID
 		capturedFileIDs = fileIDs
 		return "photo received", nil
@@ -386,7 +393,7 @@ func TestHandleUpdate_UnsupportedType(t *testing.T) {
 	h := NewHandler(bot)
 
 	called := false
-	h.OnTextMessage = func(_ int64, _ string) (string, error) {
+	h.OnTextMessage = func(_ int64, _ int, _ string) (string, error) {
 		called = true
 		return "", nil
 	}
@@ -405,7 +412,7 @@ func TestHandleUpdate_NilChat(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
-	h.OnTextMessage = func(_ int64, _ string) (string, error) {
+	h.OnTextMessage = func(_ int64, _ int, _ string) (string, error) {
 		called = true
 		return "", nil
 	}
@@ -432,7 +439,7 @@ func TestHandleUpdate_NilFrom(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
-	h.OnTextMessage = func(_ int64, _ string) (string, error) {
+	h.OnTextMessage = func(_ int64, _ int, _ string) (string, error) {
 		called = true
 		return "", nil
 	}
@@ -558,7 +565,7 @@ func TestHandleCommand_MentionMatchingBot(t *testing.T) {
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
 	h.Config.BotUsername = "MyTestBot"
-	h.OnCommand = func(_ int64, cmd string, args string) (string, error) {
+	h.OnCommand = func(_ int64, _ int, cmd string, args string) (string, error) {
 		capturedCmd = cmd
 		capturedArgs = args
 		return "ok", nil
@@ -586,7 +593,7 @@ func TestHandleCommand_MentionDifferentBot_Ignored(t *testing.T) {
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
 	h.Config.BotUsername = "MyTestBot"
-	h.OnCommand = func(_ int64, _ string, _ string) (string, error) {
+	h.OnCommand = func(_ int64, _ int, _ string, _ string) (string, error) {
 		called = true
 		return "", nil
 	}
@@ -610,7 +617,7 @@ func TestHandleCommand_MentionDifferentBotCaseInsensitive(t *testing.T) {
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
 	h.Config.BotUsername = "MyTestBot"
-	h.OnCommand = func(_ int64, _ string, _ string) (string, error) {
+	h.OnCommand = func(_ int64, _ int, _ string, _ string) (string, error) {
 		called = true
 		return "", nil
 	}
@@ -634,7 +641,7 @@ func TestHandleCommand_NoMention_GroupWithBotUsername(t *testing.T) {
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
 	h.Config.BotUsername = "MyTestBot"
-	h.OnCommand = func(_ int64, cmd string, _ string) (string, error) {
+	h.OnCommand = func(_ int64, _ int, cmd string, _ string) (string, error) {
 		capturedCmd = cmd
 		return "ok", nil
 	}
@@ -658,7 +665,7 @@ func TestHandleCommand_NoBotUsernameSet(t *testing.T) {
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
 	h.Config.BotUsername = "" // no bot username configured
-	h.OnCommand = func(_ int64, cmd string, _ string) (string, error) {
+	h.OnCommand = func(_ int64, _ int, cmd string, _ string) (string, error) {
 		capturedCmd = cmd
 		return "ok", nil
 	}
@@ -682,7 +689,7 @@ func TestHandleCommand_EmptyCommand(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
-	h.OnCommand = func(_ int64, _ string, _ string) (string, error) {
+	h.OnCommand = func(_ int64, _ int, _ string, _ string) (string, error) {
 		called = true
 		return "", nil
 	}
@@ -807,7 +814,7 @@ func TestSendResponse_callsSendMessage(t *testing.T) {
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
 
-	h.SendResponse(123, "Hello, World!")
+	h.SendResponse(123, "Hello, World!", 0)
 
 	reqs := rec.all()
 	// Should have at least one sendMessage call
@@ -836,7 +843,7 @@ func TestSendResponse_SendMessageWithParseMode(t *testing.T) {
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
 
-	h.SendResponse(123, "Hello *World*!")
+	h.SendResponse(123, "Hello *World*!", 0)
 
 	reqs := rec.all()
 	var foundParseMode bool
@@ -860,11 +867,75 @@ func TestSendResponse_EmptyString(t *testing.T) {
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
 
-	h.SendResponse(123, "")
+	h.SendResponse(123, "", 0)
 
 	if rec.count() != 0 {
 		t.Errorf("SendResponse with empty string made %d HTTP requests, want 0", rec.count())
 	}
+}
+
+// TestSendResponse_WithReplyTo verifies that reply_to_message_id is included
+// in the HTTP request body when replyToMessageID is non-zero.
+func TestSendResponse_WithReplyTo(t *testing.T) {
+	rec := new(requestRecorder)
+	ts := testServer(t, rec)
+	defer ts.Close()
+	bot := testBot(t, ts)
+	h := NewHandler(bot)
+
+	h.SendResponse(123, "Hello response", 42)
+
+	reqs := rec.all()
+	for _, req := range reqs {
+		if strings.HasSuffix(req.Path, "/sendMessage") {
+			var body map[string]any
+			if err := json.Unmarshal([]byte(req.Body), &body); err != nil {
+				t.Fatalf("failed to parse body: %v", err)
+			}
+			got, ok := body["reply_to_message_id"]
+			if !ok {
+				t.Errorf("sendMessage body missing reply_to_message_id, got keys: %v", keys(body))
+			}
+			if got != float64(42) {
+				t.Errorf("reply_to_message_id = %v (%T), want 42", got, got)
+			}
+			return
+		}
+	}
+	t.Error("no sendMessage request found")
+}
+
+// TestSendResponse_WithoutReplyTo verifies that reply_to_message_id is NOT
+// included when replyToMessageID is 0.
+func TestSendResponse_WithoutReplyTo(t *testing.T) {
+	rec := new(requestRecorder)
+	ts := testServer(t, rec)
+	defer ts.Close()
+	bot := testBot(t, ts)
+	h := NewHandler(bot)
+
+	h.SendResponse(123, "Hello response", 0)
+
+	reqs := rec.all()
+	for _, req := range reqs {
+		if strings.HasSuffix(req.Path, "/sendMessage") {
+			if strings.Contains(req.Body, "reply_to_message_id") {
+				t.Errorf("sendMessage body should not contain reply_to_message_id when param is 0: %s", req.Body)
+			}
+			return
+		}
+	}
+	t.Error("no sendMessage request found")
+}
+
+// keys returns the keys of a map as a sorted slice (for test error messages).
+func keys(m map[string]any) []string {
+	k := make([]string, 0, len(m))
+	for key := range m {
+		k = append(k, key)
+	}
+	sort.Strings(k)
+	return k
 }
 
 func TestSendResponse_RetryOnParseError(t *testing.T) {
@@ -897,7 +968,7 @@ func TestSendResponse_RetryOnParseError(t *testing.T) {
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
 
-	h.SendResponse(123, "Hello _World_")
+	h.SendResponse(123, "Hello _World_", 0)
 
 	// Should have been called twice: first with MarkdownV2 (fails), then plain text (succeeds)
 	if attempt < 2 {
@@ -923,7 +994,7 @@ func TestSendResponse_MediaPhoto(t *testing.T) {
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
 
-	h.SendResponse(123, "MEDIA:photo:"+tmpPath)
+	h.SendResponse(123, "MEDIA:photo:"+tmpPath, 0)
 
 	reqs := rec.all()
 	var found bool
@@ -953,7 +1024,7 @@ func TestSendResponse_MediaVoice(t *testing.T) {
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
 
-	h.SendResponse(456, "MEDIA:voice:"+tmpPath)
+	h.SendResponse(456, "MEDIA:voice:"+tmpPath, 0)
 
 	reqs := rec.all()
 	var found bool
@@ -980,7 +1051,7 @@ func TestSendResponse_MediaFileNotFound(t *testing.T) {
 		errCalled = true
 	}
 
-	h.SendResponse(123, "MEDIA:photo:/nonexistent/file.jpg")
+	h.SendResponse(123, "MEDIA:photo:/nonexistent/file.jpg", 0)
 
 	reqs := rec.all()
 	for _, req := range reqs {
@@ -1013,7 +1084,7 @@ func TestSendResponse_MediaUnknownType(t *testing.T) {
 		errCalled = true
 	}
 
-	h.SendResponse(123, "MEDIA:document:"+tmpPath)
+	h.SendResponse(123, "MEDIA:document:"+tmpPath, 0)
 
 	reqs := rec.all()
 	for _, req := range reqs {
@@ -1034,7 +1105,7 @@ func TestSendResponse_MediaMalformed(t *testing.T) {
 	h := NewHandler(bot)
 
 	// MEDIA: with no type:path — should be silently ignored (len(parts) < 2)
-	h.SendResponse(123, "MEDIA:")
+	h.SendResponse(123, "MEDIA:", 0)
 	// No requests should be made, no error should be raised
 	if rec.count() != 0 {
 		t.Errorf("expected 0 requests for malformed MEDIA, got %d", rec.count())
@@ -1054,7 +1125,7 @@ func TestSendResponse_Chunking(t *testing.T) {
 
 	// Create text long enough to trigger chunking (over 4096 bytes).
 	longText := strings.Repeat("A paragraph. ", 50) + "\n\n" + strings.Repeat("Another paragraph. ", 50)
-	h.SendResponse(123, longText)
+	h.SendResponse(123, longText, 0)
 
 	reqs := rec.all()
 	var sendMsgCount int
@@ -1079,7 +1150,7 @@ func TestHandleUpdate_OnErrorCalled(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
-	h.OnTextMessage = func(_ int64, _ string) (string, error) {
+	h.OnTextMessage = func(_ int64, _ int, _ string) (string, error) {
 		return "", assertError("simulated error")
 	}
 	h.OnError = func(chatID int64, err error) {
@@ -1122,7 +1193,7 @@ func TestHandleUpdate_NotAllowed(t *testing.T) {
 	h.Config.AllowedUsers = []int64{10}
 
 	called := false
-	h.OnTextMessage = func(_ int64, _ string) (string, error) {
+	h.OnTextMessage = func(_ int64, _ int, _ string) (string, error) {
 		called = true
 		return "", nil
 	}
@@ -1151,7 +1222,7 @@ func TestHandleUpdate_AllowedUserOnly(t *testing.T) {
 	h.Config.AllowedUsers = []int64{42}
 
 	called := false
-	h.OnTextMessage = func(_ int64, _ string) (string, error) {
+	h.OnTextMessage = func(_ int64, _ int, _ string) (string, error) {
 		called = true
 		return "", nil
 	}
@@ -1425,7 +1496,7 @@ func TestHandler_HandleCommand_MentionErrorHandling(t *testing.T) {
 
 	chatID := int64(100)
 	expectedErr := assertError("command execution failed")
-	h.OnCommand = func(_ int64, _ string, _ string) (string, error) {
+	h.OnCommand = func(_ int64, _ int, _ string, _ string) (string, error) {
 		return "", expectedErr
 	}
 
@@ -1462,7 +1533,7 @@ func TestHandler_HandleMessage_OnErrorCalledOnVoiceFailure(t *testing.T) {
 
 	chatID := int64(333)
 	expectedErr := assertError("voice processing failed")
-	h.OnVoiceMessage = func(_ int64, _ string) (string, error) {
+	h.OnVoiceMessage = func(_ int64, _ int, _ string) (string, error) {
 		return "", expectedErr
 	}
 
@@ -1503,7 +1574,7 @@ func TestHandler_HandleMessage_OnErrorCalledOnPhotoFailure(t *testing.T) {
 
 	chatID := int64(555)
 	expectedErr := assertError("photo processing failed")
-	h.OnPhotoMessage = func(_ int64, _ []string) (string, error) {
+	h.OnPhotoMessage = func(_ int64, _ int, _ []string) (string, error) {
 		return "", expectedErr
 	}
 
@@ -1542,7 +1613,7 @@ func TestHandler_HandleMessage_OnErrorCalledOnTextFailure(t *testing.T) {
 
 	chatID := int64(777)
 	expectedErr := assertError("text processing failed")
-	h.OnTextMessage = func(_ int64, _ string) (string, error) {
+	h.OnTextMessage = func(_ int64, _ int, _ string) (string, error) {
 		return "", expectedErr
 	}
 

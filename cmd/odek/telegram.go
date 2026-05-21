@@ -161,13 +161,13 @@ func telegramCmd(args []string) error {
 	// block the main update processing loop. The TelegramApprover blocks waiting
 	// for inline keyboard callbacks, which arrive via the main loop — only async
 	// dispatch prevents deadlock.
-	handler.OnTextMessage = func(chatID int64, text string) (string, error) {
-		go handleChatMessage(chatID, text, bot, handler, sessionManager,
+	handler.OnTextMessage = func(chatID int64, messageID int, text string) (string, error) {
+		go handleChatMessage(chatID, messageID, text, bot, handler, sessionManager,
 			resolved, systemMessage, handlerLog)
 		return "", nil
 	}
 
-	handler.OnCommand = func(chatID int64, cmdName string, argsStr string) (string, error) {
+	handler.OnCommand = func(chatID int64, messageID int, cmdName string, argsStr string) (string, error) {
 		cmd := telegram.FindCommand(cmdName)
 		if cmd == nil {
 			return fmt.Sprintf("Unknown command: /%s", cmdName), nil
@@ -300,7 +300,7 @@ func telegramCmd(args []string) error {
 					"Use your write_file tool to save the plan.",
 				description, slug,
 			)
-			go handleChatMessage(chatID, prompt, bot, handler, sessionManager,
+			go handleChatMessage(chatID, messageID, prompt, bot, handler, sessionManager,
 				resolved, systemMessage, handlerLog)
 			return fmt.Sprintf("📝 *Planning* `%s`…\n\n_Generating plan for: %s_", slug, description), nil
 		}
@@ -400,14 +400,14 @@ func telegramCmd(args []string) error {
 		return "", nil // approval callbacks are routed by the approver
 	}
 
-	handler.OnVoiceMessage = func(chatID int64, fileID string) (string, error) {
-		go handleChatMessage(chatID, "[voice message: "+fileID+"]",
+	handler.OnVoiceMessage = func(chatID int64, messageID int, fileID string) (string, error) {
+		go handleChatMessage(chatID, messageID, "[voice message: "+fileID+"]",
 			bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 		return "", nil
 	}
 
-	handler.OnPhotoMessage = func(chatID int64, fileIDs []string) (string, error) {
-		go handleChatMessage(chatID, "[photo message: "+strings.Join(fileIDs, ",")+"]",
+	handler.OnPhotoMessage = func(chatID int64, messageID int, fileIDs []string) (string, error) {
+		go handleChatMessage(chatID, messageID, "[photo message: "+strings.Join(fileIDs, ",")+"]",
 			bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 		return "", nil
 	}
@@ -541,6 +541,7 @@ func spawnChild() error {
 // back the response. Each chat gets its own TelegramApprover instance.
 func handleChatMessage(
 	chatID int64,
+	messageID int,
 	text string,
 	bot *telegram.Bot,
 	handler *telegram.Handler,
@@ -563,7 +564,7 @@ func handleChatMessage(
 	// Get or create the session for this chat.
 	cs, err := sessionManager.GetOrCreate(chatID)
 	if err != nil {
-		reportError(bot, chatID, "Failed to create session: "+err.Error())
+		reportError(bot, chatID, messageID, "Failed to create session: "+err.Error())
 		return
 	}
 
@@ -586,7 +587,7 @@ func handleChatMessage(
 	// exhausted — avoids burning an API call just to be rejected.
 	if resolved.Telegram.DailyTokenBudget > 0 {
 		if err := bot.CheckDailyBudget(1); err != nil {
-			reportError(bot, chatID, fmt.Sprintf(
+			reportError(bot, chatID, messageID, fmt.Sprintf(
 				"Daily token budget exhausted: %v. "+
 					"The budget resets at midnight UTC. "+
 					"Set daily_token_budget to 0 in config for unlimited usage.",
@@ -660,7 +661,7 @@ func handleChatMessage(
 			},
 		}
 		if _, err := bot.SendMessage(chatID, "❓ "+question,
-			&telegram.SendOpts{ReplyMarkup: replyMarkup, ParseMode: "Markdown"}); err != nil {
+			&telegram.SendOpts{ReplyMarkup: replyMarkup, ParseMode: "Markdown", ReplyToMessageID: messageID}); err != nil {
 			return "", fmt.Errorf("clarify: send message: %w", err)
 		}
 
@@ -746,14 +747,14 @@ func handleChatMessage(
 			switch event.Type {
 			case "loaded":
 				names := strings.Join(event.Skills, ", ")
-				go bot.SendMessage(chatID, "📚 Loaded skill: "+names, nil)
+				go bot.SendMessage(chatID, "📚 Loaded skill: "+names, &telegram.SendOpts{ReplyToMessageID: messageID})
 			case "autoloaded":
 				names := strings.Join(event.Skills, ", ")
-				go bot.SendMessage(chatID, "📚 Auto-loaded skills: "+names, nil)
+				go bot.SendMessage(chatID, "📚 Auto-loaded skills: "+names, &telegram.SendOpts{ReplyToMessageID: messageID})
 			case "saved":
-				go bot.SendMessage(chatID, fmt.Sprintf("✓ Saved skill %q", event.SkillName), nil)
+				go bot.SendMessage(chatID, fmt.Sprintf("✓ Saved skill %q", event.SkillName), &telegram.SendOpts{ReplyToMessageID: messageID})
 			case "deleted":
-				go bot.SendMessage(chatID, fmt.Sprintf("✗ Deleted skill %q", event.SkillName), nil)
+				go bot.SendMessage(chatID, fmt.Sprintf("✗ Deleted skill %q", event.SkillName), &telegram.SendOpts{ReplyToMessageID: messageID})
 			case "suggested":
 				replyMarkup := &telegram.InlineKeyboardMarkup{
 					InlineKeyboard: [][]telegram.InlineKeyboardButton{
@@ -779,14 +780,14 @@ func handleChatMessage(
 					msg += fmt.Sprintf("\n\n```\n%s\n```", preview)
 				}
 				go bot.SendMessage(chatID, msg,
-					&telegram.SendOpts{ReplyMarkup: replyMarkup, ParseMode: "Markdown"})
+					&telegram.SendOpts{ReplyMarkup: replyMarkup, ParseMode: "Markdown", ReplyToMessageID: messageID})
 			}
 		},
 	}
 
 	agent, err := odek.New(agentCfg)
 	if err != nil {
-		reportError(bot, chatID, "Failed to create agent: "+err.Error())
+		reportError(bot, chatID, messageID, "Failed to create agent: "+err.Error())
 		return
 	}
 	defer agent.Close()
@@ -803,7 +804,7 @@ func handleChatMessage(
 	// Run the agent with the full message history (multi-turn).
 	response, updatedMessages, err := agent.RunWithMessages(agentCtx, cs.Messages)
 	if err != nil {
-		reportError(bot, chatID, "Agent error: "+err.Error())
+		reportError(bot, chatID, messageID, "Agent error: "+err.Error())
 		return
 	}
 
@@ -819,7 +820,7 @@ func handleChatMessage(
 					"Further agent runs may be blocked until the daily budget resets. "+
 					"Use `/stats` to check current usage.",
 				err,
-			), &telegram.SendOpts{ParseMode: telegram.ParseModeMarkdownV2})
+			), &telegram.SendOpts{ParseMode: telegram.ParseModeMarkdownV2, ReplyToMessageID: messageID})
 		}
 	}
 
@@ -832,7 +833,7 @@ func handleChatMessage(
 
 	// Send the response, then append compact stats as a separate message.
 	if response != "" {
-		handler.SendResponse(chatID, response)
+		handler.SendResponse(chatID, response, messageID)
 
 		// Send run stats as a separate message directly via Bot.SendMessage
 		// (bypassing SendResponse/FormatResponse) so MarkdownV2 backtick code
@@ -844,10 +845,13 @@ func handleChatMessage(
 
 			statsLine := formatTelegramStats(runInfo, toolList)
 			if _, err := bot.SendMessage(chatID, statsLine, &telegram.SendOpts{
-				ParseMode: telegram.ParseModeMarkdownV2,
+				ParseMode:        telegram.ParseModeMarkdownV2,
+				ReplyToMessageID: messageID,
 			}); err != nil {
 				// Fallback: send as plain text so the info isn't lost
-				if _, err2 := bot.SendMessage(chatID, statsLine, nil); err2 != nil {
+				if _, err2 := bot.SendMessage(chatID, statsLine, &telegram.SendOpts{
+					ReplyToMessageID: messageID,
+				}); err2 != nil {
 					fmt.Fprintf(os.Stderr, "odek telegram: stats send fallback failed: %v (orig: %v)\n", err2, err)
 				}
 			}
@@ -991,9 +995,9 @@ func formatStopSummary(info loop.IterationInfo) string {
 }
 
 // reportError sends an error message to the given chat and logs to stderr.
-func reportError(bot *telegram.Bot, chatID int64, msg string) {
+func reportError(bot *telegram.Bot, chatID int64, messageID int, msg string) {
 	fmt.Fprintf(os.Stderr, "odek telegram: %s\n", msg)
-	if _, err := bot.SendMessage(chatID, "❌ "+msg, nil); err != nil {
+	if _, err := bot.SendMessage(chatID, "❌ "+msg, &telegram.SendOpts{ReplyToMessageID: messageID}); err != nil {
 		fmt.Fprintf(os.Stderr, "odek telegram: send error message: %v\n", err)
 	}
 }

@@ -237,12 +237,16 @@ func (b *Bot) EditMessageText(chatID int64, messageID int, text string, opts *Se
 }
 
 // SendPhoto sends a photo from a file path to the specified chat.
-func (b *Bot) SendPhoto(chatID int64, path string, caption string) (*Message, error) {
+// opts may contain ReplyToMessageID to reply to a specific message.
+func (b *Bot) SendPhoto(chatID int64, path string, caption string, opts *SendOpts) (*Message, error) {
 	params := map[string]any{
 		"chat_id": chatID,
 	}
 	if caption != "" {
 		params["caption"] = caption
+	}
+	if opts != nil && opts.ReplyToMessageID != 0 {
+		params["reply_to_message_id"] = opts.ReplyToMessageID
 	}
 
 	var msg Message
@@ -253,12 +257,16 @@ func (b *Bot) SendPhoto(chatID int64, path string, caption string) (*Message, er
 }
 
 // SendVoice sends a voice note from a file path to the specified chat.
-func (b *Bot) SendVoice(chatID int64, path string, caption string) (*Message, error) {
+// opts may contain ReplyToMessageID to reply to a specific message.
+func (b *Bot) SendVoice(chatID int64, path string, caption string, opts *SendOpts) (*Message, error) {
 	params := map[string]any{
 		"chat_id": chatID,
 	}
 	if caption != "" {
 		params["caption"] = caption
+	}
+	if opts != nil && opts.ReplyToMessageID != 0 {
+		params["reply_to_message_id"] = opts.ReplyToMessageID
 	}
 
 	var msg Message
