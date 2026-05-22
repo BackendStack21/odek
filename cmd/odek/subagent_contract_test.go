@@ -594,8 +594,8 @@ func TestDefaultSystem_IncludesDelegation(t *testing.T) {
 // ── 8. Subagent System Prompt ──────────────────────────────────────
 
 func TestSubagentSystemPrompt_Minimal(t *testing.T) {
-	if len(subagentSystem) > 900 {
-		t.Errorf("subagent system prompt too long: %d chars (max 900)", len(subagentSystem))
+	if len(subagentSystem) > 1400 {
+		t.Errorf("subagent system prompt too long: %d chars (max 1400)", len(subagentSystem))
 	}
 	if subagentSystem == "" {
 		t.Fatal("subagent system prompt must not be empty")

@@ -578,12 +578,15 @@ func TestTrimContext_OverBudget(t *testing.T) {
 	if result[0].Role != "system" {
 		t.Errorf("trimContext should keep system message first, got role=%q", result[0].Role)
 	}
-	if result[1].Role != "user" {
-		t.Errorf("trimContext should keep task message second, got role=%q", result[1].Role)
+	if result[1].Role != "system" {
+		t.Errorf("trimContext should inject trim warning at index 1, got role=%q", result[1].Role)
+	}
+	if result[2].Role != "user" {
+		t.Errorf("trimContext should keep task message at index 2, got role=%q", result[2].Role)
 	}
 
-	// Should have fewer messages than original
-	if len(result) >= len(msgs) {
+	// Should have fewer messages than original (excluding the injected warning)
+	if len(result)-1 >= len(msgs) {
 		t.Errorf("trimContext should reduce messages, got %d >= %d", len(result), len(msgs))
 	}
 }
@@ -606,8 +609,11 @@ func TestTrimContext_VeryTightBudget(t *testing.T) {
 	if result[0].Role != "system" {
 		t.Errorf("trimContext(VeryTight) should keep system first")
 	}
-	if result[1].Role != "user" {
-		t.Errorf("trimContext(VeryTight) should keep task second, got %q", result[1].Role)
+	if result[1].Role != "system" {
+		t.Errorf("trimContext(VeryTight) should inject trim warning at index 1, got %q", result[1].Role)
+	}
+	if result[2].Role != "user" {
+		t.Errorf("trimContext(VeryTight) should keep task at index 2, got %q", result[2].Role)
 	}
 }
 

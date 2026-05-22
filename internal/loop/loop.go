@@ -206,6 +206,10 @@ func contextBudget(maxContext int) int {
 // It drops the oldest non-essential message triples (assistant tool-call
 // message + its tool result(s)) to avoid orphaning tool results without
 // their preceding tool_calls — DeepSeek rejects orphaned tool messages.
+//
+// When trimming occurs, a system message is injected to warn the agent
+// that context was lost, preventing it from confidently operating on
+// incomplete information.
 func (e *Engine) trimContext(messages []llm.Message, toolDefs []llm.ToolDef) []llm.Message {
 	budget := contextBudget(e.maxContext)
 	if budget <= 0 {
@@ -214,6 +218,9 @@ func (e *Engine) trimContext(messages []llm.Message, toolDefs []llm.ToolDef) []l
 
 	// Estimate tool definitions once (they don't change between iterations)
 	defTokens := estimateToolDefs(toolDefs)
+
+	droppedGroups := 0
+	droppedTools := make(map[string]int)
 
 	for {
 		msgTokens := estimateMessages(messages)
@@ -242,15 +249,38 @@ func (e *Engine) trimContext(messages []llm.Message, toolDefs []llm.ToolDef) []l
 		//   - An assistant tool_calls message + all following tool results
 		groupEnd := start + 1
 		if messages[start].Role == "assistant" && len(messages[start].ToolCalls) > 0 {
+			// Track which tools were called in dropped groups
+			for _, tc := range messages[start].ToolCalls {
+				droppedTools[tc.Function.Name]++
+			}
 			// Include all following tool result messages
 			for groupEnd < len(messages) && messages[groupEnd].Role == "tool" {
 				groupEnd++
 			}
 		}
+		droppedGroups++
 
 		// Drop the entire group atomically
 		messages = append(messages[:start], messages[groupEnd:]...)
 	}
+
+	// Inject context trim warning if we dropped messages
+	if droppedGroups > 0 && len(messages) > 1 {
+		warning := fmt.Sprintf(
+			"[Context trimmed: %d prior message group(s) dropped to stay within token budget. "+
+				"Some earlier tool calls and their results are no longer available. "+
+				"If the user references earlier work, ask them to summarize what was done.]",
+			droppedGroups,
+		)
+		// Insert after system message (index 0), before task (index 1)
+		trimMsg := llm.Message{Role: "system", Content: warning}
+		newMsgs := make([]llm.Message, 0, len(messages)+1)
+		newMsgs = append(newMsgs, messages[0])
+		newMsgs = append(newMsgs, trimMsg)
+		newMsgs = append(newMsgs, messages[1:]...)
+		messages = newMsgs
+	}
+
 	return messages
 }
 
