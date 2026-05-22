@@ -964,6 +964,17 @@ func handleChatMessage(
 			log.Debug("skill suggestions suppressed by skip list", "count", skipped)
 		}
 	}
+
+	// ── Media cleanup ────────────────────────────────────────────────
+	// Remove downloaded media files older than 1 hour in the background.
+	// These are only needed during the agent turn for analysis/transcription.
+	go func() {
+		if removed, err := telegram.CleanupMedia(1 * time.Hour); err != nil {
+			fmt.Fprintf(os.Stderr, "odek telegram: media cleanup: %v\n", err)
+		} else if removed > 0 {
+			log.Debug("cleaned up old media files", "count", removed)
+		}
+	}()
 }
 
 // formatStats formats session statistics for the Telegram stats command.

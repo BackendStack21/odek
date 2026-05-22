@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // ── Media Directory ────────────────────────────────────────────────────────
@@ -118,4 +119,49 @@ func DownloadPhoto(bot *Bot, fileIDs []string) (string, error) {
 	}
 
 	return localPath, nil
+}
+
+// ── Media Cleanup ──────────────────────────────────────────────────────────
+
+// CleanupMedia removes media files older than maxAge from the downloaded
+// media directory (~/.odek/media/). Returns the number of files removed.
+// Non-existent directories and subdirectories are silently skipped.
+func CleanupMedia(maxAge time.Duration) (int, error) {
+	dir, err := MediaDir()
+	if err != nil {
+		return 0, err
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil // nothing to clean
+		}
+		return 0, fmt.Errorf("telegram cleanup: read dir: %w", err)
+	}
+
+	cutoff := time.Now().Add(-maxAge)
+	var removed int
+
+	for _, e := range entries {
+		if e.IsDir() {
+			continue // skip subdirectories
+		}
+
+		info, err := e.Info()
+		if err != nil {
+			continue // skip unreadable entries
+		}
+
+		if info.ModTime().Before(cutoff) {
+			path := filepath.Join(dir, e.Name())
+			if err := os.Remove(path); err != nil {
+				// Log but don't fail — one bad file shouldn't block cleanup.
+				continue
+			}
+			removed++
+		}
+	}
+
+	return removed, nil
 }
