@@ -19,6 +19,7 @@ type TelegramConfig struct {
 	DailyTokenBudget int64    `json:"daily_token_budget"` // 0 = unlimited (default)
 	SessionTTL       int      `json:"session_ttl_hours"`  // hours, default 24
 	FallbackURLs     []string `json:"fallback_urls"`
+	HealthAddr       string   `json:"health_addr"`        // e.g. "127.0.0.1:9090" (empty = disabled)
 	LogLevel         string   `json:"log_level"` // "debug","info","warn","error" (default "info")
 	LogFile          string   `json:"log_file"`  // path or empty for stderr
 }
@@ -78,6 +79,9 @@ func ConfigFromEnv(base TelegramConfig) TelegramConfig {
 	}
 	if v := os.Getenv("ODEK_TELEGRAM_FALLBACK_URLS"); v != "" {
 		cfg.FallbackURLs = splitAndTrim(v)
+	}
+	if v := os.Getenv("ODEK_TELEGRAM_HEALTH_ADDR"); v != "" {
+		cfg.HealthAddr = v
 	}
 	if v := os.Getenv("ODEK_TELEGRAM_LOG_LEVEL"); v != "" {
 		cfg.LogLevel = v

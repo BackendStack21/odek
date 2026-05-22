@@ -473,6 +473,19 @@ func telegramCmd(args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// 14b. Start health server if configured.
+	if cfg.HealthAddr != "" {
+		healthSrv := telegram.NewHealthServer(cfg.HealthAddr)
+		healthSrv.SetLogger(rootLog.With("component", "health"))
+		go func() {
+			if err := healthSrv.Start(ctx); err != nil {
+				fmt.Fprintf(os.Stderr, "odek telegram: health server: %v\n", err)
+			}
+		}()
+		// Mark ready once polling begins.
+		defer healthSrv.SetReady()
+	}
+
 	// 15. Handle SIGINT/SIGTERM/SIGHUP.
 	//     SIGHUP spawns a child process then exits (used by /restart and
 	//     agent-triggered restarts). The child's acquireLock kills this

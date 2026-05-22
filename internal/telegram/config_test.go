@@ -42,6 +42,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.FallbackURLs != nil {
 		t.Errorf("DefaultConfig().FallbackURLs = %v, want nil", cfg.FallbackURLs)
 	}
+	if cfg.HealthAddr != "" {
+		t.Errorf("DefaultConfig().HealthAddr = %q, want empty string", cfg.HealthAddr)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -281,6 +284,14 @@ func TestConfigFromEnv_fallbackURLsTrimsEmptyEntries(t *testing.T) {
 	want := []string{"https://a.com", "https://b.com"}
 	if !equalStringSlice(cfg.FallbackURLs, want) {
 		t.Errorf("FallbackURLs = %v, want %v", cfg.FallbackURLs, want)
+	}
+}
+
+func TestConfigFromEnv_healthAddr(t *testing.T) {
+	t.Setenv("ODEK_TELEGRAM_HEALTH_ADDR", "127.0.0.1:9090")
+	cfg := ConfigFromEnv(DefaultConfig())
+	if cfg.HealthAddr != "127.0.0.1:9090" {
+		t.Errorf("HealthAddr = %q, want 127.0.0.1:9090", cfg.HealthAddr)
 	}
 }
 
