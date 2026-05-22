@@ -895,6 +895,11 @@ func handleChatMessage(
 	// Run the agent with the full message history (multi-turn).
 	response, updatedMessages, err := agent.RunWithMessages(agentCtx, cs.Messages)
 	if err != nil {
+		// Clean up trace message on error too.
+		if traceMsgID != 0 {
+			bot.DeleteMessage(chatID, traceMsgID)
+			traceMsgID = 0
+		}
 		reportError(bot, chatID, messageID, "Agent error: "+err.Error())
 		return
 	}
@@ -925,6 +930,14 @@ func handleChatMessage(
 	// Send the response, then append compact stats as a separate message.
 	if response != "" {
 		handler.SendResponse(chatID, response, messageID)
+
+		// Clean up the tool trace message — it's stale after the response.
+		if traceMsgID != 0 {
+			if err := bot.DeleteMessage(chatID, traceMsgID); err != nil {
+				log.Debug("delete trace message failed", "chat_id", chatID, "msg_id", traceMsgID, "error", err)
+			}
+			traceMsgID = 0
+		}
 
 		// Send run stats as a separate message directly via Bot.SendMessage
 		// (bypassing SendResponse/FormatResponse) so MarkdownV2 backtick code
