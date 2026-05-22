@@ -1,10 +1,13 @@
 package skills
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"time"
 )
+
+// ── In-Memory File Cache ─────────────────────────────────────────────
 
 // fileCache tracks the last-modified time of each known SKILL.md file.
 // Used by scanDirCached to skip re-parsing files that haven't changed.
@@ -98,4 +101,105 @@ func scanDirCached(dir string, fc fileCache, prevSkills map[string]Skill) []Skil
 		skills = append(skills, *s)
 	}
 	return skills
+}
+
+// ── Persistent Disk Cache ─────────────────────────────────────────────
+
+const (
+	// cacheVersion is bumped when the cache format changes, automatically
+	// invalidating all existing cache files.
+	cacheVersion = 1
+
+	// cacheFileName is the name of the persistent cache file inside the
+	// user's skill directory. The leading dot keeps it hidden from ls.
+	cacheFileName = ".skills_cache.json"
+)
+
+// persistentCache is the on-disk format for the skill cache.
+// Survives across odek process invocations so that stat+parse only
+// happens when files actually change.
+type persistentCache struct {
+	Version int                     `json:"version"`
+	Skills  map[string]cachedSkill  `json:"skills"` // path → cached skill
+}
+
+// cachedSkill pairs a file's mtime with its parsed Skill, enabling
+// zero-parsing cache hits across process restarts.
+type cachedSkill struct {
+	MTime time.Time `json:"mtime"`
+	Skill Skill     `json:"skill"`
+}
+
+// cachePath returns the path to the persistent cache file inside dir.
+func cachePath(dir string) string {
+	return filepath.Join(dir, cacheFileName)
+}
+
+// loadPersistentCache reads the cache file from dir. Returns empty maps
+// if the file doesn't exist, has an incompatible version, or is corrupt.
+// Never returns an error — degraded behavior is always safe here.
+func loadPersistentCache(dir string) (fileCache, map[string]Skill) {
+	fileTimes := make(fileCache)
+	prevSkills := make(map[string]Skill)
+
+	data, err := os.ReadFile(cachePath(dir))
+	if err != nil {
+		return fileTimes, prevSkills // file doesn't exist or can't read
+	}
+
+	var cache persistentCache
+	if err := json.Unmarshal(data, &cache); err != nil {
+		return fileTimes, prevSkills // corrupt file
+	}
+
+	if cache.Version != cacheVersion {
+		return fileTimes, prevSkills // incompatible version
+	}
+
+	for path, cs := range cache.Skills {
+		fileTimes[path] = cs.MTime
+		prevSkills[path] = cs.Skill
+	}
+
+	return fileTimes, prevSkills
+}
+
+// savePersistentCache writes the current fileTimes and prevSkills to disk.
+// Errors are silently ignored — the cache is an optimization, not a
+// correctness requirement. Atomic write via temp file + rename.
+func savePersistentCache(dir string, fc fileCache, prev map[string]Skill) {
+	if dir == "" {
+		return
+	}
+	cache := persistentCache{
+		Version: cacheVersion,
+		Skills:  make(map[string]cachedSkill, len(fc)),
+	}
+	for path, mtime := range fc {
+		if skill, ok := prev[path]; ok {
+			cache.Skills[path] = cachedSkill{
+				MTime: mtime,
+				Skill: skill,
+			}
+		}
+	}
+
+	data, err := json.Marshal(cache)
+	if err != nil {
+		return
+	}
+
+	target := cachePath(dir)
+	tmp := target + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		os.Remove(tmp)
+		return
+	}
+	os.Rename(tmp, target) // best-effort
+}
+
+// clearPersistentCache removes the cache file. Called after explicit skill
+// mutations (save/patch/delete) to force a full rescan on next Reload.
+func clearPersistentCache(dir string) {
+	os.Remove(cachePath(dir)) // best-effort
 }

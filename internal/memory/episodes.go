@@ -39,10 +39,16 @@ type RankStrategy func(query string, episodes []EpisodeMeta) ([]EpisodeMeta, err
 // Written after sessions with sufficient turns, searchable via SimpleCall.
 // Index operations are protected by a mutex to prevent TOCTOU races
 // between concurrent sessions sharing the same memory directory.
+//
+// The in-memory idxCache avoids reading + unmarshalling index.json from
+// disk on every FormatEpisodeContext call (which fires every loop turn).
+// The cache is invalidated after every write.
 type EpisodeStore struct {
-	mu     sync.Mutex
-	dir    string
-	rankFn RankStrategy
+	mu       sync.Mutex
+	dir      string
+	rankFn   RankStrategy
+	idxCache []EpisodeMeta   // cached index, nil = not loaded
+	muCache  sync.RWMutex    // fine-grained lock for cache reads
 }
 
 // NewEpisodeStore creates an EpisodeStore rooted at dir. If rankFn is nil,
@@ -114,7 +120,21 @@ func (e *EpisodeStore) Read(sessionID string) (string, error) {
 
 // ReadIndex reads the episode index from disk. Returns empty slice if the
 // index file doesn't exist yet. Entries are ordered newest-first.
+//
+// Uses an in-memory cache to avoid disk I/O on every Search() call.
+// The cache is invalidated after every writeIndex().
 func (e *EpisodeStore) ReadIndex() ([]EpisodeMeta, error) {
+	// Fast path: return cached index if available.
+	e.muCache.RLock()
+	if e.idxCache != nil {
+		cpy := make([]EpisodeMeta, len(e.idxCache))
+		copy(cpy, e.idxCache)
+		e.muCache.RUnlock()
+		return cpy, nil
+	}
+	e.muCache.RUnlock()
+
+	// Slow path: read from disk.
 	idxPath := filepath.Join(e.dir, episodeIndexFile)
 	data, err := os.ReadFile(idxPath)
 	if err != nil {
@@ -131,7 +151,16 @@ func (e *EpisodeStore) ReadIndex() ([]EpisodeMeta, error) {
 	sort.Slice(idx, func(i, j int) bool {
 		return idx[i].CreatedAt.After(idx[j].CreatedAt)
 	})
-	return idx, nil
+
+	// Populate cache.
+	e.muCache.Lock()
+	e.idxCache = idx
+	e.muCache.Unlock()
+
+	// Return a copy to prevent callers from mutating the cache.
+	cpy := make([]EpisodeMeta, len(idx))
+	copy(cpy, idx)
+	return cpy, nil
 }
 
 // Search returns the most relevant episodes for a query, ranked by the
@@ -175,6 +204,8 @@ func (e *EpisodeStore) addToIndex(meta EpisodeMeta) error {
 
 // writeIndex serializes the index to disk atomically (temp + rename).
 // Caller must hold e.mu.
+// Invalidates the in-memory cache after a successful write so the next
+// ReadIndex call picks up the new data.
 func (e *EpisodeStore) writeIndex(idx []EpisodeMeta) error {
 	// Write to temp + rename for atomicity
 	idxPath := filepath.Join(e.dir, episodeIndexFile)
@@ -191,6 +222,17 @@ func (e *EpisodeStore) writeIndex(idx []EpisodeMeta) error {
 		os.Remove(tmpPath) // best-effort cleanup
 		return err
 	}
+
+	// Update in-memory cache with sorted copy (newest-first).
+	sorted := make([]EpisodeMeta, len(idx))
+	copy(sorted, idx)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].CreatedAt.After(sorted[j].CreatedAt)
+	})
+	e.muCache.Lock()
+	e.idxCache = sorted
+	e.muCache.Unlock()
+
 	return nil
 }
 

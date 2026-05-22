@@ -523,8 +523,8 @@ func TestLoadConfig_MemoryDefaults(t *testing.T) {
 	if mem.ExtractOnEnd == nil || !*mem.ExtractOnEnd {
 		t.Error("Memory.ExtractOnEnd should default to true")
 	}
-	if mem.LLMSearch == nil || !*mem.LLMSearch {
-		t.Error("Memory.LLMSearch should default to true")
+	if mem.LLMSearch == nil || *mem.LLMSearch {
+		t.Error("Memory.LLMSearch should default to false — RP ranker used instead of LLM")
 	}
 	if mem.LLMExtract == nil || !*mem.LLMExtract {
 		t.Error("Memory.LLMExtract should default to true")
@@ -578,8 +578,8 @@ func TestLoadConfig_MemoryFromGlobalFile(t *testing.T) {
 	if mem.ExtractOnEnd == nil || !*mem.ExtractOnEnd {
 		t.Error("Memory.ExtractOnEnd should default to true")
 	}
-	if mem.LLMSearch == nil || !*mem.LLMSearch {
-		t.Error("Memory.LLMSearch should default to true")
+	if mem.LLMSearch == nil || *mem.LLMSearch {
+		t.Error("Memory.LLMSearch should default to false — RP ranker used instead of LLM")
 	}
 }
 

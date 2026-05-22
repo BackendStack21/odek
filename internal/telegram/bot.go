@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"time"
+
+	"github.com/BackendStack21/kode/internal/transport"
 )
 
 // TelegramError represents an error returned by the Telegram Bot API.
@@ -45,9 +47,7 @@ func NewBot(token string) *Bot {
 		Token:       token,
 		BaseURL:     fmt.Sprintf("https://api.telegram.org/bot%s", token),
 		FileBaseURL: fmt.Sprintf("https://api.telegram.org/file/bot%s", token),
-		Client: &http.Client{
-			Timeout: 60 * time.Second,
-		},
+		Client: transport.NewPooledClient(60 * time.Second),
 		log: NewNopLogger(),
 	}
 }

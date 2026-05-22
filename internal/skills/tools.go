@@ -40,13 +40,16 @@ type SkillManager struct {
 
 // NewSkillManager creates a SkillManager with the given directories.
 // It scans the directories and builds the trigger index.
+// On first call, it loads a persistent cache from ~/.odek/skills/ to
+// avoid re-parsing unchanged skills across process restarts.
 func NewSkillManager(userDir, projectDir string) *SkillManager {
+	fc, prev := loadPersistentCache(userDir)
 	sm := &SkillManager{
 		UserDir:    userDir,
 		ProjectDir: projectDir,
 		Notifier:   &NoopNotifier{},
-		fileTimes:  make(fileCache),
-		prevSkills: make(map[string]Skill),
+		fileTimes:  fc,
+		prevSkills: prev,
 	}
 	sm.Reload()
 	return sm
@@ -88,10 +91,16 @@ func (sm *SkillManager) reloadLocked() {
 		sm.Result = ScanDirs(sm.ProjectDir, sm.UserDir, extraDirs)
 		sm.fileTimes = make(fileCache)
 		sm.prevSkills = make(map[string]Skill)
+		clearPersistentCache(sm.UserDir)
 		sm.dirty = false
 	} else {
 		sm.Result = scanDirsCached(sm.ProjectDir, sm.UserDir, extraDirs, sm.fileTimes, sm.prevSkills)
 	}
+
+	// Persist cache for next process invocation.
+	// Only the user dir is cached (global skills); project-level skills
+	// are re-scanned on each project switch.
+	savePersistentCache(sm.UserDir, sm.fileTimes, sm.prevSkills)
 
 	// Build index from all lazy skills only (auto-load skills are always in context)
 	sm.TrieIndex = BuildTriggerIndex(sm.Result.Lazy)

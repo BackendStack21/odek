@@ -175,7 +175,7 @@ func (s *Store) saveIndexLocked(idx map[string]*IndexEntry) error {
 	for _, e := range idx {
 		entries = append(entries, e)
 	}
-	data, err := json.MarshalIndent(entries, "", "  ")
+	data, err := json.Marshal(entries)
 	if err != nil {
 		return fmt.Errorf("session: marshal index: %w", err)
 	}
@@ -274,7 +274,7 @@ func (s *Store) saveLocked(sess *Session) error {
 		sess.Messages[i].ReasoningContent = redact.RedactSecrets(sess.Messages[i].ReasoningContent)
 	}
 
-	data, err := json.MarshalIndent(sess, "", "  ")
+	data, err := json.Marshal(sess)
 	if err != nil {
 		return fmt.Errorf("session: marshal: %w", err)
 	}

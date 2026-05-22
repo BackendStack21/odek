@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/BackendStack21/kode/internal/transport"
 )
 
 // Client sends chat completion requests to any OpenAI-compatible endpoint.
@@ -45,7 +47,7 @@ func NewWithMaxTokens(baseURL, apiKey, model, thinking string, maxTokens int, ti
 		Model:     model,
 		Thinking:  thinking,
 		MaxTokens: maxTokens,
-		http:      &http.Client{Timeout: timeout},
+		http: transport.NewPooledClient(timeout),
 	}
 }
 

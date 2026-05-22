@@ -1106,3 +1106,64 @@ func TestPromptTiering_MemMsgIdxResets(t *testing.T) {
 }
 
 func registryOrNil() *tool.Registry { return tool.NewRegistry(nil) }
+
+// ─── Benchmarks ──────────────────────────────────────────────────────────
+
+// BenchmarkTrimContext measures trimContext performance across increasing
+// conversation sizes. Before the fix, this was O(n²) — each iteration
+// re-scanned ALL messages to estimate tokens. After the fix, it's O(n)
+// with a running token total.
+func BenchmarkTrimContext(b *testing.B) {
+	// A single message group: assistant turn + tool result.
+	// Each group is ~60 tokens so we can precisely control budget.
+	makeGroup := func(i int) []llm.Message {
+		return []llm.Message{
+			{Role: "assistant", Content: fmt.Sprintf("thinking step %d... debug log data here", i)},
+			{Role: "tool", Content: fmt.Sprintf("result data for step %d with some content", i), ToolCallID: "call_" + fmt.Sprint(i)},
+		}
+	}
+
+	for _, numGroups := range []int{10, 50, 100} {
+		// Build conversation: system + task + N groups
+		msgs := []llm.Message{
+			{Role: "system", Content: "You are a helpful assistant."},
+			{Role: "user", Content: "Run my analysis pipeline please"},
+		}
+		for i := 0; i < numGroups; i++ {
+			msgs = append(msgs, makeGroup(i)...)
+		}
+
+		// Budget tight enough to trim ~half the groups.
+		// Each group = ~120 chars → ~30 tokens + overhead.
+		// Total = 2 preserved + N groups. Budget for 2 + half the groups.
+		halfTokens := estimateMessages(msgs) / 2
+		budget := halfTokens
+
+		b.Run(fmt.Sprintf("groups=%d", numGroups), func(b *testing.B) {
+			engine := &Engine{maxContext: budget}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				// Copy messages each iteration to avoid modifying shared state.
+				cp := make([]llm.Message, len(msgs))
+				copy(cp, msgs)
+				engine.trimContext(cp, nil)
+			}
+		})
+	}
+}
+
+// BenchmarkTrimContext_NoTrim measures the fast path when no trimming is needed.
+func BenchmarkTrimContext_NoTrim(b *testing.B) {
+	msgs := []llm.Message{
+		{Role: "system", Content: "You are a helpful assistant."},
+		{Role: "user", Content: "Hello"},
+		{Role: "assistant", Content: "Hi there"},
+	}
+	engine := &Engine{maxContext: 1_000_000} // huge budget, no trim needed
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		engine.trimContext(msgs, nil)
+	}
+}

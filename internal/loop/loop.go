@@ -218,6 +218,12 @@ func contextBudget(maxContext int) int {
 // When trimming occurs, a system message is injected to warn the agent
 // that context was lost, preventing it from confidently operating on
 // incomplete information.
+//
+// Performance: uses a running token total to avoid O(n²) re-scanning of
+// the full message list on every iteration. Previously, estimateMessages
+// was called at the top of the loop, re-summing ALL messages each time
+// a single group was dropped. For large conversations near the context
+// limit, this was O(n²) — now it's O(n).
 func (e *Engine) trimContext(messages []llm.Message, toolDefs []llm.ToolDef) []llm.Message {
 	budget := contextBudget(e.maxContext)
 	if budget <= 0 {
@@ -227,12 +233,15 @@ func (e *Engine) trimContext(messages []llm.Message, toolDefs []llm.ToolDef) []l
 	// Estimate tool definitions once (they don't change between iterations)
 	defTokens := estimateToolDefs(toolDefs)
 
+	// Compute the running total ONCE — each group drop then subtracts only
+	// the dropped group's tokens instead of re-scanning all messages.
+	totalTokens := estimateMessages(messages) + defTokens
+
 	droppedGroups := 0
 	droppedTools := make(map[string]int)
 
 	for {
-		msgTokens := estimateMessages(messages)
-		if msgTokens+defTokens <= budget {
+		if totalTokens <= budget {
 			break
 		}
 		if len(messages) <= 2 {
@@ -267,6 +276,12 @@ func (e *Engine) trimContext(messages []llm.Message, toolDefs []llm.ToolDef) []l
 			}
 		}
 		droppedGroups++
+
+		// Subtract the dropped group's tokens from the running total.
+		// This avoids O(n²) behavior: we only scan the N messages being
+		// dropped, not the entire M-message list each iteration.
+		totalTokens -= estimateMessages(messages[start:groupEnd])
+		// (defTokens remains unchanged — tool defs don't get dropped)
 
 		// Drop the entire group atomically
 		messages = append(messages[:start], messages[groupEnd:]...)
