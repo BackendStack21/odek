@@ -36,8 +36,8 @@ const (
 
 // Default character caps for fact files.
 const (
-	defaultFactsLimitUser = 1500
-	defaultFactsLimitEnv  = 2500
+	defaultFactsLimitUser = 4000
+	defaultFactsLimitEnv  = 8000
 )
 
 // entrySep is the delimiter between entries in a fact file.

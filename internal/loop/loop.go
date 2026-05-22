@@ -18,6 +18,12 @@ import (
 // (formatted skill content) to inject, or empty string if no skills match.
 type SkillLoader func(userInput string) string
 
+// EpisodeContextFunc is an optional callback that the loop engine calls
+// before each LLM invocation to discover relevant past session episodes.
+// The callback receives the latest user input as a search query and returns
+// formatted episode context to inject, or empty string if nothing matches.
+type EpisodeContextFunc func(userInput string) string
+
 // ToolEventHandler is an optional callback invoked for each tool execution
 // during the agent loop — fires before (tool_call) and after (tool_result)
 // each tool invocation. Used by the WebUI for live streaming of tool events.
@@ -54,6 +60,7 @@ type Engine struct {
 	skillLoader SkillLoader       // optional: loads matching skills
 	lastSkillMsg string           // last user message that triggered skill loading (dedup)
 	skillVerbose bool             // show full skill banners (default: condensed)
+	episodeCtx   EpisodeContextFunc // optional: per-turn episode search
 
 	toolEventHandler ToolEventHandler // optional: fires during tool execution
 
@@ -98,6 +105,12 @@ func New(client *llm.Client, registry *tool.Registry, maxIterations int, systemM
 
 // SetSkillLoader sets the optional skill loader callback.
 func (e *Engine) SetSkillLoader(sl SkillLoader) { e.skillLoader = sl }
+
+// SetEpisodeContextFunc sets the optional per-turn episode search callback.
+// When set, it is called once per new user message to search for relevant
+// past session episodes. The returned context is injected as a system
+// message before the LLM invocation.
+func (e *Engine) SetEpisodeContextFunc(ef EpisodeContextFunc) { e.episodeCtx = ef }
 
 // SetSkillVerbose controls whether skill loading shows full banners (true)
 // or condensed markers (false, default). Condensed saves context window space.
@@ -327,6 +340,29 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 					newMsgs := make([]llm.Message, 0, len(messages)+1)
 					newMsgs = append(newMsgs, messages[:insertIdx]...)
 					newMsgs = append(newMsgs, skillMsg)
+					newMsgs = append(newMsgs, messages[insertIdx:]...)
+					messages = newMsgs
+				}
+			}
+		}
+
+		// Search relevant past session episodes based on latest user input.
+		// Only runs once per new user message (same dedup as skill loading).
+		if e.episodeCtx != nil {
+			if userMsg := lastUserMessage(messages); userMsg != "" && userMsg != e.lastSkillMsg {
+				if episodeContext := e.episodeCtx(userMsg); episodeContext != "" {
+					// Inject episode context as a system message before the user message
+					insertIdx := len(messages)
+					for j := len(messages) - 1; j >= 0; j-- {
+						if messages[j].Role == "system" && j != 0 {
+							insertIdx = j + 1
+							break
+						}
+					}
+					epMsg := llm.Message{Role: "system", Content: episodeContext}
+					newMsgs := make([]llm.Message, 0, len(messages)+1)
+					newMsgs = append(newMsgs, messages[:insertIdx]...)
+					newMsgs = append(newMsgs, epMsg)
 					newMsgs = append(newMsgs, messages[insertIdx:]...)
 					messages = newMsgs
 				}

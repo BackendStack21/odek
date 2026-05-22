@@ -426,6 +426,31 @@ func (m *MemoryManager) SearchEpisodes(query string, limit int) ([]EpisodeMeta, 
 	return m.episodes.Search(query, limit)
 }
 
+// FormatEpisodeContext searches episodes with a recency-based ranker
+// (no LLM — safe for per-turn use without recursion risk) and returns
+// formatted context to inject as a system message. Returns empty string
+// if no episodes found or memory is disabled.
+func (m *MemoryManager) FormatEpisodeContext(query string) string {
+	if m.cfg.Enabled == nil || !*m.cfg.Enabled {
+		return ""
+	}
+
+	episodes, err := m.episodes.Search(query, 3)
+	if err != nil || len(episodes) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("\n═══ RELEVANT PAST SESSIONS ═══\n")
+	b.WriteString("Summaries of past sessions related to the current task:\n")
+	for _, ep := range episodes {
+		fmt.Fprintf(&b, "• [%s] (%d turns): %s\n", ep.SessionID, ep.Turns, ep.Summary)
+	}
+	b.WriteString("─────────────────────────────────\n")
+	b.WriteString("Use this context to recall past decisions, fixes, and discussions.\n")
+	return b.String()
+}
+
 // ── System Prompt Builder ────────────────────────────────────────────
 
 // BuildSystemPrompt returns the memory section to inject into the system

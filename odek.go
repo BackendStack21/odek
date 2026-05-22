@@ -520,6 +520,14 @@ func New(cfg Config) (*Agent, error) {
 		engine.SetIterationCallback(cfg.IterationCallback)
 	}
 
+	// Wire per-turn episode search — searches past session episodes
+	// using the user's message as a query, then injects relevant summaries.
+	// Uses recency-based ranking (no LLM) to avoid recursion in the loop.
+	// Only active when memory is enabled.
+	engine.SetEpisodeContextFunc(func(userInput string) string {
+		return memoryManager.FormatEpisodeContext(userInput)
+	})
+
 	agent.engine = engine
 	agent.registry = registry
 	agent.sandboxCleanup = cfg.SandboxCleanup

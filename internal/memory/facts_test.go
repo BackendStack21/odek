@@ -236,11 +236,11 @@ func TestFactStore_NewFactStoreZeroCaps(t *testing.T) {
 	// Zero caps should use defaults
 	dir := t.TempDir()
 	fs := NewFactStore(dir, 0, 0)
-	if fs.capUser != 1500 {
-		t.Errorf("expected default capUser 1500, got %d", fs.capUser)
+	if fs.capUser != 4000 {
+		t.Errorf("expected default capUser 4000, got %d", fs.capUser)
 	}
-	if fs.capEnv != 2500 {
-		t.Errorf("expected default capEnv 2500, got %d", fs.capEnv)
+	if fs.capEnv != 8000 {
+		t.Errorf("expected default capEnv 8000, got %d", fs.capEnv)
 	}
 }
 
