@@ -121,6 +121,50 @@ func DownloadPhoto(bot *Bot, fileIDs []string) (string, error) {
 	return localPath, nil
 }
 
+// ── Document Download ─────────────────────────────────────────────────────
+
+// DownloadDocument downloads a document/file from Telegram and saves it
+// to the media directory. Returns the local file path. The file preserves
+// the original filename from the Telegram Document metadata.
+func DownloadDocument(bot *Bot, fileID, fileName string) (string, error) {
+	dir, err := MediaDir()
+	if err != nil {
+		return "", err
+	}
+
+	// Get file metadata from Telegram.
+	f, err := bot.GetFile(fileID)
+	if err != nil {
+		return "", fmt.Errorf("telegram document: get file: %w", err)
+	}
+	if f.FilePath == "" {
+		return "", fmt.Errorf("telegram document: no file path returned")
+	}
+
+	// Download raw bytes.
+	data, err := bot.DownloadFile(f.FilePath)
+	if err != nil {
+		return "", fmt.Errorf("telegram document: download: %w", err)
+	}
+
+	// Use original filename or generate one from file ID.
+	safeName := fileName
+	if safeName == "" {
+		ext := filepath.Ext(f.FilePath)
+		if ext == "" {
+			ext = ".bin"
+		}
+		safeName = "doc_" + fileID[:min(16, len(fileID))] + ext
+	}
+	localPath := filepath.Join(dir, safeName)
+
+	if err := os.WriteFile(localPath, data, 0600); err != nil {
+		return "", fmt.Errorf("telegram document: save: %w", err)
+	}
+
+	return localPath, nil
+}
+
 // ── Media Cleanup ──────────────────────────────────────────────────────────
 
 // CleanupMedia removes media files older than maxAge from the downloaded

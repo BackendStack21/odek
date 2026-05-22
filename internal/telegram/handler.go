@@ -58,6 +58,12 @@ type Handler struct {
 	// Callers should use DownloadPhoto with the last element.
 	OnPhotoMessage func(chatID int64, messageID int, fileIDs []string) (string, error)
 
+	// OnDocumentMessage is called when a document/file message is received.
+	// Returns the response text (may be empty).
+	// fileID is the Telegram file ID. Callers should use DownloadDocument
+	// and pass the document's fileName to save the file locally.
+	OnDocumentMessage func(chatID int64, messageID int, fileID string, fileName string) (string, error)
+
 	// OnError is called when a processing error occurs.
 	OnError func(chatID int64, err error)
 }
@@ -98,6 +104,7 @@ func NewHandler(bot *Bot) *Handler {
 		OnCommand:       defaultCommandHandler(),
 		OnVoiceMessage:  defaultVoiceHandler(bot),
 		OnPhotoMessage:  defaultPhotoHandler(bot),
+		OnDocumentMessage: defaultDocumentHandler(bot),
 	}
 }
 
@@ -152,6 +159,18 @@ func defaultPhotoHandler(bot *Bot) func(int64, int, []string) (string, error) {
 			return "", fmt.Errorf("telegram handler: download photo: %w", err)
 		}
 		return fmt.Sprintf("MEDIA:photo:%s", path), nil
+	}
+}
+
+// defaultDocumentHandler returns a default OnDocumentMessage callback that
+// downloads the document and returns a MEDIA: response.
+func defaultDocumentHandler(bot *Bot) func(int64, int, string, string) (string, error) {
+	return func(chatID int64, _ int, fileID string, fileName string) (string, error) {
+		path, err := DownloadDocument(bot, fileID, fileName)
+		if err != nil {
+			return "", fmt.Errorf("telegram handler: download document: %w", err)
+		}
+		return fmt.Sprintf("MEDIA:document:%s:%s", path, fileName), nil
 	}
 }
 
@@ -233,7 +252,21 @@ func (h *Handler) handleMessage(msg *Message) {
 				h.SendResponse(msg.Chat.ID, resp, msg.ID)
 			}
 		}
-	case msg.Text != "":
+	case msg.Document != nil:
+		if h.OnDocumentMessage != nil {
+			resp, err := h.OnDocumentMessage(msg.Chat.ID, msg.ID, msg.Document.FileID, msg.Document.FileName)
+			if err != nil {
+				h.log.Error("document message handler failed", "chat_id", msg.Chat.ID, "error", err)
+				if h.OnError != nil {
+					h.OnError(msg.Chat.ID, err)
+				}
+				return
+			}
+			if resp != "" {
+				h.SendResponse(msg.Chat.ID, resp, msg.ID)
+			}
+		}
+	case msg.Text != "": 
 		if h.OnTextMessage != nil {
 			resp, err := h.OnTextMessage(msg.Chat.ID, msg.ID, msg.Text)
 			if err != nil {

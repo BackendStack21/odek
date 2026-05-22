@@ -436,6 +436,21 @@ func telegramCmd(args []string) error {
 		return "", nil
 	}
 
+	handler.OnDocumentMessage = func(chatID int64, messageID int, fileID string, fileName string) (string, error) {
+		localPath, err := telegram.DownloadDocument(bot, fileID, fileName)
+		if err != nil {
+			handlerLog.Warn("document download failed", "chat_id", chatID, "file_name", fileName, "error", err)
+			go handleChatMessage(chatID, messageID,
+				fmt.Sprintf("[document received — download failed: %v]", err),
+				bot, handler, sessionManager, resolved, systemMessage, handlerLog)
+			return "", nil
+		}
+		go handleChatMessage(chatID, messageID,
+			fmt.Sprintf("📄 Document received and saved to %q. Use shell tools to analyze and respond.", localPath),
+			bot, handler, sessionManager, resolved, systemMessage, handlerLog)
+		return "", nil
+	}
+
 	handler.OnError = func(chatID int64, err error) {
 		handlerLog.Error("handler error", "chat_id", chatID, "error", err)
 	}
