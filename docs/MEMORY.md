@@ -45,7 +45,7 @@ HH:MM  agent  pushed 19 tests, tagged v0.8.19
 
 ### Tier 3 — Episodes (on-disk, searchable)
 
-After sessions with ≥3 turns, the MemoryManager runs SimpleCall to extract 1-3 durable facts. Written to `episodes/<session-id>.md`. Searchable via `memory(search=...)` which uses SimpleCall to rank episodes by relevance to the query.
+After sessions with ≥3 turns, the MemoryManager runs SimpleCall to extract 1-3 durable facts. Written to `episodes/<session-id>.md`. Searchable via `memory(search=...)` which uses **RandomProjections** (go-vector) to rank episodes by cosine similarity to the query — zero LLM calls per search. Set `llm_search: true` in config to use LLM-based ranking instead.
 
 ## Memory Tool — Unified API
 
@@ -72,7 +72,7 @@ After sessions with ≥3 turns, the MemoryManager runs SimpleCall to extract 1-3
 | `remove` | user/env | — | ✅ substring | Finds entry by substring, removes it |
 | `consolidate` | user/env | — | — | SimpleCall: merge related entries for density |
 | `read` | — | — | — | Returns full content of both user.md + env.md |
-| `search` | — | — | ✅ query | SimpleCall: rank episodes + facts by relevance |
+| `search` | — | — | ✅ query | RP ranker: rank episodes + facts by cosine similarity (zero LLM calls) |
 
 ## Merge-on-Write (go-vector Integration)
 
@@ -146,7 +146,7 @@ Subagents do NOT get a `memory` tool — they cannot modify parent memory.
     "buffer_enabled": true,
     "merge_on_write": true,
     "extract_on_end": true,
-    "llm_search": true,
+    "llm_search": false,       // false = RP ranker (default), true = LLM-based ranking
     "llm_extract": true,
     "llm_consolidate": true,
     "merge_threshold": 0.7,
@@ -163,3 +163,20 @@ All memory content is scanned on write for:
 - **Credential patterns** (`sk-...`, `-----BEGIN`, bearer tokens)
 
 Rejected content returns an error to the agent.
+
+## Architecture
+
+### Episode Index Caching
+
+The episode index (`episodes/index.json`) is cached in memory after the first read. Every subsequent `FormatEpisodeContext` call (fires once per agent loop turn) hits the in-memory cache instead of re-reading + unmarshalling from disk. A read-write lock (`sync.RWMutex`) allows concurrent readers without blocking each other — only writes (rare, ~once per session) acquire the exclusive lock. The cache is invalidated after any write.
+
+### Search Ranking
+
+Episode search uses **RandomProjections** (go-vector) for semantic similarity by default:
+
+1. Fit RP embedder on episode summaries + query (64 dims, ~1ms)
+2. Embed each summary and the query into 64-dimensional vectors
+3. Score by cosine similarity between query vector and each summary vector
+4. Return top-3 results sorted by score
+
+This is zero LLM calls per search, ~1ms per search. Set `llm_search: true` in config to switch to LLM-based ranking (uses SimpleCall to rank episodes by relevance — higher quality, higher latency + token cost).

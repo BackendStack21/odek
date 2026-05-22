@@ -37,6 +37,9 @@ internal/
   ws/
     ws.go                     RFC 6455 WebSocket framing (~200 LOC)
     ws_test.go                Handshake, framing, ping/pong tests
+  transport/
+    client.go                 Tuned HTTP transport with connection pooling
+    client_test.go            Pool config tests (keep-alives, idle timeouts)
   tool/
     registry.go               Thread-safe tool registry
     registry_test.go          Registry tests
@@ -59,6 +62,8 @@ internal/
     types.go                  Skill/skill manager types, DefaultSkillsConfig, ValidateSkillName
     types_test.go             ValidateSkillName tests
     loader.go                 Skill loader + trie trigger index
+    cache.go                  File mod-time cache + persistent disk cache (.skills_cache.json)
+    cache_test.go             Cache tests
     derive.go                 Keyword derivation from skill body
     trigger.go                Trigger matching
     selfimprove.go            5 heuristics + runAllHeuristics
@@ -170,6 +175,37 @@ See [docs/WEBUI.md](docs/WEBUI.md) for the WebSocket protocol and full documenta
 - **subagent_tool.go**: `delegate_tasks` built-in tool. Spawns real OS processes via `exec.Command` with temp files for task data
 
 See [docs/SUBAGENTS.md](docs/SUBAGENTS.md) for full documentation.
+
+## Performance Architecture
+
+### HTTP Connection Pooling (`internal/transport/`)
+
+All API clients (LLM, Telegram) use `transport.NewPooledClient()` which creates an `*http.Client` with a tuned transport:
+
+| Setting | Value | Purpose |
+|---|---|---|
+| `MaxIdleConns` | 20 | Pool up to 20 idle connections |
+| `MaxIdleConnsPerHost` | 10 | 10 keep-alive connections per API host |
+| `IdleConnTimeout` | 90s | Close idle connections after 90s of inactivity |
+| `DisableCompression` | true | API responses (JSON) are already compact |
+| `ForceAttemptHTTP2` | true | Prefer HTTP/2 multiplexing |
+| `Dialer.KeepAlive` | 30s | TCP keep-alive interval |
+
+Before pooling, every API call opened a new TCP + TLS connection (~200-500ms). With pooling, connections are reused across calls.
+
+### Context Trimming (`internal/loop/loop.go`)
+
+The `trimContext` function uses a **running token total** to avoid O(n²) behavior. Instead of calling `estimateMessages()` on the full message list after every group drop, it subtracts only the dropped group's tokens from a precomputed total. The fast path (no trim needed) is zero allocations, ~62ns.
+
+### Skill Caching (`internal/skills/cache.go`)
+
+Two cache layers:
+1. **In-memory** `fileCache` — maps SKILL.md paths to their last-known mtime. Within a single process, unchanged files skip re-parsing.
+2. **Persistent** `.skills_cache.json` — serializes the in-memory cache to `~/.odek/skills/` for reuse across process invocations. On the next `odek run`, skills are loaded from the cache instead of re-parsing 151 YAML frontmatters. Invalidated on format version bumps or explicit mutations.
+
+### Episode Index Cache (`internal/memory/episodes.go`)
+
+The episode `index.json` is cached in memory after the first read. Subsequent `Search()` calls (one per agent loop turn) hit the cache instead of re-reading + unmarshalling from disk. A `sync.RWMutex` allows concurrent readers. The cache is invalidated after writes (rare, ~once per session).
 
 ## Contributing
 

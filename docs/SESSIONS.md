@@ -97,7 +97,7 @@ fmt.Printf("Session %s saved\n", sess.ID)
 
 ## Storage format
 
-Sessions are stored as JSON at `~/.odek/sessions/<id>.json`:
+Sessions are stored as compact JSON at `~/.odek/sessions/<id>.json` (no indentation — ~5% smaller on disk, faster serialization):
 
 ```json
 {
