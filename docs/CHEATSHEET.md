@@ -27,7 +27,7 @@ odek repl --sandbox --sandbox-image python:3.12
   "max_iterations": 30,
   "sandbox": true,
   "sandbox_image": "alpine:latest",
-  "sandbox_network": "bridge",
+  "sandbox_network": "none",
   "max_concurrency": 3,
 
   "skills": {

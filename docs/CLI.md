@@ -250,7 +250,7 @@ Use `odek skill reset-skips` to clear the skip list and re-enable suppressed sug
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--sandbox-image <img>` | `alpine:latest` | Docker image |
-| `--sandbox-network <mode>` | `bridge` | Network: `bridge`/`none`/`host` |
+| `--sandbox-network <mode>` | `none` | Network: `none`/`bridge`/`host` |
 | `--sandbox-readonly` | false | Mount working directory read-only |
 | `--sandbox-memory <s>` | — | Memory limit (e.g. `512m`, `2g`) |
 | `--sandbox-cpus <n>` | — | CPU limit (e.g. `0.5`, `2`) |

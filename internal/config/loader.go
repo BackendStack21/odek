@@ -242,7 +242,7 @@ type ResolvedConfig struct {
 // ── Defaults ───────────────────────────────────────────────────────────
 
 const (
-	DefaultSandboxNetwork = "bridge"
+	DefaultSandboxNetwork = "none"
 )
 
 // ── Paths ──────────────────────────────────────────────────────────────
@@ -560,6 +560,12 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if resolved.APIKey == "" {
 		resolved.APIKey = os.Getenv("OPENAI_API_KEY")
 	}
+
+	// Clear API key env vars to prevent exposure via /proc/pid/environ.
+	// The key is now in the Config struct; the environment shouldn't keep a copy.
+	os.Unsetenv("ODEK_API_KEY")
+	os.Unsetenv("DEEPSEEK_API_KEY")
+	os.Unsetenv("OPENAI_API_KEY")
 
 	return resolved
 }

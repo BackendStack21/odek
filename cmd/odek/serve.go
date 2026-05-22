@@ -150,7 +150,7 @@ Flags:
   --open                   Open browser automatically
   --sandbox                Enable Docker sandbox for agent tool execution
   --sandbox-image image    Docker image (default: alpine:latest or Dockerfile.odek)
-  --sandbox-network net    Docker network mode (default: bridge)
+  --sandbox-network net    Docker network mode (default: none)
   --sandbox-readonly       Mount working directory read-only
   --sandbox-memory limit   Container memory limit (e.g. 512m, 2g)
   --sandbox-cpus limit     Container CPU limit (e.g. 0.5, 2, 4)

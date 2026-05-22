@@ -52,17 +52,19 @@ Without `--sandbox`, the `shell` tool runs commands directly on the host with th
 With `--sandbox`, each session is fully contained in a Docker container:
 
 - **No filesystem access** beyond the working directory (mounted read-only if configured)
-- **No network** when `--sandbox-network none` is set
+- **No network by default** — `sandbox_network` defaults to `none`. `host` mode is rejected (forces `none` with a warning) to prevent bypassing isolation
 - **No capabilities** — even root inside the container has zero kernel capabilities
 - **No privilege escalation** — `setuid` binaries are neutered
 - **No persistence** — container destroyed on exit
 - **No executable temp files** — `/tmp` is mounted `noexec`
 
+Set `sandbox_network: bridge` explicitly if the agent needs outbound internet access (e.g. `npm install`).
+
 See [Sandboxing](SANDBOXING.md) for the full reference.
 
 ## API key handling
 
-API keys are read from environment variables or explicit config. odek never logs, stores, or transmits your key beyond the HTTPS request to the LLM endpoint.
+API keys are read from environment variables (`ODEK_API_KEY`, `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`) or explicit config. After the key is resolved, the environment variables are **cleared** to prevent exposure via `/proc/<pid>/environ` — any process on the same machine can no longer read the key from the process environment. odek never logs, stores, or transmits your key beyond the HTTPS request to the LLM endpoint.
 
 ---
 

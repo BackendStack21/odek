@@ -691,3 +691,29 @@ func TestLoadConfig_MemoryNotSetReturnsDefaults(t *testing.T) {
 		t.Error("Enabled should match default")
 	}
 }
+
+func TestLoadConfig_ClearsAPIKeyFromEnviron(t *testing.T) {
+	os.Setenv("ODEK_API_KEY", "sk-odek-test")
+	os.Setenv("DEEPSEEK_API_KEY", "sk-deepseek-test")
+	os.Setenv("OPENAI_API_KEY", "sk-openai-test")
+
+	dir := t.TempDir()
+	prevHome := os.Getenv("HOME")
+	os.Setenv("HOME", dir)
+	defer os.Setenv("HOME", prevHome)
+
+	cfg := LoadConfig(CLIFlags{})
+
+	if cfg.APIKey != "sk-odek-test" {
+		t.Errorf("APIKey = %q, want 'sk-odek-test'", cfg.APIKey)
+	}
+	if v := os.Getenv("ODEK_API_KEY"); v != "" {
+		t.Errorf("ODEK_API_KEY should be cleared after LoadConfig, got %q", v)
+	}
+	if v := os.Getenv("DEEPSEEK_API_KEY"); v != "" {
+		t.Errorf("DEEPSEEK_API_KEY should be cleared after LoadConfig, got %q", v)
+	}
+	if v := os.Getenv("OPENAI_API_KEY"); v != "" {
+		t.Errorf("OPENAI_API_KEY should be cleared after LoadConfig, got %q", v)
+	}
+}

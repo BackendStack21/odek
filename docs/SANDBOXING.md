@@ -5,8 +5,11 @@ odek runs agent shell commands inside an **isolated Docker container** when `--s
 ## Quick start
 
 ```bash
-# Enable sandbox with internet access (default network: bridge)
+# Enable sandbox with no network (default: none)
 odek run --sandbox "npm install && npm test"
+
+# Enable sandbox with internet access
+odek run --sandbox --sandbox-network bridge "npm install && npm test"
 
 # Use a specific base image
 odek run --sandbox --sandbox-image node:20-alpine "echo hello"
@@ -28,7 +31,7 @@ All sandbox settings are available in `~/.odek/config.json`, `./kode.json`, `ODE
 {
   "sandbox": true,
   "sandbox_image": "node:20-alpine",
-  "sandbox_network": "bridge",
+  "sandbox_network": "none",
   "sandbox_readonly": false,
   "sandbox_memory": "512m",
   "sandbox_cpus": "2",
@@ -49,7 +52,7 @@ All sandbox settings are available in `~/.odek/config.json`, `./kode.json`, `ODE
 |-------|---------|----------|------|---------|-------------|
 | `sandbox` | `ODEK_SANDBOX` | `--sandbox` | bool | `false` | Enable/disable sandbox isolation |
 | `sandbox_image` | `ODEK_SANDBOX_IMAGE` | `--sandbox-image` | string | `alpine:latest` | Docker image for the sandbox container |
-| `sandbox_network` | `ODEK_SANDBOX_NETWORK` | `--sandbox-network` | string | `bridge` | Docker network mode |
+| `sandbox_network` | `ODEK_SANDBOX_NETWORK` | `--sandbox-network` | string | `none` | Docker network mode |
 | `sandbox_readonly` | `ODEK_SANDBOX_READONLY` | `--sandbox-readonly` | bool | `false` | Mount working directory read-only |
 | `sandbox_memory` | `ODEK_SANDBOX_MEMORY` | `--sandbox-memory` | string | `""` | Memory limit (e.g. `512m`, `2g`) |
 | `sandbox_cpus` | `ODEK_SANDBOX_CPUS` | `--sandbox-cpus` | string | `""` | CPU limit (e.g. `0.5`, `2`) |
@@ -79,7 +82,7 @@ ODEK_SANDBOX_USER=1000:1000 \
 odek run \
   --sandbox \
   --sandbox-image node:20-alpine \
-  --sandbox-network bridge \
+  --sandbox-network none \
   --sandbox-readonly \
   --sandbox-memory 512m \
   --sandbox-cpus 2 \
@@ -221,7 +224,7 @@ odek's sandbox follows the principle of **least privilege with progressive opt-i
 {
   "sandbox": true,
   "sandbox_image": "node:20-alpine",
-  "sandbox_network": "bridge",
+  "sandbox_network": "none",
   "sandbox_readonly": false,
   "sandbox_memory": "2g",
   "sandbox_env": {
@@ -240,7 +243,7 @@ odek's sandbox follows the principle of **least privilege with progressive opt-i
 {
   "sandbox": true,
   "sandbox_image": "golang:1.24-alpine",
-  "sandbox_network": "bridge",
+  "sandbox_network": "none",
   "sandbox_readonly": false,
   "sandbox_memory": "4g",
   "sandbox_cpus": "4",

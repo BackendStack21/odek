@@ -293,7 +293,7 @@ type runFlags struct {
 
 	// Sandbox-specific CLI flags
 	SandboxImage    string // Docker image (e.g. "node:20-alpine")
-	SandboxNetwork  string // Network mode: "bridge" | "none" | "host"
+	SandboxNetwork  string // Network mode: "none" | "bridge" | "host"
 	SandboxMemory   string // Memory limit (e.g. "512m", "2g")
 	SandboxCPUs     string // CPU limit (e.g. "0.5", "2")
 	SandboxUser     string // Container user (e.g. "1000:1000")
@@ -552,7 +552,7 @@ Skill commands:
 Sandbox flags:
   --sandbox            Run in isolated Docker container
   --sandbox-image <img>  Docker image (default: alpine:latest)
-  --sandbox-network <m>  Network mode: bridge (default) | none | host
+  --sandbox-network <m>  Network mode: none (default) | bridge | host
   --sandbox-readonly   Mount working directory read-only
   --sandbox-memory <s> Memory limit (e.g. 512m, 2g)
   --sandbox-cpus <n>   CPU limit (e.g. 0.5, 2, 4)
@@ -575,7 +575,7 @@ Environment variables:
   ODEK_NO_AGENTS       true/false — skip AGENTS.md
   ODEK_SYSTEM          System prompt override
   ODEK_SANDBOX_IMAGE   Docker image for sandbox container
-  ODEK_SANDBOX_NETWORK Network mode (bridge | none | host)
+  ODEK_SANDBOX_NETWORK Network mode (none | bridge | host)
   ODEK_SANDBOX_READONLY true/false — mount read-only
   ODEK_SANDBOX_MEMORY  Memory limit (e.g. 512m, 2g)
   ODEK_SANDBOX_CPUS    CPU limit (e.g. 0.5, 2)
@@ -596,7 +596,7 @@ const defaultConfigTemplate = `{
   "system": "",
   "github_repo_directory": "",
   "sandbox_image": "",
-  "sandbox_network": "bridge",
+  "sandbox_network": "none",
   "sandbox_readonly": false,
   "sandbox_memory": "",
   "sandbox_cpus": "",
@@ -722,7 +722,7 @@ func initConfig(args []string) error {
 	fmt.Println("    system          System prompt override")
 	fmt.Println("    github_repo_directory  Local clone path of the project repo")
 	fmt.Println("    sandbox_image   Docker image (alpine:latest if empty)")
-	fmt.Println("    sandbox_network Network mode (bridge | none | host)")
+	fmt.Println("    sandbox_network Network mode (none | bridge | host)")
 	fmt.Println("    sandbox_readonly Mount working directory read-only")
 	fmt.Println("    sandbox_memory  Memory limit (e.g. 512m, 2g)")
 	fmt.Println("    sandbox_cpus    CPU limit (e.g. 0.5, 2)")
@@ -1130,8 +1130,14 @@ func buildSandboxArgs(cfg sandboxConfig, containerName, workdir, image string) [
 		"--security-opt", "no-new-privileges",
 	}
 
-	// Network mode
-	args = append(args, "--network", cfg.Network)
+	// Network mode — "host" is forbidden (destroys container isolation).
+	// If explicitly set to "host", warn and force "none".
+	network := cfg.Network
+	if network == "host" {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: --sandbox-network host destroys container isolation. Forcing 'none'.\n")
+		network = "none"
+	}
+	args = append(args, "--network", network)
 
 	// Read-only mount?
 	volume := workdir + ":/workspace"

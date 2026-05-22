@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1885,6 +1886,36 @@ func TestBuildSandboxArgs_ValidVolume(t *testing.T) {
 	args := buildSandboxArgs(cfg, "odek-test", "/workspace", "alpine:latest")
 	if !hasArgPair(args, "-v", "/data:/data") {
 		t.Error("valid volume /data:/data should be included in docker args")
+	}
+}
+
+// TestBuildSandboxArgs_RejectsHostNetwork verifies that --sandbox-network host
+// is rejected and replaced with "none", protecting container isolation.
+func TestBuildSandboxArgs_RejectsHostNetwork(t *testing.T) {
+	origStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	cfg := sandboxConfig{Network: "host"}
+	args := buildSandboxArgs(cfg, "odek-test", "/workspace", "alpine:latest")
+
+	w.Close()
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	os.Stderr = origStderr
+	stderr := buf.String()
+
+	hostFound := false
+	for i, a := range args {
+		if a == "--network" && i+1 < len(args) && args[i+1] == "host" {
+			hostFound = true
+		}
+	}
+	if hostFound {
+		t.Error("--network host was NOT rejected — isolation destroyed")
+	}
+	if !strings.Contains(stderr, "WARNING") || !strings.Contains(stderr, "host") {
+		t.Errorf("expected stderr warning about host network, got: %s", stderr)
 	}
 }
 
