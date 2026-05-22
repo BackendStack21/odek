@@ -20,7 +20,7 @@ Telegram Bot API ◄── bot.go (HTTP client)
                       download.go (voice/photo media)
 ```
 
-The package is self-contained under `internal/telegram/` with 450+ tests and 87% coverage. All Telegram API calls use the Bot struct, which wraps `net/http` with JSON marshaling and multipart upload support. No external Telegram libraries are used.
+The package is self-contained under `internal/telegram/` with 473 tests and 87% coverage. All Telegram API calls use the Bot struct, which wraps `net/http` with JSON marshaling, multipart upload support, exponential backoff retry, and typed error handling. No external Telegram libraries are used.
 
 ## Configuration
 
@@ -75,8 +75,10 @@ The `Bot` struct is a lightweight Telegram Bot API client built on the standard 
 
 ### Underlying HTTP Helpers
 
-- **`doJSON`** — Sends JSON POST requests and unmarshals the `result` field from Telegram's response envelope
-- **`doUpload`** — Sends multipart/form-data POST requests for file uploads (photo, voice)
+- **`doJSON`** — Sends JSON POST requests with exponential backoff retry. Unmarshals the `result` field from Telegram's response envelope.
+- **`doUpload`** — Sends multipart/form-data POST requests for file uploads (photo, voice). Buffers the entire file in memory to enable retry without re-reading from disk.
+
+See [Error Handling & Retry](#error-handling--retry) above for retry strategy, `TelegramError` type, and `isRetryableNetworkError` details.
 
 ### Fallback URLs
 
@@ -93,6 +95,44 @@ The `Bot` struct is a lightweight Telegram Bot API client built on the standard 
 - No-op when budget is 0 (unlimited, the default)
 - Configurable via `ODEK_TELEGRAM_DAILY_TOKEN_BUDGET` env var or `daily_token_budget` in `odek.json`
 
+### Error Handling & Retry
+
+`doJSON` and `doUpload` implement exponential backoff retry with these characteristics:
+
+- **Up to 4 retries** (5 total attempts), with 1s → 2s → 4s → 8s backoff
+- **Transient errors that get retried:**
+  - Network errors with `net.Error.Timeout()` or `net.Error.Temporary()` (timeouts, connection refused). Non-transient network errors (DNS failures) are returned immediately.
+  - HTTP 429 (rate limit) — server indicates client should slow down
+  - HTTP 5xx (server error) — may be temporary backend issues
+- **Fatal errors that are NOT retried:** HTTP 401, 403, 409, and other 4xx client errors (except 429)
+
+### Typed API Errors
+
+Telegram API errors use the `TelegramError` type instead of opaque strings:
+
+```go
+type TelegramError struct {
+    Method      string // API method that failed (e.g. "sendMessage")
+    Description string // Human-readable error description
+    Code        int    // HTTP status code
+}
+```
+
+`IsFatalAPIError(err)` uses `errors.As` for type-safe code extraction — callers don't depend on error string format. Fatal codes: 401 (Unauthorized), 403 (Forbidden), 409 (Conflict — duplicate polling).
+
+### Upload Memory Tradeoff
+
+`doUpload` buffers the entire file in memory before sending (`bytes.Buffer`). This enables retry without re-reading from disk. Telegram's 50 MB upload limit makes this acceptable for bot use cases.
+
+## Health Server (`health.go`)
+
+The `HealthServer` provides an HTTP `/health` endpoint for monitoring systems.
+
+- **Address**: configurable via `--telegram-health-addr` (e.g. `127.0.0.1:9090`). Empty string disables.
+- **`ready` state**: uses `atomic.Bool` for thread-safe access. `/health` returns `503 Service Unavailable` with `{"status": "starting"}` until `SetReady()` is called (after polling begins).
+- **`200 OK`**: `{"status": "ok", "uptime_seconds": <N>}` once polling is active.
+- Graceful shutdown on context cancellation.
+
 ## Long-Polling (`poller.go`)
 
 The `Poller` struct implements Telegram's long-polling update mechanism:
@@ -100,6 +140,7 @@ The `Poller` struct implements Telegram's long-polling update mechanism:
 - **Offset tracking**: updates are acknowledged by advancing the offset past the highest received update ID, preventing duplicate processing
 - **Configurable timeout**: default 30s long-poll (Telegram holds the connection open until updates arrive or the timeout expires)
 - **Polling interval**: 1s between poll cycles (configurable via `PollInterval`)
+- **Exponential backoff**: consecutive poll errors trigger increasing delays: `interval × 2^errors`, capped at `60 × interval`. Error count clamps at 30 to prevent integer overflow in the bit-shift. A successful poll resets the error counter.
 
 ```go
 poller := telegram.NewPoller(bot)
@@ -270,7 +311,9 @@ The package defines Telegram API types used throughout:
 | `InlineKeyboardButton` | Inline keyboard button |
 | `CallbackQuery` | Inline keyboard callback |
 | `HandlerConfig` | Message handler configuration |
+| `TelegramError` | Typed API error with `Method`, `Description`, `Code` |
 | `TelegramConfig` | Full bot configuration |
+| `HealthServer` | HTTP health check server |
 | `PlanInfo` | Plan file summary |
 | `ChatSession` | Per-chat agent session |
 | `SessionManager` | Session lifecycle manager |
@@ -303,7 +346,7 @@ A fire-and-forget goroutine sends `sendChatAction("typing")` every 4 seconds whi
 
 ## Testing
 
-The Telegram package has **409 tests** with **86.9% coverage**. Tests use:
+The Telegram package has **473 tests** with **87.1% coverage**. Tests use:
 - `httptest.NewServer` to mock Telegram API responses
 - HTTP handler functions for each API endpoint (getFile, sendMessage, sendDocument, etc.)
 - `t.TempDir()` + `t.Setenv("HOME", ...)` for filesystem isolation

@@ -76,7 +76,8 @@ internal/
     session.go                Telegram session store (chat → odek session mapping)
     plan.go                   Plan management (Slugify, ListPlans, ReadPlan, DeletePlan, MostRecentPlan)
     download.go               Media download (voice, photo → file on disk)
-    *_test.go                 409 tests across all subsystems (86.9% coverage)
+    health.go                 HTTP health check endpoint (atomic.Bool ready state, 503→200)
+    *_test.go                 473 tests across all subsystems (87.1% coverage)
 cmd/odek/
   main.go                     CLI entry point, flag parsing, commands, sandbox
   main_test.go                CLI tests (flag parsing, version, init)
@@ -130,7 +131,7 @@ Zero external test dependencies — tests use `httptest`, `testing`, and the sta
 
 | Layer | Runner | Tests | What's tested |
 |-------|--------|-------|---------------|
-| **Unit** | `go test ./...` | 1890+ | All 14 packages — config, LLM client, loop, sessions, renderer, tools, WS, resources, memory, skills, telegram, danger, security, mcp |
+| **Unit** | `go test ./...` | 1954 | All 17 packages — config, LLM client, loop, sessions, renderer, tools, WS, resources, memory, skills, telegram, danger, security, mcp |
 | **Contract** | `go test ./cmd/odek/` | 60+ | Sub-agent flag parsing, JSON stdout, exit codes, tool schema, config, serve, shell |
 | **E2E** | `KODE_E2E=true go test -run 'TestE2E_'` | 16 | Real subprocess spawning, tool→binary pipeline, concurrency, timeouts, custom prompts |
 
@@ -150,7 +151,7 @@ Zero external test dependencies — tests use `httptest`, `testing`, and the sta
 | `internal/danger` | 281 | Command classification (8 risk classes), config overrides, allow/denylist |
 | `internal/memory` | 144 | Facts CRUD, buffer ring, episodes, merge detector (go-vector), ReplaceEntry, AppendEntry, memory tool, security scan, LLM ranking |
 | `internal/skills` | 127 | Loading, triggers, self-improvement (5 heuristics), curation, LLM-enhanced generation, import, tools, ValidateSkillName, isPrivateHost, extractRelevantChange |
-| `internal/telegram` | 409 | Bot client, long-polling, command handlers, session management, plan CRUD, voice/photo download, media dir management |
+| `internal/telegram` | 473 | Bot client, long-polling, command handlers, session management, plan CRUD, voice/photo download, health server, retry/backoff |
 | `cmd/odek` | 441 | Flag parsing, init, version, sandbox setup, subagent, serve, security E2E, shell tool danger, browser tool, contract tests |
 
 ## Key packages
