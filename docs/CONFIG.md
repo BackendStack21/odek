@@ -63,6 +63,7 @@ Every config knob has a `ODEK_*` counterpart:
 | `ODEK_NO_AGENTS` | `--no-agents` | bool |
 | `ODEK_SYSTEM` | `--system` | string |
 | `ODEK_SKILLS_LEARN` | `skills.learn` | bool |
+| `ODEK_PROMPT_CACHING` | `prompt_caching` | bool |
 | `ODEK_SANDBOX_IMAGE` | `--sandbox-image` | string |
 | `ODEK_SANDBOX_NETWORK` | `--sandbox-network` | string |
 | `ODEK_SANDBOX_READONLY` | `--sandbox-readonly` | bool |

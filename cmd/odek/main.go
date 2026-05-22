@@ -235,6 +235,7 @@ type runFlags struct {
 	Sandbox  *bool // nil = not set
 	NoColor  *bool // nil = not set
 	NoAgents *bool // nil = not set
+	PromptCaching *bool // nil = not set; true = enable prompt caching
 	Session  *bool // nil = not set; true = save session after run
 	Learn    *bool // nil = not set; true = enable skills learning mode
 	Task     string
@@ -300,6 +301,9 @@ func parseRunFlags(args []string) (runFlags, error) {
 		case "--no-agents":
 			f.NoAgents = boolPtr(true)
 			i++
+		case "--prompt-caching":
+			f.PromptCaching = boolPtr(true)
+			i++
 		case "--session":
 			f.Session = boolPtr(true)
 			i++
@@ -353,6 +357,7 @@ type replFlags struct {
 	Model    string
 	Thinking string
 	Sandbox  *bool // nil = not set
+	PromptCaching *bool // nil = not set; true = enable prompt caching
 
 	// Sandbox-specific CLI flags
 	SandboxImage    string
@@ -415,6 +420,9 @@ func parseReplFlags(args []string) (replFlags, error) {
 		case "--sandbox-user":
 			f.SandboxUser = args[i+1]
 			i += 2
+		case "--prompt-caching":
+			f.PromptCaching = boolPtr(true)
+			i++
 		default:
 			// Unrecognized flag or positional — skip it
 			i++
@@ -443,7 +451,7 @@ Commands:
   run --session       Execute and save conversation as a session
   continue            Continue the most recent session (or by --id)
   repl                Interactive REPL mode (multi-turn session)
-                       Accepts --model, --thinking, --sandbox, and
+                       Accepts --model, --thinking, --sandbox, --prompt-caching, and
                        --sandbox-* flags just like odek run.
   serve               Web UI server with WebSocket streaming
                        Open http://localhost:8080 in your browser.
@@ -476,6 +484,7 @@ Run flags:
   --temperature <n>    LLM temperature 0.0–2.0 (default: 0 = deterministic)
   --no-color           Disable colored terminal output
   --no-agents          Skip loading AGENTS.md from working directory
+  --prompt-caching     Enable prompt caching markers (Anthropic/DeepSeek/OpenAI)
   --session            Save conversation as a multi-turn session
   --learn              Enable skill learning mode — on by default, no flag needed
   --no-learn           Disable skill learning mode (overrides config/default)
@@ -488,6 +497,7 @@ Skill commands:
   odek skill import <uri> [flags]    Import a skill from file:// or https://
                                      Flags: --basic (skip LLM), --yes (auto-approve)
   odek skill curate                  Analyze skills for quality, staleness, overlap
+                                     Flags: --apply (apply changes), --interactive (review one-by-one)
 
 Sandbox flags:
   --sandbox            Run in isolated Docker container
@@ -782,6 +792,7 @@ func run(args []string) error {
 		Sandbox:  f.Sandbox,
 		NoColor:  f.NoColor,
 		NoAgents: f.NoAgents,
+		PromptCaching: f.PromptCaching,
 		Learn:    f.Learn,
 		System:   f.System,
 		Task:     f.Task,
@@ -906,6 +917,7 @@ func run(args []string) error {
 		Renderer:       rend,
 		Skills:         skillsCfg,
 		SkillManager:   sm,
+		PromptCaching:  resolved.PromptCaching,
 	})
 	if err != nil {
 		return err
@@ -1628,11 +1640,27 @@ func skillCmd(args []string) error {
 		return nil
 
 	case "curate":
+		// Parse --apply and --interactive flags
+		apply := false
+		interactive := false
+		var remainingArgs []string
+		for _, arg := range subArgs {
+			switch arg {
+			case "--apply":
+				apply = true
+			case "--interactive":
+				interactive = true
+			default:
+				remainingArgs = append(remainingArgs, arg)
+			}
+		}
+		_ = remainingArgs // future use: filter by skill name
 		sm := skills.NewSkillManager(userDir, "./.odek/skills")
 		allSkills := append(sm.Result.AutoLoad, sm.Result.Lazy...)
 		report := skills.CurateSkills(allSkills, skills.CurateOptions{
 			StalenessDays: 90,
-			Apply:         false,
+			Apply:         apply,
+			Interactive:   interactive,
 		})
 		fmt.Print(skills.FormatCurationReport(report))
 		return nil
@@ -1801,6 +1829,7 @@ func continueCmd(args []string) error {
 		Renderer:       rend,
 		Skills:         skillsCfg,
 		SkillManager:   sm,
+		PromptCaching:  resolved.PromptCaching,
 	})
 	if err != nil {
 		return err

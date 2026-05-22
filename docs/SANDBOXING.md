@@ -20,7 +20,7 @@ odek run --sandbox "protoc --version"
 
 ## Config reference
 
-All sandbox settings are available in `~/.odek/config.json`, `./kode.json`, `KODE_*` env vars, and CLI flags, following the same [priority chain](CONFIG.md).
+All sandbox settings are available in `~/.odek/config.json`, `./kode.json`, `ODEK_*` env vars, and CLI flags, following the same [priority chain](CONFIG.md).
 
 ### Config file fields
 
@@ -47,28 +47,28 @@ All sandbox settings are available in `~/.odek/config.json`, `./kode.json`, `KOD
 
 | Field | Env var | CLI flag | Type | Default | Description |
 |-------|---------|----------|------|---------|-------------|
-| `sandbox` | `KODE_SANDBOX` | `--sandbox` | bool | `false` | Enable/disable sandbox isolation |
-| `sandbox_image` | `KODE_SANDBOX_IMAGE` | `--sandbox-image` | string | `alpine:latest` | Docker image for the sandbox container |
-| `sandbox_network` | `KODE_SANDBOX_NETWORK` | `--sandbox-network` | string | `bridge` | Docker network mode |
-| `sandbox_readonly` | `KODE_SANDBOX_READONLY` | `--sandbox-readonly` | bool | `false` | Mount working directory read-only |
-| `sandbox_memory` | `KODE_SANDBOX_MEMORY` | `--sandbox-memory` | string | `""` | Memory limit (e.g. `512m`, `2g`) |
-| `sandbox_cpus` | `KODE_SANDBOX_CPUS` | `--sandbox-cpus` | string | `""` | CPU limit (e.g. `0.5`, `2`) |
-| `sandbox_user` | `KODE_SANDBOX_USER` | `--sandbox-user` | string | `""` | Run as user (`uid:gid` or name) |
+| `sandbox` | `ODEK_SANDBOX` | `--sandbox` | bool | `false` | Enable/disable sandbox isolation |
+| `sandbox_image` | `ODEK_SANDBOX_IMAGE` | `--sandbox-image` | string | `alpine:latest` | Docker image for the sandbox container |
+| `sandbox_network` | `ODEK_SANDBOX_NETWORK` | `--sandbox-network` | string | `bridge` | Docker network mode |
+| `sandbox_readonly` | `ODEK_SANDBOX_READONLY` | `--sandbox-readonly` | bool | `false` | Mount working directory read-only |
+| `sandbox_memory` | `ODEK_SANDBOX_MEMORY` | `--sandbox-memory` | string | `""` | Memory limit (e.g. `512m`, `2g`) |
+| `sandbox_cpus` | `ODEK_SANDBOX_CPUS` | `--sandbox-cpus` | string | `""` | CPU limit (e.g. `0.5`, `2`) |
+| `sandbox_user` | `ODEK_SANDBOX_USER` | `--sandbox-user` | string | `""` | Run as user (`uid:gid` or name) |
 | `sandbox_env` | — | — | object | `{}` | Extra env vars injected into container |
 | `sandbox_volumes` | — | — | array | `[]` | Extra volume mounts (`host:container`) |
 
-> **Note:** `sandbox_env` and `sandbox_volumes` are config-file-only — they're too complex for flat env vars or CLI flags. For all other fields, env vars and CLI flags follow the standard `KODE_*` pattern.
+> **Note:** `sandbox_env` and `sandbox_volumes` are config-file-only — they're too complex for flat env vars or CLI flags. For all other fields, env vars and CLI flags follow the standard `ODEK_*` pattern.
 
 ### Env var examples
 
 ```bash
-KODE_SANDBOX=true \
-KODE_SANDBOX_IMAGE=python:3.12-slim \
-KODE_SANDBOX_NETWORK=none \
-KODE_SANDBOX_READONLY=true \
-KODE_SANDBOX_MEMORY=1g \
-KODE_SANDBOX_CPUS=4 \
-KODE_SANDBOX_USER=1000:1000 \
+ODEK_SANDBOX=true \
+ODEK_SANDBOX_IMAGE=python:3.12-slim \
+ODEK_SANDBOX_NETWORK=none \
+ODEK_SANDBOX_READONLY=true \
+ODEK_SANDBOX_MEMORY=1g \
+ODEK_SANDBOX_CPUS=4 \
+ODEK_SANDBOX_USER=1000:1000 \
   odek run "process untrusted data"
 ```
 

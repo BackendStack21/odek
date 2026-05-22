@@ -50,6 +50,7 @@ func replCmd(args []string) error {
 		Model:    f.Model,
 		Thinking: f.Thinking,
 		Sandbox:  f.Sandbox,
+		PromptCaching: f.PromptCaching,
 
 		SandboxImage:    f.SandboxImage,
 		SandboxNetwork:  f.SandboxNetwork,
@@ -145,6 +146,7 @@ func replCmd(args []string) error {
 		Skills:         skillsCfg,
 		SkillManager:   sm,
 		MemoryConfig:   resolved.Memory,
+		PromptCaching:  resolved.PromptCaching,
 	})
 	if err != nil {
 		return err

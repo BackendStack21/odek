@@ -49,6 +49,10 @@ type CLIFlags struct {
 	Learn    *bool // nil = not set
 	Task     string
 
+	// PromptCaching enables prompt caching markers for supported providers.
+	// Config: prompt_caching, ODEK_PROMPT_CACHING, --prompt-caching.
+	PromptCaching *bool // nil = not set
+
 	// Sandbox-specific
 	SandboxImage    string
 	SandboxNetwork  string
@@ -91,6 +95,9 @@ type FileConfig struct {
 	Sandbox  *bool `json:"sandbox,omitempty"`
 	NoColor  *bool `json:"no_color,omitempty"`
 	NoAgents *bool `json:"no_agents,omitempty"`
+
+	// PromptCaching enables prompt caching markers for supported providers.
+	PromptCaching *bool `json:"prompt_caching,omitempty"`
 
 	System string `json:"system,omitempty"`
 
@@ -158,6 +165,7 @@ type ResolvedConfig struct {
 	Sandbox      bool
 	NoColor      bool
 	NoAgents     bool
+	PromptCaching bool
 	System       string
 
 	// SandboxImage is the Docker image for the sandbox container.
@@ -380,6 +388,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if v := envBool("NO_AGENTS"); v != nil {
 		cfg.NoAgents = v
 	}
+	if v := envBool("PROMPT_CACHING"); v != nil {
+		cfg.PromptCaching = v
+	}
 	if v := envString("SYSTEM"); v != "" {
 		cfg.System = v
 	}
@@ -456,6 +467,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if cli.NoAgents != nil {
 		cfg.NoAgents = cli.NoAgents
 	}
+	if cli.PromptCaching != nil {
+		cfg.PromptCaching = cli.PromptCaching
+	}
 	if cli.Learn != nil {
 		if cfg.Skills == nil {
 			cfg.Skills = &SkillsConfig{}
@@ -531,6 +545,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	}
 	if cfg.NoAgents != nil {
 		resolved.NoAgents = *cfg.NoAgents
+	}
+	if cfg.PromptCaching != nil {
+		resolved.PromptCaching = *cfg.PromptCaching
 	}
 	if cfg.SandboxReadonly != nil {
 		resolved.SandboxReadonly = *cfg.SandboxReadonly

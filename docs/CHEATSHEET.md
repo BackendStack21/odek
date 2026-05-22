@@ -12,7 +12,6 @@ odek serve                           # Web UI (http://127.0.0.1:8080)
 odek serve --open                    # Web UI + auto-open browser
 odek subagent --goal "review auth"   # Spawn subagent
 odek mcp                             # Expose tools via MCP stdio
-odek mcp --sse-addr :8081            # Expose via SSE
 
 # Sandbox flags (apply to run/repl/serve)
 odek run --sandbox "build safely"
@@ -197,6 +196,7 @@ odek mcp --sse-addr :8081                   # SSE transport
 | `ODEK_SYSTEM` | system |
 | `ODEK_NO_COLOR` | no_color |
 | `ODEK_NO_AGENTS` | no_agents |
+| `ODEK_PROMPT_CACHING` | prompt_caching |
 | `ODEK_MAX_CONCURRENCY` | max_concurrency |
 | `ODEK_CTX` | ctx (comma-separated file paths) |
 | `ODEK_API_KEY` | api_key (preferred) |

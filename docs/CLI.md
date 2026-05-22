@@ -32,7 +32,7 @@
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--model <name>` | string | `deepseek-chat` | LLM model — profiles auto-set thinking/timeout (see [Providers](docs/PROVIDERS.md)) |
+| `--model <name>` | string | `deepseek-chat` | LLM model — profiles auto-set thinking/timeout (see [Providers](docs/PROVIDERS.md)). Consider using `deepseek-v4-flash` for faster/cheaper tasks. |
 | `--base-url <url>` | string | `https://api.deepseek.com/v1` | OpenAI-compatible API endpoint |
 | `--max-iter <n>` | int | `90` | Max think→act cycles |
 | `--thinking <level>` | string | profile default | Reasoning depth: `enabled`/`disabled`/`low`/`medium`/`high` |

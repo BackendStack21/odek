@@ -35,6 +35,7 @@ func serveCmd(args []string) error {
 	// Sandbox CLI flags (nil pointers = not set)
 	var sandbox *bool
 	var sandboxReadonly *bool
+	var promptCaching *bool
 	var sandboxImage, sandboxNetwork, sandboxMemory, sandboxCPUs, sandboxUser string
 
 	for i := 0; i < len(args); i++ {
@@ -78,6 +79,8 @@ func serveCmd(args []string) error {
 			if i < len(args) {
 				sandboxUser = args[i]
 			}
+		case "--prompt-caching":
+			promptCaching = boolPtr(true)
 		default:
 			return fmt.Errorf("unknown flag %q for serve", args[i])
 		}
@@ -85,6 +88,7 @@ func serveCmd(args []string) error {
 
 	resolved := config.LoadConfig(config.CLIFlags{
 		Sandbox:         sandbox,
+		PromptCaching:   promptCaching,
 		SandboxImage:    sandboxImage,
 		SandboxNetwork:  sandboxNetwork,
 		SandboxReadonly: sandboxReadonly,
