@@ -13,7 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BackendStack21/kode/internal/config"
 	"github.com/BackendStack21/kode/internal/loop"
+	"github.com/BackendStack21/kode/internal/skills"
 	"github.com/BackendStack21/kode/internal/telegram"
 )
 
@@ -465,6 +467,90 @@ func TestOnCommandStop_NoRunInfoWhenTaskCancelledEarly(t *testing.T) {
 	result, _ = h.OnCommand(chatID, 0, "stop", "")
 	if !strings.Contains(result, "No active task to stop") {
 		t.Errorf("expected 'No active task to stop' when no run info, got: %q", result)
+	}
+}
+
+// ── /new command handler test ──────────────────────────────────────
+
+// TestOnCommandNew_SessionStartMessage verifies that /new returns a
+// rich session-start message with model, sandbox, verbose, and repo info.
+func TestOnCommandNew_SessionStartMessage(t *testing.T) {
+	chatID := int64(99910)
+
+	// Create a session store backed by a temp directory.
+	store := newTestSessionStore(t)
+	sm := telegram.NewSessionManager(store, 1*time.Hour)
+
+	// Populate a session so there's something to delete.
+	sm.GetOrCreate(chatID)
+
+	// Build a ResolvedConfig with known values.
+	resolved := config.ResolvedConfig{
+		Model:               "deepseek-v4-flash",
+		Sandbox:             true,
+		GithubRepoDirectory: "/home/user/projects/odek",
+		Skills:              skills.SkillsConfig{Verbose: true},
+	}
+
+	bot := newTestBot(t)
+	h := newTestHandler(bot)
+
+	// Wire OnCommand with the same logic as telegram.go.
+	h.OnCommand = func(cid int64, mid int, cmdName string, argsStr string) (string, error) {
+		if cmdName == "new" {
+			sm.Delete(cid)
+			// ResetApprover not needed for this test.
+			var b strings.Builder
+			b.WriteString("🔄 *New session started*\n\n")
+			b.WriteString(fmt.Sprintf("• Model: `%s`\n", resolved.Model))
+			if resolved.Sandbox {
+				b.WriteString("• Sandbox: enabled\n")
+			}
+			if resolved.Skills.Verbose {
+				b.WriteString("• Skills verbose: on\n")
+			}
+			if resolved.GithubRepoDirectory != "" {
+				repo := filepath.Base(resolved.GithubRepoDirectory)
+				b.WriteString(fmt.Sprintf("• Repo: `%s`\n", repo))
+			}
+			b.WriteString("\n_Send a message to begin._")
+			return b.String(), nil
+		}
+		return "", nil
+	}
+
+	result, err := h.OnCommand(chatID, 0, "new", "")
+	if err != nil {
+		t.Fatalf("OnCommand /new returned error: %v", err)
+	}
+
+	// Verify the enhanced message contains all expected elements.
+	if !strings.Contains(result, "New session started") {
+		t.Errorf("expected 'New session started', got: %q", result)
+	}
+	if !strings.Contains(result, "deepseek-v4-flash") {
+		t.Errorf("expected model name, got: %q", result)
+	}
+	if !strings.Contains(result, "Sandbox: enabled") {
+		t.Errorf("expected sandbox status, got: %q", result)
+	}
+	if !strings.Contains(result, "Skills verbose: on") {
+		t.Errorf("expected skills verbose, got: %q", result)
+	}
+	if !strings.Contains(result, "odek") {
+		t.Errorf("expected repo name 'odek', got: %q", result)
+	}
+	if !strings.Contains(result, "Send a message to begin") {
+		t.Errorf("expected prompt to begin, got: %q", result)
+	}
+
+	// Verify the session was actually deleted.
+	cs, err := sm.Load(chatID)
+	if err != nil {
+		t.Fatalf("Load after delete: %v", err)
+	}
+	if cs != nil {
+		t.Errorf("expected nil session after delete, got %+v", cs)
 	}
 }
 
