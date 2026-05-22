@@ -126,10 +126,7 @@ func newHandler(args string) (string, error) {
 }
 
 func statsHandler(args string) (string, error) {
-	return "📊 *Session Stats*\n\n" +
-		"Messages: {count}\n" +
-		"Session started: {time}\n\n" +
-		"(Dynamic stats not available yet — connect to session store)", nil
+	return "📊 *Stats* — Session statistics are displayed inline by the bot.", nil
 }
 
 func stopHandler(args string) (string, error) {
@@ -137,7 +134,11 @@ func stopHandler(args string) (string, error) {
 }
 
 func modeHandler(args string) (string, error) {
-	return "⚙️ *Agent Modes*\n\nSelect a mode to toggle:", nil
+	return "⚙️ *Agent Modes*\n\n" +
+		"Modes are set at startup via `odek.json` or CLI flags:\n" +
+		"• `sandbox: true` — run in Docker isolation\n" +
+		"• `skills.verbose: true` — show skill learning details\n\n" +
+		"Restart the bot after changing config.", nil
 }
 
 // restartHandler handles the /restart command.
@@ -148,23 +149,15 @@ func restartHandler(args string) (string, error) {
 	return "🔄 *Restarting...*\n\nThe bot will restart momentarily. This may take a few seconds.", nil
 }
 
-func sessionsHandler(args string) (string, error) {
-	return "📋 *Sessions* — Listing sessions is handled inline.", nil
-}
+func sessionsHandler(args string) (string, error) { return "", nil }
 
-func resumeHandler(args string) (string, error) {
-	return "✅ *Resume* — Session resume is handled inline.", nil
-}
+func resumeHandler(args string) (string, error) { return "", nil }
 
-func pruneHandler(args string) (string, error) {
-	return "🧹 *Prune* — Session cleanup is handled inline.", nil
-}
+func pruneHandler(args string) (string, error) { return "", nil }
 
 // ── Plan Command Handlers ──────────────────────────────────────────────
 
-func planHandler(args string) (string, error) {
-	return "📝 *Plan* — Plan creation is handled inline.", nil
-}
+func planHandler(args string) (string, error) { return "", nil }
 
 func plansHandler(args string) (string, error) {
 	infos, err := ListPlans(20)
@@ -215,9 +208,7 @@ func planDeleteHandler(args string) (string, error) {
 	return fmt.Sprintf("🗑️ *Plan deleted*: `%s`", matched), nil
 }
 
-func planResumeHandler(args string) (string, error) {
-	return "📋 *Plan Resume* — Handled inline.", nil
-}
+func planResumeHandler(args string) (string, error) { return "", nil }
 
 // FindCommand returns the command descriptor with the matching name, or nil.
 func FindCommand(name string) *CommandDescriptor {

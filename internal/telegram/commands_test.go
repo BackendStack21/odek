@@ -188,13 +188,20 @@ func TestAllHandlers_ReturnNoError(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
 
+	// Commands handled entirely by telegram.go's OnCommand — their
+	// handlers are stubs that return "".
+	inlineOnly := map[string]bool{
+		"sessions": true, "resume": true, "prune": true,
+		"plan": true, "plan_resume": true,
+	}
+
 	for _, cmd := range DefaultCommands {
 		t.Run(cmd.Command, func(t *testing.T) {
 			got, err := cmd.Handler("")
 			if err != nil {
 				t.Errorf("%s handler returned error: %v", cmd.Command, err)
 			}
-			if got == "" {
+			if got == "" && !inlineOnly[cmd.Command] {
 				t.Errorf("%s handler returned empty string", cmd.Command)
 			}
 		})
@@ -322,14 +329,15 @@ func TestPlanDeleteHandler_NotFound(t *testing.T) {
 	}
 }
 
-func TestPlanHandler_Usage(t *testing.T) {
+func TestPlanHandler_Stub(t *testing.T) {
+	// planHandler is a stub — real plan creation is handled inline
+	// by telegram.go's OnCommand which spawns an agent.
 	got, err := planHandler("")
 	if err != nil {
 		t.Fatalf("planHandler: %v", err)
 	}
-	// Stub handler — just returns placeholder (real logic is inline in telegram.go).
-	if got == "" {
-		t.Error("planHandler returned empty string")
+	if got != "" {
+		t.Errorf("planHandler should return empty (handled inline), got: %s", got)
 	}
 }
 
@@ -338,9 +346,8 @@ func TestPlanResumeHandler_Stub(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planResumeHandler: %v", err)
 	}
-	// Stub handler — real logic is inline in telegram.go.
-	if got == "" {
-		t.Error("planResumeHandler returned empty string")
+	if got != "" {
+		t.Errorf("planResumeHandler should return empty (handled inline), got: %s", got)
 	}
 }
 
