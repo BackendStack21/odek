@@ -55,7 +55,7 @@ func init() {
 
 func TestSubagent_GoalFlag(t *testing.T) {
 	skipIfNoBinary(t)
-	cmd := exec.Command(odekBinary, "subagent", "--goal", "test goal")
+	cmd := exec.Command(odekBinary, "subagent", "--goal", "test goal", "--timeout", "3")
 	cmd.Stderr = &bytes.Buffer{}
 	out, err := cmd.Output()
 
@@ -78,6 +78,7 @@ func TestSubagent_ContextFlag(t *testing.T) {
 	cmd := exec.Command(odekBinary, "subagent",
 		"--goal", "test",
 		"--context", "important background",
+		"--timeout", "3",
 	)
 	cmd.Stderr = &bytes.Buffer{}
 	_, err := cmd.Output()
@@ -100,7 +101,7 @@ func TestSubagent_TaskFileFlag(t *testing.T) {
 	data, _ := json.Marshal(taskData)
 	os.WriteFile(taskFile, data, 0644)
 
-	cmd := exec.Command(odekBinary, "subagent", "--task", taskFile)
+	cmd := exec.Command(odekBinary, "subagent", "--task", taskFile, "--timeout", "3")
 	cmd.Stderr = &bytes.Buffer{}
 	_, err := cmd.Output()
 
@@ -116,7 +117,7 @@ func TestSubagent_TimeoutFlag(t *testing.T) {
 	skipIfNoBinary(t)
 	cmd := exec.Command(odekBinary, "subagent",
 		"--goal", "test",
-		"--timeout", "30",
+		"--timeout", "3",
 	)
 	cmd.Stderr = &bytes.Buffer{}
 	_, err := cmd.Output()
@@ -134,6 +135,7 @@ func TestSubagent_MaxIterFlag(t *testing.T) {
 	cmd := exec.Command(odekBinary, "subagent",
 		"--goal", "test",
 		"--max-iter", "5",
+		"--timeout", "3",
 	)
 	cmd.Stderr = &bytes.Buffer{}
 	_, err := cmd.Output()
@@ -150,6 +152,7 @@ func TestSubagent_QuietFlag(t *testing.T) {
 	cmd := exec.Command(odekBinary, "subagent",
 		"--goal", "test",
 		"--quiet",
+		"--timeout", "3",
 	)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -166,6 +169,7 @@ func TestSubagent_ParentSessionFlag(t *testing.T) {
 	cmd := exec.Command(odekBinary, "subagent",
 		"--goal", "test",
 		"--parent-session", "20260519-test123",
+		"--timeout", "3",
 	)
 	cmd.Stderr = &bytes.Buffer{}
 	_, err := cmd.Output()
@@ -183,7 +187,7 @@ func TestSubagent_RejectsGoalAndTaskTogether(t *testing.T) {
 	taskFile := filepath.Join(t.TempDir(), "task.json")
 	os.WriteFile(taskFile, []byte(`{"goal":"test"}`), 0644)
 
-	cmd := exec.Command(odekBinary, "subagent", "--goal", "x", "--task", taskFile)
+	cmd := exec.Command(odekBinary, "subagent", "--goal", "x", "--task", taskFile, "--timeout", "3")
 	out, err := cmd.CombinedOutput()
 
 	if err == nil {
@@ -196,7 +200,7 @@ func TestSubagent_RejectsGoalAndTaskTogether(t *testing.T) {
 
 func TestSubagent_RejectsNoGoalOrTask(t *testing.T) {
 	skipIfNoBinary(t)
-	cmd := exec.Command(odekBinary, "subagent")
+	cmd := exec.Command(odekBinary, "subagent", "--timeout", "3")
 	out, err := cmd.CombinedOutput()
 
 	if err == nil {
@@ -211,7 +215,7 @@ func TestSubagent_RejectsNoGoalOrTask(t *testing.T) {
 
 func TestSubagent_StdoutIsJSON(t *testing.T) {
 	skipIfNoBinary(t)
-	cmd := exec.Command(odekBinary, "subagent", "--goal", "test")
+	cmd := exec.Command(odekBinary, "subagent", "--goal", "test", "--timeout", "3")
 	out, err := cmd.Output()
 
 	if err != nil {
@@ -297,7 +301,7 @@ func TestSubagent_ExitCodeTwo(t *testing.T)  {}
 
 func TestSubagent_ExitCodeThree(t *testing.T) {
 	skipIfNoBinary(t)
-	cmd := exec.Command(odekBinary, "subagent")
+	cmd := exec.Command(odekBinary, "subagent", "--timeout", "3")
 	_, err := cmd.CombinedOutput()
 
 	if err == nil {

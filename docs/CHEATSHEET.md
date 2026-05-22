@@ -174,7 +174,6 @@ odek run "analyze this page"
 
 # Server mode — expose tools to other clients
 odek mcp                                    # stdio transport
-odek mcp --sse-addr :8081                   # SSE transport
 ```
 
 ## Env Vars
