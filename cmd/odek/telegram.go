@@ -191,6 +191,21 @@ func telegramCmd(args []string) error {
 			if a := handler.GetApprover(chatID); a != nil {
 				a.ResetTrust()
 			}
+			var b strings.Builder
+			b.WriteString("🔄 *New session started*\n\n")
+			b.WriteString(fmt.Sprintf("• Model: `%s`\n", resolved.Model))
+			if resolved.Sandbox {
+				b.WriteString("• Sandbox: enabled\n")
+			}
+			if resolved.Skills.Verbose {
+				b.WriteString("• Skills verbose: on\n")
+			}
+			if resolved.GithubRepoDirectory != "" {
+				repo := filepath.Base(resolved.GithubRepoDirectory)
+				b.WriteString(fmt.Sprintf("• Repo: `%s`\n", repo))
+			}
+			b.WriteString("\n_Send a message to begin._")
+			return b.String(), nil
 		}
 
 		// Handle /stats — read from session store.
