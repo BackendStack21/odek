@@ -1694,11 +1694,11 @@ func TestIsFatalAPIError(t *testing.T) {
 		err   error
 		fatal bool
 	}{
-		{fmt.Errorf("telegram: getUpdates failed: Unauthorized (code 401)"), true},
-		{fmt.Errorf("telegram: getUpdates failed: Forbidden: bot was blocked by the user (code 403)"), true},
-		{fmt.Errorf("telegram: getUpdates failed: Conflict: terminated by other getUpdates request (code 409)"), true},
-		{fmt.Errorf("telegram: sendMessage failed: Too Many Requests (code 429)"), false},
-		{fmt.Errorf("telegram: getUpdates failed: Bad Gateway (code 502)"), false},
+		{&TelegramError{Method: "getUpdates", Description: "Unauthorized", Code: 401}, true},
+		{&TelegramError{Method: "getUpdates", Description: "Forbidden: bot was blocked by the user", Code: 403}, true},
+		{&TelegramError{Method: "getUpdates", Description: "Conflict: terminated by other getUpdates request", Code: 409}, true},
+		{&TelegramError{Method: "sendMessage", Description: "Too Many Requests", Code: 429}, false},
+		{&TelegramError{Method: "getUpdates", Description: "Bad Gateway", Code: 502}, false},
 		{fmt.Errorf("network error"), false},
 		{nil, false},
 	}
@@ -1706,7 +1706,7 @@ func TestIsFatalAPIError(t *testing.T) {
 	for _, tt := range tests {
 		got := IsFatalAPIError(tt.err)
 		if got != tt.fatal {
-			t.Errorf("IsFatalAPIError(%q) = %v, want %v", tt.err, got, tt.fatal)
+			t.Errorf("IsFatalAPIError(%v) = %v, want %v", tt.err, got, tt.fatal)
 		}
 	}
 }

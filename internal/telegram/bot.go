@@ -3,16 +3,30 @@ package telegram
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 )
+
+// TelegramError represents an error returned by the Telegram Bot API.
+// It includes the HTTP status code so callers can distinguish transient
+// (429, 5xx) from fatal (401, 403, 409) errors without string matching.
+type TelegramError struct {
+	Method      string
+	Description string
+	Code        int
+}
+
+func (e *TelegramError) Error() string {
+	return fmt.Sprintf("telegram: %s failed: %s (code %d)", e.Method, e.Description, e.Code)
+}
 
 // Bot represents a Telegram Bot API client.
 type Bot struct {
@@ -82,7 +96,10 @@ func (b *Bot) doJSON(method string, body any, dest any) error {
 		if err != nil {
 			b.log.Error("http post failed", "method", method, "error", err)
 			lastErr = fmt.Errorf("telegram: post %s: %w", method, err)
-			continue // network error — retry
+			if isRetryableNetworkError(err) {
+				continue
+			}
+			return lastErr
 		}
 
 		respBody, err := io.ReadAll(resp.Body)
@@ -108,18 +125,18 @@ func (b *Bot) doJSON(method string, body any, dest any) error {
 			// 429 (rate limit) — retry
 			if apiResp.ErrorCode == 429 {
 				b.log.Warn("rate limited", "method", method, "description", apiResp.Description)
-				lastErr = fmt.Errorf("telegram: %s failed: %s (code %d)", method, apiResp.Description, apiResp.ErrorCode)
+				lastErr = &TelegramError{Method: method, Description: apiResp.Description, Code: apiResp.ErrorCode}
 				continue
 			}
 			// 5xx (server error) — retry
 			if apiResp.ErrorCode >= 500 && apiResp.ErrorCode < 600 {
 				b.log.Warn("server error", "method", method, "error_code", apiResp.ErrorCode, "description", apiResp.Description)
-				lastErr = fmt.Errorf("telegram: %s failed: %s (code %d)", method, apiResp.Description, apiResp.ErrorCode)
+				lastErr = &TelegramError{Method: method, Description: apiResp.Description, Code: apiResp.ErrorCode}
 				continue
 			}
 			// 4xx (client error, not 429) — don't retry
 			b.log.Error("api error", "method", method, "description", apiResp.Description, "error_code", apiResp.ErrorCode)
-			return fmt.Errorf("telegram: %s failed: %s (code %d)", method, apiResp.Description, apiResp.ErrorCode)
+			return &TelegramError{Method: method, Description: apiResp.Description, Code: apiResp.ErrorCode}
 		}
 
 		if dest != nil && len(apiResp.Result) > 0 {
@@ -137,6 +154,10 @@ func (b *Bot) doJSON(method string, body any, dest any) error {
 
 // doUpload sends a multipart/form-data POST request with a file and optional parameters.
 // Retries on transient errors with the same backoff strategy as doJSON.
+//
+// NOTE: The entire file is read into memory before sending (bodyBytes).
+// This is intentional — it allows retry without re-reading the file from disk.
+// Telegram's 50 MB upload limit makes this acceptable for bot use cases.
 func (b *Bot) doUpload(method string, field string, path string, params map[string]any, dest any) error {
 	file, err := os.Open(path)
 	if err != nil {
@@ -200,7 +221,10 @@ func (b *Bot) doUpload(method string, field string, path string, params map[stri
 		if err != nil {
 			b.log.Error("http post failed", "method", method, "error", err)
 			lastErr = fmt.Errorf("telegram: post %s: %w", method, err)
-			continue
+			if isRetryableNetworkError(err) {
+				continue
+			}
+			return lastErr
 		}
 
 		respBody, err := io.ReadAll(resp.Body)
@@ -225,16 +249,16 @@ func (b *Bot) doUpload(method string, field string, path string, params map[stri
 		if !apiResp.OK {
 			if apiResp.ErrorCode == 429 {
 				b.log.Warn("rate limited", "method", method, "description", apiResp.Description)
-				lastErr = fmt.Errorf("telegram: %s failed: %s (code %d)", method, apiResp.Description, apiResp.ErrorCode)
+				lastErr = &TelegramError{Method: method, Description: apiResp.Description, Code: apiResp.ErrorCode}
 				continue
 			}
 			if apiResp.ErrorCode >= 500 && apiResp.ErrorCode < 600 {
 				b.log.Warn("server error", "method", method, "error_code", apiResp.ErrorCode, "description", apiResp.Description)
-				lastErr = fmt.Errorf("telegram: %s failed: %s (code %d)", method, apiResp.Description, apiResp.ErrorCode)
+				lastErr = &TelegramError{Method: method, Description: apiResp.Description, Code: apiResp.ErrorCode}
 				continue
 			}
 			b.log.Error("api error", "method", method, "description", apiResp.Description, "error_code", apiResp.ErrorCode)
-			return fmt.Errorf("telegram: %s failed: %s (code %d)", method, apiResp.Description, apiResp.ErrorCode)
+			return &TelegramError{Method: method, Description: apiResp.Description, Code: apiResp.ErrorCode}
 		}
 
 		if dest != nil && len(apiResp.Result) > 0 {
@@ -253,17 +277,22 @@ func (b *Bot) doUpload(method string, field string, path string, params map[stri
 // IsFatalAPIError reports whether a Telegram API error is fatal (should not
 // be retried). Errors with status codes 401 (Unauthorized), 403 (Forbidden),
 // and 409 (Conflict — duplicate polling instance) are fatal.
+// Uses errors.As for type-safe code extraction instead of string matching.
 func IsFatalAPIError(err error) bool {
-	if err == nil {
-		return false
+	var te *TelegramError
+	if errors.As(err, &te) {
+		return te.Code == 401 || te.Code == 403 || te.Code == 409
 	}
-	s := err.Error()
-	// Match the format from doJSON: "telegram: <method> failed: <desc> (code NNN)"
-	// Check for known fatal codes.
-	for _, code := range []string{"(code 401)", "(code 403)", "(code 409)"} {
-		if strings.Contains(s, code) {
-			return true
-		}
+	return false
+}
+
+// isRetryableNetworkError reports whether a network error is likely
+// transient and safe to retry. Uses net.Error to distinguish timeouts
+// and temporary failures from permanent ones (DNS resolution failures).
+func isRetryableNetworkError(err error) bool {
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return netErr.Timeout() || netErr.Temporary()
 	}
 	return false
 }
