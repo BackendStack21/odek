@@ -14,12 +14,13 @@ import (
 
 // Client sends chat completion requests to any OpenAI-compatible endpoint.
 type Client struct {
-	BaseURL    string
-	APIKey     string
-	Model      string
-	Thinking   string // "enabled", "disabled", "low", "medium", "high", or empty
-	MaxTokens  int    // max output tokens (0 = provider default)
-	http       *http.Client
+	BaseURL     string
+	APIKey      string
+	Model       string
+	Thinking    string  // "enabled", "disabled", "low", "medium", "high", or empty
+	MaxTokens   int     // max output tokens (0 = provider default)
+	Temperature float64 // 0 = use provider default, <0 = omit from request
+	http        *http.Client
 }
 
 // maxResponseSize limits the LLM response body read to prevent DoS/OOM.
@@ -106,6 +107,7 @@ type CallParams struct {
 	Tools           []ToolDef       `json:"tools,omitempty"`
 	Stream          bool            `json:"stream"`
 	MaxTokens       int             `json:"max_tokens,omitempty"`     // max output tokens (0 = omit/provider default)
+	Temperature     *float64        `json:"temperature,omitempty"`    // 0–2, nil = provider default
 	Thinking        *ThinkingConfig `json:"thinking,omitempty"`
 	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
 }
@@ -256,6 +258,10 @@ func (c *Client) Call(ctx context.Context, messages []Message, systemBlocks []Sy
 		Tools:     tools,
 		Stream:    false,
 		MaxTokens: c.MaxTokens,
+	}
+
+	if c.Temperature >= 0 {
+		body.Temperature = &c.Temperature
 	}
 
 	switch c.Thinking {

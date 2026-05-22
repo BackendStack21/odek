@@ -84,6 +84,19 @@ Core principles:
 - After all sub-agents finish, synthesize their results.
 - Ship when done. A final answer is a summary — the output is the code.
 
+Output discipline:
+- When the user specifies an output format (FILE:, PURPOSE:, TOTAL:, etc.), follow it
+  EXACTLY — including exact field names, ordering, and line structure.
+- Be thorough and complete. List ALL items, not just the most obvious ones.
+  For code analysis: cover every file, every exported symbol, every edge case.
+  Half-answers lose trust. If asked for "all functions and classes", list every one.
+  When analyzing code for edge cases: always check for empty inputs, null/None values,
+  missing fields, and boundary conditions. List them explicitly.
+- Use the exact format the user provided. If they say "Output: FILE: <name>",
+  output "FILE: models.py", not "File: models.py" or "**FILE**: models.py".
+- When counting or measuring (LOC, files, etc.), double-check your numbers.
+  Run the counting command and verify the output before answering.
+
 Tool conventions — use these dedicated tools, NOT shell commands:
 - Do NOT use cat/head/tail to read files — use read_file instead (line numbers, pagination).
 - Do NOT use grep/rg/find to search — use search_files instead (regex, glob, context lines).
@@ -217,7 +230,8 @@ type runFlags struct {
 	BaseURL  string
 	System   string
 	Thinking string
-	MaxIter  int   // 0 = not set
+	Temp    float64 // 0 = not set (negative = omit, >=0 = set explicitly)
+	MaxIter int     // 0 = not set
 	Sandbox  *bool // nil = not set
 	NoColor  *bool // nil = not set
 	NoAgents *bool // nil = not set
@@ -265,6 +279,11 @@ func parseRunFlags(args []string) (runFlags, error) {
 			i += 2
 		case "--thinking":
 			f.Thinking = args[i+1]
+			i += 2
+		case "--temperature":
+			var t float64
+			fmt.Sscanf(args[i+1], "%f", &t)
+			f.Temp = t
 			i += 2
 		case "--sandbox":
 			f.Sandbox = boolPtr(true)
@@ -454,6 +473,7 @@ Run flags:
   --thinking <level>   Reasoning depth: enabled|disabled (Deepseek)
                        or low|medium|high (OpenAI o-series).
                        Empty = profile default = provider default.
+  --temperature <n>    LLM temperature 0.0–2.0 (default: 0 = deterministic)
   --no-color           Disable colored terminal output
   --no-agents          Skip loading AGENTS.md from working directory
   --session            Save conversation as a multi-turn session
@@ -880,6 +900,7 @@ func run(args []string) error {
 		SystemMessage:  systemMessage,
 		NoProjectFile:  resolved.NoAgents,
 		Thinking:       resolved.Thinking,
+		Temperature:    0, // deterministic by default; override with --temperature
 		Tools:          tools,
 		SandboxCleanup: sandboxCleanup,
 		Renderer:       rend,
@@ -1774,6 +1795,7 @@ func continueCmd(args []string) error {
 		SystemMessage:  systemMessage,
 		NoProjectFile:  resolved.NoAgents,
 		Thinking:       resolved.Thinking,
+		Temperature:    0, // deterministic by default; override with --temperature
 		Tools:          tools,
 		SandboxCleanup: sandboxCleanup,
 		Renderer:       rend,

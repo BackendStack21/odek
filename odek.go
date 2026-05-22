@@ -64,6 +64,12 @@ type Config struct {
 	// has no default, the field is not sent (provider default behavior).
 	Thinking string
 
+	// Temperature controls LLM output randomness (0.0–2.0).
+	// Negative = omit from request (use provider default).
+	// 0.0 = deterministic, 1.0 = creative. Default: 0.0 for benchmark
+	// stability; set to -1 to use provider defaults.
+	Temperature float64
+
 	// Tools available to the agent.
 	Tools []Tool
 
@@ -363,6 +369,9 @@ func New(cfg Config) (*Agent, error) {
 	}
 
 	client := llm.New(cfg.BaseURL, cfg.APIKey, cfg.Model, cfg.Thinking, time.Duration(timeout)*time.Second)
+	if cfg.Temperature >= 0 {
+		client.Temperature = cfg.Temperature
+	}
 
 	// Load skills and inject auto-load skills into system message
 	var sm *skills.SkillManager
