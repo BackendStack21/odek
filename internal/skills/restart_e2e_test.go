@@ -1,7 +1,6 @@
 package skills
 
 import (
-	"os"
 	"strings"
 	"testing"
 )
@@ -10,8 +9,8 @@ import (
 // correctly triggers the restart-odek-telegram skill for common user
 // inputs like "rebuild and restart", "restart the bot", etc.
 func TestRestartSkill_Triggers_ScoredMatcher(t *testing.T) {
-	if _, err := os.Stat("/root/.odek/skills/restart-odek-telegram/SKILL.md"); os.IsNotExist(err) {
-		t.Skip("restart-odek-telegram skill not installed — E2E test requires it")
+	if testing.Short() {
+		t.Skip("skipping E2E test in short mode (requires installed skills)")
 	}
 	sm := NewSkillManager("", "/root/.odek/skills")
 	sm.Reload()
@@ -64,8 +63,8 @@ func TestRestartSkill_Triggers_ScoredMatcher(t *testing.T) {
 // actually directs the agent to use the build-and-restart script,
 // not manual build or kill commands.
 func TestRestartSkill_BodyContainsScript(t *testing.T) {
-	if _, err := os.Stat("/root/.odek/skills/restart-odek-telegram/SKILL.md"); os.IsNotExist(err) {
-		t.Skip("restart-odek-telegram skill not installed — E2E test requires it")
+	if testing.Short() {
+		t.Skip("skipping E2E test in short mode (requires installed skills)")
 	}
 	sm := NewSkillManager("", "/root/.odek/skills")
 	sm.Reload()
