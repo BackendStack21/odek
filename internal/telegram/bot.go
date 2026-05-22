@@ -276,6 +276,26 @@ func (b *Bot) SendVoice(chatID int64, path string, caption string, opts *SendOpt
 	return &msg, nil
 }
 
+// SendDocument sends a document from a file path to the specified chat.
+// opts may contain ReplyToMessageID to reply to a specific message.
+func (b *Bot) SendDocument(chatID int64, path string, caption string, opts *SendOpts) (*Message, error) {
+	params := map[string]any{
+		"chat_id": chatID,
+	}
+	if caption != "" {
+		params["caption"] = caption
+	}
+	if opts != nil && opts.ReplyToMessageID != 0 {
+		params["reply_to_message_id"] = opts.ReplyToMessageID
+	}
+
+	var msg Message
+	if err := b.doUpload("sendDocument", "document", path, params, &msg); err != nil {
+		return nil, err
+	}
+	return &msg, nil
+}
+
 // GetUpdates retrieves incoming updates using long polling.
 func (b *Bot) GetUpdates(offset int, timeout int) ([]Update, error) {
 	params := map[string]any{

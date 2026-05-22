@@ -627,6 +627,91 @@ func TestSendPhoto_FileNotFound(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// SendDocument — multipart upload
+// ---------------------------------------------------------------------------
+
+func TestSendDocument_Success(t *testing.T) {
+	tmpDir := t.TempDir()
+	docPath := filepath.Join(tmpDir, "test_doc.pdf")
+	if err := os.WriteFile(docPath, []byte("fake-pdf-data"), 0o644); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimSuffix(r.URL.Path, "/")
+		if path != "/sendDocument" {
+			t.Errorf("unexpected path: %s", path)
+		}
+		requireMultipartBody(t, r, "document", "test_doc.pdf", map[string]any{
+			"chat_id": float64(123),
+			"caption": "here is the doc",
+		})
+		okResponse(w, map[string]any{
+			"message_id": 20,
+			"text":       "",
+			"chat":       map[string]any{"id": 123, "type": "private"},
+			"date":       2000,
+		})
+	}))
+	defer ts.Close()
+
+	bot := NewBot("x")
+	bot.BaseURL = ts.URL
+
+	msg, err := bot.SendDocument(123, docPath, "here is the doc", nil)
+	if err != nil {
+		t.Fatalf("SendDocument: %v", err)
+	}
+	if msg == nil {
+		t.Fatal("SendDocument returned nil message")
+	}
+	if msg.ID != 20 {
+		t.Errorf("msg.ID = %d, want 20", msg.ID)
+	}
+}
+
+func TestSendDocument_NoCaption(t *testing.T) {
+	tmpDir := t.TempDir()
+	docPath := filepath.Join(tmpDir, "report.csv")
+	if err := os.WriteFile(docPath, []byte("a,b,c\n1,2,3"), 0o644); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requireMultipartBody(t, r, "document", "report.csv", map[string]any{
+			"chat_id": float64(456),
+		})
+		okResponse(w, map[string]any{
+			"message_id": 21,
+			"chat":       map[string]any{"id": 456},
+		})
+	}))
+	defer ts.Close()
+
+	bot := NewBot("x")
+	bot.BaseURL = ts.URL
+
+	msg, err := bot.SendDocument(456, docPath, "", nil)
+	if err != nil {
+		t.Fatalf("SendDocument(no caption): %v", err)
+	}
+	if msg.ID != 21 {
+		t.Errorf("msg.ID = %d, want 21", msg.ID)
+	}
+}
+
+func TestSendDocument_FileNotFound(t *testing.T) {
+	bot := NewBot("x")
+	_, err := bot.SendDocument(1, "/nonexistent/path.pdf", "", nil)
+	if err == nil {
+		t.Fatal("expected error for missing file, got nil")
+	}
+	if !strings.Contains(err.Error(), "open") {
+		t.Errorf("error = %q, want substring %q", err, "open")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // AnswerCallbackQuery
 // ---------------------------------------------------------------------------
 

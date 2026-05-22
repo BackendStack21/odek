@@ -63,6 +63,11 @@ func testServer(t *testing.T, recorder *requestRecorder) *httptest.Server {
 				"ok":     true,
 				"result": map[string]any{"message_id": 3},
 			}
+		case strings.HasSuffix(r.URL.Path, "/sendDocument"):
+			resp = map[string]any{
+				"ok":     true,
+				"result": map[string]any{"message_id": 4},
+			}
 		default:
 			resp = map[string]any{"ok": true}
 		}
@@ -1084,16 +1089,46 @@ func TestSendResponse_MediaUnknownType(t *testing.T) {
 		errCalled = true
 	}
 
-	h.SendResponse(123, "MEDIA:document:"+tmpPath, 0)
+	h.SendResponse(123, "MEDIA:video:"+tmpPath, 0)
 
 	reqs := rec.all()
 	for _, req := range reqs {
-		if strings.HasSuffix(req.Path, "/sendPhoto") || strings.HasSuffix(req.Path, "/sendVoice") {
-			t.Errorf("unexpected send request for unknown media type")
+		if strings.HasSuffix(req.Path, "/sendPhoto") || strings.HasSuffix(req.Path, "/sendVoice") || strings.HasSuffix(req.Path, "/sendDocument") {
+			t.Errorf("unexpected send request for unknown media type: %s", req.Path)
 		}
 	}
 	if !errCalled {
 		t.Error("OnError was not called for unknown media type")
+	}
+}
+
+func TestSendResponse_MediaDocument(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "test-doc-*.pdf")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	tmpPath := tmpFile.Name()
+	tmpFile.Close()
+	defer os.Remove(tmpPath)
+
+	rec := new(requestRecorder)
+	ts := testServer(t, rec)
+	defer ts.Close()
+	bot := testBot(t, ts)
+	h := NewHandler(bot)
+
+	h.SendResponse(456, "MEDIA:document:"+tmpPath, 0)
+
+	reqs := rec.all()
+	found := false
+	for _, req := range reqs {
+		if strings.HasSuffix(req.Path, "/sendDocument") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("no sendDocument request was made for MEDIA:document")
 	}
 }
 

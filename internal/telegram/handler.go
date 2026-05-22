@@ -438,6 +438,12 @@ func (h *Handler) sendMedia(chatID int64, text string, replyToMessageID int) {
 			opts = &SendOpts{ReplyToMessageID: replyToMessageID}
 		}
 		_, err = h.Bot.SendVoice(chatID, filePath, "", opts)
+	case "document":
+		var opts *SendOpts
+		if replyToMessageID != 0 {
+			opts = &SendOpts{ReplyToMessageID: replyToMessageID}
+		}
+		_, err = h.Bot.SendDocument(chatID, filePath, "", opts)
 	default:
 		h.log.Error("unknown media type", "chat_id", chatID, "media_type", mediaType)
 		if h.OnError != nil {
