@@ -45,6 +45,8 @@ func testServer(t *testing.T, recorder *requestRecorder) *httptest.Server {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/answerCallbackQuery"):
 			resp = map[string]any{"ok": true}
+		case strings.HasSuffix(r.URL.Path, "/deleteMessage"):
+			resp = map[string]any{"ok": true}
 		case strings.HasSuffix(r.URL.Path, "/sendMessage"):
 			resp = map[string]any{
 				"ok": true,

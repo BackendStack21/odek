@@ -293,6 +293,16 @@ func (b *Bot) EditMessageText(chatID int64, messageID int, text string, opts *Se
 	return b.doJSON("editMessageText", params, nil)
 }
 
+// DeleteMessage deletes a message previously sent by the bot.
+// Requires the bot to have can_delete_messages permission in groups/supergroups.
+func (b *Bot) DeleteMessage(chatID int64, messageID int) error {
+	params := map[string]any{
+		"chat_id":    chatID,
+		"message_id": messageID,
+	}
+	return b.doJSON("deleteMessage", params, nil)
+}
+
 // SendPhoto sends a photo from a file path to the specified chat.
 // opts may contain ReplyToMessageID to reply to a specific message.
 func (b *Bot) SendPhoto(chatID int64, path string, caption string, opts *SendOpts) (*Message, error) {

@@ -1091,6 +1091,56 @@ func TestBot_EditMessageText_Error(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// DeleteMessage
+// ---------------------------------------------------------------------------
+
+func TestBot_DeleteMessage_Success(t *testing.T) {
+	var gotBody map[string]any
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimSuffix(r.URL.Path, "/")
+		if path != "/deleteMessage" {
+			t.Errorf("unexpected path: %s", path)
+		}
+		requireJSONBody(t, r, "application/json", &gotBody)
+		okResponse(w, true)
+	}))
+	defer ts.Close()
+
+	bot := NewBot("x")
+	bot.BaseURL = ts.URL
+
+	err := bot.DeleteMessage(123, 456)
+	if err != nil {
+		t.Fatalf("DeleteMessage: %v", err)
+	}
+
+	if gotBody["chat_id"] != float64(123) {
+		t.Errorf("chat_id = %v, want 123", gotBody["chat_id"])
+	}
+	if gotBody["message_id"] != float64(456) {
+		t.Errorf("message_id = %v, want 456", gotBody["message_id"])
+	}
+}
+
+func TestBot_DeleteMessage_Error(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		failResponse(w, 400, "Bad Request: message to delete not found")
+	}))
+	defer ts.Close()
+
+	bot := NewBot("x")
+	bot.BaseURL = ts.URL
+
+	err := bot.DeleteMessage(1, 999)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "message to delete not found") {
+		t.Errorf("error = %q, want substring %q", err, "message to delete not found")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // SetFallbackURLs
 // ---------------------------------------------------------------------------
 
