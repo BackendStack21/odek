@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -247,6 +248,24 @@ func (b *Bot) doUpload(method string, field string, path string, params map[stri
 	}
 
 	return lastErr
+}
+
+// IsFatalAPIError reports whether a Telegram API error is fatal (should not
+// be retried). Errors with status codes 401 (Unauthorized), 403 (Forbidden),
+// and 409 (Conflict — duplicate polling instance) are fatal.
+func IsFatalAPIError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	// Match the format from doJSON: "telegram: <method> failed: <desc> (code NNN)"
+	// Check for known fatal codes.
+	for _, code := range []string{"(code 401)", "(code 403)", "(code 409)"} {
+		if strings.Contains(s, code) {
+			return true
+		}
+	}
+	return false
 }
 
 // SendMessage sends a text message to the specified chat.

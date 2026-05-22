@@ -513,7 +513,12 @@ func telegramCmd(args []string) error {
 
 	// 16. Start polling in a background goroutine.
 	updates := make(chan telegram.Update, 100)
-	go poller.Start(ctx, updates)
+	go func() {
+		if err := poller.Start(ctx, updates); err != nil && err != context.Canceled {
+			fmt.Fprintf(os.Stderr, "odek telegram: poller stopped: %v\n", err)
+			cancel() // signal shutdown
+		}
+	}()
 
 	// 17. Process updates until the channel is closed (ctx cancelled).
 	for upd := range updates {

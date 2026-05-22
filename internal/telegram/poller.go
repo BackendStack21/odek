@@ -107,6 +107,12 @@ func (p *Poller) Start(ctx context.Context, updates chan<- Update) error {
 			default:
 			}
 
+			// Fatal errors (401, 403, 409) should not be retried.
+			if IsFatalAPIError(err) {
+				p.log.Error("fatal poll error, stopping", "error", err)
+				return err
+			}
+
 			p.consecutiveErrors++
 			backoff := p.backoffDuration(p.consecutiveErrors)
 			p.log.Error("poll error", "error", err, "consecutive_errors", p.consecutiveErrors, "backoff", backoff)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -595,5 +596,81 @@ func TestPoller_BackoffResetsOnSuccess(t *testing.T) {
 	p.consecutiveErrors = 0
 	if d := p.backoffDuration(p.consecutiveErrors); d != 0 {
 		t.Errorf("expected zero backoff after reset, got %v", d)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Fatal error handling — Start returns error on 401/403/409
+// ---------------------------------------------------------------------------
+
+func TestPoller_Start_FatalError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		failResponse(w, 401, "Unauthorized")
+	}))
+	defer ts.Close()
+
+	bot := &Bot{
+		Token:   "test:token",
+		BaseURL: ts.URL + "/bottest:token",
+		Client:  ts.Client(),
+		log:     NewNopLogger(),
+	}
+
+	p := NewPoller(bot)
+	p.Timeout = 0
+
+	updates := make(chan Update, 10)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := p.Start(ctx, updates)
+	if err == nil {
+		t.Fatal("expected fatal error, got nil")
+	}
+	if !strings.Contains(err.Error(), "Unauthorized") {
+		t.Errorf("error = %q, want substring %q", err, "Unauthorized")
+	}
+}
+
+func TestPoller_Start_RetriesOnTransientError(t *testing.T) {
+	attempts := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts < 3 {
+			failResponse(w, 502, "Bad Gateway")
+			return
+		}
+		// Success on 3rd attempt.
+		resp := GetUpdatesResponse{
+			OK:     true,
+			Result: []Update{},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer ts.Close()
+
+	bot := &Bot{
+		Token:   "test:token",
+		BaseURL: ts.URL + "/bottest:token",
+		Client:  ts.Client(),
+		log:     NewNopLogger(),
+	}
+
+	p := NewPoller(bot)
+	p.Timeout = 0
+	p.Interval = time.Microsecond
+
+	updates := make(chan Update, 10)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	// Should not return error (transient errors are retried).
+	err := p.Start(ctx, updates)
+	if err != context.DeadlineExceeded && err != context.Canceled {
+		t.Errorf("Start returned %v, want context deadline/cancel error", err)
+	}
+	if attempts < 3 {
+		t.Errorf("attempts = %d, want >= 3", attempts)
 	}
 }

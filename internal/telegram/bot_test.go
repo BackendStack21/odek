@@ -1684,3 +1684,29 @@ func TestBot_DoUpload_RetryOn5xx(t *testing.T) {
 		t.Errorf("attempts = %d, want 3", attempts)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// IsFatalAPIError
+// ---------------------------------------------------------------------------
+
+func TestIsFatalAPIError(t *testing.T) {
+	tests := []struct {
+		err   error
+		fatal bool
+	}{
+		{fmt.Errorf("telegram: getUpdates failed: Unauthorized (code 401)"), true},
+		{fmt.Errorf("telegram: getUpdates failed: Forbidden: bot was blocked by the user (code 403)"), true},
+		{fmt.Errorf("telegram: getUpdates failed: Conflict: terminated by other getUpdates request (code 409)"), true},
+		{fmt.Errorf("telegram: sendMessage failed: Too Many Requests (code 429)"), false},
+		{fmt.Errorf("telegram: getUpdates failed: Bad Gateway (code 502)"), false},
+		{fmt.Errorf("network error"), false},
+		{nil, false},
+	}
+
+	for _, tt := range tests {
+		got := IsFatalAPIError(tt.err)
+		if got != tt.fatal {
+			t.Errorf("IsFatalAPIError(%q) = %v, want %v", tt.err, got, tt.fatal)
+		}
+	}
+}
