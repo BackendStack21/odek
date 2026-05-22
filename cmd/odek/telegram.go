@@ -422,7 +422,16 @@ func telegramCmd(args []string) error {
 	}
 
 	handler.OnPhotoMessage = func(chatID int64, messageID int, fileIDs []string) (string, error) {
-		go handleChatMessage(chatID, messageID, "[photo message: "+strings.Join(fileIDs, ",")+"]",
+		localPath, err := telegram.DownloadPhoto(bot, fileIDs)
+		if err != nil {
+			handlerLog.Warn("photo download failed", "chat_id", chatID, "error", err)
+			go handleChatMessage(chatID, messageID,
+				fmt.Sprintf("[photo received — download failed: %v]", err),
+				bot, handler, sessionManager, resolved, systemMessage, handlerLog)
+			return "", nil
+		}
+		go handleChatMessage(chatID, messageID,
+			fmt.Sprintf("🖼 Photo received and saved to %q. Use vision tools or shell commands to analyze and respond.", localPath),
 			bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 		return "", nil
 	}
