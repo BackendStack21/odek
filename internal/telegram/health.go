@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"time"
 )
 
@@ -15,7 +16,7 @@ import (
 type HealthServer struct {
 	addr      string
 	startTime time.Time
-	ready     bool
+	ready     atomic.Bool
 	log       Logger
 }
 
@@ -39,8 +40,9 @@ func (hs *HealthServer) SetLogger(l Logger) {
 }
 
 // SetReady marks the health server as ready (polling has started).
+// Thread-safe: safe to call from any goroutine.
 func (hs *HealthServer) SetReady() {
-	hs.ready = true
+	hs.ready.Store(true)
 }
 
 // ServeHTTP implements http.Handler.
@@ -52,7 +54,7 @@ func (hs *HealthServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 
-	if !hs.ready {
+	if !hs.ready.Load() {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		json.NewEncoder(w).Encode(map[string]any{
 			"status":  "starting",

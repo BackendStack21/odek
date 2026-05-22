@@ -10,7 +10,7 @@ import (
 
 func TestHealthServer_Returns200(t *testing.T) {
 	hs := NewHealthServer("127.0.0.1:0")
-	hs.ready = true
+	hs.ready.Store(true)
 
 	ts := &http.Server{Addr: hs.addr, Handler: hs}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

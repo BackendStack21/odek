@@ -39,11 +39,15 @@ func (p *Poller) SetLogger(l Logger) {
 // backoffDuration returns the sleep duration after consecutive poll errors.
 // Formula: interval * 2^errors, capped at 60 * interval.
 // Returns 0 for 0 errors (no backoff needed).
+// errors is clamped to 30 to prevent integer overflow in 1<<errors.
 func (p *Poller) backoffDuration(errors int) time.Duration {
 	if errors <= 0 {
 		return 0
 	}
-	shift := 1 << errors // 2^errors
+	if errors > 30 {
+		errors = 30
+	}
+	shift := 1 << errors // 2^errors, safe after clamp
 	d := p.Interval * time.Duration(shift)
 	max := 60 * p.Interval
 	if d > max {

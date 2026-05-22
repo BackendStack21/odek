@@ -482,8 +482,8 @@ func telegramCmd(args []string) error {
 				fmt.Fprintf(os.Stderr, "odek telegram: health server: %v\n", err)
 			}
 		}()
-		// Mark ready once polling begins.
-		defer healthSrv.SetReady()
+		// Mark ready — the server goroutine is already listening.
+		healthSrv.SetReady()
 	}
 
 	// 15. Handle SIGINT/SIGTERM/SIGHUP.
