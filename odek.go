@@ -71,9 +71,18 @@ type Config struct {
 	MaxIterations int
 
 	// SystemMessage is the system prompt injected at the start of every run.
+	// Runtime context (OS, hostname, cwd, date, platform) is automatically
+	// prepended to this message before it reaches the LLM.
 	// If AGENTS.md exists in the working directory, its content is appended
 	// automatically. Set NoProjectFile to true to skip this.
 	SystemMessage string
+
+	// RuntimeContext, when set, prepends environment awareness to the system
+	// message: OS, hostname, working directory, current date/time, and
+	// platform-specific formatting rules. Each entry point (CLI, Telegram,
+	// WebUI) sets this automatically. When empty, BuildRuntimeContext("")
+	// provides generic terminal context.
+	RuntimeContext string
 
 	// NoProjectFile disables automatic loading of AGENTS.md from the
 	// working directory. By default, odek reads AGENTS.md and appends
@@ -301,6 +310,20 @@ func New(cfg Config) (*Agent, error) {
 	}
 	if cfg.Model == "" {
 		cfg.Model = defaultModel
+	}
+
+	// ── Runtime Context ─────────────────────────────────────────────
+	// Prepend environment awareness so the agent knows its host, cwd,
+	// date/time, and platform without burning tokens on shell commands.
+	// Each entry point can set RuntimeContext explicitly (CLI, Telegram,
+	// WebUI); when empty, a generic terminal context is built.
+	if cfg.RuntimeContext == "" {
+		cfg.RuntimeContext = BuildRuntimeContext("terminal")
+	}
+	if cfg.SystemMessage != "" {
+		cfg.SystemMessage = cfg.RuntimeContext + "\n\n" + cfg.SystemMessage
+	} else {
+		cfg.SystemMessage = cfg.RuntimeContext
 	}
 
 	// Apply model profile defaults (only when user hasn't explicitly set them)

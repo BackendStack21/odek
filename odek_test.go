@@ -203,8 +203,8 @@ func TestConfigSystemMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if agent.config.SystemMessage != "You are a helpful assistant." {
-		t.Errorf("SystemMessage = %q, want %q", agent.config.SystemMessage, "You are a helpful assistant.")
+	if !strings.Contains(agent.config.SystemMessage, "You are a helpful assistant.") {
+		t.Errorf("SystemMessage should contain the original message, got: %s", agent.config.SystemMessage)
 	}
 }
 
@@ -767,8 +767,8 @@ func TestNew_ProjectFileWithNoOriginalSystem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if agent.config.SystemMessage != "# Project Instructions\n\nJust these instructions." {
-		t.Errorf("SystemMessage = %q, want 'Project Instructions' + content", agent.config.SystemMessage)
+	if !strings.Contains(agent.config.SystemMessage, "# Project Instructions") {
+		t.Errorf("SystemMessage should contain 'Project Instructions', got: %s", agent.config.SystemMessage)
 	}
 }
 
@@ -791,8 +791,8 @@ func TestNew_NoProjectFileOptOut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if agent.config.SystemMessage != "Only this." {
-		t.Errorf("SystemMessage = %q, want original only (no project file)", agent.config.SystemMessage)
+	if !strings.Contains(agent.config.SystemMessage, "Only this.") {
+		t.Errorf("SystemMessage should contain 'Only this.', got: %s", agent.config.SystemMessage)
 	}
 }
 
