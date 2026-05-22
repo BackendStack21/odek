@@ -523,7 +523,20 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 				e.toolEventHandler("tool_result", tc.Function.Name, output)
 			}
 
-			// Wrap tool output in unbreakable delimiters so the model
+			// Compress large tool outputs to save context window.
+		// Keep the first and last portions — head usually contains
+		// the most important info, tail may have final results.
+		const maxOutput = 4096
+		if len(output) > maxOutput {
+			head := maxOutput * 3 / 4 // 3KB head
+			tail := maxOutput / 4     // 1KB tail
+			output = output[:head] +
+				fmt.Sprintf("\n\n... [%d bytes omitted — output was %d bytes total] ...\n\n",
+					len(output)-head-tail, len(output)) +
+				output[len(output)-tail:]
+		}
+
+		// Wrap tool output in unbreakable delimiters so the model
 			// treats it as DATA, never as instructions. The header and
 			// footer both explicitly frame the content as untrusted data.
 			// Even if the output contains "ignore previous instructions",

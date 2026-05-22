@@ -163,3 +163,62 @@ func EnhanceCurationWithLLM(llm LLMClient, report *CurationReport) string {
 	}
 	return resp
 }
+
+// ExtractSkillsFromConversation takes the full conversation history (all messages)
+// and asks the LLM to identify whether a reusable skill was demonstrated.
+// Unlike GenerateSkillWithLLM (which only enhances pattern-detected tool call
+// sequences), this analyzes the complete interaction — user intent, agent
+// reasoning, tool calls, and final outcome — to discover deeper patterns.
+//
+// Returns nil if the LLM call fails or no skill is found.
+func ExtractSkillsFromConversation(llm LLMClient, messages []LlmMessage, userMessages []string) *SkillSuggestion {
+	if llm == nil || len(messages) < 3 {
+		return nil
+	}
+
+	var b strings.Builder
+	b.WriteString("Analyze this AI coding agent conversation for reusable skills:\n\n")
+
+	// Include up to 20 messages (user/assistant/tool) to give full context
+	maxMsgs := len(messages)
+	if maxMsgs > 20 {
+		maxMsgs = 20
+	}
+	start := len(messages) - maxMsgs
+	for i := start; i < len(messages); i++ {
+		m := messages[i]
+		content := m.Content
+		if len(content) > 300 {
+			content = content[:297] + "..."
+		}
+		label := m.Role
+		if m.Name != "" {
+			label = m.Role + ":" + m.Name
+		}
+		b.WriteString(fmt.Sprintf("[%s] %s\n", label, content))
+	}
+
+	b.WriteString("\nDid the agent demonstrate a reusable skill or procedure? ")
+	b.WriteString("If YES, generate a skill file. If NO, respond with just 'none'.\n\n")
+	b.WriteString("Output format:\n")
+	b.WriteString("NAME: <short kebab-case name>\n")
+	b.WriteString("DESCRIPTION: <one-line, max 100 chars>\n")
+	b.WriteString("TOPICS: <3-5 comma-separated topic keywords>\n")
+	b.WriteString("ACTIONS: <2-3 comma-separated action keywords>\n")
+	b.WriteString("BODY:\n")
+	b.WriteString("<markdown body with ## Overview, ## Step-by-Step, ## Common Pitfalls, ## Verification>\n")
+
+	resp, err := llm.SimpleCall(context.Background(),
+		"You are a skill curator. Given a conversation trace, identify if a reusable skill or procedure was demonstrated. If yes, generate a structured SKILL.md. If no clear reusable pattern exists, respond with just 'none'. Be conservative — only extract genuinely reusable skills.",
+		b.String(),
+	)
+	if err != nil || resp == "" || strings.TrimSpace(resp) == "none" {
+		return nil
+	}
+
+	s := parseLLMSuggestion(resp)
+	if s != nil {
+		s.Heuristic = "conversation-extracted"
+	}
+	return s
+}

@@ -1312,6 +1312,22 @@ func learnAndSuggest(messages []llm.Message, sm *skills.SkillManager, llmClient 
 	userMessages := extractUserMessages(messages)
 	suggestions := skills.RunAllHeuristics(skillMsgs, userMessages)
 
+	// Conversation-level skill extraction — uses full context, not just tool patterns.
+	// Catches architectural decisions, debugging strategies, and workflow patterns
+	// that the pattern-based heuristics miss.
+	if llmLearn && llmClient != nil {
+		if convSkill := skills.ExtractSkillsFromConversation(llmClient, skillMsgs, userMessages); convSkill != nil {
+			// Build a command log from tool calls for context
+			calls := skills.ExtractToolCalls(skillMsgs)
+			cmds := make([]string, 0, len(calls))
+			for _, c := range calls {
+				cmds = append(cmds, c.Input)
+			}
+			convSkill.CommandLog = cmds
+			suggestions = append(suggestions, *convSkill)
+		}
+	}
+
 	// Apply LLM enhancement to each suggestion
 	for i := range suggestions {
 		if llmLearn && llmClient != nil {

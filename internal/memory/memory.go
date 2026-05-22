@@ -135,10 +135,13 @@ func NewMemoryManager(memoryDir string, llc LLMClient, cfg MemoryConfig) *Memory
 	episodesDir := memoryDir
 
 	factStore := NewFactStore(factsDir, cfg.FactsLimitUser, cfg.FactsLimitEnv)
-	// Use LLM-based episode ranker when an LLM client is available and enabled
+	// Use LLM-based episode ranker when an LLM client is available and enabled.
+	// Otherwise use RP (RandomProjections) semantic similarity — fast, no LLM cost.
 	var rankFn RankStrategy
 	if llc != nil && cfg.LLMSearch != nil && *cfg.LLMSearch {
 		rankFn = NewLLMRanker(llc)
+	} else {
+		rankFn = NewRPRanker(64)
 	}
 	episodeStore := NewEpisodeStore(episodesDir, rankFn)
 	mergeDetector := NewMergeDetectorWithThresholds(0, cfg.MergeThreshold, cfg.AddThreshold)

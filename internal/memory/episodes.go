@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/BackendStack21/go-vector/pkg/vector"
 )
 
 // maxEpisodeSummaryBytes caps how much summary text we store per episode.
@@ -248,5 +251,78 @@ func NewLLMRanker(llm LLMClient) RankStrategy {
 		return defaultRanker(query, episodes)
 	}
 	return ranked, nil
+	}
 }
+
+// NewRPRanker creates a RankStrategy that uses RandomProjections (go-vector)
+// for semantic similarity search over episodes. No LLM calls — pure vector
+// math. Falls back to recency ordering if RP fitting fails.
+//
+// The ranker fits the RP embedder on episode summaries on each call.
+// With the typical number of episodes (< 100, 120-char summaries each),
+// fitting takes < 1ms and is negligible compared to LLM latency.
+func NewRPRanker(dims int) RankStrategy {
+	if dims <= 0 {
+		dims = 64 // lower dims = faster, fine for short summaries
+	}
+	return func(query string, episodes []EpisodeMeta) ([]EpisodeMeta, error) {
+		if len(episodes) <= 1 {
+			out := make([]EpisodeMeta, len(episodes))
+			copy(out, episodes)
+			return out, nil
+		}
+
+		// Build corpus from episode summaries
+		corpus := make([]string, len(episodes))
+		for i, ep := range episodes {
+			corpus[i] = ep.Summary
+		}
+
+		// Fit RP and embed query + corpus
+		rp := vector.NewRandomProjections(dims)
+		rp.Fit(append(corpus, query))
+		queryVec, _ := rp.Embed(query)
+
+		// Score each episode by cosine similarity
+		type scored struct {
+			idx   int
+			score float32
+		}
+		scores := make([]scored, len(episodes))
+		for i, summary := range corpus {
+			vec, _ := rp.Embed(summary)
+			sim := cosineVector(queryVec, vec)
+			scores[i] = scored{idx: i, score: sim}
+		}
+
+		// Sort by score descending
+		sort.Slice(scores, func(i, j int) bool {
+			return scores[i].score > scores[j].score
+		})
+
+		out := make([]EpisodeMeta, len(episodes))
+		for i, s := range scores {
+			out[i] = episodes[s.idx]
+		}
+		return out, nil
+	}
+}
+
+// cosineVector computes cosine similarity between two go-vector Vectors.
+func cosineVector(a, b vector.Vector) float32 {
+	if len(a) != len(b) || len(a) == 0 {
+		return 0
+	}
+	var dot, normA, normB float64
+	for i := range a {
+		da := float64(a[i])
+		db := float64(b[i])
+		dot += da * db
+		normA += da * da
+		normB += db * db
+	}
+	if normA == 0 || normB == 0 {
+		return 0
+	}
+	return float32(dot / (math.Sqrt(normA) * math.Sqrt(normB)))
 }
