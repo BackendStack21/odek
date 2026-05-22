@@ -585,6 +585,8 @@ func handleChatMessage(
 	// ── Pre-flight budget check ────────────────────────────────────
 	// Before running the agent, check if the daily budget is already
 	// exhausted — avoids burning an API call just to be rejected.
+	// Use a 5% buffer: if >95% of budget is consumed, refuse new runs
+	// to leave headroom for the response delivery (which uses tokens too).
 	if resolved.Telegram.DailyTokenBudget > 0 {
 		if err := bot.CheckDailyBudget(1); err != nil {
 			reportError(bot, chatID, messageID, fmt.Sprintf(
@@ -595,25 +597,42 @@ func handleChatMessage(
 			))
 			return
 		}
+		// Warn if budget is running low (>80% consumed).
+		used, limit := bot.DailyTokenUsage()
+		if limit > 0 && used > 0 {
+			pct := used * 100 / limit
+			if pct >= 80 {
+				sendAsync(bot, chatID, fmt.Sprintf(
+					"⚠️ *Budget: %d%% used* (%d/%d tokens)\\. "+
+						"Consider `/new` to trim conversation history or set a higher `daily_token_budget`\\.",
+					pct, used, limit,
+				), &telegram.SendOpts{ParseMode: telegram.ParseModeMarkdownV2, ReplyToMessageID: messageID})
+			}
+		}
 	}
 
 	// ── Typing Indicator ────────────────────────────────────────────
 	// Send "typing" action every 4s while the agent runs (Telegram shows
-	// it for ~5s). Fire-and-forget so a hanging HTTP call doesn't block
-	// the ticker and permanently stop the indicator.
+	// it for ~5s). Circuit breaker: stop after 3 consecutive failures
+	// to prevent log spam when the API is unreachable or rate-limited.
 	typingDone := make(chan struct{})
 	defer close(typingDone)
 	go func() {
 		ticker := time.NewTicker(4 * time.Second)
 		defer ticker.Stop()
+		consecutiveFails := 0
 		for {
 			select {
 			case <-ticker.C:
-				go func() {
-					if err := bot.SendChatAction(chatID, "typing"); err != nil {
-						fmt.Fprintf(os.Stderr, "odek telegram: sendChatAction failed: %v\n", err)
-					}
-				}()
+				if consecutiveFails >= 3 {
+					return // circuit breaker tripped
+				}
+				if err := bot.SendChatAction(chatID, "typing"); err != nil {
+					consecutiveFails++
+					fmt.Fprintf(os.Stderr, "odek telegram: sendChatAction failed (%d/3): %v\n", consecutiveFails, err)
+				} else {
+					consecutiveFails = 0
+				}
 			case <-typingDone:
 				return
 			}

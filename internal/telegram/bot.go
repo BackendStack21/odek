@@ -420,6 +420,22 @@ func (b *Bot) CheckDailyBudget(tokens int64) error {
 	return nil
 }
 
+// DailyTokenUsage returns the current token usage and budget limit.
+// Returns (0, 0) when the budget is not configured.
+func (b *Bot) DailyTokenUsage() (used int64, limit int64) {
+	if b.DailyTokenBudget <= 0 {
+		return 0, 0
+	}
+	path := budgetFilePath()
+	data, err := os.ReadFile(path)
+	if err == nil {
+		if parsed, err := strconv.ParseInt(string(data), 10, 64); err == nil {
+			used = parsed
+		}
+	}
+	return used, b.DailyTokenBudget
+}
+
 // GetMe returns basic information about the bot (useful as a health check).
 func (b *Bot) GetMe() (*User, error) {
 	var user User

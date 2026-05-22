@@ -1181,6 +1181,49 @@ func TestBot_CheckDailyBudget_SequentialBillings(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// DailyTokenUsage
+// ---------------------------------------------------------------------------
+
+// TestBot_DailyTokenUsage verifies the read-only usage query.
+func TestBot_DailyTokenUsage(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	bot := NewBot("testtoken")
+	bot.SetDailyTokenBudget(100_000)
+
+	// Before any usage — should be 0.
+	used, limit := bot.DailyTokenUsage()
+	if used != 0 {
+		t.Errorf("initial usage = %d, want 0", used)
+	}
+	if limit != 100_000 {
+		t.Errorf("limit = %d, want 100000", limit)
+	}
+
+	// Bill some tokens.
+	bot.CheckDailyBudget(25000)
+	used, limit = bot.DailyTokenUsage()
+	if used != 25000 {
+		t.Errorf("usage after 25k = %d, want 25000", used)
+	}
+
+	// Bill more.
+	bot.CheckDailyBudget(15000)
+	used, limit = bot.DailyTokenUsage()
+	if used != 40000 {
+		t.Errorf("usage after 40k = %d, want 40000", used)
+	}
+
+	// Zero budget — returns (0,0).
+	bot2 := NewBot("testtoken")
+	used, limit = bot2.DailyTokenUsage()
+	if used != 0 || limit != 0 {
+		t.Errorf("unconfigured usage = (%d, %d), want (0,0)", used, limit)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // SendChatAction
 // ---------------------------------------------------------------------------
 
