@@ -53,6 +53,9 @@ func (b *Bot) url(method string) string {
 
 // doJSON marshals the request body, sends a POST request, and unmarshals
 // the "result" field of the response into the provided destination.
+// Retries on transient errors: network errors, 429 (rate limit), and 5xx
+// server errors, with exponential backoff (1s, 2s, 4s, 8s; max 4 retries).
+// Does NOT retry on 4xx errors (except 429) — those are client errors.
 func (b *Bot) doJSON(method string, body any, dest any) error {
 	var reqBody []byte
 	if body != nil {
@@ -65,43 +68,70 @@ func (b *Bot) doJSON(method string, body any, dest any) error {
 	}
 
 	url := b.url(method)
-	resp, err := b.Client.Post(url, "application/json", bytes.NewReader(reqBody))
-	if err != nil {
-		b.log.Error("http post failed", "method", method, "error", err)
-		return fmt.Errorf("telegram: post %s: %w", method, err)
-	}
-	defer resp.Body.Close()
+	var lastErr error
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		b.log.Error("read response body failed", "method", method, "error", err)
-		return fmt.Errorf("telegram: read response: %w", err)
-	}
-
-	var apiResp struct {
-		OK          bool              `json:"ok"`
-		Result      json.RawMessage   `json:"result"`
-		Description string            `json:"description"`
-		ErrorCode   int               `json:"error_code"`
-	}
-	if err := json.Unmarshal(respBody, &apiResp); err != nil {
-		b.log.Error("unmarshal response failed", "method", method, "error", err)
-		return fmt.Errorf("telegram: unmarshal response: %w", err)
-	}
-
-	if !apiResp.OK {
-		b.log.Error("api error", "method", method, "description", apiResp.Description, "error_code", apiResp.ErrorCode)
-		return fmt.Errorf("telegram: %s failed: %s (code %d)", method, apiResp.Description, apiResp.ErrorCode)
-	}
-
-	if dest != nil && len(apiResp.Result) > 0 {
-		if err := json.Unmarshal(apiResp.Result, dest); err != nil {
-			b.log.Error("unmarshal result failed", "method", method, "error", err)
-			return fmt.Errorf("telegram: unmarshal result: %w", err)
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(1<<(attempt-1)) * time.Second // 1s, 2s, 4s, 8s
+			b.log.Warn("retrying request", "method", method, "attempt", attempt, "backoff", backoff)
+			time.Sleep(backoff)
 		}
+
+		resp, err := b.Client.Post(url, "application/json", bytes.NewReader(reqBody))
+		if err != nil {
+			b.log.Error("http post failed", "method", method, "error", err)
+			lastErr = fmt.Errorf("telegram: post %s: %w", method, err)
+			continue // network error — retry
+		}
+
+		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			b.log.Error("read response body failed", "method", method, "error", err)
+			lastErr = fmt.Errorf("telegram: read response: %w", err)
+			continue // read error — retry
+		}
+
+		var apiResp struct {
+			OK          bool            `json:"ok"`
+			Result      json.RawMessage `json:"result"`
+			Description string          `json:"description"`
+			ErrorCode   int             `json:"error_code"`
+		}
+		if err := json.Unmarshal(respBody, &apiResp); err != nil {
+			b.log.Error("unmarshal response failed", "method", method, "error", err)
+			return fmt.Errorf("telegram: unmarshal response: %w", err) // parse error — don't retry
+		}
+
+		if !apiResp.OK {
+			// 429 (rate limit) — retry
+			if apiResp.ErrorCode == 429 {
+				b.log.Warn("rate limited", "method", method, "description", apiResp.Description)
+				lastErr = fmt.Errorf("telegram: %s failed: %s (code %d)", method, apiResp.Description, apiResp.ErrorCode)
+				continue
+			}
+			// 5xx (server error) — retry
+			if apiResp.ErrorCode >= 500 && apiResp.ErrorCode < 600 {
+				b.log.Warn("server error", "method", method, "error_code", apiResp.ErrorCode, "description", apiResp.Description)
+				lastErr = fmt.Errorf("telegram: %s failed: %s (code %d)", method, apiResp.Description, apiResp.ErrorCode)
+				continue
+			}
+			// 4xx (client error, not 429) — don't retry
+			b.log.Error("api error", "method", method, "description", apiResp.Description, "error_code", apiResp.ErrorCode)
+			return fmt.Errorf("telegram: %s failed: %s (code %d)", method, apiResp.Description, apiResp.ErrorCode)
+		}
+
+		if dest != nil && len(apiResp.Result) > 0 {
+			if err := json.Unmarshal(apiResp.Result, dest); err != nil {
+				b.log.Error("unmarshal result failed", "method", method, "error", err)
+				return fmt.Errorf("telegram: unmarshal result: %w", err)
+			}
+		}
+
+		return nil
 	}
 
-	return nil
+	return lastErr
 }
 
 // doUpload sends a multipart/form-data POST request with a file and optional parameters.

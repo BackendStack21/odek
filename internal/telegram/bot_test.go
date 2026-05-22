@@ -1430,3 +1430,126 @@ func TestBot_DownloadFile_Error(t *testing.T) {
 		t.Errorf("error = %q, want substring %q", err, "download file")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Retry (doJSON with exponential backoff)
+// ---------------------------------------------------------------------------
+
+func TestBot_DoJSON_RetryOn429(t *testing.T) {
+	attempts := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(429)
+			json.NewEncoder(w).Encode(map[string]any{
+				"ok":          false,
+				"error_code":  429,
+				"description": "Too Many Requests",
+			})
+			return
+		}
+		okResponse(w, map[string]any{
+			"message_id": 99,
+			"text":       "retry works",
+			"chat":       map[string]any{"id": 1, "type": "private"},
+			"date":       2000,
+		})
+	}))
+	defer ts.Close()
+
+	bot := NewBot("x")
+	bot.BaseURL = ts.URL
+
+	var msg Message
+	err := bot.doJSON("sendMessage", map[string]any{
+		"chat_id": 1,
+		"text":    "hello",
+	}, &msg)
+	if err != nil {
+		t.Fatalf("doJSON with retry: %v", err)
+	}
+	if attempts != 2 {
+		t.Errorf("attempts = %d, want 2", attempts)
+	}
+	if msg.ID != 99 {
+		t.Errorf("msg.ID = %d, want 99", msg.ID)
+	}
+}
+
+func TestBot_DoJSON_RetryOn5xx(t *testing.T) {
+	attempts := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts < 3 {
+			w.WriteHeader(502)
+			json.NewEncoder(w).Encode(map[string]any{
+				"ok":          false,
+				"error_code":  502,
+				"description": "Bad Gateway",
+			})
+			return
+		}
+		okResponse(w, map[string]any{"text": "ok"})
+	}))
+	defer ts.Close()
+
+	bot := NewBot("x")
+	bot.BaseURL = ts.URL
+
+	err := bot.doJSON("sendMessage", map[string]any{"chat_id": 1, "text": "hi"}, nil)
+	if err != nil {
+		t.Fatalf("doJSON with 5xx retry: %v", err)
+	}
+	if attempts != 3 {
+		t.Errorf("attempts = %d, want 3", attempts)
+	}
+}
+
+func TestBot_DoJSON_NoRetryOn4xx(t *testing.T) {
+	attempts := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]any{
+			"ok":          false,
+			"error_code":  400,
+			"description": "Bad Request",
+		})
+	}))
+	defer ts.Close()
+
+	bot := NewBot("x")
+	bot.BaseURL = ts.URL
+
+	err := bot.doJSON("sendMessage", map[string]any{"chat_id": 1, "text": "hi"}, nil)
+	if err == nil {
+		t.Fatal("expected error for 400, got nil")
+	}
+	if attempts != 1 {
+		t.Errorf("attempts = %d, want 1 (no retry on 4xx)", attempts)
+	}
+}
+
+func TestBot_DoJSON_RetryExhausted(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(503)
+		json.NewEncoder(w).Encode(map[string]any{
+			"ok":          false,
+			"error_code":  503,
+			"description": "Service Unavailable",
+		})
+	}))
+	defer ts.Close()
+
+	bot := NewBot("x")
+	bot.BaseURL = ts.URL
+
+	err := bot.doJSON("sendMessage", map[string]any{"chat_id": 1, "text": "hi"}, nil)
+	if err == nil {
+		t.Fatal("expected error after retries exhausted, got nil")
+	}
+	if !strings.Contains(err.Error(), "Service Unavailable") {
+		t.Errorf("error = %q, want substring %q", err, "Service Unavailable")
+	}
+}
