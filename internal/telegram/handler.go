@@ -165,6 +165,8 @@ func (h *Handler) HandleUpdate(upd Update) {
 	switch {
 	case upd.Message != nil:
 		h.handleMessage(upd.Message)
+	case upd.EditedMessage != nil:
+		h.handleMessage(upd.EditedMessage)
 	case upd.CallbackQuery != nil:
 		h.handleCallback(upd.CallbackQuery)
 	default:

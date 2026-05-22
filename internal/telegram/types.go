@@ -12,6 +12,7 @@ const (
 type Update struct {
 	ID            int             `json:"update_id"`
 	Message       *Message        `json:"message,omitempty"`
+	EditedMessage *Message        `json:"edited_message,omitempty"`
 	CallbackQuery *CallbackQuery  `json:"callback_query,omitempty"`
 }
 
