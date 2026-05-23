@@ -44,8 +44,8 @@ func TestHandleCallback_Approve(t *testing.T) {
 	id := a.newID()
 
 	// Register a pending request manually.
-	resp := make(chan string, 1)
-	a.pending[id] = resp
+	pr := &pendingRequest{resp: make(chan string, 1)}
+	a.pending[id] = pr
 
 	// Handle an approve callback.
 	handled := a.HandleCallback(cbPrefixApprove + id)
@@ -54,7 +54,7 @@ func TestHandleCallback_Approve(t *testing.T) {
 	}
 
 	// Check the response channel received the action.
-	action := <-resp
+	action := <-pr.resp
 	if action != "approve" {
 		t.Errorf("response action = %q, want %q", action, "approve")
 	}
@@ -68,15 +68,15 @@ func TestHandleCallback_Deny(t *testing.T) {
 	a := NewTelegramApprover(bot, 1)
 	id := a.newID()
 
-	resp := make(chan string, 1)
-	a.pending[id] = resp
+	pr := &pendingRequest{resp: make(chan string, 1)}
+	a.pending[id] = pr
 
 	handled := a.HandleCallback(cbPrefixDeny + id)
 	if !handled {
 		t.Fatal("HandleCallback should return true for deny callback")
 	}
 
-	action := <-resp
+	action := <-pr.resp
 	if action != "deny" {
 		t.Errorf("response action = %q, want %q", action, "deny")
 	}
@@ -90,15 +90,15 @@ func TestHandleCallback_Trust(t *testing.T) {
 	a := NewTelegramApprover(bot, 1)
 	id := a.newID()
 
-	resp := make(chan string, 1)
-	a.pending[id] = resp
+	pr := &pendingRequest{resp: make(chan string, 1)}
+	a.pending[id] = pr
 
 	handled := a.HandleCallback(cbPrefixTrust + id)
 	if !handled {
 		t.Fatal("HandleCallback should return true for trust callback")
 	}
 
-	action := <-resp
+	action := <-pr.resp
 	if action != "trust" {
 		t.Errorf("response action = %q, want %q", action, "trust")
 	}

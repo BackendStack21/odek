@@ -27,6 +27,14 @@ const (
 
 // ── TelegramApprover ───────────────────────────────────────────────────────
 
+// pendingRequest holds the response channel and the message ID for a
+// pending approval request, so HandleCallback can edit the message
+// text and remove the inline keyboard after the user responds.
+type pendingRequest struct {
+	resp      chan string
+	messageID int
+}
+
 // TelegramApprover implements danger.Approver by sending approval requests
 // via Telegram inline keyboards. The agent loop calls PromptCommand which:
 //
@@ -41,7 +49,7 @@ const (
 // Thread-safe: PromptCommand and HandleCallback are safe to call concurrently.
 type TelegramApprover struct {
 	bot     *Bot
-	pending map[string]chan string // requestID -> response channel
+	pending map[string]*pendingRequest // requestID -> pending request
 	mu      sync.Mutex
 	trusted map[danger.RiskClass]bool
 	trustAll bool // when true, all PromptCommand calls auto-approve
@@ -57,7 +65,7 @@ func NewTelegramApprover(bot *Bot, chatID int64) *TelegramApprover {
 	return &TelegramApprover{
 		bot:     bot,
 		ChatID:  chatID,
-		pending: make(map[string]chan string),
+		pending: make(map[string]*pendingRequest),
 		trusted: make(map[danger.RiskClass]bool),
 		log:     NewNopLogger(),
 		cancel:  make(chan struct{}),
@@ -129,7 +137,7 @@ func (a *TelegramApprover) PromptCommand(cls danger.RiskClass, cmd, description 
 		},
 	}
 
-	_, err := a.bot.SendMessage(a.ChatID, text, &SendOpts{
+	msg, err := a.bot.SendMessage(a.ChatID, text, &SendOpts{
 		ParseMode:   ParseModeMarkdownV2,
 		ReplyMarkup: &markup,
 	})
@@ -137,10 +145,10 @@ func (a *TelegramApprover) PromptCommand(cls danger.RiskClass, cmd, description 
 		return fmt.Errorf("telegram approver: send prompt: %w", err)
 	}
 
-	// Register the pending request.
-	resp := make(chan string, 1)
+	// Register the pending request with message ID.
+	pr := &pendingRequest{resp: make(chan string, 1), messageID: msg.ID}
 	a.mu.Lock()
-	a.pending[id] = resp
+	a.pending[id] = pr
 	a.mu.Unlock()
 
 	defer func() {
@@ -151,7 +159,24 @@ func (a *TelegramApprover) PromptCommand(cls danger.RiskClass, cmd, description 
 
 	// Wait for response, cancellation, or timeout.
 	select {
-	case action := <-resp:
+	case action := <-pr.resp:
+		// Edit the approval message to remove buttons and show the user's decision.
+		answerText := ""
+		switch action {
+		case "approve":
+			answerText = "✅ *Approved*"
+		case "trust":
+			answerText = fmt.Sprintf("🔒 *Trusted:* `%s`", cls)
+		case "deny":
+			answerText = "❌ *Denied*"
+		default:
+			answerText = "⏭ *Skipped*"
+		}
+		if answerText != "" {
+			a.bot.EditMessageText(a.ChatID, pr.messageID, answerText,
+				&SendOpts{ParseMode: ParseModeMarkdownV2, ReplyMarkup: &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{}}})
+		}
+
 		switch action {
 		case "approve":
 			return nil
@@ -159,12 +184,6 @@ func (a *TelegramApprover) PromptCommand(cls danger.RiskClass, cmd, description 
 			a.mu.Lock()
 			a.trusted[cls] = true
 			a.mu.Unlock()
-			// Confirm trust to the user
-			if _, err := a.bot.SendMessage(a.ChatID,
-				fmt.Sprintf("🔒 Class `%s` trusted for this session.", cls),
-				&SendOpts{ParseMode: ParseModeMarkdownV2}); err != nil {
-				a.log.Error("confirm trust message failed", "chat_id", a.ChatID, "error", err)
-			}
 			return nil
 		case "deny":
 			return fmt.Errorf("operation denied by user: %s", cmd)
@@ -208,11 +227,11 @@ func (a *TelegramApprover) HandleCallback(data string) bool {
 	}
 
 	a.mu.Lock()
-	resp, ok := a.pending[id]
+	pr, ok := a.pending[id]
 	a.mu.Unlock()
 
 	if ok {
-		resp <- action
+		pr.resp <- action
 	}
 
 	return true
