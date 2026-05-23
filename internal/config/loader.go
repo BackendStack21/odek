@@ -867,6 +867,9 @@ func overlayFile(base, override FileConfig) FileConfig {
 	if override.GithubRepoUrl != "" {
 		base.GithubRepoUrl = override.GithubRepoUrl
 	}
+	if override.InteractionMode != "" {
+		base.InteractionMode = override.InteractionMode
+	}
 	return base
 }
 
