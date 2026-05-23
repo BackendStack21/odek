@@ -27,6 +27,7 @@ Shared across all projects:
   "thinking": "",
   "max_iterations": 90,
   "sandbox": false,
+  "interaction_mode": "engaging",
   "no_color": false,
   "no_agents": false,
   "system": ""
@@ -59,6 +60,7 @@ Every config knob has a `ODEK_*` counterpart:
 | `ODEK_THINKING` | `--thinking` | string |
 | `ODEK_MAX_ITER` | `--max-iter` | int |
 | `ODEK_SANDBOX` | `--sandbox` | bool |
+| `ODEK_INTERACTION_MODE` | `--interaction-mode` | string |
 | `ODEK_NO_COLOR` | `--no-color` | bool |
 | `ODEK_NO_AGENTS` | `--no-agents` | bool |
 | `ODEK_SYSTEM` | `--system` | string |

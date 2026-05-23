@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.33.2 (2026-05-23) — Narrator Integration Complete
+
+### Telegram Engaging Mode
+- **Instant progress** — sends an immediate "🤔 Looking into that..." message when the agent starts
+- **Live tool narration** — updates the progress message with emoji-rich descriptions on each tool call
+- **Clean chat** — deletes the progress message when the final answer arrives
+
+### Test Coverage
+- InteractionMode config tests: default, `ODEK_INTERACTION_MODE`, CLI override
+- `/mode` command test: verifies interaction_mode documentation
+
+---
+
+## v0.33.1 (2026-05-23) — InteractionMode & Narrator
+
+### New Feature: InteractionMode
+- `interaction_mode` config field: `"engaging"` (default) or `"verbose"`
+- **Engaging mode** — LLM/narrator-powered emoji-rich progress messages instead of raw tool call output
+- **Verbose mode** — traditional raw tool names, args, and results (existing behavior)
+- `ODEK_INTERACTION_MODE` env var and `--interaction-mode` CLI flag
+
+### New Package: `internal/narrate`
+- Template-based tool narration with emojis (📖 Reading, ✏️ Editing, 🔍 Searching, etc.)
+- `narrate.New(enabled)` constructor — zero deps, zero LLM calls
+- 4 tests, offline fallbacks for all built-in tools
+
+### Integration Points
+- CLI (`--interaction-mode` in run, repl, serve, telegram subcommands)
+- ReAct loop (loop.go) — narrator wired into tool execution and thinking phases
+- Renderer — `NarratorMessage()` for terminal output
+- `NewAgent()` — narrator wired based on `InteractionMode`
+- `/mode` command — documents `interaction_mode` options
+- Config default-overlay: unset defaults to `"engaging"`
+
+---
+
 ## v0.33.0 (2026-05-23) — Performance Release
 
 Six performance improvements across the stack, reducing latency per session by **~30-50%**.

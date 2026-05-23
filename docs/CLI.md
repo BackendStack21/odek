@@ -37,6 +37,7 @@
 | `--max-iter <n>` | int | `90` | Max think→act cycles |
 | `--thinking <level>` | string | profile default | Reasoning depth: `enabled`/`disabled`/`low`/`medium`/`high` |
 | `--sandbox` | bool | false | Execute shell commands inside Docker container |
+| `--interaction-mode <mode>` | string | `engaging` | Tool-call rendering: `engaging` (emoji narration) or `verbose` (raw tool output) |
 | `--no-color` | bool | false | Disable colored terminal output |
 | `--prompt-caching` | bool | false | Enable Anthropic/OpenAI/DeepSeek prompt caching markers |
 | `--no-agents` | bool | false | Skip loading AGENTS.md |

@@ -199,7 +199,7 @@ The handler uses `sync.Map` for `TelegramApprover` instances, keyed by `chatID`.
 | `/new` | Reset the current conversation (clear context) |
 | `/stats` | Show session statistics (turn count, model used, etc.) |
 | `/stop` | Cancel a running agent task |
-| `/mode` | Toggle agent modes (sandbox, verbose) |
+| `/mode` | Show current agent modes (interaction_mode, sandbox, skills) |
 | `/restart` | Gracefully restart the bot process |
 | `/plan <description>` | Create a new plan from a natural language description |
 | `/plans` | List all saved plans |
