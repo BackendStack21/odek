@@ -37,6 +37,7 @@ type wsApprover struct {
 	pending    map[string]chan string        // request ID → response channel
 	mu         sync.Mutex
 	approveAll map[danger.RiskClass]bool     // trust-cached risk classes
+	trustAll   bool                          // when true, all PromptCommand calls auto-approve
 	cancel     chan struct{}                 // closed by Cancel() to interrupt waiting PromptCommand
 }
 
@@ -51,7 +52,7 @@ func newWSApprover(sendFn func(v any) error) *wsApprover {
 }
 
 func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string) error {
-	if a.approveAll[cls] {
+	if a.approveAll[cls] || a.trustAll {
 		return nil
 	}
 
@@ -138,4 +139,11 @@ func (a *wsApprover) Cancel() {
 	default:
 		close(a.cancel)
 	}
+}
+
+// SetTrustAll enables or disables blanket trust for all risk classes.
+func (a *wsApprover) SetTrustAll(enabled bool) {
+	a.mu.Lock()
+	a.trustAll = enabled
+	a.mu.Unlock()
 }

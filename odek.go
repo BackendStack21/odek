@@ -161,6 +161,13 @@ type Config struct {
 	// occurs (loaded, autoloaded, saved, deleted, etc.). Used by WebUI
 	// (WebSocket streaming) and Telegram (inline messages).
 	SkillEventHandler func(event skills.SkillEvent)
+
+	// Approver gates dangerous tool operations. When set and the LLM returns
+	// multiple tool calls in one iteration, a single batch approval prompt
+	// is shown instead of N individual prompts. If denied, no tools run
+	// for that iteration. If approved, individual tool-level PromptCommand
+	// calls are bypassed via SetTrustAll.
+	Approver danger.Approver
 }
 
 // Agent is the agent loop runtime.
@@ -483,6 +490,9 @@ func New(cfg Config) (*Agent, error) {
 	engine.PromptCaching = cfg.PromptCaching
 	if cfg.MaxToolParallel > 0 {
 		engine.SetMaxToolParallel(cfg.MaxToolParallel)
+	}
+	if cfg.Approver != nil {
+		engine.SetApprover(cfg.Approver)
 	}
 
 	// Set skill verbosity: condensed by default, full banners when verbose.

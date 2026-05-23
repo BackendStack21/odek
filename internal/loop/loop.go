@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BackendStack21/kode/internal/danger"
 	"github.com/BackendStack21/kode/internal/llm"
 	"github.com/BackendStack21/kode/internal/narrate"
 	"github.com/BackendStack21/kode/internal/redact"
@@ -99,6 +100,14 @@ type Engine struct {
 	// avoiding resource exhaustion.
 	MaxToolParallel int
 
+	// approver gates dangerous operations. When set and the LLM returns
+	// multiple tool calls in one iteration, a single batch approval prompt
+	// is shown before any tool executes. If the batch is denied, no tools
+	// run for that iteration. If approved, SetTrustAll(true) is called on
+	// the approver (if supported) so individual tool-level PromptCommand
+	// calls auto-approve.
+	approver danger.Approver
+
 	// Token accounting — accumulated across all iterations of the most recent run.
 	// Reset on each Run/RunWithMessages call and read by callers (e.g. WebUI).
 	TotalInputTokens  int
@@ -162,6 +171,13 @@ func (e *Engine) SetIterationCallback(cb IterationCallback) { e.iterationCallbac
 // SetMaxToolParallel sets the maximum concurrency for tool execution per
 // iteration. 0 or negative = use default (4).
 func (e *Engine) SetMaxToolParallel(n int) { e.MaxToolParallel = n }
+
+// SetApprover sets the approval gate for dangerous operations.
+// When set and the LLM returns multiple tool calls in one iteration, a
+// single batch approval prompt is shown. Individual tool-level approval
+// is bypassed when the batch is approved (if the approver supports
+// SetTrustAll).
+func (e *Engine) SetApprover(a danger.Approver) { e.approver = a }
 
 // ── Token Estimation ─────────────────────────────────────────────────
 //
@@ -585,6 +601,40 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 			}
 		}
 
+		// Phase 1.5: batch approval gate
+		// When an approver is set and the LLM returned multiple tool calls,
+		// present a single approval prompt for the entire batch instead of
+		// N individual prompts. If denied, all tool calls are rejected
+		// without executing anything. If approved, the approver's trustAll
+		// flag is set so individual tool-level PromptCommand calls auto-pass.
+		batchDenied := false
+		if e.approver != nil && len(result.ToolCalls) > 1 {
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("Execute %d tool calls in parallel?\n\n", len(result.ToolCalls)))
+			for i, tc := range result.ToolCalls {
+				args := tc.Function.Arguments
+				if len(args) > 120 {
+					args = args[:120] + "…"
+				}
+				sb.WriteString(fmt.Sprintf("  %d. %s(%s)\n", i+1, tc.Function.Name, args))
+			}
+			description := sb.String()
+
+			// Single approval prompt for the entire batch.
+			if err := e.approver.PromptCommand("tool_batch", description, ""); err != nil {
+				batchDenied = true
+			}
+
+			// Approved: set trustAll on the approver if supported, so
+			// individual tool-level PromptCommand calls auto-pass.
+			if !batchDenied {
+				if ta, ok := e.approver.(interface{ SetTrustAll(bool) }); ok {
+					ta.SetTrustAll(true)
+					defer ta.SetTrustAll(false)
+				}
+			}
+		}
+
 		// Phase 2: execute tools in parallel (bounded by semaphore)
 		type execResult struct {
 			output string
@@ -596,27 +646,33 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		sem := make(chan struct{}, parallel)
 		results := make([]execResult, len(result.ToolCalls))
 
-		for i, tc := range result.ToolCalls {
-			sem <- struct{}{} // acquire — blocks if at cap
-			go func(idx int, tcRef llm.ToolCall) {
-				defer func() { <-sem }() // release
+		if batchDenied {
+			for i := range results {
+				results[i].output = "error: batch approval denied"
+			}
+		} else {
+			for i, tc := range result.ToolCalls {
+				sem <- struct{}{} // acquire — blocks if at cap
+				go func(idx int, tcRef llm.ToolCall) {
+					defer func() { <-sem }() // release
 
-				t := e.registry.Get(tcRef.Function.Name)
-				output := fmt.Sprintf("error: tool %q not found", tcRef.Function.Name)
-				if t != nil {
-					res, err := t.Call(tcRef.Function.Arguments)
-					if err != nil {
-						output = fmt.Sprintf("error: %s", err.Error())
-					} else {
-						output = redact.RedactSecrets(res)
+					t := e.registry.Get(tcRef.Function.Name)
+					output := fmt.Sprintf("error: tool %q not found", tcRef.Function.Name)
+					if t != nil {
+						res, err := t.Call(tcRef.Function.Arguments)
+						if err != nil {
+							output = fmt.Sprintf("error: %s", err.Error())
+						} else {
+							output = redact.RedactSecrets(res)
+						}
 					}
-				}
-				results[idx] = execResult{output: output}
-			}(i, tc)
-		}
-		// Drain the semaphore — wait for all goroutines to finish.
-		for i := 0; i < cap(sem); i++ {
-			sem <- struct{}{}
+					results[idx] = execResult{output: output}
+				}(i, tc)
+			}
+			// Drain the semaphore — wait for all goroutines to finish.
+			for i := 0; i < cap(sem); i++ {
+				sem <- struct{}{}
+			}
 		}
 
 		// Phase 3: process results in order (render, compress, append to messages)

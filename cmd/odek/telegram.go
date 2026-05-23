@@ -1189,24 +1189,24 @@ func handleChatMessage(
 		},
 		SkillEventHandler: func(event skills.SkillEvent) {
 			switch event.Type {
-		case "loaded":
-			if skillsCfg != nil && skillsCfg.Verbose {
-				names := strings.Join(event.Skills, ", ")
-				sendAsync(bot, chatID, "📚 Loaded skill: "+names, &telegram.SendOpts{ReplyToMessageID: messageID})
-			}
-		case "autoloaded":
-			if skillsCfg != nil && skillsCfg.Verbose {
-				names := strings.Join(event.Skills, ", ")
-				sendAsync(bot, chatID, "📚 Auto-loaded skills: "+names, &telegram.SendOpts{ReplyToMessageID: messageID})
-			}
-		case "saved":
-			if skillsCfg != nil && skillsCfg.Verbose {
-				sendAsync(bot, chatID, fmt.Sprintf("✓ Saved skill %q", event.SkillName), &telegram.SendOpts{ReplyToMessageID: messageID})
-			}
-		case "deleted":
-			if skillsCfg != nil && skillsCfg.Verbose {
-				sendAsync(bot, chatID, fmt.Sprintf("✗ Deleted skill %q", event.SkillName), &telegram.SendOpts{ReplyToMessageID: messageID})
-			}
+			case "loaded":
+				if skillsCfg != nil && skillsCfg.Verbose {
+					names := strings.Join(event.Skills, ", ")
+					sendAsync(bot, chatID, "📚 Loaded skill: "+names, &telegram.SendOpts{ReplyToMessageID: messageID})
+				}
+			case "autoloaded":
+				if skillsCfg != nil && skillsCfg.Verbose {
+					names := strings.Join(event.Skills, ", ")
+					sendAsync(bot, chatID, "📚 Auto-loaded skills: "+names, &telegram.SendOpts{ReplyToMessageID: messageID})
+				}
+			case "saved":
+				if skillsCfg != nil && skillsCfg.Verbose {
+					sendAsync(bot, chatID, fmt.Sprintf("✓ Saved skill %q", event.SkillName), &telegram.SendOpts{ReplyToMessageID: messageID})
+				}
+			case "deleted":
+				if skillsCfg != nil && skillsCfg.Verbose {
+					sendAsync(bot, chatID, fmt.Sprintf("✗ Deleted skill %q", event.SkillName), &telegram.SendOpts{ReplyToMessageID: messageID})
+				}
 			case "suggested":
 				replyMarkup := &telegram.InlineKeyboardMarkup{
 					InlineKeyboard: [][]telegram.InlineKeyboardButton{
@@ -1235,6 +1235,7 @@ func handleChatMessage(
 				&telegram.SendOpts{ReplyMarkup: replyMarkup, ParseMode: "Markdown", ReplyToMessageID: messageID})
 			}
 		},
+		Approver: approver,
 	}
 
 	agent, err := odek.New(agentCfg)

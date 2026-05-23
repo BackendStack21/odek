@@ -37,6 +37,7 @@ type TTYApprover struct {
 	TrustedClasses  map[RiskClass]bool
 	mu              sync.Mutex
 	TTYPath         string // overridden in tests
+	trustAll        bool   // when true, all PromptCommand calls auto-approve
 }
 
 // NewTTYApprover creates a TTYApprover with the given config.
@@ -56,6 +57,14 @@ func (a *TTYApprover) SetTrustedClasses(m map[RiskClass]bool) {
 	a.mu.Unlock()
 }
 
+// SetTrustAll enables or disables blanket trust for all risk classes.
+// When enabled, PromptCommand returns nil for every call (used by batch approval).
+func (a *TTYApprover) SetTrustAll(enabled bool) {
+	a.mu.Lock()
+	a.trustAll = enabled
+	a.mu.Unlock()
+}
+
 func (a *TTYApprover) PromptCommand(cls RiskClass, cmd, description string) error {
 	return a.prompt(cls, cmd, description)
 }
@@ -68,6 +77,7 @@ func (a *TTYApprover) prompt(cls RiskClass, cmd, description string) error {
 	// Check session trust cache
 	a.mu.Lock()
 	trusted := a.TrustedClasses != nil && a.TrustedClasses[cls]
+	trusted = trusted || a.trustAll
 	a.mu.Unlock()
 	if trusted {
 		return nil

@@ -44,6 +44,7 @@ type TelegramApprover struct {
 	pending map[string]chan string // requestID -> response channel
 	mu      sync.Mutex
 	trusted map[danger.RiskClass]bool
+	trustAll bool // when true, all PromptCommand calls auto-approve
 	log     Logger
 	cancel  chan struct{} // closed by Cancel() to interrupt waiting PromptCommand
 
@@ -88,7 +89,7 @@ func (a *TelegramApprover) Cancel() {
 func (a *TelegramApprover) PromptCommand(cls danger.RiskClass, cmd, description string) error {
 	// Check session trust cache
 	a.mu.Lock()
-	if a.trusted[cls] {
+	if a.trusted[cls] || a.trustAll {
 		a.mu.Unlock()
 		return nil
 	}
@@ -236,5 +237,13 @@ func (a *TelegramApprover) IsTrusted(cls danger.RiskClass) bool {
 func (a *TelegramApprover) ResetTrust() {
 	a.mu.Lock()
 	a.trusted = make(map[danger.RiskClass]bool)
+	a.mu.Unlock()
+}
+
+// SetTrustAll enables or disables blanket trust for all risk classes.
+// When enabled, PromptCommand returns nil for every call without prompting.
+func (a *TelegramApprover) SetTrustAll(enabled bool) {
+	a.mu.Lock()
+	a.trustAll = enabled
 	a.mu.Unlock()
 }
