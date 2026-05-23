@@ -22,6 +22,7 @@ type TelegramConfig struct {
 	HealthAddr       string   `json:"health_addr"`        // e.g. "127.0.0.1:9090" (empty = disabled)
 	LogLevel         string   `json:"log_level"` // "debug","info","warn","error" (default "info")
 	LogFile          string   `json:"log_file"`  // path or empty for stderr
+	DefaultChatID    int64    `json:"default_chat_id"`    // for --deliver and cron delivery
 }
 
 // DefaultConfig returns a TelegramConfig with sensible defaults.

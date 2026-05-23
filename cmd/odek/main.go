@@ -16,6 +16,7 @@ import (
 
 	"github.com/BackendStack21/kode"
 	"github.com/BackendStack21/kode/internal/config"
+	"github.com/BackendStack21/kode/internal/telegram"
 	"github.com/BackendStack21/kode/internal/danger"
 	"github.com/BackendStack21/kode/internal/llm"
 	"github.com/BackendStack21/kode/internal/mcpclient"
@@ -316,6 +317,8 @@ type runFlags struct {
 	// Repo context flags
 	GithubRepoDirectory string // --github-repo-dir
 	GithubRepoUrl       string // --github-repo-url
+
+	Deliver *bool // nil = not set; true = deliver result to default channel
 }
 
 // parseRunFlags parses `odek run` arguments and returns the parsed flags.
@@ -398,6 +401,9 @@ func parseRunFlags(args []string) (runFlags, error) {
 		case "--ctx", "-c":
 			f.Ctx = strings.Split(args[i+1], ",")
 			i += 2
+			case "--deliver":
+				f.Deliver = boolPtr(true)
+				i++
 		default:
 			// Not a flag — treat remaining as the task
 			goto done
@@ -992,6 +998,7 @@ func run(args []string) error {
 	// Shared agent run — capture messages for --learn mode
 	var allMessages []llm.Message
 	var runErr error
+	var result string
 
 	if f.Session != nil && *f.Session {
 		// Multi-turn session mode: save conversation history
@@ -1007,9 +1014,7 @@ func run(args []string) error {
 			mm.AppendBuffer("user", shorten(f.Task, 100))
 		}
 
-		var result string
 		result, allMessages, runErr = agent.RunWithMessages(ctx, messages)
-		_ = result
 
 		// Append agent response to buffer
 		if runErr == nil && len(allMessages) > 0 {
@@ -1048,7 +1053,7 @@ func run(args []string) error {
 		if systemMessage != "" {
 			messages = append([]llm.Message{{Role: "system", Content: systemMessage}}, messages...)
 		}
-		_, allMessages, runErr = agent.RunWithMessages(ctx, messages)
+		result, allMessages, runErr = agent.RunWithMessages(ctx, messages)
 	}
 
 	if runErr != nil {
@@ -1075,6 +1080,32 @@ func run(args []string) error {
 		}
 	}
 
+	// ── Delivery: send result to default channel ──
+	if f.Deliver != nil && *f.Deliver && runErr == nil && result != "" {
+		if err := deliverToTelegram(result, resolved); err != nil {
+			fmt.Fprintf(os.Stderr, "odek: delivery failed: %v\n", err)
+		}
+	}
+
+	return nil
+}
+
+// deliverToTelegram sends a message to the configured Telegram default chat.
+// Creates a temporary bot client from the resolved config and sends the
+// response text. Returns an error if no Telegram config or chat is set.
+func deliverToTelegram(text string, resolved config.ResolvedConfig) error {
+	if resolved.Telegram.Token == "" {
+		return fmt.Errorf("telegram bot_token not configured")
+	}
+	chatID := resolved.Telegram.DefaultChatID
+	if chatID == 0 {
+		return fmt.Errorf("telegram default_chat_id not configured")
+	}
+	bot := telegram.NewBot(resolved.Telegram.Token)
+	_, err := bot.SendMessage(chatID, text, &telegram.SendOpts{ParseMode: telegram.ParseModeMarkdownV2})
+	if err != nil {
+		return fmt.Errorf("send telegram message: %w", err)
+	}
 	return nil
 }
 
