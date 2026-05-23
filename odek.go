@@ -370,10 +370,20 @@ func New(cfg Config) (*Agent, error) {
 		timeout = profile.Timeout
 	}
 
-	// Resolve max context: profile value (0 = no limit)
+	// Resolve max context: discovered API values > profile > 0 (no limit)
 	maxContext := 0
-	if profile := LookupProfile(cfg.Model); profile != nil && profile.MaxContext > 0 {
-		maxContext = profile.MaxContext
+	// Priority 1: dynamic discovery via GET /models endpoint
+	if discovered := llm.DiscoverModelContext(cfg.BaseURL, cfg.APIKey, cfg.Model); discovered > 0 {
+		maxContext = discovered
+	}
+	// Priority 2: static profile fallback (only if discovery returned nothing)
+	if maxContext == 0 {
+		if profile := LookupProfile(cfg.Model); profile != nil && profile.MaxContext > 0 {
+			maxContext = profile.MaxContext
+		}
+	}
+	if maxContext > 0 {
+		log.Printf("odek: model %q context window: %d tokens", cfg.Model, maxContext)
 	}
 
 	// Build tool registry from external Tool interface
