@@ -338,6 +338,9 @@ func (b *Bot) EditMessageText(chatID int64, messageID int, text string, opts *Se
 	if opts != nil && opts.ParseMode != "" {
 		params["parse_mode"] = opts.ParseMode
 	}
+	if opts != nil && opts.ReplyMarkup != nil {
+		params["reply_markup"] = opts.ReplyMarkup
+	}
 	return b.doJSON("editMessageText", params, nil)
 }
 

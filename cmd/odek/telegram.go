@@ -42,6 +42,11 @@ var chatCancels sync.Map // map[int64]context.CancelFunc
 // interrupted task.
 var chatRunInfos sync.Map // map[int64]loop.IterationInfo
 
+// clarifyMsgIDs stores the message ID of the active clarify prompt
+// per chat, so the callback handler can edit/remove it after the user
+// responds. Cleared when the clarify tool completes or times out.
+var clarifyMsgIDs sync.Map // map[int64]int
+
 // pendingSuggestions stores SkillSuggestion values keyed by skill name,
 // awaiting user approval via inline keyboard callbacks.
 var pendingSuggestions sync.Map // map[string]skills.SkillSuggestion
@@ -400,7 +405,14 @@ func telegramCmd(args []string) error {
 					// Channel full or closed — clarify already resolved.
 				}
 			}
-			return "✅ You chose **" + answer + "**", nil
+			// Remove the inline keyboard and update text to show the answer.
+			if msgID, ok := clarifyMsgIDs.Load(chatID); ok {
+				bot.EditMessageText(chatID, msgID.(int),
+					"✅ *User answered:* "+answer,
+					&telegram.SendOpts{ParseMode: telegram.ParseModeMarkdownV2, ReplyMarkup: &telegram.InlineKeyboardMarkup{InlineKeyboard: [][]telegram.InlineKeyboardButton{}}})
+				clarifyMsgIDs.Delete(chatID)
+			}
+			return "", nil
 		}
 
 		// Route skill suggestion callbacks — Save or Skip.
@@ -1072,9 +1084,12 @@ func handleChatMessage(
 				},
 			},
 		}
-		if _, err := bot.SendMessage(chatID, "❓ "+question,
+		if msg, err := bot.SendMessage(chatID, "❓ "+question,
 			&telegram.SendOpts{ReplyMarkup: replyMarkup, ParseMode: "Markdown", ReplyToMessageID: messageID}); err != nil {
 			return "", fmt.Errorf("clarify: send message: %w", err)
+		} else {
+			clarifyMsgIDs.Store(chatID, msg.ID)
+			defer clarifyMsgIDs.Delete(chatID)
 		}
 
 		// Wait for the user to click a button (or timeout).
