@@ -288,7 +288,7 @@
   "operatingSystem": "Linux, macOS",
   "description": "The fastest, minimal Go autonomous agent runtime. ~12 MB static binary, zero frameworks. ReAct agent with parallel tool execution, persistent memory, MCP, sandbox, Web UI, and Telegram bot.",
   "url": "https://odek.21no.de",
-  "downloadUrl": "https://github.com/BackendStack21/kode",
+  "downloadUrl": "https://github.com/BackendStack21/odek",
   "author": {
     "@type": "Organization",
     "name": "21no.de",
@@ -306,7 +306,7 @@
     <a href="#install">Install</a>
     <a href="#cheatsheet">Cheatsheet</a>
     <a href="#demos">Demos</a>
-    <a href="https://github.com/BackendStack21/kode" target="_blank">GitHub</a>
+    <a href="https://github.com/BackendStack21/odek" target="_blank">GitHub</a>
   </div>
 </nav>
 
@@ -317,8 +317,8 @@
     <div class="badge" style="margin-top:12px;display:inline-block;background:var(--accent-subtle);border:1px solid rgba(56,189,248,.15);border-radius:6px;padding:5px 12px;font-size:0.8125rem;font-family:var(--font-mono);color:var(--accent);">v0.37.18</div>
 
     <div class="install-block">
-      <code>go install github.com/BackendStack21/kode/cmd/odek@latest</code>
-      <button class="copy-btn" onclick="copyText(this,'go install github.com/BackendStack21/kode/cmd/odek@latest')">📋 Copy</button>
+      <code>go install github.com/BackendStack21/odek/cmd/odek@latest</code>
+      <button class="copy-btn" onclick="copyText(this,'go install github.com/BackendStack21/odek/cmd/odek@latest')">📋 Copy</button>
       <a class="btn" href="#install">Get Started →</a>
     </div>
   </div>
@@ -373,7 +373,7 @@
         <span class="prompt">$ odek run "How many lines in go.mod?"</span><br>
         <span class="info">═══ Iter 1/15 ═══  [456 in · 21 out · 0.8s]</span><br>
         <span class="output">The <strong>go.mod</strong> file has 3 lines:</span><br>
-        <span class="output">module github.com/BackendStack21/kode</span><br>
+        <span class="output">module github.com/BackendStack21/odek</span><br>
         <span class="output">go 1.24</span><br>
         <span class="output">require ( ... )</span><br>
         <span class="info">✅ Done in 0.8s</span>
@@ -587,9 +587,9 @@
       <span class="n">2</span>
       <span>
         Install:
-        <button class="copy-btn" onclick="copyText(this,'go install github.com/BackendStack21/kode/cmd/odek@latest')" style="margin-left:8px;">📋 Copy</button>
+        <button class="copy-btn" onclick="copyText(this,'go install github.com/BackendStack21/odek/cmd/odek@latest')" style="margin-left:8px;">📋 Copy</button>
         <br>
-        <code style="margin-top:6px;display:inline-block;">go install github.com/BackendStack21/kode/cmd/odek@latest</code>
+        <code style="margin-top:6px;display:inline-block;">go install github.com/BackendStack21/odek/cmd/odek@latest</code>
       </span>
     </li>
     <li>
@@ -608,11 +608,11 @@
   </p>
 
   <pre><code><span class="hljs-comment"># Download to /usr/local/bin (may need sudo)</span>
-curl -sfLo /usr/local/bin/odek https://github.com/BackendStack21/kode/releases/latest/download/odek-$(uname -s | tr <span class="hljs-string">'[:upper:]'</span> <span class="hljs-string">'[:lower:]'</span>)-$(uname -m | sed <span class="hljs-string">'s/x86_64/amd64/;s/aarch64/arm64/'</span>) && chmod +x /usr/local/bin/odek
+curl -sfLo /usr/local/bin/odek https://github.com/BackendStack21/odek/releases/latest/download/odek-$(uname -s | tr <span class="hljs-string">'[:upper:]'</span> <span class="hljs-string">'[:lower:]'</span>)-$(uname -m | sed <span class="hljs-string">'s/x86_64/amd64/;s/aarch64/arm64/'</span>) && chmod +x /usr/local/bin/odek
 
 <span class="hljs-comment"># Or to current directory</span>
-curl -sfLO https://github.com/BackendStack21/kode/releases/latest/download/odek-$(uname -s | tr <span class="hljs-string">'[:upper:]'</span> <span class="hljs-string">'[:lower:]'</span>)-$(uname -m | sed <span class="hljs-string">'s/x86_64/amd64/;s/aarch64/arm64/'</span>) && chmod +x odek-* && ./odek-* version</code>
-<button class="clip" onclick="copyText(this,'curl -sfLo /usr/local/bin/odek https://github.com/BackendStack21/kode/releases/latest/download/odek-$(uname -s | tr \'[:upper:]\' \'[:lower:]\')-$(uname -m | sed \'s/x86_64/amd64/;s/aarch64/arm64/\') && chmod +x /usr/local/bin/odek')">📋 Copy</button>
+curl -sfLO https://github.com/BackendStack21/odek/releases/latest/download/odek-$(uname -s | tr <span class="hljs-string">'[:upper:]'</span> <span class="hljs-string">'[:lower:]'</span>)-$(uname -m | sed <span class="hljs-string">'s/x86_64/amd64/;s/aarch64/arm64/'</span>) && chmod +x odek-* && ./odek-* version</code>
+<button class="clip" onclick="copyText(this,'curl -sfLo /usr/local/bin/odek https://github.com/BackendStack21/odek/releases/latest/download/odek-$(uname -s | tr \'[:upper:]\' \'[:lower:]\')-$(uname -m | sed \'s/x86_64/amd64/;s/aarch64/arm64/\') && chmod +x /usr/local/bin/odek')">📋 Copy</button>
 </pre>
 
   <div class="platform-tags">
@@ -655,6 +655,8 @@ $ odek run <span class="hljs-string">"@README.md summarize this project"</span>
     <li><span class="cmd">odek subagent --goal &lt;s&gt;</span><span class="desc">Run a focused sub-task</span></li>
     <li><span class="cmd">odek mcp</span><span class="desc">Start MCP server (stdio)</span></li>
     <li><span class="cmd">odek mcp --sse-addr :8081</span><span class="desc">Start MCP server (SSE)</span></li>
+    <li><span class="cmd">odek telegram</span><span class="desc">Start Telegram bot</span></li>
+    <li><span class="cmd">odek run --deliver <task></span><span class="desc">Run task, deliver to Telegram</span></li>
     <li><span class="cmd">odek init [--global]</span><span class="desc">Create config file</span></li>
   </ul>
 
@@ -670,6 +672,8 @@ $ odek run <span class="hljs-string">"@README.md summarize this project"</span>
     <li><span class="cmd">--ctx &lt;files&gt; / -c</span><span class="desc">Attach files as context blocks (comma-separated)</span></li>
     <li><span class="cmd">--system &lt;prompt&gt;</span><span class="desc">Override system prompt</span></li>
     <li><span class="cmd">--no-color</span><span class="desc">Disable colored output</span></li>
+    <li><span class="cmd">--deliver</span><span class="desc">Deliver result to Telegram default chat</span></li>
+    <li><span class="cmd">--interaction-mode <m></span><span class="desc">engaging | verbose | enhance</span></li>
   </ul>
 </section>
 
@@ -679,20 +683,20 @@ $ odek run <span class="hljs-string">"@README.md summarize this project"</span>
   <p style="margin-bottom:20px">Deep-dive docs for every subsystem. Real detail, no fluff.</p>
 
   <div class="doc-links">
-    <a href="https://github.com/BackendStack21/kode/blob/main/docs/CLI.md">CLI Reference<span>All commands, subcommands, flags, examples</span></a>
-    <a href="https://github.com/BackendStack21/kode/blob/main/docs/CHEATSHEET.md">Cheat Sheet<span>Quick reference: commands, config, memory, subagents, env vars</span></a>
-    <a href="https://github.com/BackendStack21/kode/blob/main/docs/API.md">Go SDK Guide<span>Import, Agent, Tools, memory, multi-turn sessions, examples</span></a>
-    <a href="https://github.com/BackendStack21/kode/blob/main/docs/CONFIG.md">Configuration<span>Config files, env vars, priority chain</span></a>
-    <a href="https://github.com/BackendStack21/kode/blob/main/docs/PROVIDERS.md">Providers & Models<span>Deepseek, OpenAI, Anthropic, Ollama, vLLM, more</span></a>
-    <a href="https://github.com/BackendStack21/kode/blob/main/docs/MCP.md">MCP (Two-Way)<span>Serve tools + connect to external MCP servers</span></a>
-    <a href="https://github.com/BackendStack21/kode/blob/main/docs/MEMORY.md">Memory System<span>Three-tier facts, buffer, episodes</span></a>
-    <a href="https://github.com/BackendStack21/kode/blob/main/docs/SESSIONS.md">Multi-Turn Sessions<span>Save, resume, list, trim, cleanup</span></a>
-    <a href="https://github.com/BackendStack21/kode/blob/main/docs/SANDBOXING.md">Sandboxing<span>Docker isolation, config, security model</span></a>
-    <a href="https://github.com/BackendStack21/kode/blob/main/docs/SECURITY.md">Security<span>Prompt injection defense, threat model</span></a>
-    <a href="https://github.com/BackendStack21/kode/blob/main/docs/SUBAGENTS.md">Sub-Agents<span>Task decomposition, delegation protocol</span></a>
-    <a href="https://github.com/BackendStack21/kode/blob/main/docs/LEARNING.md">Self-Learning<span>Skill detection, LLM enhancement, curation</span></a>
-    <a href="https://github.com/BackendStack21/kode/blob/main/docs/WEBUI.md">Web UI<span>odek serve, WebSocket protocol, @ resources</span></a>
-    <a href="https://github.com/BackendStack21/kode/blob/main/docs/DEVELOPMENT.md">Development<span>Building, testing, contributing</span></a>
+    <a href="https://github.com/BackendStack21/odek/blob/main/docs/CLI.md">CLI Reference<span>All commands, subcommands, flags, examples</span></a>
+    <a href="https://github.com/BackendStack21/odek/blob/main/docs/CHEATSHEET.md">Cheat Sheet<span>Quick reference: commands, config, memory, subagents, env vars</span></a>
+    <a href="https://github.com/BackendStack21/odek/blob/main/docs/API.md">Go SDK Guide<span>Import, Agent, Tools, memory, multi-turn sessions, examples</span></a>
+    <a href="https://github.com/BackendStack21/odek/blob/main/docs/CONFIG.md">Configuration<span>Config files, env vars, priority chain</span></a>
+    <a href="https://github.com/BackendStack21/odek/blob/main/docs/PROVIDERS.md">Providers & Models<span>Deepseek, OpenAI, Anthropic, Ollama, vLLM, more</span></a>
+    <a href="https://github.com/BackendStack21/odek/blob/main/docs/MCP.md">MCP (Two-Way)<span>Serve tools + connect to external MCP servers</span></a>
+    <a href="https://github.com/BackendStack21/odek/blob/main/docs/MEMORY.md">Memory System<span>Three-tier facts, buffer, episodes</span></a>
+    <a href="https://github.com/BackendStack21/odek/blob/main/docs/SESSIONS.md">Multi-Turn Sessions<span>Save, resume, list, trim, cleanup</span></a>
+    <a href="https://github.com/BackendStack21/odek/blob/main/docs/SANDBOXING.md">Sandboxing<span>Docker isolation, config, security model</span></a>
+    <a href="https://github.com/BackendStack21/odek/blob/main/docs/SECURITY.md">Security<span>Prompt injection defense, threat model</span></a>
+    <a href="https://github.com/BackendStack21/odek/blob/main/docs/SUBAGENTS.md">Sub-Agents<span>Task decomposition, delegation protocol</span></a>
+    <a href="https://github.com/BackendStack21/odek/blob/main/docs/LEARNING.md">Self-Learning<span>Skill detection, LLM enhancement, curation</span></a>
+    <a href="https://github.com/BackendStack21/odek/blob/main/docs/WEBUI.md">Web UI<span>odek serve, WebSocket protocol, @ resources</span></a>
+    <a href="https://github.com/BackendStack21/odek/blob/main/docs/DEVELOPMENT.md">Development<span>Building, testing, contributing</span></a>
   </div>
 </section>
 
@@ -704,9 +708,9 @@ $ odek run <span class="hljs-string">"@README.md summarize this project"</span>
     Go install and go.
   </p>
   <div class="install-block cta-block">
-    <code>go install github.com/BackendStack21/kode/cmd/odek@latest</code>
-    <button class="copy-btn" onclick="copyText(this,'go install github.com/BackendStack21/kode/cmd/odek@latest')">📋 Copy</button>
-    <a class="btn" href="https://github.com/BackendStack21/kode" target="_blank">GitHub →</a>
+    <code>go install github.com/BackendStack21/odek/cmd/odek@latest</code>
+    <button class="copy-btn" onclick="copyText(this,'go install github.com/BackendStack21/odek/cmd/odek@latest')">📋 Copy</button>
+    <a class="btn" href="https://github.com/BackendStack21/odek" target="_blank">GitHub →</a>
   </div>
 </section>
 
@@ -715,7 +719,7 @@ $ odek run <span class="hljs-string">"@README.md summarize this project"</span>
 <footer>
   <div class="container">
     <a href="https://21no.de">21no.de</a> &middot; MIT License &middot;
-    <a href="https://github.com/BackendStack21/kode">GitHub</a>
+    <a href="https://github.com/BackendStack21/odek">GitHub</a>
   </div>
 </footer>
 
