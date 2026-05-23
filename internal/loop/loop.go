@@ -91,6 +91,14 @@ type Engine struct {
 	// dedicated "system" field for Anthropic compatibility.
 	PromptCaching bool
 
+	// MaxToolParallel controls how many tool calls run concurrently per
+	// iteration. 0 = use default (4). Models that support parallel tool
+	// calling (Claude 3.5+, GPT-4o, DeepSeek V4) can emit multiple tool
+	// calls in one response — this setting bounds concurrency so tools
+	// like read_file, search_files, and web_search run in parallel while
+	// avoiding resource exhaustion.
+	MaxToolParallel int
+
 	// Token accounting — accumulated across all iterations of the most recent run.
 	// Reset on each Run/RunWithMessages call and read by callers (e.g. WebUI).
 	TotalInputTokens  int
@@ -150,6 +158,10 @@ func (e *Engine) SetNarrator(n *narrate.Narrator) { e.narrator = n }
 // SetIterationCallback sets the iteration progress callback.
 // If nil, no callback is fired.
 func (e *Engine) SetIterationCallback(cb IterationCallback) { e.iterationCallback = cb }
+
+// SetMaxToolParallel sets the maximum concurrency for tool execution per
+// iteration. 0 or negative = use default (4).
+func (e *Engine) SetMaxToolParallel(n int) { e.MaxToolParallel = n }
 
 // ── Token Estimation ─────────────────────────────────────────────────
 //
@@ -552,12 +564,13 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		}
 		messages = append(messages, assistantMsg)
 
-		// ACT: execute each tool call
+		// ACT: execute each tool call in parallel with bounded concurrency
 		toolNames := make([]string, 0, len(result.ToolCalls))
+
+		// Phase 1: fire all tool_call events synchronously (rendering + events)
 		for _, tc := range result.ToolCalls {
 			toolNames = append(toolNames, tc.Function.Name)
 
-			// Render tool call: engaging mode uses narrator, verbose mode uses renderer.
 			if e.narrator != nil {
 				if msg := e.narrator.ToolCallMessage(tc.Function.Name, tc.Function.Arguments); msg != "" {
 					if e.renderer != nil {
@@ -570,17 +583,46 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 			if e.toolEventHandler != nil {
 				e.toolEventHandler("tool_call", tc.Function.Name, tc.Function.Arguments)
 			}
+		}
 
-			t := e.registry.Get(tc.Function.Name)
-			output := fmt.Sprintf("error: tool %q not found", tc.Function.Name)
-			if t != nil {
-				res, err := t.Call(tc.Function.Arguments)
-				if err != nil {
-					output = fmt.Sprintf("error: %s", err.Error())
-				} else {
-					output = redact.RedactSecrets(res)
+		// Phase 2: execute tools in parallel (bounded by semaphore)
+		type execResult struct {
+			output string
+		}
+		parallel := e.MaxToolParallel
+		if parallel <= 0 {
+			parallel = 4
+		}
+		sem := make(chan struct{}, parallel)
+		results := make([]execResult, len(result.ToolCalls))
+
+		for i, tc := range result.ToolCalls {
+			sem <- struct{}{} // acquire — blocks if at cap
+			go func(idx int, tcRef llm.ToolCall) {
+				defer func() { <-sem }() // release
+
+				t := e.registry.Get(tcRef.Function.Name)
+				output := fmt.Sprintf("error: tool %q not found", tcRef.Function.Name)
+				if t != nil {
+					res, err := t.Call(tcRef.Function.Arguments)
+					if err != nil {
+						output = fmt.Sprintf("error: %s", err.Error())
+					} else {
+						output = redact.RedactSecrets(res)
+					}
 				}
-			}
+				results[idx] = execResult{output: output}
+			}(i, tc)
+		}
+		// Drain the semaphore — wait for all goroutines to finish.
+		for i := 0; i < cap(sem); i++ {
+			sem <- struct{}{}
+		}
+
+		// Phase 3: process results in order (render, compress, append to messages)
+		const maxOutput = 4096
+		for i, tc := range result.ToolCalls {
+			output := results[i].output
 
 			// Tool results: only shown in verbose mode.
 			if e.narrator == nil && e.renderer != nil {
@@ -591,19 +633,18 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 			}
 
 			// Compress large tool outputs to save context window.
-		// Keep the first and last portions — head usually contains
-		// the most important info, tail may have final results.
-		const maxOutput = 4096
-		if len(output) > maxOutput {
-			head := maxOutput * 3 / 4 // 3KB head
-			tail := maxOutput / 4     // 1KB tail
-			output = output[:head] +
-				fmt.Sprintf("\n\n... [%d bytes omitted — output was %d bytes total] ...\n\n",
-					len(output)-head-tail, len(output)) +
-				output[len(output)-tail:]
-		}
+			// Keep the first and last portions — head usually contains
+			// the most important info, tail may have final results.
+			if len(output) > maxOutput {
+				head := maxOutput * 3 / 4 // 3KB head
+				tail := maxOutput / 4     // 1KB tail
+				output = output[:head] +
+					fmt.Sprintf("\n\n... [%d bytes omitted — output was %d bytes total] ...\n\n",
+						len(output)-head-tail, len(output)) +
+					output[len(output)-tail:]
+			}
 
-		// Wrap tool output in unbreakable delimiters so the model
+			// Wrap tool output in unbreakable delimiters so the model
 			// treats it as DATA, never as instructions. The header and
 			// footer both explicitly frame the content as untrusted data.
 			// Even if the output contains "ignore previous instructions",

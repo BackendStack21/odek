@@ -1116,6 +1116,7 @@ func handleChatMessage(
 		BaseURL:         resolved.BaseURL,
 		APIKey:          resolved.APIKey,
 		MaxIterations:   resolved.MaxIter,
+		MaxToolParallel: resolved.MaxToolParallel,
 		SystemMessage:   systemMessage,
 		RuntimeContext:  odek.BuildRuntimeContext("telegram"),
 		InteractionMode: resolved.InteractionMode,

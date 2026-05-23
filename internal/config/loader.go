@@ -145,6 +145,11 @@ type FileConfig struct {
 	// Default: 3.
 	MaxConcurrency int `json:"max_concurrency,omitempty"`
 
+	// MaxToolParallel limits how many tool calls run concurrently per
+	// agent iteration. Config: max_tool_parallel.
+	// Default: 0 (loop uses default of 4).
+	MaxToolParallel int `json:"max_tool_parallel,omitempty"`
+
 	// Telegram configures the Telegram bot integration.
 	Telegram *telegram.TelegramConfig `json:"telegram,omitempty"`
 
@@ -239,6 +244,11 @@ type ResolvedConfig struct {
 	// Config: max_concurrency, ODEK_MAX_CONCURRENCY.
 	// Default: 3.
 	MaxConcurrency int
+
+	// MaxToolParallel limits how many tool calls run concurrently per
+	// agent iteration. Config: max_tool_parallel.
+	// Default: 0 (loop uses default of 4).
+	MaxToolParallel int
 
 	// Telegram is the resolved Telegram bot configuration.
 	Telegram telegram.TelegramConfig
@@ -565,6 +575,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	} else {
 		resolved.MaxConcurrency = 3
 	}
+
+	// MaxToolParallel: 0 = use loop engine default (4)
+	resolved.MaxToolParallel = cfg.MaxToolParallel
 
 	// Booleans: default to false if not set
 	if cfg.Sandbox != nil {

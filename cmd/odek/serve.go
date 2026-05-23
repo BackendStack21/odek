@@ -245,6 +245,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 		BaseURL:         resolved.BaseURL,
 		APIKey:          resolved.APIKey,
 		MaxIterations:   resolved.MaxIter,
+		MaxToolParallel: resolved.MaxToolParallel,
 		SystemMessage:   system,
 		NoProjectFile:   resolved.NoAgents,
 		Thinking:        resolved.Thinking,

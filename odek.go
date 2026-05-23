@@ -151,6 +151,12 @@ type Config struct {
 	// on cached tokens and ~60-80% TTFT latency reduction.
 	PromptCaching bool
 
+	// MaxToolParallel controls how many tool calls run concurrently per
+	// agent iteration. 0 = use default (4). Models that emit multiple
+	// parallel tool calls benefit from concurrent execution of I/O-bound
+	// tools like read_file, search_files, and web_search.
+	MaxToolParallel int
+
 	// SkillEventHandler, if set, is invoked when a skill lifecycle event
 	// occurs (loaded, autoloaded, saved, deleted, etc.). Used by WebUI
 	// (WebSocket streaming) and Telegram (inline messages).
@@ -475,6 +481,9 @@ func New(cfg Config) (*Agent, error) {
 
 	engine := loop.New(client, registry, cfg.MaxIterations, cfg.SystemMessage, cfg.Renderer, maxContext)
 	engine.PromptCaching = cfg.PromptCaching
+	if cfg.MaxToolParallel > 0 {
+		engine.SetMaxToolParallel(cfg.MaxToolParallel)
+	}
 
 	// Set skill verbosity: condensed by default, full banners when verbose.
 	if cfg.Skills != nil {
