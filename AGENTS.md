@@ -60,6 +60,8 @@ docs/                         Documentation (CLI, API, CONFIG, MCP, MEMORY, etc.
 - **Config structs:** JSON tags for serialization. `*bool` for optional tristate fields (nil = not set).
 - **Security:** Symlinked AGENTS.md is refused. Shell commands are classified into 8 risk classes. Sandbox mode uses Docker with no network and read-only mounts.
 - **Model profiles:** Added in `odek.go`'s `KnownProfiles` var. Longest-prefix matching.
+- **Parallel tool execution:** When the LLM returns multiple `tool_calls` in one response, they execute concurrently via goroutines with a channel semaphore (default cap: 4). Results are collected in original call order.
+- **Batch approval gate:** When an approver is set and > 1 tool calls per iteration, a single batch approval prompt fires before Phase 2. If approved, `SetTrustAll(true)` is called on the approver to bypass individual tool-level prompts.
 
 ## How to Update/Maintain This Project
 
@@ -156,3 +158,6 @@ Edit `odek.go`, add to `KnownProfiles`:
 - Session files are JSON in `~/.odek/sessions/` — corrupt data is handled gracefully with fallback scan.
 - The Telegram bot uses long-polling (no webhooks), built on stdlib `net/http`.
 - `delegate_tasks` sub-agents have a 120s default timeout. Override via `subagent.timeout_seconds` config.
+- **Parallel tool tests** use `timedTool` with configurable delays — always run with `-race` to catch data races on the results slice.
+- **Batch approval gate** (`Phase 1.5`) checks `e.approver != nil && len(result.ToolCalls) > 1` — single-tool responses skip the gate. When adding a new approver implementation, implement `SetTrustAll(bool)` to benefit from batch trust cascade.
+- **SetTrustAll** is bounded by `defer` — it's enabled before Phase 2 and disabled when `runLoop` returns. The mockApprover's `trustAll` field will be `false` after `Run()` returns because the deferred `SetTrustAll(false)` runs first.

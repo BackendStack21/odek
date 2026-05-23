@@ -1,6 +1,55 @@
 # Changelog
 
-## v0.34.0 (2026-05-23) — secrets.env Auto-Load + File Attachments
+## v0.36.1 (2026-05-23) — Phase 1.5: Batch Approval Gate
+
+### Parallel Approval Fix
+- When the LLM returns **multiple tool calls** in one iteration and an **approver is set**, the engine now shows a **single batch approval prompt** instead of N concurrent inline keyboards
+- If denied, all tools are rejected with `"error: batch approval denied"` without executing anything
+- If approved, `SetTrustAll(true)` is called on the approver so individual tool-level `PromptCommand` calls auto-pass during that iteration
+- Single tool calls (≤1 per iteration) skip the batch gate entirely — no behavior change
+
+### New Method: `SetTrustAll(bool)`
+Added to all three approver implementations:
+- **`TTYApprover`** — skips `/dev/tty` prompt when enabled
+- **`TelegramApprover`** — skips inline keyboard prompt when enabled
+- **`wsApprover`** — skips WebSocket approval when enabled
+
+### API: `Config.Approver`
+- New `Approver danger.Approver` field on `odek.Config`
+- Wired through `odek.New()` → `loop.Engine.SetApprover()`
+- Telegram handler passes per-chat `TelegramApprover` to the agent config
+
+### Test Coverage
+- 3 batch approval tests: denied, approved, single-tool skip
+- All tests pass with `-race`
+
+---
+
+## v0.36.0 (2026-05-23) — Parallel Tool Execution
+
+### Parallel Execution
+- When the LLM returns multiple tool calls in one response, tools now execute **concurrently** in goroutines (was: sequential)
+- **Bounded semaphore** — at most `max_tool_parallel` goroutines run simultaneously (default: 4)
+- I/O-bound tools (read_file, search_files, shell, web_search) benefit most — latency drops from `sum(latencies)` to `max(latency)`
+- Configurable via `max_tool_parallel` in config or `ODEK_MAX_TOOL_PARALLEL` env var
+
+### Three-Phase Implementation
+1. **Phase 1 (sync)** — fire all `tool_call` events + narrator/rendering so the user sees progress immediately
+2. **Phase 2 (parallel)** — N goroutines execute tools concurrently via channel semaphore
+3. **Phase 3 (sync)** — drain semaphore, compress large outputs, append results in **original call order**
+
+### Config
+- `MaxToolParallel int` on `loop.Engine` and `odek.Config` (0 = default 4)
+- `max_tool_parallel` in FileConfig (`internal/config/loader.go`)
+- Wired through CLI, Telegram, and serve entry points
+
+### Test Coverage
+- 6 parallelism tests: latency (4×100ms → ~100ms vs 400ms), ordering, semaphore cap (6 tools, cap=2), default cap, error resilience, single tool
+- All tests pass with `-race`
+
+---
+
+## v0.35.1 (2026-05-23) — secrets.env Auto-Load + File Attachments
 
 ### Secrets Management
 - **`~/.odek/secrets.env` auto-loaded** as Layer 0 in the config priority chain — parsed before any config file or env var lookup

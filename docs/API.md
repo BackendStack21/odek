@@ -156,6 +156,24 @@ type Config struct {
     // Memory system configuration (facts, buffer, episodes).
     // Default: memory.DefaultMemoryConfig()
     MemoryConfig memory.MemoryConfig
+
+    // PromptCaching enables prompt caching markers for supported
+    // providers (Anthropic, DeepSeek, OpenAI). When enabled, the
+    // system prompt and first user message are annotated for cache.
+    // Default: false (no cache markers)
+    PromptCaching bool
+
+    // MaxToolParallel controls tool call concurrency per iteration.
+    // When the LLM emits multiple tool calls in one response, they
+    // execute concurrently — this caps the max simultaneous goroutines.
+    // 0 = use default (4). I/O-bound tools benefit most.
+    MaxToolParallel int
+
+    // Approver gates dangerous tool operations. When set and the LLM
+    // returns multiple tool calls in one iteration, a single batch
+    // approval prompt is shown instead of N individual prompts.
+    // If denied, no tools run for that iteration.
+    Approver danger.Approver
 }
 ```
 

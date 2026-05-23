@@ -38,6 +38,7 @@ Shared across all projects:
   "interaction_mode": "engaging",
   "no_color": false,
   "no_agents": false,
+  "max_tool_parallel": 4,
   "system": ""
 }
 ```
@@ -107,10 +108,23 @@ Every config knob has a `ODEK_*` counterpart:
 | `ODEK_SANDBOX_MEMORY` | `--sandbox-memory` | string |
 | `ODEK_SANDBOX_CPUS` | `--sandbox-cpus` | string |
 | `ODEK_SANDBOX_USER` | `--sandbox-user` | string |
+| `ODEK_MAX_TOOL_PARALLEL` | `max_tool_parallel` | int |
 
 ## API key fallback order
 
 `ODEK_API_KEY` → `DEEPSEEK_API_KEY` → `OPENAI_API_KEY`
+
+## Parallel tool execution
+
+When a model emits multiple tool calls in one response (`tool_calls` array with N entries), odek executes them **concurrently** in goroutines bounded by a semaphore.
+
+| Field | Default | Env var | Description |
+|-------|---------|---------|-------------|
+| `max_tool_parallel` | `4` | `ODEK_MAX_TOOL_PARALLEL` | Max concurrent tool calls per iteration. 0 = default 4. Set to 1 for sequential execution. |
+
+I/O-bound tools (read_file, search_files, shell) benefit most — latency drops from `sum(latencies)` to `max(latency)`.
+
+**Approval gate:** When an approver is configured and the LLM returns multiple tool calls, a single batch approval prompt is shown before any tool executes. If approved, all tools run in parallel. If denied, no tools run.
 
 ## Skills configuration
 
