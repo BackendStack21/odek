@@ -1156,15 +1156,19 @@ func handleChatMessage(
 				}
 
 			case "tool_result":
-				if msgIDVal, ok := toolMsgIDs.Load(name); ok {
-					msgID := msgIDVal.(int)
-					sizeLabel := fmt.Sprintf("%dB", len(data))
-					if len(data) > 1024 {
-						sizeLabel = fmt.Sprintf("%dKB", len(data)/1024)
-					}
-					bot.EditMessageText(chatID, msgID,
-						fmt.Sprintf("%s `%s` ✅ (%s)", render.ToolEmoji(name), name, sizeLabel), nil)
+				// Send a new message for the result so the full timeline
+				// is preserved in chat history.
+				sizeLabel := fmt.Sprintf("%dB", len(data))
+				if len(data) > 1024 {
+					sizeLabel = fmt.Sprintf("%dKB", len(data)/1024)
 				}
+				bot.SendMessage(chatID,
+					fmt.Sprintf("%s `%s` ✅ (%s)", render.ToolEmoji(name), name, sizeLabel), nil)
+				// Clean up the initial tool_call message — it's stale now.
+				if msgIDVal, ok := toolMsgIDs.Load(name); ok {
+					bot.DeleteMessage(chatID, msgIDVal.(int))
+				}
+				toolMsgIDs.Delete(name)
 			}
 		},
 		IterationCallback: func(info loop.IterationInfo) {
