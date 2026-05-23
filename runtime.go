@@ -31,8 +31,9 @@ func BuildRuntimeContext(platform string) string {
 		ctx += "\n\nYou are on a text messaging communication platform, Telegram. " +
 			"Standard markdown is supported: **bold**, *italic*, ~~strikethrough~~, " +
 			"||spoiler||, `inline code`, ```code blocks```, [links](url), and ## headers. " +
-			"Use send_message for Telegram-specific features like inline keyboard buttons " +
-			"(via buttons parameter with cb: prefix)."
+			"Use the send_message tool to send intermediate messages, files (photo/document/voice), " +
+			"or interactive inline keyboard buttons (buttons parameter with cb: prefix). " +
+			"For final answers, just return the text directly — no need to use send_message."
 
 	case "web":
 		ctx += "\n\nYou are running in a web UI. " +

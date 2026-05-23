@@ -1072,6 +1072,31 @@ func handleChatMessage(
 		}
 	}))
 
+	// ── Send Message Tool ──────────────────────────────────────────
+	// Wire the send_message tool so the agent can send intermediate
+	// messages, files, and interactive keyboards mid-task — not just
+	// at the final answer.
+	agentTools = append(agentTools, toolpkg.NewSendMessageTool(
+		func(text string, file string, buttons [][]map[string]string) error {
+			if file != "" {
+				// Detect media type from extension.
+				mediaType := mediaTypeFromExt(file)
+				return sendTelegramMedia(bot, chatID, mediaType, file, text, buttons)
+			}
+			if len(buttons) > 0 {
+				markup := buttonsToMarkup(buttons)
+				_, err := bot.SendMessage(chatID, text, &telegram.SendOpts{
+					ParseMode:   telegram.ParseModeMarkdownV2,
+					ReplyMarkup: markup,
+				})
+				return err
+			}
+			_, err := bot.SendMessage(chatID, text, &telegram.SendOpts{
+				ParseMode: telegram.ParseModeMarkdownV2,
+			})
+			return err
+		}))
+
 	// Resolve skills config (same logic as main.go run command).
 	var skillsCfg *skills.SkillsConfig
 	if resolved.Skills.Learn {
@@ -1566,4 +1591,61 @@ func acquireLock() (*instanceLock, error) {
 // release removes the PID file on clean shutdown.
 func (l *instanceLock) release() {
 	os.Remove(l.pidFile)
+}
+
+// ── send_message helpers ──────────────────────────────────────────────
+
+// mediaTypeFromExt returns the Telegram media type for a file extension.
+func mediaTypeFromExt(path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".png", ".jpg", ".jpeg", ".webp", ".gif":
+		return "photo"
+	case ".ogg", ".mp3", ".wav", ".opus":
+		return "voice"
+	default:
+		return "document"
+	}
+}
+
+// sendTelegramMedia sends a file as a Telegram media message with caption
+// and optional inline keyboard. Detects the media type from file extension.
+func sendTelegramMedia(bot *telegram.Bot, chatID int64, mediaType, path, caption string, buttons [][]map[string]string) error {
+	var replyMarkup *telegram.InlineKeyboardMarkup
+	if len(buttons) > 0 {
+		replyMarkup = buttonsToMarkup(buttons)
+	}
+	opts := &telegram.SendOpts{
+		ParseMode:   telegram.ParseModeMarkdownV2,
+		ReplyMarkup: replyMarkup,
+	}
+	switch mediaType {
+	case "photo":
+		_, err := bot.SendPhoto(chatID, path, caption, opts)
+		return err
+	case "voice":
+		_, err := bot.SendVoice(chatID, path, caption, opts)
+		return err
+	default:
+		_, err := bot.SendDocument(chatID, path, caption, opts)
+		return err
+	}
+}
+
+// buttonsToMarkup converts the tool's button format to Telegram's
+// InlineKeyboardMarkup type.
+func buttonsToMarkup(buttons [][]map[string]string) *telegram.InlineKeyboardMarkup {
+	markup := &telegram.InlineKeyboardMarkup{
+		InlineKeyboard: make([][]telegram.InlineKeyboardButton, len(buttons)),
+	}
+	for i, row := range buttons {
+		markup.InlineKeyboard[i] = make([]telegram.InlineKeyboardButton, len(row))
+		for j, btn := range row {
+			markup.InlineKeyboard[i][j] = telegram.InlineKeyboardButton{
+				Text:         btn["text"],
+				CallbackData: btn["callback_data"],
+			}
+		}
+	}
+	return markup
 }
