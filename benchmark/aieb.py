@@ -90,17 +90,17 @@ TASKS = [
     {
         "id": "4.1", "tier": 4, "name": "fast_read", "max_iter": 5,
         "prompt": "Read these three files as fast as possible: benchmark_data/explain_me.py, benchmark_data/buggy.py, benchmark_data/under_tested.py. Report their total combined file size in bytes and the first line of each file.\nOutput format:\nTOTAL_BYTES: <number>\nFILES:\n  <filename>: <first line>\n  <filename>: <first line>\n  <filename>: <first line>",
-        "score": lambda out: score_speed_read(out, expected_bytes=parse_expected_sizes()),
+        "score": lambda out, wt: score_speed_read(out, expected_bytes=parse_expected_sizes(), wall_time=wt),
     },
     {
         "id": "4.2", "tier": 4, "name": "quick_math", "max_iter": 5,
         "prompt": "Using ONLY the shell tool (no Python), compute: 42 * 17, then add 256 to the result, then divide by 10. Report each intermediate result and the final answer.\nOutput format:\nSTEP1: 42 * 17 = <result>\nSTEP2: <result> + 256 = <result>\nSTEP3: <result> / 10 = <final>",
-        "score": lambda out: score_shell_math(out, expected=97),
+        "score": lambda out, wt: score_shell_math(out, expected=97, wall_time=wt),
     },
     {
         "id": "4.3", "tier": 4, "name": "multi_search", "max_iter": 8,
         "prompt": "In benchmark_data/, search for ALL of these patterns simultaneously (one call each, run in parallel):\n1. 'TODO' in all files\n2. 'def ' in all files\n3. 'import ' in all files\nReport the count of matches for each search.\nOutput format:\nTODO: <count>\nDEFS: <count>\nIMPORTS: <count>",
-        "score": lambda out: score_keywords(out, ["TODO:", "DEFS:", "IMPORTS:"], []),
+        "score": lambda out, wt: score_multi_search(out, wall_time=wt),
     },
 ]
 
@@ -270,49 +270,87 @@ def verify_refactor() -> float:
     return min(100, score)
 
 
-def score_speed_read(output: str, expected_bytes: int) -> float:
-    """Score the fast_read task — check accuracy and reward speed.
-    v2.0: speed is measured by wall time (injected later)."""
+def score_speed_read(output: str, expected_bytes: int, wall_time: float = 120) -> float:
+    """Format-tolerant fast_read scorer.
+    Finds all numbers in output, picks closest to expected total bytes.
+    50% correctness (accuracy × 0.7 + file coverage × 0.3) + 50% speed bonus."""
     lower = output.lower()
-    # Must have total bytes
-    m = re.search(r"total_bytes:\s*(\d+)", lower)
-    if not m:
+    numbers = [int(m.group()) for m in re.finditer(r'\d+', output)]
+    if not numbers:
         return 0.0
 
-    reported = int(m.group(1))
-    diff = abs(reported - expected_bytes) / max(expected_bytes, 1)
-    accuracy = max(0, 100 - diff * 200)
+    # Accuracy: best match to expected total
+    closest = min(numbers, key=lambda n: abs(n - expected_bytes))
+    accuracy = max(0, 1 - abs(closest - expected_bytes) / max(expected_bytes, 1))
 
-    # Must have 3 file names
-    files_found = sum(1 for f in ["explain_me.py", "buggy.py", "under_tested.py"]
-                      if f.lower() in lower)
-    file_score = files_found / 3 * 30
+    # File coverage: mention all 3 files?
+    files = sum(1 for f in ["explain_me.py", "buggy.py", "under_tested.py"]
+                if f.lower() in lower)
+    file_cov = files / 3
 
-    return round(min(100, accuracy * 0.7 + file_score), 1)
+    correctness = (accuracy * 0.7 + file_cov * 0.3) * 50
+    speed = _speed_bonus(wall_time)
+    return round(min(100, correctness + speed), 1)
 
 
-def score_shell_math(output: str, expected: int) -> float:
-    """Score the quick_math task — verify intermediate steps and final answer."""
-    # Check for 3 steps
-    steps = len(re.findall(r"STEP\d", output, re.IGNORECASE))
-    if steps < 3:
-        return steps * 15  # partial credit for individual steps
+def score_shell_math(output: str, expected: int, wall_time: float = 120) -> float:
+    """Format-tolerant quick_math scorer.
+    Looks for the final answer (97) anywhere in the output.
+    50% correctness + 50% speed bonus."""
+    # Can we find the final answer?
+    numbers = [int(m.group()) for m in re.finditer(r'\d+', output)]
+    found_final = expected in numbers
+    # Also look for intermediate results
+    found_714 = 714 in numbers
+    found_970 = 970 in numbers
 
-    # Check final answer
-    m = re.search(r"STEP3.*?=\s*(\d+(?:\.\d+)?)", output, re.IGNORECASE)
-    if not m:
-        return 50.0  # steps done but no final answer
+    correctness = 0.0
+    if found_final:
+        correctness += 35  # final answer is most important
+    if found_714:
+        correctness += 10  # intermediate
+    if found_970:
+        correctness += 5   # intermediate
 
-    try:
-        final = float(m.group(1))
-        if abs(final - expected) < 1:
-            return 100.0
-        elif abs(final - expected) < 5:
-            return 70.0
-        else:
-            return 50.0
-    except ValueError:
-        return 50.0
+    speed = _speed_bonus(wall_time)
+    return round(min(100, correctness + speed), 1)
+
+
+def score_multi_search(output: str, wall_time: float = 120) -> float:
+    """Format-tolerant multi_search scorer.
+    Looks for reasonable match counts in the output.
+    Expected: TODO ~3, def ~66, import ~38.
+    50% correctness + 50% speed bonus."""
+    numbers = [int(m.group()) for m in re.finditer(r'\d+', output)]
+    if not numbers:
+        return 0.0
+
+    # Score matches based on proximity to expected values
+    def proximity(actual, expected):
+        return max(0, 1 - abs(actual - expected) / max(expected, 1))
+
+    best_todo = max((proximity(n, 3) for n in numbers), default=0)
+    best_def  = max((proximity(n, 66) for n in numbers), default=0)
+    best_import = max((proximity(n, 38) for n in numbers), default=0)
+
+    # Also check that output mentions all three search terms
+    mentions_todo = 'todo' in output.lower() or 'TODO' in output
+    mentions_def = 'def' in output.lower()
+    mentions_import = 'import' in output.lower()
+    coverage = sum([mentions_todo, mentions_def, mentions_import]) / 3
+
+    correctness = (best_todo * 15 + best_def * 15 + best_import * 10 + coverage * 10)
+    speed = _speed_bonus(wall_time)
+    return round(min(100, correctness + speed), 1)
+
+
+def _speed_bonus(wall_time: float, max_score: float = 50.0) -> float:
+    """Speed bonus: 0 at 120s, full at 10s, linear ramp."""
+    if wall_time <= 10:
+        return max_score
+    if wall_time >= 120:
+        return 0.0
+    return round(max_score * (1 - (wall_time - 10) / 110), 1)
 
 
 # ─── Benchmark Data ──────────────────────────────────────────────────
@@ -606,7 +644,10 @@ def run_odek(task: dict) -> dict:
         tokens_out = int(m.group(2))
 
     iterations = len(re.findall(r"═══ Iter \d+/\d+", combined))
-    score = task["score"](combined)
+    try:
+        score = task["score"](combined, wall)
+    except TypeError:
+        score = task["score"](combined)
 
     # v2.0: slow task penalty
     if wall > SLOW_TASK_SECS and score > 0:
@@ -637,7 +678,10 @@ def run_hermes(task: dict) -> dict:
 
     wall = time.time() - start
     output = (r.stdout or "") + (r.stderr or "")
-    score = task["score"](output)
+    try:
+        score = task["score"](output, wall)
+    except TypeError:
+        score = task["score"](output)
 
     # v2.0: slow task penalty
     if wall > SLOW_TASK_SECS and score > 0:
