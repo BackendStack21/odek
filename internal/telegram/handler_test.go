@@ -1769,3 +1769,32 @@ func TestHandleUpdate_CallbackQueryNotAllowed(t *testing.T) {
 		t.Error("OnCallbackQuery was not called for user 999 (callback queries may not check isAllowed)")
 	}
 }
+
+// ── Test approvalToast ─────────────────────────────────────────────────
+
+func TestApprovalToast_Approve(t *testing.T) {
+	if got := approvalToast(cbPrefixApprove + "abc123"); got != "✅ Approved" {
+		t.Errorf("expected '✅ Approved', got: %q", got)
+	}
+}
+
+func TestApprovalToast_Deny(t *testing.T) {
+	if got := approvalToast(cbPrefixDeny + "abc123"); got != "❌ Denied" {
+		t.Errorf("expected '❌ Denied', got: %q", got)
+	}
+}
+
+func TestApprovalToast_Trust(t *testing.T) {
+	if got := approvalToast(cbPrefixTrust + "abc123"); got != "🔒 Trusted for this session" {
+		t.Errorf("expected trust message, got: %q", got)
+	}
+}
+
+func TestApprovalToast_Unknown(t *testing.T) {
+	if got := approvalToast("clarify:yes"); got != "" {
+		t.Errorf("expected empty for unknown prefix, got: %q", got)
+	}
+	if got := approvalToast(""); got != "" {
+		t.Errorf("expected empty for empty data, got: %q", got)
+	}
+}

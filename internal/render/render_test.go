@@ -709,3 +709,45 @@ func TestRenderer_SkillEvents_NoColor(t *testing.T) {
 		t.Errorf("missing skill name in no-color: %q", out)
 	}
 }
+
+func TestRenderer_NarratorMessage(t *testing.T) {
+	var buf bytes.Buffer
+	r := New(&buf, false)
+
+	r.NarratorMessage("📖 Reading `main.go`...")
+	out := buf.String()
+	if !strings.Contains(out, "📖 Reading `main.go`...") {
+		t.Errorf("expected narrator message, got: %q", out)
+	}
+}
+
+func TestRenderer_NarratorMessage_Empty(t *testing.T) {
+	var buf bytes.Buffer
+	r := New(&buf, false)
+
+	r.NarratorMessage("")
+	out := buf.String()
+	if out != "" {
+		t.Errorf("expected empty output for empty message, got: %q", out)
+	}
+}
+
+func TestRenderer_NarratorMessage_NilRenderer(t *testing.T) {
+	var r *Renderer
+	// Should not panic.
+	r.NarratorMessage("test")
+}
+
+func TestRenderer_NarratorMessage_NoColor(t *testing.T) {
+	var buf bytes.Buffer
+	r := New(&buf, false) // color = false = noColor
+
+	r.NarratorMessage("📖 Reading")
+	out := buf.String()
+	if strings.Contains(out, "\033[") {
+		t.Errorf("NoColor should strip ANSI codes, got: %q", out)
+	}
+	if !strings.Contains(out, "📖 Reading") {
+		t.Errorf("missing message in no-color output: %q", out)
+	}
+}

@@ -42,3 +42,93 @@ func TestNarrator_AllFallbackTools(t *testing.T) {
 		}
 	}
 }
+
+func TestNarrator_ThinkingMessage_WithContent(t *testing.T) {
+	n := New(true)
+	msg := n.ThinkingMessage("I should read the config first")
+	if msg != "🤔 Thinking..." {
+		t.Errorf("expected thinking message, got: %q", msg)
+	}
+}
+
+func TestNarrator_ThinkingMessage_EmptyContent(t *testing.T) {
+	n := New(true)
+	if msg := n.ThinkingMessage(""); msg != "" {
+		t.Errorf("expected empty for empty thought, got: %q", msg)
+	}
+}
+
+func TestNarrator_Truncate_UnderLimit(t *testing.T) {
+	if s := truncate("hello", 10); s != "hello" {
+		t.Errorf("expected no truncation, got: %q", s)
+	}
+}
+
+func TestNarrator_Truncate_OverLimit(t *testing.T) {
+	if s := truncate("hello world this is long", 10); s != "hello worl..." {
+		t.Errorf("expected truncated, got: %q", s)
+	}
+}
+
+func TestNarrator_Truncate_AtLimit(t *testing.T) {
+	if s := truncate("hello", 5); s != "hello" {
+		t.Errorf("expected no truncation at exact length, got: %q", s)
+	}
+}
+
+func TestNarrator_ExtractShell_Found(t *testing.T) {
+	if s := extractShell(`{"command": "go test ./..."}`); s != "go test ./..." {
+		t.Errorf("expected command, got: %q", s)
+	}
+}
+
+func TestNarrator_ExtractShell_NotFound(t *testing.T) {
+	if s := extractShell(`{"path": "main.go"}`); s != "command" {
+		t.Errorf("expected fallback 'command', got: %q", s)
+	}
+}
+
+func TestNarrator_ExtractShell_Malformed(t *testing.T) {
+	if s := extractShell(`{"command": }`); s != "command" {
+		t.Errorf("expected fallback for malformed args, got: %q", s)
+	}
+}
+
+func TestNarrator_ExtractPath_Found(t *testing.T) {
+	if s := extractPath(`{"path": "/root/projects/main.go"}`); s != "main.go" {
+		t.Errorf("expected basename, got: %q", s)
+	}
+}
+
+func TestNarrator_ExtractPath_FileKey(t *testing.T) {
+	if s := extractPath(`{"file": "config.json"}`); s != "config.json" {
+		t.Errorf("expected filename, got: %q", s)
+	}
+}
+
+func TestNarrator_ExtractPath_NotFound(t *testing.T) {
+	if s := extractPath(`{"command": "echo"}`); s != "file" {
+		t.Errorf("expected fallback 'file', got: %q", s)
+	}
+}
+
+func TestNarrator_ToolEmoji_AllKnown(t *testing.T) {
+	tests := map[string]string{
+		"read_file":       "📖",
+		"write_file":      "✏️",
+		"patch":           "✏️",
+		"shell":           "⚙️",
+		"search_files":    "🔍",
+		"delegate_task":   "👥",
+		"delegate_tasks":  "👥",
+		"browser":         "🌐",
+		"memory":          "🧠",
+		"clarify":         "❓",
+		"unknown_tool":    "🔧",
+	}
+	for name, want := range tests {
+		if got := toolEmoji(name); got != want {
+			t.Errorf("toolEmoji(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
