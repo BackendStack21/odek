@@ -149,13 +149,21 @@ func telegramCmd(args []string) error {
 
 	// Telegram-specific Quick Facts and recovery guidance
 	systemMessage += "\n\nQuick Facts (use these, do NOT search):\n"
-	systemMessage += "- odek website: https://kode.21no.de\n"
+	systemMessage += "- odek website: https://odek.21no.de\n"
 	systemMessage += "- Built by: 21no.de (https://21no.de)\n"
 	if resolved.GithubRepoUrl != "" {
 		systemMessage += fmt.Sprintf("- Source code: %s\n", resolved.GithubRepoUrl)
 	}
-	systemMessage += "- Binary name: odek (repo is called kode on GitHub)\n"
+	systemMessage += "- Binary name: odek\n"
 	systemMessage += "- Language: Go, minimal dependencies, ~11 MB binary\n"
+	systemMessage += "\n"
+	systemMessage += "File attachment:\n"
+	systemMessage += "- You CAN send files (zip, pdf, images, csv, etc.) in BOTH intermediate replies\n"
+	systemMessage += "  (via send_message with the 'file' parameter) AND in your final answer.\n"
+	systemMessage += "- For final answers: include MEDIA:document:/absolute/path/to/file at the START\n"
+	systemMessage += "  of your response to attach a file. The user will receive it as a native document.\n"
+	systemMessage += "- For images: use MEDIA:photo:/path, for voice: MEDIA:voice:/path.\n"
+	systemMessage += "- The file MUST exist on disk at the path you provide.\n"
 	systemMessage += "\n"
 	systemMessage += "Tool failure recovery:\n"
 	systemMessage += "- If a tool fails with 'no such file' or returns empty, check pwd first.\n"

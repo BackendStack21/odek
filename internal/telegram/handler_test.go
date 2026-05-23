@@ -1086,21 +1086,18 @@ func TestSendResponse_MediaUnknownType(t *testing.T) {
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
 
-	errCalled := false
-	h.OnError = func(_ int64, err error) {
-		errCalled = true
-	}
-
 	h.SendResponse(123, "MEDIA:video:"+tmpPath, 0)
 
 	reqs := rec.all()
+	found := false
 	for _, req := range reqs {
-		if strings.HasSuffix(req.Path, "/sendPhoto") || strings.HasSuffix(req.Path, "/sendVoice") || strings.HasSuffix(req.Path, "/sendDocument") {
-			t.Errorf("unexpected send request for unknown media type: %s", req.Path)
+		if strings.HasSuffix(req.Path, "/sendDocument") {
+			found = true
+			break
 		}
 	}
-	if !errCalled {
-		t.Error("OnError was not called for unknown media type")
+	if !found {
+		t.Error("expected sendDocument for unknown media type, got none")
 	}
 }
 

@@ -446,11 +446,12 @@ func (h *Handler) sendMedia(chatID int64, text string, replyToMessageID int) {
 		}
 		_, err = h.Bot.SendDocument(chatID, filePath, "", opts)
 	default:
-		h.log.Error("unknown media type", "chat_id", chatID, "media_type", mediaType)
-		if h.OnError != nil {
-			h.OnError(chatID, fmt.Errorf("telegram: unknown media type: %s", mediaType))
+		// Unknown media type — send as a document (zip, csv, pdf, etc.)
+		var opts *SendOpts
+		if replyToMessageID != 0 {
+			opts = &SendOpts{ReplyToMessageID: replyToMessageID}
 		}
-		return
+		_, err = h.Bot.SendDocument(chatID, filePath, "", opts)
 	}
 
 	if err != nil {
