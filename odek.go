@@ -114,7 +114,7 @@ type Config struct {
 	// after each tool invocation. Used by the WebUI for live streaming.
 	ToolEventHandler func(event string, name string, data string)
 
-	// InteractionMode controls tool-call rendering: "engaging" (default) or "verbose".
+	// InteractionMode controls tool-call rendering: "engaging" (default), "enhance", or "verbose".
 	InteractionMode string
 
 	// IterationCallback, if set, is invoked after each iteration of the
@@ -566,9 +566,9 @@ func New(cfg Config) (*Agent, error) {
 		engine.SetIterationCallback(cfg.IterationCallback)
 	}
 
-	// Wire narrator for engaging interaction mode (default).
+	// Wire narrator for engaging/enhance interaction modes.
 	// In verbose mode, narrator stays nil → existing renderer behavior.
-	if cfg.InteractionMode == "" || cfg.InteractionMode == "engaging" {
+	if cfg.InteractionMode == "" || cfg.InteractionMode == "engaging" || cfg.InteractionMode == "enhance" {
 		engine.SetNarrator(narrate.New(true))
 	}
 

@@ -1009,18 +1009,23 @@ func handleChatMessage(
 		}
 	}()
 	
-	// ── Engaging Mode: Immediate Progress ──────────────────────────
+	// ── Progress Mode Setup ───────────────────────────────────────
 	// Send an instant "working on it" message so the user sees feedback
-	// within milliseconds, not seconds. This message gets updated with
-	// narrator-style progress on each tool call, then deleted when the
-	// final answer arrives.
+	// within milliseconds, not seconds.
+	//
+	//   engaging: updated with narrated tool descriptions (edits), then
+	//             deleted when the final answer arrives.
+	//   enhance:  kept as a per-iteration header; narrated tool messages
+	//             are appended below it as new messages (no edits).
+	//   verbose:  no progress message — uses raw tool traces instead.
 	var narrator *narrate.Narrator
-	isEngaging := resolved.InteractionMode != "verbose"
-	if isEngaging {
+	isEngaging := resolved.InteractionMode == "engaging"
+	isEnhance := resolved.InteractionMode == "enhance"
+	if isEngaging || isEnhance {
 		narrator = narrate.New(true)
 	}
 	var progressMsgID int
-	if isEngaging {
+	if isEngaging || isEnhance {
 		msg, err := bot.SendMessage(chatID, "🤔 Looking into that...",
 			&telegram.SendOpts{ReplyToMessageID: messageID})
 		if err == nil {
@@ -1029,9 +1034,10 @@ func handleChatMessage(
 	}
 	defer func() {
 		// Clean up the progress message when the task finishes.
-		// The final answer replaces it entirely — this avoids cluttering
-		// the chat with a stale "thinking" message.
-		if progressMsgID != 0 {
+		// In engaging mode, deletes the stale "thinking" message.
+		// In enhance mode, preserves it as a per-iteration header
+		// with the narrated tool messages below it.
+		if progressMsgID != 0 && isEngaging {
 			bot.DeleteMessage(chatID, progressMsgID)
 		}
 	}()
@@ -1149,9 +1155,28 @@ func handleChatMessage(
 		Tools:           agentTools,
 		Renderer:        rend,
 		ToolEventHandler: func(event string, name string, data string) {
+			// Enhance mode: send new messages with narrated descriptions.
+			// Each tool call gets its own message (no edits, no cleanup).
+			if isEnhance {
+				switch event {
+				case "tool_call":
+					if narrator != nil {
+						if msg := narrator.ToolCallMessage(name, data); msg != "" {
+							escapedMsg := telegram.EscapeMarkdown(msg)
+							bot.SendMessage(chatID, escapedMsg,
+								&telegram.SendOpts{ParseMode: telegram.ParseModeMarkdownV2})
+						}
+					}
+				case "tool_result":
+					// silent in enhance mode -- the narrated tool_call
+					// message already describes what's happening.
+				}
+				return
+			}
+
 			// Engaging mode: update the progress message with narrated tool
 			// descriptions instead of raw traces.
-			if resolved.InteractionMode != "verbose" {
+			if isEngaging {
 				if progressMsgID != 0 && event == "tool_call" && narrator != nil {
 					if msg := narrator.ToolCallMessage(name, data); msg != "" {
 						bot.EditMessageText(chatID, progressMsgID, msg, nil)

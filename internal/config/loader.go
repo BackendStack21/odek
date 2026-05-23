@@ -70,7 +70,8 @@ type CLIFlags struct {
 	GithubRepoUrl string
 
 	// InteractionMode controls how tool-call progress is surfaced.
-	// "engaging" (default) = LLM-narrated, emoji-rich explanations.
+	// "engaging" (default) = emoji-rich narration, progress message edited.
+	// "enhance" = per-tool narrated messages appended, progress header kept.
 	// "verbose" = raw tool names, args, and results.
 	InteractionMode string
 }
@@ -166,7 +167,8 @@ type FileConfig struct {
 	GithubRepoUrl string `json:"github_repo_url,omitempty"`
 
 	// InteractionMode controls how the agent communicates tool/progress updates.
-	// "engaging" (default) = LLM-narrated, emoji-rich explanations.
+	// "engaging" (default) = emoji-rich narration, progress message edited.
+	// "enhance" = per-tool narrated messages, progress header kept.
 	// "verbose" = raw tool names, args, and results.
 	InteractionMode string `json:"interaction_mode,omitempty"`
 }
@@ -261,7 +263,7 @@ type ResolvedConfig struct {
 	GithubRepoUrl string
 
 	// InteractionMode is the resolved interaction style.
-	// "engaging" (default) or "verbose".
+	// "engaging" (default), "enhance", or "verbose".
 	InteractionMode string
 }
 

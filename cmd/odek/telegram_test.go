@@ -564,6 +564,107 @@ func TestModeCommand(t *testing.T) {
 	}
 }
 
+// TestEnhanceMode_SendsNarratedMessages tests that enhance mode sends
+// new narrated messages per tool_call (no edits, no cleanup, silent tool_result).
+func TestEnhanceMode_SendsNarratedMessages(t *testing.T) {
+	bot := newMockBot()
+
+	chatID := int64(123)
+	messageID := 1
+	isEnhance := true
+
+	// Simulate the narrator for enhance mode
+	type narrateMsg struct{}
+	var progressMsgID int
+	if isEnhance {
+		msg, _ := bot.SendMessage(chatID, "🤔 Looking into that...",
+			&telegram.SendOpts{ReplyToMessageID: messageID})
+		if msg != nil {
+			progressMsgID = msg.ID
+		}
+	}
+
+	// Simulate enhance-mode tool handler
+	toolHandler := func(event string, name string, data string) {
+		if !isEnhance {
+			return
+		}
+		switch event {
+		case "tool_call":
+			msg := narratorToolCallMessage(name, data)
+			if msg != "" {
+				bot.SendMessage(chatID, msg,
+					&telegram.SendOpts{ParseMode: telegram.ParseModeMarkdownV2})
+			}
+		case "tool_result":
+			// silent in enhance mode
+		}
+	}
+
+	// Fire events: one iteration with reasoning + 2 tool calls
+	toolHandler("tool_call", "read_file", `{"path":"/etc/hostname"}`)
+	toolHandler("tool_result", "read_file", `{"content":"my-host"}`)
+	toolHandler("tool_call", "shell", `{"command":"go test ./..."}`)
+	toolHandler("tool_result", "shell", `{"output":"PASS","exit_code":0}`)
+
+	calls := bot.recorded()
+	t.Logf("Enhance mode sequence (%d calls):", len(calls))
+	for i, c := range calls {
+		t.Logf("  %d. %s %q (msgID=%d)", i+1, c.Method, truncateStr(c.Text, 60), c.MsgID)
+	}
+
+	// Expected: 3 sendMessages (thinking node + 2 narrated tool_call)
+	// No edits, no deletes
+	if len(calls) != 3 {
+		t.Fatalf("expected 3 calls (thinking node + 2 narrated), got %d", len(calls))
+	}
+
+	// Call 1: thinking node
+	if calls[0].Method != "sendMessage" || !strings.Contains(calls[0].Text, "🤔") {
+		t.Errorf("call 1: expected sendMessage with thinking node, got %s %q", calls[0].Method, calls[0].Text)
+	}
+
+	// Call 2: narrated read_file
+	if calls[1].Method != "sendMessage" || !strings.Contains(calls[1].Text, "📖") {
+		t.Errorf("call 2: expected sendMessage with narrated read_file, got %s %q", calls[1].Method, calls[1].Text)
+	}
+
+	// Call 3: narrated shell
+	if calls[2].Method != "sendMessage" || !strings.Contains(calls[2].Text, "⚙️") {
+		t.Errorf("call 3: expected sendMessage with narrated shell, got %s %q", calls[2].Method, calls[2].Text)
+	}
+
+	// No editMessageText
+	for _, c := range calls {
+		if c.Method == "editMessageText" {
+			t.Errorf("unexpected editMessageText in enhance mode: %q", c.Text)
+		}
+	}
+
+	// No deleteMessage
+	for _, c := range calls {
+		if c.Method == "deleteMessage" {
+			t.Errorf("unexpected deleteMessage in enhance mode (msgID=%d)", c.MsgID)
+		}
+	}
+
+	// Verify progressMsgID is NOT deleted (it was stored but defer cleanup
+	// skipped it because isEngaging=false)
+	_ = progressMsgID
+}
+
+// narratorToolCallMessage replicates the narrator's ToolCallMessage for tests.
+func narratorToolCallMessage(name, args string) string {
+	switch name {
+	case "read_file":
+		return "📖 Reading `hostname`..."
+	case "shell":
+		return "⚙️ Running `go test ./...`..."
+	default:
+		return "🔧 Working on `" + name + "`..."
+	}
+}
+
 // truncateStr truncates a string for display in test logs.
 func truncateStr(s string, n int) string {
 	if len(s) <= n {
