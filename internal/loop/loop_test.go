@@ -1681,3 +1681,96 @@ func TestBatchApprovalSingleTool(t *testing.T) {
 	t.Logf("Single tool: batch gate not triggered ✓")
 }
 
+// ── classifyToolCall Tests ──────────────────────────────────────────────
+
+func TestClassifyToolCall_ShellDestructive(t *testing.T) {
+	risk, resource := classifyToolCall("shell", `{"command":"rm -rf /etc/passwd"}`)
+	if risk != danger.Destructive {
+		t.Errorf("risk = %q, want %q", risk, danger.Destructive)
+	}
+	if resource != "rm -rf /etc/passwd" {
+		t.Errorf("resource = %q, want %q", resource, "rm -rf /etc/passwd")
+	}
+}
+
+func TestClassifyToolCall_ShellSafe(t *testing.T) {
+	risk, resource := classifyToolCall("shell", `{"command":"ls -la"}`)
+	if risk != danger.Safe {
+		t.Errorf("risk = %q, want %q", risk, danger.Safe)
+	}
+	if resource != "ls -la" {
+		t.Errorf("resource = %q, want %q", resource, "ls -la")
+	}
+}
+
+func TestClassifyToolCall_ShellInvalidJSON(t *testing.T) {
+	risk, resource := classifyToolCall("shell", `not-json`)
+	if risk != "" || resource != "" {
+		t.Errorf("expected empty for invalid JSON, got risk=%q resource=%q", risk, resource)
+	}
+}
+
+func TestClassifyToolCall_ReadFileSystemPath(t *testing.T) {
+	risk, resource := classifyToolCall("read_file", `{"path":"/etc/shadow"}`)
+	if risk != danger.SystemWrite {
+		t.Errorf("risk = %q, want %q", risk, danger.SystemWrite)
+	}
+	if resource != "/etc/shadow" {
+		t.Errorf("resource = %q, want %q", resource, "/etc/shadow")
+	}
+}
+
+func TestClassifyToolCall_ReadFileLocalPath(t *testing.T) {
+	risk, resource := classifyToolCall("read_file", `{"path":"/tmp/test.txt"}`)
+	if risk != danger.LocalWrite {
+		t.Errorf("risk = %q, want %q", risk, danger.LocalWrite)
+	}
+	if resource != "/tmp/test.txt" {
+		t.Errorf("resource = %q, want %q", resource, "/tmp/test.txt")
+	}
+}
+
+func TestClassifyToolCall_PatchSystemPath(t *testing.T) {
+	risk, resource := classifyToolCall("patch", `{"path":"/etc/nginx.conf"}`)
+	if risk != danger.SystemWrite {
+		t.Errorf("risk = %q, want %q", risk, danger.SystemWrite)
+	}
+	if resource != "/etc/nginx.conf" {
+		t.Errorf("resource = %q, want %q", resource, "/etc/nginx.conf")
+	}
+}
+
+func TestClassifyToolCall_WriteFileBadJSON(t *testing.T) {
+	risk, resource := classifyToolCall("write_file", `invalid`)
+	if risk != "" || resource != "" {
+		t.Errorf("expected empty for invalid JSON, got risk=%q resource=%q", risk, resource)
+	}
+}
+
+func TestClassifyToolCall_BrowserNavigate(t *testing.T) {
+	risk, resource := classifyToolCall("browser_navigate", `https://example.com`)
+	if risk != danger.NetworkEgress {
+		t.Errorf("risk = %q, want %q", risk, danger.NetworkEgress)
+	}
+	if resource != "https://example.com" {
+		t.Errorf("resource = %q, want %q", resource, "https://example.com")
+	}
+}
+
+func TestClassifyToolCall_UnknownTool(t *testing.T) {
+	risk, resource := classifyToolCall("unknown_tool", `{}`)
+	if risk != "" || resource != "" {
+		t.Errorf("expected empty for unknown tool, got risk=%q resource=%q", risk, resource)
+	}
+}
+
+func TestClassifyToolCall_Terminal(t *testing.T) {
+	risk, resource := classifyToolCall("terminal", `{"command":"whoami"}`)
+	if risk != danger.Safe {
+		t.Errorf("risk = %q, want %q", risk, danger.Safe)
+	}
+	if resource != "whoami" {
+		t.Errorf("resource = %q, want %q", resource, "whoami")
+	}
+}
+
