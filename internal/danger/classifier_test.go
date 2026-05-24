@@ -649,6 +649,30 @@ func TestActionForCommand_EmptyCommand(t *testing.T) {
 	}
 }
 
+func TestActionForCommand_PatternTrimmed(t *testing.T) {
+	// Patterns with trailing whitespace should still match after trimming.
+	cfg := &DangerousConfig{
+		Allowlist: []string{"git push origin main "},  // trailing space
+		Denylist:  []string{" rm -rf / "},             // leading + trailing space
+	}
+	// Allowlist: trimmed pattern matches trimmed command
+	if action := cfg.ActionForCommand("git push origin main"); action != Allow {
+		t.Errorf("allowlist with trailing space should match, got %s", action)
+	}
+	// Allowlist: command with trailing space also matches
+	if action := cfg.ActionForCommand("git push origin main "); action != Allow {
+		t.Errorf("allowlist should match command with trailing space, got %s", action)
+	}
+	// Denylist: trimmed pattern matches trimmed command
+	if action := cfg.ActionForCommand("rm -rf / --no-preserve-root"); action != Deny {
+		t.Errorf("denylist with leading space should match, got %s", action)
+	}
+	// Denylist: command with trailing space still matches
+	if action := cfg.ActionForCommand("rm -rf / "); action != Deny {
+		t.Errorf("denylist should match command with trailing space, got %s", action)
+	}
+}
+
 func TestParseAction(t *testing.T) {
 	if got := parseAction("allow"); got != Allow {
 		t.Errorf("parseAction(allow) = %s", got)

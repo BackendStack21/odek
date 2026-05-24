@@ -217,7 +217,7 @@ type DangerousConfig struct {
 	Allowlist []string `json:"allowlist,omitempty"`
 
 	// Denylist is a list of command strings that are always denied,
-	// regardless of their risk classification. Exact match only.
+	// regardless of their risk classification. Prefix match (after trimming).
 	Denylist []string `json:"denylist,omitempty"`
 
 	// DefaultAction is the global default action applied to ALL risk classes
@@ -279,22 +279,22 @@ func (c *DangerousConfig) ActionFor(cls RiskClass) Action {
 }
 
 // ActionForCommand returns the action for a specific command string.
-// Allowlist and denylist are checked first (exact match), then falls
-// back to the risk-class-based action.
+// Allowlist and denylist are checked first (exact match for allowlist,
+// prefix match for denylist), then falls back to the risk-class-based action.
 func (c *DangerousConfig) ActionForCommand(cmd string) Action {
 	cmd = strings.TrimSpace(cmd)
 	if cmd == "" {
 		return Allow
 	}
-	// Allowlist has highest priority
+	// Allowlist has highest priority — exact match after trimming both sides.
 	for _, pattern := range c.Allowlist {
-		if cmd == pattern {
+		if cmd == strings.TrimSpace(pattern) {
 			return Allow
 		}
 	}
-	// Denylist is checked before classification
+	// Denylist is checked before classification — prefix match after trimming.
 	for _, pattern := range c.Denylist {
-		if strings.HasPrefix(cmd, pattern) {
+		if strings.HasPrefix(cmd, strings.TrimSpace(pattern)) {
 			return Deny
 		}
 	}
