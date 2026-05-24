@@ -17,6 +17,19 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* ── Light Theme ── */
+body.light {
+  --bg-primary: #ffffff;
+  --bg-card: #f3f4f6;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-tertiary: #94a3b8;
+  --border-subtle: #e2e8f0;
+  --accent: #2563eb;
+  --accent-subtle: rgba(37,99,235,0.08);
+  --accent-glow: rgba(37,99,235,0.04);
+}
+
 /* ── App Shell ── */
 #app {
   display: grid;
@@ -89,6 +102,9 @@ body {
 .session-item .del-btn { margin-left: auto; opacity: 0; transition: opacity 0.15s; color: var(--text-tertiary); cursor: pointer; font-size: 12px; padding: 0 4px; }
 .session-item:hover .del-btn { opacity: 0.6; }
 .session-item .del-btn:hover { opacity: 1; color: #ef4444; }
+.session-item .rename-btn { opacity: 0; transition: opacity 0.15s; color: var(--text-tertiary); cursor: pointer; font-size: 12px; padding: 0 4px; }
+.session-item:hover .rename-btn { opacity: 0.6; }
+.session-item .rename-btn:hover { opacity: 1; color: var(--accent); }
 
 /* ── Main Chat ── */
 #main {
@@ -1123,6 +1139,22 @@ body {
 }
 #cancel-btn svg { width: 12px; height: 12px; flex-shrink: 0; }
 
+/* ── Theme Toggle & Model Picker ── */
+#theme-btn {
+  background: transparent; border: 1px solid var(--border-subtle); color: var(--text-secondary);
+  cursor: pointer; font-size: 15px; padding: 4px 6px; border-radius: 6px;
+  transition: all .15s; line-height: 1; flex-shrink: 0; display: flex; align-items: center;
+}
+#theme-btn:hover { color: var(--accent); background: rgba(56,189,248,0.06); }
+#model-picker {
+  background: var(--bg-card); color: var(--text-secondary); border: 1px solid var(--border-subtle);
+  border-radius: 6px; padding: 2px 6px; font-size: 11px; font-family: var(--font-mono);
+  cursor: pointer; outline: none; transition: border-color .15s; max-width: 140px;
+}
+#model-picker:hover { border-color: var(--accent); }
+#model-picker:focus { border-color: var(--accent); }
+#model-picker optgroup, #model-picker option { background: var(--bg-card); color: var(--text-primary); }
+
 /* ── Phase 1: Scroll-to-Bottom Button ── */
 #scroll-bottom-btn {
   display: none; position: absolute; bottom: 20px; right: 16px;
@@ -1207,6 +1239,10 @@ body {
     <div class="stats" id="stats-bar"></div>
     <span class="model" id="model-label"></span>
     <span class="session-stats" id="session-stats"></span>
+    <select id="model-picker" onchange="switchModel(this.value)" title="Switch model">
+      <option value="">Loading...</option>
+    </select>
+    <button id="theme-btn" onclick="toggleTheme()" title="Toggle theme" aria-label="Toggle theme">🌙</button>
     <button id="cancel-btn" onclick="cancelAgent()" aria-label="Cancel">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
     </button>
@@ -1331,6 +1367,8 @@ let busy = false;
 let history = JSON.parse(localStorage.getItem('kode_history') || '[]');
 let historyIdx = -1;
 let attachedFiles = []; // {name, size, content}
+let currentModel = localStorage.getItem('kode_model') || '';
+let availableModels = [];
 
 // ── DOM ──
 const messagesEl = document.getElementById('messages');
@@ -1517,6 +1555,12 @@ function connect() {
         // Show model in stats
         if (event.model) {
           statsBar.textContent = event.model;
+        }
+        // Sync model picker with server-confirmed model
+        if (event.model && currentModel !== event.model) {
+          currentModel = event.model;
+          const picker = document.getElementById('model-picker');
+          if (picker) picker.value = event.model;
         }
         loadSessions();
         break;
@@ -1721,6 +1765,12 @@ function startStream() {
 
   streamBubbleEl = wrapper;
   streamContentEl = wrapper.querySelector('#stream-content');
+  // Add copy button and collapse check to the stream bubble
+  const bubble = wrapper.querySelector('.bubble');
+  if (bubble) {
+    addCopyButton(bubble);
+    checkCollapse(bubble);
+  }
   pruneMessages();
   scrollBottom();
 }
@@ -2050,6 +2100,78 @@ window.executeDeleteSession = function() {
     .catch(() => showToast('Failed to delete session'));
 };
 
+// ── Theme Toggle ──
+window.toggleTheme = function() {
+  document.body.classList.toggle('light');
+  const isLight = document.body.classList.contains('light');
+  localStorage.setItem('kode_theme', isLight ? 'light' : 'dark');
+  document.getElementById('theme-btn').textContent = isLight ? '☀️' : '🌙';
+};
+// Restore theme on load
+if (localStorage.getItem('kode_theme') === 'light') {
+  document.body.classList.add('light');
+  document.getElementById('theme-btn').textContent = '☀️';
+}
+
+// ── Model Picker ──
+async function fetchModels() {
+  const picker = document.getElementById('model-picker');
+  try {
+    picker.disabled = true;
+    const resp = await fetch('/api/models');
+    if (!resp.ok) { picker.innerHTML = '<option value="">Models unavailable</option>'; return; }
+    const models = await resp.json();
+    availableModels = models;
+    if (!models || models.length === 0) {
+      picker.innerHTML = '<option value="">No models</option>';
+      return;
+    }
+    // Build <option> list, group by top-level prefix
+    let html = '<option value="">— select model —</option>';
+    models.forEach(m => {
+      const sel = currentModel === m.id ? ' selected' : '';
+      html += `<option value="${escapeAttr(m.id)}"${sel}>${escapeHtml(m.description || m.id)}</option>`;
+    });
+    picker.innerHTML = html;
+    if (currentModel) picker.value = currentModel;
+  } catch {
+    picker.innerHTML = '<option value="">Failed to load</option>';
+  } finally {
+    picker.disabled = false;
+  }
+}
+
+window.switchModel = function(modelId) {
+  currentModel = modelId;
+  if (modelId) {
+    localStorage.setItem('kode_model', modelId);
+  } else {
+    localStorage.removeItem('kode_model');
+  }
+  showToast(modelId ? 'Model: ' + modelId : 'Using default model');
+};
+
+// ── Session Rename ──
+window.renameSession = function(sid, el) {
+  const item = el.closest('.session-item');
+  if (!item) return;
+  const taskEl = item.querySelector('.task');
+  const currentName = taskEl ? taskEl.textContent : '';
+  const newName = prompt('Rename session:', currentName);
+  if (!newName || newName === currentName) return;
+  fetch('/api/sessions/' + encodeURIComponent(sid), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: newName })
+  })
+    .then(resp => {
+      if (!resp.ok) throw new Error('rename failed');
+      loadSessions();
+      showToast('Session renamed');
+    })
+    .catch(() => showToast('Failed to rename session'));
+};
+
 // ── Shortcuts ──
 window.toggleShortcuts = function() {
   document.getElementById('shortcuts-overlay').classList.toggle('active');
@@ -2213,7 +2335,8 @@ function send() {
   ws.send(JSON.stringify({
     type: 'prompt',
     content: text,
-    session_id: sessionId
+    session_id: sessionId,
+    model: currentModel || undefined
   }));
 }
 
@@ -2523,6 +2646,7 @@ async function loadSessions() {
       `<div class="session-item${s.id === sessionId ? ' active' : ''}" data-id="${escapeAttr(s.id)}">
         <div style="display:flex;align-items:center;gap:4px">
           <div class="id">${escapeHtml(s.id.slice(0, 8))}</div>
+          <span class="rename-btn" title="Rename" onclick="event.stopPropagation();renameSession('${escapeAttr(s.id)}', this)">✎</span>
           <span class="del-btn" title="Delete">✕</span>
         </div>
         <div class="task">${escapeHtml(s.task || '')}</div>
@@ -2540,6 +2664,7 @@ connect();
 // Show skeleton while connecting
 if (skeletonEl) skeletonEl.classList.add('visible');
 loadSessions();
+fetchModels();
 promptEl.focus();
 
 // Handle keyboard shortcuts globally

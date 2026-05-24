@@ -672,6 +672,20 @@ func (a *Agent) SkillManager() *skills.SkillManager {
 	return a.skillManager
 }
 
+// SwitchModel updates the LLM model used by this agent at runtime.
+// The model string must be a valid OpenAI-compatible model identifier.
+// This is safe to call between RunWithMessages calls to switch models
+// mid-session. Empty strings are silently ignored.
+func (a *Agent) SwitchModel(model string) {
+	if a == nil || model == "" {
+		return
+	}
+	a.config.Model = model
+	if a.engine != nil {
+		a.engine.SetModel(model)
+	}
+}
+
 // expandHome replaces the leading ~/ with the user's home directory.
 func expandHome(path string) string {
 	if strings.HasPrefix(path, "~/") {

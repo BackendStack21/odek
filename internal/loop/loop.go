@@ -882,3 +882,12 @@ func classifyToolCall(name, args string) (danger.RiskClass, string) {
 		return "", ""
 	}
 }
+
+// SetModel updates the LLM model used by this engine at runtime.
+// The model string must be a valid OpenAI-compatible model identifier.
+func (e *Engine) SetModel(model string) {
+	if model == "" || e.client == nil {
+		return
+	}
+	e.client.Model = model
+}

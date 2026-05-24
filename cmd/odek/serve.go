@@ -18,6 +18,7 @@ import (
 	"github.com/BackendStack21/kode"
 	"github.com/BackendStack21/kode/internal/config"
 	"github.com/BackendStack21/kode/internal/llm"
+	"github.com/BackendStack21/kode/internal/loop"
 	"github.com/BackendStack21/kode/internal/resource"
 	"github.com/BackendStack21/kode/internal/session"
 	"github.com/BackendStack21/kode/internal/skills"
@@ -126,7 +127,8 @@ func serveCmd(args []string) error {
 	})
 	mux.HandleFunc("/api/resources", handleResourceSearch(resourceReg))
 	mux.HandleFunc("/api/sessions", handleSessionList(store))
-	mux.HandleFunc("/api/sessions/", handleSessionDelete(store))
+	mux.HandleFunc("/api/sessions/", handleSessionByID(store))
+	mux.HandleFunc("/api/models", handleModelList)
 	mux.HandleFunc("/api/cancel", handleCancel)
 
 	listener, err := net.Listen("tcp", addr)
@@ -278,6 +280,15 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 				"heuristic":  event.Heuristic,
 			})
 		},
+		// Stream thinking/reasoning content to the WebUI
+		IterationCallback: func(info loop.IterationInfo) {
+			if info.ReasoningContent != "" {
+				sendFn(map[string]any{
+					"type":    "thinking",
+					"content": info.ReasoningContent,
+				})
+			}
+		},
 	})
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -292,6 +303,7 @@ type wsClientMsg struct {
 	Type      string `json:"type"`
 	Content   string `json:"content"`
 	SessionID string `json:"session_id"`
+	Model     string `json:"model,omitempty"`
 }
 
 // ── WebSocket Handler ──────────────────────────────────────────────────
@@ -323,8 +335,9 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	// Track the current session across WebSocket messages
+	// Track the current session and model across WebSocket messages
 	var currentSession *session.Session
+	currentModel := resolved.Model // start with configured model
 
 	// Session-level token economics (cumulative across all turns)
 	var sessionInputTokens, sessionOutputTokens int
@@ -387,6 +400,13 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 
 		if msg.Content == "" {
 			continue
+		}
+
+		// Handle runtime model switching
+		if msg.Model != "" && msg.Model != currentModel {
+			currentModel = msg.Model
+			resolved.Model = msg.Model
+			agent.SwitchModel(msg.Model)
 		}
 
 		// Handle session switch mid-connection (new conversation)
@@ -677,6 +697,79 @@ func handleSessionList(store *session.Store) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(sessions)
 	}
+}
+
+func handleSessionByID(store *session.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
+
+		switch r.Method {
+		case http.MethodDelete:
+			if id == "" {
+				http.Error(w, "missing session id", http.StatusBadRequest)
+				return
+			}
+			if err := store.Delete(id); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+
+		case http.MethodPost:
+			// Rename session
+			if id == "" {
+				http.Error(w, "missing session id", http.StatusBadRequest)
+				return
+			}
+			var body struct {
+				Name string `json:"name"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, "invalid JSON", http.StatusBadRequest)
+				return
+			}
+			sess, err := store.Load(id)
+			if err != nil {
+				http.Error(w, "session not found", http.StatusNotFound)
+				return
+			}
+			sess.Task = body.Name
+			store.Save(sess)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(sess)
+
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+func handleModelList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	profiles := odek.KnownProfiles
+	type modelEntry struct {
+		ID          string `json:"id"`
+		MaxContext  int    `json:"max_context"`
+		Description string `json:"description,omitempty"`
+	}
+	models := make([]modelEntry, 0, len(profiles))
+	seen := make(map[string]bool)
+	for _, p := range profiles {
+		if seen[p.Prefix] {
+			continue
+		}
+		seen[p.Prefix] = true
+		models = append(models, modelEntry{
+			ID:          p.Prefix,
+			MaxContext:  p.Profile.MaxContext,
+			Description: fmt.Sprintf("%s — %dK context", p.Prefix, p.Profile.MaxContext/1024),
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(models)
 }
 
 func handleSessionDelete(store *session.Store) http.HandlerFunc {
