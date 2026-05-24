@@ -29,6 +29,27 @@ import (
 	"github.com/BackendStack21/kode/internal/danger"
 )
 
+// safeCall wraps a tool function body with panic recovery.
+func safeCall(fn func() (string, error)) (result string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("tool panic: %v", r)
+			result = `{"error":"internal tool error"}`
+		}
+	}()
+	return fn()
+}
+
+// readFileNoFollow reads a file with O_NOFOLLOW (anti-symlink).
+func readFileNoFollow(path string) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(f)
+}
+
 // ═════════════════════════════════════════════════════════════════════════
 // 1. batch_patch — Apply multiple edits atomically
 // ═════════════════════════════════════════════════════════════════════════
@@ -668,12 +689,12 @@ func (t *diffTool) Call(argsJSON string) (string, error) {
 				return jsonError(err.Error())
 			}
 		}
-		data, err := os.ReadFile(args.PathA)
+		data, err := readFileNoFollow(args.PathA)
 		if err != nil {
 			return jsonResult(diffResult{Error: err.Error(), PathA: pathA, PathB: pathB})
 		}
 		linesA = strings.Split(string(data), "\n")
-		data, err = os.ReadFile(args.PathB)
+		data, err = readFileNoFollow(args.PathB)
 		if err != nil {
 			return jsonResult(diffResult{Error: err.Error(), PathA: pathA, PathB: pathB})
 		}
@@ -685,7 +706,7 @@ func (t *diffTool) Call(argsJSON string) (string, error) {
 		}, nil); err != nil {
 			return jsonError(err.Error())
 		}
-		data, err := os.ReadFile(args.Path)
+		data, err := readFileNoFollow(args.Path)
 		if err != nil {
 			return jsonResult(diffResult{Error: err.Error(), PathA: pathA, PathB: pathB})
 		}
@@ -866,7 +887,12 @@ func (t *countLinesTool) Call(argsJSON string) (string, error) {
 	return jsonResult(countLinesResult{Results: results, Total: total})
 }
 
-func (t *countLinesTool) countFile(path string) countFileEntry {
+func (t *countLinesTool) countFile(path string) (entry countFileEntry) {
+	defer func() {
+		if r := recover(); r != nil {
+			entry = countFileEntry{Path: path, Error: fmt.Sprintf("internal error: %v", r)}
+		}
+	}()
 	if path == "" {
 		return countFileEntry{Error: "path is required"}
 	}
@@ -1006,7 +1032,12 @@ func (t *multiGrepTool) Call(argsJSON string) (string, error) {
 	return jsonResult(multiGrepResult{Results: results})
 }
 
-func (t *multiGrepTool) searchPattern(pattern, root, fileGlob string, limit int) grepPatternResult {
+func (t *multiGrepTool) searchPattern(pattern, root, fileGlob string, limit int) (result grepPatternResult) {
+	defer func() {
+		if r := recover(); r != nil {
+			result = grepPatternResult{Pattern: pattern, Error: fmt.Sprintf("internal error: %v", r)}
+		}
+	}()
 	re, err := regexp.Compile(pattern)
 	if err != nil {
 		return grepPatternResult{Pattern: pattern, Error: fmt.Sprintf("invalid regex: %v", err)}
@@ -1416,7 +1447,12 @@ func (t *checksumTool) Call(argsJSON string) (string, error) {
 	return jsonResult(checksumResult{Results: results})
 }
 
-func (t *checksumTool) hashFile(arg checksumFileArg) checksumEntry {
+func (t *checksumTool) hashFile(arg checksumFileArg) (entry checksumEntry) {
+	defer func() {
+		if r := recover(); r != nil {
+			entry = checksumEntry{Path: arg.Path, Algorithm: strings.ToLower(arg.Algorithm), Error: fmt.Sprintf("internal error: %v", r)}
+		}
+	}()
 	if arg.Path == "" {
 		return checksumEntry{Error: "path is required"}
 	}
@@ -1703,7 +1739,12 @@ func (t *headTailTool) Call(argsJSON string) (string, error) {
 	return jsonResult(headTailResult{Results: results})
 }
 
-func (t *headTailTool) readPreview(path string, n int, mode string) headTailFileResult {
+func (t *headTailTool) readPreview(path string, n int, mode string) (result headTailFileResult) {
+	defer func() {
+		if r := recover(); r != nil {
+			result = headTailFileResult{Path: path, Error: fmt.Sprintf("internal error: %v", r)}
+		}
+	}()
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
 		Name: "head_tail", Resource: path, Risk: danger.ClassifyPath(path),
 	}, nil); err != nil {
@@ -1838,7 +1879,7 @@ func (t *base64Tool) Call(argsJSON string) (string, error) {
 		return jsonError(err.Error())
 	}
 
-	data, err := os.ReadFile(args.Path)
+	data, err := readFileNoFollow(args.Path)
 	if err != nil {
 		return jsonResult(base64Result{Error: fmt.Sprintf("cannot read %q: %v", args.Path, err)})
 	}
@@ -1915,7 +1956,7 @@ func (t *trTool) Call(argsJSON string) (string, error) {
 		}, nil); err != nil {
 			return jsonError(err.Error())
 		}
-		data, err := os.ReadFile(args.Path)
+		data, err := readFileNoFollow(args.Path)
 		if err != nil {
 			return jsonResult(trResult{Error: fmt.Sprintf("cannot read %q: %v", args.Path, err)})
 		}
@@ -2063,7 +2104,12 @@ func (t *wordCountTool) Call(argsJSON string) (string, error) {
 	return jsonResult(wordCountResult{Results: results, Total: total})
 }
 
-func (t *wordCountTool) countWords(path string) wordCountEntry {
+func (t *wordCountTool) countWords(path string) (entry wordCountEntry) {
+	defer func() {
+		if r := recover(); r != nil {
+			entry = wordCountEntry{Path: path, Error: fmt.Sprintf("internal error: %v", r)}
+		}
+	}()
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
 		Name: "word_count", Resource: path, Risk: danger.ClassifyPath(path),
 	}, nil); err != nil {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -988,5 +989,616 @@ func TestWordCount_NotFound(t *testing.T) {
 	mustUnmarshal(t, result, &r)
 	if r.Results[0].Error == "" {
 		t.Errorf("expected error for nonexistent file")
+	}
+}
+
+// ── Security & Edge Case Tests ──────────────────────────────────────
+//
+// These tests verify that every tool properly gates through the danger
+// system, handles empty/binary/symlink files, rejects path traversal,
+// respects max limits, and never panics on any input.
+
+// ── Symlink Attack Detection ──────────────────────────────────────────
+
+func TestBatchPatch_SymlinkRejected(t *testing.T) {
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.txt")
+	os.WriteFile(target, []byte("secret\n"), 0644)
+	link := filepath.Join(dir, "link.txt")
+	os.Symlink(target, link)
+
+	tool := &batchPatchTool{}
+	// Try to patch through a symlink — should fail with O_NOFOLLOW
+	args := fmt.Sprintf(`{"patches":[{"path":"%s","old_string":"secret","new_string":"leaked"}]}`, link)
+	result := callJSON(t, tool, args)
+
+	var r struct {
+		Results []struct {
+			Success bool   `json:"success"`
+			Error   string `json:"error"`
+		} `json:"results"`
+	}
+	mustUnmarshal(t, result, &r)
+	if len(r.Results) > 0 && r.Results[0].Success {
+		t.Error("batch_patch should reject symlinks")
+	}
+}
+
+func TestHeadTail_SymlinkRejected(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.txt")
+	os.WriteFile(target, []byte("data\n"), 0644)
+	link := filepath.Join(dir, "link.txt")
+	os.Symlink(target, link)
+
+	tool := &headTailTool{}
+	args := fmt.Sprintf(`{"files":[{"path":"%s"}],"lines":1}`, link)
+	result := callJSON(t, tool, args)
+
+	var r struct {
+		Results []struct {
+			Error string `json:"error"`
+		} `json:"results"`
+	}
+	mustUnmarshal(t, result, &r)
+	if len(r.Results) > 0 && r.Results[0].Error == "" {
+		t.Error("head_tail should reject symlinks")
+	}
+}
+
+// ── Empty File Handling ──────────────────────────────────────────────
+
+func TestSort_EmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "empty.txt")
+	os.WriteFile(path, []byte{}, 0644)
+
+	tool := &sortTool{}
+	args := fmt.Sprintf(`{"path":"%s"}`, path)
+	result := callJSON(t, tool, args)
+
+	var r struct {
+		Output string `json:"output"`
+		Total  int    `json:"total"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Total != 0 {
+		t.Errorf("total = %d, want 0", r.Total)
+	}
+}
+
+func TestHeadTail_EmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "empty.txt")
+	os.WriteFile(path, []byte{}, 0644)
+
+	tool := &headTailTool{}
+	args := fmt.Sprintf(`{"files":[{"path":"%s"}],"lines":5}`, path)
+	result := callJSON(t, tool, args)
+
+	var r struct {
+		Results []struct {
+			Count int      `json:"count"`
+			Lines []string `json:"lines"`
+			Error string   `json:"error"`
+		} `json:"results"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Results[0].Error != "" {
+		t.Fatalf("error: %s", r.Results[0].Error)
+	}
+	if r.Results[0].Count != 0 {
+		t.Errorf("count = %d, want 0", r.Results[0].Count)
+	}
+}
+
+func TestWordCount_EmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "empty.txt")
+	os.WriteFile(path, []byte{}, 0644)
+
+	tool := &wordCountTool{}
+	args := fmt.Sprintf(`{"files":[{"path":"%s"}]}`, path)
+	result := callJSON(t, tool, args)
+
+	var r struct {
+		Results []struct {
+			Lines int    `json:"lines"`
+			Words int    `json:"words"`
+			Error string `json:"error"`
+		} `json:"results"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Results[0].Lines != 0 || r.Results[0].Words != 0 {
+		t.Errorf("empty file: lines=%d words=%d, want 0", r.Results[0].Lines, r.Results[0].Words)
+	}
+}
+
+// ── Binary File Protection ───────────────────────────────────────────
+
+func TestCountLines_BinaryFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "binary.bin")
+	os.WriteFile(path, []byte{0x00, 0x01, 0x02, 0x03}, 0644)
+
+	tool := &countLinesTool{}
+	args := fmt.Sprintf(`{"files":[{"path":"%s"}]}`, path)
+	result := callJSON(t, tool, args)
+
+	var r struct {
+		Results []struct {
+			Lines int    `json:"lines"`
+			Error string `json:"error"`
+		} `json:"results"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Results[0].Error != "" {
+		t.Fatalf("error: %s", r.Results[0].Error)
+	}
+}
+
+// ── Max Limits Enforcement ───────────────────────────────────────────
+
+func TestBatchPatch_MaxLimit(t *testing.T) {
+	tool := &batchPatchTool{}
+	patches := make([]string, 11)
+	for i := range patches {
+		patches[i] = fmt.Sprintf(`{"path":"test%d.txt","old_string":"a","new_string":"b"}`, i)
+	}
+	args := `{"patches":[` + strings.Join(patches, ",") + `]}`
+	result := callJSON(t, tool, args)
+
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if !strings.Contains(r.Error, "max 10") {
+		t.Errorf("should reject >10 patches, got: %s", r.Error)
+	}
+}
+
+func TestMultiGrep_MaxPatterns(t *testing.T) {
+	tool := &multiGrepTool{}
+	patterns := make([]string, 11)
+	for i := range patterns {
+		patterns[i] = fmt.Sprintf(`"pattern%d"`, i)
+	}
+	args := `{"patterns":[` + strings.Join(patterns, ",") + `]}`
+	result := callJSON(t, tool, args)
+
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if !strings.Contains(r.Error, "max 10") {
+		t.Errorf("should reject >10 patterns, got: %s", r.Error)
+	}
+}
+
+func TestHTTPBatch_MaxURLs(t *testing.T) {
+	tool := newHTTPBatchTool(danger.DangerousConfig{})
+	urls := make([]string, 11)
+	for i := range urls {
+		urls[i] = fmt.Sprintf(`{"url":"https://example.com/page%d"}`, i)
+	}
+	args := `{"requests":[` + strings.Join(urls, ",") + `]}`
+	result := callJSON(t, tool, args)
+
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if !strings.Contains(r.Error, "max 10") {
+		t.Errorf("should reject >10 URLs, got: %s", r.Error)
+	}
+}
+
+// ── Empty Args Rejection ─────────────────────────────────────────────
+
+func TestSort_NoPath(t *testing.T) {
+	tool := &sortTool{}
+	result := callJSON(t, tool, `{}`)
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if !strings.Contains(r.Error, "provide path") {
+		t.Errorf("should require path, got: %s", r.Error)
+	}
+}
+
+func TestBase64_NoArgs(t *testing.T) {
+	tool := &base64Tool{}
+	result := callJSON(t, tool, `{}`)
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if !strings.Contains(r.Error, "provide path") {
+		t.Errorf("should require args, got: %s", r.Error)
+	}
+}
+
+func TestTr_NoTransformations(t *testing.T) {
+	tool := &trTool{}
+	result := callJSON(t, tool, `{"content":"hello","transformations":[]}`)
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if !strings.Contains(r.Error, "at least one") {
+		t.Errorf("should require transformations, got: %s", r.Error)
+	}
+}
+
+// ── Invalid JSON Rejection ───────────────────────────────────────────
+
+func TestTools_InvalidJSON(t *testing.T) {
+	tools := []struct {
+		name string
+		tool interface{ Call(string) (string, error) }
+	}{
+		{"batch_patch", &batchPatchTool{}},
+		{"parallel_shell", &parallelShellTool{}},
+		{"http_batch", newHTTPBatchTool(danger.DangerousConfig{})},
+		{"math_eval", &mathEvalTool{}},
+		{"diff", &diffTool{}},
+		{"count_lines", &countLinesTool{}},
+		{"multi_grep", &multiGrepTool{}},
+		{"json_query", &jsonQueryTool{}},
+		{"tree", &treeTool{}},
+		{"checksum", &checksumTool{}},
+		{"sort", &sortTool{}},
+		{"head_tail", &headTailTool{}},
+		{"base64", &base64Tool{}},
+		{"tr", &trTool{}},
+		{"word_count", &wordCountTool{}},
+	}
+
+	for _, tc := range tools {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := tc.tool.Call(`{bad json}`)
+			if err != nil {
+				return
+			}
+			var r struct {
+				Error string `json:"error"`
+			}
+			if err := json.Unmarshal([]byte(result), &r); err != nil {
+				t.Fatalf("unmarshal failed: %v\nraw: %s", err, result)
+			}
+			if !strings.Contains(r.Error, "invalid") {
+				t.Errorf("expected 'invalid' in error, got: %s", r.Error)
+			}
+		})
+	}
+}
+
+// ── Missing Required Fields ──────────────────────────────────────────
+
+func TestTools_MissingRequired(t *testing.T) {
+	t.Run("batch_patch/empty", func(t *testing.T) {
+		result, _ := (&batchPatchTool{}).Call(`{"patches":[]}`)
+		var r struct{ Error string }
+		json.Unmarshal([]byte(result), &r)
+		if !strings.Contains(r.Error, "at least one") {
+			t.Errorf("expected error, got: %s", r.Error)
+		}
+	})
+
+	t.Run("parallel_shell/empty", func(t *testing.T) {
+		result, _ := (&parallelShellTool{}).Call(`{"commands":[]}`)
+		var r struct{ Error string }
+		json.Unmarshal([]byte(result), &r)
+		if !strings.Contains(r.Error, "at least one") {
+			t.Errorf("expected error, got: %s", r.Error)
+		}
+	})
+
+	t.Run("math_eval/empty", func(t *testing.T) {
+		result, _ := (&mathEvalTool{}).Call(`{"expression":""}`)
+		var r struct{ Error string }
+		json.Unmarshal([]byte(result), &r)
+		if !strings.Contains(r.Error, "required") {
+			t.Errorf("expected error, got: %s", r.Error)
+		}
+	})
+
+	t.Run("diff/no_paths", func(t *testing.T) {
+		result, _ := (&diffTool{}).Call(`{}`)
+		var r struct{ Error string }
+		json.Unmarshal([]byte(result), &r)
+		if !strings.Contains(r.Error, "provide") {
+			t.Errorf("expected error, got: %s", r.Error)
+		}
+	})
+
+	t.Run("json_query/no_path", func(t *testing.T) {
+		result, _ := (&jsonQueryTool{}).Call(`{}`)
+		var r struct{ Error string }
+		json.Unmarshal([]byte(result), &r)
+		if !strings.Contains(r.Error, "path") {
+			t.Errorf("expected error, got: %s", r.Error)
+		}
+	})
+}
+
+// ── Tr Edge Cases ────────────────────────────────────────────────────
+
+func TestTr_ChainTransforms(t *testing.T) {
+	tool := &trTool{}
+	result := callJSON(t, tool, `{"content":"abc123def456","transformations":[
+		{"type":"delete","from":"123456"},
+		{"type":"upper"},
+		{"type":"string","from":"DEF","to":"XYZ"}
+	]}`)
+	var r struct{ Result string }
+	mustUnmarshal(t, result, &r)
+	if r.Result != "ABCXYZ" {
+		t.Errorf("chained result = %q, want 'ABCXYZ'", r.Result)
+	}
+}
+
+func TestTr_FileInput(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.txt")
+	os.WriteFile(path, []byte("hello world\n"), 0644)
+
+	tool := &trTool{}
+	args := fmt.Sprintf(`{"path":"%s","transformations":[{"type":"upper"}]}`, path)
+	result := callJSON(t, tool, args)
+
+	var r struct {
+		Result   string `json:"result"`
+		FromFile bool   `json:"from_file"`
+	}
+	mustUnmarshal(t, result, &r)
+	if !r.FromFile {
+		t.Error("should indicate from_file=true")
+	}
+	if r.Result != "HELLO WORLD\n" {
+		t.Errorf("result = %q, want 'HELLO WORLD\\n'", r.Result)
+	}
+}
+
+// ── Sort Edge Cases ──────────────────────────────────────────────────
+
+func TestSort_IgnoreCase(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.txt")
+	os.WriteFile(path, []byte("Beta\nalpha\nGamma\n"), 0644)
+
+	tool := &sortTool{}
+	args := fmt.Sprintf(`{"path":"%s","ignore_case":true}`, path)
+	result := callJSON(t, tool, args)
+
+	var r struct{ Output string }
+	mustUnmarshal(t, result, &r)
+	if r.Output != "alpha\nBeta\nGamma" {
+		t.Errorf("case-insensitive sort = %q", r.Output)
+	}
+}
+
+func TestSort_MultipleFiles(t *testing.T) {
+	dir := t.TempDir()
+	path1 := filepath.Join(dir, "a.txt")
+	path2 := filepath.Join(dir, "b.txt")
+	os.WriteFile(path1, []byte("b\nc\n"), 0644)
+	os.WriteFile(path2, []byte("a\n"), 0644)
+
+	tool := &sortTool{}
+	args := fmt.Sprintf(`{"files":[{"path":"%s"},{"path":"%s"}]}`, path1, path2)
+	result := callJSON(t, tool, args)
+
+	var r struct{ Output string }
+	mustUnmarshal(t, result, &r)
+	if r.Output != "a\nb\nc" {
+		t.Errorf("merged sort = %q, want 'a\\nb\\nc'", r.Output)
+	}
+}
+
+// ── Diff Edge Cases ──────────────────────────────────────────────────
+
+func TestDiff_FileVsStringEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.txt")
+	os.WriteFile(path, []byte("content\n"), 0644)
+
+	tool := &diffTool{}
+	args := fmt.Sprintf(`{"path":"%s","content":""}`, path)
+	result := callJSON(t, tool, args)
+
+	var r struct {
+		Hunks []struct {
+			Type  string `json:"type"`
+			Lines []any  `json:"lines"`
+		} `json:"hunks"`
+	}
+	mustUnmarshal(t, result, &r)
+	if len(r.Hunks) == 0 {
+		t.Error("expected at least one hunk (removed)")
+	}
+}
+
+// ── WordCount Edge Cases ─────────────────────────────────────────────
+
+func TestWordCount_TotalAggregation(t *testing.T) {
+	dir := t.TempDir()
+	path1 := filepath.Join(dir, "a.txt")
+	path2 := filepath.Join(dir, "b.txt")
+	os.WriteFile(path1, []byte("one two\nthree\n"), 0644)
+	os.WriteFile(path2, []byte("four five six\n"), 0644)
+
+	tool := &wordCountTool{}
+	args := fmt.Sprintf(`{"files":[{"path":"%s"},{"path":"%s"}]}`, path1, path2)
+	result := callJSON(t, tool, args)
+
+	var r struct {
+		Total struct {
+			Lines int `json:"lines"`
+			Words int `json:"words"`
+		} `json:"total"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Total.Lines != 3 {
+		t.Errorf("total lines = %d, want 3", r.Total.Lines)
+	}
+	if r.Total.Words != 6 {
+		t.Errorf("total words = %d, want 6", r.Total.Words)
+	}
+}
+
+// ── CountLines Edge Cases ────────────────────────────────────────────
+
+func TestCountLines_TotalLineCount(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.txt")
+	os.WriteFile(path, []byte("a\nb\nc\n"), 0644)
+
+	tool := &countLinesTool{}
+	args := fmt.Sprintf(`{"files":[{"path":"%s"}]}`, path)
+	result := callJSON(t, tool, args)
+
+	var r struct {
+		Total struct {
+			Lines int `json:"lines"`
+		} `json:"total"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Total.Lines != 3 {
+		t.Errorf("total = %d, want 3", r.Total.Lines)
+	}
+}
+
+// ── JSONQuery Edge Cases ─────────────────────────────────────────────
+
+func TestJSONQuery_MissingKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.json")
+	os.WriteFile(path, []byte(`{"name":"Alice"}`), 0644)
+
+	tool := &jsonQueryTool{}
+	args := fmt.Sprintf(`{"path":"%s","query":"age"}`, path)
+	result := callJSON(t, tool, args)
+
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if !strings.Contains(r.Error, "not found") {
+		t.Errorf("expected 'not found', got: %s", r.Error)
+	}
+}
+
+// ── Checksum Edge Cases ──────────────────────────────────────────────
+
+func TestChecksum_InvalidAlgorithm(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.txt")
+	os.WriteFile(path, []byte("data\n"), 0644)
+
+	tool := &checksumTool{}
+	args := fmt.Sprintf(`{"files":[{"path":"%s","algorithm":"sha3"}]}`, path)
+	result := callJSON(t, tool, args)
+
+	var r struct {
+		Results []struct {
+			Algorithm string `json:"algorithm"`
+			Hash      string `json:"hash"`
+			Error     string `json:"error"`
+		} `json:"results"`
+	}
+	mustUnmarshal(t, result, &r)
+	if !strings.Contains(r.Results[0].Error, "unsupported") {
+		t.Errorf("expected 'unsupported' error, got: %s", r.Results[0].Error)
+	}
+}
+
+// ── Tree Edge Cases ──────────────────────────────────────────────────
+
+func TestTree_DepthLimit(t *testing.T) {
+	dir := t.TempDir()
+	deep := filepath.Join(dir, "a", "b", "c")
+	os.MkdirAll(deep, 0755)
+	os.WriteFile(filepath.Join(deep, "f.txt"), []byte("data\n"), 0644)
+
+	tool := &treeTool{}
+	args := fmt.Sprintf(`{"path":"%s","max_depth":1}`, dir)
+	result := callJSON(t, tool, args)
+
+	var r struct {
+		Tree struct {
+			FileCount int `json:"file_count"`
+		} `json:"tree"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Tree.FileCount != 0 {
+		t.Errorf("depth=1 shouldn't see nested file, got count=%d", r.Tree.FileCount)
+	}
+}
+
+// ── Math Edge Cases ──────────────────────────────────────────────────
+
+func TestMathEval_DivisionByZero(t *testing.T) {
+	tool := &mathEvalTool{}
+	result := callJSON(t, tool, `{"expression":"1/0"}`)
+
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if !strings.Contains(r.Error, "division by zero") {
+		t.Errorf("expected division by zero error, got: %s", r.Error)
+	}
+}
+
+func TestMathEval_InvalidExpression(t *testing.T) {
+	tool := &mathEvalTool{}
+	result := callJSON(t, tool, `{"expression":"hello + world"}`)
+
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" {
+		t.Errorf("expected some error message")
+	}
+}
+
+// ── Base64 Edge Cases ────────────────────────────────────────────────
+
+func TestBase64_DecodeInvalid(t *testing.T) {
+	tool := &base64Tool{}
+	result := callJSON(t, tool, `{"string":"not-valid-base64!!!","decode":true}`)
+
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if !strings.Contains(r.Error, "decode") {
+		t.Errorf("expected decode error, got: %s", r.Error)
+	}
+}
+
+// ── HTTP Batch Edge Cases ────────────────────────────────────────────
+
+func TestHTTPBatch_DangerConfigDenyAll(t *testing.T) {
+	action := "deny"
+	dc := danger.DangerousConfig{
+		DefaultAction: &action,
+	}
+	tool := newHTTPBatchTool(dc)
+	result := callJSON(t, tool, `{"requests":[{"url":"https://example.com"}]}`)
+
+	var r struct {
+		Results []struct {
+			URL   string `json:"url"`
+			Error string `json:"error"`
+		} `json:"results"`
+	}
+	mustUnmarshal(t, result, &r)
+	if len(r.Results) > 0 && r.Results[0].Error == "" {
+		t.Error("expected error for denied URL")
 	}
 }
