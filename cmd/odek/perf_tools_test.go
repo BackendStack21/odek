@@ -638,3 +638,355 @@ func TestChecksum_DefaultAlgorithm(t *testing.T) {
 		t.Errorf("default algorithm = %q, want sha256", r.Results[0].Algorithm)
 	}
 }
+
+// ── Sort Tests ───────────────────────────────────────────────────────
+
+func TestSort_Basic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.txt")
+	os.WriteFile(path, []byte("c\nb\na\n"), 0644)
+
+	tool := &sortTool{}
+	args := fmt.Sprintf(`{"path":"%s"}`, path)
+	result := callJSON(t, tool, args)
+
+	var r struct {
+		Output string `json:"output"`
+		Total  int    `json:"total"`
+		Error  string `json:"error,omitempty"`
+	}
+	mustUnmarshal(t, result, &r)
+
+	if r.Error != "" {
+		t.Fatalf("error: %s", r.Error)
+	}
+	if r.Total != 3 {
+		t.Errorf("total = %d, want 3", r.Total)
+	}
+	if r.Output != "a\nb\nc" {
+		t.Errorf("output = %q, want a\\nb\\nc", r.Output)
+	}
+}
+
+func TestSort_Desc(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.txt")
+	os.WriteFile(path, []byte("a\nb\nc\n"), 0644)
+
+	tool := &sortTool{}
+	args := fmt.Sprintf(`{"path":"%s","order":"desc"}`, path)
+	result := callJSON(t, tool, args)
+
+	var r struct {
+		Output string `json:"output"`
+	}
+	mustUnmarshal(t, result, &r)
+
+	if r.Output != "c\nb\na" {
+		t.Errorf("output = %q, want c\\nb\\na", r.Output)
+	}
+}
+
+func TestSort_Unique(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.txt")
+	os.WriteFile(path, []byte("a\nb\na\nc\nb\n"), 0644)
+
+	tool := &sortTool{}
+	args := fmt.Sprintf(`{"path":"%s","unique":true}`, path)
+	result := callJSON(t, tool, args)
+
+	var r struct {
+		Output string `json:"output"`
+		Total  int    `json:"total"`
+	}
+	mustUnmarshal(t, result, &r)
+
+	if r.Total != 3 {
+		t.Errorf("total = %d, want 3", r.Total)
+	}
+}
+
+// ── HeadTail Tests ───────────────────────────────────────────────────
+
+func TestHeadTail_Head(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.txt")
+	os.WriteFile(path, []byte("a\nb\nc\nd\ne\n"), 0644)
+
+	tool := &headTailTool{}
+	args := fmt.Sprintf(`{"files":[{"path":"%s"}],"lines":2,"mode":"head"}`, path)
+	result := callJSON(t, tool, args)
+
+	var r struct {
+		Results []struct {
+			Lines []string `json:"lines"`
+			Count int      `json:"count"`
+			Total int      `json:"total"`
+			Error string   `json:"error"`
+		} `json:"results"`
+	}
+	mustUnmarshal(t, result, &r)
+
+	if len(r.Results) != 1 {
+		t.Fatalf("Results = %d, want 1", len(r.Results))
+	}
+	if r.Results[0].Count != 2 {
+		t.Errorf("count = %d, want 2", r.Results[0].Count)
+	}
+	if r.Results[0].Total != 5 {
+		t.Errorf("total = %d, want 5", r.Results[0].Total)
+	}
+	if r.Results[0].Lines[0] != "a" {
+		t.Errorf("first line = %q, want 'a'", r.Results[0].Lines[0])
+	}
+}
+
+func TestHeadTail_Tail(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.txt")
+	os.WriteFile(path, []byte("a\nb\nc\nd\ne\n"), 0644)
+
+	tool := &headTailTool{}
+	args := fmt.Sprintf(`{"files":[{"path":"%s"}],"lines":2,"mode":"tail"}`, path)
+	result := callJSON(t, tool, args)
+
+	var r struct {
+		Results []struct {
+			Lines []string `json:"lines"`
+			Count int      `json:"count"`
+		} `json:"results"`
+	}
+	mustUnmarshal(t, result, &r)
+
+	if r.Results[0].Count != 2 || r.Results[0].Lines[0] != "d" {
+		t.Errorf("tail(2) = %v, want [d e]", r.Results[0].Lines)
+	}
+}
+
+func TestHeadTail_NotFound(t *testing.T) {
+	tool := &headTailTool{}
+	result := callJSON(t, tool, `{"files":[{"path":"/nonexistent"}]}`)
+	var r struct {
+		Results []struct {
+			Error string `json:"error"`
+		} `json:"results"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Results[0].Error == "" {
+		t.Errorf("expected error")
+	}
+}
+
+// ── Base64 Tests ─────────────────────────────────────────────────────
+
+func TestBase64_EncodeString(t *testing.T) {
+	tool := &base64Tool{}
+	result := callJSON(t, tool, `{"content":"hello"}`)
+
+	var r struct {
+		Encoded string `json:"encoded"`
+		Size    int    `json:"size"`
+	}
+	mustUnmarshal(t, result, &r)
+
+	if r.Encoded != "aGVsbG8=" {
+		t.Errorf("encoded = %q, want aGVsbG8=", r.Encoded)
+	}
+	if r.Size != 5 {
+		t.Errorf("size = %d, want 5", r.Size)
+	}
+}
+
+func TestBase64_Decode(t *testing.T) {
+	tool := &base64Tool{}
+	result := callJSON(t, tool, `{"string":"aGVsbG8=","decode":true}`)
+
+	var r struct {
+		Decoded string `json:"decoded"`
+	}
+	mustUnmarshal(t, result, &r)
+
+	if r.Decoded != "hello" {
+		t.Errorf("decoded = %q, want 'hello'", r.Decoded)
+	}
+}
+
+func TestBase64_File(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.bin")
+	os.WriteFile(path, []byte("test data\n"), 0644)
+
+	tool := &base64Tool{}
+	args := fmt.Sprintf(`{"path":"%s"}`, path)
+	result := callJSON(t, tool, args)
+
+	var r struct {
+		Encoded string `json:"encoded"`
+		Size    int    `json:"size"`
+	}
+	mustUnmarshal(t, result, &r)
+
+	if r.Encoded == "" {
+		t.Errorf("expected non-empty encoded string")
+	}
+	if r.Size <= 0 {
+		t.Errorf("expected size > 0")
+	}
+}
+
+// ── Tr Tests ─────────────────────────────────────────────────────────
+
+func TestTr_Upper(t *testing.T) {
+	tool := &trTool{}
+	result := callJSON(t, tool, `{"content":"hello world","transformations":[{"type":"upper"}]}`)
+
+	var r struct {
+		Result string `json:"result"`
+	}
+	mustUnmarshal(t, result, &r)
+
+	if r.Result != "HELLO WORLD" {
+		t.Errorf("result = %q, want 'HELLO WORLD'", r.Result)
+	}
+}
+
+func TestTr_Lower(t *testing.T) {
+	tool := &trTool{}
+	result := callJSON(t, tool, `{"content":"HELLO","transformations":[{"type":"lower"}]}`)
+
+	var r struct {
+		Result string `json:"result"`
+	}
+	mustUnmarshal(t, result, &r)
+
+	if r.Result != "hello" {
+		t.Errorf("result = %q, want 'hello'", r.Result)
+	}
+}
+
+func TestTr_StringReplace(t *testing.T) {
+	tool := &trTool{}
+	result := callJSON(t, tool, `{"content":"foo bar foo","transformations":[{"type":"string","from":"foo","to":"baz"}]}`)
+
+	var r struct {
+		Result string `json:"result"`
+	}
+	mustUnmarshal(t, result, &r)
+
+	if r.Result != "baz bar baz" {
+		t.Errorf("result = %q, want 'baz bar baz'", r.Result)
+	}
+}
+
+func TestTr_Delete(t *testing.T) {
+	tool := &trTool{}
+	result := callJSON(t, tool, `{"content":"hello 123 world","transformations":[{"type":"delete","from":"123"}]}`)
+
+	var r struct {
+		Result string `json:"result"`
+	}
+	mustUnmarshal(t, result, &r)
+
+	if r.Result != "hello  world" {
+		t.Errorf("result = %q, want 'hello  world'", r.Result)
+	}
+}
+
+func TestTr_MultipleTransforms(t *testing.T) {
+	tool := &trTool{}
+	result := callJSON(t, tool, `{"content":"Hello World","transformations":[{"type":"lower"},{"type":"string","from":" ","to":"_"}]}`)
+
+	var r struct {
+		Result string `json:"result"`
+	}
+	mustUnmarshal(t, result, &r)
+
+	if r.Result != "hello_world" {
+		t.Errorf("result = %q, want 'hello_world'", r.Result)
+	}
+}
+
+// ── WordCount Tests ──────────────────────────────────────────────────
+
+func TestWordCount_Basic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.txt")
+	os.WriteFile(path, []byte("hello world\nfoo bar baz\n"), 0644)
+
+	tool := &wordCountTool{}
+	args := fmt.Sprintf(`{"files":[{"path":"%s"}]}`, path)
+	result := callJSON(t, tool, args)
+
+	var r struct {
+		Results []struct {
+			Lines int    `json:"lines"`
+			Words int    `json:"words"`
+			Chars int    `json:"chars"`
+			Bytes int64  `json:"bytes"`
+			Error string `json:"error"`
+		} `json:"results"`
+		Total struct {
+			Lines int `json:"lines"`
+			Words int `json:"words"`
+		} `json:"total"`
+	}
+	mustUnmarshal(t, result, &r)
+
+	if len(r.Results) != 1 {
+		t.Fatalf("Results = %d, want 1", len(r.Results))
+	}
+	if r.Results[0].Error != "" {
+		t.Fatalf("error: %s", r.Results[0].Error)
+	}
+	if r.Results[0].Lines != 2 {
+		t.Errorf("lines = %d, want 2", r.Results[0].Lines)
+	}
+	if r.Results[0].Words != 5 {
+		t.Errorf("words = %d, want 5", r.Results[0].Words)
+	}
+	if r.Total.Words != 5 {
+		t.Errorf("total words = %d, want 5", r.Total.Words)
+	}
+}
+
+func TestWordCount_MultipleFiles(t *testing.T) {
+	dir := t.TempDir()
+	path1 := filepath.Join(dir, "a.txt")
+	path2 := filepath.Join(dir, "b.txt")
+	os.WriteFile(path1, []byte("one two\n"), 0644)
+	os.WriteFile(path2, []byte("three four five\n"), 0644)
+
+	tool := &wordCountTool{}
+	args := fmt.Sprintf(`{"files":[{"path":"%s"},{"path":"%s"}]}`, path1, path2)
+	result := callJSON(t, tool, args)
+
+	var r struct {
+		Total struct {
+			Lines int `json:"lines"`
+			Words int `json:"words"`
+		} `json:"total"`
+	}
+	mustUnmarshal(t, result, &r)
+
+	if r.Total.Lines != 2 {
+		t.Errorf("total lines = %d, want 2", r.Total.Lines)
+	}
+	if r.Total.Words != 5 {
+		t.Errorf("total words = %d, want 5", r.Total.Words)
+	}
+}
+
+func TestWordCount_NotFound(t *testing.T) {
+	tool := &wordCountTool{}
+	result := callJSON(t, tool, `{"files":[{"path":"/nonexistent"}]}`)
+	var r struct {
+		Results []struct {
+			Error string `json:"error"`
+		} `json:"results"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Results[0].Error == "" {
+		t.Errorf("expected error for nonexistent file")
+	}
+}

@@ -1410,6 +1410,11 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 		&jsonQueryTool{dangerousConfig: dc},
 		&treeTool{dangerousConfig: dc},
 		&checksumTool{dangerousConfig: dc},
+		&sortTool{dangerousConfig: dc},
+		&headTailTool{dangerousConfig: dc},
+		&base64Tool{dangerousConfig: dc},
+		&trTool{dangerousConfig: dc},
+		&wordCountTool{dangerousConfig: dc},
 		newBrowserTool(dc),
 	}
 

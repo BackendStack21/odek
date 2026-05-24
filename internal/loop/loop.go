@@ -865,7 +865,8 @@ func classifyToolCall(name, args string) (danger.RiskClass, string) {
 		}
 		return danger.Classify(cmd.Command), cmd.Command
 	case "read_file", "write_file", "patch", "search_files", "batch_read", "file_info", "glob",
-		"diff", "multi_grep", "json_query", "tree", "batch_patch", "count_lines", "checksum":
+		"diff", "multi_grep", "json_query", "tree", "batch_patch", "count_lines", "checksum",
+		"sort", "head_tail", "base64", "tr", "word_count":
 		// Extract the path from JSON args.
 		var p struct {
 			Path string `json:"path"`
