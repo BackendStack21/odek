@@ -738,6 +738,11 @@ if e.approver != nil && len(result.ToolCalls) > 1 {
 					t := e.registry.Get(tcRef.Function.Name)
 					output := fmt.Sprintf("error: tool %q not found", tcRef.Function.Name)
 					if t != nil {
+						// Propagate agent context to tools that support it
+						// (e.g. delegate_tasks kills sub-agents on parent cancel).
+						if ctxTool, ok := t.(interface{ SetContext(context.Context) }); ok {
+							ctxTool.SetContext(ctx)
+						}
 						res, err := t.Call(tcRef.Function.Arguments)
 						if err != nil {
 							output = fmt.Sprintf("error: %s", err.Error())

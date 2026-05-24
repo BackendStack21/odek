@@ -26,6 +26,12 @@ type delegateTasksTool struct {
 	odekPath       string // path to the odek binary
 	timeout        time.Duration
 
+	// ctx is the parent agent's context, set by the agent loop before each
+	// Call invocation. When the parent is cancelled (Ctrl+C, restart, timeout),
+	// runTask derives its per-task context from this, so sub-agent processes
+	// are killed promptly instead of running the full timeout.
+	ctx context.Context
+
 	// OnSubagentLog, if set, is called with each NDJSON progress line
 	// emitted by a sub-agent. taskIdx is the index within the current
 	// batch. Used by the WebUI for live log streaming.
@@ -33,6 +39,13 @@ type delegateTasksTool struct {
 }
 
 func (t *delegateTasksTool) Name() string { return "delegate_tasks" }
+
+// SetContext sets the parent agent's context on the tool.
+// Called by the agent loop before each Call invocation to propagate
+// cancellation signals (Ctrl+C, restart, timeout) to sub-agents.
+func (t *delegateTasksTool) SetContext(ctx context.Context) {
+	t.ctx = ctx
+}
 
 func (t *delegateTasksTool) Description() string {
 	return `Spawn one or more sub-agent OS processes to work on focused sub-tasks in parallel. Each sub-agent gets its own process, config, and context window. Use this when the task has clear independent sub-tasks that can be worked on simultaneously.
@@ -142,7 +155,14 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 }
 
 func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, system string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), t.timeout)
+	// Derive per-task context from the parent's context (if set).
+	// When the parent is cancelled, all running sub-agents are killed
+	// promptly instead of running the full timeout.
+	parentCtx := context.Background()
+	if t.ctx != nil {
+		parentCtx = t.ctx
+	}
+	ctx, cancel := context.WithTimeout(parentCtx, t.timeout)
 	defer cancel()
 
 	// Write task to temp file (avoids CLI arg length limits)
