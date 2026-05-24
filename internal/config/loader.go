@@ -8,7 +8,8 @@
 //
 // Both config files are optional. Missing files are silently ignored.
 // String values in config files support ${VAR} environment variable
-// substitution (e.g. "api_key": "${MY_API_KEY}").
+// substitution (e.g. "api_key": "${MY_API_KEY}"). Use $$ for a literal
+// dollar sign.
 package config
 
 import (
@@ -366,8 +367,76 @@ func loadFile(path string) FileConfig {
 }
 
 // expandEnv replaces ${VAR} or $VAR with environment variable values.
+// Supports $$ as an escape for a literal dollar sign.
 func expandEnv(s string) string {
-	return os.Expand(s, os.Getenv)
+	var buf strings.Builder
+	i := 0
+	for j := 0; j < len(s); j++ {
+		if s[j] != '$' {
+			continue
+		}
+		buf.WriteString(s[i:j])
+
+		// $$ → literal $
+		if j+1 < len(s) && s[j+1] == '$' {
+			buf.WriteByte('$')
+			i = j + 2
+			j++ // skip second $
+			continue
+		}
+
+		// Find variable name: ${VAR} or $VAR or $VAR_NAME
+		name, w := parseVarName(s[j+1:])
+		i = j + 1 + w
+
+		if name == "" {
+			// $ followed by non-identifier: emit as-is
+			buf.WriteByte('$')
+			continue
+		}
+		buf.WriteString(os.Getenv(name))
+	}
+	buf.WriteString(s[i:])
+	return buf.String()
+}
+
+// parseVarName extracts a shell variable name from s, which is the part
+// after the $ sign. Returns (name, width) where width is how many bytes
+// the variable reference consumed (including braces for ${VAR}).
+// Returns ("", 0) for no match (bare $) or ("", 1) for $?/$!/etc.
+func parseVarName(s string) (string, int) {
+	if len(s) == 0 {
+		return "", 0
+	}
+	if s[0] == '{' {
+		// ${VAR}
+		for k := 1; k < len(s); k++ {
+			if s[k] == '}' {
+				return s[1:k], k + 1
+			}
+		}
+		return "", len(s) // unterminated — consume everything
+	}
+	// $VAR or $VAR_NAME123
+	if !isVarStart(s[0]) {
+		return "", 1 // $@, $*, $#, $?, $-, $$, $!, $0...
+	}
+	// Parse the rest of the name
+	k := 1
+	for k < len(s) && isVarCont(s[k]) {
+		k++
+	}
+	return s[:k], k
+}
+
+// isVarStart returns true for characters that can start a variable name.
+func isVarStart(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+}
+
+// isVarCont returns true for characters that can continue a variable name.
+func isVarCont(c byte) bool {
+	return isVarStart(c) || (c >= '0' && c <= '9')
 }
 
 // ── Environment Variable Loading ───────────────────────────────────────
