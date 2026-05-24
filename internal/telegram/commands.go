@@ -47,7 +47,7 @@ func init() {
 		},
 		{
 			Command:     "mode",
-			Description: "Toggle agent modes (sandbox, verbose)",
+			Description: "Show agent modes (interaction_mode, tool_progress, sandbox)",
 			Handler:     modeHandler,
 		},
 		{
@@ -135,10 +135,18 @@ func stopHandler(args string) (string, error) {
 
 func modeHandler(args string) (string, error) {
 	return "⚙️ *Agent Modes*\n\n" +
-		"Modes are set at startup via `odek.json` or CLI flags:\n" +
+		"Modes are set at startup via `odek.json` or CLI flags:\n\n" +
+		"*Interaction Mode:*\n" +
 		"• `interaction_mode: engaging` — emoji-rich narration (default)\n" +
 		"• `interaction_mode: enhance` — narrated tool summaries (persist)\n" +
-		"• `interaction_mode: verbose` — raw tool call output\n" +
+		"• `interaction_mode: verbose` — raw tool call output\n\n" +
+		"*Tool Progress (Telegram):*\n" +
+		"• `tool_progress: all` — smart previews with throttling (default)\n" +
+		"• `tool_progress: new` — only on tool change\n" +
+		"• `tool_progress: verbose` — raw tool args\n" +
+		"• `tool_progress: off` — no progress messages\n" +
+		"• `tool_progress_cleanup: true` — delete progress on answer\n\n" +
+		"*Other:*\n" +
 		"• `sandbox: true` — run in Docker isolation\n" +
 		"• `skills.verbose: true` — show skill learning details\n\n" +
 		"Restart the bot after changing config.", nil

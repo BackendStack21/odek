@@ -39,6 +39,8 @@ Shared across all projects:
   "no_color": false,
   "no_agents": false,
   "max_tool_parallel": 4,
+  "tool_progress": "all",
+  "tool_progress_cleanup": true,
   "system": ""
 }
 ```
@@ -322,6 +324,49 @@ odek run "Daily summary" --deliver
 ```
 
 See [docs/TELEGRAM.md](docs/TELEGRAM.md#cron-integration) for full cron setup instructions.
+
+## Tool Progress
+
+Controls how per-tool progress messages appear inside the Telegram bot during agent runs. Independent from `interaction_mode` — you can have engaging terminal output with minimal Telegram progress, or verbose terminal with rich progress bubbles.
+
+```json
+{
+  "tool_progress": "all",
+  "tool_progress_cleanup": true
+}
+```
+
+### `tool_progress`
+
+| Value | Behavior | Use case |
+|-------|----------|----------|
+| `"all"` (default) | Single editable progress bubble with smart previews — e.g. `📝 read_file: "main.go"`. Includes edit throttling (1.5s), tool dedup (`×N` counter for repeated same-tool), and automatic flood-control fallback | General use — shows what the agent is doing without spamming the chat |
+| `"new"` | Same as `"all"` but only updates when the tool name changes. Consecutive `read_file` calls produce one line; a `shell` call starts a new line | Long-running agents with repetitive tool chains (e.g. reading 50 files in batch) |
+| `"verbose"` | Raw tool arguments as separate messages. Each tool call sends a new message with full JSON args; on completion the result is sent as a new message `✅ (size)` | Debugging — see exactly what the agent passes to each tool |
+| `"off"` | No per-tool progress messages at all. Only the initial "🤔 Looking into that..." and final answer are shown | Privacy-sensitive contexts or users who prefer zero noise |
+
+### `tool_progress_cleanup`
+
+Default: `true`. Controls whether the progress message bubble is deleted after the agent's final answer arrives:
+- `true` — delete the progress bubble (clean chat, no stale tool traces)
+- `false` — keep the progress bubble as a breadcrumb of what the agent did
+
+### How it works
+
+The progress system is an evolving single message that gets edited in-place (similar to an animated status). Each tool call adds a line like:
+
+```
+📝 read_file: "main.go"
+💻 shell: "npm test"
+📝 read_file: "utils.go" (×3)
+```
+
+Key behaviors:
+- **Smart previews** — instead of showing raw JSON args, the system extracts meaningful context: filename for file tools, the command text for shell, URL for browser, query text for memory/search tools, audio filename for transcribe
+- **Edit throttling** — edits are rate-limited to one every 1.5 seconds to avoid hitting Telegram's flood control limits. Rapid tool chains don't produce 429 errors
+- **Tool dedup** — when the same tool runs consecutively (common with parallel batch tools like `batch_read`), identical lines are collapsed into a `(×N)` counter instead of repeating N times
+- **Flood control fallback** — if an edit message fails with "flood" or "retry after", the system automatically switches to sending new messages instead of editing. This prevents the bot from becoming unresponsive under heavy load
+- **Content reset** — when the agent calls `send_message` mid-run to send an interim message, the progress bubble resets below that content, keeping the chat timeline in correct order
 
 ## odek init
 
