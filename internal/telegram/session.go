@@ -105,9 +105,14 @@ func (sm *SessionManager) Save(chatID int64, messages []llm.Message) error {
 	sm.Mu.Lock()
 	cs, ok := sm.Cache[chatID]
 	if ok {
-		cs.Messages = messages
-		cs.LastActive = time.Now()
-		cs.TurnCount++
+		// Copy-on-write: create a new ChatSession so existing pointers
+		// held by Load() callers are not mutated, avoiding data races.
+		updated := *cs
+		updated.Messages = messages
+		updated.LastActive = time.Now()
+		updated.TurnCount++
+		cs = &updated
+		sm.Cache[chatID] = cs
 	} else {
 		cs = &ChatSession{
 			ChatID:     chatID,
@@ -118,15 +123,18 @@ func (sm *SessionManager) Save(chatID int64, messages []llm.Message) error {
 		}
 		sm.Cache[chatID] = cs
 	}
+	// Snapshot fields needed after unlock to avoid data race:
+	sessionID := cs.SessionID
+	createdAt := cs.CreatedAt
+	turnCount := cs.TurnCount
 	sm.Mu.Unlock()
 
-	now := time.Now()
 	sess := &session.Session{
-		ID:        cs.SessionID,
-		CreatedAt: cs.CreatedAt,
-		UpdatedAt: now,
+		ID:        sessionID,
+		CreatedAt: createdAt,
+		UpdatedAt: time.Now(),
 		Model:     "",
-		Turns:     cs.TurnCount,
+		Turns:     turnCount,
 		Task:      fmt.Sprintf("tg-%d", chatID),
 		Messages:  messages,
 	}

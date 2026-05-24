@@ -277,11 +277,12 @@ func TestSave_incrementsTurnCount(t *testing.T) {
 		t.Errorf("TurnCount = %d, want 1 after first save", cs.TurnCount)
 	}
 
-	// Second save → TurnCount = 2
+	// Second save → re-fetch from cache to verify increment
 	err = sm.Save(chatID, []llm.Message{{Role: "user", Content: "turn 2"}})
 	if err != nil {
 		t.Fatalf("second Save failed: %v", err)
 	}
+	cs, _ = sm.GetOrCreate(chatID)
 	if cs.TurnCount != 2 {
 		t.Errorf("TurnCount = %d, want 2 after second save", cs.TurnCount)
 	}
@@ -291,13 +292,9 @@ func TestSave_incrementsTurnCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("third Save failed: %v", err)
 	}
+	cs, _ = sm.GetOrCreate(chatID)
 	if cs.TurnCount != 3 {
 		t.Errorf("TurnCount = %d, want 3 after third save", cs.TurnCount)
-	}
-
-	// Verify disk also has the right turn count.
-	if cs.TurnCount != 3 {
-		t.Errorf("TurnCount = %d, want 3", cs.TurnCount)
 	}
 }
 
@@ -496,6 +493,11 @@ func TestAppendMessage(t *testing.T) {
 	err = sm.AppendMessage(chatID, "assistant", "response")
 	if err != nil {
 		t.Fatalf("second AppendMessage failed: %v", err)
+	}
+	// Re-fetch after Save (copy-on-write replaces cache pointer).
+	cs, err = sm.GetOrCreate(chatID)
+	if err != nil {
+		t.Fatalf("GetOrCreate after second append failed: %v", err)
 	}
 	if len(cs.Messages) != 2 {
 		t.Errorf("Messages length = %d, want 2", len(cs.Messages))

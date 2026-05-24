@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -633,10 +634,10 @@ func TestPoller_Start_FatalError(t *testing.T) {
 }
 
 func TestPoller_Start_RetriesOnTransientError(t *testing.T) {
-	attempts := 0
+	var attempts atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attempts++
-		if attempts < 3 {
+		attempts.Add(1)
+		if attempts.Load() < 3 {
 			failResponse(w, 502, "Bad Gateway")
 			return
 		}
@@ -670,7 +671,7 @@ func TestPoller_Start_RetriesOnTransientError(t *testing.T) {
 	if err != context.DeadlineExceeded && err != context.Canceled {
 		t.Errorf("Start returned %v, want context deadline/cancel error", err)
 	}
-	if attempts < 3 {
-		t.Errorf("attempts = %d, want >= 3", attempts)
+	if attempts.Load() < 3 {
+		t.Errorf("attempts = %d, want >= 3", attempts.Load())
 	}
 }
