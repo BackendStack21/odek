@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.43.1 (2026-05-24) — Tool Progress Docs & /mode Command
+
+### Documentation
+- **CONFIG.md** — added full Tool Progress configuration section with value table (`tool_progress: all|new|verbose|off`), cleanup docs, and how-it-works walkthrough with examples (smart previews, edit throttling, tool dedup, flood fallback, content reset)
+- Updated default config JSON example to include `tool_progress` and `tool_progress_cleanup`
+
+### Telegram Bot
+- **/mode command** — updated to show tool_progress options alongside interaction_mode settings. New sections: *Interaction Mode*, *Tool Progress (Telegram)*, *Other*
+- Updated `/mode` command description in `/help` from "Toggle agent modes (sandbox, verbose)" to "Show agent modes (interaction_mode, tool_progress, sandbox)"
+
+---
+
 ## v0.43.0 (2026-05-24) — Telegram Narrator Upgrade
 
 ### New Features
