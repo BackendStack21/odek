@@ -314,7 +314,7 @@
   <div class="container">
     <h1>odek</h1>
     <p class="sub"><span class="size">~12 MB</span> static binary · Zero frameworks.<br>Think, therefore act.</p>
-    <div class="badge" style="margin-top:12px;display:inline-block;background:var(--accent-subtle);border:1px solid rgba(56,189,248,.15);border-radius:6px;padding:5px 12px;font-size:0.8125rem;font-family:var(--font-mono);color:var(--accent);">v0.37.18</div>
+    <div class="badge" style="margin-top:12px;display:inline-block;background:var(--accent-subtle);border:1px solid rgba(56,189,248,.15);border-radius:6px;padding:5px 12px;font-size:0.8125rem;font-family:var(--font-mono);color:var(--accent);">v0.45.0</div>
 
     <div class="install-block">
       <code>go install github.com/BackendStack21/odek/cmd/odek@latest</code>
@@ -426,7 +426,7 @@
       <div class="slide">
         <span class="info"># MCP server mode</span><br>
         <span class="prompt">$ odek mcp</span><br>
-        <span class="info">odek mcp ⚡  MCP server starting (v0.37.18)</span><br>
+        <span class="info">odek mcp ⚡  MCP server starting (v0.45.0)</span><br>
         <span class="output">Connected by Claude Code. Exposing 8 tools:</span><br>
         <span class="output">  • read_file    — read files with line numbers</span><br>
         <span class="output">  • write_file   — write files safely</span><br>
@@ -514,21 +514,21 @@
     </div>
 
     <div class="card">
-      <div class="icon">📎</div>
-      <h4>File Attachments</h4>
-      <p>Attach files to any prompt with <code>--ctx</code> / <code>-c</code> (CLI), <code>@file</code> inline references (REPL), or drag-and-drop (Web UI). File content is injected as context blocks — no tool calls needed.</p>
-    </div>
-
-    <div class="card">
-      <div class="icon">🏗️</div>
-      <h4>Layerable Config</h4>
-      <p>Four-layer priority chain: global → project → <code>ODEK_*</code> env vars → CLI flags. <code>${VAR}</code> substitution in config files. Sensible defaults at every layer.</p>
-    </div>
-
-    <div class="card">
       <div class="icon">🔍</div>
+      <h4>Session Search</h4>
+      <p><code>session_search</code> — full-text and fuzzy search across your entire agent history. Use <code>--deep</code> for LLM-powered semantic search. Never lose a past finding, decision, or code review.</p>
+    </div>
+
+    <div class="card">
+      <div class="icon">🎤</div>
+      <h4>Audio Transcription</h4>
+      <p><code>transcribe</code> — local whisper-based audio transcription. Drop an OGG, MP3, or WAV file, get text back. Runs entirely offline, no cloud API. Private by design.</p>
+    </div>
+
+    <div class="card">
+      <div class="icon">🛠️</div>
       <h4>Native Tools</h4>
-      <p>Built-in read_file, write_file, search_files, patch, shell, and browser. All gated by a unified security layer — classify operations as allow / deny / prompt per risk class.</p>
+      <p>read_file, write_file, search_files, patch, shell, browser — all compiled into a single static Go binary. Zero subprocess overhead, instant startup, thread-safe concurrent execution. Gated by a unified security layer.</p>
     </div>
 
     <div class="card">
