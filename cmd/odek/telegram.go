@@ -881,7 +881,7 @@ func spawnChild() error {
 	argv[0] = exe
 
 	// Open stderr log file for the child so startup errors aren't lost.
-	stderr, err := os.OpenFile("/tmp/odek-telegram.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	stderr, err := os.OpenFile("/tmp/odek-telegram.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		stderr = nil // fallback: child gets /dev/null
 	}
