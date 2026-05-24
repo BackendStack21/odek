@@ -357,15 +357,12 @@ func (e *replEditor) drawLine() {
 	fmt.Fprintf(os.Stderr, "\r\x1b[%dC", offset)
 }
 
-// redrawFromCursor redraws from the current cursor position to the end.
+// redrawFromCursor redraws the full line from scratch.
+// The old partial-redraw logic (printing from e.pos onward) failed when
+// e.pos == len(e.line) — the common "typing at end" case — leaving
+// every keystroke invisible. A full drawLine() is correct and fast.
 func (e *replEditor) redrawFromCursor() {
-	fmt.Fprint(os.Stderr, string(e.line[e.pos:]))
-	// Clear to end
-	fmt.Fprint(os.Stderr, "\x1b[K")
-	// Move cursor back
-	if remaining := len(e.line) - e.pos; remaining > 0 {
-		fmt.Fprintf(os.Stderr, "\x1b[%dD", remaining)
-	}
+	e.drawLine()
 }
 
 func (e *replEditor) clearScreen() {
