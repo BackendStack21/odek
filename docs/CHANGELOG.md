@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.42.1 (2026-05-24) — OGG Opus Transcribe Fix
+
+### Bug Fixes
+- **transcribe tool** — whisper.cpp cannot read OGG Opus audio (`dr_wav`/`dr_mp3` limitation). Telegram voice messages are OGG Opus → produced empty transcriptions silently. Added `convertToWAV()` that auto-detects unsupported formats and uses ffmpeg (16kHz mono WAV) before passing to whisper. Best-effort: falls through to original path if ffmpeg unavailable, so whisper's own error bubbles up
+- **config loader** — `overlayFile()` was missing `Transcription` field propagation. Adding `"transcription"` to `~/.odek/config.json` was silently ignored. Now properly propagates the pointer field
+
+### Stats
+- 43 insertions across 2 files (transcribe_tool.go, loader.go)
+- All 19 packages pass with `-race`
+
+---
+
+## v0.42.0 (2026-05-24) — Session Search
+
+### New Tool: `session_search`
+- Built-in `session_search` tool — browse, search, and recall past sessions by keyword or browse most recent
+- Uses FTS5 full-text search on the sessions index JSON
+- Supports: keyword queries with OR/AND, phrase search, role filtering, prefix search
+- Returns LLM-summarized matching sessions with timestamps and previews
+- Zero new dependencies (stdlib `encoding/json` + FTS5 via sqlite)
+
+### CI
+- Bumped `softprops/action-gh-release` from v2 to v4
+
+### Stats
+- 212 insertions across 3 files
+- All tests pass with `-race`
+
+---
+
 ## v0.41.1 (2026-05-24) — Quality Hardening
 
 ### Bug Fixes

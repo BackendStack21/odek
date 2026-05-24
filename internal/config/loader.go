@@ -905,6 +905,9 @@ func overlayFile(base, override FileConfig) FileConfig {
 	if override.InteractionMode != "" {
 		base.InteractionMode = override.InteractionMode
 	}
+	if override.Transcription != nil {
+		base.Transcription = override.Transcription
+	}
 	return base
 }
 

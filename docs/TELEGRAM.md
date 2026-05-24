@@ -167,7 +167,7 @@ The `Handler` struct routes incoming updates to the appropriate callback based o
 |---|---|---|
 | `OnTextMessage` | Plain text message | `(chatID int64, text string) (string, error)` |
 | `OnCommand` | Slash command (e.g. `/start`) | `(chatID int64, command, args string) (string, error)` |
-| `OnVoiceMessage` | Voice message (OGG) | `(chatID int64, fileID string) (string, error)` |
+| `OnVoiceMessage` | Voice message (OGG Opus) | `(chatID int64, messageID int, fileID string) (string, error)` |
 | `OnPhotoMessage` | Photo message | `(chatID int64, fileIDs []string) (string, error)` |
 | `OnCallbackQuery` | Inline keyboard callback | `(chatID int64, callbackData string) (string, error)` |
 
@@ -291,6 +291,21 @@ Media files are saved to `~/.odek/media/` (created automatically on first downlo
 - Uses the last (largest) photo size
 - Saves as `photo_<truncated_fileID>.<ext>` (default extension: `.jpg`)
 - Same fileID truncation as voice downloads
+
+### Auto-Transcribe (Voice → Text)
+
+When `transcription.auto_transcribe: true` is set in config and whisper is installed, voice messages are automatically transcribed into text before reaching the agent:
+
+```
+Voice message received → DownloadVoice (OGG Opus to disk)
+                        → convertToWAV (ffmpeg: OGG→16kHz mono WAV)
+                        → whisper.cpp (local transcription)
+                        → transcribed text injected as user message
+```
+
+**OGG Opus handling:** whisper.cpp uses `dr_wav`/`dr_mp3` internally and does not support OGG Opus. The transcribe tool auto-detects unsupported formats and converts via ffmpeg. If ffmpeg is unavailable, the original file is passed to whisper which produces a clear error message.
+
+**Fallback:** If auto-transcribe fails (ffmpeg unavailable, corrupt audio, whisper error), the agent receives the file path with a suggestion to use the `transcribe()` tool manually.
 
 ## Types (`types.go`)
 

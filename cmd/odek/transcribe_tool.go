@@ -14,6 +14,36 @@ import (
 	"github.com/BackendStack21/kode/internal/danger"
 )
 
+// ── Audio Format Conversion ──────────────────────────────────────────────
+
+// convertToWAV converts an audio file to WAV format using ffmpeg if needed.
+// Returns the path to the WAV file (may be the same as input if already WAV/MP3/FLAC
+// or if ffmpeg is unavailable/fails — in which case whisper will produce its own error).
+// The caller must remove the returned path if it differs from the input path.
+func convertToWAV(srcPath string) string {
+	ext := strings.ToLower(filepath.Ext(srcPath))
+	// whisper.cpp supports WAV, MP3, FLAC natively via dr_wav/dr_mp3/dr_flac.
+	switch ext {
+	case ".wav", ".mp3", ".flac":
+		return srcPath
+	}
+
+	// Check if ffmpeg is available
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		return srcPath
+	}
+
+	// Convert to WAV using ffmpeg — best-effort, fall through on failure.
+	dstPath := srcPath + ".wav"
+	cmd := exec.Command("ffmpeg", "-y", "-i", srcPath, "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", dstPath)
+	if err := cmd.Run(); err != nil {
+		// If ffmpeg fails (corrupt file, unsupported codec, etc.),
+		// just pass the original path — whisper will produce its own error.
+		return srcPath
+	}
+	return dstPath
+}
+
 // ── Resolved Paths ──────────────────────────────────────────────────
 
 // whisperBinary attempts to locate the whisper CLI binary.
@@ -191,6 +221,15 @@ func (t *transcribeTool) Call(argsJSON string) (result string, err error) {
 	}
 	f.Close()
 
+	// Convert to WAV if needed (whisper.cpp doesn't support OGG Opus natively).
+	wavPath := convertToWAV(args.Path)
+	cleanup := func() {
+		if wavPath != args.Path {
+			os.Remove(wavPath)
+		}
+	}
+	defer cleanup()
+
 	// Locate whisper binary
 	binary, err := whisperBinary(t.transcriptionCfg)
 	if err != nil {
@@ -216,7 +255,7 @@ func (t *transcribeTool) Call(argsJSON string) (result string, err error) {
 	args2 := []string{
 		"--model", modelPathResolved,
 		"--output-json",
-		"--file", args.Path,
+		"--file", wavPath,
 	}
 	if lang != "" {
 		args2 = append(args2, "--language", lang)
