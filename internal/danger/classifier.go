@@ -9,8 +9,11 @@ package danger
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -84,18 +87,113 @@ func ClassifyPath(path string) RiskClass {
 
 // ClassifyURL returns a RiskClass for a browser URL.
 // Internal IPs → system_write; external → network_egress.
+// Uses proper IP parsing (handles decimal, octal, hex, IPv6 compressed,
+// short forms like 127.1, and all other representations that browsers
+// accept via inet_aton-style parsing) instead of string prefix matching
+// which was trivially bypassable.
 func ClassifyURL(rawURL string) RiskClass {
-	for _, prefix := range []string{
-		"http://127.0.0.1", "http://localhost", "http://10.",
-		"http://172.", "http://192.168.", "http://[::1]",
-		"https://127.0.0.1", "https://localhost",
-		"https://10.", "https://172.", "https://192.168.",
-	} {
-		if strings.HasPrefix(rawURL, prefix) {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return NetworkEgress // can't parse — don't block, but will fail at fetch time
+	}
+
+	host := u.Hostname()
+
+	// Try as an IP address — uses browser-compatible parsing that handles
+	// decimal (127.0.0.1), octal (0177.0.0.1), hex (0x7f000001),
+	// mixed (127.0x1), short (127.1), single-integer (2130706433),
+	// IPv6 compressed ([::1]), IPv4-mapped IPv6, etc.
+	if ip := parseBrowserIP(host); ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
 			return SystemWrite
 		}
+		if ip.IsUnspecified() {
+			return SystemWrite
+		}
+		return NetworkEgress
 	}
+
+	// Hostname-based: check well-known private hostnames
+	hostLower := strings.ToLower(host)
+	switch hostLower {
+	case "localhost", "localhost.localdomain", "localhost6", "localhost6.localdomain6",
+		"ip6-localhost", "ip6-loopback":
+		return SystemWrite
+	}
+
+	// *.local (mDNS) resolves to link-local
+	if strings.HasSuffix(hostLower, ".local") {
+		return SystemWrite
+	}
+
+	// Common cloud metadata endpoints (SSRF targets)
+	if hostLower == "169.254.169.254" || hostLower == "[fd00:ec2::254]" ||
+		hostLower == "metadata.google.internal" ||
+		hostLower == "metadata.internal" ||
+		strings.HasSuffix(hostLower, ".internal") {
+		return SystemWrite
+	}
+
+	// Docker internal hostnames
+	if strings.HasSuffix(hostLower, ".docker.internal") {
+		return SystemWrite
+	}
+
 	return NetworkEgress
+}
+
+// parseBrowserIP parses an IP address using the same rules browsers use
+// (inet_aton-style), handling representations that Go's net.ParseIP doesn't:
+//   - Octal: 0177.0.0.1
+//   - Hex:   0x7f000001, 0x0.0x0.0x0.0x0
+//   - Integer: 2130706433
+//   - Short:  127.1
+func parseBrowserIP(host string) net.IP {
+	// Try standard parse first (handles IPv6, dotted decimal, etc.)
+	if ip := net.ParseIP(host); ip != nil {
+		return ip
+	}
+
+	// Try inet_aton-style parsing for IPv4 with non-standard representations
+	parts := strings.Split(host, ".")
+	if len(parts) < 1 || len(parts) > 4 {
+		return nil
+	}
+
+	var nums []uint32
+	for _, p := range parts {
+		var val uint64
+		var err error
+		switch {
+		case strings.HasPrefix(p, "0x") || strings.HasPrefix(p, "0X"):
+			val, err = strconv.ParseUint(p[2:], 16, 32)
+		case strings.HasPrefix(p, "0") && len(p) > 1:
+			// Only octal if it starts with 0 and has more digits
+			// Single "0" is just decimal zero
+			val, err = strconv.ParseUint(p[1:], 8, 32)
+		default:
+			val, err = strconv.ParseUint(p, 10, 32)
+		}
+		if err != nil || val > 0xFFFFFFFF {
+			return nil
+		}
+		nums = append(nums, uint32(val))
+	}
+
+	switch len(nums) {
+	case 1:
+		// Single number: full 32-bit address
+		return net.IPv4(byte(nums[0]>>24), byte(nums[0]>>16), byte(nums[0]>>8), byte(nums[0]))
+	case 2:
+		// a.b: a = high byte, b = remaining 24 bits
+		return net.IPv4(byte(nums[0]), byte(nums[1]>>16), byte(nums[1]>>8), byte(nums[1]))
+	case 3:
+		// a.b.c: a, b = high bytes, c = remaining 16 bits
+		return net.IPv4(byte(nums[0]), byte(nums[1]), byte(nums[2]>>8), byte(nums[2]))
+	case 4:
+		return net.IPv4(byte(nums[0]), byte(nums[1]), byte(nums[2]), byte(nums[3]))
+	}
+	return nil
 }
 
 // ── Config ─────────────────────────────────────────────────────────────
