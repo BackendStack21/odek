@@ -423,6 +423,21 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 			}
 		}
 
+		// After trimContext, verify the memory message still exists at the
+		// tracked position. trimContext starts dropping from index 2 onward,
+		// and the memory message can shift into that range after a trim
+		// warning is injected (shifting it from index 1 to 2). Once at index
+		// 2, it can be dropped by subsequent trimContext calls, leaving
+		// memMsgIdx pointing to the wrong message (a user/assistant message
+		// that shifted into that slot). When this happens, reset memMsgIdx
+		// so the memory is re-inserted at the correct position.
+		if e.memMsgIdx >= 0 && e.memMsgIdx < len(messages) {
+			if messages[e.memMsgIdx].Role != "system" {
+				// Memory message was dropped — re-insert on next update.
+				e.memMsgIdx = -1
+			}
+		}
+
 		// Load relevant skills based on latest user input (once per message)
 		if e.skillLoader != nil {
 			if userMsg := lastUserMessage(messages); userMsg != "" && userMsg != e.lastSkillMsg {
