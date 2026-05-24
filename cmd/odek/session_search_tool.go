@@ -87,6 +87,11 @@ func (t *sessionSearchTool) Call(argsJSON string) (result string, err error) {
 		}
 	}()
 
+	// Guard: store must be initialized (nil when --session is not used).
+	if t.store == nil {
+		return jsonError("session store is not available (use --session to enable session persistence)")
+	}
+
 	var args sessionSearchArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return jsonError("invalid arguments: " + err.Error())
