@@ -141,6 +141,7 @@ The `Poller` struct implements Telegram's long-polling update mechanism:
 - **Configurable timeout**: default 30s long-poll (Telegram holds the connection open until updates arrive or the timeout expires)
 - **Polling interval**: 1s between poll cycles (configurable via `PollInterval`)
 - **Exponential backoff**: consecutive poll errors trigger increasing delays: `interval × 2^errors`, capped at `60 × interval`. Error count clamps at 30 to prevent integer overflow in the bit-shift. A successful poll resets the error counter.
+- **Context cancellation**: `GetUpdatesContext(ctx, ...)` and `Poll(ctx)` use context-aware HTTP requests (`http.NewRequestWithContext`). When the context is cancelled (e.g. SIGINT/SIGTERM), the long-poll HTTP call is **aborted immediately** instead of blocking until the poll timeout expires. The retry loop also checks `ctx.Done()` during backoff sleeps, so cancellation during retries returns promptly.
 
 ```go
 poller := telegram.NewPoller(bot)
@@ -400,7 +401,9 @@ During restart:
 
 4. **Bounded drain** — the process waits up to 15 seconds for all agent goroutines to finish. If a task is stuck (e.g., a long HTTP call that ignores context), the child process takes over and the parent is killed by the singleton lock.
 
-5. **Post-restart notification** — when the new instance starts, it reads the restart marker file and sends "🔄 Bot restarted" to each chat that was active during the restart.
+5. **PID file cleanup** — before `os.Exit(0)`, the PID file lock is explicitly released so the child process starts with no stale lock file.
+
+6. **Post-restart notification** — when the new instance starts, it reads the restart marker file and sends "🔄 Bot restarted" to each chat that was active during the restart.
 
 ### Spawn+Exit Mechanism
 

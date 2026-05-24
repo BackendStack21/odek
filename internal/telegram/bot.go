@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -64,6 +65,101 @@ func (b *Bot) SetLogger(l Logger) {
 // url builds the full API endpoint URL for the given method.
 func (b *Bot) url(method string) string {
 	return fmt.Sprintf("%s/%s", b.BaseURL, method)
+}
+
+// doJSONContext is like doJSON but respects context cancellation.
+// It uses context-aware HTTP requests and checks context.Done() during retry backoff.
+func (b *Bot) doJSONContext(ctx context.Context, method string, body any, dest any) error {
+	var reqBody []byte
+	if body != nil {
+		var err error
+		reqBody, err = json.Marshal(body)
+		if err != nil {
+			b.log.Error("marshal request failed", "method", method, "error", err)
+			return fmt.Errorf("telegram: marshal request: %w", err)
+		}
+	}
+
+	url := b.url(method)
+	var lastErr error
+
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(1<<(attempt-1)) * time.Second // 1s, 2s, 4s, 8s
+			b.log.Warn("retrying request", "method", method, "attempt", attempt, "backoff", backoff)
+			// Check context cancellation during backoff sleep.
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("telegram: %s cancelled: %w", method, ctx.Err())
+			case <-time.After(backoff):
+			}
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
+		if err != nil {
+			b.log.Error("create request failed", "method", method, "error", err)
+			return fmt.Errorf("telegram: create request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := b.Client.Do(req)
+		if err != nil {
+			b.log.Error("http post failed", "method", method, "error", err)
+			lastErr = fmt.Errorf("telegram: post %s: %w", method, err)
+			if isRetryableNetworkError(err) {
+				continue
+			}
+			return lastErr
+		}
+
+		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			b.log.Error("read response body failed", "method", method, "error", err)
+			lastErr = fmt.Errorf("telegram: read response: %w", err)
+			continue // read error — retry
+		}
+
+		var apiResp struct {
+			OK          bool            `json:"ok"`
+			Result      json.RawMessage `json:"result"`
+			Description string          `json:"description"`
+			ErrorCode   int             `json:"error_code"`
+		}
+		if err := json.Unmarshal(respBody, &apiResp); err != nil {
+			b.log.Error("unmarshal response failed", "method", method, "error", err)
+			return fmt.Errorf("telegram: unmarshal response: %w", err) // parse error — don't retry
+		}
+
+		if !apiResp.OK {
+			// 429 (rate limit) — retry
+			if apiResp.ErrorCode == 429 {
+				b.log.Warn("rate limited", "method", method, "description", apiResp.Description)
+				lastErr = &TelegramError{Method: method, Description: apiResp.Description, Code: apiResp.ErrorCode}
+				continue
+			}
+			// 5xx (server error) — retry
+			if apiResp.ErrorCode >= 500 && apiResp.ErrorCode < 600 {
+				b.log.Warn("server error", "method", method, "error_code", apiResp.ErrorCode, "description", apiResp.Description)
+				lastErr = &TelegramError{Method: method, Description: apiResp.Description, Code: apiResp.ErrorCode}
+				continue
+			}
+			// 4xx (client error, not 429) — don't retry
+			b.log.Error("api error", "method", method, "description", apiResp.Description, "error_code", apiResp.ErrorCode)
+			return &TelegramError{Method: method, Description: apiResp.Description, Code: apiResp.ErrorCode}
+		}
+
+		if dest != nil && len(apiResp.Result) > 0 {
+			if err := json.Unmarshal(apiResp.Result, dest); err != nil {
+				b.log.Error("unmarshal result failed", "method", method, "error", err)
+				return fmt.Errorf("telegram: unmarshal result: %w", err)
+			}
+		}
+
+		return nil
+	}
+
+	return lastErr
 }
 
 // doJSON marshals the request body, sends a POST request, and unmarshals
@@ -414,7 +510,23 @@ func (b *Bot) SendDocument(chatID int64, path string, caption string, opts *Send
 	return &msg, nil
 }
 
-// GetUpdates retrieves incoming updates using long polling.
+// GetUpdates retrieves incoming updates using long polling with context support.
+// When ctx is cancelled, the HTTP request is aborted immediately.
+func (b *Bot) GetUpdatesContext(ctx context.Context, offset int, timeout int) ([]Update, error) {
+	params := map[string]any{
+		"offset":  offset,
+		"timeout": timeout,
+	}
+
+	var updates []Update
+	if err := b.doJSONContext(ctx, "getUpdates", params, &updates); err != nil {
+		return nil, err
+	}
+	return updates, nil
+}
+
+// GetUpdates retrieves incoming updates using long polling (no context).
+// Deprecated: Use GetUpdatesContext for context-aware cancellation.
 func (b *Bot) GetUpdates(offset int, timeout int) ([]Update, error) {
 	params := map[string]any{
 		"offset":  offset,

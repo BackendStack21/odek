@@ -68,7 +68,7 @@ func (p *Poller) Poll(ctx context.Context) ([]Update, error) {
 	default:
 	}
 
-	updates, err := p.Bot.GetUpdates(p.Offset, p.Timeout)
+	updates, err := p.Bot.GetUpdatesContext(ctx, p.Offset, p.Timeout)
 	if err != nil {
 		return nil, err
 	}

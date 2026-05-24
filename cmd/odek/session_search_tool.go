@@ -252,7 +252,7 @@ func (t *sessionSearchTool) deepSearch(tokens []string, candidates []session.Ses
 		}
 
 		full, err := t.store.Load(s.ID)
-		if err != nil {
+		if err != nil || full == nil {
 			continue
 		}
 

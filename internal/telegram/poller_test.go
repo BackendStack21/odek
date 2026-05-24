@@ -662,7 +662,7 @@ func TestPoller_Start_RetriesOnTransientError(t *testing.T) {
 	p.Interval = time.Microsecond
 
 	updates := make(chan Update, 10)
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	// Should not return error (transient errors are retried).

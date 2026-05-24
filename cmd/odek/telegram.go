@@ -69,6 +69,10 @@ var resolvedAPIKey string
 // shutdown). Override in tests to avoid killing the test process.
 var killFn = syscall.Kill
 
+// instanceLockRef holds the current PID file lock, accessible from
+// gracefulRestart so it can release the lock before os.Exit(0).
+var instanceLockRef *instanceLock
+
 // getChatMutex returns the per-chat mutex for the given chat ID.
 func getChatMutex(chatID int64) *sync.Mutex {
 	v, _ := chatMu.LoadOrStore(chatID, &sync.Mutex{})
@@ -82,7 +86,11 @@ func telegramCmd(args []string) error {
 	if err != nil {
 		return fmt.Errorf("telegram: %w", err)
 	}
-	defer lock.release()
+	instanceLockRef = lock
+	defer func() {
+		instanceLockRef = nil
+		lock.release()
+	}()
 
 	// 1. Load config from all sources (file → env).
 	resolved := config.LoadConfig(config.CLIFlags{})
@@ -226,6 +234,7 @@ func telegramCmd(args []string) error {
 		// Handle /new — clear session and reset trust in the approver.
 		if cmdName == "new" {
 			sessionManager.Delete(chatID)
+			chatMu.Delete(chatID) // prevent mutex leak on session reset
 			if a := handler.GetApprover(chatID); a != nil {
 				a.ResetTrust()
 			}
@@ -862,9 +871,11 @@ func gracefulRestart(bot *telegram.Bot, cancel context.CancelFunc) {
 	// should be an instant restart.
 	//
 	// Since the child is an independent process already running via
-	// os.StartProcess, the cleanest path is to exit right here. The child's
-	// acquireLock reads the stale PID file, finds this PID is dead,
-	// and writes its own without issue.
+	// os.StartProcess, the cleanest path is to exit right here.
+	// Release the PID file lock before exit so the child gets a clean slate.
+	if instanceLockRef != nil {
+		instanceLockRef.release()
+	}
 	os.Exit(0)
 }
 
@@ -974,7 +985,7 @@ func handleChatMessage(
 	cs.LastActive = time.Now()
 
 	// Build the agent with Telegram approver.
-	tools := builtinTools(resolved.Dangerous, nil, approver, resolved.MaxConcurrency, resolved.Transcription, nil)
+	tools := builtinTools(resolved.Dangerous, nil, approver, resolved.MaxConcurrency, resolved.Transcription, sessionManager.Store)
 
 	modelLabel := odek.ProfileLabel(resolved.Model)
 	if modelLabel == "" {
