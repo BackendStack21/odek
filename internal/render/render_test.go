@@ -751,3 +751,54 @@ func TestRenderer_NarratorMessage_NoColor(t *testing.T) {
 		t.Errorf("missing message in no-color output: %q", out)
 	}
 }
+
+func TestFirstSentence_Empty(t *testing.T) {
+	if got := FirstSentence(""); got != "" {
+		t.Errorf("FirstSentence('') = %q, want ''", got)
+	}
+}
+
+func TestFirstSentence_Simple(t *testing.T) {
+	input := "Let me search for that file. I will use grep to find the pattern."
+	got := FirstSentence(input)
+	want := "Let me search for that file."
+	if got != want {
+		t.Errorf("FirstSentence = %q, want %q", got, want)
+	}
+}
+
+func TestFirstSentence_StripsIWill(t *testing.T) {
+	input := "I will check the server logs for errors. Then I can debug further."
+	got := FirstSentence(input)
+	want := "check the server logs for errors."
+	if got != want {
+		t.Errorf("FirstSentence = %q, want %q", got, want)
+	}
+}
+
+func TestFirstSentence_NoBoundary(t *testing.T) {
+	input := "Just a single short phrase"
+	got := FirstSentence(input)
+	want := "Just a single short phrase"
+	if got != want {
+		t.Errorf("FirstSentence = %q, want %q", got, want)
+	}
+}
+
+func TestFirstSentence_TruncateLong(t *testing.T) {
+	input := "I think the best approach would be to first check the configuration file and then run the application to see if it works correctly without any errors."
+	got := FirstSentence(input)
+	words := len(strings.Fields(got))
+	if words > 20 {
+		t.Errorf("FirstSentence = %q has %d words, want ≤20", got, words)
+	}
+}
+
+func TestFirstSentence_WithExclamation(t *testing.T) {
+	input := "Found it! Now let me read the contents."
+	got := FirstSentence(input)
+	want := "Found it!"
+	if got != want {
+		t.Errorf("FirstSentence = %q, want %q", got, want)
+	}
+}

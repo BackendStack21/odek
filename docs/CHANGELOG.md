@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.44.0 (2026-05-24) — Reasoning-First Progress & Language Matching
+
+### New Features
+- **Reasoning-first progress** — the first sentence of the LLM's internal reasoning (under 20 words, user-facing) now appears at the top of the progress bubble, followed by individual tool previews. The LLM is prompted to make this sentence specific, funny, and engaging:
+  - System prompt includes imperative `REASONING RULE` with ✅/❌ examples and violation consequences
+  - Bottom-of-prompt `REASONING REMINDER` for recency bias
+  - `render.FirstSentence()` extracts the first sentence from reasoning content (handles `. ! ?` boundaries, strips "I will"/"I'll", truncates to 20 words)
+  - Falls back to classic `ToolPreview()` when the model produces no reasoning content
+  - Dedup still works on the reasoning header (`(×N)` for repeated iterations)
+- **Language matching** — the bot always replies in the exact same language the user writes in, enforced at both the top and bottom of the system prompt:
+  - Applies to the final answer, the 💭 thinking message, and the progress indicator
+  - Includes `LANGUAGE RULE` with examples and consequences
+  - Bottom-of-prompt `LANGUAGE REMINDER` for recency bias
+
+### Bug Fixes
+- **`internal/loop/loop.go`** — fixed `memMsgIdx` desync after context trimming: when `trimContext` injects a context-warning system message, the memory message index shifts by 1, causing memory content to be silently dropped. Now detects and adjusts the index
+
+### Documentation
+- **TELEGRAM.md** — updated Tool Progress docs to describe reasoning-first behavior and language matching
+
+### Internal
+- **`render.FirstSentence()`** — new exported function with 6 tests (empty, simple, exclamation, "I will" stripping, no-boundary, long truncation)
+- **`render/render_test.go`** — restored existing test suite (was accidentally overwritten) and appended FirstSentence tests
+- **`cmd/odek/telegram.go`** — removed unused local `truncateWords` closure; replaced with `render.FirstSentence()`
+
 ## v0.43.1 (2026-05-24) — Tool Progress Docs & /mode Command
 
 ### Documentation

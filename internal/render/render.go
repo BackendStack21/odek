@@ -269,6 +269,58 @@ func ToolPreview(name, args string) string {
 	return ""
 }
 
+// FirstSentence extracts the first sentence from reasoning/thinking text.
+// Returns a user-facing preview under 20 words. Falls back to truncation
+// if no sentence boundary is found. Returns empty string for empty input.
+// Handles standard punctuation (. ! ?) followed by space or newline, and
+// also handles ellipsis (...) and end-of-input as boundaries.
+func FirstSentence(text string) string {
+	if text == "" {
+		return ""
+	}
+
+	// Clean leading whitespace and reasoning markers
+	text = strings.TrimSpace(text)
+	text = strings.TrimPrefix(text, "I'll")
+	text = strings.TrimPrefix(text, "I will")
+	text = strings.TrimSpace(text)
+
+	// Try standard sentence boundaries
+	for _, sep := range []string{". ", "! ", "? ", ".\n", "!\n", "?\n", "...\n"} {
+		if idx := strings.Index(text, sep); idx > 0 {
+			sentence := strings.TrimSpace(text[:idx+1])
+			if sentence != "" {
+				return truncateWords(sentence, 20)
+			}
+		}
+	}
+
+	// No boundary found — check if the whole thing is short enough
+	if wordCount(text) <= 20 {
+		return text
+	}
+
+	// Truncate to 20 words
+	return truncateWords(text, 20)
+}
+
+// wordCount returns the number of whitespace-delimited words in s.
+func wordCount(s string) int {
+	if strings.TrimSpace(s) == "" {
+		return 0
+	}
+	return len(strings.Fields(s))
+}
+
+// truncateWords limits s to maxWords, appending "…" if trimmed.
+func truncateWords(s string, maxWords int) string {
+	words := strings.Fields(s)
+	if len(words) <= maxWords {
+		return s
+	}
+	return strings.Join(words[:maxWords], " ") + "…"
+}
+
 // extractJSONField extracts the value of a top-level string field from a JSON blob.
 func extractJSONField(jsonStr, field string) string {
 	prefix := `"` + field + `": "`

@@ -313,12 +313,14 @@ Tool progress shows what the agent is doing in real time. Controlled by the `too
 
 | Mode | Behavior |
 |------|----------|
-| `all` (default) | Single editable progress bubble with smart previews — e.g. `📝 read_file: "main.go"`. With edit throttling (1.5s), dedup (`×N` counter), and flood-control fallback |
-| `new` | Like `all` but only updates when the tool name changes — skips consecutive same-tool repeats |
+| `all` (default) | Reasoning-first progress: LLM's first reasoning sentence as header, then individual tool previews below. Eg: `"Let me search that file..."` then `📝 read_file: "main.go"`. With edit throttling (1.5s), dedup, and flood-control fallback |
+| `new` | Like `all` but reasoning header only updates on new iteration |
 | `verbose` | Raw tool arguments as separate messages — `📝 `read_file` {"path":"main.go"}` then `📝 `read_file` ✅ (2KB)` on completion |
 | `off` | No per-tool progress messages — just the thinking preamble and final answer |
 
 **Key features:**
+- **Reasoning-first progress** — the first sentence of the LLM's internal reasoning (under 20 words) appears at the top of the progress bubble, followed by individual tool previews. The LLM is prompted to make this sentence user-facing, specific, and engaging
+- **Language matching** — the bot always replies in the same language the user writes in, including the thinking message and progress indicator
 - **Smart previews** — extracts meaningful context: filename for file tools, command for shell, URL for browser, query for memory, filename for transcribe
 - **Edit throttling** — 1.5s minimum between edits prevents Telegram flood control (429 errors)
 - **Tool dedup** — if the same tool runs N times in a row (common with parallel batches), shows `📝 read_file: "main.go" (×5)` instead of 5 identical lines

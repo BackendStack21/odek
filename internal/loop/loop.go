@@ -410,6 +410,19 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		// Trim context to stay within model's context window
 		messages = e.trimContext(messages, tools)
 
+		// Resync memMsgIdx after trimContext — when trimContext injects a
+		// context-warning message at index 1, all subsequent messages shift
+		// right by 1, making e.memMsgIdx point to the warning instead of
+		// memory. Detect this by checking if the message at our tracked
+		// position is a trim warning.
+		if e.memMsgIdx > 0 && e.memMsgIdx < len(messages) {
+			if strings.Contains(messages[e.memMsgIdx].Content, "[Context trimmed:") {
+				// Trim warning was injected before our memory message.
+				// The actual memory message is now at memMsgIdx + 1.
+				e.memMsgIdx++
+			}
+		}
+
 		// Load relevant skills based on latest user input (once per message)
 		if e.skillLoader != nil {
 			if userMsg := lastUserMessage(messages); userMsg != "" && userMsg != e.lastSkillMsg {

@@ -173,8 +173,18 @@ func telegramCmd(args []string) error {
 	systemMessage += "- If a tool fails with 'no such file' or returns empty, check pwd first.\n"
 	systemMessage += "- NEVER run 'find /' or recursive searches from root — they hang.\n"
 	systemMessage += "- A single failure means the path or assumption was wrong — fix that,\n"
-	systemMessage += "  don't escalate to a broader search. Narrow, don't widen."
-
+	systemMessage += "  don't escalate to a broader search. Narrow, don't widen.\n"
+	systemMessage += "\n"
+	systemMessage += "## REASONING REMINDER\n"
+	systemMessage += "The first sentence of your reasoning block is the user's live progress indicator. "
+	systemMessage += "Make it brief (<20 words), user-facing, and specific to what you are "
+	systemMessage += "doing right now. Generic self-talk like 'Let me think about this...' "
+	systemMessage += "is useless — users see nothing useful. Start with a real explanation.\n"
+	systemMessage += "\n"
+	systemMessage += "## LANGUAGE REMINDER\n"
+	systemMessage += "Always reply in the exact same language the user writes in. "
+	systemMessage += "Match their language for the answer, the thinking message, "
+	systemMessage += "and the progress indicator. Never switch languages.\n"
 	// Set working directory to the configured repo directory.
 	// This ensures tools like search_files scan the project, not /root.
 	if resolved.GithubRepoDirectory != "" {
@@ -1140,19 +1150,14 @@ func handleChatMessage(
 		}
 	}
 
-	// Collect agent run stats via the iteration callback.
+	// reasoningProgressLine captures the first sentence of LLM reasoning
+	// for use as the progress bubble content in "all"/"new" modes.
+	// Reset at the start of each IsPreTool callback. When empty (no reasoning),
+	// the ToolEventHandler falls back to the old ToolPreview approach.
+	var reasoningProgressLine string
 	var runInfo loop.IterationInfo
 	var allToolsMu sync.Mutex
 	allTools := make(map[string]int)
-
-	// truncateWords limits text to maxWords, appending "…" if trimmed.
-	truncateWords := func(s string, maxWords int) string {
-		words := strings.Fields(s)
-		if len(words) <= maxWords {
-			return s
-		}
-		return strings.Join(words[:maxWords], " ") + "…"
-	}
 
 	// ── Clarify Tool ───────────────────────────────────────────────
 	// Wire the clarify tool with a Telegram-native answer function.
@@ -1275,7 +1280,17 @@ func handleChatMessage(
 					line = telegram.EscapeMarkdown(line)
 					bot.SendMessage(chatID, line,
 						&telegram.SendOpts{ParseMode: telegram.ParseModeMarkdownV2})
-				} else {
+				} else if toolProgress == "all" || toolProgress == "new" {
+					// Insert reasoning header (first sentence) at top of bubble
+					if reasoningProgressLine != "" {
+						if len(progressLines) == 0 || progressLines[0] != reasoningProgressLine {
+							// Insert reasoning header as first line
+							progressLines = append([]string{reasoningProgressLine}, progressLines...)
+							lastProgressMsg = reasoningProgressLine
+						}
+						reasoningProgressLine = "" // consumed, reset for next call
+					}
+					// Always add tool-specific progress line
 					line := buildProgressLine(name, data)
 					sendProgress(line)
 				}
@@ -1295,13 +1310,21 @@ func handleChatMessage(
 				// bubble already shows the narrated tool call).
 			}
 		},
+		// reasoningProgressLine is set in IsPreTool callback and consumed
+		// by the ToolEventHandler to insert the reasoning header into the
+		// progress bubble, followed by individual tool lines.
 		IterationCallback: func(info loop.IterationInfo) {
-			// Pre-tool callback: show LLM reasoning before tools run.
+			// Pre-tool callback: extract first reasoning sentence for progress.
 			if info.IsPreTool {
+				// Reset from previous iteration
+				reasoningProgressLine = ""
+
 				if info.ReasoningContent != "" {
-					reasoning := truncateWords(info.ReasoningContent, 50)
-					if reasoning != "" {
-						bot.SendMessage(chatID, "💭 "+reasoning,
+					firstSentence := render.FirstSentence(info.ReasoningContent)
+					if firstSentence != "" {
+						reasoningProgressLine = firstSentence
+						// Show as a compact thinking message
+						bot.SendMessage(chatID, "💭 "+firstSentence,
 							&telegram.SendOpts{ReplyToMessageID: messageID})
 					}
 				}
