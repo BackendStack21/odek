@@ -12,7 +12,7 @@ It provides context about the project's architecture, conventions, and how to up
 - **Binary:** `odek` — single static binary, ~12 MB, instant startup.
 - **Config:** Five-layer priority: `~/.odek/secrets.env` → `~/.odek/config.json` → `./odek.json` → `ODEK_*` env vars → CLI flags.
 - **Benchmark:** AIEB v2.0 — 80.3% (highest published agent score on the Autonomous Intelligence Engineering Benchmark).
-- **Version:** v0.44.0 — see latest tag at https://github.com/BackendStack21/odek/releases
+- **Version:** v0.44.1 — see latest tag at https://github.com/BackendStack21/odek/releases
 
 ## Source Layout
 

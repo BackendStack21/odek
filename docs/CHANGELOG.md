@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.44.1 (2026-05-25) — Security Hardening & Session Fix
+
+### Security Fixes
+- **SSRF prevention** — `isPrivateHost` now properly parses IP addresses instead of string prefix matching; closes DNS rebinding via explicit resolution; covers RFC 6598 (CGNAT), IPv6 ULAs
+- **ClassifyURL SSRF bypass** — proper IP parsing replaces string prefixes in `danger/classifier.go`
+- **O_NOFOLLOW hardening** — `searchFilesTool.searchContent` and `glob` tool's binary-skip now use `O_NOFOLLOW`, closing symlink-follow vectors
+- **Symlink traversal** — all `filepath.Walk` callbacks now skip symlinks (`os.Lstat` → `os.ModeSymlink`)
+- **Telegam bot stderr log** — file permission changed from `0644` to `0600` (world-readable `/tmp/odek-telegram-stderr.log`)
+- **Delegate task context propagation** — parent context propagates to subagents so cancelling the parent kills children
+- **Config bypass** — allowlist/denylist patterns are trimmed to prevent whitespace-injection bypasses
+- **Shell variable expansion** — `$$` escapes literal `$` in config variable expansion (`${VAR}` interpolation now supports `$$dollar` → `$dollar`)
+- **MemMsgIdx desync fix** — `memMsgIdx` (memory-message index) now correctly adjusts when `trimContext` injects a warning message that shifts the memory slot by 1 (documented in v0.44.0 but actually released here)
+
+### Bug Fixes
+- **Session search nil store** — `session_search` tool was registered with a `nil` store in the Telegram bot; now passes `sessionManager.Store`, and `deepSearch` has a defensive nil-check. Bot no longer reports "session store is not available" in Telegram mode
+
+### Internal
+- **`cmd/odek/telegram.go`** — pass `sessionManager.Store` to `builtinTools` instead of `nil`
+- **`cmd/odek/session_search_tool.go`** — add defensive `full == nil` check in `deepSearch`
+
+---
+
 ## v0.44.0 (2026-05-24) — Reasoning-First Progress & Language Matching
 
 ### New Features
