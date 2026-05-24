@@ -380,6 +380,11 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 			}
 			return nil
 		}
+		// Skip symlinks — prevents TOCTOU on the path and avoids listing
+		// files the agent can't read (O_NOFOLLOW opens would fail anyway).
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
 
 		// Apply file_glob filter
 		if args.FileGlob != "" {
@@ -472,6 +477,10 @@ func (t *searchFilesTool) searchFiles(args searchFilesArgs) (string, error) {
 				if strings.HasPrefix(info.Name(), ".") && info.Name() != "." {
 					return filepath.SkipDir
 				}
+				return nil
+			}
+			// Skip symlinks — prevents listing files the agent can't read.
+			if info.Mode()&os.ModeSymlink != 0 {
 				return nil
 			}
 			match, _ := filepath.Match(pattern, info.Name())
@@ -1032,6 +1041,11 @@ func (t *globTool) Call(argsJSON string) (result string, err error) {
 	if strings.Contains(args.Pattern, "/") || strings.Contains(args.Pattern, "\\") {
 		filepath.Walk(args.Path, func(path string, info os.FileInfo, err error) error {
 			if err != nil || info == nil {
+				return nil
+			}
+			// Skip symlinks — prevents traversal via symlinked directories
+			// and avoids listing files the agent can't read.
+			if info.Mode()&os.ModeSymlink != 0 {
 				return nil
 			}
 			match, _ := filepath.Match(args.Pattern, path)

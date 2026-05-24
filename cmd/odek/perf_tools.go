@@ -1091,6 +1091,10 @@ func (t *multiGrepTool) searchPattern(pattern, root, fileGlob string, limit int)
 			}
 			return nil
 		}
+		// Skip symlinks — prevents TOCTOU and listing unreadable files.
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
 		if fileGlob != "" {
 			match, _ := filepath.Match(fileGlob, info.Name())
 			if !match {

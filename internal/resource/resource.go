@@ -289,6 +289,11 @@ func (f *FileResolver) walkAndMatch(searchTerm string) []string {
 		if err != nil {
 			return nil
 		}
+		// Skip symlinks — resource resolver uses O_NOFOLLOW on Load,
+		// so symlinks are unreadable anyway.
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
 		if info.IsDir() {
 			if skipDir(info.Name()) {
 				return filepath.SkipDir
