@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.49.2 (2026-05-25) — Prompt Trimming & Web UI Context
+
+### Intelligence Improvements
+- **ANTI-PATTERN block compacted** — `cmd/odek/main.go`: trimmed from 342→186 chars. Removed verbose examples ("If a user asks 'what is odek's website?'") — a compact warning is equally effective and saves ~150 tokens per session.
+- **Web UI platform context expanded** — `runtime.go`: expanded from 2→8 lines. Web users now get guidance on real-time streaming, markdown rendering, reload behavior, and visual output conventions — equivalent to Telegram's rich platform context.
+
+### Testing
+- `TestDefaultSystem_AntiPatternIsConcise` — guards ANTI-PATTERN block length under 250 chars
+- `TestBuildRuntimeContext_WebHasRichInstructions` — verifies web context has meaningful platform guidance (300+ chars with streaming, markdown, visual keywords)
+
 ## v0.49.1 (2026-05-25) — Verification Contradiction Fix
 
 ### Bug Fixes
