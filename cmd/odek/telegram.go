@@ -1306,7 +1306,7 @@ func handleChatMessage(
 
 				if toolProgress == "verbose" {
 					recordToolStart()
-					line := fmt.Sprintf("%s `%s` %s", render.ToolEmoji(name), name, data)
+					line := fmt.Sprintf("%s `%s` %s", render.ToolEmoji(name), name, truncateToolArgs(data, 2000))
 					line = telegram.EscapeMarkdown(line)
 					bot.SendMessage(chatID, line,
 						&telegram.SendOpts{ParseMode: telegram.ParseModeMarkdownV2})
@@ -1715,6 +1715,17 @@ func sendAsync(bot *telegram.Bot, chatID int64, text string, opts *telegram.Send
 			fmt.Fprintf(os.Stderr, "odek telegram: async send failed: %v\n", err)
 		}
 	}()
+}
+
+// truncateToolArgs truncates tool call arguments to at most maxLen characters
+// for Telegram progress display. This prevents the "message is too long" error
+// (Telegram's 4096 character limit) when sending verbose progress messages for
+// calls like write_file that include large content payloads.
+func truncateToolArgs(data string, maxLen int) string {
+	if len(data) <= maxLen {
+		return data
+	}
+	return data[:maxLen] + fmt.Sprintf("… [%d more bytes]", len(data)-maxLen)
 }
 
 // ── Singleton Lock ─────────────────────────────────────────────────────

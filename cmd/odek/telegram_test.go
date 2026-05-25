@@ -731,3 +731,32 @@ func TestToolLatencyTracking(t *testing.T) {
 		t.Errorf("expected empty after draining queue, got %q", lat)
 	}
 }
+
+// ── truncateToolArgs tests ────────────────────────────────────────────
+
+func TestTruncateToolArgs_Short(t *testing.T) {
+	data := `{"path": "test.go"}`
+	got := truncateToolArgs(data, 2000)
+	if got != data {
+		t.Errorf("short data should not be truncated: got %q", got)
+	}
+}
+
+func TestTruncateToolArgs_Long(t *testing.T) {
+	data := `{"content": "` + strings.Repeat("A", 5000) + `"}`
+	got := truncateToolArgs(data, 100)
+	if len(got) >= len(data) {
+		t.Error("long data should be truncated")
+	}
+	if !strings.Contains(got, "more bytes") {
+		t.Error("truncated data should include byte count")
+	}
+}
+
+func TestTruncateToolArgs_ExactBoundary(t *testing.T) {
+	data := strings.Repeat("x", 100)
+	got := truncateToolArgs(data, 100)
+	if got != data {
+		t.Errorf("data at exact maxLen should not be truncated: got len=%d", len(got))
+	}
+}

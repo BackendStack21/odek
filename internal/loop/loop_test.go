@@ -1953,3 +1953,162 @@ func TestToolPanic_DoesNotKillAgent(t *testing.T) {
 		t.Errorf("agent result = %q, want 'Agent survived'", result)
 	}
 }
+
+// ── Context Length Error Detection ────────────────────────────────────
+
+func TestIsContextLengthError_Nil(t *testing.T) {
+	if isContextLengthError(nil) {
+		t.Error("nil should not be a context length error")
+	}
+}
+
+func TestIsContextLengthError_DeepSeek(t *testing.T) {
+	err := fmt.Errorf("llm: 400 Bad Request (status 400): context_length_exceeded")
+	if !isContextLengthError(err) {
+		t.Error("DeepSeek context_length_exceeded should be detected")
+	}
+}
+
+func TestIsContextLengthError_OpenAI(t *testing.T) {
+	err := fmt.Errorf("llm: 400 Bad Request (status 400): maximum context length is 128000 tokens")
+	if !isContextLengthError(err) {
+		t.Error("OpenAI 'maximum context length' should be detected")
+	}
+}
+
+func TestIsContextLengthError_Anthropic(t *testing.T) {
+	err := fmt.Errorf("llm: 400 Bad Request: input is too long: token count 150000 exceeds max context window 200000")
+	if !isContextLengthError(err) {
+		t.Error("Anthropic 'input is too long' should be detected")
+	}
+}
+
+func TestIsContextLengthError_Negative(t *testing.T) {
+	errors := []error{
+		fmt.Errorf("llm: 401 Unauthorized (status 401)"),
+		fmt.Errorf("llm: connection refused"),
+		fmt.Errorf("llm: 429 Too Many Requests"),
+		fmt.Errorf("llm: timeout while awaiting headers"),
+		fmt.Errorf("llm: invalid API key"),
+		fmt.Errorf("internal server error"),
+	}
+	for _, err := range errors {
+		if isContextLengthError(err) {
+			t.Errorf("should not detect context length for: %v", err)
+		}
+	}
+}
+
+// ── trimToSurvival ────────────────────────────────────────────────────
+
+func TestTrimToSurvival_AlreadyMinimal(t *testing.T) {
+	msgs := []llm.Message{
+		{Role: "system", Content: "you are a helpful agent"},
+		{Role: "user", Content: "do something"},
+	}
+	got := trimToSurvival(msgs)
+	if len(got) != 2 { // Already minimal — no warning needed
+		t.Errorf("expected 2 messages for minimal input, got %d", len(got))
+	}
+	if got[0].Content != msgs[0].Content {
+		t.Errorf("system message preserved: got %q, want %q", got[0].Content, msgs[0].Content)
+	}
+	if got[1].Content != msgs[1].Content {
+		t.Errorf("user message preserved: got %q, want %q", got[1].Content, msgs[1].Content)
+	}
+}
+
+func TestTrimToSurvival_DropsOldTurns(t *testing.T) {
+	msgs := []llm.Message{
+		{Role: "system", Content: "system prompt"},
+		{Role: "user", Content: "original task"},
+		// Turn 1
+		{Role: "assistant", Content: "", ToolCalls: []llm.ToolCall{{ID: "c1", Function: struct {
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		}{Name: "read_file", Arguments: `{"path":"a.go"}`}}}},
+		{Role: "tool", Content: "result 1", Name: "read_file", ToolCallID: "c1"},
+		// Turn 2
+		{Role: "assistant", Content: "", ToolCalls: []llm.ToolCall{{ID: "c2", Function: struct {
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		}{Name: "write_file", Arguments: `{"path":"b.go"}`}}}},
+		{Role: "tool", Content: "result 2", Name: "write_file", ToolCallID: "c2"},
+		// Turn 3 (most recently completed)
+		{Role: "assistant", Content: "", ToolCalls: []llm.ToolCall{{ID: "c3", Function: struct {
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		}{Name: "search_files", Arguments: `{"pattern":"*.go"}`}}}},
+		{Role: "tool", Content: "result 3", Name: "search_files", ToolCallID: "c3"},
+		// Current user input
+		{Role: "user", Content: "continue working"},
+	}
+	got := trimToSurvival(msgs)
+	// Should have: system + warning + last 2 turns + last user
+	// Turn 1 should be dropped (only keep 2 most recent turns)
+	if len(got) < 5 {
+		t.Fatalf("expected at least 5 messages, got %d: %v", len(got), got)
+	}
+	// System preserved
+	if got[0].Content != "system prompt" {
+		t.Errorf("expected system prompt, got %q", got[0].Content)
+	}
+	// Warning injected
+	if !strings.Contains(got[1].Content, "Context trimmed") {
+		t.Errorf("expected context trim warning at index 1, got %q", got[1].Content)
+	}
+	// Last user message preserved as final message
+	last := got[len(got)-1]
+	if last.Role != "user" || last.Content != "continue working" {
+		t.Errorf("expected last user message preserved, got role=%q content=%q", last.Role, last.Content)
+	}
+	// Turn 1 (read_file) should be dropped — only last 2 turns survive
+	for _, m := range got {
+		if m.ToolCallID == "c1" {
+			t.Error("Turn 1 should have been dropped")
+		}
+	}
+	// Turn 2 and 3 should survive
+	foundTurn2 := false
+	foundTurn3 := false
+	for _, m := range got {
+		if m.ToolCallID == "c2" {
+			foundTurn2 = true
+		}
+		if m.ToolCallID == "c3" {
+			foundTurn3 = true
+		}
+	}
+	if !foundTurn2 {
+		t.Error("Turn 2 (recent) should survive")
+	}
+	if !foundTurn3 {
+		t.Error("Turn 3 (most recent) should survive")
+	}
+}
+
+func TestTrimToSurvival_NoSystem(t *testing.T) {
+	// Without system message, trimToSurvival still works
+	msgs := []llm.Message{
+		{Role: "user", Content: "task"},
+		{Role: "assistant", Content: "", ToolCalls: []llm.ToolCall{{ID: "c1", Function: struct {
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		}{Name: "echo", Arguments: `{}`}}}},
+		{Role: "tool", Content: "result", Name: "echo", ToolCallID: "c1"},
+		{Role: "user", Content: "continue"},
+	}
+	got := trimToSurvival(msgs)
+	if len(got) < 2 {
+		t.Fatalf("expected at least 2 messages, got %d", len(got))
+	}
+	// Warning message should be first
+	if !strings.Contains(got[0].Content, "Context trimmed") {
+		t.Errorf("expected warning at index 0, got %q", got[0].Content)
+	}
+	// Last user message preserved
+	last := got[len(got)-1]
+	if last.Content != "continue" {
+		t.Errorf("expected last user message, got %q", last.Content)
+	}
+}

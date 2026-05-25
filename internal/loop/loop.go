@@ -372,6 +372,99 @@ func (e *Engine) trimContext(messages []llm.Message, toolDefs []llm.ToolDef) []l
 	return messages
 }
 
+// isContextLengthError returns true for API errors that indicate the
+// input exceeded the model's context window. These errors are retryable
+// with aggressive trimming rather than killing the session.
+func isContextLengthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	// Common error patterns across providers:
+	// DeepSeek: "context_length_exceeded", "maximum context length"
+	// OpenAI:   "maximum context length", "token limit"
+	// Anthropic: "input is too long", "context window"
+	return strings.Contains(msg, "context_length_exceeded") ||
+		strings.Contains(msg, "maximum context length") ||
+		strings.Contains(msg, "context length") ||
+		strings.Contains(msg, "token limit") ||
+		strings.Contains(msg, "context window") ||
+		strings.Contains(msg, "max_input_tokens") ||
+		strings.Contains(msg, "input length") ||
+		strings.Contains(msg, "too many tokens") ||
+		strings.Contains(msg, "input is too long") ||
+		strings.Contains(msg, "reduce the length")
+}
+
+// trimToSurvival drops all but the system prompt, first user message,
+// and the most recent 2 complete turn groups. This is the nuclear option
+// used when the API rejects the request as context-length-exceeded.
+// Unlike trimContext which gives up when it can't stay under budget,
+// trimToSurvival always produces a drastically reduced message list
+// that nearly every model can handle.
+func trimToSurvival(msgs []llm.Message) []llm.Message {
+	if len(msgs) <= 3 {
+		return msgs // already minimal enough
+	}
+	start := 0
+	if msgs[0].Role == "system" {
+		start = 1 // keep system
+	}
+	// Last user message (the current task/input) — always keep it.
+	var lastUser llm.Message
+	lastUserIdx := -1
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "user" {
+			lastUser = msgs[i]
+			lastUserIdx = i
+			break
+		}
+	}
+
+	// Collect the last 2 complete assistant→tool groups before the user msg.
+	var groups []llm.Message
+	seen := 0
+	for i := lastUserIdx - 1; i > start && seen < 2; i-- {
+		if msgs[i].Role == "assistant" && len(msgs[i].ToolCalls) > 0 {
+			// This assistant message has tool calls — collect it and
+			// its following tool results.
+			groupEnd := i + 1
+			for groupEnd < len(msgs) && msgs[groupEnd].Role == "tool" {
+				groupEnd++
+			}
+			groups = append(groups, msgs[i:groupEnd]...)
+			// Also include any preceding system messages (corrections, warnings).
+			preStart := i - 1
+			for preStart > start && msgs[preStart].Role == "system" {
+				preStart--
+			}
+			for k := preStart + 1; k < i; k++ {
+				groups = append(groups, msgs[k])
+			}
+			seen++
+		}
+	}
+
+	// Build survival set: system + task + recent groups + last user
+	survival := make([]llm.Message, 0, start+1+len(groups)+1)
+	if start > 0 {
+		survival = append(survival, msgs[0]) // system message
+	}
+	// Add a context-warning system message
+	warning := "[Context trimmed to survive: the conversation history exceeded the model's context window. Earlier turns have been dropped. If you need information from earlier in the conversation, the agent may ask for a summary.]"
+	survival = append(survival, llm.Message{Role: "system", Content: warning})
+
+	// Add the recent groups (in chronological order, not reversed)
+	for i := len(groups) - 1; i >= 0; i-- {
+		survival = append(survival, groups[i])
+	}
+
+	// Add the last user message
+	survival = append(survival, lastUser)
+
+	return survival
+}
+
 // ── Loop ──────────────────────────────────────────────────────────────
 
 // Run executes the loop for a given task and returns the final response.
@@ -562,6 +655,26 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		result, err := e.client.Call(ctx, callMsgs, systemBlocks, tools)
 		latency := time.Since(start)
 		if err != nil {
+			// Context-length-exceeded errors: don't die — try aggressive
+			// trimming and retry once. The trimContext at the top of the
+			// loop may have been too conservative (75% budget) or the
+			// provider's reported context window may be smaller than
+			// the actual model limit.
+			if isContextLengthError(err) {
+				trimmed := trimToSurvival(messages)
+				if len(trimmed) < len(messages) {
+					messages = trimmed
+					// Reset memory index — trimToSurvival drops it.
+					e.memMsgIdx = -1
+					// Inject survival warning as the final message
+					// so the agent knows context was lost.
+					messages = append(messages, llm.Message{
+						Role:    "system",
+						Content: "[Context survival mode: the conversation was aggressively reduced to fit the model's context window. Continue from where you left off using the most recent context available.]",
+					})
+					continue // retry this iteration
+				}
+			}
 			return "", messages, fmt.Errorf("iteration %d: %w", i, err)
 		}
 
