@@ -2139,6 +2139,27 @@ func TestDefaultSystem_AllowsSkillExploration(t *testing.T) {
 	}
 }
 
+// TestDefaultSystem_AllowsVerification verifies that defaultSystem does NOT
+// contain the "do NOT test after write" instruction that contradicts the
+// Reasoning Scaffold's step 4 ("Verify — Do NOT skip verification on complex
+// changes"). Both instructions exist at the same time: one says "never test
+// after writing", the other says "always verify complex changes". The model
+// cannot follow both — resolve by removing the anti-verification instruction.
+func TestDefaultSystem_AllowsVerification(t *testing.T) {
+	if strings.Contains(defaultSystem, "do NOT run tests or verify") {
+		t.Error("defaultSystem says 'After writing a file, do NOT run tests or verify with shell commands' " +
+			"but the Reasoning Scaffold (lines 95-97) says 'Verify — Do NOT skip verification on complex changes'. " +
+			"These directly contradict. The model cannot follow both instructions. " +
+			"Remove the anti-verification instruction so the Verify step works as intended.")
+	}
+	if strings.Contains(defaultSystem, "Do NOT write, then test, then rewrite") {
+		t.Error("defaultSystem says 'Do NOT write, then test, then rewrite, then retest' which discourages " +
+			"verification. Combined with the 'Verify' step in the Reasoning Scaffold, the model gets " +
+			"conflicting instructions. Reword to 'Avoid unnecessary iteration — verify in one shot' " +
+			"to remove the contradiction.")
+	}
+}
+
 // ── --deliver flag tests ──────────────────────────────────────────────────
 
 func TestParseRunFlags_Deliver(t *testing.T) {

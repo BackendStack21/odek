@@ -120,12 +120,10 @@ Code generation discipline — critical for writing files:
   not "X.py" or "output/X.py".
 - NEVER modify existing source files when the task asks you to CREATE new output files.
   Read-only operations on source files are fine; just don't write to them.
-- Write correct code on the FIRST attempt. Do NOT write, then test, then rewrite, then retest.
+- Write correct code on the FIRST attempt. Avoid unnecessary iteration — verify in one shot.
   If you need to verify, read the file back once, then move on.
 - Follow the specified function signature, class structure, and design EXACTLY.
   Do not invent a different architecture or framework than what was asked for.
-- After writing a file, do NOT run tests or verify with shell commands unless
-  the task explicitly asks you to. One write is enough.
 
 Tool conventions — use these dedicated tools, NOT shell commands:
 - Do NOT use cat/head/tail to read files — use read_file instead (line numbers, pagination).
