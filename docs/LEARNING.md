@@ -57,6 +57,7 @@ odek run --learn "set up CI with GitHub Actions"
 - **LLM enhancement is optional** — when enabled, the LLM enriches heuristic output with better names, structured bodies, and accurate keywords.
 - **One skip = permanent suppression** — skip a suggestion once and it won't appear again. Use `odek skill reset-skips` to re-enable.
 - **Auto-curation runs silently** — after every session where skills were saved, overlaps are merged, duplicates removed, and stale skills pruned.
+- **Learning is non-blocking** — skill detection and auto-save run in a background goroutine after the agent's response is delivered. The process exits immediately; learning completes asynchronously on a best-effort basis.
 
 ## CLI Usage
 

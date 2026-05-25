@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.56.1 (2026-05-25) — MCP Test Portability
+
+### Bug Fixes
+- **MCP client tests now build fakeserver from source** — The committed `testdata/fakeserver` binary was ELF x86-64 (Linux), causing `exec format error` on macOS ARM64. `fakeServerPath()` and `fakeMCPPath()` now compile the fake MCP server from `testdata/main.go` on-the-fly at test time. The 5.8 MB binary has been removed from git.
+- **Subagent E2E TestMain hardcoded path fixed** — `subagent_e2e_test.go` had hardcoded `/root/projects/odek` paths from CI. Now resolves the repo root dynamically via `runtime.Caller`.
+
+### Infrastructure
+- `internal/mcpclient/testdata/fakeserver` removed from git, added to `.gitignore`
+
+## v0.56.0 (2026-05-25) — Post-Response Hang Eliminated
+
+### Performance
+- **Learn loop runs asynchronously** — After the agent delivers its response, skill learning (pattern detection, LLM enhancement, auto-save) now runs in a background goroutine instead of blocking process exit. This eliminates the 2-5 second hang users saw after every `odek run`.
+- **Episode extraction runs asynchronously** — `OnSessionEnd` LLM calls in `run`, `continue`, and REPL now run in goroutines. Sessions are still summarized — just without blocking termination.
+
+### Behavior Change
+- Skill learning and episode extraction are now **best-effort post-processing**. On fast exits the goroutines may be killed mid-flight, but persistent state (skill files, episodes) is written atomically. Since learning is triggered on every session, missed runs self-correct on the next invocation.
+- Learn loop tests updated with brief waits (200ms) to accommodate async execution.
+
 ## v0.51.0 (2026-05-25) — Test Coverage Expansion
 
 ### Testing

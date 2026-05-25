@@ -47,6 +47,8 @@ HH:MM  agent  pushed 19 tests, tagged v0.8.19
 
 After sessions with ≥3 turns, the MemoryManager runs SimpleCall to extract 1-3 durable facts. Written to `episodes/<session-id>.md`. Searchable via `memory(search=...)` which uses **RandomProjections** (go-vector) to rank episodes by cosine similarity to the query — zero LLM calls per search. Set `llm_search: true` in config to use LLM-based ranking instead.
 
+Episode extraction runs **asynchronously** — it does not block process exit. The session summary is a best-effort post-processing step that completes in a background goroutine.
+
 ## Memory Tool — Unified API
 
 ```json

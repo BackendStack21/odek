@@ -114,7 +114,7 @@ docs/                         Documentation
 ## Testing
 
 ```bash
-# All tests (excluding E2E — those need KODE_E2E=true)
+# All tests (excluding E2E — those need ODEK_E2E=true)
 go test ./... -count=1
 
 # Specific package
@@ -124,7 +124,10 @@ go test ./internal/session/ -v
 go test -race ./... -count=1
 
 # E2E tests (builds odek binary, tests real subprocess spawning)
-KODE_E2E=true go test -v -count=1 ./cmd/odek/ -run "TestE2E_"
+ODEK_E2E=true go test -v -count=1 ./cmd/odek/ -run "TestE2E_"
+
+# MCP E2E tests (real MCP server subprocess + fakeserver compiled on-the-fly)
+ODEK_E2E=true go test -v -count=1 ./cmd/odek/ -run "TestMCPClientE2E"
 
 # Contract tests (sub-agent interface contract — binary must already be built)
 go test -v -count=1 ./cmd/odek/ -run "TestSubagent|TestDelegateTasks"
@@ -138,7 +141,8 @@ Zero external test dependencies — tests use `httptest`, `testing`, and the sta
 |-------|--------|-------|---------------|
 | **Unit** | `go test ./...` | 1954 | All 17 packages — config, LLM client, loop, sessions, renderer, tools, WS, resources, memory, skills, telegram, danger, security, mcp |
 | **Contract** | `go test ./cmd/odek/` | 60+ | Sub-agent flag parsing, JSON stdout, exit codes, tool schema, config, serve, shell |
-| **E2E** | `KODE_E2E=true go test -run 'TestE2E_'` | 16 | Real subprocess spawning, tool→binary pipeline, concurrency, timeouts, custom prompts |
+| **E2E** | `ODEK_E2E=true go test -run 'TestE2E_'` | 16 | Real subprocess spawning, tool→binary pipeline, concurrency, timeouts, custom prompts |
+| **MCP E2E** | `ODEK_E2E=true go test -run 'TestMCPClientE2E'` | 5 | MCP client with real fakeserver subprocess (compiled on-the-fly from testdata/main.go) |
 
 ### Test coverage
 
