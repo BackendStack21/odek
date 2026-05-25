@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -63,8 +64,16 @@ func TestHealthServer_EmptyAddrDoesNothing(t *testing.T) {
 }
 
 func TestHealthServer_StartAndShutdown(t *testing.T) {
-	hs := NewHealthServer("127.0.0.1:0")
-	hs.SetReady() // mark ready so health check returns 200
+	// Pre-bind to :0 to discover the port without racing on hs.addr
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	ln.Close() // release it so Start can re-bind
+
+	hs := NewHealthServer(addr)
+	hs.SetReady()
 	ctx, cancel := context.WithCancel(context.Background())
 
 	errCh := make(chan error, 1)
@@ -72,16 +81,10 @@ func TestHealthServer_StartAndShutdown(t *testing.T) {
 		errCh <- hs.Start(ctx)
 	}()
 
-	// Wait for server to start
-	var resp *http.Response
-	var err error
-	for i := 0; i < 10; i++ {
-		time.Sleep(50 * time.Millisecond)
-		resp, err = http.Get("http://" + hs.addr + "/health")
-		if err == nil {
-			break
-		}
-	}
+	// Give server time to start
+	time.Sleep(50 * time.Millisecond)
+
+	resp, err := http.Get("http://" + addr + "/health")
 	if err != nil {
 		t.Fatalf("Failed to reach health server: %v", err)
 	}
