@@ -71,6 +71,11 @@ type Engine struct {
 
 	toolEventHandler ToolEventHandler // optional: fires during tool execution
 
+	// interactionMode controls how progress is surfaced to the user.
+	// "engaging" (default), "verbose", "enhance", or "off" (silent).
+	// When "off", all per-iteration render output is suppressed.
+	interactionMode string
+
 	// narrator produces engaging, human-friendly progress messages
 	// instead of raw tool call output. nil = verbose mode (default).
 	narrator *narrate.Narrator
@@ -147,6 +152,10 @@ func (e *Engine) SetSkillLoader(sl SkillLoader) { e.skillLoader = sl }
 // past session episodes. The returned context is injected as a system
 // message before the LLM invocation.
 func (e *Engine) SetEpisodeContextFunc(ef EpisodeContextFunc) { e.episodeCtx = ef }
+
+// SetInteractionMode sets how progress is surfaced.
+// "off" suppresses all per-iteration render output except the final answer.
+func (e *Engine) SetInteractionMode(mode string) { e.interactionMode = mode }
 
 // SetSkillVerbose controls whether skill loading shows full banners (true)
 // or condensed markers (false, default). Condensed saves context window space.
@@ -404,7 +413,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		}
 
 		// Render iteration header (1-indexed for humans)
-		if e.renderer != nil {
+		if e.renderer != nil && e.interactionMode != "off" {
 			e.renderer.Iteration(i+1, e.maxIter, 0, 0, 0, 0)
 		}
 
@@ -547,7 +556,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		}
 
 		// Render turn statistics (re-draw iteration header with stats)
-		if e.renderer != nil {
+		if e.renderer != nil && e.interactionMode != "off" {
 			e.renderer.Iteration(i+1, e.maxIter, latency, result.InputTokens, result.OutputTokens, 0)
 		}
 
@@ -563,7 +572,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 
 		// No tool calls = final answer
 		if len(result.ToolCalls) == 0 {
-			if e.renderer != nil {
+			if e.renderer != nil && e.interactionMode != "off" {
 				e.renderer.FinalAnswer(result.Content)
 				e.renderer.Summary(
 					e.TotalInputTokens,
@@ -607,7 +616,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 					e.renderer.NarratorMessage(msg)
 				}
 			}
-		} else if e.renderer != nil && result.Content != "" {
+		} else if e.renderer != nil && result.Content != "" && e.interactionMode != "off" {
 			e.renderer.Thinking(result.Content)
 		}
 
@@ -653,7 +662,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 						e.renderer.NarratorMessage(msg)
 					}
 				}
-			} else if e.renderer != nil {
+			} else if e.renderer != nil && e.interactionMode != "off" {
 				e.renderer.ToolCall(tc.Function.Name, tc.Function.Arguments)
 			}
 			if e.toolEventHandler != nil {
@@ -782,7 +791,7 @@ if e.approver != nil && len(result.ToolCalls) > 1 {
 			output := results[i].output
 
 			// Tool results: only shown in verbose mode.
-			if e.narrator == nil && e.renderer != nil {
+			if e.narrator == nil && e.renderer != nil && e.interactionMode != "off" {
 				e.renderer.ToolResult(output)
 			}
 			if e.toolEventHandler != nil {

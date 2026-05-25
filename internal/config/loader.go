@@ -74,6 +74,7 @@ type CLIFlags struct {
 	// "engaging" (default) = emoji-rich narration, progress message edited.
 	// "enhance" = per-tool narrated messages appended, progress header kept.
 	// "verbose" = raw tool names, args, and results.
+	// "off" = no intermediate progress output, clean answer only.
 	InteractionMode string
 }
 
@@ -184,6 +185,7 @@ type FileConfig struct {
 	// "engaging" (default) = emoji-rich narration, progress message edited.
 	// "enhance" = per-tool narrated messages, progress header kept.
 	// "verbose" = raw tool names, args, and results.
+	// "off" = no progress output, clean answer only.
 	InteractionMode string `json:"interaction_mode,omitempty"`
 
 	// ToolProgress controls per-tool progress messages for the Telegram bot.
@@ -292,6 +294,7 @@ type ResolvedConfig struct {
 	GithubRepoUrl string
 
 	// InteractionMode is the resolved interaction style.
+	// Values: "engaging" (default), "enhance", "verbose", or "off".
 	// "engaging" (default), "enhance", or "verbose".
 	InteractionMode string
 

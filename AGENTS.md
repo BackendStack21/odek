@@ -118,7 +118,7 @@ Five-layer priority chain:
 4. CLI flags               ← Explicit invocation (highest priority)
 ```
 - `${VAR}` substitution in JSON config files.
-- `interaction_mode` field: `engaging` | `verbose` | `enhance`.
+- `interaction_mode` field: `engaging` | `verbose` | `enhance` | `off`.
 - `max_tool_parallel`: bounded concurrency for tool execution.
 - `--deliver` CLI flag delivers agent response to Telegram default chat (for cron).
 

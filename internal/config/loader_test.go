@@ -750,3 +750,11 @@ func TestLoadConfig_InteractionModeViaCLI(t *testing.T) {
 		t.Errorf("InteractionMode = %q, want %q", cfg.InteractionMode, "verbose")
 	}
 }
+
+func TestLoadConfig_InteractionModeOff(t *testing.T) {
+	// "off" should be accepted as a valid value via CLI.
+	cfg := LoadConfig(CLIFlags{InteractionMode: "off"})
+	if cfg.InteractionMode != "off" {
+		t.Errorf("InteractionMode = %q, want %q", cfg.InteractionMode, "off")
+	}
+}

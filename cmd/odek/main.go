@@ -1092,7 +1092,9 @@ func run(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	rend.Start(f.Task)
+	if resolved.InteractionMode != "off" {
+		rend.Start(f.Task)
+	}
 
 	// Shared agent run — capture messages for --learn mode
 	var allMessages []llm.Message
@@ -1184,6 +1186,11 @@ func run(args []string) error {
 		if err := deliverToTelegram(result, resolved); err != nil {
 			fmt.Fprintf(os.Stderr, "odek: delivery failed: %v\n", err)
 		}
+	}
+
+	// ── Off mode: print clean result to stdout ──
+	if resolved.InteractionMode == "off" && runErr == nil && result != "" {
+		fmt.Println(result)
 	}
 
 	return nil

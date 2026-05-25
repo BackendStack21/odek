@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/BackendStack21/kode/internal/danger"
 	"github.com/BackendStack21/kode/internal/llm"
+	"github.com/BackendStack21/kode/internal/render"
 	"github.com/BackendStack21/kode/internal/tool"
 )
 
@@ -1837,6 +1839,72 @@ func TestClassifyToolCall_Terminal(t *testing.T) {
 	}
 	if resource != "whoami" {
 		t.Errorf("resource = %q, want %q", resource, "whoami")
+	}
+}
+
+func TestEngine_InteractionModeOff_SuppressesAllRenderOutput(t *testing.T) {
+	// Mock LLM: first response has thinking + tool call, second is final answer.
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"Let me check.","tool_calls":[{"id":"call_1","function":{"name":"echo","arguments":"{\"text\":\"hello\"}"}}]}}]}`)
+		} else {
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"Final answer"}}]}`)
+		}
+	}))
+	defer server.Close()
+
+	var buf bytes.Buffer
+	reg := tool.NewRegistry([]tool.Tool{&fakeTool{name: "echo", output: "echo output"}})
+	rend := render.New(&buf, false)
+
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0)
+	engine := New(client, reg, 10, "", rend, 0)
+	engine.SetInteractionMode("off")
+
+	result, err := engine.Run(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if result != "Final answer" {
+		t.Errorf("result = %q, want %q", result, "Final answer")
+	}
+	if buf.Len() > 0 {
+		t.Errorf("render output should be empty in off mode, got %d bytes: %q", buf.Len(), buf.String())
+	}
+}
+
+func TestEngine_InteractionModeDefault_ProducesRenderOutput(t *testing.T) {
+	// Same mock LLM but without SetInteractionMode("off") — render output should appear.
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"Let me check.","tool_calls":[{"id":"call_1","function":{"name":"echo","arguments":"{\"text\":\"hello\"}"}}]}}]}`)
+		} else {
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"Final answer"}}]}`)
+		}
+	}))
+	defer server.Close()
+
+	var buf bytes.Buffer
+	reg := tool.NewRegistry([]tool.Tool{&fakeTool{name: "echo", output: "echo output"}})
+	rend := render.New(&buf, false)
+
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0)
+	engine := New(client, reg, 10, "", rend, 0)
+	// Default interaction mode — no SetInteractionMode, no SetNarrator = verbose mode
+
+	result, err := engine.Run(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if result != "Final answer" {
+		t.Errorf("result = %q, want %q", result, "Final answer")
+	}
+	if buf.Len() == 0 {
+		t.Error("render output should NOT be empty in default (verbose) mode")
 	}
 }
 

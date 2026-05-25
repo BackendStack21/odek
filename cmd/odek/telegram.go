@@ -1053,6 +1053,10 @@ func handleChatMessage(
 	// behavior is used regardless of tool_progress (preserves existing UX).
 	toolProgress := resolved.ToolProgress
 	isEnhance := resolved.InteractionMode == "enhance"
+	isOff := resolved.InteractionMode == "off"
+	if isOff {
+		toolProgress = "off"
+	}
 	if isEnhance {
 		toolProgress = "enhance"
 	}

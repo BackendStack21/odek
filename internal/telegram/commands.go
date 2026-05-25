@@ -139,7 +139,8 @@ func modeHandler(args string) (string, error) {
 		"*Interaction Mode:*\n" +
 		"• `interaction_mode: engaging` — emoji-rich narration (default)\n" +
 		"• `interaction_mode: enhance` — narrated tool summaries (persist)\n" +
-		"• `interaction_mode: verbose` — raw tool call output\n\n" +
+		"• `interaction_mode: verbose` — raw tool call output\n" +
+		"• `interaction_mode: off` — no progress output, clean answer only\n\n" +
 		"*Tool Progress (Telegram):*\n" +
 		"• `tool_progress: all` — smart previews with throttling (default)\n" +
 		"• `tool_progress: new` — only on tool change\n" +
