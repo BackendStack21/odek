@@ -888,11 +888,14 @@ func spawnChild() error {
 	}
 
 	// Build child environment: parent env + re-injected API key.
-	// config.LoadConfig clears ODEK_API_KEY from the environment, so it's
-	// missing from os.Environ(). Re-inject it so the child can start.
+	// config.LoadConfig clears all API key env vars from the environment,
+	// so they're missing from os.Environ(). Re-inject all three forms so
+	// the child process finds the key regardless of which env var it checks.
 	childEnv := os.Environ()
 	if resolvedAPIKey != "" {
 		childEnv = append(childEnv, "ODEK_API_KEY="+resolvedAPIKey)
+		childEnv = append(childEnv, "DEEPSEEK_API_KEY="+resolvedAPIKey)
+		childEnv = append(childEnv, "OPENAI_API_KEY="+resolvedAPIKey)
 	}
 
 	attr := &os.ProcAttr{
@@ -975,7 +978,7 @@ func handleChatMessage(
 	cs.LastActive = time.Now()
 
 	// Build the agent with Telegram approver.
-	tools := builtinTools(resolved.Dangerous, nil, approver, resolved.MaxConcurrency, resolved.Transcription, sessionManager.Store)
+	tools := builtinTools(resolved.Dangerous, nil, approver, resolved.MaxConcurrency, resolved.APIKey, resolved.Transcription, sessionManager.Store)
 
 	modelLabel := odek.ProfileLabel(resolved.Model)
 	if modelLabel == "" {

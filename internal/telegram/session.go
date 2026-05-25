@@ -283,10 +283,10 @@ func (sm *SessionManager) ResumeSession(chatID int64, sessionID string) (*ChatSe
 		if listErr != nil {
 			return nil, fmt.Errorf("list sessions: %w", listErr)
 		}
-		for _, s := range all {
+		for i, s := range all {
 			if strings.HasPrefix(s.ID, sessionID) ||
 				strings.Contains(strings.ToLower(s.Task), strings.ToLower(sessionID)) {
-				sess = &s
+				sess = &all[i]
 				break
 			}
 		}

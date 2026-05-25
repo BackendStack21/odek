@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -341,5 +342,51 @@ func TestFactStore_ReplaceCapExceeded(t *testing.T) {
 	err := fs.Replace("user", "short fact", "this is a very long replacement that should overflow the tiny 30 character cap")
 	if err == nil {
 		t.Fatal("expected cap error on replace")
+	}
+}
+
+// ── Red test: FactStore TOCTOU race on concurrent writes ──────────────────
+
+// TestFactStore_ConcurrentAdd_NoDataLoss verifies that concurrent Add calls
+// to the same FactStore don't lose data. BUG: readModifyWrite releases the
+// mutex before writeEntries, causing a TOCTOU race where two concurrent Adds
+// can read the same base data and the second write silently overwrites the first.
+func TestFactStore_ConcurrentAdd_NoDataLoss(t *testing.T) {
+	dir := t.TempDir()
+	fs := NewFactStore(dir, 5000, 5000)
+
+	// N goroutines each add a unique entry.
+	const N = 10
+	done := make(chan error, N)
+	for i := 0; i < N; i++ {
+		i := i
+		go func() {
+			done <- fs.Add("user", fmt.Sprintf("unique fact number %d", i))
+		}()
+	}
+
+	// Collect all errors.
+	for i := 0; i < N; i++ {
+		if err := <-done; err != nil {
+			t.Errorf("Add failed: %v", err)
+		}
+	}
+
+	// After all concurrent adds, we should have N unique entries.
+	entries, err := fs.Entries("user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != N {
+		t.Errorf("got %d entries, want %d — concurrent writes lost data due to TOCTOU race", len(entries), N)
+	}
+
+	// Verify every entry is unique (no duplicates from overwrites).
+	seen := make(map[string]bool)
+	for _, e := range entries {
+		if seen[e] {
+			t.Errorf("duplicate entry: %q — concurrent write overwrote a previous write", e)
+		}
+		seen[e] = true
 	}
 }

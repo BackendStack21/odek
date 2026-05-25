@@ -993,6 +993,23 @@ func overlayFile(base, override FileConfig) FileConfig {
 	if override.Telegram != nil {
 		base.Telegram = override.Telegram
 	}
+	if override.PromptCaching != nil {
+		base.PromptCaching = override.PromptCaching
+	}
+	if override.MaxConcurrency > 0 {
+		base.MaxConcurrency = override.MaxConcurrency
+	}
+	if override.MaxToolParallel > 0 {
+		base.MaxToolParallel = override.MaxToolParallel
+	}
+	if override.MCPServers != nil {
+		if base.MCPServers == nil {
+			base.MCPServers = make(map[string]mcpclient.ServerConfig)
+		}
+		for k, v := range override.MCPServers {
+			base.MCPServers[k] = v
+		}
+	}
 	if override.GithubRepoDirectory != "" {
 		base.GithubRepoDirectory = override.GithubRepoDirectory
 	}

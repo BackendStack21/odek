@@ -382,3 +382,47 @@ func TestEpisodeStore_Write_InvalidDirPath(t *testing.T) {
 		t.Errorf("expected 'mkdir' in error, got: %v", err)
 	}
 }
+
+// ── Red test: EpisodeStore.Search data race on lastQuery/lastResult ────────
+
+// TestEpisodeStore_SearchConcurrent detects the data race on lastQuery and
+// lastResult fields which are read/written without any synchronization.
+// Run with: go test -race -run TestEpisodeStore_SearchConcurrent
+func TestEpisodeStore_SearchConcurrent(t *testing.T) {
+	dir := t.TempDir()
+	mockRank := func(query string, episodes []EpisodeMeta) ([]EpisodeMeta, error) {
+		// Return all, sorted by some deterministic order
+		return episodes, nil
+	}
+	es := NewEpisodeStore(dir, mockRank)
+
+	// Write some episodes first.
+	for i := 0; i < 10; i++ {
+		sid := fmt.Sprintf("sess-%03d", i)
+		if err := es.Write(sid, fmt.Sprintf("summary %d", i), i+1); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Wait for index to settle.
+	time.Sleep(10 * time.Millisecond)
+
+	// Concurrent Search calls — this SHOULD trigger a race on
+	// lastQuery/lastResult if they're not synchronized.
+	done := make(chan struct{})
+	const N = 20
+	for i := 0; i < N; i++ {
+		go func(n int) {
+			query := fmt.Sprintf("search term %d", n%5)
+			results, err := es.Search(query, 5)
+			if err != nil {
+				t.Errorf("Search(%q) failed: %v", query, err)
+			}
+			_ = results
+			done <- struct{}{}
+		}(i)
+	}
+	for i := 0; i < N; i++ {
+		<-done
+	}
+}

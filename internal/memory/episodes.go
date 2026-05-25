@@ -52,8 +52,10 @@ type EpisodeStore struct {
 
 	// queryCache caches the last Search query result to avoid
 	// re-ranking identical queries on consecutive turns.
+	// Protected by muQuery.
 	lastQuery  string
 	lastResult []EpisodeMeta
+	muQuery    sync.RWMutex
 }
 
 // NewEpisodeStore creates an EpisodeStore rooted at dir. If rankFn is nil,
@@ -172,9 +174,14 @@ func (e *EpisodeStore) ReadIndex() ([]EpisodeMeta, error) {
 // configured RankStrategy. Limited to limit results.
 func (e *EpisodeStore) Search(query string, limit int) ([]EpisodeMeta, error) {
 	// Check query cache for identical queries
-	if query == e.lastQuery && e.lastResult != nil {
+	e.muQuery.RLock()
+	sameQuery := query == e.lastQuery && e.lastResult != nil
+	e.muQuery.RUnlock()
+	if sameQuery {
+		e.muQuery.RLock()
 		result := make([]EpisodeMeta, len(e.lastResult))
 		copy(result, e.lastResult)
+		e.muQuery.RUnlock()
 		if limit > 0 && len(result) > limit {
 			result = result[:limit]
 		}
@@ -195,9 +202,11 @@ func (e *EpisodeStore) Search(query string, limit int) ([]EpisodeMeta, error) {
 	}
 
 	// Cache result for this query
+	e.muQuery.Lock()
 	e.lastQuery = query
 	e.lastResult = make([]EpisodeMeta, len(ranked))
 	copy(e.lastResult, ranked)
+	e.muQuery.Unlock()
 
 	if limit > 0 && len(ranked) > limit {
 		ranked = ranked[:limit]

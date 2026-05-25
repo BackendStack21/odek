@@ -3,8 +3,10 @@ package telegram
 import (
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/session"
 )
 
 // TestSave_UnblocksOtherChatsDuringDiskIO verifies that Save() releases
@@ -138,4 +140,49 @@ func TestSave_RaceFreeLoadAfterSave(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// ── Red test: ResumeSession loop variable bug ─────────────────────────────
+
+// TestResumeSession_LoopVariableBug verifies that ResumeSession returns
+// the correct session data when multiple sessions exist.
+// BUG: sess = &s where s is the for-range loop variable — in Go < 1.22
+// this captures the address of the reused loop variable, not the element.
+func TestResumeSession_LoopVariableBug(t *testing.T) {
+	sm, store := setupTestSessionManager(t)
+
+	// Create multiple sessions with known IDs.
+	for _, s := range []struct {
+		id   string
+		task string
+	}{
+		{"sess-alpha", "Fix login page"},
+		{"sess-beta", "Implement API rate limiting"},
+		{"sess-gamma", "Refactor database layer"},
+	} {
+		if err := store.Save(&session.Session{
+			ID:        s.id,
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+			Task:      s.task,
+			Messages:  nil,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Resume by session ID prefix — should find the matching session.
+	cs, err := sm.ResumeSession(42, "sess-beta")
+	if err != nil {
+		t.Fatalf("ResumeSession failed: %v", err)
+	}
+	if cs == nil {
+		t.Fatal("ResumeSession returned nil")
+	}
+	if cs.SessionID != "sess-beta" {
+		t.Errorf("SessionID = %q, want %q", cs.SessionID, "sess-beta")
+	}
+	if cs.TurnCount != 0 {
+		t.Errorf("TurnCount = %d, want 0", cs.TurnCount)
+	}
 }

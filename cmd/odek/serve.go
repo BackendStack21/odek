@@ -187,7 +187,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 	approver := newWSApprover(sendFn)
 	resolved.Dangerous.Approver = approver
 
-	tools := builtinTools(resolved.Dangerous, sm, approver, resolved.MaxConcurrency, config.TranscriptionConfig{}, nil)
+	tools := builtinTools(resolved.Dangerous, sm, approver, resolved.MaxConcurrency, resolved.APIKey, config.TranscriptionConfig{}, nil)
 
 	// Find the delegateTasksTool to wire up sub-agent log streaming
 	var subagentTool *delegateTasksTool

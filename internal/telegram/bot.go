@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/BackendStack21/odek/internal/transport"
@@ -39,6 +40,9 @@ type Bot struct {
 	Client           *http.Client
 	DailyTokenBudget int64
 	log              Logger
+
+	stopRetries chan struct{} // closed by StopRetries to abort retry backoff
+	stopOnce    sync.Once     // ensures stop channel is only closed once
 }
 
 // NewBot creates a new Bot with the given token and a default HTTP client
@@ -49,6 +53,7 @@ func NewBot(token string) *Bot {
 		BaseURL:     fmt.Sprintf("https://api.telegram.org/bot%s", token),
 		FileBaseURL: fmt.Sprintf("https://api.telegram.org/file/bot%s", token),
 		Client: transport.NewPooledClient(60 * time.Second),
+		stopRetries: make(chan struct{}),
 		log: NewNopLogger(),
 	}
 }
@@ -169,6 +174,15 @@ func (b *Bot) doJSONContext(ctx context.Context, method string, body any, dest a
 	return lastErr
 }
 
+// StopRetries signals any in-flight doJSON retry loops to abort.
+// Safe to call multiple times. After calling, doJSON will return
+// a cancelled error instead of sleeping through the full backoff.
+func (b *Bot) StopRetries() {
+	b.stopOnce.Do(func() {
+		close(b.stopRetries)
+	})
+}
+
 // doJSON marshals the request body, sends a POST request, and unmarshals
 // the "result" field of the response into the provided destination.
 // Retries on transient errors: network errors, 429 (rate limit), and 5xx
@@ -192,7 +206,12 @@ func (b *Bot) doJSON(method string, body any, dest any) error {
 		if attempt > 0 {
 			backoff := time.Duration(1<<(attempt-1)) * time.Second // 1s, 2s, 4s, 8s
 			b.log.Warn("retrying request", "method", method, "attempt", attempt, "backoff", backoff)
-			time.Sleep(backoff)
+			// Check stop signal during backoff sleep so shutdown isn't delayed.
+			select {
+			case <-time.After(backoff):
+			case <-b.stopRetries:
+				return &TelegramError{Method: method, Description: "cancelled", Code: 0}
+			}
 		}
 
 		resp, err := b.Client.Post(url, "application/json", bytes.NewReader(reqBody))
@@ -310,7 +329,12 @@ func (b *Bot) doUpload(method string, field string, path string, params map[stri
 		if attempt > 0 {
 			backoff := time.Duration(1<<(attempt-1)) * time.Second
 			b.log.Warn("retrying upload", "method", method, "attempt", attempt, "backoff", backoff)
-			time.Sleep(backoff)
+			// Check stop signal during backoff so shutdown isn't delayed.
+			select {
+			case <-time.After(backoff):
+			case <-b.stopRetries:
+				return &TelegramError{Method: method, Description: "cancelled", Code: 0}
+			}
 		}
 
 		req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(bodyBytes))

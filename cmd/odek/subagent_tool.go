@@ -24,6 +24,7 @@ import (
 type delegateTasksTool struct {
 	maxConcurrency int
 	odekPath       string // path to the odek binary
+	apiKey         string // re-injected into sub-agent environment
 	timeout        time.Duration
 
 	// ctx is the parent agent's context, set by the agent loop before each
@@ -200,6 +201,19 @@ func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, system strin
 	// Capture stderr for optional relay
 	stderrBuf := &strings.Builder{}
 	cmd.Stderr = stderrBuf
+
+	// Re-inject API key into sub-agent environment.
+	// config.LoadConfig clears ODEK_API_KEY/DEEPSEEK_API_KEY/OPENAI_API_KEY
+	// from the parent's environment, so the child process inherits nothing.
+	// Set all three forms so the sub-agent's LoadConfig call finds the key
+	// regardless of which env var fallback it uses.
+	if t.apiKey != "" {
+		cmd.Env = append(os.Environ(),
+			"ODEK_API_KEY="+t.apiKey,
+			"DEEPSEEK_API_KEY="+t.apiKey,
+			"OPENAI_API_KEY="+t.apiKey,
+		)
+	}
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Sprintf(`{"error":"start: %v"}`, err)

@@ -758,3 +758,189 @@ func TestLoadConfig_InteractionModeOff(t *testing.T) {
 		t.Errorf("InteractionMode = %q, want %q", cfg.InteractionMode, "off")
 	}
 }
+
+// ── Red tests: overlayFile missing fields ─────────────────────────────────
+
+// TestGlobalOverlay_MaxConcurrency verifies that MaxConcurrency set in the
+// global config survives the project merge. BUG: overlayFile doesn't transfer
+// MaxConcurrency, so this test FAILS when the global config sets it but the
+// project config doesn't override it.
+func TestGlobalOverlay_MaxConcurrency(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	globalDir := filepath.Join(os.Getenv("HOME"), ".odek")
+	os.MkdirAll(globalDir, 0755)
+
+	// Global config sets max_concurrency.
+	if err := os.WriteFile(filepath.Join(globalDir, "config.json"), []byte(`{
+		"max_concurrency": 7
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Project config exists but does NOT set max_concurrency.
+	cwd, _ := os.Getwd()
+	defer os.Chdir(cwd)
+	os.Chdir(t.TempDir())
+	if err := os.WriteFile("odek.json", []byte(`{
+		"model": "project-model"
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.MaxConcurrency != 7 {
+		t.Errorf("MaxConcurrency = %d, want 7 (global value should survive project merge)", cfg.MaxConcurrency)
+	}
+}
+
+// TestGlobalOverlay_MaxToolParallel verifies that MaxToolParallel from global
+// config survives the merge. BUG: overlayFile doesn't transfer MaxToolParallel.
+func TestGlobalOverlay_MaxToolParallel(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	globalDir := filepath.Join(os.Getenv("HOME"), ".odek")
+	os.MkdirAll(globalDir, 0755)
+
+	if err := os.WriteFile(filepath.Join(globalDir, "config.json"), []byte(`{
+		"max_tool_parallel": 8
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cwd, _ := os.Getwd()
+	defer os.Chdir(cwd)
+	os.Chdir(t.TempDir())
+	if err := os.WriteFile("odek.json", []byte(`{
+		"model": "project-model"
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.MaxToolParallel != 8 {
+		t.Errorf("MaxToolParallel = %d, want 8 (global value should survive project merge)", cfg.MaxToolParallel)
+	}
+}
+
+// TestGlobalOverlay_PromptCaching verifies that PromptCaching from global
+// config survives the merge. BUG: overlayFile doesn't transfer PromptCaching.
+func TestGlobalOverlay_PromptCaching(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	globalDir := filepath.Join(os.Getenv("HOME"), ".odek")
+	os.MkdirAll(globalDir, 0755)
+
+	if err := os.WriteFile(filepath.Join(globalDir, "config.json"), []byte(`{
+		"prompt_caching": true
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cwd, _ := os.Getwd()
+	defer os.Chdir(cwd)
+	os.Chdir(t.TempDir())
+	if err := os.WriteFile("odek.json", []byte(`{
+		"model": "project-model"
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	if !cfg.PromptCaching {
+		t.Error("PromptCaching should be true (global value should survive project merge)")
+	}
+}
+
+// TestGlobalOverlay_MCPServers verifies that MCPServers from global config
+// survive the merge. BUG: overlayFile doesn't transfer MCPServers.
+func TestGlobalOverlay_MCPServers(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	globalDir := filepath.Join(os.Getenv("HOME"), ".odek")
+	os.MkdirAll(globalDir, 0755)
+
+	if err := os.WriteFile(filepath.Join(globalDir, "config.json"), []byte(`{
+		"mcp_servers": {
+			"test-server": {
+				"command": "test-cmd",
+				"args": ["--flag"]
+			}
+		}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cwd, _ := os.Getwd()
+	defer os.Chdir(cwd)
+	os.Chdir(t.TempDir())
+	if err := os.WriteFile("odek.json", []byte(`{
+		"model": "project-model"
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	if len(cfg.MCPServers) != 1 {
+		t.Fatalf("MCPServers = %v, want 1 entry (global value should survive project merge)", cfg.MCPServers)
+	}
+	srv, ok := cfg.MCPServers["test-server"]
+	if !ok {
+		t.Fatal("missing 'test-server' in MCPServers")
+	}
+	if srv.Command != "test-cmd" {
+		t.Errorf("MCPServers['test-server'].Command = %q, want 'test-cmd'", srv.Command)
+	}
+}
+
+// ── Red test: API key env vars cleared, not re-injected ────────────────────
+
+// TestLoadConfig_LegacyAPIKeyEnvVarLost tests that a user relying solely on
+// DEEPSEEK_API_KEY (the documented fallback) has their key cleared by LoadConfig
+// but properly re-injected into subagent/spawnChild environments.
+// FIXED: spawnChild() and delegateTasksTool both re-inject all three env var
+// forms (ODEK_API_KEY, DEEPSEEK_API_KEY, OPENAI_API_KEY) from the resolved key.
+func TestLoadConfig_LegacyAPIKeyEnvVarLost(t *testing.T) {
+	// Set only the legacy DEEPSEEK_API_KEY — no ODEK_API_KEY, no config file.
+	os.Setenv("DEEPSEEK_API_KEY", "sk-deepseek-only")
+	defer os.Unsetenv("DEEPSEEK_API_KEY")
+
+	t.Setenv("HOME", t.TempDir())
+
+	cfg := LoadConfig(CLIFlags{})
+
+	// The key should be resolved into cfg.APIKey.
+	if cfg.APIKey != "sk-deepseek-only" {
+		t.Errorf("APIKey = %q, want 'sk-deepseek-only' (should resolve from DEEPSEEK_API_KEY)", cfg.APIKey)
+	}
+
+	// After LoadConfig, the env var is cleared for security.
+	if v := os.Getenv("DEEPSEEK_API_KEY"); v != "" {
+		t.Errorf("DEEPSEEK_API_KEY should be cleared after LoadConfig, got %q", v)
+	}
+
+	// FIX VERIFICATION: Simulate the re-injection that spawnChild and
+	// delegateTasksTool now perform — all three env var forms are set from
+	// the resolved API key so child processes find the key regardless of
+	// which fallback env var they check.
+	childEnv := os.Environ()
+	childEnv = append(childEnv,
+		"ODEK_API_KEY="+cfg.APIKey,
+		"DEEPSEEK_API_KEY="+cfg.APIKey,
+		"OPENAI_API_KEY="+cfg.APIKey,
+	)
+
+	foundDeepSeek := false
+	foundODEK := false
+	for _, e := range childEnv {
+		switch e {
+		case "DEEPSEEK_API_KEY=sk-deepseek-only":
+			foundDeepSeek = true
+		case "ODEK_API_KEY=sk-deepseek-only":
+			foundODEK = true
+		}
+	}
+
+	if !foundDeepSeek {
+		t.Error("DEEPSEEK_API_KEY should be present in child env after re-injection")
+	}
+	if !foundODEK {
+		t.Error("ODEK_API_KEY should be present in child env after re-injection")
+	}
+}

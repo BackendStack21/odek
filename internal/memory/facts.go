@@ -131,29 +131,28 @@ func (f *FactStore) Read(target string) (string, error) {
 }
 
 // readModifyWrite is the core read→modify→write pattern for fact files.
-// It holds the mutex only during the read+parse+modify phase, then releases
-// it before the disk write. This prevents blocking other sessions during file I/O.
+// The mutex is held for the entire read+modify+write cycle so that
+// concurrent sessions don't lose each other's writes to the TOCTOU race
+// between reading the old data and writing the new data.
 //
 // The modify function receives parsed entries and returns modified entries.
 // If it returns nil entries, the write is skipped (no-op).
 func (f *FactStore) readModifyWrite(target string, modify func([]string) ([]string, error)) error {
-	// Read and parse under lock
 	f.mu.Lock()
+	defer f.mu.Unlock()
+
 	existing, err := f.Read(target)
 	if err != nil {
-		f.mu.Unlock()
 		return err
 	}
 	entries := parseEntries(existing)
 	result, err := modify(entries)
-	f.mu.Unlock()
 	if err != nil {
 		return err
 	}
 	if result == nil {
 		return nil // no-op
 	}
-	// Write without lock
 	return f.writeEntries(target, result)
 }
 

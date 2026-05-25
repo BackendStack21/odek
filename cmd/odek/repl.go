@@ -79,7 +79,7 @@ func replCmd(args []string) error {
 			"./.odek/skills",
 		)
 	}
-	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, config.TranscriptionConfig{}, nil)
+	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, config.TranscriptionConfig{}, nil)
 	var sandboxCleanup func() error
 
 	// MCP server tools

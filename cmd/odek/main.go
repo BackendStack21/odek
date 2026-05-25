@@ -924,7 +924,7 @@ func run(args []string) error {
 
 	// Sandbox setup
 	var sandboxCleanup func() error
-	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.Transcription, nil)
+	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, resolved.Transcription, nil)
 
 	// MCP server tools
 	var mcpCleanup func()
@@ -1311,7 +1311,7 @@ func injectFilesToSandbox(containerName string, files []string, cwd string) (int
 	return injected, nil
 }
 
-func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver danger.Approver, maxConcurrency int, tc config.TranscriptionConfig, store *session.Store) []odek.Tool {
+func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver danger.Approver, maxConcurrency int, apiKey string, tc config.TranscriptionConfig, store *session.Store) []odek.Tool {
 	tools := []odek.Tool{
 		&shellTool{
 			dangerousConfig: dc,
@@ -1320,6 +1320,7 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 		&delegateTasksTool{
 			maxConcurrency: maxConcurrency,
 			odekPath:       os.Args[0],
+			apiKey:         apiKey,
 			timeout:        120 * time.Second,
 		},
 		&readFileTool{dangerousConfig: dc},
@@ -1890,7 +1891,7 @@ func continueCmd(args []string) error {
 			"./.odek/skills",
 		)
 	}
-	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.Transcription, store)
+	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, resolved.Transcription, store)
 	var sandboxCleanup func() error
 
 	// MCP server tools
