@@ -384,15 +384,24 @@ func telegramCmd(args []string) error {
 		// Handle /stop — cancel the running agent task and report a summary.
 		if cmdName == "stop" {
 			// Cancel the running agent context, if any.
+			cancelled := false
 			if cancelVal, ok := chatCancels.LoadAndDelete(chatID); ok {
 				cancel := cancelVal.(context.CancelFunc)
 				cancel()
+				cancelled = true
 			}
 			// Retrieve the latest run info for a summary of what was interrupted.
+			// Use Load, not LoadAndDelete — handleChatMessage's cancellation handler
+			// and defer own the cleanup. Racing with LoadAndDelete here would strip
+			// the info before the cancellation handler can format its own message.
 			var summary string
-			if infoVal, ok := chatRunInfos.LoadAndDelete(chatID); ok {
+			if infoVal, ok := chatRunInfos.Load(chatID); ok {
 				info := infoVal.(loop.IterationInfo)
 				summary = formatStopSummary(info)
+			} else if cancelled {
+				// Cancel was sent but no run info yet (first iteration callback
+				// hadn't fired). Report cancellation without detailed summary.
+				summary = "⏹️ *Task cancelled.*"
 			} else {
 				summary = "⏹️ No active task to stop."
 			}
