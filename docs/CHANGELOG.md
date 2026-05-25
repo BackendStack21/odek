@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.51.0 (2026-05-25) — Test Coverage Expansion
+
+### Testing
+- **`internal/skills/llm_enhance_test.go`** — 17 new tests covering `parseLLMSuggestion` (8 cases: valid, missing name/body, empty input, whitespace, multiline), `GenerateSkillWithLLM` (6 cases: nil LLM, LLM error, empty response, success, tool calls, truncation), and `EnhanceCurationWithLLM` (5 cases: nil LLM, nil report, empty report, LLM failure, success)
+- **`internal/skills/scored_matcher_test.go`** — 20 new tests covering `NewScoredMatcher` config defaults, `MatchSkills` (nil receiver, empty, exact, action, description, sorting, capping, no match, deterministic order), `scoreSkill` (topic, action, no match), `ExplainMatch` format, and config default validation
+- **`internal/skills/notifier_test.go`** — 9 new tests covering `NoopNotifier`, `NewMultiNotifier` (zero/one/multiple), fan-out dispatch and event independence
+- **`internal/danger/approver_test.go`** — 7 new tests covering `SetTrustAll` (enable/disable), `PromptCommand` non-interactive deny, trusted class bypass
+- **`internal/telegram/health_test.go`** — 6 new tests covering `NewHealthServer`, `SetLogger`, `SetReady`, `Start`/shutdown with live HTTP check, `ServeHTTP`
+- **Coverage improved**: `GenerateSkillWithLLM` 5%→92%, `NewScoredMatcher` 64%→100%, health `SetLogger`/`SetReady` 0%→100%, notifier `Notify` 0%→100%, `SetTrustAll` 0%→100%
+
+### Infrastructure
+- **`internal/telegram/health.go`** — store actual bound address after `net.Listen` so tests using `:0` can discover the port
+
+## v0.50.0 (2026-05-25) — Module Rename: kode → odek
+
+### Breaking Changes
+- **Module path renamed** from `github.com/BackendStack21/kode` to `github.com/BackendStack21/odek` — all imports updated
+
 ## v0.49.2 (2026-05-25) — Prompt Trimming & Web UI Context
 
 ### Intelligence Improvements

@@ -152,3 +152,128 @@ func TestPromptOperation_NoTTY_Allow(t *testing.T) {
 		t.Errorf("expected nil for non-interactive allow, got: %v", err)
 	}
 }
+
+func TestSetTrustAll_ApprovesAll(t *testing.T) {
+	a := NewTTYApprover(&DangerousConfig{NonInteractive: strPtr("deny")})
+	a.TTYPath = "/nonexistent/tty-for-test"
+
+	// Enable blanket trust
+	a.SetTrustAll(true)
+
+	// Destructive class should auto-approve despite NonInteractive=deny
+	if err := a.PromptCommand(Destructive, "rm -rf /", "dangerous command"); err != nil {
+		t.Errorf("expected nil with trustAll=true, got: %v", err)
+	}
+
+	// Blocked class should also auto-approve
+	if err := a.PromptCommand(Blocked, "some blocked cmd", ""); err != nil {
+		t.Errorf("expected nil with trustAll=true, got: %v", err)
+	}
+}
+
+func TestSetTrustAll_ThenDisable(t *testing.T) {
+	a := NewTTYApprover(&DangerousConfig{NonInteractive: strPtr("deny")})
+	a.TTYPath = "/nonexistent/tty-for-test"
+
+	// Enable blanket trust
+	a.SetTrustAll(true)
+
+	// Should be approved
+	if err := a.PromptCommand(Destructive, "rm -rf /", ""); err != nil {
+		t.Errorf("expected nil with trustAll=true, got: %v", err)
+	}
+
+	// Disable blanket trust
+	a.SetTrustAll(false)
+
+	// Should now be denied (no TTY, NonInteractive=deny)
+	err := a.PromptCommand(Destructive, "rm -rf /", "")
+	if err == nil {
+		t.Fatal("expected error after disabling trustAll")
+	}
+	if !strings.Contains(err.Error(), "denied") {
+		t.Errorf("expected 'denied' in error message, got: %v", err)
+	}
+}
+
+func TestPromptCommand_NoTTY_NilConfigDefaultAllow(t *testing.T) {
+	a := NewTTYApprover(nil)
+	a.TTYPath = "/nonexistent/tty-for-test"
+
+	// Nil config with no TTY → NonInteractive defaults to Allow → returns nil
+	err := a.PromptCommand(SystemWrite, "some command", "")
+	if err != nil {
+		t.Errorf("expected nil for nil config + no TTY, got: %v", err)
+	}
+}
+
+func TestPromptCommand_NoTTY_NonInteractiveDeny_Untrusted(t *testing.T) {
+	a := NewTTYApprover(&DangerousConfig{NonInteractive: strPtr("deny")})
+	a.TTYPath = "/nonexistent/tty-for-test"
+
+	// No trusted classes configure, non-interactive deny → should error
+	err := a.PromptCommand(SystemWrite, "touch /etc/config", "write system file")
+	if err == nil {
+		t.Fatal("expected error for non-interactive deny with no TTY")
+	}
+	if !strings.Contains(err.Error(), "denied") {
+		t.Errorf("expected 'denied' in error message, got: %v", err)
+	}
+}
+
+func TestPromptCommand_TrustedClassSkipsTTY(t *testing.T) {
+	a := NewTTYApprover(&DangerousConfig{NonInteractive: strPtr("deny")})
+	a.TTYPath = "/nonexistent/tty-for-test"
+
+	// Trust Destructive class
+	a.SetTrustedClasses(map[RiskClass]bool{Destructive: true})
+
+	// Trusted class is checked before TTY → should succeed even with NonInteractive=deny
+	err := a.PromptCommand(Destructive, "rm -rf /tmp/data", "")
+	if err != nil {
+		t.Errorf("expected nil for trusted class, got: %v", err)
+	}
+
+	// SystemWrite is NOT trusted → should be denied
+	err = a.PromptCommand(SystemWrite, "touch /etc/config", "")
+	if err == nil {
+		t.Fatal("expected error for untrusted class with NonInteractive=deny")
+	}
+	if !strings.Contains(err.Error(), "denied") {
+		t.Errorf("expected 'denied' in error message, got: %v", err)
+	}
+}
+
+func TestPromptOperation_NoTTY_NonInteractiveDeny(t *testing.T) {
+	a := NewTTYApprover(&DangerousConfig{NonInteractive: strPtr("deny")})
+	a.TTYPath = "/nonexistent/tty-for-test"
+
+	op := ToolOperation{
+		Name:     "write_file",
+		Resource: "/etc/system/config",
+		Risk:     SystemWrite,
+	}
+	err := a.PromptOperation(op)
+	if err == nil {
+		t.Fatal("expected error for non-interactive deny with no TTY")
+	}
+	if !strings.Contains(err.Error(), "denied") {
+		t.Errorf("expected 'denied' in error message, got: %v", err)
+	}
+}
+
+func TestPromptCommand_NoTTY_NonInteractiveDeny_SafeClass(t *testing.T) {
+	a := NewTTYApprover(&DangerousConfig{NonInteractive: strPtr("deny")})
+	a.TTYPath = "/nonexistent/tty-for-test"
+
+	// Safe class is not in trusted classes but no trusted classes configured at all
+	// so TrustedClasses map exists but is empty → Safe is not trusted
+	// NonInteractive=deny + no TTY → should error
+	err := a.PromptCommand(Safe, "ls", "")
+	if err == nil {
+		t.Fatal("expected error for non-interactive deny with no TTY")
+	}
+	if !strings.Contains(err.Error(), "denied") {
+		t.Errorf("expected 'denied' in error message, got: %v", err)
+	}
+}

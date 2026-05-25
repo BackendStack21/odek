@@ -83,6 +83,7 @@ func (hs *HealthServer) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("health server: listen %s: %w", hs.addr, err)
 	}
+	hs.addr = ln.Addr().String() // store actual bound address (e.g. :0 → :34567)
 
 	srv := &http.Server{Addr: hs.addr, Handler: hs}
 	hs.log.Info("health server started", "addr", ln.Addr().String())

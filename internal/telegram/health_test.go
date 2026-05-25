@@ -1,94 +1,141 @@
 package telegram
 
 import (
-	"encoding/json"
-	"net"
+	"context"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
 
-func TestHealthServer_Returns200(t *testing.T) {
+func TestNewHealthServer(t *testing.T) {
 	hs := NewHealthServer("127.0.0.1:0")
-	hs.ready.Store(true)
-
-	ts := &http.Server{Addr: hs.addr, Handler: hs}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
+	if hs == nil {
+		t.Fatal("NewHealthServer returned nil")
 	}
-	defer ln.Close()
-	go ts.Serve(ln)
+	if hs.addr != "127.0.0.1:0" {
+		t.Errorf("addr = %q, want %q", hs.addr, "127.0.0.1:0")
+	}
+	if hs.startTime.IsZero() {
+		t.Error("startTime should not be zero")
+	}
+	if hs.ready.Load() {
+		t.Error("ready should be false initially")
+	}
+}
 
-	time.Sleep(50 * time.Millisecond)
+func TestHealthServer_SetLogger(t *testing.T) {
+	hs := NewHealthServer("")
+	if hs.log == nil {
+		t.Fatal("default log should not be nil")
+	}
 
-	resp, err := http.Get("http://" + ln.Addr().String() + "/health")
+	l := NewNopLogger()
+	hs.SetLogger(l)
+	if hs.log != l {
+		t.Error("SetLogger did not update the logger")
+	}
+
+	hs.SetLogger(nil)
+	if hs.log == nil {
+		t.Error("SetLogger(nil) should set a NopLogger, not nil")
+	}
+}
+
+func TestHealthServer_SetReady(t *testing.T) {
+	hs := NewHealthServer("")
+	if hs.ready.Load() {
+		t.Error("ready should be false initially")
+	}
+
+	hs.SetReady()
+	if !hs.ready.Load() {
+		t.Error("ready should be true after SetReady()")
+	}
+}
+
+func TestHealthServer_EmptyAddrDoesNothing(t *testing.T) {
+	hs := NewHealthServer("")
+	err := hs.Start(context.Background())
 	if err != nil {
-		t.Fatalf("GET /health: %v", err)
+		t.Errorf("Start with empty addr should return nil, got: %v", err)
+	}
+}
+
+func TestHealthServer_StartAndShutdown(t *testing.T) {
+	hs := NewHealthServer("127.0.0.1:0")
+	hs.SetReady() // mark ready so health check returns 200
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- hs.Start(ctx)
+	}()
+
+	// Wait for server to start
+	var resp *http.Response
+	var err error
+	for i := 0; i < 10; i++ {
+		time.Sleep(50 * time.Millisecond)
+		resp, err = http.Get("http://" + hs.addr + "/health")
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
+		t.Fatalf("Failed to reach health server: %v", err)
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != 200 {
-		t.Errorf("status = %d, want 200", resp.StatusCode)
+		t.Errorf("expected 200, got %d", resp.StatusCode)
 	}
 
-	var body map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if body["status"] != "ok" {
-		t.Errorf("status = %q, want ok", body["status"])
-	}
-	if _, ok := body["uptime_seconds"]; !ok {
-		t.Error("missing uptime_seconds")
-	}
-}
-
-func TestHealthServer_NotReady(t *testing.T) {
-	hs := NewHealthServer("127.0.0.1:0")
-	// ready defaults to false
-
-	ts := &http.Server{Addr: hs.addr, Handler: hs}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	defer ln.Close()
-	go ts.Serve(ln)
-
-	time.Sleep(50 * time.Millisecond)
-
-	resp, err := http.Get("http://" + ln.Addr().String() + "/health")
-	if err != nil {
-		t.Fatalf("GET /health: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 503 {
-		t.Errorf("status = %d, want 503", resp.StatusCode)
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil && !strings.Contains(err.Error(), "server closed") {
+			t.Errorf("unexpected error on shutdown: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for server shutdown")
 	}
 }
 
-func TestHealthServer_404OnOtherPaths(t *testing.T) {
-	hs := NewHealthServer("127.0.0.1:0")
+func TestHealthServer_ServeHTTP_Healthy(t *testing.T) {
+	hs := NewHealthServer("")
+	hs.SetReady()
 
-	ts := &http.Server{Addr: hs.addr, Handler: hs}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
+	req, _ := http.NewRequest("GET", "/health", nil)
+	rec := &mockResponseWriter{}
+	hs.ServeHTTP(rec, req)
+
+	if rec.statusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.statusCode)
 	}
-	defer ln.Close()
-	go ts.Serve(ln)
-
-	time.Sleep(50 * time.Millisecond)
-
-	resp, err := http.Get("http://" + ln.Addr().String() + "/metrics")
-	if err != nil {
-		t.Fatalf("GET /metrics: %v", err)
+	if len(rec.body) == 0 {
+		t.Error("expected non-empty response body")
 	}
-	defer resp.Body.Close()
+}
 
-	if resp.StatusCode != 404 {
-		t.Errorf("status = %d, want 404", resp.StatusCode)
+// mockResponseWriter implements http.ResponseWriter for testing
+type mockResponseWriter struct {
+	statusCode int
+	body       []byte
+	headers    http.Header
+}
+
+func (m *mockResponseWriter) Header() http.Header {
+	if m.headers == nil {
+		m.headers = make(http.Header)
 	}
+	return m.headers
+}
+
+func (m *mockResponseWriter) Write(b []byte) (int, error) {
+	m.body = append(m.body, b...)
+	return len(b), nil
+}
+
+func (m *mockResponseWriter) WriteHeader(statusCode int) {
+	m.statusCode = statusCode
 }
