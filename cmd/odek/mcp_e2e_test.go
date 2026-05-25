@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/BackendStack21/odek/internal/mcpclient"
@@ -15,11 +17,21 @@ import (
 // them, and verify the full ToolAdapter round-trip. Gated by ODEK_E2E=true
 // since they spawn external processes.
 
-// fakeMCPPath returns the path to the pre-compiled fake MCP server binary.
-// The test runs inside cmd/odek/, so we go up two levels to reach the repo root.
+// fakeMCPPath compiles the fake MCP server from source on-the-fly
+// and returns the path to the compiled binary.
 func fakeMCPPath(t *testing.T) string {
 	t.Helper()
-	return filepath.Join("..", "..", "internal", "mcpclient", "testdata", "fakeserver")
+	_, thisFile, _, _ := runtime.Caller(0)
+	// Navigate from cmd/odek/ to the repo root, then to internal/mcpclient/testdata/
+	repoRoot := filepath.Join(filepath.Dir(thisFile), "..", "..")
+	testdataDir := filepath.Join(repoRoot, "internal", "mcpclient", "testdata")
+	exePath := filepath.Join(t.TempDir(), "fakeserver")
+	cmd := exec.Command("go", "build", "-o", exePath, testdataDir)
+	cmd.Dir = repoRoot // run from module root so go.mod is found
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build fakeserver: %v\n%s", err, out)
+	}
+	return exePath
 }
 
 func skipIfNoMCPE2E(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -52,12 +53,16 @@ func TestMain(m *testing.M) {
 	e2eBinDir = dir
 	e2eBinary = filepath.Join(dir, ".odek")
 
+	// Resolve repo root from this source file
+	_, thisFile, _, _ := runtime.Caller(0)
+	repoRoot := filepath.Join(filepath.Dir(thisFile), "..", "..")
+
 	cmd := exec.Command("go", "build",
 		"-ldflags", "-X main.version=v0.0.0-e2e",
 		"-o", e2eBinary,
-			"/root/projects/odek/cmd/odek/",
+		filepath.Join(repoRoot, "cmd", "odek"),
 	)
-	cmd.Dir = "/root/projects/odek"
+	cmd.Dir = repoRoot
 	stderr := &bytes.Buffer{}
 	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {

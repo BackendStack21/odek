@@ -4,21 +4,27 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
 
-// fakeServerPath returns the path to the pre-compiled fake MCP server.
+// fakeServerPath compiles the fake MCP server from source on-the-fly
+// and returns the path to the compiled binary. The binary is placed in
+// t.TempDir() and cleaned up automatically when the test completes.
 func fakeServerPath(t *testing.T) string {
 	t.Helper()
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
+	_, thisFile, _, _ := runtime.Caller(0)
+	testdataDir := filepath.Join(filepath.Dir(thisFile), "testdata")
+	exePath := filepath.Join(t.TempDir(), "fakeserver")
+	cmd := exec.Command("go", "build", "-o", exePath, testdataDir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build fakeserver: %v\n%s", err, out)
 	}
-	return filepath.Join(dir, "testdata", "fakeserver")
+	return exePath
 }
 
 func TestNew_NonExistentCommand(t *testing.T) {

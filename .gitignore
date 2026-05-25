@@ -6,3 +6,4 @@ odek-bin
 .plans/
 .hermes/
 notify-channel-proposal.md
+internal/mcpclient/testdata/fakeserver
