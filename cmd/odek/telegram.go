@@ -1090,6 +1090,27 @@ func handleChatMessage(
 	// messages are preserved for the old verbose interaction mode.
 	var toolMsgIDs sync.Map // map[string]int
 
+	// ── Tool Latency Tracking ──────────────────────────────────────
+	// tool_call and tool_result fire in the same order within each
+	// iteration batch. We track start times as a FIFO slice so on
+	// tool_result we can report the actual execution duration.
+	var toolStartTimes []time.Time
+	recordToolStart := func() {
+		toolStartTimes = append(toolStartTimes, time.Now())
+	}
+	popToolLatency := func() string {
+		if len(toolStartTimes) == 0 {
+			return ""
+		}
+		start := toolStartTimes[0]
+		toolStartTimes = toolStartTimes[1:]
+		d := time.Since(start)
+		if d < time.Second {
+			return fmt.Sprintf("%dms", d.Milliseconds())
+		}
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	}
+
 	// Helper: build a progress line for a tool call.
 	buildProgressLine := func(name, data string) string {
 		emoji := render.ToolEmoji(name)
@@ -1281,6 +1302,7 @@ func handleChatMessage(
 				}
 
 				if toolProgress == "verbose" {
+					recordToolStart()
 					line := fmt.Sprintf("%s `%s` %s", render.ToolEmoji(name), name, data)
 					line = telegram.EscapeMarkdown(line)
 					bot.SendMessage(chatID, line,
@@ -1302,11 +1324,12 @@ func handleChatMessage(
 
 			case "tool_result":
 				if toolProgress == "verbose" {
+					latency := popToolLatency()
 					sizeLabel := fmt.Sprintf("%dB", len(data))
 					if len(data) > 1024 {
 						sizeLabel = fmt.Sprintf("%dKB", len(data)/1024)
 					}
-					line := fmt.Sprintf("%s `%s` ✅ (%s)", render.ToolEmoji(name), name, sizeLabel)
+					line := fmt.Sprintf("%s `%s` ✅ (%s, %s)", render.ToolEmoji(name), name, latency, sizeLabel)
 					line = telegram.EscapeMarkdown(line)
 					bot.SendMessage(chatID, line,
 						&telegram.SendOpts{ParseMode: telegram.ParseModeMarkdownV2})

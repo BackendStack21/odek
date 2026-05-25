@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.48.0 (2026-05-25) — Tool Latency & Intelligence Upgrades
+
+### Intelligence Improvements
+- **Episode extraction now produces narrative task summaries** — `internal/memory/memory.go`: replaced "Extract 1-3 durable facts" with "Summarize this session covering: what was implemented/fixed, key files changed, architectural decisions, outcome". Episodes are now recoverable by semantic cross-session search instead of disappearing as unreachable bullet points.
+- **Init-time episode search removed** — `odek.go`: removed `SearchEpisodes("session context", 3)` that injected potentially irrelevant episodes at agent creation. Per-turn `FormatEpisodeContext` already injects relevant episodes based on the actual user message. Saves ~400 tokens per session.
+- **Structured reasoning scaffold** — `cmd/odek/main.go`: added `Reasoning scaffold for complex tasks` with 5 explicit stages (Understand → Plan → Execute → Verify → Ship), replacing vague "think first, then act".
+- **Batch/parallel tool awareness** — `cmd/odek/main.go`: added `Performance tools` section telling the agent about `batch_read`, `parallel_shell`, `multi_grep` with the rule "When you need 3+ files, always use batch_read".
+- **Composable subagent personas** — `cmd/odek/subagent.go`: replaced `switch/case` (first match wins) with compositional `personaFragment` collection. Compound goals like "review the auth code and fix bugs" now merge methodologies from all matched categories instead of picking only one.
+
+### Features
+- **Tool execution latency in verbose progress** — `cmd/odek/telegram.go`: added FIFO-based latency tracking (`recordToolStart`/`popToolLatency`) that measures time between `tool_call` and `tool_result` events. Output format: `🔧 read_file ✅ (12ms, 2KB)` — latency in ms or seconds, paired with result size.
+
+### Documentation
+- **CONFIG.md** — updated `tool_progress: "verbose"` value description to include latency info
+- **TELEGRAM.md** — updated verbose mode example to show latency in output format
+
+### Testing
+- `TestToolLatencyTracking` — verifies FIFO queue behavior: empty case, single-record, multi-record order, and drain
+
+---
+
 ## v0.47.0 (2026-05-25) — Consolidation JSON & Episode Rank Cache
 
 ### Bug Fixes

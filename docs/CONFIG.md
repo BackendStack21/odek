@@ -342,7 +342,7 @@ Controls how per-tool progress messages appear inside the Telegram bot during ag
 |-------|----------|----------|
 | `"all"` (default) | Single editable progress bubble with smart previews — e.g. `📝 read_file: "main.go"`. Includes edit throttling (1.5s), tool dedup (`×N` counter for repeated same-tool), and automatic flood-control fallback | General use — shows what the agent is doing without spamming the chat |
 | `"new"` | Same as `"all"` but only updates when the tool name changes. Consecutive `read_file` calls produce one line; a `shell` call starts a new line | Long-running agents with repetitive tool chains (e.g. reading 50 files in batch) |
-| `"verbose"` | Raw tool arguments as separate messages. Each tool call sends a new message with full JSON args; on completion the result is sent as a new message `✅ (size)` | Debugging — see exactly what the agent passes to each tool |
+| `"verbose"` | Raw tool arguments as separate messages. Each tool call sends a new message with full JSON args; on completion the result is sent as a new message `✅ (12ms, 2KB)` including execution latency and result size | Debugging — see exactly what the agent passes to each tool and how long it takes |
 | `"off"` | No per-tool progress messages at all. Only the initial "🤔 Looking into that..." and final answer are shown | Privacy-sensitive contexts or users who prefer zero noise |
 
 ### `tool_progress_cleanup`

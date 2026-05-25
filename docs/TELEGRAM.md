@@ -316,7 +316,7 @@ Tool progress shows what the agent is doing in real time. Controlled by the `too
 |------|----------|
 | `all` (default) | Reasoning-first progress: LLM's first reasoning sentence as header, then individual tool previews below. Eg: `"Let me search that file..."` then `📝 read_file: "main.go"`. With edit throttling (1.5s), dedup, and flood-control fallback |
 | `new` | Like `all` but reasoning header only updates on new iteration |
-| `verbose` | Raw tool arguments as separate messages — `📝 `read_file` {"path":"main.go"}` then `📝 `read_file` ✅ (2KB)` on completion |
+| `verbose` | Raw tool arguments as separate messages — `📝 `read_file` {"path":"main.go"}` then `📝 `read_file` ✅ (12ms, 2KB)` on completion, including execution latency |
 | `off` | No per-tool progress messages — just the thinking preamble and final answer |
 
 **Key features:**

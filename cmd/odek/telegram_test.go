@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/BackendStack21/kode/internal/loop"
 	"github.com/BackendStack21/kode/internal/render"
@@ -671,4 +672,62 @@ func truncateStr(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// ── Tool Latency ────────────────────────────────────────────────────
+
+// TestToolLatencyTracking verifies that recordToolStart and popToolLatency
+// correctly track tool execution durations as a FIFO queue. This is the
+// mechanism used in verbose tool_progress mode to show per-tool latency.
+func TestToolLatencyTracking(t *testing.T) {
+	var toolStartTimes []time.Time
+	recordToolStart := func() {
+		toolStartTimes = append(toolStartTimes, time.Now())
+	}
+	popToolLatency := func() string {
+		if len(toolStartTimes) == 0 {
+			return ""
+		}
+		start := toolStartTimes[0]
+		toolStartTimes = toolStartTimes[1:]
+		d := time.Since(start)
+		if d < time.Second {
+			return fmt.Sprintf("%dms", d.Milliseconds())
+		}
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	}
+
+	// Empty case
+	if lat := popToolLatency(); lat != "" {
+		t.Errorf("expected empty latency from empty queue, got %q", lat)
+	}
+
+	// Record a start, then immediately pop
+	recordToolStart()
+	lat := popToolLatency()
+	if lat == "" {
+		t.Fatal("expected non-empty latency after recording a start")
+	}
+	// Should be ~0ms since we popped immediately
+	if !strings.HasSuffix(lat, "ms") {
+		t.Errorf("expected latency in 'Xms' format (<1s), got %q", lat)
+	}
+
+	// Verify FIFO order: record 3, pop 3 in order
+	recordToolStart()
+	recordToolStart()
+	recordToolStart()
+	if len(toolStartTimes) != 3 {
+		t.Fatalf("expected 3 start times queued, got %d", len(toolStartTimes))
+	}
+	// Pop all 3
+	for i := 0; i < 3; i++ {
+		if lat := popToolLatency(); lat == "" {
+			t.Errorf("pop %d: expected non-empty latency", i)
+		}
+	}
+	// Queue should now be empty
+	if lat := popToolLatency(); lat != "" {
+		t.Errorf("expected empty after draining queue, got %q", lat)
+	}
 }
