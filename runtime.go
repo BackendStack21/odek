@@ -60,8 +60,13 @@ func BuildRuntimeContext(platform string) string {
 
 	case "web":
 		ctx += "\n\nYou are running in a web UI. " +
-			"Responses are streamed to the browser via WebSocket. " +
-			"Markdown formatting is supported. Keep responses concise and visual."
+			"Responses are streamed to the browser via WebSocket in real-time — " +
+			"each reasoning step and tool call becomes visible as it happens. " +
+			"Markdown formatting (headings, lists, code blocks, bold, links) is " +
+			"fully rendered in the browser. Use visual elements like code blocks " +
+			"and structured lists. The user can reload the page or submit a new " +
+			"prompt at any time without losing context. Keep responses concise " +
+			"and visual — the user is reading in a browser."
 
 	case "terminal", "":
 		ctx += "\n\nYou are running in a terminal/CLI environment. " +

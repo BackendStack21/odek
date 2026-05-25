@@ -1100,3 +1100,34 @@ func TestAgent_SkillEventHandler_NilSkills(t *testing.T) {
 		t.Errorf("expected 0 events when skills disabled, got %d", len(events))
 	}
 }
+
+// TestBuildRuntimeContext_WebHasRichInstructions verifies that the web
+// platform context includes meaningful instructions beyond the bare minimum.
+// The original was only 2 lines ("streamed via WebSocket, markdown supported")
+// while Telegram gets 50+ lines with reasoning rules, platform-specific
+// formatting, and interaction patterns. Web UI users deserve equivalent
+// guidance about real-time streaming, markdown, visual output, and reload
+// behavior.
+func TestBuildRuntimeContext_WebHasRichInstructions(t *testing.T) {
+	ctx := BuildRuntimeContext("web")
+
+	checks := []struct {
+		phrase string
+		reason string
+	}{
+		{"streamed", "should mention output is streamed in real-time"},
+		{"WebSocket", "should mention transport mechanism"},
+		{"Markdown", "should confirm markdown support"},
+		{"visual", "should encourage visual responses"},
+	}
+	for _, c := range checks {
+		if !strings.Contains(ctx, c.phrase) {
+			t.Errorf("BuildRuntimeContext(\"web\") should %s (missing %q)", c.reason, c.phrase)
+		}
+	}
+
+	// Should be substantially more context than the original 2 lines
+	if len(ctx) < 300 {
+		t.Errorf("BuildRuntimeContext(\"web\") is only %d chars — too short for meaningful platform guidance (min 300)", len(ctx))
+	}
+}

@@ -2160,6 +2160,30 @@ func TestDefaultSystem_AllowsVerification(t *testing.T) {
 	}
 }
 
+// TestDefaultSystem_AntiPatternIsConcise verifies that the ANTI-PATTERN
+// block at the top of defaultSystem is concise — under 250 characters.
+// The original was ~340 characters with verbose examples like
+// '"what is odek's website?", just answer: https://odek.21no.de'. Models
+// don't need complete sentences with full examples; a compact warning
+// is equally effective and saves ~100 tokens on every session start.
+func TestDefaultSystem_AntiPatternIsConcise(t *testing.T) {
+	// Extract the ANTI-PATTERN line from defaultSystem
+	const prefix = "⚠️ ANTI-PATTERN"
+	startIdx := strings.Index(defaultSystem, prefix)
+	if startIdx < 0 {
+		t.Fatal("ANTI-PATTERN block not found in defaultSystem")
+	}
+	// Find end of the first line (newline after the block)
+	endIdx := strings.Index(defaultSystem[startIdx:], "\n")
+	if endIdx < 0 {
+		endIdx = len(defaultSystem[startIdx:])
+	}
+	block := strings.TrimSpace(defaultSystem[startIdx : startIdx+endIdx])
+	if len(block) > 250 {
+		t.Errorf("ANTI-PATTERN block is %d chars (max 250). Compact it — models don't need full-sentence examples.\nBlock: %q", len(block), block)
+	}
+}
+
 // ── --deliver flag tests ──────────────────────────────────────────────────
 
 func TestParseRunFlags_Deliver(t *testing.T) {
