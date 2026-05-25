@@ -2079,8 +2079,8 @@ func TestBuildSystemPrompt_FallsBackToDefault(t *testing.T) {
 	}
 
 	got := buildSystemPrompt(resolved)
-	if !strings.Contains(got, "⚠️ ANTI-PATTERN") {
-		t.Error("expected defaultSystem prefix when no override or IDENTITY.md")
+	if !strings.Contains(got, "You are odek") {
+		t.Error("expected defaultSystem identity when no override or IDENTITY.md")
 	}
 	if !strings.Contains(got, "https://github.com/test/repo") {
 		t.Error("repo URL should appear in prompt")
@@ -2160,27 +2160,17 @@ func TestDefaultSystem_AllowsVerification(t *testing.T) {
 	}
 }
 
-// TestDefaultSystem_AntiPatternIsConcise verifies that the ANTI-PATTERN
-// block at the top of defaultSystem is concise — under 250 characters.
-// The original was ~340 characters with verbose examples like
-// '"what is odek's website?", just answer: https://odek.21no.de'. Models
-// don't need complete sentences with full examples; a compact warning
-// is equally effective and saves ~100 tokens on every session start.
+// TestDefaultSystem_AntiPatternIsConcise verifies that the opening
+// line of defaultSystem is concise — under 150 characters.
 func TestDefaultSystem_AntiPatternIsConcise(t *testing.T) {
-	// Extract the ANTI-PATTERN line from defaultSystem
-	const prefix = "⚠️ ANTI-PATTERN"
-	startIdx := strings.Index(defaultSystem, prefix)
-	if startIdx < 0 {
-		t.Fatal("ANTI-PATTERN block not found in defaultSystem")
+	// Extract the first line from defaultSystem
+	firstLineEnd := strings.Index(defaultSystem, "\n")
+	if firstLineEnd < 0 {
+		t.Fatal("defaultSystem has no newline")
 	}
-	// Find end of the first line (newline after the block)
-	endIdx := strings.Index(defaultSystem[startIdx:], "\n")
-	if endIdx < 0 {
-		endIdx = len(defaultSystem[startIdx:])
-	}
-	block := strings.TrimSpace(defaultSystem[startIdx : startIdx+endIdx])
-	if len(block) > 250 {
-		t.Errorf("ANTI-PATTERN block is %d chars (max 250). Compact it — models don't need full-sentence examples.\nBlock: %q", len(block), block)
+	firstLine := strings.TrimSpace(defaultSystem[:firstLineEnd])
+	if len(firstLine) > 150 {
+		t.Errorf("first line is %d chars (max 150). Keep it short.\nLine: %q", len(firstLine), firstLine)
 	}
 }
 
@@ -2270,17 +2260,15 @@ func TestDeliverToTelegram_SendsMessage(t *testing.T) {
 // a scaffold, the model's "think first, then act" instruction is too vague
 // — models perform measurably better with explicit thinking stages.
 func TestDefaultSystem_IncludesReasoningScaffold(t *testing.T) {
-	hasUnderstand := strings.Contains(defaultSystem, "**1. Understand**") ||
-		strings.Contains(defaultSystem, "1. Understand:")
-	hasPlan := strings.Contains(defaultSystem, "**2. Plan**") ||
-		strings.Contains(defaultSystem, "2. Plan:")
-	hasExecute := strings.Contains(defaultSystem, "**3. Execute**") ||
-		strings.Contains(defaultSystem, "3. Execute:")
-	hasVerify := strings.Contains(defaultSystem, "**4. Verify**") ||
-		strings.Contains(defaultSystem, "4. Verify:")
+	hasThink := strings.Contains(defaultSystem, "Think before you act") ||
+		strings.Contains(defaultSystem, "think first")
+	hasTDD := strings.Contains(defaultSystem, "TDD") ||
+		strings.Contains(defaultSystem, "failing test first")
+	hasVerify := strings.Contains(defaultSystem, "Verify after") ||
+		strings.Contains(defaultSystem, "verify after every change")
 
-	if !hasUnderstand || !hasPlan || !hasExecute || !hasVerify {
-		t.Error("defaultSystem should include a structured reasoning scaffold (Understand → Plan → Execute → Verify → Ship)")
+	if !hasThink || !hasTDD || !hasVerify {
+		t.Error("defaultSystem should include reasoning guidance (think → TDD → verify)")
 	}
 }
 
@@ -2307,10 +2295,13 @@ func TestDefaultSystem_MentionsBatchTools(t *testing.T) {
 // not "bash", "sh", or "terminal". The model frequently hallucinates
 // unix command names as tool names, wasting an iteration on a 404.
 func TestDefaultSystem_RemindsLiteralToolNames(t *testing.T) {
-	if !strings.Contains(defaultSystem, "tool names are LITERAL") {
-		t.Error("defaultSystem should remind the agent that tool names are literal — call 'shell' not 'bash', 'sh', or 'terminal'")
-	}
 	if !strings.Contains(defaultSystem, `"shell" NOT "bash"`) {
 		t.Error("defaultSystem should include explicit 'shell NOT bash' mapping")
+	}
+	if !strings.Contains(defaultSystem, `"read_file" NOT "cat"`) {
+		t.Error("defaultSystem should include explicit 'read_file NOT cat' mapping")
+	}
+	if !strings.Contains(defaultSystem, `"patch" NOT "sed"`) {
+		t.Error("defaultSystem should include explicit 'patch NOT sed' mapping")
 	}
 }
