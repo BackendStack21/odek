@@ -109,6 +109,13 @@ type Engine struct {
 	// avoiding resource exhaustion.
 	MaxToolParallel int
 
+	// maxConsecutiveToolErrors tracks how many consecutive error results
+	// each tool has produced. Reset on success, incremented on error.
+	// When a tool hits 3 consecutive errors, the loop injects a corrective
+	// system message suggesting alternative tools instead of letting the
+	// LLM keep retrying the same failing tool.
+	maxConsecutiveToolErrors map[string]int
+
 	// approver gates dangerous operations. When set and the LLM returns
 	// multiple tool calls in one iteration, a single batch approval prompt
 	// is shown before any tool executes, but ONLY for tools whose risk
@@ -135,12 +142,13 @@ type Engine struct {
 // Pass 0 for no limit enforcement.
 func New(client *llm.Client, registry *tool.Registry, maxIterations int, systemMessage string, renderer *render.Renderer, maxContext int) *Engine {
 	return &Engine{
-		client:    client,
-		registry:  registry,
-		renderer:  renderer,
-		maxIter:   maxIterations,
-		system:    systemMessage,
-		maxContext: maxContext,
+		client:                   client,
+		registry:                 registry,
+		renderer:                 renderer,
+		maxIter:                  maxIterations,
+		system:                   systemMessage,
+		maxContext:               maxContext,
+		maxConsecutiveToolErrors: make(map[string]int),
 	}
 }
 
@@ -404,6 +412,8 @@ func (e *Engine) RunWithMessages(ctx context.Context, messages []llm.Message) (s
 func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, []llm.Message, error) {
 	tools := e.buildToolDefs()
 	startTime := time.Now()
+	// Reset per-session tool error tracking
+	e.maxConsecutiveToolErrors = make(map[string]int)
 
 	for i := 0; i < e.maxIter; i++ {
 		select {
@@ -826,6 +836,65 @@ if e.approver != nil && len(result.ToolCalls) > 1 {
 				Content:    delimited,
 				Name:       tc.Function.Name,
 				ToolCallID: tc.ID,
+			})
+		}
+
+		// ── Tool error recovery: track consecutive failures per tool ──
+		// When a tool errors 3+ times in a row, inject a corrective
+		// system message so the LLM picks a different approach instead
+		// of retrying the same failing tool.
+		const (
+			errThreshold  = 3  // consecutive errors before intervention
+			errPrefixRead = "\"error\":" // JSON error indicator
+		)
+		var corrections []string
+		for idx, tc := range result.ToolCalls {
+			raw := results[idx].output
+			toolName := tc.Function.Name
+			isErr := strings.Contains(raw, errPrefixRead) ||
+				strings.HasPrefix(raw, "error:")
+
+			if isErr {
+				e.maxConsecutiveToolErrors[toolName]++
+			} else {
+				e.maxConsecutiveToolErrors[toolName] = 0
+			}
+
+			if e.maxConsecutiveToolErrors[toolName] >= errThreshold {
+				// Build a corrective suggestion based on error type
+				var correction string
+				switch {
+				case strings.Contains(raw, "is a directory"):
+					correction = fmt.Sprintf(
+						"⚠️ Tool %q keeps failing on a directory. Use tree or search_files(target='files') to explore directories instead.",
+						toolName)
+				case toolName == "shell" && strings.Contains(raw, "exit status"):
+					correction = fmt.Sprintf(
+						"⚠️ Shell command failed repeatedly. Try a different approach: use read_file to inspect files, or break the command into simpler steps.")
+				case strings.Contains(raw, "not found") || strings.Contains(raw, "no such file"):
+					correction = fmt.Sprintf(
+						"⚠️ Tool %q cannot find the path. Use search_files or glob to locate the correct path first.",
+						toolName)
+				case strings.Contains(raw, "is a binary file") || strings.Contains(raw, "binary"):
+					correction = fmt.Sprintf(
+						"⚠️ Tool %q cannot read binary files. Use base64 to encode binary content, or checksum to hash it.",
+						toolName)
+				default:
+					correction = fmt.Sprintf(
+						"⚠️ Tool %q keeps failing. Try a different tool: use shell for shell commands, search_files for finding files, or read_file for reading files.",
+						toolName)
+				}
+				corrections = append(corrections, correction)
+				// Reset counter after injecting suggestion
+				e.maxConsecutiveToolErrors[toolName] = 0
+			}
+		}
+		// Inject all corrections as a single system message
+		if len(corrections) > 0 {
+			msg := strings.Join(corrections, "\n")
+			messages = append(messages, llm.Message{
+				Role:    "system",
+				Content: msg,
 			})
 		}
 

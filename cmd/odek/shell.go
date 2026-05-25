@@ -120,14 +120,20 @@ func (t *shellTool) Call(args string) (string, error) {
 
 	err := cmd.Run()
 	output := strings.TrimSpace(outBuf.String())
-	if errBuf.Len() > 0 {
+	stderrStr := strings.TrimSpace(errBuf.String())
+	if stderrStr != "" {
 		if output != "" {
 			output += "\n"
 		}
-		output += strings.TrimSpace(errBuf.String())
+		output += stderrStr
 	}
 	if err != nil && output == "" {
 		return "", fmt.Errorf("shell: %w", err)
+	}
+	if err != nil && stderrStr != "" {
+		// Include stderr even when stdout is empty — "exit status 1" alone
+		// gives the LLM no clue why the command failed.
+		return output, nil
 	}
 	if output == "" {
 		output = "(no output)"
