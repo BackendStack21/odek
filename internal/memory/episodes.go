@@ -49,6 +49,11 @@ type EpisodeStore struct {
 	rankFn   RankStrategy
 	idxCache []EpisodeMeta   // cached index, nil = not loaded
 	muCache  sync.RWMutex    // fine-grained lock for cache reads
+
+	// queryCache caches the last Search query result to avoid
+	// re-ranking identical queries on consecutive turns.
+	lastQuery  string
+	lastResult []EpisodeMeta
 }
 
 // NewEpisodeStore creates an EpisodeStore rooted at dir. If rankFn is nil,
@@ -166,6 +171,16 @@ func (e *EpisodeStore) ReadIndex() ([]EpisodeMeta, error) {
 // Search returns the most relevant episodes for a query, ranked by the
 // configured RankStrategy. Limited to limit results.
 func (e *EpisodeStore) Search(query string, limit int) ([]EpisodeMeta, error) {
+	// Check query cache for identical queries
+	if query == e.lastQuery && e.lastResult != nil {
+		result := make([]EpisodeMeta, len(e.lastResult))
+		copy(result, e.lastResult)
+		if limit > 0 && len(result) > limit {
+			result = result[:limit]
+		}
+		return result, nil
+	}
+
 	idx, err := e.ReadIndex()
 	if err != nil {
 		return nil, err
@@ -178,6 +193,11 @@ func (e *EpisodeStore) Search(query string, limit int) ([]EpisodeMeta, error) {
 	if err != nil {
 		return nil, fmt.Errorf("memory: search episodes: %w", err)
 	}
+
+	// Cache result for this query
+	e.lastQuery = query
+	e.lastResult = make([]EpisodeMeta, len(ranked))
+	copy(e.lastResult, ranked)
 
 	if limit > 0 && len(ranked) > limit {
 		ranked = ranked[:limit]

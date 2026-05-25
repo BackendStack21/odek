@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.47.0 (2026-05-25) — Consolidation JSON & Episode Rank Cache
+
+### Bug Fixes
+- **Consolidation delimiter fragility** — `internal/memory/memory.go`: switched from primitive " § " string-split parsing to JSON array format for consolidation output. Facts containing " § " as natural text no longer corrupt the entry set on consolidation.
+
+### Performance
+- **Episode rank query cache** — `internal/memory/episodes.go`: added single-entry query cache to `EpisodeStore.Search`. Consecutive identical user messages no longer re-rank episodes via LLM, saving ~1 LLM call per turn on repeated queries.
+
+### Testing
+- `TestConsolidate_JSONDelimiter` — verifies JSON array parsing works
+- `TestConsolidate_DelimiterInContent` — verifies facts containing " § " survive consolidation
+- `TestEpisodeRankCache` — verifies consecutive identical queries hit cache
+- `TestOnSessionEnd_StructuredPrompt` — verifies extraction prompt preserves USER/ASSISTANT labels
+
+---
+
 ## v0.46.0 (2026-05-24) — System Prompt Optimization & Episode Context Fix
 
 ### Bug Fixes

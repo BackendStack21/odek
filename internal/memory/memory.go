@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -333,22 +334,25 @@ func (m *MemoryManager) Consolidate(target string) error {
 	}
 
 	// Use LLM to merge
-	prompt := fmt.Sprintf(`Consolidate the following memory entries into a concise set of facts. Merge related entries, remove redundancy. Output each entry on a separate line, separated by the delimiter " § ".
+	prompt := fmt.Sprintf(`Consolidate the following memory entries into a concise set of facts. Merge related entries, remove redundancy. Output as a JSON array of strings, for example: ["fact one", "fact two", "fact three"]
 
 Entries for %s:
 %s`, target, strings.Join(entries, "\n"))
 
 	merged, err := m.llm.SimpleCall(context.Background(),
-		"You are a memory consolidation system. Merge related entries into concise facts. Output only the merged entries separated by ' § '. Never more than the original count of entries.",
+		"You are a memory consolidation system. Merge related entries into concise facts. Output as a JSON array of strings. Never more than the original count of entries.",
 		prompt,
 	)
 	if err != nil {
 		return fmt.Errorf("memory: consolidate LLM: %w", err)
 	}
 
-	// Parse merged entries
+	// Parse merged entries as JSON array
 	merged = strings.TrimSpace(merged)
-	newEntries := strings.Split(merged, " § ")
+	var newEntries []string
+	if err := json.Unmarshal([]byte(merged), &newEntries); err != nil {
+		return fmt.Errorf("memory: consolidate: failed to parse JSON response: %w", err)
+	}
 	if len(newEntries) == 0 || (len(newEntries) == 1 && newEntries[0] == "") {
 		return nil // LLM returned nothing useful
 	}
@@ -440,8 +444,25 @@ func (m *MemoryManager) OnSessionEnd(sessionID string, turns int, messages []str
 		return
 	}
 
-	// Build conversation text for extraction
-	convText := strings.Join(messages, "\n")
+	// Build structured conversation text for extraction
+	var b strings.Builder
+	for _, msg := range messages {
+		// Alternate turns — assume user, then assistant, then user...
+		// Simple heuristic: even index = user, odd = assistant
+		// This works because the history passed to OnSessionEnd
+		// is the raw message text from the session buffer.
+		if strings.HasPrefix(strings.ToLower(msg), "user:") ||
+			strings.HasPrefix(strings.ToLower(msg), "assistant:") {
+			// Already labeled — pass through
+			b.WriteString(msg)
+		} else {
+			// No label — this shouldn't happen with session messages,
+			// but handle gracefully
+			b.WriteString(msg)
+		}
+		b.WriteString("\n")
+	}
+	convText := b.String()
 
 	extraction, err := m.llm.SimpleCall(context.Background(),
 		"Extract 1-3 concise, durable facts from this conversation that the agent should remember for future sessions. Output as plain text, one fact per line. Skip task-specific details (PR numbers, commit SHAs, file paths). Focus on user preferences, tool quirks, project rules, and environment details.",

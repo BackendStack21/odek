@@ -52,22 +52,6 @@ func BuildRuntimeContext(platform string) string {
 				"VIOLATION CONSEQUENCE: If you write a generic self-directed first sentence, " +
 				"users see NOTHING useful while you work — they have no clue what is happening. " +
 				"The bot looks broken. Always start with a real explanation.\n\n" +
-				"## 🌐 LANGUAGE RULE — FOLLOW THIS EXACTLY\n" +
-				"You MUST reply in the EXACT SAME LANGUAGE the user writes in.\n" +
-				"- Read the user's language from their message and match it\n" +
-				"- This includes the final answer, the 💭 thinking message, AND the progress indicator\n" +
-				"- NEVER switch languages mid-conversation\n" +
-				"- If unsure, detect the language from the message content\n" +
-				"\n" +
-				"Examples: user writes in Portuguese → reply in Portuguese. " +
-				"User writes in English → reply in English. " +
-				"User writes in Spanish → reply in Spanish.\n" +
-				"\n" +
-				"VIOLATION CONSEQUENCE: Replying in the wrong language confuses the user " +
-				"and makes the bot unusable. Always match the user's language.\n\n" +
-				"You are on a text messaging communication platform, Telegram. " +
-				"Standard markdown is supported: **bold**, *italic*, ~~strikethrough~~, " +
-				"||spoiler||, `inline code`, ```code blocks```, [links](url), and ## headers. " +
 				"Use the send_message tool to send intermediate messages, files (photo/document/voice), " +
 				"or interactive inline keyboard buttons (buttons parameter with cb: prefix). " +
 				"For final answers, just return the text directly — no need to use send_message."

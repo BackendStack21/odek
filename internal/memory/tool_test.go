@@ -168,7 +168,7 @@ func TestMemoryToolConsolidate(t *testing.T) {
 	dir := t.TempDir()
 	llm := &mockLLM{
 		responses: map[string]string{
-			"Consolidate": "Merged fact one § Merged fact two",
+			"Consolidate": `["Merged fact one", "Merged fact two"]`,
 		},
 	}
 	mm := NewMemoryManager(dir, llm, DefaultMemoryConfig())
