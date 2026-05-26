@@ -998,6 +998,24 @@ func handleChatMessage(
 	cs.Messages = append(cs.Messages, llm.Message{Role: "user", Content: text})
 	cs.LastActive = time.Now()
 
+	// Persist the user message immediately so session_search can find it
+	// inside the agent loop. Without this, the current turn is only in
+	// memory and invisible to both vector search and deepSearch.
+	// Build a session.Snapshot directly to avoid incrementing TurnCount
+	// (that happens once at the end in the normal Save path).
+	sess := &session.Session{
+		ID:        cs.SessionID,
+		CreatedAt: cs.CreatedAt,
+		UpdatedAt: time.Now(),
+		Model:     "",
+		Turns:     cs.TurnCount,
+		Task:      fmt.Sprintf("tg-%d", chatID),
+		Messages:  cs.Messages,
+	}
+	if err := sessionManager.Store.Save(sess); err != nil {
+		log.Error("save session before agent run", "chat_id", chatID, "error", err)
+	}
+
 	// Build the agent with Telegram approver.
 	tools := builtinTools(resolved.Dangerous, nil, approver, resolved.MaxConcurrency, resolved.APIKey, resolved.Transcription, sessionManager.Store)
 
