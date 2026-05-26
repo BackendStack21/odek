@@ -24,7 +24,9 @@ func newSessionSearchTool(store *session.Store) *sessionSearchTool {
 }
 
 func (t *sessionSearchTool) Name() string        { return "session_search" }
-func (t *sessionSearchTool) Description() string  { return `Search and retrieve past agent sessions. Actions: list (recent sessions), search (semantic keyword search through full message content), get (full session by ID), find (sessions by task/title). Uses semantic vector search for the search action — it finds sessions whose conversation content is relevant to your query, even when titles don't match. Use OR between keywords for broad recall.` }
+func (t *sessionSearchTool) Description() string  { return `Search and retrieve past agent sessions. Actions: list (recent sessions), search (semantic keyword search through full message content), get (full session by ID including ALL messages), find (sessions by task/title). Uses semantic vector search for the search action — it finds sessions whose conversation content is relevant to your query, even when titles don't match. Use OR between keywords for broad recall.
+
+IMPORTANT: After search returns matching sessions, use get (not search) to read the actual conversation content. get returns the full session_messages array with every user and assistant message.` }
 
 type sessionSearchArgs struct {
 	Action string `json:"action"`          // list, search, get, find
@@ -305,24 +307,35 @@ func (t *sessionSearchTool) deepSearch(tokens []string, candidates []session.Ses
 			continue
 		}
 
-		score := 0
+		// Track which distinct query tokens matched across all messages.
+		// This prevents a single common word like "changes" from qualifying
+		// an unrelated 107-message session.
+		matchedTokens := make(map[string]bool, len(tokens))
 		var snippet string
 		for _, msg := range full.Messages {
 			if msg.Role != "user" && msg.Role != "assistant" {
 				continue
 			}
-			if n := matchTokens(tokens, msg.Content); n > 0 {
-				score += n
-				if snippet == "" {
-					snippet = truncate(msg.Content, 100)
+			lower := strings.ToLower(msg.Content)
+			for _, tok := range tokens {
+				if len(tok) < 2 || matchedTokens[tok] {
+					continue
+				}
+				if strings.Contains(lower, tok) {
+					matchedTokens[tok] = true
+					if snippet == "" {
+						snippet = truncate(msg.Content, 100)
+					}
 				}
 			}
 		}
 
-		if score > 0 {
+		// Require at least 2 distinct tokens to match (or all if query has only 1 token).
+		// A single common word hitting one of 107 messages is noise, not signal.
+		if len(matchedTokens) >= 2 || (len(tokens) == 1 && len(matchedTokens) == 1) {
 			existing = append(existing, sessionMatch{
 				session: *full,
-				score:   score,
+				score:   len(matchedTokens),
 				snippet: snippet,
 			})
 		}
