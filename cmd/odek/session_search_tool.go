@@ -164,6 +164,15 @@ func (t *sessionSearchTool) handleSearch(query string, limit int) (string, error
 			// Load full session metadata for each result.
 			results := make([]sessionSummary, 0, len(vecResults))
 			for _, vr := range vecResults {
+				// Phase 1a: Filter by similarity threshold.
+				// Random Projections is bag-of-words, not semantic — when
+				// 115/117 sessions are "say hello", generic tech queries
+				// (odek, project, agent) match the hello centroid at 0.30-0.36.
+				// A threshold of 0.40 keeps only genuinely strong matches and
+				// falls through to keyword search for everything else.
+				if vr.Score < 0.40 {
+					continue
+				}
 				sess, err := t.store.Load(vr.SessionID)
 				if err != nil || sess == nil {
 					continue
@@ -190,14 +199,9 @@ func (t *sessionSearchTool) handleSearch(query string, limit int) (string, error
 		// Vector search returned no results — fall through to keyword.
 	}
 
-	// Phase 2: Keyword search (existing logic — title + deep scan).
-	// Get generous candidate list
-	listLimit := limit * 4
-	if listLimit < 20 {
-		listLimit = 20
-	}
-
-	sessions, err := t.store.List(listLimit)
+	// Phase 2: Keyword search — search ALL sessions, not just recent.
+	// "say hello" heartbeats should not drown out older substantive sessions.
+	sessions, err := t.store.List(0) // 0 = all sessions
 	if err != nil {
 		return jsonResult(sessionSearchResult{
 			Action:   "search",
