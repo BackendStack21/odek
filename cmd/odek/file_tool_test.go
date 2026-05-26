@@ -1573,6 +1573,59 @@ func TestSearchContent_LimitReached(t *testing.T) {
 	}
 }
 
+func TestSearchFiles_SkipsBuildDirs(t *testing.T) {
+	dir := t.TempDir()
+	// Create a file in the root search dir
+	os.WriteFile(filepath.Join(dir, "work.go"), []byte("package main\nfunc init() {}\n"), 0644)
+	// Create node_modules with a file that should NOT be found
+	nmDir := filepath.Join(dir, "node_modules")
+	os.MkdirAll(nmDir, 0755)
+	os.WriteFile(filepath.Join(nmDir, "dep.js"), []byte("module.exports.init = function() {}\n"), 0644)
+	// Create __pycache__ with a file that should NOT be found
+	pcDir := filepath.Join(dir, "__pycache__")
+	os.MkdirAll(pcDir, 0755)
+	os.WriteFile(filepath.Join(pcDir, "cache.py"), []byte("def init():\n    pass\n"), 0644)
+	// Create vendor with a file that should NOT be found
+	vDir := filepath.Join(dir, "vendor")
+	os.MkdirAll(vDir, 0755)
+	os.WriteFile(filepath.Join(vDir, "lib.go"), []byte("package vendor\nfunc Init() {}\n"), 0644)
+
+	tool := &searchFilesTool{}
+
+	// Search for "init" — should only find work.go
+	result := callJSON(t, tool, `{"pattern":"init","target":"content","path":"`+dir+`"}`)
+	var r struct {
+		Matches []struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		} `json:"matches"`
+	}
+	mustUnmarshal(t, result, &r)
+
+	if len(r.Matches) == 0 {
+		t.Fatal("expected at least 1 match (work.go)")
+	}
+	for _, m := range r.Matches {
+		rel, _ := filepath.Rel(dir, m.Path)
+		if strings.Contains(rel, "node_modules") ||
+			strings.Contains(rel, "__pycache__") ||
+			strings.Contains(rel, "vendor") {
+			t.Errorf("search matched file inside skipped dir: %s", rel)
+		}
+	}
+	// Verify work.go IS found
+	foundWork := false
+	for _, m := range r.Matches {
+		if strings.HasSuffix(m.Path, "work.go") {
+			foundWork = true
+			break
+		}
+	}
+	if !foundWork {
+		t.Error("work.go should have been found (outside build dirs)")
+	}
+}
+
 // ── BatchRead Tool Tests ──────────────────────────────────────────────
 
 func TestBatchRead_Basic(t *testing.T) {

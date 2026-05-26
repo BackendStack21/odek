@@ -1086,6 +1086,9 @@ func (t *multiGrepTool) searchPattern(pattern, root, fileGlob string, limit int)
 			if strings.HasPrefix(info.Name(), ".") && info.Name() != "." {
 				return filepath.SkipDir
 			}
+			if skipDir(info.Name()) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		// Skip symlinks — prevents TOCTOU and listing unreadable files.

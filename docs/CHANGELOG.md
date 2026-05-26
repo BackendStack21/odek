@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.57.0 (2026-05-26) — search_files & multi_grep Performance
+
+### Performance
+- **`search_files` now skips build/artifact directories** — `node_modules`, `vendor`, `__pycache__`, `target`, `dist`, `build`, `.next`, `.venv` are automatically excluded from directory walks. Previously only hidden dirs (`.git`, `.cache`) were skipped, causing `search_files` from broad paths like `/root` to walk thousands of irrelevant files.
+- **`multi_grep` applies the same `skipDir`** — parallel multi-pattern searches also skip build/artifact directories, matching the resource resolver's behavior in `internal/resource/resource.go`.
+
+### LLM Guidance
+- **`search_files` tool description updated** — now explicitly says "ALWAYS use file_glob" and warns that "without it every file in the tree is scanned."
+- **`search_files` schema descriptions updated** — `path` now warns "NEVER use '/' or '/root' without file_glob", `file_glob` advises "ALWAYS use this on broad paths."
+- **Default system prompt** — added "Search performance" section with guidance on `file_glob`, narrow paths, and `multi_grep`.
+- **Telegram system prompt** — same search_files performance guidance added.
+
+### Testing
+- **`TestSearchFiles_SkipsBuildDirs`** — new test verifies that files inside `node_modules`, `__pycache__`, and `vendor` are skipped while legitimate sibling files are found.
+
+## v0.56.2 (2026-05-26) — Terminal UX Compression & trimToSurvival Fix
+
+### Bug Fixes
+- **trimToSurvival message ordering** — tool messages are now kept grouped with their parent assistant message after trimming, preventing orphaned tool results from earlier turns.
+- **Vertical space compression** — `render.Start()` is now a no-op; blank lines removed from Iteration/FinalAnswer/Summary outputs. Raw-mode cursor uses `\r\n` instead of bare `\n` for cross-platform terminal compatibility.
+- **Cross-platform test fixes** — macOS temp dirs now correctly classified as `LocalWrite` (not `SystemWrite`); Docker availability check verifies daemon reachability.
+
 ## v0.56.1 (2026-05-25) — MCP Test Portability
 
 ### Bug Fixes

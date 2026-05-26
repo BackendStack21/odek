@@ -183,6 +183,12 @@ func telegramCmd(args []string) error {
 	systemMessage += "- A single failure means the path or assumption was wrong — fix that,\n"
 	systemMessage += "  don't escalate to a broader search. Narrow, don't widen.\n"
 	systemMessage += "\n"
+	systemMessage += "search_files performance:\n"
+	systemMessage += "- ALWAYS use file_glob (e.g. '*.go', '*.md') to restrict the file types scanned.\n"
+	systemMessage += "- ALWAYS use a narrow path — never '/' or '/root' without file_glob.\n"
+	systemMessage += "- Without file_glob, every readable file in the subtree is opened and scanned.\n"
+	systemMessage += "- For multi-pattern searches, use multi_grep (parallel walk, less overhead).\n"
+	systemMessage += "\n"
 	// Set working directory to the configured repo directory.
 	// This ensures tools like search_files scan the project, not /root.
 	if resolved.GithubRepoDirectory != "" {

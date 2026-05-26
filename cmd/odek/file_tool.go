@@ -258,6 +258,17 @@ func (t *writeFileTool) Call(argsJSON string) (string, error) {
 	})
 }
 
+// skipDir returns true for directories that should be excluded from
+// recursive file searches (.git is already excluded by the hidden-dir
+// check — these are non-hidden build/cache/artifact directories).
+func skipDir(name string) bool {
+	switch name {
+	case "node_modules", "vendor", "__pycache__", "target", "dist", "build", ".next", ".venv":
+		return true
+	}
+	return false
+}
+
 // ── SearchFiles Tool ───────────────────────────────────────────────────
 
 const maxMatches = 50
@@ -272,7 +283,9 @@ func (t *searchFilesTool) Description() string {
 	return `Search file contents or find files by name.
 Two modes: target="content" searches inside files for a regex pattern,
 target="files" finds files by glob pattern.
-Results are sorted by modification time (newest first).`
+Results are sorted by modification time (newest first).
+For performance, ALWAYS use file_glob (e.g. '*.go', '*.py', '*.md') and a
+narrow path — without file_glob, every file in the tree is scanned.`
 }
 
 func (t *searchFilesTool) Schema() any {
@@ -290,11 +303,11 @@ func (t *searchFilesTool) Schema() any {
 			},
 			"path": map[string]any{
 				"type":        "string",
-				"description": "Directory or file to search in (default: current directory '.').",
+				"description": "Directory or file to search in (default: '.'). Narrow to the most specific directory possible. NEVER use '/' or '/root' without file_glob.",
 			},
 			"file_glob": map[string]any{
 				"type":        "string",
-				"description": "Filter files by pattern in content mode (e.g. '*.go' to only search Go files).",
+				"description": "Filter files by pattern in content mode (e.g. '*.go'). ALWAYS use this on broad paths — without it every file is scanned (slow on large trees).",
 			},
 			"limit": map[string]any{
 				"type":        "integer",
@@ -376,6 +389,10 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 		if info.IsDir() {
 			// Skip hidden directories
 			if strings.HasPrefix(info.Name(), ".") && info.Name() != "." {
+				return filepath.SkipDir
+			}
+			// Skip known-large build/artifact directories
+			if skipDir(info.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -475,6 +492,9 @@ func (t *searchFilesTool) searchFiles(args searchFilesArgs) (string, error) {
 			}
 			if info.IsDir() {
 				if strings.HasPrefix(info.Name(), ".") && info.Name() != "." {
+					return filepath.SkipDir
+				}
+				if skipDir(info.Name()) {
 					return filepath.SkipDir
 				}
 				return nil
