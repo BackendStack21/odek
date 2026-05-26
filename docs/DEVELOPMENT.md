@@ -1,5 +1,34 @@
 # Development
 
+## Generate Changelog
+
+CHANGELOG.md is auto-generated from conventional git commits. **Do not edit manually** — edits will be overwritten.
+
+```bash
+# Generate changelog for the next patch release (stdout)
+./generate-changelog.sh --bump patch
+
+# Prepend to CHANGELOG.md
+./generate-changelog.sh --bump patch --prepend
+
+# Release notes for gh release create
+./generate-changelog.sh --bump patch --notes > /tmp/notes.md
+gh release create v0.59.0 --notes-file /tmp/notes.md
+
+# Explicit range
+./generate-changelog.sh --from v0.57.0 --to v0.58.0
+```
+
+Commit prefixes and their section mapping:
+- `feat|feature:` → ### Features
+- `fix|bugfix:` → ### Bug Fixes
+- `perf:` → ### Performance
+- `refactor:` → ### Refactoring
+- `docs:` → ### Documentation
+- `test|tests:` → ### Testing
+- `chore|build|ci:` → ### Infrastructure
+- (unmatched) → ### Other Changes
+
 ## Prerequisites
 
 - Go 1.24+
@@ -94,7 +123,7 @@ cmd/odek/
   wsapprover.go               WSApprover — WebSocket-based approval for serve mode
   subagent_test.go            Tests (flag parsing, JSON stdout, exit codes, tool schema)
   subagent_contract_test.go   Contract tests (flag parsing, stdout protocol, exit codes)
-  subagent_e2e_test.go        E2E tests (16 — KODE_E2E=true, real subprocess spawning)
+  subagent_e2e_test.go        E2E tests (16 — ODEK_E2E=true, real subprocess spawning)
   ui/
     index.html                Single-page web UI (~770 LOC, vanilla JS + CSS)
 docs/                         Documentation

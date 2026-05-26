@@ -77,6 +77,28 @@ odek session cleanup 0
 # → Cleaned up 12 session(s) older than 0 days.
 ```
 
+**Vector index maintenance:** `odek session cleanup` also removes stale entries from the vector index — orphaned vectors no longer accumulate in `vectors.gob`. This was a bug fix in v0.58.2: the primary cleanup path previously bypassed `Vec.Remove()`, leaving orphaned vectors that silently accumulated.
+
+## Session Search Tool
+
+The `session_search` tool (available inside the agent loop, not as a CLI command) lets the agent browse, search, and recall past sessions by semantic content. This is the primary mechanism for revisiting historical conversations.
+
+| Action | Description |
+|--------|-------------|
+| `list` | Recent sessions (metadata only: ID, task, turns, timestamps, model) |
+| `search` | Semantic keyword search through full message content using vector similarity |
+| `get` | Full session by ID — returns ALL messages including tool calls and results |
+| `find` | Find sessions by task/title |
+
+**How search works — two-tier pipeline:**
+
+1. **Vector index** (fast path) — go-vector RandomProjections embed session summaries into 64-dimensional vectors. Cosine similarity >0.7 returns results in ~1ms. Zero LLM calls.
+2. **DeepSearch** (fallback) — when vector results are insufficient (<2 distinct token matches), falls back to exhaustive text search through session files on disk. Requires 2+ distinct token matches to qualify.
+
+**IMPORTANT:** After `search` returns matching session IDs, use `get` (not `search`) to read the actual conversation content. `get` returns the full `session_messages` array with every user and assistant message.
+
+From inside the Telegram bot, session recall is seamless: the current user message is persisted to the session store *before* the agent loop runs, so `session_search` can find the current conversation's data during the same turn.
+
 ## Programmatic API
 
 ```go

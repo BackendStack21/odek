@@ -277,6 +277,7 @@ odek mcp                                    # stdio transport
 |------|-------------|
 | `delegate_tasks` | Spawn sub-agent OS processes |
 | `memory` | Persistent fact CRUD with cosine-merge |
+| `session_search` | Browse, search, and recall past sessions (semantic vector search) |
 | `clarify` | Ask the user for clarification |
 | `send_message` | Send text/photo/document to Telegram |
 | `skill_load/list/save/patch/delete` | Skill CRUD |

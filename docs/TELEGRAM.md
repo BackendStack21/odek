@@ -197,7 +197,7 @@ The handler uses `sync.Map` for `TelegramApprover` instances, keyed by `chatID`.
 |---|---|
 | `/start` | Welcome message and bot introduction |
 | `/help` | Show all available commands with descriptions |
-| `/new` | Reset the current conversation (clear context) |
+| `/new` | Archive the current session and start a fresh conversation. Archived sessions are timestamped (`tg-<chatID>-<YYYYMMDD>-<HHMMSS>`) and remain visible via `odek session list` |
 | `/stats` | Show session statistics (turn count, model used, etc.) |
 | `/stop` | Cancel a running agent task |
 | `/mode` | Show current agent modes (interaction_mode, sandbox, skills) |
@@ -229,7 +229,9 @@ The `SessionManager` manages per-chat Telegram agent conversations, backed by th
 2. Sessions are persisted to `~/.odek/sessions/tg-<chatID>.json`
 3. An in-memory cache (`map[int64]*ChatSession`) avoids redundant disk reads
 4. Session TTL (default 24h) controls inactivity timeout
-5. Active sessions survive bot restarts — on reconnect, the session is loaded from disk
+5. **Session recall** — the user message is saved to the session store *before* the agent loop runs, enabling `session_search` to find the current conversation's data during the same turn
+6. Active sessions survive bot restarts — on reconnect, the session is loaded from disk
+7. **/now archives** — using `/new` archives the current session with a timestamped ID (`tg-<chatID>-<YYYYMMDD>-<HHMMSS>`) before starting fresh. Archived sessions remain on disk and are visible via `odek session list`.
 
 ### Key Methods
 

@@ -171,5 +171,5 @@ Example event sequence:
 ## Tips
 
 - **Security sandbox**: `odek serve --addr localhost:8080` restricts to localhost. Use a reverse proxy (Caddy, nginx) for remote access.
-- **Config inheritance**: `odek serve` reads the same config chain (`~/.odek/config.json` → `./kode.json` → env vars) as `odek run`. Set your model, API key, and sandbox settings there.
+- **Config inheritance**: `odek serve` reads the same config chain (`~/.odek/config.json` → `./odek.json` → env vars) as `odek run`. Set your model, API key, and sandbox settings there.
 - **Session discovery**: reference any saved session via `@sess:ID` in your prompt to give the agent full context from previous conversations.

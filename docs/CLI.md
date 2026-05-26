@@ -342,7 +342,7 @@ Config sources from lowest to highest priority:
 ```
 1.  ~/.odek/config.json    ← Global defaults
 2.  ./odek.json           ← Project overrides
-3.  KODE_* env vars       ← Runtime overrides
+3.  ODEK_* env vars       ← Runtime overrides
 4.  CLI flags             ← Explicit invocation (highest)
 ```
 

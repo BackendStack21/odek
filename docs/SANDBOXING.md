@@ -23,7 +23,7 @@ odek run --sandbox "protoc --version"
 
 ## Config reference
 
-All sandbox settings are available in `~/.odek/config.json`, `./kode.json`, `ODEK_*` env vars, and CLI flags, following the same [priority chain](CONFIG.md).
+All sandbox settings are available in `~/.odek/config.json`, `./odek.json`, `ODEK_*` env vars, and CLI flags, following the same [priority chain](CONFIG.md).
 
 ### Config file fields
 

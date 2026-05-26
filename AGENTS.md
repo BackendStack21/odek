@@ -12,7 +12,7 @@ It provides context about the project's architecture, conventions, and how to up
 - **Binary:** `odek` — single static binary, ~12 MB, instant startup.
 - **Config:** Five-layer priority: `~/.odek/secrets.env` → `~/.odek/config.json` → `./odek.json` → `ODEK_*` env vars → CLI flags.
 - **Benchmark:** AIEB v2.0 — 80.3% (highest published agent score on the Autonomous Intelligence Engineering Benchmark).
-- **Version:** v0.56.2 — see latest tag at https://github.com/BackendStack21/odek/releases
+- **Version:** v0.58.8 — see latest tag at https://github.com/BackendStack21/odek/releases
 
 ## Source Layout
 
@@ -71,6 +71,8 @@ ReAct cycle: observe → think → act → repeat.
 - **Interaction modes** — engaging (narrated), enhance (persistent), verbose (raw), off.
 - Max 300 iterations by default.
 - **Post-response async processing** (v0.56.0) — skill learning and episode extraction run in background goroutines, eliminating the 2-5 second hang after every `odek run`.
+- **Artifact-aware file search** (v0.57.0) — `search_files` and `multi_grep` skip build/artifact directories (`node_modules`, `vendor`, `.git`, `__pycache__`, `.venv`, etc.) automatically, reducing noise and speeding scans.
+- **Semantic session search** (v0.58.0) — the `session_search` tool uses go-vector RandomProjections + k-NN for semantic similarity search through session content. Finds relevant past conversations even when keywords don't match. Features a two-tier pipeline: vector index (fast, ~1ms) → deepSearch fallback (exhaustive, slower).
 
 ### Tools
 All built-in tools with zero subprocess forks: batch_read, batch_patch, parallel_shell, http_batch, math_eval, diff, count_lines, multi_grep, json_query, tree, checksum, sort, head_tail, base64, tr, word_count, transcribe, browser, read_file, write_file, search_files, patch, shell, delegate_tasks, session_search.
