@@ -23,11 +23,11 @@ import (
 
 // Resource is a discovered resource returned by a Resolver.
 type Resource struct {
-	ID      string `json:"id"`      // Full @ reference (e.g. "@src/main.go")
-	Type    string `json:"type"`    // "file", "session", "skill"
-	Label   string `json:"label"`   // Display label (e.g. "src/main.go")
-	Detail  string `json:"detail"`  // One-line description (e.g. "Go source, 142 lines")
-	Content string `json:"-"`       // Full content (not sent in search results)
+	ID      string `json:"id"`     // Full @ reference (e.g. "@src/main.go")
+	Type    string `json:"type"`   // "file", "session", "skill"
+	Label   string `json:"label"`  // Display label (e.g. "src/main.go")
+	Detail  string `json:"detail"` // One-line description (e.g. "Go source, 142 lines")
+	Content string `json:"-"`      // Full content (not sent in search results)
 }
 
 // A Resolver discovers and loads resources by type.

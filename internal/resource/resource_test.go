@@ -553,11 +553,11 @@ type fakeFileInfo struct {
 }
 
 func (f fakeFileInfo) Name() string       { return "fake" }
-func (f fakeFileInfo) Size() int64         { return f.size }
-func (f fakeFileInfo) Mode() os.FileMode   { return 0644 }
-func (f fakeFileInfo) ModTime() time.Time  { return time.Now() }
-func (f fakeFileInfo) IsDir() bool         { return false }
-func (f fakeFileInfo) Sys() interface{}    { return nil }
+func (f fakeFileInfo) Size() int64        { return f.size }
+func (f fakeFileInfo) Mode() os.FileMode  { return 0644 }
+func (f fakeFileInfo) ModTime() time.Time { return time.Now() }
+func (f fakeFileInfo) IsDir() bool        { return false }
+func (f fakeFileInfo) Sys() interface{}   { return nil }
 
 // ── formatDuration Tests ───────────────────────────────────────────────
 
