@@ -19,6 +19,7 @@ import (
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/mcpclient"
+	"github.com/BackendStack21/odek/internal/sandbox"
 	"github.com/BackendStack21/odek/internal/telegram"
 )
 
@@ -247,7 +248,7 @@ func TestPrintUsage(t *testing.T) {
 		"--base-url",
 		"--max-iter",
 		"--thinking",
-		"profile default",
+		"--thinking-budget",
 		"--sandbox",
 		"--no-color",
 		"--no-agents",
@@ -961,7 +962,7 @@ func TestResolveSandboxImage_Default(t *testing.T) {
 	os.Chdir(dir)
 	defer os.Chdir(cwd)
 
-	image, err := resolveSandboxImage(sandboxConfig{})
+	image, err := sandbox.ResolveImage(sandboxConfig{})
 	if err != nil {
 		t.Fatalf("resolveSandboxImage error: %v", err)
 	}
@@ -980,7 +981,7 @@ func TestResolveSandboxImage_Explicit(t *testing.T) {
 	// Even with a Dockerfile.odek, explicit should win
 	os.WriteFile("Dockerfile.odek", []byte("FROM alpine"), 0644)
 
-	image, err := resolveSandboxImage(sandboxConfig{Image: "node:20-alpine"})
+	image, err := sandbox.ResolveImage(sandboxConfig{Image: "node:20-alpine"})
 	if err != nil {
 		t.Fatalf("resolveSandboxImage error: %v", err)
 	}
@@ -1005,7 +1006,7 @@ func TestResolveSandboxImage_DockerfileKode(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	image, err := resolveSandboxImage(sandboxConfig{})
+	image, err := sandbox.ResolveImage(sandboxConfig{})
 	if err != nil {
 		t.Fatalf("resolveSandboxImage error: %v", err)
 	}
@@ -1030,7 +1031,7 @@ func TestResolveSandboxImage_DockerfileKodeCached(t *testing.T) {
 	content := "FROM scratch\nCMD []"
 	os.WriteFile("Dockerfile.odek", []byte(content), 0644)
 
-	img1, err := resolveSandboxImage(sandboxConfig{})
+	img1, err := sandbox.ResolveImage(sandboxConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1039,7 +1040,7 @@ func TestResolveSandboxImage_DockerfileKodeCached(t *testing.T) {
 	os.Remove("Dockerfile.odek")
 	os.WriteFile("Dockerfile.odek", []byte(content), 0644)
 
-	img2, err := resolveSandboxImage(sandboxConfig{})
+	img2, err := sandbox.ResolveImage(sandboxConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1147,12 +1148,12 @@ func TestBuildSandboxArgs_EnvAndVolumes(t *testing.T) {
 		Image:   "alpine:latest",
 		Network: "bridge",
 		Env: map[string]string{
-			"GOCACHE":   "/tmp/gocache",
-			"NODE_ENV":  "test",
+			"GOCACHE":  "/tmp/gocache",
+			"NODE_ENV": "test",
 		},
 		Volumes: []string{"/host/cache:/container/cache", "/host/data:/data:ro"},
 	}
-	args := buildSandboxArgs(cfg, "odek-test", "/tmp/workdir", cfg.Image)
+	args := sandbox.BuildRunArgs(cfg, "odek-test", "/tmp/workdir", cfg.Image)
 
 	// Must contain env vars as "-e KEY=VALUE" pairs
 	if !hasArgPair(args, "-e", "GOCACHE=/tmp/gocache") {
@@ -1177,7 +1178,7 @@ func TestBuildSandboxArgs_EmptyEnvAndVolumes(t *testing.T) {
 		Image:   "alpine:latest",
 		Network: "bridge",
 	}
-	args := buildSandboxArgs(cfg, "odek-test", "/tmp/workdir", cfg.Image)
+	args := sandbox.BuildRunArgs(cfg, "odek-test", "/tmp/workdir", cfg.Image)
 
 	// Should not contain any -e or extra -v beyond the workspace mount
 	for i, a := range args {
@@ -1546,48 +1547,8 @@ func TestRunLearn_NoSuggestions(t *testing.T) {
 	}
 }
 
-// ── buildFromDockerfile Tests ──────────────────────────────────────────
-
-func TestBuildFromDockerfile_FileNotFound(t *testing.T) {
-	// Change to a temp dir with no Dockerfile.odek
-	origDir, _ := os.Getwd()
-	emptyDir := t.TempDir()
-	os.Chdir(emptyDir)
-	defer os.Chdir(origDir)
-
-	_, err := buildFromDockerfile()
-	if err == nil {
-		t.Fatal("expected error when Dockerfile.odek does not exist")
-	}
-	if !strings.Contains(err.Error(), "Dockerfile.odek") {
-		t.Errorf("error should mention Dockerfile.odek: %v", err)
-	}
-}
-
-func TestBuildFromDockerfile_InvalidDockerfile(t *testing.T) {
-	if !dockerAvailable() {
-		t.Skip("docker not available")
-	}
-
-	origDir, _ := os.Getwd()
-	emptyDir := t.TempDir()
-	defer os.Chdir(origDir)
-
-	// Create an invalid Dockerfile
-	err := os.WriteFile(filepath.Join(emptyDir, "Dockerfile.odek"), []byte("INVALID DOCKERFILE CONTENT $$$"), 0644)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	os.Chdir(emptyDir)
-	_, err = buildFromDockerfile()
-	if err == nil {
-		t.Fatal("expected error for invalid Dockerfile")
-	}
-	if !strings.Contains(err.Error(), "docker build failed") {
-		t.Errorf("error should mention docker build failure: %v", err)
-	}
-}
+// buildFromDockerfile tests live with the implementation in
+// internal/sandbox/sandbox_test.go (the function is unexported there).
 
 // ── shorten Tests ──────────────────────────────────────────────────────
 
@@ -1723,7 +1684,7 @@ func TestParseReplFlags_TrailingArg(t *testing.T) {
 // ── buildSandboxArgs Tests ─────────────────────────────────────────────
 
 func TestBuildSandboxArgs_Defaults(t *testing.T) {
-	args := buildSandboxArgs(sandboxConfig{}, "odek-test", "/workspace", "alpine:latest")
+	args := sandbox.BuildRunArgs(sandboxConfig{}, "odek-test", "/workspace", "alpine:latest")
 	if len(args) == 0 {
 		t.Fatal("buildSandboxArgs returned empty args")
 	}
@@ -1741,7 +1702,7 @@ func TestBuildSandboxArgs_Defaults(t *testing.T) {
 }
 
 func TestBuildSandboxArgs_Readonly(t *testing.T) {
-	args := buildSandboxArgs(sandboxConfig{
+	args := sandbox.BuildRunArgs(sandboxConfig{
 		Readonly: true,
 		Network:  "bridge",
 	}, "odek-test", "/workspace", "alpine:latest")
@@ -1757,7 +1718,7 @@ func TestBuildSandboxArgs_Readonly(t *testing.T) {
 }
 
 func TestBuildSandboxArgs_WithResources(t *testing.T) {
-	args := buildSandboxArgs(sandboxConfig{
+	args := sandbox.BuildRunArgs(sandboxConfig{
 		Network: "none",
 		Memory:  "512m",
 		CPUs:    "0.5",
@@ -1784,7 +1745,7 @@ func TestBuildSandboxArgs_WithResources(t *testing.T) {
 }
 
 func TestBuildSandboxArgs_ForbiddenVolumeRejected(t *testing.T) {
-	args := buildSandboxArgs(sandboxConfig{
+	args := sandbox.BuildRunArgs(sandboxConfig{
 		Network: "bridge",
 		Volumes: []string{"/etc/passwd:/etc/passwd"},
 	}, "odek-test", "/workspace", "alpine:latest")
@@ -1898,7 +1859,7 @@ func TestBuildSandboxArgs_AllForbiddenPrefixes(t *testing.T) {
 				Network: "bridge",
 				Volumes: []string{vol},
 			}
-			args := buildSandboxArgs(cfg, "odek-test", "/workspace", "alpine:latest")
+			args := sandbox.BuildRunArgs(cfg, "odek-test", "/workspace", "alpine:latest")
 			full := strings.Join(args, " ")
 			if strings.Contains(full, vol) {
 				t.Errorf("forbidden volume %q should be rejected, but found in args", vol)
@@ -1913,7 +1874,7 @@ func TestBuildSandboxArgs_ValidVolume(t *testing.T) {
 		Network: "bridge",
 		Volumes: []string{"/data:/data"},
 	}
-	args := buildSandboxArgs(cfg, "odek-test", "/workspace", "alpine:latest")
+	args := sandbox.BuildRunArgs(cfg, "odek-test", "/workspace", "alpine:latest")
 	if !hasArgPair(args, "-v", "/data:/data") {
 		t.Error("valid volume /data:/data should be included in docker args")
 	}
@@ -1927,7 +1888,7 @@ func TestBuildSandboxArgs_RejectsHostNetwork(t *testing.T) {
 	os.Stderr = w
 
 	cfg := sandboxConfig{Network: "host"}
-	args := buildSandboxArgs(cfg, "odek-test", "/workspace", "alpine:latest")
+	args := sandbox.BuildRunArgs(cfg, "odek-test", "/workspace", "alpine:latest")
 
 	w.Close()
 	var buf bytes.Buffer

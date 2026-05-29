@@ -1,0 +1,109 @@
+package main
+
+import (
+	"errors"
+	"strings"
+	"testing"
+)
+
+// fakeInnerTool implements the tool interface that untrustedToolWrapper
+// embeds, with deterministic responses we can assert on.
+type fakeInnerTool struct {
+	name    string
+	desc    string
+	schema  any
+	out     string
+	callErr error
+	lastArg string
+}
+
+func (f *fakeInnerTool) Name() string        { return f.name }
+func (f *fakeInnerTool) Description() string { return f.desc }
+func (f *fakeInnerTool) Schema() any         { return f.schema }
+func (f *fakeInnerTool) Call(args string) (string, error) {
+	f.lastArg = args
+	return f.out, f.callErr
+}
+
+func TestUntrustedToolWrapper_Name_DelegatesToInner(t *testing.T) {
+	inner := &fakeInnerTool{name: "fetch"}
+	w := &untrustedToolWrapper{inner: inner, source: "mcp:foo:bar"}
+	if got := w.Name(); got != "fetch" {
+		t.Errorf("Name() = %q, want %q", got, "fetch")
+	}
+}
+
+func TestUntrustedToolWrapper_Description_DelegatesToInner(t *testing.T) {
+	inner := &fakeInnerTool{desc: "fetch a URL"}
+	w := &untrustedToolWrapper{inner: inner, source: "mcp:foo:bar"}
+	if got := w.Description(); got != "fetch a URL" {
+		t.Errorf("Description() = %q, want %q", got, "fetch a URL")
+	}
+}
+
+func TestUntrustedToolWrapper_Schema_DelegatesToInner(t *testing.T) {
+	wantSchema := map[string]any{"type": "object"}
+	inner := &fakeInnerTool{schema: wantSchema}
+	w := &untrustedToolWrapper{inner: inner}
+	got, ok := w.Schema().(map[string]any)
+	if !ok {
+		t.Fatalf("Schema() returned %T, want map[string]any", w.Schema())
+	}
+	if got["type"] != "object" {
+		t.Errorf("Schema()[type] = %v, want 'object'", got["type"])
+	}
+}
+
+func TestUntrustedToolWrapper_Call_WrapsOutputWithSource(t *testing.T) {
+	inner := &fakeInnerTool{out: "page body text"}
+	w := &untrustedToolWrapper{inner: inner, source: "https://example.com/page"}
+
+	got, err := w.Call(`{"url":"https://example.com/page"}`)
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if !hasUntrustedWrapper(got) {
+		t.Errorf("Call result should be wrapped, got: %s", got)
+	}
+	if !strings.Contains(got, `source="https://example.com/page"`) {
+		t.Errorf("source attribute missing from wrapper, got: %s", got)
+	}
+	if body := unwrapUntrusted(got); body != "page body text" {
+		t.Errorf("unwrapped body = %q, want %q", body, "page body text")
+	}
+	if inner.lastArg != `{"url":"https://example.com/page"}` {
+		t.Errorf("inner.Call received %q, want it passed through verbatim", inner.lastArg)
+	}
+}
+
+func TestUntrustedToolWrapper_Call_PassesThroughErrorWithoutWrapping(t *testing.T) {
+	sentinel := errors.New("network down")
+	inner := &fakeInnerTool{out: "partial", callErr: sentinel}
+	w := &untrustedToolWrapper{inner: inner, source: "x"}
+
+	got, err := w.Call("{}")
+	if !errors.Is(err, sentinel) {
+		t.Errorf("Call err = %v, want %v", err, sentinel)
+	}
+	// On error, the wrapper must return the raw inner output (no wrapping)
+	// so the error message stays parseable upstream.
+	if hasUntrustedWrapper(got) {
+		t.Errorf("error path should not wrap output, got: %s", got)
+	}
+	if got != "partial" {
+		t.Errorf("returned output = %q, want %q", got, "partial")
+	}
+}
+
+func TestUntrustedToolWrapper_Call_EmptyOutputStaysEmpty(t *testing.T) {
+	// wrapUntrusted short-circuits on empty content.
+	inner := &fakeInnerTool{out: ""}
+	w := &untrustedToolWrapper{inner: inner, source: "x"}
+	got, err := w.Call("{}")
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if got != "" {
+		t.Errorf("expected empty output to stay empty, got %q", got)
+	}
+}

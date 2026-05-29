@@ -140,7 +140,7 @@ func (t *readFileTool) Call(argsJSON string) (string, error) {
 	}
 
 	result := readFileResult{
-		Content:    content,
+		Content:    wrapUntrusted(args.Path, content),
 		TotalLines: totalLines,
 	}
 	return jsonResult(result)
@@ -441,7 +441,7 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 				matches = append(matches, searchMatch{
 					Path:    path,
 					Line:    lineNum,
-					Content: strings.TrimSpace(line),
+					Content: wrapUntrusted(fmt.Sprintf("%s:%d", path, lineNum), strings.TrimSpace(line)),
 				})
 				if len(matches) >= limit {
 					break

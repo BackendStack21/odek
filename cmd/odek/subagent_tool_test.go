@@ -48,7 +48,7 @@ func TestDelegateTasksTool_OnSubagentLog(t *testing.T) {
 	}
 
 	// Run a task
-	result := tool.runTask(0, "test goal", "", "")
+	result := tool.runTask(0, "TASK", "", "", "", "")
 
 	// Verify log events: should have 4 NDJSON lines
 	if len(logEvents) != 4 {
@@ -95,7 +95,7 @@ func TestDelegateTasksTool_OnSubagentLog_NoLogLines(t *testing.T) {
 		},
 	}
 
-	result := tool.runTask(0, "quick", "", "")
+	result := tool.runTask(0, "TASK", "", "", "", "")
 
 	if len(logEvents) != 0 {
 		t.Errorf("expected 0 log events for no-NDJSON output, got %d", len(logEvents))
@@ -127,7 +127,7 @@ func TestDelegateTasksTool_OnSubagentLog_ExitError(t *testing.T) {
 		},
 	}
 
-	result := tool.runTask(0, "failing task", "", "")
+	result := tool.runTask(0, "TASK", "", "", "", "")
 
 	if logEvents != 1 {
 		t.Errorf("expected 1 log event, got %d", logEvents)

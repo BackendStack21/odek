@@ -23,10 +23,12 @@ func newSessionSearchTool(store *session.Store) *sessionSearchTool {
 	return &sessionSearchTool{store: store}
 }
 
-func (t *sessionSearchTool) Name() string        { return "session_search" }
-func (t *sessionSearchTool) Description() string  { return `Search and retrieve past agent sessions. Actions: list (recent sessions), search (semantic keyword search through full message content), get (full session by ID including ALL messages), find (sessions by task/title). Uses semantic vector search for the search action — it finds sessions whose conversation content is relevant to your query, even when titles don't match. Use OR between keywords for broad recall.
+func (t *sessionSearchTool) Name() string { return "session_search" }
+func (t *sessionSearchTool) Description() string {
+	return `Search and retrieve past agent sessions. Actions: list (recent sessions), search (semantic keyword search through full message content), get (full session by ID including ALL messages), find (sessions by task/title). Uses semantic vector search for the search action — it finds sessions whose conversation content is relevant to your query, even when titles don't match. Use OR between keywords for broad recall.
 
-IMPORTANT: After search returns matching sessions, use get (not search) to read the actual conversation content. get returns the full session_messages array with every user and assistant message.` }
+IMPORTANT: After search returns matching sessions, use get (not search) to read the actual conversation content. get returns the full session_messages array with every user and assistant message.`
+}
 
 type sessionSearchArgs struct {
 	Action string `json:"action"`          // list, search, get, find
@@ -49,16 +51,16 @@ type sessionSearchResult struct {
 	Sessions []sessionSummary `json:"sessions,omitempty"`
 	Count    int              `json:"count"`
 	// For get action — full session details
-	ID        string   `json:"id,omitempty"`
-	Task      string   `json:"task,omitempty"`
-	Turns     int      `json:"turns,omitempty"`
-	CreatedAt string   `json:"created_at,omitempty"`
-	UpdatedAt string   `json:"updated_at,omitempty"`
-	Model     string   `json:"model,omitempty"`
-	Buffer    []string `json:"buffer,omitempty"`
-	Messages       int              `json:"messages,omitempty"`
+	ID              string           `json:"id,omitempty"`
+	Task            string           `json:"task,omitempty"`
+	Turns           int              `json:"turns,omitempty"`
+	CreatedAt       string           `json:"created_at,omitempty"`
+	UpdatedAt       string           `json:"updated_at,omitempty"`
+	Model           string           `json:"model,omitempty"`
+	Buffer          []string         `json:"buffer,omitempty"`
+	Messages        int              `json:"messages,omitempty"`
 	SessionMessages []sessionMessage `json:"session_messages,omitempty"`
-	Error     string   `json:"error,omitempty"`
+	Error           string           `json:"error,omitempty"`
 }
 
 // sessionMessage is a single message in a session.
@@ -230,7 +232,7 @@ func (t *sessionSearchTool) handleSearch(query string, limit int) (string, error
 
 	// Phase 2b: if not enough results, load full sessions and search messages
 	if len(matches) < limit {
-		matches = t.deepSearch(tokens, sessions, matches, limit)
+		matches = t.deepSearch(tokens, sessions, matches)
 	}
 
 	// Sort by score desc, then recency
@@ -291,7 +293,9 @@ func (t *sessionSearchTool) scoreSession(tokens []string, s session.Session) ses
 }
 
 // deepSearch loads full sessions and searches within their messages.
-func (t *sessionSearchTool) deepSearch(tokens []string, candidates []session.Session, existing []sessionMatch, limit int) []sessionMatch {
+// Callers truncate the merged result list to the user-requested limit after
+// re-sorting, so deepSearch returns everything it can find.
+func (t *sessionSearchTool) deepSearch(tokens []string, candidates []session.Session, existing []sessionMatch) []sessionMatch {
 	existingIDs := make(map[string]bool, len(existing))
 	for _, e := range existing {
 		existingIDs[e.session.ID] = true
@@ -370,15 +374,15 @@ func (t *sessionSearchTool) handleGet(id string) (string, error) {
 	}
 	msgCount := len(sessionMessages)
 	return jsonResult(sessionSearchResult{
-		Action:    "get",
-		ID:        sess.ID,
-		Task:      sess.Task,
-		Turns:     sess.Turns,
-		CreatedAt: sess.CreatedAt.UTC().Format(time.RFC3339),
-		UpdatedAt: sess.UpdatedAt.UTC().Format(time.RFC3339),
-		Model:     sess.Model,
-		Buffer:    sess.Buffer,
-		Messages:  msgCount,
+		Action:          "get",
+		ID:              sess.ID,
+		Task:            sess.Task,
+		Turns:           sess.Turns,
+		CreatedAt:       sess.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:       sess.UpdatedAt.UTC().Format(time.RFC3339),
+		Model:           sess.Model,
+		Buffer:          sess.Buffer,
+		Messages:        msgCount,
 		SessionMessages: sessionMessages,
 	})
 }

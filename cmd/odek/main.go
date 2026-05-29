@@ -2,32 +2,39 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
-	"github.com/BackendStack21/odek/internal/telegram"
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/mcpclient"
+	"github.com/BackendStack21/odek/internal/memory"
 	"github.com/BackendStack21/odek/internal/render"
+	"github.com/BackendStack21/odek/internal/sandbox"
 	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/skills"
+	"github.com/BackendStack21/odek/internal/telegram"
 )
 
 // version is set at build time via ldflags: -ldflags "-X main.version=v0.2.1"
 // Falls back to VCS tag from debug.ReadBuildInfo, then to "dev".
 var version string
+
+// sandboxSeq makes each container name unique within a process lifetime.
+// Incremented on every setupSandbox call so concurrent WebSocket connections
+// (serve mode) don't collide on the same container name.
+var sandboxSeq atomic.Int64
 
 // defaultSystem is the built-in system prompt for the agent. It defines
 // odek's identity, rules of operation, and anti-injection defenses.
@@ -122,89 +129,15 @@ func loadIdentityFile() string {
 	return content
 }
 
-// dockerfileName is the filename for project-specific Docker images.
-// When this file exists in the working directory and no explicit
-// sandbox_image is configured, odek builds a content-hash-cached
-// Docker image from it. See buildFromDockerfile() and SANDBOXING.md.
-const dockerfileName = "Dockerfile.odek"
-
-// forbiddenMountPrefixes lists host paths that sandbox volume mounts
-// may not target. Mounting /, /etc, /proc, /sys would give the sandbox
-// container access to the host filesystem, defeating isolation.
-var forbiddenMountPrefixes = []string{"/", "/etc", "/proc", "/sys", "/boot", "/dev"}
+// sandboxConfig is an alias preserved so existing call sites (run, repl,
+// serve, continueCmd) keep their short local name. The fields, defaults,
+// and behaviour live in internal/sandbox.
+type sandboxConfig = sandbox.Config
 
 func boolPtr(b bool) *bool { return &b }
 
 func main() {
-	if len(os.Args) < 2 {
-		printUsage()
-		os.Exit(1)
-	}
-
-	switch os.Args[1] {
-	case "run":
-		if err := run(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "odek: %v\n", err)
-			os.Exit(1)
-		}
-	case "version":
-		fmt.Println("odek", getVersion())
-	case "init":
-		if err := initConfig(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "odek: %v\n", err)
-			os.Exit(1)
-		}
-	case "continue":
-		if err := continueCmd(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "odek: %v\n", err)
-			os.Exit(1)
-		}
-	case "session":
-		if err := sessionCmd(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "odek: %v\n", err)
-			os.Exit(1)
-		}
-	case "repl":
-		if err := replCmd(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "odek: %v\n", err)
-			os.Exit(1)
-		}
-	case "skill":
-		if err := skillCmd(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "odek: %v\n", err)
-			os.Exit(1)
-		}
-	case "serve":
-		if err := serveCmd(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "odek: %v\n", err)
-			os.Exit(1)
-		}
-	case "subagent":
-		if err := subagentCmd(os.Args[2:]); err != nil {
-			// Print error to stderr (human-readable)
-			fmt.Fprintf(os.Stderr, "odek: %v\n", err)
-			// Always output JSON to stdout for the parent to parse
-			json.NewEncoder(os.Stdout).Encode(subagentResult{
-				Status: "error",
-				Error:  err.Error(),
-			})
-			os.Exit(3)
-		}
-	case "mcp":
-		if err := mcpCmd(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "odek: %v\n", err)
-			os.Exit(1)
-		}
-	case "telegram":
-		if err := telegramCmd(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "odek: %v\n", err)
-			os.Exit(1)
-		}
-	default:
-		fmt.Fprintf(os.Stderr, "odek: unknown command %q\n", os.Args[1])
-		printUsage()
-		os.Exit(1)
-	}
+	os.Exit(dispatch(os.Args[1:]))
 }
 
 // ── CLI Parsing ───────────────────────────────────────────────────────
@@ -219,20 +152,21 @@ func main() {
 // which is critical for boolean flags: --sandbox-readonly absent means
 // "inherit from config", while --sandbox-readonly present means "true".
 type runFlags struct {
-	Model    string
-	BaseURL  string
-	System   string
-	Thinking string
-	Temp    float64 // 0 = not set (negative = omit, >=0 = set explicitly)
-	MaxIter int     // 0 = not set
-	Sandbox  *bool // nil = not set
-	NoColor  *bool // nil = not set
-	NoAgents *bool // nil = not set
-	PromptCaching *bool // nil = not set; true = enable prompt caching
-	Session  *bool // nil = not set; true = save session after run
-	Learn    *bool // nil = not set; true = enable skills learning mode
-	Task     string
-	Ctx      []string // --ctx files to attach
+	Model          string
+	BaseURL        string
+	System         string
+	Thinking       string
+	ThinkingBudget int     // 0 = not set; use default
+	Temp           float64 // 0 = not set (negative = omit, >=0 = set explicitly)
+	MaxIter        int     // 0 = not set
+	Sandbox        *bool   // nil = not set
+	NoColor        *bool   // nil = not set
+	NoAgents       *bool   // nil = not set
+	PromptCaching  *bool   // nil = not set; true = enable prompt caching
+	Session        *bool   // nil = not set; true = save session after run
+	Learn          *bool   // nil = not set; true = enable skills learning mode
+	Task           string
+	Ctx            []string // --ctx files to attach
 
 	// Sandbox-specific CLI flags
 	SandboxImage    string // Docker image (e.g. "node:20-alpine")
@@ -290,6 +224,12 @@ func parseRunFlags(args []string) (runFlags, error) {
 				return f, fmt.Errorf("--thinking requires a value")
 			}
 			f.Thinking = args[i+1]
+			i += 2
+		case "--thinking-budget":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--thinking-budget requires a value")
+			}
+			fmt.Sscanf(args[i+1], "%d", &f.ThinkingBudget)
 			i += 2
 		case "--temperature":
 			if i+1 >= len(args) {
@@ -440,6 +380,7 @@ type replFlags struct {
 	ID              string // session ID to resume
 	Model           string
 	Thinking        string
+	ThinkingBudget  int   // 0 = not set; use default
 	Sandbox         *bool // nil = not set
 	PromptCaching   *bool // nil = not set; true = enable prompt caching
 	InteractionMode string
@@ -483,6 +424,9 @@ func parseReplFlags(args []string) (replFlags, error) {
 			i += 2
 		case "--thinking":
 			f.Thinking = args[i+1]
+			i += 2
+		case "--thinking-budget":
+			fmt.Sscanf(args[i+1], "%d", &f.ThinkingBudget)
 			i += 2
 		case "--sandbox":
 			f.Sandbox = boolPtr(true)
@@ -566,9 +510,10 @@ Run flags:
                        Profiles auto-set thinking/timeout defaults.
   --base-url <url>     API endpoint (default: https://api.deepseek.com/v1)
   --max-iter <n>       Max think->act cycles (default: 90)
-  --thinking <level>   Reasoning depth: enabled|disabled (Deepseek)
-                       or low|medium|high (OpenAI o-series).
-                       Empty = profile default = provider default.
+  --thinking <level>     Reasoning depth: enabled, disabled, low, medium, high
+                         Requires a model that supports extended thinking.
+                         Anthropic: forces temperature=1 and needs budget_tokens.
+  --thinking-budget <n>  Max thinking tokens for extended thinking (default: 5000).
   --temperature <n>    LLM temperature 0.0–2.0 (default: 0 = deterministic)
   --no-color           Disable colored terminal output
   --no-agents          Skip loading AGENTS.md from working directory
@@ -773,82 +718,6 @@ func initConfig(args []string) error {
 	return nil
 }
 
-// ── Sandbox Config ────────────────────────────────────────────────────
-
-// sandboxConfig holds all resolved sandbox settings for a single agent run.
-// Values come from the merged config (files → env → CLI) and are passed
-// to setupSandbox() which translates them into docker run arguments.
-//
-// See SANDBOXING.md for a full reference on each field.
-type sandboxConfig struct {
-	Image    string            // Docker image (e.g. "node:20-alpine", or built from Dockerfile.odek)
-	Network  string            // Docker network mode: "bridge" | "none" | "host"
-	Readonly bool              // Mount working directory read-only
-	Memory   string            // Memory limit (e.g. "512m", "2g"; empty = no limit)
-	CPUs     string            // CPU limit (e.g. "0.5", "2"; empty = no limit)
-	User     string            // Container user (e.g. "1000:1000"; empty = root)
-	Env      map[string]string // Extra environment variables (config-file only)
-	Volumes  []string          // Extra volume mounts (config-file only)
-}
-
-// resolveSandboxImage determines the Docker image to use for the sandbox
-// container. Resolution order:
-//
-//  1. Explicitly configured sandbox_image → use the configured image directly
-//  2. Dockerfile.odek exists in working directory → build a cached image from it
-//  3. Neither → "alpine:latest" (minimal default)
-//
-// This function is called by setupSandbox() before starting the container.
-// The resolved image is then passed to "docker run" with the image name.
-func resolveSandboxImage(cfg sandboxConfig) (string, error) {
-	if cfg.Image != "" {
-		return cfg.Image, nil
-	}
-
-	// Check for Dockerfile.odek in the working directory
-	if _, err := os.Stat(dockerfileName); err == nil {
-		return buildFromDockerfile()
-	}
-
-	return "alpine:latest", nil
-}
-
-// buildFromDockerfile builds a Docker image from Dockerfile.odek and
-// returns the image tag.
-//
-// The image is tagged with "odek-sandbox:<sha256[:12]>" where the hash
-// is derived from the file content. This enables caching: the image is
-// only rebuilt when Dockerfile.odek changes. On subsequent runs with the
-// same file content, the cached image is used instantly.
-//
-// The build context is the current working directory (where Dockerfile.odek
-// lives). This means COPY instructions in the Dockerfile can reference
-// files in the project. stderr is piped to the user's terminal so build
-// output is visible during the (rare) first build.
-func buildFromDockerfile() (string, error) {
-	data, err := os.ReadFile(dockerfileName)
-	if err != nil {
-		return "", fmt.Errorf("read %s: %w", dockerfileName, err)
-	}
-
-	hash := sha256.Sum256(data)
-	tag := "odek-sandbox:" + hex.EncodeToString(hash[:12])
-
-	// Only build if not already cached
-	if _, err := exec.Command("docker", "image", "inspect", tag).CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "odek: building sandbox image from %s...\n", dockerfileName)
-		build := exec.Command("docker", "build", "-t", tag, "-f", dockerfileName, ".")
-		build.Stderr = os.Stderr
-		build.Stdout = os.Stderr
-		if err := build.Run(); err != nil {
-			return "", fmt.Errorf("docker build failed: %w", err)
-		}
-		fmt.Fprintf(os.Stderr, "odek: built image %s\n", tag)
-	}
-
-	return tag, nil
-}
-
 // ── Run ───────────────────────────────────────────────────────────────
 
 // run executes the `odek run` command and returns an error on failure.
@@ -873,17 +742,17 @@ func run(args []string) error {
 
 	// Load config from all sources (file → env → CLI)
 	resolved := config.LoadConfig(config.CLIFlags{
-		Model:    f.Model,
-		BaseURL:  f.BaseURL,
-		Thinking: f.Thinking,
-		MaxIter:  f.MaxIter,
-		Sandbox:  f.Sandbox,
-		NoColor:  f.NoColor,
-		NoAgents: f.NoAgents,
+		Model:         f.Model,
+		BaseURL:       f.BaseURL,
+		Thinking:      f.Thinking,
+		MaxIter:       f.MaxIter,
+		Sandbox:       f.Sandbox,
+		NoColor:       f.NoColor,
+		NoAgents:      f.NoAgents,
 		PromptCaching: f.PromptCaching,
-		Learn:    f.Learn,
-		System:   f.System,
-		Task:     f.Task,
+		Learn:         f.Learn,
+		System:        f.System,
+		Task:          f.Task,
 
 		SandboxImage:    f.SandboxImage,
 		SandboxNetwork:  f.SandboxNetwork,
@@ -952,7 +821,7 @@ func run(args []string) error {
 
 		// Inject --ctx files into the sandbox container
 		if len(f.Ctx) > 0 {
-			injected, injectErr := injectFilesToSandbox(containerName, f.Ctx, cwd)
+			injected, injectErr := sandbox.InjectFiles(containerName, f.Ctx, cwd)
 			if injectErr != nil {
 				return fmt.Errorf("sandbox: inject ctx files: %w", injectErr)
 			}
@@ -960,6 +829,8 @@ func run(args []string) error {
 				fmt.Fprintf(os.Stderr, "odek: copied %d file(s) into sandbox\n", injected)
 			}
 		}
+	} else {
+		warnSandboxDisabled()
 	}
 
 	// Create terminal renderer for colored step-by-step output.
@@ -983,21 +854,22 @@ func run(args []string) error {
 	}
 
 	agent, err := odek.New(odek.Config{
-		Model:          resolved.Model,
-		BaseURL:        resolved.BaseURL,
-		APIKey:         resolved.APIKey,
-		MaxIterations:  resolved.MaxIter,
+		Model:           resolved.Model,
+		BaseURL:         resolved.BaseURL,
+		APIKey:          resolved.APIKey,
+		MaxIterations:   resolved.MaxIter,
 		MaxToolParallel: resolved.MaxToolParallel,
-		SystemMessage:  systemMessage,
-		NoProjectFile:  resolved.NoAgents,
-		Thinking:       resolved.Thinking,
-		Temperature:    0, // deterministic by default; override with --temperature
-		Tools:          tools,
-		SandboxCleanup: sandboxCleanup,
-		Renderer:       rend,
-		Skills:         skillsCfg,
-		SkillManager:   sm,
-		PromptCaching:  resolved.PromptCaching,
+		SystemMessage:   systemMessage,
+		NoProjectFile:   resolved.NoAgents,
+		Thinking:        resolved.Thinking,
+		ThinkingBudget:  f.ThinkingBudget,
+		Temperature:     0, // deterministic by default; override with --temperature
+		Tools:           tools,
+		SandboxCleanup:  sandboxCleanup,
+		Renderer:        rend,
+		Skills:          skillsCfg,
+		SkillManager:    sm,
+		PromptCaching:   resolved.PromptCaching,
 	})
 	if err != nil {
 		return err
@@ -1082,8 +954,8 @@ func run(args []string) error {
 	// post-processing that should not block termination.
 	if resolved.Skills.Learn && sm != nil {
 		go func() {
-			skillsLLM := llm.New(resolved.BaseURL, resolved.APIKey, resolved.Model, "", 30*time.Second)
-			runLearnLoop(allMessages, f.Task, sm, skillsLLM, resolved.Skills)
+			skillsLLM := llm.New(resolved.BaseURL, resolved.APIKey, resolved.Model, "", 0, 30*time.Second)
+			runLearnLoop(allMessages, sm, skillsLLM, resolved.Skills)
 		}()
 	}
 
@@ -1096,21 +968,23 @@ func run(args []string) error {
 				latest, err := sess.Latest()
 				if err == nil {
 					msgStrs := makeSessionMessageStrings(latest)
-					mm.OnSessionEnd(latest.ID, latest.Turns, msgStrs)
+					prov := memory.DeriveProvenance(latest.Messages)
+					mm.OnSessionEndWithProvenance(latest.ID, latest.Turns, msgStrs, prov)
 				}
 			}
 		}()
 	}
 
 	// ── Delivery: send result to default channel ──
-	if f.Deliver != nil && *f.Deliver && runErr == nil && result != "" {
+	// runErr is guaranteed nil here — the early return above bails on error.
+	if f.Deliver != nil && *f.Deliver && result != "" {
 		if err := deliverToTelegram(result, resolved); err != nil {
 			fmt.Fprintf(os.Stderr, "odek: delivery failed: %v\n", err)
 		}
 	}
 
 	// ── Off mode: print clean result to stdout ──
-	if resolved.InteractionMode == "off" && runErr == nil && result != "" {
+	if resolved.InteractionMode == "off" && result != "" {
 		fmt.Println(result)
 	}
 
@@ -1139,37 +1013,27 @@ func deliverToTelegram(text string, resolved config.ResolvedConfig) error {
 // ── Sandbox Setup ──────────────────────────────────────────────────────
 
 // setupSandbox creates a Docker container with the given configuration
-// and wires the shell tool to use it.
+// and wires every shell-capable tool to route commands through it.
 //
-// Container lifecycle:
-//  1. Resolve the Docker image via resolveSandboxImage() — checks for
-//     explicit config, Dockerfile.odek, or uses alpine:latest
-//  2. Build "docker run" arguments from the sandboxConfig: image, network
-//     mode, volume mounts, resource limits, user, env vars
-//  3. Create the container with --rm --detach (auto-destroy on exit, background)
-//  4. Wire the shell tool (tools[0]) to route commands through docker exec
-//     into this container by setting shellTool.containerName
+// The container-lifecycle logic (image resolution, "docker run" argument
+// construction) lives in internal/sandbox. This wrapper exists in cmd/odek
+// because it mutates package-local tool types (*shellTool /
+// *parallelShellTool) — that wiring cannot move out without leaking
+// agent-tool internals into the sandbox package.
 //
-// The container runs "sleep infinity" so it stays alive while the agent
-// loop executes. odek communicates with it exclusively through docker exec
-// via the shell tool.
-//
-// The returned cleanup function destroys the container when the agent
-// finishes or is interrupted. Always call cleanup via Agent.Close().
-//
-// Security hardening (always applied):
-//   - --cap-drop ALL: zero Linux capabilities
-//   - --security-opt no-new-privileges: setuid binaries can't escalate
-//   - --tmpfs /tmp:noexec: no executable files in temp
-//   - --rm: container destroyed on agent exit
+// The returned cleanup function destroys the container; always invoke it
+// via Agent.Close().
 func setupSandbox(tools []odek.Tool, cfg sandboxConfig) (containerName string, cleanup func() error, err error) {
-	// Resolve the Docker image (explicit, Dockerfile.odek, or default)
-	image, err := resolveSandboxImage(cfg)
+	image, err := sandbox.ResolveImage(cfg)
 	if err != nil {
 		return "", nil, err
 	}
 
-	containerName = fmt.Sprintf("odek-%d", os.Getpid())
+	// A monotonic sequence number lets concurrent callers (multiple
+	// WebSocket connections in serve mode) get distinct container names
+	// even with the same PID.
+	seq := sandboxSeq.Add(1)
+	containerName = fmt.Sprintf("odek-%d-%d", os.Getpid(), seq)
 	fmt.Fprintf(os.Stderr, "odek: starting sandbox container %s (image: %s)...\n", containerName, image)
 
 	wd, err := os.Getwd()
@@ -1177,12 +1041,16 @@ func setupSandbox(tools []odek.Tool, cfg sandboxConfig) (containerName string, c
 		return "", nil, fmt.Errorf("getwd: %w", err)
 	}
 
-	args := buildSandboxArgs(cfg, containerName, wd, image)
+	// Best-effort sweep of a stale container with this name (e.g. if a
+	// previous process was killed without running cleanup and the OS
+	// recycled the PID).
+	exec.Command("docker", "rm", "-f", containerName).Run() //nolint:errcheck
 
+	args := sandbox.BuildRunArgs(cfg, containerName, wd, image)
 	createCmd := exec.Command("docker", args...)
 	createCmd.Stderr = os.Stderr
 	if err := createCmd.Run(); err != nil {
-		return "", nil, fmt.Errorf("failed to create container: %w", err)
+		return "", nil, fmt.Errorf("failed to create sandbox container %q: %w\n  hint: make sure Docker is running, or disable sandbox with --no-sandbox", containerName, err)
 	}
 
 	cleanup = func() error {
@@ -1190,137 +1058,15 @@ func setupSandbox(tools []odek.Tool, cfg sandboxConfig) (containerName string, c
 		return exec.Command("docker", "rm", "-f", containerName).Run()
 	}
 
-	// Wire the shell tool to execute commands inside the sandbox.
-	tools[0].(*shellTool).containerName = containerName
+	for _, t := range tools {
+		switch tool := t.(type) {
+		case *shellTool:
+			tool.containerName = containerName
+		case *parallelShellTool:
+			tool.containerName = containerName
+		}
+	}
 	return containerName, cleanup, nil
-}
-
-// buildSandboxArgs builds the docker run arguments from a sandboxConfig.
-// Exported for testing. Does not execute docker — just returns the arg slice.
-func buildSandboxArgs(cfg sandboxConfig, containerName, workdir, image string) []string {
-	args := []string{
-		"run",
-		"--rm",     // destroy on exit
-		"--detach", // run in background
-		"--name", containerName,
-		"--cap-drop", "ALL",
-		"--security-opt", "no-new-privileges",
-	}
-
-	// Network mode — "host" is forbidden (destroys container isolation).
-	// If explicitly set to "host", warn and force "none".
-	network := cfg.Network
-	if network == "host" {
-		fmt.Fprintf(os.Stderr, "odek: WARNING: --sandbox-network host destroys container isolation. Forcing 'none'.\n")
-		network = "none"
-	}
-	args = append(args, "--network", network)
-
-	// Read-only mount?
-	volume := workdir + ":/workspace"
-	if cfg.Readonly {
-		volume += ":ro"
-	}
-	args = append(args, "-v", volume)
-
-	// tmpfs (always noexec for security)
-	args = append(args, "--tmpfs", "/tmp:noexec")
-
-	// Resource limits
-	if cfg.Memory != "" {
-		args = append(args, "--memory", cfg.Memory)
-	}
-	if cfg.CPUs != "" {
-		args = append(args, "--cpus", cfg.CPUs)
-	}
-
-	// Container user
-	if cfg.User != "" {
-		args = append(args, "--user", cfg.User)
-	}
-
-	// Extra env vars
-	for k, v := range cfg.Env {
-		args = append(args, "-e", k+"="+v)
-	}
-
-	// Extra volume mounts
-	for _, vol := range cfg.Volumes {
-		// Validate: reject mounts to sensitive host paths
-		reject := false
-		parts := strings.SplitN(vol, ":", 2)
-		if len(parts) > 0 {
-			hostPath := filepath.Clean(parts[0])
-			for _, forbidden := range forbiddenMountPrefixes {
-				if hostPath == forbidden || strings.HasPrefix(hostPath, forbidden+"/") {
-					fmt.Fprintf(os.Stderr, "odek: WARNING: rejecting forbidden volume mount %q (host path %s)\n", vol, hostPath)
-					reject = true
-					break
-				}
-			}
-		}
-		if !reject {
-			args = append(args, "-v", vol)
-		}
-	}
-
-	// Image and command
-	args = append(args, image, "sleep", "infinity")
-	return args
-}
-
-// injectFilesToSandbox copies ctx files into a running sandbox container
-// using docker cp. Returns the number of files successfully injected.
-// Files are placed at /workspace/<relative-path-from-cwd> in the container.
-// Absolute-path files are placed at /workspace/<basename>.
-// Skips files that don't exist (logs warning), returns error only on docker failure.
-func injectFilesToSandbox(containerName string, files []string, cwd string) (int, error) {
-	injected := 0
-	for _, f := range files {
-		f = strings.TrimSpace(f)
-		if f == "" {
-			continue
-		}
-
-		// Resolve to absolute path
-		absPath := f
-		if !filepath.IsAbs(absPath) {
-			absPath = filepath.Join(cwd, absPath)
-		}
-		absPath = filepath.Clean(absPath)
-
-		// Verify file exists and is a regular file
-		info, err := os.Stat(absPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "odek: warning: ctx file %q not found, skipping sandbox injection\n", f)
-			continue
-		}
-		if info.IsDir() {
-			fmt.Fprintf(os.Stderr, "odek: warning: ctx path %q is a directory, skipping sandbox injection\n", f)
-			continue
-		}
-
-		// Determine destination path inside container
-		// For files under cwd: preserve relative path
-		// For files outside cwd: use basename
-		dest := filepath.Base(absPath) // default: just the filename
-		if strings.HasPrefix(absPath, cwd+string(filepath.Separator)) || absPath == cwd {
-			rel, err := filepath.Rel(cwd, absPath)
-			if err == nil {
-				dest = rel
-			}
-		}
-
-		// docker cp into container:/workspace/<dest>
-		containerDest := fmt.Sprintf("%s:/workspace/%s", containerName, dest)
-		cpCmd := exec.Command("docker", "cp", absPath, containerDest)
-		output, err := cpCmd.CombinedOutput()
-		if err != nil {
-			return injected, fmt.Errorf("docker cp %q: %w\n%s", f, err, string(output))
-		}
-		injected++
-	}
-	return injected, nil
 }
 
 func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver danger.Approver, maxConcurrency int, apiKey string, tc config.TranscriptionConfig, store *session.Store) []odek.Tool {
@@ -1400,11 +1146,15 @@ func loadMCPTools(servers map[string]mcpclient.ServerConfig, tools *[]odek.Tool)
 		}
 
 		for _, def := range defs {
-			*tools = append(*tools, &mcpclient.ToolAdapter{
+			inner := &mcpclient.ToolAdapter{
 				Client:      client,
 				ToolName:    def.Name,
 				Desc:        def.Description,
 				ParamSchema: def.InputSchema,
+			}
+			*tools = append(*tools, &untrustedToolWrapper{
+				inner:  inner,
+				source: "mcp:" + name + ":" + def.Name,
 			})
 		}
 
@@ -1455,6 +1205,21 @@ func getVersion() string {
 	return "dev"
 }
 
+// getVCSTime returns the build date from VCS info (vcs.time), truncated to
+// the date part (YYYY-MM-DD). Returns "" when not available.
+func getVCSTime() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+	for _, s := range info.Settings {
+		if s.Key == "vcs.time" && len(s.Value) >= 10 {
+			return s.Value[:10]
+		}
+	}
+	return ""
+}
+
 // ── Skill Commands ─────────────────────────────────────────────────────
 
 // ── Skill Commands ─────────────────────────────────────────────────────
@@ -1467,74 +1232,44 @@ func getVersion() string {
 // This is the non-interactive core shared by CLI, WebUI, and Telegram.
 // When suppressSuggested is true, "suggested" notifier events are skipped
 // (caller handles presentation, e.g. when auto-save is enabled).
-func learnAndSuggest(messages []llm.Message, sm *skills.SkillManager, llmClient skills.LLMClient, llmLearn, suppressSuggested bool) []skills.SkillSuggestion {
-	// Convert llm.Message to skills.LlmMessage
-	skillMsgs := make([]skills.LlmMessage, 0, len(messages))
+// llmToSkillMessages adapts the engine's llm.Message slice into the
+// skills package's own LlmMessage shape. The conversion lives here (not
+// in internal/skills) because we don't want the skills package to depend
+// on internal/llm — it must stay usable in isolation.
+func llmToSkillMessages(messages []llm.Message) []skills.LlmMessage {
+	out := make([]skills.LlmMessage, 0, len(messages))
 	for _, m := range messages {
-		msg := skills.LlmMessage{
+		converted := skills.LlmMessage{
 			Role:       m.Role,
 			Content:    m.Content,
 			Name:       m.Name,
 			ToolCallID: m.ToolCallID,
 		}
 		for _, tc := range m.ToolCalls {
-			msg.ToolCalls = append(msg.ToolCalls, skills.LlmToolCall{
-				ID: tc.ID,
-			})
-			msg.ToolCalls[len(msg.ToolCalls)-1].Function.Name = tc.Function.Name
-			msg.ToolCalls[len(msg.ToolCalls)-1].Function.Arguments = tc.Function.Arguments
+			next := skills.LlmToolCall{ID: tc.ID}
+			next.Function.Name = tc.Function.Name
+			next.Function.Arguments = tc.Function.Arguments
+			converted.ToolCalls = append(converted.ToolCalls, next)
 		}
-		skillMsgs = append(skillMsgs, msg)
+		out = append(out, converted)
 	}
-
-	userMessages := extractUserMessages(messages)
-	suggestions := skills.RunAllHeuristics(skillMsgs, userMessages)
-
-	// Conversation-level skill extraction — uses full context, not just tool patterns.
-	// Catches architectural decisions, debugging strategies, and workflow patterns
-	// that the pattern-based heuristics miss.
-	if llmLearn && llmClient != nil {
-		if convSkill := skills.ExtractSkillsFromConversation(llmClient, skillMsgs, userMessages); convSkill != nil {
-			// Build a command log from tool calls for context
-			calls := skills.ExtractToolCalls(skillMsgs)
-			cmds := make([]string, 0, len(calls))
-			for _, c := range calls {
-				cmds = append(cmds, c.Input)
-			}
-			convSkill.CommandLog = cmds
-			suggestions = append(suggestions, *convSkill)
-		}
-	}
-
-	// Apply LLM enhancement to each suggestion
-	for i := range suggestions {
-		if llmLearn && llmClient != nil {
-			calls := skills.ExtractToolCalls(skillMsgs)
-			if enhanced := skills.GenerateSkillWithLLM(llmClient, calls, userMessages, suggestions[i].Heuristic); enhanced != nil {
-				enhanced.CommandLog = suggestions[i].CommandLog
-				enhanced.Heuristic = suggestions[i].Heuristic
-				suggestions[i] = *enhanced
-			}
-		}
-	}
-
-	// Fire suggested events via notifier (unless suppressed)
-	if !suppressSuggested {
-		for _, s := range suggestions {
-			sm.Notifier.Notify(skills.SkillEvent{
-				Type:      "suggested",
-				SkillName: s.Name,
-				Heuristic: s.Heuristic,
-				Body:      s.Body,
-				Timestamp: time.Now().UTC(),
-			})
-		}
-	}
-
-	return suggestions
+	return out
 }
 
-func runLearnLoop(messages []llm.Message, task string, sm *skills.SkillManager, llmClient skills.LLMClient, skillsCfg skills.SkillsConfig) {
+// learnAndSuggest converts engine messages and runs the skill-suggestion
+// pipeline. The pipeline itself lives in internal/skills.AnalyzeMessages.
+func learnAndSuggest(messages []llm.Message, sm *skills.SkillManager, llmClient skills.LLMClient, llmLearn, suppressSuggested bool) []skills.SkillSuggestion {
+	skillMsgs := llmToSkillMessages(messages)
+	userMessages := skills.ExtractUserMessages(skillMsgs)
+	return skills.AnalyzeMessages(skillMsgs, userMessages, sm, llmClient, llmLearn, suppressSuggested)
+}
+
+// runLearnLoop orchestrates skill learning at the end of a session:
+// generate suggestions, filter against the skip list, then either run
+// the non-interactive auto-save pipeline or fall back to an interactive
+// prompt. All the non-interactive work lives in internal/skills; only
+// the TTY prompt stays here.
+func runLearnLoop(messages []llm.Message, sm *skills.SkillManager, llmClient skills.LLMClient, skillsCfg skills.SkillsConfig) {
 	suggestions := learnAndSuggest(messages, sm, llmClient, skillsCfg.LLMLearn, true)
 	if len(suggestions) == 0 {
 		return
@@ -1543,7 +1278,6 @@ func runLearnLoop(messages []llm.Message, task string, sm *skills.SkillManager, 
 	userDir := expandHome("~/.odek/skills")
 	os.MkdirAll(userDir, 0755)
 
-	// Filter out previously-skipped suggestions
 	filtered, skipped := skills.FilterSkipped(suggestions, userDir,
 		skillsCfg.Curation.SkipThreshold, skillsCfg.Curation.SkipResetDays)
 	if skipped > 0 && skillsCfg.Verbose {
@@ -1553,46 +1287,25 @@ func runLearnLoop(messages []llm.Message, task string, sm *skills.SkillManager, 
 		return
 	}
 
-	// Auto-save if enabled
-	if skillsCfg.AutoSave.Enabled {
-		if !skillsCfg.AutoSave.RequireLLM || skillsCfg.LLMLearn {
-			result := skills.AutoSaveSuggestions(filtered, userDir, skillsCfg)
-			if skillsCfg.Verbose {
-				for _, name := range result.Saved {
-					heuristic := result.Heuristics[name]
-					if heuristic != "" {
-						fmt.Fprintf(os.Stderr, "   ✓ Auto-saved skill %q (%s)\n", name, heuristic)
-					} else {
-						fmt.Fprintf(os.Stderr, "   ✓ Auto-saved skill %q\n", name)
-					}
-				}
-				if result.Skipped > 0 {
-					fmt.Fprintf(os.Stderr, "   (%d previously skipped, suppressed)\n", result.Skipped)
-				}
-				for _, name := range result.Failed {
-					fmt.Fprintf(os.Stderr, "   ⚠ Quality gate failed for %q (use --no-auto-save to review manually)\n", name)
-				}
-			}
-			// Fire notifier events even when silent so WebUI/Telegram get them
-			for _, name := range result.Saved {
-				sm.Notifier.Notify(skills.SkillEvent{
-					Type: "saved", SkillName: name, Timestamp: time.Now().UTC(),
-				})
-			}
-			if len(result.Saved) > 0 {
-				sm.MarkDirty()
-				sm.Reload()
-				// Run micro-curation after auto-save
-				runAutoCurate(userDir, sm, skillsCfg, llmClient)
-			}
-			return
-		}
+	var verbose io.Writer
+	if skillsCfg.Verbose {
+		verbose = os.Stderr
+	}
+	if skills.RunAutoSaveLoop(filtered, userDir, sm, llmClient, skillsCfg, verbose) {
+		return
 	}
 
-	// Interactive fallback: show preview and prompt
+	// Interactive fallback — silent unless verbose so non-TTY runs don't
+	// block on Scanf.
 	if !skillsCfg.Verbose {
-		return // silently skip interactive prompt in non-verbose mode
+		return
 	}
+	interactiveSavePrompt(filtered, userDir, sm)
+}
+
+// interactiveSavePrompt walks the user through each suggestion, reading
+// y/n/s from stdin. Lives in cmd/odek because it couples to the TTY.
+func interactiveSavePrompt(filtered []skills.SkillSuggestion, userDir string, sm *skills.SkillManager) {
 	fmt.Fprintf(os.Stderr, "\n🔍 Learning: detected %d skill pattern(s)\n", len(filtered))
 	for _, s := range filtered {
 		fmt.Fprint(os.Stderr, skills.FormatSuggestionWithPreview(s, true, 400))
@@ -1602,7 +1315,8 @@ func runLearnLoop(messages []llm.Message, task string, sm *skills.SkillManager, 
 		fmt.Scanf("%s", &response)
 		response = strings.ToLower(strings.TrimSpace(response))
 
-		if response == "" || response == "y" || response == "yes" {
+		switch response {
+		case "", "y", "yes":
 			if err := skills.SaveSuggestion(userDir, s); err != nil {
 				fmt.Fprintf(os.Stderr, "   ✗ Error saving skill: %v\n", err)
 			} else {
@@ -1610,42 +1324,16 @@ func runLearnLoop(messages []llm.Message, task string, sm *skills.SkillManager, 
 				sm.MarkDirty()
 				sm.Reload()
 			}
-		} else if response == "s" || response == "skip" {
+		case "s", "skip":
 			sl := skills.LoadSkipList(userDir)
 			sl.RecordSkip(userDir, s.Name, s.Heuristic)
 			fmt.Fprintf(os.Stderr, "   Skipped permanently. Use `odek skill reset-skips` to re-enable.\n")
-		} else {
+		default:
 			sl := skills.LoadSkipList(userDir)
 			sl.RecordSkip(userDir, s.Name, s.Heuristic)
 			fmt.Fprintf(os.Stderr, "   Skipped.\n")
 		}
 	}
-}
-
-// runAutoCurate triggers automatic curation after auto-save.
-func runAutoCurate(userDir string, sm *skills.SkillManager, cfg skills.SkillsConfig, llmClient skills.LLMClient) {
-	allSkills := sm.AllSkills()
-	var newSkills []skills.Skill
-	for _, s := range allSkills {
-		if s.Quality == skills.QualityDraft {
-			newSkills = append(newSkills, s)
-		}
-	}
-	msg := skills.RunAutoCurate(userDir, newSkills, allSkills, cfg, llmClient)
-	if msg != "" && cfg.Verbose {
-		fmt.Fprint(os.Stderr, msg)
-	}
-}
-
-// extractUserMessages extracts user message content from llm messages.
-func extractUserMessages(messages []llm.Message) []string {
-	var out []string
-	for _, m := range messages {
-		if m.Role == "user" {
-			out = append(out, m.Content)
-		}
-	}
-	return out
 }
 
 // skillCmd handles `odek skill <list|view|save|delete|import|curate|reset-skips>`.
@@ -1702,6 +1390,16 @@ func skillCmd(args []string) error {
 		fmt.Println(result)
 		return nil
 
+	case "promote":
+		// Clear Provenance.NeedsReview on a skill so it can be auto-
+		// loaded. Intended for skills auto-saved from sessions that
+		// ingested untrusted content — the user reviews the body and
+		// then promotes it. See SkillProvenance.
+		if len(subArgs) == 0 {
+			return fmt.Errorf("usage: odek skill promote <name>")
+		}
+		return promoteSkill(userDir, subArgs[0])
+
 	case "import":
 		if len(subArgs) == 0 {
 			return fmt.Errorf("usage: odek skill import <uri> [--basic] [--yes]")
@@ -1725,7 +1423,7 @@ func skillCmd(args []string) error {
 			if basicOnly {
 				return "", fmt.Errorf("basic mode — no LLM call")
 			}
-			client := llm.New(cfg.BaseURL, cfg.APIKey, cfg.Model, "", 30)
+			client := llm.New(cfg.BaseURL, cfg.APIKey, cfg.Model, "", 0, 30)
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			return client.SimpleCall(ctx,
@@ -1956,21 +1654,21 @@ func continueCmd(args []string) error {
 	}
 
 	agent, err := odek.New(odek.Config{
-		Model:          resolved.Model,
-		BaseURL:        resolved.BaseURL,
-		APIKey:         resolved.APIKey,
-		MaxIterations:  resolved.MaxIter,
+		Model:           resolved.Model,
+		BaseURL:         resolved.BaseURL,
+		APIKey:          resolved.APIKey,
+		MaxIterations:   resolved.MaxIter,
 		MaxToolParallel: resolved.MaxToolParallel,
-		SystemMessage:  systemMessage,
-		NoProjectFile:  resolved.NoAgents,
-		Thinking:       resolved.Thinking,
-		Temperature:    0, // deterministic by default; override with --temperature
-		Tools:          tools,
-		SandboxCleanup: sandboxCleanup,
-		Renderer:       rend,
-		Skills:         skillsCfg,
-		SkillManager:   sm,
-		PromptCaching:  resolved.PromptCaching,
+		SystemMessage:   systemMessage,
+		NoProjectFile:   resolved.NoAgents,
+		Thinking:        resolved.Thinking,
+		Temperature:     0, // deterministic by default; override with --temperature
+		Tools:           tools,
+		SandboxCleanup:  sandboxCleanup,
+		Renderer:        rend,
+		Skills:          skillsCfg,
+		SkillManager:    sm,
+		PromptCaching:   resolved.PromptCaching,
 	})
 	if err != nil {
 		return err
@@ -1995,12 +1693,27 @@ func continueCmd(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
+	// Audit: record every untrusted-content ingestion that fires during
+	// this turn. The recorder is cleared on exit so a later turn (or
+	// background goroutine) cannot accidentally write to the wrong
+	// session's audit log.
+	auditStore := session.NewAuditStore(store.Dir())
+	currentTurn := sess.Turns + 1
+	sessIDCapture := sess.ID
+	setIngestRecorder(func(source, content string) {
+		_ = auditStore.RecordIngest(sessIDCapture, currentTurn, source, content)
+	})
+	defer setIngestRecorder(nil)
+
 	rend.Start(task)
 	result, allMessages, err := agent.RunWithMessages(ctx, messages)
 	if err != nil {
 		return err
 	}
 	_ = result
+
+	// Record per-turn divergence assessment after the turn completes.
+	recordTurnAudit(auditStore, sessIDCapture, currentTurn, task, allMessages[len(sess.GetMessages()):])
 
 	// Append agent response to buffer
 	if len(allMessages) > 0 {
@@ -2035,7 +1748,8 @@ func continueCmd(args []string) error {
 	if mm := agent.Memory(); mm != nil {
 		go func() {
 			msgStrs := makeSessionMessageStrings(sess)
-			mm.OnSessionEnd(sess.ID, sess.Turns+1, msgStrs)
+			prov := memory.DeriveProvenance(sess.Messages)
+			mm.OnSessionEndWithProvenance(sess.ID, sess.Turns+1, msgStrs, prov)
 		}()
 	}
 

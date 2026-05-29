@@ -12,13 +12,35 @@ import (
 
 // approvalRequest is sent from the serve WebSocket to the browser
 // when the agent needs user approval for a dangerous operation.
+//
+// AllowTrust reports whether the "trust class for session" shortcut is
+// available for this prompt. It is false for the two highest-impact
+// classes (destructive, blocked) — those always require a per-call
+// approval to defeat approval-fatigue attacks. The UI must hide the
+// "Trust" button when AllowTrust is false.
+//
+// Friction is true when the user has already approved >=
+// FrictionThreshold operations of this class inside FrictionWindow.
+// In friction mode the UI must show the recent-approval count to the
+// user and require typing the literal word "approve" (no button
+// click) before forwarding "approve" to the server.
 type approvalRequest struct {
-	Type        string `json:"type"`
-	ID          string `json:"id"`
-	Risk        string `json:"risk"`
-	Command     string `json:"command"`
-	Description string `json:"description,omitempty"`
-	IsOperation bool   `json:"is_operation"`
+	Type              string `json:"type"`
+	ID                string `json:"id"`
+	Risk              string `json:"risk"`
+	Command           string `json:"command"`
+	Description       string `json:"description,omitempty"`
+	IsOperation       bool   `json:"is_operation"`
+	AllowTrust        bool   `json:"allow_trust"`
+	Friction          bool   `json:"friction"`
+	FrictionApprovals int    `json:"friction_approvals,omitempty"`
+}
+
+// allowTrustForClass mirrors the TTYApprover policy: destructive and
+// blocked must never be class-trusted, so an attacker cannot social-
+// engineer a single broad approval into long-term carte blanche.
+func allowTrustForClass(cls danger.RiskClass) bool {
+	return cls != danger.Destructive && cls != danger.Blocked
 }
 
 // approvalResponse is received from the browser when the user responds.
@@ -33,22 +55,60 @@ type approvalResponse struct {
 // approval prompt. The caller must call HandleResponse() when a
 // matching response arrives from the WebSocket.
 type wsApprover struct {
-	sendFn     func(v any) error            // sends JSON to WebSocket
-	pending    map[string]chan string        // request ID → response channel
+	sendFn     func(v any) error      // sends JSON to WebSocket
+	pending    map[string]chan string // request ID → response channel
 	mu         sync.Mutex
-	approveAll map[danger.RiskClass]bool     // trust-cached risk classes
-	trustAll   bool                          // when true, all PromptCommand calls auto-approve
-	cancel     chan struct{}                 // closed by Cancel() to interrupt waiting PromptCommand
+	approveAll map[danger.RiskClass]bool // trust-cached risk classes
+	trustAll   bool                      // when true, all PromptCommand calls auto-approve
+	cancel     chan struct{}             // closed by Cancel() to interrupt waiting PromptCommand
+
+	// Approval-fatigue mitigation. Parallel to the TTYApprover policy.
+	frictionThreshold int
+	frictionWindow    time.Duration
+	approvalLog       map[danger.RiskClass][]time.Time
 }
 
 // newWSApprover creates a wsApprover that sends requests via sendFn.
 func newWSApprover(sendFn func(v any) error) *wsApprover {
 	return &wsApprover{
-		sendFn:     sendFn,
-		pending:    make(map[string]chan string),
-		approveAll: make(map[danger.RiskClass]bool),
-		cancel:     make(chan struct{}),
+		sendFn:            sendFn,
+		pending:           make(map[string]chan string),
+		approveAll:        make(map[danger.RiskClass]bool),
+		cancel:            make(chan struct{}),
+		frictionThreshold: 3,
+		frictionWindow:    60 * time.Second,
+		approvalLog:       make(map[danger.RiskClass][]time.Time),
 	}
+}
+
+// recordApproval logs an approval timestamp for cls.
+func (a *wsApprover) recordApproval(cls danger.RiskClass) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.approvalLog == nil {
+		a.approvalLog = make(map[danger.RiskClass][]time.Time)
+	}
+	a.approvalLog[cls] = append(a.approvalLog[cls], time.Now())
+}
+
+// shouldFriction returns true and the recent approval count when the
+// next prompt for cls should engage the high-friction UI path.
+func (a *wsApprover) shouldFriction(cls danger.RiskClass) (bool, int) {
+	if a.frictionThreshold <= 0 || a.frictionWindow <= 0 {
+		return false, 0
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	cutoff := time.Now().Add(-a.frictionWindow)
+	log := a.approvalLog[cls]
+	kept := log[:0]
+	for _, t := range log {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	a.approvalLog[cls] = kept
+	return len(kept) >= a.frictionThreshold, len(kept)
 }
 
 func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string) error {
@@ -69,14 +129,20 @@ func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string
 		a.mu.Unlock()
 	}()
 
+	allowTrust := allowTrustForClass(cls)
+	friction, approvalCount := a.shouldFriction(cls)
+
 	// Send approval request via WebSocket
 	err := a.sendFn(approvalRequest{
-		Type:        "approval_request",
-		ID:          id,
-		Risk:        string(cls),
-		Command:     cmd,
-		Description: description,
-		IsOperation: false,
+		Type:              "approval_request",
+		ID:                id,
+		Risk:              string(cls),
+		Command:           cmd,
+		Description:       description,
+		IsOperation:       false,
+		AllowTrust:        allowTrust,
+		Friction:          friction,
+		FrictionApprovals: approvalCount,
 	})
 	if err != nil {
 		return fmt.Errorf("approval: send failed: %w", err)
@@ -93,8 +159,17 @@ func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string
 		})
 		switch action {
 		case "approve":
+			a.recordApproval(cls)
 			return nil
 		case "trust":
+			if !allowTrust {
+				// A forged or stale UI may still send "trust" for a
+				// destructive/blocked prompt. Coerce to a one-shot
+				// approve so the single operation runs but no class-
+				// wide trust is cached.
+				a.recordApproval(cls)
+				return nil
+			}
 			a.approveAll[cls] = true
 			return nil
 		default:

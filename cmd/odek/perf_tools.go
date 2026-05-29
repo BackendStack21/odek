@@ -29,17 +29,6 @@ import (
 	"github.com/BackendStack21/odek/internal/danger"
 )
 
-// safeCall wraps a tool function body with panic recovery.
-func safeCall(fn func() (string, error)) (result string, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("tool panic: %v", r)
-			result = `{"error":"internal tool error"}`
-		}
-	}()
-	return fn()
-}
-
 // readFileNoFollow reads a file with O_NOFOLLOW (anti-symlink).
 func readFileNoFollow(path string) ([]byte, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
@@ -60,8 +49,10 @@ type batchPatchTool struct {
 	dangerousConfig danger.DangerousConfig
 }
 
-func (t *batchPatchTool) Name() string        { return "batch_patch" }
-func (t *batchPatchTool) Description() string  { return `Apply up to 10 find-replace edits across files in a single call. Edits are applied sequentially; if any fails the rest are skipped (early-stop). Each edit uses O_NOFOLLOW read + atomic temp+rename write, same as the patch tool.` }
+func (t *batchPatchTool) Name() string { return "batch_patch" }
+func (t *batchPatchTool) Description() string {
+	return `Apply up to 10 find-replace edits across files in a single call. Edits are applied sequentially; if any fails the rest are skipped (early-stop). Each edit uses O_NOFOLLOW read + atomic temp+rename write, same as the patch tool.`
+}
 
 type batchPatchArg struct {
 	Path       string `json:"path"`
@@ -97,9 +88,9 @@ func (t *batchPatchTool) Schema() any {
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"path":       map[string]any{"type": "string", "description": "File path."},
-						"old_string": map[string]any{"type": "string", "description": "Text to find."},
-						"new_string": map[string]any{"type": "string", "description": "Replacement (empty = delete)."},
+						"path":        map[string]any{"type": "string", "description": "File path."},
+						"old_string":  map[string]any{"type": "string", "description": "Text to find."},
+						"new_string":  map[string]any{"type": "string", "description": "Replacement (empty = delete)."},
 						"replace_all": map[string]any{"type": "boolean", "description": "Replace all occurrences (default: false)."},
 					},
 					"required": []string{"path", "old_string"},
@@ -179,8 +170,14 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 		diff := fmt.Sprintf("--- a/%s\n+++ b/%s\n@@ -1 +1 @@\n-%s\n+%s\n",
 			p.Path, p.Path, truncateDiff(original, 100), truncateDiff(modified, 100))
 
-		// Atomic write
+		// Atomic write — preserve the original file's mode and surface any
+		// write error so a short or failed write cannot silently corrupt
+		// the target (see IMPROVEMENTS_ROADMAP.md B-H1, B-H2).
 		dir := filepath.Dir(p.Path)
+		origMode := os.FileMode(0644)
+		if st, err := os.Stat(p.Path); err == nil {
+			origMode = st.Mode().Perm()
+		}
 		tmpFile, err := os.CreateTemp(dir, ".tmp_batchpatch_*")
 		if err != nil {
 			entry.Error = fmt.Sprintf("cannot create temp file: %v", err)
@@ -188,9 +185,26 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 			continue
 		}
 		tmpPath := tmpFile.Name()
-		tmpFile.Write([]byte(modified))
-		tmpFile.Chmod(0644)
-		tmpFile.Close()
+		if _, werr := tmpFile.Write([]byte(modified)); werr != nil {
+			tmpFile.Close()
+			os.Remove(tmpPath)
+			entry.Error = fmt.Sprintf("cannot write temp for %q: %v", p.Path, werr)
+			results[idx] = entry
+			continue
+		}
+		if cerr := tmpFile.Chmod(origMode); cerr != nil {
+			tmpFile.Close()
+			os.Remove(tmpPath)
+			entry.Error = fmt.Sprintf("cannot set mode on temp for %q: %v", p.Path, cerr)
+			results[idx] = entry
+			continue
+		}
+		if cerr := tmpFile.Close(); cerr != nil {
+			os.Remove(tmpPath)
+			entry.Error = fmt.Sprintf("cannot close temp for %q: %v", p.Path, cerr)
+			results[idx] = entry
+			continue
+		}
 
 		if err := os.Rename(tmpPath, p.Path); err != nil {
 			os.Remove(tmpPath)
@@ -216,10 +230,15 @@ const maxParallelShellCmds = 8
 type parallelShellTool struct {
 	dangerousConfig danger.DangerousConfig
 	approver        danger.Approver
+	// containerName, when set, routes every command through "docker exec"
+	// so sandbox isolation is preserved — same as shellTool.
+	containerName string
 }
 
-func (t *parallelShellTool) Name() string        { return "parallel_shell" }
-func (t *parallelShellTool) Description() string  { return `Run multiple independent shell commands in parallel. Each command gets its own process. Returns structured results with stdout, stderr, exit_code, and duration for each command. Commands requiring approval are checked before execution.` }
+func (t *parallelShellTool) Name() string { return "parallel_shell" }
+func (t *parallelShellTool) Description() string {
+	return `Run multiple independent shell commands in parallel. Each command gets its own process. Returns structured results with stdout, stderr, exit_code, and duration for each command. Commands requiring approval are checked before execution.`
+}
 
 type parallelShellCmd struct {
 	Command     string `json:"command"`
@@ -320,7 +339,12 @@ func (t *parallelShellTool) Call(argsJSON string) (result string, err error) {
 			start := time.Now()
 			entry := parallelShellEntry{Index: idx, Command: cmd.Command}
 
-			shCmd := exec.Command("sh", "-c", cmd.Command)
+			var shCmd *exec.Cmd
+			if t.containerName != "" {
+				shCmd = exec.Command("docker", "exec", "-w", "/workspace", t.containerName, "sh", "-c", cmd.Command)
+			} else {
+				shCmd = exec.Command("sh", "-c", cmd.Command)
+			}
 			var stdout, stderr strings.Builder
 			shCmd.Stdout = &stdout
 			shCmd.Stderr = &stderr
@@ -390,8 +414,10 @@ func newHTTPBatchTool(dc danger.DangerousConfig) *httpBatchTool {
 	}
 }
 
-func (t *httpBatchTool) Name() string        { return "http_batch" }
-func (t *httpBatchTool) Description() string  { return `Fetch multiple URLs in parallel. Returns status code, content length, and error for each URL. Does NOT parse HTML — it's a lightweight parallel fetch for APIs, docs, and data files. Max 10 URLs per call.` }
+func (t *httpBatchTool) Name() string { return "http_batch" }
+func (t *httpBatchTool) Description() string {
+	return `Fetch multiple URLs in parallel. Returns status code, content length, and error for each URL. Does NOT parse HTML — it's a lightweight parallel fetch for APIs, docs, and data files. Max 10 URLs per call.`
+}
 
 type httpBatchReq struct {
 	URL     string            `json:"url"`
@@ -531,8 +557,10 @@ func (t *httpBatchTool) Call(argsJSON string) (result string, err error) {
 
 type mathEvalTool struct{}
 
-func (t *mathEvalTool) Name() string        { return "math_eval" }
-func (t *mathEvalTool) Description() string  { return `Evaluate a math expression and return the result. Supports: +, -, *, /, %, parentheses, decimal numbers. Zero-fork — no subprocess spawned. Example: "42 * 17 + 256 / 10"` }
+func (t *mathEvalTool) Name() string { return "math_eval" }
+func (t *mathEvalTool) Description() string {
+	return `Evaluate a math expression and return the result. Supports: +, -, *, /, %, parentheses, decimal numbers. Zero-fork — no subprocess spawned. Example: "42 * 17 + 256 / 10"`
+}
 
 type mathEvalArgs struct {
 	Expression string `json:"expression"`
@@ -647,8 +675,10 @@ type diffTool struct {
 	dangerousConfig danger.DangerousConfig
 }
 
-func (t *diffTool) Name() string        { return "diff" }
-func (t *diffTool) Description() string  { return `Compare two files and return structured hunks. Each hunk has a type (equal/added/removed) and line-by-line content. Use path_a+path_b for file-vs-file, or path+content for file-vs-string. Zero-fork LCS-based diff — no subprocess spawned.` }
+func (t *diffTool) Name() string { return "diff" }
+func (t *diffTool) Description() string {
+	return `Compare two files and return structured hunks. Each hunk has a type (equal/added/removed) and line-by-line content. Use path_a+path_b for file-vs-file, or path+content for file-vs-string. Zero-fork LCS-based diff — no subprocess spawned.`
+}
 
 type diffArgs struct {
 	PathA   string `json:"path_a,omitempty"`
@@ -834,8 +864,10 @@ type countLinesTool struct {
 	dangerousConfig danger.DangerousConfig
 }
 
-func (t *countLinesTool) Name() string        { return "count_lines" }
-func (t *countLinesTool) Description() string  { return `Count lines, bytes, and characters in one or more files. Streaming scanner — zero-alloc on content, zero subprocess forks. Per-file and aggregate totals.` }
+func (t *countLinesTool) Name() string { return "count_lines" }
+func (t *countLinesTool) Description() string {
+	return `Count lines, bytes, and characters in one or more files. Streaming scanner — zero-alloc on content, zero subprocess forks. Per-file and aggregate totals.`
+}
 
 type countFileArg struct {
 	Path string `json:"path"`
@@ -977,8 +1009,10 @@ type multiGrepTool struct {
 	dangerousConfig danger.DangerousConfig
 }
 
-func (t *multiGrepTool) Name() string        { return "multi_grep" }
-func (t *multiGrepTool) Description() string  { return `Search for multiple regex patterns in parallel across files. Each pattern runs its own directory walk with bounded concurrency. Returns structured {pattern, path, line, content} results. Replaces N serial search_files calls. Directly targets the multi_search benchmark.` }
+func (t *multiGrepTool) Name() string { return "multi_grep" }
+func (t *multiGrepTool) Description() string {
+	return `Search for multiple regex patterns in parallel across files. Each pattern runs its own directory walk with bounded concurrency. Returns structured {pattern, path, line, content} results. Replaces N serial search_files calls. Directly targets the multi_search benchmark.`
+}
 
 type grepMatch struct {
 	Path    string `json:"path"`
@@ -1123,7 +1157,9 @@ func (t *multiGrepTool) searchPattern(pattern, root, fileGlob string, limit int)
 			line := scanner.Text()
 			if re.MatchString(line) {
 				matches = append(matches, grepMatch{
-					Path: path, Line: lineNum, Content: strings.TrimSpace(line),
+					Path:    path,
+					Line:    lineNum,
+					Content: wrapUntrusted(fmt.Sprintf("%s:%d", path, lineNum), strings.TrimSpace(line)),
 				})
 				if len(matches) >= limit {
 					return filepath.SkipAll
@@ -1151,8 +1187,10 @@ type jsonQueryTool struct {
 	dangerousConfig danger.DangerousConfig
 }
 
-func (t *jsonQueryTool) Name() string        { return "json_query" }
-func (t *jsonQueryTool) Description() string  { return `Parse a JSON file and extract a value using a dot-path query. Supports array indexing with [N]. Empty query returns the entire parsed JSON. Zero-fork — pure Go JSON traversal.` }
+func (t *jsonQueryTool) Name() string { return "json_query" }
+func (t *jsonQueryTool) Description() string {
+	return `Parse a JSON file and extract a value using a dot-path query. Supports array indexing with [N]. Empty query returns the entire parsed JSON. Zero-fork — pure Go JSON traversal.`
+}
 
 type jsonQueryArgs struct {
 	Path  string `json:"path"`
@@ -1292,8 +1330,10 @@ type treeTool struct {
 	dangerousConfig danger.DangerousConfig
 }
 
-func (t *treeTool) Name() string        { return "tree" }
-func (t *treeTool) Description() string  { return `List the directory tree with file counts, sizes, and nesting. Returns a structured tree: each entry shows path, is_dir, file_count, total_size, children, depth. Zero-fork — pure Go directory walk.` }
+func (t *treeTool) Name() string { return "tree" }
+func (t *treeTool) Description() string {
+	return `List the directory tree with file counts, sizes, and nesting. Returns a structured tree: each entry shows path, is_dir, file_count, total_size, children, depth. Zero-fork — pure Go directory walk.`
+}
 
 type treeArgs struct {
 	Path          string `json:"path,omitempty"`
@@ -1423,8 +1463,10 @@ type checksumTool struct {
 	dangerousConfig danger.DangerousConfig
 }
 
-func (t *checksumTool) Name() string        { return "checksum" }
-func (t *checksumTool) Description() string  { return `Compute cryptographic hashes of files using SHA-256 (default), SHA-1, or MD5. Uses Go crypto stdlib — zero subprocess fork, pure Go implementation.` }
+func (t *checksumTool) Name() string { return "checksum" }
+func (t *checksumTool) Description() string {
+	return `Compute cryptographic hashes of files using SHA-256 (default), SHA-1, or MD5. Uses Go crypto stdlib — zero subprocess fork, pure Go implementation.`
+}
 
 type checksumFileArg struct {
 	Path      string `json:"path"`
@@ -1554,17 +1596,19 @@ type sortTool struct {
 	dangerousConfig danger.DangerousConfig
 }
 
-func (t *sortTool) Name() string        { return "sort" }
-func (t *sortTool) Description() string  { return `Sort lines in one or more files. Supports ascending (default), descending, unique (dedup), numeric, case-insensitive, and reverse. For multiple files, results are merged. Zero-fork — pure Go sort with no subprocess.` }
+func (t *sortTool) Name() string { return "sort" }
+func (t *sortTool) Description() string {
+	return `Sort lines in one or more files. Supports ascending (default), descending, unique (dedup), numeric, case-insensitive, and reverse. For multiple files, results are merged. Zero-fork — pure Go sort with no subprocess.`
+}
 
 type sortArgs struct {
-	Path       string `json:"path,omitempty"`       // single file
+	Path       string        `json:"path,omitempty"`  // single file
 	Files      []sortFileArg `json:"files,omitempty"` // multiple files
-	Order      string `json:"order,omitempty"`       // "asc" (default) or "desc"
-	Unique     bool   `json:"unique,omitempty"`
-	Numeric    bool   `json:"numeric,omitempty"`
-	IgnoreCase bool   `json:"ignore_case,omitempty"`
-	Reverse    bool   `json:"reverse,omitempty"`
+	Order      string        `json:"order,omitempty"` // "asc" (default) or "desc"
+	Unique     bool          `json:"unique,omitempty"`
+	Numeric    bool          `json:"numeric,omitempty"`
+	IgnoreCase bool          `json:"ignore_case,omitempty"`
+	Reverse    bool          `json:"reverse,omitempty"`
 }
 
 type sortFileArg struct {
@@ -1572,9 +1616,9 @@ type sortFileArg struct {
 }
 
 type sortEntry struct {
-	File  string   `json:"file"`
-	Lines int      `json:"lines"`
-	Error string   `json:"error,omitempty"`
+	File  string `json:"file"`
+	Lines int    `json:"lines"`
+	Error string `json:"error,omitempty"`
 }
 
 type sortResult struct {
@@ -1587,13 +1631,13 @@ func (t *sortTool) Schema() any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"path":       map[string]any{"type": "string", "description": "Single file to sort."},
-			"files":      map[string]any{"type": "array", "description": "Multiple files to sort (results merged).", "items": map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}}, "required": []string{"path"}}},
-			"order":      map[string]any{"type": "string", "enum": []string{"asc", "desc"}, "description": "Sort order (default: asc)."},
-			"unique":     map[string]any{"type": "boolean", "description": "Remove duplicate lines."},
-			"numeric":    map[string]any{"type": "boolean", "description": "Numeric sort (by number prefix)."},
+			"path":        map[string]any{"type": "string", "description": "Single file to sort."},
+			"files":       map[string]any{"type": "array", "description": "Multiple files to sort (results merged).", "items": map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}}, "required": []string{"path"}}},
+			"order":       map[string]any{"type": "string", "enum": []string{"asc", "desc"}, "description": "Sort order (default: asc)."},
+			"unique":      map[string]any{"type": "boolean", "description": "Remove duplicate lines."},
+			"numeric":     map[string]any{"type": "boolean", "description": "Numeric sort (by number prefix)."},
 			"ignore_case": map[string]any{"type": "boolean", "description": "Case-insensitive sort."},
-			"reverse":    map[string]any{"type": "boolean", "description": "Reverse sort order."},
+			"reverse":     map[string]any{"type": "boolean", "description": "Reverse sort order."},
 		},
 	}
 }
@@ -1720,8 +1764,10 @@ type headTailTool struct {
 	dangerousConfig danger.DangerousConfig
 }
 
-func (t *headTailTool) Name() string        { return "head_tail" }
-func (t *headTailTool) Description() string  { return `Read the first or last N lines of one or more files. Streaming — stops after N lines (no full-file read for head). Supports multiple files in parallel. Zero-fork — pure Go scanner.` }
+func (t *headTailTool) Name() string { return "head_tail" }
+func (t *headTailTool) Description() string {
+	return `Read the first or last N lines of one or more files. Streaming — stops after N lines (no full-file read for head). Supports multiple files in parallel. Zero-fork — pure Go scanner.`
+}
 
 type headTailFileArg struct {
 	Path string `json:"path"`
@@ -1734,11 +1780,11 @@ type headTailArgs struct {
 }
 
 type headTailFileResult struct {
-	Path   string   `json:"path"`
-	Lines  []string `json:"lines"`
-	Count  int      `json:"count"`
-	Total  int      `json:"total"` // total lines in file
-	Error  string   `json:"error,omitempty"`
+	Path  string   `json:"path"`
+	Lines []string `json:"lines"`
+	Count int      `json:"count"`
+	Total int      `json:"total"` // total lines in file
+	Error string   `json:"error,omitempty"`
 }
 
 type headTailResult struct {
@@ -1874,8 +1920,10 @@ type base64Tool struct {
 	dangerousConfig danger.DangerousConfig
 }
 
-func (t *base64Tool) Name() string        { return "base64" }
-func (t *base64Tool) Description() string  { return `Encode or decode base64. Supports file input (path) or inline string (content). Encode: file or string → base64. Decode: base64 string → decoded string. Zero-fork — pure Go encoding. Use path for file, content for inline string, decode=true to decode.` }
+func (t *base64Tool) Name() string { return "base64" }
+func (t *base64Tool) Description() string {
+	return `Encode or decode base64. Supports file input (path) or inline string (content). Encode: file or string → base64. Decode: base64 string → decoded string. Zero-fork — pure Go encoding. Use path for file, content for inline string, decode=true to decode.`
+}
 
 type base64Args struct {
 	Path    string `json:"path,omitempty"`
@@ -1962,8 +2010,10 @@ type trTool struct {
 	dangerousConfig danger.DangerousConfig
 }
 
-func (t *trTool) Name() string        { return "tr" }
-func (t *trTool) Description() string  { return `Transform text: case conversion, character replacement, string substitution, character deletion. Operates on a file or inline content. Zero-fork — pure Go strings transformations.` }
+func (t *trTool) Name() string { return "tr" }
+func (t *trTool) Description() string {
+	return `Transform text: case conversion, character replacement, string substitution, character deletion. Operates on a file or inline content. Zero-fork — pure Go strings transformations.`
+}
 
 type trTransform struct {
 	From string `json:"from,omitempty"` // for char/string replacement
@@ -1972,8 +2022,8 @@ type trTransform struct {
 }
 
 type trArgs struct {
-	Path           string        `json:"path,omitempty"`
-	Content        string        `json:"content,omitempty"`
+	Path            string        `json:"path,omitempty"`
+	Content         string        `json:"content,omitempty"`
 	Transformations []trTransform `json:"transformations"`
 }
 
@@ -2095,8 +2145,10 @@ type wordCountTool struct {
 	dangerousConfig danger.DangerousConfig
 }
 
-func (t *wordCountTool) Name() string        { return "word_count" }
-func (t *wordCountTool) Description() string  { return `Count words, lines, and characters in one or more files. Streaming scanner — no full-content load. Returns per-file and aggregate totals. Zero-fork — pure Go scanner.` }
+func (t *wordCountTool) Name() string { return "word_count" }
+func (t *wordCountTool) Description() string {
+	return `Count words, lines, and characters in one or more files. Streaming scanner — no full-content load. Returns per-file and aggregate totals. Zero-fork — pure Go scanner.`
+}
 
 type wordCountFileArg struct {
 	Path string `json:"path"`

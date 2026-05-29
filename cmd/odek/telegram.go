@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -246,7 +247,7 @@ func telegramCmd(args []string) error {
 			}
 			var b strings.Builder
 			b.WriteString("🔄 *Session archived, starting fresh*\n\n")
-			b.WriteString(fmt.Sprintf("• Model: `%s`\n", resolved.Model))
+			fmt.Fprintf(&b, "• Model: `%s`\n", resolved.Model)
 			if resolved.Sandbox {
 				b.WriteString("• Sandbox: enabled\n")
 			}
@@ -255,7 +256,7 @@ func telegramCmd(args []string) error {
 			}
 			if resolved.GithubRepoDirectory != "" {
 				repo := filepath.Base(resolved.GithubRepoDirectory)
-				b.WriteString(fmt.Sprintf("• Repo: `%s`\n", repo))
+				fmt.Fprintf(&b, "• Repo: `%s`\n", repo)
 			}
 			b.WriteString("\n_Send a message to begin._")
 			return b.String(), nil
@@ -339,12 +340,12 @@ func telegramCmd(args []string) error {
 				return fmt.Sprintf("📋 *Prune* — Nothing older than %d days found.", days), nil
 			}
 			var b strings.Builder
-			b.WriteString(fmt.Sprintf("🧹 *Pruned* — Removed items older than %d days:\n\n", days))
+			fmt.Fprintf(&b, "🧹 *Pruned* — Removed items older than %d days:\n\n", days)
 			if sessionsRemoved > 0 {
-				b.WriteString(fmt.Sprintf("• %d session(s)\n", sessionsRemoved))
+				fmt.Fprintf(&b, "• %d session(s)\n", sessionsRemoved)
 			}
 			if plansRemoved > 0 {
-				b.WriteString(fmt.Sprintf("• %d plan(s)\n", plansRemoved))
+				fmt.Fprintf(&b, "• %d plan(s)\n", plansRemoved)
 			}
 			return b.String(), nil
 		}
@@ -429,8 +430,7 @@ func telegramCmd(args []string) error {
 
 	handler.OnCallbackQuery = func(chatID int64, data string) (string, error) {
 		// Route clarify callbacks — the user clicked Yes/No on a clarify question.
-		if strings.HasPrefix(data, "clarify:") {
-			answer := strings.TrimPrefix(data, "clarify:")
+		if answer, ok := strings.CutPrefix(data, "clarify:"); ok {
 			if ch, ok := sessionManager.GetClarifyChannel(chatID); ok {
 				select {
 				case ch <- answer:
@@ -449,8 +449,7 @@ func telegramCmd(args []string) error {
 		}
 
 		// Route skill suggestion callbacks — Save or Skip.
-		if strings.HasPrefix(data, "skill_save:") {
-			skillName := strings.TrimPrefix(data, "skill_save:")
+		if skillName, ok := strings.CutPrefix(data, "skill_save:"); ok {
 			userDir := expandHome("~/.odek/skills")
 			os.MkdirAll(userDir, 0755)
 			// Find and save the suggestion from the pending suggestions map
@@ -465,8 +464,7 @@ func telegramCmd(args []string) error {
 			}
 			return "⚠️ Suggestion no longer available.", nil
 		}
-		if strings.HasPrefix(data, "skill_skip:") {
-			skillName := strings.TrimPrefix(data, "skill_skip:")
+		if skillName, ok := strings.CutPrefix(data, "skill_skip:"); ok {
 			// Persist the skip so it won't be suggested again
 			userDir := expandHome("~/.odek/skills")
 			sl := skills.LoadSkipList(userDir)
@@ -596,7 +594,7 @@ func telegramCmd(args []string) error {
 	go func() {
 		for sig := range sigCh {
 			if sig == syscall.SIGHUP {
-				gracefulRestart(bot, cancel)
+				gracefulRestart(bot)
 				continue
 			}
 			fmt.Fprintf(os.Stderr, "\nodek telegram: shutting down...\n")
@@ -608,7 +606,7 @@ func telegramCmd(args []string) error {
 	// 15b. Check for restart marker from previous instance and notify any
 	// chats that had active runs when the old instance restarted.
 	if chatIDs, ok := readRestartMarker(); ok {
-		msg := "🔄 *Bot restarted*\n\nA new instance is now running. Use `/new` if you experience any context issues."
+		msg := "🔄 *Bot restarted*\n\nA new instance is now running.\nUse `/resume` to continue your last session, or `/new` to start fresh."
 		for _, chatID := range chatIDs {
 			if _, err := bot.SendMessage(chatID, msg, &telegram.SendOpts{ParseMode: "Markdown"}); err != nil {
 				fmt.Fprintf(os.Stderr, "odek telegram: restart notify chat %d: %v\n", chatID, err)
@@ -743,18 +741,12 @@ type restartMarker struct {
 }
 
 // writeRestartMarker writes a marker so the next instance knows a restart
-// just happened. It records the chat IDs of any active agent runs so the
-// new instance can notify those users.
-func writeRestartMarker() error {
-	marker := restartMarker{}
-	chatCancels.Range(func(key, value any) bool {
-		marker.ChatIDs = append(marker.ChatIDs, key.(int64))
-		return true
-	})
+// just happened. chatIDs must be captured in Phase 1 (before the drain),
+// since goroutines remove themselves from chatCancels in their exit defers.
+func writeRestartMarker(chatIDs []int64) error {
+	marker := restartMarker{ChatIDs: chatIDs}
 	// Sort for deterministic output.
-	sort.Slice(marker.ChatIDs, func(i, j int) bool {
-		return marker.ChatIDs[i] < marker.ChatIDs[j]
-	})
+	slices.Sort(marker.ChatIDs)
 
 	// Marshal — fallback to empty marker on error (non-fatal).
 	data, err := json.Marshal(marker)
@@ -826,7 +818,7 @@ func countSyncMap(m *sync.Map) int {
 //	alive and users can retry /restart.
 //
 // Must be called from the SIGHUP handler goroutine only.
-func gracefulRestart(bot *telegram.Bot, cancel context.CancelFunc) {
+func gracefulRestart(bot *telegram.Bot) {
 	// Guard: only one restart at a time.
 	if !restartInProgress.CompareAndSwap(false, true) {
 		return
@@ -836,15 +828,21 @@ func gracefulRestart(bot *telegram.Bot, cancel context.CancelFunc) {
 	fmt.Fprintf(os.Stderr, "odek telegram: graceful restart — phase 1: notifying %d active chat(s)...\n", activeCount)
 
 	// ── Phase 1: Notify + Cancel ──────────────────────────────────────
+	// Capture active chat IDs NOW — goroutine defers remove them from
+	// chatCancels when they exit, so by the time Phase 2 drains, the map
+	// is empty. writeRestartMarker needs these IDs to notify users on startup.
+	var activeChatIDs []int64
 	chatCancels.Range(func(key, value any) bool {
 		chatID := key.(int64)
 		cancel := value.(context.CancelFunc)
+
+		activeChatIDs = append(activeChatIDs, chatID)
 
 		// Best-effort notification — the API call might fail during shutdown.
 		if _, err := bot.SendMessage(chatID,
 			"🔄 *Bot restarting* — your current task was interrupted.\n\n"+
 				"Your conversation has been saved. The new instance will be ready "+
-				"in a few seconds. Use `/new` to start fresh.",
+				"in a few seconds. Use `/resume` to continue or `/new` to start fresh.",
 			&telegram.SendOpts{ParseMode: telegram.ParseModeMarkdownV2}); err != nil {
 			fmt.Fprintf(os.Stderr, "odek telegram: restart notify chat %d: %v\n", chatID, err)
 		}
@@ -870,7 +868,7 @@ func gracefulRestart(bot *telegram.Bot, cancel context.CancelFunc) {
 
 	// ── Phase 3: Marker + Spawn → Exit or Recover ──────────────────────
 	fmt.Fprintf(os.Stderr, "odek telegram: graceful restart — phase 3: spawning child...\n")
-	writeRestartMarker()
+	writeRestartMarker(activeChatIDs)
 	if err := spawnChild(); err != nil {
 		fmt.Fprintf(os.Stderr, "odek telegram: spawn failed: %v\n", err)
 		restartInProgress.Store(false) // allow new tasks to start
@@ -1086,7 +1084,7 @@ func handleChatMessage(
 			}
 		}
 	}()
-	
+
 	// ── Progress Mode Setup ───────────────────────────────────────
 	// The tool_progress config controls Telegram progress bubbles:
 	//   "all"     — single editable bubble with smart previews, throttled edits,
@@ -1388,21 +1386,23 @@ func handleChatMessage(
 		// by the ToolEventHandler to insert the reasoning header into the
 		// progress bubble, followed by individual tool lines.
 		IterationCallback: func(info loop.IterationInfo) {
-			// Pre-tool callback: extract first reasoning sentence for progress.
-			if info.IsPreTool {
-				// Reset from previous iteration
+			// Show the model's reasoning as a compact 💭 message for both
+			// pre-tool iterations AND the final answer turn.
+			// Previously only IsPreTool was handled, so final-answer reasoning
+			// was silently dropped.
+			if info.IsPreTool || info.HasFinalAnswer {
 				reasoningProgressLine = ""
-
 				if info.ReasoningContent != "" {
 					firstSentence := render.FirstSentence(info.ReasoningContent)
 					if firstSentence != "" {
 						reasoningProgressLine = firstSentence
-						// Show as a compact thinking message
 						bot.SendMessage(chatID, "💭 "+firstSentence,
 							&telegram.SendOpts{ReplyToMessageID: messageID})
 					}
 				}
-				return
+				if info.IsPreTool {
+					return // pre-tool: stats not yet available, nothing more to do
+				}
 			}
 
 			// Post-tool / final-answer callback: collect tool stats.
@@ -1464,8 +1464,8 @@ func handleChatMessage(
 					}
 					msg += fmt.Sprintf("\n\n```\n%s\n```", preview)
 				}
-			sendAsync(bot, chatID, msg,
-				&telegram.SendOpts{ReplyMarkup: replyMarkup, ParseMode: "Markdown", ReplyToMessageID: messageID})
+				sendAsync(bot, chatID, msg,
+					&telegram.SendOpts{ReplyMarkup: replyMarkup, ParseMode: "Markdown", ReplyToMessageID: messageID})
 			}
 		},
 		Approver:        approver,
@@ -1620,9 +1620,9 @@ func handleChatMessage(
 					}
 				}
 				msg := skills.RunAutoCurate(userDir, newSkills, allSkills, *skillsCfg, nil)
-			if msg != "" && skillsCfg.Verbose {
-				sendAsync(bot, chatID, msg, nil)
-			}
+				if msg != "" && skillsCfg.Verbose {
+					sendAsync(bot, chatID, msg, nil)
+				}
 			}
 		} else {
 			// Store suggestions for inline keyboard callback handling
@@ -1815,29 +1815,32 @@ func acquireLock() (*instanceLock, error) {
 		return nil, fmt.Errorf("mkdir pid: %w", err)
 	}
 
-	// Read stale PID and kill it.
+	// Read stale PID and kill it if still alive.
 	if data, err := os.ReadFile(pidFile); err == nil {
 		oldPID := strings.TrimSpace(string(data))
-		if oldPID != "" {
-			// Check if it's an odek telegram process.
-			procPath := filepath.Join("/proc", oldPID, "cmdline")
-			if cmdline, err := os.ReadFile(procPath); err == nil {
-				if strings.Contains(string(cmdline), "odek") &&
-					strings.Contains(string(cmdline), "telegram") {
-					pid, _ := strconv.Atoi(oldPID)
-					if pid > 1 {
-						fmt.Fprintf(os.Stderr, "odek telegram: killing stale instance (PID %d)\n", pid)
-						syscall.Kill(pid, syscall.SIGTERM)
-						// Wait up to 5s for graceful shutdown.
-						for i := 0; i < 50; i++ {
-							time.Sleep(100 * time.Millisecond)
-							if err := syscall.Kill(pid, 0); err != nil {
-								break // process gone
-							}
+		if pid, _ := strconv.Atoi(oldPID); pid > 1 {
+			// Primary liveness check: cross-platform (signal 0 = probe only).
+			if err := syscall.Kill(pid, 0); err == nil {
+				// Process is alive. On Linux, verify it's an odek telegram
+				// process before killing — skip identity check elsewhere since
+				// /proc is Linux-only and the PID file is odek-specific anyway.
+				shouldKill := true
+				if cmdline, err := os.ReadFile(filepath.Join("/proc", oldPID, "cmdline")); err == nil {
+					shouldKill = strings.Contains(string(cmdline), "odek") &&
+						strings.Contains(string(cmdline), "telegram")
+				}
+				if shouldKill {
+					fmt.Fprintf(os.Stderr, "odek telegram: killing stale instance (PID %d)\n", pid)
+					syscall.Kill(pid, syscall.SIGTERM)
+					// Wait up to 5s for graceful shutdown.
+					for i := 0; i < 50; i++ {
+						time.Sleep(100 * time.Millisecond)
+						if err := syscall.Kill(pid, 0); err != nil {
+							break // process gone
 						}
-						// Force kill if still alive.
-						syscall.Kill(pid, syscall.SIGKILL)
 					}
+					// Force kill if still alive.
+					syscall.Kill(pid, syscall.SIGKILL)
 				}
 			}
 		}

@@ -83,14 +83,24 @@ func (t *delegateTasksTool) Schema() any {
 							"type":        "string",
 							"description": "Required. The specific goal for this sub-agent. Be precise: what to build, where, and key constraints.",
 						},
-					"context": map[string]any{
-						"type":        "string",
-						"description": "Optional. Background context: file paths, architecture decisions, API contracts.",
-					},
-					"system": map[string]any{
-						"type":        "string",
-						"description": "Optional. System prompt for this sub-agent. Tailor the approach: \"You are a security engineer reviewing auth code\" for reviews, \"Find the root cause first\" for debugging.",
-					},
+						"context": map[string]any{
+							"type":        "string",
+							"description": "Optional. Background context: file paths, architecture decisions, API contracts.",
+						},
+						"system": map[string]any{
+							"type":        "string",
+							"description": "Optional. System prompt for this sub-agent. Tailor the approach: \"You are a security engineer reviewing auth code\" for reviews, \"Find the root cause first\" for debugging.",
+						},
+						"trust_level": map[string]any{
+							"type":        "string",
+							"enum":        []string{"trusted", "untrusted"},
+							"description": "Trust level of the goal/context strings. Set to \"untrusted\" when any portion was derived from external content (fetched pages, files outside CWD, MCP tool output). Untrusted tasks run with stricter approval defaults in the sub-agent.",
+						},
+						"max_risk": map[string]any{
+							"type":        "string",
+							"enum":        []string{"safe", "local_write", "system_write", "destructive", "code_execution", "network_egress", "install", "blocked"},
+							"description": "Optional cap on the sub-agent's allowed risk class. Tool calls above this class will be denied in the sub-agent without prompting. Use for fan-out tasks that should be read-only.",
+						},
 					},
 					"required": []string{"goal"},
 				},
@@ -106,10 +116,12 @@ func (t *delegateTasksTool) Schema() any {
 
 func (t *delegateTasksTool) Call(args string) (string, error) {
 	var input struct {
-		Tasks       []struct {
-			Goal    string `json:"goal"`
-			Context string `json:"context"`
-			System  string `json:"system,omitempty"`
+		Tasks []struct {
+			Goal       string `json:"goal"`
+			Context    string `json:"context"`
+			System     string `json:"system,omitempty"`
+			TrustLevel string `json:"trust_level,omitempty"`
+			MaxRisk    string `json:"max_risk,omitempty"`
 		} `json:"tasks"`
 		Description string `json:"description,omitempty"`
 	}
@@ -130,13 +142,13 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 
 	for i, task := range input.Tasks {
 		sem <- struct{}{}
-		go func(i int, goal, ctx, sys string) {
+		go func(i int, goal, ctx, sys, trust, maxRisk string) {
 			defer func() { <-sem }()
-			r := t.runTask(i, goal, ctx, sys)
+			r := t.runTask(i, goal, ctx, sys, trust, maxRisk)
 			mu.Lock()
 			results[i] = r
 			mu.Unlock()
-		}(i, task.Goal, task.Context, task.System)
+		}(i, task.Goal, task.Context, task.System, task.TrustLevel, task.MaxRisk)
 	}
 
 	// Drain semaphore = wait for all goroutines
@@ -155,7 +167,7 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 	return buf.String(), nil
 }
 
-func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, system string) string {
+func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, system, trustLevel, maxRisk string) string {
 	// Derive per-task context from the parent's context (if set).
 	// When the parent is cancelled, all running sub-agents are killed
 	// promptly instead of running the full timeout.
@@ -174,9 +186,11 @@ func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, system strin
 	taskPath := taskFile.Name()
 
 	task := map[string]string{
-		"goal":    goal,
-		"context": taskContext,
-		"system":  system,
+		"goal":        goal,
+		"context":     taskContext,
+		"system":      system,
+		"trust_level": trustLevel,
+		"max_risk":    maxRisk,
 	}
 	if err := json.NewEncoder(taskFile).Encode(task); err != nil {
 		taskFile.Close()
@@ -202,17 +216,25 @@ func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, system strin
 	stderrBuf := &strings.Builder{}
 	cmd.Stderr = stderrBuf
 
-	// Re-inject API key into sub-agent environment.
-	// config.LoadConfig clears ODEK_API_KEY/DEEPSEEK_API_KEY/OPENAI_API_KEY
-	// from the parent's environment, so the child process inherits nothing.
-	// Set all three forms so the sub-agent's LoadConfig call finds the key
-	// regardless of which env var fallback it uses.
+	// Hand the API key to the sub-agent via FD 3 instead of an env var.
+	// Env-passed credentials are visible in /proc/<pid>/environ, in crash
+	// logs, and to any tool the child runs that prints its own env
+	// (e.g. `env`, an injected shell call). The FD approach keeps the
+	// secret in an anonymous (unlinked) tempfile whose only readers are
+	// this process and the child, and the child closes the FD as soon
+	// as it has read the key.
+	cmd.Env = os.Environ() // parent already stripped *_API_KEY in LoadConfig
+	var keyFile *os.File
 	if t.apiKey != "" {
-		cmd.Env = append(os.Environ(),
-			"ODEK_API_KEY="+t.apiKey,
-			"DEEPSEEK_API_KEY="+t.apiKey,
-			"OPENAI_API_KEY="+t.apiKey,
-		)
+		f, err := writeKeyToUnlinkedFile(t.apiKey)
+		if err != nil {
+			return fmt.Sprintf(`{"error":"key handoff: %v"}`, err)
+		}
+		keyFile = f
+		cmd.ExtraFiles = []*os.File{keyFile}
+		// FD 3 in the child = the first ExtraFiles entry.
+		cmd.Env = append(cmd.Env, keyFDEnvVar+"=3")
+		defer keyFile.Close()
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -277,7 +299,7 @@ func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, system strin
 		}
 	}
 
-	return fmt.Sprintf(`{"error":"no result from sub-agent"}`)
+	return `{"error":"no result from sub-agent"}`
 }
 
 // Ensure delegateTasksTool implements odek.Tool

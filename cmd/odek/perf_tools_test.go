@@ -239,8 +239,8 @@ func TestMathEval_Steps(t *testing.T) {
 	// The exact quick_math benchmark asks for intermediate steps
 	tool := &mathEvalTool{}
 	cases := []struct {
-		expr    string
-		want    float64
+		expr string
+		want float64
 	}{
 		{"42 * 17", 714},
 		{"714 + 256", 970},
@@ -432,7 +432,7 @@ func TestMultiGrep_Basic(t *testing.T) {
 	if len(r.Results) != 2 {
 		t.Fatalf("Results = %d, want 2", len(r.Results))
 	}
-	if r.Results[0].Count + r.Results[1].Count != 3 {
+	if r.Results[0].Count+r.Results[1].Count != 3 {
 		t.Errorf("total matches should be 3, got TODO:%d FIXME:%d",
 			r.Results[0].Count, r.Results[1].Count)
 	}
@@ -1807,7 +1807,9 @@ func TestMultiGrep_GlobFilter(t *testing.T) {
 // ── Parallel Shell Timeout ──────────────────────────────────────────────
 
 func TestParallelShell_Timeout(t *testing.T) {
-	t.Skip("skipping under race detector due to inherent Process.Kill() vs Run() timing race")
+	if raceEnabled {
+		t.Skip("skipping under race detector due to inherent Process.Kill() vs Run() timing race")
+	}
 	// Verify timeout mechanism works by checking the returned error
 	tool := &parallelShellTool{}
 	result := callJSON(t, tool, `{"commands":[{"command":"sleep 10","timeout":1}]}`)

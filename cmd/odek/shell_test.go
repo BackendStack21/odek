@@ -108,8 +108,9 @@ func TestShellTool_Call_NoOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
 	}
-	if result != "(no output)" {
-		t.Errorf("result = %q, want '(no output)'", result)
+	body := unwrapUntrusted(result)
+	if body != "(no output)" {
+		t.Errorf("body = %q, want '(no output)'", body)
 	}
 }
 
@@ -184,11 +185,16 @@ func TestShellTool_Call_DockerExec_WorkingDir(t *testing.T) {
 		t.Skip("docker not available")
 	}
 
-	containerName := "odek-test-wd"
-	// Mount /tmp as /workspace so we can write a test file
 	tmpDir := t.TempDir()
+	if !dockerBindMountWorks(t, tmpDir) {
+		t.Skipf("docker bind mount of %s not supported in this environment", tmpDir)
+	}
+
+	containerName := "odek-test-wd"
 	markerFile := tmpDir + "/marker.txt"
-	os.WriteFile(markerFile, []byte("found"), 0644)
+	if err := os.WriteFile(markerFile, []byte("found"), 0644); err != nil {
+		t.Fatalf("write marker file: %v", err)
+	}
 
 	createCmd := exec.Command("docker", "run",
 		"--rm", "--detach", "--name", containerName,
@@ -208,6 +214,24 @@ func TestShellTool_Call_DockerExec_WorkingDir(t *testing.T) {
 	if !strings.Contains(result, "found") {
 		t.Errorf("result = %q, want 'found' (working directory should be /workspace)", result)
 	}
+}
+
+// dockerBindMountWorks probes whether docker can bind-mount the host path
+// and see file changes. Docker Desktop on macOS only shares specific paths
+// (e.g. /Users) by default — bind mounts of /tmp or /var/folders silently
+// no-op, leaving the test directory invisible inside the container.
+func dockerBindMountWorks(t *testing.T, hostDir string) bool {
+	t.Helper()
+	marker := hostDir + "/.docker-probe"
+	if err := os.WriteFile(marker, []byte("ok"), 0644); err != nil {
+		return false
+	}
+	defer os.Remove(marker)
+	out, err := exec.Command("docker", "run", "--rm",
+		"-v", hostDir+":/probe",
+		"alpine:latest", "cat", "/probe/.docker-probe",
+	).CombinedOutput()
+	return err == nil && strings.Contains(string(out), "ok")
 }
 
 func TestShellTool_Call_JSONUnmarshalError(t *testing.T) {

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,7 +30,7 @@ func TestWriteAndReadRestartMarker(t *testing.T) {
 	home, _ := os.UserHomeDir()
 	os.MkdirAll(filepath.Join(home, ".odek"), 0755)
 
-	if err := writeRestartMarker(); err != nil {
+	if err := writeRestartMarker(nil); err != nil {
 		t.Fatalf("writeRestartMarker: %v", err)
 	}
 	chatIDs, ok := readRestartMarker()
@@ -53,17 +52,10 @@ func TestWriteAndReadRestartMarker_WithChatIDs(t *testing.T) {
 	home, _ := os.UserHomeDir()
 	os.MkdirAll(filepath.Join(home, ".odek"), 0755)
 
-	ctx, cancel1 := context.WithCancel(context.Background())
-	ctx, cancel2 := context.WithCancel(context.Background())
-	_ = ctx
-	chatCancels.Store(int64(100), cancel1)
-	chatCancels.Store(int64(200), cancel2)
-	defer func() {
-		chatCancels.LoadAndDelete(int64(100))
-		chatCancels.LoadAndDelete(int64(200))
-	}()
-
-	if err := writeRestartMarker(); err != nil {
+	// Pass chat IDs directly — callers must capture them before the drain
+	// phase, since goroutines remove themselves from chatCancels on exit.
+	ids := []int64{100, 200}
+	if err := writeRestartMarker(ids); err != nil {
 		t.Fatalf("writeRestartMarker: %v", err)
 	}
 	chatIDs, ok := readRestartMarker()
@@ -133,8 +125,8 @@ type callRecord struct {
 
 // mockBot is a fake *telegram.Bot that records calls.
 type mockBot struct {
-	mu    sync.Mutex
-	calls []callRecord
+	mu     sync.Mutex
+	calls  []callRecord
 	nextID int
 }
 

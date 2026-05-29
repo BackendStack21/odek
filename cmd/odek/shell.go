@@ -133,12 +133,12 @@ func (t *shellTool) Call(args string) (string, error) {
 	if err != nil && stderrStr != "" {
 		// Include stderr even when stdout is empty — "exit status 1" alone
 		// gives the LLM no clue why the command failed.
-		return output, nil
+		return wrapUntrusted("$ "+input.Command, output), nil
 	}
 	if output == "" {
 		output = "(no output)"
 	}
-	return output, nil
+	return wrapUntrusted("$ "+input.Command, output), nil
 }
 
 // checkApproval classifies the command and prompts the user if needed.

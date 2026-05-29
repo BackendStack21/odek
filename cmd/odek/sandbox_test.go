@@ -5,13 +5,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/BackendStack21/odek/internal/sandbox"
 )
 
 func TestInjectFilesToSandbox_FileNotFound(t *testing.T) {
 	// Non-existent file should log a warning and count as skipped
 	tDir := t.TempDir()
 	stderr := captureStderr(t)
-	count, err := injectFilesToSandbox("nonexistent-container", []string{"missing.txt"}, tDir)
+	count, err := sandbox.InjectFiles("nonexistent-container", []string{"missing.txt"}, tDir)
 	if err != nil {
 		t.Logf("docker cp error (expected): %v", err)
 	}
@@ -32,7 +34,7 @@ func TestInjectFilesToSandbox_Directory(t *testing.T) {
 		t.Fatal(err)
 	}
 	stderr := captureStderr(t)
-	count, err := injectFilesToSandbox("nonexistent-container", []string{"subdir"}, tDir)
+	count, err := sandbox.InjectFiles("nonexistent-container", []string{"subdir"}, tDir)
 	if err != nil {
 		t.Logf("docker cp error (expected): %v", err)
 	}
@@ -46,7 +48,7 @@ func TestInjectFilesToSandbox_Directory(t *testing.T) {
 }
 
 func TestInjectFilesToSandbox_EmptyList(t *testing.T) {
-	count, err := injectFilesToSandbox("any", nil, "/tmp")
+	count, err := sandbox.InjectFiles("any", nil, "/tmp")
 	if err != nil {
 		t.Errorf("unexpected error for empty list: %v", err)
 	}
@@ -54,7 +56,7 @@ func TestInjectFilesToSandbox_EmptyList(t *testing.T) {
 		t.Errorf("expected 0 for empty list, got %d", count)
 	}
 
-	count, err = injectFilesToSandbox("any", []string{}, "/tmp")
+	count, err = sandbox.InjectFiles("any", []string{}, "/tmp")
 	if err != nil {
 		t.Errorf("unexpected error for empty slice: %v", err)
 	}
@@ -71,7 +73,7 @@ func TestInjectFilesToSandbox_DockerCpFails(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	count, err := injectFilesToSandbox("container-does-not-exist-abc123", []string{"test.txt"}, tDir)
+	count, err := sandbox.InjectFiles("container-does-not-exist-abc123", []string{"test.txt"}, tDir)
 	if err == nil {
 		t.Error("expected error for docker cp to non-existent container")
 	}

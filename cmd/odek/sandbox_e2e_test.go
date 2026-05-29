@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/BackendStack21/odek/internal/sandbox"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -35,7 +37,7 @@ func TestE2E_SandboxFileInjection(t *testing.T) {
 
 	// Create a sandbox container using the same machinery as odek run
 	containerName := fmt.Sprintf("odek-test-inject-%d", time.Now().UnixNano())
-	args := buildSandboxArgs(sandboxConfig{
+	args := sandbox.BuildRunArgs(sandboxConfig{
 		Image:   "alpine:latest",
 		Network: "none",
 	}, containerName, workDir, "alpine:latest")
@@ -53,7 +55,7 @@ func TestE2E_SandboxFileInjection(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	// Inject the file
-	count, err := injectFilesToSandbox(containerName, []string{"injected.txt"}, workDir)
+	count, err := sandbox.InjectFiles(containerName, []string{"injected.txt"}, workDir)
 	if err != nil {
 		t.Fatalf("injectFilesToSandbox: %v", err)
 	}
@@ -89,7 +91,7 @@ func TestE2E_SandboxFileInjection_NestedPath(t *testing.T) {
 	}
 
 	containerName := fmt.Sprintf("odek-test-nested-%d", time.Now().UnixNano())
-	args := buildSandboxArgs(sandboxConfig{
+	args := sandbox.BuildRunArgs(sandboxConfig{
 		Image:   "alpine:latest",
 		Network: "none",
 	}, containerName, workDir, "alpine:latest")
@@ -104,7 +106,7 @@ func TestE2E_SandboxFileInjection_NestedPath(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	// Inject with relative path from cwd: subdir/nested.txt
-	count, err := injectFilesToSandbox(containerName, []string{"subdir/nested.txt"}, workDir)
+	count, err := sandbox.InjectFiles(containerName, []string{"subdir/nested.txt"}, workDir)
 	if err != nil {
 		t.Fatalf("injectFilesToSandbox: %v", err)
 	}
@@ -139,7 +141,7 @@ func TestE2E_SandboxFileInjection_AbsolutePath(t *testing.T) {
 	workDir := t.TempDir()
 
 	containerName := fmt.Sprintf("odek-test-abs-%d", time.Now().UnixNano())
-	args := buildSandboxArgs(sandboxConfig{
+	args := sandbox.BuildRunArgs(sandboxConfig{
 		Image:   "alpine:latest",
 		Network: "none",
 	}, containerName, workDir, "alpine:latest")
@@ -154,7 +156,7 @@ func TestE2E_SandboxFileInjection_AbsolutePath(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	// Inject with absolute path (outside cwd) — should use basename
-	count, err := injectFilesToSandbox(containerName, []string{absFile}, workDir)
+	count, err := sandbox.InjectFiles(containerName, []string{absFile}, workDir)
 	if err != nil {
 		t.Fatalf("injectFilesToSandbox: %v", err)
 	}
@@ -183,7 +185,7 @@ func TestE2E_SandboxFileInjection_MultipleFiles(t *testing.T) {
 	os.WriteFile(filepath.Join(workDir, "b.txt"), []byte("file B"), 0644)
 
 	containerName := fmt.Sprintf("odek-test-multi-%d", time.Now().UnixNano())
-	args := buildSandboxArgs(sandboxConfig{
+	args := sandbox.BuildRunArgs(sandboxConfig{
 		Image:   "alpine:latest",
 		Network: "none",
 	}, containerName, workDir, "alpine:latest")
@@ -197,7 +199,7 @@ func TestE2E_SandboxFileInjection_MultipleFiles(t *testing.T) {
 
 	time.Sleep(500 * time.Millisecond)
 
-	count, err := injectFilesToSandbox(containerName, []string{"a.txt", "b.txt"}, workDir)
+	count, err := sandbox.InjectFiles(containerName, []string{"a.txt", "b.txt"}, workDir)
 	if err != nil {
 		t.Fatalf("injectFilesToSandbox: %v", err)
 	}

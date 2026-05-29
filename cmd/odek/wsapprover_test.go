@@ -312,3 +312,124 @@ func TestWSApprover_Cancel_Idempotent(t *testing.T) {
 	a.Cancel()
 	a.Cancel() // second call should not panic
 }
+
+// promptAndCaptureRequest runs PromptCommand against a fake sendFn that
+// captures the outbound approvalRequest, replies with the given action,
+// and returns both the captured request and any PromptCommand error.
+func promptAndCaptureRequest(t *testing.T, a *wsApprover, cls danger.RiskClass, action string) (approvalRequest, error) {
+	t.Helper()
+	captured := make(chan approvalRequest, 1)
+	a.sendFn = func(v any) error {
+		if req, ok := v.(approvalRequest); ok {
+			captured <- req
+		}
+		return nil
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- a.PromptCommand(cls, "cmd", "test") }()
+
+	req := <-captured
+	a.HandleResponse(req.ID, action)
+	return req, <-errCh
+}
+
+// TestWSApprover_AllowTrustFlag_PerClass verifies the outbound approval
+// request advertises AllowTrust=false only for destructive and blocked.
+func TestWSApprover_AllowTrustFlag_PerClass(t *testing.T) {
+	cases := []struct {
+		cls       danger.RiskClass
+		wantAllow bool
+	}{
+		{danger.Safe, true},
+		{danger.LocalWrite, true},
+		{danger.SystemWrite, true},
+		{danger.NetworkEgress, true},
+		{danger.CodeExecution, true},
+		{danger.Install, true},
+		{danger.Destructive, false},
+		{danger.Blocked, false},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.cls), func(t *testing.T) {
+			a := newWSApprover(nil)
+			req, err := promptAndCaptureRequest(t, a, tc.cls, "approve")
+			if err != nil {
+				t.Fatalf("PromptCommand: %v", err)
+			}
+			if req.AllowTrust != tc.wantAllow {
+				t.Errorf("AllowTrust = %v, want %v for %s", req.AllowTrust, tc.wantAllow, tc.cls)
+			}
+		})
+	}
+}
+
+// TestWSApprover_TrustResponse_CoercedToApprove_ForDestructive verifies
+// that even if a forged or stale UI sends action="trust" for a
+// destructive prompt, the server treats it as a single approve and does
+// NOT cache the class as trusted.
+func TestWSApprover_TrustResponse_CoercedToApprove_ForDestructive(t *testing.T) {
+	a := newWSApprover(nil)
+	_, err := promptAndCaptureRequest(t, a, danger.Destructive, "trust")
+	if err != nil {
+		t.Errorf("expected nil error (coerced to approve), got: %v", err)
+	}
+	if a.approveAll[danger.Destructive] {
+		t.Error("destructive class was cached as trusted — class trust must be impossible")
+	}
+}
+
+// TestWSApprover_FrictionTriggersAfterThreshold checks that recording
+// FrictionThreshold approvals of the same class causes shouldFriction
+// to return true.
+func TestWSApprover_FrictionTriggersAfterThreshold(t *testing.T) {
+	a := newWSApprover(nil)
+	a.frictionThreshold = 3
+	for i := 0; i < 3; i++ {
+		if friction, _ := a.shouldFriction(danger.SystemWrite); friction {
+			t.Errorf("friction true before threshold (i=%d)", i)
+		}
+		a.recordApproval(danger.SystemWrite)
+	}
+	friction, count := a.shouldFriction(danger.SystemWrite)
+	if !friction {
+		t.Error("friction false after threshold reached")
+	}
+	if count != 3 {
+		t.Errorf("FrictionApprovals = %d, want 3", count)
+	}
+}
+
+// TestWSApprover_FrictionFlagInRequest verifies that once friction is
+// active, the outbound approvalRequest carries Friction=true and the
+// recent approval count.
+func TestWSApprover_FrictionFlagInRequest(t *testing.T) {
+	a := newWSApprover(nil)
+	a.frictionThreshold = 2
+	// Pre-load 2 approvals so the next prompt is in friction mode.
+	a.recordApproval(danger.SystemWrite)
+	a.recordApproval(danger.SystemWrite)
+
+	req, err := promptAndCaptureRequest(t, a, danger.SystemWrite, "approve")
+	if err != nil {
+		t.Fatalf("PromptCommand: %v", err)
+	}
+	if !req.Friction {
+		t.Error("expected Friction=true in request after threshold")
+	}
+	if req.FrictionApprovals != 2 {
+		t.Errorf("FrictionApprovals = %d, want 2", req.FrictionApprovals)
+	}
+}
+
+// TestWSApprover_TrustResponse_CoercedToApprove_ForBlocked is the
+// matching case for the Blocked class.
+func TestWSApprover_TrustResponse_CoercedToApprove_ForBlocked(t *testing.T) {
+	a := newWSApprover(nil)
+	_, err := promptAndCaptureRequest(t, a, danger.Blocked, "trust")
+	if err != nil {
+		t.Errorf("expected nil error (coerced to approve), got: %v", err)
+	}
+	if a.approveAll[danger.Blocked] {
+		t.Error("blocked class was cached as trusted — class trust must be impossible")
+	}
+}

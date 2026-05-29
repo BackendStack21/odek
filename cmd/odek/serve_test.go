@@ -23,11 +23,11 @@ import (
 
 // testServer wraps the odek serve HTTP server for testing.
 type testServer struct {
-	ln     net.Listener
-	url    string
-	wsURL  string
-	store  *session.Store
-	t      *testing.T
+	ln    net.Listener
+	url   string
+	wsURL string
+	store *session.Store
+	t     *testing.T
 }
 
 func startTestServer(t *testing.T) *testServer {
@@ -163,15 +163,15 @@ func (s *testServer) handleWebSocket(conn *golangws.Conn) {
 
 			// Send done
 			writeJSON(conn, map[string]any{
-				"type":                "done",
-				"latency":             0.5,
-				"contextTokens":       150,
-				"outputTokens":        30,
-				"cacheCreationTokens": 50,
-				"cacheReadTokens":     100,
-				"cachedTokens":        0,
+				"type":                 "done",
+				"latency":              0.5,
+				"contextTokens":        150,
+				"outputTokens":         30,
+				"cacheCreationTokens":  50,
+				"cacheReadTokens":      100,
+				"cachedTokens":         0,
 				"sessionContextTokens": 150,
-				"sessionOutputTokens": 30,
+				"sessionOutputTokens":  30,
 			})
 		}
 	}
@@ -189,11 +189,6 @@ func readJSON(conn *golangws.Conn, dst any) error {
 		return err
 	}
 	return json.Unmarshal(data, dst)
-}
-
-// sessionDir returns the ~/.odek/sessions directory for testing.
-func sessionDir() (string, error) {
-	return "/tmp/odek-test-sessions", nil
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────
@@ -952,8 +947,8 @@ func TestServeCmd_Help(t *testing.T) {
 
 func TestServeCmd_SandboxFlags(t *testing.T) {
 	tests := []struct {
-		name string
-		args []string
+		name  string
+		args  []string
 		check func(t *testing.T, addr string, open bool, sb, sbr *bool, sbi, sbn, sbm, sbc, sbu string)
 	}{
 		{
@@ -1609,7 +1604,6 @@ func TestServe_Cancel_WebSocketCancel(t *testing.T) {
 	}
 }
 
-
 func TestServe_E2E_CancelWithMockLLM(t *testing.T) {
 	// Verify the cancel infrastructure at the HTTP/WS level.
 	// 1. Send a prompt via WebSocket
@@ -1723,5 +1717,3 @@ func TestServe_E2E_CancelWithMockLLM(t *testing.T) {
 		t.Log("No terminal event (connection may have been closed by cancel)")
 	}
 }
-
-

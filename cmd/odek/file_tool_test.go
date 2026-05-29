@@ -50,11 +50,12 @@ func TestReadFile_OffsetLimit(t *testing.T) {
 	if r.TotalLines != 5 {
 		t.Errorf("TotalLines = %d, want 5", r.TotalLines)
 	}
-	if !strings.Contains(r.Content, "b") || strings.Contains(r.Content, "a") {
-		t.Errorf("offset 2 should skip 'a', got: %q", r.Content)
+	body := unwrapUntrusted(r.Content)
+	if !strings.Contains(body, "b") || strings.Contains(body, "a") {
+		t.Errorf("offset 2 should skip 'a', got: %q", body)
 	}
-	if strings.Contains(r.Content, "d") {
-		t.Errorf("limit 2 should stop after 'c', got: %q", r.Content)
+	if strings.Contains(body, "d") {
+		t.Errorf("limit 2 should stop after 'c', got: %q", body)
 	}
 }
 
@@ -106,7 +107,8 @@ func TestReadFile_LimitCap(t *testing.T) {
 		t.Errorf("TotalLines = %d, want 5000", r.TotalLines)
 	}
 	// Should cap at maxLines (2000)
-	count := strings.Count(r.Content, "\n") + 1
+	body := unwrapUntrusted(r.Content)
+	count := strings.Count(body, "\n") + 1
 	if count > 2000+1 { // +1 for cap boundary
 		t.Errorf("Returned %d lines, should be capped at 2000", count)
 	}
@@ -357,9 +359,9 @@ func TestSearchFiles_Grep(t *testing.T) {
 	result := callJSON(t, tool, `{"pattern":"foo","target":"content","path":"`+dir+`"}`)
 	var r struct {
 		Matches []struct {
-			Path     string `json:"path"`
-			Line     int    `json:"line"`
-			Content  string `json:"content"`
+			Path    string `json:"path"`
+			Line    int    `json:"line"`
+			Content string `json:"content"`
 		} `json:"matches"`
 	}
 	mustUnmarshal(t, result, &r)
@@ -1078,7 +1080,9 @@ func TestWriteFile_SecurityDenied(t *testing.T) {
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
-func callJSON(t *testing.T, tool interface{ Call(args string) (string, error) }, args string) string {
+func callJSON(t *testing.T, tool interface {
+	Call(args string) (string, error)
+}, args string) string {
 	t.Helper()
 	result, err := tool.Call(args)
 	if err != nil {
@@ -1097,7 +1101,7 @@ func mustUnmarshal(t *testing.T, data string, v any) {
 func mustSuccess(t *testing.T, result string) {
 	t.Helper()
 	var r struct {
-		Success bool `json:"success"`
+		Success bool   `json:"success"`
 		Error   string `json:"error"`
 	}
 	if err := json.Unmarshal([]byte(result), &r); err != nil {
@@ -1282,40 +1286,6 @@ func TestReadLinesWithCount_EmptyFile(t *testing.T) {
 		t.Errorf("gotContent = %q, want empty", gotContent)
 	}
 }
-
-// defaultTestDangerousConfig returns a permissive DangerousConfig for tests.
-func defaultTestDangerousConfig() DangerConfig {
-	return DangerConfig{
-		Action: "allow",
-		NonInteractive: "allow",
-		Classes: map[RiskClass]string{
-			RiskClassDestructive:    "allow",
-			RiskClassNetworkEgress:  "allow",
-			RiskClassCodeExecution:  "allow",
-			RiskClassInstall:        "allow",
-			RiskClassSystemWrite:    "allow",
-		},
-	}
-}
-
-// DangerConfig matches the danger.DangerousConfig structure for test use.
-type DangerConfig struct {
-	Action         string                 `json:"action"`
-	NonInteractive string                 `json:"non_interactive"`
-	Classes        map[RiskClass]string   `json:"classes"`
-	Allowlist      []string               `json:"allowlist,omitempty"`
-	Denylist       []string               `json:"denylist,omitempty"`
-}
-
-type RiskClass string
-
-const (
-	RiskClassDestructive   RiskClass = "destructive"
-	RiskClassNetworkEgress RiskClass = "network_egress"
-	RiskClassCodeExecution RiskClass = "code_execution"
-	RiskClassInstall       RiskClass = "install"
-	RiskClassSystemWrite   RiskClass = "system_write"
-)
 
 // ── ReadFile O_NOFOLLOW Tests ─────────────────────────────────────────
 
@@ -1939,5 +1909,3 @@ func TestFileInfo_EmptyPath(t *testing.T) {
 		t.Errorf("error should mention 'path is required', got: %s", r.Error)
 	}
 }
-
-

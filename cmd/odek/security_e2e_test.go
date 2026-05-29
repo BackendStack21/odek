@@ -28,7 +28,9 @@ func denyNonInteractive() danger.DangerousConfig {
 func TestSecurity_ReadFile_SystemPath(t *testing.T) {
 	tool := &readFileTool{dangerousConfig: denyNonInteractive()}
 	result := callJSON(t, tool, `{"path":"/etc/shadow"}`)
-	var r struct{ Error string `json:"error"` }
+	var r struct {
+		Error string `json:"error"`
+	}
 	mustUnmarshal(t, result, &r)
 	if r.Error == "" || !strings.Contains(r.Error, "denied") {
 		t.Errorf("expected denial for /etc/shadow, got: %s", r.Error)
@@ -42,7 +44,9 @@ func TestSecurity_ReadFile_LocalPath(t *testing.T) {
 
 	tool := &readFileTool{dangerousConfig: denyNonInteractive()}
 	result := callJSON(t, tool, `{"path":"`+path+`"}`)
-	var r struct{ Error string `json:"error"` }
+	var r struct {
+		Error string `json:"error"`
+	}
 	mustUnmarshal(t, result, &r)
 	if r.Error != "" {
 		t.Fatalf("expected allow for local path, got: %s", r.Error)
@@ -52,7 +56,9 @@ func TestSecurity_ReadFile_LocalPath(t *testing.T) {
 func TestSecurity_ReadFile_DestructivePath(t *testing.T) {
 	tool := &readFileTool{dangerousConfig: denyNonInteractive()}
 	result := callJSON(t, tool, `{"path":"/boot/vmlinuz"}`)
-	var r struct{ Error string `json:"error"` }
+	var r struct {
+		Error string `json:"error"`
+	}
 	mustUnmarshal(t, result, &r)
 	if r.Error == "" || !strings.Contains(r.Error, "denied") {
 		t.Errorf("expected denial for /boot path, got: %s", r.Error)
@@ -67,7 +73,9 @@ func TestSecurity_ReadFile_SSHKeyPath(t *testing.T) {
 
 	tool := &readFileTool{dangerousConfig: denyNonInteractive()}
 	result := callJSON(t, tool, `{"path":"`+filepath.Join(home, ".ssh", "id_rsa")+`"}`)
-	var r struct{ Error string `json:"error"` }
+	var r struct {
+		Error string `json:"error"`
+	}
 	mustUnmarshal(t, result, &r)
 	if r.Error == "" || !strings.Contains(r.Error, "denied") {
 		t.Errorf("expected denial for %s/.ssh, got: %s", home, r.Error)
@@ -79,7 +87,9 @@ func TestSecurity_ReadFile_SSHKeyPath(t *testing.T) {
 func TestSecurity_WriteFile_SystemPath(t *testing.T) {
 	tool := &writeFileTool{dangerousConfig: denyNonInteractive()}
 	result := callJSON(t, tool, `{"path":"/etc/test-odek.txt","content":"test"}`)
-	var r struct{ Error string `json:"error"` }
+	var r struct {
+		Error string `json:"error"`
+	}
 	mustUnmarshal(t, result, &r)
 	if r.Error == "" || !strings.Contains(r.Error, "denied") {
 		t.Errorf("expected denial for /etc path, got: %s", r.Error)
@@ -90,7 +100,9 @@ func TestSecurity_WriteFile_TmpPath(t *testing.T) {
 	tool := &writeFileTool{dangerousConfig: denyNonInteractive()}
 	path := filepath.Join(os.TempDir(), "odek-test-"+strconv.Itoa(os.Getpid())+".txt")
 	result := callJSON(t, tool, `{"path":"`+path+`","content":"safe"}`)
-	var r struct{ Error string `json:"error"` }
+	var r struct {
+		Error string `json:"error"`
+	}
 	mustUnmarshal(t, result, &r)
 	if r.Error != "" {
 		t.Fatalf("expected allow for /tmp path, got: %s", r.Error)
@@ -101,7 +113,9 @@ func TestSecurity_WriteFile_TmpPath(t *testing.T) {
 func TestSecurity_WriteFile_DestructivePath(t *testing.T) {
 	tool := &writeFileTool{dangerousConfig: denyNonInteractive()}
 	result := callJSON(t, tool, `{"path":"/dev/null","content":"test"}`)
-	var r struct{ Error string `json:"error"` }
+	var r struct {
+		Error string `json:"error"`
+	}
 	mustUnmarshal(t, result, &r)
 	if r.Error == "" || !strings.Contains(r.Error, "denied") {
 		t.Errorf("expected denial for /dev path, got: %s", r.Error)
@@ -120,7 +134,9 @@ func TestSecurity_WriteFile_CustomAllowlist(t *testing.T) {
 	}
 	tool := &writeFileTool{dangerousConfig: dc}
 	result := callJSON(t, tool, `{"path":"/etc/passwd","content":"hack"}`)
-	var r struct{ Error string `json:"error"` }
+	var r struct {
+		Error string `json:"error"`
+	}
 	mustUnmarshal(t, result, &r)
 	// With non_interactive=allow, the security layer should NOT issue
 	// a denial. A filesystem-level permission error is acceptable.
@@ -138,7 +154,9 @@ func TestSecurity_WriteFile_CustomAllowlist(t *testing.T) {
 func TestSecurity_SearchFiles_SystemPath(t *testing.T) {
 	tool := &searchFilesTool{dangerousConfig: denyNonInteractive()}
 	result := callJSON(t, tool, `{"pattern":"test","path":"/etc"}`)
-	var r struct{ Error string `json:"error"` }
+	var r struct {
+		Error string `json:"error"`
+	}
 	mustUnmarshal(t, result, &r)
 	if r.Error == "" || !strings.Contains(r.Error, "denied") {
 		t.Errorf("expected denial for /etc path, got: %s", r.Error)
@@ -151,7 +169,9 @@ func TestSecurity_SearchFiles_LocalPath(t *testing.T) {
 
 	tool := &searchFilesTool{dangerousConfig: denyNonInteractive()}
 	result := callJSON(t, tool, `{"pattern":"hello","path":"`+dir+`"}`)
-	var r struct{ Error string `json:"error"` }
+	var r struct {
+		Error string `json:"error"`
+	}
 	mustUnmarshal(t, result, &r)
 	if r.Error != "" {
 		t.Fatalf("expected allow for temp dir, got: %s", r.Error)
@@ -169,7 +189,9 @@ func TestSecurity_Patch_SystemPath(t *testing.T) {
 	// First, successful patch on local path
 	tool := &patchTool{dangerousConfig: denyNonInteractive()}
 	result := callJSON(t, tool, `{"path":"`+path+`","old_string":"hello","new_string":"world"}`)
-	var r struct{ Success bool `json:"success"` }
+	var r struct {
+		Success bool `json:"success"`
+	}
 	mustUnmarshal(t, result, &r)
 	if !r.Success {
 		t.Fatal("expected success for local patch")
@@ -177,7 +199,9 @@ func TestSecurity_Patch_SystemPath(t *testing.T) {
 
 	// Now try system path
 	result = callJSON(t, tool, `{"path":"/etc/motd","old_string":"x","new_string":"y"}`)
-	var r2 struct{ Error string `json:"error"` }
+	var r2 struct {
+		Error string `json:"error"`
+	}
 	mustUnmarshal(t, result, &r2)
 	if r2.Error == "" || !strings.Contains(r2.Error, "denied") {
 		t.Errorf("expected denial for /etc path, got: %s", r2.Error)
@@ -196,7 +220,9 @@ func TestSecurity_Browser_ExternalURL(t *testing.T) {
 	tool := &browserTool{dangerousConfig: dc}
 	// Don't actually fetch — just test the classification check passes
 	result := callJSON(t, tool, `{"action":"navigate","url":"http://nonexistent-test-12345.com"}`)
-	var r struct{ Error string `json:"error"` }
+	var r struct {
+		Error string `json:"error"`
+	}
 	mustUnmarshal(t, result, &r)
 	// Error should be connection-related, not security-denial
 	if r.Error != "" && strings.Contains(r.Error, "denied") {
@@ -207,7 +233,9 @@ func TestSecurity_Browser_ExternalURL(t *testing.T) {
 func TestSecurity_Browser_Localhost(t *testing.T) {
 	tool := &browserTool{dangerousConfig: denyNonInteractive()}
 	result := callJSON(t, tool, `{"action":"navigate","url":"http://localhost:9200"}`)
-	var r struct{ Error string `json:"error"` }
+	var r struct {
+		Error string `json:"error"`
+	}
 	mustUnmarshal(t, result, &r)
 	if r.Error == "" || !strings.Contains(r.Error, "denied") {
 		t.Errorf("expected denial for localhost, got: %s", r.Error)
@@ -217,7 +245,9 @@ func TestSecurity_Browser_Localhost(t *testing.T) {
 func TestSecurity_Browser_InternalIP(t *testing.T) {
 	tool := &browserTool{dangerousConfig: denyNonInteractive()}
 	result := callJSON(t, tool, `{"action":"navigate","url":"http://192.168.1.1"}`)
-	var r struct{ Error string `json:"error"` }
+	var r struct {
+		Error string `json:"error"`
+	}
 	mustUnmarshal(t, result, &r)
 	if r.Error == "" || !strings.Contains(r.Error, "denied") {
 		t.Errorf("expected denial for internal IP, got: %s", r.Error)
@@ -260,7 +290,9 @@ func TestSecurity_ConfigConsistency_SystemPath(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: unexpected error: %v", tt.name, err)
 		}
-		var r struct{ Error string `json:"error"` }
+		var r struct {
+			Error string `json:"error"`
+		}
 		mustUnmarshal(t, result, &r)
 		if r.Error == "" || !strings.Contains(r.Error, "denied") {
 			t.Errorf("%s(%s) = %q, want denial", tt.name, path, r.Error)
@@ -311,7 +343,9 @@ func TestSecurity_ConfigConsistency_TmpPath(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: unexpected error: %v", tt.name, err)
 		}
-		var r struct{ Error string `json:"error"` }
+		var r struct {
+			Error string `json:"error"`
+		}
 		mustUnmarshal(t, result, &r)
 		if r.Error != "" {
 			t.Errorf("%s(%s) = %q, want allow", tt.name, path, r.Error)
@@ -339,7 +373,9 @@ func TestSecurity_ClassOverride_LocalWriteDenied(t *testing.T) {
 	// write_file to temp dir → local_write → should be denied now
 	tool := &writeFileTool{dangerousConfig: dc}
 	result := callJSON(t, tool, `{"path":"`+path+`","content":"x"}`)
-	var r struct{ Error string `json:"error"` }
+	var r struct {
+		Error string `json:"error"`
+	}
 	mustUnmarshal(t, result, &r)
 	if r.Error == "" || !strings.Contains(r.Error, "denied") {
 		t.Errorf("expected denial after local_write override, got: %s", r.Error)
@@ -359,7 +395,9 @@ func TestSecurity_ClassOverride_SystemWriteAllowed(t *testing.T) {
 	// write_file to /etc → system_write → should be allowed now
 	tool := &writeFileTool{dangerousConfig: dc}
 	result := callJSON(t, tool, `{"path":"/etc/odek-test-override","content":"x"}`)
-	var r struct{ Error string `json:"error"` }
+	var r struct {
+		Error string `json:"error"`
+	}
 	mustUnmarshal(t, result, &r)
 	// Write will fail because /etc is not writable, but it should NOT be a security denial
 	if r.Error != "" && (strings.Contains(r.Error, "security") || strings.Contains(r.Error, "class")) {
@@ -383,7 +421,9 @@ func TestSecurity_ClassOverride_NetworkEgressAllowed(t *testing.T) {
 
 	tool := &browserTool{dangerousConfig: dc}
 	result := callJSON(t, tool, `{"action":"navigate","url":"http://example.com"}`)
-	var r struct{ Error string `json:"error"` }
+	var r struct {
+		Error string `json:"error"`
+	}
 	mustUnmarshal(t, result, &r)
 	// Should NOT be a security denial
 	if r.Error != "" && strings.Contains(r.Error, "denied") {

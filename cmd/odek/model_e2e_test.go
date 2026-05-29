@@ -38,9 +38,15 @@ type modelCase struct {
 
 // ── DeepSeek models ────────────────────────────────────────────────────
 
-func TestModelE2E_DeepSeek_Chat(t *testing.T)   { testModel(t, modelCase{Name: "deepseek-chat", Model: "deepseek-chat", KeyEnv: "ODEK_API_KEY_DEEPSEEK"}) }
-func TestModelE2E_DeepSeek_V4Flash(t *testing.T) { testModel(t, modelCase{Name: "deepseek-v4-flash", Model: "deepseek-v4-flash", KeyEnv: "ODEK_API_KEY_DEEPSEEK"}) }
-func TestModelE2E_DeepSeek_V4Pro(t *testing.T)   { testModel(t, modelCase{Name: "deepseek-v4-pro", Model: "deepseek-v4-pro", KeyEnv: "ODEK_API_KEY_DEEPSEEK"}) }
+func TestModelE2E_DeepSeek_Chat(t *testing.T) {
+	testModel(t, modelCase{Name: "deepseek-chat", Model: "deepseek-chat", KeyEnv: "ODEK_API_KEY_DEEPSEEK"})
+}
+func TestModelE2E_DeepSeek_V4Flash(t *testing.T) {
+	testModel(t, modelCase{Name: "deepseek-v4-flash", Model: "deepseek-v4-flash", KeyEnv: "ODEK_API_KEY_DEEPSEEK"})
+}
+func TestModelE2E_DeepSeek_V4Pro(t *testing.T) {
+	testModel(t, modelCase{Name: "deepseek-v4-pro", Model: "deepseek-v4-pro", KeyEnv: "ODEK_API_KEY_DEEPSEEK"})
+}
 
 // ── OpenAI models ──────────────────────────────────────────────────────
 

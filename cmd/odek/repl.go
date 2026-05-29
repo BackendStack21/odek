@@ -13,6 +13,7 @@ import (
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/memory"
 	"github.com/BackendStack21/odek/internal/render"
 	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/skills"
@@ -111,6 +112,8 @@ func replCmd(args []string) error {
 		}
 		_ = replContainerName // not used in REPL mode
 		sandboxCleanup = cleanup
+	} else {
+		warnSandboxDisabled()
 	}
 
 	// Renderer
@@ -135,6 +138,7 @@ func replCmd(args []string) error {
 		SystemMessage:  systemMessage,
 		NoProjectFile:  resolved.NoAgents,
 		Thinking:       resolved.Thinking,
+		ThinkingBudget: f.ThinkingBudget,
 		Tools:          tools,
 		SandboxCleanup: sandboxCleanup,
 		Renderer:       rend,
@@ -279,7 +283,8 @@ func replCmd(args []string) error {
 			for _, m := range messages {
 				msgStrs = append(msgStrs, m.Role+": "+m.Content)
 			}
-			mm.OnSessionEnd(sess.ID, sess.Turns, msgStrs)
+			prov := memory.DeriveProvenance(messages)
+			mm.OnSessionEndWithProvenance(sess.ID, sess.Turns, msgStrs, prov)
 		}()
 	}
 

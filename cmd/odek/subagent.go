@@ -11,6 +11,7 @@ import (
 
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/render"
 	"github.com/BackendStack21/odek/internal/skills"
@@ -172,12 +173,13 @@ func buildSubagentPrompt(goal, context string) string {
 
 // subagentResult is the JSON contract written to stdout.
 type subagentResult struct {
-	Status       string   `json:"status"`                  // "success" or "error"
-	Error        string   `json:"error,omitempty"`         // error message
-	Summary      string   `json:"summary"`                 // task summary
-	FilesChanged []string `json:"files_changed,omitempty"` // changed files
-	TokensUsed   int      `json:"tokens_used"`             // total tokens consumed
-	Iterations   int      `json:"iterations"`              // think-act cycles used
+	Status        string   `json:"status"`                   // "success" or "error"
+	Error         string   `json:"error,omitempty"`          // error message
+	Summary       string   `json:"summary"`                  // task summary
+	FilesChanged  []string `json:"files_changed,omitempty"`  // changed files
+	TokensUsed    int      `json:"tokens_used"`              // total tokens consumed
+	Iterations    int      `json:"iterations"`               // think-act cycles used
+	ParentSession string   `json:"parent_session,omitempty"` // correlation id from --parent-session
 }
 
 // ── SubagentConfig ───────────────────────────────────────────────────
@@ -233,10 +235,11 @@ func parseSubagentConfig(data string) subagentConfig {
 // a JSON result to stdout. Stderr carries human-readable progress.
 //
 // Exit codes:
-//   0 = success (status: "success")
-//   1 = task error (status: "error" with message)
-//   2 = timeout (killed by parent/context)
-//   3 = internal setup error
+//
+//	0 = success (status: "success")
+//	1 = task error (status: "error" with message)
+//	2 = timeout (killed by parent/context)
+//	3 = internal setup error
 func subagentCmd(args []string) error {
 	// Parse flags
 	var cfg struct {
@@ -306,15 +309,19 @@ func subagentCmd(args []string) error {
 
 	// Load task from file if --task is provided, including optional system prompt
 	var taskSystem string // system prompt from task file (if any)
+	var taskTrust string  // "trusted" or "untrusted" (from parent agent)
+	var taskMaxRisk string
 	if hasTaskFile {
 		data, err := os.ReadFile(cfg.taskFile)
 		if err != nil {
 			return fmt.Errorf("read task file: %w", err)
 		}
 		var task struct {
-			Goal    string `json:"goal"`
-			Context string `json:"context"`
-			System  string `json:"system,omitempty"`
+			Goal       string `json:"goal"`
+			Context    string `json:"context"`
+			System     string `json:"system,omitempty"`
+			TrustLevel string `json:"trust_level,omitempty"`
+			MaxRisk    string `json:"max_risk,omitempty"`
 		}
 		if err := json.Unmarshal(data, &task); err != nil {
 			return fmt.Errorf("parse task file: %w", err)
@@ -322,6 +329,8 @@ func subagentCmd(args []string) error {
 		cfg.goal = task.Goal
 		cfg.context = task.Context
 		taskSystem = task.System
+		taskTrust = task.TrustLevel
+		taskMaxRisk = task.MaxRisk
 		// Clean up temp file
 		os.Remove(cfg.taskFile)
 	}
@@ -342,6 +351,21 @@ func subagentCmd(args []string) error {
 
 	// Resolve config (inherits everything from normal chain)
 	resolved := config.LoadConfig(config.CLIFlags{})
+
+	// If the parent handed us an API key via FD 3, prefer it over any
+	// env-resolved value. This keeps the key out of the child's process
+	// environment so it does not leak via /proc, crash logs, or any
+	// tool the agent runs that prints its own env.
+	if fdKey := readKeyFromInheritedFD(); fdKey != "" {
+		resolved.APIKey = fdKey
+	}
+
+	// Apply parent-supplied trust constraints. When the parent marked the
+	// task as untrusted (e.g. it contains text derived from a fetched
+	// page or unfamiliar file), force non-interactive denials so no
+	// dangerous operation slips through without a fresh approval. When
+	// max_risk is set, clamp every class above it to Deny.
+	applySubagentTrust(&resolved.Dangerous, taskTrust, taskMaxRisk)
 
 	// Resolve system prompt for this sub-agent.
 	// Priority: 1) task file override  2) user config override  3) dynamic build
@@ -472,10 +496,11 @@ func subagentCmd(args []string) error {
 
 	// Build result
 	result := subagentResult{
-		Status:     "success",
-		Summary:    extractSummary(allMessages),
-		TokensUsed: tokensUsed,
-		Iterations: iterations,
+		Status:        "success",
+		Summary:       extractSummary(allMessages),
+		TokensUsed:    tokensUsed,
+		Iterations:    iterations,
+		ParentSession: cfg.parentSession,
 	}
 
 	if err != nil {
@@ -551,4 +576,92 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(runes[:n]) + "…"
+}
+
+// applySubagentTrust narrows a sub-agent's danger config based on the
+// trust signals supplied by the parent agent via the task file.
+//
+// trustLevel == "untrusted": the task strings (goal/context) were derived
+// from external content the parent ingested (a fetched page, a file
+// outside CWD, an MCP server response). We:
+//   - Force NonInteractiveAction to deny (sub-agents have no TTY).
+//   - Clamp the action for Destructive, CodeExecution, Install,
+//     SystemWrite, and NetworkEgress to Deny so the sub-agent cannot
+//     escalate beyond LocalWrite without coming back through the
+//     parent.
+//
+// maxRisk caps the highest risk class the sub-agent will execute.
+// Anything strictly above maxRisk is forced to Deny.
+func applySubagentTrust(dc *danger.DangerousConfig, trustLevel, maxRisk string) {
+	if dc == nil {
+		return
+	}
+	if trustLevel == "" && maxRisk == "" {
+		return
+	}
+
+	if dc.Classes == nil {
+		dc.Classes = make(map[danger.RiskClass]danger.Action)
+	}
+
+	if trustLevel == "untrusted" {
+		deny := "deny"
+		dc.NonInteractive = &deny
+		// Lock down every class that could plausibly cause out-of-task
+		// damage. LocalWrite remains the cap — sub-agents may still
+		// edit files inside the working directory.
+		for _, cls := range []danger.RiskClass{
+			danger.Destructive,
+			danger.CodeExecution,
+			danger.Install,
+			danger.SystemWrite,
+			danger.NetworkEgress,
+			danger.Blocked,
+		} {
+			dc.Classes[cls] = danger.Deny
+		}
+	}
+
+	if maxRisk != "" {
+		cap := danger.RiskClass(maxRisk)
+		capRank := riskRank(cap)
+		for _, cls := range []danger.RiskClass{
+			danger.Safe,
+			danger.LocalWrite,
+			danger.SystemWrite,
+			danger.Destructive,
+			danger.NetworkEgress,
+			danger.CodeExecution,
+			danger.Install,
+			danger.Blocked,
+		} {
+			if riskRank(cls) > capRank {
+				dc.Classes[cls] = danger.Deny
+			}
+		}
+	}
+}
+
+// riskRank mirrors internal/danger.rank but is duplicated here to keep
+// applySubagentTrust local. Order matches internal/danger/classifier.go.
+func riskRank(cls danger.RiskClass) int {
+	switch cls {
+	case danger.Blocked:
+		return 8
+	case danger.Destructive:
+		return 7
+	case danger.SystemWrite:
+		return 6
+	case danger.CodeExecution:
+		return 5
+	case danger.NetworkEgress:
+		return 4
+	case danger.Install:
+		return 3
+	case danger.LocalWrite:
+		return 2
+	case danger.Safe:
+		return 1
+	}
+	return 0
 }

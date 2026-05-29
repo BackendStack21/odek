@@ -25,8 +25,8 @@ type replEditor struct {
 	fd       int
 
 	// Line buffer
-	line  []rune
-	pos   int // cursor position in runes
+	line []rune
+	pos  int // cursor position in runes
 
 	// Paste detection
 	bracketed bool

@@ -73,7 +73,7 @@ func seedSessionStore(t *testing.T) (*session.Store, func()) {
 		{
 			id: "20260510-old-setup", task: "initial project setup",
 			model: "claude-sonnet-4", turns: 3,
-			buf:   []string{"09:00 user set up project structure"},
+			buf: []string{"09:00 user set up project structure"},
 			msgs: []llm.Message{
 				{Role: "user", Content: "Set up the project with Go modules"},
 			},
@@ -451,10 +451,10 @@ func TestSessionSearch_ListOrder(t *testing.T) {
 
 	// Most recent first (transcribe is 1h old, native-tools is 2d, auth-fix is 4d, old-setup is 14d)
 	expected := []string{
-		"20260524-transcribe",  // 1 hour
+		"20260524-transcribe",   // 1 hour
 		"20260522-native-tools", // 2 days
-		"20260520-auth-fix",    // 4 days
-		"20260510-old-setup",   // 14 days
+		"20260520-auth-fix",     // 4 days
+		"20260510-old-setup",    // 14 days
 	}
 	for i, e := range expected {
 		if resp.Sessions[i].ID != e {

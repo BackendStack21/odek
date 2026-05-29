@@ -149,8 +149,10 @@ func newTranscribeTool(dc danger.DangerousConfig, tc config.TranscriptionConfig)
 	}
 }
 
-func (t *transcribeTool) Name() string        { return "transcribe" }
-func (t *transcribeTool) Description() string  { return `Transcribe an audio file to text using a local whisper model (whisper.cpp CLI). Returns transcribed text with segments and duration. Requires whisper CLI and a model file to be installed locally.` }
+func (t *transcribeTool) Name() string { return "transcribe" }
+func (t *transcribeTool) Description() string {
+	return `Transcribe an audio file to text using a local whisper model (whisper.cpp CLI). Returns transcribed text with segments and duration. Requires whisper CLI and a model file to be installed locally.`
+}
 
 type transcribeArgs struct {
 	Path     string `json:"path"`
@@ -292,14 +294,15 @@ func (t *transcribeTool) Call(argsJSON string) (result string, err error) {
 		return jsonResult(transcribeResult{
 			Text:     strings.TrimSpace(string(output)),
 			Duration: 0,
-			Model:   filepath.Base(modelPathResolved),
+			Model:    filepath.Base(modelPathResolved),
 		})
 	}
 
 	// Convert segments
+	source := "transcribe:" + args.Path
 	segments := make([]transcribeSegment, len(whisperOut.Segments))
 	for i, s := range whisperOut.Segments {
-		segments[i] = transcribeSegment{Start: s.Start, End: s.End, Text: s.Text}
+		segments[i] = transcribeSegment{Start: s.Start, End: s.End, Text: wrapUntrusted(source, s.Text)}
 	}
 
 	modelLabel := filepath.Base(modelPathResolved)
@@ -307,7 +310,7 @@ func (t *transcribeTool) Call(argsJSON string) (result string, err error) {
 	modelLabel = strings.TrimSuffix(modelLabel, ".bin")
 
 	return jsonResult(transcribeResult{
-		Text:     strings.TrimSpace(whisperOut.Text),
+		Text:     wrapUntrusted(source, strings.TrimSpace(whisperOut.Text)),
 		Duration: whisperOut.Duration,
 		Segments: segments,
 		Model:    modelLabel,

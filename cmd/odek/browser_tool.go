@@ -16,17 +16,15 @@ import (
 // ── Regex helpers for HTML parsing (zero-dep) ─────────────────────────
 
 var (
-	reTitle   = regexp.MustCompile(`<title[^>]*>([^<]*)</title>`)
-	reLink    = regexp.MustCompile(`<a\s[^>]*href\s*=\s*"([^"]*)"[^>]*>([^<]*)</a>`)
-	reButton  = regexp.MustCompile(`<button[^>]*>([^<]*)</button>`)
-	reInput   = regexp.MustCompile(`<input\s[^>]*type\s*=\s*"(?:submit|button|text|search)"[^>]*>`)
-	reInputVal = regexp.MustCompile(`value\s*=\s*"([^"]*)"`)
+	reTitle            = regexp.MustCompile(`<title[^>]*>([^<]*)</title>`)
+	reLink             = regexp.MustCompile(`<a\s[^>]*href\s*=\s*"([^"]*)"[^>]*>([^<]*)</a>`)
+	reButton           = regexp.MustCompile(`<button[^>]*>([^<]*)</button>`)
+	reInput            = regexp.MustCompile(`<input\s[^>]*type\s*=\s*"(?:submit|button|text|search)"[^>]*>`)
+	reInputVal         = regexp.MustCompile(`value\s*=\s*"([^"]*)"`)
 	reInputPlaceholder = regexp.MustCompile(`placeholder\s*=\s*"([^"]*)"`)
-	reH1      = regexp.MustCompile(`<h[1-6][^>]*>([^<]*)</h[1-6]>`)
-	rePTag    = regexp.MustCompile(`<p[^>]*>([^<]*)</p>`)
-	reLi      = regexp.MustCompile(`<li[^>]*>([^<]*)</li>`)
-	reStrip   = regexp.MustCompile(`<[^>]*>`)
-	reTitleSimplify = regexp.MustCompile(`\s+`)
+	reH1               = regexp.MustCompile(`<h[1-6][^>]*>([^<]*)</h[1-6]>`)
+	rePTag             = regexp.MustCompile(`<p[^>]*>([^<]*)</p>`)
+	reLi               = regexp.MustCompile(`<li[^>]*>([^<]*)</li>`)
 )
 
 // clickableRef represents an interactive element extracted from the page.
@@ -48,25 +46,25 @@ type browserSnapshot struct {
 
 // browserState holds the shared state for one browser session.
 type browserState struct {
-	mu       sync.Mutex
-	history  []browserSnapshot
-	current  *browserSnapshot
-	nextRef  int
+	mu      sync.Mutex
+	history []browserSnapshot
+	current *browserSnapshot
+	nextRef int
 }
 
 // ── Browser Tool ──────────────────────────────────────────────────────
 
 type browserTool struct {
-	state          *browserState
-	client         *http.Client
+	state           *browserState
+	client          *http.Client
 	dangerousConfig danger.DangerousConfig
 	trustedClasses  map[danger.RiskClass]bool
 }
 
 func newBrowserTool(dc danger.DangerousConfig) *browserTool {
 	return &browserTool{
-		state:          &browserState{nextRef: 1},
-		client:         &http.Client{},
+		state:           &browserState{nextRef: 1},
+		client:          &http.Client{},
 		dangerousConfig: dc,
 	}
 }
@@ -208,7 +206,7 @@ func (t *browserTool) doNavigate(rawURL string) (string, error) {
 	return jsonResult(browserResult{
 		Title:    snap.Title,
 		URL:      snap.URL,
-		Content:  snap.Content,
+		Content:  wrapUntrusted(snap.URL, snap.Content),
 		Status:   snap.Status,
 		Elements: snap.Elements,
 	})
@@ -225,7 +223,7 @@ func (t *browserTool) doSnaPshot() (string, error) {
 	return jsonResult(browserResult{
 		Title:    t.state.current.Title,
 		URL:      t.state.current.URL,
-		Content:  t.state.current.Content,
+		Content:  wrapUntrusted(t.state.current.URL, t.state.current.Content),
 		Elements: t.state.current.Elements,
 	})
 }
@@ -288,7 +286,7 @@ func (t *browserTool) doBack() (string, error) {
 	return jsonResult(browserResult{
 		Title:   t.state.current.Title,
 		URL:     t.state.current.URL,
-		Content: t.state.current.Content,
+		Content: wrapUntrusted(t.state.current.URL, t.state.current.Content),
 	})
 }
 

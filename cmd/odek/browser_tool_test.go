@@ -152,7 +152,7 @@ func TestBrowser_Click(t *testing.T) {
 	defer ts.Close()
 
 	pages = map[string]string{
-		"/":     `<html><body><a href="/page2" ref="e1">Go to page 2</a></body></html>`,
+		"/":      `<html><body><a href="/page2" ref="e1">Go to page 2</a></body></html>`,
 		"/page2": `<html><body><h1>Page 2 Content</h1></body></html>`,
 	}
 
@@ -225,7 +225,7 @@ func TestBrowser_Back(t *testing.T) {
 	defer ts.Close()
 
 	pages = map[string]string{
-		"/":     `<html><body><h1>Home</h1></body></html>`,
+		"/":      `<html><body><h1>Home</h1></body></html>`,
 		"/page2": `<html><body><h1>Page 2</h1></body></html>`,
 	}
 

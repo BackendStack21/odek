@@ -52,8 +52,14 @@ func TestGetChatMutex_Cleanup(t *testing.T) {
 		if mu == nil {
 			t.Fatalf("getChatMutex(%d) returned nil after cleanup", id)
 		}
-		// Should be able to lock/unlock without issue.
-		mu.Lock()
+		// Liveness check: fresh mutex must be acquirable without
+		// blocking. TryLock keeps the critical section non-empty (so
+		// staticcheck's SA2001 doesn't flag it) while still asserting
+		// the same property.
+		if !mu.TryLock() {
+			t.Errorf("fresh mutex for chat %d should be immediately lockable", id)
+			continue
+		}
 		mu.Unlock()
 	}
 }
