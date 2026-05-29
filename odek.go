@@ -73,6 +73,9 @@ type Config struct {
 	// stability; set to -1 to use provider defaults.
 	Temperature float64
 
+	// ThinkingBudget is the maximum thinking tokens for Anthropic extended thinking (default 5000).
+	ThinkingBudget int
+
 	// Tools available to the agent.
 	Tools []Tool
 
@@ -230,8 +233,8 @@ var KnownProfiles = []struct {
 		Profile: ModelProfile{
 			Label:           "DeepSeek v4 Pro",
 			DefaultThinking: "enabled", // full reasoning enabled by default
-			Timeout:         180,        // may take longer to think
-			MaxContext:      1_000_000,  // 1M token context window
+			Timeout:         180,       // may take longer to think
+			MaxContext:      1_000_000, // 1M token context window
 		},
 	},
 	{
@@ -246,7 +249,7 @@ var KnownProfiles = []struct {
 	{
 		Prefix: "deepseek-",
 		Profile: ModelProfile{
-			Label:     "DeepSeek (generic)",
+			Label:      "DeepSeek (generic)",
 			MaxContext: 131_072, // 128K safe default for unknown DeepSeek models
 		},
 	},
@@ -410,7 +413,7 @@ func New(cfg Config) (*Agent, error) {
 		}
 	}
 
-	client := llm.New(cfg.BaseURL, cfg.APIKey, cfg.Model, cfg.Thinking, time.Duration(timeout)*time.Second)
+	client := llm.New(cfg.BaseURL, cfg.APIKey, cfg.Model, cfg.Thinking, cfg.ThinkingBudget, time.Duration(timeout)*time.Second)
 	if cfg.Temperature >= 0 {
 		client.Temperature = cfg.Temperature
 	}
@@ -471,9 +474,9 @@ func New(cfg Config) (*Agent, error) {
 	}
 	memoryManager := memory.NewMemoryManager(memoryDir, client, cfg.MemoryConfig)
 	agent := &Agent{
-		config:         cfg,
-		skillManager:   sm,
-		memoryManager:  memoryManager,
+		config:        cfg,
+		skillManager:  sm,
+		memoryManager: memoryManager,
 	}
 
 	// Wire per-turn memory injection so the agent sees the latest facts
@@ -669,6 +672,20 @@ func (a *Agent) SwitchModel(model string) {
 	a.config.Model = model
 	if a.engine != nil {
 		a.engine.SetModel(model)
+	}
+}
+
+// SwitchThinking updates the reasoning/thinking mode used by this agent at
+// runtime. Accepts the same values as Config.Thinking: "enabled",
+// "disabled", "low", "medium", "high", or "" (provider default / off).
+// Safe to call between RunWithMessages calls to toggle thinking per-query.
+func (a *Agent) SwitchThinking(thinking string) {
+	if a == nil {
+		return
+	}
+	a.config.Thinking = thinking
+	if a.engine != nil {
+		a.engine.SetThinking(thinking)
 	}
 }
 

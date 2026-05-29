@@ -674,7 +674,6 @@ func TestProfileLabel_Flash(t *testing.T) {
 	}
 }
 
-
 // ── Project File (AGENTS.md) Tests ───────────────────────────────────
 
 func TestLoadProjectFile_Missing(t *testing.T) {
@@ -981,9 +980,9 @@ func TestAgent_SkillEventHandler_AutoLoad(t *testing.T) {
 
 	var events []skills.SkillEvent
 	cfg := Config{
-		APIKey:             "sk-test",
-		Skills:             &skills.SkillsConfig{MaxAutoLoad: 3, MaxLazySlots: 5},
-		SkillManager:       sm,
+		APIKey:       "sk-test",
+		Skills:       &skills.SkillsConfig{MaxAutoLoad: 3, MaxLazySlots: 5},
+		SkillManager: sm,
 		SkillEventHandler: func(event skills.SkillEvent) {
 			events = append(events, event)
 		},
