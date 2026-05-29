@@ -652,8 +652,8 @@ func TestActionForCommand_EmptyCommand(t *testing.T) {
 func TestActionForCommand_PatternTrimmed(t *testing.T) {
 	// Patterns with trailing whitespace should still match after trimming.
 	cfg := &DangerousConfig{
-		Allowlist: []string{"git push origin main "},  // trailing space
-		Denylist:  []string{" rm -rf / "},             // leading + trailing space
+		Allowlist: []string{"git push origin main "}, // trailing space
+		Denylist:  []string{" rm -rf / "},            // leading + trailing space
 	}
 	// Allowlist: trimmed pattern matches trimmed command
 	if action := cfg.ActionForCommand("git push origin main"); action != Allow {
@@ -850,7 +850,7 @@ func TestIsSystemPath(t *testing.T) {
 		{"./local/file", false},
 		{"file.go", false},
 		{"/root/.bashrc", false},
-		{"/usr", false},              // no trailing slash — must be a directory prefix
+		{"/usr", false}, // no trailing slash — must be a directory prefix
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
@@ -1021,14 +1021,14 @@ func TestClassifyURL_InternalIPs(t *testing.T) {
 		{"https://172.20.0.1", SystemWrite},
 		{"https://192.168.0.1", SystemWrite},
 		// Bypass vectors that the old string-prefix classifier missed:
-		{"http://0", SystemWrite},               // 0.0.0.0
-		{"http://0177.0.0.1", SystemWrite},      // octal for 127.0.0.1
-		{"http://2130706433", SystemWrite},       // decimal for 127.0.0.1
-		{"http://0x7f000001", SystemWrite},       // hex for 127.0.0.1
-		{"http://127.1", SystemWrite},            // shorthand for 127.0.0.1
-		{"http://0x0.0x0.0x0.0x0", SystemWrite}, // hex dotted
-		{"http://[::0:0:0:1]", SystemWrite},     // alt IPv6 loopback
-		{"http://169.254.169.254", SystemWrite},  // metadata endpoint
+		{"http://0", SystemWrite},                        // 0.0.0.0
+		{"http://0177.0.0.1", SystemWrite},               // octal for 127.0.0.1
+		{"http://2130706433", SystemWrite},               // decimal for 127.0.0.1
+		{"http://0x7f000001", SystemWrite},               // hex for 127.0.0.1
+		{"http://127.1", SystemWrite},                    // shorthand for 127.0.0.1
+		{"http://0x0.0x0.0x0.0x0", SystemWrite},          // hex dotted
+		{"http://[::0:0:0:1]", SystemWrite},              // alt IPv6 loopback
+		{"http://169.254.169.254", SystemWrite},          // metadata endpoint
 		{"http://metadata.google.internal", SystemWrite}, // GCP metadata
 	}
 	for _, tt := range tests {

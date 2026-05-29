@@ -80,7 +80,7 @@ func TestSetTrustedClasses_ReplaceMap(t *testing.T) {
 	a.SetTrustedClasses(map[RiskClass]bool{})
 
 	// Safe no longer trusted (empty map) → should fail because TTY doesn't exist
-	// and NonInteractive default is Allow, so it won't deny... 
+	// and NonInteractive default is Allow, so it won't deny...
 	// Actually with default NonInteractive=Allow, no TTY returns nil.
 	// Let me change the config to deny.
 	a.DangerousConfig = &DangerousConfig{NonInteractive: strPtr("deny")}

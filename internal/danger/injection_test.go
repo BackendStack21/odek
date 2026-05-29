@@ -70,9 +70,9 @@ func TestScanInjection_NewSystemPrompt(t *testing.T) {
 
 func TestScanInjection_HiddenUnicode(t *testing.T) {
 	payloads := []string{
-		"Hello\u200BWorld",                 // zero-width space
-		"Text\u200Fwith\u202Eoverride",     // RTL mark + override
-		"Normal text \uFEFF with BOM",      // BOM
+		"Hello\u200BWorld",             // zero-width space
+		"Text\u200Fwith\u202Eoverride", // RTL mark + override
+		"Normal text \uFEFF with BOM",  // BOM
 	}
 	for _, p := range payloads {
 		results := ScanInjection(p)

