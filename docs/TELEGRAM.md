@@ -20,7 +20,7 @@ Telegram Bot API ◄── bot.go (HTTP client)
                       download.go (voice/photo media)
 ```
 
-The package is self-contained under `internal/telegram/` with 473 tests and 87% coverage. All Telegram API calls use the Bot struct, which wraps `net/http` with JSON marshaling, multipart upload support, exponential backoff retry, and typed error handling. No external Telegram libraries are used.
+The package is self-contained under `internal/telegram/` and well-tested under `-race`. All Telegram API calls use the Bot struct, which wraps `net/http` with JSON marshaling, multipart upload support, exponential backoff retry, and typed error handling. No external Telegram libraries are used.
 
 ## Configuration
 
@@ -520,7 +520,7 @@ ls -la ~/.odek/config.json
 
 ## Testing
 
-The Telegram package has **473 tests** with **87.1% coverage**. Tests use:
+The Telegram package is exhaustively tested under `-race`. Tests use:
 - `httptest.NewServer` to mock Telegram API responses
 - HTTP handler functions for each API endpoint (getFile, sendMessage, sendDocument, etc.)
 - `t.TempDir()` + `t.Setenv("HOME", ...)` for filesystem isolation

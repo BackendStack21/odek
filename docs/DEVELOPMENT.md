@@ -31,7 +31,7 @@ Commit prefixes and their section mapping:
 
 ## Prerequisites
 
-- Go 1.24+
+- Go 1.25+ (matches `go.mod`; CI builds with the same toolchain)
 - Docker (for sandbox integration tests only)
 
 ## Building
@@ -57,14 +57,16 @@ internal/
     loop_test.go              Engine tests with mock server
   session/
     session.go                Session store (CRUD, trim, cleanup)
-    session_test.go           Session tests (42 tests, 89.7% coverage)
+    session_test.go           Session tests
+    audit.go                  Per-session prompt-injection audit log (ingests, divergence)
+    audit_test.go             Audit store tests
   render/
     render.go                 Terminal output with model label and color
   resource/
     resource.go               @-reference resolver (files, sessions)
     resource_test.go          Parse, resolve, search tests
   ws/
-    ws.go                     RFC 6455 WebSocket framing (~200 LOC)
+    ws.go                     RFC 6455 WebSocket framing (compact, stdlib-only)
     ws_test.go                Handshake, framing, ping/pong tests
   transport/
     client.go                 Tuned HTTP transport with connection pooling
@@ -73,10 +75,13 @@ internal/
     registry.go               Thread-safe tool registry
     registry_test.go          Registry tests
     clarify.go                Clarify tool — ask user questions with Answer function injection
-    clarify_test.go           Clarify tool tests (11 tests, 100% coverage)
+    clarify_test.go           Clarify tool tests
+  sandbox/
+    sandbox.go                Docker container lifecycle (image resolve, run args, file injection)
+    sandbox_test.go           Sandbox tests (BuildRunArgs, ResolveImage, InjectFiles)
   danger/
     classifier.go             Command/URL classification for security gating
-    classifier_test.go        209 tests, 8 risk classes, config overrides
+    classifier_test.go        Risk classification, 8 classes, config overrides
     approver.go               Approver interface + TTYApprover (CLI /dev/tty)
   memory/
     memory.go                 MemoryManager orchestrator (facts, buffer, episodes)
@@ -86,7 +91,8 @@ internal/
     episodes.go               EpisodeStore with search + LLM ranking
     scan.go                   Security scan (invisible Unicode, injection, credentials)
     tool.go                   memory tool for the agent (6 actions)
-    *_test.go                 144 tests across all subsystems
+    provenance.go             Episode trust-signal derivation (untrusted-source taint)
+    *_test.go                 Tests across all subsystems
   skills/
     types.go                  Skill/skill manager types, DefaultSkillsConfig, ValidateSkillName
     types_test.go             ValidateSkillName tests
@@ -95,12 +101,13 @@ internal/
     cache_test.go             Cache tests
     derive.go                 Keyword derivation from skill body
     trigger.go                Trigger matching
-    selfimprove.go            5 heuristics + runAllHeuristics
+    selfimprove.go            Heuristics + runAllHeuristics + AutoSaveSuggestions
+    learnloop.go              AnalyzeMessages + RunAutoSaveLoop (non-interactive end-of-session pipeline)
     curator.go                Quality audit, staleness, overlap, dedup
     llm_enhance.go            LLM enrichment for learning + curation
     importer.go               URI import with LLM risk assessment
     tools.go                  Skill CRUD tools (list/view/save/patch/delete/load)
-    *_test.go                 127 tests across all subsystems (86.3% coverage)
+    *_test.go                 Tests across all subsystems
   telegram/
     bot.go                    Telegram bot client (getFile, download, sendMessage, sendDocument)
     config.go                 Bot config from environment
@@ -111,21 +118,30 @@ internal/
     plan.go                   Plan management (Slugify, ListPlans, ReadPlan, DeletePlan, MostRecentPlan)
     download.go               Media download (voice, photo → file on disk)
     health.go                 HTTP health check endpoint (atomic.Bool ready state, 503→200)
-    *_test.go                 473 tests across all subsystems (87.1% coverage)
+    *_test.go                 Tests across all subsystems
 cmd/odek/
-  main.go                     CLI entry point, flag parsing, commands, sandbox
-  main_test.go                CLI tests (flag parsing, version, init)
+  main.go                     Process entry, flag parsing, run/repl handlers
+  main_test.go                CLI flag-parsing + lifecycle tests
+  dispatch.go                 CLI subcommand dispatch table + exit-code translators
+  dispatch_test.go            Routing tests (unknown command, version, exit codes)
   shell.go                    Built-in shell tool (local or docker exec)
-  shell_test.go               Shell + sandbox tests
+  shell_test.go               Shell tests (sandbox tests live in internal/sandbox)
+  audit.go                    `odek audit` CLI handler + per-turn audit recording
+  audit_test.go               Audit handler + recording tests
+  skill_promote.go            `odek skill promote` — clear NeedsReview on tainted skills
+  untrusted.go                <untrusted_content> wrapper + ingest recorder + MCP tool wrapper
   serve.go                    Web UI server (HTTP + WebSocket)
   subagent.go                 Sub-agent command (--goal, --context, --task, JSON stdout)
+  subagent_key.go             POSIX FD-based API key handoff (avoid /proc env leak)
   subagent_tool.go            delegate_tasks built-in tool
   wsapprover.go               WSApprover — WebSocket-based approval for serve mode
-  subagent_test.go            Tests (flag parsing, JSON stdout, exit codes, tool schema)
+  subagent_test.go            Sub-agent flag-parsing + JSON-stdout tests
   subagent_contract_test.go   Contract tests (flag parsing, stdout protocol, exit codes)
-  subagent_e2e_test.go        E2E tests (16 — ODEK_E2E=true, real subprocess spawning)
+  subagent_e2e_test.go        E2E sandbox + subprocess tests (ODEK_E2E=true)
+  race_on_test.go / race_off_test.go  Build-tag-gated `raceEnabled` const for race-sensitive tests
   ui/
-    index.html                Single-page web UI (~770 LOC, vanilla JS + CSS)
+    index.html                Single-page web UI (vanilla JS + CSS)
+    app.js, style.css         Extracted JS / CSS
 docs/                         Documentation
   CLI.md                      CLI reference
   API.md                      Programmatic API (Go library)
@@ -166,48 +182,67 @@ Zero external test dependencies — tests use `httptest`, `testing`, and the sta
 
 ### Test layers
 
-| Layer | Runner | Tests | What's tested |
-|-------|--------|-------|---------------|
-| **Unit** | `go test ./...` | 1954 | All 17 packages — config, LLM client, loop, sessions, renderer, tools, WS, resources, memory, skills, telegram, danger, security, mcp |
-| **Contract** | `go test ./cmd/odek/` | 60+ | Sub-agent flag parsing, JSON stdout, exit codes, tool schema, config, serve, shell |
-| **E2E** | `ODEK_E2E=true go test -run 'TestE2E_'` | 16 | Real subprocess spawning, tool→binary pipeline, concurrency, timeouts, custom prompts |
-| **MCP E2E** | `ODEK_E2E=true go test -run 'TestMCPClientE2E'` | 5 | MCP client with real fakeserver subprocess (compiled on-the-fly from testdata/main.go) |
+| Layer | Runner | What's tested |
+|-------|--------|---------------|
+| **Unit** | `go test ./...` | Every package — config, LLM client, loop, sessions, renderer, tools, WS, resources, sandbox, memory, skills, telegram, danger, mcp |
+| **Race** | `go test -race ./...` | Same suite under the race detector. Race-sensitive tests are gated on the `raceEnabled` build-tag constant so they fail loudly under default builds but skip cleanly under `-race`. |
+| **Contract** | `go test ./cmd/odek/` | Sub-agent flag parsing, JSON stdout, exit codes, tool schema, config, serve, shell, audit, skill promote |
+| **E2E** | `ODEK_E2E=1 go test -run 'TestE2E_'` | Real subprocess spawning, tool→binary pipeline, concurrency, timeouts, custom prompts, sandbox file injection (incl. nested paths) |
+| **MCP E2E** | `ODEK_E2E=1 go test -run 'TestMCPClientE2E'` | MCP client against a real `fakeserver` subprocess compiled on-the-fly from `testdata/main.go` |
 
-### Test coverage
+CI (`.github/workflows/test.yml`) runs the unit suite under `-race` on every push and PR. The E2E suite is opt-in locally — enable it before merging changes that touch the sandbox, subagent, or MCP client paths.
 
-| Package | Tests | Focus |
-|---------|-------|-------|
-| `odek` | 62 | Config defaults, API key fallback, thinking passthrough, model profiles, AGENTS.md, Close lifecycle, token tracking, Memory() nil-safety |
-| `internal/config` | 19 | Config file loading, env vars, merge chain, var expansion |
-| `internal/llm` | 50 | JSON marshaling, thinking fields, response parsing, usage statistics, SimpleCall |
-| `internal/loop` | 37 | ReAct engine with httptest mock server, context budgeting, skill loader |
-| `internal/session` | 42 | CRUD, trim, cleanup, list, latest, fallback scan, corrupt data, path traversal protection, concurrent safety, atomic writes |
-| `internal/tool` | 17 | Registry CRUD, duplicate detection, ClarifyTool (Name, Description, Schema, Call with all error paths) |
-| `internal/ws` | 1 | WebSocket constant verification |
-| `internal/resource` | 45 | @-reference parsing, file resolution, session resolution, security |
-| `internal/render` | 62 | Terminal output, no-color mode, nil safety, tool call/result rendering |
-| `internal/danger` | 281 | Command classification (8 risk classes), config overrides, allow/denylist |
-| `internal/memory` | 144 | Facts CRUD, buffer ring, episodes, merge detector (go-vector), ReplaceEntry, AppendEntry, memory tool, security scan, LLM ranking |
-| `internal/skills` | 127 | Loading, triggers, self-improvement (5 heuristics), curation, LLM-enhanced generation, import, tools, ValidateSkillName, isPrivateHost, extractRelevantChange |
-| `internal/telegram` | 473 | Bot client, long-polling, command handlers, session management, plan CRUD, voice/photo download, health server, retry/backoff |
-| `cmd/odek` | 441 | Flag parsing, init, version, sandbox setup, subagent, serve, security E2E, shell tool danger, browser tool, contract tests |
+### What each package covers
+
+| Package | Focus |
+|---------|-------|
+| `odek` | Config defaults, API key fallback, thinking passthrough, model profiles, AGENTS.md, Close lifecycle, token tracking, Memory() nil-safety |
+| `internal/config` | Config file loading, env vars, merge chain, variable expansion |
+| `internal/llm` | JSON marshaling, thinking fields, response parsing, usage statistics, SimpleCall, retry/backoff |
+| `internal/loop` | ReAct engine with httptest mock server, context budgeting, skill loader |
+| `internal/session` | Session CRUD, trim, cleanup, list, latest, fallback scan, corrupt data, path-traversal protection, concurrent safety, atomic writes, audit log roundtrip |
+| `internal/sandbox` | Image resolution, `docker run` argument construction (security defaults, forbidden-mount filtering), nested-path file injection, build-from-Dockerfile caching |
+| `internal/tool` | Registry CRUD, duplicate detection, ClarifyTool full surface |
+| `internal/ws` | WebSocket constant verification |
+| `internal/resource` | @-reference parsing, file resolution, session resolution, security |
+| `internal/render` | Terminal output, no-color mode, nil safety, tool call/result rendering |
+| `internal/danger` | Command classification across 8 risk classes, config overrides, allow/denylist, classifier-bypass attempts, approver friction |
+| `internal/memory` | Facts CRUD, buffer ring, episodes, merge detector (go-vector), ReplaceEntry/AppendEntry, memory tool, security scan, LLM ranking, episode provenance |
+| `internal/skills` | Loading, triggers, self-improvement heuristics, curation, LLM-enhanced generation, import, tools, AnalyzeMessages/RunAutoSaveLoop, ValidateSkillName, isPrivateHost |
+| `internal/telegram` | Bot client, long-polling, command handlers, session management, plan CRUD, voice/photo download, health server, retry/backoff |
+| `cmd/odek` | Flag parsing, init, version, dispatch table, sandbox setup wiring, subagent, serve, security E2E, shell-tool danger, browser tool, audit CLI, skill promote, untrusted-tool wrapper |
 
 ## Key packages
 
 ### Web UI (`cmd/odek/serve.go` + `internal/ws/ws.go` + `cmd/odek/ui/index.html`)
 
 - **serve.go**: HTTP server with embedded WebSocket handler, `@` resource API, session list API
-- **ws/ws.go**: Zero-dependency RFC 6455 WebSocket (~200 LOC). Handles upgrade, text frames, close, ping/pong
-- **ui/index.html**: Single-file SPA, ~770 LOC vanilla JS + CSS. Streaming, collapsible tool blocks, `@` autocomplete, session sidebar
+- **ws/ws.go**: Zero-dependency RFC 6455 WebSocket. Handles upgrade, text frames, close, ping/pong
+- **ui/index.html + app.js + style.css**: Vanilla JS + CSS SPA. Streaming, collapsible tool blocks, `@` autocomplete, session sidebar
 
 See [docs/WEBUI.md](docs/WEBUI.md) for the WebSocket protocol and full documentation.
 
-### Sub-agents (`cmd/odek/subagent.go` + `cmd/odek/subagent_tool.go`)
+### Sub-agents (`cmd/odek/subagent.go` + `cmd/odek/subagent_tool.go` + `cmd/odek/subagent_key.go`)
 
-- **subagent.go**: CLI handler for `odek subagent --goal <string>`. Parses flags, creates agent, runs with minimal system prompt, outputs JSON to stdout
+- **subagent.go**: CLI handler for `odek subagent --goal <string>`. Parses flags, creates agent, runs with minimal system prompt, outputs JSON to stdout (includes `parent_session` when `--parent-session` was passed)
 - **subagent_tool.go**: `delegate_tasks` built-in tool. Spawns real OS processes via `exec.Command` with temp files for task data
+- **subagent_key.go**: API key handoff to the spawned child via an unlinked-tempfile FD passed through `ExtraFiles`, so the secret never appears in the child's `/proc/<pid>/environ`
 
 See [docs/SUBAGENTS.md](docs/SUBAGENTS.md) for full documentation.
+
+### Sandbox (`internal/sandbox/` + `cmd/odek/main.go::setupSandbox`)
+
+- **sandbox/sandbox.go**: container lifecycle inputs — image resolution (explicit / `Dockerfile.odek` / `alpine:latest`), `docker run` argument construction with mandatory hardening (`--cap-drop ALL`, `--security-opt no-new-privileges`, `--tmpfs /tmp:noexec`), and `InjectFiles` (preserves nested paths via in-container `mkdir -p`)
+- **cmd/odek/main.go::setupSandbox**: wires the resolved container into `*shellTool` / `*parallelShellTool` — kept in `cmd/odek` because the sandbox package must not know about agent-tool internals
+
+See [docs/SANDBOXING.md](docs/SANDBOXING.md) for the user-facing security model.
+
+### Skill learning loop (`internal/skills/learnloop.go` + `cmd/odek/main.go::runLearnLoop`)
+
+- **skills/learnloop.go**: non-interactive pipeline — `AnalyzeMessages` converts a conversation into suggestions (heuristics + LLM enhancement + provenance), `RunAutoSaveLoop` filters against the skip list, persists eligible suggestions, fires notifier events, and triggers post-save micro-curation
+- **cmd/odek/main.go::runLearnLoop**: orchestration only — calls `AnalyzeMessages` → `FilterSkipped` → tries `RunAutoSaveLoop`; falls back to `interactiveSavePrompt` (the only TTY-coupled piece) when auto-save is disabled
+
+See [docs/LEARNING.md](docs/LEARNING.md) for the user-facing skill model.
 
 ## Performance Architecture
 

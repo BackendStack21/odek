@@ -339,7 +339,7 @@
   <ul class="whys">
     <li>
       <span class="q">Why?</span>
-      <span class="a">Because every AI agent framework today ships a <strong>200-package dependency tree</strong> and a 200 MB Python venv. odek is an <strong>~12 MB static binary</strong> with <strong>minimal dependencies</strong> — everything else is Go stdlib.</span>
+      <span class="a">Because every AI agent framework today ships a <strong>200-package dependency tree</strong> and a fat Python venv. odek is a <strong>small static binary</strong> with a <strong>tiny dependency tree</strong> — everything else is Go stdlib.</span>
     </li>
     <li>
       <span class="q">Why?</span>
@@ -433,8 +433,8 @@
       <div class="slide">
         <span class="info"># MCP server mode</span><br>
         <span class="prompt">$ odek mcp</span><br>
-        <span class="info">odek mcp ⚡  MCP server starting (v0.48.0)</span><br>
-        <span class="output">Connected by Claude Code. Exposing 8 tools:</span><br>
+        <span class="info">odek mcp ⚡  MCP server starting</span><br>
+        <span class="output">Connected by Claude Code. Exposing built-in tools:</span><br>
         <span class="output">  • read_file    — read files with line numbers</span><br>
         <span class="output">  • write_file   — write files safely</span><br>
         <span class="output">  • search_files — ripgrep-backed search</span><br>
@@ -466,7 +466,7 @@
         <span class="info">Intelligence Engineering Benchmark v2.0</span><br>
         <span class="output">Tier 1 — Code Generation: multi-location</span><br>
         <span class="output">  refactoring, format-tolerant scoring</span><br>
-        <span class="output">Tier 2 — Tool Use: 8 native tools</span><br>
+        <span class="output">Tier 2 — Tool Use: native tool set</span><br>
         <span class="output">Tier 3 — Memory: 3-tier persistence</span><br>
         <span class="output">Tier 4 — Speed: parallel execution,</span><br>
         <span class="output">  speed-weighted scoring</span><br>
@@ -568,8 +568,8 @@
       <tr><th></th><th>odek</th><th>Python agents</th></tr>
     </thead>
     <tbody>
-      <tr><td>Direct dependencies</td><td class="win">Minimal — stdlib + 4 focused pkgs</td><td>200+ packages</td></tr>
-      <tr><td>Binary size</td><td class="win">~12 MB static</td><td>50–200 MB (venv)</td></tr>
+      <tr><td>Direct dependencies</td><td class="win">Minimal — stdlib + a handful of focused pkgs</td><td>200+ packages</td></tr>
+      <tr><td>Binary size</td><td class="win">Small static binary</td><td>50–200 MB (venv)</td></tr>
       <tr><td>Startup</td><td class="win">Instant</td><td>2–10 seconds</td></tr>
       <tr><td>Sandbox</td><td class="win"><code>--sandbox</code> flag</td><td>Manual Docker setup</td></tr>
       <tr><td>Tool interface</td><td class="win">One interface, one method</td><td>Class hierarchies + decorators</td></tr>

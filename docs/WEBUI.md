@@ -25,7 +25,7 @@ Open `http://localhost:8080` in your browser. The UI auto-reconnects if the serv
                                               └───────────────────┘
 ```
 
-The server uses a **custom WebSocket implementation** (`internal/ws/`) — ~200 LOC of hand-written RFC 6455 framing in pure Go. No gorilla/websocket, no caddy/caddylib, no external dependencies.
+The server uses a **custom WebSocket implementation** (`internal/ws/`) — a compact hand-written RFC 6455 framer in pure Go. No gorilla/websocket, no caddy/caddylib, no external dependencies.
 
 ## Features
 

@@ -17,12 +17,15 @@
 | `odek skill list` | List all available skills |
 | `odek skill view <name>` | View a skill's full content |
 | `odek skill delete <name>` | Delete a skill |
+| `odek skill promote <name>` | Clear `NeedsReview` on a tainted auto-saved skill so it can auto-load |
 | `odek skill import <uri> [flags]` | Import a skill from file:// or https:// |
 || `odek skill curate` | Analyze skills for quality, staleness, trigger overlap |
 || `odek skill curate --apply` | Apply all curation suggestions (merge, delete, prune) |
 || `odek skill curate --interactive` | Review each suggestion one-by-one |
 || `odek skill reset-skips [name]` | Reset skip list (all or specific skill) |
-|| `odek serve [--addr :8080] [--open]` | Web UI server with WebSocket streaming, `@` resource completion, session history |
+| `odek audit <session-id>` | Print the prompt-injection audit log for a session (JSON) |
+| `odek audit --list` | List sessions with non-zero ingest counts and divergence flags |
+|| `odek serve [--addr :8080] [--open] [--no-sandbox]` | Web UI server. Sandbox is on by default; pass `--no-sandbox` to disable |
 || `odek subagent --goal <string> [flags]` | Run a focused sub-task; outputs JSON on stdout. Spawned by `delegate_tasks` tool |
 | `odek init [--global] [--force]` | Create a config file template |
 | `odek mcp [--sandbox]` | Start MCP server (expose tools to Claude Code) or connect to external MCP servers (via `mcp_servers` config) |
@@ -35,7 +38,8 @@
 | `--model <name>` | string | `deepseek-chat` | LLM model — profiles auto-set thinking/timeout (see [Providers](docs/PROVIDERS.md)). Consider using `deepseek-v4-flash` for faster/cheaper tasks. |
 | `--base-url <url>` | string | `https://api.deepseek.com/v1` | OpenAI-compatible API endpoint |
 | `--max-iter <n>` | int | `90` | Max think→act cycles |
-| `--thinking <level>` | string | profile default | Reasoning depth: `enabled`/`disabled`/`low`/`medium`/`high` |
+| `--thinking <level>` | string | profile default | Reasoning depth: `enabled`/`disabled`/`low`/`medium`/`high`. Requires a model that supports extended thinking. |
+| `--thinking-budget <n>` | int | `5000` | Max thinking tokens for extended thinking (Anthropic budget_tokens). Only applied when `--thinking` is set. |
 | `--sandbox` | bool | false | Execute shell commands inside Docker container |
 | `--deliver` | bool | false | Deliver the agent's final response to the configured Telegram `default_chat_id`. Requires `telegram.bot_token` + `telegram.default_chat_id` in config. Use with cron for scheduled agent tasks. |
 | `--interaction-mode <mode>` | string | `engaging` | Tool-call rendering: `engaging` (emoji narration) or `verbose` (raw tool output) |
@@ -171,6 +175,14 @@ odek skill view docker-build
 # Delete a skill
 odek skill delete docker-build
 
+# Promote a tainted auto-saved skill so it can auto-load.
+# Skills derived from sessions that ingested untrusted content
+# (browser fetch, file outside CWD, MCP response, audio) are
+# saved with NeedsReview=true and pinned to the Lazy set.
+# Review the body first, then promote.
+odek skill view my-skill
+odek skill promote my-skill
+
 # Import a skill from a file or URL
 odek skill import ./skills/my-skill.md
 odek skill import https://example.com/skills/deploy.md
@@ -252,11 +264,40 @@ Use `odek skill reset-skips` to clear the skip list and re-enable suppressed sug
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--sandbox-image <img>` | `alpine:latest` | Docker image |
-| `--sandbox-network <mode>` | `none` | Network: `none`/`bridge`/`host` |
+| `--sandbox-network <mode>` | `none` | Network: `none`/`bridge`. `host` rejected. |
 | `--sandbox-readonly` | false | Mount working directory read-only |
 | `--sandbox-memory <s>` | — | Memory limit (e.g. `512m`, `2g`) |
 | `--sandbox-cpus <n>` | — | CPU limit (e.g. `0.5`, `2`) |
 | `--sandbox-user <s>` | — | Run as user (`uid:gid`) |
+| `--no-sandbox` | — | (serve only) Disable the default-on sandbox. Prints a warning. |
+
+`odek serve` enables `--sandbox` by default. `odek run` and `odek repl` keep sandbox opt-in but print a startup warning when running unsandboxed. Set `ODEK_SUPPRESS_SANDBOX_WARNING=1` to silence the warning if you've made an informed decision.
+
+## Audit log
+
+`odek audit` reads the per-session prompt-injection audit log written under `<sessions>/audit/<id>.json`. Every time the agent ingests externally-sourced content (browser fetch, file read, MCP tool response, audio transcript) the log records:
+
+- the source (URL / path / `mcp:<server>:<tool>`)
+- a 16-hex SHA-256 prefix of the content
+- the turn it landed on
+
+After each turn, odek runs a divergence heuristic and sets `suspicious_divergence=true` when the agent ingested untrusted content **and** the tools called referenced resources (URLs, paths, dotted names) that did not appear in the user's preceding message — the footprint of a successful prompt injection.
+
+```bash
+odek audit --list
+# Session                Ingests  Turns  Suspicious  First-Ingest-Source
+# 20260527-a1b2c3            12      4           1   https://example.com/blog
+# 20260527-d4e5f6             3      2           0   /tmp/spec.md
+
+odek audit 20260527-a1b2c3
+# JSON: { "session_id": "...", "ingests": [...], "turns": [...] }
+
+odek audit 20260527-a1b2c3 | jq '.turns[] | select(.suspicious_divergence)'
+```
+
+The audit log is local-only — nothing in odek transmits it.
+
+See [SECURITY.md](SECURITY.md) for the full threat model.
 
 ## Init flags
 

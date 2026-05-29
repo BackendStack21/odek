@@ -97,9 +97,14 @@ The `delegate_tasks` tool is available in all odek modes (CLI, REPL, Web UI). Th
   "summary": "Built JWT auth middleware with HS256 signing",
   "files_changed": ["internal/middleware/auth.go"],
   "tokens_used": 4200,
-  "iterations": 3
+  "iterations": 3,
+  "parent_session": "20260519-abc123"  // echoed back when --parent-session was passed
 }
 ```
+
+The `parent_session` field is omitted when `--parent-session` was not supplied.
+Use it to correlate sub-agent results back to the originating parent session
+in logs, dashboards, or audit pipelines.
 
 On failure:
 
@@ -326,11 +331,11 @@ Config in `odek.json`:
 
 The sub-agent system has three test layers:
 
-| Layer | Tests | Runner | What's verified |
-|-------|-------|--------|-----------------|
-| **Contract tests** | ~50 | `go test ./cmd/odek/` | Flag parsing, JSON stdout protocol, exit codes, tool schema, config parsing, buildSubagentPrompt dynamic generation (goal embedded, context, intent detection, uniqueness, max length) |
-| **E2E tests** | 16 | `ODEK_E2E=true go test ./cmd/odek/ -run "TestE2E_"` | Real subprocess spawning, tool → binary pipeline, stderr protocol, concurrency, timeouts, custom system prompt threading |
-| **Full suite** | All | `go test -race ./...` | 12 packages, race-detector clean |
+| Layer | Runner | What's verified |
+|-------|--------|-----------------|
+| **Contract tests** | `go test ./cmd/odek/` | Flag parsing, JSON stdout protocol, exit codes, tool schema, config parsing, `buildSubagentPrompt` dynamic generation (goal embedded, context, intent detection, uniqueness, max length) |
+| **E2E tests** | `ODEK_E2E=1 go test ./cmd/odek/ -run "TestE2E_"` | Real subprocess spawning, tool → binary pipeline, stderr protocol, concurrency, timeouts, custom system prompt threading |
+| **Full suite** | `go test -race ./...` | Every package, race-detector clean |
 
 E2E tests:
 - Build the `odek` binary once via `TestMain`
