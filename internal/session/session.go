@@ -35,15 +35,15 @@ import (
 // Session represents a single multi-turn conversation with the agent.
 // All fields are exported for direct manipulation at the CLI layer.
 type Session struct {
-	ID        string         `json:"id"`         // e.g. "20260518-abc123"
-	CreatedAt time.Time      `json:"created_at"` // first message time
-	UpdatedAt time.Time      `json:"updated_at"` // last append time
-	Model     string         `json:"model"`      // model name used
-	Turns     int            `json:"turns"`       // number of user turns
-	Task      string         `json:"task"`        // first user message (label)
-	Sandbox   bool           `json:"sandbox"`     // was sandboxed — auto-apply on resume
-	Messages  []llm.Message  `json:"messages"`    // full conversation history
-	Buffer    []string       `json:"buffer,omitempty"` // last N turn summaries (memory tier 2)
+	ID        string        `json:"id"`               // e.g. "20260518-abc123"
+	CreatedAt time.Time     `json:"created_at"`       // first message time
+	UpdatedAt time.Time     `json:"updated_at"`       // last append time
+	Model     string        `json:"model"`            // model name used
+	Turns     int           `json:"turns"`            // number of user turns
+	Task      string        `json:"task"`             // first user message (label)
+	Sandbox   bool          `json:"sandbox"`          // was sandboxed — auto-apply on resume
+	Messages  []llm.Message `json:"messages"`         // full conversation history
+	Buffer    []string      `json:"buffer,omitempty"` // last N turn summaries (memory tier 2)
 }
 
 // ── Store ──────────────────────────────────────────────────────────────
