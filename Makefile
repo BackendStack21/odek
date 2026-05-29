@@ -31,33 +31,41 @@ build-all: ## Cross-compile for linux, darwin (amd64 + arm64)
 # ── Test (no LLM) ──────────────────────────────────────────────────────
 
 .PHONY: test
-test: ## Run unit tests (fast, no LLM API calls)
-	$(GO) test -short -count=1 ./...
+test: ## Run unit tests (fast, no LLM API calls; excludes cmd/odek)
+	$(GO) list ./... | grep -v cmd/odek | xargs $(GO) test -short -count=1
+
+.PHONY: test-internal
+test-internal: ## Run only internal package tests (excludes cmd/odek)
+	$(GO) list ./... | grep -v cmd/odek | xargs $(GO) test -short -count=1
+
+.PHONY: test-cmd
+test-cmd: ## Run cmd/odek unit tests (excludes TTY approval and E2E tests)
+	$(GO) test -short -count=1 -timeout 300s ./cmd/odek -skip "TestBrowser|TestModel_E2E|TestREPL_E2E|TestSandbox_E2E|TestSecurity_E2E|TestMCP_E2E|TestSubagent_E2E|TestRefs_E2E"
 
 .PHONY: test-race
-test-race: ## Run unit tests with race detector
-	$(GO) test -short -race -count=1 ./...
+test-race: ## Run unit tests with race detector (excludes cmd/odek)
+	$(GO) list ./... | grep -v cmd/odek | xargs $(GO) test -short -race -count=1
 
 .PHONY: test-verbose
-test-verbose: ## Run unit tests with full output
-	$(GO) test -short -v -count=1 ./...
+test-verbose: ## Run unit tests with full output (excludes cmd/odek)
+	$(GO) list ./... | grep -v cmd/odek | xargs $(GO) test -short -v -count=1
 
 # ── Coverage ───────────────────────────────────────────────────────────
 
 .PHONY: coverage
-coverage: ## Generate HTML coverage report (unit tests)
-	$(GO) test -short -coverprofile=$(COVER) -covermode=atomic ./...
+coverage: ## Generate HTML coverage report (unit tests; excludes cmd/odek)
+	$(GO) list ./... | grep -v cmd/odek | xargs $(GO) test -short -coverprofile=$(COVER) -covermode=atomic
 	$(GO) tool cover -html=$(COVER) -o coverage.html
 	@echo "→ coverage.html"
 
 .PHONY: coverage-func
-coverage-func: ## Print per-function coverage summary
-	$(GO) test -short -coverprofile=$(COVER) -covermode=atomic ./...
+coverage-func: ## Print per-function coverage summary (excludes cmd/odek)
+	$(GO) list ./... | grep -v cmd/odek | xargs $(GO) test -short -coverprofile=$(COVER) -covermode=atomic
 	$(GO) tool cover -func=$(COVER)
 
 .PHONY: coverage-total
-coverage-total: ## Print total coverage percentage
-	$(GO) test -short -coverprofile=$(COVER) -covermode=atomic ./...
+coverage-total: ## Print total coverage percentage (excludes cmd/odek)
+	$(GO) list ./... | grep -v cmd/odek | xargs $(GO) test -short -coverprofile=$(COVER) -covermode=atomic
 	@$(GO) tool cover -func=$(COVER) | tail -1 | awk '{print "total " $$3}'
 
 # ── Test (with LLM) ────────────────────────────────────────────────────

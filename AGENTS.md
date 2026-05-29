@@ -33,18 +33,23 @@ cmd/odek/
   mcp.go                      MCP server implementation (stdio + SSE transport)
   transcribe_tool.go          Whisper.cpp audio transcription
   session_search_tool.go      Session search tool
-  wsapprover.go               WebSocket interactive approval relay
+  wsapprover.go               WebSocket interactive approval relay (with friction + class-trust gates)
   refs.go                     @-resource reference resolution (files, sessions)
+  untrusted.go                <untrusted_content_<nonce>> wrapper + per-call ingest recorder
+  audit.go                    Per-turn audit + `odek audit` subcommand (divergence heuristic)
+  subagent_key.go             FD-based API key handoff (parent → sub-agent, never via env)
+  skill_promote.go            `odek skill promote` — clear NeedsReview on a tainted skill
+  security_report_validation_test.go  Regression bar for every documented mitigation
   *_test.go                   200+ unit + E2E tests covering all tools
 internal/
   llm/                        OpenAI-compatible HTTP client with reasoning_content support
   loop/                       ReAct engine: observe → think → parallel-act → repeat
   tool/                       Thread-safe tool registry, clarify.go, send_message.go
-  danger/                     Command/URL classification for security gating
+  danger/                     Command/URL classification + bypass-resistant tokenizer (substitution, $IFS, wrappers, basenames). TTYApprover with friction mode.
   auth/                       Interactive approval system
-  memory/                     MemoryManager (facts, buffer, episodes, merge, scan, LLM search)
-  session/                    Session store (CRUD, trim, cleanup, compact JSON)
-  skills/                     Skill system (types, loader, triggers, self-improve, curator, import, cache)
+  memory/                     MemoryManager (facts, buffer, episodes, merge, scan). EpisodeProvenance — tainted episodes never auto-replayed.
+  session/                    Session store (CRUD, trim, cleanup, compact JSON). AuditStore + divergence heuristic.
+  skills/                     Skill system (types, loader, triggers, self-improve, curator, import, cache). SkillProvenance gate — NeedsReview skills pinned to Lazy.
   config/                     Config file loading, env vars, secrets.env, priority merge
   telegram/                   Telegram bot: bot.go, poller.go, handler.go, commands.go, session.go
   render/                     Terminal output and narrator support
@@ -82,6 +87,21 @@ v0.56.2: Vertical space compression — `Start()` is now a no-op; blank lines re
 
 ### Identity
 System prompt is loaded by priority: `--system` flag > `~/.odek/IDENTITY.md` > compiled-in defaultSystem. The default is a concise identity focused on TDD workflow, tool discipline, and safety rules.
+
+### Security Architecture
+Layered prompt-injection / approval-fatigue defenses. Full reference: [docs/SECURITY.md](docs/SECURITY.md).
+
+- **Untrusted-content wrapper** (`cmd/odek/untrusted.go`) — every tool whose output sources from outside the trust boundary (`browser`, `read_file`, `shell`, `search_files`, `multi_grep`, `transcribe`, any MCP tool) wraps results in `<untrusted_content_<nonce> source="...">…</untrusted_content_<nonce>>`. Per-call nonce defeats wrapper-escape via literal close tag.
+- **Audit log** (`cmd/odek/audit.go` + `internal/session/audit.go`) — every `wrapUntrusted` call records source + content-hash + turn into `<sessions>/audit/<id>.json`. After each turn a divergence heuristic flags `suspicious_divergence=true` when the agent ingested untrusted content AND its tool calls referenced resources the user did not mention. Inspect with `odek audit <session-id>` / `odek audit --list`.
+- **Memory taint** (`internal/memory/provenance.go`) — `EpisodeProvenance` tracks Untrusted/Sources/UserApproved. Tainted episodes are stored but `Search()` filters them out, so a one-shot injection cannot persist via the episode pipeline. User must explicitly promote.
+- **Skill provenance gate** (`internal/skills/loader.go` + `cache.go`) — `Skill.Provenance{Untrusted, Sources, NeedsReview}`. NeedsReview skills pin to Lazy regardless of `auto_load`. `odek skill promote <name>` clears the flag after user review.
+- **Sub-agent damage cap** (`cmd/odek/subagent.go::applySubagentTrust`) — `delegate_tasks` carries `trust_level` + `max_risk`. Untrusted ⇒ NonInteractive=deny, Destructive/CodeExec/Install/SystemWrite/NetworkEgress all forced to Deny. `max_risk` ⇒ everything above cap forced to Deny.
+- **FD-based API key handoff** (`cmd/odek/subagent_key.go`) — parent writes key to a 0600 tempfile, immediately `unlink()`s, passes the FD via `cmd.ExtraFiles`. Sub-agent reads from `$ODEK_API_KEY_FD` and closes. Key never in `/proc/<pid>/environ`.
+- **Approver friction** (`internal/danger/approver.go`, `cmd/odek/wsapprover.go`) — both TTYApprover and WSApprover engage friction mode after 3 approvals of the same class in 60s: require typing literal `approve`, 1.5s pause. Trust-class shortcut disabled for `destructive` + `blocked` regardless.
+- **Danger classifier bypass resistance** (`internal/danger/classifier.go`) — `normalize()` pre-processes: expand `$IFS` / `${IFS}`, extract `$(...)` / `` `...` `` substitutions, strip `command` / `exec` / `builtin` wrappers, collapse unquoted backslashes, basename absolute paths. Regression suite in `classifier_bypass_test.go`.
+- **WS Origin allowlist** (`cmd/odek/serve.go::checkLocalOrigin`) — rejects non-localhost upgrades. Closes CSRF-on-localhost.
+- **Serve sandbox default-on** — `odek serve` enables `--sandbox` automatically unless `--no-sandbox` is passed.
+- **Secret redaction** (`internal/redact/redact.go`) — 20+ patterns: OpenAI, Anthropic, GitHub PAT, AWS, PEM, JWT, Vault, Google OAuth, SendGrid, Discord, DB URLs, etc.
 
 ### Platform Support
 CLI, REPL, Web UI, Telegram bot — all in a single binary.

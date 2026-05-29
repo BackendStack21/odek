@@ -1,6 +1,6 @@
 # odek
 
-**Minimal Go autonomous agent runtime — 5 deps, ~11 MB, instant startup.**
+**Minimal Go autonomous agent runtime — tiny dep tree, small static binary, instant startup.**
 
 One binary. One loop. Zero frameworks. ReAct (Reasoning + Acting) — think, therefore act.
 
@@ -33,7 +33,10 @@ odek is not a framework. It's a **runtime** — the smallest possible surface ar
 ## Strategic Features
 
 ### 🔒 Sandboxed Execution
-`odek run --sandbox` — every session spawns an isolated Docker container. No network, no host mounts beyond the working directory, zero capabilities, destroyed on exit. `--ctx` files are automatically injected into the container at `/workspace/`. Full security model in [docs/SANDBOXING.md](docs/SANDBOXING.md).
+Every session can run in an isolated Docker container: no network, no host mounts beyond the working directory, zero capabilities, destroyed on exit. `odek serve` enables the sandbox **by default**; `odek run` keeps it opt-in but warns when running unsandboxed. `--ctx` files are auto-injected into the container at `/workspace/`. Full security model in [docs/SANDBOXING.md](docs/SANDBOXING.md).
+
+### 🛡️ Prompt-Injection-Aware
+External content the agent ingests (`browser`, `read_file`, `shell`, `search_files`, `multi_grep`, `transcribe`, MCP tools) is wrapped in per-call nonce'd `<untrusted_content>` boundaries so the model can distinguish data from instructions. The danger classifier resists 8 known shell-evasion tricks (`$()`, backticks, `$IFS`, `command`/`exec`, `\rm`, basenamed absolute paths). Approvers engage friction mode after 3 same-class approvals in 60 s. Memory episodes from tainted sessions are stored but never auto-replayed. Skill auto-save tracks provenance and pins untrusted suggestions for explicit `odek skill promote`. `odek audit <session-id>` surfaces every ingest + per-turn divergence heuristic. Full threat model in [docs/SECURITY.md](docs/SECURITY.md).
 
 ### 🧩 Sub-Agent Delegation
 Parallel OS-process sub-agents via `delegate_tasks`. True isolation — each sub-agent is a fresh `odek subagent` process with its own config, tools, and termination timeout. Up to 8 concurrent workers. [docs/SUBAGENTS.md](docs/SUBAGENTS.md)
@@ -118,9 +121,12 @@ odek run "@README.md what does this project do?"
 | `odek skill list` | List available skills |
 | `odek skill view <name>` | View skill content |
 | `odek skill delete <name>` | Delete a skill |
+| `odek skill promote <name>` | Promote a tainted auto-saved skill after review |
 | `odek skill import <uri>` | Import skill from URL |
 | `odek skill curate` | Audit skill quality/overlap |
-| `odek serve [--addr :8080]` | Start Web UI server |
+| `odek audit <session-id>` | Print the prompt-injection audit log for a session |
+| `odek audit --list` | List sessions with ingest counts and divergence flags |
+| `odek serve [--addr :8080]` | Start Web UI server (sandbox on by default; `--no-sandbox` to disable) |
 | `odek subagent --goal <string>` | Run a focused sub-task |
 | `odek init [--global]` | Create config file |
 | `odek mcp [--sandbox]` | Start MCP server — expose tools to Claude Code |
@@ -193,14 +199,13 @@ The full `Config` struct supports: `BaseURL`, `Thinking`, `SandboxCleanup`, `Ren
 ## Test
 
 ```bash
-go test ./...                  # 1760+ tests, all pass (no setup required)
-go test -race ./...           # race detector clean
-go test -cover ./...          # overall coverage ~85%
+go test ./...                 # full suite, no setup required
+go test -race ./...           # also clean under the race detector
+go test -cover ./...          # per-package coverage report
+ODEK_E2E=1 go test ./cmd/odek/   # opt-in Docker / subprocess E2E suite
 ```
 
-Everything runs with `go test` — no Docker, no network, no external services required for unit tests.
-
-Coverage highlights: `internal/tool` 100%, `internal/llm` 87.9%, `internal/loop` 89.4%, `internal/session` 89.7%, `internal/telegram` 86.9%, `internal/memory` 86.2%, `internal/skills` 86.3%.
+Everything runs with `go test` — no Docker, no network, no external services required for the default unit suite. The opt-in `ODEK_E2E=1` set exercises the sandbox, sub-agent subprocess pipeline, and Web UI handshake against real Docker / real processes.
 
 ---
 
