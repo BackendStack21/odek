@@ -72,6 +72,33 @@ var patterns = []*regexp.Regexp{
 
 	// Generic credential env vars: EXPORT/VAR=VALUE with long base64 values
 	regexp.MustCompile(`(?i)(?:export\s+)?[A-Z_]{3,}(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)[A-Z_]{0,20}\s*=\s*['\x60"]?([^\s'\x60"]{20,})['\x60"]?`),
+
+	// HashiCorp Vault tokens — service (hvs.) and batch (hvb.).
+	regexp.MustCompile(`hv[sb]\.[A-Za-z0-9_-]{30,}`),
+
+	// Google OAuth 2.0 access tokens (ya29. prefix) and refresh tokens
+	// (1//0 prefix). 1// alone is too generic — refresh tokens always
+	// begin with the literal "1//0".
+	regexp.MustCompile(`ya29\.[A-Za-z0-9_.-]{20,}`),
+	regexp.MustCompile(`\b1//0[A-Za-z0-9_-]{30,}`),
+
+	// SendGrid API keys — SG.<22-char id>.<43-char secret>.
+	regexp.MustCompile(`SG\.[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{30,}`),
+
+	// Discord bot tokens — three base64url segments. Discord user IDs
+	// are 17–19 digit decimal numbers, which encode in base64 to strings
+	// starting with M, N, or O. Anchoring on that prefix + the strict
+	// segment-length structure avoids collisions with generic dotted
+	// base64 strings; real JWTs are already matched by the eyJ pattern
+	// above.
+	regexp.MustCompile(`\b[MNO][A-Za-z0-9_-]{22,27}\.[A-Za-z0-9_-]{5,7}\.[A-Za-z0-9_-]{27,40}\b`),
+
+	// Database connection URLs with embedded credentials. We require a
+	// scheme that genuinely carries DB creds (so this doesn't catch HTTP
+	// basic auth URLs that often appear legitimately in code). The
+	// password segment must be at least 6 chars to avoid matching common
+	// placeholders like `:x@`.
+	regexp.MustCompile(`(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqps?|mssql|clickhouse)://[^:\s/]+:[^@\s/]{6,}@[^\s'\x60"]+`),
 }
 
 // ── Public API ─────────────────────────────────────────────────────────
