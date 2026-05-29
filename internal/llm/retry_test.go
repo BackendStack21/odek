@@ -26,7 +26,7 @@ func TestClient_Call_RetryOn429(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	c := New(ts.URL, "key", "model", "", 10*time.Second)
+	c := New(ts.URL, "key", "model", "", 0, 10*time.Second)
 	result, err := c.Call(context.Background(), []Message{
 		{Role: "user", Content: "hi"},
 	}, nil, nil)
@@ -55,7 +55,7 @@ func TestClient_Call_RetryOn503(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	c := New(ts.URL, "key", "model", "", 10*time.Second)
+	c := New(ts.URL, "key", "model", "", 0, 10*time.Second)
 	result, err := c.Call(context.Background(), []Message{
 		{Role: "user", Content: "hi"},
 	}, nil, nil)
@@ -78,7 +78,7 @@ func TestClient_Call_NoRetryOn400(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	c := New(ts.URL, "key", "model", "", 10*time.Second)
+	c := New(ts.URL, "key", "model", "", 0, 10*time.Second)
 	_, err := c.Call(context.Background(), []Message{
 		{Role: "user", Content: "hi"},
 	}, nil, nil)
@@ -101,7 +101,7 @@ func TestClient_Call_RetryExhausted(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	c := New(ts.URL, "key", "model", "", 10*time.Second)
+	c := New(ts.URL, "key", "model", "", 0, 10*time.Second)
 	_, err := c.Call(context.Background(), []Message{
 		{Role: "user", Content: "hi"},
 	}, nil, nil)
@@ -134,7 +134,7 @@ func TestClient_Call_RetryOnNetworkError(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	c := New(ts.URL, "key", "model", "", 10*time.Second)
+	c := New(ts.URL, "key", "model", "", 0, 10*time.Second)
 	result, err := c.Call(context.Background(), []Message{
 		{Role: "user", Content: "hi"},
 	}, nil, nil)

@@ -31,9 +31,9 @@ func cacheKey(baseURL, apiKey string) string {
 // Different providers use different field names for context length.
 type rawModel struct {
 	ID            string `json:"id"`
-	ContextLength int    `json:"context_length"`    // OpenRouter, Together, some providers
-	MaxContext    int    `json:"max_context"`        // Fallback field name
-	MaxInput      int    `json:"max_input_tokens"`   // Common alternative
+	ContextLength int    `json:"context_length"`   // OpenRouter, Together, some providers
+	MaxContext    int    `json:"max_context"`      // Fallback field name
+	MaxInput      int    `json:"max_input_tokens"` // Common alternative
 }
 
 // modelsResponse is the top-level response from GET /models.

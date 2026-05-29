@@ -16,13 +16,14 @@ import (
 
 // Client sends chat completion requests to any OpenAI-compatible endpoint.
 type Client struct {
-	BaseURL     string
-	APIKey      string
-	Model       string
-	Thinking    string  // "enabled", "disabled", "low", "medium", "high", or empty
-	MaxTokens   int     // max output tokens (0 = provider default)
-	Temperature float64 // 0 = use provider default, <0 = omit from request
-	http        *http.Client
+	BaseURL        string
+	APIKey         string
+	Model          string
+	Thinking       string  // "enabled", "disabled", "low", "medium", "high", or empty
+	ThinkingBudget int     // max thinking tokens for Anthropic extended thinking (0 = use default 5000)
+	MaxTokens      int     // max output tokens (0 = provider default)
+	Temperature    float64 // 0 = use provider default, <0 = omit from request
+	http           *http.Client
 }
 
 // maxResponseSize limits the LLM response body read to prevent DoS/OOM.
@@ -31,23 +32,24 @@ const maxResponseSize = 50 * 1024 * 1024 // 50 MB
 // New creates a Client with the given timeout. Pass 0 to use the default
 // (120s). The timeout applies per HTTP request — the agent loop may have
 // multiple requests; set a generous timeout for deep-reasoning models.
-func New(baseURL, apiKey, model, thinking string, timeout time.Duration) *Client {
-	return NewWithMaxTokens(baseURL, apiKey, model, thinking, 0, timeout)
+func New(baseURL, apiKey, model, thinking string, thinkingBudget int, timeout time.Duration) *Client {
+	return NewWithMaxTokens(baseURL, apiKey, model, thinking, thinkingBudget, 0, timeout)
 }
 
 // NewWithMaxTokens creates a Client with a specific max_tokens setting.
 // maxTokens=0 means no limit (provider default).
-func NewWithMaxTokens(baseURL, apiKey, model, thinking string, maxTokens int, timeout time.Duration) *Client {
+func NewWithMaxTokens(baseURL, apiKey, model, thinking string, thinkingBudget int, maxTokens int, timeout time.Duration) *Client {
 	if timeout <= 0 {
 		timeout = 120 * time.Second
 	}
 	return &Client{
-		BaseURL:   strings.TrimRight(baseURL, "/"),
-		APIKey:    apiKey,
-		Model:     model,
-		Thinking:  thinking,
-		MaxTokens: maxTokens,
-		http: transport.NewPooledClient(timeout),
+		BaseURL:        strings.TrimRight(baseURL, "/"),
+		APIKey:         apiKey,
+		Model:          model,
+		Thinking:       thinking,
+		ThinkingBudget: thinkingBudget,
+		MaxTokens:      maxTokens,
+		http:           transport.NewPooledClient(timeout),
 	}
 }
 
@@ -61,20 +63,20 @@ type CacheControl struct {
 // cache control. OpenAI-compatible endpoints that don't support this format
 // silently ignore the field.
 type SystemBlock struct {
-	Type         string       `json:"type"` // "text"
-	Text         string       `json:"text"`
+	Type         string        `json:"type"` // "text"
+	Text         string        `json:"text"`
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
 }
 
 // Message represents a chat message.
 type Message struct {
-	Role        string       `json:"role"`                  // "system", "user", "assistant", "tool"
-	Content     string       `json:"content"`               // text content
-	Name        string       `json:"name,omitempty"`        // tool name (for tool role)
-	ToolCallID  string       `json:"tool_call_id,omitempty"`
-	ToolCalls   []ToolCall   `json:"tool_calls,omitempty"`  // required for assistant role with tool calls
-	ReasoningContent string  `json:"reasoning_content,omitempty"` // DeepSeek reasoning tokens, must be echoed back
-	CacheControl *CacheControl `json:"cache_control,omitempty"` // Anthropic prompt caching marker
+	Role             string        `json:"role"`           // "system", "user", "assistant", "tool"
+	Content          string        `json:"content"`        // text content
+	Name             string        `json:"name,omitempty"` // tool name (for tool role)
+	ToolCallID       string        `json:"tool_call_id,omitempty"`
+	ToolCalls        []ToolCall    `json:"tool_calls,omitempty"`        // required for assistant role with tool calls
+	ReasoningContent string        `json:"reasoning_content,omitempty"` // DeepSeek reasoning tokens, must be echoed back
+	CacheControl     *CacheControl `json:"cache_control,omitempty"`     // Anthropic prompt caching marker
 }
 
 // ToolCall represents a single tool invocation requested by the model.
@@ -105,18 +107,20 @@ type FunctionDef struct {
 type CallParams struct {
 	Model           string          `json:"model"`
 	Messages        []Message       `json:"messages"`
-	System          []SystemBlock   `json:"system,omitempty"`         // Anthropic-style system blocks
+	System          []SystemBlock   `json:"system,omitempty"` // Anthropic-style system blocks
 	Tools           []ToolDef       `json:"tools,omitempty"`
 	Stream          bool            `json:"stream"`
-	MaxTokens       int             `json:"max_tokens,omitempty"`     // max output tokens (0 = omit/provider default)
-	Temperature     *float64        `json:"temperature,omitempty"`    // 0–2, nil = provider default
+	MaxTokens       int             `json:"max_tokens,omitempty"`  // max output tokens (0 = omit/provider default)
+	Temperature     *float64        `json:"temperature,omitempty"` // 0–2, nil = provider default
 	Thinking        *ThinkingConfig `json:"thinking,omitempty"`
 	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
 }
 
-// ThinkingConfig controls Deepseek's extended thinking feature.
+// ThinkingConfig controls extended thinking for DeepSeek and Anthropic models.
+// Anthropic requires budget_tokens when type is "enabled"; DeepSeek ignores it.
 type ThinkingConfig struct {
-	Type string `json:"type"` // "enabled" or "disabled"
+	Type         string `json:"type"`                    // "enabled" or "disabled"
+	BudgetTokens int    `json:"budget_tokens,omitempty"` // Anthropic: max thinking tokens
 }
 
 // CallResult is the parsed response from /chat/completions.
@@ -124,8 +128,8 @@ type CallResult struct {
 	Content          string     // assistant text
 	ReasoningContent string     // DeepSeek reasoning/thinking tokens
 	ToolCalls        []ToolCall // tool calls requested by the model
-	InputTokens  int        // prompt_tokens from API usage (0 = not reported)
-	OutputTokens int        // completion_tokens from API usage (0 = not reported)
+	InputTokens      int        // prompt_tokens from API usage (0 = not reported)
+	OutputTokens     int        // completion_tokens from API usage (0 = not reported)
 
 	// Cache metrics. Only populated when the provider returns them.
 	// Anthropic: cache_creation_input_tokens, cache_read_input_tokens
@@ -158,8 +162,8 @@ func ApplyCacheMarkers(messages []Message) ([]Message, []SystemBlock) {
 		// (Anthropic format) with cache_control
 		if m.Role == "system" && len(systemBlocks) == 0 {
 			systemBlocks = append(systemBlocks, SystemBlock{
-				Type: "text",
-				Text: m.Content,
+				Type:         "text",
+				Text:         m.Content,
 				CacheControl: &CacheControl{Type: "ephemeral"},
 			})
 			continue // don't add to messages — it's now in System
@@ -262,15 +266,33 @@ func (c *Client) Call(ctx context.Context, messages []Message, systemBlocks []Sy
 		MaxTokens: c.MaxTokens,
 	}
 
-	if c.Temperature >= 0 {
-		body.Temperature = &c.Temperature
-	}
-
 	switch c.Thinking {
-	case "enabled", "disabled":
-		body.Thinking = &ThinkingConfig{Type: c.Thinking}
-	case "low", "medium", "high":
-		body.ReasoningEffort = c.Thinking
+	case "enabled":
+		// Anthropic requires budget_tokens when enabling thinking.
+		// 5000 is a safe default: leaves ample room for the text response
+		// even on models with 8K max output (e.g. Claude Haiku).
+		// DeepSeek silently ignores the field.
+		budget := c.ThinkingBudget
+		if budget <= 0 {
+			budget = 5000
+		}
+		body.Thinking = &ThinkingConfig{Type: "enabled", BudgetTokens: budget}
+		// Anthropic also requires temperature=1 when thinking is enabled.
+		// Force it regardless of the configured temperature to avoid a 400.
+		one := float64(1)
+		body.Temperature = &one
+	case "disabled":
+		body.Thinking = &ThinkingConfig{Type: "disabled"}
+		if c.Temperature >= 0 {
+			body.Temperature = &c.Temperature
+		}
+	default:
+		if c.Temperature >= 0 {
+			body.Temperature = &c.Temperature
+		}
+		if c.Thinking == "low" || c.Thinking == "medium" || c.Thinking == "high" {
+			body.ReasoningEffort = c.Thinking
+		}
 	}
 
 	reqBytes, err := json.Marshal(body)
@@ -370,7 +392,7 @@ func parseResponse(data []byte) (*CallResult, error) {
 			Message struct {
 				Content          string `json:"content"`
 				ReasoningContent string `json:"reasoning_content"`
-				ToolCalls []struct {
+				ToolCalls        []struct {
 					ID       string `json:"id"`
 					Function struct {
 						Name      string `json:"name"`

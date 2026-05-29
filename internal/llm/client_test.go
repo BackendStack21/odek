@@ -331,7 +331,7 @@ func TestClient_ThinkingSwitch(t *testing.T) {
 }
 
 func TestClient_New(t *testing.T) {
-	c := New("https://api.example.com/v1", "sk-key", "gpt-4", "enabled", 0)
+	c := New("https://api.example.com/v1", "sk-key", "gpt-4", "enabled", 0, 0)
 	if c.BaseURL != "https://api.example.com/v1" {
 		t.Errorf("BaseURL = %q", c.BaseURL)
 	}
@@ -347,21 +347,21 @@ func TestClient_New(t *testing.T) {
 }
 
 func TestClient_New_TrailingSlash(t *testing.T) {
-	c := New("https://api.example.com/v1/", "sk-key", "model", "", 0)
+	c := New("https://api.example.com/v1/", "sk-key", "model", "", 0, 0)
 	if c.BaseURL != "https://api.example.com/v1" {
 		t.Errorf("BaseURL should trim trailing slash, got %q", c.BaseURL)
 	}
 }
 
 func TestClient_New_CustomTimeout(t *testing.T) {
-	c := New("https://api.example.com", "sk-key", "model", "", 30*time.Second)
+	c := New("https://api.example.com", "sk-key", "model", "", 0, 30*time.Second)
 	if c.http.Timeout != 30*time.Second {
 		t.Errorf("Timeout = %v, want 30s", c.http.Timeout)
 	}
 }
 
 func TestClient_New_ZeroTimeoutUsesDefault(t *testing.T) {
-	c := New("https://api.example.com", "sk-key", "model", "", 0)
+	c := New("https://api.example.com", "sk-key", "model", "", 0, 0)
 	if c.http.Timeout != 120*time.Second {
 		t.Errorf("Timeout = %v, want 120s", c.http.Timeout)
 	}
@@ -381,7 +381,7 @@ func TestClient_Call_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := New(server.URL, "sk-test", "test-model", "", 0)
+	c := New(server.URL, "sk-test", "test-model", "", 0, 0)
 	result, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, nil)
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
@@ -398,7 +398,7 @@ func TestClient_Call_HTTPError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := New(server.URL, "sk-test", "test-model", "", 0)
+	c := New(server.URL, "sk-test", "test-model", "", 0, 0)
 	_, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for 500 response")
@@ -414,7 +414,7 @@ func TestClient_Call_WithThinking(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := New(server.URL, "sk-test", "deepseek-chat", "enabled", 0)
+	c := New(server.URL, "sk-test", "deepseek-chat", "enabled", 0, 0)
 	result, err := c.Call(context.Background(), []Message{{Role: "user", Content: "think"}}, nil, nil)
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
@@ -442,7 +442,7 @@ func TestClient_Call_WithReasoningEffort(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := New(server.URL, "sk-test", "o1", "high", 0)
+	c := New(server.URL, "sk-test", "o1", "high", 0, 0)
 	result, err := c.Call(context.Background(), []Message{{Role: "user", Content: "reason"}}, nil, nil)
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
@@ -457,7 +457,7 @@ func TestClient_Call_WithReasoningEffort(t *testing.T) {
 }
 
 func TestClient_Call_InvalidEndpoint(t *testing.T) {
-	c := New("http://127.0.0.1:1", "sk-test", "model", "", 0)
+	c := New("http://127.0.0.1:1", "sk-test", "model", "", 0, 0)
 	_, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, nil)
 	if err == nil {
 		t.Fatal("expected connection error")
@@ -472,7 +472,7 @@ func TestClient_Call_WithTools(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := New(server.URL, "sk-test", "test-model", "", 0)
+	c := New(server.URL, "sk-test", "test-model", "", 0, 0)
 	tools := []ToolDef{
 		{
 			Type: "function",
@@ -500,7 +500,7 @@ func TestClient_Call_Unauthorized(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := New(server.URL, "sk-bad", "test-model", "", 0)
+	c := New(server.URL, "sk-bad", "test-model", "", 0, 0)
 	_, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for 401 response")
@@ -515,7 +515,7 @@ func TestClient_Call_InvalidJSONResponse(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := New(server.URL, "sk-test", "test-model", "", 0)
+	c := New(server.URL, "sk-test", "test-model", "", 0, 0)
 	_, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON response")
@@ -596,7 +596,7 @@ func TestClient_Call_ReturnsUsage(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := New(server.URL, "sk-test", "test-model", "", 0)
+	c := New(server.URL, "sk-test", "test-model", "", 0, 0)
 	result, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -616,7 +616,7 @@ func TestClient_SimpleCall_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := New(server.URL, "sk-test", "test-model", "", 0)
+	c := New(server.URL, "sk-test", "test-model", "", 0, 0)
 	result, err := c.SimpleCall(context.Background(), "You are a bot.", "say hi")
 	if err != nil {
 		t.Fatalf("SimpleCall() error: %v", err)
@@ -633,7 +633,7 @@ func TestClient_SimpleCall_HTTPError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := New(server.URL, "sk-test", "test-model", "", 0)
+	c := New(server.URL, "sk-test", "test-model", "", 0, 0)
 	_, err := c.SimpleCall(context.Background(), "bot", "hi")
 	if err == nil {
 		t.Fatal("expected error for 400 response")
@@ -647,7 +647,7 @@ func TestClient_SimpleCall_EmptyResponse(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := New(server.URL, "sk-test", "test-model", "", 0)
+	c := New(server.URL, "sk-test", "test-model", "", 0, 0)
 	_, err := c.SimpleCall(context.Background(), "bot", "hi")
 	if err == nil {
 		t.Fatal("expected error for empty choices")
@@ -671,7 +671,7 @@ func TestClient_Call_FlashModelNoThinkingField(t *testing.T) {
 	defer server.Close()
 
 	// Flash: model=deepseek-v4-flash, thinking="" (the default)
-	c := New(server.URL, "sk-test", "deepseek-v4-flash", "", 0)
+	c := New(server.URL, "sk-test", "deepseek-v4-flash", "", 0, 0)
 	result, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, nil)
 	if err != nil {
 		t.Fatalf("Flash Call() error: %v", err)
@@ -709,7 +709,7 @@ func TestClient_Call_FlashVsProThinkingContrast(t *testing.T) {
 		}))
 		defer server.Close()
 
-		c := New(server.URL, "sk-test", "deepseek-v4-flash", "", 0)
+		c := New(server.URL, "sk-test", "deepseek-v4-flash", "", 0, 0)
 		_, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -728,7 +728,7 @@ func TestClient_Call_FlashVsProThinkingContrast(t *testing.T) {
 		}))
 		defer server.Close()
 
-		c := New(server.URL, "sk-test", "deepseek-v4-pro", "enabled", 0)
+		c := New(server.URL, "sk-test", "deepseek-v4-pro", "enabled", 0, 0)
 		_, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -941,7 +941,7 @@ func TestCallParamsMarshaling_SystemOmitEmpty(t *testing.T) {
 }
 
 func TestClient_NewWithMaxTokens(t *testing.T) {
-	c := NewWithMaxTokens("https://api.example.com", "sk-key", "model", "", 8192, 0)
+	c := NewWithMaxTokens("https://api.example.com", "sk-key", "model", "", 0, 8192, 0)
 	if c.MaxTokens != 8192 {
 		t.Errorf("MaxTokens = %d, want 8192", c.MaxTokens)
 	}
