@@ -1,6 +1,6 @@
 // Package memory provides persistent, agent-managed memory across sessions.
 //
-// Architecture
+// # Architecture
 //
 // Three tiers:
 //
@@ -14,7 +14,7 @@
 //  3. Episodes — LLM-extracted durable facts written after sessions with ≥3
 //     turns. Searchable via memory(search=...).
 //
-// Merge-on-Write
+// # Merge-on-Write
 //
 // When adding a fact, go-vector's RandomProjections provides a fast similarity
 // check vs existing entries. cos > 0.7 = auto-merge, cos < 0.3 = auto-add,

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BackendStack21/go-vector/pkg/vector"
 	"github.com/BackendStack21/odek/internal/session"
@@ -24,10 +25,11 @@ const episodeIndexFile = "index.json"
 
 // EpisodeMeta holds metadata for a single episode.
 type EpisodeMeta struct {
-	SessionID string    `json:"session_id"`
-	Turns     int       `json:"turns"`
-	CreatedAt time.Time `json:"created_at"`
-	Summary   string    `json:"summary"` // truncated for index listing
+	SessionID  string            `json:"session_id"`
+	Turns      int               `json:"turns"`
+	CreatedAt  time.Time         `json:"created_at"`
+	Summary    string            `json:"summary"` // truncated for index listing
+	Provenance EpisodeProvenance `json:"provenance,omitempty"`
 }
 
 // RankStrategy is an injectable function for ranking episodes by relevance
@@ -47,8 +49,8 @@ type EpisodeStore struct {
 	mu       sync.Mutex
 	dir      string
 	rankFn   RankStrategy
-	idxCache []EpisodeMeta   // cached index, nil = not loaded
-	muCache  sync.RWMutex    // fine-grained lock for cache reads
+	idxCache []EpisodeMeta // cached index, nil = not loaded
+	muCache  sync.RWMutex  // fine-grained lock for cache reads
 
 	// queryCache caches the last Search query result to avoid
 	// re-ranking identical queries on consecutive turns.
@@ -71,9 +73,18 @@ func NewEpisodeStore(dir string, rankFn RankStrategy) *EpisodeStore {
 }
 
 // Write stores an episode summary for a session. Creates the episodes
-// directory and updates the index.
-// sessionID is validated for path traversal before use.
+// directory and updates the index. Equivalent to WriteWithProvenance
+// with a zero-value (trusted) provenance.
 func (e *EpisodeStore) Write(sessionID, summary string, turns int) error {
+	return e.WriteWithProvenance(sessionID, summary, turns, EpisodeProvenance{})
+}
+
+// WriteWithProvenance stores an episode and attaches the given
+// provenance to the index entry. An episode written with Untrusted=true
+// is kept on disk but never auto-replayed (Search filters it out unless
+// UserApproved=true).
+// sessionID is validated for path traversal before use.
+func (e *EpisodeStore) WriteWithProvenance(sessionID, summary string, turns int, prov EpisodeProvenance) error {
 	if err := session.ValidateSessionID(sessionID); err != nil {
 		return fmt.Errorf("memory: episodes write: %w", err)
 	}
@@ -83,7 +94,8 @@ func (e *EpisodeStore) Write(sessionID, summary string, turns int) error {
 
 	// Truncate summary to cap
 	if len(summary) > maxEpisodeSummaryBytes {
-		summary = summary[:maxEpisodeSummaryBytes] + "..."
+		// Truncate at a rune boundary to avoid storing invalid UTF-8.
+		summary = truncateAtRune(summary, maxEpisodeSummaryBytes) + "..."
 	}
 
 	// Write summary file
@@ -94,21 +106,28 @@ func (e *EpisodeStore) Write(sessionID, summary string, turns int) error {
 
 	// Update index
 	return e.addToIndex(EpisodeMeta{
-		SessionID: sessionID,
-		Turns:     turns,
-		CreatedAt: time.Now().UTC(),
-		Summary:   truncateForIndex(summary),
+		SessionID:  sessionID,
+		Turns:      turns,
+		CreatedAt:  time.Now().UTC(),
+		Summary:    truncateForIndex(summary),
+		Provenance: prov,
 	})
 }
 
 // WriteIfEnough calls Write only if turns >= threshold.
 // Returns nil without writing if the threshold isn't met.
 func (e *EpisodeStore) WriteIfEnough(sessionID, summary string, turns int) error {
+	return e.WriteIfEnoughWithProvenance(sessionID, summary, turns, EpisodeProvenance{})
+}
+
+// WriteIfEnoughWithProvenance is the provenance-carrying counterpart of
+// WriteIfEnough.
+func (e *EpisodeStore) WriteIfEnoughWithProvenance(sessionID, summary string, turns int, prov EpisodeProvenance) error {
 	const defaultThreshold = 3
 	if turns < defaultThreshold {
 		return nil
 	}
-	return e.Write(sessionID, summary, turns)
+	return e.WriteWithProvenance(sessionID, summary, turns, prov)
 }
 
 // Read returns the full summary content for a session.
@@ -173,12 +192,11 @@ func (e *EpisodeStore) ReadIndex() ([]EpisodeMeta, error) {
 // Search returns the most relevant episodes for a query, ranked by the
 // configured RankStrategy. Limited to limit results.
 func (e *EpisodeStore) Search(query string, limit int) ([]EpisodeMeta, error) {
-	// Check query cache for identical queries
+	// Check query cache under a single lock to close the window between the
+	// "same query?" check and the actual read. The old pattern (RLock/RUnlock
+	// then RLock again) allowed the cache to be invalidated in between.
 	e.muQuery.RLock()
-	sameQuery := query == e.lastQuery && e.lastResult != nil
-	e.muQuery.RUnlock()
-	if sameQuery {
-		e.muQuery.RLock()
+	if query == e.lastQuery && e.lastResult != nil {
 		result := make([]EpisodeMeta, len(e.lastResult))
 		copy(result, e.lastResult)
 		e.muQuery.RUnlock()
@@ -187,16 +205,28 @@ func (e *EpisodeStore) Search(query string, limit int) ([]EpisodeMeta, error) {
 		}
 		return result, nil
 	}
+	e.muQuery.RUnlock()
 
 	idx, err := e.ReadIndex()
 	if err != nil {
 		return nil, err
 	}
-	if len(idx) == 0 {
+	// Filter out tainted episodes that the user has not promoted. They
+	// remain on disk for audit (see ReadIndex) but must not be replayed
+	// into a new session's context — that is the persistence vector
+	// EpisodeProvenance exists to close.
+	filtered := idx[:0:len(idx)]
+	for _, ep := range idx {
+		if ep.Provenance.Untrusted && !ep.Provenance.UserApproved {
+			continue
+		}
+		filtered = append(filtered, ep)
+	}
+	if len(filtered) == 0 {
 		return nil, nil
 	}
 
-	ranked, err := e.rankFn(query, idx)
+	ranked, err := e.rankFn(query, filtered)
 	if err != nil {
 		return nil, fmt.Errorf("memory: search episodes: %w", err)
 	}
@@ -306,44 +336,44 @@ func NewLLMRanker(llm LLMClient) RankStrategy {
 		b.WriteString("Format: a single line of comma-separated numbers, e.g. \"3,0,1\"\n")
 		b.WriteString("If none are relevant, return \"none\".")
 
-	resp, err := llm.SimpleCall(context.Background(),
-		"You are a relevance ranking system. Given a query and a list of items, return the indices of the most relevant items ordered by relevance. Return only a comma-separated list of numbers or the word 'none'.",
-		b.String(),
-	)
-	if err != nil || strings.TrimSpace(resp) == "" {
-		return defaultRanker(query, episodes)
-	}
-
-	resp = strings.TrimSpace(resp)
-	if resp == "none" {
-		return nil, nil
-	}
-
-	// Parse "3,0,1" or "3, 0, 1" into indices
-	parts := strings.Split(resp, ",")
-	seen := make(map[int]bool)
-	var ranked []EpisodeMeta
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
+		resp, err := llm.SimpleCall(context.Background(),
+			"You are a relevance ranking system. Given a query and a list of items, return the indices of the most relevant items ordered by relevance. Return only a comma-separated list of numbers or the word 'none'.",
+			b.String(),
+		)
+		if err != nil || strings.TrimSpace(resp) == "" {
+			return defaultRanker(query, episodes)
 		}
-		idx := 0
-		for _, c := range p {
-			if c >= '0' && c <= '9' {
-				idx = idx*10 + int(c-'0')
+
+		resp = strings.TrimSpace(resp)
+		if resp == "none" {
+			return nil, nil
+		}
+
+		// Parse "3,0,1" or "3, 0, 1" into indices
+		parts := strings.Split(resp, ",")
+		seen := make(map[int]bool)
+		var ranked []EpisodeMeta
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			idx := 0
+			for _, c := range p {
+				if c >= '0' && c <= '9' {
+					idx = idx*10 + int(c-'0')
+				}
+			}
+			if idx >= 0 && idx < len(episodes) && !seen[idx] {
+				ranked = append(ranked, episodes[idx])
+				seen[idx] = true
 			}
 		}
-		if idx >= 0 && idx < len(episodes) && !seen[idx] {
-			ranked = append(ranked, episodes[idx])
-			seen[idx] = true
-		}
-	}
 
-	if len(ranked) == 0 {
-		return defaultRanker(query, episodes)
-	}
-	return ranked, nil
+		if len(ranked) == 0 {
+			return defaultRanker(query, episodes)
+		}
+		return ranked, nil
 	}
 }
 
@@ -418,4 +448,17 @@ func cosineVector(a, b vector.Vector) float32 {
 		return 0
 	}
 	return float32(dot / (math.Sqrt(normA) * math.Sqrt(normB)))
+}
+
+// truncateAtRune returns s truncated to at most maxBytes bytes, always
+// cutting at a rune boundary so the result is valid UTF-8.
+func truncateAtRune(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	// Walk backwards from maxBytes until we find a valid rune boundary.
+	for maxBytes > 0 && !utf8.RuneStart(s[maxBytes]) {
+		maxBytes--
+	}
+	return s[:maxBytes]
 }

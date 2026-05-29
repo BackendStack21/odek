@@ -49,9 +49,11 @@ func NewMemoryTool(mm *MemoryManager) *MemoryTool {
 	return &MemoryTool{manager: mm}
 }
 
-func (t *MemoryTool) Name() string        { return "memory" }
-func (t *MemoryTool) Description() string { return "Manage persistent memory across sessions: read, add, update, remove facts, consolidate related entries, or search past episode summaries." }
-func (t *MemoryTool) Schema() any         { return memoryToolSchema }
+func (t *MemoryTool) Name() string { return "memory" }
+func (t *MemoryTool) Description() string {
+	return "Manage persistent memory across sessions: read, add, update, remove facts, consolidate related entries, or search past episode summaries."
+}
+func (t *MemoryTool) Schema() any { return memoryToolSchema }
 
 func (t *MemoryTool) Call(args string) (string, error) {
 	var params struct {
