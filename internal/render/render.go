@@ -85,9 +85,9 @@ const (
 // The zero value is usable but won't produce any output — call New()
 // to create a properly initialized Renderer.
 type Renderer struct {
-	w           io.Writer
-	color       bool
-	model       string
+	w            io.Writer
+	color        bool
+	model        string
 	skillVerbose bool // show skill notifications (auto-load, save, suggest, etc.)
 }
 

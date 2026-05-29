@@ -681,12 +681,12 @@ func TestRenderer_SkillDeleted(t *testing.T) {
 }
 
 func TestRenderer_SkillEvents_NilSafe(t *testing.T) {
-	var r *Renderer // nil
-	r.SkillLoaded([]string{"test"})   // should not panic
+	var r *Renderer                     // nil
+	r.SkillLoaded([]string{"test"})     // should not panic
 	r.SkillAutoLoaded([]string{"test"}) // should not panic
-	r.SkillSuggested("x", "h")       // should not panic
-	r.SkillSaved("x")                // should not panic
-	r.SkillDeleted("x")              // should not panic
+	r.SkillSuggested("x", "h")          // should not panic
+	r.SkillSaved("x")                   // should not panic
+	r.SkillDeleted("x")                 // should not panic
 }
 
 func TestRenderer_SkillEvents_NoColor(t *testing.T) {
