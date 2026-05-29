@@ -114,17 +114,17 @@ func TestNarrator_ExtractPath_NotFound(t *testing.T) {
 
 func TestNarrator_ToolEmoji_AllKnown(t *testing.T) {
 	tests := map[string]string{
-		"read_file":       "📖",
-		"write_file":      "✏️",
-		"patch":           "✏️",
-		"shell":           "⚙️",
-		"search_files":    "🔍",
-		"delegate_task":   "👥",
-		"delegate_tasks":  "👥",
-		"browser":         "🌐",
-		"memory":          "🧠",
-		"clarify":         "❓",
-		"unknown_tool":    "🔧",
+		"read_file":      "📖",
+		"write_file":     "✏️",
+		"patch":          "✏️",
+		"shell":          "⚙️",
+		"search_files":   "🔍",
+		"delegate_task":  "👥",
+		"delegate_tasks": "👥",
+		"browser":        "🌐",
+		"memory":         "🧠",
+		"clarify":        "❓",
+		"unknown_tool":   "🔧",
 	}
 	for name, want := range tests {
 		if got := toolEmoji(name); got != want {
