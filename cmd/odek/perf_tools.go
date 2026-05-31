@@ -408,10 +408,33 @@ type httpBatchTool struct {
 }
 
 func newHTTPBatchTool(dc danger.DangerousConfig) *httpBatchTool {
-	return &httpBatchTool{
-		dangerousConfig: dc,
-		client:          &http.Client{Timeout: 30 * time.Second},
+	t := &httpBatchTool{dangerousConfig: dc}
+	t.client = &http.Client{
+		Timeout:       30 * time.Second,
+		CheckRedirect: t.checkRedirect,
 	}
+	return t
+}
+
+// checkRedirect re-classifies every redirect hop. http_batch only checks
+// the initial URL before the request, so without this a benign-classified
+// URL could 302 to an SSRF target (cloud metadata, internal host) that the
+// initial ClassifyURL gate would have blocked. The body is discarded, but
+// the request itself — and the leaked status/content-length — is the
+// vector we close here. Installing CheckRedirect disables Go's implicit
+// 10-hop cap, so we re-impose it.
+func (t *httpBatchTool) checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return fmt.Errorf("stopped after 10 redirects")
+	}
+	target := req.URL.String()
+	risk := danger.ClassifyURL(target)
+	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
+		Name: "http_batch", Resource: target, Risk: risk,
+	}, nil); err != nil {
+		return fmt.Errorf("redirect to %s blocked: %w", target, err)
+	}
+	return nil
 }
 
 func (t *httpBatchTool) Name() string { return "http_batch" }

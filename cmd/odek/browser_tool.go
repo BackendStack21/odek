@@ -62,11 +62,34 @@ type browserTool struct {
 }
 
 func newBrowserTool(dc danger.DangerousConfig) *browserTool {
-	return &browserTool{
+	t := &browserTool{
 		state:           &browserState{nextRef: 1},
-		client:          &http.Client{},
 		dangerousConfig: dc,
 	}
+	t.client = &http.Client{CheckRedirect: t.checkRedirect}
+	return t
+}
+
+// checkRedirect re-classifies every redirect hop with the same SSRF /
+// danger policy applied to the initial URL. Go's http.Client follows up
+// to 10 redirects by default, but ONLY when CheckRedirect is nil — once
+// we install our own we must enforce the hop limit ourselves. Without
+// this, a benign-classified URL could 302 to http://169.254.169.254/
+// (cloud metadata) or an internal host and the body would be returned to
+// the model unchecked. The skill importer already guards redirects; this
+// brings the browser tool in line.
+func (t *browserTool) checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return fmt.Errorf("stopped after 10 redirects")
+	}
+	target := req.URL.String()
+	risk := danger.ClassifyURL(target)
+	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
+		Name: "browser", Resource: target, Risk: risk,
+	}, t.trustedClasses); err != nil {
+		return fmt.Errorf("redirect to %s blocked: %w", target, err)
+	}
+	return nil
 }
 
 func (t *browserTool) Name() string { return "browser" }
@@ -139,7 +162,7 @@ func (t *browserTool) Call(argsJSON string) (string, error) {
 		t.state = &browserState{nextRef: 1}
 	}
 	if t.client == nil {
-		t.client = &http.Client{}
+		t.client = &http.Client{CheckRedirect: t.checkRedirect}
 	}
 
 	switch args.Action {

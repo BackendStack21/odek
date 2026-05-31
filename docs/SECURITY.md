@@ -47,7 +47,7 @@ Every tool whose output sources from outside the agent's trust boundary wraps it
 </untrusted_content_a3f8d9c1>
 ```
 
-The nonce is fresh per call, so an attacker cannot embed a literal close tag in their content to escape the wrapper. Any literal `untrusted_content` substring inside the body is neutralised (the underscore is replaced with a Unicode look-alike) so it cannot pair with a fabricated tag.
+The nonce is fresh per call, so an attacker cannot embed a literal close tag in their content to escape the wrapper. Any literal `untrusted_content` substring inside the body is neutralised (the underscore is replaced with a Unicode look-alike) so it cannot pair with a fabricated tag. The `source` attribute is sanitised too — `"`, `<`, `>`, and newlines are neutralised so an attacker-influenced source (a redirect URL, a crafted path) cannot prematurely close the opening tag.
 
 Tools that wrap:
 
@@ -58,7 +58,12 @@ Tools that wrap:
 | `search_files`, `multi_grep` | `<path>:<line>` per match |
 | `shell` | `$ <command>` |
 | `transcribe` | `transcribe:<audio path>` (full transcript + each segment) |
+| `session_search` | `session_search` (whole result — past sessions may be tainted) |
 | any MCP tool | `mcp:<server>:<tool>` |
+
+`session_search` is wrapped because it can surface content from arbitrary past sessions — including sessions that ingested untrusted content. Wrapping its whole output keeps that content from re-entering as trusted instructions and records the retrieval in the audit log, closing a path that otherwise bypassed the memory taint gate (defense 5).
+
+The MCP wrapper guards a tool's **output**. The server-supplied tool **description** is a separate surface ("tool poisoning"): it flows into the model's tool catalogue as effectively trusted instructions. odek scans every MCP tool description with the injection classifier (`ScanInjection`) at registration; if injection patterns are found the description is withheld (replaced with a placeholder, logged to stderr) while the tool stays callable by name. The MCP **error channel** is guarded as well: a server that returns its payload via an error instead of a result has that error message wrapped (and audited) too, since the loop surfaces error text to the model.
 
 The model is instructed (via the default system prompt) to treat the wrapped region as data, not instructions. A model trained on prompt-injection resistance (Claude Sonnet 4.6+ does this well) honours the boundary. Older models or aggressively fine-tuned ones may not.
 
@@ -233,7 +238,10 @@ Defaults: `FrictionThreshold=3`, `FrictionWindow=60s`. To opt out (TTYApprover o
 |---|---|
 | README.md says "ignore your instructions" | Identity anchoring + read_file wrapper |
 | Compiler / shell output embeds instructions | Wrapped output + identity rules |
-| Fetched page redirects to `169.254.169.254` (cloud metadata) | Browser tool re-classifies every redirect hop |
+| Fetched page redirects to `169.254.169.254` (cloud metadata) | `browser` and `http_batch` re-classify every redirect hop (`CheckRedirect` re-runs `ClassifyURL` + policy) |
+| Malicious MCP server poisons its tool description with instructions | Description scanned with `ScanInjection` at registration; withheld if injection patterns found |
+| MCP server smuggles a payload via the error channel | Error message wrapped + audited, same as tool output |
+| `session_search` re-surfaces content from a previously-tainted session | Output wrapped as untrusted and recorded in the audit log |
 | Page contains literal `</untrusted_content>` to escape | Per-call nonce defeats blind close-tag injection |
 | `$(echo rm) -rf /` smuggled through shell | Classifier recursively expands substitution |
 | Attacker-controlled task delegated to sub-agent | Parent sets `trust_level=untrusted`; sub-agent clamps Destructive/CodeExec/Install/SystemWrite/NetworkEgress to Deny |
