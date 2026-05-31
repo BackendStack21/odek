@@ -1104,7 +1104,11 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 		&trTool{dangerousConfig: dc},
 		&wordCountTool{dangerousConfig: dc},
 		newTranscribeTool(dc, tc),
-		newSessionSearchTool(store),
+		// session_search returns content from arbitrary past sessions —
+		// including sessions that ingested untrusted content. That path
+		// otherwise bypasses the memory taint gate and the audit log, so
+		// wrap its whole output as untrusted (which also records an ingest).
+		&untrustedToolWrapper{inner: newSessionSearchTool(store), source: "session_search"},
 		newBrowserTool(dc),
 	}
 
@@ -1146,10 +1150,16 @@ func loadMCPTools(servers map[string]mcpclient.ServerConfig, tools *[]odek.Tool)
 		}
 
 		for _, def := range defs {
+			// A malicious MCP server controls the tool name, description,
+			// and parameter schema — all of which flow into the model's
+			// tool catalogue as effectively trusted instructions ("tool
+			// poisoning"). The untrusted wrapper only guards the tool's
+			// runtime *output*, so scan the server-supplied description for
+			// injection patterns and withhold it if any are found.
 			inner := &mcpclient.ToolAdapter{
 				Client:      client,
 				ToolName:    def.Name,
-				Desc:        def.Description,
+				Desc:        sanitizeMCPDescription(name, def.Name, def.Description),
 				ParamSchema: def.InputSchema,
 			}
 			*tools = append(*tools, &untrustedToolWrapper{

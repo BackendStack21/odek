@@ -3,11 +3,14 @@ package main
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
 	"strings"
 	"sync"
+
+	"github.com/BackendStack21/odek/internal/danger"
 )
 
 // warnSandboxDisabled emits a one-time stderr notice that the agent is
@@ -96,7 +99,7 @@ func wrapUntrusted(source, content string) string {
 	}
 	recordIngest(source, content)
 	nonce := newWrapperNonce()
-	src := strings.ReplaceAll(source, `"`, `'`)
+	src := sanitizeWrapperSource(source)
 	body := neutraliseWrapperLiterals(content)
 	var b strings.Builder
 	b.Grow(len(body) + 128)
@@ -115,6 +118,27 @@ func wrapUntrusted(source, content string) string {
 	b.WriteString(`>`)
 	return b.String()
 }
+
+// sanitizeWrapperSource neutralises characters in a source label that
+// could break out of the opening tag's attribute or close the tag early.
+// Only `"` was handled before, which left `>` and newlines free to
+// prematurely terminate the opening tag when the source is
+// attacker-influenced (a redirect URL, a crafted path). The nonce'd
+// *closing* tag is still unforgeable, so this cannot fully escape the
+// wrapper, but neutralising these keeps the marker well-formed and
+// unambiguous. We use homoglyphs (consistent with neutraliseWrapperLiterals)
+// so the label stays human-readable.
+func sanitizeWrapperSource(source string) string {
+	return wrapperSourceReplacer.Replace(source)
+}
+
+var wrapperSourceReplacer = strings.NewReplacer(
+	`"`, `'`,
+	"<", "‹", // ‹ SINGLE LEFT-POINTING ANGLE QUOTATION MARK
+	">", "›", // › SINGLE RIGHT-POINTING ANGLE QUOTATION MARK
+	"\n", " ",
+	"\r", " ",
+)
 
 // newWrapperNonce returns an 8-byte hex nonce. Crypto-grade randomness
 // is overkill but cheap.
@@ -168,6 +192,31 @@ func hasUntrustedWrapper(s string) bool {
 	return reWrapper.MatchString(s)
 }
 
+// mcpDescriptionWithheld replaces an MCP tool description in which
+// prompt-injection patterns were detected.
+const mcpDescriptionWithheld = "[odek: description withheld — prompt-injection patterns detected in the MCP server's tool description]"
+
+// sanitizeMCPDescription scans a third-party MCP server's tool description
+// for prompt-injection patterns. A malicious server controls this text and
+// it flows into the model's tool catalogue as effectively trusted
+// instructions ("tool poisoning") — the untrusted wrapper only guards a
+// tool's runtime output, not its advertised description. If injection
+// patterns are found the description is withheld (the tool stays callable
+// by name) and a warning is logged. Returns the description to register.
+func sanitizeMCPDescription(serverName, toolName, desc string) string {
+	threats := danger.ScanInjection(desc)
+	if len(threats) == 0 {
+		return desc
+	}
+	labels := make([]string, 0, len(threats))
+	for _, th := range threats {
+		labels = append(labels, th.Label)
+	}
+	fmt.Fprintf(os.Stderr, "odek: warning: mcp server %q tool %q: description withheld — injection patterns detected: %s\n",
+		serverName, toolName, strings.Join(labels, ", "))
+	return mcpDescriptionWithheld
+}
+
 // untrustedToolWrapper wraps any odek.Tool so that its Call result is
 // passed through wrapUntrusted with the configured source label. Used
 // for MCP tools — their responses come from third-party servers and
@@ -188,6 +237,15 @@ func (w *untrustedToolWrapper) Schema() any         { return w.inner.Schema() }
 func (w *untrustedToolWrapper) Call(args string) (string, error) {
 	out, err := w.inner.Call(args)
 	if err != nil {
+		// A third-party MCP server can return its payload via the error
+		// channel instead of the result. The loop surfaces err.Error()
+		// to the model (as "error: <msg>") and drops the result string,
+		// so wrapping only `out` would leave the error text unguarded.
+		// Wrap the error message too — wrapUntrusted also records the
+		// ingest, so an error-channel payload still lands in the audit log.
+		if msg := err.Error(); msg != "" {
+			return out, errors.New(wrapUntrusted(w.source, msg))
+		}
 		return out, err
 	}
 	return wrapUntrusted(w.source, out), nil
