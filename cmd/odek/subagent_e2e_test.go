@@ -427,11 +427,11 @@ func TestE2E_StdErrCaptureInTool(t *testing.T) {
 	}
 }
 
-// ── 6. Custom System Prompt ─────────────────────────────────────────
+// ── 6. Approach Guidance ────────────────────────────────────────────
 
-// TestE2E_CustomSystemPrompt verifies that delegate_tasks accepts a
-// per-task system prompt and threads it through to the subprocess.
-func TestE2E_CustomSystemPrompt(t *testing.T) {
+// TestE2E_Guidance verifies that delegate_tasks accepts per-task approach
+// guidance and threads it through to the subprocess (in the request).
+func TestE2E_Guidance(t *testing.T) {
 	skipIfNoE2E(t)
 
 	tool := &delegateTasksTool{
@@ -440,7 +440,7 @@ func TestE2E_CustomSystemPrompt(t *testing.T) {
 		timeout:        30 * time.Second,
 	}
 
-	input := `{"tasks":[{"goal":"create JWT middleware","context":"use gin","system":"You are a security engineer reviewing auth code. Focus on token validation."}]}`
+	input := `{"tasks":[{"goal":"create JWT middleware","context":"use gin","guidance":"Focus on token validation; review for auth gaps."}]}`
 	result, err := tool.Call(input)
 	if err != nil {
 		t.Fatalf("tool.Call returned unexpected error: %v", err)
@@ -454,9 +454,9 @@ func TestE2E_CustomSystemPrompt(t *testing.T) {
 	}
 }
 
-// TestE2E_CustomSystemPromptWithEmpty verifies that empty system prompts
-// are handled gracefully (fall back to classifyGoal).
-func TestE2E_CustomSystemPromptWithEmpty(t *testing.T) {
+// TestE2E_GuidanceEmpty verifies that an empty guidance field is handled
+// gracefully (the request just carries the goal/context).
+func TestE2E_GuidanceEmpty(t *testing.T) {
 	skipIfNoE2E(t)
 
 	tool := &delegateTasksTool{
@@ -465,20 +465,20 @@ func TestE2E_CustomSystemPromptWithEmpty(t *testing.T) {
 		timeout:        30 * time.Second,
 	}
 
-	input := `{"tasks":[{"goal":"create JWT middleware","context":"use gin","system":""}]}`
+	input := `{"tasks":[{"goal":"create JWT middleware","context":"use gin","guidance":""}]}`
 	result, err := tool.Call(input)
 	if err != nil {
 		t.Fatalf("tool.Call returned unexpected error: %v", err)
 	}
 
 	if !strings.Contains(result, "Task 1") {
-		t.Errorf("result should label Task 1 even with empty system prompt, got: %s", result)
+		t.Errorf("result should label Task 1 even with empty guidance, got: %s", result)
 	}
 }
 
-// TestE2E_MixedSystemPrompts verifies mixing tasks with and without
-// custom system prompts works correctly.
-func TestE2E_MixedSystemPrompts(t *testing.T) {
+// TestE2E_MixedGuidance verifies mixing tasks with and without approach
+// guidance works correctly.
+func TestE2E_MixedGuidance(t *testing.T) {
 	skipIfNoE2E(t)
 
 	tool := &delegateTasksTool{
@@ -488,8 +488,8 @@ func TestE2E_MixedSystemPrompts(t *testing.T) {
 	}
 
 	input := `{"tasks":[
-		{"goal":"review auth middleware","system":"You are a security engineer."},
-		{"goal":"fix bug in parser","system":"","context":"parser.go has nil pointer bug"},
+		{"goal":"review auth middleware","guidance":"Look for token-validation gaps."},
+		{"goal":"fix bug in parser","guidance":"","context":"parser.go has nil pointer bug"},
 		{"goal":"create user model"}
 	]}`
 	result, err := tool.Call(input)

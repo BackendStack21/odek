@@ -117,13 +117,28 @@ This clears `NeedsReview`, allowing the skill to auto-load on the next session.
 
 `delegate_tasks` accepts two parent-side trust signals on each task:
 
-- `trust_level: "untrusted"` — the goal / context strings may contain attacker-controllable text.
+- `trust_level: "untrusted"` — the goal / guidance / context strings may contain attacker-controllable text.
 - `max_risk: "<class>"` — the highest risk class the sub-agent may execute.
 
 The sub-agent process reads both at startup. `applySubagentTrust` clamps its `DangerousConfig`:
 
 - Untrusted ⇒ `NonInteractive=deny`; `destructive`, `code_execution`, `install`, `system_write`, `network_egress` all forced to Deny. `local_write` and below remain allowed so the sub-agent can still do real work.
 - `max_risk` ⇒ every class strictly above the cap is forced to Deny.
+
+#### Sub-agent system prompt is a fixed trust boundary
+
+The sub-agent's system prompt (`subagentSystem`) is a **code-defined constant**. The parent
+agent cannot write to it: there is no `system` field on `delegate_tasks`, and `ODEK_SYSTEM` /
+config `system` do not apply to sub-agents. All parent-supplied strings (`goal`, `guidance`,
+`context`) are delivered in the **user request** via `buildSubagentRequest`, never spliced
+into the system message. This means a prompt-injection payload that rides in on parent-ingested
+content can, at worst, become a hostile *request* — it can never redefine the sub-agent's
+identity or strip its SAFETY block. When `trust_level: "untrusted"`, the request body is
+additionally wrapped in an `<untrusted_input>` fence so the model treats it as data.
+
+(Previously the parent could pass a `system` field that replaced the prompt wholesale —
+dropping the SAFETY block — and `buildSubagentPrompt` embedded the raw goal text directly into
+the system message. Both are removed.)
 
 ### 8. API key handoff to sub-agents
 

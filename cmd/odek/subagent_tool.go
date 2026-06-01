@@ -87,9 +87,9 @@ func (t *delegateTasksTool) Schema() any {
 							"type":        "string",
 							"description": "Optional. Background context: file paths, architecture decisions, API contracts.",
 						},
-						"system": map[string]any{
+						"guidance": map[string]any{
 							"type":        "string",
-							"description": "Optional. System prompt for this sub-agent. Tailor the approach: \"You are a security engineer reviewing auth code\" for reviews, \"Find the root cause first\" for debugging.",
+							"description": "Optional. How the sub-agent should approach the task — delivered as part of its request, NOT as its system prompt. The sub-agent's identity and safety rules are fixed and cannot be overridden. Use this to steer the approach, e.g. \"Review for token-validation gaps and timing attacks\" or \"Find the root cause before changing code\".",
 						},
 						"trust_level": map[string]any{
 							"type":        "string",
@@ -119,7 +119,7 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 		Tasks []struct {
 			Goal       string `json:"goal"`
 			Context    string `json:"context"`
-			System     string `json:"system,omitempty"`
+			Guidance   string `json:"guidance,omitempty"`
 			TrustLevel string `json:"trust_level,omitempty"`
 			MaxRisk    string `json:"max_risk,omitempty"`
 		} `json:"tasks"`
@@ -142,13 +142,13 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 
 	for i, task := range input.Tasks {
 		sem <- struct{}{}
-		go func(i int, goal, ctx, sys, trust, maxRisk string) {
+		go func(i int, goal, ctx, guidance, trust, maxRisk string) {
 			defer func() { <-sem }()
-			r := t.runTask(i, goal, ctx, sys, trust, maxRisk)
+			r := t.runTask(i, goal, ctx, guidance, trust, maxRisk)
 			mu.Lock()
 			results[i] = r
 			mu.Unlock()
-		}(i, task.Goal, task.Context, task.System, task.TrustLevel, task.MaxRisk)
+		}(i, task.Goal, task.Context, task.Guidance, task.TrustLevel, task.MaxRisk)
 	}
 
 	// Drain semaphore = wait for all goroutines
@@ -167,7 +167,7 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 	return buf.String(), nil
 }
 
-func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, system, trustLevel, maxRisk string) string {
+func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, trustLevel, maxRisk string) string {
 	// Derive per-task context from the parent's context (if set).
 	// When the parent is cancelled, all running sub-agents are killed
 	// promptly instead of running the full timeout.
@@ -188,7 +188,7 @@ func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, system, trus
 	task := map[string]string{
 		"goal":        goal,
 		"context":     taskContext,
-		"system":      system,
+		"guidance":    guidance,
 		"trust_level": trustLevel,
 		"max_risk":    maxRisk,
 	}
