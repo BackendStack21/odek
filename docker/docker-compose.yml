@@ -1,0 +1,81 @@
+# Odek in Docker Compose — Restricted (default) and Godmode (all permissions).
+#
+# Run from this directory (`cd docker`) so the relative paths and `.env`
+# resolve correctly. Build context is the repo root (one level up).
+#
+# Profiles (opt into exactly one at a time):
+#   restricted           Web UI + approval prompts (recommended)
+#   godmode              No prompts; sealed container
+#   telegram-restricted  Telegram bot; approvals via inline keyboards
+#   telegram-godmode     Telegram bot; no prompts
+#
+# Examples:
+#   docker compose --profile restricted up --build
+#   docker compose --profile godmode run --rm odek-godmode run "create build.sh and run it"
+#   docker compose --profile telegram-restricted up --build -d
+
+services:
+  # ── Restricted (default) — interactive Web UI with approval prompts ──
+  odek-restricted:
+    profiles: ["restricted"]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: odek:local
+    env_file: .env
+    command: ["serve", "--addr", "0.0.0.0:8080", "--no-sandbox"]
+    ports:
+      - "127.0.0.1:8080:8080"   # Web UI, bound to localhost only
+    volumes:
+      - ./workspace:/workspace
+      - ./config.restricted.json:/home/odek/.odek/config.json:ro
+    restart: "no"
+
+  # ── Godmode (all permissions) — non-interactive, sealed container ──
+  odek-godmode:
+    profiles: ["godmode"]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: odek:local
+    env_file: .env
+    # No published ports. No network unless you need it (remove network_mode).
+    network_mode: "none"
+    command: ["serve", "--addr", "0.0.0.0:8080", "--no-sandbox"]
+    volumes:
+      - ./workspace:/workspace
+      - ./config.godmode.json:/home/odek/.odek/config.json:ro
+    restart: "no"
+
+  # ── Telegram bot — Restricted (approvals via inline keyboards) ──
+  odek-telegram-restricted:
+    profiles: ["telegram-restricted"]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: odek:local
+    env_file: .env
+    command: ["telegram"]
+    volumes:
+      - ./workspace:/workspace
+      - ./config.restricted.json:/home/odek/.odek/config.json:ro
+      - odek-tg-state:/home/odek/.odek
+    restart: unless-stopped
+
+  # ── Telegram bot — Godmode (no prompts; sealed container) ──
+  odek-telegram-godmode:
+    profiles: ["telegram-godmode"]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: odek:local
+    env_file: .env
+    command: ["telegram"]
+    volumes:
+      - ./workspace:/workspace
+      - ./config.godmode.json:/home/odek/.odek/config.json:ro
+      - odek-tg-state:/home/odek/.odek
+    restart: unless-stopped
+
+volumes:
+  odek-tg-state:

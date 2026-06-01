@@ -7,3 +7,8 @@ odek-bin
 .hermes/
 notify-channel-proposal.md
 internal/mcpclient/testdata/fakeserver
+
+# Docker Compose examples — local secrets and agent scratch dir
+docker/.env
+docker/workspace/*
+!docker/workspace/.gitkeep

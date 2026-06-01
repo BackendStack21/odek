@@ -1,0 +1,11 @@
+# Keep the build context (repo root) small for `docker build`.
+.git
+bin/
+*.test
+coverage.out
+odek-bin
+.plans/
+.hermes/
+docker/.env
+docker/workspace/
+benchmark/

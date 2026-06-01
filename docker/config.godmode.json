@@ -1,0 +1,7 @@
+{
+  "sandbox": false,
+  "dangerous": {
+    "action": "allow",
+    "non_interactive": "allow"
+  }
+}

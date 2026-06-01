@@ -1,0 +1,17 @@
+{
+  "sandbox": false,
+  "dangerous": {
+    "action": "prompt",
+    "non_interactive": "deny",
+    "classes": {
+      "destructive": "deny",
+      "system_write": "prompt",
+      "network_egress": "prompt",
+      "code_execution": "prompt",
+      "install": "prompt",
+      "local_write": "allow"
+    },
+    "allowlist": [],
+    "denylist": ["rm -rf /"]
+  }
+}
