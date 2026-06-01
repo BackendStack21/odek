@@ -18,8 +18,9 @@ RUN CGO_ENABLED=0 go build -ldflags "-s -w" -o /out/odek ./cmd/odek
 # ---- runtime stage ----
 FROM alpine:latest
 # Tooling the agent commonly needs inside the sandbox container.
-# Trim or extend this list to taste. (git is already included here.)
-RUN apk add --no-cache ca-certificates git bash coreutils curl jq
+# Trim or extend this list to taste. git + the GitHub CLI (`gh`, from the
+# Alpine community repo) are included so the agent can clone/PR/release.
+RUN apk add --no-cache ca-certificates git github-cli bash coreutils curl jq
 
 # ── Adding extra dependencies the agent can use ──────────────────────────
 # The agent runs shell commands INSIDE this image, so any runtime or CLI it
