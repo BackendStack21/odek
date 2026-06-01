@@ -59,16 +59,21 @@ docker compose run --rm -it odek-restricted repl
 
 ### Godmode (all permissions)
 
-No prompts. Best for sealed, disposable containers. One-shot task:
+No prompts. Best for disposable containers. One-shot task:
 
 ```bash
 docker compose --profile godmode run --rm odek-godmode \
   run "Create build.sh, make it executable, and run it."
 ```
 
-The trailing `run "<task>"` overrides the service's default `serve` command. The
-service sets `network_mode: none`, so nothing leaves the container — remove that
-line in `docker-compose.yml` if the task genuinely needs network egress.
+The trailing `run "<task>"` overrides the service's default `serve` command.
+
+> **The container has outbound network** — Odek must reach the LLM provider API,
+> so `network_mode: none` is *not* an option here (it would break the model call).
+> Isolation comes from the container boundary, the non-root user, and mounting only
+> `./workspace`. To also fence the agent's *own* egress while still letting Odek
+> reach the model, run it on a network behind an allowlisting egress proxy — that's
+> an advanced setup beyond these examples.
 
 ### Telegram bot
 
@@ -130,5 +135,7 @@ container after editing (`... up` again) since the config is mounted at startup.
   keys, cloud creds, or `/var/run/docker.sock`.
 - Keep the Web UI on `127.0.0.1`; front it with an authenticated reverse proxy for
   remote access.
-- Prefer `network_mode: none` (or a scoped network), especially for Godmode.
+- The container needs outbound network for the LLM API, so don't rely on
+  `network_mode: none` for isolation. To restrict the agent's own egress, front it
+  with an allowlisting proxy / firewalled network (advanced).
 - `.env` and `workspace/` are gitignored — never commit secrets or scratch files.

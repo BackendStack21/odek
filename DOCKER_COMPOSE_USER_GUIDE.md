@@ -123,8 +123,8 @@ ODEK_SUPPRESS_SANDBOX_WARNING=1
 # ODEK_MODEL=gpt-4o
 # ODEK_BASE_URL=https://api.openai.com/v1
 
-# Anthropic:
-# ODEK_MODEL=claude-opus-4-1
+# Anthropic (OpenAI-compatible endpoint; matches the claude-sonnet-4 profile):
+# ODEK_MODEL=claude-sonnet-4-5
 # ODEK_BASE_URL=https://api.anthropic.com/v1
 ```
 
@@ -196,8 +196,10 @@ configurable.
 ```
 
 > ⚠️ **Godmode gives the agent free rein inside the container.** Only use it with a
-> throwaway container, ideally with `network_mode: none` (see below) or a restricted
-> network, and never mount sensitive host paths or the Docker socket.
+> throwaway container, never mount sensitive host paths or the Docker socket, and keep
+> the only writable mount scoped to `./workspace`. (The container still needs outbound
+> network to reach the LLM API — see the notes under §6 — so isolation comes from the
+> container boundary, not from cutting the network.)
 
 ---
 
@@ -224,14 +226,14 @@ services:
       - ./config.restricted.json:/home/odek/.odek/config.json:ro
     restart: "no"
 
-  # ── Godmode (all permissions) — non-interactive, sealed container ──
+  # ── Godmode (all permissions) — non-interactive, disposable container ──
   odek-godmode:
     profiles: ["godmode"]
     build: .
     image: odek:local
     env_file: .env
-    # No published ports. No network unless you need it (see notes).
-    network_mode: "none"
+    # No published ports (no inbound needed). Outbound networking stays on —
+    # Odek must reach the LLM provider API to run.
     command: ["serve", "--addr", "0.0.0.0:8080", "--no-sandbox"]
     volumes:
       - ./workspace:/workspace
@@ -248,8 +250,11 @@ Notes:
 - The Web UI binds to `0.0.0.0:8080` *inside* the container; the `ports` mapping exposes
   it only on the host's `127.0.0.1`. Use a reverse proxy (Caddy/nginx) if you need remote
   access.
-- The Godmode service has `network_mode: "none"` so the agent cannot reach the network.
-  Remove that line (or set a restricted network) if the task genuinely needs egress.
+- **Don't use `network_mode: "none"`.** Odek calls the LLM provider over the network every
+  turn, so a no‑network container can't run at all. The container's isolation comes from
+  the boundary itself, the non‑root user, and mounting only `./workspace`. To restrict the
+  *agent's own* egress while still letting Odek reach the model, put it on a network behind
+  an allowlisting egress proxy (advanced — out of scope here).
 
 ---
 
@@ -301,7 +306,7 @@ docker compose run --rm -it \
 
 ## 8. Running — Godmode (all permissions)
 
-No prompts, no human in the loop. Best for sealed, disposable containers.
+No prompts, no human in the loop. Best for disposable containers.
 
 ### One‑shot task
 
@@ -315,9 +320,10 @@ docker compose --profile godmode run --rm odek-godmode \
 The trailing `run "<task>"` overrides the service's default `command:` (`serve`). No
 `--no-sandbox` is needed — `run` is unsandboxed by default.
 
-Every command the agent issues runs immediately. Because `network_mode: "none"` is set,
-nothing can leave the container; everything is confined to `./workspace` on your host (the
-only writable mount) and the container's ephemeral filesystem.
+Every command the agent issues runs immediately. The blast radius is the container: the
+only writable host mount is `./workspace`, everything else is the container's ephemeral
+filesystem, and it runs as a non‑root user. (The container does have outbound network —
+Odek needs it to reach the LLM — so this is isolation by *boundary*, not by airgap.)
 
 ### Long‑running / Web UI
 
@@ -327,9 +333,9 @@ If you want the Web UI in Godmode too (e.g. a personal automation box):
 docker compose --profile godmode up --build
 ```
 
-Then add a port mapping to the `odek-godmode` service and remove `network_mode: none` if
-the agent needs the network. **Only do this on a trusted host** — in Godmode the UI grants
-unrestricted command execution inside the container.
+Then add a `ports:` mapping to the `odek-godmode` service so you can reach the UI. **Only
+do this on a trusted host** — in Godmode the UI grants unrestricted command execution
+inside the container.
 
 ---
 
@@ -387,7 +393,9 @@ global `action` → built‑in defaults. The `blocked` class is always denied re
   SSH keys, cloud credentials, or `/var/run/docker.sock`.
 - ✅ Keep the Web UI bound to `127.0.0.1` on the host; front it with an authenticated
   reverse proxy for any remote access.
-- ✅ Prefer `network_mode: "none"` (or a tightly scoped network) — especially for Godmode.
+- ✅ Remember the container needs **outbound** network for the LLM API, so `network_mode:
+  none` isn't an option. To fence the agent's *own* egress, use a firewalled network or an
+  allowlisting egress proxy rather than relying on Docker's network mode.
 - ✅ Treat **Godmode containers as disposable**: `--rm`, no persistent secrets beyond the
   injected API key, throwaway `workspace/`.
 - ✅ Keep `.env` out of version control.
@@ -462,7 +470,7 @@ restarts. No `ports` are needed.
       - odek-tg-state:/home/odek/.odek
     restart: unless-stopped
 
-  # ── Telegram bot — Godmode (no prompts; sealed container) ──
+  # ── Telegram bot — Godmode (no prompts; disposable container) ──
   odek-telegram-godmode:
     profiles: ["telegram-godmode"]
     build: .
@@ -498,7 +506,7 @@ Message your bot: `/start`, then try a task. When the agent hits a `prompt`‑cl
 you'll get an inline keyboard — tap **Approve**, **Deny**, or **Trust** (trust = allow that
 risk class for the rest of the session).
 
-**Godmode** (no prompts — only on a trusted host, ideally with restricted egress):
+**Godmode** (no prompts — only on a trusted host):
 
 ```bash
 docker compose --profile telegram-godmode up --build -d

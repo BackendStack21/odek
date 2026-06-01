@@ -5,7 +5,7 @@
 #
 # Profiles (opt into exactly one at a time):
 #   restricted           Web UI + approval prompts (recommended)
-#   godmode              No prompts; sealed container
+#   godmode              No prompts; disposable container
 #   telegram-restricted  Telegram bot; approvals via inline keyboards
 #   telegram-godmode     Telegram bot; no prompts
 #
@@ -31,7 +31,7 @@ services:
       - ./config.restricted.json:/home/odek/.odek/config.json:ro
     restart: "no"
 
-  # ── Godmode (all permissions) — non-interactive, sealed container ──
+  # ── Godmode (all permissions) — non-interactive, disposable container ──
   odek-godmode:
     profiles: ["godmode"]
     build:
@@ -39,8 +39,11 @@ services:
       dockerfile: docker/Dockerfile
     image: odek:local
     env_file: .env
-    # No published ports. No network unless you need it (remove network_mode).
-    network_mode: "none"
+    # No published ports (no inbound needed). The container keeps default
+    # outbound networking — Odek MUST reach the LLM provider API to run.
+    # Isolation here is the container boundary + non-root + only ./workspace
+    # mounted, NOT network restriction. To also fence the agent's own egress,
+    # put it on a network behind an allowlisting proxy (advanced; see README).
     command: ["serve", "--addr", "0.0.0.0:8080", "--no-sandbox"]
     volumes:
       - ./workspace:/workspace
@@ -62,7 +65,7 @@ services:
       - odek-tg-state:/home/odek/.odek
     restart: unless-stopped
 
-  # ── Telegram bot — Godmode (no prompts; sealed container) ──
+  # ── Telegram bot — Godmode (no prompts; disposable container) ──
   odek-telegram-godmode:
     profiles: ["telegram-godmode"]
     build:
