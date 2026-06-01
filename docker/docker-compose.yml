@@ -51,6 +51,9 @@ services:
     restart: "no"
 
   # ── Telegram bot — Restricted (approvals via inline keyboards) ──
+  # State (sessions, skills, telegram.pid) lives in the local ./.odek folder —
+  # an external folder on the host, just like ./workspace. config.restricted.json
+  # is layered on top of ./.odek/config.json to set the approval policy.
   odek-telegram-restricted:
     profiles: ["telegram-restricted"]
     build:
@@ -61,11 +64,13 @@ services:
     command: ["telegram"]
     volumes:
       - ./workspace:/workspace
+      - ./.odek:/home/odek/.odek
       - ./config.restricted.json:/home/odek/.odek/config.json:ro
-      - odek-tg-state:/home/odek/.odek
     restart: unless-stopped
 
-  # ── Telegram bot — Godmode (no prompts; disposable container) ──
+  # ── Telegram bot — Godmode (no prompts; unrestricted) ──
+  # Same ./.odek state folder; config.godmode.json is layered on top of
+  # ./.odek/config.json to force the unrestricted (action: allow) policy.
   odek-telegram-godmode:
     profiles: ["telegram-godmode"]
     build:
@@ -76,9 +81,6 @@ services:
     command: ["telegram"]
     volumes:
       - ./workspace:/workspace
+      - ./.odek:/home/odek/.odek
       - ./config.godmode.json:/home/odek/.odek/config.json:ro
-      - odek-tg-state:/home/odek/.odek
     restart: unless-stopped
-
-volumes:
-  odek-tg-state:

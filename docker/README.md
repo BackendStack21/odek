@@ -92,7 +92,8 @@ docker compose --profile telegram-restricted up --build -d   # approvals in chat
 docker compose --profile telegram-godmode up --build -d      # no prompts
 ```
 
-Message your bot `/start`. Sessions persist in the `odek-tg-state` volume.
+Message your bot `/start`. State (sessions, skills, `telegram.pid`) persists in the
+local `./.odek` folder — an external host folder, just like `./workspace`.
 
 > **Only run one Telegram profile at a time per token** — Telegram allows a single
 > long-poller per bot (a second gets `409 Conflict`). Create a second bot via

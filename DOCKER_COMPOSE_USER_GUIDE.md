@@ -40,11 +40,12 @@ odek/
 ├── .env                       # your API key + model settings (gitignored)
 ├── config.restricted.json     # Restricted permission policy
 ├── config.godmode.json        # Godmode (YOLO) permission policy
-└── workspace/                 # the directory the agent works in (mounted into the container)
+├── workspace/                 # the directory the agent works in (mounted into the container)
+└── .odek/                     # Telegram bot state: sessions, skills, lock (mounted in)
 ```
 
-> Add `.env` and `workspace/` to your `.gitignore` so you never commit secrets or
-> scratch files.
+> Add `.env`, `workspace/`, and `.odek/` to your `.gitignore` so you never commit secrets
+> or scratch files.
 
 ---
 
@@ -75,8 +76,8 @@ FROM alpine:latest
 RUN apk add --no-cache ca-certificates git bash coreutils curl jq
 
 # Run as a non-root user — defense in depth even inside the container.
-# Pre-create ~/.odek owned by the user so a mounted named volume (used for
-# Telegram session state in §13) inherits uid 1000 ownership and is writable.
+# Pre-create ~/.odek owned by the user so it's writable for config, sessions,
+# and the Telegram lock (whether backed by an image dir or a mounted folder).
 RUN adduser -D -u 1000 odek \
  && mkdir -p /home/odek/.odek /workspace \
  && chown -R odek:odek /home/odek/.odek /workspace
@@ -452,9 +453,9 @@ ODEK_TELEGRAM_SESSION_TTL_HOURS=24          # optional
 
 ### 13c. Compose services
 
-Add these to `docker-compose.yml`. Note the **named volume for `/home/odek/.odek`**: it
-persists per‑chat sessions, the daily‑budget counter, and the singleton lock across
-restarts. No `ports` are needed.
+Add these to `docker-compose.yml`. State (per‑chat sessions, the daily‑budget counter, and
+the singleton lock) lives in a local **`./.odek` folder** — an external host folder, just
+like `./workspace` — so it survives restarts and is easy to inspect. No `ports` are needed.
 
 ```yaml
   # ── Telegram bot — Restricted (approvals via inline keyboards) ──
@@ -466,8 +467,8 @@ restarts. No `ports` are needed.
     command: ["telegram"]
     volumes:
       - ./workspace:/workspace
+      - ./.odek:/home/odek/.odek
       - ./config.restricted.json:/home/odek/.odek/config.json:ro
-      - odek-tg-state:/home/odek/.odek
     restart: unless-stopped
 
   # ── Telegram bot — Godmode (no prompts; disposable container) ──
@@ -479,19 +480,22 @@ restarts. No `ports` are needed.
     command: ["telegram"]
     volumes:
       - ./workspace:/workspace
+      - ./.odek:/home/odek/.odek
       - ./config.godmode.json:/home/odek/.odek/config.json:ro
-      - odek-tg-state:/home/odek/.odek
     restart: unless-stopped
-
-volumes:
-  odek-tg-state:
 ```
 
-> The `:ro` config mount and the writable `odek-tg-state` volume both target
-> `/home/odek/.odek`. Compose layers them: the bind mount wins for `config.json`, the
-> named volume holds everything else (sessions, lock, budget). If your Compose version
-> errors on overlapping mounts, drop the `:ro` bind and instead bake the policy into the
-> image, or copy it into the volume once at startup.
+Create the folder first (so the container's non‑root user can write to it) and gitignore
+its contents:
+
+```bash
+mkdir -p .odek && chmod 777 .odek && touch .odek/.gitkeep
+```
+
+> The `./.odek` bind mounts at `/home/odek/.odek`, and `config.json` is bind‑mounted on top
+> of it — a nested file‑over‑directory mount. Compose layers them: the `:ro` `config.json`
+> wins for that one file, and `./.odek` holds everything else (sessions, lock, budget).
+> Docker leaves a harmless empty `./.odek/config.json` stub on the host as the mount point.
 
 ### 13d. Run it
 
@@ -522,16 +526,16 @@ Stop either with `docker compose --profile telegram-restricted down` (matching p
 | `/help` | List all commands |
 | `/new` | Archive the current session, start fresh |
 
-Voice and photo messages are supported too. Sessions persist per chat (visible via
-`odek session list` against the mounted state volume).
+Voice and photo messages are supported too. Sessions persist per chat in the local
+`./.odek` folder (inspect with `odek session list` against that directory).
 
 ### 13f. Telegram‑specific gotchas
 
 - **One poller per token.** Telegram allows a single long‑poller per bot token; a second
   one gets `409 Conflict`. So you **cannot run the Restricted and Godmode bot services at
   the same time with the same token** — pick one, or create a second bot via @BotFather
-  for the other. A singleton PID lock at `~/.odek/telegram.pid` (kept in the shared state
-  volume) backs this up — a second `odek telegram` that finds a live lock won't start.
+  for the other. A singleton PID lock at `~/.odek/telegram.pid` (kept in the shared `./.odek`
+  folder) backs this up — a second `odek telegram` that finds a live lock won't start.
 - **Optional health endpoint.** The `telegram` command takes no CLI flags — configure it
   via env. Set `ODEK_TELEGRAM_HEALTH_ADDR=0.0.0.0:9090` in `.env` (and add a `ports:`
   mapping) to expose `GET /health` for an orchestrator's liveness probe.

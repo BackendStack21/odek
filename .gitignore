@@ -8,7 +8,9 @@ odek-bin
 notify-channel-proposal.md
 internal/mcpclient/testdata/fakeserver
 
-# Docker Compose examples — local secrets and agent scratch dir
+# Docker Compose examples — local secrets and agent scratch dirs
 docker/.env
 docker/workspace/*
 !docker/workspace/.gitkeep
+docker/.odek/*
+!docker/.odek/.gitkeep

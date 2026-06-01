@@ -63,8 +63,8 @@ RUN apk add --no-cache ca-certificates git bash coreutils curl jq
 # (the mkdir/chown, ENV HOME, USER, and WORKDIR lines all work unchanged).
 
 # Run as a non-root user — defense in depth even inside the container.
-# Pre-create ~/.odek owned by the user so a mounted named volume (used for
-# Telegram session state) inherits uid 1000 ownership and is writable.
+# Pre-create ~/.odek owned by the user so it's writable for config, sessions,
+# and the Telegram lock (whether backed by an image dir or a mounted folder).
 RUN adduser -D -u 1000 odek \
  && mkdir -p /home/odek/.odek /workspace \
  && chown -R odek:odek /home/odek/.odek /workspace
