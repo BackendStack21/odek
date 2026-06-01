@@ -931,6 +931,24 @@ func spawnChild() error {
 	return err
 }
 
+// seedSystemMessage guarantees the system prompt is messages[0].
+//
+// RunWithMessages — unlike Run — does NOT inject the engine's system message,
+// so every caller that resumes a message history must seed it (the run/continue
+// commands do the same). Without this, a fresh Telegram chat reaches the model
+// with no system prompt at all and the agent answers as the provider's base
+// identity (e.g. "I am Claude") instead of from IDENTITY.md / the default.
+//
+// New or system-less histories get the prompt prepended; resumed histories get
+// messages[0] refreshed so IDENTITY.md / prompt changes take effect next turn.
+func seedSystemMessage(messages []llm.Message, system string) []llm.Message {
+	if len(messages) == 0 || messages[0].Role != "system" {
+		return append([]llm.Message{{Role: "system", Content: system}}, messages...)
+	}
+	messages[0].Content = system
+	return messages
+}
+
 // handleChatMessage processes a user message from Telegram in a background
 // goroutine. It creates or loads the chat session, creates a TelegramApprover
 // for approval prompts, runs the agent loop with RunWithMessages, and sends
@@ -995,6 +1013,9 @@ func handleChatMessage(
 		reportError(bot, chatID, messageID, "Failed to create session: "+err.Error())
 		return
 	}
+
+	// Ensure the system prompt is messages[0] before the agent runs.
+	cs.Messages = seedSystemMessage(cs.Messages, systemMessage)
 
 	// Append user message to session.
 	cs.Messages = append(cs.Messages, llm.Message{Role: "user", Content: text})
