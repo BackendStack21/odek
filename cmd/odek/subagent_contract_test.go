@@ -410,13 +410,18 @@ func TestDelegateTasksTool_HasSchema(t *testing.T) {
 		t.Errorf("tasks.maxItems must be 8, got %v (type %T)", tasksMap["maxItems"], tasksMap["maxItems"])
 	}
 
-	// Verify items.properties has system (new) field
+	// Verify items.properties has the guidance field (replaces the old
+	// `system` field — the sub-agent system prompt is fixed and not
+	// parent-writable; approach guidance is delivered in the request).
 	itemsProps, ok := items["properties"].(map[string]any)
 	if !ok {
 		t.Fatal("tasks.items.properties must be object")
 	}
-	if _, ok := itemsProps["system"]; !ok {
-		t.Error("tasks.items.properties should include optional 'system' field")
+	if _, ok := itemsProps["guidance"]; !ok {
+		t.Error("tasks.items.properties should include optional 'guidance' field")
+	}
+	if _, ok := itemsProps["system"]; ok {
+		t.Error("tasks.items.properties must NOT include a 'system' field (sub-agent prompt is a fixed trust boundary)")
 	}
 	if _, ok := itemsProps["context"]; !ok {
 		t.Error("tasks.items.properties should include 'context' field")
@@ -610,97 +615,6 @@ func TestSubagentSystemPrompt_Minimal(t *testing.T) {
 	}
 }
 
-// ── 9. buildSubagentPrompt ──────────────────────────────────────────
-
-func TestBuildSubagentPrompt_IncludesGoal(t *testing.T) {
-	got := buildSubagentPrompt("Create a user model with CRUD", "")
-	if !strings.Contains(got, "Create a user model with CRUD") {
-		t.Errorf("prompt should contain the goal text, got:\n%s", got)
-	}
-}
-
-func TestBuildSubagentPrompt_IncludesContext(t *testing.T) {
-	got := buildSubagentPrompt("Build auth middleware", "Uses gin, models at internal/models/user.go")
-	if !strings.Contains(got, "Uses gin") {
-		t.Errorf("prompt should contain context, got:\n%s", got)
-	}
-}
-
-func TestBuildSubagentPrompt_EmptyGoal(t *testing.T) {
-	got := buildSubagentPrompt("", "")
-	if got != subagentSystem {
-		t.Errorf("empty goal should return subagentSystem, got:\n%s", got)
-	}
-}
-
-func TestBuildSubagentPrompt_DebugDetection(t *testing.T) {
-	for _, goal := range []string{"fix OOM bug in parser", "crash in websocket handler", "broken import path"} {
-		got := buildSubagentPrompt(goal, "")
-		if !strings.Contains(got, "debugger") && !strings.Contains(got, "root cause") {
-			t.Errorf("goal %q should produce debug prompt, got:\n%s", goal, got)
-		}
-	}
-}
-
-func TestBuildSubagentPrompt_TestDetection(t *testing.T) {
-	for _, goal := range []string{"write unit tests for auth", "add coverage for models", "create integration test for API"} {
-		got := buildSubagentPrompt(goal, "")
-		if !strings.Contains(got, "test") && !strings.Contains(got, "assert") && !strings.Contains(got, "coverage") {
-			t.Errorf("goal %q should produce test prompt, got:\n%s", goal, got)
-		}
-	}
-}
-
-func TestBuildSubagentPrompt_ReviewDetection(t *testing.T) {
-	got := buildSubagentPrompt("review PR #42 for security issues", "")
-	if !strings.Contains(got, "reviewing") && !strings.Contains(got, "critically") {
-		t.Errorf("review goal should produce review prompt, got:\n%s", got)
-	}
-}
-
-func TestBuildSubagentPrompt_RefactorDetection(t *testing.T) {
-	got := buildSubagentPrompt("refactor the monolith into handlers", "")
-	if !strings.Contains(got, "architecture") && !strings.Contains(got, "Preserve behavior") {
-		t.Errorf("refactor goal should produce architecture prompt, got:\n%s", got)
-	}
-}
-
-func TestBuildSubagentPrompt_ConfigDetection(t *testing.T) {
-	got := buildSubagentPrompt("setup Docker CI pipeline", "")
-	if !strings.Contains(got, "DevOps") && !strings.Contains(got, "reproducible") {
-		t.Errorf("config goal should produce DevOps prompt, got:\n%s", got)
-	}
-}
-
-func TestBuildSubagentPrompt_ResearchDetection(t *testing.T) {
-	got := buildSubagentPrompt("research Go HTTP router performance", "")
-	if !strings.Contains(got, "researcher") && !strings.Contains(got, "Explore thoroughly") {
-		t.Errorf("research goal should produce research prompt, got:\n%s", got)
-	}
-}
-
-func TestBuildSubagentPrompt_FallbackToBuild(t *testing.T) {
-	got := buildSubagentPrompt("do something random", "")
-	if !strings.Contains(got, "expert engineer") {
-		t.Errorf("generic goal should produce engineer prompt, got:\n%s", got)
-	}
-}
-
-func TestBuildSubagentPrompt_UniquePerGoal(t *testing.T) {
-	p1 := buildSubagentPrompt("Build auth middleware", "")
-	p2 := buildSubagentPrompt("Create user model", "")
-	if p1 == p2 {
-		t.Error("different goals should produce different prompts")
-	}
-}
-
-func TestBuildSubagentPrompt_MaxLength(t *testing.T) {
-	got := buildSubagentPrompt("Create a full CRUD REST API with JWT auth and PostgreSQL storage", "Uses gin, GORM, models at internal/models/")
-	if len(got) > 800 {
-		t.Errorf("prompt too long: %d chars (max 800)\n%s", len(got), got)
-	}
-}
-
 // ── 10. Integration ─────────────────────────────────────────────────
 
 func TestDelegateTasks_PipesStderr(t *testing.T) {
@@ -712,204 +626,6 @@ func TestDelegateTasks_PipesStderr(t *testing.T) {
 
 	input := `{"tasks":[{"goal":"build auth"}]}`
 	_, _ = tool.Call(input)
-}
-
-// ── 11. buildSubagentPrompt — Expanded Keyword Detection ────────────
-
-func TestBuildSubagentPrompt_TestGoalExactMatch(t *testing.T) {
-	got := buildSubagentPrompt("test goal", "")
-	if !strings.Contains(got, "testing engineer") {
-		t.Errorf("goal %q should produce 'testing engineer' persona, got:\n%s", "test goal", got)
-	}
-	if !strings.Contains(got, "Write thorough tests") {
-		t.Errorf("goal %q should contain 'Write thorough tests', got:\n%s", "test goal", got)
-	}
-}
-
-func TestBuildSubagentPrompt_TestKeywordVariants(t *testing.T) {
-	goals := []string{
-		"test goal",
-		"spec the API endpoints",
-		"add spec for user model",
-		"increase coverage to 90%",
-		"write assertions for edge cases",
-		"assert the response is correct",
-	}
-	for _, goal := range goals {
-		got := buildSubagentPrompt(goal, "")
-		if !strings.Contains(got, "testing engineer") {
-			t.Errorf("goal %q should produce 'testing engineer' persona, got:\n%s", goal, got)
-		}
-		if !strings.Contains(got, "happy path") {
-			t.Errorf("goal %q should mention 'happy path' in testing prompt, got:\n%s", goal, got)
-		}
-	}
-}
-
-func TestBuildSubagentPrompt_CaseInsensitive(t *testing.T) {
-	tests := []struct {
-		goal        string
-		wantKeyword string
-	}{
-		{"FIX THE CRASH IN DB", "debugger"},
-		{"TEST ALL ENDPOINTS", "testing engineer"},
-		{"REVIEW DEPLOYMENT SCRIPT", "reviewing"},
-		{"REFACTOR THE MONOLITH", "architecture expert"},
-		{"SETUP CI/CD PIPELINE", "DevOps"},
-		{"RESEARCH PERFORMANCE", "researcher"},
-	}
-	for _, tt := range tests {
-		got := buildSubagentPrompt(tt.goal, "")
-		// Compound goals produce "multiple strengths" persona —
-		// check for the keyword within the combined methodology instead.
-		matched := strings.Contains(got, tt.wantKeyword) ||
-			strings.Contains(got, "multiple strengths")
-		if !matched {
-			t.Errorf("goal %q should produce persona containing %q or 'multiple strengths', got:\n%s", tt.goal, tt.wantKeyword, got)
-		}
-	}
-}
-
-func TestBuildSubagentPrompt_DebugAdditionalKeywords(t *testing.T) {
-	keywords := []string{
-		"fix null pointer",
-		"fix regression in parser",
-		"bug in login handler",
-		"error handling for timeout",
-		"crash on startup",
-		"broken query builder",
-		"incorrect calculation result",
-		"wrong output format",
-		"fail on empty input",
-	}
-	for _, goal := range keywords {
-		got := buildSubagentPrompt(goal, "")
-		if !strings.Contains(got, "debugger") && !strings.Contains(got, "root cause") {
-			t.Errorf("goal %q should produce debug prompt, got:\n%s", goal, got)
-		}
-	}
-}
-
-func TestBuildSubagentPrompt_ReviewAdditionalKeywords(t *testing.T) {
-	keywords := []string{
-		"audit security dependencies",
-		"check code quality",
-		"verify auth logic is correct",
-		"validate input sanitization",
-	}
-	// Note: "inspect" is intentionally excluded here because it contains
-	// "spec" as a substring, which triggers the test persona match first
-	// in the switch/case priority order.
-	for _, goal := range keywords {
-		got := buildSubagentPrompt(goal, "")
-		if !strings.Contains(got, "reviewing") && !strings.Contains(got, "critically") {
-			t.Errorf("goal %q should produce review prompt, got:\n%s", goal, got)
-		}
-	}
-}
-
-func TestBuildSubagentPrompt_RefactorAdditionalKeywords(t *testing.T) {
-	keywords := []string{
-		"simplify the validation logic",
-		"clean up legacy handler",
-		"rename UserDTO to UserResponse",
-		"simplify nested if-else",
-		"extract database logic into repository",
-		"restructure the project layout",
-	}
-	for _, goal := range keywords {
-		got := buildSubagentPrompt(goal, "")
-		if !strings.Contains(got, "architecture") && !strings.Contains(got, "Preserve behavior") {
-			t.Errorf("goal %q should produce refactor prompt, got:\n%s", goal, got)
-		}
-	}
-}
-
-func TestBuildSubagentPrompt_ConfigAdditionalKeywords(t *testing.T) {
-	keywords := []string{
-		"setup Postgres dev environment",
-		"config nginx reverse proxy",
-		"install kubectl and helm",
-		"setup the project",
-		"configure CI pipeline",
-		"dockerize the application",
-		"deploy to production",
-		"provision AWS resources",
-	}
-	for _, goal := range keywords {
-		got := buildSubagentPrompt(goal, "")
-		if !strings.Contains(got, "DevOps") && !strings.Contains(got, "reproducible") {
-			t.Errorf("goal %q should produce DevOps prompt, got:\n%s", goal, got)
-		}
-	}
-}
-
-func TestBuildSubagentPrompt_ResearchAdditionalKeywords(t *testing.T) {
-	keywords := []string{
-		"compare Go vs Rust performance",
-		"understand the caching mechanism",
-		"analyze API response times",
-		"research database indexing strategies",
-	}
-	// Note: "investigate" is intentionally excluded because goals containing
-	// "suspect" (like "investigate memory leak suspect") have "spec" as a
-	// substring, triggering the test persona match first in priority order.
-	for _, goal := range keywords {
-		got := buildSubagentPrompt(goal, "")
-		if !strings.Contains(got, "researcher") && !strings.Contains(got, "Explore thoroughly") {
-			t.Errorf("goal %q should produce research prompt, got:\n%s", goal, got)
-		}
-	}
-}
-
-func TestBuildSubagentPrompt_PriorityOrder(t *testing.T) {
-	// When multiple categories match, all are composed.
-	// "fix broken test" matches both "fix" and "test" — persona is
-	// "multiple strengths" with both methodologies combined.
-	got := buildSubagentPrompt("fix broken test", "")
-	if !strings.Contains(got, "debugger") && !strings.Contains(got, "root cause") {
-		t.Errorf("'fix broken test' should contain debugger methodology, got:\n%s", got)
-	}
-	if !strings.Contains(got, "testing engineer") && !strings.Contains(got, "thorough tests") {
-		t.Errorf("'fix broken test' should also contain test methodology (compounded), got:\n%s", got)
-	}
-
-	// "test setup script" matches both "test" and "setup"
-	got2 := buildSubagentPrompt("test setup script", "")
-	if !strings.Contains(got2, "testing engineer") && !strings.Contains(got2, "thorough tests") {
-		t.Errorf("'test setup script' should contain test methodology, got:\n%s", got2)
-	}
-	if !strings.Contains(got2, "DevOps") && !strings.Contains(got2, "reproducible") {
-		t.Errorf("'test setup script' should also contain DevOps methodology (compounded), got:\n%s", got2)
-	}
-}
-
-func TestBuildSubagentPrompt_ContextAddedAfterGoal(t *testing.T) {
-	got := buildSubagentPrompt("build auth", "Context: use gin framework")
-	if !strings.Contains(got, "Context:") {
-		t.Errorf("prompt should include 'Context:' label, got:\n%s", got)
-	}
-	// Context should appear after the goal section
-	goalIdx := strings.Index(got, "build auth")
-	ctxIdx := strings.Index(got, "Context:")
-	if ctxIdx < goalIdx {
-		t.Errorf("context should appear after goal in prompt, got:\n%s", got)
-	}
-}
-
-func TestBuildSubagentPrompt_EmptyGoalWithContext(t *testing.T) {
-	// Empty goal with context should still return subagentSystem (fallback)
-	got := buildSubagentPrompt("", "some context")
-	if got != subagentSystem {
-		t.Errorf("empty goal with context should return subagentSystem, got:\n%s", got)
-	}
-}
-
-func TestBuildSubagentPrompt_ReportSuffix(t *testing.T) {
-	got := buildSubagentPrompt("build something", "")
-	if !strings.Contains(got, "Report what you built") {
-		t.Errorf("prompt should end with report instruction, got:\n%s", got)
-	}
 }
 
 // ── 12. truncate ────────────────────────────────────────────────────
@@ -1336,30 +1052,4 @@ func isFlagParseError(err error) bool {
 		return false
 	}
 	return exitErr.ExitCode() == 1 || exitErr.ExitCode() == 3
-}
-
-// ── Subagent Persona Composition ─────────────────────────────────────
-
-// TestBuildSubagentPrompt_CompoundGoal_MergesPersonas verifies that
-// compound goals (e.g. "review the auth code and fix bugs") produce
-// personas that merge insights from multiple matched categories.
-// The new behavior composes: persona, methodology, and focus from
-// all matched categories.
-func TestBuildSubagentPrompt_CompoundGoal_MergesPersonas(t *testing.T) {
-	got := buildSubagentPrompt("review the auth code and fix the OOM bug", "")
-
-	// GREEN PHASE: assert BOTH review and fix keywords are present
-	hasReview := strings.Contains(got, "reviewing") || strings.Contains(got, "Read every line")
-	hasFix := strings.Contains(got, "root cause") || strings.Contains(got, "debugger")
-	hasJoint := strings.Contains(got, "multiple strengths")
-
-	if !hasReview {
-		t.Error("compound goal 'review and fix' should include review methodology")
-	}
-	if !hasFix {
-		t.Error("compound goal 'review and fix' should include fix methodology")
-	}
-	if !hasJoint {
-		t.Error("compound goal 'review and fix' should indicate multiple strengths in persona")
-	}
 }
