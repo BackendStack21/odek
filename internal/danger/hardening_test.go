@@ -88,7 +88,7 @@ func TestHardening_ReverseShellDevTCP(t *testing.T) {
 		"exec 3<>/dev/udp/10.0.0.1/53",
 	}
 	for _, cmd := range cases {
-		if got := Classify(cmd); rank(got) < rank(NetworkEgress) {
+		if got := Classify(cmd); Rank(got) < Rank(NetworkEgress) {
 			t.Errorf("Classify(%q) = %s, want >= network_egress", cmd, got)
 		}
 	}
@@ -133,7 +133,7 @@ func TestHardening_SensitivePathReads(t *testing.T) {
 		"grep secret ~/.git-credentials",
 	}
 	for _, cmd := range cases {
-		if got := Classify(cmd); rank(got) < rank(SystemWrite) {
+		if got := Classify(cmd); Rank(got) < Rank(SystemWrite) {
 			t.Errorf("Classify(%q) = %s, want >= system_write", cmd, got)
 		}
 	}
@@ -235,6 +235,42 @@ func TestHardening_SafeAllowlistStillSafe(t *testing.T) {
 	for _, cmd := range safe {
 		if got := Classify(cmd); got != Safe {
 			t.Errorf("Classify(%q) = %s, want safe", cmd, got)
+		}
+	}
+}
+
+func TestHardening_DdToCharDeviceNotDestructive(t *testing.T) {
+	// dd writing to a character pseudo-device (discard/echo) is benign — only
+	// raw block devices are destructive. Loose "/dev/" matching used to deny
+	// these common idioms.
+	benign := []string{
+		"dd if=/dev/zero of=/dev/null bs=1M count=100",
+		"dd if=/dev/urandom of=/dev/stdout count=1",
+	}
+	for _, cmd := range benign {
+		if got := Classify(cmd); got == Destructive || got == Blocked {
+			t.Errorf("Classify(%q) = %s, want non-destructive", cmd, got)
+		}
+	}
+	// Real block-device writes stay destructive/blocked.
+	for _, cmd := range []string{"dd if=/dev/zero of=/dev/sda", "dd if=/dev/zero of=/dev/nvme0n1 bs=4M"} {
+		if got := Classify(cmd); Rank(got) < Rank(Destructive) {
+			t.Errorf("Classify(%q) = %s, want >= destructive", cmd, got)
+		}
+	}
+}
+
+func TestHardening_ANSICOctalDigitCap(t *testing.T) {
+	// $'\NNN' consumes at most 3 octal digits, like bash: $'\1551' is octal
+	// 155 ('m') followed by a literal '1' → "m1", not a single over-read byte.
+	cases := map[string]string{
+		`$'\155'`:     "m",
+		`$'\1551'`:    "m1",
+		`$'\162\155'`: "rm",
+	}
+	for in, want := range cases {
+		if got := decodeANSIC(in); got != want {
+			t.Errorf("decodeANSIC(%s) = %q, want %q", in, got, want)
 		}
 	}
 }

@@ -492,8 +492,8 @@ func truncate(s string, n int) string {
 // outside CWD, an MCP server response). We:
 //   - Force NonInteractiveAction to deny (sub-agents have no TTY).
 //   - Clamp the action for Destructive, CodeExecution, Install,
-//     SystemWrite, and NetworkEgress to Deny so the sub-agent cannot
-//     escalate beyond LocalWrite without coming back through the
+//     SystemWrite, NetworkEgress, and Unknown to Deny so the sub-agent
+//     cannot escalate beyond LocalWrite without coming back through the
 //     parent.
 //
 // maxRisk caps the highest risk class the sub-agent will execute.
@@ -522,6 +522,7 @@ func applySubagentTrust(dc *danger.DangerousConfig, trustLevel, maxRisk string) 
 			danger.Install,
 			danger.SystemWrite,
 			danger.NetworkEgress,
+			danger.Unknown,
 			danger.Blocked,
 		} {
 			dc.Classes[cls] = danger.Deny
@@ -529,8 +530,7 @@ func applySubagentTrust(dc *danger.DangerousConfig, trustLevel, maxRisk string) 
 	}
 
 	if maxRisk != "" {
-		cap := danger.RiskClass(maxRisk)
-		capRank := riskRank(cap)
+		capRank := danger.Rank(danger.RiskClass(maxRisk))
 		for _, cls := range []danger.RiskClass{
 			danger.Safe,
 			danger.LocalWrite,
@@ -539,35 +539,12 @@ func applySubagentTrust(dc *danger.DangerousConfig, trustLevel, maxRisk string) 
 			danger.NetworkEgress,
 			danger.CodeExecution,
 			danger.Install,
+			danger.Unknown,
 			danger.Blocked,
 		} {
-			if riskRank(cls) > capRank {
+			if danger.Rank(cls) > capRank {
 				dc.Classes[cls] = danger.Deny
 			}
 		}
 	}
-}
-
-// riskRank mirrors internal/danger.rank but is duplicated here to keep
-// applySubagentTrust local. Order matches internal/danger/classifier.go.
-func riskRank(cls danger.RiskClass) int {
-	switch cls {
-	case danger.Blocked:
-		return 8
-	case danger.Destructive:
-		return 7
-	case danger.SystemWrite:
-		return 6
-	case danger.CodeExecution:
-		return 5
-	case danger.NetworkEgress:
-		return 4
-	case danger.Install:
-		return 3
-	case danger.LocalWrite:
-		return 2
-	case danger.Safe:
-		return 1
-	}
-	return 0
 }

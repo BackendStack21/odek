@@ -76,7 +76,7 @@ func TestBypass_KnownEvasions(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := Classify(tc.cmd)
-			if rank(got) < rank(tc.minWant) {
+			if Rank(got) < Rank(tc.minWant) {
 				t.Errorf("Classify(%q) = %v, want at least %v\nwhy: %s",
 					tc.cmd, got, tc.minWant, tc.why)
 			}
@@ -99,7 +99,7 @@ func TestBypass_KnownDetections(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := Classify(tc.cmd)
-			if rank(got) < rank(Destructive) {
+			if Rank(got) < Rank(Destructive) {
 				t.Errorf("Classify(%q) = %v, want >= destructive — regression in existing detection", tc.cmd, got)
 			}
 		})

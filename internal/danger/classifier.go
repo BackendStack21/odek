@@ -708,7 +708,7 @@ func Classify(cmd string) RiskClass {
 		// Substitutions are themselves commands the shell will run.
 		// Re-enter Classify (not classifyOne) so nested substitutions
 		// inside them also normalise.
-		if r := Classify(s); rank(r) > rank(worst) {
+		if r := Classify(s); Rank(r) > Rank(worst) {
 			worst = r
 		}
 	}
@@ -728,7 +728,7 @@ func classifyOne(cmd string) RiskClass {
 	worst := Safe
 	for _, seg := range segments {
 		cls := classifyPipeline(seg)
-		if rank(cls) > rank(worst) {
+		if Rank(cls) > Rank(worst) {
 			worst = cls
 		}
 	}
@@ -876,13 +876,17 @@ func decodeEscape(s string, b *strings.Builder) int {
 			}
 		}
 	default:
-		if s[1] >= '0' && s[1] <= '7' { // \NNN octal (1–3 digits)
+		if s[1] >= '0' && s[1] <= '7' { // \NNN octal (1–3 digits, like bash)
+			// end starts after the backslash+first digit; cap at end<4 so at
+			// most 3 octal digits (s[1:4]) are consumed. A wider bound would
+			// swallow a following literal octal digit and diverge from the
+			// shell (bash: $'\1551' → "m1", not one byte).
 			end := 2
-			for end < len(s) && end < 5 && s[end] >= '0' && s[end] <= '7' {
+			for end < len(s) && end < 4 && s[end] >= '0' && s[end] <= '7' {
 				end++
 			}
 			if v, err := strconv.ParseUint(s[1:end], 8, 16); err == nil {
-				b.WriteByte(byte(v))
+				b.WriteByte(byte(v)) // bash takes octal escapes mod 256
 				return end
 			}
 		}
@@ -1284,7 +1288,7 @@ func commandName(tok string) string {
 
 // worstOf returns whichever class ranks higher (more severe).
 func worstOf(a, b RiskClass) RiskClass {
-	if rank(b) > rank(a) {
+	if Rank(b) > Rank(a) {
 		return b
 	}
 	return a
@@ -1524,9 +1528,12 @@ func isDestructive(first string, tokens []string) bool {
 		return len(tokens) >= 1
 	}
 
-	// dd with of=/dev/sd* or of=/dev/nvme*
+	// dd writing to a raw block device (of=/dev/sda etc.) is destructive.
+	// Match only real block devices via containsBlockDevice/isBlockDevice —
+	// NOT any "/dev/" substring, so benign discards like of=/dev/null and
+	// of=/dev/stdout are not misclassified.
 	for _, tok := range tokens {
-		if strings.HasPrefix(tok, "of=") && strings.Contains(tok, "/dev/") {
+		if strings.HasPrefix(tok, "of=") && containsBlockDevice(tok) {
 			return true
 		}
 		if tok == "of=" && len(tokens) > 1 {
@@ -1754,8 +1761,11 @@ func isSystemPath(path string) bool {
 
 // ── Ranking ────────────────────────────────────────────────────────────
 
-// rank returns the severity order for priority comparison.
-func rank(cls RiskClass) int {
+// Rank returns the severity order for priority comparison. Exported so
+// consumers that enforce risk caps (e.g. the sub-agent maxRisk clamp) share
+// this single ordering instead of mirroring it — a mirror silently drifts
+// when a class is added, as happened with Unknown.
+func Rank(cls RiskClass) int {
 	switch cls {
 	case Blocked:
 		return 9

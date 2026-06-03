@@ -36,11 +36,13 @@ type approvalRequest struct {
 	FrictionApprovals int    `json:"friction_approvals,omitempty"`
 }
 
-// allowTrustForClass mirrors the TTYApprover policy: destructive and
-// blocked must never be class-trusted, so an attacker cannot social-
-// engineer a single broad approval into long-term carte blanche.
+// allowTrustForClass mirrors the TTYApprover policy: destructive, blocked,
+// and unknown must never be class-trusted, so an attacker cannot social-
+// engineer a single broad approval into long-term carte blanche. Unknown is
+// the fail-closed catch-all for unrecognised verbs; class-trusting it would
+// blanket-approve every future obfuscated/novel command.
 func allowTrustForClass(cls danger.RiskClass) bool {
-	return cls != danger.Destructive && cls != danger.Blocked
+	return cls != danger.Destructive && cls != danger.Blocked && cls != danger.Unknown
 }
 
 // approvalResponse is received from the browser when the user responds.

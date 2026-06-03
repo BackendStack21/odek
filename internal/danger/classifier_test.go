@@ -831,9 +831,9 @@ func TestRank(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := rank(tt.cls)
+			got := Rank(tt.cls)
 			if got != tt.want {
-				t.Errorf("rank(%s) = %d, want %d", tt.cls, got, tt.want)
+				t.Errorf("Rank(%s) = %d, want %d", tt.cls, got, tt.want)
 			}
 		})
 	}
