@@ -288,9 +288,12 @@ func TestClassify_Priority_Wins(t *testing.T) {
 			cls:  CodeExecution,
 		},
 		{
-			name: "sudo_rm_is_system_write_not_local",
+			// sudo no longer masks the destructive inner command: the
+			// privileged wrapper sets a system_write floor, then the rm -rf
+			// of a system path escalates to destructive (the worse class).
+			name: "sudo_rm_recurses_into_destructive",
 			cmd:  "sudo rm -rf /var/log",
-			cls:  SystemWrite,
+			cls:  Destructive,
 		},
 		{
 			name: "rm_root_is_destructive_not_local",
