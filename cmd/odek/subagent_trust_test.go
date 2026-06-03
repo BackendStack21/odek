@@ -35,6 +35,7 @@ func TestApplySubagentTrust_Untrusted_LocksDownEscalationClasses(t *testing.T) {
 		danger.Install,
 		danger.SystemWrite,
 		danger.NetworkEgress,
+		danger.Unknown,
 		danger.Blocked,
 	} {
 		if got := dc.Classes[cls]; got != danger.Deny {
@@ -63,6 +64,7 @@ func TestApplySubagentTrust_MaxRisk_ClampsAbove(t *testing.T) {
 		danger.NetworkEgress,
 		danger.CodeExecution,
 		danger.Install,
+		danger.Unknown,
 		danger.Blocked,
 	} {
 		if got := dc.Classes[cls]; got != danger.Deny {
@@ -73,6 +75,27 @@ func TestApplySubagentTrust_MaxRisk_ClampsAbove(t *testing.T) {
 	for _, cls := range []danger.RiskClass{danger.Safe, danger.LocalWrite} {
 		if got, ok := dc.Classes[cls]; ok && got == danger.Deny {
 			t.Errorf("Class %s should be allowed with max_risk=local_write, got %q", cls, got)
+		}
+	}
+}
+
+// TestApplySubagentTrust_MaxRiskUnknown_KeepsSafeOpen guards the fix for the
+// cap miscomputation: before Unknown was added to riskRank's shared ordering,
+// max_risk="unknown" computed rank 0 and force-denied even Safe. It must now
+// leave Safe/LocalWrite open and deny only the classes above Unknown.
+func TestApplySubagentTrust_MaxRiskUnknown_KeepsSafeOpen(t *testing.T) {
+	dc := danger.DangerousConfig{}
+	applySubagentTrust(&dc, "", "unknown")
+
+	for _, cls := range []danger.RiskClass{danger.Safe, danger.LocalWrite} {
+		if got, ok := dc.Classes[cls]; ok && got == danger.Deny {
+			t.Errorf("Class %s must stay open with max_risk=unknown, got %q", cls, got)
+		}
+	}
+	// Only classes ranked above Unknown (Destructive, Blocked) are denied.
+	for _, cls := range []danger.RiskClass{danger.Destructive, danger.Blocked} {
+		if got := dc.Classes[cls]; got != danger.Deny {
+			t.Errorf("Class %s = %q, want deny with max_risk=unknown", cls, got)
 		}
 	}
 }

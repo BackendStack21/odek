@@ -71,8 +71,9 @@ Use for: reading files, listing directories, running tests, building code, and g
 In sandbox mode (--sandbox), commands run inside the Docker container with restricted permissions.
 In host mode (default), commands run with the same permissions as the odek process.
 
-Risk classes: safe, local_write, system_write, destructive, network_egress, code_execution, install, blocked
-High-risk operations may prompt for approval (configurable via dangerous section in odek.json).`
+Risk classes: safe, local_write, system_write, destructive, network_egress, code_execution, install, unknown, blocked
+High-risk operations may prompt for approval (configurable via dangerous section in odek.json).
+The gate fails closed: an unrecognised command classifies as "unknown" and is denied by default.`
 }
 
 func (t *shellTool) Schema() any {

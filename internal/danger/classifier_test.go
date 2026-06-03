@@ -288,9 +288,12 @@ func TestClassify_Priority_Wins(t *testing.T) {
 			cls:  CodeExecution,
 		},
 		{
-			name: "sudo_rm_is_system_write_not_local",
+			// sudo no longer masks the destructive inner command: the
+			// privileged wrapper sets a system_write floor, then the rm -rf
+			// of a system path escalates to destructive (the worse class).
+			name: "sudo_rm_recurses_into_destructive",
 			cmd:  "sudo rm -rf /var/log",
-			cls:  SystemWrite,
+			cls:  Destructive,
 		},
 		{
 			name: "rm_root_is_destructive_not_local",
@@ -374,8 +377,13 @@ func TestClassify_ConfigDefaults(t *testing.T) {
 	if got := cfg.ActionFor(Blocked); got != Deny {
 		t.Errorf("ActionFor(blocked) = %s, want deny", got)
 	}
-	if got := cfg.ActionFor(RiskClass("unknown")); got != Prompt {
-		t.Errorf("ActionFor(unknown) = %s, want prompt (default)", got)
+	// Unknown fails closed: unrecognised commands are denied by default.
+	if got := cfg.ActionFor(Unknown); got != Deny {
+		t.Errorf("ActionFor(unknown) = %s, want deny", got)
+	}
+	// A class string that isn't in the table at all falls back to prompt.
+	if got := cfg.ActionFor(RiskClass("bogus")); got != Prompt {
+		t.Errorf("ActionFor(bogus) = %s, want prompt (fallback)", got)
 	}
 }
 
@@ -756,9 +764,9 @@ func TestHasSystemRedirectTarget(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := hasSystemRedirectTarget(tt.tokens)
+			got := touchesSystemPath(tt.tokens)
 			if got != tt.want {
-				t.Errorf("hasSystemRedirectTarget(%v) = %v, want %v", tt.tokens, got, tt.want)
+				t.Errorf("touchesSystemPath(%v) = %v, want %v", tt.tokens, got, tt.want)
 			}
 		})
 	}
@@ -816,15 +824,16 @@ func TestRank(t *testing.T) {
 		{"network_egress", NetworkEgress, 4},
 		{"code_execution", CodeExecution, 5},
 		{"system_write", SystemWrite, 6},
-		{"destructive", Destructive, 7},
-		{"blocked", Blocked, 8},
-		{"unknown_class", RiskClass("unknown"), 0},
+		{"unknown", Unknown, 7},
+		{"destructive", Destructive, 8},
+		{"blocked", Blocked, 9},
+		{"unrecognized_class", RiskClass("bogus"), 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := rank(tt.cls)
+			got := Rank(tt.cls)
 			if got != tt.want {
-				t.Errorf("rank(%s) = %d, want %d", tt.cls, got, tt.want)
+				t.Errorf("Rank(%s) = %d, want %d", tt.cls, got, tt.want)
 			}
 		})
 	}
@@ -884,7 +893,7 @@ func TestClassify_ForkBomb_StillDetected(t *testing.T) {
 }
 
 func TestClassify_SystemRedirectTarget(t *testing.T) {
-	// Regression: isSystemWrite and hasSystemRedirectTarget now share
+	// Regression: isSystemWrite and touchesSystemPath now share
 	// isSystemPath. Verify system path redirect detection works.
 	tests := []struct {
 		cmd string

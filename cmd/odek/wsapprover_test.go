@@ -348,6 +348,7 @@ func TestWSApprover_AllowTrustFlag_PerClass(t *testing.T) {
 		{danger.Install, true},
 		{danger.Destructive, false},
 		{danger.Blocked, false},
+		{danger.Unknown, false},
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.cls), func(t *testing.T) {
@@ -431,5 +432,20 @@ func TestWSApprover_TrustResponse_CoercedToApprove_ForBlocked(t *testing.T) {
 	}
 	if a.approveAll[danger.Blocked] {
 		t.Error("blocked class was cached as trusted — class trust must be impossible")
+	}
+}
+
+// TestWSApprover_TrustResponse_CoercedToApprove_ForUnknown verifies the
+// fail-closed Unknown class cannot be class-trusted: a forged "trust" is
+// treated as a single approve and never cached, so unrecognised verbs can't
+// be blanket-approved by one social-engineered grant.
+func TestWSApprover_TrustResponse_CoercedToApprove_ForUnknown(t *testing.T) {
+	a := newWSApprover(nil)
+	_, err := promptAndCaptureRequest(t, a, danger.Unknown, "trust")
+	if err != nil {
+		t.Errorf("expected nil error (coerced to approve), got: %v", err)
+	}
+	if a.approveAll[danger.Unknown] {
+		t.Error("unknown class was cached as trusted — class trust must be impossible")
 	}
 }

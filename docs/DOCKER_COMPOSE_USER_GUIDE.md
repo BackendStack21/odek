@@ -138,10 +138,10 @@ These JSON files are mounted to `/home/odek/.odek/config.json` inside the contai
 
 ### 5a. Restricted policy — `config.restricted.json`
 
-This is essentially Odek's default behavior, made explicit. Commands are risk‑classified;
-destructive ones are denied, the rest prompt for approval. Crucially, `non_interactive`
-is set to **`deny`** so that if the agent runs in a container *without* an attached
-terminal or Web UI, high‑risk commands are blocked rather than silently allowed.
+Commands are risk‑classified; destructive and unrecognised ones are denied, the rest
+prompt for approval. Crucially, `non_interactive` is set to **`deny`** so that if the
+agent runs in a container *without* an attached terminal or Web UI, anything that would
+prompt is blocked rather than silently allowed.
 
 ```json
 {
@@ -163,22 +163,80 @@ terminal or Web UI, high‑risk commands are blocked rather than silently allowe
 }
 ```
 
-**How the classes map** (built‑in risk model):
+#### What each field does
 
-| Class | Examples | Restricted action |
-| --- | --- | --- |
-| `safe` | `ls`, `cat`, `echo` | allow |
-| `local_write` | write files in the working dir | allow |
-| `system_write` | `chmod`, `chown`, `mkdir /etc` | prompt |
-| `network_egress` | `curl`, `wget`, DNS lookups | prompt |
-| `code_execution` | `go run`, `python x.py` | prompt |
-| `install` | `npm install`, `apk add` | prompt |
-| `destructive` | `rm -rf`, `git rm`, `docker rm` | **deny** |
-| `blocked` | fork bombs, `dd` to block devices | **always deny** (cannot be overridden) |
+| Field | Meaning |
+| --- | --- |
+| `sandbox` | `false` runs commands directly in this container (the Compose setup already *is* the sandbox). `true` would nest a second Docker sandbox — not what you want here. |
+| `action` | **Global default** action for any class **not** listed under `classes`. `"prompt"` here, `"allow"` = godmode, `"deny"` = lockdown. ⚠️ This overrides the *built‑in* per‑class defaults (see the gotcha below). |
+| `non_interactive` | What to do with a **prompt**‑level command when there is no human channel (no TTY, no Web UI). `"deny"` blocks it; `"allow"` runs it. Always set this to `"deny"` for unattended/automated containers. |
+| `classes` | Per‑class action overrides. The most specific setting — it wins over `action` and the built‑in defaults. Only list the classes you want to pin. |
+| `allowlist` | Commands that always run, **exact string match**, no classification. Highest priority of all. Use for a handful of trusted exact commands (e.g. `"npm run deploy"`). |
+| `denylist` | Commands that are always denied, **prefix match** after trimming. Beats classification and even godmode — but **not** the allowlist. |
+
+#### How the classes map (built‑in risk model)
+
+| Class | Examples | Built‑in default | This profile |
+| --- | --- | --- | --- |
+| `safe` | `ls`, `cat`, `grep`, `git status` | allow | prompt¹ |
+| `local_write` | write files in the working dir | allow | allow |
+| `install` | `npm install`, `pip install`, `apk add` | prompt | prompt |
+| `network_egress` | `curl`, `wget`, `ssh`, DNS lookups | prompt | prompt |
+| `code_execution` | `curl … \| sh`, `bash -c`, `python -c`, `go run` | prompt | prompt |
+| `system_write` | `sudo`, writes to `/etc`, reads of `~/.ssh` | prompt | prompt |
+| `unknown` | any command whose program name Odek does **not** recognise | deny | prompt¹ → denied unattended |
+| `destructive` | `rm -rf /`, `dd … of=/dev/sda`, `mkfs` | deny | **deny** |
+| `blocked` | fork bombs, fully‑specified `dd` to a block device | **always deny** | **always deny** (cannot be overridden) |
+
+> ¹ `safe` and `unknown` are not listed under `classes`, so the global
+> `action: "prompt"` applies to them — see the gotcha below. With a human channel
+> they prompt; unattended (`non_interactive: "deny"`) they are denied.
+
+Odek **fails closed**: the `unknown` class catches any command whose verb isn't in the
+built‑in safe/dangerous tables, so a novel or obfuscated command can't slip through as
+"safe". To permit a specific unrecognised tool, add its exact invocation to `allowlist`,
+or relax the class with `"unknown": "prompt"`.
+
+#### How an action is resolved (precedence, first match wins)
+
+1. Command exactly matches an **`allowlist`** entry → **allow**.
+2. Command starts with a **`denylist`** entry → **deny**.
+3. Otherwise classify it, then: explicit **`classes`** entry → `blocked` is **always deny** → global **`action`** (if set) → built‑in class default.
+4. If the result is **prompt** and there's no human channel, **`non_interactive`** decides.
+
+> **Gotcha — `action` overrides *every* unlisted class.** Because `action: "prompt"` is
+> set, any class you don't list under `classes` resolves to *prompt*, including `safe`.
+> So with this profile as written, even `ls` prompts (and is denied unattended). Two ways
+> to get the usual "safe commands just run" behavior:
+>
+> - add `"safe": "allow"` to `classes` (keep `action: "prompt"` as the catch‑all for
+>   everything else, including `unknown`), **or**
+> - **omit `action` entirely** and only override the classes you care about — then unlisted
+>   classes keep their built‑in defaults (safe/local_write allow; destructive/blocked/unknown
+>   deny; system_write/network_egress/code_execution/install prompt).
+>
+> The second form is the better default if you want `unknown` to stay deny‑by‑default
+> rather than prompt.
 
 > Approvals require a human channel: the **Web UI** (`odek serve`, modal approval over
 > WebSocket) or an **interactive terminal** (`odek repl` with `docker compose run -it`).
 > Without either, `non_interactive: "deny"` is what keeps you safe.
+
+#### Customising the policy
+
+```jsonc
+// Tighter: also block all outbound network and package installs.
+"classes": { "network_egress": "deny", "install": "deny", /* … */ }
+
+// Looser: pre‑approve a few exact commands you trust, keep everything else gated.
+"allowlist": ["npm ci", "npm run build", "go build ./..."]
+
+// Allow one normally‑unrecognised tool without loosening the whole class:
+"allowlist": ["terraform plan"]          // exact match only
+
+// Full lockdown: deny everything except the allowlist.
+"action": "deny"
+```
 
 ### 5b. Godmode policy — `config.godmode.json`
 
@@ -547,9 +605,9 @@ Voice and photo messages are supported too. Sessions persist per chat in the loc
 
 ## Reference
 
-- `docs/SANDBOXING.md` — Odek's nested‑Docker sandbox model (the `--sandbox` feature).
-- `docs/SECURITY.md` — threat model, approval flow, YOLO mode, attack‑vector matrix.
-- `docs/CONFIG.md` — full configuration layering and environment variables.
-- `docs/CLI.md` — all subcommands and flags, including the `dangerous` schema.
-- `docs/WEBUI.md` — Web UI protocol and the WebSocket approval flow.
-- `docs/TELEGRAM.md` — Telegram bot architecture, config variables, and slash commands.
+- [`SANDBOXING.md`](SANDBOXING.md) — Odek's nested‑Docker sandbox model (the `--sandbox` feature).
+- [`SECURITY.md`](SECURITY.md) — threat model, approval flow, YOLO mode, attack‑vector matrix.
+- [`CONFIG.md`](CONFIG.md) — full configuration layering and environment variables.
+- [`CLI.md`](CLI.md) — all subcommands and flags, including the `dangerous` schema.
+- [`WEBUI.md`](WEBUI.md) — Web UI protocol and the WebSocket approval flow.
+- [`TELEGRAM.md`](TELEGRAM.md) — Telegram bot architecture, config variables, and slash commands.

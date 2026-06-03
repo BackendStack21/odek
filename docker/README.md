@@ -14,7 +14,7 @@ Ready-to-run Compose setup for Odek in two permission profiles:
 > `run`/`repl`/`telegram` are unsandboxed by default.)
 
 For the full walkthrough, threat model, and tuning, see
-[`../DOCKER_COMPOSE_USER_GUIDE.md`](../DOCKER_COMPOSE_USER_GUIDE.md).
+[`../docs/DOCKER_COMPOSE_USER_GUIDE.md`](../docs/DOCKER_COMPOSE_USER_GUIDE.md).
 
 ## Files
 

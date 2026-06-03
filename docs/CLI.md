@@ -123,7 +123,12 @@ When running without `--sandbox`, odek classifies every shell command by risk an
 | 🔴 network_egress | **prompt** | `curl`, `git push`, `ssh`, `scp` |
 | 🔴 code_execution | **prompt** | `curl url \| bash`, `eval`, `node -e`, `go run` |
 | 🟠 install | **prompt** | `npm install`, `pip install`, `go install <path>` |
+| 🔴 unknown | **deny** | any command whose program name isn't recognised |
 | ⬛ blocked | **deny** | Fork bombs, `dd` to block devices |
+
+odek **fails closed**: a command whose verb matches no known-safe or known-dangerous
+pattern is classified `unknown` and denied by default. Permit a specific tool by adding
+its exact invocation to `allowlist`, or soften the class with `"unknown": "prompt"`.
 
 The approval prompt accepts:
 

@@ -144,12 +144,13 @@ func (a *TTYApprover) prompt(cls RiskClass, cmd, description string) error {
 	}
 	defer tty.Close()
 
-	// Trust-class shortcut is disabled for the two highest-impact
-	// classes. Destructive and Blocked operations always require a
-	// per-call approval to defeat approval-fatigue attacks where the
-	// model batches a benign destructive-class trust grant with a
-	// destructive payload.
-	allowTrust := cls != Destructive && cls != Blocked
+	// Trust-class shortcut is disabled for the highest-impact classes.
+	// Destructive and Blocked always require per-call approval to defeat
+	// approval-fatigue attacks where the model batches a benign trust grant
+	// with a dangerous payload. Unknown is included because it is the
+	// fail-closed catch-all for unrecognised verbs — class-trusting it would
+	// blanket-approve every future obfuscated/novel command.
+	allowTrust := cls != Destructive && cls != Blocked && cls != Unknown
 
 	// Approval-fatigue mitigation: if the user has already approved
 	// this class FrictionThreshold times in FrictionWindow, the next

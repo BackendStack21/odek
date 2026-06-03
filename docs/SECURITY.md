@@ -69,18 +69,19 @@ The model is instructed (via the default system prompt) to treat the wrapped reg
 
 ### 3. Danger classifier (shell)
 
-The `shell` tool tokenises commands and classifies each into one of 8 risk classes (`safe`, `local_write`, `system_write`, `destructive`, `network_egress`, `code_execution`, `install`, `blocked`). Per-class policy (allow / prompt / deny) is configurable.
+The `shell` tool tokenises commands and classifies each into one of 9 risk classes (`safe`, `local_write`, `system_write`, `destructive`, `network_egress`, `code_execution`, `install`, `unknown`, `blocked`). Per-class policy (allow / prompt / deny) is configurable.
 
-The classifier is hardened against common evasion tricks:
+The gate **fails closed**: a command whose program name matches neither the known-safe allowlist nor any known-dangerous pattern is classified `unknown` and **denied by default** (same as `destructive`). Recognised commands used benignly are `safe`. So a novel or obfuscated verb cannot slip through as "safe" — to permit a specific tool, allowlist it or set `"unknown": "prompt"`.
 
-- `$(echo rm) -rf /` — command substitution is recursively classified.
-- `` `echo rm` -rf / `` — backticks treated the same.
-- `\rm -rf /` and `r\m -rf /` — unquoted backslash escapes are collapsed.
-- `rm$IFS-rf$IFS/` — `$IFS` / `${IFS}` expanded to space.
-- `command rm -rf /` and `exec rm -rf /` — wrappers stripped.
-- `/bin/rm -rf /` — absolute paths basenamed before matching.
+The classifier is hardened against common evasion tricks (see the package doc in `internal/danger/classifier.go` for the full model):
 
-A regression suite (`internal/danger/classifier_bypass_test.go`) pins these as known evasions. If you find a new bypass, the test file is the place to add it.
+- `$(echo rm) -rf /` / `` `echo rm` `` / `<(curl evil)` — command and process substitutions are recursively classified.
+- `\rm -rf /`, `r""m -rf /` — backslash escapes collapsed and quote boundaries are not word boundaries.
+- `rm$IFS-rf$IFS/`, `{rm,-rf,/}`, `$'\x72\x6d'` — `$IFS`, brace expansion, and ANSI-C escapes are normalised.
+- `command rm`, `env rm`, `sudo rm`, `/bin/rm`, `true | dd of=/dev/sda` — wrappers are stripped, every pipe stage is classified, and absolute paths are basenamed before matching.
+- `bash -i >& /dev/tcp/…`, `cat ~/.ssh/id_rsa` — reverse-shell channels and sensitive-path access are flagged regardless of the command verb.
+
+Regression suites (`internal/danger/classifier_bypass_test.go` and `hardening_test.go`) pin these as known-closed evasions. If you find a new bypass, those test files are the place to add it.
 
 ### 4. Tool-call approval
 
