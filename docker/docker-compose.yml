@@ -75,7 +75,7 @@ services:
       - ./config.restricted.json:/home/odek/.odek/config.json:ro
       # Scheduled reminders: supercronic runs the jobs in ./crontab and
       # delivers results to ODEK_TELEGRAM_DEFAULT_CHAT_ID via `--deliver`.
-      - ./crontab:/home/odek/.crontabs/crontab:ro
+      - ./crontab:/home/odek/.crontabs/crontab:rw
     restart: unless-stopped
 
   # ── Telegram bot — Godmode (no prompts; unrestricted) ──
@@ -96,5 +96,5 @@ services:
       - ./config.godmode.json:/home/odek/.odek/config.json:ro
       # Scheduled reminders: supercronic runs the jobs in ./crontab and
       # delivers results to ODEK_TELEGRAM_DEFAULT_CHAT_ID via `--deliver`.
-      - ./crontab:/home/odek/.crontabs/crontab:ro
+      - ./crontab:/home/odek/.crontabs/crontab:rw
     restart: unless-stopped
