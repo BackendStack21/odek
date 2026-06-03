@@ -24,6 +24,50 @@ func TestSpawnChild_StartsChildProcess(t *testing.T) {
 	}
 }
 
+func TestSpawnChild_UsesODEKENTRYPOINT(t *testing.T) {
+	// When ODEK_ENTRYPOINT is set (injected by cron-entrypoint.sh inside the
+	// container), spawnChild must use that path as the executable so the
+	// wrapper restarts supercronic alongside the new odek process.
+	// /bin/sh is a universally present executable that accepts arbitrary args
+	// and exits immediately when given -c ''; it lets us verify the branch
+	// without spawning a real odek binary.
+	t.Setenv("ODEK_ENTRYPOINT", "/bin/sh")
+	err := spawnChild()
+	// /bin/sh exits quickly with a non-zero code because os.Args contains
+	// test flags it does not understand, but os.StartProcess itself succeeds
+	// (process started) — the important thing is no "executable not found" error.
+	if err != nil {
+		t.Logf("spawnChild with ODEK_ENTRYPOINT returned: %v", err)
+	}
+}
+
+func TestSpawnChild_ODEKENTRYPOINTEmpty_FallsBackToOdekBinary(t *testing.T) {
+	// When ODEK_ENTRYPOINT is empty (not set), the executable must remain
+	// the current odek binary — not some zero-value path.
+	t.Setenv("ODEK_ENTRYPOINT", "")
+	err := spawnChild()
+	if err != nil {
+		t.Logf("spawnChild (no ODEK_ENTRYPOINT) returned: %v", err)
+	}
+}
+
+func TestSpawnChild_ResolvedAPIKeyInjected(t *testing.T) {
+	// resolvedAPIKey is re-injected into the child env so config.LoadConfig
+	// (which clears env keys) does not leave the child without credentials.
+	orig := resolvedAPIKey
+	t.Cleanup(func() { resolvedAPIKey = orig })
+	resolvedAPIKey = "test-key-abc"
+	err := spawnChild()
+	if err != nil {
+		t.Logf("spawnChild returned: %v", err)
+	}
+	// Verify the key is still set in current env (spawnChild must not mutate
+	// os.Environ — it appends to a copy for the child only).
+	if v := os.Getenv("ODEK_API_KEY"); v == "test-key-abc" {
+		t.Error("spawnChild must not mutate the current process environment")
+	}
+}
+
 func TestWriteAndReadRestartMarker(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)

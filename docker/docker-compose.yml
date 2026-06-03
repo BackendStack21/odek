@@ -62,10 +62,20 @@ services:
     image: odek:local
     env_file: .env
     command: ["telegram"]
+    # init: true adds Docker's built-in init (tini) as PID 1. This gives us:
+    # - Zombie reaping: supercronic child processes are reaped when they exit.
+    # - Signal forwarding: SIGTERM from `docker stop` reaches all children,
+    #   giving in-flight cron jobs a clean shutdown window.
+    # - Graceful restart safety: when odek exits during /restart, the spawned
+    #   child is reparented to the init rather than dying with odek.
+    init: true
     volumes:
       - ./workspace:/workspace
       - ./.odek:/home/odek/.odek
       - ./config.restricted.json:/home/odek/.odek/config.json:ro
+      # Scheduled reminders: supercronic runs the jobs in ./crontab and
+      # delivers results to ODEK_TELEGRAM_DEFAULT_CHAT_ID via `--deliver`.
+      - ./crontab:/home/odek/.crontabs/crontab:ro
     restart: unless-stopped
 
   # ── Telegram bot — Godmode (no prompts; unrestricted) ──
@@ -79,8 +89,12 @@ services:
     image: odek:local
     env_file: .env
     command: ["telegram"]
+    init: true   # zombie reaping + SIGTERM forwarding (see telegram-restricted)
     volumes:
       - ./workspace:/workspace
       - ./.odek:/home/odek/.odek
       - ./config.godmode.json:/home/odek/.odek/config.json:ro
+      # Scheduled reminders: supercronic runs the jobs in ./crontab and
+      # delivers results to ODEK_TELEGRAM_DEFAULT_CHAT_ID via `--deliver`.
+      - ./crontab:/home/odek/.crontabs/crontab:ro
     restart: unless-stopped

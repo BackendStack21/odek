@@ -899,6 +899,14 @@ func spawnChild() error {
 	if err != nil {
 		return fmt.Errorf("executable: %w", err)
 	}
+	// When running inside the Docker container the entrypoint script exports
+	// ODEK_ENTRYPOINT=$0. Re-exec through the wrapper so supercronic is
+	// restarted alongside the new odek process. The wrapper reads
+	// ODEK_SUPERCRONIC_PID (also in childEnv via os.Environ()) and kills the
+	// previous supercronic before starting a new one — no duplicate instances.
+	if ep := os.Getenv("ODEK_ENTRYPOINT"); ep != "" {
+		exe = ep
+	}
 	// Copy args (same as current process).
 	argv := make([]string, len(os.Args))
 	copy(argv, os.Args)

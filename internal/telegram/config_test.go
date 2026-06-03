@@ -205,6 +205,41 @@ func TestConfigFromEnv_pollTimeoutEmpty(t *testing.T) {
 	}
 }
 
+func TestConfigFromEnv_defaultChatID(t *testing.T) {
+	t.Setenv("ODEK_TELEGRAM_DEFAULT_CHAT_ID", "8592463065")
+	cfg := ConfigFromEnv(DefaultConfig())
+	if cfg.DefaultChatID != 8592463065 {
+		t.Errorf("DefaultChatID = %d, want 8592463065", cfg.DefaultChatID)
+	}
+}
+
+func TestConfigFromEnv_defaultChatIDNegative(t *testing.T) {
+	// Group/channel chat IDs are negative; ParseInt must accept them.
+	t.Setenv("ODEK_TELEGRAM_DEFAULT_CHAT_ID", "-1001234567890")
+	cfg := ConfigFromEnv(DefaultConfig())
+	if cfg.DefaultChatID != -1001234567890 {
+		t.Errorf("DefaultChatID = %d, want -1001234567890", cfg.DefaultChatID)
+	}
+}
+
+func TestConfigFromEnv_defaultChatIDInvalidKeepsBase(t *testing.T) {
+	t.Setenv("ODEK_TELEGRAM_DEFAULT_CHAT_ID", "not-a-number")
+	base := DefaultConfig()
+	base.DefaultChatID = 42 // a non-zero base must survive an unparseable env value
+	cfg := ConfigFromEnv(base)
+	if cfg.DefaultChatID != 42 {
+		t.Errorf("DefaultChatID = %d, want base 42 preserved", cfg.DefaultChatID)
+	}
+}
+
+func TestConfigFromEnv_defaultChatIDEmpty(t *testing.T) {
+	t.Setenv("ODEK_TELEGRAM_DEFAULT_CHAT_ID", "")
+	cfg := ConfigFromEnv(DefaultConfig())
+	if cfg.DefaultChatID != 0 {
+		t.Errorf("DefaultChatID = %d, want default 0", cfg.DefaultChatID)
+	}
+}
+
 func TestConfigFromEnv_maxMsgLength(t *testing.T) {
 	t.Setenv("ODEK_TELEGRAM_MAX_MSG_LENGTH", "1024")
 	cfg := ConfigFromEnv(DefaultConfig())
