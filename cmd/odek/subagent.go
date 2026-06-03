@@ -13,6 +13,7 @@ import (
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/redact"
 	"github.com/BackendStack21/odek/internal/render"
 	"github.com/BackendStack21/odek/internal/skills"
 )
@@ -263,6 +264,9 @@ func subagentCmd(args []string) error {
 	// tool the agent runs that prints its own env.
 	if fdKey := readKeyFromInheritedFD(); fdKey != "" {
 		resolved.APIKey = fdKey
+		// Register the FD-supplied key so it is redacted from tool output
+		// (LoadConfig only saw the env-resolved value, which may be empty here).
+		redact.RegisterSecret(fdKey)
 	}
 
 	// Apply parent-supplied trust constraints. When the parent marked the

@@ -24,6 +24,7 @@ import (
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/mcpclient"
 	"github.com/BackendStack21/odek/internal/memory"
+	"github.com/BackendStack21/odek/internal/redact"
 	"github.com/BackendStack21/odek/internal/skills"
 	"github.com/BackendStack21/odek/internal/telegram"
 )
@@ -726,6 +727,16 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	os.Unsetenv("ODEK_API_KEY")
 	os.Unsetenv("DEEPSEEK_API_KEY")
 	os.Unsetenv("OPENAI_API_KEY")
+
+	// Seed the redaction layer with odek's own secrets so they (and their
+	// common encodings) are stripped from any tool output, even when the
+	// agent prints them in a format the pattern matchers don't recognise.
+	// The API key is registered from its resolved value (the unsets above
+	// only remove it from the environment, not from resolved.APIKey);
+	// RegisterSecretsFromEnv covers .env / secrets.env injected values.
+	redact.RegisterSecret(resolved.APIKey)
+	redact.RegisterSecret(resolved.Telegram.Token)
+	redact.RegisterSecretsFromEnv()
 
 	return resolved
 }

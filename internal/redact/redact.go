@@ -18,8 +18,13 @@
 package redact
 
 import (
+	"encoding/base64"
+	"encoding/hex"
+	"net/url"
+	"os"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // ── Patterns ───────────────────────────────────────────────────────────
@@ -60,6 +65,10 @@ var patterns = []*regexp.Regexp{
 
 	// Slack bot tokens: xoxb-, xoxp-
 	regexp.MustCompile(`xox[abpos]-[0-9]{10,}-[0-9]{10,}-[a-zA-Z0-9]{24,}`),
+
+	// Telegram bot tokens: <numeric bot id>:<35-char base64url secret>.
+	// e.g. 123456789:AAHfakeTokenValueExample0123456789abcdef
+	regexp.MustCompile(`\b[0-9]{5,}:[A-Za-z0-9_-]{30,}\b`),
 
 	// Stripe keys: sk_live_, sk_test_, pk_live_, pk_test_
 	regexp.MustCompile(`[rs]k_(live|test)_[a-zA-Z0-9]{24,}`),
@@ -106,6 +115,12 @@ var patterns = []*regexp.Regexp{
 // RedactSecrets scans text for known secret patterns and replaces matched
 // content with "[REDACTED]". Returns the sanitized text.
 //
+// Two layers run: first the known-value layer (exact secret values registered
+// via RegisterSecret, plus their common encodings), then the format-pattern
+// layer below. The known-value layer is the reliable one for odek's own
+// secrets — it catches them even when printed in a format the patterns miss
+// (a bare echo of a non-standard token, base64/hex encodings, etc.).
+//
 // The function is safe to call on empty strings and strings without secrets
 // (returns the original string unchanged in the common case).
 func RedactSecrets(text string) string {
@@ -114,17 +129,26 @@ func RedactSecrets(text string) string {
 	}
 
 	result := text
+	if r := currentReplacer(); r != nil {
+		result = r.Replace(result)
+	}
 	for _, p := range patterns {
 		result = p.ReplaceAllString(result, "[REDACTED]")
 	}
 	return result
 }
 
-// HasSecrets returns true if the text contains any recognized secret pattern.
+// HasSecrets returns true if the text contains any recognized secret pattern
+// or any registered known secret value.
 // Useful for quick pre-checks without allocating the full redacted string.
 func HasSecrets(text string) bool {
 	if text == "" {
 		return false
+	}
+	for _, f := range currentForms() {
+		if strings.Contains(text, f) {
+			return true
+		}
 	}
 	for _, p := range patterns {
 		if p.MatchString(text) {
@@ -149,11 +173,169 @@ func CountSecrets(text string) int {
 		return 0
 	}
 	count := 0
+	for _, f := range currentForms() {
+		count += strings.Count(text, f)
+	}
 	for _, p := range patterns {
 		matches := p.FindAllString(text, -1)
 		count += len(matches)
 	}
 	return count
+}
+
+// ── Known-value redaction ──────────────────────────────────────────────
+//
+// Pattern matching only catches secrets whose *format* we recognise. odek
+// also holds its own secrets: the LLM API key (needed to talk to the model),
+// the Telegram bot token, and anything injected via .env / secrets.env.
+// Because we know those exact values, we can redact them — and their common
+// encodings — from tool output regardless of how the agent prints them.
+//
+// This closes two gaps that pure pattern matching cannot:
+//   - a bare echo of a secret whose format we don't recognise
+//     (e.g. `echo $TELEGRAM_BOT_TOKEN`)
+//   - a trivially transformed secret (`echo $API_KEY | base64`, `| xxd`)
+//
+// It does NOT defend against arbitrary transformations the agent could apply
+// (gzip, openssl enc, char substitution) or against side-channel exfiltration
+// that never returns text to the tool surface — those are the job of the
+// network-egress controls, not redaction. See docs/REDACTION_HARDENING.md.
+
+// minSecretLen is the shortest raw value we will register. Short values risk
+// over-redacting ordinary text, and real keys/tokens are far longer.
+const minSecretLen = 8
+
+var (
+	secretsMu       sync.RWMutex
+	secretSet       = map[string]struct{}{} // every literal form to redact
+	secretReplacer  *strings.Replacer
+	secretFormsList []string
+)
+
+// osEnviron is os.Environ, swapped in tests.
+var osEnviron = os.Environ
+
+// RegisterSecret records a known secret value so that it — and its common
+// encodings (base64 std/url, hex, percent-encoding, reversed) — are redacted
+// from all tool output. Values shorter than minSecretLen are ignored to
+// avoid over-redaction. Safe to call repeatedly and concurrently; callers
+// should register before any tool output is produced (i.e. at startup).
+func RegisterSecret(value string) {
+	value = strings.TrimSpace(value)
+	if len(value) < minSecretLen {
+		return
+	}
+	forms := encodeForms(value)
+	secretsMu.Lock()
+	defer secretsMu.Unlock()
+	changed := false
+	for _, f := range forms {
+		if len(f) < minSecretLen {
+			continue
+		}
+		if _, ok := secretSet[f]; !ok {
+			secretSet[f] = struct{}{}
+			changed = true
+		}
+	}
+	if changed {
+		rebuildReplacerLocked()
+	}
+}
+
+// RegisterSecretsFromEnv scans the process environment for variables whose
+// names look sensitive and registers their values. This automatically covers
+// secrets injected via .env (docker env_file) or ~/.odek/secrets.env without
+// the caller having to enumerate them.
+func RegisterSecretsFromEnv() {
+	for _, kv := range osEnviron() {
+		name, val, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		if sensitiveName(name) {
+			RegisterSecret(val)
+		}
+	}
+}
+
+// ResetSecrets clears the known-value registry. Intended for tests.
+func ResetSecrets() {
+	secretsMu.Lock()
+	defer secretsMu.Unlock()
+	secretSet = map[string]struct{}{}
+	secretReplacer = nil
+	secretFormsList = nil
+}
+
+// sensitiveName reports whether an env var name has a segment that marks it
+// as secret-bearing. Matching whole `_`/`-` separated segments avoids
+// substring false positives like GIT_AUTHOR (AUTH) or compass (PASS).
+func sensitiveName(name string) bool {
+	for _, seg := range strings.FieldsFunc(name, func(r rune) bool { return r == '_' || r == '-' }) {
+		switch strings.ToUpper(seg) {
+		case "KEY", "APIKEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "PASS",
+			"CREDENTIAL", "CREDENTIALS", "PRIVATEKEY", "ACCESSKEY", "SECRETKEY":
+			return true
+		}
+	}
+	return false
+}
+
+// encodeForms returns the raw value plus the encodings an agent is most
+// likely to pipe a secret through. url.QueryEscape and the base64 variants
+// frequently coincide for alphanumeric keys; duplicates are collapsed by the
+// registry's set.
+func encodeForms(v string) []string {
+	b := []byte(v)
+	return []string{
+		v,
+		base64.StdEncoding.EncodeToString(b),
+		base64.RawStdEncoding.EncodeToString(b),
+		base64.URLEncoding.EncodeToString(b),
+		base64.RawURLEncoding.EncodeToString(b),
+		hex.EncodeToString(b),
+		strings.ToUpper(hex.EncodeToString(b)),
+		url.QueryEscape(v),
+		reverseString(v),
+	}
+}
+
+func reverseString(s string) string {
+	r := []rune(s)
+	for i, j := 0, len(r)-1; i < j; i, j = i+1, j-1 {
+		r[i], r[j] = r[j], r[i]
+	}
+	return string(r)
+}
+
+// rebuildReplacerLocked recomputes the replacer and form list from secretSet.
+// Caller must hold secretsMu for writing.
+func rebuildReplacerLocked() {
+	forms := make([]string, 0, len(secretSet))
+	pairs := make([]string, 0, len(secretSet)*2)
+	for f := range secretSet {
+		forms = append(forms, f)
+		pairs = append(pairs, f, "[REDACTED]")
+	}
+	secretFormsList = forms
+	if len(pairs) == 0 {
+		secretReplacer = nil
+		return
+	}
+	secretReplacer = strings.NewReplacer(pairs...)
+}
+
+func currentReplacer() *strings.Replacer {
+	secretsMu.RLock()
+	defer secretsMu.RUnlock()
+	return secretReplacer
+}
+
+func currentForms() []string {
+	secretsMu.RLock()
+	defer secretsMu.RUnlock()
+	return secretFormsList
 }
 
 // RedactWithCount returns both the redacted text and a count of redacted
