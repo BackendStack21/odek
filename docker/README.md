@@ -25,6 +25,8 @@ docker/
 ├── config.restricted.json   # Restricted permission policy
 ├── config.godmode.json      # Godmode (YOLO) permission policy
 ├── .env.example             # copy to .env, add your API key
+├── cron-entrypoint.sh       # starts supercronic (if a crontab is mounted), then execs odek
+├── crontab                  # scheduled reminders (edit + uncomment to enable)
 └── workspace/               # the dir the agent works in (mounted in)
 ```
 
@@ -98,6 +100,29 @@ local `./.odek` folder — an external host folder, just like `./workspace`.
 > **Only run one Telegram profile at a time per token** — Telegram allows a single
 > long-poller per bot (a second gets `409 Conflict`). Create a second bot via
 > @BotFather if you want both.
+
+### Scheduled reminders (cron)
+
+The Telegram profiles bundle [supercronic](https://github.com/aptible/supercronic), a
+container-friendly cron. Unlike the classic `crond`, it runs as the non-root user **and
+passes the container environment to each job** — so a scheduled `odek run --deliver`
+sees the same `.env` vars (API key, bot token) the bot does. No separate host crontab,
+no daemon juggling.
+
+1. In `.env`, set **`ODEK_TELEGRAM_DEFAULT_CHAT_ID`** — the chat reminders are sent to
+   (usually your own ID, the same as `ODEK_TELEGRAM_ALLOWED_CHATS`).
+2. Edit `crontab` and uncomment/add jobs (standard 5-field syntax; min granularity is
+   1 minute). Example — a weekday stand-up nudge:
+
+   ```cron
+   0 9 * * 1-5  /usr/local/bin/odek run --deliver "Reminder: stand-up in 15 minutes."
+   ```
+
+3. (Re)start a Telegram profile. On boot you'll see `cron-entrypoint: starting
+   supercronic …` in the logs; each job's result is delivered to your chat.
+
+Times are UTC unless you set `TZ` in `.env`. An empty/all-commented `crontab` is fine —
+supercronic simply schedules nothing.
 
 ## Verify the profiles differ
 

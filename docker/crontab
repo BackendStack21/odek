@@ -1,0 +1,28 @@
+# odek reminders — supercronic crontab (standard 5-field cron syntax).
+#
+# This file is bind-mounted read-only into the container at
+# /home/odek/.crontabs/crontab (see docker-compose.yml). When present, the
+# entrypoint starts supercronic, which runs each job below on schedule.
+#
+# Each reminder is just `odek run --deliver "<task>"`. --deliver sends the
+# agent's final response to the Telegram chat in ODEK_TELEGRAM_DEFAULT_CHAT_ID
+# (set in .env). supercronic passes the container environment to every job, so
+# ODEK_API_KEY and the bot token are available here with no extra wiring.
+#
+#   ┌ minute (0-59)
+#   │ ┌ hour (0-23)
+#   │ │ ┌ day-of-month (1-31)
+#   │ │ │ ┌ month (1-12)
+#   │ │ │ │ ┌ day-of-week (0-6, Sun=0)
+#   │ │ │ │ │
+#   * * * * *  command
+#
+# Times are UTC unless you set TZ in .env. Use the absolute binary path.
+#
+# Uncomment / edit the examples below to enable reminders:
+
+# Weekdays at 09:00 — stand-up nudge:
+# 0 9 * * 1-5  /usr/local/bin/odek run --deliver "Reminder: daily stand-up starts in 15 minutes."
+
+# Every day at 18:30 — end-of-day wrap-up prompt:
+# 30 18 * * *  /usr/local/bin/odek run --deliver "End of day: summarize what I shipped and what's open for tomorrow."
