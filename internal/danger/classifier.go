@@ -668,6 +668,10 @@ var safeCommands = map[string]bool{
 	"local": true, "declare": true, "typeset": true, "readonly": true,
 	"alias": true, "unalias": true, "jobs": true, "bg": true, "fg": true,
 	"disown": true, "let": true, "ulimit": true, "times": true,
+	// common modern read-only CLIs (ls/find/cat/ps/df/du/diff/hex viewers)
+	"fd": true, "fdfind": true, "eza": true, "exa": true, "lsd": true,
+	"htop": true, "btop": true, "glances": true, "pstree": true, "procs": true,
+	"duf": true, "dust": true, "delta": true, "hexyl": true, "glow": true,
 }
 
 // ── Classifier ─────────────────────────────────────────────────────────
@@ -744,15 +748,8 @@ func classifyPipeline(tokens []string) RiskClass {
 	stages := splitPipes(tokens)
 	worst := Safe
 	for idx, stage := range stages {
-		cls := classifyStage(stage)
-		if idx > 0 {
-			// Data piped into a shell interpreter executes fetched code.
-			cmdTokens, _ := unwrapWrappers(stage)
-			if len(cmdTokens) > 0 && pipedShells[commandName(cmdTokens[0])] {
-				cls = worstOf(cls, CodeExecution)
-			}
-		}
-		worst = worstOf(worst, cls)
+		// idx > 0 means this stage receives piped input from the previous one.
+		worst = worstOf(worst, classifyStage(stage, idx > 0))
 	}
 	return worst
 }
@@ -762,7 +759,9 @@ func classifyPipeline(tokens []string) RiskClass {
 // underneath is the one classified, while privileged wrappers still set a
 // system_write floor. It then escalates for shell `-c` payloads, `find
 // -exec`, and any reverse-shell or sensitive-resource tokens in the stage.
-func classifyStage(tokens []string) RiskClass {
+// pipedInto reports whether the stage's stdin comes from an upstream pipe, in
+// which case feeding it to a shell interpreter is code execution.
+func classifyStage(tokens []string, pipedInto bool) RiskClass {
 	if len(tokens) == 0 {
 		return Safe
 	}
@@ -772,9 +771,12 @@ func classifyStage(tokens []string) RiskClass {
 		cls = worstOf(cls, classifyCommand(cmdTokens))
 
 		name := commandName(cmdTokens[0])
-		// A shell interpreter given something to execute — a -c payload, a
-		// script file, or a process substitution like <(curl …) — runs code.
+		// A shell interpreter that executes code: piped-in data (`… | bash`),
+		// a -c payload, a script file, or a process substitution `<(curl …)`.
 		if pipedShells[name] {
+			if pipedInto {
+				cls = worstOf(cls, CodeExecution)
+			}
 			if arg := flagArg(cmdTokens, "-c"); arg != "" {
 				cls = worstOf(cls, CodeExecution)
 				cls = worstOf(cls, Classify(arg))
@@ -1256,6 +1258,13 @@ func classifyResourceToken(tok string) RiskClass {
 // Matching is substring-based so it catches ~, /root, /home/<user>, and
 // absolute variants alike. /etc/passwd is intentionally excluded — it is
 // world-readable and accessed routinely, so flagging it is pure noise.
+//
+// This is deliberately distinct from ClassifyPath's home-sensitive-dir list:
+// that classifies the *write* risk of an absolute filesystem path (for the
+// file tool), whereas this flags *credential reads/writes* in a raw shell
+// token (which may be ~-relative or carry an `of=`-style prefix). They
+// overlap (~/.ssh, ~/.aws, ~/.gnupg) but are not interchangeable; if you add
+// a credential location to one, consider whether the other needs it too.
 var sensitivePathFragments = []string{
 	"/etc/shadow", "/etc/gshadow", "/etc/sudoers", "/etc/ssl/private",
 	"/.ssh", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
@@ -1402,8 +1411,10 @@ func classifyCommand(tokens []string) RiskClass {
 		return LocalWrite
 	}
 
-	// Check for redirect targets that are system paths
-	if hasSystemRedirectTarget(tokens) {
+	// Any argument that names a system path (read or write) — broader than
+	// isSystemWrite's redirect-only check above, which runs earlier so a
+	// redirect to a system path beats the LocalWrite classification.
+	if touchesSystemPath(tokens) {
 		return SystemWrite
 	}
 
@@ -1734,8 +1745,11 @@ func hasArgAfter(tokens []string, after, target string) bool {
 	return false
 }
 
-// hasSystemRedirectTarget checks if any redirect target is a system path.
-func hasSystemRedirectTarget(tokens []string) bool {
+// touchesSystemPath reports whether any token names a system path (an
+// argument or a redirect target alike). It is intentionally broader than the
+// redirect-only scan in isSystemWrite — it catches reads/args such as
+// `cat /etc/foo` or an unknown tool pointed at /usr — so both checks exist.
+func touchesSystemPath(tokens []string) bool {
 	for _, tok := range tokens {
 		if tok == ">" || tok == ">>" {
 			continue

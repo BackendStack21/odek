@@ -764,9 +764,9 @@ func TestHasSystemRedirectTarget(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := hasSystemRedirectTarget(tt.tokens)
+			got := touchesSystemPath(tt.tokens)
 			if got != tt.want {
-				t.Errorf("hasSystemRedirectTarget(%v) = %v, want %v", tt.tokens, got, tt.want)
+				t.Errorf("touchesSystemPath(%v) = %v, want %v", tt.tokens, got, tt.want)
 			}
 		})
 	}
@@ -893,7 +893,7 @@ func TestClassify_ForkBomb_StillDetected(t *testing.T) {
 }
 
 func TestClassify_SystemRedirectTarget(t *testing.T) {
-	// Regression: isSystemWrite and hasSystemRedirectTarget now share
+	// Regression: isSystemWrite and touchesSystemPath now share
 	// isSystemPath. Verify system path redirect detection works.
 	tests := []struct {
 		cmd string

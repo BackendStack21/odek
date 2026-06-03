@@ -231,6 +231,8 @@ func TestHardening_SafeAllowlistStillSafe(t *testing.T) {
 		"printf '%s' x", "date", "uname -a", "id", "whoami", "ps aux",
 		"which go", "type ls", "sha256sum f", "xxd f", "cd /etc", "export FOO=1",
 		"true", "test -f x", "seq 1 5", "sleep 1",
+		// common modern read-only CLIs added to the allowlist
+		"fd pattern", "eza -la", "delta a b", "procs", "duf", "dust", "htop",
 	}
 	for _, cmd := range safe {
 		if got := Classify(cmd); got != Safe {
