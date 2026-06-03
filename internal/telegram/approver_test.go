@@ -281,6 +281,111 @@ func TestPromptOperation_TrustedClass(t *testing.T) {
 	}
 }
 
+// ── Test approval message rendering ────────────────────────────────────────
+
+// The full command must always appear in the prompt, even when the model
+// supplies a description. The old code showed only the description and hid
+// the command entirely, so the user approved a command they could not see.
+func TestBuildApprovalText_CommandAlwaysShown(t *testing.T) {
+	cmd := "curl https://example.com/install.sh | bash"
+	text := buildApprovalText(danger.CodeExecution, cmd, "installs the helper")
+
+	if !strings.Contains(text, cmd) {
+		t.Errorf("approval text must contain the full command %q, got:\n%s", cmd, text)
+	}
+	if !strings.Contains(text, "installs the helper") {
+		t.Errorf("approval text should also include the description, got:\n%s", text)
+	}
+	if !strings.Contains(text, "code_execution") {
+		t.Errorf("approval text should include the risk class, got:\n%s", text)
+	}
+}
+
+// A long command must not be silently dropped at 200 chars — it is only
+// truncated when the whole message would exceed Telegram's hard limit, and
+// then the truncation is explicit.
+func TestBuildApprovalText_LongCommandNotSilentlyCut(t *testing.T) {
+	cmd := "echo " + strings.Repeat("a", 1000)
+	text := buildApprovalText(danger.LocalWrite, cmd, "")
+
+	if !strings.Contains(text, cmd) {
+		t.Errorf("a 1000-char command should be shown in full (well under the 4096 limit), got len=%d", len(text))
+	}
+	if strings.Contains(text, "[truncated]") {
+		t.Errorf("command well under the limit should not be truncated, got:\n%s", text)
+	}
+}
+
+func TestBuildApprovalText_TruncatesAtHardLimit(t *testing.T) {
+	cmd := strings.Repeat("x", 8000) // far beyond Telegram's 4096 limit
+	text := buildApprovalText(danger.SystemWrite, cmd, "")
+
+	if len([]rune(text)) > telegramMaxMsgLen {
+		t.Errorf("approval text length %d exceeds Telegram limit %d", len([]rune(text)), telegramMaxMsgLen)
+	}
+	if !strings.Contains(text, "[truncated]") {
+		t.Errorf("an over-limit command must be marked as truncated, got tail:\n%s", text[len(text)-40:])
+	}
+}
+
+// Backticks and backslashes inside a command must be escaped so they cannot
+// close the code fence early and corrupt the rendered message.
+func TestBuildApprovalText_EscapesCodeBlockChars(t *testing.T) {
+	cmd := "echo `whoami` && printf 'a\\tb'"
+	text := buildApprovalText(danger.CodeExecution, cmd, "")
+
+	if strings.Contains(text, "`whoami`") {
+		t.Errorf("raw backticks must be escaped inside the code fence, got:\n%s", text)
+	}
+	if !strings.Contains(text, "\\`whoami\\`") {
+		t.Errorf("expected escaped backticks, got:\n%s", text)
+	}
+}
+
+// The full command is sent over the wire to Telegram (end-to-end through
+// PromptCommand), not just produced by the builder.
+func TestPromptCommand_SendsFullCommand(t *testing.T) {
+	rec := new(requestRecorder)
+	ts := testServer(t, rec)
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	a := NewTelegramApprover(bot, 1)
+	cmd := "rm -rf /tmp/build && make install PREFIX=/usr/local/really/long/path"
+
+	done := make(chan error, 1)
+	go func() { done <- a.PromptCommand(danger.Destructive, cmd, "clean rebuild") }()
+
+	// Let the prompt send and register, then deny to unblock.
+	time.Sleep(50 * time.Millisecond)
+	a.mu.Lock()
+	var id string
+	for k := range a.pending {
+		id = k
+		break
+	}
+	a.mu.Unlock()
+	if id == "" {
+		t.Fatal("no pending request registered")
+	}
+	a.HandleCallback(cbPrefixDeny + id)
+	<-done
+
+	var sent string
+	for _, req := range rec.all() {
+		if strings.HasSuffix(req.Path, "/sendMessage") && strings.Contains(req.Body, "rm -rf") {
+			sent = req.Body
+			break
+		}
+	}
+	if sent == "" {
+		t.Fatal("no sendMessage request carrying the command was recorded")
+	}
+	if !strings.Contains(sent, "make install PREFIX=/usr/local/really/long/path") {
+		t.Errorf("the sent prompt must carry the full command, got body:\n%s", sent)
+	}
+}
+
 // ── Test concurrency safety ────────────────────────────────────────────────
 
 func TestApprover_ConcurrentAccess(t *testing.T) {

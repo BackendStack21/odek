@@ -3,6 +3,7 @@ package narrate
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestNarrator_ToolCallMessage_Offline(t *testing.T) {
@@ -91,6 +92,40 @@ func TestNarrator_ExtractShell_NotFound(t *testing.T) {
 func TestNarrator_ExtractShell_Malformed(t *testing.T) {
 	if s := extractShell(`{"command": }`); s != "command" {
 		t.Errorf("expected fallback for malformed args, got: %q", s)
+	}
+}
+
+// A command containing quotes must be extracted in full — the old substring
+// scan stopped at the first embedded quote and showed a truncated command.
+func TestNarrator_ExtractShell_EmbeddedQuotes(t *testing.T) {
+	args := `{"command": "git commit -m \"fix: the thing\""}`
+	want := `git commit -m "fix: the thing"`
+	if s := extractShell(args); s != want {
+		t.Errorf("extractShell = %q, want %q", s, want)
+	}
+}
+
+func TestNarrator_ExtractShell_DescriptionFieldBefore(t *testing.T) {
+	// "description" appears before "command"; the JSON decode must still pick
+	// the command rather than getting confused by the earlier field.
+	args := `{"description": "run the tests", "command": "go test ./..."}`
+	if s := extractShell(args); s != "go test ./..." {
+		t.Errorf("extractShell = %q, want %q", s, "go test ./...")
+	}
+}
+
+// truncate measures runes, not bytes, so it never splits a multi-byte char.
+func TestNarrator_Truncate_RuneSafe(t *testing.T) {
+	s := truncate("héllo wörld", 5) // é and ö are multi-byte
+	if s != "héllo..." {
+		t.Errorf("truncate = %q, want %q", s, "héllo...")
+	}
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			t.Fatalf("truncate produced invalid UTF-8 at byte %d: %q", i, s)
+		}
+		i += size
 	}
 }
 
