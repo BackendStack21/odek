@@ -887,7 +887,7 @@ func decodeEscape(s string, b *strings.Builder) int {
 			for end < len(s) && end < 4 && s[end] >= '0' && s[end] <= '7' {
 				end++
 			}
-			if v, err := strconv.ParseUint(s[1:end], 8, 16); err == nil {
+			if v, err := strconv.ParseUint(s[1:end], 8, 8); err == nil {
 				b.WriteByte(byte(v)) // bash takes octal escapes mod 256
 				return end
 			}
