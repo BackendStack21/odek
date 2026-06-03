@@ -206,7 +206,7 @@ CI (`.github/workflows/test.yml`) runs the unit suite under `-race` on every pus
 | `internal/ws` | WebSocket constant verification |
 | `internal/resource` | @-reference parsing, file resolution, session resolution, security |
 | `internal/render` | Terminal output, no-color mode, nil safety, tool call/result rendering |
-| `internal/danger` | Command classification across 8 risk classes, config overrides, allow/denylist, classifier-bypass attempts, approver friction |
+| `internal/danger` | Command classification across 9 risk classes (incl. fail-closed `unknown`), config overrides, allow/denylist, classifier-bypass attempts, approver friction |
 | `internal/memory` | Facts CRUD, buffer ring, episodes, merge detector (go-vector), ReplaceEntry/AppendEntry, memory tool, security scan, LLM ranking, episode provenance |
 | `internal/skills` | Loading, triggers, self-improvement heuristics, curation, LLM-enhanced generation, import, tools, AnalyzeMessages/RunAutoSaveLoop, ValidateSkillName, isPrivateHost |
 | `internal/telegram` | Bot client, long-polling, command handlers, session management, plan CRUD, voice/photo download, health server, retry/backoff |
