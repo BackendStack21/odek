@@ -76,7 +76,7 @@ RUN apk add --no-cache ca-certificates git github-cli bash coreutils curl jq
 ARG SUPERCRONIC_VERSION=v0.2.46
 ARG TARGETARCH
 RUN set -eu; \
-    arch="${TARGETARCH:-amd64}"; \
+    arch="${TARGETARCH:?TARGETARCH is empty — build with BuildKit (docker buildx build) or pass --build-arg TARGETARCH=amd64|arm64}"; \
     case "$arch" in \
       amd64) sha=5adff01c5a797663948e656d2b61d10932369ee437eb5cb54fa872b2960f222b ;; \
       arm64) sha=c0576a8eb092e3f79108ed0a2155a25c7766af78456e5a6070e54757ef513bfe ;; \
