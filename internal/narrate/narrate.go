@@ -4,8 +4,10 @@
 package narrate
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // Narrator produces engaging progress messages for tool calls and thinking.
@@ -32,7 +34,7 @@ func (n *Narrator) ToolCallMessage(name, args string) string {
 	case "write_file", "patch":
 		return fmt.Sprintf("%s Editing `%s`...", emoji, extractPath(args))
 	case "shell":
-		return fmt.Sprintf("%s Running `%s`...", emoji, truncate(extractShell(args), 50))
+		return fmt.Sprintf("%s Running `%s`...", emoji, truncate(extractShell(args), 120))
 	case "search_files":
 		return fmt.Sprintf("%s Searching the codebase...", emoji)
 	case "delegate_task", "delegate_tasks":
@@ -81,11 +83,20 @@ func toolEmoji(name string) string {
 	}
 }
 
+// truncate shortens s to at most n runes, appending an ellipsis when it cuts.
+// It measures in runes (not bytes) so it never splits a multi-byte character.
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	if utf8.RuneCountInString(s) <= n {
 		return s
 	}
-	return s[:n] + "..."
+	count := 0
+	for i := range s {
+		if count == n {
+			return s[:i] + "..."
+		}
+		count++
+	}
+	return s + "..."
 }
 
 func extractPath(args string) string {
@@ -107,7 +118,19 @@ func extractPath(args string) string {
 	return "file"
 }
 
+// extractShell pulls the shell command out of the tool-call JSON args. It
+// decodes the JSON properly rather than scanning for the first quote pair:
+// commands routinely contain quotes (git commit -m "msg", python -c "code"),
+// and the old substring approach stopped at the first embedded quote, showing
+// a truncated command. Falls back to a best-effort scan only if the args are
+// not valid JSON.
 func extractShell(args string) string {
+	var parsed struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal([]byte(args), &parsed); err == nil && parsed.Command != "" {
+		return parsed.Command
+	}
 	if idx := strings.Index(args, `"command"`); idx >= 0 {
 		rest := args[idx+len(`"command"`):]
 		if start := strings.Index(rest, `"`); start >= 0 {

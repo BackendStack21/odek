@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/danger"
 )
@@ -105,24 +106,9 @@ func (a *TelegramApprover) PromptCommand(cls danger.RiskClass, cmd, description 
 
 	id := a.newID()
 
-	// Build description text.
-	var desc string
-	if description != "" {
-		desc = description
-	} else {
-		desc = cmd
-		if len(desc) > 200 {
-			desc = desc[:200] + "..."
-		}
-	}
-
-	// Build the approval message.
-	text := fmt.Sprintf(
-		"⚠️ *Approval Required*\n\n"+
-			"Risk: `%s`\n"+
-			"```\n%s\n```",
-		cls, desc,
-	)
+	// Build the approval message — the full command is always shown so the
+	// user can make an informed decision.
+	text := buildApprovalText(cls, cmd, description)
 
 	// Send with inline keyboard.
 	markup := InlineKeyboardMarkup{
@@ -235,6 +221,77 @@ func (a *TelegramApprover) HandleCallback(data string) bool {
 	}
 
 	return true
+}
+
+// telegramMaxMsgLen is Telegram's hard per-message character limit. The
+// approval text must fit within it or the send fails.
+const telegramMaxMsgLen = 4096
+
+// buildApprovalText renders the approval prompt. The full shell command is
+// ALWAYS shown inside a fenced code block — earlier versions hid the command
+// entirely whenever a model-supplied description was present, or silently cut
+// it at 200 bytes, both of which left the user approving a command they could
+// not fully see. The model description (when present) is shown as a separate
+// labelled line so it complements rather than replaces the command.
+//
+// The command is only ever truncated when the whole message would otherwise
+// exceed telegramMaxMsgLen, and when it is, the cut is explicit ("… [truncated]")
+// and made on a rune boundary.
+func buildApprovalText(cls danger.RiskClass, cmd, description string) string {
+	var b strings.Builder
+	b.WriteString("⚠️ *Approval Required*\n\n")
+	fmt.Fprintf(&b, "Risk: `%s`\n", escapeCodeBlock(string(cls)))
+	if d := strings.TrimSpace(description); d != "" {
+		b.WriteString("Why: " + EscapeMarkdown(d) + "\n")
+	}
+
+	// Reserve room for the fixed parts so the command body can be budgeted
+	// against Telegram's hard limit. The fences and a possible truncation
+	// marker are accounted for here.
+	const openFence = "```\n"
+	const closeFence = "\n```"
+	overhead := b.Len() + len(openFence) + len(closeFence)
+
+	body := escapeCodeBlock(cmd)
+	if budget := telegramMaxMsgLen - overhead; len(body) > budget {
+		const marker = "\n… [truncated]"
+		// truncateRunes clamps a negative budget to an empty string.
+		body = truncateRunes(body, budget-len(marker))
+		// A dangling backslash left by truncation would escape the closing
+		// fence and corrupt the whole message — strip any trailing run.
+		body = strings.TrimRight(body, `\`) + marker
+	}
+
+	b.WriteString(openFence)
+	b.WriteString(body)
+	b.WriteString(closeFence)
+	return b.String()
+}
+
+// escapeCodeBlock escapes the two characters that are special inside a
+// Telegram MarkdownV2 code block: backslash and backtick. Without this a
+// command containing ``` or a literal backslash would close the block early
+// and mangle the rendered command. EscapeMarkdown deliberately leaves code
+// spans untouched, so it cannot be used for content destined for a fence.
+func escapeCodeBlock(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, "`", "\\`")
+	return s
+}
+
+// truncateRunes returns s shortened to at most maxBytes bytes without
+// splitting a multi-byte UTF-8 rune.
+func truncateRunes(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(s) <= maxBytes {
+		return s
+	}
+	for maxBytes > 0 && !utf8.RuneStart(s[maxBytes]) {
+		maxBytes--
+	}
+	return s[:maxBytes]
 }
 
 // newID generates a unique request ID.
