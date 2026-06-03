@@ -1,5 +1,12 @@
 {
   "sandbox": false,
+  "interaction_mode": "engaging",
+  "tool_progress": "verbose",
+  "tool_progress_cleanup": false,
+  "no_color": false,
+  "skills": {
+    "verbose": true
+  },
   "dangerous": {
     "action": "allow",
     "non_interactive": "allow"
