@@ -180,6 +180,65 @@ func TestHardening_NewNetworkAndExec(t *testing.T) {
 	}
 }
 
+func TestHardening_UnknownFailsClosed(t *testing.T) {
+	// Unrecognised verbs classify as Unknown (deny-by-default), and an
+	// unknown stage dominates benign siblings in a compound command.
+	unknown := []string{
+		"frobnicate --do-stuff",
+		"mytool subcmd arg",
+		"make",
+		"cat file && mytool",
+		"ls | weirdfilter",
+		"X=rm $Y -rf /", // variable indirection: $Y is an unknown verb
+	}
+	for _, cmd := range unknown {
+		if got := Classify(cmd); got != Unknown {
+			t.Errorf("Classify(%q) = %s, want unknown", cmd, got)
+		}
+	}
+	// And Unknown denies by default, matching destructive.
+	cfg := DangerousConfig{}
+	if got := cfg.ActionFor(Unknown); got != Deny {
+		t.Errorf("ActionFor(unknown) = %s, want deny", got)
+	}
+}
+
+func TestHardening_LeadingAssignmentUnwrapped(t *testing.T) {
+	cases := []struct {
+		cmd string
+		cls RiskClass
+	}{
+		{"FOO=bar rm -rf /", Destructive}, // assignment skipped → rm
+		{"A=1 B=2 curl http://x", NetworkEgress},
+		{"FOO=bar", Safe},       // assignment-only is a no-op
+		{"LANG=C ls -la", Safe}, // benign command after assignment
+	}
+	for _, tc := range cases {
+		if got := Classify(tc.cmd); got != tc.cls {
+			t.Errorf("Classify(%q) = %s, want %s", tc.cmd, got, tc.cls)
+		}
+	}
+}
+
+func TestHardening_SafeAllowlistStillSafe(t *testing.T) {
+	// A representative sweep of the read-only allowlist must remain Safe so
+	// fail-closed does not break ordinary inspection.
+	safe := []string{
+		"ls -la", "cat main.go", "head -n5 f", "tail -f log", "wc -l f",
+		"grep -r foo .", "rg pattern", "sort f", "uniq f", "cut -f1 f",
+		"diff a b", "jq '.x' f", "stat f", "file f", "du -sh .", "df -h",
+		"tree", "realpath .", "basename /a/b", "dirname /a/b", "pwd",
+		"printf '%s' x", "date", "uname -a", "id", "whoami", "ps aux",
+		"which go", "type ls", "sha256sum f", "xxd f", "cd /etc", "export FOO=1",
+		"true", "test -f x", "seq 1 5", "sleep 1",
+	}
+	for _, cmd := range safe {
+		if got := Classify(cmd); got != Safe {
+			t.Errorf("Classify(%q) = %s, want safe", cmd, got)
+		}
+	}
+}
+
 // TestHardening_NoRegressionOnBenign guards against over-classification of
 // ordinary developer commands that must remain low-risk.
 func TestHardening_NoRegressionOnBenign(t *testing.T) {

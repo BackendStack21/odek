@@ -377,8 +377,13 @@ func TestClassify_ConfigDefaults(t *testing.T) {
 	if got := cfg.ActionFor(Blocked); got != Deny {
 		t.Errorf("ActionFor(blocked) = %s, want deny", got)
 	}
-	if got := cfg.ActionFor(RiskClass("unknown")); got != Prompt {
-		t.Errorf("ActionFor(unknown) = %s, want prompt (default)", got)
+	// Unknown fails closed: unrecognised commands are denied by default.
+	if got := cfg.ActionFor(Unknown); got != Deny {
+		t.Errorf("ActionFor(unknown) = %s, want deny", got)
+	}
+	// A class string that isn't in the table at all falls back to prompt.
+	if got := cfg.ActionFor(RiskClass("bogus")); got != Prompt {
+		t.Errorf("ActionFor(bogus) = %s, want prompt (fallback)", got)
 	}
 }
 
@@ -819,9 +824,10 @@ func TestRank(t *testing.T) {
 		{"network_egress", NetworkEgress, 4},
 		{"code_execution", CodeExecution, 5},
 		{"system_write", SystemWrite, 6},
-		{"destructive", Destructive, 7},
-		{"blocked", Blocked, 8},
-		{"unknown_class", RiskClass("unknown"), 0},
+		{"unknown", Unknown, 7},
+		{"destructive", Destructive, 8},
+		{"blocked", Blocked, 9},
+		{"unrecognized_class", RiskClass("bogus"), 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -3,8 +3,15 @@
 //
 // Classification is token-based (not regex) — it respects quotes, pipes,
 // redirects, compound commands (&&, ||, ;), and multi-line input. Each
-// command is classified into one of 8 risk classes, and the user can
+// command is classified into one of 9 risk classes, and the user can
 // configure which actions (allow/prompt/deny) apply to each class.
+//
+// The gate fails CLOSED. A command whose program name is recognised but
+// used benignly classifies as Safe (allow); a command whose verb is NOT
+// recognised classifies as Unknown and is denied by default. The set of
+// recognised-safe commands (safeCommands) is therefore an explicit
+// read-only allowlist — extend it, or the per-profile allowlist, to permit
+// a tool rather than relying on it slipping through unclassified.
 //
 // # Threat model
 //
@@ -55,13 +62,16 @@
 // shell interpreter. It does not, and cannot, catch everything:
 //
 //   - Variable indirection: `X=rm; $X -rf /` — the value of $X is not
-//     tracked, so the second command reads as an unknown verb.
+//     tracked. Note the fail-closed default turns this from a silent bypass
+//     into a denial: the unrecognised `$X` verb classifies as Unknown.
 //   - Fully dynamic construction from runtime data, command output, or
 //     environment the classifier cannot evaluate.
 //   - Arbitrary value transformations beyond the enumerated encodings
 //     (e.g. a secret piped through gzip/openssl before exfiltration).
 //   - Interpreter escape hatches we do not special-case (awk 'BEGIN{system()}',
-//     editor `!` shells, language-specific eval paths).
+//     editor `!` shells, language-specific eval paths). These read as a known
+//     command (awk/vim/…) used benignly, so they classify Safe — the known
+//     verb is the gap, not an unknown one.
 //
 // Because these gaps exist, the classifier is paired with other controls:
 // non-interactive denial, output redaction (internal/redact), and — for
@@ -96,6 +106,13 @@ const (
 	CodeExecution RiskClass = "code_execution"
 	Install       RiskClass = "install"
 	Blocked       RiskClass = "blocked"
+
+	// Unknown is the fall-through class for a command whose program name the
+	// classifier does not recognise. It defaults to Deny (same as
+	// Destructive): the gate fails CLOSED rather than open, so a novel or
+	// obfuscated verb that dodged every known-dangerous check cannot run
+	// unprompted. Recognised-but-benign usage classifies as Safe instead.
+	Unknown RiskClass = "unknown"
 )
 
 // Action represents what to do when a command of a given risk class is detected.
@@ -280,7 +297,13 @@ func parseBrowserIP(host string) net.IP {
 //
 //	safe → allow, local_write → allow, system_write → prompt,
 //	destructive → deny, network_egress → prompt,
-//	code_execution → prompt, install → prompt, blocked → deny
+//	code_execution → prompt, install → prompt, blocked → deny,
+//	unknown → deny
+//
+// The classifier fails closed: a command whose program name is not
+// recognised classifies as Unknown and is denied by default. Set
+// "unknown": "prompt" (or add trusted tools to the allowlist) to soften
+// this for a given profile.
 type DangerousConfig struct {
 	// Classes maps risk classes to their configured action.
 	// Only overrides for non-default values need to be set.
@@ -323,6 +346,10 @@ var defaultActions = map[RiskClass]Action{
 	CodeExecution: Prompt,
 	Install:       Prompt,
 	Blocked:       Deny,
+	// Unrecognised commands fail closed — denied by default, like
+	// Destructive. Override per-profile (e.g. "unknown": "prompt") or via
+	// the allowlist for tools you trust.
+	Unknown: Deny,
 }
 
 // ActionFor returns the configured action for the given risk class.
@@ -588,6 +615,59 @@ var installPrefixes = map[string]bool{
 	"npm": true, "pip": true, "pip3": true, "gem": true,
 	"cargo": true, "brew": true, "go": true,
 	"pnpm": true, "yarn": true, "bun": true, "apk": true,
+}
+
+// safeCommands are read-only / no-op programs that inspect state or
+// transform stdin→stdout without touching the filesystem, network, or
+// privileges. They classify as Safe (allow) so ordinary inspection keeps
+// working under the fail-closed default. A command here that is given a
+// write redirect or a system/sensitive path is still escalated by the
+// LocalWrite / SystemWrite / resource-scan checks before this set is
+// consulted — so adding a tool here cannot make `cmd > /etc/x` allowed.
+//
+// Only genuinely non-mutating tools belong here: anything that writes
+// files, mutates system state, opens the network, or executes arbitrary
+// code must NOT be added (it would become silently allowed).
+var safeCommands = map[string]bool{
+	// listing / reading files
+	"ls": true, "ll": true, "dir": true, "vdir": true, "cat": true, "tac": true,
+	"head": true, "tail": true, "less": true, "more": true, "bat": true,
+	"nl": true, "wc": true, "file": true, "stat": true, "readlink": true,
+	"realpath": true, "basename": true, "dirname": true, "tree": true,
+	"du": true, "df": true, "find": true, "locate": true, "mdfind": true,
+	// text transforms (stdin→stdout; a > redirect escalates to LocalWrite)
+	"grep": true, "egrep": true, "fgrep": true, "rg": true, "ag": true, "ack": true,
+	"sort": true, "uniq": true, "cut": true, "paste": true, "column": true,
+	"fold": true, "comm": true, "join": true, "look": true, "tr": true,
+	"expand": true, "unexpand": true, "fmt": true, "pr": true, "rev": true,
+	"diff": true, "cmp": true, "sdiff": true, "colordiff": true, "diffstat": true,
+	"jq": true, "yq": true, "xmllint": true, "csvlook": true,
+	// hashing / encoding (read-only inspection)
+	"strings": true, "od": true, "hexdump": true, "xxd": true,
+	"base32": true, "md5sum": true, "sha1sum": true, "sha256sum": true,
+	"sha512sum": true, "cksum": true, "b2sum": true, "sum": true, "shasum": true,
+	// system / process inspection
+	"pwd": true, "printf": true, "date": true, "cal": true, "uptime": true,
+	"uname": true, "arch": true, "hostname": true, "nproc": true, "free": true,
+	"vmstat": true, "iostat": true, "mpstat": true, "lscpu": true, "lsblk": true,
+	"lsmem": true, "lsusb": true, "lspci": true, "lsof": true, "dmesg": true,
+	"id": true, "whoami": true, "groups": true, "users": true, "who": true,
+	"w": true, "last": true, "getent": true, "ps": true, "pgrep": true,
+	"pidof": true, "netstat": true, "ss": true, "printenv": true, "locale": true,
+	"getconf": true, "which": true, "whereis": true, "type": true, "hash": true,
+	// control / no-op builtins
+	"true": true, "false": true, ":": true, "test": true, "[": true,
+	"sleep": true, "seq": true, "yes": true, "expr": true, "echo": true,
+	"man": true, "info": true, "tldr": true, "help": true, "clear": true,
+	// benign shell builtins (navigation, var/job control; no FS/net/priv).
+	// NOTE: eval/source/. are deliberately absent — they execute code and
+	// are handled as code_execution.
+	"cd": true, "pushd": true, "popd": true, "dirs": true, "export": true,
+	"unset": true, "set": true, "read": true, "wait": true, "shift": true,
+	"return": true, "exit": true, "trap": true, "umask": true, "getopts": true,
+	"local": true, "declare": true, "typeset": true, "readonly": true,
+	"alias": true, "unalias": true, "jobs": true, "bg": true, "fg": true,
+	"disown": true, "let": true, "ulimit": true, "times": true,
 }
 
 // ── Classifier ─────────────────────────────────────────────────────────
@@ -1029,7 +1109,11 @@ func isKnownCommandName(name string) bool {
 		networkPrefixes[name] ||
 		codeEvalPrefixes[name] ||
 		installPrefixes[name] ||
-		pipedShells[name]
+		pipedShells[name] ||
+		safeCommands[name] ||
+		remoteRunPrefixes[name] ||
+		execWrappers[name] ||
+		privilegedWrappers[name]
 }
 
 // isRawBlocked checks the raw command string for patterns that are
@@ -1106,13 +1190,21 @@ var execWrappers = map[string]bool{
 	"command": true, "exec": true, "builtin": true, "watch": true,
 }
 
-// unwrapWrappers strips leading execution wrappers and returns the inner
-// command tokens plus a risk floor (system_write if a privileged wrapper was
-// present). It conservatively skips wrapper option flags, `env` VAR=VALUE
-// assignments, and the numeric/duration argument that timeout/nice take.
+// unwrapWrappers strips leading shell assignments and execution wrappers and
+// returns the inner command tokens plus a risk floor (system_write if a
+// privileged wrapper was present). It conservatively skips wrapper option
+// flags, `env` VAR=VALUE assignments, and the numeric/duration argument that
+// timeout/nice take. Leading bare assignments (FOO=bar cmd …) are skipped so
+// the real command is the one classified; an assignment-only command (no
+// verb) is left empty and treated as Safe.
 func unwrapWrappers(tokens []string) ([]string, RiskClass) {
 	floor := Safe
 	i := 0
+	for i < len(tokens) && isAssignment(tokens[i]) {
+		i++ // leading VAR=value assignment prefix
+	}
+	tokens = tokens[i:]
+	i = 0
 	for i < len(tokens) {
 		name := commandName(tokens[i])
 		priv := privilegedWrappers[name]
@@ -1311,7 +1403,13 @@ func classifyCommand(tokens []string) RiskClass {
 		return SystemWrite
 	}
 
-	return Safe
+	// Fail closed: a recognised command used benignly is Safe; an
+	// unrecognised verb is Unknown (deny-by-default). An empty token slice
+	// (e.g. an assignment-only command after unwrapping) is Safe.
+	if len(tokens) == 0 || isKnownCommandName(first) {
+		return Safe
+	}
+	return Unknown
 }
 
 // ── Detection helpers ──────────────────────────────────────────────────
@@ -1660,8 +1758,14 @@ func isSystemPath(path string) bool {
 func rank(cls RiskClass) int {
 	switch cls {
 	case Blocked:
-		return 8
+		return 9
 	case Destructive:
+		return 8
+	case Unknown:
+		// Ranked above the prompt-level classes so a single unknown stage in
+		// a pipeline/compound command dominates benign siblings (e.g.
+		// `pip install x && weirdverb` stays deny-by-default), but below
+		// Destructive/Blocked so those keep their more informative label.
 		return 7
 	case SystemWrite:
 		return 6
