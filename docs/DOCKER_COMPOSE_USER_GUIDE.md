@@ -605,9 +605,9 @@ Voice and photo messages are supported too. Sessions persist per chat in the loc
 
 ## Reference
 
-- `docs/SANDBOXING.md` — Odek's nested‑Docker sandbox model (the `--sandbox` feature).
-- `docs/SECURITY.md` — threat model, approval flow, YOLO mode, attack‑vector matrix.
-- `docs/CONFIG.md` — full configuration layering and environment variables.
-- `docs/CLI.md` — all subcommands and flags, including the `dangerous` schema.
-- `docs/WEBUI.md` — Web UI protocol and the WebSocket approval flow.
-- `docs/TELEGRAM.md` — Telegram bot architecture, config variables, and slash commands.
+- [`SANDBOXING.md`](SANDBOXING.md) — Odek's nested‑Docker sandbox model (the `--sandbox` feature).
+- [`SECURITY.md`](SECURITY.md) — threat model, approval flow, YOLO mode, attack‑vector matrix.
+- [`CONFIG.md`](CONFIG.md) — full configuration layering and environment variables.
+- [`CLI.md`](CLI.md) — all subcommands and flags, including the `dangerous` schema.
+- [`WEBUI.md`](WEBUI.md) — Web UI protocol and the WebSocket approval flow.
+- [`TELEGRAM.md`](TELEGRAM.md) — Telegram bot architecture, config variables, and slash commands.
