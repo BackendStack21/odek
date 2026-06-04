@@ -62,6 +62,9 @@ Any OpenAI-compatible endpoint: Deepseek, OpenAI, Anthropic, Ollama, vLLM, Groq,
 ### 🤖 Telegram Bot
 Run agent tasks directly from Telegram via long-polling. Supports slash commands (`/plan`, `/sessions`, `/resume`, `/prune`, `/help`, etc.), voice message transcription, photo analysis, conversation persistence across restarts, saved plan files, and daily token budgeting. No external Telegram libraries — built on stdlib `net/http`. [docs/TELEGRAM.md](docs/TELEGRAM.md)
 
+### ⏰ Scheduled Tasks (native cron)
+Run agent tasks on a cron schedule and deliver results to Telegram, stdout, or a log — no external cron daemon. The scheduler runs **in-process** (inside `odek telegram` or a standalone `odek schedule daemon`), so a scheduled task sees the same resolved config (API key, model, bot token) an interactive run does. Stdlib-only cron parser with Vixie day-of-month/day-of-week semantics, per-job timezones, missed-run catchup, and a singleton lock so jobs never double-fire. `odek schedule add --cron "0 9 * * 1-5" --deliver telegram "..."`. [docs/SCHEDULES.md](docs/SCHEDULES.md)
+
 ### 📎 File Attachments
 Attach files to any prompt with `--ctx` / `-c` (CLI), `@filename` inline references (CLI + REPL + Web UI), or drag-and-drop (Web UI). File content is injected as context blocks before the task — no tool calls needed. Comma-separate multiple files: `--ctx main.go,lib.go`. [docs/CLI.md#file-attachments](docs/CLI.md#file-attachments)
 

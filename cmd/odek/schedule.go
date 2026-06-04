@@ -293,7 +293,7 @@ func scheduleDaemon(_ []string) error {
 	sched := schedule.New(st,
 		agentRunner{resolved: resolved, system: system},
 		cliDeliverer{resolved: resolved},
-		schedule.Options{Logger: stderrLogger{}},
+		schedulerOptions(resolved.Schedules, stderrLogger{}),
 	)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -423,6 +423,10 @@ func (d telegramDeliverer) Deliver(job schedule.Job, result string) error {
 // to it, to avoid double-firing). It returns a stop func that releases the
 // lock; the scheduler goroutine itself stops when ctx is cancelled.
 func startSchedulerForBot(ctx context.Context, bot *telegram.Bot, resolved config.ResolvedConfig, system string, log telegram.Logger) func() {
+	if !resolved.Schedules.Enabled {
+		log.Info("schedule: embedded scheduler disabled by config")
+		return func() {}
+	}
 	unlock, err := acquireScheduleLock()
 	if err != nil {
 		log.Info("schedule: embedded scheduler not started", "reason", err.Error())
@@ -437,7 +441,7 @@ func startSchedulerForBot(ctx context.Context, bot *telegram.Bot, resolved confi
 	sched := schedule.New(st,
 		telegramRunner{resolved: resolved, system: system, bot: bot},
 		telegramDeliverer{bot: bot, fallback: cliDeliverer{resolved: resolved}},
-		schedule.Options{Logger: log},
+		schedulerOptions(resolved.Schedules, log),
 	)
 	scheduleUnlockRef = unlock
 	go func() { _ = sched.Run(ctx) }()
@@ -517,6 +521,25 @@ func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────
+
+// schedulerOptions builds engine options from the resolved config, falling
+// back to UTC if the configured default timezone can't be loaded.
+func schedulerOptions(sc config.ScheduleConfig, logger schedule.Logger) schedule.Options {
+	loc := time.UTC
+	if sc.Timezone != "" {
+		if l, err := time.LoadLocation(sc.Timezone); err == nil {
+			loc = l
+		} else {
+			logger.Error("schedule: invalid default timezone, using UTC", "timezone", sc.Timezone, "error", err)
+		}
+	}
+	return schedule.Options{
+		MaxConcurrent: sc.MaxConcurrent,
+		DefaultTZ:     loc,
+		Catchup:       sc.Catchup,
+		Logger:        logger,
+	}
+}
 
 // jobSchedule compiles a job's cron in its timezone (or UTC) for display.
 func jobSchedule(j schedule.Job) (*schedule.Schedule, error) {

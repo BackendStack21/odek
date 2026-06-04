@@ -170,6 +170,9 @@ type FileConfig struct {
 	// Transcription configures local audio transcription (whisper.cpp).
 	Transcription *TranscriptionConfig `json:"transcription,omitempty"`
 
+	// Schedules configures the native in-process task scheduler.
+	Schedules *SchedulesConfig `json:"schedules,omitempty"`
+
 	// GithubRepoDirectory is the path to the local clone of the project
 	// repository. Injected into the system prompt so the agent knows
 	// where source code lives and can self-correct.
@@ -286,6 +289,10 @@ type ResolvedConfig struct {
 	// Transcription is the resolved transcription config.
 	// Default: auto_transcribe=true, model="tiny", language="", no binary_path.
 	Transcription TranscriptionConfig
+
+	// Schedules is the resolved scheduler config.
+	// Default: enabled=true, max_concurrent=2, timezone="UTC", catchup=false.
+	Schedules ScheduleConfig
 
 	// GithubRepoDirectory is the path to the local clone of the project
 	// repository. Injected into the system prompt.
@@ -584,6 +591,33 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		cfg.InteractionMode = v
 	}
 
+	// Schedules env overrides (ODEK_SCHEDULES_*): lets the scheduler be tuned
+	// from the environment, like everything else in a containerised deploy.
+	if v := envBool("SCHEDULES_ENABLED"); v != nil {
+		if cfg.Schedules == nil {
+			cfg.Schedules = &SchedulesConfig{}
+		}
+		cfg.Schedules.Enabled = v
+	}
+	if v := envInt("SCHEDULES_MAX_CONCURRENT"); v > 0 {
+		if cfg.Schedules == nil {
+			cfg.Schedules = &SchedulesConfig{}
+		}
+		cfg.Schedules.MaxConcurrent = v
+	}
+	if v := envString("SCHEDULES_TIMEZONE"); v != "" {
+		if cfg.Schedules == nil {
+			cfg.Schedules = &SchedulesConfig{}
+		}
+		cfg.Schedules.Timezone = v
+	}
+	if v := envBool("SCHEDULES_CATCHUP"); v != nil {
+		if cfg.Schedules == nil {
+			cfg.Schedules = &SchedulesConfig{}
+		}
+		cfg.Schedules.Catchup = v
+	}
+
 	// Telegram env overrides: merge env vars on top of file config.
 	baseTelegram := telegram.DefaultConfig()
 	if cfg.Telegram != nil {
@@ -676,6 +710,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		MCPServers:          cfg.MCPServers,
 		Telegram:            resolveTelegram(cfg.Telegram),
 		Transcription:       resolveTranscription(cfg.Transcription),
+		Schedules:           resolveSchedules(cfg.Schedules),
 		GithubRepoDirectory: cfg.GithubRepoDirectory,
 		GithubRepoUrl:       cfg.GithubRepoUrl,
 		InteractionMode:     ifZero(cfg.InteractionMode, "engaging"),
@@ -932,6 +967,49 @@ func resolveTranscription(cfg *TranscriptionConfig) TranscriptionConfig {
 	}
 }
 
+// SchedulesConfig is the file-level scheduler configuration. Tri-state fields
+// use pointers so "unset" is distinguishable from an explicit false.
+type SchedulesConfig struct {
+	Enabled       *bool  `json:"enabled,omitempty"`        // run the embedded scheduler inside `odek telegram` (default true)
+	MaxConcurrent int    `json:"max_concurrent,omitempty"` // max jobs running at once (default 2)
+	Timezone      string `json:"timezone,omitempty"`       // default timezone for jobs with none (default UTC)
+	Catchup       *bool  `json:"catchup,omitempty"`        // global default: run a missed fire once on startup (default false)
+}
+
+// ScheduleConfig is the resolved scheduler config (all fields concrete).
+type ScheduleConfig struct {
+	Enabled       bool
+	MaxConcurrent int
+	Timezone      string
+	Catchup       bool
+}
+
+// resolveSchedules merges file-level scheduler config with defaults.
+func resolveSchedules(cfg *SchedulesConfig) ScheduleConfig {
+	out := ScheduleConfig{
+		Enabled:       true,
+		MaxConcurrent: 2,
+		Timezone:      "UTC",
+		Catchup:       false,
+	}
+	if cfg == nil {
+		return out
+	}
+	if cfg.Enabled != nil {
+		out.Enabled = *cfg.Enabled
+	}
+	if cfg.MaxConcurrent > 0 {
+		out.MaxConcurrent = cfg.MaxConcurrent
+	}
+	if cfg.Timezone != "" {
+		out.Timezone = cfg.Timezone
+	}
+	if cfg.Catchup != nil {
+		out.Catchup = *cfg.Catchup
+	}
+	return out
+}
+
 // overlayFile overlays a higher-priority FileConfig onto a lower-priority one.
 // Only fields that are explicitly set (non-zero for scalars, non-nil for
 // pointers) override the base value.
@@ -1038,6 +1116,9 @@ func overlayFile(base, override FileConfig) FileConfig {
 	}
 	if override.Transcription != nil {
 		base.Transcription = override.Transcription
+	}
+	if override.Schedules != nil {
+		base.Schedules = override.Schedules
 	}
 	return base
 }
