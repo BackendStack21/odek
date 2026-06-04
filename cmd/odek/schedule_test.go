@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/schedule"
@@ -131,5 +132,66 @@ func TestCliDeliverer_UnknownKind(t *testing.T) {
 	job := schedule.Job{Deliver: schedule.Delivery{Kind: "pigeon"}}
 	if err := d.Deliver(job, "x"); err == nil {
 		t.Error("unknown delivery kind should error")
+	}
+}
+
+// ── embedded (bot) deliverer ────────────────────────────────────────────
+
+func TestTelegramDeliverer_SendsViaLiveBot(t *testing.T) {
+	bot, msgCh := newRecordingTestBot(t)
+	d := telegramDeliverer{bot: bot, fallback: cliDeliverer{resolved: config.ResolvedConfig{}}}
+	job := schedule.Job{Deliver: schedule.Delivery{Kind: schedule.DeliverTelegram, ChatID: 555}}
+	if err := d.Deliver(job, "scheduled hello"); err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	select {
+	case got := <-msgCh:
+		if got != "scheduled hello" {
+			t.Errorf("sent %q, want %q", got, "scheduled hello")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("bot did not receive a sendMessage")
+	}
+}
+
+func TestTelegramDeliverer_UsesDefaultChatID(t *testing.T) {
+	bot, msgCh := newRecordingTestBot(t)
+	d := telegramDeliverer{
+		bot:      bot,
+		fallback: cliDeliverer{resolved: config.ResolvedConfig{Telegram: telegram.TelegramConfig{DefaultChatID: 999}}},
+	}
+	// No per-job chat ID → falls back to default_chat_id.
+	job := schedule.Job{Deliver: schedule.Delivery{Kind: schedule.DeliverTelegram}}
+	if err := d.Deliver(job, "to default"); err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	select {
+	case <-msgCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("bot did not receive a sendMessage to the default chat")
+	}
+}
+
+func TestTelegramDeliverer_NoChatErrors(t *testing.T) {
+	bot, _ := newRecordingTestBot(t)
+	d := telegramDeliverer{bot: bot, fallback: cliDeliverer{resolved: config.ResolvedConfig{}}}
+	job := schedule.Job{Deliver: schedule.Delivery{Kind: schedule.DeliverTelegram}}
+	if err := d.Deliver(job, "x"); err == nil {
+		t.Error("telegram delivery with no chat id should error")
+	}
+}
+
+func TestTelegramDeliverer_FallsBackForLog(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// Non-telegram kinds route to the CLI deliverer; the bot is untouched.
+	d := telegramDeliverer{bot: nil, fallback: cliDeliverer{resolved: config.ResolvedConfig{}}}
+	job := schedule.Job{ID: "jb-x", Name: "logjob", Deliver: schedule.Delivery{Kind: schedule.DeliverLog}}
+	if err := d.Deliver(job, "logged via fallback"); err != nil {
+		t.Fatalf("Deliver(log): %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".odek", "schedule.log"))
+	if err != nil || !strings.Contains(string(data), "logged via fallback") {
+		t.Errorf("fallback log path failed: err=%v content=%q", err, string(data))
 	}
 }

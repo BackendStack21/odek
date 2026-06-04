@@ -623,6 +623,14 @@ func telegramCmd(args []string) error {
 		}
 	}()
 
+	// 16b. Start the embedded scheduler. It fires scheduled jobs (see
+	// `odek schedule`) and delivers results to Telegram, sharing this
+	// process's resolved config — so no environment-inheritance problem and no
+	// separate cron daemon. If an external `odek schedule daemon` already holds
+	// the lock, this defers to it instead of double-firing.
+	stopScheduler := startSchedulerForBot(ctx, bot, resolved, systemMessage, handlerLog)
+	defer stopScheduler()
+
 	// 17. Process updates until the channel is closed (ctx cancelled).
 	for upd := range updates {
 		handler.HandleUpdate(upd)
@@ -888,6 +896,11 @@ func gracefulRestart(bot *telegram.Bot) {
 	// Release the PID file lock before exit so the child gets a clean slate.
 	if instanceLockRef != nil {
 		instanceLockRef.release()
+	}
+	// Release the schedule lock too, so the restarted child's embedded
+	// scheduler can re-acquire it instead of finding a (briefly) live owner.
+	if scheduleUnlockRef != nil {
+		scheduleUnlockRef()
 	}
 	os.Exit(0)
 }

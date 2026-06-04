@@ -17,6 +17,7 @@ import (
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/render"
 	"github.com/BackendStack21/odek/internal/schedule"
 	"github.com/BackendStack21/odek/internal/telegram"
@@ -363,6 +364,100 @@ func (d cliDeliverer) deliverTelegram(job schedule.Job, result string) error {
 	return err
 }
 
+// ── embedded scheduler (inside `odek telegram`) ─────────────────────────
+
+// scheduleUnlockRef holds the embedded scheduler's pid-lock releaser so the
+// Telegram graceful-restart path can release it before os.Exit(0), mirroring
+// instanceLockRef. Without this the restarted child would see a live lock and
+// skip starting its scheduler.
+var scheduleUnlockRef func()
+
+// telegramRunner runs a job's task headlessly and accounts its token usage
+// against the bot's daily budget.
+type telegramRunner struct {
+	resolved config.ResolvedConfig
+	system   string
+	bot      *telegram.Bot
+}
+
+func (r telegramRunner) Run(ctx context.Context, job schedule.Job) (string, int64, error) {
+	budgeted := r.resolved.Telegram.DailyTokenBudget > 0
+	if budgeted {
+		// Pre-flight: refuse if the budget is already exhausted so a runaway
+		// schedule can't keep spending. Mirrors the chat-message pre-check.
+		if err := r.bot.CheckDailyBudget(1); err != nil {
+			return "", 0, fmt.Errorf("daily token budget exhausted: %w", err)
+		}
+	}
+	result, tokens, err := runTaskHeadless(ctx, r.resolved, r.system, job.Task)
+	if err == nil && budgeted && tokens > 0 {
+		_ = r.bot.CheckDailyBudget(tokens) // bill the run (best-effort)
+	}
+	return result, tokens, err
+}
+
+// telegramDeliverer delivers via the live bot for telegram jobs (sharing its
+// client and rate limiting) and falls back to the CLI deliverer for stdout/log.
+type telegramDeliverer struct {
+	bot      *telegram.Bot
+	fallback cliDeliverer
+}
+
+func (d telegramDeliverer) Deliver(job schedule.Job, result string) error {
+	if job.Deliver.Kind != schedule.DeliverTelegram {
+		return d.fallback.Deliver(job, result)
+	}
+	chatID := job.Deliver.ChatID
+	if chatID == 0 {
+		chatID = d.fallback.resolved.Telegram.DefaultChatID
+	}
+	if chatID == 0 {
+		return fmt.Errorf("no chat id (set the job's telegram:<chatID> or telegram.default_chat_id)")
+	}
+	_, err := d.bot.SendMessage(chatID, result, nil)
+	return err
+}
+
+// startSchedulerForBot starts the embedded scheduler unless an external
+// `odek schedule daemon` already holds the lock (in which case the bot defers
+// to it, to avoid double-firing). It returns a stop func that releases the
+// lock; the scheduler goroutine itself stops when ctx is cancelled.
+func startSchedulerForBot(ctx context.Context, bot *telegram.Bot, resolved config.ResolvedConfig, system string, log telegram.Logger) func() {
+	unlock, err := acquireScheduleLock()
+	if err != nil {
+		log.Info("schedule: embedded scheduler not started", "reason", err.Error())
+		return func() {}
+	}
+	st, err := schedule.NewStore()
+	if err != nil {
+		log.Error("schedule: store init failed", "error", err)
+		unlock()
+		return func() {}
+	}
+	sched := schedule.New(st,
+		telegramRunner{resolved: resolved, system: system, bot: bot},
+		telegramDeliverer{bot: bot, fallback: cliDeliverer{resolved: resolved}},
+		schedule.Options{Logger: log},
+	)
+	scheduleUnlockRef = unlock
+	go func() { _ = sched.Run(ctx) }()
+
+	enabled := 0
+	if jobs, err := st.List(); err == nil {
+		for _, j := range jobs {
+			if j.Enabled {
+				enabled++
+			}
+		}
+	}
+	log.Info("schedule: embedded scheduler started", "enabled_jobs", enabled)
+
+	return func() {
+		scheduleUnlockRef = nil
+		unlock()
+	}
+}
+
 // ── headless agent execution ────────────────────────────────────────────
 
 // runTaskHeadless builds a fresh agent with no terminal renderer and no
@@ -383,21 +478,27 @@ func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system
 		defer cleanup()
 	}
 
+	// Capture cumulative token usage from the final iteration so the Runner
+	// can report it (the engine logs it; the bot bills it against the budget).
+	// RunWithMessages drives the loop synchronously on this goroutine, so the
+	// callback needs no synchronisation.
+	var lastInfo loop.IterationInfo
 	agent, err := odek.New(odek.Config{
-		Model:           resolved.Model,
-		BaseURL:         resolved.BaseURL,
-		APIKey:          resolved.APIKey,
-		MaxIterations:   resolved.MaxIter,
-		MaxToolParallel: resolved.MaxToolParallel,
-		SystemMessage:   system,
-		RuntimeContext:  odek.BuildRuntimeContext("schedule"),
-		NoProjectFile:   resolved.NoAgents,
-		Thinking:        resolved.Thinking,
-		Temperature:     0,
-		Tools:           tools,
-		Renderer:        render.New(io.Discard, false), // silent: unattended
-		InteractionMode: "off",
-		PromptCaching:   resolved.PromptCaching,
+		Model:             resolved.Model,
+		BaseURL:           resolved.BaseURL,
+		APIKey:            resolved.APIKey,
+		MaxIterations:     resolved.MaxIter,
+		MaxToolParallel:   resolved.MaxToolParallel,
+		SystemMessage:     system,
+		RuntimeContext:    odek.BuildRuntimeContext("schedule"),
+		NoProjectFile:     resolved.NoAgents,
+		Thinking:          resolved.Thinking,
+		Temperature:       0,
+		Tools:             tools,
+		Renderer:          render.New(io.Discard, false), // silent: unattended
+		InteractionMode:   "off",
+		PromptCaching:     resolved.PromptCaching,
+		IterationCallback: func(info loop.IterationInfo) { lastInfo = info },
 	})
 	if err != nil {
 		return "", 0, err
@@ -411,7 +512,8 @@ func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system
 	messages = append(messages, llm.Message{Role: "user", Content: task})
 
 	result, _, err := agent.RunWithMessages(ctx, messages)
-	return result, 0, err
+	tokens := int64(lastInfo.InputTokens + lastInfo.OutputTokens)
+	return result, tokens, err
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────
