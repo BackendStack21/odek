@@ -104,6 +104,37 @@ func TestNext_DomDowUnion(t *testing.T) {
 	}
 }
 
+func TestNext_StepListKeepsUnion(t *testing.T) {
+	// A dom field that is a comma-list beginning with a step (`*/2,15`) is
+	// RESTRICTED, not a wildcard, so the Vixie union with a restricted dow must
+	// apply: fire on (odd day or 15th) OR any Friday.
+	s := mustParse(t, "0 0 */2,15 * 5")
+	// 2026-06-12 is a Friday and day 12 (even, not in dom set, not the 15th).
+	// Under the union it must still fire because it's a Friday.
+	fri12 := time.Date(2026, 6, 12, 0, 0, 0, 0, time.UTC)
+	if !s.Matches(fri12) {
+		t.Errorf("expected fire on Friday 2026-06-12 via dom/dow union, got no match")
+	}
+	// 2026-06-01 is a Monday and day 1 (odd → in the dom set) → must fire.
+	mon1 := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	if !s.Matches(mon1) {
+		t.Errorf("expected fire on day 1 (odd, in dom set), got no match")
+	}
+}
+
+func TestParse_PlainStepIsStillWildcard(t *testing.T) {
+	// A pure step (`*/2`) IS a wildcard for the coupling rule, so `0 0 */2 * 5`
+	// (dom wildcard-ish, dow restricted) uses intersection: only odd days that
+	// are Fridays. 2026-06-12 (Fri, even) must NOT fire; 2026-06-05 (Fri, odd) must.
+	s := mustParse(t, "0 0 */2 * 5")
+	if s.Matches(time.Date(2026, 6, 12, 0, 0, 0, 0, time.UTC)) {
+		t.Errorf("`*/2` should be wildcard → intersection; even Friday must not fire")
+	}
+	if !s.Matches(time.Date(2026, 6, 5, 0, 0, 0, 0, time.UTC)) {
+		t.Errorf("odd Friday should fire under intersection")
+	}
+}
+
 func TestNext_DomRestrictedDowStar(t *testing.T) {
 	// dow is "*" → intersection: only the 1st and 15th.
 	s := mustParse(t, "0 0 1,15 * *")

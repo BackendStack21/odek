@@ -593,28 +593,20 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 
 	// Schedules env overrides (ODEK_SCHEDULES_*): lets the scheduler be tuned
 	// from the environment, like everything else in a containerised deploy.
+	// Allocate once — an all-zero SchedulesConfig resolves identically to nil.
+	if cfg.Schedules == nil {
+		cfg.Schedules = &SchedulesConfig{}
+	}
 	if v := envBool("SCHEDULES_ENABLED"); v != nil {
-		if cfg.Schedules == nil {
-			cfg.Schedules = &SchedulesConfig{}
-		}
 		cfg.Schedules.Enabled = v
 	}
 	if v := envInt("SCHEDULES_MAX_CONCURRENT"); v > 0 {
-		if cfg.Schedules == nil {
-			cfg.Schedules = &SchedulesConfig{}
-		}
 		cfg.Schedules.MaxConcurrent = v
 	}
 	if v := envString("SCHEDULES_TIMEZONE"); v != "" {
-		if cfg.Schedules == nil {
-			cfg.Schedules = &SchedulesConfig{}
-		}
 		cfg.Schedules.Timezone = v
 	}
 	if v := envBool("SCHEDULES_CATCHUP"); v != nil {
-		if cfg.Schedules == nil {
-			cfg.Schedules = &SchedulesConfig{}
-		}
 		cfg.Schedules.Catchup = v
 	}
 

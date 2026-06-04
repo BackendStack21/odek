@@ -143,15 +143,20 @@ func expandMacro(m string) (string, error) {
 }
 
 // parseField parses one cron field into a bitset over [min,max]. star reports
-// whether the field began with "*" (a wildcard), which the caller needs for
-// the dom/dow union rule. names, if non-nil, maps lowercased symbolic names
-// (e.g. "mon") to values.
+// whether the field is an unrestricted wildcard — true only when EVERY
+// comma-separated item is wildcard-based ("*" or "*/n"). The caller needs this
+// for the Vixie dom/dow union rule: a field like "*/2,15" is restricted (it
+// lists an explicit member), so it must NOT count as a wildcard even though it
+// starts with "*". names, if non-nil, maps lowercased symbolic names to values.
 func parseField(field string, min, max int, names map[string]int) (mask uint64, star bool, err error) {
 	if field == "" {
 		return 0, false, fmt.Errorf("empty field")
 	}
-	star = strings.HasPrefix(field, "*")
+	star = true
 	for item := range strings.SplitSeq(field, ",") {
+		if !strings.HasPrefix(item, "*") {
+			star = false
+		}
 		m, err := parseItem(item, min, max, names)
 		if err != nil {
 			return 0, false, err

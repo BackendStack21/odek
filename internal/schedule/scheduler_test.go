@@ -200,7 +200,7 @@ func TestReconcile_MissedSkip(t *testing.T) {
 		Deliver: Delivery{Kind: DeliverStdout}, Enabled: true, Catchup: false})
 	// Pretend a fire was due in the past while we were down.
 	past := time.Date(2026, 6, 3, 9, 0, 0, 0, time.UTC)
-	_ = st.SaveState(RunState{JobID: job.ID, NextRun: past})
+	_ = st.SaveState(RunState{JobID: job.ID, NextRun: past, Sig: jobSig(job)})
 
 	runner := &fakeRunner{}
 	s := New(st, runner, &fakeDeliverer{}, Options{})
@@ -222,12 +222,71 @@ func TestReconcile_MissedSkip(t *testing.T) {
 	}
 }
 
+func TestReconcile_CronChangedWhileDownNotMissed(t *testing.T) {
+	// Persisted NextRun was produced by an OLD cron (different sig). On restart
+	// the job's cron has changed; the stale slot must NOT trigger a catchup.
+	st := newTestStore(t)
+	job := addJob(t, st, Job{Name: "j", Cron: "0 9 * * *", Task: "x",
+		Deliver: Delivery{Kind: DeliverStdout}, Enabled: true, Catchup: true})
+	// Seed state from a DIFFERENT schedule signature, with a past NextRun.
+	past := time.Date(2026, 6, 3, 9, 0, 0, 0, time.UTC)
+	_ = st.SaveState(RunState{JobID: job.ID, NextRun: past, Sig: "OLD|"})
+
+	runner := &fakeRunner{}
+	s := New(st, runner, &fakeDeliverer{}, Options{})
+	now := time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC)
+	s.reconcile(now)
+
+	// The stale (different-sig) slot is ignored → next is forward-scheduled, no fire.
+	if !s.peekNext(job.ID).After(now) {
+		t.Errorf("stale-sig NextRun should be ignored; next=%v", s.peekNext(job.ID))
+	}
+	s.fireDue(context.Background(), now)
+	s.Wait()
+	if runner.callCount() != 0 {
+		t.Error("cron changed while down → must NOT catchup-fire on the old slot")
+	}
+}
+
+func TestFireDue_CancelDuringDispatchUnblocks(t *testing.T) {
+	// With all slots held by a blocked job, a cancelled ctx must let fireDue
+	// return instead of wedging on the semaphore, and undispatched jobs must
+	// have their overlap guard cleared.
+	st := newTestStore(t)
+	a := addJob(t, st, Job{Name: "a", Cron: "* * * * *", Task: "x", Deliver: Delivery{Kind: DeliverStdout}, Enabled: true})
+	b := addJob(t, st, Job{Name: "b", Cron: "* * * * *", Task: "y", Deliver: Delivery{Kind: DeliverStdout}, Enabled: true})
+	runner := &fakeRunner{block: make(chan struct{}), started: make(chan string, 2)}
+	s := New(st, runner, &fakeDeliverer{}, Options{MaxConcurrent: 1}) // one slot
+
+	t0 := time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC)
+	s.reconcile(t0)
+	due := s.peekNext(a.ID) // both share the same next minute
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { s.fireDue(ctx, due); close(done) }()
+
+	<-runner.started // first job took the only slot and is blocked
+	cancel()         // cancel while the second job can't acquire a slot
+
+	select {
+	case <-done:
+		// fireDue returned despite the full semaphore — good.
+	case <-time.After(2 * time.Second):
+		close(runner.block)
+		t.Fatal("fireDue wedged on the semaphore after ctx cancel")
+	}
+	close(runner.block)
+	s.Wait()
+	_ = b
+}
+
 func TestReconcile_MissedCatchup(t *testing.T) {
 	st := newTestStore(t)
 	job := addJob(t, st, Job{Name: "j", Cron: "0 9 * * *", Task: "x",
 		Deliver: Delivery{Kind: DeliverStdout}, Enabled: true, Catchup: true})
 	past := time.Date(2026, 6, 3, 9, 0, 0, 0, time.UTC)
-	_ = st.SaveState(RunState{JobID: job.ID, NextRun: past})
+	_ = st.SaveState(RunState{JobID: job.ID, NextRun: past, Sig: jobSig(job)})
 
 	runner := &fakeRunner{result: "caught up"}
 	deliv := &fakeDeliverer{}
@@ -337,7 +396,7 @@ func TestRun_FiresThenStopsCleanly(t *testing.T) {
 	// startup — so we exercise Run's real loop without waiting a wall minute.
 	job := addJob(t, st, Job{Name: "j", Cron: "0 0 1 1 *", Task: "x",
 		Deliver: Delivery{Kind: DeliverStdout}, Enabled: true, Catchup: true})
-	_ = st.SaveState(RunState{JobID: job.ID, NextRun: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)})
+	_ = st.SaveState(RunState{JobID: job.ID, NextRun: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC), Sig: jobSig(job)})
 
 	runner := &fakeRunner{result: "ok", started: make(chan string, 1)}
 	s := New(st, runner, &fakeDeliverer{}, Options{ReloadEvery: 20 * time.Millisecond})

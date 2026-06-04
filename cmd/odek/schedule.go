@@ -263,8 +263,14 @@ func scheduleRunNow(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	mcpTools, mcpCleanup, err := buildScheduledMCPTools(resolved)
+	if err != nil {
+		return err
+	}
+	defer mcpCleanup()
+
 	fmt.Fprintf(os.Stderr, "Running %s (%s)…\n", job.ID, job.Name)
-	result, _, err := runTaskHeadless(ctx, resolved, system, job.Task)
+	result, _, err := runTaskHeadless(ctx, resolved, system, job.Task, mcpTools)
 	if err != nil {
 		return fmt.Errorf("run: %w", err)
 	}
@@ -290,10 +296,18 @@ func scheduleDaemon(_ []string) error {
 		return err
 	}
 
+	// Connect MCP servers once (if any) and share them across every fire.
+	mcpTools, mcpCleanup, err := buildScheduledMCPTools(resolved)
+	if err != nil {
+		return err
+	}
+	defer mcpCleanup()
+
+	logger := telegram.NewFileLogger(telegram.LogInfo, "") // "" → stderr
 	sched := schedule.New(st,
-		agentRunner{resolved: resolved, system: system},
+		agentRunner{resolved: resolved, system: system, mcpTools: mcpTools},
 		cliDeliverer{resolved: resolved},
-		schedulerOptions(resolved.Schedules, stderrLogger{}),
+		schedulerOptions(resolved.Schedules, logger),
 	)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -318,14 +332,15 @@ func scheduleDaemon(_ []string) error {
 // ── Runner / Deliverer implementations ──────────────────────────────────
 
 // agentRunner runs each job's task through a fresh, headless odek agent using
-// the config resolved at daemon startup.
+// the config resolved at daemon startup. mcpTools are connected once and reused.
 type agentRunner struct {
 	resolved config.ResolvedConfig
 	system   string
+	mcpTools []odek.Tool
 }
 
 func (r agentRunner) Run(ctx context.Context, job schedule.Job) (string, int64, error) {
-	return runTaskHeadless(ctx, r.resolved, r.system, job.Task)
+	return runTaskHeadless(ctx, r.resolved, r.system, job.Task, r.mcpTools)
 }
 
 // cliDeliverer routes results to stdout, a log file, or Telegram, honouring a
@@ -378,18 +393,20 @@ type telegramRunner struct {
 	resolved config.ResolvedConfig
 	system   string
 	bot      *telegram.Bot
+	mcpTools []odek.Tool
 }
 
 func (r telegramRunner) Run(ctx context.Context, job schedule.Job) (string, int64, error) {
 	budgeted := r.resolved.Telegram.DailyTokenBudget > 0
 	if budgeted {
-		// Pre-flight: refuse if the budget is already exhausted so a runaway
-		// schedule can't keep spending. Mirrors the chat-message pre-check.
-		if err := r.bot.CheckDailyBudget(1); err != nil {
-			return "", 0, fmt.Errorf("daily token budget exhausted: %w", err)
+		// Pre-flight: refuse if the budget is already exhausted, WITHOUT mutating
+		// it (DailyTokenUsage is read-only; CheckDailyBudget would charge the
+		// probe amount on every fire).
+		if used, limit := r.bot.DailyTokenUsage(); limit > 0 && used >= limit {
+			return "", 0, fmt.Errorf("daily token budget exhausted (%d/%d tokens)", used, limit)
 		}
 	}
-	result, tokens, err := runTaskHeadless(ctx, r.resolved, r.system, job.Task)
+	result, tokens, err := runTaskHeadless(ctx, r.resolved, r.system, job.Task, r.mcpTools)
 	if err == nil && budgeted && tokens > 0 {
 		_ = r.bot.CheckDailyBudget(tokens) // bill the run (best-effort)
 	}
@@ -438,8 +455,15 @@ func startSchedulerForBot(ctx context.Context, bot *telegram.Bot, resolved confi
 		unlock()
 		return func() {}
 	}
+	// Connect MCP servers once and share across fires. A failure here must not
+	// take down the bot — log and continue without MCP tools for scheduled jobs.
+	mcpTools, mcpCleanup, err := buildScheduledMCPTools(resolved)
+	if err != nil {
+		log.Error("schedule: MCP connect failed, scheduled jobs run without MCP tools", "error", err)
+		mcpTools, mcpCleanup = nil, func() {}
+	}
 	sched := schedule.New(st,
-		telegramRunner{resolved: resolved, system: system, bot: bot},
+		telegramRunner{resolved: resolved, system: system, bot: bot, mcpTools: mcpTools},
 		telegramDeliverer{bot: bot, fallback: cliDeliverer{resolved: resolved}},
 		schedulerOptions(resolved.Schedules, log),
 	)
@@ -458,6 +482,7 @@ func startSchedulerForBot(ctx context.Context, bot *telegram.Bot, resolved confi
 
 	return func() {
 		scheduleUnlockRef = nil
+		mcpCleanup()
 		unlock()
 	}
 }
@@ -466,21 +491,26 @@ func startSchedulerForBot(ctx context.Context, bot *telegram.Bot, resolved confi
 
 // runTaskHeadless builds a fresh agent with no terminal renderer and no
 // interactive approver and runs one task to completion, returning the final
-// text. It mirrors run()'s construction but for unattended use: the danger
-// policy from resolved.Dangerous governs what the task may do (no human is
-// present to approve), exactly as for `odek run` invoked non-interactively.
-// Token usage is not yet surfaced (returns 0); the Telegram integration will
-// supply its own Runner that accounts for the daily budget.
-func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system, task string) (string, int64, error) {
-	tools := builtinTools(resolved.Dangerous, nil, nil, resolved.MaxConcurrency, resolved.APIKey, resolved.Transcription, nil)
-
-	if len(resolved.MCPServers) > 0 {
-		cleanup, err := loadMCPTools(resolved.MCPServers, &tools)
-		if err != nil {
-			return "", 0, fmt.Errorf("mcp: %w", err)
-		}
-		defer cleanup()
+// text and the tokens it consumed. mcpTools are pre-connected MCP tools shared
+// across fires (the builtin tools are rebuilt per call — they're cheap and
+// must not be shared concurrently); pass nil for none.
+//
+// Safety: a scheduled task runs unattended, so there is no human to answer an
+// approval prompt. builtinTools is given a nil approver, which means a
+// Prompt-class op would fall back to DangerousConfig.NonInteractiveAction() —
+// and that DEFAULTS TO ALLOW when the policy doesn't say otherwise. To avoid
+// silently granting dangerous operations when no policy is configured, we set a
+// "deny" floor whenever NonInteractive is unset, matching the hardening that
+// sub-agents apply. An explicit allow/deny (e.g. the godmode profile, or the
+// restricted profile's "deny") is honoured unchanged.
+func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system, task string, mcpTools []odek.Tool) (string, int64, error) {
+	if resolved.Dangerous.NonInteractive == nil {
+		deny := "deny"
+		resolved.Dangerous.NonInteractive = &deny
 	}
+
+	tools := builtinTools(resolved.Dangerous, nil, nil, resolved.MaxConcurrency, resolved.APIKey, resolved.Transcription, nil)
+	tools = append(tools, mcpTools...)
 
 	// Capture cumulative token usage from the final iteration so the Runner
 	// can report it (the engine logs it; the bot bills it against the budget).
@@ -518,6 +548,23 @@ func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system
 	result, _, err := agent.RunWithMessages(ctx, messages)
 	tokens := int64(lastInfo.InputTokens + lastInfo.OutputTokens)
 	return result, tokens, err
+}
+
+// buildScheduledMCPTools connects the configured MCP servers ONCE so the
+// connections can be reused across every scheduled fire (the MCP client
+// serialises calls with a mutex, so sharing across concurrent runs is safe),
+// instead of reconnecting per fire. Returns the tools, a cleanup to close the
+// connections, and any error. With no MCP servers it's a no-op.
+func buildScheduledMCPTools(resolved config.ResolvedConfig) ([]odek.Tool, func(), error) {
+	if len(resolved.MCPServers) == 0 {
+		return nil, func() {}, nil
+	}
+	var tools []odek.Tool
+	cleanup, err := loadMCPTools(resolved.MCPServers, &tools)
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("mcp: %w", err)
+	}
+	return tools, cleanup, nil
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────
@@ -615,22 +662,6 @@ func appendScheduleLog(job schedule.Job, result string) error {
 	return err
 }
 
-// stderrLogger is a minimal schedule.Logger that writes key/value lines to
-// stderr, matching the daemon's foreground logging style.
-type stderrLogger struct{}
-
-func (stderrLogger) Info(msg string, kv ...any)  { logKV("INFO", msg, kv) }
-func (stderrLogger) Error(msg string, kv ...any) { logKV("ERROR", msg, kv) }
-
-func logKV(level, msg string, kv []any) {
-	var b strings.Builder
-	fmt.Fprintf(&b, "%s schedule: %s", level, msg)
-	for i := 0; i+1 < len(kv); i += 2 {
-		fmt.Fprintf(&b, " %v=%v", kv[i], kv[i+1])
-	}
-	fmt.Fprintln(os.Stderr, b.String())
-}
-
 // acquireScheduleLock prevents two schedule daemons from firing the same jobs.
 // Unlike the Telegram lock it refuses to start when a live daemon is found
 // rather than killing it — a running scheduler should not be silently usurped.
@@ -644,13 +675,22 @@ func acquireScheduleLock() (func(), error) {
 		return nil, err
 	}
 	if data, err := os.ReadFile(pidFile); err == nil {
-		if pid, _ := strconv.Atoi(strings.TrimSpace(string(data))); pid > 1 {
-			if err := syscall.Kill(pid, 0); err == nil {
+		if pid, _ := strconv.Atoi(strings.TrimSpace(string(data))); pid > 1 && syscall.Kill(pid, 0) == nil {
+			// The PID is alive, but after an unclean exit the OS may have recycled
+			// it onto an unrelated process. Confirm it's actually an odek process
+			// (mirrors the Telegram instance lock) before refusing — otherwise a
+			// recycled PID would make us refuse to start forever. On platforms
+			// without /proc the read fails and we stay conservative (treat as live).
+			owned := true
+			if cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid)); err == nil {
+				owned = strings.Contains(string(cmdline), "odek")
+			}
+			if owned {
 				return nil, fmt.Errorf("another schedule daemon is already running (PID %d)", pid)
 			}
 		}
 	}
-	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())), 0644); err != nil {
+	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())), 0600); err != nil {
 		return nil, err
 	}
 	return func() { os.Remove(pidFile) }, nil

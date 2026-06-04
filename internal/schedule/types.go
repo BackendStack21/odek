@@ -71,4 +71,5 @@ type RunState struct {
 	LastResult string    `json:"last_result,omitempty"` // truncated preview of the delivered text
 	NextRun    time.Time `json:"next_run,omitzero"`     // computed projected next fire
 	Runs       int       `json:"runs,omitempty"`        // total successful + failed fires
+	Sig        string    `json:"sig,omitempty"`         // schedule signature that produced NextRun (cron|tz); detects stale state after a cron edit
 }

@@ -40,6 +40,7 @@ type Options struct {
 	DefaultTZ     *time.Location   // timezone for jobs with no Timezone set (default UTC)
 	Catchup       bool             // global default: run a job once if a fire was missed while down
 	ReloadEvery   time.Duration    // how often to poll schedules.json mtime for changes (default 30s)
+	RunTimeout    time.Duration    // max wall-clock per job run (default 15m; <=0 keeps the engine default)
 	Logger        Logger           // defaults to NopLogger
 	Now           func() time.Time // injectable clock for decisions (default time.Now); tests override
 }
@@ -47,8 +48,9 @@ type Options struct {
 const (
 	defaultMaxConcurrent = 2
 	defaultReloadEvery   = 30 * time.Second
-	maxSleep             = time.Hour // cap on a single idle sleep so the loop stays responsive
-	resultPreviewRunes   = 280       // how much of a result we persist as LastResult
+	defaultRunTimeout    = 15 * time.Minute // bounds a single job so a hung run can't hold a slot forever
+	maxSleep             = time.Hour        // cap on a single idle sleep so the loop stays responsive
+	resultPreviewRunes   = 280              // how much of a result we persist as LastResult
 )
 
 // Scheduler fires jobs from a Store on their cron schedule, runs them through
@@ -83,6 +85,9 @@ func New(store *Store, runner Runner, deliverer Deliverer, opts Options) *Schedu
 	}
 	if opts.ReloadEvery <= 0 {
 		opts.ReloadEvery = defaultReloadEvery
+	}
+	if opts.RunTimeout == 0 {
+		opts.RunTimeout = defaultRunTimeout
 	}
 	if opts.Logger == nil {
 		opts.Logger = NopLogger{}
@@ -167,29 +172,40 @@ func (s *Scheduler) reconcile(now time.Time) {
 		if !job.Enabled {
 			continue
 		}
+		newSig := jobSig(job)
+
+		// Unchanged and already scheduled — leave its next-fire intact (so an
+		// unrelated edit doesn't shift this job) and skip the relatively
+		// expensive re-parse + timezone load entirely.
+		if _, tracked := s.next[job.ID]; tracked && s.sig[job.ID] == newSig {
+			seen[job.ID] = true
+			s.jobs[job.ID] = job
+			s.runs[job.ID] = state[job.ID].Runs
+			continue
+		}
+
 		sched, err := compile(job, s.opts.DefaultTZ)
 		if err != nil {
 			// A malformed job is skipped, not fatal — one bad entry must not
-			// stop every other schedule.
+			// stop every other schedule. Leaving it out of `seen` also drops a
+			// previously-valid job that was just edited into an invalid one.
 			s.log.Error("scheduler: skipping job with invalid schedule", "id", job.ID, "name", job.Name, "error", err)
 			continue
 		}
 		seen[job.ID] = true
 		s.jobs[job.ID] = job
 		s.compiled[job.ID] = sched
+		s.sig[job.ID] = newSig
 		s.runs[job.ID] = state[job.ID].Runs
 
-		newSig := job.Cron + "|" + job.Timezone
-		if _, tracked := s.next[job.ID]; tracked && s.sig[job.ID] == newSig {
-			// Unchanged and already scheduled — leave its next-fire intact so an
-			// unrelated file edit doesn't shift this job.
-			continue
-		}
-		s.sig[job.ID] = newSig
-
 		// Determine the first fire for a newly-seen or changed job, applying the
-		// missed-run policy against any persisted next-fire.
-		prevNext := state[job.ID].NextRun
+		// missed-run policy. Only trust the persisted NextRun if it was produced
+		// by the SAME schedule signature; otherwise the cron/timezone changed
+		// while we were down and the old slot is meaningless.
+		prevNext := time.Time{}
+		if st := state[job.ID]; st.Sig == newSig {
+			prevNext = st.NextRun
+		}
 		catchup := job.Catchup || s.opts.Catchup
 		switch {
 		case !prevNext.IsZero() && prevNext.Before(now) && catchup:
@@ -201,7 +217,7 @@ func (s *Scheduler) reconcile(now time.Time) {
 			s.log.Info("scheduler: skipping missed fire", "id", job.ID, "name", job.Name)
 			_ = s.store.SaveState(RunState{
 				JobID: job.ID, LastStatus: StatusSkipped, LastRun: now,
-				NextRun: s.next[job.ID], Runs: s.runs[job.ID],
+				NextRun: s.next[job.ID], Runs: s.runs[job.ID], Sig: newSig,
 			})
 		default:
 			s.next[job.ID] = sched.Next(now)
@@ -243,8 +259,21 @@ func (s *Scheduler) fireDue(ctx context.Context, now time.Time) {
 	}
 	s.mu.Unlock()
 
-	for _, job := range toFire {
-		s.sem <- struct{}{} // acquire (blocks if at MaxConcurrent)
+	for i, job := range toFire {
+		// Acquire a slot, but stay responsive to cancellation: if all slots are
+		// held by long-running jobs and ctx is cancelled, don't wedge here —
+		// release the overlap guard for every job we won't dispatch and bail so
+		// Run() can reach its shutdown path.
+		select {
+		case s.sem <- struct{}{}:
+		case <-ctx.Done():
+			s.mu.Lock()
+			for _, j := range toFire[i:] {
+				s.running[j.ID] = false
+			}
+			s.mu.Unlock()
+			return
+		}
 		s.wg.Add(1)
 		go func(job Job, firedAt time.Time) {
 			defer s.wg.Done()
@@ -263,10 +292,17 @@ func (s *Scheduler) execute(ctx context.Context, job Job, firedAt time.Time) {
 	}()
 
 	s.mu.Lock()
-	st := RunState{JobID: job.ID, LastRun: firedAt, Runs: s.runs[job.ID], NextRun: s.next[job.ID]}
+	st := RunState{JobID: job.ID, LastRun: firedAt, Runs: s.runs[job.ID], NextRun: s.next[job.ID], Sig: jobSig(job)}
 	s.mu.Unlock()
 
-	result, tokens, err := s.runner.Run(ctx, job)
+	// Bound the run so a hung agent/tool can't hold its concurrency slot forever.
+	runCtx := ctx
+	if s.opts.RunTimeout > 0 {
+		var cancel context.CancelFunc
+		runCtx, cancel = context.WithTimeout(ctx, s.opts.RunTimeout)
+		defer cancel()
+	}
+	result, tokens, err := s.runner.Run(runCtx, job)
 	switch {
 	case err != nil:
 		st.LastStatus = StatusError
@@ -311,6 +347,11 @@ func (s *Scheduler) timeToNext(now time.Time) time.Duration {
 	}
 	return d
 }
+
+// jobSig is the change signature for a job's schedule. Two jobs with the same
+// signature fire at the same times; a change means the persisted NextRun no
+// longer corresponds to the current schedule.
+func jobSig(j Job) string { return j.Cron + "|" + j.Timezone }
 
 // compile parses a job's cron expression in its timezone (or the supplied
 // default when the job specifies none).
