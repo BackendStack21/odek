@@ -1,0 +1,135 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/schedule"
+	"github.com/BackendStack21/odek/internal/telegram"
+)
+
+func TestParseDeliver(t *testing.T) {
+	tests := []struct {
+		in       string
+		wantKind string
+		wantChat int64
+		wantErr  bool
+	}{
+		{"", schedule.DeliverStdout, 0, false},
+		{"stdout", schedule.DeliverStdout, 0, false},
+		{"log", schedule.DeliverLog, 0, false},
+		{"telegram", schedule.DeliverTelegram, 0, false},
+		{"telegram:12345", schedule.DeliverTelegram, 12345, false},
+		{"telegram:-100999", schedule.DeliverTelegram, -100999, false},
+		{"telegram:notanid", "", 0, true},
+		{"smoke-signal", "", 0, true},
+	}
+	for _, tc := range tests {
+		got, err := parseDeliver(tc.in)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("parseDeliver(%q) err=%v wantErr=%v", tc.in, err, tc.wantErr)
+			continue
+		}
+		if tc.wantErr {
+			continue
+		}
+		if got.Kind != tc.wantKind || got.ChatID != tc.wantChat {
+			t.Errorf("parseDeliver(%q) = %+v, want kind=%s chat=%d", tc.in, got, tc.wantKind, tc.wantChat)
+		}
+	}
+}
+
+func TestDeliverString(t *testing.T) {
+	cases := map[schedule.Delivery]string{
+		{Kind: schedule.DeliverStdout}:                   "stdout",
+		{Kind: schedule.DeliverLog}:                      "log",
+		{Kind: schedule.DeliverTelegram}:                 "telegram",
+		{Kind: schedule.DeliverTelegram, ChatID: 42}:     "telegram:42",
+		{Kind: schedule.DeliverTelegram, ChatID: -10042}: "telegram:-10042",
+	}
+	for d, want := range cases {
+		if got := deliverString(d); got != want {
+			t.Errorf("deliverString(%+v) = %q, want %q", d, got, want)
+		}
+	}
+}
+
+func TestFirstWords(t *testing.T) {
+	tests := []struct {
+		in   string
+		n    int
+		want string
+	}{
+		{"one two three four", 2, "one two"},
+		{"short", 6, "short"},
+		{"  extra   spaces   here ", 2, "extra spaces"},
+		{"", 3, ""},
+	}
+	for _, tc := range tests {
+		if got := firstWords(tc.in, tc.n); got != tc.want {
+			t.Errorf("firstWords(%q,%d) = %q, want %q", tc.in, tc.n, got, tc.want)
+		}
+	}
+}
+
+func TestJobSchedule(t *testing.T) {
+	// Valid, default UTC.
+	if _, err := jobSchedule(schedule.Job{Cron: "0 9 * * *"}); err != nil {
+		t.Errorf("valid job: unexpected error %v", err)
+	}
+	// Valid with timezone.
+	if _, err := jobSchedule(schedule.Job{Cron: "0 9 * * *", Timezone: "Europe/Berlin"}); err != nil {
+		t.Errorf("tz job: unexpected error %v", err)
+	}
+	// Bad timezone.
+	if _, err := jobSchedule(schedule.Job{Cron: "0 9 * * *", Timezone: "Mars/Phobos"}); err == nil {
+		t.Error("bad timezone should error")
+	}
+	// Bad cron.
+	if _, err := jobSchedule(schedule.Job{Cron: "nope"}); err == nil {
+		t.Error("bad cron should error")
+	}
+}
+
+func TestCliDeliverer_Log(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	d := cliDeliverer{resolved: config.ResolvedConfig{}}
+	job := schedule.Job{ID: "jb-1", Name: "logjob", Deliver: schedule.Delivery{Kind: schedule.DeliverLog}}
+	if err := d.Deliver(job, "hello from cron"); err != nil {
+		t.Fatalf("Deliver(log): %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".odek", "schedule.log"))
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	if !strings.Contains(string(data), "hello from cron") || !strings.Contains(string(data), "jb-1") {
+		t.Errorf("log missing content: %q", string(data))
+	}
+}
+
+func TestCliDeliverer_TelegramErrors(t *testing.T) {
+	// No token configured → error.
+	d := cliDeliverer{resolved: config.ResolvedConfig{}}
+	job := schedule.Job{Deliver: schedule.Delivery{Kind: schedule.DeliverTelegram}}
+	if err := d.Deliver(job, "x"); err == nil {
+		t.Error("expected error when telegram token is unset")
+	}
+
+	// Token set but no chat id anywhere → error.
+	d = cliDeliverer{resolved: config.ResolvedConfig{Telegram: telegram.TelegramConfig{Token: "t"}}}
+	if err := d.Deliver(job, "x"); err == nil {
+		t.Error("expected error when no chat id is resolvable")
+	}
+}
+
+func TestCliDeliverer_UnknownKind(t *testing.T) {
+	d := cliDeliverer{resolved: config.ResolvedConfig{}}
+	job := schedule.Job{Deliver: schedule.Delivery{Kind: "pigeon"}}
+	if err := d.Deliver(job, "x"); err == nil {
+		t.Error("unknown delivery kind should error")
+	}
+}

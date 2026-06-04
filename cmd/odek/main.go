@@ -476,6 +476,7 @@ func printUsage() {
   odek skill <list|view|save|delete|import|curate>
   odek mcp [--sandbox]
   odek telegram
+  odek schedule <list|add|rm|enable|disable|run|next|daemon>
   odek version
 
 Commands:
@@ -497,6 +498,10 @@ Commands:
   mcp                 Start MCP server (Model Context Protocol) over stdio
                         Exposes all built-in tools for Claude Code, Cursor, etc.
   telegram            Start Telegram bot (long-polling mode)
+  schedule            Manage native in-process scheduled tasks (cron)
+                       Subcommands: list, add, rm, enable, disable, run, next, daemon
+                       The daemon (or the Telegram bot) fires jobs and delivers
+                       results to stdout, a log, or a Telegram chat.
   init                Create a config file (default: ./odek.json)
   version             Print version and exit
 
