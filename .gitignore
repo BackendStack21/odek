@@ -14,3 +14,6 @@ docker/workspace/*
 !docker/workspace/.gitkeep
 docker/.odek/*
 !docker/.odek/.gitkeep
+
+# Claude Code local artifacts
+.claude/

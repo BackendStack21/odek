@@ -912,15 +912,11 @@ func spawnChild() error {
 	if err != nil {
 		return fmt.Errorf("executable: %w", err)
 	}
-	// When running inside the Docker container the entrypoint script exports
-	// ODEK_ENTRYPOINT=$0. Re-exec through the wrapper so supercronic is
-	// restarted alongside the new odek process. The wrapper reads
-	// ODEK_SUPERCRONIC_PID (also in childEnv via os.Environ()) and kills the
-	// previous supercronic before starting a new one — no duplicate instances.
-	if ep := os.Getenv("ODEK_ENTRYPOINT"); ep != "" {
-		exe = ep
-	}
-	// Copy args (same as current process).
+	// Copy args (same as current process). The restarted `odek telegram`
+	// process starts its own embedded scheduler goroutine, so there is nothing
+	// extra to re-exec through — the scheduler's lifecycle follows the bot's.
+	// (gracefulRestart releases the schedule lock before os.Exit so the child
+	// re-acquires it cleanly.)
 	argv := make([]string, len(os.Args))
 	copy(argv, os.Args)
 	argv[0] = exe
