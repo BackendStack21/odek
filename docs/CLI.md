@@ -29,6 +29,8 @@
 || `odek subagent --goal <string> [flags]` | Run a focused sub-task; outputs JSON on stdout. Spawned by `delegate_tasks` tool |
 | `odek init [--global] [--force]` | Create a config file template |
 | `odek mcp [--sandbox]` | Start MCP server (expose tools to Claude Code) or connect to external MCP servers (via `mcp_servers` config) |
+| `odek telegram` | Start the Telegram bot (long-polling). Hosts the embedded scheduler unless `schedules.enabled=false` |
+| `odek schedule <subcommand>` | Manage native in-process scheduled tasks (cron): `list`, `add`, `rm`, `enable`, `disable`, `run`, `next`, `daemon`. See [Schedules](SCHEDULES.md) |
 | `odek version` | Print version and exit |
 
 ## Run flags
@@ -41,7 +43,7 @@
 | `--thinking <level>` | string | profile default | Reasoning depth: `enabled`/`disabled`/`low`/`medium`/`high`. Requires a model that supports extended thinking. |
 | `--thinking-budget <n>` | int | `5000` | Max thinking tokens for extended thinking (Anthropic budget_tokens). Only applied when `--thinking` is set. |
 | `--sandbox` | bool | false | Execute shell commands inside Docker container |
-| `--deliver` | bool | false | Deliver the agent's final response to the configured Telegram `default_chat_id`. Requires `telegram.bot_token` + `telegram.default_chat_id` in config. Use with cron for scheduled agent tasks. |
+| `--deliver` | bool | false | Deliver the agent's final response to the configured Telegram `default_chat_id`. Requires `telegram.bot_token` + `telegram.default_chat_id` in config. Handy for host-cron one-shots; for recurring tasks prefer the native scheduler (`odek schedule`, see [Schedules](SCHEDULES.md)). |
 | `--interaction-mode <mode>` | string | `engaging` | Tool-call rendering: `engaging` (emoji narration) or `verbose` (raw tool output) |
 | `--no-color` | bool | false | Disable colored terminal output |
 | `--prompt-caching` | bool | false | Enable Anthropic/OpenAI/DeepSeek prompt caching markers |

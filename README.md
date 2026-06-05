@@ -167,6 +167,7 @@ odek run "@README.md what does this project do?"
 | [Memory](docs/MEMORY.md) | Three-tier design, go-vector merge-on-write, `memory` tool |
 | [Sessions](docs/SESSIONS.md) | Multi-turn conversations, save/resume/trim/cleanup |
 | [Telegram Bot](docs/TELEGRAM.md) | Telegram integration: bot client, slash commands, session management, plans, media downloads |
+| [Scheduled Tasks](docs/SCHEDULES.md) | Native in-process cron: `odek schedule`, Vixie cron syntax, delivery, missed-run catchup, daemon vs embedded |
 | [Sandboxing](docs/SANDBOXING.md) | Docker isolation model, config, security hardening |
 | [Security](docs/SECURITY.md) | Threat model, prompt injection defense, sandbox model |
 | [Sub-Agents](docs/SUBAGENTS.md) | Task decomposition, delegation tool, subagent protocol |

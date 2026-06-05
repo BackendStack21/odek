@@ -12,6 +12,13 @@ odek serve                           # Web UI (http://127.0.0.1:8080)
 odek serve --open                    # Web UI + auto-open browser
 odek subagent --goal "review auth"   # Spawn subagent
 odek mcp                             # Expose tools via MCP stdio
+odek telegram                        # Telegram bot (also hosts the scheduler)
+
+# Scheduled tasks (native cron — see docs/SCHEDULES.md)
+odek schedule add --cron "0 9 * * 1-5" --deliver telegram "stand-up nudge"
+odek schedule list                   # List jobs (id, next fire, last status)
+odek schedule next "*/15 * * * *"    # Preview upcoming fire times
+odek schedule daemon                 # Run the scheduler headless
 
 # Sandbox flags (apply to run/repl/serve)
 odek run --sandbox "build safely"
