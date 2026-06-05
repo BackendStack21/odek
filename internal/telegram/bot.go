@@ -426,6 +426,13 @@ func isRetryableNetworkError(err error) bool {
 
 // SendMessage sends a text message to the specified chat.
 func (b *Bot) SendMessage(chatID int64, text string, opts *SendOpts) (*Message, error) {
+	return b.SendMessageContext(context.Background(), chatID, text, opts)
+}
+
+// SendMessageContext is like SendMessage but aborts the request (and its retry
+// backoff) when ctx is cancelled — used by the scheduler so a stuck delivery
+// doesn't block graceful shutdown.
+func (b *Bot) SendMessageContext(ctx context.Context, chatID int64, text string, opts *SendOpts) (*Message, error) {
 	params := map[string]any{
 		"chat_id": chatID,
 		"text":    text,
@@ -446,7 +453,7 @@ func (b *Bot) SendMessage(chatID int64, text string, opts *SendOpts) (*Message, 
 	}
 
 	var msg Message
-	if err := b.doJSON("sendMessage", params, &msg); err != nil {
+	if err := b.doJSONContext(ctx, "sendMessage", params, &msg); err != nil {
 		return nil, err
 	}
 	return &msg, nil

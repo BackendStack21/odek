@@ -25,8 +25,6 @@ docker/
 ├── config.restricted.json   # Restricted permission policy
 ├── config.godmode.json      # Godmode (YOLO) permission policy
 ├── .env.example             # copy to .env, add your API key
-├── cron-entrypoint.sh       # starts supercronic (if a crontab is mounted), then execs odek
-├── crontab                  # scheduled reminders (edit + uncomment to enable)
 └── workspace/               # the dir the agent works in (mounted in)
 ```
 
@@ -103,26 +101,38 @@ local `./.odek` folder — an external host folder, just like `./workspace`.
 
 ### Scheduled reminders (cron)
 
-The Telegram profiles bundle [supercronic](https://github.com/aptible/supercronic), a
-container-friendly cron. Unlike the classic `crond`, it runs as the non-root user **and
-passes the container environment to each job** — so a scheduled `odek run --deliver`
-sees the same `.env` vars (API key, bot token) the bot does. No separate host crontab,
-no daemon juggling.
+The Telegram bot hosts odek's **native, in-process scheduler** — no extra
+container, no external cron. Because it runs inside the bot, a scheduled task
+sees the same resolved config (API key, bot token, default chat) the bot does.
+Full guide: [../docs/SCHEDULES.md](../docs/SCHEDULES.md).
 
 1. In `.env`, set **`ODEK_TELEGRAM_DEFAULT_CHAT_ID`** — the chat reminders are sent to
    (usually your own ID, the same as `ODEK_TELEGRAM_ALLOWED_CHATS`).
-2. Edit `crontab` and uncomment/add jobs (standard 5-field syntax; min granularity is
-   1 minute). Example — a weekday stand-up nudge:
+2. Add a job. The easiest way is **from the chat itself** — message the bot:
 
-   ```cron
-   0 9 * * 1-5  /usr/local/bin/odek run --deliver "Reminder: stand-up in 15 minutes."
+   ```text
+   /schedule add 0 9 * * 1-5 Stand-up in 15 minutes
    ```
 
-3. (Re)start a Telegram profile. On boot you'll see `cron-entrypoint: starting
-   supercronic …` in the logs; each job's result is delivered to your chat.
+   Jobs added this way deliver back to that chat by default. Use `/schedules`
+   to list and `/schedule rm|enable|disable|run|next` to manage them. To keep
+   management host-only, set `ODEK_SCHEDULES_ALLOW_TELEGRAM_MANAGEMENT=false`
+   (the chat can still list and preview).
 
-Times are UTC unless you set `TZ` in `.env`. An empty/all-commented `crontab` is fine —
-supercronic simply schedules nothing.
+   You can also run the CLI inside the container, or edit
+   `./.odek/schedules.json` on the host directly — jobs persist in the `./.odek`
+   volume and the running bot picks up changes automatically:
+
+   ```bash
+   docker compose --profile telegram-restricted exec odek-telegram-restricted \
+     odek schedule add --cron "0 9 * * 1-5" --deliver telegram "Stand-up in 15 minutes"
+   ```
+
+Don't run a separate `odek schedule daemon` against the same `./.odek` while the
+bot is up — a shared lock prevents double-firing, but the daemon will refuse to
+start (non-zero exit, "another schedule daemon is already running") when the bot
+holds it. In the reverse order (daemon up first), the bot's embedded scheduler
+just defers silently.
 
 ## Verify the profiles differ
 

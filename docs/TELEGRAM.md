@@ -209,6 +209,8 @@ The handler uses `sync.Map` for `TelegramApprover` instances, keyed by `chatID`.
 | `/sessions` | List recent conversation sessions |
 | `/resume <session_id>` | Resume a previous session by ID |
 | `/prune [days]` | Clean up old sessions (default: 30 days) |
+| `/schedules` | List scheduled tasks (id, on/off, cron, next fire, last status) |
+| `/schedule <subcommand>` | Manage scheduled tasks — `add`, `rm`, `enable`, `disable`, `run`, `next`, `view`. See [Managing schedules from Telegram](SCHEDULES.md#managing-from-telegram) |
 
 ### Architecture
 
@@ -429,7 +431,14 @@ A fire-and-forget goroutine sends `sendChatAction("typing")` every 4 seconds whi
 
 ## Cron Integration
 
-odek can run fully offline agent tasks and deliver the result to Telegram, enabling system cron-based scheduled agent workflows — no daemon or scheduler required.
+> **Prefer the native scheduler.** odek now has a built-in, in-process
+> scheduler — `odek schedule add --cron "..." --deliver telegram "..."`. The
+> bot hosts it automatically, so there's no host crontab to manage and a
+> scheduled task sees the same resolved config the bot does. See
+> [SCHEDULES.md](SCHEDULES.md). The OS-cron approach below still works and is
+> handy when you'd rather drive scheduling from the host.
+
+odek can also run fully offline agent tasks from system cron and deliver the result to Telegram with `--deliver` — no long-running odek process required.
 
 ### How it works
 

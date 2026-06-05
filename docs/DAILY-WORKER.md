@@ -11,7 +11,7 @@
 | **Memory** | Per-session + persistent | 🏆 3-tier (facts, buffer, episodes) + vector |
 | **Skills auto-learning** | Manual skills | 🏆 Auto-detect patterns, trie-based trigger |
 | **Docker sandbox** | Manual | 🏆 Wired into agent loop |
-| **Cron / scheduling** | 🏆 Native | ❌ None |
+| **Cron / scheduling** | 🏆 Native | ✅ Native, in-process (`odek schedule`) |
 | **Web UI** | ❌ | 🏆 `odek serve` |
 | **MCP bidirectional** | Client only (native-mcp) | 🏆 Server + Client |
 

@@ -325,6 +325,34 @@ odek run "Daily summary" --deliver
 
 See [docs/TELEGRAM.md](docs/TELEGRAM.md#cron-integration) for full cron setup instructions.
 
+## Schedules
+
+Configures the native in-process task scheduler (`odek schedule`). Job
+definitions live in `~/.odek/schedules.json`; this section only tunes the
+engine. Every field has an `ODEK_SCHEDULES_*` environment override.
+
+```json
+{
+  "schedules": {
+    "enabled": true,
+    "max_concurrent": 2,
+    "timezone": "UTC",
+    "catchup": false,
+    "allow_telegram_management": true
+  }
+}
+```
+
+| Field | Env | Default | Description |
+|---|---|---|---|
+| `enabled` | `ODEK_SCHEDULES_ENABLED` | `true` | Run the embedded scheduler inside `odek telegram`. Set false to run only a standalone `odek schedule daemon`. |
+| `max_concurrent` | `ODEK_SCHEDULES_MAX_CONCURRENT` | `2` | Maximum scheduled jobs running at once. |
+| `timezone` | `ODEK_SCHEDULES_TIMEZONE` | `UTC` | Default timezone for jobs that don't set their own `--tz`. |
+| `catchup` | `ODEK_SCHEDULES_CATCHUP` | `false` | Global default for the missed-run policy: run a missed fire once on startup. |
+| `allow_telegram_management` | `ODEK_SCHEDULES_ALLOW_TELEGRAM_MANAGEMENT` | `true` | Allow the Telegram `/schedule` commands to create/remove/toggle/run jobs. When false, the bot still lists and previews jobs but mutations must go through `odek schedule`. |
+
+Full guide: [docs/SCHEDULES.md](SCHEDULES.md).
+
 ## Tool Progress
 
 Controls how per-tool progress messages appear inside the Telegram bot during agent runs. Independent from `interaction_mode` — you can have engaging terminal output with minimal Telegram progress, or verbose terminal with rich progress bubbles.

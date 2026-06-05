@@ -556,6 +556,12 @@
       <p>Full-featured Telegram bot with <code>odek telegram</code>. MarkdownV2 messages, inline keyboards, file attachments, <code>send_message</code> tool, and <code>--deliver</code> flag for cron integration. Interaction mode-aware with per-tool progress traces.</p>
     </div>
 
+    <div class="card">
+      <div class="icon">⏰</div>
+      <h4>Scheduled Tasks</h4>
+      <p>Native, in-process cron with <code>odek schedule</code> — no external cron daemon. Runs inside <code>odek telegram</code> or a standalone <code>odek schedule daemon</code>, so a scheduled task sees the same resolved config an interactive run does. Stdlib cron parser with Vixie day-of-month/day-of-week semantics, per-job timezones, missed-run catchup, and a singleton lock so jobs never double-fire.</p>
+    </div>
+
   </div>
 </section>
 

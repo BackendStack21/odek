@@ -22,6 +22,7 @@ import (
 	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/render"
+	"github.com/BackendStack21/odek/internal/schedule"
 	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/skills"
 	"github.com/BackendStack21/odek/internal/telegram"
@@ -216,10 +217,37 @@ func telegramCmd(args []string) error {
 		return "", nil
 	}
 
+	// Shared schedule store for the in-chat /schedule commands. Created once and
+	// also handed to the embedded scheduler below so both sides agree. A nil
+	// store (rare init failure) degrades to a friendly error from the commands.
+	scheduleStore, err := schedule.NewStore()
+	if err != nil {
+		handlerLog.Warn("schedule: store unavailable; /schedule commands degraded", "error", err)
+		scheduleStore = nil
+	}
+
 	handler.OnCommand = func(chatID int64, messageID int, cmdName string, argsStr string) (string, error) {
 		cmd := telegram.FindCommand(cmdName)
 		if cmd == nil {
 			return fmt.Sprintf("Unknown command: /%s", cmdName), nil
+		}
+
+		// Handle /schedules and /schedule — manage scheduled tasks. scheduleReloadRef
+		// is set by the embedded scheduler (nil if none runs here); the parsing and
+		// formatting live in schedule_telegram.go. A /schedule run dispatches the
+		// job's task through the normal chat pipeline.
+		if cmdName == "schedules" || cmdName == "schedule" {
+			sub := argsStr
+			if cmdName == "schedules" {
+				sub = "list"
+			}
+			reply, runTask := telegramScheduleReply(chatID, sub, scheduleStore,
+				scheduleReloadRef, resolved.Schedules.AllowTelegramManagement)
+			if runTask != "" {
+				go handleChatMessage(chatID, messageID, runTask, bot, handler, sessionManager,
+					resolved, systemMessage, handlerLog)
+			}
+			return reply, nil
 		}
 
 		// Handle /restart — return confirmation message, then signal SIGHUP.
@@ -623,6 +651,14 @@ func telegramCmd(args []string) error {
 		}
 	}()
 
+	// 16b. Start the embedded scheduler. It fires scheduled jobs (see
+	// `odek schedule`) and delivers results to Telegram, sharing this
+	// process's resolved config — so no environment-inheritance problem and no
+	// separate cron daemon. If an external `odek schedule daemon` already holds
+	// the lock, this defers to it instead of double-firing.
+	stopScheduler := startSchedulerForBot(ctx, bot, resolved, systemMessage, handlerLog, scheduleStore)
+	defer stopScheduler()
+
 	// 17. Process updates until the channel is closed (ctx cancelled).
 	for upd := range updates {
 		handler.HandleUpdate(upd)
@@ -889,6 +925,17 @@ func gracefulRestart(bot *telegram.Bot) {
 	if instanceLockRef != nil {
 		instanceLockRef.release()
 	}
+	// Close the embedded scheduler's MCP connections before exiting — os.Exit
+	// skips deferred cleanup, so without this the MCP child processes (e.g.
+	// Playwright/Chromium) would leak across every restart.
+	if mcpCleanupRef != nil {
+		mcpCleanupRef()
+	}
+	// Release the schedule lock too, so the restarted child's embedded
+	// scheduler can re-acquire it instead of finding a (briefly) live owner.
+	if scheduleUnlockRef != nil {
+		scheduleUnlockRef()
+	}
 	os.Exit(0)
 }
 
@@ -899,15 +946,11 @@ func spawnChild() error {
 	if err != nil {
 		return fmt.Errorf("executable: %w", err)
 	}
-	// When running inside the Docker container the entrypoint script exports
-	// ODEK_ENTRYPOINT=$0. Re-exec through the wrapper so supercronic is
-	// restarted alongside the new odek process. The wrapper reads
-	// ODEK_SUPERCRONIC_PID (also in childEnv via os.Environ()) and kills the
-	// previous supercronic before starting a new one — no duplicate instances.
-	if ep := os.Getenv("ODEK_ENTRYPOINT"); ep != "" {
-		exe = ep
-	}
-	// Copy args (same as current process).
+	// Copy args (same as current process). The restarted `odek telegram`
+	// process starts its own embedded scheduler goroutine, so there is nothing
+	// extra to re-exec through — the scheduler's lifecycle follows the bot's.
+	// (gracefulRestart releases the schedule lock before os.Exit so the child
+	// re-acquires it cleanly.)
 	argv := make([]string, len(os.Args))
 	copy(argv, os.Args)
 	argv[0] = exe

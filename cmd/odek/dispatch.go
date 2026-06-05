@@ -51,6 +51,8 @@ func dispatch(args []string) int {
 		return cliExit(mcpCmd(rest))
 	case "telegram":
 		return cliExit(telegramCmd(rest))
+	case "schedule":
+		return cliExit(scheduleCmd(rest))
 	default:
 		fmt.Fprintf(os.Stderr, "odek: unknown command %q\n", cmd)
 		printUsage()
