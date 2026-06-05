@@ -378,8 +378,39 @@ func (d cliDeliverer) deliverTelegram(ctx context.Context, job schedule.Job, res
 		return fmt.Errorf("no chat id (set the job's telegram:<chatID> or telegram.default_chat_id)")
 	}
 	bot := telegram.NewBot(d.resolved.Telegram.Token)
-	_, err := bot.SendMessageContext(ctx, chatID, result, nil)
-	return err
+	return sendTelegramResult(ctx, bot, chatID, result)
+}
+
+// sendTelegramResult delivers a scheduled task's result to Telegram, mirroring
+// the live bot's Handler.SendResponse pipeline: the result (odek markdown) is
+// converted to Telegram MarkdownV2 and chunked via FormatResponse, then each
+// chunk is sent with MarkdownV2 and retried as plain text if Telegram rejects
+// the formatting. Without this the raw "**bold**" markdown is delivered as
+// literal asterisks. Uses the context-aware send so a stuck delivery doesn't
+// block the scheduler's graceful shutdown.
+func sendTelegramResult(ctx context.Context, bot *telegram.Bot, chatID int64, result string) error {
+	chunks, err := telegram.FormatResponse(result)
+	if err != nil {
+		return fmt.Errorf("format response: %w", err)
+	}
+	for _, chunk := range chunks {
+		if chunk == "" {
+			continue
+		}
+		_, err := bot.SendMessageContext(ctx, chatID, chunk, &telegram.SendOpts{ParseMode: telegram.ParseModeMarkdownV2})
+		if err == nil {
+			continue
+		}
+		// Retry as plain text — covers MarkdownV2 parse errors and other
+		// transient failures — but give up if the context was cancelled.
+		if ctx.Err() != nil {
+			return err
+		}
+		if _, perr := bot.SendMessageContext(ctx, chatID, chunk, nil); perr != nil {
+			return perr
+		}
+	}
+	return nil
 }
 
 // ── embedded scheduler (inside `odek telegram`) ─────────────────────────
@@ -447,8 +478,7 @@ func (d telegramDeliverer) Deliver(ctx context.Context, job schedule.Job, result
 	if chatID == 0 {
 		return fmt.Errorf("no chat id (set the job's telegram:<chatID> or telegram.default_chat_id)")
 	}
-	_, err := d.bot.SendMessageContext(ctx, chatID, result, nil)
-	return err
+	return sendTelegramResult(ctx, d.bot, chatID, result)
 }
 
 // startSchedulerForBot starts the embedded scheduler unless an external
