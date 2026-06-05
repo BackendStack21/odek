@@ -897,6 +897,12 @@ func gracefulRestart(bot *telegram.Bot) {
 	if instanceLockRef != nil {
 		instanceLockRef.release()
 	}
+	// Close the embedded scheduler's MCP connections before exiting — os.Exit
+	// skips deferred cleanup, so without this the MCP child processes (e.g.
+	// Playwright/Chromium) would leak across every restart.
+	if mcpCleanupRef != nil {
+		mcpCleanupRef()
+	}
 	// Release the schedule lock too, so the restarted child's embedded
 	// scheduler can re-acquire it instead of finding a (briefly) live owner.
 	if scheduleUnlockRef != nil {

@@ -120,7 +120,10 @@ Full guide: [../docs/SCHEDULES.md](../docs/SCHEDULES.md).
 3. Inspect with `odek schedule list` / `odek schedule next <id>`.
 
 Don't run a separate `odek schedule daemon` against the same `./.odek` while the
-bot is up — a shared lock makes the second one defer, so jobs never double-fire.
+bot is up — a shared lock prevents double-firing, but the daemon will refuse to
+start (non-zero exit, "another schedule daemon is already running") when the bot
+holds it. In the reverse order (daemon up first), the bot's embedded scheduler
+just defers silently.
 
 ## Verify the profiles differ
 

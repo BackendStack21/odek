@@ -16,9 +16,11 @@ type Runner interface {
 }
 
 // Deliverer routes a successful job result to its destination (Telegram chat,
-// stdout, a log file). It is called only when Run succeeded.
+// stdout, a log file). It is called only when Run succeeded. The context lets a
+// slow delivery (e.g. an unreachable Telegram endpoint) be cancelled on
+// shutdown instead of blocking the drain.
 type Deliverer interface {
-	Deliver(job Job, result string) error
+	Deliver(ctx context.Context, job Job, result string) error
 }
 
 // Logger is the minimal logging surface the engine needs, satisfied by the
@@ -165,7 +167,10 @@ func (s *Scheduler) reconcile(now time.Time) {
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
+
+	// Skip records to persist are collected here and written AFTER the lock is
+	// released — SaveState does disk I/O and must not run under s.mu.
+	var skips []RunState
 
 	seen := make(map[string]bool, len(jobs))
 	for _, job := range jobs {
@@ -176,11 +181,12 @@ func (s *Scheduler) reconcile(now time.Time) {
 
 		// Unchanged and already scheduled — leave its next-fire intact (so an
 		// unrelated edit doesn't shift this job) and skip the relatively
-		// expensive re-parse + timezone load entirely.
+		// expensive re-parse + timezone load entirely. The in-memory Runs
+		// counter is authoritative here (a concurrent execute() may have already
+		// incremented it past the on-disk value), so it is NOT reseeded.
 		if _, tracked := s.next[job.ID]; tracked && s.sig[job.ID] == newSig {
 			seen[job.ID] = true
 			s.jobs[job.ID] = job
-			s.runs[job.ID] = state[job.ID].Runs
 			continue
 		}
 
@@ -192,11 +198,22 @@ func (s *Scheduler) reconcile(now time.Time) {
 			s.log.Error("scheduler: skipping job with invalid schedule", "id", job.ID, "name", job.Name, "error", err)
 			continue
 		}
+		// Reject expressions that parse but never match a real date (e.g. Feb 30,
+		// hand-edited past Validate). Their next-fire would be the zero time,
+		// which the engine would treat as perpetually due.
+		if sched.Next(now).IsZero() {
+			s.log.Error("scheduler: skipping job whose cron never matches a real date", "id", job.ID, "name", job.Name, "cron", job.Cron)
+			continue
+		}
 		seen[job.ID] = true
 		s.jobs[job.ID] = job
 		s.compiled[job.ID] = sched
 		s.sig[job.ID] = newSig
-		s.runs[job.ID] = state[job.ID].Runs
+		// Seed the run counter from disk only when this job isn't currently
+		// executing; an in-flight run owns the authoritative count.
+		if !s.running[job.ID] {
+			s.runs[job.ID] = state[job.ID].Runs
+		}
 
 		// Determine the first fire for a newly-seen or changed job, applying the
 		// missed-run policy. Only trust the persisted NextRun if it was produced
@@ -212,10 +229,10 @@ func (s *Scheduler) reconcile(now time.Time) {
 			// A fire was missed while we were down and catchup is on → run asap.
 			s.next[job.ID] = now
 		case !prevNext.IsZero() && prevNext.Before(now):
-			// Missed but no catchup → record the skip and move on.
+			// Missed but no catchup → record the skip (persisted after unlock).
 			s.next[job.ID] = sched.Next(now)
 			s.log.Info("scheduler: skipping missed fire", "id", job.ID, "name", job.Name)
-			_ = s.store.SaveState(RunState{
+			skips = append(skips, RunState{
 				JobID: job.ID, LastStatus: StatusSkipped, LastRun: now,
 				NextRun: s.next[job.ID], Runs: s.runs[job.ID], Sig: newSig,
 			})
@@ -234,6 +251,14 @@ func (s *Scheduler) reconcile(now time.Time) {
 			delete(s.runs, id)
 		}
 	}
+	s.mu.Unlock()
+
+	// Persist skip records outside the lock; log failures (don't swallow them).
+	for _, st := range skips {
+		if err := s.store.SaveState(st); err != nil {
+			s.log.Error("scheduler: save skip state failed", "id", st.JobID, "error", err)
+		}
+	}
 }
 
 // fireDue launches every job whose next-fire time is at or before now, then
@@ -244,6 +269,13 @@ func (s *Scheduler) fireDue(ctx context.Context, now time.Time) {
 	s.mu.Lock()
 	var toFire []Job
 	for id, nt := range s.next {
+		// A zero next-fire means the cron never matches (reconcile/Validate
+		// normally prevent this); never treat it as due (zero is before any
+		// real instant) and drop it so it can't spin.
+		if nt.IsZero() {
+			delete(s.next, id)
+			continue
+		}
 		if nt.After(now) {
 			continue
 		}
@@ -309,7 +341,7 @@ func (s *Scheduler) execute(ctx context.Context, job Job, firedAt time.Time) {
 		st.LastError = err.Error()
 		s.log.Error("scheduler: job run failed", "id", job.ID, "name", job.Name, "error", err)
 	default:
-		if derr := s.deliverer.Deliver(job, result); derr != nil {
+		if derr := s.deliverer.Deliver(runCtx, job, result); derr != nil {
 			st.LastStatus = StatusError
 			st.LastError = "delivery: " + derr.Error()
 			s.log.Error("scheduler: delivery failed", "id", job.ID, "name", job.Name, "error", derr)

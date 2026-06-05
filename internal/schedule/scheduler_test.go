@@ -44,7 +44,7 @@ type fakeDeliverer struct {
 	err       error
 }
 
-func (f *fakeDeliverer) Deliver(_ Job, result string) error {
+func (f *fakeDeliverer) Deliver(_ context.Context, _ Job, result string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
@@ -219,6 +219,53 @@ func TestReconcile_MissedSkip(t *testing.T) {
 	state, _ := st.LoadState()
 	if state[job.ID].LastStatus != StatusSkipped {
 		t.Errorf("status = %q, want skipped", state[job.ID].LastStatus)
+	}
+}
+
+func TestReconcile_SkipsImpossibleCron(t *testing.T) {
+	// A hand-edited impossible cron (bypasses Validate) must not be scheduled —
+	// otherwise its zero next-fire would be treated as perpetually due.
+	st := newTestStore(t)
+	doc, _ := st.loadDoc()
+	doc.Jobs = append(doc.Jobs, Job{ID: "jb-feb30", Name: "feb30", Cron: "0 0 30 2 *",
+		Task: "x", Deliver: Delivery{Kind: DeliverStdout}, Enabled: true})
+	_ = st.saveDoc(doc)
+
+	runner := &fakeRunner{}
+	s := New(st, runner, &fakeDeliverer{}, Options{})
+	now := time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC)
+	s.reconcile(now)
+	if !s.peekNext("jb-feb30").IsZero() {
+		t.Error("impossible cron should not be tracked")
+	}
+	s.fireDue(context.Background(), now)
+	s.Wait()
+	if runner.callCount() != 0 {
+		t.Error("impossible cron must never fire")
+	}
+}
+
+func TestReconcile_UnchangedDoesNotReseedRuns(t *testing.T) {
+	// An in-flight fire increments the in-memory Runs counter; a reload tick
+	// (unchanged job) must NOT clobber it back to the on-disk value.
+	st := newTestStore(t)
+	job := addJob(t, st, Job{Name: "j", Cron: "* * * * *", Task: "x",
+		Deliver: Delivery{Kind: DeliverStdout}, Enabled: true})
+	s := New(st, &fakeRunner{}, &fakeDeliverer{}, Options{})
+	now := time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC)
+	s.reconcile(now)
+
+	// Simulate fireDue having incremented the counter (disk still at 0).
+	s.mu.Lock()
+	s.runs[job.ID] = 5
+	s.mu.Unlock()
+
+	s.reconcile(now.Add(time.Minute)) // unchanged job, reload
+	s.mu.Lock()
+	got := s.runs[job.ID]
+	s.mu.Unlock()
+	if got != 5 {
+		t.Errorf("reconcile clobbered in-memory Runs: got %d, want 5", got)
 	}
 }
 

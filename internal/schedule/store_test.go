@@ -38,6 +38,8 @@ func TestValidate(t *testing.T) {
 		{"valid", func(*Job) {}, false},
 		{"empty task", func(j *Job) { j.Task = "" }, true},
 		{"bad cron", func(j *Job) { j.Cron = "nope" }, true},
+		{"impossible cron (Feb 30)", func(j *Job) { j.Cron = "0 0 30 2 *" }, true},
+		{"impossible cron (Apr 31)", func(j *Job) { j.Cron = "0 0 31 4 *" }, true},
 		{"bad timezone", func(j *Job) { j.Timezone = "Mars/Phobos" }, true},
 		{"good timezone", func(j *Job) { j.Timezone = "Europe/Berlin" }, false},
 		{"empty deliver kind", func(j *Job) { j.Deliver.Kind = "" }, true},

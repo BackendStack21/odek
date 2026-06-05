@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,7 +101,7 @@ func TestCliDeliverer_Log(t *testing.T) {
 	t.Setenv("HOME", home)
 	d := cliDeliverer{resolved: config.ResolvedConfig{}}
 	job := schedule.Job{ID: "jb-1", Name: "logjob", Deliver: schedule.Delivery{Kind: schedule.DeliverLog}}
-	if err := d.Deliver(job, "hello from cron"); err != nil {
+	if err := d.Deliver(context.Background(), job, "hello from cron"); err != nil {
 		t.Fatalf("Deliver(log): %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(home, ".odek", "schedule.log"))
@@ -116,13 +117,13 @@ func TestCliDeliverer_TelegramErrors(t *testing.T) {
 	// No token configured → error.
 	d := cliDeliverer{resolved: config.ResolvedConfig{}}
 	job := schedule.Job{Deliver: schedule.Delivery{Kind: schedule.DeliverTelegram}}
-	if err := d.Deliver(job, "x"); err == nil {
+	if err := d.Deliver(context.Background(), job, "x"); err == nil {
 		t.Error("expected error when telegram token is unset")
 	}
 
 	// Token set but no chat id anywhere → error.
 	d = cliDeliverer{resolved: config.ResolvedConfig{Telegram: telegram.TelegramConfig{Token: "t"}}}
-	if err := d.Deliver(job, "x"); err == nil {
+	if err := d.Deliver(context.Background(), job, "x"); err == nil {
 		t.Error("expected error when no chat id is resolvable")
 	}
 }
@@ -130,7 +131,7 @@ func TestCliDeliverer_TelegramErrors(t *testing.T) {
 func TestCliDeliverer_UnknownKind(t *testing.T) {
 	d := cliDeliverer{resolved: config.ResolvedConfig{}}
 	job := schedule.Job{Deliver: schedule.Delivery{Kind: "pigeon"}}
-	if err := d.Deliver(job, "x"); err == nil {
+	if err := d.Deliver(context.Background(), job, "x"); err == nil {
 		t.Error("unknown delivery kind should error")
 	}
 }
@@ -141,7 +142,7 @@ func TestTelegramDeliverer_SendsViaLiveBot(t *testing.T) {
 	bot, msgCh := newRecordingTestBot(t)
 	d := telegramDeliverer{bot: bot, fallback: cliDeliverer{resolved: config.ResolvedConfig{}}}
 	job := schedule.Job{Deliver: schedule.Delivery{Kind: schedule.DeliverTelegram, ChatID: 555}}
-	if err := d.Deliver(job, "scheduled hello"); err != nil {
+	if err := d.Deliver(context.Background(), job, "scheduled hello"); err != nil {
 		t.Fatalf("Deliver: %v", err)
 	}
 	select {
@@ -162,7 +163,7 @@ func TestTelegramDeliverer_UsesDefaultChatID(t *testing.T) {
 	}
 	// No per-job chat ID → falls back to default_chat_id.
 	job := schedule.Job{Deliver: schedule.Delivery{Kind: schedule.DeliverTelegram}}
-	if err := d.Deliver(job, "to default"); err != nil {
+	if err := d.Deliver(context.Background(), job, "to default"); err != nil {
 		t.Fatalf("Deliver: %v", err)
 	}
 	select {
@@ -176,7 +177,7 @@ func TestTelegramDeliverer_NoChatErrors(t *testing.T) {
 	bot, _ := newRecordingTestBot(t)
 	d := telegramDeliverer{bot: bot, fallback: cliDeliverer{resolved: config.ResolvedConfig{}}}
 	job := schedule.Job{Deliver: schedule.Delivery{Kind: schedule.DeliverTelegram}}
-	if err := d.Deliver(job, "x"); err == nil {
+	if err := d.Deliver(context.Background(), job, "x"); err == nil {
 		t.Error("telegram delivery with no chat id should error")
 	}
 }
@@ -187,7 +188,7 @@ func TestTelegramDeliverer_FallsBackForLog(t *testing.T) {
 	// Non-telegram kinds route to the CLI deliverer; the bot is untouched.
 	d := telegramDeliverer{bot: nil, fallback: cliDeliverer{resolved: config.ResolvedConfig{}}}
 	job := schedule.Job{ID: "jb-x", Name: "logjob", Deliver: schedule.Delivery{Kind: schedule.DeliverLog}}
-	if err := d.Deliver(job, "logged via fallback"); err != nil {
+	if err := d.Deliver(context.Background(), job, "logged via fallback"); err != nil {
 		t.Fatalf("Deliver(log): %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(home, ".odek", "schedule.log"))

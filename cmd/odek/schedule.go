@@ -16,7 +16,6 @@ import (
 
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/render"
 	"github.com/BackendStack21/odek/internal/schedule"
@@ -211,8 +210,12 @@ func scheduleNext(st *schedule.Store, args []string) error {
 	if len(args) < 1 {
 		return fmt.Errorf(`usage: odek schedule next <id|"cron-expr">`)
 	}
+	job, ok, err := st.Get(args[0])
+	if err != nil {
+		return err // surface a corrupt/unreadable store, not a misleading cron error
+	}
 	var s *schedule.Schedule
-	if job, ok, _ := st.Get(args[0]); ok && len(args) == 1 {
+	if ok && len(args) == 1 {
 		sc, err := jobSchedule(job)
 		if err != nil {
 			return err
@@ -274,7 +277,7 @@ func scheduleRunNow(args []string) error {
 	if err != nil {
 		return fmt.Errorf("run: %w", err)
 	}
-	if err := (cliDeliverer{resolved: resolved}).Deliver(job, result); err != nil {
+	if err := (cliDeliverer{resolved: resolved}).Deliver(ctx, job, result); err != nil {
 		return fmt.Errorf("deliver: %w", err)
 	}
 	return nil
@@ -349,7 +352,7 @@ type cliDeliverer struct {
 	resolved config.ResolvedConfig
 }
 
-func (d cliDeliverer) Deliver(job schedule.Job, result string) error {
+func (d cliDeliverer) Deliver(ctx context.Context, job schedule.Job, result string) error {
 	switch job.Deliver.Kind {
 	case schedule.DeliverStdout:
 		fmt.Printf("\n── %s · %s ──\n%s\n", job.Name, time.Now().Format(time.RFC1123), result)
@@ -357,13 +360,13 @@ func (d cliDeliverer) Deliver(job schedule.Job, result string) error {
 	case schedule.DeliverLog:
 		return appendScheduleLog(job, result)
 	case schedule.DeliverTelegram:
-		return d.deliverTelegram(job, result)
+		return d.deliverTelegram(ctx, job, result)
 	default:
 		return fmt.Errorf("unknown delivery kind %q", job.Deliver.Kind)
 	}
 }
 
-func (d cliDeliverer) deliverTelegram(job schedule.Job, result string) error {
+func (d cliDeliverer) deliverTelegram(ctx context.Context, job schedule.Job, result string) error {
 	if d.resolved.Telegram.Token == "" {
 		return fmt.Errorf("telegram bot_token not configured")
 	}
@@ -375,7 +378,7 @@ func (d cliDeliverer) deliverTelegram(job schedule.Job, result string) error {
 		return fmt.Errorf("no chat id (set the job's telegram:<chatID> or telegram.default_chat_id)")
 	}
 	bot := telegram.NewBot(d.resolved.Telegram.Token)
-	_, err := bot.SendMessage(chatID, result, nil)
+	_, err := bot.SendMessageContext(ctx, chatID, result, nil)
 	return err
 }
 
@@ -386,6 +389,12 @@ func (d cliDeliverer) deliverTelegram(job schedule.Job, result string) error {
 // instanceLockRef. Without this the restarted child would see a live lock and
 // skip starting its scheduler.
 var scheduleUnlockRef func()
+
+// mcpCleanupRef holds the embedded scheduler's MCP-connection cleanup so the
+// graceful-restart path can run it before os.Exit(0). os.Exit skips deferred
+// functions, so without this the MCP child processes (e.g. Playwright/Chromium)
+// would leak across every /restart.
+var mcpCleanupRef func()
 
 // telegramRunner runs a job's task headlessly and accounts its token usage
 // against the bot's daily budget.
@@ -420,9 +429,9 @@ type telegramDeliverer struct {
 	fallback cliDeliverer
 }
 
-func (d telegramDeliverer) Deliver(job schedule.Job, result string) error {
+func (d telegramDeliverer) Deliver(ctx context.Context, job schedule.Job, result string) error {
 	if job.Deliver.Kind != schedule.DeliverTelegram {
-		return d.fallback.Deliver(job, result)
+		return d.fallback.Deliver(ctx, job, result)
 	}
 	chatID := job.Deliver.ChatID
 	if chatID == 0 {
@@ -431,7 +440,7 @@ func (d telegramDeliverer) Deliver(job schedule.Job, result string) error {
 	if chatID == 0 {
 		return fmt.Errorf("no chat id (set the job's telegram:<chatID> or telegram.default_chat_id)")
 	}
-	_, err := d.bot.SendMessage(chatID, result, nil)
+	_, err := d.bot.SendMessageContext(ctx, chatID, result, nil)
 	return err
 }
 
@@ -468,7 +477,12 @@ func startSchedulerForBot(ctx context.Context, bot *telegram.Bot, resolved confi
 		schedulerOptions(resolved.Schedules, log),
 	)
 	scheduleUnlockRef = unlock
-	go func() { _ = sched.Run(ctx) }()
+	mcpCleanupRef = mcpCleanup
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = sched.Run(ctx)
+	}()
 
 	enabled := 0
 	if jobs, err := st.List(); err == nil {
@@ -482,6 +496,16 @@ func startSchedulerForBot(ctx context.Context, bot *telegram.Bot, resolved confi
 
 	return func() {
 		scheduleUnlockRef = nil
+		mcpCleanupRef = nil
+		// Wait for the scheduler to drain in-flight jobs before tearing down the
+		// shared MCP connections (otherwise a draining run sees broken pipes and
+		// persists a misleading error state) and releasing the lock. Bounded so a
+		// stuck job can't block shutdown indefinitely.
+		select {
+		case <-done:
+		case <-time.After(20 * time.Second):
+			log.Error("schedule: drain timed out, proceeding with cleanup")
+		}
 		mcpCleanup()
 		unlock()
 	}
@@ -539,13 +563,12 @@ func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system
 	}
 	defer agent.Close()
 
-	var messages []llm.Message
-	if system != "" {
-		messages = append(messages, llm.Message{Role: "system", Content: system})
-	}
-	messages = append(messages, llm.Message{Role: "user", Content: task})
-
-	result, _, err := agent.RunWithMessages(ctx, messages)
+	// Use agent.Run (not RunWithMessages): the engine prepends its stored system
+	// message — which odek.New built as RuntimeContext + SystemMessage — so the
+	// host/cwd/date header actually reaches the model. RunWithMessages would take
+	// our messages verbatim and silently drop that context (breaking date-aware
+	// tasks like "summarize today's calendar").
+	result, err := agent.Run(ctx, task)
 	tokens := int64(lastInfo.InputTokens + lastInfo.OutputTokens)
 	return result, tokens, err
 }

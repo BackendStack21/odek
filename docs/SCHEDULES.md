@@ -27,8 +27,11 @@ The same engine runs in two places; pick whichever fits your deployment:
 | **Inside `odek telegram`** | You already run the bot. The scheduler starts automatically as part of the bot process — one process for chat + reminders. |
 | **`odek schedule daemon`** | You don't run the bot (headless server, CI box). A dedicated foreground process that only schedules. |
 
-A shared lock (`~/.odek/schedule.pid`) coordinates the two: whichever starts
-first owns scheduling; the other defers, so jobs never fire twice. (Disable the
+A shared lock (`~/.odek/schedule.pid`) coordinates the two so jobs never fire
+twice — but the two sides handle contention differently: if a daemon already
+holds the lock, the bot's embedded scheduler **defers silently** (the bot keeps
+running, just without scheduling); if the bot holds it, a standalone
+`odek schedule daemon` **refuses to start** and exits non-zero. (Disable the
 bot's embedded scheduler with `schedules.enabled = false` if you prefer to run
 the daemon separately.)
 

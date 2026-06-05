@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -76,8 +77,15 @@ func (j Job) Validate() error {
 		}
 		loc = l
 	}
-	if _, err := ParseInLocation(j.Cron, loc); err != nil {
+	sched, err := ParseInLocation(j.Cron, loc)
+	if err != nil {
 		return fmt.Errorf("schedule: job %q: %w", j.Name, err)
+	}
+	// Reject expressions that parse but can never match a real date (e.g.
+	// "0 0 30 2 *" — Feb 30). Such a job would otherwise have an all-zero
+	// next-fire and the engine would treat it as perpetually due.
+	if sched.Next(time.Now()).IsZero() {
+		return fmt.Errorf("schedule: job %q: cron %q never matches a real date", j.Name, j.Cron)
 	}
 	switch j.Deliver.Kind {
 	case DeliverTelegram, DeliverStdout, DeliverLog:
@@ -100,6 +108,7 @@ func (s *Store) Add(job Job) (Job, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer s.fileLock()()
 
 	doc, err := s.loadDoc()
 	if err != nil {
@@ -167,6 +176,7 @@ func (s *Store) Put(job Job) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer s.fileLock()()
 	doc, err := s.loadDoc()
 	if err != nil {
 		return err
@@ -192,6 +202,7 @@ func (s *Store) Put(job Job) error {
 func (s *Store) Remove(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer s.fileLock()()
 	doc, err := s.loadDoc()
 	if err != nil {
 		return err
@@ -225,6 +236,7 @@ func (s *Store) Remove(id string) error {
 func (s *Store) SetEnabled(id string, enabled bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer s.fileLock()()
 	doc, err := s.loadDoc()
 	if err != nil {
 		return err
@@ -271,6 +283,7 @@ func (s *Store) SaveState(st RunState) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer s.fileLock()()
 	sd, err := s.loadState()
 	if err != nil {
 		return err
@@ -352,6 +365,29 @@ func writeJSONAtomic(path string, v any) error {
 		return fmt.Errorf("schedule: rename %s: %w", filepath.Base(path), err)
 	}
 	return nil
+}
+
+// fileLock takes an exclusive OS lock (flock) on ~/.odek/schedules.lock and
+// returns a release func. The in-process mutex only serialises one process;
+// this serialises the read-modify-write cycle ACROSS processes, so two
+// concurrent `odek schedule add` invocations can't both load the same baseline
+// and clobber each other's write. Best-effort: if the lock file can't be opened
+// or locked, the caller still proceeds (single-process safety is preserved by
+// s.mu). Callers hold s.mu, so there is a single lock order (mu → flock) and no
+// deadlock with the read-only methods, which take only s.mu.
+func (s *Store) fileLock() func() {
+	f, err := os.OpenFile(filepath.Join(s.dir, "schedules.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return func() {}
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return func() {}
+	}
+	return func() {
+		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		f.Close()
+	}
 }
 
 // newJobID returns a stable, collision-resistant job ID like "jb-1a2b3c4d".
