@@ -92,19 +92,10 @@ One wrong name wastes an entire iteration. Be precise.
 //  1. resolved.System (explicit --system / ODEK_SYSTEM / config)
 //  2. ~/.odek/IDENTITY.md (swappable identity file)
 //  3. defaultSystem (compiled-in fallback)
-//
-// After selecting the base, it appends repo directory/URL context.
 func buildSystemPrompt(resolved config.ResolvedConfig) string {
 	base := resolved.System
 	if base == "" {
 		base = loadIdentityFile()
-	}
-
-	if resolved.GithubRepoDirectory != "" {
-		base += fmt.Sprintf("\n\nRepository directory: %s\nThis is the local clone of the project repository.", resolved.GithubRepoDirectory)
-	}
-	if resolved.GithubRepoUrl != "" {
-		base += fmt.Sprintf("\nRepository URL: %s\nThis is the upstream GitHub repository.\n", resolved.GithubRepoUrl)
 	}
 
 	return base
@@ -175,10 +166,6 @@ type runFlags struct {
 	SandboxCPUs     string // CPU limit (e.g. "0.5", "2")
 	SandboxUser     string // Container user (e.g. "1000:1000")
 	SandboxReadonly *bool  // nil = not set; true = read-only mount
-
-	// Repo context flags
-	GithubRepoDirectory string // --github-repo-dir
-	GithubRepoUrl       string // --github-repo-url
 
 	Deliver *bool // nil = not set; true = deliver result to default channel
 }
@@ -292,18 +279,6 @@ func parseRunFlags(args []string) (runFlags, error) {
 				return f, fmt.Errorf("--sandbox-user requires a value")
 			}
 			f.SandboxUser = args[i+1]
-			i += 2
-		case "--github-repo-dir":
-			if i+1 >= len(args) {
-				return f, fmt.Errorf("--github-repo-dir requires a value")
-			}
-			f.GithubRepoDirectory = args[i+1]
-			i += 2
-		case "--github-repo-url":
-			if i+1 >= len(args) {
-				return f, fmt.Errorf("--github-repo-url requires a value")
-			}
-			f.GithubRepoUrl = args[i+1]
 			i += 2
 		case "--ctx", "-c":
 			if i+1 >= len(args) {
@@ -582,7 +557,6 @@ const defaultConfigTemplate = `{
   "no_color": false,
   "no_agents": false,
   "system": "",
-  "github_repo_directory": "",
   "sandbox_image": "",
   "sandbox_network": "none",
   "sandbox_readonly": false,
@@ -708,7 +682,6 @@ func initConfig(args []string) error {
 	fmt.Println("    no_color        Disable colored output (true/false)")
 	fmt.Println("    no_agents       Skip AGENTS.md (true/false)")
 	fmt.Println("    system          System prompt override")
-	fmt.Println("    github_repo_directory  Local clone path of the project repo")
 	fmt.Println("    sandbox_image   Docker image (alpine:latest if empty)")
 	fmt.Println("    sandbox_network Network mode (none | bridge | host)")
 	fmt.Println("    sandbox_readonly Mount working directory read-only")
@@ -765,9 +738,6 @@ func run(args []string) error {
 		SandboxMemory:   f.SandboxMemory,
 		SandboxCPUs:     f.SandboxCPUs,
 		SandboxUser:     f.SandboxUser,
-
-		GithubRepoDirectory: f.GithubRepoDirectory,
-		GithubRepoUrl:       f.GithubRepoUrl,
 	})
 
 	// Resolve @references and --ctx file attachments in the task
