@@ -609,6 +609,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if v := envBool("SCHEDULES_CATCHUP"); v != nil {
 		cfg.Schedules.Catchup = v
 	}
+	if v := envBool("SCHEDULES_ALLOW_TELEGRAM_MANAGEMENT"); v != nil {
+		cfg.Schedules.AllowTelegramManagement = v
+	}
 
 	// Telegram env overrides: merge env vars on top of file config.
 	baseTelegram := telegram.DefaultConfig()
@@ -966,23 +969,29 @@ type SchedulesConfig struct {
 	MaxConcurrent int    `json:"max_concurrent,omitempty"` // max jobs running at once (default 2)
 	Timezone      string `json:"timezone,omitempty"`       // default timezone for jobs with none (default UTC)
 	Catchup       *bool  `json:"catchup,omitempty"`        // global default: run a missed fire once on startup (default false)
+	// AllowTelegramManagement gates the in-chat `/schedule` management commands.
+	// When false, the Telegram bot still lists/previews jobs but refuses to
+	// add/remove/enable/disable/run them — manage from the host CLI instead.
+	AllowTelegramManagement *bool `json:"allow_telegram_management,omitempty"` // default true
 }
 
 // ScheduleConfig is the resolved scheduler config (all fields concrete).
 type ScheduleConfig struct {
-	Enabled       bool
-	MaxConcurrent int
-	Timezone      string
-	Catchup       bool
+	Enabled                 bool
+	MaxConcurrent           int
+	Timezone                string
+	Catchup                 bool
+	AllowTelegramManagement bool
 }
 
 // resolveSchedules merges file-level scheduler config with defaults.
 func resolveSchedules(cfg *SchedulesConfig) ScheduleConfig {
 	out := ScheduleConfig{
-		Enabled:       true,
-		MaxConcurrent: 2,
-		Timezone:      "UTC",
-		Catchup:       false,
+		Enabled:                 true,
+		MaxConcurrent:           2,
+		Timezone:                "UTC",
+		Catchup:                 false,
+		AllowTelegramManagement: true,
 	}
 	if cfg == nil {
 		return out
@@ -998,6 +1007,9 @@ func resolveSchedules(cfg *SchedulesConfig) ScheduleConfig {
 	}
 	if cfg.Catchup != nil {
 		out.Catchup = *cfg.Catchup
+	}
+	if cfg.AllowTelegramManagement != nil {
+		out.AllowTelegramManagement = *cfg.AllowTelegramManagement
 	}
 	return out
 }

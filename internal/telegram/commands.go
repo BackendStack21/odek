@@ -95,6 +95,16 @@ func init() {
 			Description: "Resume the most recent plan",
 			Handler:     planResumeHandler,
 		},
+		{
+			Command:     "schedules",
+			Description: "List scheduled tasks",
+			Handler:     schedulesHandler,
+		},
+		{
+			Command:     "schedule",
+			Description: "Manage scheduled tasks (add, rm, enable, disable, run, next, view)",
+			Handler:     scheduleHandler,
+		},
 	}
 }
 
@@ -108,6 +118,8 @@ func startHandler(args string) (string, error) {
 		"/sessions — List recent sessions\n" +
 		"/resume <id> — Resume a previous session\n" +
 		"/prune [days] — Clean up old sessions\n" +
+		"/schedules — List scheduled tasks\n" +
+		"/schedule add <cron> <task> — Schedule a recurring task\n" +
 		"/stop — Cancel running task\n\n" +
 		"Send me a message and I will help!", nil
 }
@@ -221,6 +233,12 @@ func planDeleteHandler(args string) (string, error) {
 }
 
 func planResumeHandler(args string) (string, error) { return "", nil }
+
+// Schedule command handlers are intercepted in the bot's OnCommand callback
+// (they need the chat ID and the schedule store), so the descriptor handlers
+// are no-ops — like /sessions and /resume.
+func schedulesHandler(args string) (string, error) { return "", nil }
+func scheduleHandler(args string) (string, error)  { return "", nil }
 
 // FindCommand returns the command descriptor with the matching name, or nil.
 func FindCommand(name string) *CommandDescriptor {

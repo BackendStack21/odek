@@ -291,18 +291,22 @@ func TestAcquireScheduleLock_HomeError(t *testing.T) {
 
 func TestStartSchedulerForBot_Disabled(t *testing.T) {
 	stop := startSchedulerForBot(context.Background(), nil, config.ResolvedConfig{}, "system",
-		telegram.NewFileLogger(telegram.LogInfo, ""))
+		telegram.NewFileLogger(telegram.LogInfo, ""), nil)
 	stop() // disabled → no-op stop, must not panic
 }
 
 func TestStartSchedulerForBot_StartAndStop(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	bot, _ := newRecordingTestBot(t)
+	st, err := schedule.NewStore()
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
 	resolved := config.ResolvedConfig{
 		Schedules: config.ScheduleConfig{Enabled: true, MaxConcurrent: 2, Timezone: "UTC"},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	stop := startSchedulerForBot(ctx, bot, resolved, "system", telegram.NewFileLogger(telegram.LogInfo, ""))
+	stop := startSchedulerForBot(ctx, bot, resolved, "system", telegram.NewFileLogger(telegram.LogInfo, ""), st)
 	cancel()
 	stop() // drains the scheduler goroutine, cleans up MCP, releases the lock
 }

@@ -16,6 +16,29 @@ func TestResolveSchedules_Defaults(t *testing.T) {
 	if got.Catchup {
 		t.Error("Catchup should default to false")
 	}
+	if !got.AllowTelegramManagement {
+		t.Error("AllowTelegramManagement should default to true")
+	}
+}
+
+func TestResolveSchedules_AllowTelegramManagementOverride(t *testing.T) {
+	got := resolveSchedules(&SchedulesConfig{AllowTelegramManagement: boolPtr(false)})
+	if got.AllowTelegramManagement {
+		t.Error("AllowTelegramManagement should be overridable to false")
+	}
+	// Unrelated defaults are preserved.
+	if !got.Enabled || got.MaxConcurrent != 2 {
+		t.Errorf("override disturbed defaults: %+v", got)
+	}
+}
+
+func TestLoadConfig_SchedulesAllowTelegramManagementEnv(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ODEK_SCHEDULES_ALLOW_TELEGRAM_MANAGEMENT", "false")
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.Schedules.AllowTelegramManagement {
+		t.Error("ODEK_SCHEDULES_ALLOW_TELEGRAM_MANAGEMENT=false should disable in-chat management")
+	}
 }
 
 func TestResolveSchedules_Overrides(t *testing.T) {

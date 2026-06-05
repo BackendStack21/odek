@@ -337,7 +337,8 @@ engine. Every field has an `ODEK_SCHEDULES_*` environment override.
     "enabled": true,
     "max_concurrent": 2,
     "timezone": "UTC",
-    "catchup": false
+    "catchup": false,
+    "allow_telegram_management": true
   }
 }
 ```
@@ -348,6 +349,7 @@ engine. Every field has an `ODEK_SCHEDULES_*` environment override.
 | `max_concurrent` | `ODEK_SCHEDULES_MAX_CONCURRENT` | `2` | Maximum scheduled jobs running at once. |
 | `timezone` | `ODEK_SCHEDULES_TIMEZONE` | `UTC` | Default timezone for jobs that don't set their own `--tz`. |
 | `catchup` | `ODEK_SCHEDULES_CATCHUP` | `false` | Global default for the missed-run policy: run a missed fire once on startup. |
+| `allow_telegram_management` | `ODEK_SCHEDULES_ALLOW_TELEGRAM_MANAGEMENT` | `true` | Allow the Telegram `/schedule` commands to create/remove/toggle/run jobs. When false, the bot still lists and previews jobs but mutations must go through `odek schedule`. |
 
 Full guide: [docs/SCHEDULES.md](SCHEDULES.md).
 

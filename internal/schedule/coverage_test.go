@@ -427,6 +427,42 @@ func TestPreview_Truncates(t *testing.T) {
 	}
 }
 
+func TestRun_ReloadTrigger(t *testing.T) {
+	st := newTestStore(t)
+	runner := &fakeRunner{result: "ok", started: make(chan string, 1)}
+	// Long reload poll so the only way the new job fires promptly is via Reload().
+	s := New(st, runner, &fakeDeliverer{}, Options{ReloadEvery: time.Hour})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx) }()
+	time.Sleep(40 * time.Millisecond) // let the initial reconcile run (empty store)
+
+	job := Job{ID: "jb-reload", Name: "r", Cron: "0 0 1 1 *", Task: "x",
+		Deliver: Delivery{Kind: DeliverStdout}, Enabled: true, Catchup: true}
+	past := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := st.SaveState(RunState{JobID: job.ID, NextRun: past, Sig: jobSig(job)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Add(job); err != nil {
+		t.Fatal(err)
+	}
+	s.Reload() // force an immediate reconcile instead of waiting an hour
+
+	select {
+	case <-runner.started:
+	case <-time.After(3 * time.Second):
+		cancel()
+		t.Fatal("Reload() did not trigger a reconcile + catchup fire")
+	}
+	cancel()
+	<-done
+
+	// A Reload with no active Run loop must not block (buffered, coalescing).
+	s.Reload()
+	s.Reload()
+}
+
 func TestRun_ReloadsOnFileChange(t *testing.T) {
 	st := newTestStore(t)
 	runner := &fakeRunner{result: "ok", started: make(chan string, 1)}

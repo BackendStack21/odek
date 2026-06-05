@@ -75,6 +75,8 @@ type Scheduler struct {
 
 	sem chan struct{}  // bounds concurrent executions
 	wg  sync.WaitGroup // tracks in-flight executions for graceful drain
+
+	reloadCh chan struct{} // manual reconcile trigger (Reload); buffered, coalescing
 }
 
 // New builds a Scheduler. The store, runner, and deliverer are required.
@@ -110,6 +112,19 @@ func New(store *Store, runner Runner, deliverer Deliverer, opts Options) *Schedu
 		runs:      map[string]int{},
 		running:   map[string]bool{},
 		sem:       make(chan struct{}, opts.MaxConcurrent),
+		reloadCh:  make(chan struct{}, 1),
+	}
+}
+
+// Reload asks a running Run loop to re-read job definitions immediately instead
+// of waiting for the next mtime poll — used after an out-of-band edit (e.g. the
+// Telegram `/schedule` commands) so changes take effect at once. Safe to call
+// from any goroutine; if a reload is already pending it coalesces, and if Run
+// isn't active the buffered signal is consumed on the next loop iteration.
+func (s *Scheduler) Reload() {
+	select {
+	case s.reloadCh <- struct{}{}:
+	default:
 	}
 }
 
@@ -143,6 +158,13 @@ func (s *Scheduler) Run(ctx context.Context) error {
 				s.log.Info("scheduler: schedules changed, reloading")
 				s.reconcile(s.opts.Now())
 			}
+		case <-s.reloadCh:
+			// Explicit Reload() — reconcile now and resync lastMod so the mtime
+			// poll doesn't redundantly reconcile the same write on its next tick.
+			timer.Stop()
+			lastMod = s.store.ModTime()
+			s.log.Info("scheduler: manual reload")
+			s.reconcile(s.opts.Now())
 		}
 	}
 }

@@ -396,6 +396,13 @@ var scheduleUnlockRef func()
 // would leak across every /restart.
 var mcpCleanupRef func()
 
+// scheduleReloadRef points at the running embedded scheduler's Reload method so
+// the Telegram `/schedule` commands can force an immediate reconcile after an
+// edit instead of waiting for the mtime poll. nil when no embedded scheduler is
+// running (disabled, or an external daemon holds the lock) — callers treat a nil
+// ref as a no-op and rely on the file write being picked up by whoever schedules.
+var scheduleReloadRef func()
+
 // telegramRunner runs a job's task headlessly and accounts its token usage
 // against the bot's daily budget.
 type telegramRunner struct {
@@ -448,20 +455,18 @@ func (d telegramDeliverer) Deliver(ctx context.Context, job schedule.Job, result
 // `odek schedule daemon` already holds the lock (in which case the bot defers
 // to it, to avoid double-firing). It returns a stop func that releases the
 // lock; the scheduler goroutine itself stops when ctx is cancelled.
-func startSchedulerForBot(ctx context.Context, bot *telegram.Bot, resolved config.ResolvedConfig, system string, log telegram.Logger) func() {
+func startSchedulerForBot(ctx context.Context, bot *telegram.Bot, resolved config.ResolvedConfig, system string, log telegram.Logger, st *schedule.Store) func() {
 	if !resolved.Schedules.Enabled {
 		log.Info("schedule: embedded scheduler disabled by config")
+		return func() {}
+	}
+	if st == nil {
+		log.Error("schedule: store unavailable, embedded scheduler not started")
 		return func() {}
 	}
 	unlock, err := acquireScheduleLock()
 	if err != nil {
 		log.Info("schedule: embedded scheduler not started", "reason", err.Error())
-		return func() {}
-	}
-	st, err := schedule.NewStore()
-	if err != nil {
-		log.Error("schedule: store init failed", "error", err)
-		unlock()
 		return func() {}
 	}
 	// Connect MCP servers once and share across fires. A failure here must not
@@ -478,6 +483,7 @@ func startSchedulerForBot(ctx context.Context, bot *telegram.Bot, resolved confi
 	)
 	scheduleUnlockRef = unlock
 	mcpCleanupRef = mcpCleanup
+	scheduleReloadRef = sched.Reload
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -497,6 +503,7 @@ func startSchedulerForBot(ctx context.Context, bot *telegram.Bot, resolved confi
 	return func() {
 		scheduleUnlockRef = nil
 		mcpCleanupRef = nil
+		scheduleReloadRef = nil
 		// Wait for the scheduler to drain in-flight jobs before tearing down the
 		// shared MCP connections (otherwise a draining run sees broken pipes and
 		// persists a misleading error state) and releasing the lock. Bounded so a

@@ -108,16 +108,25 @@ Full guide: [../docs/SCHEDULES.md](../docs/SCHEDULES.md).
 
 1. In `.env`, set **`ODEK_TELEGRAM_DEFAULT_CHAT_ID`** — the chat reminders are sent to
    (usually your own ID, the same as `ODEK_TELEGRAM_ALLOWED_CHATS`).
-2. Add a job. Either run the CLI inside the container:
+2. Add a job. The easiest way is **from the chat itself** — message the bot:
+
+   ```text
+   /schedule add 0 9 * * 1-5 Stand-up in 15 minutes
+   ```
+
+   Jobs added this way deliver back to that chat by default. Use `/schedules`
+   to list and `/schedule rm|enable|disable|run|next` to manage them. To keep
+   management host-only, set `ODEK_SCHEDULES_ALLOW_TELEGRAM_MANAGEMENT=false`
+   (the chat can still list and preview).
+
+   You can also run the CLI inside the container, or edit
+   `./.odek/schedules.json` on the host directly — jobs persist in the `./.odek`
+   volume and the running bot picks up changes automatically:
 
    ```bash
    docker compose --profile telegram-restricted exec odek-telegram-restricted \
      odek schedule add --cron "0 9 * * 1-5" --deliver telegram "Stand-up in 15 minutes"
    ```
-
-   …or edit `./.odek/schedules.json` on the host directly. Jobs persist in the
-   `./.odek` volume and the running bot picks up changes automatically.
-3. Inspect with `odek schedule list` / `odek schedule next <id>`.
 
 Don't run a separate `odek schedule daemon` against the same `./.odek` while the
 bot is up — a shared lock prevents double-firing, but the daemon will refuse to

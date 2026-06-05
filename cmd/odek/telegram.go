@@ -22,6 +22,7 @@ import (
 	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/render"
+	"github.com/BackendStack21/odek/internal/schedule"
 	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/skills"
 	"github.com/BackendStack21/odek/internal/telegram"
@@ -216,10 +217,37 @@ func telegramCmd(args []string) error {
 		return "", nil
 	}
 
+	// Shared schedule store for the in-chat /schedule commands. Created once and
+	// also handed to the embedded scheduler below so both sides agree. A nil
+	// store (rare init failure) degrades to a friendly error from the commands.
+	scheduleStore, err := schedule.NewStore()
+	if err != nil {
+		handlerLog.Warn("schedule: store unavailable; /schedule commands degraded", "error", err)
+		scheduleStore = nil
+	}
+
 	handler.OnCommand = func(chatID int64, messageID int, cmdName string, argsStr string) (string, error) {
 		cmd := telegram.FindCommand(cmdName)
 		if cmd == nil {
 			return fmt.Sprintf("Unknown command: /%s", cmdName), nil
+		}
+
+		// Handle /schedules and /schedule — manage scheduled tasks. scheduleReloadRef
+		// is set by the embedded scheduler (nil if none runs here); the parsing and
+		// formatting live in schedule_telegram.go. A /schedule run dispatches the
+		// job's task through the normal chat pipeline.
+		if cmdName == "schedules" || cmdName == "schedule" {
+			sub := argsStr
+			if cmdName == "schedules" {
+				sub = "list"
+			}
+			reply, runTask := telegramScheduleReply(chatID, sub, scheduleStore,
+				scheduleReloadRef, resolved.Schedules.AllowTelegramManagement)
+			if runTask != "" {
+				go handleChatMessage(chatID, messageID, runTask, bot, handler, sessionManager,
+					resolved, systemMessage, handlerLog)
+			}
+			return reply, nil
 		}
 
 		// Handle /restart — return confirmation message, then signal SIGHUP.
@@ -628,7 +656,7 @@ func telegramCmd(args []string) error {
 	// process's resolved config — so no environment-inheritance problem and no
 	// separate cron daemon. If an external `odek schedule daemon` already holds
 	// the lock, this defers to it instead of double-firing.
-	stopScheduler := startSchedulerForBot(ctx, bot, resolved, systemMessage, handlerLog)
+	stopScheduler := startSchedulerForBot(ctx, bot, resolved, systemMessage, handlerLog, scheduleStore)
 	defer stopScheduler()
 
 	// 17. Process updates until the channel is closed (ctx cancelled).

@@ -67,6 +67,55 @@ scheduler picks up edits to the definitions file automatically (no restart).
 
 ---
 
+## Managing from Telegram
+
+When you run `odek telegram`, the same jobs can be managed from inside the chat
+— no shell access needed. Two slash commands mirror the CLI:
+
+```text
+/schedules                                  List jobs (id, on/off, cron, next fire, last status)
+/schedule add <cron> <task> [| opts]        Add a job (delivered to this chat by default)
+/schedule view <id>                         Show a job's full detail + recent status
+/schedule next <id|cron>                    Preview the next few fire times
+/schedule run <id>                          Run a job once now, in this chat
+/schedule enable | disable <id>             Toggle a job
+/schedule rm <id>                           Remove a job
+```
+
+Because a cron expression has a fixed shape, `add` needs no quoting: an
+`@macro` is one token and a classic expression is exactly **five** fields; the
+rest of the line is the task. Options come after a literal `|`:
+
+```text
+/schedule add 0 9 * * 1-5 Summarize my unread email
+/schedule add @daily Daily standup digest | tz=Europe/Berlin name=standup
+/schedule add */15 9-17 * * 1-5 Check the build | deliver=telegram catchup
+```
+
+| Option (after `|`) | Meaning |
+|---|---|
+| `deliver=<dest>` | `stdout`, `log`, `telegram`, or `telegram:<chatID>`. **Default: this chat.** |
+| `tz=<IANA>` | Per-job timezone, e.g. `Europe/Berlin` |
+| `name=<label>` | Human label (single token; default: first words of the task) |
+| `catchup` | Run a missed fire once on startup |
+| `disabled` | Add without enabling |
+
+Notes:
+
+- **Delivery defaults to the current chat** (unlike the CLI, which defaults to
+  `stdout`) — adding a job from a conversation sends its results back there.
+- `/schedule run` executes the task **now, in this chat**, through the normal
+  agent pipeline (you see progress and answer any approval prompts) — a safe way
+  to test a job. It does not change the job's own schedule or delivery.
+- Edits made from Telegram take effect **immediately** (the embedded scheduler
+  reconciles on the spot, not on the ~30 s poll).
+- Only chats/users on the bot's allowlist (`ODEK_TELEGRAM_ALLOWED_CHATS` /
+  `ALLOWED_USERS`) reach these commands. To keep schedule **management**
+  CLI-only while still allowing in-chat listing/preview, set
+  `schedules.allow_telegram_management = false` (read-only verbs still work).
+
+---
+
 ## Cron syntax
 
 Standard 5-field Vixie cron:
@@ -140,7 +189,8 @@ the engine. Every field also has an `ODEK_SCHEDULES_*` environment override.
     "enabled": true,
     "max_concurrent": 2,
     "timezone": "UTC",
-    "catchup": false
+    "catchup": false,
+    "allow_telegram_management": true
   }
 }
 ```
@@ -151,6 +201,7 @@ the engine. Every field also has an `ODEK_SCHEDULES_*` environment override.
 | `max_concurrent` | `ODEK_SCHEDULES_MAX_CONCURRENT` | `2` | Max jobs running at once |
 | `timezone` | `ODEK_SCHEDULES_TIMEZONE` | `UTC` | Default timezone for jobs without `--tz` |
 | `catchup` | `ODEK_SCHEDULES_CATCHUP` | `false` | Global default for the missed-run policy |
+| `allow_telegram_management` | `ODEK_SCHEDULES_ALLOW_TELEGRAM_MANAGEMENT` | `true` | Allow the in-chat `/schedule` commands to add/remove/toggle/run jobs (read-only listing always works) |
 
 ---
 
