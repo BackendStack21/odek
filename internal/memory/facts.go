@@ -304,7 +304,13 @@ func (f *FactStore) Entries(target string) ([]string, error) {
 // writeEntries joins entries and writes them to disk atomically. It writes to a
 // UNIQUE temp file in the same directory and renames it into place, so two
 // FactStore instances writing the same directory concurrently can never clobber
-// a shared temp file. Caller must hold f.mu.
+// a shared temp file.
+//
+// Locking contract: callers must hold EITHER f.mu (normal mutation paths via
+// readModifyWrite) OR the process-wide factsDirLock for this directory
+// (Consolidate path in memory.go). These two locks are never acquired together,
+// so there is no deadlock risk. factsDirLock provides the same cross-instance
+// mutual exclusion that f.mu provides per-instance.
 func (f *FactStore) writeEntries(target string, entries []string) error {
 	content := strings.Join(entries, entrySep)
 	path := f.path(target)

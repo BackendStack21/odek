@@ -64,6 +64,7 @@ type MemoryConfig struct {
 	MergeOnWrite          *bool   `json:"merge_on_write,omitempty"`
 	ExtractOnEnd          *bool   `json:"extract_on_end,omitempty"`
 	ExtractFacts          *bool   `json:"extract_facts,omitempty"`
+	ConsolidateOnEnd      *bool   `json:"consolidate_on_end,omitempty"`
 	LLMSearch             *bool   `json:"llm_search,omitempty"`
 	LLMExtract            *bool   `json:"llm_extract,omitempty"`
 	LLMConsolidate        *bool   `json:"llm_consolidate,omitempty"`
@@ -95,6 +96,7 @@ func DefaultMemoryConfig() MemoryConfig {
 		MergeOnWrite:          boolPtr(true),
 		ExtractOnEnd:          boolPtr(true),
 		ExtractFacts:          boolPtr(false), // opt-in: persistent-poisoning risk, see SECURITY.md
+		ConsolidateOnEnd:      boolPtr(true),  // restores LLM merge quality removed from AddFact
 		LLMSearch:             boolPtr(true),  // LLM ranker by default — relevance over recency
 		LLMExtract:            boolPtr(true),
 		LLMConsolidate:        boolPtr(true),
@@ -151,6 +153,9 @@ func NewMemoryManager(memoryDir string, llc LLMClient, cfg MemoryConfig) *Memory
 	}
 	if cfg.ExtractFacts != nil {
 		def.ExtractFacts = cfg.ExtractFacts
+	}
+	if cfg.ConsolidateOnEnd != nil {
+		def.ConsolidateOnEnd = cfg.ConsolidateOnEnd
 	}
 	if cfg.LLMSearch != nil {
 		def.LLMSearch = cfg.LLMSearch
@@ -249,8 +254,11 @@ func (m *MemoryManager) AddFact(target, content string) error {
 
 			switch action {
 			case "merge":
-				// Auto-merge: replace similar entry with merged content
-				merged := mergeEntries(m.llm, entries[similarIdx], content)
+				// Auto-merge using the fast (non-LLM) path so AddFact never blocks
+				// on a network round-trip. The simple merge handles the common
+				// substring case well; LLM quality is recovered at session end by
+				// the background consolidation that runs when consolidate_on_end=true.
+				merged := mergeEntries(nil, entries[similarIdx], content)
 				if err := m.facts.Replace(target, entries[similarIdx][:min(30, len(entries[similarIdx]))], merged); err != nil {
 					return err
 				}
@@ -258,23 +266,9 @@ func (m *MemoryManager) AddFact(target, content string) error {
 				m.merge.ReplaceEntry(similarIdx, merged)
 				return nil
 			case "judge":
-				// Borderline: use LLM to decide
-				if m.llm != nil {
-					decision, err := m.judgeMerge(target, entries[similarIdx], content)
-					if err == nil {
-						if decision == "merge" {
-							merged := mergeEntries(m.llm, entries[similarIdx], content)
-							if err := m.facts.Replace(target, entries[similarIdx][:min(30, len(entries[similarIdx]))], merged); err != nil {
-								return err
-							}
-							// Update merge detector incrementally
-							m.merge.ReplaceEntry(similarIdx, merged)
-							return nil
-						}
-						// decision == "add" — fall through to normal add
-					}
-				}
-				// No LLM available or LLM failed: let agent decide (just add)
+				// Borderline similarity — add without blocking on an LLM judgment
+				// call. Brief duplication (until session-end consolidation) is
+				// preferable to stalling the agent loop for a round-trip.
 				fallthrough
 			case "add":
 				// No overlap — normal add
@@ -423,6 +417,11 @@ Entries for %s:
 	if len(newEntries) == 0 || (len(newEntries) == 1 && newEntries[0] == "") {
 		return nil // LLM returned nothing useful
 	}
+	// Guard against a hallucinating LLM expanding the entry count; the system
+	// prompt says "Never more than the original count" but that is advisory only.
+	if len(newEntries) > len(entries) {
+		newEntries = newEntries[:len(entries)]
+	}
 
 	// Security: scan LLM output before persisting
 	for _, entry := range newEntries {
@@ -520,7 +519,24 @@ func (m *MemoryManager) OnSessionEndWithProvenance(sessionID string, turns int, 
 	if minTurns <= 0 {
 		minTurns = defaultMinTurnsForExtraction
 	}
-	// Shared preconditions for any end-of-session LLM extraction.
+
+	// Background consolidation is independent of episode/fact extraction —
+	// it fires based on its own gate so that llm_extract=false does not
+	// silently disable it (D-06). Requires an LLM client, llm_consolidate,
+	// and a minimum session length (same threshold reused for consistency).
+	if m.llm != nil && turns >= minTurns &&
+		m.cfg.ConsolidateOnEnd != nil && *m.cfg.ConsolidateOnEnd &&
+		m.cfg.LLMConsolidate != nil && *m.cfg.LLMConsolidate {
+		go func() {
+			for _, target := range []string{"user", "env"} {
+				// Best-effort: errors (e.g. only 1 entry, nothing to consolidate)
+				// are silently ignored — consolidation is a quality pass, not critical.
+				_ = m.Consolidate(target)
+			}
+		}()
+	}
+
+	// Preconditions shared by episode summary + fact extraction.
 	if m.cfg.LLMExtract == nil || !*m.cfg.LLMExtract || m.llm == nil || turns < minTurns || len(messages) == 0 {
 		return
 	}
@@ -821,34 +837,6 @@ func (m *MemoryManager) BuildSystemPrompt() string {
 }
 
 // ── Private helpers ──────────────────────────────────────────────────
-
-// judgeMerge asks the LLM whether two entries should be merged.
-// Returns "merge" or "add".
-func (m *MemoryManager) judgeMerge(target, existing, newEntry string) (string, error) {
-	prompt := fmt.Sprintf(`I have two memory entries for the "%s" category:
-
-EXISTING: %s
-NEW: %s
-
-Should the new entry be MERGED into the existing one (they are related or redundant)
-or ADDED as a separate entry (they are distinct topics)?
-
-Reply with exactly one word: "merge" or "add"`, target, existing, newEntry)
-
-	decision, err := m.llm.SimpleCall(context.Background(),
-		"You are a memory deduplication system. Reply with exactly one word: 'merge' or 'add'.",
-		prompt,
-	)
-	if err != nil {
-		return "add", err
-	}
-
-	decision = strings.TrimSpace(strings.ToLower(decision))
-	if strings.Contains(decision, "merge") {
-		return "merge", nil
-	}
-	return "add", nil
-}
 
 // mergeEntries combines two related entries into one.
 // When an LLM client is available, uses semantic merging for higher quality.
