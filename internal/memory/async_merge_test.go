@@ -124,6 +124,36 @@ func TestConsolidateOnEnd_FiresAtSessionEnd(t *testing.T) {
 	t.Error("session-end consolidation did not reduce fact count within 3 seconds")
 }
 
+// TestConsolidateOnEnd_IndependentOfLLMExtract: consolidation must fire even
+// when llm_extract=false (episode extraction disabled). D-06 regression guard.
+func TestConsolidateOnEnd_IndependentOfLLMExtract(t *testing.T) {
+	dir := t.TempDir()
+	llm := &mockLLM{responses: map[string]string{
+		"memory entri": `["consolidated single fact"]`,
+	}}
+	cfg := DefaultMemoryConfig()
+	cfg.LLMExtract = boolPtr(false) // episodes off — must NOT suppress consolidation
+	cfg.ConsolidateOnEnd = boolPtr(true)
+	cfg.MergeOnWrite = boolPtr(false)
+	mm := NewMemoryManager(dir, llm, cfg)
+	_ = mm.AddFact("user", "prefers dark mode editors")
+	_ = mm.AddFact("user", "uses dark theme always")
+	entries0, _ := mm.facts.Entries("user")
+	if len(entries0) < 2 {
+		t.Fatalf("need 2 seeded entries, got %d", len(entries0))
+	}
+	msgs := []string{"user: hi", "assistant: ok", "user: more", "assistant: done"}
+	mm.OnSessionEndWithProvenance("sess-d06", 5, msgs, EpisodeProvenance{})
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if e, _ := mm.facts.Entries("user"); len(e) < 2 {
+			return // consolidation fired
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Error("consolidation should fire even with llm_extract=false")
+}
+
 // TestConsolidateOnEnd_FlagOff: with consolidate_on_end=false, fact count must
 // remain stable at session end (no consolidation LLM call).
 func TestConsolidateOnEnd_FlagOff(t *testing.T) {

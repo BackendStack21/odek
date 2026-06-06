@@ -417,6 +417,11 @@ Entries for %s:
 	if len(newEntries) == 0 || (len(newEntries) == 1 && newEntries[0] == "") {
 		return nil // LLM returned nothing useful
 	}
+	// Guard against a hallucinating LLM expanding the entry count; the system
+	// prompt says "Never more than the original count" but that is advisory only.
+	if len(newEntries) > len(entries) {
+		newEntries = newEntries[:len(entries)]
+	}
 
 	// Security: scan LLM output before persisting
 	for _, entry := range newEntries {
@@ -514,7 +519,24 @@ func (m *MemoryManager) OnSessionEndWithProvenance(sessionID string, turns int, 
 	if minTurns <= 0 {
 		minTurns = defaultMinTurnsForExtraction
 	}
-	// Shared preconditions for any end-of-session LLM extraction.
+
+	// Background consolidation is independent of episode/fact extraction —
+	// it fires based on its own gate so that llm_extract=false does not
+	// silently disable it (D-06). Requires an LLM client, llm_consolidate,
+	// and a minimum session length (same threshold reused for consistency).
+	if m.llm != nil && turns >= minTurns &&
+		m.cfg.ConsolidateOnEnd != nil && *m.cfg.ConsolidateOnEnd &&
+		m.cfg.LLMConsolidate != nil && *m.cfg.LLMConsolidate {
+		go func() {
+			for _, target := range []string{"user", "env"} {
+				// Best-effort: errors (e.g. only 1 entry, nothing to consolidate)
+				// are silently ignored — consolidation is a quality pass, not critical.
+				_ = m.Consolidate(target)
+			}
+		}()
+	}
+
+	// Preconditions shared by episode summary + fact extraction.
 	if m.cfg.LLMExtract == nil || !*m.cfg.LLMExtract || m.llm == nil || turns < minTurns || len(messages) == 0 {
 		return
 	}
@@ -530,20 +552,6 @@ func (m *MemoryManager) OnSessionEndWithProvenance(sessionID string, turns int, 
 	// system prompt, so a poisoned fact is worse than a poisoned episode.
 	if m.cfg.ExtractFacts != nil && *m.cfg.ExtractFacts && !prov.Untrusted {
 		m.extractFactsFromSession(convText)
-	}
-
-	// Background consolidation: recover the LLM-merge quality that AddFact no
-	// longer applies synchronously. Runs after fact extraction so any newly
-	// auto-extracted facts are also consolidated in the same pass.
-	if m.cfg.ConsolidateOnEnd != nil && *m.cfg.ConsolidateOnEnd &&
-		m.cfg.LLMConsolidate != nil && *m.cfg.LLMConsolidate && m.llm != nil {
-		go func() {
-			for _, target := range []string{"user", "env"} {
-				// Best-effort: errors (e.g. only 1 entry, nothing to consolidate)
-				// are silently ignored — consolidation is a quality pass, not critical.
-				_ = m.Consolidate(target)
-			}
-		}()
 	}
 }
 

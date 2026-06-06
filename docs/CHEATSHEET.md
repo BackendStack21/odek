@@ -122,12 +122,13 @@ Settings: `model` (tiny/base/small/medium), `language` (ISO code, empty=auto), `
 ```
 RP.embed(newEntry) → cosine similarity vs each existing entry
 
-  cos > 0.7  ─────→ auto-merge (replace)
+  cos > 0.7  ─────→ simple merge (no LLM — substring or concatenation)
   cos < 0.3  ─────→ auto-add
-  0.3–0.7   ─────→ LLM judges → merge or add
+  0.3–0.7   ─────→ auto-add (deferred to session-end consolidation)
 ```
 
-Saves ~80% of LLM calls on memory writes.
+AddFact makes zero LLM calls. Near-duplicate dedup happens at session end
+via background consolidation (`consolidate_on_end`, default true).
 
 ### Memory Tool
 
