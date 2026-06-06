@@ -200,7 +200,8 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
     "llm_extract": true,
     "llm_consolidate": true,
     "merge_threshold": 0.7,
-    "add_threshold": 0.3
+    "add_threshold": 0.3,
+    "auto_approve_episodes": false
   }
 }
 ```
@@ -219,6 +220,7 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
 | `llm_consolidate` | true | Use LLM to merge related fact entries |
 | `merge_threshold` | 0.7 | go-vector cosine threshold for auto-merge (0.0–1.0) |
 | `add_threshold` | 0.3 | go-vector cosine threshold for auto-add (0.0–1.0) |
+| `auto_approve_episodes` | false | **Security trade-off.** When true, untrusted episodes (sessions that touched web/MCP/out-of-workspace content) are auto-approved at session end so they are recalled without a manual `odek memory promote`. Leaving it `false` keeps the human review gate (recommended). |
 
 ## Sub-agent configuration
 

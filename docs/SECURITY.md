@@ -114,6 +114,8 @@ odek memory promote <session_id>    # approve one after reviewing its summary
 
 Promotion is **CLI-only and human-gated** — it is deliberately *not* exposed as an agent tool, so a prompt-injected agent cannot self-approve its own poisoned memory.
 
+**Opt-out of the gate (`memory.auto_approve_episodes`, default `false`).** Operators who accept the risk (e.g. a fully sandboxed, single-tenant deployment) can set `auto_approve_episodes: true` to have untrusted episodes stamped `AutoApproved` at session end so they are recalled without a manual promote. This **disables the persistence-injection protection** for episodes — a single successful injection can then influence future sessions automatically — so it is off by default and should stay off in any environment exposed to untrusted input. The on-disk record still keeps `Untrusted=true` and `Sources`, and uses a distinct `AutoApproved` flag (never `UserApproved`) so the audit trail shows the approval was automatic.
+
 ### 6. Skill provenance gate
 
 `internal/skills` carries the same provenance model and shares the exact taint decision (`memory.ToolCallTaints`). Skills auto-saved from sessions that crossed the trust boundary — `browser` / `http_batch` / `transcribe` / any MCP tool, or a `read_file` / `search_files` / `multi_grep` of a **sensitive** path — are tagged with `Provenance.Untrusted=true` and `NeedsReview=true`. The skill loader pins those skills to the Lazy set regardless of their `auto_load` flag.

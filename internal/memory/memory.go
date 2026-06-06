@@ -37,6 +37,13 @@ type MemoryConfig struct {
 	MergeThreshold        float32 `json:"merge_threshold,omitempty"`
 	AddThreshold          float32 `json:"add_threshold,omitempty"`
 	MinTurnsForExtraction int     `json:"min_turns_for_extraction,omitempty"`
+
+	// AutoApproveEpisodes, when true, stamps untrusted episodes as approved at
+	// session-end so they are recalled without a manual `odek memory promote`.
+	// SECURITY: this is the opt-in escape valve that trades the human review
+	// gate for convenience — a session that ingested external/untrusted content
+	// can then influence future sessions automatically. Off (false) by default.
+	AutoApproveEpisodes *bool `json:"auto_approve_episodes,omitempty"`
 }
 
 // BoolPtr returns a pointer to a bool value.
@@ -60,6 +67,7 @@ func DefaultMemoryConfig() MemoryConfig {
 		MergeThreshold:        MergeThreshold,
 		AddThreshold:          AddThreshold,
 		MinTurnsForExtraction: defaultMinTurnsForExtraction,
+		AutoApproveEpisodes:   boolPtr(false), // secure default — human gate stays on
 	}
 }
 
@@ -133,6 +141,9 @@ func NewMemoryManager(memoryDir string, llc LLMClient, cfg MemoryConfig) *Memory
 	}
 	if cfg.MinTurnsForExtraction > 0 {
 		def.MinTurnsForExtraction = cfg.MinTurnsForExtraction
+	}
+	if cfg.AutoApproveEpisodes != nil {
+		def.AutoApproveEpisodes = cfg.AutoApproveEpisodes
 	}
 	cfg = def
 
@@ -488,6 +499,14 @@ func (m *MemoryManager) OnSessionEndWithProvenance(sessionID string, turns int, 
 	extraction = strings.TrimSpace(extraction)
 	if extraction == "" {
 		return
+	}
+
+	// Opt-in auto-approval: stamp untrusted episodes as approved so they are
+	// recalled without a manual `odek memory promote`. Off by default; the
+	// audit record keeps Untrusted + Sources so it stays clear the content was
+	// external and the approval was automatic (AutoApproved, not UserApproved).
+	if prov.Untrusted && m.cfg.AutoApproveEpisodes != nil && *m.cfg.AutoApproveEpisodes {
+		prov.AutoApproved = true
 	}
 
 	// Write as episode, preserving the provenance signal.

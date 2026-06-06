@@ -217,7 +217,7 @@ func (e *EpisodeStore) Search(query string, limit int) ([]EpisodeMeta, error) {
 	// EpisodeProvenance exists to close.
 	filtered := idx[:0:len(idx)]
 	for _, ep := range idx {
-		if ep.Provenance.Untrusted && !ep.Provenance.UserApproved {
+		if ep.Provenance.Untrusted && !ep.Provenance.UserApproved && !ep.Provenance.AutoApproved {
 			continue
 		}
 		filtered = append(filtered, ep)
@@ -290,7 +290,7 @@ func (e *EpisodeStore) PendingReview() ([]EpisodeMeta, error) {
 	}
 	var pending []EpisodeMeta
 	for _, ep := range idx {
-		if ep.Provenance.Untrusted && !ep.Provenance.UserApproved {
+		if ep.Provenance.Untrusted && !ep.Provenance.UserApproved && !ep.Provenance.AutoApproved {
 			pending = append(pending, ep)
 		}
 	}

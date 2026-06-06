@@ -20,10 +20,18 @@ import (
 // explicitly promoted (UserApproved=true) by the user first (see
 // `odek memory promote`). This stops a one-shot prompt injection from
 // becoming a persistent backdoor.
+//
+// AutoApproved is the opt-in escape valve: when the operator sets
+// memory.auto_approve_episodes=true, untrusted episodes are stamped
+// AutoApproved at creation so they are recalled without a manual promote.
+// It is kept distinct from UserApproved so the audit trail still shows the
+// approval was automatic (policy) rather than a human decision; Untrusted and
+// Sources remain recorded either way.
 type EpisodeProvenance struct {
 	Untrusted    bool     `json:"untrusted,omitempty"`
 	Sources      []string `json:"sources,omitempty"`
 	UserApproved bool     `json:"user_approved,omitempty"`
+	AutoApproved bool     `json:"auto_approved,omitempty"`
 }
 
 // AlwaysExternalTools are tools whose RESULT content originates outside the
