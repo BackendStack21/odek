@@ -217,11 +217,11 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
 | `merge_on_write` | true | Use go-vector RP similarity to auto-merge related entries |
 | `extract_on_end` | true | At session end (≥3 turns), extract a narrative episode summary via LLM for later recall |
 | `extract_facts` | **false** | **Opt-in.** At session end (≥3 turns), auto-extract a few **durable** facts (stable user preferences, project invariants) into `user.md`/`env.md`. Off by default — see the security note below. Independent of `extract_on_end`; to disable *all* end-of-session LLM extraction set `llm_extract: false`. |
-| `llm_search` | true | Use LLM to rank episode search results by relevance |
+| `llm_search` | true | Use LLM to rerank candidates for **explicit** `memory search` calls (the `memory` tool). Per-turn recall (`FormatEpisodeContext`) always uses the cached go-vector index — no LLM call on the hot path regardless of this setting. |
 | `llm_extract` | true | Use LLM for end-of-session fact extraction |
 | `llm_consolidate` | true | Use LLM to merge related fact entries |
-| `merge_threshold` | 0.7 | go-vector cosine threshold for auto-merge (0.0–1.0) |
-| `add_threshold` | 0.3 | go-vector cosine threshold for auto-add (0.0–1.0) |
+| `merge_threshold` | 0.7 | Cosine similarity above which two fact entries are **auto-merged** without an LLM call (0.0–1.0). Raise it to merge less aggressively; lower it to merge more. |
+| `add_threshold` | 0.3 | Cosine similarity below which a new fact entry is **auto-added** without an LLM call (0.0–1.0). Between `add_threshold` and `merge_threshold` the LLM decides. Keep `add_threshold` < `merge_threshold`. |
 | `auto_approve_episodes` | false | **Security trade-off.** When true, untrusted episodes (sessions that touched web/MCP/out-of-workspace content) are auto-approved at session end so they are recalled without a manual `odek memory promote`. Leaving it `false` keeps the human review gate (recommended). |
 
 ### ⚠️ `extract_facts` — automatic fact learning (opt-in, off by default)

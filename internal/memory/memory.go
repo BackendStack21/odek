@@ -640,8 +640,40 @@ Output ONLY a JSON array of objects, no prose: [{"scope":"user|env","fact":"..."
 }
 
 // SearchEpisodes returns the most relevant episodes for a query.
+// SearchEpisodes is the explicit memory-search path (called by the memory tool,
+// not by the per-turn recall loop). It retrieves candidates from the vector
+// index and, when llm_search is enabled, LLM-reranks only those candidates —
+// never all N episodes. This keeps relevance quality while bounding the LLM
+// cost to O(candidates), not O(total episodes).
 func (m *MemoryManager) SearchEpisodes(query string, limit int) ([]EpisodeMeta, error) {
-	return m.episodes.Search(query, limit)
+	if limit <= 0 {
+		limit = 5
+	}
+	// Fetch a bounded candidate set via the vector index.
+	candidates, err := m.episodes.recallByVector(query, max(limit*4, 20))
+	if err != nil || len(candidates) == 0 {
+		// Fallback to the ranked Search (LLM or RP) if the index is not ready.
+		return m.episodes.Search(query, limit)
+	}
+	// If LLM reranking is disabled or unavailable, return index-ranked results.
+	if m.llm == nil || m.cfg.LLMSearch == nil || !*m.cfg.LLMSearch {
+		if limit < len(candidates) {
+			candidates = candidates[:limit]
+		}
+		return candidates, nil
+	}
+	// LLM-rerank the bounded candidate set.
+	reranked, err := m.episodes.rankFn(query, candidates)
+	if err != nil || len(reranked) == 0 {
+		if limit < len(candidates) {
+			candidates = candidates[:limit]
+		}
+		return candidates, nil
+	}
+	if limit < len(reranked) {
+		reranked = reranked[:limit]
+	}
+	return reranked, nil
 }
 
 // PromoteEpisode marks a tainted episode as user-approved so it can be
@@ -663,18 +695,17 @@ func (m *MemoryManager) PendingReviewEpisodes() ([]EpisodeMeta, error) {
 	return m.episodes.PendingReview()
 }
 
-// FormatEpisodeContext searches past episodes for ones relevant to the
-// current task and returns formatted context to inject as a system message.
-// Ranking uses the episode store's configured RankStrategy (the LLM ranker by
-// default, RP similarity otherwise — see NewMemoryManager). Untrusted,
-// unpromoted episodes are excluded by Search. Returns empty string if no
+// FormatEpisodeContext returns relevant past-session context to inject into the
+// system message on each loop turn. It uses the cached go-vector index —
+// zero LLM calls on this path — so it is safe to call every turn. Untrusted,
+// unpromoted episodes are excluded. Returns empty string if no relevant
 // episodes are found or memory is disabled.
 func (m *MemoryManager) FormatEpisodeContext(query string) string {
 	if m.cfg.Enabled == nil || !*m.cfg.Enabled {
 		return ""
 	}
 
-	episodes, err := m.episodes.Search(query, 3)
+	episodes, err := m.episodes.recallByVector(query, 3)
 	if err != nil || len(episodes) == 0 {
 		return ""
 	}
