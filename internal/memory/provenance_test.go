@@ -1,6 +1,8 @@
 package memory
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/BackendStack21/odek/internal/llm"
@@ -9,6 +11,18 @@ import (
 func toolMsg(name string) llm.Message {
 	tc := llm.ToolCall{}
 	tc.Function.Name = name
+	return llm.Message{
+		Role:      "assistant",
+		ToolCalls: []llm.ToolCall{tc},
+	}
+}
+
+// toolMsgArgs builds an assistant message with one tool call carrying the
+// given raw JSON arguments string (as recorded on real sessions).
+func toolMsgArgs(name, argsJSON string) llm.Message {
+	tc := llm.ToolCall{}
+	tc.Function.Name = name
+	tc.Function.Arguments = argsJSON
 	return llm.Message{
 		Role:      "assistant",
 		ToolCalls: []llm.ToolCall{tc},
@@ -46,10 +60,104 @@ func TestDeriveProvenance_MCPAdapterTaints(t *testing.T) {
 	}
 }
 
-func TestDeriveProvenance_ReadFileTaints(t *testing.T) {
-	prov := DeriveProvenance([]llm.Message{toolMsg("read_file")})
+// ── Path-aware taint (the fix) ────────────────────────────────────────
+
+// A read confined to the workspace (relative path) must NOT taint — this is
+// the headline behavior change that makes episodes from normal coding
+// sessions recallable again.
+func TestDeriveProvenance_ReadFileWorkspaceTrusted(t *testing.T) {
+	for _, p := range []string{"internal/x.go", "./README.md", "cmd/odek/main.go"} {
+		prov := DeriveProvenance([]llm.Message{
+			toolMsg("shell"),
+			toolMsgArgs("read_file", `{"path":"`+p+`"}`),
+		})
+		if prov.Untrusted {
+			t.Errorf("read_file %q is in-workspace and must be trusted, got %+v", p, prov)
+		}
+	}
+}
+
+// search_files / multi_grep with no path default to the workspace → trusted.
+func TestDeriveProvenance_SearchDefaultPathTrusted(t *testing.T) {
+	msgs := []llm.Message{
+		toolMsgArgs("search_files", `{"pattern":"TODO","file_glob":"*.go"}`),
+		toolMsgArgs("multi_grep", `{"patterns":["a","b"]}`),
+	}
+	prov := DeriveProvenance(msgs)
+	if prov.Untrusted {
+		t.Errorf("workspace-default search should be trusted, got %+v", prov)
+	}
+}
+
+// A read of a sensitive system path still taints — the original concern the
+// provenance control exists for.
+func TestDeriveProvenance_ReadFileSensitivePathTaints(t *testing.T) {
+	prov := DeriveProvenance([]llm.Message{
+		toolMsgArgs("read_file", `{"path":"/etc/passwd"}`),
+	})
 	if !prov.Untrusted {
-		t.Errorf("read_file should taint (conservative — file may be outside CWD), got %+v", prov)
+		t.Fatalf("/etc/passwd read must taint, got %+v", prov)
+	}
+	if len(prov.Sources) != 1 || prov.Sources[0] != "read_file" {
+		t.Errorf("Sources = %v, want [read_file]", prov.Sources)
+	}
+}
+
+// Home credential dirs (resolved absolutely) still taint.
+func TestDeriveProvenance_ReadFileHomeSecretTaints(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("no home dir")
+	}
+	secret := filepath.Join(home, ".ssh", "id_rsa")
+	prov := DeriveProvenance([]llm.Message{
+		toolMsgArgs("read_file", `{"path":"`+secret+`"}`),
+	})
+	if !prov.Untrusted {
+		t.Errorf("%s read must taint, got %+v", secret, prov)
+	}
+}
+
+// Malformed / empty argument strings are treated conservatively (taint),
+// since we cannot tell what path was touched.
+func TestDeriveProvenance_ReadFileMalformedArgsTaints(t *testing.T) {
+	for _, args := range []string{"", "not json", "{"} {
+		prov := DeriveProvenance([]llm.Message{toolMsgArgs("read_file", args)})
+		if !prov.Untrusted {
+			t.Errorf("malformed read_file args %q should conservatively taint, got %+v", args, prov)
+		}
+	}
+}
+
+// Network / audio tools always taint regardless of arguments.
+func TestDeriveProvenance_AlwaysExternalToolsTaint(t *testing.T) {
+	for _, name := range []string{"http_batch", "transcribe"} {
+		prov := DeriveProvenance([]llm.Message{toolMsgArgs(name, `{"path":"internal/x.go"}`)})
+		if !prov.Untrusted {
+			t.Errorf("%s must always taint, got %+v", name, prov)
+		}
+	}
+}
+
+// ToolCallTaints is the shared predicate used by both memory and skills.
+func TestToolCallTaints(t *testing.T) {
+	cases := []struct {
+		name, args string
+		want       bool
+	}{
+		{"shell", `{"command":"ls"}`, false},
+		{"write_file", `{"path":"/etc/x"}`, false}, // not a read tool
+		{"read_file", `{"path":"internal/x.go"}`, false},
+		{"read_file", `{"path":"/etc/shadow"}`, true},
+		{"read_file", ``, true},
+		{"search_files", `{"pattern":"x"}`, false},
+		{"browser", `{"url":"https://x"}`, true},
+		{"github__list_issues", `{}`, true},
+	}
+	for _, c := range cases {
+		if got := ToolCallTaints(c.name, c.args); got != c.want {
+			t.Errorf("ToolCallTaints(%q,%q) = %v, want %v", c.name, c.args, got, c.want)
+		}
 	}
 }
 

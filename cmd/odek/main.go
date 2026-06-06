@@ -452,6 +452,7 @@ func printUsage() {
   odek mcp [--sandbox]
   odek telegram
   odek schedule <list|add|rm|enable|disable|run|next|daemon>
+  odek memory <list|promote <session_id>>
   odek version
 
 Commands:
@@ -477,6 +478,10 @@ Commands:
                        Subcommands: list, add, rm, enable, disable, run, next, daemon
                        The daemon (or the Telegram bot) fires jobs and delivers
                        results to stdout, a log, or a Telegram chat.
+  memory              Review and promote past-session memory episodes
+                       list: show episodes excluded from recall (untrusted)
+                       promote <session_id>: approve one so it can be recalled.
+                       Human-gated on purpose — not available to the agent.
   init                Create a config file (default: ./odek.json)
   version             Print version and exit
 

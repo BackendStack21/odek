@@ -100,11 +100,23 @@ Both:
 
 `internal/memory` tracks `EpisodeProvenance{Untrusted, Sources, UserApproved}` for every episode. An episode derived from a session that ingested untrusted content is **stored on disk for audit but never auto-replayed** into future sessions. This stops a single successful injection from becoming a persistent backdoor through the episode pipeline.
 
-To use a tainted episode anyway, the user must explicitly promote it (set `UserApproved=true`).
+Taint is decided per tool call by `memory.ToolCallTaints` (the single source of truth, shared with skills):
+
+- **Always untrusted:** `browser`, `http_batch`, `transcribe` (network/opaque-audio content), and any MCP tool (`server__tool`).
+- **Path-scoped:** `read_file`, `search_files`, `multi_grep` taint **only** when their `path` argument resolves to a sensitive location (`danger.ClassifyPath` → `system_write`/`destructive`, e.g. `/etc`, `~/.ssh`, `~/.aws`). Reads confined to the workspace — or any other non-sensitive local path — stay trusted, so ordinary coding sessions remain recallable. A malformed/absent path is treated conservatively as untrusted.
+
+To use a tainted episode anyway, the user explicitly promotes it (sets `UserApproved=true`) from the CLI:
+
+```
+odek memory list                    # episodes excluded from recall, with their sources
+odek memory promote <session_id>    # approve one after reviewing its summary
+```
+
+Promotion is **CLI-only and human-gated** — it is deliberately *not* exposed as an agent tool, so a prompt-injected agent cannot self-approve its own poisoned memory.
 
 ### 6. Skill provenance gate
 
-`internal/skills` carries the same provenance model. Skills auto-saved from sessions that touched `browser` / `http_batch` / `read_file` / `search_files` / `multi_grep` / `transcribe` / any MCP tool are tagged with `Provenance.Untrusted=true` and `NeedsReview=true`. The skill loader pins those skills to the Lazy set regardless of their `auto_load` flag.
+`internal/skills` carries the same provenance model and shares the exact taint decision (`memory.ToolCallTaints`). Skills auto-saved from sessions that crossed the trust boundary — `browser` / `http_batch` / `transcribe` / any MCP tool, or a `read_file` / `search_files` / `multi_grep` of a **sensitive** path — are tagged with `Provenance.Untrusted=true` and `NeedsReview=true`. The skill loader pins those skills to the Lazy set regardless of their `auto_load` flag.
 
 After reviewing the skill body, promote it:
 

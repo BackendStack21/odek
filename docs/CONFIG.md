@@ -213,7 +213,7 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
 | `buffer_lines` | 20 | Max turn summaries in session buffer |
 | `buffer_enabled` | true | Enable the turn-level buffer |
 | `merge_on_write` | true | Use go-vector RP similarity to auto-merge related entries |
-| `extract_on_end` | true | Extract durable facts via LLM at session end (≥3 turns) |
+| `extract_on_end` | true | At session end (≥3 turns), extract a narrative episode summary via LLM for later recall |
 | `llm_search` | true | Use LLM to rank episode search results by relevance |
 | `llm_extract` | true | Use LLM for end-of-session fact extraction |
 | `llm_consolidate` | true | Use LLM to merge related fact entries |

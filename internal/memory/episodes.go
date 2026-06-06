@@ -244,6 +244,59 @@ func (e *EpisodeStore) Search(query string, limit int) ([]EpisodeMeta, error) {
 	return ranked, nil
 }
 
+// ── Promotion (human-gated escape hatch) ──────────────────────────────
+
+// Promote marks a tainted episode as user-approved so it can be replayed
+// into future sessions. This is the human-gated escape hatch for episodes
+// whose originating session legitimately touched external content. It is
+// intentionally NOT exposed to the agent (only via `odek memory promote`) so
+// that a prompt-injected agent cannot self-approve poisoned memory.
+//
+// Returns an error if the session is unknown or already approved.
+func (e *EpisodeStore) Promote(sessionID string) error {
+	if err := session.ValidateSessionID(sessionID); err != nil {
+		return fmt.Errorf("memory: episodes promote: %w", err)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	idx, err := e.ReadIndex()
+	if err != nil {
+		return err
+	}
+	found := false
+	for i := range idx {
+		if idx[i].SessionID == sessionID {
+			found = true
+			if idx[i].Provenance.UserApproved {
+				return fmt.Errorf("memory: episode %q is already approved", sessionID)
+			}
+			idx[i].Provenance.UserApproved = true
+		}
+	}
+	if !found {
+		return fmt.Errorf("memory: episode %q not found", sessionID)
+	}
+	return e.writeIndex(idx)
+}
+
+// PendingReview returns the episodes that are untrusted and not yet
+// user-approved — the ones currently excluded from recall that a user may
+// want to promote. Ordered newest-first (as ReadIndex returns them).
+func (e *EpisodeStore) PendingReview() ([]EpisodeMeta, error) {
+	idx, err := e.ReadIndex()
+	if err != nil {
+		return nil, err
+	}
+	var pending []EpisodeMeta
+	for _, ep := range idx {
+		if ep.Provenance.Untrusted && !ep.Provenance.UserApproved {
+			pending = append(pending, ep)
+		}
+	}
+	return pending, nil
+}
+
 // ── Index helpers ─────────────────────────────────────────────────────
 
 // addToIndex appends an entry to the index and writes it.

@@ -499,10 +499,31 @@ func (m *MemoryManager) SearchEpisodes(query string, limit int) ([]EpisodeMeta, 
 	return m.episodes.Search(query, limit)
 }
 
-// FormatEpisodeContext searches episodes with a recency-based ranker
-// (no LLM — safe for per-turn use without recursion risk) and returns
-// formatted context to inject as a system message. Returns empty string
-// if no episodes found or memory is disabled.
+// PromoteEpisode marks a tainted episode as user-approved so it can be
+// recalled into future sessions. Human-gated escape hatch — see
+// EpisodeStore.Promote.
+func (m *MemoryManager) PromoteEpisode(sessionID string) error {
+	if m.cfg.Enabled == nil || !*m.cfg.Enabled {
+		return fmt.Errorf("memory: disabled")
+	}
+	return m.episodes.Promote(sessionID)
+}
+
+// PendingReviewEpisodes lists episodes that are untrusted and not yet
+// user-approved (currently excluded from recall).
+func (m *MemoryManager) PendingReviewEpisodes() ([]EpisodeMeta, error) {
+	if m.cfg.Enabled == nil || !*m.cfg.Enabled {
+		return nil, fmt.Errorf("memory: disabled")
+	}
+	return m.episodes.PendingReview()
+}
+
+// FormatEpisodeContext searches past episodes for ones relevant to the
+// current task and returns formatted context to inject as a system message.
+// Ranking uses the episode store's configured RankStrategy (the LLM ranker by
+// default, RP similarity otherwise — see NewMemoryManager). Untrusted,
+// unpromoted episodes are excluded by Search. Returns empty string if no
+// episodes are found or memory is disabled.
 func (m *MemoryManager) FormatEpisodeContext(query string) string {
 	if m.cfg.Enabled == nil || !*m.cfg.Enabled {
 		return ""

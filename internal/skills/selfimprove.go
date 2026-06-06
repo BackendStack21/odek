@@ -600,32 +600,29 @@ func PassesQualityGate(s SkillSuggestion) bool {
 
 // ── Provenance derivation ─────────────────────────────────────────────
 
-// untrustedToolNames is the canonical set defined in internal/memory.
-// Referencing the same map ensures both packages stay in sync.
-var untrustedToolNames = memory.UntrustedToolNames
-
 // DeriveProvenance scans the session's tool calls and returns the trust
 // signals appropriate for any skill derived from it. A skill is marked
 // Untrusted (with NeedsReview = true) if any of the messages involved
-// a tool whose output is sourced from external content the agent
-// ingested. The sources list records which tools triggered the flag so
-// the user can review what to inspect.
+// a tool call that crossed the agent's trust boundary. The sources list
+// records which tools triggered the flag so the user can review what to
+// inspect.
 //
-// We additionally treat any MCP tool call (name contains "__" — the
-// adapter naming convention) as untrusted, since MCP servers return
-// arbitrary text from third-party processes.
+// The per-call decision is delegated to memory.ToolCallTaints — the single
+// source of truth shared with episode provenance. That keeps the two systems
+// in lockstep and makes both argument-aware: path-scoped reads (read_file,
+// search_files, multi_grep) only taint when they touch a sensitive path, while
+// network/MCP/audio tools always taint.
 func DeriveProvenance(messages []LlmMessage) SkillProvenance {
 	prov := SkillProvenance{}
 	seen := make(map[string]bool)
 	for _, m := range messages {
 		for _, tc := range m.ToolCalls {
-			name := tc.Function.Name
-			tainted := untrustedToolNames[name] || strings.Contains(name, "__")
-			if !tainted {
+			if !memory.ToolCallTaints(tc.Function.Name, tc.Function.Arguments) {
 				continue
 			}
 			prov.Untrusted = true
 			prov.NeedsReview = true
+			name := tc.Function.Name
 			if !seen[name] {
 				seen[name] = true
 				prov.Sources = append(prov.Sources, name)
