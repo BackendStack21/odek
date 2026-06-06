@@ -224,13 +224,9 @@ func replCmd(args []string) error {
 		origLen := len(messages)
 		messages = append(messages, llm.Message{Role: "user", Content: input})
 
-		// Append user input to buffer
+		// Append user input to buffer (AppendBuffer summarizes raw text).
 		if mm := agent.Memory(); mm != nil {
-			userSummary := input
-			if len(userSummary) > 100 {
-				userSummary = userSummary[:97] + "..."
-			}
-			mm.AppendBuffer("user", userSummary)
+			mm.AppendBuffer("user", input)
 		}
 
 		// Run agent with full history
@@ -241,14 +237,10 @@ func replCmd(args []string) error {
 			continue
 		}
 
-		// Append agent response to buffer
+		// Append agent response to buffer (AppendBuffer summarizes raw text).
 		if mm := agent.Memory(); mm != nil && len(allMessages) > 0 {
 			if last := allMessages[len(allMessages)-1]; last.Role == "assistant" {
-				summary := last.Content
-				if len(summary) > 100 {
-					summary = summary[:97] + "..."
-				}
-				mm.AppendBuffer("agent", summary)
+				mm.AppendBuffer("agent", last.Content)
 			}
 		}
 

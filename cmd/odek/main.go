@@ -877,9 +877,9 @@ func run(args []string) error {
 			messages = append([]llm.Message{{Role: "system", Content: systemMessage}}, messages...)
 		}
 
-		// Append user input to buffer
+		// Append user input to buffer (AppendBuffer summarizes raw text).
 		if mm := agent.Memory(); mm != nil {
-			mm.AppendBuffer("user", shorten(f.Task, 100))
+			mm.AppendBuffer("user", f.Task)
 		}
 
 		result, allMessages, runErr = agent.RunWithMessages(ctx, messages)
@@ -889,7 +889,7 @@ func run(args []string) error {
 			if mm := agent.Memory(); mm != nil {
 				for i := len(allMessages) - 1; i >= 0; i-- {
 					if allMessages[i].Role == "assistant" && allMessages[i].Content != "" {
-						mm.AppendBuffer("agent", shorten(allMessages[i].Content, 100))
+						mm.AppendBuffer("agent", allMessages[i].Content)
 						break
 					}
 				}
@@ -1675,9 +1675,9 @@ func continueCmd(args []string) error {
 	messages := sess.GetMessages()
 	messages = append(messages, llm.Message{Role: "user", Content: task})
 
-	// Append user input to buffer
+	// Append user input to buffer (AppendBuffer summarizes raw text).
 	if mm := agent.Memory(); mm != nil {
-		mm.AppendBuffer("user", shorten(task, 100))
+		mm.AppendBuffer("user", task)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -1710,7 +1710,7 @@ func continueCmd(args []string) error {
 		if mm := agent.Memory(); mm != nil {
 			for i := len(allMessages) - 1; i >= 0; i-- {
 				if allMessages[i].Role == "assistant" && allMessages[i].Content != "" {
-					mm.AppendBuffer("agent", shorten(allMessages[i].Content, 100))
+					mm.AppendBuffer("agent", allMessages[i].Content)
 					break
 				}
 			}
