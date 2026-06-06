@@ -7,6 +7,11 @@
   "skills": {
     "verbose": true
   },
+  "transcription": {
+    "model": "tiny",
+    "auto_transcribe": true,
+    "models_dir": "/usr/local/share/whisper/models"
+  },
   "dangerous": {
     "action": "allow",
     "non_interactive": "allow"

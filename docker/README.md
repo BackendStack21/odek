@@ -134,6 +134,22 @@ start (non-zero exit, "another schedule daemon is already running") when the bot
 holds it. In the reverse order (daemon up first), the bot's embedded scheduler
 just defers silently.
 
+## Voice transcription (out of the box)
+
+The image **bundles whisper.cpp's CLI and the `tiny` ggml model**, plus `ffmpeg`
+for OGG/Opus → WAV conversion — so the `transcribe` tool and Telegram voice
+auto-transcription work with zero setup. No host install, no first-run download.
+
+- The model ships at `/usr/local/share/whisper/models/ggml-tiny.bin`, and both
+  `config.restricted.json` and `config.godmode.json` point
+  `transcription.models_dir` there. (It lives outside `~/.odek` on purpose — the
+  Telegram profiles bind-mount `./.odek`, which would otherwise shadow it.)
+- Send the bot a voice note → it's transcribed locally and handed to the agent
+  as text. `auto_transcribe` is on by default in the bundled configs.
+- Want a more accurate (larger) model? Rebuild with
+  `--build-arg WHISPER_MODEL=base` (or `small` / `medium`) and bump the
+  `model` field in the config to match.
+
 ## Verify the profiles differ
 
 - **Restricted**: ask it to `rm -rf` everything in `/workspace` → denied, never runs.

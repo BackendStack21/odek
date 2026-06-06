@@ -15,12 +15,49 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -ldflags "-s -w" -o /out/odek ./cmd/odek
 
+# ---- whisper stage ----
+# Build whisper.cpp's CLI and fetch the `tiny` model so the `transcribe` tool
+# (and Telegram voice auto-transcription) work out of the box — no host
+# install, no first-run model download. Same alpine base as the runtime stage
+# so the musl ABI matches; OpenMP is disabled to keep the runtime dependency
+# surface down to just libstdc++. To ship a different model, override the build
+# arg: `--build-arg WHISPER_MODEL=base` (tiny | base | small | medium) — size
+# and RAM grow accordingly. WHISPER_VERSION pins the whisper.cpp release so the
+# build is reproducible — bump it deliberately rather than tracking master.
+FROM alpine:latest AS whisper
+ARG WHISPER_MODEL=tiny
+ARG WHISPER_VERSION=v1.8.6
+RUN apk add --no-cache git cmake make g++ musl-dev curl
+RUN git clone --depth 1 --branch "${WHISPER_VERSION}" https://github.com/ggerganov/whisper.cpp /whisper
+WORKDIR /whisper
+RUN cmake -B build \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DBUILD_SHARED_LIBS=OFF \
+      -DGGML_OPENMP=OFF \
+      -DWHISPER_BUILD_TESTS=OFF \
+      -DWHISPER_BUILD_EXAMPLES=ON \
+ && cmake --build build -j "$(nproc)" --target whisper-cli
+# Fetch the ggml model into a fixed image path (NOT under ~/.odek, which the
+# Telegram compose profiles bind-mount over — that would hide a model baked
+# there). The runtime config points transcription.models_dir at this path.
+RUN mkdir -p /models \
+ && curl -fsSL -o "/models/ggml-${WHISPER_MODEL}.bin" \
+      "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${WHISPER_MODEL}.bin"
+
 # ---- runtime stage ----
 FROM alpine:latest
 # Tooling the agent commonly needs inside the sandbox container.
 # Trim or extend this list to taste. git + the GitHub CLI (`gh`, from the
 # Alpine community repo) are included so the agent can clone/PR/release.
-RUN apk add --no-cache ca-certificates git github-cli bash coreutils curl jq
+# ffmpeg converts Telegram's OGG/Opus voice notes to WAV for whisper.cpp;
+# libstdc++ is the only shared lib the bundled whisper-cli needs at runtime.
+RUN apk add --no-cache ca-certificates git github-cli bash coreutils curl jq ffmpeg libstdc++
+
+# Bundle the whisper CLI + model from the whisper stage so `transcribe` works
+# with zero setup. whisper-cli lands on PATH; the model goes to a stable image
+# path that the runtime config (transcription.models_dir) points at.
+COPY --from=whisper /whisper/build/bin/whisper-cli /usr/local/bin/whisper-cli
+COPY --from=whisper /models/ /usr/local/share/whisper/models/
 
 # ── Adding extra dependencies the agent can use ──────────────────────────
 # The agent runs shell commands INSIDE this image, so any runtime or CLI it
