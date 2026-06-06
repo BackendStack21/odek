@@ -85,10 +85,11 @@ const (
 // The zero value is usable but won't produce any output — call New()
 // to create a properly initialized Renderer.
 type Renderer struct {
-	w            io.Writer
-	color        bool
-	model        string
-	skillVerbose bool // show skill notifications (auto-load, save, suggest, etc.)
+	w             io.Writer
+	color         bool
+	model         string
+	skillVerbose  bool // show skill notifications (auto-load, save, suggest, etc.)
+	memoryVerbose bool // show memory lifecycle + agent-signal notifications
 }
 
 // New creates a Renderer that writes to w. If color is false, ANSI escape
@@ -110,6 +111,15 @@ func (r *Renderer) WithModel(name string) *Renderer {
 // (auto-load, save, suggest, delete) are shown. Disabled by default.
 func (r *Renderer) WithSkillVerbose(verbose bool) *Renderer {
 	r.skillVerbose = verbose
+	return r
+}
+
+// WithMemoryVerbose controls whether memory lifecycle notifications (fact
+// add/merge/consolidate, episode store/dedup/evict/promote) and internal
+// agent signals (context trim, tool-failure recovery) are shown. Disabled by
+// default to keep the terminal scannable; enabled by verbose interaction mode.
+func (r *Renderer) WithMemoryVerbose(verbose bool) *Renderer {
+	r.memoryVerbose = verbose
 	return r
 }
 
@@ -470,6 +480,83 @@ func (r *Renderer) SkillDeleted(name string) {
 		return
 	}
 	fmt.Fprintln(r.w, r.style(red, "✗ Deleted skill \""+name+"\""))
+}
+
+// ── Memory lifecycle notifications ────────────────────────────────────
+
+// MemoryFact prints a fact-tier lifecycle notification. action is one of
+// "added", "merged", "replaced", "removed".
+func (r *Renderer) MemoryFact(action, target, content string) {
+	if r.disable() || !r.memoryVerbose {
+		return
+	}
+	var icon, color string
+	switch action {
+	case "added":
+		icon, color = "🧠 +", green
+	case "merged":
+		icon, color = "🧠 ⇄", cyan
+	case "replaced":
+		icon, color = "🧠 ✎", cyan
+	case "removed":
+		icon, color = "🧠 −", yellow
+	default:
+		icon, color = "🧠", dim
+	}
+	fmt.Fprintln(r.w, r.style(color, fmt.Sprintf("%s memory[%s] %s: %s", icon, target, action, r.truncate(content, 70))))
+}
+
+// MemoryConsolidated prints a fact-consolidation notification (before → after).
+func (r *Renderer) MemoryConsolidated(target string, before, after int) {
+	if r.disable() || !r.memoryVerbose {
+		return
+	}
+	fmt.Fprintln(r.w, r.style(cyan, fmt.Sprintf("🧠 consolidated memory[%s] (%d → %d entries)", target, before, after)))
+}
+
+// MemoryEpisode prints an episode-tier lifecycle notification. action is one of
+// "stored", "deduped", "evicted", "promoted", "pending_review".
+func (r *Renderer) MemoryEpisode(action, detail string) {
+	if r.disable() || !r.memoryVerbose {
+		return
+	}
+	var icon, color string
+	switch action {
+	case "stored":
+		icon, color = "💾", dim
+	case "deduped":
+		icon, color = "💾 ⇄", dim
+	case "evicted":
+		icon, color = "💾 ✗", yellow
+	case "promoted":
+		icon, color = "💾 ✓", green
+	case "pending_review":
+		icon, color = "🔒", yellow
+	default:
+		icon, color = "💾", dim
+	}
+	fmt.Fprintln(r.w, r.style(color, fmt.Sprintf("%s episode %s: %s", icon, action, detail)))
+}
+
+// ── Agent-loop signal notifications ───────────────────────────────────
+
+// ContextTrimmed reports that the engine dropped message groups to stay within
+// the model's context window. mode is "proactive" (pre-call budget trim) or
+// "survival" (post-error nuclear trim).
+func (r *Renderer) ContextTrimmed(mode string, count int) {
+	if r.disable() || !r.memoryVerbose {
+		return
+	}
+	fmt.Fprintln(r.w, r.style(yellow, fmt.Sprintf("✂️  context trimmed (%s): dropped %d message group(s)", mode, count)))
+}
+
+// ToolRecovery reports that a repeatedly-failing tool triggered an automatic
+// corrective hint so the model changes approach.
+func (r *Renderer) ToolRecovery(tool, detail string) {
+	if r.disable() || !r.memoryVerbose {
+		return
+	}
+	fmt.Fprintln(r.w, r.style(yellow, fmt.Sprintf("🔁 tool recovery [%s]: %s", tool, r.truncate(detail, 80))))
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────

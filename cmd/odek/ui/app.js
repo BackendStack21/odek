@@ -316,6 +316,14 @@ function connect() {
       case 'skill_event':
         handleSkillEvent(event);
         break;
+
+      case 'memory_event':
+        handleMemoryEvent(event);
+        break;
+
+      case 'agent_signal':
+        handleAgentSignal(event);
+        break;
     }
   };
 }
@@ -1075,6 +1083,56 @@ function handleSkillEvent(event) {
     }
     case 'loaded': case 'autoloaded':
       // Silent — noisy to show every skill load.
+      break;
+  }
+}
+
+// ── Memory Events ──
+function handleMemoryEvent(event) {
+  switch (event.event) {
+    case 'fact_added':
+      showToast('🧠 Memory fact added (' + (event.target || '') + ')');
+      break;
+    case 'fact_merged':
+      showToast('🧠 Memory fact merged (' + (event.target || '') + ')');
+      break;
+    case 'fact_replaced':
+      showToast('🧠 Memory fact updated (' + (event.target || '') + ')');
+      break;
+    case 'fact_removed':
+      showToast('🧠 Memory fact removed (' + (event.target || '') + ')');
+      break;
+    case 'fact_consolidated':
+      showToast('🧠 Memory consolidated (' + (event.target || '') + ': ' +
+        (event.count || 0) + ' → ' + (event.new_count || 0) + ')');
+      break;
+    case 'episode_stored':
+      // Silent by default — fires after every qualifying session.
+      break;
+    case 'episode_promoted':
+      showToast('💾 ✓ Episode promoted: ' + (event.session_id || ''));
+      break;
+    case 'episode_evicted':
+      showToast('💾 ✗ ' + (event.count || 0) + ' episode(s) evicted');
+      break;
+    case 'episode_pending_review':
+      showToast('🔒 Episode pending review (untrusted): ' + (event.session_id || ''));
+      break;
+    case 'episode_deduped':
+      // Silent — internal dedup detail.
+      break;
+  }
+}
+
+// ── Agent Signals ──
+function handleAgentSignal(event) {
+  switch (event.event) {
+    case 'context_trimmed':
+      showToast('✂️ Context trimmed (' + (event.detail || '') + '): ' +
+        (event.count || 0) + ' group(s) dropped');
+      break;
+    case 'tool_recovery':
+      showToast('🔁 Tool recovery: ' + (event.tool || ''));
       break;
   }
 }

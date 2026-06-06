@@ -703,6 +703,65 @@ func TestRenderer_SkillEvents_NoColor(t *testing.T) {
 	}
 }
 
+// ── Memory + Signal Event Tests ────────────────────────────────────────
+
+func TestRenderer_MemoryFact_GatedByVerbose(t *testing.T) {
+	var buf bytes.Buffer
+	// Default (not verbose): no output.
+	r := New(&buf, true)
+	r.MemoryFact("added", "user", "user prefers tabs")
+	if buf.Len() != 0 {
+		t.Errorf("expected no output when memoryVerbose is off, got: %q", buf.String())
+	}
+
+	// Verbose: emits the fact.
+	r = New(&buf, true).WithMemoryVerbose(true)
+	r.MemoryFact("added", "user", "user prefers tabs")
+	out := buf.String()
+	if !strings.Contains(out, "🧠") || !strings.Contains(out, "added") || !strings.Contains(out, "user") {
+		t.Errorf("missing memory fact details: %q", out)
+	}
+}
+
+func TestRenderer_MemoryConsolidatedAndEpisode(t *testing.T) {
+	var buf bytes.Buffer
+	r := New(&buf, true).WithMemoryVerbose(true)
+
+	r.MemoryConsolidated("env", 5, 2)
+	r.MemoryEpisode("evicted", "3 episode(s)")
+	out := buf.String()
+	if !strings.Contains(out, "5 → 2") {
+		t.Errorf("missing consolidation counts: %q", out)
+	}
+	if !strings.Contains(out, "evicted") {
+		t.Errorf("missing episode eviction: %q", out)
+	}
+}
+
+func TestRenderer_SignalEvents(t *testing.T) {
+	var buf bytes.Buffer
+	r := New(&buf, true).WithMemoryVerbose(true)
+
+	r.ContextTrimmed("survival", 4)
+	r.ToolRecovery("shell", "try a different approach to the failing command")
+	out := buf.String()
+	if !strings.Contains(out, "context trimmed") || !strings.Contains(out, "survival") {
+		t.Errorf("missing context trim signal: %q", out)
+	}
+	if !strings.Contains(out, "tool recovery") || !strings.Contains(out, "shell") {
+		t.Errorf("missing tool recovery signal: %q", out)
+	}
+}
+
+func TestRenderer_MemoryEvents_NilSafe(t *testing.T) {
+	var r *Renderer // nil
+	r.MemoryFact("added", "user", "x")
+	r.MemoryConsolidated("env", 1, 1)
+	r.MemoryEpisode("stored", "x")
+	r.ContextTrimmed("proactive", 1)
+	r.ToolRecovery("shell", "x")
+}
+
 func TestRenderer_NarratorMessage(t *testing.T) {
 	var buf bytes.Buffer
 	r := New(&buf, false)

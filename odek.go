@@ -165,6 +165,18 @@ type Config struct {
 	// (WebSocket streaming) and Telegram (inline messages).
 	SkillEventHandler func(event skills.SkillEvent)
 
+	// MemoryEventHandler, if set, is invoked when a memory lifecycle event
+	// occurs (fact add/merge/consolidate, episode store/dedup/evict/promote).
+	// Fans out alongside the terminal renderer so embedding programs, the WebUI
+	// (WebSocket streaming), and Telegram can observe memory activity that was
+	// previously silent.
+	MemoryEventHandler func(event memory.MemoryEvent)
+
+	// AgentSignalHandler, if set, is invoked on internal agent-loop signals
+	// (context-window trim, tool-failure recovery) that the engine previously
+	// handled silently. Used for observability across all surfaces.
+	AgentSignalHandler func(event loop.SignalEvent)
+
 	// Approver gates dangerous tool operations. When set and the LLM returns
 	// multiple tool calls in one iteration, a single batch approval prompt
 	// is shown instead of N individual prompts. If denied, no tools run
@@ -473,6 +485,21 @@ func New(cfg Config) (*Agent, error) {
 		memoryDir = expandHome("~/.odek/memory")
 	}
 	memoryManager := memory.NewMemoryManager(memoryDir, client, cfg.MemoryConfig)
+
+	// Wire memory lifecycle observability: fan out events to the programmatic
+	// handler (WebUI/Telegram/embedders) and the terminal renderer. Mirrors the
+	// skills notifier pattern so memory activity is no longer silent.
+	var memNotifiers []memory.MemoryNotifier
+	if cfg.MemoryEventHandler != nil {
+		memNotifiers = append(memNotifiers, &memoryEventHandlerAdapter{fn: cfg.MemoryEventHandler})
+	}
+	if cfg.Renderer != nil {
+		memNotifiers = append(memNotifiers, &memoryRenderNotifier{r: cfg.Renderer})
+	}
+	if len(memNotifiers) > 0 {
+		memoryManager.SetNotifier(memory.NewMultiMemoryNotifier(memNotifiers...))
+	}
+
 	agent := &Agent{
 		config:        cfg,
 		skillManager:  sm,
@@ -554,6 +581,26 @@ func New(cfg Config) (*Agent, error) {
 	// Wire tool event handler for live streaming
 	if cfg.ToolEventHandler != nil {
 		engine.SetToolEventHandler(cfg.ToolEventHandler)
+	}
+
+	// Wire agent-loop signal observability (context trim, tool recovery): fan
+	// out to the programmatic handler and the terminal renderer.
+	if cfg.AgentSignalHandler != nil || cfg.Renderer != nil {
+		handler := cfg.AgentSignalHandler
+		renderer := cfg.Renderer
+		engine.SetSignalHandler(func(ev loop.SignalEvent) {
+			if handler != nil {
+				handler(ev)
+			}
+			if renderer != nil {
+				switch ev.Type {
+				case "context_trimmed":
+					renderer.ContextTrimmed(ev.Detail, ev.Count)
+				case "tool_recovery":
+					renderer.ToolRecovery(ev.Tool, ev.Detail)
+				}
+			}
+		})
 	}
 
 	// Wire iteration callback for progress reporting
@@ -742,5 +789,54 @@ func (n *renderNotifier) Notify(event skills.SkillEvent) {
 		n.r.SkillSaved(event.SkillName)
 	case "deleted":
 		n.r.SkillDeleted(event.SkillName)
+	}
+}
+
+// ── Memory Event Adapters ─────────────────────────────────────────────
+
+// memoryEventHandlerAdapter bridges Config.MemoryEventHandler to
+// memory.MemoryNotifier.
+type memoryEventHandlerAdapter struct {
+	fn func(event memory.MemoryEvent)
+}
+
+func (a *memoryEventHandlerAdapter) Notify(event memory.MemoryEvent) {
+	if a.fn != nil {
+		a.fn(event)
+	}
+}
+
+// memoryRenderNotifier bridges *render.Renderer to memory.MemoryNotifier,
+// translating each memory lifecycle event into the matching renderer call.
+type memoryRenderNotifier struct {
+	r *render.Renderer
+}
+
+func (n *memoryRenderNotifier) Notify(event memory.MemoryEvent) {
+	switch event.Type {
+	case "fact_added":
+		n.r.MemoryFact("added", event.Target, event.Content)
+	case "fact_merged":
+		n.r.MemoryFact("merged", event.Target, event.Content)
+	case "fact_replaced":
+		n.r.MemoryFact("replaced", event.Target, event.Content)
+	case "fact_removed":
+		n.r.MemoryFact("removed", event.Target, event.Content)
+	case "fact_consolidated":
+		n.r.MemoryConsolidated(event.Target, event.Count, event.NewCount)
+	case "episode_stored":
+		detail := event.SessionID
+		if event.Untrusted {
+			detail += " (untrusted)"
+		}
+		n.r.MemoryEpisode("stored", detail)
+	case "episode_deduped":
+		n.r.MemoryEpisode("deduped", event.SessionID)
+	case "episode_evicted":
+		n.r.MemoryEpisode("evicted", fmt.Sprintf("%d episode(s)", event.Count))
+	case "episode_promoted":
+		n.r.MemoryEpisode("promoted", event.SessionID)
+	case "episode_pending_review":
+		n.r.MemoryEpisode("pending_review", event.SessionID)
 	}
 }

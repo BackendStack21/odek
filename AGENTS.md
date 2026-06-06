@@ -43,11 +43,11 @@ cmd/odek/
   *_test.go                   200+ unit + E2E tests covering all tools
 internal/
   llm/                        OpenAI-compatible HTTP client with reasoning_content support
-  loop/                       ReAct engine: observe → think → parallel-act → repeat
+  loop/                       ReAct engine: observe → think → parallel-act → repeat. signal.go — SignalEvent observability (context_trimmed, tool_recovery).
   tool/                       Thread-safe tool registry, clarify.go, send_message.go
   danger/                     Command/URL classification + bypass-resistant tokenizer (substitution, $IFS, wrappers, basenames). TTYApprover with friction mode.
   auth/                       Interactive approval system
-  memory/                     MemoryManager (facts, buffer, episodes, merge, scan). EpisodeProvenance — tainted episodes never auto-replayed.
+  memory/                     MemoryManager (facts, buffer, episodes, merge, scan). EpisodeProvenance — tainted episodes never auto-replayed. notifier.go — MemoryEvent lifecycle observability (fact/episode events fan out to terminal/WebUI/Telegram/programmatic handler).
   session/                    Session store (CRUD, trim, cleanup, compact JSON). AuditStore + divergence heuristic.
   skills/                     Skill system (types, loader, triggers, self-improve, curator, import, cache). SkillProvenance gate — NeedsReview skills pinned to Lazy.
   config/                     Config file loading, env vars, secrets.env, priority merge

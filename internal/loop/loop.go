@@ -70,6 +70,7 @@ type Engine struct {
 	episodeCtx   EpisodeContextFunc // optional: per-turn episode search
 
 	toolEventHandler ToolEventHandler // optional: fires during tool execution
+	signalHandler    SignalHandler    // optional: fires on internal loop signals
 
 	// interactionMode controls how progress is surfaced to the user.
 	// "engaging" (default), "verbose", "enhance", or "off" (silent).
@@ -367,6 +368,12 @@ func (e *Engine) trimContext(messages []llm.Message, toolDefs []llm.ToolDef) []l
 		newMsgs = append(newMsgs, trimMsg)
 		newMsgs = append(newMsgs, messages[1:]...)
 		messages = newMsgs
+
+		e.emitSignal(SignalEvent{
+			Type:   "context_trimmed",
+			Detail: "proactive",
+			Count:  droppedGroups,
+		})
 	}
 
 	return messages
@@ -672,6 +679,11 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 			if isContextLengthError(err) {
 				trimmed := trimToSurvival(messages)
 				if len(trimmed) < len(messages) {
+					e.emitSignal(SignalEvent{
+						Type:   "context_trimmed",
+						Detail: "survival",
+						Count:  len(messages) - len(trimmed),
+					})
 					messages = trimmed
 					// Reset memory index — trimToSurvival drops it.
 					e.memMsgIdx = -1
@@ -1029,6 +1041,11 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 						toolName)
 				}
 				corrections = append(corrections, correction)
+				e.emitSignal(SignalEvent{
+					Type:   "tool_recovery",
+					Tool:   toolName,
+					Detail: correction,
+				})
 				// Reset counter after injecting suggestion
 				e.maxConsecutiveToolErrors[toolName] = 0
 			}

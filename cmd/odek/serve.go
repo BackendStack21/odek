@@ -384,6 +384,27 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 				"heuristic":  event.Heuristic,
 			})
 		},
+		MemoryEventHandler: func(event memory.MemoryEvent) {
+			sendFn(map[string]any{
+				"type":       "memory_event",
+				"event":      event.Type,
+				"target":     event.Target,
+				"session_id": event.SessionID,
+				"content":    event.Content,
+				"count":      event.Count,
+				"new_count":  event.NewCount,
+				"untrusted":  event.Untrusted,
+			})
+		},
+		AgentSignalHandler: func(event loop.SignalEvent) {
+			sendFn(map[string]any{
+				"type":   "agent_signal",
+				"event":  event.Type,
+				"detail": event.Detail,
+				"tool":   event.Tool,
+				"count":  event.Count,
+			})
+		},
 		// Stream thinking/reasoning content to the WebUI.
 		// Only fire for pre-tool iterations (reasoning before tool calls);
 		// post-tool callbacks have no new reasoning to display.

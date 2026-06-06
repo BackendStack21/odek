@@ -21,6 +21,7 @@ import (
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/loop"
+	"github.com/BackendStack21/odek/internal/memory"
 	"github.com/BackendStack21/odek/internal/render"
 	"github.com/BackendStack21/odek/internal/schedule"
 	"github.com/BackendStack21/odek/internal/session"
@@ -1525,6 +1526,51 @@ func handleChatMessage(
 				sendAsync(bot, chatID, msg,
 					&telegram.SendOpts{ReplyMarkup: replyMarkup, ParseMode: "Markdown", ReplyToMessageID: messageID})
 			}
+		},
+		MemoryEventHandler: func(event memory.MemoryEvent) {
+			// Only surface memory activity in verbose mode, and only the
+			// operationally meaningful events (skip high-frequency/internal ones
+			// like episode_stored and episode_deduped to avoid chat noise).
+			if skillsCfg == nil || !skillsCfg.Verbose {
+				return
+			}
+			var msg string
+			switch event.Type {
+			case "fact_added":
+				msg = "🧠 Memory fact added (" + event.Target + ")"
+			case "fact_merged":
+				msg = "🧠 Memory fact merged (" + event.Target + ")"
+			case "fact_replaced":
+				msg = "🧠 Memory fact updated (" + event.Target + ")"
+			case "fact_removed":
+				msg = "🧠 Memory fact removed (" + event.Target + ")"
+			case "fact_consolidated":
+				msg = fmt.Sprintf("🧠 Memory consolidated (%s: %d → %d)", event.Target, event.Count, event.NewCount)
+			case "episode_evicted":
+				msg = fmt.Sprintf("💾 %d episode(s) evicted", event.Count)
+			case "episode_pending_review":
+				msg = "🔒 Episode pending review (untrusted): " + event.SessionID
+			case "episode_promoted":
+				msg = "💾 Episode promoted: " + event.SessionID
+			default:
+				return
+			}
+			sendAsync(bot, chatID, msg, &telegram.SendOpts{ReplyToMessageID: messageID})
+		},
+		AgentSignalHandler: func(event loop.SignalEvent) {
+			if skillsCfg == nil || !skillsCfg.Verbose {
+				return
+			}
+			var msg string
+			switch event.Type {
+			case "context_trimmed":
+				msg = fmt.Sprintf("✂️ Context trimmed (%s): %d group(s) dropped", event.Detail, event.Count)
+			case "tool_recovery":
+				msg = "🔁 Tool recovery: " + event.Tool
+			default:
+				return
+			}
+			sendAsync(bot, chatID, msg, &telegram.SendOpts{ReplyToMessageID: messageID})
 		},
 		Approver:        approver,
 		DangerousConfig: &resolved.Dangerous,
