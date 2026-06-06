@@ -195,6 +195,7 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
     "buffer_lines": 20,
     "buffer_enabled": true,
     "merge_on_write": true,
+    "consolidate_on_end": true,
     "extract_on_end": true,
     "extract_facts": false,
     "llm_search": true,
@@ -214,7 +215,8 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
 | `facts_limit_env` | 2500 | Max chars for `env.md` fact file |
 | `buffer_lines` | 20 | Max turn summaries in session buffer |
 | `buffer_enabled` | true | Enable the turn-level buffer |
-| `merge_on_write` | true | Use go-vector RP similarity to auto-merge related entries |
+| `merge_on_write` | true | Use go-vector RP similarity to auto-merge related entries (fast, no LLM — uses simple string merge) |
+| `consolidate_on_end` | true | At session end, run an LLM consolidation pass over `user.md` and `env.md` in a background goroutine. This is the quality complement to `merge_on_write`: merge-on-write handles obvious duplicates immediately (no LLM), while consolidation handles near-duplicates and paraphrases at session end with full LLM quality. Requires `llm_consolidate: true`. |
 | `extract_on_end` | true | At session end (≥3 turns), extract a narrative episode summary via LLM for later recall |
 | `extract_facts` | **false** | **Opt-in.** At session end (≥3 turns), auto-extract a few **durable** facts (stable user preferences, project invariants) into `user.md`/`env.md`. Off by default — see the security note below. Independent of `extract_on_end`; to disable *all* end-of-session LLM extraction set `llm_extract: false`. |
 | `llm_search` | true | Use LLM to rerank candidates for **explicit** `memory search` calls (the `memory` tool). Per-turn recall (`FormatEpisodeContext`) always uses the cached go-vector index — no LLM call on the hot path regardless of this setting. |
