@@ -31,6 +31,7 @@ type MemoryConfig struct {
 	BufferEnabled         *bool   `json:"buffer_enabled,omitempty"`
 	MergeOnWrite          *bool   `json:"merge_on_write,omitempty"`
 	ExtractOnEnd          *bool   `json:"extract_on_end,omitempty"`
+	ExtractFacts          *bool   `json:"extract_facts,omitempty"`
 	LLMSearch             *bool   `json:"llm_search,omitempty"`
 	LLMExtract            *bool   `json:"llm_extract,omitempty"`
 	LLMConsolidate        *bool   `json:"llm_consolidate,omitempty"`
@@ -61,6 +62,7 @@ func DefaultMemoryConfig() MemoryConfig {
 		BufferEnabled:         boolPtr(true),
 		MergeOnWrite:          boolPtr(true),
 		ExtractOnEnd:          boolPtr(true),
+		ExtractFacts:          boolPtr(true), // auto-learn durable facts from trusted sessions
 		LLMSearch:             boolPtr(true), // LLM ranker by default — relevance over recency
 		LLMExtract:            boolPtr(true),
 		LLMConsolidate:        boolPtr(true),
@@ -114,6 +116,9 @@ func NewMemoryManager(memoryDir string, llc LLMClient, cfg MemoryConfig) *Memory
 	}
 	if cfg.ExtractOnEnd != nil {
 		def.ExtractOnEnd = cfg.ExtractOnEnd
+	}
+	if cfg.ExtractFacts != nil {
+		def.ExtractFacts = cfg.ExtractFacts
 	}
 	if cfg.LLMSearch != nil {
 		def.LLMSearch = cfg.LLMSearch
@@ -464,30 +469,35 @@ func (m *MemoryManager) OnSessionEndWithProvenance(sessionID string, turns int, 
 	if minTurns <= 0 {
 		minTurns = defaultMinTurnsForExtraction
 	}
-	if m.cfg.ExtractOnEnd == nil || !*m.cfg.ExtractOnEnd || m.cfg.LLMExtract == nil || !*m.cfg.LLMExtract || m.llm == nil || turns < minTurns || len(messages) == 0 {
+	// Shared preconditions for any end-of-session LLM extraction.
+	if m.cfg.LLMExtract == nil || !*m.cfg.LLMExtract || m.llm == nil || turns < minTurns || len(messages) == 0 {
 		return
 	}
 
-	// Build structured conversation text for extraction
-	var b strings.Builder
-	for _, msg := range messages {
-		// Alternate turns — assume user, then assistant, then user...
-		// Simple heuristic: even index = user, odd = assistant
-		// This works because the history passed to OnSessionEnd
-		// is the raw message text from the session buffer.
-		if strings.HasPrefix(strings.ToLower(msg), "user:") ||
-			strings.HasPrefix(strings.ToLower(msg), "assistant:") {
-			// Already labeled — pass through
-			b.WriteString(msg)
-		} else {
-			// No label — this shouldn't happen with session messages,
-			// but handle gracefully
-			b.WriteString(msg)
-		}
-		b.WriteString("\n")
-	}
-	convText := b.String()
+	convText := buildConvText(messages)
 
+	// Episode summary (narrative). Trust is enforced at recall time, not here.
+	if m.cfg.ExtractOnEnd != nil && *m.cfg.ExtractOnEnd {
+		m.extractEpisode(sessionID, convText, turns, prov)
+	}
+
+	// Durable facts. ONLY for trusted sessions: facts are injected into every
+	// system prompt, so a poisoned fact is worse than a poisoned episode.
+	if m.cfg.ExtractFacts != nil && *m.cfg.ExtractFacts && !prov.Untrusted {
+		m.extractFactsFromSession(convText)
+	}
+}
+
+// buildConvText joins the session's message lines into a single transcript for
+// LLM extraction. Lines are already role-labeled ("user:"/"assistant:") by the
+// callers; unlabeled lines are passed through as-is.
+func buildConvText(messages []string) string {
+	return strings.Join(messages, "\n") + "\n"
+}
+
+// extractEpisode produces a 1-3 sentence narrative summary and writes it as an
+// episode, applying the opt-in auto-approval stamp for untrusted sessions.
+func (m *MemoryManager) extractEpisode(sessionID, convText string, turns int, prov EpisodeProvenance) {
 	extraction, err := m.llm.SimpleCall(context.Background(),
 		"Summarize this session in 1-3 sentences covering: what was implemented/fixed, key files changed, architectural decisions, and the outcome. Format as a narrative summary, not bullet points.",
 		convText,
@@ -495,7 +505,6 @@ func (m *MemoryManager) OnSessionEndWithProvenance(sessionID string, turns int, 
 	if err != nil {
 		return
 	}
-
 	extraction = strings.TrimSpace(extraction)
 	if extraction == "" {
 		return
@@ -509,8 +518,62 @@ func (m *MemoryManager) OnSessionEndWithProvenance(sessionID string, turns int, 
 		prov.AutoApproved = true
 	}
 
-	// Write as episode, preserving the provenance signal.
 	m.episodes.WriteIfEnoughWithProvenance(sessionID, extraction, turns, prov)
+}
+
+// maxAutoFactsPerSession caps how many durable facts a single session may
+// auto-add, so end-of-session extraction can't flood the always-injected fact
+// files in one go.
+const maxAutoFactsPerSession = 5
+
+// extractFactsFromSession asks the LLM for a few DURABLE, reusable facts from
+// the session transcript and routes each through AddFact — which already runs
+// the injection scan (ScanContent), merge-on-write dedup, and char-cap
+// enforcement. It is best-effort: any LLM/parse/per-fact error is swallowed so
+// it never breaks session end, and it is only ever called for trusted sessions.
+func (m *MemoryManager) extractFactsFromSession(convText string) {
+	const system = `You extract DURABLE, reusable memory facts from a coding session.
+Return ONLY facts worth remembering across future sessions:
+- scope "user": stable preferences or identity of the human (tooling choices, conventions they insist on, how they like answers).
+- scope "env": durable project/environment invariants (language, framework, build/test commands, architecture decisions).
+Do NOT include ephemeral task details, one-off file edits, or anything specific to only this session.
+If there is nothing durable to remember, return an empty array.
+Output ONLY a JSON array of objects, no prose: [{"scope":"user|env","fact":"..."}]`
+
+	out, err := m.llm.SimpleCall(context.Background(), system, convText)
+	if err != nil {
+		return
+	}
+	out = strings.TrimSpace(out)
+	if out == "" || out == "[]" {
+		return
+	}
+
+	var facts []struct {
+		Scope string `json:"scope"`
+		Fact  string `json:"fact"`
+	}
+	if err := json.Unmarshal([]byte(out), &facts); err != nil {
+		return // tolerate non-JSON output
+	}
+
+	added := 0
+	for _, f := range facts {
+		if added >= maxAutoFactsPerSession {
+			break
+		}
+		scope := strings.ToLower(strings.TrimSpace(f.Scope))
+		fact := strings.TrimSpace(f.Fact)
+		if fact == "" || (scope != "user" && scope != "env") {
+			continue
+		}
+		// AddFact handles ScanContent + merge-on-write dedup + cap rejection;
+		// on any error (cap hit, injection pattern, store error) skip this fact.
+		if err := m.AddFact(scope, fact); err != nil {
+			continue
+		}
+		added++
+	}
 }
 
 // SearchEpisodes returns the most relevant episodes for a query.

@@ -196,6 +196,7 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
     "buffer_enabled": true,
     "merge_on_write": true,
     "extract_on_end": true,
+    "extract_facts": true,
     "llm_search": true,
     "llm_extract": true,
     "llm_consolidate": true,
@@ -215,6 +216,7 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
 | `buffer_enabled` | true | Enable the turn-level buffer |
 | `merge_on_write` | true | Use go-vector RP similarity to auto-merge related entries |
 | `extract_on_end` | true | At session end (≥3 turns), extract a narrative episode summary via LLM for later recall |
+| `extract_facts` | true | At session end (≥3 turns), auto-extract a few **durable** facts (stable user preferences, project invariants) into `user.md`/`env.md`. Runs **only for trusted sessions** (untrusted ones — web/MCP/out-of-workspace reads — are skipped, since facts are injected into every prompt). Capped per session; each fact still passes the injection scan, merge-on-write dedup, and char caps. |
 | `llm_search` | true | Use LLM to rank episode search results by relevance |
 | `llm_extract` | true | Use LLM for end-of-session fact extraction |
 | `llm_consolidate` | true | Use LLM to merge related fact entries |

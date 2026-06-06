@@ -702,12 +702,15 @@ func TestOnSessionEnd_ExtractionPromptIsTaskOriented(t *testing.T) {
 	}
 	content := string(src)
 
-	// GREEN PHASE: assert the new prompt contains "Summarize"
-	if !strings.Contains(content, "Summarize") {
-		t.Error("episode extraction prompt should contain 'Summarize' instead of 'durable facts' — narrative summaries are more recoverable by semantic search")
+	// The EPISODE extraction prompt must be a task-oriented narrative summary,
+	// not a fact dump. (Durable-fact extraction is a separate, intentional path
+	// — extractFactsFromSession — so "durable facts" legitimately appears
+	// elsewhere in this file; scope the check to the episode prompt itself.)
+	if !strings.Contains(content, "Summarize this session") {
+		t.Error("episode extraction prompt should summarize the session narratively (recoverable by semantic search)")
 	}
-	if strings.Contains(content, "durable facts") {
-		t.Error("episode extraction prompt should NOT contain 'durable facts' — use 'Summarize' for task-oriented narrative summaries")
+	if !strings.Contains(content, "narrative summary") {
+		t.Error("episode extraction prompt should ask for a narrative summary, not bullet points")
 	}
 }
 

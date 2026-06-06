@@ -823,6 +823,9 @@ func resolveMemory(cfg *memory.MemoryConfig) memory.MemoryConfig {
 	if cfg.ExtractOnEnd != nil {
 		def.ExtractOnEnd = cfg.ExtractOnEnd
 	}
+	if cfg.ExtractFacts != nil {
+		def.ExtractFacts = cfg.ExtractFacts
+	}
 	if cfg.LLMSearch != nil {
 		def.LLMSearch = cfg.LLMSearch
 	}
