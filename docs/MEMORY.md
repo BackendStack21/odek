@@ -166,6 +166,39 @@ All memory content is scanned on write for:
 
 Rejected content returns an error to the agent.
 
+## Observability (lifecycle events)
+
+Every memory lifecycle moment emits a `memory.MemoryEvent` so operators can see
+activity that was previously silent. Events fan out (via `MultiMemoryNotifier`)
+to whichever surfaces are wired:
+
+- **Terminal** — shown in verbose interaction mode (`--interaction verbose`),
+  e.g. `🧠 memory[user] added: ...`, `🧠 consolidated memory[env] (5 → 2 entries)`.
+- **Web UI** — streamed over the WebSocket as `memory_event` and surfaced as toasts.
+- **Telegram** — posted in the chat when the bot runs verbose.
+- **Programmatic** — set `Config.MemoryEventHandler` to receive every event.
+
+| Event | Fired when | Key fields |
+|---|---|---|
+| `fact_added` | a new durable fact is appended (not on a silent dedup) | `Target`, `Content` |
+| `fact_merged` | merge-on-write folds a fact into a near-duplicate | `Target`, `Content`, `Similarity` |
+| `fact_replaced` | an existing fact is replaced | `Target`, `Content` |
+| `fact_removed` | a fact is removed | `Target`, `Content` |
+| `fact_consolidated` | LLM consolidation merges entries | `Target`, `Count`→`NewCount` |
+| `episode_stored` | a session episode is extracted + persisted | `SessionID`, `Count` (turns), `Untrusted` |
+| `episode_deduped` | a new episode replaces a near-duplicate | `SessionID`, `Similarity` |
+| `episode_evicted` | episodes pruned by TTL / count cap | `Sessions`, `Count` |
+| `episode_promoted` | a tainted episode is user-approved | `SessionID` |
+| `episode_pending_review` | an untrusted episode is stored but excluded from recall | `SessionID` |
+
+Notifiers must be non-blocking — fact writes fire mid-loop and episode events
+fire from the post-session background goroutines.
+
+The agent loop also emits `loop.SignalEvent`s for previously-silent self-healing
+(`context_trimmed` when message groups are dropped to fit the context window,
+`tool_recovery` when a repeatedly-failing tool triggers a corrective hint),
+surfaced the same way via `Config.AgentSignalHandler`.
+
 ## Architecture
 
 ### Episode Index Caching

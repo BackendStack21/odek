@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/BackendStack21/odek/internal/session"
 )
@@ -143,6 +144,10 @@ type MemoryManager struct {
 	llm      LLMClient
 	cfg      MemoryConfig
 
+	// notifier receives memory lifecycle events (facts + episodes). Defaults to
+	// a NoopMemoryNotifier so the fire path is always safe without a nil check.
+	notifier MemoryNotifier
+
 	// prompt caching avoids rebuilding the system prompt block on every
 	// iteration when memory hasn't changed. The cache is invalidated
 	// whenever facts or buffer are modified.
@@ -239,7 +244,33 @@ func NewMemoryManager(memoryDir string, llc LLMClient, cfg MemoryConfig) *Memory
 		merge:    mergeDetector,
 		llm:      llc,
 		cfg:      cfg,
+		notifier: NoopMemoryNotifier{},
 	}
+}
+
+// SetNotifier replaces the memory lifecycle notifier and propagates it to the
+// underlying EpisodeStore so fact AND episode events share one sink. If n is
+// nil a NoopMemoryNotifier is used so callers never have to nil-check.
+func (m *MemoryManager) SetNotifier(n MemoryNotifier) {
+	if n == nil {
+		n = NoopMemoryNotifier{}
+	}
+	m.notifier = n
+	if m.episodes != nil {
+		m.episodes.SetNotifier(n)
+	}
+}
+
+// notify fires an event on the configured notifier, stamping the UTC timestamp
+// when the caller left it zero. Safe even before SetNotifier (nil → no-op).
+func (m *MemoryManager) notify(ev MemoryEvent) {
+	if m.notifier == nil {
+		return
+	}
+	if ev.Timestamp.IsZero() {
+		ev.Timestamp = time.Now().UTC()
+	}
+	m.notifier.Notify(ev)
 }
 
 // ── Fact Operations ─────────────────────────────────────────────────
@@ -292,6 +323,13 @@ func (m *MemoryManager) AddFact(target, content string) error {
 				}
 				// Update merge detector incrementally — only re-embed the changed entry
 				m.merge.ReplaceEntry(similarIdx, merged)
+				m.markPromptDirty()
+				m.notify(MemoryEvent{
+					Type:       "fact_merged",
+					Target:     target,
+					Content:    merged,
+					Similarity: similarity,
+				})
 				return nil
 			case "judge":
 				// Borderline similarity — add without blocking on an LLM judgment
@@ -307,11 +345,31 @@ func (m *MemoryManager) AddFact(target, content string) error {
 		}
 	}
 
+	// Detect a silent dedup (FactStore.Add no-ops when content already exists)
+	// so fact_added only fires for genuine additions. FactStore stores trimmed
+	// content, so compare against the trimmed form. Reuse the pre-add entries
+	// read for merge-on-write; otherwise read once.
+	trimmed := strings.TrimSpace(content)
+	preAdd := entries
+	if preAdd == nil {
+		preAdd, _ = m.facts.Entries(target)
+	}
+	existedBefore := false
+	for _, e := range preAdd {
+		if e == trimmed {
+			existedBefore = true
+			break
+		}
+	}
+
 	// Standard add
 	if err := m.facts.Add(target, content); err != nil {
 		return err
 	}
 	m.markPromptDirty()
+	if !existedBefore {
+		m.notify(MemoryEvent{Type: "fact_added", Target: target, Content: trimmed})
+	}
 
 	// Incrementally update merge detector instead of re-reading + re-embedding all.
 	// Check dedup: if content already existed in the entries we read at the top,
@@ -354,6 +412,7 @@ func (m *MemoryManager) ReplaceFact(target, oldText, content string) error {
 		return err
 	}
 	m.markPromptDirty()
+	m.notify(MemoryEvent{Type: "fact_replaced", Target: target, Content: strings.TrimSpace(content)})
 	// Re-fit merge detector
 	if m.cfg.MergeOnWrite != nil && *m.cfg.MergeOnWrite {
 		entries, _ := m.facts.Entries(target)
@@ -374,6 +433,7 @@ func (m *MemoryManager) RemoveFact(target, oldText string) error {
 		return err
 	}
 	m.markPromptDirty()
+	m.notify(MemoryEvent{Type: "fact_removed", Target: target, Content: strings.TrimSpace(oldText)})
 	// Re-fit merge detector
 	if m.cfg.MergeOnWrite != nil && *m.cfg.MergeOnWrite {
 		entries, _ := m.facts.Entries(target)
@@ -463,6 +523,7 @@ Entries for %s:
 	}
 
 	// Write back
+	before := len(entries)
 	if err := m.facts.writeEntries(target, newEntries); err != nil {
 		return err
 	}
@@ -471,6 +532,9 @@ Entries for %s:
 	if m.cfg.MergeOnWrite != nil && *m.cfg.MergeOnWrite {
 		entries, _ := m.facts.Entries(target)
 		m.merge.Fit(entries)
+		m.notify(MemoryEvent{Type: "fact_consolidated", Target: target, Count: before, NewCount: len(entries)})
+	} else {
+		m.notify(MemoryEvent{Type: "fact_consolidated", Target: target, Count: before, NewCount: len(newEntries)})
 	}
 	return nil
 }

@@ -52,6 +52,12 @@ type EpisodeStore struct {
 	idxCache []EpisodeMeta // cached index, nil = not loaded
 	muCache  sync.RWMutex  // fine-grained lock for cache reads
 
+	// notifier receives episode lifecycle events (stored, deduped, evicted,
+	// promoted, pending-review). Defaults to a NoopMemoryNotifier so callers
+	// never have to nil-check before firing. Set via SetNotifier, normally
+	// propagated from the owning MemoryManager.
+	notifier MemoryNotifier
+
 	// Lifecycle policy (see NewEpisodeStoreWithLifecycle). Zero values disable
 	// each mechanism, so the bare NewEpisodeStore constructor keeps the legacy
 	// behavior (no dedup, no eviction); production wiring supplies defaults via
@@ -89,7 +95,32 @@ func NewEpisodeStoreWithLifecycle(dir string, rankFn RankStrategy, dedupThreshol
 		dedupThreshold: dedupThreshold,
 		maxEpisodes:    maxEpisodes,
 		ttlDays:        ttlDays,
+		notifier:       NoopMemoryNotifier{},
 	}
+}
+
+// SetNotifier replaces the episode store's lifecycle notifier. If n is nil a
+// NoopMemoryNotifier is used so the fire path is always safe.
+func (e *EpisodeStore) SetNotifier(n MemoryNotifier) {
+	if n == nil {
+		n = NoopMemoryNotifier{}
+	}
+	e.mu.Lock()
+	e.notifier = n
+	e.mu.Unlock()
+}
+
+// notify fires an event on the configured notifier, stamping the timestamp if
+// the caller left it zero. Caller must hold e.mu (every call site already does,
+// or is single-threaded construction). Safe even if notifier is nil.
+func (e *EpisodeStore) notify(ev MemoryEvent) {
+	if e.notifier == nil {
+		return
+	}
+	if ev.Timestamp.IsZero() {
+		ev.Timestamp = time.Now().UTC()
+	}
+	e.notifier.Notify(ev)
 }
 
 // Write stores an episode summary for a session. Creates the episodes
@@ -144,8 +175,14 @@ func (e *EpisodeStore) writeLocked(sessionID, summary string, turns int, prov Ep
 	if e.dedupThreshold > 0 {
 		if dupIdx, sim := e.findDuplicate(summary, idx); dupIdx >= 0 && sim >= e.dedupThreshold {
 			if trustRank(prov) >= trustRank(idx[dupIdx].Provenance) {
-				e.removeEpisodeFile(idx[dupIdx].SessionID)
+				deduped := idx[dupIdx].SessionID
+				e.removeEpisodeFile(deduped)
 				idx = append(idx[:dupIdx], idx[dupIdx+1:]...)
+				e.notify(MemoryEvent{
+					Type:       "episode_deduped",
+					SessionID:  deduped,
+					Similarity: sim,
+				})
 			}
 		}
 	}
@@ -177,6 +214,23 @@ func (e *EpisodeStore) writeLocked(sessionID, summary string, turns int, prov Ep
 	// Mark the vector index dirty so it rebuilds on the next recall, picking up
 	// the new episode and dropping any evicted/replaced ids.
 	sharedEpisodeIndex(e.dir).markDirty()
+
+	// Surface lifecycle signals only after the write has durably succeeded.
+	e.notify(MemoryEvent{
+		Type:      "episode_stored",
+		SessionID: sessionID,
+		Content:   truncateForIndex(summary),
+		Count:     turns,
+		Untrusted: prov.Untrusted,
+	})
+	// An untrusted, unapproved episode is persisted but excluded from recall
+	// until `odek memory promote` — make that gap observable.
+	if prov.Untrusted && !prov.UserApproved && !prov.AutoApproved {
+		e.notify(MemoryEvent{Type: "episode_pending_review", SessionID: sessionID})
+	}
+	if len(removed) > 0 {
+		e.notify(MemoryEvent{Type: "episode_evicted", Sessions: removed, Count: len(removed)})
+	}
 	return nil
 }
 
@@ -390,7 +444,11 @@ func (e *EpisodeStore) Promote(sessionID string) error {
 	if !found {
 		return fmt.Errorf("memory: episode %q not found", sessionID)
 	}
-	return e.writeIndex(idx)
+	if err := e.writeIndex(idx); err != nil {
+		return err
+	}
+	e.notify(MemoryEvent{Type: "episode_promoted", SessionID: sessionID})
+	return nil
 }
 
 // PendingReview returns the episodes that are untrusted and not yet
@@ -437,6 +495,7 @@ func (e *EpisodeStore) Prune() error {
 		return err
 	}
 	sharedEpisodeIndex(e.dir).markDirty()
+	e.notify(MemoryEvent{Type: "episode_evicted", Sessions: removed, Count: len(removed)})
 	return nil
 }
 

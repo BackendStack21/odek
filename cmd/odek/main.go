@@ -827,6 +827,11 @@ func run(args []string) error {
 		rend.WithSkillVerbose(resolved.Skills.Verbose)
 	}
 
+	// Surface memory lifecycle + agent-signal notifications in verbose mode so
+	// fact/episode activity and silent recoveries (context trim, tool recovery)
+	// are observable without flooding the default terminal output.
+	rend.WithMemoryVerbose(resolved.InteractionMode == "verbose")
+
 	// Resolve skills config pointer (only when learn mode is enabled)
 	var skillsCfg *skills.SkillsConfig
 	if resolved.Skills.Learn {
