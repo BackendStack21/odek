@@ -22,11 +22,13 @@ RUN CGO_ENABLED=0 go build -ldflags "-s -w" -o /out/odek ./cmd/odek
 # so the musl ABI matches; OpenMP is disabled to keep the runtime dependency
 # surface down to just libstdc++. To ship a different model, override the build
 # arg: `--build-arg WHISPER_MODEL=base` (tiny | base | small | medium) — size
-# and RAM grow accordingly.
+# and RAM grow accordingly. WHISPER_VERSION pins the whisper.cpp release so the
+# build is reproducible — bump it deliberately rather than tracking master.
 FROM alpine:latest AS whisper
 ARG WHISPER_MODEL=tiny
+ARG WHISPER_VERSION=v1.8.6
 RUN apk add --no-cache git cmake make g++ musl-dev curl
-RUN git clone --depth 1 https://github.com/ggerganov/whisper.cpp /whisper
+RUN git clone --depth 1 --branch "${WHISPER_VERSION}" https://github.com/ggerganov/whisper.cpp /whisper
 WORKDIR /whisper
 RUN cmake -B build \
       -DCMAKE_BUILD_TYPE=Release \
