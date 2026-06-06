@@ -105,6 +105,28 @@ Taint is decided per tool call by `memory.ToolCallTaints` (the single source of 
 - **Always untrusted:** `browser`, `http_batch`, `transcribe` (network / opaque-audio content), `session_search` (recall of prior-session transcripts, which may carry earlier-injected text), and any MCP tool (`server__tool`).
 - **Path-reading tools** (`read_file`, `search_files`, `multi_grep`, `batch_read`, `json_query`, `head_tail`, `count_lines`, `checksum`, `word_count`, `sort`, `tr`, `diff`, `file_info`, `glob`, `tree`, `base64`) taint when **any** of their path arguments resolves **outside the workspace trust zone** — the workspace dir, the sandbox `/workspace` mount, or `~/.odek`. Reads confined to the workspace stay trusted, so ordinary coding sessions remain recallable; reads of anything else (system/credential paths, home files, sibling repos) taint. The check is a workspace-containment allowlist rather than a sensitive-path denylist, and it resolves symlinks (so e.g. `/etc` → `/private/etc` on macOS cannot disguise an escape). A malformed argument string is treated conservatively as untrusted. When adding a new file-reading tool, add it to `PathReadingTools`.
 
+**Auto-extracted durable facts are opt-in and trusted-only.** At session end odek
+can also extract durable facts into `user.md`/`env.md` (`memory.extract_facts`).
+It is **off by default** — facts are injected into **every** system prompt, so a
+poisoned fact is worse than a poisoned episode. When enabled, auto-fact-extraction
+runs **only for trusted sessions** (`!Untrusted`, same `DeriveProvenance` gate):
+a session that touched web/MCP/out-of-workspace content writes no durable facts
+automatically; the human can still add them via the `memory` tool after review.
+
+**Residual risk (be aware).** The `!Untrusted` gate covers content the agent
+ingested via *tools*. It does **not** cover untrusted text that entered the
+*conversation* by other means (e.g. the user pasting an attacker-controlled
+snippet into a chat that otherwise stayed trusted) — that text is still
+summarized by the extractor and could surface as a durable fact. This is
+mitigated, not eliminated: the extractor is instructed to treat the conversation
+as data and never record actionable instructions; a download-and-execute /
+pipe-to-shell filter (`FactLooksUnsafe`) drops the concrete "run this" exploit
+class; and `ScanContent` strips injection patterns/credentials. A determined
+injection of a *plausible, non-command* fact remains possible, so periodically
+review stored facts (`memory` read). Turning conversation into always-injected
+memory carries irreducible residual risk — set `extract_facts: false` to opt out
+entirely.
+
 To use a tainted episode anyway, the user explicitly promotes it (sets `UserApproved=true`) from the CLI:
 
 ```

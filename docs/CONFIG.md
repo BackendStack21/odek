@@ -196,6 +196,7 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
     "buffer_enabled": true,
     "merge_on_write": true,
     "extract_on_end": true,
+    "extract_facts": false,
     "llm_search": true,
     "llm_extract": true,
     "llm_consolidate": true,
@@ -215,12 +216,45 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
 | `buffer_enabled` | true | Enable the turn-level buffer |
 | `merge_on_write` | true | Use go-vector RP similarity to auto-merge related entries |
 | `extract_on_end` | true | At session end (≥3 turns), extract a narrative episode summary via LLM for later recall |
+| `extract_facts` | **false** | **Opt-in.** At session end (≥3 turns), auto-extract a few **durable** facts (stable user preferences, project invariants) into `user.md`/`env.md`. Off by default — see the security note below. Independent of `extract_on_end`; to disable *all* end-of-session LLM extraction set `llm_extract: false`. |
 | `llm_search` | true | Use LLM to rank episode search results by relevance |
 | `llm_extract` | true | Use LLM for end-of-session fact extraction |
 | `llm_consolidate` | true | Use LLM to merge related fact entries |
 | `merge_threshold` | 0.7 | go-vector cosine threshold for auto-merge (0.0–1.0) |
 | `add_threshold` | 0.3 | go-vector cosine threshold for auto-add (0.0–1.0) |
 | `auto_approve_episodes` | false | **Security trade-off.** When true, untrusted episodes (sessions that touched web/MCP/out-of-workspace content) are auto-approved at session end so they are recalled without a manual `odek memory promote`. Leaving it `false` keeps the human review gate (recommended). |
+
+### ⚠️ `extract_facts` — automatic fact learning (opt-in, off by default)
+
+When enabled, after each session of ≥3 turns odek asks the LLM to pull a few
+**durable** facts from the conversation — stable user preferences (`user.md`) and
+project/environment invariants (`env.md`) — so it learns them without you calling
+the `memory` tool. Facts are injected into **every** system prompt.
+
+**Why it is off by default.** Turning conversation into always-injected memory is
+a *persistent prompt-injection* surface. Several guards apply when it is on:
+
+- It runs **only for trusted sessions** — a session that ingested untrusted
+  content via tools (web, MCP, out-of-workspace file reads) writes no facts.
+- The extractor is instructed to treat the conversation as **data**, never to act
+  on instructions in it, and never to record "download-and-run" style content.
+- A download-and-execute / pipe-to-shell filter drops the obvious exploit class,
+  and the standard injection/credential scan, merge-on-write dedup, and char caps
+  all still apply. A per-session count cap limits how many facts one session adds.
+
+**The residual risk these do NOT remove:** the trusted-session gate only covers
+content the agent fetched via *tools* — it does **not** cover untrusted text that
+enters the *conversation* another way (e.g. you paste an attacker-controlled
+snippet into a chat that otherwise stayed trusted). Such text is summarized by
+the extractor and a *plausible, non-command* fact could still be stored and then
+injected into every future prompt. This cannot be fully eliminated while the
+feature is on.
+
+**Recommendation.** Leave `extract_facts: false` (the default) on any host that
+processes untrusted input. Enable it only in trusted, single-user setups where
+you accept the trade-off, and periodically review stored facts with the `memory`
+tool (`read`) — or remove a bad one with `memory remove`. To turn off *all*
+end-of-session LLM extraction (episodes and facts), set `llm_extract: false`.
 
 ## Sub-agent configuration
 

@@ -45,6 +45,27 @@ func ScanContent(content string) error {
 	return nil
 }
 
+// remoteExecRe / evalFetchRe match the download-and-execute / pipe-to-shell
+// class of instruction — the shape a poisoned "fact" would take to turn the
+// always-injected fact files into a persistent backdoor. They are deliberately
+// NARROW: legitimate command facts a session should remember (e.g. "go test
+// ./...", "make build", "uses Postgres on :5432") do not match — only a remote
+// fetch piped into a shell, or eval/source of a fetched command, do.
+var (
+	remoteExecRe = regexp.MustCompile(`(?i)\b(curl|wget|fetch|iwr|invoke-webrequest)\b[^\n|]*\|\s*\w*sh\b`)
+	evalFetchRe  = regexp.MustCompile(`(?i)\b(eval|exec|source)\b[^\n]*\$\(\s*(curl|wget|fetch)\b`)
+)
+
+// FactLooksUnsafe reports whether a fact embeds a download-and-execute /
+// pipe-to-shell instruction. It is applied ONLY to AUTO-extracted facts (which
+// are lower-trust and injected into every system prompt), not to facts the user
+// adds explicitly via the memory tool. It does not catch every malicious fact —
+// turning conversation into durable memory has an irreducible residual risk —
+// but it closes the concrete download-and-run class.
+func FactLooksUnsafe(fact string) bool {
+	return remoteExecRe.MatchString(fact) || evalFetchRe.MatchString(fact)
+}
+
 // hasInvisibleUnicode checks for zero-width characters, direction overrides, BOM.
 func hasInvisibleUnicode(s string) bool {
 	for _, r := range s {
