@@ -94,6 +94,34 @@ func TestSummarizeForBuffer_HardCutSingleLongToken(t *testing.T) {
 	}
 }
 
+// TestSummarizeForBuffer_EarlyAbbreviationNoCollapse guards against an early,
+// lone sentence terminator (abbreviation / version / domain) collapsing the
+// excerpt to a few runes. The cut must fall back to the word boundary near the
+// cap and retain most of the content.
+func TestSummarizeForBuffer_EarlyAbbreviationNoCollapse(t *testing.T) {
+	cases := []string{
+		"e.g., " + strings.Repeat("we should refactor the module ", 20),
+		"node.js " + strings.Repeat("is a runtime for building scalable apps ", 20),
+		"v1.2 " + strings.Repeat("introduces many features and improvements ", 20),
+	}
+	for _, in := range cases {
+		got := summarizeForBuffer(in)
+		if n := utf8.RuneCountInString(got); n < maxBufferSummaryRunes/2 {
+			t.Errorf("early-abbreviation excerpt collapsed to %d runes: %q", n, got)
+		}
+	}
+}
+
+// TestSummarizeForBuffer_UnclosedFence ensures an unclosed code fence leaves no
+// stray backticks in the summary.
+func TestSummarizeForBuffer_UnclosedFence(t *testing.T) {
+	in := "Here is some code:\n```go\nfunc main() { panic() }\nand more text after"
+	got := summarizeForBuffer(in)
+	if strings.Contains(got, "`") {
+		t.Errorf("summary contains a leftover backtick: %q", got)
+	}
+}
+
 func TestSummarizeForBuffer_MultibyteBoundarySafe(t *testing.T) {
 	// A long run of 3-byte runes with no spaces/sentence ends: must hard-cut on a
 	// rune boundary, never splitting a rune.

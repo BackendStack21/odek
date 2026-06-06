@@ -48,8 +48,10 @@ func summarizeForBuffer(text string) string {
 	hadCode := reCodeFence.MatchString(text)
 	text = reCodeFence.ReplaceAllString(text, " ")
 
-	// 2. Inline code -> inner text.
+	// 2. Inline code -> inner text, then drop any residual backticks (e.g. from
+	//    an unclosed fence that step 1 could not match).
 	text = reInlineCode.ReplaceAllString(text, "$1")
+	text = strings.ReplaceAll(text, "`", "")
 
 	// 3. Images/links -> their visible text.
 	text = reMdImage.ReplaceAllString(text, "$1")
@@ -84,6 +86,11 @@ func summarizeForBuffer(text string) string {
 // cuts at the last sentence terminator (.!?) before the cap, else the last
 // space, else hard-cuts at the cap — always on a rune boundary — and appends an
 // ellipsis. Never splits a multibyte rune.
+//
+// A sentence cut is only preferred when it lands at least halfway through the
+// window. Otherwise a single early terminator (an abbreviation like "e.g.", a
+// version "v1.2", or a domain "node.js") would collapse the summary to a few
+// runes; in that case we fall back to the word boundary near the cap instead.
 func excerptRunes(s string, max int) string {
 	if utf8.RuneCountInString(s) <= max {
 		return s
@@ -97,8 +104,10 @@ func excerptRunes(s string, max int) string {
 			cut = i + 1 // include the terminator
 		}
 	}
-	if cut <= 0 {
-		// No sentence end; fall back to the last word boundary.
+	if cut < max/2 {
+		// No (or only an early) sentence end; fall back to the last word
+		// boundary so we keep as much content as possible.
+		cut = -1
 		for i := len(window) - 1; i >= 0; i-- {
 			if window[i] == ' ' {
 				cut = i
