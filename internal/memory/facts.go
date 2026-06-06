@@ -46,11 +46,15 @@ const entrySep = "\n§\n"
 
 // FactStore manages typed fact files (user.md and env.md) with character caps,
 // duplicate prevention, and entry-level CRUD via substring matching.
-// All write operations are protected by a mutex to prevent TOCTOU races
-// between concurrent sessions sharing the same memory directory.
-// The mutex guards only the in-memory read+parse+modify phase;
-// the final disk write happens outside the lock to avoid blocking
-// other sessions during file I/O.
+//
+// Concurrency: the per-instance mutex serializes the read+parse+modify+write of
+// a single FactStore. Because each odek session builds its own MemoryManager /
+// FactStore over the *same* memory directory, cross-instance serialization on a
+// shared directory is provided one level up by the MemoryManager per-directory
+// lock (factsDirLock) wrapping the full read-modify-write — without it,
+// concurrent session-end writes would lose each other's updates. Disk writes go
+// to a unique temp file + atomic rename, so concurrent writers never clobber a
+// shared temp file.
 type FactStore struct {
 	mu      sync.Mutex
 	dir     string
@@ -297,17 +301,33 @@ func (f *FactStore) Entries(target string) ([]string, error) {
 	return parseEntries(existing), nil
 }
 
-// writeEntries joins entries and writes to disk atomically (temp + rename).
-// Caller must hold f.mu.
+// writeEntries joins entries and writes them to disk atomically. It writes to a
+// UNIQUE temp file in the same directory and renames it into place, so two
+// FactStore instances writing the same directory concurrently can never clobber
+// a shared temp file. Caller must hold f.mu.
 func (f *FactStore) writeEntries(target string, entries []string) error {
 	content := strings.Join(entries, entrySep)
 	path := f.path(target)
-	tmpPath := path + ".tmp"
 
-	if err := os.WriteFile(tmpPath, []byte(content), 0600); err != nil {
+	tmp, err := os.CreateTemp(f.dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmpPath, path)
+	tmpName := tmp.Name()
+	if _, err := tmp.Write([]byte(content)); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return nil
 }
 
 // parseEntries splits file content into individual entries.

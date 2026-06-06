@@ -216,7 +216,7 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
 | `buffer_enabled` | true | Enable the turn-level buffer |
 | `merge_on_write` | true | Use go-vector RP similarity to auto-merge related entries |
 | `extract_on_end` | true | At session end (≥3 turns), extract a narrative episode summary via LLM for later recall |
-| `extract_facts` | true | At session end (≥3 turns), auto-extract a few **durable** facts (stable user preferences, project invariants) into `user.md`/`env.md`. Runs **only for trusted sessions** (untrusted ones — web/MCP/out-of-workspace reads — are skipped, since facts are injected into every prompt). Capped per session; each fact still passes the injection scan, merge-on-write dedup, and char caps. |
+| `extract_facts` | true | At session end (≥3 turns), auto-extract a few **durable** facts (stable user preferences, project invariants) into `user.md`/`env.md`. Runs **only for trusted sessions** (untrusted ones — web/MCP/out-of-workspace reads — are skipped, since facts are injected into every prompt). Capped per session; each fact still passes the injection scan, a download-and-execute filter, merge-on-write dedup, and char caps. **Independent of `extract_on_end`** — it fires its own session-end LLM call even when episodes are off; to disable *all* end-of-session LLM extraction set `llm_extract: false`. |
 | `llm_search` | true | Use LLM to rank episode search results by relevance |
 | `llm_extract` | true | Use LLM for end-of-session fact extraction |
 | `llm_consolidate` | true | Use LLM to merge related fact entries |

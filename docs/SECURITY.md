@@ -113,6 +113,20 @@ sessions** (`!Untrusted`, same `DeriveProvenance` gate). A session that touched
 web/MCP/out-of-workspace content writes no durable facts automatically; the human
 can still add them via the `memory` tool after review.
 
+**Residual risk (be aware).** The `!Untrusted` gate covers content the agent
+ingested via *tools*. It does **not** cover untrusted text that entered the
+*conversation* by other means (e.g. the user pasting an attacker-controlled
+snippet into a chat that otherwise stayed trusted) — that text is still
+summarized by the extractor and could surface as a durable fact. This is
+mitigated, not eliminated: the extractor is instructed to treat the conversation
+as data and never record actionable instructions; a download-and-execute /
+pipe-to-shell filter (`FactLooksUnsafe`) drops the concrete "run this" exploit
+class; and `ScanContent` strips injection patterns/credentials. A determined
+injection of a *plausible, non-command* fact remains possible, so periodically
+review stored facts (`memory` read). Turning conversation into always-injected
+memory carries irreducible residual risk — set `extract_facts: false` to opt out
+entirely.
+
 To use a tainted episode anyway, the user explicitly promotes it (sets `UserApproved=true`) from the CLI:
 
 ```
