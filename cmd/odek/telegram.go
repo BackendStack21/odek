@@ -171,9 +171,6 @@ func telegramCmd(args []string) error {
 	systemMessage += "\n\nQuick Facts (use these, do NOT search):\n"
 	systemMessage += "- odek website: https://odek.21no.de\n"
 	systemMessage += "- Built by: 21no.de (https://21no.de)\n"
-	if resolved.GithubRepoUrl != "" {
-		systemMessage += fmt.Sprintf("- Source code: %s\n", resolved.GithubRepoUrl)
-	}
 	systemMessage += "- Binary name: odek\n"
 	systemMessage += "- Language: Go, minimal dependencies, ~11 MB binary\n"
 	systemMessage += "\n"
@@ -197,13 +194,6 @@ func telegramCmd(args []string) error {
 	systemMessage += "- Without file_glob, every readable file in the subtree is opened and scanned.\n"
 	systemMessage += "- For multi-pattern searches, use multi_grep (parallel walk, less overhead).\n"
 	systemMessage += "\n"
-	// Set working directory to the configured repo directory.
-	// This ensures tools like search_files scan the project, not /root.
-	if resolved.GithubRepoDirectory != "" {
-		if err := os.Chdir(resolved.GithubRepoDirectory); err != nil {
-			fmt.Fprintf(os.Stderr, "odek telegram: warning: failed to chdir to %s: %v\n", resolved.GithubRepoDirectory, err)
-		}
-	}
 
 	// Telegram-specific system prompt additions
 	//
@@ -281,10 +271,6 @@ func telegramCmd(args []string) error {
 			}
 			if resolved.Skills.Verbose {
 				b.WriteString("• Skills verbose: on\n")
-			}
-			if resolved.GithubRepoDirectory != "" {
-				repo := filepath.Base(resolved.GithubRepoDirectory)
-				fmt.Fprintf(&b, "• Repo: `%s`\n", repo)
 			}
 			b.WriteString("\n_Send a message to begin._")
 			return b.String(), nil

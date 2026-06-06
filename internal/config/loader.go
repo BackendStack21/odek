@@ -65,12 +65,6 @@ type CLIFlags struct {
 	SandboxUser     string
 	SandboxReadonly *bool // nil = not set
 
-	// GithubRepoDirectory is the path to the local clone of the project repo.
-	GithubRepoDirectory string
-
-	// GithubRepoUrl is the HTTPS URL of the project's GitHub repository.
-	GithubRepoUrl string
-
 	// InteractionMode controls how tool-call progress is surfaced.
 	// "engaging" (default) = emoji-rich narration, progress message edited.
 	// "enhance" = per-tool narrated messages appended, progress header kept.
@@ -172,18 +166,6 @@ type FileConfig struct {
 
 	// Schedules configures the native in-process task scheduler.
 	Schedules *SchedulesConfig `json:"schedules,omitempty"`
-
-	// GithubRepoDirectory is the path to the local clone of the project
-	// repository. Injected into the system prompt so the agent knows
-	// where source code lives and can self-correct.
-	// Config: github_repo_directory, ODEK_GITHUB_REPO_DIRECTORY.
-	GithubRepoDirectory string `json:"github_repo_directory,omitempty"`
-
-	// GithubRepoUrl is the HTTPS URL of the project's GitHub repository.
-	// Injected into the system prompt so the agent can reference the
-	// upstream repo for PRs, issues, and documentation links.
-	// Config: github_repo_url, ODEK_GITHUB_REPO_URL.
-	GithubRepoUrl string `json:"github_repo_url,omitempty"`
 
 	// InteractionMode controls how the agent communicates tool/progress updates.
 	// "engaging" (default) = emoji-rich narration, progress message edited.
@@ -294,13 +276,6 @@ type ResolvedConfig struct {
 	// Default: enabled=true, max_concurrent=2, timezone="UTC", catchup=false.
 	Schedules ScheduleConfig
 
-	// GithubRepoDirectory is the path to the local clone of the project
-	// repository. Injected into the system prompt.
-	GithubRepoDirectory string
-
-	// GithubRepoUrl is the HTTPS URL of the project's GitHub repository.
-	GithubRepoUrl string
-
 	// InteractionMode is the resolved interaction style.
 	// Values: "engaging" (default), "enhance", "verbose", or "off".
 	// "engaging" (default), "enhance", or "verbose".
@@ -372,8 +347,6 @@ func loadFile(path string) FileConfig {
 	cfg.SandboxMemory = expandEnv(cfg.SandboxMemory)
 	cfg.SandboxCPUs = expandEnv(cfg.SandboxCPUs)
 	cfg.SandboxUser = expandEnv(cfg.SandboxUser)
-	cfg.GithubRepoDirectory = expandEnv(cfg.GithubRepoDirectory)
-	cfg.GithubRepoUrl = expandEnv(cfg.GithubRepoUrl)
 	return cfg
 }
 
@@ -576,16 +549,6 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		cfg.MaxConcurrency = v
 	}
 
-	// Github repo directory env var
-	if v := envString("GITHUB_REPO_DIRECTORY"); v != "" {
-		cfg.GithubRepoDirectory = v
-	}
-
-	// Github repo URL env var
-	if v := envString("GITHUB_REPO_URL"); v != "" {
-		cfg.GithubRepoUrl = v
-	}
-
 	// InteractionMode env var
 	if v := envString("INTERACTION_MODE"); v != "" {
 		cfg.InteractionMode = v
@@ -673,12 +636,6 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if cli.SandboxUser != "" {
 		cfg.SandboxUser = cli.SandboxUser
 	}
-	if cli.GithubRepoDirectory != "" {
-		cfg.GithubRepoDirectory = cli.GithubRepoDirectory
-	}
-	if cli.GithubRepoUrl != "" {
-		cfg.GithubRepoUrl = cli.GithubRepoUrl
-	}
 	if cli.InteractionMode != "" {
 		cfg.InteractionMode = cli.InteractionMode
 	}
@@ -706,8 +663,6 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		Telegram:            resolveTelegram(cfg.Telegram),
 		Transcription:       resolveTranscription(cfg.Transcription),
 		Schedules:           resolveSchedules(cfg.Schedules),
-		GithubRepoDirectory: cfg.GithubRepoDirectory,
-		GithubRepoUrl:       cfg.GithubRepoUrl,
 		InteractionMode:     ifZero(cfg.InteractionMode, "engaging"),
 		ToolProgress:        ifZero(cfg.ToolProgress, "all"),
 	}
@@ -1102,12 +1057,6 @@ func overlayFile(base, override FileConfig) FileConfig {
 		for k, v := range override.MCPServers {
 			base.MCPServers[k] = v
 		}
-	}
-	if override.GithubRepoDirectory != "" {
-		base.GithubRepoDirectory = override.GithubRepoDirectory
-	}
-	if override.GithubRepoUrl != "" {
-		base.GithubRepoUrl = override.GithubRepoUrl
 	}
 	if override.InteractionMode != "" {
 		base.InteractionMode = override.InteractionMode

@@ -2018,8 +2018,7 @@ func TestBuildSystemPrompt_ExplicitSystemWins(t *testing.T) {
 	os.WriteFile(filepath.Join(homeDir, ".odek", "IDENTITY.md"), []byte("# Identity from file"), 0644)
 
 	resolved := config.ResolvedConfig{
-		System:              "Explicit system override",
-		GithubRepoDirectory: "/tmp/repo",
+		System: "Explicit system override",
 	}
 
 	got := buildSystemPrompt(resolved)
@@ -2028,9 +2027,6 @@ func TestBuildSystemPrompt_ExplicitSystemWins(t *testing.T) {
 	}
 	if strings.Contains(got, "Identity from file") {
 		t.Error("IDENTITY.md content should NOT appear when explicit System is set")
-	}
-	if !strings.Contains(got, "/tmp/repo") {
-		t.Error("repo directory should appear in prompt")
 	}
 }
 
@@ -2052,16 +2048,11 @@ func TestBuildSystemPrompt_FallsBackToIdentity(t *testing.T) {
 
 func TestBuildSystemPrompt_FallsBackToDefault(t *testing.T) {
 	_ = setupTestHome(t)
-	resolved := config.ResolvedConfig{
-		GithubRepoUrl: "https://github.com/test/repo",
-	}
+	resolved := config.ResolvedConfig{}
 
 	got := buildSystemPrompt(resolved)
 	if !strings.Contains(got, "You are odek") {
 		t.Error("expected defaultSystem identity when no override or IDENTITY.md")
-	}
-	if !strings.Contains(got, "https://github.com/test/repo") {
-		t.Error("repo URL should appear in prompt")
 	}
 }
 

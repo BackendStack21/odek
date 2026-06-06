@@ -62,9 +62,6 @@ func replCmd(args []string) error {
 		SandboxUser:     f.SandboxUser,
 	})
 	systemMessage := buildSystemPrompt(resolved)
-	if resolved.GithubRepoDirectory != "" {
-		systemMessage += " You can read and modify files here. When asked to update your own code, this is where the source lives."
-	}
 
 	// session resume
 	if sess != nil && sess.Sandbox && !resolved.Sandbox {
