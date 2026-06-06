@@ -4,24 +4,40 @@ import (
 	"context"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"unicode/utf8"
 )
 
 // mockLLM is a simple LLMClient mock for testing.
+//
+// SimpleCall is concurrency-safe: OnSessionEndWithProvenance legitimately calls
+// the LLM from two goroutines at once (synchronous episode extraction + the
+// background consolidation goroutine), so the mock must guard its shared state
+// or `go test -race` flags a write/write race on lastUser.
 type mockLLM struct {
-	responses map[string]string // query prefix → response
+	responses map[string]string // query prefix → response (read-only after init)
+	mu        sync.Mutex        // guards lastUser
 	lastUser  string            // captured last user prompt
 }
 
 func (m *mockLLM) SimpleCall(ctx context.Context, system, user string) (string, error) {
+	m.mu.Lock()
 	m.lastUser = user
+	m.mu.Unlock()
 	for prefix, resp := range m.responses {
 		if strings.Contains(system, prefix) || strings.Contains(user, prefix) {
 			return resp, nil
 		}
 	}
 	return "", nil
+}
+
+// getLastUser returns the last captured user prompt under the lock.
+func (m *mockLLM) getLastUser() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastUser
 }
 
 func TestMemoryManagerAddAndReadFacts(t *testing.T) {
@@ -322,12 +338,13 @@ func TestOnSessionEnd_StructuredPrompt(t *testing.T) {
 		"user: great, please add tests",
 	})
 
-	if llm.lastUser == "" {
+	last := llm.getLastUser()
+	if last == "" {
 		t.Fatal("extraction LLM was not called")
 	}
-	lower := strings.ToLower(llm.lastUser)
+	lower := strings.ToLower(last)
 	if !strings.Contains(lower, "user:") && !strings.Contains(lower, "assistant:") {
-		t.Error("extraction prompt should contain user:/assistant: labels, got:\n" + llm.lastUser)
+		t.Error("extraction prompt should contain user:/assistant: labels, got:\n" + last)
 	}
 }
 
