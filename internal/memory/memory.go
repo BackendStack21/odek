@@ -273,6 +273,19 @@ func (m *MemoryManager) notify(ev MemoryEvent) {
 	m.notifier.Notify(ev)
 }
 
+// fireAfterUnlock releases lock, then fans out the collected events. Used as
+// `defer m.fireAfterUnlock(lock, &pending)` so fact lifecycle events are never
+// delivered while the shared facts-dir lock is held — a notifier runs arbitrary
+// caller code (a WebSocket send under `odek serve`, or a handler that could
+// re-enter AddFact), and firing under the lock would serialize fact writes
+// across every MemoryManager sharing the dir and risk a reentrancy deadlock.
+func (m *MemoryManager) fireAfterUnlock(lock *sync.Mutex, events *[]MemoryEvent) {
+	lock.Unlock()
+	for _, ev := range *events {
+		m.notify(ev)
+	}
+}
+
 // ── Fact Operations ─────────────────────────────────────────────────
 
 // AddFact appends a new fact entry. Performs:
@@ -289,7 +302,8 @@ func (m *MemoryManager) AddFact(target, content string) error {
 	// Serialize the whole read-modify-write across instances sharing this dir.
 	lock := factsDirLock(m.facts.dir)
 	lock.Lock()
-	defer lock.Unlock()
+	var pending []MemoryEvent
+	defer m.fireAfterUnlock(lock, &pending)
 
 	// Security scan
 	if err := ScanContent(content); err != nil {
@@ -324,7 +338,7 @@ func (m *MemoryManager) AddFact(target, content string) error {
 				// Update merge detector incrementally — only re-embed the changed entry
 				m.merge.ReplaceEntry(similarIdx, merged)
 				m.markPromptDirty()
-				m.notify(MemoryEvent{
+				pending = append(pending, MemoryEvent{
 					Type:       "fact_merged",
 					Target:     target,
 					Content:    merged,
@@ -368,7 +382,7 @@ func (m *MemoryManager) AddFact(target, content string) error {
 	}
 	m.markPromptDirty()
 	if !existedBefore {
-		m.notify(MemoryEvent{Type: "fact_added", Target: target, Content: trimmed})
+		pending = append(pending, MemoryEvent{Type: "fact_added", Target: target, Content: trimmed})
 	}
 
 	// Incrementally update merge detector instead of re-reading + re-embedding all.
@@ -404,7 +418,8 @@ func (m *MemoryManager) ReplaceFact(target, oldText, content string) error {
 	}
 	lock := factsDirLock(m.facts.dir)
 	lock.Lock()
-	defer lock.Unlock()
+	var pending []MemoryEvent
+	defer m.fireAfterUnlock(lock, &pending)
 	if err := ScanContent(content); err != nil {
 		return err
 	}
@@ -412,7 +427,7 @@ func (m *MemoryManager) ReplaceFact(target, oldText, content string) error {
 		return err
 	}
 	m.markPromptDirty()
-	m.notify(MemoryEvent{Type: "fact_replaced", Target: target, Content: strings.TrimSpace(content)})
+	pending = append(pending, MemoryEvent{Type: "fact_replaced", Target: target, Content: strings.TrimSpace(content)})
 	// Re-fit merge detector
 	if m.cfg.MergeOnWrite != nil && *m.cfg.MergeOnWrite {
 		entries, _ := m.facts.Entries(target)
@@ -428,12 +443,13 @@ func (m *MemoryManager) RemoveFact(target, oldText string) error {
 	}
 	lock := factsDirLock(m.facts.dir)
 	lock.Lock()
-	defer lock.Unlock()
+	var pending []MemoryEvent
+	defer m.fireAfterUnlock(lock, &pending)
 	if err := m.facts.Remove(target, oldText); err != nil {
 		return err
 	}
 	m.markPromptDirty()
-	m.notify(MemoryEvent{Type: "fact_removed", Target: target, Content: strings.TrimSpace(oldText)})
+	pending = append(pending, MemoryEvent{Type: "fact_removed", Target: target, Content: strings.TrimSpace(oldText)})
 	// Re-fit merge detector
 	if m.cfg.MergeOnWrite != nil && *m.cfg.MergeOnWrite {
 		entries, _ := m.facts.Entries(target)
@@ -472,7 +488,8 @@ func (m *MemoryManager) Consolidate(target string) error {
 	// lock is acceptable.
 	lock := factsDirLock(m.facts.dir)
 	lock.Lock()
-	defer lock.Unlock()
+	var pending []MemoryEvent
+	defer m.fireAfterUnlock(lock, &pending)
 
 	entries, err := m.facts.Entries(target)
 	if err != nil {
@@ -532,9 +549,9 @@ Entries for %s:
 	if m.cfg.MergeOnWrite != nil && *m.cfg.MergeOnWrite {
 		entries, _ := m.facts.Entries(target)
 		m.merge.Fit(entries)
-		m.notify(MemoryEvent{Type: "fact_consolidated", Target: target, Count: before, NewCount: len(entries)})
+		pending = append(pending, MemoryEvent{Type: "fact_consolidated", Target: target, Count: before, NewCount: len(entries)})
 	} else {
-		m.notify(MemoryEvent{Type: "fact_consolidated", Target: target, Count: before, NewCount: len(newEntries)})
+		pending = append(pending, MemoryEvent{Type: "fact_consolidated", Target: target, Count: before, NewCount: len(newEntries)})
 	}
 	return nil
 }

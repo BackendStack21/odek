@@ -110,17 +110,24 @@ func (e *EpisodeStore) SetNotifier(n MemoryNotifier) {
 	e.mu.Unlock()
 }
 
-// notify fires an event on the configured notifier, stamping the timestamp if
-// the caller left it zero. Caller must hold e.mu (every call site already does,
-// or is single-threaded construction). Safe even if notifier is nil.
-func (e *EpisodeStore) notify(ev MemoryEvent) {
-	if e.notifier == nil {
+// notifyAll fires the given events on the configured notifier, stamping the
+// timestamp on any that left it zero. It MUST be called WITHOUT holding e.mu:
+// notifiers run arbitrary caller code (a WebSocket send under `odek serve`, or
+// a user handler that could re-enter the store), so firing under the lock would
+// serialize writes behind the sink and risk a reentrancy deadlock. Lifecycle
+// methods therefore collect events while locked and fan them out after Unlock.
+// Safe even if the notifier is nil.
+func (e *EpisodeStore) notifyAll(events []MemoryEvent) {
+	if e.notifier == nil || len(events) == 0 {
 		return
 	}
-	if ev.Timestamp.IsZero() {
-		ev.Timestamp = time.Now().UTC()
+	now := time.Now().UTC()
+	for _, ev := range events {
+		if ev.Timestamp.IsZero() {
+			ev.Timestamp = now
+		}
+		e.notifier.Notify(ev)
 	}
-	e.notifier.Notify(ev)
 }
 
 // Write stores an episode summary for a session. Creates the episodes
@@ -150,8 +157,11 @@ func (e *EpisodeStore) WriteWithProvenance(sessionID, summary string, turns int,
 	}
 
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.writeLocked(sessionID, summary, turns, prov)
+	events, err := e.writeLocked(sessionID, summary, turns, prov)
+	e.mu.Unlock()
+	// Fan out lifecycle events only after releasing the lock (see notifyAll).
+	e.notifyAll(events)
+	return err
 }
 
 // writeLocked performs the full episode write under e.mu: dedup against
@@ -159,8 +169,10 @@ func (e *EpisodeStore) WriteWithProvenance(sessionID, summary string, turns int,
 // mark the vector index dirty. File mutations happen before writeIndex, which
 // happens before markDirty, so a crash leaves at most a dangling index entry
 // (rebuild/recall tolerate a missing .md) rather than an orphan file in the
-// index. Caller must hold e.mu.
-func (e *EpisodeStore) writeLocked(sessionID, summary string, turns int, prov EpisodeProvenance) error {
+// index. Caller must hold e.mu. Lifecycle events are returned (not fired) so the
+// caller can fan them out after releasing the lock (see notifyAll).
+func (e *EpisodeStore) writeLocked(sessionID, summary string, turns int, prov EpisodeProvenance) ([]MemoryEvent, error) {
+	var events []MemoryEvent
 	idx, err := e.ReadIndex()
 	if err != nil {
 		idx = []EpisodeMeta{}
@@ -178,7 +190,7 @@ func (e *EpisodeStore) writeLocked(sessionID, summary string, turns int, prov Ep
 				deduped := idx[dupIdx].SessionID
 				e.removeEpisodeFile(deduped)
 				idx = append(idx[:dupIdx], idx[dupIdx+1:]...)
-				e.notify(MemoryEvent{
+				events = append(events, MemoryEvent{
 					Type:       "episode_deduped",
 					SessionID:  deduped,
 					Similarity: sim,
@@ -190,7 +202,7 @@ func (e *EpisodeStore) writeLocked(sessionID, summary string, turns int, prov Ep
 	// Write the summary file.
 	path := filepath.Join(e.dir, sessionID+".md")
 	if err := os.WriteFile(path, []byte(summary), 0600); err != nil {
-		return fmt.Errorf("memory: write episode: %w", err)
+		return events, fmt.Errorf("memory: write episode: %w", err)
 	}
 
 	idx = append(idx, EpisodeMeta{
@@ -208,15 +220,16 @@ func (e *EpisodeStore) writeLocked(sessionID, summary string, turns int, prov Ep
 	}
 
 	if err := e.writeIndex(idx); err != nil {
-		return err
+		return events, err
 	}
 
 	// Mark the vector index dirty so it rebuilds on the next recall, picking up
 	// the new episode and dropping any evicted/replaced ids.
 	sharedEpisodeIndex(e.dir).markDirty()
 
-	// Surface lifecycle signals only after the write has durably succeeded.
-	e.notify(MemoryEvent{
+	// Collect lifecycle signals only after the write has durably succeeded. They
+	// are fired by the caller once e.mu is released (see notifyAll).
+	events = append(events, MemoryEvent{
 		Type:      "episode_stored",
 		SessionID: sessionID,
 		Content:   truncateForIndex(summary),
@@ -226,12 +239,12 @@ func (e *EpisodeStore) writeLocked(sessionID, summary string, turns int, prov Ep
 	// An untrusted, unapproved episode is persisted but excluded from recall
 	// until `odek memory promote` — make that gap observable.
 	if prov.Untrusted && !prov.UserApproved && !prov.AutoApproved {
-		e.notify(MemoryEvent{Type: "episode_pending_review", SessionID: sessionID})
+		events = append(events, MemoryEvent{Type: "episode_pending_review", SessionID: sessionID})
 	}
 	if len(removed) > 0 {
-		e.notify(MemoryEvent{Type: "episode_evicted", Sessions: removed, Count: len(removed)})
+		events = append(events, MemoryEvent{Type: "episode_evicted", Sessions: removed, Count: len(removed)})
 	}
-	return nil
+	return events, nil
 }
 
 // WriteIfEnough calls Write only if turns >= threshold.
@@ -425,10 +438,10 @@ func (e *EpisodeStore) Promote(sessionID string) error {
 		return fmt.Errorf("memory: episodes promote: %w", err)
 	}
 	e.mu.Lock()
-	defer e.mu.Unlock()
 
 	idx, err := e.ReadIndex()
 	if err != nil {
+		e.mu.Unlock()
 		return err
 	}
 	found := false
@@ -436,18 +449,23 @@ func (e *EpisodeStore) Promote(sessionID string) error {
 		if idx[i].SessionID == sessionID {
 			found = true
 			if idx[i].Provenance.UserApproved {
+				e.mu.Unlock()
 				return fmt.Errorf("memory: episode %q is already approved", sessionID)
 			}
 			idx[i].Provenance.UserApproved = true
 		}
 	}
 	if !found {
+		e.mu.Unlock()
 		return fmt.Errorf("memory: episode %q not found", sessionID)
 	}
 	if err := e.writeIndex(idx); err != nil {
+		e.mu.Unlock()
 		return err
 	}
-	e.notify(MemoryEvent{Type: "episode_promoted", SessionID: sessionID})
+	e.mu.Unlock()
+	// Fired after releasing the lock (see notifyAll).
+	e.notifyAll([]MemoryEvent{{Type: "episode_promoted", SessionID: sessionID}})
 	return nil
 }
 
@@ -475,27 +493,32 @@ func (e *EpisodeStore) PendingReview() ([]EpisodeMeta, error) {
 // No-op when both the cap and TTL are disabled.
 func (e *EpisodeStore) Prune() error {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 
 	if e.maxEpisodes <= 0 && e.ttlDays <= 0 {
+		e.mu.Unlock()
 		return nil
 	}
 	idx, err := e.ReadIndex()
 	if err != nil {
+		e.mu.Unlock()
 		return err
 	}
 	idx, removed := e.pruneLocked(idx)
 	if len(removed) == 0 {
+		e.mu.Unlock()
 		return nil
 	}
 	for _, sid := range removed {
 		e.removeEpisodeFile(sid)
 	}
 	if err := e.writeIndex(idx); err != nil {
+		e.mu.Unlock()
 		return err
 	}
 	sharedEpisodeIndex(e.dir).markDirty()
-	e.notify(MemoryEvent{Type: "episode_evicted", Sessions: removed, Count: len(removed)})
+	e.mu.Unlock()
+	// Fired after releasing the lock (see notifyAll).
+	e.notifyAll([]MemoryEvent{{Type: "episode_evicted", Sessions: removed, Count: len(removed)}})
 	return nil
 }
 

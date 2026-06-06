@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"strings"
 	"sync"
 	"testing"
 )
@@ -103,6 +104,38 @@ func TestAddFact_SilentDedupDoesNotFire(t *testing.T) {
 	}
 	if got := rec.typesSeen()["fact_added"]; got != 1 {
 		t.Fatalf("expected exactly 1 fact_added (dedup must be silent), got %d", got)
+	}
+}
+
+func TestAddFact_MergeOnWriteFiresFactMerged(t *testing.T) {
+	rec := &recordingNotifier{}
+	// Force merge-on-write to fire deterministically: any token overlap merges.
+	cfg := DefaultMemoryConfig()
+	cfg.MergeOnWrite = boolPtr(true)
+	cfg.MergeThreshold = 0.001
+	cfg.AddThreshold = 0.0005
+	mm := NewMemoryManager(t.TempDir(), nil, cfg)
+	mm.SetNotifier(rec)
+
+	if err := mm.AddFact("user", "user prefers terse direct answers"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mm.AddFact("user", "user prefers terse direct concise answers"); err != nil {
+		t.Fatal(err)
+	}
+
+	seen := rec.typesSeen()
+	if seen["fact_merged"] == 0 {
+		t.Fatalf("expected a fact_merged event from merge-on-write, got %v", seen)
+	}
+	// Merge collapses to a single entry; the merged content must be live in the
+	// system prompt (regression guard for the markPromptDirty fix on this path).
+	if entries, _ := mm.facts.Entries("user"); len(entries) != 1 {
+		t.Fatalf("expected 1 merged entry, got %d", len(entries))
+	}
+	prompt := mm.BuildSystemPrompt()
+	if !strings.Contains(prompt, "concise") {
+		t.Errorf("merged fact not reflected in system prompt (markPromptDirty regression): %q", prompt)
 	}
 }
 
