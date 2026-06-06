@@ -51,6 +51,13 @@ const defaultBufferLines = 20
 // Default minimum turns before episode extraction triggers.
 const defaultMinTurnsForExtraction = 3
 
+// Episode lifecycle defaults. Dedup on (high threshold so only genuine
+// near-duplicates collapse); a generous count cap; TTL disabled.
+const (
+	defaultEpisodeDedupThreshold = 0.92
+	defaultMaxEpisodes           = 500
+)
+
 // MemoryConfig holds configuration for the memory system.
 // Mirrors the JSON config section.
 // Bool fields use *bool so that JSON omitempty can distinguish
@@ -71,6 +78,15 @@ type MemoryConfig struct {
 	MergeThreshold        float32 `json:"merge_threshold,omitempty"`
 	AddThreshold          float32 `json:"add_threshold,omitempty"`
 	MinTurnsForExtraction int     `json:"min_turns_for_extraction,omitempty"`
+
+	// Episode lifecycle (see internal/memory/episodes.go). EpisodeDedupThreshold
+	// is the cosine above which a new episode replaces an existing near-duplicate
+	// (0 disables dedup). MaxEpisodes caps the stored episode count, evicting the
+	// oldest beyond it (0 disables the cap). EpisodeTTLDays evicts episodes older
+	// than that many days (0 disables TTL).
+	EpisodeDedupThreshold float32 `json:"episode_dedup_threshold,omitempty"`
+	MaxEpisodes           int     `json:"max_episodes,omitempty"`
+	EpisodeTTLDays        int     `json:"episode_ttl_days,omitempty"`
 
 	// AutoApproveEpisodes, when true, stamps untrusted episodes as approved at
 	// session-end so they are recalled without a manual `odek memory promote`.
@@ -104,6 +120,9 @@ func DefaultMemoryConfig() MemoryConfig {
 		AddThreshold:          AddThreshold,
 		MinTurnsForExtraction: defaultMinTurnsForExtraction,
 		AutoApproveEpisodes:   boolPtr(false), // secure default — human gate stays on
+		EpisodeDedupThreshold: defaultEpisodeDedupThreshold,
+		MaxEpisodes:           defaultMaxEpisodes,
+		EpisodeTTLDays:        0, // TTL disabled by default
 	}
 }
 
@@ -187,6 +206,15 @@ func NewMemoryManager(memoryDir string, llc LLMClient, cfg MemoryConfig) *Memory
 	if cfg.AutoApproveEpisodes != nil {
 		def.AutoApproveEpisodes = cfg.AutoApproveEpisodes
 	}
+	if cfg.EpisodeDedupThreshold > 0 {
+		def.EpisodeDedupThreshold = cfg.EpisodeDedupThreshold
+	}
+	if cfg.MaxEpisodes > 0 {
+		def.MaxEpisodes = cfg.MaxEpisodes
+	}
+	if cfg.EpisodeTTLDays > 0 {
+		def.EpisodeTTLDays = cfg.EpisodeTTLDays
+	}
 	cfg = def
 
 	factsDir := memoryDir
@@ -201,7 +229,7 @@ func NewMemoryManager(memoryDir string, llc LLMClient, cfg MemoryConfig) *Memory
 	} else {
 		rankFn = NewRPRanker(64)
 	}
-	episodeStore := NewEpisodeStore(episodesDir, rankFn)
+	episodeStore := NewEpisodeStoreWithLifecycle(episodesDir, rankFn, cfg.EpisodeDedupThreshold, cfg.MaxEpisodes, cfg.EpisodeTTLDays)
 	mergeDetector := NewMergeDetectorWithThresholds(0, cfg.MergeThreshold, cfg.AddThreshold)
 
 	return &MemoryManager{

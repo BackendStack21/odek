@@ -859,6 +859,15 @@ func resolveMemory(cfg *memory.MemoryConfig) memory.MemoryConfig {
 	if cfg.AutoApproveEpisodes != nil {
 		def.AutoApproveEpisodes = cfg.AutoApproveEpisodes
 	}
+	if cfg.EpisodeDedupThreshold > 0 {
+		def.EpisodeDedupThreshold = cfg.EpisodeDedupThreshold
+	}
+	if cfg.MaxEpisodes > 0 {
+		def.MaxEpisodes = cfg.MaxEpisodes
+	}
+	if cfg.EpisodeTTLDays > 0 {
+		def.EpisodeTTLDays = cfg.EpisodeTTLDays
+	}
 	return def
 }
 

@@ -52,6 +52,14 @@ type EpisodeStore struct {
 	idxCache []EpisodeMeta // cached index, nil = not loaded
 	muCache  sync.RWMutex  // fine-grained lock for cache reads
 
+	// Lifecycle policy (see NewEpisodeStoreWithLifecycle). Zero values disable
+	// each mechanism, so the bare NewEpisodeStore constructor keeps the legacy
+	// behavior (no dedup, no eviction); production wiring supplies defaults via
+	// MemoryConfig.
+	dedupThreshold float32 // cosine ≥ this → new episode replaces near-duplicate; 0 disables
+	maxEpisodes    int     // keep at most this many episodes; 0 disables the cap
+	ttlDays        int     // evict episodes older than this many days; 0 disables TTL
+
 	// queryCache caches the last Search query result to avoid
 	// re-ranking identical queries on consecutive turns.
 	// Protected by muQuery.
@@ -60,15 +68,27 @@ type EpisodeStore struct {
 	muQuery    sync.RWMutex
 }
 
-// NewEpisodeStore creates an EpisodeStore rooted at dir. If rankFn is nil,
-// a default ranker is used (SimpleCall-based — requires LLM client).
+// NewEpisodeStore creates an EpisodeStore rooted at dir with lifecycle
+// management disabled (no dedup, no eviction). If rankFn is nil, a default
+// ranker is used (SimpleCall-based — requires LLM client).
 func NewEpisodeStore(dir string, rankFn RankStrategy) *EpisodeStore {
+	return NewEpisodeStoreWithLifecycle(dir, rankFn, 0, 0, 0)
+}
+
+// NewEpisodeStoreWithLifecycle creates an EpisodeStore with dedup + eviction
+// policy. dedupThreshold is the cosine above which a new episode replaces an
+// existing near-duplicate (0 disables); maxEpisodes caps the stored count
+// (0 disables); ttlDays evicts episodes older than that many days (0 disables).
+func NewEpisodeStoreWithLifecycle(dir string, rankFn RankStrategy, dedupThreshold float32, maxEpisodes, ttlDays int) *EpisodeStore {
 	if rankFn == nil {
 		rankFn = defaultRanker
 	}
 	return &EpisodeStore{
-		dir:    dir,
-		rankFn: rankFn,
+		dir:            dir,
+		rankFn:         rankFn,
+		dedupThreshold: dedupThreshold,
+		maxEpisodes:    maxEpisodes,
+		ttlDays:        ttlDays,
 	}
 }
 
@@ -98,24 +118,66 @@ func (e *EpisodeStore) WriteWithProvenance(sessionID, summary string, turns int,
 		summary = truncateAtRune(summary, maxEpisodeSummaryBytes) + "..."
 	}
 
-	// Write summary file
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.writeLocked(sessionID, summary, turns, prov)
+}
+
+// writeLocked performs the full episode write under e.mu: dedup against
+// existing episodes, write the summary file, update + prune the index, and
+// mark the vector index dirty. File mutations happen before writeIndex, which
+// happens before markDirty, so a crash leaves at most a dangling index entry
+// (rebuild/recall tolerate a missing .md) rather than an orphan file in the
+// index. Caller must hold e.mu.
+func (e *EpisodeStore) writeLocked(sessionID, summary string, turns int, prov EpisodeProvenance) error {
+	idx, err := e.ReadIndex()
+	if err != nil {
+		idx = []EpisodeMeta{}
+	}
+
+	// Drop any existing entry for this same sessionID (re-running a session
+	// overwrites its episode rather than appending a duplicate index entry).
+	idx = removeBySessionID(idx, sessionID)
+
+	// Dedup: if a near-duplicate exists, replace it with this newer episode —
+	// but never let an untrusted episode evict a trusted/approved one.
+	if e.dedupThreshold > 0 {
+		if dupIdx, sim := e.findDuplicate(summary, idx); dupIdx >= 0 && sim >= e.dedupThreshold {
+			if trustRank(prov) >= trustRank(idx[dupIdx].Provenance) {
+				_ = os.Remove(filepath.Join(e.dir, idx[dupIdx].SessionID+".md"))
+				idx = append(idx[:dupIdx], idx[dupIdx+1:]...)
+			}
+		}
+	}
+
+	// Write the summary file.
 	path := filepath.Join(e.dir, sessionID+".md")
 	if err := os.WriteFile(path, []byte(summary), 0600); err != nil {
 		return fmt.Errorf("memory: write episode: %w", err)
 	}
 
-	// Mark the episode vector index dirty so it rebuilds on the next recall,
-	// picking up this new episode. No embedding on the write path.
-	sharedEpisodeIndex(e.dir).markDirty()
-
-	// Update index
-	return e.addToIndex(EpisodeMeta{
+	idx = append(idx, EpisodeMeta{
 		SessionID:  sessionID,
 		Turns:      turns,
 		CreatedAt:  time.Now().UTC(),
 		Summary:    truncateForIndex(summary),
 		Provenance: prov,
 	})
+
+	// Evict by TTL + count cap; remove the corresponding summary files.
+	idx, removed := e.pruneLocked(idx)
+	for _, sid := range removed {
+		_ = os.Remove(filepath.Join(e.dir, sid+".md"))
+	}
+
+	if err := e.writeIndex(idx); err != nil {
+		return err
+	}
+
+	// Mark the vector index dirty so it rebuilds on the next recall, picking up
+	// the new episode and dropping any evicted/replaced ids.
+	sharedEpisodeIndex(e.dir).markDirty()
+	return nil
 }
 
 // WriteIfEnough calls Write only if turns >= threshold.
@@ -348,21 +410,122 @@ func (e *EpisodeStore) PendingReview() ([]EpisodeMeta, error) {
 	return pending, nil
 }
 
-// ── Index helpers ─────────────────────────────────────────────────────
+// ── Lifecycle helpers ─────────────────────────────────────────────────
 
-// addToIndex appends an entry to the index and writes it.
-// Caller must hold e.mu (acquired by Write).
-func (e *EpisodeStore) addToIndex(meta EpisodeMeta) error {
+// Prune evicts episodes by TTL and count cap (see NewEpisodeStoreWithLifecycle)
+// and removes their summary files. Safe to call at session end or from a CLI.
+// No-op when both the cap and TTL are disabled.
+func (e *EpisodeStore) Prune() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	if e.maxEpisodes <= 0 && e.ttlDays <= 0 {
+		return nil
+	}
 	idx, err := e.ReadIndex()
 	if err != nil {
-		// Index error means we start fresh
-		idx = []EpisodeMeta{}
+		return err
 	}
-	idx = append(idx, meta)
-	return e.writeIndex(idx)
+	idx, removed := e.pruneLocked(idx)
+	if len(removed) == 0 {
+		return nil
+	}
+	for _, sid := range removed {
+		_ = os.Remove(filepath.Join(e.dir, sid+".md"))
+	}
+	if err := e.writeIndex(idx); err != nil {
+		return err
+	}
+	sharedEpisodeIndex(e.dir).markDirty()
+	return nil
+}
+
+// pruneLocked applies TTL then count-cap eviction, returning the kept entries
+// and the sessionIDs whose summary files should be removed. Trust-blind by
+// design: eviction is a disk/recall budget, not a trust decision. Caller must
+// hold e.mu.
+func (e *EpisodeStore) pruneLocked(idx []EpisodeMeta) ([]EpisodeMeta, []string) {
+	var removed []string
+
+	if e.ttlDays > 0 {
+		cutoff := time.Now().UTC().Add(-time.Duration(e.ttlDays) * 24 * time.Hour)
+		kept := make([]EpisodeMeta, 0, len(idx))
+		for _, m := range idx {
+			if m.CreatedAt.Before(cutoff) {
+				removed = append(removed, m.SessionID)
+			} else {
+				kept = append(kept, m)
+			}
+		}
+		idx = kept
+	}
+
+	if e.maxEpisodes > 0 && len(idx) > e.maxEpisodes {
+		// Newest-first so the oldest fall off the end.
+		sort.Slice(idx, func(i, j int) bool {
+			return idx[i].CreatedAt.After(idx[j].CreatedAt)
+		})
+		for _, m := range idx[e.maxEpisodes:] {
+			removed = append(removed, m.SessionID)
+		}
+		idx = idx[:e.maxEpisodes]
+	}
+
+	return idx, removed
+}
+
+// findDuplicate returns the index of the existing episode most similar to
+// newSummary and that similarity, comparing full on-disk summaries via an
+// ephemeral RP embedder (the same primitive NewRPRanker uses). Returns
+// (-1, 0) for an empty corpus. Caller must hold e.mu.
+func (e *EpisodeStore) findDuplicate(newSummary string, idx []EpisodeMeta) (int, float32) {
+	if len(idx) == 0 {
+		return -1, 0
+	}
+	corpus := make([]string, len(idx))
+	for i, m := range idx {
+		if s, err := e.Read(m.SessionID); err == nil {
+			corpus[i] = s
+		} else {
+			corpus[i] = m.Summary // fallback to the index summary
+		}
+	}
+
+	rp := vector.NewRandomProjections(64)
+	rp.Fit(append(append([]string{}, corpus...), newSummary))
+	newVec, _ := rp.Embed(newSummary)
+
+	best := -1
+	var bestSim float32
+	for i, s := range corpus {
+		vec, _ := rp.Embed(s)
+		if sim := cosineVector(newVec, vec); sim > bestSim {
+			bestSim = sim
+			best = i
+		}
+	}
+	return best, bestSim
+}
+
+// removeBySessionID returns idx without any entry matching sessionID.
+func removeBySessionID(idx []EpisodeMeta, sessionID string) []EpisodeMeta {
+	out := idx[:0]
+	for _, m := range idx {
+		if m.SessionID != sessionID {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// trustRank maps provenance to a coarse trust level for dedup gating: an
+// untrusted, unapproved episode ranks below any trusted/approved one, so it
+// can never evict it. Mirrors the recall provenance filter.
+func trustRank(p EpisodeProvenance) int {
+	if p.Untrusted && !p.UserApproved && !p.AutoApproved {
+		return 0
+	}
+	return 1
 }
 
 // writeIndex serializes the index to disk atomically (temp + rename).
