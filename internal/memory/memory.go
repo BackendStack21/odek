@@ -94,8 +94,8 @@ func DefaultMemoryConfig() MemoryConfig {
 		BufferEnabled:         boolPtr(true),
 		MergeOnWrite:          boolPtr(true),
 		ExtractOnEnd:          boolPtr(true),
-		ExtractFacts:          boolPtr(true), // auto-learn durable facts from trusted sessions
-		LLMSearch:             boolPtr(true), // LLM ranker by default — relevance over recency
+		ExtractFacts:          boolPtr(false), // opt-in: persistent-poisoning risk, see SECURITY.md
+		LLMSearch:             boolPtr(true),  // LLM ranker by default — relevance over recency
 		LLMExtract:            boolPtr(true),
 		LLMConsolidate:        boolPtr(true),
 		MergeThreshold:        MergeThreshold,
