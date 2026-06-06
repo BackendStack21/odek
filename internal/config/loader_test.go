@@ -35,6 +35,7 @@ func TestLoadConfig_Defaults(t *testing.T) {
 }
 
 func TestLoadConfig_CLIOnly(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	cfg := LoadConfig(CLIFlags{
 		Model:    "gpt-4o",
 		BaseURL:  "https://api.openai.com/v1",
@@ -72,14 +73,11 @@ func TestLoadConfig_CLIOnly(t *testing.T) {
 }
 
 func TestLoadConfig_CLIOverridesEnv(t *testing.T) {
-	os.Setenv("ODEK_MODEL", "env-model")
-	os.Setenv("ODEK_BASE_URL", "https://env.example.com/v1")
-	os.Setenv("ODEK_THINKING", "low")
-	os.Setenv("ODEK_SANDBOX", "true")
-	defer os.Unsetenv("ODEK_MODEL")
-	defer os.Unsetenv("ODEK_BASE_URL")
-	defer os.Unsetenv("ODEK_THINKING")
-	defer os.Unsetenv("ODEK_SANDBOX")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ODEK_MODEL", "env-model")
+	t.Setenv("ODEK_BASE_URL", "https://env.example.com/v1")
+	t.Setenv("ODEK_THINKING", "low")
+	t.Setenv("ODEK_SANDBOX", "true")
 
 	cfg := LoadConfig(CLIFlags{
 		Model:   "cli-model",
@@ -100,26 +98,16 @@ func TestLoadConfig_CLIOverridesEnv(t *testing.T) {
 }
 
 func TestLoadConfig_EnvVars(t *testing.T) {
-	os.Setenv("ODEK_MODEL", "deepseek-v4-flash")
-	os.Setenv("ODEK_BASE_URL", "https://custom.deepseek.com/v1")
-	os.Setenv("ODEK_API_KEY", "sk-env-key")
-	os.Setenv("ODEK_THINKING", "enabled")
-	os.Setenv("ODEK_MAX_ITER", "50")
-	os.Setenv("ODEK_SANDBOX", "true")
-	os.Setenv("ODEK_NO_COLOR", "false")
-	os.Setenv("ODEK_NO_AGENTS", "true")
-	os.Setenv("ODEK_SYSTEM", "Env system prompt.")
-	defer func() {
-		os.Unsetenv("ODEK_MODEL")
-		os.Unsetenv("ODEK_BASE_URL")
-		os.Unsetenv("ODEK_API_KEY")
-		os.Unsetenv("ODEK_THINKING")
-		os.Unsetenv("ODEK_MAX_ITER")
-		os.Unsetenv("ODEK_SANDBOX")
-		os.Unsetenv("ODEK_NO_COLOR")
-		os.Unsetenv("ODEK_NO_AGENTS")
-		os.Unsetenv("ODEK_SYSTEM")
-	}()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ODEK_MODEL", "deepseek-v4-flash")
+	t.Setenv("ODEK_BASE_URL", "https://custom.deepseek.com/v1")
+	t.Setenv("ODEK_API_KEY", "sk-env-key")
+	t.Setenv("ODEK_THINKING", "enabled")
+	t.Setenv("ODEK_MAX_ITER", "50")
+	t.Setenv("ODEK_SANDBOX", "true")
+	t.Setenv("ODEK_NO_COLOR", "false")
+	t.Setenv("ODEK_NO_AGENTS", "true")
+	t.Setenv("ODEK_SYSTEM", "Env system prompt.")
 
 	cfg := LoadConfig(CLIFlags{})
 	if cfg.Model != "deepseek-v4-flash" {
@@ -174,10 +162,9 @@ func TestLoadConfig_APIKeyFallback_OpenAI(t *testing.T) {
 }
 
 func TestLoadConfig_APIKey_KODEOverridesLegacy(t *testing.T) {
-	os.Setenv("ODEK_API_KEY", "sk-odek")
-	os.Setenv("DEEPSEEK_API_KEY", "sk-deepseek")
-	defer os.Unsetenv("ODEK_API_KEY")
-	defer os.Unsetenv("DEEPSEEK_API_KEY")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ODEK_API_KEY", "sk-odek")
+	t.Setenv("DEEPSEEK_API_KEY", "sk-deepseek")
 
 	cfg := LoadConfig(CLIFlags{})
 	if cfg.APIKey != "sk-odek" {
@@ -186,10 +173,9 @@ func TestLoadConfig_APIKey_KODEOverridesLegacy(t *testing.T) {
 }
 
 func TestLoadConfig_EnvBoolParsing(t *testing.T) {
-	os.Setenv("ODEK_SANDBOX", "1")
-	os.Setenv("ODEK_NO_COLOR", "0")
-	defer os.Unsetenv("ODEK_SANDBOX")
-	defer os.Unsetenv("ODEK_NO_COLOR")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ODEK_SANDBOX", "1")
+	t.Setenv("ODEK_NO_COLOR", "0")
 
 	cfg := LoadConfig(CLIFlags{})
 	if !cfg.Sandbox {
@@ -202,9 +188,7 @@ func TestLoadConfig_EnvBoolParsing(t *testing.T) {
 
 func TestLoadConfig_GlobalFile(t *testing.T) {
 	dir := t.TempDir()
-	prevHome := os.Getenv("HOME")
-	os.Setenv("HOME", dir)
-	defer os.Setenv("HOME", prevHome)
+	t.Setenv("HOME", dir)
 
 	// Create ~/.odek/config.json
 	cfgDir := filepath.Join(dir, ".odek")
@@ -242,9 +226,7 @@ func TestLoadConfig_ProjectOverridesGlobal(t *testing.T) {
 	dir := t.TempDir()
 
 	// Set HOME to temp dir for global config
-	prevHome := os.Getenv("HOME")
-	os.Setenv("HOME", dir)
-	defer os.Setenv("HOME", prevHome)
+	t.Setenv("HOME", dir)
 
 	// Create ~/.odek/config.json (global)
 	globalDir := filepath.Join(dir, ".odek")
@@ -259,9 +241,7 @@ func TestLoadConfig_ProjectOverridesGlobal(t *testing.T) {
 	}
 
 	// Create ./odek.json in temp dir (project)
-	cwd, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(cwd)
+	t.Chdir(dir)
 
 	if err := os.WriteFile(filepath.Join(dir, "odek.json"), []byte(`{
 		"model": "project-model",
@@ -283,10 +263,9 @@ func TestLoadConfig_ProjectOverridesGlobal(t *testing.T) {
 }
 
 func TestLoadConfig_EnvOverridesProjectFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
-	cwd, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(cwd)
+	t.Chdir(dir)
 
 	// Create ./odek.json
 	if err := os.WriteFile(filepath.Join(dir, "odek.json"), []byte(`{
@@ -297,8 +276,7 @@ func TestLoadConfig_EnvOverridesProjectFile(t *testing.T) {
 	}
 
 	// Set env vars
-	os.Setenv("ODEK_MODEL", "env-model")
-	defer os.Unsetenv("ODEK_MODEL")
+	t.Setenv("ODEK_MODEL", "env-model")
 
 	cfg := LoadConfig(CLIFlags{})
 	if cfg.Model != "env-model" {
@@ -310,10 +288,9 @@ func TestLoadConfig_EnvOverridesProjectFile(t *testing.T) {
 }
 
 func TestLoadConfig_CLIOverridesProjectFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
-	cwd, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(cwd)
+	t.Chdir(dir)
 
 	// Create ./odek.json
 	if err := os.WriteFile(filepath.Join(dir, "odek.json"), []byte(`{
@@ -338,14 +315,10 @@ func TestLoadConfig_CLIOverridesProjectFile(t *testing.T) {
 func TestLoadConfig_VarExpansion(t *testing.T) {
 	dir := t.TempDir()
 
-	prevHome := os.Getenv("HOME")
-	os.Setenv("HOME", dir)
-	defer os.Setenv("HOME", prevHome)
+	t.Setenv("HOME", dir)
 
-	os.Setenv("ODEK_MODEL_VAR", "expanded-model")
-	os.Setenv("ODEK_API_KEY_VAR", "sk-expanded")
-	defer os.Unsetenv("ODEK_MODEL_VAR")
-	defer os.Unsetenv("ODEK_API_KEY_VAR")
+	t.Setenv("ODEK_MODEL_VAR", "expanded-model")
+	t.Setenv("ODEK_API_KEY_VAR", "sk-expanded")
 
 	globalDir := filepath.Join(dir, ".odek")
 	os.MkdirAll(globalDir, 0755)
@@ -368,9 +341,7 @@ func TestLoadConfig_VarExpansion(t *testing.T) {
 func TestLoadConfig_MissingFiles(t *testing.T) {
 	// No files at all — should not panic, return zero values
 	dir := t.TempDir()
-	prevHome := os.Getenv("HOME")
-	os.Setenv("HOME", dir)
-	defer os.Setenv("HOME", prevHome)
+	t.Setenv("HOME", dir)
 
 	// Don't create any config files
 	cfg := LoadConfig(CLIFlags{})
@@ -381,9 +352,7 @@ func TestLoadConfig_MissingFiles(t *testing.T) {
 
 func TestLoadConfig_InvalidJSON(t *testing.T) {
 	dir := t.TempDir()
-	prevHome := os.Getenv("HOME")
-	os.Setenv("HOME", dir)
-	defer os.Setenv("HOME", prevHome)
+	t.Setenv("HOME", dir)
 
 	globalDir := filepath.Join(dir, ".odek")
 	os.MkdirAll(globalDir, 0755)
@@ -423,14 +392,10 @@ func TestLoadConfig_SkillsLearnEnvDoesNotClobberSkillsConfig(t *testing.T) {
 	// existing skills config from files, not replace the entire struct.
 	dir := t.TempDir()
 
-	prevHome := os.Getenv("HOME")
-	os.Setenv("HOME", dir)
-	defer os.Setenv("HOME", prevHome)
+	t.Setenv("HOME", dir)
 
 	// Create project file with skills settings
-	cwd, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(cwd)
+	t.Chdir(dir)
 
 	if err := os.WriteFile(filepath.Join(dir, "odek.json"), []byte(`{
 		"skills": {
@@ -452,8 +417,7 @@ func TestLoadConfig_SkillsLearnEnvDoesNotClobberSkillsConfig(t *testing.T) {
 	}
 
 	// Set ODEK_SKILLS_LEARN — should NOT clobber other skills fields
-	os.Setenv("ODEK_SKILLS_LEARN", "true")
-	defer os.Unsetenv("ODEK_SKILLS_LEARN")
+	t.Setenv("ODEK_SKILLS_LEARN", "true")
 
 	cfg := LoadConfig(CLIFlags{})
 	if !cfg.Skills.Learn {
@@ -478,11 +442,10 @@ func TestLoadConfig_SkillsLearnEnvDoesNotClobberSkillsConfig(t *testing.T) {
 
 func TestLoadConfig_SkillsLearnCLIDoesNotClobberSkillsConfig(t *testing.T) {
 	// Regression: --learn CLI flag should merge, not replace.
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 
-	cwd, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(cwd)
+	t.Chdir(dir)
 
 	if err := os.WriteFile(filepath.Join(dir, "odek.json"), []byte(`{
 		"skills": {
@@ -509,6 +472,7 @@ func TestLoadConfig_SkillsLearnCLIDoesNotClobberSkillsConfig(t *testing.T) {
 func TestLoadConfig_MemoryDefaults(t *testing.T) {
 	// When no memory section is configured, the resolved config must have
 	// sensible defaults (Enabled=true, all features on).
+	t.Setenv("HOME", t.TempDir())
 	cfg := LoadConfig(CLIFlags{})
 	mem := cfg.Memory
 	if mem.Enabled == nil || !*mem.Enabled {
@@ -539,9 +503,7 @@ func TestLoadConfig_MemoryDefaults(t *testing.T) {
 
 func TestLoadConfig_MemoryFromGlobalFile(t *testing.T) {
 	dir := t.TempDir()
-	prevHome := os.Getenv("HOME")
-	os.Setenv("HOME", dir)
-	defer os.Setenv("HOME", prevHome)
+	t.Setenv("HOME", dir)
 
 	cfgDir := filepath.Join(dir, ".odek")
 	os.MkdirAll(cfgDir, 0755)
@@ -585,9 +547,7 @@ func TestLoadConfig_MemoryFromGlobalFile(t *testing.T) {
 
 func TestLoadConfig_MemoryProjectOverridesGlobal(t *testing.T) {
 	dir := t.TempDir()
-	prevHome := os.Getenv("HOME")
-	os.Setenv("HOME", dir)
-	defer os.Setenv("HOME", prevHome)
+	t.Setenv("HOME", dir)
 
 	// Global config with memory section
 	globalDir := filepath.Join(dir, ".odek")
@@ -603,9 +563,7 @@ func TestLoadConfig_MemoryProjectOverridesGlobal(t *testing.T) {
 	}
 
 	// Project config overrides some memory fields
-	cwd, _ := os.Getwd()
-	os.Chdir(dir)
-	defer os.Chdir(cwd)
+	t.Chdir(dir)
 
 	if err := os.WriteFile(filepath.Join(dir, "odek.json"), []byte(`{
 		"memory": {
@@ -693,14 +651,12 @@ func TestLoadConfig_MemoryNotSetReturnsDefaults(t *testing.T) {
 }
 
 func TestLoadConfig_ClearsAPIKeyFromEnviron(t *testing.T) {
-	os.Setenv("ODEK_API_KEY", "sk-odek-test")
-	os.Setenv("DEEPSEEK_API_KEY", "sk-deepseek-test")
-	os.Setenv("OPENAI_API_KEY", "sk-openai-test")
+	t.Setenv("ODEK_API_KEY", "sk-odek-test")
+	t.Setenv("DEEPSEEK_API_KEY", "sk-deepseek-test")
+	t.Setenv("OPENAI_API_KEY", "sk-openai-test")
 
 	dir := t.TempDir()
-	prevHome := os.Getenv("HOME")
-	os.Setenv("HOME", dir)
-	defer os.Setenv("HOME", prevHome)
+	t.Setenv("HOME", dir)
 
 	cfg := LoadConfig(CLIFlags{})
 
@@ -723,6 +679,7 @@ func TestLoadConfig_InteractionModeDefaults(t *testing.T) {
 	// default to "engaging". Note: the user's ~/.odek/config.json may
 	// set interaction_mode, so this test accepts any non-empty value
 	// from the file load chain and only fails on the empty-zero case.
+	t.Setenv("HOME", t.TempDir())
 	cfg := LoadConfig(CLIFlags{})
 	if cfg.InteractionMode == "" {
 		t.Errorf("InteractionMode = %q, want non-empty default", cfg.InteractionMode)
@@ -731,8 +688,8 @@ func TestLoadConfig_InteractionModeDefaults(t *testing.T) {
 
 func TestLoadConfig_InteractionModeViaEnv(t *testing.T) {
 	// ODEK_INTERACTION_MODE should override the default.
-	os.Setenv("ODEK_INTERACTION_MODE", "verbose")
-	defer os.Unsetenv("ODEK_INTERACTION_MODE")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ODEK_INTERACTION_MODE", "verbose")
 
 	cfg := LoadConfig(CLIFlags{})
 	if cfg.InteractionMode != "verbose" {
@@ -742,8 +699,8 @@ func TestLoadConfig_InteractionModeViaEnv(t *testing.T) {
 
 func TestLoadConfig_InteractionModeViaCLI(t *testing.T) {
 	// CLI flag should take precedence over env.
-	os.Setenv("ODEK_INTERACTION_MODE", "engaging")
-	defer os.Unsetenv("ODEK_INTERACTION_MODE")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ODEK_INTERACTION_MODE", "engaging")
 
 	cfg := LoadConfig(CLIFlags{InteractionMode: "verbose"})
 	if cfg.InteractionMode != "verbose" {
@@ -753,6 +710,7 @@ func TestLoadConfig_InteractionModeViaCLI(t *testing.T) {
 
 func TestLoadConfig_InteractionModeOff(t *testing.T) {
 	// "off" should be accepted as a valid value via CLI.
+	t.Setenv("HOME", t.TempDir())
 	cfg := LoadConfig(CLIFlags{InteractionMode: "off"})
 	if cfg.InteractionMode != "off" {
 		t.Errorf("InteractionMode = %q, want %q", cfg.InteractionMode, "off")
@@ -778,9 +736,7 @@ func TestGlobalOverlay_MaxConcurrency(t *testing.T) {
 	}
 
 	// Project config exists but does NOT set max_concurrency.
-	cwd, _ := os.Getwd()
-	defer os.Chdir(cwd)
-	os.Chdir(t.TempDir())
+	t.Chdir(t.TempDir())
 	if err := os.WriteFile("odek.json", []byte(`{
 		"model": "project-model"
 	}`), 0644); err != nil {
@@ -806,9 +762,7 @@ func TestGlobalOverlay_MaxToolParallel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cwd, _ := os.Getwd()
-	defer os.Chdir(cwd)
-	os.Chdir(t.TempDir())
+	t.Chdir(t.TempDir())
 	if err := os.WriteFile("odek.json", []byte(`{
 		"model": "project-model"
 	}`), 0644); err != nil {
@@ -834,9 +788,7 @@ func TestGlobalOverlay_PromptCaching(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cwd, _ := os.Getwd()
-	defer os.Chdir(cwd)
-	os.Chdir(t.TempDir())
+	t.Chdir(t.TempDir())
 	if err := os.WriteFile("odek.json", []byte(`{
 		"model": "project-model"
 	}`), 0644); err != nil {
@@ -867,9 +819,7 @@ func TestGlobalOverlay_MCPServers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cwd, _ := os.Getwd()
-	defer os.Chdir(cwd)
-	os.Chdir(t.TempDir())
+	t.Chdir(t.TempDir())
 	if err := os.WriteFile("odek.json", []byte(`{
 		"model": "project-model"
 	}`), 0644); err != nil {
@@ -898,8 +848,7 @@ func TestGlobalOverlay_MCPServers(t *testing.T) {
 // forms (ODEK_API_KEY, DEEPSEEK_API_KEY, OPENAI_API_KEY) from the resolved key.
 func TestLoadConfig_LegacyAPIKeyEnvVarLost(t *testing.T) {
 	// Set only the legacy DEEPSEEK_API_KEY — no ODEK_API_KEY, no config file.
-	os.Setenv("DEEPSEEK_API_KEY", "sk-deepseek-only")
-	defer os.Unsetenv("DEEPSEEK_API_KEY")
+	t.Setenv("DEEPSEEK_API_KEY", "sk-deepseek-only")
 
 	t.Setenv("HOME", t.TempDir())
 
