@@ -104,6 +104,10 @@ func (e *EpisodeStore) WriteWithProvenance(sessionID, summary string, turns int,
 		return fmt.Errorf("memory: write episode: %w", err)
 	}
 
+	// Mark the episode vector index dirty so it rebuilds on the next recall,
+	// picking up this new episode. No embedding on the write path.
+	sharedEpisodeIndex(e.dir).markDirty()
+
 	// Update index
 	return e.addToIndex(EpisodeMeta{
 		SessionID:  sessionID,
@@ -242,6 +246,53 @@ func (e *EpisodeStore) Search(query string, limit int) ([]EpisodeMeta, error) {
 		ranked = ranked[:limit]
 	}
 	return ranked, nil
+}
+
+// recallByVector is the per-turn recall path. It searches the cached go-vector
+// index (zero LLM calls), applies the provenance filter, and returns up to k
+// trusted episodes. Falls back to nil on any error so the turn is never blocked.
+func (e *EpisodeStore) recallByVector(query string, k int) ([]EpisodeMeta, error) {
+	if k <= 0 {
+		k = 3
+	}
+	// Over-fetch so the provenance filter still leaves k usable results.
+	// Discard zero-score results: when the query has no vocabulary overlap with
+	// the episode corpus (all-OOV), go-vector returns a zero vector and every
+	// Store.Search result has cosine similarity = 0. Returning those as
+	// "candidates" would make SearchEpisodes skip the LLM fallback with noise.
+	raw := sharedEpisodeIndex(e.dir).search(query, k*3+5)
+	scored := raw[:0:len(raw)]
+	for _, s := range raw {
+		if s.Score > 0 {
+			scored = append(scored, s)
+		}
+	}
+	if len(scored) == 0 {
+		return nil, nil
+	}
+	idx, err := e.ReadIndex()
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]EpisodeMeta, len(idx))
+	for _, ep := range idx {
+		byID[ep.SessionID] = ep
+	}
+	out := make([]EpisodeMeta, 0, k)
+	for _, s := range scored {
+		ep, ok := byID[s.ID]
+		if !ok {
+			continue
+		}
+		if ep.Provenance.Untrusted && !ep.Provenance.UserApproved && !ep.Provenance.AutoApproved {
+			continue
+		}
+		out = append(out, ep)
+		if len(out) >= k {
+			break
+		}
+	}
+	return out, nil
 }
 
 // ── Promotion (human-gated escape hatch) ──────────────────────────────

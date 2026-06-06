@@ -73,16 +73,17 @@ func NewMergeDetectorWithThresholds(dims int, mergeThreshold, addThreshold float
 // corpus entries. Call whenever facts change (after add/replace/remove).
 func (m *MergeDetector) Fit(corpus []string) {
 	m.corpus = make([]string, len(corpus))
-	copy(m.corpus, corpus)
+	copy(m.corpus, corpus) // keep raw entries for merge/judge string logic
 
-	m.rp.Fit(corpus)
+	// Fit and embed featurized text so RP sees normalised tokens + bigrams.
+	// m.corpus stores the raw strings; only the go-vector boundary is featurized.
+	feat := featurizeAll(corpus)
+	m.rp.Fit(feat)
 
-	// Pre-compute all embeddings
 	m.vecs = make([]vector.Vector, len(corpus))
-	for i, entry := range corpus {
-		vec, err := m.rp.Embed(entry)
+	for i, f := range feat {
+		vec, err := m.rp.Embed(f)
 		if err != nil {
-			// RP can't error on valid input, but handle gracefully
 			continue
 		}
 		m.vecs[i] = vec
@@ -102,7 +103,7 @@ func (m *MergeDetector) Classify(entry string) (action string, similarIdx int, s
 		return "nobody", -1, 0
 	}
 
-	vec, err := m.rp.Embed(entry)
+	vec, err := m.rp.Embed(featurizeForEmbedding(entry))
 	if err != nil {
 		return "nobody", -1, 0
 	}
@@ -146,8 +147,8 @@ func (m *MergeDetector) Classify(entry string) (action string, similarIdx int, s
 // refreshed so new tokens from the entry are available for future Classify calls.
 func (m *MergeDetector) AppendEntry(entry string) {
 	m.corpus = append(m.corpus, entry)
-	m.rp.Fit(m.corpus)
-	vec, err := m.rp.Embed(entry)
+	m.rp.Fit(featurizeAll(m.corpus))
+	vec, err := m.rp.Embed(featurizeForEmbedding(entry))
 	if err != nil {
 		vec = nil
 	}
@@ -161,8 +162,8 @@ func (m *MergeDetector) ReplaceEntry(idx int, entry string) {
 		return
 	}
 	m.corpus[idx] = entry
-	m.rp.Fit(m.corpus)
-	vec, err := m.rp.Embed(entry)
+	m.rp.Fit(featurizeAll(m.corpus))
+	vec, err := m.rp.Embed(featurizeForEmbedding(entry))
 	if err != nil {
 		vec = nil
 	}
