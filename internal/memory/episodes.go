@@ -144,7 +144,7 @@ func (e *EpisodeStore) writeLocked(sessionID, summary string, turns int, prov Ep
 	if e.dedupThreshold > 0 {
 		if dupIdx, sim := e.findDuplicate(summary, idx); dupIdx >= 0 && sim >= e.dedupThreshold {
 			if trustRank(prov) >= trustRank(idx[dupIdx].Provenance) {
-				_ = os.Remove(filepath.Join(e.dir, idx[dupIdx].SessionID+".md"))
+				e.removeEpisodeFile(idx[dupIdx].SessionID)
 				idx = append(idx[:dupIdx], idx[dupIdx+1:]...)
 			}
 		}
@@ -167,7 +167,7 @@ func (e *EpisodeStore) writeLocked(sessionID, summary string, turns int, prov Ep
 	// Evict by TTL + count cap; remove the corresponding summary files.
 	idx, removed := e.pruneLocked(idx)
 	for _, sid := range removed {
-		_ = os.Remove(filepath.Join(e.dir, sid+".md"))
+		e.removeEpisodeFile(sid)
 	}
 
 	if err := e.writeIndex(idx); err != nil {
@@ -431,7 +431,7 @@ func (e *EpisodeStore) Prune() error {
 		return nil
 	}
 	for _, sid := range removed {
-		_ = os.Remove(filepath.Join(e.dir, sid+".md"))
+		e.removeEpisodeFile(sid)
 	}
 	if err := e.writeIndex(idx); err != nil {
 		return err
@@ -505,6 +505,17 @@ func (e *EpisodeStore) findDuplicate(newSummary string, idx []EpisodeMeta) (int,
 		}
 	}
 	return best, bestSim
+}
+
+// removeEpisodeFile deletes a session's summary file, but ONLY after validating
+// the sessionID — defense-in-depth so a crafted/corrupted index.json entry can
+// never make eviction/dedup os.Remove a path outside the episodes dir. Mirrors
+// the validation that Read/Write/Promote already apply. Best-effort.
+func (e *EpisodeStore) removeEpisodeFile(sessionID string) {
+	if err := session.ValidateSessionID(sessionID); err != nil {
+		return
+	}
+	_ = os.Remove(filepath.Join(e.dir, sessionID+".md"))
 }
 
 // removeBySessionID returns idx without any entry matching sessionID.

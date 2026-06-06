@@ -304,6 +304,37 @@ func TestEpisodeLifecycle_ConcurrentSafety(t *testing.T) {
 	}
 }
 
+// ── Security: traversal-safe eviction ──────────────────────────────────
+
+// A crafted/corrupted index.json with a traversal sessionID must never make
+// eviction delete a file outside the episodes dir.
+func TestEpisodeEviction_TraversalSafe(t *testing.T) {
+	resetEpIdxes()
+	base := t.TempDir()
+	dir := filepath.Join(base, "mem")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(base, "victim.md")
+	if err := os.WriteFile(victim, []byte("do not delete"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	old := time.Now().UTC().Add(-100 * 24 * time.Hour)
+	writeIndexDirect(t, dir, []EpisodeMeta{
+		{SessionID: "../victim", CreatedAt: old, Summary: "x"},
+	})
+
+	es := NewEpisodeStoreWithLifecycle(dir, nil, 0, 0, 7) // TTL 7d → would evict the entry
+	if err := es.Prune(); err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+
+	if _, err := os.Stat(victim); os.IsNotExist(err) {
+		t.Error("traversal sessionID caused deletion of a file OUTSIDE the episodes dir")
+	}
+}
+
 // ── Config wiring ──────────────────────────────────────────────────────
 
 func TestMemoryConfig_EpisodeLifecycleDefaults(t *testing.T) {
