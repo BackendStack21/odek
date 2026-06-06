@@ -449,11 +449,18 @@ Entries for %s:
 
 // ── Buffer Operations ────────────────────────────────────────────────
 
-// AppendBuffer adds a turn summary to the in-memory ring buffer.
+// AppendBuffer adds a turn summary to the in-memory ring buffer. Callers pass
+// the RAW turn text; summarizeForBuffer derives a clean, bounded excerpt here so
+// every entry point shares one policy.
+//
+// Invariant: summarization lives here, not in Buffer.Append, so that
+// RestoreBuffer (which calls Buffer.Append directly with already-formatted,
+// already-summarized lines) never re-processes persisted summaries.
 func (m *MemoryManager) AppendBuffer(role, message string) {
 	if m.cfg.BufferEnabled == nil || !*m.cfg.BufferEnabled {
 		return
 	}
+	message = summarizeForBuffer(message)
 	line := FormatBufferLine(role, message)
 	m.buffer.Append(line)
 	m.markPromptDirty()
@@ -468,6 +475,10 @@ func (m *MemoryManager) GetBuffer() []string {
 }
 
 // RestoreBuffer loads buffer lines from a saved slice (e.g., from session).
+//
+// Invariant: these lines are already-formatted, already-summarized buffer
+// entries. They go straight to Buffer.Append and MUST NOT be routed through
+// AppendBuffer/summarizeForBuffer, which would corrupt the persisted summaries.
 func (m *MemoryManager) RestoreBuffer(lines []string) {
 	if m.cfg.BufferEnabled == nil || !*m.cfg.BufferEnabled {
 		return

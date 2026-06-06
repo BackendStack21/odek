@@ -4,23 +4,40 @@ import (
 	"context"
 	"os"
 	"strings"
+	"sync"
 	"testing"
+	"unicode/utf8"
 )
 
 // mockLLM is a simple LLMClient mock for testing.
+//
+// SimpleCall is concurrency-safe: OnSessionEndWithProvenance legitimately calls
+// the LLM from two goroutines at once (synchronous episode extraction + the
+// background consolidation goroutine), so the mock must guard its shared state
+// or `go test -race` flags a write/write race on lastUser.
 type mockLLM struct {
-	responses map[string]string // query prefix → response
+	responses map[string]string // query prefix → response (read-only after init)
+	mu        sync.Mutex        // guards lastUser
 	lastUser  string            // captured last user prompt
 }
 
 func (m *mockLLM) SimpleCall(ctx context.Context, system, user string) (string, error) {
+	m.mu.Lock()
 	m.lastUser = user
+	m.mu.Unlock()
 	for prefix, resp := range m.responses {
 		if strings.Contains(system, prefix) || strings.Contains(user, prefix) {
 			return resp, nil
 		}
 	}
 	return "", nil
+}
+
+// getLastUser returns the last captured user prompt under the lock.
+func (m *mockLLM) getLastUser() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastUser
 }
 
 func TestMemoryManagerAddAndReadFacts(t *testing.T) {
@@ -149,6 +166,72 @@ func TestMemoryManagerBufferRestore(t *testing.T) {
 	}
 }
 
+// bufferMessage extracts the message portion of a formatted buffer line
+// ("HH:MM  role  message").
+func bufferMessage(t *testing.T, line string) string {
+	t.Helper()
+	parts := strings.SplitN(line, "  ", 3)
+	if len(parts) != 3 {
+		t.Fatalf("unexpected buffer line format: %q", line)
+	}
+	return parts[2]
+}
+
+// TestAppendBufferCleansAndDoesNotMidWordCut verifies that AppendBuffer routes
+// raw text through summarizeForBuffer: code/markdown noise is stripped and the
+// excerpt is bounded and rune-safe (no mid-word/mid-rune chop).
+func TestAppendBufferCleansAndDoesNotMidWordCut(t *testing.T) {
+	dir := t.TempDir()
+	mm := NewMemoryManager(dir, nil, DefaultMemoryConfig())
+
+	raw := "Sure, I'll help with that.\n\n```go\nfunc main() {}\n```\n" +
+		strings.Repeat("Then we verify the behavior carefully. ", 30)
+	mm.AppendBuffer("agent", raw)
+
+	lines := mm.GetBuffer()
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 buffer line, got %d", len(lines))
+	}
+	msg := bufferMessage(t, lines[0])
+
+	if strings.Contains(msg, "\n") {
+		t.Errorf("buffer message contains a newline: %q", msg)
+	}
+	if strings.Contains(msg, "```") {
+		t.Errorf("buffer message still contains a code fence: %q", msg)
+	}
+	if !utf8.ValidString(msg) {
+		t.Errorf("buffer message is not valid UTF-8: %q", msg)
+	}
+	if n := utf8.RuneCountInString(msg); n > maxBufferSummaryRunes+1 {
+		t.Errorf("buffer message rune count %d exceeds cap %d (+1)", n, maxBufferSummaryRunes)
+	}
+}
+
+// TestRestoreBufferPreservesLinesVerbatim guards the load-bearing invariant:
+// RestoreBuffer must NOT re-summarize. It includes a line whose content would be
+// mangled if it were routed through summarizeForBuffer.
+func TestRestoreBufferPreservesLinesVerbatim(t *testing.T) {
+	dir := t.TempDir()
+	mm := NewMemoryManager(dir, nil, DefaultMemoryConfig())
+
+	saved := []string{
+		"14:00  user  first turn",
+		"14:01  agent  Sure, I'll help. ```code``` # heading",
+	}
+	mm.RestoreBuffer(saved)
+
+	lines := mm.GetBuffer()
+	if len(lines) != len(saved) {
+		t.Fatalf("expected %d lines, got %d", len(saved), len(lines))
+	}
+	for i := range saved {
+		if lines[i] != saved[i] {
+			t.Errorf("line %d not verbatim:\n got  %q\n want %q", i, lines[i], saved[i])
+		}
+	}
+}
+
 func TestMemoryManagerBuildSystemPrompt(t *testing.T) {
 	dir := t.TempDir()
 	mm := NewMemoryManager(dir, nil, DefaultMemoryConfig())
@@ -255,12 +338,13 @@ func TestOnSessionEnd_StructuredPrompt(t *testing.T) {
 		"user: great, please add tests",
 	})
 
-	if llm.lastUser == "" {
+	last := llm.getLastUser()
+	if last == "" {
 		t.Fatal("extraction LLM was not called")
 	}
-	lower := strings.ToLower(llm.lastUser)
+	lower := strings.ToLower(last)
 	if !strings.Contains(lower, "user:") && !strings.Contains(lower, "assistant:") {
-		t.Error("extraction prompt should contain user:/assistant: labels, got:\n" + llm.lastUser)
+		t.Error("extraction prompt should contain user:/assistant: labels, got:\n" + last)
 	}
 }
 

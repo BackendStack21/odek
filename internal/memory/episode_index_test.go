@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -157,12 +158,11 @@ func TestEpisodeIndex_FormatEpisodeContextNoLLM(t *testing.T) {
 	resetEpIdxes()
 	dir := t.TempDir()
 
-	callCount := 0
 	llm := &mockLLM{responses: map[string]string{
 		"Summarize": "session summary",
 	}}
 	// Override SimpleCall to count calls.
-	countingLLM := &countCallsLLM{inner: llm, count: &callCount}
+	countingLLM := &countCallsLLM{inner: llm}
 
 	cfg := DefaultMemoryConfig()
 	cfg.LLMSearch = boolPtr(true) // explicitly on — FormatEpisodeContext must still skip it
@@ -172,11 +172,11 @@ func TestEpisodeIndex_FormatEpisodeContextNoLLM(t *testing.T) {
 	msgs := []string{"user: hi", "assistant: built the postgres schema", "user: ok", "assistant: done"}
 	mm.OnSessionEndWithProvenance("20260605-a", 5, msgs, EpisodeProvenance{})
 
-	before := callCount
+	before := countingLLM.calls()
 
 	// FormatEpisodeContext must not add any LLM calls.
 	_ = mm.FormatEpisodeContext("postgres schema")
-	after := callCount
+	after := countingLLM.calls()
 
 	if after != before {
 		t.Errorf("FormatEpisodeContext made %d LLM call(s); want 0 (should use vector index only)",
@@ -185,15 +185,22 @@ func TestEpisodeIndex_FormatEpisodeContextNoLLM(t *testing.T) {
 }
 
 // countCallsLLM wraps mockLLM and counts SimpleCall invocations.
+//
+// The counter is atomic: OnSessionEndWithProvenance calls the LLM from two
+// goroutines at once (synchronous episode extraction + background
+// consolidation), so a plain int would race under `go test -race`.
 type countCallsLLM struct {
 	inner *mockLLM
-	count *int
+	n     atomic.Int64
 }
 
 func (c *countCallsLLM) SimpleCall(ctx context.Context, system, user string) (string, error) {
-	*c.count++
+	c.n.Add(1)
 	return c.inner.SimpleCall(ctx, system, user)
 }
+
+// calls returns the number of SimpleCall invocations so far.
+func (c *countCallsLLM) calls() int { return int(c.n.Load()) }
 
 // TestEpisodeIndex_ConcurrentSafety: N goroutines sharing one memory dir write
 // episodes and recall concurrently. No race, no crashes.
@@ -267,8 +274,7 @@ func TestEpisodeIndex_AbsPath(t *testing.T) {
 // returns vector-ranked candidates without making any LLM call.
 func TestSearchEpisodes_LLMSearchFalse(t *testing.T) {
 	resetEpIdxes()
-	llmCalls := 0
-	llm := &countCallsLLM{inner: &mockLLM{responses: map[string]string{}}, count: &llmCalls}
+	llm := &countCallsLLM{inner: &mockLLM{responses: map[string]string{}}}
 	cfg := DefaultMemoryConfig()
 	cfg.LLMSearch = boolPtr(false)
 	mm := NewMemoryManager(t.TempDir(), llm, cfg)
@@ -276,13 +282,13 @@ func TestSearchEpisodes_LLMSearchFalse(t *testing.T) {
 	msgs := []string{"user: hi", "assistant: postgres schema done", "user: ok", "assistant: done"}
 	mm.OnSessionEndWithProvenance("20260701-a", 5, msgs, EpisodeProvenance{})
 
-	before := llmCalls
+	before := llm.calls()
 	results, err := mm.SearchEpisodes("postgres", 3)
 	if err != nil {
 		t.Fatalf("SearchEpisodes: %v", err)
 	}
-	if llmCalls != before {
-		t.Errorf("llm_search=false should fire 0 LLM calls, got %d", llmCalls-before)
+	if after := llm.calls(); after != before {
+		t.Errorf("llm_search=false should fire 0 LLM calls, got %d", after-before)
 	}
 	_ = results
 }
@@ -373,7 +379,6 @@ func TestSearchEpisodes_RankFnErrorFallback(t *testing.T) {
 func TestSearchEpisodes_OOVFallbackToLLM(t *testing.T) {
 	resetEpIdxes()
 	dir := t.TempDir()
-	llmCalls := 0
 	llm := &countCallsLLM{
 		inner: &mockLLM{responses: map[string]string{
 			"Summarize":  "postgres work",
@@ -381,7 +386,6 @@ func TestSearchEpisodes_OOVFallbackToLLM(t *testing.T) {
 			"rank":       "0",
 			"most relev": "0",
 		}},
-		count: &llmCalls,
 	}
 	cfg := DefaultMemoryConfig()
 	cfg.LLMSearch = boolPtr(true)
@@ -390,10 +394,10 @@ func TestSearchEpisodes_OOVFallbackToLLM(t *testing.T) {
 	msgs := []string{"user: hi", "assistant: postgres schema done", "user: ok", "assistant: done"}
 	mm.OnSessionEndWithProvenance("20260705-a", 5, msgs, EpisodeProvenance{})
 
-	before := llmCalls
+	before := llm.calls()
 	// Query with zero vocabulary overlap (all OOV) → recallByVector returns nil → fallback to Search
 	_, _ = mm.SearchEpisodes("xyzzy wumpus frobnitz", 3)
-	after := llmCalls
+	after := llm.calls()
 	t.Logf("OOV query: llm calls=%d (0 means vector returned nothing, fallback to LLM Search)", after-before)
 	// After D-05 fix: OOV → recallByVector returns nil → SearchEpisodes falls back to episodes.Search
 	// which uses the LLM ranker. We don't assert an exact count because the fallback

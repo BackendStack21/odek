@@ -652,10 +652,9 @@ func handlePrompt(
 	}
 	writeWSJSON(conn, map[string]any{"type": "session", "session_id": sid, "model": resolved.Model, "sandbox": resolved.Sandbox})
 
-	// Append user input to buffer
+	// Append user input to buffer (AppendBuffer summarizes raw text).
 	if mm := agent.Memory(); mm != nil {
-		userSummary := shorten(prompt, 100)
-		mm.AppendBuffer("user", userSummary)
+		mm.AppendBuffer("user", prompt)
 	}
 
 	// Run agent. Audit recorder wired around the loop so every
@@ -753,8 +752,7 @@ func handlePrompt(
 	if mm := agent.Memory(); mm != nil {
 		for _, msg := range newMsgs {
 			if msg.Role == "assistant" && msg.Content != "" {
-				agentSummary := shorten(msg.Content, 100)
-				mm.AppendBuffer("agent", agentSummary)
+				mm.AppendBuffer("agent", msg.Content)
 				break
 			}
 		}
