@@ -2,6 +2,7 @@ bin/
 /odek
 *.test
 coverage.out
+*.out
 odek-bin
 .plans/
 .hermes/
