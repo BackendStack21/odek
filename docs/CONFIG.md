@@ -200,7 +200,8 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
     "llm_extract": true,
     "llm_consolidate": true,
     "merge_threshold": 0.7,
-    "add_threshold": 0.3
+    "add_threshold": 0.3,
+    "auto_approve_episodes": false
   }
 }
 ```
@@ -213,12 +214,13 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
 | `buffer_lines` | 20 | Max turn summaries in session buffer |
 | `buffer_enabled` | true | Enable the turn-level buffer |
 | `merge_on_write` | true | Use go-vector RP similarity to auto-merge related entries |
-| `extract_on_end` | true | Extract durable facts via LLM at session end (≥3 turns) |
+| `extract_on_end` | true | At session end (≥3 turns), extract a narrative episode summary via LLM for later recall |
 | `llm_search` | true | Use LLM to rank episode search results by relevance |
 | `llm_extract` | true | Use LLM for end-of-session fact extraction |
 | `llm_consolidate` | true | Use LLM to merge related fact entries |
 | `merge_threshold` | 0.7 | go-vector cosine threshold for auto-merge (0.0–1.0) |
 | `add_threshold` | 0.3 | go-vector cosine threshold for auto-add (0.0–1.0) |
+| `auto_approve_episodes` | false | **Security trade-off.** When true, untrusted episodes (sessions that touched web/MCP/out-of-workspace content) are auto-approved at session end so they are recalled without a manual `odek memory promote`. Leaving it `false` keeps the human review gate (recommended). |
 
 ## Sub-agent configuration
 

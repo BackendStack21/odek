@@ -145,6 +145,15 @@ func ClassifyPath(path string) RiskClass {
 	}
 	abs = filepath.Clean(abs)
 
+	// macOS canonicalizes /etc, /var, and /tmp as symlinks under /private.
+	// Strip the /private prefix so the sensitivity checks below match
+	// consistently — e.g. /private/etc/master.passwd must classify the same
+	// as /etc/master.passwd (system_write), and /private/var/folders/... must
+	// still resolve to the temp dir (local_write).
+	if strings.HasPrefix(abs, "/private/") {
+		abs = strings.TrimPrefix(abs, "/private")
+	}
+
 	for _, prefix := range []string{"/boot", "/dev", "/proc", "/sys", "/mnt", "/media"} {
 		if strings.HasPrefix(abs, prefix) {
 			return Destructive

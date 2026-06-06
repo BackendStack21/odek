@@ -13,6 +13,44 @@ func msgWithTool(name string) LlmMessage {
 	}
 }
 
+func msgWithToolArgs(name, argsJSON string) LlmMessage {
+	tc := LlmToolCall{}
+	tc.Function.Name = name
+	tc.Function.Arguments = argsJSON
+	return LlmMessage{
+		Role:      "assistant",
+		ToolCalls: []LlmToolCall{tc},
+	}
+}
+
+// Mirrors the memory fix: a skill learned from a session that only read
+// workspace files must NOT be flagged for review. This also guards the
+// llm.Message → LlmMessage conversion: if Arguments were dropped upstream,
+// the path tool would read as empty-args and conservatively taint, failing
+// this test.
+func TestDeriveProvenance_WorkspaceReadTrusted(t *testing.T) {
+	msgs := []LlmMessage{
+		msgWithTool("shell"),
+		msgWithToolArgs("read_file", `{"path":"internal/x.go"}`),
+		msgWithToolArgs("search_files", `{"pattern":"TODO"}`),
+	}
+	prov := DeriveProvenance(msgs)
+	if prov.Untrusted || prov.NeedsReview {
+		t.Errorf("workspace-only session should yield a trusted skill, got %+v", prov)
+	}
+}
+
+func TestDeriveProvenance_SensitiveReadTaints(t *testing.T) {
+	msgs := []LlmMessage{msgWithToolArgs("read_file", `{"path":"/etc/passwd"}`)}
+	prov := DeriveProvenance(msgs)
+	if !prov.Untrusted || !prov.NeedsReview {
+		t.Fatalf("reading /etc/passwd should taint the skill, got %+v", prov)
+	}
+	if len(prov.Sources) != 1 || prov.Sources[0] != "read_file" {
+		t.Errorf("Sources = %v, want [read_file]", prov.Sources)
+	}
+}
+
 func TestDeriveProvenance_EmptyIsTrusted(t *testing.T) {
 	prov := DeriveProvenance(nil)
 	if prov.Untrusted {

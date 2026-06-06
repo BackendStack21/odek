@@ -649,22 +649,22 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		MaxIter:  cfg.MaxIter,
 		System:   cfg.System,
 
-		SandboxImage:        cfg.SandboxImage, // empty = resolve at call site (Dockerfile.odek or alpine:latest)
-		SandboxNetwork:      ifZero(cfg.SandboxNetwork, DefaultSandboxNetwork),
-		SandboxMemory:       cfg.SandboxMemory,
-		SandboxCPUs:         cfg.SandboxCPUs,
-		SandboxUser:         cfg.SandboxUser,
-		SandboxEnv:          cfg.SandboxEnv,
-		SandboxVolumes:      cfg.SandboxVolumes,
-		Skills:              resolveSkills(cfg.Skills),
-		Dangerous:           resolveDangerous(cfg.Dangerous),
-		Memory:              resolveMemory(cfg.Memory),
-		MCPServers:          cfg.MCPServers,
-		Telegram:            resolveTelegram(cfg.Telegram),
-		Transcription:       resolveTranscription(cfg.Transcription),
-		Schedules:           resolveSchedules(cfg.Schedules),
-		InteractionMode:     ifZero(cfg.InteractionMode, "engaging"),
-		ToolProgress:        ifZero(cfg.ToolProgress, "all"),
+		SandboxImage:    cfg.SandboxImage, // empty = resolve at call site (Dockerfile.odek or alpine:latest)
+		SandboxNetwork:  ifZero(cfg.SandboxNetwork, DefaultSandboxNetwork),
+		SandboxMemory:   cfg.SandboxMemory,
+		SandboxCPUs:     cfg.SandboxCPUs,
+		SandboxUser:     cfg.SandboxUser,
+		SandboxEnv:      cfg.SandboxEnv,
+		SandboxVolumes:  cfg.SandboxVolumes,
+		Skills:          resolveSkills(cfg.Skills),
+		Dangerous:       resolveDangerous(cfg.Dangerous),
+		Memory:          resolveMemory(cfg.Memory),
+		MCPServers:      cfg.MCPServers,
+		Telegram:        resolveTelegram(cfg.Telegram),
+		Transcription:   resolveTranscription(cfg.Transcription),
+		Schedules:       resolveSchedules(cfg.Schedules),
+		InteractionMode: ifZero(cfg.InteractionMode, "engaging"),
+		ToolProgress:    ifZero(cfg.ToolProgress, "all"),
 	}
 
 	// MaxConcurrency: default to 3 if not set
@@ -849,6 +849,9 @@ func resolveMemory(cfg *memory.MemoryConfig) memory.MemoryConfig {
 	}
 	if cfg.MinTurnsForExtraction > 0 {
 		def.MinTurnsForExtraction = cfg.MinTurnsForExtraction
+	}
+	if cfg.AutoApproveEpisodes != nil {
+		def.AutoApproveEpisodes = cfg.AutoApproveEpisodes
 	}
 	return def
 }

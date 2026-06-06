@@ -100,11 +100,25 @@ Both:
 
 `internal/memory` tracks `EpisodeProvenance{Untrusted, Sources, UserApproved}` for every episode. An episode derived from a session that ingested untrusted content is **stored on disk for audit but never auto-replayed** into future sessions. This stops a single successful injection from becoming a persistent backdoor through the episode pipeline.
 
-To use a tainted episode anyway, the user must explicitly promote it (set `UserApproved=true`).
+Taint is decided per tool call by `memory.ToolCallTaints` (the single source of truth, shared with skills):
+
+- **Always untrusted:** `browser`, `http_batch`, `transcribe` (network / opaque-audio content), `session_search` (recall of prior-session transcripts, which may carry earlier-injected text), and any MCP tool (`server__tool`).
+- **Path-reading tools** (`read_file`, `search_files`, `multi_grep`, `batch_read`, `json_query`, `head_tail`, `count_lines`, `checksum`, `word_count`, `sort`, `tr`, `diff`, `file_info`, `glob`, `tree`, `base64`) taint when **any** of their path arguments resolves **outside the workspace trust zone** — the workspace dir, the sandbox `/workspace` mount, or `~/.odek`. Reads confined to the workspace stay trusted, so ordinary coding sessions remain recallable; reads of anything else (system/credential paths, home files, sibling repos) taint. The check is a workspace-containment allowlist rather than a sensitive-path denylist, and it resolves symlinks (so e.g. `/etc` → `/private/etc` on macOS cannot disguise an escape). A malformed argument string is treated conservatively as untrusted. When adding a new file-reading tool, add it to `PathReadingTools`.
+
+To use a tainted episode anyway, the user explicitly promotes it (sets `UserApproved=true`) from the CLI:
+
+```
+odek memory list                    # episodes excluded from recall, with their sources
+odek memory promote <session_id>    # approve one after reviewing its summary
+```
+
+Promotion is **CLI-only and human-gated** — it is deliberately *not* exposed as an agent tool, so a prompt-injected agent cannot self-approve its own poisoned memory.
+
+**Opt-out of the gate (`memory.auto_approve_episodes`, default `false`).** Operators who accept the risk (e.g. a fully sandboxed, single-tenant deployment) can set `auto_approve_episodes: true` to have untrusted episodes stamped `AutoApproved` at session end so they are recalled without a manual promote. This **disables the persistence-injection protection** for episodes — a single successful injection can then influence future sessions automatically — so it is off by default and should stay off in any environment exposed to untrusted input. The on-disk record still keeps `Untrusted=true` and `Sources`, and uses a distinct `AutoApproved` flag (never `UserApproved`) so the audit trail shows the approval was automatic.
 
 ### 6. Skill provenance gate
 
-`internal/skills` carries the same provenance model. Skills auto-saved from sessions that touched `browser` / `http_batch` / `read_file` / `search_files` / `multi_grep` / `transcribe` / any MCP tool are tagged with `Provenance.Untrusted=true` and `NeedsReview=true`. The skill loader pins those skills to the Lazy set regardless of their `auto_load` flag.
+`internal/skills` carries the same provenance model and shares the exact taint decision (`memory.ToolCallTaints`). Skills auto-saved from sessions that crossed the trust boundary — `browser` / `http_batch` / `transcribe` / any MCP tool, or a `read_file` / `search_files` / `multi_grep` of a **sensitive** path — are tagged with `Provenance.Untrusted=true` and `NeedsReview=true`. The skill loader pins those skills to the Lazy set regardless of their `auto_load` flag.
 
 After reviewing the skill body, promote it:
 
