@@ -256,7 +256,17 @@ func (e *EpisodeStore) recallByVector(query string, k int) ([]EpisodeMeta, error
 		k = 3
 	}
 	// Over-fetch so the provenance filter still leaves k usable results.
-	scored := sharedEpisodeIndex(e.dir).search(query, k*3+5)
+	// Discard zero-score results: when the query has no vocabulary overlap with
+	// the episode corpus (all-OOV), go-vector returns a zero vector and every
+	// Store.Search result has cosine similarity = 0. Returning those as
+	// "candidates" would make SearchEpisodes skip the LLM fallback with noise.
+	raw := sharedEpisodeIndex(e.dir).search(query, k*3+5)
+	scored := raw[:0:len(raw)]
+	for _, s := range raw {
+		if s.Score > 0 {
+			scored = append(scored, s)
+		}
+	}
 	if len(scored) == 0 {
 		return nil, nil
 	}

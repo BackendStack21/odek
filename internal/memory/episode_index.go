@@ -52,6 +52,15 @@ type episodeVectorIndex struct {
 // shared across all MemoryManager / EpisodeStore instances in the process.
 // odek serve builds one manager per WebSocket connection — all over the same
 // ~/.odek/memory — so a per-instance index would race on the .gob files.
+//
+// Multi-process note: two separate odek processes sharing the same memory
+// directory are NOT serialized by this in-process singleton. Concurrent saves
+// from distinct processes can interleave on the .tmp files. The practical
+// impact is limited — the worst case is one process loading a recently-rebuilt
+// gob pair and getting slightly stale recall — but operators running multiple
+// odek processes against a shared ~/.odek/memory should be aware of this.
+// Each process still produces internally-consistent gob pairs (store+emb are
+// rebuilt atomically within one process); the risk is only cross-process.
 var (
 	epIdxMu sync.Mutex
 	epIdxes = map[string]*episodeVectorIndex{}
