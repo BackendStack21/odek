@@ -203,7 +203,10 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
     "llm_consolidate": true,
     "merge_threshold": 0.7,
     "add_threshold": 0.3,
-    "auto_approve_episodes": false
+    "auto_approve_episodes": false,
+    "episode_dedup_threshold": 0.92,
+    "max_episodes": 500,
+    "episode_ttl_days": 0
   }
 }
 ```
@@ -225,6 +228,9 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
 | `merge_threshold` | 0.7 | Cosine similarity above which two fact entries are **auto-merged** without an LLM call (0.0–1.0). Raise it to merge less aggressively; lower it to merge more. |
 | `add_threshold` | 0.3 | Cosine similarity below which a new fact entry is **auto-added** without an LLM call (0.0–1.0). Between `add_threshold` and `merge_threshold` the LLM decides. Keep `add_threshold` < `merge_threshold`. |
 | `auto_approve_episodes` | false | **Security trade-off.** When true, untrusted episodes (sessions that touched web/MCP/out-of-workspace content) are auto-approved at session end so they are recalled without a manual `odek memory promote`. Leaving it `false` keeps the human review gate (recommended). |
+| `episode_dedup_threshold` | 0.92 | Cosine similarity above which a newly written episode is treated as a near-duplicate of an existing one and **replaces** it (newest wins). An untrusted episode never replaces a trusted/approved one. `0` disables dedup. |
+| `max_episodes` | 500 | Maximum number of stored episodes. On each write, episodes beyond this count are evicted oldest-first (both the summary file and the index entry). `0` disables the cap. |
+| `episode_ttl_days` | 0 | Evict episodes older than this many days. `0` (default) disables TTL-based eviction. |
 
 ### ⚠️ `extract_facts` — automatic fact learning (opt-in, off by default)
 
