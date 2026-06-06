@@ -12,6 +12,20 @@
     "auto_transcribe": true,
     "models_dir": "/usr/local/share/whisper/models"
   },
+  "memory": {
+    "enabled": true,
+    "facts_limit_user": 1500,
+    "facts_limit_env": 2500,
+    "buffer_lines": 20,
+    "buffer_enabled": true,
+    "merge_on_write": true,
+    "extract_on_end": true,
+    "llm_search": true,
+    "llm_extract": true,
+    "llm_consolidate": true,
+    "merge_threshold": 0.7,
+    "add_threshold": 0.3
+  },
   "dangerous": {
     "action": "allow",
     "non_interactive": "allow"
