@@ -102,8 +102,8 @@ Both:
 
 Taint is decided per tool call by `memory.ToolCallTaints` (the single source of truth, shared with skills):
 
-- **Always untrusted:** `browser`, `http_batch`, `transcribe` (network/opaque-audio content), and any MCP tool (`server__tool`).
-- **Path-scoped:** `read_file`, `search_files`, `multi_grep` taint **only** when their `path` argument resolves to a sensitive location (`danger.ClassifyPath` → `system_write`/`destructive`, e.g. `/etc`, `~/.ssh`, `~/.aws`). Reads confined to the workspace — or any other non-sensitive local path — stay trusted, so ordinary coding sessions remain recallable. A malformed/absent path is treated conservatively as untrusted.
+- **Always untrusted:** `browser`, `http_batch`, `transcribe` (network / opaque-audio content), `session_search` (recall of prior-session transcripts, which may carry earlier-injected text), and any MCP tool (`server__tool`).
+- **Path-reading tools** (`read_file`, `search_files`, `multi_grep`, `batch_read`, `json_query`, `head_tail`, `count_lines`, `checksum`, `word_count`, `sort`, `tr`, `diff`, `file_info`, `glob`, `tree`, `base64`) taint when **any** of their path arguments resolves **outside the workspace trust zone** — the workspace dir, the sandbox `/workspace` mount, or `~/.odek`. Reads confined to the workspace stay trusted, so ordinary coding sessions remain recallable; reads of anything else (system/credential paths, home files, sibling repos) taint. The check is a workspace-containment allowlist rather than a sensitive-path denylist, and it resolves symlinks (so e.g. `/etc` → `/private/etc` on macOS cannot disguise an escape). A malformed argument string is treated conservatively as untrusted. When adding a new file-reading tool, add it to `PathReadingTools`.
 
 To use a tainted episode anyway, the user explicitly promotes it (sets `UserApproved=true`) from the CLI:
 

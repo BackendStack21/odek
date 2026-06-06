@@ -72,6 +72,38 @@ func TestEpisode_PromotePersists(t *testing.T) {
 	}
 }
 
+// TestMemoryManager_PromoteAndPending covers the manager-level wrappers
+// (PromoteEpisode / PendingReviewEpisodes), including the disabled-memory guard.
+func TestMemoryManager_PromoteAndPending(t *testing.T) {
+	dir := t.TempDir()
+	m := NewMemoryManager(dir, nil, MemoryConfig{Enabled: boolPtr(true)})
+	if err := m.episodes.WriteWithProvenance("20260201-web", "researched X", 5,
+		EpisodeProvenance{Untrusted: true, Sources: []string{"browser"}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	pending, err := m.PendingReviewEpisodes()
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("PendingReviewEpisodes = %v, err=%v; want 1", pending, err)
+	}
+	if err := m.PromoteEpisode("20260201-web"); err != nil {
+		t.Fatalf("PromoteEpisode: %v", err)
+	}
+	pending, _ = m.PendingReviewEpisodes()
+	if len(pending) != 0 {
+		t.Errorf("after promote, pending = %v, want empty", pending)
+	}
+
+	// Disabled memory: both wrappers must error rather than touch the store.
+	off := NewMemoryManager(dir, nil, MemoryConfig{Enabled: boolPtr(false)})
+	if err := off.PromoteEpisode("20260201-web"); err == nil {
+		t.Error("PromoteEpisode on disabled memory should error")
+	}
+	if _, err := off.PendingReviewEpisodes(); err == nil {
+		t.Error("PendingReviewEpisodes on disabled memory should error")
+	}
+}
+
 func TestEpisode_PromoteErrors(t *testing.T) {
 	es := NewEpisodeStore(t.TempDir(), nil)
 	if err := es.WriteWithProvenance("20260107-a", "s", 5,

@@ -2,9 +2,10 @@ package memory
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 
-	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/llm"
 )
 
@@ -13,12 +14,12 @@ import (
 //
 // An untrusted episode is one whose originating session ingested
 // content from outside the agent's trust boundary (fetched pages, MCP
-// tool output, audio transcription, or reads of sensitive system/
-// credential paths). Such episodes are stored on disk for audit but are
-// NEVER auto-replayed into future sessions — they must be explicitly
-// promoted (UserApproved=true) by the user first (see `odek memory
-// promote`). This stops a one-shot prompt injection from becoming a
-// persistent backdoor.
+// tool output, audio transcription, prior-session recall, or reads of
+// files outside the workspace). Such episodes are stored on disk for
+// audit but are NEVER auto-replayed into future sessions — they must be
+// explicitly promoted (UserApproved=true) by the user first (see
+// `odek memory promote`). This stops a one-shot prompt injection from
+// becoming a persistent backdoor.
 type EpisodeProvenance struct {
 	Untrusted    bool     `json:"untrusted,omitempty"`
 	Sources      []string `json:"sources,omitempty"`
@@ -26,36 +27,55 @@ type EpisodeProvenance struct {
 }
 
 // AlwaysExternalTools are tools whose RESULT content originates outside the
-// agent's trust boundary regardless of their arguments: network fetches and
-// opaque transcribed audio. A session that used any of these always produces
-// an untrusted episode.
+// agent's trust boundary regardless of their arguments: network fetches,
+// opaque transcribed audio, and recall of prior-session transcripts (which may
+// themselves carry previously-injected content).
 var AlwaysExternalTools = map[string]bool{
-	"browser":    true,
-	"http_batch": true,
-	"transcribe": true,
+	"browser":        true,
+	"http_batch":     true,
+	"transcribe":     true,
+	"session_search": true,
 }
 
-// PathScopedTools are local file tools that only cross the trust boundary when
-// they touch a SENSITIVE path (system or credential locations). Reads confined
-// to the workspace — or any other non-sensitive local path — are trusted, so
-// ordinary coding sessions no longer taint their episode just for reading
-// project files. The per-call decision lives in ToolCallTaints.
-var PathScopedTools = map[string]bool{
+// PathReadingTools are tools that read filesystem content (or structure) into
+// the transcript. They taint the episode only when one of their path arguments
+// resolves OUTSIDE the workspace (see pathReadEscapes) — reads confined to the
+// workspace, or to odek's own ~/.odek state, stay trusted so ordinary coding
+// sessions remain recallable.
+//
+// This must list every tool that surfaces file contents/structure to the
+// model. A tool missing here would let an injected agent read a secret into a
+// TRUSTED, recallable episode; when adding a new file-reading tool, add it
+// here too.
+var PathReadingTools = map[string]bool{
 	"read_file":    true,
 	"search_files": true,
 	"multi_grep":   true,
+	"batch_read":   true,
+	"json_query":   true,
+	"head_tail":    true,
+	"count_lines":  true,
+	"checksum":     true,
+	"word_count":   true,
+	"sort":         true,
+	"tr":           true,
+	"diff":         true,
+	"file_info":    true,
+	"glob":         true,
+	"tree":         true,
+	"base64":       true,
 }
 
 // UntrustedToolNames is the union of the two categories above. It is retained
 // as the canonical "these tools can produce untrusted content" set for
 // external references and documentation. The actual per-call decision is made
-// by ToolCallTaints, which is argument-aware for the path-scoped tools.
+// by ToolCallTaints, which is argument-aware for the path-reading tools.
 var UntrustedToolNames = func() map[string]bool {
-	m := make(map[string]bool, len(AlwaysExternalTools)+len(PathScopedTools))
+	m := make(map[string]bool, len(AlwaysExternalTools)+len(PathReadingTools))
 	for k := range AlwaysExternalTools {
 		m[k] = true
 	}
-	for k := range PathScopedTools {
+	for k := range PathReadingTools {
 		m[k] = true
 	}
 	return m
@@ -68,10 +88,11 @@ var UntrustedToolNames = func() map[string]bool {
 //   - MCP adapter calls (name contains "__") always taint — third-party servers
 //     return arbitrary text.
 //   - AlwaysExternalTools always taint, regardless of arguments.
-//   - PathScopedTools taint only when their "path" argument resolves to a
-//     sensitive location (danger.ClassifyPath → SystemWrite/Destructive). An
-//     empty path means the tool defaults to the workspace (trusted); a
-//     malformed argument string is treated conservatively as tainting.
+//   - PathReadingTools taint only when one of their path arguments resolves
+//     OUTSIDE the workspace trust zone (workspace dir, the sandbox /workspace
+//     mount, or ~/.odek). Symlinks are resolved so e.g. /etc → /private/etc on
+//     macOS cannot disguise an escape. A malformed argument string taints
+//     conservatively; absent/empty paths default to the workspace (trusted).
 //   - Everything else (shell, patch, write_file, …) is trusted.
 func ToolCallTaints(name, argsJSON string) bool {
 	if strings.Contains(name, "__") {
@@ -80,33 +101,98 @@ func ToolCallTaints(name, argsJSON string) bool {
 	if AlwaysExternalTools[name] {
 		return true
 	}
-	if PathScopedTools[name] {
-		return pathArgIsSensitive(argsJSON)
+	if PathReadingTools[name] {
+		return pathReadEscapes(argsJSON)
 	}
 	return false
 }
 
-// pathArgIsSensitive extracts the "path" argument of a path-scoped tool call
-// and reports whether it points outside the trust boundary. All three
-// path-scoped tools (read_file, search_files, multi_grep) use the "path" key.
-func pathArgIsSensitive(argsJSON string) bool {
+// pathReadEscapes extracts every filesystem path argument from a path-reading
+// tool call and reports whether any of them resolves outside the workspace
+// trust zone. The known path-bearing argument shapes across odek's file tools
+// are: "path", "path_a"/"path_b" (diff), and a "files":[{"path":…}] array
+// (batch_read, head_tail, count_lines, checksum, word_count, sort).
+func pathReadEscapes(argsJSON string) bool {
 	var a struct {
-		Path string `json:"path"`
+		Path  string `json:"path"`
+		PathA string `json:"path_a"`
+		PathB string `json:"path_b"`
+		Files []struct {
+			Path string `json:"path"`
+		} `json:"files"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
-		return true // can't determine the path → assume the worst
+		return true // can't determine the paths → assume the worst
 	}
-	if strings.TrimSpace(a.Path) == "" {
-		return false // empty path defaults to the workspace — trusted
+
+	roots := trustedRoots()
+	candidates := []string{a.Path, a.PathA, a.PathB}
+	for _, f := range a.Files {
+		candidates = append(candidates, f.Path)
 	}
-	switch danger.ClassifyPath(a.Path) {
-	case danger.SystemWrite, danger.Destructive:
-		return true
-	default:
-		// LocalWrite (in-workspace, /tmp, and other non-sensitive local
-		// paths) and anything else is within the trust boundary.
-		return false
+
+	sawPath := false
+	for _, p := range candidates {
+		if strings.TrimSpace(p) == "" {
+			continue
+		}
+		sawPath = true
+		if pathOutsideRoots(p, roots) {
+			return true
+		}
 	}
+	// No path argument at all → the tool defaulted to the workspace (trusted).
+	_ = sawPath
+	return false
+}
+
+// trustedRoots returns the set of directory prefixes within which a file read
+// is considered inside the trust boundary: the current workspace (process cwd
+// at session-end), the conventional sandbox mount "/workspace", and odek's own
+// ~/.odek state directory. Each is included both as-is and symlink-resolved.
+func trustedRoots() []string {
+	var roots []string
+	add := func(p string) {
+		if p == "" {
+			return
+		}
+		c := filepath.Clean(p)
+		roots = append(roots, c)
+		if r, err := filepath.EvalSymlinks(c); err == nil && r != c {
+			roots = append(roots, r)
+		}
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		add(cwd)
+	}
+	add("/workspace") // sandbox mount point (see internal/sandbox)
+	if home, err := os.UserHomeDir(); err == nil {
+		add(filepath.Join(home, ".odek"))
+	}
+	return roots
+}
+
+// pathOutsideRoots reports whether p resolves outside every trusted root.
+// The path is checked both as filepath.Abs(p) and symlink-resolved, so a
+// symlinked sensitive path (e.g. /etc → /private/etc) cannot evade detection.
+func pathOutsideRoots(p string, roots []string) bool {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return true // unresolvable → conservative
+	}
+	abs = filepath.Clean(abs)
+	cands := []string{abs}
+	if r, err := filepath.EvalSymlinks(abs); err == nil && r != abs {
+		cands = append(cands, r)
+	}
+	for _, c := range cands {
+		for _, root := range roots {
+			if c == root || strings.HasPrefix(c, root+string(filepath.Separator)) {
+				return false // inside a trusted root
+			}
+		}
+	}
+	return true
 }
 
 // DeriveProvenance walks a session's structured messages and returns

@@ -149,8 +149,17 @@ func TestToolCallTaints(t *testing.T) {
 		{"write_file", `{"path":"/etc/x"}`, false}, // not a read tool
 		{"read_file", `{"path":"internal/x.go"}`, false},
 		{"read_file", `{"path":"/etc/shadow"}`, true},
+		{"read_file", `{"path":"/private/etc/master.passwd"}`, true}, // macOS /private symlink
 		{"read_file", ``, true},
 		{"search_files", `{"pattern":"x"}`, false},
+		{"read_file", `{"path":"/workspace/foo.go"}`, false}, // sandbox mount is trusted
+		// Broadened file-reading tool coverage (was the D-01 bypass):
+		{"batch_read", `{"files":[{"path":"/etc/shadow"}]}`, true},
+		{"batch_read", `{"files":[{"path":"internal/x.go"}]}`, false},
+		{"json_query", `{"path":"/etc/passwd"}`, true},
+		{"diff", `{"path_a":"/etc/hosts","path_b":"a.txt"}`, true}, // any path escaping taints
+		{"count_lines", `{"files":[{"path":"go.mod"}]}`, false},
+		{"session_search", `{"query":"password"}`, true}, // recall of prior transcripts
 		{"browser", `{"url":"https://x"}`, true},
 		{"github__list_issues", `{}`, true},
 	}
