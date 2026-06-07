@@ -182,7 +182,7 @@
     .carousel .nav button.active { background: var(--accent); color: #000; border-color: var(--accent); }
     /* Hero carousel — terminal content is left-aligned even inside the centered hero */
     .hero-carousel { max-width: 680px; margin: 40px auto 0; text-align: left; }
-    .carousel .slide-img { text-align: center; }
+    .carousel .slide-img { text-align: left; padding: 12px 16px; }
     .carousel .slide-img img {
       display: block; margin: 12px auto 10px; max-width: 100%; max-height: 440px;
       border-radius: 10px; border: 1px solid var(--border-subtle);
@@ -198,12 +198,12 @@
     .carousel .slide .bul { display: block; padding-left: 14px; text-indent: -14px; }
 
     /* ── Telegram chat mockup (slide 7) ── */
-    .tg-wrap { display: flex; justify-content: center; padding: 10px 0 4px; }
+    .tg-wrap { display: flex; width: 100%; padding: 4px 0; }
     .tg-phone {
-      width: 320px; background: #0e1621; border-radius: 14px;
+      width: 100%; background: #0e1621; border-radius: 14px;
       border: 1px solid #1e3448; overflow: hidden;
       font-family: var(--font-sans); font-size: 0.8rem;
-      display: flex; flex-direction: column; max-height: 400px;
+      display: flex; flex-direction: column;
     }
     .tg-hdr {
       background: #17212b; padding: 9px 14px; display: flex; align-items: center;
