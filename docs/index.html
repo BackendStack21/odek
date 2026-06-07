@@ -3,24 +3,37 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0a0d12">
   <title>odek · ~12 MB, zero-framework Go agent runtime</title>
-  <meta name="description" content="odek — the fastest, minimal Go autonomous agent runtime. One binary. One loop. Zero frameworks.">
+  <meta name="description" content="The fastest, minimal Go autonomous agent runtime: a ~12 MB static binary, zero frameworks. ReAct loop, parallel tools, memory, MCP, sandbox, Web UI, Telegram bot.">
   <link rel="canonical" href="https://odek.21no.de/">
   <link rel="robots" href="/robots.txt">
   <link rel="sitemap" href="/sitemap.xml">
   <meta property="og:type" content="website">
+  <meta property="og:site_name" content="odek">
+  <meta property="og:locale" content="en_US">
   <meta property="og:url" content="https://odek.21no.de/">
   <meta property="og:title" content="odek — Go Autonomous Agent Runtime">
   <meta property="og:description" content="The fastest, minimal Go autonomous agent runtime. ~12 MB static binary, zero frameworks. ReAct agent with persistent memory, MCP, sandbox, Web UI, and Telegram bot.">
   <meta property="og:image" content="https://odek.21no.de/og-image.png">
+  <meta property="og:image:secure_url" content="https://odek.21no.de/og-image.png">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="odek — ~12 MB static binary, zero-framework Go autonomous agent runtime">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="odek — Go Autonomous Agent Runtime">
   <meta name="twitter:description" content="The fastest, minimal Go autonomous agent runtime. ~12 MB static binary, zero frameworks.">
+  <meta name="twitter:image" content="https://odek.21no.de/og-image.png">
+  <meta name="twitter:image:alt" content="odek — ~12 MB static binary, zero-framework Go autonomous agent runtime">
   <meta name="keywords" content="Go, autonomous agent, AI agent, LLM, ReAct, MCP, parallel execution, interaction modes, Telegram bot, Docker sandbox, CLI, benchmark, open-source">
   <meta name="robots" content="index, follow">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://assets.21no.de; font-src https://assets.21no.de; img-src 'self' https://21no.de; connect-src 'self'">
-  <link rel="icon" type="image/x-icon" href="https://21no.de/logo-v2.png">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="icon" type="image/png" href="https://21no.de/logo-v2.png">
   <link rel="apple-touch-icon" href="https://21no.de/logo-v2.png">
+  <link rel="preconnect" href="https://assets.21no.de" crossorigin>
+  <link rel="dns-prefetch" href="https://assets.21no.de">
   <link rel="stylesheet" href="https://assets.21no.de/fonts/fonts.css">
   <link rel="stylesheet" href="https://assets.21no.de/css/tokens.css">
   <style>
@@ -310,11 +323,79 @@
   "description": "The fastest, minimal Go autonomous agent runtime. ~12 MB static binary, zero frameworks. ReAct agent with parallel tool execution, persistent memory, MCP, sandbox, Web UI, and Telegram bot.",
   "url": "https://odek.21no.de",
   "downloadUrl": "https://github.com/BackendStack21/odek",
+  "softwareVersion": "1.2.0",
+  "license": "https://github.com/BackendStack21/odek/blob/main/LICENSE",
+  "image": "https://odek.21no.de/og-image.png",
+  "screenshot": "https://odek.21no.de/telegram-demo.png",
+  "sameAs": ["https://github.com/BackendStack21/odek"],
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+  },
+  "featureList": [
+    "ReAct agent loop",
+    "Parallel tool execution",
+    "Persistent three-tier memory",
+    "MCP server and client",
+    "Docker sandbox",
+    "Web UI",
+    "Telegram bot",
+    "Provider-agnostic (any OpenAI-compatible endpoint)"
+  ],
   "author": {
     "@type": "Organization",
     "name": "21no.de",
     "url": "https://21no.de"
   }
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "What is odek?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "odek is a ~12 MB static Go binary that runs an autonomous ReAct agent loop. It is provider-agnostic and ships parallel tool execution, persistent memory, an MCP server and client, a Docker sandbox, a Web UI, and a Telegram bot — with no frameworks and no Python venv."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How do I install odek?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Run 'go install github.com/BackendStack21/odek/cmd/odek@latest', or download the static binary from GitHub releases. It installs in seconds with no Docker, venv, or npm required."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Which LLM providers does odek support?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Any OpenAI-compatible endpoint: Deepseek, OpenAI, Anthropic, Ollama, vLLM, Groq, Together, and Fireworks. odek is provider-agnostic, so you are not locked into a single vendor."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can odek run as a Telegram bot?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. 'odek telegram' runs the same agent over a Telegram bot using outbound long-polling, so it needs no open ports and works behind NAT. It supports per-chat sessions and inline Approve / Deny / Trust keyboards for risky commands."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Is odek free and open source?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. odek is open source under the MIT license and free to use."
+      }
+    }
+  ]
 }
 </script>
 </head>
@@ -478,7 +559,7 @@
         <!-- Slide 7 — the result -->
         <div class="slide slide-img">
           <span class="info"># 7 · Chat with it →</span><br>
-          <img src="telegram-demo.png" alt="Chatting with the odek Telegram bot — it replies in English and Spanish, with token stats per turn" loading="lazy">
+          <img src="telegram-demo.png" alt="Chatting with the odek Telegram bot — it replies in English and Spanish, with token stats per turn" width="1220" height="1214" loading="lazy">
           <span class="cap">Same agent, now in your pocket. Risky commands prompt for <strong>Approve / Deny / Trust</strong> right in the chat.</span>
         </div>
 
