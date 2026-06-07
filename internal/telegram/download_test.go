@@ -304,8 +304,9 @@ func TestDownloadVoice_ShortFileIDSuffix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DownloadVoice error: %v", err)
 	}
-	if !strings.Contains(path, "voice_short") {
-		t.Errorf("expected short fileID in path, got %q", path)
+	// Filenames are now derived from a hash of the full fileID, not the raw id.
+	if !strings.Contains(path, "voice_"+fileIDSuffix("short")) {
+		t.Errorf("expected hashed fileID suffix in path, got %q", path)
 	}
 	os.Remove(path)
 }
@@ -364,8 +365,8 @@ func TestDownloadPhoto_FilePathEmpty(t *testing.T) {
 	}
 }
 
-func TestDownloadVoice_LongFileIDTruncation(t *testing.T) {
-	// A fileID longer than 16 chars should be truncated in the filename.
+func TestDownloadVoice_HashedFileIDSuffix(t *testing.T) {
+	// A long fileID is hashed into a 16-hex-char suffix, not raw-truncated.
 	longID := "abcdefghijklmnopqrstuvwxyz1234567890"
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.String(), "getFile") {
@@ -382,14 +383,17 @@ func TestDownloadVoice_LongFileIDTruncation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DownloadVoice error: %v", err)
 	}
-	// The filename should contain a truncated (16-char) suffix.
-	if !strings.Contains(path, longID[:16]) {
-		t.Errorf("expected truncated fileID in path, got %q", path)
+	if !strings.Contains(path, "voice_"+fileIDSuffix(longID)) {
+		t.Errorf("expected hashed fileID suffix in path, got %q", path)
+	}
+	// The raw id prefix must NOT appear — that was the collision bug.
+	if strings.Contains(filepath.Base(path), longID[:16]) {
+		t.Errorf("filename still contains raw fileID prefix: %q", path)
 	}
 	os.Remove(path)
 }
 
-func TestDownloadPhoto_LongFileIDTruncation(t *testing.T) {
+func TestDownloadPhoto_HashedFileIDSuffix(t *testing.T) {
 	longID := "abcdefghijklmnopqrstuvwxyz1234567890"
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.String(), "getFile") {
@@ -406,10 +410,51 @@ func TestDownloadPhoto_LongFileIDTruncation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DownloadPhoto error: %v", err)
 	}
-	if !strings.Contains(path, longID[:16]) {
-		t.Errorf("expected truncated fileID in path, got %q", path)
+	if !strings.Contains(path, "photo_"+fileIDSuffix(longID)) {
+		t.Errorf("expected hashed fileID suffix in path, got %q", path)
 	}
 	os.Remove(path)
+}
+
+// TestDownloadPhoto_PrefixCollisionAvoided is the regression test for the bug
+// where two distinct Telegram photos sharing the long common file_id prefix
+// (e.g. "AgACAgIAAxkBAAI…") were truncated to the same 16-char name and thus
+// overwrote each other — making the bot report "image already processed".
+func TestDownloadPhoto_PrefixCollisionAvoided(t *testing.T) {
+	// Two different IDs that share the first 20 characters.
+	idA := "AgACAgIAAxkBAAIvAAAA_distinct_A"
+	idB := "AgACAgIAAxkBAAIvAAAA_distinct_B"
+	if idA[:20] != idB[:20] {
+		t.Fatalf("test setup: ids must share a prefix")
+	}
+
+	makeBot := func(id, body string) *Bot {
+		handler := func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(r.URL.String(), "getFile") {
+				fmt.Fprintf(w, `{"ok":true,"result":{"file_id":"%s","file_path":"photos/img.jpg"}}`, id)
+			} else {
+				w.Write([]byte(body))
+			}
+		}
+		ts := httptest.NewServer(http.HandlerFunc(handler))
+		t.Cleanup(ts.Close)
+		return testBot(t, ts)
+	}
+
+	pathA, err := DownloadPhoto(makeBot(idA, "imageA"), []string{idA})
+	if err != nil {
+		t.Fatalf("DownloadPhoto(A) error: %v", err)
+	}
+	defer os.Remove(pathA)
+	pathB, err := DownloadPhoto(makeBot(idB, "imageB"), []string{idB})
+	if err != nil {
+		t.Fatalf("DownloadPhoto(B) error: %v", err)
+	}
+	defer os.Remove(pathB)
+
+	if pathA == pathB {
+		t.Fatalf("distinct photos collided to the same filename: %q", pathA)
+	}
 }
 
 func TestDownloadVoice_MediaDirError(t *testing.T) {

@@ -109,6 +109,11 @@ type VisionConfig struct {
 	// VideoFrames is the number of frames to sample evenly from a video file.
 	// Default: 8.
 	VideoFrames int `json:"video_frames,omitempty"`
+	// AutoDescribe controls whether photos received over Telegram are
+	// automatically run through the vision model to extract a description
+	// before the agent answers (mirrors transcription.auto_transcribe).
+	// Default: true.
+	AutoDescribe bool `json:"auto_describe,omitempty"`
 }
 
 // FileConfig is the JSON schema used by ~/.odek/config.json and ./odek.json.
@@ -967,7 +972,8 @@ func resolveVision(cfg *VisionConfig) VisionConfig {
 		return *cfg
 	}
 	return VisionConfig{
-		VideoFrames: 8,
+		VideoFrames:  8,
+		AutoDescribe: true,
 	}
 }
 

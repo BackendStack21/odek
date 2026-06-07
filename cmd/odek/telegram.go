@@ -535,7 +535,7 @@ func telegramCmd(args []string) error {
 		return "", nil
 	}
 
-	handler.OnPhotoMessage = func(chatID int64, messageID int, fileIDs []string) (string, error) {
+	handler.OnPhotoMessage = func(chatID int64, messageID int, fileIDs []string, caption string) (string, error) {
 		localPath, err := telegram.DownloadPhoto(bot, fileIDs)
 		if err != nil {
 			handlerLog.Warn("photo download failed", "chat_id", chatID, "error", err)
@@ -544,8 +544,63 @@ func telegramCmd(args []string) error {
 				bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 			return "", nil
 		}
-		go handleChatMessage(chatID, messageID,
-			fmt.Sprintf("🖼 Photo received and saved to %q. Use vision tools or shell commands to analyze and respond.", localPath),
+
+		caption = strings.TrimSpace(caption)
+
+		// Auto-describe if configured and the vision model is available: run the
+		// photo through the local vision model FIRST to extract a description,
+		// then hand that description (plus the user's caption, if any) to the
+		// agent so it can answer the request. Mirrors voice auto-transcription.
+		if resolved.Vision.AutoDescribe {
+			tool := newVisionTool(resolved.Dangerous, resolved.Vision)
+
+			// Focus the small vision model on the caption when present.
+			visionPrompt := "Describe this image in detail. Include any visible text, objects, people, and notable details."
+			if caption != "" {
+				visionPrompt = fmt.Sprintf(
+					"Describe this image in detail. Pay special attention to anything relevant to: %q. Include any visible text, objects, people, and notable details.",
+					caption)
+			}
+			argsJSON, _ := json.Marshal(map[string]string{"path": localPath, "prompt": visionPrompt})
+
+			result, err := tool.Call(string(argsJSON))
+			if err == nil {
+				var r struct {
+					Description string `json:"description"`
+					Error       string `json:"error"`
+				}
+				if json.Unmarshal([]byte(result), &r) == nil && r.Error == "" && r.Description != "" {
+					// r.Description is already wrapped in <untrusted_content>
+					// boundaries by the vision tool (image text is untrusted).
+					var msg string
+					if caption != "" {
+						msg = fmt.Sprintf(
+							"The user sent an image with this message: %q\n\n"+
+								"A local vision model extracted this description of the image:\n%s\n\n"+
+								"Use the description to respond to the user's message.",
+							caption, r.Description)
+					} else {
+						msg = fmt.Sprintf(
+							"The user sent an image (no caption). A local vision model extracted this description:\n%s\n\n"+
+								"Respond appropriately — e.g. summarize what's in the image.",
+							r.Description)
+					}
+					go handleChatMessage(chatID, messageID, msg,
+						bot, handler, sessionManager, resolved, systemMessage, handlerLog)
+					return "", nil
+				}
+			}
+			// Vision failed — fall through to the path-based message below.
+			handlerLog.Warn("auto-describe failed, falling back to path", "chat_id", chatID, "error", err)
+		}
+
+		// Fallback: hand the agent the file path (and caption) so it can analyze
+		// the image itself via the vision/shell tools.
+		fallback := fmt.Sprintf("🖼 Photo received and saved to %q. Use the vision tool or shell commands to analyze and respond.", localPath)
+		if caption != "" {
+			fallback = fmt.Sprintf("🖼 Photo saved to %q with this message from the user: %q. Use the vision tool to analyze the image, then respond.", localPath, caption)
+		}
+		go handleChatMessage(chatID, messageID, fallback,
 			bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 		return "", nil
 	}

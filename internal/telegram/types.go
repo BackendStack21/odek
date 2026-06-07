@@ -27,6 +27,7 @@ type Message struct {
 	Photo       []PhotoSize           `json:"photo,omitempty"`
 	Voice       *Voice                `json:"voice,omitempty"`
 	Document    *Document             `json:"document,omitempty"`
+	Caption     string                `json:"caption,omitempty"`
 	ReplyMarkup *InlineKeyboardMarkup `json:"reply_markup,omitempty"`
 }
 

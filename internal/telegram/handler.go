@@ -56,7 +56,8 @@ type Handler struct {
 	// Returns the response text (may be empty).
 	// fileIDs contains all available sizes (last = largest).
 	// Callers should use DownloadPhoto with the last element.
-	OnPhotoMessage func(chatID int64, messageID int, fileIDs []string) (string, error)
+	// caption is the optional text the user attached to the photo (may be empty).
+	OnPhotoMessage func(chatID int64, messageID int, fileIDs []string, caption string) (string, error)
 
 	// OnDocumentMessage is called when a document/file message is received.
 	// Returns the response text (may be empty).
@@ -152,8 +153,8 @@ func defaultVoiceHandler(bot *Bot) func(int64, int, string) (string, error) {
 
 // defaultPhotoHandler returns a default OnPhotoMessage callback that downloads
 // the largest photo size and returns a MEDIA: response.
-func defaultPhotoHandler(bot *Bot) func(int64, int, []string) (string, error) {
-	return func(chatID int64, _ int, fileIDs []string) (string, error) {
+func defaultPhotoHandler(bot *Bot) func(int64, int, []string, string) (string, error) {
+	return func(chatID int64, _ int, fileIDs []string, _ string) (string, error) {
 		path, err := DownloadPhoto(bot, fileIDs)
 		if err != nil {
 			return "", fmt.Errorf("telegram handler: download photo: %w", err)
@@ -240,7 +241,7 @@ func (h *Handler) handleMessage(msg *Message) {
 			for i, p := range msg.Photo {
 				fileIDs[i] = p.FileID
 			}
-			resp, err := h.OnPhotoMessage(msg.Chat.ID, msg.ID, fileIDs)
+			resp, err := h.OnPhotoMessage(msg.Chat.ID, msg.ID, fileIDs, msg.Caption)
 			if err != nil {
 				h.log.Error("photo message handler failed", "chat_id", msg.Chat.ID, "error", err)
 				if h.OnError != nil {
