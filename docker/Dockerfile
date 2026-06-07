@@ -55,10 +55,13 @@ RUN mkdir -p /models \
       "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${WHISPER_MODEL}.bin"
 
 # ---- minicpm-v stage ----
-# Downloads a pre-built llama-mtmd-cli binary and fetches MiniCPM-V 4.6 model
-# files (main GGUF + vision projector) so the `vision` tool works out of the
-# box with zero host setup. Pre-built binaries from the official llama.cpp
-# release avoid a multi-minute C++ compile inside Docker.
+# Builds llama-mtmd-cli from source (same Debian Bookworm base as the runtime
+# stage) so the binary links against the exact glibc/libstdc++ versions that
+# are present at runtime — no ABI mismatch. Pre-built Ubuntu release binaries
+# require GLIBC_2.38 / GLIBCXX_3.4.32, which Bookworm doesn't ship.
+# BUILD_SHARED_LIBS=OFF statically links llama's internal libraries so only
+# system libs (glibc, libstdc++) are needed at runtime.
+# GGML_OPENMP=OFF removes the libgomp dependency (mirrors the whisper stage).
 #
 # Size added to the runtime image: ~530 MB model + ~1.1 GB mmproj ≈ 1.6 GB.
 # To use a different quantization level: --build-arg MINICPM_QUANT=Q8_0
@@ -68,31 +71,28 @@ FROM debian:bookworm-slim AS minicpm
 ARG MINICPM_QUANT=Q4_K_M
 ARG LLAMA_VERSION=b9549
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      curl ca-certificates \
+      git cmake make g++ curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
-# Map dpkg architecture to the llama.cpp release asset name suffix
-# (amd64 → x64, arm64 → arm64). Extract the CLI binary and all bundled
-# shared libraries (.so*) — the pre-built Ubuntu binaries are dynamically
-# linked against libllama.so, libmtmd.so, etc. shipped in the same tarball.
-RUN set -ex \
- && LLAMA_ARCH=$(dpkg --print-architecture | sed 's/amd64/x64/') \
- && curl -fsSL \
-      "https://github.com/ggerganov/llama.cpp/releases/download/${LLAMA_VERSION}/llama-${LLAMA_VERSION}-bin-ubuntu-${LLAMA_ARCH}.tar.gz" \
-      -o /tmp/llama.tar.gz \
- && mkdir -p /tmp/llama-bin \
- && tar -xzf /tmp/llama.tar.gz -C /tmp/llama-bin \
- && find /tmp/llama-bin -name "llama-mtmd-cli" -exec install -m 755 {} /usr/local/bin/llama-mtmd-cli \; \
- && mkdir -p /usr/local/lib/llama \
- && find /tmp/llama-bin -name "*.so*" -exec cp -P {} /usr/local/lib/llama/ \; \
- && rm -rf /tmp/llama.tar.gz /tmp/llama-bin
+RUN git clone --depth 1 --branch "${LLAMA_VERSION}" \
+      https://github.com/ggerganov/llama.cpp /llama \
+ && cmake -S /llama -B /llama/build \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DBUILD_SHARED_LIBS=OFF \
+      -DGGML_NATIVE=OFF \
+      -DGGML_OPENMP=OFF \
+      -DLLAMA_CURL=OFF \
+      -DLLAMA_BUILD_TESTS=OFF \
+ && cmake --build /llama/build -j"$(nproc)" --target llama-mtmd-cli \
+ && install -m 755 /llama/build/bin/llama-mtmd-cli /usr/local/bin/llama-mtmd-cli \
+ && rm -rf /llama
 # Fetch the model GGUF and vision projector into a fixed image path (NOT under
 # ~/.odek — bind-mount profiles would hide files baked there). The runtime
 # config points vision.models_dir at this path, or the tool auto-detects it.
 RUN mkdir -p /usr/local/share/minicpm-v/models \
- && curl -fsSL \
+ && curl -fSL --retry 5 --retry-delay 5 --retry-connrefused --retry-all-errors \
       "https://huggingface.co/openbmb/MiniCPM-V-4_6-gguf/resolve/78e02f066e9819a60573b78a4275df8a0c27f698/MiniCPM-V-4_6-${MINICPM_QUANT}.gguf" \
       -o /usr/local/share/minicpm-v/models/model.gguf \
- && curl -fsSL \
+ && curl -fSL --retry 5 --retry-delay 5 --retry-connrefused --retry-all-errors \
       "https://huggingface.co/openbmb/MiniCPM-V-4_6-gguf/resolve/78e02f066e9819a60573b78a4275df8a0c27f698/mmproj-model-f16.gguf" \
       -o /usr/local/share/minicpm-v/models/mmproj.gguf
 
@@ -126,12 +126,9 @@ COPY --from=whisper /models/ /usr/local/share/whisper/models/
 
 # Bundle llama-mtmd-cli + MiniCPM-V 4.6 from the minicpm stage so `vision`
 # works with zero setup. The tool auto-detects /usr/local/share/minicpm-v/models.
-# The shared libraries (libllama.so, libmtmd.so, …) are registered via ldconfig
-# so the dynamically-linked binary resolves them at runtime.
+# Built from source with BUILD_SHARED_LIBS=OFF so only system libs are needed.
 COPY --from=minicpm /usr/local/bin/llama-mtmd-cli /usr/local/bin/llama-mtmd-cli
-COPY --from=minicpm /usr/local/lib/llama/ /usr/local/lib/llama/
 COPY --from=minicpm /usr/local/share/minicpm-v/models/ /usr/local/share/minicpm-v/models/
-RUN echo "/usr/local/lib/llama" > /etc/ld.so.conf.d/llama.conf && ldconfig
 
 # ── Adding extra dependencies the agent can use ──────────────────────────
 # The agent runs shell commands INSIDE this image, so any runtime or CLI it

@@ -152,7 +152,7 @@ auto-transcription work with zero setup. No host install, no first-run download.
 
 ## Image & video understanding (out of the box)
 
-The image **bundles `llama-mtmd-cli` (llama.cpp b9549) and MiniCPM-V 4.6**
+The image **bundles `llama-mtmd-cli` (llama.cpp b9549, built from source) and MiniCPM-V 4.6**
 (1.3B multimodal model) so the `vision` tool works with zero setup — no cloud
 API, no host install, no first-run download.
 
