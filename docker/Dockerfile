@@ -71,7 +71,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 # Map dpkg architecture to the llama.cpp release asset name suffix
-# (amd64 → x64, arm64 → arm64) and extract only llama-mtmd-cli.
+# (amd64 → x64, arm64 → arm64). Extract the CLI binary and all bundled
+# shared libraries (.so*) — the pre-built Ubuntu binaries are dynamically
+# linked against libllama.so, libmtmd.so, etc. shipped in the same tarball.
 RUN set -ex \
  && LLAMA_ARCH=$(dpkg --print-architecture | sed 's/amd64/x64/') \
  && curl -fsSL \
@@ -80,6 +82,8 @@ RUN set -ex \
  && mkdir -p /tmp/llama-bin \
  && tar -xzf /tmp/llama.tar.gz -C /tmp/llama-bin \
  && find /tmp/llama-bin -name "llama-mtmd-cli" -exec install -m 755 {} /usr/local/bin/llama-mtmd-cli \; \
+ && mkdir -p /usr/local/lib/llama \
+ && find /tmp/llama-bin -name "*.so*" -exec cp -P {} /usr/local/lib/llama/ \; \
  && rm -rf /tmp/llama.tar.gz /tmp/llama-bin
 # Fetch the model GGUF and vision projector into a fixed image path (NOT under
 # ~/.odek — bind-mount profiles would hide files baked there). The runtime
@@ -122,8 +126,12 @@ COPY --from=whisper /models/ /usr/local/share/whisper/models/
 
 # Bundle llama-mtmd-cli + MiniCPM-V 4.6 from the minicpm stage so `vision`
 # works with zero setup. The tool auto-detects /usr/local/share/minicpm-v/models.
+# The shared libraries (libllama.so, libmtmd.so, …) are registered via ldconfig
+# so the dynamically-linked binary resolves them at runtime.
 COPY --from=minicpm /usr/local/bin/llama-mtmd-cli /usr/local/bin/llama-mtmd-cli
+COPY --from=minicpm /usr/local/lib/llama/ /usr/local/lib/llama/
 COPY --from=minicpm /usr/local/share/minicpm-v/models/ /usr/local/share/minicpm-v/models/
+RUN echo "/usr/local/lib/llama" > /etc/ld.so.conf.d/llama.conf && ldconfig
 
 # ── Adding extra dependencies the agent can use ──────────────────────────
 # The agent runs shell commands INSIDE this image, so any runtime or CLI it
