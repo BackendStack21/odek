@@ -184,7 +184,7 @@ func TestNewHandler_defaults(t *testing.T) {
 		t.Logf("onVoiceMessage returned: %q (err=%v)", voiceResp, voiceErr)
 	}
 
-	photoResp, photoErr := h.OnPhotoMessage(1, 0, []string{"f1", "f2"})
+	photoResp, photoErr := h.OnPhotoMessage(1, 0, []string{"f1", "f2"}, "")
 	if photoResp != "" || photoErr == nil {
 		t.Logf("onPhotoMessage returned: %q (err=%v)", photoResp, photoErr)
 	}
@@ -353,22 +353,25 @@ func TestHandleUpdate_PhotoMessage(t *testing.T) {
 	var (
 		capturedChatID  int64
 		capturedFileIDs []string
+		capturedCaption string
 	)
 	ts := testServer(t, nil)
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
-	h.OnPhotoMessage = func(chatID int64, messageID int, fileIDs []string) (string, error) {
+	h.OnPhotoMessage = func(chatID int64, messageID int, fileIDs []string, caption string) (string, error) {
 		capturedChatID = chatID
 		capturedFileIDs = fileIDs
+		capturedCaption = caption
 		return "photo received", nil
 	}
 
 	upd := Update{
 		ID: 5,
 		Message: &Message{
-			Chat: &Chat{ID: 555},
-			From: &User{ID: 666},
+			Chat:    &Chat{ID: 555},
+			From:    &User{ID: 666},
+			Caption: "what breed is this dog?",
 			Photo: []PhotoSize{
 				{FileID: "photo_small", Width: 100, Height: 100},
 				{FileID: "photo_large", Width: 800, Height: 600},
@@ -389,6 +392,9 @@ func TestHandleUpdate_PhotoMessage(t *testing.T) {
 	}
 	if capturedFileIDs[1] != "photo_large" {
 		t.Errorf("OnPhotoMessage fileIDs[1] = %q, want %q", capturedFileIDs[1], "photo_large")
+	}
+	if capturedCaption != "what breed is this dog?" {
+		t.Errorf("OnPhotoMessage caption = %q, want %q", capturedCaption, "what breed is this dog?")
 	}
 }
 
@@ -1608,7 +1614,7 @@ func TestHandler_HandleMessage_OnErrorCalledOnPhotoFailure(t *testing.T) {
 
 	chatID := int64(555)
 	expectedErr := assertError("photo processing failed")
-	h.OnPhotoMessage = func(_ int64, _ int, _ []string) (string, error) {
+	h.OnPhotoMessage = func(_ int64, _ int, _ []string, _ string) (string, error) {
 		return "", expectedErr
 	}
 

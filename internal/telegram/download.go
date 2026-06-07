@@ -1,11 +1,24 @@
 package telegram
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 )
+
+// fileIDSuffix derives a short, collision-free filename suffix from a Telegram
+// file_id. Telegram file_ids share a long, near-constant prefix that encodes
+// the file type, datacenter, and version (e.g. "AgACAgIAAxkBAAI…" for photos);
+// the bytes that actually distinguish one file from another come *after* that
+// prefix. Truncating the raw file_id therefore collides across different files,
+// so we hash the full id and keep the first 16 hex chars — unique per file.
+func fileIDSuffix(fileID string) string {
+	sum := sha256.Sum256([]byte(fileID))
+	return hex.EncodeToString(sum[:])[:16]
+}
 
 // ── Media Directory ────────────────────────────────────────────────────────
 
@@ -55,12 +68,8 @@ func DownloadVoice(bot *Bot, fileID string) (string, error) {
 		ext = ".ogg"
 	}
 
-	// Use short fileID suffix for filename to avoid overly long names.
-	suffix := fileID
-	if len(suffix) > 16 {
-		suffix = suffix[:16]
-	}
-	localPath := filepath.Join(dir, fmt.Sprintf("voice_%s%s", suffix, ext))
+	// Hash the full fileID for a unique, collision-free filename suffix.
+	localPath := filepath.Join(dir, fmt.Sprintf("voice_%s%s", fileIDSuffix(fileID), ext))
 
 	if err := os.WriteFile(localPath, data, 0600); err != nil {
 		return "", fmt.Errorf("telegram voice: save: %w", err)
@@ -108,11 +117,7 @@ func DownloadPhoto(bot *Bot, fileIDs []string) (string, error) {
 		ext = ".jpg"
 	}
 
-	suffix := fileID
-	if len(suffix) > 16 {
-		suffix = suffix[:16]
-	}
-	localPath := filepath.Join(dir, fmt.Sprintf("photo_%s%s", suffix, ext))
+	localPath := filepath.Join(dir, fmt.Sprintf("photo_%s%s", fileIDSuffix(fileID), ext))
 
 	if err := os.WriteFile(localPath, data, 0600); err != nil {
 		return "", fmt.Errorf("telegram photo: save: %w", err)

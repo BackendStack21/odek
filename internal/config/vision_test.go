@@ -13,6 +13,21 @@ func TestResolveVision_Defaults(t *testing.T) {
 	if v.BinaryPath != "" {
 		t.Errorf("BinaryPath = %q, want empty", v.BinaryPath)
 	}
+	if !v.AutoDescribe {
+		t.Error("AutoDescribe = false, want true (default when section absent)")
+	}
+}
+
+func TestResolveVision_AutoDescribePreserved(t *testing.T) {
+	// When a vision section is present, the explicit value is honored.
+	on := resolveVision(&VisionConfig{AutoDescribe: true})
+	if !on.AutoDescribe {
+		t.Error("AutoDescribe = false, want true (explicitly set)")
+	}
+	off := resolveVision(&VisionConfig{AutoDescribe: false})
+	if off.AutoDescribe {
+		t.Error("AutoDescribe = true, want false (explicitly unset)")
+	}
 }
 
 func TestResolveVision_ZeroFramesFilled(t *testing.T) {

@@ -169,7 +169,7 @@ The `Handler` struct routes incoming updates to the appropriate callback based o
 | `OnTextMessage` | Plain text message | `(chatID int64, text string) (string, error)` |
 | `OnCommand` | Slash command (e.g. `/start`) | `(chatID int64, command, args string) (string, error)` |
 | `OnVoiceMessage` | Voice message (OGG Opus) | `(chatID int64, messageID int, fileID string) (string, error)` |
-| `OnPhotoMessage` | Photo message | `(chatID int64, fileIDs []string) (string, error)` |
+| `OnPhotoMessage` | Photo message | `(chatID int64, messageID int, fileIDs []string, caption string) (string, error)` |
 | `OnCallbackQuery` | Inline keyboard callback | `(chatID int64, callbackData string) (string, error)` |
 
 All callbacks return a response string (may be empty) and an error. The `Handle` method:
@@ -294,8 +294,25 @@ Media files are saved to `~/.odek/media/` (created automatically on first downlo
 
 - Takes a slice of `PhotoSize` IDs (Telegram sends multiple sizes)
 - Uses the last (largest) photo size
-- Saves as `photo_<truncated_fileID>.<ext>` (default extension: `.jpg`)
-- Same fileID truncation as voice downloads
+- Saves as `photo_<hash>.<ext>` (default extension: `.jpg`), where `<hash>` is the first 16 hex chars of the SHA-256 of the full Telegram `file_id`
+- Hashing the **full** id avoids a collision: Telegram photo `file_id`s share a long constant prefix (e.g. `AgACAgIAAxkBAAI…`), so raw-truncating to 16 chars produced identical filenames for different photos — each overwrote the last, making the bot report a photo as "already processed". Voice downloads use the same scheme.
+
+### Auto-Describe (Photo → Vision)
+
+When `vision.auto_describe: true` is set in config (default) and the MiniCPM-V model is available, photos are automatically run through the local vision model before reaching the agent:
+
+```
+Photo received → DownloadPhoto (largest size to disk)
+               → vision tool (llama-mtmd-cli, focused by the caption if any)
+               → extracted description + the caption injected as the user message
+               → agent answers the request using the description
+```
+
+If the photo has a **caption**, that text becomes the user's request and also focuses the vision extraction. The description is wrapped in `<untrusted_content>` boundaries (image text is untrusted input).
+
+**Fallback:** If auto-describe is disabled or the vision model fails, the agent receives the file path (and caption, if any) with a suggestion to use the `vision` tool manually.
+
+**Docker:** the official image bundles `llama-mtmd-cli` and MiniCPM-V 4.6, with `auto_describe` enabled in the shipped configs — so photo understanding works out of the box. See [../docker/README.md](../docker/README.md#image--video-understanding-out-of-the-box).
 
 ### Auto-Transcribe (Voice → Text)
 
@@ -535,7 +552,7 @@ The Telegram package is exhaustively tested under `-race`. Tests use:
 - `httptest.NewServer` to mock Telegram API responses
 - HTTP handler functions for each API endpoint (getFile, sendMessage, sendDocument, etc.)
 - `t.TempDir()` + `t.Setenv("HOME", ...)` for filesystem isolation
-- Long fileID truncation tests for voice/photo downloads
+- Hashed fileID suffix tests for voice/photo downloads (incl. prefix-collision regression)
 - Plan CRUD tests with prefix matching, ambiguous matches, and error paths
 - Session manager tests with TTL expiry and cache behavior
 
