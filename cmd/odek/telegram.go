@@ -553,15 +553,10 @@ func telegramCmd(args []string) error {
 		// agent so it can answer the request. Mirrors voice auto-transcription.
 		if resolved.Vision.AutoDescribe {
 			tool := newVisionTool(resolved.Dangerous, resolved.Vision)
-
-			// Focus the small vision model on the caption when present.
-			visionPrompt := "Describe this image in detail. Include any visible text, objects, people, and notable details."
-			if caption != "" {
-				visionPrompt = fmt.Sprintf(
-					"Describe this image in detail. Pay special attention to anything relevant to: %q. Include any visible text, objects, people, and notable details.",
-					caption)
-			}
-			argsJSON, _ := json.Marshal(map[string]string{"path": localPath, "prompt": visionPrompt})
+			argsJSON, _ := json.Marshal(map[string]string{
+				"path":   localPath,
+				"prompt": photoVisionPrompt(caption),
+			})
 
 			result, err := tool.Call(string(argsJSON))
 			if err == nil {
@@ -572,20 +567,8 @@ func telegramCmd(args []string) error {
 				if json.Unmarshal([]byte(result), &r) == nil && r.Error == "" && r.Description != "" {
 					// r.Description is already wrapped in <untrusted_content>
 					// boundaries by the vision tool (image text is untrusted).
-					var msg string
-					if caption != "" {
-						msg = fmt.Sprintf(
-							"The user sent an image with this message: %q\n\n"+
-								"A local vision model extracted this description of the image:\n%s\n\n"+
-								"Use the description to respond to the user's message.",
-							caption, r.Description)
-					} else {
-						msg = fmt.Sprintf(
-							"The user sent an image (no caption). A local vision model extracted this description:\n%s\n\n"+
-								"Respond appropriately — e.g. summarize what's in the image.",
-							r.Description)
-					}
-					go handleChatMessage(chatID, messageID, msg,
+					go handleChatMessage(chatID, messageID,
+						photoVisionMessage(caption, r.Description),
 						bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 					return "", nil
 				}
@@ -596,11 +579,8 @@ func telegramCmd(args []string) error {
 
 		// Fallback: hand the agent the file path (and caption) so it can analyze
 		// the image itself via the vision/shell tools.
-		fallback := fmt.Sprintf("🖼 Photo received and saved to %q. Use the vision tool or shell commands to analyze and respond.", localPath)
-		if caption != "" {
-			fallback = fmt.Sprintf("🖼 Photo saved to %q with this message from the user: %q. Use the vision tool to analyze the image, then respond.", localPath, caption)
-		}
-		go handleChatMessage(chatID, messageID, fallback,
+		go handleChatMessage(chatID, messageID,
+			photoFallbackMessage(localPath, caption),
 			bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 		return "", nil
 	}
@@ -2019,6 +1999,47 @@ func (l *instanceLock) release() {
 }
 
 // ── send_message helpers ──────────────────────────────────────────────
+
+// photoVisionPrompt builds the extraction prompt handed to the vision model
+// for a received photo. A non-empty caption focuses the (small) model on the
+// part of the image the user is asking about; otherwise a thorough default
+// describe prompt is used.
+func photoVisionPrompt(caption string) string {
+	if caption != "" {
+		return fmt.Sprintf(
+			"Describe this image in detail. Pay special attention to anything relevant to: %q. Include any visible text, objects, people, and notable details.",
+			caption)
+	}
+	return "Describe this image in detail. Include any visible text, objects, people, and notable details."
+}
+
+// photoVisionMessage builds the user-role message injected into the agent after
+// the vision model extracts a description. description is expected to already be
+// wrapped in <untrusted_content> boundaries by the vision tool. When a caption
+// is present it is surfaced as the user's request so the agent answers it.
+func photoVisionMessage(caption, description string) string {
+	if caption != "" {
+		return fmt.Sprintf(
+			"The user sent an image with this message: %q\n\n"+
+				"A local vision model extracted this description of the image:\n%s\n\n"+
+				"Use the description to respond to the user's message.",
+			caption, description)
+	}
+	return fmt.Sprintf(
+		"The user sent an image (no caption). A local vision model extracted this description:\n%s\n\n"+
+			"Respond appropriately — e.g. summarize what's in the image.",
+		description)
+}
+
+// photoFallbackMessage builds the message injected when auto-describe is off or
+// the vision model fails: it hands the agent the saved file path (and caption,
+// if any) so the agent can analyze the image itself via the vision/shell tools.
+func photoFallbackMessage(localPath, caption string) string {
+	if caption != "" {
+		return fmt.Sprintf("🖼 Photo saved to %q with this message from the user: %q. Use the vision tool to analyze the image, then respond.", localPath, caption)
+	}
+	return fmt.Sprintf("🖼 Photo received and saved to %q. Use the vision tool or shell commands to analyze and respond.", localPath)
+}
 
 // mediaTypeFromExt returns the Telegram media type for a file extension.
 func mediaTypeFromExt(path string) string {
