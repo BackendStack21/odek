@@ -86,10 +86,10 @@ RUN set -ex \
 # config points vision.models_dir at this path, or the tool auto-detects it.
 RUN mkdir -p /usr/local/share/minicpm-v/models \
  && curl -fsSL \
-      "https://huggingface.co/openbmb/MiniCPM-V-4_6-gguf/resolve/main/MiniCPM-V-4_6-${MINICPM_QUANT}.gguf" \
+      "https://huggingface.co/openbmb/MiniCPM-V-4_6-gguf/resolve/78e02f066e9819a60573b78a4275df8a0c27f698/MiniCPM-V-4_6-${MINICPM_QUANT}.gguf" \
       -o /usr/local/share/minicpm-v/models/model.gguf \
  && curl -fsSL \
-      "https://huggingface.co/openbmb/MiniCPM-V-4_6-gguf/resolve/main/mmproj-model-f16.gguf" \
+      "https://huggingface.co/openbmb/MiniCPM-V-4_6-gguf/resolve/78e02f066e9819a60573b78a4275df8a0c27f698/mmproj-model-f16.gguf" \
       -o /usr/local/share/minicpm-v/models/mmproj.gguf
 
 # ---- runtime stage ----

@@ -73,9 +73,9 @@ func visionModelPaths(cfg config.VisionConfig) (modelPath, mmprojPath string, er
 Download and install:
   mkdir -p %s
   cd %s
-  curl -LO "https://huggingface.co/openbmb/MiniCPM-V-4_6-gguf/resolve/main/MiniCPM-V-4_6-Q4_K_M.gguf"
+  curl -LO "https://huggingface.co/openbmb/MiniCPM-V-4_6-gguf/resolve/78e02f066e9819a60573b78a4275df8a0c27f698/MiniCPM-V-4_6-Q4_K_M.gguf"
   mv MiniCPM-V-4_6-Q4_K_M.gguf model.gguf
-  curl -LO "https://huggingface.co/openbmb/MiniCPM-V-4_6-gguf/resolve/main/mmproj-model-f16.gguf"
+  curl -LO "https://huggingface.co/openbmb/MiniCPM-V-4_6-gguf/resolve/78e02f066e9819a60573b78a4275df8a0c27f698/mmproj-model-f16.gguf"
   mv mmproj-model-f16.gguf mmproj.gguf
 
 Or set models_dir in the vision config.`, mp, dir, dir)
