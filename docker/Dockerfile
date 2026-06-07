@@ -54,6 +54,44 @@ RUN mkdir -p /models \
  && curl -fsSL -o "/models/ggml-${WHISPER_MODEL}.bin" \
       "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${WHISPER_MODEL}.bin"
 
+# ---- minicpm-v stage ----
+# Downloads a pre-built llama-mtmd-cli binary and fetches MiniCPM-V 4.6 model
+# files (main GGUF + vision projector) so the `vision` tool works out of the
+# box with zero host setup. Pre-built binaries from the official llama.cpp
+# release avoid a multi-minute C++ compile inside Docker.
+#
+# Size added to the runtime image: ~530 MB model + ~1.1 GB mmproj ≈ 1.6 GB.
+# To use a different quantization level: --build-arg MINICPM_QUANT=Q8_0
+# Available quants: Q4_0 (501 MB) | Q4_K_M (529 MB, default) | Q8_0 (812 MB)
+# LLAMA_VERSION pins the llama.cpp release — bump it deliberately.
+FROM debian:bookworm-slim AS minicpm
+ARG MINICPM_QUANT=Q4_K_M
+ARG LLAMA_VERSION=b9549
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+# Map dpkg architecture to the llama.cpp release asset name suffix
+# (amd64 → x64, arm64 → arm64) and extract only llama-mtmd-cli.
+RUN set -ex \
+ && LLAMA_ARCH=$(dpkg --print-architecture | sed 's/amd64/x64/') \
+ && curl -fsSL \
+      "https://github.com/ggerganov/llama.cpp/releases/download/${LLAMA_VERSION}/llama-${LLAMA_VERSION}-bin-ubuntu-${LLAMA_ARCH}.tar.gz" \
+      -o /tmp/llama.tar.gz \
+ && mkdir -p /tmp/llama-bin \
+ && tar -xzf /tmp/llama.tar.gz -C /tmp/llama-bin \
+ && find /tmp/llama-bin -name "llama-mtmd-cli" -exec install -m 755 {} /usr/local/bin/llama-mtmd-cli \; \
+ && rm -rf /tmp/llama.tar.gz /tmp/llama-bin
+# Fetch the model GGUF and vision projector into a fixed image path (NOT under
+# ~/.odek — bind-mount profiles would hide files baked there). The runtime
+# config points vision.models_dir at this path, or the tool auto-detects it.
+RUN mkdir -p /usr/local/share/minicpm-v/models \
+ && curl -fsSL \
+      "https://huggingface.co/openbmb/MiniCPM-V-4_6-gguf/resolve/main/MiniCPM-V-4_6-${MINICPM_QUANT}.gguf" \
+      -o /usr/local/share/minicpm-v/models/model.gguf \
+ && curl -fsSL \
+      "https://huggingface.co/openbmb/MiniCPM-V-4_6-gguf/resolve/main/mmproj-model-f16.gguf" \
+      -o /usr/local/share/minicpm-v/models/mmproj.gguf
+
 # ---- runtime stage ----
 FROM debian:bookworm-slim
 # Tooling the agent commonly needs inside the sandbox container.
@@ -81,6 +119,11 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 # path that the runtime config (transcription.models_dir) points at.
 COPY --from=whisper /whisper/build/bin/whisper-cli /usr/local/bin/whisper-cli
 COPY --from=whisper /models/ /usr/local/share/whisper/models/
+
+# Bundle llama-mtmd-cli + MiniCPM-V 4.6 from the minicpm stage so `vision`
+# works with zero setup. The tool auto-detects /usr/local/share/minicpm-v/models.
+COPY --from=minicpm /usr/local/bin/llama-mtmd-cli /usr/local/bin/llama-mtmd-cli
+COPY --from=minicpm /usr/local/share/minicpm-v/models/ /usr/local/share/minicpm-v/models/
 
 # ── Adding extra dependencies the agent can use ──────────────────────────
 # The agent runs shell commands INSIDE this image, so any runtime or CLI it

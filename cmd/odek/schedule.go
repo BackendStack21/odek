@@ -570,7 +570,7 @@ func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system
 		resolved.Dangerous.NonInteractive = &deny
 	}
 
-	tools := builtinTools(resolved.Dangerous, nil, nil, resolved.MaxConcurrency, resolved.APIKey, resolved.Transcription, nil)
+	tools := builtinTools(resolved.Dangerous, nil, nil, resolved.MaxConcurrency, resolved.APIKey, resolved.Transcription, resolved.Vision, nil)
 	tools = append(tools, mcpTools...)
 
 	// Capture cumulative token usage from the final iteration so the Runner

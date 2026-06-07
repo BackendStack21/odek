@@ -328,7 +328,7 @@ Tool progress shows what the agent is doing in real time. Controlled by the `too
 **Key features:**
 - **Reasoning-first progress** — the first sentence of the LLM's internal reasoning (under 20 words) appears at the top of the progress bubble, followed by individual tool previews. The LLM is prompted to make this sentence user-facing, specific, and engaging
 - **Language matching** — the bot always replies in the same language the user writes in, including the thinking message and progress indicator
-- **Smart previews** — extracts meaningful context: filename for file tools, command for shell, URL for browser, query for memory, filename for transcribe
+- **Smart previews** — extracts meaningful context: filename for file tools, command for shell, URL for browser, query for memory, filename for transcribe, file path for vision
 - **Edit throttling** — 1.5s minimum between edits prevents Telegram flood control (429 errors)
 - **Tool dedup** — if the same tool runs N times in a row (common with parallel batches), shows `📝 read_file: "main.go" (×5)` instead of 5 identical lines
 - **Flood fallback** — if an edit fails with "flood" or "retry after", automatically switches to sending new messages

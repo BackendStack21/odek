@@ -244,7 +244,7 @@ func TestBuiltinTools_SessionSearchWrappedAsUntrusted(t *testing.T) {
 	store, cleanup := seedSessionStore(t)
 	defer cleanup()
 
-	tools := builtinTools(danger.DangerousConfig{}, nil, nil, 4, "", config.TranscriptionConfig{}, store)
+	tools := builtinTools(danger.DangerousConfig{}, nil, nil, 4, "", config.TranscriptionConfig{}, config.VisionConfig{}, store)
 
 	var ss odek.Tool
 	for _, tool := range tools {
