@@ -85,6 +85,25 @@ Priority: `~/.odek/config.json` ← `./odek.json` ← `ODEK_*` env ← CLI flags
 
 Settings: `model` (tiny/base/small/medium), `language` (ISO code, empty=auto), `auto_transcribe` (Telegram voice → text), `models_dir` (model directory), `binary_path` (whisper binary path).
 
+### Image & Video Understanding
+- **`vision`** tool uses local MiniCPM-V 4.6 (1.3B) via `llama-mtmd-cli` — no cloud APIs
+- Accepts images (JPEG, PNG, GIF, WebP, BMP) and videos (MP4, MOV, AVI, MKV, WebM)
+- Videos are sampled into evenly-spaced frames with ffmpeg; all frames analysed in one call
+- Model files: `model.gguf` (~529 MB, Q4\_K\_M) + `mmproj.gguf` (~1.1 GB) — bundled in the Docker image at `/usr/local/share/minicpm-v/models/`
+- Configure via `vision` section in config:
+
+```json
+{
+  "vision": {
+    "models_dir": "~/.odek/minicpm-v/models",
+    "binary_path": "/usr/local/bin/llama-mtmd-cli",
+    "video_frames": 8
+  }
+}
+```
+
+Settings: `models_dir` (dir with `model.gguf` + `mmproj.gguf`), `binary_path` (llama-mtmd-cli path), `video_frames` (frames to sample from video, default 8).
+
 ## Memory System Architecture
 
 ### Three Tiers

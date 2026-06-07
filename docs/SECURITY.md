@@ -58,6 +58,7 @@ Tools that wrap:
 | `search_files`, `multi_grep` | `<path>:<line>` per match |
 | `shell` | `$ <command>` |
 | `transcribe` | `transcribe:<audio path>` (full transcript + each segment) |
+| `vision` | `vision:<file path>` (full description) |
 | `session_search` | `session_search` (whole result — past sessions may be tainted) |
 | any MCP tool | `mcp:<server>:<tool>` |
 
@@ -102,7 +103,7 @@ Both:
 
 Taint is decided per tool call by `memory.ToolCallTaints` (the single source of truth, shared with skills):
 
-- **Always untrusted:** `browser`, `http_batch`, `transcribe` (network / opaque-audio content), `session_search` (recall of prior-session transcripts, which may carry earlier-injected text), and any MCP tool (`server__tool`).
+- **Always untrusted:** `browser`, `http_batch`, `transcribe` (network / opaque-audio content), `vision` (opaque-image/video content), `session_search` (recall of prior-session transcripts, which may carry earlier-injected text), and any MCP tool (`server__tool`).
 - **Path-reading tools** (`read_file`, `search_files`, `multi_grep`, `batch_read`, `json_query`, `head_tail`, `count_lines`, `checksum`, `word_count`, `sort`, `tr`, `diff`, `file_info`, `glob`, `tree`, `base64`) taint when **any** of their path arguments resolves **outside the workspace trust zone** — the workspace dir, the sandbox `/workspace` mount, or `~/.odek`. Reads confined to the workspace stay trusted, so ordinary coding sessions remain recallable; reads of anything else (system/credential paths, home files, sibling repos) taint. The check is a workspace-containment allowlist rather than a sensitive-path denylist, and it resolves symlinks (so e.g. `/etc` → `/private/etc` on macOS cannot disguise an escape). A malformed argument string is treated conservatively as untrusted. When adding a new file-reading tool, add it to `PathReadingTools`.
 
 **Auto-extracted durable facts are opt-in and trusted-only.** At session end odek
@@ -140,7 +141,7 @@ Promotion is **CLI-only and human-gated** — it is deliberately *not* exposed a
 
 ### 6. Skill provenance gate
 
-`internal/skills` carries the same provenance model and shares the exact taint decision (`memory.ToolCallTaints`). Skills auto-saved from sessions that crossed the trust boundary — `browser` / `http_batch` / `transcribe` / any MCP tool, or a `read_file` / `search_files` / `multi_grep` of a **sensitive** path — are tagged with `Provenance.Untrusted=true` and `NeedsReview=true`. The skill loader pins those skills to the Lazy set regardless of their `auto_load` flag.
+`internal/skills` carries the same provenance model and shares the exact taint decision (`memory.ToolCallTaints`). Skills auto-saved from sessions that crossed the trust boundary — `browser` / `http_batch` / `transcribe` / `vision` / any MCP tool, or a `read_file` / `search_files` / `multi_grep` of a **sensitive** path — are tagged with `Provenance.Untrusted=true` and `NeedsReview=true`. The skill loader pins those skills to the Lazy set regardless of their `auto_load` flag.
 
 After reviewing the skill body, promote it:
 

@@ -97,6 +97,20 @@ type TranscriptionConfig struct {
 	BinaryPath     string `json:"binary_path,omitempty"`
 }
 
+// VisionConfig controls the vision tool (MiniCPM-V 4.6 via llama-mtmd-cli).
+// Populated from the "vision" section of odek.json or ~/.odek/config.json.
+type VisionConfig struct {
+	// ModelsDir is the directory containing model.gguf and mmproj.gguf.
+	// Default: /usr/local/share/minicpm-v/models (Docker image path), with
+	// fallback to ~/.odek/minicpm-v/models for out-of-container installs.
+	ModelsDir string `json:"models_dir,omitempty"`
+	// BinaryPath overrides PATH lookup for the llama-mtmd-cli binary.
+	BinaryPath string `json:"binary_path,omitempty"`
+	// VideoFrames is the number of frames to sample evenly from a video file.
+	// Default: 8.
+	VideoFrames int `json:"video_frames,omitempty"`
+}
+
 // FileConfig is the JSON schema used by ~/.odek/config.json and ./odek.json.
 // Pointer booleans distinguish "explicitly set to false" from "not set".
 type FileConfig struct {
@@ -163,6 +177,9 @@ type FileConfig struct {
 
 	// Transcription configures local audio transcription (whisper.cpp).
 	Transcription *TranscriptionConfig `json:"transcription,omitempty"`
+
+	// Vision configures local image/video understanding (MiniCPM-V 4.6 via llama-mtmd-cli).
+	Vision *VisionConfig `json:"vision,omitempty"`
 
 	// Schedules configures the native in-process task scheduler.
 	Schedules *SchedulesConfig `json:"schedules,omitempty"`
@@ -271,6 +288,10 @@ type ResolvedConfig struct {
 	// Transcription is the resolved transcription config.
 	// Default: auto_transcribe=true, model="tiny", language="", no binary_path.
 	Transcription TranscriptionConfig
+
+	// Vision is the resolved vision config.
+	// Default: VideoFrames=8, ModelsDir="" (auto-detect), BinaryPath="" (PATH lookup).
+	Vision VisionConfig
 
 	// Schedules is the resolved scheduler config.
 	// Default: enabled=true, max_concurrent=2, timezone="UTC", catchup=false.
@@ -662,6 +683,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		MCPServers:      cfg.MCPServers,
 		Telegram:        resolveTelegram(cfg.Telegram),
 		Transcription:   resolveTranscription(cfg.Transcription),
+		Vision:          resolveVision(cfg.Vision),
 		Schedules:       resolveSchedules(cfg.Schedules),
 		InteractionMode: ifZero(cfg.InteractionMode, "engaging"),
 		ToolProgress:    ifZero(cfg.ToolProgress, "all"),
@@ -935,6 +957,20 @@ func resolveTranscription(cfg *TranscriptionConfig) TranscriptionConfig {
 	}
 }
 
+// resolveVision returns the resolved vision config.
+// If the file config is nil, returns sensible defaults.
+func resolveVision(cfg *VisionConfig) VisionConfig {
+	if cfg != nil {
+		if cfg.VideoFrames == 0 {
+			cfg.VideoFrames = 8
+		}
+		return *cfg
+	}
+	return VisionConfig{
+		VideoFrames: 8,
+	}
+}
+
 // SchedulesConfig is the file-level scheduler configuration. Tri-state fields
 // use pointers so "unset" is distinguishable from an explicit false.
 type SchedulesConfig struct {
@@ -1087,6 +1123,9 @@ func overlayFile(base, override FileConfig) FileConfig {
 	}
 	if override.Transcription != nil {
 		base.Transcription = override.Transcription
+	}
+	if override.Vision != nil {
+		base.Vision = override.Vision
 	}
 	if override.Schedules != nil {
 		base.Schedules = override.Schedules

@@ -150,6 +150,25 @@ auto-transcription work with zero setup. No host install, no first-run download.
   `--build-arg WHISPER_MODEL=base` (or `small` / `medium`) and bump the
   `model` field in the config to match.
 
+## Image & video understanding (out of the box)
+
+The image **bundles `llama-mtmd-cli` (llama.cpp b9549) and MiniCPM-V 4.6**
+(1.3B multimodal model) so the `vision` tool works with zero setup — no cloud
+API, no host install, no first-run download.
+
+- The model GGUF (`Q4_K_M`, ~529 MB) and vision projector (`mmproj`, ~1.1 GB)
+  ship at `/usr/local/share/minicpm-v/models/`. They live outside `~/.odek` so
+  Telegram bind-mounts cannot shadow them.
+- Send the agent an image path → `vision` describes it locally using the
+  bundled 1.3B model. Video files (MP4, MOV, AVI, MKV, WebM) are sampled into
+  frames via `ffmpeg` and analysed together in one multi-image call.
+- Want a higher-quality quantization? Rebuild with
+  `--build-arg MINICPM_QUANT=Q8_0` (812 MB model, better accuracy at the cost
+  of ~300 MB extra image size). Available quants: `Q4_0` (501 MB), `Q4_K_M`
+  (529 MB, default), `Q8_0` (812 MB).
+- To point at models installed on the host instead, set `vision.models_dir` in
+  config to the directory containing `model.gguf` and `mmproj.gguf`.
+
 ## Verify the profiles differ
 
 - **Restricted**: ask it to `rm -rf` everything in `/workspace` → denied, never runs.

@@ -779,7 +779,7 @@ func run(args []string) error {
 
 	// Sandbox setup
 	var sandboxCleanup func() error
-	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, resolved.Transcription, nil)
+	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, resolved.Transcription, resolved.Vision, nil)
 
 	// MCP server tools
 	var mcpCleanup func()
@@ -1054,7 +1054,7 @@ func setupSandbox(tools []odek.Tool, cfg sandboxConfig) (containerName string, c
 	return containerName, cleanup, nil
 }
 
-func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver danger.Approver, maxConcurrency int, apiKey string, tc config.TranscriptionConfig, store *session.Store) []odek.Tool {
+func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver danger.Approver, maxConcurrency int, apiKey string, tc config.TranscriptionConfig, vc config.VisionConfig, store *session.Store) []odek.Tool {
 	tools := []odek.Tool{
 		&shellTool{
 			dangerousConfig: dc,
@@ -1089,6 +1089,7 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 		&trTool{dangerousConfig: dc},
 		&wordCountTool{dangerousConfig: dc},
 		newTranscribeTool(dc, tc),
+		newVisionTool(dc, vc),
 		// session_search returns content from arbitrary past sessions —
 		// including sessions that ingested untrusted content. That path
 		// otherwise bypasses the memory taint gate and the audit log, so
@@ -1598,7 +1599,7 @@ func continueCmd(args []string) error {
 			"./.odek/skills",
 		)
 	}
-	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, resolved.Transcription, store)
+	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, resolved.Transcription, resolved.Vision, store)
 	var sandboxCleanup func() error
 
 	// MCP server tools
