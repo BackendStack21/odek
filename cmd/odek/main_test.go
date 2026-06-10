@@ -2051,7 +2051,7 @@ func TestBuildSystemPrompt_FallsBackToDefault(t *testing.T) {
 	resolved := config.ResolvedConfig{}
 
 	got := buildSystemPrompt(resolved)
-	if !strings.Contains(got, "You are odek") {
+	if !strings.Contains(got, "You are Odek") {
 		t.Error("expected defaultSystem identity when no override or IDENTITY.md")
 	}
 }
