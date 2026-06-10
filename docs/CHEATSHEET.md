@@ -106,6 +106,28 @@ Settings: `model` (tiny/base/small/medium), `language` (ISO code, empty=auto), `
 
 Settings: `auto_describe` (Telegram photo → description before the agent answers, default true), `models_dir` (dir with `model.gguf` + `mmproj.gguf`), `binary_path` (llama-mtmd-cli path), `video_frames` (frames to sample from video, default 8).
 
+### Web Search
+- **`web_search`** tool queries a self-hosted **SearXNG** metasearch instance — no cloud search API, no keys
+- Returns ranked results (title, url, snippet, engine) + direct answers; results are wrapped as untrusted content
+- The agent then fetches the URLs it wants with `browser` / `http_batch`
+- **Registered only when `web_search.base_url` is set.** The Docker compose setup runs a SearXNG sidecar and sets it automatically; outside Docker, run SearXNG yourself and point `base_url` at it
+- Gated as `network_egress` (prompts in restricted, allowed in godmode) — the backend URL is fixed config, so there is no SSRF surface
+- Configure via `web_search` section:
+
+```json
+{
+  "web_search": {
+    "base_url": "http://searxng:8080",
+    "categories": "general",
+    "language": "en",
+    "max_results": 10,
+    "timeout_seconds": 15
+  }
+}
+```
+
+Settings: `base_url` (SearXNG instance; empty = tool disabled), `categories` (optional SearXNG categories), `language` (optional language code), `max_results` (default 10), `timeout_seconds` (default 15).
+
 ## Memory System Architecture
 
 ### Three Tiers

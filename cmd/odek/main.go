@@ -779,7 +779,7 @@ func run(args []string) error {
 
 	// Sandbox setup
 	var sandboxCleanup func() error
-	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, resolved.Transcription, resolved.Vision, nil)
+	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{Transcription: resolved.Transcription, Vision: resolved.Vision, WebSearch: resolved.WebSearch}, nil)
 
 	// MCP server tools
 	var mcpCleanup func()
@@ -1054,7 +1054,17 @@ func setupSandbox(tools []odek.Tool, cfg sandboxConfig) (containerName string, c
 	return containerName, cleanup, nil
 }
 
-func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver danger.Approver, maxConcurrency int, apiKey string, tc config.TranscriptionConfig, vc config.VisionConfig, store *session.Store) []odek.Tool {
+// toolConfig bundles the per-tool configuration sections threaded into
+// builtinTools. Grouping them keeps the builtinTools signature stable as new
+// configurable tools are added (rather than growing a positional parameter
+// per tool).
+type toolConfig struct {
+	Transcription config.TranscriptionConfig
+	Vision        config.VisionConfig
+	WebSearch     config.WebSearchConfig
+}
+
+func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver danger.Approver, maxConcurrency int, apiKey string, tcfg toolConfig, store *session.Store) []odek.Tool {
 	tools := []odek.Tool{
 		&shellTool{
 			dangerousConfig: dc,
@@ -1088,14 +1098,21 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 		&base64Tool{dangerousConfig: dc},
 		&trTool{dangerousConfig: dc},
 		&wordCountTool{dangerousConfig: dc},
-		newTranscribeTool(dc, tc),
-		newVisionTool(dc, vc),
+		newTranscribeTool(dc, tcfg.Transcription),
+		newVisionTool(dc, tcfg.Vision),
 		// session_search returns content from arbitrary past sessions —
 		// including sessions that ingested untrusted content. That path
 		// otherwise bypasses the memory taint gate and the audit log, so
 		// wrap its whole output as untrusted (which also records an ingest).
 		&untrustedToolWrapper{inner: newSessionSearchTool(store), source: "session_search"},
 		newBrowserTool(dc),
+	}
+
+	// web_search is registered only when a SearXNG backend is configured —
+	// without a base_url there is no instance to query, so the tool would just
+	// confuse the agent. The Docker compose setup sets this automatically.
+	if tcfg.WebSearch.BaseURL != "" {
+		tools = append(tools, newWebSearchTool(dc, tcfg.WebSearch))
 	}
 
 	if sm != nil {
@@ -1599,7 +1616,7 @@ func continueCmd(args []string) error {
 			"./.odek/skills",
 		)
 	}
-	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, resolved.Transcription, resolved.Vision, store)
+	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{Transcription: resolved.Transcription, Vision: resolved.Vision, WebSearch: resolved.WebSearch}, store)
 	var sandboxCleanup func() error
 
 	// MCP server tools

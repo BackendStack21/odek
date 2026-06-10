@@ -169,6 +169,24 @@ API, no host install, no first-run download.
 - To point at models installed on the host instead, set `vision.models_dir` in
   config to the directory containing `model.gguf` and `mmproj.gguf`.
 
+## Web search (out of the box)
+
+The compose setup runs a **private [SearXNG](https://docs.searxng.org/) metasearch
+sidecar** backing the `web_search` tool — no cloud search API, no keys.
+
+- The `searxng` service co-starts with every profile and is reachable only by the
+  odek containers at `http://searxng:8080` (**no host port is published** — the
+  agent is the only consumer). Both bundled configs set `web_search.base_url` to it.
+- `docker/searxng/settings.yml` enables the JSON API (`search.formats: [html, json]`)
+  and disables the anti-bot limiter, so **no Redis/Valkey is required**.
+- Set **`SEARXNG_SECRET`** in `.env` (e.g. `openssl rand -hex 32`).
+- The agent searches, gets ranked results, then fetches the URLs it wants with the
+  `browser` / `http_batch` tools. Results are wrapped as untrusted content.
+- SearXNG needs outbound internet to reach upstream engines (Google, Bing,
+  DuckDuckGo, …). If you front the stack with an allowlisting egress proxy, permit those.
+- To run **without** web search: comment out the `searxng` service (and the
+  `depends_on: [searxng]` lines), and remove the `web_search` block from the configs.
+
 ## Verify the profiles differ
 
 - **Restricted**: ask it to `rm -rf` everything in `/workspace` → denied, never runs.

@@ -59,6 +59,7 @@ Tools that wrap:
 | `shell` | `$ <command>` |
 | `transcribe` | `transcribe:<audio path>` (full transcript + each segment) |
 | `vision` | `vision:<file path>` (full description) |
+| `web_search` | `web_search:<query>` (results + answers from SearXNG) |
 | `session_search` | `session_search` (whole result — past sessions may be tainted) |
 | any MCP tool | `mcp:<server>:<tool>` |
 

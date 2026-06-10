@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/BackendStack21/odek"
-	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
 )
 
@@ -244,7 +243,7 @@ func TestBuiltinTools_SessionSearchWrappedAsUntrusted(t *testing.T) {
 	store, cleanup := seedSessionStore(t)
 	defer cleanup()
 
-	tools := builtinTools(danger.DangerousConfig{}, nil, nil, 4, "", config.TranscriptionConfig{}, config.VisionConfig{}, store)
+	tools := builtinTools(danger.DangerousConfig{}, nil, nil, 4, "", toolConfig{}, store)
 
 	var ss odek.Tool
 	for _, tool := range tools {

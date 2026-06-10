@@ -116,6 +116,27 @@ type VisionConfig struct {
 	AutoDescribe bool `json:"auto_describe,omitempty"`
 }
 
+// WebSearchConfig controls the web_search tool (self-hosted SearXNG backend).
+// Populated from the "web_search" section of odek.json or ~/.odek/config.json.
+// The tool is registered only when BaseURL is non-empty — without a reachable
+// SearXNG instance there is no backend, so the tool stays hidden by default
+// (a plain `go install` has no sidecar; the Docker compose setup sets BaseURL).
+type WebSearchConfig struct {
+	// BaseURL is the SearXNG instance the tool queries, e.g.
+	// "http://searxng:8080" (Docker compose) or "http://127.0.0.1:8888"
+	// (host). Empty disables the tool.
+	BaseURL string `json:"base_url,omitempty"`
+	// Categories optionally restricts the SearXNG categories queried
+	// (comma-separated, e.g. "general" or "general,news"). Empty = SearXNG default.
+	Categories string `json:"categories,omitempty"`
+	// Language optionally sets the SearXNG language code (e.g. "en"). Empty = SearXNG default.
+	Language string `json:"language,omitempty"`
+	// MaxResults caps how many results are returned to the agent. Default: 10.
+	MaxResults int `json:"max_results,omitempty"`
+	// Timeout is the per-request timeout in seconds. Default: 15.
+	Timeout int `json:"timeout_seconds,omitempty"`
+}
+
 // FileConfig is the JSON schema used by ~/.odek/config.json and ./odek.json.
 // Pointer booleans distinguish "explicitly set to false" from "not set".
 type FileConfig struct {
@@ -185,6 +206,9 @@ type FileConfig struct {
 
 	// Vision configures local image/video understanding (MiniCPM-V 4.6 via llama-mtmd-cli).
 	Vision *VisionConfig `json:"vision,omitempty"`
+
+	// WebSearch configures the web_search tool (self-hosted SearXNG backend).
+	WebSearch *WebSearchConfig `json:"web_search,omitempty"`
 
 	// Schedules configures the native in-process task scheduler.
 	Schedules *SchedulesConfig `json:"schedules,omitempty"`
@@ -297,6 +321,10 @@ type ResolvedConfig struct {
 	// Vision is the resolved vision config.
 	// Default: VideoFrames=8, ModelsDir="" (auto-detect), BinaryPath="" (PATH lookup).
 	Vision VisionConfig
+
+	// WebSearch is the resolved web_search config.
+	// Default: MaxResults=10, Timeout=15, BaseURL="" (tool disabled until set).
+	WebSearch WebSearchConfig
 
 	// Schedules is the resolved scheduler config.
 	// Default: enabled=true, max_concurrent=2, timezone="UTC", catchup=false.
@@ -689,6 +717,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		Telegram:        resolveTelegram(cfg.Telegram),
 		Transcription:   resolveTranscription(cfg.Transcription),
 		Vision:          resolveVision(cfg.Vision),
+		WebSearch:       resolveWebSearch(cfg.WebSearch),
 		Schedules:       resolveSchedules(cfg.Schedules),
 		InteractionMode: ifZero(cfg.InteractionMode, "engaging"),
 		ToolProgress:    ifZero(cfg.ToolProgress, "all"),
@@ -977,6 +1006,25 @@ func resolveVision(cfg *VisionConfig) VisionConfig {
 	}
 }
 
+// resolveWebSearch returns the resolved web_search config, filling zero-valued
+// numeric fields with defaults. BaseURL has no default — it stays empty (and
+// the tool stays unregistered) until the operator points it at a SearXNG instance.
+func resolveWebSearch(cfg *WebSearchConfig) WebSearchConfig {
+	if cfg != nil {
+		if cfg.MaxResults == 0 {
+			cfg.MaxResults = 10
+		}
+		if cfg.Timeout == 0 {
+			cfg.Timeout = 15
+		}
+		return *cfg
+	}
+	return WebSearchConfig{
+		MaxResults: 10,
+		Timeout:    15,
+	}
+}
+
 // SchedulesConfig is the file-level scheduler configuration. Tri-state fields
 // use pointers so "unset" is distinguishable from an explicit false.
 type SchedulesConfig struct {
@@ -1132,6 +1180,9 @@ func overlayFile(base, override FileConfig) FileConfig {
 	}
 	if override.Vision != nil {
 		base.Vision = override.Vision
+	}
+	if override.WebSearch != nil {
+		base.WebSearch = override.WebSearch
 	}
 	if override.Schedules != nil {
 		base.Schedules = override.Schedules

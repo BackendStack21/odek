@@ -1,0 +1,43 @@
+# SearXNG configuration for the odek `web_search` tool.
+#
+# This is a minimal PRIVATE instance: the only consumer is the odek agent on
+# the internal compose network. Two settings make that work:
+#   1. search.formats includes `json`  → enables the JSON API the tool calls.
+#      (Upstream defaults to HTML-only; without this you get HTTP 403 on
+#       ?format=json.)
+#   2. server.limiter: false + public_instance: false → no anti-bot rate
+#      limiter, so no Redis/Valkey dependency is required.
+#
+# If you ever expose this instance beyond the compose network, re-enable the
+# limiter and add a Valkey service (see SearXNG docs), and set a strong secret.
+
+use_default_settings: true
+
+general:
+  instance_name: "odek-search"
+  # Don't leak instance metadata to the agent's results.
+  enable_metrics: false
+
+server:
+  # Must be overridden from the default; injected via $SEARXNG_SECRET in compose.
+  secret_key: "change-me-in-dot-env"
+  bind_address: "0.0.0.0"
+  port: 8080
+  # Single trusted consumer on a private network — disable the bot limiter
+  # (this is what removes the Redis/Valkey requirement).
+  limiter: false
+  public_instance: false
+  image_proxy: false
+
+search:
+  # ENABLES THE JSON API used by the web_search tool. Do not remove `json`.
+  formats:
+    - html
+    - json
+  # Reasonable defaults; the tool can override per request.
+  autocomplete: ""
+  default_lang: "auto"
+  safe_search: 0
+
+# Keep the default engine set (general web search). Tune here if you want to
+# disable specific engines or add categories.

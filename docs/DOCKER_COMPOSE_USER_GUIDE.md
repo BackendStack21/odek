@@ -127,7 +127,19 @@ ODEK_SUPPRESS_SANDBOX_WARNING=1
 # Anthropic (OpenAI-compatible endpoint; matches the claude-sonnet-4 profile):
 # ODEK_MODEL=claude-sonnet-4-5
 # ODEK_BASE_URL=https://api.anthropic.com/v1
+
+# Web search: secret for the bundled SearXNG sidecar (web_search tool).
+# Generate with `openssl rand -hex 32`. The instance is internal-only.
+SEARXNG_SECRET=change-me-run-openssl-rand-hex-32
 ```
+
+The compose file also runs a private **SearXNG** metasearch sidecar that backs the
+`web_search` tool (see [docker/README.md](../docker/README.md#web-search-out-of-the-box)).
+It co-starts with every profile, is reachable only by the odek containers at
+`http://searxng:8080` (no host port), and needs only `SEARXNG_SECRET` set above —
+no Redis/Valkey. To disable web search, comment the `searxng` service and the
+`depends_on: [searxng]` lines in the compose file and drop the `web_search` block
+from the config files.
 
 ---
 
