@@ -240,10 +240,14 @@ One config switches **every** similarity path: per-turn episode recall, the
 explicit `memory(search=...)` candidate retrieval, episode write-time dedup,
 the non-LLM episode ranker, and fact merge-on-write classification.
 
-Mechanics (`internal/memory/embedder.go`):
+Mechanics (`internal/embedding`, the shared package; memory references it via
+package-local aliases in `internal/memory/embedder.go`):
 
-- All paths go through the `textEmbedder` seam — `rp` (default, corpus-fitted,
-  bigram-featurized) or `http` (stateless, raw text, cached).
+- All paths go through the `embedding.TextEmbedder` seam — `rp` (default,
+  corpus-fitted, bigram-featurized) or `http` (stateless, raw text, cached). The
+  same package powers semantic session search and opt-in skill matching, so one
+  endpoint config gives consistent embedding-space semantics across subsystems
+  (see `docs/CONFIG.md` → *Shared embedding backend*).
 - The persisted episode vector index records its embedding space in
   `episodes_index_meta.json`; changing provider/model/dims invalidates and
   rebuilds it automatically. Pre-existing RP indexes (no meta file) keep

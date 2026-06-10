@@ -300,6 +300,39 @@ Multi-step procedure detected during a odek session.
 - **trigger keywords** — derived automatically from the command log (topic = first meaningful word, action = extracted verbs)
 - **author: odek** — distinguishes auto-generated skills from manually authored ones
 
+## How lazy skills are matched
+
+On every user turn, lazy skills compete for a limited number of context slots
+(`skills.max_lazy_slots`). Matching runs in priority order:
+
+1. **Keyword matcher (default)** — a scored matcher with stemming and synonyms
+   (no AND-lock: a topic-only or action-only hit still scores). Local and
+   instant; this is the default per-turn path.
+2. **Semantic matcher (opt-in)** — when `skills.embedding` is configured with an
+   HTTP backend, the query is embedded and matched against the skill corpus by
+   meaning, catching morphological and paraphrase variants the keyword matcher
+   misses. Because it runs on the hot path, the query embed is **time-bounded**
+   (2s default) and **falls back to the keyword matcher** on any miss, timeout,
+   or down backend.
+
+Skill matching is the one subsystem that does **not** inherit the shared
+top-level `embedding` default — you opt in explicitly because it embeds on every
+turn. The skill corpus embeds once per reload (cheap); only the query embeds per
+turn. See [CONFIG.md → Shared embedding backend](./CONFIG.md#shared-embedding-backend-embedding--sessions--skills).
+
+```json
+{
+  "skills": {
+    "embedding": {
+      "provider": "http",
+      "base_url": "http://localhost:11434/v1",
+      "model": "nomic-embed-text",
+      "timeout_seconds": 2
+    }
+  }
+}
+```
+
 ## Examples
 
 ### Basic: Let odek learn from a session (auto-save enabled)
@@ -407,6 +440,7 @@ odek skill reset-skips repeated-ls
 | `curation.skip_threshold` | `1` | Skips needed for permanent suppression |
 | `curation.skip_reset_days` | `30` | Days before skip expires |
 | `curation.auto_prune` | `false` | Auto-delete stale skills |
+| `embedding` | *(unset)* | **Opt-in** HTTP embedding backend for semantic skill matching (see above). Unset = local keyword matching. Not inherited from the top-level `embedding` default. |
 
 ## Related
 
