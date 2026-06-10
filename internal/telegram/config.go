@@ -58,7 +58,10 @@ func ConfigFromEnv(base TelegramConfig) TelegramConfig {
 		cfg.AllowedUsers = parseInt64List(v)
 	}
 	if v := os.Getenv("ODEK_TELEGRAM_ALLOW_ALL"); v != "" {
-		cfg.AllowAllUsers = parseBool(v)
+		// strconv.ParseBool keeps the truthy grammar consistent with the rest
+		// of the config surface; a malformed value fails closed (false).
+		b, err := strconv.ParseBool(strings.TrimSpace(v))
+		cfg.AllowAllUsers = err == nil && b
 	}
 	if v := os.Getenv("ODEK_TELEGRAM_BOT_USERNAME"); v != "" {
 		cfg.BotUsername = v
@@ -139,7 +142,7 @@ func ValidateConfig(cfg TelegramConfig) error {
 	// operator explicitly opts in. An empty allowlist would otherwise let ANY
 	// Telegram user drive the agent (and its shell/file tools). Checked last so
 	// field-level validation errors surface first.
-	if len(cfg.AllowedChats) == 0 && len(cfg.AllowedUsers) == 0 && !cfg.AllowAllUsers {
+	if !cfg.HasAllowlist() && !cfg.AllowAllUsers {
 		return fmt.Errorf("telegram: no allowlist configured — set ODEK_TELEGRAM_ALLOWED_CHATS " +
 			"and/or ODEK_TELEGRAM_ALLOWED_USERS to restrict access, or set " +
 			"ODEK_TELEGRAM_ALLOW_ALL=true to explicitly run an open bot (NOT recommended)")
@@ -147,15 +150,11 @@ func ValidateConfig(cfg TelegramConfig) error {
 	return nil
 }
 
-// parseBool parses common truthy string values ("true", "1", "yes", "on",
-// case-insensitive). Anything else is false.
-func parseBool(s string) bool {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "true", "1", "yes", "on":
-		return true
-	default:
-		return false
-	}
+// HasAllowlist reports whether at least one allowlist (chats or users) is
+// configured. With no allowlist the bot is open to every Telegram user, which
+// requires the explicit AllowAllUsers opt-in (see ValidateConfig).
+func (c TelegramConfig) HasAllowlist() bool {
+	return len(c.AllowedChats) > 0 || len(c.AllowedUsers) > 0
 }
 
 // parseInt64List parses a comma-separated string of integers into a slice of int64.

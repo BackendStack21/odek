@@ -169,7 +169,7 @@ func telegramCmd(args []string) error {
 	// Loud warning when running without an allowlist (only reachable when the
 	// operator explicitly set ODEK_TELEGRAM_ALLOW_ALL; ValidateConfig blocks
 	// the accidental case).
-	if cfg.AllowAllUsers && len(cfg.AllowedChats) == 0 && len(cfg.AllowedUsers) == 0 {
+	if cfg.AllowAllUsers && !cfg.HasAllowlist() {
 		handlerLog.Warn("telegram bot is running with NO allowlist — ANY user can drive the agent (ODEK_TELEGRAM_ALLOW_ALL=true)")
 	}
 
