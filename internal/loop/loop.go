@@ -529,6 +529,15 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 	// Reset per-session tool error tracking
 	e.maxConsecutiveToolErrors = make(map[string]int)
 
+	// Backstop: clear any batch trustAll grant when this run returns, even on
+	// early exit or panic, so it never leaks into a later prompt that reuses
+	// the same approver (wsApprover is per-connection, TelegramApprover is
+	// per-chat). The per-iteration reset below is the primary mechanism; this
+	// defer only covers abnormal exits mid-iteration.
+	if ta, ok := e.approver.(interface{ SetTrustAll(bool) }); ok {
+		defer ta.SetTrustAll(false)
+	}
+
 	for i := 0; i < e.maxIter; i++ {
 		select {
 		case <-ctx.Done():
