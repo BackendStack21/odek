@@ -462,6 +462,59 @@ func TestConfigFromEnv_allowAll(t *testing.T) {
 	}
 }
 
+// TestConfigFromEnv_allowAllStrictGrammar pins the strconv.ParseBool grammar:
+// only its truthy forms enable the open-bot flag; anything else — including
+// the formerly-accepted "yes"/"on" and malformed values — fails closed.
+func TestConfigFromEnv_allowAllStrictGrammar(t *testing.T) {
+	tests := []struct {
+		value string
+		want  bool
+	}{
+		{"true", true},
+		{"TRUE", true},
+		{"1", true},
+		{" true ", true}, // surrounding whitespace is trimmed
+		{"false", false},
+		{"0", false},
+		{"yes", false}, // not part of strconv.ParseBool — fails closed
+		{"on", false},  // not part of strconv.ParseBool — fails closed
+		{"junk", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			unsetAllEnvVars(t)
+			t.Setenv("ODEK_TELEGRAM_ALLOW_ALL", tt.value)
+			cfg := ConfigFromEnv(DefaultConfig())
+			if cfg.AllowAllUsers != tt.want {
+				t.Errorf("ODEK_TELEGRAM_ALLOW_ALL=%q → AllowAllUsers=%v, want %v",
+					tt.value, cfg.AllowAllUsers, tt.want)
+			}
+		})
+	}
+}
+
+func TestHasAllowlist(t *testing.T) {
+	tests := []struct {
+		name  string
+		chats []int64
+		users []int64
+		want  bool
+	}{
+		{"both empty", nil, nil, false},
+		{"chats only", []int64{1}, nil, true},
+		{"users only", nil, []int64{2}, true},
+		{"both set", []int64{1}, []int64{2}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := TelegramConfig{AllowedChats: tt.chats, AllowedUsers: tt.users}
+			if got := cfg.HasAllowlist(); got != tt.want {
+				t.Errorf("HasAllowlist() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestValidateConfig_emptyToken(t *testing.T) {
 	cfg := DefaultConfig()
 	err := ValidateConfig(cfg)
