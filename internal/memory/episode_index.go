@@ -52,13 +52,20 @@ type scoredEpisode struct {
 // Thread-safety: all exported methods hold vi.mu as appropriate.
 // Per-directory singleton: see sharedEpisodeIndex.
 type episodeVectorIndex struct {
-	mu       sync.RWMutex
-	store    *vector.Store
-	emb      textEmbedder
-	dir      string
-	ready    bool
-	dirty    bool
-	failedAt time.Time // last failed rebuild; zero = never failed
+	mu    sync.RWMutex
+	store *vector.Store
+	emb   textEmbedder
+	// newEmb builds a FRESH embedder instance for a rebuild. Rebuilds embed on
+	// a detached instance off-lock (see ensureFresh), so the live (emb, store)
+	// pair stays valid and consistent until the atomic swap — a query never
+	// embeds against a half-refitted embedder.
+	newEmb     func() textEmbedder
+	dir        string
+	ready      bool
+	dirty      bool
+	rebuilding bool      // single-flight guard: a rebuild is embedding off-lock
+	dirtySeq   uint64    // bumped by markDirty; reconciled after an off-lock rebuild
+	failedAt   time.Time // last failed rebuild; zero = never failed
 }
 
 // indexMeta is the persisted embedding-space identity (episodeIndexMetaFile).
@@ -104,7 +111,7 @@ func sharedEpisodeIndex(dir string, newEmb func() textEmbedder) *episodeVectorIn
 	if vi, ok := epIdxes[key]; ok {
 		return vi
 	}
-	vi := &episodeVectorIndex{dir: abs, emb: emb}
+	vi := &episodeVectorIndex{dir: abs, emb: emb, newEmb: newEmb}
 	epIdxes[key] = vi
 	return vi
 }
@@ -117,6 +124,7 @@ func sharedEpisodeIndex(dir string, newEmb func() textEmbedder) *episodeVectorIn
 func (vi *episodeVectorIndex) markDirty() {
 	vi.mu.Lock()
 	vi.dirty = true
+	vi.dirtySeq++
 	vi.failedAt = time.Time{}
 	vi.mu.Unlock()
 }
@@ -150,34 +158,78 @@ func (vi *episodeVectorIndex) search(query string, k int) []scoredEpisode {
 
 // ensureFresh loads or rebuilds the index as needed. Must NOT be called while
 // holding vi.mu (it acquires it internally).
+//
+// The expensive part of a rebuild — fitting the embedder and embedding the
+// whole corpus, which is a blocking network call for the HTTP backend — runs
+// OFF the lock on a fresh embedder instance, then the result is swapped in
+// atomically under the lock. This keeps a slow embedding backend from
+// serializing every concurrent recall behind one rebuild (search runs per
+// turn; under `odek serve` all connections funnel through this per-dir
+// singleton). A single-flight guard (rebuilding) collapses a thundering herd
+// of concurrent rebuilds into one, and a dirty-sequence check folds in any
+// episode write that lands mid-rebuild.
 func (vi *episodeVectorIndex) ensureFresh() {
 	vi.mu.RLock()
-	if vi.ready && !vi.dirty {
-		vi.mu.RUnlock()
+	ready := vi.ready && !vi.dirty
+	vi.mu.RUnlock()
+	if ready {
 		return
 	}
-	vi.mu.RUnlock()
 
 	vi.mu.Lock()
-	defer vi.mu.Unlock()
 	if vi.ready && !vi.dirty {
-		return // double-checked
+		vi.mu.Unlock()
+		return
 	}
 	// Back off after a failed rebuild so a down embedding backend is not
 	// re-hit on every loop turn (search runs per turn).
 	if !vi.failedAt.IsZero() && time.Since(vi.failedAt) < rebuildRetryInterval {
+		vi.mu.Unlock()
 		return
 	}
-
-	// Cold start without a pending write: try the persisted state first.
+	// Single-flight: if another goroutine is already rebuilding off-lock, serve
+	// the current state for this turn rather than launch a duplicate (and a
+	// duplicate batch embed) — the in-flight rebuild will publish shortly.
+	if vi.rebuilding {
+		vi.mu.Unlock()
+		return
+	}
+	// Cold start without a pending write: try the persisted state first
+	// (disk-only, fast — fine to do under the lock).
 	if !vi.ready && !vi.dirty {
 		if vi.tryLoadLocked() {
+			vi.mu.Unlock()
 			return
 		}
 	}
-	// Either cold-start without usable persisted state, or dirty after a
-	// write — full rebuild.
-	vi.rebuildLocked()
+	// Rebuild needed. Snapshot the dirty sequence, take a fresh embedder, and
+	// release the lock before the network-bound embedding work.
+	vi.rebuilding = true
+	seq := vi.dirtySeq
+	emb := vi.newEmb()
+	vi.mu.Unlock()
+
+	store := buildEpisodeStore(vi.readAllSummaries(), emb)
+
+	vi.mu.Lock()
+	defer vi.mu.Unlock()
+	vi.rebuilding = false
+	if store == nil {
+		// Embedding failed (e.g. backend down) — keep the previous index, if
+		// any, serving and start the retry cool-down.
+		vi.failedAt = time.Now()
+		return
+	}
+	vi.store = store
+	vi.emb = emb
+	vi.ready = true
+	vi.failedAt = time.Time{}
+	// Only clear dirty if no write landed while we were rebuilding off-lock;
+	// otherwise leave it set so the next search rebuilds with the newest data.
+	if vi.dirtySeq == seq {
+		vi.dirty = false
+	}
+	vi.saveLocked()
 }
 
 // tryLoadLocked attempts to load persisted state. Returns true on success.
@@ -219,26 +271,23 @@ func legacyRPFingerprint() string {
 	return newRPTextEmbedder(episodeVectorDim).fingerprint()
 }
 
-// rebuildLocked reads all episode summaries from disk, fits the embedder on
-// the full corpus, and persists the result. On embedding failure (e.g. a
-// remote backend being down) the previous index — if any — is kept serving
-// and a retry cool-down starts. Caller must hold vi.mu (write lock).
-func (vi *episodeVectorIndex) rebuildLocked() {
-	texts := vi.readAllSummaries()
-
+// buildEpisodeStore fits emb on the full corpus and returns a populated vector
+// store, or nil on any embedding failure (e.g. a remote backend being down) so
+// the caller can keep the previous index serving. It takes NO lock and touches
+// no shared index state — it operates entirely on its arguments and a fresh
+// embedder, which is what lets ensureFresh run it off vi.mu.
+func buildEpisodeStore(texts []idText, emb textEmbedder) *vector.Store {
 	corpus := make([]string, len(texts))
 	for i, t := range texts {
 		corpus[i] = t.text
 	}
 
-	if err := vi.emb.fit(corpus); err != nil {
-		vi.failedAt = time.Now()
-		return
+	if err := emb.fit(corpus); err != nil {
+		return nil
 	}
-	vecs, err := vi.emb.embedAll(corpus)
+	vecs, err := emb.embedAll(corpus)
 	if err != nil {
-		vi.failedAt = time.Now()
-		return
+		return nil
 	}
 
 	store := vector.NewStore(vector.CosineDistance)
@@ -248,12 +297,7 @@ func (vi *episodeVectorIndex) rebuildLocked() {
 		}
 		store.Add(t.id, vecs[i])
 	}
-
-	vi.store = store
-	vi.ready = true
-	vi.dirty = false
-	vi.failedAt = time.Time{}
-	vi.saveLocked()
+	return store
 }
 
 type idText struct {

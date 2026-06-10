@@ -173,14 +173,19 @@ func (m *MergeDetector) ReplaceEntry(idx int, entry string) {
 	}
 	m.corpus[idx] = entry
 	if err := m.emb.fit(m.corpus); err != nil {
-		m.vecs[idx] = nil
+		m.vecs = nil // a failed fit invalidates the whole precomputed set
 		return
 	}
 	vec, err := m.emb.embed(entry)
 	if err != nil {
 		vec = nil
 	}
-	m.vecs[idx] = vec
+	// A prior failed Fit can leave m.vecs nil or shorter than m.corpus; guard
+	// the write so a desynced index never panics here (Classify already treats
+	// an empty/short vecs as "nobody").
+	if idx < len(m.vecs) {
+		m.vecs[idx] = vec
+	}
 }
 
 // Corpus returns the current corpus (for inspection).

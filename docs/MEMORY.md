@@ -248,11 +248,14 @@ Mechanics (`internal/memory/embedder.go`):
   `episodes_index_meta.json`; changing provider/model/dims invalidates and
   rebuilds it automatically. Pre-existing RP indexes (no meta file) keep
   loading without a rebuild.
-- The HTTP embedder caches text→vector, so an index rebuild after a new
-  episode only embeds texts it hasn't seen — one batch call.
+- The HTTP embedder caches text→vector within an instance, so per-turn query
+  embeds are not re-sent. An index rebuild (after a new episode) runs on a
+  fresh client *off the index lock* — one batch call over the corpus — so a
+  slow backend never serializes concurrent recall.
 - Failure mode: embedding errors degrade to "no recall context" / "add fact
-  without merge check"; a failed index rebuild backs off for 30s so a down
-  backend is not re-hit every loop turn. The agent loop is never blocked.
+  without merge check" / recency ranking — never a wrong dedup (which would
+  delete the matched episode). A failed index rebuild backs off for 30s so a
+  down backend is not re-hit every loop turn. The agent loop is never blocked.
 
 See `docs/CONFIG.md` → `embedding` for all fields and the privacy note
 (summaries are sent to the configured endpoint — use a local server if that

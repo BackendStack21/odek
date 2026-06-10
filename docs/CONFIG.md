@@ -262,16 +262,25 @@ that matches by meaning.
 
 Operational notes:
 
-- **Per-turn recall stays cheap.** Episode vectors are cached in a persisted
-  index; a loop turn costs at most one embedding call (the query), bounded by
+- **Per-turn recall stays cheap.** Episode vectors live in a persisted index; a
+  loop turn costs at most one embedding call (the query), bounded by
   `timeout_seconds`. If the backend is down, recall degrades to "no context"
-  and rebuilds back off for 30s — the agent loop is never blocked.
+  and rebuilds back off for 30s — the agent loop is never blocked. The index
+  rebuild that follows a new episode (session-end) embeds the corpus on a fresh
+  client *off* the index lock, so a slow backend never serializes concurrent
+  recall; it is one batch call over the episode summaries.
 - **Switching backends is safe.** The persisted index records which embedding
   space it was built in; changing `provider`/`model`/`dims` automatically
-  invalidates it and rebuilds on next use (one batch embedding call).
-- **Episode summaries leave the machine.** With `"http"`, episode summaries and
-  fact entries are sent to the configured endpoint for embedding. Point it at a
-  local server (Ollama/llama.cpp) if that must not happen.
+  invalidates it and rebuilds on next use (one batch embedding call). Note: with
+  `dims: 0`, if a server silently changes a model's output dimensionality (e.g.
+  a model upgrade under the same name) the fingerprint cannot detect it; recall
+  self-heals to "no context" on the dimension mismatch and rebuilds on the next
+  write. Pin `dims` if you want such a change to force an explicit rebuild.
+- **`base_url` is an egress target — point it only at a server you trust.** Every
+  episode summary and fact entry is POSTed there for embedding. The URL is used
+  verbatim with no allowlist, so do not point it at internal/metadata endpoints
+  (e.g. cloud metadata services) you would not otherwise expose. Prefer a local
+  server (Ollama/llama.cpp) when episode/fact text must not leave the machine.
 
 ### ⚠️ `extract_facts` — automatic fact learning (opt-in, off by default)
 

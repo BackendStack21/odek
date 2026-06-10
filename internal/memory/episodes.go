@@ -862,7 +862,15 @@ func cosineVector(a, b vector.Vector) float32 {
 	if normA == 0 || normB == 0 {
 		return 0
 	}
-	return float32(dot / (math.Sqrt(normA) * math.Sqrt(normB)))
+	sim := dot / (math.Sqrt(normA) * math.Sqrt(normB))
+	if math.IsNaN(sim) || math.IsInf(sim, 0) {
+		// A buggy/hostile embedding backend can return NaN/Inf components; a
+		// NaN score breaks sort ordering (non-strict-weak). Treat as "no
+		// similarity" so ranking stays well-defined. Mirrors the NaN guard in
+		// MergeDetector.Classify.
+		return 0
+	}
+	return float32(sim)
 }
 
 // truncateAtRune returns s truncated to at most maxBytes bytes, always
