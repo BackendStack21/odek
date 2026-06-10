@@ -21,7 +21,8 @@ For the full walkthrough, threat model, and tuning, see
 ```
 docker/
 ├── Dockerfile               # multi-stage build of the odek binary
-├── docker-compose.yml       # 4 services across 4 profiles
+├── Dockerfile.embeddings    # llama.cpp embeddings sidecar (bundled GGUF)
+├── docker-compose.yml       # odek (4 profiles) + searxng + llama-embeddings
 ├── config.restricted.json   # Restricted permission policy
 ├── config.godmode.json      # Godmode (YOLO) permission policy
 ├── .env.example             # copy to .env, add your API key
@@ -186,6 +187,41 @@ sidecar** backing the `web_search` tool — no cloud search API, no keys.
   DuckDuckGo, …). If you front the stack with an allowlisting egress proxy, permit those.
 - To run **without** web search: comment out the `searxng` service (and the
   `depends_on: [searxng]` lines), and remove the `web_search` block from the configs.
+
+## Local memory embeddings (out of the box)
+
+The compose setup runs a **private [llama.cpp](https://github.com/ggerganov/llama.cpp)
+embeddings sidecar** backing odek's memory system — no cloud embeddings API, no keys.
+
+Without it, memory similarity (episode recall, dedup, ranking, fact merge-on-write)
+runs on local bag-of-words vectors: fast, but purely lexical — *"fixed the auth bug"*
+and *"repaired login issue"* don't match. The sidecar swaps that for a real embedding
+model, so recall matches by **meaning**. See
+[`../docs/MEMORY.md`](../docs/MEMORY.md) → *Pluggable Embeddings* and
+[`../docs/CONFIG.md`](../docs/CONFIG.md) → `embedding`.
+
+- The `llama-embeddings` service co-starts with every profile and is reachable only by
+  the odek containers at `http://llama-embeddings:8080` (**no host port** — odek's memory
+  is the only consumer). Both bundled configs set `memory.embedding` to it.
+- The image **bundles `llama-server` (built from source, pinned to the same llama.cpp
+  release as the main image) and `nomic-embed-text-v1.5`** (768-dim, ~84 MB at Q4_K_M)
+  — so there's **no first-run model download** and no volume, mirroring the bundled
+  whisper / MiniCPM-V models. The server runs `--embeddings --pooling mean` and exposes
+  the OpenAI-compatible `/v1/embeddings` endpoint.
+- **Graceful by design:** if the sidecar is still loading or unreachable, recall just
+  degrades to "no context" and retries with a 30s backoff — the agent loop is never
+  blocked, and a wrong dedup never deletes an episode. Default behavior without the
+  service is local RandomProjections.
+- Want a higher-quality quantization? Rebuild with
+  `--build-arg EMBED_QUANT=Q8_0` (available: `Q4_K_M` default, `Q5_K_M`, `Q6_K`, `Q8_0`,
+  `f16`). To use a different model, override `EMBED_HF_REPO` / `EMBED_HF_REVISION` /
+  `EMBED_FILE` and update `memory.embedding.model` in the configs.
+- To run **without** local embeddings: comment out the `llama-embeddings` service (and
+  the matching `depends_on` entries), and remove the `embedding` block from the configs
+  — memory falls back to RandomProjections automatically.
+- **Point `base_url` only at a server you trust:** every episode summary and fact entry
+  is sent there for embedding. Here it's the in-network sidecar, so nothing leaves the
+  compose network; if you repoint it at a cloud API, that text egresses.
 
 ## Verify the profiles differ
 

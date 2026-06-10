@@ -1,0 +1,79 @@
+# syntax=docker/dockerfile:1
+
+# llama.cpp embeddings sidecar — backs odek's memory.embedding (http provider).
+#
+# Builds llama-server from source pinned to the SAME llama.cpp release as the
+# main image (LLAMA_VERSION), and bundles a pinned nomic-embed-text-v1.5 GGUF
+# so the service is fully offline after build — no first-run model download.
+# This mirrors how the main image bundles whisper.cpp + MiniCPM-V.
+#
+# nomic-embed-text-v1.5 is a 768-dim text embedding model (~84 MB at Q4_K_M).
+# odek sends raw summary/query text for both corpus and query, so the embedding
+# space stays symmetric even without nomic's optional task-instruction prefixes.
+#
+# Override the model with build args, e.g. a higher-quality quant:
+#   --build-arg EMBED_QUANT=Q8_0
+# Available quants in this repo: Q4_K_M (default) | Q5_K_M | Q6_K | Q8_0 | f16
+
+# ---- build stage: compile llama-server + fetch the model ----
+# Same Debian Bookworm base as the runtime stage so the binary links against the
+# exact glibc/libstdc++ present at runtime (no ABI mismatch — see the main
+# Dockerfile's llama.cpp stage for the rationale).
+FROM debian:bookworm-slim AS build
+ARG LLAMA_VERSION=b9549
+# Pin the embeddings model + git revision so the image is reproducible.
+ARG EMBED_HF_REPO=nomic-ai/nomic-embed-text-v1.5-GGUF
+ARG EMBED_HF_REVISION=0188c9bf409793f810680a5a431e7b899c46104c
+ARG EMBED_QUANT=Q4_K_M
+ARG EMBED_FILE=nomic-embed-text-v1.5.${EMBED_QUANT}.gguf
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git cmake make g++ curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# BUILD_SHARED_LIBS=OFF statically links llama's internal libraries; GGML_OPENMP
+# OFF drops the libgomp dependency; LLAMA_CURL=OFF because the model is bundled
+# (no runtime download). Target llama-server (the OpenAI-compatible HTTP server)
+# instead of the main image's llama-mtmd-cli.
+RUN git clone --depth 1 --branch "${LLAMA_VERSION}" \
+      https://github.com/ggerganov/llama.cpp /llama \
+ && cmake -S /llama -B /llama/build \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DBUILD_SHARED_LIBS=OFF \
+      -DGGML_NATIVE=OFF \
+      -DGGML_OPENMP=OFF \
+      -DLLAMA_CURL=OFF \
+      -DLLAMA_BUILD_TESTS=OFF \
+ && cmake --build /llama/build -j"$(nproc)" --target llama-server \
+ && install -m 755 /llama/build/bin/llama-server /usr/local/bin/llama-server \
+ && rm -rf /llama
+
+# Fetch the pinned GGUF into a fixed image path.
+RUN mkdir -p /models \
+ && curl -fSL --retry 5 --retry-delay 5 --retry-connrefused --retry-all-errors \
+      "https://huggingface.co/${EMBED_HF_REPO}/resolve/${EMBED_HF_REVISION}/${EMBED_FILE}" \
+      -o /models/embed.gguf
+
+# ---- runtime stage ----
+FROM debian:bookworm-slim
+# libstdc++6 for the C++ binary; curl only for the compose healthcheck;
+# ca-certificates is harmless and tiny. No outbound network is needed at runtime.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libstdc++6 ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=build /usr/local/bin/llama-server /usr/local/bin/llama-server
+COPY --from=build /models/embed.gguf /models/embed.gguf
+
+# Run non-root (uid 1000), matching the main image's posture.
+RUN useradd -u 1000 -m llama
+USER llama
+EXPOSE 8080
+
+# --embeddings enables the /v1/embeddings endpoint; --pooling mean matches
+# nomic-embed-text; --ctx-size 2048 is the model's training context (episode
+# summaries are capped at ~1 KB, well within it). Bind all interfaces — only
+# the compose network can reach it (no host port is published).
+ENTRYPOINT ["llama-server", \
+            "--host", "0.0.0.0", "--port", "8080", \
+            "--model", "/models/embed.gguf", \
+            "--embeddings", "--pooling", "mean", "--ctx-size", "2048"]

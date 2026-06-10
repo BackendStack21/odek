@@ -32,7 +32,12 @@
     "llm_extract": true,
     "llm_consolidate": true,
     "merge_threshold": 0.7,
-    "add_threshold": 0.3
+    "add_threshold": 0.3,
+    "embedding": {
+      "provider": "http",
+      "base_url": "http://llama-embeddings:8080/v1",
+      "model": "nomic-embed-text-v1.5"
+    }
   },
   "dangerous": {
     "action": "allow",
