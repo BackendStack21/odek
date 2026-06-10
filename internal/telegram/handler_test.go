@@ -202,6 +202,7 @@ func TestHandleUpdate_TextMessage(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // routing test — access control covered by TestIsAllowed_*
 	h.OnTextMessage = func(chatID int64, messageID int, text string) (string, error) {
 		capturedChatID = chatID
 		capturedMessageID = messageID
@@ -279,6 +280,7 @@ func TestHandleUpdate_Command(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // routing test — access control covered by TestIsAllowed_*
 	h.OnCommand = func(chatID int64, messageID int, cmd string, args string) (string, error) {
 		capturedChatID = chatID
 		capturedCmd = cmd
@@ -320,6 +322,7 @@ func TestHandleUpdate_VoiceMessage(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // routing test — access control covered by TestIsAllowed_*
 	h.OnVoiceMessage = func(chatID int64, messageID int, fileID string) (string, error) {
 		capturedChatID = chatID
 		capturedFileID = fileID
@@ -359,6 +362,7 @@ func TestHandleUpdate_PhotoMessage(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // routing test — access control covered by TestIsAllowed_*
 	h.OnPhotoMessage = func(chatID int64, messageID int, fileIDs []string, caption string) (string, error) {
 		capturedChatID = chatID
 		capturedFileIDs = fileIDs
@@ -726,12 +730,27 @@ func TestIsAllowed_EmptyAllowlist(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
-	// Both AllowedChats and AllowedUsers are empty → allow all.
+	// Fail-closed: both allowlists empty and AllowAllUsers not set → deny.
+	if h.isAllowed(999, 888) {
+		t.Error("isAllowed(999, 888) = true, want false (fail-closed, no opt-in)")
+	}
+	if h.isAllowed(0, 0) {
+		t.Error("isAllowed(0, 0) = true, want false (fail-closed, no opt-in)")
+	}
+}
+
+func TestIsAllowed_EmptyAllowlistWithAllowAll(t *testing.T) {
+	ts := testServer(t, nil)
+	defer ts.Close()
+	bot := testBot(t, ts)
+	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true
+	// Explicit opt-in: empty allowlists + AllowAllUsers → allow anyone.
 	if !h.isAllowed(999, 888) {
-		t.Error("isAllowed(999, 888) = false, want true (empty allowlists)")
+		t.Error("isAllowed(999, 888) = false, want true (AllowAllUsers opt-in)")
 	}
 	if !h.isAllowed(0, 0) {
-		t.Error("isAllowed(0, 0) = false, want true (empty allowlists)")
+		t.Error("isAllowed(0, 0) = false, want true (AllowAllUsers opt-in)")
 	}
 }
 
@@ -1190,6 +1209,7 @@ func TestHandleUpdate_OnErrorCalled(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // routing test — access control covered by TestIsAllowed_*
 	h.OnTextMessage = func(_ int64, _ int, _ string) (string, error) {
 		return "", assertError("simulated error")
 	}
@@ -1570,6 +1590,7 @@ func TestHandler_HandleMessage_OnErrorCalledOnVoiceFailure(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // routing test — access control covered by TestIsAllowed_*
 
 	chatID := int64(333)
 	expectedErr := assertError("voice processing failed")
@@ -1611,6 +1632,7 @@ func TestHandler_HandleMessage_OnErrorCalledOnPhotoFailure(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // routing test — access control covered by TestIsAllowed_*
 
 	chatID := int64(555)
 	expectedErr := assertError("photo processing failed")
@@ -1650,6 +1672,7 @@ func TestHandler_HandleMessage_OnErrorCalledOnTextFailure(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // routing test — access control covered by TestIsAllowed_*
 
 	chatID := int64(777)
 	expectedErr := assertError("text processing failed")

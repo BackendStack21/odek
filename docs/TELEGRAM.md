@@ -31,8 +31,9 @@ All configuration flows through `TelegramConfig` and can be set via environment 
 | Variable | Field | Default |
 |---|---|---|
 | `ODEK_TELEGRAM_BOT_TOKEN` | Token | — (required) |
-| `ODEK_TELEGRAM_ALLOWED_CHATS` | AllowedChats | all |
-| `ODEK_TELEGRAM_ALLOWED_USERS` | AllowedUsers | all |
+| `ODEK_TELEGRAM_ALLOWED_CHATS` | AllowedChats | — (see below) |
+| `ODEK_TELEGRAM_ALLOWED_USERS` | AllowedUsers | — (see below) |
+| `ODEK_TELEGRAM_ALLOW_ALL` | AllowAllUsers | false |
 | `ODEK_TELEGRAM_BOT_USERNAME` | BotUsername | — |
 | `ODEK_TELEGRAM_POLL_INTERVAL` | PollInterval | 1s |
 | `ODEK_TELEGRAM_POLL_TIMEOUT` | PollTimeout | 30s |
@@ -181,9 +182,18 @@ All callbacks return a response string (may be empty) and an error. The `Handle`
 ### Access Control
 
 `HandlerConfig` supports:
-- **AllowedChats** — restrict to specific chat IDs (empty = allow all)
-- **AllowedUsers** — restrict to specific user IDs (empty = allow all)
+- **AllowedChats** — restrict to specific chat IDs
+- **AllowedUsers** — restrict to specific user IDs
+- **AllowAllUsers** — explicit opt-in to run with no allowlist (see below)
 - **BotUsername** — for `@mention` detection in groups
+
+> **Fail-closed authorization.** The bot **refuses to start** if neither
+> `ODEK_TELEGRAM_ALLOWED_CHATS` nor `ODEK_TELEGRAM_ALLOWED_USERS` is set, so an
+> open bot — where any Telegram user could drive the agent and its shell/file
+> tools — can never be deployed by accident. To intentionally run an open bot,
+> set `ODEK_TELEGRAM_ALLOW_ALL=true` (logged as a loud warning at startup). At
+> runtime, with both allowlists empty and `AllowAllUsers` unset, every update is
+> denied.
 
 ### Inline Keyboards
 

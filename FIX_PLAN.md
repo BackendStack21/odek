@@ -8,13 +8,13 @@ steps. Check items off as they land.
 ## Priority order (fix these first)
 
 1. **#1** — Telegram document path traversal (remote arbitrary-write/RCE). ✅ Fixed
-2. **#3** — Fail-open Telegram authorization (amplifies #1).
+2. **#3** — Fail-open Telegram authorization (amplifies #1). ✅ Fixed
 3. **#2** — `trustAll` never resets within a run (one click unlocks the turn). ✅ Fixed
 4. **#4 / #5** — WS auth + serve-mode approval deadlock.
 
-> Status: #1 and #2 are implemented and tested in this PR. The remaining items
-> are open. #3, #4, #6 involve a behavior/default change (fail-closed auth, WS
-> token) and are left for maintainer direction.
+> Status: #1, #2, and #3 are implemented and tested in this PR. The remaining
+> items are open. #4 and #6 involve a behavior/default change (WS token) and are
+> left for maintainer direction.
 
 ---
 
@@ -56,6 +56,13 @@ steps. Check items off as they land.
   same run still triggers `PromptCommand`.
 
 ## 3. Fail-open Telegram authorization
+- **Status:** ✅ Fixed — `ValidateConfig` now refuses to start with no allowlist
+  unless `ODEK_TELEGRAM_ALLOW_ALL=true` is set; `isAllowed` is fail-closed
+  (empty lists + no opt-in → deny); startup logs a loud warning when running
+  open. Tests: `TestValidateConfig_noAllowlistFailsClosed`,
+  `TestValidateConfig_allowAllOptIn`, `TestConfigFromEnv_allowAll`,
+  `TestIsAllowed_EmptyAllowlist` (now asserts deny),
+  `TestIsAllowed_EmptyAllowlistWithAllowAll`.
 - **Severity:** High
 - **Location:** `internal/telegram/handler.go:505-533`; defaults in
   `internal/telegram/config.go`

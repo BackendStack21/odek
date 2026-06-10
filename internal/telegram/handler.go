@@ -11,10 +11,14 @@ import (
 
 // HandlerConfig controls which messages the Handler processes.
 type HandlerConfig struct {
-	AllowedChats []int64 // empty = allow all
+	AllowedChats []int64 // restricts by chat ID; empty + AllowAllUsers required to allow any
 	BotUsername  string  // for @mention detection in groups (without @)
 	MaxMsgLength int     // default: 4096
-	AllowedUsers []int64 // empty = allow all users
+	AllowedUsers []int64 // restricts by user ID; empty + AllowAllUsers required to allow any
+	// AllowAllUsers must be true to permit access when BOTH allowlists are
+	// empty. Default false = fail-closed (deny everyone) so an unconfigured
+	// handler never silently allows all users. See ValidateConfig.
+	AllowAllUsers bool
 }
 
 // ─── Handler ──────────────────────────────────────────────────────────────
@@ -501,8 +505,15 @@ func (h *Handler) sendChunk(chatID int64, chunk string, replyToMessageID int) {
 // ─── Access Control ───────────────────────────────────────────────────────
 
 // isAllowed checks if the given chat and user are allowed to interact.
-// Returns true if both pass (or their respective allowlists are empty).
+// When both allowlists are empty, access is denied unless AllowAllUsers was
+// explicitly enabled (fail-closed). When a list is non-empty, the corresponding
+// ID must appear in it.
 func (h *Handler) isAllowed(chatID int64, userID int64) bool {
+	// Fail-closed: with no allowlist at all, deny unless explicitly opted in.
+	if len(h.Config.AllowedChats) == 0 && len(h.Config.AllowedUsers) == 0 {
+		return h.Config.AllowAllUsers
+	}
+
 	if len(h.Config.AllowedChats) > 0 {
 		found := false
 		for _, id := range h.Config.AllowedChats {

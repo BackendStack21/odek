@@ -73,6 +73,7 @@ func TestE2E_FullTextMessageFlow(t *testing.T) {
 	poller := NewPoller(bot)
 	poller.Timeout = 0 // don't wait in tests
 	handler := NewHandler(bot)
+	handler.Config.AllowAllUsers = true // routing test
 
 	// Set up the text message callback.
 	var (
@@ -198,6 +199,7 @@ func TestE2E_FullCommandFlow(t *testing.T) {
 	poller := NewPoller(bot)
 	poller.Timeout = 0
 	handler := NewHandler(bot)
+	handler.Config.AllowAllUsers = true // routing test
 
 	var (
 		capturedChatID int64
@@ -328,6 +330,7 @@ func TestE2E_FullCallbackFlow(t *testing.T) {
 	poller := NewPoller(bot)
 	poller.Timeout = 0
 	handler := NewHandler(bot)
+	handler.Config.AllowAllUsers = true // routing test
 
 	var (
 		capturedChatID int64
@@ -446,6 +449,7 @@ func TestE2E_PollThenHandlerFlow(t *testing.T) {
 	poller := NewPoller(bot)
 	poller.Timeout = 0
 	handler := NewHandler(bot)
+	handler.Config.AllowAllUsers = true // routing test
 
 	// Track how many text messages and their content.
 	var (
@@ -614,6 +618,7 @@ func TestE2E_MediaFlow(t *testing.T) {
 	poller := NewPoller(bot)
 	poller.Timeout = 0
 	handler := NewHandler(bot)
+	handler.Config.AllowAllUsers = true // routing test
 
 	// OnTextMessage returns a MEDIA:photo response.
 	handler.OnTextMessage = func(chatID int64, messageID int, text string) (string, error) {
@@ -715,6 +720,7 @@ func TestE2E_VoiceMediaFlow(t *testing.T) {
 	poller := NewPoller(bot)
 	poller.Timeout = 0
 	handler := NewHandler(bot)
+	handler.Config.AllowAllUsers = true // routing test
 
 	handler.OnTextMessage = func(chatID int64, messageID int, text string) (string, error) {
 		return "MEDIA:voice:" + tmpPath, nil
@@ -804,6 +810,7 @@ func TestE2E_PollEmptyThenMessage(t *testing.T) {
 	poller := NewPoller(bot)
 	poller.Timeout = 0
 	handler := NewHandler(bot)
+	handler.Config.AllowAllUsers = true // routing test
 
 	var messagesReceived []string
 	handler.OnTextMessage = func(chatID int64, messageID int, text string) (string, error) {
@@ -925,6 +932,7 @@ func TestE2E_InlineKeyboardResponse(t *testing.T) {
 	poller := NewPoller(bot)
 	poller.Timeout = 0
 	handler := NewHandler(bot)
+	handler.Config.AllowAllUsers = true // routing test
 
 	handler.OnCommand = func(chatID int64, messageID int, cmd string, args string) (string, error) {
 		return "Here are your options:", nil

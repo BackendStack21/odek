@@ -159,10 +159,18 @@ func telegramCmd(args []string) error {
 
 	// 8. Set handler config from cfg.
 	handler.Config = telegram.HandlerConfig{
-		AllowedChats: cfg.AllowedChats,
-		BotUsername:  cfg.BotUsername,
-		MaxMsgLength: cfg.MaxMsgLength,
-		AllowedUsers: cfg.AllowedUsers,
+		AllowedChats:  cfg.AllowedChats,
+		BotUsername:   cfg.BotUsername,
+		MaxMsgLength:  cfg.MaxMsgLength,
+		AllowedUsers:  cfg.AllowedUsers,
+		AllowAllUsers: cfg.AllowAllUsers,
+	}
+
+	// Loud warning when running without an allowlist (only reachable when the
+	// operator explicitly set ODEK_TELEGRAM_ALLOW_ALL; ValidateConfig blocks
+	// the accidental case).
+	if cfg.AllowAllUsers && len(cfg.AllowedChats) == 0 && len(cfg.AllowedUsers) == 0 {
+		handlerLog.Warn("telegram bot is running with NO allowlist — ANY user can drive the agent (ODEK_TELEGRAM_ALLOW_ALL=true)")
 	}
 
 	// 9. Build system prompt: explicit override > IDENTITY.md > compiled default

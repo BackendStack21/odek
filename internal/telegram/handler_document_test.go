@@ -73,6 +73,7 @@ func TestHandleUpdate_Document(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // routing test
 
 	h.OnDocumentMessage = func(chatID int64, messageID int, fileID string, fileName string) (string, error) {
 		capturedFileID = fileID
