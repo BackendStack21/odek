@@ -139,3 +139,92 @@ func TestMatchLazySkillsFallsBackOnDownBackend(t *testing.T) {
 		t.Errorf("fallback matches = %v, want docker-build", skillNames(matches))
 	}
 }
+
+// TestMatchLazySkillsSemanticSuccess: with a healthy HTTP backend, the manager
+// returns the semantic match directly (the semantic-first branch), not the
+// keyword fallback.
+func TestMatchLazySkillsSemanticSuccess(t *testing.T) {
+	srv := mockSkillEmbedServer(t)
+	dir := t.TempDir()
+	sm := NewSkillManagerWithEmbedding(dir, dir, httpSkillsConfig(srv))
+	sm.Result.Lazy = dockerAndGoSkills()
+	sm.ScoredMatcher = NewScoredMatcher(sm.Result.Lazy, DefaultScoredConfig())
+	sm.VectorMatcher = NewVectorMatcherWithConfig(sm.Result.Lazy, DefaultMatcherConfig, httpSkillsConfig(srv))
+
+	// "kubernetes" shares no keyword with the docker skill, so a hit here proves
+	// the semantic path ran (the keyword ScoredMatcher would miss it).
+	matches := sm.MatchLazySkills("kubernetes image registry", 5)
+	if len(matches) == 0 || matches[0].Name != "docker-build" {
+		t.Fatalf("MatchLazySkills = %v, want docker-build via semantic match", skillNames(matches))
+	}
+}
+
+// TestHybridMatcher exercises the trie+vector merge: trie hits come first,
+// vector fills the remaining slots without duplicating.
+func TestHybridMatcher(t *testing.T) {
+	hm := NewHybridMatcher(dockerAndGoSkills(), DefaultMatcherConfig)
+	matches := hm.MatchSkills("docker build", 5)
+	if len(matches) == 0 {
+		t.Fatal("hybrid matcher returned no matches for 'docker build'")
+	}
+	// No duplicate skill names in the merged result.
+	seen := map[string]bool{}
+	for _, m := range matches {
+		if seen[m.Name] {
+			t.Errorf("duplicate skill %q in hybrid result", m.Name)
+		}
+		seen[m.Name] = true
+	}
+	if !seen["docker-build"] {
+		t.Errorf("expected docker-build in hybrid result, got %v", skillNames(matches))
+	}
+}
+
+// TestBuildEmbedTextVariants covers the non-merged topic/action layout and the
+// include-body branch of buildEmbedText.
+func TestBuildEmbedTextVariants(t *testing.T) {
+	s := Skill{
+		Name:        "x",
+		Trigger:     SkillTrigger{TopicKeywords: []string{"docker"}, ActionKeywords: []string{"build"}},
+		Description: "Build images",
+		Body:        "long body text about layers",
+	}
+	separate := buildEmbedText(s, MatcherConfig{MergeTopicAction: false, IncludeBody: true})
+	for _, want := range []string{"docker", "build", "Build images", "long body text"} {
+		if !strings.Contains(separate, want) {
+			t.Errorf("buildEmbedText(separate+body) missing %q in %q", want, separate)
+		}
+	}
+	merged := buildEmbedText(s, MatcherConfig{MergeTopicAction: true, IncludeBody: false})
+	if strings.Contains(merged, "long body text") {
+		t.Errorf("buildEmbedText should omit body when IncludeBody=false: %q", merged)
+	}
+}
+
+// TestMatchLazySkillsFallbackChain covers the non-semantic fallback order:
+// vector matcher when the scored matcher is absent, then trie when both are.
+func TestMatchLazySkillsFallbackChain(t *testing.T) {
+	dir := t.TempDir()
+	sm := NewSkillManager(dir, dir) // local RP, not semantic
+	sm.Result.Lazy = dockerAndGoSkills()
+	sm.ScoredMatcher = nil
+	sm.VectorMatcher = NewVectorMatcher(sm.Result.Lazy, DefaultMatcherConfig)
+	sm.TrieIndex = BuildTriggerIndex(sm.Result.Lazy)
+
+	// scored == nil → vector matcher path.
+	if m := sm.MatchLazySkills("docker build container", 5); len(m) == 0 {
+		t.Error("expected vector-matcher fallback to match when scored matcher is nil")
+	}
+
+	// scored and vector nil → trie path.
+	sm.VectorMatcher = nil
+	if m := sm.MatchLazySkills("docker build", 5); len(m) == 0 {
+		t.Error("expected trie fallback to match when scored and vector matchers are nil")
+	}
+
+	// Everything nil → no panic, empty result.
+	sm.TrieIndex = nil
+	if m := sm.MatchLazySkills("docker build", 5); len(m) != 0 {
+		t.Errorf("all matchers nil should yield no matches, got %v", skillNames(m))
+	}
+}

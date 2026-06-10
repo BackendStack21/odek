@@ -204,3 +204,77 @@ func TestVectorIndexRebuildBackoff(t *testing.T) {
 		t.Errorf("rebuild retried %d times within cool-down, want 0", requests-after)
 	}
 }
+
+// TestVectorIndexSaveAndReplace covers the public Save, replace-on-Add, and
+// empty-text paths of the RP index.
+func TestVectorIndexSaveAndReplace(t *testing.T) {
+	dir := t.TempDir()
+	vi := new(VectorIndex)
+	if err := vi.Init(dir); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	add := func(id, content string) {
+		if err := vi.Add(id, []llm.Message{{Role: "user", Content: content}}); err != nil {
+			t.Fatalf("Add %s: %v", id, err)
+		}
+	}
+	add("sess-a", "postgres database tuning")
+	add("sess-b", "kubernetes deployment rollout")
+
+	// Re-adding the same ID replaces rather than duplicates.
+	add("sess-a", "postgres replication and backups")
+
+	// Empty conversation text is a no-op (no user/assistant content).
+	if err := vi.Add("sess-empty", []llm.Message{{Role: "tool", Content: "result"}}); err != nil {
+		t.Fatalf("Add empty: %v", err)
+	}
+	results, err := vi.Search("postgres", 10)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	for _, r := range results {
+		if r.SessionID == "sess-empty" {
+			t.Error("empty-text session must not be indexed")
+		}
+	}
+	// sess-a present exactly once.
+	count := 0
+	for _, r := range results {
+		if r.SessionID == "sess-a" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("sess-a appears %d times after replace, want 1", count)
+	}
+
+	// Save persists store + embedder + meta; a fresh index loads them (no rebuild).
+	if err := vi.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	for _, f := range []string{vectorFile, embedderFile, vectorMetaFile} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+			t.Errorf("expected %s persisted after Save: %v", f, err)
+		}
+	}
+	vi2 := new(VectorIndex)
+	if err := vi2.Init(dir); err != nil {
+		t.Fatalf("Init vi2: %v", err)
+	}
+	if got, _ := vi2.Search("postgres", 1); len(got) == 0 {
+		t.Error("reloaded index should serve the persisted vectors")
+	}
+}
+
+// TestVectorIndexRemoveAndSaveNotReady: Remove and Save on an uninitialized
+// (not-ready) index are safe no-ops.
+func TestVectorIndexRemoveAndSaveNotReady(t *testing.T) {
+	vi := new(VectorIndex) // never Init'd → not ready, dir empty
+	if err := vi.Remove("anything"); err != nil {
+		t.Errorf("Remove on not-ready index = %v, want nil", err)
+	}
+	if err := vi.Save(); err != nil {
+		t.Errorf("Save on not-ready index = %v, want nil", err)
+	}
+}
