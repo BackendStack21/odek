@@ -30,7 +30,7 @@ services:
       - ./workspace:/workspace
       - ./config.restricted.json:/home/odek/.odek/config.json:ro
     restart: "no"
-    depends_on: [searxng]
+    depends_on: [searxng, llama-embeddings]
 
   # ── Godmode (all permissions) — non-interactive, disposable container ──
   odek-godmode:
@@ -50,7 +50,7 @@ services:
       - ./workspace:/workspace
       - ./config.godmode.json:/home/odek/.odek/config.json:ro
     restart: "no"
-    depends_on: [searxng]
+    depends_on: [searxng, llama-embeddings]
 
   # ── Telegram bot — Restricted (approvals via inline keyboards) ──
   # State (sessions, skills, telegram.pid) lives in the local ./.odek folder —
@@ -74,7 +74,7 @@ services:
       - ./.odek:/home/odek/.odek
       - ./config.restricted.json:/home/odek/.odek/config.json:ro
     restart: unless-stopped
-    depends_on: [searxng]
+    depends_on: [searxng, llama-embeddings]
 
   # ── Telegram bot — Godmode (no prompts; unrestricted) ──
   # Same ./.odek state folder; config.godmode.json is layered on top of
@@ -93,7 +93,35 @@ services:
       - ./.odek:/home/odek/.odek
       - ./config.godmode.json:/home/odek/.odek/config.json:ro
     restart: unless-stopped
-    depends_on: [searxng]
+    depends_on: [searxng, llama-embeddings]
+
+  # ── llama.cpp embeddings — local backend for memory.embedding ──
+  # Co-starts with every odek profile so the memory system gets real semantic
+  # embeddings (recall, dedup, ranking, fact merge) out of the box — no cloud
+  # embeddings API, no keys. Reachable only by the odek containers over the
+  # compose network at http://llama-embeddings:8080 — NO host port is published
+  # (odek's memory system is the only consumer). The GGUF is baked into the
+  # image (see docker/Dockerfile.embeddings), so there is no first-run download
+  # and no volume. Both bundled configs point memory.embedding.base_url here.
+  # To run without local embeddings, comment this service and the matching
+  # depends_on entries, and drop the "embedding" block from the configs (memory
+  # then falls back to local RandomProjections — lexical, zero-cost).
+  llama-embeddings:
+    profiles: ["restricted", "godmode", "telegram-restricted", "telegram-godmode"]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.embeddings
+    image: odek-embeddings:local
+    # Health is observability only — odek tolerates the server being briefly
+    # unavailable (recall degrades to "no context" and rebuilds back off 30s),
+    # so startup is not gated on it. The model is bundled, so load is quick.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    restart: unless-stopped
 
   # ── SearXNG — self-hosted metasearch backing the `web_search` tool ──
   # Co-starts with every odek profile so web search works out of the box.

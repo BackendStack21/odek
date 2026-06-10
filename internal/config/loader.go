@@ -924,6 +924,9 @@ func resolveMemory(cfg *memory.MemoryConfig) memory.MemoryConfig {
 	if cfg.EpisodeTTLDays > 0 {
 		def.EpisodeTTLDays = cfg.EpisodeTTLDays
 	}
+	if cfg.Embedding != nil {
+		def.Embedding = cfg.Embedding
+	}
 	return def
 }
 

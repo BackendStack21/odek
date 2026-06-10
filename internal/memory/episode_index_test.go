@@ -261,8 +261,8 @@ func TestEpisodeIndex_AbsPath(t *testing.T) {
 	resetEpIdxes()
 	dir := t.TempDir()
 	abs, _ := filepath.Abs(dir)
-	i1 := sharedEpisodeIndex(dir)
-	i2 := sharedEpisodeIndex(abs)
+	i1 := sharedEpisodeIndex(dir, defaultEmbedderFactory)
+	i2 := sharedEpisodeIndex(abs, defaultEmbedderFactory)
 	if i1 != i2 {
 		t.Errorf("expected same singleton instance for relative and absolute path")
 	}

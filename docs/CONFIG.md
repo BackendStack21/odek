@@ -206,7 +206,15 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
     "auto_approve_episodes": false,
     "episode_dedup_threshold": 0.92,
     "max_episodes": 500,
-    "episode_ttl_days": 0
+    "episode_ttl_days": 0,
+    "embedding": {
+      "provider": "http",
+      "base_url": "http://localhost:11434/v1",
+      "model": "nomic-embed-text",
+      "api_key": "${OPENAI_API_KEY}",
+      "dims": 0,
+      "timeout_seconds": 10
+    }
   }
 }
 ```
@@ -231,6 +239,48 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
 | `episode_dedup_threshold` | 0.92 | Cosine similarity above which a newly written episode is treated as a near-duplicate of an existing one and **replaces** it (newest wins). An untrusted episode never replaces a trusted/approved one. `0` disables dedup. |
 | `max_episodes` | 500 | Maximum number of stored episodes. On each write, episodes beyond this count are evicted oldest-first (both the summary file and the index entry). `0` disables the cap. |
 | `episode_ttl_days` | 0 | Evict episodes older than this many days. `0` (default) disables TTL-based eviction. |
+| `embedding` | *(unset)* | Semantic embedding backend for episode recall, episode dedup, the non-LLM episode ranker, and fact merge-on-write. Unset = local RandomProjections (lexical bag-of-words — fast, zero-cost, but no real semantics). See below. |
+
+### `embedding` — real semantic embeddings (optional)
+
+By default every similarity computation in memory uses go-vector
+**RandomProjections**: a local, zero-dependency bag-of-words embedder. It is
+fast but purely lexical — *"fixed the auth bug"* and *"repaired login issue"*
+share no tokens and score ~0. Setting `embedding.provider` to `"http"` routes
+all of those paths through any **OpenAI-compatible embeddings API** instead
+(Ollama, llama.cpp server, LM Studio, vLLM, OpenAI, Voyage…), giving recall
+that matches by meaning.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `provider` | `"rp"` | `"rp"` = local RandomProjections; `"http"` = OpenAI-compatible embeddings API. An `"http"` config missing `base_url` or `model` silently falls back to `"rp"` so memory keeps working. |
+| `base_url` | — | API root, e.g. `http://localhost:11434/v1` (Ollama) or `https://api.openai.com/v1`. `${ENV_VAR}` expansion supported. |
+| `model` | — | Embedding model name, e.g. `nomic-embed-text`, `text-embedding-3-small`. |
+| `api_key` | — | Sent as `Authorization: Bearer <key>` when set. `${ENV_VAR}` expansion supported — keep secrets out of config files. |
+| `dims` | 0 | Expected vector dimensionality; `0` infers it from the first response (recommended). |
+| `timeout_seconds` | 10 | Per-request HTTP timeout. |
+
+Operational notes:
+
+- **Per-turn recall stays cheap.** Episode vectors live in a persisted index; a
+  loop turn costs at most one embedding call (the query), bounded by
+  `timeout_seconds`. If the backend is down, recall degrades to "no context"
+  and rebuilds back off for 30s — the agent loop is never blocked. The index
+  rebuild that follows a new episode (session-end) embeds the corpus on a fresh
+  client *off* the index lock, so a slow backend never serializes concurrent
+  recall; it is one batch call over the episode summaries.
+- **Switching backends is safe.** The persisted index records which embedding
+  space it was built in; changing `provider`/`model`/`dims` automatically
+  invalidates it and rebuilds on next use (one batch embedding call). Note: with
+  `dims: 0`, if a server silently changes a model's output dimensionality (e.g.
+  a model upgrade under the same name) the fingerprint cannot detect it; recall
+  self-heals to "no context" on the dimension mismatch and rebuilds on the next
+  write. Pin `dims` if you want such a change to force an explicit rebuild.
+- **`base_url` is an egress target — point it only at a server you trust.** Every
+  episode summary and fact entry is POSTed there for embedding. The URL is used
+  verbatim with no allowlist, so do not point it at internal/metadata endpoints
+  (e.g. cloud metadata services) you would not otherwise expose. Prefer a local
+  server (Ollama/llama.cpp) when episode/fact text must not leave the machine.
 
 ### ⚠️ `extract_facts` — automatic fact learning (opt-in, off by default)
 

@@ -893,3 +893,45 @@ func TestLoadConfig_LegacyAPIKeyEnvVarLost(t *testing.T) {
 		t.Error("ODEK_API_KEY should be present in child env after re-injection")
 	}
 }
+
+// TestLoadConfig_MemoryEmbeddingSection verifies the memory.embedding config
+// section is parsed and propagated through LoadConfig/resolveMemory, and that
+// the raw ${ENV_VAR} placeholders survive into ResolvedConfig (expansion is
+// deferred to embedder construction, where both base_url and api_key are run
+// through os.ExpandEnv). Closes the C2 end-to-end config gap surfaced by the
+// PR #27 verification pass.
+func TestLoadConfig_MemoryEmbeddingSection(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+	if err := os.WriteFile(filepath.Join(dir, "odek.json"), []byte(`{
+		"memory": {
+			"embedding": {
+				"provider": "http",
+				"base_url": "${ODEK_EMBED_URL}",
+				"model": "nomic-embed-text",
+				"api_key": "${ODEK_EMBED_KEY}",
+				"dims": 768,
+				"timeout_seconds": 7
+			}
+		}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := LoadConfig(CLIFlags{})
+	emb := cfg.Memory.Embedding
+	if emb == nil {
+		t.Fatal("memory.embedding was not parsed into ResolvedConfig")
+	}
+	if emb.Provider != "http" || emb.Model != "nomic-embed-text" {
+		t.Errorf("provider/model = %q/%q, want http/nomic-embed-text", emb.Provider, emb.Model)
+	}
+	if emb.Dims != 768 || emb.TimeoutSeconds != 7 {
+		t.Errorf("dims/timeout = %d/%d, want 768/7", emb.Dims, emb.TimeoutSeconds)
+	}
+	// Raw config keeps ${VAR} (expansion happens at embedder construction); assert
+	// the literal so a future eager-expand change is caught deliberately.
+	if emb.BaseURL != "${ODEK_EMBED_URL}" || emb.APIKey != "${ODEK_EMBED_KEY}" {
+		t.Errorf("base_url/api_key = %q/%q, want unexpanded ${...} placeholders", emb.BaseURL, emb.APIKey)
+	}
+}

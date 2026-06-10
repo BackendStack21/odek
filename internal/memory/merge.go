@@ -20,25 +20,25 @@ const (
 	defaultOutputDim = 256
 )
 
-// MergeDetector uses RandomProjections to quickly estimate whether a new
-// fact entry overlaps with existing entries. This avoids ~80% of LLM calls
-// during merge-on-write.
+// MergeDetector estimates whether a new fact entry overlaps with existing
+// entries, using the configured embedding backend (RandomProjections by
+// default — see textEmbedder). This avoids ~80% of LLM calls during
+// merge-on-write.
 //
 // Lifecycle:
-//  1. NewMergeDetector(dims) — creates RP embedder
-//  2. Fit(corpus) — builds vocabulary from existing entries
+//  1. NewMergeDetector(dims) — creates the embedder
+//  2. Fit(corpus) — prepares the embedder for the existing entries
 //  3. Classify(entry) → action + similarIdx + similarity
-//  4. After facts change → Fit(newCorpus) to rebuild vocabulary
+//  4. After facts change → Fit(newCorpus) to refresh
 //
 // Thresholds control the classification:
 //   - mergeThreshold: cosine above this → auto-merge (default 0.7)
 //   - addThreshold: cosine below this → auto-add (default 0.3)
 //   - Between thresholds: "judge" — requires LLM to decide
 type MergeDetector struct {
-	rp             *vector.RandomProjections
+	emb            textEmbedder
 	corpus         []string
 	vecs           []vector.Vector // precomputed embeddings of corpus
-	dims           int
 	mergeThreshold float32
 	addThreshold   float32
 }
@@ -50,11 +50,20 @@ func NewMergeDetector(dims int) *MergeDetector {
 	return NewMergeDetectorWithThresholds(dims, MergeThreshold, AddThreshold)
 }
 
-// NewMergeDetectorWithThresholds creates a MergeDetector with custom thresholds.
+// NewMergeDetectorWithThresholds creates a MergeDetector with custom thresholds
+// over the default RandomProjections embedder.
 func NewMergeDetectorWithThresholds(dims int, mergeThreshold, addThreshold float32) *MergeDetector {
 	if dims <= 0 {
 		dims = defaultOutputDim
 	}
+	return newMergeDetectorWithEmbedder(newRPTextEmbedder(dims), mergeThreshold, addThreshold)
+}
+
+// newMergeDetectorWithEmbedder creates a MergeDetector over an arbitrary
+// embedding backend. The detector owns the embedder instance — RP backends
+// are stateful per fitted corpus, so it must not be shared with other
+// consumers (see textEmbedder).
+func newMergeDetectorWithEmbedder(emb textEmbedder, mergeThreshold, addThreshold float32) *MergeDetector {
 	if mergeThreshold <= 0 {
 		mergeThreshold = MergeThreshold
 	}
@@ -62,32 +71,30 @@ func NewMergeDetectorWithThresholds(dims int, mergeThreshold, addThreshold float
 		addThreshold = AddThreshold
 	}
 	return &MergeDetector{
-		rp:             vector.NewRandomProjections(dims),
-		dims:           dims,
+		emb:            emb,
 		mergeThreshold: mergeThreshold,
 		addThreshold:   addThreshold,
 	}
 }
 
-// Fit builds the RP vocabulary and pre-computes embeddings for all
-// corpus entries. Call whenever facts change (after add/replace/remove).
+// Fit prepares the embedder and pre-computes embeddings for all corpus
+// entries. Call whenever facts change (after add/replace/remove). On
+// embedding failure the precomputed vectors are cleared, so Classify
+// degrades to "nobody" (add without merge) rather than misclassifying.
 func (m *MergeDetector) Fit(corpus []string) {
 	m.corpus = make([]string, len(corpus))
 	copy(m.corpus, corpus) // keep raw entries for merge/judge string logic
 
-	// Fit and embed featurized text so RP sees normalised tokens + bigrams.
-	// m.corpus stores the raw strings; only the go-vector boundary is featurized.
-	feat := featurizeAll(corpus)
-	m.rp.Fit(feat)
-
-	m.vecs = make([]vector.Vector, len(corpus))
-	for i, f := range feat {
-		vec, err := m.rp.Embed(f)
-		if err != nil {
-			continue
-		}
-		m.vecs[i] = vec
+	if err := m.emb.fit(corpus); err != nil {
+		m.vecs = nil
+		return
 	}
+	vecs, err := m.emb.embedAll(corpus)
+	if err != nil {
+		m.vecs = nil
+		return
+	}
+	m.vecs = vecs
 }
 
 // Classify returns the merge decision for a new entry vs the fitted corpus.
@@ -103,7 +110,7 @@ func (m *MergeDetector) Classify(entry string) (action string, similarIdx int, s
 		return "nobody", -1, 0
 	}
 
-	vec, err := m.rp.Embed(featurizeForEmbedding(entry))
+	vec, err := m.emb.embed(entry)
 	if err != nil {
 		return "nobody", -1, 0
 	}
@@ -142,13 +149,16 @@ func (m *MergeDetector) Classify(entry string) (action string, similarIdx int, s
 	}
 }
 
-// AppendEntry adds a single entry to the corpus. Only the new entry is embedded,
-// avoiding a full re-embed of all existing entries. The RP vocabulary is still
-// refreshed so new tokens from the entry are available for future Classify calls.
+// AppendEntry adds a single entry to the corpus. The embedder is refreshed so
+// new tokens from the entry are available for future Classify calls; for
+// stateless backends only the new entry costs an embedding call (cache).
 func (m *MergeDetector) AppendEntry(entry string) {
 	m.corpus = append(m.corpus, entry)
-	m.rp.Fit(featurizeAll(m.corpus))
-	vec, err := m.rp.Embed(featurizeForEmbedding(entry))
+	if err := m.emb.fit(m.corpus); err != nil {
+		m.vecs = append(m.vecs, nil)
+		return
+	}
+	vec, err := m.emb.embed(entry)
 	if err != nil {
 		vec = nil
 	}
@@ -162,12 +172,20 @@ func (m *MergeDetector) ReplaceEntry(idx int, entry string) {
 		return
 	}
 	m.corpus[idx] = entry
-	m.rp.Fit(featurizeAll(m.corpus))
-	vec, err := m.rp.Embed(featurizeForEmbedding(entry))
+	if err := m.emb.fit(m.corpus); err != nil {
+		m.vecs = nil // a failed fit invalidates the whole precomputed set
+		return
+	}
+	vec, err := m.emb.embed(entry)
 	if err != nil {
 		vec = nil
 	}
-	m.vecs[idx] = vec
+	// A prior failed Fit can leave m.vecs nil or shorter than m.corpus; guard
+	// the write so a desynced index never panics here (Classify already treats
+	// an empty/short vecs as "nobody").
+	if idx < len(m.vecs) {
+		m.vecs[idx] = vec
+	}
 }
 
 // Corpus returns the current corpus (for inspection).

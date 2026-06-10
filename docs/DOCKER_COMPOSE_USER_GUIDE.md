@@ -138,8 +138,16 @@ The compose file also runs a private **SearXNG** metasearch sidecar that backs t
 It co-starts with every profile, is reachable only by the odek containers at
 `http://searxng:8080` (no host port), and needs only `SEARXNG_SECRET` set above —
 no Redis/Valkey. To disable web search, comment the `searxng` service and the
-`depends_on: [searxng]` lines in the compose file and drop the `web_search` block
+`depends_on` entries in the compose file and drop the `web_search` block
 from the config files.
+
+A second sidecar, **`llama-embeddings`** (a llama.cpp server with a bundled
+`nomic-embed-text-v1.5` GGUF), gives the memory system real semantic embeddings —
+see [docker/README.md](../docker/README.md#local-memory-embeddings-out-of-the-box).
+It also co-starts on every profile, is reachable only at `http://llama-embeddings:8080`
+(no host port, no key, no first-run download), and both bundled configs point
+`memory.embedding` at it. Disable the same way: comment the service + its `depends_on`
+entries and drop the `embedding` block (memory falls back to local RandomProjections).
 
 ---
 

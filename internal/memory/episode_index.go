@@ -13,11 +13,23 @@ import (
 
 const (
 	// episodeVectorDim matches the session and fact-merge embedders (256).
+	// Used by the default (RandomProjections) embedder only; HTTP embedders
+	// take their dimensionality from the model.
 	episodeVectorDim = 256
 
 	episodeVectorFile = "episodes_vectors.gob"
 	episodeEmbedFile  = "episodes_embedder.gob"
+
+	// episodeIndexMetaFile records which embedding space the persisted
+	// vectors live in. Vectors are only reusable by an embedder with the
+	// same fingerprint — switching provider/model/dims forces a rebuild.
+	episodeIndexMetaFile = "episodes_index_meta.json"
 )
+
+// rebuildRetryInterval is the cool-down after a failed index rebuild. With a
+// remote embedding backend, a down server must not be re-hit on every loop
+// turn — recall degrades to "no context" until the next attempt.
+const rebuildRetryInterval = 30 * time.Second
 
 // scoredEpisode pairs a session ID with its cosine similarity to a query.
 type scoredEpisode struct {
@@ -25,33 +37,51 @@ type scoredEpisode struct {
 	Score float32
 }
 
-// episodeVectorIndex is a persisted go-vector RandomProjections embedder +
-// brute-force k-NN store for per-turn episode recall.
+// episodeVectorIndex is a persisted embedder + brute-force k-NN store for
+// per-turn episode recall.
 //
-// Rationale for dirty-flag + full-rebuild design: go-vector's RandomProjections
-// must be Fit on the FULL corpus to build a valid vocabulary — embedding
-// incrementally with a stale Fit produces degenerate vectors for new terms.
-// Episodes are written at session-end (infrequent); recall fires every turn
-// (frequent). The trade-off is one O(n) rebuild after each new episode, then
-// fast cached cosine on every subsequent turn until the next write.
+// Rationale for dirty-flag + full-rebuild design: the default RandomProjections
+// embedder must be Fit on the FULL corpus to build a valid vocabulary —
+// embedding incrementally with a stale Fit produces degenerate vectors for new
+// terms. Episodes are written at session-end (infrequent); recall fires every
+// turn (frequent). The trade-off is one O(n) rebuild after each new episode,
+// then fast cached cosine on every subsequent turn until the next write. For
+// HTTP embedders the rebuild's network cost is one batch call over texts not
+// already in the embedder's cache.
 //
 // Thread-safety: all exported methods hold vi.mu as appropriate.
 // Per-directory singleton: see sharedEpisodeIndex.
 type episodeVectorIndex struct {
 	mu    sync.RWMutex
 	store *vector.Store
-	emb   *vector.RandomProjections
-	dir   string
-	ready bool
-	dirty bool
+	emb   textEmbedder
+	// newEmb builds a FRESH embedder instance for a rebuild. Rebuilds embed on
+	// a detached instance off-lock (see ensureFresh), so the live (emb, store)
+	// pair stays valid and consistent until the atomic swap — a query never
+	// embeds against a half-refitted embedder.
+	newEmb     func() textEmbedder
+	dir        string
+	ready      bool
+	dirty      bool
+	rebuilding bool      // single-flight guard: a rebuild is embedding off-lock
+	dirtySeq   uint64    // bumped by markDirty; reconciled after an off-lock rebuild
+	failedAt   time.Time // last failed rebuild; zero = never failed
+}
+
+// indexMeta is the persisted embedding-space identity (episodeIndexMetaFile).
+type indexMeta struct {
+	Fingerprint string `json:"fingerprint"`
 }
 
 // ── Per-directory singleton ───────────────────────────────────────────────────
 
-// episodeIndexes holds one *episodeVectorIndex per absolute memory directory,
-// shared across all MemoryManager / EpisodeStore instances in the process.
-// odek serve builds one manager per WebSocket connection — all over the same
-// ~/.odek/memory — so a per-instance index would race on the .gob files.
+// episodeIndexes holds one *episodeVectorIndex per (absolute memory directory,
+// embedder fingerprint), shared across all MemoryManager / EpisodeStore
+// instances in the process. odek serve builds one manager per WebSocket
+// connection — all over the same ~/.odek/memory — so a per-instance index
+// would race on the .gob files. The fingerprint is part of the key so a
+// process mixing embedding configs over one dir (unusual) gets distinct
+// in-memory indexes; the persisted gobs are still guarded by the meta file.
 //
 // Multi-process note: two separate odek processes sharing the same memory
 // directory are NOT serialized by this in-process singleton. Concurrent saves
@@ -66,30 +96,36 @@ var (
 	epIdxes = map[string]*episodeVectorIndex{}
 )
 
-// sharedEpisodeIndex returns the process-wide index for dir, creating it on
-// first call. The index is lazily initialised on first search.
-func sharedEpisodeIndex(dir string) *episodeVectorIndex {
+// sharedEpisodeIndex returns the process-wide index for dir and the embedding
+// space produced by newEmb, creating it on first call. The index is lazily
+// initialised on first search.
+func sharedEpisodeIndex(dir string, newEmb func() textEmbedder) *episodeVectorIndex {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		abs = dir
 	}
+	emb := newEmb()
+	key := abs + "|" + emb.fingerprint()
 	epIdxMu.Lock()
 	defer epIdxMu.Unlock()
-	if vi, ok := epIdxes[abs]; ok {
+	if vi, ok := epIdxes[key]; ok {
 		return vi
 	}
-	vi := &episodeVectorIndex{dir: abs}
-	epIdxes[abs] = vi
+	vi := &episodeVectorIndex{dir: abs, emb: emb, newEmb: newEmb}
+	epIdxes[key] = vi
 	return vi
 }
 
 // ── Public methods ────────────────────────────────────────────────────────────
 
 // markDirty signals that the on-disk episodes changed. The next search will
-// rebuild the index before serving results. No disk I/O on this path.
+// rebuild the index before serving results. No disk I/O on this path. A
+// pending failure cool-down is cleared: new data is a fresh reason to retry.
 func (vi *episodeVectorIndex) markDirty() {
 	vi.mu.Lock()
 	vi.dirty = true
+	vi.dirtySeq++
+	vi.failedAt = time.Time{}
 	vi.mu.Unlock()
 }
 
@@ -106,7 +142,7 @@ func (vi *episodeVectorIndex) search(query string, k int) []scoredEpisode {
 	if k <= 0 {
 		k = 5
 	}
-	vec, err := vi.emb.Embed(featurizeForEmbedding(query))
+	vec, err := vi.emb.embed(query)
 	if err != nil {
 		return nil
 	}
@@ -122,74 +158,146 @@ func (vi *episodeVectorIndex) search(query string, k int) []scoredEpisode {
 
 // ensureFresh loads or rebuilds the index as needed. Must NOT be called while
 // holding vi.mu (it acquires it internally).
+//
+// The expensive part of a rebuild — fitting the embedder and embedding the
+// whole corpus, which is a blocking network call for the HTTP backend — runs
+// OFF the lock on a fresh embedder instance, then the result is swapped in
+// atomically under the lock. This keeps a slow embedding backend from
+// serializing every concurrent recall behind one rebuild (search runs per
+// turn; under `odek serve` all connections funnel through this per-dir
+// singleton). A single-flight guard (rebuilding) collapses a thundering herd
+// of concurrent rebuilds into one, and a dirty-sequence check folds in any
+// episode write that lands mid-rebuild.
 func (vi *episodeVectorIndex) ensureFresh() {
 	vi.mu.RLock()
-	if vi.ready && !vi.dirty {
-		vi.mu.RUnlock()
+	ready := vi.ready && !vi.dirty
+	vi.mu.RUnlock()
+	if ready {
 		return
 	}
-	vi.mu.RUnlock()
 
 	vi.mu.Lock()
-	defer vi.mu.Unlock()
 	if vi.ready && !vi.dirty {
-		return // double-checked
+		vi.mu.Unlock()
+		return
 	}
-
-	// Cold start without a pending write: try the persisted gobs first.
+	// Back off after a failed rebuild so a down embedding backend is not
+	// re-hit on every loop turn (search runs per turn).
+	if !vi.failedAt.IsZero() && time.Since(vi.failedAt) < rebuildRetryInterval {
+		vi.mu.Unlock()
+		return
+	}
+	// Single-flight: if another goroutine is already rebuilding off-lock, serve
+	// the current state for this turn rather than launch a duplicate (and a
+	// duplicate batch embed) — the in-flight rebuild will publish shortly.
+	if vi.rebuilding {
+		vi.mu.Unlock()
+		return
+	}
+	// Cold start without a pending write: try the persisted state first
+	// (disk-only, fast — fine to do under the lock).
 	if !vi.ready && !vi.dirty {
 		if vi.tryLoadLocked() {
+			vi.mu.Unlock()
 			return
 		}
 	}
-	// Either cold-start without gobs, or dirty after a write — full rebuild.
-	vi.rebuildLocked()
+	// Rebuild needed. Snapshot the dirty sequence, take a fresh embedder, and
+	// release the lock before the network-bound embedding work.
+	vi.rebuilding = true
+	seq := vi.dirtySeq
+	emb := vi.newEmb()
+	vi.mu.Unlock()
+
+	store := buildEpisodeStore(vi.readAllSummaries(), emb)
+
+	vi.mu.Lock()
+	defer vi.mu.Unlock()
+	vi.rebuilding = false
+	if store == nil {
+		// Embedding failed (e.g. backend down) — keep the previous index, if
+		// any, serving and start the retry cool-down.
+		vi.failedAt = time.Now()
+		return
+	}
+	vi.store = store
+	vi.emb = emb
+	vi.ready = true
+	vi.failedAt = time.Time{}
+	// Only clear dirty if no write landed while we were rebuilding off-lock;
+	// otherwise leave it set so the next search rebuilds with the newest data.
+	if vi.dirtySeq == seq {
+		vi.dirty = false
+	}
+	vi.saveLocked()
 }
 
 // tryLoadLocked attempts to load persisted state. Returns true on success.
-// Caller must hold vi.mu (write lock).
+// The persisted vectors are only valid for the embedding space they were
+// built in: the meta fingerprint must match the current embedder. A missing
+// meta file is treated as the legacy RandomProjections layout and accepted
+// only when the current embedder IS that legacy space, so pre-existing
+// installs keep their index without a rebuild. Caller must hold vi.mu (write).
 func (vi *episodeVectorIndex) tryLoadLocked() bool {
+	fp := vi.emb.fingerprint()
+	data, err := os.ReadFile(filepath.Join(vi.dir, episodeIndexMetaFile))
+	if err != nil {
+		// Legacy layout (no meta): only the original rp/256 space can own it.
+		if fp != legacyRPFingerprint() {
+			return false
+		}
+	} else {
+		var meta indexMeta
+		if json.Unmarshal(data, &meta) != nil || meta.Fingerprint != fp {
+			return false
+		}
+	}
+
 	store := vector.NewStore(vector.CosineDistance)
 	if err := store.Load(filepath.Join(vi.dir, episodeVectorFile)); err != nil {
 		return false
 	}
-	emb, err := vector.LoadEmbedder(filepath.Join(vi.dir, episodeEmbedFile))
-	if err != nil {
+	if !vi.emb.loadState(filepath.Join(vi.dir, episodeEmbedFile)) {
 		return false
 	}
 	vi.store = store
-	vi.emb = emb
 	vi.ready = true
 	return true
 }
 
-// rebuildLocked reads all episode summaries from disk, fits the RP embedder on
-// the full corpus, and persists the result. Caller must hold vi.mu (write lock).
-func (vi *episodeVectorIndex) rebuildLocked() {
-	texts := vi.readAllSummaries()
+// legacyRPFingerprint is the embedding space of indexes persisted before the
+// meta file existed (RandomProjections at episodeVectorDim).
+func legacyRPFingerprint() string {
+	return newRPTextEmbedder(episodeVectorDim).fingerprint()
+}
 
+// buildEpisodeStore fits emb on the full corpus and returns a populated vector
+// store, or nil on any embedding failure (e.g. a remote backend being down) so
+// the caller can keep the previous index serving. It takes NO lock and touches
+// no shared index state — it operates entirely on its arguments and a fresh
+// embedder, which is what lets ensureFresh run it off vi.mu.
+func buildEpisodeStore(texts []idText, emb textEmbedder) *vector.Store {
 	corpus := make([]string, len(texts))
 	for i, t := range texts {
-		corpus[i] = featurizeForEmbedding(t.text)
+		corpus[i] = t.text
 	}
 
-	emb := vector.NewRandomProjections(episodeVectorDim)
-	emb.Fit(corpus)
+	if err := emb.fit(corpus); err != nil {
+		return nil
+	}
+	vecs, err := emb.embedAll(corpus)
+	if err != nil {
+		return nil
+	}
 
 	store := vector.NewStore(vector.CosineDistance)
 	for i, t := range texts {
-		vec, err := emb.Embed(corpus[i])
-		if err != nil {
+		if vecs[i] == nil {
 			continue
 		}
-		store.Add(t.id, vec)
+		store.Add(t.id, vecs[i])
 	}
-
-	vi.store = store
-	vi.emb = emb
-	vi.ready = true
-	vi.dirty = false
-	vi.saveLocked()
+	return store
 }
 
 type idText struct {
@@ -229,8 +337,9 @@ func (vi *episodeVectorIndex) readAllSummaries() []idText {
 	return out
 }
 
-// saveLocked atomically persists the store and embedder. Caller must hold
-// vi.mu (write lock). Fixed temp names are safe because the index is a
+// saveLocked atomically persists the store, the embedder state (RP only —
+// stateless embedders no-op), and the embedding-space meta file. Caller must
+// hold vi.mu (write lock). Fixed temp names are safe because the index is a
 // per-dir singleton, so all saves funnel through this mutex-guarded method.
 func (vi *episodeVectorIndex) saveLocked() {
 	if vi.store == nil || vi.emb == nil || vi.dir == "" {
@@ -242,10 +351,15 @@ func (vi *episodeVectorIndex) saveLocked() {
 			os.Remove(tmp)
 		}
 	}
-	embPath := filepath.Join(vi.dir, episodeEmbedFile)
-	if tmp := embPath + ".tmp"; vi.emb.SaveEmbedder(tmp) == nil {
-		if err := os.Rename(tmp, embPath); err != nil {
-			os.Remove(tmp)
+	vi.emb.saveState(filepath.Join(vi.dir, episodeEmbedFile))
+
+	metaPath := filepath.Join(vi.dir, episodeIndexMetaFile)
+	if data, err := json.Marshal(indexMeta{Fingerprint: vi.emb.fingerprint()}); err == nil {
+		tmp := metaPath + ".tmp"
+		if os.WriteFile(tmp, data, 0600) == nil {
+			if err := os.Rename(tmp, metaPath); err != nil {
+				os.Remove(tmp)
+			}
 		}
 	}
 }
