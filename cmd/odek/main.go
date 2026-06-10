@@ -1640,8 +1640,6 @@ func continueCmd(args []string) error {
 	if err != nil {
 		return fmt.Errorf("session store: %w", err)
 	}
-	// Initialize semantic search index (non-fatal on failure).
-	_ = store.InitVectorIndex()
 
 	var sess *session.Session
 	if sessionID != "" {
@@ -1658,6 +1656,10 @@ func continueCmd(args []string) error {
 
 	// Resolve config (no CLI flags for continue — uses session's model)
 	resolved := config.LoadConfig(config.CLIFlags{Model: sess.Model})
+
+	// Initialize semantic search index (non-fatal on failure). Sessions share
+	// memory's embedding backend so one endpoint config powers both.
+	_ = store.InitVectorIndex(resolved.Memory.Embedding)
 
 	// Auto-apply sandbox if session was sandboxed (even if config changed)
 	if sess.Sandbox && !resolved.Sandbox {
