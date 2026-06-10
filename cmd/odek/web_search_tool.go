@@ -112,11 +112,11 @@ type searxngResponse struct {
 		Content string `json:"content"`
 		Engine  string `json:"engine"`
 	} `json:"results"`
-	// SearXNG answers are objects ({"answer": "...", "url": ..., "template": ...}),
-	// not bare strings — decode the answer text out of each.
-	Answers []struct {
-		Answer string `json:"answer"`
-	} `json:"answers"`
+	// SearXNG answers are heterogeneous objects (simple {"answer": "..."} plus
+	// other shapes like weather/translations). Keep them raw and decode each
+	// element tolerantly (see Call) so an unexpected answer shape can never fail
+	// the whole response and lose the results.
+	Answers     []json.RawMessage `json:"answers"`
 	Infoboxes   []json.RawMessage `json:"infoboxes"`
 	Suggestions []string          `json:"suggestions"`
 }
@@ -192,7 +192,16 @@ func (t *webSearchTool) Call(argsJSON string) (result string, err error) {
 		})
 	}
 	out.Count = len(out.Results)
-	for _, a := range resp.Answers {
+	for _, raw := range resp.Answers {
+		// Decode each answer element on its own: a non-conforming shape (e.g. a
+		// weather/translation answer with no string "answer" field) is skipped,
+		// never failing the whole response.
+		var a struct {
+			Answer string `json:"answer"`
+		}
+		if json.Unmarshal(raw, &a) != nil {
+			continue
+		}
 		if s := strings.TrimSpace(a.Answer); s != "" {
 			out.Answers = append(out.Answers, s)
 		}

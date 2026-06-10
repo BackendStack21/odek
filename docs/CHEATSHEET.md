@@ -132,13 +132,14 @@ Settings: `base_url` (SearXNG instance; empty = tool disabled), `categories` (op
 requirement is enabling the JSON API — SearXNG ships HTML-only, so a stock
 instance returns HTTP 403 for `format=json`. Reuse the repo's ready-made minimal
 config (`docker/searxng/settings.yml` — JSON API on, anti-bot limiter off so no
-Redis/Valkey is needed):
+Redis/Valkey is needed). Run from the **repo root** so the relative volume path
+resolves (the image tag matches the one pinned in `docker/docker-compose.yml`):
 
 ```bash
 docker run -d --name searxng -p 8888:8080 \
   -e SEARXNG_SECRET="$(openssl rand -hex 32)" \
   -v "$PWD/docker/searxng/settings.yml:/etc/searxng/settings.yml:ro" \
-  searxng/searxng:latest
+  searxng/searxng:2026.6.8-f3fab143b
 ```
 
 Then point odek at it (global `~/.odek/config.json` or project `./odek.json`):

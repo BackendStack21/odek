@@ -93,6 +93,42 @@ func TestWebSearch_HappyPath(t *testing.T) {
 	}
 }
 
+func TestWebSearch_HeterogeneousAnswersDoNotLoseResults(t *testing.T) {
+	// SearXNG answers are polymorphic. A non-string "answer" and a foreign shape
+	// must be skipped tolerantly — never failing the whole decode and dropping
+	// the results.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"query": "x",
+			"results": []map[string]string{
+				{"title": "R1", "url": "https://example.com/1", "content": "c", "engine": "e"},
+			},
+			"answers": []any{
+				map[string]any{"answer": "good"},                          // valid → kept
+				map[string]any{"answer": 42},                              // non-string → skipped, not fatal
+				map[string]any{"translations": []string{"x"}, "url": "u"}, // foreign shape → skipped
+			},
+		})
+	}))
+	t.Cleanup(srv.Close)
+	tool := newWebSearchTool(allowAllDanger(), config.WebSearchConfig{BaseURL: srv.URL})
+
+	raw, err := tool.Call(`{"query":"x"}`)
+	if err != nil {
+		t.Fatalf("Call error: %v", err)
+	}
+	out := decodeWebSearch(t, raw)
+	if out.Error != "" {
+		t.Fatalf("a malformed answer must not fail the response, got error: %q", out.Error)
+	}
+	if out.Count != 1 || len(out.Results) != 1 {
+		t.Fatalf("results lost: Count=%d len=%d, want 1", out.Count, len(out.Results))
+	}
+	if len(out.Answers) != 1 || out.Answers[0] != "good" {
+		t.Errorf("answers = %v, want only [good]", out.Answers)
+	}
+}
+
 func TestWebSearch_MaxResultsTruncation(t *testing.T) {
 	srv, _ := mockSearXNG(t, 10)
 	// config cap of 2; the request overrides to 4 — request wins.
