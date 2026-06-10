@@ -282,6 +282,64 @@ Operational notes:
   (e.g. cloud metadata services) you would not otherwise expose. Prefer a local
   server (Ollama/llama.cpp) when episode/fact text must not leave the machine.
 
+## Shared embedding backend (`embedding`) — sessions & skills
+
+The same embedder that powers memory also powers **semantic session search**
+(the `session_search` tool) and, opt-in, **semantic skill matching**. Rather
+than configuring three separate endpoints, set one **top-level `embedding`
+block** as the shared default; subsystems then inherit or override it. The block
+uses the exact same fields as `memory.embedding` above
+(`provider`/`base_url`/`model`/`api_key`/`dims`/`timeout_seconds`).
+
+```json
+{
+  "embedding": {
+    "provider": "http",
+    "base_url": "http://localhost:11434/v1",
+    "model": "nomic-embed-text"
+  }
+}
+```
+
+| Subsystem | Uses the shared `embedding`? | Override |
+|-----------|------------------------------|----------|
+| **Memory** | Yes, when `memory.embedding` is unset | `memory.embedding` wins if set (back-compat) |
+| **Sessions** (`session_search`) | Yes — semantic session search | *(top-level only)* |
+| **Skills** (lazy matching) | **No — opt-in** | `skills.embedding` (explicit) |
+
+Why skills are opt-in: skill matching runs on **every user turn**, so a remote
+embedding call sits on the hot path. Sessions and memory embed infrequently
+(explicit search / session-end) and persist their vectors, so inheriting the
+shared default there is cheap. To enable semantic skill matching, set
+`skills.embedding` explicitly:
+
+```json
+{
+  "skills": {
+    "embedding": {
+      "provider": "http",
+      "base_url": "http://localhost:11434/v1",
+      "model": "nomic-embed-text",
+      "timeout_seconds": 2
+    }
+  }
+}
+```
+
+Operational notes:
+
+- **Sessions self-heal across backend changes** exactly like memory: a
+  `vectors_meta.json` fingerprint records the embedding space; changing
+  `provider`/`model`/`dims` forces a one-time rebuild from the session files. A
+  down backend degrades `session_search` to its keyword fallback and backs off
+  for 30s — it never fails a session save.
+- **Skill matching fails fast and falls back.** The per-turn query embed is
+  bounded by a short timeout (defaults to 2s when `skills.embedding` omits
+  `timeout_seconds`); on a slow/failed/empty result the matcher falls back to
+  the local keyword matcher, so a down backend never stalls or blocks loading.
+- The **egress warning above applies to every subsystem** — session transcripts
+  and skill text are POSTed to `base_url`. Point it only at a server you trust.
+
 ### ⚠️ `extract_facts` — automatic fact learning (opt-in, off by default)
 
 When enabled, after each session of ≥3 turns odek asks the LLM to pull a few

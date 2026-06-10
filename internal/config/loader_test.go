@@ -935,3 +935,61 @@ func TestLoadConfig_MemoryEmbeddingSection(t *testing.T) {
 		t.Errorf("base_url/api_key = %q/%q, want unexpanded ${...} placeholders", emb.BaseURL, emb.APIKey)
 	}
 }
+
+// TestLoadConfig_TopLevelEmbeddingShared verifies the shared top-level
+// embedding block: it populates ResolvedConfig.Embedding (sessions read it) and
+// memory inherits it when memory.embedding is unset. Skills do NOT inherit it —
+// skill matching is opt-in via skills.embedding only.
+func TestLoadConfig_TopLevelEmbeddingShared(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+	if err := os.WriteFile(filepath.Join(dir, "odek.json"), []byte(`{
+		"embedding": {
+			"provider": "http",
+			"base_url": "http://localhost:11434/v1",
+			"model": "nomic-embed-text"
+		}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := LoadConfig(CLIFlags{})
+
+	if cfg.Embedding == nil || cfg.Embedding.Model != "nomic-embed-text" {
+		t.Fatalf("top-level embedding not resolved: %+v", cfg.Embedding)
+	}
+	// Memory inherits the shared default.
+	if cfg.Memory.Embedding == nil || cfg.Memory.Embedding.Model != "nomic-embed-text" {
+		t.Errorf("memory should inherit top-level embedding, got %+v", cfg.Memory.Embedding)
+	}
+	// Skills do NOT inherit it (opt-in only).
+	if cfg.Skills.Embedding != nil {
+		t.Errorf("skills must not inherit the top-level embedding default, got %+v", cfg.Skills.Embedding)
+	}
+}
+
+// TestLoadConfig_EmbeddingOverrides verifies memory.embedding overrides the
+// shared default and skills.embedding opts in independently.
+func TestLoadConfig_EmbeddingOverrides(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+	if err := os.WriteFile(filepath.Join(dir, "odek.json"), []byte(`{
+		"embedding": {"provider": "http", "base_url": "http://shared/v1", "model": "shared-model"},
+		"memory": {"embedding": {"provider": "http", "base_url": "http://mem/v1", "model": "mem-model"}},
+		"skills": {"embedding": {"provider": "http", "base_url": "http://skill/v1", "model": "skill-model"}}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := LoadConfig(CLIFlags{})
+
+	if cfg.Embedding == nil || cfg.Embedding.Model != "shared-model" {
+		t.Fatalf("shared embedding = %+v, want shared-model", cfg.Embedding)
+	}
+	if cfg.Memory.Embedding == nil || cfg.Memory.Embedding.Model != "mem-model" {
+		t.Errorf("memory.embedding should win over shared default, got %+v", cfg.Memory.Embedding)
+	}
+	if cfg.Skills.Embedding == nil || cfg.Skills.Embedding.Model != "skill-model" {
+		t.Errorf("skills.embedding opt-in = %+v, want skill-model", cfg.Skills.Embedding)
+	}
+}

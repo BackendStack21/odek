@@ -828,9 +828,10 @@ func run(args []string) error {
 	// Skills setup
 	var sm *skills.SkillManager
 	if resolved.Skills.Learn {
-		sm = skills.NewSkillManager(
+		sm = skills.NewSkillManagerWithEmbedding(
 			expandHome("~/.odek/skills"),
 			"./.odek/skills",
+			resolved.Skills.Embedding,
 		)
 	}
 
@@ -1657,9 +1658,9 @@ func continueCmd(args []string) error {
 	// Resolve config (no CLI flags for continue — uses session's model)
 	resolved := config.LoadConfig(config.CLIFlags{Model: sess.Model})
 
-	// Initialize semantic search index (non-fatal on failure). Sessions share
-	// memory's embedding backend so one endpoint config powers both.
-	_ = store.InitVectorIndex(resolved.Memory.Embedding)
+	// Initialize semantic search index (non-fatal on failure). Sessions use the
+	// shared top-level embedding backend.
+	_ = store.InitVectorIndex(resolved.Embedding)
 
 	// Auto-apply sandbox if session was sandboxed (even if config changed)
 	if sess.Sandbox && !resolved.Sandbox {
@@ -1670,9 +1671,10 @@ func continueCmd(args []string) error {
 	// Build tools
 	var sm *skills.SkillManager
 	if resolved.Skills.Learn {
-		sm = skills.NewSkillManager(
+		sm = skills.NewSkillManagerWithEmbedding(
 			expandHome("~/.odek/skills"),
 			"./.odek/skills",
+			resolved.Skills.Embedding,
 		)
 	}
 	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{Transcription: resolved.Transcription, Vision: resolved.Vision, WebSearch: resolved.WebSearch}, store)

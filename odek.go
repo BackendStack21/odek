@@ -536,46 +536,34 @@ func New(cfg Config) (*Agent, error) {
 		return memoryManager.BuildSystemPrompt()
 	})
 
-	// Set the skill loader for lazy loading
-	// Uses scoring matcher (fixes AND-lock, adds stemming + synonyms) when available.
-	// Falls back to vector matcher, then trie only.
+	// Set the skill loader for lazy loading. MatchLazySkills prefers semantic
+	// matching when an HTTP embedding backend is configured (time-bounded, with
+	// keyword fallback), otherwise uses the keyword ScoredMatcher.
 	if sm != nil && cfg.Skills != nil && cfg.Skills.MaxLazySlots > 0 {
 		maxSlots := cfg.Skills.MaxLazySlots
 
-		// Prefer scoring matcher, then vector, then trie
-		var matcher func(string, int) []skills.Skill
-		if sm.ScoredMatcher != nil {
-			matcher = sm.ScoredMatcher.MatchSkills
-		} else if sm.VectorMatcher != nil {
-			matcher = sm.VectorMatcher.MatchSkills
-		} else if sm.TrieIndex != nil {
-			matcher = sm.TrieIndex.MatchSkills
-		}
+		engine.SetSkillLoader(func(userInput string) string {
+			matched := sm.MatchLazySkills(userInput, maxSlots)
+			if len(matched) == 0 {
+				return ""
+			}
+			var context string
+			names := make([]string, 0, len(matched))
+			for _, sk := range matched {
+				sm.RecordUsage(sk.Name)
+				context += "\n" + skills.FormatAsContext(sk)
+				names = append(names, sk.Name)
+			}
 
-		if matcher != nil {
-			engine.SetSkillLoader(func(userInput string) string {
-				matched := matcher(userInput, maxSlots)
-				if len(matched) == 0 {
-					return ""
-				}
-				var context string
-				names := make([]string, 0, len(matched))
-				for _, sk := range matched {
-					sm.RecordUsage(sk.Name)
-					context += "\n" + skills.FormatAsContext(sk)
-					names = append(names, sk.Name)
-				}
-
-				// Fire loaded event
-				sm.Notifier.Notify(skills.SkillEvent{
-					Type:      "loaded",
-					Skills:    names,
-					Timestamp: time.Now().UTC(),
-				})
-
-				return context
+			// Fire loaded event
+			sm.Notifier.Notify(skills.SkillEvent{
+				Type:      "loaded",
+				Skills:    names,
+				Timestamp: time.Now().UTC(),
 			})
-		}
+
+			return context
+		})
 	}
 
 	// Wire tool event handler for live streaming

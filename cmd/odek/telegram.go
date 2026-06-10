@@ -143,9 +143,9 @@ func telegramCmd(args []string) error {
 		return err
 	}
 
-	// Initialize semantic search index. Sessions share memory's embedding
-	// backend so a single Ollama/OpenAI endpoint config powers both.
-	if err := store.InitVectorIndex(resolved.Memory.Embedding); err != nil {
+	// Initialize semantic search index using the shared top-level embedding
+	// backend so a single Ollama/OpenAI endpoint config powers it.
+	if err := store.InitVectorIndex(resolved.Embedding); err != nil {
 		fmt.Fprintf(os.Stderr, "odek telegram: vector index: %v\n", err)
 		// Non-fatal — search falls back to metadata-only.
 	}

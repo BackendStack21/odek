@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/embedding"
 	"github.com/BackendStack21/odek/internal/mcpclient"
 	"github.com/BackendStack21/odek/internal/memory"
 	"github.com/BackendStack21/odek/internal/redact"
@@ -85,6 +86,7 @@ type SkillsConfig struct {
 	LLMLearn     *bool                  `json:"llm_learn,omitempty"`
 	LLMCurate    *bool                  `json:"llm_curate,omitempty"`
 	Verbose      *bool                  `json:"verbose,omitempty"`
+	Embedding    *embedding.Config      `json:"embedding,omitempty"`
 }
 
 // TranscriptionConfig controls the transcribe tool (local whisper.cpp).
@@ -174,6 +176,12 @@ type FileConfig struct {
 
 	// Memory section controls the persistent memory system.
 	Memory *memory.MemoryConfig `json:"memory,omitempty"`
+
+	// Embedding is the shared default embedding backend for semantic retrieval.
+	// Memory uses it unless memory.embedding overrides it, and sessions use it
+	// for semantic session_search. Skills opt in separately (skills.embedding)
+	// because they run on every turn. See internal/embedding.Config.
+	Embedding *embedding.Config `json:"embedding,omitempty"`
 
 	// MCPServers maps server names to MCP server configurations.
 	// Each server is an external MCP server (e.g., Playwright, database,
@@ -296,6 +304,11 @@ type ResolvedConfig struct {
 
 	// Memory is the resolved memory config with default values.
 	Memory memory.MemoryConfig
+
+	// Embedding is the resolved shared embedding backend used by sessions for
+	// semantic session_search (and as memory's default when memory.embedding is
+	// unset). nil = default RandomProjections.
+	Embedding *embedding.Config
 
 	// MCPServers maps server names to external MCP server configurations.
 	// Populated from the mcp_servers section of odek.json.
@@ -713,6 +726,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		Skills:          resolveSkills(cfg.Skills),
 		Dangerous:       resolveDangerous(cfg.Dangerous),
 		Memory:          resolveMemory(cfg.Memory),
+		Embedding:       cfg.Embedding,
 		MCPServers:      cfg.MCPServers,
 		Telegram:        resolveTelegram(cfg.Telegram),
 		Transcription:   resolveTranscription(cfg.Transcription),
@@ -721,6 +735,13 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		Schedules:       resolveSchedules(cfg.Schedules),
 		InteractionMode: ifZero(cfg.InteractionMode, "engaging"),
 		ToolProgress:    ifZero(cfg.ToolProgress, "all"),
+	}
+
+	// Memory inherits the shared top-level embedding backend unless it set its
+	// own (memory.embedding wins for back-compat). Sessions read
+	// resolved.Embedding directly; skills opt in via skills.embedding only.
+	if resolved.Memory.Embedding == nil {
+		resolved.Memory.Embedding = cfg.Embedding
 	}
 
 	// MaxConcurrency: default to 3 if not set
@@ -845,6 +866,10 @@ func resolveSkills(cfg *SkillsConfig) skills.SkillsConfig {
 	}
 	if cfg.Verbose != nil {
 		def.Verbose = *cfg.Verbose
+	}
+	// Opt-in only: skills do not inherit the top-level embedding default.
+	if cfg.Embedding != nil {
+		def.Embedding = cfg.Embedding
 	}
 	return def
 }
@@ -1148,6 +1173,9 @@ func overlayFile(base, override FileConfig) FileConfig {
 	}
 	if override.Memory != nil {
 		base.Memory = override.Memory
+	}
+	if override.Embedding != nil {
+		base.Embedding = override.Embedding
 	}
 	if override.Telegram != nil {
 		base.Telegram = override.Telegram
