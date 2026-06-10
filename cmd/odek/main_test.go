@@ -203,7 +203,7 @@ func TestRun_NoAPIKey(t *testing.T) {
 }
 
 func TestBuiltinTools(t *testing.T) {
-	tools := builtinTools(danger.DangerousConfig{}, nil, nil, 3, "", config.TranscriptionConfig{}, config.VisionConfig{}, nil)
+	tools := builtinTools(danger.DangerousConfig{}, nil, nil, 3, "", toolConfig{}, nil)
 	if len(tools) == 0 {
 		t.Fatal("builtinTools() returned empty slice")
 	}

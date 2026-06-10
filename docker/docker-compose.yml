@@ -30,6 +30,7 @@ services:
       - ./workspace:/workspace
       - ./config.restricted.json:/home/odek/.odek/config.json:ro
     restart: "no"
+    depends_on: [searxng]
 
   # ── Godmode (all permissions) — non-interactive, disposable container ──
   odek-godmode:
@@ -49,6 +50,7 @@ services:
       - ./workspace:/workspace
       - ./config.godmode.json:/home/odek/.odek/config.json:ro
     restart: "no"
+    depends_on: [searxng]
 
   # ── Telegram bot — Restricted (approvals via inline keyboards) ──
   # State (sessions, skills, telegram.pid) lives in the local ./.odek folder —
@@ -72,6 +74,7 @@ services:
       - ./.odek:/home/odek/.odek
       - ./config.restricted.json:/home/odek/.odek/config.json:ro
     restart: unless-stopped
+    depends_on: [searxng]
 
   # ── Telegram bot — Godmode (no prompts; unrestricted) ──
   # Same ./.odek state folder; config.godmode.json is layered on top of
@@ -89,4 +92,29 @@ services:
       - ./workspace:/workspace
       - ./.odek:/home/odek/.odek
       - ./config.godmode.json:/home/odek/.odek/config.json:ro
+    restart: unless-stopped
+    depends_on: [searxng]
+
+  # ── SearXNG — self-hosted metasearch backing the `web_search` tool ──
+  # Co-starts with every odek profile so web search works out of the box.
+  # Reachable only by the odek containers over the compose network at
+  # http://searxng:8080 — NO host port is published (the agent is the only
+  # consumer). The bundled config enables the JSON API and disables the
+  # anti-bot limiter, so no Redis/Valkey is needed (single trusted consumer).
+  # Set SEARXNG_SECRET in .env. To run without web search, comment this service
+  # and the depends_on lines above, and drop "web_search" from the configs.
+  searxng:
+    profiles: ["restricted", "godmode", "telegram-restricted", "telegram-godmode"]
+    image: searxng/searxng:2026.6.8-f3fab143b   # pinned; bump deliberately
+    environment:
+      - SEARXNG_BASE_URL=http://searxng:8080/
+      # SearXNG reads server.secret_key from this env var at app load, overriding
+      # settings.yml. Set SEARXNG_SECRET in .env. The fallback is the canonical
+      # "ultrasecretkey" sentinel so an unset secret triggers SearXNG's own
+      # "secret_key is not changed" warning rather than a silent weak literal.
+      - SEARXNG_SECRET=${SEARXNG_SECRET:-ultrasecretkey}
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    # SearXNG needs outbound internet to query upstream engines (Google, Bing,
+    # DuckDuckGo, …). Behind the advanced allowlisting egress proxy, permit those.
     restart: unless-stopped

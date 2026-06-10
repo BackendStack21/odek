@@ -16,6 +16,10 @@
     "auto_describe": true,
     "models_dir": "/usr/local/share/minicpm-v/models"
   },
+  "web_search": {
+    "base_url": "http://searxng:8080",
+    "max_results": 10
+  },
   "memory": {
     "enabled": true,
     "facts_limit_user": 1500,

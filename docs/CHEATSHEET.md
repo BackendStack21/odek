@@ -106,6 +106,52 @@ Settings: `model` (tiny/base/small/medium), `language` (ISO code, empty=auto), `
 
 Settings: `auto_describe` (Telegram photo → description before the agent answers, default true), `models_dir` (dir with `model.gguf` + `mmproj.gguf`), `binary_path` (llama-mtmd-cli path), `video_frames` (frames to sample from video, default 8).
 
+### Web Search
+- **`web_search`** tool queries a self-hosted **SearXNG** metasearch instance — no cloud search API, no keys
+- Returns ranked results (title, url, snippet, engine) + direct answers; results are wrapped as untrusted content
+- The agent then fetches the URLs it wants with `browser` / `http_batch`
+- **Registered only when `web_search.base_url` is set.** The Docker compose setup runs a SearXNG sidecar and sets it automatically; outside Docker, run SearXNG yourself and point `base_url` at it
+- Gated as `network_egress` (prompts in restricted, allowed in godmode) — the backend URL is fixed config, so there is no SSRF surface
+- Configure via `web_search` section:
+
+```json
+{
+  "web_search": {
+    "base_url": "http://searxng:8080",
+    "categories": "general",
+    "language": "en",
+    "max_results": 10,
+    "timeout_seconds": 15
+  }
+}
+```
+
+Settings: `base_url` (SearXNG instance; empty = tool disabled), `categories` (optional SearXNG categories), `language` (optional language code), `max_results` (default 10), `timeout_seconds` (default 15).
+
+**Run SearXNG standalone (outside the bundled Compose):** the only non-default
+requirement is enabling the JSON API — SearXNG ships HTML-only, so a stock
+instance returns HTTP 403 for `format=json`. Reuse the repo's ready-made minimal
+config (`docker/searxng/settings.yml` — JSON API on, anti-bot limiter off so no
+Redis/Valkey is needed). Run from the **repo root** so the relative volume path
+resolves (the image tag matches the one pinned in `docker/docker-compose.yml`):
+
+```bash
+docker run -d --name searxng -p 8888:8080 \
+  -e SEARXNG_SECRET="$(openssl rand -hex 32)" \
+  -v "$PWD/docker/searxng/settings.yml:/etc/searxng/settings.yml:ro" \
+  searxng/searxng:2026.6.8-f3fab143b
+```
+
+Then point odek at it (global `~/.odek/config.json` or project `./odek.json`):
+
+```json
+{ "web_search": { "base_url": "http://127.0.0.1:8888" } }
+```
+
+If you bring your own `settings.yml`, the two settings that matter are
+`search.formats: [html, json]` (enables the API) and, for a private single-user
+instance, `server.limiter: false` (drops the Redis/Valkey dependency).
+
 ## Memory System Architecture
 
 ### Three Tiers

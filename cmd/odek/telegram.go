@@ -1113,7 +1113,7 @@ func handleChatMessage(
 	}
 
 	// Build the agent with Telegram approver.
-	tools := builtinTools(resolved.Dangerous, nil, approver, resolved.MaxConcurrency, resolved.APIKey, resolved.Transcription, resolved.Vision, sessionManager.Store)
+	tools := builtinTools(resolved.Dangerous, nil, approver, resolved.MaxConcurrency, resolved.APIKey, toolConfig{Transcription: resolved.Transcription, Vision: resolved.Vision, WebSearch: resolved.WebSearch}, sessionManager.Store)
 
 	modelLabel := odek.ProfileLabel(resolved.Model)
 	if modelLabel == "" {
