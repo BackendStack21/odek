@@ -18,7 +18,8 @@
   },
   "web_search": {
     "base_url": "http://searxng:8080",
-    "max_results": 10
+    "max_results": 10,
+    "timeout_seconds": 15
   },
   "memory": {
     "enabled": true,
@@ -36,7 +37,9 @@
     "embedding": {
       "provider": "http",
       "base_url": "http://llama-embeddings:8080/v1",
-      "model": "nomic-embed-text-v1.5"
+      "model": "nomic-embed-text-v1.5",
+      "dims": 768,
+      "timeout_seconds": 10
     }
   },
   "dangerous": {
