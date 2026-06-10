@@ -217,7 +217,7 @@ odek audit <session-id> | jq …    # programmatic triage
 
 `AllowedChats` and `AllowedUsers` are loaded from `[telegram]` config or `ODEK_TELEGRAM_ALLOWED_CHATS` / `…_USERS` env vars. When non-empty, the handler rejects any update whose `chat.id` / `user.id` is not in the list **before** any tool call is reached. Denied attempts are logged so you can notice scanning.
 
-If you run the bot at all, **set the allowlist**. The bot is the only internet-exposed surface, and the agent it drives has full host access.
+Authorization is **fail-closed**: if neither allowlist is configured, the bot refuses to start (`ValidateConfig` returns an error), and at runtime `isAllowed` denies every update. The bot is the only internet-exposed surface and the agent it drives has full host access, so an empty allowlist must never silently mean "allow everyone". To intentionally run an open bot you must explicitly set `ODEK_TELEGRAM_ALLOW_ALL=true`, which logs a loud warning at startup.
 
 ### 13. Identity anchoring (legacy)
 

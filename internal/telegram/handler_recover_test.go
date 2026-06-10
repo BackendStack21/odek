@@ -12,6 +12,7 @@ func TestHandleUpdate_RecoverFromPanic(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // routing test
 
 	// Set up a text handler that panics.
 	var panicCaught atomic.Bool
@@ -62,6 +63,7 @@ func TestHandleUpdate_RecoverFromPanicCallback(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // routing test
 
 	h.OnCallbackQuery = func(chatID int64, data string) (string, error) {
 		panic("simulated callback panic")
@@ -108,6 +110,7 @@ func TestHandleUpdate_RecoverFromPanicCommand(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // routing test
 
 	h.OnCommand = func(chatID int64, messageID int, cmd string, args string) (string, error) {
 		panic("simulated command panic")

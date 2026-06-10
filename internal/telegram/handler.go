@@ -11,10 +11,14 @@ import (
 
 // HandlerConfig controls which messages the Handler processes.
 type HandlerConfig struct {
-	AllowedChats []int64 // empty = allow all
+	AllowedChats []int64 // restricts by chat ID; empty + AllowAllUsers required to allow any
 	BotUsername  string  // for @mention detection in groups (without @)
 	MaxMsgLength int     // default: 4096
-	AllowedUsers []int64 // empty = allow all users
+	AllowedUsers []int64 // restricts by user ID; empty + AllowAllUsers required to allow any
+	// AllowAllUsers must be true to permit access when BOTH allowlists are
+	// empty. Default false = fail-closed (deny everyone) so an unconfigured
+	// handler never silently allows all users. See ValidateConfig.
+	AllowAllUsers bool
 }
 
 // ─── Handler ──────────────────────────────────────────────────────────────
@@ -330,6 +334,18 @@ func (h *Handler) handleCallback(cq *CallbackQuery) {
 		return
 	}
 
+	// Apply the same allowlist as messages. Callback queries (inline-button
+	// presses) otherwise bypass authorization — they can drive per-chat
+	// approval/clarify state and trigger outbound API calls. Without a From
+	// user, treat the user ID as 0 (matches no AllowedUsers entry).
+	var userID int64
+	if cq.From != nil {
+		userID = cq.From.ID
+	}
+	if !h.isAllowed(cq.Message.Chat.ID, userID) {
+		return
+	}
+
 	// Route approval callbacks to the per-chat TelegramApprover.
 	if a := h.GetApprover(cq.Message.Chat.ID); a != nil && a.HandleCallback(cq.Data) {
 		// Show a toast acknowledging the user's choice.
@@ -501,8 +517,15 @@ func (h *Handler) sendChunk(chatID int64, chunk string, replyToMessageID int) {
 // ─── Access Control ───────────────────────────────────────────────────────
 
 // isAllowed checks if the given chat and user are allowed to interact.
-// Returns true if both pass (or their respective allowlists are empty).
+// When both allowlists are empty, access is denied unless AllowAllUsers was
+// explicitly enabled (fail-closed). When a list is non-empty, the corresponding
+// ID must appear in it.
 func (h *Handler) isAllowed(chatID int64, userID int64) bool {
+	// Fail-closed: with no allowlist at all, deny unless explicitly opted in.
+	if len(h.Config.AllowedChats) == 0 && len(h.Config.AllowedUsers) == 0 {
+		return h.Config.AllowAllUsers
+	}
+
 	if len(h.Config.AllowedChats) > 0 {
 		found := false
 		for _, id := range h.Config.AllowedChats {

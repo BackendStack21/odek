@@ -16,6 +16,7 @@ func TestHandleUpdate_EditedMessage(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // routing test
 	h.OnTextMessage = func(chatID int64, messageID int, text string) (string, error) {
 		capturedChatID = chatID
 		capturedText = text
@@ -59,6 +60,7 @@ func TestHandleUpdate_EditedMessageWithCommand(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // routing test
 	h.OnCommand = func(chatID int64, messageID int, cmd string, args string) (string, error) {
 		capturedCmd = cmd
 		capturedArgs = args

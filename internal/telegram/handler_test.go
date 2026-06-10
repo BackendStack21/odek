@@ -202,6 +202,7 @@ func TestHandleUpdate_TextMessage(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // routing test — access control covered by TestIsAllowed_*
 	h.OnTextMessage = func(chatID int64, messageID int, text string) (string, error) {
 		capturedChatID = chatID
 		capturedMessageID = messageID
@@ -241,6 +242,7 @@ func TestHandleUpdate_CallbackQuery(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // callback routing test
 	h.OnCallbackQuery = func(chatID int64, data string) (string, error) {
 		capturedChatID = chatID
 		capturedCallbackID = data
@@ -279,6 +281,7 @@ func TestHandleUpdate_Command(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // routing test — access control covered by TestIsAllowed_*
 	h.OnCommand = func(chatID int64, messageID int, cmd string, args string) (string, error) {
 		capturedChatID = chatID
 		capturedCmd = cmd
@@ -320,6 +323,7 @@ func TestHandleUpdate_VoiceMessage(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // routing test — access control covered by TestIsAllowed_*
 	h.OnVoiceMessage = func(chatID int64, messageID int, fileID string) (string, error) {
 		capturedChatID = chatID
 		capturedFileID = fileID
@@ -359,6 +363,7 @@ func TestHandleUpdate_PhotoMessage(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // routing test — access control covered by TestIsAllowed_*
 	h.OnPhotoMessage = func(chatID int64, messageID int, fileIDs []string, caption string) (string, error) {
 		capturedChatID = chatID
 		capturedFileIDs = fileIDs
@@ -726,12 +731,66 @@ func TestIsAllowed_EmptyAllowlist(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
-	// Both AllowedChats and AllowedUsers are empty → allow all.
+	// Fail-closed: both allowlists empty and AllowAllUsers not set → deny.
+	if h.isAllowed(999, 888) {
+		t.Error("isAllowed(999, 888) = true, want false (fail-closed, no opt-in)")
+	}
+	if h.isAllowed(0, 0) {
+		t.Error("isAllowed(0, 0) = true, want false (fail-closed, no opt-in)")
+	}
+}
+
+func TestIsAllowed_EmptyAllowlistWithAllowAll(t *testing.T) {
+	ts := testServer(t, nil)
+	defer ts.Close()
+	bot := testBot(t, ts)
+	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true
+	// Explicit opt-in: empty allowlists + AllowAllUsers → allow anyone.
 	if !h.isAllowed(999, 888) {
-		t.Error("isAllowed(999, 888) = false, want true (empty allowlists)")
+		t.Error("isAllowed(999, 888) = false, want true (AllowAllUsers opt-in)")
 	}
 	if !h.isAllowed(0, 0) {
-		t.Error("isAllowed(0, 0) = false, want true (empty allowlists)")
+		t.Error("isAllowed(0, 0) = false, want true (AllowAllUsers opt-in)")
+	}
+}
+
+// TestHandleCallback_RespectsAllowlist verifies callback queries (inline-button
+// presses) are gated by the same allowlist as messages — a non-allowlisted
+// chat must not reach OnCallbackQuery.
+func TestHandleCallback_RespectsAllowlist(t *testing.T) {
+	ts := testServer(t, nil)
+	defer ts.Close()
+	bot := testBot(t, ts)
+	h := NewHandler(bot)
+	h.Config.AllowedChats = []int64{100} // only chat 100 allowed
+
+	var called bool
+	h.OnCallbackQuery = func(chatID int64, data string) (string, error) {
+		called = true
+		return "", nil
+	}
+
+	// Callback from a NON-allowlisted chat → must be dropped.
+	h.handleCallback(&CallbackQuery{
+		ID:      "cb1",
+		From:    &User{ID: 999},
+		Message: &Message{Chat: &Chat{ID: 999}},
+		Data:    "clarify:yes",
+	})
+	if called {
+		t.Error("OnCallbackQuery was called for a non-allowlisted chat (callback bypassed authorization)")
+	}
+
+	// Callback from the allowlisted chat → must be processed.
+	h.handleCallback(&CallbackQuery{
+		ID:      "cb2",
+		From:    &User{ID: 1},
+		Message: &Message{Chat: &Chat{ID: 100}},
+		Data:    "clarify:yes",
+	})
+	if !called {
+		t.Error("OnCallbackQuery was NOT called for an allowlisted chat")
 	}
 }
 
@@ -1190,6 +1249,7 @@ func TestHandleUpdate_OnErrorCalled(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // routing test — access control covered by TestIsAllowed_*
 	h.OnTextMessage = func(_ int64, _ int, _ string) (string, error) {
 		return "", assertError("simulated error")
 	}
@@ -1372,6 +1432,7 @@ func TestHandler_HandleCallback_RouteToApprover(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // callback routing test
 
 	chatID := int64(789)
 	approver := NewTelegramApprover(bot, chatID)
@@ -1438,6 +1499,7 @@ func TestHandler_HandleCallback_ApproverAnswerError(t *testing.T) {
 		log:         NewNopLogger(),
 	}
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // callback routing test
 
 	chatID := int64(789)
 	approver := NewTelegramApprover(bot, chatID)
@@ -1482,6 +1544,7 @@ func TestHandler_HandleCallback_FallbackToOnCallbackQuery(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // callback routing test
 	// No approver registered.
 
 	var (
@@ -1570,6 +1633,7 @@ func TestHandler_HandleMessage_OnErrorCalledOnVoiceFailure(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // routing test — access control covered by TestIsAllowed_*
 
 	chatID := int64(333)
 	expectedErr := assertError("voice processing failed")
@@ -1611,6 +1675,7 @@ func TestHandler_HandleMessage_OnErrorCalledOnPhotoFailure(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // routing test — access control covered by TestIsAllowed_*
 
 	chatID := int64(555)
 	expectedErr := assertError("photo processing failed")
@@ -1650,6 +1715,7 @@ func TestHandler_HandleMessage_OnErrorCalledOnTextFailure(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // routing test — access control covered by TestIsAllowed_*
 
 	chatID := int64(777)
 	expectedErr := assertError("text processing failed")
@@ -1749,10 +1815,9 @@ func TestHandleUpdate_CallbackQueryNotAllowed(t *testing.T) {
 		return "", nil
 	}
 
-	// Note: handleCallback does NOT check isAllowed — it only routes.
-	// The isAllowed check is only in handleMessage.
-	// So callback queries from any user are processed regardless.
-	// This is the current behavior — document it.
+	// Callback queries are gated by the same allowlist as messages: a press
+	// from a user not in AllowedUsers must be dropped before reaching
+	// OnCallbackQuery (otherwise inline buttons bypass authorization).
 	upd := Update{
 		ID: 40,
 		CallbackQuery: &CallbackQuery{
@@ -1767,9 +1832,8 @@ func TestHandleUpdate_CallbackQueryNotAllowed(t *testing.T) {
 
 	h.HandleUpdate(upd)
 
-	// Callback queries are currently processed without isAllowed check
-	if !called {
-		t.Error("OnCallbackQuery was not called for user 999 (callback queries may not check isAllowed)")
+	if called {
+		t.Error("OnCallbackQuery was called for non-allowlisted user 999 (callback bypassed isAllowed)")
 	}
 }
 

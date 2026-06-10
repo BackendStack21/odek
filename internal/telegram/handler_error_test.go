@@ -14,6 +14,7 @@ func TestHandleCommand_ErrorSentToUser(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // routing test
 
 	h.OnCommand = func(chatID int64, messageID int, cmd string, args string) (string, error) {
 		return "", fmt.Errorf("simulated command failure: %s", cmd)
@@ -57,6 +58,7 @@ func TestHandleCallback_ErrorSentToUser(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // routing test
 
 	h.OnCallbackQuery = func(chatID int64, data string) (string, error) {
 		return "", fmt.Errorf("simulated callback failure: %s", data)
@@ -99,6 +101,7 @@ func TestHandleCommand_ErrorNotSentOnSuccess(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // routing test
 
 	h.OnCommand = func(chatID int64, messageID int, cmd string, args string) (string, error) {
 		return "ok response", nil

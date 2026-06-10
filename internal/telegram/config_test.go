@@ -366,11 +366,12 @@ func TestConfigFromEnv_multipleOverrides(t *testing.T) {
 
 func TestValidateConfig_valid(t *testing.T) {
 	cfg := TelegramConfig{
-		Token:        "valid:token",
-		PollInterval: 1,
-		PollTimeout:  30,
-		MaxMsgLength: 4096,
-		SessionTTL:   24,
+		Token:         "valid:token",
+		PollInterval:  1,
+		PollTimeout:   30,
+		MaxMsgLength:  4096,
+		SessionTTL:    24,
+		AllowAllUsers: true,
 	}
 	if err := ValidateConfig(cfg); err != nil {
 		t.Errorf("ValidateConfig() = %v, want nil", err)
@@ -384,6 +385,7 @@ func TestValidateConfig_validMinimal(t *testing.T) {
 		PollTimeout:  1,
 		MaxMsgLength: 1,
 		SessionTTL:   1,
+		AllowedUsers: []int64{123}, // satisfies fail-closed check via allowlist
 	}
 	if err := ValidateConfig(cfg); err != nil {
 		t.Errorf("ValidateConfig() = %v, want nil", err)
@@ -392,14 +394,71 @@ func TestValidateConfig_validMinimal(t *testing.T) {
 
 func TestValidateConfig_validMaximums(t *testing.T) {
 	cfg := TelegramConfig{
-		Token:        "abc",
-		PollInterval: 999,
-		PollTimeout:  60,
-		MaxMsgLength: 4096,
-		SessionTTL:   8760,
+		Token:         "abc",
+		PollInterval:  999,
+		PollTimeout:   60,
+		MaxMsgLength:  4096,
+		SessionTTL:    8760,
+		AllowAllUsers: true,
 	}
 	if err := ValidateConfig(cfg); err != nil {
 		t.Errorf("ValidateConfig() = %v, want nil", err)
+	}
+}
+
+func TestValidateConfig_noAllowlistFailsClosed(t *testing.T) {
+	// A config with a token but no allowlist and no explicit opt-in must be
+	// rejected (fail-closed) so an open bot can't be deployed by accident.
+	cfg := TelegramConfig{
+		Token:        "abc",
+		PollInterval: 1,
+		PollTimeout:  30,
+		MaxMsgLength: 4096,
+		SessionTTL:   24,
+	}
+	err := ValidateConfig(cfg)
+	if err == nil {
+		t.Fatal("ValidateConfig() = nil, want error about missing allowlist")
+	}
+	if !contains(err.Error(), "no allowlist configured") {
+		t.Errorf("unexpected error: %q", err.Error())
+	}
+}
+
+func TestValidateConfig_allowAllOptIn(t *testing.T) {
+	cfg := TelegramConfig{
+		Token:         "abc",
+		PollInterval:  1,
+		PollTimeout:   30,
+		MaxMsgLength:  4096,
+		SessionTTL:    24,
+		AllowAllUsers: true,
+	}
+	if err := ValidateConfig(cfg); err != nil {
+		t.Errorf("ValidateConfig() with AllowAllUsers = %v, want nil", err)
+	}
+}
+
+func TestValidateConfig_allowlistSatisfiesCheck(t *testing.T) {
+	cfg := TelegramConfig{
+		Token:        "abc",
+		PollInterval: 1,
+		PollTimeout:  30,
+		MaxMsgLength: 4096,
+		SessionTTL:   24,
+		AllowedChats: []int64{42},
+	}
+	if err := ValidateConfig(cfg); err != nil {
+		t.Errorf("ValidateConfig() with allowlist = %v, want nil", err)
+	}
+}
+
+func TestConfigFromEnv_allowAll(t *testing.T) {
+	unsetAllEnvVars(t)
+	t.Setenv("ODEK_TELEGRAM_ALLOW_ALL", "true")
+	cfg := ConfigFromEnv(DefaultConfig())
+	if !cfg.AllowAllUsers {
+		t.Error("ConfigFromEnv did not set AllowAllUsers from ODEK_TELEGRAM_ALLOW_ALL=true")
 	}
 }
 
@@ -732,11 +791,12 @@ func splitAt(s string, sep byte) string {
 // validConfig returns a TelegramConfig that passes ValidateConfig.
 func validConfig() TelegramConfig {
 	return TelegramConfig{
-		Token:        "test:token",
-		PollInterval: 1,
-		PollTimeout:  30,
-		MaxMsgLength: 4096,
-		SessionTTL:   24,
+		Token:         "test:token",
+		PollInterval:  1,
+		PollTimeout:   30,
+		MaxMsgLength:  4096,
+		SessionTTL:    24,
+		AllowAllUsers: true, // satisfy fail-closed authorization check
 	}
 }
 

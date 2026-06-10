@@ -24,6 +24,11 @@ type TelegramConfig struct {
 	LogLevel         string   `json:"log_level"`       // "debug","info","warn","error" (default "info")
 	LogFile          string   `json:"log_file"`        // path or empty for stderr
 	DefaultChatID    int64    `json:"default_chat_id"` // for --deliver and cron delivery
+	// AllowAllUsers must be explicitly set to true to run the bot with NO
+	// allowlist (any Telegram user may drive the agent). Without it, an empty
+	// AllowedChats + AllowedUsers is a fatal misconfiguration (fail-closed) so
+	// an open bot can never be deployed by accident. Env: ODEK_TELEGRAM_ALLOW_ALL.
+	AllowAllUsers bool `json:"allow_all_users"`
 }
 
 // DefaultConfig returns a TelegramConfig with sensible defaults.
@@ -51,6 +56,9 @@ func ConfigFromEnv(base TelegramConfig) TelegramConfig {
 	}
 	if v := os.Getenv("ODEK_TELEGRAM_ALLOWED_USERS"); v != "" {
 		cfg.AllowedUsers = parseInt64List(v)
+	}
+	if v := os.Getenv("ODEK_TELEGRAM_ALLOW_ALL"); v != "" {
+		cfg.AllowAllUsers = parseBool(v)
 	}
 	if v := os.Getenv("ODEK_TELEGRAM_BOT_USERNAME"); v != "" {
 		cfg.BotUsername = v
@@ -127,7 +135,27 @@ func ValidateConfig(cfg TelegramConfig) error {
 	if cfg.AgentTimeout < 0 {
 		return fmt.Errorf("telegram: agent_timeout_seconds must be >= 0, got %d", cfg.AgentTimeout)
 	}
+	// Fail-closed authorization: refuse to start an unrestricted bot unless the
+	// operator explicitly opts in. An empty allowlist would otherwise let ANY
+	// Telegram user drive the agent (and its shell/file tools). Checked last so
+	// field-level validation errors surface first.
+	if len(cfg.AllowedChats) == 0 && len(cfg.AllowedUsers) == 0 && !cfg.AllowAllUsers {
+		return fmt.Errorf("telegram: no allowlist configured — set ODEK_TELEGRAM_ALLOWED_CHATS " +
+			"and/or ODEK_TELEGRAM_ALLOWED_USERS to restrict access, or set " +
+			"ODEK_TELEGRAM_ALLOW_ALL=true to explicitly run an open bot (NOT recommended)")
+	}
 	return nil
+}
+
+// parseBool parses common truthy string values ("true", "1", "yes", "on",
+// case-insensitive). Anything else is false.
+func parseBool(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "true", "1", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // parseInt64List parses a comma-separated string of integers into a slice of int64.

@@ -153,14 +153,7 @@ func DownloadDocument(bot *Bot, fileID, fileName string) (string, error) {
 	}
 
 	// Use original filename or generate one from file ID.
-	safeName := fileName
-	if safeName == "" {
-		ext := filepath.Ext(f.FilePath)
-		if ext == "" {
-			ext = ".bin"
-		}
-		safeName = "doc_" + fileID[:min(16, len(fileID))] + ext
-	}
+	safeName := sanitizeDocName(fileName, fileID, f.FilePath)
 	localPath := filepath.Join(dir, safeName)
 
 	if err := os.WriteFile(localPath, data, 0600); err != nil {
@@ -168,6 +161,26 @@ func DownloadDocument(bot *Bot, fileID, fileName string) (string, error) {
 	}
 
 	return localPath, nil
+}
+
+// sanitizeDocName derives a safe, single-component filename for a downloaded
+// Telegram document. The supplied fileName comes from attacker-controlled
+// Document metadata, so directory components must be stripped to prevent path
+// traversal outside the media directory (e.g. "../../.ssh/authorized_keys").
+// When the name is empty or degenerate ("", ".", "..") a deterministic name is
+// generated from the file ID instead.
+func sanitizeDocName(fileName, fileID, filePath string) string {
+	base := filepath.Base(filepath.Clean(fileName))
+	// filepath.Base never returns a path containing a separator, but it can
+	// still yield "." (empty/relative input) or ".." which must be rejected.
+	if base == "" || base == "." || base == ".." || base == string(filepath.Separator) {
+		ext := filepath.Ext(filePath)
+		if ext == "" {
+			ext = ".bin"
+		}
+		return "doc_" + fileID[:min(16, len(fileID))] + ext
+	}
+	return base
 }
 
 // ── Media Cleanup ──────────────────────────────────────────────────────────
