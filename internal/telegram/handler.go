@@ -11,10 +11,10 @@ import (
 
 // HandlerConfig controls which messages the Handler processes.
 type HandlerConfig struct {
-	AllowedChats []int64 // restricts by chat ID; empty + AllowAllUsers required to allow any
+	AllowedChats []int64 // non-empty: only these chat IDs pass; empty: no chat filter
 	BotUsername  string  // for @mention detection in groups (without @)
 	MaxMsgLength int     // default: 4096
-	AllowedUsers []int64 // restricts by user ID; empty + AllowAllUsers required to allow any
+	AllowedUsers []int64 // non-empty: only these user IDs pass; empty: no user filter
 	// AllowAllUsers must be true to permit access when BOTH allowlists are
 	// empty. Default false = fail-closed (deny everyone) so an unconfigured
 	// handler never silently allows all users. See ValidateConfig.
@@ -184,6 +184,11 @@ func defaultDocumentHandler(bot *Bot) func(int64, int, string, string) (string, 
 // HandleUpdate routes an incoming Telegram update to the appropriate handler.
 // Recovers from panics in handler callbacks to prevent a single bad update
 // from crashing the entire bot loop.
+//
+// SECURITY: every handler routed here must enforce isAllowed itself before
+// acting (handleMessage and handleCallback both do). When adding a new update
+// type, gate it the same way — callback queries once bypassed authorization
+// because their handler skipped this check.
 func (h *Handler) HandleUpdate(upd Update) {
 	defer h.recoverFromPanic("HandleUpdate", upd.ID)
 	switch {

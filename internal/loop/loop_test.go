@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2007,8 +2008,12 @@ func (p *panicTool) Call(args string) (string, error) {
 }
 
 // TestToolPanic_DoesNotKillAgent verifies that a panicking tool call
-// does not crash the agent. The agent should recover and continue.
+// does not crash the agent. The agent should recover and continue, and the
+// recovered panic message must reach the LLM as the tool result (regression:
+// it used to be discarded, leaving an empty tool result).
 func TestToolPanic_DoesNotKillAgent(t *testing.T) {
+	var toolResult atomic.Value // string: content of the tool message the LLM saw
+	var callNum atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Messages []llm.Message `json:"messages"`
@@ -2017,11 +2022,16 @@ func TestToolPanic_DoesNotKillAgent(t *testing.T) {
 			t.Fatal(err)
 		}
 		// First call: return tool calls with panic tool
-		if len(body.Messages) == 2 {
+		if callNum.Add(1) == 1 {
 			fmt.Fprint(w, `{"choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"panic_tool","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
 			return
 		}
-		// Second call (after tool panic): return content
+		// Second call (after tool panic): capture the tool result, return content
+		for _, m := range body.Messages {
+			if m.Role == "tool" {
+				toolResult.Store(m.Content)
+			}
+		}
 		fmt.Fprint(w, `{"choices":[{"index":0,"message":{"role":"assistant","content":"Agent survived the panic!"},"finish_reason":"stop"}]}`)
 	}))
 	defer server.Close()
@@ -2034,6 +2044,10 @@ func TestToolPanic_DoesNotKillAgent(t *testing.T) {
 	}
 	if !strings.Contains(result, "Agent survived") {
 		t.Errorf("agent result = %q, want 'Agent survived'", result)
+	}
+	tr, _ := toolResult.Load().(string)
+	if !strings.Contains(tr, "panicked") {
+		t.Errorf("tool result sent to LLM = %q, want the recovered panic message (containing %q)", tr, "panicked")
 	}
 }
 

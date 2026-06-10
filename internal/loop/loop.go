@@ -520,6 +520,10 @@ func (e *Engine) RunWithMessages(ctx context.Context, messages []llm.Message) (s
 	return e.runLoop(ctx, messages)
 }
 
+// trustAllSetter is implemented by approvers (wsApprover, TelegramApprover)
+// whose tool-level prompts auto-pass while a batch approval grant is active.
+type trustAllSetter interface{ SetTrustAll(bool) }
+
 // runLoop is the shared core of Run and RunWithMessages.
 // It runs the ReAct loop on the given messages and returns the final
 // answer plus the complete updated message history.
@@ -534,7 +538,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 	// the same approver (wsApprover is per-connection, TelegramApprover is
 	// per-chat). The per-iteration reset below is the primary mechanism; this
 	// defer only covers abnormal exits mid-iteration.
-	if ta, ok := e.approver.(interface{ SetTrustAll(bool) }); ok {
+	if ta, ok := e.approver.(trustAllSetter); ok {
 		defer ta.SetTrustAll(false)
 	}
 
@@ -847,7 +851,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		// (not via defer, which only fires when runLoop returns) — otherwise a
 		// single approved batch would auto-approve every dangerous tool for the
 		// remainder of the run.
-		var trustAllApprover interface{ SetTrustAll(bool) }
+		var trustAllApprover trustAllSetter
 		if e.approver != nil && len(result.ToolCalls) > 1 {
 			// Classify each tool call and filter to only those needing approval.
 			type riskyCall struct {
@@ -901,7 +905,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 				// Approved: set trustAll on the approver if supported, so
 				// individual tool-level PromptCommand calls auto-pass.
 				if !batchDenied {
-					if ta, ok := e.approver.(interface{ SetTrustAll(bool) }); ok {
+					if ta, ok := e.approver.(trustAllSetter); ok {
 						ta.SetTrustAll(true)
 						trustAllApprover = ta
 					}
@@ -939,12 +943,13 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 							ctxTool.SetContext(ctx)
 						}
 						// Capture any panic from the tool so it does not kill the agent.
-						var toolPanicked bool
+						// The recovered message falls through to results[idx] like any
+						// other tool error, so the LLM sees it and the consecutive-error
+						// tracking counts it.
 						func() {
 							defer func() {
 								if r := recover(); r != nil {
 									output = fmt.Sprintf("error: tool %q panicked: %v", tcRef.Function.Name, r)
-									toolPanicked = true
 								}
 							}()
 							res, err := t.Call(tcRef.Function.Arguments)
@@ -954,9 +959,6 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 								output = redact.RedactSecrets(res)
 							}
 						}()
-						if toolPanicked {
-							return
-						}
 					}
 					results[idx] = execResult{output: output}
 				}(i, tc)
