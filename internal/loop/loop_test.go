@@ -1626,16 +1626,98 @@ func TestBatchApprovalApproved(t *testing.T) {
 
 	approver.mu.Lock()
 	cc := approver.callCount
-	approxAfter := approver.trustAll // should be false (reset by defer)
+	approxAfter := approver.trustAll // should be false (reset after the iteration)
 	approver.mu.Unlock()
 
 	if cc != 1 {
 		t.Errorf("approver.PromptCommand called %d times, want 1 (batch gate only)", cc)
 	}
 	if approxAfter {
-		t.Error("SetTrustAll should have been reset to false after iteration (defer)")
+		t.Error("SetTrustAll should have been reset to false after the iteration")
 	}
 	t.Logf("Batch approved: PromptCommand called %d time(s), elapsed=%v ✓", cc, elapsed)
+}
+
+// recordingApprover mimics the real approvers (wsApprover / TelegramApprover):
+// PromptCommand auto-approves while trustAll is set, and it records the
+// trustAll state observed at each call so a test can assert the batch grant
+// does not leak across loop iterations.
+type recordingApprover struct {
+	mu          sync.Mutex
+	trustAll    bool
+	trustAtCall []bool
+}
+
+func (a *recordingApprover) PromptCommand(cls danger.RiskClass, cmd, description string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.trustAtCall = append(a.trustAtCall, a.trustAll)
+	return nil // always approve so the run proceeds to the next iteration
+}
+
+func (a *recordingApprover) PromptOperation(op danger.ToolOperation) error {
+	return a.PromptCommand(op.Risk, op.Resource, op.Name)
+}
+
+func (a *recordingApprover) SetTrustAll(enabled bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.trustAll = enabled
+}
+
+// TestBatchApprovalTrustAllNotLeakedAcrossIterations is a regression test for a
+// bug where an approved batch's trustAll grant was reset via `defer` inside the
+// iteration loop — so it only fired at function return, leaving trustAll set for
+// every subsequent iteration. That let a single approved batch auto-approve all
+// later dangerous tools in the run. The batch gate must see trustAll=false at
+// the start of every iteration.
+func TestBatchApprovalTrustAllNotLeakedAcrossIterations(t *testing.T) {
+	approver := &recordingApprover{}
+
+	shellTool := &mockTool{name: "shell", result: "done"}
+	registry := tool.NewRegistry([]tool.Tool{shellTool})
+
+	// Server returns a 2-tool destructive batch on the first TWO LLM calls
+	// (two iterations that both hit the batch gate), then a final answer.
+	callNum := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callNum++
+		if callNum <= 2 {
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"","tool_calls":[`+
+				`{"id":"call_a","function":{"name":"shell","arguments":"{\"command\":\"rm -rf /etc/a\"}"}},`+
+				`{"id":"call_b","function":{"name":"shell","arguments":"{\"command\":\"rm -rf /etc/b\"}"}}`+
+				`]}}]}`)
+			return
+		}
+		fmt.Fprintf(w, `{"choices":[{"message":{"content":%q}}]}`, "done")
+	}))
+	defer server.Close()
+
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	engine := New(client, registry, 10, "", nil, 0)
+	engine.SetApprover(approver)
+	engine.SetMaxToolParallel(2)
+	allow := "allow"
+	engine.SetDangerousConfig(&danger.DangerousConfig{
+		DefaultAction: &allow,
+		Classes:       map[danger.RiskClass]danger.Action{danger.Destructive: danger.Prompt},
+	})
+
+	if _, err := engine.Run(context.Background(), "two dangerous batches"); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	approver.mu.Lock()
+	defer approver.mu.Unlock()
+	if len(approver.trustAtCall) != 2 {
+		t.Fatalf("batch gate invoked %d times, want 2 (one per iteration): %v",
+			len(approver.trustAtCall), approver.trustAtCall)
+	}
+	for i, observed := range approver.trustAtCall {
+		if observed {
+			t.Errorf("iteration %d: batch gate saw trustAll=true (grant leaked from a prior batch)", i+1)
+		}
+	}
 }
 
 // TestBatchApprovalSingleTool verifies that single tool calls skip the batch gate.

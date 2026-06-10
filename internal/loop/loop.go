@@ -832,6 +832,13 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		// anything. If approved, the approver's trustAll flag is set so
 		// individual tool-level PromptCommand calls auto-pass.
 		batchDenied := false
+		// trustAllApprover holds the approver whose trustAll flag was set by an
+		// approved batch this iteration, so it can be reset once this
+		// iteration's tools have executed. It MUST be reset per-iteration
+		// (not via defer, which only fires when runLoop returns) — otherwise a
+		// single approved batch would auto-approve every dangerous tool for the
+		// remainder of the run.
+		var trustAllApprover interface{ SetTrustAll(bool) }
 		if e.approver != nil && len(result.ToolCalls) > 1 {
 			// Classify each tool call and filter to only those needing approval.
 			type riskyCall struct {
@@ -887,7 +894,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 				if !batchDenied {
 					if ta, ok := e.approver.(interface{ SetTrustAll(bool) }); ok {
 						ta.SetTrustAll(true)
-						defer ta.SetTrustAll(false)
+						trustAllApprover = ta
 					}
 				}
 			}
@@ -949,6 +956,13 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 			for i := 0; i < cap(sem); i++ {
 				sem <- struct{}{}
 			}
+		}
+
+		// Reset the batch trustAll grant now that this iteration's tools have
+		// run. Scoping it to the iteration (rather than deferring to function
+		// return) ensures a later iteration's dangerous tools still prompt.
+		if trustAllApprover != nil {
+			trustAllApprover.SetTrustAll(false)
 		}
 
 		// Phase 3: process results in order (render, compress, append to messages)

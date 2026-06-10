@@ -492,3 +492,69 @@ func TestDownloadPhoto_MediaDirError(t *testing.T) {
 		t.Fatal("expected error when MediaDir fails")
 	}
 }
+
+// ── Test sanitizeDocName (path-traversal hardening) ─────────────────────────
+
+func TestSanitizeDocName(t *testing.T) {
+	const fileID = "AgACAgIAAxkBAAIabcdef0123456789"
+	tests := []struct {
+		name     string
+		fileName string
+		want     string
+	}{
+		{"plain name", "report.pdf", "report.pdf"},
+		{"parent traversal", "../../.ssh/authorized_keys", "authorized_keys"},
+		{"absolute path", "/etc/passwd", "passwd"},
+		{"deep traversal to config", "../../../home/user/.odek/config.json", "config.json"},
+		{"nested subdir", "a/b/c.txt", "c.txt"},
+		{"dot-dot only", "..", "doc_" + fileID[:16] + ".bin"},
+		{"empty falls back", "", "doc_" + fileID[:16] + ".bin"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeDocName(tt.fileName, fileID, "documents/file.bin")
+			if got != tt.want {
+				t.Errorf("sanitizeDocName(%q) = %q, want %q", tt.fileName, got, tt.want)
+			}
+			// The result must never contain a path separator.
+			if strings.ContainsRune(got, filepath.Separator) {
+				t.Errorf("sanitizeDocName(%q) = %q contains a path separator", tt.fileName, got)
+			}
+		})
+	}
+}
+
+// TestDownloadDocument_NoTraversal verifies the full download path keeps a
+// malicious filename confined to the media directory.
+func TestDownloadDocument_NoTraversal(t *testing.T) {
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.String(), "getFile"):
+			fmt.Fprintf(w, `{"ok":true,"result":{"file_id":"doc123","file_path":"documents/file.bin"}}`)
+		case strings.HasSuffix(r.URL.String(), "documents/file.bin"):
+			w.Write([]byte("pwned"))
+		default:
+			http.Error(w, `{"ok":false}`, 404)
+		}
+	}
+	ts := httptest.NewServer(http.HandlerFunc(handler))
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	dir, err := MediaDir()
+	if err != nil {
+		t.Fatalf("MediaDir: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	localPath, err := DownloadDocument(bot, "doc123", "../../../evil.txt")
+	if err != nil {
+		t.Fatalf("DownloadDocument: %v", err)
+	}
+	if filepath.Dir(localPath) != filepath.Clean(dir) {
+		t.Errorf("file written to %q, want it inside %q", localPath, dir)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(dir), "evil.txt")); err == nil {
+		t.Error("traversal succeeded: evil.txt written outside media dir")
+	}
+}
