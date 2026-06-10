@@ -128,6 +128,29 @@ Settings: `auto_describe` (Telegram photo → description before the agent answe
 
 Settings: `base_url` (SearXNG instance; empty = tool disabled), `categories` (optional SearXNG categories), `language` (optional language code), `max_results` (default 10), `timeout_seconds` (default 15).
 
+**Run SearXNG standalone (outside the bundled Compose):** the only non-default
+requirement is enabling the JSON API — SearXNG ships HTML-only, so a stock
+instance returns HTTP 403 for `format=json`. Reuse the repo's ready-made minimal
+config (`docker/searxng/settings.yml` — JSON API on, anti-bot limiter off so no
+Redis/Valkey is needed):
+
+```bash
+docker run -d --name searxng -p 8888:8080 \
+  -e SEARXNG_SECRET="$(openssl rand -hex 32)" \
+  -v "$PWD/docker/searxng/settings.yml:/etc/searxng/settings.yml:ro" \
+  searxng/searxng:latest
+```
+
+Then point odek at it (global `~/.odek/config.json` or project `./odek.json`):
+
+```json
+{ "web_search": { "base_url": "http://127.0.0.1:8888" } }
+```
+
+If you bring your own `settings.yml`, the two settings that matter are
+`search.formats: [html, json]` (enables the API) and, for a private single-user
+instance, `server.limiter: false` (drops the Redis/Valkey dependency).
+
 ## Memory System Architecture
 
 ### Three Tiers

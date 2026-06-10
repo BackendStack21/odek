@@ -74,6 +74,9 @@ Attach files to any prompt with `--ctx` / `-c` (CLI), `@filename` inline referen
 ### 🔍 Native Tools
 Built-in `read_file`, `write_file`, `search_files`, `patch`, `shell`, and `browser` tools. All gated by a unified security layer (`dangerous` config) — classify operations as `allow` / `deny` / `prompt` per risk class. No third-party dependencies. [docs/SECURITY.md](docs/SECURITY.md)
 
+### 🌐 Local Web Search
+`web_search` queries a **self-hosted [SearXNG](https://docs.searxng.org/) metasearch instance** — no cloud search API, no keys. Returns ranked results (title, url, snippet) the agent then fetches with `browser` / `http_batch`; results are wrapped as untrusted content and gated as `network_egress`. The Docker Compose setup runs a SearXNG sidecar and enables it out of the box; standalone installs point `web_search.base_url` at any SearXNG instance. [docs/CHEATSHEET.md](docs/CHEATSHEET.md#web-search)
+
 ---
 
 ## Quick Start
