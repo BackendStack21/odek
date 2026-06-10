@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
@@ -41,7 +42,10 @@ func mockSearXNG(t *testing.T, results int) (*httptest.Server, *string) {
 			})
 		}
 		resp["results"] = rs
-		resp["answers"] = []string{"42"}
+		// SearXNG answers are objects with an "answer" field, not bare strings.
+		resp["answers"] = []map[string]any{
+			{"answer": "42", "url": nil, "template": "answer/legacy.html"},
+		}
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	t.Cleanup(srv.Close)
@@ -146,12 +150,43 @@ func TestWebSearch_JSONDisabled403(t *testing.T) {
 }
 
 func TestWebSearch_BackendUnreachable(t *testing.T) {
+	// Connection-refused triggers the cold-start retry; shrink the delay so the
+	// test exercises the retry path without the 1s production backoff.
+	orig := searxngRetryDelay
+	searxngRetryDelay = time.Millisecond
+	t.Cleanup(func() { searxngRetryDelay = orig })
+
 	// Point at a closed port on localhost.
 	tool := newWebSearchTool(allowAllDanger(), config.WebSearchConfig{BaseURL: "http://127.0.0.1:1"})
 	raw, _ := tool.Call(`{"query":"x"}`)
 	out := decodeWebSearch(t, raw)
 	if !strings.Contains(out.Error, "cannot reach SearXNG") {
 		t.Errorf("expected unreachable error, got %q", out.Error)
+	}
+}
+
+func TestWebSearch_RedirectToInternalBlocked(t *testing.T) {
+	// A compromised/misconfigured SearXNG that 302s toward an internal host must
+	// be stopped by the CheckRedirect guard, not followed (SSRF defense).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://169.254.169.254/latest/meta-data/", http.StatusFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	// Deny network egress so the redirect-hop re-classification blocks the hop.
+	dc := danger.DangerousConfig{Classes: map[danger.RiskClass]danger.Action{
+		danger.NetworkEgress: danger.Allow, // initial query allowed
+		danger.SystemWrite:   danger.Deny,  // internal/metadata target denied
+	}}
+	tool := newWebSearchTool(dc, config.WebSearchConfig{BaseURL: srv.URL})
+
+	raw, _ := tool.Call(`{"query":"x"}`)
+	out := decodeWebSearch(t, raw)
+	if out.Error == "" {
+		t.Fatalf("expected redirect to internal host to be blocked, got results: %+v", out)
+	}
+	if !strings.Contains(out.Error, "blocked") && !strings.Contains(out.Error, "cannot reach") {
+		t.Errorf("expected a redirect-blocked error, got %q", out.Error)
 	}
 }
 

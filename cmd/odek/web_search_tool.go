@@ -2,11 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/BackendStack21/odek"
@@ -17,6 +19,15 @@ import (
 // maxSearXNGBody caps the response body read from SearXNG (defensive — a
 // metasearch JSON payload is small; this guards against a misbehaving backend).
 const maxSearXNGBody = 4 << 20 // 4 MiB
+
+// Cold-start retry: how many extra attempts (and the delay between them) to
+// make when SearXNG refuses the connection — covers the compose startup race
+// where the container is up but the app isn't yet listening. Vars (not consts)
+// so tests can shrink the delay.
+var (
+	searxngConnectRetries = 2
+	searxngRetryDelay     = time.Second
+)
 
 // ═════════════════════════════════════════════════════════════════════════
 // web_search Tool (SearXNG JSON API backend)
@@ -33,11 +44,30 @@ func newWebSearchTool(dc danger.DangerousConfig, cfg config.WebSearchConfig) *we
 	if timeout <= 0 {
 		timeout = 15
 	}
-	return &webSearchTool{
-		dangerousConfig: dc,
-		cfg:             cfg,
-		client:          &http.Client{Timeout: time.Duration(timeout) * time.Second},
+	t := &webSearchTool{dangerousConfig: dc, cfg: cfg}
+	t.client = &http.Client{
+		Timeout:       time.Duration(timeout) * time.Second,
+		CheckRedirect: t.checkRedirect,
 	}
+	return t
+}
+
+// checkRedirect re-classifies every redirect hop. The configured base_url is
+// trusted, but a compromised, buggy, or misconfigured SearXNG could 3xx the
+// client toward an internal/metadata endpoint (SSRF). Re-classifying each hop —
+// the same guard browser/http_batch install — closes that. Installing
+// CheckRedirect disables Go's implicit 10-hop cap, so we re-impose it.
+func (t *webSearchTool) checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return fmt.Errorf("stopped after 10 redirects")
+	}
+	target := req.URL.String()
+	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
+		Name: "web_search", Resource: target, Risk: danger.ClassifyURL(target),
+	}, nil); err != nil {
+		return fmt.Errorf("redirect to %s blocked: %w", target, err)
+	}
+	return nil
 }
 
 func (t *webSearchTool) Name() string { return "web_search" }
@@ -82,7 +112,11 @@ type searxngResponse struct {
 		Content string `json:"content"`
 		Engine  string `json:"engine"`
 	} `json:"results"`
-	Answers     []json.RawMessage `json:"answers"`
+	// SearXNG answers are objects ({"answer": "...", "url": ..., "template": ...}),
+	// not bare strings — decode the answer text out of each.
+	Answers []struct {
+		Answer string `json:"answer"`
+	} `json:"answers"`
 	Infoboxes   []json.RawMessage `json:"infoboxes"`
 	Suggestions []string          `json:"suggestions"`
 }
@@ -159,8 +193,8 @@ func (t *webSearchTool) Call(argsJSON string) (result string, err error) {
 	}
 	out.Count = len(out.Results)
 	for _, a := range resp.Answers {
-		if s := strings.TrimSpace(string(a)); s != "" && s != "null" {
-			out.Answers = append(out.Answers, strings.Trim(s, `"`))
+		if s := strings.TrimSpace(a.Answer); s != "" {
+			out.Answers = append(out.Answers, s)
 		}
 	}
 
@@ -198,7 +232,18 @@ func (t *webSearchTool) query(query, category string) (*searxngResponse, error) 
 	}
 	req.Header.Set("Accept", "application/json")
 
-	httpResp, err := t.client.Do(req)
+	// Retry only on connection-refused — the precise signal that the SearXNG
+	// sidecar is up as a container but not yet accepting connections (the
+	// startup race when both come up together under compose). Other errors
+	// (timeouts, DNS, genuine "down") fail fast on the first attempt.
+	var httpResp *http.Response
+	for attempt := 0; ; attempt++ {
+		httpResp, err = t.client.Do(req)
+		if err == nil || attempt >= searxngConnectRetries || !errors.Is(err, syscall.ECONNREFUSED) {
+			break
+		}
+		time.Sleep(searxngRetryDelay)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("cannot reach SearXNG at %s — is the service running? (%v)", t.cfg.BaseURL, err)
 	}

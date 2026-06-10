@@ -108,7 +108,11 @@ services:
     image: searxng/searxng:2026.6.8-f3fab143b   # pinned; bump deliberately
     environment:
       - SEARXNG_BASE_URL=http://searxng:8080/
-      - SEARXNG_SECRET=${SEARXNG_SECRET:-change-me-in-dot-env}
+      # SearXNG reads server.secret_key from this env var at app load, overriding
+      # settings.yml. Set SEARXNG_SECRET in .env. The fallback is the canonical
+      # "ultrasecretkey" sentinel so an unset secret triggers SearXNG's own
+      # "secret_key is not changed" warning rather than a silent weak literal.
+      - SEARXNG_SECRET=${SEARXNG_SECRET:-ultrasecretkey}
     volumes:
       - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
     # SearXNG needs outbound internet to query upstream engines (Google, Bing,
