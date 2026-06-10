@@ -21,11 +21,12 @@ general:
 server:
   # SearXNG reads server.secret_key from the SEARXNG_SECRET env var at app load
   # (searx/settings_defaults.py: environ_name='SEARXNG_SECRET'), which overrides
-  # this value — set SEARXNG_SECRET in .env. Keep this as the canonical
-  # "ultrasecretkey" placeholder so that, if SEARXNG_SECRET is ever left unset,
-  # SearXNG logs its built-in "secret_key is not changed" warning instead of
-  # silently running with a custom-but-weak literal.
-  secret_key: "ultrasecretkey"
+  # this value — set SEARXNG_SECRET in .env. This must NOT be the literal
+  # "ultrasecretkey": in production (non-debug) mode SearXNG treats that sentinel
+  # as fatal (logs "secret_key is not changed" and exits the worker), so a
+  # missing env override would crash startup. This is a private, internal-only
+  # instance (single trusted consumer), so a static default is acceptable.
+  secret_key: "odek-searxng-internal-default-override-in-env"
   bind_address: "0.0.0.0"
   port: 8080
   # Single trusted consumer on a private network — disable the bot limiter

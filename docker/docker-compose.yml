@@ -137,10 +137,13 @@ services:
     environment:
       - SEARXNG_BASE_URL=http://searxng:8080/
       # SearXNG reads server.secret_key from this env var at app load, overriding
-      # settings.yml. Set SEARXNG_SECRET in .env. The fallback is the canonical
-      # "ultrasecretkey" sentinel so an unset secret triggers SearXNG's own
-      # "secret_key is not changed" warning rather than a silent weak literal.
-      - SEARXNG_SECRET=${SEARXNG_SECRET:-ultrasecretkey}
+      # settings.yml. Set SEARXNG_SECRET in .env. The fallback must NOT be the
+      # "ultrasecretkey" sentinel: in production (non-debug) mode SearXNG treats
+      # that literal as FATAL — it logs "secret_key is not changed" and calls
+      # sys.exit(1), so the worker dies and the container never serves. This
+      # internal-only instance (no host port, single trusted consumer) is fine
+      # with a static default; override it in .env for any exposed deployment.
+      - SEARXNG_SECRET=${SEARXNG_SECRET:-odek-searxng-internal-default-override-in-env}
     volumes:
       - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
     # SearXNG needs outbound internet to query upstream engines (Google, Bing,
