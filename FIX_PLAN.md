@@ -59,10 +59,18 @@ steps. Check items off as they land.
 - **Status:** ✅ Fixed — `ValidateConfig` now refuses to start with no allowlist
   unless `ODEK_TELEGRAM_ALLOW_ALL=true` is set; `isAllowed` is fail-closed
   (empty lists + no opt-in → deny); startup logs a loud warning when running
-  open. Tests: `TestValidateConfig_noAllowlistFailsClosed`,
-  `TestValidateConfig_allowAllOptIn`, `TestConfigFromEnv_allowAll`,
-  `TestIsAllowed_EmptyAllowlist` (now asserts deny),
-  `TestIsAllowed_EmptyAllowlistWithAllowAll`.
+  open. **Also closed a callback-query authorization bypass** found while
+  challenging the fix: `handleCallback` (inline-button presses) did not call
+  `isAllowed` — it now does, so callbacks are gated like messages. Tests:
+  `TestValidateConfig_noAllowlistFailsClosed`, `TestValidateConfig_allowAllOptIn`,
+  `TestConfigFromEnv_allowAll`, `TestIsAllowed_EmptyAllowlist` (now asserts deny),
+  `TestIsAllowed_EmptyAllowlistWithAllowAll`, `TestHandleCallback_RespectsAllowlist`,
+  `TestHandleUpdate_CallbackQueryNotAllowed` (now asserts deny).
+- **Note (not fixed — pre-existing, lower priority):** in a *group* chat where
+  only `AllowedChats` is set, any group member can press another user's
+  approval/clarify buttons (callback passes the chat-level allowlist). Tightening
+  this requires binding an approval to the specific user who triggered the run —
+  out of scope for this PR.
 - **Severity:** High
 - **Location:** `internal/telegram/handler.go:505-533`; defaults in
   `internal/telegram/config.go`

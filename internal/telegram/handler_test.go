@@ -242,6 +242,7 @@ func TestHandleUpdate_CallbackQuery(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // callback routing test
 	h.OnCallbackQuery = func(chatID int64, data string) (string, error) {
 		capturedChatID = chatID
 		capturedCallbackID = data
@@ -751,6 +752,45 @@ func TestIsAllowed_EmptyAllowlistWithAllowAll(t *testing.T) {
 	}
 	if !h.isAllowed(0, 0) {
 		t.Error("isAllowed(0, 0) = false, want true (AllowAllUsers opt-in)")
+	}
+}
+
+// TestHandleCallback_RespectsAllowlist verifies callback queries (inline-button
+// presses) are gated by the same allowlist as messages — a non-allowlisted
+// chat must not reach OnCallbackQuery.
+func TestHandleCallback_RespectsAllowlist(t *testing.T) {
+	ts := testServer(t, nil)
+	defer ts.Close()
+	bot := testBot(t, ts)
+	h := NewHandler(bot)
+	h.Config.AllowedChats = []int64{100} // only chat 100 allowed
+
+	var called bool
+	h.OnCallbackQuery = func(chatID int64, data string) (string, error) {
+		called = true
+		return "", nil
+	}
+
+	// Callback from a NON-allowlisted chat → must be dropped.
+	h.handleCallback(&CallbackQuery{
+		ID:      "cb1",
+		From:    &User{ID: 999},
+		Message: &Message{Chat: &Chat{ID: 999}},
+		Data:    "clarify:yes",
+	})
+	if called {
+		t.Error("OnCallbackQuery was called for a non-allowlisted chat (callback bypassed authorization)")
+	}
+
+	// Callback from the allowlisted chat → must be processed.
+	h.handleCallback(&CallbackQuery{
+		ID:      "cb2",
+		From:    &User{ID: 1},
+		Message: &Message{Chat: &Chat{ID: 100}},
+		Data:    "clarify:yes",
+	})
+	if !called {
+		t.Error("OnCallbackQuery was NOT called for an allowlisted chat")
 	}
 }
 
@@ -1392,6 +1432,7 @@ func TestHandler_HandleCallback_RouteToApprover(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // callback routing test
 
 	chatID := int64(789)
 	approver := NewTelegramApprover(bot, chatID)
@@ -1458,6 +1499,7 @@ func TestHandler_HandleCallback_ApproverAnswerError(t *testing.T) {
 		log:         NewNopLogger(),
 	}
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // callback routing test
 
 	chatID := int64(789)
 	approver := NewTelegramApprover(bot, chatID)
@@ -1502,6 +1544,7 @@ func TestHandler_HandleCallback_FallbackToOnCallbackQuery(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true // callback routing test
 	// No approver registered.
 
 	var (
@@ -1772,10 +1815,9 @@ func TestHandleUpdate_CallbackQueryNotAllowed(t *testing.T) {
 		return "", nil
 	}
 
-	// Note: handleCallback does NOT check isAllowed — it only routes.
-	// The isAllowed check is only in handleMessage.
-	// So callback queries from any user are processed regardless.
-	// This is the current behavior — document it.
+	// Callback queries are gated by the same allowlist as messages: a press
+	// from a user not in AllowedUsers must be dropped before reaching
+	// OnCallbackQuery (otherwise inline buttons bypass authorization).
 	upd := Update{
 		ID: 40,
 		CallbackQuery: &CallbackQuery{
@@ -1790,9 +1832,8 @@ func TestHandleUpdate_CallbackQueryNotAllowed(t *testing.T) {
 
 	h.HandleUpdate(upd)
 
-	// Callback queries are currently processed without isAllowed check
-	if !called {
-		t.Error("OnCallbackQuery was not called for user 999 (callback queries may not check isAllowed)")
+	if called {
+		t.Error("OnCallbackQuery was called for non-allowlisted user 999 (callback bypassed isAllowed)")
 	}
 }
 

@@ -334,6 +334,18 @@ func (h *Handler) handleCallback(cq *CallbackQuery) {
 		return
 	}
 
+	// Apply the same allowlist as messages. Callback queries (inline-button
+	// presses) otherwise bypass authorization — they can drive per-chat
+	// approval/clarify state and trigger outbound API calls. Without a From
+	// user, treat the user ID as 0 (matches no AllowedUsers entry).
+	var userID int64
+	if cq.From != nil {
+		userID = cq.From.ID
+	}
+	if !h.isAllowed(cq.Message.Chat.ID, userID) {
+		return
+	}
+
 	// Route approval callbacks to the per-chat TelegramApprover.
 	if a := h.GetApprover(cq.Message.Chat.ID); a != nil && a.HandleCallback(cq.Data) {
 		// Show a toast acknowledging the user's choice.
