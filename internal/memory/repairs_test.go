@@ -201,16 +201,27 @@ func TestRebuildDoesNotSerializeRecall(t *testing.T) {
 	}
 
 	// G1 triggers the rebuild and blocks inside the embed call.
-	go func() { store.recallByVector("query", 1) }() //nolint:errcheck // blocked rebuild
+	g1 := make(chan struct{})
+	go func() { defer close(g1); store.recallByVector("query", 1) }() //nolint:errcheck // blocked rebuild
+
+	// On EVERY exit path (including t.Fatal, which runs deferred funcs), unblock
+	// the backend and wait for the rebuild goroutine to finish writing the index
+	// gobs BEFORE t.TempDir cleanup runs — otherwise that write races RemoveAll
+	// ("directory not empty"). Deferred funcs run before t.Cleanup, so this is
+	// ordered correctly.
+	var releaseOnce sync.Once
+	releaseBackend := func() { releaseOnce.Do(func() { close(release) }) }
+	defer func() { releaseBackend(); <-g1 }()
+
 	select {
 	case <-entered:
 	case <-time.After(5 * time.Second):
 		t.Fatal("rebuild embed never reached the backend")
 	}
 
-	// While G1 is blocked under the (released-held) backend, concurrent recalls
-	// must NOT hang behind it. If rebuild still held the index write lock during
-	// the network call, these would block until release and time out.
+	// While G1 is blocked under the held backend, concurrent recalls must NOT
+	// hang behind it. If rebuild still held the index write lock during the
+	// network call, these would block until release and time out.
 	done := make(chan struct{})
 	go func() {
 		var wg sync.WaitGroup
@@ -227,10 +238,9 @@ func TestRebuildDoesNotSerializeRecall(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		close(release)
 		t.Fatal("concurrent recalls were serialized behind the slow rebuild (lock held during network I/O)")
 	}
 
-	// Release the backend; the rebuild completes and a subsequent recall works.
-	close(release)
+	// Normal exit: the deferred releaseBackend() lets the rebuild complete and
+	// the deferred <-g1 waits for it before the test's TempDir is cleaned up.
 }
