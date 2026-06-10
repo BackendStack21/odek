@@ -10,8 +10,8 @@ func TestMergeDetectorNew(t *testing.T) {
 	if md == nil {
 		t.Fatal("NewMergeDetector returned nil")
 	}
-	if md.rp == nil {
-		t.Fatal("expected RP embedder to be initialized")
+	if md.emb == nil {
+		t.Fatal("expected embedder to be initialized")
 	}
 }
 
@@ -168,8 +168,12 @@ func TestMergeDetectorHighAddThreshold(t *testing.T) {
 func TestMergeDetectorWithThresholdsDefaultDims(t *testing.T) {
 	// 0 dims should use default
 	md := NewMergeDetectorWithThresholds(0, 0.5, 0.2)
-	if md.rp.Dims() != 256 {
-		t.Errorf("expected default 256 dims, got %d", md.rp.Dims())
+	rp, ok := md.emb.(*rpTextEmbedder)
+	if !ok {
+		t.Fatalf("default embedder = %T, want *rpTextEmbedder", md.emb)
+	}
+	if rp.dims != 256 {
+		t.Errorf("expected default 256 dims, got %d", rp.dims)
 	}
 }
 

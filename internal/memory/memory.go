@@ -95,6 +95,13 @@ type MemoryConfig struct {
 	// gate for convenience — a session that ingested external/untrusted content
 	// can then influence future sessions automatically. Off (false) by default.
 	AutoApproveEpisodes *bool `json:"auto_approve_episodes,omitempty"`
+
+	// Embedding selects the semantic embedding backend used by episode
+	// recall, episode dedup, the non-LLM episode ranker, and fact
+	// merge-on-write. nil = local RandomProjections (lexical, zero-cost).
+	// See EmbeddingConfig for the "http" provider that enables real
+	// semantic similarity via any OpenAI-compatible embeddings API.
+	Embedding *EmbeddingConfig `json:"embedding,omitempty"`
 }
 
 // BoolPtr returns a pointer to a bool value.
@@ -220,22 +227,35 @@ func NewMemoryManager(memoryDir string, llc LLMClient, cfg MemoryConfig) *Memory
 	if cfg.EpisodeTTLDays > 0 {
 		def.EpisodeTTLDays = cfg.EpisodeTTLDays
 	}
+	if cfg.Embedding != nil {
+		def.Embedding = cfg.Embedding
+	}
 	cfg = def
 
 	factsDir := memoryDir
 	episodesDir := memoryDir
 
 	factStore := NewFactStore(factsDir, cfg.FactsLimitUser, cfg.FactsLimitEnv)
+
+	// Embedding backend for all semantic paths (recall index, dedup, ranker,
+	// merge-on-write). A factory, not a shared instance: the default RP
+	// embedder is stateful per fitted corpus (see textEmbedder). Each factory
+	// call passes the legacy RP dims for its consumer so persisted RP state
+	// stays loadable when embedding is unconfigured.
+	embFactory := func() textEmbedder { return newTextEmbedder(cfg.Embedding, episodeVectorDim) }
+
 	// Use LLM-based episode ranker when an LLM client is available and enabled.
-	// Otherwise use RP (RandomProjections) semantic similarity — fast, no LLM cost.
+	// Otherwise rank by embedding similarity — fast, no LLM cost.
 	var rankFn RankStrategy
 	if llc != nil && cfg.LLMSearch != nil && *cfg.LLMSearch {
 		rankFn = NewLLMRanker(llc)
 	} else {
-		rankFn = NewRPRanker(64)
+		rankFn = newEmbedderRanker(func() textEmbedder { return newTextEmbedder(cfg.Embedding, 64) })
 	}
 	episodeStore := NewEpisodeStoreWithLifecycle(episodesDir, rankFn, cfg.EpisodeDedupThreshold, cfg.MaxEpisodes, cfg.EpisodeTTLDays)
-	mergeDetector := NewMergeDetectorWithThresholds(0, cfg.MergeThreshold, cfg.AddThreshold)
+	episodeStore.setEmbedderFactory(embFactory)
+	mergeDetector := newMergeDetectorWithEmbedder(
+		newTextEmbedder(cfg.Embedding, defaultOutputDim), cfg.MergeThreshold, cfg.AddThreshold)
 
 	return &MemoryManager{
 		facts:    factStore,

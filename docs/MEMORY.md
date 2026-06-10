@@ -90,7 +90,7 @@ RP.embed(newEntry) → cos similarity vs each existing entry
 
 This saves ~80% of LLM calls on memory writes.
 
-**Implementation:** `internal/memory/merge.go` imports `github.com/BackendStack21/go-vector/pkg/vector` for `RandomProjections` and `Cosine`. The RP embedder is fit on existing facts when the detector is created, and re-fit whenever facts change.
+**Implementation:** `internal/memory/merge.go` imports `github.com/BackendStack21/go-vector/pkg/vector` for `RandomProjections` and `Cosine`. The embedder is fit on existing facts when the detector is created, and re-fit whenever facts change. With `memory.embedding` configured (see *Pluggable Embeddings* below), the same classification runs over real semantic vectors from an OpenAI-compatible API instead of RP.
 
 ### Durability & Statefulness
 
@@ -207,7 +207,7 @@ The episode index (`episodes/index.json`) is cached in memory after the first re
 
 ### Search Ranking
 
-Episode search uses **RandomProjections** (go-vector) for semantic similarity by default:
+Episode search uses **RandomProjections** (go-vector) for similarity by default:
 
 1. Fit RP embedder on episode summaries + query (64 dims, ~1ms)
 2. Embed each summary and the query into 64-dimensional vectors
@@ -215,3 +215,45 @@ Episode search uses **RandomProjections** (go-vector) for semantic similarity by
 4. Return top-3 results sorted by score
 
 This is zero LLM calls per search, ~1ms per search. Set `llm_search: true` in config to switch to LLM-based ranking (uses SimpleCall to rank episodes by relevance — higher quality, higher latency + token cost).
+
+### Pluggable Embeddings (`memory.embedding`)
+
+RandomProjections is lexical: two texts only score as similar when they share
+vocabulary. *"fixed the auth bug"* vs *"repaired login issue"* → cosine ≈ 0,
+so recall misses semantically related episodes. The `memory.embedding` config
+section replaces RP with a real embedding model behind any OpenAI-compatible
+API (Ollama, llama.cpp server, LM Studio, vLLM, OpenAI, …):
+
+```json
+{
+  "memory": {
+    "embedding": {
+      "provider": "http",
+      "base_url": "http://localhost:11434/v1",
+      "model": "nomic-embed-text"
+    }
+  }
+}
+```
+
+One config switches **every** similarity path: per-turn episode recall, the
+explicit `memory(search=...)` candidate retrieval, episode write-time dedup,
+the non-LLM episode ranker, and fact merge-on-write classification.
+
+Mechanics (`internal/memory/embedder.go`):
+
+- All paths go through the `textEmbedder` seam — `rp` (default, corpus-fitted,
+  bigram-featurized) or `http` (stateless, raw text, cached).
+- The persisted episode vector index records its embedding space in
+  `episodes_index_meta.json`; changing provider/model/dims invalidates and
+  rebuilds it automatically. Pre-existing RP indexes (no meta file) keep
+  loading without a rebuild.
+- The HTTP embedder caches text→vector, so an index rebuild after a new
+  episode only embeds texts it hasn't seen — one batch call.
+- Failure mode: embedding errors degrade to "no recall context" / "add fact
+  without merge check"; a failed index rebuild backs off for 30s so a down
+  backend is not re-hit every loop turn. The agent loop is never blocked.
+
+See `docs/CONFIG.md` → `embedding` for all fields and the privacy note
+(summaries are sent to the configured endpoint — use a local server if that
+matters).

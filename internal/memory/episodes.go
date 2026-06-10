@@ -52,6 +52,14 @@ type EpisodeStore struct {
 	idxCache []EpisodeMeta // cached index, nil = not loaded
 	muCache  sync.RWMutex  // fine-grained lock for cache reads
 
+	// newEmbedder builds the embedding backend used for per-turn recall
+	// (via sharedEpisodeIndex) and write-time dedup. A factory rather than
+	// an instance because the default RandomProjections embedder is
+	// stateful per fitted corpus — the shared index and each dedup pass
+	// need their own instance. Defaults to RandomProjections; overridden
+	// via setEmbedderFactory when memory.embedding is configured.
+	newEmbedder func() textEmbedder
+
 	// notifier receives episode lifecycle events (stored, deduped, evicted,
 	// promoted, pending-review). Defaults to a NoopMemoryNotifier so callers
 	// never have to nil-check before firing. Set via SetNotifier, normally
@@ -96,7 +104,22 @@ func NewEpisodeStoreWithLifecycle(dir string, rankFn RankStrategy, dedupThreshol
 		maxEpisodes:    maxEpisodes,
 		ttlDays:        ttlDays,
 		notifier:       NoopMemoryNotifier{},
+		newEmbedder:    defaultEmbedderFactory,
 	}
+}
+
+// defaultEmbedderFactory preserves the pre-config behavior: local
+// RandomProjections at the index dimensionality.
+func defaultEmbedderFactory() textEmbedder { return newRPTextEmbedder(episodeVectorDim) }
+
+// setEmbedderFactory replaces the embedding backend factory. Passing nil
+// restores the default. Normally called once at construction time by
+// NewMemoryManager, before any recall/write traffic.
+func (e *EpisodeStore) setEmbedderFactory(f func() textEmbedder) {
+	if f == nil {
+		f = defaultEmbedderFactory
+	}
+	e.newEmbedder = f
 }
 
 // SetNotifier replaces the episode store's lifecycle notifier. If n is nil a
@@ -225,7 +248,7 @@ func (e *EpisodeStore) writeLocked(sessionID, summary string, turns int, prov Ep
 
 	// Mark the vector index dirty so it rebuilds on the next recall, picking up
 	// the new episode and dropping any evicted/replaced ids.
-	sharedEpisodeIndex(e.dir).markDirty()
+	sharedEpisodeIndex(e.dir, e.newEmbedder).markDirty()
 
 	// Collect lifecycle signals only after the write has durably succeeded. They
 	// are fired by the caller once e.mu is released (see notifyAll).
@@ -389,7 +412,7 @@ func (e *EpisodeStore) recallByVector(query string, k int) ([]EpisodeMeta, error
 	// the episode corpus (all-OOV), go-vector returns a zero vector and every
 	// Store.Search result has cosine similarity = 0. Returning those as
 	// "candidates" would make SearchEpisodes skip the LLM fallback with noise.
-	raw := sharedEpisodeIndex(e.dir).search(query, k*3+5)
+	raw := sharedEpisodeIndex(e.dir, e.newEmbedder).search(query, k*3+5)
 	scored := raw[:0:len(raw)]
 	for _, s := range raw {
 		if s.Score > 0 {
@@ -515,7 +538,7 @@ func (e *EpisodeStore) Prune() error {
 		e.mu.Unlock()
 		return err
 	}
-	sharedEpisodeIndex(e.dir).markDirty()
+	sharedEpisodeIndex(e.dir, e.newEmbedder).markDirty()
 	e.mu.Unlock()
 	// Fired after releasing the lock (see notifyAll).
 	e.notifyAll([]MemoryEvent{{Type: "episode_evicted", Sessions: removed, Count: len(removed)}})
@@ -558,8 +581,9 @@ func (e *EpisodeStore) pruneLocked(idx []EpisodeMeta) ([]EpisodeMeta, []string) 
 
 // findDuplicate returns the index of the existing episode most similar to
 // newSummary and that similarity, comparing full on-disk summaries via an
-// ephemeral RP embedder (the same primitive NewRPRanker uses). Returns
-// (-1, 0) for an empty corpus. Caller must hold e.mu.
+// ephemeral embedder from the store's factory. Returns (-1, 0) for an empty
+// corpus or when embedding fails (no dedup is safer than a wrong dedup —
+// writeLocked would DELETE the matched episode). Caller must hold e.mu.
 func (e *EpisodeStore) findDuplicate(newSummary string, idx []EpisodeMeta) (int, float32) {
 	if len(idx) == 0 {
 		return -1, 0
@@ -573,14 +597,25 @@ func (e *EpisodeStore) findDuplicate(newSummary string, idx []EpisodeMeta) (int,
 		}
 	}
 
-	rp := vector.NewRandomProjections(64)
-	rp.Fit(append(append([]string{}, corpus...), newSummary))
-	newVec, _ := rp.Embed(newSummary)
+	emb := e.newEmbedder()
+	if err := emb.fit(append(append([]string{}, corpus...), newSummary)); err != nil {
+		return -1, 0
+	}
+	newVec, err := emb.embed(newSummary)
+	if err != nil {
+		return -1, 0
+	}
+	vecs, err := emb.embedAll(corpus)
+	if err != nil {
+		return -1, 0
+	}
 
 	best := -1
 	var bestSim float32
-	for i, s := range corpus {
-		vec, _ := rp.Embed(s)
+	for i, vec := range vecs {
+		if vec == nil {
+			continue
+		}
 		if sim := cosineVector(newVec, vec); sim > bestSim {
 			bestSim = sim
 			best = i
@@ -740,14 +775,22 @@ func NewLLMRanker(llm LLMClient) RankStrategy {
 // NewRPRanker creates a RankStrategy that uses RandomProjections (go-vector)
 // for semantic similarity search over episodes. No LLM calls — pure vector
 // math. Falls back to recency ordering if RP fitting fails.
-//
-// The ranker fits the RP embedder on episode summaries on each call.
-// With the typical number of episodes (< 100, 120-char summaries each),
-// fitting takes < 1ms and is negligible compared to LLM latency.
 func NewRPRanker(dims int) RankStrategy {
 	if dims <= 0 {
 		dims = 64 // lower dims = faster, fine for short summaries
 	}
+	return newEmbedderRanker(func() textEmbedder { return newRPTextEmbedder(dims) })
+}
+
+// newEmbedderRanker creates a RankStrategy that ranks episodes by cosine
+// similarity in the embedding space produced by newEmb. Falls back to recency
+// ordering (the input order) when embedding fails.
+//
+// The ranker fits a fresh embedder on episode summaries on each call. For
+// RandomProjections that takes < 1ms at typical episode counts; for HTTP
+// backends it costs one batch call, which only the explicit memory-search
+// path pays (per-turn recall goes through the cached shared index instead).
+func newEmbedderRanker(newEmb func() textEmbedder) RankStrategy {
 	return func(query string, episodes []EpisodeMeta) ([]EpisodeMeta, error) {
 		if len(episodes) <= 1 {
 			out := make([]EpisodeMeta, len(episodes))
@@ -761,10 +804,24 @@ func NewRPRanker(dims int) RankStrategy {
 			corpus[i] = ep.Summary
 		}
 
-		// Fit RP and embed query + corpus
-		rp := vector.NewRandomProjections(dims)
-		rp.Fit(append(corpus, query))
-		queryVec, _ := rp.Embed(query)
+		recency := func() []EpisodeMeta {
+			out := make([]EpisodeMeta, len(episodes))
+			copy(out, episodes)
+			return out
+		}
+
+		emb := newEmb()
+		if err := emb.fit(append(corpus, query)); err != nil {
+			return recency(), nil
+		}
+		queryVec, err := emb.embed(query)
+		if err != nil {
+			return recency(), nil
+		}
+		vecs, err := emb.embedAll(corpus)
+		if err != nil {
+			return recency(), nil
+		}
 
 		// Score each episode by cosine similarity
 		type scored struct {
@@ -772,10 +829,8 @@ func NewRPRanker(dims int) RankStrategy {
 			score float32
 		}
 		scores := make([]scored, len(episodes))
-		for i, summary := range corpus {
-			vec, _ := rp.Embed(summary)
-			sim := cosineVector(queryVec, vec)
-			scores[i] = scored{idx: i, score: sim}
+		for i, vec := range vecs {
+			scores[i] = scored{idx: i, score: cosineVector(queryVec, vec)}
 		}
 
 		// Sort by score descending
