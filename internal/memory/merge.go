@@ -85,11 +85,11 @@ func (m *MergeDetector) Fit(corpus []string) {
 	m.corpus = make([]string, len(corpus))
 	copy(m.corpus, corpus) // keep raw entries for merge/judge string logic
 
-	if err := m.emb.fit(corpus); err != nil {
+	if err := m.emb.Fit(corpus); err != nil {
 		m.vecs = nil
 		return
 	}
-	vecs, err := m.emb.embedAll(corpus)
+	vecs, err := m.emb.EmbedAll(corpus)
 	if err != nil {
 		m.vecs = nil
 		return
@@ -110,7 +110,7 @@ func (m *MergeDetector) Classify(entry string) (action string, similarIdx int, s
 		return "nobody", -1, 0
 	}
 
-	vec, err := m.emb.embed(entry)
+	vec, err := m.emb.Embed(entry)
 	if err != nil {
 		return "nobody", -1, 0
 	}
@@ -154,11 +154,11 @@ func (m *MergeDetector) Classify(entry string) (action string, similarIdx int, s
 // stateless backends only the new entry costs an embedding call (cache).
 func (m *MergeDetector) AppendEntry(entry string) {
 	m.corpus = append(m.corpus, entry)
-	if err := m.emb.fit(m.corpus); err != nil {
+	if err := m.emb.Fit(m.corpus); err != nil {
 		m.vecs = append(m.vecs, nil)
 		return
 	}
-	vec, err := m.emb.embed(entry)
+	vec, err := m.emb.Embed(entry)
 	if err != nil {
 		vec = nil
 	}
@@ -172,11 +172,11 @@ func (m *MergeDetector) ReplaceEntry(idx int, entry string) {
 		return
 	}
 	m.corpus[idx] = entry
-	if err := m.emb.fit(m.corpus); err != nil {
+	if err := m.emb.Fit(m.corpus); err != nil {
 		m.vecs = nil // a failed fit invalidates the whole precomputed set
 		return
 	}
-	vec, err := m.emb.embed(entry)
+	vec, err := m.emb.Embed(entry)
 	if err != nil {
 		vec = nil
 	}

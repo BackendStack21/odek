@@ -166,14 +166,11 @@ func TestMergeDetectorHighAddThreshold(t *testing.T) {
 }
 
 func TestMergeDetectorWithThresholdsDefaultDims(t *testing.T) {
-	// 0 dims should use default
+	// 0 dims should use default (256). The concrete embedder type lives in
+	// internal/embedding now, so assert via the public fingerprint.
 	md := NewMergeDetectorWithThresholds(0, 0.5, 0.2)
-	rp, ok := md.emb.(*rpTextEmbedder)
-	if !ok {
-		t.Fatalf("default embedder = %T, want *rpTextEmbedder", md.emb)
-	}
-	if rp.dims != 256 {
-		t.Errorf("expected default 256 dims, got %d", rp.dims)
+	if got := md.emb.Fingerprint(); got != "rp/256" {
+		t.Errorf("default embedder fingerprint = %q, want rp/256", got)
 	}
 }
 

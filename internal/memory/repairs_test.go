@@ -51,7 +51,7 @@ func TestNewTextEmbedderExpandsAPIKey(t *testing.T) {
 		Provider: "http", BaseURL: srv.URL + "/v1", Model: "m",
 		APIKey: "${ODEK_TEST_EMBED_KEY}",
 	}, 64)
-	if _, err := emb.embed("hi"); err != nil {
+	if _, err := emb.Embed("hi"); err != nil {
 		t.Fatal(err)
 	}
 	if got := <-gotAuth; got != "Bearer sk-expanded" {
@@ -63,12 +63,12 @@ func TestNewTextEmbedderExpandsAPIKey(t *testing.T) {
 
 type failingEmbedder struct{}
 
-func (failingEmbedder) fit([]string) error                         { return errEmbed }
-func (failingEmbedder) embed(string) (vector.Vector, error)        { return nil, errEmbed }
-func (failingEmbedder) embedAll([]string) ([]vector.Vector, error) { return nil, errEmbed }
-func (failingEmbedder) fingerprint() string                        { return "failing/0" }
-func (failingEmbedder) saveState(string)                           {}
-func (failingEmbedder) loadState(string) bool                      { return false }
+func (failingEmbedder) Fit([]string) error                         { return errEmbed }
+func (failingEmbedder) Embed(string) (vector.Vector, error)        { return nil, errEmbed }
+func (failingEmbedder) EmbedAll([]string) ([]vector.Vector, error) { return nil, errEmbed }
+func (failingEmbedder) Fingerprint() string                        { return "failing/0" }
+func (failingEmbedder) SaveState(string)                           {}
+func (failingEmbedder) LoadState(string) bool                      { return false }
 
 var errEmbed = errors.New("embed: backend unavailable")
 

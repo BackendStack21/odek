@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -14,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/BackendStack21/go-vector/pkg/vector"
+	"github.com/BackendStack21/odek/internal/embedding"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -598,14 +598,14 @@ func (e *EpisodeStore) findDuplicate(newSummary string, idx []EpisodeMeta) (int,
 	}
 
 	emb := e.newEmbedder()
-	if err := emb.fit(append(append([]string{}, corpus...), newSummary)); err != nil {
+	if err := emb.Fit(append(append([]string{}, corpus...), newSummary)); err != nil {
 		return -1, 0
 	}
-	newVec, err := emb.embed(newSummary)
+	newVec, err := emb.Embed(newSummary)
 	if err != nil {
 		return -1, 0
 	}
-	vecs, err := emb.embedAll(corpus)
+	vecs, err := emb.EmbedAll(corpus)
 	if err != nil {
 		return -1, 0
 	}
@@ -811,14 +811,14 @@ func newEmbedderRanker(newEmb func() textEmbedder) RankStrategy {
 		}
 
 		emb := newEmb()
-		if err := emb.fit(append(corpus, query)); err != nil {
+		if err := emb.Fit(append(corpus, query)); err != nil {
 			return recency(), nil
 		}
-		queryVec, err := emb.embed(query)
+		queryVec, err := emb.Embed(query)
 		if err != nil {
 			return recency(), nil
 		}
-		vecs, err := emb.embedAll(corpus)
+		vecs, err := emb.EmbedAll(corpus)
 		if err != nil {
 			return recency(), nil
 		}
@@ -846,31 +846,12 @@ func newEmbedderRanker(newEmb func() textEmbedder) RankStrategy {
 	}
 }
 
-// cosineVector computes cosine similarity between two go-vector Vectors.
+// cosineVector computes cosine similarity between two go-vector Vectors. It
+// delegates to embedding.Cosine (which clamps NaN/Inf to 0 so ranking stays
+// well-defined against a hostile backend — the guard MergeDetector.Classify
+// also relies on).
 func cosineVector(a, b vector.Vector) float32 {
-	if len(a) != len(b) || len(a) == 0 {
-		return 0
-	}
-	var dot, normA, normB float64
-	for i := range a {
-		da := float64(a[i])
-		db := float64(b[i])
-		dot += da * db
-		normA += da * da
-		normB += db * db
-	}
-	if normA == 0 || normB == 0 {
-		return 0
-	}
-	sim := dot / (math.Sqrt(normA) * math.Sqrt(normB))
-	if math.IsNaN(sim) || math.IsInf(sim, 0) {
-		// A buggy/hostile embedding backend can return NaN/Inf components; a
-		// NaN score breaks sort ordering (non-strict-weak). Treat as "no
-		// similarity" so ranking stays well-defined. Mirrors the NaN guard in
-		// MergeDetector.Classify.
-		return 0
-	}
-	return float32(sim)
+	return embedding.Cosine(a, b)
 }
 
 // truncateAtRune returns s truncated to at most maxBytes bytes, always
