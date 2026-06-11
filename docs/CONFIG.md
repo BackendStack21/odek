@@ -181,6 +181,7 @@ The `skills` section controls the skill system:
 | `auto_save.enabled` | — | true | Auto-save quality skill suggestions without prompting |
 | `auto_save.require_llm` | — | true | Only auto-save if LLM enhancement was applied |
 | `auto_save.max_per_run` | — | 3 | Max skills to auto-save per session |
+| `embedding` | — | *(inherits top-level `embedding`)* | Optional override of the shared embedding backend for semantic skill matching. When unset, skills inherit the top-level `embedding` default with the per-turn query timeout bounded to 2s. See [Shared embedding backend](#shared-embedding-backend-embedding--memory-sessions--skills). |
 
 ## Memory configuration
 
@@ -239,7 +240,7 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
 | `episode_dedup_threshold` | 0.92 | Cosine similarity above which a newly written episode is treated as a near-duplicate of an existing one and **replaces** it (newest wins). An untrusted episode never replaces a trusted/approved one. `0` disables dedup. |
 | `max_episodes` | 500 | Maximum number of stored episodes. On each write, episodes beyond this count are evicted oldest-first (both the summary file and the index entry). `0` disables the cap. |
 | `episode_ttl_days` | 0 | Evict episodes older than this many days. `0` (default) disables TTL-based eviction. |
-| `embedding` | *(unset)* | Semantic embedding backend for episode recall, episode dedup, the non-LLM episode ranker, and fact merge-on-write. Unset = local RandomProjections (lexical bag-of-words — fast, zero-cost, but no real semantics). See below. |
+| `embedding` | *(inherits top-level `embedding`)* | Optional override of the embedding backend for episode recall, dedup, the non-LLM episode ranker, and fact merge-on-write. When unset, memory inherits the shared top-level [`embedding`](#shared-embedding-backend-embedding--memory-sessions--skills) default; if neither is set, local RandomProjections (lexical bag-of-words — fast, zero-cost, but no real semantics). See below. |
 
 ### `embedding` — real semantic embeddings (optional)
 
