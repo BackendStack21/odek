@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1
 
-# llama.cpp embeddings sidecar — backs odek's memory.embedding (http provider).
+# llama.cpp embeddings sidecar — backs odek's shared `embedding` block (http
+# provider): memory, session_search, and skill matching.
 #
 # Builds llama-server from source pinned to the SAME llama.cpp release as the
 # main image (LLAMA_VERSION), and bundles a pinned nomic-embed-text-v1.5 GGUF

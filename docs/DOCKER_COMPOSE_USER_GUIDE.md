@@ -142,12 +142,13 @@ no Redis/Valkey. To disable web search, comment the `searxng` service and the
 from the config files.
 
 A second sidecar, **`llama-embeddings`** (a llama.cpp server with a bundled
-`nomic-embed-text-v1.5` GGUF), gives the memory system real semantic embeddings —
-see [docker/README.md](../docker/README.md#local-memory-embeddings-out-of-the-box).
+`nomic-embed-text-v1.5` GGUF), gives odek real semantic embeddings —
+see [docker/README.md](../docker/README.md#local-semantic-embeddings-out-of-the-box).
 It also co-starts on every profile, is reachable only at `http://llama-embeddings:8080`
-(no host port, no key, no first-run download), and both bundled configs point
-`memory.embedding` at it. Disable the same way: comment the service + its `depends_on`
-entries and drop the `embedding` block (memory falls back to local RandomProjections).
+(no host port, no key, no first-run download), and both bundled configs set the top-level
+`embedding` block to it — so memory, `session_search`, and skill matching all run
+semantically. Disable the same way: comment the service + its `depends_on` entries and
+drop the top-level `embedding` block (every subsystem falls back to RandomProjections).
 
 ---
 
