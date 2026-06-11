@@ -307,18 +307,22 @@ On every user turn, lazy skills compete for a limited number of context slots
 
 1. **Keyword matcher (default)** — a scored matcher with stemming and synonyms
    (no AND-lock: a topic-only or action-only hit still scores). Local and
-   instant; this is the default per-turn path.
-2. **Semantic matcher (opt-in)** — when `skills.embedding` is configured with an
-   HTTP backend, the query is embedded and matched against the skill corpus by
-   meaning, catching morphological and paraphrase variants the keyword matcher
-   misses. Because it runs on the hot path, the query embed is **time-bounded**
-   (2s default) and **falls back to the keyword matcher** on any miss, timeout,
-   or down backend.
+   instant; this is the path when no embedding backend is configured.
+2. **Semantic matcher** — when an `embedding` backend is configured (the shared
+   top-level block, or a `skills.embedding` override), the query is embedded and
+   matched against the skill corpus by meaning, catching morphological and
+   paraphrase variants the keyword matcher misses. Because it runs on the hot
+   path, the query embed is **time-bounded** and **falls back to the keyword
+   matcher** on any miss, timeout, or down backend.
 
-Skill matching is the one subsystem that does **not** inherit the shared
-top-level `embedding` default — you opt in explicitly because it embeds on every
-turn. The skill corpus embeds once per reload (cheap); only the query embeds per
-turn. See [CONFIG.md → Shared embedding backend](./CONFIG.md#shared-embedding-backend-embedding--sessions--skills).
+Skills inherit the shared embedding default like every other subsystem, so a
+single top-level `embedding` block turns on semantic skill matching too. The one
+special-case: because skills embed on **every turn**, an *inherited* config has
+its per-turn query timeout capped at **2s** (the shared `timeout_seconds` is not
+allowed to leak onto the hot path). The skill corpus embeds once per reload
+(cheap); only the query embeds per turn. To point skills at a different model or
+a different timeout, set `skills.embedding` explicitly (then it is respected
+verbatim). See [CONFIG.md → Shared embedding backend](./CONFIG.md#shared-embedding-backend-embedding--memory-sessions--skills).
 
 ```json
 {
@@ -326,7 +330,7 @@ turn. See [CONFIG.md → Shared embedding backend](./CONFIG.md#shared-embedding-
     "embedding": {
       "provider": "http",
       "base_url": "http://localhost:11434/v1",
-      "model": "nomic-embed-text",
+      "model": "all-minilm",
       "timeout_seconds": 2
     }
   }
@@ -440,7 +444,7 @@ odek skill reset-skips repeated-ls
 | `curation.skip_threshold` | `1` | Skips needed for permanent suppression |
 | `curation.skip_reset_days` | `30` | Days before skip expires |
 | `curation.auto_prune` | `false` | Auto-delete stale skills |
-| `embedding` | *(unset)* | **Opt-in** HTTP embedding backend for semantic skill matching (see above). Unset = local keyword matching. Not inherited from the top-level `embedding` default. |
+| `embedding` | *(inherits top-level)* | Optional override of the shared embedding backend for semantic skill matching (see above). When unset, skills inherit the top-level `embedding` default with the per-turn timeout bounded to 2s. No backend anywhere = local keyword matching. |
 
 ## Related
 

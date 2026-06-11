@@ -282,14 +282,14 @@ Operational notes:
   (e.g. cloud metadata services) you would not otherwise expose. Prefer a local
   server (Ollama/llama.cpp) when episode/fact text must not leave the machine.
 
-## Shared embedding backend (`embedding`) — sessions & skills
+## Shared embedding backend (`embedding`) — memory, sessions & skills
 
 The same embedder that powers memory also powers **semantic session search**
-(the `session_search` tool) and, opt-in, **semantic skill matching**. Rather
-than configuring three separate endpoints, set one **top-level `embedding`
-block** as the shared default; subsystems then inherit or override it. The block
-uses the exact same fields as `memory.embedding` above
-(`provider`/`base_url`/`model`/`api_key`/`dims`/`timeout_seconds`).
+(the `session_search` tool) and **semantic skill matching**. Set one
+**top-level `embedding` block** and *every* subsystem inherits it — one endpoint,
+consistent embedding-space semantics everywhere. Each subsystem can still
+override the default with its own block. The block uses the same fields as
+`memory.embedding` above (`provider`/`base_url`/`model`/`api_key`/`dims`/`timeout_seconds`).
 
 ```json
 {
@@ -301,28 +301,22 @@ uses the exact same fields as `memory.embedding` above
 }
 ```
 
-| Subsystem | Uses the shared `embedding`? | Override |
-|-----------|------------------------------|----------|
-| **Memory** | Yes, when `memory.embedding` is unset | `memory.embedding` wins if set (back-compat) |
-| **Sessions** (`session_search`) | Yes — semantic session search | *(top-level only)* |
-| **Skills** (lazy matching) | **No — opt-in** | `skills.embedding` (explicit) |
+With just that block, memory recall, `session_search`, and skill matching all go
+semantic.
 
-Why skills are opt-in: skill matching runs on **every user turn**, so a remote
-embedding call sits on the hot path. Sessions and memory embed infrequently
-(explicit search / session-end) and persist their vectors, so inheriting the
-shared default there is cheap. To enable semantic skill matching, set
-`skills.embedding` explicitly:
+| Subsystem | Inherits the shared `embedding`? | Optional override |
+|-----------|----------------------------------|-------------------|
+| **Memory** | ✅ when `memory.embedding` is unset | `memory.embedding` |
+| **Sessions** (`session_search`) | ✅ when `sessions.embedding` is unset | `sessions.embedding` |
+| **Skills** (lazy matching) | ✅ when `skills.embedding` is unset (timeout bounded) | `skills.embedding` |
+
+Each override is optional and isolated — e.g. point skills at a smaller/faster
+model while memory uses a higher-quality one:
 
 ```json
 {
-  "skills": {
-    "embedding": {
-      "provider": "http",
-      "base_url": "http://localhost:11434/v1",
-      "model": "nomic-embed-text",
-      "timeout_seconds": 2
-    }
-  }
+  "embedding": { "provider": "http", "base_url": "http://localhost:11434/v1", "model": "nomic-embed-text" },
+  "skills":   { "embedding": { "provider": "http", "base_url": "http://localhost:11434/v1", "model": "all-minilm" } }
 }
 ```
 
@@ -333,10 +327,13 @@ Operational notes:
   `provider`/`model`/`dims` forces a one-time rebuild from the session files. A
   down backend degrades `session_search` to its keyword fallback and backs off
   for 30s — it never fails a session save.
-- **Skill matching fails fast and falls back.** The per-turn query embed is
-  bounded by a short timeout (defaults to 2s when `skills.embedding` omits
-  `timeout_seconds`); on a slow/failed/empty result the matcher falls back to
-  the local keyword matcher, so a down backend never stalls or blocks loading.
+- **Skill matching is the hot path — it inherits, but with a bounded timeout.**
+  Skill matching runs on *every user turn*, so when skills inherit the shared
+  default their per-turn query embed is capped at **2s** (regardless of the
+  shared `timeout_seconds`) and any slow/failed/empty result falls back to the
+  local keyword matcher. An explicit `skills.embedding` is respected verbatim —
+  set its own `timeout_seconds` if you want a different bound. Memory and
+  sessions are *not* capped (they embed infrequently and persist their vectors).
 - The **egress warning above applies to every subsystem** — session transcripts
   and skill text are POSTed to `base_url`. Point it only at a server you trust.
 

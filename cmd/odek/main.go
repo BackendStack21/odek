@@ -1659,8 +1659,8 @@ func continueCmd(args []string) error {
 	resolved := config.LoadConfig(config.CLIFlags{Model: sess.Model})
 
 	// Initialize semantic search index (non-fatal on failure). Sessions use the
-	// shared top-level embedding backend.
-	_ = store.InitVectorIndex(resolved.Embedding)
+	// shared embedding backend (or a sessions.embedding override).
+	_ = store.InitVectorIndex(resolved.SessionEmbedding)
 
 	// Auto-apply sandbox if session was sandboxed (even if config changed)
 	if sess.Sandbox && !resolved.Sandbox {
