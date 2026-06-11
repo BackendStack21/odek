@@ -95,17 +95,19 @@ services:
     restart: unless-stopped
     depends_on: [searxng, llama-embeddings]
 
-  # ── llama.cpp embeddings — local backend for memory.embedding ──
-  # Co-starts with every odek profile so the memory system gets real semantic
-  # embeddings (recall, dedup, ranking, fact merge) out of the box — no cloud
-  # embeddings API, no keys. Reachable only by the odek containers over the
-  # compose network at http://llama-embeddings:8080 — NO host port is published
-  # (odek's memory system is the only consumer). The GGUF is baked into the
-  # image (see docker/Dockerfile.embeddings), so there is no first-run download
-  # and no volume. Both bundled configs point memory.embedding.base_url here.
-  # To run without local embeddings, comment this service and the matching
-  # depends_on entries, and drop the "embedding" block from the configs (memory
-  # then falls back to local RandomProjections — lexical, zero-cost).
+  # ── llama.cpp embeddings — local backend for the shared "embedding" block ──
+  # Co-starts with every odek profile so semantic embeddings work out of the box
+  # — no cloud embeddings API, no keys. Both bundled configs set the top-level
+  # "embedding" block to this server, so a single endpoint powers ALL three
+  # consumers: memory (recall, dedup, ranking, fact merge), session_search, and
+  # lazy skill matching (skills inherit the shared default with a bounded 2s
+  # per-turn timeout). Reachable only by the odek containers over the compose
+  # network at http://llama-embeddings:8080 — NO host port is published. The
+  # GGUF is baked into the image (see docker/Dockerfile.embeddings), so there is
+  # no first-run download and no volume. To run without local embeddings,
+  # comment this service and the matching depends_on entries, and drop the
+  # top-level "embedding" block from the configs (every subsystem then falls
+  # back to local RandomProjections — lexical, zero-cost).
   llama-embeddings:
     profiles: ["restricted", "godmode", "telegram-restricted", "telegram-godmode"]
     build:

@@ -188,40 +188,51 @@ sidecar** backing the `web_search` tool — no cloud search API, no keys.
 - To run **without** web search: comment out the `searxng` service (and the
   `depends_on: [searxng]` lines), and remove the `web_search` block from the configs.
 
-## Local memory embeddings (out of the box)
+## Local semantic embeddings (out of the box)
 
 The compose setup runs a **private [llama.cpp](https://github.com/ggerganov/llama.cpp)
-embeddings sidecar** backing odek's memory system — no cloud embeddings API, no keys.
+embeddings sidecar** backing odek's semantic features — no cloud embeddings API, no keys.
 
-Without it, memory similarity (episode recall, dedup, ranking, fact merge-on-write)
-runs on local bag-of-words vectors: fast, but purely lexical — *"fixed the auth bug"*
-and *"repaired login issue"* don't match. The sidecar swaps that for a real embedding
-model, so recall matches by **meaning**. See
-[`../docs/MEMORY.md`](../docs/MEMORY.md) → *Pluggable Embeddings* and
-[`../docs/CONFIG.md`](../docs/CONFIG.md) → `embedding`.
+Without it, similarity runs on local bag-of-words vectors: fast, but purely lexical —
+*"fixed the auth bug"* and *"repaired login issue"* don't match. The sidecar swaps that
+for a real embedding model, so everything matches by **meaning**. Both bundled configs
+set the **top-level `embedding` block** to the sidecar, so one endpoint powers all three
+consumers at once:
+
+- **Memory** — episode recall, dedup, ranking, fact merge-on-write.
+- **Sessions** — the `session_search` tool matches past sessions by meaning.
+- **Skills** — lazy skill matching (inherits the shared default, with the per-turn query
+  timeout bounded to 2s so the hot path stays fast).
+
+See [`../docs/MEMORY.md`](../docs/MEMORY.md) → *Pluggable Embeddings*,
+[`../docs/SESSIONS.md`](../docs/SESSIONS.md) → *Session Search*, and
+[`../docs/CONFIG.md`](../docs/CONFIG.md) → *Shared embedding backend*.
 
 - The `llama-embeddings` service co-starts with every profile and is reachable only by
-  the odek containers at `http://llama-embeddings:8080` (**no host port** — odek's memory
-  is the only consumer). Both bundled configs set `memory.embedding` to it.
+  the odek containers at `http://llama-embeddings:8080` (**no host port** — the odek
+  containers are the only consumers). Both bundled configs set the top-level `embedding`
+  block to it; memory, sessions, and skills inherit it.
 - The image **bundles `llama-server` (built from source, pinned to the same llama.cpp
   release as the main image) and `nomic-embed-text-v1.5`** (768-dim, ~84 MB at Q4_K_M)
   — so there's **no first-run model download** and no volume, mirroring the bundled
   whisper / MiniCPM-V models. The server runs `--embeddings --pooling mean` and exposes
   the OpenAI-compatible `/v1/embeddings` endpoint.
-- **Graceful by design:** if the sidecar is still loading or unreachable, recall just
-  degrades to "no context" and retries with a 30s backoff — the agent loop is never
-  blocked, and a wrong dedup never deletes an episode. Default behavior without the
-  service is local RandomProjections.
+- **Graceful by design:** if the sidecar is still loading or unreachable, each consumer
+  degrades safely — memory recall falls back to "no context", `session_search` to its
+  keyword tier, skill matching to the keyword matcher — all with a 30s/short-timeout
+  backoff, so the agent loop is never blocked and a wrong dedup never deletes an episode.
+  Default behavior without the service is local RandomProjections everywhere.
 - Want a higher-quality quantization? Rebuild with
   `--build-arg EMBED_QUANT=Q8_0` (available: `Q4_K_M` default, `Q5_K_M`, `Q6_K`, `Q8_0`,
   `f16`). To use a different model, override `EMBED_HF_REPO` / `EMBED_HF_REVISION` /
-  `EMBED_FILE` and update `memory.embedding.model` in the configs.
+  `EMBED_FILE` and update `embedding.model` in the configs.
 - To run **without** local embeddings: comment out the `llama-embeddings` service (and
-  the matching `depends_on` entries), and remove the `embedding` block from the configs
-  — memory falls back to RandomProjections automatically.
-- **Point `base_url` only at a server you trust:** every episode summary and fact entry
-  is sent there for embedding. Here it's the in-network sidecar, so nothing leaves the
-  compose network; if you repoint it at a cloud API, that text egresses.
+  the matching `depends_on` entries), and remove the top-level `embedding` block from the
+  configs — every subsystem falls back to RandomProjections automatically.
+- **Point `base_url` only at a server you trust:** session transcripts, episode summaries,
+  fact entries, and skill text are all sent there for embedding. Here it's the in-network
+  sidecar, so nothing leaves the compose network; if you repoint it at a cloud API, that
+  text egresses.
 
 ## Verify the profiles differ
 

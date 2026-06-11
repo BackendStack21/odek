@@ -935,3 +935,83 @@ func TestLoadConfig_MemoryEmbeddingSection(t *testing.T) {
 		t.Errorf("base_url/api_key = %q/%q, want unexpanded ${...} placeholders", emb.BaseURL, emb.APIKey)
 	}
 }
+
+// TestLoadConfig_TopLevelEmbeddingShared verifies the shared top-level
+// embedding block flows to EVERY subsystem by default: ResolvedConfig.Embedding,
+// memory, sessions (SessionEmbedding), and skills all inherit it. Skills inherit
+// with a bounded per-turn timeout so the hot path stays fast.
+func TestLoadConfig_TopLevelEmbeddingShared(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+	if err := os.WriteFile(filepath.Join(dir, "odek.json"), []byte(`{
+		"embedding": {
+			"provider": "http",
+			"base_url": "http://localhost:11434/v1",
+			"model": "nomic-embed-text",
+			"timeout_seconds": 10
+		}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := LoadConfig(CLIFlags{})
+
+	if cfg.Embedding == nil || cfg.Embedding.Model != "nomic-embed-text" {
+		t.Fatalf("top-level embedding not resolved: %+v", cfg.Embedding)
+	}
+	// Memory inherits the shared default verbatim.
+	if cfg.Memory.Embedding == nil || cfg.Memory.Embedding.Model != "nomic-embed-text" {
+		t.Errorf("memory should inherit top-level embedding, got %+v", cfg.Memory.Embedding)
+	}
+	// Sessions inherit via SessionEmbedding.
+	if cfg.SessionEmbedding == nil || cfg.SessionEmbedding.Model != "nomic-embed-text" {
+		t.Errorf("sessions should inherit top-level embedding, got %+v", cfg.SessionEmbedding)
+	}
+	// Skills inherit too, but with the per-turn timeout bounded.
+	if cfg.Skills.Embedding == nil || cfg.Skills.Embedding.Model != "nomic-embed-text" {
+		t.Fatalf("skills should inherit top-level embedding, got %+v", cfg.Skills.Embedding)
+	}
+	if cfg.Skills.Embedding.TimeoutSeconds != maxSkillsInheritedTimeout {
+		t.Errorf("inherited skills timeout = %d, want bounded to %d",
+			cfg.Skills.Embedding.TimeoutSeconds, maxSkillsInheritedTimeout)
+	}
+	// The shared/memory configs keep the original timeout (not bounded).
+	if cfg.Memory.Embedding.TimeoutSeconds != 10 {
+		t.Errorf("memory timeout = %d, want 10 (unbounded)", cfg.Memory.Embedding.TimeoutSeconds)
+	}
+}
+
+// TestLoadConfig_EmbeddingOverrides verifies each subsystem can override the
+// shared default independently, and an explicit skills.embedding is respected
+// as-is (its timeout is NOT bounded — only inherited skills configs are).
+func TestLoadConfig_EmbeddingOverrides(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+	if err := os.WriteFile(filepath.Join(dir, "odek.json"), []byte(`{
+		"embedding": {"provider": "http", "base_url": "http://shared/v1", "model": "shared-model"},
+		"memory": {"embedding": {"provider": "http", "base_url": "http://mem/v1", "model": "mem-model"}},
+		"sessions": {"embedding": {"provider": "http", "base_url": "http://ses/v1", "model": "ses-model"}},
+		"skills": {"embedding": {"provider": "http", "base_url": "http://skill/v1", "model": "skill-model", "timeout_seconds": 7}}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := LoadConfig(CLIFlags{})
+
+	if cfg.Embedding == nil || cfg.Embedding.Model != "shared-model" {
+		t.Fatalf("shared embedding = %+v, want shared-model", cfg.Embedding)
+	}
+	if cfg.Memory.Embedding == nil || cfg.Memory.Embedding.Model != "mem-model" {
+		t.Errorf("memory.embedding should win over shared default, got %+v", cfg.Memory.Embedding)
+	}
+	if cfg.SessionEmbedding == nil || cfg.SessionEmbedding.Model != "ses-model" {
+		t.Errorf("sessions.embedding should win over shared default, got %+v", cfg.SessionEmbedding)
+	}
+	if cfg.Skills.Embedding == nil || cfg.Skills.Embedding.Model != "skill-model" {
+		t.Errorf("skills.embedding override = %+v, want skill-model", cfg.Skills.Embedding)
+	}
+	// Explicit skills timeout is respected, not bounded to maxSkillsInheritedTimeout.
+	if cfg.Skills.Embedding.TimeoutSeconds != 7 {
+		t.Errorf("explicit skills timeout = %d, want 7 (respected as-is)", cfg.Skills.Embedding.TimeoutSeconds)
+	}
+}

@@ -22,6 +22,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/BackendStack21/odek/internal/embedding"
 )
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -102,6 +104,12 @@ type SkillsConfig struct {
 	LLMLearn     bool           `json:"llm_learn"`
 	LLMCurate    bool           `json:"llm_curate"`
 	Verbose      bool           `json:"verbose"` // show full skill banners when loaded
+
+	// Embedding opts skill matching into a remote (HTTP) embedding backend for
+	// real semantic matching. nil (default) = local RandomProjections. It is
+	// NOT inherited from the top-level embedding default because skill matching
+	// runs on every turn — opt in explicitly. See internal/embedding.Config.
+	Embedding *embedding.Config `json:"embedding,omitempty"`
 }
 
 // ImportConfig controls the URI import flow.

@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/embedding"
 	"github.com/BackendStack21/odek/internal/mcpclient"
 	"github.com/BackendStack21/odek/internal/memory"
 	"github.com/BackendStack21/odek/internal/redact"
@@ -85,6 +86,14 @@ type SkillsConfig struct {
 	LLMLearn     *bool                  `json:"llm_learn,omitempty"`
 	LLMCurate    *bool                  `json:"llm_curate,omitempty"`
 	Verbose      *bool                  `json:"verbose,omitempty"`
+	Embedding    *embedding.Config      `json:"embedding,omitempty"`
+}
+
+// SessionsConfig is the "sessions" section of odek.json. It currently only
+// carries an optional embedding override for semantic session_search; when
+// unset, sessions use the shared top-level embedding default.
+type SessionsConfig struct {
+	Embedding *embedding.Config `json:"embedding,omitempty"`
 }
 
 // TranscriptionConfig controls the transcribe tool (local whisper.cpp).
@@ -174,6 +183,16 @@ type FileConfig struct {
 
 	// Memory section controls the persistent memory system.
 	Memory *memory.MemoryConfig `json:"memory,omitempty"`
+
+	// Embedding is the shared default embedding backend for semantic retrieval.
+	// Every subsystem (memory, sessions, skills) uses it unless that subsystem
+	// sets its own override (memory.embedding / sessions.embedding /
+	// skills.embedding). See internal/embedding.Config.
+	Embedding *embedding.Config `json:"embedding,omitempty"`
+
+	// Sessions configures the session subsystem. Currently only an optional
+	// embedding override for semantic session_search.
+	Sessions *SessionsConfig `json:"sessions,omitempty"`
 
 	// MCPServers maps server names to MCP server configurations.
 	// Each server is an external MCP server (e.g., Playwright, database,
@@ -296,6 +315,14 @@ type ResolvedConfig struct {
 
 	// Memory is the resolved memory config with default values.
 	Memory memory.MemoryConfig
+
+	// Embedding is the resolved shared embedding backend — the default every
+	// subsystem inherits unless it overrides. nil = default RandomProjections.
+	Embedding *embedding.Config
+
+	// SessionEmbedding is the embedding backend sessions use for semantic
+	// session_search: sessions.embedding when set, else the shared Embedding.
+	SessionEmbedding *embedding.Config
 
 	// MCPServers maps server names to external MCP server configurations.
 	// Populated from the mcp_servers section of odek.json.
@@ -713,6 +740,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		Skills:          resolveSkills(cfg.Skills),
 		Dangerous:       resolveDangerous(cfg.Dangerous),
 		Memory:          resolveMemory(cfg.Memory),
+		Embedding:       cfg.Embedding,
 		MCPServers:      cfg.MCPServers,
 		Telegram:        resolveTelegram(cfg.Telegram),
 		Transcription:   resolveTranscription(cfg.Transcription),
@@ -721,6 +749,20 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		Schedules:       resolveSchedules(cfg.Schedules),
 		InteractionMode: ifZero(cfg.InteractionMode, "engaging"),
 		ToolProgress:    ifZero(cfg.ToolProgress, "all"),
+	}
+
+	// Every subsystem inherits the shared top-level embedding default unless it
+	// set its own override. Memory and skills carry their resolved embedder on
+	// their own config struct; sessions expose it via SessionEmbedding.
+	if resolved.Memory.Embedding == nil {
+		resolved.Memory.Embedding = cfg.Embedding
+	}
+	if resolved.Skills.Embedding == nil {
+		resolved.Skills.Embedding = skillsInheritedEmbedding(cfg.Embedding)
+	}
+	resolved.SessionEmbedding = cfg.Embedding
+	if cfg.Sessions != nil && cfg.Sessions.Embedding != nil {
+		resolved.SessionEmbedding = cfg.Sessions.Embedding
 	}
 
 	// MaxConcurrency: default to 3 if not set
@@ -790,6 +832,25 @@ func ifZero(s, def string) string {
 	return s
 }
 
+// maxSkillsInheritedTimeout bounds (seconds) the per-turn query embed when
+// skills inherit the shared embedding default. Skill matching runs every turn,
+// so a longer memory/session-oriented timeout must not leak onto the hot path.
+// An explicit skills.embedding is respected as-is (not capped here).
+const maxSkillsInheritedTimeout = 2
+
+// skillsInheritedEmbedding returns the shared embedding config bounded to a
+// short per-turn timeout for skill matching. nil stays nil (local RP default).
+func skillsInheritedEmbedding(shared *embedding.Config) *embedding.Config {
+	if shared == nil {
+		return nil
+	}
+	c := *shared
+	if c.TimeoutSeconds == 0 || c.TimeoutSeconds > maxSkillsInheritedTimeout {
+		c.TimeoutSeconds = maxSkillsInheritedTimeout
+	}
+	return &c
+}
+
 // resolveSkills merges file-level skills config with defaults.
 func resolveSkills(cfg *SkillsConfig) skills.SkillsConfig {
 	def := skills.DefaultSkillsConfig()
@@ -845,6 +906,11 @@ func resolveSkills(cfg *SkillsConfig) skills.SkillsConfig {
 	}
 	if cfg.Verbose != nil {
 		def.Verbose = *cfg.Verbose
+	}
+	// skills.embedding overrides the shared default; inheritance of the shared
+	// default (when this is nil) is applied by the caller after resolution.
+	if cfg.Embedding != nil {
+		def.Embedding = cfg.Embedding
 	}
 	return def
 }
@@ -1148,6 +1214,12 @@ func overlayFile(base, override FileConfig) FileConfig {
 	}
 	if override.Memory != nil {
 		base.Memory = override.Memory
+	}
+	if override.Embedding != nil {
+		base.Embedding = override.Embedding
+	}
+	if override.Sessions != nil {
+		base.Sessions = override.Sessions
 	}
 	if override.Telegram != nil {
 		base.Telegram = override.Telegram

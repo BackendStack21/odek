@@ -66,9 +66,10 @@ Flags:
 	// Build skills manager (for skill tools)
 	var sm *skills.SkillManager
 	if resolved.Skills.Learn {
-		sm = skills.NewSkillManager(
+		sm = skills.NewSkillManagerWithEmbedding(
 			expandHome("~/.odek/skills"),
 			"./.odek/skills",
+			resolved.Skills.Embedding,
 		)
 	}
 

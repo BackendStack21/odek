@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/BackendStack21/odek/internal/embedding"
 )
 
 // ── Agent Tools ────────────────────────────────────────────────────────
@@ -36,6 +38,11 @@ type SkillManager struct {
 	fileTimes  fileCache        // path → last-known mod time
 	prevSkills map[string]Skill // path → cached parsed skill
 	dirty      bool             // true after explicit mutation — bypasses cache on Reload
+
+	// embeddingCfg optionally selects a remote (HTTP) embedding backend for
+	// semantic skill matching. nil (default) = local RandomProjections. Set via
+	// NewSkillManagerWithEmbedding; used when (re)building the VectorMatcher.
+	embeddingCfg *embedding.Config
 }
 
 // NewSkillManager creates a SkillManager with the given directories.
@@ -43,16 +50,57 @@ type SkillManager struct {
 // On first call, it loads a persistent cache from ~/.odek/skills/ to
 // avoid re-parsing unchanged skills across process restarts.
 func NewSkillManager(userDir, projectDir string) *SkillManager {
+	return NewSkillManagerWithEmbedding(userDir, projectDir, nil)
+}
+
+// NewSkillManagerWithEmbedding is like NewSkillManager but selects an embedding
+// backend for the semantic skill matcher. embCfg nil (or non-HTTP) keeps the
+// default local RandomProjections; an HTTP config opts into remote semantic
+// matching (time-bounded, with keyword fallback).
+func NewSkillManagerWithEmbedding(userDir, projectDir string, embCfg *embedding.Config) *SkillManager {
 	fc, prev := loadPersistentCache(userDir)
 	sm := &SkillManager{
-		UserDir:    userDir,
-		ProjectDir: projectDir,
-		Notifier:   &NoopNotifier{},
-		fileTimes:  fc,
-		prevSkills: prev,
+		UserDir:      userDir,
+		ProjectDir:   projectDir,
+		Notifier:     &NoopNotifier{},
+		fileTimes:    fc,
+		prevSkills:   prev,
+		embeddingCfg: embCfg,
 	}
 	sm.Reload()
 	return sm
+}
+
+// MatchLazySkills selects lazy skills for the user input. When a remote
+// (HTTP) embedding backend is configured it tries semantic matching first and
+// falls back to the keyword ScoredMatcher on no match, a failed/timed-out
+// embed, or a down backend. Otherwise it uses the keyword ScoredMatcher
+// directly (the default), then the vector and trie matchers. This is the
+// single entry point the agent loop wires as its skill loader.
+func (sm *SkillManager) MatchLazySkills(input string, maxSlots int) []Skill {
+	sm.mu.RLock()
+	vm, scored, trie := sm.VectorMatcher, sm.ScoredMatcher, sm.TrieIndex
+	sm.mu.RUnlock()
+
+	// Prefer semantic matching only when an HTTP backend is configured; the
+	// local RP vector matcher is not obviously better than the keyword matcher
+	// and stays a fallback.
+	if vm.Semantic() {
+		if m := vm.MatchSkills(input, maxSlots); len(m) > 0 {
+			return m
+		}
+		// No match, or the query embed failed/timed out — fall through.
+	}
+	if scored != nil {
+		return scored.MatchSkills(input, maxSlots)
+	}
+	if vm != nil {
+		return vm.MatchSkills(input, maxSlots)
+	}
+	if trie != nil {
+		return trie.MatchSkills(input, maxSlots)
+	}
+	return nil
 }
 
 // SetNotifier replaces the current notifier. If n is nil, a NoopNotifier is used.
@@ -108,8 +156,9 @@ func (sm *SkillManager) reloadLocked() {
 	// Build scoring-based matcher (fixes AND-lock, adds stemming + synonyms)
 	sm.ScoredMatcher = NewScoredMatcher(sm.Result.Lazy, DefaultScoredConfig())
 
-	// Build vector matcher for semantic skill matching (go-vector RP)
-	sm.VectorMatcher = NewVectorMatcher(sm.Result.Lazy, DefaultMatcherConfig)
+	// Build vector matcher for semantic skill matching (RP by default, or the
+	// opt-in HTTP embedding backend when configured).
+	sm.VectorMatcher = NewVectorMatcherWithConfig(sm.Result.Lazy, DefaultMatcherConfig, sm.embeddingCfg)
 }
 
 // GetResult returns a read-locked copy of the scan result.

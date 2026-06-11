@@ -300,6 +300,43 @@ Multi-step procedure detected during a odek session.
 - **trigger keywords** — derived automatically from the command log (topic = first meaningful word, action = extracted verbs)
 - **author: odek** — distinguishes auto-generated skills from manually authored ones
 
+## How lazy skills are matched
+
+On every user turn, lazy skills compete for a limited number of context slots
+(`skills.max_lazy_slots`). Matching runs in priority order:
+
+1. **Keyword matcher (default)** — a scored matcher with stemming and synonyms
+   (no AND-lock: a topic-only or action-only hit still scores). Local and
+   instant; this is the path when no embedding backend is configured.
+2. **Semantic matcher** — when an `embedding` backend is configured (the shared
+   top-level block, or a `skills.embedding` override), the query is embedded and
+   matched against the skill corpus by meaning, catching morphological and
+   paraphrase variants the keyword matcher misses. Because it runs on the hot
+   path, the query embed is **time-bounded** and **falls back to the keyword
+   matcher** on any miss, timeout, or down backend.
+
+Skills inherit the shared embedding default like every other subsystem, so a
+single top-level `embedding` block turns on semantic skill matching too. The one
+special-case: because skills embed on **every turn**, an *inherited* config has
+its per-turn query timeout capped at **2s** (the shared `timeout_seconds` is not
+allowed to leak onto the hot path). The skill corpus embeds once per reload
+(cheap); only the query embeds per turn. To point skills at a different model or
+a different timeout, set `skills.embedding` explicitly (then it is respected
+verbatim). See [CONFIG.md → Shared embedding backend](./CONFIG.md#shared-embedding-backend-embedding--memory-sessions--skills).
+
+```json
+{
+  "skills": {
+    "embedding": {
+      "provider": "http",
+      "base_url": "http://localhost:11434/v1",
+      "model": "all-minilm",
+      "timeout_seconds": 2
+    }
+  }
+}
+```
+
 ## Examples
 
 ### Basic: Let odek learn from a session (auto-save enabled)
@@ -407,6 +444,7 @@ odek skill reset-skips repeated-ls
 | `curation.skip_threshold` | `1` | Skips needed for permanent suppression |
 | `curation.skip_reset_days` | `30` | Days before skip expires |
 | `curation.auto_prune` | `false` | Auto-delete stale skills |
+| `embedding` | *(inherits top-level)* | Optional override of the shared embedding backend for semantic skill matching (see above). When unset, skills inherit the top-level `embedding` default with the per-turn timeout bounded to 2s. No backend anywhere = local keyword matching. |
 
 ## Related
 

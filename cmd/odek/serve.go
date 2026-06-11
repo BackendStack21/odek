@@ -257,9 +257,10 @@ func serveOnListener(listener net.Listener, mux *http.ServeMux) error {
 func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v any) error) (*odek.Agent, func() error, func(), *wsApprover, error) {
 	var sm *skills.SkillManager
 	if resolved.Skills.Learn {
-		sm = skills.NewSkillManager(
+		sm = skills.NewSkillManagerWithEmbedding(
 			expandHome("~/.odek/skills"),
 			"./.odek/skills",
+			resolved.Skills.Embedding,
 		)
 	}
 

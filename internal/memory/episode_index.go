@@ -105,7 +105,7 @@ func sharedEpisodeIndex(dir string, newEmb func() textEmbedder) *episodeVectorIn
 		abs = dir
 	}
 	emb := newEmb()
-	key := abs + "|" + emb.fingerprint()
+	key := abs + "|" + emb.Fingerprint()
 	epIdxMu.Lock()
 	defer epIdxMu.Unlock()
 	if vi, ok := epIdxes[key]; ok {
@@ -142,7 +142,7 @@ func (vi *episodeVectorIndex) search(query string, k int) []scoredEpisode {
 	if k <= 0 {
 		k = 5
 	}
-	vec, err := vi.emb.embed(query)
+	vec, err := vi.emb.Embed(query)
 	if err != nil {
 		return nil
 	}
@@ -239,7 +239,7 @@ func (vi *episodeVectorIndex) ensureFresh() {
 // only when the current embedder IS that legacy space, so pre-existing
 // installs keep their index without a rebuild. Caller must hold vi.mu (write).
 func (vi *episodeVectorIndex) tryLoadLocked() bool {
-	fp := vi.emb.fingerprint()
+	fp := vi.emb.Fingerprint()
 	data, err := os.ReadFile(filepath.Join(vi.dir, episodeIndexMetaFile))
 	if err != nil {
 		// Legacy layout (no meta): only the original rp/256 space can own it.
@@ -257,7 +257,7 @@ func (vi *episodeVectorIndex) tryLoadLocked() bool {
 	if err := store.Load(filepath.Join(vi.dir, episodeVectorFile)); err != nil {
 		return false
 	}
-	if !vi.emb.loadState(filepath.Join(vi.dir, episodeEmbedFile)) {
+	if !vi.emb.LoadState(filepath.Join(vi.dir, episodeEmbedFile)) {
 		return false
 	}
 	vi.store = store
@@ -268,7 +268,7 @@ func (vi *episodeVectorIndex) tryLoadLocked() bool {
 // legacyRPFingerprint is the embedding space of indexes persisted before the
 // meta file existed (RandomProjections at episodeVectorDim).
 func legacyRPFingerprint() string {
-	return newRPTextEmbedder(episodeVectorDim).fingerprint()
+	return newRPTextEmbedder(episodeVectorDim).Fingerprint()
 }
 
 // buildEpisodeStore fits emb on the full corpus and returns a populated vector
@@ -282,10 +282,10 @@ func buildEpisodeStore(texts []idText, emb textEmbedder) *vector.Store {
 		corpus[i] = t.text
 	}
 
-	if err := emb.fit(corpus); err != nil {
+	if err := emb.Fit(corpus); err != nil {
 		return nil
 	}
-	vecs, err := emb.embedAll(corpus)
+	vecs, err := emb.EmbedAll(corpus)
 	if err != nil {
 		return nil
 	}
@@ -351,10 +351,10 @@ func (vi *episodeVectorIndex) saveLocked() {
 			os.Remove(tmp)
 		}
 	}
-	vi.emb.saveState(filepath.Join(vi.dir, episodeEmbedFile))
+	vi.emb.SaveState(filepath.Join(vi.dir, episodeEmbedFile))
 
 	metaPath := filepath.Join(vi.dir, episodeIndexMetaFile)
-	if data, err := json.Marshal(indexMeta{Fingerprint: vi.emb.fingerprint()}); err == nil {
+	if data, err := json.Marshal(indexMeta{Fingerprint: vi.emb.Fingerprint()}); err == nil {
 		tmp := metaPath + ".tmp"
 		if os.WriteFile(tmp, data, 0600) == nil {
 			if err := os.Rename(tmp, metaPath); err != nil {

@@ -26,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BackendStack21/odek/internal/embedding"
 	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/redact"
 )
@@ -74,15 +75,16 @@ func NewStore() (*Store, error) {
 	return &Store{dir: dir}, nil
 }
 
-// InitVectorIndex initializes the semantic search index. Must be called
+// InitVectorIndex initializes the semantic search index using the embedding
+// backend selected by cfg (nil = default RandomProjections). Must be called
 // after NewStore, before the first Save. Safe to call multiple times —
-// subsequent calls are no-ops.
-func (s *Store) InitVectorIndex() error {
+// subsequent calls are no-ops once the index is ready.
+func (s *Store) InitVectorIndex(cfg *embedding.Config) error {
 	if s.Vec != nil && s.Vec.Ready() {
 		return nil // already initialized
 	}
 	s.Vec = new(VectorIndex)
-	return s.Vec.Init(s.dir)
+	return s.Vec.InitWithConfig(s.dir, cfg)
 }
 
 // ── ID Generation ──────────────────────────────────────────────────────

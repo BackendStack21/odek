@@ -1,4 +1,4 @@
-package memory
+package embedding
 
 import (
 	"encoding/json"
@@ -75,8 +75,8 @@ func containsWord(text, w string) bool {
 	return slices.Contains(strings.Fields(normalizeForEmbedding(text)), w)
 }
 
-func httpCfg(srv *httptest.Server) *EmbeddingConfig {
-	return &EmbeddingConfig{
+func httpCfg(srv *httptest.Server) *Config {
+	return &Config{
 		Provider: "http",
 		BaseURL:  srv.URL + "/v1",
 		Model:    "mock-embed",
@@ -84,7 +84,7 @@ func httpCfg(srv *httptest.Server) *EmbeddingConfig {
 }
 
 func TestNewTextEmbedderDefaultsToRP(t *testing.T) {
-	for _, cfg := range []*EmbeddingConfig{
+	for _, cfg := range []*Config{
 		nil,
 		{},
 		{Provider: "rp"},
@@ -93,11 +93,11 @@ func TestNewTextEmbedderDefaultsToRP(t *testing.T) {
 		{Provider: "http", Model: "m"},           // missing base_url
 		{Provider: "something-else", Model: "m"}, // unknown provider
 	} {
-		emb := newTextEmbedder(cfg, 64)
+		emb := New(cfg, 64)
 		if _, ok := emb.(*rpTextEmbedder); !ok {
-			t.Errorf("newTextEmbedder(%+v) = %T, want *rpTextEmbedder", cfg, emb)
+			t.Errorf("New(%+v) = %T, want *rpTextEmbedder", cfg, emb)
 		}
-		if got := emb.fingerprint(); got != "rp/64" {
+		if got := emb.Fingerprint(); got != "rp/64" {
 			t.Errorf("fingerprint = %q, want rp/64", got)
 		}
 	}
@@ -105,19 +105,19 @@ func TestNewTextEmbedderDefaultsToRP(t *testing.T) {
 
 func TestNewTextEmbedderHTTP(t *testing.T) {
 	srv, _, _ := mockEmbedServer(t)
-	emb := newTextEmbedder(httpCfg(srv), 64)
+	emb := New(httpCfg(srv), 64)
 	he, ok := emb.(*httpTextEmbedder)
 	if !ok {
-		t.Fatalf("newTextEmbedder = %T, want *httpTextEmbedder", emb)
+		t.Fatalf("New = %T, want *httpTextEmbedder", emb)
 	}
-	if got := he.fingerprint(); got != "http/mock-embed/0" {
+	if got := he.Fingerprint(); got != "http/mock-embed/0" {
 		t.Errorf("fingerprint = %q, want http/mock-embed/0", got)
 	}
 }
 
 func TestNewTextEmbedderExpandsEnv(t *testing.T) {
 	t.Setenv("ODEK_TEST_EMBED_URL", "http://localhost:9999/v1")
-	emb := newTextEmbedder(&EmbeddingConfig{
+	emb := New(&Config{
 		Provider: "http",
 		BaseURL:  "${ODEK_TEST_EMBED_URL}",
 		Model:    "m",
@@ -129,36 +129,36 @@ func TestNewTextEmbedderExpandsEnv(t *testing.T) {
 
 func TestHTTPEmbedderSemanticMatch(t *testing.T) {
 	srv, _, _ := mockEmbedServer(t)
-	emb := newTextEmbedder(httpCfg(srv), 64)
+	emb := New(httpCfg(srv), 64)
 
-	a, err := emb.embed("the feline sat on the mat")
+	a, err := emb.Embed("the feline sat on the mat")
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := emb.embed("a cat appeared")
+	b, err := emb.Embed("a cat appeared")
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := emb.embed("postgres database migration")
+	c, err := emb.Embed("postgres database migration")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if simAB := cosineVector(a, b); simAB < 0.9 {
+	if simAB := Cosine(a, b); simAB < 0.9 {
 		t.Errorf("cat/feline cosine = %v, want ≥ 0.9 (semantic match)", simAB)
 	}
-	if simAC := cosineVector(a, c); simAC > 0.5 {
+	if simAC := Cosine(a, c); simAC > 0.5 {
 		t.Errorf("cat/database cosine = %v, want < 0.5", simAC)
 	}
 }
 
 func TestHTTPEmbedderCachesRepeatEmbeds(t *testing.T) {
 	srv, requests, _ := mockEmbedServer(t)
-	emb := newTextEmbedder(httpCfg(srv), 64)
+	emb := New(httpCfg(srv), 64)
 
-	if _, err := emb.embed("hello world"); err != nil {
+	if _, err := emb.Embed("hello world"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := emb.embed("hello world"); err != nil {
+	if _, err := emb.Embed("hello world"); err != nil {
 		t.Fatal(err)
 	}
 	if got := requests.Load(); got != 1 {
@@ -168,10 +168,10 @@ func TestHTTPEmbedderCachesRepeatEmbeds(t *testing.T) {
 
 func TestHTTPEmbedderFitBatchesOnlyMisses(t *testing.T) {
 	srv, requests, texts := mockEmbedServer(t)
-	emb := newTextEmbedder(httpCfg(srv), 64)
+	emb := New(httpCfg(srv), 64)
 
 	corpus := []string{"one", "two", "three"}
-	if err := emb.fit(corpus); err != nil {
+	if err := emb.Fit(corpus); err != nil {
 		t.Fatal(err)
 	}
 	if got := requests.Load(); got != 1 {
@@ -182,7 +182,7 @@ func TestHTTPEmbedderFitBatchesOnlyMisses(t *testing.T) {
 	}
 
 	// Refit with one new entry: only the miss goes over the wire.
-	if err := emb.fit(append(corpus, "four")); err != nil {
+	if err := emb.Fit(append(corpus, "four")); err != nil {
 		t.Fatal(err)
 	}
 	if got := requests.Load(); got != 2 {
@@ -195,9 +195,9 @@ func TestHTTPEmbedderFitBatchesOnlyMisses(t *testing.T) {
 
 func TestHTTPEmbedderEmbedAllDedupsWithinBatch(t *testing.T) {
 	srv, _, texts := mockEmbedServer(t)
-	emb := newTextEmbedder(httpCfg(srv), 64)
+	emb := New(httpCfg(srv), 64)
 
-	vecs, err := emb.embedAll([]string{"same", "same", "same"})
+	vecs, err := emb.EmbedAll([]string{"same", "same", "same"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,54 +214,54 @@ func TestHTTPEmbedderErrorPropagates(t *testing.T) {
 		http.Error(w, `{"error":{"message":"boom"}}`, http.StatusInternalServerError)
 	}))
 	defer srv.Close()
-	emb := newTextEmbedder(&EmbeddingConfig{Provider: "http", BaseURL: srv.URL + "/v1", Model: "m"}, 64)
+	emb := New(&Config{Provider: "http", BaseURL: srv.URL + "/v1", Model: "m"}, 64)
 
-	if _, err := emb.embed("x"); err == nil {
+	if _, err := emb.Embed("x"); err == nil {
 		t.Fatal("embed should propagate API errors")
 	}
-	if err := emb.fit([]string{"a", "b"}); err == nil {
+	if err := emb.Fit([]string{"a", "b"}); err == nil {
 		t.Fatal("fit should propagate API errors")
 	}
 }
 
 func TestRPTextEmbedderRoundTrip(t *testing.T) {
-	emb := newRPTextEmbedder(64)
+	emb := NewRP(64)
 	corpus := []string{"uses postgres for storage", "prefers tabs over spaces"}
-	if err := emb.fit(corpus); err != nil {
+	if err := emb.Fit(corpus); err != nil {
 		t.Fatal(err)
 	}
-	vecs, err := emb.embedAll(corpus)
+	vecs, err := emb.EmbedAll(corpus)
 	if err != nil {
 		t.Fatal(err)
 	}
-	q, err := emb.embed("postgres storage")
+	q, err := emb.Embed("postgres storage")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if simSame := cosineVector(q, vecs[0]); simSame <= cosineVector(q, vecs[1]) {
+	if simSame := Cosine(q, vecs[0]); simSame <= Cosine(q, vecs[1]) {
 		t.Errorf("query should be closer to the postgres entry: %v vs %v",
-			simSame, cosineVector(q, vecs[1]))
+			simSame, Cosine(q, vecs[1]))
 	}
 
 	// Persistence round-trip.
 	path := t.TempDir() + "/rp.gob"
-	emb.saveState(path)
-	emb2 := newRPTextEmbedder(64)
-	if !emb2.loadState(path) {
+	emb.SaveState(path)
+	emb2 := NewRP(64)
+	if !emb2.LoadState(path) {
 		t.Fatal("loadState failed")
 	}
-	q2, err := emb2.embed("postgres storage")
+	q2, err := emb2.Embed("postgres storage")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cosineVector(q, q2) < 0.999 {
-		t.Errorf("loaded embedder should reproduce vectors, cosine = %v", cosineVector(q, q2))
+	if Cosine(q, q2) < 0.999 {
+		t.Errorf("loaded embedder should reproduce vectors, cosine = %v", Cosine(q, q2))
 	}
 }
 
 func TestHTTPEmbedderCacheResetWhenFull(t *testing.T) {
 	srv, _, _ := mockEmbedServer(t)
-	emb := newTextEmbedder(httpCfg(srv), 64).(*httpTextEmbedder)
+	emb := New(httpCfg(srv), 64).(*httpTextEmbedder)
 
 	// Fill past the cap in chunks; the cache must reset, not grow unbounded.
 	batch := make([]string, 512)
@@ -269,7 +269,7 @@ func TestHTTPEmbedderCacheResetWhenFull(t *testing.T) {
 		for i := range batch {
 			batch[i] = fmt.Sprintf("text-%d-%d", round, i)
 		}
-		if _, err := emb.embedAll(batch); err != nil {
+		if _, err := emb.EmbedAll(batch); err != nil {
 			t.Fatal(err)
 		}
 	}

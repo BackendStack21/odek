@@ -92,8 +92,10 @@ The `session_search` tool (available inside the agent loop, not as a CLI command
 
 **How search works — two-tier pipeline:**
 
-1. **Vector index** (fast path) — go-vector RandomProjections embed session summaries into 64-dimensional vectors. Cosine similarity >0.7 returns results in ~1ms. Zero LLM calls.
-2. **DeepSearch** (fallback) — when vector results are insufficient (<2 distinct token matches), falls back to exhaustive text search through session files on disk. Requires 2+ distinct token matches to qualify.
+1. **Vector index** (fast path) — sessions are embedded into a persisted vector store and ranked by cosine similarity in ~1ms with zero LLM calls. The embedder is the shared backend (`internal/embedding`): by default local go-vector **RandomProjections** (256-dim, lexical), or — when an `embedding` block is configured (the shared top-level default, or a `sessions.embedding` override) — any **OpenAI-compatible HTTP embeddings API**, giving *semantic* matches that the lexical default can't (a query and a session that share no words can still match by meaning). See [CONFIG.md → Shared embedding backend](./CONFIG.md#shared-embedding-backend-embedding--memory-sessions--skills).
+2. **DeepSearch** (fallback) — when vector results are insufficient (<2 distinct token matches), or while the embedding backend is unavailable, falls back to exhaustive text search through session files on disk. Requires 2+ distinct token matches to qualify.
+
+**Resilience & backend switching:** the index records which embedding space it was built in (`vectors_meta.json`). Changing `provider`/`model`/`dims` forces a one-time rebuild from the session files; a down HTTP backend degrades `search` to the DeepSearch tier and backs off for 30s — it never fails a session save or blocks the loop.
 
 **IMPORTANT:** After `search` returns matching session IDs, use `get` (not `search`) to read the actual conversation content. `get` returns the full `session_messages` array with every user and assistant message.
 

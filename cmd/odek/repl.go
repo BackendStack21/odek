@@ -72,9 +72,10 @@ func replCmd(args []string) error {
 	// Build tools
 	var sm *skills.SkillManager
 	if resolved.Skills.Learn {
-		sm = skills.NewSkillManager(
+		sm = skills.NewSkillManagerWithEmbedding(
 			expandHome("~/.odek/skills"),
 			"./.odek/skills",
+			resolved.Skills.Embedding,
 		)
 	}
 	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{WebSearch: resolved.WebSearch}, nil)

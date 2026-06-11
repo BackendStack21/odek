@@ -181,6 +181,7 @@ The `skills` section controls the skill system:
 | `auto_save.enabled` | — | true | Auto-save quality skill suggestions without prompting |
 | `auto_save.require_llm` | — | true | Only auto-save if LLM enhancement was applied |
 | `auto_save.max_per_run` | — | 3 | Max skills to auto-save per session |
+| `embedding` | — | *(inherits top-level `embedding`)* | Optional override of the shared embedding backend for semantic skill matching. When unset, skills inherit the top-level `embedding` default with the per-turn query timeout bounded to 2s. See [Shared embedding backend](#shared-embedding-backend-embedding--memory-sessions--skills). |
 
 ## Memory configuration
 
@@ -239,7 +240,7 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
 | `episode_dedup_threshold` | 0.92 | Cosine similarity above which a newly written episode is treated as a near-duplicate of an existing one and **replaces** it (newest wins). An untrusted episode never replaces a trusted/approved one. `0` disables dedup. |
 | `max_episodes` | 500 | Maximum number of stored episodes. On each write, episodes beyond this count are evicted oldest-first (both the summary file and the index entry). `0` disables the cap. |
 | `episode_ttl_days` | 0 | Evict episodes older than this many days. `0` (default) disables TTL-based eviction. |
-| `embedding` | *(unset)* | Semantic embedding backend for episode recall, episode dedup, the non-LLM episode ranker, and fact merge-on-write. Unset = local RandomProjections (lexical bag-of-words — fast, zero-cost, but no real semantics). See below. |
+| `embedding` | *(inherits top-level `embedding`)* | Optional override of the embedding backend for episode recall, dedup, the non-LLM episode ranker, and fact merge-on-write. When unset, memory inherits the shared top-level [`embedding`](#shared-embedding-backend-embedding--memory-sessions--skills) default; if neither is set, local RandomProjections (lexical bag-of-words — fast, zero-cost, but no real semantics). See below. |
 
 ### `embedding` — real semantic embeddings (optional)
 
@@ -281,6 +282,61 @@ Operational notes:
   verbatim with no allowlist, so do not point it at internal/metadata endpoints
   (e.g. cloud metadata services) you would not otherwise expose. Prefer a local
   server (Ollama/llama.cpp) when episode/fact text must not leave the machine.
+
+## Shared embedding backend (`embedding`) — memory, sessions & skills
+
+The same embedder that powers memory also powers **semantic session search**
+(the `session_search` tool) and **semantic skill matching**. Set one
+**top-level `embedding` block** and *every* subsystem inherits it — one endpoint,
+consistent embedding-space semantics everywhere. Each subsystem can still
+override the default with its own block. The block uses the same fields as
+`memory.embedding` above (`provider`/`base_url`/`model`/`api_key`/`dims`/`timeout_seconds`).
+
+```json
+{
+  "embedding": {
+    "provider": "http",
+    "base_url": "http://localhost:11434/v1",
+    "model": "nomic-embed-text"
+  }
+}
+```
+
+With just that block, memory recall, `session_search`, and skill matching all go
+semantic.
+
+| Subsystem | Inherits the shared `embedding`? | Optional override |
+|-----------|----------------------------------|-------------------|
+| **Memory** | ✅ when `memory.embedding` is unset | `memory.embedding` |
+| **Sessions** (`session_search`) | ✅ when `sessions.embedding` is unset | `sessions.embedding` |
+| **Skills** (lazy matching) | ✅ when `skills.embedding` is unset (timeout bounded) | `skills.embedding` |
+
+Each override is optional and isolated — e.g. point skills at a smaller/faster
+model while memory uses a higher-quality one:
+
+```json
+{
+  "embedding": { "provider": "http", "base_url": "http://localhost:11434/v1", "model": "nomic-embed-text" },
+  "skills":   { "embedding": { "provider": "http", "base_url": "http://localhost:11434/v1", "model": "all-minilm" } }
+}
+```
+
+Operational notes:
+
+- **Sessions self-heal across backend changes** exactly like memory: a
+  `vectors_meta.json` fingerprint records the embedding space; changing
+  `provider`/`model`/`dims` forces a one-time rebuild from the session files. A
+  down backend degrades `session_search` to its keyword fallback and backs off
+  for 30s — it never fails a session save.
+- **Skill matching is the hot path — it inherits, but with a bounded timeout.**
+  Skill matching runs on *every user turn*, so when skills inherit the shared
+  default their per-turn query embed is capped at **2s** (regardless of the
+  shared `timeout_seconds`) and any slow/failed/empty result falls back to the
+  local keyword matcher. An explicit `skills.embedding` is respected verbatim —
+  set its own `timeout_seconds` if you want a different bound. Memory and
+  sessions are *not* capped (they embed infrequently and persist their vectors).
+- The **egress warning above applies to every subsystem** — session transcripts
+  and skill text are POSTed to `base_url`. Point it only at a server you trust.
 
 ### ⚠️ `extract_facts` — automatic fact learning (opt-in, off by default)
 
