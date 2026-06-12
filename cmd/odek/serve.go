@@ -485,6 +485,14 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
+	// Connection-scoped context, cancelled the moment the socket reader exits
+	// (disconnect or shutdown). Prompts run under this context, so a prompt
+	// in flight when the client disconnects is aborted promptly, and any
+	// prompts already buffered in promptCh run against a cancelled context
+	// instead of making real LLM calls whose output streams to a dead socket.
+	connCtx, connCancel := context.WithCancel(ctx)
+	defer connCancel()
+
 	// Dedicated socket reader.
 	//
 	// The agent loop (handlePrompt → RunWithMessages) runs synchronously in the
@@ -507,8 +515,10 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 		for {
 			var data []byte
 			if err := golangws.Message.Receive(conn, &data); err != nil {
-				// Socket gone: release any in-flight approval so a blocked
-				// handlePrompt returns now instead of waiting out the timeout.
+				// Socket gone: cancel in-flight/queued prompt work and release
+				// any pending approval so a blocked handlePrompt returns now
+				// instead of waiting out the 60s timeout.
+				connCancel()
 				if approver != nil {
 					approver.Cancel()
 				}
@@ -624,8 +634,9 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 		}
 
 		// Run prompt — passes the persistent agent for buffer continuity
-		// Create a cancelable context for this prompt (so POST /api/cancel can abort it)
-		promptCtx, promptCancel := context.WithCancel(ctx)
+		// Create a cancelable context for this prompt (so POST /api/cancel can abort it).
+		// Derived from connCtx so a disconnect also aborts the running prompt.
+		promptCtx, promptCancel := context.WithCancel(connCtx)
 		currentPromptCancel.Store(promptCancel)
 
 		currentSession = handlePrompt(promptCtx, conn, store, resources, resolved, agent, currentSession, msg.Content, msg.SessionID, &sessionInputTokens, &sessionOutputTokens)
