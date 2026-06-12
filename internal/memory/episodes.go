@@ -14,6 +14,7 @@ import (
 
 	"github.com/BackendStack21/go-vector/pkg/vector"
 	"github.com/BackendStack21/odek/internal/embedding"
+	"github.com/BackendStack21/odek/internal/fsatomic"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -224,7 +225,7 @@ func (e *EpisodeStore) writeLocked(sessionID, summary string, turns int, prov Ep
 
 	// Write the summary file.
 	path := filepath.Join(e.dir, sessionID+".md")
-	if err := os.WriteFile(path, []byte(summary), 0600); err != nil {
+	if err := fsatomic.WriteFile(path, []byte(summary), 0600); err != nil {
 		return events, fmt.Errorf("memory: write episode: %w", err)
 	}
 
@@ -661,19 +662,14 @@ func trustRank(p EpisodeProvenance) int {
 // Invalidates the in-memory cache after a successful write so the next
 // ReadIndex call picks up the new data.
 func (e *EpisodeStore) writeIndex(idx []EpisodeMeta) error {
-	// Write to temp + rename for atomicity
+	// Write atomically and durably (temp → fsync → rename → dir fsync).
 	idxPath := filepath.Join(e.dir, episodeIndexFile)
-	tmpPath := idxPath + ".tmp"
 
 	data, err := json.MarshalIndent(idx, "", "  ")
 	if err != nil {
 		return fmt.Errorf("memory: marshal index: %w", err)
 	}
-	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpPath, idxPath); err != nil {
-		os.Remove(tmpPath) // best-effort cleanup
+	if err := fsatomic.WriteFile(idxPath, data, 0600); err != nil {
 		return err
 	}
 

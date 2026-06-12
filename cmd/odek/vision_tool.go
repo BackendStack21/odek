@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -89,7 +90,7 @@ Or set models_dir in the vision config.`, mp, dir, dir)
 // extractVideoFrames samples n evenly-spaced frames from videoPath into a
 // temporary directory. Returns paths to the JPEG frame files; caller must
 // remove the directory (filepath.Dir of the first path).
-func extractVideoFrames(videoPath string, n int) ([]string, error) {
+func extractVideoFrames(ctx context.Context, videoPath string, n int) ([]string, error) {
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		return nil, fmt.Errorf("ffmpeg not found — required for video frame extraction")
 	}
@@ -98,7 +99,7 @@ func extractVideoFrames(videoPath string, n int) ([]string, error) {
 	}
 
 	// Get duration with ffprobe
-	out, err := exec.Command("ffprobe",
+	out, err := exec.CommandContext(ctx, "ffprobe",
 		"-v", "error",
 		"-show_entries", "format=duration",
 		"-of", "csv=p=0",
@@ -124,7 +125,7 @@ func extractVideoFrames(videoPath string, n int) ([]string, error) {
 	for i := 1; i <= n; i++ {
 		ts := interval * float64(i)
 		out := filepath.Join(tmpDir, fmt.Sprintf("frame_%02d.jpg", i))
-		cmd := exec.Command("ffmpeg",
+		cmd := exec.CommandContext(ctx, "ffmpeg",
 			"-ss", fmt.Sprintf("%.3f", ts),
 			"-i", videoPath,
 			"-frames:v", "1",
@@ -146,7 +147,7 @@ func extractVideoFrames(videoPath string, n int) ([]string, error) {
 
 // runLlamaMtmd calls llama-mtmd-cli in single-turn mode with one or more images
 // and returns the trimmed stdout response.
-func runLlamaMtmd(binary, modelPath, mmprojPath, prompt string, imagePaths []string) (string, error) {
+func runLlamaMtmd(ctx context.Context, binary, modelPath, mmprojPath, prompt string, imagePaths []string) (string, error) {
 	args := []string{
 		"-m", modelPath,
 		"--mmproj", mmprojPath,
@@ -162,7 +163,7 @@ func runLlamaMtmd(binary, modelPath, mmprojPath, prompt string, imagePaths []str
 		args = append(args, "--image", img)
 	}
 
-	cmd := exec.Command(binary, args...)
+	cmd := exec.CommandContext(ctx, binary, args...)
 	output, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -179,6 +180,7 @@ func runLlamaMtmd(binary, modelPath, mmprojPath, prompt string, imagePaths []str
 // ═════════════════════════════════════════════════════════════════════════
 
 type visionTool struct {
+	ctxTool
 	dangerousConfig danger.DangerousConfig
 	visionCfg       config.VisionConfig
 }
@@ -277,7 +279,7 @@ func (t *visionTool) Call(argsJSON string) (result string, err error) {
 }
 
 func (t *visionTool) analyzeImage(binary, modelPath, mmprojPath, imgPath, prompt, source string) (string, error) {
-	desc, err := runLlamaMtmd(binary, modelPath, mmprojPath, prompt, []string{imgPath})
+	desc, err := runLlamaMtmd(t.toolCtx(), binary, modelPath, mmprojPath, prompt, []string{imgPath})
 	if err != nil {
 		return jsonResult(visionResult{Error: err.Error()})
 	}
@@ -294,7 +296,7 @@ func (t *visionTool) analyzeVideo(binary, modelPath, mmprojPath, videoPath, prom
 		n = 8
 	}
 
-	frames, err := extractVideoFrames(videoPath, n)
+	frames, err := extractVideoFrames(t.toolCtx(), videoPath, n)
 	if err != nil {
 		return jsonResult(visionResult{Error: err.Error()})
 	}
@@ -304,7 +306,7 @@ func (t *visionTool) analyzeVideo(binary, modelPath, mmprojPath, videoPath, prom
 		"These are %d frames sampled evenly from a video. %s",
 		len(frames), prompt,
 	)
-	desc, err := runLlamaMtmd(binary, modelPath, mmprojPath, videoPrompt, frames)
+	desc, err := runLlamaMtmd(t.toolCtx(), binary, modelPath, mmprojPath, videoPrompt, frames)
 	if err != nil {
 		return jsonResult(visionResult{Error: err.Error()})
 	}

@@ -34,6 +34,7 @@ var (
 // ═════════════════════════════════════════════════════════════════════════
 
 type webSearchTool struct {
+	ctxTool
 	dangerousConfig danger.DangerousConfig
 	cfg             config.WebSearchConfig
 	client          *http.Client
@@ -235,7 +236,7 @@ func (t *webSearchTool) query(query, category string) (*searxngResponse, error) 
 	}
 	endpoint.RawQuery = q.Encode()
 
-	req, err := http.NewRequest(http.MethodGet, endpoint.String(), nil)
+	req, err := http.NewRequestWithContext(t.toolCtx(), http.MethodGet, endpoint.String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %v", err)
 	}

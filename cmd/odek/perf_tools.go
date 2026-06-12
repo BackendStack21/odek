@@ -412,6 +412,7 @@ func (t *parallelShellTool) runOne(cmd parallelShellCmd) parallelShellEntry {
 const maxHTTPBatchURLs = 10
 
 type httpBatchTool struct {
+	ctxTool
 	dangerousConfig danger.DangerousConfig
 	client          *http.Client
 }
@@ -556,7 +557,7 @@ func (t *httpBatchTool) fetchOne(r httpBatchReq) httpBatchEntry {
 	}
 
 	entry := httpBatchEntry{URL: r.URL}
-	httpReq, err := http.NewRequest(method, r.URL, nil)
+	httpReq, err := http.NewRequestWithContext(t.toolCtx(), method, r.URL, nil)
 	if err != nil {
 		entry.Error = err.Error()
 		return entry

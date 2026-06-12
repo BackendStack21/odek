@@ -2,14 +2,25 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 
 	"github.com/BackendStack21/odek/internal/danger"
 )
+
+// defaultShellTimeout bounds a single shell command. It is deliberately
+// generous — the goal is to stop a genuinely stuck command (a network read
+// that never returns, an interactive prompt, an infinite loop) from wedging
+// the agent forever, NOT to kill legitimate long builds or test suites. When
+// the agent context is cancelled (Ctrl-C, turn timeout) the command is killed
+// immediately regardless of this backstop.
+const defaultShellTimeout = 30 * time.Minute
 
 // shellTool is odek's built-in tool that lets the agent run shell commands.
 //
@@ -61,6 +72,13 @@ type shellTool struct {
 	// ttyPath is the path to the terminal device for approval prompts.
 	// Overridden in tests to mock user input. Only used when approver is nil.
 	ttyPath string
+
+	// ctxTool provides SetContext/toolCtx so cancelling the agent context
+	// (Ctrl-C, turn timeout) kills the running command.
+	ctxTool
+
+	// timeout bounds a single command. Zero falls back to defaultShellTimeout.
+	timeout time.Duration
 }
 
 func (t *shellTool) Name() string { return "shell" }
@@ -113,13 +131,52 @@ func (t *shellTool) Call(args string) (string, error) {
 		return "", err
 	}
 
-	cmd := t.buildCmd(input.Command)
+	// Bound execution: cancel with the agent context (Ctrl-C / turn timeout)
+	// and a generous backstop timeout so a stuck command can never wedge the
+	// agent forever. Note: in sandbox mode this kills the host-side
+	// `docker exec` client, which unblocks the agent, but Docker does not
+	// propagate the signal to the in-container process — that lingers until the
+	// container is torn down at session end.
+	base := t.toolCtx()
+	timeout := t.timeout
+	if timeout <= 0 {
+		timeout = defaultShellTimeout
+	}
+	ctx, cancel := context.WithTimeout(base, timeout)
+	defer cancel()
+
+	cmd := t.buildCmd(ctx, input.Command)
+	// Run the command in its own process group and, on cancel/timeout, kill the
+	// WHOLE group — not just the `sh` leader. `sh -c "<cmd>"` may fork children
+	// (e.g. `sleep`); killing only the leader leaves them alive holding the
+	// output pipes, so Run() would block until WaitDelay. Signalling the group
+	// (negative pid) tears the whole tree down at once.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			// Best-effort group kill; ignore ESRCH if it already exited.
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return nil
+	}
+	// WaitDelay is a backstop in case a process somehow outlives the group kill.
+	cmd.WaitDelay = 3 * time.Second
 
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
 
 	err := cmd.Run()
+
+	// Surface cancellation/timeout as a clear, actionable error rather than an
+	// opaque "signal: killed".
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		if ctxErr == context.DeadlineExceeded {
+			return "", fmt.Errorf("shell: command timed out after %s (still running? it was killed): %s", timeout, input.Command)
+		}
+		return "", fmt.Errorf("shell: command cancelled: %s", input.Command)
+	}
+
 	output := strings.TrimSpace(outBuf.String())
 	stderrStr := strings.TrimSpace(errBuf.String())
 	if stderrStr != "" {
@@ -200,9 +257,9 @@ func (t *shellTool) promptUser(cmd, description string) error {
 //
 // When running on the host (default), the command executes via "sh -c"
 // in odek's current working directory.
-func (t *shellTool) buildCmd(command string) *exec.Cmd {
+func (t *shellTool) buildCmd(ctx context.Context, command string) *exec.Cmd {
 	if t.containerName != "" {
-		return exec.Command("docker", "exec", "-w", "/workspace", t.containerName, "sh", "-c", command)
+		return exec.CommandContext(ctx, "docker", "exec", "-w", "/workspace", t.containerName, "sh", "-c", command)
 	}
-	return exec.Command("sh", "-c", command)
+	return exec.CommandContext(ctx, "sh", "-c", command)
 }
