@@ -9,6 +9,37 @@ import (
 	"time"
 )
 
+// TestClient_SimpleCall_RetryOn429 verifies the lightweight secondary calls
+// share the main loop's retry resilience: a transient 429 no longer aborts a
+// skill-match / memory / title call on the first failure.
+func TestClient_SimpleCall_RetryOn429(t *testing.T) {
+	var callCount atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := int(callCount.Add(1))
+		if count <= 2 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"error":{"message":"Rate limited"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"assessed"}}]}`))
+	}))
+	defer ts.Close()
+
+	c := New(ts.URL, "key", "model", "", 0, 10*time.Second)
+	out, err := c.SimpleCall(context.Background(), "sys", "user")
+	if err != nil {
+		t.Fatalf("unexpected error after retries: %v", err)
+	}
+	if out != "assessed" {
+		t.Errorf("content = %q, want %q", out, "assessed")
+	}
+	if callCount.Load() != 3 {
+		t.Errorf("call count = %d, want 3 (SimpleCall should retry)", callCount.Load())
+	}
+}
+
 func TestClient_Call_RetryOn429(t *testing.T) {
 	var callCount atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

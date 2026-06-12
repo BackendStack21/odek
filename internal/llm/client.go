@@ -209,30 +209,12 @@ func (c *Client) SimpleCall(ctx context.Context, systemPrompt, userPrompt string
 		return "", fmt.Errorf("llm: marshal request: %w", err)
 	}
 
-	url := c.BaseURL + "/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBytes))
+	// Share the main loop's retry/backoff so a transient blip doesn't abort
+	// these best-effort secondary calls (skill matching, memory summaries,
+	// episode extraction, session titles).
+	respBytes, err := c.postChatWithRetry(ctx, reqBytes)
 	if err != nil {
-		return "", fmt.Errorf("llm: create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.APIKey)
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("llm: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
-	if err != nil {
-		return "", fmt.Errorf("llm: read response: %w", err)
-	}
-	if len(respBytes) > maxResponseSize {
-		return "", fmt.Errorf("llm: response exceeds maximum size (%d bytes)", maxResponseSize)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("llm: %s (status %d)", resp.Status, resp.StatusCode)
+		return "", err
 	}
 
 	var raw struct {
@@ -300,6 +282,19 @@ func (c *Client) Call(ctx context.Context, messages []Message, systemBlocks []Sy
 		return nil, fmt.Errorf("llm: marshal request: %w", err)
 	}
 
+	respBytes, err := c.postChatWithRetry(ctx, reqBytes)
+	if err != nil {
+		return nil, err
+	}
+	return parseResponse(respBytes)
+}
+
+// postChatWithRetry POSTs reqBytes to /chat/completions and returns the raw 200
+// response body, retrying transient network errors and retryable HTTP statuses
+// (429, 502, 503, 504) with exponential backoff. Shared by every chat call so
+// the main loop and the lightweight secondary calls (SimpleCall) get identical
+// resilience. Respects ctx cancellation during the backoff sleep.
+func (c *Client) postChatWithRetry(ctx context.Context, reqBytes []byte) ([]byte, error) {
 	url := c.BaseURL + "/chat/completions"
 
 	const maxRetries = 3
@@ -307,7 +302,7 @@ func (c *Client) Call(ctx context.Context, messages []Message, systemBlocks []Sy
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
-			// Exponential backoff: 1s, 2s, 4s
+			// Exponential backoff: 1s, 2s, 4s.
 			backoff := time.Duration(1<<(attempt-1)) * time.Second
 			select {
 			case <-ctx.Done():
@@ -356,7 +351,7 @@ func (c *Client) Call(ctx context.Context, messages []Message, systemBlocks []Sy
 			return nil, lastErr
 		}
 
-		return parseResponse(respBytes)
+		return respBytes, nil
 	}
 
 	return nil, fmt.Errorf("llm: retry exhausted (%d attempts): %w", maxRetries+1, lastErr)
