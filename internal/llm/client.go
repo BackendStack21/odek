@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -299,17 +300,19 @@ func (c *Client) postChatWithRetry(ctx context.Context, reqBytes []byte) ([]byte
 
 	const maxRetries = 3
 	var lastErr error
+	var wait time.Duration // how long to sleep before the next attempt
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
-			// Exponential backoff: 1s, 2s, 4s.
-			backoff := time.Duration(1<<(attempt-1)) * time.Second
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(backoff):
+			case <-time.After(wait):
 			}
 		}
+		// Default backoff for the next attempt if this one fails: 1s, 2s, 4s.
+		// A Retry-After header on a 429/503 overrides it below.
+		wait = time.Duration(1<<attempt) * time.Second
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBytes))
 		if err != nil {
@@ -329,6 +332,7 @@ func (c *Client) postChatWithRetry(ctx context.Context, reqBytes []byte) ([]byte
 		}
 
 		respBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
+		retryAfter := resp.Header.Get("Retry-After")
 		resp.Body.Close()
 		if err != nil {
 			lastErr = fmt.Errorf("llm: read response: %w", err)
@@ -346,6 +350,13 @@ func (c *Client) postChatWithRetry(ctx context.Context, reqBytes []byte) ([]byte
 				lastErr = fmt.Errorf("llm: %s (status %d)", resp.Status, resp.StatusCode)
 			}
 			if isRetryableHTTPStatus(resp.StatusCode) {
+				// Honor the server's Retry-After (seconds or HTTP-date) when it
+				// asks us to wait longer than our default backoff — otherwise a
+				// rate-limited turn burns all three retries in ~7s and fails
+				// even though the server told us exactly when to come back.
+				if ra := parseRetryAfter(retryAfter); ra > 0 {
+					wait = ra
+				}
 				continue
 			}
 			return nil, lastErr
@@ -355,6 +366,40 @@ func (c *Client) postChatWithRetry(ctx context.Context, reqBytes []byte) ([]byte
 	}
 
 	return nil, fmt.Errorf("llm: retry exhausted (%d attempts): %w", maxRetries+1, lastErr)
+}
+
+// maxRetryAfter caps how long we'll honor a server's Retry-After. A pathological
+// or hostile value (e.g. "Retry-After: 86400") must not wedge a turn for hours;
+// ctx cancellation can still break the wait sooner.
+const maxRetryAfter = 60 * time.Second
+
+// parseRetryAfter interprets an HTTP Retry-After header, which is either an
+// integer number of seconds or an HTTP-date. Returns 0 when absent or
+// unparseable (callers then fall back to exponential backoff). The result is
+// capped at maxRetryAfter.
+func parseRetryAfter(v string) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	var d time.Duration
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		d = time.Duration(secs) * time.Second
+	} else if t, err := http.ParseTime(v); err == nil {
+		d = time.Until(t)
+		if d <= 0 {
+			return 0
+		}
+	} else {
+		return 0
+	}
+	if d > maxRetryAfter {
+		d = maxRetryAfter
+	}
+	return d
 }
 
 // isRetryableHTTPStatus returns true for HTTP status codes that indicate
