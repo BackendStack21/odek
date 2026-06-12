@@ -1,6 +1,7 @@
 package danger
 
 import (
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -1166,6 +1167,98 @@ func TestClassifyURL_ExternalURLs(t *testing.T) {
 			got := ClassifyURL(tt.url)
 			if got != tt.want {
 				t.Errorf("ClassifyURL(%q) = %s, want %s", tt.url, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsBlockedIP(t *testing.T) {
+	tests := []struct {
+		ip   string
+		want bool
+	}{
+		// Loopback
+		{"127.0.0.1", true},
+		{"127.0.0.53", true},
+		{"::1", true},
+		// RFC1918 private
+		{"10.0.0.1", true},
+		{"172.16.0.1", true},
+		{"172.31.255.255", true},
+		{"192.168.1.1", true},
+		// IPv6 ULA (RFC4193)
+		{"fd00::1", true},
+		{"fc00::1", true},
+		// Link-local (incl. cloud metadata)
+		{"169.254.169.254", true},
+		{"169.254.0.1", true},
+		{"fe80::1", true},
+		// Unspecified
+		{"0.0.0.0", true},
+		{"::", true},
+		// IPv4-mapped IPv6 of a loopback address must still be caught
+		{"::ffff:127.0.0.1", true},
+		{"::ffff:10.0.0.1", true},
+		// Public addresses are allowed
+		{"8.8.8.8", false},
+		{"1.1.1.1", false},
+		{"93.184.216.34", false},
+		{"2606:4700:4700::1111", false},
+		// CGNAT 100.64/10 is not covered by Go's IsPrivate — documents the
+		// current (allowed) behavior so a future tightening is a conscious change.
+		{"100.64.0.1", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.ip, func(t *testing.T) {
+			ip := net.ParseIP(tt.ip)
+			if ip == nil {
+				t.Fatalf("could not parse %q", tt.ip)
+			}
+			if got := IsBlockedIP(ip); got != tt.want {
+				t.Errorf("IsBlockedIP(%q) = %v, want %v", tt.ip, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsBlockedIP_NilFailsClosed(t *testing.T) {
+	if !IsBlockedIP(nil) {
+		t.Error("IsBlockedIP(nil) = false, want true (fail closed)")
+	}
+}
+
+func TestHostIsImplicitlyInternal(t *testing.T) {
+	tests := []struct {
+		host string
+		want bool
+	}{
+		// Literal internal IPs, including browser-encoded bypass forms
+		{"127.0.0.1", true},
+		{"10.0.0.1", true},
+		{"192.168.1.1", true},
+		{"169.254.169.254", true},
+		{"0177.0.0.1", true},  // octal 127.0.0.1
+		{"2130706433", true},  // decimal 127.0.0.1
+		{"0x7f000001", true},  // hex 127.0.0.1
+		{"127.1", true},       // shorthand
+		{"::1", true},         // IPv6 loopback
+		// Known-internal hostnames
+		{"localhost", true},
+		{"foo.local", true},
+		{"metadata.google.internal", true},
+		{"anything.internal", true},
+		{"db.docker.internal", true},
+		// External hosts and IPs are NOT implicitly internal — these must be
+		// re-validated against their resolved IPs by the dial guard.
+		{"example.com", false},
+		{"api.github.com", false},
+		{"8.8.8.8", false},
+		{"93.184.216.34", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.host, func(t *testing.T) {
+			if got := HostIsImplicitlyInternal(tt.host); got != tt.want {
+				t.Errorf("HostIsImplicitlyInternal(%q) = %v, want %v", tt.host, got, tt.want)
 			}
 		})
 	}
