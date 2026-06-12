@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/BackendStack21/odek/internal/danger"
@@ -145,9 +146,21 @@ func (t *shellTool) Call(args string) (string, error) {
 	defer cancel()
 
 	cmd := t.buildCmd(ctx, input.Command)
-	// WaitDelay guarantees Run() returns even if the killed process leaves
-	// children holding the output pipes open after the context fires.
-	cmd.WaitDelay = 5 * time.Second
+	// Run the command in its own process group and, on cancel/timeout, kill the
+	// WHOLE group — not just the `sh` leader. `sh -c "<cmd>"` may fork children
+	// (e.g. `sleep`); killing only the leader leaves them alive holding the
+	// output pipes, so Run() would block until WaitDelay. Signalling the group
+	// (negative pid) tears the whole tree down at once.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			// Best-effort group kill; ignore ESRCH if it already exited.
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return nil
+	}
+	// WaitDelay is a backstop in case a process somehow outlives the group kill.
+	cmd.WaitDelay = 3 * time.Second
 
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf

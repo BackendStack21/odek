@@ -26,7 +26,7 @@ func TestShellTool_Timeout(t *testing.T) {
 	var out string
 	var err error
 	go func() {
-		out, err = st.Call(`{"command":"sleep 30"}`)
+		out, err = st.Call(`{"command":"sleep 30 | cat"}`)
 		close(done)
 	}()
 	select {
@@ -52,7 +52,7 @@ func TestShellTool_ContextCancellation(t *testing.T) {
 	done := make(chan struct{})
 	var err error
 	go func() {
-		_, err = st.Call(`{"command":"sleep 30"}`)
+		_, err = st.Call(`{"command":"sleep 30 | cat"}`)
 		close(done)
 	}()
 	time.Sleep(100 * time.Millisecond)
