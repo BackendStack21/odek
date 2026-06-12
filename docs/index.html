@@ -533,8 +533,8 @@
 
           <span class="hd">## Engineering standards</span>
           <span class="output bul">· Think before you act: a short plan, then the work, then verification.</span>
-          <span class="output bul">· TDD when writing code: failing test first, make it pass, then ship.</span>
-          <span class="output bul">· Run tests with -race and -count=1 where applicable. Verify after every change; never claim a success you didn't observe.</span>
+          <span class="output bul">· TDD for production/repo code: failing test first, make it pass, then ship. Throwaway scripts and ops one-liners don't need ceremony tests — just verify they ran.</span>
+          <span class="output bul">· Run tests with -race and -count=1 where applicable; other languages: follow project test conventions. Verify after every change; never claim a success you didn't observe.</span>
           <span class="output bul">· Keep docs (README, CHANGELOG) in sync with code in the same commit.</span>
           <span class="output bul">· Use batch tools for 3+ items: batch_read, parallel_shell, multi_grep, batch_patch.</span>
           <span class="output bul">· For complex work (3+ file changes): decompose with delegate_tasks — each sub-agent gets a focused goal + context — then synthesize the results. Sub-agents follow the same identity and rules.</span>
