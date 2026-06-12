@@ -523,22 +523,34 @@ func (d telegramDeliverer) recordScheduledTurn(chatID int64, job schedule.Job, r
 		return nil // no active conversation to attach to — deliver-only
 	}
 
-	// A user turn that makes clear this came from the scheduler (not typed
-	// live), followed by the assistant's result. Storing both keeps the
-	// conversation well-formed (alternating roles) and lets the agent answer
-	// "what did that scheduled task find?". Secrets are redacted by Store.Save.
 	label := job.Name
 	if label == "" {
 		label = job.ID
 	}
-	userTurn := fmt.Sprintf("⏰ [scheduled task %q ran]\n%s", label, job.Task)
 
 	msgs := make([]llm.Message, len(cs.Messages), len(cs.Messages)+2)
 	copy(msgs, cs.Messages)
-	msgs = append(msgs,
-		llm.Message{Role: "user", Content: userTurn},
-		llm.Message{Role: "assistant", Content: result},
-	)
+
+	// Normally append a user turn (clearly marked as scheduler-originated, not
+	// typed live) followed by the assistant result — well-formed and ready for
+	// the next user message. But an existing session can already END on a bare
+	// user message (a turn cancelled before the agent replied, or a
+	// context-injection command). Appending another user turn there would put
+	// two user messages back-to-back, which strict providers (Anthropic) reject
+	// on the next call. In that case fold the label into a single assistant
+	// message so roles stay alternating. Either way the session ends on an
+	// assistant turn. Secrets are redacted by Store.Save.
+	if n := len(msgs); n > 0 && msgs[n-1].Role == "user" {
+		msgs = append(msgs, llm.Message{
+			Role:    "assistant",
+			Content: fmt.Sprintf("⏰ [scheduled task %q ran]\n%s", label, result),
+		})
+	} else {
+		msgs = append(msgs,
+			llm.Message{Role: "user", Content: fmt.Sprintf("⏰ [scheduled task %q ran]\n%s", label, job.Task)},
+			llm.Message{Role: "assistant", Content: result},
+		)
+	}
 	return d.sessions.Save(chatID, msgs)
 }
 

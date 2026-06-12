@@ -81,6 +81,48 @@ func TestScheduleDeliver_RecordsIntoExistingSession(t *testing.T) {
 	}
 }
 
+// TestScheduleDeliver_PreservesAlternationAfterUserEndingSession guards the
+// edge where the session already ends on a bare user message (a turn cancelled
+// before the agent replied, or a context-injection command). Appending another
+// user turn would produce two consecutive user messages, which Anthropic
+// rejects on the next call. The write-back must fold into a single assistant
+// turn instead — and never produce two same-role messages in a row.
+func TestScheduleDeliver_PreservesAlternationAfterUserEndingSession(t *testing.T) {
+	d, sm, recv := newTestDeliverer(t)
+	chatID := int64(5560)
+	if err := sm.Save(chatID, []llm.Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "an interrupted turn"}, // session ends on user
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	job := schedule.Job{
+		ID: "jb-9", Name: "digest", Task: "summarize",
+		Deliver: schedule.Delivery{Kind: schedule.DeliverTelegram, ChatID: chatID},
+	}
+	if err := d.Deliver(context.Background(), job, "the result"); err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	<-recv
+
+	cs, err := sm.Load(chatID)
+	if err != nil || cs == nil {
+		t.Fatalf("Load: %v cs=%v", err, cs)
+	}
+	// No two consecutive same-role messages anywhere.
+	for i := 1; i < len(cs.Messages); i++ {
+		if cs.Messages[i].Role == cs.Messages[i-1].Role {
+			t.Fatalf("consecutive %q messages at %d: %+v", cs.Messages[i].Role, i, cs.Messages)
+		}
+	}
+	// The result was recorded, and the session ends on an assistant turn.
+	last := cs.Messages[len(cs.Messages)-1]
+	if last.Role != "assistant" || !strings.Contains(last.Content, "the result") {
+		t.Errorf("last message should be the assistant result, got %+v", last)
+	}
+}
+
 // TestScheduleDeliver_NoSessionNotCreated verifies a notification-only chat
 // (never used interactively) is NOT given a session just because a schedule
 // posted to it — avoiding an ever-growing transcript of scheduled posts.
