@@ -132,7 +132,10 @@ func (t *shellTool) Call(args string) (string, error) {
 
 	// Bound execution: cancel with the agent context (Ctrl-C / turn timeout)
 	// and a generous backstop timeout so a stuck command can never wedge the
-	// agent forever.
+	// agent forever. Note: in sandbox mode this kills the host-side
+	// `docker exec` client, which unblocks the agent, but Docker does not
+	// propagate the signal to the in-container process — that lingers until the
+	// container is torn down at session end.
 	base := t.toolCtx()
 	timeout := t.timeout
 	if timeout <= 0 {
