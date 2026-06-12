@@ -1,17 +1,73 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestShellTool_Name(t *testing.T) {
 	st := &shellTool{}
 	if st.Name() != "shell" {
 		t.Errorf("Name() = %q, want %q", st.Name(), "shell")
+	}
+}
+
+// TestShellTool_Timeout verifies a stuck command can no longer wedge the agent:
+// a tiny per-tool timeout kills the command and Call returns promptly with a
+// clear timeout error instead of blocking forever.
+func TestShellTool_Timeout(t *testing.T) {
+	st := &shellTool{timeout: 200 * time.Millisecond}
+	done := make(chan struct{})
+	var out string
+	var err error
+	go func() {
+		out, err = st.Call(`{"command":"sleep 30"}`)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Call did not return after the command timeout — agent would hang")
+	}
+	if err == nil {
+		t.Fatalf("expected a timeout error, got output %q", out)
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("error should mention the timeout, got: %v", err)
+	}
+}
+
+// TestShellTool_ContextCancellation verifies Ctrl-C / turn cancellation kills a
+// running command immediately via the agent context.
+func TestShellTool_ContextCancellation(t *testing.T) {
+	st := &shellTool{}
+	ctx, cancel := context.WithCancel(context.Background())
+	st.SetContext(ctx)
+
+	done := make(chan struct{})
+	var err error
+	go func() {
+		_, err = st.Call(`{"command":"sleep 30"}`)
+		close(done)
+	}()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Call did not return after context cancellation — Ctrl-C would not work")
+	}
+	if err == nil {
+		t.Fatal("expected a cancellation error")
+	}
+	if !strings.Contains(err.Error(), "cancelled") {
+		t.Errorf("error should mention cancellation, got: %v", err)
 	}
 }
 
@@ -130,7 +186,7 @@ func TestShellTool_Call_StdoutAndStderr(t *testing.T) {
 
 func TestShellTool_BuildCmd_Local(t *testing.T) {
 	st := &shellTool{}
-	cmd := st.buildCmd("echo test")
+	cmd := st.buildCmd(context.Background(), "echo test")
 	args := cmd.Args
 	if args[0] != "sh" || args[1] != "-c" || args[2] != "echo test" {
 		t.Errorf("local cmd args = %v, want [sh -c 'echo test']", args)
@@ -139,7 +195,7 @@ func TestShellTool_BuildCmd_Local(t *testing.T) {
 
 func TestShellTool_BuildCmd_Docker(t *testing.T) {
 	st := &shellTool{containerName: "odek-12345"}
-	cmd := st.buildCmd("echo test")
+	cmd := st.buildCmd(context.Background(), "echo test")
 	args := cmd.Args
 	expected := []string{"docker", "exec", "-w", "/workspace", "odek-12345", "sh", "-c", "echo test"}
 	if !stringSlicesEqual(args, expected) {
@@ -303,7 +359,7 @@ func TestShellTool_CheckApproval(t *testing.T) {
 
 func TestShellTool_BuildCmd_Default(t *testing.T) {
 	st := &shellTool{}
-	cmd := st.buildCmd("echo hello")
+	cmd := st.buildCmd(context.Background(), "echo hello")
 	if cmd.Args[0] != "sh" {
 		t.Errorf("expected sh, got %s", cmd.Args[0])
 	}
