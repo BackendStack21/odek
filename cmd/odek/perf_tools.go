@@ -336,78 +336,73 @@ func (t *parallelShellTool) Call(argsJSON string) (result string, err error) {
 		}
 	}
 
-	results := make([]parallelShellEntry, len(args.Commands))
-	var mu sync.Mutex
-	sem := make(chan struct{}, 4)
-
-	for i, c := range args.Commands {
-		sem <- struct{}{}
-		go func(idx int, cmd parallelShellCmd) {
-			defer func() { <-sem }()
-
-			timeout := cmd.Timeout
-			if timeout <= 0 {
-				timeout = 30
-			}
-
-			start := time.Now()
-			entry := parallelShellEntry{Index: idx, Command: cmd.Command}
-
-			var shCmd *exec.Cmd
-			if t.containerName != "" {
-				shCmd = exec.Command("docker", "exec", "-w", "/workspace", t.containerName, "sh", "-c", cmd.Command)
-			} else {
-				shCmd = exec.Command("sh", "-c", cmd.Command)
-			}
-			var stdout, stderr strings.Builder
-			shCmd.Stdout = &stdout
-			shCmd.Stderr = &stderr
-
-			// Kill on timeout via goroutine, with mutex to avoid Process race
-			var procMu sync.Mutex
-			done := make(chan error, 1)
-			go func() {
-				err := shCmd.Run()
-				procMu.Lock()
-				done <- err
-				procMu.Unlock()
-			}()
-
-			select {
-			case err := <-done:
-				entry.Stdout = strings.TrimSpace(stdout.String())
-				entry.Stderr = strings.TrimSpace(stderr.String())
-				entry.DurationMs = time.Since(start).Milliseconds()
-
-				if err != nil {
-					if exitErr, ok := err.(*exec.ExitError); ok {
-						entry.ExitCode = exitErr.ExitCode()
-					} else {
-						entry.Error = err.Error()
-					}
-				}
-			case <-time.After(time.Duration(timeout) * time.Second):
-				procMu.Lock()
-				if shCmd.Process != nil {
-					shCmd.Process.Kill()
-				}
-				procMu.Unlock()
-				entry.Error = fmt.Sprintf("timeout after %ds", timeout)
-				entry.DurationMs = time.Since(start).Milliseconds()
-			}
-
-			mu.Lock()
-			results[idx] = entry
-			mu.Unlock()
-		}(i, c)
-	}
-
-	// Drain
-	for i := 0; i < cap(sem); i++ {
-		sem <- struct{}{}
+	// Commands are pre-approved above; run them with bounded concurrency and
+	// per-worker panic recovery. Results stay in input order, so Index == slot.
+	results := parallelMap(args.Commands, toolConcurrency(), t.runOne,
+		func(c parallelShellCmd, p any) parallelShellEntry {
+			return parallelShellEntry{Command: c.Command, Error: fmt.Sprintf("internal error: %v", p)}
+		})
+	for i := range results {
+		results[i].Index = i
 	}
 
 	return jsonResult(parallelShellResult{Results: results})
+}
+
+// runOne executes a single pre-approved command with a per-command timeout.
+func (t *parallelShellTool) runOne(cmd parallelShellCmd) parallelShellEntry {
+	timeout := cmd.Timeout
+	if timeout <= 0 {
+		timeout = 30
+	}
+
+	start := time.Now()
+	entry := parallelShellEntry{Command: cmd.Command}
+
+	var shCmd *exec.Cmd
+	if t.containerName != "" {
+		shCmd = exec.Command("docker", "exec", "-w", "/workspace", t.containerName, "sh", "-c", cmd.Command)
+	} else {
+		shCmd = exec.Command("sh", "-c", cmd.Command)
+	}
+	var stdout, stderr strings.Builder
+	shCmd.Stdout = &stdout
+	shCmd.Stderr = &stderr
+
+	// Kill on timeout via goroutine, with mutex to avoid Process race
+	var procMu sync.Mutex
+	done := make(chan error, 1)
+	go func() {
+		err := shCmd.Run()
+		procMu.Lock()
+		done <- err
+		procMu.Unlock()
+	}()
+
+	select {
+	case err := <-done:
+		entry.Stdout = strings.TrimSpace(stdout.String())
+		entry.Stderr = strings.TrimSpace(stderr.String())
+		entry.DurationMs = time.Since(start).Milliseconds()
+
+		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				entry.ExitCode = exitErr.ExitCode()
+			} else {
+				entry.Error = err.Error()
+			}
+		}
+	case <-time.After(time.Duration(timeout) * time.Second):
+		procMu.Lock()
+		if shCmd.Process != nil {
+			shCmd.Process.Kill()
+		}
+		procMu.Unlock()
+		entry.Error = fmt.Sprintf("timeout after %ds", timeout)
+		entry.DurationMs = time.Since(start).Milliseconds()
+	}
+
+	return entry
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -520,12 +515,16 @@ func (t *httpBatchTool) Call(argsJSON string) (result string, err error) {
 		return jsonError(fmt.Sprintf("max %d URLs per call", maxHTTPBatchURLs))
 	}
 
+	// Security checks run serially up front (they may prompt the user), then
+	// only the approved fetches run in parallel. Denied requests get an error
+	// entry in place and are not fetched.
 	results := make([]httpBatchEntry, len(args.Requests))
-	var mu sync.Mutex
-	sem := make(chan struct{}, 4)
-
+	type httpJob struct {
+		idx int
+		req httpBatchReq
+	}
+	var todo []httpJob
 	for i, req := range args.Requests {
-		// Security check
 		risk := danger.ClassifyURL(req.URL)
 		if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
 			Name: "http_batch", Resource: req.URL, Risk: risk,
@@ -533,60 +532,56 @@ func (t *httpBatchTool) Call(argsJSON string) (result string, err error) {
 			results[i] = httpBatchEntry{URL: req.URL, Error: err.Error()}
 			continue
 		}
-
-		sem <- struct{}{}
-		go func(idx int, r httpBatchReq) {
-			defer func() { <-sem }()
-
-			method := r.Method
-			if method == "" {
-				method = "GET"
-			}
-
-			entry := httpBatchEntry{URL: r.URL}
-			httpReq, err := http.NewRequest(method, r.URL, nil)
-			if err != nil {
-				entry.Error = err.Error()
-				mu.Lock()
-				results[idx] = entry
-				mu.Unlock()
-				return
-			}
-
-			for k, v := range r.Headers {
-				httpReq.Header.Set(k, v)
-			}
-			httpReq.Header.Set("User-Agent", "odek-http-batch/0.1")
-
-			resp, err := t.client.Do(httpReq)
-			if err != nil {
-				entry.Error = err.Error()
-				mu.Lock()
-				results[idx] = entry
-				mu.Unlock()
-				return
-			}
-			defer resp.Body.Close()
-
-			entry.Status = resp.StatusCode
-			entry.ContentLength = resp.ContentLength
-			if entry.ContentLength <= 0 {
-				n, _ := io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
-				entry.ContentLength = n
-			}
-
-			mu.Lock()
-			results[idx] = entry
-			mu.Unlock()
-		}(i, req)
+		todo = append(todo, httpJob{idx: i, req: req})
 	}
 
-	// Drain
-	for i := 0; i < cap(sem); i++ {
-		sem <- struct{}{}
+	done := parallelMap(todo, toolConcurrency(),
+		func(j httpJob) httpBatchEntry { return t.fetchOne(j.req) },
+		func(j httpJob, p any) httpBatchEntry {
+			return httpBatchEntry{URL: j.req.URL, Error: fmt.Sprintf("internal error: %v", p)}
+		})
+	for k, j := range todo {
+		results[j.idx] = done[k]
 	}
 
 	return jsonResult(httpBatchResult{Results: results})
+}
+
+// fetchOne performs a single pre-approved HTTP request through the SSRF-guarded
+// client and reports status + content length (body discarded, capped at 1 MiB).
+func (t *httpBatchTool) fetchOne(r httpBatchReq) httpBatchEntry {
+	method := r.Method
+	if method == "" {
+		method = "GET"
+	}
+
+	entry := httpBatchEntry{URL: r.URL}
+	httpReq, err := http.NewRequest(method, r.URL, nil)
+	if err != nil {
+		entry.Error = err.Error()
+		return entry
+	}
+
+	for k, v := range r.Headers {
+		httpReq.Header.Set(k, v)
+	}
+	httpReq.Header.Set("User-Agent", "odek-http-batch/0.1")
+
+	resp, err := t.client.Do(httpReq)
+	if err != nil {
+		entry.Error = err.Error()
+		return entry
+	}
+	defer resp.Body.Close()
+
+	entry.Status = resp.StatusCode
+	entry.ContentLength = resp.ContentLength
+	if entry.ContentLength <= 0 {
+		n, _ := io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+		entry.ContentLength = n
+	}
+
+	return entry
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -962,20 +957,11 @@ func (t *countLinesTool) Call(argsJSON string) (string, error) {
 		return jsonError(fmt.Sprintf("max %d files per call", maxCountFiles))
 	}
 
-	results := make([]countFileEntry, len(args.Files))
-	sem := make(chan struct{}, 4)
-
-	for i, f := range args.Files {
-		sem <- struct{}{}
-		go func(idx int, path string) {
-			defer func() { <-sem }()
-			results[idx] = t.countFile(path)
-		}(i, f.Path)
-	}
-
-	for i := 0; i < cap(sem); i++ {
-		sem <- struct{}{}
-	}
+	results := parallelMap(args.Files, toolConcurrency(),
+		func(f countFileArg) countFileEntry { return t.countFile(f.Path) },
+		func(f countFileArg, p any) countFileEntry {
+			return countFileEntry{Path: f.Path, Error: fmt.Sprintf("internal error: %v", p)}
+		})
 
 	var total countFileEntry
 	total.Path = "(total)"
@@ -1119,20 +1105,13 @@ func (t *multiGrepTool) Call(argsJSON string) (string, error) {
 		return jsonError(err.Error())
 	}
 
-	results := make([]grepPatternResult, len(args.Patterns))
-	sem := make(chan struct{}, 4)
-
-	for i, pattern := range args.Patterns {
-		sem <- struct{}{}
-		go func(idx int, pat string) {
-			defer func() { <-sem }()
-			results[idx] = t.searchPattern(pat, args.Path, args.FileGlob, args.Limit)
-		}(i, pattern)
-	}
-
-	for i := 0; i < cap(sem); i++ {
-		sem <- struct{}{}
-	}
+	results := parallelMap(args.Patterns, toolConcurrency(),
+		func(pat string) grepPatternResult {
+			return t.searchPattern(pat, args.Path, args.FileGlob, args.Limit)
+		},
+		func(pat string, p any) grepPatternResult {
+			return grepPatternResult{Pattern: pat, Error: fmt.Sprintf("internal error: %v", p)}
+		})
 
 	return jsonResult(multiGrepResult{Results: results})
 }
@@ -1561,20 +1540,10 @@ func (t *checksumTool) Call(argsJSON string) (string, error) {
 		return jsonError(fmt.Sprintf("max %d files per call", maxChecksumFiles))
 	}
 
-	results := make([]checksumEntry, len(args.Files))
-	sem := make(chan struct{}, 4)
-
-	for i, f := range args.Files {
-		sem <- struct{}{}
-		go func(idx int, cf checksumFileArg) {
-			defer func() { <-sem }()
-			results[idx] = t.hashFile(cf)
-		}(i, f)
-	}
-
-	for i := 0; i < cap(sem); i++ {
-		sem <- struct{}{}
-	}
+	results := parallelMap(args.Files, toolConcurrency(), t.hashFile,
+		func(cf checksumFileArg, p any) checksumEntry {
+			return checksumEntry{Path: cf.Path, Algorithm: strings.ToLower(cf.Algorithm), Error: fmt.Sprintf("internal error: %v", p)}
+		})
 
 	return jsonResult(checksumResult{Results: results})
 }
@@ -1870,20 +1839,11 @@ func (t *headTailTool) Call(argsJSON string) (string, error) {
 		mode = "head"
 	}
 
-	results := make([]headTailFileResult, len(args.Files))
-	sem := make(chan struct{}, 4)
-
-	for i, f := range args.Files {
-		sem <- struct{}{}
-		go func(idx int, path string) {
-			defer func() { <-sem }()
-			results[idx] = t.readPreview(path, n, mode)
-		}(i, f.Path)
-	}
-
-	for i := 0; i < cap(sem); i++ {
-		sem <- struct{}{}
-	}
+	results := parallelMap(args.Files, toolConcurrency(),
+		func(f headTailFileArg) headTailFileResult { return t.readPreview(f.Path, n, mode) },
+		func(f headTailFileArg, p any) headTailFileResult {
+			return headTailFileResult{Path: f.Path, Error: fmt.Sprintf("internal error: %v", p)}
+		})
 
 	return jsonResult(headTailResult{Results: results})
 }
@@ -2238,20 +2198,11 @@ func (t *wordCountTool) Call(argsJSON string) (string, error) {
 		return jsonError(fmt.Sprintf("max %d files per call", maxWordCountFiles))
 	}
 
-	results := make([]wordCountEntry, len(args.Files))
-	sem := make(chan struct{}, 4)
-
-	for i, f := range args.Files {
-		sem <- struct{}{}
-		go func(idx int, path string) {
-			defer func() { <-sem }()
-			results[idx] = t.countWords(path)
-		}(i, f.Path)
-	}
-
-	for i := 0; i < cap(sem); i++ {
-		sem <- struct{}{}
-	}
+	results := parallelMap(args.Files, toolConcurrency(),
+		func(f wordCountFileArg) wordCountEntry { return t.countWords(f.Path) },
+		func(f wordCountFileArg, p any) wordCountEntry {
+			return wordCountEntry{Path: f.Path, Error: fmt.Sprintf("internal error: %v", p)}
+		})
 
 	var total wordCountEntry
 	total.Path = "(total)"

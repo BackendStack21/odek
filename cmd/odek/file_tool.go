@@ -916,21 +916,10 @@ func (t *batchReadTool) Call(argsJSON string) (result string, err error) {
 		return jsonError(fmt.Sprintf("max %d files per batch_read call", maxBatchFiles))
 	}
 
-	results := make([]batchReadFileResult, len(args.Files))
-	sem := make(chan struct{}, 4) // bounded concurrency for file I/O
-
-	for i, f := range args.Files {
-		sem <- struct{}{}
-		go func(idx int, fileArg batchReadFileArg) {
-			defer func() { <-sem }()
-			results[idx] = t.readSingle(fileArg)
-		}(i, f)
-	}
-
-	// Drain — wait for all goroutines
-	for i := 0; i < cap(sem); i++ {
-		sem <- struct{}{}
-	}
+	results := parallelMap(args.Files, toolConcurrency(), t.readSingle,
+		func(f batchReadFileArg, p any) batchReadFileResult {
+			return batchReadFileResult{Path: f.Path, Error: fmt.Sprintf("internal error: %v", p)}
+		})
 
 	return jsonResult(batchReadResult{Results: results})
 }
