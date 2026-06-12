@@ -44,6 +44,50 @@ func TestBatchPatch_Basic(t *testing.T) {
 	}
 }
 
+// TestBatchPatch_PathConfinement verifies batch_patch enforces the same
+// restrictToCWD confinement as write_file/patch: escapes are rejected
+// per-entry, and odek's trust anchors are excluded from the ~/.odek/
+// carve-out.
+func TestBatchPatch_PathConfinement(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ok.txt")
+	os.WriteFile(path, []byte("hello world\n"), 0644)
+
+	origDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(origDir)
+
+	home, _ := os.UserHomeDir()
+	tool := &batchPatchTool{restrictToCWD: true}
+	args := fmt.Sprintf(`{"patches":[
+		{"path":"ok.txt","old_string":"world","new_string":"there"},
+		{"path":"../escape.txt","old_string":"a","new_string":"b"},
+		{"path":"%s/.odek/config.json","old_string":"a","new_string":"b"}
+	]}`, home)
+	result := callJSON(t, tool, args)
+
+	var r struct {
+		Results []struct {
+			Success bool   `json:"success"`
+			Error   string `json:"error"`
+		} `json:"results"`
+	}
+	mustUnmarshal(t, result, &r)
+
+	if len(r.Results) != 3 {
+		t.Fatalf("Results = %d, want 3", len(r.Results))
+	}
+	if !r.Results[0].Success {
+		t.Errorf("in-CWD patch should succeed: %s", r.Results[0].Error)
+	}
+	if r.Results[1].Success || !strings.Contains(r.Results[1].Error, "escapes the working directory") {
+		t.Errorf("escape should be rejected, got success=%v err=%q", r.Results[1].Success, r.Results[1].Error)
+	}
+	if r.Results[2].Success || r.Results[2].Error == "" {
+		t.Errorf("~/.odek/config.json should be rejected, got success=%v err=%q", r.Results[2].Success, r.Results[2].Error)
+	}
+}
+
 func TestBatchPatch_MultipleFiles(t *testing.T) {
 	dir := t.TempDir()
 	path1 := filepath.Join(dir, "a.txt")

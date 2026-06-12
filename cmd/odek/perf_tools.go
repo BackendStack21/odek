@@ -47,6 +47,7 @@ const maxBatchPatches = 10
 
 type batchPatchTool struct {
 	dangerousConfig danger.DangerousConfig
+	restrictToCWD   bool // when true, reject paths escaping the working directory
 }
 
 func (t *batchPatchTool) Name() string { return "batch_patch" }
@@ -127,6 +128,19 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 			entry.Error = "old_string is required"
 			results[idx] = entry
 			continue
+		}
+
+		// Path confinement: same as write_file/patch — reject paths that
+		// escape the working directory.
+		if t.restrictToCWD {
+			resolved, err := confineToCWD(p.Path)
+			if err != nil {
+				entry.Error = err.Error()
+				results[idx] = entry
+				continue
+			}
+			p.Path = resolved
+			entry.Path = resolved
 		}
 
 		if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{

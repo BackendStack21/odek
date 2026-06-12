@@ -2,6 +2,7 @@ package danger
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -995,6 +996,105 @@ func TestClassifyPath_HomeSensitiveDirs(t *testing.T) {
 		{home + "/.kube/config", SystemWrite},
 		{home + "/.docker/config.json", SystemWrite},
 		{home + "/.gitconfig", SystemWrite},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			got := ClassifyPath(tt.path)
+			if got != tt.want {
+				t.Errorf("ClassifyPath(%q) = %s, want %s", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestClassifyPath_OdekTrustAnchors verifies that odek's own config,
+// secrets, and auto-loaded skills classify as SystemWrite (prompt/deny),
+// not auto-allowed LocalWrite — rewriting them lets a confined agent
+// disable the sandbox, enable YOLO mode, or inject prompts on the next run.
+func TestClassifyPath_OdekTrustAnchors(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		t.Skip("no home dir")
+	}
+	if strings.HasPrefix(home, "/root") {
+		// /root is SystemWrite by prefix — LocalWrite expectations below
+		// don't hold when running as root.
+		t.Skip("running as root")
+	}
+	tests := []struct {
+		path string
+		want RiskClass
+	}{
+		{home + "/.odek/config.json", SystemWrite},
+		{home + "/.odek/secrets.env", SystemWrite},
+		{home + "/.odek/skills/evil/SKILL.md", SystemWrite},
+		{home + "/.odek/skills", SystemWrite},
+		// non-anchor ~/.odek state stays local
+		{home + "/.odek/memory/episodes.json", LocalWrite},
+		{home + "/.odek/sessions/abc.json", LocalWrite},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			got := ClassifyPath(tt.path)
+			if got != tt.want {
+				t.Errorf("ClassifyPath(%q) = %s, want %s", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestClassifyPath_ShellRCFiles verifies that shell startup files in $HOME
+// classify as SystemWrite — writing them is code execution on the next
+// shell start, not a local file edit.
+func TestClassifyPath_ShellRCFiles(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		t.Skip("no home dir")
+	}
+	if strings.HasPrefix(home, "/root") {
+		t.Skip("running as root")
+	}
+	tests := []struct {
+		path string
+		want RiskClass
+	}{
+		{home + "/.bashrc", SystemWrite},
+		{home + "/.bash_profile", SystemWrite},
+		{home + "/.bash_aliases", SystemWrite},
+		{home + "/.profile", SystemWrite},
+		{home + "/.zshrc", SystemWrite},
+		{home + "/.zprofile", SystemWrite},
+		{home + "/.zshenv", SystemWrite},
+		// only files directly in $HOME are rc files — same names deeper
+		// in the tree are ordinary project files
+		{home + "/code/dotfiles/.bashrc", LocalWrite},
+		// non-rc dotfiles in $HOME stay local
+		{home + "/.vimrc", LocalWrite},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			got := ClassifyPath(tt.path)
+			if got != tt.want {
+				t.Errorf("ClassifyPath(%q) = %s, want %s", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestClassifyPath_CrontabPaths locks in that crontab locations classify
+// as SystemWrite via the existing /etc, /var, /usr prefix checks — a
+// crontab entry is persistence/code-execution on a schedule.
+func TestClassifyPath_CrontabPaths(t *testing.T) {
+	tests := []struct {
+		path string
+		want RiskClass
+	}{
+		{"/etc/crontab", SystemWrite},
+		{"/etc/cron.d/evil", SystemWrite},
+		{"/etc/cron.daily/job", SystemWrite},
+		{"/var/spool/cron/crontabs/root", SystemWrite}, // Linux user crontabs
+		{"/usr/lib/cron/tabs/user", SystemWrite},       // macOS user crontabs
+		{"/var/at/tabs/user", SystemWrite},             // macOS at jobs
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {

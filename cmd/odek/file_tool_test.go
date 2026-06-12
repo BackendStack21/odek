@@ -770,20 +770,60 @@ func TestConfineToCWD_DoubleDotEscape(t *testing.T) {
 	}
 }
 
-// TestConfineToCWD_AllowsOdekDir verifies that paths under ~/.odek/
-// are allowed by confineToCWD even when they are outside the project
-// CWD. The agent frequently needs to write skills, memory, and config
-// to ~/.odek/ — blocking these forces wasteful shell workarounds.
+// TestConfineToCWD_AllowsOdekDir verifies that non-sensitive paths under
+// ~/.odek/ (memory, state) are allowed by confineToCWD even when they are
+// outside the project CWD — blocking these forces wasteful shell workarounds.
 func TestConfineToCWD_AllowsOdekDir(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatal(err)
 	}
-	odekPath := home + "/.odek/skills/test-skill/SKILL.md"
+	for _, p := range []string{
+		home + "/.odek/memory/episodes.json",
+		home + "/.odek/sessions/abc.json",
+		home + "/.odek/notes.md",
+	} {
+		if _, err := confineToCWD(p); err != nil {
+			t.Errorf("non-sensitive ~/.odek/ path %q should be allowed, got: %v", p, err)
+		}
+	}
+}
 
-	_, err = confineToCWD(odekPath)
+// TestConfineToCWD_RejectsProtectedOdekPaths verifies that odek's trust
+// anchors are EXCLUDED from the ~/.odek/ carve-out. A confined agent that
+// can rewrite its own config.json can disable the sandbox or enable YOLO
+// mode on the next run; a dropped SKILL.md is auto-loaded into future
+// prompts; secrets.env is injected into the process environment. Skills
+// writes go through the dedicated skill_save/skill_patch tools instead.
+func TestConfineToCWD_RejectsProtectedOdekPaths(t *testing.T) {
+	home, err := os.UserHomeDir()
 	if err != nil {
-		t.Errorf("~/.odek/ paths should be allowed by confineToCWD, got: %v", err)
+		t.Fatal(err)
+	}
+	for _, p := range []string{
+		home + "/.odek/config.json",
+		home + "/.odek/secrets.env",
+		home + "/.odek/skills/evil/SKILL.md",
+		home + "/.odek/skills",
+		// ".." traversal inside the carve-out must not reach the anchors
+		home + "/.odek/memory/../config.json",
+	} {
+		if _, err := confineToCWD(p); err == nil {
+			t.Errorf("protected odek path %q should be rejected by confineToCWD", p)
+		}
+	}
+}
+
+// TestConfineToCWD_SkillsPrefixNotOverbroad verifies the skills/ exclusion
+// matches the directory itself, not sibling names sharing the prefix.
+func TestConfineToCWD_SkillsPrefixNotOverbroad(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := home + "/.odek/skills-backup/notes.md"
+	if _, err := confineToCWD(p); err != nil {
+		t.Errorf("%q is not under skills/ and should be allowed, got: %v", p, err)
 	}
 }
 
@@ -1056,6 +1096,81 @@ func TestWriteFile_PathConfinementAllow(t *testing.T) {
 	data, _ := os.ReadFile(path)
 	if string(data) != "should succeed" {
 		t.Errorf("content = %q, want %q", string(data), "should succeed")
+	}
+}
+
+func TestPatch_PathConfinementReject(t *testing.T) {
+	tool := &patchTool{
+		restrictToCWD: true,
+	}
+	// ../ escape should be rejected before any classification or file I/O
+	result := callJSON(t, tool, `{"path":"../escape-test.txt","old_string":"a","new_string":"b"}`)
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" {
+		t.Fatal("expected error for path confinement violation")
+	}
+	if !strings.Contains(r.Error, "escapes the working directory") {
+		t.Errorf("error should mention escaping, got: %s", r.Error)
+	}
+}
+
+func TestPatch_PathConfinementAllow(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "patchme.txt")
+	if err := os.WriteFile(path, []byte("hello world"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	origDir, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(origDir)
+
+	tool := &patchTool{
+		restrictToCWD: true,
+	}
+	result := callJSON(t, tool, `{"path":"patchme.txt","old_string":"world","new_string":"there"}`)
+	var r struct {
+		Success bool   `json:"success"`
+		Error   string `json:"error,omitempty"`
+	}
+	mustUnmarshal(t, result, &r)
+	if !r.Success {
+		t.Fatalf("expected success, got error: %s", r.Error)
+	}
+
+	data, _ := os.ReadFile(path)
+	if string(data) != "hello there" {
+		t.Errorf("content = %q, want %q", string(data), "hello there")
+	}
+}
+
+// TestPatch_RejectsProtectedOdekPaths verifies the patch tool cannot edit
+// odek's trust anchors through the ~/.odek/ carve-out — closing the
+// escalation where a confined agent patches its own config.json to
+// disable the sandbox on the next run.
+func TestPatch_RejectsProtectedOdekPaths(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home dir")
+	}
+	tool := &patchTool{
+		restrictToCWD: true,
+	}
+	for _, p := range []string{
+		home + "/.odek/config.json",
+		home + "/.odek/skills/x/SKILL.md",
+	} {
+		result := callJSON(t, tool, `{"path":"`+p+`","old_string":"a","new_string":"b"}`)
+		var r struct {
+			Error string `json:"error"`
+		}
+		mustUnmarshal(t, result, &r)
+		if r.Error == "" {
+			t.Errorf("patch to %q should be rejected", p)
+		}
 	}
 }
 
