@@ -532,6 +532,7 @@ func (t *searchFilesTool) searchFiles(args searchFilesArgs) (string, error) {
 type patchTool struct {
 	dangerousConfig danger.DangerousConfig
 	trustedClasses  map[danger.RiskClass]bool
+	restrictToCWD   bool // when true, reject paths escaping the working directory
 }
 
 func (t *patchTool) Name() string { return "patch" }
@@ -590,6 +591,16 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 	}
 	if args.OldString == "" {
 		return jsonError("old_string is required")
+	}
+
+	// Path confinement: same as write_file — reject paths that escape the
+	// working directory via ".." traversal or absolute paths.
+	if t.restrictToCWD {
+		resolved, err := confineToCWD(args.Path)
+		if err != nil {
+			return jsonError(err.Error())
+		}
+		args.Path = resolved
 	}
 
 	// Security: classify and check patch operation
@@ -758,11 +769,20 @@ func confineToCWD(path string) (string, error) {
 	}
 
 	// Allow paths under ~/.odek/ even when outside CWD — the agent
-	// frequently writes skills, memory, and config to this directory.
+	// frequently writes memory and other state to this directory. The
+	// carve-out deliberately EXCLUDES odek's trust anchors (config.json,
+	// secrets.env, skills/): a confined agent that can rewrite its own
+	// config can disable the sandbox or enable YOLO mode on the next run,
+	// and a dropped SKILL.md is auto-loaded into future prompts. Skills
+	// are legitimately written through the dedicated skill_save/skill_patch
+	// tools, not the generic file tools.
 	home, homeErr := os.UserHomeDir()
 	if homeErr == nil {
 		odekPrefix := home + "/.odek/"
 		if strings.HasPrefix(abs, odekPrefix) {
+			if isProtectedOdekPath(strings.TrimPrefix(abs, odekPrefix)) {
+				return "", fmt.Errorf("path %q is a protected odek configuration path and cannot be written by file tools", path)
+			}
 			return abs, nil
 		}
 	}
@@ -773,6 +793,15 @@ func confineToCWD(path string) (string, error) {
 	}
 
 	return abs, nil
+}
+
+// isProtectedOdekPath reports whether rel (a path relative to ~/.odek/,
+// already cleaned by confineToCWD) names one of odek's trust anchors that
+// must not be writable through the generic file tools. Keep in sync with
+// the SystemWrite escalation in danger.ClassifyPath.
+func isProtectedOdekPath(rel string) bool {
+	return rel == "config.json" || rel == "secrets.env" ||
+		rel == "skills" || strings.HasPrefix(rel, "skills"+string(filepath.Separator))
 }
 
 func truncateDiff(s string, maxLen int) string {

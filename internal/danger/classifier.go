@@ -136,8 +136,18 @@ type ToolOperation struct {
 // ── Path-based classification ──────────────────────────────────────────
 
 // ClassifyPath returns a RiskClass for a filesystem path.
-// /tmp/*, working directory → local_write; /etc/*, /root/* → system_write;
-// /boot/*, /dev/*, /sys/* → destructive; home sensitive dirs → system_write.
+//
+// Classification rules (highest wins):
+//   - /boot, /dev, /proc, /sys, /mnt, /media → destructive
+//   - /tmp, $TMPDIR → local_write
+//   - /etc, /root, /var, /run, /lib, /usr → system_write
+//   - $HOME/.ssh, .config, .gnupg, .aws, .kube, .docker, .gitconfig, .env → system_write
+//   - $HOME/.odek/config.json, secrets.env, skills/ → system_write (odek trust anchors;
+//     rewriting them can disable the sandbox or inject prompts on the next run)
+//   - $HOME shell rc/profile files (.bashrc, .zshrc, .profile, .zshenv, etc.) → system_write
+//   - everything else → local_write
+//
+// macOS: /private/{etc,var,tmp} are transparently normalised before matching.
 func ClassifyPath(path string) RiskClass {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -182,8 +192,38 @@ func ClassifyPath(path string) RiskClass {
 				return SystemWrite
 			}
 		}
+		// odek's own trust anchors. Rewriting ~/.odek/config.json can disable
+		// the sandbox or set "action": "allow" (YOLO) for the next run; a
+		// SKILL.md dropped under ~/.odek/skills/ is auto-loaded into future
+		// prompts; secrets.env is injected into the process environment.
+		// Auto-allowing these as LocalWrite would let a confined agent
+		// escalate out of its own sandbox, so they classify as SystemWrite
+		// (prompt/deny). Keep in sync with the carve-out exclusions in
+		// cmd/odek/file_tool.go (isProtectedOdekPath).
+		for _, sub := range []string{"/.odek/config.json", "/.odek/secrets.env", "/.odek/skills"} {
+			if strings.HasPrefix(abs, home+sub) {
+				return SystemWrite
+			}
+		}
+		// Shell rc/profile files execute on the user's next shell start —
+		// writing them is persistence/escalation, not a local file edit.
+		if filepath.Dir(abs) == home && shellRCFiles[filepath.Base(abs)] {
+			return SystemWrite
+		}
 	}
 	return LocalWrite
+}
+
+// shellRCFiles are dotfiles in $HOME that shells execute automatically on
+// startup/login. Writing any of them is code execution on the next shell,
+// so ClassifyPath escalates them to SystemWrite. Fish/nushell configs live
+// under ~/.config, which is already covered by the home-sensitive-dir list.
+var shellRCFiles = map[string]bool{
+	".bashrc": true, ".bash_profile": true, ".bash_login": true,
+	".bash_logout": true, ".bash_aliases": true, ".profile": true,
+	".zshrc": true, ".zprofile": true, ".zshenv": true, ".zlogin": true,
+	".zlogout": true, ".kshrc": true, ".cshrc": true, ".tcshrc": true,
+	".login": true, ".logout": true,
 }
 
 // ClassifyURL returns a RiskClass for a browser URL.
