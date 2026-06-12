@@ -80,12 +80,21 @@ func ssrfGuardedDial(base dialFunc, lookup ipLookupFunc) dialFunc {
 	}
 }
 
-// ssrfGuardedTransport returns an *http.Transport (cloned from the default so
-// it keeps sane timeouts, proxy handling, and HTTP/2) whose DialContext is the
-// SSRF guard above, backed by the real dialer and resolver.
+// ssrfGuardedTransport returns an *http.Transport whose DialContext is the SSRF
+// guard above, backed by the real dialer and resolver. It clones the default
+// transport when possible so it inherits sane defaults (env proxy handling,
+// idle-conn limits, HTTP/2, TLS handshake timeout); if a third-party package
+// has swapped http.DefaultTransport for a non-*http.Transport RoundTripper, it
+// falls back to a fresh transport with explicit proxy handling rather than
+// panicking on the type assertion — this runs at startup, so it must fail safe.
 func ssrfGuardedTransport() *http.Transport {
 	base := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
-	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr, ok := http.DefaultTransport.(*http.Transport)
+	if ok {
+		tr = tr.Clone()
+	} else {
+		tr = &http.Transport{Proxy: http.ProxyFromEnvironment}
+	}
 	tr.DialContext = ssrfGuardedDial(base.DialContext, net.DefaultResolver.LookupIPAddr)
 	return tr
 }
