@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -20,7 +21,7 @@ import (
 // Returns the path to the WAV file (may be the same as input if already WAV/MP3/FLAC
 // or if ffmpeg is unavailable/fails — in which case whisper will produce its own error).
 // The caller must remove the returned path if it differs from the input path.
-func convertToWAV(srcPath string) string {
+func convertToWAV(ctx context.Context, srcPath string) string {
 	ext := strings.ToLower(filepath.Ext(srcPath))
 	// whisper.cpp supports WAV, MP3, FLAC natively via dr_wav/dr_mp3/dr_flac.
 	switch ext {
@@ -35,7 +36,7 @@ func convertToWAV(srcPath string) string {
 
 	// Convert to WAV using ffmpeg — best-effort, fall through on failure.
 	dstPath := srcPath + ".wav"
-	cmd := exec.Command("ffmpeg", "-y", "-i", srcPath, "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", dstPath)
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-y", "-i", srcPath, "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", dstPath)
 	if err := cmd.Run(); err != nil {
 		// If ffmpeg fails (corrupt file, unsupported codec, etc.),
 		// just pass the original path — whisper will produce its own error.
@@ -138,6 +139,7 @@ Set "model" in transcription config to change which model is expected.`,
 // ═════════════════════════════════════════════════════════════════════════
 
 type transcribeTool struct {
+	ctxTool
 	dangerousConfig  danger.DangerousConfig
 	transcriptionCfg config.TranscriptionConfig
 }
@@ -224,7 +226,7 @@ func (t *transcribeTool) Call(argsJSON string) (result string, err error) {
 	f.Close()
 
 	// Convert to WAV if needed (whisper.cpp doesn't support OGG Opus natively).
-	wavPath := convertToWAV(args.Path)
+	wavPath := convertToWAV(t.toolCtx(), args.Path)
 	cleanup := func() {
 		if wavPath != args.Path {
 			os.Remove(wavPath)
@@ -263,7 +265,7 @@ func (t *transcribeTool) Call(argsJSON string) (result string, err error) {
 		args2 = append(args2, "--language", lang)
 	}
 
-	cmd := exec.Command(binary, args2...)
+	cmd := exec.CommandContext(t.toolCtx(), binary, args2...)
 	output, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {

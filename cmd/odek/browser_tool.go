@@ -55,6 +55,7 @@ type browserState struct {
 // ── Browser Tool ──────────────────────────────────────────────────────
 
 type browserTool struct {
+	ctxTool
 	state           *browserState
 	client          *http.Client
 	dangerousConfig danger.DangerousConfig
@@ -196,7 +197,7 @@ func (t *browserTool) doNavigate(rawURL string) (string, error) {
 		return jsonError(fmt.Sprintf("invalid URL %q: must start with http:// or https://", rawURL))
 	}
 
-	req, err := http.NewRequest("GET", rawURL, nil)
+	req, err := http.NewRequestWithContext(t.toolCtx(), "GET", rawURL, nil)
 	if err != nil {
 		return jsonError(fmt.Sprintf("cannot create request: %v", err))
 	}

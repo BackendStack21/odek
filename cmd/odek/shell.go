@@ -72,18 +72,13 @@ type shellTool struct {
 	// Overridden in tests to mock user input. Only used when approver is nil.
 	ttyPath string
 
-	// ctx, when set via SetContext, ties command execution to the agent's
-	// lifetime: cancelling it (Ctrl-C, turn timeout) kills the running command.
-	ctx context.Context
+	// ctxTool provides SetContext/toolCtx so cancelling the agent context
+	// (Ctrl-C, turn timeout) kills the running command.
+	ctxTool
 
 	// timeout bounds a single command. Zero falls back to defaultShellTimeout.
 	timeout time.Duration
 }
-
-// SetContext lets the agent loop propagate its context so a running command is
-// killed when the turn is cancelled. Implements the loop's optional
-// context-aware tool interface.
-func (t *shellTool) SetContext(ctx context.Context) { t.ctx = ctx }
 
 func (t *shellTool) Name() string { return "shell" }
 
@@ -138,10 +133,7 @@ func (t *shellTool) Call(args string) (string, error) {
 	// Bound execution: cancel with the agent context (Ctrl-C / turn timeout)
 	// and a generous backstop timeout so a stuck command can never wedge the
 	// agent forever.
-	base := t.ctx
-	if base == nil {
-		base = context.Background()
-	}
+	base := t.toolCtx()
 	timeout := t.timeout
 	if timeout <= 0 {
 		timeout = defaultShellTimeout
