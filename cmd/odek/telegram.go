@@ -82,6 +82,25 @@ func getChatMutex(chatID int64) *sync.Mutex {
 	return v.(*sync.Mutex)
 }
 
+// resetChatForNew implements the /new command's session reset: it archives the
+// current session and clears the approver's trust state for a fresh start.
+//
+// It deliberately does NOT remove the per-chat mutex from chatMu. Deleting the
+// mutex while an in-flight handleChatMessage goroutine still holds it lets the
+// next message LoadOrStore a *fresh* mutex and TryLock it successfully, so two
+// agent runs execute concurrently for the same chat — corrupting interleaved
+// sessionManager.Save writes and clobbering each other's approver. The per-chat
+// mutex is naturally bounded (one entry per chat ID ever seen), so retaining it
+// is not a meaningful leak.
+func resetChatForNew(chatID int64, sessionManager *telegram.SessionManager, handler *telegram.Handler, log telegram.Logger) {
+	if err := sessionManager.ArchiveAndDelete(chatID); err != nil {
+		log.Warn("archive session", "chat_id", chatID, "error", err)
+	}
+	if a := handler.GetApprover(chatID); a != nil {
+		a.ResetTrust()
+	}
+}
+
 // telegramCmd is the entry point for "odek telegram".
 func telegramCmd(args []string) error {
 	// 0. Acquire singleton lock — kill any stale previous instance.
@@ -266,13 +285,7 @@ func telegramCmd(args []string) error {
 		// The current session is preserved as a timestamped archive file
 		// so it can be revisited via `odek session list`.
 		if cmdName == "new" {
-			if err := sessionManager.ArchiveAndDelete(chatID); err != nil {
-				handlerLog.Warn("archive session", "chat_id", chatID, "error", err)
-			}
-			chatMu.Delete(chatID) // prevent mutex leak on session reset
-			if a := handler.GetApprover(chatID); a != nil {
-				a.ResetTrust()
-			}
+			resetChatForNew(chatID, sessionManager, handler, handlerLog)
 			var b strings.Builder
 			b.WriteString("🔄 *Session archived, starting fresh*\n\n")
 			fmt.Fprintf(&b, "• Model: `%s`\n", resolved.Model)

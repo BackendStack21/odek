@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -241,34 +242,15 @@ func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, tr
 		return fmt.Sprintf(`{"error":"start: %v"}`, err)
 	}
 
-	// Read stdout line-by-line — NDJSON progress lines followed by final JSON result
-	var result map[string]any
-	var lastLine string
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		line := scanner.Text()
-		lastLine = line
-
-		// Check if this is a progress line (NDJSON with "type":"tool_call" or "type":"tool_result")
-		var event struct {
-			Type string `json:"type"`
-		}
-		if err := json.Unmarshal([]byte(line), &event); err == nil {
-			if event.Type == "tool_call" || event.Type == "tool_result" {
-				if t.OnSubagentLog != nil {
-					t.OnSubagentLog(taskIdx, line)
-				}
-				continue
-			}
-		}
-
-		// Not a progress line — parse as result JSON
-		var r map[string]any
-		if err := json.Unmarshal([]byte(line), &r); err == nil {
-			result = r
-		}
+	// Read stdout line-by-line — NDJSON progress lines followed by final JSON
+	// result. A streamed tool_call event can embed full tool arguments (e.g. a
+	// large write_file), so lines routinely exceed bufio.Scanner's default 64KB
+	// token cap; scanSubagentStream raises the cap to avoid losing the result.
+	var onLog func(line string)
+	if t.OnSubagentLog != nil {
+		onLog = func(line string) { t.OnSubagentLog(taskIdx, line) }
 	}
-	scannerErr := scanner.Err()
+	result, lastLine, scannerErr := scanSubagentStream(stdout, onLog)
 
 	if err := cmd.Wait(); err != nil {
 		// Process exited with error — result may still be valid
@@ -300,6 +282,50 @@ func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, tr
 	}
 
 	return `{"error":"no result from sub-agent"}`
+}
+
+// maxSubagentLine caps a single NDJSON line read from a sub-agent's stdout.
+// Streamed tool_call events embed full tool arguments (e.g. a large write_file
+// or patch), which routinely exceed bufio.Scanner's default 64KB token cap.
+// Without a raised cap the scanner returns bufio.ErrTooLong, the reader stops,
+// the child blocks writing to a full stdout pipe, and cmd.Wait hangs until the
+// timeout kills a task that actually completed successfully.
+const maxSubagentLine = 10 << 20 // 10 MiB
+
+// scanSubagentStream reads a sub-agent's NDJSON stdout: zero or more progress
+// lines (objects with "type":"tool_call" or "type":"tool_result") followed by
+// the final JSON result object. Progress lines are forwarded to onLog (when
+// non-nil); the last line that parses as a JSON object is returned as result.
+// It returns the result map (nil if none parsed), the last raw line seen, and
+// any scanner error. The scan buffer is sized to maxSubagentLine so large
+// streamed events do not truncate the stream.
+func scanSubagentStream(r io.Reader, onLog func(line string)) (result map[string]any, lastLine string, err error) {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxSubagentLine)
+	for scanner.Scan() {
+		line := scanner.Text()
+		lastLine = line
+
+		// Check if this is a progress line (NDJSON with "type":"tool_call" or "type":"tool_result")
+		var event struct {
+			Type string `json:"type"`
+		}
+		if uerr := json.Unmarshal([]byte(line), &event); uerr == nil {
+			if event.Type == "tool_call" || event.Type == "tool_result" {
+				if onLog != nil {
+					onLog(line)
+				}
+				continue
+			}
+		}
+
+		// Not a progress line — parse as result JSON
+		var rmap map[string]any
+		if uerr := json.Unmarshal([]byte(line), &rmap); uerr == nil {
+			result = rmap
+		}
+	}
+	return result, lastLine, scanner.Err()
 }
 
 // Ensure delegateTasksTool implements odek.Tool
