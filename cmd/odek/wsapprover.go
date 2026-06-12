@@ -114,7 +114,15 @@ func (a *wsApprover) shouldFriction(cls danger.RiskClass) (bool, int) {
 }
 
 func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string) error {
-	if a.approveAll[cls] || a.trustAll {
+	// Read the trust caches under the lock: PromptCommand runs concurrently
+	// across parallel tool calls, while HandleResponse's "trust" path and
+	// SetTrustAll write these same fields. An unsynchronised read here against
+	// the map write below (or SetTrustAll) is a data race that can fatally
+	// crash serve with "concurrent map read and map write".
+	a.mu.Lock()
+	trusted := a.approveAll[cls] || a.trustAll
+	a.mu.Unlock()
+	if trusted {
 		return nil
 	}
 
@@ -172,7 +180,9 @@ func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string
 				a.recordApproval(cls)
 				return nil
 			}
+			a.mu.Lock()
 			a.approveAll[cls] = true
+			a.mu.Unlock()
 			return nil
 		default:
 			return fmt.Errorf("operation denied by user: %s", cmd)

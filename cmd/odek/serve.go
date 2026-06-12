@@ -485,6 +485,66 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
+	// Dedicated socket reader.
+	//
+	// The agent loop (handlePrompt → RunWithMessages) runs synchronously in the
+	// processor loop below and BLOCKS whenever a tool needs approval — the
+	// wsApprover waits for the browser's approval_response. If the same
+	// goroutine both ran the agent and read the socket, it could never read
+	// that response: every approval would dead-block until the 60s timeout and
+	// be denied, making the Web UI's safety prompt unusable.
+	//
+	// So a separate goroutine owns the socket. It handles approval responses
+	// INLINE (delivering them to the blocked PromptCommand via HandleResponse)
+	// and forwards every other message to promptCh for serial processing. The
+	// forward is non-blocking: the reader must never stall, or a full queue
+	// would re-introduce the deadlock by stopping approval delivery. A buffered
+	// queue absorbs the request/reply UI's normal pacing; an overflow only
+	// happens under a client flooding prompts, which is reported and dropped.
+	promptCh := make(chan []byte, 8)
+	go func() {
+		defer close(promptCh)
+		for {
+			var data []byte
+			if err := golangws.Message.Receive(conn, &data); err != nil {
+				// Socket gone: release any in-flight approval so a blocked
+				// handlePrompt returns now instead of waiting out the timeout.
+				if approver != nil {
+					approver.Cancel()
+				}
+				return
+			}
+
+			var msgType struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal(data, &msgType); err != nil {
+				continue
+			}
+
+			// Approval responses are handled here, off the processor goroutine,
+			// so a prompt blocked awaiting approval can be unblocked. This is
+			// the crux of the deadlock fix.
+			if msgType.Type == "approval_response" {
+				var resp approvalResponse
+				if err := json.Unmarshal(data, &resp); err == nil {
+					approver.HandleResponse(resp.ID, resp.Action)
+				}
+				continue
+			}
+
+			select {
+			case promptCh <- data:
+			default:
+				// Processor is busy and the queue is full — only reachable by a
+				// client sending prompts faster than they can run.
+				if msgType.Type == "prompt" {
+					writeWSError(conn, "busy: a prompt is already running")
+				}
+			}
+		}
+	}()
+
 	// Track the current session and model across WebSocket messages
 	var currentSession *session.Session
 	currentModel := resolved.Model // start with configured model
@@ -492,26 +552,12 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 	// Session-level token economics (cumulative across all turns)
 	var sessionInputTokens, sessionOutputTokens int
 
-	for {
-		var data []byte
-		if err := golangws.Message.Receive(conn, &data); err != nil {
-			break
-		}
-
+	for data := range promptCh {
 		// Peek at the message type without full unmarshal
 		var msgType struct {
 			Type string `json:"type"`
 		}
 		if err := json.Unmarshal(data, &msgType); err != nil {
-			continue
-		}
-
-		// Handle approval responses separately (non-blocking, from the browser)
-		if msgType.Type == "approval_response" {
-			var resp approvalResponse
-			if err := json.Unmarshal(data, &resp); err == nil {
-				approver.HandleResponse(resp.ID, resp.Action)
-			}
 			continue
 		}
 
