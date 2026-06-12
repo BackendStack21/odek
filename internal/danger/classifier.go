@@ -136,8 +136,18 @@ type ToolOperation struct {
 // ── Path-based classification ──────────────────────────────────────────
 
 // ClassifyPath returns a RiskClass for a filesystem path.
-// /tmp/*, working directory → local_write; /etc/*, /root/* → system_write;
-// /boot/*, /dev/*, /sys/* → destructive; home sensitive dirs → system_write.
+//
+// Classification rules (highest wins):
+//   - /boot, /dev, /proc, /sys, /mnt, /media → destructive
+//   - /tmp, $TMPDIR → local_write
+//   - /etc, /root, /var, /run, /lib, /usr → system_write
+//   - $HOME/.ssh, .config, .gnupg, .aws, .kube, .docker, .gitconfig, .env → system_write
+//   - $HOME/.odek/config.json, secrets.env, skills/ → system_write (odek trust anchors;
+//     rewriting them can disable the sandbox or inject prompts on the next run)
+//   - $HOME shell rc/profile files (.bashrc, .zshrc, .profile, .zshenv, etc.) → system_write
+//   - everything else → local_write
+//
+// macOS: /private/{etc,var,tmp} are transparently normalised before matching.
 func ClassifyPath(path string) RiskClass {
 	abs, err := filepath.Abs(path)
 	if err != nil {
