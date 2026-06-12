@@ -27,6 +27,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/BackendStack21/odek/internal/fsatomic"
 )
 
 // File names for fact targets.
@@ -313,27 +315,7 @@ func (f *FactStore) Entries(target string) ([]string, error) {
 // mutual exclusion that f.mu provides per-instance.
 func (f *FactStore) writeEntries(target string, entries []string) error {
 	content := strings.Join(entries, entrySep)
-	path := f.path(target)
-
-	tmp, err := os.CreateTemp(f.dir, filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write([]byte(content)); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	return nil
+	return fsatomic.WriteFile(f.path(target), []byte(content), 0600)
 }
 
 // parseEntries splits file content into individual entries.

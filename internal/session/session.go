@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/embedding"
+	"github.com/BackendStack21/odek/internal/fsatomic"
 	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/redact"
 )
@@ -197,15 +198,8 @@ func (s *Store) saveIndexLocked(idx map[string]*IndexEntry) error {
 	if err != nil {
 		return fmt.Errorf("session: marshal index: %w", err)
 	}
-	target := s.indexPath()
-	tmp := target + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("session: write index tmp: %w", err)
-	}
-	if err := os.Rename(tmp, target); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("session: rename index: %w", err)
+	if err := fsatomic.WriteFile(s.indexPath(), data, 0600); err != nil {
+		return fmt.Errorf("session: write index: %w", err)
 	}
 	return nil
 }
@@ -265,9 +259,10 @@ func (s *Store) Append(id string, newMsgs []llm.Message) error {
 	return s.saveLocked(sess)
 }
 
-// Save writes a session to disk atomically using a temp-file + rename
-// strategy. This prevents:
+// Save writes a session to disk atomically and durably via fsatomic.WriteFile
+// (temp-file → fsync → rename → dir fsync). This prevents:
 //   - Partial writes from crashes (rename is atomic on POSIX)
+//   - Data loss on power failure (the fsync flushes bytes before the rename)
 //   - Symlink-following TOCTOU attacks (os.Rename replaces the
 //     directory entry itself — it does NOT follow symlinks)
 func (s *Store) Save(sess *Session) error {
@@ -297,15 +292,8 @@ func (s *Store) saveLocked(sess *Session) error {
 		return fmt.Errorf("session: marshal: %w", err)
 	}
 
-	target := s.path(sess.ID)
-	tmp := target + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("session: write tmp: %w", err)
-	}
-	if err := os.Rename(tmp, target); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("session: rename: %w", err)
+	if err := fsatomic.WriteFile(s.path(sess.ID), data, 0600); err != nil {
+		return fmt.Errorf("session: write: %w", err)
 	}
 
 	// Update the index atomically.
