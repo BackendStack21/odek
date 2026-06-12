@@ -426,6 +426,7 @@ func newHTTPBatchTool(dc danger.DangerousConfig) *httpBatchTool {
 	t.client = &http.Client{
 		Timeout:       30 * time.Second,
 		CheckRedirect: t.checkRedirect,
+		Transport:     ssrfGuardedTransport(),
 	}
 	return t
 }

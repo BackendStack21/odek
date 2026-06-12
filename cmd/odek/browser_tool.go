@@ -66,7 +66,10 @@ func newBrowserTool(dc danger.DangerousConfig) *browserTool {
 		state:           &browserState{nextRef: 1},
 		dangerousConfig: dc,
 	}
-	t.client = &http.Client{CheckRedirect: t.checkRedirect}
+	t.client = &http.Client{
+		CheckRedirect: t.checkRedirect,
+		Transport:     ssrfGuardedTransport(),
+	}
 	return t
 }
 
@@ -162,7 +165,10 @@ func (t *browserTool) Call(argsJSON string) (string, error) {
 		t.state = &browserState{nextRef: 1}
 	}
 	if t.client == nil {
-		t.client = &http.Client{CheckRedirect: t.checkRedirect}
+		t.client = &http.Client{
+			CheckRedirect: t.checkRedirect,
+			Transport:     ssrfGuardedTransport(),
+		}
 	}
 
 	switch args.Action {

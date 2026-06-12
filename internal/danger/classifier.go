@@ -245,42 +245,76 @@ func ClassifyURL(rawURL string) RiskClass {
 	// mixed (127.0x1), short (127.1), single-integer (2130706433),
 	// IPv6 compressed ([::1]), IPv4-mapped IPv6, etc.
 	if ip := parseBrowserIP(host); ip != nil {
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-			return SystemWrite
-		}
-		if ip.IsUnspecified() {
+		if IsBlockedIP(ip) {
 			return SystemWrite
 		}
 		return NetworkEgress
 	}
 
-	// Hostname-based: check well-known private hostnames
-	hostLower := strings.ToLower(host)
-	switch hostLower {
-	case "localhost", "localhost.localdomain", "localhost6", "localhost6.localdomain6",
-		"ip6-localhost", "ip6-loopback":
-		return SystemWrite
-	}
-
-	// *.local (mDNS) resolves to link-local
-	if strings.HasSuffix(hostLower, ".local") {
-		return SystemWrite
-	}
-
-	// Common cloud metadata endpoints (SSRF targets)
-	if hostLower == "169.254.169.254" || hostLower == "[fd00:ec2::254]" ||
-		hostLower == "metadata.google.internal" ||
-		hostLower == "metadata.internal" ||
-		strings.HasSuffix(hostLower, ".internal") {
-		return SystemWrite
-	}
-
-	// Docker internal hostnames
-	if strings.HasSuffix(hostLower, ".docker.internal") {
+	// Hostname-based: well-known private names and private suffixes.
+	if hostnameIsInternal(host) {
 		return SystemWrite
 	}
 
 	return NetworkEgress
+}
+
+// IsBlockedIP reports whether ip falls in a range that the agent's web tools
+// must never reach: loopback (127/8, ::1), RFC1918 / RFC4193 private (incl.
+// IPv6 ULA fc00::/7), link-local (169.254/16 — which covers the
+// 169.254.169.254 cloud-metadata endpoint — and fe80::/10), or the unspecified
+// address (0.0.0.0, ::). It is the single source of truth shared by both
+// ClassifyURL's literal-host gate and the dial-time SSRF guard, so the two
+// cannot drift apart. A nil IP is treated as blocked (fail closed).
+func IsBlockedIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	return ip.IsLoopback() || ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsUnspecified()
+}
+
+// hostnameIsInternal reports whether a non-IP hostname denotes a well-known
+// loopback/internal name or a private suffix that must classify as SystemWrite.
+// Matching is case-insensitive.
+func hostnameIsInternal(host string) bool {
+	hostLower := strings.ToLower(host)
+	switch hostLower {
+	case "localhost", "localhost.localdomain", "localhost6", "localhost6.localdomain6",
+		"ip6-localhost", "ip6-loopback":
+		return true
+	}
+	// *.local (mDNS) resolves to link-local.
+	if strings.HasSuffix(hostLower, ".local") {
+		return true
+	}
+	// Common cloud metadata endpoints (SSRF targets) and private TLDs.
+	if hostLower == "169.254.169.254" || hostLower == "[fd00:ec2::254]" ||
+		hostLower == "metadata.google.internal" ||
+		hostLower == "metadata.internal" ||
+		strings.HasSuffix(hostLower, ".internal") {
+		return true
+	}
+	// Docker internal hostnames.
+	if strings.HasSuffix(hostLower, ".docker.internal") {
+		return true
+	}
+	return false
+}
+
+// HostIsImplicitlyInternal reports whether the literal host string already
+// resolves to an internal target by inspection alone — i.e. ClassifyURL returns
+// SystemWrite for it with no DNS lookup (a literal internal IP, in any browser
+// encoding, or a known-internal hostname). The dial-time SSRF guard uses this
+// to tell apart a target that was *already* surfaced to the policy gate as
+// internal (and dialed under that decision) from one that presented as external
+// and must be re-validated against its resolved IPs.
+func HostIsImplicitlyInternal(host string) bool {
+	if ip := parseBrowserIP(host); ip != nil {
+		return IsBlockedIP(ip)
+	}
+	return hostnameIsInternal(host)
 }
 
 // parseBrowserIP parses an IP address using the same rules browsers use
