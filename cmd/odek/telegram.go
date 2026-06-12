@@ -700,7 +700,7 @@ func telegramCmd(args []string) error {
 	// process's resolved config — so no environment-inheritance problem and no
 	// separate cron daemon. If an external `odek schedule daemon` already holds
 	// the lock, this defers to it instead of double-firing.
-	stopScheduler := startSchedulerForBot(ctx, bot, resolved, systemMessage, handlerLog, scheduleStore)
+	stopScheduler := startSchedulerForBot(ctx, bot, resolved, systemMessage, handlerLog, scheduleStore, sessionManager)
 	defer stopScheduler()
 
 	// 17. Process updates until the channel is closed (ctx cancelled).

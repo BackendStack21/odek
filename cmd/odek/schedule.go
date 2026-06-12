@@ -16,6 +16,7 @@ import (
 
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/render"
 	"github.com/BackendStack21/odek/internal/schedule"
@@ -462,9 +463,16 @@ func (r telegramRunner) Run(ctx context.Context, job schedule.Job) (string, int6
 
 // telegramDeliverer delivers via the live bot for telegram jobs (sharing its
 // client and rate limiting) and falls back to the CLI deliverer for stdout/log.
+//
+// sessions, when set, lets a delivered result be recorded into the target
+// chat's conversation (Option B) so a follow-up message in that chat sees what
+// the schedule posted. The scheduled run itself stays isolated — only its
+// output is written back.
 type telegramDeliverer struct {
 	bot      *telegram.Bot
 	fallback cliDeliverer
+	sessions *telegram.SessionManager
+	log      schedule.Logger
 }
 
 func (d telegramDeliverer) Deliver(ctx context.Context, job schedule.Job, result string) error {
@@ -478,14 +486,79 @@ func (d telegramDeliverer) Deliver(ctx context.Context, job schedule.Job, result
 	if chatID == 0 {
 		return fmt.Errorf("no chat id (set the job's telegram:<chatID> or telegram.default_chat_id)")
 	}
-	return sendTelegramResult(ctx, d.bot, chatID, result)
+	if err := sendTelegramResult(ctx, d.bot, chatID, result); err != nil {
+		return err
+	}
+	// Best-effort: record the delivered turn into the chat's conversation so
+	// the agent can follow up on it. A failure here must NOT fail the run — the
+	// message was already sent — so it is logged, not returned.
+	if err := d.recordScheduledTurn(chatID, job, result); err != nil && d.log != nil {
+		d.log.Error("schedule: record delivered turn into session failed", "id", job.ID, "chat", chatID, "error", err)
+	}
+	return nil
+}
+
+// recordScheduledTurn appends the scheduled task and its result to the target
+// chat's EXISTING session, so a later interactive turn has them in context. It
+// deliberately does NOT create a session when none exists: a notification-only
+// chat (one that's never been used interactively) shouldn't accumulate an
+// ever-growing transcript of scheduled posts. The write is serialized with the
+// interactive handler — and with concurrent deliveries to the same chat —
+// through the per-chat mutex, so it can't interleave with a live turn's
+// read-modify-write of the same session.
+func (d telegramDeliverer) recordScheduledTurn(chatID int64, job schedule.Job, result string) error {
+	if d.sessions == nil || result == "" {
+		return nil
+	}
+
+	mu := getChatMutex(chatID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	cs, err := d.sessions.Load(chatID)
+	if err != nil {
+		return err
+	}
+	if cs == nil {
+		return nil // no active conversation to attach to — deliver-only
+	}
+
+	label := job.Name
+	if label == "" {
+		label = job.ID
+	}
+
+	msgs := make([]llm.Message, len(cs.Messages), len(cs.Messages)+2)
+	copy(msgs, cs.Messages)
+
+	// Normally append a user turn (clearly marked as scheduler-originated, not
+	// typed live) followed by the assistant result — well-formed and ready for
+	// the next user message. But an existing session can already END on a bare
+	// user message (a turn cancelled before the agent replied, or a
+	// context-injection command). Appending another user turn there would put
+	// two user messages back-to-back, which strict providers (Anthropic) reject
+	// on the next call. In that case fold the label into a single assistant
+	// message so roles stay alternating. Either way the session ends on an
+	// assistant turn. Secrets are redacted by Store.Save.
+	if n := len(msgs); n > 0 && msgs[n-1].Role == "user" {
+		msgs = append(msgs, llm.Message{
+			Role:    "assistant",
+			Content: fmt.Sprintf("⏰ [scheduled task %q ran]\n%s", label, result),
+		})
+	} else {
+		msgs = append(msgs,
+			llm.Message{Role: "user", Content: fmt.Sprintf("⏰ [scheduled task %q ran]\n%s", label, job.Task)},
+			llm.Message{Role: "assistant", Content: result},
+		)
+	}
+	return d.sessions.Save(chatID, msgs)
 }
 
 // startSchedulerForBot starts the embedded scheduler unless an external
 // `odek schedule daemon` already holds the lock (in which case the bot defers
 // to it, to avoid double-firing). It returns a stop func that releases the
 // lock; the scheduler goroutine itself stops when ctx is cancelled.
-func startSchedulerForBot(ctx context.Context, bot *telegram.Bot, resolved config.ResolvedConfig, system string, log telegram.Logger, st *schedule.Store) func() {
+func startSchedulerForBot(ctx context.Context, bot *telegram.Bot, resolved config.ResolvedConfig, system string, log telegram.Logger, st *schedule.Store, sessions *telegram.SessionManager) func() {
 	if !resolved.Schedules.Enabled {
 		log.Info("schedule: embedded scheduler disabled by config")
 		return func() {}
@@ -508,7 +581,7 @@ func startSchedulerForBot(ctx context.Context, bot *telegram.Bot, resolved confi
 	}
 	sched := schedule.New(st,
 		telegramRunner{resolved: resolved, system: system, bot: bot, mcpTools: mcpTools},
-		telegramDeliverer{bot: bot, fallback: cliDeliverer{resolved: resolved}},
+		telegramDeliverer{bot: bot, fallback: cliDeliverer{resolved: resolved}, sessions: sessions, log: log},
 		schedulerOptions(resolved.Schedules, log),
 	)
 	scheduleUnlockRef = unlock
