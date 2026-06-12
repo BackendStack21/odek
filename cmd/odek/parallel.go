@@ -57,6 +57,11 @@ func parallelMap[I, O any](items []I, limit int, work func(I) O, recovered func(
 			defer func() { <-sem }()
 			defer func() {
 				if r := recover(); r != nil && recovered != nil {
+					// The handler runs while unwinding a worker panic; if it
+					// panics too, that second panic must not escape either — the
+					// guarantee is that NO worker can crash the process. A
+					// panicked handler leaves the slot at its zero value.
+					defer func() { _ = recover() }()
 					out[idx] = recovered(items[idx], r)
 				}
 			}()

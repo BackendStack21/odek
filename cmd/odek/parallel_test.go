@@ -93,6 +93,28 @@ func TestParallelMap_NilRecoveredLeavesZero(t *testing.T) {
 	}
 }
 
+// TestParallelMap_PanickingHandlerDoesNotCrash verifies the guarantee is
+// unconditional: even a recovered() handler that itself panics cannot crash the
+// process — the worker's slot is just left at its zero value.
+func TestParallelMap_PanickingHandlerDoesNotCrash(t *testing.T) {
+	out := parallelMap([]int{0, 1, 2}, 2,
+		func(i int) string {
+			if i == 1 {
+				panic("work boom")
+			}
+			return "ok"
+		},
+		func(i int, _ any) string {
+			panic("handler boom") // must not escape the goroutine
+		})
+	if out[0] != "ok" || out[2] != "ok" {
+		t.Errorf("non-panicking slots wrong: %v", out)
+	}
+	if out[1] != "" {
+		t.Errorf("slot with panicking handler should be zero value, got %q", out[1])
+	}
+}
+
 // TestParallelMap_ConcurrencyBounded verifies no more than `limit` workers run
 // at once, even with far more items than the limit.
 func TestParallelMap_ConcurrencyBounded(t *testing.T) {
