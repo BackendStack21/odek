@@ -972,6 +972,7 @@ func confineToCWD(path string) (string, error) {
 // the SystemWrite escalation in danger.ClassifyPath.
 func isProtectedOdekPath(rel string) bool {
 	return rel == "config.json" || rel == "secrets.env" ||
+		rel == "IDENTITY.md" ||
 		rel == "skills" || strings.HasPrefix(rel, "skills"+string(filepath.Separator))
 }
 

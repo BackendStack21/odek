@@ -187,6 +187,18 @@ func loadIdentityFile() string {
 	if content == "" {
 		return defaultSystem
 	}
+	// IDENTITY.md becomes the system prompt verbatim, so it must clear the
+	// same injection scan that AGENTS.md does (see odek.New). A tampered
+	// identity file falls back to the built-in default rather than loading
+	// attacker-controlled instructions as trusted system text.
+	if threats := danger.ScanInjection(content); len(threats) > 0 {
+		labels := make([]string, 0, len(threats))
+		for _, t := range threats {
+			labels = append(labels, t.Label)
+		}
+		fmt.Fprintf(os.Stderr, "odek: warning: IDENTITY.md contains injection threats (%s) — using default identity\n", strings.Join(labels, ", "))
+		return defaultSystem
+	}
 	return content
 }
 

@@ -142,8 +142,8 @@ type ToolOperation struct {
 //   - /tmp, $TMPDIR → local_write
 //   - /etc, /root, /var, /run, /lib, /usr → system_write
 //   - $HOME/.ssh, .config, .gnupg, .aws, .kube, .docker, .gitconfig, .env → system_write
-//   - $HOME/.odek/config.json, secrets.env, skills/ → system_write (odek trust anchors;
-//     rewriting them can disable the sandbox or inject prompts on the next run)
+//   - $HOME/.odek/config.json, secrets.env, skills/, IDENTITY.md → system_write (odek trust
+//     anchors; rewriting them can disable the sandbox or inject prompts on the next run)
 //   - $HOME shell rc/profile files (.bashrc, .zshrc, .profile, .zshenv, etc.) → system_write
 //   - everything else → local_write
 //
@@ -195,12 +195,14 @@ func ClassifyPath(path string) RiskClass {
 		// odek's own trust anchors. Rewriting ~/.odek/config.json can disable
 		// the sandbox or set "action": "allow" (YOLO) for the next run; a
 		// SKILL.md dropped under ~/.odek/skills/ is auto-loaded into future
-		// prompts; secrets.env is injected into the process environment.
+		// prompts; secrets.env is injected into the process environment;
+		// IDENTITY.md becomes the system prompt on the next run, so writing it
+		// lets a prompt-injected agent rewrite its own trusted instructions.
 		// Auto-allowing these as LocalWrite would let a confined agent
 		// escalate out of its own sandbox, so they classify as SystemWrite
 		// (prompt/deny). Keep in sync with the carve-out exclusions in
 		// cmd/odek/file_tool.go (isProtectedOdekPath).
-		for _, sub := range []string{"/.odek/config.json", "/.odek/secrets.env", "/.odek/skills"} {
+		for _, sub := range []string{"/.odek/config.json", "/.odek/secrets.env", "/.odek/skills", "/.odek/IDENTITY.md"} {
 			if strings.HasPrefix(abs, home+sub) {
 				return SystemWrite
 			}

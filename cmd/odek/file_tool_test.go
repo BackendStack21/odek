@@ -803,10 +803,12 @@ func TestConfineToCWD_RejectsProtectedOdekPaths(t *testing.T) {
 	for _, p := range []string{
 		home + "/.odek/config.json",
 		home + "/.odek/secrets.env",
+		home + "/.odek/IDENTITY.md",
 		home + "/.odek/skills/evil/SKILL.md",
 		home + "/.odek/skills",
 		// ".." traversal inside the carve-out must not reach the anchors
 		home + "/.odek/memory/../config.json",
+		home + "/.odek/memory/../IDENTITY.md",
 	} {
 		if _, err := confineToCWD(p); err == nil {
 			t.Errorf("protected odek path %q should be rejected by confineToCWD", p)
