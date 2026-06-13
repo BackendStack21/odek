@@ -21,6 +21,10 @@ import (
 
 const maxLines = 2000
 
+// maxReadBytes caps the content returned by read_file / batch_read to prevent
+// memory exhaustion from huge files.
+const maxReadBytes = 1 << 20 // 1 MiB
+
 type readFileTool struct {
 	dangerousConfig danger.DangerousConfig
 }
@@ -226,6 +230,14 @@ func (t *writeFileTool) Call(argsJSON string) (string, error) {
 		}
 	}
 
+	// Preserve the original file's mode when overwriting, so a temp file
+	// created with default permissions does not change the accessibility
+	// of an existing file (e.g., making a 0640 file world-readable).
+	var origMode os.FileMode = 0644
+	if st, err := os.Stat(args.Path); err == nil {
+		origMode = st.Mode().Perm()
+	}
+
 	// Atomic write via temp file + rename to prevent TOCTOU symlink races.
 	// os.CreateTemp creates the file in the same directory (same filesystem),
 	// and os.Rename atomically replaces the directory entry without following
@@ -240,6 +252,11 @@ func (t *writeFileTool) Call(argsJSON string) (string, error) {
 		tmpFile.Close()
 		os.Remove(tmpPath)
 		return jsonError(fmt.Sprintf("cannot write %q: %v", args.Path, err))
+	}
+	if err := tmpFile.Chmod(origMode); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		return jsonError(fmt.Sprintf("cannot set permissions %q: %v", args.Path, err))
 	}
 	if err := tmpFile.Close(); err != nil {
 		os.Remove(tmpPath)
@@ -722,6 +739,8 @@ func isBinary(data []byte) bool {
 
 // readLinesWithCount reads lines from an open file, returning content
 // and total line count in a single pass. offset is 1-based, limit caps lines.
+// The returned content is capped at maxReadBytes to avoid unbounded memory
+// consumption from huge lines or huge limits.
 func readLinesWithCount(f *os.File, offset, limit int) (string, int, error) {
 	var out strings.Builder
 	scanner := bufio.NewScanner(f)
@@ -729,6 +748,7 @@ func readLinesWithCount(f *os.File, offset, limit int) (string, int, error) {
 	lineNum := 0
 	start := offset
 	end := offset + limit - 1
+	truncated := false
 
 	for scanner.Scan() {
 		lineNum++
@@ -738,7 +758,17 @@ func readLinesWithCount(f *os.File, offset, limit int) (string, int, error) {
 		if lineNum > end {
 			continue // count total even beyond limit
 		}
-		out.WriteString(fmt.Sprintf("%d|%s\n", lineNum, scanner.Text()))
+		line := scanner.Text()
+		formatted := fmt.Sprintf("%d|%s\n", lineNum, line)
+		if !truncated && out.Len()+len(formatted) > maxReadBytes {
+			out.WriteString("... [truncated]\n")
+			truncated = true
+			// Continue scanning only to count total lines.
+			continue
+		}
+		if !truncated {
+			out.WriteString(formatted)
+		}
 	}
 
 	// If no limit was set (limit=0), continue counting past start
@@ -759,6 +789,10 @@ func confineToCWD(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("cannot determine working directory: %v", err)
 	}
+	cwdResolved, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve working directory: %v", err)
+	}
 
 	// Resolve to absolute path
 	var abs string
@@ -766,6 +800,34 @@ func confineToCWD(path string) (string, error) {
 		abs = filepath.Clean(path)
 	} else {
 		abs = filepath.Join(cwd, path)
+	}
+
+	// Resolve symlinks so a path that is lexically under CWD but traverses a
+	// symlink cannot escape (e.g., cwd/link -> /etc, cwd/link/file would
+	// resolve to /etc/file). If the full path or an intermediate directory
+	// does not exist yet (common for write_file), walk up to the deepest
+	// existing ancestor, resolve that, and re-attach the missing suffix.
+	// Missing directories cannot be symlinks, so they cannot be used to escape.
+	absResolved := abs
+	resolved := false
+	cur := abs
+	for cur != "/" && cur != "" {
+		if r, err := filepath.EvalSymlinks(cur); err == nil {
+			suffix := strings.TrimPrefix(abs, cur)
+			if suffix == "" {
+				absResolved = r
+			} else {
+				absResolved = r + suffix
+			}
+			resolved = true
+			break
+		}
+		cur = filepath.Dir(cur)
+	}
+	if !resolved {
+		// Nothing resolvable along the path (should not happen in practice,
+		// since / always exists). Fall back to lexical path.
+		absResolved = abs
 	}
 
 	// Allow paths under ~/.odek/ even when outside CWD — the agent
@@ -779,8 +841,8 @@ func confineToCWD(path string) (string, error) {
 	home, homeErr := os.UserHomeDir()
 	if homeErr == nil {
 		odekPrefix := home + "/.odek/"
-		if strings.HasPrefix(abs, odekPrefix) {
-			if isProtectedOdekPath(strings.TrimPrefix(abs, odekPrefix)) {
+		if strings.HasPrefix(absResolved, odekPrefix) {
+			if isProtectedOdekPath(strings.TrimPrefix(absResolved, odekPrefix)) {
 				return "", fmt.Errorf("path %q is a protected odek configuration path and cannot be written by file tools", path)
 			}
 			return abs, nil
@@ -788,7 +850,7 @@ func confineToCWD(path string) (string, error) {
 	}
 
 	// Check that the resolved path is within CWD
-	if !strings.HasPrefix(abs, cwd+string(filepath.Separator)) && abs != cwd {
+	if !strings.HasPrefix(absResolved, cwdResolved+string(filepath.Separator)) && absResolved != cwdResolved {
 		return "", fmt.Errorf("path %q escapes the working directory", path)
 	}
 
@@ -986,7 +1048,7 @@ func (t *batchReadTool) readSingle(arg batchReadFileArg) batchReadFileResult {
 
 	return batchReadFileResult{
 		Path:       arg.Path,
-		Content:    content,
+		Content:    wrapUntrusted(arg.Path, content),
 		TotalLines: totalLines,
 	}
 }
@@ -1169,8 +1231,12 @@ func (t *globTool) Call(argsJSON string) (result string, err error) {
 			return jsonError(fmt.Sprintf("invalid glob %q: %v", args.Pattern, err))
 		}
 		for _, p := range gm {
-			info, err := os.Stat(p)
+			// Use Lstat so symlinks are not followed to their targets.
+			info, err := os.Lstat(p)
 			if err != nil {
+				continue
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
 				continue
 			}
 			matches = append(matches, globMatch{
