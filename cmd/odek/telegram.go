@@ -230,9 +230,9 @@ func telegramCmd(args []string) error {
 	// block the main update processing loop. The TelegramApprover blocks waiting
 	// for inline keyboard callbacks, which arrive via the main loop — only async
 	// dispatch prevents deadlock.
-	handler.OnTextMessage = func(chatID int64, messageID int, text string) (string, error) {
-		go handleChatMessage(chatID, messageID, text, bot, handler, sessionManager,
-			resolved, systemMessage, handlerLog)
+	handler.OnTextMessage = func(chatID int64, messageID int, text string, forwarded bool, userID int64) (string, error) {
+		go handleChatMessage(chatID, messageID, userID, telegramTextMessage(chatID, text, forwarded),
+			bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 		return "", nil
 	}
 
@@ -245,7 +245,7 @@ func telegramCmd(args []string) error {
 		scheduleStore = nil
 	}
 
-	handler.OnCommand = func(chatID int64, messageID int, cmdName string, argsStr string) (string, error) {
+	handler.OnCommand = func(chatID int64, messageID int, cmdName string, argsStr string, userID int64) (string, error) {
 		cmd := telegram.FindCommand(cmdName)
 		if cmd == nil {
 			return fmt.Sprintf("Unknown command: /%s", cmdName), nil
@@ -263,7 +263,7 @@ func telegramCmd(args []string) error {
 			reply, runTask := telegramScheduleReply(chatID, sub, scheduleStore,
 				scheduleReloadRef, resolved.Schedules.AllowTelegramManagement)
 			if runTask != "" {
-				go handleChatMessage(chatID, messageID, runTask, bot, handler, sessionManager,
+				go handleChatMessage(chatID, messageID, userID, runTask, bot, handler, sessionManager,
 					resolved, systemMessage, handlerLog)
 			}
 			return reply, nil
@@ -406,7 +406,7 @@ func telegramCmd(args []string) error {
 					"Use your write_file tool to save the plan.",
 				description, slug,
 			)
-			go handleChatMessage(chatID, messageID, prompt, bot, handler, sessionManager,
+			go handleChatMessage(chatID, messageID, userID, prompt, bot, handler, sessionManager,
 				resolved, systemMessage, handlerLog)
 			return fmt.Sprintf("📝 *Planning* `%s`…\n\n_Generating plan for: %s_", slug, description), nil
 		}
@@ -519,12 +519,12 @@ func telegramCmd(args []string) error {
 		return "", nil // approval callbacks are routed by the approver
 	}
 
-	handler.OnVoiceMessage = func(chatID int64, messageID int, fileID string) (string, error) {
+	handler.OnVoiceMessage = func(chatID int64, messageID int, fileID string, userID int64) (string, error) {
 		// Download the voice file.
 		localPath, err := telegram.DownloadVoice(bot, fileID)
 		if err != nil {
 			handlerLog.Warn("voice download failed", "chat_id", chatID, "error", err)
-			go handleChatMessage(chatID, messageID,
+			go handleChatMessage(chatID, messageID, userID,
 				fmt.Sprintf("[voice message received — download failed: %v]", err),
 				bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 			return "", nil
@@ -540,8 +540,10 @@ func telegramCmd(args []string) error {
 					Error string `json:"error"`
 				}
 				if json.Unmarshal([]byte(result), &r) == nil && r.Error == "" && r.Text != "" {
-					// Transcribed text injected directly as user message
-					go handleChatMessage(chatID, messageID, r.Text,
+					// Transcribed text crosses an external trust boundary; wrap it before
+					// injecting it into the user message stream.
+					go handleChatMessage(chatID, messageID, userID,
+						wrapUntrusted(fmt.Sprintf("telegram:chat:%d:voice", chatID), r.Text),
 						bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 					return "", nil
 				}
@@ -551,17 +553,18 @@ func telegramCmd(args []string) error {
 		}
 
 		// Fallback: pass the file path to the agent
-		go handleChatMessage(chatID, messageID,
-			fmt.Sprintf("🎤 Voice message saved to %q. Use transcribe() tool to get the text.", localPath),
+		go handleChatMessage(chatID, messageID, userID,
+			wrapUntrusted(fmt.Sprintf("telegram:chat:%d:voice", chatID),
+				fmt.Sprintf("🎤 Voice message saved to %q. Use transcribe() tool to get the text.", localPath)),
 			bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 		return "", nil
 	}
 
-	handler.OnPhotoMessage = func(chatID int64, messageID int, fileIDs []string, caption string) (string, error) {
+	handler.OnPhotoMessage = func(chatID int64, messageID int, fileIDs []string, caption string, userID int64) (string, error) {
 		localPath, err := telegram.DownloadPhoto(bot, fileIDs)
 		if err != nil {
 			handlerLog.Warn("photo download failed", "chat_id", chatID, "error", err)
-			go handleChatMessage(chatID, messageID,
+			go handleChatMessage(chatID, messageID, userID,
 				fmt.Sprintf("[photo received — download failed: %v]", err),
 				bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 			return "", nil
@@ -589,7 +592,7 @@ func telegramCmd(args []string) error {
 				if json.Unmarshal([]byte(result), &r) == nil && r.Error == "" && r.Description != "" {
 					// r.Description is already wrapped in <untrusted_content>
 					// boundaries by the vision tool (image text is untrusted).
-					go handleChatMessage(chatID, messageID,
+					go handleChatMessage(chatID, messageID, userID,
 						photoVisionMessage(caption, r.Description),
 						bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 					return "", nil
@@ -601,23 +604,23 @@ func telegramCmd(args []string) error {
 
 		// Fallback: hand the agent the file path (and caption) so it can analyze
 		// the image itself via the vision/shell tools.
-		go handleChatMessage(chatID, messageID,
+		go handleChatMessage(chatID, messageID, userID,
 			photoFallbackMessage(localPath, caption),
 			bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 		return "", nil
 	}
 
-	handler.OnDocumentMessage = func(chatID int64, messageID int, fileID string, fileName string) (string, error) {
+	handler.OnDocumentMessage = func(chatID int64, messageID int, fileID string, fileName string, userID int64) (string, error) {
 		localPath, err := telegram.DownloadDocument(bot, fileID, fileName)
 		if err != nil {
 			handlerLog.Warn("document download failed", "chat_id", chatID, "file_name", fileName, "error", err)
-			go handleChatMessage(chatID, messageID,
+			go handleChatMessage(chatID, messageID, userID,
 				fmt.Sprintf("[document received — download failed: %v]", err),
 				bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 			return "", nil
 		}
-		go handleChatMessage(chatID, messageID,
-			fmt.Sprintf("📄 Document received and saved to %q. Use shell tools to analyze and respond.", localPath),
+		go handleChatMessage(chatID, messageID, userID,
+			telegramDocumentMessage(localPath),
 			bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 		return "", nil
 	}
@@ -1051,6 +1054,7 @@ func seedSystemMessage(messages []llm.Message, system string) []llm.Message {
 func handleChatMessage(
 	chatID int64,
 	messageID int,
+	userID int64,
 	text string,
 	bot *telegram.Bot,
 	handler *telegram.Handler,
@@ -1098,7 +1102,9 @@ func handleChatMessage(
 	defer activeTaskWG.Done()
 
 	// Create a per-chat TelegramApprover for inline keyboard approval.
-	approver := telegram.NewTelegramApprover(bot, chatID)
+	// Bind approvals to the originating user so group members cannot hijack
+	// each other's approval prompts.
+	approver := telegram.NewTelegramApprover(bot, chatID, userID)
 	handler.SetApprover(chatID, approver)
 	defer handler.DeleteApprover(chatID)
 
@@ -2042,10 +2048,10 @@ func photoVisionPrompt(caption string) string {
 func photoVisionMessage(caption, description string) string {
 	if caption != "" {
 		return fmt.Sprintf(
-			"The user sent an image with this message: %q\n\n"+
+			"The user sent an image with this message:\n%s\n\n"+
 				"A local vision model extracted this description of the image:\n%s\n\n"+
 				"Use the description to respond to the user's message.",
-			caption, description)
+			wrapUntrusted("telegram:photo:caption", caption), description)
 	}
 	return fmt.Sprintf(
 		"The user sent an image (no caption). A local vision model extracted this description:\n%s\n\n"+
@@ -2053,12 +2059,30 @@ func photoVisionMessage(caption, description string) string {
 		description)
 }
 
+// telegramTextMessage builds the user-role content for an incoming Telegram
+// text message. Direct messages are kept as-is so the operator's typed intent
+// is treated normally; forwarded messages are wrapped as untrusted because
+// they cross an external trust boundary.
+func telegramTextMessage(chatID int64, text string, forwarded bool) string {
+	if forwarded {
+		return wrapUntrusted(fmt.Sprintf("telegram:chat:%d:forwarded", chatID), text)
+	}
+	return text
+}
+
+// telegramDocumentMessage builds the user-role message for an incoming
+// document. The whole message is wrapped as untrusted because the document
+// path comes from an external channel.
+func telegramDocumentMessage(localPath string) string {
+	return wrapUntrusted("telegram:document", fmt.Sprintf("📄 Document received and saved to %q. Use shell tools to analyze and respond.", localPath))
+}
+
 // photoFallbackMessage builds the message injected when auto-describe is off or
 // the vision model fails: it hands the agent the saved file path (and caption,
 // if any) so the agent can analyze the image itself via the vision/shell tools.
 func photoFallbackMessage(localPath, caption string) string {
 	if caption != "" {
-		return fmt.Sprintf("🖼 Photo saved to %q with this message from the user: %q. Use the vision tool to analyze the image, then respond.", localPath, caption)
+		return fmt.Sprintf("🖼 Photo saved to %q with this message from the user:\n%s\n\nUse the vision tool to analyze the image, then respond.", localPath, wrapUntrusted("telegram:photo:caption", caption))
 	}
 	return fmt.Sprintf("🖼 Photo received and saved to %q. Use the vision tool or shell commands to analyze and respond.", localPath)
 }

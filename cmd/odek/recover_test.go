@@ -76,7 +76,7 @@ func TestHandleChatMessage_RecoversFromPanic(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		handleChatMessage(
-			chatID, messageID, "test input",
+			chatID, messageID, 0, "test input",
 			bot, handler, nil, // nil → panic at sessionManager.GetOrCreate
 			resolved, systemMessage, telegram.NewNopLogger(),
 		)
@@ -142,7 +142,7 @@ func TestHandleChatMessage_RecoversFromPanic_MidRun(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		handleChatMessage(
-			chatID, messageID, "test input",
+			chatID, messageID, 0, "test input",
 			bot, handler, sm,
 			resolved, systemMessage, telegram.NewNopLogger(),
 		)

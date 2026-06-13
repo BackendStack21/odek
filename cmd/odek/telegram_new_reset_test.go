@@ -73,7 +73,7 @@ func TestResetChatForNew_ResetsApproverTrust(t *testing.T) {
 	bot := telegram.NewBot("test:token")
 	handler := telegram.NewHandler(bot)
 
-	approver := telegram.NewTelegramApprover(bot, chatID)
+	approver := telegram.NewTelegramApprover(bot, chatID, 0)
 	handler.SetApprover(chatID, approver)
 
 	// Should not panic and should reach the approver reset path.

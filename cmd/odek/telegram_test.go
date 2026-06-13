@@ -549,14 +549,14 @@ func TestModeCommand(t *testing.T) {
 
 	h := telegram.NewHandler(telegram.NewBot("test:token"))
 
-	h.OnTextMessage = func(chatID int64, messageID int, text string) (string, error) {
+	h.OnTextMessage = func(chatID int64, messageID int, text string, _ bool, _ int64) (string, error) {
 		if text == "/mode" {
 			return "Agent Modes\n\n*interaction_mode*: engaging\n\nTo switch to *verbose* mode, use `/mode verbose`.", nil
 		}
 		return "", nil
 	}
 
-	result, err := h.OnTextMessage(123, 0, "/mode")
+	result, err := h.OnTextMessage(123, 0, "/mode", false, 0)
 	if err != nil {
 		t.Fatalf("OnTextMessage /mode returned error: %v", err)
 	}

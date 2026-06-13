@@ -36,10 +36,12 @@ type Handler struct {
 	approvers sync.Map
 
 	// OnTextMessage is called when a plain text message is received.
+	// forwarded is true when the message was forwarded from another chat or
+	// user; callers should treat the text as crossing an external trust boundary.
 	// Returns the response text (may be empty).
 	// Should run asynchronously if it starts the agent loop — callers
 	// should dispatch to a goroutine to avoid blocking the update loop.
-	OnTextMessage func(chatID int64, messageID int, text string) (string, error)
+	OnTextMessage func(chatID int64, messageID int, text string, forwarded bool, userID int64) (string, error)
 
 	// OnCallbackQuery is called when a callback query is received and
 	// it was NOT handled by the TelegramApprover. Returns the response
@@ -47,27 +49,31 @@ type Handler struct {
 	OnCallbackQuery func(chatID int64, callbackData string) (string, error)
 
 	// OnCommand is called when a bot command (e.g. /start) is received.
+	// userID is the Telegram user who sent the command.
 	// Returns the response text (may be empty).
-	OnCommand func(chatID int64, messageID int, command string, args string) (string, error)
+	OnCommand func(chatID int64, messageID int, command string, args string, userID int64) (string, error)
 
 	// OnVoiceMessage is called when a voice message is received.
 	// Returns the response text (may be empty).
 	// fileID is the Telegram file ID of the voice message in OGG format.
+	// userID is the Telegram user who sent the voice message.
 	// Callers should use DownloadVoice to save the file locally.
-	OnVoiceMessage func(chatID int64, messageID int, fileID string) (string, error)
+	OnVoiceMessage func(chatID int64, messageID int, fileID string, userID int64) (string, error)
 
 	// OnPhotoMessage is called when a photo message is received.
 	// Returns the response text (may be empty).
 	// fileIDs contains all available sizes (last = largest).
 	// Callers should use DownloadPhoto with the last element.
 	// caption is the optional text the user attached to the photo (may be empty).
-	OnPhotoMessage func(chatID int64, messageID int, fileIDs []string, caption string) (string, error)
+	// userID is the Telegram user who sent the photo message.
+	OnPhotoMessage func(chatID int64, messageID int, fileIDs []string, caption string, userID int64) (string, error)
 
 	// OnDocumentMessage is called when a document/file message is received.
 	// Returns the response text (may be empty).
 	// fileID is the Telegram file ID. Callers should use DownloadDocument
 	// and pass the document's fileName to save the file locally.
-	OnDocumentMessage func(chatID int64, messageID int, fileID string, fileName string) (string, error)
+	// userID is the Telegram user who sent the document message.
+	OnDocumentMessage func(chatID int64, messageID int, fileID string, fileName string, userID int64) (string, error)
 
 	// OnError is called when a processing error occurs.
 	OnError func(chatID int64, err error)
@@ -123,8 +129,8 @@ func (h *Handler) SetLogger(l Logger) {
 }
 
 // defaultTextHandler returns a default OnTextMessage callback.
-func defaultTextHandler() func(int64, int, string) (string, error) {
-	return func(_ int64, _ int, _ string) (string, error) {
+func defaultTextHandler() func(int64, int, string, bool, int64) (string, error) {
+	return func(_ int64, _ int, _ string, _ bool, _ int64) (string, error) {
 		return "Not implemented yet: text", nil
 	}
 }
@@ -137,16 +143,16 @@ func defaultCallbackHandler() func(int64, string) (string, error) {
 }
 
 // defaultCommandHandler returns a default OnCommand callback.
-func defaultCommandHandler() func(int64, int, string, string) (string, error) {
-	return func(_ int64, _ int, _ string, _ string) (string, error) {
+func defaultCommandHandler() func(int64, int, string, string, int64) (string, error) {
+	return func(_ int64, _ int, _ string, _ string, _ int64) (string, error) {
 		return "Not implemented yet: command", nil
 	}
 }
 
 // defaultVoiceHandler returns a default OnVoiceMessage callback that downloads
 // the voice file and returns a MEDIA: response.
-func defaultVoiceHandler(bot *Bot) func(int64, int, string) (string, error) {
-	return func(chatID int64, _ int, fileID string) (string, error) {
+func defaultVoiceHandler(bot *Bot) func(int64, int, string, int64) (string, error) {
+	return func(chatID int64, _ int, fileID string, _ int64) (string, error) {
 		path, err := DownloadVoice(bot, fileID)
 		if err != nil {
 			return "", fmt.Errorf("telegram handler: download voice: %w", err)
@@ -157,8 +163,8 @@ func defaultVoiceHandler(bot *Bot) func(int64, int, string) (string, error) {
 
 // defaultPhotoHandler returns a default OnPhotoMessage callback that downloads
 // the largest photo size and returns a MEDIA: response.
-func defaultPhotoHandler(bot *Bot) func(int64, int, []string, string) (string, error) {
-	return func(chatID int64, _ int, fileIDs []string, _ string) (string, error) {
+func defaultPhotoHandler(bot *Bot) func(int64, int, []string, string, int64) (string, error) {
+	return func(chatID int64, _ int, fileIDs []string, _ string, _ int64) (string, error) {
 		path, err := DownloadPhoto(bot, fileIDs)
 		if err != nil {
 			return "", fmt.Errorf("telegram handler: download photo: %w", err)
@@ -169,8 +175,8 @@ func defaultPhotoHandler(bot *Bot) func(int64, int, []string, string) (string, e
 
 // defaultDocumentHandler returns a default OnDocumentMessage callback that
 // downloads the document and returns a MEDIA: response.
-func defaultDocumentHandler(bot *Bot) func(int64, int, string, string) (string, error) {
-	return func(chatID int64, _ int, fileID string, fileName string) (string, error) {
+func defaultDocumentHandler(bot *Bot) func(int64, int, string, string, int64) (string, error) {
+	return func(chatID int64, _ int, fileID string, fileName string, _ int64) (string, error) {
 		path, err := DownloadDocument(bot, fileID, fileName)
 		if err != nil {
 			return "", fmt.Errorf("telegram handler: download document: %w", err)
@@ -223,16 +229,17 @@ func (h *Handler) handleMessage(msg *Message) {
 		return
 	}
 
-	if !h.isAllowed(msg.Chat.ID, msg.From.ID) {
+	userID := msg.From.ID
+	if !h.isAllowed(msg.Chat.ID, userID) {
 		return
 	}
 
 	switch {
 	case msg.IsCommand():
-		h.handleCommand(msg)
+		h.handleCommand(msg, userID)
 	case msg.Voice != nil:
 		if h.OnVoiceMessage != nil {
-			resp, err := h.OnVoiceMessage(msg.Chat.ID, msg.ID, msg.Voice.FileID)
+			resp, err := h.OnVoiceMessage(msg.Chat.ID, msg.ID, msg.Voice.FileID, userID)
 			if err != nil {
 				h.log.Error("voice message handler failed", "chat_id", msg.Chat.ID, "error", err)
 				if h.OnError != nil {
@@ -250,7 +257,7 @@ func (h *Handler) handleMessage(msg *Message) {
 			for i, p := range msg.Photo {
 				fileIDs[i] = p.FileID
 			}
-			resp, err := h.OnPhotoMessage(msg.Chat.ID, msg.ID, fileIDs, msg.Caption)
+			resp, err := h.OnPhotoMessage(msg.Chat.ID, msg.ID, fileIDs, msg.Caption, userID)
 			if err != nil {
 				h.log.Error("photo message handler failed", "chat_id", msg.Chat.ID, "error", err)
 				if h.OnError != nil {
@@ -264,7 +271,7 @@ func (h *Handler) handleMessage(msg *Message) {
 		}
 	case msg.Document != nil:
 		if h.OnDocumentMessage != nil {
-			resp, err := h.OnDocumentMessage(msg.Chat.ID, msg.ID, msg.Document.FileID, msg.Document.FileName)
+			resp, err := h.OnDocumentMessage(msg.Chat.ID, msg.ID, msg.Document.FileID, msg.Document.FileName, userID)
 			if err != nil {
 				h.log.Error("document message handler failed", "chat_id", msg.Chat.ID, "error", err)
 				if h.OnError != nil {
@@ -278,7 +285,8 @@ func (h *Handler) handleMessage(msg *Message) {
 		}
 	case msg.Text != "":
 		if h.OnTextMessage != nil {
-			resp, err := h.OnTextMessage(msg.Chat.ID, msg.ID, msg.Text)
+			forwarded := msg.ForwardOrigin != nil || msg.ForwardFrom != nil || msg.ForwardDate != 0
+			resp, err := h.OnTextMessage(msg.Chat.ID, msg.ID, msg.Text, forwarded, userID)
 			if err != nil {
 				h.log.Error("text message handler failed", "chat_id", msg.Chat.ID, "error", err)
 				if h.OnError != nil {
@@ -296,7 +304,7 @@ func (h *Handler) handleMessage(msg *Message) {
 }
 
 // handleCommand processes a bot command message.
-func (h *Handler) handleCommand(msg *Message) {
+func (h *Handler) handleCommand(msg *Message, userID int64) {
 	cmd, args := extractCommand(msg.Text)
 	if cmd == "" {
 		return
@@ -317,7 +325,7 @@ func (h *Handler) handleCommand(msg *Message) {
 	}
 
 	if h.OnCommand != nil {
-		resp, err := h.OnCommand(msg.Chat.ID, msg.ID, cmd, args)
+		resp, err := h.OnCommand(msg.Chat.ID, msg.ID, cmd, args, userID)
 		if err != nil {
 			h.log.Error("command handler failed", "chat_id", msg.Chat.ID, "command", cmd, "error", err)
 			if h.OnError != nil {
@@ -352,7 +360,7 @@ func (h *Handler) handleCallback(cq *CallbackQuery) {
 	}
 
 	// Route approval callbacks to the per-chat TelegramApprover.
-	if a := h.GetApprover(cq.Message.Chat.ID); a != nil && a.HandleCallback(cq.Data) {
+	if a := h.GetApprover(cq.Message.Chat.ID); a != nil && a.HandleCallback(cq.Data, userID) {
 		// Show a toast acknowledging the user's choice.
 		ack := approvalToast(cq.Data)
 		if err := h.Bot.AnswerCallbackQuery(cq.ID, ack, false); err != nil {

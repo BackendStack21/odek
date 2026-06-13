@@ -34,6 +34,7 @@ const (
 type pendingRequest struct {
 	resp      chan string
 	messageID int
+	userID    int64 // originating user; 0 means unknown (legacy allow-all)
 }
 
 // TelegramApprover implements danger.Approver by sending approval requests
@@ -59,13 +60,21 @@ type TelegramApprover struct {
 
 	// ChatID is the Telegram chat where approval prompts are sent.
 	ChatID int64
+
+	// userID is the originating Telegram user whose approval requests this
+	// approver will accept. Callbacks from other users are rejected to prevent
+	// group-chat approval hijacking. Zero means unknown (legacy allow-all).
+	userID int64
 }
 
-// NewTelegramApprover creates a TelegramApprover for the given chat.
-func NewTelegramApprover(bot *Bot, chatID int64) *TelegramApprover {
+// NewTelegramApprover creates a TelegramApprover for the given chat and
+// originating user. Callbacks are only accepted from userID; use 0 to allow
+// callbacks from any user (legacy behavior, not recommended for groups).
+func NewTelegramApprover(bot *Bot, chatID, userID int64) *TelegramApprover {
 	return &TelegramApprover{
 		bot:     bot,
 		ChatID:  chatID,
+		userID:  userID,
 		pending: make(map[string]*pendingRequest),
 		trusted: make(map[danger.RiskClass]bool),
 		log:     NewNopLogger(),
@@ -131,8 +140,8 @@ func (a *TelegramApprover) PromptCommand(cls danger.RiskClass, cmd, description 
 		return fmt.Errorf("telegram approver: send prompt: %w", err)
 	}
 
-	// Register the pending request with message ID.
-	pr := &pendingRequest{resp: make(chan string, 1), messageID: msg.ID}
+	// Register the pending request with message ID and originating user.
+	pr := &pendingRequest{resp: make(chan string, 1), messageID: msg.ID, userID: a.userID}
 	a.mu.Lock()
 	a.pending[id] = pr
 	a.mu.Unlock()
@@ -191,9 +200,11 @@ func (a *TelegramApprover) PromptOperation(op danger.ToolOperation) error {
 
 // HandleCallback processes a callback query from an inline keyboard approval.
 // It parses the callback data, looks up the pending request, and unblocks
-// the waiting goroutine. Returns true if the callback was handled (was an
-// approval callback), false if it should fall through to OnCallbackQuery.
-func (a *TelegramApprover) HandleCallback(data string) bool {
+// the waiting goroutine. Callbacks are only accepted from the originating
+// user (or any user if userID is unknown/0). Returns true if the callback
+// was handled (was an approval callback), false if it should fall through to
+// OnCallbackQuery.
+func (a *TelegramApprover) HandleCallback(data string, userID int64) bool {
 	// Parse callback data: "apr:<id>", "den:<id>", "trs:<id>"
 	var action string
 	var id string
@@ -217,6 +228,11 @@ func (a *TelegramApprover) HandleCallback(data string) bool {
 	a.mu.Unlock()
 
 	if ok {
+		// Reject callbacks from users other than the one who initiated the
+		// operation, unless no originating user was recorded (userID == 0).
+		if pr.userID != 0 && pr.userID != userID {
+			return true
+		}
 		pr.resp <- action
 	}
 

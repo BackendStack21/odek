@@ -16,7 +16,7 @@ func TestHandleCommand_ErrorSentToUser(t *testing.T) {
 	h := NewHandler(bot)
 	h.Config.AllowAllUsers = true // routing test
 
-	h.OnCommand = func(chatID int64, messageID int, cmd string, args string) (string, error) {
+	h.OnCommand = func(chatID int64, messageID int, cmd string, args string, _ int64) (string, error) {
 		return "", fmt.Errorf("simulated command failure: %s", cmd)
 	}
 
@@ -103,7 +103,7 @@ func TestHandleCommand_ErrorNotSentOnSuccess(t *testing.T) {
 	h := NewHandler(bot)
 	h.Config.AllowAllUsers = true // routing test
 
-	h.OnCommand = func(chatID int64, messageID int, cmd string, args string) (string, error) {
+	h.OnCommand = func(chatID int64, messageID int, cmd string, args string, _ int64) (string, error) {
 		return "ok response", nil
 	}
 

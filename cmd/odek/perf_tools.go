@@ -286,6 +286,15 @@ type parallelShellTool struct {
 	// containerName, when set, routes every command through "docker exec"
 	// so sandbox isolation is preserved — same as shellTool.
 	containerName string
+
+	// ttyPath is the path to the terminal device for approval prompts.
+	// Overridden in tests to mock user input. Only used when approver is nil.
+	ttyPath string
+
+	// trustedClasses caches user-approved risk classes for this process.
+	// Set when user presses T (trust this session) at the prompt.
+	trustedClasses map[danger.RiskClass]bool
+	trustedMu      sync.Mutex
 }
 
 func (t *parallelShellTool) Name() string { return "parallel_shell" }
@@ -366,11 +375,9 @@ func (t *parallelShellTool) Call(argsJSON string) (result string, err error) {
 		case danger.Deny:
 			return jsonError(fmt.Sprintf("command denied: %s", c.Command))
 		case danger.Prompt:
-			if t.approver != nil {
-				cls := danger.Classify(c.Command)
-				if err := t.approver.PromptCommand(cls, c.Command, c.Description); err != nil {
-					return jsonError(fmt.Sprintf("command rejected: %s", c.Command))
-				}
+			cls := danger.Classify(c.Command)
+			if err := t.promptCommand(cls, c.Command, c.Description); err != nil {
+				return jsonError(fmt.Sprintf("command rejected: %s", c.Command))
 			}
 		}
 	}
@@ -386,6 +393,36 @@ func (t *parallelShellTool) Call(argsJSON string) (result string, err error) {
 	}
 
 	return jsonResult(parallelShellResult{Results: results})
+}
+
+// promptCommand asks the configured approver, or falls back to a TTYApprover,
+// for approval of a single command. This mirrors shellTool.promptUser so that
+// parallel_shell cannot bypass interactive approval when no explicit approver
+// is injected.
+func (t *parallelShellTool) promptCommand(cls danger.RiskClass, cmd, description string) error {
+	approver := t.approver
+	if approver == nil {
+		ttyApprover := danger.NewTTYApprover(&t.dangerousConfig)
+		t.trustedMu.Lock()
+		if t.trustedClasses != nil {
+			ttyApprover.SetTrustedClasses(t.trustedClasses)
+		}
+		t.trustedMu.Unlock()
+		if t.ttyPath != "" {
+			ttyApprover.TTYPath = t.ttyPath
+		}
+		approver = ttyApprover
+	}
+
+	err := approver.PromptCommand(cls, cmd, description)
+	if err == nil {
+		if tty, ok := approver.(*danger.TTYApprover); ok {
+			t.trustedMu.Lock()
+			t.trustedClasses = tty.TrustedClasses
+			t.trustedMu.Unlock()
+		}
+	}
+	return err
 }
 
 // runOne executes a single pre-approved command with a per-command timeout.

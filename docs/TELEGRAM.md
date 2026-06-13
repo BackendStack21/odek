@@ -167,7 +167,7 @@ The `Handler` struct routes incoming updates to the appropriate callback based o
 
 | Callback | Trigger | Signature |
 |---|---|---|
-| `OnTextMessage` | Plain text message | `(chatID int64, text string) (string, error)` |
+| `OnTextMessage` | Plain text message | `(chatID int64, messageID int, text string, forwarded bool) (string, error)` |
 | `OnCommand` | Slash command (e.g. `/start`) | `(chatID int64, command, args string) (string, error)` |
 | `OnVoiceMessage` | Voice message (OGG Opus) | `(chatID int64, messageID int, fileID string) (string, error)` |
 | `OnPhotoMessage` | Photo message | `(chatID int64, messageID int, fileIDs []string, caption string) (string, error)` |

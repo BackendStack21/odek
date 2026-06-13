@@ -16,7 +16,7 @@ func TestHandleUpdate_RecoverFromPanic(t *testing.T) {
 
 	// Set up a text handler that panics.
 	var panicCaught atomic.Bool
-	h.OnTextMessage = func(chatID int64, messageID int, text string) (string, error) {
+	h.OnTextMessage = func(chatID int64, messageID int, text string, _ bool, _ int64) (string, error) {
 		panic("simulated handler panic")
 	}
 
@@ -112,7 +112,7 @@ func TestHandleUpdate_RecoverFromPanicCommand(t *testing.T) {
 	h := NewHandler(bot)
 	h.Config.AllowAllUsers = true // routing test
 
-	h.OnCommand = func(chatID int64, messageID int, cmd string, args string) (string, error) {
+	h.OnCommand = func(chatID int64, messageID int, cmd string, args string, _ int64) (string, error) {
 		panic("simulated command panic")
 	}
 
