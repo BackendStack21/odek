@@ -541,9 +541,9 @@ func telegramCmd(args []string) error {
 				}
 				if json.Unmarshal([]byte(result), &r) == nil && r.Error == "" && r.Text != "" {
 					// Transcribed text crosses an external trust boundary; wrap it before
-					// injecting it into the user message stream.
+					// injecting it into the user message stream (telegramVoiceMessage).
 					go handleChatMessage(chatID, messageID, userID,
-						wrapUntrusted(fmt.Sprintf("telegram:chat:%d:voice", chatID), r.Text),
+						telegramVoiceMessage(chatID, r.Text),
 						bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 					return "", nil
 				}
@@ -2068,6 +2068,15 @@ func telegramTextMessage(chatID int64, text string, forwarded bool) string {
 		return wrapUntrusted(fmt.Sprintf("telegram:chat:%d:forwarded", chatID), text)
 	}
 	return text
+}
+
+// telegramVoiceMessage builds the user-role content for an auto-transcribed
+// voice message. The transcript is produced by a speech-to-text model from
+// attacker-influenceable audio, so it crosses an external trust boundary and
+// must be wrapped as untrusted before it enters the message stream — a
+// malicious recording must not become the user's "trusted" request.
+func telegramVoiceMessage(chatID int64, transcript string) string {
+	return wrapUntrusted(fmt.Sprintf("telegram:chat:%d:voice", chatID), transcript)
 }
 
 // telegramDocumentMessage builds the user-role message for an incoming
