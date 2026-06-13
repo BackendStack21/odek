@@ -161,6 +161,9 @@ func TestClassify_NetworkEgress_Commands(t *testing.T) {
 		{"wget https://example.com/file", NetworkEgress},
 		{"git push origin main", NetworkEgress},
 		{"git push --force origin main", NetworkEgress},
+		{"git clone https://github.com/user/repo", NetworkEgress},
+		{"git fetch origin", NetworkEgress},
+		{"git pull origin main", NetworkEgress},
 		{"scp file user@remote:/path", NetworkEgress},
 		{"rsync -avz ./ user@remote:/backup", NetworkEgress},
 		{"nc example.com 80", NetworkEgress},
@@ -545,10 +548,10 @@ func TestClassify_EmptyCommand(t *testing.T) {
 }
 
 func TestClassify_GitClone(t *testing.T) {
-	// git clone is classified as safe — only git push triggers network egress
+	// git clone contacts a remote repository, so it is network egress.
 	got := Classify("git clone https://github.com/user/repo")
-	if got != Safe {
-		t.Errorf("Classify(git clone) = %s, want safe", got)
+	if got != NetworkEgress {
+		t.Errorf("Classify(git clone) = %s, want network egress", got)
 	}
 }
 

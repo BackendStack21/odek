@@ -1691,9 +1691,30 @@ func isNetworkEgress(first string, tokens []string) bool {
 	if !networkPrefixes[first] {
 		return false
 	}
-	// git push requires a remote argument
+	// git subcommands that inherently contact a remote.
 	if first == "git" {
-		return hasArgAfter(tokens, "git", "push") && hasArgAfter(tokens, "push", "")
+		// Find the git subcommand, skipping the initial "git" token and any
+		// leading path (e.g. /usr/bin/git) or global options.
+		sub := ""
+		seenGit := false
+		for _, tok := range tokens {
+			if commandName(tok) == "git" {
+				seenGit = true
+				continue
+			}
+			if seenGit && !strings.HasPrefix(tok, "-") {
+				sub = tok
+				break
+			}
+		}
+		switch sub {
+		case "clone", "fetch", "pull":
+			return true
+		case "push":
+			// "git push" with no remote is harmless (prints upstream info).
+			return hasArgAfter(tokens, "push", "")
+		}
+		return false
 	}
 	// rsync with remote target (contains :)
 	if first == "rsync" {
