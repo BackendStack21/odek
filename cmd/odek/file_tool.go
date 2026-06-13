@@ -25,6 +25,10 @@ const maxLines = 2000
 // memory exhaustion from huge files.
 const maxReadBytes = 1 << 20 // 1 MiB
 
+// maxWriteFileContentBytes caps the content argument of write_file to prevent
+// disk exhaustion and memory pressure from a single enormous tool call.
+const maxWriteFileContentBytes = maxReadBytes // 1 MiB
+
 // maxSearchLimit caps the number of matches returned by search_files to
 // prevent unbounded result JSON from exhausting memory.
 const maxSearchLimit = 500
@@ -214,6 +218,9 @@ func (t *writeFileTool) Call(argsJSON string) (string, error) {
 	}
 	if args.Path == "" {
 		return jsonError("path is required")
+	}
+	if len(args.Content) > maxWriteFileContentBytes {
+		return jsonError(fmt.Sprintf("content too large (%d bytes, max %d)", len(args.Content), maxWriteFileContentBytes))
 	}
 
 	// Path confinement: when restrictToCWD is enabled, reject paths that
@@ -1314,6 +1321,7 @@ func (t *globTool) Call(argsJSON string) (result string, err error) {
 
 type fileInfoTool struct {
 	dangerousConfig danger.DangerousConfig
+	restrictToCWD   bool // when true, reject paths escaping the working directory
 }
 
 func (t *fileInfoTool) Name() string { return "file_info" }
@@ -1368,6 +1376,16 @@ func (t *fileInfoTool) Call(argsJSON string) (result string, err error) {
 		return jsonError("path is required")
 	}
 
+	// Path confinement: when restrictToCWD is enabled, reject paths that
+	// escape the working directory via ".." traversal or absolute paths.
+	if t.restrictToCWD {
+		resolved, err := confineToCWD(args.Path)
+		if err != nil {
+			return jsonError(err.Error())
+		}
+		args.Path = resolved
+	}
+
 	// Security: classify path
 	risk := danger.ClassifyPath(args.Path)
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
@@ -1400,6 +1418,10 @@ func (t *fileInfoTool) Call(argsJSON string) (result string, err error) {
 		IsSymlink: lInfo.Mode()&os.ModeSymlink != 0,
 		IsRegular: lInfo.Mode().IsRegular(),
 	}
+
+	// file_info output originates from the filesystem trust boundary, so
+	// mark the returned path as untrusted.
+	fi.Path = wrapUntrusted("file_info:"+args.Path, fi.Path)
 
 	return jsonResult(fi)
 }

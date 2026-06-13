@@ -32,6 +32,11 @@ import (
 //go:embed ui
 var uiFS embed.FS
 
+// maxWSMessageBytes caps the size of an incoming WebSocket text message.
+// This prevents a local client from exhausting server memory by sending a
+// multi-gigabyte frame.
+const maxWSMessageBytes = 8 * 1024 * 1024 // 8 MiB
+
 // currentPromptCancel holds the cancel function for the currently executing
 // prompt. Used by the POST /api/cancel endpoint to abort a running agent.
 var currentPromptCancel atomic.Value
@@ -456,6 +461,10 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 		wsHandlerWG.Done()
 	}()
 	defer conn.Close()
+
+	// Cap incoming message size to prevent a local client from exhausting
+	// server memory with a single huge frame.
+	conn.MaxPayloadBytes = maxWSMessageBytes
 
 	// Create ONE agent per WebSocket connection — provides buffer
 	// continuity across turns within the same session.

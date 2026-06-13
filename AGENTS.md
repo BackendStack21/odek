@@ -91,7 +91,7 @@ System prompt is loaded by priority: `--system` flag > `~/.odek/IDENTITY.md` > c
 ### Security Architecture
 Layered prompt-injection / approval-fatigue defenses. Full reference: [docs/SECURITY.md](docs/SECURITY.md).
 
-- **Untrusted-content wrapper** (`cmd/odek/untrusted.go`) — every tool whose output sources from outside the trust boundary (`browser`, `read_file`, `shell`, `search_files`, `multi_grep`, `transcribe`, `head_tail`, `diff`, `tr`, `sort`, `json_query`, `batch_patch`, `glob`, `session_search`, `@-resources`, `--ctx` files, any MCP tool) wraps results in `<untrusted_content_<nonce> source="...">…</untrusted_content_<nonce>>`. Per-call nonce defeats wrapper-escape via literal close tag.
+- **Untrusted-content wrapper** (`cmd/odek/untrusted.go`) — every tool whose output sources from outside the trust boundary (`browser`, `read_file`, `shell`, `search_files`, `multi_grep`, `transcribe`, `head_tail`, `diff`, `tr`, `sort`, `json_query`, `batch_patch`, `glob`, `file_info`, `session_search`, `@-resources`, `--ctx` files, any MCP tool) wraps results in `<untrusted_content_<nonce> source="...">…</untrusted_content_<nonce>>`. Per-call nonce defeats wrapper-escape via literal close tag.
 - **Audit log** (`cmd/odek/audit.go` + `internal/session/audit.go`) — every `wrapUntrusted` call records source + content-hash + turn into `<sessions>/audit/<id>.json`. After each turn a divergence heuristic flags `suspicious_divergence=true` when the agent ingested untrusted content AND its tool calls referenced resources the user did not mention. Inspect with `odek audit <session-id>` / `odek audit --list`.
 - **Memory taint** (`internal/memory/provenance.go`) — `EpisodeProvenance` tracks Untrusted/Sources/UserApproved. Tainted episodes are stored but `Search()` filters them out, so a one-shot injection cannot persist via the episode pipeline. User must explicitly promote.
 - **Skill provenance gate** (`internal/skills/loader.go` + `cache.go`) — `Skill.Provenance{Untrusted, Sources, NeedsReview}`. NeedsReview skills pin to Lazy regardless of `auto_load`. `odek skill promote <name>` clears the flag after user review.
@@ -116,6 +116,11 @@ Layered prompt-injection / approval-fatigue defenses. Full reference: [docs/SECU
 - **Resource resolver size cap** (`internal/resource/resource.go`) — `@-resource` file loads are capped at 1 MiB to prevent OOM from `@hugefile` references.
 - **Sub-agent summary cap** (`cmd/odek/subagent_tool.go`) — each sub-agent result included in the `delegate_tasks` summary is truncated to 100 KiB to prevent memory DoS.
 - **patch / batch_patch output expansion cap** (`cmd/odek/file_tool.go`, `cmd/odek/perf_tools.go`) — the post-replacement result is capped at 10 MiB so `ReplaceAll` cannot explode memory.
+- **write_file content cap** (`cmd/odek/file_tool.go`) — the `content` argument is capped at 1 MiB to prevent disk exhaustion and memory pressure from a single enormous tool call.
+- **file_info confinement + wrapping** (`cmd/odek/file_tool.go`) — `file_info` respects the same `restrictToCWD` path confinement as `write_file`/`patch`, and the returned path is wrapped as untrusted content.
+- **WebSocket message-size cap** (`cmd/odek/serve.go`) — `odek serve` sets `MaxPayloadBytes` on every WebSocket connection so a local client cannot OOM the server with a huge frame.
+- **Session file size cap** (`internal/session/session.go`) — session files larger than 32 MiB are rejected by `Load()` to prevent OOM from tampered or corrupted transcripts.
+- **Skill file size cap** (`internal/skills/loader.go`) — `SKILL.md` files larger than 1 MiB are skipped so a malicious project cannot OOM the process at startup or bloat the system prompt.
 - **Serve sandbox default-on** — `odek serve` enables `--sandbox` automatically unless `--no-sandbox` is passed.
 - **Secret redaction** (`internal/redact/redact.go`) — 20+ patterns: OpenAI, Anthropic, GitHub PAT, AWS, PEM, JWT, Vault, Google OAuth, SendGrid, Discord, DB URLs, etc.
 

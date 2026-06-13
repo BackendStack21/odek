@@ -16,6 +16,7 @@ import (
 	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/resource"
 	"github.com/BackendStack21/odek/internal/session"
+	"github.com/BackendStack21/odek/internal/skills"
 )
 
 // ── 1. Browser history must be capped to avoid memory DoS ────────────────
@@ -799,5 +800,103 @@ func TestBatchPatch_RejectsOutputExpansion(t *testing.T) {
 	}
 	if !strings.Contains(r.Results[0].Error, "too large") {
 		t.Fatalf("expected size error, got: %q", r.Results[0].Error)
+	}
+}
+
+// ── 21. write_file must cap content size to prevent DoS / disk exhaustion ─
+
+func TestWriteFile_CapsContentSize(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "out.txt")
+	huge := strings.Repeat("x", maxWriteFileContentBytes+1)
+
+	tool := &writeFileTool{}
+	result := callJSON(t, tool, fmt.Sprintf(`{"path":%q,"content":%q}`, path, huge))
+	var r struct {
+		Success bool   `json:"success"`
+		Error   string `json:"error,omitempty"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Success {
+		t.Fatal("write_file should reject content above maxWriteFileContentBytes")
+	}
+	if !strings.Contains(r.Error, "too large") {
+		t.Fatalf("expected size error, got: %q", r.Error)
+	}
+}
+
+// ── 22. file_info must respect restrictToCWD and wrap its output ──────────
+
+func TestFileInfo_RestrictToCWD(t *testing.T) {
+	tool := &fileInfoTool{restrictToCWD: true}
+	result := callJSON(t, tool, `{"path":"/etc/passwd"}`)
+	var r struct {
+		Error string `json:"error,omitempty"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" {
+		t.Fatal("file_info with restrictToCWD=true should reject paths outside CWD")
+	}
+}
+
+func TestFileInfo_WrapsPath(t *testing.T) {
+	t.Chdir(t.TempDir())
+	os.WriteFile("target.txt", []byte("hello"), 0644)
+
+	tool := &fileInfoTool{restrictToCWD: true}
+	result := callJSON(t, tool, `{"path":"target.txt"}`)
+	var r struct {
+		Path  string `json:"path"`
+		Error string `json:"error,omitempty"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error != "" {
+		t.Fatalf("unexpected error: %s", r.Error)
+	}
+	if !strings.HasPrefix(r.Path, "<untrusted_content_") {
+		t.Fatalf("file_info path should be wrapped in untrusted_content, got: %q", r.Path)
+	}
+}
+
+// ── 23. session store Load must reject huge session files ─────────────────
+
+func TestSessionLoad_CapsFileSize(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	store, err := session.NewStore()
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	sessID := "20260613-abc123"
+	sessPath := store.Path(sessID)
+	if err := os.MkdirAll(filepath.Dir(sessPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Write a session file that exceeds the cap.
+	os.WriteFile(sessPath, []byte(strings.Repeat("x", session.MaxSessionFileBytes+1)), 0600)
+
+	_, err = store.Load(sessID)
+	if err == nil {
+		t.Fatal("session Load should reject a huge session file")
+	}
+	if !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("expected size error, got: %v", err)
+	}
+}
+
+// ── 24. skill loader must reject huge SKILL.md files ──────────────────────
+
+func TestSkillLoader_CapsFileSize(t *testing.T) {
+	projectDir := filepath.Join(t.TempDir(), ".odek", "skills")
+	skillDir := filepath.Join(projectDir, "bigskill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a SKILL.md larger than the cap (no valid frontmatter needed).
+	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(strings.Repeat("x", skills.MaxSkillFileBytes+1)), 0644)
+
+	result := skills.ScanDirs(projectDir, "", nil)
+	if len(result.AutoLoad)+len(result.Lazy) != 0 {
+		t.Fatalf("skill loader should reject a huge SKILL.md, got %d skills", len(result.AutoLoad)+len(result.Lazy))
 	}
 }

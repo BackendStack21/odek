@@ -8,6 +8,11 @@ import (
 	"strings"
 )
 
+// MaxSkillFileBytes caps the size of a single SKILL.md file that the loader
+// will read into memory. A maliciously huge skill file could otherwise OOM
+// the process at startup or bloat the system prompt.
+const MaxSkillFileBytes = 1 * 1024 * 1024 // 1 MiB
+
 // ── Frontmatter Parsing ───────────────────────────────────────────────
 //
 // Manual YAML frontmatter parser for the SKILL.md subset:
@@ -20,6 +25,13 @@ import (
 // parseSkillFile reads and parses a single SKILL.md file.
 // Returns nil if the file doesn't exist or can't be parsed.
 func parseSkillFile(path string) *Skill {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil
+	}
+	if info.Size() > MaxSkillFileBytes {
+		return nil
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil

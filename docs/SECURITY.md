@@ -61,6 +61,7 @@ Tools that wrap:
 | `vision` | `vision:<file path>` (full description) |
 | `web_search` | `web_search:<query>` (results + answers from SearXNG) |
 | `session_search` | `session_search` (whole result — past sessions may be tainted) |
+| `file_info` | `file_info:<path>` (metadata about an external file) |
 | any MCP tool | `mcp:<server>:<tool>` |
 
 `session_search` is wrapped because it can surface content from arbitrary past sessions — including sessions that ingested untrusted content. Wrapping its whole output keeps that content from re-entering as trusted instructions and records the retrieval in the audit log, closing a path that otherwise bypassed the memory taint gate (defense 5).

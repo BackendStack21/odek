@@ -1140,7 +1140,7 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 		&patchTool{dangerousConfig: dc, restrictToCWD: true},
 		&batchReadTool{dangerousConfig: dc},
 		&globTool{dangerousConfig: dc},
-		&fileInfoTool{dangerousConfig: dc},
+		&fileInfoTool{dangerousConfig: dc, restrictToCWD: true},
 		&batchPatchTool{dangerousConfig: dc, restrictToCWD: true},
 		&parallelShellTool{dangerousConfig: dc, approver: approver},
 		newHTTPBatchTool(dc),
