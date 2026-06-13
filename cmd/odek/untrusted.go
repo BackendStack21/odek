@@ -183,7 +183,10 @@ func unwrapUntrusted(s string) string {
 	if len(m) < 2 {
 		return s
 	}
-	return m[1]
+	body := m[1]
+	body = strings.TrimPrefix(body, "\n")
+	body = strings.TrimSuffix(body, "\n")
+	return body
 }
 
 // hasUntrustedWrapper reports whether s contains a complete nonce'd

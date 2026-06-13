@@ -91,7 +91,7 @@ System prompt is loaded by priority: `--system` flag > `~/.odek/IDENTITY.md` > c
 ### Security Architecture
 Layered prompt-injection / approval-fatigue defenses. Full reference: [docs/SECURITY.md](docs/SECURITY.md).
 
-- **Untrusted-content wrapper** (`cmd/odek/untrusted.go`) — every tool whose output sources from outside the trust boundary (`browser`, `read_file`, `shell`, `search_files`, `multi_grep`, `transcribe`, any MCP tool) wraps results in `<untrusted_content_<nonce> source="...">…</untrusted_content_<nonce>>`. Per-call nonce defeats wrapper-escape via literal close tag.
+- **Untrusted-content wrapper** (`cmd/odek/untrusted.go`) — every tool whose output sources from outside the trust boundary (`browser`, `read_file`, `shell`, `search_files`, `multi_grep`, `transcribe`, `head_tail`, `diff`, `tr`, `sort`, `json_query`, `batch_patch`, `glob`, `file_info`, `tree`, `base64` file mode, `session_search`, `@-resources`, `--ctx` files, any MCP tool) wraps results in `<untrusted_content_<nonce> source="...">…</untrusted_content_<nonce>>`. Browser page title and interactive-element text are wrapped in addition to the main content. Per-call nonce defeats wrapper-escape via literal close tag.
 - **Audit log** (`cmd/odek/audit.go` + `internal/session/audit.go`) — every `wrapUntrusted` call records source + content-hash + turn into `<sessions>/audit/<id>.json`. After each turn a divergence heuristic flags `suspicious_divergence=true` when the agent ingested untrusted content AND its tool calls referenced resources the user did not mention. Inspect with `odek audit <session-id>` / `odek audit --list`.
 - **Memory taint** (`internal/memory/provenance.go`) — `EpisodeProvenance` tracks Untrusted/Sources/UserApproved. Tainted episodes are stored but `Search()` filters them out, so a one-shot injection cannot persist via the episode pipeline. User must explicitly promote.
 - **Skill provenance gate** (`internal/skills/loader.go` + `cache.go`) — `Skill.Provenance{Untrusted, Sources, NeedsReview}`. NeedsReview skills pin to Lazy regardless of `auto_load`. `odek skill promote <name>` clears the flag after user review.
@@ -100,6 +100,35 @@ Layered prompt-injection / approval-fatigue defenses. Full reference: [docs/SECU
 - **Approver friction** (`internal/danger/approver.go`, `cmd/odek/wsapprover.go`) — both TTYApprover and WSApprover engage friction mode after 3 approvals of the same class in 60s: require typing literal `approve`, 1.5s pause. Trust-class shortcut disabled for `destructive` + `blocked` regardless.
 - **Danger classifier bypass resistance** (`internal/danger/classifier.go`) — `normalize()` pre-processes: expand `$IFS` / `${IFS}`, extract `$(...)` / `` `...` `` substitutions, strip `command` / `exec` / `builtin` wrappers, collapse unquoted backslashes, basename absolute paths. Regression suite in `classifier_bypass_test.go`.
 - **WS Origin allowlist** (`cmd/odek/serve.go::checkLocalOrigin`) — rejects non-localhost upgrades. Closes CSRF-on-localhost.
+- **REST API CSRF protection** (`cmd/odek/serve.go::requireLocalOrigin`) — state-changing HTTP endpoints (POST/PUT/PATCH/DELETE) require a localhost origin or no Origin header, and static responses set `X-Frame-Options: DENY` + `Content-Security-Policy: frame-ancestors 'none'` to block clickjacking.
+- **Browser history cap** (`cmd/odek/browser_tool.go`) — navigation history is capped at 50 snapshots to prevent memory DoS from repeated `browser_navigate` calls.
+- **Browser element cap** (`cmd/odek/browser_tool.go`) — the number of interactive elements extracted per page is capped at 500 so a hostile page cannot OOM the agent with thousands of links or buttons.
+- **Search result bounds** (`cmd/odek/file_tool.go`, `cmd/odek/perf_tools.go`) — `search_files` and `multi_grep` enforce a max match limit (500) and a total returned-content cap (1 MiB) to avoid unbounded result JSON.
+- **Perf-tool file-size cap** (`cmd/odek/perf_tools.go`) — `diff`, `base64`, `tr`, `sort`, `json_query`, and `batch_patch` reject files larger than 10 MiB to avoid loading multi-gigabyte files into memory.
+- **Shell output cap** (`cmd/odek/shell.go`, `cmd/odek/perf_tools.go`) — `shell` and `parallel_shell` cap captured stdout/stderr at 1 MiB per stream to prevent memory DoS from commands that dump huge files.
+- **Browser request timeout** (`cmd/odek/browser_tool.go`) — the browser HTTP client enforces a 30-second request timeout so a slow/malicious server cannot hang the agent turn.
+- **Transcribe input/output guard** (`cmd/odek/transcribe_tool.go`) — rejects audio files larger than 10 MiB, caps whisper stdout at 10 MiB, and writes ffmpeg output to a temp file so it cannot clobber an existing `.wav` next to the source path.
+- **Tree width cap** (`cmd/odek/perf_tools.go`) — the `tree` tool limits each directory listing to 1,000 entries to avoid OOM from directories with millions of files.
+- **patch tool hardening** (`cmd/odek/file_tool.go`) — `patch` rejects files larger than 10 MiB and preserves the original file mode instead of resetting it to 0644.
+- **glob tool hardening** (`cmd/odek/file_tool.go`) — `glob` caps results at 1,000 matches and wraps returned paths as untrusted content.
+- **Sub-agent task-file cap** (`cmd/odek/subagent.go`) — `odek subagent --task <file>` rejects task files larger than 10 MiB before loading them into memory.
+- **session_search hardening** (`cmd/odek/session_search_tool.go`) — the `get` action returns at most the 100 most recent messages and wraps each message content, task, and buffer entry as untrusted; `list`/`search`/`find` also wrap session tasks.
+- **@-resource / --ctx prompt wrapping** (`cmd/odek/refs.go`, `cmd/odek/serve.go`) — content resolved from `@file` references and `--ctx` files is wrapped as untrusted before being inserted into the prompt.
+- **Config file size cap** (`internal/config/loader.go`) — `~/.odek/config.json` and `./odek.json` are rejected if larger than 5 MiB to prevent OOM from a malicious or broken config at startup.
+- **Resource resolver size cap** (`internal/resource/resource.go`) — `@-resource` file loads are capped at 1 MiB to prevent OOM from `@hugefile` references.
+- **Resource resolver symlink hardening** (`internal/resource/resource.go`) — `FileResolver.Search` uses `os.Lstat` (not `os.Stat`) for search-result metadata, so symlinks cannot leak the size of arbitrary targets outside the workspace.
+- **Sub-agent summary cap** (`cmd/odek/subagent_tool.go`) — each sub-agent result included in the `delegate_tasks` summary is truncated to 100 KiB to prevent memory DoS.
+- **Tree path wrapping** (`cmd/odek/perf_tools.go`) — the `tree` tool wraps every filesystem-derived path as untrusted content.
+- **head_tail output cap** (`cmd/odek/perf_tools.go`) — `head_tail` truncates returned lines so total content stays within 1 MiB, preventing multi-file/multi-line memory DoS.
+- **search_files symlink hardening** (`cmd/odek/file_tool.go`) — the `files` target uses `Lstat` (not `Stat`) and skips symlinks in the glob branch, closing metadata disclosure via symlinked paths.
+- **AGENTS.md size cap** (`odek.go`) — project-level `AGENTS.md` is ignored if larger than 256 KiB to prevent OOM/prompt stuffing from a malicious repo.
+- **IDENTITY.md size cap** (`cmd/odek/main.go`) — `~/.odek/IDENTITY.md` is ignored if larger than 256 KiB, falling back to the default identity.
+- **patch / batch_patch output expansion cap** (`cmd/odek/file_tool.go`, `cmd/odek/perf_tools.go`) — the post-replacement result is capped at 10 MiB so `ReplaceAll` cannot explode memory.
+- **write_file content cap** (`cmd/odek/file_tool.go`) — the `content` argument is capped at 1 MiB to prevent disk exhaustion and memory pressure from a single enormous tool call.
+- **file_info confinement + wrapping** (`cmd/odek/file_tool.go`) — `file_info` respects the same `restrictToCWD` path confinement as `write_file`/`patch`, and the returned path is wrapped as untrusted content.
+- **WebSocket message-size cap** (`cmd/odek/serve.go`) — `odek serve` sets `MaxPayloadBytes` on every WebSocket connection so a local client cannot OOM the server with a huge frame.
+- **Session file size cap** (`internal/session/session.go`) — session files larger than 32 MiB are rejected by `Load()` to prevent OOM from tampered or corrupted transcripts.
+- **Skill file size cap** (`internal/skills/loader.go`) — `SKILL.md` files larger than 1 MiB are skipped so a malicious project cannot OOM the process at startup or bloat the system prompt.
 - **Serve sandbox default-on** — `odek serve` enables `--sandbox` automatically unless `--no-sandbox` is passed.
 - **Secret redaction** (`internal/redact/redact.go`) — 20+ patterns: OpenAI, Anthropic, GitHub PAT, AWS, PEM, JWT, Vault, Google OAuth, SendGrid, Discord, DB URLs, etc.
 

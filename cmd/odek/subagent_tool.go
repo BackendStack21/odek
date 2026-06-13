@@ -157,12 +157,18 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 		sem <- struct{}{}
 	}
 
-	// Build summary for the calling agent
+	// Build summary for the calling agent. Cap each sub-agent result so the
+	// summary cannot grow without bound.
 	var buf strings.Builder
 	buf.WriteString("📋 Sub-agent results:\n\n")
 	for i, r := range results {
 		buf.WriteString(fmt.Sprintf("─── Task %d: %s ───\n", i+1, truncate(input.Tasks[i].Goal, 60)))
-		buf.WriteString(r)
+		if len(r) > maxSubagentSummaryResultBytes {
+			buf.WriteString(r[:maxSubagentSummaryResultBytes])
+			buf.WriteString("\n... [result truncated]")
+		} else {
+			buf.WriteString(r)
+		}
 		buf.WriteString("\n\n")
 	}
 	return buf.String(), nil
@@ -283,6 +289,11 @@ func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, tr
 
 	return `{"error":"no result from sub-agent"}`
 }
+
+// maxSubagentSummaryResultBytes caps how much of each sub-agent result is
+// included in the parent delegate_tasks summary, preventing memory DoS from
+// huge sub-agent outputs.
+const maxSubagentSummaryResultBytes = 100 << 10 // 100 KiB
 
 // maxSubagentLine caps a single NDJSON line read from a sub-agent's stdout.
 // Streamed tool_call events embed full tool arguments (e.g. a large write_file

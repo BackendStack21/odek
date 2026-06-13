@@ -22,6 +22,34 @@ import (
 // immediately regardless of this backstop.
 const defaultShellTimeout = 30 * time.Minute
 
+// maxShellOutputBytes caps the stdout + stderr captured from a single shell
+// command to prevent memory DoS from commands that dump huge files.
+const maxShellOutputBytes = 1 << 20 // 1 MiB
+
+// limitWriter wraps a bytes.Buffer and drops further writes once the total
+// size would exceed limit, recording that output was truncated.
+type limitWriter struct {
+	buf       *bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (w *limitWriter) Write(p []byte) (int, error) {
+	if w.truncated {
+		return len(p), nil
+	}
+	if w.buf.Len()+len(p) > w.limit {
+		w.truncated = true
+		room := w.limit - w.buf.Len()
+		if room > 0 {
+			w.buf.Write(p[:room])
+		}
+		w.buf.WriteString("\n... [output truncated]")
+		return len(p), nil
+	}
+	return w.buf.Write(p)
+}
+
 // shellTool is odek's built-in tool that lets the agent run shell commands.
 //
 // This is the only built-in tool — it's enough for reading files, running
@@ -163,8 +191,10 @@ func (t *shellTool) Call(args string) (string, error) {
 	cmd.WaitDelay = 3 * time.Second
 
 	var outBuf, errBuf bytes.Buffer
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &errBuf
+	outW := &limitWriter{buf: &outBuf, limit: maxShellOutputBytes}
+	errW := &limitWriter{buf: &errBuf, limit: maxShellOutputBytes}
+	cmd.Stdout = outW
+	cmd.Stderr = errW
 
 	err := cmd.Run()
 

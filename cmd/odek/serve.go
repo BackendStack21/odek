@@ -32,6 +32,11 @@ import (
 //go:embed ui
 var uiFS embed.FS
 
+// maxWSMessageBytes caps the size of an incoming WebSocket text message.
+// This prevents a local client from exhausting server memory by sending a
+// multi-gigabyte frame.
+const maxWSMessageBytes = 8 * 1024 * 1024 // 8 MiB
+
 // currentPromptCancel holds the cancel function for the currently executing
 // prompt. Used by the POST /api/cancel endpoint to abort a running agent.
 var currentPromptCancel atomic.Value
@@ -150,11 +155,11 @@ func serveCmd(args []string) error {
 			handleWS(store, resourceReg, resolved, systemMessage, conn)
 		},
 	})
-	mux.HandleFunc("/api/resources", handleResourceSearch(resourceReg))
-	mux.HandleFunc("/api/sessions", handleSessionList(store))
-	mux.HandleFunc("/api/sessions/", handleSessionByID(store))
-	mux.HandleFunc("/api/models", handleModelList(resolved.Model))
-	mux.HandleFunc("/api/cancel", handleCancel)
+	mux.Handle("/api/resources", requireLocalOrigin(handleResourceSearch(resourceReg)))
+	mux.Handle("/api/sessions", requireLocalOrigin(handleSessionList(store)))
+	mux.Handle("/api/sessions/", requireLocalOrigin(handleSessionByID(store)))
+	mux.Handle("/api/models", requireLocalOrigin(handleModelList(resolved.Model)))
+	mux.Handle("/api/cancel", requireLocalOrigin(http.HandlerFunc(handleCancel)))
 
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -457,6 +462,10 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 	}()
 	defer conn.Close()
 
+	// Cap incoming message size to prevent a local client from exhausting
+	// server memory with a single huge frame.
+	conn.MaxPayloadBytes = maxWSMessageBytes
+
 	// Create ONE agent per WebSocket connection — provides buffer
 	// continuity across turns within the same session.
 	agent, sandboxCleanup, mcpCleanup, approver, err := newServeAgent(resolved, system, func(v any) error {
@@ -682,7 +691,7 @@ func handlePrompt(
 		if err != nil {
 			continue
 		}
-		resolvedRefs[ref.Raw] = content
+		resolvedRefs[ref.Raw] = wrapUntrusted("resource:"+ref.Raw, content)
 	}
 	enrichedPrompt := resource.ReplaceRefs(prompt, resolvedRefs)
 
@@ -945,6 +954,38 @@ func checkLocalOrigin(_ *golangws.Config, req *http.Request) error {
 	return fmt.Errorf("Origin %q not allowed (only localhost is accepted)", origin)
 }
 
+// requireLocalOrigin rejects cross-origin state-changing requests to the REST
+// API. It is the HTTP counterpart to checkLocalOrigin.
+func requireLocalOrigin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isStateChangingMethod(r.Method) {
+			origin := r.Header.Get("Origin")
+			if origin != "" {
+				u, err := url.Parse(origin)
+				if err != nil {
+					http.Error(w, "invalid Origin", http.StatusForbidden)
+					return
+				}
+				host := u.Hostname()
+				if host != "localhost" && host != "127.0.0.1" && host != "::1" {
+					http.Error(w, "Origin not allowed", http.StatusForbidden)
+					return
+				}
+			}
+		}
+		w.Header().Set("Vary", "Origin")
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isStateChangingMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return false
+	}
+	return true
+}
+
 func writeWSJSON(conn *golangws.Conn, data any) {
 	payload, err := json.Marshal(data)
 	if err != nil {
@@ -1144,6 +1185,8 @@ func handleStatic() http.HandlerFunc {
 		w.Header().Set("Content-Type", entry[1])
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
 		w.Write(data)
 	}
 }

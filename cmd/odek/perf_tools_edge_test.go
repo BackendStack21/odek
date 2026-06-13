@@ -310,7 +310,7 @@ func TestJSONQuery_NestedObjects(t *testing.T) {
 	if r.Error != "" {
 		t.Fatalf("error: %s", r.Error)
 	}
-	if r.Value != "deep" {
+	if got, ok := r.Value.(string); !ok || unwrapUntrusted(got) != "deep" {
 		t.Errorf("value = %v, want 'deep'", r.Value)
 	}
 }

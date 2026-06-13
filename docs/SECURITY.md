@@ -53,7 +53,7 @@ Tools that wrap:
 
 | Tool | Source attribute |
 |---|---|
-| `browser` (navigate / snapshot / back) | the URL |
+| `browser` (navigate / snapshot / back) | the URL; page title and interactive-element text are wrapped too |
 | `read_file` | the absolute path |
 | `search_files`, `multi_grep` | `<path>:<line>` per match |
 | `shell` | `$ <command>` |
@@ -61,6 +61,9 @@ Tools that wrap:
 | `vision` | `vision:<file path>` (full description) |
 | `web_search` | `web_search:<query>` (results + answers from SearXNG) |
 | `session_search` | `session_search` (whole result — past sessions may be tainted) |
+| `file_info` | `file_info:<path>` (metadata about an external file) |
+| `tree` | `tree:<root>` (directory/file names from the filesystem) |
+| `base64` (file/path mode) | `base64:<path>` (the encoded bytes are wrapped) |
 | any MCP tool | `mcp:<server>:<tool>` |
 
 `session_search` is wrapped because it can surface content from arbitrary past sessions — including sessions that ingested untrusted content. Wrapping its whole output keeps that content from re-entering as trusted instructions and records the retrieval in the audit log, closing a path that otherwise bypassed the memory taint gate (defense 5).
@@ -68,6 +71,8 @@ Tools that wrap:
 The MCP wrapper guards a tool's **output**. The server-supplied tool **description** is a separate surface ("tool poisoning"): it flows into the model's tool catalogue as effectively trusted instructions. odek scans every MCP tool description with the injection classifier (`ScanInjection`) at registration; if injection patterns are found the description is withheld (replaced with a placeholder, logged to stderr) while the tool stays callable by name. The MCP **error channel** is guarded as well: a server that returns its payload via an error instead of a result has that error message wrapped (and audited) too, since the loop surfaces error text to the model.
 
 The model is instructed (via the default system prompt) to treat the wrapped region as data, not instructions. A model trained on prompt-injection resistance (Claude Sonnet 4.6+ does this well) honours the boundary. Older models or aggressively fine-tuned ones may not.
+
+Two additional boundaries keep filesystem-derived metadata from leaking as "trusted" context. First, the `base64` tool wraps encoded output when reading from a file path, so even transformed filesystem bytes stay inside an untrusted boundary. Second, the `@`-resource resolver (`FileResolver.Search`) uses `os.Lstat` when building search-result metadata, which prevents a symlink inside the workspace from leaking the size (or other `stat` metadata) of an arbitrary target outside it.
 
 ### 3. Danger classifier (shell)
 
@@ -254,6 +259,10 @@ See [CLI.md — Dangerous Operations](CLI.md#dangerous-operations) for the full 
   }
 }
 ```
+
+### 15. Configuration file size cap
+
+`~/.odek/config.json` and `./odek.json` are rejected if they exceed 5 MiB. This prevents a malicious, truncated, or accidentally-generated config file from causing an out-of-memory condition at startup.
 
 ### YOLO mode
 

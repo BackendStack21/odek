@@ -30,6 +30,10 @@ import (
 	"github.com/BackendStack21/odek/internal/telegram"
 )
 
+// maxConfigFileBytes caps how large a config file may be before it is rejected.
+// This prevents a malicious or broken config from OOMing startup.
+const maxConfigFileBytes = 5 << 20 // 5 MiB
+
 // ── Types ──────────────────────────────────────────────────────────────
 
 // CLIFlags holds values parsed from the CLI. Zero/nil values mean the
@@ -408,9 +412,17 @@ func loadFile(path string) FileConfig {
 	if path == "" {
 		return FileConfig{}
 	}
-	data, err := os.ReadFile(path)
+	info, err := os.Stat(path)
 	if err != nil {
 		return FileConfig{} // missing or unreadable = empty
+	}
+	if info.Size() > maxConfigFileBytes {
+		fmt.Fprintf(os.Stderr, "odek: warning: config %s: file exceeds maximum size %d bytes — ignoring file\n", path, maxConfigFileBytes)
+		return FileConfig{}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return FileConfig{} // unreadable = empty
 	}
 	var cfg FileConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {

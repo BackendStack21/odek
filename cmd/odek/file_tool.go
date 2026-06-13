@@ -25,6 +25,22 @@ const maxLines = 2000
 // memory exhaustion from huge files.
 const maxReadBytes = 1 << 20 // 1 MiB
 
+// maxWriteFileContentBytes caps the content argument of write_file to prevent
+// disk exhaustion and memory pressure from a single enormous tool call.
+const maxWriteFileContentBytes = maxReadBytes // 1 MiB
+
+// maxSearchLimit caps the number of matches returned by search_files to
+// prevent unbounded result JSON from exhausting memory.
+const maxSearchLimit = 500
+
+// maxSearchResultBytes caps the total returned content bytes for a single
+// search_files / multi_grep content query.
+const maxSearchResultBytes = maxReadBytes
+
+// maxGlobMatches caps the number of paths returned by the glob tool to prevent
+// unbounded JSON responses from broad patterns.
+const maxGlobMatches = 1000
+
 type readFileTool struct {
 	dangerousConfig danger.DangerousConfig
 }
@@ -203,6 +219,9 @@ func (t *writeFileTool) Call(argsJSON string) (string, error) {
 	if args.Path == "" {
 		return jsonError("path is required")
 	}
+	if len(args.Content) > maxWriteFileContentBytes {
+		return jsonError(fmt.Sprintf("content too large (%d bytes, max %d)", len(args.Content), maxWriteFileContentBytes))
+	}
 
 	// Path confinement: when restrictToCWD is enabled, reject paths that
 	// escape the working directory via ".." traversal or absolute paths.
@@ -371,6 +390,9 @@ func (t *searchFilesTool) Call(argsJSON string) (string, error) {
 	if args.Limit <= 0 {
 		args.Limit = maxMatches
 	}
+	if args.Limit > maxSearchLimit {
+		args.Limit = maxSearchLimit
+	}
 
 	// Security: check search path
 	risk := danger.ClassifyPath(args.Path)
@@ -398,6 +420,7 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 
 	var matches []searchMatch
 	limit := args.Limit
+	resultBytes := 0
 
 	err = filepath.Walk(args.Path, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -455,10 +478,16 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 			lineNum++
 			line := scanner.Text()
 			if re.MatchString(line) {
+				trimmed := strings.TrimSpace(line)
+				if resultBytes+len(trimmed) > maxSearchResultBytes {
+					limit = len(matches)
+					break
+				}
+				resultBytes += len(trimmed)
 				matches = append(matches, searchMatch{
 					Path:    path,
 					Line:    lineNum,
-					Content: wrapUntrusted(fmt.Sprintf("%s:%d", path, lineNum), strings.TrimSpace(line)),
+					Content: wrapUntrusted(fmt.Sprintf("%s:%d", path, lineNum), trimmed),
 				})
 				if len(matches) >= limit {
 					break
@@ -493,12 +522,18 @@ func (t *searchFilesTool) searchFiles(args searchFilesArgs) (string, error) {
 			return jsonError(fmt.Sprintf("invalid glob %q: %v", pattern, err))
 		}
 		for _, p := range globMatches {
-			info, err := os.Stat(p)
-			if err == nil && !info.IsDir() {
-				matches = append(matches, searchMatch{Path: p})
-				if len(matches) >= limit {
-					break
-				}
+			// Lstat so symlinks are not followed to their targets for metadata.
+			info, err := os.Lstat(p)
+			if err != nil {
+				continue
+			}
+			// Skip directories and symlinks — same policy as the walk branch.
+			if info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				continue
+			}
+			matches = append(matches, searchMatch{Path: wrapUntrusted("search_files:"+p, p)})
+			if len(matches) >= limit {
+				break
 			}
 		}
 	} else {
@@ -522,7 +557,7 @@ func (t *searchFilesTool) searchFiles(args searchFilesArgs) (string, error) {
 			}
 			match, _ := filepath.Match(pattern, info.Name())
 			if match {
-				matches = append(matches, searchMatch{Path: path})
+				matches = append(matches, searchMatch{Path: wrapUntrusted("search_files:"+path, path)})
 				if len(matches) >= limit {
 					return filepath.SkipAll
 				}
@@ -531,12 +566,13 @@ func (t *searchFilesTool) searchFiles(args searchFilesArgs) (string, error) {
 		})
 	}
 
-	// Sort by modification time (newest first)
+	// Sort by modification time (newest first). Use Lstat so symlinks are not
+	// followed and their own metadata is used for sorting.
 	sort.Slice(matches, func(i, j int) bool {
-		fi, _ := os.Stat(matches[i].Path)
-		fj, _ := os.Stat(matches[j].Path)
+		fi, _ := os.Lstat(unwrapUntrusted(matches[i].Path))
+		fj, _ := os.Lstat(unwrapUntrusted(matches[j].Path))
 		if fi == nil || fj == nil {
-			return matches[i].Path < matches[j].Path
+			return unwrapUntrusted(matches[i].Path) < unwrapUntrusted(matches[j].Path)
 		}
 		return fi.ModTime().After(fj.ModTime())
 	})
@@ -638,6 +674,16 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 	}
 	defer f.Close()
 
+	// Reject files that would exhaust memory during the read/edit/write cycle.
+	info, err := f.Stat()
+	if err != nil {
+		return jsonError(fmt.Sprintf("cannot stat %q: %v", args.Path, err))
+	}
+	if info.Size() > maxFileReadBytes {
+		return jsonError(fmt.Sprintf("file too large (%d bytes, max %d)", info.Size(), maxFileReadBytes))
+	}
+	origMode := info.Mode().Perm()
+
 	// Read content through the opened fd (not re-opening the path)
 	var sb strings.Builder
 	_, err = io.Copy(&sb, f)
@@ -656,6 +702,9 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 		modified = strings.ReplaceAll(original, args.OldString, args.NewString)
 	} else {
 		modified = strings.Replace(original, args.OldString, args.NewString, 1)
+	}
+	if len(modified) > maxFileReadBytes {
+		return jsonError(fmt.Sprintf("patch result too large (%d bytes, max %d)", len(modified), maxFileReadBytes))
 	}
 
 	// Generate a simple diff
@@ -681,7 +730,7 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 		os.Remove(tmpPath)
 		return jsonError(fmt.Sprintf("cannot write %q: %v", args.Path, err))
 	}
-	if err := tmpFile.Chmod(0644); err != nil {
+	if err := tmpFile.Chmod(origMode); err != nil {
 		tmpFile.Close()
 		os.Remove(tmpPath)
 		return jsonError(fmt.Sprintf("cannot set permissions %q: %v", args.Path, err))
@@ -1137,6 +1186,9 @@ func (t *globTool) Call(argsJSON string) (result string, err error) {
 	if args.Limit <= 0 {
 		args.Limit = maxMatches
 	}
+	if args.Limit > maxGlobMatches {
+		args.Limit = maxGlobMatches
+	}
 
 	// Security: classify search root path
 	risk := danger.ClassifyPath(args.Path)
@@ -1260,6 +1312,10 @@ func (t *globTool) Call(argsJSON string) (result string, err error) {
 		return fi.ModTime().After(fj.ModTime())
 	})
 
+	for i := range matches {
+		matches[i].Path = wrapUntrusted("glob:"+args.Path, matches[i].Path)
+	}
+
 	return jsonResult(globResult{Matches: matches})
 }
 
@@ -1272,6 +1328,7 @@ func (t *globTool) Call(argsJSON string) (result string, err error) {
 
 type fileInfoTool struct {
 	dangerousConfig danger.DangerousConfig
+	restrictToCWD   bool // when true, reject paths escaping the working directory
 }
 
 func (t *fileInfoTool) Name() string { return "file_info" }
@@ -1326,6 +1383,16 @@ func (t *fileInfoTool) Call(argsJSON string) (result string, err error) {
 		return jsonError("path is required")
 	}
 
+	// Path confinement: when restrictToCWD is enabled, reject paths that
+	// escape the working directory via ".." traversal or absolute paths.
+	if t.restrictToCWD {
+		resolved, err := confineToCWD(args.Path)
+		if err != nil {
+			return jsonError(err.Error())
+		}
+		args.Path = resolved
+	}
+
 	// Security: classify path
 	risk := danger.ClassifyPath(args.Path)
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
@@ -1358,6 +1425,10 @@ func (t *fileInfoTool) Call(argsJSON string) (result string, err error) {
 		IsSymlink: lInfo.Mode()&os.ModeSymlink != 0,
 		IsRegular: lInfo.Mode().IsRegular(),
 	}
+
+	// file_info output originates from the filesystem trust boundary, so
+	// mark the returned path as untrusted.
+	fi.Path = wrapUntrusted("file_info:"+args.Path, fi.Path)
 
 	return jsonResult(fi)
 }

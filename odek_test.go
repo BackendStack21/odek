@@ -16,6 +16,17 @@ import (
 	"github.com/BackendStack21/odek/internal/skills"
 )
 
+func TestLoadProjectFile_CapsSize(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	os.WriteFile(ProjectFileName, []byte(strings.Repeat("x", maxProjectFileBytes+1)), 0644)
+	got := LoadProjectFile()
+	if got != "" {
+		t.Fatalf("LoadProjectFile should reject a huge %s, got length %d", ProjectFileName, len(got))
+	}
+}
+
 func TestConfigDefaults(t *testing.T) {
 	os.Unsetenv("DEEPSEEK_API_KEY")
 	os.Unsetenv("OPENAI_API_KEY")

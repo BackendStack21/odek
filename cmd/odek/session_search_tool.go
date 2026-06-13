@@ -142,7 +142,7 @@ func (t *sessionSearchTool) handleList(limit int) (string, error) {
 			Count:    0,
 		})
 	}
-	results := toSummaries(sessions)
+	results := toSummaries("session_search:list", sessions)
 	return jsonResult(sessionSearchResult{
 		Action:   "list",
 		Sessions: results,
@@ -191,7 +191,7 @@ func (t *sessionSearchTool) handleSearch(query string, limit int) (string, error
 				scoreLabel := fmt.Sprintf("(score: %.3f)", vr.Score)
 				results = append(results, sessionSummary{
 					ID:        sess.ID,
-					Task:      sess.Task + " " + scoreLabel,
+					Task:      wrapUntrusted("session_search:search", sess.Task+" "+scoreLabel),
 					Turns:     sess.Turns,
 					CreatedAt: sess.CreatedAt.UTC().Format(time.RFC3339),
 					UpdatedAt: sess.UpdatedAt.UTC().Format(time.RFC3339),
@@ -248,16 +248,17 @@ func (t *sessionSearchTool) handleSearch(query string, limit int) (string, error
 
 	results := make([]sessionSummary, len(matches))
 	for i, m := range matches {
+		task := m.session.Task
+		if m.snippet != "" && m.snippet != m.session.Task {
+			task = m.session.Task + " — " + m.snippet
+		}
 		results[i] = sessionSummary{
 			ID:        m.session.ID,
-			Task:      m.session.Task,
+			Task:      wrapUntrusted("session_search:search", task),
 			Turns:     m.session.Turns,
 			CreatedAt: m.session.CreatedAt.UTC().Format(time.RFC3339),
 			UpdatedAt: m.session.UpdatedAt.UTC().Format(time.RFC3339),
 			Model:     m.session.Model,
-		}
-		if m.snippet != "" && m.snippet != m.session.Task {
-			results[i].Task = m.session.Task + " — " + m.snippet
 		}
 	}
 
@@ -362,7 +363,9 @@ func (t *sessionSearchTool) handleGet(id string) (string, error) {
 		})
 	}
 
-	// Build session messages for the LLM to read.
+	// Build session messages for the LLM to read. Cap how many are returned
+	// and treat the content as untrusted because it includes prior tool outputs.
+	const maxSessionGetMessages = 100
 	var sessionMessages []sessionMessage
 	for _, m := range sess.Messages {
 		if m.Role == "user" || m.Role == "assistant" {
@@ -372,16 +375,26 @@ func (t *sessionSearchTool) handleGet(id string) (string, error) {
 			})
 		}
 	}
+	if len(sessionMessages) > maxSessionGetMessages {
+		sessionMessages = sessionMessages[len(sessionMessages)-maxSessionGetMessages:]
+	}
+	for i := range sessionMessages {
+		sessionMessages[i].Content = wrapUntrusted("session_search:"+sess.ID, sessionMessages[i].Content)
+	}
 	msgCount := len(sessionMessages)
+	wrappedBuffer := make([]string, len(sess.Buffer))
+	for i, b := range sess.Buffer {
+		wrappedBuffer[i] = wrapUntrusted("session_search:get:buffer", b)
+	}
 	return jsonResult(sessionSearchResult{
 		Action:          "get",
 		ID:              sess.ID,
-		Task:            sess.Task,
+		Task:            wrapUntrusted("session_search:get", sess.Task),
 		Turns:           sess.Turns,
 		CreatedAt:       sess.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt:       sess.UpdatedAt.UTC().Format(time.RFC3339),
 		Model:           sess.Model,
-		Buffer:          sess.Buffer,
+		Buffer:          wrappedBuffer,
 		Messages:        msgCount,
 		SessionMessages: sessionMessages,
 	})
@@ -418,7 +431,7 @@ func (t *sessionSearchTool) handleFind(query string, limit int) (string, error) 
 
 	return jsonResult(sessionSearchResult{
 		Action:   "find",
-		Sessions: toSummaries(matched),
+		Sessions: toSummaries("session_search:find", matched),
 		Count:    len(matched),
 	})
 }
@@ -441,12 +454,12 @@ func matchTokens(tokens []string, text string) int {
 }
 
 // toSummaries converts session.Session slices to sessionSummary (metadata only).
-func toSummaries(sessions []session.Session) []sessionSummary {
+func toSummaries(source string, sessions []session.Session) []sessionSummary {
 	results := make([]sessionSummary, len(sessions))
 	for i, s := range sessions {
 		results[i] = sessionSummary{
 			ID:        s.ID,
-			Task:      s.Task,
+			Task:      wrapUntrusted(source, s.Task),
 			Turns:     s.Turns,
 			CreatedAt: s.CreatedAt.UTC().Format(time.RFC3339),
 			UpdatedAt: s.UpdatedAt.UTC().Format(time.RFC3339),

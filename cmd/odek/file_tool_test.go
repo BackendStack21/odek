@@ -402,7 +402,7 @@ func TestSearchFiles_FindByName(t *testing.T) {
 	}
 
 	for _, m := range r.Matches {
-		name := filepath.Base(m.Path)
+		name := filepath.Base(unwrapUntrusted(m.Path))
 		if name != "main.go" && name != "main_test.go" {
 			t.Errorf("unexpected match: %s", name)
 		}
@@ -939,8 +939,9 @@ func TestSearchFiles_GlobWithPathSeparator(t *testing.T) {
 	if len(r.Matches) != 1 {
 		t.Fatalf("expected 1 match for 'subdir/*.txt', got %d", len(r.Matches))
 	}
-	if !strings.HasSuffix(r.Matches[0].Path, "subdir/result.txt") && !strings.HasSuffix(r.Matches[0].Path, "subdir\\result.txt") {
-		t.Errorf("unexpected match path: %s", r.Matches[0].Path)
+	p := unwrapUntrusted(r.Matches[0].Path)
+	if !strings.HasSuffix(p, "subdir/result.txt") && !strings.HasSuffix(p, "subdir\\result.txt") {
+		t.Errorf("unexpected match path: %s", p)
 	}
 }
 
@@ -1491,8 +1492,8 @@ func TestSearchFiles_FilesTargetWithPathSeparator(t *testing.T) {
 	if len(r.Matches) != 1 {
 		t.Fatalf("expected 1 match for 'sub/*.txt', got %d", len(r.Matches))
 	}
-	if !strings.Contains(r.Matches[0].Path, "nested.txt") {
-		t.Errorf("expected nested.txt match, got: %s", r.Matches[0].Path)
+	if !strings.Contains(unwrapUntrusted(r.Matches[0].Path), "nested.txt") {
+		t.Errorf("expected nested.txt match, got: %s", unwrapUntrusted(r.Matches[0].Path))
 	}
 }
 
@@ -1512,8 +1513,8 @@ func TestSearchFiles_FilesTargetHiddenDirSkipped(t *testing.T) {
 	}
 	mustUnmarshal(t, result, &r)
 	for _, m := range r.Matches {
-		if strings.Contains(m.Path, ".hidden") {
-			t.Errorf("should not include hidden dir contents: %s", m.Path)
+		if strings.Contains(unwrapUntrusted(m.Path), ".hidden") {
+			t.Errorf("should not include hidden dir contents: %s", unwrapUntrusted(m.Path))
 		}
 	}
 	if len(r.Matches) != 1 {

@@ -32,6 +32,11 @@ import (
 	"github.com/BackendStack21/odek/internal/redact"
 )
 
+// MaxSessionFileBytes caps the on-disk size of a session file that Load will
+// read into memory. This prevents a tampered or corrupted multi-gigabyte
+// session file from causing an OOM when any caller loads it.
+const MaxSessionFileBytes = 32 * 1024 * 1024 // 32 MiB
+
 // ── Types ──────────────────────────────────────────────────────────────
 
 // Session represents a single multi-turn conversation with the agent.
@@ -318,6 +323,13 @@ func (s *Store) saveLocked(sess *Session) error {
 func (s *Store) Load(id string) (*Session, error) {
 	if err := ValidateSessionID(id); err != nil {
 		return nil, err
+	}
+	info, err := os.Stat(s.path(id))
+	if err != nil {
+		return nil, fmt.Errorf("session: load %q: %w", id, err)
+	}
+	if info.Size() > MaxSessionFileBytes {
+		return nil, fmt.Errorf("session: load %q: file too large (%d bytes, max %d)", id, info.Size(), MaxSessionFileBytes)
 	}
 	data, err := os.ReadFile(s.path(id))
 	if err != nil {

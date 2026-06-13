@@ -113,6 +113,7 @@ func (s *testServer) handleResourceSearch() http.HandlerFunc {
 }
 
 func (s *testServer) handleWebSocket(conn *golangws.Conn) {
+	conn.MaxPayloadBytes = maxWSMessageBytes
 	defer conn.Close()
 
 	for {
@@ -1715,5 +1716,43 @@ func TestServe_E2E_CancelWithMockLLM(t *testing.T) {
 		t.Log("Terminal event received after cancel")
 	} else {
 		t.Log("No terminal event (connection may have been closed by cancel)")
+	}
+}
+
+// TestServe_WebSocketMaxPayload verifies that the WebSocket endpoint rejects
+// incoming messages larger than maxWSMessageBytes to prevent memory DoS.
+func TestServe_WebSocketMaxPayload(t *testing.T) {
+	s := startTestServer(t)
+	defer s.Close()
+
+	conn, err := golangws.Dial(s.wsURL+"/ws", "", "http://localhost")
+	if err != nil {
+		t.Fatalf("Dial(): %v", err)
+	}
+	defer conn.Close()
+
+	// First confirm a normal message works.
+	if err := golangws.Message.Send(conn, `{"type":"prompt","content":"hi"}`); err != nil {
+		t.Fatalf("Send small message: %v", err)
+	}
+	var small map[string]any
+	if err := readJSON(conn, &small); err != nil {
+		t.Fatalf("Receive small message response: %v", err)
+	}
+	if small["type"] != "session" {
+		t.Fatalf("expected session event, got %v", small["type"])
+	}
+
+	// Send a message that exceeds the payload cap.
+	huge := `{"type":"prompt","content":"` + strings.Repeat("x", int(maxWSMessageBytes)+1024) + `"}`
+	if err := golangws.Message.Send(conn, huge); err != nil {
+		// Some transports close the connection on send; that also satisfies the test.
+		return
+	}
+
+	// The next receive must fail because the server closed the connection.
+	var data []byte
+	if err := golangws.Message.Receive(conn, &data); err == nil {
+		t.Fatalf("expected connection to be closed after oversized message, but received: %s", string(data))
 	}
 }

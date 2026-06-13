@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/BackendStack21/odek/internal/danger"
 )
@@ -44,6 +45,15 @@ type browserSnapshot struct {
 	Elements []clickableRef `json:"elements,omitempty"`
 }
 
+// maxBrowserHistory caps the number of snapshots retained in browser state to
+// prevent memory DoS from repeated navigate actions.
+const maxBrowserHistory = 50
+
+// maxBrowserElements caps the number of interactive elements extracted from a
+// page to prevent a hostile page from OOMing the agent with thousands of links
+// or buttons.
+const maxBrowserElements = 500
+
 // browserState holds the shared state for one browser session.
 type browserState struct {
 	mu      sync.Mutex
@@ -62,12 +72,17 @@ type browserTool struct {
 	trustedClasses  map[danger.RiskClass]bool
 }
 
+// browserRequestTimeout bounds each browser HTTP request. Tests may lower it to
+// verify timeout behavior.
+var browserRequestTimeout = 30 * time.Second
+
 func newBrowserTool(dc danger.DangerousConfig) *browserTool {
 	t := &browserTool{
 		state:           &browserState{nextRef: 1},
 		dangerousConfig: dc,
 	}
 	t.client = &http.Client{
+		Timeout:       browserRequestTimeout,
 		CheckRedirect: t.checkRedirect,
 		Transport:     ssrfGuardedTransport(),
 	}
@@ -167,6 +182,7 @@ func (t *browserTool) Call(argsJSON string) (string, error) {
 	}
 	if t.client == nil {
 		t.client = &http.Client{
+			Timeout:       browserRequestTimeout,
 			CheckRedirect: t.checkRedirect,
 			Transport:     ssrfGuardedTransport(),
 		}
@@ -226,10 +242,15 @@ func (t *browserTool) doNavigate(rawURL string) (string, error) {
 	html := string(body)
 	snap := parseHTML(html, rawURL, resp.StatusCode)
 
-	// Store in state
+	// Store in state. Keep a persistent copy of the snapshot for current; the
+	// local variable's address would otherwise escape to the heap implicitly.
 	t.state.mu.Lock()
 	t.state.history = append(t.state.history, snap)
-	t.state.current = &snap
+	if len(t.state.history) > maxBrowserHistory {
+		t.state.history = t.state.history[len(t.state.history)-maxBrowserHistory:]
+	}
+	snapCopy := snap
+	t.state.current = &snapCopy
 	t.state.nextRef = len(snap.Elements) + 1
 	t.state.mu.Unlock()
 
@@ -363,6 +384,9 @@ func parseHTML(html, pageURL string, status int) browserSnapshot {
 
 	// Extract links
 	for _, m := range reLink.FindAllStringSubmatch(html, -1) {
+		if len(elements) >= maxBrowserElements {
+			break
+		}
 		href := strings.TrimSpace(m[1])
 		text := strings.TrimSpace(m[2])
 		if href == "" || text == "" || href == "#" || strings.HasPrefix(href, "javascript:") {
@@ -388,6 +412,9 @@ func parseHTML(html, pageURL string, status int) browserSnapshot {
 
 	// Extract buttons and inputs
 	for _, m := range reButton.FindAllStringSubmatch(html, -1) {
+		if len(elements) >= maxBrowserElements {
+			break
+		}
 		text := strings.TrimSpace(m[1])
 		if text == "" {
 			text = "button"
@@ -403,6 +430,9 @@ func parseHTML(html, pageURL string, status int) browserSnapshot {
 	}
 
 	for _, m := range reInput.FindAllStringSubmatch(html, -1) {
+		if len(elements) >= maxBrowserElements {
+			break
+		}
 		tag := m[0]
 		text := ""
 		if vm := reInputVal.FindStringSubmatch(tag); len(vm) > 1 {
@@ -425,6 +455,12 @@ func parseHTML(html, pageURL string, status int) browserSnapshot {
 
 	snap.Content = strings.Join(contentParts, "\n")
 	snap.Elements = elements
+
+	// Title and element text come from the page — wrap them as untrusted content.
+	snap.Title = wrapUntrusted(pageURL, snap.Title)
+	for i := range snap.Elements {
+		snap.Elements[i].Text = wrapUntrusted(pageURL, snap.Elements[i].Text)
+	}
 
 	return snap
 }

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/BackendStack21/odek/internal/memory"
@@ -1013,5 +1014,19 @@ func TestLoadConfig_EmbeddingOverrides(t *testing.T) {
 	// Explicit skills timeout is respected, not bounded to maxSkillsInheritedTimeout.
 	if cfg.Skills.Embedding.TimeoutSeconds != 7 {
 		t.Errorf("explicit skills timeout = %d, want 7 (respected as-is)", cfg.Skills.Embedding.TimeoutSeconds)
+	}
+}
+
+// TestLoadFile_CapsSize verifies that config files larger than maxConfigFileBytes
+// are ignored to prevent OOM from a malicious or broken config file.
+func TestLoadFile_CapsSize(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "odek.json")
+	if err := os.WriteFile(path, []byte(strings.Repeat("x", maxConfigFileBytes+1)), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := loadFile(path)
+	if cfg.Model != "" {
+		t.Fatalf("loadFile should reject a huge config file, got Model=%q", cfg.Model)
 	}
 }

@@ -103,7 +103,7 @@ func TestSort_AlreadySorted(t *testing.T) {
 	if r.Error != "" {
 		t.Fatalf("error: %s", r.Error)
 	}
-	if r.Output != "a\nb\nc\nd" {
+	if unwrapUntrusted(r.Output) != "a\nb\nc\nd" {
 		t.Errorf("output = %q, want a\nb\nc\nd", r.Output)
 	}
 }
@@ -123,7 +123,7 @@ func TestSort_Descending(t *testing.T) {
 	if r.Error != "" {
 		t.Fatalf("error: %s", r.Error)
 	}
-	if r.Output != "c\nb\na" {
+	if unwrapUntrusted(r.Output) != "c\nb\na" {
 		t.Errorf("desc sort = %q, want c\nb\na", r.Output)
 	}
 }
@@ -272,8 +272,8 @@ func TestTR_FileInput(t *testing.T) {
 	if !r.FromFile {
 		t.Errorf("expected from_file=true")
 	}
-	if r.Result != "hello world\n" {
-		t.Errorf("result = %q, want 'hello world\\n'", r.Result)
+	if unwrapUntrusted(r.Result) != "hello world" {
+		t.Errorf("result = %q, want 'hello world' (unwrapped)", r.Result)
 	}
 }
 

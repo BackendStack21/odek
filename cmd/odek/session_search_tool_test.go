@@ -186,7 +186,7 @@ func TestSessionSearch_Get(t *testing.T) {
 	if r.ID != "20260520-auth-fix" {
 		t.Errorf("id = %q, want '20260520-auth-fix'", r.ID)
 	}
-	if r.Task != "fix O_NOFOLLOW in file_tool.go" {
+	if unwrapUntrusted(r.Task) != "fix O_NOFOLLOW in file_tool.go" {
 		t.Errorf("task = %q", r.Task)
 	}
 	if r.Turns != 8 {
@@ -712,7 +712,7 @@ func TestSessionSearch_GetReturnsSessionMessages(t *testing.T) {
 		if resp.SessionMessages[i].Role != c.role {
 			t.Errorf("msg[%d] role = %q, want %q", i, resp.SessionMessages[i].Role, c.role)
 		}
-		if resp.SessionMessages[i].Content != c.content {
+		if unwrapUntrusted(resp.SessionMessages[i].Content) != c.content {
 			t.Errorf("msg[%d] content = %q, want %q", i, resp.SessionMessages[i].Content, c.content)
 		}
 	}

@@ -21,6 +21,11 @@ import (
 	"github.com/BackendStack21/odek/internal/session"
 )
 
+// maxResourceFileBytes caps how much of a file the @-resource resolver will
+// read into memory. It still truncates the returned content to 50 KB, but this
+// guard prevents OOM from files larger than 1 MiB.
+const maxResourceFileBytes = 1 << 20 // 1 MiB
+
 // Resource is a discovered resource returned by a Resolver.
 type Resource struct {
 	ID      string `json:"id"`     // Full @ reference (e.g. "@src/main.go")
@@ -218,13 +223,27 @@ func (f *FileResolver) Search(ctx context.Context, query string, limit int) ([]R
 		matches = f.walkAndMatch(query)
 	}
 
+	// Resolve the root once so every match can be confined to it. A query
+	// such as "../../etc/passwd" makes filepath.Join above clean to a path
+	// outside root, and filepath.Glob would then match files the workspace
+	// must not expose. Skip any match that escapes root before touching the
+	// filesystem (closes CodeQL "uncontrolled data in path expression").
+	absRoot, err := filepath.Abs(f.root)
+	if err != nil {
+		return nil, nil
+	}
+
 	var resources []Resource
 	for _, match := range matches {
 		if len(resources) >= limit {
 			break
 		}
+		if !withinRoot(absRoot, match) {
+			continue
+		}
 		rel, _ := filepath.Rel(f.root, match)
-		info, err := os.Stat(match)
+		// Use Lstat so that symlinks do not leak metadata from their targets.
+		info, err := os.Lstat(match)
 		if err != nil {
 			continue
 		}
@@ -251,11 +270,7 @@ func (f *FileResolver) Load(ctx context.Context, id string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	absRoot, err := filepath.Abs(f.root)
-	if err != nil {
-		return "", err
-	}
-	if !strings.HasPrefix(absTarget, absRoot) {
+	if !withinRoot(f.root, absTarget) {
 		return "", fmt.Errorf("resource: path %q is outside root", id)
 	}
 
@@ -267,6 +282,14 @@ func (f *FileResolver) Load(ctx context.Context, id string) (string, error) {
 		return "", err
 	}
 	defer fd.Close()
+
+	info, err := fd.Stat()
+	if err != nil {
+		return "", err
+	}
+	if info.Size() > maxResourceFileBytes {
+		return "", fmt.Errorf("resource: file too large (%d bytes, max %d)", info.Size(), maxResourceFileBytes)
+	}
 
 	data, err := io.ReadAll(fd)
 	if err != nil {
@@ -324,6 +347,25 @@ func skipDir(name string) bool {
 		return true
 	}
 	return false
+}
+
+// withinRoot reports whether candidate resolves to a path inside root.
+// root may be relative; candidate may be relative or absolute. The check is
+// separator-aware so "/foo" does not match "/foobar". It is the single
+// confinement primitive for the file resolver (Search metadata + Load reads).
+func withinRoot(root, candidate string) bool {
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	absCandidate, err := filepath.Abs(candidate)
+	if err != nil {
+		return false
+	}
+	if absCandidate == absRoot {
+		return true
+	}
+	return strings.HasPrefix(absCandidate, absRoot+string(os.PathSeparator))
 }
 
 func describeFile(info os.FileInfo) string {
