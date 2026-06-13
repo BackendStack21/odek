@@ -222,6 +222,30 @@ func TestFileResolver_SearchRecursive(t *testing.T) {
 	}
 }
 
+func TestFileResolver_SearchOutsideRoot(t *testing.T) {
+	// Parent holds a sentinel file; root is a subdirectory of it. A traversal
+	// query must not surface metadata for files outside root.
+	parent := t.TempDir()
+	if err := os.WriteFile(filepath.Join(parent, "secret.txt"), []byte("top secret"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(parent, "workspace")
+	if err := os.MkdirAll(root, 0755); err != nil {
+		t.Fatal(err)
+	}
+	res := NewFileResolver(root)
+
+	results, err := res.Search(context.Background(), "../secret", 10)
+	if err != nil {
+		t.Fatalf("Search() error: %v", err)
+	}
+	for _, r := range results {
+		if strings.Contains(r.Label, "secret") || strings.Contains(r.ID, "secret") {
+			t.Fatalf("traversal query leaked file outside root: %+v", r)
+		}
+	}
+}
+
 func TestFileResolver_Load(t *testing.T) {
 	dir := newTestDir(t)
 	res := NewFileResolver(dir)
