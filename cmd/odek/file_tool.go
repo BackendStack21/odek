@@ -522,12 +522,18 @@ func (t *searchFilesTool) searchFiles(args searchFilesArgs) (string, error) {
 			return jsonError(fmt.Sprintf("invalid glob %q: %v", pattern, err))
 		}
 		for _, p := range globMatches {
-			info, err := os.Stat(p)
-			if err == nil && !info.IsDir() {
-				matches = append(matches, searchMatch{Path: p})
-				if len(matches) >= limit {
-					break
-				}
+			// Lstat so symlinks are not followed to their targets for metadata.
+			info, err := os.Lstat(p)
+			if err != nil {
+				continue
+			}
+			// Skip directories and symlinks — same policy as the walk branch.
+			if info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				continue
+			}
+			matches = append(matches, searchMatch{Path: wrapUntrusted("search_files:"+p, p)})
+			if len(matches) >= limit {
+				break
 			}
 		}
 	} else {
@@ -551,7 +557,7 @@ func (t *searchFilesTool) searchFiles(args searchFilesArgs) (string, error) {
 			}
 			match, _ := filepath.Match(pattern, info.Name())
 			if match {
-				matches = append(matches, searchMatch{Path: path})
+				matches = append(matches, searchMatch{Path: wrapUntrusted("search_files:"+path, path)})
 				if len(matches) >= limit {
 					return filepath.SkipAll
 				}
@@ -560,12 +566,13 @@ func (t *searchFilesTool) searchFiles(args searchFilesArgs) (string, error) {
 		})
 	}
 
-	// Sort by modification time (newest first)
+	// Sort by modification time (newest first). Use Lstat so symlinks are not
+	// followed and their own metadata is used for sorting.
 	sort.Slice(matches, func(i, j int) bool {
-		fi, _ := os.Stat(matches[i].Path)
-		fj, _ := os.Stat(matches[j].Path)
+		fi, _ := os.Lstat(unwrapUntrusted(matches[i].Path))
+		fj, _ := os.Lstat(unwrapUntrusted(matches[j].Path))
 		if fi == nil || fj == nil {
-			return matches[i].Path < matches[j].Path
+			return unwrapUntrusted(matches[i].Path) < unwrapUntrusted(matches[j].Path)
 		}
 		return fi.ModTime().After(fj.ModTime())
 	})

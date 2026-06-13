@@ -298,6 +298,11 @@ func ProfileLabel(model string) string {
 // that odek automatically loads from the working directory.
 const ProjectFileName = "AGENTS.md"
 
+// maxProjectFileBytes caps the size of AGENTS.md that will be loaded into the
+// system prompt. A maliciously huge project file could otherwise OOM the
+// process at startup or bloat every prompt.
+const maxProjectFileBytes = 256 * 1024 // 256 KiB
+
 // LoadProjectFile reads ProjectFileName from the current working directory.
 // Returns the file content (trimmed) if it exists and is readable.
 // Returns empty string if the file doesn't exist or can't be read.
@@ -313,6 +318,10 @@ func LoadProjectFile() string {
 	// If it's a symlink, refuse to follow it
 	if info.Mode()&os.ModeSymlink != 0 {
 		fmt.Fprintf(os.Stderr, "odek: warning: %s is a symlink — refusing to follow for security\n", ProjectFileName)
+		return ""
+	}
+	if info.Size() > maxProjectFileBytes {
+		fmt.Fprintf(os.Stderr, "odek: warning: %s is too large (%d bytes, max %d) — ignoring\n", ProjectFileName, info.Size(), maxProjectFileBytes)
 		return ""
 	}
 	data, err := os.ReadFile(ProjectFileName)

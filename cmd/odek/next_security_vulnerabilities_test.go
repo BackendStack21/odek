@@ -900,3 +900,117 @@ func TestSkillLoader_CapsFileSize(t *testing.T) {
 		t.Fatalf("skill loader should reject a huge SKILL.md, got %d skills", len(result.AutoLoad)+len(result.Lazy))
 	}
 }
+
+// ── 25. tree must wrap filesystem-derived paths as untrusted ──────────────
+
+func TestTree_WrapsPaths(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "note.txt"), []byte("hello"), 0644)
+
+	tool := &treeTool{dangerousConfig: danger.DangerousConfig{}}
+	result := callJSON(t, tool, fmt.Sprintf(`{"path":%q,"max_depth":1}`, dir))
+	var r struct {
+		Tree struct {
+			Path     string `json:"path"`
+			Children []struct {
+				Path string `json:"path"`
+			} `json:"children"`
+		} `json:"tree"`
+		Error string `json:"error,omitempty"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error != "" {
+		t.Fatalf("tree error: %s", r.Error)
+	}
+	if !strings.HasPrefix(r.Tree.Path, "<untrusted_content_") {
+		t.Fatalf("tree root path should be wrapped, got: %q", r.Tree.Path)
+	}
+	if len(r.Tree.Children) == 0 {
+		t.Fatal("expected at least one child")
+	}
+	if !strings.HasPrefix(r.Tree.Children[0].Path, "<untrusted_content_") {
+		t.Fatalf("tree child path should be wrapped, got: %q", r.Tree.Children[0].Path)
+	}
+}
+
+// ── 26. head_tail must cap total output size ──────────────────────────────
+
+func TestHeadTail_CapsOutputSize(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "biglines.txt")
+	// 10 lines of 200 KB => 2 MB of content, exceeding the 1 MiB cap.
+	var lines []string
+	for i := 0; i < 10; i++ {
+		lines = append(lines, fmt.Sprintf("line-%d-%s", i, strings.Repeat("x", 200*1024)))
+	}
+	os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0644)
+
+	tool := &headTailTool{dangerousConfig: danger.DangerousConfig{}}
+	result := callJSON(t, tool, fmt.Sprintf(`{"files":[{"path":%q}],"lines":100}`, path))
+	var r struct {
+		Results []struct {
+			Lines []string `json:"lines"`
+			Total int      `json:"total"`
+		} `json:"results"`
+	}
+	mustUnmarshal(t, result, &r)
+	if len(r.Results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(r.Results))
+	}
+
+	total := 0
+	for _, line := range r.Results[0].Lines {
+		total += len(unwrapUntrusted(line))
+	}
+	if total > maxHeadTailTotalBytes+200 {
+		t.Fatalf("head_tail returned %d bytes of content, expected cap near %d", total, maxHeadTailTotalBytes)
+	}
+}
+
+// ── 27. search_files target=files must not follow symlinks for metadata ───
+
+func TestSearchFiles_TargetFiles_NoSymlinkFollow(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "sub")
+	os.MkdirAll(sub, 0755)
+	// Regular file
+	os.WriteFile(filepath.Join(sub, "real.txt"), []byte("hello"), 0644)
+	// Symlink to a non-existent target — old os.Stat would skip it; Lstat lets us detect and skip it ourselves.
+	os.Symlink("/nonexistent/odek-test", filepath.Join(sub, "link.txt"))
+
+	tool := &searchFilesTool{dangerousConfig: danger.DangerousConfig{}}
+	// Pattern with a separator forces the filepath.Glob branch.
+	result := callJSON(t, tool, fmt.Sprintf(`{"pattern":"**/*.txt","path":%q,"target":"files"}`, dir))
+	var r struct {
+		Matches []struct {
+			Path string `json:"path"`
+		} `json:"matches"`
+	}
+	mustUnmarshal(t, result, &r)
+	if len(r.Matches) != 1 {
+		t.Fatalf("expected 1 regular file match, got %d", len(r.Matches))
+	}
+	if !strings.Contains(r.Matches[0].Path, "real.txt") {
+		t.Fatalf("expected real.txt match, got: %q", r.Matches[0].Path)
+	}
+	if !strings.HasPrefix(r.Matches[0].Path, "<untrusted_content_") {
+		t.Fatalf("search_files file path should be wrapped, got: %q", r.Matches[0].Path)
+	}
+}
+
+// ── 28. IDENTITY.md must be size-capped ───────────────────────────────────
+
+func TestIdentityFile_CapsSize(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	home, _ := os.UserHomeDir()
+	identityPath := filepath.Join(home, ".odek", "IDENTITY.md")
+	if err := os.MkdirAll(filepath.Dir(identityPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(identityPath, []byte(strings.Repeat("x", maxIdentityFileBytes+1)), 0644)
+
+	got := loadIdentityFile()
+	if got != defaultSystem {
+		t.Fatalf("loadIdentityFile should fall back to defaultSystem for a huge IDENTITY.md, got length %d", len(got))
+	}
+}

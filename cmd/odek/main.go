@@ -158,6 +158,11 @@ func buildSystemPrompt(resolved config.ResolvedConfig) string {
 	return base
 }
 
+// maxIdentityFileBytes caps the size of ~/.odek/IDENTITY.md that will be
+// loaded into the system prompt. A tampered or corrupted identity file could
+// otherwise OOM the process or stuff every prompt.
+const maxIdentityFileBytes = 256 * 1024 // 256 KiB
+
 // loadIdentityFile reads ~/.odek/IDENTITY.md and returns its content.
 // Returns defaultSystem if the file does not exist or cannot be read.
 func loadIdentityFile() string {
@@ -166,6 +171,14 @@ func loadIdentityFile() string {
 		return defaultSystem
 	}
 	path := filepath.Join(home, ".odek", "IDENTITY.md")
+	info, err := os.Stat(path)
+	if err != nil {
+		return defaultSystem
+	}
+	if info.Size() > maxIdentityFileBytes {
+		fmt.Fprintf(os.Stderr, "odek: warning: IDENTITY.md is too large (%d bytes, max %d) — using default identity\n", info.Size(), maxIdentityFileBytes)
+		return defaultSystem
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return defaultSystem

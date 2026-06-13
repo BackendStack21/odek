@@ -1513,7 +1513,7 @@ func (t *treeTool) Call(argsJSON string) (result string, err error) {
 func buildTree(root, path string, depth, maxDepth int, includeHidden bool) (treeEntry, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
-		return treeEntry{Path: path, ErrMsg: err.Error()}, nil
+		return treeEntry{Path: wrapUntrusted("tree:"+root, path), ErrMsg: err.Error()}, nil
 	}
 
 	entry := treeEntry{
@@ -1525,6 +1525,10 @@ func buildTree(root, path string, depth, maxDepth int, includeHidden bool) (tree
 	if depth == 0 {
 		entry.Path = path
 	}
+
+	// Tree paths come from the filesystem trust boundary, so mark them as
+	// untrusted before returning them to the model.
+	entry.Path = wrapUntrusted("tree:"+root, entry.Path)
 
 	if !info.IsDir() || depth >= maxDepth {
 		if !info.IsDir() {
@@ -1880,6 +1884,11 @@ func (t *sortTool) Call(argsJSON string) (result string, err error) {
 // 12. head_tail — Quick file preview (first/last N lines)
 // ═════════════════════════════════════════════════════════════════════════
 
+// maxHeadTailTotalBytes caps the total content returned by head_tail across
+// all requested files. Without this, 10 files × 100 lines × 1 MiB lines can
+// allocate roughly 1 GB in a single tool call.
+const maxHeadTailTotalBytes = maxReadBytes // 1 MiB
+
 type headTailTool struct {
 	dangerousConfig danger.DangerousConfig
 }
@@ -1988,13 +1997,18 @@ func (t *headTailTool) readPreview(path string, n int, mode string) (result head
 func (t *headTailTool) readHead(f *os.File, path string, n int) headTailFileResult {
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-	var lines []string
+	var rawLines []string
 	total := 0
 	for scanner.Scan() {
 		total++
-		if len(lines) < n {
-			lines = append(lines, wrapUntrusted(path, scanner.Text()))
+		if len(rawLines) < n {
+			rawLines = append(rawLines, scanner.Text())
 		}
+	}
+	rawLines = truncateHeadTailLines(rawLines)
+	lines := make([]string, len(rawLines))
+	for i, l := range rawLines {
+		lines[i] = wrapUntrusted(path, l)
 	}
 	return headTailFileResult{Path: path, Lines: lines, Count: len(lines), Total: total}
 }
@@ -2012,15 +2026,37 @@ func (t *headTailTool) readTail(f *os.File, path string, n int) headTailFileResu
 		total++
 	}
 	// Extract in correct order
-	var lines []string
+	var rawLines []string
 	start := 0
 	if written >= n {
 		start = written % n
 	}
 	for i := 0; i < n && i < written; i++ {
-		lines = append(lines, wrapUntrusted(path, buf[(start+i)%n]))
+		rawLines = append(rawLines, buf[(start+i)%n])
+	}
+	rawLines = truncateHeadTailLines(rawLines)
+	lines := make([]string, len(rawLines))
+	for i, l := range rawLines {
+		lines[i] = wrapUntrusted(path, l)
 	}
 	return headTailFileResult{Path: path, Lines: lines, Count: len(lines), Total: total}
+}
+
+// truncateHeadTailLines truncates a slice of raw lines so the total byte
+// count stays within maxHeadTailTotalBytes. It preserves leading lines and
+// appends a marker when truncation occurs.
+func truncateHeadTailLines(lines []string) []string {
+	total := 0
+	for i, l := range lines {
+		if total+len(l) > maxHeadTailTotalBytes {
+			if i == 0 {
+				return []string{"... [truncated]"}
+			}
+			return append(lines[:i], "... [truncated]")
+		}
+		total += len(l)
+	}
+	return lines
 }
 
 // ═════════════════════════════════════════════════════════════════════════
