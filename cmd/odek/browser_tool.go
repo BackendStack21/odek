@@ -44,6 +44,10 @@ type browserSnapshot struct {
 	Elements []clickableRef `json:"elements,omitempty"`
 }
 
+// maxBrowserHistory caps the number of snapshots retained in browser state to
+// prevent memory DoS from repeated navigate actions.
+const maxBrowserHistory = 50
+
 // browserState holds the shared state for one browser session.
 type browserState struct {
 	mu      sync.Mutex
@@ -226,10 +230,15 @@ func (t *browserTool) doNavigate(rawURL string) (string, error) {
 	html := string(body)
 	snap := parseHTML(html, rawURL, resp.StatusCode)
 
-	// Store in state
+	// Store in state. Keep a persistent copy of the snapshot for current; the
+	// local variable's address would otherwise escape to the heap implicitly.
 	t.state.mu.Lock()
 	t.state.history = append(t.state.history, snap)
-	t.state.current = &snap
+	if len(t.state.history) > maxBrowserHistory {
+		t.state.history = t.state.history[len(t.state.history)-maxBrowserHistory:]
+	}
+	snapCopy := snap
+	t.state.current = &snapCopy
 	t.state.nextRef = len(snap.Elements) + 1
 	t.state.mu.Unlock()
 

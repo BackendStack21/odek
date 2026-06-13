@@ -515,7 +515,7 @@ func TestJSONQuery_Basic(t *testing.T) {
 	if r.Error != "" {
 		t.Fatalf("error: %s", r.Error)
 	}
-	if r.Value != "Alice" {
+	if got, ok := r.Value.(string); !ok || unwrapUntrusted(got) != "Alice" {
 		t.Errorf("value = %v, want 'Alice'", r.Value)
 	}
 }
@@ -534,7 +534,7 @@ func TestJSONQuery_ArrayIndex(t *testing.T) {
 	}
 	mustUnmarshal(t, result, &r)
 
-	if r.Value != "Bob" {
+	if got, ok := r.Value.(string); !ok || unwrapUntrusted(got) != "Bob" {
 		t.Errorf("value = %v, want 'Bob'", r.Value)
 	}
 }
@@ -713,7 +713,7 @@ func TestSort_Basic(t *testing.T) {
 	if r.Total != 3 {
 		t.Errorf("total = %d, want 3", r.Total)
 	}
-	if r.Output != "a\nb\nc" {
+	if unwrapUntrusted(r.Output) != "a\nb\nc" {
 		t.Errorf("output = %q, want a\\nb\\nc", r.Output)
 	}
 }
@@ -732,7 +732,7 @@ func TestSort_Desc(t *testing.T) {
 	}
 	mustUnmarshal(t, result, &r)
 
-	if r.Output != "c\nb\na" {
+	if unwrapUntrusted(r.Output) != "c\nb\na" {
 		t.Errorf("output = %q, want c\\nb\\na", r.Output)
 	}
 }
@@ -787,7 +787,7 @@ func TestHeadTail_Head(t *testing.T) {
 	if r.Results[0].Total != 5 {
 		t.Errorf("total = %d, want 5", r.Results[0].Total)
 	}
-	if r.Results[0].Lines[0] != "a" {
+	if unwrapUntrusted(r.Results[0].Lines[0]) != "a" {
 		t.Errorf("first line = %q, want 'a'", r.Results[0].Lines[0])
 	}
 }
@@ -809,7 +809,7 @@ func TestHeadTail_Tail(t *testing.T) {
 	}
 	mustUnmarshal(t, result, &r)
 
-	if r.Results[0].Count != 2 || r.Results[0].Lines[0] != "d" {
+	if r.Results[0].Count != 2 || unwrapUntrusted(r.Results[0].Lines[0]) != "d" {
 		t.Errorf("tail(2) = %v, want [d e]", r.Results[0].Lines)
 	}
 }
@@ -1406,8 +1406,8 @@ func TestTr_FileInput(t *testing.T) {
 	if !r.FromFile {
 		t.Error("should indicate from_file=true")
 	}
-	if r.Result != "HELLO WORLD\n" {
-		t.Errorf("result = %q, want 'HELLO WORLD\\n'", r.Result)
+	if unwrapUntrusted(r.Result) != "HELLO WORLD" {
+		t.Errorf("result = %q, want 'HELLO WORLD' (unwrapped)", r.Result)
 	}
 }
 
@@ -1424,7 +1424,7 @@ func TestSort_IgnoreCase(t *testing.T) {
 
 	var r struct{ Output string }
 	mustUnmarshal(t, result, &r)
-	if r.Output != "alpha\nBeta\nGamma" {
+	if unwrapUntrusted(r.Output) != "alpha\nBeta\nGamma" {
 		t.Errorf("case-insensitive sort = %q", r.Output)
 	}
 }
@@ -1442,7 +1442,7 @@ func TestSort_MultipleFiles(t *testing.T) {
 
 	var r struct{ Output string }
 	mustUnmarshal(t, result, &r)
-	if r.Output != "a\nb\nc" {
+	if unwrapUntrusted(r.Output) != "a\nb\nc" {
 		t.Errorf("merged sort = %q, want 'a\\nb\\nc'", r.Output)
 	}
 }
@@ -1762,7 +1762,7 @@ func TestSort_Numeric(t *testing.T) {
 	if r.Total != 4 {
 		t.Errorf("total = %d, want 4", r.Total)
 	}
-	if r.Output != "1\n2\n10\n30" {
+	if unwrapUntrusted(r.Output) != "1\n2\n10\n30" {
 		t.Errorf("numeric sort = %q, want '1\\n2\\n10\\n30'", r.Output)
 	}
 }

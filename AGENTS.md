@@ -91,7 +91,7 @@ System prompt is loaded by priority: `--system` flag > `~/.odek/IDENTITY.md` > c
 ### Security Architecture
 Layered prompt-injection / approval-fatigue defenses. Full reference: [docs/SECURITY.md](docs/SECURITY.md).
 
-- **Untrusted-content wrapper** (`cmd/odek/untrusted.go`) — every tool whose output sources from outside the trust boundary (`browser`, `read_file`, `shell`, `search_files`, `multi_grep`, `transcribe`, any MCP tool) wraps results in `<untrusted_content_<nonce> source="...">…</untrusted_content_<nonce>>`. Per-call nonce defeats wrapper-escape via literal close tag.
+- **Untrusted-content wrapper** (`cmd/odek/untrusted.go`) — every tool whose output sources from outside the trust boundary (`browser`, `read_file`, `shell`, `search_files`, `multi_grep`, `transcribe`, `head_tail`, `diff`, `tr`, `sort`, `json_query`, any MCP tool) wraps results in `<untrusted_content_<nonce> source="...">…</untrusted_content_<nonce>>`. Per-call nonce defeats wrapper-escape via literal close tag.
 - **Audit log** (`cmd/odek/audit.go` + `internal/session/audit.go`) — every `wrapUntrusted` call records source + content-hash + turn into `<sessions>/audit/<id>.json`. After each turn a divergence heuristic flags `suspicious_divergence=true` when the agent ingested untrusted content AND its tool calls referenced resources the user did not mention. Inspect with `odek audit <session-id>` / `odek audit --list`.
 - **Memory taint** (`internal/memory/provenance.go`) — `EpisodeProvenance` tracks Untrusted/Sources/UserApproved. Tainted episodes are stored but `Search()` filters them out, so a one-shot injection cannot persist via the episode pipeline. User must explicitly promote.
 - **Skill provenance gate** (`internal/skills/loader.go` + `cache.go`) — `Skill.Provenance{Untrusted, Sources, NeedsReview}`. NeedsReview skills pin to Lazy regardless of `auto_load`. `odek skill promote <name>` clears the flag after user review.
@@ -100,6 +100,10 @@ Layered prompt-injection / approval-fatigue defenses. Full reference: [docs/SECU
 - **Approver friction** (`internal/danger/approver.go`, `cmd/odek/wsapprover.go`) — both TTYApprover and WSApprover engage friction mode after 3 approvals of the same class in 60s: require typing literal `approve`, 1.5s pause. Trust-class shortcut disabled for `destructive` + `blocked` regardless.
 - **Danger classifier bypass resistance** (`internal/danger/classifier.go`) — `normalize()` pre-processes: expand `$IFS` / `${IFS}`, extract `$(...)` / `` `...` `` substitutions, strip `command` / `exec` / `builtin` wrappers, collapse unquoted backslashes, basename absolute paths. Regression suite in `classifier_bypass_test.go`.
 - **WS Origin allowlist** (`cmd/odek/serve.go::checkLocalOrigin`) — rejects non-localhost upgrades. Closes CSRF-on-localhost.
+- **REST API CSRF protection** (`cmd/odek/serve.go::requireLocalOrigin`) — state-changing HTTP endpoints (POST/PUT/PATCH/DELETE) require a localhost origin or no Origin header, and static responses set `X-Frame-Options: DENY` + `Content-Security-Policy: frame-ancestors 'none'` to block clickjacking.
+- **Browser history cap** (`cmd/odek/browser_tool.go`) — navigation history is capped at 50 snapshots to prevent memory DoS from repeated `browser_navigate` calls.
+- **Search result bounds** (`cmd/odek/file_tool.go`, `cmd/odek/perf_tools.go`) — `search_files` and `multi_grep` enforce a max match limit (500) and a total returned-content cap (1 MiB) to avoid unbounded result JSON.
+- **Perf-tool file-size cap** (`cmd/odek/perf_tools.go`) — `diff`, `base64`, `tr`, `sort`, and `json_query` reject files larger than 10 MiB to avoid loading multi-gigabyte files into memory.
 - **Serve sandbox default-on** — `odek serve` enables `--sandbox` automatically unless `--no-sandbox` is passed.
 - **Secret redaction** (`internal/redact/redact.go`) — 20+ patterns: OpenAI, Anthropic, GitHub PAT, AWS, PEM, JWT, Vault, Google OAuth, SendGrid, Discord, DB URLs, etc.
 

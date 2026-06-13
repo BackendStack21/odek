@@ -25,6 +25,14 @@ const maxLines = 2000
 // memory exhaustion from huge files.
 const maxReadBytes = 1 << 20 // 1 MiB
 
+// maxSearchLimit caps the number of matches returned by search_files to
+// prevent unbounded result JSON from exhausting memory.
+const maxSearchLimit = 500
+
+// maxSearchResultBytes caps the total returned content bytes for a single
+// search_files / multi_grep content query.
+const maxSearchResultBytes = maxReadBytes
+
 type readFileTool struct {
 	dangerousConfig danger.DangerousConfig
 }
@@ -371,6 +379,9 @@ func (t *searchFilesTool) Call(argsJSON string) (string, error) {
 	if args.Limit <= 0 {
 		args.Limit = maxMatches
 	}
+	if args.Limit > maxSearchLimit {
+		args.Limit = maxSearchLimit
+	}
 
 	// Security: check search path
 	risk := danger.ClassifyPath(args.Path)
@@ -398,6 +409,7 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 
 	var matches []searchMatch
 	limit := args.Limit
+	resultBytes := 0
 
 	err = filepath.Walk(args.Path, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -455,10 +467,16 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 			lineNum++
 			line := scanner.Text()
 			if re.MatchString(line) {
+				trimmed := strings.TrimSpace(line)
+				if resultBytes+len(trimmed) > maxSearchResultBytes {
+					limit = len(matches)
+					break
+				}
+				resultBytes += len(trimmed)
 				matches = append(matches, searchMatch{
 					Path:    path,
 					Line:    lineNum,
-					Content: wrapUntrusted(fmt.Sprintf("%s:%d", path, lineNum), strings.TrimSpace(line)),
+					Content: wrapUntrusted(fmt.Sprintf("%s:%d", path, lineNum), trimmed),
 				})
 				if len(matches) >= limit {
 					break

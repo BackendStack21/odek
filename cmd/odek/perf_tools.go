@@ -29,14 +29,29 @@ import (
 	"github.com/BackendStack21/odek/internal/danger"
 )
 
-// readFileNoFollow reads a file with O_NOFOLLOW (anti-symlink).
+// maxFileReadBytes caps how much of a single file the perf tools will load
+// into memory. This prevents OOM when tools like diff/base64/tr/sort point at
+// multi-gigabyte logs or core dumps.
+const maxFileReadBytes = 10 << 20 // 10 MiB
+
+// readFileNoFollow reads a file with O_NOFOLLOW (anti-symlink), rejecting files
+// larger than maxFileReadBytes to avoid unbounded memory consumption.
 func readFileNoFollow(path string) ([]byte, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	return io.ReadAll(f)
+
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > maxFileReadBytes {
+		return nil, fmt.Errorf("file too large (%d bytes, max %d)", info.Size(), maxFileReadBytes)
+	}
+
+	return io.ReadAll(io.LimitReader(f, maxFileReadBytes+1))
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -787,6 +802,12 @@ func (t *diffTool) Call(argsJSON string) (result string, err error) {
 		linesB = strings.Split(string(data), "\n")
 	} else if args.Path != "" {
 		pathA, pathB = args.Path, "<inline>"
+		if len(args.Content) > maxFileReadBytes {
+			return jsonResult(diffResult{
+				Error: fmt.Sprintf("inline content too large (%d bytes, max %d)", len(args.Content), maxFileReadBytes),
+				PathA: pathA, PathB: pathB,
+			})
+		}
 		if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
 			Name: "diff", Resource: args.Path, Risk: danger.ClassifyPath(args.Path),
 		}, nil); err != nil {
@@ -822,6 +843,12 @@ func (t *diffTool) Call(argsJSON string) (result string, err error) {
 	}
 
 	hunks := computeDiff(linesA, linesB)
+	src := fmt.Sprintf("diff:%s|%s", pathA, pathB)
+	for i := range hunks {
+		for j := range hunks[i].Lines {
+			hunks[i].Lines[j].Content = wrapUntrusted(src, hunks[i].Lines[j].Content)
+		}
+	}
 	return jsonResult(diffResult{Hunks: hunks, PathA: pathA, PathB: pathB})
 }
 
@@ -1099,6 +1126,9 @@ func (t *multiGrepTool) Call(argsJSON string) (string, error) {
 	if args.Limit <= 0 {
 		args.Limit = 50
 	}
+	if args.Limit > maxSearchLimit {
+		args.Limit = maxSearchLimit
+	}
 
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
 		Name: "multi_grep", Resource: args.Path, Risk: danger.ClassifyPath(args.Path),
@@ -1129,6 +1159,7 @@ func (t *multiGrepTool) searchPattern(pattern, root, fileGlob string, limit int)
 	}
 
 	var matches []grepMatch
+	resultBytes := 0
 
 	filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info == nil {
@@ -1174,10 +1205,15 @@ func (t *multiGrepTool) searchPattern(pattern, root, fileGlob string, limit int)
 			lineNum++
 			line := scanner.Text()
 			if re.MatchString(line) {
+				trimmed := strings.TrimSpace(line)
+				if resultBytes+len(trimmed) > maxSearchResultBytes {
+					return filepath.SkipAll
+				}
+				resultBytes += len(trimmed)
 				matches = append(matches, grepMatch{
 					Path:    path,
 					Line:    lineNum,
-					Content: wrapUntrusted(fmt.Sprintf("%s:%d", path, lineNum), strings.TrimSpace(line)),
+					Content: wrapUntrusted(fmt.Sprintf("%s:%d", path, lineNum), trimmed),
 				})
 				if len(matches) >= limit {
 					return filepath.SkipAll
@@ -1261,6 +1297,14 @@ func (t *jsonQueryTool) Call(argsJSON string) (result string, err error) {
 	}
 	defer f.Close()
 
+	info, err := f.Stat()
+	if err != nil {
+		return jsonResult(jsonQueryResult{Path: args.Path, Error: fmt.Sprintf("cannot stat %q: %v", args.Path, err)})
+	}
+	if info.Size() > maxFileReadBytes {
+		return jsonResult(jsonQueryResult{Path: args.Path, Error: fmt.Sprintf("file too large (%d bytes, max %d)", info.Size(), maxFileReadBytes)})
+	}
+
 	var data interface{}
 	if err := json.NewDecoder(f).Decode(&data); err != nil {
 		return jsonResult(jsonQueryResult{Path: args.Path, Error: fmt.Sprintf("invalid JSON: %v", err)})
@@ -1268,7 +1312,7 @@ func (t *jsonQueryTool) Call(argsJSON string) (result string, err error) {
 
 	if args.Query == "" {
 		vt := fmt.Sprintf("%T", data)
-		return jsonResult(jsonQueryResult{Path: args.Path, Query: "", Value: data, ValueType: vt})
+		return jsonResult(jsonQueryResult{Path: args.Path, Query: "", Value: wrapJSONStrings(args.Path, data), ValueType: vt})
 	}
 
 	value, err := jsonPathQuery(data, args.Query)
@@ -1277,7 +1321,27 @@ func (t *jsonQueryTool) Call(argsJSON string) (result string, err error) {
 	}
 
 	vt := fmt.Sprintf("%T", value)
-	return jsonResult(jsonQueryResult{Path: args.Path, Query: args.Query, Value: value, ValueType: vt})
+	return jsonResult(jsonQueryResult{Path: args.Path, Query: args.Query, Value: wrapJSONStrings(args.Path, value), ValueType: vt})
+}
+
+// wrapJSONStrings recursively wraps string values inside decoded JSON so that
+// file content returned by json_query is treated as untrusted.
+func wrapJSONStrings(source string, v interface{}) interface{} {
+	switch x := v.(type) {
+	case string:
+		return wrapUntrusted(source, x)
+	case map[string]interface{}:
+		for k, val := range x {
+			x[k] = wrapJSONStrings(source, val)
+		}
+		return x
+	case []interface{}:
+		for i, val := range x {
+			x[i] = wrapJSONStrings(source, val)
+		}
+		return x
+	}
+	return v
 }
 
 func jsonPathQuery(data interface{}, query string) (interface{}, error) {
@@ -1693,6 +1757,17 @@ func (t *sortTool) Call(argsJSON string) (result string, err error) {
 			results = append(results, sortEntry{File: p, Error: fmt.Sprintf("cannot open %q: %v", p, err)})
 			continue
 		}
+		info, err := f.Stat()
+		if err != nil {
+			f.Close()
+			results = append(results, sortEntry{File: p, Error: fmt.Sprintf("cannot stat %q: %v", p, err)})
+			continue
+		}
+		if info.Size() > maxFileReadBytes {
+			f.Close()
+			results = append(results, sortEntry{File: p, Error: fmt.Sprintf("file too large (%d bytes, max %d)", info.Size(), maxFileReadBytes)})
+			continue
+		}
 		data, err := io.ReadAll(f)
 		f.Close()
 		if err != nil {
@@ -1759,7 +1834,7 @@ func (t *sortTool) Call(argsJSON string) (result string, err error) {
 	output := strings.Join(allLines, "\n")
 	return jsonResult(sortResult{
 		Results: results,
-		Output:  output,
+		Output:  wrapUntrusted("sort:"+strings.Join(paths, ","), output),
 		Total:   len(allLines),
 	})
 }
@@ -1881,7 +1956,7 @@ func (t *headTailTool) readHead(f *os.File, path string, n int) headTailFileResu
 	for scanner.Scan() {
 		total++
 		if len(lines) < n {
-			lines = append(lines, scanner.Text())
+			lines = append(lines, wrapUntrusted(path, scanner.Text()))
 		}
 	}
 	return headTailFileResult{Path: path, Lines: lines, Count: len(lines), Total: total}
@@ -1906,7 +1981,7 @@ func (t *headTailTool) readTail(f *os.File, path string, n int) headTailFileResu
 		start = written % n
 	}
 	for i := 0; i < n && i < written; i++ {
-		lines = append(lines, buf[(start+i)%n])
+		lines = append(lines, wrapUntrusted(path, buf[(start+i)%n]))
 	}
 	return headTailFileResult{Path: path, Lines: lines, Count: len(lines), Total: total}
 }
@@ -2131,6 +2206,9 @@ func (t *trTool) Call(argsJSON string) (result string, err error) {
 		}
 	}
 
+	if fromFile {
+		text = wrapUntrusted(args.Path, text)
+	}
 	return jsonResult(trResult{Result: text, FromFile: fromFile})
 }
 
