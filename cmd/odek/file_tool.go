@@ -33,6 +33,10 @@ const maxSearchLimit = 500
 // search_files / multi_grep content query.
 const maxSearchResultBytes = maxReadBytes
 
+// maxGlobMatches caps the number of paths returned by the glob tool to prevent
+// unbounded JSON responses from broad patterns.
+const maxGlobMatches = 1000
+
 type readFileTool struct {
 	dangerousConfig danger.DangerousConfig
 }
@@ -656,6 +660,16 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 	}
 	defer f.Close()
 
+	// Reject files that would exhaust memory during the read/edit/write cycle.
+	info, err := f.Stat()
+	if err != nil {
+		return jsonError(fmt.Sprintf("cannot stat %q: %v", args.Path, err))
+	}
+	if info.Size() > maxFileReadBytes {
+		return jsonError(fmt.Sprintf("file too large (%d bytes, max %d)", info.Size(), maxFileReadBytes))
+	}
+	origMode := info.Mode().Perm()
+
 	// Read content through the opened fd (not re-opening the path)
 	var sb strings.Builder
 	_, err = io.Copy(&sb, f)
@@ -699,7 +713,7 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 		os.Remove(tmpPath)
 		return jsonError(fmt.Sprintf("cannot write %q: %v", args.Path, err))
 	}
-	if err := tmpFile.Chmod(0644); err != nil {
+	if err := tmpFile.Chmod(origMode); err != nil {
 		tmpFile.Close()
 		os.Remove(tmpPath)
 		return jsonError(fmt.Sprintf("cannot set permissions %q: %v", args.Path, err))
@@ -1155,6 +1169,9 @@ func (t *globTool) Call(argsJSON string) (result string, err error) {
 	if args.Limit <= 0 {
 		args.Limit = maxMatches
 	}
+	if args.Limit > maxGlobMatches {
+		args.Limit = maxGlobMatches
+	}
 
 	// Security: classify search root path
 	risk := danger.ClassifyPath(args.Path)
@@ -1277,6 +1294,10 @@ func (t *globTool) Call(argsJSON string) (result string, err error) {
 		}
 		return fi.ModTime().After(fj.ModTime())
 	})
+
+	for i := range matches {
+		matches[i].Path = wrapUntrusted("glob:"+args.Path, matches[i].Path)
+	}
 
 	return jsonResult(globResult{Matches: matches})
 }

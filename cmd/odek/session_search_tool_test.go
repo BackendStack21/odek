@@ -712,7 +712,7 @@ func TestSessionSearch_GetReturnsSessionMessages(t *testing.T) {
 		if resp.SessionMessages[i].Role != c.role {
 			t.Errorf("msg[%d] role = %q, want %q", i, resp.SessionMessages[i].Role, c.role)
 		}
-		if resp.SessionMessages[i].Content != c.content {
+		if unwrapUntrusted(resp.SessionMessages[i].Content) != c.content {
 			t.Errorf("msg[%d] content = %q, want %q", i, resp.SessionMessages[i].Content, c.content)
 		}
 	}

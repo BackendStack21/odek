@@ -287,8 +287,14 @@ func (t *transcribeTool) Call(argsJSON string) (result string, err error) {
 		args2 = append(args2, "--language", lang)
 	}
 
+	const maxWhisperOutputBytes = 10 << 20 // 10 MiB
 	cmd := exec.CommandContext(t.toolCtx(), binary, args2...)
 	output, err := cmd.Output()
+	if err == nil && len(output) > maxWhisperOutputBytes {
+		return jsonResult(transcribeResult{
+			Error: fmt.Sprintf("whisper output too large (%d bytes, max %d)", len(output), maxWhisperOutputBytes),
+		})
+	}
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return jsonResult(transcribeResult{

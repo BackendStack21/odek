@@ -224,6 +224,13 @@ func subagentCmd(args []string) error {
 	var taskTrust string    // "trusted" or "untrusted" (from parent agent)
 	var taskMaxRisk string
 	if hasTaskFile {
+		info, err := os.Stat(cfg.taskFile)
+		if err != nil {
+			return fmt.Errorf("stat task file: %w", err)
+		}
+		if info.Size() > maxFileReadBytes {
+			return fmt.Errorf("task file too large (%d bytes, max %d)", info.Size(), maxFileReadBytes)
+		}
 		data, err := os.ReadFile(cfg.taskFile)
 		if err != nil {
 			return fmt.Errorf("read task file: %w", err)

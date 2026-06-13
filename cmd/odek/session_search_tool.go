@@ -362,7 +362,9 @@ func (t *sessionSearchTool) handleGet(id string) (string, error) {
 		})
 	}
 
-	// Build session messages for the LLM to read.
+	// Build session messages for the LLM to read. Cap how many are returned
+	// and treat the content as untrusted because it includes prior tool outputs.
+	const maxSessionGetMessages = 100
 	var sessionMessages []sessionMessage
 	for _, m := range sess.Messages {
 		if m.Role == "user" || m.Role == "assistant" {
@@ -371,6 +373,12 @@ func (t *sessionSearchTool) handleGet(id string) (string, error) {
 				Content: m.Content,
 			})
 		}
+	}
+	if len(sessionMessages) > maxSessionGetMessages {
+		sessionMessages = sessionMessages[len(sessionMessages)-maxSessionGetMessages:]
+	}
+	for i := range sessionMessages {
+		sessionMessages[i].Content = wrapUntrusted("session_search:"+sess.ID, sessionMessages[i].Content)
 	}
 	msgCount := len(sessionMessages)
 	return jsonResult(sessionSearchResult{

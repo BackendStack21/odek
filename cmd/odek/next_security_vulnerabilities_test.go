@@ -11,7 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/session"
 )
 
 // ── 1. Browser history must be capped to avoid memory DoS ────────────────
@@ -473,5 +476,175 @@ func TestTree_CapsDirectoryWidth(t *testing.T) {
 	}
 	if len(r.Tree.Children) > 1000 {
 		t.Fatalf("tree did not cap directory width: got %d children", len(r.Tree.Children))
+	}
+}
+
+
+// ── 11. patch must reject huge files and preserve original permissions ───
+
+func TestPatch_RejectsHugeFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "huge.txt")
+	os.WriteFile(path, []byte(strings.Repeat("x", 15*1024*1024)), 0644)
+
+	tool := &patchTool{}
+	result := callJSON(t, tool, fmt.Sprintf(`{"path":%q,"old_string":"xxx","new_string":"yyy"}`, path))
+	var r struct {
+		Success bool   `json:"success"`
+		Error   string `json:"error,omitempty"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Success {
+		t.Fatal("patch should reject a 15 MiB file")
+	}
+	if !strings.Contains(r.Error, "too large") {
+		t.Fatalf("patch should reject huge file with a size error, got: %q", r.Error)
+	}
+}
+
+func TestPatch_PreservesFileMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "script.sh")
+	os.WriteFile(path, []byte("#!/bin/sh\necho hello\n"), 0755)
+
+	tool := &patchTool{}
+	result := callJSON(t, tool, fmt.Sprintf(`{"path":%q,"old_string":"hello","new_string":"world"}`, path))
+	var r struct {
+		Success bool `json:"success"`
+	}
+	mustUnmarshal(t, result, &r)
+	if !r.Success {
+		t.Fatal("patch failed")
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0755 {
+		t.Fatalf("patch changed mode from 0755 to %04o", info.Mode().Perm())
+	}
+}
+
+// ── 12. glob must cap match count and wrap paths as untrusted ────────────
+
+func TestGlob_CapsMatchCount(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 1500; i++ {
+		os.WriteFile(filepath.Join(dir, fmt.Sprintf("file%d.txt", i)), []byte("x"), 0644)
+	}
+
+	tool := &globTool{dangerousConfig: danger.DangerousConfig{}}
+	result := callJSON(t, tool, fmt.Sprintf(`{"pattern":"*","path":%q,"limit":10000}`, dir))
+	var r struct {
+		Matches []struct {
+			Path string `json:"path"`
+		} `json:"matches"`
+	}
+	mustUnmarshal(t, result, &r)
+	if len(r.Matches) > 1000 {
+		t.Fatalf("glob did not cap match count: got %d", len(r.Matches))
+	}
+	if len(r.Matches) == 0 {
+		t.Fatal("expected at least one match")
+	}
+	if !strings.HasPrefix(r.Matches[0].Path, "<untrusted_content_") {
+		t.Fatalf("glob path should be wrapped in untrusted_content, got: %q", r.Matches[0].Path)
+	}
+}
+
+// ── 13. subagent must reject a huge task file ────────────────────────────
+
+func TestSubagent_RejectsHugeTaskFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "task.json")
+	os.WriteFile(path, []byte(`{"goal":"`+strings.Repeat("x", 15*1024*1024)+`"}`), 0600)
+
+	err := subagentCmd([]string{"--task", path})
+	if err == nil {
+		t.Fatal("subagent should reject a huge task file")
+	}
+	if !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("subagent should reject huge task file with a size error, got: %v", err)
+	}
+}
+
+// ── 14. transcribe must cap whisper stdout ───────────────────────────────
+
+func TestTranscribe_CapsWhisperOutput(t *testing.T) {
+	dir := t.TempDir()
+	fakeBinary := filepath.Join(dir, "whisper")
+	fakeModel := filepath.Join(dir, "model.bin")
+	// Fake whisper: streams valid-ish opening JSON then floods stdout.
+	script := `#!/bin/sh
+head -c 20000000 /dev/zero | tr '\0' 'x'
+exit 0
+`
+	os.WriteFile(fakeBinary, []byte(script), 0755)
+	os.WriteFile(fakeModel, []byte("fake model"), 0644)
+
+	audioPath := filepath.Join(dir, "audio.wav")
+	os.WriteFile(audioPath, []byte("fake wav"), 0644)
+
+	tool := newTranscribeTool(danger.DangerousConfig{}, config.TranscriptionConfig{
+		BinaryPath: fakeBinary,
+		Model:      fakeModel,
+	})
+	result := callJSON(t, tool, fmt.Sprintf(`{"path":%q}`, audioPath))
+	var r struct {
+		Error string `json:"error,omitempty"`
+	}
+	mustUnmarshal(t, result, &r)
+	if !strings.Contains(r.Error, "too large") {
+		t.Fatalf("transcribe should cap whisper output, got: %q", r.Error)
+	}
+}
+
+// ── 15. session_search get must cap/wrap returned messages ───────────────
+
+func TestSessionSearchGet_CapsAndWrapsMessages(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	store, err := session.NewStore()
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	sess := &session.Session{
+		ID:        "test-session",
+		Task:      "test",
+		Model:     "test-model",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	for i := 0; i < 150; i++ {
+		sess.Messages = append(sess.Messages, llm.Message{Role: "assistant", Content: fmt.Sprintf("msg %d", i)})
+	}
+	if err := store.Save(sess); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	tool := &sessionSearchTool{store: store}
+	result := callJSON(t, tool, `{"action":"get","query":"test-session"}`)
+	t.Logf("session get result: %s", result)
+	var r struct {
+		Error           string `json:"error,omitempty"`
+		SessionMessages []struct {
+			Content string `json:"content"`
+		} `json:"session_messages"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error != "" {
+		t.Fatalf("session get error: %s", r.Error)
+	}
+	if len(r.SessionMessages) > 100 {
+		t.Fatalf("session_search get did not cap messages: got %d", len(r.SessionMessages))
+	}
+	if len(r.SessionMessages) == 0 {
+		t.Fatal("expected at least one message")
+	}
+	if !strings.HasPrefix(r.SessionMessages[0].Content, "<untrusted_content_") {
+		t.Fatalf("session message should be wrapped in untrusted_content, got: %q", r.SessionMessages[0].Content)
 	}
 }
