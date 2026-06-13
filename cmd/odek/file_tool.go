@@ -689,6 +689,9 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 	} else {
 		modified = strings.Replace(original, args.OldString, args.NewString, 1)
 	}
+	if len(modified) > maxFileReadBytes {
+		return jsonError(fmt.Sprintf("patch result too large (%d bytes, max %d)", len(modified), maxFileReadBytes))
+	}
 
 	// Generate a simple diff
 	diff := fmt.Sprintf("--- a/%s\n+++ b/%s\n@@ -1 +1 @@\n-%s\n+%s\n",

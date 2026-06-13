@@ -186,7 +186,7 @@ func TestSessionSearch_Get(t *testing.T) {
 	if r.ID != "20260520-auth-fix" {
 		t.Errorf("id = %q, want '20260520-auth-fix'", r.ID)
 	}
-	if r.Task != "fix O_NOFOLLOW in file_tool.go" {
+	if unwrapUntrusted(r.Task) != "fix O_NOFOLLOW in file_tool.go" {
 		t.Errorf("task = %q", r.Task)
 	}
 	if r.Turns != 8 {

@@ -214,6 +214,11 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 		} else {
 			modified = strings.Replace(original, p.OldString, p.NewString, 1)
 		}
+		if len(modified) > maxFileReadBytes {
+			entry.Error = fmt.Sprintf("patch result too large (%d bytes, max %d)", len(modified), maxFileReadBytes)
+			results[idx] = entry
+			continue
+		}
 
 		diff := fmt.Sprintf("--- a/%s\n+++ b/%s\n@@ -1 +1 @@\n-%s\n+%s\n",
 			p.Path, p.Path, truncateDiff(original, 100), truncateDiff(modified, 100))

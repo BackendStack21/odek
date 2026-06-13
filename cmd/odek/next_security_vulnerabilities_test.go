@@ -14,6 +14,7 @@ import (
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/resource"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -646,5 +647,157 @@ func TestSessionSearchGet_CapsAndWrapsMessages(t *testing.T) {
 	}
 	if !strings.HasPrefix(r.SessionMessages[0].Content, "<untrusted_content_") {
 		t.Fatalf("session message should be wrapped in untrusted_content, got: %q", r.SessionMessages[0].Content)
+	}
+}
+
+
+// ── 16. enrichTask must wrap @-resource / --ctx content ──────────────────
+
+func TestEnrichTask_WrapsCtxContent(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "note.txt"), []byte("hello world"), 0644)
+
+	enriched, err := enrichTask("check @note.txt", nil, dir)
+	if err != nil {
+		t.Fatalf("enrichTask error: %v", err)
+	}
+	if !strings.Contains(enriched, "<untrusted_content_") {
+		t.Fatalf("enriched prompt should wrap file content in untrusted_content, got: %s", enriched)
+	}
+}
+
+func TestEnrichTask_WrapsCtxFiles(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "data.txt"), []byte("sensitive data"), 0644)
+
+	enriched, err := enrichTask("analyze", []string{"data.txt"}, dir)
+	if err != nil {
+		t.Fatalf("enrichTask error: %v", err)
+	}
+	if !strings.Contains(enriched, "<untrusted_content_") {
+		t.Fatalf("--ctx content should be wrapped in untrusted_content, got: %s", enriched)
+	}
+}
+
+// ── 17. session_search list/search/find must wrap Task/Buffer ────────────
+
+func TestSessionSearch_ListWrapsTask(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	store, err := session.NewStore()
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	sess := &session.Session{
+		ID:        "list-test",
+		Task:      "user task about go-vector",
+		Model:     "test",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := store.Save(sess); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	tool := newSessionSearchTool(store)
+	result := callJSON(t, tool, `{"action":"list"}`)
+	var r struct {
+		Sessions []struct {
+			Task string `json:"task"`
+		} `json:"sessions"`
+	}
+	mustUnmarshal(t, result, &r)
+	if len(r.Sessions) == 0 || !strings.HasPrefix(r.Sessions[0].Task, "<untrusted_content_") {
+		t.Fatalf("session list should wrap task in untrusted_content, got: %s", result)
+	}
+}
+
+// ── 18. Resource resolver must reject huge files ─────────────────────────
+
+func TestResourceResolver_RejectsHugeFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "huge.txt")
+	os.WriteFile(path, make([]byte, 15*1024*1024), 0644)
+
+	res := resource.NewFileResolver(dir)
+	_, err := res.Load(context.Background(), "huge.txt")
+	if err == nil {
+		t.Fatal("resource resolver should reject a 15 MiB file")
+	}
+	if !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("expected size error, got: %v", err)
+	}
+}
+
+// ── 19. delegate_tasks must cap summary size ─────────────────────────────
+
+func TestDelegateTasks_CapsSummarySize(t *testing.T) {
+	if os.Getenv("ODEK_E2E") == "" {
+		t.Skip("sub-agent spawning test; set ODEK_E2E=true to run")
+	}
+	fakeOdek := filepath.Join(t.TempDir(), "fake-odek")
+	// Print a valid JSON result whose summary is ~6 MB.
+	script := `#!/bin/sh
+printf '{"status":"success","summary":"%s","files_changed":[],"iterations":1,"tokens_used":10}\n' "$(head -c 6000000 /dev/zero | tr '\0' 'x')"
+`
+	os.WriteFile(fakeOdek, []byte(script), 0755)
+
+	tool := &delegateTasksTool{
+		odekPath:       fakeOdek,
+		maxConcurrency: 1,
+		timeout:        30 * time.Second,
+	}
+	tool.SetContext(context.Background())
+	result, err := tool.Call(`{"tasks":[{"goal":"a"},{"goal":"b"}],"description":"summary cap test"}`)
+	if err != nil {
+		t.Fatalf("Call() error: %v", err)
+	}
+	if len(result) > 1024*1024+500 {
+		t.Fatalf("delegate_tasks summary returned %d bytes, expected cap near 1 MiB", len(result))
+	}
+}
+
+// ── 20. patch / batch_patch must cap ReplaceAll expansion ────────────────
+
+func TestPatch_RejectsOutputExpansion(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "data.txt")
+	// 2,000 'a' chars. Replacing each with 10,000 'x' => ~20M chars.
+	os.WriteFile(path, []byte(strings.Repeat("a", 2000)), 0644)
+
+	tool := &patchTool{}
+	result := callJSON(t, tool, fmt.Sprintf(`{"path":%q,"old_string":"a","new_string":%q,"replace_all":true}`, path, strings.Repeat("x", 10000)))
+	var r struct {
+		Success bool   `json:"success"`
+		Error   string `json:"error,omitempty"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Success {
+		t.Fatal("patch should reject a ReplaceAll that explodes output size")
+	}
+	if !strings.Contains(r.Error, "too large") {
+		t.Fatalf("expected size error, got: %q", r.Error)
+	}
+}
+
+func TestBatchPatch_RejectsOutputExpansion(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "data.txt")
+	os.WriteFile(path, []byte(strings.Repeat("a", 2000)), 0644)
+
+	tool := &batchPatchTool{}
+	result := callJSON(t, tool, fmt.Sprintf(`{"patches":[{"path":%q,"old_string":"a","new_string":%q,"replace_all":true}]}`, path, strings.Repeat("x", 10000)))
+	var r struct {
+		Results []struct {
+			Success bool   `json:"success"`
+			Error   string `json:"error,omitempty"`
+		} `json:"results"`
+	}
+	mustUnmarshal(t, result, &r)
+	if len(r.Results) != 1 || r.Results[0].Success {
+		t.Fatal("batch_patch should reject a ReplaceAll that explodes output size")
+	}
+	if !strings.Contains(r.Results[0].Error, "too large") {
+		t.Fatalf("expected size error, got: %q", r.Results[0].Error)
 	}
 }

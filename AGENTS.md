@@ -91,7 +91,7 @@ System prompt is loaded by priority: `--system` flag > `~/.odek/IDENTITY.md` > c
 ### Security Architecture
 Layered prompt-injection / approval-fatigue defenses. Full reference: [docs/SECURITY.md](docs/SECURITY.md).
 
-- **Untrusted-content wrapper** (`cmd/odek/untrusted.go`) — every tool whose output sources from outside the trust boundary (`browser`, `read_file`, `shell`, `search_files`, `multi_grep`, `transcribe`, `head_tail`, `diff`, `tr`, `sort`, `json_query`, `batch_patch`, `glob`, `session_search`, any MCP tool) wraps results in `<untrusted_content_<nonce> source="...">…</untrusted_content_<nonce>>`. Per-call nonce defeats wrapper-escape via literal close tag.
+- **Untrusted-content wrapper** (`cmd/odek/untrusted.go`) — every tool whose output sources from outside the trust boundary (`browser`, `read_file`, `shell`, `search_files`, `multi_grep`, `transcribe`, `head_tail`, `diff`, `tr`, `sort`, `json_query`, `batch_patch`, `glob`, `session_search`, `@-resources`, `--ctx` files, any MCP tool) wraps results in `<untrusted_content_<nonce> source="...">…</untrusted_content_<nonce>>`. Per-call nonce defeats wrapper-escape via literal close tag.
 - **Audit log** (`cmd/odek/audit.go` + `internal/session/audit.go`) — every `wrapUntrusted` call records source + content-hash + turn into `<sessions>/audit/<id>.json`. After each turn a divergence heuristic flags `suspicious_divergence=true` when the agent ingested untrusted content AND its tool calls referenced resources the user did not mention. Inspect with `odek audit <session-id>` / `odek audit --list`.
 - **Memory taint** (`internal/memory/provenance.go`) — `EpisodeProvenance` tracks Untrusted/Sources/UserApproved. Tainted episodes are stored but `Search()` filters them out, so a one-shot injection cannot persist via the episode pipeline. User must explicitly promote.
 - **Skill provenance gate** (`internal/skills/loader.go` + `cache.go`) — `Skill.Provenance{Untrusted, Sources, NeedsReview}`. NeedsReview skills pin to Lazy regardless of `auto_load`. `odek skill promote <name>` clears the flag after user review.
@@ -111,7 +111,11 @@ Layered prompt-injection / approval-fatigue defenses. Full reference: [docs/SECU
 - **patch tool hardening** (`cmd/odek/file_tool.go`) — `patch` rejects files larger than 10 MiB and preserves the original file mode instead of resetting it to 0644.
 - **glob tool hardening** (`cmd/odek/file_tool.go`) — `glob` caps results at 1,000 matches and wraps returned paths as untrusted content.
 - **Sub-agent task-file cap** (`cmd/odek/subagent.go`) — `odek subagent --task <file>` rejects task files larger than 10 MiB before loading them into memory.
-- **session_search get hardening** (`cmd/odek/session_search_tool.go`) — the `get` action returns at most the 100 most recent messages and wraps each message content as untrusted.
+- **session_search hardening** (`cmd/odek/session_search_tool.go`) — the `get` action returns at most the 100 most recent messages and wraps each message content, task, and buffer entry as untrusted; `list`/`search`/`find` also wrap session tasks.
+- **@-resource / --ctx prompt wrapping** (`cmd/odek/refs.go`, `cmd/odek/serve.go`) — content resolved from `@file` references and `--ctx` files is wrapped as untrusted before being inserted into the prompt.
+- **Resource resolver size cap** (`internal/resource/resource.go`) — `@-resource` file loads are capped at 1 MiB to prevent OOM from `@hugefile` references.
+- **Sub-agent summary cap** (`cmd/odek/subagent_tool.go`) — each sub-agent result included in the `delegate_tasks` summary is truncated to 100 KiB to prevent memory DoS.
+- **patch / batch_patch output expansion cap** (`cmd/odek/file_tool.go`, `cmd/odek/perf_tools.go`) — the post-replacement result is capped at 10 MiB so `ReplaceAll` cannot explode memory.
 - **Serve sandbox default-on** — `odek serve` enables `--sandbox` automatically unless `--no-sandbox` is passed.
 - **Secret redaction** (`internal/redact/redact.go`) — 20+ patterns: OpenAI, Anthropic, GitHub PAT, AWS, PEM, JWT, Vault, Google OAuth, SendGrid, Discord, DB URLs, etc.
 

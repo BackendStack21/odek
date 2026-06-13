@@ -682,7 +682,7 @@ func handlePrompt(
 		if err != nil {
 			continue
 		}
-		resolvedRefs[ref.Raw] = content
+		resolvedRefs[ref.Raw] = wrapUntrusted("resource:"+ref.Raw, content)
 	}
 	enrichedPrompt := resource.ReplaceRefs(prompt, resolvedRefs)
 
