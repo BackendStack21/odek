@@ -110,10 +110,17 @@ func (t *readFileTool) Call(argsJSON string) (string, error) {
 		args.Limit = maxLines
 	}
 
+	// Security: resolve directory symlinks before classification so a path that
+	// traverses a symlinked directory is classified by its real target.
+	resolvedPath, err := resolveReadPath(args.Path)
+	if err != nil {
+		return jsonError(err.Error())
+	}
+
 	// Security: check if this path requires approval
-	risk := danger.ClassifyPath(args.Path)
+	risk := danger.ClassifyPath(resolvedPath)
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-		Name: "read_file", Resource: args.Path, Risk: risk,
+		Name: "read_file", Resource: resolvedPath, Risk: risk,
 	}, nil); err != nil {
 		return jsonError(err.Error())
 	}
@@ -123,7 +130,7 @@ func (t *readFileTool) Call(argsJSON string) (string, error) {
 	// in a single syscall — eliminating the TOCTOU window between
 	// os.Stat (check) and os.Open (use). If the path is a symlink, the
 	// open fails with ELOOP.
-	f, err := os.OpenFile(args.Path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := os.OpenFile(resolvedPath, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return jsonError(fmt.Sprintf("file not found: %s", args.Path))
@@ -160,7 +167,7 @@ func (t *readFileTool) Call(argsJSON string) (string, error) {
 	}
 
 	result := readFileResult{
-		Content:    wrapUntrusted(args.Path, content),
+		Content:    wrapUntrusted(resolvedPath, content),
 		TotalLines: totalLines,
 	}
 	return jsonResult(result)
@@ -830,6 +837,59 @@ func readLinesWithCount(f *os.File, offset, limit int) (string, int, error) {
 	return strings.TrimSuffix(out.String(), "\n"), lineNum, scanner.Err()
 }
 
+// resolveReadPath resolves symlinks in the directory components of path,
+// leaving the final path component untouched. This prevents intermediate
+// directory symlinks from bypassing risk classification: a path like
+// "workspace/link_to_etc/passwd" where link_to_etc -> /etc resolves to
+// "/etc/passwd" and is classified as system_write instead of local_write.
+//
+// The final component is kept unresolved so callers can still open with
+// O_NOFOLLOW, preserving the existing policy of rejecting symlink final
+// components. If the directory part does not exist, the original path is
+// returned (the open will fail with a not-found error).
+func resolveReadPath(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("path is empty")
+	}
+
+	// Work with an absolute, cleaned path.
+	abs := path
+	if !filepath.IsAbs(abs) {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("cannot determine working directory: %v", err)
+		}
+		abs = filepath.Join(cwd, path)
+	}
+	abs = filepath.Clean(abs)
+
+	dir := filepath.Dir(abs)
+	base := filepath.Base(abs)
+
+	// Resolve only directory symlinks; keep the final component as-is.
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		// The directory part doesn't exist. Return the original path so the
+		// caller can produce a sensible "not found" error.
+		return path, nil
+	}
+
+	return filepath.Join(resolvedDir, base), nil
+}
+
+// classifyResolvedPath resolves directory symlinks in path (leaving the final
+// component untouched) and returns the danger classification of the resolved
+// path. Read-only tools use this so that a symlinked directory pointing outside
+// the workspace is classified by its real target rather than by the lexical
+// workspace path.
+func classifyResolvedPath(path string) danger.RiskClass {
+	resolved, err := resolveReadPath(path)
+	if err != nil {
+		return danger.ClassifyPath(path)
+	}
+	return danger.ClassifyPath(resolved)
+}
+
 // confineToCWD resolves path relative to the current working directory and
 // rejects paths that escape the working directory via ".." traversal or are
 // absolute paths outside the CWD. Returns the cleaned absolute path on success.
@@ -1052,16 +1112,22 @@ func (t *batchReadTool) readSingle(arg batchReadFileArg) batchReadFileResult {
 		arg.Limit = maxLines
 	}
 
+	// Security: resolve directory symlinks before classification.
+	resolvedPath, err := resolveReadPath(arg.Path)
+	if err != nil {
+		return batchReadFileResult{Path: arg.Path, Error: err.Error()}
+	}
+
 	// Security: classify path and check operation
-	risk := danger.ClassifyPath(arg.Path)
+	risk := danger.ClassifyPath(resolvedPath)
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-		Name: "batch_read", Resource: arg.Path, Risk: risk,
+		Name: "batch_read", Resource: resolvedPath, Risk: risk,
 	}, nil); err != nil {
 		return batchReadFileResult{Path: arg.Path, Error: err.Error()}
 	}
 
 	// Open without following symlinks
-	f, err := os.OpenFile(arg.Path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := os.OpenFile(resolvedPath, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return batchReadFileResult{Path: arg.Path, Error: fmt.Sprintf("file not found: %s", arg.Path)}
@@ -1097,7 +1163,7 @@ func (t *batchReadTool) readSingle(arg batchReadFileArg) batchReadFileResult {
 
 	return batchReadFileResult{
 		Path:       arg.Path,
-		Content:    wrapUntrusted(arg.Path, content),
+		Content:    wrapUntrusted(resolvedPath, content),
 		TotalLines: totalLines,
 	}
 }

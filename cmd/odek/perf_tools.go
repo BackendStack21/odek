@@ -41,8 +41,14 @@ const maxTreeEntries = 1000
 
 // readFileNoFollow reads a file with O_NOFOLLOW (anti-symlink), rejecting files
 // larger than maxFileReadBytes to avoid unbounded memory consumption.
+// Directory symlinks in the path are resolved first so risk classification
+// cannot be bypassed by a symlinked directory.
 func readFileNoFollow(path string) ([]byte, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	resolvedPath, err := resolveReadPath(path)
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(resolvedPath, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -857,7 +863,7 @@ func (t *diffTool) Call(argsJSON string) (result string, err error) {
 		pathA, pathB = args.PathA, args.PathB
 		for _, p := range []string{args.PathA, args.PathB} {
 			if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-				Name: "diff", Resource: p, Risk: danger.ClassifyPath(p),
+				Name: "diff", Resource: p, Risk: classifyResolvedPath(p),
 			}, nil); err != nil {
 				return jsonError(err.Error())
 			}
@@ -881,7 +887,7 @@ func (t *diffTool) Call(argsJSON string) (result string, err error) {
 			})
 		}
 		if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-			Name: "diff", Resource: args.Path, Risk: danger.ClassifyPath(args.Path),
+			Name: "diff", Resource: args.Path, Risk: classifyResolvedPath(args.Path),
 		}, nil); err != nil {
 			return jsonError(err.Error())
 		}
@@ -1087,7 +1093,7 @@ func (t *countLinesTool) countFile(path string) (entry countFileEntry) {
 	}
 
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-		Name: "count_lines", Resource: path, Risk: danger.ClassifyPath(path),
+		Name: "count_lines", Resource: path, Risk: classifyResolvedPath(path),
 	}, nil); err != nil {
 		return countFileEntry{Path: path, Error: err.Error()}
 	}
@@ -1203,7 +1209,7 @@ func (t *multiGrepTool) Call(argsJSON string) (string, error) {
 	}
 
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-		Name: "multi_grep", Resource: args.Path, Risk: danger.ClassifyPath(args.Path),
+		Name: "multi_grep", Resource: args.Path, Risk: classifyResolvedPath(args.Path),
 	}, nil); err != nil {
 		return jsonError(err.Error())
 	}
@@ -1358,7 +1364,7 @@ func (t *jsonQueryTool) Call(argsJSON string) (result string, err error) {
 	}
 
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-		Name: "json_query", Resource: args.Path, Risk: danger.ClassifyPath(args.Path),
+		Name: "json_query", Resource: args.Path, Risk: classifyResolvedPath(args.Path),
 	}, nil); err != nil {
 		return jsonError(err.Error())
 	}
@@ -1543,7 +1549,7 @@ func (t *treeTool) Call(argsJSON string) (result string, err error) {
 	}
 
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-		Name: "tree", Resource: args.Path, Risk: danger.ClassifyPath(args.Path),
+		Name: "tree", Resource: args.Path, Risk: classifyResolvedPath(args.Path),
 	}, nil); err != nil {
 		return jsonError(err.Error())
 	}
@@ -1715,7 +1721,7 @@ func (t *checksumTool) hashFile(arg checksumFileArg) (entry checksumEntry) {
 	}
 
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-		Name: "checksum", Resource: arg.Path, Risk: danger.ClassifyPath(arg.Path),
+		Name: "checksum", Resource: arg.Path, Risk: classifyResolvedPath(arg.Path),
 	}, nil); err != nil {
 		return checksumEntry{Path: arg.Path, Algorithm: algo, Error: err.Error()}
 	}
@@ -1834,7 +1840,7 @@ func (t *sortTool) Call(argsJSON string) (result string, err error) {
 	var results []sortEntry
 	for _, p := range paths {
 		if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-			Name: "sort", Resource: p, Risk: danger.ClassifyPath(p),
+			Name: "sort", Resource: p, Risk: classifyResolvedPath(p),
 		}, nil); err != nil {
 			results = append(results, sortEntry{File: p, Error: err.Error()})
 			continue
@@ -2024,7 +2030,7 @@ func (t *headTailTool) readPreview(path string, n int, mode string) (result head
 		}
 	}()
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-		Name: "head_tail", Resource: path, Risk: danger.ClassifyPath(path),
+		Name: "head_tail", Resource: path, Risk: classifyResolvedPath(path),
 	}, nil); err != nil {
 		return headTailFileResult{Path: path, Error: err.Error()}
 	}
@@ -2183,7 +2189,7 @@ func (t *base64Tool) Call(argsJSON string) (result string, err error) {
 
 	// File mode
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-		Name: "base64", Resource: args.Path, Risk: danger.ClassifyPath(args.Path),
+		Name: "base64", Resource: args.Path, Risk: classifyResolvedPath(args.Path),
 	}, nil); err != nil {
 		return jsonError(err.Error())
 	}
@@ -2269,7 +2275,7 @@ func (t *trTool) Call(argsJSON string) (result string, err error) {
 	fromFile := false
 	if args.Path != "" {
 		if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-			Name: "tr", Resource: args.Path, Risk: danger.ClassifyPath(args.Path),
+			Name: "tr", Resource: args.Path, Risk: classifyResolvedPath(args.Path),
 		}, nil); err != nil {
 			return jsonError(err.Error())
 		}
@@ -2424,7 +2430,7 @@ func (t *wordCountTool) countWords(path string) (entry wordCountEntry) {
 		}
 	}()
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-		Name: "word_count", Resource: path, Risk: danger.ClassifyPath(path),
+		Name: "word_count", Resource: path, Risk: classifyResolvedPath(path),
 	}, nil); err != nil {
 		return wordCountEntry{Path: path, Error: err.Error()}
 	}
