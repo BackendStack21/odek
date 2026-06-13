@@ -390,6 +390,15 @@ func (t *parallelShellTool) Call(argsJSON string) (result string, err error) {
 		})
 	for i := range results {
 		results[i].Index = i
+		// stdout/stderr cross the shell trust boundary; wrap them with a
+		// per-call nonce boundary so injected command output cannot masquerade
+		// as instructions.
+		if results[i].Stdout != "" {
+			results[i].Stdout = wrapUntrusted(fmt.Sprintf("parallel_shell:%d:stdout", i), results[i].Stdout)
+		}
+		if results[i].Stderr != "" {
+			results[i].Stderr = wrapUntrusted(fmt.Sprintf("parallel_shell:%d:stderr", i), results[i].Stderr)
+		}
 	}
 
 	return jsonResult(parallelShellResult{Results: results})

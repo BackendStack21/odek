@@ -181,3 +181,62 @@ func TestParallelShell_Danger_TrustedClassCached(t *testing.T) {
 		t.Errorf("second marker missing: %v", err)
 	}
 }
+
+// TestParallelShell_OutputWrapped verifies that each command's stdout and
+// stderr are wrapped as untrusted content before being returned to the model.
+func TestParallelShell_OutputWrapped(t *testing.T) {
+	tool := &parallelShellTool{}
+	result, err := tool.Call(`{"commands":[
+		{"command":"echo hello"},
+		{"command":"echo error >&2"}
+	]}`)
+	if err != nil {
+		t.Fatalf("Call() error: %v", err)
+	}
+
+	var r parallelShellResult
+	mustUnmarshal(t, result, &r)
+	if len(r.Results) != 2 {
+		t.Fatalf("Results = %d, want 2", len(r.Results))
+	}
+
+	// Both stdout and stderr should be wrapped in untrusted_content boundaries.
+	for i, entry := range r.Results {
+		if entry.Stdout != "" && !strings.Contains(entry.Stdout, "<untrusted_content_") {
+			t.Errorf("cmd %d stdout not wrapped: %q", i, entry.Stdout)
+		}
+		if entry.Stderr != "" && !strings.Contains(entry.Stderr, "<untrusted_content_") {
+			t.Errorf("cmd %d stderr not wrapped: %q", i, entry.Stderr)
+		}
+	}
+
+	// The original content should still be present inside the wrapper.
+	if !strings.Contains(r.Results[0].Stdout, "hello") {
+		t.Errorf("stdout missing original content: %q", r.Results[0].Stdout)
+	}
+	if !strings.Contains(r.Results[1].Stderr, "error") {
+		t.Errorf("stderr missing original content: %q", r.Results[1].Stderr)
+	}
+}
+
+// TestParallelShell_OutputEmpty_NoWrapper verifies that empty stdout/stderr
+// do not inject empty untrusted wrappers.
+func TestParallelShell_OutputEmpty_NoWrapper(t *testing.T) {
+	tool := &parallelShellTool{}
+	result, err := tool.Call(`{"commands":[{"command":"true"}]}`)
+	if err != nil {
+		t.Fatalf("Call() error: %v", err)
+	}
+
+	var r parallelShellResult
+	mustUnmarshal(t, result, &r)
+	if len(r.Results) != 1 {
+		t.Fatalf("Results = %d, want 1", len(r.Results))
+	}
+	if r.Results[0].Stdout != "" {
+		t.Errorf("expected empty stdout, got: %q", r.Results[0].Stdout)
+	}
+	if r.Results[0].Stderr != "" {
+		t.Errorf("expected empty stderr, got: %q", r.Results[0].Stderr)
+	}
+}
