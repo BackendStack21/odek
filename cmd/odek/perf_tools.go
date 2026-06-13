@@ -1884,10 +1884,11 @@ func (t *sortTool) Call(argsJSON string) (result string, err error) {
 // 12. head_tail — Quick file preview (first/last N lines)
 // ═════════════════════════════════════════════════════════════════════════
 
-// maxHeadTailTotalBytes caps the total content returned by head_tail across
-// all requested files. Without this, 10 files × 100 lines × 1 MiB lines can
-// allocate roughly 1 GB in a single tool call.
-const maxHeadTailTotalBytes = maxReadBytes // 1 MiB
+// maxHeadTailTotalBytes caps the content returned by head_tail for a single
+// file. Combined with the 10-file-per-call limit (see Call), this bounds a
+// head_tail response to ~10 MiB. Without it, 10 files × 100 lines × 1 MiB
+// lines could allocate roughly 1 GB in a single tool call.
+const maxHeadTailTotalBytes = maxReadBytes // 1 MiB per file
 
 type headTailTool struct {
 	dangerousConfig danger.DangerousConfig

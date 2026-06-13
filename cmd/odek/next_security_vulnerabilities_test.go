@@ -1041,6 +1041,56 @@ func TestHeadTail_CapsOutputSize(t *testing.T) {
 	}
 }
 
+// TestHeadTail_CapsOutputSizeMultiFile locks the aggregate bound: the per-file
+// cap (maxHeadTailTotalBytes) combined with the 10-file-per-call limit means a
+// single head_tail response stays within ~10 files × the per-file cap, even
+// when every file is individually oversized.
+func TestHeadTail_CapsOutputSizeMultiFile(t *testing.T) {
+	dir := t.TempDir()
+	const nFiles = 10
+	var paths []string
+	for f := 0; f < nFiles; f++ {
+		path := filepath.Join(dir, fmt.Sprintf("big-%d.txt", f))
+		var lines []string
+		for i := 0; i < 10; i++ {
+			lines = append(lines, fmt.Sprintf("line-%d-%s", i, strings.Repeat("x", 200*1024)))
+		}
+		os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0644)
+		paths = append(paths, path)
+	}
+
+	var fileArgs []string
+	for _, p := range paths {
+		fileArgs = append(fileArgs, fmt.Sprintf("{\"path\":%q}", p))
+	}
+	tool := &headTailTool{dangerousConfig: danger.DangerousConfig{}}
+	result := callJSON(t, tool, fmt.Sprintf(`{"files":[%s],"lines":100}`, strings.Join(fileArgs, ",")))
+	var r struct {
+		Results []struct {
+			Lines []string `json:"lines"`
+		} `json:"results"`
+	}
+	mustUnmarshal(t, result, &r)
+	if len(r.Results) != nFiles {
+		t.Fatalf("expected %d results, got %d", nFiles, len(r.Results))
+	}
+
+	total := 0
+	for _, res := range r.Results {
+		fileTotal := 0
+		for _, line := range res.Lines {
+			fileTotal += len(unwrapUntrusted(line))
+		}
+		if fileTotal > maxHeadTailTotalBytes+200 {
+			t.Fatalf("per-file content %d bytes exceeds per-file cap %d", fileTotal, maxHeadTailTotalBytes)
+		}
+		total += fileTotal
+	}
+	if total > nFiles*(maxHeadTailTotalBytes+200) {
+		t.Fatalf("aggregate head_tail content %d bytes exceeds bound %d", total, nFiles*maxHeadTailTotalBytes)
+	}
+}
+
 // ── 27. search_files target=files must not follow symlinks for metadata ───
 
 func TestSearchFiles_TargetFiles_NoSymlinkFollow(t *testing.T) {
