@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/BackendStack21/odek/internal/danger"
 )
@@ -66,12 +67,17 @@ type browserTool struct {
 	trustedClasses  map[danger.RiskClass]bool
 }
 
+// browserRequestTimeout bounds each browser HTTP request. Tests may lower it to
+// verify timeout behavior.
+var browserRequestTimeout = 30 * time.Second
+
 func newBrowserTool(dc danger.DangerousConfig) *browserTool {
 	t := &browserTool{
 		state:           &browserState{nextRef: 1},
 		dangerousConfig: dc,
 	}
 	t.client = &http.Client{
+		Timeout:       browserRequestTimeout,
 		CheckRedirect: t.checkRedirect,
 		Transport:     ssrfGuardedTransport(),
 	}
@@ -171,6 +177,7 @@ func (t *browserTool) Call(argsJSON string) (string, error) {
 	}
 	if t.client == nil {
 		t.client = &http.Client{
+			Timeout:       browserRequestTimeout,
 			CheckRedirect: t.checkRedirect,
 			Transport:     ssrfGuardedTransport(),
 		}

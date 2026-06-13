@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BackendStack21/odek/internal/danger"
 )
@@ -314,5 +316,162 @@ func TestJsonQuery_WrapsStringValue(t *testing.T) {
 	mustUnmarshal(t, result, &r)
 	if !strings.HasPrefix(r.Value, "<untrusted_content_") {
 		t.Fatalf("json_query string value should be wrapped in untrusted_content, got: %q", r.Value)
+	}
+}
+
+
+// ── 6. Shell / parallel_shell must cap command output ────────────────────
+
+func TestShell_CapsOutputSize(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "huge.txt")
+	os.WriteFile(path, []byte(strings.Repeat("x", 15*1024*1024)), 0644)
+
+	tool := &shellTool{}
+	tool.SetContext(context.Background())
+	result, err := tool.Call(fmt.Sprintf(`{"command":"cat %s","description":"read huge file"}`, path))
+	if err != nil {
+		t.Fatalf("Call() error: %v", err)
+	}
+
+	body := unwrapUntrusted(result)
+	if len(body) > 1024*1024+200 {
+		t.Fatalf("shell returned %d bytes, expected cap near 1 MiB", len(body))
+	}
+}
+
+func TestParallelShell_CapsOutputSize(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "huge.txt")
+	os.WriteFile(path, []byte(strings.Repeat("x", 15*1024*1024)), 0644)
+
+	tool := &parallelShellTool{}
+	result := callJSON(t, tool, fmt.Sprintf(`{"commands":[{"command":"cat %s"}]}`, path))
+	var r struct {
+		Results []struct {
+			Stdout string `json:"stdout"`
+			Stderr string `json:"stderr"`
+			Error  string `json:"error,omitempty"`
+		} `json:"results"`
+	}
+	mustUnmarshal(t, result, &r)
+	if len(r.Results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(r.Results))
+	}
+	out := r.Results[0].Stdout + r.Results[0].Stderr
+	if len(out) > 1024*1024+200 {
+		t.Fatalf("parallel_shell returned %d bytes, expected cap near 1 MiB", len(out))
+	}
+}
+
+// ── 7. Browser must enforce an HTTP request timeout ──────────────────────
+
+func TestBrowser_NavigateTimeout(t *testing.T) {
+	orig := browserRequestTimeout
+	browserRequestTimeout = 100 * time.Millisecond
+	defer func() { browserRequestTimeout = orig }()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		fmt.Fprint(w, "<html><body>page</body></html>")
+	}))
+	defer srv.Close()
+
+	tool := newBrowserTool(danger.DangerousConfig{})
+	result := callJSON(t, tool, fmt.Sprintf(`{"action":"navigate","url":%q}`, srv.URL))
+	var r struct {
+		Error string `json:"error,omitempty"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" || !strings.Contains(strings.ToLower(r.Error), "timeout") {
+		t.Fatalf("browser should time out on a slow server, got: %q", r.Error)
+	}
+}
+
+// ── 8. batch_patch must reject huge files and wrap diff output ───────────
+
+func TestBatchPatch_RejectsHugeFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "huge.txt")
+	os.WriteFile(path, []byte(strings.Repeat("x", 15*1024*1024)), 0644)
+
+	tool := &batchPatchTool{}
+	result := callJSON(t, tool, fmt.Sprintf(`{"patches":[{"path":%q,"old_string":"xxx","new_string":"yyy"}]}`, path))
+	var r struct {
+		Results []struct {
+			Success bool   `json:"success"`
+			Error   string `json:"error,omitempty"`
+		} `json:"results"`
+	}
+	mustUnmarshal(t, result, &r)
+	if len(r.Results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(r.Results))
+	}
+	if r.Results[0].Success {
+		t.Fatal("batch_patch should reject a 15 MiB file")
+	}
+	if r.Results[0].Error == "" {
+		t.Fatal("batch_patch should return an error for a 15 MiB file")
+	}
+}
+
+func TestBatchPatch_WrapsDiff(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.txt")
+	os.WriteFile(path, []byte("hello world\n"), 0644)
+
+	tool := &batchPatchTool{}
+	result := callJSON(t, tool, fmt.Sprintf(`{"patches":[{"path":%q,"old_string":"hello","new_string":"goodbye"}]}`, path))
+	var r struct {
+		Results []struct {
+			Diff string `json:"diff"`
+		} `json:"results"`
+	}
+	mustUnmarshal(t, result, &r)
+	if len(r.Results) == 0 || !strings.HasPrefix(r.Results[0].Diff, "<untrusted_content_") {
+		t.Fatalf("batch_patch diff should be wrapped in untrusted_content, got: %q", r.Results[0].Diff)
+	}
+}
+
+// ── 9. Transcribe must reject huge / symlinked audio inputs ──────────────
+
+func TestTranscribe_RejectsHugeFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "huge.ogg")
+	os.WriteFile(path, make([]byte, 15*1024*1024), 0644)
+
+	tool := &transcribeTool{}
+	result := callJSON(t, tool, fmt.Sprintf(`{"path":%q}`, path))
+	var r struct {
+		Error string `json:"error,omitempty"`
+	}
+	mustUnmarshal(t, result, &r)
+	if !strings.Contains(r.Error, "too large") {
+		t.Fatalf("transcribe should reject a 15 MiB file with a size error, got: %q", r.Error)
+	}
+}
+
+// ── 10. Tree must cap directory width ────────────────────────────────────
+
+func TestTree_CapsDirectoryWidth(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 1500; i++ {
+		os.WriteFile(filepath.Join(dir, fmt.Sprintf("file%d.txt", i)), []byte("x"), 0644)
+	}
+
+	tool := &treeTool{dangerousConfig: danger.DangerousConfig{}}
+	result := callJSON(t, tool, fmt.Sprintf(`{"path":%q}`, dir))
+	var r struct {
+		Tree struct {
+			Children []any `json:"children"`
+		} `json:"tree"`
+		Error string `json:"error,omitempty"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error != "" {
+		t.Fatalf("tree returned error: %s", r.Error)
+	}
+	if len(r.Tree.Children) > 1000 {
+		t.Fatalf("tree did not cap directory width: got %d children", len(r.Tree.Children))
 	}
 }

@@ -35,11 +35,20 @@ func convertToWAV(ctx context.Context, srcPath string) string {
 	}
 
 	// Convert to WAV using ffmpeg — best-effort, fall through on failure.
-	dstPath := srcPath + ".wav"
+	// Write the output to a temp file in the system temp directory so we never
+	// clobber an existing .wav file next to the source path.
+	dstFile, err := os.CreateTemp("", "odek-transcribe-*.wav")
+	if err != nil {
+		return srcPath
+	}
+	dstPath := dstFile.Name()
+	dstFile.Close()
+
 	cmd := exec.CommandContext(ctx, "ffmpeg", "-y", "-i", srcPath, "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", dstPath)
 	if err := cmd.Run(); err != nil {
 		// If ffmpeg fails (corrupt file, unsupported codec, etc.),
 		// just pass the original path — whisper will produce its own error.
+		os.Remove(dstPath)
 		return srcPath
 	}
 	return dstPath
@@ -216,14 +225,27 @@ func (t *transcribeTool) Call(argsJSON string) (result string, err error) {
 		return jsonError(err.Error())
 	}
 
-	// Check the audio file exists (O_NOFOLLOW to prevent symlink attacks)
+	// Check the audio file exists (O_NOFOLLOW to prevent symlink attacks) and
+	// reject inputs that would exhaust memory during conversion / transcription.
 	f, err := os.OpenFile(args.Path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return jsonResult(transcribeResult{
 			Error: fmt.Sprintf("cannot open audio file %q: %v", args.Path, err),
 		})
 	}
+	info, err := f.Stat()
 	f.Close()
+	if err != nil {
+		return jsonResult(transcribeResult{
+			Error: fmt.Sprintf("cannot stat audio file %q: %v", args.Path, err),
+		})
+	}
+	const maxAudioFileBytes = maxFileReadBytes // 10 MiB — same cap as other file-reading tools
+	if info.Size() > maxAudioFileBytes {
+		return jsonResult(transcribeResult{
+			Error: fmt.Sprintf("audio file too large (%d bytes, max %d)", info.Size(), maxAudioFileBytes),
+		})
+	}
 
 	// Convert to WAV if needed (whisper.cpp doesn't support OGG Opus natively).
 	wavPath := convertToWAV(t.toolCtx(), args.Path)

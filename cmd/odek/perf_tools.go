@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/md5"
 	"crypto/sha1"
 	"crypto/sha256"
@@ -33,6 +34,10 @@ import (
 // into memory. This prevents OOM when tools like diff/base64/tr/sort point at
 // multi-gigabyte logs or core dumps.
 const maxFileReadBytes = 10 << 20 // 10 MiB
+
+// maxTreeEntries caps the number of children reported for a single directory
+// by the tree tool, preventing OOM from directories with millions of entries.
+const maxTreeEntries = 1000
 
 // readFileNoFollow reads a file with O_NOFOLLOW (anti-symlink), rejecting files
 // larger than maxFileReadBytes to avoid unbounded memory consumption.
@@ -173,6 +178,20 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 			continue
 		}
 
+		info, err := f.Stat()
+		if err != nil {
+			f.Close()
+			entry.Error = fmt.Sprintf("cannot stat %q: %v", p.Path, err)
+			results[idx] = entry
+			continue
+		}
+		if info.Size() > maxFileReadBytes {
+			f.Close()
+			entry.Error = fmt.Sprintf("file too large (%d bytes, max %d)", info.Size(), maxFileReadBytes)
+			results[idx] = entry
+			continue
+		}
+
 		var sb strings.Builder
 		_, err = io.Copy(&sb, f)
 		f.Close()
@@ -243,7 +262,7 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 		}
 
 		entry.Success = true
-		entry.Diff = diff
+		entry.Diff = wrapUntrusted("batch_patch:"+p.Path, diff)
 		results[idx] = entry
 	}
 
@@ -380,9 +399,11 @@ func (t *parallelShellTool) runOne(cmd parallelShellCmd) parallelShellEntry {
 	} else {
 		shCmd = exec.Command("sh", "-c", cmd.Command)
 	}
-	var stdout, stderr strings.Builder
-	shCmd.Stdout = &stdout
-	shCmd.Stderr = &stderr
+	var stdout, stderr bytes.Buffer
+	outW := &limitWriter{buf: &stdout, limit: maxShellOutputBytes}
+	errW := &limitWriter{buf: &stderr, limit: maxShellOutputBytes}
+	shCmd.Stdout = outW
+	shCmd.Stderr = errW
 
 	// Kill on timeout via goroutine, with mutex to avoid Process race
 	var procMu sync.Mutex
@@ -1513,9 +1534,20 @@ func buildTree(root, path string, depth, maxDepth int, includeHidden bool) (tree
 		return entry, nil
 	}
 
+	totalEntries := len(entries)
+	truncated := false
+	if totalEntries > maxTreeEntries {
+		entries = entries[:maxTreeEntries]
+		truncated = true
+	}
+
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].Name() < entries[j].Name()
 	})
+
+	if truncated {
+		entry.ErrMsg = fmt.Sprintf("directory truncated (%d entries shown, %d total)", maxTreeEntries, totalEntries)
+	}
 
 	entry.Children = make([]treeEntry, 0, len(entries))
 	for _, e := range entries {
