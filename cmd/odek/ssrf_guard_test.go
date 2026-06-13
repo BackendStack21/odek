@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
 )
 
@@ -166,6 +167,29 @@ func TestHTTPBatch_SSRF_ResolvesInternal(t *testing.T) {
 	}
 }
 
+// TestWebSearch_SSRF_ResolvesInternal exercises the guard through the real
+// web_search query path. The configured base_url hostname classifies as external
+// but resolves to the cloud-metadata IP; the dial guard must refuse it.
+func TestWebSearch_SSRF_ResolvesInternal(t *testing.T) {
+	tool := newWebSearchTool(allowAllDanger(), config.WebSearchConfig{BaseURL: "http://internal-disguised.example.com"})
+	tool.client = &http.Client{
+		Timeout:       tool.client.Timeout,
+		CheckRedirect: tool.checkRedirect,
+		Transport: &http.Transport{
+			DialContext: ssrfGuardedDial((&net.Dialer{}).DialContext, stubLookup("169.254.169.254")),
+		},
+	}
+
+	raw, _ := tool.Call(`{"query":"x"}`)
+	out := decodeWebSearch(t, raw)
+	if out.Error == "" {
+		t.Fatal("expected web_search query to be blocked by the dial guard")
+	}
+	if !strings.Contains(out.Error, "internal address") && !strings.Contains(out.Error, "SSRF") {
+		t.Errorf("error %q should explain the SSRF block", out.Error)
+	}
+}
+
 // TestSSRFGuardedTransport_Installed is a guard against regressions that would
 // silently drop the SSRF protection from the production constructors.
 func TestSSRFGuardedTransport_Installed(t *testing.T) {
@@ -183,5 +207,13 @@ func TestSSRFGuardedTransport_Installed(t *testing.T) {
 	}
 	if tr, ok := h.client.Transport.(*http.Transport); !ok || tr.DialContext == nil {
 		t.Error("http_batch tool Transport is missing the guarded DialContext")
+	}
+
+	w := newWebSearchTool(danger.DangerousConfig{}, config.WebSearchConfig{})
+	if w.client.Transport == nil {
+		t.Error("web_search tool client has no Transport — SSRF guard not installed")
+	}
+	if tr, ok := w.client.Transport.(*http.Transport); !ok || tr.DialContext == nil {
+		t.Error("web_search tool Transport is missing the guarded DialContext")
 	}
 }
