@@ -265,19 +265,21 @@ func (f *FileResolver) Load(ctx context.Context, id string) (string, error) {
 	// id is the path after @ (e.g. "src/main.go")
 	target := filepath.Join(f.root, id)
 
-	// Security: resolve path and check it's within root (string-level check)
-	absTarget, err := filepath.Abs(target)
-	if err != nil {
-		return "", err
-	}
-	if !withinRoot(f.root, absTarget) {
+	// Security: resolve symlinks in the directory components of the path and
+	// verify the resolved location stays within the root. This prevents an
+	// attacker from using a symlinked directory inside the workspace (e.g.
+	// workspace/link -> /etc) to read files outside the workspace via
+	// @link/passwd. The final path component is left unresolved so the
+	// O_NOFOLLOW open below still rejects symlink final components.
+	resolvedTarget := resolveDirSymlinks(target)
+	if !withinRoot(f.root, resolvedTarget) {
 		return "", fmt.Errorf("resource: path %q is outside root", id)
 	}
 
-	// Open with O_NOFOLLOW to atomically prevent symlink following.
-	// If the path is a symlink, the open fails with ELOOP — closing
-	// the TOCTOU window between a separate Lstat check and the read.
-	fd, err := os.OpenFile(absTarget, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	// Open with O_NOFOLLOW to atomically prevent the final component from
+	// being a symlink. If the path is a symlink, the open fails with ELOOP —
+	// closing the TOCTOU window between a separate Lstat check and the read.
+	fd, err := os.OpenFile(resolvedTarget, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return "", err
 	}
@@ -349,23 +351,49 @@ func skipDir(name string) bool {
 	return false
 }
 
+// resolveDirSymlinks returns the absolute, cleaned path with all directory
+// symlinks resolved. The final path component is left untouched so callers can
+// still enforce O_NOFOLLOW on it. If a directory component does not exist, the
+// original absolute path is returned (so the caller can produce a sensible
+// "not found" error).
+func resolveDirSymlinks(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	abs = filepath.Clean(abs)
+
+	dir := filepath.Dir(abs)
+	base := filepath.Base(abs)
+
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return abs
+	}
+	return filepath.Join(resolvedDir, base)
+}
+
 // withinRoot reports whether candidate resolves to a path inside root.
-// root may be relative; candidate may be relative or absolute. The check is
-// separator-aware so "/foo" does not match "/foobar". It is the single
-// confinement primitive for the file resolver (Search metadata + Load reads).
+// Directory symlinks in candidate are resolved before comparison so a symlinked
+// directory outside the workspace cannot bypass confinement; the final
+// component is kept unresolved so symlinks to files inside the workspace are
+// still reported by Search (their content is rejected by Load with O_NOFOLLOW).
+// The check is separator-aware so "/foo" does not match "/foobar".
 func withinRoot(root, candidate string) bool {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return false
 	}
-	absCandidate, err := filepath.Abs(candidate)
+	absRoot, err = filepath.EvalSymlinks(absRoot)
 	if err != nil {
 		return false
 	}
-	if absCandidate == absRoot {
+
+	resolved := resolveDirSymlinks(candidate)
+	if resolved == absRoot {
 		return true
 	}
-	return strings.HasPrefix(absCandidate, absRoot+string(os.PathSeparator))
+	return strings.HasPrefix(resolved, absRoot+string(os.PathSeparator))
 }
 
 func describeFile(info os.FileInfo) string {

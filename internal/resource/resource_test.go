@@ -348,6 +348,31 @@ func TestFileResolver_LoadTruncated(t *testing.T) {
 	}
 }
 
+// ── Bug #8: FileResolver.Load follows intermediate symlink directories ──────
+
+func TestFileResolver_Load_SymlinkDirectoryTraversal(t *testing.T) {
+	// Workspace contains a symlinked directory that points outside the root.
+	// A reference like @link/secret.txt must be rejected, not read through the
+	// symlink directory.
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	secret := filepath.Join(outside, "secret.txt")
+	if err := os.WriteFile(secret, []byte("should not be read"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	link := filepath.Join(workspace, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatalf("create symlink dir: %v", err)
+	}
+
+	resolver := NewFileResolver(workspace)
+	_, err := resolver.Load(context.Background(), "link/secret.txt")
+	if err == nil {
+		t.Fatal("Load through symlink directory should be rejected")
+	}
+}
+
 // ── SessionResolver ────────────────────────────────────────────────────
 
 func TestSessionResolver_SearchNoDir(t *testing.T) {
