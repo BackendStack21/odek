@@ -1240,8 +1240,10 @@ func loadMCPTools(servers map[string]mcpclient.ServerConfig, tools *[]odek.Tool)
 			// and parameter schema — all of which flow into the model's
 			// tool catalogue as effectively trusted instructions ("tool
 			// poisoning"). The untrusted wrapper only guards the tool's
-			// runtime *output*, so scan the server-supplied description for
-			// injection patterns and withhold it if any are found.
+			// runtime *output*, so sanitizeMCPDescription both scans the
+			// server-supplied description for injection patterns (withholding
+			// it on a hit) and wraps whatever passes in an untrusted-data
+			// boundary so the model never treats it as instructions.
 			inner := &mcpclient.ToolAdapter{
 				Client:      client,
 				ToolName:    def.Name,
