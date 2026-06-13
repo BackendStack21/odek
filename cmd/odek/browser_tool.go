@@ -49,6 +49,11 @@ type browserSnapshot struct {
 // prevent memory DoS from repeated navigate actions.
 const maxBrowserHistory = 50
 
+// maxBrowserElements caps the number of interactive elements extracted from a
+// page to prevent a hostile page from OOMing the agent with thousands of links
+// or buttons.
+const maxBrowserElements = 500
+
 // browserState holds the shared state for one browser session.
 type browserState struct {
 	mu      sync.Mutex
@@ -379,6 +384,9 @@ func parseHTML(html, pageURL string, status int) browserSnapshot {
 
 	// Extract links
 	for _, m := range reLink.FindAllStringSubmatch(html, -1) {
+		if len(elements) >= maxBrowserElements {
+			break
+		}
 		href := strings.TrimSpace(m[1])
 		text := strings.TrimSpace(m[2])
 		if href == "" || text == "" || href == "#" || strings.HasPrefix(href, "javascript:") {
@@ -404,6 +412,9 @@ func parseHTML(html, pageURL string, status int) browserSnapshot {
 
 	// Extract buttons and inputs
 	for _, m := range reButton.FindAllStringSubmatch(html, -1) {
+		if len(elements) >= maxBrowserElements {
+			break
+		}
 		text := strings.TrimSpace(m[1])
 		if text == "" {
 			text = "button"
@@ -419,6 +430,9 @@ func parseHTML(html, pageURL string, status int) browserSnapshot {
 	}
 
 	for _, m := range reInput.FindAllStringSubmatch(html, -1) {
+		if len(elements) >= maxBrowserElements {
+			break
+		}
 		tag := m[0]
 		text := ""
 		if vm := reInputVal.FindStringSubmatch(tag); len(vm) > 1 {
@@ -441,6 +455,12 @@ func parseHTML(html, pageURL string, status int) browserSnapshot {
 
 	snap.Content = strings.Join(contentParts, "\n")
 	snap.Elements = elements
+
+	// Title and element text come from the page — wrap them as untrusted content.
+	snap.Title = wrapUntrusted(pageURL, snap.Title)
+	for i := range snap.Elements {
+		snap.Elements[i].Text = wrapUntrusted(pageURL, snap.Elements[i].Text)
+	}
 
 	return snap
 }

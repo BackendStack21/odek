@@ -1,6 +1,7 @@
 package resource
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -647,5 +648,44 @@ func TestSessionResolverLoad_PathTraversal(t *testing.T) {
 		if err == nil {
 			t.Errorf("Load with path traversal %q should have failed but succeeded (security bug)", attempt)
 		}
+	}
+}
+
+// ── Bug #30: FileResolver.Search follows symlinks via os.Stat ───────────────
+
+func TestFileResolverSearch_DoesNotFollowSymlinksForMetadata(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "base")
+	if err := os.MkdirAll(base, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	secret := filepath.Join(dir, "secret.txt")
+	// 2000 bytes produces "2.0 KB" in Detail if os.Stat follows the symlink.
+	if err := os.WriteFile(secret, bytes.Repeat([]byte("x"), 2000), 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "leak.txt")
+	if err := os.Symlink(secret, link); err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := NewFileResolver(base)
+	results, err := resolver.Search(context.Background(), "leak", 10)
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	res := results[0]
+	// With os.Stat the target's size (2.0 KB) would leak through Detail.
+	// With os.Lstat we get the symlink's own metadata, never the target size.
+	if strings.Contains(res.Detail, "2.0") {
+		t.Errorf("symlink leaked target file size through Detail: %s", res.Detail)
+	}
+	// The returned resource reference must point to the symlink inside the base.
+	if res.ID != "@leak.txt" {
+		t.Errorf("expected resource ID %q, got %q", "@leak.txt", res.ID)
 	}
 }

@@ -2146,7 +2146,7 @@ func (t *base64Tool) Call(argsJSON string) (result string, err error) {
 		return jsonResult(base64Result{Error: fmt.Sprintf("cannot read %q: %v", args.Path, err)})
 	}
 	encoded := base64.StdEncoding.EncodeToString(data)
-	return jsonResult(base64Result{Encoded: encoded, Size: len(data)})
+	return jsonResult(base64Result{Encoded: wrapUntrusted(args.Path, encoded), Size: len(data)})
 }
 
 // ═════════════════════════════════════════════════════════════════════════

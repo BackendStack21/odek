@@ -901,6 +901,80 @@ func TestSkillLoader_CapsFileSize(t *testing.T) {
 	}
 }
 
+// ── 26. base64 must wrap file-mode encoded output as untrusted ───────────
+
+func TestBase64_WrapsFileEncodedContent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secret.txt")
+	os.WriteFile(path, []byte("sensitive data"), 0644)
+
+	tool := &base64Tool{dangerousConfig: danger.DangerousConfig{}}
+	result := callJSON(t, tool, fmt.Sprintf(`{"path":%q}`, path))
+	var r struct {
+		Encoded string `json:"encoded"`
+		Size    int    `json:"size"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Size == 0 {
+		t.Fatal("expected size > 0")
+	}
+	if !strings.HasPrefix(r.Encoded, "<untrusted_content_") {
+		t.Fatalf("base64 file output should be wrapped in untrusted_content, got: %q", r.Encoded)
+	}
+}
+
+// ── 27. browser must wrap page title / element text ──────────────────────
+
+func TestBrowser_WrapsTitleAndElementText(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<html><head><title>Evil Title</title></head><body><a href="/x">click me</a></body></html>`)
+	}))
+	defer srv.Close()
+
+	tool := newBrowserTool(danger.DangerousConfig{})
+	result := callJSON(t, tool, fmt.Sprintf(`{"action":"navigate","url":%q}`, srv.URL))
+	var r struct {
+		Title    string `json:"title"`
+		Elements []struct {
+			Text string `json:"text"`
+			URL  string `json:"url"`
+		} `json:"elements"`
+	}
+	mustUnmarshal(t, result, &r)
+	if !strings.HasPrefix(r.Title, "<untrusted_content_") {
+		t.Fatalf("browser title should be wrapped, got: %q", r.Title)
+	}
+	if len(r.Elements) == 0 {
+		t.Fatal("expected at least one element")
+	}
+	if !strings.HasPrefix(r.Elements[0].Text, "<untrusted_content_") {
+		t.Fatalf("browser element text should be wrapped, got: %q", r.Elements[0].Text)
+	}
+}
+
+// ── 28. browser must cap the number of interactive elements ──────────────
+
+func TestBrowser_CapsElementCount(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("<html><body>"))
+		for i := 0; i < 1500; i++ {
+			fmt.Fprintf(w, `<a href="/p%d">link %d</a>`, i, i)
+		}
+		w.Write([]byte("</body></html>"))
+	}))
+	defer srv.Close()
+
+	tool := newBrowserTool(danger.DangerousConfig{})
+	result := callJSON(t, tool, fmt.Sprintf(`{"action":"navigate","url":%q}`, srv.URL))
+	var r struct {
+		Elements []any `json:"elements"`
+	}
+	mustUnmarshal(t, result, &r)
+	if len(r.Elements) > 1000 {
+		t.Fatalf("browser did not cap element count: got %d", len(r.Elements))
+	}
+}
+
 // ── 25. tree must wrap filesystem-derived paths as untrusted ──────────────
 
 func TestTree_WrapsPaths(t *testing.T) {

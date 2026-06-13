@@ -34,8 +34,8 @@ func TestBrowser_Navigate(t *testing.T) {
 	if r.Error != "" {
 		t.Fatalf("navigate error: %s", r.Error)
 	}
-	if r.Title != "Test Page" {
-		t.Errorf("title = %q, want %q", r.Title, "Test Page")
+	if unwrapUntrusted(r.Title) != "Test Page" {
+		t.Errorf("title = %q, want %q", unwrapUntrusted(r.Title), "Test Page")
 	}
 	if !strings.Contains(r.Content, "Hello World") {
 		t.Errorf("content missing 'Hello World': %q", r.Content)

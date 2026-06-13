@@ -229,7 +229,8 @@ func (f *FileResolver) Search(ctx context.Context, query string, limit int) ([]R
 			break
 		}
 		rel, _ := filepath.Rel(f.root, match)
-		info, err := os.Stat(match)
+		// Use Lstat so that symlinks do not leak metadata from their targets.
+		info, err := os.Lstat(match)
 		if err != nil {
 			continue
 		}
