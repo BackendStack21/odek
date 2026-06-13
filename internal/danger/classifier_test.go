@@ -263,6 +263,61 @@ func TestClassify_Install_GoInstallNeedsRemote(t *testing.T) {
 	}
 }
 
+// TestClassify_ScriptAndPackageManagerExecution covers finding #11: invoking a
+// script interpreter on a file, or a package-manager run/start/build command,
+// must escalate to code execution / install rather than slipping through Safe.
+func TestClassify_ScriptAndPackageManagerExecution(t *testing.T) {
+	tests := []struct {
+		cmd string
+		cls RiskClass
+	}{
+		// Script interpreters running a file (no -e/-c/-r flag).
+		{"python script.py", CodeExecution},
+		{"python3 exfil.py --flag", CodeExecution},
+		{"node server.js", CodeExecution},
+		{"perl tool.pl", CodeExecution},
+		{"ruby app.rb", CodeExecution},
+		{"php index.php", CodeExecution},
+		{"python -m http.server", CodeExecution},
+		// Pure version/help queries stay safe.
+		{"python --version", Safe},
+		{"node -v", Safe},
+		{"python3 --help", Safe},
+		// Package-manager run/start/build scripts execute arbitrary code.
+		{"npm start", CodeExecution},
+		{"npm run build", CodeExecution},
+		{"npm test", CodeExecution},
+		{"npm exec foo", CodeExecution},
+		{"yarn start", CodeExecution},
+		{"pnpm run dev", CodeExecution},
+		{"bun run index.ts", CodeExecution},
+		{"bun start", CodeExecution},
+		{"bun index.ts", CodeExecution},
+		{"cargo run", CodeExecution},
+		{"cargo build", CodeExecution},
+		{"cargo test", CodeExecution},
+		// Package-manager installs still classify as install, not code exec.
+		{"npm install express", Install},
+		{"bun add left-pad", Install},
+		{"cargo install ripgrep", Install},
+		{"go get github.com/foo/bar", Install},
+		{"go mod download", Install},
+		// Preserved safe behaviour (existing stance).
+		{"go build ./...", Safe},
+		{"go test ./...", Safe},
+		{"go mod tidy", Safe},
+		{"cargo check", Safe},
+		{"cargo fmt", Safe},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			if got := Classify(tt.cmd); got != tt.cls {
+				t.Errorf("Classify(%q) = %s, want %s", tt.cmd, got, tt.cls)
+			}
+		})
+	}
+}
+
 func TestClassify_Blocked_Commands(t *testing.T) {
 	tests := []struct {
 		cmd string
@@ -1240,11 +1295,11 @@ func TestHostIsImplicitlyInternal(t *testing.T) {
 		{"10.0.0.1", true},
 		{"192.168.1.1", true},
 		{"169.254.169.254", true},
-		{"0177.0.0.1", true},  // octal 127.0.0.1
-		{"2130706433", true},  // decimal 127.0.0.1
-		{"0x7f000001", true},  // hex 127.0.0.1
-		{"127.1", true},       // shorthand
-		{"::1", true},         // IPv6 loopback
+		{"0177.0.0.1", true}, // octal 127.0.0.1
+		{"2130706433", true}, // decimal 127.0.0.1
+		{"0x7f000001", true}, // hex 127.0.0.1
+		{"127.1", true},      // shorthand
+		{"::1", true},        // IPv6 loopback
 		// Known-internal hostnames
 		{"localhost", true},
 		{"foo.local", true},
