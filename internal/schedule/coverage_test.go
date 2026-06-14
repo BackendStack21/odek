@@ -88,19 +88,21 @@ func TestLoadState_Error(t *testing.T) {
 
 // ── saveDoc / writeJSONAtomic error paths ─────────────────────────────────
 
-// makeTmpDir creates a directory at "<file>.tmp" so writeJSONAtomic's WriteFile
-// to that temp path fails (it can't write a file over a directory).
-func makeTmpDir(t *testing.T, path string) {
+// makeReadOnly makes dir read-only so fsatomic.WriteFile's temp-file creation
+// fails, exercising the save error path.
+func makeReadOnly(t *testing.T, dir string) func() {
 	t.Helper()
-	if err := os.MkdirAll(path+".tmp", 0755); err != nil {
-		t.Fatalf("mkdir %s.tmp: %v", path, err)
+	if err := os.Chmod(dir, 0500); err != nil {
+		t.Fatalf("chmod %s: %v", dir, err)
 	}
+	return func() { os.Chmod(dir, 0755) }
 }
 
 func TestAdd_SaveDocError(t *testing.T) {
 	dir := t.TempDir()
 	st, _ := NewStoreAt(dir)
-	makeTmpDir(t, filepath.Join(dir, schedulesFile))
+	cleanup := makeReadOnly(t, dir)
+	defer cleanup()
 	if _, err := st.Add(sampleJob()); err == nil {
 		t.Error("Add should fail when the definitions file can't be written")
 	}
@@ -113,7 +115,8 @@ func TestRemove_SaveDocError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	makeTmpDir(t, filepath.Join(dir, schedulesFile))
+	cleanup := makeReadOnly(t, dir)
+	defer cleanup()
 	if err := st.Remove(a.ID); err == nil {
 		t.Error("Remove should fail when the definitions file can't be rewritten")
 	}
@@ -170,11 +173,18 @@ func TestWriteJSONAtomic_Errors(t *testing.T) {
 		t.Error("writeJSONAtomic should fail to marshal a channel")
 	}
 
-	// Write error: the temp path is a directory.
-	wpath := filepath.Join(dir, "w.json")
-	makeTmpDir(t, wpath)
+	// Write error: the directory is read-only, so temp-file creation fails.
+	wdir := filepath.Join(dir, "wro")
+	if err := os.Mkdir(wdir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(wdir, 0500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(wdir, 0755)
+	wpath := filepath.Join(wdir, "w.json")
 	if err := writeJSONAtomic(wpath, map[string]int{"a": 1}); err == nil {
-		t.Error("writeJSONAtomic should fail when the temp path is a directory")
+		t.Error("writeJSONAtomic should fail when the directory is not writable")
 	}
 
 	// Rename error: the destination is a non-empty directory, so rename of the
@@ -335,7 +345,8 @@ func TestReconcile_SkipSaveStateError(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Break state writes so the skip-record persistence fails (logged, not fatal).
-	makeTmpDir(t, filepath.Join(dir, stateFile))
+	cleanup := makeReadOnly(t, dir)
+	defer cleanup()
 	s := New(st, &fakeRunner{}, &fakeDeliverer{}, Options{})
 	now := time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC)
 	s.reconcile(now) // exercises the SaveState-error log branch
@@ -353,7 +364,8 @@ func TestExecute_SaveStateError(t *testing.T) {
 	t0 := time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC)
 	s.reconcile(t0)
 	// Break state writes; the run still completes, the SaveState error is logged.
-	makeTmpDir(t, filepath.Join(dir, stateFile))
+	cleanup := makeReadOnly(t, dir)
+	defer cleanup()
 	s.fireDue(context.Background(), s.peekNext(job.ID))
 	s.Wait()
 }
