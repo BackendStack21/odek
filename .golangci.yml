@@ -8,7 +8,7 @@
 # is touched.
 run:
   timeout: 10m
-  go: "1.24"
+  go: "1.25"
 
 linters:
   enable:
