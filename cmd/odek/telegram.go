@@ -1477,12 +1477,12 @@ func handleChatMessage(
 		SystemMessage:    systemMessage,
 		UntrustedWrapper: wrapUntrusted,
 		RuntimeContext:   odek.BuildRuntimeContext("telegram"),
-		InteractionMode: resolved.InteractionMode,
-		NoProjectFile:   resolved.NoAgents,
-		Skills:          skillsCfg,
-		Thinking:        resolved.Thinking,
-		Tools:           agentTools,
-		Renderer:        rend,
+		InteractionMode:  resolved.InteractionMode,
+		NoProjectFile:    resolved.NoAgents,
+		Skills:           skillsCfg,
+		Thinking:         resolved.Thinking,
+		Tools:            agentTools,
+		Renderer:         rend,
 		ToolEventHandler: func(event string, name string, data string) {
 			// Enhance mode: send new messages with narrated descriptions.
 			if isEnhance {
@@ -2130,6 +2130,12 @@ func mediaTypeFromExt(path string) string {
 // sendTelegramMedia sends a file as a Telegram media message with caption
 // and optional inline keyboard. Detects the media type from file extension.
 func sendTelegramMedia(bot *telegram.Bot, chatID int64, mediaType, path, caption string, buttons [][]map[string]string) error {
+	// Defense-in-depth: validate the path against the media allowlist.
+	resolved, err := telegram.ResolveMediaPath(path)
+	if err != nil {
+		return fmt.Errorf("telegram media: %w", err)
+	}
+
 	var replyMarkup *telegram.InlineKeyboardMarkup
 	if len(buttons) > 0 {
 		replyMarkup = buttonsToMarkup(buttons)
@@ -2140,13 +2146,13 @@ func sendTelegramMedia(bot *telegram.Bot, chatID int64, mediaType, path, caption
 	}
 	switch mediaType {
 	case "photo":
-		_, err := bot.SendPhoto(chatID, path, caption, opts)
+		_, err := bot.SendPhoto(chatID, resolved, caption, opts)
 		return err
 	case "voice":
-		_, err := bot.SendVoice(chatID, path, caption, opts)
+		_, err := bot.SendVoice(chatID, resolved, caption, opts)
 		return err
 	default:
-		_, err := bot.SendDocument(chatID, path, caption, opts)
+		_, err := bot.SendDocument(chatID, resolved, caption, opts)
 		return err
 	}
 }

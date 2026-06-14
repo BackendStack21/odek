@@ -224,7 +224,8 @@ func TestFileResolver_SearchRecursive(t *testing.T) {
 
 func TestFileResolver_SearchOutsideRoot(t *testing.T) {
 	// Parent holds a sentinel file; root is a subdirectory of it. A traversal
-	// query must not surface metadata for files outside root.
+	// query must be rejected outright rather than surface metadata for files
+	// outside root.
 	parent := t.TempDir()
 	if err := os.WriteFile(filepath.Join(parent, "secret.txt"), []byte("top secret"), 0644); err != nil {
 		t.Fatal(err)
@@ -235,13 +236,51 @@ func TestFileResolver_SearchOutsideRoot(t *testing.T) {
 	}
 	res := NewFileResolver(root)
 
-	results, err := res.Search(context.Background(), "../secret", 10)
+	_, err := res.Search(context.Background(), "../secret", 10)
+	if err == nil {
+		t.Fatal("expected Search() to reject traversal query")
+	}
+}
+
+func TestFileResolver_Search_AbsoluteQueryRejected(t *testing.T) {
+	dir := newTestDir(t)
+	res := NewFileResolver(dir)
+
+	_, err := res.Search(context.Background(), "/etc/passwd", 10)
+	if err == nil {
+		t.Fatal("expected Search() to reject absolute query")
+	}
+}
+
+func TestFileResolver_Search_PathSeparatorQueryRejected(t *testing.T) {
+	dir := newTestDir(t)
+	res := NewFileResolver(dir)
+
+	_, err := res.Search(context.Background(), "subdir/deep", 10)
+	if err == nil {
+		t.Fatal("expected Search() to reject query containing path separators")
+	}
+}
+
+func TestFileResolver_Search_SymlinkedDirectoryNotFollowed(t *testing.T) {
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("secret"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(workspace, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := NewFileResolver(workspace)
+	results, err := resolver.Search(context.Background(), "secret", 10)
 	if err != nil {
-		t.Fatalf("Search() error: %v", err)
+		t.Fatalf("Search failed: %v", err)
 	}
 	for _, r := range results {
-		if strings.Contains(r.Label, "secret") || strings.Contains(r.ID, "secret") {
-			t.Fatalf("traversal query leaked file outside root: %+v", r)
+		if strings.Contains(r.Label, "secret") {
+			t.Fatalf("search followed symlinked directory: %+v", r)
 		}
 	}
 }

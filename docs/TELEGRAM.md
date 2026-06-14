@@ -206,6 +206,15 @@ All callbacks return a response string (may be empty) and an error. The `Handle`
 
 The handler uses `sync.Map` for `TelegramApprover` instances, keyed by `chatID`. This allows the agent to send inline keyboard approval requests (yes/no) and receive responses via callback queries. The handler intercepts callback queries matching pending approval requests before dispatching to `OnCallbackQuery`.
 
+### Outbound Media
+
+The agent can send files back to the chat either by emitting a `MEDIA:` prefix in its final answer (`MEDIA:photo:/path`, `MEDIA:voice:/path`, `MEDIA:document:/path`) or by calling `send_message` with the `file` parameter. Before any upload, the path is validated by `internal/telegram.ResolveMediaPath`:
+
+- Allowed directories: current working directory, `~/.odek/media/`, and the system temporary directory.
+- The path is resolved to an absolute, cleaned form and checked against the allowlist.
+- Symlinks are rejected: the final component is verified with `os.Lstat` and the resolved path must not escape the allowlist.
+- Files outside the allowlist (e.g. `/home/user/.ssh/id_rsa`) are refused, closing prompt-injection-driven exfiltration.
+
 ## Slash Commands (`commands.go`)
 
 ### Built-in Commands

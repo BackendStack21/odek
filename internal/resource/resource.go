@@ -211,6 +211,12 @@ func (f *FileResolver) Search(ctx context.Context, query string, limit int) ([]R
 		return nil, nil
 	}
 
+	// Reject traversal attempts before touching the filesystem. A query is a
+	// bare filename/prefix for autocomplete, not a path expression.
+	if err := validateSearchQuery(query); err != nil {
+		return nil, err
+	}
+
 	// Try exact match first
 	pattern := filepath.Join(f.root, query)
 	matches, err := filepath.Glob(pattern + "*")
@@ -223,11 +229,7 @@ func (f *FileResolver) Search(ctx context.Context, query string, limit int) ([]R
 		matches = f.walkAndMatch(query)
 	}
 
-	// Resolve the root once so every match can be confined to it. A query
-	// such as "../../etc/passwd" makes filepath.Join above clean to a path
-	// outside root, and filepath.Glob would then match files the workspace
-	// must not expose. Skip any match that escapes root before touching the
-	// filesystem (closes CodeQL "uncontrolled data in path expression").
+	// Resolve the root once so every match can be confined to it.
 	absRoot, err := filepath.Abs(f.root)
 	if err != nil {
 		return nil, nil
@@ -259,6 +261,21 @@ func (f *FileResolver) Search(ctx context.Context, query string, limit int) ([]R
 		})
 	}
 	return resources, nil
+}
+
+// validateSearchQuery rejects queries that could escape the configured root.
+// Search queries are autocomplete prefixes, not filesystem paths.
+func validateSearchQuery(query string) error {
+	if filepath.IsAbs(query) {
+		return fmt.Errorf("resource: search query must not be an absolute path")
+	}
+	if strings.Contains(query, "..") {
+		return fmt.Errorf("resource: search query must not contain parent references")
+	}
+	if strings.ContainsAny(query, "/\\") {
+		return fmt.Errorf("resource: search query must not contain path separators")
+	}
+	return nil
 }
 
 func (f *FileResolver) Load(ctx context.Context, id string) (string, error) {
@@ -312,17 +329,21 @@ func (f *FileResolver) walkAndMatch(searchTerm string) []string {
 	base := f.root
 
 	var results []string
-	filepath.Walk(base, func(path string, info os.FileInfo, err error) error {
+	filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
 		// Skip symlinks — resource resolver uses O_NOFOLLOW on Load,
-		// so symlinks are unreadable anyway.
-		if info.Mode()&os.ModeSymlink != 0 {
+		// so symlinks are unreadable anyway. Skip symlinked directories
+		// entirely so traversal cannot follow them.
+		if d.Type()&os.ModeSymlink != 0 {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
-		if info.IsDir() {
-			if skipDir(info.Name()) {
+		if d.IsDir() {
+			if skipDir(d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil

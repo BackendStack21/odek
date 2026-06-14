@@ -2,7 +2,6 @@ package telegram
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 )
@@ -459,46 +458,46 @@ func (h *Handler) sendMedia(chatID int64, text string, replyToMessageID int) {
 	mediaType := parts[0]
 	filePath := parts[1]
 
-	// Check if file exists.
-	if _, err := os.Stat(filePath); err != nil {
-		h.log.Error("media file not found", "chat_id", chatID, "path", filePath, "error", err)
+	// Validate and resolve the media path against the allowlist.
+	resolved, err := ResolveMediaPath(filePath)
+	if err != nil {
+		h.log.Error("media file rejected", "chat_id", chatID, "path", filePath, "error", err)
 		if h.OnError != nil {
-			h.OnError(chatID, fmt.Errorf("telegram: media file not found: %s: %w", filePath, err))
+			h.OnError(chatID, fmt.Errorf("telegram: media file rejected: %s: %w", filePath, err))
 		}
 		return
 	}
 
-	var err error
 	switch mediaType {
 	case "photo":
 		var opts *SendOpts
 		if replyToMessageID != 0 {
 			opts = &SendOpts{ReplyToMessageID: replyToMessageID}
 		}
-		_, err = h.Bot.SendPhoto(chatID, filePath, "", opts)
+		_, err = h.Bot.SendPhoto(chatID, resolved, "", opts)
 	case "voice":
 		var opts *SendOpts
 		if replyToMessageID != 0 {
 			opts = &SendOpts{ReplyToMessageID: replyToMessageID}
 		}
-		_, err = h.Bot.SendVoice(chatID, filePath, "", opts)
+		_, err = h.Bot.SendVoice(chatID, resolved, "", opts)
 	case "document":
 		var opts *SendOpts
 		if replyToMessageID != 0 {
 			opts = &SendOpts{ReplyToMessageID: replyToMessageID}
 		}
-		_, err = h.Bot.SendDocument(chatID, filePath, "", opts)
+		_, err = h.Bot.SendDocument(chatID, resolved, "", opts)
 	default:
 		// Unknown media type — send as a document (zip, csv, pdf, etc.)
 		var opts *SendOpts
 		if replyToMessageID != 0 {
 			opts = &SendOpts{ReplyToMessageID: replyToMessageID}
 		}
-		_, err = h.Bot.SendDocument(chatID, filePath, "", opts)
+		_, err = h.Bot.SendDocument(chatID, resolved, "", opts)
 	}
 
 	if err != nil {
-		h.log.Error("send media failed", "chat_id", chatID, "media_type", mediaType, "path", filePath, "error", err)
+		h.log.Error("send media failed", "chat_id", chatID, "media_type", mediaType, "path", resolved, "error", err)
 		if h.OnError != nil {
 			h.OnError(chatID, fmt.Errorf("telegram: send media: %w", err))
 		}

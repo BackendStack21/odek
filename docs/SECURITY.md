@@ -74,7 +74,7 @@ The MCP wrapper guards a tool's **output**. The server-supplied tool **descripti
 
 The model is instructed (via the default system prompt) to treat the wrapped region as data, not instructions. A model trained on prompt-injection resistance (Claude Sonnet 4.6+ does this well) honours the boundary. Older models or aggressively fine-tuned ones may not.
 
-Two additional boundaries keep filesystem-derived metadata from leaking as "trusted" context. First, the `base64` tool wraps encoded output when reading from a file path, so even transformed filesystem bytes stay inside an untrusted boundary. Second, the `@`-resource resolver (`FileResolver.Search`) uses `os.Lstat` when building search-result metadata, which prevents a symlink inside the workspace from leaking the size (or other `stat` metadata) of an arbitrary target outside it.
+Two additional boundaries keep filesystem-derived metadata from leaking as "trusted" context. First, the `base64` tool wraps encoded output when reading from a file path, so even transformed filesystem bytes stay inside an untrusted boundary. Second, the `@`-resource resolver (`FileResolver.Search`) rejects queries containing `..`, path separators, or absolute components before joining them with the workspace root, and uses `filepath.WalkDir` (which does not follow symlinks) for recursive autocomplete; `os.Lstat` is used when building search-result metadata, which prevents a symlink inside the workspace from leaking the size (or other `stat` metadata) of an arbitrary target outside it.
 
 ### 3. Danger classifier (shell)
 
@@ -324,7 +324,17 @@ The Telegram bot previously used a PID file at `~/.odek/telegram.pid` to enforce
 
 The `send_message` tool lets the agent send inline keyboard buttons. Each button's `callback_data` is validated by the tool and again by the Telegram sender closure: any value that starts with a reserved internal prefix (`apr:`, `den:`, `trs:`, `clarify:`, `skill_save:`, `skill_skip:`) is rejected. Only user-facing `cb:` callbacks are allowed. This prevents a compromised or prompt-injected agent from presenting a button that, when clicked, would forge an approval decision or trigger a skill action.
 
-### 23. Session ID entropy + session-scoped auth tokens
+### 23. Telegram outbound media path allowlist
+
+When the agent emits `MEDIA:photo:/path`, `MEDIA:voice:/path`, `MEDIA:document:/path`, or `send_message` with a `file`, the path is validated by `internal/telegram.ResolveMediaPath` before upload. Only paths inside an allowed base directory are permitted:
+
+- the current working directory,
+- `~/.odek/media/`, and
+- the system temporary directory.
+
+The path is resolved to an absolute, cleaned form with `filepath.Abs`, symlinks are resolved with `filepath.EvalSymlinks`, and the final component is checked with `os.Lstat`. If the final component is a symlink, or if the resolved path escapes the allowlist, the upload is rejected. This closes the arbitrary-file-read/exfiltration vector where a prompt-injected agent asks the bot to send files such as `/home/user/.ssh/id_rsa`.
+
+### 24. Session ID entropy + session-scoped auth tokens
 
 `odek serve` session endpoints were previously protected only by localhost binding and a short, predictable session ID (`YYYYMMDD-` + 3 random bytes ≈ 16.7 M possibilities). A local attacker who obtained IDs from `GET /api/sessions` could brute-force `GET /api/sessions/<id>` to read transcripts.
 
@@ -336,7 +346,7 @@ The defense has three layers:
 
 Legacy sessions created before this defense have no `AuthToken`; the first access bootstraps one and returns it to the client, preserving backward compatibility without weakening protection for newly created sessions.
 
-### 24. Skill and episode context wrapped as untrusted
+### 25. Skill and episode context wrapped as untrusted
 
 Skill content and retrieved session episodes are externally-sourced data that cross the trust boundary. Before injecting them as `system` messages, the loop passes them through the same nonce'd `<untrusted_content_*>` wrapper used for tool output. The skill manager already gates `NeedsReview`/tainted skills, and the memory manager filters tainted episodes from search, but the wrapper provides defense-in-depth so a compromised skill or episode cannot pose as trusted system instructions.
 
@@ -389,6 +399,7 @@ Defaults: `FrictionThreshold=3`, `FrictionWindow=60s`. To opt out (TTYApprover o
 | Local process brute-forces session IDs to read transcripts | 128-bit IDs + session-scoped auth tokens + per-IP rate limiting |
 | Telegram bot scanned by random user | Allowlist enforced before any tool call |
 | Agent sends fake approval/skill button via `send_message` | Reserved internal callback prefixes rejected; only `cb:` allowed |
+| Agent exfiltrates arbitrary file via Telegram media | Outbound paths restricted to cwd, `~/.odek/media/`, and temp dir; symlinks rejected |
 | Auto-saved skill auto-activates on next session | Provenance gate pins NeedsReview skills to Lazy |
 | Memory replays a previously-injected episode forever | Tainted episodes filtered from `Search` |
 | User reflex-approves a destructive class after many benign ones | Friction mode requires typed `approve` + 1.5 s pause |

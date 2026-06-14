@@ -5,9 +5,10 @@ package tool
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/BackendStack21/odek/internal/telegram"
 )
 
 // ── Constants ───────────────────────────────────────────────────────────
@@ -129,14 +130,17 @@ func (t *SendMessageTool) Call(argsJSON string) (string, error) {
 		return "", fmt.Errorf("send_message: parse args: %w", err)
 	}
 
-	// Validate file path if provided.
+	// Validate file path if provided. Outbound media is restricted to an
+	// allowlist of directories and symlinks are rejected.
 	if args.File != "" {
 		if !filepath.IsAbs(args.File) {
 			return "", fmt.Errorf("send_message: file path must be absolute: %s", args.File)
 		}
-		if _, err := os.Stat(args.File); err != nil {
-			return "", fmt.Errorf("send_message: file not found: %s: %w", args.File, err)
+		resolved, err := telegram.ResolveMediaPath(args.File)
+		if err != nil {
+			return "", fmt.Errorf("send_message: file not found or not allowed: %s: %w", args.File, err)
 		}
+		args.File = resolved
 	}
 
 	// Normalise buttons to the expected format.

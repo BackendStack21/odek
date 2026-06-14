@@ -86,8 +86,12 @@ func TestSendMessageTool_Call_WithFile(t *testing.T) {
 	if !strings.Contains(result, "file sent") {
 		t.Errorf("expected 'file sent' in result, got: %q", result)
 	}
-	if sentFile != f {
-		t.Errorf("file = %q, want %q", sentFile, f)
+	want, err := filepath.EvalSymlinks(f)
+	if err != nil {
+		t.Fatalf("EvalSymlinks failed: %v", err)
+	}
+	if sentFile != want {
+		t.Errorf("file = %q, want %q", sentFile, want)
 	}
 }
 
