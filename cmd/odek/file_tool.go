@@ -755,7 +755,7 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 
 	return jsonResult(patchResult{
 		Success: true,
-		Diff:    diff,
+		Diff:    wrapUntrusted("patch:"+args.Path, diff),
 	})
 }
 

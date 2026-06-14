@@ -502,6 +502,12 @@ func TestPatch_BasicReplace(t *testing.T) {
 	if r.Diff == "" {
 		t.Error("expected diff output")
 	}
+	if !strings.HasPrefix(r.Diff, "<untrusted_content_") {
+		t.Errorf("patch diff should be wrapped as untrusted content, got: %q", r.Diff)
+	}
+	if !strings.Contains(unwrapUntrusted(r.Diff), "--- a/") {
+		t.Errorf("unwrapped patch diff missing expected markers, got: %q", unwrapUntrusted(r.Diff))
+	}
 
 	data, _ := os.ReadFile(path)
 	if string(data) != "hello new world\n" {
