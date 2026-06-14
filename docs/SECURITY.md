@@ -308,6 +308,10 @@ exceed the cap are rejected before they are written.
 
 These fields can only be set from operator-controlled sources: `~/.odek/config.json`, `ODEK_*` environment variables, or CLI flags.
 
+### 19. MCP server environment sanitisation
+
+MCP server subprocesses no longer inherit the full odek process environment. They receive only a minimal allowlist of safe variables (e.g. `PATH`, `HOME`, `LANG`, `TMPDIR`) plus any explicit `env` overrides from the server config. Keys matching secret patterns — `*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `*_CREDENTIAL`, `*_PRIVATE_KEY`, etc. — are stripped even when listed in `env`. This prevents a compromised or malicious MCP server from reading secrets loaded from `~/.odek/secrets.env` or other provider keys that were present in the parent environment.
+
 ### YOLO mode
 
 ```json

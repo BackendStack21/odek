@@ -108,11 +108,11 @@ Add `mcp_servers` to `~/.odek/config.json` (global, operator-trusted) or `odek.j
       "command": "uvx",
       "args": ["mcp-server-fetch"]
     },
-    "github": {
-      "command": "node",
-      "args": ["/path/to/github-mcp-server/index.js"],
+    "fetch": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"],
       "env": {
-        "GITHUB_TOKEN": "${GITHUB_TOKEN}"
+        "LOG_LEVEL": "debug"
       }
     }
   }
@@ -123,6 +123,14 @@ Each server is defined by:
 - `command` — the executable to run
 - `args` — optional command-line arguments
 - `env` — optional environment variable overrides (empty string removes the variable)
+
+> **Environment sanitisation.** MCP server children receive only a minimal
+> allowlist of safe variables (e.g. `PATH`, `HOME`, `LANG`) plus the overrides
+> from `env`. Keys matching secret patterns (`*_API_KEY`, `*_TOKEN`,
+> `*_SECRET`, `*_PASSWORD`, etc.) are stripped even when listed in `env`, so a
+> compromised server cannot exfiltrate parent secrets. Pass authentication
+> material via server-specific config files or command-line arguments instead
+> of environment variables.
 
 The format matches Claude Code's `mcpServers` config — any MCP server you use
 with Claude Code can be added to odek's config.

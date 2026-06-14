@@ -282,14 +282,76 @@ func TestBuildEnv_Overrides(t *testing.T) {
 
 func TestBuildEnv_RemovesEmptyValue(t *testing.T) {
 	result := buildEnv(map[string]string{
-		"REMOVE_ME": "", // empty = remove from env
+		"PATH": "", // empty = remove from env
 	})
 
 	for _, e := range result {
-		if len(e) > 8 && e[:9] == "REMOVE_ME" {
-			t.Errorf("expected REMOVE_ME to be removed, but found: %s", e)
+		if strings.HasPrefix(e, "PATH=") {
+			t.Errorf("expected PATH to be removed, but found: %s", e)
 		}
 	}
+}
+
+func TestBuildEnv_AllowlistBlocksSecrets(t *testing.T) {
+	orig := osEnviron
+	osEnviron = func() []string {
+		return []string{
+			"PATH=/usr/bin",
+			"HOME=/home/user",
+			"ODEK_API_KEY=sk-odek",
+			"GITHUB_TOKEN=ghp-secret",
+			"SOME_SECRET=shh",
+			"MY_PASSWORD=hunter2",
+		}
+	}
+	defer func() { osEnviron = orig }()
+
+	result := buildEnv(nil)
+	m := envToMap(result)
+
+	if m["PATH"] != "/usr/bin" {
+		t.Errorf("PATH = %q, want /usr/bin", m["PATH"])
+	}
+	if m["HOME"] != "/home/user" {
+		t.Errorf("HOME = %q, want /home/user", m["HOME"])
+	}
+	for _, k := range []string{"ODEK_API_KEY", "GITHUB_TOKEN", "SOME_SECRET", "MY_PASSWORD"} {
+		if _, ok := m[k]; ok {
+			t.Errorf("sensitive key %q should not be forwarded", k)
+		}
+	}
+}
+
+func TestBuildEnv_OverridesCannotInjectSecrets(t *testing.T) {
+	orig := osEnviron
+	osEnviron = func() []string { return []string{"PATH=/usr/bin"} }
+	defer func() { osEnviron = orig }()
+
+	result := buildEnv(map[string]string{
+		"LEGIT_VAR":   "ok",
+		"EVIL_API_KEY": "sk-stolen",
+		"BOT_TOKEN":    "tok-stolen",
+	})
+	m := envToMap(result)
+
+	if m["LEGIT_VAR"] != "ok" {
+		t.Errorf("LEGIT_VAR = %q, want ok", m["LEGIT_VAR"])
+	}
+	for _, k := range []string{"EVIL_API_KEY", "BOT_TOKEN"} {
+		if _, ok := m[k]; ok {
+			t.Errorf("sensitive override %q should be dropped", k)
+		}
+	}
+}
+
+func envToMap(env []string) map[string]string {
+	m := make(map[string]string, len(env))
+	for _, e := range env {
+		if k, v, ok := strings.Cut(e, "="); ok {
+			m[k] = v
+		}
+	}
+	return m
 }
 
 func TestDiscover_FailsOnDeadProcess(t *testing.T) {
