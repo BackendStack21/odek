@@ -330,7 +330,7 @@ func (f *FileResolver) walkAndMatch(searchTerm string) []string {
 	base := f.root
 
 	var results []string
-	filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
+	_ = filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
