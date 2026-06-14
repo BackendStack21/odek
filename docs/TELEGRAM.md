@@ -83,7 +83,14 @@ See [Error Handling & Retry](#error-handling--retry) above for retry strategy, `
 
 ### Fallback URLs
 
-`SetFallbackURLs` configures alternate Telegram API endpoints. If the primary endpoint is unreachable, the bot falls through to the next URL in the list. This is useful for regions where `api.telegram.org` may be blocked.
+`SetFallbackURLs` configures alternate Telegram API endpoints. If the primary endpoint is unreachable, the bot falls through to the next URL in the list. This is useful for regions where `api.telegram.org` may be blocked or for pointing at a local [Telegram Bot API server](https://core.telegram.org/bots/api#using-a-local-bot-api-server).
+
+Fallback URLs are validated on startup. Only the following are accepted:
+
+- HTTPS hosts under `telegram.org` (e.g. `https://api.telegram.org`, `https://fallback.api.telegram.org`).
+- Loopback addresses for local Bot API servers (e.g. `http://127.0.0.1:8081`, `http://localhost:8081`, `http://[::1]:8081`).
+
+Non-HTTPS, non-loopback, or non-Telegram URLs are rejected to prevent the bot token from leaking to third parties, because the fallback transport rewrites the request host while preserving the original path (`/bot<token>/<method>`).
 
 ### Daily Token Budget
 

@@ -1149,8 +1149,10 @@ func TestBot_SetFallbackURLs(t *testing.T) {
 	bot := NewBot("testtoken")
 	originalClient := bot.Client
 
-	fallbacks := []string{"https://api.telegram2.org", "https://api.telegram3.org"}
-	bot.SetFallbackURLs(fallbacks)
+	fallbacks := []string{"https://fallback1.api.telegram.org", "https://fallback2.api.telegram.org"}
+	if err := bot.SetFallbackURLs(fallbacks); err != nil {
+		t.Fatalf("SetFallbackURLs: %v", err)
+	}
 
 	// The bot's client should have been replaced.
 	if bot.Client == originalClient {
@@ -1166,11 +1168,11 @@ func TestBot_SetFallbackURLs(t *testing.T) {
 	if len(ft.FallbackURLs) != 2 {
 		t.Errorf("FallbackURLs length = %d, want 2", len(ft.FallbackURLs))
 	}
-	if ft.FallbackURLs[0] != "https://api.telegram2.org" {
-		t.Errorf("FallbackURLs[0] = %q, want %q", ft.FallbackURLs[0], "https://api.telegram2.org")
+	if ft.FallbackURLs[0] != "https://fallback1.api.telegram.org" {
+		t.Errorf("FallbackURLs[0] = %q, want %q", ft.FallbackURLs[0], "https://fallback1.api.telegram.org")
 	}
-	if ft.FallbackURLs[1] != "https://api.telegram3.org" {
-		t.Errorf("FallbackURLs[1] = %q, want %q", ft.FallbackURLs[1], "https://api.telegram3.org")
+	if ft.FallbackURLs[1] != "https://fallback2.api.telegram.org" {
+		t.Errorf("FallbackURLs[1] = %q, want %q", ft.FallbackURLs[1], "https://fallback2.api.telegram.org")
 	}
 }
 
@@ -1179,10 +1181,26 @@ func TestBot_SetFallbackURLs_Empty(t *testing.T) {
 	originalClient := bot.Client
 
 	// Empty slice should be a no-op.
-	bot.SetFallbackURLs([]string{})
+	if err := bot.SetFallbackURLs([]string{}); err != nil {
+		t.Fatalf("SetFallbackURLs(empty): %v", err)
+	}
 
 	if bot.Client != originalClient {
 		t.Error("bot.Client was replaced despite empty fallback list")
+	}
+}
+
+func TestBot_SetFallbackURLs_InvalidRejected(t *testing.T) {
+	bot := NewBot("testtoken")
+	originalClient := bot.Client
+
+	if err := bot.SetFallbackURLs([]string{"https://attacker.example.com"}); err == nil {
+		t.Fatal("expected error for untrusted fallback URL, got nil")
+	}
+
+	// Client must not be replaced when validation fails.
+	if bot.Client != originalClient {
+		t.Error("bot.Client was replaced despite invalid fallback URL")
 	}
 }
 

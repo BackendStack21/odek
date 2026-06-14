@@ -92,7 +92,10 @@ func TestRetryWithBackoff_SingleAttempt(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNewFallbackTransport(t *testing.T) {
-	ft := NewFallbackTransport([]string{"https://fallback1.example.com", "https://fallback2.example.com"})
+	ft, err := NewFallbackTransport([]string{"https://api.telegram.org", "https://fallback.api.telegram.org"})
+	if err != nil {
+		t.Fatalf("NewFallbackTransport returned error: %v", err)
+	}
 	if ft == nil {
 		t.Fatal("NewFallbackTransport returned nil")
 	}
@@ -114,7 +117,10 @@ func TestNewFallbackTransport(t *testing.T) {
 }
 
 func TestNewFallbackTransport_EmptyFallbacks(t *testing.T) {
-	ft := NewFallbackTransport(nil)
+	ft, err := NewFallbackTransport(nil)
+	if err != nil {
+		t.Fatalf("NewFallbackTransport returned error: %v", err)
+	}
 	if ft == nil {
 		t.Fatal("NewFallbackTransport returned nil")
 	}
@@ -128,6 +134,16 @@ func TestNewFallbackTransport_EmptyFallbacks(t *testing.T) {
 	urls := ft.allURLs()
 	if len(urls) != 1 || urls[0] != "https://api.telegram.org" {
 		t.Errorf("allURLs() = %v, want [https://api.telegram.org]", urls)
+	}
+}
+
+func TestNewFallbackTransport_InvalidFallbackRejected(t *testing.T) {
+	_, err := NewFallbackTransport([]string{"https://attacker.example.com"})
+	if err == nil {
+		t.Fatal("expected error for untrusted fallback URL, got nil")
+	}
+	if !strings.Contains(err.Error(), "telegram.org") && !strings.Contains(err.Error(), "loopback") {
+		t.Errorf("error = %q, want telegram.org/loopback mention", err)
 	}
 }
 
@@ -145,7 +161,10 @@ func TestEndpoints_RunningServer(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	ft := NewFallbackTransport(nil)
+	ft, err := NewFallbackTransport(nil)
+	if err != nil {
+		t.Fatalf("NewFallbackTransport: %v", err)
+	}
 	ft.PrimaryURL = ts.URL
 
 	results := ft.TestEndpoints()
@@ -174,7 +193,10 @@ func TestEndpoints_RunningServerWithFallback(t *testing.T) {
 	}))
 	defer fallback.Close()
 
-	ft := NewFallbackTransport([]string{fallback.URL})
+	ft, err := NewFallbackTransport([]string{fallback.URL})
+	if err != nil {
+		t.Fatalf("NewFallbackTransport: %v", err)
+	}
 	ft.PrimaryURL = primary.URL
 
 	results := ft.TestEndpoints()
@@ -196,7 +218,10 @@ func TestEndpoints_StoppedServer(t *testing.T) {
 	}))
 	ts.Close()
 
-	ft := NewFallbackTransport(nil)
+	ft, err := NewFallbackTransport(nil)
+	if err != nil {
+		t.Fatalf("NewFallbackTransport: %v", err)
+	}
 	ft.PrimaryURL = ts.URL
 
 	results := ft.TestEndpoints()
@@ -222,7 +247,10 @@ func TestEndpoints_MixedOneUpOneDown(t *testing.T) {
 	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	down.Close() // server is dead
 
-	ft := NewFallbackTransport([]string{down.URL, up.URL})
+	ft, err := NewFallbackTransport([]string{down.URL, up.URL})
+	if err != nil {
+		t.Fatalf("NewFallbackTransport: %v", err)
+	}
 	ft.PrimaryURL = down.URL // test the down one first
 
 	results := ft.TestEndpoints()
@@ -245,7 +273,10 @@ func TestEndpoints_NonOKStatus(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	ft := NewFallbackTransport(nil)
+	ft, err := NewFallbackTransport(nil)
+	if err != nil {
+		t.Fatalf("NewFallbackTransport: %v", err)
+	}
 	ft.PrimaryURL = ts.URL
 
 	results := ft.TestEndpoints()
@@ -272,7 +303,10 @@ func TestFallbackTransport_RoundTrip_PrimaryWorks(t *testing.T) {
 	}))
 	defer primary.Close()
 
-	ft := NewFallbackTransport(nil)
+	ft, err := NewFallbackTransport(nil)
+	if err != nil {
+		t.Fatalf("NewFallbackTransport: %v", err)
+	}
 	ft.PrimaryURL = primary.URL
 
 	req, err := http.NewRequest(http.MethodGet, primary.URL+"/getMe", nil)
@@ -300,7 +334,10 @@ func TestFallbackTransport_RoundTrip_FallbackWorks(t *testing.T) {
 	}))
 	defer fallback.Close()
 
-	ft := NewFallbackTransport([]string{fallback.URL})
+	ft, err := NewFallbackTransport([]string{fallback.URL})
+	if err != nil {
+		t.Fatalf("NewFallbackTransport: %v", err)
+	}
 	ft.PrimaryURL = primary.URL
 
 	req, err := http.NewRequest(http.MethodGet, primary.URL+"/getMe", nil)
@@ -325,7 +362,10 @@ func TestFallbackTransport_RoundTrip_AllFail(t *testing.T) {
 	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	fallback.Close()
 
-	ft := NewFallbackTransport([]string{fallback.URL})
+	ft, err := NewFallbackTransport([]string{fallback.URL})
+	if err != nil {
+		t.Fatalf("NewFallbackTransport: %v", err)
+	}
 	ft.PrimaryURL = primary.URL
 
 	req, err := http.NewRequest(http.MethodGet, primary.URL+"/getMe", nil)
@@ -348,7 +388,10 @@ func TestFallbackTransport_Do_UsesTryURLs(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	ft := NewFallbackTransport(nil)
+	ft, err := NewFallbackTransport(nil)
+	if err != nil {
+		t.Fatalf("NewFallbackTransport: %v", err)
+	}
 	ft.PrimaryURL = ts.URL
 
 	req, err := http.NewRequest(http.MethodPost, ts.URL+"/sendMessage", nil)
@@ -376,7 +419,10 @@ func TestFallbackTransport_QueryParametersPreserved(t *testing.T) {
 	}))
 	defer primary.Close()
 
-	ft := NewFallbackTransport(nil)
+	ft, err := NewFallbackTransport(nil)
+	if err != nil {
+		t.Fatalf("NewFallbackTransport: %v", err)
+	}
 	ft.PrimaryURL = primary.URL
 
 	req, err := http.NewRequest(http.MethodGet, primary.URL+"/test?foo=bar&baz=1", nil)
@@ -395,7 +441,10 @@ func TestFallbackTransport_QueryParametersPreserved(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFallbackTransport_InvalidPrimaryURL(t *testing.T) {
-	ft := NewFallbackTransport(nil)
+	ft, err := NewFallbackTransport(nil)
+	if err != nil {
+		t.Fatalf("NewFallbackTransport: %v", err)
+	}
 	ft.PrimaryURL = "://invalid-url"
 
 	req, err := http.NewRequest(http.MethodGet, "http://example.com/test", nil)
@@ -412,24 +461,13 @@ func TestFallbackTransport_InvalidPrimaryURL(t *testing.T) {
 }
 
 func TestFallbackTransport_InvalidFallbackURL(t *testing.T) {
-	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("primary ok"))
-	}))
-	defer primary.Close()
-
-	ft := NewFallbackTransport([]string{":bad"})
-	ft.PrimaryURL = primary.URL
-
-	req, err := http.NewRequest(http.MethodGet, primary.URL+"/test", nil)
-	if err != nil {
-		t.Fatalf("create request: %v", err)
+	_, err := NewFallbackTransport([]string{":bad"})
+	if err == nil {
+		t.Fatal("expected error for invalid fallback URL, got nil")
 	}
-	resp, err := ft.RoundTrip(req)
-	if err != nil {
-		t.Fatalf("RoundTrip should fall through to primary: %v", err)
+	if !strings.Contains(err.Error(), "invalid fallback URL") {
+		t.Errorf("error = %q, want substring %q", err, "invalid fallback URL")
 	}
-	resp.Body.Close()
 }
 
 // ---------------------------------------------------------------------------
@@ -437,7 +475,10 @@ func TestFallbackTransport_InvalidFallbackURL(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEndpoints_InvalidURL(t *testing.T) {
-	ft := NewFallbackTransport(nil)
+	ft, err := NewFallbackTransport(nil)
+	if err != nil {
+		t.Fatalf("NewFallbackTransport: %v", err)
+	}
 	ft.PrimaryURL = "://bad"
 
 	results := ft.TestEndpoints()
@@ -464,7 +505,10 @@ func TestFallbackTransport_WrapBot(t *testing.T) {
 
 	bot := NewBot("testtoken")
 	// Point the bot at our primary URL.
-	ft := NewFallbackTransport(nil)
+	ft, err := NewFallbackTransport(nil)
+	if err != nil {
+		t.Fatalf("NewFallbackTransport: %v", err)
+	}
 	ft.PrimaryURL = ts.URL
 
 	// WrapBot must replace bot.Client with the transport's client.
@@ -495,7 +539,10 @@ func TestFallbackTransport_WrapBot_SendsRequest(t *testing.T) {
 	defer ts.Close()
 
 	bot := NewBot("testtoken")
-	ft := NewFallbackTransport(nil)
+	ft, err := NewFallbackTransport(nil)
+	if err != nil {
+		t.Fatalf("NewFallbackTransport: %v", err)
+	}
 	ft.PrimaryURL = ts.URL
 	ft.WrapBot(bot)
 
@@ -517,9 +564,12 @@ func TestFallbackTransport_WrapBot_SendsRequest(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNewFallbackTransport_allURLs(t *testing.T) {
-	ft := NewFallbackTransport([]string{"fb1", "fb2"})
+	ft, err := NewFallbackTransport([]string{"https://fallback1.api.telegram.org", "https://fallback2.api.telegram.org"})
+	if err != nil {
+		t.Fatalf("NewFallbackTransport: %v", err)
+	}
 	urls := ft.allURLs()
-	want := []string{"https://api.telegram.org", "fb1", "fb2"}
+	want := []string{"https://api.telegram.org", "https://fallback1.api.telegram.org", "https://fallback2.api.telegram.org"}
 	if len(urls) != len(want) {
 		t.Fatalf("len = %d, want %d: %v", len(urls), len(want), urls)
 	}
@@ -527,6 +577,42 @@ func TestNewFallbackTransport_allURLs(t *testing.T) {
 		if urls[i] != want[i] {
 			t.Errorf("urls[%d] = %q, want %q", i, urls[i], want[i])
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// validateFallbackURL
+// ---------------------------------------------------------------------------
+
+func TestValidateFallbackURL(t *testing.T) {
+	cases := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{"official api", "https://api.telegram.org", false},
+		{"telegram.org subdomain", "https://fallback.api.telegram.org", false},
+		{"loopback localhost", "http://localhost:8081", false},
+		{"loopback 127.0.0.1", "http://127.0.0.1:8081", false},
+		{"loopback IPv6", "http://[::1]:8081", false},
+		{"plain http non-loopback", "http://api.telegram.org", true},
+		{"untrusted domain", "https://attacker.example.com", true},
+		{"similar domain", "https://api.telegram.org.evil.com", true},
+		{"missing scheme", "api.telegram.org", true},
+		{"empty", "", true},
+		{"bad URL", "://bad", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateFallbackURL(tc.url)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected error for %q, got nil", tc.url)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error for %q: %v", tc.url, err)
+			}
+		})
 	}
 }
 

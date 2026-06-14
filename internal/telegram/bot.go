@@ -651,12 +651,20 @@ func (b *Bot) SetMyCommands(commands []BotCommand) error {
 // "https://api.telegram.org" (without the /bot<token> suffix). The fallback
 // transport rewrites the host on each request, keeping the original path
 // (which includes the token).
-func (b *Bot) SetFallbackURLs(urls []string) {
+//
+// Fallback URLs are validated: they must be HTTPS telegram.org hosts or
+// loopback addresses. This prevents the bot token from leaking to arbitrary
+// third-party endpoints.
+func (b *Bot) SetFallbackURLs(urls []string) error {
 	if len(urls) == 0 {
-		return
+		return nil
 	}
-	ft := NewFallbackTransport(urls)
+	ft, err := NewFallbackTransport(urls)
+	if err != nil {
+		return err
+	}
 	ft.WrapBot(b)
+	return nil
 }
 
 // SetDailyTokenBudget sets the daily token usage budget for the bot.

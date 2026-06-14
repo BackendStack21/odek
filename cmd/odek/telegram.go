@@ -187,7 +187,9 @@ func telegramCmd(args []string) error {
 
 	// 4c. Configure fallback Telegram API endpoints if provided.
 	if len(cfg.FallbackURLs) > 0 {
-		bot.SetFallbackURLs(cfg.FallbackURLs)
+		if err := bot.SetFallbackURLs(cfg.FallbackURLs); err != nil {
+			return fmt.Errorf("telegram: invalid fallback URL: %w", err)
+		}
 	}
 
 	// 4d. Configure daily token budget (0 = unlimited, the default).
