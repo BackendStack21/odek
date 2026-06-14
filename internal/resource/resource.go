@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/BackendStack21/odek/internal/pathutil"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -211,6 +212,12 @@ func (f *FileResolver) Search(ctx context.Context, query string, limit int) ([]R
 		return nil, nil
 	}
 
+	// Reject traversal attempts before touching the filesystem. A query is a
+	// bare filename/prefix for autocomplete, not a path expression.
+	if err := validateSearchQuery(query); err != nil {
+		return nil, err
+	}
+
 	// Try exact match first
 	pattern := filepath.Join(f.root, query)
 	matches, err := filepath.Glob(pattern + "*")
@@ -223,11 +230,7 @@ func (f *FileResolver) Search(ctx context.Context, query string, limit int) ([]R
 		matches = f.walkAndMatch(query)
 	}
 
-	// Resolve the root once so every match can be confined to it. A query
-	// such as "../../etc/passwd" makes filepath.Join above clean to a path
-	// outside root, and filepath.Glob would then match files the workspace
-	// must not expose. Skip any match that escapes root before touching the
-	// filesystem (closes CodeQL "uncontrolled data in path expression").
+	// Resolve the root once so every match can be confined to it.
 	absRoot, err := filepath.Abs(f.root)
 	if err != nil {
 		return nil, nil
@@ -238,7 +241,7 @@ func (f *FileResolver) Search(ctx context.Context, query string, limit int) ([]R
 		if len(resources) >= limit {
 			break
 		}
-		if !withinRoot(absRoot, match) {
+		if !pathutil.WithinRoot(absRoot, match) {
 			continue
 		}
 		rel, _ := filepath.Rel(f.root, match)
@@ -261,23 +264,40 @@ func (f *FileResolver) Search(ctx context.Context, query string, limit int) ([]R
 	return resources, nil
 }
 
+// validateSearchQuery rejects queries that could escape the configured root.
+// Search queries are autocomplete prefixes, not filesystem paths.
+func validateSearchQuery(query string) error {
+	if filepath.IsAbs(query) {
+		return fmt.Errorf("resource: search query must not be an absolute path")
+	}
+	if strings.Contains(query, "..") {
+		return fmt.Errorf("resource: search query must not contain parent references")
+	}
+	if strings.ContainsAny(query, "/\\") {
+		return fmt.Errorf("resource: search query must not contain path separators")
+	}
+	return nil
+}
+
 func (f *FileResolver) Load(ctx context.Context, id string) (string, error) {
 	// id is the path after @ (e.g. "src/main.go")
 	target := filepath.Join(f.root, id)
 
-	// Security: resolve path and check it's within root (string-level check)
-	absTarget, err := filepath.Abs(target)
-	if err != nil {
-		return "", err
-	}
-	if !withinRoot(f.root, absTarget) {
+	// Security: resolve symlinks in the directory components of the path and
+	// verify the resolved location stays within the root. This prevents an
+	// attacker from using a symlinked directory inside the workspace (e.g.
+	// workspace/link -> /etc) to read files outside the workspace via
+	// @link/passwd. The final path component is left unresolved so the
+	// O_NOFOLLOW open below still rejects symlink final components.
+	resolvedTarget := pathutil.ResolveDirSymlinks(target)
+	if !pathutil.WithinRoot(f.root, resolvedTarget) {
 		return "", fmt.Errorf("resource: path %q is outside root", id)
 	}
 
-	// Open with O_NOFOLLOW to atomically prevent symlink following.
-	// If the path is a symlink, the open fails with ELOOP — closing
-	// the TOCTOU window between a separate Lstat check and the read.
-	fd, err := os.OpenFile(absTarget, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	// Open with O_NOFOLLOW to atomically prevent the final component from
+	// being a symlink. If the path is a symlink, the open fails with ELOOP —
+	// closing the TOCTOU window between a separate Lstat check and the read.
+	fd, err := os.OpenFile(resolvedTarget, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return "", err
 	}
@@ -310,17 +330,21 @@ func (f *FileResolver) walkAndMatch(searchTerm string) []string {
 	base := f.root
 
 	var results []string
-	filepath.Walk(base, func(path string, info os.FileInfo, err error) error {
+	_ = filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
 		// Skip symlinks — resource resolver uses O_NOFOLLOW on Load,
-		// so symlinks are unreadable anyway.
-		if info.Mode()&os.ModeSymlink != 0 {
+		// so symlinks are unreadable anyway. Skip symlinked directories
+		// entirely so traversal cannot follow them.
+		if d.Type()&os.ModeSymlink != 0 {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
-		if info.IsDir() {
-			if skipDir(info.Name()) {
+		if d.IsDir() {
+			if skipDir(d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -347,25 +371,6 @@ func skipDir(name string) bool {
 		return true
 	}
 	return false
-}
-
-// withinRoot reports whether candidate resolves to a path inside root.
-// root may be relative; candidate may be relative or absolute. The check is
-// separator-aware so "/foo" does not match "/foobar". It is the single
-// confinement primitive for the file resolver (Search metadata + Load reads).
-func withinRoot(root, candidate string) bool {
-	absRoot, err := filepath.Abs(root)
-	if err != nil {
-		return false
-	}
-	absCandidate, err := filepath.Abs(candidate)
-	if err != nil {
-		return false
-	}
-	if absCandidate == absRoot {
-		return true
-	}
-	return strings.HasPrefix(absCandidate, absRoot+string(os.PathSeparator))
 }
 
 func describeFile(info os.FileInfo) string {

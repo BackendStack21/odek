@@ -1,0 +1,178 @@
+# golangci-lint configuration for odek.
+#
+# Goal: enable a core set of linters in CI without requiring a one-shot
+# refactor of the whole codebase. Test files are excluded from the noisiest
+# rules (errcheck, unused) because setup helpers frequently ignore errors or
+# are conditionally compiled. Pre-existing production issues are listed below
+# with explicit excludes so CI stays green; they should be removed as the code
+# is touched.
+run:
+  timeout: 10m
+  go: "1.24"
+
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+linters-settings:
+  errcheck:
+    # Ignore common error-delegation patterns where the error is handled
+    # implicitly (e.g. fmt.Fprintf to stderr).
+    exclude-functions:
+      - fmt.Fprintf
+      - fmt.Fprintln
+      - io.WriteString
+
+issues:
+  exclude-rules:
+    # Test helpers commonly ignore setup errors, may define conditionally unused
+    # helpers, and often contain intentionally empty branches / identical
+    # comparison assertions. Keep govet enabled for tests; silence the rest.
+    - path: _test\.go
+      linters:
+        - errcheck
+        - gosimple
+        - ineffassign
+        - staticcheck
+        - unused
+
+    # ------------------------------------------------------------------
+    # Pre-existing production issues to be fixed incrementally. Each entry
+    # points to a concrete lint finding that existed before golangci-lint
+    # was enabled in CI. Contributors should remove the matching exclude
+    # when fixing the underlying code.
+    # ------------------------------------------------------------------
+
+    # cmd/odek/file_tool.go: unchecked filepath.Walk errors.
+    - path: cmd/odek/file_tool.go
+      linters:
+        - errcheck
+
+    # cmd/odek/main.go: unchecked fmt.Sscanf/Scanf/store.Save/sl.RecordSkip.
+    - path: cmd/odek/main.go
+      linters:
+        - errcheck
+
+    # cmd/odek/mcp.go: unchecked error return.
+    - path: cmd/odek/mcp.go
+      linters:
+        - errcheck
+
+    # cmd/odek/perf_tools.go: unchecked Walk/Seek/io.Copy/Process.Kill.
+    - path: cmd/odek/perf_tools.go
+      linters:
+        - errcheck
+
+    # cmd/odek/repl.go: unchecked store.Save.
+    - path: cmd/odek/repl.go
+      linters:
+        - errcheck
+
+    # cmd/odek/repl_editor.go: unchecked terminal restore/read.
+    - path: cmd/odek/repl_editor.go
+      linters:
+        - errcheck
+
+    # cmd/odek/serve.go: unchecked error returns + unused wsStreamWriter.
+    - path: cmd/odek/serve.go
+      linters:
+        - errcheck
+        - unused
+
+    # cmd/odek/telegram.go: unchecked bot.* and os.MkdirAll error returns.
+    - path: cmd/odek/telegram.go
+      linters:
+        - errcheck
+
+    # cmd/odek/wsapprover.go: unchecked rand.Read error.
+    - path: cmd/odek/wsapprover.go
+      linters:
+        - errcheck
+
+    # cmd/odek/subagent.go: unchecked enc.Encode.
+    - path: cmd/odek/subagent.go
+      linters:
+        - errcheck
+
+    # cmd/odek/vision_tool.go: unchecked fmt.Sscanf.
+    - path: cmd/odek/vision_tool.go
+      linters:
+        - errcheck
+
+    # internal/memory/memory.go: unchecked episode write.
+    - path: internal/memory/memory.go
+      linters:
+        - errcheck
+
+    # internal/skills/cache.go/tools.go/types.go: unchecked Rename/Unmarshal.
+    - path: internal/skills/cache.go
+      linters:
+        - errcheck
+    - path: internal/skills/tools.go
+      linters:
+        - errcheck
+    - path: internal/skills/types.go
+      linters:
+        - errcheck
+
+    # internal/flock/flock.go: unchecked unlockFile.
+    - path: internal/flock/flock.go
+      linters:
+        - errcheck
+
+    # internal/telegram/approver.go: unchecked EditMessageText/rand.Read.
+    - path: internal/telegram/approver.go
+      linters:
+        - errcheck
+
+    # internal/telegram/health.go: unchecked json.Encode.
+    - path: internal/telegram/health.go
+      linters:
+        - errcheck
+
+    # internal/llm/client.go: unused var + empty branch.
+    - path: internal/llm/client.go
+      linters:
+        - unused
+        - staticcheck
+
+    # internal/loop/loop.go: unnecessary fmt.Sprintf.
+    - path: internal/loop/loop.go
+      linters:
+        - gosimple
+
+    # internal/mcpclient/client.go: unused type/fields/function + unchecked Wait/Kill.
+    - path: internal/mcpclient/client.go
+      linters:
+        - errcheck
+        - unused
+
+    # internal/memory/buffer.go: unnecessary fmt.Sprintf.
+    - path: internal/memory/buffer.go
+      linters:
+        - gosimple
+
+    # internal/memory/memory.go: unused const.
+    - path: internal/memory/memory.go
+      linters:
+        - unused
+
+    # internal/memory/merge.go: ineffectual assignments.
+    - path: internal/memory/merge.go
+      linters:
+        - ineffassign
+
+    # internal/telegram/bot.go: deprecated netErr.Temporary.
+    - path: internal/telegram/bot.go
+      linters:
+        - staticcheck
+
+    # internal/schedule/store.go: unchecked syscall.Flock.
+    - path: internal/schedule/store.go
+      linters:
+        - errcheck

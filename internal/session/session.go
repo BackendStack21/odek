@@ -42,15 +42,16 @@ const MaxSessionFileBytes = 32 * 1024 * 1024 // 32 MiB
 // Session represents a single multi-turn conversation with the agent.
 // All fields are exported for direct manipulation at the CLI layer.
 type Session struct {
-	ID        string        `json:"id"`               // e.g. "20260518-abc123"
-	CreatedAt time.Time     `json:"created_at"`       // first message time
-	UpdatedAt time.Time     `json:"updated_at"`       // last append time
-	Model     string        `json:"model"`            // model name used
-	Turns     int           `json:"turns"`            // number of user turns
-	Task      string        `json:"task"`             // first user message (label)
-	Sandbox   bool          `json:"sandbox"`          // was sandboxed — auto-apply on resume
-	Messages  []llm.Message `json:"messages"`         // full conversation history
-	Buffer    []string      `json:"buffer,omitempty"` // last N turn summaries (memory tier 2)
+	ID        string        `json:"id"`                 // e.g. "20260518-abc123…" (128-bit random suffix)
+	AuthToken string        `json:"auth_token,omitempty"` // session-scoped secret required by serve handlers
+	CreatedAt time.Time     `json:"created_at"`         // first message time
+	UpdatedAt time.Time     `json:"updated_at"`         // last append time
+	Model     string        `json:"model"`              // model name used
+	Turns     int           `json:"turns"`              // number of user turns
+	Task      string        `json:"task"`               // first user message (label)
+	Sandbox   bool          `json:"sandbox"`            // was sandboxed — auto-apply on resume
+	Messages  []llm.Message `json:"messages"`           // full conversation history
+	Buffer    []string      `json:"buffer,omitempty"`   // last N turn summaries (memory tier 2)
 }
 
 // ── Store ──────────────────────────────────────────────────────────────
@@ -95,14 +96,35 @@ func (s *Store) InitVectorIndex(cfg *embedding.Config) error {
 
 // ── ID Generation ──────────────────────────────────────────────────────
 
-// generateID creates a session ID: YYYYMMDD-<random 3 bytes hex>.
+// generateID creates a session ID: YYYYMMDD-<random 16 bytes hex>.
 // The date prefix enables chronological sorting by filename.
-// The random suffix avoids collisions from parallel runs.
+// The 128-bit random suffix (32 hex chars) makes session IDs unguessable,
+// preventing brute-force enumeration of transcript files.
 func generateID() string {
 	now := time.Now().UTC().Format("20060102")
-	buf := make([]byte, 3)
-	rand.Read(buf) //nolint:errcheck // always succeeds per docs
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		// crypto/rand.Read only fails on catastrophic system failure. Fail
+		// closed rather than minting a predictable timestamp-derived ID, which
+		// would reintroduce the brute-force enumeration this randomness exists
+		// to prevent.
+		panic(fmt.Sprintf("session: crypto/rand unavailable: %v", err))
+	}
 	return now + "-" + hexEncode(buf)
+}
+
+// GenerateAuthToken creates a 256-bit URL-safe secret for session-scoped
+// authentication in the Web UI. It is generated once when a session is created
+// and required by serve handlers for any access to session details.
+func GenerateAuthToken() string {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		// crypto/rand.Read only fails on catastrophic system failure. Fail
+		// closed rather than minting a predictable timestamp-derived token,
+		// which would be trivially guessable and defeat session auth.
+		panic(fmt.Sprintf("session: crypto/rand unavailable: %v", err))
+	}
+	return hexEncode(buf)
 }
 
 func hexEncode(b []byte) string {
@@ -233,6 +255,7 @@ func isSessionFile(name string) bool {
 func (s *Store) Create(messages []llm.Message, model, task string) (*Session, error) {
 	sess := &Session{
 		ID:        generateID(),
+		AuthToken: GenerateAuthToken(),
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
 		Model:     model,

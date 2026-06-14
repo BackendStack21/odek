@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/BackendStack21/odek/internal/render"
 	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/telegram"
+	toolpkg "github.com/BackendStack21/odek/internal/tool"
 )
 
 // ── spawnChild tests ──────────────────────────────────────────────────
@@ -549,14 +551,14 @@ func TestModeCommand(t *testing.T) {
 
 	h := telegram.NewHandler(telegram.NewBot("test:token"))
 
-	h.OnTextMessage = func(chatID int64, messageID int, text string) (string, error) {
+	h.OnTextMessage = func(chatID int64, messageID int, text string, _ bool, _ int64) (string, error) {
 		if text == "/mode" {
 			return "Agent Modes\n\n*interaction_mode*: engaging\n\nTo switch to *verbose* mode, use `/mode verbose`.", nil
 		}
 		return "", nil
 	}
 
-	result, err := h.OnTextMessage(123, 0, "/mode")
+	result, err := h.OnTextMessage(123, 0, "/mode", false, 0)
 	if err != nil {
 		t.Fatalf("OnTextMessage /mode returned error: %v", err)
 	}
@@ -767,5 +769,162 @@ func TestTruncateToolArgs_ExactBoundary(t *testing.T) {
 	got := truncateToolArgs(data, 100)
 	if got != data {
 		t.Errorf("data at exact maxLen should not be truncated: got len=%d", len(got))
+	}
+}
+
+// ── /restart authorization + cooldown tests ─────────────────────────────
+
+func TestHandleRestartCommand_AuthorizationAndCooldown(t *testing.T) {
+	origKill := killFn
+	origLast := lastRestartAt.Load()
+	t.Cleanup(func() {
+		killFn = origKill
+		lastRestartAt.Store(origLast)
+	})
+
+	var gotSig syscall.Signal
+	var gotPid int
+	sigCh := make(chan struct{}, 2)
+	killFn = func(pid int, sig syscall.Signal) error {
+		gotPid = pid
+		gotSig = sig
+		sigCh <- struct{}{}
+		return nil
+	}
+	lastRestartAt.Store(0)
+
+	adminChats := []int64{100}
+	adminUsers := []int64{200}
+
+	// Non-operator chat/user is denied.
+	reply, triggered := handleRestartCommand(999, 999, adminChats, adminUsers)
+	if triggered || !strings.Contains(reply, "restricted") {
+		t.Fatalf("non-operator should be denied, got reply=%q triggered=%v", reply, triggered)
+	}
+
+	// Operator chat triggers restart.
+	reply, triggered = handleRestartCommand(100, 999, adminChats, adminUsers)
+	if !triggered || !strings.Contains(reply, "Restarting") {
+		t.Fatalf("operator chat should trigger restart, got reply=%q triggered=%v", reply, triggered)
+	}
+	select {
+	case <-sigCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("restart signal not sent for operator chat")
+	}
+	if gotSig != syscall.SIGHUP {
+		t.Errorf("expected SIGHUP, got %v", gotSig)
+	}
+	if gotPid != os.Getpid() {
+		t.Errorf("expected pid %d, got %d", os.Getpid(), gotPid)
+	}
+
+	// Operator user is allowed even from a non-admin chat.
+	lastRestartAt.Store(0)
+	reply, triggered = handleRestartCommand(999, 200, adminChats, adminUsers)
+	if !triggered || !strings.Contains(reply, "Restarting") {
+		t.Fatalf("operator user should trigger restart, got reply=%q triggered=%v", reply, triggered)
+	}
+	select {
+	case <-sigCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("restart signal not sent for operator user")
+	}
+
+	// Immediate restart is blocked by cooldown.
+	reply, triggered = handleRestartCommand(100, 999, adminChats, adminUsers)
+	if triggered || !strings.Contains(reply, "wait") {
+		t.Fatalf("cooldown should block restart, got reply=%q triggered=%v", reply, triggered)
+	}
+}
+
+// ── singleton lock tests ────────────────────────────────────────────────
+
+func TestAcquireLock_CreatesLockFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	release, err := acquireLock()
+	if err != nil {
+		t.Fatalf("acquireLock: %v", err)
+	}
+	defer release()
+
+	lockFile := filepath.Join(dir, ".odek", "telegram.lock")
+	info, err := os.Stat(lockFile)
+	if err != nil {
+		t.Fatalf("stat lock file: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Errorf("lock file mode = %04o, want 0600", perm)
+	}
+}
+
+func TestAcquireLock_RemovesLegacyPIDFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	pidFile := filepath.Join(dir, ".odek", "telegram.pid")
+	if err := os.MkdirAll(filepath.Dir(pidFile), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pidFile, []byte("12345\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	release, err := acquireLock()
+	if err != nil {
+		t.Fatalf("acquireLock: %v", err)
+	}
+	defer release()
+
+	if _, err := os.Stat(pidFile); !os.IsNotExist(err) {
+		t.Errorf("legacy PID file was not removed")
+	}
+}
+
+func TestAcquireLock_DoesNotKillLegacyPID(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	pidFile := filepath.Join(dir, ".odek", "telegram.pid")
+	if err := os.MkdirAll(filepath.Dir(pidFile), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Old PID-file logic would have killed this process. The flock-based lock
+	// must not act on the PID file contents at all.
+	if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	release, err := acquireLock()
+	if err != nil {
+		t.Fatalf("acquireLock: %v", err)
+	}
+	defer release()
+
+	// If we reach here, the current process is still alive.
+}
+
+// ── Send Message Tool Callback Validation ──────────────────────────────
+
+func TestValidateSendMessageButtons_ReservedPrefixesRejected(t *testing.T) {
+	for _, prefix := range toolpkg.ReservedCallbackPrefixes {
+		buttons := [][]map[string]string{
+			{{"text": "Bad", "callback_data": prefix + "foo"}},
+		}
+		if err := validateSendMessageButtons(buttons); err == nil {
+			t.Errorf("expected error for reserved prefix %q", prefix)
+		}
+	}
+}
+
+func TestValidateSendMessageButtons_NormalCallbacksAllowed(t *testing.T) {
+	buttons := [][]map[string]string{
+		{{"text": "OK", "callback_data": "cb:ok"}},
+		{{"text": "Plain", "callback_data": "plain"}},
+	}
+	if err := validateSendMessageButtons(buttons); err != nil {
+		t.Errorf("expected no error for normal callbacks, got: %v", err)
 	}
 }

@@ -18,17 +18,30 @@ type Update struct {
 
 // Message represents a Telegram message.
 type Message struct {
-	ID          int                   `json:"message_id"`
-	From        *User                 `json:"from,omitempty"`
-	Chat        *Chat                 `json:"chat,omitempty"`
-	Date        int                   `json:"date,omitempty"`
-	Text        string                `json:"text,omitempty"`
-	Entities    []MessageEntity       `json:"entities,omitempty"`
-	Photo       []PhotoSize           `json:"photo,omitempty"`
-	Voice       *Voice                `json:"voice,omitempty"`
-	Document    *Document             `json:"document,omitempty"`
-	Caption     string                `json:"caption,omitempty"`
-	ReplyMarkup *InlineKeyboardMarkup `json:"reply_markup,omitempty"`
+	ID            int                   `json:"message_id"`
+	From          *User                 `json:"from,omitempty"`
+	Chat          *Chat                 `json:"chat,omitempty"`
+	Date          int                   `json:"date,omitempty"`
+	Text          string                `json:"text,omitempty"`
+	Entities      []MessageEntity       `json:"entities,omitempty"`
+	Photo         []PhotoSize           `json:"photo,omitempty"`
+	Voice         *Voice                `json:"voice,omitempty"`
+	Document      *Document             `json:"document,omitempty"`
+	Caption       string                `json:"caption,omitempty"`
+	ReplyMarkup   *InlineKeyboardMarkup `json:"reply_markup,omitempty"`
+	ForwardFrom   *User                 `json:"forward_from,omitempty"`
+	ForwardDate   int                   `json:"forward_date,omitempty"`
+	ForwardOrigin *ForwardOrigin        `json:"forward_origin,omitempty"`
+}
+
+// ForwardOrigin describes the original sender of a forwarded message.
+// It is present when a message was forwarded from another chat or user.
+type ForwardOrigin struct {
+	Type           string `json:"type,omitempty"`
+	SenderUser     *User  `json:"sender_user,omitempty"`
+	SenderUserName string `json:"sender_user_name,omitempty"`
+	Chat           *Chat  `json:"chat,omitempty"`
+	MessageID      int    `json:"message_id,omitempty"`
 }
 
 // User represents a Telegram user or bot.

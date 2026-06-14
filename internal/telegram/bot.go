@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BackendStack21/odek/internal/flock"
 	"github.com/BackendStack21/odek/internal/transport"
 )
 
@@ -34,12 +35,14 @@ func (e *TelegramError) Error() string {
 
 // Bot represents a Telegram Bot API client.
 type Bot struct {
-	Token            string
-	BaseURL          string
-	FileBaseURL      string
-	Client           *http.Client
-	DailyTokenBudget int64
-	log              Logger
+	Token             string
+	BaseURL           string
+	FileBaseURL       string
+	Client            *http.Client
+	DailyTokenBudget  int64
+	MaxDownloadSize   int64 // 0 = unlimited; >0 = per-file byte cap
+	MediaQuotaPerChat int64 // 0 = disabled; >0 = per-chat quota in bytes
+	log               Logger
 
 	stopRetries chan struct{} // closed by StopRetries to abort retry backoff
 	stopOnce    sync.Once     // ensures stop channel is only closed once
@@ -592,6 +595,8 @@ func (b *Bot) GetFile(fileID string) (*File, error) {
 }
 
 // DownloadFile downloads a file from Telegram's file server and returns its raw bytes.
+// If MaxDownloadSize is set (>0), the read is capped and an error is returned
+// when the file exceeds the limit.
 func (b *Bot) DownloadFile(filePath string) ([]byte, error) {
 	url := fmt.Sprintf("%s/%s", b.FileBaseURL, filePath)
 
@@ -603,6 +608,17 @@ func (b *Bot) DownloadFile(filePath string) ([]byte, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("telegram: download file: status %d", resp.StatusCode)
+	}
+
+	if b.MaxDownloadSize > 0 {
+		data, err := io.ReadAll(io.LimitReader(resp.Body, b.MaxDownloadSize+1))
+		if err != nil {
+			return nil, fmt.Errorf("telegram: read file data: %w", err)
+		}
+		if int64(len(data)) > b.MaxDownloadSize {
+			return nil, fmt.Errorf("telegram: download file: exceeds maximum size of %d bytes", b.MaxDownloadSize)
+		}
+		return data, nil
 	}
 
 	data, err := io.ReadAll(resp.Body)
@@ -635,12 +651,20 @@ func (b *Bot) SetMyCommands(commands []BotCommand) error {
 // "https://api.telegram.org" (without the /bot<token> suffix). The fallback
 // transport rewrites the host on each request, keeping the original path
 // (which includes the token).
-func (b *Bot) SetFallbackURLs(urls []string) {
+//
+// Fallback URLs are validated: they must be HTTPS telegram.org hosts or
+// loopback addresses. This prevents the bot token from leaking to arbitrary
+// third-party endpoints.
+func (b *Bot) SetFallbackURLs(urls []string) error {
 	if len(urls) == 0 {
-		return
+		return nil
 	}
-	ft := NewFallbackTransport(urls)
+	ft, err := NewFallbackTransport(urls)
+	if err != nil {
+		return err
+	}
 	ft.WrapBot(b)
+	return nil
 }
 
 // SetDailyTokenBudget sets the daily token usage budget for the bot.
@@ -665,6 +689,9 @@ func budgetFilePath() string {
 // adds the given number of tokens, and returns an error if the total
 // exceeds the configured DailyTokenBudget. If the budget is zero (unset),
 // no check is performed and nil is returned.
+//
+// The read-modify-write cycle is protected by an advisory file lock so
+// concurrent odek processes and goroutines cannot clobber the counter.
 func (b *Bot) CheckDailyBudget(tokens int64) error {
 	if b.DailyTokenBudget <= 0 {
 		return nil // budget not configured
@@ -680,6 +707,13 @@ func (b *Bot) CheckDailyBudget(tokens int64) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("telegram: create budget dir: %w", err)
 	}
+
+	// Serialize read-modify-write across processes.
+	release, err := flock.Lock(path + ".lock")
+	if err != nil {
+		return fmt.Errorf("telegram: lock budget file: %w", err)
+	}
+	defer release()
 
 	// Read current usage (file may not exist yet — that's fine).
 	var current int64
@@ -700,8 +734,8 @@ func (b *Bot) CheckDailyBudget(tokens int64) error {
 		)
 	}
 
-	// Write the updated count.
-	if err := os.WriteFile(path, []byte(strconv.FormatInt(total, 10)), 0644); err != nil {
+	// Write the updated count with owner-only permissions.
+	if err := os.WriteFile(path, []byte(strconv.FormatInt(total, 10)), 0600); err != nil {
 		return fmt.Errorf("telegram: write budget file: %w", err)
 	}
 
@@ -715,6 +749,13 @@ func (b *Bot) DailyTokenUsage() (used int64, limit int64) {
 		return 0, 0
 	}
 	path := budgetFilePath()
+
+	release, err := flock.Lock(path + ".lock")
+	if err != nil {
+		return 0, b.DailyTokenBudget
+	}
+	defer release()
+
 	data, err := os.ReadFile(path)
 	if err == nil {
 		if parsed, err := strconv.ParseInt(string(data), 10, 64); err == nil {

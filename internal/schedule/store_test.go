@@ -271,6 +271,42 @@ func TestAtomicWrite_NoTempLeftover(t *testing.T) {
 	}
 }
 
+func TestAtomicWrite_SymlinkTargetReplaced(t *testing.T) {
+	dir := t.TempDir()
+
+	// Simulate an attacker swapping schedules.json with a symlink to a sensitive
+	// file. The write must replace the symlink (the directory entry), not follow
+	// it and overwrite the sensitive target.
+	decoy := filepath.Join(dir, "decoy-sensitive.txt")
+	if err := os.WriteFile(decoy, []byte("original-secret"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, schedulesFile)
+	if err := os.Symlink(decoy, target); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeJSONAtomic(target, scheduleDoc{Version: 1, Jobs: []Job{sampleJob()}}); err != nil {
+		t.Fatalf("writeJSONAtomic: %v", err)
+	}
+
+	got, err := os.ReadFile(decoy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "original-secret" {
+		t.Errorf("symlink target was overwritten: %q", string(got))
+	}
+
+	info, err := os.Lstat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Error("target is still a symlink; symlink was followed instead of replaced")
+	}
+}
+
 // ── Concurrency (run with -race) ────────────────────────────────────────
 
 func TestConcurrentStateWrites(t *testing.T) {

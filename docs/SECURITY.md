@@ -28,6 +28,8 @@ Out of scope:
 `odek run --sandbox` and `odek serve` (default) spawn an isolated Docker container per session:
 
 - No filesystem access beyond the working directory (mounted read-only when configured).
+- `write_file`, `patch`, and `batch_patch` do not touch the host filesystem when `--sandbox` is active; they translate the host path to `/workspace/...` and copy content into the running container with `docker cp`. This makes `--sandbox-readonly` enforceable for the agent's own file tools, not only for commands run through `shell`.
+- Extra bind volumes supplied with `--sandbox-volume` are confined to the working directory: the host path must resolve to a location under the working directory, cannot contain `..` or symlink escapes, and cannot match sensitive prefixes such as `/etc`, `/proc`, `/sys`, `/dev`, `/root`, `/home`, `/var`, `/run`, or `/var/run/docker.sock`.
 - No network by default. `sandbox_network` defaults to `none`; `host` is rejected.
 - Zero kernel capabilities even as root inside the container.
 - No `setuid` escalation; `/tmp` is `noexec`.
@@ -68,11 +70,11 @@ Tools that wrap:
 
 `session_search` is wrapped because it can surface content from arbitrary past sessions — including sessions that ingested untrusted content. Wrapping its whole output keeps that content from re-entering as trusted instructions and records the retrieval in the audit log, closing a path that otherwise bypassed the memory taint gate (defense 5).
 
-The MCP wrapper guards a tool's **output**. The server-supplied tool **description** is a separate surface ("tool poisoning"): it flows into the model's tool catalogue as effectively trusted instructions. odek scans every MCP tool description with the injection classifier (`ScanInjection`) at registration; if injection patterns are found the description is withheld (replaced with a placeholder, logged to stderr) while the tool stays callable by name. The MCP **error channel** is guarded as well: a server that returns its payload via an error instead of a result has that error message wrapped (and audited) too, since the loop surfaces error text to the model.
+The MCP wrapper guards a tool's **output**. The server-supplied tool **description** is a separate surface ("tool poisoning"): it flows into the model's tool catalogue as effectively trusted instructions. odek scans every MCP tool description with the injection classifier (`ScanInjection`) at registration; if injection patterns are found the description is withheld (replaced with a placeholder, logged to stderr) while the tool stays callable by name. The classifier now normalizes invisible Unicode, folds common homoglyphs, detects mixed confusable scripts, and matches paraphrased exfiltration and non-English override phrases. The MCP **error channel** is guarded as well: a server that returns its payload via an error instead of a result has that error message wrapped (and audited) too, since the loop surfaces error text to the model.
 
 The model is instructed (via the default system prompt) to treat the wrapped region as data, not instructions. A model trained on prompt-injection resistance (Claude Sonnet 4.6+ does this well) honours the boundary. Older models or aggressively fine-tuned ones may not.
 
-Two additional boundaries keep filesystem-derived metadata from leaking as "trusted" context. First, the `base64` tool wraps encoded output when reading from a file path, so even transformed filesystem bytes stay inside an untrusted boundary. Second, the `@`-resource resolver (`FileResolver.Search`) uses `os.Lstat` when building search-result metadata, which prevents a symlink inside the workspace from leaking the size (or other `stat` metadata) of an arbitrary target outside it.
+Two additional boundaries keep filesystem-derived metadata from leaking as "trusted" context. First, the `base64` tool wraps encoded output when reading from a file path, so even transformed filesystem bytes stay inside an untrusted boundary. Second, the `@`-resource resolver (`FileResolver.Search`) rejects queries containing `..`, path separators, or absolute components before joining them with the workspace root, and uses `filepath.WalkDir` (which does not follow symlinks) for recursive autocomplete; `os.Lstat` is used when building search-result metadata, which prevents a symlink inside the workspace from leaking the size (or other `stat` metadata) of an arbitrary target outside it.
 
 ### 3. Danger classifier (shell)
 
@@ -128,7 +130,7 @@ summarized by the extractor and could surface as a durable fact. This is
 mitigated, not eliminated: the extractor is instructed to treat the conversation
 as data and never record actionable instructions; a download-and-execute /
 pipe-to-shell filter (`FactLooksUnsafe`) drops the concrete "run this" exploit
-class; and `ScanContent` strips injection patterns/credentials. A determined
+class; and `ScanContent` reuses the hardened `danger.ScanInjection` classifier plus credential checks. A determined
 injection of a *plausible, non-command* fact remains possible, so periodically
 review stored facts (`memory` read). Turning conversation into always-injected
 memory carries irreducible residual risk — set `extract_facts: false` to opt out
@@ -208,7 +210,7 @@ Every time the agent ingests externally-sourced content (any `wrapUntrusted` cal
 - a 16-hex SHA-256 prefix of the content
 - the turn it landed on
 
-After each turn, odek records the tools called and runs a divergence heuristic: a turn is flagged `suspicious_divergence` when the agent ingested untrusted content **and** the tools called referenced resources (URLs, paths, dotted names) that did **not** appear in the user's preceding message. That's the exact footprint of a successful prompt injection steering the agent toward an attacker-chosen resource.
+After each turn, odek records the tools called and runs a divergence heuristic: a turn is flagged `suspicious_divergence` when the agent ingested untrusted content **and** the agent's actions or final response reference resources that either (a) did not appear in the user's preceding message, or (b) were introduced by the untrusted content itself. This catches both classic prompt injection (steering the agent toward an attacker-chosen resource) and "reused-resource" injection where the attacker reuses a user-mentioned resource to evade a simple novelty check.
 
 The log is local-only, stored under `<sessions>/audit/<id>.json`. Review via:
 
@@ -223,6 +225,12 @@ odek audit <session-id> | jq …    # programmatic triage
 `AllowedChats` and `AllowedUsers` are loaded from `[telegram]` config or `ODEK_TELEGRAM_ALLOWED_CHATS` / `…_USERS` env vars. When non-empty, the handler rejects any update whose `chat.id` / `user.id` is not in the list **before** any tool call is reached. Denied attempts are logged so you can notice scanning.
 
 Authorization is **fail-closed**: if neither allowlist is configured, the bot refuses to start (`ValidateConfig` returns an error), and at runtime `isAllowed` denies every update. The bot is the only internet-exposed surface and the agent it drives has full host access, so an empty allowlist must never silently mean "allow everyone". To intentionally run an open bot you must explicitly set `ODEK_TELEGRAM_ALLOW_ALL=true`, which logs a loud warning at startup.
+
+The `/restart` command is further restricted to operator chats/users
+(`schedules.telegram_admin_chats` / `telegram_admin_users`, falling back to
+`telegram.default_chat_id`) and is rate-limited to once per 60 seconds, so a
+compromised allowed account cannot restart-loop the bot and interrupt scheduled
+work.
 
 ### 13. Identity anchoring (legacy)
 
@@ -239,6 +247,23 @@ This is the original layer 1. The `<untrusted_content>` wrappers (defense 2) giv
 ### 14. AGENTS.md
 
 When `AGENTS.md` exists in the working directory, odek appends it to the system prompt. It is treated as project context, not as a user instruction — identity anchoring and the anti-injection rules still apply on top of it. `--no-agents` skips loading.
+
+### 15. Scheduled task hardening
+
+`odek telegram` can host a native cron scheduler, and any chat/user on the bot
+allowlist can reach the `/schedule` commands. Because scheduled jobs run
+headlessly while no one is watching, the following hardening is applied:
+
+- Mutating `/schedule` commands (`add`, `rm`, `enable`, `disable`, `run`) are
+  restricted to configured operator chats/users
+  (`schedules.telegram_admin_chats` / `telegram_admin_users`). If neither list
+  nor `telegram.default_chat_id` is configured, mutating commands are rejected;
+  read-only commands still work.
+- The headless runner forces `non_interactive` to `deny` and clamps destructive,
+  code-execution, install, system-write, network-egress, unknown, and blocked
+  risk classes to `deny`, regardless of the active `dangerous` profile.
+- Results written to `~/.odek/schedule.log` are redacted for secrets before they
+  are persisted.
 
 ---
 
@@ -260,9 +285,83 @@ See [CLI.md — Dangerous Operations](CLI.md#dangerous-operations) for the full 
 }
 ```
 
-### 15. Configuration file size cap
+### 16. Telegram file download limits
+
+Voice messages, photos, and documents sent to the Telegram bot are downloaded to
+`~/.odek/media/`. A per-file cap (`telegram.max_download_size`, default 5 MiB)
+and an optional per-chat quota (`telegram.media_quota_per_chat`) prevent a
+single large upload (or a flood of uploads) from filling the disk. Downloads that
+exceed the cap are rejected before they are written.
+
+### 17. Configuration file size cap
 
 `~/.odek/config.json` and `./odek.json` are rejected if they exceed 5 MiB. This prevents a malicious, truncated, or accidentally-generated config file from causing an out-of-memory condition at startup.
+
+### 18. Project-level sensitive config rejection
+
+`./odek.json` can be shipped by any repository the agent runs in, so it is treated as untrusted for sensitive fields. If a project config sets any of the following, the value is ignored and a warning is printed to stderr:
+
+- `base_url` — can redirect the conversation history and API key to an attacker-controlled server.
+- `api_key` — can exfiltrate prompts by billing runs to an attacker-owned key.
+- `system` — can poison the system prompt with hidden instructions.
+- `dangerous` — can disable the approval gate (`{"action": "allow"}`) and enable destructive auto-execution.
+
+These fields can only be set from operator-controlled sources: `~/.odek/config.json`, `ODEK_*` environment variables, or CLI flags.
+
+### 19. MCP server environment sanitisation
+
+MCP server subprocesses no longer inherit the full odek process environment. They receive only a minimal allowlist of safe variables (e.g. `PATH`, `HOME`, `LANG`, `TMPDIR`) plus any explicit `env` overrides from the server config. Keys matching secret patterns — `*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `*_CREDENTIAL`, `*_PRIVATE_KEY`, etc. — are stripped even when listed in `env`. This prevents a compromised or malicious MCP server from reading secrets loaded from `~/.odek/secrets.env` or other provider keys that were present in the parent environment.
+
+### 20. Schedule file atomic-write hardening
+
+Schedule persistence (`schedules.json` and `schedule-state.json`) now writes through `internal/fsatomic.WriteFile`. It creates a uniquely-named temp file with `O_EXCL` (so a pre-created symlink cannot be opened), fsyncs the data and parent directory, and atomically renames over the target. This means a swapped-in symlink is replaced rather than followed, closing the symlink-override attack where an attacker points `schedules.json.tmp` or `schedule-state.json.tmp` at sensitive files.
+
+### 21. Telegram singleton lock uses flock instead of PID file
+
+The Telegram bot previously used a PID file at `~/.odek/telegram.pid` to enforce a single polling instance. On Linux it verified `/proc/<pid>/cmdline`, but on macOS and other POSIX systems it would kill whatever process the planted PID belonged to. The implementation now uses an advisory `flock` on `~/.odek/telegram.lock` via `internal/flock`. A second instance simply blocks until the first releases the lock, and the OS releases the lock automatically if the holder crashes, eliminating the arbitrary-process-kill vector.
+
+### 22. Telegram `send_message` callback prefix restriction
+
+The `send_message` tool lets the agent send inline keyboard buttons. Each button's `callback_data` is validated by the tool and again by the Telegram sender closure: any value that starts with a reserved internal prefix (`apr:`, `den:`, `trs:`, `clarify:`, `skill_save:`, `skill_skip:`) is rejected. Only user-facing `cb:` callbacks are allowed. This prevents a compromised or prompt-injected agent from presenting a button that, when clicked, would forge an approval decision or trigger a skill action.
+
+### 23. Telegram outbound media path allowlist
+
+When the agent emits `MEDIA:photo:/path`, `MEDIA:voice:/path`, `MEDIA:document:/path`, or `send_message` with a `file`, the path is validated by `internal/telegram.ResolveMediaPath` before upload. Only paths inside an allowed base directory are permitted:
+
+- the current working directory,
+- `~/.odek/media/`, and
+- the system temporary directory.
+
+The path is resolved to an absolute, cleaned form with `filepath.Abs`, symlinks are resolved with `filepath.EvalSymlinks`, and the final component is checked with `os.Lstat`. If the final component is a symlink, or if the resolved path escapes the allowlist, the upload is rejected. This closes the arbitrary-file-read/exfiltration vector where a prompt-injected agent asks the bot to send files such as `/home/user/.ssh/id_rsa`.
+
+### 24. Session ID entropy + session-scoped auth tokens
+
+`odek serve` session endpoints were previously protected only by localhost binding and a short, predictable session ID (`YYYYMMDD-` + 3 random bytes ≈ 16.7 M possibilities). A local attacker who obtained IDs from `GET /api/sessions` could brute-force `GET /api/sessions/<id>` to read transcripts.
+
+The defense has three layers:
+
+1. **128-bit session IDs** (`internal/session/session.go`) — IDs now use 16 random bytes (32 hex chars) plus the date prefix. The date prefix is kept so filenames sort chronologically; the random suffix has 2^128 possible values, making brute-force enumeration infeasible.
+2. **Session-scoped auth tokens** — every new session is created with a 256-bit `AuthToken` stored in the session JSON. `GET /api/sessions/<id>`, `DELETE /api/sessions/<id>`, `POST /api/sessions/<id>` (rename), and WebSocket session-resume messages require the token via the `X-Session-Token` header, `session_token` cookie, or `auth_token` WebSocket field. Missing or invalid tokens return 401.
+3. **Per-IP rate limiting** — `GET /api/sessions/<id>` is rate-limited to 60 lookups per minute per IP, adding a backstop against any remaining enumeration attempts.
+
+Legacy sessions created before this defense have no `AuthToken`; the first access bootstraps one and returns it to the client, preserving backward compatibility without weakening protection for newly created sessions.
+
+### 25. Skill and episode context wrapped as untrusted
+
+Skill content and retrieved session episodes are externally-sourced data that cross the trust boundary. Before injecting them as `system` messages, the loop passes them through the same nonce'd `<untrusted_content_*>` wrapper used for tool output. The skill manager already gates `NeedsReview`/tainted skills, and the memory manager filters tainted episodes from search, but the wrapper provides defense-in-depth so a compromised skill or episode cannot pose as trusted system instructions.
+
+### 26. Session vector index rebuild hardening
+
+`internal/session/vector_index.go::rebuildLocked` scans the session directory to build the semantic search corpus. Before a file is read it must pass two checks:
+
+1. **Session-ID validation** — the filename is stripped of its `.json` suffix and passed through `ValidateSessionID`. Names that are empty, contain path separators, or contain `..` are skipped.
+2. **Symlink rejection** — the `os.DirEntry.Type()` is checked for `ModeSymlink`, and the full path is then `os.Lstat`ed to skip symlinks even on platforms/filesystems where `Type()` does not report the link.
+
+This closes the path where an attacker plants a symlink named like a session file (e.g. `20260518-abc….json`) that points to a sensitive file outside the sessions directory, which would otherwise have its content embedded into the session search corpus.
+
+### 27. Episode index session ID validation
+
+The episode vector index is rebuilt from `index.json` plus one `.md` summary file per entry. Because `index.json` is persisted JSON that can be tampered with on disk, `internal/memory/episode_index.go::readAllSummaries` treats every `session_id` as untrusted input. It calls `session.ValidateSessionID` before constructing the path `filepath.Join(dir, sessionID+".md")` and skips (with a stderr warning) any entry that is empty, contains path separators, contains `..`, or is otherwise malformed. This prevents a tampered entry such as `"../../../.odek/config"` from causing the rebuild to read arbitrary files (e.g. `~/.odek/config.json` or `IDENTITY.md`) and include them in the embedding space.
 
 ### YOLO mode
 
@@ -310,11 +409,15 @@ Defaults: `FrictionThreshold=3`, `FrictionWindow=60s`. To opt out (TTYApprover o
 | Attacker-controlled task delegated to sub-agent | Parent sets `trust_level=untrusted`; sub-agent clamps Destructive/CodeExec/Install/SystemWrite/NetworkEgress to Deny |
 | Sub-agent reads parent's API key from `/proc/<pid>/environ` | Key passed via unlinked FD, never in env |
 | Browser drive-by on localhost web UI | WS handshake rejects non-local Origin |
+| Local process brute-forces session IDs to read transcripts | 128-bit IDs + session-scoped auth tokens + per-IP rate limiting |
 | Telegram bot scanned by random user | Allowlist enforced before any tool call |
+| Agent sends fake approval/skill button via `send_message` | Reserved internal callback prefixes rejected; only `cb:` allowed |
+| Agent exfiltrates arbitrary file via Telegram media | Outbound paths restricted to cwd, `~/.odek/media/`, and temp dir; symlinks rejected |
 | Auto-saved skill auto-activates on next session | Provenance gate pins NeedsReview skills to Lazy |
 | Memory replays a previously-injected episode forever | Tainted episodes filtered from `Search` |
 | User reflex-approves a destructive class after many benign ones | Friction mode requires typed `approve` + 1.5 s pause |
 | Successful injection steers agent to attacker URL | `odek audit` flags `suspicious_divergence` on the turn |
+| Symlink planted as session file exfiltrates arbitrary file into semantic search | `rebuildLocked` validates IDs and skips symlinks via `Lstat` |
 
 ---
 

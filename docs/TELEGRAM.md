@@ -83,7 +83,14 @@ See [Error Handling & Retry](#error-handling--retry) above for retry strategy, `
 
 ### Fallback URLs
 
-`SetFallbackURLs` configures alternate Telegram API endpoints. If the primary endpoint is unreachable, the bot falls through to the next URL in the list. This is useful for regions where `api.telegram.org` may be blocked.
+`SetFallbackURLs` configures alternate Telegram API endpoints. If the primary endpoint is unreachable, the bot falls through to the next URL in the list. This is useful for regions where `api.telegram.org` may be blocked or for pointing at a local [Telegram Bot API server](https://core.telegram.org/bots/api#using-a-local-bot-api-server).
+
+Fallback URLs are validated on startup. Only the following are accepted:
+
+- HTTPS hosts under `telegram.org` (e.g. `https://api.telegram.org`, `https://fallback.api.telegram.org`).
+- Loopback addresses for local Bot API servers (e.g. `http://127.0.0.1:8081`, `http://localhost:8081`, `http://[::1]:8081`).
+
+Non-HTTPS, non-loopback, or non-Telegram URLs are rejected to prevent the bot token from leaking to third parties, because the fallback transport rewrites the request host while preserving the original path (`/bot<token>/<method>`).
 
 ### Daily Token Budget
 
@@ -167,7 +174,7 @@ The `Handler` struct routes incoming updates to the appropriate callback based o
 
 | Callback | Trigger | Signature |
 |---|---|---|
-| `OnTextMessage` | Plain text message | `(chatID int64, text string) (string, error)` |
+| `OnTextMessage` | Plain text message | `(chatID int64, messageID int, text string, forwarded bool) (string, error)` |
 | `OnCommand` | Slash command (e.g. `/start`) | `(chatID int64, command, args string) (string, error)` |
 | `OnVoiceMessage` | Voice message (OGG Opus) | `(chatID int64, messageID int, fileID string) (string, error)` |
 | `OnPhotoMessage` | Photo message | `(chatID int64, messageID int, fileIDs []string, caption string) (string, error)` |
@@ -199,6 +206,15 @@ All callbacks return a response string (may be empty) and an error. The `Handle`
 
 The handler uses `sync.Map` for `TelegramApprover` instances, keyed by `chatID`. This allows the agent to send inline keyboard approval requests (yes/no) and receive responses via callback queries. The handler intercepts callback queries matching pending approval requests before dispatching to `OnCallbackQuery`.
 
+### Outbound Media
+
+The agent can send files back to the chat either by emitting a `MEDIA:` prefix in its final answer (`MEDIA:photo:/path`, `MEDIA:voice:/path`, `MEDIA:document:/path`) or by calling `send_message` with the `file` parameter. Before any upload, the path is validated by `internal/telegram.ResolveMediaPath`:
+
+- Allowed directories: current working directory, `~/.odek/media/`, and the system temporary directory.
+- The path is resolved to an absolute, cleaned form and checked against the allowlist.
+- Symlinks are rejected: the final component is verified with `os.Lstat` and the resolved path must not escape the allowlist.
+- Files outside the allowlist (e.g. `/home/user/.ssh/id_rsa`) are refused, closing prompt-injection-driven exfiltration.
+
 ## Slash Commands (`commands.go`)
 
 ### Built-in Commands
@@ -211,7 +227,7 @@ The handler uses `sync.Map` for `TelegramApprover` instances, keyed by `chatID`.
 | `/stats` | Show session statistics (turn count, model used, etc.) |
 | `/stop` | Cancel a running agent task |
 | `/mode` | Show current agent modes (interaction_mode, sandbox, skills) |
-| `/restart` | Gracefully restart the bot process |
+| `/restart` | Gracefully restart the bot process. Restricted to operator chats/users and rate-limited to once per 60 seconds. |
 | `/plan <description>` | Create a new plan from a natural language description |
 | `/plans` | List all saved plans |
 | `/plan-view <slug>` | View a specific plan's content |
@@ -220,7 +236,7 @@ The handler uses `sync.Map` for `TelegramApprover` instances, keyed by `chatID`.
 | `/resume <session_id>` | Resume a previous session by ID |
 | `/prune [days]` | Clean up old sessions (default: 30 days) |
 | `/schedules` | List scheduled tasks (id, on/off, cron, next fire, last status) |
-| `/schedule <subcommand>` | Manage scheduled tasks — `add`, `rm`, `enable`, `disable`, `run`, `next`, `view`. See [Managing schedules from Telegram](SCHEDULES.md#managing-from-telegram) |
+| `/schedule <subcommand>` | Manage scheduled tasks — `add`, `rm`, `enable`, `disable`, `run`, `next`, `view`. Mutating commands are restricted to configured operator chats/users. See [Managing schedules from Telegram](SCHEDULES.md#managing-from-telegram) |
 
 ### Architecture
 
@@ -287,24 +303,30 @@ Slug generation (`slugify`) collapses a description into a lowercase, hyphen-sep
 
 ## Media Download (`download.go`)
 
-Supports downloading voice messages and photos from Telegram to the local filesystem.
+Supports downloading voice messages, photos, and documents from Telegram to the local filesystem.
 
 ### Media Directory
 
 Media files are saved to `~/.odek/media/` (created automatically on first download).
 
+### Download limits
+
+- **Per-file cap:** `telegram.max_download_size` (default **5 MiB**). Files larger than the cap are rejected before they are written to disk. Set to `-1` to disable.
+- **Per-chat quota:** `telegram.media_quota_per_chat` (default **disabled**). When set to a positive byte value, the bot refuses downloads that would push that chat's total stored media above the quota.
+- Filenames include the chat ID (`voice_chat<chatID>_<hash>.ogg`, `photo_chat<chatID>_<hash>.jpg`, `chat<chatID>_<filename>`) so the quota can be enforced per chat.
+
 ### DownloadVoice
 
 - Gets file metadata via `GetFile`
 - Downloads raw bytes via `DownloadFile`
-- Saves as `voice_<truncated_fileID>.<ext>` (default extension: `.ogg`)
-- Truncates fileID to 16 chars for filenames
+- Saves as `voice_chat<chatID>_<hash>.<ext>` (default extension: `.ogg`)
+- `<hash>` is the first 16 hex chars of the SHA-256 of the full Telegram `file_id`
 
 ### DownloadPhoto
 
 - Takes a slice of `PhotoSize` IDs (Telegram sends multiple sizes)
 - Uses the last (largest) photo size
-- Saves as `photo_<hash>.<ext>` (default extension: `.jpg`), where `<hash>` is the first 16 hex chars of the SHA-256 of the full Telegram `file_id`
+- Saves as `photo_chat<chatID>_<hash>.<ext>` (default extension: `.jpg`)
 - Hashing the **full** id avoids a collision: Telegram photo `file_id`s share a long constant prefix (e.g. `AgACAgIAAxkBAAI…`), so raw-truncating to 16 chars produced identical filenames for different photos — each overwrote the last, making the bot report a photo as "already processed". Voice downloads use the same scheme.
 
 ### Auto-Describe (Photo → Vision)
@@ -318,7 +340,7 @@ Photo received → DownloadPhoto (largest size to disk)
                → agent answers the request using the description
 ```
 
-If the photo has a **caption**, that text becomes the user's request and also focuses the vision extraction. The description is wrapped in `<untrusted_content>` boundaries (image text is untrusted input).
+If the photo has a **caption**, that text becomes the user's request and also focuses the vision extraction. Both the caption passed to the local vision model and the description returned to the main agent are wrapped in `<untrusted_content>` boundaries (external text is untrusted input).
 
 **Fallback:** If auto-describe is disabled or the vision model fails, the agent receives the file path (and caption, if any) with a suggestion to use the `vision` tool manually.
 
@@ -402,7 +424,7 @@ The package defines Telegram API types used throughout:
 
 ### Singleton Lock
 
-The bot writes its PID to `~/.odek/telegram.pid` on startup. If a stale PID file exists from a previous instance, the new process kills it (SIGTERM → 5s grace → SIGKILL) before taking over. This prevents 409 Conflict errors from dual polling.
+The bot acquires an advisory file lock on `~/.odek/telegram.lock` on startup. If another instance is already running, the new process blocks on the lock until the old process exits, then takes over automatically. This prevents 409 Conflict errors from dual polling without trusting or killing PID values, which could otherwise be planted to target unrelated processes.
 
 ### Graceful Restart
 
@@ -432,9 +454,9 @@ During restart:
 
 3. **New messages are rejected** — any message arriving while restart is in progress gets "⏳ Bot is restarting — please try again in a few seconds." The message is not lost (it remains in the Telegram server).
 
-4. **Bounded drain** — the process waits up to 15 seconds for all agent goroutines to finish. If a task is stuck (e.g., a long HTTP call that ignores context), the child process takes over and the parent is killed by the singleton lock.
+4. **Bounded drain** — the process waits up to 15 seconds for all agent goroutines to finish. If a task is stuck (e.g., a long HTTP call that ignores context), the child process takes over after the parent releases the singleton lock.
 
-5. **PID file cleanup** — before `os.Exit(0)`, the PID file lock is explicitly released so the child process starts with no stale lock file.
+5. **Lock release** — before `os.Exit(0)`, the singleton lock is explicitly released so the child process can acquire it immediately.
 
 6. **Post-restart notification** — when the new instance starts, it reads the restart marker file and sends "🔄 Bot restarted" to each chat that was active during the restart.
 
@@ -445,12 +467,13 @@ The actual process handoff uses the same spawn+exit mechanism:
 ```
 SIGHUP → gracefulRestart() → writeRestartMarker() → spawnChild() → os.Exit(0)
                                                                    ↓
-                                                child acquireLock() kills parent
+                                                parent releases singleton lock
+                                                child acquireLock() succeeds
                                                 child gets fresh HTTP/2 connections
                                                 child starts polling Telegram
 ```
 
-The child process inherits environment variables and command-line arguments. `acquireLock` ensures the old process is dead before the new one starts polling. The restart marker at `~/.odek/restart.json` carries the list of chat IDs that had active agent runs.
+The child process inherits environment variables and command-line arguments. `acquireLock` waits for the parent to release the lock, then the child starts polling. The restart marker at `~/.odek/restart.json` carries the list of chat IDs that had active agent runs.
 
 This avoids binary overwrite races, stale HTTP/2 connections, and session context loops that plagued `syscall.Exec`. The restart marker (`~/.odek/restart.json`) enables the new instance to notify users that a restart occurred.
 

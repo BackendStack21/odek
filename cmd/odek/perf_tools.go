@@ -41,8 +41,14 @@ const maxTreeEntries = 1000
 
 // readFileNoFollow reads a file with O_NOFOLLOW (anti-symlink), rejecting files
 // larger than maxFileReadBytes to avoid unbounded memory consumption.
+// Directory symlinks in the path are resolved first so risk classification
+// cannot be bypassed by a symlinked directory.
 func readFileNoFollow(path string) ([]byte, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	resolvedPath, err := resolveReadPath(path)
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(resolvedPath, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -68,6 +74,9 @@ const maxBatchPatches = 10
 type batchPatchTool struct {
 	dangerousConfig danger.DangerousConfig
 	restrictToCWD   bool // when true, reject paths escaping the working directory
+	// containerName, when set, routes writes through the sandbox container so
+	// that read-only workspace mounts are enforced.
+	containerName string
 }
 
 func (t *batchPatchTool) Name() string { return "batch_patch" }
@@ -223,14 +232,30 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 		diff := fmt.Sprintf("--- a/%s\n+++ b/%s\n@@ -1 +1 @@\n-%s\n+%s\n",
 			p.Path, p.Path, truncateDiff(original, 100), truncateDiff(modified, 100))
 
-		// Atomic write — preserve the original file's mode and surface any
-		// write error so a short or failed write cannot silently corrupt
-		// the target (see IMPROVEMENTS_ROADMAP.md B-H1, B-H2).
-		dir := filepath.Dir(p.Path)
+		// Preserve the original file's mode.
 		origMode := os.FileMode(0644)
 		if st, err := os.Stat(p.Path); err == nil {
 			origMode = st.Mode().Perm()
 		}
+
+		// When sandbox mode is active, route the write through the container so
+		// a read-only workspace mount is actually enforced.
+		if t.containerName != "" {
+			if err := sandboxWriteFile(t.containerName, p.Path, []byte(modified), origMode); err != nil {
+				entry.Error = fmt.Sprintf("cannot write %q via sandbox: %v", p.Path, err)
+				results[idx] = entry
+				continue
+			}
+			entry.Success = true
+			entry.Diff = wrapUntrusted("batch_patch:"+p.Path, diff)
+			results[idx] = entry
+			continue
+		}
+
+		// Atomic write — preserve the original file's mode and surface any
+		// write error so a short or failed write cannot silently corrupt
+		// the target (see IMPROVEMENTS_ROADMAP.md B-H1, B-H2).
+		dir := filepath.Dir(p.Path)
 		tmpFile, err := os.CreateTemp(dir, ".tmp_batchpatch_*")
 		if err != nil {
 			entry.Error = fmt.Sprintf("cannot create temp file: %v", err)
@@ -286,6 +311,15 @@ type parallelShellTool struct {
 	// containerName, when set, routes every command through "docker exec"
 	// so sandbox isolation is preserved — same as shellTool.
 	containerName string
+
+	// ttyPath is the path to the terminal device for approval prompts.
+	// Overridden in tests to mock user input. Only used when approver is nil.
+	ttyPath string
+
+	// trustedClasses caches user-approved risk classes for this process.
+	// Set when user presses T (trust this session) at the prompt.
+	trustedClasses map[danger.RiskClass]bool
+	trustedMu      sync.Mutex
 }
 
 func (t *parallelShellTool) Name() string { return "parallel_shell" }
@@ -366,11 +400,9 @@ func (t *parallelShellTool) Call(argsJSON string) (result string, err error) {
 		case danger.Deny:
 			return jsonError(fmt.Sprintf("command denied: %s", c.Command))
 		case danger.Prompt:
-			if t.approver != nil {
-				cls := danger.Classify(c.Command)
-				if err := t.approver.PromptCommand(cls, c.Command, c.Description); err != nil {
-					return jsonError(fmt.Sprintf("command rejected: %s", c.Command))
-				}
+			cls := danger.Classify(c.Command)
+			if err := t.promptCommand(cls, c.Command, c.Description); err != nil {
+				return jsonError(fmt.Sprintf("command rejected: %s", c.Command))
 			}
 		}
 	}
@@ -383,9 +415,48 @@ func (t *parallelShellTool) Call(argsJSON string) (result string, err error) {
 		})
 	for i := range results {
 		results[i].Index = i
+		// stdout/stderr cross the shell trust boundary; wrap them with a
+		// per-call nonce boundary so injected command output cannot masquerade
+		// as instructions.
+		if results[i].Stdout != "" {
+			results[i].Stdout = wrapUntrusted(fmt.Sprintf("parallel_shell:%d:stdout", i), results[i].Stdout)
+		}
+		if results[i].Stderr != "" {
+			results[i].Stderr = wrapUntrusted(fmt.Sprintf("parallel_shell:%d:stderr", i), results[i].Stderr)
+		}
 	}
 
 	return jsonResult(parallelShellResult{Results: results})
+}
+
+// promptCommand asks the configured approver, or falls back to a TTYApprover,
+// for approval of a single command. This mirrors shellTool.promptUser so that
+// parallel_shell cannot bypass interactive approval when no explicit approver
+// is injected.
+func (t *parallelShellTool) promptCommand(cls danger.RiskClass, cmd, description string) error {
+	approver := t.approver
+	if approver == nil {
+		ttyApprover := danger.NewTTYApprover(&t.dangerousConfig)
+		t.trustedMu.Lock()
+		if t.trustedClasses != nil {
+			ttyApprover.SetTrustedClasses(t.trustedClasses)
+		}
+		t.trustedMu.Unlock()
+		if t.ttyPath != "" {
+			ttyApprover.TTYPath = t.ttyPath
+		}
+		approver = ttyApprover
+	}
+
+	err := approver.PromptCommand(cls, cmd, description)
+	if err == nil {
+		if tty, ok := approver.(*danger.TTYApprover); ok {
+			t.trustedMu.Lock()
+			t.trustedClasses = tty.TrustedClasses
+			t.trustedMu.Unlock()
+		}
+	}
+	return err
 }
 
 // runOne executes a single pre-approved command with a per-command timeout.
@@ -811,7 +882,7 @@ func (t *diffTool) Call(argsJSON string) (result string, err error) {
 		pathA, pathB = args.PathA, args.PathB
 		for _, p := range []string{args.PathA, args.PathB} {
 			if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-				Name: "diff", Resource: p, Risk: danger.ClassifyPath(p),
+				Name: "diff", Resource: p, Risk: classifyResolvedPath(p),
 			}, nil); err != nil {
 				return jsonError(err.Error())
 			}
@@ -835,7 +906,7 @@ func (t *diffTool) Call(argsJSON string) (result string, err error) {
 			})
 		}
 		if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-			Name: "diff", Resource: args.Path, Risk: danger.ClassifyPath(args.Path),
+			Name: "diff", Resource: args.Path, Risk: classifyResolvedPath(args.Path),
 		}, nil); err != nil {
 			return jsonError(err.Error())
 		}
@@ -1041,7 +1112,7 @@ func (t *countLinesTool) countFile(path string) (entry countFileEntry) {
 	}
 
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-		Name: "count_lines", Resource: path, Risk: danger.ClassifyPath(path),
+		Name: "count_lines", Resource: path, Risk: classifyResolvedPath(path),
 	}, nil); err != nil {
 		return countFileEntry{Path: path, Error: err.Error()}
 	}
@@ -1157,7 +1228,7 @@ func (t *multiGrepTool) Call(argsJSON string) (string, error) {
 	}
 
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-		Name: "multi_grep", Resource: args.Path, Risk: danger.ClassifyPath(args.Path),
+		Name: "multi_grep", Resource: args.Path, Risk: classifyResolvedPath(args.Path),
 	}, nil); err != nil {
 		return jsonError(err.Error())
 	}
@@ -1312,7 +1383,7 @@ func (t *jsonQueryTool) Call(argsJSON string) (result string, err error) {
 	}
 
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-		Name: "json_query", Resource: args.Path, Risk: danger.ClassifyPath(args.Path),
+		Name: "json_query", Resource: args.Path, Risk: classifyResolvedPath(args.Path),
 	}, nil); err != nil {
 		return jsonError(err.Error())
 	}
@@ -1497,7 +1568,7 @@ func (t *treeTool) Call(argsJSON string) (result string, err error) {
 	}
 
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-		Name: "tree", Resource: args.Path, Risk: danger.ClassifyPath(args.Path),
+		Name: "tree", Resource: args.Path, Risk: classifyResolvedPath(args.Path),
 	}, nil); err != nil {
 		return jsonError(err.Error())
 	}
@@ -1669,7 +1740,7 @@ func (t *checksumTool) hashFile(arg checksumFileArg) (entry checksumEntry) {
 	}
 
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-		Name: "checksum", Resource: arg.Path, Risk: danger.ClassifyPath(arg.Path),
+		Name: "checksum", Resource: arg.Path, Risk: classifyResolvedPath(arg.Path),
 	}, nil); err != nil {
 		return checksumEntry{Path: arg.Path, Algorithm: algo, Error: err.Error()}
 	}
@@ -1788,7 +1859,7 @@ func (t *sortTool) Call(argsJSON string) (result string, err error) {
 	var results []sortEntry
 	for _, p := range paths {
 		if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-			Name: "sort", Resource: p, Risk: danger.ClassifyPath(p),
+			Name: "sort", Resource: p, Risk: classifyResolvedPath(p),
 		}, nil); err != nil {
 			results = append(results, sortEntry{File: p, Error: err.Error()})
 			continue
@@ -1978,7 +2049,7 @@ func (t *headTailTool) readPreview(path string, n int, mode string) (result head
 		}
 	}()
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-		Name: "head_tail", Resource: path, Risk: danger.ClassifyPath(path),
+		Name: "head_tail", Resource: path, Risk: classifyResolvedPath(path),
 	}, nil); err != nil {
 		return headTailFileResult{Path: path, Error: err.Error()}
 	}
@@ -2137,7 +2208,7 @@ func (t *base64Tool) Call(argsJSON string) (result string, err error) {
 
 	// File mode
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-		Name: "base64", Resource: args.Path, Risk: danger.ClassifyPath(args.Path),
+		Name: "base64", Resource: args.Path, Risk: classifyResolvedPath(args.Path),
 	}, nil); err != nil {
 		return jsonError(err.Error())
 	}
@@ -2223,7 +2294,7 @@ func (t *trTool) Call(argsJSON string) (result string, err error) {
 	fromFile := false
 	if args.Path != "" {
 		if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-			Name: "tr", Resource: args.Path, Risk: danger.ClassifyPath(args.Path),
+			Name: "tr", Resource: args.Path, Risk: classifyResolvedPath(args.Path),
 		}, nil); err != nil {
 			return jsonError(err.Error())
 		}
@@ -2378,7 +2449,7 @@ func (t *wordCountTool) countWords(path string) (entry wordCountEntry) {
 		}
 	}()
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-		Name: "word_count", Resource: path, Risk: danger.ClassifyPath(path),
+		Name: "word_count", Resource: path, Risk: classifyResolvedPath(path),
 	}, nil); err != nil {
 		return wordCountEntry{Path: path, Error: err.Error()}
 	}

@@ -2,6 +2,7 @@ package memory
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/go-vector/pkg/vector"
+	"github.com/BackendStack21/odek/internal/session"
 )
 
 const (
@@ -323,6 +325,21 @@ func (vi *episodeVectorIndex) readAllSummaries() []idText {
 	}
 	out := make([]idText, 0, len(index))
 	for _, m := range index {
+		// index.json is untrusted input; validate the session ID before using it
+		// to construct a filesystem path. Reject traversal, separators, and any
+		// other malformed ID silently so a tampered index cannot pull arbitrary
+		// files (e.g. ~/.odek/config.json) into the embedding space.
+		if err := session.ValidateSessionID(m.SessionID); err != nil {
+			fmt.Fprintf(os.Stderr, "odek: warning: episode index rejected invalid session_id %q: %v\n", m.SessionID, err)
+			continue
+		}
+		// Defense-in-depth: ValidateSessionID already rejects these, but the
+		// consequences of a missed check are a path traversal read, so verify
+		// explicitly before joining.
+		if strings.Contains(m.SessionID, "..") || strings.ContainsAny(m.SessionID, "/\\") {
+			fmt.Fprintf(os.Stderr, "odek: warning: episode index rejected unsafe session_id %q\n", m.SessionID)
+			continue
+		}
 		path := filepath.Join(vi.dir, m.SessionID+".md")
 		b, err := os.ReadFile(path)
 		if err != nil {

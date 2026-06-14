@@ -12,6 +12,7 @@
 
 let ws = null;
 let sessionId = null;
+let sessionTokens = {}; // session id -> auth token
 let busy = false;
 let history = JSON.parse(localStorage.getItem('odek_history') || '[]');
 let historyIdx = -1;
@@ -20,6 +21,23 @@ let currentModel = localStorage.getItem('odek_model') || '';
 let availableModels = [];
 // Per-query thinking toggle. Persisted so it survives page refresh.
 let thinkingEnabled = localStorage.getItem('odek_thinking') === '1';
+
+function getSessionToken(sid) {
+  if (!sid) return '';
+  return sessionTokens[sid] || localStorage.getItem('odek_session_token_' + sid) || '';
+}
+
+function setSessionToken(sid, token) {
+  if (!sid || !token) return;
+  sessionTokens[sid] = token;
+  localStorage.setItem('odek_session_token_' + sid, token);
+}
+
+function clearSessionToken(sid) {
+  if (!sid) return;
+  delete sessionTokens[sid];
+  localStorage.removeItem('odek_session_token_' + sid);
+}
 
 // ── DOM ──
 const messagesEl = document.getElementById('messages');
@@ -214,6 +232,7 @@ function connect() {
     switch (event.type) {
       case 'session':
         sessionId = event.session_id || null;
+        if (event.auth_token) setSessionToken(sessionId, event.auth_token);
         // Only adopt the server's model on the very first session event
         // (no user-selected model yet). After that the user's choice wins.
         if (event.model && !currentModel) {
@@ -919,13 +938,33 @@ window.hideConfirmDialog = function() {
   pendingDeleteId = null;
 };
 
-window.executeDeleteSession = function() {
+window.executeDeleteSession = async function() {
   if (!pendingDeleteId) return;
   const sid = pendingDeleteId;
   pendingDeleteId = null;
   document.getElementById('confirm-overlay').classList.remove('active');
-  fetch('/api/sessions/' + encodeURIComponent(sid), { method: 'DELETE' })
-    .then(() => loadSessions())
+
+  let token = getSessionToken(sid);
+  if (!token) {
+    try {
+      const bootstrap = await fetch('/api/sessions/' + encodeURIComponent(sid));
+      if (bootstrap.ok) {
+        const bs = await bootstrap.json();
+        token = bootstrap.headers.get('X-Session-Token') || bs.auth_token;
+        if (token) setSessionToken(sid, token);
+      }
+    } catch { /* continue — server will return 401 if token required */ }
+  }
+
+  fetch('/api/sessions/' + encodeURIComponent(sid), {
+    method: 'DELETE',
+    headers: token ? { 'X-Session-Token': token } : {}
+  })
+    .then(() => {
+      clearSessionToken(sid);
+      if (sessionId === sid) newSession();
+      loadSessions();
+    })
     .catch(() => showToast('Failed to delete session'));
 };
 
@@ -1041,16 +1080,32 @@ window.switchModel = function(modelId) {
 };
 
 // ── Session Rename ──
-window.renameSession = function(sid, el) {
+window.renameSession = async function(sid, el) {
   const item = el.closest('.session-item');
   if (!item) return;
   const taskEl = item.querySelector('.task');
   const currentName = taskEl ? taskEl.textContent : '';
   const newName = prompt('Rename session:', currentName);
   if (!newName || newName === currentName) return;
+
+  let token = getSessionToken(sid);
+  if (!token) {
+    try {
+      const bootstrap = await fetch('/api/sessions/' + encodeURIComponent(sid));
+      if (bootstrap.ok) {
+        const bs = await bootstrap.json();
+        token = bootstrap.headers.get('X-Session-Token') || bs.auth_token;
+        if (token) setSessionToken(sid, token);
+      }
+    } catch { /* continue — server will return 401 if token required */ }
+  }
+
   fetch('/api/sessions/' + encodeURIComponent(sid), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { 'X-Session-Token': token } : {})
+    },
     body: JSON.stringify({ name: newName })
   })
     .then(resp => {
@@ -1345,6 +1400,7 @@ function send() {
     type: 'prompt',
     content: payload,
     session_id: sessionId,
+    auth_token: getSessionToken(sessionId) || undefined,
     model: currentModel || undefined,
     thinking: thinkingEnabled ? 'enabled' : ''
   }));
@@ -1651,9 +1707,16 @@ sessionListEl.addEventListener('click', (e) => {
 
 async function loadAndRenderSession(sid) {
   try {
-    const resp = await fetch('/api/sessions/' + encodeURIComponent(sid));
+    let token = getSessionToken(sid);
+    const headers = token ? { 'X-Session-Token': token } : {};
+    const resp = await fetch('/api/sessions/' + encodeURIComponent(sid), { headers });
     if (!resp.ok) { showToast('Failed to load session'); return; }
     const sess = await resp.json();
+
+    // Persist the token returned by the server (bootstrapped for legacy
+    // sessions, echoed for current ones).
+    const returnedToken = resp.headers.get('X-Session-Token') || sess.auth_token;
+    if (returnedToken) setSessionToken(sid, returnedToken);
 
     // Switch session ID so the next prompt continues this session.
     sessionId = sid;

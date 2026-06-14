@@ -53,6 +53,22 @@ func TestResourcesIn_FindsURLsPathsAndExtensions(t *testing.T) {
 	}
 }
 
+func TestResourcesIn_FindsQuotedJSONArguments(t *testing.T) {
+	// Tool arguments are JSON-encoded, so paths/URLs appear inside quotes.
+	text := `{"path":"README.md","url":"https://x.com/blog"}`
+	got := ResourcesIn(text)
+	want := map[string]bool{
+		"README.md":         true,
+		"https://x.com/blog": true,
+	}
+	for _, g := range got {
+		delete(want, g)
+	}
+	if len(want) != 0 {
+		t.Errorf("missing expected matches: %v\nfull got: %v", want, got)
+	}
+}
+
 func TestNovelResources_FlagsToolReferencesNotInUserMessage(t *testing.T) {
 	user := "summarize the README and the LICENSE"
 	tool := "fetched https://evil.example/x and /etc/passwd"
@@ -93,6 +109,7 @@ func TestAuditTurn_RoundtripsSuspiciousFlag(t *testing.T) {
 		UserMessage:          "summarise README",
 		ToolCalls:            []string{"browser", "shell"},
 		NovelResources:       []string{"https://attacker.example/x"},
+		UntrustedResources:   []string{"README.md"},
 		IngestedUntrusted:    true,
 		SuspiciousDivergence: true,
 	}
@@ -102,5 +119,8 @@ func TestAuditTurn_RoundtripsSuspiciousFlag(t *testing.T) {
 	log, _ := s.Load(sid)
 	if len(log.Turns) != 1 || !log.Turns[0].SuspiciousDivergence {
 		t.Errorf("turn divergence not persisted: %+v", log.Turns)
+	}
+	if len(log.Turns[0].UntrustedResources) != 1 || log.Turns[0].UntrustedResources[0] != "README.md" {
+		t.Errorf("untrusted resources not persisted: %+v", log.Turns[0].UntrustedResources)
 	}
 }

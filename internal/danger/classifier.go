@@ -142,8 +142,8 @@ type ToolOperation struct {
 //   - /tmp, $TMPDIR → local_write
 //   - /etc, /root, /var, /run, /lib, /usr → system_write
 //   - $HOME/.ssh, .config, .gnupg, .aws, .kube, .docker, .gitconfig, .env → system_write
-//   - $HOME/.odek/config.json, secrets.env, skills/ → system_write (odek trust anchors;
-//     rewriting them can disable the sandbox or inject prompts on the next run)
+//   - $HOME/.odek/config.json, secrets.env, skills/, IDENTITY.md → system_write (odek trust
+//     anchors; rewriting them can disable the sandbox or inject prompts on the next run)
 //   - $HOME shell rc/profile files (.bashrc, .zshrc, .profile, .zshenv, etc.) → system_write
 //   - everything else → local_write
 //
@@ -195,12 +195,14 @@ func ClassifyPath(path string) RiskClass {
 		// odek's own trust anchors. Rewriting ~/.odek/config.json can disable
 		// the sandbox or set "action": "allow" (YOLO) for the next run; a
 		// SKILL.md dropped under ~/.odek/skills/ is auto-loaded into future
-		// prompts; secrets.env is injected into the process environment.
+		// prompts; secrets.env is injected into the process environment;
+		// IDENTITY.md becomes the system prompt on the next run, so writing it
+		// lets a prompt-injected agent rewrite its own trusted instructions.
 		// Auto-allowing these as LocalWrite would let a confined agent
 		// escalate out of its own sandbox, so they classify as SystemWrite
 		// (prompt/deny). Keep in sync with the carve-out exclusions in
 		// cmd/odek/file_tool.go (isProtectedOdekPath).
-		for _, sub := range []string{"/.odek/config.json", "/.odek/secrets.env", "/.odek/skills"} {
+		for _, sub := range []string{"/.odek/config.json", "/.odek/secrets.env", "/.odek/skills", "/.odek/IDENTITY.md"} {
 			if strings.HasPrefix(abs, home+sub) {
 				return SystemWrite
 			}
@@ -698,6 +700,22 @@ var installPrefixes = map[string]bool{
 	"npm": true, "pip": true, "pip3": true, "gem": true,
 	"cargo": true, "brew": true, "go": true,
 	"pnpm": true, "yarn": true, "bun": true, "apk": true,
+}
+
+// pkgRunSubcommands map package managers to the subcommands that execute
+// arbitrary project-defined code: package.json lifecycle/`run` scripts, cargo
+// build scripts (build.rs), test harnesses, etc. These are code execution, not
+// a plain install — an attacker who can drop a malicious package.json or
+// build.rs runs code the moment one of these is invoked. Subcommands that only
+// download (e.g. "go mod download") are handled as installs instead, and go's
+// run/test/build verbs are intentionally absent here (see isCodeExecution /
+// isInstall) so existing go build|test|mod-tidy behaviour is preserved.
+var pkgRunSubcommands = map[string]map[string]bool{
+	"npm":   {"start": true, "run": true, "run-script": true, "test": true, "stop": true, "restart": true, "exec": true},
+	"pnpm":  {"start": true, "run": true, "test": true, "exec": true},
+	"yarn":  {"start": true, "run": true, "test": true, "exec": true},
+	"bun":   {"start": true, "run": true, "test": true, "exec": true},
+	"cargo": {"run": true, "build": true, "test": true, "bench": true},
 }
 
 // safeCommands are read-only / no-op programs that inspect state or
@@ -1691,9 +1709,49 @@ func isNetworkEgress(first string, tokens []string) bool {
 	if !networkPrefixes[first] {
 		return false
 	}
-	// git push requires a remote argument
+	// git subcommands that inherently contact a remote.
 	if first == "git" {
-		return hasArgAfter(tokens, "git", "push") && hasArgAfter(tokens, "push", "")
+		// Find the git subcommand, skipping the initial "git" token and any
+		// leading path (e.g. /usr/bin/git) or global options. Some global
+		// options take a *separate* value token that does not start with "-"
+		// (e.g. "git -C <path> push", "git -c <key=val> fetch"); that value
+		// must not be mistaken for the subcommand, otherwise a remote-contacting
+		// command is misclassified as non-egress and could be auto-allowed.
+		sub := ""
+		seenGit := false
+		skipNext := false
+		for _, tok := range tokens {
+			if !seenGit && commandName(tok) == "git" {
+				seenGit = true
+				continue
+			}
+			if !seenGit {
+				continue
+			}
+			if skipNext {
+				skipNext = false
+				continue
+			}
+			if strings.HasPrefix(tok, "-") {
+				switch tok {
+				case "-C", "-c", "--git-dir", "--work-tree", "--namespace",
+					"--exec-path", "--super-prefix", "--config-env":
+					// These consume the following token as their value.
+					skipNext = true
+				}
+				continue
+			}
+			sub = tok
+			break
+		}
+		switch sub {
+		case "clone", "fetch", "pull":
+			return true
+		case "push":
+			// "git push" with no remote is harmless (prints upstream info).
+			return hasArgAfter(tokens, "push", "")
+		}
+		return false
 	}
 	// rsync with remote target (contains :)
 	if first == "rsync" {
@@ -1729,6 +1787,12 @@ func isCodeExecution(first string, tokens []string) bool {
 		return true
 	}
 
+	// Package-manager subcommands that run arbitrary project-defined scripts
+	// (npm/yarn/pnpm/bun run|start|test|exec, cargo run|build|test|bench, …).
+	if isPackageManagerRun(first, tokens) {
+		return true
+	}
+
 	if !codeEvalPrefixes[first] {
 		// go run / go tool / go generate compile and execute code.
 		if first == "go" {
@@ -1754,13 +1818,57 @@ func isCodeExecution(first string, tokens []string) bool {
 		return true
 	}
 
-	// node/python/perl/ruby/php with -e, -c, -r flags
+	// A script interpreter (node/python/perl/ruby/php) runs code whenever it
+	// is given a script file or a code-bearing flag (-e/-c/-r/-m, etc.). Only
+	// a bare REPL invocation or a pure version/help query is non-executing, so
+	// `python exfil.py` no longer slips through as Safe.
+	return interpreterRunsCode(tokens)
+}
+
+// interpreterInfoFlags are the only arguments a script interpreter can carry
+// without running code — version and help queries. Anything else is either a
+// script-file argument or a code-bearing flag.
+var interpreterInfoFlags = map[string]bool{
+	"--version": true, "-V": true, "-v": true,
+	"--help": true, "-h": true, "--help-all": true,
+}
+
+// interpreterRunsCode reports whether a script-interpreter invocation will run
+// code rather than merely print version/help text. A bare invocation (no args)
+// classifies as non-executing.
+func interpreterRunsCode(tokens []string) bool {
 	for _, tok := range tokens[1:] {
-		if tok == "-e" || tok == "-c" || tok == "-r" {
+		if interpreterInfoFlags[tok] {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// isPackageManagerRun reports whether a package-manager invocation runs a
+// project-defined script (and thus arbitrary code). It inspects the first
+// non-flag token after the command: for run-style managers that token must be
+// a known run/start/test/build subcommand. bun additionally executes a bare
+// file argument (`bun index.ts`) — a token that looks like a path rather than
+// one of bun's own subcommands (add/install/remove/…).
+func isPackageManagerRun(first string, tokens []string) bool {
+	subs, ok := pkgRunSubcommands[first]
+	if !ok {
+		return false
+	}
+	for _, tok := range tokens[1:] {
+		if strings.HasPrefix(tok, "-") {
+			continue
+		}
+		if subs[tok] {
 			return true
 		}
+		if first == "bun" && (strings.Contains(tok, "/") || strings.Contains(tok, ".")) {
+			return true
+		}
+		return false
 	}
-
 	return false
 }
 
@@ -1785,19 +1893,28 @@ func isInstall(first string, tokens []string) bool {
 		return hasArgAfter(tokens, "cargo", "install")
 	}
 
-	// go install <remote> OR go install <local-path>
+	// go subcommands that fetch remote code: go install <pkg>, go get,
+	// go mod download. Bare "go install" is a local build, and "go mod tidy"
+	// / "go build" / "go test" stay Safe (handled elsewhere).
 	if first == "go" {
-		hasInstall := false
+		var args []string
 		for _, tok := range tokens[1:] {
-			if tok == "install" {
-				hasInstall = true
-				continue
-			}
-			if hasInstall {
-				return true // go install <something> downloads deps
+			if !strings.HasPrefix(tok, "-") {
+				args = append(args, tok)
 			}
 		}
-		return false // bare "go install" = local build only
+		if len(args) == 0 {
+			return false
+		}
+		switch args[0] {
+		case "get":
+			return true // go get fetches remote modules
+		case "install":
+			return len(args) > 1 // go install <pkg> downloads; bare = local build
+		case "mod":
+			return len(args) > 1 && args[1] == "download"
+		}
+		return false
 	}
 
 	// brew install

@@ -2,8 +2,10 @@ package telegram
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -16,10 +18,59 @@ type FallbackTransport struct {
 	Client       *http.Client
 }
 
+// validateFallbackURL checks that a fallback URL is a trusted Telegram API
+// endpoint. The bot token is embedded in the request path, so untrusted
+// fallbacks would leak the secret to third parties.
+//
+// Allowed:
+//   - https:// hosts under telegram.org (e.g. api.telegram.org)
+//   - http or https on loopback addresses (localhost, 127.0.0.1, ::1)
+func validateFallbackURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return fmt.Errorf("URL must have a scheme and host")
+	}
+
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("URL must have a host")
+	}
+
+	// Loopback is trusted for local Bot API servers.
+	ip := net.ParseIP(host)
+	if ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	if strings.EqualFold(host, "localhost") {
+		return nil
+	}
+
+	// Everything else must be HTTPS and Telegram-controlled.
+	if !strings.EqualFold(u.Scheme, "https") {
+		return fmt.Errorf("non-loopback fallback URL must use HTTPS")
+	}
+	if !strings.EqualFold(host, "api.telegram.org") && !strings.HasSuffix(strings.ToLower(host), ".telegram.org") {
+		return fmt.Errorf("fallback URL must be a telegram.org host or loopback")
+	}
+	return nil
+}
+
 // NewFallbackTransport creates a FallbackTransport with the given fallback
 // URLs. The primary URL defaults to https://api.telegram.org and the timeout
 // defaults to 30 seconds.
-func NewFallbackTransport(fallbackURLs []string) *FallbackTransport {
+//
+// It returns an error if any fallback URL is untrusted, because the bot token
+// is sent in the request path and untrusted endpoints would receive it.
+func NewFallbackTransport(fallbackURLs []string) (*FallbackTransport, error) {
+	for _, raw := range fallbackURLs {
+		if err := validateFallbackURL(raw); err != nil {
+			return nil, fmt.Errorf("invalid fallback URL %q: %w", raw, err)
+		}
+	}
+
 	ft := &FallbackTransport{
 		PrimaryURL:   "https://api.telegram.org",
 		FallbackURLs: fallbackURLs,
@@ -29,7 +80,7 @@ func NewFallbackTransport(fallbackURLs []string) *FallbackTransport {
 		Timeout:   ft.Timeout,
 		Transport: ft,
 	}
-	return ft
+	return ft, nil
 }
 
 // allURLs returns the primary URL followed by all fallback URLs in a single

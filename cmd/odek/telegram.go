@@ -19,6 +19,7 @@ import (
 
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/flock"
 	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/memory"
@@ -72,9 +73,48 @@ var resolvedAPIKey string
 // shutdown). Override in tests to avoid killing the test process.
 var killFn = syscall.Kill
 
-// instanceLockRef holds the current PID file lock, accessible from
-// gracefulRestart so it can release the lock before os.Exit(0).
-var instanceLockRef *instanceLock
+// restartCooldown limits how often /restart can be triggered, preventing a
+// compromised or over-eager account from restart-looping the bot.
+const restartCooldown = 60 * time.Second
+
+// lastRestartAt stores the Unix timestamp of the most recent /restart.
+var lastRestartAt atomic.Int64
+
+// restartCooldownRemaining returns the time left before another /restart is
+// allowed. Zero means the cooldown has elapsed.
+func restartCooldownRemaining() time.Duration {
+	last := time.Unix(lastRestartAt.Load(), 0)
+	if last.IsZero() {
+		return 0
+	}
+	elapsed := time.Since(last)
+	if elapsed >= restartCooldown {
+		return 0
+	}
+	return restartCooldown - elapsed
+}
+
+// handleRestartCommand checks operator identity and cooldown for /restart and,
+// if allowed, starts the asynchronous SIGHUP. It returns the reply text and a
+// bool indicating whether a restart was actually triggered.
+func handleRestartCommand(chatID, userID int64, adminChats, adminUsers []int64) (string, bool) {
+	if !canManageSchedule(chatID, userID, adminChats, adminUsers) {
+		return "🔒 /restart is restricted to configured operator chats/users.", false
+	}
+	if rem := restartCooldownRemaining(); rem > 0 {
+		return fmt.Sprintf("⏳ /restart was used recently. Please wait %s before restarting again.", rem.Round(time.Second)), false
+	}
+	lastRestartAt.Store(time.Now().Unix())
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		killFn(os.Getpid(), syscall.SIGHUP)
+	}()
+	return "🔄 *Restarting...*\n\nThe bot will restart momentarily. This may take a few seconds.", true
+}
+
+// instanceLockRef holds the current Telegram singleton lock release function,
+// accessible from gracefulRestart so it can release the lock before os.Exit(0).
+var instanceLockRef func()
 
 // getChatMutex returns the per-chat mutex for the given chat ID.
 func getChatMutex(chatID int64) *sync.Mutex {
@@ -103,15 +143,15 @@ func resetChatForNew(chatID int64, sessionManager *telegram.SessionManager, hand
 
 // telegramCmd is the entry point for "odek telegram".
 func telegramCmd(args []string) error {
-	// 0. Acquire singleton lock — kill any stale previous instance.
-	lock, err := acquireLock()
+	// 0. Acquire singleton lock — wait for any previous instance to exit.
+	lockRelease, err := acquireLock()
 	if err != nil {
 		return fmt.Errorf("telegram: %w", err)
 	}
-	instanceLockRef = lock
+	instanceLockRef = lockRelease
 	defer func() {
 		instanceLockRef = nil
-		lock.release()
+		lockRelease()
 	}()
 
 	// 1. Load config from all sources (file → env).
@@ -134,6 +174,8 @@ func telegramCmd(args []string) error {
 
 	// 4. Create bot client.
 	bot := telegram.NewBot(cfg.Token)
+	bot.MaxDownloadSize = cfg.MaxDownloadSize
+	bot.MediaQuotaPerChat = cfg.MediaQuotaPerChat
 
 	// 4b. Create logger.
 	level := telegram.ParseLogLevel(cfg.LogLevel)
@@ -146,7 +188,9 @@ func telegramCmd(args []string) error {
 
 	// 4c. Configure fallback Telegram API endpoints if provided.
 	if len(cfg.FallbackURLs) > 0 {
-		bot.SetFallbackURLs(cfg.FallbackURLs)
+		if err := bot.SetFallbackURLs(cfg.FallbackURLs); err != nil {
+			return fmt.Errorf("telegram: invalid fallback URL: %w", err)
+		}
 	}
 
 	// 4d. Configure daily token budget (0 = unlimited, the default).
@@ -230,9 +274,9 @@ func telegramCmd(args []string) error {
 	// block the main update processing loop. The TelegramApprover blocks waiting
 	// for inline keyboard callbacks, which arrive via the main loop — only async
 	// dispatch prevents deadlock.
-	handler.OnTextMessage = func(chatID int64, messageID int, text string) (string, error) {
-		go handleChatMessage(chatID, messageID, text, bot, handler, sessionManager,
-			resolved, systemMessage, handlerLog)
+	handler.OnTextMessage = func(chatID int64, messageID int, text string, forwarded bool, userID int64) (string, error) {
+		go handleChatMessage(chatID, messageID, userID, telegramTextMessage(chatID, text, forwarded),
+			bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 		return "", nil
 	}
 
@@ -245,7 +289,7 @@ func telegramCmd(args []string) error {
 		scheduleStore = nil
 	}
 
-	handler.OnCommand = func(chatID int64, messageID int, cmdName string, argsStr string) (string, error) {
+	handler.OnCommand = func(chatID int64, messageID int, cmdName string, argsStr string, userID int64) (string, error) {
 		cmd := telegram.FindCommand(cmdName)
 		if cmd == nil {
 			return fmt.Sprintf("Unknown command: /%s", cmdName), nil
@@ -260,25 +304,24 @@ func telegramCmd(args []string) error {
 			if cmdName == "schedules" {
 				sub = "list"
 			}
-			reply, runTask := telegramScheduleReply(chatID, sub, scheduleStore,
-				scheduleReloadRef, resolved.Schedules.AllowTelegramManagement)
+			reply, runTask := telegramScheduleReply(chatID, userID, sub, scheduleStore,
+				scheduleReloadRef, resolved.Schedules.AllowTelegramManagement,
+				resolved.Schedules.TelegramAdminChats, resolved.Schedules.TelegramAdminUsers)
 			if runTask != "" {
-				go handleChatMessage(chatID, messageID, runTask, bot, handler, sessionManager,
+				go handleChatMessage(chatID, messageID, userID, runTask, bot, handler, sessionManager,
 					resolved, systemMessage, handlerLog)
 			}
 			return reply, nil
 		}
 
-		// Handle /restart — return confirmation message, then signal SIGHUP.
-		// The message is sent through the standard response pipeline (MarkdownV2 +
-		// retry logic). SIGHUP fires asynchronously after a short delay so the
-		// pipeline has time to dispatch before graceful restart begins.
+		// Handle /restart — restricted to operator chats/users and rate-limited.
+		// The confirmation message is sent through the standard response pipeline
+		// (MarkdownV2 + retry logic). SIGHUP fires asynchronously after a short
+		// delay so the pipeline has time to dispatch before graceful restart begins.
 		if cmdName == "restart" {
-			go func() {
-				time.Sleep(500 * time.Millisecond)
-				killFn(os.Getpid(), syscall.SIGHUP)
-			}()
-			return "🔄 *Restarting...*\n\nThe bot will restart momentarily. This may take a few seconds.", nil
+			reply, _ := handleRestartCommand(chatID, userID,
+				resolved.Schedules.TelegramAdminChats, resolved.Schedules.TelegramAdminUsers)
+			return reply, nil
 		}
 
 		// Handle /new — archive the current session and start fresh.
@@ -406,7 +449,7 @@ func telegramCmd(args []string) error {
 					"Use your write_file tool to save the plan.",
 				description, slug,
 			)
-			go handleChatMessage(chatID, messageID, prompt, bot, handler, sessionManager,
+			go handleChatMessage(chatID, messageID, userID, prompt, bot, handler, sessionManager,
 				resolved, systemMessage, handlerLog)
 			return fmt.Sprintf("📝 *Planning* `%s`…\n\n_Generating plan for: %s_", slug, description), nil
 		}
@@ -519,12 +562,12 @@ func telegramCmd(args []string) error {
 		return "", nil // approval callbacks are routed by the approver
 	}
 
-	handler.OnVoiceMessage = func(chatID int64, messageID int, fileID string) (string, error) {
+	handler.OnVoiceMessage = func(chatID int64, messageID int, fileID string, userID int64) (string, error) {
 		// Download the voice file.
-		localPath, err := telegram.DownloadVoice(bot, fileID)
+		localPath, err := telegram.DownloadVoice(bot, chatID, fileID)
 		if err != nil {
 			handlerLog.Warn("voice download failed", "chat_id", chatID, "error", err)
-			go handleChatMessage(chatID, messageID,
+			go handleChatMessage(chatID, messageID, userID,
 				fmt.Sprintf("[voice message received — download failed: %v]", err),
 				bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 			return "", nil
@@ -540,8 +583,10 @@ func telegramCmd(args []string) error {
 					Error string `json:"error"`
 				}
 				if json.Unmarshal([]byte(result), &r) == nil && r.Error == "" && r.Text != "" {
-					// Transcribed text injected directly as user message
-					go handleChatMessage(chatID, messageID, r.Text,
+					// Transcribed text crosses an external trust boundary; wrap it before
+					// injecting it into the user message stream (telegramVoiceMessage).
+					go handleChatMessage(chatID, messageID, userID,
+						telegramVoiceMessage(chatID, r.Text),
 						bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 					return "", nil
 				}
@@ -551,17 +596,18 @@ func telegramCmd(args []string) error {
 		}
 
 		// Fallback: pass the file path to the agent
-		go handleChatMessage(chatID, messageID,
-			fmt.Sprintf("🎤 Voice message saved to %q. Use transcribe() tool to get the text.", localPath),
+		go handleChatMessage(chatID, messageID, userID,
+			wrapUntrusted(fmt.Sprintf("telegram:chat:%d:voice", chatID),
+				fmt.Sprintf("🎤 Voice message saved to %q. Use transcribe() tool to get the text.", localPath)),
 			bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 		return "", nil
 	}
 
-	handler.OnPhotoMessage = func(chatID int64, messageID int, fileIDs []string, caption string) (string, error) {
-		localPath, err := telegram.DownloadPhoto(bot, fileIDs)
+	handler.OnPhotoMessage = func(chatID int64, messageID int, fileIDs []string, caption string, userID int64) (string, error) {
+		localPath, err := telegram.DownloadPhoto(bot, chatID, fileIDs)
 		if err != nil {
 			handlerLog.Warn("photo download failed", "chat_id", chatID, "error", err)
-			go handleChatMessage(chatID, messageID,
+			go handleChatMessage(chatID, messageID, userID,
 				fmt.Sprintf("[photo received — download failed: %v]", err),
 				bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 			return "", nil
@@ -589,7 +635,7 @@ func telegramCmd(args []string) error {
 				if json.Unmarshal([]byte(result), &r) == nil && r.Error == "" && r.Description != "" {
 					// r.Description is already wrapped in <untrusted_content>
 					// boundaries by the vision tool (image text is untrusted).
-					go handleChatMessage(chatID, messageID,
+					go handleChatMessage(chatID, messageID, userID,
 						photoVisionMessage(caption, r.Description),
 						bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 					return "", nil
@@ -601,23 +647,23 @@ func telegramCmd(args []string) error {
 
 		// Fallback: hand the agent the file path (and caption) so it can analyze
 		// the image itself via the vision/shell tools.
-		go handleChatMessage(chatID, messageID,
+		go handleChatMessage(chatID, messageID, userID,
 			photoFallbackMessage(localPath, caption),
 			bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 		return "", nil
 	}
 
-	handler.OnDocumentMessage = func(chatID int64, messageID int, fileID string, fileName string) (string, error) {
-		localPath, err := telegram.DownloadDocument(bot, fileID, fileName)
+	handler.OnDocumentMessage = func(chatID int64, messageID int, fileID string, fileName string, userID int64) (string, error) {
+		localPath, err := telegram.DownloadDocument(bot, chatID, fileID, fileName)
 		if err != nil {
 			handlerLog.Warn("document download failed", "chat_id", chatID, "file_name", fileName, "error", err)
-			go handleChatMessage(chatID, messageID,
+			go handleChatMessage(chatID, messageID, userID,
 				fmt.Sprintf("[document received — download failed: %v]", err),
 				bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 			return "", nil
 		}
-		go handleChatMessage(chatID, messageID,
-			fmt.Sprintf("📄 Document received and saved to %q. Use shell tools to analyze and respond.", localPath),
+		go handleChatMessage(chatID, messageID, userID,
+			telegramDocumentMessage(localPath),
 			bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 		return "", nil
 	}
@@ -965,9 +1011,9 @@ func gracefulRestart(bot *telegram.Bot) {
 	//
 	// Since the child is an independent process already running via
 	// os.StartProcess, the cleanest path is to exit right here.
-	// Release the PID file lock before exit so the child gets a clean slate.
+	// Release the singleton lock before exit so the child gets a clean slate.
 	if instanceLockRef != nil {
-		instanceLockRef.release()
+		instanceLockRef()
 	}
 	// Close the embedded scheduler's MCP connections before exiting — os.Exit
 	// skips deferred cleanup, so without this the MCP child processes (e.g.
@@ -1051,6 +1097,7 @@ func seedSystemMessage(messages []llm.Message, system string) []llm.Message {
 func handleChatMessage(
 	chatID int64,
 	messageID int,
+	userID int64,
 	text string,
 	bot *telegram.Bot,
 	handler *telegram.Handler,
@@ -1098,7 +1145,9 @@ func handleChatMessage(
 	defer activeTaskWG.Done()
 
 	// Create a per-chat TelegramApprover for inline keyboard approval.
-	approver := telegram.NewTelegramApprover(bot, chatID)
+	// Bind approvals to the originating user so group members cannot hijack
+	// each other's approval prompts.
+	approver := telegram.NewTelegramApprover(bot, chatID, userID)
 	handler.SetApprover(chatID, approver)
 	defer handler.DeleteApprover(chatID)
 
@@ -1389,6 +1438,11 @@ func handleChatMessage(
 	// at the final answer.
 	agentTools = append(agentTools, toolpkg.NewSendMessageTool(
 		func(text string, file string, buttons [][]map[string]string) error {
+			// Defense-in-depth: never send buttons that use reserved internal
+			// callback prefixes, even if the tool validation was bypassed.
+			if err := validateSendMessageButtons(buttons); err != nil {
+				return err
+			}
 			if file != "" {
 				// Detect media type from extension.
 				mediaType := mediaTypeFromExt(file)
@@ -1415,19 +1469,20 @@ func handleChatMessage(
 	}
 
 	agentCfg := odek.Config{
-		Model:           resolved.Model,
-		BaseURL:         resolved.BaseURL,
-		APIKey:          resolved.APIKey,
-		MaxIterations:   resolved.MaxIter,
-		MaxToolParallel: resolved.MaxToolParallel,
-		SystemMessage:   systemMessage,
-		RuntimeContext:  odek.BuildRuntimeContext("telegram"),
-		InteractionMode: resolved.InteractionMode,
-		NoProjectFile:   resolved.NoAgents,
-		Skills:          skillsCfg,
-		Thinking:        resolved.Thinking,
-		Tools:           agentTools,
-		Renderer:        rend,
+		Model:            resolved.Model,
+		BaseURL:          resolved.BaseURL,
+		APIKey:           resolved.APIKey,
+		MaxIterations:    resolved.MaxIter,
+		MaxToolParallel:  resolved.MaxToolParallel,
+		SystemMessage:    systemMessage,
+		UntrustedWrapper: wrapUntrusted,
+		RuntimeContext:   odek.BuildRuntimeContext("telegram"),
+		InteractionMode:  resolved.InteractionMode,
+		NoProjectFile:    resolved.NoAgents,
+		Skills:           skillsCfg,
+		Thinking:         resolved.Thinking,
+		Tools:            agentTools,
+		Renderer:         rend,
 		ToolEventHandler: func(event string, name string, data string) {
 			// Enhance mode: send new messages with narrated descriptions.
 			if isEnhance {
@@ -1935,89 +1990,53 @@ func truncateToolArgs(data string, maxLen int) string {
 // ── Singleton Lock ─────────────────────────────────────────────────────
 //
 // Prevents two bot instances from polling Telegram simultaneously (which
-// causes 409 Conflict errors). Uses a PID file at ~/.odek/telegram.pid.
+// causes 409 Conflict errors). Uses an advisory file lock on
+// ~/.odek/telegram.lock via the internal/flock module.
+//
+// Why not a PID file? A PID file is probed with signals and, on macOS and
+// other non-Linux POSIX systems, can easily be made to kill an unrelated
+// process whose PID was planted by an attacker. flock is advisory, portable,
+// and the OS automatically releases the lock when the holding process exits.
 //
 // LIFECYCLE
 //
 // Normal startup (no previous instance):
 //
-//	acquireLock() → PID file doesn't exist → writes own PID → OK
+//	acquireLock() → flock succeeds → OK
 //
 // Competing startup (existing instance still alive):
 //
-//	acquireLock() → reads PID file → kills old process (SIGTERM→5s→SIGKILL)
-//	               → old process dies → writes own PID → OK
+//	acquireLock() → blocks on flock until the old process exits → OK
 //
 // Restart (child starts after parent's os.Exit(0)):
 //
-//	acquireLock() → reads PID file → finds old (dead) PID
-//	               → syscall.Kill(pid, 0) fails (process gone)
-//	               → writes own PID → OK
-//
-// Note: During restart, the parent's deferred lock.release() never runs
-// (os.Exit(0) skips defers). The stale PID file is harmless — the child's
-// acquireLock simply finds a dead PID and overwrites it.
+//	acquireLock() → old process released the lock via os.Exit → OK
 
-type instanceLock struct {
-	pidFile string
-}
-
-// acquireLock reads any existing PID file, kills the old process if still
-// alive, then writes the current PID. Returns the lock for deferred release.
-func acquireLock() (*instanceLock, error) {
+// acquireLock acquires an exclusive advisory lock on ~/.odek/telegram.lock
+// using the internal/flock module. The returned release function must be
+// called on shutdown. Any legacy telegram.pid file is removed on success.
+func acquireLock() (func(), error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("home dir: %w", err)
 	}
-	pidFile := filepath.Join(home, ".odek", "telegram.pid")
+	lockFile := filepath.Join(home, ".odek", "telegram.lock")
 
 	// Ensure parent dir exists.
-	if err := os.MkdirAll(filepath.Dir(pidFile), 0755); err != nil {
-		return nil, fmt.Errorf("mkdir pid: %w", err)
+	if err := os.MkdirAll(filepath.Dir(lockFile), 0755); err != nil {
+		return nil, fmt.Errorf("mkdir lock: %w", err)
 	}
 
-	// Read stale PID and kill it if still alive.
-	if data, err := os.ReadFile(pidFile); err == nil {
-		oldPID := strings.TrimSpace(string(data))
-		if pid, _ := strconv.Atoi(oldPID); pid > 1 {
-			// Primary liveness check: cross-platform (signal 0 = probe only).
-			if err := syscall.Kill(pid, 0); err == nil {
-				// Process is alive. On Linux, verify it's an odek telegram
-				// process before killing — skip identity check elsewhere since
-				// /proc is Linux-only and the PID file is odek-specific anyway.
-				shouldKill := true
-				if cmdline, err := os.ReadFile(filepath.Join("/proc", oldPID, "cmdline")); err == nil {
-					shouldKill = strings.Contains(string(cmdline), "odek") &&
-						strings.Contains(string(cmdline), "telegram")
-				}
-				if shouldKill {
-					fmt.Fprintf(os.Stderr, "odek telegram: killing stale instance (PID %d)\n", pid)
-					syscall.Kill(pid, syscall.SIGTERM)
-					// Wait up to 5s for graceful shutdown.
-					for i := 0; i < 50; i++ {
-						time.Sleep(100 * time.Millisecond)
-						if err := syscall.Kill(pid, 0); err != nil {
-							break // process gone
-						}
-					}
-					// Force kill if still alive.
-					syscall.Kill(pid, syscall.SIGKILL)
-				}
-			}
-		}
+	release, err := flock.Lock(lockFile)
+	if err != nil {
+		return nil, fmt.Errorf("acquire singleton lock: %w", err)
 	}
 
-	// Write our PID.
-	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())+"\n"), 0644); err != nil {
-		return nil, fmt.Errorf("write pid: %w", err)
-	}
+	// Clean up the legacy PID file if present; it is no longer used.
+	pidFile := filepath.Join(home, ".odek", "telegram.pid")
+	os.Remove(pidFile)
 
-	return &instanceLock{pidFile: pidFile}, nil
-}
-
-// release removes the PID file on clean shutdown.
-func (l *instanceLock) release() {
-	os.Remove(l.pidFile)
+	return release, nil
 }
 
 // ── send_message helpers ──────────────────────────────────────────────
@@ -2026,11 +2045,16 @@ func (l *instanceLock) release() {
 // for a received photo. A non-empty caption focuses the (small) model on the
 // part of the image the user is asking about; otherwise a thorough default
 // describe prompt is used.
+//
+// The caption crosses the Telegram trust boundary, so it is wrapped as
+// untrusted content before being embedded in the prompt. This prevents a
+// prompt-injected caption from steering the local vision model as if it were
+// a system instruction.
 func photoVisionPrompt(caption string) string {
 	if caption != "" {
 		return fmt.Sprintf(
-			"Describe this image in detail. Pay special attention to anything relevant to: %q. Include any visible text, objects, people, and notable details.",
-			caption)
+			"Describe this image in detail. Pay special attention to anything relevant to the user-provided caption below. Include any visible text, objects, people, and notable details.\n\n%s",
+			wrapUntrusted("telegram:photo:caption", caption))
 	}
 	return "Describe this image in detail. Include any visible text, objects, people, and notable details."
 }
@@ -2042,10 +2066,10 @@ func photoVisionPrompt(caption string) string {
 func photoVisionMessage(caption, description string) string {
 	if caption != "" {
 		return fmt.Sprintf(
-			"The user sent an image with this message: %q\n\n"+
+			"The user sent an image with this message:\n%s\n\n"+
 				"A local vision model extracted this description of the image:\n%s\n\n"+
 				"Use the description to respond to the user's message.",
-			caption, description)
+			wrapUntrusted("telegram:photo:caption", caption), description)
 	}
 	return fmt.Sprintf(
 		"The user sent an image (no caption). A local vision model extracted this description:\n%s\n\n"+
@@ -2053,12 +2077,39 @@ func photoVisionMessage(caption, description string) string {
 		description)
 }
 
+// telegramTextMessage builds the user-role content for an incoming Telegram
+// text message. Direct messages are kept as-is so the operator's typed intent
+// is treated normally; forwarded messages are wrapped as untrusted because
+// they cross an external trust boundary.
+func telegramTextMessage(chatID int64, text string, forwarded bool) string {
+	if forwarded {
+		return wrapUntrusted(fmt.Sprintf("telegram:chat:%d:forwarded", chatID), text)
+	}
+	return text
+}
+
+// telegramVoiceMessage builds the user-role content for an auto-transcribed
+// voice message. The transcript is produced by a speech-to-text model from
+// attacker-influenceable audio, so it crosses an external trust boundary and
+// must be wrapped as untrusted before it enters the message stream — a
+// malicious recording must not become the user's "trusted" request.
+func telegramVoiceMessage(chatID int64, transcript string) string {
+	return wrapUntrusted(fmt.Sprintf("telegram:chat:%d:voice", chatID), transcript)
+}
+
+// telegramDocumentMessage builds the user-role message for an incoming
+// document. The whole message is wrapped as untrusted because the document
+// path comes from an external channel.
+func telegramDocumentMessage(localPath string) string {
+	return wrapUntrusted("telegram:document", fmt.Sprintf("📄 Document received and saved to %q. Use shell tools to analyze and respond.", localPath))
+}
+
 // photoFallbackMessage builds the message injected when auto-describe is off or
 // the vision model fails: it hands the agent the saved file path (and caption,
 // if any) so the agent can analyze the image itself via the vision/shell tools.
 func photoFallbackMessage(localPath, caption string) string {
 	if caption != "" {
-		return fmt.Sprintf("🖼 Photo saved to %q with this message from the user: %q. Use the vision tool to analyze the image, then respond.", localPath, caption)
+		return fmt.Sprintf("🖼 Photo saved to %q with this message from the user:\n%s\n\nUse the vision tool to analyze the image, then respond.", localPath, wrapUntrusted("telegram:photo:caption", caption))
 	}
 	return fmt.Sprintf("🖼 Photo received and saved to %q. Use the vision tool or shell commands to analyze and respond.", localPath)
 }
@@ -2079,6 +2130,12 @@ func mediaTypeFromExt(path string) string {
 // sendTelegramMedia sends a file as a Telegram media message with caption
 // and optional inline keyboard. Detects the media type from file extension.
 func sendTelegramMedia(bot *telegram.Bot, chatID int64, mediaType, path, caption string, buttons [][]map[string]string) error {
+	// Defense-in-depth: validate the path against the media allowlist.
+	resolved, err := telegram.ResolveMediaPath(path)
+	if err != nil {
+		return fmt.Errorf("telegram media: %w", err)
+	}
+
 	var replyMarkup *telegram.InlineKeyboardMarkup
 	if len(buttons) > 0 {
 		replyMarkup = buttonsToMarkup(buttons)
@@ -2089,15 +2146,30 @@ func sendTelegramMedia(bot *telegram.Bot, chatID int64, mediaType, path, caption
 	}
 	switch mediaType {
 	case "photo":
-		_, err := bot.SendPhoto(chatID, path, caption, opts)
+		_, err := bot.SendPhoto(chatID, resolved, caption, opts)
 		return err
 	case "voice":
-		_, err := bot.SendVoice(chatID, path, caption, opts)
+		_, err := bot.SendVoice(chatID, resolved, caption, opts)
 		return err
 	default:
-		_, err := bot.SendDocument(chatID, path, caption, opts)
+		_, err := bot.SendDocument(chatID, resolved, caption, opts)
 		return err
 	}
+}
+
+// validateSendMessageButtons ensures no button uses a reserved internal
+// callback-data prefix. This is defense-in-depth alongside the validation in
+// internal/tool/send_message.go.
+func validateSendMessageButtons(buttons [][]map[string]string) error {
+	for i, row := range buttons {
+		for j, btn := range row {
+			cd := btn["callback_data"]
+			if toolpkg.IsReservedCallbackPrefix(cd) {
+				return fmt.Errorf("button[%d][%d] uses reserved callback_data prefix %q", i, j, cd)
+			}
+		}
+	}
+	return nil
 }
 
 // buttonsToMarkup converts the tool's button format to Telegram's

@@ -89,3 +89,60 @@ func TestWrapUntrusted_EmptyInputBypasses(t *testing.T) {
 		t.Errorf("wrapUntrusted(_, \"\") = %q, want \"\"", got)
 	}
 }
+
+// TestUntrustedSourcesAll_SkipsEmptySource verifies that a wrapper with an
+// empty source attribute does not contribute an empty string to the source
+// list. An empty source would match every resource via strings.HasPrefix(r, "")
+// in the audit divergence check, blinding the reused-resource heuristic.
+func TestUntrustedSourcesAll_SkipsEmptySource(t *testing.T) {
+	// A blob with no source, concatenated with a blob that has a real source.
+	combined := wrapUntrusted("", "anonymous body") + wrapUntrusted("https://evil.example/x", "named body")
+
+	srcs := untrustedSourcesAll(combined)
+	for _, s := range srcs {
+		if s == "" {
+			t.Fatalf("untrustedSourcesAll returned an empty source: %#v", srcs)
+		}
+	}
+	if len(srcs) != 1 || srcs[0] != "https://evil.example/x" {
+		t.Fatalf("untrustedSourcesAll = %#v, want exactly [https://evil.example/x]", srcs)
+	}
+
+	// Both bodies must still be aggregated (the empty-source blob is not dropped).
+	bodies := unwrapUntrustedAll(combined)
+	if len(bodies) != 2 {
+		t.Fatalf("unwrapUntrustedAll returned %d bodies, want 2: %#v", len(bodies), bodies)
+	}
+}
+
+// TestExtractUntrustedAll_SinglePass verifies that extractUntrustedAll returns
+// the same bodies and sources as the separate unwrapUntrustedAll and
+// untrustedSourcesAll helpers, proving the single-pass refactoring is correct.
+func TestExtractUntrustedAll_SinglePass(t *testing.T) {
+	combined := wrapUntrusted("https://a.example", "body one") +
+		wrapUntrusted("", "body two") +
+		wrapUntrusted("https://b.example", "body three")
+
+	wantBodies := unwrapUntrustedAll(combined)
+	wantSources := untrustedSourcesAll(combined)
+
+	gotBodies, gotSources := extractUntrustedAll(combined)
+
+	if len(gotBodies) != len(wantBodies) {
+		t.Fatalf("bodies length mismatch: got %d, want %d", len(gotBodies), len(wantBodies))
+	}
+	for i := range wantBodies {
+		if gotBodies[i] != wantBodies[i] {
+			t.Errorf("body[%d] = %q, want %q", i, gotBodies[i], wantBodies[i])
+		}
+	}
+
+	if len(gotSources) != len(wantSources) {
+		t.Fatalf("sources length mismatch: got %d, want %d", len(gotSources), len(wantSources))
+	}
+	for i := range wantSources {
+		if gotSources[i] != wantSources[i] {
+			t.Errorf("source[%d] = %q, want %q", i, gotSources[i], wantSources[i])
+		}
+	}
+}

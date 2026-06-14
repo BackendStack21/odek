@@ -189,6 +189,13 @@ type Config struct {
 	// tool call needs approval before showing the prompt. When nil, the
 	// batch gate plays safe and shows the prompt for any classified tool.
 	DangerousConfig *danger.DangerousConfig
+
+	// UntrustedWrapper, if set, is applied to skill and episode context before
+	// injection into the model's system context. It should wrap externally-
+	// sourced content with a nonce'd boundary (and record it for audit). When
+	// nil, skill/episode content is injected directly (not recommended for
+	// production surfaces).
+	UntrustedWrapper func(source, content string) string
 }
 
 // Agent is the agent loop runtime.
@@ -525,6 +532,7 @@ func New(cfg Config) (*Agent, error) {
 
 	engine := loop.New(client, registry, cfg.MaxIterations, cfg.SystemMessage, cfg.Renderer, maxContext)
 	engine.PromptCaching = cfg.PromptCaching
+	engine.SetUntrustedWrapper(cfg.UntrustedWrapper)
 	if cfg.MaxToolParallel > 0 {
 		engine.SetMaxToolParallel(cfg.MaxToolParallel)
 	}

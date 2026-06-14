@@ -86,8 +86,12 @@ func TestSendMessageTool_Call_WithFile(t *testing.T) {
 	if !strings.Contains(result, "file sent") {
 		t.Errorf("expected 'file sent' in result, got: %q", result)
 	}
-	if sentFile != f {
-		t.Errorf("file = %q, want %q", sentFile, f)
+	want, err := filepath.EvalSymlinks(f)
+	if err != nil {
+		t.Fatalf("EvalSymlinks failed: %v", err)
+	}
+	if sentFile != want {
+		t.Errorf("file = %q, want %q", sentFile, want)
 	}
 }
 
@@ -173,6 +177,26 @@ func TestSendMessageTool_Call_ButtonCallbackPrefix(t *testing.T) {
 	cd := sentButtons[0][0]["callback_data"]
 	if !strings.HasPrefix(cd, "cb:") {
 		t.Errorf("expected cb: prefix on callback_data, got: %q", cd)
+	}
+}
+
+func TestSendMessageTool_Call_ReservedCallbackPrefixRejected(t *testing.T) {
+	tool := &SendMessageTool{
+		Sender: func(text, file string, buttons [][]map[string]string) error {
+			return nil
+		},
+	}
+
+	for _, prefix := range ReservedCallbackPrefixes {
+		args := fmt.Sprintf(`{"text": "x", "buttons": [[{"text": "Bad", "callback_data": "%sfoo"}]]}`, prefix)
+		_, err := tool.Call(args)
+		if err == nil {
+			t.Errorf("expected error for reserved prefix %q, got nil", prefix)
+			continue
+		}
+		if !strings.Contains(err.Error(), "reserved internal prefix") {
+			t.Errorf("expected 'reserved internal prefix' error for %q, got: %v", prefix, err)
+		}
 	}
 }
 

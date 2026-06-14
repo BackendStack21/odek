@@ -23,6 +23,38 @@ import (
 
 // ── GET /api/sessions/:id ────────────────────────────────────────────
 
+func TestHandleSessionList_DoesNotLeakAuthTokens(t *testing.T) {
+	store := newTestSessionStore(t)
+	if _, err := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "one"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create([]llm.Message{{Role: "user", Content: "bye"}}, "m", "two"); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := handleSessionList(store)
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	var sessions []session.Session
+	if err := json.NewDecoder(w.Body).Decode(&sessions); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("len(sessions) = %d, want 2", len(sessions))
+	}
+	for _, s := range sessions {
+		if s.AuthToken != "" {
+			t.Errorf("session list leaked auth token for %s", s.ID)
+		}
+	}
+}
+
 func TestHandleSessionByID_GET_ReturnsSession(t *testing.T) {
 	store := newTestSessionStore(t)
 
@@ -37,6 +69,7 @@ func TestHandleSessionByID_GET_ReturnsSession(t *testing.T) {
 
 	handler := handleSessionByID(store)
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
+	req.Header.Set("X-Session-Token", sess.AuthToken)
 	w := httptest.NewRecorder()
 	handler(w, req)
 
@@ -111,6 +144,7 @@ func TestHandleSessionByID_GET_MessagesArePresent(t *testing.T) {
 
 	handler := handleSessionByID(store)
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
+	req.Header.Set("X-Session-Token", sess.AuthToken)
 	w := httptest.NewRecorder()
 	handler(w, req)
 
@@ -147,6 +181,7 @@ func TestHandleSessionByID_DELETE_StillWorks(t *testing.T) {
 
 	handler := handleSessionByID(store)
 	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+sess.ID, nil)
+	req.Header.Set("X-Session-Token", sess.AuthToken)
 	w := httptest.NewRecorder()
 	handler(w, req)
 
@@ -175,6 +210,7 @@ func TestHandleSessionByID_POST_RenameStillWorks(t *testing.T) {
 	body := strings.NewReader(`{"name":"renamed task"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+sess.ID, body)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Session-Token", sess.AuthToken)
 	w := httptest.NewRecorder()
 	handler(w, req)
 
@@ -186,6 +222,136 @@ func TestHandleSessionByID_POST_RenameStillWorks(t *testing.T) {
 	json.NewDecoder(w.Body).Decode(&got)
 	if got.Task != "renamed task" {
 		t.Errorf("Task after rename = %q, want 'renamed task'", got.Task)
+	}
+}
+
+func TestHandleSessionByID_GET_InvalidToken(t *testing.T) {
+	store := newTestSessionStore(t)
+	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
+
+	handler := handleSessionByID(store)
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
+	req.Header.Set("X-Session-Token", "wrong-token")
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", w.Code)
+	}
+}
+
+func TestHandleSessionByID_GET_MissingToken(t *testing.T) {
+	store := newTestSessionStore(t)
+	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
+
+	handler := handleSessionByID(store)
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", w.Code)
+	}
+}
+
+func TestHandleSessionByID_GET_LazyTokenBootstrap(t *testing.T) {
+	// Legacy sessions created before the auth-token defense have no token.
+	// The first GET bootstraps a token and returns it so the UI can use it
+	// for subsequent requests.
+	store := newTestSessionStore(t)
+	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
+	sess.AuthToken = ""
+	if err := store.Save(sess); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	handler := handleSessionByID(store)
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	token := w.Header().Get("X-Session-Token")
+	if token == "" {
+		t.Error("bootstrap should return X-Session-Token header")
+	}
+
+	var got session.Session
+	json.NewDecoder(w.Body).Decode(&got)
+	if got.AuthToken != token {
+		t.Errorf("response auth_token = %q, want %q", got.AuthToken, token)
+	}
+
+	// Subsequent requests with the bootstrapped token succeed.
+	req2 := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
+	req2.Header.Set("X-Session-Token", token)
+	w2 := httptest.NewRecorder()
+	handler(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Errorf("second GET status = %d, want 200", w2.Code)
+	}
+}
+
+func TestHandleSessionByID_DELETE_RequiresToken(t *testing.T) {
+	store := newTestSessionStore(t)
+	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
+
+	handler := handleSessionByID(store)
+	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+sess.ID, nil)
+	req.Header.Set("X-Session-Token", "wrong-token")
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", w.Code)
+	}
+}
+
+func TestHandleSessionByID_POST_RequiresToken(t *testing.T) {
+	store := newTestSessionStore(t)
+	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
+
+	handler := handleSessionByID(store)
+	body := strings.NewReader(`{"name":"renamed"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+sess.ID, body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Session-Token", "wrong-token")
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", w.Code)
+	}
+}
+
+func TestHandleSessionByID_GET_RateLimit(t *testing.T) {
+	store := newTestSessionStore(t)
+	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
+
+	sessionLookupLimiter.reset()
+	defer sessionLookupLimiter.reset()
+
+	handler := handleSessionByID(store)
+	// Exhaust the 60/min allowance.
+	for i := 0; i < 60; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
+		req.Header.Set("X-Session-Token", sess.AuthToken)
+		w := httptest.NewRecorder()
+		handler(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("request %d: status = %d, want 200", i, w.Code)
+		}
+	}
+
+	// The next request from the same (loopback) IP should be rate limited.
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
+	req.Header.Set("X-Session-Token", sess.AuthToken)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("status = %d, want 429", w.Code)
 	}
 }
 
@@ -508,7 +674,7 @@ func TestServe_E2E_SessionMessagesStoredWithoutSystemInjections(t *testing.T) {
 	golangws.Message.Send(conn, string(payload))
 
 	conn.SetReadDeadline(time.Now().Add(15 * time.Second))
-	var sid string
+	var sid, authToken string
 	for {
 		var raw []byte
 		if err := golangws.Message.Receive(conn, &raw); err != nil {
@@ -518,6 +684,7 @@ func TestServe_E2E_SessionMessagesStoredWithoutSystemInjections(t *testing.T) {
 		json.Unmarshal(raw, &evt)
 		if evt["type"] == "session" {
 			sid, _ = evt["session_id"].(string)
+			authToken, _ = evt["auth_token"].(string)
 		}
 		if evt["type"] == "done" {
 			break
@@ -532,7 +699,9 @@ func TestServe_E2E_SessionMessagesStoredWithoutSystemInjections(t *testing.T) {
 	}
 
 	// Fetch the stored session and verify no system messages are stored.
-	resp, err := http.Get("http://" + ln.Addr().String() + "/api/sessions/" + sid)
+	req, _ := http.NewRequest(http.MethodGet, "http://"+ln.Addr().String()+"/api/sessions/"+sid, nil)
+	req.Header.Set("X-Session-Token", authToken)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET session: %v", err)
 	}

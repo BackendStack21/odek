@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -332,6 +333,12 @@ type ResolvedConfig struct {
 	// Populated from the mcp_servers section of odek.json.
 	MCPServers map[string]mcpclient.ServerConfig
 
+	// ProjectMCPServerNames lists the MCP server names that were introduced by
+	// the project-level ./odek.json config. These require explicit user approval
+	// before their subprocesses are spawned, because a malicious repo could
+	// otherwise execute arbitrary code via the mcp_servers section.
+	ProjectMCPServerNames []string
+
 	// MaxConcurrency limits how many sub-agent tasks run in parallel.
 	// Config: max_concurrency, ODEK_MAX_CONCURRENCY.
 	// Default: 3.
@@ -550,6 +557,26 @@ func envInt(key string) int {
 	return n
 }
 
+// envInt64List parses a comma-separated ODEK_* env var into a slice of int64.
+// Empty/unparseable entries are silently dropped.
+func envInt64List(key string) []int64 {
+	v := os.Getenv("ODEK_" + key)
+	if v == "" {
+		return nil
+	}
+	var out []int64
+	for _, s := range strings.Split(v, ",") {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // ── Merge ──────────────────────────────────────────────────────────────
 
 // LoadConfig merges configuration from all four layers and returns the
@@ -574,9 +601,53 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	// Layer 2: project (./odek.json)
 	project := loadFile(ProjectConfigPath())
 
+	// Project config is untrusted: a malicious repo must not be able to steal
+	// the API key, poison the system prompt, or disable safety policy.
+	// Keep global values for these sensitive fields; env vars and CLI flags can
+	// still override below.
+	if project.BaseURL != "" {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring base_url from project config (%s); set it via ~/.odek/config.json, ODEK_BASE_URL, or --base-url\n", ProjectConfigPath())
+		project.BaseURL = ""
+	}
+	if project.APIKey != "" {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring api_key from project config (%s); set it via ~/.odek/config.json, ODEK_API_KEY, or ~/.odek/secrets.env\n", ProjectConfigPath())
+		project.APIKey = ""
+	}
+	if project.System != "" {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring system from project config (%s); set it via ~/.odek/config.json, ODEK_SYSTEM, or --system\n", ProjectConfigPath())
+		project.System = ""
+	}
+	if project.Dangerous != nil {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring dangerous section from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
+		project.Dangerous = nil
+	}
+	// A malicious repo must not be able to turn OFF the sandbox or its
+	// read-only mode via ./odek.json — that would undo the container isolation
+	// the operator opted into. Only the weakening direction is ignored; a
+	// project may still enable the sandbox or request read-only. Other sandbox
+	// knobs (image, user, network, volumes) keep their global/env/CLI
+	// precedence and project values are confined elsewhere (volumes are bound
+	// to the working directory in internal/sandbox).
+	if project.Sandbox != nil && !*project.Sandbox {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring sandbox=false from project config (%s); set sandbox policy via ~/.odek/config.json or the CLI\n", ProjectConfigPath())
+		project.Sandbox = nil
+	}
+	if project.SandboxReadonly != nil && !*project.SandboxReadonly {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring sandbox_readonly=false from project config (%s); set it via ~/.odek/config.json or CLI\n", ProjectConfigPath())
+		project.SandboxReadonly = nil
+	}
+
 	// Start with global, overlay project
 	cfg := overlayFile(FileConfig{}, global)
 	cfg = overlayFile(cfg, project)
+
+	// Remember which MCP servers came from the project config so commands can
+	// require explicit approval before spawning potentially untrusted subprocesses.
+	projectMCPNames := make([]string, 0, len(project.MCPServers))
+	for name := range project.MCPServers {
+		projectMCPNames = append(projectMCPNames, name)
+	}
+	sort.Strings(projectMCPNames)
 
 	// Layer 3: ODEK_* env vars
 	if v := envString("MODEL"); v != "" {
@@ -668,6 +739,12 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if v := envBool("SCHEDULES_ALLOW_TELEGRAM_MANAGEMENT"); v != nil {
 		cfg.Schedules.AllowTelegramManagement = v
 	}
+	if v := envInt64List("SCHEDULES_TELEGRAM_ADMIN_CHATS"); v != nil {
+		cfg.Schedules.TelegramAdminChats = v
+	}
+	if v := envInt64List("SCHEDULES_TELEGRAM_ADMIN_USERS"); v != nil {
+		cfg.Schedules.TelegramAdminUsers = v
+	}
 
 	// Telegram env overrides: merge env vars on top of file config.
 	baseTelegram := telegram.DefaultConfig()
@@ -752,9 +829,10 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		Skills:          resolveSkills(cfg.Skills),
 		Dangerous:       resolveDangerous(cfg.Dangerous),
 		Memory:          resolveMemory(cfg.Memory),
-		Embedding:       cfg.Embedding,
-		MCPServers:      cfg.MCPServers,
-		Telegram:        resolveTelegram(cfg.Telegram),
+		Embedding:             cfg.Embedding,
+		MCPServers:            cfg.MCPServers,
+		ProjectMCPServerNames: projectMCPNames,
+		Telegram:              resolveTelegram(cfg.Telegram),
 		Transcription:   resolveTranscription(cfg.Transcription),
 		Vision:          resolveVision(cfg.Vision),
 		WebSearch:       resolveWebSearch(cfg.WebSearch),
@@ -782,6 +860,16 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		resolved.MaxConcurrency = cfg.MaxConcurrency
 	} else {
 		resolved.MaxConcurrency = 3
+	}
+
+	// Telegram operator identity: schedule management and /restart are restricted
+	// to configured operator chats/users. If the operator did not configure
+	// explicit admin lists, fall back to telegram.default_chat_id (the operator's
+	// own chat). If that is also unset, mutating /schedule commands and /restart
+	// are rejected until an admin list is configured; read-only commands still
+	// work.
+	if len(resolved.Schedules.TelegramAdminChats) == 0 && len(resolved.Schedules.TelegramAdminUsers) == 0 && resolved.Telegram.DefaultChatID != 0 {
+		resolved.Schedules.TelegramAdminChats = []int64{resolved.Telegram.DefaultChatID}
 	}
 
 	// MaxToolParallel: 0 = use loop engine default (4)
@@ -1057,6 +1145,19 @@ func resolveTelegram(cfg *telegram.TelegramConfig) telegram.TelegramConfig {
 	if cfg.DefaultChatID != 0 {
 		base.DefaultChatID = cfg.DefaultChatID
 	}
+	// MaxDownloadSize: 0 (unset) -> default 5 MiB; negative -> unlimited (0);
+	// positive -> explicit cap.
+	if cfg.MaxDownloadSize < 0 {
+		base.MaxDownloadSize = 0
+	} else if cfg.MaxDownloadSize > 0 {
+		base.MaxDownloadSize = cfg.MaxDownloadSize
+	} else {
+		base.MaxDownloadSize = telegram.DefaultMaxDownloadSize
+	}
+	// MediaQuotaPerChat: 0 = disabled (default); positive = quota in bytes.
+	if cfg.MediaQuotaPerChat > 0 {
+		base.MediaQuotaPerChat = cfg.MediaQuotaPerChat
+	}
 	return base
 }
 
@@ -1117,6 +1218,13 @@ type SchedulesConfig struct {
 	// When false, the Telegram bot still lists/previews jobs but refuses to
 	// add/remove/enable/disable/run them — manage from the host CLI instead.
 	AllowTelegramManagement *bool `json:"allow_telegram_management,omitempty"` // default true
+	// TelegramAdminChats restricts mutating `/schedule` commands to the listed
+	// chat IDs. When empty, management falls back to telegram.default_chat_id
+	// (if set). Read-only commands are not affected.
+	TelegramAdminChats []int64 `json:"telegram_admin_chats,omitempty"`
+	// TelegramAdminUsers restricts mutating `/schedule` commands to the listed
+	// user IDs. Read-only commands are not affected.
+	TelegramAdminUsers []int64 `json:"telegram_admin_users,omitempty"`
 }
 
 // ScheduleConfig is the resolved scheduler config (all fields concrete).
@@ -1126,6 +1234,8 @@ type ScheduleConfig struct {
 	Timezone                string
 	Catchup                 bool
 	AllowTelegramManagement bool
+	TelegramAdminChats      []int64
+	TelegramAdminUsers      []int64
 }
 
 // resolveSchedules merges file-level scheduler config with defaults.
@@ -1155,6 +1265,8 @@ func resolveSchedules(cfg *SchedulesConfig) ScheduleConfig {
 	if cfg.AllowTelegramManagement != nil {
 		out.AllowTelegramManagement = *cfg.AllowTelegramManagement
 	}
+	out.TelegramAdminChats = cfg.TelegramAdminChats
+	out.TelegramAdminUsers = cfg.TelegramAdminUsers
 	return out
 }
 

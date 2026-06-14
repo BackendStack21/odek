@@ -49,6 +49,7 @@ func newWebSearchTool(dc danger.DangerousConfig, cfg config.WebSearchConfig) *we
 	t.client = &http.Client{
 		Timeout:       time.Duration(timeout) * time.Second,
 		CheckRedirect: t.checkRedirect,
+		Transport:     ssrfGuardedTransport(),
 	}
 	return t
 }

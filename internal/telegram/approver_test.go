@@ -18,7 +18,7 @@ func TestNewTelegramApprover(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	a := NewTelegramApprover(bot, 12345)
+	a := NewTelegramApprover(bot, 12345, 0)
 	if a == nil {
 		t.Fatal("NewTelegramApprover returned nil")
 	}
@@ -40,7 +40,7 @@ func TestHandleCallback_Approve(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	a := NewTelegramApprover(bot, 1)
+	a := NewTelegramApprover(bot, 1, 0)
 	id := a.newID()
 
 	// Register a pending request manually.
@@ -48,7 +48,7 @@ func TestHandleCallback_Approve(t *testing.T) {
 	a.pending[id] = pr
 
 	// Handle an approve callback.
-	handled := a.HandleCallback(cbPrefixApprove + id)
+	handled := a.HandleCallback(cbPrefixApprove + id, 0)
 	if !handled {
 		t.Fatal("HandleCallback should return true for approval callback")
 	}
@@ -65,13 +65,13 @@ func TestHandleCallback_Deny(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	a := NewTelegramApprover(bot, 1)
+	a := NewTelegramApprover(bot, 1, 0)
 	id := a.newID()
 
 	pr := &pendingRequest{resp: make(chan string, 1)}
 	a.pending[id] = pr
 
-	handled := a.HandleCallback(cbPrefixDeny + id)
+	handled := a.HandleCallback(cbPrefixDeny + id, 0)
 	if !handled {
 		t.Fatal("HandleCallback should return true for deny callback")
 	}
@@ -87,13 +87,13 @@ func TestHandleCallback_Trust(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	a := NewTelegramApprover(bot, 1)
+	a := NewTelegramApprover(bot, 1, 0)
 	id := a.newID()
 
 	pr := &pendingRequest{resp: make(chan string, 1)}
 	a.pending[id] = pr
 
-	handled := a.HandleCallback(cbPrefixTrust + id)
+	handled := a.HandleCallback(cbPrefixTrust + id, 0)
 	if !handled {
 		t.Fatal("HandleCallback should return true for trust callback")
 	}
@@ -109,10 +109,10 @@ func TestHandleCallback_UnknownPrefix(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	a := NewTelegramApprover(bot, 1)
+	a := NewTelegramApprover(bot, 1, 0)
 
 	// Callback with an unknown prefix should not be handled.
-	handled := a.HandleCallback("unknown:something")
+	handled := a.HandleCallback("unknown:something", 0)
 	if handled {
 		t.Fatal("HandleCallback should return false for unknown prefix")
 	}
@@ -123,11 +123,11 @@ func TestHandleCallback_UnknownID(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	a := NewTelegramApprover(bot, 1)
+	a := NewTelegramApprover(bot, 1, 0)
 
 	// Valid prefix but unknown ID — should return true (recognition)
 	// but not panic (no channel to send to).
-	handled := a.HandleCallback(cbPrefixApprove + "nonexistent")
+	handled := a.HandleCallback(cbPrefixApprove + "nonexistent", 0)
 	if !handled {
 		t.Fatal("HandleCallback should return true for known prefix even with unknown ID")
 	}
@@ -140,7 +140,7 @@ func TestIsTrusted_Initial(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	a := NewTelegramApprover(bot, 1)
+	a := NewTelegramApprover(bot, 1, 0)
 	if a.IsTrusted(danger.SystemWrite) {
 		t.Error("IsTrusted(SystemWrite) should be false initially")
 	}
@@ -151,7 +151,7 @@ func TestResetTrust(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	a := NewTelegramApprover(bot, 1)
+	a := NewTelegramApprover(bot, 1, 0)
 
 	// Manually set a trusted class.
 	a.mu.Lock()
@@ -177,7 +177,7 @@ func TestTelegramApprover_SetLogger_Nil(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	a := NewTelegramApprover(bot, 1)
+	a := NewTelegramApprover(bot, 1, 0)
 	// Initially uses NopLogger.
 	a.SetLogger(nil)
 	// After nil, should use NopLogger (no panic).
@@ -189,7 +189,7 @@ func TestTelegramApprover_SetLogger_Valid(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	a := NewTelegramApprover(bot, 1)
+	a := NewTelegramApprover(bot, 1, 0)
 	logger := NewFileLogger(LogDebug, "")
 	a.SetLogger(logger)
 	// Just verify no panic — the logger is set internally.
@@ -202,7 +202,7 @@ func TestNewID_Unique(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	a := NewTelegramApprover(bot, 1)
+	a := NewTelegramApprover(bot, 1, 0)
 	ids := make(map[string]bool)
 	for i := 0; i < 100; i++ {
 		id := a.newID()
@@ -226,7 +226,7 @@ func TestPromptCommand_TrustedClass(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	a := NewTelegramApprover(bot, 1)
+	a := NewTelegramApprover(bot, 1, 0)
 	a.mu.Lock()
 	a.trusted[danger.Safe] = true
 	a.mu.Unlock()
@@ -250,7 +250,7 @@ func TestPromptCommand_SendError(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	a := NewTelegramApprover(bot, 1)
+	a := NewTelegramApprover(bot, 1, 0)
 
 	// Should return an error (can't send the prompt).
 	err := a.PromptCommand(danger.SystemWrite, "rm -rf /", "dangerous")
@@ -266,7 +266,7 @@ func TestPromptOperation_TrustedClass(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	a := NewTelegramApprover(bot, 1)
+	a := NewTelegramApprover(bot, 1, 0)
 	a.mu.Lock()
 	a.trusted[danger.LocalWrite] = true
 	a.mu.Unlock()
@@ -350,7 +350,7 @@ func TestPromptCommand_SendsFullCommand(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	a := NewTelegramApprover(bot, 1)
+	a := NewTelegramApprover(bot, 1, 0)
 	cmd := "rm -rf /tmp/build && make install PREFIX=/usr/local/really/long/path"
 
 	done := make(chan error, 1)
@@ -368,7 +368,7 @@ func TestPromptCommand_SendsFullCommand(t *testing.T) {
 	if id == "" {
 		t.Fatal("no pending request registered")
 	}
-	a.HandleCallback(cbPrefixDeny + id)
+	a.HandleCallback(cbPrefixDeny + id, 0)
 	<-done
 
 	var sent string
@@ -393,7 +393,7 @@ func TestApprover_ConcurrentAccess(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	a := NewTelegramApprover(bot, 1)
+	a := NewTelegramApprover(bot, 1, 0)
 
 	// Set trust from multiple goroutines.
 	done := make(chan bool, 10)
@@ -423,7 +423,7 @@ func TestTelegramApprover_Cancel_InterruptsPrompt(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	a := NewTelegramApprover(bot, 1)
+	a := NewTelegramApprover(bot, 1, 0)
 
 	done := make(chan error, 1)
 	go func() {
@@ -451,7 +451,7 @@ func TestTelegramApprover_Cancel_Idempotent(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	a := NewTelegramApprover(bot, 1)
+	a := NewTelegramApprover(bot, 1, 0)
 	a.Cancel()
 	a.Cancel() // second call should not panic
 	// If we get here without panic, it's idempotent.
@@ -464,7 +464,7 @@ func TestPromptCommand_Deny(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	a := NewTelegramApprover(bot, 1)
+	a := NewTelegramApprover(bot, 1, 0)
 
 	done := make(chan error, 1)
 	go func() {
@@ -486,7 +486,7 @@ func TestPromptCommand_Deny(t *testing.T) {
 	if pendingID == "" {
 		t.Fatal("expected a pending request ID")
 	}
-	a.HandleCallback(cbPrefixDeny + pendingID)
+	a.HandleCallback(cbPrefixDeny + pendingID, 0)
 
 	select {
 	case err := <-done:
@@ -507,7 +507,7 @@ func TestPromptCommand_Timeout(t *testing.T) {
 	bot := testBot(t, ts)
 
 	// Use a short timeout by overriding.
-	a := NewTelegramApprover(bot, 1)
+	a := NewTelegramApprover(bot, 1, 0)
 
 	done := make(chan error, 1)
 	go func() {

@@ -14,25 +14,43 @@ import (
 // the unlink behaviour.
 func TestWriteKeyToUnlinkedFile_RoundtripsThroughFD(t *testing.T) {
 	const want = "sk-test-1234567890"
-	f, err := writeKeyToUnlinkedFile(want)
+	f, cleanup, err := writeKeyToUnlinkedFile(want)
 	if err != nil {
 		t.Fatalf("writeKeyToUnlinkedFile: %v", err)
 	}
-	defer f.Close()
 
 	got, err := io.ReadAll(f)
 	if err != nil {
+		f.Close()
+		cleanup()
 		t.Fatalf("read: %v", err)
 	}
 	if string(got) != want {
+		f.Close()
+		cleanup()
 		t.Errorf("read = %q, want %q", string(got), want)
+		return
 	}
 
 	// On POSIX, the file must already be unlinked — the inode lives on
 	// only because we hold the FD. Verify by stat'ing the path.
 	if runtime.GOOS != "windows" {
 		if _, err := os.Stat(f.Name()); !os.IsNotExist(err) {
+			f.Close()
+			cleanup()
 			t.Errorf("expected file to be unlinked on disk, stat err = %v", err)
+			return
+		}
+	}
+
+	// Cleanup must be called after close. On POSIX it is a no-op; on
+	// Windows it deletes the temp file.
+	f.Close()
+	cleanup()
+
+	if runtime.GOOS == "windows" {
+		if _, err := os.Stat(f.Name()); !os.IsNotExist(err) {
+			t.Errorf("expected temp file to be deleted on Windows, stat err = %v", err)
 		}
 	}
 }
@@ -73,11 +91,14 @@ else
   echo "env_leak=false"
 fi
 `
-	keyFile, err := writeKeyToUnlinkedFile(want)
+	keyFile, cleanup, err := writeKeyToUnlinkedFile(want)
 	if err != nil {
 		t.Fatalf("writeKeyToUnlinkedFile: %v", err)
 	}
-	defer keyFile.Close()
+	defer func() {
+		_ = keyFile.Close()
+		cleanup()
+	}()
 
 	cmd := exec.Command("/bin/sh", "-c", script)
 	// Strip any inherited key env vars so the test cannot pass by

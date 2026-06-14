@@ -162,7 +162,7 @@ func TestNewHandler_defaults(t *testing.T) {
 	}
 
 	// Verify default callbacks return appropriate messages.
-	textResp, _ := h.OnTextMessage(1, 0, "hi")
+	textResp, _ := h.OnTextMessage(1, 0, "hi", false, 0)
 	if textResp != "Not implemented yet: text" {
 		t.Errorf("default OnTextMessage = %q, want %q", textResp, "Not implemented yet: text")
 	}
@@ -172,19 +172,19 @@ func TestNewHandler_defaults(t *testing.T) {
 		t.Errorf("default OnCallbackQuery = %q, want %q", cbResp, "Not implemented yet: callback query")
 	}
 
-	cmdResp, _ := h.OnCommand(1, 0, "start", "")
+	cmdResp, _ := h.OnCommand(1, 0, "start", "", 0)
 	if cmdResp != "Not implemented yet: command" {
 		t.Errorf("default OnCommand = %q, want %q", cmdResp, "Not implemented yet: command")
 	}
 
-	voiceResp, voiceErr := h.OnVoiceMessage(1, 0, "file_id")
+	voiceResp, voiceErr := h.OnVoiceMessage(1, 0, "file_id", 0)
 	// Voice and photo defaults now try to download via Bot (no real client in test).
 	// They should return an error, not a placeholder string.
 	if voiceResp != "" || voiceErr == nil {
 		t.Logf("onVoiceMessage returned: %q (err=%v)", voiceResp, voiceErr)
 	}
 
-	photoResp, photoErr := h.OnPhotoMessage(1, 0, []string{"f1", "f2"}, "")
+	photoResp, photoErr := h.OnPhotoMessage(1, 0, []string{"f1", "f2"}, "", 0)
 	if photoResp != "" || photoErr == nil {
 		t.Logf("onPhotoMessage returned: %q (err=%v)", photoResp, photoErr)
 	}
@@ -203,7 +203,7 @@ func TestHandleUpdate_TextMessage(t *testing.T) {
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
 	h.Config.AllowAllUsers = true // routing test — access control covered by TestIsAllowed_*
-	h.OnTextMessage = func(chatID int64, messageID int, text string) (string, error) {
+	h.OnTextMessage = func(chatID int64, messageID int, text string, forwarded bool, _ int64) (string, error) {
 		capturedChatID = chatID
 		capturedMessageID = messageID
 		capturedText = text
@@ -230,6 +230,74 @@ func TestHandleUpdate_TextMessage(t *testing.T) {
 	}
 	if capturedText != "hello world" {
 		t.Errorf("OnTextMessage text = %q, want %q", capturedText, "hello world")
+	}
+}
+
+func TestHandleUpdate_TextMessageTooLong(t *testing.T) {
+	var called bool
+	ts := testServer(t, nil)
+	defer ts.Close()
+	bot := testBot(t, ts)
+	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true
+	h.Config.MaxMsgLength = 10
+	h.OnTextMessage = func(_ int64, _ int, _ string, _ bool, _ int64) (string, error) {
+		called = true
+		return "should not fire", nil
+	}
+
+	upd := Update{
+		ID: 1,
+		Message: &Message{
+			ID:   42,
+			Chat: &Chat{ID: 123},
+			From: &User{ID: 456},
+			Text: strings.Repeat("x", 11),
+		},
+	}
+
+	h.HandleUpdate(upd)
+
+	if called {
+		t.Error("OnTextMessage should not be called for oversized messages")
+	}
+	// The handler should have sent a rejection reply.
+	if ts.Client() == nil {
+		t.Log("test server client is nil; skipping sendMessage assertion")
+	}
+}
+
+func TestHandleUpdate_CaptionTooLong(t *testing.T) {
+	var called bool
+	ts := testServer(t, nil)
+	defer ts.Close()
+	bot := testBot(t, ts)
+	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true
+	h.Config.MaxMsgLength = 10
+	h.OnPhotoMessage = func(_ int64, _ int, _ []string, _ string, _ int64) (string, error) {
+		called = true
+		return "should not fire", nil
+	}
+
+	upd := Update{
+		ID: 1,
+		Message: &Message{
+			ID:   42,
+			Chat: &Chat{ID: 123},
+			From: &User{ID: 456},
+			Photo: []PhotoSize{
+				{FileID: "small"},
+				{FileID: "big"},
+			},
+			Caption: strings.Repeat("x", 11),
+		},
+	}
+
+	h.HandleUpdate(upd)
+
+	if called {
+		t.Error("OnPhotoMessage should not be called for oversized captions")
 	}
 }
 
@@ -282,7 +350,7 @@ func TestHandleUpdate_Command(t *testing.T) {
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
 	h.Config.AllowAllUsers = true // routing test — access control covered by TestIsAllowed_*
-	h.OnCommand = func(chatID int64, messageID int, cmd string, args string) (string, error) {
+	h.OnCommand = func(chatID int64, messageID int, cmd string, args string, _ int64) (string, error) {
 		capturedChatID = chatID
 		capturedCmd = cmd
 		capturedArgs = args
@@ -324,7 +392,7 @@ func TestHandleUpdate_VoiceMessage(t *testing.T) {
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
 	h.Config.AllowAllUsers = true // routing test — access control covered by TestIsAllowed_*
-	h.OnVoiceMessage = func(chatID int64, messageID int, fileID string) (string, error) {
+	h.OnVoiceMessage = func(chatID int64, messageID int, fileID string, _ int64) (string, error) {
 		capturedChatID = chatID
 		capturedFileID = fileID
 		return "voice received", nil
@@ -364,7 +432,7 @@ func TestHandleUpdate_PhotoMessage(t *testing.T) {
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
 	h.Config.AllowAllUsers = true // routing test — access control covered by TestIsAllowed_*
-	h.OnPhotoMessage = func(chatID int64, messageID int, fileIDs []string, caption string) (string, error) {
+	h.OnPhotoMessage = func(chatID int64, messageID int, fileIDs []string, caption string, _ int64) (string, error) {
 		capturedChatID = chatID
 		capturedFileIDs = fileIDs
 		capturedCaption = caption
@@ -411,7 +479,7 @@ func TestHandleUpdate_UnsupportedType(t *testing.T) {
 	h := NewHandler(bot)
 
 	called := false
-	h.OnTextMessage = func(_ int64, _ int, _ string) (string, error) {
+	h.OnTextMessage = func(_ int64, _ int, _ string, _ bool, _ int64) (string, error) {
 		called = true
 		return "", nil
 	}
@@ -430,7 +498,7 @@ func TestHandleUpdate_NilChat(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
-	h.OnTextMessage = func(_ int64, _ int, _ string) (string, error) {
+	h.OnTextMessage = func(_ int64, _ int, _ string, _ bool, _ int64) (string, error) {
 		called = true
 		return "", nil
 	}
@@ -457,7 +525,7 @@ func TestHandleUpdate_NilFrom(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
-	h.OnTextMessage = func(_ int64, _ int, _ string) (string, error) {
+	h.OnTextMessage = func(_ int64, _ int, _ string, _ bool, _ int64) (string, error) {
 		called = true
 		return "", nil
 	}
@@ -583,7 +651,7 @@ func TestHandleCommand_MentionMatchingBot(t *testing.T) {
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
 	h.Config.BotUsername = "MyTestBot"
-	h.OnCommand = func(_ int64, _ int, cmd string, args string) (string, error) {
+	h.OnCommand = func(_ int64, _ int, cmd string, args string, _ int64) (string, error) {
 		capturedCmd = cmd
 		capturedArgs = args
 		return "ok", nil
@@ -594,7 +662,7 @@ func TestHandleCommand_MentionMatchingBot(t *testing.T) {
 		Chat: &Chat{ID: 100},
 		From: &User{ID: 200},
 		Text: "/start@MyTestBot some args",
-	})
+	}, 200)
 
 	if capturedCmd != "start" {
 		t.Errorf("command = %q, want %q", capturedCmd, "start")
@@ -611,7 +679,7 @@ func TestHandleCommand_MentionDifferentBot_Ignored(t *testing.T) {
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
 	h.Config.BotUsername = "MyTestBot"
-	h.OnCommand = func(_ int64, _ int, _ string, _ string) (string, error) {
+	h.OnCommand = func(_ int64, _ int, _ string, _ string, _ int64) (string, error) {
 		called = true
 		return "", nil
 	}
@@ -621,7 +689,7 @@ func TestHandleCommand_MentionDifferentBot_Ignored(t *testing.T) {
 		Chat: &Chat{ID: 100},
 		From: &User{ID: 200},
 		Text: "/start@OtherBot",
-	})
+	}, 200)
 
 	if called {
 		t.Error("OnCommand was called but the command was targeted at a different bot")
@@ -635,7 +703,7 @@ func TestHandleCommand_MentionDifferentBotCaseInsensitive(t *testing.T) {
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
 	h.Config.BotUsername = "MyTestBot"
-	h.OnCommand = func(_ int64, _ int, _ string, _ string) (string, error) {
+	h.OnCommand = func(_ int64, _ int, _ string, _ string, _ int64) (string, error) {
 		called = true
 		return "", nil
 	}
@@ -645,7 +713,7 @@ func TestHandleCommand_MentionDifferentBotCaseInsensitive(t *testing.T) {
 		Chat: &Chat{ID: 100},
 		From: &User{ID: 200},
 		Text: "/start@mytestbot",
-	})
+	}, 200)
 
 	if !called {
 		t.Error("OnCommand was NOT called but the mention should match case-insensitively")
@@ -659,7 +727,7 @@ func TestHandleCommand_NoMention_GroupWithBotUsername(t *testing.T) {
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
 	h.Config.BotUsername = "MyTestBot"
-	h.OnCommand = func(_ int64, _ int, cmd string, _ string) (string, error) {
+	h.OnCommand = func(_ int64, _ int, cmd string, _ string, _ int64) (string, error) {
 		capturedCmd = cmd
 		return "ok", nil
 	}
@@ -669,7 +737,7 @@ func TestHandleCommand_NoMention_GroupWithBotUsername(t *testing.T) {
 		Chat: &Chat{ID: 100},
 		From: &User{ID: 200},
 		Text: "/help",
-	})
+	}, 200)
 
 	if capturedCmd != "help" {
 		t.Errorf("command = %q, want %q", capturedCmd, "help")
@@ -683,7 +751,7 @@ func TestHandleCommand_NoBotUsernameSet(t *testing.T) {
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
 	h.Config.BotUsername = "" // no bot username configured
-	h.OnCommand = func(_ int64, _ int, cmd string, _ string) (string, error) {
+	h.OnCommand = func(_ int64, _ int, cmd string, _ string, _ int64) (string, error) {
 		capturedCmd = cmd
 		return "ok", nil
 	}
@@ -694,7 +762,7 @@ func TestHandleCommand_NoBotUsernameSet(t *testing.T) {
 		Chat: &Chat{ID: 100},
 		From: &User{ID: 200},
 		Text: "/start@SomeBot",
-	})
+	}, 200)
 
 	if capturedCmd != "start" {
 		t.Errorf("command = %q, want %q", capturedCmd, "start")
@@ -707,7 +775,7 @@ func TestHandleCommand_EmptyCommand(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
-	h.OnCommand = func(_ int64, _ int, _ string, _ string) (string, error) {
+	h.OnCommand = func(_ int64, _ int, _ string, _ string, _ int64) (string, error) {
 		called = true
 		return "", nil
 	}
@@ -717,7 +785,7 @@ func TestHandleCommand_EmptyCommand(t *testing.T) {
 		Chat: &Chat{ID: 100},
 		From: &User{ID: 200},
 		Text: "not a command",
-	})
+	}, 200)
 
 	if called {
 		t.Error("OnCommand was called but the message is not a command")
@@ -1250,7 +1318,7 @@ func TestHandleUpdate_OnErrorCalled(t *testing.T) {
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
 	h.Config.AllowAllUsers = true // routing test — access control covered by TestIsAllowed_*
-	h.OnTextMessage = func(_ int64, _ int, _ string) (string, error) {
+	h.OnTextMessage = func(_ int64, _ int, _ string, _ bool, _ int64) (string, error) {
 		return "", assertError("simulated error")
 	}
 	h.OnError = func(chatID int64, err error) {
@@ -1293,7 +1361,7 @@ func TestHandleUpdate_NotAllowed(t *testing.T) {
 	h.Config.AllowedUsers = []int64{10}
 
 	called := false
-	h.OnTextMessage = func(_ int64, _ int, _ string) (string, error) {
+	h.OnTextMessage = func(_ int64, _ int, _ string, _ bool, _ int64) (string, error) {
 		called = true
 		return "", nil
 	}
@@ -1322,7 +1390,7 @@ func TestHandleUpdate_AllowedUserOnly(t *testing.T) {
 	h.Config.AllowedUsers = []int64{42}
 
 	called := false
-	h.OnTextMessage = func(_ int64, _ int, _ string) (string, error) {
+	h.OnTextMessage = func(_ int64, _ int, _ string, _ bool, _ int64) (string, error) {
 		called = true
 		return "", nil
 	}
@@ -1367,7 +1435,7 @@ func TestHandler_SetApprover(t *testing.T) {
 	h := NewHandler(bot)
 
 	chatID := int64(12345)
-	approver := NewTelegramApprover(bot, chatID)
+	approver := NewTelegramApprover(bot, chatID, 0)
 
 	// Initially, no approver.
 	if got := h.GetApprover(chatID); got != nil {
@@ -1435,7 +1503,7 @@ func TestHandler_HandleCallback_RouteToApprover(t *testing.T) {
 	h.Config.AllowAllUsers = true // callback routing test
 
 	chatID := int64(789)
-	approver := NewTelegramApprover(bot, chatID)
+	approver := NewTelegramApprover(bot, chatID, 0)
 	h.SetApprover(chatID, approver)
 
 	// Send a callback with data that HandleCallback recognises as approval.
@@ -1502,7 +1570,7 @@ func TestHandler_HandleCallback_ApproverAnswerError(t *testing.T) {
 	h.Config.AllowAllUsers = true // callback routing test
 
 	chatID := int64(789)
-	approver := NewTelegramApprover(bot, chatID)
+	approver := NewTelegramApprover(bot, chatID, 0)
 	h.SetApprover(chatID, approver)
 
 	var (
@@ -1599,7 +1667,7 @@ func TestHandler_HandleCommand_MentionErrorHandling(t *testing.T) {
 
 	chatID := int64(100)
 	expectedErr := assertError("command execution failed")
-	h.OnCommand = func(_ int64, _ int, _ string, _ string) (string, error) {
+	h.OnCommand = func(_ int64, _ int, _ string, _ string, _ int64) (string, error) {
 		return "", expectedErr
 	}
 
@@ -1616,7 +1684,7 @@ func TestHandler_HandleCommand_MentionErrorHandling(t *testing.T) {
 		Chat: &Chat{ID: chatID},
 		From: &User{ID: 200},
 		Text: "/do_something arg1 arg2",
-	})
+	}, 200)
 
 	if errChatID != chatID {
 		t.Errorf("OnError chatID = %d, want %d", errChatID, chatID)
@@ -1637,7 +1705,7 @@ func TestHandler_HandleMessage_OnErrorCalledOnVoiceFailure(t *testing.T) {
 
 	chatID := int64(333)
 	expectedErr := assertError("voice processing failed")
-	h.OnVoiceMessage = func(_ int64, _ int, _ string) (string, error) {
+	h.OnVoiceMessage = func(_ int64, _ int, _ string, _ int64) (string, error) {
 		return "", expectedErr
 	}
 
@@ -1679,7 +1747,7 @@ func TestHandler_HandleMessage_OnErrorCalledOnPhotoFailure(t *testing.T) {
 
 	chatID := int64(555)
 	expectedErr := assertError("photo processing failed")
-	h.OnPhotoMessage = func(_ int64, _ int, _ []string, _ string) (string, error) {
+	h.OnPhotoMessage = func(_ int64, _ int, _ []string, _ string, _ int64) (string, error) {
 		return "", expectedErr
 	}
 
@@ -1719,7 +1787,7 @@ func TestHandler_HandleMessage_OnErrorCalledOnTextFailure(t *testing.T) {
 
 	chatID := int64(777)
 	expectedErr := assertError("text processing failed")
-	h.OnTextMessage = func(_ int64, _ int, _ string) (string, error) {
+	h.OnTextMessage = func(_ int64, _ int, _ string, _ bool, _ int64) (string, error) {
 		return "", expectedErr
 	}
 

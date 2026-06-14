@@ -84,7 +84,7 @@ func replCmd(args []string) error {
 	// MCP server tools
 	var mcpCleanup func()
 	if len(resolved.MCPServers) > 0 {
-		cl, err := loadMCPTools(resolved.MCPServers, &tools)
+		cl, err := loadMCPTools(resolved, &tools)
 		if err != nil {
 			return fmt.Errorf("mcp: %w", err)
 		}
@@ -129,11 +129,12 @@ func replCmd(args []string) error {
 	}
 
 	agent, err := odek.New(odek.Config{
-		Model:          resolved.Model,
-		BaseURL:        resolved.BaseURL,
-		APIKey:         resolved.APIKey,
-		MaxIterations:  resolved.MaxIter,
-		SystemMessage:  systemMessage,
+		Model:            resolved.Model,
+		BaseURL:          resolved.BaseURL,
+		APIKey:           resolved.APIKey,
+		MaxIterations:    resolved.MaxIter,
+		SystemMessage:    systemMessage,
+		UntrustedWrapper: wrapUntrusted,
 		NoProjectFile:  resolved.NoAgents,
 		Thinking:       resolved.Thinking,
 		ThinkingBudget: f.ThinkingBudget,

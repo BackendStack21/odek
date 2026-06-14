@@ -161,6 +161,15 @@ func TestClassify_NetworkEgress_Commands(t *testing.T) {
 		{"wget https://example.com/file", NetworkEgress},
 		{"git push origin main", NetworkEgress},
 		{"git push --force origin main", NetworkEgress},
+		{"git clone https://github.com/user/repo", NetworkEgress},
+		{"git fetch origin", NetworkEgress},
+		{"git pull origin main", NetworkEgress},
+		// Global options that take a separate value token must not be mistaken
+		// for the subcommand (regression: these were misclassified as safe).
+		{"git -C /repo push origin main", NetworkEgress},
+		{"git -c http.proxy=http://evil fetch origin", NetworkEgress},
+		{"git --git-dir /repo/.git push origin", NetworkEgress},
+		{"git -C /repo -c key=val pull", NetworkEgress},
 		{"scp file user@remote:/path", NetworkEgress},
 		{"rsync -avz ./ user@remote:/backup", NetworkEgress},
 		{"nc example.com 80", NetworkEgress},
@@ -257,6 +266,61 @@ func TestClassify_Install_GoInstallNeedsRemote(t *testing.T) {
 	got := Classify("go install")
 	if got != Safe {
 		t.Errorf("Classify(\"go install\") = %s, want safe", got)
+	}
+}
+
+// TestClassify_ScriptAndPackageManagerExecution covers finding #11: invoking a
+// script interpreter on a file, or a package-manager run/start/build command,
+// must escalate to code execution / install rather than slipping through Safe.
+func TestClassify_ScriptAndPackageManagerExecution(t *testing.T) {
+	tests := []struct {
+		cmd string
+		cls RiskClass
+	}{
+		// Script interpreters running a file (no -e/-c/-r flag).
+		{"python script.py", CodeExecution},
+		{"python3 exfil.py --flag", CodeExecution},
+		{"node server.js", CodeExecution},
+		{"perl tool.pl", CodeExecution},
+		{"ruby app.rb", CodeExecution},
+		{"php index.php", CodeExecution},
+		{"python -m http.server", CodeExecution},
+		// Pure version/help queries stay safe.
+		{"python --version", Safe},
+		{"node -v", Safe},
+		{"python3 --help", Safe},
+		// Package-manager run/start/build scripts execute arbitrary code.
+		{"npm start", CodeExecution},
+		{"npm run build", CodeExecution},
+		{"npm test", CodeExecution},
+		{"npm exec foo", CodeExecution},
+		{"yarn start", CodeExecution},
+		{"pnpm run dev", CodeExecution},
+		{"bun run index.ts", CodeExecution},
+		{"bun start", CodeExecution},
+		{"bun index.ts", CodeExecution},
+		{"cargo run", CodeExecution},
+		{"cargo build", CodeExecution},
+		{"cargo test", CodeExecution},
+		// Package-manager installs still classify as install, not code exec.
+		{"npm install express", Install},
+		{"bun add left-pad", Install},
+		{"cargo install ripgrep", Install},
+		{"go get github.com/foo/bar", Install},
+		{"go mod download", Install},
+		// Preserved safe behaviour (existing stance).
+		{"go build ./...", Safe},
+		{"go test ./...", Safe},
+		{"go mod tidy", Safe},
+		{"cargo check", Safe},
+		{"cargo fmt", Safe},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			if got := Classify(tt.cmd); got != tt.cls {
+				t.Errorf("Classify(%q) = %s, want %s", tt.cmd, got, tt.cls)
+			}
+		})
 	}
 }
 
@@ -545,10 +609,10 @@ func TestClassify_EmptyCommand(t *testing.T) {
 }
 
 func TestClassify_GitClone(t *testing.T) {
-	// git clone is classified as safe — only git push triggers network egress
+	// git clone contacts a remote repository, so it is network egress.
 	got := Classify("git clone https://github.com/user/repo")
-	if got != Safe {
-		t.Errorf("Classify(git clone) = %s, want safe", got)
+	if got != NetworkEgress {
+		t.Errorf("Classify(git clone) = %s, want network egress", got)
 	}
 }
 
@@ -1237,11 +1301,11 @@ func TestHostIsImplicitlyInternal(t *testing.T) {
 		{"10.0.0.1", true},
 		{"192.168.1.1", true},
 		{"169.254.169.254", true},
-		{"0177.0.0.1", true},  // octal 127.0.0.1
-		{"2130706433", true},  // decimal 127.0.0.1
-		{"0x7f000001", true},  // hex 127.0.0.1
-		{"127.1", true},       // shorthand
-		{"::1", true},         // IPv6 loopback
+		{"0177.0.0.1", true}, // octal 127.0.0.1
+		{"2130706433", true}, // decimal 127.0.0.1
+		{"0x7f000001", true}, // hex 127.0.0.1
+		{"127.1", true},      // shorthand
+		{"::1", true},        // IPv6 loopback
 		// Known-internal hostnames
 		{"localhost", true},
 		{"foo.local", true},

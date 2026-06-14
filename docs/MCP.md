@@ -94,7 +94,8 @@ during `odek run`, `odek repl`, `odek serve`, and `odek mcp`.
 
 ### Configuration
 
-Add `mcp_servers` to `odek.json` (project-level) or `~/.odek/config.json` (global):
+Add `mcp_servers` to `~/.odek/config.json` (global, operator-trusted) or `odek.json`
+(project-level):
 
 ```json
 {
@@ -107,11 +108,11 @@ Add `mcp_servers` to `odek.json` (project-level) or `~/.odek/config.json` (globa
       "command": "uvx",
       "args": ["mcp-server-fetch"]
     },
-    "github": {
-      "command": "node",
-      "args": ["/path/to/github-mcp-server/index.js"],
+    "fetch": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"],
       "env": {
-        "GITHUB_TOKEN": "${GITHUB_TOKEN}"
+        "LOG_LEVEL": "debug"
       }
     }
   }
@@ -123,8 +124,39 @@ Each server is defined by:
 - `args` — optional command-line arguments
 - `env` — optional environment variable overrides (empty string removes the variable)
 
+> **Environment sanitisation.** MCP server children receive only a minimal
+> allowlist of safe variables (e.g. `PATH`, `HOME`, `LANG`) plus the overrides
+> from `env`. Keys matching secret patterns (`*_API_KEY`, `*_TOKEN`,
+> `*_SECRET`, `*_PASSWORD`, etc.) are stripped even when listed in `env`, so a
+> compromised server cannot exfiltrate parent secrets. Pass authentication
+> material via server-specific config files or command-line arguments instead
+> of environment variables.
+
 The format matches Claude Code's `mcpServers` config — any MCP server you use
 with Claude Code can be added to odek's config.
+
+### Project-level MCP server approval
+
+Because `mcp_servers` in `./odek.json` can execute arbitrary commands, odek
+requires **explicit approval** for any server introduced by a project config
+before it spawns the subprocess. Global servers from `~/.odek/config.json` are
+operator-trusted and do not require approval.
+
+Approval methods:
+
+1. **Interactive prompt** — when running on a TTY, odek asks for each project
+   server: `Approve? [y/N]`.
+2. **`ODEK_APPROVE_MCP=1`** — approve all project MCP servers for a single
+   invocation. Useful in CI, scheduled jobs, or non-interactive use:
+   ```bash
+   ODEK_APPROVE_MCP=1 odek run "task"
+   ```
+3. **Persisted approvals** — approvals are stored in
+   `~/.odek/mcp_approvals.json` (0600) keyed by project directory + server name
+   + command + args. If the config changes, you are prompted again.
+
+If approval is required and cannot be obtained, odek aborts before spawning any
+MCP server.
 
 ### How it works
 

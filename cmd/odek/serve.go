@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -49,6 +50,59 @@ var wsConns sync.Map // map[*golangws.Conn]struct{}
 // wsHandlerWG counts live handleWS goroutines; serveOnListener waits on it
 // after closing all connections to ensure cleanup completes.
 var wsHandlerWG sync.WaitGroup
+
+// sessionLookupLimiter provides basic per-IP rate limiting for session detail
+// lookups, raising the cost of brute-force enumeration of session IDs.
+var sessionLookupLimiter = newRateLimiter(60, time.Minute)
+
+// rateLimiter is a tiny per-key sliding-window rate limiter.
+type rateLimiter struct {
+	mu      sync.Mutex
+	windows map[string][]time.Time
+	max     int
+	window  time.Duration
+}
+
+func newRateLimiter(max int, window time.Duration) *rateLimiter {
+	return &rateLimiter{
+		windows: make(map[string][]time.Time),
+		max:     max,
+		window:  window,
+	}
+}
+
+// allow returns true if the key has not exceeded max requests in the sliding
+// window. It prunes stale entries on each call.
+func (rl *rateLimiter) allow(key string) bool {
+	if rl == nil || rl.max <= 0 {
+		return true
+	}
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now().UTC()
+	cutoff := now.Add(-rl.window)
+	var times []time.Time
+	for _, t := range rl.windows[key] {
+		if t.After(cutoff) {
+			times = append(times, t)
+		}
+	}
+	if len(times) >= rl.max {
+		rl.windows[key] = times
+		return false
+	}
+	times = append(times, now)
+	rl.windows[key] = times
+	return true
+}
+
+// reset clears all tracked windows (useful in tests).
+func (rl *rateLimiter) reset() {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	rl.windows = make(map[string][]time.Time)
+}
 
 // ── Serve Command ───────────────────────────────────────────────────────
 
@@ -307,7 +361,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 	// MCP server tools
 	var mcpCleanup func()
 	if len(resolved.MCPServers) > 0 {
-		cl, err := loadMCPTools(resolved.MCPServers, &tools)
+		cl, err := loadMCPTools(resolved, &tools)
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("mcp: %w", err)
 		}
@@ -354,13 +408,14 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 	}
 
 	agent, err := odek.New(odek.Config{
-		Model:           resolved.Model,
-		BaseURL:         resolved.BaseURL,
-		APIKey:          resolved.APIKey,
-		MaxIterations:   resolved.MaxIter,
-		MaxToolParallel: resolved.MaxToolParallel,
-		SystemMessage:   system,
-		RuntimeContext:  runtimeCtx,
+		Model:            resolved.Model,
+		BaseURL:          resolved.BaseURL,
+		APIKey:           resolved.APIKey,
+		MaxIterations:    resolved.MaxIter,
+		MaxToolParallel:  resolved.MaxToolParallel,
+		SystemMessage:    system,
+		UntrustedWrapper: wrapUntrusted,
+		RuntimeContext:   runtimeCtx,
 		NoProjectFile:   resolved.NoAgents,
 		Thinking:        resolved.Thinking,
 		InteractionMode: resolved.InteractionMode,
@@ -444,6 +499,7 @@ type wsClientMsg struct {
 	Type      string `json:"type"`
 	Content   string `json:"content"`
 	SessionID string `json:"session_id"`
+	AuthToken string `json:"auth_token,omitempty"`
 	Model     string `json:"model,omitempty"`
 	Thinking  string `json:"thinking,omitempty"` // "enabled" | "" — per-query toggle
 }
@@ -633,12 +689,18 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 		// Handle session switch mid-connection (new conversation)
 		if msg.SessionID != "" && (currentSession == nil || currentSession.ID != msg.SessionID) {
 			sess, err := store.Load(msg.SessionID)
-			if err == nil {
-				currentSession = sess
-				// Restore buffer from the resumed session
-				if mm := agent.Memory(); mm != nil && len(sess.Buffer) > 0 {
-					mm.RestoreBuffer(sess.Buffer)
-				}
+			if err != nil {
+				writeWSError(conn, "session not found")
+				continue
+			}
+			if _, ok := validateSessionToken(store, sess, msg.AuthToken); !ok {
+				writeWSError(conn, "invalid session token")
+				continue
+			}
+			currentSession = sess
+			// Restore buffer from the resumed session
+			if mm := agent.Memory(); mm != nil && len(sess.Buffer) > 0 {
+				mm.RestoreBuffer(sess.Buffer)
 			}
 		}
 
@@ -735,10 +797,12 @@ func handlePrompt(
 
 	// Send session info
 	sid := ""
+	authToken := ""
 	if sess != nil {
 		sid = sess.ID
+		authToken = sess.AuthToken
 	}
-	writeWSJSON(conn, map[string]any{"type": "session", "session_id": sid, "model": resolved.Model, "sandbox": resolved.Sandbox})
+	writeWSJSON(conn, map[string]any{"type": "session", "session_id": sid, "auth_token": authToken, "model": resolved.Model, "sandbox": resolved.Sandbox})
 
 	// Append user input to buffer (AppendBuffer summarizes raw text).
 	if mm := agent.Memory(); mm != nil {
@@ -986,6 +1050,43 @@ func isStateChangingMethod(method string) bool {
 	return true
 }
 
+// sessionTokenFromRequest returns the session auth token from the
+// X-Session-Token header or the session_token cookie, in that order.
+func sessionTokenFromRequest(r *http.Request) string {
+	if t := r.Header.Get("X-Session-Token"); t != "" {
+		return t
+	}
+	if c, err := r.Cookie("session_token"); err == nil && c.Value != "" {
+		return c.Value
+	}
+	return ""
+}
+
+// validateSessionToken checks the provided token against the session. If the
+// session has no token (legacy session created before this defense), a token is
+// generated and the session is persisted. The returned string is the effective
+// token (empty only when validation failed). The bool indicates success.
+func validateSessionToken(store *session.Store, sess *session.Session, token string) (string, bool) {
+	if sess == nil {
+		return "", false
+	}
+	if sess.AuthToken == "" {
+		sess.AuthToken = session.GenerateAuthToken()
+		if err := store.Save(sess); err != nil {
+			// If we cannot persist the token, still allow this request but do not
+			// leak a transient token to the client.
+			return "", true
+		}
+		return sess.AuthToken, true
+	}
+	// Constant-time comparison so an attacker cannot recover the token byte by
+	// byte via response-timing differences.
+	if subtle.ConstantTimeCompare([]byte(token), []byte(sess.AuthToken)) == 1 {
+		return sess.AuthToken, true
+	}
+	return "", false
+}
+
 func writeWSJSON(conn *golangws.Conn, data any) {
 	payload, err := json.Marshal(data)
 	if err != nil {
@@ -1032,6 +1133,12 @@ func handleSessionList(store *session.Store) http.HandlerFunc {
 			sessions = []session.Session{}
 		}
 
+		// Never leak session-scoped auth tokens in the list endpoint. Tokens are
+		// only returned (in the X-Session-Token header) after a valid detail lookup.
+		for i := range sessions {
+			sessions[i].AuthToken = ""
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(sessions)
 	}
@@ -1040,11 +1147,17 @@ func handleSessionList(store *session.Store) http.HandlerFunc {
 func handleSessionByID(store *session.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
+		if id == "" {
+			http.Error(w, "missing session id", http.StatusBadRequest)
+			return
+		}
 
 		switch r.Method {
 		case http.MethodGet:
-			if id == "" {
-				http.Error(w, "missing session id", http.StatusBadRequest)
+			// Rate-limit session detail lookups per IP to slow brute-force
+			// enumeration of the 128-bit ID space.
+			if !sessionLookupLimiter.allow(clientIP(r)) {
+				http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 				return
 			}
 			sess, err := store.Load(id)
@@ -1052,12 +1165,27 @@ func handleSessionByID(store *session.Store) http.HandlerFunc {
 				http.Error(w, "session not found", http.StatusNotFound)
 				return
 			}
+			token := sessionTokenFromRequest(r)
+			effectiveToken, ok := validateSessionToken(store, sess, token)
+			if !ok {
+				http.Error(w, "invalid session token", http.StatusUnauthorized)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
+			if effectiveToken != "" {
+				w.Header().Set("X-Session-Token", effectiveToken)
+			}
 			json.NewEncoder(w).Encode(sess)
 
 		case http.MethodDelete:
-			if id == "" {
-				http.Error(w, "missing session id", http.StatusBadRequest)
+			sess, err := store.Load(id)
+			if err != nil {
+				http.Error(w, "session not found", http.StatusNotFound)
+				return
+			}
+			token := sessionTokenFromRequest(r)
+			if _, ok := validateSessionToken(store, sess, token); !ok {
+				http.Error(w, "invalid session token", http.StatusUnauthorized)
 				return
 			}
 			if err := store.Delete(id); err != nil {
@@ -1068,10 +1196,6 @@ func handleSessionByID(store *session.Store) http.HandlerFunc {
 
 		case http.MethodPost:
 			// Rename session
-			if id == "" {
-				http.Error(w, "missing session id", http.StatusBadRequest)
-				return
-			}
 			var body struct {
 				Name string `json:"name"`
 			}
@@ -1084,6 +1208,11 @@ func handleSessionByID(store *session.Store) http.HandlerFunc {
 				http.Error(w, "session not found", http.StatusNotFound)
 				return
 			}
+			token := sessionTokenFromRequest(r)
+			if _, ok := validateSessionToken(store, sess, token); !ok {
+				http.Error(w, "invalid session token", http.StatusUnauthorized)
+				return
+			}
 			sess.Task = body.Name
 			store.Save(sess)
 			w.Header().Set("Content-Type", "application/json")
@@ -1093,6 +1222,29 @@ func handleSessionByID(store *session.Store) http.HandlerFunc {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	}
+}
+
+// clientIP returns a best-effort client identifier for rate limiting. It prefers
+// X-Forwarded-For / X-Real-Ip only when the direct remote address is a loopback
+// proxy, otherwise uses RemoteAddr. This avoids trusting spoofed headers from
+// arbitrary clients while still working behind a local reverse proxy.
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	if host == "127.0.0.1" || host == "::1" || host == "localhost" {
+		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+			if i := strings.Index(fwd, ","); i > 0 {
+				return strings.TrimSpace(fwd[:i])
+			}
+			return strings.TrimSpace(fwd)
+		}
+		if real := r.Header.Get("X-Real-Ip"); real != "" {
+			return real
+		}
+	}
+	return host
 }
 
 func handleModelList(configuredModel string) http.HandlerFunc {

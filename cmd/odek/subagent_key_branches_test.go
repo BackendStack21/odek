@@ -53,14 +53,18 @@ func TestReadKeyFromInheritedFD_UnsetsEnvVarBeforeRead(t *testing.T) {
 // degenerate but valid case of an empty key — the function should still
 // hand back a readable FD (containing zero bytes) and unlink the file.
 func TestWriteKeyToUnlinkedFile_EmptyKeyStillProducesValidFD(t *testing.T) {
-	f, err := writeKeyToUnlinkedFile("")
+	f, cleanup, err := writeKeyToUnlinkedFile("")
 	if err != nil {
 		t.Fatalf("writeKeyToUnlinkedFile(\"\"): %v", err)
 	}
-	defer f.Close()
 	buf := make([]byte, 16)
 	n, _ := f.Read(buf)
 	if n != 0 {
+		f.Close()
+		cleanup()
 		t.Errorf("expected 0 bytes for empty key, got %d (%q)", n, string(buf[:n]))
+		return
 	}
+	f.Close()
+	cleanup()
 }

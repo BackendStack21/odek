@@ -52,10 +52,18 @@ Same schema as global. Only set the fields you want to override:
 ```json
 {
   "model": "gpt-4o",
-  "base_url": "https://api.openai.com/v1",
   "max_iterations": 30
 }
 ```
+
+> **Security note:** The following fields cannot be set in `./odek.json` because a malicious repository could use them to steal secrets, poison the system prompt, or disable safety policy:
+>
+> - `base_url` — use `~/.odek/config.json`, `ODEK_BASE_URL`, or `--base-url`
+> - `api_key` — use `~/.odek/config.json`, `ODEK_API_KEY`, or `~/.odek/secrets.env`
+> - `system` — use `~/.odek/config.json`, `ODEK_SYSTEM`, or `--system`
+> - `dangerous` — use `~/.odek/config.json`
+>
+> If any of these appear in `./odek.json`, odek ignores them and prints a warning.
 
 Both files are optional. Missing files are silently ignored. String values support `${VAR}` environment variable substitution — useful for API keys without plaintext storage.
 
@@ -438,6 +446,8 @@ The `telegram` section configures the Telegram bot integration and the `--delive
     "poll_interval": 1,
     "poll_timeout": 30,
     "max_msg_length": 4096,
+    "max_download_size": 5242880,
+    "media_quota_per_chat": 52428800,
     "session_ttl_hours": 24,
     "log_level": "info",
     "log_file": "",
@@ -455,6 +465,8 @@ The `telegram` section configures the Telegram bot integration and the `--delive
 | `poll_timeout` | — | 30 | Long-poll timeout (1-60 seconds) |
 | `max_msg_length` | — | 4096 | Max characters per message |
 | `session_ttl_hours` | — | 24 | Hours before inactive session expires |
+| `max_download_size` | `ODEK_TELEGRAM_MAX_DOWNLOAD_SIZE` | 5242880 (5 MiB) | Per-file byte cap for Telegram voice/photo/document downloads. Set to `-1` to disable. |
+| `media_quota_per_chat` | `ODEK_TELEGRAM_MEDIA_QUOTA_PER_CHAT` | 0 (disabled) | Total bytes of downloaded media allowed per chat. `0` disables the quota. |
 | `log_level` | — | info | Log level: debug, info, warn, error |
 | `log_file` | — | stderr | Log file path (empty = stderr) |
 | `default_chat_id` | — | 0 | **Required for `--deliver`** — numeric chat ID where `odek run --deliver` sends results. Get this from your bot's update or use a tool like `@userinfobot`. |
@@ -488,7 +500,9 @@ engine. Every field has an `ODEK_SCHEDULES_*` environment override.
     "max_concurrent": 2,
     "timezone": "UTC",
     "catchup": false,
-    "allow_telegram_management": true
+    "allow_telegram_management": true,
+    "telegram_admin_chats": [123456789],
+    "telegram_admin_users": [987654321]
   }
 }
 ```
@@ -500,6 +514,8 @@ engine. Every field has an `ODEK_SCHEDULES_*` environment override.
 | `timezone` | `ODEK_SCHEDULES_TIMEZONE` | `UTC` | Default timezone for jobs that don't set their own `--tz`. |
 | `catchup` | `ODEK_SCHEDULES_CATCHUP` | `false` | Global default for the missed-run policy: run a missed fire once on startup. |
 | `allow_telegram_management` | `ODEK_SCHEDULES_ALLOW_TELEGRAM_MANAGEMENT` | `true` | Allow the Telegram `/schedule` commands to create/remove/toggle/run jobs. When false, the bot still lists and previews jobs but mutations must go through `odek schedule`. |
+| `telegram_admin_chats` | `ODEK_SCHEDULES_TELEGRAM_ADMIN_CHATS` | `[]` | Comma-separated list of operator chat IDs. These IDs may use mutating `/schedule` commands **and** `/restart`. When empty, the bot falls back to `telegram.default_chat_id`. Read-only commands are unaffected. |
+| `telegram_admin_users` | `ODEK_SCHEDULES_TELEGRAM_ADMIN_USERS` | `[]` | Comma-separated list of operator user IDs. These IDs may use mutating `/schedule` commands **and** `/restart`. Read-only commands are unaffected. |
 
 Full guide: [docs/SCHEDULES.md](SCHEDULES.md).
 

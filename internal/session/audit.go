@@ -38,8 +38,9 @@ type AuditIngest struct {
 type AuditTurn struct {
 	Turn                 int      `json:"turn"`
 	UserMessage          string   `json:"user_message"`
-	ToolCalls            []string `json:"tool_calls"`                // names of tools called this turn
-	NovelResources       []string `json:"novel_resources,omitempty"` // resources referenced by tools but not by user
+	ToolCalls            []string `json:"tool_calls"`                   // names of tools called this turn
+	NovelResources       []string `json:"novel_resources,omitempty"`    // resources referenced by tools but not by user
+	UntrustedResources   []string `json:"untrusted_resources,omitempty"` // resources from untrusted content that were later referenced
 	IngestedUntrusted    bool     `json:"ingested_untrusted"`
 	SuspiciousDivergence bool     `json:"suspicious_divergence"`
 }
@@ -137,20 +138,23 @@ func (s *AuditStore) saveLocked(sessionID string, log AuditLog) error {
 // The heuristic compares resources referenced by tool calls against
 // the user's preceding message; anything novel is suspicious when the
 // session has ingested untrusted content this turn.
-var reResource = regexp.MustCompile(`(?i)(?:https?://[^\s'"<>]+|/[A-Za-z0-9_./-]{2,}|[A-Za-z0-9_-]+\.[A-Za-z]{2,5})`)
+//
+// Optional surrounding quotes are captured so JSON-encoded tool arguments
+// (e.g. {"path":"README.md"}) are inspected correctly.
+var reResource = regexp.MustCompile(`(?i)["']?(https?://[^\s'"<>]+|/[A-Za-z0-9_./-]{2,}|[A-Za-z0-9_-]+\.[A-Za-z]{2,5})["']?`)
 
 // ResourcesIn returns the set of resource-like tokens found in text.
 func ResourcesIn(text string) []string {
-	matches := reResource.FindAllString(text, -1)
+	matches := reResource.FindAllStringSubmatch(text, -1)
 	seen := make(map[string]bool, len(matches))
 	out := make([]string, 0, len(matches))
 	for _, m := range matches {
-		m = strings.TrimRight(m, ".,);")
-		if seen[m] || m == "" {
+		res := strings.TrimRight(m[1], ".,);")
+		if seen[res] || res == "" {
 			continue
 		}
-		seen[m] = true
-		out = append(out, m)
+		seen[res] = true
+		out = append(out, res)
 	}
 	return out
 }

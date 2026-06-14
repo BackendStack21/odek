@@ -551,6 +551,40 @@ func TestDelegateTasks_Timeout(t *testing.T) {
 	}
 }
 
+// TestDelegateTasks_SummaryIsWrapped verifies that the aggregated result
+// returned to the parent agent is wrapped as untrusted content, so a
+// compromised sub-agent cannot inject instructions into the parent context.
+func TestDelegateTasks_SummaryIsWrapped(t *testing.T) {
+	mockDir := t.TempDir()
+	fakeOdek := filepath.Join(mockDir, "fake-odek")
+	script := `#!/bin/sh
+printf '{"status":"success","summary":"hello from subagent","files_changed":[],"iterations":1,"tokens_used":10}\n'
+`
+	if err := os.WriteFile(fakeOdek, []byte(script), 0755); err != nil {
+		t.Fatalf("write fake odek: %v", err)
+	}
+
+	tool := &delegateTasksTool{
+		maxConcurrency: 1,
+		odekPath:       fakeOdek,
+		timeout:        10 * time.Second,
+	}
+
+	result, err := tool.Call(`{"tasks":[{"goal":"test delegation"}]}`)
+	if err != nil {
+		t.Fatalf("Call() error: %v", err)
+	}
+	if !strings.Contains(result, "<untrusted_content_") {
+		t.Errorf("delegate_tasks summary should be wrapped with opening tag, got: %s", result)
+	}
+	if !strings.Contains(result, "</untrusted_content_") {
+		t.Errorf("delegate_tasks summary should be wrapped with closing tag, got: %s", result)
+	}
+	if !strings.Contains(result, "hello from subagent") {
+		t.Errorf("wrapped summary should still contain sub-agent result, got: %s", result)
+	}
+}
+
 // ── 6. Config ───────────────────────────────────────────────────────
 
 func TestSubagentConfig_DefaultValues(t *testing.T) {

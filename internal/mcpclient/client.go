@@ -167,10 +167,9 @@ type Client struct {
 func New(name string, cfg ServerConfig) (*Client, error) {
 	cmd := exec.Command(cfg.Command, cfg.Args...)
 
-	// Apply env overrides
-	if len(cfg.Env) > 0 {
-		cmd.Env = buildEnv(cfg.Env)
-	}
+	// Apply env overrides. Always build a sanitized environment so MCP children
+	// do not inherit the full parent environment (API keys, tokens, secrets).
+	cmd.Env = buildEnv(cfg.Env)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -213,8 +212,56 @@ func New(name string, cfg ServerConfig) (*Client, error) {
 	return c, nil
 }
 
+// allowedEnvVars is the allowlist of parent environment variables that may be
+// forwarded to MCP server subprocesses. It contains only non-sensitive,
+// commonly-required variables (e.g. PATH so the server can find binaries).
+var allowedEnvVars = map[string]bool{
+	"PATH": true,
+	"HOME": true,
+	"USER": true,
+	"LOGNAME": true,
+	"SHELL": true,
+	"TMPDIR": true,
+	"LANG": true,
+	"LC_ALL": true,
+	"LC_CTYPE": true,
+	"LC_MESSAGES": true,
+	"LC_NUMERIC": true,
+	"LC_TIME": true,
+	"LC_COLLATE": true,
+	"LC_MONETARY": true,
+	"LC_PAPER": true,
+	"LC_NAME": true,
+	"LC_ADDRESS": true,
+	"LC_TELEPHONE": true,
+	"LC_MEASUREMENT": true,
+	"LC_IDENTIFICATION": true,
+	"TZ": true,
+	"TERM": true,
+}
+
+// isSensitiveEnvVar reports whether a key looks like a secret. These patterns
+// are blocked from being forwarded to MCP children even if they are present in
+// the parent environment or explicitly supplied as overrides.
+func isSensitiveEnvVar(key string) bool {
+	upper := strings.ToUpper(key)
+	for _, pat := range []string{
+		"API_KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "CREDS",
+		"PRIVATE_KEY", "ACCESS_KEY",
+	} {
+		if strings.Contains(upper, pat) {
+			return true
+		}
+	}
+	return false
+}
+
 // buildEnv constructs the environment for the subprocess.
-// Overrides ODEK_ prefixed env vars cannot be removed.
+//
+// Only a small allowlist of parent environment variables is forwarded, plus any
+// overrides from the MCP server config. Keys that look like secrets (e.g.
+// *_API_KEY, *_TOKEN, *_SECRET) are always stripped, even when provided as
+// overrides, so a compromised or malicious MCP server cannot exfiltrate tokens.
 func buildEnv(overrides map[string]string) []string {
 	// Start with current env
 	env := osEnviron()
@@ -222,16 +269,22 @@ func buildEnv(overrides map[string]string) []string {
 		env = environ() // fallback for testing
 	}
 
-	// Build a map for efficient update
-	envMap := make(map[string]string, len(env))
+	// Build a map from the allowlist only.
+	envMap := make(map[string]string)
 	for _, e := range env {
 		if k, v, ok := strings.Cut(e, "="); ok {
-			envMap[k] = v
+			if allowedEnvVars[k] && !isSensitiveEnvVar(k) {
+				envMap[k] = v
+			}
 		}
 	}
 
-	// Apply overrides
+	// Apply overrides. Sensitive overrides are dropped; empty values remove the
+	// variable.
 	for k, v := range overrides {
+		if isSensitiveEnvVar(k) {
+			continue
+		}
 		if v == "" {
 			delete(envMap, k)
 		} else {

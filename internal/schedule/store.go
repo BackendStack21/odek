@@ -11,6 +11,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/BackendStack21/odek/internal/fsatomic"
 )
 
 // File names under ~/.odek.
@@ -350,19 +352,17 @@ func readJSON(path string, v any) error {
 // so a reader never observes a half-written file and a swapped-in symlink is
 // replaced rather than followed. Files are 0600 since tasks may reference
 // secrets.
+//
+// The actual atomic write is delegated to internal/fsatomic, which uses a
+// random temp name with O_EXCL (so a pre-created symlink cannot be opened)
+// and fsyncs both the data and the parent directory before returning.
 func writeJSONAtomic(path string, v any) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return fmt.Errorf("schedule: marshal %s: %w", filepath.Base(path), err)
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
-		os.Remove(tmp)
+	if err := fsatomic.WriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("schedule: write %s: %w", filepath.Base(path), err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("schedule: rename %s: %w", filepath.Base(path), err)
 	}
 	return nil
 }

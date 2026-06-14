@@ -724,6 +724,7 @@ func TestRun_WithProjectConfig(t *testing.T) {
 
 	origDS := os.Getenv("DEEPSEEK_API_KEY")
 	origOAI := os.Getenv("OPENAI_API_KEY")
+	origOdekAPI := os.Getenv("ODEK_API_KEY")
 	origHome := os.Getenv("HOME")
 	origCwd, _ := os.Getwd()
 	os.Unsetenv("DEEPSEEK_API_KEY")
@@ -732,6 +733,7 @@ func TestRun_WithProjectConfig(t *testing.T) {
 	defer func() {
 		os.Setenv("DEEPSEEK_API_KEY", origDS)
 		os.Setenv("OPENAI_API_KEY", origOAI)
+		os.Setenv("ODEK_API_KEY", origOdekAPI)
 		os.Setenv("HOME", origHome)
 		os.Chdir(origCwd)
 	}()
@@ -739,11 +741,14 @@ func TestRun_WithProjectConfig(t *testing.T) {
 	// Isolate from any global config
 	os.Setenv("HOME", t.TempDir())
 
+	// API keys may not come from the untrusted project config; set one via env.
+	os.Setenv("ODEK_API_KEY", "sk-project-test-key")
+
 	// Create project-level config in a temp directory
 	projectDir := t.TempDir()
 	os.Chdir(projectDir)
 	if err := os.WriteFile(projectDir+"/odek.json", []byte(`{
-		"api_key": "sk-project-config"
+		"model": "project-model"
 	}`), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -1151,7 +1156,7 @@ func TestBuildSandboxArgs_EnvAndVolumes(t *testing.T) {
 			"GOCACHE":  "/tmp/gocache",
 			"NODE_ENV": "test",
 		},
-		Volumes: []string{"/host/cache:/container/cache", "/host/data:/data:ro"},
+		Volumes: []string{"/tmp/workdir/cache:/container/cache", "/tmp/workdir/data:/data:ro"},
 	}
 	args := sandbox.BuildRunArgs(cfg, "odek-test", "/tmp/workdir", cfg.Image)
 
@@ -1163,12 +1168,13 @@ func TestBuildSandboxArgs_EnvAndVolumes(t *testing.T) {
 		t.Error("missing env var NODE_ENV=test in docker args")
 	}
 
-	// Must contain volume mounts as "-v HOST:CONTAINER" pairs
-	if !hasArgPair(args, "-v", "/host/cache:/container/cache") {
-		t.Error("missing volume /host/cache:/container/cache in docker args")
+	// Must contain volume mounts as "-v HOST:CONTAINER" pairs.
+	// With the security fix, extra volume host paths must stay inside workdir.
+	if !hasArgPair(args, "-v", "/tmp/workdir/cache:/container/cache") {
+		t.Error("missing volume /tmp/workdir/cache:/container/cache in docker args")
 	}
-	if !hasArgPair(args, "-v", "/host/data:/data:ro") {
-		t.Error("missing volume /host/data:/data:ro in docker args")
+	if !hasArgPair(args, "-v", "/tmp/workdir/data:/data:ro") {
+		t.Error("missing volume /tmp/workdir/data:/data:ro in docker args")
 	}
 }
 
@@ -1724,7 +1730,7 @@ func TestBuildSandboxArgs_WithResources(t *testing.T) {
 		CPUs:    "0.5",
 		User:    "1000:1000",
 		Env:     map[string]string{"FOO": "bar"},
-		Volumes: []string{"/data:/data"},
+		Volumes: []string{"/workspace/data:/data"},
 	}, "odek-test", "/workspace", "alpine:latest")
 	full := strings.Join(args, " ")
 	if !strings.Contains(full, "--memory") || !strings.Contains(full, "512m") {
@@ -1739,7 +1745,7 @@ func TestBuildSandboxArgs_WithResources(t *testing.T) {
 	if !strings.Contains(full, "FOO=bar") {
 		t.Error("should include env var")
 	}
-	if !strings.Contains(full, "/data:/data") {
+	if !strings.Contains(full, "/workspace/data:/data") {
 		t.Error("should include extra volume")
 	}
 }
@@ -1868,15 +1874,16 @@ func TestBuildSandboxArgs_AllForbiddenPrefixes(t *testing.T) {
 	}
 }
 
-// TestBuildSandboxArgs_ValidVolume verifies a non-forbidden volume IS included.
+// TestBuildSandboxArgs_ValidVolume verifies a non-forbidden volume under the
+// working directory IS included.
 func TestBuildSandboxArgs_ValidVolume(t *testing.T) {
 	cfg := sandboxConfig{
 		Network: "bridge",
-		Volumes: []string{"/data:/data"},
+		Volumes: []string{"/workspace/data:/data"},
 	}
 	args := sandbox.BuildRunArgs(cfg, "odek-test", "/workspace", "alpine:latest")
-	if !hasArgPair(args, "-v", "/data:/data") {
-		t.Error("valid volume /data:/data should be included in docker args")
+	if !hasArgPair(args, "-v", "/workspace/data:/data") {
+		t.Error("valid volume /workspace/data:/data should be included in docker args")
 	}
 }
 
@@ -1914,7 +1921,7 @@ func TestBuildSandboxArgs_RejectsHostNetwork(t *testing.T) {
 
 func TestLoadMCPTools_EmptyServers(t *testing.T) {
 	tools := make([]odek.Tool, 0)
-	cleanup, err := loadMCPTools(nil, &tools)
+	cleanup, err := loadMCPTools(config.ResolvedConfig{}, &tools)
 	if err != nil {
 		t.Fatalf("loadMCPTools(nil) error: %v", err)
 	}
@@ -1925,7 +1932,7 @@ func TestLoadMCPTools_EmptyServers(t *testing.T) {
 	cleanup()
 
 	// Also test with empty map
-	cleanup2, err := loadMCPTools(map[string]mcpclient.ServerConfig{}, &tools)
+	cleanup2, err := loadMCPTools(config.ResolvedConfig{MCPServers: map[string]mcpclient.ServerConfig{}}, &tools)
 	if err != nil {
 		t.Fatalf("loadMCPTools(empty map) error: %v", err)
 	}

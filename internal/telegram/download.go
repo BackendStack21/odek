@@ -20,6 +20,44 @@ func fileIDSuffix(fileID string) string {
 	return hex.EncodeToString(sum[:])[:16]
 }
 
+// chatMediaPattern returns a glob pattern that matches files saved for chatID.
+func chatMediaPattern(dir string, chatID int64) string {
+	return filepath.Join(dir, fmt.Sprintf("*_chat%d_*", chatID))
+}
+
+// chatMediaUsage returns the total size of media files already stored for chatID.
+func chatMediaUsage(dir string, chatID int64) (int64, error) {
+	matches, err := filepath.Glob(chatMediaPattern(dir, chatID))
+	if err != nil {
+		return 0, err
+	}
+	var total int64
+	for _, m := range matches {
+		fi, err := os.Stat(m)
+		if err != nil {
+			continue
+		}
+		total += fi.Size()
+	}
+	return total, nil
+}
+
+// checkMediaQuota returns an error if writing additionalSize bytes for chatID
+// would exceed quota. A quota of 0 disables the check.
+func checkMediaQuota(dir string, chatID, additionalSize, quota int64) error {
+	if quota <= 0 {
+		return nil
+	}
+	usage, err := chatMediaUsage(dir, chatID)
+	if err != nil {
+		return fmt.Errorf("telegram: media quota: %w", err)
+	}
+	if usage+additionalSize > quota {
+		return fmt.Errorf("telegram: media quota exceeded for chat %d (%d + %d > %d bytes)", chatID, usage, additionalSize, quota)
+	}
+	return nil
+}
+
 // ── Media Directory ────────────────────────────────────────────────────────
 
 // MediaDir returns the directory where downloaded media files are stored.
@@ -40,8 +78,8 @@ func MediaDir() (string, error) {
 
 // DownloadVoice downloads a voice message from Telegram and saves it to the
 // media directory. Returns the local file path. The file is saved as
-// "voice_<fileID>.ogg" using a content-hash-safe truncation of the fileID.
-func DownloadVoice(bot *Bot, fileID string) (string, error) {
+// "voice_chat<chatID>_<fileID>.ogg" using a content-hash-safe truncation of the fileID.
+func DownloadVoice(bot *Bot, chatID int64, fileID string) (string, error) {
 	dir, err := MediaDir()
 	if err != nil {
 		return "", err
@@ -62,6 +100,11 @@ func DownloadVoice(bot *Bot, fileID string) (string, error) {
 		return "", fmt.Errorf("telegram voice: download: %w", err)
 	}
 
+	// Enforce per-chat media quota before writing.
+	if err := checkMediaQuota(dir, chatID, int64(len(data)), bot.MediaQuotaPerChat); err != nil {
+		return "", err
+	}
+
 	// Determine extension from original path.
 	ext := filepath.Ext(f.FilePath)
 	if ext == "" {
@@ -69,7 +112,7 @@ func DownloadVoice(bot *Bot, fileID string) (string, error) {
 	}
 
 	// Hash the full fileID for a unique, collision-free filename suffix.
-	localPath := filepath.Join(dir, fmt.Sprintf("voice_%s%s", fileIDSuffix(fileID), ext))
+	localPath := filepath.Join(dir, fmt.Sprintf("voice_chat%d_%s%s", chatID, fileIDSuffix(fileID), ext))
 
 	if err := os.WriteFile(localPath, data, 0600); err != nil {
 		return "", fmt.Errorf("telegram voice: save: %w", err)
@@ -82,8 +125,8 @@ func DownloadVoice(bot *Bot, fileID string) (string, error) {
 
 // DownloadPhoto downloads the largest available size of a photo and saves it
 // to the media directory. Uses the last (largest) PhotoSize in the slice.
-// Returns the local file path. Saved as "photo_<fileID>.jpg".
-func DownloadPhoto(bot *Bot, fileIDs []string) (string, error) {
+// Returns the local file path. Saved as "photo_chat<chatID>_<fileID>.jpg".
+func DownloadPhoto(bot *Bot, chatID int64, fileIDs []string) (string, error) {
 	if len(fileIDs) == 0 {
 		return "", fmt.Errorf("telegram photo: no file IDs")
 	}
@@ -111,13 +154,18 @@ func DownloadPhoto(bot *Bot, fileIDs []string) (string, error) {
 		return "", fmt.Errorf("telegram photo: download: %w", err)
 	}
 
+	// Enforce per-chat media quota before writing.
+	if err := checkMediaQuota(dir, chatID, int64(len(data)), bot.MediaQuotaPerChat); err != nil {
+		return "", err
+	}
+
 	// Determine extension.
 	ext := filepath.Ext(f.FilePath)
 	if ext == "" {
 		ext = ".jpg"
 	}
 
-	localPath := filepath.Join(dir, fmt.Sprintf("photo_%s%s", fileIDSuffix(fileID), ext))
+	localPath := filepath.Join(dir, fmt.Sprintf("photo_chat%d_%s%s", chatID, fileIDSuffix(fileID), ext))
 
 	if err := os.WriteFile(localPath, data, 0600); err != nil {
 		return "", fmt.Errorf("telegram photo: save: %w", err)
@@ -129,9 +177,9 @@ func DownloadPhoto(bot *Bot, fileIDs []string) (string, error) {
 // ── Document Download ─────────────────────────────────────────────────────
 
 // DownloadDocument downloads a document/file from Telegram and saves it
-// to the media directory. Returns the local file path. The file preserves
-// the original filename from the Telegram Document metadata.
-func DownloadDocument(bot *Bot, fileID, fileName string) (string, error) {
+// to the media directory. Returns the local file path. The filename is prefixed
+// with the chat ID so per-chat quotas can be enforced.
+func DownloadDocument(bot *Bot, chatID int64, fileID, fileName string) (string, error) {
 	dir, err := MediaDir()
 	if err != nil {
 		return "", err
@@ -152,9 +200,18 @@ func DownloadDocument(bot *Bot, fileID, fileName string) (string, error) {
 		return "", fmt.Errorf("telegram document: download: %w", err)
 	}
 
-	// Use original filename or generate one from file ID.
+	// Enforce per-chat media quota before writing.
+	if err := checkMediaQuota(dir, chatID, int64(len(data)), bot.MediaQuotaPerChat); err != nil {
+		return "", err
+	}
+
+	// Use original filename or generate one from file ID, prefixed with a
+	// "doc_chat<chatID>_" tag. The "<type>_chat<chatID>_" prefix mirrors the
+	// voice/photo naming so the file is matched by chatMediaPattern and counted
+	// toward the per-chat media quota (a bare "chat<chatID>_" prefix would not
+	// match the leading-underscore glob and would let documents bypass the cap).
 	safeName := sanitizeDocName(fileName, fileID, f.FilePath)
-	localPath := filepath.Join(dir, safeName)
+	localPath := filepath.Join(dir, fmt.Sprintf("doc_chat%d_%s", chatID, safeName))
 
 	if err := os.WriteFile(localPath, data, 0600); err != nil {
 		return "", fmt.Errorf("telegram document: save: %w", err)

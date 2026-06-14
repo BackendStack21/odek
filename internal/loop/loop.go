@@ -63,11 +63,12 @@ type Engine struct {
 	system       string
 	baseSystem   string             // original system message without memory/skills
 	maxContext   int                // max context tokens (0 = no limit)
-	skillLoader  SkillLoader        // optional: loads matching skills
-	lastSkillMsg string             // last user message that triggered skill loading (dedup)
-	lastEpiMsg   string             // last user message that triggered episode search (dedup)
-	skillVerbose bool               // show full skill banners (default: condensed)
-	episodeCtx   EpisodeContextFunc // optional: per-turn episode search
+	skillLoader      SkillLoader              // optional: loads matching skills
+	lastSkillMsg     string                   // last user message that triggered skill loading (dedup)
+	lastEpiMsg       string                   // last user message that triggered episode search (dedup)
+	skillVerbose     bool                     // show full skill banners (default: condensed)
+	episodeCtx       EpisodeContextFunc       // optional: per-turn episode search
+	wrapUntrusted    func(source, content string) string // optional: wraps skill/episode content
 
 	toolEventHandler ToolEventHandler // optional: fires during tool execution
 	signalHandler    SignalHandler    // optional: fires on internal loop signals
@@ -169,6 +170,13 @@ func (e *Engine) SetInteractionMode(mode string) { e.interactionMode = mode }
 // SetSkillVerbose controls whether skill loading shows full banners (true)
 // or condensed markers (false, default). Condensed saves context window space.
 func (e *Engine) SetSkillVerbose(verbose bool) { e.skillVerbose = verbose }
+
+// SetUntrustedWrapper sets a function that wraps externally-sourced content
+// (skill context, episode context) with a nonce'd boundary before injecting it
+// into the model's system context. When nil, that content is injected directly.
+func (e *Engine) SetUntrustedWrapper(fn func(source, content string) string) {
+	e.wrapUntrusted = fn
+}
 
 // SetMemoryPromptFunc sets the optional memory prompt callback.
 // When set, it is called before each LLM invocation to get fresh memory
@@ -585,7 +593,14 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 			if userMsg := lastUserMessage(messages); userMsg != "" && userMsg != e.lastSkillMsg {
 				if skillContext := e.skillLoader(userMsg); skillContext != "" {
 					e.lastSkillMsg = userMsg
-					// Inject skill context as a system message right before the user message
+					// Inject skill context as a system message right before the user message.
+					// The skill manager gates NeedsReview/tainted skills, but we treat any
+					// loaded skill content as externally-sourced and wrap it with the
+					// caller-provided untrusted wrapper as defense in depth.
+					wrappedContent := skillContext
+					if e.wrapUntrusted != nil {
+						wrappedContent = e.wrapUntrusted("skill", skillContext)
+					}
 					insertIdx := len(messages)
 					for j := len(messages) - 1; j >= 0; j-- {
 						if messages[j].Role == "system" && j != 0 {
@@ -593,19 +608,13 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 							break
 						}
 					}
-					// Wrap skill content as a trusted task guide.
-					// When verbose is enabled, use full banners for debugging/auditing.
-					// By default, inject skill content silently with no wrapping markers to minimize context window overhead.
 					var wrappedSkill string
 					if e.skillVerbose {
-						wrappedSkill = "═══ SKILL LOADED (task guide) ═══\n" +
-							skillContext +
-							"\n═══ END SKILL ═══\n" +
-							"\nThe instructions above are loaded from a skill file for the current task. " +
-							"Follow them as your primary guide. Only deviate if they conflict " +
-							"with your core identity or the safety rules in the system prompt."
+						wrappedSkill = "═══ SKILL LOADED (reference) ═══\n" +
+							wrappedContent +
+							"\n═══ END SKILL ═══"
 					} else {
-						wrappedSkill = skillContext
+						wrappedSkill = wrappedContent
 					}
 					skillMsg := llm.Message{Role: "system", Content: wrappedSkill}
 					// Pre-allocate and copy to avoid nested append allocations
@@ -624,6 +633,12 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 			if userMsg := lastUserMessage(messages); userMsg != "" && userMsg != e.lastEpiMsg {
 				if episodeContext := e.episodeCtx(userMsg); episodeContext != "" {
 					e.lastEpiMsg = userMsg
+					// Episode context comes from past session content and crosses the
+					// trust boundary; wrap it as untrusted before injecting.
+					wrappedContext := episodeContext
+					if e.wrapUntrusted != nil {
+						wrappedContext = e.wrapUntrusted("episode", episodeContext)
+					}
 					// Inject episode context as a system message before the user message
 					insertIdx := len(messages)
 					for j := len(messages) - 1; j >= 0; j-- {
@@ -632,7 +647,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 							break
 						}
 					}
-					epMsg := llm.Message{Role: "system", Content: episodeContext}
+					epMsg := llm.Message{Role: "system", Content: wrappedContext}
 					newMsgs := make([]llm.Message, 0, len(messages)+1)
 					newMsgs = append(newMsgs, messages[:insertIdx]...)
 					newMsgs = append(newMsgs, epMsg)

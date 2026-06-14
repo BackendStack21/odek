@@ -80,7 +80,7 @@ func TestE2E_FullTextMessageFlow(t *testing.T) {
 		capturedChatID int64
 		capturedText   string
 	)
-	handler.OnTextMessage = func(chatID int64, messageID int, text string) (string, error) {
+	handler.OnTextMessage = func(chatID int64, messageID int, text string, _ bool, _ int64) (string, error) {
 		capturedChatID = chatID
 		capturedText = text
 		return "Hello back!", nil
@@ -206,7 +206,7 @@ func TestE2E_FullCommandFlow(t *testing.T) {
 		capturedCmd    string
 		capturedArgs   string
 	)
-	handler.OnCommand = func(chatID int64, messageID int, cmd string, args string) (string, error) {
+	handler.OnCommand = func(chatID int64, messageID int, cmd string, args string, _ int64) (string, error) {
 		capturedChatID = chatID
 		capturedCmd = cmd
 		capturedArgs = args
@@ -457,7 +457,7 @@ func TestE2E_PollThenHandlerFlow(t *testing.T) {
 		textChatID    int64
 		textContent   string
 	)
-	handler.OnTextMessage = func(chatID int64, messageID int, text string) (string, error) {
+	handler.OnTextMessage = func(chatID int64, messageID int, text string, _ bool, _ int64) (string, error) {
 		textCallCount++
 		textChatID = chatID
 		textContent = text
@@ -621,7 +621,7 @@ func TestE2E_MediaFlow(t *testing.T) {
 	handler.Config.AllowAllUsers = true // routing test
 
 	// OnTextMessage returns a MEDIA:photo response.
-	handler.OnTextMessage = func(chatID int64, messageID int, text string) (string, error) {
+	handler.OnTextMessage = func(chatID int64, messageID int, text string, _ bool, _ int64) (string, error) {
 		return "MEDIA:photo:" + tmpPath, nil
 	}
 
@@ -722,7 +722,7 @@ func TestE2E_VoiceMediaFlow(t *testing.T) {
 	handler := NewHandler(bot)
 	handler.Config.AllowAllUsers = true // routing test
 
-	handler.OnTextMessage = func(chatID int64, messageID int, text string) (string, error) {
+	handler.OnTextMessage = func(chatID int64, messageID int, text string, _ bool, _ int64) (string, error) {
 		return "MEDIA:voice:" + tmpPath, nil
 	}
 
@@ -813,7 +813,7 @@ func TestE2E_PollEmptyThenMessage(t *testing.T) {
 	handler.Config.AllowAllUsers = true // routing test
 
 	var messagesReceived []string
-	handler.OnTextMessage = func(chatID int64, messageID int, text string) (string, error) {
+	handler.OnTextMessage = func(chatID int64, messageID int, text string, _ bool, _ int64) (string, error) {
 		messagesReceived = append(messagesReceived, text)
 		return "Response to: " + text, nil
 	}
@@ -934,7 +934,7 @@ func TestE2E_InlineKeyboardResponse(t *testing.T) {
 	handler := NewHandler(bot)
 	handler.Config.AllowAllUsers = true // routing test
 
-	handler.OnCommand = func(chatID int64, messageID int, cmd string, args string) (string, error) {
+	handler.OnCommand = func(chatID int64, messageID int, cmd string, args string, _ int64) (string, error) {
 		return "Here are your options:", nil
 	}
 

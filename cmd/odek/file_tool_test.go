@@ -502,6 +502,12 @@ func TestPatch_BasicReplace(t *testing.T) {
 	if r.Diff == "" {
 		t.Error("expected diff output")
 	}
+	if !strings.HasPrefix(r.Diff, "<untrusted_content_") {
+		t.Errorf("patch diff should be wrapped as untrusted content, got: %q", r.Diff)
+	}
+	if !strings.Contains(unwrapUntrusted(r.Diff), "--- a/") {
+		t.Errorf("unwrapped patch diff missing expected markers, got: %q", unwrapUntrusted(r.Diff))
+	}
 
 	data, _ := os.ReadFile(path)
 	if string(data) != "hello new world\n" {
@@ -803,10 +809,12 @@ func TestConfineToCWD_RejectsProtectedOdekPaths(t *testing.T) {
 	for _, p := range []string{
 		home + "/.odek/config.json",
 		home + "/.odek/secrets.env",
+		home + "/.odek/IDENTITY.md",
 		home + "/.odek/skills/evil/SKILL.md",
 		home + "/.odek/skills",
 		// ".." traversal inside the carve-out must not reach the anchors
 		home + "/.odek/memory/../config.json",
+		home + "/.odek/memory/../IDENTITY.md",
 	} {
 		if _, err := confineToCWD(p); err == nil {
 			t.Errorf("protected odek path %q should be rejected by confineToCWD", p)

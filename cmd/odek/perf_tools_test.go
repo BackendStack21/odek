@@ -181,10 +181,10 @@ func TestParallelShell_Basic(t *testing.T) {
 	if len(r.Results) != 2 {
 		t.Fatalf("Results = %d, want 2", len(r.Results))
 	}
-	if r.Results[0].Stdout != "hello" {
+	if unwrapUntrusted(r.Results[0].Stdout) != "hello" {
 		t.Errorf("cmd 0 stdout = %q, want 'hello'", r.Results[0].Stdout)
 	}
-	if r.Results[1].Stdout != "world" {
+	if unwrapUntrusted(r.Results[1].Stdout) != "world" {
 		t.Errorf("cmd 1 stdout = %q, want 'world'", r.Results[1].Stdout)
 	}
 }

@@ -99,6 +99,11 @@ local `./.odek` folder — an external host folder, just like `./workspace`.
 > **Only run one Telegram profile at a time per token** — Telegram allows a single
 > long-poller per bot (a second gets `409 Conflict`). Create a second bot via
 > @BotFather if you want both.
+>
+> **File downloads are capped.** Voice/photo/document downloads are limited to
+> `ODEK_TELEGRAM_MAX_DOWNLOAD_SIZE` (default 5 MiB) and optionally to a total
+> per-chat quota via `ODEK_TELEGRAM_MEDIA_QUOTA_PER_CHAT`. This prevents a
+> malicious or accidental large upload from exhausting the container disk.
 
 ### Scheduled reminders (cron)
 
@@ -116,9 +121,16 @@ Full guide: [../docs/SCHEDULES.md](../docs/SCHEDULES.md).
    ```
 
    Jobs added this way deliver back to that chat by default. Use `/schedules`
-   to list and `/schedule rm|enable|disable|run|next` to manage them. To keep
-   management host-only, set `ODEK_SCHEDULES_ALLOW_TELEGRAM_MANAGEMENT=false`
-   (the chat can still list and preview).
+   to list and `/schedule rm|enable|disable|run|next` to manage them.
+
+   > **Schedule management and `/restart` are restricted to operator chats/users.**
+   > Mutating commands (`add`, `rm`, `enable`, `disable`, `run`) and `/restart`
+   > are allowed only from the IDs listed in `ODEK_SCHEDULES_TELEGRAM_ADMIN_CHATS` /
+   > `ODEK_SCHEDULES_TELEGRAM_ADMIN_USERS`. `/restart` is also rate-limited to
+   > once per 60 seconds. If neither list nor `ODEK_TELEGRAM_DEFAULT_CHAT_ID` is
+   > configured, mutating commands and `/restart` are rejected (read-only
+   > `list`/`view`/`next` still work). To keep management host-only,
+   > set `ODEK_SCHEDULES_ALLOW_TELEGRAM_MANAGEMENT=false`.
 
    You can also run the CLI inside the container, or edit
    `./.odek/schedules.json` on the host directly — jobs persist in the `./.odek`

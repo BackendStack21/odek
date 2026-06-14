@@ -41,7 +41,7 @@ All sandbox settings are available in `~/.odek/config.json`, `./odek.json`, `ODE
     "NODE_ENV": "development"
   },
   "sandbox_volumes": [
-    "/home/user/.npm:/root/.npm"
+    "./.npm:/root/.npm"
   ]
 }
 ```
@@ -61,6 +61,12 @@ All sandbox settings are available in `~/.odek/config.json`, `./odek.json`, `ODE
 | `sandbox_volumes` | — | — | array | `[]` | Extra volume mounts (`host:container`) |
 
 > **Note:** `sandbox_env` and `sandbox_volumes` are config-file-only — they're too complex for flat env vars or CLI flags. For all other fields, env vars and CLI flags follow the standard `ODEK_*` pattern.
+>
+> **Security restriction on `sandbox_volumes`:** Extra volume host paths must be
+> inside the working directory. Absolute paths outside the project (e.g.
+> `/var/run/docker.sock`, `/etc`, `/home/user/...`) and paths containing `..`
+> or symlinks are rejected. Relative paths are resolved relative to the working
+> directory and must stay inside it.
 
 ### Env var examples
 
@@ -232,7 +238,7 @@ odek's sandbox follows the principle of **least privilege with progressive opt-i
     "NPM_CONFIG_CACHE": "/tmp/.npm"
   },
   "sandbox_volumes": [
-    "/root/.npm:/root/.npm"
+    "./.npm:/root/.npm"
   ]
 }
 ```

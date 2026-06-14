@@ -187,6 +187,18 @@ func loadIdentityFile() string {
 	if content == "" {
 		return defaultSystem
 	}
+	// IDENTITY.md becomes the system prompt verbatim, so it must clear the
+	// same injection scan that AGENTS.md does (see odek.New). A tampered
+	// identity file falls back to the built-in default rather than loading
+	// attacker-controlled instructions as trusted system text.
+	if threats := danger.ScanInjection(content); len(threats) > 0 {
+		labels := make([]string, 0, len(threats))
+		for _, t := range threats {
+			labels = append(labels, t.Label)
+		}
+		fmt.Fprintf(os.Stderr, "odek: warning: IDENTITY.md contains injection threats (%s) — using default identity\n", strings.Join(labels, ", "))
+		return defaultSystem
+	}
 	return content
 }
 
@@ -855,7 +867,7 @@ func run(args []string) error {
 	// MCP server tools
 	var mcpCleanup func()
 	if len(resolved.MCPServers) > 0 {
-		cl, err := loadMCPTools(resolved.MCPServers, &tools)
+		cl, err := loadMCPTools(resolved, &tools)
 		if err != nil {
 			return fmt.Errorf("mcp: %w", err)
 		}
@@ -910,13 +922,14 @@ func run(args []string) error {
 	}
 
 	agent, err := odek.New(odek.Config{
-		Model:           resolved.Model,
-		BaseURL:         resolved.BaseURL,
-		APIKey:          resolved.APIKey,
-		MaxIterations:   resolved.MaxIter,
-		MaxToolParallel: resolved.MaxToolParallel,
-		SystemMessage:   systemMessage,
-		NoProjectFile:   resolved.NoAgents,
+		Model:            resolved.Model,
+		BaseURL:          resolved.BaseURL,
+		APIKey:           resolved.APIKey,
+		MaxIterations:    resolved.MaxIter,
+		MaxToolParallel:  resolved.MaxToolParallel,
+		SystemMessage:    systemMessage,
+		UntrustedWrapper: wrapUntrusted,
+		NoProjectFile:    resolved.NoAgents,
 		Thinking:        resolved.Thinking,
 		ThinkingBudget:  f.ThinkingBudget,
 		Temperature:     0, // deterministic by default; override with --temperature
@@ -1120,6 +1133,12 @@ func setupSandbox(tools []odek.Tool, cfg sandboxConfig) (containerName string, c
 			tool.containerName = containerName
 		case *parallelShellTool:
 			tool.containerName = containerName
+		case *writeFileTool:
+			tool.containerName = containerName
+		case *patchTool:
+			tool.containerName = containerName
+		case *batchPatchTool:
+			tool.containerName = containerName
 		}
 	}
 	return containerName, cleanup, nil
@@ -1202,9 +1221,18 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 // loadMCPTools connects to configured MCP servers and appends their tools
 // to the tool slice. Returns a cleanup function that closes all connections.
 // The passed-in tool slice pointer is extended with ToolAdapters.
-func loadMCPTools(servers map[string]mcpclient.ServerConfig, tools *[]odek.Tool) (func(), error) {
+//
+// Before spawning any server that was defined in the project-level ./odek.json,
+// loadMCPTools calls approveMCPServers, which requires explicit user approval
+// (interactive prompt or ODEK_APPROVE_MCP=1) and persists approvals in
+// ~/.odek/mcp_approvals.json.
+func loadMCPTools(resolved config.ResolvedConfig, tools *[]odek.Tool) (func(), error) {
+	if err := approveMCPServers(resolved, os.Stdin, os.Stdout); err != nil {
+		return nil, err
+	}
+
 	var cleaners []func()
-	for name, cfg := range servers {
+	for name, cfg := range resolved.MCPServers {
 		client, err := mcpclient.New(name, cfg)
 		if err != nil {
 			// Clean up any servers we already started
@@ -1228,8 +1256,10 @@ func loadMCPTools(servers map[string]mcpclient.ServerConfig, tools *[]odek.Tool)
 			// and parameter schema — all of which flow into the model's
 			// tool catalogue as effectively trusted instructions ("tool
 			// poisoning"). The untrusted wrapper only guards the tool's
-			// runtime *output*, so scan the server-supplied description for
-			// injection patterns and withhold it if any are found.
+			// runtime *output*, so sanitizeMCPDescription both scans the
+			// server-supplied description for injection patterns (withholding
+			// it on a hit) and wraps whatever passes in an untrusted-data
+			// boundary so the model never treats it as instructions.
 			inner := &mcpclient.ToolAdapter{
 				Client:      client,
 				ToolName:    def.Name,
@@ -1696,7 +1726,7 @@ func continueCmd(args []string) error {
 	// MCP server tools
 	var mcpCleanup func()
 	if len(resolved.MCPServers) > 0 {
-		cl, err := loadMCPTools(resolved.MCPServers, &tools)
+		cl, err := loadMCPTools(resolved, &tools)
 		if err != nil {
 			return fmt.Errorf("mcp: %w", err)
 		}
@@ -1741,13 +1771,14 @@ func continueCmd(args []string) error {
 	}
 
 	agent, err := odek.New(odek.Config{
-		Model:           resolved.Model,
-		BaseURL:         resolved.BaseURL,
-		APIKey:          resolved.APIKey,
-		MaxIterations:   resolved.MaxIter,
-		MaxToolParallel: resolved.MaxToolParallel,
-		SystemMessage:   systemMessage,
-		NoProjectFile:   resolved.NoAgents,
+		Model:            resolved.Model,
+		BaseURL:          resolved.BaseURL,
+		APIKey:           resolved.APIKey,
+		MaxIterations:    resolved.MaxIter,
+		MaxToolParallel:  resolved.MaxToolParallel,
+		SystemMessage:    systemMessage,
+		UntrustedWrapper: wrapUntrusted,
+		NoProjectFile:    resolved.NoAgents,
 		Thinking:        resolved.Thinking,
 		Temperature:     0, // deterministic by default; override with --temperature
 		Tools:           tools,
