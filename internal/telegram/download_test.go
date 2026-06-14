@@ -600,3 +600,33 @@ func TestDownloadVoice_QuotaExceeded(t *testing.T) {
 		t.Fatalf("expected quota-exceeded error, got %v", err)
 	}
 }
+
+// TestDownloadDocument_CountsTowardQuota is a regression test: documents must
+// be named with the same "<type>_chat<id>_" prefix as voice/photo so they are
+// matched by chatMediaPattern and counted toward the per-chat media quota.
+// A bare "chat<id>_" prefix did not match the leading-underscore glob, letting
+// documents bypass the cap entirely.
+func TestDownloadDocument_CountsTowardQuota(t *testing.T) {
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.String(), "getFile") {
+			fmt.Fprintf(w, `{"ok":true,"result":{"file_id":"d1","file_path":"documents/file.bin"}}`)
+			return
+		}
+		w.Write([]byte("hello")) // 5 bytes
+	}
+	ts := httptest.NewServer(http.HandlerFunc(handler))
+	defer ts.Close()
+	bot := testBot(t, ts)
+	bot.MediaQuotaPerChat = 8 // bytes — fits one 5-byte file, not two
+	t.Setenv("HOME", t.TempDir())
+
+	if _, err := DownloadDocument(bot, 42, "d1", "report.bin"); err != nil {
+		t.Fatalf("first document download should fit under quota: %v", err)
+	}
+	// The first document (5 bytes) must count as existing usage, so a second
+	// 5-byte document exceeds the 8-byte quota.
+	_, err := DownloadDocument(bot, 42, "d2", "report2.bin")
+	if err == nil || !strings.Contains(err.Error(), "media quota exceeded") {
+		t.Fatalf("expected second document to exceed quota (first must be counted), got %v", err)
+	}
+}

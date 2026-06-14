@@ -30,6 +30,13 @@ func setupMediaPathTest(t *testing.T) (outsideDir string) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
 	t.Setenv("USERPROFILE", tmp)
+
+	// Run with a temp working directory so tests that exercise the "cwd is
+	// allowed" path write their fixtures into a throwaway directory instead of
+	// polluting the package source tree. t.Chdir restores the original cwd on
+	// cleanup.
+	t.Chdir(t.TempDir())
+
 	return outsideDir
 }
 

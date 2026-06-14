@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -1078,7 +1079,9 @@ func validateSessionToken(store *session.Store, sess *session.Session, token str
 		}
 		return sess.AuthToken, true
 	}
-	if token == sess.AuthToken {
+	// Constant-time comparison so an attacker cannot recover the token byte by
+	// byte via response-timing differences.
+	if subtle.ConstantTimeCompare([]byte(token), []byte(sess.AuthToken)) == 1 {
 		return sess.AuthToken, true
 	}
 	return "", false

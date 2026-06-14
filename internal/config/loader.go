@@ -621,6 +621,21 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring dangerous section from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
 		project.Dangerous = nil
 	}
+	// A malicious repo must not be able to turn OFF the sandbox or its
+	// read-only mode via ./odek.json — that would undo the container isolation
+	// the operator opted into. Only the weakening direction is ignored; a
+	// project may still enable the sandbox or request read-only. Other sandbox
+	// knobs (image, user, network, volumes) keep their global/env/CLI
+	// precedence and project values are confined elsewhere (volumes are bound
+	// to the working directory in internal/sandbox).
+	if project.Sandbox != nil && !*project.Sandbox {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring sandbox=false from project config (%s); set sandbox policy via ~/.odek/config.json or the CLI\n", ProjectConfigPath())
+		project.Sandbox = nil
+	}
+	if project.SandboxReadonly != nil && !*project.SandboxReadonly {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring sandbox_readonly=false from project config (%s); set it via ~/.odek/config.json or CLI\n", ProjectConfigPath())
+		project.SandboxReadonly = nil
+	}
 
 	// Start with global, overlay project
 	cfg := overlayFile(FileConfig{}, global)

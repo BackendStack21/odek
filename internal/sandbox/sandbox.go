@@ -200,7 +200,7 @@ func sanitizeVolumeMount(vol, workdir string) (string, bool) {
 	}
 
 	// Reject symlinks — they could escape the working directory even if the
-	// link itself is inside it.
+	// link itself is inside it. Lstat only inspects the final component.
 	if info, err := os.Lstat(absHost); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
 			fmt.Fprintf(os.Stderr, "odek: WARNING: rejecting volume mount %q (symlinks are not allowed)\n", vol)
@@ -208,13 +208,41 @@ func sanitizeVolumeMount(vol, workdir string) (string, bool) {
 		}
 	}
 
-	// Reject forbidden host paths.
-	for _, forbidden := range ForbiddenMountPrefixes {
-		if absHost == forbidden {
-			fmt.Fprintf(os.Stderr, "odek: WARNING: rejecting forbidden volume mount %q (host path %s)\n", vol, absHost)
-			return "", false
+	// Resolve symlinks in the parent chain and re-check containment so an
+	// intermediate symlinked directory cannot escape the working directory
+	// (e.g. workdir/link -> /etc, requested as workdir/link/passwd: the final
+	// component "passwd" is not itself a symlink, so the Lstat check above
+	// passes, but the resolved path is outside workdir). Both sides are
+	// resolved so platforms where the workdir contains symlinks (macOS
+	// /var -> /private/var) compare canonical paths. When the parent does not
+	// exist yet, EvalSymlinks fails and the lexical confinement check above
+	// remains the guarantee.
+	if parent := filepath.Dir(absHost); parent != absHost {
+		resolvedParent, perr := filepath.EvalSymlinks(parent)
+		resolvedWorkdir, werr := filepath.EvalSymlinks(absWorkdir)
+		if perr == nil && werr == nil {
+			resolvedHost := filepath.Join(resolvedParent, filepath.Base(absHost))
+			if !isPathUnder(resolvedHost, resolvedWorkdir) {
+				fmt.Fprintf(os.Stderr, "odek: WARNING: rejecting volume mount %q (resolved host path %s escapes working directory %s)\n", vol, resolvedHost, resolvedWorkdir)
+				return "", false
+			}
 		}
-		if strings.HasPrefix(absHost, forbidden+string(filepath.Separator)) {
+	}
+
+	// Reject forbidden host paths. Skip any forbidden prefix that the working
+	// directory itself sits at or under: the confinement check above already
+	// bounds the mount to the working directory, and the broad system roots
+	// (/home, /root, /var, /run) are the normal parents of a project directory.
+	// Without this exemption every legitimate in-workdir mount on a typical
+	// Linux host (cwd under /home/<user>) would be rejected, while paths that
+	// genuinely escape into a forbidden area are still caught — either by the
+	// confinement check above or by a forbidden prefix the workdir is not under.
+	sep := string(filepath.Separator)
+	for _, forbidden := range ForbiddenMountPrefixes {
+		if absWorkdir == forbidden || strings.HasPrefix(absWorkdir, forbidden+sep) {
+			continue
+		}
+		if absHost == forbidden || strings.HasPrefix(absHost, forbidden+sep) {
 			fmt.Fprintf(os.Stderr, "odek: WARNING: rejecting forbidden volume mount %q (host path %s)\n", vol, absHost)
 			return "", false
 		}

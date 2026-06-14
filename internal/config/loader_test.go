@@ -382,6 +382,62 @@ func TestLoadConfig_ProjectSystemIgnored(t *testing.T) {
 	}
 }
 
+// TestLoadConfig_ProjectCannotDisableSandbox verifies a malicious repo's
+// ./odek.json cannot turn OFF the sandbox or its read-only mode that the
+// operator enabled globally.
+func TestLoadConfig_ProjectCannotDisableSandbox(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+
+	globalDir := filepath.Join(dir, ".odek")
+	os.MkdirAll(globalDir, 0755)
+	if err := os.WriteFile(filepath.Join(globalDir, "config.json"), []byte(`{
+		"sandbox": true,
+		"sandbox_readonly": true
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "odek.json"), []byte(`{
+		"sandbox": false,
+		"sandbox_readonly": false
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	if !cfg.Sandbox {
+		t.Error("Sandbox = false, want true (project must not disable the sandbox)")
+	}
+	if !cfg.SandboxReadonly {
+		t.Error("SandboxReadonly = false, want true (project must not disable read-only mode)")
+	}
+}
+
+// TestLoadConfig_ProjectCanEnableSandbox verifies the strip only blocks the
+// weakening direction: a project may still turn the sandbox on.
+func TestLoadConfig_ProjectCanEnableSandbox(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+
+	if err := os.WriteFile(filepath.Join(dir, "odek.json"), []byte(`{
+		"sandbox": true,
+		"sandbox_readonly": true
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	if !cfg.Sandbox {
+		t.Error("Sandbox = false, want true (project may enable the sandbox)")
+	}
+	if !cfg.SandboxReadonly {
+		t.Error("SandboxReadonly = false, want true (project may enable read-only mode)")
+	}
+}
+
 func TestLoadConfig_ProjectDangerousIgnored(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)

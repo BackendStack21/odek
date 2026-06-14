@@ -1712,18 +1712,37 @@ func isNetworkEgress(first string, tokens []string) bool {
 	// git subcommands that inherently contact a remote.
 	if first == "git" {
 		// Find the git subcommand, skipping the initial "git" token and any
-		// leading path (e.g. /usr/bin/git) or global options.
+		// leading path (e.g. /usr/bin/git) or global options. Some global
+		// options take a *separate* value token that does not start with "-"
+		// (e.g. "git -C <path> push", "git -c <key=val> fetch"); that value
+		// must not be mistaken for the subcommand, otherwise a remote-contacting
+		// command is misclassified as non-egress and could be auto-allowed.
 		sub := ""
 		seenGit := false
+		skipNext := false
 		for _, tok := range tokens {
-			if commandName(tok) == "git" {
+			if !seenGit && commandName(tok) == "git" {
 				seenGit = true
 				continue
 			}
-			if seenGit && !strings.HasPrefix(tok, "-") {
-				sub = tok
-				break
+			if !seenGit {
+				continue
 			}
+			if skipNext {
+				skipNext = false
+				continue
+			}
+			if strings.HasPrefix(tok, "-") {
+				switch tok {
+				case "-C", "-c", "--git-dir", "--work-tree", "--namespace",
+					"--exec-path", "--super-prefix", "--config-env":
+					// These consume the following token as their value.
+					skipNext = true
+				}
+				continue
+			}
+			sub = tok
+			break
 		}
 		switch sub {
 		case "clone", "fetch", "pull":

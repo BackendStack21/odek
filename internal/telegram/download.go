@@ -205,9 +205,13 @@ func DownloadDocument(bot *Bot, chatID int64, fileID, fileName string) (string, 
 		return "", err
 	}
 
-	// Use original filename or generate one from file ID, prefixed with chat ID.
+	// Use original filename or generate one from file ID, prefixed with a
+	// "doc_chat<chatID>_" tag. The "<type>_chat<chatID>_" prefix mirrors the
+	// voice/photo naming so the file is matched by chatMediaPattern and counted
+	// toward the per-chat media quota (a bare "chat<chatID>_" prefix would not
+	// match the leading-underscore glob and would let documents bypass the cap).
 	safeName := sanitizeDocName(fileName, fileID, f.FilePath)
-	localPath := filepath.Join(dir, fmt.Sprintf("chat%d_%s", chatID, safeName))
+	localPath := filepath.Join(dir, fmt.Sprintf("doc_chat%d_%s", chatID, safeName))
 
 	if err := os.WriteFile(localPath, data, 0600); err != nil {
 		return "", fmt.Errorf("telegram document: save: %w", err)

@@ -164,6 +164,12 @@ func TestClassify_NetworkEgress_Commands(t *testing.T) {
 		{"git clone https://github.com/user/repo", NetworkEgress},
 		{"git fetch origin", NetworkEgress},
 		{"git pull origin main", NetworkEgress},
+		// Global options that take a separate value token must not be mistaken
+		// for the subcommand (regression: these were misclassified as safe).
+		{"git -C /repo push origin main", NetworkEgress},
+		{"git -c http.proxy=http://evil fetch origin", NetworkEgress},
+		{"git --git-dir /repo/.git push origin", NetworkEgress},
+		{"git -C /repo -c key=val pull", NetworkEgress},
 		{"scp file user@remote:/path", NetworkEgress},
 		{"rsync -avz ./ user@remote:/backup", NetworkEgress},
 		{"nc example.com 80", NetworkEgress},

@@ -42,11 +42,14 @@ func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, user
 		if m.Role == "tool" {
 			if hasUntrustedWrapper(m.Content) {
 				ingestedUntrusted = true
-				untrustedBodies.WriteString(unwrapUntrusted(m.Content))
-				untrustedBodies.WriteByte(' ')
-				if src := untrustedSource(m.Content); src != "" {
-					untrustedSources = append(untrustedSources, src)
+				// A tool message may carry several untrusted blobs; aggregate
+				// every body and source, not just the first, so a later blob
+				// cannot smuggle in a reused-resource injection unseen.
+				for _, body := range unwrapUntrustedAll(m.Content) {
+					untrustedBodies.WriteString(body)
+					untrustedBodies.WriteByte(' ')
 				}
+				untrustedSources = append(untrustedSources, untrustedSourcesAll(m.Content)...)
 			}
 		}
 		if m.Role == "assistant" && m.Content != "" {

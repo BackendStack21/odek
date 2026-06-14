@@ -22,7 +22,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -105,9 +104,11 @@ func generateID() string {
 	now := time.Now().UTC().Format("20060102")
 	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {
-		// crypto/rand.Read only fails on catastrophic system failure; fall back
-		// to a timestamp-based suffix so the store remains usable.
-		return now + "-" + strconv.FormatInt(time.Now().UTC().UnixNano(), 36)
+		// crypto/rand.Read only fails on catastrophic system failure. Fail
+		// closed rather than minting a predictable timestamp-derived ID, which
+		// would reintroduce the brute-force enumeration this randomness exists
+		// to prevent.
+		panic(fmt.Sprintf("session: crypto/rand unavailable: %v", err))
 	}
 	return now + "-" + hexEncode(buf)
 }
@@ -118,8 +119,10 @@ func generateID() string {
 func GenerateAuthToken() string {
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
-		// Fallback to a timestamp + random composite on catastrophic failure.
-		buf = []byte(strconv.FormatInt(time.Now().UTC().UnixNano(), 36))
+		// crypto/rand.Read only fails on catastrophic system failure. Fail
+		// closed rather than minting a predictable timestamp-derived token,
+		// which would be trivially guessable and defeat session auth.
+		panic(fmt.Sprintf("session: crypto/rand unavailable: %v", err))
 	}
 	return hexEncode(buf)
 }

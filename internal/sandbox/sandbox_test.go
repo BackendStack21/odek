@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -146,6 +147,33 @@ func TestBuildRunArgs_ForbiddenVolumeMountRejected(t *testing.T) {
 	}
 }
 
+// TestBuildRunArgs_InWorkdirMountUnderSystemRootAllowed guards against the
+// regression where the broad system-root forbidden prefixes (/home, /root,
+// /var, /run) rejected every legitimate in-workdir mount on a typical Linux
+// host, where the working directory itself lives under /home/<user>.
+func TestBuildRunArgs_InWorkdirMountUnderSystemRootAllowed(t *testing.T) {
+	for _, workdir := range []string{"/home/alice/project", "/root/project", "/var/lib/app", "/run/app"} {
+		mount := workdir + "/data:/container/data"
+		args := BuildRunArgs(Config{Volumes: []string{mount}}, "odek-test", workdir, "alpine:latest")
+		if !contains(args, mount) {
+			t.Errorf("in-workdir mount under system root should be allowed for workdir %q\nargs: %v", workdir, args)
+		}
+	}
+}
+
+// TestBuildRunArgs_SystemRootMountOutsideWorkdirStillRejected confirms the
+// system-root protection still fires when the path is NOT inside the workdir.
+func TestBuildRunArgs_SystemRootMountOutsideWorkdirStillRejected(t *testing.T) {
+	// workdir is /, so /etc/secret is lexically "under" the workdir and passes
+	// confinement, but must still be rejected by the /etc forbidden prefix.
+	args := BuildRunArgs(Config{Volumes: []string{"/etc/secret:/container/secret"}}, "odek-test", "/", "alpine:latest")
+	for i, a := range args {
+		if a == "-v" && i+1 < len(args) && strings.HasPrefix(args[i+1], "/etc/secret:") {
+			t.Errorf("mount into /etc should be rejected even when workdir is /, found %q", args[i+1])
+		}
+	}
+}
+
 func TestBuildRunArgs_VolumeOutsideWorkdirRejected(t *testing.T) {
 	args := BuildRunArgs(Config{
 		Volumes: []string{"/tmp:/container/tmp"},
@@ -175,6 +203,32 @@ func TestBuildRunArgs_DockerSocketRejected(t *testing.T) {
 	for i, a := range args {
 		if a == "-v" && i+1 < len(args) && strings.Contains(args[i+1], "docker.sock") {
 			t.Errorf("docker socket mount should have been rejected, found %q", args[i+1])
+		}
+	}
+}
+
+// TestBuildRunArgs_IntermediateSymlinkEscapeRejected verifies that a mount
+// whose final component is a regular file (passing the Lstat check) but whose
+// parent is a symlink pointing outside the working directory is rejected.
+func TestBuildRunArgs_IntermediateSymlinkEscapeRejected(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink tests skipped on windows")
+	}
+	workdir := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// workdir/link -> outside (a directory symlink that escapes the workdir).
+	if err := os.Symlink(outside, filepath.Join(workdir, "link")); err != nil {
+		t.Fatal(err)
+	}
+
+	mount := filepath.Join(workdir, "link", "secret") + ":/container/secret"
+	args := BuildRunArgs(Config{Volumes: []string{mount}}, "odek-test", workdir, "alpine:latest")
+	for i, a := range args {
+		if a == "-v" && i+1 < len(args) && strings.Contains(args[i+1], "secret") {
+			t.Errorf("mount traversing an intermediate symlink out of workdir should be rejected, found %q", args[i+1])
 		}
 	}
 }

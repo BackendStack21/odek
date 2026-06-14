@@ -190,25 +190,44 @@ func unwrapUntrusted(s string) string {
 	return body
 }
 
+// unwrapUntrustedAll returns the trimmed body of every <untrusted_content_*>
+// wrapper in s. A single tool message may concatenate several blobs (e.g. a
+// multi-fetch tool), and the audit divergence check must inspect all of them —
+// using only the first match would let an injection arriving in a later blob
+// escape detection.
+func unwrapUntrustedAll(s string) []string {
+	matches := reWrapper.FindAllStringSubmatch(s, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	bodies := make([]string, 0, len(matches))
+	for _, m := range matches {
+		body := strings.TrimPrefix(m[2], "\n")
+		body = strings.TrimSuffix(body, "\n")
+		bodies = append(bodies, body)
+	}
+	return bodies
+}
+
+// untrustedSourcesAll extracts the (desanitised) source attribute from every
+// <untrusted_content_*> wrapper in s.
+func untrustedSourcesAll(s string) []string {
+	matches := reWrapper.FindAllStringSubmatch(s, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	rep := strings.NewReplacer("'", `"`, "‹", "<", "›", ">")
+	srcs := make([]string, 0, len(matches))
+	for _, m := range matches {
+		srcs = append(srcs, rep.Replace(m[1]))
+	}
+	return srcs
+}
+
 // hasUntrustedWrapper reports whether s contains a complete nonce'd
 // untrusted_content wrapper.
 func hasUntrustedWrapper(s string) bool {
 	return reWrapper.MatchString(s)
-}
-
-// untrustedSource extracts the source attribute from an
-// <untrusted_content_*> wrapper. It returns the empty string if the input
-// is not a wrapped blob.
-func untrustedSource(s string) string {
-	m := reWrapper.FindStringSubmatch(s)
-	if len(m) < 2 {
-		return ""
-	}
-	src := m[1]
-	// The source attribute is sanitised by wrapUntrusted; reverse the
-	// substitutions so it compares cleanly against resource strings.
-	src = strings.NewReplacer("'", `"`, "‹", "<", "›", ">").Replace(src)
-	return src
 }
 
 // mcpDescriptionWithheld replaces an MCP tool description in which
