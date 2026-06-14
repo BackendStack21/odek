@@ -129,11 +129,12 @@ func replCmd(args []string) error {
 	}
 
 	agent, err := odek.New(odek.Config{
-		Model:          resolved.Model,
-		BaseURL:        resolved.BaseURL,
-		APIKey:         resolved.APIKey,
-		MaxIterations:  resolved.MaxIter,
-		SystemMessage:  systemMessage,
+		Model:            resolved.Model,
+		BaseURL:          resolved.BaseURL,
+		APIKey:           resolved.APIKey,
+		MaxIterations:    resolved.MaxIter,
+		SystemMessage:    systemMessage,
+		UntrustedWrapper: wrapUntrusted,
 		NoProjectFile:  resolved.NoAgents,
 		Thinking:       resolved.Thinking,
 		ThinkingBudget: f.ThinkingBudget,

@@ -1469,13 +1469,14 @@ func handleChatMessage(
 	}
 
 	agentCfg := odek.Config{
-		Model:           resolved.Model,
-		BaseURL:         resolved.BaseURL,
-		APIKey:          resolved.APIKey,
-		MaxIterations:   resolved.MaxIter,
-		MaxToolParallel: resolved.MaxToolParallel,
-		SystemMessage:   systemMessage,
-		RuntimeContext:  odek.BuildRuntimeContext("telegram"),
+		Model:            resolved.Model,
+		BaseURL:          resolved.BaseURL,
+		APIKey:           resolved.APIKey,
+		MaxIterations:    resolved.MaxIter,
+		MaxToolParallel:  resolved.MaxToolParallel,
+		SystemMessage:    systemMessage,
+		UntrustedWrapper: wrapUntrusted,
+		RuntimeContext:   odek.BuildRuntimeContext("telegram"),
 		InteractionMode: resolved.InteractionMode,
 		NoProjectFile:   resolved.NoAgents,
 		Skills:          skillsCfg,

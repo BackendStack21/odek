@@ -336,6 +336,10 @@ The defense has three layers:
 
 Legacy sessions created before this defense have no `AuthToken`; the first access bootstraps one and returns it to the client, preserving backward compatibility without weakening protection for newly created sessions.
 
+### 24. Skill and episode context wrapped as untrusted
+
+Skill content and retrieved session episodes are externally-sourced data that cross the trust boundary. Before injecting them as `system` messages, the loop passes them through the same nonce'd `<untrusted_content_*>` wrapper used for tool output. The skill manager already gates `NeedsReview`/tainted skills, and the memory manager filters tainted episodes from search, but the wrapper provides defense-in-depth so a compromised skill or episode cannot pose as trusted system instructions.
+
 ### YOLO mode
 
 ```json

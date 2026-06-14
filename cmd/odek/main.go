@@ -922,13 +922,14 @@ func run(args []string) error {
 	}
 
 	agent, err := odek.New(odek.Config{
-		Model:           resolved.Model,
-		BaseURL:         resolved.BaseURL,
-		APIKey:          resolved.APIKey,
-		MaxIterations:   resolved.MaxIter,
-		MaxToolParallel: resolved.MaxToolParallel,
-		SystemMessage:   systemMessage,
-		NoProjectFile:   resolved.NoAgents,
+		Model:            resolved.Model,
+		BaseURL:          resolved.BaseURL,
+		APIKey:           resolved.APIKey,
+		MaxIterations:    resolved.MaxIter,
+		MaxToolParallel:  resolved.MaxToolParallel,
+		SystemMessage:    systemMessage,
+		UntrustedWrapper: wrapUntrusted,
+		NoProjectFile:    resolved.NoAgents,
 		Thinking:        resolved.Thinking,
 		ThinkingBudget:  f.ThinkingBudget,
 		Temperature:     0, // deterministic by default; override with --temperature
@@ -1770,13 +1771,14 @@ func continueCmd(args []string) error {
 	}
 
 	agent, err := odek.New(odek.Config{
-		Model:           resolved.Model,
-		BaseURL:         resolved.BaseURL,
-		APIKey:          resolved.APIKey,
-		MaxIterations:   resolved.MaxIter,
-		MaxToolParallel: resolved.MaxToolParallel,
-		SystemMessage:   systemMessage,
-		NoProjectFile:   resolved.NoAgents,
+		Model:            resolved.Model,
+		BaseURL:          resolved.BaseURL,
+		APIKey:           resolved.APIKey,
+		MaxIterations:    resolved.MaxIter,
+		MaxToolParallel:  resolved.MaxToolParallel,
+		SystemMessage:    systemMessage,
+		UntrustedWrapper: wrapUntrusted,
+		NoProjectFile:    resolved.NoAgents,
 		Thinking:        resolved.Thinking,
 		Temperature:     0, // deterministic by default; override with --temperature
 		Tools:           tools,

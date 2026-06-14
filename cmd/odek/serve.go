@@ -407,13 +407,14 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 	}
 
 	agent, err := odek.New(odek.Config{
-		Model:           resolved.Model,
-		BaseURL:         resolved.BaseURL,
-		APIKey:          resolved.APIKey,
-		MaxIterations:   resolved.MaxIter,
-		MaxToolParallel: resolved.MaxToolParallel,
-		SystemMessage:   system,
-		RuntimeContext:  runtimeCtx,
+		Model:            resolved.Model,
+		BaseURL:          resolved.BaseURL,
+		APIKey:           resolved.APIKey,
+		MaxIterations:    resolved.MaxIter,
+		MaxToolParallel:  resolved.MaxToolParallel,
+		SystemMessage:    system,
+		UntrustedWrapper: wrapUntrusted,
+		RuntimeContext:   runtimeCtx,
 		NoProjectFile:   resolved.NoAgents,
 		Thinking:        resolved.Thinking,
 		InteractionMode: resolved.InteractionMode,

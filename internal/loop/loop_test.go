@@ -1917,6 +1917,54 @@ func TestEngine_SkillsAndEpisodesBothLoad(t *testing.T) {
 	}
 }
 
+func TestEngine_SkillAndEpisode_Wrapped(t *testing.T) {
+	var sawSkillWrapped, sawEpisodeWrapped bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			return
+		}
+		for _, msg := range body.Messages {
+			if strings.HasPrefix(msg.Content, "WRAPPED:skill:") && strings.Contains(msg.Content, "injected skill context") {
+				sawSkillWrapped = true
+			}
+			if strings.HasPrefix(msg.Content, "WRAPPED:episode:") && strings.Contains(msg.Content, "injected episode context") {
+				sawEpisodeWrapped = true
+			}
+		}
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"done"}}]}`)
+	}))
+	defer server.Close()
+
+	skillLoader := func(string) string { return "injected skill context" }
+	episodeCtx := func(string) string { return "injected episode context" }
+
+	client := llm.New(server.URL, "sk", "test-model", "", 0, 0)
+	engine := New(client, tool.NewRegistry(nil), 10, "You are odek.", nil, 0)
+	engine.SetSkillLoader(skillLoader)
+	engine.SetEpisodeContextFunc(episodeCtx)
+	engine.SetUntrustedWrapper(func(source, content string) string {
+		return "WRAPPED:" + source + ":" + content
+	})
+
+	_, err := engine.Run(context.Background(), "test both wrappers")
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	if !sawSkillWrapped {
+		t.Error("skill context was not passed through the untrusted wrapper")
+	}
+	if !sawEpisodeWrapped {
+		t.Error("episode context was not passed through the untrusted wrapper")
+	}
+}
+
 func TestClassifyToolCall_Terminal(t *testing.T) {
 	risk, resource := classifyToolCall("terminal", `{"command":"whoami"}`)
 	if risk != danger.Safe {
