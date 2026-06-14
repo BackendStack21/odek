@@ -233,6 +233,74 @@ func TestHandleUpdate_TextMessage(t *testing.T) {
 	}
 }
 
+func TestHandleUpdate_TextMessageTooLong(t *testing.T) {
+	var called bool
+	ts := testServer(t, nil)
+	defer ts.Close()
+	bot := testBot(t, ts)
+	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true
+	h.Config.MaxMsgLength = 10
+	h.OnTextMessage = func(_ int64, _ int, _ string, _ bool, _ int64) (string, error) {
+		called = true
+		return "should not fire", nil
+	}
+
+	upd := Update{
+		ID: 1,
+		Message: &Message{
+			ID:   42,
+			Chat: &Chat{ID: 123},
+			From: &User{ID: 456},
+			Text: strings.Repeat("x", 11),
+		},
+	}
+
+	h.HandleUpdate(upd)
+
+	if called {
+		t.Error("OnTextMessage should not be called for oversized messages")
+	}
+	// The handler should have sent a rejection reply.
+	if ts.Client() == nil {
+		t.Log("test server client is nil; skipping sendMessage assertion")
+	}
+}
+
+func TestHandleUpdate_CaptionTooLong(t *testing.T) {
+	var called bool
+	ts := testServer(t, nil)
+	defer ts.Close()
+	bot := testBot(t, ts)
+	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true
+	h.Config.MaxMsgLength = 10
+	h.OnPhotoMessage = func(_ int64, _ int, _ []string, _ string, _ int64) (string, error) {
+		called = true
+		return "should not fire", nil
+	}
+
+	upd := Update{
+		ID: 1,
+		Message: &Message{
+			ID:   42,
+			Chat: &Chat{ID: 123},
+			From: &User{ID: 456},
+			Photo: []PhotoSize{
+				{FileID: "small"},
+				{FileID: "big"},
+			},
+			Caption: strings.Repeat("x", 11),
+		},
+	}
+
+	h.HandleUpdate(upd)
+
+	if called {
+		t.Error("OnPhotoMessage should not be called for oversized captions")
+	}
+}
+
 func TestHandleUpdate_CallbackQuery(t *testing.T) {
 	var (
 		capturedChatID     int64

@@ -234,6 +234,19 @@ func (h *Handler) handleMessage(msg *Message) {
 		return
 	}
 
+	// Enforce the configured maximum message length on text and captions.
+	// Oversized input can flood context, tokens, and session storage.
+	if h.Config.MaxMsgLength > 0 {
+		if len(msg.Text) > h.Config.MaxMsgLength {
+			h.SendResponse(msg.Chat.ID, fmt.Sprintf("❌ Message is too long (%d > %d characters). Please split or shorten it.", len(msg.Text), h.Config.MaxMsgLength), msg.ID)
+			return
+		}
+		if len(msg.Caption) > h.Config.MaxMsgLength {
+			h.SendResponse(msg.Chat.ID, fmt.Sprintf("❌ Caption is too long (%d > %d characters). Please shorten it.", len(msg.Caption), h.Config.MaxMsgLength), msg.ID)
+			return
+		}
+	}
+
 	switch {
 	case msg.IsCommand():
 		h.handleCommand(msg, userID)
