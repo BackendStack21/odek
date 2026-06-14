@@ -415,7 +415,7 @@ The package defines Telegram API types used throughout:
 
 ### Singleton Lock
 
-The bot writes its PID to `~/.odek/telegram.pid` on startup. If a stale PID file exists from a previous instance, the new process kills it (SIGTERM → 5s grace → SIGKILL) before taking over. This prevents 409 Conflict errors from dual polling.
+The bot acquires an advisory file lock on `~/.odek/telegram.lock` on startup. If another instance is already running, the new process blocks on the lock until the old process exits, then takes over automatically. This prevents 409 Conflict errors from dual polling without trusting or killing PID values, which could otherwise be planted to target unrelated processes.
 
 ### Graceful Restart
 
@@ -445,9 +445,9 @@ During restart:
 
 3. **New messages are rejected** — any message arriving while restart is in progress gets "⏳ Bot is restarting — please try again in a few seconds." The message is not lost (it remains in the Telegram server).
 
-4. **Bounded drain** — the process waits up to 15 seconds for all agent goroutines to finish. If a task is stuck (e.g., a long HTTP call that ignores context), the child process takes over and the parent is killed by the singleton lock.
+4. **Bounded drain** — the process waits up to 15 seconds for all agent goroutines to finish. If a task is stuck (e.g., a long HTTP call that ignores context), the child process takes over after the parent releases the singleton lock.
 
-5. **PID file cleanup** — before `os.Exit(0)`, the PID file lock is explicitly released so the child process starts with no stale lock file.
+5. **Lock release** — before `os.Exit(0)`, the singleton lock is explicitly released so the child process can acquire it immediately.
 
 6. **Post-restart notification** — when the new instance starts, it reads the restart marker file and sends "🔄 Bot restarted" to each chat that was active during the restart.
 
@@ -458,12 +458,13 @@ The actual process handoff uses the same spawn+exit mechanism:
 ```
 SIGHUP → gracefulRestart() → writeRestartMarker() → spawnChild() → os.Exit(0)
                                                                    ↓
-                                                child acquireLock() kills parent
+                                                parent releases singleton lock
+                                                child acquireLock() succeeds
                                                 child gets fresh HTTP/2 connections
                                                 child starts polling Telegram
 ```
 
-The child process inherits environment variables and command-line arguments. `acquireLock` ensures the old process is dead before the new one starts polling. The restart marker at `~/.odek/restart.json` carries the list of chat IDs that had active agent runs.
+The child process inherits environment variables and command-line arguments. `acquireLock` waits for the parent to release the lock, then the child starts polling. The restart marker at `~/.odek/restart.json` carries the list of chat IDs that had active agent runs.
 
 This avoids binary overwrite races, stale HTTP/2 connections, and session context loops that plagued `syscall.Exec`. The restart marker (`~/.odek/restart.json`) enables the new instance to notify users that a restart occurred.
 

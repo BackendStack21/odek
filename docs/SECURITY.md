@@ -316,6 +316,10 @@ MCP server subprocesses no longer inherit the full odek process environment. The
 
 Schedule persistence (`schedules.json` and `schedule-state.json`) now writes through `internal/fsatomic.WriteFile`. It creates a uniquely-named temp file with `O_EXCL` (so a pre-created symlink cannot be opened), fsyncs the data and parent directory, and atomically renames over the target. This means a swapped-in symlink is replaced rather than followed, closing the symlink-override attack where an attacker points `schedules.json.tmp` or `schedule-state.json.tmp` at sensitive files.
 
+### 21. Telegram singleton lock uses flock instead of PID file
+
+The Telegram bot previously used a PID file at `~/.odek/telegram.pid` to enforce a single polling instance. On Linux it verified `/proc/<pid>/cmdline`, but on macOS and other POSIX systems it would kill whatever process the planted PID belonged to. The implementation now uses an advisory `flock` on `~/.odek/telegram.lock` via `internal/flock`. A second instance simply blocks until the first releases the lock, and the OS releases the lock automatically if the holder crashes, eliminating the arbitrary-process-kill vector.
+
 ### YOLO mode
 
 ```json

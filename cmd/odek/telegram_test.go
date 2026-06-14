@@ -836,3 +836,71 @@ func TestHandleRestartCommand_AuthorizationAndCooldown(t *testing.T) {
 		t.Fatalf("cooldown should block restart, got reply=%q triggered=%v", reply, triggered)
 	}
 }
+
+// ── singleton lock tests ────────────────────────────────────────────────
+
+func TestAcquireLock_CreatesLockFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	release, err := acquireLock()
+	if err != nil {
+		t.Fatalf("acquireLock: %v", err)
+	}
+	defer release()
+
+	lockFile := filepath.Join(dir, ".odek", "telegram.lock")
+	info, err := os.Stat(lockFile)
+	if err != nil {
+		t.Fatalf("stat lock file: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Errorf("lock file mode = %04o, want 0600", perm)
+	}
+}
+
+func TestAcquireLock_RemovesLegacyPIDFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	pidFile := filepath.Join(dir, ".odek", "telegram.pid")
+	if err := os.MkdirAll(filepath.Dir(pidFile), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pidFile, []byte("12345\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	release, err := acquireLock()
+	if err != nil {
+		t.Fatalf("acquireLock: %v", err)
+	}
+	defer release()
+
+	if _, err := os.Stat(pidFile); !os.IsNotExist(err) {
+		t.Errorf("legacy PID file was not removed")
+	}
+}
+
+func TestAcquireLock_DoesNotKillLegacyPID(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	pidFile := filepath.Join(dir, ".odek", "telegram.pid")
+	if err := os.MkdirAll(filepath.Dir(pidFile), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Old PID-file logic would have killed this process. The flock-based lock
+	// must not act on the PID file contents at all.
+	if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	release, err := acquireLock()
+	if err != nil {
+		t.Fatalf("acquireLock: %v", err)
+	}
+	defer release()
+
+	// If we reach here, the current process is still alive.
+}

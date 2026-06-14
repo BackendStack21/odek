@@ -19,6 +19,7 @@ import (
 
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/flock"
 	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/memory"
@@ -111,9 +112,9 @@ func handleRestartCommand(chatID, userID int64, adminChats, adminUsers []int64) 
 	return "🔄 *Restarting...*\n\nThe bot will restart momentarily. This may take a few seconds.", true
 }
 
-// instanceLockRef holds the current PID file lock, accessible from
-// gracefulRestart so it can release the lock before os.Exit(0).
-var instanceLockRef *instanceLock
+// instanceLockRef holds the current Telegram singleton lock release function,
+// accessible from gracefulRestart so it can release the lock before os.Exit(0).
+var instanceLockRef func()
 
 // getChatMutex returns the per-chat mutex for the given chat ID.
 func getChatMutex(chatID int64) *sync.Mutex {
@@ -142,15 +143,15 @@ func resetChatForNew(chatID int64, sessionManager *telegram.SessionManager, hand
 
 // telegramCmd is the entry point for "odek telegram".
 func telegramCmd(args []string) error {
-	// 0. Acquire singleton lock — kill any stale previous instance.
-	lock, err := acquireLock()
+	// 0. Acquire singleton lock — wait for any previous instance to exit.
+	lockRelease, err := acquireLock()
 	if err != nil {
 		return fmt.Errorf("telegram: %w", err)
 	}
-	instanceLockRef = lock
+	instanceLockRef = lockRelease
 	defer func() {
 		instanceLockRef = nil
-		lock.release()
+		lockRelease()
 	}()
 
 	// 1. Load config from all sources (file → env).
@@ -1010,9 +1011,9 @@ func gracefulRestart(bot *telegram.Bot) {
 	//
 	// Since the child is an independent process already running via
 	// os.StartProcess, the cleanest path is to exit right here.
-	// Release the PID file lock before exit so the child gets a clean slate.
+	// Release the singleton lock before exit so the child gets a clean slate.
 	if instanceLockRef != nil {
-		instanceLockRef.release()
+		instanceLockRef()
 	}
 	// Close the embedded scheduler's MCP connections before exiting — os.Exit
 	// skips deferred cleanup, so without this the MCP child processes (e.g.
@@ -1983,89 +1984,53 @@ func truncateToolArgs(data string, maxLen int) string {
 // ── Singleton Lock ─────────────────────────────────────────────────────
 //
 // Prevents two bot instances from polling Telegram simultaneously (which
-// causes 409 Conflict errors). Uses a PID file at ~/.odek/telegram.pid.
+// causes 409 Conflict errors). Uses an advisory file lock on
+// ~/.odek/telegram.lock via the internal/flock module.
+//
+// Why not a PID file? A PID file is probed with signals and, on macOS and
+// other non-Linux POSIX systems, can easily be made to kill an unrelated
+// process whose PID was planted by an attacker. flock is advisory, portable,
+// and the OS automatically releases the lock when the holding process exits.
 //
 // LIFECYCLE
 //
 // Normal startup (no previous instance):
 //
-//	acquireLock() → PID file doesn't exist → writes own PID → OK
+//	acquireLock() → flock succeeds → OK
 //
 // Competing startup (existing instance still alive):
 //
-//	acquireLock() → reads PID file → kills old process (SIGTERM→5s→SIGKILL)
-//	               → old process dies → writes own PID → OK
+//	acquireLock() → blocks on flock until the old process exits → OK
 //
 // Restart (child starts after parent's os.Exit(0)):
 //
-//	acquireLock() → reads PID file → finds old (dead) PID
-//	               → syscall.Kill(pid, 0) fails (process gone)
-//	               → writes own PID → OK
-//
-// Note: During restart, the parent's deferred lock.release() never runs
-// (os.Exit(0) skips defers). The stale PID file is harmless — the child's
-// acquireLock simply finds a dead PID and overwrites it.
+//	acquireLock() → old process released the lock via os.Exit → OK
 
-type instanceLock struct {
-	pidFile string
-}
-
-// acquireLock reads any existing PID file, kills the old process if still
-// alive, then writes the current PID. Returns the lock for deferred release.
-func acquireLock() (*instanceLock, error) {
+// acquireLock acquires an exclusive advisory lock on ~/.odek/telegram.lock
+// using the internal/flock module. The returned release function must be
+// called on shutdown. Any legacy telegram.pid file is removed on success.
+func acquireLock() (func(), error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("home dir: %w", err)
 	}
-	pidFile := filepath.Join(home, ".odek", "telegram.pid")
+	lockFile := filepath.Join(home, ".odek", "telegram.lock")
 
 	// Ensure parent dir exists.
-	if err := os.MkdirAll(filepath.Dir(pidFile), 0755); err != nil {
-		return nil, fmt.Errorf("mkdir pid: %w", err)
+	if err := os.MkdirAll(filepath.Dir(lockFile), 0755); err != nil {
+		return nil, fmt.Errorf("mkdir lock: %w", err)
 	}
 
-	// Read stale PID and kill it if still alive.
-	if data, err := os.ReadFile(pidFile); err == nil {
-		oldPID := strings.TrimSpace(string(data))
-		if pid, _ := strconv.Atoi(oldPID); pid > 1 {
-			// Primary liveness check: cross-platform (signal 0 = probe only).
-			if err := syscall.Kill(pid, 0); err == nil {
-				// Process is alive. On Linux, verify it's an odek telegram
-				// process before killing — skip identity check elsewhere since
-				// /proc is Linux-only and the PID file is odek-specific anyway.
-				shouldKill := true
-				if cmdline, err := os.ReadFile(filepath.Join("/proc", oldPID, "cmdline")); err == nil {
-					shouldKill = strings.Contains(string(cmdline), "odek") &&
-						strings.Contains(string(cmdline), "telegram")
-				}
-				if shouldKill {
-					fmt.Fprintf(os.Stderr, "odek telegram: killing stale instance (PID %d)\n", pid)
-					syscall.Kill(pid, syscall.SIGTERM)
-					// Wait up to 5s for graceful shutdown.
-					for i := 0; i < 50; i++ {
-						time.Sleep(100 * time.Millisecond)
-						if err := syscall.Kill(pid, 0); err != nil {
-							break // process gone
-						}
-					}
-					// Force kill if still alive.
-					syscall.Kill(pid, syscall.SIGKILL)
-				}
-			}
-		}
+	release, err := flock.Lock(lockFile)
+	if err != nil {
+		return nil, fmt.Errorf("acquire singleton lock: %w", err)
 	}
 
-	// Write our PID.
-	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())+"\n"), 0644); err != nil {
-		return nil, fmt.Errorf("write pid: %w", err)
-	}
+	// Clean up the legacy PID file if present; it is no longer used.
+	pidFile := filepath.Join(home, ".odek", "telegram.pid")
+	os.Remove(pidFile)
 
-	return &instanceLock{pidFile: pidFile}, nil
-}
-
-// release removes the PID file on clean shutdown.
-func (l *instanceLock) release() {
-	os.Remove(l.pidFile)
+	return release, nil
 }
 
 // ── send_message helpers ──────────────────────────────────────────────
