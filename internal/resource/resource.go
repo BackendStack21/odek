@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/BackendStack21/odek/internal/pathutil"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -240,7 +241,7 @@ func (f *FileResolver) Search(ctx context.Context, query string, limit int) ([]R
 		if len(resources) >= limit {
 			break
 		}
-		if !withinRoot(absRoot, match) {
+		if !pathutil.WithinRoot(absRoot, match) {
 			continue
 		}
 		rel, _ := filepath.Rel(f.root, match)
@@ -288,8 +289,8 @@ func (f *FileResolver) Load(ctx context.Context, id string) (string, error) {
 	// workspace/link -> /etc) to read files outside the workspace via
 	// @link/passwd. The final path component is left unresolved so the
 	// O_NOFOLLOW open below still rejects symlink final components.
-	resolvedTarget := resolveDirSymlinks(target)
-	if !withinRoot(f.root, resolvedTarget) {
+	resolvedTarget := pathutil.ResolveDirSymlinks(target)
+	if !pathutil.WithinRoot(f.root, resolvedTarget) {
 		return "", fmt.Errorf("resource: path %q is outside root", id)
 	}
 
@@ -370,51 +371,6 @@ func skipDir(name string) bool {
 		return true
 	}
 	return false
-}
-
-// resolveDirSymlinks returns the absolute, cleaned path with all directory
-// symlinks resolved. The final path component is left untouched so callers can
-// still enforce O_NOFOLLOW on it. If a directory component does not exist, the
-// original absolute path is returned (so the caller can produce a sensible
-// "not found" error).
-func resolveDirSymlinks(path string) string {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return path
-	}
-	abs = filepath.Clean(abs)
-
-	dir := filepath.Dir(abs)
-	base := filepath.Base(abs)
-
-	resolvedDir, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		return abs
-	}
-	return filepath.Join(resolvedDir, base)
-}
-
-// withinRoot reports whether candidate resolves to a path inside root.
-// Directory symlinks in candidate are resolved before comparison so a symlinked
-// directory outside the workspace cannot bypass confinement; the final
-// component is kept unresolved so symlinks to files inside the workspace are
-// still reported by Search (their content is rejected by Load with O_NOFOLLOW).
-// The check is separator-aware so "/foo" does not match "/foobar".
-func withinRoot(root, candidate string) bool {
-	absRoot, err := filepath.Abs(root)
-	if err != nil {
-		return false
-	}
-	absRoot, err = filepath.EvalSymlinks(absRoot)
-	if err != nil {
-		return false
-	}
-
-	resolved := resolveDirSymlinks(candidate)
-	if resolved == absRoot {
-		return true
-	}
-	return strings.HasPrefix(resolved, absRoot+string(os.PathSeparator))
 }
 
 func describeFile(info os.FileInfo) string {

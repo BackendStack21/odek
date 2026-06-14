@@ -114,3 +114,35 @@ func TestUntrustedSourcesAll_SkipsEmptySource(t *testing.T) {
 		t.Fatalf("unwrapUntrustedAll returned %d bodies, want 2: %#v", len(bodies), bodies)
 	}
 }
+
+// TestExtractUntrustedAll_SinglePass verifies that extractUntrustedAll returns
+// the same bodies and sources as the separate unwrapUntrustedAll and
+// untrustedSourcesAll helpers, proving the single-pass refactoring is correct.
+func TestExtractUntrustedAll_SinglePass(t *testing.T) {
+	combined := wrapUntrusted("https://a.example", "body one") +
+		wrapUntrusted("", "body two") +
+		wrapUntrusted("https://b.example", "body three")
+
+	wantBodies := unwrapUntrustedAll(combined)
+	wantSources := untrustedSourcesAll(combined)
+
+	gotBodies, gotSources := extractUntrustedAll(combined)
+
+	if len(gotBodies) != len(wantBodies) {
+		t.Fatalf("bodies length mismatch: got %d, want %d", len(gotBodies), len(wantBodies))
+	}
+	for i := range wantBodies {
+		if gotBodies[i] != wantBodies[i] {
+			t.Errorf("body[%d] = %q, want %q", i, gotBodies[i], wantBodies[i])
+		}
+	}
+
+	if len(gotSources) != len(wantSources) {
+		t.Fatalf("sources length mismatch: got %d, want %d", len(gotSources), len(wantSources))
+	}
+	for i := range wantSources {
+		if gotSources[i] != wantSources[i] {
+			t.Errorf("source[%d] = %q, want %q", i, gotSources[i], wantSources[i])
+		}
+	}
+}

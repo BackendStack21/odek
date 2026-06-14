@@ -27,7 +27,7 @@ func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, user
 	}
 
 	var toolCalls []string
-	var actionText strings.Builder  // agent actions: tool calls + final response
+	var actionText strings.Builder // agent actions: tool calls + final response
 	var untrustedBodies strings.Builder
 	var untrustedSources []string
 	ingestedUntrusted := false
@@ -44,12 +44,15 @@ func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, user
 				ingestedUntrusted = true
 				// A tool message may carry several untrusted blobs; aggregate
 				// every body and source, not just the first, so a later blob
-				// cannot smuggle in a reused-resource injection unseen.
-				for _, body := range unwrapUntrustedAll(m.Content) {
+				// cannot smuggle in a reused-resource injection unseen. Extract
+				// both in a single regex pass rather than scanning the payload
+				// twice.
+				bodies, srcs := extractUntrustedAll(m.Content)
+				for _, body := range bodies {
 					untrustedBodies.WriteString(body)
 					untrustedBodies.WriteByte(' ')
 				}
-				untrustedSources = append(untrustedSources, untrustedSourcesAll(m.Content)...)
+				untrustedSources = append(untrustedSources, srcs...)
 			}
 		}
 		if m.Role == "assistant" && m.Content != "" {

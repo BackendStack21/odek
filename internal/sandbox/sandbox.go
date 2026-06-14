@@ -19,6 +19,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/BackendStack21/odek/internal/pathutil"
 )
 
 // DockerfileName is the project-local Dockerfile name. Presence in the
@@ -215,18 +217,12 @@ func sanitizeVolumeMount(vol, workdir string) (string, bool) {
 	// passes, but the resolved path is outside workdir). Both sides are
 	// resolved so platforms where the workdir contains symlinks (macOS
 	// /var -> /private/var) compare canonical paths. When the parent does not
-	// exist yet, EvalSymlinks fails and the lexical confinement check above
-	// remains the guarantee.
-	if parent := filepath.Dir(absHost); parent != absHost {
-		resolvedParent, perr := filepath.EvalSymlinks(parent)
-		resolvedWorkdir, werr := filepath.EvalSymlinks(absWorkdir)
-		if perr == nil && werr == nil {
-			resolvedHost := filepath.Join(resolvedParent, filepath.Base(absHost))
-			if !isPathUnder(resolvedHost, resolvedWorkdir) {
-				fmt.Fprintf(os.Stderr, "odek: WARNING: rejecting volume mount %q (resolved host path %s escapes working directory %s)\n", vol, resolvedHost, resolvedWorkdir)
-				return "", false
-			}
-		}
+	// exist yet, ResolveDirSymlinks returns the original absolute path and the
+	// lexical confinement check above remains the guarantee.
+	resolvedHost := pathutil.ResolveDirSymlinks(absHost)
+	if !pathutil.WithinRoot(absWorkdir, resolvedHost) {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: rejecting volume mount %q (resolved host path %s escapes working directory %s)\n", vol, resolvedHost, absWorkdir)
+		return "", false
 	}
 
 	// Reject forbidden host paths. Skip any forbidden prefix that the working
@@ -237,13 +233,16 @@ func sanitizeVolumeMount(vol, workdir string) (string, bool) {
 	// Linux host (cwd under /home/<user>) would be rejected, while paths that
 	// genuinely escape into a forbidden area are still caught — either by the
 	// confinement check above or by a forbidden prefix the workdir is not under.
+	//
+	// The forbidden-prefix check uses the symlink-resolved host path so it is
+	// composed on the same canonical path as the confinement check above.
 	sep := string(filepath.Separator)
 	for _, forbidden := range ForbiddenMountPrefixes {
 		if absWorkdir == forbidden || strings.HasPrefix(absWorkdir, forbidden+sep) {
 			continue
 		}
-		if absHost == forbidden || strings.HasPrefix(absHost, forbidden+sep) {
-			fmt.Fprintf(os.Stderr, "odek: WARNING: rejecting forbidden volume mount %q (host path %s)\n", vol, absHost)
+		if resolvedHost == forbidden || strings.HasPrefix(resolvedHost, forbidden+sep) {
+			fmt.Fprintf(os.Stderr, "odek: WARNING: rejecting forbidden volume mount %q (host path %s)\n", vol, resolvedHost)
 			return "", false
 		}
 	}

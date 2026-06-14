@@ -190,45 +190,48 @@ func unwrapUntrusted(s string) string {
 	return body
 }
 
-// unwrapUntrustedAll returns the trimmed body of every <untrusted_content_*>
-// wrapper in s. A single tool message may concatenate several blobs (e.g. a
-// multi-fetch tool), and the audit divergence check must inspect all of them —
-// using only the first match would let an injection arriving in a later blob
-// escape detection.
-func unwrapUntrustedAll(s string) []string {
+// extractUntrustedAll extracts every <untrusted_content_*> wrapper from s in a
+// single regex pass, returning the trimmed bodies and the desanitised source
+// attributes separately. A single tool message may concatenate several blobs
+// (e.g. a multi-fetch tool), and the audit divergence check must inspect all of
+// them — using only the first match would let an injection arriving in a later
+// blob escape detection.
+func extractUntrustedAll(s string) (bodies, sources []string) {
 	matches := reWrapper.FindAllStringSubmatch(s, -1)
 	if len(matches) == 0 {
-		return nil
+		return nil, nil
 	}
-	bodies := make([]string, 0, len(matches))
+	rep := strings.NewReplacer("'", `"`, "‹", "<", "›", ">")
+	bodies = make([]string, 0, len(matches))
+	sources = make([]string, 0, len(matches))
 	for _, m := range matches {
 		body := strings.TrimPrefix(m[2], "\n")
 		body = strings.TrimSuffix(body, "\n")
 		bodies = append(bodies, body)
+
+		src := rep.Replace(m[1])
+		// Skip empty sources. An empty source would match every resource as a
+		// prefix in the audit divergence check (strings.HasPrefix(r, "")), which
+		// would blind the reused-resource injection heuristic for the whole turn.
+		if src != "" {
+			sources = append(sources, src)
+		}
 	}
+	return bodies, sources
+}
+
+// unwrapUntrustedAll returns the trimmed body of every <untrusted_content_*>
+// wrapper in s.
+func unwrapUntrustedAll(s string) []string {
+	bodies, _ := extractUntrustedAll(s)
 	return bodies
 }
 
 // untrustedSourcesAll extracts the (desanitised) source attribute from every
 // <untrusted_content_*> wrapper in s.
 func untrustedSourcesAll(s string) []string {
-	matches := reWrapper.FindAllStringSubmatch(s, -1)
-	if len(matches) == 0 {
-		return nil
-	}
-	rep := strings.NewReplacer("'", `"`, "‹", "<", "›", ">")
-	srcs := make([]string, 0, len(matches))
-	for _, m := range matches {
-		src := rep.Replace(m[1])
-		// Skip empty sources. An empty source would match every resource as a
-		// prefix in the audit divergence check (strings.HasPrefix(r, "")), which
-		// would blind the reused-resource injection heuristic for the whole turn.
-		if src == "" {
-			continue
-		}
-		srcs = append(srcs, src)
-	}
-	return srcs
+	_, sources := extractUntrustedAll(s)
+	return sources
 }
 
 // hasUntrustedWrapper reports whether s contains a complete nonce'd
