@@ -287,24 +287,30 @@ Slug generation (`slugify`) collapses a description into a lowercase, hyphen-sep
 
 ## Media Download (`download.go`)
 
-Supports downloading voice messages and photos from Telegram to the local filesystem.
+Supports downloading voice messages, photos, and documents from Telegram to the local filesystem.
 
 ### Media Directory
 
 Media files are saved to `~/.odek/media/` (created automatically on first download).
 
+### Download limits
+
+- **Per-file cap:** `telegram.max_download_size` (default **5 MiB**). Files larger than the cap are rejected before they are written to disk. Set to `-1` to disable.
+- **Per-chat quota:** `telegram.media_quota_per_chat` (default **disabled**). When set to a positive byte value, the bot refuses downloads that would push that chat's total stored media above the quota.
+- Filenames include the chat ID (`voice_chat<chatID>_<hash>.ogg`, `photo_chat<chatID>_<hash>.jpg`, `chat<chatID>_<filename>`) so the quota can be enforced per chat.
+
 ### DownloadVoice
 
 - Gets file metadata via `GetFile`
 - Downloads raw bytes via `DownloadFile`
-- Saves as `voice_<truncated_fileID>.<ext>` (default extension: `.ogg`)
-- Truncates fileID to 16 chars for filenames
+- Saves as `voice_chat<chatID>_<hash>.<ext>` (default extension: `.ogg`)
+- `<hash>` is the first 16 hex chars of the SHA-256 of the full Telegram `file_id`
 
 ### DownloadPhoto
 
 - Takes a slice of `PhotoSize` IDs (Telegram sends multiple sizes)
 - Uses the last (largest) photo size
-- Saves as `photo_<hash>.<ext>` (default extension: `.jpg`), where `<hash>` is the first 16 hex chars of the SHA-256 of the full Telegram `file_id`
+- Saves as `photo_chat<chatID>_<hash>.<ext>` (default extension: `.jpg`)
 - Hashing the **full** id avoids a collision: Telegram photo `file_id`s share a long constant prefix (e.g. `AgACAgIAAxkBAAI…`), so raw-truncating to 16 chars produced identical filenames for different photos — each overwrote the last, making the bot report a photo as "already processed". Voice downloads use the same scheme.
 
 ### Auto-Describe (Photo → Vision)

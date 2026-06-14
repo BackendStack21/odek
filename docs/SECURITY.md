@@ -283,7 +283,15 @@ See [CLI.md — Dangerous Operations](CLI.md#dangerous-operations) for the full 
 }
 ```
 
-### 16. Configuration file size cap
+### 16. Telegram file download limits
+
+Voice messages, photos, and documents sent to the Telegram bot are downloaded to
+`~/.odek/media/`. A per-file cap (`telegram.max_download_size`, default 5 MiB)
+and an optional per-chat quota (`telegram.media_quota_per_chat`) prevent a
+single large upload (or a flood of uploads) from filling the disk. Downloads that
+exceed the cap are rejected before they are written.
+
+### 17. Configuration file size cap
 
 `~/.odek/config.json` and `./odek.json` are rejected if they exceed 5 MiB. This prevents a malicious, truncated, or accidentally-generated config file from causing an out-of-memory condition at startup.
 

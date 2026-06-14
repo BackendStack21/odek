@@ -1093,6 +1093,19 @@ func resolveTelegram(cfg *telegram.TelegramConfig) telegram.TelegramConfig {
 	if cfg.DefaultChatID != 0 {
 		base.DefaultChatID = cfg.DefaultChatID
 	}
+	// MaxDownloadSize: 0 (unset) -> default 5 MiB; negative -> unlimited (0);
+	// positive -> explicit cap.
+	if cfg.MaxDownloadSize < 0 {
+		base.MaxDownloadSize = 0
+	} else if cfg.MaxDownloadSize > 0 {
+		base.MaxDownloadSize = cfg.MaxDownloadSize
+	} else {
+		base.MaxDownloadSize = telegram.DefaultMaxDownloadSize
+	}
+	// MediaQuotaPerChat: 0 = disabled (default); positive = quota in bytes.
+	if cfg.MediaQuotaPerChat > 0 {
+		base.MediaQuotaPerChat = cfg.MediaQuotaPerChat
+	}
 	return base
 }
 

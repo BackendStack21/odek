@@ -99,6 +99,11 @@ local `./.odek` folder — an external host folder, just like `./workspace`.
 > **Only run one Telegram profile at a time per token** — Telegram allows a single
 > long-poller per bot (a second gets `409 Conflict`). Create a second bot via
 > @BotFather if you want both.
+>
+> **File downloads are capped.** Voice/photo/document downloads are limited to
+> `ODEK_TELEGRAM_MAX_DOWNLOAD_SIZE` (default 5 MiB) and optionally to a total
+> per-chat quota via `ODEK_TELEGRAM_MEDIA_QUOTA_PER_CHAT`. This prevents a
+> malicious or accidental large upload from exhausting the container disk.
 
 ### Scheduled reminders (cron)
 

@@ -22,7 +22,7 @@ func TestDownloadDocument_Success(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	path, err := DownloadDocument(bot, "doc1", "report.pdf")
+	path, err := DownloadDocument(bot, 42, "doc1", "report.pdf")
 	if err != nil {
 		t.Fatalf("DownloadDocument: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestDownloadDocument_NoFileName(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	path, err := DownloadDocument(bot, "doc2", "")
+	path, err := DownloadDocument(bot, 42, "doc2", "")
 	if err != nil {
 		t.Fatalf("DownloadDocument: %v", err)
 	}

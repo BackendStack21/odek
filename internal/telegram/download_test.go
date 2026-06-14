@@ -59,7 +59,7 @@ func TestDownloadVoice_Success(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	path, err := DownloadVoice(bot, "voice123")
+	path, err := DownloadVoice(bot, 42, "voice123")
 	if err != nil {
 		t.Fatalf("DownloadVoice() error: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestDownloadVoice_GetFileError(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	_, err := DownloadVoice(bot, "bad_id")
+	_, err := DownloadVoice(bot, 42, "bad_id")
 	if err == nil {
 		t.Fatal("DownloadVoice should return error on getFile failure")
 	}
@@ -107,7 +107,7 @@ func TestDownloadVoice_EmptyFilePath(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	_, err := DownloadVoice(bot, "v1")
+	_, err := DownloadVoice(bot, 42, "v1")
 	if err == nil {
 		t.Fatal("DownloadVoice should return error for empty file_path")
 	}
@@ -133,7 +133,7 @@ func TestDownloadPhoto_Success(t *testing.T) {
 	bot := testBot(t, ts)
 
 	// Multiple file IDs (simulating multiple sizes). Last one = largest.
-	path, err := DownloadPhoto(bot, []string{"small", "medium", "photo_big"})
+	path, err := DownloadPhoto(bot, 42, []string{"small", "medium", "photo_big"})
 	if err != nil {
 		t.Fatalf("DownloadPhoto() error: %v", err)
 	}
@@ -161,12 +161,12 @@ func TestDownloadPhoto_EmptyIDs(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	_, err := DownloadPhoto(bot, nil)
+	_, err := DownloadPhoto(bot, 42, nil)
 	if err == nil {
 		t.Fatal("DownloadPhoto should return error for nil fileIDs")
 	}
 
-	_, err = DownloadPhoto(bot, []string{})
+	_, err = DownloadPhoto(bot, 42, []string{})
 	if err == nil {
 		t.Fatal("DownloadPhoto should return error for empty fileIDs")
 	}
@@ -181,7 +181,7 @@ func TestDownloadPhoto_GetFileError(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	_, err := DownloadPhoto(bot, []string{"bad_photo"})
+	_, err := DownloadPhoto(bot, 42, []string{"bad_photo"})
 	if err == nil {
 		t.Fatal("DownloadPhoto should return error on getFile failure")
 	}
@@ -256,7 +256,7 @@ func TestDownloadVoice_DownloadFileError(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	_, err := DownloadVoice(bot, "v1")
+	_, err := DownloadVoice(bot, 42, "v1")
 	if err == nil {
 		t.Fatal("expected error when download fails")
 	}
@@ -278,7 +278,7 @@ func TestDownloadVoice_EmptyExtensionFallback(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	path, err := DownloadVoice(bot, "v1")
+	path, err := DownloadVoice(bot, 42, "v1")
 	if err != nil {
 		t.Fatalf("DownloadVoice error: %v", err)
 	}
@@ -300,12 +300,12 @@ func TestDownloadVoice_ShortFileIDSuffix(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	path, err := DownloadVoice(bot, "short")
+	path, err := DownloadVoice(bot, 42, "short")
 	if err != nil {
 		t.Fatalf("DownloadVoice error: %v", err)
 	}
 	// Filenames are now derived from a hash of the full fileID, not the raw id.
-	if !strings.Contains(path, "voice_"+fileIDSuffix("short")) {
+	if !strings.Contains(path, "voice_chat42_"+fileIDSuffix("short")) {
 		t.Errorf("expected hashed fileID suffix in path, got %q", path)
 	}
 	os.Remove(path)
@@ -323,7 +323,7 @@ func TestDownloadPhoto_EmptyExtensionFallback(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	path, err := DownloadPhoto(bot, []string{"p1"})
+	path, err := DownloadPhoto(bot, 42, []string{"p1"})
 	if err != nil {
 		t.Fatalf("DownloadPhoto error: %v", err)
 	}
@@ -345,7 +345,7 @@ func TestDownloadPhoto_DownloadFileError(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	_, err := DownloadPhoto(bot, []string{"p1"})
+	_, err := DownloadPhoto(bot, 42, []string{"p1"})
 	if err == nil {
 		t.Fatal("expected error when download fails")
 	}
@@ -359,7 +359,7 @@ func TestDownloadPhoto_FilePathEmpty(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	_, err := DownloadPhoto(bot, []string{"p1"})
+	_, err := DownloadPhoto(bot, 42, []string{"p1"})
 	if err == nil {
 		t.Fatal("expected error for empty file_path")
 	}
@@ -379,11 +379,11 @@ func TestDownloadVoice_HashedFileIDSuffix(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	path, err := DownloadVoice(bot, longID)
+	path, err := DownloadVoice(bot, 42, longID)
 	if err != nil {
 		t.Fatalf("DownloadVoice error: %v", err)
 	}
-	if !strings.Contains(path, "voice_"+fileIDSuffix(longID)) {
+	if !strings.Contains(path, "voice_chat42_"+fileIDSuffix(longID)) {
 		t.Errorf("expected hashed fileID suffix in path, got %q", path)
 	}
 	// The raw id prefix must NOT appear — that was the collision bug.
@@ -406,11 +406,11 @@ func TestDownloadPhoto_HashedFileIDSuffix(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 
-	path, err := DownloadPhoto(bot, []string{longID})
+	path, err := DownloadPhoto(bot, 42, []string{longID})
 	if err != nil {
 		t.Fatalf("DownloadPhoto error: %v", err)
 	}
-	if !strings.Contains(path, "photo_"+fileIDSuffix(longID)) {
+	if !strings.Contains(path, "photo_chat42_"+fileIDSuffix(longID)) {
 		t.Errorf("expected hashed fileID suffix in path, got %q", path)
 	}
 	os.Remove(path)
@@ -441,12 +441,12 @@ func TestDownloadPhoto_PrefixCollisionAvoided(t *testing.T) {
 		return testBot(t, ts)
 	}
 
-	pathA, err := DownloadPhoto(makeBot(idA, "imageA"), []string{idA})
+	pathA, err := DownloadPhoto(makeBot(idA, "imageA"), 42, []string{idA})
 	if err != nil {
 		t.Fatalf("DownloadPhoto(A) error: %v", err)
 	}
 	defer os.Remove(pathA)
-	pathB, err := DownloadPhoto(makeBot(idB, "imageB"), []string{idB})
+	pathB, err := DownloadPhoto(makeBot(idB, "imageB"), 42, []string{idB})
 	if err != nil {
 		t.Fatalf("DownloadPhoto(B) error: %v", err)
 	}
@@ -470,7 +470,7 @@ func TestDownloadVoice_MediaDirError(t *testing.T) {
 	}
 	t.Setenv("HOME", tmp)
 
-	_, err := DownloadVoice(&Bot{BaseURL: "http://example.com"}, "fid")
+	_, err := DownloadVoice(&Bot{BaseURL: "http://example.com"}, 42, "fid")
 	if err == nil {
 		t.Fatal("expected error when MediaDir fails")
 	}
@@ -487,7 +487,7 @@ func TestDownloadPhoto_MediaDirError(t *testing.T) {
 	}
 	t.Setenv("HOME", tmp)
 
-	_, err := DownloadPhoto(&Bot{BaseURL: "http://example.com"}, []string{"fid"})
+	_, err := DownloadPhoto(&Bot{BaseURL: "http://example.com"}, 42, []string{"fid"})
 	if err == nil {
 		t.Fatal("expected error when MediaDir fails")
 	}
@@ -547,7 +547,7 @@ func TestDownloadDocument_NoTraversal(t *testing.T) {
 	}
 	defer os.RemoveAll(dir)
 
-	localPath, err := DownloadDocument(bot, "doc123", "../../../evil.txt")
+	localPath, err := DownloadDocument(bot, 42, "doc123", "../../../evil.txt")
 	if err != nil {
 		t.Fatalf("DownloadDocument: %v", err)
 	}
@@ -556,5 +556,47 @@ func TestDownloadDocument_NoTraversal(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(dir), "evil.txt")); err == nil {
 		t.Error("traversal succeeded: evil.txt written outside media dir")
+	}
+}
+
+// ── Download limits ────────────────────────────────────────────────────────
+
+func TestDownloadVoice_MaxSizeExceeded(t *testing.T) {
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.String(), "getFile") {
+			fmt.Fprintf(w, `{"ok":true,"result":{"file_id":"v1","file_path":"voice/file.ogg"}}`)
+			return
+		}
+		w.Write([]byte("this payload is larger than five bytes"))
+	}
+	ts := httptest.NewServer(http.HandlerFunc(handler))
+	defer ts.Close()
+	bot := testBot(t, ts)
+	bot.MaxDownloadSize = 5
+
+	_, err := DownloadVoice(bot, 42, "v1")
+	if err == nil || !strings.Contains(err.Error(), "exceeds maximum size") {
+		t.Fatalf("expected size-exceeded error, got %v", err)
+	}
+}
+
+func TestDownloadVoice_QuotaExceeded(t *testing.T) {
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.String(), "getFile") {
+			fmt.Fprintf(w, `{"ok":true,"result":{"file_id":"v1","file_path":"voice/file.ogg"}}`)
+			return
+		}
+		w.Write([]byte("hello"))
+	}
+	ts := httptest.NewServer(http.HandlerFunc(handler))
+	defer ts.Close()
+	bot := testBot(t, ts)
+	bot.MediaQuotaPerChat = 3 // bytes — a 5-byte file should exceed it
+
+	t.Setenv("HOME", t.TempDir())
+
+	_, err := DownloadVoice(bot, 42, "v1")
+	if err == nil || !strings.Contains(err.Error(), "media quota exceeded") {
+		t.Fatalf("expected quota-exceeded error, got %v", err)
 	}
 }

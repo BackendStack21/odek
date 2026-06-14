@@ -34,12 +34,14 @@ func (e *TelegramError) Error() string {
 
 // Bot represents a Telegram Bot API client.
 type Bot struct {
-	Token            string
-	BaseURL          string
-	FileBaseURL      string
-	Client           *http.Client
-	DailyTokenBudget int64
-	log              Logger
+	Token             string
+	BaseURL           string
+	FileBaseURL       string
+	Client            *http.Client
+	DailyTokenBudget  int64
+	MaxDownloadSize   int64 // 0 = unlimited; >0 = per-file byte cap
+	MediaQuotaPerChat int64 // 0 = disabled; >0 = per-chat quota in bytes
+	log               Logger
 
 	stopRetries chan struct{} // closed by StopRetries to abort retry backoff
 	stopOnce    sync.Once     // ensures stop channel is only closed once
@@ -592,6 +594,8 @@ func (b *Bot) GetFile(fileID string) (*File, error) {
 }
 
 // DownloadFile downloads a file from Telegram's file server and returns its raw bytes.
+// If MaxDownloadSize is set (>0), the read is capped and an error is returned
+// when the file exceeds the limit.
 func (b *Bot) DownloadFile(filePath string) ([]byte, error) {
 	url := fmt.Sprintf("%s/%s", b.FileBaseURL, filePath)
 
@@ -603,6 +607,17 @@ func (b *Bot) DownloadFile(filePath string) ([]byte, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("telegram: download file: status %d", resp.StatusCode)
+	}
+
+	if b.MaxDownloadSize > 0 {
+		data, err := io.ReadAll(io.LimitReader(resp.Body, b.MaxDownloadSize+1))
+		if err != nil {
+			return nil, fmt.Errorf("telegram: read file data: %w", err)
+		}
+		if int64(len(data)) > b.MaxDownloadSize {
+			return nil, fmt.Errorf("telegram: download file: exceeds maximum size of %d bytes", b.MaxDownloadSize)
+		}
+		return data, nil
 	}
 
 	data, err := io.ReadAll(resp.Body)

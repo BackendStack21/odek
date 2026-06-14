@@ -438,6 +438,8 @@ The `telegram` section configures the Telegram bot integration and the `--delive
     "poll_interval": 1,
     "poll_timeout": 30,
     "max_msg_length": 4096,
+    "max_download_size": 5242880,
+    "media_quota_per_chat": 52428800,
     "session_ttl_hours": 24,
     "log_level": "info",
     "log_file": "",
@@ -455,6 +457,8 @@ The `telegram` section configures the Telegram bot integration and the `--delive
 | `poll_timeout` | — | 30 | Long-poll timeout (1-60 seconds) |
 | `max_msg_length` | — | 4096 | Max characters per message |
 | `session_ttl_hours` | — | 24 | Hours before inactive session expires |
+| `max_download_size` | `ODEK_TELEGRAM_MAX_DOWNLOAD_SIZE` | 5242880 (5 MiB) | Per-file byte cap for Telegram voice/photo/document downloads. Set to `-1` to disable. |
+| `media_quota_per_chat` | `ODEK_TELEGRAM_MEDIA_QUOTA_PER_CHAT` | 0 (disabled) | Total bytes of downloaded media allowed per chat. `0` disables the quota. |
 | `log_level` | — | info | Log level: debug, info, warn, error |
 | `log_file` | — | stderr | Log file path (empty = stderr) |
 | `default_chat_id` | — | 0 | **Required for `--deliver`** — numeric chat ID where `odek run --deliver` sends results. Get this from your bot's update or use a tool like `@userinfobot`. |

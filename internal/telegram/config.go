@@ -7,23 +7,29 @@ import (
 	"strings"
 )
 
+// DefaultMaxDownloadSize is the per-file cap for Telegram downloads (5 MiB)
+// when the operator does not configure an explicit value.
+const DefaultMaxDownloadSize = 5 * 1024 * 1024
+
 // TelegramConfig holds all configuration for the Telegram bot.
 type TelegramConfig struct {
-	Token            string   `json:"bot_token"`
-	AllowedChats     []int64  `json:"allowed_chats"`
-	AllowedUsers     []int64  `json:"allowed_users"`
-	BotUsername      string   `json:"bot_username"`
-	PollInterval     int      `json:"poll_interval"`         // seconds, default 1
-	PollTimeout      int      `json:"poll_timeout"`          // seconds, default 30
-	MaxMsgLength     int      `json:"max_msg_length"`        // default 4096
-	DailyTokenBudget int64    `json:"daily_token_budget"`    // 0 = unlimited (default)
-	SessionTTL       int      `json:"session_ttl_hours"`     // hours, default 24
-	AgentTimeout     int      `json:"agent_timeout_seconds"` // max agent run duration, default 900 (15m), 0 = unlimited
-	FallbackURLs     []string `json:"fallback_urls"`
-	HealthAddr       string   `json:"health_addr"`     // e.g. "127.0.0.1:9090" (empty = disabled)
-	LogLevel         string   `json:"log_level"`       // "debug","info","warn","error" (default "info")
-	LogFile          string   `json:"log_file"`        // path or empty for stderr
-	DefaultChatID    int64    `json:"default_chat_id"` // for --deliver and cron delivery
+	Token             string   `json:"bot_token"`
+	AllowedChats      []int64  `json:"allowed_chats"`
+	AllowedUsers      []int64  `json:"allowed_users"`
+	BotUsername       string   `json:"bot_username"`
+	PollInterval      int      `json:"poll_interval"`                  // seconds, default 1
+	PollTimeout       int      `json:"poll_timeout"`                   // seconds, default 30
+	MaxMsgLength      int      `json:"max_msg_length"`                 // default 4096
+	DailyTokenBudget  int64    `json:"daily_token_budget"`             // 0 = unlimited (default)
+	SessionTTL        int      `json:"session_ttl_hours"`              // hours, default 24
+	AgentTimeout      int      `json:"agent_timeout_seconds"`          // max agent run duration, default 900 (15m), 0 = unlimited
+	MaxDownloadSize   int64    `json:"max_download_size,omitempty"`    // 0 = default 5 MiB; <0 = unlimited; >0 = explicit cap
+	MediaQuotaPerChat int64    `json:"media_quota_per_chat,omitempty"` // 0 = disabled; >0 = per-chat quota in bytes
+	FallbackURLs      []string `json:"fallback_urls"`
+	HealthAddr        string   `json:"health_addr"`     // e.g. "127.0.0.1:9090" (empty = disabled)
+	LogLevel          string   `json:"log_level"`       // "debug","info","warn","error" (default "info")
+	LogFile           string   `json:"log_file"`        // path or empty for stderr
+	DefaultChatID     int64    `json:"default_chat_id"` // for --deliver and cron delivery
 	// AllowAllUsers must be explicitly set to true to run the bot with NO
 	// allowlist (any Telegram user may drive the agent). Without it, an empty
 	// AllowedChats + AllowedUsers is a fatal misconfiguration (fail-closed) so
@@ -111,6 +117,16 @@ func ConfigFromEnv(base TelegramConfig) TelegramConfig {
 	if v := os.Getenv("ODEK_TELEGRAM_DEFAULT_CHAT_ID"); v != "" {
 		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
 			cfg.DefaultChatID = id
+		}
+	}
+	if v := os.Getenv("ODEK_TELEGRAM_MAX_DOWNLOAD_SIZE"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			cfg.MaxDownloadSize = n
+		}
+	}
+	if v := os.Getenv("ODEK_TELEGRAM_MEDIA_QUOTA_PER_CHAT"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			cfg.MediaQuotaPerChat = n
 		}
 	}
 

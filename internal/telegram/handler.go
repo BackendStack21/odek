@@ -153,7 +153,7 @@ func defaultCommandHandler() func(int64, int, string, string, int64) (string, er
 // the voice file and returns a MEDIA: response.
 func defaultVoiceHandler(bot *Bot) func(int64, int, string, int64) (string, error) {
 	return func(chatID int64, _ int, fileID string, _ int64) (string, error) {
-		path, err := DownloadVoice(bot, fileID)
+		path, err := DownloadVoice(bot, chatID, fileID)
 		if err != nil {
 			return "", fmt.Errorf("telegram handler: download voice: %w", err)
 		}
@@ -165,7 +165,7 @@ func defaultVoiceHandler(bot *Bot) func(int64, int, string, int64) (string, erro
 // the largest photo size and returns a MEDIA: response.
 func defaultPhotoHandler(bot *Bot) func(int64, int, []string, string, int64) (string, error) {
 	return func(chatID int64, _ int, fileIDs []string, _ string, _ int64) (string, error) {
-		path, err := DownloadPhoto(bot, fileIDs)
+		path, err := DownloadPhoto(bot, chatID, fileIDs)
 		if err != nil {
 			return "", fmt.Errorf("telegram handler: download photo: %w", err)
 		}
@@ -177,7 +177,7 @@ func defaultPhotoHandler(bot *Bot) func(int64, int, []string, string, int64) (st
 // downloads the document and returns a MEDIA: response.
 func defaultDocumentHandler(bot *Bot) func(int64, int, string, string, int64) (string, error) {
 	return func(chatID int64, _ int, fileID string, fileName string, _ int64) (string, error) {
-		path, err := DownloadDocument(bot, fileID, fileName)
+		path, err := DownloadDocument(bot, chatID, fileID, fileName)
 		if err != nil {
 			return "", fmt.Errorf("telegram handler: download document: %w", err)
 		}

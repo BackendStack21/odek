@@ -173,6 +173,8 @@ func telegramCmd(args []string) error {
 
 	// 4. Create bot client.
 	bot := telegram.NewBot(cfg.Token)
+	bot.MaxDownloadSize = cfg.MaxDownloadSize
+	bot.MediaQuotaPerChat = cfg.MediaQuotaPerChat
 
 	// 4b. Create logger.
 	level := telegram.ParseLogLevel(cfg.LogLevel)
@@ -559,7 +561,7 @@ func telegramCmd(args []string) error {
 
 	handler.OnVoiceMessage = func(chatID int64, messageID int, fileID string, userID int64) (string, error) {
 		// Download the voice file.
-		localPath, err := telegram.DownloadVoice(bot, fileID)
+		localPath, err := telegram.DownloadVoice(bot, chatID, fileID)
 		if err != nil {
 			handlerLog.Warn("voice download failed", "chat_id", chatID, "error", err)
 			go handleChatMessage(chatID, messageID, userID,
@@ -599,7 +601,7 @@ func telegramCmd(args []string) error {
 	}
 
 	handler.OnPhotoMessage = func(chatID int64, messageID int, fileIDs []string, caption string, userID int64) (string, error) {
-		localPath, err := telegram.DownloadPhoto(bot, fileIDs)
+		localPath, err := telegram.DownloadPhoto(bot, chatID, fileIDs)
 		if err != nil {
 			handlerLog.Warn("photo download failed", "chat_id", chatID, "error", err)
 			go handleChatMessage(chatID, messageID, userID,
@@ -649,7 +651,7 @@ func telegramCmd(args []string) error {
 	}
 
 	handler.OnDocumentMessage = func(chatID int64, messageID int, fileID string, fileName string, userID int64) (string, error) {
-		localPath, err := telegram.DownloadDocument(bot, fileID, fileName)
+		localPath, err := telegram.DownloadDocument(bot, chatID, fileID, fileName)
 		if err != nil {
 			handlerLog.Warn("document download failed", "chat_id", chatID, "file_name", fileName, "error", err)
 			go handleChatMessage(chatID, messageID, userID,
