@@ -288,7 +288,7 @@ Use `odek skill reset-skips` to clear the skip list and re-enable suppressed sug
 - a 16-hex SHA-256 prefix of the content
 - the turn it landed on
 
-After each turn, odek runs a divergence heuristic and sets `suspicious_divergence=true` when the agent ingested untrusted content **and** the tools called referenced resources (URLs, paths, dotted names) that did not appear in the user's preceding message — the footprint of a successful prompt injection.
+After each turn, odek runs a divergence heuristic and sets `suspicious_divergence=true` when the agent ingested untrusted content **and** its actions or final response reference resources that either (a) did not appear in the user's preceding message, or (b) were introduced by the untrusted content itself. This catches classic prompt injection, response-only exfiltration, and reused-resource injection.
 
 ```bash
 odek audit --list

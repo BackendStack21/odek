@@ -171,8 +171,9 @@ func neutraliseWrapperLiterals(s string) string {
 }
 
 // reWrapper matches a complete nonce'd wrapper so unwrapUntrusted can
-// extract the body for tests.
-var reWrapper = regexp.MustCompile(`(?s)<untrusted_content_[0-9a-f]+ source="[^"]*">\n?(.*?)\n?</untrusted_content_[0-9a-f]+>`)
+// extract the body for tests. Group 1 is the source attribute, group 2 is
+// the body.
+var reWrapper = regexp.MustCompile(`(?s)<untrusted_content_[0-9a-f]+ source="([^"]*)">\n?(.*?)\n?</untrusted_content_[0-9a-f]+>`)
 
 // unwrapUntrusted returns the body of an <untrusted_content_*> wrapper,
 // or the input unchanged if no wrapper is present. Intended for tests
@@ -180,10 +181,10 @@ var reWrapper = regexp.MustCompile(`(?s)<untrusted_content_[0-9a-f]+ source="[^"
 // source attribute or nonce suffix.
 func unwrapUntrusted(s string) string {
 	m := reWrapper.FindStringSubmatch(s)
-	if len(m) < 2 {
+	if len(m) < 3 {
 		return s
 	}
-	body := m[1]
+	body := m[2]
 	body = strings.TrimPrefix(body, "\n")
 	body = strings.TrimSuffix(body, "\n")
 	return body
@@ -193,6 +194,21 @@ func unwrapUntrusted(s string) string {
 // untrusted_content wrapper.
 func hasUntrustedWrapper(s string) bool {
 	return reWrapper.MatchString(s)
+}
+
+// untrustedSource extracts the source attribute from an
+// <untrusted_content_*> wrapper. It returns the empty string if the input
+// is not a wrapped blob.
+func untrustedSource(s string) string {
+	m := reWrapper.FindStringSubmatch(s)
+	if len(m) < 2 {
+		return ""
+	}
+	src := m[1]
+	// The source attribute is sanitised by wrapUntrusted; reverse the
+	// substitutions so it compares cleanly against resource strings.
+	src = strings.NewReplacer("'", `"`, "‹", "<", "›", ">").Replace(src)
+	return src
 }
 
 // mcpDescriptionWithheld replaces an MCP tool description in which

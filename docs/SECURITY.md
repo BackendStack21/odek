@@ -208,7 +208,7 @@ Every time the agent ingests externally-sourced content (any `wrapUntrusted` cal
 - a 16-hex SHA-256 prefix of the content
 - the turn it landed on
 
-After each turn, odek records the tools called and runs a divergence heuristic: a turn is flagged `suspicious_divergence` when the agent ingested untrusted content **and** the tools called referenced resources (URLs, paths, dotted names) that did **not** appear in the user's preceding message. That's the exact footprint of a successful prompt injection steering the agent toward an attacker-chosen resource.
+After each turn, odek records the tools called and runs a divergence heuristic: a turn is flagged `suspicious_divergence` when the agent ingested untrusted content **and** the agent's actions or final response reference resources that either (a) did not appear in the user's preceding message, or (b) were introduced by the untrusted content itself. This catches both classic prompt injection (steering the agent toward an attacker-chosen resource) and "reused-resource" injection where the attacker reuses a user-mentioned resource to evade a simple novelty check.
 
 The log is local-only, stored under `<sessions>/audit/<id>.json`. Review via:
 

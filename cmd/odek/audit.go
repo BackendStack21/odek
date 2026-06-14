@@ -16,8 +16,9 @@ import (
 // by tool calls diverge from those mentioned in the user message.
 //
 // "Divergence" is a heuristic: a turn is flagged as suspicious when
-// the agent ingested untrusted content AND the tools called referenced
-// resources (URLs, paths, dotted names) that the user did not mention.
+// the agent ingested untrusted content AND the agent's actions or final
+// response reference resources that either (a) did not appear in the
+// user's message, or (b) were introduced by the untrusted content itself.
 // This is exactly the footprint of a successful prompt injection that
 // steered the agent toward an attacker-chosen resource.
 func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, userText string, newMsgs []llm.Message) {
@@ -26,35 +27,87 @@ func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, user
 	}
 
 	var toolCalls []string
-	var toolText strings.Builder
+	var actionText strings.Builder  // agent actions: tool calls + final response
+	var untrustedBodies strings.Builder
+	var untrustedSources []string
 	ingestedUntrusted := false
+	lastAssistantContent := ""
 
 	for _, m := range newMsgs {
 		for _, tc := range m.ToolCalls {
 			toolCalls = append(toolCalls, tc.Function.Name)
-			toolText.WriteString(tc.Function.Arguments)
-			toolText.WriteByte(' ')
+			actionText.WriteString(tc.Function.Arguments)
+			actionText.WriteByte(' ')
 		}
 		if m.Role == "tool" {
-			toolText.WriteString(m.Content)
-			toolText.WriteByte(' ')
 			if hasUntrustedWrapper(m.Content) {
 				ingestedUntrusted = true
+				untrustedBodies.WriteString(unwrapUntrusted(m.Content))
+				untrustedBodies.WriteByte(' ')
+				if src := untrustedSource(m.Content); src != "" {
+					untrustedSources = append(untrustedSources, src)
+				}
 			}
+		}
+		if m.Role == "assistant" && m.Content != "" {
+			// Track the final assistant response; it can also be used for
+			// exfiltration ("response-only" injection).
+			lastAssistantContent = m.Content
+		}
+	}
+	if lastAssistantContent != "" {
+		actionText.WriteString(lastAssistantContent)
+		actionText.WriteByte(' ')
+	}
+
+	// Resources referenced by the agent's actions that the user did not
+	// mention. We intentionally do not scan raw tool results here; a
+	// resource that merely appears in a fetched page is not itself a
+	// divergence unless the agent acts on it.
+	novel := session.NovelResources(userText, actionText.String())
+
+	// Resources introduced by untrusted content itself. Even if the user
+	// mentioned the same resource earlier, acting on it after it appears in
+	// untrusted content is the footprint of a "reused-resource" injection.
+	// We exclude resources that match the source of the untrusted content
+	// (e.g. a fetched page mentioning its own URL) to avoid false positives
+	// for legitimate user-requested fetches.
+	isSource := func(r string) bool {
+		lr := strings.ToLower(r)
+		for _, s := range untrustedSources {
+			ls := strings.ToLower(s)
+			if lr == ls || strings.HasPrefix(lr, ls) || strings.HasPrefix(ls, lr) {
+				return true
+			}
+		}
+		return false
+	}
+	untrustedResSet := make(map[string]bool)
+	for _, r := range session.ResourcesIn(untrustedBodies.String()) {
+		if !isSource(r) {
+			untrustedResSet[strings.ToLower(r)] = true
+		}
+	}
+	var untrustedResources []string
+	seen := make(map[string]bool)
+	for _, r := range session.ResourcesIn(actionText.String()) {
+		lr := strings.ToLower(r)
+		if untrustedResSet[lr] && !seen[lr] {
+			seen[lr] = true
+			untrustedResources = append(untrustedResources, r)
 		}
 	}
 
-	novel := session.NovelResources(userText, toolText.String())
-
 	// We do not flag divergence on untainted turns — a trusted internal
 	// search legitimately surfaces resources the user did not name.
-	suspicious := ingestedUntrusted && len(novel) > 0
+	suspicious := ingestedUntrusted && (len(novel) > 0 || len(untrustedResources) > 0)
 
 	at := session.AuditTurn{
 		Turn:                 turn,
 		UserMessage:          userText,
 		ToolCalls:            toolCalls,
 		NovelResources:       novel,
+		UntrustedResources:   untrustedResources,
 		IngestedUntrusted:    ingestedUntrusted,
 		SuspiciousDivergence: suspicious,
 	}
