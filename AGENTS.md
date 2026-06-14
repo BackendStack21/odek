@@ -117,7 +117,7 @@ Layered prompt-injection / approval-fatigue defenses. Full reference: [docs/SECU
 - **Config file size cap** (`internal/config/loader.go`) — `~/.odek/config.json` and `./odek.json` are rejected if larger than 5 MiB to prevent OOM from a malicious or broken config at startup.
 - **Resource resolver size cap** (`internal/resource/resource.go`) — `@-resource` file loads are capped at 1 MiB to prevent OOM from `@hugefile` references.
 - **Resource resolver symlink hardening** (`internal/resource/resource.go`) — `FileResolver.Search` uses `os.Lstat` (not `os.Stat`) for search-result metadata, so symlinks cannot leak the size of arbitrary targets outside the workspace.
-- **Sub-agent summary cap** (`cmd/odek/subagent_tool.go`) — each sub-agent result included in the `delegate_tasks` summary is truncated to 100 KiB to prevent memory DoS.
+- **Sub-agent summary cap + wrapping** (`cmd/odek/subagent_tool.go`) — each sub-agent result included in the `delegate_tasks` summary is truncated to 100 KiB to prevent memory DoS, and the final aggregated summary is wrapped as untrusted content so a compromised sub-agent cannot inject instructions into the parent context.
 - **Tree path wrapping** (`cmd/odek/perf_tools.go`) — the `tree` tool wraps every filesystem-derived path as untrusted content.
 - **head_tail output cap** (`cmd/odek/perf_tools.go`) — `head_tail` truncates returned lines so total content stays within 1 MiB, preventing multi-file/multi-line memory DoS.
 - **search_files symlink hardening** (`cmd/odek/file_tool.go`) — the `files` target uses `Lstat` (not `Stat`) and skips symlinks in the glob branch, closing metadata disclosure via symlinked paths.
@@ -130,6 +130,7 @@ Layered prompt-injection / approval-fatigue defenses. Full reference: [docs/SECU
 - **Session file size cap** (`internal/session/session.go`) — session files larger than 32 MiB are rejected by `Load()` to prevent OOM from tampered or corrupted transcripts.
 - **Skill file size cap** (`internal/skills/loader.go`) — `SKILL.md` files larger than 1 MiB are skipped so a malicious project cannot OOM the process at startup or bloat the system prompt.
 - **Serve sandbox default-on** — `odek serve` enables `--sandbox` automatically unless `--no-sandbox` is passed.
+- **Telegram photo caption wrapping** (`cmd/odek/telegram.go`) — photo captions cross the Telegram trust boundary, so they are wrapped as untrusted content both when passed to the local vision model and when injected into the main agent's user message.
 - **Secret redaction** (`internal/redact/redact.go`) — 20+ patterns: OpenAI, Anthropic, GitHub PAT, AWS, PEM, JWT, Vault, Google OAuth, SendGrid, Discord, DB URLs, etc.
 
 ### Platform Support

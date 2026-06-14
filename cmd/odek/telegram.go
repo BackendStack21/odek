@@ -2072,11 +2072,16 @@ func (l *instanceLock) release() {
 // for a received photo. A non-empty caption focuses the (small) model on the
 // part of the image the user is asking about; otherwise a thorough default
 // describe prompt is used.
+//
+// The caption crosses the Telegram trust boundary, so it is wrapped as
+// untrusted content before being embedded in the prompt. This prevents a
+// prompt-injected caption from steering the local vision model as if it were
+// a system instruction.
 func photoVisionPrompt(caption string) string {
 	if caption != "" {
 		return fmt.Sprintf(
-			"Describe this image in detail. Pay special attention to anything relevant to: %q. Include any visible text, objects, people, and notable details.",
-			caption)
+			"Describe this image in detail. Pay special attention to anything relevant to the user-provided caption below. Include any visible text, objects, people, and notable details.\n\n%s",
+			wrapUntrusted("telegram:photo:caption", caption))
 	}
 	return "Describe this image in detail. Include any visible text, objects, people, and notable details."
 }

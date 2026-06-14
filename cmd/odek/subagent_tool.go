@@ -171,7 +171,10 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 		}
 		buf.WriteString("\n\n")
 	}
-	return buf.String(), nil
+	// The aggregated sub-agent output comes from a separate process and may
+	// contain injected content or prompt-like text. Wrap the whole summary so
+	// the parent agent treats it as untrusted data rather than instructions.
+	return wrapUntrusted("delegate_tasks", buf.String()), nil
 }
 
 func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, trustLevel, maxRisk string) string {

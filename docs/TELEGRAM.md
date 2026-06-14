@@ -324,7 +324,7 @@ Photo received → DownloadPhoto (largest size to disk)
                → agent answers the request using the description
 ```
 
-If the photo has a **caption**, that text becomes the user's request and also focuses the vision extraction. The description is wrapped in `<untrusted_content>` boundaries (image text is untrusted input).
+If the photo has a **caption**, that text becomes the user's request and also focuses the vision extraction. Both the caption passed to the local vision model and the description returned to the main agent are wrapped in `<untrusted_content>` boundaries (external text is untrusted input).
 
 **Fallback:** If auto-describe is disabled or the vision model fails, the agent receives the file path (and caption, if any) with a suggestion to use the `vision` tool manually.
 

@@ -14,13 +14,19 @@ func TestPhotoVisionPrompt(t *testing.T) {
 	if strings.Contains(def, "Pay special attention") {
 		t.Errorf("default prompt should not mention caption focus: %q", def)
 	}
+	if strings.Contains(def, "<untrusted_content_") {
+		t.Errorf("default prompt should not contain an untrusted wrapper: %q", def)
+	}
 
 	withCap := photoVisionPrompt("what breed is this dog?")
-	if !strings.Contains(withCap, "Pay special attention to anything relevant to:") {
+	if !strings.Contains(withCap, "Pay special attention to anything relevant to the user-provided caption below") {
 		t.Errorf("captioned prompt missing focus clause: %q", withCap)
 	}
 	if !strings.Contains(withCap, "what breed is this dog?") {
 		t.Errorf("captioned prompt missing the caption text: %q", withCap)
+	}
+	if !strings.Contains(withCap, "<untrusted_content_") {
+		t.Errorf("captioned prompt should wrap the caption as untrusted: %q", withCap)
 	}
 }
 
