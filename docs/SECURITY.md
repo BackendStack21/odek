@@ -350,6 +350,19 @@ Legacy sessions created before this defense have no `AuthToken`; the first acces
 
 Skill content and retrieved session episodes are externally-sourced data that cross the trust boundary. Before injecting them as `system` messages, the loop passes them through the same nonce'd `<untrusted_content_*>` wrapper used for tool output. The skill manager already gates `NeedsReview`/tainted skills, and the memory manager filters tainted episodes from search, but the wrapper provides defense-in-depth so a compromised skill or episode cannot pose as trusted system instructions.
 
+### 26. Session vector index rebuild hardening
+
+`internal/session/vector_index.go::rebuildLocked` scans the session directory to build the semantic search corpus. Before a file is read it must pass two checks:
+
+1. **Session-ID validation** — the filename is stripped of its `.json` suffix and passed through `ValidateSessionID`. Names that are empty, contain path separators, or contain `..` are skipped.
+2. **Symlink rejection** — the `os.DirEntry.Type()` is checked for `ModeSymlink`, and the full path is then `os.Lstat`ed to skip symlinks even on platforms/filesystems where `Type()` does not report the link.
+
+This closes the path where an attacker plants a symlink named like a session file (e.g. `20260518-abc….json`) that points to a sensitive file outside the sessions directory, which would otherwise have its content embedded into the session search corpus.
+
+### 27. Episode index session ID validation
+
+The episode vector index is rebuilt from `index.json` plus one `.md` summary file per entry. Because `index.json` is persisted JSON that can be tampered with on disk, `internal/memory/episode_index.go::readAllSummaries` treats every `session_id` as untrusted input. It calls `session.ValidateSessionID` before constructing the path `filepath.Join(dir, sessionID+".md")` and skips (with a stderr warning) any entry that is empty, contains path separators, contains `..`, or is otherwise malformed. This prevents a tampered entry such as `"../../../.odek/config"` from causing the rebuild to read arbitrary files (e.g. `~/.odek/config.json` or `IDENTITY.md`) and include them in the embedding space.
+
 ### YOLO mode
 
 ```json
@@ -404,6 +417,7 @@ Defaults: `FrictionThreshold=3`, `FrictionWindow=60s`. To opt out (TTYApprover o
 | Memory replays a previously-injected episode forever | Tainted episodes filtered from `Search` |
 | User reflex-approves a destructive class after many benign ones | Friction mode requires typed `approve` + 1.5 s pause |
 | Successful injection steers agent to attacker URL | `odek audit` flags `suspicious_divergence` on the turn |
+| Symlink planted as session file exfiltrates arbitrary file into semantic search | `rebuildLocked` validates IDs and skips symlinks via `Lstat` |
 
 ---
 

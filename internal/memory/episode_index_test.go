@@ -2,11 +2,14 @@ package memory
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // resetEpIdxes clears the process-wide singleton map so each test gets a fresh
@@ -402,5 +405,106 @@ func TestSearchEpisodes_OOVFallbackToLLM(t *testing.T) {
 	// After D-05 fix: OOV → recallByVector returns nil → SearchEpisodes falls back to episodes.Search
 	// which uses the LLM ranker. We don't assert an exact count because the fallback
 	// path (episodes.Search) may or may not call LLM depending on whether the index
-	// is also empty from LLM ranker's perspective, but we confirm no panic.
+	// is also empty from the LLM ranker's perspective, but we confirm no panic.
+}
+
+// ── Episode index untrusted-session-id validation (Finding #15) ───────────────
+
+// TestReadAllSummaries_ValidSessionID confirms that a well-formed session ID is
+// accepted and its summary is loaded normally.
+func TestReadAllSummaries_ValidSessionID(t *testing.T) {
+	dir := t.TempDir()
+	validID := "20260601-valid"
+	if err := os.WriteFile(filepath.Join(dir, validID+".md"), []byte("valid summary"), 0600); err != nil {
+		t.Fatalf("write valid episode: %v", err)
+	}
+	idx := []EpisodeMeta{{SessionID: validID, CreatedAt: time.Now().UTC()}}
+	data, err := json.Marshal(idx)
+	if err != nil {
+		t.Fatalf("marshal index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, episodeIndexFile), data, 0600); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	vi := &episodeVectorIndex{dir: dir}
+	out := vi.readAllSummaries()
+	if len(out) != 1 || out[0].id != validID || out[0].text != "valid summary" {
+		t.Fatalf("expected 1 valid result for %q, got %v", validID, out)
+	}
+}
+
+// TestReadAllSummaries_TraversalRejected confirms that a tampered session_id
+// like "../secret" cannot escape the episodes directory and pull arbitrary
+// files into the embedding space.
+func TestReadAllSummaries_TraversalRejected(t *testing.T) {
+	root := t.TempDir()
+	epDir := filepath.Join(root, "episodes")
+	if err := os.MkdirAll(epDir, 0700); err != nil {
+		t.Fatalf("mkdir episodes: %v", err)
+	}
+	validID := "20260601-valid"
+	if err := os.WriteFile(filepath.Join(epDir, validID+".md"), []byte("valid summary"), 0600); err != nil {
+		t.Fatalf("write valid episode: %v", err)
+	}
+	// Place a file one directory above the episodes dir; a traversal would read it.
+	if err := os.WriteFile(filepath.Join(root, "secret.md"), []byte("stolen"), 0600); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+
+	idx := []EpisodeMeta{
+		{SessionID: validID, CreatedAt: time.Now().UTC()},
+		{SessionID: "../secret", CreatedAt: time.Now().UTC()},
+	}
+	data, err := json.Marshal(idx)
+	if err != nil {
+		t.Fatalf("marshal index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(epDir, episodeIndexFile), data, 0600); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	vi := &episodeVectorIndex{dir: epDir}
+	out := vi.readAllSummaries()
+	if len(out) != 1 || out[0].id != validID || out[0].text != "valid summary" {
+		t.Fatalf("expected only valid episode, got %v", out)
+	}
+}
+
+// TestReadAllSummaries_PathSeparatorRejected confirms that session IDs
+// containing forward or backward slashes are rejected.
+func TestReadAllSummaries_PathSeparatorRejected(t *testing.T) {
+	dir := t.TempDir()
+	validID := "20260601-valid"
+	if err := os.WriteFile(filepath.Join(dir, validID+".md"), []byte("valid summary"), 0600); err != nil {
+		t.Fatalf("write valid episode: %v", err)
+	}
+
+	// Create a subdirectory with a file that a separator-containing ID could reach.
+	subDir := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(subDir, 0700); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(subDir, "secret.md"), []byte("stolen"), 0600); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+
+	idx := []EpisodeMeta{
+		{SessionID: validID, CreatedAt: time.Now().UTC()},
+		{SessionID: "sub/secret", CreatedAt: time.Now().UTC()},
+		{SessionID: "sub\\secret", CreatedAt: time.Now().UTC()},
+	}
+	data, err := json.Marshal(idx)
+	if err != nil {
+		t.Fatalf("marshal index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, episodeIndexFile), data, 0600); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	vi := &episodeVectorIndex{dir: dir}
+	out := vi.readAllSummaries()
+	if len(out) != 1 || out[0].id != validID {
+		t.Fatalf("expected only valid episode, got %v", out)
+	}
 }

@@ -155,7 +155,26 @@ func (vi *VectorIndex) rebuildLocked() error {
 		if e.IsDir() || !isSessionFile(e.Name()) {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(vi.dir, e.Name()))
+
+		// Only load session files whose base name is a valid session ID and
+		// that are not symlinks. This prevents a planted symlink named like a
+		// session file from pointing outside the directory and having its
+		// content embedded into the search corpus.
+		id := idFromPath(e.Name())
+		if err := ValidateSessionID(id); err != nil {
+			continue
+		}
+		if e.Type()&os.ModeSymlink != 0 {
+			continue
+		}
+
+		path := filepath.Join(vi.dir, e.Name())
+		info, err := os.Lstat(path)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+
+		data, err := os.ReadFile(path)
 		if err != nil {
 			continue
 		}
@@ -163,7 +182,7 @@ func (vi *VectorIndex) rebuildLocked() error {
 		if text == "" {
 			continue
 		}
-		ids = append(ids, idFromPath(e.Name()))
+		ids = append(ids, id)
 		corpus = append(corpus, text)
 	}
 
