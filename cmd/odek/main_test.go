@@ -724,6 +724,7 @@ func TestRun_WithProjectConfig(t *testing.T) {
 
 	origDS := os.Getenv("DEEPSEEK_API_KEY")
 	origOAI := os.Getenv("OPENAI_API_KEY")
+	origOdekAPI := os.Getenv("ODEK_API_KEY")
 	origHome := os.Getenv("HOME")
 	origCwd, _ := os.Getwd()
 	os.Unsetenv("DEEPSEEK_API_KEY")
@@ -732,6 +733,7 @@ func TestRun_WithProjectConfig(t *testing.T) {
 	defer func() {
 		os.Setenv("DEEPSEEK_API_KEY", origDS)
 		os.Setenv("OPENAI_API_KEY", origOAI)
+		os.Setenv("ODEK_API_KEY", origOdekAPI)
 		os.Setenv("HOME", origHome)
 		os.Chdir(origCwd)
 	}()
@@ -739,11 +741,14 @@ func TestRun_WithProjectConfig(t *testing.T) {
 	// Isolate from any global config
 	os.Setenv("HOME", t.TempDir())
 
+	// API keys may not come from the untrusted project config; set one via env.
+	os.Setenv("ODEK_API_KEY", "sk-project-test-key")
+
 	// Create project-level config in a temp directory
 	projectDir := t.TempDir()
 	os.Chdir(projectDir)
 	if err := os.WriteFile(projectDir+"/odek.json", []byte(`{
-		"api_key": "sk-project-config"
+		"model": "project-model"
 	}`), 0644); err != nil {
 		t.Fatal(err)
 	}

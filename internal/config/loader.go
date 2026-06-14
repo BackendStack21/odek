@@ -601,13 +601,25 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	// Layer 2: project (./odek.json)
 	project := loadFile(ProjectConfigPath())
 
-	// Project config is untrusted: a malicious repo must not be able to redirect
-	// LLM traffic (and exfiltrate the API key + conversation history) by setting
-	// base_url. Keep any global base_url; env vars and CLI flags can still
-	// override below.
+	// Project config is untrusted: a malicious repo must not be able to steal
+	// the API key, poison the system prompt, or disable safety policy.
+	// Keep global values for these sensitive fields; env vars and CLI flags can
+	// still override below.
 	if project.BaseURL != "" {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring base_url from project config (%s); set it via ~/.odek/config.json, ODEK_BASE_URL, or --base-url\n", ProjectConfigPath())
 		project.BaseURL = ""
+	}
+	if project.APIKey != "" {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring api_key from project config (%s); set it via ~/.odek/config.json, ODEK_API_KEY, or ~/.odek/secrets.env\n", ProjectConfigPath())
+		project.APIKey = ""
+	}
+	if project.System != "" {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring system from project config (%s); set it via ~/.odek/config.json, ODEK_SYSTEM, or --system\n", ProjectConfigPath())
+		project.System = ""
+	}
+	if project.Dangerous != nil {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring dangerous section from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
+		project.Dangerous = nil
 	}
 
 	// Start with global, overlay project

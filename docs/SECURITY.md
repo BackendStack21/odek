@@ -297,9 +297,16 @@ exceed the cap are rejected before they are written.
 
 `~/.odek/config.json` and `./odek.json` are rejected if they exceed 5 MiB. This prevents a malicious, truncated, or accidentally-generated config file from causing an out-of-memory condition at startup.
 
-### 18. Project-level `base_url` rejection
+### 18. Project-level sensitive config rejection
 
-`./odek.json` can be shipped by any repository the agent runs in, so it is treated as untrusted for the LLM endpoint. If a project config sets `base_url`, the value is ignored and a warning is printed to stderr. The LLM base URL can only be set from operator-controlled sources: `~/.odek/config.json`, `ODEK_BASE_URL`, or `--base-url`. This closes a prompt-exfiltration path where a malicious repo redirects the conversation history and API key to an attacker-controlled server.
+`./odek.json` can be shipped by any repository the agent runs in, so it is treated as untrusted for sensitive fields. If a project config sets any of the following, the value is ignored and a warning is printed to stderr:
+
+- `base_url` — can redirect the conversation history and API key to an attacker-controlled server.
+- `api_key` — can exfiltrate prompts by billing runs to an attacker-owned key.
+- `system` — can poison the system prompt with hidden instructions.
+- `dangerous` — can disable the approval gate (`{"action": "allow"}`) and enable destructive auto-execution.
+
+These fields can only be set from operator-controlled sources: `~/.odek/config.json`, `ODEK_*` environment variables, or CLI flags.
 
 ### YOLO mode
 

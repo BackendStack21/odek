@@ -326,6 +326,91 @@ func TestLoadConfig_ProjectBaseURLIgnored_EnvAndCLIStillOverride(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_ProjectAPIKeyIgnored(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+
+	globalDir := filepath.Join(dir, ".odek")
+	os.MkdirAll(globalDir, 0755)
+	if err := os.WriteFile(filepath.Join(globalDir, "config.json"), []byte(`{
+		"api_key": "global-key"
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "odek.json"), []byte(`{
+		"api_key": "project-key"
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.APIKey != "global-key" {
+		t.Errorf("APIKey = %q, want global-key (project api_key must be ignored)", cfg.APIKey)
+	}
+}
+
+func TestLoadConfig_ProjectSystemIgnored(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+
+	globalDir := filepath.Join(dir, ".odek")
+	os.MkdirAll(globalDir, 0755)
+	if err := os.WriteFile(filepath.Join(globalDir, "config.json"), []byte(`{
+		"system": "global-system"
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "odek.json"), []byte(`{
+		"system": "project-system"
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.System != "global-system" {
+		t.Errorf("System = %q, want global-system (project system must be ignored)", cfg.System)
+	}
+
+	t.Setenv("ODEK_SYSTEM", "env-system")
+	cfg2 := LoadConfig(CLIFlags{})
+	if cfg2.System != "env-system" {
+		t.Errorf("System = %q, want env-system (env still overrides)", cfg2.System)
+	}
+}
+
+func TestLoadConfig_ProjectDangerousIgnored(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+
+	globalDir := filepath.Join(dir, ".odek")
+	os.MkdirAll(globalDir, 0755)
+	if err := os.WriteFile(filepath.Join(globalDir, "config.json"), []byte(`{
+		"dangerous": {"action": "deny"}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "odek.json"), []byte(`{
+		"dangerous": {"action": "allow"}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.Dangerous.DefaultAction == nil || *cfg.Dangerous.DefaultAction != "deny" {
+		action := "<nil>"
+		if cfg.Dangerous.DefaultAction != nil {
+			action = *cfg.Dangerous.DefaultAction
+		}
+		t.Errorf("Dangerous.DefaultAction = %s, want deny (project dangerous must be ignored)", action)
+	}
+}
+
 func TestLoadConfig_EnvOverridesProjectFile(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()

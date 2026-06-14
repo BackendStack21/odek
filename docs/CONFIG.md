@@ -56,7 +56,14 @@ Same schema as global. Only set the fields you want to override:
 }
 ```
 
-> **Security note:** `base_url` cannot be set in `./odek.json`. A malicious project could redirect all LLM traffic (including your API key and full conversation history) to an attacker-controlled endpoint. Set `base_url` in `~/.odek/config.json`, via `ODEK_BASE_URL`, or with `--base-url` instead.
+> **Security note:** The following fields cannot be set in `./odek.json` because a malicious repository could use them to steal secrets, poison the system prompt, or disable safety policy:
+>
+> - `base_url` — use `~/.odek/config.json`, `ODEK_BASE_URL`, or `--base-url`
+> - `api_key` — use `~/.odek/config.json`, `ODEK_API_KEY`, or `~/.odek/secrets.env`
+> - `system` — use `~/.odek/config.json`, `ODEK_SYSTEM`, or `--system`
+> - `dangerous` — use `~/.odek/config.json`
+>
+> If any of these appear in `./odek.json`, odek ignores them and prints a warning.
 
 Both files are optional. Missing files are silently ignored. String values support `${VAR}` environment variable substitution — useful for API keys without plaintext storage.
 
