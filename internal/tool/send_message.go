@@ -10,6 +10,32 @@ import (
 	"strings"
 )
 
+// ── Constants ───────────────────────────────────────────────────────────
+
+// ReservedCallbackPrefixes lists callback-data prefixes that are reserved for
+// internal odek UI flows (approval, trust, clarify, skill suggestions). The
+// send_message tool rejects buttons using these prefixes so a compromised
+// agent cannot forge an approval/skill UI.
+var ReservedCallbackPrefixes = []string{
+	"apr:",
+	"den:",
+	"trs:",
+	"clarify:",
+	"skill_save:",
+	"skill_skip:",
+}
+
+// IsReservedCallbackPrefix reports whether data starts with a reserved
+// internal callback-data prefix.
+func IsReservedCallbackPrefix(data string) bool {
+	for _, p := range ReservedCallbackPrefixes {
+		if strings.HasPrefix(data, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // ── Types ──────────────────────────────────────────────────────────────
 
 // SendMessageTool lets the agent send arbitrary messages to the Telegram
@@ -79,7 +105,7 @@ func (t *SendMessageTool) Schema() any {
 							},
 							"callback_data": map[string]any{
 								"type":        "string",
-								"description": "Callback data sent when user clicks. Must start with 'cb:' for agent-routed callbacks.",
+								"description": "Callback data sent when user clicks. Must start with 'cb:' for agent-routed callbacks. Reserved internal prefixes (apr:, den:, trs:, clarify:, skill_save:, skill_skip:) are rejected.",
 							},
 						},
 						"required": []string{"text", "callback_data"},
@@ -120,7 +146,10 @@ func (t *SendMessageTool) Call(argsJSON string) (string, error) {
 		for j, btn := range row {
 			// Validate callback_data prefix convention.
 			cd := btn.CallbackData
-			if !strings.HasPrefix(cd, "cb:") && !strings.HasPrefix(cd, "apr:") && !strings.HasPrefix(cd, "den:") && !strings.HasPrefix(cd, "trs:") {
+			if IsReservedCallbackPrefix(cd) {
+				return "", fmt.Errorf("send_message: callback_data %q uses reserved internal prefix; only 'cb:' callbacks are allowed", cd)
+			}
+			if !strings.HasPrefix(cd, "cb:") {
 				cd = "cb:" + cd
 			}
 			buttons[i][j] = map[string]string{

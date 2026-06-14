@@ -289,8 +289,8 @@ func TestGenerateID(t *testing.T) {
 	if !strings.Contains(id, "-") {
 		t.Errorf("id = %q, should contain '-'", id)
 	}
-	if len(id) < 10 {
-		t.Errorf("id too short: %q", id)
+	if len(id) < 39 {
+		t.Errorf("id too short: %q (len=%d)", id, len(id))
 	}
 	// Two calls should produce different IDs
 	id2 := generateID()
@@ -551,9 +551,9 @@ func TestValidateSessionID_NullBytes(t *testing.T) {
 
 func TestGenerateID_Format(t *testing.T) {
 	id := generateID()
-	// Format: YYYYMMDD-xxxxxx (8 digits, dash, 6 hex chars)
-	if len(id) != 15 {
-		t.Errorf("generateID() length = %d, want 15 (got %q)", len(id), id)
+	// Format: YYYYMMDD-<random 16 bytes hex> (8 digits, dash, 32 hex chars)
+	if len(id) != 41 {
+		t.Errorf("generateID() length = %d, want 41 (got %q)", len(id), id)
 	}
 	// Prefix must be 8 digits
 	if id[0:8] != id[0:8] { // always true, but check digits
@@ -567,15 +567,37 @@ func TestGenerateID_Format(t *testing.T) {
 	if id[8] != '-' {
 		t.Errorf("generateID() char 8 = %q, want '-' (got %q)", id[8], id)
 	}
-	// Suffix must be 6 hex chars
+	// Suffix must be 32 hex chars
 	suffix := id[9:]
-	if len(suffix) != 6 {
-		t.Errorf("generateID() suffix length = %d, want 6 (got %q)", len(suffix), id)
+	if len(suffix) != 32 {
+		t.Errorf("generateID() suffix length = %d, want 32 (got %q)", len(suffix), id)
 	}
 	for i, c := range suffix {
 		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
 			t.Errorf("generateID() suffix char %d = %q, want hex digit (got %q)", i, c, id)
 		}
+	}
+}
+
+func TestCreate_GeneratesAuthToken(t *testing.T) {
+	store := newTestStore(t)
+	sess, err := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "hi")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if sess.AuthToken == "" {
+		t.Error("Create() should generate AuthToken")
+	}
+	if len(sess.AuthToken) < 32 {
+		t.Errorf("AuthToken too short: %d chars", len(sess.AuthToken))
+	}
+
+	loaded, err := store.Load(sess.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.AuthToken != sess.AuthToken {
+		t.Errorf("AuthToken not persisted: got %q, want %q", loaded.AuthToken, sess.AuthToken)
 	}
 }
 

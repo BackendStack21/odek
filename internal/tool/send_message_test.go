@@ -176,6 +176,26 @@ func TestSendMessageTool_Call_ButtonCallbackPrefix(t *testing.T) {
 	}
 }
 
+func TestSendMessageTool_Call_ReservedCallbackPrefixRejected(t *testing.T) {
+	tool := &SendMessageTool{
+		Sender: func(text, file string, buttons [][]map[string]string) error {
+			return nil
+		},
+	}
+
+	for _, prefix := range ReservedCallbackPrefixes {
+		args := fmt.Sprintf(`{"text": "x", "buttons": [[{"text": "Bad", "callback_data": "%sfoo"}]]}`, prefix)
+		_, err := tool.Call(args)
+		if err == nil {
+			t.Errorf("expected error for reserved prefix %q, got nil", prefix)
+			continue
+		}
+		if !strings.Contains(err.Error(), "reserved internal prefix") {
+			t.Errorf("expected 'reserved internal prefix' error for %q, got: %v", prefix, err)
+		}
+	}
+}
+
 func TestSendMessageTool_Call_NoSender(t *testing.T) {
 	tool := &SendMessageTool{}
 	_, err := tool.Call(`{"text": "hi"}`)

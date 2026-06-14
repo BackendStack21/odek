@@ -14,6 +14,7 @@ import (
 	"github.com/BackendStack21/odek/internal/render"
 	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/telegram"
+	toolpkg "github.com/BackendStack21/odek/internal/tool"
 )
 
 // ── spawnChild tests ──────────────────────────────────────────────────
@@ -903,4 +904,27 @@ func TestAcquireLock_DoesNotKillLegacyPID(t *testing.T) {
 	defer release()
 
 	// If we reach here, the current process is still alive.
+}
+
+// ── Send Message Tool Callback Validation ──────────────────────────────
+
+func TestValidateSendMessageButtons_ReservedPrefixesRejected(t *testing.T) {
+	for _, prefix := range toolpkg.ReservedCallbackPrefixes {
+		buttons := [][]map[string]string{
+			{{"text": "Bad", "callback_data": prefix + "foo"}},
+		}
+		if err := validateSendMessageButtons(buttons); err == nil {
+			t.Errorf("expected error for reserved prefix %q", prefix)
+		}
+	}
+}
+
+func TestValidateSendMessageButtons_NormalCallbacksAllowed(t *testing.T) {
+	buttons := [][]map[string]string{
+		{{"text": "OK", "callback_data": "cb:ok"}},
+		{{"text": "Plain", "callback_data": "plain"}},
+	}
+	if err := validateSendMessageButtons(buttons); err != nil {
+		t.Errorf("expected no error for normal callbacks, got: %v", err)
+	}
 }

@@ -1438,6 +1438,11 @@ func handleChatMessage(
 	// at the final answer.
 	agentTools = append(agentTools, toolpkg.NewSendMessageTool(
 		func(text string, file string, buttons [][]map[string]string) error {
+			// Defense-in-depth: never send buttons that use reserved internal
+			// callback prefixes, even if the tool validation was bypassed.
+			if err := validateSendMessageButtons(buttons); err != nil {
+				return err
+			}
 			if file != "" {
 				// Detect media type from extension.
 				mediaType := mediaTypeFromExt(file)
@@ -2143,6 +2148,21 @@ func sendTelegramMedia(bot *telegram.Bot, chatID int64, mediaType, path, caption
 		_, err := bot.SendDocument(chatID, path, caption, opts)
 		return err
 	}
+}
+
+// validateSendMessageButtons ensures no button uses a reserved internal
+// callback-data prefix. This is defense-in-depth alongside the validation in
+// internal/tool/send_message.go.
+func validateSendMessageButtons(buttons [][]map[string]string) error {
+	for i, row := range buttons {
+		for j, btn := range row {
+			cd := btn["callback_data"]
+			if toolpkg.IsReservedCallbackPrefix(cd) {
+				return fmt.Errorf("button[%d][%d] uses reserved callback_data prefix %q", i, j, cd)
+			}
+		}
+	}
+	return nil
 }
 
 // buttonsToMarkup converts the tool's button format to Telegram's

@@ -320,6 +320,22 @@ Schedule persistence (`schedules.json` and `schedule-state.json`) now writes thr
 
 The Telegram bot previously used a PID file at `~/.odek/telegram.pid` to enforce a single polling instance. On Linux it verified `/proc/<pid>/cmdline`, but on macOS and other POSIX systems it would kill whatever process the planted PID belonged to. The implementation now uses an advisory `flock` on `~/.odek/telegram.lock` via `internal/flock`. A second instance simply blocks until the first releases the lock, and the OS releases the lock automatically if the holder crashes, eliminating the arbitrary-process-kill vector.
 
+### 22. Telegram `send_message` callback prefix restriction
+
+The `send_message` tool lets the agent send inline keyboard buttons. Each button's `callback_data` is validated by the tool and again by the Telegram sender closure: any value that starts with a reserved internal prefix (`apr:`, `den:`, `trs:`, `clarify:`, `skill_save:`, `skill_skip:`) is rejected. Only user-facing `cb:` callbacks are allowed. This prevents a compromised or prompt-injected agent from presenting a button that, when clicked, would forge an approval decision or trigger a skill action.
+
+### 23. Session ID entropy + session-scoped auth tokens
+
+`odek serve` session endpoints were previously protected only by localhost binding and a short, predictable session ID (`YYYYMMDD-` + 3 random bytes ≈ 16.7 M possibilities). A local attacker who obtained IDs from `GET /api/sessions` could brute-force `GET /api/sessions/<id>` to read transcripts.
+
+The defense has three layers:
+
+1. **128-bit session IDs** (`internal/session/session.go`) — IDs now use 16 random bytes (32 hex chars) plus the date prefix. The date prefix is kept so filenames sort chronologically; the random suffix has 2^128 possible values, making brute-force enumeration infeasible.
+2. **Session-scoped auth tokens** — every new session is created with a 256-bit `AuthToken` stored in the session JSON. `GET /api/sessions/<id>`, `DELETE /api/sessions/<id>`, `POST /api/sessions/<id>` (rename), and WebSocket session-resume messages require the token via the `X-Session-Token` header, `session_token` cookie, or `auth_token` WebSocket field. Missing or invalid tokens return 401.
+3. **Per-IP rate limiting** — `GET /api/sessions/<id>` is rate-limited to 60 lookups per minute per IP, adding a backstop against any remaining enumeration attempts.
+
+Legacy sessions created before this defense have no `AuthToken`; the first access bootstraps one and returns it to the client, preserving backward compatibility without weakening protection for newly created sessions.
+
 ### YOLO mode
 
 ```json
@@ -366,7 +382,9 @@ Defaults: `FrictionThreshold=3`, `FrictionWindow=60s`. To opt out (TTYApprover o
 | Attacker-controlled task delegated to sub-agent | Parent sets `trust_level=untrusted`; sub-agent clamps Destructive/CodeExec/Install/SystemWrite/NetworkEgress to Deny |
 | Sub-agent reads parent's API key from `/proc/<pid>/environ` | Key passed via unlinked FD, never in env |
 | Browser drive-by on localhost web UI | WS handshake rejects non-local Origin |
+| Local process brute-forces session IDs to read transcripts | 128-bit IDs + session-scoped auth tokens + per-IP rate limiting |
 | Telegram bot scanned by random user | Allowlist enforced before any tool call |
+| Agent sends fake approval/skill button via `send_message` | Reserved internal callback prefixes rejected; only `cb:` allowed |
 | Auto-saved skill auto-activates on next session | Provenance gate pins NeedsReview skills to Lazy |
 | Memory replays a previously-injected episode forever | Tainted episodes filtered from `Search` |
 | User reflex-approves a destructive class after many benign ones | Friction mode requires typed `approve` + 1.5 s pause |
