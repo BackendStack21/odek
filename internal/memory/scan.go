@@ -3,7 +3,8 @@ package memory
 import (
 	"fmt"
 	"regexp"
-	"strings"
+
+	"github.com/BackendStack21/odek/internal/danger"
 )
 
 // ScanContent checks memory content for security threats. Returns an error if
@@ -11,33 +12,26 @@ import (
 //
 // Checks:
 //   - Invisible Unicode characters (zero-width spaces, direction overrides, BOM)
+//   - Mixed confusable scripts (Cyrillic/Greek homoglyphs mixed with Latin)
 //   - Prompt injection markers ("ignore previous instructions", etc.)
 //   - Credential exfiltration patterns (API keys, private keys, bearer tokens)
 func ScanContent(content string) error {
 	// 1. Invisible Unicode
-	if hasInvisibleUnicode(content) {
+	if danger.ContainsInvisible(content) {
 		return fmt.Errorf("memory: content contains invisible Unicode characters")
 	}
 
-	// 2. Injection patterns (case-insensitive)
-	lower := strings.ToLower(content)
-	injectionPatterns := []string{
-		"ignore previous instructions",
-		"ignore all prior",
-		"ignore your previous",
-		"disregard everything",
-		"you are now a different ai",
-		"follow these new instructions",
-		"you are now a different",
-		"override your instructions",
-	}
-	for _, pat := range injectionPatterns {
-		if strings.Contains(lower, pat) {
-			return fmt.Errorf("memory: content contains injection pattern: %q", pat)
-		}
+	// 2. Mixed confusable scripts
+	if danger.HasConfusableScript(content) {
+		return fmt.Errorf("memory: content contains mixed confusable scripts")
 	}
 
-	// 3. Credential exfiltration
+	// 3. Injection patterns (normalized for homoglyph/zero-width resilience)
+	if threats := danger.ScanInjection(content); len(threats) > 0 {
+		return fmt.Errorf("memory: content contains injection pattern: %q", threats[0].Label)
+	}
+
+	// 4. Credential exfiltration
 	if hasCredentials(content) {
 		return fmt.Errorf("memory: content contains potential credential material")
 	}
@@ -64,21 +58,6 @@ var (
 // but it closes the concrete download-and-run class.
 func FactLooksUnsafe(fact string) bool {
 	return remoteExecRe.MatchString(fact) || evalFetchRe.MatchString(fact)
-}
-
-// hasInvisibleUnicode checks for zero-width characters, direction overrides, BOM.
-func hasInvisibleUnicode(s string) bool {
-	for _, r := range s {
-		// Zero-width space, non-joiner, joiner, LTR/RTL marks, RTL override, BOM
-		if r == '\u200B' || r == '\u200C' || r == '\u200D' ||
-			r == '\u200E' || r == '\u200F' ||
-			r == '\u202A' || r == '\u202B' || r == '\u202C' ||
-			r == '\u202D' || r == '\u202E' ||
-			r == '\uFEFF' {
-			return true
-		}
-	}
-	return false
 }
 
 // reSKKey matches OpenAI-style sk- prefixed keys.

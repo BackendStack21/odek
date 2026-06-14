@@ -68,7 +68,7 @@ Tools that wrap:
 
 `session_search` is wrapped because it can surface content from arbitrary past sessions — including sessions that ingested untrusted content. Wrapping its whole output keeps that content from re-entering as trusted instructions and records the retrieval in the audit log, closing a path that otherwise bypassed the memory taint gate (defense 5).
 
-The MCP wrapper guards a tool's **output**. The server-supplied tool **description** is a separate surface ("tool poisoning"): it flows into the model's tool catalogue as effectively trusted instructions. odek scans every MCP tool description with the injection classifier (`ScanInjection`) at registration; if injection patterns are found the description is withheld (replaced with a placeholder, logged to stderr) while the tool stays callable by name. The MCP **error channel** is guarded as well: a server that returns its payload via an error instead of a result has that error message wrapped (and audited) too, since the loop surfaces error text to the model.
+The MCP wrapper guards a tool's **output**. The server-supplied tool **description** is a separate surface ("tool poisoning"): it flows into the model's tool catalogue as effectively trusted instructions. odek scans every MCP tool description with the injection classifier (`ScanInjection`) at registration; if injection patterns are found the description is withheld (replaced with a placeholder, logged to stderr) while the tool stays callable by name. The classifier now normalizes invisible Unicode, folds common homoglyphs, detects mixed confusable scripts, and matches paraphrased exfiltration and non-English override phrases. The MCP **error channel** is guarded as well: a server that returns its payload via an error instead of a result has that error message wrapped (and audited) too, since the loop surfaces error text to the model.
 
 The model is instructed (via the default system prompt) to treat the wrapped region as data, not instructions. A model trained on prompt-injection resistance (Claude Sonnet 4.6+ does this well) honours the boundary. Older models or aggressively fine-tuned ones may not.
 
@@ -128,7 +128,7 @@ summarized by the extractor and could surface as a durable fact. This is
 mitigated, not eliminated: the extractor is instructed to treat the conversation
 as data and never record actionable instructions; a download-and-execute /
 pipe-to-shell filter (`FactLooksUnsafe`) drops the concrete "run this" exploit
-class; and `ScanContent` strips injection patterns/credentials. A determined
+class; and `ScanContent` reuses the hardened `danger.ScanInjection` classifier plus credential checks. A determined
 injection of a *plausible, non-command* fact remains possible, so periodically
 review stored facts (`memory` read). Turning conversation into always-injected
 memory carries irreducible residual risk — set `extract_facts: false` to opt out
