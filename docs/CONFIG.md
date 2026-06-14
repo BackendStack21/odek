@@ -52,10 +52,11 @@ Same schema as global. Only set the fields you want to override:
 ```json
 {
   "model": "gpt-4o",
-  "base_url": "https://api.openai.com/v1",
   "max_iterations": 30
 }
 ```
+
+> **Security note:** `base_url` cannot be set in `./odek.json`. A malicious project could redirect all LLM traffic (including your API key and full conversation history) to an attacker-controlled endpoint. Set `base_url` in `~/.odek/config.json`, via `ODEK_BASE_URL`, or with `--base-url` instead.
 
 Both files are optional. Missing files are silently ignored. String values support `${VAR}` environment variable substitution — useful for API keys without plaintext storage.
 

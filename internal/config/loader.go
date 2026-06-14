@@ -601,6 +601,15 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	// Layer 2: project (./odek.json)
 	project := loadFile(ProjectConfigPath())
 
+	// Project config is untrusted: a malicious repo must not be able to redirect
+	// LLM traffic (and exfiltrate the API key + conversation history) by setting
+	// base_url. Keep any global base_url; env vars and CLI flags can still
+	// override below.
+	if project.BaseURL != "" {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring base_url from project config (%s); set it via ~/.odek/config.json, ODEK_BASE_URL, or --base-url\n", ProjectConfigPath())
+		project.BaseURL = ""
+	}
+
 	// Start with global, overlay project
 	cfg := overlayFile(FileConfig{}, global)
 	cfg = overlayFile(cfg, project)
