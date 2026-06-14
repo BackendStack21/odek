@@ -867,7 +867,7 @@ func run(args []string) error {
 	// MCP server tools
 	var mcpCleanup func()
 	if len(resolved.MCPServers) > 0 {
-		cl, err := loadMCPTools(resolved.MCPServers, &tools)
+		cl, err := loadMCPTools(resolved, &tools)
 		if err != nil {
 			return fmt.Errorf("mcp: %w", err)
 		}
@@ -1214,9 +1214,18 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 // loadMCPTools connects to configured MCP servers and appends their tools
 // to the tool slice. Returns a cleanup function that closes all connections.
 // The passed-in tool slice pointer is extended with ToolAdapters.
-func loadMCPTools(servers map[string]mcpclient.ServerConfig, tools *[]odek.Tool) (func(), error) {
+//
+// Before spawning any server that was defined in the project-level ./odek.json,
+// loadMCPTools calls approveMCPServers, which requires explicit user approval
+// (interactive prompt or ODEK_APPROVE_MCP=1) and persists approvals in
+// ~/.odek/mcp_approvals.json.
+func loadMCPTools(resolved config.ResolvedConfig, tools *[]odek.Tool) (func(), error) {
+	if err := approveMCPServers(resolved, os.Stdin, os.Stdout); err != nil {
+		return nil, err
+	}
+
 	var cleaners []func()
-	for name, cfg := range servers {
+	for name, cfg := range resolved.MCPServers {
 		client, err := mcpclient.New(name, cfg)
 		if err != nil {
 			// Clean up any servers we already started
@@ -1710,7 +1719,7 @@ func continueCmd(args []string) error {
 	// MCP server tools
 	var mcpCleanup func()
 	if len(resolved.MCPServers) > 0 {
-		cl, err := loadMCPTools(resolved.MCPServers, &tools)
+		cl, err := loadMCPTools(resolved, &tools)
 		if err != nil {
 			return fmt.Errorf("mcp: %w", err)
 		}

@@ -1914,7 +1914,7 @@ func TestBuildSandboxArgs_RejectsHostNetwork(t *testing.T) {
 
 func TestLoadMCPTools_EmptyServers(t *testing.T) {
 	tools := make([]odek.Tool, 0)
-	cleanup, err := loadMCPTools(nil, &tools)
+	cleanup, err := loadMCPTools(config.ResolvedConfig{}, &tools)
 	if err != nil {
 		t.Fatalf("loadMCPTools(nil) error: %v", err)
 	}
@@ -1925,7 +1925,7 @@ func TestLoadMCPTools_EmptyServers(t *testing.T) {
 	cleanup()
 
 	// Also test with empty map
-	cleanup2, err := loadMCPTools(map[string]mcpclient.ServerConfig{}, &tools)
+	cleanup2, err := loadMCPTools(config.ResolvedConfig{MCPServers: map[string]mcpclient.ServerConfig{}}, &tools)
 	if err != nil {
 		t.Fatalf("loadMCPTools(empty map) error: %v", err)
 	}

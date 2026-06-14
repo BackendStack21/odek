@@ -307,7 +307,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 	// MCP server tools
 	var mcpCleanup func()
 	if len(resolved.MCPServers) > 0 {
-		cl, err := loadMCPTools(resolved.MCPServers, &tools)
+		cl, err := loadMCPTools(resolved, &tools)
 		if err != nil {
 			return nil, nil, nil, nil, fmt.Errorf("mcp: %w", err)
 		}

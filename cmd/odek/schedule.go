@@ -708,7 +708,7 @@ func buildScheduledMCPTools(resolved config.ResolvedConfig) ([]odek.Tool, func()
 		return nil, func() {}, nil
 	}
 	var tools []odek.Tool
-	cleanup, err := loadMCPTools(resolved.MCPServers, &tools)
+	cleanup, err := loadMCPTools(resolved, &tools)
 	if err != nil {
 		return nil, func() {}, fmt.Errorf("mcp: %w", err)
 	}

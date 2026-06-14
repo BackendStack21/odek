@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -332,6 +333,12 @@ type ResolvedConfig struct {
 	// Populated from the mcp_servers section of odek.json.
 	MCPServers map[string]mcpclient.ServerConfig
 
+	// ProjectMCPServerNames lists the MCP server names that were introduced by
+	// the project-level ./odek.json config. These require explicit user approval
+	// before their subprocesses are spawned, because a malicious repo could
+	// otherwise execute arbitrary code via the mcp_servers section.
+	ProjectMCPServerNames []string
+
 	// MaxConcurrency limits how many sub-agent tasks run in parallel.
 	// Config: max_concurrency, ODEK_MAX_CONCURRENCY.
 	// Default: 3.
@@ -598,6 +605,14 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	cfg := overlayFile(FileConfig{}, global)
 	cfg = overlayFile(cfg, project)
 
+	// Remember which MCP servers came from the project config so commands can
+	// require explicit approval before spawning potentially untrusted subprocesses.
+	projectMCPNames := make([]string, 0, len(project.MCPServers))
+	for name := range project.MCPServers {
+		projectMCPNames = append(projectMCPNames, name)
+	}
+	sort.Strings(projectMCPNames)
+
 	// Layer 3: ODEK_* env vars
 	if v := envString("MODEL"); v != "" {
 		cfg.Model = v
@@ -778,9 +793,10 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		Skills:          resolveSkills(cfg.Skills),
 		Dangerous:       resolveDangerous(cfg.Dangerous),
 		Memory:          resolveMemory(cfg.Memory),
-		Embedding:       cfg.Embedding,
-		MCPServers:      cfg.MCPServers,
-		Telegram:        resolveTelegram(cfg.Telegram),
+		Embedding:             cfg.Embedding,
+		MCPServers:            cfg.MCPServers,
+		ProjectMCPServerNames: projectMCPNames,
+		Telegram:              resolveTelegram(cfg.Telegram),
 		Transcription:   resolveTranscription(cfg.Transcription),
 		Vision:          resolveVision(cfg.Vision),
 		WebSearch:       resolveWebSearch(cfg.WebSearch),

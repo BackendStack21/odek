@@ -79,7 +79,7 @@ Flags:
 	// MCP server tools — connect and discover before sandbox
 	var mcpCleanup func()
 	if len(resolved.MCPServers) > 0 {
-		cl, err := loadMCPTools(resolved.MCPServers, &toolSet)
+		cl, err := loadMCPTools(resolved, &toolSet)
 		if err != nil {
 			return fmt.Errorf("mcp: %w", err)
 		}
