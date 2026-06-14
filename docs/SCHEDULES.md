@@ -114,9 +114,10 @@ Notes:
 - **Schedule management is further restricted to operator chats/users.**
   Mutating commands (`add`, `rm`, `enable`, `disable`, `run`) are allowed only
   from the IDs listed in `schedules.telegram_admin_chats` /
-  `schedules.telegram_admin_users`. When neither list is configured, the bot
-  falls back to `telegram.default_chat_id`; if that is also unset, mutating
-  commands are rejected (read-only `list`/`view`/`next` still work). To keep
+  `schedules.telegram_admin_users`. These same IDs also authorize `/restart`.
+  When neither list is configured, the bot falls back to
+  `telegram.default_chat_id`; if that is also unset, mutating commands and
+  `/restart` are rejected (read-only `list`/`view`/`next` still work). To keep
   schedule management CLI-only entirely, set
   `schedules.allow_telegram_management = false`.
 

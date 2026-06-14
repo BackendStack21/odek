@@ -224,6 +224,12 @@ odek audit <session-id> | jq …    # programmatic triage
 
 Authorization is **fail-closed**: if neither allowlist is configured, the bot refuses to start (`ValidateConfig` returns an error), and at runtime `isAllowed` denies every update. The bot is the only internet-exposed surface and the agent it drives has full host access, so an empty allowlist must never silently mean "allow everyone". To intentionally run an open bot you must explicitly set `ODEK_TELEGRAM_ALLOW_ALL=true`, which logs a loud warning at startup.
 
+The `/restart` command is further restricted to operator chats/users
+(`schedules.telegram_admin_chats` / `telegram_admin_users`, falling back to
+`telegram.default_chat_id`) and is rate-limited to once per 60 seconds, so a
+compromised allowed account cannot restart-loop the bot and interrupt scheduled
+work.
+
 ### 13. Identity anchoring (legacy)
 
 The default system prompt instructs the model:

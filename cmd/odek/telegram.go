@@ -72,6 +72,45 @@ var resolvedAPIKey string
 // shutdown). Override in tests to avoid killing the test process.
 var killFn = syscall.Kill
 
+// restartCooldown limits how often /restart can be triggered, preventing a
+// compromised or over-eager account from restart-looping the bot.
+const restartCooldown = 60 * time.Second
+
+// lastRestartAt stores the Unix timestamp of the most recent /restart.
+var lastRestartAt atomic.Int64
+
+// restartCooldownRemaining returns the time left before another /restart is
+// allowed. Zero means the cooldown has elapsed.
+func restartCooldownRemaining() time.Duration {
+	last := time.Unix(lastRestartAt.Load(), 0)
+	if last.IsZero() {
+		return 0
+	}
+	elapsed := time.Since(last)
+	if elapsed >= restartCooldown {
+		return 0
+	}
+	return restartCooldown - elapsed
+}
+
+// handleRestartCommand checks operator identity and cooldown for /restart and,
+// if allowed, starts the asynchronous SIGHUP. It returns the reply text and a
+// bool indicating whether a restart was actually triggered.
+func handleRestartCommand(chatID, userID int64, adminChats, adminUsers []int64) (string, bool) {
+	if !canManageSchedule(chatID, userID, adminChats, adminUsers) {
+		return "🔒 /restart is restricted to configured operator chats/users.", false
+	}
+	if rem := restartCooldownRemaining(); rem > 0 {
+		return fmt.Sprintf("⏳ /restart was used recently. Please wait %s before restarting again.", rem.Round(time.Second)), false
+	}
+	lastRestartAt.Store(time.Now().Unix())
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		killFn(os.Getpid(), syscall.SIGHUP)
+	}()
+	return "🔄 *Restarting...*\n\nThe bot will restart momentarily. This may take a few seconds.", true
+}
+
 // instanceLockRef holds the current PID file lock, accessible from
 // gracefulRestart so it can release the lock before os.Exit(0).
 var instanceLockRef *instanceLock
@@ -270,16 +309,14 @@ func telegramCmd(args []string) error {
 			return reply, nil
 		}
 
-		// Handle /restart — return confirmation message, then signal SIGHUP.
-		// The message is sent through the standard response pipeline (MarkdownV2 +
-		// retry logic). SIGHUP fires asynchronously after a short delay so the
-		// pipeline has time to dispatch before graceful restart begins.
+		// Handle /restart — restricted to operator chats/users and rate-limited.
+		// The confirmation message is sent through the standard response pipeline
+		// (MarkdownV2 + retry logic). SIGHUP fires asynchronously after a short
+		// delay so the pipeline has time to dispatch before graceful restart begins.
 		if cmdName == "restart" {
-			go func() {
-				time.Sleep(500 * time.Millisecond)
-				killFn(os.Getpid(), syscall.SIGHUP)
-			}()
-			return "🔄 *Restarting...*\n\nThe bot will restart momentarily. This may take a few seconds.", nil
+			reply, _ := handleRestartCommand(chatID, userID,
+				resolved.Schedules.TelegramAdminChats, resolved.Schedules.TelegramAdminUsers)
+			return reply, nil
 		}
 
 		// Handle /new — archive the current session and start fresh.

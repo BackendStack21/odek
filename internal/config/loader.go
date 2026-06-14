@@ -810,15 +810,14 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		resolved.MaxConcurrency = 3
 	}
 
-	// Scheduled-task management from Telegram is restricted to operator chats/users.
-	// If the operator did not configure explicit admin lists, fall back to the
-	// configured telegram.default_chat_id (the operator's own chat). If that is
-	// also unset, mutating /schedule commands are rejected until an admin list is
-	// configured; read-only commands still work.
-	if resolved.Schedules.AllowTelegramManagement {
-		if len(resolved.Schedules.TelegramAdminChats) == 0 && len(resolved.Schedules.TelegramAdminUsers) == 0 && resolved.Telegram.DefaultChatID != 0 {
-			resolved.Schedules.TelegramAdminChats = []int64{resolved.Telegram.DefaultChatID}
-		}
+	// Telegram operator identity: schedule management and /restart are restricted
+	// to configured operator chats/users. If the operator did not configure
+	// explicit admin lists, fall back to telegram.default_chat_id (the operator's
+	// own chat). If that is also unset, mutating /schedule commands and /restart
+	// are rejected until an admin list is configured; read-only commands still
+	// work.
+	if len(resolved.Schedules.TelegramAdminChats) == 0 && len(resolved.Schedules.TelegramAdminUsers) == 0 && resolved.Telegram.DefaultChatID != 0 {
+		resolved.Schedules.TelegramAdminChats = []int64{resolved.Telegram.DefaultChatID}
 	}
 
 	// MaxToolParallel: 0 = use loop engine default (4)

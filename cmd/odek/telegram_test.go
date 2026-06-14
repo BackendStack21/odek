@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -767,5 +768,71 @@ func TestTruncateToolArgs_ExactBoundary(t *testing.T) {
 	got := truncateToolArgs(data, 100)
 	if got != data {
 		t.Errorf("data at exact maxLen should not be truncated: got len=%d", len(got))
+	}
+}
+
+// ── /restart authorization + cooldown tests ─────────────────────────────
+
+func TestHandleRestartCommand_AuthorizationAndCooldown(t *testing.T) {
+	origKill := killFn
+	origLast := lastRestartAt.Load()
+	t.Cleanup(func() {
+		killFn = origKill
+		lastRestartAt.Store(origLast)
+	})
+
+	var gotSig syscall.Signal
+	var gotPid int
+	sigCh := make(chan struct{}, 2)
+	killFn = func(pid int, sig syscall.Signal) error {
+		gotPid = pid
+		gotSig = sig
+		sigCh <- struct{}{}
+		return nil
+	}
+	lastRestartAt.Store(0)
+
+	adminChats := []int64{100}
+	adminUsers := []int64{200}
+
+	// Non-operator chat/user is denied.
+	reply, triggered := handleRestartCommand(999, 999, adminChats, adminUsers)
+	if triggered || !strings.Contains(reply, "restricted") {
+		t.Fatalf("non-operator should be denied, got reply=%q triggered=%v", reply, triggered)
+	}
+
+	// Operator chat triggers restart.
+	reply, triggered = handleRestartCommand(100, 999, adminChats, adminUsers)
+	if !triggered || !strings.Contains(reply, "Restarting") {
+		t.Fatalf("operator chat should trigger restart, got reply=%q triggered=%v", reply, triggered)
+	}
+	select {
+	case <-sigCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("restart signal not sent for operator chat")
+	}
+	if gotSig != syscall.SIGHUP {
+		t.Errorf("expected SIGHUP, got %v", gotSig)
+	}
+	if gotPid != os.Getpid() {
+		t.Errorf("expected pid %d, got %d", os.Getpid(), gotPid)
+	}
+
+	// Operator user is allowed even from a non-admin chat.
+	lastRestartAt.Store(0)
+	reply, triggered = handleRestartCommand(999, 200, adminChats, adminUsers)
+	if !triggered || !strings.Contains(reply, "Restarting") {
+		t.Fatalf("operator user should trigger restart, got reply=%q triggered=%v", reply, triggered)
+	}
+	select {
+	case <-sigCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("restart signal not sent for operator user")
+	}
+
+	// Immediate restart is blocked by cooldown.
+	reply, triggered = handleRestartCommand(100, 999, adminChats, adminUsers)
+	if triggered || !strings.Contains(reply, "wait") {
+		t.Fatalf("cooldown should block restart, got reply=%q triggered=%v", reply, triggered)
 	}
 }
