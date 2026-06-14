@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BackendStack21/odek/internal/flock"
 	"github.com/BackendStack21/odek/internal/transport"
 )
 
@@ -680,6 +681,9 @@ func budgetFilePath() string {
 // adds the given number of tokens, and returns an error if the total
 // exceeds the configured DailyTokenBudget. If the budget is zero (unset),
 // no check is performed and nil is returned.
+//
+// The read-modify-write cycle is protected by an advisory file lock so
+// concurrent odek processes and goroutines cannot clobber the counter.
 func (b *Bot) CheckDailyBudget(tokens int64) error {
 	if b.DailyTokenBudget <= 0 {
 		return nil // budget not configured
@@ -695,6 +699,13 @@ func (b *Bot) CheckDailyBudget(tokens int64) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("telegram: create budget dir: %w", err)
 	}
+
+	// Serialize read-modify-write across processes.
+	release, err := flock.Lock(path + ".lock")
+	if err != nil {
+		return fmt.Errorf("telegram: lock budget file: %w", err)
+	}
+	defer release()
 
 	// Read current usage (file may not exist yet — that's fine).
 	var current int64
@@ -715,8 +726,8 @@ func (b *Bot) CheckDailyBudget(tokens int64) error {
 		)
 	}
 
-	// Write the updated count.
-	if err := os.WriteFile(path, []byte(strconv.FormatInt(total, 10)), 0644); err != nil {
+	// Write the updated count with owner-only permissions.
+	if err := os.WriteFile(path, []byte(strconv.FormatInt(total, 10)), 0600); err != nil {
 		return fmt.Errorf("telegram: write budget file: %w", err)
 	}
 
@@ -730,6 +741,13 @@ func (b *Bot) DailyTokenUsage() (used int64, limit int64) {
 		return 0, 0
 	}
 	path := budgetFilePath()
+
+	release, err := flock.Lock(path + ".lock")
+	if err != nil {
+		return 0, b.DailyTokenBudget
+	}
+	defer release()
+
 	data, err := os.ReadFile(path)
 	if err == nil {
 		if parsed, err := strconv.ParseInt(string(data), 10, 64); err == nil {

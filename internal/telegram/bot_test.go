@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -1315,6 +1316,55 @@ func TestBot_CheckDailyBudget_SequentialBillings(t *testing.T) {
 	}
 }
 
+func TestBot_CheckDailyBudget_FilePermissionsAreRestricted(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	bot := NewBot("testtoken")
+	bot.SetDailyTokenBudget(10_000)
+
+	if err := bot.CheckDailyBudget(100); err != nil {
+		t.Fatalf("CheckDailyBudget: %v", err)
+	}
+
+	date := time.Now().Format("2006-01-02")
+	budgetPath := filepath.Join(tmpDir, ".odek", "telegram_token_usage_"+date)
+	info, err := os.Stat(budgetPath)
+	if err != nil {
+		t.Fatalf("stat budget file: %v", err)
+	}
+	if info.Mode().Perm()&0077 != 0 {
+		t.Errorf("budget file is world/group accessible: %o", info.Mode().Perm())
+	}
+}
+
+func TestBot_CheckDailyBudget_ConcurrentBillingsAreSafe(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	bot := NewBot("testtoken")
+	bot.SetDailyTokenBudget(1_000_000)
+
+	var wg sync.WaitGroup
+	workers := 20
+	billEach := 1000
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := bot.CheckDailyBudget(int64(billEach)); err != nil {
+				t.Errorf("CheckDailyBudget: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	used, _ := bot.DailyTokenUsage()
+	want := int64(workers * billEach)
+	if used != want {
+		t.Errorf("DailyTokenUsage = %d, want %d (race detected)", used, want)
+	}
+}
 // ---------------------------------------------------------------------------
 // DailyTokenUsage
 // ---------------------------------------------------------------------------
