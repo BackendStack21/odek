@@ -60,8 +60,8 @@ func TestParseScheduleOpts(t *testing.T) {
 func TestTelegramScheduleAdd_DefaultsToThisChat(t *testing.T) {
 	st := newTGStore(t)
 	reloaded := false
-	reply, run := telegramScheduleReply(555, "add 0 9 * * 1-5 Summarize my unread email",
-		st, func() { reloaded = true }, true)
+	reply, run := telegramScheduleReply(555, 0, "add 0 9 * * 1-5 Summarize my unread email",
+		st, func() { reloaded = true }, true, []int64{555}, nil)
 	if run != "" {
 		t.Error("add should not produce a runTask")
 	}
@@ -86,8 +86,8 @@ func TestTelegramScheduleAdd_DefaultsToThisChat(t *testing.T) {
 
 func TestTelegramScheduleAdd_Options(t *testing.T) {
 	st := newTGStore(t)
-	reply, _ := telegramScheduleReply(7, "add @daily Daily digest | tz=Europe/Berlin name=digest deliver=log catchup disabled",
-		st, nil, true)
+	reply, _ := telegramScheduleReply(7, 0, "add @daily Daily digest | tz=Europe/Berlin name=digest deliver=log catchup disabled",
+		st, nil, true, []int64{7}, nil)
 	if !strings.Contains(reply, "Added") {
 		t.Fatalf("unexpected reply: %q", reply)
 	}
@@ -110,7 +110,7 @@ func TestTelegramScheduleAdd_Errors(t *testing.T) {
 		"bad deliver":    "add 0 9 * * * a task | deliver=pigeon",
 	}
 	for name, args := range cases {
-		reply, _ := telegramScheduleReply(1, args, st, nil, true)
+		reply, _ := telegramScheduleReply(1, 0, args, st, nil, true, []int64{1}, nil)
 		if !strings.HasPrefix(reply, "❗") && !strings.HasPrefix(reply, "❌") {
 			t.Errorf("%s: expected an error reply, got %q", name, reply)
 		}
@@ -124,28 +124,28 @@ func TestTelegramScheduleAdd_Errors(t *testing.T) {
 
 func TestTelegramScheduleListViewNext(t *testing.T) {
 	st := newTGStore(t)
-	if reply, _ := telegramScheduleReply(1, "list", st, nil, true); !strings.Contains(reply, "No scheduled jobs") {
+	if reply, _ := telegramScheduleReply(1, 0, "list", st, nil, true, []int64{1}, nil); !strings.Contains(reply, "No scheduled jobs") {
 		t.Errorf("empty list reply: %q", reply)
 	}
 	a, _ := st.Add(schedule.Job{Name: "morning", Cron: "0 9 * * *", Task: "x",
 		Deliver: schedule.Delivery{Kind: schedule.DeliverStdout}, Enabled: true})
 
-	if reply, _ := telegramScheduleReply(1, "list", st, nil, true); !strings.Contains(reply, a.ID) {
+	if reply, _ := telegramScheduleReply(1, 0, "list", st, nil, true, []int64{1}, nil); !strings.Contains(reply, a.ID) {
 		t.Errorf("list should include the job id: %q", reply)
 	}
-	if reply, _ := telegramScheduleReply(1, "view "+a.ID, st, nil, true); !strings.Contains(reply, "morning") {
+	if reply, _ := telegramScheduleReply(1, 0, "view "+a.ID, st, nil, true, []int64{1}, nil); !strings.Contains(reply, "morning") {
 		t.Errorf("view reply: %q", reply)
 	}
-	if reply, _ := telegramScheduleReply(1, "view jb-missing", st, nil, true); !strings.Contains(reply, "No job") {
+	if reply, _ := telegramScheduleReply(1, 0, "view jb-missing", st, nil, true, []int64{1}, nil); !strings.Contains(reply, "No job") {
 		t.Errorf("view-missing reply: %q", reply)
 	}
-	if reply, _ := telegramScheduleReply(1, "next "+a.ID, st, nil, true); !strings.Contains(reply, a.ID) {
+	if reply, _ := telegramScheduleReply(1, 0, "next "+a.ID, st, nil, true, []int64{1}, nil); !strings.Contains(reply, a.ID) {
 		t.Errorf("next-by-id reply: %q", reply)
 	}
-	if reply, _ := telegramScheduleReply(1, "next */15 * * * *", st, nil, true); !strings.Contains(reply, "UTC") {
+	if reply, _ := telegramScheduleReply(1, 0, "next */15 * * * *", st, nil, true, []int64{1}, nil); !strings.Contains(reply, "UTC") {
 		t.Errorf("next-by-cron reply: %q", reply)
 	}
-	if reply, _ := telegramScheduleReply(1, "next not-a-cron", st, nil, true); !strings.HasPrefix(reply, "❌") {
+	if reply, _ := telegramScheduleReply(1, 0, "next not-a-cron", st, nil, true, []int64{1}, nil); !strings.HasPrefix(reply, "❌") {
 		t.Errorf("next-bad reply: %q", reply)
 	}
 }
@@ -158,27 +158,27 @@ func TestTelegramScheduleMutations(t *testing.T) {
 		Deliver: schedule.Delivery{Kind: schedule.DeliverStdout}, Enabled: true})
 
 	// disable / enable
-	if reply, _ := telegramScheduleReply(1, "disable "+a.ID, st, nil, true); !strings.Contains(reply, "Disabled") {
+	if reply, _ := telegramScheduleReply(1, 0, "disable "+a.ID, st, nil, true, []int64{1}, nil); !strings.Contains(reply, "Disabled") {
 		t.Errorf("disable reply: %q", reply)
 	}
 	if j, _, _ := st.Get(a.ID); j.Enabled {
 		t.Error("job should be disabled")
 	}
-	if reply, _ := telegramScheduleReply(1, "enable "+a.ID, st, nil, true); !strings.Contains(reply, "Enabled") {
+	if reply, _ := telegramScheduleReply(1, 0, "enable "+a.ID, st, nil, true, []int64{1}, nil); !strings.Contains(reply, "Enabled") {
 		t.Errorf("enable reply: %q", reply)
 	}
 
 	// run → returns the job task for the caller to dispatch
-	reply, run := telegramScheduleReply(1, "run "+a.ID, st, nil, true)
+	reply, run := telegramScheduleReply(1, 0, "run "+a.ID, st, nil, true, []int64{1}, nil)
 	if run != "do it" || !strings.Contains(reply, "Running") {
 		t.Errorf("run should return the task: reply=%q run=%q", reply, run)
 	}
-	if _, miss := telegramScheduleReply(1, "run jb-missing", st, nil, true); miss != "" {
+	if _, miss := telegramScheduleReply(1, 0, "run jb-missing", st, nil, true, []int64{1}, nil); miss != "" {
 		t.Error("run of a missing job should not produce a runTask")
 	}
 
 	// rm
-	if reply, _ := telegramScheduleReply(1, "rm "+a.ID, st, nil, true); !strings.Contains(reply, "Removed") {
+	if reply, _ := telegramScheduleReply(1, 0, "rm "+a.ID, st, nil, true, []int64{1}, nil); !strings.Contains(reply, "Removed") {
 		t.Errorf("rm reply: %q", reply)
 	}
 	if jobs, _ := st.List(); len(jobs) != 0 {
@@ -187,7 +187,7 @@ func TestTelegramScheduleMutations(t *testing.T) {
 
 	// usage errors for missing ids
 	for _, args := range []string{"rm", "enable", "disable", "run", "view"} {
-		if reply, _ := telegramScheduleReply(1, args, st, nil, true); !strings.HasPrefix(reply, "❗") {
+		if reply, _ := telegramScheduleReply(1, 0, args, st, nil, true, []int64{1}, nil); !strings.HasPrefix(reply, "❗") {
 			t.Errorf("%q with no id should return usage, got %q", args, reply)
 		}
 	}
@@ -202,16 +202,16 @@ func TestTelegramSchedule_ManagementGate(t *testing.T) {
 
 	// Mutating verbs are refused when management is disabled.
 	for _, args := range []string{"add 0 9 * * * t", "rm " + a.ID, "enable " + a.ID, "disable " + a.ID, "run " + a.ID} {
-		reply, run := telegramScheduleReply(1, args, st, nil, false)
+		reply, run := telegramScheduleReply(1, 0, args, st, nil, false, nil, nil)
 		if !strings.Contains(reply, "disabled") || run != "" {
 			t.Errorf("gated %q should be refused, got %q", args, reply)
 		}
 	}
 	// Read-only verbs still work.
-	if reply, _ := telegramScheduleReply(1, "list", st, nil, false); !strings.Contains(reply, a.ID) {
+	if reply, _ := telegramScheduleReply(1, 0, "list", st, nil, false, nil, nil); !strings.Contains(reply, a.ID) {
 		t.Errorf("list should work even when management is disabled: %q", reply)
 	}
-	if reply, _ := telegramScheduleReply(1, "view "+a.ID, st, nil, false); strings.Contains(reply, "disabled (`schedules") {
+	if reply, _ := telegramScheduleReply(1, 0, "view "+a.ID, st, nil, false, nil, nil); strings.Contains(reply, "disabled (`schedules") {
 		t.Error("view should not be gated")
 	}
 	// The job must be untouched.
@@ -220,17 +220,47 @@ func TestTelegramSchedule_ManagementGate(t *testing.T) {
 	}
 }
 
+func TestTelegramSchedule_OperatorGate(t *testing.T) {
+	st := newTGStore(t)
+
+	// A non-operator chat/user cannot add jobs even when management is enabled.
+	reply, _ := telegramScheduleReply(999, 0, "add 0 9 * * * do something", st, nil, true, []int64{1, 2}, []int64{42})
+	if !strings.Contains(reply, "restricted") {
+		t.Errorf("non-operator add should be refused, got %q", reply)
+	}
+	if jobs, _ := st.List(); len(jobs) != 0 {
+		t.Errorf("non-operator add must not persist a job, got %d", len(jobs))
+	}
+
+	// An operator chat is allowed.
+	reply, _ = telegramScheduleReply(1, 0, "add 0 9 * * * allowed via chat", st, nil, true, []int64{1, 2}, []int64{42})
+	if !strings.Contains(reply, "Added") {
+		t.Errorf("operator chat add should succeed, got %q", reply)
+	}
+
+	// An operator user is allowed even from an unlisted chat.
+	reply, _ = telegramScheduleReply(555, 42, "add 0 10 * * * allowed via user", st, nil, true, []int64{1, 2}, []int64{42})
+	if !strings.Contains(reply, "Added") {
+		t.Errorf("operator user add should succeed, got %q", reply)
+	}
+
+	// Read-only verbs remain available to anyone.
+	if reply, _ := telegramScheduleReply(999, 0, "list", st, nil, true, []int64{1}, nil); !strings.Contains(reply, "Scheduled jobs") {
+		t.Errorf("non-operator list should still work: %q", reply)
+	}
+}
+
 func TestTelegramSchedule_HelpAndUnknownAndNilStore(t *testing.T) {
 	st := newTGStore(t)
 	for _, args := range []string{"", "help"} {
-		if reply, _ := telegramScheduleReply(1, args, st, nil, true); !strings.Contains(reply, "Schedule commands") {
+		if reply, _ := telegramScheduleReply(1, 0, args, st, nil, true, []int64{1}, nil); !strings.Contains(reply, "Schedule commands") {
 			t.Errorf("%q should return usage, got %q", args, reply)
 		}
 	}
-	if reply, _ := telegramScheduleReply(1, "bogus", st, nil, true); !strings.Contains(reply, "Unknown subcommand") {
+	if reply, _ := telegramScheduleReply(1, 0, "bogus", st, nil, true, []int64{1}, nil); !strings.Contains(reply, "Unknown subcommand") {
 		t.Errorf("unknown subcommand reply: %q", reply)
 	}
-	if reply, _ := telegramScheduleReply(1, "list", nil, nil, true); !strings.Contains(reply, "unavailable") {
+	if reply, _ := telegramScheduleReply(1, 0, "list", nil, nil, true, []int64{1}, nil); !strings.Contains(reply, "unavailable") {
 		t.Errorf("nil store should report unavailable, got %q", reply)
 	}
 }

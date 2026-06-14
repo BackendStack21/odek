@@ -240,6 +240,23 @@ This is the original layer 1. The `<untrusted_content>` wrappers (defense 2) giv
 
 When `AGENTS.md` exists in the working directory, odek appends it to the system prompt. It is treated as project context, not as a user instruction — identity anchoring and the anti-injection rules still apply on top of it. `--no-agents` skips loading.
 
+### 15. Scheduled task hardening
+
+`odek telegram` can host a native cron scheduler, and any chat/user on the bot
+allowlist can reach the `/schedule` commands. Because scheduled jobs run
+headlessly while no one is watching, the following hardening is applied:
+
+- Mutating `/schedule` commands (`add`, `rm`, `enable`, `disable`, `run`) are
+  restricted to configured operator chats/users
+  (`schedules.telegram_admin_chats` / `telegram_admin_users`). If neither list
+  nor `telegram.default_chat_id` is configured, mutating commands are rejected;
+  read-only commands still work.
+- The headless runner forces `non_interactive` to `deny` and clamps destructive,
+  code-execution, install, system-write, network-egress, unknown, and blocked
+  risk classes to `deny`, regardless of the active `dangerous` profile.
+- Results written to `~/.odek/schedule.log` are redacted for secrets before they
+  are persisted.
+
 ---
 
 ## Configuration
@@ -260,7 +277,7 @@ See [CLI.md — Dangerous Operations](CLI.md#dangerous-operations) for the full 
 }
 ```
 
-### 15. Configuration file size cap
+### 16. Configuration file size cap
 
 `~/.odek/config.json` and `./odek.json` are rejected if they exceed 5 MiB. This prevents a malicious, truncated, or accidentally-generated config file from causing an out-of-memory condition at startup.
 

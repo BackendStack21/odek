@@ -550,6 +550,26 @@ func envInt(key string) int {
 	return n
 }
 
+// envInt64List parses a comma-separated ODEK_* env var into a slice of int64.
+// Empty/unparseable entries are silently dropped.
+func envInt64List(key string) []int64 {
+	v := os.Getenv("ODEK_" + key)
+	if v == "" {
+		return nil
+	}
+	var out []int64
+	for _, s := range strings.Split(v, ",") {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // ── Merge ──────────────────────────────────────────────────────────────
 
 // LoadConfig merges configuration from all four layers and returns the
@@ -668,6 +688,12 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if v := envBool("SCHEDULES_ALLOW_TELEGRAM_MANAGEMENT"); v != nil {
 		cfg.Schedules.AllowTelegramManagement = v
 	}
+	if v := envInt64List("SCHEDULES_TELEGRAM_ADMIN_CHATS"); v != nil {
+		cfg.Schedules.TelegramAdminChats = v
+	}
+	if v := envInt64List("SCHEDULES_TELEGRAM_ADMIN_USERS"); v != nil {
+		cfg.Schedules.TelegramAdminUsers = v
+	}
 
 	// Telegram env overrides: merge env vars on top of file config.
 	baseTelegram := telegram.DefaultConfig()
@@ -782,6 +808,17 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		resolved.MaxConcurrency = cfg.MaxConcurrency
 	} else {
 		resolved.MaxConcurrency = 3
+	}
+
+	// Scheduled-task management from Telegram is restricted to operator chats/users.
+	// If the operator did not configure explicit admin lists, fall back to the
+	// configured telegram.default_chat_id (the operator's own chat). If that is
+	// also unset, mutating /schedule commands are rejected until an admin list is
+	// configured; read-only commands still work.
+	if resolved.Schedules.AllowTelegramManagement {
+		if len(resolved.Schedules.TelegramAdminChats) == 0 && len(resolved.Schedules.TelegramAdminUsers) == 0 && resolved.Telegram.DefaultChatID != 0 {
+			resolved.Schedules.TelegramAdminChats = []int64{resolved.Telegram.DefaultChatID}
+		}
 	}
 
 	// MaxToolParallel: 0 = use loop engine default (4)
@@ -1117,6 +1154,13 @@ type SchedulesConfig struct {
 	// When false, the Telegram bot still lists/previews jobs but refuses to
 	// add/remove/enable/disable/run them — manage from the host CLI instead.
 	AllowTelegramManagement *bool `json:"allow_telegram_management,omitempty"` // default true
+	// TelegramAdminChats restricts mutating `/schedule` commands to the listed
+	// chat IDs. When empty, management falls back to telegram.default_chat_id
+	// (if set). Read-only commands are not affected.
+	TelegramAdminChats []int64 `json:"telegram_admin_chats,omitempty"`
+	// TelegramAdminUsers restricts mutating `/schedule` commands to the listed
+	// user IDs. Read-only commands are not affected.
+	TelegramAdminUsers []int64 `json:"telegram_admin_users,omitempty"`
 }
 
 // ScheduleConfig is the resolved scheduler config (all fields concrete).
@@ -1126,6 +1170,8 @@ type ScheduleConfig struct {
 	Timezone                string
 	Catchup                 bool
 	AllowTelegramManagement bool
+	TelegramAdminChats      []int64
+	TelegramAdminUsers      []int64
 }
 
 // resolveSchedules merges file-level scheduler config with defaults.
@@ -1155,6 +1201,8 @@ func resolveSchedules(cfg *SchedulesConfig) ScheduleConfig {
 	if cfg.AllowTelegramManagement != nil {
 		out.AllowTelegramManagement = *cfg.AllowTelegramManagement
 	}
+	out.TelegramAdminChats = cfg.TelegramAdminChats
+	out.TelegramAdminUsers = cfg.TelegramAdminUsers
 	return out
 }
 

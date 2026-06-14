@@ -116,9 +116,15 @@ Full guide: [../docs/SCHEDULES.md](../docs/SCHEDULES.md).
    ```
 
    Jobs added this way deliver back to that chat by default. Use `/schedules`
-   to list and `/schedule rm|enable|disable|run|next` to manage them. To keep
-   management host-only, set `ODEK_SCHEDULES_ALLOW_TELEGRAM_MANAGEMENT=false`
-   (the chat can still list and preview).
+   to list and `/schedule rm|enable|disable|run|next` to manage them.
+
+   > **Schedule management is restricted to operator chats/users.**
+   > Mutating commands (`add`, `rm`, `enable`, `disable`, `run`) are allowed only
+   > from the IDs listed in `ODEK_SCHEDULES_TELEGRAM_ADMIN_CHATS` /
+   > `ODEK_SCHEDULES_TELEGRAM_ADMIN_USERS`. If neither list nor
+   > `ODEK_TELEGRAM_DEFAULT_CHAT_ID` is configured, mutating commands are rejected
+   > (read-only `list`/`view`/`next` still work). To keep management host-only,
+   > set `ODEK_SCHEDULES_ALLOW_TELEGRAM_MANAGEMENT=false`.
 
    You can also run the CLI inside the container, or edit
    `./.odek/schedules.json` on the host directly — jobs persist in the `./.odek`

@@ -22,16 +22,35 @@ import (
 
 const scheduleTelegramMaxRows = 20
 
+// canManageSchedule returns true when the originating chat or user is in the
+// configured operator allowlist. An empty allowlist means no one is authorised;
+// mutating commands are then rejected (fail-closed).
+func canManageSchedule(chatID, userID int64, adminChats, adminUsers []int64) bool {
+	for _, id := range adminChats {
+		if id == chatID {
+			return true
+		}
+	}
+	for _, id := range adminUsers {
+		if id == userID {
+			return true
+		}
+	}
+	return false
+}
+
 // telegramScheduleReply handles a `/schedule <sub> …` command and returns the
 // reply to send. When the subcommand is `run` and the job exists, runTask holds
 // the job's task for the caller to dispatch through the normal chat pipeline
 // (this helper has no agent access); it is empty otherwise.
 //
 // chatID is the originating chat — telegram-delivered jobs added here default to
-// delivering back to it. reload, if non-nil, is invoked after a mutation so the
-// embedded scheduler reconciles immediately. allowManage gates the mutating
-// verbs; read-only verbs (list/view/next/help) always work.
-func telegramScheduleReply(chatID int64, argsStr string, st *schedule.Store, reload func(), allowManage bool) (reply, runTask string) {
+// delivering back to it. userID is the Telegram user who sent the command.
+// reload, if non-nil, is invoked after a mutation so the embedded scheduler
+// reconciles immediately. allowManage gates the mutating verbs; read-only verbs
+// (list/view/next/help) always work. adminChats/adminUsers further restrict
+// mutating verbs to configured operator identities.
+func telegramScheduleReply(chatID int64, userID int64, argsStr string, st *schedule.Store, reload func(), allowManage bool, adminChats []int64, adminUsers []int64) (reply, runTask string) {
 	if st == nil {
 		return "❌ Schedule store is unavailable.", ""
 	}
@@ -51,9 +70,12 @@ func telegramScheduleReply(chatID int64, argsStr string, st *schedule.Store, rel
 		return scheduleTelegramNext(st, rest), ""
 	}
 
-	// Mutating verbs — gated by config.
+	// Mutating verbs — gated by config and operator identity.
 	if !allowManage {
 		return "🔒 Managing schedules from Telegram is disabled (`schedules.allow_telegram_management = false`). Use `odek schedule` on the host.", ""
+	}
+	if !canManageSchedule(chatID, userID, adminChats, adminUsers) {
+		return "🔒 Schedule management is restricted to configured operator chats/users (`schedules.telegram_admin_chats` / `telegram_admin_users`). Read-only commands (list/view/next) still work.", ""
 	}
 	switch sub {
 	case "add":

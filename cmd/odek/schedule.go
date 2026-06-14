@@ -16,8 +16,10 @@ import (
 
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/loop"
+	"github.com/BackendStack21/odek/internal/redact"
 	"github.com/BackendStack21/odek/internal/render"
 	"github.com/BackendStack21/odek/internal/schedule"
 	"github.com/BackendStack21/odek/internal/telegram"
@@ -631,19 +633,32 @@ func startSchedulerForBot(ctx context.Context, bot *telegram.Bot, resolved confi
 //
 // Safety: a scheduled task runs unattended, so there is no human to answer an
 // approval prompt. builtinTools is given a nil approver, which means a
-// Prompt-class op would fall back to DangerousConfig.NonInteractiveAction() —
-// and that DEFAULTS TO ALLOW when the policy doesn't say otherwise. To avoid
-// silently granting dangerous operations when no policy is configured, we set a
-// "deny" floor whenever NonInteractive is unset, matching the hardening that
-// sub-agents apply. An explicit allow/deny (e.g. the godmode profile, or the
-// restricted profile's "deny") is honoured unchanged.
+// Prompt-class op would fall back to DangerousConfig.NonInteractiveAction().
+// To prevent a compromised task (or a permissive "godmode" profile) from
+// executing destructive/network operations while no one is watching, we force
+// NonInteractive to "deny" and clamp the highest-risk classes to Deny
+// regardless of what the resolved config says. This mirrors the untrusted
+// sub-agent damage cap.
 func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system, task string, mcpTools []odek.Tool) (string, int64, error) {
-	if resolved.Dangerous.NonInteractive == nil {
-		deny := "deny"
-		resolved.Dangerous.NonInteractive = &deny
+	dangerCfg := resolved.Dangerous
+	deny := "deny"
+	dangerCfg.NonInteractive = &deny
+	if dangerCfg.Classes == nil {
+		dangerCfg.Classes = make(map[danger.RiskClass]danger.Action)
+	}
+	for _, cls := range []danger.RiskClass{
+		danger.Destructive,
+		danger.CodeExecution,
+		danger.Install,
+		danger.SystemWrite,
+		danger.NetworkEgress,
+		danger.Unknown,
+		danger.Blocked,
+	} {
+		dangerCfg.Classes[cls] = danger.Deny
 	}
 
-	tools := builtinTools(resolved.Dangerous, nil, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{Transcription: resolved.Transcription, Vision: resolved.Vision, WebSearch: resolved.WebSearch}, nil)
+	tools := builtinTools(dangerCfg, nil, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{Transcription: resolved.Transcription, Vision: resolved.Vision, WebSearch: resolved.WebSearch}, nil)
 	tools = append(tools, mcpTools...)
 
 	// Capture cumulative token usage from the final iteration so the Runner
@@ -776,6 +791,9 @@ func firstWords(s string, n int) string {
 }
 
 // appendScheduleLog appends a delivered result to ~/.odek/schedule.log.
+// Both the job label and the result are run through secret redaction before
+// they are written, because task output can contain API keys, tokens, or
+// private keys fetched or produced by the agent.
 func appendScheduleLog(job schedule.Job, result string) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -791,7 +809,9 @@ func appendScheduleLog(job schedule.Job, result string) error {
 		return err
 	}
 	defer f.Close()
-	_, err = fmt.Fprintf(f, "[%s] %s (%s)\n%s\n\n", time.Now().Format(time.RFC3339), job.Name, job.ID, result)
+	name := redact.RedactSecrets(job.Name)
+	safe := redact.RedactSecrets(result)
+	_, err = fmt.Fprintf(f, "[%s] %s (%s)\n%s\n\n", time.Now().Format(time.RFC3339), name, job.ID, safe)
 	return err
 }
 

@@ -220,7 +220,7 @@ The handler uses `sync.Map` for `TelegramApprover` instances, keyed by `chatID`.
 | `/resume <session_id>` | Resume a previous session by ID |
 | `/prune [days]` | Clean up old sessions (default: 30 days) |
 | `/schedules` | List scheduled tasks (id, on/off, cron, next fire, last status) |
-| `/schedule <subcommand>` | Manage scheduled tasks — `add`, `rm`, `enable`, `disable`, `run`, `next`, `view`. See [Managing schedules from Telegram](SCHEDULES.md#managing-from-telegram) |
+| `/schedule <subcommand>` | Manage scheduled tasks — `add`, `rm`, `enable`, `disable`, `run`, `next`, `view`. Mutating commands are restricted to configured operator chats/users. See [Managing schedules from Telegram](SCHEDULES.md#managing-from-telegram) |
 
 ### Architecture
 

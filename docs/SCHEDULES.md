@@ -110,9 +110,15 @@ Notes:
 - Edits made from Telegram take effect **immediately** (the embedded scheduler
   reconciles on the spot, not on the ~30 s poll).
 - Only chats/users on the bot's allowlist (`ODEK_TELEGRAM_ALLOWED_CHATS` /
-  `ALLOWED_USERS`) reach these commands. To keep schedule **management**
-  CLI-only while still allowing in-chat listing/preview, set
-  `schedules.allow_telegram_management = false` (read-only verbs still work).
+  `ALLOWED_USERS`) reach these commands.
+- **Schedule management is further restricted to operator chats/users.**
+  Mutating commands (`add`, `rm`, `enable`, `disable`, `run`) are allowed only
+  from the IDs listed in `schedules.telegram_admin_chats` /
+  `schedules.telegram_admin_users`. When neither list is configured, the bot
+  falls back to `telegram.default_chat_id`; if that is also unset, mutating
+  commands are rejected (read-only `list`/`view`/`next` still work). To keep
+  schedule management CLI-only entirely, set
+  `schedules.allow_telegram_management = false`.
 
 ---
 
@@ -164,17 +170,20 @@ client is reused (shared rate limiting).
 
 ## Safety: unattended tasks
 
-A scheduled task runs with **no human present to approve actions**. It inherits
-the process's existing danger policy (`dangerous` in config) exactly as a
-non-interactive `odek run` would:
+A scheduled task runs with **no human present to approve actions**. The
+headless runner always applies a hard "deny" floor for prompt-class operations
+and clamps destructive, code-execution, install, system-write, network-egress,
+and unknown/blocked risk classes to `deny` — regardless of the configured
+`dangerous` profile. This prevents a compromised task definition from erasing
+files or exfiltrating data while unattended.
 
-- **Restricted profile** → destructive / code-execution / network-write
-  operations are denied; read/summarise/deliver tasks work.
-- **Godmode profile** → full access, unattended. Only point scheduled jobs at
-  godmode if you trust every task definition.
+Read/summarise/deliver tasks work as usual. If you truly need a scheduled job
+that performs high-risk operations, run it interactively via `odek run` or the
+`/schedule run` command so an approver can review each action.
 
 Task definitions in `schedules.json` are owner-authored (same trust level as
-`config.json`); the file is written `0600`.
+`config.json`); the file is written `0600`. Results written to
+`~/.odek/schedule.log` are redacted for secrets before they hit disk.
 
 ---
 
@@ -190,7 +199,9 @@ the engine. Every field also has an `ODEK_SCHEDULES_*` environment override.
     "max_concurrent": 2,
     "timezone": "UTC",
     "catchup": false,
-    "allow_telegram_management": true
+    "allow_telegram_management": true,
+    "telegram_admin_chats": [123456789],
+    "telegram_admin_users": [987654321]
   }
 }
 ```
@@ -202,6 +213,8 @@ the engine. Every field also has an `ODEK_SCHEDULES_*` environment override.
 | `timezone` | `ODEK_SCHEDULES_TIMEZONE` | `UTC` | Default timezone for jobs without `--tz` |
 | `catchup` | `ODEK_SCHEDULES_CATCHUP` | `false` | Global default for the missed-run policy |
 | `allow_telegram_management` | `ODEK_SCHEDULES_ALLOW_TELEGRAM_MANAGEMENT` | `true` | Allow the in-chat `/schedule` commands to add/remove/toggle/run jobs (read-only listing always works) |
+| `telegram_admin_chats` | `ODEK_SCHEDULES_TELEGRAM_ADMIN_CHATS` | `[]` | Operator chat IDs that may use mutating `/schedule` commands |
+| `telegram_admin_users` | `ODEK_SCHEDULES_TELEGRAM_ADMIN_USERS` | `[]` | Operator user IDs that may use mutating `/schedule` commands |
 
 ---
 

@@ -196,3 +196,25 @@ func TestTelegramDeliverer_FallsBackForLog(t *testing.T) {
 		t.Errorf("fallback log path failed: err=%v content=%q", err, string(data))
 	}
 }
+
+func TestAppendScheduleLog_RedactsSecrets(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	job := schedule.Job{ID: "jb-secret", Name: "api_key=sk-12345678901234567890123456789012"}
+	if err := appendScheduleLog(job, "token is ghp_123456789012345678901234567890123456"); err != nil {
+		t.Fatalf("appendScheduleLog: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".odek", "schedule.log"))
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	if strings.Contains(string(data), "sk-12345678901234567890123456789012") {
+		t.Error("log should not contain the raw OpenAI-style key")
+	}
+	if strings.Contains(string(data), "ghp_123456789012345678901234567890123456") {
+		t.Error("log should not contain the raw GitHub PAT")
+	}
+	if !strings.Contains(string(data), "[REDACTED]") {
+		t.Errorf("log should contain [REDACTED] markers: %q", string(data))
+	}
+}

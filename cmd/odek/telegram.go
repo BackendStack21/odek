@@ -260,8 +260,9 @@ func telegramCmd(args []string) error {
 			if cmdName == "schedules" {
 				sub = "list"
 			}
-			reply, runTask := telegramScheduleReply(chatID, sub, scheduleStore,
-				scheduleReloadRef, resolved.Schedules.AllowTelegramManagement)
+			reply, runTask := telegramScheduleReply(chatID, userID, sub, scheduleStore,
+				scheduleReloadRef, resolved.Schedules.AllowTelegramManagement,
+				resolved.Schedules.TelegramAdminChats, resolved.Schedules.TelegramAdminUsers)
 			if runTask != "" {
 				go handleChatMessage(chatID, messageID, userID, runTask, bot, handler, sessionManager,
 					resolved, systemMessage, handlerLog)
