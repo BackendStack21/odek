@@ -130,6 +130,8 @@ Layered prompt-injection / approval-fatigue defenses. Full reference: [docs/SECU
 - **Session file size cap** (`internal/session/session.go`) — session files larger than 32 MiB are rejected by `Load()` to prevent OOM from tampered or corrupted transcripts.
 - **Skill file size cap** (`internal/skills/loader.go`) — `SKILL.md` files larger than 1 MiB are skipped so a malicious project cannot OOM the process at startup or bloat the system prompt.
 - **Serve sandbox default-on** — `odek serve` enables `--sandbox` automatically unless `--no-sandbox` is passed.
+- **Sandbox volume confinement** (`internal/sandbox/sandbox.go`) — extra `--sandbox-volume` host paths must resolve to a location under the working directory, cannot contain `..` or symlink escapes, and cannot match sensitive prefixes such as `/etc`, `/proc`, `/sys`, `/dev`, `/root`, `/home`, `/var`, `/run`, or `/var/run/docker.sock`.
+- **Sandbox read-only enforcement** (`cmd/odek/sandbox_file.go` + `cmd/odek/file_tool.go` + `cmd/odek/perf_tools.go`) — when a sandbox container is active, `write_file`, `patch`, and `batch_patch` translate host paths to `/workspace/...` and copy data into the container with `docker cp`, so a read-only workspace mount (`--sandbox-readonly`) is enforced for the agent's own file tools.
 - **Telegram photo caption wrapping** (`cmd/odek/telegram.go`) — photo captions cross the Telegram trust boundary, so they are wrapped as untrusted content both when passed to the local vision model and when injected into the main agent's user message.
 - **Secret redaction** (`internal/redact/redact.go`) — 20+ patterns: OpenAI, Anthropic, GitHub PAT, AWS, PEM, JWT, Vault, Google OAuth, SendGrid, Discord, DB URLs, etc.
 

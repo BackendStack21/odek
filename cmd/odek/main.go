@@ -1132,6 +1132,12 @@ func setupSandbox(tools []odek.Tool, cfg sandboxConfig) (containerName string, c
 			tool.containerName = containerName
 		case *parallelShellTool:
 			tool.containerName = containerName
+		case *writeFileTool:
+			tool.containerName = containerName
+		case *patchTool:
+			tool.containerName = containerName
+		case *batchPatchTool:
+			tool.containerName = containerName
 		}
 	}
 	return containerName, cleanup, nil

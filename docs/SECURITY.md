@@ -28,6 +28,8 @@ Out of scope:
 `odek run --sandbox` and `odek serve` (default) spawn an isolated Docker container per session:
 
 - No filesystem access beyond the working directory (mounted read-only when configured).
+- `write_file`, `patch`, and `batch_patch` do not touch the host filesystem when `--sandbox` is active; they translate the host path to `/workspace/...` and copy content into the running container with `docker cp`. This makes `--sandbox-readonly` enforceable for the agent's own file tools, not only for commands run through `shell`.
+- Extra bind volumes supplied with `--sandbox-volume` are confined to the working directory: the host path must resolve to a location under the working directory, cannot contain `..` or symlink escapes, and cannot match sensitive prefixes such as `/etc`, `/proc`, `/sys`, `/dev`, `/root`, `/home`, `/var`, `/run`, or `/var/run/docker.sock`.
 - No network by default. `sandbox_network` defaults to `none`; `host` is rejected.
 - Zero kernel capabilities even as root inside the container.
 - No `setuid` escalation; `/tmp` is `noexec`.

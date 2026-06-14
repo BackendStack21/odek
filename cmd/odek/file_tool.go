@@ -179,6 +179,9 @@ type writeFileTool struct {
 	dangerousConfig danger.DangerousConfig
 	trustedClasses  map[danger.RiskClass]bool
 	restrictToCWD   bool // when true, reject paths escaping the working directory
+	// containerName, when set, routes writes through the sandbox container so
+	// that read-only workspace mounts are enforced.
+	containerName string
 }
 
 func (t *writeFileTool) Name() string { return "write_file" }
@@ -248,20 +251,32 @@ func (t *writeFileTool) Call(argsJSON string) (string, error) {
 		return jsonError(err.Error())
 	}
 
-	// Create parent directories
-	dir := filepath.Dir(args.Path)
-	if dir != "." && dir != "/" {
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return jsonError(fmt.Sprintf("cannot create directory %q: %v", dir, err))
-		}
-	}
-
 	// Preserve the original file's mode when overwriting, so a temp file
 	// created with default permissions does not change the accessibility
 	// of an existing file (e.g., making a 0640 file world-readable).
 	var origMode os.FileMode = 0644
 	if st, err := os.Stat(args.Path); err == nil {
 		origMode = st.Mode().Perm()
+	}
+
+	// When sandbox mode is active, route the write through the container so a
+	// read-only workspace mount is actually enforced.
+	if t.containerName != "" {
+		if err := sandboxWriteFile(t.containerName, args.Path, []byte(args.Content), origMode); err != nil {
+			return jsonError(fmt.Sprintf("cannot write %q via sandbox: %v", args.Path, err))
+		}
+		return jsonResult(writeFileResult{
+			Success: true,
+			Path:    args.Path,
+		})
+	}
+
+	// Create parent directories
+	dir := filepath.Dir(args.Path)
+	if dir != "." && dir != "/" {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return jsonError(fmt.Sprintf("cannot create directory %q: %v", dir, err))
+		}
 	}
 
 	// Atomic write via temp file + rename to prevent TOCTOU symlink races.
@@ -593,6 +608,9 @@ type patchTool struct {
 	dangerousConfig danger.DangerousConfig
 	trustedClasses  map[danger.RiskClass]bool
 	restrictToCWD   bool // when true, reject paths escaping the working directory
+	// containerName, when set, routes writes through the sandbox container so
+	// that read-only workspace mounts are enforced.
+	containerName string
 }
 
 func (t *patchTool) Name() string { return "patch" }
@@ -720,6 +738,18 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 		truncateDiff(original, 100),
 		truncateDiff(modified, 100),
 	)
+
+	// When sandbox mode is active, route the write through the container so a
+	// read-only workspace mount is actually enforced.
+	if t.containerName != "" {
+		if err := sandboxWriteFile(t.containerName, args.Path, []byte(modified), origMode); err != nil {
+			return jsonError(fmt.Sprintf("cannot write %q via sandbox: %v", args.Path, err))
+		}
+		return jsonResult(patchResult{
+			Success: true,
+			Diff:    wrapUntrusted("patch:"+args.Path, diff),
+		})
+	}
 
 	// Atomic write via temp file + rename to prevent TOCTOU symlink races.
 	// The temp file is created in the same directory (same filesystem),

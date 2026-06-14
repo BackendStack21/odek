@@ -74,6 +74,9 @@ const maxBatchPatches = 10
 type batchPatchTool struct {
 	dangerousConfig danger.DangerousConfig
 	restrictToCWD   bool // when true, reject paths escaping the working directory
+	// containerName, when set, routes writes through the sandbox container so
+	// that read-only workspace mounts are enforced.
+	containerName string
 }
 
 func (t *batchPatchTool) Name() string { return "batch_patch" }
@@ -229,14 +232,30 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 		diff := fmt.Sprintf("--- a/%s\n+++ b/%s\n@@ -1 +1 @@\n-%s\n+%s\n",
 			p.Path, p.Path, truncateDiff(original, 100), truncateDiff(modified, 100))
 
-		// Atomic write — preserve the original file's mode and surface any
-		// write error so a short or failed write cannot silently corrupt
-		// the target (see IMPROVEMENTS_ROADMAP.md B-H1, B-H2).
-		dir := filepath.Dir(p.Path)
+		// Preserve the original file's mode.
 		origMode := os.FileMode(0644)
 		if st, err := os.Stat(p.Path); err == nil {
 			origMode = st.Mode().Perm()
 		}
+
+		// When sandbox mode is active, route the write through the container so
+		// a read-only workspace mount is actually enforced.
+		if t.containerName != "" {
+			if err := sandboxWriteFile(t.containerName, p.Path, []byte(modified), origMode); err != nil {
+				entry.Error = fmt.Sprintf("cannot write %q via sandbox: %v", p.Path, err)
+				results[idx] = entry
+				continue
+			}
+			entry.Success = true
+			entry.Diff = wrapUntrusted("batch_patch:"+p.Path, diff)
+			results[idx] = entry
+			continue
+		}
+
+		// Atomic write — preserve the original file's mode and surface any
+		// write error so a short or failed write cannot silently corrupt
+		// the target (see IMPROVEMENTS_ROADMAP.md B-H1, B-H2).
+		dir := filepath.Dir(p.Path)
 		tmpFile, err := os.CreateTemp(dir, ".tmp_batchpatch_*")
 		if err != nil {
 			entry.Error = fmt.Sprintf("cannot create temp file: %v", err)
