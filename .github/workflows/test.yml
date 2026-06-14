@@ -14,7 +14,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version: "1.25"
 
       - name: build
         run: go build -o /tmp/odek-test github.com/BackendStack21/odek/cmd/odek && chmod +x /tmp/odek-test
@@ -35,10 +35,14 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version: "1.25"
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
           version: v1.64
+          # Compile golangci-lint with the toolchain set up above (Go 1.25) so
+          # its typechecker can read the `go 1.25` module. The official
+          # prebuilt v1.64 binary is built with Go 1.24 and rejects it.
+          install-mode: goinstall
           args: --timeout=10m
