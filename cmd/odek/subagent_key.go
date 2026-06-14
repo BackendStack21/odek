@@ -14,28 +14,39 @@ import (
 // cmd.ExtraFiles without ever leaving a readable file on disk.
 //
 // On Windows we cannot unlink an open file, so we fall back to a
-// 0600 file in the user's TempDir; the caller deletes it after Start.
-// (Windows is a degraded path; the env-passing concern is largely a
-// Unix /proc problem anyway.)
-func writeKeyToUnlinkedFile(key string) (*os.File, error) {
+// 0600 file in the user's TempDir. The returned cleanup function must be
+// called after the child has exited and the file has been closed; on
+// Windows it deletes the temp file, and on POSIX it is a no-op (the file
+// was already unlinked).
+func writeKeyToUnlinkedFile(key string) (*os.File, func(), error) {
 	f, err := os.CreateTemp("", "odek-key-*")
 	if err != nil {
-		return nil, fmt.Errorf("create temp: %w", err)
+		return nil, nil, fmt.Errorf("create temp: %w", err)
 	}
+
+	cleanup := func() {
+		// POSIX: file was already unlinked, nothing to do.
+		// Windows: delete the temp file after the child has exited and
+		// the parent's handle has been closed.
+		if runtime.GOOS == "windows" {
+			_ = os.Remove(f.Name())
+		}
+	}
+
 	if err := f.Chmod(0600); err != nil {
 		f.Close()
 		os.Remove(f.Name())
-		return nil, fmt.Errorf("chmod: %w", err)
+		return nil, nil, fmt.Errorf("chmod: %w", err)
 	}
 	if _, err := f.WriteString(key); err != nil {
 		f.Close()
 		os.Remove(f.Name())
-		return nil, fmt.Errorf("write: %w", err)
+		return nil, nil, fmt.Errorf("write: %w", err)
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		f.Close()
 		os.Remove(f.Name())
-		return nil, fmt.Errorf("seek: %w", err)
+		return nil, nil, fmt.Errorf("seek: %w", err)
 	}
 	// Unlink immediately on POSIX. The open FD keeps the inode alive
 	// for the parent and the soon-to-be-forked child.
@@ -46,7 +57,7 @@ func writeKeyToUnlinkedFile(key string) (*os.File, error) {
 			fmt.Fprintf(os.Stderr, "odek: warning: could not unlink key tempfile: %v\n", err)
 		}
 	}
-	return f, nil
+	return f, cleanup, nil
 }
 
 // keyFDEnvVar is the signal env var the parent sets when it passes an

@@ -235,16 +235,23 @@ func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, tr
 	// as it has read the key.
 	cmd.Env = os.Environ() // parent already stripped *_API_KEY in LoadConfig
 	var keyFile *os.File
+	var keyCleanup func()
 	if t.apiKey != "" {
-		f, err := writeKeyToUnlinkedFile(t.apiKey)
+		f, cleanup, err := writeKeyToUnlinkedFile(t.apiKey)
 		if err != nil {
 			return fmt.Sprintf(`{"error":"key handoff: %v"}`, err)
 		}
 		keyFile = f
+		keyCleanup = cleanup
 		cmd.ExtraFiles = []*os.File{keyFile}
 		// FD 3 in the child = the first ExtraFiles entry.
 		cmd.Env = append(cmd.Env, keyFDEnvVar+"=3")
-		defer keyFile.Close()
+		defer func() {
+			_ = keyFile.Close()
+			if keyCleanup != nil {
+				keyCleanup()
+			}
+		}()
 	}
 
 	if err := cmd.Start(); err != nil {
