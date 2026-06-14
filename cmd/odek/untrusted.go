@@ -219,7 +219,14 @@ func untrustedSourcesAll(s string) []string {
 	rep := strings.NewReplacer("'", `"`, "‹", "<", "›", ">")
 	srcs := make([]string, 0, len(matches))
 	for _, m := range matches {
-		srcs = append(srcs, rep.Replace(m[1]))
+		src := rep.Replace(m[1])
+		// Skip empty sources. An empty source would match every resource as a
+		// prefix in the audit divergence check (strings.HasPrefix(r, "")), which
+		// would blind the reused-resource injection heuristic for the whole turn.
+		if src == "" {
+			continue
+		}
+		srcs = append(srcs, src)
 	}
 	return srcs
 }

@@ -89,3 +89,28 @@ func TestWrapUntrusted_EmptyInputBypasses(t *testing.T) {
 		t.Errorf("wrapUntrusted(_, \"\") = %q, want \"\"", got)
 	}
 }
+
+// TestUntrustedSourcesAll_SkipsEmptySource verifies that a wrapper with an
+// empty source attribute does not contribute an empty string to the source
+// list. An empty source would match every resource via strings.HasPrefix(r, "")
+// in the audit divergence check, blinding the reused-resource heuristic.
+func TestUntrustedSourcesAll_SkipsEmptySource(t *testing.T) {
+	// A blob with no source, concatenated with a blob that has a real source.
+	combined := wrapUntrusted("", "anonymous body") + wrapUntrusted("https://evil.example/x", "named body")
+
+	srcs := untrustedSourcesAll(combined)
+	for _, s := range srcs {
+		if s == "" {
+			t.Fatalf("untrustedSourcesAll returned an empty source: %#v", srcs)
+		}
+	}
+	if len(srcs) != 1 || srcs[0] != "https://evil.example/x" {
+		t.Fatalf("untrustedSourcesAll = %#v, want exactly [https://evil.example/x]", srcs)
+	}
+
+	// Both bodies must still be aggregated (the empty-source blob is not dropped).
+	bodies := unwrapUntrustedAll(combined)
+	if len(bodies) != 2 {
+		t.Fatalf("unwrapUntrustedAll returned %d bodies, want 2: %#v", len(bodies), bodies)
+	}
+}
