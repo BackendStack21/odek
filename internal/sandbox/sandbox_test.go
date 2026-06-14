@@ -134,15 +134,57 @@ func TestBuildRunArgs_ReadonlyAppendsRoSuffix(t *testing.T) {
 
 func TestBuildRunArgs_ForbiddenVolumeMountRejected(t *testing.T) {
 	args := BuildRunArgs(Config{
-		Volumes: []string{"/etc:/container/etc", "/safe:/safe"},
+		Volumes: []string{"/etc:/container/etc", "/workspace/extra:/container/extra"},
 	}, "odek-test", "/workspace", "alpine:latest")
 	for _, a := range args {
 		if strings.HasPrefix(a, "/etc:") {
 			t.Errorf("forbidden /etc mount should have been rejected, found %q", a)
 		}
 	}
-	if !contains(args, "/safe:/safe") {
-		t.Errorf("safe mount %q should have been preserved\nargs: %v", "/safe:/safe", args)
+	if !contains(args, "/workspace/extra:/container/extra") {
+		t.Errorf("safe mount %q should have been preserved\nargs: %v", "/workspace/extra:/container/extra", args)
+	}
+}
+
+func TestBuildRunArgs_VolumeOutsideWorkdirRejected(t *testing.T) {
+	args := BuildRunArgs(Config{
+		Volumes: []string{"/tmp:/container/tmp"},
+	}, "odek-test", "/workspace", "alpine:latest")
+	for i, a := range args {
+		if a == "-v" && i+1 < len(args) && strings.HasPrefix(args[i+1], "/tmp:") {
+			t.Errorf("volume outside workdir should have been rejected, found %q", args[i+1])
+		}
+	}
+}
+
+func TestBuildRunArgs_RelativeTraversalRejected(t *testing.T) {
+	args := BuildRunArgs(Config{
+		Volumes: []string{"../../etc:/container/etc"},
+	}, "odek-test", "/workspace", "alpine:latest")
+	for i, a := range args {
+		if a == "-v" && i+1 < len(args) && strings.Contains(args[i+1], "etc") {
+			t.Errorf("relative traversal volume should have been rejected, found %q", args[i+1])
+		}
+	}
+}
+
+func TestBuildRunArgs_DockerSocketRejected(t *testing.T) {
+	args := BuildRunArgs(Config{
+		Volumes: []string{"/var/run/docker.sock:/var/run/docker.sock"},
+	}, "odek-test", "/workspace", "alpine:latest")
+	for i, a := range args {
+		if a == "-v" && i+1 < len(args) && strings.Contains(args[i+1], "docker.sock") {
+			t.Errorf("docker socket mount should have been rejected, found %q", args[i+1])
+		}
+	}
+}
+
+func TestBuildRunArgs_RelativeVolumeResolvedUnderWorkdir(t *testing.T) {
+	args := BuildRunArgs(Config{
+		Volumes: []string{"extra:/container/extra"},
+	}, "odek-test", "/workspace", "alpine:latest")
+	if !contains(args, "/workspace/extra:/container/extra") {
+		t.Errorf("relative volume should be resolved to absolute under workdir\nargs: %v", args)
 	}
 }
 

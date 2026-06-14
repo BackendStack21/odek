@@ -29,7 +29,11 @@ const DockerfileName = "Dockerfile.odek"
 // touch. A user could accidentally (or, in --task scenarios, be coaxed
 // into) requesting one of these and undo the whole point of sandboxing.
 // Mounts to these paths are dropped with a stderr warning.
-var ForbiddenMountPrefixes = []string{"/", "/etc", "/proc", "/sys", "/boot", "/dev"}
+var ForbiddenMountPrefixes = []string{
+	"/", "/etc", "/proc", "/sys", "/boot", "/dev",
+	"/var", "/run", "/root", "/home",
+	"/var/run/docker.sock",
+}
 
 // Config is the resolved sandbox configuration for one agent run. All
 // fields come from the merged config (files → env → CLI) — this struct
@@ -135,25 +139,120 @@ func BuildRunArgs(cfg Config, containerName, workdir, image string) []string {
 	}
 
 	for _, vol := range cfg.Volumes {
-		reject := false
-		parts := strings.SplitN(vol, ":", 2)
-		if len(parts) > 0 {
-			hostPath := filepath.Clean(parts[0])
-			for _, forbidden := range ForbiddenMountPrefixes {
-				if hostPath == forbidden || strings.HasPrefix(hostPath, forbidden+"/") {
-					fmt.Fprintf(os.Stderr, "odek: WARNING: rejecting forbidden volume mount %q (host path %s)\n", vol, hostPath)
-					reject = true
-					break
-				}
-			}
+		sanitized, ok := sanitizeVolumeMount(vol, workdir)
+		if !ok {
+			continue
 		}
-		if !reject {
-			args = append(args, "-v", vol)
-		}
+		args = append(args, "-v", sanitized)
 	}
 
 	args = append(args, image, "sleep", "infinity")
 	return args
+}
+
+// sanitizeVolumeMount validates and canonicalises a user-supplied docker -v
+// string. It returns the canonical mount string and true if the mount is
+// allowed, or an empty string and false if it should be dropped.
+//
+// Security rules:
+//   - The host path must be absolute or a local path under workdir.
+//   - Any ".." component is rejected.
+//   - The resolved host path must be inside workdir.
+//   - The resolved host path must not match ForbiddenMountPrefixes.
+//   - Symlinks are rejected (they could point outside workdir).
+//
+// The returned string uses the resolved absolute host path so Docker does not
+// interpret a relative path relative to the daemon's working directory.
+func sanitizeVolumeMount(vol, workdir string) (string, bool) {
+	// Docker volume format: host[:container[:options]]. We only need the host.
+	parts := strings.SplitN(vol, ":", 2)
+	host := strings.TrimSpace(parts[0])
+	if host == "" {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: rejecting malformed volume mount %q (empty host path)\n", vol)
+		return "", false
+	}
+
+	// Reject paths with traversal attempts before resolving them.
+	if hasDotDotComponent(host) {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: rejecting volume mount %q (contains ..)\n", vol)
+		return "", false
+	}
+
+	// Resolve to an absolute path. Relative paths are interpreted relative to
+	// the current working directory, which should be the project root.
+	absHost := host
+	if !filepath.IsAbs(absHost) {
+		absHost = filepath.Join(workdir, absHost)
+	}
+	absHost = filepath.Clean(absHost)
+
+	absWorkdir, err := filepath.Abs(workdir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: rejecting volume mount %q (cannot resolve workdir: %v)\n", vol, err)
+		return "", false
+	}
+	absWorkdir = filepath.Clean(absWorkdir)
+
+	// The host path must stay inside the working directory.
+	if !isPathUnder(absHost, absWorkdir) {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: rejecting volume mount %q (host path %s is outside working directory %s)\n", vol, absHost, absWorkdir)
+		return "", false
+	}
+
+	// Reject symlinks — they could escape the working directory even if the
+	// link itself is inside it.
+	if info, err := os.Lstat(absHost); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			fmt.Fprintf(os.Stderr, "odek: WARNING: rejecting volume mount %q (symlinks are not allowed)\n", vol)
+			return "", false
+		}
+	}
+
+	// Reject forbidden host paths.
+	for _, forbidden := range ForbiddenMountPrefixes {
+		if absHost == forbidden {
+			fmt.Fprintf(os.Stderr, "odek: WARNING: rejecting forbidden volume mount %q (host path %s)\n", vol, absHost)
+			return "", false
+		}
+		if strings.HasPrefix(absHost, forbidden+string(filepath.Separator)) {
+			fmt.Fprintf(os.Stderr, "odek: WARNING: rejecting forbidden volume mount %q (host path %s)\n", vol, absHost)
+			return "", false
+		}
+	}
+
+	// Rebuild the mount with the canonical absolute host path.
+	rest := ""
+	if len(parts) == 2 {
+		rest = ":" + parts[1]
+	}
+	return absHost + rest, true
+}
+
+// hasDotDotComponent reports whether p contains a ".." path component after
+// cleaning. It allows names that merely contain ".." as a substring (e.g.
+// "foo..bar") but rejects any traversal attempt.
+func hasDotDotComponent(p string) bool {
+	clean := filepath.Clean(p)
+	for _, part := range strings.Split(clean, string(filepath.Separator)) {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+// isPathUnder reports whether path is inside root. Both paths must be clean
+// absolute paths. A path equal to root is considered under root.
+func isPathUnder(path, root string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	// filepath.Rel returns paths starting with ".." when path is outside root.
+	return !strings.HasPrefix(rel, "..") && !strings.Contains(filepath.ToSlash(rel), "/../")
 }
 
 // InjectFiles copies each file under cwd into a running container via
