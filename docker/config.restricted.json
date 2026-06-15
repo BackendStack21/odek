@@ -48,7 +48,7 @@
       "safe": "allow",
       "local_write": "allow",
       "install": "prompt",
-      "network_egress": "prompt",
+      "network_egress": "allow",
       "code_execution": "prompt",
       "system_write": "prompt",
       "unknown": "deny",
@@ -56,6 +56,17 @@
       "blocked": "deny"
     },
     "allowlist": [],
-    "denylist": ["rm -rf /"]
+    "denylist": [
+      "rm -rf /"
+    ]
+  },
+  "schedules": {
+    "enabled": true,
+    "max_concurrent": 2,
+    "dangerous": {
+      "classes": {
+        "network_egress": "allow"
+      }
+    }
   }
 }

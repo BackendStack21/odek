@@ -45,5 +45,12 @@
   "dangerous": {
     "action": "allow",
     "non_interactive": "allow"
+  },
+  "schedules": {
+    "enabled": true,
+    "max_concurrent": 2,
+    "dangerous": {
+      "action": "allow"
+    }
   }
 }
