@@ -414,7 +414,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 		MaxIterations:    resolved.MaxIter,
 		MaxToolParallel:  resolved.MaxToolParallel,
 		SystemMessage:    system,
-		UntrustedWrapper: wrapUntrusted,
+		UntrustedWrapper: func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
 		RuntimeContext:   runtimeCtx,
 		NoProjectFile:   resolved.NoAgents,
 		Thinking:        resolved.Thinking,
@@ -753,7 +753,7 @@ func handlePrompt(
 		if err != nil {
 			continue
 		}
-		resolvedRefs[ref.Raw] = wrapUntrusted("resource:"+ref.Raw, content)
+		resolvedRefs[ref.Raw] = wrapUntrusted(ctx, "resource:"+ref.Raw, content)
 	}
 	enrichedPrompt := resource.ReplaceRefs(prompt, resolvedRefs)
 
@@ -823,10 +823,11 @@ func handlePrompt(
 		auditTurn = currSess.Turns + 1
 	}
 	if auditSessID != "" {
-		setIngestRecorder(func(source, content string) {
+		// Scope the ingest recorder to this prompt's context so concurrent
+		// sessions cannot overwrite each other's audit attribution.
+		ctx = loop.WithIngestRecorder(ctx, func(source, content string) {
 			_ = auditStore.RecordIngest(auditSessID, auditTurn, source, content)
 		})
-		defer setIngestRecorder(nil)
 	}
 
 	origLen := len(messages) - 1 // initial estimate: index of the user message we appended

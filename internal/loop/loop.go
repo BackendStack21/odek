@@ -16,6 +16,27 @@ import (
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
+// ingestRecorderKey is the context key used to carry the per-run audit
+// ingest recorder through the agent loop to tool implementations.
+type ingestRecorderKey struct{}
+
+// WithIngestRecorder returns a context that carries fn as the active ingest
+// recorder. Callers such as cmd/odek wrapUntrusted use IngestRecorderFrom to
+// read it back. Using a context value removes the package-global recorder that
+// previously caused cross-session races in the WebUI.
+func WithIngestRecorder(ctx context.Context, fn func(source, content string)) context.Context {
+	return context.WithValue(ctx, ingestRecorderKey{}, fn)
+}
+
+// IngestRecorderFrom extracts the ingest recorder from ctx, if any.
+func IngestRecorderFrom(ctx context.Context) func(source, content string) {
+	if ctx == nil {
+		return nil
+	}
+	fn, _ := ctx.Value(ingestRecorderKey{}).(func(source, content string))
+	return fn
+}
+
 // SkillLoader is an optional callback that the loop engine calls before each
 // LLM invocation to discover contextually relevant skills. The callback
 // receives the latest user input and returns additional system context
@@ -601,6 +622,9 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 					if e.wrapUntrusted != nil {
 						wrappedContent = e.wrapUntrusted("skill", skillContext)
 					}
+					if fn := IngestRecorderFrom(ctx); fn != nil {
+						fn("skill", skillContext)
+					}
 					insertIdx := len(messages)
 					for j := len(messages) - 1; j >= 0; j-- {
 						if messages[j].Role == "system" && j != 0 {
@@ -638,6 +662,9 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 					wrappedContext := episodeContext
 					if e.wrapUntrusted != nil {
 						wrappedContext = e.wrapUntrusted("episode", episodeContext)
+					}
+					if fn := IngestRecorderFrom(ctx); fn != nil {
+						fn("episode", episodeContext)
 					}
 					// Inject episode context as a system message before the user message
 					insertIdx := len(messages)

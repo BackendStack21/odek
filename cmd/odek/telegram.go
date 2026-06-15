@@ -597,7 +597,7 @@ func telegramCmd(args []string) error {
 
 		// Fallback: pass the file path to the agent
 		go handleChatMessage(chatID, messageID, userID,
-			wrapUntrusted(fmt.Sprintf("telegram:chat:%d:voice", chatID),
+			wrapUntrusted(context.Background(), fmt.Sprintf("telegram:chat:%d:voice", chatID),
 				fmt.Sprintf("🎤 Voice message saved to %q. Use transcribe() tool to get the text.", localPath)),
 			bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 		return "", nil
@@ -1475,7 +1475,7 @@ func handleChatMessage(
 		MaxIterations:    resolved.MaxIter,
 		MaxToolParallel:  resolved.MaxToolParallel,
 		SystemMessage:    systemMessage,
-		UntrustedWrapper: wrapUntrusted,
+		UntrustedWrapper: func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
 		RuntimeContext:   odek.BuildRuntimeContext("telegram"),
 		InteractionMode:  resolved.InteractionMode,
 		NoProjectFile:    resolved.NoAgents,
@@ -2054,7 +2054,7 @@ func photoVisionPrompt(caption string) string {
 	if caption != "" {
 		return fmt.Sprintf(
 			"Describe this image in detail. Pay special attention to anything relevant to the user-provided caption below. Include any visible text, objects, people, and notable details.\n\n%s",
-			wrapUntrusted("telegram:photo:caption", caption))
+			wrapUntrusted(context.Background(), "telegram:photo:caption", caption))
 	}
 	return "Describe this image in detail. Include any visible text, objects, people, and notable details."
 }
@@ -2069,7 +2069,7 @@ func photoVisionMessage(caption, description string) string {
 			"The user sent an image with this message:\n%s\n\n"+
 				"A local vision model extracted this description of the image:\n%s\n\n"+
 				"Use the description to respond to the user's message.",
-			wrapUntrusted("telegram:photo:caption", caption), description)
+			wrapUntrusted(context.Background(), "telegram:photo:caption", caption), description)
 	}
 	return fmt.Sprintf(
 		"The user sent an image (no caption). A local vision model extracted this description:\n%s\n\n"+
@@ -2083,7 +2083,7 @@ func photoVisionMessage(caption, description string) string {
 // they cross an external trust boundary.
 func telegramTextMessage(chatID int64, text string, forwarded bool) string {
 	if forwarded {
-		return wrapUntrusted(fmt.Sprintf("telegram:chat:%d:forwarded", chatID), text)
+		return wrapUntrusted(context.Background(), fmt.Sprintf("telegram:chat:%d:forwarded", chatID), text)
 	}
 	return text
 }
@@ -2094,14 +2094,14 @@ func telegramTextMessage(chatID int64, text string, forwarded bool) string {
 // must be wrapped as untrusted before it enters the message stream — a
 // malicious recording must not become the user's "trusted" request.
 func telegramVoiceMessage(chatID int64, transcript string) string {
-	return wrapUntrusted(fmt.Sprintf("telegram:chat:%d:voice", chatID), transcript)
+	return wrapUntrusted(context.Background(), fmt.Sprintf("telegram:chat:%d:voice", chatID), transcript)
 }
 
 // telegramDocumentMessage builds the user-role message for an incoming
 // document. The whole message is wrapped as untrusted because the document
 // path comes from an external channel.
 func telegramDocumentMessage(localPath string) string {
-	return wrapUntrusted("telegram:document", fmt.Sprintf("📄 Document received and saved to %q. Use shell tools to analyze and respond.", localPath))
+	return wrapUntrusted(context.Background(), "telegram:document", fmt.Sprintf("📄 Document received and saved to %q. Use shell tools to analyze and respond.", localPath))
 }
 
 // photoFallbackMessage builds the message injected when auto-describe is off or
@@ -2109,7 +2109,7 @@ func telegramDocumentMessage(localPath string) string {
 // if any) so the agent can analyze the image itself via the vision/shell tools.
 func photoFallbackMessage(localPath, caption string) string {
 	if caption != "" {
-		return fmt.Sprintf("🖼 Photo saved to %q with this message from the user:\n%s\n\nUse the vision tool to analyze the image, then respond.", localPath, wrapUntrusted("telegram:photo:caption", caption))
+		return fmt.Sprintf("🖼 Photo saved to %q with this message from the user:\n%s\n\nUse the vision tool to analyze the image, then respond.", localPath, wrapUntrusted(context.Background(), "telegram:photo:caption", caption))
 	}
 	return fmt.Sprintf("🖼 Photo received and saved to %q. Use the vision tool or shell commands to analyze and respond.", localPath)
 }

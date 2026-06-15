@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -240,7 +241,7 @@ func (t *browserTool) doNavigate(rawURL string) (string, error) {
 	}
 
 	html := string(body)
-	snap := parseHTML(html, rawURL, resp.StatusCode)
+	snap := parseHTML(t.toolCtx(), html, rawURL, resp.StatusCode)
 
 	// Store in state. Keep a persistent copy of the snapshot for current; the
 	// local variable's address would otherwise escape to the heap implicitly.
@@ -257,7 +258,7 @@ func (t *browserTool) doNavigate(rawURL string) (string, error) {
 	return jsonResult(browserResult{
 		Title:    snap.Title,
 		URL:      snap.URL,
-		Content:  wrapUntrusted(snap.URL, snap.Content),
+		Content:  wrapUntrusted(t.toolCtx(), snap.URL, snap.Content),
 		Status:   snap.Status,
 		Elements: snap.Elements,
 	})
@@ -274,7 +275,7 @@ func (t *browserTool) doSnaPshot() (string, error) {
 	return jsonResult(browserResult{
 		Title:    t.state.current.Title,
 		URL:      t.state.current.URL,
-		Content:  wrapUntrusted(t.state.current.URL, t.state.current.Content),
+		Content:  wrapUntrusted(t.toolCtx(), t.state.current.URL, t.state.current.Content),
 		Elements: t.state.current.Elements,
 	})
 }
@@ -337,13 +338,13 @@ func (t *browserTool) doBack() (string, error) {
 	return jsonResult(browserResult{
 		Title:   t.state.current.Title,
 		URL:     t.state.current.URL,
-		Content: wrapUntrusted(t.state.current.URL, t.state.current.Content),
+		Content: wrapUntrusted(t.toolCtx(), t.state.current.URL, t.state.current.Content),
 	})
 }
 
 // ── HTML Parsing ──────────────────────────────────────────────────────
 
-func parseHTML(html, pageURL string, status int) browserSnapshot {
+func parseHTML(ctx context.Context, html, pageURL string, status int) browserSnapshot {
 	var snap browserSnapshot
 	snap.URL = pageURL
 	snap.Status = status
@@ -457,9 +458,9 @@ func parseHTML(html, pageURL string, status int) browserSnapshot {
 	snap.Elements = elements
 
 	// Title and element text come from the page — wrap them as untrusted content.
-	snap.Title = wrapUntrusted(pageURL, snap.Title)
+	snap.Title = wrapUntrusted(ctx, pageURL, snap.Title)
 	for i := range snap.Elements {
-		snap.Elements[i].Text = wrapUntrusted(pageURL, snap.Elements[i].Text)
+		snap.Elements[i].Text = wrapUntrusted(ctx, pageURL, snap.Elements[i].Text)
 	}
 
 	return snap

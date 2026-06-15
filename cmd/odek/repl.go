@@ -134,7 +134,7 @@ func replCmd(args []string) error {
 		APIKey:           resolved.APIKey,
 		MaxIterations:    resolved.MaxIter,
 		SystemMessage:    systemMessage,
-		UntrustedWrapper: wrapUntrusted,
+		UntrustedWrapper: func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
 		NoProjectFile:  resolved.NoAgents,
 		Thinking:       resolved.Thinking,
 		ThinkingBudget: f.ThinkingBudget,

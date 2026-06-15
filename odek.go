@@ -764,6 +764,16 @@ func (a *toolAdapter) Call(args string) (string, error) {
 	return a.t.Call(args)
 }
 
+// SetContext propagates the agent context to tools that implement the
+// context-aware interface. This lets odek.Tool implementations receive the
+// per-run context (including the audit ingest recorder) without changing the
+// public Tool interface.
+func (a *toolAdapter) SetContext(ctx context.Context) {
+	if ct, ok := a.t.(interface{ SetContext(context.Context) }); ok {
+		ct.SetContext(ctx)
+	}
+}
+
 // ── Skill Event Adapters ──────────────────────────────────────────────
 
 // skillEventHandlerAdapter bridges Config.SkillEventHandler to skills.SkillNotifier.

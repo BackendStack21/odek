@@ -685,7 +685,7 @@ func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system
 		MaxIterations:     resolved.MaxIter,
 		MaxToolParallel:   resolved.MaxToolParallel,
 		SystemMessage:     system,
-		UntrustedWrapper:  wrapUntrusted,
+		UntrustedWrapper:  func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
 		RuntimeContext:    odek.BuildRuntimeContext("schedule"),
 		NoProjectFile:     resolved.NoAgents,
 		Thinking:          resolved.Thinking,

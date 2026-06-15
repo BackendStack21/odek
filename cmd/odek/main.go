@@ -18,6 +18,7 @@ import (
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/mcpclient"
 	"github.com/BackendStack21/odek/internal/memory"
 	"github.com/BackendStack21/odek/internal/render"
@@ -928,7 +929,7 @@ func run(args []string) error {
 		MaxIterations:    resolved.MaxIter,
 		MaxToolParallel:  resolved.MaxToolParallel,
 		SystemMessage:    systemMessage,
-		UntrustedWrapper: wrapUntrusted,
+		UntrustedWrapper: func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
 		NoProjectFile:    resolved.NoAgents,
 		Thinking:        resolved.Thinking,
 		ThinkingBudget:  f.ThinkingBudget,
@@ -1777,7 +1778,7 @@ func continueCmd(args []string) error {
 		MaxIterations:    resolved.MaxIter,
 		MaxToolParallel:  resolved.MaxToolParallel,
 		SystemMessage:    systemMessage,
-		UntrustedWrapper: wrapUntrusted,
+		UntrustedWrapper: func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
 		NoProjectFile:    resolved.NoAgents,
 		Thinking:        resolved.Thinking,
 		Temperature:     0, // deterministic by default; override with --temperature
@@ -1812,16 +1813,15 @@ func continueCmd(args []string) error {
 	defer cancel()
 
 	// Audit: record every untrusted-content ingestion that fires during
-	// this turn. The recorder is cleared on exit so a later turn (or
-	// background goroutine) cannot accidentally write to the wrong
+	// this turn. The recorder is scoped to the run context so a later turn
+	// (or background goroutine) cannot accidentally write to the wrong
 	// session's audit log.
 	auditStore := session.NewAuditStore(store.Dir())
 	currentTurn := sess.Turns + 1
 	sessIDCapture := sess.ID
-	setIngestRecorder(func(source, content string) {
+	ctx = loop.WithIngestRecorder(ctx, func(source, content string) {
 		_ = auditStore.RecordIngest(sessIDCapture, currentTurn, source, content)
 	})
-	defer setIngestRecorder(nil)
 
 	rend.Start(task)
 	result, allMessages, err := agent.RunWithMessages(ctx, messages)

@@ -42,6 +42,7 @@ const maxSearchResultBytes = maxReadBytes
 const maxGlobMatches = 1000
 
 type readFileTool struct {
+	ctxTool
 	dangerousConfig danger.DangerousConfig
 }
 
@@ -167,7 +168,7 @@ func (t *readFileTool) Call(argsJSON string) (string, error) {
 	}
 
 	result := readFileResult{
-		Content:    wrapUntrusted(resolvedPath, content),
+		Content:    wrapUntrusted(t.toolCtx(), resolvedPath, content),
 		TotalLines: totalLines,
 	}
 	return jsonResult(result)
@@ -176,6 +177,7 @@ func (t *readFileTool) Call(argsJSON string) (string, error) {
 // ── WriteFile Tool ─────────────────────────────────────────────────────
 
 type writeFileTool struct {
+	ctxTool
 	dangerousConfig danger.DangerousConfig
 	trustedClasses  map[danger.RiskClass]bool
 	restrictToCWD   bool // when true, reject paths escaping the working directory
@@ -332,6 +334,7 @@ func skipDir(name string) bool {
 const maxMatches = 50
 
 type searchFilesTool struct {
+	ctxTool
 	dangerousConfig danger.DangerousConfig
 }
 
@@ -509,7 +512,7 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 				matches = append(matches, searchMatch{
 					Path:    path,
 					Line:    lineNum,
-					Content: wrapUntrusted(fmt.Sprintf("%s:%d", path, lineNum), trimmed),
+					Content: wrapUntrusted(t.toolCtx(), fmt.Sprintf("%s:%d", path, lineNum), trimmed),
 				})
 				if len(matches) >= limit {
 					break
@@ -553,7 +556,7 @@ func (t *searchFilesTool) searchFiles(args searchFilesArgs) (string, error) {
 			if info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 				continue
 			}
-			matches = append(matches, searchMatch{Path: wrapUntrusted("search_files:"+p, p)})
+			matches = append(matches, searchMatch{Path: wrapUntrusted(t.toolCtx(), "search_files:"+p, p)})
 			if len(matches) >= limit {
 				break
 			}
@@ -579,7 +582,7 @@ func (t *searchFilesTool) searchFiles(args searchFilesArgs) (string, error) {
 			}
 			match, _ := filepath.Match(pattern, info.Name())
 			if match {
-				matches = append(matches, searchMatch{Path: wrapUntrusted("search_files:"+path, path)})
+				matches = append(matches, searchMatch{Path: wrapUntrusted(t.toolCtx(), "search_files:"+path, path)})
 				if len(matches) >= limit {
 					return filepath.SkipAll
 				}
@@ -605,6 +608,7 @@ func (t *searchFilesTool) searchFiles(args searchFilesArgs) (string, error) {
 // ── Patch Tool ─────────────────────────────────────────────────────────
 
 type patchTool struct {
+	ctxTool
 	dangerousConfig danger.DangerousConfig
 	trustedClasses  map[danger.RiskClass]bool
 	restrictToCWD   bool // when true, reject paths escaping the working directory
@@ -747,7 +751,7 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 		}
 		return jsonResult(patchResult{
 			Success: true,
-			Diff:    wrapUntrusted("patch:"+args.Path, diff),
+			Diff:    wrapUntrusted(t.toolCtx(), "patch:"+args.Path, diff),
 		})
 	}
 
@@ -785,7 +789,7 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 
 	return jsonResult(patchResult{
 		Success: true,
-		Diff:    wrapUntrusted("patch:"+args.Path, diff),
+		Diff:    wrapUntrusted(t.toolCtx(), "patch:"+args.Path, diff),
 	})
 }
 
@@ -1029,6 +1033,7 @@ func truncateDiff(s string, maxLen int) string {
 const maxBatchFiles = 10
 
 type batchReadTool struct {
+	ctxTool
 	dangerousConfig danger.DangerousConfig
 }
 
@@ -1194,7 +1199,7 @@ func (t *batchReadTool) readSingle(arg batchReadFileArg) batchReadFileResult {
 
 	return batchReadFileResult{
 		Path:       arg.Path,
-		Content:    wrapUntrusted(resolvedPath, content),
+		Content:    wrapUntrusted(t.toolCtx(), resolvedPath, content),
 		TotalLines: totalLines,
 	}
 }
@@ -1207,6 +1212,7 @@ func (t *batchReadTool) readSingle(arg batchReadFileArg) batchReadFileResult {
 // by modification time (newest first).
 
 type globTool struct {
+	ctxTool
 	dangerousConfig danger.DangerousConfig
 }
 
@@ -1410,7 +1416,7 @@ func (t *globTool) Call(argsJSON string) (result string, err error) {
 	})
 
 	for i := range matches {
-		matches[i].Path = wrapUntrusted("glob:"+args.Path, matches[i].Path)
+		matches[i].Path = wrapUntrusted(t.toolCtx(), "glob:"+args.Path, matches[i].Path)
 	}
 
 	return jsonResult(globResult{Matches: matches})
@@ -1424,6 +1430,7 @@ func (t *globTool) Call(argsJSON string) (result string, err error) {
 // Replaces shell: ls -la / stat / test -f forks.
 
 type fileInfoTool struct {
+	ctxTool
 	dangerousConfig danger.DangerousConfig
 	restrictToCWD   bool // when true, reject paths escaping the working directory
 }
@@ -1525,7 +1532,7 @@ func (t *fileInfoTool) Call(argsJSON string) (result string, err error) {
 
 	// file_info output originates from the filesystem trust boundary, so
 	// mark the returned path as untrusted.
-	fi.Path = wrapUntrusted("file_info:"+args.Path, fi.Path)
+	fi.Path = wrapUntrusted(t.toolCtx(), "file_info:"+args.Path, fi.Path)
 
 	return jsonResult(fi)
 }

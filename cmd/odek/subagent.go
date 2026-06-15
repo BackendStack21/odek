@@ -359,7 +359,7 @@ func subagentCmd(args []string) error {
 		APIKey:         resolved.APIKey,
 		MaxIterations:  cfg.maxIter,
 		SystemMessage:    systemMsg,
-		UntrustedWrapper: wrapUntrusted,
+		UntrustedWrapper: func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
 		RuntimeContext: odek.BuildRuntimeContext("terminal"),
 		NoProjectFile:  resolved.NoAgents,
 		Thinking:       resolved.Thinking,

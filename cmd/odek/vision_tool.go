@@ -284,7 +284,7 @@ func (t *visionTool) analyzeImage(binary, modelPath, mmprojPath, imgPath, prompt
 		return jsonResult(visionResult{Error: err.Error()})
 	}
 	return jsonResult(visionResult{
-		Description: wrapUntrusted(source, desc),
+		Description: wrapUntrusted(t.toolCtx(), source, desc),
 		Model:       "minicpm-v-4.6",
 		Type:        "image",
 	})
@@ -311,7 +311,7 @@ func (t *visionTool) analyzeVideo(binary, modelPath, mmprojPath, videoPath, prom
 		return jsonResult(visionResult{Error: err.Error()})
 	}
 	return jsonResult(visionResult{
-		Description: wrapUntrusted(source, desc),
+		Description: wrapUntrusted(t.toolCtx(), source, desc),
 		Model:       "minicpm-v-4.6",
 		Type:        "video",
 		Frames:      len(frames),

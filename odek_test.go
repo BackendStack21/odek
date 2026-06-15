@@ -1141,3 +1141,53 @@ func TestBuildRuntimeContext_WebHasRichInstructions(t *testing.T) {
 		t.Errorf("BuildRuntimeContext(\"web\") is only %d chars — too short for meaningful platform guidance (min 300)", len(ctx))
 	}
 }
+
+// ctxAwareTool is a test tool that captures the context passed via SetContext.
+type ctxAwareTool struct {
+	ctx context.Context
+}
+
+func (c *ctxAwareTool) Name() string        { return "ctx_aware" }
+func (c *ctxAwareTool) Description() string { return "captures context" }
+func (c *ctxAwareTool) Schema() any         { return map[string]any{"type": "object"} }
+func (c *ctxAwareTool) Call(args string) (string, error) { return "ok", nil }
+func (c *ctxAwareTool) SetContext(ctx context.Context)   { c.ctx = ctx }
+
+// TestToolAdapter_ForwardsSetContext verifies that the internal tool adapter
+// forwards SetContext to odek.Tool implementations that implement the
+// context-aware interface. This is required for the audit ingest recorder to
+// reach tools through the agent loop.
+func TestToolAdapter_ForwardsSetContext(t *testing.T) {
+	inner := &ctxAwareTool{}
+	adapter := &toolAdapter{t: inner}
+
+	ctx := context.WithValue(context.Background(), struct{}{}, "marker")
+	adapter.SetContext(ctx)
+
+	if inner.ctx != ctx {
+		t.Error("toolAdapter.SetContext did not forward context to inner tool")
+	}
+}
+
+// TestToolAdapter_SetContextNonContextAware verifies that SetContext is a no-op
+// when the wrapped tool does not implement the context-aware interface.
+func TestToolAdapter_SetContextNonContextAware(t *testing.T) {
+	inner := &nonCtxAwareTool{}
+	adapter := &toolAdapter{t: inner}
+	adapter.SetContext(nil) // should not panic and should not affect inner tool
+}
+
+// nonCtxAwareTool does not implement SetContext.
+type nonCtxAwareTool struct{}
+
+func (n *nonCtxAwareTool) Name() string        { return "non_ctx" }
+func (n *nonCtxAwareTool) Description() string { return "no SetContext" }
+func (n *nonCtxAwareTool) Schema() any         { return map[string]any{"type": "object"} }
+func (n *nonCtxAwareTool) Call(args string) (string, error) { return "ok", nil }
+
+// TestToolAdapter_SetContextNoPanic verifies the adapter does not panic when
+// wrapping a tool without SetContext.
+func TestToolAdapter_SetContextNoPanic(t *testing.T) {
+	adapter := &toolAdapter{t: &nonCtxAwareTool{}}
+	adapter.SetContext(context.Background()) // should not panic
+}
