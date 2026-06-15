@@ -625,6 +625,36 @@ func startSchedulerForBot(ctx context.Context, bot *telegram.Bot, resolved confi
 
 // ── headless agent execution ────────────────────────────────────────────
 
+// buildHeadlessDangerConfig assembles the danger policy for an unattended
+// scheduled run. It starts from the global config, overlays any schedule-
+// specific policy, and then applies a non-overrideable safety floor.
+//
+// Safety floor:
+//   - non_interactive is forced to "deny" (no human present to approve)
+//   - destructive and blocked classes are always denied
+//
+// Schedule-specific overrides can allow network_egress, system_write,
+// code_execution, install, or unknown for cron jobs.
+func buildHeadlessDangerConfig(resolved config.ResolvedConfig) danger.DangerousConfig {
+	dangerCfg := resolved.Dangerous
+	mergeScheduleDangerous(&dangerCfg, resolved.Schedules.Dangerous)
+
+	deny := "deny"
+	dangerCfg.NonInteractive = &deny
+	if dangerCfg.Classes == nil {
+		dangerCfg.Classes = make(map[danger.RiskClass]danger.Action)
+	}
+	// Non-overrideable floor. Destructive and blocked are irreversible or
+	// hard-coded malicious; scheduled runs must never execute them.
+	for _, cls := range []danger.RiskClass{
+		danger.Destructive,
+		danger.Blocked,
+	} {
+		dangerCfg.Classes[cls] = danger.Deny
+	}
+	return dangerCfg
+}
+
 // runTaskHeadless builds a fresh agent with no terminal renderer and no
 // interactive approver and runs one task to completion, returning the final
 // text and the tokens it consumed. mcpTools are pre-connected MCP tools shared
@@ -634,29 +664,11 @@ func startSchedulerForBot(ctx context.Context, bot *telegram.Bot, resolved confi
 // Safety: a scheduled task runs unattended, so there is no human to answer an
 // approval prompt. builtinTools is given a nil approver, which means a
 // Prompt-class op would fall back to DangerousConfig.NonInteractiveAction().
-// To prevent a compromised task (or a permissive "godmode" profile) from
-// executing destructive/network operations while no one is watching, we force
-// NonInteractive to "deny" and clamp the highest-risk classes to Deny
-// regardless of what the resolved config says. This mirrors the untrusted
-// sub-agent damage cap.
+// The danger policy used is built by buildHeadlessDangerConfig, which applies
+// a non-overrideable safety floor on top of the global + schedule-specific
+// policy. Project-level odek.json is not allowed to set schedules.dangerous.
 func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system, task string, mcpTools []odek.Tool) (string, int64, error) {
-	dangerCfg := resolved.Dangerous
-	deny := "deny"
-	dangerCfg.NonInteractive = &deny
-	if dangerCfg.Classes == nil {
-		dangerCfg.Classes = make(map[danger.RiskClass]danger.Action)
-	}
-	for _, cls := range []danger.RiskClass{
-		danger.Destructive,
-		danger.CodeExecution,
-		danger.Install,
-		danger.SystemWrite,
-		danger.NetworkEgress,
-		danger.Unknown,
-		danger.Blocked,
-	} {
-		dangerCfg.Classes[cls] = danger.Deny
-	}
+	dangerCfg := buildHeadlessDangerConfig(resolved)
 
 	tools := builtinTools(dangerCfg, nil, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{Transcription: resolved.Transcription, Vision: resolved.Vision, WebSearch: resolved.WebSearch}, nil)
 	tools = append(tools, mcpTools...)
@@ -697,6 +709,30 @@ func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system
 	result, err := agent.Run(ctx, task)
 	tokens := int64(lastInfo.InputTokens + lastInfo.OutputTokens)
 	return result, tokens, err
+}
+
+// mergeScheduleDangerous overlays schedule-specific dangerous policy onto the
+// global policy. It mutates base in place. Lists are appended; scalar/map
+// fields in schedule override global. Schedule policy comes from operator-
+// controlled sources only (~/.odek/config.json and ODEK_SCHEDULES_DANGEROUS_*
+// env vars); project-level odek.json is rejected by the config loader.
+func mergeScheduleDangerous(base *danger.DangerousConfig, schedule danger.DangerousConfig) {
+	if schedule.Classes != nil {
+		if base.Classes == nil {
+			base.Classes = make(map[danger.RiskClass]danger.Action)
+		}
+		for k, v := range schedule.Classes {
+			base.Classes[k] = v
+		}
+	}
+	base.Allowlist = append(base.Allowlist, schedule.Allowlist...)
+	base.Denylist = append(base.Denylist, schedule.Denylist...)
+	if schedule.DefaultAction != nil {
+		base.DefaultAction = schedule.DefaultAction
+	}
+	if schedule.NonInteractive != nil {
+		base.NonInteractive = schedule.NonInteractive
+	}
 }
 
 // buildScheduledMCPTools connects the configured MCP servers ONCE so the
