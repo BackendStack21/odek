@@ -5,7 +5,7 @@
   "tool_progress_cleanup": false,
   "no_color": false,
   "skills": {
-    "verbose": true
+    "verbose": false
   },
   "transcription": {
     "model": "tiny",
