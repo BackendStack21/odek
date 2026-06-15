@@ -516,6 +516,41 @@ engine. Every field has an `ODEK_SCHEDULES_*` environment override.
 | `allow_telegram_management` | `ODEK_SCHEDULES_ALLOW_TELEGRAM_MANAGEMENT` | `true` | Allow the Telegram `/schedule` commands to create/remove/toggle/run jobs. When false, the bot still lists and previews jobs but mutations must go through `odek schedule`. |
 | `telegram_admin_chats` | `ODEK_SCHEDULES_TELEGRAM_ADMIN_CHATS` | `[]` | Comma-separated list of operator chat IDs. These IDs may use mutating `/schedule` commands **and** `/restart`. When empty, the bot falls back to `telegram.default_chat_id`. Read-only commands are unaffected. |
 | `telegram_admin_users` | `ODEK_SCHEDULES_TELEGRAM_ADMIN_USERS` | `[]` | Comma-separated list of operator user IDs. These IDs may use mutating `/schedule` commands **and** `/restart`. Read-only commands are unaffected. |
+| `dangerous` | see below | `{}` | Schedule-specific override for the dangerous-operations policy. |
+
+### Schedule-specific dangerous policy
+
+Scheduled jobs run unattended, so by default the scheduler denies any class that would require an approval prompt (`network_egress`, `system_write`, `code_execution`, `install`, `unknown`). You can override this for cron jobs without widening the policy for interactive CLI/REPL/WebUI use.
+
+```json
+{
+  "schedules": {
+    "dangerous": {
+      "classes": {
+        "network_egress": "allow",
+        "system_write": "allow"
+      },
+      "allowlist": ["curl -s https://example.com/feed.xml"]
+    }
+  }
+}
+```
+
+Environment overrides:
+
+| Env | Format |
+|---|---|
+| `ODEK_SCHEDULES_DANGEROUS_CLASSES` | JSON object, e.g. `{"network_egress":"allow","system_write":"allow"}` |
+| `ODEK_SCHEDULES_DANGEROUS_ALLOWLIST` | Comma-separated command strings |
+| `ODEK_SCHEDULES_DANGEROUS_DENYLIST` | Comma-separated command strings |
+| `ODEK_SCHEDULES_DANGEROUS_ACTION` | Global default action: `allow`, `deny`, or `prompt` |
+| `ODEK_SCHEDULES_DANGEROUS_NON_INTERACTIVE` | `allow`, `deny`, or `prompt` (ignored: scheduled runs force `deny`) |
+
+Safety floor that cannot be overridden:
+- `non_interactive` is always `deny` (no human is present to approve).
+- `destructive` and `blocked` classes are always denied.
+
+Project-level `odek.json` cannot set `schedules.dangerous`; configure it via `~/.odek/config.json` or environment variables.
 
 Full guide: [docs/SCHEDULES.md](SCHEDULES.md).
 

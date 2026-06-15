@@ -577,6 +577,83 @@ func envInt64List(key string) []int64 {
 	return out
 }
 
+// envStringList parses a comma-separated ODEK_* env var into a slice of strings.
+// Empty entries are dropped.
+func envStringList(key string) []string {
+	v := os.Getenv("ODEK_" + key)
+	if v == "" {
+		return nil
+	}
+	var out []string
+	for _, s := range strings.Split(v, ",") {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// envScheduleDangerousConfig parses ODEK_SCHEDULES_DANGEROUS_* env vars into a
+// DangerousConfig. Returns nil if none are set.
+func envScheduleDangerousConfig(prefix string) *danger.DangerousConfig {
+	classesJSON := os.Getenv("ODEK_" + prefix + "_CLASSES")
+	allowlist := envStringList(prefix + "_ALLOWLIST")
+	denylist := envStringList(prefix + "_DENYLIST")
+	action := os.Getenv("ODEK_" + prefix + "_ACTION")
+	nonInteractive := os.Getenv("ODEK_" + prefix + "_NON_INTERACTIVE")
+
+	if classesJSON == "" && len(allowlist) == 0 && len(denylist) == 0 && action == "" && nonInteractive == "" {
+		return nil
+	}
+
+	cfg := &danger.DangerousConfig{}
+	if classesJSON != "" {
+		classes := make(map[danger.RiskClass]danger.Action)
+		if err := json.Unmarshal([]byte(classesJSON), &classes); err != nil {
+			fmt.Fprintf(os.Stderr, "odek: warning: invalid ODEK_%s_CLASSES JSON (%q) — ignoring: %v\n", prefix, classesJSON, err)
+		} else {
+			cfg.Classes = classes
+		}
+	}
+	if len(allowlist) > 0 {
+		cfg.Allowlist = allowlist
+	}
+	if len(denylist) > 0 {
+		cfg.Denylist = denylist
+	}
+	if action != "" {
+		cfg.DefaultAction = &action
+	}
+	if nonInteractive != "" {
+		cfg.NonInteractive = &nonInteractive
+	}
+	return cfg
+}
+
+// mergeDangerousConfig overlays override onto base. Lists are appended; scalar
+// and map fields in override win. Used to merge env-var schedule overrides on
+// top of file-based schedule policy.
+func mergeDangerousConfig(base, override *danger.DangerousConfig) {
+	if override.Classes != nil {
+		if base.Classes == nil {
+			base.Classes = make(map[danger.RiskClass]danger.Action)
+		}
+		for k, v := range override.Classes {
+			base.Classes[k] = v
+		}
+	}
+	base.Allowlist = append(base.Allowlist, override.Allowlist...)
+	base.Denylist = append(base.Denylist, override.Denylist...)
+	if override.DefaultAction != nil {
+		base.DefaultAction = override.DefaultAction
+	}
+	if override.NonInteractive != nil {
+		base.NonInteractive = override.NonInteractive
+	}
+}
+
 // ── Merge ──────────────────────────────────────────────────────────────
 
 // LoadConfig merges configuration from all four layers and returns the
@@ -620,6 +697,10 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if project.Dangerous != nil {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring dangerous section from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
 		project.Dangerous = nil
+	}
+	if project.Schedules != nil && project.Schedules.Dangerous != nil {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring schedules.dangerous from project config (%s); set it via ~/.odek/config.json or ODEK_SCHEDULES_DANGEROUS_*\n", ProjectConfigPath())
+		project.Schedules.Dangerous = nil
 	}
 	// A malicious repo must not be able to turn OFF the sandbox or its
 	// read-only mode via ./odek.json — that would undo the container isolation
@@ -745,6 +826,13 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if v := envInt64List("SCHEDULES_TELEGRAM_ADMIN_USERS"); v != nil {
 		cfg.Schedules.TelegramAdminUsers = v
 	}
+	if v := envScheduleDangerousConfig("SCHEDULES_DANGEROUS"); v != nil {
+		if cfg.Schedules.Dangerous == nil {
+			cfg.Schedules.Dangerous = v
+		} else {
+			mergeDangerousConfig(cfg.Schedules.Dangerous, v)
+		}
+	}
 
 	// Telegram env overrides: merge env vars on top of file config.
 	baseTelegram := telegram.DefaultConfig()
@@ -819,26 +907,26 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		MaxIter:  cfg.MaxIter,
 		System:   cfg.System,
 
-		SandboxImage:    cfg.SandboxImage, // empty = resolve at call site (Dockerfile.odek or alpine:latest)
-		SandboxNetwork:  ifZero(cfg.SandboxNetwork, DefaultSandboxNetwork),
-		SandboxMemory:   cfg.SandboxMemory,
-		SandboxCPUs:     cfg.SandboxCPUs,
-		SandboxUser:     cfg.SandboxUser,
-		SandboxEnv:      cfg.SandboxEnv,
-		SandboxVolumes:  cfg.SandboxVolumes,
-		Skills:          resolveSkills(cfg.Skills),
-		Dangerous:       resolveDangerous(cfg.Dangerous),
-		Memory:          resolveMemory(cfg.Memory),
+		SandboxImage:          cfg.SandboxImage, // empty = resolve at call site (Dockerfile.odek or alpine:latest)
+		SandboxNetwork:        ifZero(cfg.SandboxNetwork, DefaultSandboxNetwork),
+		SandboxMemory:         cfg.SandboxMemory,
+		SandboxCPUs:           cfg.SandboxCPUs,
+		SandboxUser:           cfg.SandboxUser,
+		SandboxEnv:            cfg.SandboxEnv,
+		SandboxVolumes:        cfg.SandboxVolumes,
+		Skills:                resolveSkills(cfg.Skills),
+		Dangerous:             resolveDangerous(cfg.Dangerous),
+		Memory:                resolveMemory(cfg.Memory),
 		Embedding:             cfg.Embedding,
 		MCPServers:            cfg.MCPServers,
 		ProjectMCPServerNames: projectMCPNames,
 		Telegram:              resolveTelegram(cfg.Telegram),
-		Transcription:   resolveTranscription(cfg.Transcription),
-		Vision:          resolveVision(cfg.Vision),
-		WebSearch:       resolveWebSearch(cfg.WebSearch),
-		Schedules:       resolveSchedules(cfg.Schedules),
-		InteractionMode: ifZero(cfg.InteractionMode, "engaging"),
-		ToolProgress:    ifZero(cfg.ToolProgress, "all"),
+		Transcription:         resolveTranscription(cfg.Transcription),
+		Vision:                resolveVision(cfg.Vision),
+		WebSearch:             resolveWebSearch(cfg.WebSearch),
+		Schedules:             resolveSchedules(cfg.Schedules),
+		InteractionMode:       ifZero(cfg.InteractionMode, "engaging"),
+		ToolProgress:          ifZero(cfg.ToolProgress, "all"),
 	}
 
 	// Every subsystem inherits the shared top-level embedding default unless it
@@ -1225,6 +1313,14 @@ type SchedulesConfig struct {
 	// TelegramAdminUsers restricts mutating `/schedule` commands to the listed
 	// user IDs. Read-only commands are not affected.
 	TelegramAdminUsers []int64 `json:"telegram_admin_users,omitempty"`
+	// Dangerous overrides the global dangerous-operations policy for scheduled
+	// (unattended) runs only. It is applied on top of the global dangerous
+	// config, then a non-overrideable safety floor is applied by the scheduler
+	// itself: destructive and blocked classes are always denied, and
+	// non_interactive is always deny because no human is present to approve.
+	// This lets operators allow network_egress/system_write/etc. for cron jobs
+	// without widening the policy for interactive CLI/REPL/WebUI use.
+	Dangerous *danger.DangerousConfig `json:"dangerous,omitempty"`
 }
 
 // ScheduleConfig is the resolved scheduler config (all fields concrete).
@@ -1236,6 +1332,9 @@ type ScheduleConfig struct {
 	AllowTelegramManagement bool
 	TelegramAdminChats      []int64
 	TelegramAdminUsers      []int64
+	// Dangerous is the schedule-specific dangerous-operations policy. See
+	// SchedulesConfig.Dangerous for semantics.
+	Dangerous danger.DangerousConfig
 }
 
 // resolveSchedules merges file-level scheduler config with defaults.
@@ -1267,6 +1366,7 @@ func resolveSchedules(cfg *SchedulesConfig) ScheduleConfig {
 	}
 	out.TelegramAdminChats = cfg.TelegramAdminChats
 	out.TelegramAdminUsers = cfg.TelegramAdminUsers
+	out.Dangerous = resolveDangerous(cfg.Dangerous)
 	return out
 }
 

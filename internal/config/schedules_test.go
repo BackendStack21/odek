@@ -1,6 +1,12 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/BackendStack21/odek/internal/danger"
+)
 
 func TestResolveSchedules_Defaults(t *testing.T) {
 	got := resolveSchedules(nil)
@@ -123,5 +129,97 @@ func TestLoadConfig_SchedulesAdminFallbackToDefaultChatID(t *testing.T) {
 	}
 	if len(cfg.Schedules.TelegramAdminChats) != 1 || cfg.Schedules.TelegramAdminChats[0] != 424242 {
 		t.Errorf("admin chats should fall back to default_chat_id, got %v", cfg.Schedules.TelegramAdminChats)
+	}
+}
+
+func TestResolveSchedules_DangerousDefaults(t *testing.T) {
+	got := resolveSchedules(nil)
+	if got.Dangerous.Classes != nil {
+		t.Errorf("Dangerous.Classes should be nil by default, got %+v", got.Dangerous.Classes)
+	}
+}
+
+func TestResolveSchedules_DangerousFromFile(t *testing.T) {
+	got := resolveSchedules(&SchedulesConfig{
+		Dangerous: &danger.DangerousConfig{
+			Classes: map[danger.RiskClass]danger.Action{
+				danger.NetworkEgress: danger.Allow,
+				danger.SystemWrite:   danger.Allow,
+			},
+			Allowlist: []string{"/usr/bin/curl"},
+		},
+	})
+	if got.Dangerous.Classes[danger.NetworkEgress] != danger.Allow {
+		t.Errorf("network_egress should be allow, got %s", got.Dangerous.Classes[danger.NetworkEgress])
+	}
+	if got.Dangerous.Classes[danger.SystemWrite] != danger.Allow {
+		t.Errorf("system_write should be allow, got %s", got.Dangerous.Classes[danger.SystemWrite])
+	}
+	if len(got.Dangerous.Allowlist) != 1 || got.Dangerous.Allowlist[0] != "/usr/bin/curl" {
+		t.Errorf("allowlist not preserved: %v", got.Dangerous.Allowlist)
+	}
+}
+
+func TestLoadConfig_SchedulesDangerousEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ODEK_SCHEDULES_DANGEROUS_CLASSES", `{"network_egress":"allow","system_write":"allow"}`)
+	t.Setenv("ODEK_SCHEDULES_DANGEROUS_ALLOWLIST", "curl, wget")
+	t.Setenv("ODEK_SCHEDULES_DANGEROUS_DENYLIST", "rm -rf /")
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.Schedules.Dangerous.Classes[danger.NetworkEgress] != danger.Allow {
+		t.Errorf("network_egress should be allow, got %s", cfg.Schedules.Dangerous.Classes[danger.NetworkEgress])
+	}
+	if cfg.Schedules.Dangerous.Classes[danger.SystemWrite] != danger.Allow {
+		t.Errorf("system_write should be allow, got %s", cfg.Schedules.Dangerous.Classes[danger.SystemWrite])
+	}
+	if len(cfg.Schedules.Dangerous.Allowlist) != 2 {
+		t.Errorf("allowlist = %v, want 2 entries", cfg.Schedules.Dangerous.Allowlist)
+	}
+	if len(cfg.Schedules.Dangerous.Denylist) != 1 || cfg.Schedules.Dangerous.Denylist[0] != "rm -rf /" {
+		t.Errorf("denylist = %v", cfg.Schedules.Dangerous.Denylist)
+	}
+}
+
+func TestLoadConfig_SchedulesDangerousEnvMergesWithFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	globalPath := filepath.Join(home, ".odek", "config.json")
+	if err := os.MkdirAll(filepath.Dir(globalPath), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	data := []byte(`{"schedules":{"dangerous":{"classes":{"system_write":"allow"},"allowlist":["top"]}}}`)
+	if err := os.WriteFile(globalPath, data, 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("ODEK_SCHEDULES_DANGEROUS_CLASSES", `{"network_egress":"allow"}`)
+	t.Setenv("ODEK_SCHEDULES_DANGEROUS_ALLOWLIST", "bottom")
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.Schedules.Dangerous.Classes[danger.SystemWrite] != danger.Allow {
+		t.Errorf("file system_write override lost: %s", cfg.Schedules.Dangerous.Classes[danger.SystemWrite])
+	}
+	if cfg.Schedules.Dangerous.Classes[danger.NetworkEgress] != danger.Allow {
+		t.Errorf("env network_egress override lost: %s", cfg.Schedules.Dangerous.Classes[danger.NetworkEgress])
+	}
+	if len(cfg.Schedules.Dangerous.Allowlist) != 2 || cfg.Schedules.Dangerous.Allowlist[0] != "top" || cfg.Schedules.Dangerous.Allowlist[1] != "bottom" {
+		t.Errorf("allowlist not merged: %v", cfg.Schedules.Dangerous.Allowlist)
+	}
+}
+
+func TestLoadConfig_SchedulesDangerousProjectIgnored(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	wd := t.TempDir()
+	if err := os.Chdir(wd); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	projectPath := filepath.Join(wd, "odek.json")
+	data := []byte(`{"schedules":{"dangerous":{"classes":{"network_egress":"allow"}}}}`)
+	if err := os.WriteFile(projectPath, data, 0600); err != nil {
+		t.Fatalf("write project config: %v", err)
+	}
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.Schedules.Dangerous.Classes[danger.NetworkEgress] != "" {
+		t.Errorf("project schedules.dangerous should be ignored, got %s", cfg.Schedules.Dangerous.Classes[danger.NetworkEgress])
 	}
 }

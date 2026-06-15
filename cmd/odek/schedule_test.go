@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/schedule"
 	"github.com/BackendStack21/odek/internal/telegram"
 )
@@ -216,5 +217,37 @@ func TestAppendScheduleLog_RedactsSecrets(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "[REDACTED]") {
 		t.Errorf("log should contain [REDACTED] markers: %q", string(data))
+	}
+}
+
+func TestMergeScheduleDangerous(t *testing.T) {
+	base := danger.DangerousConfig{
+		Classes: map[danger.RiskClass]danger.Action{
+			danger.SystemWrite: danger.Prompt,
+		},
+		Allowlist: []string{"base-allow"},
+		Denylist:  []string{"base-deny"},
+	}
+	schedule := danger.DangerousConfig{
+		Classes: map[danger.RiskClass]danger.Action{
+			danger.NetworkEgress: danger.Allow,
+			danger.SystemWrite:   danger.Allow, // overrides base
+		},
+		Allowlist: []string{"schedule-allow"},
+		Denylist:  []string{"schedule-deny"},
+	}
+	mergeScheduleDangerous(&base, schedule)
+
+	if base.Classes[danger.NetworkEgress] != danger.Allow {
+		t.Errorf("network_egress not added from schedule: %s", base.Classes[danger.NetworkEgress])
+	}
+	if base.Classes[danger.SystemWrite] != danger.Allow {
+		t.Errorf("system_write not overridden from schedule: %s", base.Classes[danger.SystemWrite])
+	}
+	if len(base.Allowlist) != 2 || base.Allowlist[0] != "base-allow" || base.Allowlist[1] != "schedule-allow" {
+		t.Errorf("allowlist not merged: %v", base.Allowlist)
+	}
+	if len(base.Denylist) != 2 || base.Denylist[0] != "base-deny" || base.Denylist[1] != "schedule-deny" {
+		t.Errorf("denylist not merged: %v", base.Denylist)
 	}
 }
