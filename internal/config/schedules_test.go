@@ -223,3 +223,89 @@ func TestLoadConfig_SchedulesDangerousProjectIgnored(t *testing.T) {
 		t.Errorf("project schedules.dangerous should be ignored, got %s", cfg.Schedules.Dangerous.Classes[danger.NetworkEgress])
 	}
 }
+
+func TestLoadConfig_SchedulesDangerousEnvInvalidJSON(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ODEK_SCHEDULES_DANGEROUS_CLASSES", "not-json")
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.Schedules.Dangerous.Classes != nil {
+		t.Errorf("invalid classes JSON should be ignored, got %+v", cfg.Schedules.Dangerous.Classes)
+	}
+}
+
+func TestLoadConfig_SchedulesDangerousEnvOnlyAction(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ODEK_SCHEDULES_DANGEROUS_ACTION", "allow")
+	t.Setenv("ODEK_SCHEDULES_DANGEROUS_NON_INTERACTIVE", "prompt")
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.Schedules.Dangerous.DefaultAction == nil || *cfg.Schedules.Dangerous.DefaultAction != "allow" {
+		t.Errorf("default action not set from env")
+	}
+	if cfg.Schedules.Dangerous.NonInteractive == nil || *cfg.Schedules.Dangerous.NonInteractive != "prompt" {
+		t.Errorf("non_interactive not set from env")
+	}
+}
+
+func TestLoadConfig_SchedulesDangerousEnvEmptyList(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ODEK_SCHEDULES_DANGEROUS_ALLOWLIST", " , , ")
+	cfg := LoadConfig(CLIFlags{})
+	if len(cfg.Schedules.Dangerous.Allowlist) != 0 {
+		t.Errorf("empty allowlist entries should be dropped, got %v", cfg.Schedules.Dangerous.Allowlist)
+	}
+}
+
+func TestMergeDangerousConfig(t *testing.T) {
+	base := &danger.DangerousConfig{
+		Classes: map[danger.RiskClass]danger.Action{
+			danger.SystemWrite: danger.Prompt,
+		},
+		Allowlist: []string{"base-allow"},
+		Denylist:  []string{"base-deny"},
+	}
+	override := &danger.DangerousConfig{
+		Classes: map[danger.RiskClass]danger.Action{
+			danger.NetworkEgress: danger.Allow,
+			danger.SystemWrite:   danger.Allow,
+		},
+		Allowlist:      []string{"override-allow"},
+		Denylist:       []string{"override-deny"},
+		DefaultAction:  strPtr("allow"),
+		NonInteractive: strPtr("deny"),
+	}
+	mergeDangerousConfig(base, override)
+
+	if base.Classes[danger.NetworkEgress] != danger.Allow {
+		t.Errorf("network_egress not merged")
+	}
+	if base.Classes[danger.SystemWrite] != danger.Allow {
+		t.Errorf("system_write not overridden")
+	}
+	if len(base.Allowlist) != 2 {
+		t.Errorf("allowlist not appended")
+	}
+	if *base.DefaultAction != "allow" {
+		t.Errorf("default action not overridden")
+	}
+	if *base.NonInteractive != "deny" {
+		t.Errorf("non_interactive not overridden")
+	}
+}
+
+func TestMergeDangerousConfig_NilBaseClasses(t *testing.T) {
+	base := &danger.DangerousConfig{}
+	override := &danger.DangerousConfig{
+		Classes: map[danger.RiskClass]danger.Action{
+			danger.NetworkEgress: danger.Allow,
+		},
+	}
+	mergeDangerousConfig(base, override)
+	if base.Classes[danger.NetworkEgress] != danger.Allow {
+		t.Errorf("classes not initialized when base.Classes is nil")
+	}
+}
+
+func strPtr(s string) *string { return &s }

@@ -251,3 +251,100 @@ func TestMergeScheduleDangerous(t *testing.T) {
 		t.Errorf("denylist not merged: %v", base.Denylist)
 	}
 }
+
+func TestMergeScheduleDangerous_NilBaseClasses(t *testing.T) {
+	base := danger.DangerousConfig{}
+	schedule := danger.DangerousConfig{
+		Classes: map[danger.RiskClass]danger.Action{
+			danger.NetworkEgress: danger.Allow,
+		},
+	}
+	mergeScheduleDangerous(&base, schedule)
+	if base.Classes[danger.NetworkEgress] != danger.Allow {
+		t.Errorf("network_egress not added when base.Classes is nil: %s", base.Classes[danger.NetworkEgress])
+	}
+}
+
+func TestMergeScheduleDangerous_NilScheduleClasses(t *testing.T) {
+	base := danger.DangerousConfig{
+		Classes: map[danger.RiskClass]danger.Action{
+			danger.SystemWrite: danger.Allow,
+		},
+	}
+	schedule := danger.DangerousConfig{
+		Allowlist: []string{"schedule-allow"},
+	}
+	mergeScheduleDangerous(&base, schedule)
+	if base.Classes[danger.SystemWrite] != danger.Allow {
+		t.Errorf("base classes mutated when schedule.Classes is nil")
+	}
+	if len(base.Allowlist) != 1 || base.Allowlist[0] != "schedule-allow" {
+		t.Errorf("allowlist not merged when schedule.Classes is nil: %v", base.Allowlist)
+	}
+}
+
+func TestMergeScheduleDangerous_ActionAndNonInteractive(t *testing.T) {
+	base := danger.DangerousConfig{}
+	schedule := danger.DangerousConfig{
+		DefaultAction:  strPtr("allow"),
+		NonInteractive: strPtr("prompt"),
+	}
+	mergeScheduleDangerous(&base, schedule)
+	if base.DefaultAction == nil || *base.DefaultAction != "allow" {
+		t.Errorf("DefaultAction not overridden")
+	}
+	if base.NonInteractive == nil || *base.NonInteractive != "prompt" {
+		t.Errorf("NonInteractive not overridden")
+	}
+}
+
+func TestBuildHeadlessDangerConfig_Defaults(t *testing.T) {
+	resolved := config.ResolvedConfig{}
+	cfg := buildHeadlessDangerConfig(resolved)
+
+	if cfg.NonInteractive == nil || *cfg.NonInteractive != "deny" {
+		t.Errorf("non_interactive should be forced to deny, got %v", cfg.NonInteractive)
+	}
+	if cfg.Classes[danger.Destructive] != danger.Deny {
+		t.Errorf("destructive should be denied, got %s", cfg.Classes[danger.Destructive])
+	}
+	if cfg.Classes[danger.Blocked] != danger.Deny {
+		t.Errorf("blocked should be denied, got %s", cfg.Classes[danger.Blocked])
+	}
+}
+
+func TestBuildHeadlessDangerConfig_ScheduleOverridesAllowed(t *testing.T) {
+	resolved := config.ResolvedConfig{
+		Dangerous: danger.DangerousConfig{
+			Classes: map[danger.RiskClass]danger.Action{
+				danger.SystemWrite: danger.Prompt,
+			},
+		},
+		Schedules: config.ScheduleConfig{
+			Dangerous: danger.DangerousConfig{
+				Classes: map[danger.RiskClass]danger.Action{
+					danger.NetworkEgress: danger.Allow,
+					danger.SystemWrite:   danger.Allow,
+					danger.Destructive:   danger.Allow, // should be floored back to deny
+				},
+			},
+		},
+	}
+	cfg := buildHeadlessDangerConfig(resolved)
+
+	if cfg.Classes[danger.NetworkEgress] != danger.Allow {
+		t.Errorf("network_egress should be allow via schedule override, got %s", cfg.Classes[danger.NetworkEgress])
+	}
+	if cfg.Classes[danger.SystemWrite] != danger.Allow {
+		t.Errorf("system_write should be allow via schedule override, got %s", cfg.Classes[danger.SystemWrite])
+	}
+	if cfg.Classes[danger.Destructive] != danger.Deny {
+		t.Errorf("destructive should remain denied by safety floor, got %s", cfg.Classes[danger.Destructive])
+	}
+	if cfg.Classes[danger.Blocked] != danger.Deny {
+		t.Errorf("blocked should remain denied by safety floor, got %s", cfg.Classes[danger.Blocked])
+	}
+	if *cfg.NonInteractive != "deny" {
+		t.Errorf("non_interactive should remain denied by safety floor, got %s", *cfg.NonInteractive)
+	}
+}
