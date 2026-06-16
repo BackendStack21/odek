@@ -98,6 +98,112 @@ func TestStore_CreateAndLoad(t *testing.T) {
 	}
 }
 
+// TestStore_SaveRedactsTask verifies that secrets in the session Task field
+// are redacted before the session is persisted to disk. This is a regression
+// test for finding #21.
+func TestStore_SaveRedactsTask(t *testing.T) {
+	store := newTestStore(t)
+	secret := "sk-live-1234567890abcdef1234567890abcdef"
+	msgs := []llm.Message{
+		{Role: "system", Content: "You are a bot."},
+		{Role: "user", Content: "Use key " + secret},
+	}
+	sess, err := store.Create(msgs, "test-model", "Use key "+secret)
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+
+	// The in-memory Task is redacted in place by Save.
+	if sess.Task == "" || sess.Task == "Use key "+secret {
+		t.Errorf("Task was not redacted in memory: %q", sess.Task)
+	}
+
+	loaded, err := store.Load(sess.ID)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if strings.Contains(loaded.Task, secret) {
+		t.Errorf("loaded Task contains secret: %q", loaded.Task)
+	}
+	if strings.Contains(loaded.Messages[1].Content, secret) {
+		t.Errorf("loaded Messages[1].Content contains secret: %q", loaded.Messages[1].Content)
+	}
+
+	// Index entry title should also be redacted.
+	idx, err := store.Latest()
+	if err != nil {
+		t.Fatalf("Latest() error: %v", err)
+	}
+	if strings.Contains(idx.Task, secret) {
+		t.Errorf("index Task contains secret: %q", idx.Task)
+	}
+}
+
+// TestStore_AppendRedactsTask verifies that Append also redacts the Task field
+// if it has been changed after creation.
+func TestStore_AppendRedactsTask(t *testing.T) {
+	store := newTestStore(t)
+	secret := "sk-live-1234567890abcdef1234567890abcdef"
+	msgs := []llm.Message{
+		{Role: "system", Content: "You are a bot."},
+		{Role: "user", Content: "first"},
+	}
+	sess, err := store.Create(msgs, "test-model", "first")
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+
+	// Simulate a code path that mutates Task after creation.
+	sess.Task = "key is " + secret
+	if err := store.Append(sess.ID, []llm.Message{{Role: "assistant", Content: "ok"}}); err != nil {
+		t.Fatalf("Append() error: %v", err)
+	}
+
+	loaded, err := store.Load(sess.ID)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if strings.Contains(loaded.Task, secret) {
+		t.Errorf("loaded Task contains secret after Append: %q", loaded.Task)
+	}
+}
+
+// TestStore_SaveWithVectorIndex verifies that Save updates the vector index
+// when one is initialized.
+func TestStore_SaveWithVectorIndex(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.InitVectorIndex(nil); err != nil {
+		t.Fatalf("InitVectorIndex(nil): %v", err)
+	}
+	msgs := []llm.Message{
+		{Role: "system", Content: "You are a bot."},
+		{Role: "user", Content: "semantic search test"},
+	}
+	sess, err := store.Create(msgs, "test-model", "semantic search test")
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+	if !store.Vec.Ready() {
+		t.Error("vector index should be ready after Save")
+	}
+
+	// Verify the session is searchable through the vector index.
+	results, err := store.Vec.Search("semantic", 1)
+	if err != nil {
+		t.Fatalf("Search error: %v", err)
+	}
+	found := false
+	for _, r := range results {
+		if r.SessionID == sess.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("session %s not found in vector search results: %+v", sess.ID, results)
+	}
+}
+
 func TestStore_Append(t *testing.T) {
 	store := newTestStore(t)
 	msgs := []llm.Message{
