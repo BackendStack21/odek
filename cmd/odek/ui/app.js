@@ -1880,7 +1880,12 @@ function hideCancel() {
   if (cancelBtn) cancelBtn.classList.remove('visible');
 }
 window.cancelAgent = function() {
-  fetch('/api/cancel', { method: 'POST' }).catch(function(){});
+  if (!sessionId) {
+    hideCancel();
+    addSystemMessage('⏹ No active session to cancel');
+    return;
+  }
+  fetch('/api/cancel?session_id=' + encodeURIComponent(sessionId), { method: 'POST' }).catch(function(){});
   hideCancel();
   addSystemMessage('⏹ Canceled');
 };

@@ -15,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -38,9 +37,52 @@ var uiFS embed.FS
 // multi-gigabyte frame.
 const maxWSMessageBytes = 8 * 1024 * 1024 // 8 MiB
 
-// currentPromptCancel holds the cancel function for the currently executing
-// prompt. Used by the POST /api/cancel endpoint to abort a running agent.
-var currentPromptCancel atomic.Value
+// promptCancels maps a session ID to the cancel function for the prompt
+// currently executing on that session. A mutex protects the map so concurrent
+// WebSocket handlers and the HTTP /api/cancel endpoint can access it safely.
+// Using session IDs as keys scopes cancellation to the caller's session,
+// preventing one connection from cancelling another connection's prompt.
+var (
+	promptCancelMu sync.Mutex
+	promptCancels  = map[string]context.CancelFunc{}
+)
+
+// registerPromptCancel records cancel as the active cancel function for
+// sessionID. It must be unregistered when the prompt completes.
+func registerPromptCancel(sessionID string, cancel context.CancelFunc) {
+	if sessionID == "" || cancel == nil {
+		return
+	}
+	promptCancelMu.Lock()
+	promptCancels[sessionID] = cancel
+	promptCancelMu.Unlock()
+}
+
+// unregisterPromptCancel removes any cancel function registered for sessionID.
+func unregisterPromptCancel(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	promptCancelMu.Lock()
+	delete(promptCancels, sessionID)
+	promptCancelMu.Unlock()
+}
+
+// cancelPrompt cancels the active prompt for sessionID, if any. It returns
+// true if a cancel function was found and invoked.
+func cancelPrompt(sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	promptCancelMu.Lock()
+	cancel, ok := promptCancels[sessionID]
+	promptCancelMu.Unlock()
+	if !ok {
+		return false
+	}
+	cancel()
+	return true
+}
 
 // wsConns tracks every active WebSocket connection so serveOnListener can
 // close them on shutdown, unblocking handleWS goroutines and allowing their
@@ -708,13 +750,10 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 		// Create a cancelable context for this prompt (so POST /api/cancel can abort it).
 		// Derived from connCtx so a disconnect also aborts the running prompt.
 		promptCtx, promptCancel := context.WithCancel(connCtx)
-		currentPromptCancel.Store(promptCancel)
 
-		currentSession = handlePrompt(promptCtx, conn, store, resources, resolved, agent, currentSession, msg.Content, msg.SessionID, &sessionInputTokens, &sessionOutputTokens)
+		currentSession = handlePrompt(promptCtx, conn, store, resources, resolved, agent, currentSession, msg.Content, msg.SessionID, &sessionInputTokens, &sessionOutputTokens, promptCancel)
 
-		// Clear cancel on completion — the prompt is no longer running
-		// Use a no-op sentinel to avoid atomic.Value panicking on nil store
-		currentPromptCancel.Store(context.CancelFunc(func() {}))
+		// Cancel the prompt context once the run is complete.
 		promptCancel()
 	}
 
@@ -744,6 +783,7 @@ func handlePrompt(
 	prompt string,
 	sessionID string,
 	sessionInputTokens, sessionOutputTokens *int,
+	promptCancel context.CancelFunc,
 ) *session.Session {
 	// Resolve @ references
 	refs := resource.ParseRefs(prompt)
@@ -801,6 +841,12 @@ func handlePrompt(
 	if sess != nil {
 		sid = sess.ID
 		authToken = sess.AuthToken
+	}
+	// Register the cancel function for this session so the HTTP endpoint can
+	// abort this specific prompt. Unregister as soon as the run finishes.
+	if sid != "" && promptCancel != nil {
+		registerPromptCancel(sid, promptCancel)
+		defer unregisterPromptCancel(sid)
 	}
 	writeWSJSON(conn, map[string]any{"type": "session", "session_id": sid, "auth_token": authToken, "model": resolved.Model, "sandbox": resolved.Sandbox})
 
@@ -1291,20 +1337,23 @@ func handleModelList(configuredModel string) http.HandlerFunc {
 	}
 }
 
-// handleCancel cancels the currently running prompt, if any.
-// POST /api/cancel — cancels the current agent execution.
+// handleCancel cancels the running prompt for the requested session.
+// POST /api/cancel?session_id=<id> — cancels the agent execution scoped to
+// that session. Requiring the session ID prevents one connection from
+// cancelling another connection's prompt.
 func handleCancel(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	if f := currentPromptCancel.Load(); f != nil {
-		if cancel, ok := f.(context.CancelFunc); ok {
-			cancel()
-		}
+	sessionID := r.URL.Query().Get("session_id")
+	if sessionID == "" {
+		http.Error(w, "missing session_id", http.StatusBadRequest)
+		return
 	}
 
+	cancelPrompt(sessionID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
