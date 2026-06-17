@@ -203,6 +203,58 @@ func TestReadLoop_OversizedResponse(t *testing.T) {
 	}
 }
 
+func TestValidateToolName(t *testing.T) {
+	tests := []struct {
+		name    string
+		wantErr bool
+	}{
+		{"fetch", false},
+		{"db_query", false},
+		{"read-file", false},
+		{"tool_1", false},
+		{"", true},
+		{"read file", true},
+		{"read/file", true},
+		{"read\\file", true},
+		{"read.file", true},
+		{"tool;rm", true},
+		{"a" + strings.Repeat("a", 64), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateToolName(tt.name)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("validateToolName(%q) expected error", tt.name)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("validateToolName(%q) = %v, want nil", tt.name, err)
+			}
+		})
+	}
+}
+
+func TestDiscover_InvalidToolName(t *testing.T) {
+	client, err := New("invalid", ServerConfig{
+		Command: fakeServerPath(t),
+		Env:     map[string]string{"FAKE_TOOLS": `[{"name":"read file","description":"bad name"}]`},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer client.Close()
+
+	_, err = client.Discover(context.Background())
+	if err == nil {
+		t.Fatal("expected error for invalid tool name")
+	}
+	if !strings.Contains(err.Error(), "invalid character") {
+		t.Errorf("error = %v, want invalid character", err)
+	}
+}
+
 func TestServerConfig_JSON(t *testing.T) {
 	// Verify ServerConfig round-trips through JSON
 	cfg := ServerConfig{

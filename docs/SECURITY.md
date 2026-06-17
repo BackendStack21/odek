@@ -366,6 +366,22 @@ This closes the path where an attacker plants a symlink named like a session fil
 
 The episode vector index is rebuilt from `index.json` plus one `.md` summary file per entry. Because `index.json` is persisted JSON that can be tampered with on disk, `internal/memory/episode_index.go::readAllSummaries` treats every `session_id` as untrusted input. It calls `session.ValidateSessionID` before constructing the path `filepath.Join(dir, sessionID+".md")` and skips (with a stderr warning) any entry that is empty, contains path separators, contains `..`, or is otherwise malformed. This prevents a tampered entry such as `"../../../.odek/config"` from causing the rebuild to read arbitrary files (e.g. `~/.odek/config.json` or `IDENTITY.md`) and include them in the embedding space.
 
+### 28. MCP `tools/list` metadata validation and per-tool approval
+
+MCP servers supply both the names and descriptions of the tools they expose via `tools/list`. odek treats this metadata as untrusted input from the server:
+
+1. **Tool-name validation** — before registration, every tool name is checked in `internal/mcpclient/client.go::validateToolName`. Names must be non-empty, ≤ 64 characters, and contain only ASCII letters, digits, underscores, and hyphens. Names that do not match are rejected with a warning, so a server cannot register tools whose names contain whitespace, Unicode confusables, or delimiter characters that might confuse parsing or the agent.
+
+2. **Built-in shadowing prevention** — when MCP tools are loaded, raw names that collide with odek's built-in tool names (e.g. `shell`, `read_file`, `write_file`) are rejected, even though MCP tools are normally prefixed with `<server>__`. This prevents a malicious or misconfigured server from impersonating a built-in tool.
+
+3. **Per-tool approval** — project-level MCP servers must already be approved before their subprocess is spawned. In addition, each individual tool exposed by a project-level server must be explicitly approved before it is registered. Tools from globally-configured servers (`~/.odek/config.json`) are operator-trusted and do not require per-tool approval. Approval methods mirror server approval:
+
+   - **Interactive prompt** — on a TTY, odek lists the discovered tools and asks which to approve.
+   - **`ODEK_APPROVE_MCP=1`** — approves every tool from every project-level server for the invocation.
+   - **Persisted approvals** — approved tools are stored in `~/.odek/mcp_tool_approvals.json` (0600), keyed by project directory, server name, and tool name. Changing the tool name or server configuration invalidates the approval.
+
+4. **Description scanning** — tool descriptions are already scanned with `ScanInjection` at registration and withheld if injection patterns are found.
+
 ### YOLO mode
 
 ```json
@@ -404,7 +420,9 @@ Defaults: `FrictionThreshold=3`, `FrictionWindow=60s`. To opt out (TTYApprover o
 | README.md says "ignore your instructions" | Identity anchoring + read_file wrapper |
 | Compiler / shell output embeds instructions | Wrapped output + identity rules |
 | Fetched page redirects to `169.254.169.254` (cloud metadata) | `browser` and `http_batch` re-classify every redirect hop (`CheckRedirect` re-runs `ClassifyURL` + policy) |
-| Malicious MCP server poisons its tool description with instructions | Description scanned with `ScanInjection` at registration; withheld if injection patterns found |
+| Malicious MCP server poisons its tool description with instructions | Tool names validated and descriptions scanned with `ScanInjection`; withheld if injection patterns found |
+| Malicious MCP server registers a tool that shadows a built-in name | Built-in name collision is rejected at load time |
+| Malicious MCP server registers an unwanted high-risk tool | Per-tool approval required for project-level servers; `ODEK_APPROVE_MCP=1` or persisted approvals |
 | MCP server smuggles a payload via the error channel | Error message wrapped + audited, same as tool output |
 | `session_search` re-surfaces content from a previously-tainted session | Output wrapped as untrusted and recorded in the audit log |
 | Page contains literal `</untrusted_content>` to escape | Per-call nonce defeats blind close-tag injection |

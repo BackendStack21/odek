@@ -1225,14 +1225,37 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 // The passed-in tool slice pointer is extended with ToolAdapters.
 //
 // Before spawning any server that was defined in the project-level ./odek.json,
+// reservedBuiltinToolNames returns the names of tools built into odek. It is
+// used to stop an MCP server from registering a tool whose raw name shadows a
+// built-in and could confuse the model.
+func reservedBuiltinToolNames() map[string]bool {
+	bt := builtinTools(danger.DangerousConfig{}, nil, nil, 1, "", toolConfig{}, nil)
+	names := make(map[string]bool, len(bt))
+	for _, t := range bt {
+		names[t.Name()] = true
+	}
+	return names
+}
+
 // loadMCPTools calls approveMCPServers, which requires explicit user approval
 // (interactive prompt or ODEK_APPROVE_MCP=1) and persists approvals in
-// ~/.odek/mcp_approvals.json.
+// ~/.odek/mcp_approvals.json. After discovery, each advertised tool is checked
+// against built-in names and requires its own per-tool approval.
 func loadMCPTools(resolved config.ResolvedConfig, tools *[]odek.Tool) (func(), error) {
 	if err := approveMCPServers(resolved, os.Stdin, os.Stdout); err != nil {
 		return nil, err
 	}
 
+	projectDir, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("mcp: get working directory: %w", err)
+	}
+	projectDir, err = filepath.Abs(projectDir)
+	if err != nil {
+		return nil, fmt.Errorf("mcp: abs working directory: %w", err)
+	}
+
+	reserved := reservedBuiltinToolNames()
 	var cleaners []func()
 	for name, cfg := range resolved.MCPServers {
 		client, err := mcpclient.New(name, cfg)
@@ -1251,6 +1274,28 @@ func loadMCPTools(resolved config.ResolvedConfig, tools *[]odek.Tool) (func(), e
 				c()
 			}
 			return nil, fmt.Errorf("mcp server %q: discover: %w", name, err)
+		}
+
+		// Reject tools whose raw name shadows a built-in, even though the
+		// registered name is prefixed. A server naming its tool "read_file"
+		// is trying to confuse the model.
+		for _, def := range defs {
+			if reserved[def.Name] {
+				client.Close()
+				for _, c := range cleaners {
+					c()
+				}
+				return nil, fmt.Errorf("mcp server %q: tool %q shadows a built-in tool", name, def.Name)
+			}
+		}
+
+		defs, err = approveMCPTools(projectDir, name, cfg, defs, os.Stdin, os.Stdout)
+		if err != nil {
+			client.Close()
+			for _, c := range cleaners {
+				c()
+			}
+			return nil, fmt.Errorf("mcp server %q: tool approval: %w", name, err)
 		}
 
 		for _, def := range defs {

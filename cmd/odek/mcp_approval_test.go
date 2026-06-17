@@ -90,6 +90,65 @@ func TestApproveMCPServers_NonTTYRequiresEnv(t *testing.T) {
 	}
 }
 
+func TestApproveMCPTools_ApprovesAllViaEnv(t *testing.T) {
+	setupTestHome(t)
+	t.Setenv("ODEK_APPROVE_MCP", "1")
+	defs := []mcpclient.ToolDef{{Name: "fetch"}, {Name: "query"}}
+	got, err := approveMCPToolsWithTTY("/proj", "srv", mcpclient.ServerConfig{Command: "node"}, defs, strings.NewReader(""), &bytes.Buffer{}, false)
+	if err != nil {
+		t.Fatalf("expected env approval, got: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("approved %d tools, want 2", len(got))
+	}
+}
+
+func TestApproveMCPTools_PromptApprovesOne(t *testing.T) {
+	setupTestHome(t)
+	defs := []mcpclient.ToolDef{
+		{Name: "fetch", Description: "Fetch a URL"},
+		{Name: "query", Description: "Run a query"},
+	}
+	var out bytes.Buffer
+	got, err := approveMCPToolsWithTTY("/proj", "srv", mcpclient.ServerConfig{Command: "node"}, defs, strings.NewReader("yes\nno\n"), &out, true)
+	if err != nil {
+		t.Fatalf("expected interactive approval, got: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "fetch" {
+		t.Errorf("approved tools = %v, want [fetch]", got)
+	}
+	if !strings.Contains(out.String(), "fetch") || !strings.Contains(out.String(), "query") {
+		t.Errorf("prompt did not mention tools: %q", out.String())
+	}
+}
+
+func TestApproveMCPTools_NonTTYRequiresEnv(t *testing.T) {
+	setupTestHome(t)
+	os.Unsetenv("ODEK_APPROVE_MCP")
+	defs := []mcpclient.ToolDef{{Name: "fetch"}}
+	_, err := approveMCPToolsWithTTY("/proj", "srv", mcpclient.ServerConfig{Command: "node"}, defs, strings.NewReader(""), &bytes.Buffer{}, false)
+	if err == nil {
+		t.Fatal("expected error for non-interactive unapproved tool")
+	}
+	if !strings.Contains(err.Error(), "ODEK_APPROVE_MCP") {
+		t.Errorf("error = %q, want ODEK_APPROVE_MCP hint", err)
+	}
+}
+
+func TestMCPToolApprovalKey_Stability(t *testing.T) {
+	cfg := mcpclient.ServerConfig{Command: "node", Args: []string{"a.js", "b.js"}}
+	k1 := mcpToolApprovalKey("/proj", "srv", "fetch", cfg)
+	k2 := mcpToolApprovalKey("/proj", "srv", "fetch", cfg)
+	if k1 != k2 {
+		t.Fatalf("approval key not stable: %q vs %q", k1, k2)
+	}
+
+	k3 := mcpToolApprovalKey("/proj", "srv", "query", cfg)
+	if k1 == k3 {
+		t.Fatal("approval key did not change when tool name changed")
+	}
+}
+
 func TestMCPApprovalKey_Stability(t *testing.T) {
 	cfg := mcpclient.ServerConfig{Command: "node", Args: []string{"a.js", "b.js"}, Env: map[string]string{"X": "1"}}
 	k1 := mcpApprovalKey("/proj", "srv", cfg)

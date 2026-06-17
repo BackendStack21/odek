@@ -108,6 +108,30 @@ type listToolsResult struct {
 	Tools []ToolDef `json:"tools"`
 }
 
+// validateToolName rejects server-supplied tool names that are empty, too long,
+// or contain characters that could be used to spoof another tool or escape the
+// name-based trust boundary. Only ASCII letters, digits, underscore, and hyphen
+// are permitted.
+func validateToolName(name string) error {
+	if name == "" {
+		return fmt.Errorf("tool name is empty")
+	}
+	if len(name) > 64 {
+		return fmt.Errorf("tool name %q exceeds 64 characters", name)
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '_' || r == '-':
+		default:
+			return fmt.Errorf("tool name %q contains invalid character %q", name, r)
+		}
+	}
+	return nil
+}
+
 // callToolParams is the params sent to tools/call.
 type callToolParams struct {
 	Name      string `json:"name"`
@@ -345,6 +369,12 @@ func (c *Client) Discover(ctx context.Context) ([]ToolDef, error) {
 	var result listToolsResult
 	if err := json.Unmarshal(raw, &result); err != nil {
 		return nil, fmt.Errorf("mcpclient %s: parse tools/list: %w", c.name, err)
+	}
+
+	for i := range result.Tools {
+		if err := validateToolName(result.Tools[i].Name); err != nil {
+			return nil, fmt.Errorf("mcpclient %s: tools/list: %w", c.name, err)
+		}
 	}
 
 	return result.Tools, nil
