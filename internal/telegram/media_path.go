@@ -42,19 +42,16 @@ func ResolveMediaPath(path string) (string, error) {
 	abs = filepath.Clean(abs)
 
 	// The final component must not be a symlink and must be a regular file.
-	info, err := os.Lstat(abs)
-	if err != nil {
-		return "", fmt.Errorf("media path: lstat: %w", err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("media path: symlinks are not allowed: %s", abs)
-	}
-	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("media path: not a regular file: %s", abs)
+	// On Unix this is done with an atomic O_NOFOLLOW open + fstat to prevent
+	// a TOCTOU race where a directory is swapped for a symlink between lstat
+	// and the subsequent read.
+	if err := verifyRegularFile(abs); err != nil {
+		return "", err
 	}
 
-	// Resolve all symlinks in the path. Any symlink that escapes the allowlist
-	// is caught by the containment check below.
+	// Resolve any symlinks in the path (but not the final component, which we
+	// already verified is a regular file). Any symlink that escapes the
+	// allowlist is caught by the containment check below.
 	resolved, err := filepath.EvalSymlinks(abs)
 	if err != nil {
 		return "", fmt.Errorf("media path: resolve symlinks: %w", err)

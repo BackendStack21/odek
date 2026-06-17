@@ -353,7 +353,7 @@ When the agent emits `MEDIA:photo:/path`, `MEDIA:voice:/path`, `MEDIA:document:/
 - `~/.odek/media/`, and
 - the system temporary directory.
 
-The path is resolved to an absolute, cleaned form with `filepath.Abs`, symlinks are resolved with `filepath.EvalSymlinks`, and the final component is checked with `os.Lstat`. If the final component is a symlink, or if the resolved path escapes the allowlist, the upload is rejected. This closes the arbitrary-file-read/exfiltration vector where a prompt-injected agent asks the bot to send files such as `/home/user/.ssh/id_rsa`.
+The path is resolved to an absolute, cleaned form with `filepath.Abs`, symlinks are resolved with `filepath.EvalSymlinks`, and the final component is verified with an atomic `O_NOFOLLOW` open + `fstat` (Unix). If the final component is a symlink, or if the resolved path escapes the allowlist, the upload is rejected. This closes the arbitrary-file-read/exfiltration vector where a prompt-injected agent asks the bot to send files such as `/home/user/.ssh/id_rsa`.
 
 ### 24. Session ID entropy + session-scoped auth tokens
 
@@ -447,6 +447,14 @@ Telegram's message and caption limits are defined in UTF-16 code units, but `int
 ### 39. Telegram `send_message` MarkdownV2 escaping
 
 The `send_message` tool lets the agent send arbitrary text messages to Telegram using `ParseModeMarkdownV2`. Because the LLM may echo or reformat attacker-controllable content, the text is now escaped with `telegram.EscapeMarkdown` before sending. This prevents a prompt-injected payload from using Telegram's Markdown syntax to hide malicious links, fake buttons, or instruction-like formatting inside an otherwise ordinary-looking message.
+
+### 39a. Telegram plan file size cap
+
+Plan files live in `~/.odek/plans/` and are loaded by `/plan_view` and injected into context by `/plan_resume`. A prompt-injected agent could write a multi-hundred-megabyte plan, causing the next plan operation to OOM. `ReadPlan` and `MostRecentPlan` now reject files larger than 1 MiB, and `ListPlans` reads only the first 8 KiB for preview.
+
+### 39b. Telegram log file permissions
+
+Telegram log files were created with world-readable `0644` permissions, exposing chat IDs and task snippets to other local users. `NewFileLogger` now creates log files with `0600` and `os.Chmod`'s existing files to the same mode.
 
 ### 40. `/api/resources` result limit cap
 

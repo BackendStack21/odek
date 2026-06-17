@@ -181,6 +181,24 @@ func TestReadPlan_NoMatch(t *testing.T) {
 	}
 }
 
+func TestReadPlan_OversizeRejected(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	dir := filepath.Join(tmp, ".odek", "plans")
+	os.MkdirAll(dir, 0755)
+	path := filepath.Join(dir, "huge-plan.md")
+	os.WriteFile(path, []byte(strings.Repeat("x", maxPlanBytes+1)), 0644)
+
+	_, _, err := ReadPlan("huge-plan")
+	if err == nil {
+		t.Fatal("expected error for oversized plan")
+	}
+	if !strings.Contains(err.Error(), "too large") {
+		t.Errorf("error = %q, want 'too large'", err)
+	}
+}
+
 func TestDeletePlan(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)

@@ -50,6 +50,15 @@ func TestNewFileLogger_filePath(t *testing.T) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		t.Error("log file was not created")
 	}
+
+	// Verify permissions are not group/other-readable.
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat log file: %v", err)
+	}
+	if info.Mode().Perm()&0077 != 0 {
+		t.Errorf("log file permissions = %04o, want no group/other bits", info.Mode().Perm())
+	}
 }
 
 func TestNewFileLogger_invalidPath(t *testing.T) {
