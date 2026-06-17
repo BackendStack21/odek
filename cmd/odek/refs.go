@@ -39,7 +39,7 @@ func enrichTask(task string, ctxFiles []string, cwd string) (string, error) {
 				// Leave unresolved refs as-is
 				continue
 			}
-			resolved[ref.Raw] = wrapUntrusted("resource:"+ref.Raw, content)
+			resolved[ref.Raw] = wrapUntrusted(context.Background(), "resource:"+ref.Raw, content)
 		}
 		enriched = resource.ReplaceRefs(task, resolved)
 	}
@@ -56,7 +56,7 @@ func enrichTask(task string, ctxFiles []string, cwd string) (string, error) {
 			if err != nil {
 				return "", fmt.Errorf("ctx file %q: %w", f, err)
 			}
-			blocks = append(blocks, fmt.Sprintf("--- %s ---\n%s\n--- end %s ---", f, wrapUntrusted("ctx:"+f, content), f))
+			blocks = append(blocks, fmt.Sprintf("--- %s ---\n%s\n--- end %s ---", f, wrapUntrusted(context.Background(), "ctx:"+f, content), f))
 		}
 		if len(blocks) > 0 {
 			// Log attached files to stderr

@@ -59,7 +59,15 @@ func startTestServer(t *testing.T) *testServer {
 	mux.HandleFunc("/api/cancel", handleCancel)
 	mux.Handle("/ws", &golangws.Server{
 		Handshake: func(*golangws.Config, *http.Request) error { return nil },
-		Handler:   s.handleWebSocket,
+		Handler: func(conn *golangws.Conn) {
+			// The production server uses wsHandshakeWithLimits to acquire the
+			// global semaphore; the test server's no-op handshake bypasses it.
+			// Acquire and release the slot here so the test path doesn't leak
+			// the global limiter state across tests.
+			wsConnSem <- struct{}{}
+			defer func() { <-wsConnSem }()
+			s.handleWebSocket(conn)
+		},
 	})
 
 	go http.Serve(ln, mux)
@@ -526,6 +534,11 @@ func TestServe_E2E_WebSocketPipeline(t *testing.T) {
 	mux.Handle("/ws", &golangws.Server{
 		Handshake: func(*golangws.Config, *http.Request) error { return nil },
 		Handler: func(conn *golangws.Conn) {
+			// Production acquires the global semaphore in wsHandshakeWithLimits;
+			// the E2E helper uses a no-op handshake, so acquire/release here to
+			// keep the global limiter state consistent across tests.
+			wsConnSem <- struct{}{}
+			defer func() { <-wsConnSem }()
 			handleWS(store, resourceReg, resolved, systemMessage, conn)
 		},
 	})
@@ -563,6 +576,9 @@ func TestServe_E2E_WebSocketPipeline(t *testing.T) {
 
 	// 1. Connect via WebSocket
 	wsURL := "ws://" + addr + "/ws"
+	// Reset the per-IP upgrade limiter so this E2E test is not throttled by
+	// earlier connection churn from other tests.
+	wsUpgradeLimiter.reset()
 	conn, err := golangws.Dial(wsURL, "", "http://localhost")
 	if err != nil {
 		t.Fatalf("Dial(%q): %v", wsURL, err)
@@ -859,6 +875,11 @@ func buildServeMux(t *testing.T, store *session.Store) (net.Listener, *http.Serv
 	mux.Handle("/ws", &golangws.Server{
 		Handshake: func(*golangws.Config, *http.Request) error { return nil },
 		Handler: func(conn *golangws.Conn) {
+			// Production acquires the global semaphore in wsHandshakeWithLimits;
+			// the E2E helper uses a no-op handshake, so acquire/release here to
+			// keep the global limiter state consistent across tests.
+			wsConnSem <- struct{}{}
+			defer func() { <-wsConnSem }()
 			handleWS(store, resourceReg, resolved, systemMessage, conn)
 		},
 	})
@@ -1496,6 +1517,35 @@ func TestServe_DoneCacheStats(t *testing.T) {
 
 // ── Cancel Tests ──
 
+func TestPromptCancelHelpers_Guards(t *testing.T) {
+	// registerPromptCancel should ignore empty session IDs and nil funcs.
+	registerPromptCancel("", func() {})
+	registerPromptCancel("sid", nil)
+	if cancelPrompt("") {
+		t.Error("cancelPrompt(\"\") should return false")
+	}
+
+	// unregisterPromptCancel should ignore empty session IDs.
+	unregisterPromptCancel("")
+}
+
+func TestPromptCancelHelpers_RegisterAndCancel(t *testing.T) {
+	var called bool
+	registerPromptCancel("session-a", func() { called = true })
+	if !cancelPrompt("session-a") {
+		t.Fatal("cancelPrompt should find session-a")
+	}
+	if !called {
+		t.Error("cancel function was not invoked")
+	}
+
+	// After unregister, cancel should be a no-op.
+	unregisterPromptCancel("session-a")
+	if cancelPrompt("session-a") {
+		t.Error("cancelPrompt should return false after unregister")
+	}
+}
+
 func TestServe_Cancel_GetReturns405(t *testing.T) {
 	s := startTestServer(t)
 	defer s.Close()
@@ -1515,7 +1565,7 @@ func TestServe_Cancel_PostReturns204(t *testing.T) {
 	s := startTestServer(t)
 	defer s.Close()
 
-	resp, err := http.Post(s.url+"/api/cancel", "", nil)
+	resp, err := http.Post(s.url+"/api/cancel?session_id=test-session", "", nil)
 	if err != nil {
 		t.Fatalf("POST /api/cancel: %v", err)
 	}
@@ -1526,13 +1576,28 @@ func TestServe_Cancel_PostReturns204(t *testing.T) {
 	}
 }
 
+func TestServe_Cancel_MissingSessionIDReturns400(t *testing.T) {
+	s := startTestServer(t)
+	defer s.Close()
+
+	resp, err := http.Post(s.url+"/api/cancel", "", nil)
+	if err != nil {
+		t.Fatalf("POST /api/cancel: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 400 {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
 func TestServe_Cancel_NoopWhenIdle(t *testing.T) {
 	// Calling cancel when no prompt is running should be harmless (204).
 	s := startTestServer(t)
 	defer s.Close()
 
 	for i := 0; i < 3; i++ {
-		resp, err := http.Post(s.url+"/api/cancel", "", nil)
+		resp, err := http.Post(s.url+"/api/cancel?session_id=test-session", "", nil)
 		if err != nil {
 			t.Fatalf("POST %d: %v", i, err)
 		}
@@ -1562,15 +1627,33 @@ func TestServe_Cancel_WebSocketCancel(t *testing.T) {
 		t.Fatalf("Send(): %v", err)
 	}
 
-	// Immediately cancel
-	resp, err := http.Post(s.url+"/api/cancel", "", nil)
+	// Read the session event to obtain the session ID for cancellation.
+	var sessionID string
+	readDeadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(readDeadline) {
+		var event map[string]any
+		if err := readJSON(conn, &event); err != nil {
+			t.Fatalf("failed to read session event: %v", err)
+		}
+		if event["type"] == "session" {
+			if sid, ok := event["session_id"].(string); ok {
+				sessionID = sid
+			}
+			break
+		}
+	}
+	if sessionID == "" {
+		t.Fatal("did not receive session_id from WebSocket")
+	}
+
+	// Immediately cancel using the scoped session ID.
+	resp, err := http.Post(s.url+"/api/cancel?session_id="+sessionID, "", nil)
 	if err != nil {
 		t.Fatalf("POST /api/cancel: %v", err)
 	}
 	resp.Body.Close()
 
-	// Read events — we should get at least a session event, then error
-	// (canceled context), and no done event.
+	// Read remaining events — we should eventually get error (canceled context).
 	var events []map[string]any
 	timeout := time.After(3 * time.Second)
 	done := false
@@ -1594,9 +1677,6 @@ func TestServe_Cancel_WebSocketCancel(t *testing.T) {
 
 	if len(events) == 0 {
 		t.Fatal("expected at least one event after cancel")
-	}
-	if events[0]["type"] != "session" {
-		t.Errorf("first event type = %v, want 'session'", events[0]["type"])
 	}
 	// The last event should be error (context canceled) or done
 	lastType := events[len(events)-1]["type"]
@@ -1658,7 +1738,7 @@ func TestServe_E2E_CancelWithMockLLM(t *testing.T) {
 
 	// Wait for session event (agent started processing)
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	var sessionReceived bool
+	var sessionID string
 	for i := 0; i < 5; i++ {
 		var raw []byte
 		if err := golangws.Message.Receive(conn, &raw); err != nil {
@@ -1670,20 +1750,23 @@ func TestServe_E2E_CancelWithMockLLM(t *testing.T) {
 			continue
 		}
 		if evt["type"] == "session" {
-			sessionReceived = true
+			if sid, ok := evt["session_id"].(string); ok {
+				sessionID = sid
+			}
 			break
 		}
 		if evt["type"] == "done" || evt["type"] == "error" {
 			break
 		}
 	}
-	if !sessionReceived {
-		t.Fatal("expected session event before cancel")
+	if sessionID == "" {
+		t.Fatal("expected session event with session_id before cancel")
 	}
 	t.Log("Session received - agent is running")
 
-	// Send cancel request
-	cancelResp, err := http.Post("http://"+ln.Addr().String()+"/api/cancel", "", nil)
+	// Send cancel request scoped to this session.
+	cancelURL := "http://" + ln.Addr().String() + "/api/cancel?session_id=" + sessionID
+	cancelResp, err := http.Post(cancelURL, "", nil)
 	if err != nil {
 		t.Fatalf("POST /api/cancel: %v", err)
 	}
@@ -1717,6 +1800,160 @@ func TestServe_E2E_CancelWithMockLLM(t *testing.T) {
 	} else {
 		t.Log("No terminal event (connection may have been closed by cancel)")
 	}
+}
+
+// TestServe_Cancel_CannotCrossSessions is the regression test for finding #19.
+// It starts two concurrent WebSocket sessions, cancels session B, and verifies
+// that session A continues to run (its prompt is not cancelled by the global
+// cancel state that previously existed).
+func TestServe_Cancel_CannotCrossSessions(t *testing.T) {
+	var requestCount int
+	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// The first request (victim session) is intentionally slow so it is
+		// still in flight when the attacker session starts and cancels.
+		if requestCount == 0 {
+			time.Sleep(300 * time.Millisecond)
+		}
+		requestCount++
+		json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]any{
+					"content": "",
+					"tool_calls": []map[string]any{{
+						"id":   "call_1",
+						"type": "function",
+						"function": map[string]any{
+							"name":      "shell",
+							"arguments": "{\"command\":\"echo cross-session-cancel-test\"}",
+						},
+					}},
+				},
+			}},
+		})
+	}))
+	defer llmSrv.Close()
+
+	envCleanup := setTestEnv(t, llmSrv.URL)
+	defer envCleanup()
+
+	store := newTestSessionStore(t)
+	ln, mux := buildServeMux(t, store)
+	defer ln.Close()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- serveOnListener(ln, mux) }()
+	waitForHTTP(t, ln.Addr().String())
+
+	wsURL := "ws://" + ln.Addr().String() + "/ws"
+
+	// Victim connection: starts first, hits the slow LLM path.
+	victimConn, err := golangws.Dial(wsURL, "", "http://localhost")
+	if err != nil {
+		t.Fatalf("Dial victim: %v", err)
+	}
+	defer victimConn.Close()
+
+	victimPayload, _ := json.Marshal(map[string]string{"type": "prompt", "content": "victim prompt"})
+	if err := golangws.Message.Send(victimConn, string(victimPayload)); err != nil {
+		t.Fatalf("Send victim prompt: %v", err)
+	}
+	_ = readSessionID(t, victimConn)
+
+	// Attacker connection: starts second, cancels immediately.
+	attackerConn, err := golangws.Dial(wsURL, "", "http://localhost")
+	if err != nil {
+		t.Fatalf("Dial attacker: %v", err)
+	}
+	defer attackerConn.Close()
+
+	attackerPayload, _ := json.Marshal(map[string]string{"type": "prompt", "content": "attacker prompt"})
+	if err := golangws.Message.Send(attackerConn, string(attackerPayload)); err != nil {
+		t.Fatalf("Send attacker prompt: %v", err)
+	}
+	attackerSessionID := readSessionID(t, attackerConn)
+
+	// Cancel the attacker's session.
+	cancelURL := "http://" + ln.Addr().String() + "/api/cancel?session_id=" + attackerSessionID
+	cancelResp, err := http.Post(cancelURL, "", nil)
+	if err != nil {
+		t.Fatalf("POST /api/cancel: %v", err)
+	}
+	cancelResp.Body.Close()
+	if cancelResp.StatusCode != 204 {
+		t.Errorf("cancel status = %d, want 204", cancelResp.StatusCode)
+	}
+
+	// The attacker's prompt should terminate (error or done).
+	attackerTerminal := false
+	attackerDeadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(attackerDeadline) {
+		var raw []byte
+		if err := golangws.Message.Receive(attackerConn, &raw); err != nil {
+			break
+		}
+		var evt map[string]any
+		if err := json.Unmarshal(raw, &evt); err != nil {
+			continue
+		}
+		if evt["type"] == "done" || evt["type"] == "error" {
+			attackerTerminal = true
+			break
+		}
+	}
+	if !attackerTerminal {
+		t.Error("attacker session did not terminate after cancel")
+	}
+
+	// The victim's prompt must NOT be cancelled. It should eventually receive
+	// a tool_call event (proving the agent loop is still running for session A).
+	victimSawToolCall := false
+	victimDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(victimDeadline) {
+		var raw []byte
+		if err := golangws.Message.Receive(victimConn, &raw); err != nil {
+			t.Logf("victim receive error: %v", err)
+			break
+		}
+		var evt map[string]any
+		if err := json.Unmarshal(raw, &evt); err != nil {
+			continue
+		}
+		if evt["type"] == "tool_call" {
+			victimSawToolCall = true
+			break
+		}
+		if evt["type"] == "done" || evt["type"] == "error" {
+			break
+		}
+	}
+	if !victimSawToolCall {
+		t.Errorf("victim session was cancelled by attacker's cancel; did not see tool_call")
+	}
+}
+
+// readSessionID blocks until a session event is received on conn and returns
+// its session_id. It fails the test if no session event arrives in time.
+func readSessionID(t *testing.T, conn *golangws.Conn) string {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		var raw []byte
+		if err := golangws.Message.Receive(conn, &raw); err != nil {
+			t.Fatalf("readSessionID receive error: %v", err)
+		}
+		var evt map[string]any
+		if err := json.Unmarshal(raw, &evt); err != nil {
+			continue
+		}
+		if evt["type"] == "session" {
+			if sid, ok := evt["session_id"].(string); ok {
+				return sid
+			}
+		}
+	}
+	t.Fatal("readSessionID timed out waiting for session event")
+	return ""
 }
 
 // TestServe_WebSocketMaxPayload verifies that the WebSocket endpoint rejects

@@ -120,6 +120,47 @@ func TestBuildRunArgs_HostNetworkForcedToNone(t *testing.T) {
 	t.Error("--network flag not found in args")
 }
 
+func TestBuildRunArgs_ContainerNetworkForcedToNone(t *testing.T) {
+	// "container:<name>" shares another container's network namespace and
+	// must not be allowed.
+	args := BuildRunArgs(Config{Network: "container:privileged-sidecar"}, "odek-test", "/workspace", "alpine:latest")
+	for i, a := range args {
+		if a == "--network" && i+1 < len(args) {
+			if args[i+1] != "none" {
+				t.Errorf("network arg = %q, want 'none' (container: mode must be rejected)", args[i+1])
+			}
+			return
+		}
+	}
+	t.Error("--network flag not found in args")
+}
+
+func TestBuildRunArgs_BridgeNetworkAllowed(t *testing.T) {
+	args := BuildRunArgs(Config{Network: "bridge"}, "odek-test", "/workspace", "alpine:latest")
+	for i, a := range args {
+		if a == "--network" && i+1 < len(args) {
+			if args[i+1] != "bridge" {
+				t.Errorf("network arg = %q, want 'bridge'", args[i+1])
+			}
+			return
+		}
+	}
+	t.Error("--network flag not found in args")
+}
+
+func TestBuildRunArgs_EmptyNetworkDefaultsToBridge(t *testing.T) {
+	args := BuildRunArgs(Config{}, "odek-test", "/workspace", "alpine:latest")
+	for i, a := range args {
+		if a == "--network" && i+1 < len(args) {
+			if args[i+1] != "bridge" {
+				t.Errorf("network arg = %q, want 'bridge' for empty Network", args[i+1])
+			}
+			return
+		}
+	}
+	t.Error("--network flag not found in args")
+}
+
 func TestBuildRunArgs_ReadonlyAppendsRoSuffix(t *testing.T) {
 	args := BuildRunArgs(Config{Readonly: true}, "odek-test", "/workspace", "alpine:latest")
 	for i, a := range args {
@@ -291,6 +332,27 @@ func TestInjectFiles_SkipsDirectoryArg(t *testing.T) {
 	n, err := InjectFiles("nonexistent-container", []string{"subdir"}, dir)
 	if err != nil {
 		t.Errorf("directory-arg path should warn-and-skip, got err: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("injected = %d, want 0", n)
+	}
+}
+
+func TestInjectFiles_SkipsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	outsideFile := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(outsideFile, []byte("secret"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "leak")
+	if err := os.Symlink(outsideFile, link); err != nil {
+		t.Fatal(err)
+	}
+
+	// A symlink inside cwd pointing outside must NOT be injected.
+	n, err := InjectFiles("nonexistent-container", []string{"leak"}, dir)
+	if err != nil {
+		t.Errorf("symlink path should warn-and-skip, got err: %v", err)
 	}
 	if n != 0 {
 		t.Errorf("injected = %d, want 0", n)

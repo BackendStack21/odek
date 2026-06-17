@@ -44,8 +44,14 @@ import (
 // ── Protocol Constants ──────────────────────────────────────────────────
 
 const (
-	ProtocolVersion = "2025-03-26"
-	DefaultTimeout  = 30 * time.Second
+	ProtocolVersion    = "2025-03-26"
+	DefaultTimeout     = 30 * time.Second
+	// maxMCPResponseLine caps the size of a single JSON-RPC response line
+	// from an MCP server. A malicious or broken server that emits a huge
+	// line without a newline would otherwise be buffered entirely in memory
+	// by ReadString, leading to OOM. Lines exceeding this limit are dropped
+	// and the connection is closed.
+	maxMCPResponseLine = 10 << 20 // 10 MiB
 )
 
 // ── JSON-RPC Types ─────────────────────────────────────────────────────
@@ -100,6 +106,30 @@ type ToolDef struct {
 // listToolsResult is the response to tools/list.
 type listToolsResult struct {
 	Tools []ToolDef `json:"tools"`
+}
+
+// validateToolName rejects server-supplied tool names that are empty, too long,
+// or contain characters that could be used to spoof another tool or escape the
+// name-based trust boundary. Only ASCII letters, digits, underscore, and hyphen
+// are permitted.
+func validateToolName(name string) error {
+	if name == "" {
+		return fmt.Errorf("tool name is empty")
+	}
+	if len(name) > 64 {
+		return fmt.Errorf("tool name %q exceeds 64 characters", name)
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '_' || r == '-':
+		default:
+			return fmt.Errorf("tool name %q contains invalid character %q", name, r)
+		}
+	}
+	return nil
 }
 
 // callToolParams is the params sent to tools/call.
@@ -341,6 +371,12 @@ func (c *Client) Discover(ctx context.Context) ([]ToolDef, error) {
 		return nil, fmt.Errorf("mcpclient %s: parse tools/list: %w", c.name, err)
 	}
 
+	for i := range result.Tools {
+		if err := validateToolName(result.Tools[i].Name); err != nil {
+			return nil, fmt.Errorf("mcpclient %s: tools/list: %w", c.name, err)
+		}
+	}
+
 	return result.Tools, nil
 }
 
@@ -451,19 +487,11 @@ func (c *Client) call(ctx context.Context, method string, params json.RawMessage
 // are reading from the same connection.
 // Exits when stdout returns an error (EOF on pipe close).
 func (c *Client) readLoop() {
-	for {
-		line, err := c.stdout.ReadString('\n')
-		if err != nil {
-			// Process exited or pipe closed — unblock all waiters.
-			c.mu.Lock()
-			for id, ch := range c.pending {
-				close(ch)
-				delete(c.pending, id)
-			}
-			c.mu.Unlock()
-			return
-		}
-		line = strings.TrimSpace(line)
+	scanner := bufio.NewScanner(c.stdout)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxMCPResponseLine)
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
 		}
@@ -492,6 +520,28 @@ func (c *Client) readLoop() {
 			default:
 			}
 		}
+	}
+
+	// scanner.Scan returned false because of EOF, an I/O error, or an
+	// oversized token. Unblock all waiters; if the line was too long, tell
+	// them why before closing the channel.
+	oversized := scanner.Err() == bufio.ErrTooLong
+	c.mu.Lock()
+	pending := make(map[int]chan callResponse, len(c.pending))
+	for id, ch := range c.pending {
+		pending[id] = ch
+		delete(c.pending, id)
+	}
+	c.mu.Unlock()
+
+	for _, ch := range pending {
+		if oversized {
+			select {
+			case ch <- callResponse{err: fmt.Errorf("mcpclient %s: response line exceeded %d byte limit", c.name, maxMCPResponseLine)}:
+			default:
+			}
+		}
+		close(ch)
 	}
 }
 

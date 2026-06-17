@@ -215,7 +215,7 @@ func (t *webSearchTool) Call(argsJSON string) (result string, err error) {
 	}
 	// Results are external web content — wrap so the model distinguishes data
 	// from instructions (a SERP snippet could carry an injection payload).
-	return wrapUntrusted("web_search:"+query, string(raw)), nil
+	return wrapUntrusted(t.toolCtx(), "web_search:"+query, string(raw)), nil
 }
 
 // query performs the SearXNG JSON request and decodes the response.

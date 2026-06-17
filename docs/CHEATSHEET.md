@@ -242,9 +242,12 @@ Default network: `bridge` (internet access). Set `none` for air-gapped execution
 - Session TTL: 24h default (configurable)
 - Daily token budget tracking in `~/.odek/telegram_token_usage_<date>`
 - Spawn+exit restart: SIGHUP spawns child process then exits — no binary overwrite races, fresh connections
-- Singleton lock: PID file (`~/.odek/telegram.pid`) kills stale instances on startup, prevents 409 conflicts
+- Singleton lock: advisory `flock` on `~/.odek/telegram.lock` prevents duplicate polling instances
+- Restart marker (`~/.odek/restart.json`) written with `0600` to protect active chat IDs
 - Fallback API URLs for regions where `api.telegram.org` is blocked
 - Access control: restrict by chat ID or user ID
+- Incoming message/caption length enforced in UTF-16 code units, matching Telegram's limits
+- `send_message` tool escapes text for Telegram MarkdownV2 before sending, so prompt-injected formatting cannot hide links or fake buttons
 - Logging: configurable log level and log file
 
 See [docs/TELEGRAM.md](docs/TELEGRAM.md) for full documentation.
@@ -333,6 +336,12 @@ odek mcp                                    # stdio transport
 | `checksum` | SHA-256, SHA-1, MD5 hashing |
 | `tree` | Structured directory tree listing |
 
+> **Size limits:** file inputs for `sort`, `head_tail`, `diff`, `json_query`,
+> `tr`, `base64`, `count_lines`, `word_count`, `checksum`, and `batch_patch` are
+> capped at 10 MiB. Inline `string`/`content` arguments for `base64` and `tr` are
+> also capped at 10 MiB to prevent prompt-injected multi-hundred-megabyte
+> payloads from OOMing the process.
+
 ### Multi-Pattern (parallel goroutine search)
 | Tool | Description |
 |------|-------------|
@@ -343,9 +352,9 @@ odek mcp                                    # stdio transport
 | Tool | Description |
 |------|-------------|
 | `shell` | Single command, danger-classified |
-| `parallel_shell` | N commands, true parallel, per-cmd timeout |
+| `parallel_shell` | N commands, true parallel, per-cmd timeout (capped at 30m), process-group kill on cancel |
 | `http_batch` | N URLs parallel fetch (no HTML parse) |
-| `browser` | HTTP fetch + regex HTML extraction |
+| `browser` | HTTP fetch + regex HTML extraction; link URLs wrapped as untrusted |
 
 ### Agent Infrastructure
 | Tool | Description |

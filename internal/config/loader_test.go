@@ -1234,3 +1234,24 @@ func TestLoadFile_CapsSize(t *testing.T) {
 		t.Fatalf("loadFile should reject a huge config file, got Model=%q", cfg.Model)
 	}
 }
+
+// TestLoadFile_CapsSizeViaLimitReader verifies the TOCTOU-hardened read path:
+// even if a file grows after open, only maxConfigFileBytes+1 bytes are read.
+func TestLoadFile_CapsSizeViaLimitReader(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "odek.json")
+	// Start with a small, valid file.
+	if err := os.WriteFile(path, []byte(`{"model":"small"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Replace it with a huge file before loadFile reads it.
+	if err := os.WriteFile(path, []byte(strings.Repeat("x", maxConfigFileBytes+1)), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := loadFile(path)
+	if cfg.Model != "" {
+		t.Fatalf("loadFile should reject oversized file read via LimitReader, got Model=%q", cfg.Model)
+	}
+}

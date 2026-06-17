@@ -2,8 +2,17 @@
 //
 // Lock opens or creates a lock file and acquires an exclusive lock on it.
 // The returned release function must be called to unlock and close the file.
+//
+// Advisory semantics
+//
 // The lock is advisory: it only serializes callers that also use this package
-// (or otherwise cooperate on the same lock file).
+// (or otherwise cooperate on the same lock file). A non-cooperating process
+// that has write access to the protected file can ignore the lock and read or
+// write freely. For files containing sensitive data, rely on filesystem
+// permissions (0700 directories, 0600 files) as the primary access control;
+// flock is a coordination primitive, not a mandatory-access gate. The lock
+// file itself is left on disk after release so the next caller can re-acquire
+// it; it is created with 0600 permissions.
 package flock
 
 import (

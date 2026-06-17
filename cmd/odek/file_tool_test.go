@@ -1929,6 +1929,29 @@ func TestGlob_NoMatches(t *testing.T) {
 	}
 }
 
+// TestGlob_SkipsBuildDirs verifies that confinedGlob skips build-artifact
+// directories such as node_modules, exercising the skipDir branch.
+func TestGlob_SkipsBuildDirs(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "work.go"), []byte("package main\n"), 0644)
+	nmDir := filepath.Join(dir, "node_modules")
+	os.MkdirAll(nmDir, 0755)
+	os.WriteFile(filepath.Join(nmDir, "dep.js"), []byte("module.exports = {}\n"), 0644)
+
+	tool := &globTool{dangerousConfig: danger.DangerousConfig{}}
+	result := callJSON(t, tool, fmt.Sprintf(`{"pattern":"*","path":%q}`, dir))
+	var r struct {
+		Matches []globMatch `json:"matches"`
+	}
+	mustUnmarshal(t, result, &r)
+
+	for _, m := range r.Matches {
+		if strings.Contains(m.Path, "node_modules") {
+			t.Errorf("glob matched inside node_modules: %s", m.Path)
+		}
+	}
+}
+
 func TestGlob_EmptyPattern(t *testing.T) {
 	tool := &globTool{}
 	result := callJSON(t, tool, `{"pattern":""}`)
@@ -1938,6 +1961,35 @@ func TestGlob_EmptyPattern(t *testing.T) {
 	mustUnmarshal(t, result, &r)
 	if !strings.Contains(r.Error, "pattern is required") {
 		t.Errorf("error should mention 'pattern', got: %s", r.Error)
+	}
+}
+
+// TestGlob_ZeroLimitDefaults verifies that a limit of 0 is treated as the
+// default max, exercising the limit guard in confinedGlob.
+func TestGlob_ZeroLimitDefaults(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 3; i++ {
+		os.WriteFile(filepath.Join(dir, fmt.Sprintf("file%d.txt", i)), []byte("x"), 0644)
+	}
+
+	// Call confinedGlob directly with limit=0 to exercise its guard.
+	matches, err := confinedGlob(dir, "*.txt", 0, false)
+	if err != nil {
+		t.Fatalf("confinedGlob error: %v", err)
+	}
+	if len(matches) != 3 {
+		t.Errorf("matches = %d, want 3", len(matches))
+	}
+
+	// Also verify the tool surface defaults limit correctly.
+	tool := &globTool{dangerousConfig: danger.DangerousConfig{}}
+	result := callJSON(t, tool, fmt.Sprintf(`{"pattern":"*.txt","path":%q,"limit":0}`, dir))
+	var r struct {
+		Matches []globMatch `json:"matches"`
+	}
+	mustUnmarshal(t, result, &r)
+	if len(r.Matches) != 3 {
+		t.Errorf("tool matches = %d, want 3", len(r.Matches))
 	}
 }
 

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/md5"
 	"crypto/sha1"
 	"crypto/sha256"
@@ -34,6 +35,12 @@ import (
 // into memory. This prevents OOM when tools like diff/base64/tr/sort point at
 // multi-gigabyte logs or core dumps.
 const maxFileReadBytes = 10 << 20 // 10 MiB
+
+// maxInlineContentBytes caps inline string/content arguments for tools that
+// operate on data supplied directly in the tool call. This prevents a
+// prompt-injected call from passing a 100 MB base64 string and OOMing the
+// process.
+const maxInlineContentBytes = 10 << 20 // 10 MiB
 
 // maxTreeEntries caps the number of children reported for a single directory
 // by the tree tool, preventing OOM from directories with millions of entries.
@@ -72,8 +79,10 @@ func readFileNoFollow(path string) ([]byte, error) {
 const maxBatchPatches = 10
 
 type batchPatchTool struct {
+	ctxTool
 	dangerousConfig danger.DangerousConfig
-	restrictToCWD   bool // when true, reject paths escaping the working directory
+	trustedClasses  map[danger.RiskClass]bool // cached user-approved risk classes
+	restrictToCWD   bool                      // when true, reject paths escaping the working directory
 	// containerName, when set, routes writes through the sandbox container so
 	// that read-only workspace mounts are enforced.
 	containerName string
@@ -174,7 +183,7 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 
 		if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
 			Name: "batch_patch", Resource: p.Path, Risk: danger.ClassifyPath(p.Path),
-		}, nil); err != nil {
+		}, t.trustedClasses); err != nil {
 			entry.Error = err.Error()
 			results[idx] = entry
 			continue
@@ -247,7 +256,7 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 				continue
 			}
 			entry.Success = true
-			entry.Diff = wrapUntrusted("batch_patch:"+p.Path, diff)
+			entry.Diff = wrapUntrusted(t.toolCtx(), "batch_patch:"+p.Path, diff)
 			results[idx] = entry
 			continue
 		}
@@ -292,7 +301,7 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 		}
 
 		entry.Success = true
-		entry.Diff = wrapUntrusted("batch_patch:"+p.Path, diff)
+		entry.Diff = wrapUntrusted(t.toolCtx(), "batch_patch:"+p.Path, diff)
 		results[idx] = entry
 	}
 
@@ -306,6 +315,7 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 const maxParallelShellCmds = 8
 
 type parallelShellTool struct {
+	ctxTool
 	dangerousConfig danger.DangerousConfig
 	approver        danger.Approver
 	// containerName, when set, routes every command through "docker exec"
@@ -419,10 +429,10 @@ func (t *parallelShellTool) Call(argsJSON string) (result string, err error) {
 		// per-call nonce boundary so injected command output cannot masquerade
 		// as instructions.
 		if results[i].Stdout != "" {
-			results[i].Stdout = wrapUntrusted(fmt.Sprintf("parallel_shell:%d:stdout", i), results[i].Stdout)
+			results[i].Stdout = wrapUntrusted(t.toolCtx(), fmt.Sprintf("parallel_shell:%d:stdout", i), results[i].Stdout)
 		}
 		if results[i].Stderr != "" {
-			results[i].Stderr = wrapUntrusted(fmt.Sprintf("parallel_shell:%d:stderr", i), results[i].Stderr)
+			results[i].Stderr = wrapUntrusted(t.toolCtx(), fmt.Sprintf("parallel_shell:%d:stderr", i), results[i].Stderr)
 		}
 	}
 
@@ -459,21 +469,36 @@ func (t *parallelShellTool) promptCommand(cls danger.RiskClass, cmd, description
 	return err
 }
 
+// maxParallelShellTimeout is the absolute upper bound for a single
+// parallel_shell command. Callers can request less, but never more.
+const maxParallelShellTimeout = 30 * time.Minute
+
 // runOne executes a single pre-approved command with a per-command timeout.
+// It binds to the agent context, runs the command in its own process group,
+// and kills the whole group on cancellation or timeout so forked children
+// cannot outlive the command.
 func (t *parallelShellTool) runOne(cmd parallelShellCmd) parallelShellEntry {
-	timeout := cmd.Timeout
-	if timeout <= 0 {
-		timeout = 30
+	timeoutSec := cmd.Timeout
+	if timeoutSec <= 0 {
+		timeoutSec = 30
 	}
+	if timeoutSec > int(maxParallelShellTimeout.Seconds()) {
+		timeoutSec = int(maxParallelShellTimeout.Seconds())
+	}
+	timeout := time.Duration(timeoutSec) * time.Second
 
 	start := time.Now()
 	entry := parallelShellEntry{Command: cmd.Command}
 
+	base := t.toolCtx()
+	ctx, cancel := context.WithTimeout(base, timeout)
+	defer cancel()
+
 	var shCmd *exec.Cmd
 	if t.containerName != "" {
-		shCmd = exec.Command("docker", "exec", "-w", "/workspace", t.containerName, "sh", "-c", cmd.Command)
+		shCmd = exec.CommandContext(ctx, "docker", "exec", "-w", "/workspace", t.containerName, "sh", "-c", cmd.Command)
 	} else {
-		shCmd = exec.Command("sh", "-c", cmd.Command)
+		shCmd = exec.CommandContext(ctx, "sh", "-c", cmd.Command)
 	}
 	var stdout, stderr bytes.Buffer
 	outW := &limitWriter{buf: &stdout, limit: maxShellOutputBytes}
@@ -481,37 +506,32 @@ func (t *parallelShellTool) runOne(cmd parallelShellCmd) parallelShellEntry {
 	shCmd.Stdout = outW
 	shCmd.Stderr = errW
 
-	// Kill on timeout via goroutine, with mutex to avoid Process race
-	var procMu sync.Mutex
-	done := make(chan error, 1)
-	go func() {
-		err := shCmd.Run()
-		procMu.Lock()
-		done <- err
-		procMu.Unlock()
-	}()
-
-	select {
-	case err := <-done:
-		entry.Stdout = strings.TrimSpace(stdout.String())
-		entry.Stderr = strings.TrimSpace(stderr.String())
-		entry.DurationMs = time.Since(start).Milliseconds()
-
-		if err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				entry.ExitCode = exitErr.ExitCode()
-			} else {
-				entry.Error = err.Error()
-			}
-		}
-	case <-time.After(time.Duration(timeout) * time.Second):
-		procMu.Lock()
+	// Run in a new process group so a forked child (e.g. `sh -c "sleep 3600 &"`)
+	// is killed along with the shell leader when the context is cancelled.
+	shCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	shCmd.Cancel = func() error {
 		if shCmd.Process != nil {
-			shCmd.Process.Kill()
+			_ = syscall.Kill(-shCmd.Process.Pid, syscall.SIGKILL)
 		}
-		procMu.Unlock()
-		entry.Error = fmt.Sprintf("timeout after %ds", timeout)
-		entry.DurationMs = time.Since(start).Milliseconds()
+		return nil
+	}
+	shCmd.WaitDelay = 3 * time.Second
+
+	err := shCmd.Run()
+	entry.Stdout = strings.TrimSpace(stdout.String())
+	entry.Stderr = strings.TrimSpace(stderr.String())
+	entry.DurationMs = time.Since(start).Milliseconds()
+
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			entry.Error = fmt.Sprintf("timeout after %ds", timeoutSec)
+		} else if ctx.Err() == context.Canceled {
+			entry.Error = "cancelled"
+		} else if exitErr, ok := err.(*exec.ExitError); ok {
+			entry.ExitCode = exitErr.ExitCode()
+		} else {
+			entry.Error = err.Error()
+		}
 	}
 
 	return entry
@@ -818,6 +838,7 @@ func evalNode(node ast.Expr) (float64, error) {
 // ═════════════════════════════════════════════════════════════════════════
 
 type diffTool struct {
+	ctxTool
 	dangerousConfig danger.DangerousConfig
 }
 
@@ -943,7 +964,7 @@ func (t *diffTool) Call(argsJSON string) (result string, err error) {
 	src := fmt.Sprintf("diff:%s|%s", pathA, pathB)
 	for i := range hunks {
 		for j := range hunks[i].Lines {
-			hunks[i].Lines[j].Content = wrapUntrusted(src, hunks[i].Lines[j].Content)
+			hunks[i].Lines[j].Content = wrapUntrusted(t.toolCtx(), src, hunks[i].Lines[j].Content)
 		}
 	}
 	return jsonResult(diffResult{Hunks: hunks, PathA: pathA, PathB: pathB})
@@ -1130,6 +1151,9 @@ func (t *countLinesTool) countFile(path string) (entry countFileEntry) {
 	if info.IsDir() {
 		return countFileEntry{Path: path, Error: fmt.Sprintf("%q is a directory — use tree or glob to explore directories", path)}
 	}
+	if info.Size() > maxFileReadBytes {
+		return countFileEntry{Path: path, Error: fmt.Sprintf("file too large (%d bytes, max %d)", info.Size(), maxFileReadBytes)}
+	}
 
 	lines := 0
 	chars := 0
@@ -1155,6 +1179,7 @@ func (t *countLinesTool) countFile(path string) (entry countFileEntry) {
 const maxGrepPatterns = 10
 
 type multiGrepTool struct {
+	ctxTool
 	dangerousConfig danger.DangerousConfig
 }
 
@@ -1310,7 +1335,7 @@ func (t *multiGrepTool) searchPattern(pattern, root, fileGlob string, limit int)
 				matches = append(matches, grepMatch{
 					Path:    path,
 					Line:    lineNum,
-					Content: wrapUntrusted(fmt.Sprintf("%s:%d", path, lineNum), trimmed),
+					Content: wrapUntrusted(t.toolCtx(), fmt.Sprintf("%s:%d", path, lineNum), trimmed),
 				})
 				if len(matches) >= limit {
 					return filepath.SkipAll
@@ -1335,6 +1360,7 @@ func (t *multiGrepTool) searchPattern(pattern, root, fileGlob string, limit int)
 // ═════════════════════════════════════════════════════════════════════════
 
 type jsonQueryTool struct {
+	ctxTool
 	dangerousConfig danger.DangerousConfig
 }
 
@@ -1409,7 +1435,7 @@ func (t *jsonQueryTool) Call(argsJSON string) (result string, err error) {
 
 	if args.Query == "" {
 		vt := fmt.Sprintf("%T", data)
-		return jsonResult(jsonQueryResult{Path: args.Path, Query: "", Value: wrapJSONStrings(args.Path, data), ValueType: vt})
+		return jsonResult(jsonQueryResult{Path: args.Path, Query: "", Value: wrapJSONStrings(t.toolCtx(), args.Path, data), ValueType: vt})
 	}
 
 	value, err := jsonPathQuery(data, args.Query)
@@ -1418,23 +1444,23 @@ func (t *jsonQueryTool) Call(argsJSON string) (result string, err error) {
 	}
 
 	vt := fmt.Sprintf("%T", value)
-	return jsonResult(jsonQueryResult{Path: args.Path, Query: args.Query, Value: wrapJSONStrings(args.Path, value), ValueType: vt})
+	return jsonResult(jsonQueryResult{Path: args.Path, Query: args.Query, Value: wrapJSONStrings(t.toolCtx(), args.Path, value), ValueType: vt})
 }
 
 // wrapJSONStrings recursively wraps string values inside decoded JSON so that
 // file content returned by json_query is treated as untrusted.
-func wrapJSONStrings(source string, v interface{}) interface{} {
+func wrapJSONStrings(ctx context.Context, source string, v interface{}) interface{} {
 	switch x := v.(type) {
 	case string:
-		return wrapUntrusted(source, x)
+		return wrapUntrusted(ctx, source, x)
 	case map[string]interface{}:
 		for k, val := range x {
-			x[k] = wrapJSONStrings(source, val)
+			x[k] = wrapJSONStrings(ctx, source, val)
 		}
 		return x
 	case []interface{}:
 		for i, val := range x {
-			x[i] = wrapJSONStrings(source, val)
+			x[i] = wrapJSONStrings(ctx, source, val)
 		}
 		return x
 	}
@@ -1506,6 +1532,7 @@ func jsonPathQuery(data interface{}, query string) (interface{}, error) {
 // ═════════════════════════════════════════════════════════════════════════
 
 type treeTool struct {
+	ctxTool
 	dangerousConfig danger.DangerousConfig
 }
 
@@ -1573,7 +1600,7 @@ func (t *treeTool) Call(argsJSON string) (result string, err error) {
 		return jsonError(err.Error())
 	}
 
-	entry, err := buildTree(args.Path, args.Path, 0, args.MaxDepth, args.IncludeHidden)
+	entry, err := buildTree(t.toolCtx(), args.Path, args.Path, 0, args.MaxDepth, args.IncludeHidden)
 	if err != nil {
 		return jsonResult(treeResult{Error: err.Error()})
 	}
@@ -1581,10 +1608,10 @@ func (t *treeTool) Call(argsJSON string) (result string, err error) {
 	return jsonResult(treeResult{Tree: entry})
 }
 
-func buildTree(root, path string, depth, maxDepth int, includeHidden bool) (treeEntry, error) {
+func buildTree(ctx context.Context, root, path string, depth, maxDepth int, includeHidden bool) (treeEntry, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
-		return treeEntry{Path: wrapUntrusted("tree:"+root, path), ErrMsg: err.Error()}, nil
+		return treeEntry{Path: wrapUntrusted(ctx, "tree:"+root, path), ErrMsg: err.Error()}, nil
 	}
 
 	entry := treeEntry{
@@ -1599,7 +1626,7 @@ func buildTree(root, path string, depth, maxDepth int, includeHidden bool) (tree
 
 	// Tree paths come from the filesystem trust boundary, so mark them as
 	// untrusted before returning them to the model.
-	entry.Path = wrapUntrusted("tree:"+root, entry.Path)
+	entry.Path = wrapUntrusted(ctx, "tree:"+root, entry.Path)
 
 	if !info.IsDir() || depth >= maxDepth {
 		if !info.IsDir() {
@@ -1635,7 +1662,7 @@ func buildTree(root, path string, depth, maxDepth int, includeHidden bool) (tree
 			continue
 		}
 		childPath := filepath.Join(path, e.Name())
-		child, err := buildTree(root, childPath, depth+1, maxDepth, includeHidden)
+		child, err := buildTree(ctx, root, childPath, depth+1, maxDepth, includeHidden)
 		if err != nil {
 			continue
 		}
@@ -1751,6 +1778,14 @@ func (t *checksumTool) hashFile(arg checksumFileArg) (entry checksumEntry) {
 	}
 	defer f.Close()
 
+	info, err := f.Stat()
+	if err != nil {
+		return checksumEntry{Path: arg.Path, Algorithm: algo, Error: fmt.Sprintf("cannot stat %q: %v", arg.Path, err)}
+	}
+	if info.Size() > maxFileReadBytes {
+		return checksumEntry{Path: arg.Path, Algorithm: algo, Error: fmt.Sprintf("file too large (%d bytes, max %d)", info.Size(), maxFileReadBytes)}
+	}
+
 	var hash string
 	switch algo {
 	case "sha256":
@@ -1777,6 +1812,7 @@ func (t *checksumTool) hashFile(arg checksumFileArg) (entry checksumEntry) {
 // ═════════════════════════════════════════════════════════════════════════
 
 type sortTool struct {
+	ctxTool
 	dangerousConfig danger.DangerousConfig
 }
 
@@ -1946,7 +1982,7 @@ func (t *sortTool) Call(argsJSON string) (result string, err error) {
 	output := strings.Join(allLines, "\n")
 	return jsonResult(sortResult{
 		Results: results,
-		Output:  wrapUntrusted("sort:"+strings.Join(paths, ","), output),
+		Output:  wrapUntrusted(t.toolCtx(), "sort:"+strings.Join(paths, ","), output),
 		Total:   len(allLines),
 	})
 }
@@ -1962,6 +1998,7 @@ func (t *sortTool) Call(argsJSON string) (result string, err error) {
 const maxHeadTailTotalBytes = maxReadBytes // 1 MiB per file
 
 type headTailTool struct {
+	ctxTool
 	dangerousConfig danger.DangerousConfig
 }
 
@@ -2060,6 +2097,14 @@ func (t *headTailTool) readPreview(path string, n int, mode string) (result head
 	}
 	defer f.Close()
 
+	info, err := f.Stat()
+	if err != nil {
+		return headTailFileResult{Path: path, Error: fmt.Sprintf("cannot stat %q: %v", path, err)}
+	}
+	if info.Size() > maxFileReadBytes {
+		return headTailFileResult{Path: path, Error: fmt.Sprintf("file too large (%d bytes, max %d)", info.Size(), maxFileReadBytes)}
+	}
+
 	if mode == "tail" {
 		return t.readTail(f, path, n)
 	}
@@ -2080,7 +2125,7 @@ func (t *headTailTool) readHead(f *os.File, path string, n int) headTailFileResu
 	rawLines = truncateHeadTailLines(rawLines)
 	lines := make([]string, len(rawLines))
 	for i, l := range rawLines {
-		lines[i] = wrapUntrusted(path, l)
+		lines[i] = wrapUntrusted(t.toolCtx(), path, l)
 	}
 	return headTailFileResult{Path: path, Lines: lines, Count: len(lines), Total: total}
 }
@@ -2109,7 +2154,7 @@ func (t *headTailTool) readTail(f *os.File, path string, n int) headTailFileResu
 	rawLines = truncateHeadTailLines(rawLines)
 	lines := make([]string, len(rawLines))
 	for i, l := range rawLines {
-		lines[i] = wrapUntrusted(path, l)
+		lines[i] = wrapUntrusted(t.toolCtx(), path, l)
 	}
 	return headTailFileResult{Path: path, Lines: lines, Count: len(lines), Total: total}
 }
@@ -2136,6 +2181,7 @@ func truncateHeadTailLines(lines []string) []string {
 // ═════════════════════════════════════════════════════════════════════════
 
 type base64Tool struct {
+	ctxTool
 	dangerousConfig danger.DangerousConfig
 }
 
@@ -2181,6 +2227,9 @@ func (t *base64Tool) Call(argsJSON string) (result string, err error) {
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return jsonError("invalid arguments: " + err.Error())
 	}
+	if len(args.String) > maxInlineContentBytes || len(args.Content) > maxInlineContentBytes {
+		return jsonError(fmt.Sprintf("inline content too large (max %d bytes)", maxInlineContentBytes))
+	}
 
 	if args.Decode || args.String != "" {
 		src := args.String
@@ -2218,7 +2267,7 @@ func (t *base64Tool) Call(argsJSON string) (result string, err error) {
 		return jsonResult(base64Result{Error: fmt.Sprintf("cannot read %q: %v", args.Path, err)})
 	}
 	encoded := base64.StdEncoding.EncodeToString(data)
-	return jsonResult(base64Result{Encoded: wrapUntrusted(args.Path, encoded), Size: len(data)})
+	return jsonResult(base64Result{Encoded: wrapUntrusted(t.toolCtx(), args.Path, encoded), Size: len(data)})
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -2226,6 +2275,7 @@ func (t *base64Tool) Call(argsJSON string) (result string, err error) {
 // ═════════════════════════════════════════════════════════════════════════
 
 type trTool struct {
+	ctxTool
 	dangerousConfig danger.DangerousConfig
 }
 
@@ -2288,6 +2338,9 @@ func (t *trTool) Call(argsJSON string) (result string, err error) {
 	}
 	if len(args.Transformations) == 0 {
 		return jsonError("at least one transformation is required")
+	}
+	if len(args.Content) > maxInlineContentBytes {
+		return jsonError(fmt.Sprintf("inline content too large (max %d bytes)", maxInlineContentBytes))
 	}
 
 	var text string
@@ -2352,7 +2405,7 @@ func (t *trTool) Call(argsJSON string) (result string, err error) {
 	}
 
 	if fromFile {
-		text = wrapUntrusted(args.Path, text)
+		text = wrapUntrusted(t.toolCtx(), args.Path, text)
 	}
 	return jsonResult(trResult{Result: text, FromFile: fromFile})
 }
@@ -2463,6 +2516,9 @@ func (t *wordCountTool) countWords(path string) (entry wordCountEntry) {
 	info, err := f.Stat()
 	if err != nil {
 		return wordCountEntry{Path: path, Error: fmt.Sprintf("cannot stat: %v", err)}
+	}
+	if info.Size() > maxFileReadBytes {
+		return wordCountEntry{Path: path, Error: fmt.Sprintf("file too large (%d bytes, max %d)", info.Size(), maxFileReadBytes)}
 	}
 
 	lines := 0

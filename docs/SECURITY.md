@@ -89,6 +89,7 @@ The classifier is hardened against common evasion tricks (see the package doc in
 - `rm$IFS-rf$IFS/`, `{rm,-rf,/}`, `$'\x72\x6d'` — `$IFS`, brace expansion, and ANSI-C escapes are normalised.
 - `command rm`, `env rm`, `sudo rm`, `/bin/rm`, `true | dd of=/dev/sda` — wrappers are stripped, every pipe stage is classified, and absolute paths are basenamed before matching.
 - `bash -i >& /dev/tcp/…`, `cat ~/.ssh/id_rsa` — reverse-shell channels and sensitive-path access are flagged regardless of the command verb.
+- `awk 'BEGIN{system("rm -rf ~")}'`, `sed 's/foo/bar/e'`, `find . -exec sh -c '…' \;`, `vim /etc/passwd` — interpreters that can invoke shell commands (`awk`/`gawk`/`mawk`/`nawk`, `sed` `e` command / `-f`, editors, `find -exec`) are escalated to `code_execution` rather than treated as read-only.
 
 Regression suites (`internal/danger/classifier_bypass_test.go` and `hardening_test.go`) pin these as known-closed evasions. If you find a new bypass, those test files are the place to add it.
 
@@ -151,13 +152,15 @@ Promotion is **CLI-only and human-gated** — it is deliberately *not* exposed a
 
 `internal/skills` carries the same provenance model and shares the exact taint decision (`memory.ToolCallTaints`). Skills auto-saved from sessions that crossed the trust boundary — `browser` / `http_batch` / `transcribe` / `vision` / any MCP tool, or a `read_file` / `search_files` / `multi_grep` of a **sensitive** path — are tagged with `Provenance.Untrusted=true` and `NeedsReview=true`. The skill loader pins those skills to the Lazy set regardless of their `auto_load` flag.
 
-After reviewing the skill body, promote it:
+The non-interactive auto-save path (`RunAutoSaveLoop`) now **declines to persist tainted suggestions by default**, so a prompt-injected turn cannot silently leave a poisoned skill on disk. Tainted suggestions are still surfaced in the interactive TUI and can be saved explicitly by the user after review.
+
+After reviewing the skill body, promote it with `--force`:
 
 ```bash
-odek skill promote my-skill
+odek skill promote my-skill --force
 ```
 
-This clears `NeedsReview`, allowing the skill to auto-load on the next session.
+Plain `odek skill promote my-skill` refuses to clear `NeedsReview` when `Untrusted=true` or `Sources` is non-empty, preventing accidental auto-load of prompt-injection-derived instructions. The `Sources` audit trail is preserved on disk even after promotion.
 
 ### 7. Sub-agent damage cap
 
@@ -363,6 +366,111 @@ This closes the path where an attacker plants a symlink named like a session fil
 
 The episode vector index is rebuilt from `index.json` plus one `.md` summary file per entry. Because `index.json` is persisted JSON that can be tampered with on disk, `internal/memory/episode_index.go::readAllSummaries` treats every `session_id` as untrusted input. It calls `session.ValidateSessionID` before constructing the path `filepath.Join(dir, sessionID+".md")` and skips (with a stderr warning) any entry that is empty, contains path separators, contains `..`, or is otherwise malformed. This prevents a tampered entry such as `"../../../.odek/config"` from causing the rebuild to read arbitrary files (e.g. `~/.odek/config.json` or `IDENTITY.md`) and include them in the embedding space.
 
+### 28. MCP `tools/list` metadata validation and per-tool approval
+
+MCP servers supply both the names and descriptions of the tools they expose via `tools/list`. odek treats this metadata as untrusted input from the server:
+
+1. **Tool-name validation** — before registration, every tool name is checked in `internal/mcpclient/client.go::validateToolName`. Names must be non-empty, ≤ 64 characters, and contain only ASCII letters, digits, underscores, and hyphens. Names that do not match are rejected with a warning, so a server cannot register tools whose names contain whitespace, Unicode confusables, or delimiter characters that might confuse parsing or the agent.
+
+2. **Built-in shadowing prevention** — when MCP tools are loaded, raw names that collide with odek's built-in tool names (e.g. `shell`, `read_file`, `write_file`) are rejected, even though MCP tools are normally prefixed with `<server>__`. This prevents a malicious or misconfigured server from impersonating a built-in tool.
+
+3. **Per-tool approval** — project-level MCP servers must already be approved before their subprocess is spawned. In addition, each individual tool exposed by a project-level server must be explicitly approved before it is registered. Tools from globally-configured servers (`~/.odek/config.json`) are operator-trusted and do not require per-tool approval. Approval methods mirror server approval:
+
+   - **Interactive prompt** — on a TTY, odek lists the discovered tools and asks which to approve.
+   - **`ODEK_APPROVE_MCP=1`** — approves every tool from every project-level server for the invocation.
+   - **Persisted approvals** — approved tools are stored in `~/.odek/mcp_tool_approvals.json` (0600), keyed by project directory, server name, and tool name. Changing the tool name or server configuration invalidates the approval.
+
+4. **Description scanning** — tool descriptions are already scanned with `ScanInjection` at registration and withheld if injection patterns are found.
+
+### 29. Read-only perf-tool file-size cap
+
+The read-only perf tools `count_lines`, `checksum`, `head_tail`, and `word_count` previously opened a file and scanned or hashed the entire contents without checking its size. They now `Stat` the file and reject anything larger than `maxFileReadBytes` (10 MiB) with an error, matching the cap already enforced by `diff`, `base64`, `tr`, `sort`, `json_query`, and `batch_patch`. This prevents a prompt-injected call from pointing these tools at multi-gigabyte logs or core dumps and stalling or OOMing the turn.
+
+### 30. Inline content size cap for `base64` and `tr`
+
+File-based inputs for `base64` and `tr` were already capped at 10 MiB via `readFileNoFollow`, but the inline `string`/`content` arguments had no length limit. A prompt-injected tool call could pass a 100 MB base64 payload and cause a large allocation. Both tools now reject inline inputs larger than `maxInlineContentBytes` (10 MiB) before decoding or transforming them.
+
+### 31. Schedule cross-process lock hard error
+
+`internal/schedule/store.go::fileLock` takes an exclusive `flock` on `~/.odek/schedules.lock` to serialize mutating schedule operations across processes. Previously, if the lock file could not be opened or locked, the function returned a no-op releaser and the mutating operation continued without cross-process serialization. It now returns a hard error, so `odek schedule add`, `rm`, `enable`, and state writes abort rather than risk two concurrent processes loading the same baseline and clobbering each other's write.
+
+### 32. Schedule JSON file-size cap
+
+`internal/schedule/store.go::readJSON` loads `schedules.json` and `schedule-state.json` into memory before parsing. It now `Stat`s the file first and rejects anything larger than `maxScheduleFileBytes` (10 MiB). This prevents a local attacker from replacing a schedule file with a multi-gigabyte blob and OOMing the scheduler or `odek schedule list`.
+
+### 33. Nonce'd tool-result delimiter
+
+The agent loop wraps each tool result in a visual delimiter before appending it to the conversation as a `tool` message. The old delimiter (`┌── TOOL RESULT: <name> ... └── END TOOL RESULT: <name>`) was static and predictable, so a malicious tool or MCP server whose output was not wrapped as untrusted content could emit the literal closing delimiter and inject instructions after it.
+
+The delimiter now embeds a per-call random hex nonce in both the opening and closing lines (`┌── TOOL RESULT: <name> [<nonce>] ... └── END TOOL RESULT: <name> [<nonce>]`). Because the nonce is generated inside the loop and differs for every tool call, an attacker cannot predict or forge the closing delimiter. This complements the per-call `<untrusted_content_*>` wrapper used for tool outputs that cross the trust boundary.
+
+### 34. `parallel_shell` context cancellation and process-group kill
+
+`cmd/odek/perf_tools.go::runOne` previously built `exec.Command("sh", "-c", ...)` without binding it to the agent context and killed only the direct `sh` process on timeout. Cancellation therefore orphaned any forked children (`sh -c 'sleep 3600 &'`), and the per-command `Timeout` field had no upper bound.
+
+It now uses `exec.CommandContext` with the agent context, runs each command in its own process group (`Setpgid: true`), and kills the entire group on context cancellation or timeout via `syscall.Kill(-pid, SIGKILL)`. A 3-second `WaitDelay` backstop catches any process that outlives the group kill. Per-command timeouts are capped at 30 minutes.
+
+### 35. `batch_patch` trusted-class propagation
+
+`write_file` and `patch` pass their cached `trustedClasses` to `CheckOperation`, but `batch_patch` was passing `nil`. This meant a user who trusted `local_write` for the session still got re-prompted (or denied in non-interactive mode) for every patch in a batch. `batch_patch` now has its own `trustedClasses` field and passes it through, giving consistent approval behavior across the file-editing tools.
+
+### 36. Browser link URL wrapping
+
+`browser` already wrapped page title, content, and interactive-element text as untrusted, but the `URL` field of each `clickableRef` was emitted as a raw JSON string. A hostile page could set `href` to a `javascript:`, `data:`, or attacker-controlled URL containing instruction-like text. The `URL` field is now wrapped as untrusted before serialization. An unexported `rawURL` preserves the original value so internal click resolution continues to work.
+
+### 37. Telegram message length by UTF-16 code units
+
+Telegram's message and caption limits are defined in UTF-16 code units, but `internal/telegram/handler.go` was using `len(msg.Text)` and `len(msg.Caption)`, which count UTF-8 bytes. Emoji and other supplementary-plane characters consume 4 UTF-8 bytes but 2 UTF-16 code units, so emoji-heavy messages could pass the local check and then be rejected by Telegram. The handler now counts UTF-16 code units via `utf16Len`.
+
+### 38. Telegram restart marker permissions
+
+`~/.odek/restart.json` records the chat IDs that had active agent runs across a Telegram bot restart. It was written with world-readable `0644` permissions, allowing any local user to learn which chats/users interact with the bot. It is now written with `0600`.
+
+### 39. Telegram `send_message` MarkdownV2 escaping
+
+The `send_message` tool lets the agent send arbitrary text messages to Telegram using `ParseModeMarkdownV2`. Because the LLM may echo or reformat attacker-controllable content, the text is now escaped with `telegram.EscapeMarkdown` before sending. This prevents a prompt-injected payload from using Telegram's Markdown syntax to hide malicious links, fake buttons, or instruction-like formatting inside an otherwise ordinary-looking message.
+
+### 40. `/api/resources` result limit cap
+
+The `/api/resources?q=...&limit=N` autocomplete endpoint previously accepted any positive `limit` value. It is now capped to 100 results both in the HTTP handler and in `Registry.Search`. This prevents a prompt-injected or attacker-forged request from forcing an unbounded directory walk and returning a multi-megabyte JSON response.
+
+### 41. WebSocket connection limits
+
+`odek serve`'s `/ws` endpoint previously accepted an unlimited number of concurrent connections, each of which creates an agent and (in sandbox mode) a Docker container. It now enforces:
+
+- A global maximum of 20 concurrent WebSocket connections (`maxWSConnections`). Further upgrade attempts receive HTTP 503.
+- Per-IP rate limiting on upgrades (30 per minute), making it more expensive to rapidly churn connections and exhaust the global semaphore.
+
+This bounds the memory/container blast radius if a local process or malicious page tries to spawn many agent sessions.
+
+### 42. Sub-agent progress stream limits
+
+`delegate_tasks` streams NDJSON progress lines from each sub-agent. A runaway or malicious sub-agent could emit an unbounded number of `tool_call`/`tool_result` events, causing unbounded memory growth in the parent. `scanSubagentStream` now caps the total progress stream at 100 000 lines and 100 MiB of data; exceeding either limit aborts the scan and cancels the sub-agent context so the child process is killed instead of continuing to flood stdout.
+
+### 43. Sub-agent task-file deletion scope
+
+`odek subagent --task <path>` reads the JSON task file and then deletes it. Previously it would delete *any* path, so `odek subagent --task ~/.odek/config.json` would read and then remove the config. It now only deletes the file when it resides in the system temp directory and matches the `odek-task-*.json` naming convention used by `delegate_tasks`. User-supplied task files are left untouched.
+
+### 44. Atomic-write temp-file permissions
+
+`fsatomic.WriteFile` creates a temp file and renames it over the target. The old implementation used `os.CreateTemp` (mode 0600 masked by umask) and only `f.Chmod(perm)` after writing, leaving a window where the temp file could be more permissive than intended. It now opens the temp file with `O_CREATE|O_EXCL` and the exact requested permissions from the start, and it returns an error if the parent-directory fsync fails.
+
+### 45. Resource search query sanitization
+
+`FileResolver.Search` previously concatenated the raw query into a `filepath.Glob` pattern. A query containing `*`, `?`, `[`, `]`, etc. could match far more files than intended, and a very long query could force expensive work. The query is now capped to 256 bytes and glob metacharacters are escaped before building the pattern; traversal and path-separator checks remain in place.
+
+### 46. Schedule directory permissions
+
+`internal/schedule/store.go` created the `~/.odek` schedule directory with `0755`, allowing any local user to list schedule/state filenames. It now creates (and best-effort chmods existing) directories with `0700`.
+
+### 47. Config file size check TOCTOU fix
+
+`loadFile` previously `Stat`ed the config file and then `ReadFile`d it, leaving a window for a symlink swap or race. It now opens the file once and reads through `io.LimitReader(f, maxConfigFileBytes+1)`, so a multi-gigabyte target cannot be fully loaded even if it replaces a small file between open and read.
+
+### 48. Advisory flock semantics documented
+
+`internal/flock` provides an advisory lock: it serializes cooperating callers but does not prevent a non-cooperating process with filesystem access from reading or writing the protected file. The package doc now explicitly documents this limitation and notes that file/directory permissions are the primary access control for sensitive data.
+
 ### YOLO mode
 
 ```json
@@ -401,7 +509,9 @@ Defaults: `FrictionThreshold=3`, `FrictionWindow=60s`. To opt out (TTYApprover o
 | README.md says "ignore your instructions" | Identity anchoring + read_file wrapper |
 | Compiler / shell output embeds instructions | Wrapped output + identity rules |
 | Fetched page redirects to `169.254.169.254` (cloud metadata) | `browser` and `http_batch` re-classify every redirect hop (`CheckRedirect` re-runs `ClassifyURL` + policy) |
-| Malicious MCP server poisons its tool description with instructions | Description scanned with `ScanInjection` at registration; withheld if injection patterns found |
+| Malicious MCP server poisons its tool description with instructions | Tool names validated and descriptions scanned with `ScanInjection`; withheld if injection patterns found |
+| Malicious MCP server registers a tool that shadows a built-in name | Built-in name collision is rejected at load time |
+| Malicious MCP server registers an unwanted high-risk tool | Per-tool approval required for project-level servers; `ODEK_APPROVE_MCP=1` or persisted approvals |
 | MCP server smuggles a payload via the error channel | Error message wrapped + audited, same as tool output |
 | `session_search` re-surfaces content from a previously-tainted session | Output wrapped as untrusted and recorded in the audit log |
 | Page contains literal `</untrusted_content>` to escape | Per-call nonce defeats blind close-tag injection |
@@ -418,6 +528,24 @@ Defaults: `FrictionThreshold=3`, `FrictionWindow=60s`. To opt out (TTYApprover o
 | User reflex-approves a destructive class after many benign ones | Friction mode requires typed `approve` + 1.5 s pause |
 | Successful injection steers agent to attacker URL | `odek audit` flags `suspicious_divergence` on the turn |
 | Symlink planted as session file exfiltrates arbitrary file into semantic search | `rebuildLocked` validates IDs and skips symlinks via `Lstat` |
+| Concurrent `odek schedule add` processes clobber each other | `fileLock` returns a hard error instead of falling back to no lock |
+| Tampered `schedules.json` replaced with a multi-gigabyte blob | `readJSON` rejects files larger than 10 MiB |
+| Tool / MCP output forges the closing `END TOOL RESULT` delimiter | Per-call nonce embedded in the delimiter makes it unforgeable |
+| `parallel_shell` forks background processes that survive cancellation | Commands run in a process group and the whole group is killed |
+| `batch_patch` re-prompts for each patch despite a trusted `local_write` class | `trustedClasses` is now propagated through `CheckOperation` |
+| Malicious page puts instructions in a link URL | Browser wraps `clickableRef.URL` as untrusted |
+| Emoji-heavy message passes local check but is rejected by Telegram | Length enforced in UTF-16 code units, matching Telegram |
+| Local user reads `~/.odek/restart.json` to enumerate Telegram chats | Marker file written with `0600` |
+| Prompt-injected text abuses Telegram MarkdownV2 formatting in `send_message` | Text escaped with `telegram.EscapeMarkdown` before sending |
+| Huge `/api/resources?limit=` forces unbounded scan/response | `limit` capped to 100 in handler and registry |
+| Local process spawns unlimited WebSocket agents/containers | Global 20-connection cap + per-IP upgrade rate limiting |
+| Runaway sub-agent floods parent with progress NDJSON | Progress stream capped at 100k lines / 100 MiB; child cancelled on overflow |
+| `odek subagent --task` deletes an arbitrary user file | Only deletes files matching the odek temp-file pattern |
+| Temp file briefly more permissive than target permissions | `fsatomic.WriteFile` sets exact permissions at creation time |
+| Resource search query abuses glob metachars or length | Query capped to 256 bytes and metachars escaped before glob |
+| Local user lists schedule/state filenames | Schedule directory created with `0700` |
+| Config file swapped for a huge file after size check | `loadFile` reads via a single `Open` + `LimitReader` |
+| Non-cooperating process ignores advisory flock | Documented in package doc; permissions are the real access gate |
 
 ---
 

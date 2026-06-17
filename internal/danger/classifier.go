@@ -653,7 +653,7 @@ func tokenize(input string) []string {
 // documentation of what's considered read-only.)
 
 var writePrefixes = map[string]bool{
-	"echo": true, "sed": true, "awk": true, "tee": true,
+	"echo": true, "sed": true, "tee": true,
 	"rm": true, "mv": true, "cp": true, "touch": true,
 	"mkdir": true, "rmdir": true, "chmod": true, "chown": true,
 }
@@ -683,6 +683,17 @@ var networkPrefixes = map[string]bool{
 
 var pipedShells = map[string]bool{
 	"sh": true, "bash": true, "zsh": true, "fish": true, "dash": true, "ksh": true,
+}
+
+// embeddedShellInterpreters are programs whose payload (script, expression,
+// or file operand) can invoke arbitrary shell commands. They are treated like
+// script interpreters: a bare --version/--help query stays safe, but any other
+// invocation that supplies code or a file is code execution.
+var embeddedShellInterpreters = map[string]bool{
+	"awk": true, "gawk": true, "mawk": true, "nawk": true,
+	"ed": true, "ex": true,
+	"vi": true, "vim": true, "nvim": true, "view": true,
+	"emacs": true, "emacsclient": true,
 }
 
 var codeEvalPrefixes = map[string]bool{
@@ -1215,6 +1226,7 @@ func isKnownCommandName(name string) bool {
 		destructivePrefixes[name] ||
 		networkPrefixes[name] ||
 		codeEvalPrefixes[name] ||
+		embeddedShellInterpreters[name] ||
 		installPrefixes[name] ||
 		pipedShells[name] ||
 		safeCommands[name] ||
@@ -1793,6 +1805,18 @@ func isCodeExecution(first string, tokens []string) bool {
 		return true
 	}
 
+	// Embedded-shell interpreters: awk, ed/ex, vi/vim, emacs, etc. Their
+	// payload (script expression or file operand) can invoke arbitrary shell
+	// commands, so any non-trivial invocation is code execution.
+	if embeddedShellInterpreters[first] && interpreterRunsCode(tokens) {
+		return true
+	}
+
+	// sed's 'e' command and script files (-f/--file) execute shell code.
+	if first == "sed" && sedRunsShellCode(tokens) {
+		return true
+	}
+
 	if !codeEvalPrefixes[first] {
 		// go run / go tool / go generate compile and execute code.
 		if first == "go" {
@@ -1842,6 +1866,68 @@ func interpreterRunsCode(tokens []string) bool {
 			continue
 		}
 		return true
+	}
+	return false
+}
+
+// sedRunsShellCode reports whether a sed invocation uses the 'e' command or
+// loads a script file, either of which lets sed execute arbitrary shell code.
+func sedRunsShellCode(tokens []string) bool {
+	for i, tok := range tokens[1:] {
+		// A script loaded from file is uninspectable — treat as code execution.
+		if tok == "-f" || tok == "--file" {
+			return true
+		}
+		// -e/--expression introduce inline scripts; the flag token itself is not
+		// a script, so look at the next token.
+		if tok == "-e" || tok == "--expression" || tok == "-E" {
+			continue
+		}
+		// The argument following -e/--expression is a script.
+		if i > 0 {
+			prev := tokens[i]
+			if prev == "-e" || prev == "--expression" {
+				if sedScriptHasShellExec(tok) {
+					return true
+				}
+				continue
+			}
+		}
+		// Bare script argument (e.g. sed 's/foo/bar/e').
+		if !strings.HasPrefix(tok, "-") && sedScriptHasShellExec(tok) {
+			return true
+		}
+	}
+	return false
+}
+
+// sedScriptHasShellExec detects the sed 'e' command in an inline script.
+// It looks for a standalone 'e' command or an 'e' flag on an s/// substitution.
+func sedScriptHasShellExec(tok string) bool {
+	// Strip surrounding quotes so the script content is comparable.
+	if len(tok) >= 2 {
+		if (tok[0] == '\'' && tok[len(tok)-1] == '\'') || (tok[0] == '"' && tok[len(tok)-1] == '"') {
+			tok = tok[1 : len(tok)-1]
+		}
+	}
+	if tok == "" {
+		return false
+	}
+	// Standalone 'e' command, possibly separated by semicolons/newlines or
+	// followed by an optional command argument (e.g. "e whoami").
+	if regexp.MustCompile(`(^|[;\n])e(\s|$|[;\n])`).MatchString(tok) {
+		return true
+	}
+	// s/<pattern>/<replacement>/<flags> with an 'e' flag.
+	if tok[0] == 's' && len(tok) >= 4 {
+		delim := tok[1]
+		if delim != 0 && delim != '\\' && strings.Count(tok, string(delim)) >= 3 {
+			last := strings.LastIndex(tok, string(delim))
+			flags := tok[last+1:]
+			if strings.ContainsAny(flags, "eE") {
+				return true
+			}
+		}
 	}
 	return false
 }

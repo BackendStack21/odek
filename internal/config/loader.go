@@ -16,6 +16,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -419,17 +420,22 @@ func loadFile(path string) FileConfig {
 	if path == "" {
 		return FileConfig{}
 	}
-	info, err := os.Stat(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return FileConfig{} // missing or unreadable = empty
 	}
-	if info.Size() > maxConfigFileBytes {
-		fmt.Fprintf(os.Stderr, "odek: warning: config %s: file exceeds maximum size %d bytes — ignoring file\n", path, maxConfigFileBytes)
+	defer f.Close()
+
+	// Read at most maxConfigFileBytes+1 so we can detect files that exceed the
+	// limit without loading them entirely. Using a single Open+LimitReader
+	// closes the TOCTOU window between stat and read.
+	data, err := io.ReadAll(io.LimitReader(f, maxConfigFileBytes+1))
+	if err != nil {
 		return FileConfig{}
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return FileConfig{} // unreadable = empty
+	if int64(len(data)) > maxConfigFileBytes {
+		fmt.Fprintf(os.Stderr, "odek: warning: config %s: file exceeds maximum size %d bytes — ignoring file\n", path, maxConfigFileBytes)
+		return FileConfig{}
 	}
 	var cfg FileConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {

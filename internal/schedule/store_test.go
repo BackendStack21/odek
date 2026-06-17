@@ -17,6 +17,24 @@ func newTestStore(t *testing.T) *Store {
 	return st
 }
 
+// TestNewStoreAt_CreatesPrivateDir verifies that the schedule store directory
+// is created with 0700 permissions so other local users cannot list filenames.
+func TestNewStoreAt_CreatesPrivateDir(t *testing.T) {
+	dir := t.TempDir()
+	storeDir := filepath.Join(dir, "schedules")
+	_, err := NewStoreAt(storeDir)
+	if err != nil {
+		t.Fatalf("NewStoreAt: %v", err)
+	}
+	info, err := os.Stat(storeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0700 {
+		t.Errorf("schedule dir perm = %04o, want 0700", info.Mode().Perm())
+	}
+}
+
 func sampleJob() Job {
 	return Job{
 		Name:    "standup",

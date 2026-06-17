@@ -171,3 +171,132 @@ func saveMCPApprovals(approvals map[string]bool) error {
 	}
 	return os.WriteFile(path, data, 0600)
 }
+
+// mcpToolApprovalsFile is the persistent store for user-approved MCP tools.
+const mcpToolApprovalsFile = "mcp_tool_approvals.json"
+
+// approveMCPTools requires explicit user approval for each tool an MCP server
+// advertises. Project-level servers must already have passed approveMCPServers
+// before discovery; this layer asks about each individual tool so a server
+// cannot silently register a spoofed or unwanted tool.
+//
+// Approval can be granted via ODEK_APPROVE_MCP=1, an interactive y/N prompt,
+// or a prior persisted approval in ~/.odek/mcp_tool_approvals.json.
+func approveMCPTools(projectDir, serverName string, cfg mcpclient.ServerConfig, defs []mcpclient.ToolDef, stdin io.Reader, stdout io.Writer) ([]mcpclient.ToolDef, error) {
+	isTTY := stdin == os.Stdin && term.IsTerminal(int(os.Stdin.Fd()))
+	return approveMCPToolsWithTTY(projectDir, serverName, cfg, defs, stdin, stdout, isTTY)
+}
+
+// approveMCPToolsWithTTY is the testable core.
+func approveMCPToolsWithTTY(projectDir, serverName string, cfg mcpclient.ServerConfig, defs []mcpclient.ToolDef, stdin io.Reader, stdout io.Writer, tty bool) ([]mcpclient.ToolDef, error) {
+	if len(defs) == 0 {
+		return nil, nil
+	}
+
+	if mcpApprovalEnv() {
+		return defs, nil
+	}
+
+	approved, err := loadMCPToolApprovals()
+	if err != nil {
+		return nil, fmt.Errorf("mcp tool approval: load approvals: %w", err)
+	}
+
+	reader := bufio.NewReader(stdin)
+	var out []mcpclient.ToolDef
+
+	for _, def := range defs {
+		key := mcpToolApprovalKey(projectDir, serverName, def.Name, cfg)
+		if approved[key] {
+			out = append(out, def)
+			continue
+		}
+
+		if !tty {
+			return nil, fmt.Errorf(
+				"MCP tool %q from server %q requires explicit approval\n"+
+					"set ODEK_APPROVE_MCP=1 to approve all tools from all project MCP servers, or run interactively",
+				def.Name, serverName,
+			)
+		}
+
+		fmt.Fprintf(stdout, "\nMCP server %q wants to register tool %q\n", serverName, def.Name)
+		if def.Description != "" {
+			fmt.Fprintf(stdout, "  description: %s\n", truncateDescription(def.Description, 200))
+		}
+		fmt.Fprintf(stdout, "Approve? [y/N] ")
+
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return nil, fmt.Errorf("mcp tool approval: read prompt: %w", err)
+		}
+		line = strings.ToLower(strings.TrimSpace(line))
+		if line != "y" && line != "yes" {
+			continue // user declined this tool; skip it
+		}
+
+		approved[key] = true
+		if err := saveMCPToolApprovals(approved); err != nil {
+			return nil, fmt.Errorf("mcp tool approval: save approvals: %w", err)
+		}
+		out = append(out, def)
+	}
+
+	return out, nil
+}
+
+// mcpToolApprovalKey returns a stable key for the persisted tool approval store.
+func mcpToolApprovalKey(projectDir, serverName, toolName string, cfg mcpclient.ServerConfig) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s", projectDir, serverName, toolName, cfg.Command)
+	for _, a := range cfg.Args {
+		fmt.Fprintf(h, "\x00%s", a)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// loadMCPToolApprovals reads the persisted tool approval map.
+func loadMCPToolApprovals() (map[string]bool, error) {
+	path := filepath.Join(expandHome("~/.odek"), mcpToolApprovalsFile)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return make(map[string]bool), nil
+		}
+		return nil, err
+	}
+
+	var approvals map[string]bool
+	if err := json.Unmarshal(data, &approvals); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if approvals == nil {
+		approvals = make(map[string]bool)
+	}
+	return approvals, nil
+}
+
+// saveMCPToolApprovals writes the tool approval map to disk with 0600 permissions.
+func saveMCPToolApprovals(approvals map[string]bool) error {
+	dir := expandHome("~/.odek")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, mcpToolApprovalsFile)
+	data, err := json.MarshalIndent(approvals, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0600)
+}
+
+// truncateDescription limits a tool description for the approval prompt.
+func truncateDescription(desc string, max int) string {
+	if len(desc) <= max {
+		return desc
+	}
+	if max <= 3 {
+		return desc[:max]
+	}
+	return desc[:max-3] + "..."
+}

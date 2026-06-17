@@ -15,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -38,9 +37,65 @@ var uiFS embed.FS
 // multi-gigabyte frame.
 const maxWSMessageBytes = 8 * 1024 * 1024 // 8 MiB
 
-// currentPromptCancel holds the cancel function for the currently executing
-// prompt. Used by the POST /api/cancel endpoint to abort a running agent.
-var currentPromptCancel atomic.Value
+// maxWSConnections caps the number of concurrent WebSocket clients. Once the
+// limit is reached, further upgrade attempts are rejected with HTTP 503. This
+// prevents a local attacker from spawning unlimited connections, each of which
+// starts an agent with its own sandbox container and memory buffers.
+const maxWSConnections = 20
+
+// wsConnSem is the global connection limiter for /ws.
+var wsConnSem = make(chan struct{}, maxWSConnections)
+
+// wsUpgradeLimiter provides per-IP rate limiting for WebSocket upgrades, making
+// it more expensive to rapidly churn connections and exhaust wsConnSem.
+var wsUpgradeLimiter = newRateLimiter(30, time.Minute)
+
+// promptCancels maps a session ID to the cancel function for the prompt
+// currently executing on that session. A mutex protects the map so concurrent
+// WebSocket handlers and the HTTP /api/cancel endpoint can access it safely.
+// Using session IDs as keys scopes cancellation to the caller's session,
+// preventing one connection from cancelling another connection's prompt.
+var (
+	promptCancelMu sync.Mutex
+	promptCancels  = map[string]context.CancelFunc{}
+)
+
+// registerPromptCancel records cancel as the active cancel function for
+// sessionID. It must be unregistered when the prompt completes.
+func registerPromptCancel(sessionID string, cancel context.CancelFunc) {
+	if sessionID == "" || cancel == nil {
+		return
+	}
+	promptCancelMu.Lock()
+	promptCancels[sessionID] = cancel
+	promptCancelMu.Unlock()
+}
+
+// unregisterPromptCancel removes any cancel function registered for sessionID.
+func unregisterPromptCancel(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	promptCancelMu.Lock()
+	delete(promptCancels, sessionID)
+	promptCancelMu.Unlock()
+}
+
+// cancelPrompt cancels the active prompt for sessionID, if any. It returns
+// true if a cancel function was found and invoked.
+func cancelPrompt(sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	promptCancelMu.Lock()
+	cancel, ok := promptCancels[sessionID]
+	promptCancelMu.Unlock()
+	if !ok {
+		return false
+	}
+	cancel()
+	return true
+}
 
 // wsConns tracks every active WebSocket connection so serveOnListener can
 // close them on shutdown, unblocking handleWS goroutines and allowing their
@@ -204,7 +259,7 @@ func serveCmd(args []string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handleStatic())
 	mux.Handle("/ws", &golangws.Server{
-		Handshake: checkLocalOrigin,
+		Handshake: wsHandshakeWithLimits,
 		Handler: func(conn *golangws.Conn) {
 			handleWS(store, resourceReg, resolved, systemMessage, conn)
 		},
@@ -414,7 +469,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 		MaxIterations:    resolved.MaxIter,
 		MaxToolParallel:  resolved.MaxToolParallel,
 		SystemMessage:    system,
-		UntrustedWrapper: wrapUntrusted,
+		UntrustedWrapper: func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
 		RuntimeContext:   runtimeCtx,
 		NoProjectFile:   resolved.NoAgents,
 		Thinking:        resolved.Thinking,
@@ -507,6 +562,15 @@ type wsClientMsg struct {
 // ── WebSocket Handler ──────────────────────────────────────────────────
 
 func handleWS(store *session.Store, resources *resource.Registry, resolved config.ResolvedConfig, system string, conn *golangws.Conn) {
+	// Release the connection slot acquired by wsHandshakeWithLimits. This runs
+	// after the handler exits, whether normally or via panic/close.
+	defer func() {
+		select {
+		case <-wsConnSem:
+		default:
+		}
+	}()
+
 	// Register for graceful-shutdown tracking before anything else.
 	// serveOnListener closes all tracked connections on SIGINT/SIGTERM,
 	// which unblocks the Receive loop below and lets defers run.
@@ -708,13 +772,10 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 		// Create a cancelable context for this prompt (so POST /api/cancel can abort it).
 		// Derived from connCtx so a disconnect also aborts the running prompt.
 		promptCtx, promptCancel := context.WithCancel(connCtx)
-		currentPromptCancel.Store(promptCancel)
 
-		currentSession = handlePrompt(promptCtx, conn, store, resources, resolved, agent, currentSession, msg.Content, msg.SessionID, &sessionInputTokens, &sessionOutputTokens)
+		currentSession = handlePrompt(promptCtx, conn, store, resources, resolved, agent, currentSession, msg.Content, msg.SessionID, &sessionInputTokens, &sessionOutputTokens, promptCancel)
 
-		// Clear cancel on completion — the prompt is no longer running
-		// Use a no-op sentinel to avoid atomic.Value panicking on nil store
-		currentPromptCancel.Store(context.CancelFunc(func() {}))
+		// Cancel the prompt context once the run is complete.
 		promptCancel()
 	}
 
@@ -744,6 +805,7 @@ func handlePrompt(
 	prompt string,
 	sessionID string,
 	sessionInputTokens, sessionOutputTokens *int,
+	promptCancel context.CancelFunc,
 ) *session.Session {
 	// Resolve @ references
 	refs := resource.ParseRefs(prompt)
@@ -753,7 +815,7 @@ func handlePrompt(
 		if err != nil {
 			continue
 		}
-		resolvedRefs[ref.Raw] = wrapUntrusted("resource:"+ref.Raw, content)
+		resolvedRefs[ref.Raw] = wrapUntrusted(ctx, "resource:"+ref.Raw, content)
 	}
 	enrichedPrompt := resource.ReplaceRefs(prompt, resolvedRefs)
 
@@ -802,6 +864,12 @@ func handlePrompt(
 		sid = sess.ID
 		authToken = sess.AuthToken
 	}
+	// Register the cancel function for this session so the HTTP endpoint can
+	// abort this specific prompt. Unregister as soon as the run finishes.
+	if sid != "" && promptCancel != nil {
+		registerPromptCancel(sid, promptCancel)
+		defer unregisterPromptCancel(sid)
+	}
 	writeWSJSON(conn, map[string]any{"type": "session", "session_id": sid, "auth_token": authToken, "model": resolved.Model, "sandbox": resolved.Sandbox})
 
 	// Append user input to buffer (AppendBuffer summarizes raw text).
@@ -823,10 +891,11 @@ func handlePrompt(
 		auditTurn = currSess.Turns + 1
 	}
 	if auditSessID != "" {
-		setIngestRecorder(func(source, content string) {
+		// Scope the ingest recorder to this prompt's context so concurrent
+		// sessions cannot overwrite each other's audit attribution.
+		ctx = loop.WithIngestRecorder(ctx, func(source, content string) {
 			_ = auditStore.RecordIngest(auditSessID, auditTurn, source, content)
 		})
-		defer setIngestRecorder(nil)
 	}
 
 	origLen := len(messages) - 1 // initial estimate: index of the user message we appended
@@ -958,7 +1027,7 @@ func handlePrompt(
 				resolved.Skills.Curation.SkipThreshold, resolved.Skills.Curation.SkipResetDays)
 			_ = skipped
 			if resolved.Skills.AutoSave.Enabled {
-				result := skills.AutoSaveSuggestions(filtered, userDir, resolved.Skills)
+				result := skills.AutoSaveSuggestions(filtered, userDir, resolved.Skills, false)
 				for _, name := range result.Saved {
 					sm.Notifier.Notify(skills.SkillEvent{
 						Type: "saved", SkillName: name, Timestamp: time.Now().UTC(),
@@ -1016,6 +1085,24 @@ func checkLocalOrigin(_ *golangws.Config, req *http.Request) error {
 		return nil
 	}
 	return fmt.Errorf("Origin %q not allowed (only localhost is accepted)", origin)
+}
+
+// wsHandshakeWithLimits wraps checkLocalOrigin with a per-IP upgrade rate limit
+// and a global concurrent-connection semaphore. The semaphore is acquired before
+// the WebSocket handshake completes and released when the handler exits.
+func wsHandshakeWithLimits(_ *golangws.Config, req *http.Request) error {
+	if err := checkLocalOrigin(nil, req); err != nil {
+		return err
+	}
+	if !wsUpgradeLimiter.allow(clientIP(req)) {
+		return fmt.Errorf("WebSocket upgrade rate limit exceeded")
+	}
+	select {
+	case wsConnSem <- struct{}{}:
+		return nil
+	default:
+		return fmt.Errorf("too many concurrent WebSocket connections")
+	}
 }
 
 // requireLocalOrigin rejects cross-origin state-changing requests to the REST
@@ -1107,6 +1194,13 @@ func handleResourceSearch(reg *resource.Registry) http.HandlerFunc {
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 		if limit <= 0 {
 			limit = 10
+		}
+		// Registry.Search also enforces a global maximum; this explicit cap
+		// keeps the HTTP handler's contract obvious and prevents huge JSON
+		// responses even if a caller bypasses the UI.
+		const maxResourceLimit = 100
+		if limit > maxResourceLimit {
+			limit = maxResourceLimit
 		}
 
 		results, err := reg.Search(r.Context(), q, limit)
@@ -1290,20 +1384,23 @@ func handleModelList(configuredModel string) http.HandlerFunc {
 	}
 }
 
-// handleCancel cancels the currently running prompt, if any.
-// POST /api/cancel — cancels the current agent execution.
+// handleCancel cancels the running prompt for the requested session.
+// POST /api/cancel?session_id=<id> — cancels the agent execution scoped to
+// that session. Requiring the session ID prevents one connection from
+// cancelling another connection's prompt.
 func handleCancel(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	if f := currentPromptCancel.Load(); f != nil {
-		if cancel, ok := f.(context.CancelFunc); ok {
-			cancel()
-		}
+	sessionID := r.URL.Query().Get("session_id")
+	if sessionID == "" {
+		http.Error(w, "missing session_id", http.StatusBadRequest)
+		return
 	}
 
+	cancelPrompt(sessionID)
 	w.WriteHeader(http.StatusNoContent)
 }
 

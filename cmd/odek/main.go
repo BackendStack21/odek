@@ -18,6 +18,7 @@ import (
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/mcpclient"
 	"github.com/BackendStack21/odek/internal/memory"
 	"github.com/BackendStack21/odek/internal/render"
@@ -530,7 +531,7 @@ func printUsage() {
   odek serve [--addr :8080] [--open]
   odek subagent --goal <string> [--context <string>] [flags]
   odek init [--global | -g] [--force | -f]
-  odek skill <list|view|save|delete|import|curate>
+  odek skill <list|view|save|delete|promote|import|curate>
   odek mcp [--sandbox]
   odek telegram
   odek schedule <list|add|rm|enable|disable|run|next|daemon>
@@ -594,6 +595,7 @@ Skill commands:
   odek skill list                    List all available skills
   odek skill view <name>             View a skill's full content
   odek skill delete <name>           Delete a skill
+  odek skill promote <name> [--force] Promote a tainted skill after review
   odek skill import <uri> [flags]    Import a skill from file:// or https://
                                      Flags: --basic (skip LLM), --yes (auto-approve)
   odek skill curate                  Analyze skills for quality, staleness, overlap
@@ -928,7 +930,7 @@ func run(args []string) error {
 		MaxIterations:    resolved.MaxIter,
 		MaxToolParallel:  resolved.MaxToolParallel,
 		SystemMessage:    systemMessage,
-		UntrustedWrapper: wrapUntrusted,
+		UntrustedWrapper: func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
 		NoProjectFile:    resolved.NoAgents,
 		Thinking:        resolved.Thinking,
 		ThinkingBudget:  f.ThinkingBudget,
@@ -1223,14 +1225,37 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 // The passed-in tool slice pointer is extended with ToolAdapters.
 //
 // Before spawning any server that was defined in the project-level ./odek.json,
+// reservedBuiltinToolNames returns the names of tools built into odek. It is
+// used to stop an MCP server from registering a tool whose raw name shadows a
+// built-in and could confuse the model.
+func reservedBuiltinToolNames() map[string]bool {
+	bt := builtinTools(danger.DangerousConfig{}, nil, nil, 1, "", toolConfig{}, nil)
+	names := make(map[string]bool, len(bt))
+	for _, t := range bt {
+		names[t.Name()] = true
+	}
+	return names
+}
+
 // loadMCPTools calls approveMCPServers, which requires explicit user approval
 // (interactive prompt or ODEK_APPROVE_MCP=1) and persists approvals in
-// ~/.odek/mcp_approvals.json.
+// ~/.odek/mcp_approvals.json. After discovery, each advertised tool is checked
+// against built-in names and requires its own per-tool approval.
 func loadMCPTools(resolved config.ResolvedConfig, tools *[]odek.Tool) (func(), error) {
 	if err := approveMCPServers(resolved, os.Stdin, os.Stdout); err != nil {
 		return nil, err
 	}
 
+	projectDir, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("mcp: get working directory: %w", err)
+	}
+	projectDir, err = filepath.Abs(projectDir)
+	if err != nil {
+		return nil, fmt.Errorf("mcp: abs working directory: %w", err)
+	}
+
+	reserved := reservedBuiltinToolNames()
 	var cleaners []func()
 	for name, cfg := range resolved.MCPServers {
 		client, err := mcpclient.New(name, cfg)
@@ -1249,6 +1274,28 @@ func loadMCPTools(resolved config.ResolvedConfig, tools *[]odek.Tool) (func(), e
 				c()
 			}
 			return nil, fmt.Errorf("mcp server %q: discover: %w", name, err)
+		}
+
+		// Reject tools whose raw name shadows a built-in, even though the
+		// registered name is prefixed. A server naming its tool "read_file"
+		// is trying to confuse the model.
+		for _, def := range defs {
+			if reserved[def.Name] {
+				client.Close()
+				for _, c := range cleaners {
+					c()
+				}
+				return nil, fmt.Errorf("mcp server %q: tool %q shadows a built-in tool", name, def.Name)
+			}
+		}
+
+		defs, err = approveMCPTools(projectDir, name, cfg, defs, os.Stdin, os.Stdout)
+		if err != nil {
+			client.Close()
+			for _, c := range cleaners {
+				c()
+			}
+			return nil, fmt.Errorf("mcp server %q: tool approval: %w", name, err)
 		}
 
 		for _, def := range defs {
@@ -1423,6 +1470,9 @@ func interactiveSavePrompt(filtered []skills.SkillSuggestion, userDir string, sm
 	fmt.Fprintf(os.Stderr, "\n🔍 Learning: detected %d skill pattern(s)\n", len(filtered))
 	for _, s := range filtered {
 		fmt.Fprint(os.Stderr, skills.FormatSuggestionWithPreview(s, true, 400))
+		if s.IsTainted() {
+			fmt.Fprintf(os.Stderr, "   ⚠ This suggestion is tainted (sources: %s). It will be saved but cannot be auto-loaded until promoted with --force.\n", strings.Join(s.Provenance.Sources, ", "))
+		}
 		fmt.Fprintf(os.Stderr, "   Save as skill? [Y/n/s=skip always]: ")
 
 		var response string
@@ -1450,10 +1500,10 @@ func interactiveSavePrompt(filtered []skills.SkillSuggestion, userDir string, sm
 	}
 }
 
-// skillCmd handles `odek skill <list|view|save|delete|import|curate|reset-skips>`.
+// skillCmd handles `odek skill <list|view|save|delete|promote|import|curate|reset-skips>`.
 func skillCmd(args []string) error {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "Usage: odek skill <list|view|save|delete|import|curate|reset-skips> [args]\n")
+		fmt.Fprintf(os.Stderr, "Usage: odek skill <list|view|save|delete|promote|import|curate|reset-skips> [args]\n")
 		return nil
 	}
 
@@ -1510,9 +1560,15 @@ func skillCmd(args []string) error {
 		// ingested untrusted content — the user reviews the body and
 		// then promotes it. See SkillProvenance.
 		if len(subArgs) == 0 {
-			return fmt.Errorf("usage: odek skill promote <name>")
+			return fmt.Errorf("usage: odek skill promote <name> [--force]")
 		}
-		return promoteSkill(userDir, subArgs[0])
+		force := false
+		for _, a := range subArgs[1:] {
+			if a == "--force" || a == "-f" {
+				force = true
+			}
+		}
+		return promoteSkill(userDir, subArgs[0], force)
 
 	case "import":
 		if len(subArgs) == 0 {
@@ -1777,7 +1833,7 @@ func continueCmd(args []string) error {
 		MaxIterations:    resolved.MaxIter,
 		MaxToolParallel:  resolved.MaxToolParallel,
 		SystemMessage:    systemMessage,
-		UntrustedWrapper: wrapUntrusted,
+		UntrustedWrapper: func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
 		NoProjectFile:    resolved.NoAgents,
 		Thinking:        resolved.Thinking,
 		Temperature:     0, // deterministic by default; override with --temperature
@@ -1812,16 +1868,15 @@ func continueCmd(args []string) error {
 	defer cancel()
 
 	// Audit: record every untrusted-content ingestion that fires during
-	// this turn. The recorder is cleared on exit so a later turn (or
-	// background goroutine) cannot accidentally write to the wrong
+	// this turn. The recorder is scoped to the run context so a later turn
+	// (or background goroutine) cannot accidentally write to the wrong
 	// session's audit log.
 	auditStore := session.NewAuditStore(store.Dir())
 	currentTurn := sess.Turns + 1
 	sessIDCapture := sess.ID
-	setIngestRecorder(func(source, content string) {
+	ctx = loop.WithIngestRecorder(ctx, func(source, content string) {
 		_ = auditStore.RecordIngest(sessIDCapture, currentTurn, source, content)
 	})
-	defer setIngestRecorder(nil)
 
 	rend.Start(task)
 	result, allMessages, err := agent.RunWithMessages(ctx, messages)

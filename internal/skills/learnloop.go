@@ -91,7 +91,7 @@ func RunAutoSaveLoop(filtered []SkillSuggestion, userDir string, sm *SkillManage
 		return false
 	}
 
-	result := AutoSaveSuggestions(filtered, userDir, cfg)
+	result := AutoSaveSuggestions(filtered, userDir, cfg, false)
 
 	if verbose != nil {
 		for _, name := range result.Saved {
@@ -103,6 +103,9 @@ func RunAutoSaveLoop(filtered []SkillSuggestion, userDir string, sm *SkillManage
 		}
 		if result.Skipped > 0 {
 			fmt.Fprintf(verbose, "   (%d previously skipped, suppressed)\n", result.Skipped)
+		}
+		for _, name := range result.Declined {
+			fmt.Fprintf(verbose, "   ⚠ Declined to auto-save tainted skill %q (review with --force to save)\n", name)
 		}
 		for _, name := range result.Failed {
 			fmt.Fprintf(verbose, "   ⚠ Quality gate failed for %q (use --no-auto-save to review manually)\n", name)

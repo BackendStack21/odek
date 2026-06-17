@@ -109,3 +109,22 @@ func TestWriteFile_ConcurrentSameTarget(t *testing.T) {
 		t.Errorf("expected only the target file, got %d entries", len(entries))
 	}
 }
+
+// TestWriteFile_SetsPermAtCreation verifies that the final file has exactly the
+// requested permissions. The implementation now sets permissions at creation
+// time via O_EXCL, so this also covers the permission-race fix.
+func TestWriteFile_SetsPermAtCreation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "restricted")
+
+	if err := WriteFile(path, []byte("x"), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Errorf("perm = %04o, want 0600", info.Mode().Perm())
+	}
+}

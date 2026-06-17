@@ -332,7 +332,7 @@ func (t *transcribeTool) Call(argsJSON string) (result string, err error) {
 	source := "transcribe:" + args.Path
 	segments := make([]transcribeSegment, len(whisperOut.Segments))
 	for i, s := range whisperOut.Segments {
-		segments[i] = transcribeSegment{Start: s.Start, End: s.End, Text: wrapUntrusted(source, s.Text)}
+		segments[i] = transcribeSegment{Start: s.Start, End: s.End, Text: wrapUntrusted(t.toolCtx(), source, s.Text)}
 	}
 
 	modelLabel := filepath.Base(modelPathResolved)
@@ -340,7 +340,7 @@ func (t *transcribeTool) Call(argsJSON string) (result string, err error) {
 	modelLabel = strings.TrimSuffix(modelLabel, ".bin")
 
 	return jsonResult(transcribeResult{
-		Text:     wrapUntrusted(source, strings.TrimSpace(whisperOut.Text)),
+		Text:     wrapUntrusted(t.toolCtx(), source, strings.TrimSpace(whisperOut.Text)),
 		Duration: whisperOut.Duration,
 		Segments: segments,
 		Model:    modelLabel,

@@ -158,6 +158,27 @@ Approval methods:
 If approval is required and cannot be obtained, odek aborts before spawning any
 MCP server.
 
+### Project-level MCP tool approval
+
+After a project-level server is approved, each individual tool it advertises via
+`tools/list` must also be approved before the agent can call it. This prevents a
+server from quietly registering a high-risk or spoofed tool after its server
+config was reviewed.
+
+Tool approval uses the same methods as server approval:
+
+1. **Interactive prompt** — on a TTY, odek lists the discovered tools and asks
+   which to approve.
+2. **`ODEK_APPROVE_MCP=1`** — approves every tool from every project-level
+   server for the invocation.
+3. **Persisted approvals** — approved tools are stored in
+   `~/.odek/mcp_tool_approvals.json` (0600), keyed by project directory + server
+   name + tool name. If a tool is renamed or a new tool appears, it must be
+   approved again.
+
+Tools from global servers (`~/.odek/config.json`) are operator-trusted and do
+not require per-tool approval.
+
 ### How it works
 
 On startup, odek:
@@ -175,6 +196,11 @@ Tools are prefixed with the server name to avoid collisions between servers:
 - `playwright__navigate` — from the `playwright` server
 - `fetch__fetch` — from the `fetch` server
 - `github__search_issues` — from the `github` server
+
+Tool names must be ASCII letters, digits, underscores, or hyphens and no longer
+than 64 characters. Names that do not match this pattern, or that collide with
+odek's built-in tool names (even before prefixing), are rejected at startup with
+a warning.
 
 ### What MCP servers work
 

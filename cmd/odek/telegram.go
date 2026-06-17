@@ -157,12 +157,19 @@ func telegramCmd(args []string) error {
 	// 1. Load config from all sources (file → env).
 	resolved := config.LoadConfig(config.CLIFlags{})
 
+	// 1b. If the parent handed us an API key via an inherited file descriptor
+	// (FD-based handoff used on Telegram restart), use it. This keeps the key
+	// out of the child's /proc/<pid>/environ.
+	if key := readKeyFromInheritedFD(); key != "" {
+		resolved.APIKey = key
+	}
+
 	// 2. Validate API key presence.
 	if resolved.APIKey == "" {
 		return fmt.Errorf("no API key configured — set ODEK_API_KEY, DEEPSEEK_API_KEY, or configure in odek.json")
 	}
 	// Store for spawnChild: config loader clears ODEK_API_KEY from env,
-	// so the child process needs us to re-inject it.
+	// so the child process needs us to hand it off securely.
 	resolvedAPIKey = resolved.APIKey
 
 	// 3. Load and validate Telegram config.
@@ -597,7 +604,7 @@ func telegramCmd(args []string) error {
 
 		// Fallback: pass the file path to the agent
 		go handleChatMessage(chatID, messageID, userID,
-			wrapUntrusted(fmt.Sprintf("telegram:chat:%d:voice", chatID),
+			wrapUntrusted(context.Background(), fmt.Sprintf("telegram:chat:%d:voice", chatID),
 				fmt.Sprintf("🎤 Voice message saved to %q. Use transcribe() tool to get the text.", localPath)),
 			bot, handler, sessionManager, resolved, systemMessage, handlerLog)
 		return "", nil
@@ -884,7 +891,7 @@ func writeRestartMarker(chatIDs []int64) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	return os.WriteFile(path, data, 0600)
 }
 
 // readRestartMarker reads and removes the restart marker. Returns the list
@@ -1032,6 +1039,15 @@ func gracefulRestart(bot *telegram.Bot) {
 // spawnChild starts a new odek telegram process detached from the parent.
 // Stderr is redirected to /tmp/odek-telegram.log so startup errors are visible.
 func spawnChild() error {
+	return spawnChildWithStarter(os.StartProcess)
+}
+
+type processStarter func(name string, argv []string, attr *os.ProcAttr) (*os.Process, error)
+
+// spawnChildWithStarter is the testable core of spawnChild. The starter
+// argument lets tests intercept the ProcAttr without actually launching a
+// process.
+func spawnChildWithStarter(starter processStarter) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("executable: %w", err)
@@ -1051,24 +1067,36 @@ func spawnChild() error {
 		stderr = nil // fallback: child gets /dev/null
 	}
 
-	// Build child environment: parent env + re-injected API key.
-	// config.LoadConfig clears all API key env vars from the environment,
-	// so they're missing from os.Environ(). Re-inject all three forms so
-	// the child process finds the key regardless of which env var it checks.
+	// Build child environment: parent env only. The API key is passed via an
+	// inherited file descriptor instead of the environment so it does not
+	// appear in /proc/<pid>/environ or crash dumps. This mirrors the FD-based
+	// handoff used for sub-agents.
 	childEnv := os.Environ()
+	var files []*os.File
+	var cleanup func()
 	if resolvedAPIKey != "" {
-		childEnv = append(childEnv, "ODEK_API_KEY="+resolvedAPIKey)
-		childEnv = append(childEnv, "DEEPSEEK_API_KEY="+resolvedAPIKey)
-		childEnv = append(childEnv, "OPENAI_API_KEY="+resolvedAPIKey)
+		keyFile, keyCleanup, err := writeKeyToUnlinkedFile(resolvedAPIKey)
+		if err != nil {
+			return fmt.Errorf("write key to FD: %w", err)
+		}
+		cleanup = keyCleanup
+		childEnv = append(childEnv, keyFDEnvVar+"=3")
+		files = []*os.File{nil, nil, stderr, keyFile}
+	} else {
+		files = []*os.File{nil, nil, stderr}
 	}
 
 	attr := &os.ProcAttr{
 		Env: childEnv,
 		// Detach: nil stdin/stdout so child is reparented to init.
 		// Stderr is captured to the log file for debugging.
-		Files: []*os.File{nil, nil, stderr},
+		// FD 3 carries the API key when needed.
+		Files: files,
 	}
-	_, err = os.StartProcess(exe, argv, attr)
+	_, err = starter(exe, argv, attr)
+	if cleanup != nil {
+		cleanup()
+	}
 	return err
 }
 
@@ -1443,20 +1471,26 @@ func handleChatMessage(
 			if err := validateSendMessageButtons(buttons); err != nil {
 				return err
 			}
+			// Agent-generated text is attacker-influenceable (the LLM may echo or
+			// reformat untrusted content). Escape it for MarkdownV2 so reserved
+			// characters cannot be used to hide buttons, break formatting, or
+			// inject instructions into the Telegram message stream.
+			safeText := telegram.EscapeMarkdown(text)
+
 			if file != "" {
 				// Detect media type from extension.
 				mediaType := mediaTypeFromExt(file)
-				return sendTelegramMedia(bot, chatID, mediaType, file, text, buttons)
+				return sendTelegramMedia(bot, chatID, mediaType, file, safeText, buttons)
 			}
 			if len(buttons) > 0 {
 				markup := buttonsToMarkup(buttons)
-				_, err := bot.SendMessage(chatID, text, &telegram.SendOpts{
+				_, err := bot.SendMessage(chatID, safeText, &telegram.SendOpts{
 					ParseMode:   telegram.ParseModeMarkdownV2,
 					ReplyMarkup: markup,
 				})
 				return err
 			}
-			_, err := bot.SendMessage(chatID, text, &telegram.SendOpts{
+			_, err := bot.SendMessage(chatID, safeText, &telegram.SendOpts{
 				ParseMode: telegram.ParseModeMarkdownV2,
 			})
 			return err
@@ -1475,7 +1509,7 @@ func handleChatMessage(
 		MaxIterations:    resolved.MaxIter,
 		MaxToolParallel:  resolved.MaxToolParallel,
 		SystemMessage:    systemMessage,
-		UntrustedWrapper: wrapUntrusted,
+		UntrustedWrapper: func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
 		RuntimeContext:   odek.BuildRuntimeContext("telegram"),
 		InteractionMode:  resolved.InteractionMode,
 		NoProjectFile:    resolved.NoAgents,
@@ -1818,7 +1852,7 @@ func handleChatMessage(
 
 		// Auto-save if enabled
 		if skillsCfg.AutoSave.Enabled {
-			result := skills.AutoSaveSuggestions(filtered, userDir, *skillsCfg)
+			result := skills.AutoSaveSuggestions(filtered, userDir, *skillsCfg, false)
 			for _, name := range result.Saved {
 				sm.Notifier.Notify(skills.SkillEvent{
 					Type: "saved", SkillName: name, Timestamp: time.Now().UTC(),
@@ -2054,7 +2088,7 @@ func photoVisionPrompt(caption string) string {
 	if caption != "" {
 		return fmt.Sprintf(
 			"Describe this image in detail. Pay special attention to anything relevant to the user-provided caption below. Include any visible text, objects, people, and notable details.\n\n%s",
-			wrapUntrusted("telegram:photo:caption", caption))
+			wrapUntrusted(context.Background(), "telegram:photo:caption", caption))
 	}
 	return "Describe this image in detail. Include any visible text, objects, people, and notable details."
 }
@@ -2069,7 +2103,7 @@ func photoVisionMessage(caption, description string) string {
 			"The user sent an image with this message:\n%s\n\n"+
 				"A local vision model extracted this description of the image:\n%s\n\n"+
 				"Use the description to respond to the user's message.",
-			wrapUntrusted("telegram:photo:caption", caption), description)
+			wrapUntrusted(context.Background(), "telegram:photo:caption", caption), description)
 	}
 	return fmt.Sprintf(
 		"The user sent an image (no caption). A local vision model extracted this description:\n%s\n\n"+
@@ -2083,7 +2117,7 @@ func photoVisionMessage(caption, description string) string {
 // they cross an external trust boundary.
 func telegramTextMessage(chatID int64, text string, forwarded bool) string {
 	if forwarded {
-		return wrapUntrusted(fmt.Sprintf("telegram:chat:%d:forwarded", chatID), text)
+		return wrapUntrusted(context.Background(), fmt.Sprintf("telegram:chat:%d:forwarded", chatID), text)
 	}
 	return text
 }
@@ -2094,14 +2128,14 @@ func telegramTextMessage(chatID int64, text string, forwarded bool) string {
 // must be wrapped as untrusted before it enters the message stream — a
 // malicious recording must not become the user's "trusted" request.
 func telegramVoiceMessage(chatID int64, transcript string) string {
-	return wrapUntrusted(fmt.Sprintf("telegram:chat:%d:voice", chatID), transcript)
+	return wrapUntrusted(context.Background(), fmt.Sprintf("telegram:chat:%d:voice", chatID), transcript)
 }
 
 // telegramDocumentMessage builds the user-role message for an incoming
 // document. The whole message is wrapped as untrusted because the document
 // path comes from an external channel.
 func telegramDocumentMessage(localPath string) string {
-	return wrapUntrusted("telegram:document", fmt.Sprintf("📄 Document received and saved to %q. Use shell tools to analyze and respond.", localPath))
+	return wrapUntrusted(context.Background(), "telegram:document", fmt.Sprintf("📄 Document received and saved to %q. Use shell tools to analyze and respond.", localPath))
 }
 
 // photoFallbackMessage builds the message injected when auto-describe is off or
@@ -2109,7 +2143,7 @@ func telegramDocumentMessage(localPath string) string {
 // if any) so the agent can analyze the image itself via the vision/shell tools.
 func photoFallbackMessage(localPath, caption string) string {
 	if caption != "" {
-		return fmt.Sprintf("🖼 Photo saved to %q with this message from the user:\n%s\n\nUse the vision tool to analyze the image, then respond.", localPath, wrapUntrusted("telegram:photo:caption", caption))
+		return fmt.Sprintf("🖼 Photo saved to %q with this message from the user:\n%s\n\nUse the vision tool to analyze the image, then respond.", localPath, wrapUntrusted(context.Background(), "telegram:photo:caption", caption))
 	}
 	return fmt.Sprintf("🖼 Photo received and saved to %q. Use the vision tool or shell commands to analyze and respond.", localPath)
 }

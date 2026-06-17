@@ -25,7 +25,7 @@ func writeTestSkill(t *testing.T, userDir, name, frontmatter, body string) strin
 
 func TestPromoteSkill_NotFound(t *testing.T) {
 	userDir := t.TempDir()
-	err := promoteSkill(userDir, "nope")
+	err := promoteSkill(userDir, "nope", false)
 	if err == nil {
 		t.Fatal("expected error for missing skill")
 	}
@@ -41,7 +41,7 @@ func TestPromoteSkill_AlreadyTrusted(t *testing.T) {
 		"# body\n")
 
 	// Already trusted (no provenance block) — promote should be a no-op.
-	if err := promoteSkill(userDir, "trusted"); err != nil {
+	if err := promoteSkill(userDir, "trusted", false); err != nil {
 		t.Fatalf("promote: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(userDir, "trusted", "SKILL.md"))
@@ -56,19 +56,94 @@ func TestPromoteSkill_AlreadyTrusted(t *testing.T) {
 func TestPromoteSkill_ClearsNeedsReview(t *testing.T) {
 	userDir := t.TempDir()
 	frontmatter := "name: review-me\n" +
+		"description: a skill that only needs review\n" +
+		"odek:\n" +
+		"  provenance:\n" +
+		"    needs_review: true\n"
+	writeTestSkill(t, userDir, "review-me", frontmatter, "# body\n")
+
+	// NeedsReview without untrusted sources can be promoted without --force.
+	if err := promoteSkill(userDir, "review-me", false); err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(userDir, "review-me", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read after promote: %v", err)
+	}
+	out := string(data)
+	if strings.Contains(out, "needs_review: true") {
+		t.Errorf("needs_review flag should be cleared, got:\n%s", out)
+	}
+}
+
+func TestPromoteSkill_RefusesTaintedWithoutForce(t *testing.T) {
+	userDir := t.TempDir()
+	frontmatter := "name: tainted\n" +
+		"description: an untrusted skill\n" +
+		"odek:\n" +
+		"  provenance:\n" +
+		"    untrusted: true\n" +
+		"    needs_review: true\n" +
+		"    sources: browser\n"
+	writeTestSkill(t, userDir, "tainted", frontmatter, "# body\n")
+
+	err := promoteSkill(userDir, "tainted", false)
+	if err == nil {
+		t.Fatal("expected refusal for tainted skill without --force")
+	}
+	if !strings.Contains(err.Error(), "refusing to promote tainted skill") {
+		t.Errorf("error = %v, want refusal message", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(userDir, "tainted", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read after refusal: %v", err)
+	}
+	if !strings.Contains(string(data), "needs_review: true") {
+		t.Errorf("tainted skill should remain needs_review after refused promotion, got:\n%s", data)
+	}
+}
+
+func TestPromoteSkill_AlreadyPromotedWithSourcesIsNoop(t *testing.T) {
+	userDir := t.TempDir()
+	frontmatter := "name: promoted\n" +
+		"description: already promoted\n" +
+		"odek:\n" +
+		"  provenance:\n" +
+		"    sources: browser\n"
+	writeTestSkill(t, userDir, "promoted", frontmatter, "# body\n")
+
+	// NeedsReview=false means the skill is already trusted; re-promoting
+	// should be a no-op even though Sources is preserved for audit.
+	if err := promoteSkill(userDir, "promoted", false); err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(userDir, "promoted", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read after promote: %v", err)
+	}
+	if !strings.Contains(string(data), "sources: browser") {
+		t.Errorf("sources audit trail should be preserved, got:\n%s", data)
+	}
+}
+
+func TestPromoteSkill_ForcePromotesTainted(t *testing.T) {
+	userDir := t.TempDir()
+	frontmatter := "name: tainted\n" +
 		"description: an untrusted skill\n" +
 		"odek:\n" +
 		"  provenance:\n" +
 		"    untrusted: true\n" +
 		"    needs_review: true\n" +
 		"    sources: https://example.com\n"
-	writeTestSkill(t, userDir, "review-me", frontmatter, "# body\n")
+	writeTestSkill(t, userDir, "tainted", frontmatter, "# body\n")
 
-	if err := promoteSkill(userDir, "review-me"); err != nil {
-		t.Fatalf("promote: %v", err)
+	if err := promoteSkill(userDir, "tainted", true); err != nil {
+		t.Fatalf("promote --force: %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(userDir, "review-me", "SKILL.md"))
+	data, err := os.ReadFile(filepath.Join(userDir, "tainted", "SKILL.md"))
 	if err != nil {
 		t.Fatalf("read after promote: %v", err)
 	}

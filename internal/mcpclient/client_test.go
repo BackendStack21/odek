@@ -1,9 +1,11 @@
 package mcpclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -163,6 +165,93 @@ func TestClose_Idempotent(t *testing.T) {
 	}
 	if err := client.Close(); err != nil {
 		t.Errorf("second Close: %v", err)
+	}
+}
+
+func TestReadLoop_OversizedResponse(t *testing.T) {
+	dir := t.TempDir()
+	hugePath := filepath.Join(dir, "huge.txt")
+	scriptPath := filepath.Join(dir, "print.sh")
+
+	// One line that exceeds the 10 MiB cap, followed by a newline, so the
+	// scanner sees a single oversized token.
+	data := bytes.Repeat([]byte{'x'}, maxMCPResponseLine+1)
+	data = append(data, '\n')
+	if err := os.WriteFile(hugePath, data, 0644); err != nil {
+		t.Fatalf("write huge file: %v", err)
+	}
+	script := "#!/bin/sh\ncat \"" + hugePath + "\"\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	client, err := New("oversized", ServerConfig{
+		Command: "sh",
+		Args:    []string{scriptPath},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer client.Close()
+
+	_, err = client.Discover(context.Background())
+	if err == nil {
+		t.Fatal("expected error for oversized response")
+	}
+	if !strings.Contains(err.Error(), "response line exceeded") {
+		t.Errorf("error = %v, want oversized response error", err)
+	}
+}
+
+func TestValidateToolName(t *testing.T) {
+	tests := []struct {
+		name    string
+		wantErr bool
+	}{
+		{"fetch", false},
+		{"db_query", false},
+		{"read-file", false},
+		{"tool_1", false},
+		{"", true},
+		{"read file", true},
+		{"read/file", true},
+		{"read\\file", true},
+		{"read.file", true},
+		{"tool;rm", true},
+		{"a" + strings.Repeat("a", 64), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateToolName(tt.name)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("validateToolName(%q) expected error", tt.name)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("validateToolName(%q) = %v, want nil", tt.name, err)
+			}
+		})
+	}
+}
+
+func TestDiscover_InvalidToolName(t *testing.T) {
+	client, err := New("invalid", ServerConfig{
+		Command: fakeServerPath(t),
+		Env:     map[string]string{"FAKE_TOOLS": `[{"name":"read file","description":"bad name"}]`},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer client.Close()
+
+	_, err = client.Discover(context.Background())
+	if err == nil {
+		t.Fatal("expected error for invalid tool name")
+	}
+	if !strings.Contains(err.Error(), "invalid character") {
+		t.Errorf("error = %v, want invalid character", err)
 	}
 }
 

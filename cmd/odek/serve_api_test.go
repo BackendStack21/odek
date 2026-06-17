@@ -12,11 +12,14 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/resource"
 	"github.com/BackendStack21/odek/internal/session"
 	golangws "golang.org/x/net/websocket"
 )
@@ -742,4 +745,35 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// TestHandleResourceSearch_LimitCapped verifies that the `limit` query parameter
+// is capped server-side, preventing a huge value from forcing an unbounded
+// directory walk and a giant JSON response.
+func TestHandleResourceSearch_LimitCapped(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 105; i++ {
+		name := fmt.Sprintf("file%03d.go", i)
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("package x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reg := resource.NewRegistry(resource.NewFileResolver(dir))
+	handler := handleResourceSearch(reg)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/resources?q=file&limit=500", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var results []resource.Resource
+	if err := json.NewDecoder(w.Body).Decode(&results); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(results) != 100 {
+		t.Errorf("expected results capped to 100, got %d", len(results))
+	}
 }

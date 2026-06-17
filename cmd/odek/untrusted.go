@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/loop"
 )
 
 // warnSandboxDisabled emits a one-time stderr notice that the agent is
@@ -41,36 +43,12 @@ func warnSandboxDisabled() {
 // is unambiguous to the model. The `source` attribute records the
 // provenance (URL or path) so the model can reason about who produced
 // the content.
-// onUntrustedIngest, when set, is invoked from wrapUntrusted for every
-// piece of externally-sourced content the agent ingests. The recorder
-// is responsible for capturing source + content-hash into the per-
-// session audit log; it is set by main / serve at session start and
-// reset at session end. Reads are mutex-protected so a session-end
-// reset cannot race against an in-flight tool call.
-//
-// We use a callback (rather than passing context through every tool)
-// because wrapUntrusted is invoked deep inside tool implementations
-// that do not know the session ID or turn number — the loop has that
-// context and provides the closure.
-var (
-	ingestMu       sync.RWMutex
-	ingestRecorder func(source, content string)
-)
-
-// SetIngestRecorder sets (or clears with nil) the active ingest
-// recorder. Safe to call concurrently with wrapUntrusted.
-func setIngestRecorder(fn func(source, content string)) {
-	ingestMu.Lock()
-	ingestRecorder = fn
-	ingestMu.Unlock()
-}
-
 // recordIngest is the wrapUntrusted-side hook into the recorder.
-func recordIngest(source, content string) {
-	ingestMu.RLock()
-	fn := ingestRecorder
-	ingestMu.RUnlock()
-	if fn != nil {
+func recordIngest(ctx context.Context, source, content string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if fn := loop.IngestRecorderFrom(ctx); fn != nil {
 		fn(source, content)
 	}
 }
@@ -93,11 +71,11 @@ func recordIngest(source, content string) {
 // substring with a homoglyph-free placeholder; the original characters
 // are not preserved, but for safety-critical content (source URL/path)
 // this is the correct trade-off.
-func wrapUntrusted(source, content string) string {
+func wrapUntrusted(ctx context.Context, source, content string) string {
 	if content == "" {
 		return content
 	}
-	recordIngest(source, content)
+	recordIngest(ctx, source, content)
 	nonce := newWrapperNonce()
 	src := sanitizeWrapperSource(source)
 	body := neutraliseWrapperLiterals(content)
@@ -311,6 +289,7 @@ func wrapMCPDescription(serverName, toolName, desc string) string {
 // for MCP tools — their responses come from third-party servers and
 // must be treated as untrusted input to the model.
 type untrustedToolWrapper struct {
+	ctxTool
 	inner interface {
 		Name() string
 		Description() string
@@ -324,6 +303,7 @@ func (w *untrustedToolWrapper) Name() string        { return w.inner.Name() }
 func (w *untrustedToolWrapper) Description() string { return w.inner.Description() }
 func (w *untrustedToolWrapper) Schema() any         { return w.inner.Schema() }
 func (w *untrustedToolWrapper) Call(args string) (string, error) {
+	ctx := w.toolCtx()
 	out, err := w.inner.Call(args)
 	if err != nil {
 		// A third-party MCP server can return its payload via the error
@@ -333,9 +313,9 @@ func (w *untrustedToolWrapper) Call(args string) (string, error) {
 		// Wrap the error message too — wrapUntrusted also records the
 		// ingest, so an error-channel payload still lands in the audit log.
 		if msg := err.Error(); msg != "" {
-			return out, errors.New(wrapUntrusted(w.source, msg))
+			return out, errors.New(wrapUntrusted(ctx, w.source, msg))
 		}
 		return out, err
 	}
-	return wrapUntrusted(w.source, out), nil
+	return wrapUntrusted(ctx, w.source, out), nil
 }

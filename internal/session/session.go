@@ -306,10 +306,12 @@ func (s *Store) Save(sess *Session) error {
 // read and write gets replaced with a regular file.
 // Also atomically updates the session index with the session's metadata.
 func (s *Store) saveLocked(sess *Session) error {
-	// Redact secrets from all messages before writing to disk.
-	// This is defense-in-depth: the loop engine already redacts tool
+	// Redact secrets from all messages and the task label before writing to
+	// disk. This is defense-in-depth: the loop engine already redacts tool
 	// outputs, but this catches any secrets that slipped through
-	// (e.g. LLM hallucinations, direct API usage).
+	// (e.g. LLM hallucinations, direct API usage, or the first user prompt
+	// stored as the session title).
+	sess.Task = redact.RedactSecrets(sess.Task)
 	for i := range sess.Messages {
 		sess.Messages[i].Content = redact.RedactSecrets(sess.Messages[i].Content)
 		sess.Messages[i].ReasoningContent = redact.RedactSecrets(sess.Messages[i].ReasoningContent)

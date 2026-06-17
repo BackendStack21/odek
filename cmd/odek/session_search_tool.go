@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -16,6 +17,7 @@ import (
 // ═════════════════════════════════════════════════════════════════════════
 
 type sessionSearchTool struct {
+	ctxTool
 	store *session.Store
 }
 
@@ -142,7 +144,7 @@ func (t *sessionSearchTool) handleList(limit int) (string, error) {
 			Count:    0,
 		})
 	}
-	results := toSummaries("session_search:list", sessions)
+	results := toSummaries(t.toolCtx(), "session_search:list", sessions)
 	return jsonResult(sessionSearchResult{
 		Action:   "list",
 		Sessions: results,
@@ -191,7 +193,7 @@ func (t *sessionSearchTool) handleSearch(query string, limit int) (string, error
 				scoreLabel := fmt.Sprintf("(score: %.3f)", vr.Score)
 				results = append(results, sessionSummary{
 					ID:        sess.ID,
-					Task:      wrapUntrusted("session_search:search", sess.Task+" "+scoreLabel),
+					Task:      wrapUntrusted(t.toolCtx(), "session_search:search", sess.Task+" "+scoreLabel),
 					Turns:     sess.Turns,
 					CreatedAt: sess.CreatedAt.UTC().Format(time.RFC3339),
 					UpdatedAt: sess.UpdatedAt.UTC().Format(time.RFC3339),
@@ -254,7 +256,7 @@ func (t *sessionSearchTool) handleSearch(query string, limit int) (string, error
 		}
 		results[i] = sessionSummary{
 			ID:        m.session.ID,
-			Task:      wrapUntrusted("session_search:search", task),
+			Task:      wrapUntrusted(t.toolCtx(), "session_search:search", task),
 			Turns:     m.session.Turns,
 			CreatedAt: m.session.CreatedAt.UTC().Format(time.RFC3339),
 			UpdatedAt: m.session.UpdatedAt.UTC().Format(time.RFC3339),
@@ -379,17 +381,17 @@ func (t *sessionSearchTool) handleGet(id string) (string, error) {
 		sessionMessages = sessionMessages[len(sessionMessages)-maxSessionGetMessages:]
 	}
 	for i := range sessionMessages {
-		sessionMessages[i].Content = wrapUntrusted("session_search:"+sess.ID, sessionMessages[i].Content)
+		sessionMessages[i].Content = wrapUntrusted(t.toolCtx(), "session_search:"+sess.ID, sessionMessages[i].Content)
 	}
 	msgCount := len(sessionMessages)
 	wrappedBuffer := make([]string, len(sess.Buffer))
 	for i, b := range sess.Buffer {
-		wrappedBuffer[i] = wrapUntrusted("session_search:get:buffer", b)
+		wrappedBuffer[i] = wrapUntrusted(t.toolCtx(), "session_search:get:buffer", b)
 	}
 	return jsonResult(sessionSearchResult{
 		Action:          "get",
 		ID:              sess.ID,
-		Task:            wrapUntrusted("session_search:get", sess.Task),
+		Task:            wrapUntrusted(t.toolCtx(), "session_search:get", sess.Task),
 		Turns:           sess.Turns,
 		CreatedAt:       sess.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt:       sess.UpdatedAt.UTC().Format(time.RFC3339),
@@ -431,7 +433,7 @@ func (t *sessionSearchTool) handleFind(query string, limit int) (string, error) 
 
 	return jsonResult(sessionSearchResult{
 		Action:   "find",
-		Sessions: toSummaries("session_search:find", matched),
+		Sessions: toSummaries(t.toolCtx(), "session_search:find", matched),
 		Count:    len(matched),
 	})
 }
@@ -454,12 +456,12 @@ func matchTokens(tokens []string, text string) int {
 }
 
 // toSummaries converts session.Session slices to sessionSummary (metadata only).
-func toSummaries(source string, sessions []session.Session) []sessionSummary {
+func toSummaries(ctx context.Context, source string, sessions []session.Session) []sessionSummary {
 	results := make([]sessionSummary, len(sessions))
 	for i, s := range sessions {
 		results[i] = sessionSummary{
 			ID:        s.ID,
-			Task:      wrapUntrusted(source, s.Task),
+			Task:      wrapUntrusted(ctx, source, s.Task),
 			Turns:     s.Turns,
 			CreatedAt: s.CreatedAt.UTC().Format(time.RFC3339),
 			UpdatedAt: s.UpdatedAt.UTC().Format(time.RFC3339),
