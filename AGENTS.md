@@ -12,6 +12,7 @@ It provides context about the project's architecture, conventions, and how to up
 - **Binary:** `odek` — single static binary, ~12 MB, instant startup.
 - **Config:** Five-layer priority: `~/.odek/secrets.env` → `~/.odek/config.json` → `./odek.json` → `ODEK_*` env vars → CLI flags.
 - **Benchmark:** AIEB v2.0 — 80.3% (highest published agent score on the Autonomous Intelligence Engineering Benchmark).
+- **Releases:** see [GitHub Releases](https://github.com/BackendStack21/odek/releases) for the current version and changelog.
 
 ## Source Layout
 
@@ -19,47 +20,61 @@ It provides context about the project's architecture, conventions, and how to up
 odek.go                       Public API (Config, New, Run, Close, ModelProfile, KnownProfiles, Tool interface)
 cmd/odek/
   main.go                     CLI entry point, flag parsing, commands, sandbox setup, system prompt
+  dispatch.go                 CLI subcommand dispatch
   shell.go                    Built-in shell tool (local or docker exec; danger-gated)
   serve.go                    Web UI server (HTTP + WebSocket; @-resource completion)
   repl.go                     Interactive REPL with multi-turn session support
   repl_editor.go              Terminal raw-mode input editor
   telegram.go                 Telegram bot command — wires odek agent into Telegram poller
-  subagent.go                 Sub-agent command (--goal, --context, --task)
+  subagent.go                 Sub-agent command (--goal, --context, --task) + flag parsing/limits
   subagent_tool.go            delegate_tasks built-in tool (sub-agent spawning)
+  subagent_key.go             FD-based API key handoff (parent → sub-agent, never via env)
   browser_tool.go             Built-in browser tool (HTTP fetch + headless navigation)
   file_tool.go                Built-in file tools (read_file, write_file, search_files, patch, batch_read, glob, file_info)
   perf_tools.go               Performance/parallelism tools (batch_patch, parallel_shell, http_batch, math_eval, diff, count_lines, multi_grep, json_query, tree, checksum, sort, head_tail, base64, tr, word_count)
   mcp.go                      MCP server implementation (stdio + SSE transport)
+  mcp_approval.go             Per-tool MCP server approval UI and persistence
   transcribe_tool.go          Whisper.cpp audio transcription
+  vision_tool.go              Vision / image-input tool
+  web_search_tool.go          Web search tool
   session_search_tool.go      Session search tool
   wsapprover.go               WebSocket interactive approval relay (with friction + class-trust gates)
   refs.go                     @-resource reference resolution (files, sessions)
   untrusted.go                <untrusted_content_<nonce>> wrapper + per-call ingest recorder
   audit.go                    Per-turn audit + `odek audit` subcommand (divergence heuristic)
-  subagent_key.go             FD-based API key handoff (parent → sub-agent, never via env)
+  sandbox_file.go             Sandbox-aware file-tool bridge
+  ssrf_guard.go               URL / SSRF validation helpers
   skill_promote.go            `odek skill promote` — clear NeedsReview on a tainted skill
+  schedule.go                 `odek schedule` command and scheduler wiring
+  memory_cmd.go               `odek memory` command
+  parallel.go                 Parallelism helpers
+  toolctx.go                  Tool-call context plumbing
   security_report_validation_test.go  Regression bar for every documented mitigation
-  *_test.go                   200+ unit + E2E tests covering all tools
+  *_test.go                   250+ unit + E2E tests covering all tools
 internal/
   llm/                        OpenAI-compatible HTTP client with reasoning_content support
   loop/                       ReAct engine: observe → think → parallel-act → repeat. signal.go — SignalEvent observability (context_trimmed, tool_recovery).
   tool/                       Thread-safe tool registry, clarify.go, send_message.go
-  danger/                     Command/URL classification + bypass-resistant tokenizer (substitution, $IFS, wrappers, basenames). TTYApprover with friction mode.
+  danger/                     Command/URL classification + bypass-resistant tokenizer. TTYApprover with friction mode.
   auth/                       Interactive approval system
-  memory/                     MemoryManager (facts, buffer, episodes, merge, scan). EpisodeProvenance — tainted episodes never auto-replayed. notifier.go — MemoryEvent lifecycle observability (fact/episode events fan out to terminal/WebUI/Telegram/programmatic handler).
+  memory/                     MemoryManager (facts, buffer, episodes, merge, scan). EpisodeProvenance — tainted episodes never auto-replayed.
   session/                    Session store (CRUD, trim, cleanup, compact JSON). AuditStore + divergence heuristic.
-  skills/                     Skill system (types, loader, triggers, self-improve, curator, import, cache). SkillProvenance gate — NeedsReview skills pinned to Lazy.
+  skills/                     Skill system (types, loader, triggers, self-improve, curator, import, cache). SkillProvenance gate.
   config/                     Config file loading, env vars, secrets.env, priority merge
-  telegram/                   Telegram bot: bot.go, poller.go, handler.go, commands.go, session.go
+  telegram/                   Telegram bot: bot.go, poller.go, handler.go, commands.go, session.go, health.go, plan.go, media_path.go
   render/                     Terminal output and narrator support
   narrate/                    LLM-powered emoji-rich progress messages
-  redact/                     Secret redaction (13-pattern scanner)
+  redact/                     Secret redaction (20+ patterns)
   mcp/                        MCP server handler (tools/list, tools/call, SSE streaming)
   mcpclient/                  MCP client (connect to external MCP servers)
   sandbox/                    Docker sandbox lifecycle
+  flock/                      Advisory file-locking helpers
+  fsatomic/                   Atomic file-write helpers
+  pathutil/                   Path helpers
+  resource/                   @-resource resolver (files, sessions) with size/symlink hardening
   transport/                  Shared HTTP transport with connection pooling
   ws/                         RFC 6455 WebSocket framing
-docs/                         Documentation (CLI, API, CONFIG, MCP, MEMORY, TELEGRAM, etc.)
+docs/                         Documentation (CLI, API, CONFIG, MCP, MEMORY, TELEGRAM, SECURITY, etc.)
 benchmark/                    AIEB v2.0 benchmark suite (9 tasks, 4 tiers, automated scoring)
 ```
 
@@ -68,21 +83,22 @@ benchmark/                    AIEB v2.0 benchmark suite (9 tasks, 4 tiers, autom
 ### Agent Loop (`internal/loop/loop.go`)
 ReAct cycle: observe → think → act → repeat.
 - LLM returns tool calls or a final answer.
-- **Parallel tool execution** — multiple independent tool calls run concurrently (max_tool_parallel, default: 4).
+- **Parallel tool execution** — multiple independent tool calls run concurrently (`max_tool_parallel`, default: 4).
 - **Batch approval gate** — multiple risky tools shown at once in a single prompt.
-- **Tool-failure recovery** (v0.53.0) — systematic recovery from tool call failures: retry transient errors, skip permanently failed tools, and continue the loop without crashing.
-- **Context-limit protection** (v0.55.0) — trimToSurvival drops oldest messages when approaching the model's context window, keeping the agent functional under extended sessions. Fixed ordering bug in v0.56.2 (tool messages now stay grouped with their parent assistant message).
+- **Tool-failure recovery** — systematic recovery from tool call failures: retry transient errors, skip permanently failed tools, and continue the loop without crashing.
+- **Context-limit protection** — `trimToSurvival` drops oldest messages when approaching the model's context window, keeping the agent functional under extended sessions. Tool messages stay grouped with their parent assistant message.
 - **Interaction modes** — engaging (narrated), enhance (persistent), verbose (raw), off.
 - Max 300 iterations by default.
-- **Post-response async processing** (v0.56.0) — skill learning and episode extraction run in background goroutines, eliminating the 2-5 second hang after every `odek run`.
-- **Artifact-aware file search** (v0.57.0) — `search_files` and `multi_grep` skip build/artifact directories (`node_modules`, `vendor`, `.git`, `__pycache__`, `.venv`, etc.) automatically, reducing noise and speeding scans.
-- **Semantic session search** (v0.58.0) — the `session_search` tool uses go-vector RandomProjections + k-NN for semantic similarity search through session content. Finds relevant past conversations even when keywords don't match. Features a two-tier pipeline: vector index (fast, ~1ms) → deepSearch fallback (exhaustive, slower).
+- **Post-response async processing** — skill learning and episode extraction run in background goroutines, eliminating the hang after every `odek run`.
+- **Artifact-aware file search** — `search_files` and `multi_grep` skip build/artifact directories (`node_modules`, `vendor`, `.git`, `__pycache__`, `.venv`, etc.) automatically, reducing noise and speeding scans.
+- **Semantic session search** — the `session_search` tool uses go-vector RandomProjections + k-NN for semantic similarity search through session content, with a two-tier pipeline: vector index (fast, ~1ms) → deepSearch fallback (exhaustive, slower).
+- **Security-first defaults** — the latest hardening closes the high/medium/low findings tracked in `sec_findings.md`: default `non_interactive` is `deny`, project-level `odek.json` cannot redirect backends or hijack delivery, `~/.odek` trust anchors are protected, WebSocket upgrades require a per-instance CSRF token, and all untrusted content is wrapped before reaching the model. See Security Architecture below for the full list.
 
 ### Tools
 All built-in tools with zero subprocess forks: batch_read, batch_patch, parallel_shell, http_batch, math_eval, diff, count_lines, multi_grep, json_query, tree, checksum, sort, head_tail, base64, tr, word_count, transcribe, browser, read_file, write_file, search_files, patch, shell, delegate_tasks, session_search.
 
 ### Terminal Rendering (`internal/render/`)
-v0.56.2: Vertical space compression — `Start()` is now a no-op; blank lines removed from Iteration/FinalAnswer/Summary. Raw-mode cursor uses `\r\n` instead of bare `\n` for cross-platform compatibility.
+Vertical space compression — `Start()` is a no-op; blank lines removed from Iteration/FinalAnswer/Summary. Raw-mode cursor uses `\r\n` instead of bare `\n` for cross-platform compatibility.
 
 ### Identity
 System prompt is loaded by priority: `--system` flag > `~/.odek/IDENTITY.md` > compiled-in defaultSystem. The default is a concise identity focused on TDD workflow, tool discipline, and safety rules.
@@ -159,6 +175,10 @@ Layered prompt-injection / approval-fatigue defenses. Full reference: [docs/SECU
 - **`env` / `printenv` environment-dump gate** (`internal/danger/classifier.go`) — bare `env` and `printenv` invocations are classified as `system_write` because they can leak process-environment secrets that the redaction scanner does not recognise. `env VAR=value <cmd>` still classifies `<cmd>` normally.
 - **Web UI attachment wrapping** (`cmd/odek/serve.go` + `cmd/odek/ui/app.js`) — files attached through the browser are sent separately from the user's text and wrapped with the nonce'd `<untrusted_content_*>` boundary (`source="attachment:<filename>"`) before injection into the prompt.
 - **Episode index session ID validation** (`internal/memory/episode_index.go` + `internal/session/session.go`) — `readAllSummaries` treats `index.json` as untrusted input and validates every `session_id` with `session.ValidateSessionID` before building the `filepath.Join(dir, sessionID+".md")` path. Invalid / traversal / separator-containing IDs are skipped with a warning, preventing a tampered episode index from pulling arbitrary files (e.g. `~/.odek/config.json`, `IDENTITY.md`) into the embedding space.
+- **Telegram health bind warning** (`internal/telegram/health.go`) — warns when the health server binds to a non-loopback address, so operators notice accidental network exposure.
+- **Web UI prompt/model validation** (`cmd/odek/serve.go`) — server-side cap on WebSocket prompt size (1 MiB) and validation of model ID length/characters, preventing oversized or unusual payloads from reaching the LLM.
+- **Sub-agent runaway limits** (`cmd/odek/subagent.go`) — `--timeout` is capped at 3600s and `--max-iter` at 100, so a single `odek subagent` invocation cannot run indefinitely.
+- **Secrets.env permission gate** (`internal/config/loader.go`) — refuses to load `~/.odek/secrets.env` when it is group/world-readable, preventing local users from reading API keys injected into the environment.
 - **Secret redaction** (`internal/redact/redact.go`) — 20+ patterns: OpenAI, Anthropic, GitHub PAT, AWS, PEM, JWT, Vault, Google OAuth, SendGrid, Discord, DB URLs, etc.
 
 ### Platform Support
@@ -183,4 +203,4 @@ ODEK_E2E=true go test -v -count=1 ./cmd/odek/ -run "TestMCPE2E_"
 go test -v -count=1 ./cmd/odek/ -run "TestSandbox"
 ```
 
-Note: MCP client E2E tests build the fakeserver from `internal/mcpclient/testdata/main.go` at test time (no pre-compiled binary). Cross-platform test fixes in v0.56.2: macOS temp dirs classified correctly (LocalWrite not SystemWrite), Docker availability check now verifies daemon reachability.
+Note: MCP client E2E tests build the fakeserver from `internal/mcpclient/testdata/main.go` at test time (no pre-compiled binary). macOS temp dirs are classified as `LocalWrite` (not `SystemWrite`), and the Docker availability check verifies daemon reachability before running sandbox tests.
