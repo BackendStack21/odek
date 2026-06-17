@@ -1598,6 +1598,16 @@ func loadSecretsEnv() {
 	}
 	defer f.Close()
 
+	// Refuse to load secrets from a file that is readable by anyone other than
+	// the owner. A world/group-readable secrets.env leaks API keys and tokens
+	// to other local users (finding #78).
+	if info, err := f.Stat(); err == nil {
+		if perm := info.Mode().Perm(); perm&0077 != 0 {
+			fmt.Fprintf(os.Stderr, "odek: WARNING: %s is group/world-readable (%04o); refusing to load secrets\n", path, perm)
+			return
+		}
+	}
+
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())

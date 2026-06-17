@@ -2234,3 +2234,115 @@ func TestServe_CSRF_TokenRequired(t *testing.T) {
 	conn = dialTestWS(t, addr)
 	conn.Close()
 }
+
+// TestServe_E2E_PromptSizeCap verifies that prompts above maxPromptBytes are
+// rejected server-side before they are stored in the session or forwarded to
+// the LLM (finding #69).
+func TestServe_E2E_PromptSizeCap(t *testing.T) {
+	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/models") {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{}})
+			return
+		}
+		t.Error("LLM must not be called for an oversized prompt")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer llmSrv.Close()
+
+	envCleanup := setTestEnv(t, llmSrv.URL)
+	defer envCleanup()
+
+	store := newTestSessionStore(t)
+	ln, mux := buildServeMux(t, store)
+	defer ln.Close()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- serveOnListener(ln, mux) }()
+	waitForHTTP(t, ln.Addr().String())
+
+	conn := dialTestWS(t, ln.Addr().String())
+	defer conn.Close()
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+
+	msg := map[string]any{
+		"type":    "prompt",
+		"content": strings.Repeat("x", maxPromptBytes+1),
+	}
+	payload, _ := json.Marshal(msg)
+	if err := golangws.Message.Send(conn, string(payload)); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	var raw []byte
+	if err := golangws.Message.Receive(conn, &raw); err != nil {
+		t.Fatalf("expected error event, got receive error: %v", err)
+	}
+	var evt map[string]any
+	if err := json.Unmarshal(raw, &evt); err != nil {
+		t.Fatalf("unmarshal event: %v", err)
+	}
+	if evt["type"] != "error" {
+		t.Fatalf("expected error event for oversized prompt, got %v", evt["type"])
+	}
+}
+
+// TestServe_E2E_InvalidModelIDRejected verifies that model IDs from the Web UI
+// are length- and character-validated before use (finding #81).
+func TestServe_E2E_InvalidModelIDRejected(t *testing.T) {
+	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/models") {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{}})
+			return
+		}
+		t.Error("LLM must not be called for an invalid model ID")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer llmSrv.Close()
+
+	envCleanup := setTestEnv(t, llmSrv.URL)
+	defer envCleanup()
+
+	store := newTestSessionStore(t)
+	ln, mux := buildServeMux(t, store)
+	defer ln.Close()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- serveOnListener(ln, mux) }()
+	waitForHTTP(t, ln.Addr().String())
+
+	conn := dialTestWS(t, ln.Addr().String())
+	defer conn.Close()
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+
+	cases := []string{
+		strings.Repeat("x", maxModelIDBytes+1),
+		"model\nwith-newline",
+		"model\x00with-null",
+		"model<script>",
+	}
+	for _, model := range cases {
+		msg := map[string]any{
+			"type":    "prompt",
+			"content": "hello",
+			"model":   model,
+		}
+		payload, _ := json.Marshal(msg)
+		if err := golangws.Message.Send(conn, string(payload)); err != nil {
+			t.Fatalf("Send: %v", err)
+		}
+
+		var raw []byte
+		if err := golangws.Message.Receive(conn, &raw); err != nil {
+			t.Fatalf("expected error event, got receive error: %v", err)
+		}
+		var evt map[string]any
+		if err := json.Unmarshal(raw, &evt); err != nil {
+			t.Fatalf("unmarshal event: %v", err)
+		}
+		if evt["type"] != "error" {
+			t.Fatalf("expected error event for model %q, got %v", model, evt["type"])
+		}
+	}
+}

@@ -1076,6 +1076,32 @@ func skipIfNoBinary(t *testing.T) {
 	}
 }
 
+// TestParseSubagentFlags_CapsRunawayLimits verifies that --timeout and
+// --max-iter are capped at sensible maximums (finding #79).
+func TestParseSubagentFlags_CapsRunawayLimits(t *testing.T) {
+	cfg, err := parseSubagentFlags([]string{
+		"--goal", "test",
+		"--timeout", "999999",
+		"--max-iter", "99999",
+	})
+	if err != nil {
+		t.Fatalf("parseSubagentFlags error: %v", err)
+	}
+	if cfg.timeout != 3600 {
+		t.Errorf("timeout cap = %d, want 3600", cfg.timeout)
+	}
+	if cfg.maxIter != 100 {
+		t.Errorf("max-iter cap = %d, want 100", cfg.maxIter)
+	}
+}
+
+func TestParseSubagentFlags_UnknownFlag(t *testing.T) {
+	_, err := parseSubagentFlags([]string{"--unknown"})
+	if err == nil {
+		t.Fatal("expected error for unknown flag")
+	}
+}
+
 func isFlagParseError(err error) bool {
 	if err == nil {
 		return false

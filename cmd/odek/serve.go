@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,6 +39,18 @@ var uiFS embed.FS
 // This prevents a local client from exhausting server memory by sending a
 // multi-gigabyte frame.
 const maxWSMessageBytes = 8 * 1024 * 1024 // 8 MiB
+
+// maxPromptBytes caps the size of the user prompt accepted through the Web UI.
+// Combined with the WebSocket frame cap, this prevents a local client from
+// bloating the session file or exhausting the LLM context budget.
+const maxPromptBytes = 1 * 1024 * 1024 // 1 MiB
+
+// maxModelIDBytes caps the length of a model ID supplied by the Web UI.
+const maxModelIDBytes = 128
+
+// modelIDPattern restricts model IDs to printable ASCII characters commonly
+// used by model providers (alphanumeric, punctuation, and path separators).
+var modelIDPattern = regexp.MustCompile(`^[A-Za-z0-9_.:/@-]+$`)
 
 // maxWSConnections caps the number of concurrent WebSocket clients. Once the
 // limit is reached, further upgrade attempts are rejected with HTTP 503. This
@@ -829,6 +842,24 @@ func handlePrompt(
 ) *session.Session {
 	prompt := msg.Content
 	sessionID := msg.SessionID
+
+	// Server-side cap on prompt size (finding #69). A client can already send
+	// up to the WebSocket frame cap; reject anything above a reasonable prompt
+	// limit before storing it in the session or forwarding it to the LLM.
+	if len(prompt) > maxPromptBytes {
+		writeWSError(conn, "prompt exceeds maximum size")
+		return currSess
+	}
+
+	// Server-side validation of model IDs from the UI (finding #81). Model IDs
+	// are passed through to the LLM client and logged; cap length and reject
+	// control / unusual characters to prevent oversized payloads or injection.
+	if msg.Model != "" {
+		if len(msg.Model) > maxModelIDBytes || !modelIDPattern.MatchString(msg.Model) {
+			writeWSError(conn, "invalid model ID")
+			return currSess
+		}
+	}
 
 	// Resolve @ references
 	refs := resource.ParseRefs(prompt)

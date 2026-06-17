@@ -1375,3 +1375,42 @@ func TestLoadFile_CapsSizeViaLimitReader(t *testing.T) {
 		t.Fatalf("loadFile should reject oversized file read via LimitReader, got Model=%q", cfg.Model)
 	}
 }
+
+// TestLoadConfig_SecretsEnvPermissionCheck verifies that secrets.env is only
+// loaded when it is owner-readable (finding #78).
+func TestLoadConfig_SecretsEnvPermissionCheck(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	odekDir := filepath.Join(home, ".odek")
+	if err := os.MkdirAll(odekDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(odekDir, "secrets.env")
+
+	// World/group-readable secrets.env must be ignored.
+	if err := os.WriteFile(path, []byte("ODEK_TEST_SECRET=world-readable\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ODEK_TEST_SECRET", "")
+	LoadConfig(CLIFlags{})
+	if os.Getenv("ODEK_TEST_SECRET") == "world-readable" {
+		t.Error("world-readable secrets.env was loaded")
+	}
+
+	// Owner-only readable secrets.env must be loaded.
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("ODEK_TEST_SECRET=owner-only\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Ensure the file really is 0600 even under a permissive umask.
+	if err := os.Chmod(path, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ODEK_TEST_SECRET", "")
+	LoadConfig(CLIFlags{})
+	if os.Getenv("ODEK_TEST_SECRET") != "owner-only" {
+		t.Errorf("owner-only secrets.env not loaded, got %q", os.Getenv("ODEK_TEST_SECRET"))
+	}
+}

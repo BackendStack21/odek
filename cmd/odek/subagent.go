@@ -174,20 +174,21 @@ func parseSubagentConfig(data string) subagentConfig {
 //	1 = task error (status: "error" with message)
 //	2 = timeout (killed by parent/context)
 //	3 = internal setup error
-func subagentCmd(args []string) error {
-	// Parse flags
-	var cfg struct {
-		goal          string
-		context       string
-		taskFile      string
-		timeout       int
-		maxIter       int
-		quiet         bool
-		stream        bool
-		parentSession string
-	}
+// subagentFlags holds the parsed flags for `odek subagent`.
+type subagentFlags struct {
+	goal          string
+	context       string
+	taskFile      string
+	timeout       int
+	maxIter       int
+	quiet         bool
+	stream        bool
+	parentSession string
+}
 
-	// Simple flag parser (matches existing pattern in parseRunFlags)
+// parseSubagentFlags parses and validates sub-agent CLI flags.
+func parseSubagentFlags(args []string) (subagentFlags, error) {
+	var cfg subagentFlags
 	i := 0
 	for i < len(args) {
 		switch args[i] {
@@ -226,9 +227,32 @@ func subagentCmd(args []string) error {
 				cfg.parentSession = args[i]
 			}
 		default:
-			return fmt.Errorf("unknown flag %q", args[i])
+			return cfg, fmt.Errorf("unknown flag %q", args[i])
 		}
 		i++
+	}
+
+	// Clamp runaway limits (finding #79). Values <= 0 fall through to the
+	// defaults in subagentCmd; explicitly huge values are capped to prevent a
+	// single sub-agent invocation from running forever.
+	const (
+		maxSubagentTimeout = 3600 // 1 hour
+		maxSubagentIter    = 100
+	)
+	if cfg.timeout > maxSubagentTimeout {
+		cfg.timeout = maxSubagentTimeout
+	}
+	if cfg.maxIter > maxSubagentIter {
+		cfg.maxIter = maxSubagentIter
+	}
+
+	return cfg, nil
+}
+
+func subagentCmd(args []string) error {
+	cfg, err := parseSubagentFlags(args)
+	if err != nil {
+		return err
 	}
 
 	// Validate: --goal XOR --task
