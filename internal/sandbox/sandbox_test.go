@@ -297,6 +297,27 @@ func TestInjectFiles_SkipsDirectoryArg(t *testing.T) {
 	}
 }
 
+func TestInjectFiles_SkipsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	outsideFile := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(outsideFile, []byte("secret"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "leak")
+	if err := os.Symlink(outsideFile, link); err != nil {
+		t.Fatal(err)
+	}
+
+	// A symlink inside cwd pointing outside must NOT be injected.
+	n, err := InjectFiles("nonexistent-container", []string{"leak"}, dir)
+	if err != nil {
+		t.Errorf("symlink path should warn-and-skip, got err: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("injected = %d, want 0", n)
+	}
+}
+
 func contains(haystack []string, needle string) bool {
 	for _, s := range haystack {
 		if s == needle {

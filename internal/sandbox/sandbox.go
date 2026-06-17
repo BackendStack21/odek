@@ -291,6 +291,12 @@ func isPathUnder(path, root string) bool {
 // skipped with a stderr warning (not errors), since --ctx is best-effort.
 // Returns an error only when Docker itself fails.
 func InjectFiles(containerName string, files []string, cwd string) (int, error) {
+	absCwd, err := filepath.Abs(cwd)
+	if err != nil {
+		return 0, fmt.Errorf("resolve cwd: %w", err)
+	}
+	absCwd = filepath.Clean(absCwd)
+
 	injected := 0
 	for _, f := range files {
 		f = strings.TrimSpace(f)
@@ -300,13 +306,20 @@ func InjectFiles(containerName string, files []string, cwd string) (int, error) 
 
 		absPath := f
 		if !filepath.IsAbs(absPath) {
-			absPath = filepath.Join(cwd, absPath)
+			absPath = filepath.Join(absCwd, absPath)
 		}
 		absPath = filepath.Clean(absPath)
 
-		info, err := os.Stat(absPath)
+		// Use Lstat (not Stat) so symlinks are not followed. A symlink inside
+		// cwd can point at arbitrary host files; following it would copy the
+		// target into the container and bypass workspace confinement.
+		info, err := os.Lstat(absPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "odek: warning: ctx file %q not found, skipping sandbox injection\n", f)
+			continue
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			fmt.Fprintf(os.Stderr, "odek: warning: ctx file %q is a symlink, skipping sandbox injection\n", f)
 			continue
 		}
 		if info.IsDir() {
@@ -315,8 +328,8 @@ func InjectFiles(containerName string, files []string, cwd string) (int, error) 
 		}
 
 		dest := filepath.Base(absPath)
-		if strings.HasPrefix(absPath, cwd+string(filepath.Separator)) || absPath == cwd {
-			if rel, err := filepath.Rel(cwd, absPath); err == nil {
+		if isPathUnder(absPath, absCwd) {
+			if rel, err := filepath.Rel(absCwd, absPath); err == nil {
 				dest = rel
 			}
 		}
