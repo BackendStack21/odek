@@ -1933,3 +1933,62 @@ func TestApprovalToast_Unknown(t *testing.T) {
 		t.Errorf("expected empty for empty data, got: %q", got)
 	}
 }
+
+func TestHandleUpdate_TextMessageTooLongByUTF16(t *testing.T) {
+	var called bool
+	ts := testServer(t, nil)
+	defer ts.Close()
+	bot := testBot(t, ts)
+	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true
+	h.Config.MaxMsgLength = 9 // one less than 5 emoji × 2 UTF-16 code units
+	h.OnTextMessage = func(_ int64, _ int, _ string, _ bool, _ int64) (string, error) {
+		called = true
+		return "should not fire", nil
+	}
+
+	// "😀" is a supplementary-plane emoji: 4 UTF-8 bytes, 2 UTF-16 code units.
+	upd := Update{
+		ID: 1,
+		Message: &Message{
+			ID:   42,
+			Chat: &Chat{ID: 123},
+			From: &User{ID: 456},
+			Text: strings.Repeat("😀", 5), // 20 bytes, 10 UTF-16 code units
+		},
+	}
+
+	h.HandleUpdate(upd)
+	if called {
+		t.Error("OnTextMessage should not be called when UTF-16 length exceeds limit")
+	}
+}
+
+func TestHandleUpdate_TextMessageUnderLimitByUTF16(t *testing.T) {
+	var called bool
+	ts := testServer(t, nil)
+	defer ts.Close()
+	bot := testBot(t, ts)
+	h := NewHandler(bot)
+	h.Config.AllowAllUsers = true
+	h.Config.MaxMsgLength = 10 // exactly 5 emoji × 2 UTF-16 code units
+	h.OnTextMessage = func(_ int64, _ int, _ string, _ bool, _ int64) (string, error) {
+		called = true
+		return "ok", nil
+	}
+
+	upd := Update{
+		ID: 1,
+		Message: &Message{
+			ID:   42,
+			Chat: &Chat{ID: 123},
+			From: &User{ID: 456},
+			Text: strings.Repeat("😀", 5),
+		},
+	}
+
+	h.HandleUpdate(upd)
+	if !called {
+		t.Error("OnTextMessage should be called when UTF-16 length is within limit")
+	}
+}

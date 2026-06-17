@@ -404,6 +404,28 @@ The agent loop wraps each tool result in a visual delimiter before appending it 
 
 The delimiter now embeds a per-call random hex nonce in both the opening and closing lines (`┌── TOOL RESULT: <name> [<nonce>] ... └── END TOOL RESULT: <name> [<nonce>]`). Because the nonce is generated inside the loop and differs for every tool call, an attacker cannot predict or forge the closing delimiter. This complements the per-call `<untrusted_content_*>` wrapper used for tool outputs that cross the trust boundary.
 
+### 34. `parallel_shell` context cancellation and process-group kill
+
+`cmd/odek/perf_tools.go::runOne` previously built `exec.Command("sh", "-c", ...)` without binding it to the agent context and killed only the direct `sh` process on timeout. Cancellation therefore orphaned any forked children (`sh -c 'sleep 3600 &'`), and the per-command `Timeout` field had no upper bound.
+
+It now uses `exec.CommandContext` with the agent context, runs each command in its own process group (`Setpgid: true`), and kills the entire group on context cancellation or timeout via `syscall.Kill(-pid, SIGKILL)`. A 3-second `WaitDelay` backstop catches any process that outlives the group kill. Per-command timeouts are capped at 30 minutes.
+
+### 35. `batch_patch` trusted-class propagation
+
+`write_file` and `patch` pass their cached `trustedClasses` to `CheckOperation`, but `batch_patch` was passing `nil`. This meant a user who trusted `local_write` for the session still got re-prompted (or denied in non-interactive mode) for every patch in a batch. `batch_patch` now has its own `trustedClasses` field and passes it through, giving consistent approval behavior across the file-editing tools.
+
+### 36. Browser link URL wrapping
+
+`browser` already wrapped page title, content, and interactive-element text as untrusted, but the `URL` field of each `clickableRef` was emitted as a raw JSON string. A hostile page could set `href` to a `javascript:`, `data:`, or attacker-controlled URL containing instruction-like text. The `URL` field is now wrapped as untrusted before serialization. An unexported `rawURL` preserves the original value so internal click resolution continues to work.
+
+### 37. Telegram message length by UTF-16 code units
+
+Telegram's message and caption limits are defined in UTF-16 code units, but `internal/telegram/handler.go` was using `len(msg.Text)` and `len(msg.Caption)`, which count UTF-8 bytes. Emoji and other supplementary-plane characters consume 4 UTF-8 bytes but 2 UTF-16 code units, so emoji-heavy messages could pass the local check and then be rejected by Telegram. The handler now counts UTF-16 code units via `utf16Len`.
+
+### 38. Telegram restart marker permissions
+
+`~/.odek/restart.json` records the chat IDs that had active agent runs across a Telegram bot restart. It was written with world-readable `0644` permissions, allowing any local user to learn which chats/users interact with the bot. It is now written with `0600`.
+
 ### YOLO mode
 
 ```json
@@ -464,6 +486,11 @@ Defaults: `FrictionThreshold=3`, `FrictionWindow=60s`. To opt out (TTYApprover o
 | Concurrent `odek schedule add` processes clobber each other | `fileLock` returns a hard error instead of falling back to no lock |
 | Tampered `schedules.json` replaced with a multi-gigabyte blob | `readJSON` rejects files larger than 10 MiB |
 | Tool / MCP output forges the closing `END TOOL RESULT` delimiter | Per-call nonce embedded in the delimiter makes it unforgeable |
+| `parallel_shell` forks background processes that survive cancellation | Commands run in a process group and the whole group is killed |
+| `batch_patch` re-prompts for each patch despite a trusted `local_write` class | `trustedClasses` is now propagated through `CheckOperation` |
+| Malicious page puts instructions in a link URL | Browser wraps `clickableRef.URL` as untrusted |
+| Emoji-heavy message passes local check but is rejected by Telegram | Length enforced in UTF-16 code units, matching Telegram |
+| Local user reads `~/.odek/restart.json` to enumerate Telegram chats | Marker file written with `0600` |
 
 ---
 

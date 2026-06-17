@@ -891,7 +891,7 @@ func writeRestartMarker(chatIDs []int64) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	return os.WriteFile(path, data, 0600)
 }
 
 // readRestartMarker reads and removes the restart marker. Returns the list

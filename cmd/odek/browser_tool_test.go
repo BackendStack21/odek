@@ -414,3 +414,30 @@ func TestBrowser_Navigate_BadJSON(t *testing.T) {
 		t.Fatal("expected error for bad JSON types")
 	}
 }
+
+func TestBrowser_WrapsLinkURL(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`<html><body><a href="/page2">Page 2</a></body></html>`))
+	}))
+	defer ts.Close()
+
+	b := &browserTool{}
+	result := callJSON(t, b, `{"action":"navigate","url":"`+ts.URL+`"}`)
+
+	var r struct {
+		Elements []struct {
+			Type string `json:"type"`
+			URL  string `json:"url"`
+		} `json:"elements"`
+	}
+	mustUnmarshal(t, result, &r)
+	if len(r.Elements) != 1 {
+		t.Fatalf("expected 1 element, got %d", len(r.Elements))
+	}
+	if r.Elements[0].Type != "link" {
+		t.Fatalf("expected link element, got %q", r.Elements[0].Type)
+	}
+	if !strings.Contains(r.Elements[0].URL, "<untrusted_content_") {
+		t.Errorf("link URL should be wrapped as untrusted, got %q", r.Elements[0].URL)
+	}
+}

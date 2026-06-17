@@ -31,10 +31,11 @@ var (
 
 // clickableRef represents an interactive element extracted from the page.
 type clickableRef struct {
-	Ref  string `json:"ref"`
-	Type string `json:"type"` // "link", "button", "submit"
-	Text string `json:"text"`
-	URL  string `json:"url,omitempty"` // for links
+	Ref    string `json:"ref"`
+	Type   string `json:"type"` // "link", "button", "submit"
+	Text   string `json:"text"`
+	URL    string `json:"url,omitempty"`     // wrapped URL for JSON output
+	rawURL string `json:"-"`                 // unwrapped URL for internal click resolution
 }
 
 // browserSnapshot holds the structured view of a loaded page.
@@ -307,9 +308,14 @@ func (t *browserTool) doClick(ref string) (string, error) {
 	}
 
 	if target.Type == "link" {
-		// Resolve relative URLs
+		// Resolve relative URLs using the unwrapped URL; fall back to the
+		// (wrapped) URL field if no raw URL is available.
 		baseURL := current.URL
-		targetURL := resolveURL(target.URL, baseURL)
+		u := target.rawURL
+		if u == "" {
+			u = target.URL
+		}
+		targetURL := resolveURL(u, baseURL)
 		return t.doNavigate(targetURL)
 	}
 
@@ -403,10 +409,11 @@ func parseHTML(ctx context.Context, html, pageURL string, status int) browserSna
 		ref := fmt.Sprintf("e%d", refCounter)
 		refCounter++
 		elements = append(elements, clickableRef{
-			Ref:  ref,
-			Type: "link",
-			Text: text,
-			URL:  href,
+			Ref:    ref,
+			Type:   "link",
+			Text:   text,
+			URL:    href,
+			rawURL: href,
 		})
 		contentParts = append(contentParts, fmt.Sprintf("[%s] %s → %s", ref, text, href))
 	}
@@ -457,11 +464,17 @@ func parseHTML(ctx context.Context, html, pageURL string, status int) browserSna
 	snap.Content = strings.Join(contentParts, "\n")
 	snap.Elements = elements
 
-	// Title and element text come from the page — wrap them as untrusted content.
+	// Title, element text, and link URLs come from the page — wrap them as
+	// untrusted content so a hostile `href` cannot inject instructions.
 	snap.Title = wrapUntrusted(ctx, pageURL, snap.Title)
 	for i := range snap.Elements {
 		snap.Elements[i].Text = wrapUntrusted(ctx, pageURL, snap.Elements[i].Text)
+		if snap.Elements[i].Type == "link" && snap.Elements[i].URL != "" {
+			snap.Elements[i].URL = wrapUntrusted(ctx, pageURL, snap.Elements[i].URL)
+		}
 	}
+	// Keep the raw page URL itself unwrapped for internal navigation; it is
+	// wrapped at the result-output boundary in doNavigate/doSnapshot.
 
 	return snap
 }

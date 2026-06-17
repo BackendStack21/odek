@@ -6,6 +6,20 @@ import (
 	"sync"
 )
 
+// utf16Len returns the number of UTF-16 code units in s, which is what
+// Telegram uses for its message/caption length limits.
+func utf16Len(s string) int {
+	n := 0
+	for _, r := range s {
+		if r <= 0xFFFF {
+			n++
+		} else {
+			n += 2
+		}
+	}
+	return n
+}
+
 // ─── Config ────────────────────────────────────────────────────────────────
 
 // HandlerConfig controls which messages the Handler processes.
@@ -234,14 +248,15 @@ func (h *Handler) handleMessage(msg *Message) {
 	}
 
 	// Enforce the configured maximum message length on text and captions.
-	// Oversized input can flood context, tokens, and session storage.
+	// Telegram's limit is UTF-16 code units, not bytes, so emoji and other
+	// supplementary-plane characters count as 2.
 	if h.Config.MaxMsgLength > 0 {
-		if len(msg.Text) > h.Config.MaxMsgLength {
-			h.SendResponse(msg.Chat.ID, fmt.Sprintf("❌ Message is too long (%d > %d characters). Please split or shorten it.", len(msg.Text), h.Config.MaxMsgLength), msg.ID)
+		if n := utf16Len(msg.Text); n > h.Config.MaxMsgLength {
+			h.SendResponse(msg.Chat.ID, fmt.Sprintf("❌ Message is too long (%d > %d characters). Please split or shorten it.", n, h.Config.MaxMsgLength), msg.ID)
 			return
 		}
-		if len(msg.Caption) > h.Config.MaxMsgLength {
-			h.SendResponse(msg.Chat.ID, fmt.Sprintf("❌ Caption is too long (%d > %d characters). Please shorten it.", len(msg.Caption), h.Config.MaxMsgLength), msg.ID)
+		if n := utf16Len(msg.Caption); n > h.Config.MaxMsgLength {
+			h.SendResponse(msg.Chat.ID, fmt.Sprintf("❌ Caption is too long (%d > %d characters). Please shorten it.", n, h.Config.MaxMsgLength), msg.ID)
 			return
 		}
 	}

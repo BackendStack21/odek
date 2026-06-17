@@ -81,7 +81,8 @@ const maxBatchPatches = 10
 type batchPatchTool struct {
 	ctxTool
 	dangerousConfig danger.DangerousConfig
-	restrictToCWD   bool // when true, reject paths escaping the working directory
+	trustedClasses  map[danger.RiskClass]bool // cached user-approved risk classes
+	restrictToCWD   bool                      // when true, reject paths escaping the working directory
 	// containerName, when set, routes writes through the sandbox container so
 	// that read-only workspace mounts are enforced.
 	containerName string
@@ -182,7 +183,7 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 
 		if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
 			Name: "batch_patch", Resource: p.Path, Risk: danger.ClassifyPath(p.Path),
-		}, nil); err != nil {
+		}, t.trustedClasses); err != nil {
 			entry.Error = err.Error()
 			results[idx] = entry
 			continue
@@ -468,21 +469,36 @@ func (t *parallelShellTool) promptCommand(cls danger.RiskClass, cmd, description
 	return err
 }
 
+// maxParallelShellTimeout is the absolute upper bound for a single
+// parallel_shell command. Callers can request less, but never more.
+const maxParallelShellTimeout = 30 * time.Minute
+
 // runOne executes a single pre-approved command with a per-command timeout.
+// It binds to the agent context, runs the command in its own process group,
+// and kills the whole group on cancellation or timeout so forked children
+// cannot outlive the command.
 func (t *parallelShellTool) runOne(cmd parallelShellCmd) parallelShellEntry {
-	timeout := cmd.Timeout
-	if timeout <= 0 {
-		timeout = 30
+	timeoutSec := cmd.Timeout
+	if timeoutSec <= 0 {
+		timeoutSec = 30
 	}
+	if timeoutSec > int(maxParallelShellTimeout.Seconds()) {
+		timeoutSec = int(maxParallelShellTimeout.Seconds())
+	}
+	timeout := time.Duration(timeoutSec) * time.Second
 
 	start := time.Now()
 	entry := parallelShellEntry{Command: cmd.Command}
 
+	base := t.toolCtx()
+	ctx, cancel := context.WithTimeout(base, timeout)
+	defer cancel()
+
 	var shCmd *exec.Cmd
 	if t.containerName != "" {
-		shCmd = exec.Command("docker", "exec", "-w", "/workspace", t.containerName, "sh", "-c", cmd.Command)
+		shCmd = exec.CommandContext(ctx, "docker", "exec", "-w", "/workspace", t.containerName, "sh", "-c", cmd.Command)
 	} else {
-		shCmd = exec.Command("sh", "-c", cmd.Command)
+		shCmd = exec.CommandContext(ctx, "sh", "-c", cmd.Command)
 	}
 	var stdout, stderr bytes.Buffer
 	outW := &limitWriter{buf: &stdout, limit: maxShellOutputBytes}
@@ -490,37 +506,32 @@ func (t *parallelShellTool) runOne(cmd parallelShellCmd) parallelShellEntry {
 	shCmd.Stdout = outW
 	shCmd.Stderr = errW
 
-	// Kill on timeout via goroutine, with mutex to avoid Process race
-	var procMu sync.Mutex
-	done := make(chan error, 1)
-	go func() {
-		err := shCmd.Run()
-		procMu.Lock()
-		done <- err
-		procMu.Unlock()
-	}()
-
-	select {
-	case err := <-done:
-		entry.Stdout = strings.TrimSpace(stdout.String())
-		entry.Stderr = strings.TrimSpace(stderr.String())
-		entry.DurationMs = time.Since(start).Milliseconds()
-
-		if err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				entry.ExitCode = exitErr.ExitCode()
-			} else {
-				entry.Error = err.Error()
-			}
-		}
-	case <-time.After(time.Duration(timeout) * time.Second):
-		procMu.Lock()
+	// Run in a new process group so a forked child (e.g. `sh -c "sleep 3600 &"`)
+	// is killed along with the shell leader when the context is cancelled.
+	shCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	shCmd.Cancel = func() error {
 		if shCmd.Process != nil {
-			shCmd.Process.Kill()
+			_ = syscall.Kill(-shCmd.Process.Pid, syscall.SIGKILL)
 		}
-		procMu.Unlock()
-		entry.Error = fmt.Sprintf("timeout after %ds", timeout)
-		entry.DurationMs = time.Since(start).Milliseconds()
+		return nil
+	}
+	shCmd.WaitDelay = 3 * time.Second
+
+	err := shCmd.Run()
+	entry.Stdout = strings.TrimSpace(stdout.String())
+	entry.Stderr = strings.TrimSpace(stderr.String())
+	entry.DurationMs = time.Since(start).Milliseconds()
+
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			entry.Error = fmt.Sprintf("timeout after %ds", timeoutSec)
+		} else if ctx.Err() == context.Canceled {
+			entry.Error = "cancelled"
+		} else if exitErr, ok := err.(*exec.ExitError); ok {
+			entry.ExitCode = exitErr.ExitCode()
+		} else {
+			entry.Error = err.Error()
+		}
 	}
 
 	return entry

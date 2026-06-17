@@ -137,6 +137,25 @@ func TestWriteAndReadRestartMarker_WithChatIDs(t *testing.T) {
 	}
 }
 
+func TestRestartMarker_Permissions(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	if err := os.MkdirAll(filepath.Join(tmp, ".odek"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeRestartMarker([]int64{42}); err != nil {
+		t.Fatalf("writeRestartMarker: %v", err)
+	}
+	path, _ := restartMarkerPath()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat restart marker: %v", err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Errorf("restart marker permissions = %04o, want 0600", info.Mode().Perm())
+	}
+}
+
 func TestRestartMarker_LegacyEmpty(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)

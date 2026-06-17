@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BackendStack21/odek/internal/danger"
 )
@@ -157,6 +159,50 @@ func TestBatchPatch_ContinueOnError(t *testing.T) {
 	data, _ := os.ReadFile(path1)
 	if string(data) != "bye" {
 		t.Errorf("file content should be 'bye', got: %s", string(data))
+	}
+}
+
+func TestBatchPatch_TrustedClasses(t *testing.T) {
+	deny := "deny"
+	dc := danger.DangerousConfig{
+		Classes: map[danger.RiskClass]danger.Action{
+			danger.LocalWrite: danger.Prompt,
+		},
+		NonInteractive: &deny,
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.txt")
+	os.WriteFile(path, []byte("hello world\nfoo bar\n"), 0644)
+
+	// Without trusted classes, non-interactive mode denies the local_write operation.
+	tool := &batchPatchTool{dangerousConfig: dc}
+	result := callJSON(t, tool, fmt.Sprintf(`{"patches":[{"path":"%s","old_string":"foo","new_string":"baz"}]}`, path))
+	var r1 struct {
+		Results []struct {
+			Success bool   `json:"success"`
+			Error   string `json:"error"`
+		} `json:"results"`
+	}
+	mustUnmarshal(t, result, &r1)
+	if r1.Results[0].Success {
+		t.Errorf("expected patch to be denied without trusted classes")
+	}
+
+	// With LocalWrite trusted, the operation should succeed.
+	tool = &batchPatchTool{
+		dangerousConfig: dc,
+		trustedClasses:  map[danger.RiskClass]bool{danger.LocalWrite: true},
+	}
+	result = callJSON(t, tool, fmt.Sprintf(`{"patches":[{"path":"%s","old_string":"foo","new_string":"baz"}]}`, path))
+	var r2 struct {
+		Results []struct {
+			Success bool `json:"success"`
+		} `json:"results"`
+	}
+	mustUnmarshal(t, result, &r2)
+	if !r2.Results[0].Success {
+		t.Errorf("expected patch to succeed with LocalWrite trusted, got: %s", r1.Results[0].Error)
 	}
 }
 
@@ -2159,5 +2205,66 @@ func TestTr_AcceptsExactSizeInlineContent(t *testing.T) {
 	}
 	if len(r.Result) != maxInlineContentBytes {
 		t.Errorf("result length = %d, want %d", len(r.Result), maxInlineContentBytes)
+	}
+}
+
+// ── Parallel Shell Hardening (#44) ─────────────────────────────────────
+
+func TestParallelShell_TimeoutIsCapped(t *testing.T) {
+	// A requested timeout above the cap should be clamped, so a fast command
+	// still completes quickly instead of waiting for the huge value.
+	tool := &parallelShellTool{}
+	result := callJSON(t, tool, fmt.Sprintf(`{"commands":[{"command":"echo ok","timeout":%d}]}`, int(maxParallelShellTimeout.Seconds())+999999))
+
+	var r struct {
+		Results []struct {
+			Error      string `json:"error"`
+			DurationMs int64  `json:"duration_ms"`
+		} `json:"results"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Results[0].Error != "" {
+		t.Errorf("expected no error, got %q", r.Results[0].Error)
+	}
+	if r.Results[0].DurationMs > 2000 {
+		t.Errorf("capped timeout should not delay a fast command: duration_ms=%d", r.Results[0].DurationMs)
+	}
+}
+
+func TestParallelShell_ContextCancellationKillsCommand(t *testing.T) {
+	if raceEnabled {
+		t.Skip("skipping under race detector due to process timing")
+	}
+	tool := &parallelShellTool{}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	tool.SetContext(ctx)
+
+	entry := tool.runOne(parallelShellCmd{Command: "sleep 10", Timeout: 30})
+	if entry.Error == "" {
+		t.Fatal("expected error for cancelled command")
+	}
+	if !strings.Contains(entry.Error, "timeout") && !strings.Contains(entry.Error, "cancelled") {
+		t.Errorf("expected timeout/cancelled error, got %q", entry.Error)
+	}
+}
+
+func TestParallelShell_ProcessGroupKill(t *testing.T) {
+	if raceEnabled {
+		t.Skip("skipping under race detector due to process timing")
+	}
+	// A background child spawned by the shell must be killed when the command
+	// times out, not left orphaned. The parent sleeps and is killed; without
+	// group kill the background sleep would keep the stdout pipe open and
+	// Run() would hang until WaitDelay.
+	tool := &parallelShellTool{}
+	start := time.Now()
+	entry := tool.runOne(parallelShellCmd{Command: "sleep 1 & sleep 5", Timeout: 1})
+	elapsed := time.Since(start)
+	if entry.Error == "" || !strings.Contains(entry.Error, "timeout") {
+		t.Errorf("expected timeout error, got %q", entry.Error)
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("process group was not killed promptly: %v", elapsed)
 	}
 }
