@@ -21,6 +21,11 @@ const (
 	stateFile     = "schedule-state.json" // runtime state, keyed by job ID
 )
 
+// maxScheduleFileBytes caps the size of schedule/state JSON files before they
+// are loaded into memory. This prevents a tampered or corrupted multi-gigabyte
+// file from OOMing the scheduler or `odek schedule list`.
+const maxScheduleFileBytes = 10 << 20 // 10 MiB
+
 // scheduleDoc is the on-disk shape of schedules.json. Wrapping the slice in a
 // versioned object leaves room to evolve the format without a breaking change.
 type scheduleDoc struct {
@@ -110,7 +115,11 @@ func (s *Store) Add(job Job) (Job, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	defer s.fileLock()()
+	release, err := s.fileLock()
+	if err != nil {
+		return Job{}, err
+	}
+	defer release()
 
 	doc, err := s.loadDoc()
 	if err != nil {
@@ -178,7 +187,11 @@ func (s *Store) Put(job Job) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	defer s.fileLock()()
+	release, err := s.fileLock()
+	if err != nil {
+		return err
+	}
+	defer release()
 	doc, err := s.loadDoc()
 	if err != nil {
 		return err
@@ -204,7 +217,11 @@ func (s *Store) Put(job Job) error {
 func (s *Store) Remove(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	defer s.fileLock()()
+	release, err := s.fileLock()
+	if err != nil {
+		return err
+	}
+	defer release()
 	doc, err := s.loadDoc()
 	if err != nil {
 		return err
@@ -238,7 +255,11 @@ func (s *Store) Remove(id string) error {
 func (s *Store) SetEnabled(id string, enabled bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	defer s.fileLock()()
+	release, err := s.fileLock()
+	if err != nil {
+		return err
+	}
+	defer release()
 	doc, err := s.loadDoc()
 	if err != nil {
 		return err
@@ -285,7 +306,11 @@ func (s *Store) SaveState(st RunState) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	defer s.fileLock()()
+	release, err := s.fileLock()
+	if err != nil {
+		return err
+	}
+	defer release()
 	sd, err := s.loadState()
 	if err != nil {
 		return err
@@ -330,13 +355,22 @@ func (s *Store) saveState(sd *stateDoc) error {
 }
 
 // readJSON decodes path into v. A missing file is not an error — v is left at
-// its zero/default value so callers start from an empty document.
+// its zero/default value so callers start from an empty document. Files larger
+// than maxScheduleFileBytes are rejected to prevent OOM from a tampered or
+// corrupted multi-gigabyte blob.
 func readJSON(path string, v any) error {
-	data, err := os.ReadFile(path)
+	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
+		return fmt.Errorf("schedule: stat %s: %w", filepath.Base(path), err)
+	}
+	if info.Size() > maxScheduleFileBytes {
+		return fmt.Errorf("schedule: %s is too large (%d bytes, max %d)", filepath.Base(path), info.Size(), maxScheduleFileBytes)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
 		return fmt.Errorf("schedule: read %s: %w", filepath.Base(path), err)
 	}
 	if len(data) == 0 {
@@ -371,23 +405,24 @@ func writeJSONAtomic(path string, v any) error {
 // returns a release func. The in-process mutex only serialises one process;
 // this serialises the read-modify-write cycle ACROSS processes, so two
 // concurrent `odek schedule add` invocations can't both load the same baseline
-// and clobber each other's write. Best-effort: if the lock file can't be opened
-// or locked, the caller still proceeds (single-process safety is preserved by
-// s.mu). Callers hold s.mu, so there is a single lock order (mu → flock) and no
-// deadlock with the read-only methods, which take only s.mu.
-func (s *Store) fileLock() func() {
+// and clobber each other's write. Lock acquisition is now a hard error: if the
+// lock file can't be opened or locked, the caller aborts the mutating operation
+// rather than proceeding without cross-process serialization. Callers hold
+// s.mu, so there is a single lock order (mu → flock) and no deadlock with the
+// read-only methods, which take only s.mu.
+func (s *Store) fileLock() (func(), error) {
 	f, err := os.OpenFile(filepath.Join(s.dir, "schedules.lock"), os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
-		return func() {}
+		return nil, fmt.Errorf("schedule: cannot open lock file: %w", err)
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
 		f.Close()
-		return func() {}
+		return nil, fmt.Errorf("schedule: cannot acquire lock: %w", err)
 	}
 	return func() {
 		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		f.Close()
-	}
+	}, nil
 }
 
 // newJobID returns a stable, collision-resistant job ID like "jb-1a2b3c4d".

@@ -2099,6 +2099,75 @@ func TestToolPanic_DoesNotKillAgent(t *testing.T) {
 	}
 }
 
+// TestToolResultDelimiter_NoncePerCall verifies that the static tool-result
+// delimiter is replaced by a per-call nonce so a tool (or MCP server) cannot
+// forge the closing delimiter and inject instructions.
+func TestToolResultDelimiter_NoncePerCall(t *testing.T) {
+	var firstResult, secondResult string
+	var callNum atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []llm.Message `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		n := callNum.Add(1)
+		if n == 1 {
+			fmt.Fprint(w, `{"choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"echo","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+			return
+		}
+		for _, m := range body.Messages {
+			if m.Role == "tool" {
+				if firstResult == "" {
+					firstResult = m.Content
+				} else {
+					secondResult = m.Content
+				}
+			}
+		}
+		if n == 2 {
+			// Ask for a second tool call so we can compare nonces.
+			fmt.Fprint(w, `{"choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_2","type":"function","function":{"name":"echo","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+			return
+		}
+		fmt.Fprint(w, `{"choices":[{"index":0,"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	engine := New(client, tool.NewRegistry([]tool.Tool{&fakeTool{name: "echo", description: "echo", output: "tool output"}}), 10, "", nil, 0)
+	if _, err := engine.Run(context.Background(), "test task"); err != nil {
+		t.Fatalf("engine.Run: %v", err)
+	}
+
+	if firstResult == "" || secondResult == "" {
+		t.Fatalf("did not capture both tool results")
+	}
+	// Each delimiter should contain a nonce in both header and footer.
+	extractNonce := func(s string) string {
+		i := strings.Index(s, "[")
+		j := strings.Index(s, "]")
+		if i < 0 || j <= i {
+			t.Fatalf("no nonce found in delimiter: %q", s)
+		}
+		return s[i+1 : j]
+	}
+	n1 := extractNonce(firstResult)
+	n2 := extractNonce(secondResult)
+	if n1 == n2 {
+		t.Errorf("tool results reused nonce %q; each call must use a unique nonce", n1)
+	}
+	// Header and footer nonces within a single result must match.
+	parts := strings.SplitN(firstResult, "\n", 3)
+	if len(parts) < 3 {
+		t.Fatalf("tool result has fewer than 3 lines: %q", firstResult)
+	}
+	if extractNonce(parts[0]) != extractNonce(parts[2]) {
+		t.Errorf("header/footer nonce mismatch in single tool result")
+	}
+}
+
 // ── Context Length Error Detection ────────────────────────────────────
 
 func TestIsContextLengthError_Nil(t *testing.T) {

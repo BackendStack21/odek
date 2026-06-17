@@ -163,6 +163,29 @@ func TestReadJSON_ReadAndParseErrors(t *testing.T) {
 	if err := readJSON(bad, &scheduleDoc{}); err == nil {
 		t.Error("readJSON should error on invalid JSON")
 	}
+
+	// A file larger than maxScheduleFileBytes is rejected before reading.
+	huge := filepath.Join(dir, "huge.json")
+	writeFile(t, huge, "x")
+	if err := os.Truncate(huge, maxScheduleFileBytes+1); err != nil {
+		t.Fatal(err)
+	}
+	if err := readJSON(huge, &scheduleDoc{}); err == nil {
+		t.Error("readJSON should reject an oversized file")
+	}
+
+	// A file exactly at the cap is accepted. Pad a valid JSON document with
+	// whitespace so the file is exactly maxScheduleFileBytes bytes.
+	exact := filepath.Join(dir, "exact.json")
+	base := `{"version":1,"jobs":[]}`
+	padLen := maxScheduleFileBytes - len(base)
+	if padLen < 0 {
+		t.Fatal("maxScheduleFileBytes is smaller than the base JSON")
+	}
+	writeFile(t, exact, base+strings.Repeat(" ", padLen))
+	if err := readJSON(exact, &scheduleDoc{}); err != nil {
+		t.Errorf("readJSON should accept a file exactly at the cap, got %v", err)
+	}
 }
 
 func TestWriteJSONAtomic_Errors(t *testing.T) {
@@ -235,13 +258,13 @@ func TestLoadState_NullStatesMap(t *testing.T) {
 func TestFileLock_OpenError(t *testing.T) {
 	dir := t.TempDir()
 	st, _ := NewStoreAt(dir)
-	// A directory where the lock file should be makes OpenFile fail; the store
-	// must still proceed (best-effort lock), so Add succeeds.
+	// A directory where the lock file should be makes OpenFile fail. Lock
+	// acquisition is now a hard error for mutating operations, so Add must fail.
 	if err := os.Mkdir(filepath.Join(dir, "schedules.lock"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.Add(sampleJob()); err != nil {
-		t.Errorf("Add should still succeed when the lock can't be opened: %v", err)
+	if _, err := st.Add(sampleJob()); err == nil {
+		t.Errorf("Add should fail when the lock can't be opened")
 	}
 }
 

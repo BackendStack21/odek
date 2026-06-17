@@ -390,6 +390,20 @@ The read-only perf tools `count_lines`, `checksum`, `head_tail`, and `word_count
 
 File-based inputs for `base64` and `tr` were already capped at 10 MiB via `readFileNoFollow`, but the inline `string`/`content` arguments had no length limit. A prompt-injected tool call could pass a 100 MB base64 payload and cause a large allocation. Both tools now reject inline inputs larger than `maxInlineContentBytes` (10 MiB) before decoding or transforming them.
 
+### 31. Schedule cross-process lock hard error
+
+`internal/schedule/store.go::fileLock` takes an exclusive `flock` on `~/.odek/schedules.lock` to serialize mutating schedule operations across processes. Previously, if the lock file could not be opened or locked, the function returned a no-op releaser and the mutating operation continued without cross-process serialization. It now returns a hard error, so `odek schedule add`, `rm`, `enable`, and state writes abort rather than risk two concurrent processes loading the same baseline and clobbering each other's write.
+
+### 32. Schedule JSON file-size cap
+
+`internal/schedule/store.go::readJSON` loads `schedules.json` and `schedule-state.json` into memory before parsing. It now `Stat`s the file first and rejects anything larger than `maxScheduleFileBytes` (10 MiB). This prevents a local attacker from replacing a schedule file with a multi-gigabyte blob and OOMing the scheduler or `odek schedule list`.
+
+### 33. Nonce'd tool-result delimiter
+
+The agent loop wraps each tool result in a visual delimiter before appending it to the conversation as a `tool` message. The old delimiter (`┌── TOOL RESULT: <name> ... └── END TOOL RESULT: <name>`) was static and predictable, so a malicious tool or MCP server whose output was not wrapped as untrusted content could emit the literal closing delimiter and inject instructions after it.
+
+The delimiter now embeds a per-call random hex nonce in both the opening and closing lines (`┌── TOOL RESULT: <name> [<nonce>] ... └── END TOOL RESULT: <name> [<nonce>]`). Because the nonce is generated inside the loop and differs for every tool call, an attacker cannot predict or forge the closing delimiter. This complements the per-call `<untrusted_content_*>` wrapper used for tool outputs that cross the trust boundary.
+
 ### YOLO mode
 
 ```json
@@ -447,6 +461,9 @@ Defaults: `FrictionThreshold=3`, `FrictionWindow=60s`. To opt out (TTYApprover o
 | User reflex-approves a destructive class after many benign ones | Friction mode requires typed `approve` + 1.5 s pause |
 | Successful injection steers agent to attacker URL | `odek audit` flags `suspicious_divergence` on the turn |
 | Symlink planted as session file exfiltrates arbitrary file into semantic search | `rebuildLocked` validates IDs and skips symlinks via `Lstat` |
+| Concurrent `odek schedule add` processes clobber each other | `fileLock` returns a hard error instead of falling back to no lock |
+| Tampered `schedules.json` replaced with a multi-gigabyte blob | `readJSON` rejects files larger than 10 MiB |
+| Tool / MCP output forges the closing `END TOOL RESULT` delimiter | Per-call nonce embedded in the delimiter makes it unforgeable |
 
 ---
 
