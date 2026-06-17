@@ -247,6 +247,7 @@ Default network: `bridge` (internet access). Set `none` for air-gapped execution
 - Fallback API URLs for regions where `api.telegram.org` is blocked
 - Access control: restrict by chat ID or user ID
 - Incoming message/caption length enforced in UTF-16 code units, matching Telegram's limits
+- `send_message` tool escapes text for Telegram MarkdownV2 before sending, so prompt-injected formatting cannot hide links or fake buttons
 - Logging: configurable log level and log file
 
 See [docs/TELEGRAM.md](docs/TELEGRAM.md) for full documentation.

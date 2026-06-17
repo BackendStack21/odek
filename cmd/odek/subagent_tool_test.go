@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -135,5 +136,52 @@ func TestDelegateTasksTool_OnSubagentLog_ExitError(t *testing.T) {
 	// Should get an error result (but with the partial data from lastLine)
 	if strings.Contains(result, "error") {
 		t.Logf("Got error result as expected: %s", result)
+	}
+}
+
+// TestScanSubagentStream_ProgressLimits verifies that scanSubagentStream returns
+// an error once the total number of progress lines exceeds the safety cap, and
+// that the error is classified as a progress-limit violation.
+func TestScanSubagentStream_ProgressLimits(t *testing.T) {
+	// Build an NDJSON stream with more progress lines than the cap allows.
+	var b strings.Builder
+	for i := 0; i < maxSubagentProgressLines+5; i++ {
+		b.WriteString(`{"type":"tool_call","name":"shell","data":"echo x"}`)
+		b.WriteByte('\n')
+	}
+	b.WriteString(`{"status":"success","summary":"done"}`)
+	b.WriteByte('\n')
+
+	var logged int
+	onLog := func(line string) { logged++ }
+	_, _, err := scanSubagentStream(strings.NewReader(b.String()), onLog)
+	if err == nil {
+		t.Fatal("expected error when progress line limit exceeded")
+	}
+	if !progressLimitExceeded(err) {
+		t.Errorf("expected progress-limit error, got: %v", err)
+	}
+	if logged != maxSubagentProgressLines+1 {
+		t.Errorf("expected %d logged lines before cutoff, got %d", maxSubagentProgressLines+1, logged)
+	}
+}
+
+// TestScanSubagentStream_ByteLimit verifies that the byte cap is also enforced.
+func TestScanSubagentStream_ByteLimit(t *testing.T) {
+	// Each progress line is >1 KiB; maxSubagentProgressBytes is 100 MiB, so
+	// 110_000 lines pushes well past it without needing to parse 100_000 lines.
+	big := strings.Repeat("x", 1024)
+	var b strings.Builder
+	for i := 0; i < 110_000; i++ {
+		fmt.Fprintf(&b, `{"type":"tool_result","name":"x","data":"%s"}`+"\n", big)
+	}
+
+	var logged int
+	_, _, err := scanSubagentStream(strings.NewReader(b.String()), func(string) { logged++ })
+	if err == nil {
+		t.Fatal("expected error when progress byte limit exceeded")
+	}
+	if !progressLimitExceeded(err) {
+		t.Errorf("expected progress-limit error, got: %v", err)
 	}
 }

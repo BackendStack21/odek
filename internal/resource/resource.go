@@ -27,6 +27,11 @@ import (
 // guard prevents OOM from files larger than 1 MiB.
 const maxResourceFileBytes = 1 << 20 // 1 MiB
 
+// maxResourceSearchLimit caps the number of autocomplete results any caller can
+// request. This prevents a prompt-injected or attacker-controlled `limit`
+// value from forcing an unbounded directory walk / scan.
+const maxResourceSearchLimit = 100
+
 // Resource is a discovered resource returned by a Resolver.
 type Resource struct {
 	ID      string `json:"id"`     // Full @ reference (e.g. "@src/main.go")
@@ -61,6 +66,9 @@ func NewRegistry(resolvers ...Resolver) *Registry {
 func (r *Registry) Search(ctx context.Context, query string, limit int) ([]Resource, error) {
 	if limit <= 0 {
 		limit = 10
+	}
+	if limit > maxResourceSearchLimit {
+		limit = maxResourceSearchLimit
 	}
 	var results []Resource
 	for _, res := range r.resolvers {

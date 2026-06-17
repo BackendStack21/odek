@@ -426,6 +426,27 @@ Telegram's message and caption limits are defined in UTF-16 code units, but `int
 
 `~/.odek/restart.json` records the chat IDs that had active agent runs across a Telegram bot restart. It was written with world-readable `0644` permissions, allowing any local user to learn which chats/users interact with the bot. It is now written with `0600`.
 
+### 39. Telegram `send_message` MarkdownV2 escaping
+
+The `send_message` tool lets the agent send arbitrary text messages to Telegram using `ParseModeMarkdownV2`. Because the LLM may echo or reformat attacker-controllable content, the text is now escaped with `telegram.EscapeMarkdown` before sending. This prevents a prompt-injected payload from using Telegram's Markdown syntax to hide malicious links, fake buttons, or instruction-like formatting inside an otherwise ordinary-looking message.
+
+### 40. `/api/resources` result limit cap
+
+The `/api/resources?q=...&limit=N` autocomplete endpoint previously accepted any positive `limit` value. It is now capped to 100 results both in the HTTP handler and in `Registry.Search`. This prevents a prompt-injected or attacker-forged request from forcing an unbounded directory walk and returning a multi-megabyte JSON response.
+
+### 41. WebSocket connection limits
+
+`odek serve`'s `/ws` endpoint previously accepted an unlimited number of concurrent connections, each of which creates an agent and (in sandbox mode) a Docker container. It now enforces:
+
+- A global maximum of 20 concurrent WebSocket connections (`maxWSConnections`). Further upgrade attempts receive HTTP 503.
+- Per-IP rate limiting on upgrades (30 per minute), making it more expensive to rapidly churn connections and exhaust the global semaphore.
+
+This bounds the memory/container blast radius if a local process or malicious page tries to spawn many agent sessions.
+
+### 42. Sub-agent progress stream limits
+
+`delegate_tasks` streams NDJSON progress lines from each sub-agent. A runaway or malicious sub-agent could emit an unbounded number of `tool_call`/`tool_result` events, causing unbounded memory growth in the parent. `scanSubagentStream` now caps the total progress stream at 100 000 lines and 100 MiB of data; exceeding either limit aborts the scan and cancels the sub-agent context so the child process is killed instead of continuing to flood stdout.
+
 ### YOLO mode
 
 ```json
@@ -491,6 +512,10 @@ Defaults: `FrictionThreshold=3`, `FrictionWindow=60s`. To opt out (TTYApprover o
 | Malicious page puts instructions in a link URL | Browser wraps `clickableRef.URL` as untrusted |
 | Emoji-heavy message passes local check but is rejected by Telegram | Length enforced in UTF-16 code units, matching Telegram |
 | Local user reads `~/.odek/restart.json` to enumerate Telegram chats | Marker file written with `0600` |
+| Prompt-injected text abuses Telegram MarkdownV2 formatting in `send_message` | Text escaped with `telegram.EscapeMarkdown` before sending |
+| Huge `/api/resources?limit=` forces unbounded scan/response | `limit` capped to 100 in handler and registry |
+| Local process spawns unlimited WebSocket agents/containers | Global 20-connection cap + per-IP upgrade rate limiting |
+| Runaway sub-agent floods parent with progress NDJSON | Progress stream capped at 100k lines / 100 MiB; child cancelled on overflow |
 
 ---
 

@@ -1471,20 +1471,26 @@ func handleChatMessage(
 			if err := validateSendMessageButtons(buttons); err != nil {
 				return err
 			}
+			// Agent-generated text is attacker-influenceable (the LLM may echo or
+			// reformat untrusted content). Escape it for MarkdownV2 so reserved
+			// characters cannot be used to hide buttons, break formatting, or
+			// inject instructions into the Telegram message stream.
+			safeText := telegram.EscapeMarkdown(text)
+
 			if file != "" {
 				// Detect media type from extension.
 				mediaType := mediaTypeFromExt(file)
-				return sendTelegramMedia(bot, chatID, mediaType, file, text, buttons)
+				return sendTelegramMedia(bot, chatID, mediaType, file, safeText, buttons)
 			}
 			if len(buttons) > 0 {
 				markup := buttonsToMarkup(buttons)
-				_, err := bot.SendMessage(chatID, text, &telegram.SendOpts{
+				_, err := bot.SendMessage(chatID, safeText, &telegram.SendOpts{
 					ParseMode:   telegram.ParseModeMarkdownV2,
 					ReplyMarkup: markup,
 				})
 				return err
 			}
-			_, err := bot.SendMessage(chatID, text, &telegram.SendOpts{
+			_, err := bot.SendMessage(chatID, safeText, &telegram.SendOpts{
 				ParseMode: telegram.ParseModeMarkdownV2,
 			})
 			return err

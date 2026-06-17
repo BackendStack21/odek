@@ -59,7 +59,15 @@ func startTestServer(t *testing.T) *testServer {
 	mux.HandleFunc("/api/cancel", handleCancel)
 	mux.Handle("/ws", &golangws.Server{
 		Handshake: func(*golangws.Config, *http.Request) error { return nil },
-		Handler:   s.handleWebSocket,
+		Handler: func(conn *golangws.Conn) {
+			// The production server uses wsHandshakeWithLimits to acquire the
+			// global semaphore; the test server's no-op handshake bypasses it.
+			// Acquire and release the slot here so the test path doesn't leak
+			// the global limiter state across tests.
+			wsConnSem <- struct{}{}
+			defer func() { <-wsConnSem }()
+			s.handleWebSocket(conn)
+		},
 	})
 
 	go http.Serve(ln, mux)
@@ -526,6 +534,11 @@ func TestServe_E2E_WebSocketPipeline(t *testing.T) {
 	mux.Handle("/ws", &golangws.Server{
 		Handshake: func(*golangws.Config, *http.Request) error { return nil },
 		Handler: func(conn *golangws.Conn) {
+			// Production acquires the global semaphore in wsHandshakeWithLimits;
+			// the E2E helper uses a no-op handshake, so acquire/release here to
+			// keep the global limiter state consistent across tests.
+			wsConnSem <- struct{}{}
+			defer func() { <-wsConnSem }()
 			handleWS(store, resourceReg, resolved, systemMessage, conn)
 		},
 	})
@@ -563,6 +576,9 @@ func TestServe_E2E_WebSocketPipeline(t *testing.T) {
 
 	// 1. Connect via WebSocket
 	wsURL := "ws://" + addr + "/ws"
+	// Reset the per-IP upgrade limiter so this E2E test is not throttled by
+	// earlier connection churn from other tests.
+	wsUpgradeLimiter.reset()
 	conn, err := golangws.Dial(wsURL, "", "http://localhost")
 	if err != nil {
 		t.Fatalf("Dial(%q): %v", wsURL, err)
@@ -859,6 +875,11 @@ func buildServeMux(t *testing.T, store *session.Store) (net.Listener, *http.Serv
 	mux.Handle("/ws", &golangws.Server{
 		Handshake: func(*golangws.Config, *http.Request) error { return nil },
 		Handler: func(conn *golangws.Conn) {
+			// Production acquires the global semaphore in wsHandshakeWithLimits;
+			// the E2E helper uses a no-op handshake, so acquire/release here to
+			// keep the global limiter state consistent across tests.
+			wsConnSem <- struct{}{}
+			defer func() { <-wsConnSem }()
 			handleWS(store, resourceReg, resolved, systemMessage, conn)
 		},
 	})

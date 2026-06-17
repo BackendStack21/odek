@@ -610,6 +610,37 @@ func TestRegistry_Search_MultipleResolvers(t *testing.T) {
 	}
 }
 
+func TestRegistry_Search_LimitCapped(t *testing.T) {
+	// Create a directory with many files so a huge limit would otherwise return many.
+	dir := t.TempDir()
+	for i := 0; i < 105; i++ {
+		name := fmt.Sprintf("file%03d.go", i)
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("package x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reg := NewRegistry(NewFileResolver(dir))
+
+	// Request more than the internal maximum; should be silently capped.
+	results, err := reg.Search(context.Background(), "file", 500)
+	if err != nil {
+		t.Fatalf("Search() error: %v", err)
+	}
+	if len(results) != maxResourceSearchLimit {
+		t.Errorf("expected results capped to %d, got %d", maxResourceSearchLimit, len(results))
+	}
+
+	// Request exactly the cap.
+	results, err = reg.Search(context.Background(), "file", maxResourceSearchLimit)
+	if err != nil {
+		t.Fatalf("Search() error: %v", err)
+	}
+	if len(results) != maxResourceSearchLimit {
+		t.Errorf("expected results = %d for exact cap, got %d", maxResourceSearchLimit, len(results))
+	}
+}
+
 // ── describeFile Tests ────────────────────────────────────────────────
 
 func TestDescribeFile_Small(t *testing.T) {

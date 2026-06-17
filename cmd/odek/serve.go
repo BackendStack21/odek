@@ -37,6 +37,19 @@ var uiFS embed.FS
 // multi-gigabyte frame.
 const maxWSMessageBytes = 8 * 1024 * 1024 // 8 MiB
 
+// maxWSConnections caps the number of concurrent WebSocket clients. Once the
+// limit is reached, further upgrade attempts are rejected with HTTP 503. This
+// prevents a local attacker from spawning unlimited connections, each of which
+// starts an agent with its own sandbox container and memory buffers.
+const maxWSConnections = 20
+
+// wsConnSem is the global connection limiter for /ws.
+var wsConnSem = make(chan struct{}, maxWSConnections)
+
+// wsUpgradeLimiter provides per-IP rate limiting for WebSocket upgrades, making
+// it more expensive to rapidly churn connections and exhaust wsConnSem.
+var wsUpgradeLimiter = newRateLimiter(30, time.Minute)
+
 // promptCancels maps a session ID to the cancel function for the prompt
 // currently executing on that session. A mutex protects the map so concurrent
 // WebSocket handlers and the HTTP /api/cancel endpoint can access it safely.
@@ -246,7 +259,7 @@ func serveCmd(args []string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handleStatic())
 	mux.Handle("/ws", &golangws.Server{
-		Handshake: checkLocalOrigin,
+		Handshake: wsHandshakeWithLimits,
 		Handler: func(conn *golangws.Conn) {
 			handleWS(store, resourceReg, resolved, systemMessage, conn)
 		},
@@ -549,6 +562,15 @@ type wsClientMsg struct {
 // ── WebSocket Handler ──────────────────────────────────────────────────
 
 func handleWS(store *session.Store, resources *resource.Registry, resolved config.ResolvedConfig, system string, conn *golangws.Conn) {
+	// Release the connection slot acquired by wsHandshakeWithLimits. This runs
+	// after the handler exits, whether normally or via panic/close.
+	defer func() {
+		select {
+		case <-wsConnSem:
+		default:
+		}
+	}()
+
 	// Register for graceful-shutdown tracking before anything else.
 	// serveOnListener closes all tracked connections on SIGINT/SIGTERM,
 	// which unblocks the Receive loop below and lets defers run.
@@ -1065,6 +1087,24 @@ func checkLocalOrigin(_ *golangws.Config, req *http.Request) error {
 	return fmt.Errorf("Origin %q not allowed (only localhost is accepted)", origin)
 }
 
+// wsHandshakeWithLimits wraps checkLocalOrigin with a per-IP upgrade rate limit
+// and a global concurrent-connection semaphore. The semaphore is acquired before
+// the WebSocket handshake completes and released when the handler exits.
+func wsHandshakeWithLimits(_ *golangws.Config, req *http.Request) error {
+	if err := checkLocalOrigin(nil, req); err != nil {
+		return err
+	}
+	if !wsUpgradeLimiter.allow(clientIP(req)) {
+		return fmt.Errorf("WebSocket upgrade rate limit exceeded")
+	}
+	select {
+	case wsConnSem <- struct{}{}:
+		return nil
+	default:
+		return fmt.Errorf("too many concurrent WebSocket connections")
+	}
+}
+
 // requireLocalOrigin rejects cross-origin state-changing requests to the REST
 // API. It is the HTTP counterpart to checkLocalOrigin.
 func requireLocalOrigin(next http.Handler) http.Handler {
@@ -1154,6 +1194,13 @@ func handleResourceSearch(reg *resource.Registry) http.HandlerFunc {
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 		if limit <= 0 {
 			limit = 10
+		}
+		// Registry.Search also enforces a global maximum; this explicit cap
+		// keeps the HTTP handler's contract obvious and prevents huge JSON
+		// responses even if a caller bypasses the UI.
+		const maxResourceLimit = 100
+		if limit > maxResourceLimit {
+			limit = maxResourceLimit
 		}
 
 		results, err := reg.Search(r.Context(), q, limit)

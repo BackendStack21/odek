@@ -267,6 +267,11 @@ func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, tr
 		onLog = func(line string) { t.OnSubagentLog(taskIdx, line) }
 	}
 	result, lastLine, scannerErr := scanSubagentStream(stdout, onLog)
+	// If the scanner hit its safety limits, cancel the sub-agent context so the
+	// child process is killed instead of continuing to flood stdout.
+	if scannerErr != nil && (progressLimitExceeded(scannerErr)) {
+		cancel()
+	}
 
 	if err := cmd.Wait(); err != nil {
 		// Process exited with error — result may still be valid
@@ -313,6 +318,17 @@ const maxSubagentSummaryResultBytes = 100 << 10 // 100 KiB
 // timeout kills a task that actually completed successfully.
 const maxSubagentLine = 10 << 20 // 10 MiB
 
+// maxSubagentProgressLines caps the total number of progress lines read from a
+// sub-agent's stdout. A malicious or runaway sub-agent could emit an unbounded
+// stream of NDJSON tool_call/tool_result events; this limit bounds memory and
+// prevents the parent from being DoS'd by progress chatter.
+const maxSubagentProgressLines = 100_000
+
+// maxSubagentProgressBytes caps the total bytes consumed by progress lines.
+// Together with maxSubagentProgressLines it bounds the worst-case memory used
+// by a fan-out of sub-agents streaming progress at full speed.
+const maxSubagentProgressBytes = 100 << 20 // 100 MiB
+
 // scanSubagentStream reads a sub-agent's NDJSON stdout: zero or more progress
 // lines (objects with "type":"tool_call" or "type":"tool_result") followed by
 // the final JSON result object. Progress lines are forwarded to onLog (when
@@ -323,6 +339,9 @@ const maxSubagentLine = 10 << 20 // 10 MiB
 func scanSubagentStream(r io.Reader, onLog func(line string)) (result map[string]any, lastLine string, err error) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxSubagentLine)
+
+	var progressLines int
+	var progressBytes int64
 	for scanner.Scan() {
 		line := scanner.Text()
 		lastLine = line
@@ -336,6 +355,11 @@ func scanSubagentStream(r io.Reader, onLog func(line string)) (result map[string
 				if onLog != nil {
 					onLog(line)
 				}
+				progressLines++
+				progressBytes += int64(len(line))
+				if progressLines > maxSubagentProgressLines || progressBytes > maxSubagentProgressBytes {
+					return result, lastLine, fmt.Errorf("sub-agent progress stream exceeded safety limits (%d lines / %d bytes)", progressLines, progressBytes)
+				}
 				continue
 			}
 		}
@@ -347,6 +371,15 @@ func scanSubagentStream(r io.Reader, onLog func(line string)) (result map[string
 		}
 	}
 	return result, lastLine, scanner.Err()
+}
+
+// progressLimitExceeded reports whether err was caused by the sub-agent progress
+// stream exceeding its line/byte safety limits.
+func progressLimitExceeded(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "sub-agent progress stream exceeded safety limits")
 }
 
 // Ensure delegateTasksTool implements odek.Tool
