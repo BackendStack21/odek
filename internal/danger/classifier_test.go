@@ -83,7 +83,6 @@ func TestClassify_LocalWrite_Commands(t *testing.T) {
 		{"mkdir dist", LocalWrite},
 		{"rmdir old_dir", LocalWrite},
 		{"sed -i 's/foo/bar/' file.go", LocalWrite},
-		{"awk '{print $1}' input.txt > output.txt", LocalWrite},
 		{"tee output.txt", LocalWrite},
 		{"cat > file.go", LocalWrite},
 		{"chmod +x script.sh", LocalWrite},
@@ -319,6 +318,79 @@ func TestClassify_ScriptAndPackageManagerExecution(t *testing.T) {
 		t.Run(tt.cmd, func(t *testing.T) {
 			if got := Classify(tt.cmd); got != tt.cls {
 				t.Errorf("Classify(%q) = %s, want %s", tt.cmd, got, tt.cls)
+			}
+		})
+	}
+}
+
+// TestClassify_EmbeddedShellInterpreterExecution covers finding #34:
+// interpreters that are normally read-only but can invoke arbitrary shell
+// commands from their payload must escalate to code_execution.
+func TestClassify_EmbeddedShellInterpreterExecution(t *testing.T) {
+	tests := []struct {
+		cmd string
+		cls RiskClass
+	}{
+		// awk variants run shell code from their script argument.
+		{"awk 'BEGIN{system(\"rm -rf ~\")}'", CodeExecution},
+		{"gawk -F: '{print $1}' /etc/passwd", CodeExecution},
+		{"awk --version", Safe},
+		{"awk", Safe},
+		{"gawk --version", Safe},
+		// sed 'e' command and script files execute shell code.
+		{"sed 's/foo/bar/e' input.txt", CodeExecution},
+		{"sed 's/foo/bar/eg' input.txt", CodeExecution},
+		{"sed -e 'e whoami' input.txt", CodeExecution},
+		{"sed -e 's/foo/bar/e' input.txt", CodeExecution},
+		{"sed --expression 'e whoami' input.txt", CodeExecution},
+		{"sed -f script.sed input.txt", CodeExecution},
+		{"sed -i 's/foo/bar/' input.txt", LocalWrite},
+		{"sed -e 's/foo/bar/' input.txt", LocalWrite},
+		{"sed -E 's/foo/bar/' input.txt", LocalWrite},
+		{"sed -n 'p' input.txt", LocalWrite},
+		{"sed input.txt", LocalWrite},
+		{"sed -e '' input.txt", LocalWrite},
+		{"sed \"s#foo#bar#e\" input.txt", CodeExecution},
+		// Editors provide !shell escapes when given a file operand.
+		{"vim /etc/passwd", CodeExecution},
+		{"vi --version", Safe},
+		{"nvim file.txt", CodeExecution},
+		{"emacs file.el", CodeExecution},
+		{"emacs --version", Safe},
+		{"ed file.txt", CodeExecution},
+		// find -exec already escalates (defence-in-depth check).
+		{"find . -exec sh -c 'rm -rf ~' \\;", CodeExecution},
+		{"find . -name '*.go'", Safe},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			if got := Classify(tt.cmd); got != tt.cls {
+				t.Errorf("Classify(%q) = %s, want %s", tt.cmd, got, tt.cls)
+			}
+		})
+	}
+}
+
+func TestSedScriptHasShellExec(t *testing.T) {
+	tests := []struct {
+		tok  string
+		want bool
+	}{
+		{"'s/foo/bar/e'", true},
+		{`"s/foo/bar/e"`, true},
+		{"'s#foo#bar#e'", true},
+		{"'s/foo/bar/eg'", true},
+		{"'e'", true},
+		{"'e whoami'", true},
+		{"';e;'", true},
+		{"''", false},
+		{"'s/foo/bar/'", false},
+		{"'p'", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.tok, func(t *testing.T) {
+			if got := sedScriptHasShellExec(tt.tok); got != tt.want {
+				t.Errorf("sedScriptHasShellExec(%q) = %v, want %v", tt.tok, got, tt.want)
 			}
 		})
 	}

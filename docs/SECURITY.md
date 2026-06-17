@@ -89,6 +89,7 @@ The classifier is hardened against common evasion tricks (see the package doc in
 - `rm$IFS-rf$IFS/`, `{rm,-rf,/}`, `$'\x72\x6d'` — `$IFS`, brace expansion, and ANSI-C escapes are normalised.
 - `command rm`, `env rm`, `sudo rm`, `/bin/rm`, `true | dd of=/dev/sda` — wrappers are stripped, every pipe stage is classified, and absolute paths are basenamed before matching.
 - `bash -i >& /dev/tcp/…`, `cat ~/.ssh/id_rsa` — reverse-shell channels and sensitive-path access are flagged regardless of the command verb.
+- `awk 'BEGIN{system("rm -rf ~")}'`, `sed 's/foo/bar/e'`, `find . -exec sh -c '…' \;`, `vim /etc/passwd` — interpreters that can invoke shell commands (`awk`/`gawk`/`mawk`/`nawk`, `sed` `e` command / `-f`, editors, `find -exec`) are escalated to `code_execution` rather than treated as read-only.
 
 Regression suites (`internal/danger/classifier_bypass_test.go` and `hardening_test.go`) pin these as known-closed evasions. If you find a new bypass, those test files are the place to add it.
 
