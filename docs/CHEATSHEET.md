@@ -333,6 +333,12 @@ odek mcp                                    # stdio transport
 | `checksum` | SHA-256, SHA-1, MD5 hashing |
 | `tree` | Structured directory tree listing |
 
+> **Size limits:** file inputs for `sort`, `head_tail`, `diff`, `json_query`,
+> `tr`, `base64`, `count_lines`, `word_count`, `checksum`, and `batch_patch` are
+> capped at 10 MiB. Inline `string`/`content` arguments for `base64` and `tr` are
+> also capped at 10 MiB to prevent prompt-injected multi-hundred-megabyte
+> payloads from OOMing the process.
+
 ### Multi-Pattern (parallel goroutine search)
 | Tool | Description |
 |------|-------------|
