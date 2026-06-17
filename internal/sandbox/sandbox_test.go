@@ -120,6 +120,47 @@ func TestBuildRunArgs_HostNetworkForcedToNone(t *testing.T) {
 	t.Error("--network flag not found in args")
 }
 
+func TestBuildRunArgs_ContainerNetworkForcedToNone(t *testing.T) {
+	// "container:<name>" shares another container's network namespace and
+	// must not be allowed.
+	args := BuildRunArgs(Config{Network: "container:privileged-sidecar"}, "odek-test", "/workspace", "alpine:latest")
+	for i, a := range args {
+		if a == "--network" && i+1 < len(args) {
+			if args[i+1] != "none" {
+				t.Errorf("network arg = %q, want 'none' (container: mode must be rejected)", args[i+1])
+			}
+			return
+		}
+	}
+	t.Error("--network flag not found in args")
+}
+
+func TestBuildRunArgs_BridgeNetworkAllowed(t *testing.T) {
+	args := BuildRunArgs(Config{Network: "bridge"}, "odek-test", "/workspace", "alpine:latest")
+	for i, a := range args {
+		if a == "--network" && i+1 < len(args) {
+			if args[i+1] != "bridge" {
+				t.Errorf("network arg = %q, want 'bridge'", args[i+1])
+			}
+			return
+		}
+	}
+	t.Error("--network flag not found in args")
+}
+
+func TestBuildRunArgs_EmptyNetworkDefaultsToBridge(t *testing.T) {
+	args := BuildRunArgs(Config{}, "odek-test", "/workspace", "alpine:latest")
+	for i, a := range args {
+		if a == "--network" && i+1 < len(args) {
+			if args[i+1] != "bridge" {
+				t.Errorf("network arg = %q, want 'bridge' for empty Network", args[i+1])
+			}
+			return
+		}
+	}
+	t.Error("--network flag not found in args")
+}
+
 func TestBuildRunArgs_ReadonlyAppendsRoSuffix(t *testing.T) {
 	args := BuildRunArgs(Config{Readonly: true}, "odek-test", "/workspace", "alpine:latest")
 	for i, a := range args {

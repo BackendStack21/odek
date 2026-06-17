@@ -42,7 +42,7 @@ var ForbiddenMountPrefixes = []string{
 // has no notion of where values were sourced.
 type Config struct {
 	Image    string            // Docker image (e.g. "node:20-alpine"); empty triggers Dockerfile/default resolution
-	Network  string            // "bridge" | "none" | "host" — "host" is rejected and forced to "none"
+	Network  string            // "bridge" | "none" | "host"; "host" and any other value are forced to "none"
 	Readonly bool              // Mount the working directory read-only
 	Memory   string            // Memory limit (e.g. "512m", "2g")
 	CPUs     string            // CPU limit (e.g. "0.5", "2")
@@ -113,8 +113,20 @@ func BuildRunArgs(cfg Config, containerName, workdir, image string) []string {
 	}
 
 	network := cfg.Network
-	if network == "host" {
+	switch network {
+	case "", "bridge":
+		// Docker default bridge network; "bridge" is the only non-isolated
+		// mode we allow besides "none".
+		network = "bridge"
+	case "none":
+		// Fully isolated mode.
+	case "host":
 		fmt.Fprintf(os.Stderr, "odek: WARNING: --sandbox-network host destroys container isolation. Forcing 'none'.\n")
+		network = "none"
+	default:
+		// Reject modes such as "container:<name>" that share another
+		// container's network namespace and bypass isolation.
+		fmt.Fprintf(os.Stderr, "odek: WARNING: --sandbox-network %q is not allowed. Only 'none' and 'bridge' are permitted. Forcing 'none'.\n", network)
 		network = "none"
 	}
 	args = append(args, "--network", network)
