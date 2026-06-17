@@ -1891,7 +1891,10 @@ window.cancelAgent = function() {
     addSystemMessage('⏹ No active session to cancel');
     return;
   }
-  fetch('/api/cancel?session_id=' + encodeURIComponent(sessionId), { method: 'POST' }).catch(function(){});
+  fetch('/api/cancel?session_id=' + encodeURIComponent(sessionId), {
+    method: 'POST',
+    headers: { 'X-Session-Token': getSessionToken(sessionId) || '' }
+  }).catch(function(){});
   hideCancel();
   addSystemMessage('⏹ Canceled');
 };

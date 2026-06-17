@@ -283,7 +283,7 @@ func serveCmd(args []string) error {
 	mux.Handle("/api/sessions", requireLocalOrigin(handleSessionList(store)))
 	mux.Handle("/api/sessions/", requireLocalOrigin(handleSessionByID(store)))
 	mux.Handle("/api/models", requireLocalOrigin(handleModelList(resolved.Model)))
-	mux.Handle("/api/cancel", requireLocalOrigin(http.HandlerFunc(handleCancel)))
+	mux.Handle("/api/cancel", requireLocalOrigin(handleCancel(store)))
 
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -1507,20 +1507,32 @@ func handleModelList(configuredModel string) http.HandlerFunc {
 // POST /api/cancel?session_id=<id> — cancels the agent execution scoped to
 // that session. Requiring the session ID prevents one connection from
 // cancelling another connection's prompt.
-func handleCancel(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+func handleCancel(store *session.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 
-	sessionID := r.URL.Query().Get("session_id")
-	if sessionID == "" {
-		http.Error(w, "missing session_id", http.StatusBadRequest)
-		return
-	}
+		sessionID := r.URL.Query().Get("session_id")
+		if sessionID == "" {
+			http.Error(w, "missing session_id", http.StatusBadRequest)
+			return
+		}
 
-	cancelPrompt(sessionID)
-	w.WriteHeader(http.StatusNoContent)
+		sess, err := store.Load(sessionID)
+		if err != nil {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+		if _, ok := validateSessionToken(store, sess, sessionTokenFromRequest(r)); !ok {
+			http.Error(w, "invalid session token", http.StatusUnauthorized)
+			return
+		}
+
+		cancelPrompt(sessionID)
+		w.WriteHeader(http.StatusNoContent)
+	}
 }
 
 // ── Static Handler ─────────────────────────────────────────────────────

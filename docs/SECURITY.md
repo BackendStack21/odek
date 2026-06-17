@@ -94,6 +94,10 @@ The classifier is hardened against common evasion tricks (see the package doc in
 
 Regression suites (`internal/danger/classifier_bypass_test.go` and `hardening_test.go`) pin these as known-closed evasions. If you find a new bypass, those test files are the place to add it.
 
+### 3a. System prompt injection scan
+
+`~/.odek/IDENTITY.md` and explicit `--system` / `ODEK_SYSTEM` / `~/.odek/config.json` overrides are capped at 256 KiB and scanned with `danger.ScanInjection` before becoming the system prompt. If the scan detects injection patterns or the prompt exceeds the size cap, odek warns on stderr and falls back to the compiled-in default identity. This keeps the system-message boundary consistent regardless of which source supplied it.
+
 ### 4. Tool-call approval
 
 When a classification is set to `prompt`, an approver pauses the agent until the user decides. Two implementations:
@@ -358,7 +362,7 @@ The path is resolved to an absolute, cleaned form with `filepath.Abs`, symlinks 
 The defense has three layers:
 
 1. **128-bit session IDs** (`internal/session/session.go`) — IDs now use 16 random bytes (32 hex chars) plus the date prefix. The date prefix is kept so filenames sort chronologically; the random suffix has 2^128 possible values, making brute-force enumeration infeasible.
-2. **Session-scoped auth tokens** — every new session is created with a 256-bit `AuthToken` stored in the session JSON. `GET /api/sessions/<id>`, `DELETE /api/sessions/<id>`, `POST /api/sessions/<id>` (rename), and WebSocket session-resume messages require the token via the `X-Session-Token` header, `session_token` cookie, or `auth_token` WebSocket field. Missing or invalid tokens return 401.
+2. **Session-scoped auth tokens** — every new session is created with a 256-bit `AuthToken` stored in the session JSON. `GET /api/sessions/<id>`, `DELETE /api/sessions/<id>`, `POST /api/sessions/<id>` (rename), `POST /api/cancel?session_id=<id>`, and WebSocket session-resume messages require the token via the `X-Session-Token` header, `session_token` cookie, or `auth_token` WebSocket field. Missing or invalid tokens return 401.
 3. **Per-IP rate limiting** — `GET /api/sessions/<id>` is rate-limited to 60 lookups per minute per IP, adding a backstop against any remaining enumeration attempts.
 
 Legacy sessions created before this defense have no `AuthToken`; the first access bootstraps one and returns it to the client, preserving backward compatibility without weakening protection for newly created sessions.

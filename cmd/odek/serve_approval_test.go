@@ -59,7 +59,7 @@ func buildServeMuxPromptAll(t *testing.T, store *session.Store) (net.Listener, *
 			handleWS(store, resourceReg, resolved, systemMessage, conn)
 		},
 	})
-	mux.HandleFunc("/api/cancel", handleCancel)
+	mux.HandleFunc("/api/cancel", handleCancel(store))
 
 	return ln, mux
 }

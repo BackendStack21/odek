@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/resource"
 	"github.com/BackendStack21/odek/internal/session"
 	golangws "golang.org/x/net/websocket"
@@ -59,7 +60,7 @@ func startTestServer(t *testing.T) *testServer {
 	mux.HandleFunc("/", s.handleStatic())
 	mux.HandleFunc("/api/sessions", s.handleSessionList())
 	mux.HandleFunc("/api/resources", s.handleResourceSearch())
-	mux.HandleFunc("/api/cancel", handleCancel)
+	mux.HandleFunc("/api/cancel", handleCancel(store))
 	mux.Handle("/ws", &golangws.Server{
 		Handshake: func(*golangws.Config, *http.Request) error { return nil },
 		Handler: func(conn *golangws.Conn) {
@@ -140,11 +141,26 @@ func (s *testServer) handleWebSocket(conn *golangws.Conn) {
 
 		// Handle prompt — echo back structured events for testing
 		if msg["type"] == "prompt" {
+			// Ensure a session record exists so /api/cancel can validate the
+			// session-scoped auth token.
+			sess, err := s.store.Load("test-session-001")
+			if err != nil {
+				sess, _ = s.store.Create([]llm.Message{}, "test-model", "test")
+				sess.ID = "test-session-001"
+				sess.AuthToken = session.GenerateAuthToken()
+				_ = s.store.Save(sess)
+			}
+			authToken := ""
+			if sess != nil {
+				authToken = sess.AuthToken
+			}
+
 			// Send session event
 			writeJSON(conn, map[string]any{
-				"type":       "session",
-				"session_id": "test-session-001",
-				"model":      "test-model",
+				"type":        "session",
+				"session_id":  "test-session-001",
+				"auth_token":  authToken,
+				"model":       "test-model",
 			})
 
 			// Send thinking
@@ -884,7 +900,7 @@ func buildServeMux(t *testing.T, store *session.Store) (net.Listener, *http.Serv
 	})
 	mux.HandleFunc("/api/resources", handleResourceSearch(resourceReg))
 	mux.HandleFunc("/api/sessions", handleSessionList(store))
-	mux.HandleFunc("/api/cancel", handleCancel)
+	mux.HandleFunc("/api/cancel", handleCancel(store))
 
 	return ln, mux
 }
@@ -1582,10 +1598,8 @@ func TestServe_Cancel_PostReturns204(t *testing.T) {
 	s := startTestServer(t)
 	defer s.Close()
 
-	resp, err := http.Post(s.url+"/api/cancel?session_id=test-session", "", nil)
-	if err != nil {
-		t.Fatalf("POST /api/cancel: %v", err)
-	}
+	token := ensureTestSession(t, s.store, "test-session")
+	resp := postCancel(t, s.url, "test-session", token)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 204 {
@@ -1608,16 +1622,27 @@ func TestServe_Cancel_MissingSessionIDReturns400(t *testing.T) {
 	}
 }
 
+func TestServe_Cancel_InvalidTokenReturns401(t *testing.T) {
+	s := startTestServer(t)
+	defer s.Close()
+
+	ensureTestSession(t, s.store, "test-session")
+	resp := postCancel(t, s.url, "test-session", "wrong-token")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 401 {
+		t.Errorf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
 func TestServe_Cancel_NoopWhenIdle(t *testing.T) {
 	// Calling cancel when no prompt is running should be harmless (204).
 	s := startTestServer(t)
 	defer s.Close()
 
+	token := ensureTestSession(t, s.store, "test-session")
 	for i := 0; i < 3; i++ {
-		resp, err := http.Post(s.url+"/api/cancel?session_id=test-session", "", nil)
-		if err != nil {
-			t.Fatalf("POST %d: %v", i, err)
-		}
+		resp := postCancel(t, s.url, "test-session", token)
 		resp.Body.Close()
 		if resp.StatusCode != 204 {
 			t.Errorf("attempt %d: status = %d, want 204", i, resp.StatusCode)
@@ -1644,8 +1669,8 @@ func TestServe_Cancel_WebSocketCancel(t *testing.T) {
 		t.Fatalf("Send(): %v", err)
 	}
 
-	// Read the session event to obtain the session ID for cancellation.
-	var sessionID string
+	// Read the session event to obtain the session ID and auth token for cancellation.
+	var sessionID, authToken string
 	readDeadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(readDeadline) {
 		var event map[string]any
@@ -1656,6 +1681,9 @@ func TestServe_Cancel_WebSocketCancel(t *testing.T) {
 			if sid, ok := event["session_id"].(string); ok {
 				sessionID = sid
 			}
+			if tok, ok := event["auth_token"].(string); ok {
+				authToken = tok
+			}
 			break
 		}
 	}
@@ -1663,11 +1691,8 @@ func TestServe_Cancel_WebSocketCancel(t *testing.T) {
 		t.Fatal("did not receive session_id from WebSocket")
 	}
 
-	// Immediately cancel using the scoped session ID.
-	resp, err := http.Post(s.url+"/api/cancel?session_id="+sessionID, "", nil)
-	if err != nil {
-		t.Fatalf("POST /api/cancel: %v", err)
-	}
+	// Immediately cancel using the scoped session ID and token.
+	resp := postCancel(t, s.url, sessionID, authToken)
 	resp.Body.Close()
 
 	// Read remaining events — we should eventually get error (canceled context).
@@ -1751,7 +1776,7 @@ func TestServe_E2E_CancelWithMockLLM(t *testing.T) {
 
 	// Wait for session event (agent started processing)
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	var sessionID string
+	var sessionID, authToken string
 	for i := 0; i < 5; i++ {
 		var raw []byte
 		if err := golangws.Message.Receive(conn, &raw); err != nil {
@@ -1766,6 +1791,9 @@ func TestServe_E2E_CancelWithMockLLM(t *testing.T) {
 			if sid, ok := evt["session_id"].(string); ok {
 				sessionID = sid
 			}
+			if tok, ok := evt["auth_token"].(string); ok {
+				authToken = tok
+			}
 			break
 		}
 		if evt["type"] == "done" || evt["type"] == "error" {
@@ -1778,11 +1806,7 @@ func TestServe_E2E_CancelWithMockLLM(t *testing.T) {
 	t.Log("Session received - agent is running")
 
 	// Send cancel request scoped to this session.
-	cancelURL := "http://" + ln.Addr().String() + "/api/cancel?session_id=" + sessionID
-	cancelResp, err := http.Post(cancelURL, "", nil)
-	if err != nil {
-		t.Fatalf("POST /api/cancel: %v", err)
-	}
+	cancelResp := postCancel(t, "http://"+ln.Addr().String(), sessionID, authToken)
 	cancelResp.Body.Close()
 	if cancelResp.StatusCode != 204 {
 		t.Errorf("cancel status = %d, want 204", cancelResp.StatusCode)
@@ -1876,14 +1900,10 @@ func TestServe_Cancel_CannotCrossSessions(t *testing.T) {
 	if err := golangws.Message.Send(attackerConn, string(attackerPayload)); err != nil {
 		t.Fatalf("Send attacker prompt: %v", err)
 	}
-	attackerSessionID := readSessionID(t, attackerConn)
+	attackerSessionID, attackerToken := readSessionEvent(t, attackerConn)
 
 	// Cancel the attacker's session.
-	cancelURL := "http://" + ln.Addr().String() + "/api/cancel?session_id=" + attackerSessionID
-	cancelResp, err := http.Post(cancelURL, "", nil)
-	if err != nil {
-		t.Fatalf("POST /api/cancel: %v", err)
-	}
+	cancelResp := postCancel(t, "http://"+ln.Addr().String(), attackerSessionID, attackerToken)
 	cancelResp.Body.Close()
 	if cancelResp.StatusCode != 204 {
 		t.Errorf("cancel status = %d, want 204", cancelResp.StatusCode)
@@ -1939,26 +1959,72 @@ func TestServe_Cancel_CannotCrossSessions(t *testing.T) {
 
 // readSessionID blocks until a session event is received on conn and returns
 // its session_id. It fails the test if no session event arrives in time.
-func readSessionID(t *testing.T, conn *golangws.Conn) string {
+func readSessionEvent(t *testing.T, conn *golangws.Conn) (string, string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		var raw []byte
 		if err := golangws.Message.Receive(conn, &raw); err != nil {
-			t.Fatalf("readSessionID receive error: %v", err)
+			t.Fatalf("readSessionEvent receive error: %v", err)
 		}
 		var evt map[string]any
 		if err := json.Unmarshal(raw, &evt); err != nil {
 			continue
 		}
 		if evt["type"] == "session" {
-			if sid, ok := evt["session_id"].(string); ok {
-				return sid
+			var sid, tok string
+			if s, ok := evt["session_id"].(string); ok {
+				sid = s
 			}
+			if a, ok := evt["auth_token"].(string); ok {
+				tok = a
+			}
+			return sid, tok
 		}
 	}
-	t.Fatal("readSessionID timed out waiting for session event")
-	return ""
+	t.Fatal("readSessionEvent timed out waiting for session event")
+	return "", ""
+}
+
+func readSessionID(t *testing.T, conn *golangws.Conn) string {
+	sid, _ := readSessionEvent(t, conn)
+	return sid
+}
+
+// postCancel makes an authenticated POST /api/cancel request.
+func postCancel(t *testing.T, url, sessionID, token string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, url+"/api/cancel?session_id="+sessionID, nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	if token != "" {
+		req.Header.Set("X-Session-Token", token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /api/cancel: %v", err)
+	}
+	return resp
+}
+
+// ensureTestSession creates a session with the given ID in store and returns
+// its auth token, so HTTP endpoints that require session-token validation can
+// be exercised by tests.
+func ensureTestSession(t *testing.T, store *session.Store, id string) string {
+	t.Helper()
+	sess, err := store.Create([]llm.Message{}, "test-model", "test")
+	if err != nil {
+		t.Fatalf("Create session: %v", err)
+	}
+	sess.ID = id
+	if sess.AuthToken == "" {
+		sess.AuthToken = session.GenerateAuthToken()
+	}
+	if err := store.Save(sess); err != nil {
+		t.Fatalf("Save session: %v", err)
+	}
+	return sess.AuthToken
 }
 
 // TestServe_WebSocketMaxPayload verifies that the WebSocket endpoint rejects
