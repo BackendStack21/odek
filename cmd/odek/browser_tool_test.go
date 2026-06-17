@@ -6,7 +6,17 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/BackendStack21/odek/internal/danger"
 )
+
+// newTestBrowserTool returns a browserTool configured with non_interactive=allow
+// so unit tests that hit local httptest servers are not blocked by the default
+// deny policy.
+func newTestBrowserTool() *browserTool {
+	allow := "allow"
+	return newBrowserTool(danger.DangerousConfig{NonInteractive: &allow})
+}
 
 // ── Browser Navigate ──────────────────────────────────────────────────
 
@@ -21,7 +31,7 @@ func TestBrowser_Navigate(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	b := &browserTool{}
+	b := newTestBrowserTool()
 	result := callJSON(t, b, `{"action":"navigate","url":"`+ts.URL+`"}`)
 	var r struct {
 		Title   string `json:"title"`
@@ -49,7 +59,7 @@ func TestBrowser_Navigate(t *testing.T) {
 }
 
 func TestBrowser_Navigate_InvalidURL(t *testing.T) {
-	b := &browserTool{}
+	b := newTestBrowserTool()
 	result := callJSON(t, b, `{"action":"navigate","url":"not-a-valid-url"}`)
 	var r struct {
 		Error string `json:"error"`
@@ -61,7 +71,7 @@ func TestBrowser_Navigate_InvalidURL(t *testing.T) {
 }
 
 func TestBrowser_Navigate_MissingURL(t *testing.T) {
-	b := &browserTool{}
+	b := newTestBrowserTool()
 	result := callJSON(t, b, `{"action":"navigate"}`)
 	var r struct {
 		Error string `json:"error"`
@@ -79,7 +89,7 @@ func TestBrowser_Navigate_HTTPError(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	b := &browserTool{}
+	b := newTestBrowserTool()
 	result := callJSON(t, b, `{"action":"navigate","url":"`+ts.URL+`"}`)
 	var r struct {
 		Content string `json:"content"`
@@ -105,7 +115,7 @@ func TestBrowser_Snapshot(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	b := &browserTool{}
+	b := newTestBrowserTool()
 	callJSON(t, b, `{"action":"navigate","url":"`+ts.URL+`"}`)
 
 	result := callJSON(t, b, `{"action":"snapshot"}`)
@@ -127,7 +137,7 @@ func TestBrowser_Snapshot(t *testing.T) {
 }
 
 func TestBrowser_Snapshot_NoPage(t *testing.T) {
-	b := &browserTool{}
+	b := newTestBrowserTool()
 	result := callJSON(t, b, `{"action":"snapshot"}`)
 	var r struct {
 		Error string `json:"error"`
@@ -156,7 +166,7 @@ func TestBrowser_Click(t *testing.T) {
 		"/page2": `<html><body><h1>Page 2 Content</h1></body></html>`,
 	}
 
-	b := &browserTool{}
+	b := newTestBrowserTool()
 	callJSON(t, b, `{"action":"navigate","url":"`+ts.URL+`"}`)
 
 	// Click on the link
@@ -188,7 +198,7 @@ func TestBrowser_Click_InvalidRef(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	b := &browserTool{}
+	b := newTestBrowserTool()
 	callJSON(t, b, `{"action":"navigate","url":"`+ts.URL+`"}`)
 
 	result := callJSON(t, b, `{"action":"click","ref":"nonexistent"}`)
@@ -202,7 +212,7 @@ func TestBrowser_Click_InvalidRef(t *testing.T) {
 }
 
 func TestBrowser_Click_MissingRef(t *testing.T) {
-	b := &browserTool{}
+	b := newTestBrowserTool()
 	result := callJSON(t, b, `{"action":"click"}`)
 	var r struct {
 		Error string `json:"error"`
@@ -219,7 +229,7 @@ func TestBrowser_Click_ButtonAcknowledges(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	b := &browserTool{}
+	b := newTestBrowserTool()
 	callJSON(t, b, `{"action":"navigate","url":"`+ts.URL+`"}`)
 
 	result := callJSON(t, b, `{"action":"click","ref":"e1"}`)
@@ -242,7 +252,7 @@ func TestBrowser_Click_InputSubmitAcknowledges(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	b := &browserTool{}
+	b := newTestBrowserTool()
 	callJSON(t, b, `{"action":"navigate","url":"`+ts.URL+`"}`)
 
 	result := callJSON(t, b, `{"action":"click","ref":"e1"}`)
@@ -275,7 +285,7 @@ func TestBrowser_Back(t *testing.T) {
 		"/page2": `<html><body><h1>Page 2</h1></body></html>`,
 	}
 
-	b := &browserTool{}
+	b := newTestBrowserTool()
 	callJSON(t, b, `{"action":"navigate","url":"`+ts.URL+`"}`)
 	callJSON(t, b, `{"action":"navigate","url":"`+ts.URL+`/page2"}`)
 
@@ -306,7 +316,7 @@ func TestBrowser_Back_NoHistory(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	b := &browserTool{}
+	b := newTestBrowserTool()
 	callJSON(t, b, `{"action":"navigate","url":"`+ts.URL+`"}`)
 
 	result := callJSON(t, b, `{"action":"back"}`)
@@ -322,7 +332,7 @@ func TestBrowser_Back_NoHistory(t *testing.T) {
 // ── Browser Unknown Action ────────────────────────────────────────────
 
 func TestBrowser_UnknownAction(t *testing.T) {
-	b := &browserTool{}
+	b := newTestBrowserTool()
 	result := callJSON(t, b, `{"action":"fly"}`)
 	var r struct {
 		Error string `json:"error"`
@@ -336,7 +346,7 @@ func TestBrowser_UnknownAction(t *testing.T) {
 // ── Browser Schema ───────────────────────────────────────────────────
 
 func TestBrowser_Schema(t *testing.T) {
-	b := &browserTool{}
+	b := newTestBrowserTool()
 	schema := b.Schema().(map[string]any)
 	props := schema["properties"].(map[string]any)
 
@@ -364,7 +374,7 @@ func TestBrowser_ExtractsInteractiveElements(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	b := &browserTool{}
+	b := newTestBrowserTool()
 	callJSON(t, b, `{"action":"navigate","url":"`+ts.URL+`"}`)
 
 	result := callJSON(t, b, `{"action":"snapshot"}`)
@@ -447,7 +457,7 @@ func TestResolveURL_SameDirRelative(t *testing.T) {
 // ── Browser Bad Action Parameters ─────────────────────────────────────
 
 func TestBrowser_Navigate_BadJSON(t *testing.T) {
-	b := &browserTool{}
+	b := newTestBrowserTool()
 	result, err := b.Call(`{"action":"navigate","url":123}`)
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
@@ -467,7 +477,7 @@ func TestBrowser_WrapsLinkURL(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	b := &browserTool{}
+	b := newTestBrowserTool()
 	result := callJSON(t, b, `{"action":"navigate","url":"`+ts.URL+`"}`)
 
 	var r struct {

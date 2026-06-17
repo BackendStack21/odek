@@ -44,15 +44,22 @@ func buildServeMuxPromptAll(t *testing.T, store *session.Store) (net.Listener, *
 		resource.NewSessionResolver(filepath.Join(home, ".odek", "sessions")),
 	)
 
+	wsToken, err := newServeToken()
+	if err != nil {
+		t.Fatalf("CSRF token: %v", err)
+	}
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", handleStatic())
+	mux.HandleFunc("/", handleStatic(wsToken))
 	mux.Handle("/ws", &golangws.Server{
-		Handshake: func(*golangws.Config, *http.Request) error { return nil },
+		Handshake: func(cfg *golangws.Config, req *http.Request) error {
+			return wsHandshakeWithLimits(cfg, req, wsToken)
+		},
 		Handler: func(conn *golangws.Conn) {
 			handleWS(store, resourceReg, resolved, systemMessage, conn)
 		},
 	})
-	mux.HandleFunc("/api/cancel", handleCancel)
+	mux.HandleFunc("/api/cancel", handleCancel(store))
 
 	return ln, mux
 }
@@ -85,11 +92,7 @@ func TestServe_E2E_ApprovalRoundTrip(t *testing.T) {
 	go func() { _ = serveOnListener(ln, mux) }()
 	waitForHTTP(t, ln.Addr().String())
 
-	wsURL := "ws://" + ln.Addr().String() + "/ws"
-	conn, err := golangws.Dial(wsURL, "", "http://localhost")
-	if err != nil {
-		t.Fatalf("Dial(%q): %v", wsURL, err)
-	}
+	conn := dialTestWS(t, ln.Addr().String())
 	defer conn.Close()
 
 	prompt := map[string]string{"type": "prompt", "content": "run a command"}

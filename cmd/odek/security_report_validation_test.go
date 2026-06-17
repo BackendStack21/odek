@@ -92,7 +92,8 @@ func TestReport_BrowserWrapsUntrustedContent(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	bt := newBrowserTool(danger.DangerousConfig{})
+	allow := "allow"
+	bt := newBrowserTool(danger.DangerousConfig{NonInteractive: &allow})
 	resJSON, err := bt.doNavigate(ts.URL)
 	if err != nil {
 		t.Fatalf("doNavigate: %v", err)

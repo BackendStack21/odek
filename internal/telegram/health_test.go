@@ -142,3 +142,49 @@ func (m *mockResponseWriter) Write(b []byte) (int, error) {
 func (m *mockResponseWriter) WriteHeader(statusCode int) {
 	m.statusCode = statusCode
 }
+
+// captureLogger records Warn calls for testing.
+type captureLogger struct {
+	warnings []string
+}
+
+func (c *captureLogger) Debug(_ string, _ ...any) {}
+func (c *captureLogger) Info(_ string, _ ...any)  {}
+func (c *captureLogger) Warn(msg string, _ ...any)  { c.warnings = append(c.warnings, msg) }
+func (c *captureLogger) Error(_ string, _ ...any) {}
+func (c *captureLogger) With(_ ...any) Logger     { return c }
+
+func TestHealthServer_NonLoopbackAddressWarns(t *testing.T) {
+	log := &captureLogger{}
+	hs := NewHealthServer(":0")
+	hs.SetLogger(log)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- hs.Start(ctx)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if err != nil && !strings.Contains(err.Error(), "server closed") {
+			t.Errorf("unexpected shutdown error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for health server shutdown")
+	}
+
+	found := false
+	for _, w := range log.warnings {
+		if strings.Contains(w, "non-loopback") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected non-loopback binding warning, got %v", log.warnings)
+	}
+}

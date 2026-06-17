@@ -27,8 +27,6 @@ func TestClassify_Safe_Commands(t *testing.T) {
 		{"diff a.txt b.txt", Safe},
 		{"cmp old new", Safe},
 		{"date", Safe},
-		{"env", Safe},
-		{"printenv HOME", Safe},
 		{"echo hello world", Safe},
 		{"go build ./...", Safe},
 		{"go vet ./...", Safe},
@@ -623,8 +621,8 @@ func TestClassify_Config_NonInteractive(t *testing.T) {
 	}
 
 	cfg3 := DangerousConfig{}
-	if got := cfg3.NonInteractiveAction(); got != Allow {
-		t.Errorf("default NonInteractiveAction() = %s, want allow", got)
+	if got := cfg3.NonInteractiveAction(); got != Deny {
+		t.Errorf("default NonInteractiveAction() = %s, want deny", got)
 	}
 }
 
@@ -833,8 +831,8 @@ func TestParseAction(t *testing.T) {
 
 func TestNonInteractiveAction_Default(t *testing.T) {
 	cfg := &DangerousConfig{}
-	if got := cfg.NonInteractiveAction(); got != Allow {
-		t.Errorf("default non-interactive = %s, want allow", got)
+	if got := cfg.NonInteractiveAction(); got != Deny {
+		t.Errorf("default non-interactive = %s, want deny", got)
 	}
 }
 
@@ -1166,9 +1164,19 @@ func TestClassifyPath_OdekTrustAnchors(t *testing.T) {
 		{home + "/.odek/secrets.env", SystemWrite},
 		{home + "/.odek/skills/evil/SKILL.md", SystemWrite},
 		{home + "/.odek/skills", SystemWrite},
+		{home + "/.odek/sessions/abc.json", SystemWrite},
+		{home + "/.odek/audit/turn-1.json", SystemWrite},
+		{home + "/.odek/plans/evil.md", SystemWrite},
+		{home + "/.odek/schedules.json", SystemWrite},
+		{home + "/.odek/schedule-state.json", SystemWrite},
+		{home + "/.odek/mcp_approvals.json", SystemWrite},
+		{home + "/.odek/mcp_tool_approvals.json", SystemWrite},
+		{home + "/.odek/restart.json", SystemWrite},
+		{home + "/.odek/telegram.lock", SystemWrite},
 		// non-anchor ~/.odek state stays local
 		{home + "/.odek/memory/episodes.json", LocalWrite},
-		{home + "/.odek/sessions/abc.json", LocalWrite},
+		{home + "/.odek/notes.md", LocalWrite},
+		{home + "/.odek/media/photo.jpg", LocalWrite},
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {

@@ -1091,9 +1091,44 @@ func confineToCWD(path string) (string, error) {
 // must not be writable through the generic file tools. Keep in sync with
 // the SystemWrite escalation in danger.ClassifyPath.
 func isProtectedOdekPath(rel string) bool {
-	return rel == "config.json" || rel == "secrets.env" ||
-		rel == "IDENTITY.md" ||
-		rel == "skills" || strings.HasPrefix(rel, "skills"+string(filepath.Separator))
+	rel = filepath.Clean(rel)
+
+	// Exact-file trust anchors. Rewriting any of these can disable safety
+	// policy, exfiltrate secrets, or persist attacker control.
+	protectedExact := []string{
+		"config.json",
+		"secrets.env",
+		"IDENTITY.md",
+		"schedules.json",
+		"schedule-state.json",
+		"schedules.lock",
+		"mcp_approvals.json",
+		"mcp_tool_approvals.json",
+		"restart.json",
+		"telegram.lock",
+		"telegram.pid",
+		"schedule.pid",
+		"schedule.log",
+	}
+	for _, p := range protectedExact {
+		if rel == p {
+			return true
+		}
+	}
+
+	// Directory trust anchors. Anything inside these directories is protected.
+	protectedDirs := []string{
+		"skills",   // auto-loaded into future prompts
+		"sessions", // conversation history & auth tokens
+		"audit",    // forensic audit log
+		"plans",    // persisted task plans
+	}
+	for _, d := range protectedDirs {
+		if rel == d || strings.HasPrefix(rel, d+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 func truncateDiff(s string, maxLen int) string {

@@ -56,12 +56,14 @@ Same schema as global. Only set the fields you want to override:
 }
 ```
 
-> **Security note:** The following fields cannot be set in `./odek.json` because a malicious repository could use them to steal secrets, poison the system prompt, or disable safety policy:
+> **Security note:** The following fields cannot be set in `./odek.json` because a malicious repository could use them to steal secrets, poison the system prompt, disable safety policy, or redirect data to attacker-controlled backends:
 >
 > - `base_url` — use `~/.odek/config.json`, `ODEK_BASE_URL`, or `--base-url`
 > - `api_key` — use `~/.odek/config.json`, `ODEK_API_KEY`, or `~/.odek/secrets.env`
 > - `system` — use `~/.odek/config.json`, `ODEK_SYSTEM`, or `--system`
 > - `dangerous` — use `~/.odek/config.json`
+> - `embedding` / `memory` / `sessions` / `skills.dirs` / `skills.embedding` / `web_search` — use `~/.odek/config.json`
+> - `telegram` — use `~/.odek/config.json` or `ODEK_TELEGRAM_*` env vars
 >
 > If any of these appear in `./odek.json`, odek ignores them and prints a warning.
 

@@ -786,8 +786,8 @@ func TestConfineToCWD_AllowsOdekDir(t *testing.T) {
 	}
 	for _, p := range []string{
 		home + "/.odek/memory/episodes.json",
-		home + "/.odek/sessions/abc.json",
 		home + "/.odek/notes.md",
+		home + "/.odek/media/photo.jpg",
 	} {
 		if _, err := confineToCWD(p); err != nil {
 			t.Errorf("non-sensitive ~/.odek/ path %q should be allowed, got: %v", p, err)
@@ -812,9 +812,27 @@ func TestConfineToCWD_RejectsProtectedOdekPaths(t *testing.T) {
 		home + "/.odek/IDENTITY.md",
 		home + "/.odek/skills/evil/SKILL.md",
 		home + "/.odek/skills",
+		home + "/.odek/sessions/abc.json",
+		home + "/.odek/sessions",
+		home + "/.odek/audit/turn-1.json",
+		home + "/.odek/audit",
+		home + "/.odek/plans/evil.md",
+		home + "/.odek/plans",
+		home + "/.odek/schedules.json",
+		home + "/.odek/schedule-state.json",
+		home + "/.odek/schedules.lock",
+		home + "/.odek/mcp_approvals.json",
+		home + "/.odek/mcp_tool_approvals.json",
+		home + "/.odek/restart.json",
+		home + "/.odek/telegram.lock",
+		home + "/.odek/telegram.pid",
+		home + "/.odek/schedule.pid",
+		home + "/.odek/schedule.log",
 		// ".." traversal inside the carve-out must not reach the anchors
 		home + "/.odek/memory/../config.json",
 		home + "/.odek/memory/../IDENTITY.md",
+		home + "/.odek/memory/../schedules.json",
+		home + "/.odek/memory/../sessions/abc.json",
 	} {
 		if _, err := confineToCWD(p); err == nil {
 			t.Errorf("protected odek path %q should be rejected by confineToCWD", p)

@@ -108,9 +108,24 @@ func TestPromptCommand_NoTTY_Deny(t *testing.T) {
 	}
 }
 
+func TestPromptCommand_NoTTY_DefaultDenies(t *testing.T) {
+	// With no explicit non_interactive setting, the default is now deny.
+	a := NewTTYApprover(&DangerousConfig{})
+	a.TTYPath = "/nonexistent/tty-that-will-never-exist"
+
+	err := a.PromptCommand(SystemWrite, "rm -rf /etc", "testing default deny path")
+	if err == nil {
+		t.Fatal("expected error for default non-interactive policy with no TTY")
+	}
+	if !strings.Contains(err.Error(), "denied") {
+		t.Errorf("expected 'denied' in error message, got: %v", err)
+	}
+}
+
 func TestPromptCommand_NoTTY_Allow(t *testing.T) {
-	// Default NonInteractive is Allow → should return nil when TTY is unavailable
-	a := NewTTYApprover(nil)
+	// Explicit non_interactive=allow → should return nil when TTY is unavailable
+	allow := "allow"
+	a := NewTTYApprover(&DangerousConfig{NonInteractive: &allow})
 	a.TTYPath = "/nonexistent/tty-that-will-never-exist"
 
 	err := a.PromptCommand(SystemWrite, "rm -rf /etc", "testing allow path")
@@ -139,7 +154,8 @@ func TestPromptOperation_NoTTY_Deny(t *testing.T) {
 }
 
 func TestPromptOperation_NoTTY_Allow(t *testing.T) {
-	a := NewTTYApprover(nil)
+	allow := "allow"
+	a := NewTTYApprover(&DangerousConfig{NonInteractive: &allow})
 	a.TTYPath = "/nonexistent/tty-that-will-never-exist"
 
 	op := ToolOperation{

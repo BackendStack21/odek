@@ -120,7 +120,11 @@ func TestSSRFGuardedDial_ExternalPinnedToValidatedIP(t *testing.T) {
 // policy gate lets it through) but resolves to the cloud-metadata IP, and the
 // dial guard refuses it.
 func TestBrowser_SSRF_ResolvesInternal(t *testing.T) {
-	b := &browserTool{state: &browserState{nextRef: 1}}
+	allow := "allow"
+	b := &browserTool{
+		state:           &browserState{nextRef: 1},
+		dangerousConfig: danger.DangerousConfig{NonInteractive: &allow},
+	}
 	b.client = &http.Client{
 		CheckRedirect: b.checkRedirect,
 		Transport: &http.Transport{

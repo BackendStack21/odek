@@ -284,8 +284,13 @@ func TestHardening_NoRegressionOnBenign(t *testing.T) {
 		cmd string
 		cls RiskClass
 	}{
-		{"env", Safe},
-		{"printenv HOME", Safe},
+		{"env", SystemWrite},
+		{"env -i", SystemWrite},
+		{"env -u SECRET", SystemWrite},
+		{"printenv", SystemWrite},
+		{"printenv HOME", SystemWrite},
+		{"env FOO=bar go version", Safe},
+		{"env FOO=bar printenv FOO", SystemWrite},
 		{"find . -name '*.go'", Safe},
 		{"git status", Safe},
 		{"ls -la /tmp", Safe},

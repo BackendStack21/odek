@@ -90,8 +90,13 @@ The classifier is hardened against common evasion tricks (see the package doc in
 - `command rm`, `env rm`, `sudo rm`, `/bin/rm`, `true | dd of=/dev/sda` — wrappers are stripped, every pipe stage is classified, and absolute paths are basenamed before matching.
 - `bash -i >& /dev/tcp/…`, `cat ~/.ssh/id_rsa` — reverse-shell channels and sensitive-path access are flagged regardless of the command verb.
 - `awk 'BEGIN{system("rm -rf ~")}'`, `sed 's/foo/bar/e'`, `find . -exec sh -c '…' \;`, `vim /etc/passwd` — interpreters that can invoke shell commands (`awk`/`gawk`/`mawk`/`nawk`, `sed` `e` command / `-f`, editors, `find -exec`) are escalated to `code_execution` rather than treated as read-only.
+- `env` and `printenv` — a full process-environment dump is classified as `system_write` because it can leak secrets that the redaction scanner does not recognise. `env FOO=bar <cmd>` still classifies the real `<cmd>` normally.
 
 Regression suites (`internal/danger/classifier_bypass_test.go` and `hardening_test.go`) pin these as known-closed evasions. If you find a new bypass, those test files are the place to add it.
+
+### 3a. System prompt injection scan
+
+`~/.odek/IDENTITY.md` and explicit `--system` / `ODEK_SYSTEM` / `~/.odek/config.json` overrides are capped at 256 KiB and scanned with `danger.ScanInjection` before becoming the system prompt. If the scan detects injection patterns or the prompt exceeds the size cap, odek warns on stderr and falls back to the compiled-in default identity. This keeps the system-message boundary consistent regardless of which source supplied it.
 
 ### 4. Tool-call approval
 
@@ -195,9 +200,19 @@ The API key is **not** passed via process environment. It is written to a 0600 t
 
 On Windows, where you cannot `unlink` an open file, a 0600 temp file is used and deleted by the parent after `Start`.
 
-### 9. Web UI WebSocket origin allowlist
+### 9. Web UI CSRF token
 
-`odek serve`'s WebSocket handshake rejects upgrades from non-local origins. By default `localhost`, `127.0.0.1`, and `[::1]` are accepted; a missing `Origin` header (curl, native clients) is also accepted. This blocks CSRF-on-localhost attacks where a malicious page open in your browser otherwise drives the agent.
+`odek serve` issues a fresh 256-bit random token at startup. The token is:
+
+- injected into the served `index.html` as `<meta name="odek-ws-token" content="...">`,
+- delivered as an `HttpOnly` `SameSite=Strict` cookie named `odek_ws_token`, and
+- required by the `/ws` handshake via the cookie, an `X-Odek-Ws-Token` header, or a WebSocket subprotocol of the form `odek.<token>`.
+
+The origin allowlist (`localhost`, `127.0.0.1`, `[::1]`, and empty Origin for non-browser clients) remains as defense-in-depth, but the token is the primary protection against cross-port localhost CSRF: a malicious page served by another local port cannot obtain the token and therefore cannot open an agent-controlling WebSocket.
+
+### 9a. Web UI file attachments
+
+Files attached through the Web UI are sourced from the browser trust boundary. The UI sends each attachment separately from the user's text; before injecting an attachment into the model prompt, `odek serve` wraps it with the same nonce'd `<untrusted_content_*>` boundary used for tool output (`source="attachment:<filename>"`). This prevents a maliciously crafted file from being interpreted as system instructions.
 
 ### 10. Secret redaction
 
@@ -277,7 +292,7 @@ See [CLI.md — Dangerous Operations](CLI.md#dangerous-operations) for the full 
 ```json
 {
   "dangerous": {
-    "non_interactive": "allow",
+    "non_interactive": "deny",
     "classes": {
       "network_egress": "deny",
       "code_execution": "prompt"
@@ -308,8 +323,11 @@ exceed the cap are rejected before they are written.
 - `api_key` — can exfiltrate prompts by billing runs to an attacker-owned key.
 - `system` — can poison the system prompt with hidden instructions.
 - `dangerous` — can disable the approval gate (`{"action": "allow"}`) and enable destructive auto-execution.
+- `embedding` / `memory` / `sessions` / `skills.dirs` / `skills.embedding` — can redirect memory, session, or skill embeddings to an attacker-controlled endpoint.
+- `telegram` — can send final results or bot traffic to an attacker-controlled Telegram bot/chat.
+- `web_search` — can leak every search query to an attacker-controlled backend.
 
-These fields can only be set from operator-controlled sources: `~/.odek/config.json`, `ODEK_*` environment variables, or CLI flags.
+These fields can only be set from operator-controlled sources: `~/.odek/config.json` (and `ODEK_TELEGRAM_*` env vars for `telegram`).
 
 ### 19. MCP server environment sanitisation
 
@@ -335,7 +353,7 @@ When the agent emits `MEDIA:photo:/path`, `MEDIA:voice:/path`, `MEDIA:document:/
 - `~/.odek/media/`, and
 - the system temporary directory.
 
-The path is resolved to an absolute, cleaned form with `filepath.Abs`, symlinks are resolved with `filepath.EvalSymlinks`, and the final component is checked with `os.Lstat`. If the final component is a symlink, or if the resolved path escapes the allowlist, the upload is rejected. This closes the arbitrary-file-read/exfiltration vector where a prompt-injected agent asks the bot to send files such as `/home/user/.ssh/id_rsa`.
+The path is resolved to an absolute, cleaned form with `filepath.Abs`, symlinks are resolved with `filepath.EvalSymlinks`, and the final component is verified with an atomic `O_NOFOLLOW` open + `fstat` (Unix). If the final component is a symlink, or if the resolved path escapes the allowlist, the upload is rejected. This closes the arbitrary-file-read/exfiltration vector where a prompt-injected agent asks the bot to send files such as `/home/user/.ssh/id_rsa`.
 
 ### 24. Session ID entropy + session-scoped auth tokens
 
@@ -344,7 +362,7 @@ The path is resolved to an absolute, cleaned form with `filepath.Abs`, symlinks 
 The defense has three layers:
 
 1. **128-bit session IDs** (`internal/session/session.go`) — IDs now use 16 random bytes (32 hex chars) plus the date prefix. The date prefix is kept so filenames sort chronologically; the random suffix has 2^128 possible values, making brute-force enumeration infeasible.
-2. **Session-scoped auth tokens** — every new session is created with a 256-bit `AuthToken` stored in the session JSON. `GET /api/sessions/<id>`, `DELETE /api/sessions/<id>`, `POST /api/sessions/<id>` (rename), and WebSocket session-resume messages require the token via the `X-Session-Token` header, `session_token` cookie, or `auth_token` WebSocket field. Missing or invalid tokens return 401.
+2. **Session-scoped auth tokens** — every new session is created with a 256-bit `AuthToken` stored in the session JSON. `GET /api/sessions/<id>`, `DELETE /api/sessions/<id>`, `POST /api/sessions/<id>` (rename), `POST /api/cancel?session_id=<id>`, and WebSocket session-resume messages require the token via the `X-Session-Token` header, `session_token` cookie, or `auth_token` WebSocket field. Missing or invalid tokens return 401.
 3. **Per-IP rate limiting** — `GET /api/sessions/<id>` is rate-limited to 60 lookups per minute per IP, adding a backstop against any remaining enumeration attempts.
 
 Legacy sessions created before this defense have no `AuthToken`; the first access bootstraps one and returns it to the client, preserving backward compatibility without weakening protection for newly created sessions.
@@ -430,6 +448,14 @@ Telegram's message and caption limits are defined in UTF-16 code units, but `int
 
 The `send_message` tool lets the agent send arbitrary text messages to Telegram using `ParseModeMarkdownV2`. Because the LLM may echo or reformat attacker-controllable content, the text is now escaped with `telegram.EscapeMarkdown` before sending. This prevents a prompt-injected payload from using Telegram's Markdown syntax to hide malicious links, fake buttons, or instruction-like formatting inside an otherwise ordinary-looking message.
 
+### 39a. Telegram plan file size cap
+
+Plan files live in `~/.odek/plans/` and are loaded by `/plan_view` and injected into context by `/plan_resume`. A prompt-injected agent could write a multi-hundred-megabyte plan, causing the next plan operation to OOM. `ReadPlan` and `MostRecentPlan` now reject files larger than 1 MiB, and `ListPlans` reads only the first 8 KiB for preview.
+
+### 39b. Telegram log file permissions
+
+Telegram log files were created with world-readable `0644` permissions, exposing chat IDs and task snippets to other local users. `NewFileLogger` now creates log files with `0600` and `os.Chmod`'s existing files to the same mode.
+
 ### 40. `/api/resources` result limit cap
 
 The `/api/resources?q=...&limit=N` autocomplete endpoint previously accepted any positive `limit` value. It is now capped to 100 results both in the HTTP handler and in `Registry.Search`. This prevents a prompt-injected or attacker-forged request from forcing an unbounded directory walk and returning a multi-megabyte JSON response.
@@ -500,6 +526,26 @@ Use YOLO mode only for:
 
 Defaults: `FrictionThreshold=3`, `FrictionWindow=60s`. To opt out (TTYApprover only), set `FrictionThreshold=0` programmatically; there is no config knob yet — file an issue if you need one.
 
+### 25. Default non-interactive policy denies dangerous operations
+
+When odek cannot open a TTY (headless/CI/piped input), prompted operations used to fall back to the `non_interactive` action. The built-in default was `"allow"`, so a prompt-injected task such as `echo "task" | odek run "download and run attacker.sh"` could silently execute `curl … | sh`.
+
+The default is now `"deny"`. Unattended runs must explicitly opt in to auto-approval by setting `"non_interactive": "allow"` in `~/.odek/config.json`, `ODEK_DANGEROUS_NON_INTERACTIVE=allow`, or the CLI. This makes the safe behaviour the default and closes the headless prompt-injection auto-execution vector.
+
+### 26. Generic file tools cannot write `~/.odek` trust anchors
+
+`write_file`, `patch`, and `batch_patch` allow writes under `~/.odek/` (outside the project CWD) so the agent can persist memory, sessions, and other state. Previously the carve-out only excluded `config.json`, `secrets.env`, `IDENTITY.md`, and `skills/`, leaving other trust anchors writable:
+
+- `schedules.json`, `schedule-state.json`, `schedules.lock`
+- `sessions/` (conversation history and auth tokens)
+- `mcp_approvals.json`, `mcp_tool_approvals.json`
+- `restart.json`
+- `audit/`
+- `telegram.lock`, `telegram.pid`, `schedule.pid`, `schedule.log`
+- `plans/`
+
+A prompt-injected agent could overwrite `schedules.json` to install persistent commands, replace session files to hijack conversations, or tamper with MCP approvals to spawn arbitrary subprocesses. All of these paths now classify as `system_write` (prompt/deny) and are rejected by the `confineToCWD` carve-out used by the file tools. Legitimate writes to these subsystems must go through their dedicated APIs (schedule commands, session store, MCP approval flow, etc.).
+
 ---
 
 ## Attack-vector matrix
@@ -546,6 +592,11 @@ Defaults: `FrictionThreshold=3`, `FrictionWindow=60s`. To opt out (TTYApprover o
 | Local user lists schedule/state filenames | Schedule directory created with `0700` |
 | Config file swapped for a huge file after size check | `loadFile` reads via a single `Open` + `LimitReader` |
 | Non-cooperating process ignores advisory flock | Documented in package doc; permissions are the real access gate |
+| Prompt-injected task runs unattended in CI/pipe | Default `non_interactive` is `"deny"` |
+| Malicious repo redirects embeddings/memory/session search to attacker | Project-level `embedding`/`memory`/`sessions`/`skills.dirs`/`skills.embedding` rejected |
+| Malicious repo exfiltrates results via Telegram | Project-level `telegram` rejected |
+| Malicious repo logs every search query | Project-level `web_search` rejected |
+| Prompt-injected agent overwrites `~/.odek/schedules.json` or sessions | Trust anchors classified as `system_write` and rejected by file tools |
 
 ---
 

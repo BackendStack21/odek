@@ -50,6 +50,37 @@ func TestNewFileLogger_filePath(t *testing.T) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		t.Error("log file was not created")
 	}
+
+	// Verify permissions are not group/other-readable.
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat log file: %v", err)
+	}
+	if info.Mode().Perm()&0077 != 0 {
+		t.Errorf("log file permissions = %04o, want no group/other bits", info.Mode().Perm())
+	}
+}
+
+func TestNewFileLogger_hardensExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "existing.log")
+
+	// Simulate an existing world-readable log file from an earlier version.
+	if err := os.WriteFile(path, []byte("old log\n"), 0644); err != nil {
+		t.Fatalf("create existing file: %v", err)
+	}
+
+	l := NewFileLogger(LogInfo, path)
+	fl := l.(*fileLogger)
+	fl.file.Close()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat log file: %v", err)
+	}
+	if info.Mode().Perm()&0077 != 0 {
+		t.Errorf("existing log file permissions = %04o, want no group/other bits", info.Mode().Perm())
+	}
 }
 
 func TestNewFileLogger_invalidPath(t *testing.T) {

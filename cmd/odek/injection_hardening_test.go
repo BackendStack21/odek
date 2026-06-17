@@ -186,7 +186,7 @@ func TestHTTPBatch_Redirect_BlockedTargetIsNotFetched(t *testing.T) {
 func TestBrowserClients_HaveCheckRedirectInstalled(t *testing.T) {
 	// Guards against a future refactor dropping the redirect guard from a
 	// client constructor (the original gap that motivated this fix).
-	bt := newBrowserTool(danger.DangerousConfig{})
+	bt := newTestBrowserTool()
 	if bt.client.CheckRedirect == nil {
 		t.Error("browser client is missing CheckRedirect — redirects would not be re-classified")
 	}
@@ -197,7 +197,7 @@ func TestBrowserClients_HaveCheckRedirectInstalled(t *testing.T) {
 }
 
 func TestCheckRedirect_EnforcesHopLimit(t *testing.T) {
-	bt := newBrowserTool(danger.DangerousConfig{}) // allow-all (no class overrides)
+	bt := newTestBrowserTool() // policy not exercised by this test
 	req, _ := http.NewRequest("GET", "http://example.com/", nil)
 	via := make([]*http.Request, 10)
 	if err := bt.checkRedirect(req, via); err == nil {

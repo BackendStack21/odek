@@ -56,12 +56,15 @@ type fileLogger struct {
 func NewFileLogger(level LogLevel, path string) Logger {
 	fl := &fileLogger{level: level, mu: &sync.Mutex{}}
 	if path != "" {
-		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 		if err != nil {
 			// Fall back to stderr if we can't open the file.
 			fmt.Fprintf(os.Stderr, "telegram: failed to open log file %s: %v\n", path, err)
 			fl.file = os.Stderr
 		} else {
+			// Harden existing files that were created with 0644 in earlier
+			// versions; ignore chmod errors (e.g. read-only FS).
+			_ = os.Chmod(path, 0600)
 			fl.file = f
 		}
 	} else {

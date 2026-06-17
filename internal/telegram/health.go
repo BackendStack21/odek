@@ -85,6 +85,15 @@ func (hs *HealthServer) Start(ctx context.Context) error {
 	}
 	hs.addr = ln.Addr().String() // store actual bound address (e.g. :0 → :34567)
 
+	// Warn when binding to a non-loopback address. The health endpoint exposes
+	// bot liveness/uptime; under the single-user model it should not be
+	// reachable from the network (finding #77).
+	if host, _, err := net.SplitHostPort(hs.addr); err == nil {
+		if host == "" || (host != "127.0.0.1" && host != "::1" && host != "localhost") {
+			hs.log.Warn("health server binding to non-loopback address", "addr", hs.addr)
+		}
+	}
+
 	srv := &http.Server{Addr: hs.addr, Handler: hs}
 	hs.log.Info("health server started", "addr", ln.Addr().String())
 

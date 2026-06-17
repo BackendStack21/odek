@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -9,6 +10,12 @@ import (
 	"time"
 	"unicode"
 )
+
+// maxPlanBytes caps the size of a plan file that odek will read into memory
+// or inject into a session context. A prompt-injected agent could otherwise
+// write a multi-hundred-megabyte plan and OOM the next /plan_view or
+// /plan_resume.
+const maxPlanBytes = 1 * 1024 * 1024 // 1 MiB
 
 // ── Plan Manager ───────────────────────────────────────────────────────
 //
@@ -51,6 +58,38 @@ func ensurePlansDir() (string, error) {
 		return "", fmt.Errorf("plans: mkdir: %w", err)
 	}
 	return dir, nil
+}
+
+// readPlanFile reads a plan file after verifying it is within the size cap.
+func readPlanFile(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > maxPlanBytes {
+		return nil, fmt.Errorf("plan file %q is too large (%d bytes, max %d)", filepath.Base(path), info.Size(), maxPlanBytes)
+	}
+	return os.ReadFile(path)
+}
+
+// readPlanPreview reads the first few kilobytes of a plan file for the plan
+// list preview. It does not load arbitrarily large files just to extract the
+// first line.
+func readPlanPreview(path string, maxLen int) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	// 8 KiB is plenty for a first-line preview.
+	const previewBufBytes = 8 * 1024
+	buf := make([]byte, previewBufBytes)
+	n, err := io.ReadFull(f, buf)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return "", err
+	}
+	return firstLine(string(buf[:n]), maxLen), nil
 }
 
 // Slugify converts a description into a filesystem-safe slug.
@@ -131,8 +170,8 @@ func ListPlans(limit int) ([]PlanInfo, error) {
 		slug := strings.TrimSuffix(e.Name(), ".md")
 		path := filepath.Join(dir, e.Name())
 		preview := ""
-		if data, err := os.ReadFile(path); err == nil {
-			preview = firstLine(string(data), 80)
+		if p, err := readPlanPreview(path, 80); err == nil {
+			preview = p
 		}
 		infos = append(infos, PlanInfo{
 			Slug:    slug,
@@ -204,7 +243,7 @@ func ReadPlan(slugPrefix string) (string, string, error) {
 		return "", "", fmt.Errorf("no plan matching %q found — use /plans to list", slugPrefix)
 	}
 
-	data, err := os.ReadFile(filepath.Join(dir, match+".md"))
+	data, err := readPlanFile(filepath.Join(dir, match+".md"))
 	if err != nil {
 		return "", "", fmt.Errorf("read plan %q: %w", match, err)
 	}
@@ -276,7 +315,7 @@ func MostRecentPlan() (string, string, error) {
 		return "", "", fmt.Errorf("no plans found — create one with /plan <description>")
 	}
 
-	data, err := os.ReadFile(infos[0].Path)
+	data, err := readPlanFile(infos[0].Path)
 	if err != nil {
 		return "", "", fmt.Errorf("read plan: %w", err)
 	}

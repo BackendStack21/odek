@@ -142,8 +142,11 @@ type ToolOperation struct {
 //   - /tmp, $TMPDIR → local_write
 //   - /etc, /root, /var, /run, /lib, /usr → system_write
 //   - $HOME/.ssh, .config, .gnupg, .aws, .kube, .docker, .gitconfig, .env → system_write
-//   - $HOME/.odek/config.json, secrets.env, skills/, IDENTITY.md → system_write (odek trust
-//     anchors; rewriting them can disable the sandbox or inject prompts on the next run)
+//   - $HOME/.odek/config.json, secrets.env, IDENTITY.md, skills/, sessions/, audit/,
+//     plans/, schedules.json, schedule-state.json, mcp_approvals.json,
+//     mcp_tool_approvals.json, restart.json, telegram.lock, etc. → system_write
+//     (odek trust anchors; rewriting them can disable the sandbox, persist attacker
+//     control, or leak secrets)
 //   - $HOME shell rc/profile files (.bashrc, .zshrc, .profile, .zshenv, etc.) → system_write
 //   - everything else → local_write
 //
@@ -198,14 +201,14 @@ func ClassifyPath(path string) RiskClass {
 		// prompts; secrets.env is injected into the process environment;
 		// IDENTITY.md becomes the system prompt on the next run, so writing it
 		// lets a prompt-injected agent rewrite its own trusted instructions.
+		// sessions/, audit/, plans/, schedules.json, schedule-state.json and
+		// other state files similarly grant persistence or leak secrets.
 		// Auto-allowing these as LocalWrite would let a confined agent
 		// escalate out of its own sandbox, so they classify as SystemWrite
 		// (prompt/deny). Keep in sync with the carve-out exclusions in
 		// cmd/odek/file_tool.go (isProtectedOdekPath).
-		for _, sub := range []string{"/.odek/config.json", "/.odek/secrets.env", "/.odek/skills", "/.odek/IDENTITY.md"} {
-			if strings.HasPrefix(abs, home+sub) {
-				return SystemWrite
-			}
+		if isOdekTrustAnchor(home, abs) {
+			return SystemWrite
 		}
 		// Shell rc/profile files execute on the user's next shell start —
 		// writing them is persistence/escalation, not a local file edit.
@@ -226,6 +229,53 @@ var shellRCFiles = map[string]bool{
 	".zshrc": true, ".zprofile": true, ".zshenv": true, ".zlogin": true,
 	".zlogout": true, ".kshrc": true, ".cshrc": true, ".tcshrc": true,
 	".login": true, ".logout": true,
+}
+
+// isOdekTrustAnchor reports whether abs is a file or directory under ~/.odek
+// that must not be writable through auto-approved local_write tools. It must
+// stay in sync with cmd/odek/file_tool.go::isProtectedOdekPath.
+func isOdekTrustAnchor(home, abs string) bool {
+	if home == "" {
+		return false
+	}
+	prefix := home + "/.odek/"
+	if !strings.HasPrefix(abs, prefix) {
+		return false
+	}
+	rel := filepath.Clean(abs[len(prefix):])
+
+	protectedExact := []string{
+		"config.json",
+		"secrets.env",
+		"IDENTITY.md",
+		"schedules.json",
+		"schedule-state.json",
+		"schedules.lock",
+		"mcp_approvals.json",
+		"mcp_tool_approvals.json",
+		"restart.json",
+		"telegram.lock",
+		"telegram.pid",
+		"schedule.pid",
+		"schedule.log",
+	}
+	for _, p := range protectedExact {
+		if rel == p {
+			return true
+		}
+	}
+	protectedDirs := []string{
+		"skills",
+		"sessions",
+		"audit",
+		"plans",
+	}
+	for _, d := range protectedDirs {
+		if rel == d || strings.HasPrefix(rel, d+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // ClassifyURL returns a RiskClass for a browser URL.
@@ -411,7 +461,9 @@ type DangerousConfig struct {
 	DefaultAction *string `json:"action,omitempty"`
 
 	// NonInteractive specifies what to do when running without a TTY.
-	// "allow" (default) — run everything, "deny" — block all prompted ops.
+	// "deny" (default) — block all prompted ops, "allow" — run everything.
+	// The default is deny so that headless/CI/piped usage cannot be silently
+	// auto-approved by a prompt-injection payload.
 	NonInteractive *string `json:"non_interactive,omitempty"`
 
 	// Approver handles interactive approval prompts for dangerous operations.
@@ -491,11 +543,13 @@ func (c *DangerousConfig) ActionForCommand(cmd string) Action {
 }
 
 // NonInteractiveAction returns the action to use when no TTY is available.
+// Defaults to Deny so unattended/headless runs fail closed rather than
+// auto-approving dangerous operations.
 func (c *DangerousConfig) NonInteractiveAction() Action {
 	if c.NonInteractive != nil {
 		return parseAction(*c.NonInteractive)
 	}
-	return Allow
+	return Deny
 }
 
 // CheckOperation checks whether a tool operation is allowed, denied,
@@ -765,7 +819,7 @@ var safeCommands = map[string]bool{
 	"lsmem": true, "lsusb": true, "lspci": true, "lsof": true, "dmesg": true,
 	"id": true, "whoami": true, "groups": true, "users": true, "who": true,
 	"w": true, "last": true, "getent": true, "ps": true, "pgrep": true,
-	"pidof": true, "netstat": true, "ss": true, "printenv": true, "locale": true,
+	"pidof": true, "netstat": true, "ss": true, "locale": true,
 	"getconf": true, "which": true, "whereis": true, "type": true, "hash": true,
 	// control / no-op builtins
 	"true": true, "false": true, ":": true, "test": true, "[": true,
@@ -877,6 +931,13 @@ func classifyStage(tokens []string, pipedInto bool) RiskClass {
 	if len(tokens) == 0 {
 		return Safe
 	}
+	// Bare `env` / `printenv` dumps the full process environment, including
+	// secrets not covered by redaction patterns. Treat it as system_write so
+	// it requires approval in interactive modes and is denied by default in
+	// non-interactive mode.
+	if isEnvironmentDump(tokens) {
+		return SystemWrite
+	}
 	cmdTokens, floor := unwrapWrappers(tokens)
 	cls := floor
 	if len(cmdTokens) > 0 {
@@ -907,6 +968,46 @@ func classifyStage(tokens []string, pipedInto bool) RiskClass {
 		cls = worstOf(cls, classifyResourceToken(t))
 	}
 	return cls
+}
+
+// isEnvironmentDump reports whether tokens represent a bare `env` or
+// `printenv` invocation whose only effect is to dump the process environment.
+// `env FOO=bar cmd ...` is NOT a dump (the real command is classified
+// separately after unwrapWrappers strips env); `env`, `env -i`,
+// `env -u SECRET`, and `printenv` are dumps.
+func isEnvironmentDump(tokens []string) bool {
+	if len(tokens) == 0 {
+		return false
+	}
+	name := commandName(tokens[0])
+	if name == "printenv" {
+		return true
+	}
+	if name != "env" {
+		return false
+	}
+	for i := 1; i < len(tokens); {
+		t := tokens[i]
+		if isAssignment(t) {
+			i++
+			continue
+		}
+		if t == "-i" || t == "--ignore-environment" ||
+			t == "-0" || t == "--null" ||
+			t == "--help" || t == "--version" {
+			i++
+			continue
+		}
+		if (t == "-u" || t == "--unset" ||
+			t == "-C" || t == "--chdir" ||
+			t == "-S" || t == "--split-string") && i+1 < len(tokens) {
+			i += 2
+			continue
+		}
+		// Anything else is the real command being wrapped.
+		return false
+	}
+	return true
 }
 
 // ── Normalisation (evasion neutralisation) ────────────────────────────
@@ -1364,6 +1465,9 @@ func classifyResourceToken(tok string) RiskClass {
 	if isSensitivePath(tok) {
 		return SystemWrite
 	}
+	if isSensitiveOdekPath(tok) {
+		return SystemWrite
+	}
 	return Safe
 }
 
@@ -1394,6 +1498,28 @@ func isSensitivePath(tok string) bool {
 		}
 	}
 	return false
+}
+
+// isSensitiveOdekPath reports whether tok names a ~/.odek trust anchor that
+// must not be read through auto-approved Safe commands. Reading config.json,
+// secrets.env, IDENTITY.md, sessions, audit logs, etc. leaks secrets or trusted
+// instructions, so it escalates to SystemWrite. This mirrors the write-side
+// protection in ClassifyPath and cmd/odek/file_tool.go::isProtectedOdekPath.
+func isSensitiveOdekPath(tok string) bool {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return false
+	}
+	path := tok
+	if strings.HasPrefix(path, "~") {
+		path = home + path[1:]
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	abs = filepath.Clean(abs)
+	return isOdekTrustAnchor(home, abs)
 }
 
 // ── Small token helpers ────────────────────────────────────────────────
@@ -1488,6 +1614,12 @@ func classifyCommand(tokens []string) RiskClass {
 	// Resolve the program name from its basename so /bin/rm, /usr/bin/curl
 	// and ./sh classify the same as their bare names in any pipe stage.
 	first := commandName(tokens[0])
+
+	// Environment dumps are equivalent to reading the process's credential
+	// store; they are never safe even when used benignly.
+	if first == "printenv" {
+		return SystemWrite
+	}
 
 	// Blocked
 	if isBlocked(tokens) {

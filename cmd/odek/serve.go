@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/subtle"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -12,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,6 +39,18 @@ var uiFS embed.FS
 // This prevents a local client from exhausting server memory by sending a
 // multi-gigabyte frame.
 const maxWSMessageBytes = 8 * 1024 * 1024 // 8 MiB
+
+// maxPromptBytes caps the size of the user prompt accepted through the Web UI.
+// Combined with the WebSocket frame cap, this prevents a local client from
+// bloating the session file or exhausting the LLM context budget.
+const maxPromptBytes = 1 * 1024 * 1024 // 1 MiB
+
+// maxModelIDBytes caps the length of a model ID supplied by the Web UI.
+const maxModelIDBytes = 128
+
+// modelIDPattern restricts model IDs to printable ASCII characters commonly
+// used by model providers (alphanumeric, punctuation, and path separators).
+var modelIDPattern = regexp.MustCompile(`^[A-Za-z0-9_.:/@-]+$`)
 
 // maxWSConnections caps the number of concurrent WebSocket clients. Once the
 // limit is reached, further upgrade attempts are rejected with HTTP 503. This
@@ -256,10 +271,23 @@ func serveCmd(args []string) error {
 		resource.NewSessionResolver(filepath.Join(home, ".odek", "sessions")),
 	)
 
+	// Per-instance CSRF token for browser-driven WebSocket connections. A
+	// random token is issued at server start, injected into the served HTML,
+	// and also delivered as a SameSite=Strict HttpOnly cookie. The /ws
+	// handshake requires the token via cookie, header, or WebSocket
+	// subprotocol, so a page served by another localhost port cannot open
+	// an agent-controlling WebSocket.
+	wsToken, err := newServeToken()
+	if err != nil {
+		return fmt.Errorf("CSRF token: %w", err)
+	}
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", handleStatic())
+	mux.HandleFunc("/", handleStatic(wsToken))
 	mux.Handle("/ws", &golangws.Server{
-		Handshake: wsHandshakeWithLimits,
+		Handshake: func(cfg *golangws.Config, req *http.Request) error {
+			return wsHandshakeWithLimits(cfg, req, wsToken)
+		},
 		Handler: func(conn *golangws.Conn) {
 			handleWS(store, resourceReg, resolved, systemMessage, conn)
 		},
@@ -268,7 +296,7 @@ func serveCmd(args []string) error {
 	mux.Handle("/api/sessions", requireLocalOrigin(handleSessionList(store)))
 	mux.Handle("/api/sessions/", requireLocalOrigin(handleSessionByID(store)))
 	mux.Handle("/api/models", requireLocalOrigin(handleModelList(resolved.Model)))
-	mux.Handle("/api/cancel", requireLocalOrigin(http.HandlerFunc(handleCancel)))
+	mux.Handle("/api/cancel", requireLocalOrigin(handleCancel(store)))
 
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -550,13 +578,19 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 
 // ── WebSocket Types ────────────────────────────────────────────────────
 
+type wsAttachment struct {
+	Name    string `json:"name"`
+	Content string `json:"content"`
+}
+
 type wsClientMsg struct {
-	Type      string `json:"type"`
-	Content   string `json:"content"`
-	SessionID string `json:"session_id"`
-	AuthToken string `json:"auth_token,omitempty"`
-	Model     string `json:"model,omitempty"`
-	Thinking  string `json:"thinking,omitempty"` // "enabled" | "" — per-query toggle
+	Type        string         `json:"type"`
+	Content     string         `json:"content"`
+	SessionID   string         `json:"session_id"`
+	AuthToken   string         `json:"auth_token,omitempty"`
+	Model       string         `json:"model,omitempty"`
+	Thinking    string         `json:"thinking,omitempty"` // "enabled" | "" — per-query toggle
+	Attachments []wsAttachment `json:"attachments,omitempty"`
 }
 
 // ── WebSocket Handler ──────────────────────────────────────────────────
@@ -773,7 +807,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 		// Derived from connCtx so a disconnect also aborts the running prompt.
 		promptCtx, promptCancel := context.WithCancel(connCtx)
 
-		currentSession = handlePrompt(promptCtx, conn, store, resources, resolved, agent, currentSession, msg.Content, msg.SessionID, &sessionInputTokens, &sessionOutputTokens, promptCancel)
+		currentSession = handlePrompt(promptCtx, conn, store, resources, resolved, agent, currentSession, msg, &sessionInputTokens, &sessionOutputTokens, promptCancel)
 
 		// Cancel the prompt context once the run is complete.
 		promptCancel()
@@ -802,11 +836,31 @@ func handlePrompt(
 	resolved config.ResolvedConfig,
 	agent *odek.Agent,
 	currSess *session.Session,
-	prompt string,
-	sessionID string,
+	msg wsClientMsg,
 	sessionInputTokens, sessionOutputTokens *int,
 	promptCancel context.CancelFunc,
 ) *session.Session {
+	prompt := msg.Content
+	sessionID := msg.SessionID
+
+	// Server-side cap on prompt size (finding #69). A client can already send
+	// up to the WebSocket frame cap; reject anything above a reasonable prompt
+	// limit before storing it in the session or forwarding it to the LLM.
+	if len(prompt) > maxPromptBytes {
+		writeWSError(conn, "prompt exceeds maximum size")
+		return currSess
+	}
+
+	// Server-side validation of model IDs from the UI (finding #81). Model IDs
+	// are passed through to the LLM client and logged; cap length and reject
+	// control / unusual characters to prevent oversized payloads or injection.
+	if msg.Model != "" {
+		if len(msg.Model) > maxModelIDBytes || !modelIDPattern.MatchString(msg.Model) {
+			writeWSError(conn, "invalid model ID")
+			return currSess
+		}
+	}
+
 	// Resolve @ references
 	refs := resource.ParseRefs(prompt)
 	resolvedRefs := make(map[string]string)
@@ -818,6 +872,40 @@ func handlePrompt(
 		resolvedRefs[ref.Raw] = wrapUntrusted(ctx, "resource:"+ref.Raw, content)
 	}
 	enrichedPrompt := resource.ReplaceRefs(prompt, resolvedRefs)
+
+	// Web UI file attachments cross the browser trust boundary. Wrap each one
+	// with the same nonce'd untrusted boundary used for tool output before
+	// injecting them into the prompt, so a malicious attachment cannot be
+	// mistaken for system instructions.
+	if len(msg.Attachments) > 0 {
+		const maxAttachmentBytes = 5 * 1024 * 1024
+		const maxTotalAttachmentBytes = 10 * 1024 * 1024
+		var total int
+		var wrapped []string
+		for _, att := range msg.Attachments {
+			if att.Name == "" || att.Content == "" {
+				continue
+			}
+			if len(att.Content) > maxAttachmentBytes {
+				writeWSError(conn, "attachment too large: "+att.Name)
+				return currSess
+			}
+			total += len(att.Content)
+			if total > maxTotalAttachmentBytes {
+				writeWSError(conn, "total attachment size exceeds 10 MB")
+				return currSess
+			}
+			header := "--- " + att.Name + " ---\n"
+			wrapped = append(wrapped, wrapUntrusted(ctx, "attachment:"+att.Name, header+att.Content))
+		}
+		if len(wrapped) > 0 {
+			if enrichedPrompt != "" {
+				enrichedPrompt = strings.Join(wrapped, "\n\n") + "\n\n" + enrichedPrompt
+			} else {
+				enrichedPrompt = strings.Join(wrapped, "\n\n")
+			}
+		}
+	}
 
 	// Load or create session
 	var sess *session.Session
@@ -1071,6 +1159,9 @@ func (w *wsStreamWriter) Write(p []byte) (int, error) {
 // approve dangerous tool calls. The default policy allows any port on
 // localhost / 127.0.0.1 / [::1] and an empty Origin (curl, native
 // clients). See IMPROVEMENTS_ROADMAP.md S-M1.
+//
+// Note: this check is now defense-in-depth. The primary CSRF protection is
+// the per-instance wsToken validated by validateServeToken.
 func checkLocalOrigin(_ *golangws.Config, req *http.Request) error {
 	origin := req.Header.Get("Origin")
 	if origin == "" {
@@ -1087,10 +1178,69 @@ func checkLocalOrigin(_ *golangws.Config, req *http.Request) error {
 	return fmt.Errorf("Origin %q not allowed (only localhost is accepted)", origin)
 }
 
-// wsHandshakeWithLimits wraps checkLocalOrigin with a per-IP upgrade rate limit
-// and a global concurrent-connection semaphore. The semaphore is acquired before
-// the WebSocket handshake completes and released when the handler exits.
-func wsHandshakeWithLimits(_ *golangws.Config, req *http.Request) error {
+const (
+	wsTokenCookieName     = "odek_ws_token"
+	wsTokenHeaderName     = "X-Odek-Ws-Token"
+	wsTokenProtocolPrefix = "odek."
+)
+
+// newServeToken generates a 256-bit random token used to authenticate
+// browser WebSocket upgrades. The token is issued once per server process.
+func newServeToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// validateServeToken verifies that the browser has the per-instance CSRF
+// token. It accepts the token via:
+//   - the HttpOnly SameSite=Strict cookie set when serving index.html
+//     (automatic for legitimate same-origin pages),
+//   - an X-Odek-Ws-Token header (for non-browser clients), or
+//   - a WebSocket subprotocol of the form "odek.<token>" (for clients that
+//     can set Sec-WebSocket-Protocol).
+func validateServeToken(cfg *golangws.Config, req *http.Request, token string) error {
+	if token == "" {
+		return fmt.Errorf("server token not configured")
+	}
+
+	// Cookie (browser same-origin / same-site requests).
+	if c, err := req.Cookie(wsTokenCookieName); err == nil && c.Value != "" {
+		if subtle.ConstantTimeCompare([]byte(c.Value), []byte(token)) == 1 {
+			return nil
+		}
+	}
+
+	// Explicit header (non-browser clients).
+	if h := req.Header.Get(wsTokenHeaderName); h != "" {
+		if subtle.ConstantTimeCompare([]byte(h), []byte(token)) == 1 {
+			return nil
+		}
+	}
+
+	// WebSocket subprotocol.
+	for _, p := range cfg.Protocol {
+		if strings.HasPrefix(p, wsTokenProtocolPrefix) {
+			got := strings.TrimPrefix(p, wsTokenProtocolPrefix)
+			if subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1 {
+				return nil
+			}
+		}
+	}
+
+	return fmt.Errorf("missing or invalid server token")
+}
+
+// wsHandshakeWithLimits validates the CSRF token and checks the origin, then
+// applies a per-IP upgrade rate limit and acquires the global
+// concurrent-connection semaphore. The semaphore is acquired before the
+// WebSocket handshake completes and released when the handler exits.
+func wsHandshakeWithLimits(cfg *golangws.Config, req *http.Request, token string) error {
+	if err := validateServeToken(cfg, req, token); err != nil {
+		return err
+	}
 	if err := checkLocalOrigin(nil, req); err != nil {
 		return err
 	}
@@ -1388,20 +1538,32 @@ func handleModelList(configuredModel string) http.HandlerFunc {
 // POST /api/cancel?session_id=<id> — cancels the agent execution scoped to
 // that session. Requiring the session ID prevents one connection from
 // cancelling another connection's prompt.
-func handleCancel(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+func handleCancel(store *session.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 
-	sessionID := r.URL.Query().Get("session_id")
-	if sessionID == "" {
-		http.Error(w, "missing session_id", http.StatusBadRequest)
-		return
-	}
+		sessionID := r.URL.Query().Get("session_id")
+		if sessionID == "" {
+			http.Error(w, "missing session_id", http.StatusBadRequest)
+			return
+		}
 
-	cancelPrompt(sessionID)
-	w.WriteHeader(http.StatusNoContent)
+		sess, err := store.Load(sessionID)
+		if err != nil {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+		if _, ok := validateSessionToken(store, sess, sessionTokenFromRequest(r)); !ok {
+			http.Error(w, "invalid session token", http.StatusUnauthorized)
+			return
+		}
+
+		cancelPrompt(sessionID)
+		w.WriteHeader(http.StatusNoContent)
+	}
 }
 
 // ── Static Handler ─────────────────────────────────────────────────────
@@ -1413,7 +1575,7 @@ var staticFiles = map[string][2]string{
 	"/app.js":    {"ui/app.js", "application/javascript; charset=utf-8"},
 }
 
-func handleStatic() http.HandlerFunc {
+func handleStatic(wsToken string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Browsers auto-request favicon.ico — serve a minimal SVG inline.
 		if r.URL.Path == "/favicon.ico" {
@@ -1431,6 +1593,22 @@ func handleStatic() http.HandlerFunc {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
+
+		// The HTML entry point gets the per-instance CSRF token both as a
+		// cookie (sent automatically on same-site WebSocket upgrades) and as a
+		// meta tag (read by app.js and sent as a WebSocket subprotocol).
+		if r.URL.Path == "/" && wsToken != "" {
+			http.SetCookie(w, &http.Cookie{
+				Name:     wsTokenCookieName,
+				Value:    wsToken,
+				Path:     "/",
+				SameSite: http.SameSiteStrictMode,
+				HttpOnly: true,
+				// No explicit MaxAge/Expires so the cookie is a session cookie.
+			})
+			data = []byte(strings.Replace(string(data), "{{ODEK_WS_TOKEN}}", wsToken, 1))
+		}
+
 		w.Header().Set("Content-Type", entry[1])
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")

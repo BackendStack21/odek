@@ -27,7 +27,7 @@ func TestBrowser_HistoryCap(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	tool := newBrowserTool(danger.DangerousConfig{})
+	tool := newTestBrowserTool()
 	for i := 0; i < 55; i++ {
 		callJSON(t, tool, fmt.Sprintf(`{"action":"navigate","url":%q}`, srv.URL))
 	}
@@ -214,7 +214,7 @@ func TestServe_CSRF_AllowsLocalhostOrigin(t *testing.T) {
 func TestServe_StaticSecurityHeaders(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rr := httptest.NewRecorder()
-	handleStatic().ServeHTTP(rr, req)
+	handleStatic("").ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("static handler returned %d", rr.Code)
@@ -331,7 +331,8 @@ func TestShell_CapsOutputSize(t *testing.T) {
 	path := filepath.Join(dir, "huge.txt")
 	os.WriteFile(path, []byte(strings.Repeat("x", 15*1024*1024)), 0644)
 
-	tool := &shellTool{}
+	allow := "allow"
+	tool := &shellTool{dangerousConfig: danger.DangerousConfig{NonInteractive: &allow}}
 	tool.SetContext(context.Background())
 	result, err := tool.Call(fmt.Sprintf(`{"command":"cat %s","description":"read huge file"}`, path))
 	if err != nil {
@@ -349,7 +350,8 @@ func TestParallelShell_CapsOutputSize(t *testing.T) {
 	path := filepath.Join(dir, "huge.txt")
 	os.WriteFile(path, []byte(strings.Repeat("x", 15*1024*1024)), 0644)
 
-	tool := &parallelShellTool{}
+	allow := "allow"
+	tool := &parallelShellTool{dangerousConfig: danger.DangerousConfig{NonInteractive: &allow}}
 	result := callJSON(t, tool, fmt.Sprintf(`{"commands":[{"command":"cat %s"}]}`, path))
 	var r struct {
 		Results []struct {
@@ -381,7 +383,7 @@ func TestBrowser_NavigateTimeout(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	tool := newBrowserTool(danger.DangerousConfig{})
+	tool := newTestBrowserTool()
 	result := callJSON(t, tool, fmt.Sprintf(`{"action":"navigate","url":%q}`, srv.URL))
 	var r struct {
 		Error string `json:"error,omitempty"`
@@ -928,7 +930,7 @@ func TestBrowser_WrapsTitleAndElementText(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	tool := newBrowserTool(danger.DangerousConfig{})
+	tool := newTestBrowserTool()
 	result := callJSON(t, tool, fmt.Sprintf(`{"action":"navigate","url":%q}`, srv.URL))
 	var r struct {
 		Title    string `json:"title"`
@@ -961,7 +963,7 @@ func TestBrowser_CapsElementCount(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	tool := newBrowserTool(danger.DangerousConfig{})
+	tool := newTestBrowserTool()
 	result := callJSON(t, tool, fmt.Sprintf(`{"action":"navigate","url":%q}`, srv.URL))
 	var r struct {
 		Elements []any `json:"elements"`

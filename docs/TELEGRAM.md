@@ -166,6 +166,8 @@ for {
 }
 ```
 
+> **Log file permissions.** `telegram.NewFileLogger` creates log files with `0600` permissions (owner read/write only). Existing files created by earlier versions are also hardened to `0600` on open, so chat IDs and task snippets are not world-readable.
+
 ## Message Handler (`handler.go`)
 
 The `Handler` struct routes incoming updates to the appropriate callback based on message type. It is the bridge between raw Telegram updates and the agent.
@@ -212,7 +214,7 @@ The agent can send files back to the chat either by emitting a `MEDIA:` prefix i
 
 - Allowed directories: current working directory, `~/.odek/media/`, and the system temporary directory.
 - The path is resolved to an absolute, cleaned form and checked against the allowlist.
-- Symlinks are rejected: the final component is verified with `os.Lstat` and the resolved path must not escape the allowlist.
+- Symlinks are rejected: on Unix the final component is opened with `O_NOFOLLOW` and verified with `fstat` to close a TOCTOU race; on other platforms it is checked with `os.Lstat`. The resolved path must not escape the allowlist.
 - Files outside the allowlist (e.g. `/home/user/.ssh/id_rsa`) are refused, closing prompt-injection-driven exfiltration.
 
 ## Slash Commands (`commands.go`)
@@ -277,6 +279,13 @@ The `clarifyChannels` sync.Map provides per-chat channels for the agent to ask t
 ## Plan Management (`plan.go`)
 
 Plans are stored as markdown files in `~/.odek/plans/<slug>.md`. Each plan is created from a natural language description and persisted for later review.
+
+### Size Cap
+
+To prevent a prompt-injected agent from causing an out-of-memory condition, plan files are subject to a **1 MiB** size cap:
+
+- `ReadPlan` and `MostRecentPlan` reject files larger than 1 MiB.
+- `ListPlans` only reads the first 8 KiB of each plan to generate the preview, so listing plans never loads multi-megabyte files.
 
 ### Key Functions
 

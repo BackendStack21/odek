@@ -151,12 +151,27 @@ An IPI attempt is any content in tool output, files, web pages, emails, calendar
 //  2. ~/.odek/IDENTITY.md (swappable identity file)
 //  3. defaultSystem (compiled-in fallback)
 func buildSystemPrompt(resolved config.ResolvedConfig) string {
-	base := resolved.System
-	if base == "" {
-		base = loadIdentityFile()
+	if resolved.System != "" {
+		// Explicit --system / ODEK_SYSTEM / config system prompts are
+		// operator-controlled, but scanning them keeps the system-message
+		// boundary consistent with IDENTITY.md and prevents accidental
+		// injection of attacker-controlled text through env or project files.
+		if len(resolved.System) > maxIdentityFileBytes {
+			fmt.Fprintf(os.Stderr, "odek: warning: explicit system prompt is too large (%d bytes, max %d) — using default identity\n", len(resolved.System), maxIdentityFileBytes)
+			return defaultSystem
+		}
+		if threats := danger.ScanInjection(resolved.System); len(threats) > 0 {
+			labels := make([]string, 0, len(threats))
+			for _, t := range threats {
+				labels = append(labels, t.Label)
+			}
+			fmt.Fprintf(os.Stderr, "odek: warning: explicit system prompt contains injection threats (%s) — using default identity\n", strings.Join(labels, ", "))
+			return defaultSystem
+		}
+		return resolved.System
 	}
 
-	return base
+	return loadIdentityFile()
 }
 
 // maxIdentityFileBytes caps the size of ~/.odek/IDENTITY.md that will be
@@ -656,7 +671,7 @@ const defaultConfigTemplate = `{
   "sandbox_volumes": [],
   "dangerous": {
     "action": "prompt",
-    "non_interactive": "allow",
+    "non_interactive": "deny",
     "classes": {
       "destructive": "deny",
       "network_egress": "prompt",
