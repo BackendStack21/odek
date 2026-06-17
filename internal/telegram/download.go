@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -220,24 +221,80 @@ func DownloadDocument(bot *Bot, chatID int64, fileID, fileName string) (string, 
 	return localPath, nil
 }
 
+// maxDocNameLen limits downloaded document basenames. Leaving headroom for
+// the "doc_chat<N>_" prefix keeps the final filename under typical filesystem
+// limits (e.g. 255 bytes on ext4) even for long Telegram document names.
+const maxDocNameLen = 200
+
 // sanitizeDocName derives a safe, single-component filename for a downloaded
 // Telegram document. The supplied fileName comes from attacker-controlled
 // Document metadata, so directory components must be stripped to prevent path
 // traversal outside the media directory (e.g. "../../.ssh/authorized_keys").
-// When the name is empty or degenerate ("", ".", "..") a deterministic name is
-// generated from the file ID instead.
+// Hidden names, names containing characters outside a safe ASCII set, and
+// overly long names are rejected and replaced with a deterministic name
+// generated from the file ID.
 func sanitizeDocName(fileName, fileID, filePath string) string {
 	base := filepath.Base(filepath.Clean(fileName))
 	// filepath.Base never returns a path containing a separator, but it can
 	// still yield "." (empty/relative input) or ".." which must be rejected.
 	if base == "" || base == "." || base == ".." || base == string(filepath.Separator) {
-		ext := filepath.Ext(filePath)
+		return fallbackDocName(fileID, filePath)
+	}
+	// Reject hidden files (e.g. ".bashrc") to prevent configuration-file
+	// injection into ~/.odek/media.
+	if strings.HasPrefix(base, ".") {
+		return fallbackDocName(fileID, filePath)
+	}
+	// Restrict to a safe character set. Replace everything else with an
+	// underscore so the filename remains useful but cannot carry shell
+	// metacharacters, control characters, or Unicode homoglyphs.
+	var safe []rune
+	for _, r := range base {
+		switch {
+		case r >= 'a' && r <= 'z':
+			safe = append(safe, r)
+		case r >= 'A' && r <= 'Z':
+			safe = append(safe, r)
+		case r >= '0' && r <= '9':
+			safe = append(safe, r)
+		case r == '.', r == '_', r == '-':
+			safe = append(safe, r)
+		default:
+			safe = append(safe, '_')
+		}
+	}
+	base = string(safe)
+	if base == "" || base == "." {
+		return fallbackDocName(fileID, filePath)
+	}
+	// Enforce maximum length while preserving the extension.
+	if len(base) > maxDocNameLen {
+		ext := filepath.Ext(base)
 		if ext == "" {
 			ext = ".bin"
 		}
-		return "doc_" + fileID[:min(16, len(fileID))] + ext
+		maxStem := maxDocNameLen - len(ext)
+		if maxStem < 1 {
+			base = "name" + ext
+		} else {
+			stem := base[:len(base)-len(ext)]
+			if len(stem) > maxStem {
+				stem = stem[:maxStem]
+			}
+			base = stem + ext
+		}
 	}
 	return base
+}
+
+// fallbackDocName returns a deterministic filename derived from the Telegram
+// file ID and the original file extension.
+func fallbackDocName(fileID, filePath string) string {
+	ext := filepath.Ext(filePath)
+	if ext == "" {
+		ext = ".bin"
+	}
+	return "doc_" + fileID[:min(16, len(fileID))] + ext
 }
 
 // ── Media Cleanup ──────────────────────────────────────────────────────────

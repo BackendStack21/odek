@@ -509,6 +509,12 @@ func TestSanitizeDocName(t *testing.T) {
 		{"nested subdir", "a/b/c.txt", "c.txt"},
 		{"dot-dot only", "..", "doc_" + fileID[:16] + ".bin"},
 		{"empty falls back", "", "doc_" + fileID[:16] + ".bin"},
+		{"hidden file", ".bashrc", "doc_" + fileID[:16] + ".bin"},
+		{"hidden with traversal", "../../.ssh/.bashrc", "doc_" + fileID[:16] + ".bin"},
+		{"unsafe chars replaced", "report (final) v2!.pdf", "report__final__v2_.pdf"},
+		{"unicode replaced", "日本語.pdf", "___.pdf"},
+		{"long name truncated", strings.Repeat("a", 300) + ".pdf", strings.Repeat("a", 196) + ".pdf"},
+		{"only extension preserved", ".", "doc_" + fileID[:16] + ".bin"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
