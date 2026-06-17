@@ -382,6 +382,14 @@ MCP servers supply both the names and descriptions of the tools they expose via 
 
 4. **Description scanning** — tool descriptions are already scanned with `ScanInjection` at registration and withheld if injection patterns are found.
 
+### 29. Read-only perf-tool file-size cap
+
+The read-only perf tools `count_lines`, `checksum`, `head_tail`, and `word_count` previously opened a file and scanned or hashed the entire contents without checking its size. They now `Stat` the file and reject anything larger than `maxFileReadBytes` (10 MiB) with an error, matching the cap already enforced by `diff`, `base64`, `tr`, `sort`, `json_query`, and `batch_patch`. This prevents a prompt-injected call from pointing these tools at multi-gigabyte logs or core dumps and stalling or OOMing the turn.
+
+### 30. Inline content size cap for `base64` and `tr`
+
+File-based inputs for `base64` and `tr` were already capped at 10 MiB via `readFileNoFollow`, but the inline `string`/`content` arguments had no length limit. A prompt-injected tool call could pass a 100 MB base64 payload and cause a large allocation. Both tools now reject inline inputs larger than `maxInlineContentBytes` (10 MiB) before decoding or transforming them.
+
 ### YOLO mode
 
 ```json

@@ -36,6 +36,12 @@ import (
 // multi-gigabyte logs or core dumps.
 const maxFileReadBytes = 10 << 20 // 10 MiB
 
+// maxInlineContentBytes caps inline string/content arguments for tools that
+// operate on data supplied directly in the tool call. This prevents a
+// prompt-injected call from passing a 100 MB base64 string and OOMing the
+// process.
+const maxInlineContentBytes = 10 << 20 // 10 MiB
+
 // maxTreeEntries caps the number of children reported for a single directory
 // by the tree tool, preventing OOM from directories with millions of entries.
 const maxTreeEntries = 1000
@@ -1134,6 +1140,9 @@ func (t *countLinesTool) countFile(path string) (entry countFileEntry) {
 	if info.IsDir() {
 		return countFileEntry{Path: path, Error: fmt.Sprintf("%q is a directory — use tree or glob to explore directories", path)}
 	}
+	if info.Size() > maxFileReadBytes {
+		return countFileEntry{Path: path, Error: fmt.Sprintf("file too large (%d bytes, max %d)", info.Size(), maxFileReadBytes)}
+	}
 
 	lines := 0
 	chars := 0
@@ -1758,6 +1767,14 @@ func (t *checksumTool) hashFile(arg checksumFileArg) (entry checksumEntry) {
 	}
 	defer f.Close()
 
+	info, err := f.Stat()
+	if err != nil {
+		return checksumEntry{Path: arg.Path, Algorithm: algo, Error: fmt.Sprintf("cannot stat %q: %v", arg.Path, err)}
+	}
+	if info.Size() > maxFileReadBytes {
+		return checksumEntry{Path: arg.Path, Algorithm: algo, Error: fmt.Sprintf("file too large (%d bytes, max %d)", info.Size(), maxFileReadBytes)}
+	}
+
 	var hash string
 	switch algo {
 	case "sha256":
@@ -2069,6 +2086,14 @@ func (t *headTailTool) readPreview(path string, n int, mode string) (result head
 	}
 	defer f.Close()
 
+	info, err := f.Stat()
+	if err != nil {
+		return headTailFileResult{Path: path, Error: fmt.Sprintf("cannot stat %q: %v", path, err)}
+	}
+	if info.Size() > maxFileReadBytes {
+		return headTailFileResult{Path: path, Error: fmt.Sprintf("file too large (%d bytes, max %d)", info.Size(), maxFileReadBytes)}
+	}
+
 	if mode == "tail" {
 		return t.readTail(f, path, n)
 	}
@@ -2191,6 +2216,9 @@ func (t *base64Tool) Call(argsJSON string) (result string, err error) {
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return jsonError("invalid arguments: " + err.Error())
 	}
+	if len(args.String) > maxInlineContentBytes || len(args.Content) > maxInlineContentBytes {
+		return jsonError(fmt.Sprintf("inline content too large (max %d bytes)", maxInlineContentBytes))
+	}
 
 	if args.Decode || args.String != "" {
 		src := args.String
@@ -2299,6 +2327,9 @@ func (t *trTool) Call(argsJSON string) (result string, err error) {
 	}
 	if len(args.Transformations) == 0 {
 		return jsonError("at least one transformation is required")
+	}
+	if len(args.Content) > maxInlineContentBytes {
+		return jsonError(fmt.Sprintf("inline content too large (max %d bytes)", maxInlineContentBytes))
 	}
 
 	var text string
@@ -2474,6 +2505,9 @@ func (t *wordCountTool) countWords(path string) (entry wordCountEntry) {
 	info, err := f.Stat()
 	if err != nil {
 		return wordCountEntry{Path: path, Error: fmt.Sprintf("cannot stat: %v", err)}
+	}
+	if info.Size() > maxFileReadBytes {
+		return wordCountEntry{Path: path, Error: fmt.Sprintf("file too large (%d bytes, max %d)", info.Size(), maxFileReadBytes)}
 	}
 
 	lines := 0

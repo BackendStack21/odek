@@ -1904,3 +1904,110 @@ func TestWordCount_BinaryFile(t *testing.T) {
 		t.Fatalf("error: %s", r.Results[0].Error)
 	}
 }
+
+// makeOversizedFile creates a sparse file larger than maxFileReadBytes for
+// testing size-cap rejections without actually writing multi-gigabyte data.
+func makeOversizedFile(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "huge.bin")
+	if err := os.WriteFile(path, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(path, maxFileReadBytes+1); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestCountLines_RejectsHugeFile(t *testing.T) {
+	path := makeOversizedFile(t)
+	tool := &countLinesTool{}
+	result := callJSON(t, tool, fmt.Sprintf(`{"files":[{"path":"%s"}]}`, path))
+
+	var r struct {
+		Results []struct {
+			Error string `json:"error"`
+		} `json:"results"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Results[0].Error == "" || !strings.Contains(r.Results[0].Error, "too large") {
+		t.Errorf("expected 'too large' error, got %q", r.Results[0].Error)
+	}
+}
+
+func TestChecksum_RejectsHugeFile(t *testing.T) {
+	path := makeOversizedFile(t)
+	tool := &checksumTool{}
+	result := callJSON(t, tool, fmt.Sprintf(`{"files":[{"path":"%s"}]}`, path))
+
+	var r struct {
+		Results []struct {
+			Error string `json:"error"`
+		} `json:"results"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Results[0].Error == "" || !strings.Contains(r.Results[0].Error, "too large") {
+		t.Errorf("expected 'too large' error, got %q", r.Results[0].Error)
+	}
+}
+
+func TestHeadTail_RejectsHugeFile(t *testing.T) {
+	path := makeOversizedFile(t)
+	tool := &headTailTool{}
+	result := callJSON(t, tool, fmt.Sprintf(`{"files":[{"path":"%s"}]}`, path))
+
+	var r struct {
+		Results []struct {
+			Error string `json:"error"`
+		} `json:"results"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Results[0].Error == "" || !strings.Contains(r.Results[0].Error, "too large") {
+		t.Errorf("expected 'too large' error, got %q", r.Results[0].Error)
+	}
+}
+
+func TestWordCount_RejectsHugeFile(t *testing.T) {
+	path := makeOversizedFile(t)
+	tool := &wordCountTool{}
+	result := callJSON(t, tool, fmt.Sprintf(`{"files":[{"path":"%s"}]}`, path))
+
+	var r struct {
+		Results []struct {
+			Error string `json:"error"`
+		} `json:"results"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Results[0].Error == "" || !strings.Contains(r.Results[0].Error, "too large") {
+		t.Errorf("expected 'too large' error, got %q", r.Results[0].Error)
+	}
+}
+
+func TestBase64_RejectsHugeInlineContent(t *testing.T) {
+	huge := strings.Repeat("a", maxInlineContentBytes+1)
+	tool := &base64Tool{}
+	result := callJSON(t, tool, fmt.Sprintf(`{"content":"%s"}`, huge))
+
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" || !strings.Contains(r.Error, "too large") {
+		t.Errorf("expected 'too large' error, got %q", r.Error)
+	}
+}
+
+func TestTr_RejectsHugeInlineContent(t *testing.T) {
+	huge := strings.Repeat("a", maxInlineContentBytes+1)
+	tool := &trTool{}
+	result := callJSON(t, tool, fmt.Sprintf(`{"content":"%s","transformations":[{"type":"upper"}]}`, huge))
+
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" || !strings.Contains(r.Error, "too large") {
+		t.Errorf("expected 'too large' error, got %q", r.Error)
+	}
+}
