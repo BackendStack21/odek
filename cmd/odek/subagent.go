@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -273,8 +274,12 @@ func subagentCmd(args []string) error {
 		taskGuidance = task.Guidance
 		taskTrust = task.TrustLevel
 		taskMaxRisk = task.MaxRisk
-		// Clean up temp file
-		os.Remove(cfg.taskFile)
+		// Only delete the task file if the parent wrote it into an odek temp
+		// directory. This prevents `odek subagent --task /path/to/user/file`
+		// from reading and then deleting an arbitrary file.
+		if isOdekTempTaskFile(cfg.taskFile) {
+			os.Remove(cfg.taskFile)
+		}
 	}
 
 	// Apply defaults
@@ -579,4 +584,25 @@ func applySubagentTrust(dc *danger.DangerousConfig, trustLevel, maxRisk string) 
 			}
 		}
 	}
+}
+
+// isOdekTempTaskFile reports whether path is a file that odek created in the
+// system temporary directory for hand-off to a sub-agent. Only such files are
+// safe to delete after reading; user-supplied paths must be left alone.
+func isOdekTempTaskFile(path string) bool {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	tmpDir, err := filepath.Abs(os.TempDir())
+	if err != nil {
+		return false
+	}
+	// Must be inside the temp directory.
+	if !strings.HasPrefix(abs, tmpDir+string(filepath.Separator)) {
+		return false
+	}
+	// Must match the prefix used by delegateTasksTool when creating task files.
+	base := filepath.Base(abs)
+	return strings.HasPrefix(base, "odek-task-") && strings.HasSuffix(base, ".json")
 }

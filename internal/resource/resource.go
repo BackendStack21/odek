@@ -22,6 +22,20 @@ import (
 	"github.com/BackendStack21/odek/internal/session"
 )
 
+// escapeGlob escapes glob metacharacters in s so it is treated as a literal
+// string when concatenated into a filepath.Glob pattern.
+func escapeGlob(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '*', '?', '[', ']', '^', '{', '}':
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // maxResourceFileBytes caps how much of a file the @-resource resolver will
 // read into memory. It still truncates the returned content to 50 KB, but this
 // guard prevents OOM from files larger than 1 MiB.
@@ -31,6 +45,11 @@ const maxResourceFileBytes = 1 << 20 // 1 MiB
 // request. This prevents a prompt-injected or attacker-controlled `limit`
 // value from forcing an unbounded directory walk / scan.
 const maxResourceSearchLimit = 100
+
+// maxResourceQueryLength caps the length of an autocomplete query. Long queries
+// are not useful for filename completion and can be abused to construct
+// expensive glob patterns or force long walks.
+const maxResourceQueryLength = 256
 
 // Resource is a discovered resource returned by a Resolver.
 type Resource struct {
@@ -219,6 +238,9 @@ func (f *FileResolver) Search(ctx context.Context, query string, limit int) ([]R
 	if query == "" {
 		return nil, nil
 	}
+	if len(query) > maxResourceQueryLength {
+		return nil, fmt.Errorf("resource: search query too long (max %d)", maxResourceQueryLength)
+	}
 
 	// Reject traversal attempts before touching the filesystem. A query is a
 	// bare filename/prefix for autocomplete, not a path expression.
@@ -226,8 +248,12 @@ func (f *FileResolver) Search(ctx context.Context, query string, limit int) ([]R
 		return nil, err
 	}
 
+	// Escape glob metacharacters so the query is treated as a literal prefix.
+	// Without this, a query like "foo*bar" would expand into an unintended glob.
+	safeQuery := escapeGlob(query)
+
 	// Try exact match first
-	pattern := filepath.Join(f.root, query)
+	pattern := filepath.Join(f.root, safeQuery)
 	matches, err := filepath.Glob(pattern + "*")
 	if err != nil {
 		return nil, nil
@@ -235,7 +261,7 @@ func (f *FileResolver) Search(ctx context.Context, query string, limit int) ([]R
 
 	// If no match, try recursive by walking the directory tree
 	if len(matches) == 0 {
-		matches = f.walkAndMatch(query)
+		matches = f.walkAndMatch(safeQuery)
 	}
 
 	// Resolve the root once so every match can be confined to it.
@@ -337,6 +363,10 @@ func (f *FileResolver) Load(ctx context.Context, id string) (string, error) {
 func (f *FileResolver) walkAndMatch(searchTerm string) []string {
 	base := f.root
 
+	// The searchTerm has already been validated as a safe literal prefix, but
+	// unescape the glob backslashes so the substring match works on real paths.
+	literalTerm := strings.ReplaceAll(searchTerm, "\\", "")
+
 	var results []string
 	_ = filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -358,7 +388,7 @@ func (f *FileResolver) walkAndMatch(searchTerm string) []string {
 			return nil
 		}
 		rel, _ := filepath.Rel(base, path)
-		if strings.HasPrefix(rel, searchTerm) || strings.Contains(rel, searchTerm) {
+		if strings.HasPrefix(rel, literalTerm) || strings.Contains(rel, literalTerm) {
 			results = append(results, path)
 		}
 		return nil

@@ -59,11 +59,15 @@ func NewStore() (*Store, error) {
 }
 
 // NewStoreAt opens the schedule store rooted at dir. Used by tests and by
-// callers that resolve ~/.odek themselves.
+// callers that resolve ~/.odek themselves. The directory is created with 0700
+// permissions so schedule/state filenames are not listable by other local users.
 func NewStoreAt(dir string) (*Store, error) {
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("schedule: create dir: %w", err)
 	}
+	// Best-effort tighten of an existing directory that may have been created
+	// with more permissive modes by an earlier version.
+	_ = os.Chmod(dir, 0700)
 	return &Store{dir: dir}, nil
 }
 

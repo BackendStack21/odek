@@ -447,6 +447,30 @@ This bounds the memory/container blast radius if a local process or malicious pa
 
 `delegate_tasks` streams NDJSON progress lines from each sub-agent. A runaway or malicious sub-agent could emit an unbounded number of `tool_call`/`tool_result` events, causing unbounded memory growth in the parent. `scanSubagentStream` now caps the total progress stream at 100 000 lines and 100 MiB of data; exceeding either limit aborts the scan and cancels the sub-agent context so the child process is killed instead of continuing to flood stdout.
 
+### 43. Sub-agent task-file deletion scope
+
+`odek subagent --task <path>` reads the JSON task file and then deletes it. Previously it would delete *any* path, so `odek subagent --task ~/.odek/config.json` would read and then remove the config. It now only deletes the file when it resides in the system temp directory and matches the `odek-task-*.json` naming convention used by `delegate_tasks`. User-supplied task files are left untouched.
+
+### 44. Atomic-write temp-file permissions
+
+`fsatomic.WriteFile` creates a temp file and renames it over the target. The old implementation used `os.CreateTemp` (mode 0600 masked by umask) and only `f.Chmod(perm)` after writing, leaving a window where the temp file could be more permissive than intended. It now opens the temp file with `O_CREATE|O_EXCL` and the exact requested permissions from the start, and it returns an error if the parent-directory fsync fails.
+
+### 45. Resource search query sanitization
+
+`FileResolver.Search` previously concatenated the raw query into a `filepath.Glob` pattern. A query containing `*`, `?`, `[`, `]`, etc. could match far more files than intended, and a very long query could force expensive work. The query is now capped to 256 bytes and glob metacharacters are escaped before building the pattern; traversal and path-separator checks remain in place.
+
+### 46. Schedule directory permissions
+
+`internal/schedule/store.go` created the `~/.odek` schedule directory with `0755`, allowing any local user to list schedule/state filenames. It now creates (and best-effort chmods existing) directories with `0700`.
+
+### 47. Config file size check TOCTOU fix
+
+`loadFile` previously `Stat`ed the config file and then `ReadFile`d it, leaving a window for a symlink swap or race. It now opens the file once and reads through `io.LimitReader(f, maxConfigFileBytes+1)`, so a multi-gigabyte target cannot be fully loaded even if it replaces a small file between open and read.
+
+### 48. Advisory flock semantics documented
+
+`internal/flock` provides an advisory lock: it serializes cooperating callers but does not prevent a non-cooperating process with filesystem access from reading or writing the protected file. The package doc now explicitly documents this limitation and notes that file/directory permissions are the primary access control for sensitive data.
+
 ### YOLO mode
 
 ```json
@@ -516,6 +540,12 @@ Defaults: `FrictionThreshold=3`, `FrictionWindow=60s`. To opt out (TTYApprover o
 | Huge `/api/resources?limit=` forces unbounded scan/response | `limit` capped to 100 in handler and registry |
 | Local process spawns unlimited WebSocket agents/containers | Global 20-connection cap + per-IP upgrade rate limiting |
 | Runaway sub-agent floods parent with progress NDJSON | Progress stream capped at 100k lines / 100 MiB; child cancelled on overflow |
+| `odek subagent --task` deletes an arbitrary user file | Only deletes files matching the odek temp-file pattern |
+| Temp file briefly more permissive than target permissions | `fsatomic.WriteFile` sets exact permissions at creation time |
+| Resource search query abuses glob metachars or length | Query capped to 256 bytes and metachars escaped before glob |
+| Local user lists schedule/state filenames | Schedule directory created with `0700` |
+| Config file swapped for a huge file after size check | `loadFile` reads via a single `Open` + `LimitReader` |
+| Non-cooperating process ignores advisory flock | Documented in package doc; permissions are the real access gate |
 
 ---
 

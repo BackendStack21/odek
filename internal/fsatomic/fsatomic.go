@@ -15,6 +15,8 @@
 package fsatomic
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,11 +27,19 @@ import (
 func WriteFile(path string, data []byte, perm os.FileMode) (err error) {
 	dir := filepath.Dir(path)
 
-	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	// Create the temp file with the exact requested permissions immediately,
+	// closing the window where umask could leave it more permissive than
+	// intended. Use O_WRONLY|O_CREATE|O_EXCL so a pre-created symlink cannot
+	// be followed; include a random suffix so concurrent writers don't collide.
+	var randSuffix [8]byte
+	if _, rerr := rand.Read(randSuffix[:]); rerr != nil {
+		return fmt.Errorf("fsatomic: rand suffix: %w", rerr)
+	}
+	tmp := filepath.Join(dir, "."+filepath.Base(path)+".tmp-"+hex.EncodeToString(randSuffix[:]))
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
 	if err != nil {
 		return fmt.Errorf("fsatomic: create temp: %w", err)
 	}
-	tmp := f.Name()
 	// Remove the temp file on any failure before the rename succeeds.
 	defer func() {
 		if tmp != "" {
@@ -40,10 +50,6 @@ func WriteFile(path string, data []byte, perm os.FileMode) (err error) {
 	if _, err := f.Write(data); err != nil {
 		f.Close()
 		return fmt.Errorf("fsatomic: write: %w", err)
-	}
-	if err := f.Chmod(perm); err != nil {
-		f.Close()
-		return fmt.Errorf("fsatomic: chmod: %w", err)
 	}
 	// Flush the file's data to disk before exposing it via the rename.
 	if err := f.Sync(); err != nil {
@@ -59,12 +65,12 @@ func WriteFile(path string, data []byte, perm os.FileMode) (err error) {
 	}
 	tmp = "" // renamed — no longer ours to remove
 
-	// Make the rename itself durable. Best-effort: some filesystems don't
-	// support directory fsync, and the data is already synced, so a failure
-	// here doesn't corrupt anything — it just weakens the crash guarantee.
+	// Make the rename itself durable by fsyncing the parent directory.
 	if d, derr := os.Open(dir); derr == nil {
-		_ = d.Sync()
-		d.Close()
+		defer d.Close()
+		if err := d.Sync(); err != nil {
+			return fmt.Errorf("fsatomic: fsync dir: %w", err)
+		}
 	}
 	return nil
 }
