@@ -61,6 +61,28 @@ func TestNewFileLogger_filePath(t *testing.T) {
 	}
 }
 
+func TestNewFileLogger_hardensExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "existing.log")
+
+	// Simulate an existing world-readable log file from an earlier version.
+	if err := os.WriteFile(path, []byte("old log\n"), 0644); err != nil {
+		t.Fatalf("create existing file: %v", err)
+	}
+
+	l := NewFileLogger(LogInfo, path)
+	fl := l.(*fileLogger)
+	fl.file.Close()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat log file: %v", err)
+	}
+	if info.Mode().Perm()&0077 != 0 {
+		t.Errorf("existing log file permissions = %04o, want no group/other bits", info.Mode().Perm())
+	}
+}
+
 func TestNewFileLogger_invalidPath(t *testing.T) {
 	// An invalid path should fall back to stderr without panicking.
 	l := NewFileLogger(LogDebug, "/nonexistent/dir/log.log")

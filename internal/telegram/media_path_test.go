@@ -257,3 +257,61 @@ func TestResolveMediaPath_RelativeInCWD(t *testing.T) {
 		t.Errorf("expected absolute resolved path, got %q", resolved)
 	}
 }
+
+// TestResolveMediaPath_TildeExpansion verifies that a leading ~ is expanded to
+// the home directory and resolved inside the odek media dir.
+func TestResolveMediaPath_TildeExpansion(t *testing.T) {
+	setupMediaPathTest(t)
+
+	dir, err := MediaDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := filepath.Join(dir, "tilde-media.txt")
+	if err := os.WriteFile(f, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, err := ResolveMediaPath("~/.odek/media/tilde-media.txt")
+	if err != nil {
+		t.Fatalf("ResolveMediaPath with tilde: %v", err)
+	}
+	if !filepath.IsAbs(resolved) {
+		t.Errorf("expected absolute resolved path, got %q", resolved)
+	}
+}
+
+// TestResolveMediaPath_RejectsSymlinkToAllowedFile verifies that the final
+// component being a symlink is rejected even when the symlink target is inside
+// the allowlist. This exercises the O_NOFOLLOW / lstat check.
+func TestResolveMediaPath_RejectsSymlinkToAllowedFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink tests skipped on windows")
+	}
+
+	setupMediaPathTest(t)
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Both target and link are inside the allowed cwd.
+	target := filepath.Join(cwd, "allowed-target.txt")
+	if err := os.WriteFile(target, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(cwd, "allowed-link.txt")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(link) })
+
+	_, err = ResolveMediaPath(link)
+	if err == nil {
+		t.Fatal("expected rejection for symlink final component")
+	}
+	if !strings.Contains(err.Error(), "symlinks are not allowed") {
+		t.Errorf("expected 'symlinks are not allowed' in error, got: %v", err)
+	}
+}

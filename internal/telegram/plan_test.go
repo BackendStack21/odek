@@ -199,6 +199,70 @@ func TestReadPlan_OversizeRejected(t *testing.T) {
 	}
 }
 
+func TestReadPlan_AtSizeCapAllowed(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	dir := filepath.Join(tmp, ".odek", "plans")
+	os.MkdirAll(dir, 0755)
+	path := filepath.Join(dir, "max-plan.md")
+	content := strings.Repeat("x", maxPlanBytes)
+	os.WriteFile(path, []byte(content), 0644)
+
+	slug, got, err := ReadPlan("max-plan")
+	if err != nil {
+		t.Fatalf("ReadPlan at size cap: %v", err)
+	}
+	if slug != "max-plan" {
+		t.Errorf("slug = %q, want max-plan", slug)
+	}
+	if got != content {
+		t.Errorf("content length = %d, want %d", len(got), len(content))
+	}
+}
+
+func TestMostRecentPlan_OversizeRejected(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	dir := filepath.Join(tmp, ".odek", "plans")
+	os.MkdirAll(dir, 0755)
+	path := filepath.Join(dir, "huge-plan.md")
+	os.WriteFile(path, []byte(strings.Repeat("x", maxPlanBytes+1)), 0644)
+
+	_, _, err := MostRecentPlan()
+	if err == nil {
+		t.Fatal("expected error for oversized most-recent plan")
+	}
+	if !strings.Contains(err.Error(), "too large") {
+		t.Errorf("error = %q, want 'too large'", err)
+	}
+}
+
+func TestListPlans_OversizePreview(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	dir := filepath.Join(tmp, ".odek", "plans")
+	os.MkdirAll(dir, 0755)
+	path := filepath.Join(dir, "huge-plan.md")
+	os.WriteFile(path, []byte(strings.Repeat("x", maxPlanBytes+1)), 0644)
+
+	infos, err := ListPlans(0)
+	if err != nil {
+		t.Fatalf("ListPlans: %v", err)
+	}
+	if len(infos) != 1 {
+		t.Fatalf("len(infos) = %d, want 1", len(infos))
+	}
+	if infos[0].Slug != "huge-plan" {
+		t.Errorf("slug = %q, want huge-plan", infos[0].Slug)
+	}
+	if len(infos[0].Preview) > 100 {
+		t.Errorf("preview length = %d, expected short preview", len(infos[0].Preview))
+	}
+}
+
 func TestDeletePlan(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
