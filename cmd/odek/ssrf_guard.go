@@ -39,7 +39,20 @@ type ipLookupFunc func(ctx context.Context, host string) ([]net.IPAddr, error)
 // surfaced them to the policy gate as SystemWrite, so honouring that decision
 // here preserves explicitly-allowed localhost access (and keeps httptest-backed
 // tests working). Every other host is resolved via lookup and validated.
-func ssrfGuardedDial(base dialFunc, lookup ipLookupFunc) dialFunc {
+//
+// allowedHosts lists hostnames (without ports) that the operator explicitly
+// trusts, e.g. the configured web_search base_url. These hosts bypass the
+// internal-IP block so that container-internal services such as SearXNG can be
+// reached by name, while still being pinned to the resolved IP so the kernel
+// cannot re-resolve to a rebound address.
+func ssrfGuardedDial(base dialFunc, lookup ipLookupFunc, allowedHosts ...string) dialFunc {
+	allowed := make(map[string]struct{}, len(allowedHosts))
+	for _, h := range allowedHosts {
+		if h != "" {
+			allowed[h] = struct{}{}
+		}
+	}
+
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
@@ -49,6 +62,8 @@ func ssrfGuardedDial(base dialFunc, lookup ipLookupFunc) dialFunc {
 		if danger.HostIsImplicitlyInternal(host) {
 			return base(ctx, network, addr)
 		}
+
+		_, hostAllowed := allowed[host]
 
 		ips, err := lookup(ctx, host)
 		if err != nil {
@@ -60,9 +75,13 @@ func ssrfGuardedDial(base dialFunc, lookup ipLookupFunc) dialFunc {
 		// Validate every answer before dialing any of them: an attacker can
 		// return a safe IP alongside an internal one hoping the dialer picks
 		// the internal address. Refuse the whole set if any is internal.
-		for _, ipa := range ips {
-			if danger.IsBlockedIP(ipa.IP) {
-				return nil, fmt.Errorf("blocked connection to %q: resolves to internal address %s (possible SSRF / DNS rebinding)", host, ipa.IP)
+		// Operator-allowed hosts bypass this check so configured internal
+		// backends (e.g. SearXNG under Docker) remain reachable.
+		if !hostAllowed {
+			for _, ipa := range ips {
+				if danger.IsBlockedIP(ipa.IP) {
+					return nil, fmt.Errorf("blocked connection to %q: resolves to internal address %s (possible SSRF / DNS rebinding)", host, ipa.IP)
+				}
 			}
 		}
 		// Pin to validated IPs — never hand the hostname back to the kernel,
@@ -81,13 +100,15 @@ func ssrfGuardedDial(base dialFunc, lookup ipLookupFunc) dialFunc {
 }
 
 // ssrfGuardedTransport returns an *http.Transport whose DialContext is the SSRF
-// guard above, backed by the real dialer and resolver. It clones the default
-// transport when possible so it inherits sane defaults (env proxy handling,
-// idle-conn limits, HTTP/2, TLS handshake timeout); if a third-party package
-// has swapped http.DefaultTransport for a non-*http.Transport RoundTripper, it
-// falls back to a fresh transport with explicit proxy handling rather than
-// panicking on the type assertion — this runs at startup, so it must fail safe.
-func ssrfGuardedTransport() *http.Transport {
+// guard above, backed by the real dialer and resolver. allowedHosts are
+// operator-trusted hostnames (e.g. the web_search base_url host) that may
+// resolve to internal addresses. It clones the default transport when possible
+// so it inherits sane defaults (env proxy handling, idle-conn limits, HTTP/2,
+// TLS handshake timeout); if a third-party package has swapped
+// http.DefaultTransport for a non-*http.Transport RoundTripper, it falls back
+// to a fresh transport with explicit proxy handling rather than panicking on
+// the type assertion — this runs at startup, so it must fail safe.
+func ssrfGuardedTransport(allowedHosts ...string) *http.Transport {
 	base := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
 	tr, ok := http.DefaultTransport.(*http.Transport)
 	if ok {
@@ -95,6 +116,6 @@ func ssrfGuardedTransport() *http.Transport {
 	} else {
 		tr = &http.Transport{Proxy: http.ProxyFromEnvironment}
 	}
-	tr.DialContext = ssrfGuardedDial(base.DialContext, net.DefaultResolver.LookupIPAddr)
+	tr.DialContext = ssrfGuardedDial(base.DialContext, net.DefaultResolver.LookupIPAddr, allowedHosts...)
 	return tr
 }

@@ -46,10 +46,19 @@ func newWebSearchTool(dc danger.DangerousConfig, cfg config.WebSearchConfig) *we
 		timeout = 15
 	}
 	t := &webSearchTool{dangerousConfig: dc, cfg: cfg}
+
+	// The configured SearXNG backend is trusted by the operator. Allow its
+	// hostname to resolve to internal Docker addresses (e.g. 172.18.0.3) without
+	// tripping the SSRF / DNS-rebinding guard.
+	allowedHost := ""
+	if u, err := url.Parse(cfg.BaseURL); err == nil && u.Host != "" {
+		allowedHost = u.Hostname()
+	}
+
 	t.client = &http.Client{
 		Timeout:       time.Duration(timeout) * time.Second,
 		CheckRedirect: t.checkRedirect,
-		Transport:     ssrfGuardedTransport(),
+		Transport:     ssrfGuardedTransport(allowedHost),
 	}
 	return t
 }

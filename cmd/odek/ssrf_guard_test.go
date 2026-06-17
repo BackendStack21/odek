@@ -115,6 +115,35 @@ func TestSSRFGuardedDial_ExternalPinnedToValidatedIP(t *testing.T) {
 	}
 }
 
+func TestSSRFGuardedDial_AllowedHostPermitsInternal(t *testing.T) {
+	// The configured web_search backend (e.g. SearXNG under Docker) may resolve
+	// to a private container IP. An explicit allowlist lets it through while
+	// still pinning the dial to the resolved IP.
+	var dialed []string
+	guard := ssrfGuardedDial(recordingDial(&dialed), stubLookup("172.18.0.3"), "searxng")
+
+	if _, err := guard(context.Background(), "tcp", "searxng:8080"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(dialed) != 1 || dialed[0] != "172.18.0.3:8080" {
+		t.Errorf("dialed = %v, want [172.18.0.3:8080] (allowed internal backend pinned to IP)", dialed)
+	}
+}
+
+func TestSSRFGuardedDial_AllowedHostPortIgnored(t *testing.T) {
+	// The allowlist matches the hostname only; different ports on the same host
+	// are still allowed.
+	var dialed []string
+	guard := ssrfGuardedDial(recordingDial(&dialed), stubLookup("172.18.0.3"), "searxng")
+
+	if _, err := guard(context.Background(), "tcp", "searxng:9090"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(dialed) != 1 || dialed[0] != "172.18.0.3:9090" {
+		t.Errorf("dialed = %v, want [172.18.0.3:9090]", dialed)
+	}
+}
+
 // TestBrowser_SSRF_ResolvesInternal exercises the guard through the real
 // browser navigate path: the hostname classifies as NetworkEgress (so the
 // policy gate lets it through) but resolves to the cloud-metadata IP, and the
