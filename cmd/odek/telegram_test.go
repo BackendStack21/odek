@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,18 +27,65 @@ func TestSpawnChild_StartsChildProcess(t *testing.T) {
 	}
 }
 
-func TestSpawnChild_ResolvedAPIKeyInjected(t *testing.T) {
-	// resolvedAPIKey is re-injected into the child env so config.LoadConfig
-	// (which clears env keys) does not leave the child without credentials.
+func TestSpawnChild_ResolvedAPIKeyHandedOffViaFD(t *testing.T) {
+	// resolvedAPIKey must be handed off via an inherited file descriptor, not
+	// via the child environment, so it does not leak into /proc/<pid>/environ.
 	orig := resolvedAPIKey
 	t.Cleanup(func() { resolvedAPIKey = orig })
 	resolvedAPIKey = "test-key-abc"
-	err := spawnChild()
-	if err != nil {
-		t.Logf("spawnChild returned: %v", err)
+
+	var capturedAttr *os.ProcAttr
+	starter := func(name string, argv []string, attr *os.ProcAttr) (*os.Process, error) {
+		capturedAttr = attr
+		return nil, nil
 	}
-	// Verify the key is still set in current env (spawnChild must not mutate
-	// os.Environ — it appends to a copy for the child only).
+	err := spawnChildWithStarter(starter)
+	if err != nil {
+		t.Logf("spawnChildWithStarter returned: %v", err)
+	}
+	if capturedAttr == nil {
+		t.Fatal("starter was not called")
+	}
+
+	// Environment must not contain the raw key.
+	for _, e := range capturedAttr.Env {
+		if strings.HasPrefix(e, "ODEK_API_KEY=test-key-abc") ||
+			strings.HasPrefix(e, "DEEPSEEK_API_KEY=test-key-abc") ||
+			strings.HasPrefix(e, "OPENAI_API_KEY=test-key-abc") {
+			t.Errorf("child env contains raw API key: %s", e)
+		}
+	}
+
+	// Environment must contain only the FD signal.
+	var fdSignal string
+	for _, e := range capturedAttr.Env {
+		if strings.HasPrefix(e, keyFDEnvVar+"=") {
+			fdSignal = e
+			break
+		}
+	}
+	if fdSignal != keyFDEnvVar+"=3" {
+		t.Errorf("child env missing %s signal, got %q", keyFDEnvVar, fdSignal)
+	}
+
+	// Files must include FD 3 with the key.
+	if len(capturedAttr.Files) != 4 {
+		t.Fatalf("child files = %d, want 4 (stdin, stdout, stderr, key FD)", len(capturedAttr.Files))
+	}
+	keyFD := capturedAttr.Files[3]
+	if keyFD == nil {
+		t.Fatal("key FD is nil")
+	}
+	buf := make([]byte, 64)
+	n, err := keyFD.Read(buf)
+	if err != nil && err != io.EOF {
+		t.Fatalf("read key FD: %v", err)
+	}
+	if string(buf[:n]) != "test-key-abc" {
+		t.Errorf("key FD contents = %q, want %q", string(buf[:n]), "test-key-abc")
+	}
+
+	// Verify the current process environment is not mutated.
 	if v := os.Getenv("ODEK_API_KEY"); v == "test-key-abc" {
 		t.Error("spawnChild must not mutate the current process environment")
 	}

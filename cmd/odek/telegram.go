@@ -157,12 +157,19 @@ func telegramCmd(args []string) error {
 	// 1. Load config from all sources (file → env).
 	resolved := config.LoadConfig(config.CLIFlags{})
 
+	// 1b. If the parent handed us an API key via an inherited file descriptor
+	// (FD-based handoff used on Telegram restart), use it. This keeps the key
+	// out of the child's /proc/<pid>/environ.
+	if key := readKeyFromInheritedFD(); key != "" {
+		resolved.APIKey = key
+	}
+
 	// 2. Validate API key presence.
 	if resolved.APIKey == "" {
 		return fmt.Errorf("no API key configured — set ODEK_API_KEY, DEEPSEEK_API_KEY, or configure in odek.json")
 	}
 	// Store for spawnChild: config loader clears ODEK_API_KEY from env,
-	// so the child process needs us to re-inject it.
+	// so the child process needs us to hand it off securely.
 	resolvedAPIKey = resolved.APIKey
 
 	// 3. Load and validate Telegram config.
@@ -1032,6 +1039,15 @@ func gracefulRestart(bot *telegram.Bot) {
 // spawnChild starts a new odek telegram process detached from the parent.
 // Stderr is redirected to /tmp/odek-telegram.log so startup errors are visible.
 func spawnChild() error {
+	return spawnChildWithStarter(os.StartProcess)
+}
+
+type processStarter func(name string, argv []string, attr *os.ProcAttr) (*os.Process, error)
+
+// spawnChildWithStarter is the testable core of spawnChild. The starter
+// argument lets tests intercept the ProcAttr without actually launching a
+// process.
+func spawnChildWithStarter(starter processStarter) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("executable: %w", err)
@@ -1051,24 +1067,36 @@ func spawnChild() error {
 		stderr = nil // fallback: child gets /dev/null
 	}
 
-	// Build child environment: parent env + re-injected API key.
-	// config.LoadConfig clears all API key env vars from the environment,
-	// so they're missing from os.Environ(). Re-inject all three forms so
-	// the child process finds the key regardless of which env var it checks.
+	// Build child environment: parent env only. The API key is passed via an
+	// inherited file descriptor instead of the environment so it does not
+	// appear in /proc/<pid>/environ or crash dumps. This mirrors the FD-based
+	// handoff used for sub-agents.
 	childEnv := os.Environ()
+	var files []*os.File
+	var cleanup func()
 	if resolvedAPIKey != "" {
-		childEnv = append(childEnv, "ODEK_API_KEY="+resolvedAPIKey)
-		childEnv = append(childEnv, "DEEPSEEK_API_KEY="+resolvedAPIKey)
-		childEnv = append(childEnv, "OPENAI_API_KEY="+resolvedAPIKey)
+		keyFile, keyCleanup, err := writeKeyToUnlinkedFile(resolvedAPIKey)
+		if err != nil {
+			return fmt.Errorf("write key to FD: %w", err)
+		}
+		cleanup = keyCleanup
+		childEnv = append(childEnv, keyFDEnvVar+"=3")
+		files = []*os.File{nil, nil, stderr, keyFile}
+	} else {
+		files = []*os.File{nil, nil, stderr}
 	}
 
 	attr := &os.ProcAttr{
 		Env: childEnv,
 		// Detach: nil stdin/stdout so child is reparented to init.
 		// Stderr is captured to the log file for debugging.
-		Files: []*os.File{nil, nil, stderr},
+		// FD 3 carries the API key when needed.
+		Files: files,
 	}
-	_, err = os.StartProcess(exe, argv, attr)
+	_, err = starter(exe, argv, attr)
+	if cleanup != nil {
+		cleanup()
+	}
 	return err
 }
 
