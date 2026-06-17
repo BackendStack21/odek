@@ -1,9 +1,11 @@
 package mcpclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -163,6 +165,41 @@ func TestClose_Idempotent(t *testing.T) {
 	}
 	if err := client.Close(); err != nil {
 		t.Errorf("second Close: %v", err)
+	}
+}
+
+func TestReadLoop_OversizedResponse(t *testing.T) {
+	dir := t.TempDir()
+	hugePath := filepath.Join(dir, "huge.txt")
+	scriptPath := filepath.Join(dir, "print.sh")
+
+	// One line that exceeds the 10 MiB cap, followed by a newline, so the
+	// scanner sees a single oversized token.
+	data := bytes.Repeat([]byte{'x'}, maxMCPResponseLine+1)
+	data = append(data, '\n')
+	if err := os.WriteFile(hugePath, data, 0644); err != nil {
+		t.Fatalf("write huge file: %v", err)
+	}
+	script := "#!/bin/sh\ncat \"" + hugePath + "\"\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	client, err := New("oversized", ServerConfig{
+		Command: "sh",
+		Args:    []string{scriptPath},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer client.Close()
+
+	_, err = client.Discover(context.Background())
+	if err == nil {
+		t.Fatal("expected error for oversized response")
+	}
+	if !strings.Contains(err.Error(), "response line exceeded") {
+		t.Errorf("error = %v, want oversized response error", err)
 	}
 }
 

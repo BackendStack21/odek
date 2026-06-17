@@ -44,8 +44,14 @@ import (
 // ── Protocol Constants ──────────────────────────────────────────────────
 
 const (
-	ProtocolVersion = "2025-03-26"
-	DefaultTimeout  = 30 * time.Second
+	ProtocolVersion    = "2025-03-26"
+	DefaultTimeout     = 30 * time.Second
+	// maxMCPResponseLine caps the size of a single JSON-RPC response line
+	// from an MCP server. A malicious or broken server that emits a huge
+	// line without a newline would otherwise be buffered entirely in memory
+	// by ReadString, leading to OOM. Lines exceeding this limit are dropped
+	// and the connection is closed.
+	maxMCPResponseLine = 10 << 20 // 10 MiB
 )
 
 // ── JSON-RPC Types ─────────────────────────────────────────────────────
@@ -451,19 +457,11 @@ func (c *Client) call(ctx context.Context, method string, params json.RawMessage
 // are reading from the same connection.
 // Exits when stdout returns an error (EOF on pipe close).
 func (c *Client) readLoop() {
-	for {
-		line, err := c.stdout.ReadString('\n')
-		if err != nil {
-			// Process exited or pipe closed — unblock all waiters.
-			c.mu.Lock()
-			for id, ch := range c.pending {
-				close(ch)
-				delete(c.pending, id)
-			}
-			c.mu.Unlock()
-			return
-		}
-		line = strings.TrimSpace(line)
+	scanner := bufio.NewScanner(c.stdout)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxMCPResponseLine)
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
 		}
@@ -492,6 +490,28 @@ func (c *Client) readLoop() {
 			default:
 			}
 		}
+	}
+
+	// scanner.Scan returned false because of EOF, an I/O error, or an
+	// oversized token. Unblock all waiters; if the line was too long, tell
+	// them why before closing the channel.
+	oversized := scanner.Err() == bufio.ErrTooLong
+	c.mu.Lock()
+	pending := make(map[int]chan callResponse, len(c.pending))
+	for id, ch := range c.pending {
+		pending[id] = ch
+		delete(c.pending, id)
+	}
+	c.mu.Unlock()
+
+	for _, ch := range pending {
+		if oversized {
+			select {
+			case ch <- callResponse{err: fmt.Errorf("mcpclient %s: response line exceeded %d byte limit", c.name, maxMCPResponseLine)}:
+			default:
+			}
+		}
+		close(ch)
 	}
 }
 
