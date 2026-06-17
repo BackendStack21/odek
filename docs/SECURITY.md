@@ -90,6 +90,7 @@ The classifier is hardened against common evasion tricks (see the package doc in
 - `command rm`, `env rm`, `sudo rm`, `/bin/rm`, `true | dd of=/dev/sda` — wrappers are stripped, every pipe stage is classified, and absolute paths are basenamed before matching.
 - `bash -i >& /dev/tcp/…`, `cat ~/.ssh/id_rsa` — reverse-shell channels and sensitive-path access are flagged regardless of the command verb.
 - `awk 'BEGIN{system("rm -rf ~")}'`, `sed 's/foo/bar/e'`, `find . -exec sh -c '…' \;`, `vim /etc/passwd` — interpreters that can invoke shell commands (`awk`/`gawk`/`mawk`/`nawk`, `sed` `e` command / `-f`, editors, `find -exec`) are escalated to `code_execution` rather than treated as read-only.
+- `env` and `printenv` — a full process-environment dump is classified as `system_write` because it can leak secrets that the redaction scanner does not recognise. `env FOO=bar <cmd>` still classifies the real `<cmd>` normally.
 
 Regression suites (`internal/danger/classifier_bypass_test.go` and `hardening_test.go`) pin these as known-closed evasions. If you find a new bypass, those test files are the place to add it.
 
@@ -195,9 +196,19 @@ The API key is **not** passed via process environment. It is written to a 0600 t
 
 On Windows, where you cannot `unlink` an open file, a 0600 temp file is used and deleted by the parent after `Start`.
 
-### 9. Web UI WebSocket origin allowlist
+### 9. Web UI CSRF token
 
-`odek serve`'s WebSocket handshake rejects upgrades from non-local origins. By default `localhost`, `127.0.0.1`, and `[::1]` are accepted; a missing `Origin` header (curl, native clients) is also accepted. This blocks CSRF-on-localhost attacks where a malicious page open in your browser otherwise drives the agent.
+`odek serve` issues a fresh 256-bit random token at startup. The token is:
+
+- injected into the served `index.html` as `<meta name="odek-ws-token" content="...">`,
+- delivered as an `HttpOnly` `SameSite=Strict` cookie named `odek_ws_token`, and
+- required by the `/ws` handshake via the cookie, an `X-Odek-Ws-Token` header, or a WebSocket subprotocol of the form `odek.<token>`.
+
+The origin allowlist (`localhost`, `127.0.0.1`, `[::1]`, and empty Origin for non-browser clients) remains as defense-in-depth, but the token is the primary protection against cross-port localhost CSRF: a malicious page served by another local port cannot obtain the token and therefore cannot open an agent-controlling WebSocket.
+
+### 9a. Web UI file attachments
+
+Files attached through the Web UI are sourced from the browser trust boundary. The UI sends each attachment separately from the user's text; before injecting an attachment into the model prompt, `odek serve` wraps it with the same nonce'd `<untrusted_content_*>` boundary used for tool output (`source="attachment:<filename>"`). This prevents a maliciously crafted file from being interpreted as system instructions.
 
 ### 10. Secret redaction
 

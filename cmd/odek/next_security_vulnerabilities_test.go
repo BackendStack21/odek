@@ -214,7 +214,7 @@ func TestServe_CSRF_AllowsLocalhostOrigin(t *testing.T) {
 func TestServe_StaticSecurityHeaders(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rr := httptest.NewRecorder()
-	handleStatic().ServeHTTP(rr, req)
+	handleStatic("").ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("static handler returned %d", rr.Code)

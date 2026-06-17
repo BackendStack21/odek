@@ -582,11 +582,7 @@ func TestServe_E2E_NoRepetitiveResponses(t *testing.T) {
 	go serveOnListener(ln, mux)
 	waitForHTTP(t, ln.Addr().String())
 
-	wsURL := "ws://" + ln.Addr().String() + "/ws"
-	conn, err := golangws.Dial(wsURL, "", "http://localhost")
-	if err != nil {
-		t.Fatalf("Dial: %v", err)
-	}
+	conn := dialTestWS(t, ln.Addr().String())
 	defer conn.Close()
 
 	send := func(content string) {
@@ -665,11 +661,7 @@ func TestServe_E2E_SessionMessagesStoredWithoutSystemInjections(t *testing.T) {
 	go serveOnListener(ln, mux)
 	waitForHTTP(t, ln.Addr().String())
 
-	wsURL := "ws://" + ln.Addr().String() + "/ws"
-	conn, err := golangws.Dial(wsURL, "", "http://localhost")
-	if err != nil {
-		t.Fatalf("Dial: %v", err)
-	}
+	conn := dialTestWS(t, ln.Addr().String())
 	defer conn.Close()
 
 	// Send one prompt, collect session ID.

@@ -27,8 +27,6 @@ func TestClassify_Safe_Commands(t *testing.T) {
 		{"diff a.txt b.txt", Safe},
 		{"cmp old new", Safe},
 		{"date", Safe},
-		{"env", Safe},
-		{"printenv HOME", Safe},
 		{"echo hello world", Safe},
 		{"go build ./...", Safe},
 		{"go vet ./...", Safe},

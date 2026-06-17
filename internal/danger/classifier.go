@@ -819,7 +819,7 @@ var safeCommands = map[string]bool{
 	"lsmem": true, "lsusb": true, "lspci": true, "lsof": true, "dmesg": true,
 	"id": true, "whoami": true, "groups": true, "users": true, "who": true,
 	"w": true, "last": true, "getent": true, "ps": true, "pgrep": true,
-	"pidof": true, "netstat": true, "ss": true, "printenv": true, "locale": true,
+	"pidof": true, "netstat": true, "ss": true, "locale": true,
 	"getconf": true, "which": true, "whereis": true, "type": true, "hash": true,
 	// control / no-op builtins
 	"true": true, "false": true, ":": true, "test": true, "[": true,
@@ -931,6 +931,13 @@ func classifyStage(tokens []string, pipedInto bool) RiskClass {
 	if len(tokens) == 0 {
 		return Safe
 	}
+	// Bare `env` / `printenv` dumps the full process environment, including
+	// secrets not covered by redaction patterns. Treat it as system_write so
+	// it requires approval in interactive modes and is denied by default in
+	// non-interactive mode.
+	if isEnvironmentDump(tokens) {
+		return SystemWrite
+	}
 	cmdTokens, floor := unwrapWrappers(tokens)
 	cls := floor
 	if len(cmdTokens) > 0 {
@@ -961,6 +968,46 @@ func classifyStage(tokens []string, pipedInto bool) RiskClass {
 		cls = worstOf(cls, classifyResourceToken(t))
 	}
 	return cls
+}
+
+// isEnvironmentDump reports whether tokens represent a bare `env` or
+// `printenv` invocation whose only effect is to dump the process environment.
+// `env FOO=bar cmd ...` is NOT a dump (the real command is classified
+// separately after unwrapWrappers strips env); `env`, `env -i`,
+// `env -u SECRET`, and `printenv` are dumps.
+func isEnvironmentDump(tokens []string) bool {
+	if len(tokens) == 0 {
+		return false
+	}
+	name := commandName(tokens[0])
+	if name == "printenv" {
+		return true
+	}
+	if name != "env" {
+		return false
+	}
+	for i := 1; i < len(tokens); {
+		t := tokens[i]
+		if isAssignment(t) {
+			i++
+			continue
+		}
+		if t == "-i" || t == "--ignore-environment" ||
+			t == "-0" || t == "--null" ||
+			t == "--help" || t == "--version" {
+			i++
+			continue
+		}
+		if (t == "-u" || t == "--unset" ||
+			t == "-C" || t == "--chdir" ||
+			t == "-S" || t == "--split-string") && i+1 < len(tokens) {
+			i += 2
+			continue
+		}
+		// Anything else is the real command being wrapped.
+		return false
+	}
+	return true
 }
 
 // ── Normalisation (evasion neutralisation) ────────────────────────────
@@ -1418,6 +1465,9 @@ func classifyResourceToken(tok string) RiskClass {
 	if isSensitivePath(tok) {
 		return SystemWrite
 	}
+	if isSensitiveOdekPath(tok) {
+		return SystemWrite
+	}
 	return Safe
 }
 
@@ -1448,6 +1498,28 @@ func isSensitivePath(tok string) bool {
 		}
 	}
 	return false
+}
+
+// isSensitiveOdekPath reports whether tok names a ~/.odek trust anchor that
+// must not be read through auto-approved Safe commands. Reading config.json,
+// secrets.env, IDENTITY.md, sessions, audit logs, etc. leaks secrets or trusted
+// instructions, so it escalates to SystemWrite. This mirrors the write-side
+// protection in ClassifyPath and cmd/odek/file_tool.go::isProtectedOdekPath.
+func isSensitiveOdekPath(tok string) bool {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return false
+	}
+	path := tok
+	if strings.HasPrefix(path, "~") {
+		path = home + path[1:]
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	abs = filepath.Clean(abs)
+	return isOdekTrustAnchor(home, abs)
 }
 
 // ── Small token helpers ────────────────────────────────────────────────
@@ -1542,6 +1614,12 @@ func classifyCommand(tokens []string) RiskClass {
 	// Resolve the program name from its basename so /bin/rm, /usr/bin/curl
 	// and ./sh classify the same as their bare names in any pipe stage.
 	first := commandName(tokens[0])
+
+	// Environment dumps are equivalent to reading the process's credential
+	// store; they are never safe even when used benignly.
+	if first == "printenv" {
+		return SystemWrite
+	}
 
 	// Blocked
 	if isBlocked(tokens) {

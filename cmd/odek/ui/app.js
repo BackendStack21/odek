@@ -203,9 +203,16 @@ function initParticles() {
 initParticles();
 
 // ── WebSocket ──
+function getWsToken() {
+  const meta = document.querySelector('meta[name="odek-ws-token"]');
+  return meta ? meta.getAttribute('content') : '';
+}
+
 function connect() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(proto + '//' + location.host + '/ws');
+  const token = getWsToken();
+  const protocols = token ? ['odek.' + token] : [];
+  ws = new WebSocket(proto + '//' + location.host + '/ws', protocols);
 
   ws.onopen = () => {
     dotEl.className = 'dot connected';
@@ -1347,21 +1354,19 @@ window.copyCode = function(el) {
 function send() {
   let text = promptEl.value.trim();
 
-  // Compose backend payload (full file content inlined) and a display message
-  // that shows only filename + size chips — never the file body itself.
-  let payload = text;
+  // Build display message (filename chips only — never the file body) and a
+  // separate attachments payload. The server wraps each attachment with the
+  // untrusted-content boundary before injecting it into the model context.
   let display = text;
+  let attachments = [];
   if (attachedFiles.length > 0) {
-    const blocks = attachedFiles.map(f =>
-      '--- ' + f.name + ' (' + formatFileSize(f.size) + ') ---\n' + f.content + '\n--- end ' + f.name + ' ---'
-    );
-    payload = blocks.join('\n\n') + (text ? '\n\n' + text : '');
     const chips = attachedFiles.map(f => '📎 ' + f.name + ' (' + formatFileSize(f.size) + ')').join('\n');
     display = chips + (text ? '\n\n' + text : '');
+    attachments = attachedFiles.map(f => ({ name: f.name, content: f.content }));
     clearAttachedFiles();
   }
 
-  if (!payload || busy || !ws || ws.readyState !== WebSocket.OPEN) return;
+  if ((!text && attachments.length === 0) || busy || !ws || ws.readyState !== WebSocket.OPEN) return;
 
   history.push(text);
   if (history.length > 100) history.shift();
@@ -1398,7 +1403,8 @@ function send() {
 
   ws.send(JSON.stringify({
     type: 'prompt',
-    content: payload,
+    content: text,
+    attachments: attachments,
     session_id: sessionId,
     auth_token: getSessionToken(sessionId) || undefined,
     model: currentModel || undefined,
