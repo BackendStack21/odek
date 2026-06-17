@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -40,6 +41,135 @@ const maxSearchResultBytes = maxReadBytes
 // maxGlobMatches caps the number of paths returned by the glob tool to prevent
 // unbounded JSON responses from broad patterns.
 const maxGlobMatches = 1000
+
+// confinedGlob walks root and returns paths matching pattern without using
+// filepath.Glob. It is workspace-confined: it resolves root to an absolute
+// path, rejects patterns containing ".." or absolute prefixes, skips every
+// symlink (files and directories), and verifies every match stays inside root.
+// This closes the path-traversal vector described in finding #22.
+func confinedGlob(root, pattern string, limit int, includeDirs bool) ([]string, error) {
+	if limit <= 0 {
+		limit = maxGlobMatches
+	}
+	// Reject patterns that could escape the workspace. filepath.Match itself
+	// does not match "..", but a pattern like "../.ssh/id_*" combined with
+	// filepath.Glob would traverse upward. We block it explicitly.
+	if strings.Contains(pattern, "..") {
+		return nil, fmt.Errorf("pattern cannot contain ..")
+	}
+	if filepath.IsAbs(pattern) {
+		return nil, fmt.Errorf("pattern cannot be absolute")
+	}
+
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return nil, fmt.Errorf("resolve root: %w", err)
+	}
+	// Ensure absRoot ends with a separator so strings.HasPrefix cannot be
+	// tricked by a sibling directory with a matching prefix.
+	rootPrefix := absRoot + string(filepath.Separator)
+
+	// Build the matcher based on pattern syntax.
+	var matcher func(rel string, isDir bool) bool
+	switch {
+	case strings.Contains(pattern, "**"):
+		globRe, err := globToRegex(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("invalid glob pattern: %w", err)
+		}
+		matcher = func(rel string, isDir bool) bool {
+			return globRe.MatchString(rel)
+		}
+	case strings.Contains(pattern, "/") || strings.Contains(pattern, string(filepath.Separator)):
+		matcher = func(rel string, isDir bool) bool {
+			ok, _ := filepath.Match(pattern, rel)
+			return ok
+		}
+	default:
+		matcher = func(rel string, isDir bool) bool {
+			ok, _ := filepath.Match(pattern, filepath.Base(rel))
+			return ok
+		}
+	}
+
+	var matches []string
+	walkErr := filepath.WalkDir(absRoot, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d == nil {
+			return nil
+		}
+		// Skip the root itself.
+		if path == absRoot {
+			return nil
+		}
+		// Skip every symlink, including symlinked directories. WalkDir uses
+		// Lstat, so a symlink-to-directory has type symlink, not directory.
+		if d.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
+		// Skip hidden directories and build-artifact directories.
+		if d.IsDir() {
+			if strings.HasPrefix(d.Name(), ".") && d.Name() != "." {
+				return fs.SkipDir
+			}
+			if skipDir(d.Name()) {
+				return fs.SkipDir
+			}
+			if !includeDirs {
+				return nil
+			}
+		}
+		// Verify the path is inside root.
+		absPath, err := filepath.Abs(path)
+		if err != nil {
+			return nil
+		}
+		if absPath != absRoot && !strings.HasPrefix(absPath, rootPrefix) {
+			return nil
+		}
+		rel, err := filepath.Rel(absRoot, absPath)
+		if err != nil {
+			return nil
+		}
+		if matcher(rel, d.IsDir()) {
+			matches = append(matches, absPath)
+			if len(matches) >= limit {
+				return fs.SkipAll
+			}
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return nil, walkErr
+	}
+	return matches, nil
+}
+
+// globToRegex converts a glob pattern with ** to a regex. ** matches any
+// characters including path separators; * matches any characters except path
+// separators; ? matches any single character except path separators.
+func globToRegex(pattern string) (*regexp.Regexp, error) {
+	var reStr strings.Builder
+	reStr.WriteString("^")
+	for i := 0; i < len(pattern); i++ {
+		ch := pattern[i]
+		switch {
+		case ch == '*' && i+1 < len(pattern) && pattern[i+1] == '*':
+			reStr.WriteString(".*")
+			i++
+		case ch == '*':
+			reStr.WriteString("[^/]*")
+		case ch == '?':
+			reStr.WriteString("[^/]")
+		case ch == '.' || ch == '+' || ch == '^' || ch == '$' || ch == '|' || ch == '(' || ch == ')' || ch == '[' || ch == ']' || ch == '{' || ch == '}' || ch == '\\':
+			reStr.WriteByte('\\')
+			reStr.WriteByte(ch)
+		default:
+			reStr.WriteByte(ch)
+		}
+	}
+	reStr.WriteString("$")
+	return regexp.Compile(reStr.String())
+}
 
 type readFileTool struct {
 	ctxTool
@@ -537,58 +667,14 @@ func (t *searchFilesTool) searchFiles(args searchFilesArgs) (string, error) {
 	pattern := args.Pattern
 	searchDir := args.Path
 
-	var matches []searchMatch
-	limit := args.Limit
+	paths, err := confinedGlob(searchDir, pattern, args.Limit, false)
+	if err != nil {
+		return jsonError(fmt.Sprintf("invalid search pattern %q: %v", pattern, err))
+	}
 
-	// If pattern has path separators, use filepath.Glob instead
-	if strings.Contains(pattern, "/") || strings.Contains(pattern, string(filepath.Separator)) {
-		globMatches, err := filepath.Glob(filepath.Join(searchDir, pattern))
-		if err != nil {
-			return jsonError(fmt.Sprintf("invalid glob %q: %v", pattern, err))
-		}
-		for _, p := range globMatches {
-			// Lstat so symlinks are not followed to their targets for metadata.
-			info, err := os.Lstat(p)
-			if err != nil {
-				continue
-			}
-			// Skip directories and symlinks — same policy as the walk branch.
-			if info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-				continue
-			}
-			matches = append(matches, searchMatch{Path: wrapUntrusted(t.toolCtx(), "search_files:"+p, p)})
-			if len(matches) >= limit {
-				break
-			}
-		}
-	} else {
-		// Simple name match — walk the directory once
-		filepath.Walk(searchDir, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info == nil {
-				return nil
-			}
-			if info.IsDir() {
-				if strings.HasPrefix(info.Name(), ".") && info.Name() != "." {
-					return filepath.SkipDir
-				}
-				if skipDir(info.Name()) {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			// Skip symlinks — prevents listing files the agent can't read.
-			if info.Mode()&os.ModeSymlink != 0 {
-				return nil
-			}
-			match, _ := filepath.Match(pattern, info.Name())
-			if match {
-				matches = append(matches, searchMatch{Path: wrapUntrusted(t.toolCtx(), "search_files:"+path, path)})
-				if len(matches) >= limit {
-					return filepath.SkipAll
-				}
-			}
-			return nil
-		})
+	var matches []searchMatch
+	for _, p := range paths {
+		matches = append(matches, searchMatch{Path: wrapUntrusted(t.toolCtx(), "search_files:"+p, p)})
 	}
 
 	// Sort by modification time (newest first). Use Lstat so symlinks are not
@@ -1301,108 +1387,23 @@ func (t *globTool) Call(argsJSON string) (result string, err error) {
 		return jsonError(err.Error())
 	}
 
-	var matches []globMatch
+	paths, err := confinedGlob(args.Path, args.Pattern, args.Limit, true)
+	if err != nil {
+		return jsonError(fmt.Sprintf("invalid glob %q: %v", args.Pattern, err))
+	}
 
-	// If pattern has path separators, use filepath.Walk
-	if strings.Contains(args.Pattern, "/") || strings.Contains(args.Pattern, "\\") {
-		// Support ** (recursive globstar) by converting to regex.
-		// filepath.Match does NOT support ** — it treats it as literal "*".
-		// When ** is present, compile a regex and use it for matching.
-		var globRe *regexp.Regexp
-		if strings.Contains(args.Pattern, "**") {
-			// Convert glob pattern to regex:
-			//   **  ->  .*   (match any chars including path separators)
-			//   *   ->  [^/]* (match any chars except path separators)
-			//   ?   ->  [^/]  (match any single char except path separator)
-			// Escape other regex meta-characters.
-			var reStr strings.Builder
-			reStr.WriteString("^")
-			for i := 0; i < len(args.Pattern); i++ {
-				ch := args.Pattern[i]
-				switch {
-				case ch == '*' && i+1 < len(args.Pattern) && args.Pattern[i+1] == '*':
-					reStr.WriteString(".*")
-					i++
-				case ch == '*':
-					reStr.WriteString("[^/]*")
-				case ch == '?':
-					reStr.WriteString("[^/]")
-				case ch == '.' || ch == '+' || ch == '^' || ch == '$' || ch == '|' || ch == '(' || ch == ')' || ch == '[' || ch == ']' || ch == '{' || ch == '}' || ch == '\\':
-					reStr.WriteByte('\\')
-					reStr.WriteByte(ch)
-				default:
-					reStr.WriteByte(ch)
-				}
-			}
-			reStr.WriteString("$")
-			globRe, _ = regexp.Compile(reStr.String())
-		}
-		filepath.Walk(args.Path, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info == nil {
-				return nil
-			}
-			// Skip symlinks — prevents traversal via symlinked directories
-			// and avoids listing files the agent can't read.
-			if info.Mode()&os.ModeSymlink != 0 {
-				return nil
-			}
-			var match bool
-			if globRe != nil {
-				// Use regex matching for ** patterns.
-				rel, _ := filepath.Rel(args.Path, path)
-				if rel != "" {
-					match = globRe.MatchString(rel)
-				}
-			} else {
-				match, _ = filepath.Match(args.Pattern, path)
-				if !match {
-					// Also try relative to root
-					rel, err := filepath.Rel(args.Path, path)
-					if err == nil {
-						match, _ = filepath.Match(args.Pattern, rel)
-					}
-				}
-			}
-			if match {
-				matches = append(matches, globMatch{
-					Path:  path,
-					Size:  info.Size(),
-					IsDir: info.IsDir(),
-				})
-				if len(matches) >= args.Limit {
-					return filepath.SkipAll
-				}
-			}
-			if info.IsDir() && strings.HasPrefix(info.Name(), ".") && info.Name() != "." {
-				return filepath.SkipDir
-			}
-			return nil
-		})
-	} else {
-		// Simple glob — use filepath.Glob (faster, no walk)
-		globPattern := filepath.Join(args.Path, args.Pattern)
-		gm, err := filepath.Glob(globPattern)
+	var matches []globMatch
+	for _, p := range paths {
+		// Use Lstat so symlinks are not followed to their targets.
+		info, err := os.Lstat(p)
 		if err != nil {
-			return jsonError(fmt.Sprintf("invalid glob %q: %v", args.Pattern, err))
+			continue
 		}
-		for _, p := range gm {
-			// Use Lstat so symlinks are not followed to their targets.
-			info, err := os.Lstat(p)
-			if err != nil {
-				continue
-			}
-			if info.Mode()&os.ModeSymlink != 0 {
-				continue
-			}
-			matches = append(matches, globMatch{
-				Path:  p,
-				Size:  info.Size(),
-				IsDir: info.IsDir(),
-			})
-			if len(matches) >= args.Limit {
-				break
-			}
-		}
+		matches = append(matches, globMatch{
+			Path:  p,
+			Size:  info.Size(),
+			IsDir: info.IsDir(),
+		})
 	}
 
 	// Sort by modification time (newest first)

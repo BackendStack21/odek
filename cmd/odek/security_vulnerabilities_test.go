@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/BackendStack21/odek/internal/danger"
 )
 
 // skipIfSymlinksUnsupported skips the test on platforms where creating
@@ -165,6 +167,74 @@ func TestGlob_SymlinkDirectoryTraversal(t *testing.T) {
 		if m.Path == link || strings.HasPrefix(m.Path, outsideDir) {
 			t.Fatalf("glob listed directory symlink that points outside: %s", m.Path)
 		}
+	}
+}
+
+// ── 2b. glob must not traverse .. patterns ───────────────────────────────
+
+func TestGlob_DotDotPatternRejected(t *testing.T) {
+	cwd := t.TempDir()
+	parent := filepath.Dir(cwd)
+	outsideFile := filepath.Join(parent, "outside.txt")
+	os.WriteFile(outsideFile, []byte("secret"), 0644)
+
+	tool := &globTool{dangerousConfig: danger.DangerousConfig{}}
+	result := callJSON(t, tool, fmt.Sprintf(`{"pattern":"../outside.txt","path":%q}`, cwd))
+	var r struct {
+		Error   string      `json:"error,omitempty"`
+		Matches []globMatch `json:"matches"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" && len(r.Matches) > 0 {
+		t.Fatalf("glob with .. pattern escaped workspace: matches=%+v", r.Matches)
+	}
+	for _, m := range r.Matches {
+		if strings.Contains(m.Path, "outside.txt") {
+			t.Fatalf("glob matched file outside workspace: %s", m.Path)
+		}
+	}
+}
+
+// ── 2c. search_files(target=files) must not traverse .. patterns ─────────
+
+func TestSearchFiles_DotDotPatternRejected(t *testing.T) {
+	cwd := t.TempDir()
+	parent := filepath.Dir(cwd)
+	outsideFile := filepath.Join(parent, "outside.txt")
+	os.WriteFile(outsideFile, []byte("secret"), 0644)
+
+	tool := &searchFilesTool{dangerousConfig: danger.DangerousConfig{}}
+	result := callJSON(t, tool, fmt.Sprintf(`{"pattern":"../outside.txt","path":%q,"target":"files"}`, cwd))
+	var r struct {
+		Error   string `json:"error,omitempty"`
+		Matches []struct {
+			Path string `json:"path"`
+		} `json:"matches"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" && len(r.Matches) > 0 {
+		t.Fatalf("search_files with .. pattern escaped workspace: matches=%+v", r.Matches)
+	}
+	for _, m := range r.Matches {
+		if strings.Contains(unwrapUntrusted(m.Path), "outside.txt") {
+			t.Fatalf("search_files matched file outside workspace: %s", m.Path)
+		}
+	}
+}
+
+// ── 2d. glob must not accept absolute patterns ───────────────────────────
+
+func TestGlob_AbsolutePatternRejected(t *testing.T) {
+	cwd := t.TempDir()
+	tool := &globTool{dangerousConfig: danger.DangerousConfig{}}
+	result := callJSON(t, tool, fmt.Sprintf(`{"pattern":"/etc/passwd","path":%q}`, cwd))
+	var r struct {
+		Error   string      `json:"error,omitempty"`
+		Matches []globMatch `json:"matches"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" && len(r.Matches) > 0 {
+		t.Fatalf("absolute glob pattern escaped workspace: matches=%+v", r.Matches)
 	}
 }
 
