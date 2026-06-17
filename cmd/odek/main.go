@@ -531,7 +531,7 @@ func printUsage() {
   odek serve [--addr :8080] [--open]
   odek subagent --goal <string> [--context <string>] [flags]
   odek init [--global | -g] [--force | -f]
-  odek skill <list|view|save|delete|import|curate>
+  odek skill <list|view|save|delete|promote|import|curate>
   odek mcp [--sandbox]
   odek telegram
   odek schedule <list|add|rm|enable|disable|run|next|daemon>
@@ -595,6 +595,7 @@ Skill commands:
   odek skill list                    List all available skills
   odek skill view <name>             View a skill's full content
   odek skill delete <name>           Delete a skill
+  odek skill promote <name> [--force] Promote a tainted skill after review
   odek skill import <uri> [flags]    Import a skill from file:// or https://
                                      Flags: --basic (skip LLM), --yes (auto-approve)
   odek skill curate                  Analyze skills for quality, staleness, overlap
@@ -1424,6 +1425,9 @@ func interactiveSavePrompt(filtered []skills.SkillSuggestion, userDir string, sm
 	fmt.Fprintf(os.Stderr, "\n🔍 Learning: detected %d skill pattern(s)\n", len(filtered))
 	for _, s := range filtered {
 		fmt.Fprint(os.Stderr, skills.FormatSuggestionWithPreview(s, true, 400))
+		if s.IsTainted() {
+			fmt.Fprintf(os.Stderr, "   ⚠ This suggestion is tainted (sources: %s). It will be saved but cannot be auto-loaded until promoted with --force.\n", strings.Join(s.Provenance.Sources, ", "))
+		}
 		fmt.Fprintf(os.Stderr, "   Save as skill? [Y/n/s=skip always]: ")
 
 		var response string
@@ -1451,10 +1455,10 @@ func interactiveSavePrompt(filtered []skills.SkillSuggestion, userDir string, sm
 	}
 }
 
-// skillCmd handles `odek skill <list|view|save|delete|import|curate|reset-skips>`.
+// skillCmd handles `odek skill <list|view|save|delete|promote|import|curate|reset-skips>`.
 func skillCmd(args []string) error {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "Usage: odek skill <list|view|save|delete|import|curate|reset-skips> [args]\n")
+		fmt.Fprintf(os.Stderr, "Usage: odek skill <list|view|save|delete|promote|import|curate|reset-skips> [args]\n")
 		return nil
 	}
 
@@ -1511,9 +1515,15 @@ func skillCmd(args []string) error {
 		// ingested untrusted content — the user reviews the body and
 		// then promotes it. See SkillProvenance.
 		if len(subArgs) == 0 {
-			return fmt.Errorf("usage: odek skill promote <name>")
+			return fmt.Errorf("usage: odek skill promote <name> [--force]")
 		}
-		return promoteSkill(userDir, subArgs[0])
+		force := false
+		for _, a := range subArgs[1:] {
+			if a == "--force" || a == "-f" {
+				force = true
+			}
+		}
+		return promoteSkill(userDir, subArgs[0], force)
 
 	case "import":
 		if len(subArgs) == 0 {

@@ -53,11 +53,12 @@ odek run --learn "set up CI with GitHub Actions"
 ```
 
 **Key design decisions:**
-- **Auto-save is default** — quality suggestions are saved automatically (no prompt). Set `auto_save.enabled: false` to require manual approval.
+- **Auto-save is default** — quality suggestions are saved automatically (no prompt), but tainted suggestions derived from untrusted content are declined by default. Set `auto_save.enabled: false` to require manual approval.
 - **LLM enhancement is optional** — when enabled, the LLM enriches heuristic output with better names, structured bodies, and accurate keywords.
 - **One skip = permanent suppression** — skip a suggestion once and it won't appear again. Use `odek skill reset-skips` to re-enable.
 - **Auto-curation runs silently** — after every session where skills were saved, overlaps are merged, duplicates removed, and stale skills pruned.
 - **Learning is non-blocking** — skill detection and auto-save run in a background goroutine after the agent's response is delivered. The process exits immediately; learning completes asynchronously on a best-effort basis.
+- **Tainted skills require explicit promotion** — skills learned from `browser`, MCP tools, or sensitive file reads are saved with `Provenance.Untrusted=true` and `NeedsReview=true`. They cannot be auto-loaded until you run `odek skill promote <name> --force` after reviewing the body.
 
 ## CLI Usage
 
@@ -77,6 +78,9 @@ odek skill reset-skips procedure-git
 
 # Run manual curation
 odek skill curate --apply
+
+# Promote a tainted skill after reviewing its body
+odek skill promote procedure-browser --force
 ```
 
 **Auto-save (default):** Quality suggestions are saved silently after each session:

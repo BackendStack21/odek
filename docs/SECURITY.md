@@ -151,13 +151,15 @@ Promotion is **CLI-only and human-gated** — it is deliberately *not* exposed a
 
 `internal/skills` carries the same provenance model and shares the exact taint decision (`memory.ToolCallTaints`). Skills auto-saved from sessions that crossed the trust boundary — `browser` / `http_batch` / `transcribe` / `vision` / any MCP tool, or a `read_file` / `search_files` / `multi_grep` of a **sensitive** path — are tagged with `Provenance.Untrusted=true` and `NeedsReview=true`. The skill loader pins those skills to the Lazy set regardless of their `auto_load` flag.
 
-After reviewing the skill body, promote it:
+The non-interactive auto-save path (`RunAutoSaveLoop`) now **declines to persist tainted suggestions by default**, so a prompt-injected turn cannot silently leave a poisoned skill on disk. Tainted suggestions are still surfaced in the interactive TUI and can be saved explicitly by the user after review.
+
+After reviewing the skill body, promote it with `--force`:
 
 ```bash
-odek skill promote my-skill
+odek skill promote my-skill --force
 ```
 
-This clears `NeedsReview`, allowing the skill to auto-load on the next session.
+Plain `odek skill promote my-skill` refuses to clear `NeedsReview` when `Untrusted=true` or `Sources` is non-empty, preventing accidental auto-load of prompt-injection-derived instructions. The `Sources` audit trail is preserved on disk even after promotion.
 
 ### 7. Sub-agent damage cap
 

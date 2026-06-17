@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/BackendStack21/odek/internal/skills"
 )
@@ -14,7 +15,12 @@ import (
 // invoking this command; we do not enforce a confirmation prompt
 // because shipping a noisy mandatory `--yes` flag teaches users to
 // type --yes by reflex.
-func promoteSkill(userDir, name string) error {
+//
+// If the skill's provenance shows it originated from untrusted content
+// (Untrusted=true or non-empty Sources), promotion is refused unless
+// force is true. This prevents a prompt-injection-derived skill from
+// being accidentally auto-loaded after a cursory review.
+func promoteSkill(userDir, name string, force bool) error {
 	skillDir := filepath.Join(userDir, name)
 	path := filepath.Join(skillDir, "SKILL.md")
 	if _, err := os.Stat(path); err != nil {
@@ -28,9 +34,21 @@ func promoteSkill(userDir, name string) error {
 	if loaded == nil {
 		return fmt.Errorf("promote: could not parse skill %q", name)
 	}
-	if !loaded.Provenance.NeedsReview && !loaded.Provenance.Untrusted {
+	if !loaded.Provenance.NeedsReview {
 		fmt.Fprintf(os.Stderr, "odek: skill %q is already trusted (NeedsReview=false)\n", name)
 		return nil
+	}
+
+	// Refuse to promote tainted skills without explicit --force. The user
+	// must have reviewed the body and decided the external source(s) are
+	// safe to embed as loaded context.
+	if loaded.Provenance.Untrusted || len(loaded.Provenance.Sources) > 0 {
+		if !force {
+			return fmt.Errorf("promote: refusing to promote tainted skill %q (sources: %s); review the body and use --force if you accept the risk",
+				name, joinSources(loaded.Provenance.Sources))
+		}
+		fmt.Fprintf(os.Stderr, "odek: warning: promoting tainted skill %q (sources: %s); audit trail retained\n",
+			name, joinSources(loaded.Provenance.Sources))
 	}
 
 	// Clear the provenance flags but keep Sources so the audit trail
@@ -45,6 +63,14 @@ func promoteSkill(userDir, name string) error {
 	}
 	fmt.Printf("odek: promoted skill %q — NeedsReview cleared\n", name)
 	return nil
+}
+
+// joinSources formats a source list for human-readable messages.
+func joinSources(srcs []string) string {
+	if len(srcs) == 0 {
+		return "unknown"
+	}
+	return strings.Join(srcs, ", ")
 }
 
 // scanSingleSkill loads exactly one SKILL.md by re-using the package

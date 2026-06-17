@@ -32,6 +32,14 @@ type SkillSuggestion struct {
 	Provenance  SkillProvenance // trust signals of the session that produced this suggestion
 }
 
+// IsTainted reports whether the suggestion was derived from content outside
+// the agent's trust boundary. Tainted suggestions are refused by auto-save
+// unless the caller explicitly allows them, and cannot be promoted without
+// the --force flag.
+func (s SkillSuggestion) IsTainted() bool {
+	return s.Provenance.Untrusted || len(s.Provenance.Sources) > 0
+}
+
 // isTerminalTool returns true if the tool name represents a shell/terminal tool.
 // The agent's shell tool is named "shell"; tests and older call patterns use "terminal".
 func isTerminalTool(name string) bool {
@@ -637,13 +645,15 @@ type AutoSaveResult struct {
 	Saved      []string          // names of auto-saved skills
 	Skipped    int               // count of suggestions filtered by skip list
 	Failed     []string          // names that failed quality gate
+	Declined   []string          // names declined because they were tainted and allowUntrusted was false
 	Heuristics map[string]string // heuristic labels for saved skills
 }
 
 // AutoSaveSuggestions runs auto-save logic on a set of suggestions.
-// It filters skipped suggestions, then auto-saves those that pass the
-// quality gate (up to maxPerRun), recording the rest as Failed.
-func AutoSaveSuggestions(suggestions []SkillSuggestion, userDir string, cfg SkillsConfig) AutoSaveResult {
+// It filters skipped suggestions, declines tainted suggestions unless
+// allowUntrusted is true, then auto-saves those that pass the quality gate
+// (up to maxPerRun), recording the rest as Failed.
+func AutoSaveSuggestions(suggestions []SkillSuggestion, userDir string, cfg SkillsConfig, allowUntrusted bool) AutoSaveResult {
 	result := AutoSaveResult{Heuristics: make(map[string]string)}
 
 	// Load skip list and filter
@@ -662,6 +672,10 @@ func AutoSaveSuggestions(suggestions []SkillSuggestion, userDir string, cfg Skil
 	for _, s := range eligible {
 		if saved >= cfg.AutoSave.MaxPerRun {
 			break
+		}
+		if !allowUntrusted && s.IsTainted() {
+			result.Declined = append(result.Declined, s.Name)
+			continue
 		}
 		if PassesQualityGate(s) {
 			if err := SaveSuggestion(userDir, s); err == nil {

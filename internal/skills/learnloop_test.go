@@ -81,6 +81,33 @@ func TestRunAutoSaveLoop_EnabledEmptySuggestions(t *testing.T) {
 	}
 }
 
+// TestRunAutoSaveLoop_DeclinesTaintedSkill covers the path where a tainted
+// suggestion reaches the auto-save pipeline and is declined rather than
+// persisted.
+func TestRunAutoSaveLoop_DeclinesTaintedSkill(t *testing.T) {
+	body := "## Overview\n\nEnough body text to pass the quality gate minimum of 200 characters. Keep adding padding so the suggestion does not fail the gate. More text here.\n\n## Step-by-Step\n\n1. Step\n\n## Common Pitfalls\n\n- Pitfall\n\n## Verification\n\n- Run command"
+	cfg := SkillsConfig{
+		AutoSave: AutoSaveConfig{Enabled: true, MaxPerRun: 5},
+	}
+	tainted := SkillSuggestion{
+		Name:      "tainted-skill",
+		Heuristic: "test",
+		Body:      body,
+		Provenance: SkillProvenance{
+			Untrusted: true,
+			Sources:   []string{"browser"},
+		},
+	}
+	var buf bytes.Buffer
+	got := RunAutoSaveLoop([]SkillSuggestion{tainted}, t.TempDir(), nil, nil, cfg, &buf)
+	if !got {
+		t.Fatal("RunAutoSaveLoop should return true when AutoSave is enabled")
+	}
+	if !strings.Contains(buf.String(), "Declined to auto-save tainted skill") {
+		t.Errorf("verbose output should mention declined tainted skill, got:\n%s", buf.String())
+	}
+}
+
 // TestRunAutoSaveLoop_VerboseWriterReceivesFailedMessage exercises the
 // progress-output branch. We feed a suggestion that will fail the
 // quality gate (empty body) and check the verbose stream sees the

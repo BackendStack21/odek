@@ -1846,7 +1846,7 @@ func handleChatMessage(
 
 		// Auto-save if enabled
 		if skillsCfg.AutoSave.Enabled {
-			result := skills.AutoSaveSuggestions(filtered, userDir, *skillsCfg)
+			result := skills.AutoSaveSuggestions(filtered, userDir, *skillsCfg, false)
 			for _, name := range result.Saved {
 				sm.Notifier.Notify(skills.SkillEvent{
 					Type: "saved", SkillName: name, Timestamp: time.Now().UTC(),

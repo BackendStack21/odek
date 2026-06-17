@@ -489,7 +489,7 @@ func TestAutoSaveSuggestions_WithHeuristics(t *testing.T) {
 
 	cfg := DefaultSkillsConfig()
 	cfg.AutoSave.MaxPerRun = 5
-	result := AutoSaveSuggestions(suggestions, dir, cfg)
+	result := AutoSaveSuggestions(suggestions, dir, cfg, false)
 
 	if len(result.Saved) != 2 {
 		t.Fatalf("expected 2 saved, got %d", len(result.Saved))
@@ -509,7 +509,7 @@ func TestAutoSaveSuggestions_QualityGateFails(t *testing.T) {
 	}
 
 	cfg := DefaultSkillsConfig()
-	result := AutoSaveSuggestions(suggestions, dir, cfg)
+	result := AutoSaveSuggestions(suggestions, dir, cfg, false)
 
 	if len(result.Saved) != 0 {
 		t.Errorf("expected 0 saved, got %d", len(result.Saved))
@@ -531,10 +531,46 @@ func TestAutoSaveSuggestions_MaxPerRun(t *testing.T) {
 
 	cfg := DefaultSkillsConfig()
 	cfg.AutoSave.MaxPerRun = 2
-	result := AutoSaveSuggestions(suggestions, dir, cfg)
+	result := AutoSaveSuggestions(suggestions, dir, cfg, false)
 
 	if len(result.Saved) != 2 {
 		t.Errorf("expected 2 saved (max per run), got %d", len(result.Saved))
+	}
+}
+
+func TestAutoSaveSuggestions_DeclinesTaintedByDefault(t *testing.T) {
+	dir := t.TempDir()
+	body := "## Overview\n\nTest with enough body text to pass the quality gate minimum of 200 characters. Adding more padding here to ensure we cross that threshold. Still going with more text content for the body length requirement.\n\n## Step-by-Step\n\n1. Step\n\n## Common Pitfalls\n\n- Pitfall\n\n## Verification\n\n- Run command"
+	suggestions := []SkillSuggestion{
+		{Name: "tainted-skill", Body: body, Provenance: SkillProvenance{Untrusted: true, Sources: []string{"browser"}}},
+	}
+
+	cfg := DefaultSkillsConfig()
+	result := AutoSaveSuggestions(suggestions, dir, cfg, false)
+
+	if len(result.Saved) != 0 {
+		t.Errorf("expected 0 saved for tainted skill by default, got %d", len(result.Saved))
+	}
+	if len(result.Declined) != 1 || result.Declined[0] != "tainted-skill" {
+		t.Errorf("expected 1 declined tainted skill, got %v", result.Declined)
+	}
+}
+
+func TestAutoSaveSuggestions_AllowsTaintedWhenForced(t *testing.T) {
+	dir := t.TempDir()
+	body := "## Overview\n\nTest with enough body text to pass the quality gate minimum of 200 characters. Adding more padding here to ensure we cross that threshold. Still going with more text content for the body length requirement.\n\n## Step-by-Step\n\n1. Step\n\n## Common Pitfalls\n\n- Pitfall\n\n## Verification\n\n- Run command"
+	suggestions := []SkillSuggestion{
+		{Name: "tainted-skill", Body: body, Provenance: SkillProvenance{Untrusted: true, Sources: []string{"browser"}}},
+	}
+
+	cfg := DefaultSkillsConfig()
+	result := AutoSaveSuggestions(suggestions, dir, cfg, true)
+
+	if len(result.Saved) != 1 || result.Saved[0] != "tainted-skill" {
+		t.Errorf("expected 1 saved tainted skill when allowUntrusted=true, got %v", result.Saved)
+	}
+	if len(result.Declined) != 0 {
+		t.Errorf("expected 0 declined, got %v", result.Declined)
 	}
 }
 
