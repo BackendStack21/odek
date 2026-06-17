@@ -213,6 +213,52 @@ func TestBrowser_Click_MissingRef(t *testing.T) {
 	}
 }
 
+func TestBrowser_Click_ButtonAcknowledges(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`<html><body><button>Click me</button></body></html>`))
+	}))
+	defer ts.Close()
+
+	b := &browserTool{}
+	callJSON(t, b, `{"action":"navigate","url":"`+ts.URL+`"}`)
+
+	result := callJSON(t, b, `{"action":"click","ref":"e1"}`)
+	var r struct {
+		Content string `json:"content"`
+		Error   string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error != "" {
+		t.Fatalf("unexpected error: %s", r.Error)
+	}
+	if !strings.Contains(r.Content, "Clicked button") {
+		t.Errorf("expected button click acknowledgement, got %q", r.Content)
+	}
+}
+
+func TestBrowser_Click_InputSubmitAcknowledges(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`<html><body><input type="submit" value="Go"></body></html>`))
+	}))
+	defer ts.Close()
+
+	b := &browserTool{}
+	callJSON(t, b, `{"action":"navigate","url":"`+ts.URL+`"}`)
+
+	result := callJSON(t, b, `{"action":"click","ref":"e1"}`)
+	var r struct {
+		Content string `json:"content"`
+		Error   string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error != "" {
+		t.Fatalf("unexpected error: %s", r.Error)
+	}
+	if !strings.Contains(r.Content, "Clicked submit") {
+		t.Errorf("expected submit click acknowledgement, got %q", r.Content)
+	}
+}
+
 // ── Browser Back ──────────────────────────────────────────────────────
 
 func TestBrowser_Back(t *testing.T) {

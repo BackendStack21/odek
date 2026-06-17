@@ -2268,3 +2268,22 @@ func TestParallelShell_ProcessGroupKill(t *testing.T) {
 		t.Errorf("process group was not killed promptly: %v", elapsed)
 	}
 }
+
+func TestParallelShell_ContextCancel_Explicit(t *testing.T) {
+	if raceEnabled {
+		t.Skip("skipping under race detector due to process timing")
+	}
+	tool := &parallelShellTool{}
+	ctx, cancel := context.WithCancel(context.Background())
+	tool.SetContext(ctx)
+	// Cancel before the command starts to exercise the context.Canceled branch.
+	cancel()
+
+	entry := tool.runOne(parallelShellCmd{Command: "sleep 10", Timeout: 30})
+	if entry.Error == "" {
+		t.Fatal("expected error for cancelled command")
+	}
+	if !strings.Contains(entry.Error, "cancelled") {
+		t.Errorf("expected cancelled error, got %q", entry.Error)
+	}
+}

@@ -242,9 +242,11 @@ Default network: `bridge` (internet access). Set `none` for air-gapped execution
 - Session TTL: 24h default (configurable)
 - Daily token budget tracking in `~/.odek/telegram_token_usage_<date>`
 - Spawn+exit restart: SIGHUP spawns child process then exits — no binary overwrite races, fresh connections
-- Singleton lock: PID file (`~/.odek/telegram.pid`) kills stale instances on startup, prevents 409 conflicts
+- Singleton lock: advisory `flock` on `~/.odek/telegram.lock` prevents duplicate polling instances
+- Restart marker (`~/.odek/restart.json`) written with `0600` to protect active chat IDs
 - Fallback API URLs for regions where `api.telegram.org` is blocked
 - Access control: restrict by chat ID or user ID
+- Incoming message/caption length enforced in UTF-16 code units, matching Telegram's limits
 - Logging: configurable log level and log file
 
 See [docs/TELEGRAM.md](docs/TELEGRAM.md) for full documentation.
@@ -349,9 +351,9 @@ odek mcp                                    # stdio transport
 | Tool | Description |
 |------|-------------|
 | `shell` | Single command, danger-classified |
-| `parallel_shell` | N commands, true parallel, per-cmd timeout |
+| `parallel_shell` | N commands, true parallel, per-cmd timeout (capped at 30m), process-group kill on cancel |
 | `http_batch` | N URLs parallel fetch (no HTML parse) |
-| `browser` | HTTP fetch + regex HTML extraction |
+| `browser` | HTTP fetch + regex HTML extraction; link URLs wrapped as untrusted |
 
 ### Agent Infrastructure
 | Tool | Description |
