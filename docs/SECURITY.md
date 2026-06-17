@@ -329,6 +329,26 @@ exceed the cap are rejected before they are written.
 
 These fields can only be set from operator-controlled sources: `~/.odek/config.json` (and `ODEK_TELEGRAM_*` env vars for `telegram`).
 
+### SSRF guard and configured-backend allowlist
+
+The `browser`, `http_batch`, and `web_search` tools use a shared SSRF / DNS-rebinding dial guard (`cmd/odek/ssrf_guard.go`). After the policy gate classifies a hostname as `network_egress`, the guard resolves the name itself and refuses any answer that points at a loopback, RFC1918, RFC4193, link-local, or metadata IP. It then pins the dial to the validated IP so the kernel cannot re-resolve to a different address.
+
+This guard would block legitimate operator-configured internal backends, such as a self-hosted SearXNG container reachable at `http://searxng:8080` that resolves to a Docker network IP (e.g. `172.18.0.3`). To support this, `ssrfGuardedTransport` accepts an optional hostname allowlist. The `web_search` tool automatically adds the hostname from `web_search.base_url` to this list. Allowed hosts bypass the internal-IP block but are still pinned to their resolved IPs, preserving the rebinding defense for every other host.
+
+To add another configured internal endpoint in the future, pass its hostname to `ssrfGuardedTransport(...)` in the tool's HTTP client constructor, following the pattern in `cmd/odek/web_search_tool.go`:
+
+```go
+allowedHost := ""
+if u, err := url.Parse(cfg.BaseURL); err == nil && u.Host != "" {
+    allowedHost = u.Hostname()
+}
+client := &http.Client{
+    Transport: ssrfGuardedTransport(allowedHost),
+}
+```
+
+There is no user-facing allowlist config field today; the list is derived from each tool's own operator-controlled `base_url`. If you need a broader or user-editable allowlist, add a `dangerous.ssrf_allowed_hosts` (or `network.allowed_hosts`) array to the config and merge it into the set passed to `ssrfGuardedTransport`.
+
 ### 19. MCP server environment sanitisation
 
 MCP server subprocesses no longer inherit the full odek process environment. They receive only a minimal allowlist of safe variables (e.g. `PATH`, `HOME`, `LANG`, `TMPDIR`) plus any explicit `env` overrides from the server config. Keys matching secret patterns — `*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `*_CREDENTIAL`, `*_PRIVATE_KEY`, etc. — are stripped even when listed in `env`. This prevents a compromised or malicious MCP server from reading secrets loaded from `~/.odek/secrets.env` or other provider keys that were present in the parent environment.
