@@ -312,7 +312,39 @@ func TestBatchRead_CapsTotalSize(t *testing.T) {
 	}
 }
 
-// ── 5. write_file must preserve original file mode on overwrite ──────────
+// ── 5. write_file must reject ~/.odek trust anchors ─────────────────────
+
+func TestWriteFile_RejectsOdekTrustAnchors(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tool := &writeFileTool{restrictToCWD: true}
+	for _, path := range []string{
+		home + "/.odek/schedules.json",
+		home + "/.odek/schedule-state.json",
+		home + "/.odek/sessions/abc.json",
+		home + "/.odek/mcp_approvals.json",
+		home + "/.odek/mcp_tool_approvals.json",
+		home + "/.odek/restart.json",
+		home + "/.odek/telegram.lock",
+		home + "/.odek/audit/turn-1.json",
+		home + "/.odek/plans/evil.md",
+	} {
+		result := callJSON(t, tool, fmt.Sprintf(`{"path":%q,"content":"evil"}`, path))
+		var r struct {
+			Success bool   `json:"success"`
+			Error   string `json:"error,omitempty"`
+		}
+		mustUnmarshal(t, result, &r)
+		if r.Success {
+			t.Errorf("write_file should reject protected odek path %q", path)
+		}
+	}
+}
+
+// ── 6. write_file must preserve original file mode on overwrite ──────────
 
 func TestWriteFile_PreservesFileMode(t *testing.T) {
 	dir := t.TempDir()

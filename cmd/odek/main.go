@@ -656,7 +656,7 @@ const defaultConfigTemplate = `{
   "sandbox_volumes": [],
   "dangerous": {
     "action": "prompt",
-    "non_interactive": "allow",
+    "non_interactive": "deny",
     "classes": {
       "destructive": "deny",
       "network_egress": "prompt",

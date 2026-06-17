@@ -708,6 +708,41 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring schedules.dangerous from project config (%s); set it via ~/.odek/config.json or ODEK_SCHEDULES_DANGEROUS_*\n", ProjectConfigPath())
 		project.Schedules.Dangerous = nil
 	}
+	// Backend redirection: a malicious repo must not be able to send memory,
+	// session, or skill embeddings, Telegram messages, or web searches to an
+	// attacker-controlled endpoint. Only operator-controlled sources
+	// (~/.odek/config.json, and ODEK_TELEGRAM_* env vars for telegram) may
+	// set these.
+	if project.Embedding != nil {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring embedding from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
+		project.Embedding = nil
+	}
+	if project.Memory != nil {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring memory from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
+		project.Memory = nil
+	}
+	if project.Sessions != nil {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring sessions from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
+		project.Sessions = nil
+	}
+	if project.Skills != nil {
+		if len(project.Skills.Dirs) > 0 {
+			fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring skills.dirs from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
+			project.Skills.Dirs = nil
+		}
+		if project.Skills.Embedding != nil {
+			fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring skills.embedding from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
+			project.Skills.Embedding = nil
+		}
+	}
+	if project.Telegram != nil {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring telegram from project config (%s); set it via ~/.odek/config.json or ODEK_TELEGRAM_* env vars\n", ProjectConfigPath())
+		project.Telegram = nil
+	}
+	if project.WebSearch != nil {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring web_search from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
+		project.WebSearch = nil
+	}
 	// A malicious repo must not be able to turn OFF the sandbox or its
 	// read-only mode via ./odek.json — that would undo the container isolation
 	// the operator opted into. Only the weakening direction is ignored; a
@@ -1440,7 +1475,10 @@ func overlayFile(base, override FileConfig) FileConfig {
 		base.Dangerous = override.Dangerous
 	}
 	if override.Skills != nil {
-		base.Skills = override.Skills
+		if base.Skills == nil {
+			base.Skills = &SkillsConfig{}
+		}
+		overlaySkills(base.Skills, override.Skills)
 	}
 	if override.Memory != nil {
 		base.Memory = override.Memory
@@ -1493,6 +1531,45 @@ func overlayFile(base, override FileConfig) FileConfig {
 		base.Schedules = override.Schedules
 	}
 	return base
+}
+
+// overlaySkills merges a higher-priority SkillsConfig onto a lower-priority one
+// field-by-field. This lets a project config tune settings like `learn` or
+// `max_auto_load` without clobbering the global `dirs` or `embedding` settings.
+func overlaySkills(base, override *SkillsConfig) {
+	if override.MaxAutoLoad != nil {
+		base.MaxAutoLoad = override.MaxAutoLoad
+	}
+	if override.MaxLazySlots != nil {
+		base.MaxLazySlots = override.MaxLazySlots
+	}
+	if override.Learn != nil {
+		base.Learn = override.Learn
+	}
+	if len(override.Dirs) > 0 {
+		base.Dirs = override.Dirs
+	}
+	if override.Import != nil {
+		base.Import = override.Import
+	}
+	if override.Curation != nil {
+		base.Curation = override.Curation
+	}
+	if override.AutoSave != nil {
+		base.AutoSave = override.AutoSave
+	}
+	if override.LLMLearn != nil {
+		base.LLMLearn = override.LLMLearn
+	}
+	if override.LLMCurate != nil {
+		base.LLMCurate = override.LLMCurate
+	}
+	if override.Verbose != nil {
+		base.Verbose = override.Verbose
+	}
+	if override.Embedding != nil {
+		base.Embedding = override.Embedding
+	}
 }
 
 // secretsEnvPath returns the path to the secrets environment file.

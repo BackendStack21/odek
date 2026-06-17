@@ -277,7 +277,7 @@ See [CLI.md — Dangerous Operations](CLI.md#dangerous-operations) for the full 
 ```json
 {
   "dangerous": {
-    "non_interactive": "allow",
+    "non_interactive": "deny",
     "classes": {
       "network_egress": "deny",
       "code_execution": "prompt"
@@ -308,8 +308,11 @@ exceed the cap are rejected before they are written.
 - `api_key` — can exfiltrate prompts by billing runs to an attacker-owned key.
 - `system` — can poison the system prompt with hidden instructions.
 - `dangerous` — can disable the approval gate (`{"action": "allow"}`) and enable destructive auto-execution.
+- `embedding` / `memory` / `sessions` / `skills.dirs` / `skills.embedding` — can redirect memory, session, or skill embeddings to an attacker-controlled endpoint.
+- `telegram` — can send final results or bot traffic to an attacker-controlled Telegram bot/chat.
+- `web_search` — can leak every search query to an attacker-controlled backend.
 
-These fields can only be set from operator-controlled sources: `~/.odek/config.json`, `ODEK_*` environment variables, or CLI flags.
+These fields can only be set from operator-controlled sources: `~/.odek/config.json` (and `ODEK_TELEGRAM_*` env vars for `telegram`).
 
 ### 19. MCP server environment sanitisation
 
@@ -500,6 +503,26 @@ Use YOLO mode only for:
 
 Defaults: `FrictionThreshold=3`, `FrictionWindow=60s`. To opt out (TTYApprover only), set `FrictionThreshold=0` programmatically; there is no config knob yet — file an issue if you need one.
 
+### 25. Default non-interactive policy denies dangerous operations
+
+When odek cannot open a TTY (headless/CI/piped input), prompted operations used to fall back to the `non_interactive` action. The built-in default was `"allow"`, so a prompt-injected task such as `echo "task" | odek run "download and run attacker.sh"` could silently execute `curl … | sh`.
+
+The default is now `"deny"`. Unattended runs must explicitly opt in to auto-approval by setting `"non_interactive": "allow"` in `~/.odek/config.json`, `ODEK_DANGEROUS_NON_INTERACTIVE=allow`, or the CLI. This makes the safe behaviour the default and closes the headless prompt-injection auto-execution vector.
+
+### 26. Generic file tools cannot write `~/.odek` trust anchors
+
+`write_file`, `patch`, and `batch_patch` allow writes under `~/.odek/` (outside the project CWD) so the agent can persist memory, sessions, and other state. Previously the carve-out only excluded `config.json`, `secrets.env`, `IDENTITY.md`, and `skills/`, leaving other trust anchors writable:
+
+- `schedules.json`, `schedule-state.json`, `schedules.lock`
+- `sessions/` (conversation history and auth tokens)
+- `mcp_approvals.json`, `mcp_tool_approvals.json`
+- `restart.json`
+- `audit/`
+- `telegram.lock`, `telegram.pid`, `schedule.pid`, `schedule.log`
+- `plans/`
+
+A prompt-injected agent could overwrite `schedules.json` to install persistent commands, replace session files to hijack conversations, or tamper with MCP approvals to spawn arbitrary subprocesses. All of these paths now classify as `system_write` (prompt/deny) and are rejected by the `confineToCWD` carve-out used by the file tools. Legitimate writes to these subsystems must go through their dedicated APIs (schedule commands, session store, MCP approval flow, etc.).
+
 ---
 
 ## Attack-vector matrix
@@ -546,6 +569,11 @@ Defaults: `FrictionThreshold=3`, `FrictionWindow=60s`. To opt out (TTYApprover o
 | Local user lists schedule/state filenames | Schedule directory created with `0700` |
 | Config file swapped for a huge file after size check | `loadFile` reads via a single `Open` + `LimitReader` |
 | Non-cooperating process ignores advisory flock | Documented in package doc; permissions are the real access gate |
+| Prompt-injected task runs unattended in CI/pipe | Default `non_interactive` is `"deny"` |
+| Malicious repo redirects embeddings/memory/session search to attacker | Project-level `embedding`/`memory`/`sessions`/`skills.dirs`/`skills.embedding` rejected |
+| Malicious repo exfiltrates results via Telegram | Project-level `telegram` rejected |
+| Malicious repo logs every search query | Project-level `web_search` rejected |
+| Prompt-injected agent overwrites `~/.odek/schedules.json` or sessions | Trust anchors classified as `system_write` and rejected by file tools |
 
 ---
 

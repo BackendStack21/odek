@@ -145,7 +145,7 @@ Configurable via `dangerous` section in `~/.odek/config.json` or `./odek.json`:
 {
   "dangerous": {
     "action": "prompt",
-    "non_interactive": "allow",
+    "non_interactive": "deny",
     "classes": {
       "destructive": "prompt",
       "network_egress": "allow"
