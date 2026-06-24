@@ -121,7 +121,9 @@ func silenceStderr(t *testing.T) {
 	os.Stderr = devnull
 	t.Cleanup(func() {
 		os.Stderr = orig
-		devnull.Close()
+		if err := devnull.Close(); err != nil {
+			t.Errorf("close /dev/null: %v", err)
+		}
 	})
 }
 
@@ -375,6 +377,7 @@ func TestIsOctalMode(t *testing.T) {
 func TestChmodSetsSUIDGID_Direct(t *testing.T) {
 	yes := [][]string{
 		{"chmod", "u+s", "f"}, {"chmod", "g+s", "f"}, {"chmod", "+s", "f"},
+		{"chmod", "u=rws", "f"}, {"chmod", "a=rwxs", "f"},
 		{"chmod", "4755", "f"}, {"chmod", "2755", "f"}, {"chmod", "6755", "f"},
 		{"chmod", "-R", "u+s", "f"}, // flag skipped, mode still inspected
 	}
@@ -387,6 +390,7 @@ func TestChmodSetsSUIDGID_Direct(t *testing.T) {
 		{"chmod", "+x", "f"}, {"chmod", "755", "f"}, {"chmod", "0755", "f"},
 		{"chmod", "1755", "f"},          // sticky only
 		{"chmod", "644", "build+gen.s"}, // filename, not mode
+		{"chmod", "u=rw", "f"},          // no special permission
 		{"chmod"},                       // no operand
 	}
 	for _, toks := range no {

@@ -68,6 +68,8 @@ func TestClassify_ChmodSUIDGID_IsSystemWrite(t *testing.T) {
 		"chmod 2755 /tmp/x",
 		"chmod 6755 /tmp/x",
 		"chmod ug+rs /tmp/x",
+		"chmod u=rws /tmp/x",
+		"chmod a=rwxs /tmp/x",
 	}
 	for _, c := range cmds {
 		t.Run(c, func(t *testing.T) {
