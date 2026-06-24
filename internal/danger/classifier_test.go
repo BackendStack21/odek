@@ -758,10 +758,11 @@ func TestClassify_PipeToBash(t *testing.T) {
 }
 
 func TestClassify_ChmodRoot(t *testing.T) {
-	// chmod on /etc is local_write — system path detection only catches redirects
+	// chmod on a system path is system_write: a file-mutating command pointed at
+	// /etc, /usr, /bin, … escalates so it prompts instead of auto-allowing.
 	got := Classify("chmod 777 /etc/hosts")
-	if got != LocalWrite {
-		t.Errorf("Classify(chmod /etc) = %s, want local_write", got)
+	if got != SystemWrite {
+		t.Errorf("Classify(chmod /etc) = %s, want system_write", got)
 	}
 }
 

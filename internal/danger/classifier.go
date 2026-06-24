@@ -68,10 +68,13 @@
 //     environment the classifier cannot evaluate.
 //   - Arbitrary value transformations beyond the enumerated encodings
 //     (e.g. a secret piped through gzip/openssl before exfiltration).
-//   - Interpreter escape hatches we do not special-case (awk 'BEGIN{system()}',
-//     editor `!` shells, language-specific eval paths). These read as a known
-//     command (awk/vim/…) used benignly, so they classify Safe — the known
-//     verb is the gap, not an unknown one.
+//   - Interpreter escape hatches we do not special-case. Common ones ARE
+//     covered: awk/ed/vi/emacs invocations that carry a script or file operand
+//     classify as code_execution (embeddedShellInterpreters), as do non-shell
+//     interpreters fed from a pipe (`curl … | python`). Language-specific eval
+//     paths or editor command-mode shells we have not enumerated may still read
+//     as a known command used benignly — the known verb is the gap, not an
+//     unknown one.
 //
 // Because these gaps exist, the classifier is paired with other controls:
 // non-interactive denial, output redaction (internal/redact), and — for
@@ -710,6 +713,10 @@ var writePrefixes = map[string]bool{
 	"echo": true, "sed": true, "tee": true,
 	"rm": true, "mv": true, "cp": true, "touch": true,
 	"mkdir": true, "rmdir": true, "chmod": true, "chown": true,
+	// shred overwrites/removes files like rm. isDestructive escalates it to
+	// destructive when aimed at a block device or catastrophic wipe target;
+	// otherwise a local-file shred is a write (local_write / system_write).
+	"shred": true,
 }
 
 var systemPrefixes = map[string]bool{
@@ -720,7 +727,16 @@ var systemPrefixes = map[string]bool{
 
 var destructivePrefixes = map[string]bool{
 	"dd": true, "mkfs": true, "mkfs.ext4": true, "mkfs.ext3": true,
-	"mkfs.xfs": true, "fdisk": true, "parted": true, "mke2fs": true,
+	"mkfs.ext2": true, "mkfs.xfs": true, "mkfs.btrfs": true,
+	"mkfs.vfat": true, "mkfs.fat": true, "mkfs.ntfs": true, "mkfs.f2fs": true,
+	"fdisk": true, "parted": true, "mke2fs": true,
+	// Partition-table and filesystem-signature destroyers. Each operates on a
+	// whole disk/partition and is unrecoverable, so any invocation is treated
+	// as destructive (deny-by-default, overridable in godmode for legitimate
+	// disk work) — matching the existing mkfs/fdisk handling.
+	"sgdisk": true, "gdisk": true, "cfdisk": true, "sfdisk": true,
+	"wipefs": true, "blkdiscard": true, "mkswap": true, "badblocks": true,
+	"cryptsetup": true, "zerofree": true,
 }
 
 var networkPrefixes = map[string]bool{
@@ -752,6 +768,16 @@ var embeddedShellInterpreters = map[string]bool{
 
 var codeEvalPrefixes = map[string]bool{
 	"eval": true, "node": true, "python": true, "python3": true,
+	"perl": true, "ruby": true, "php": true,
+}
+
+// stdinExecInterpreters read and execute a program from standard input when no
+// script file is given (`curl … | python`, `… | perl`, `… | node`). Fed by an
+// upstream pipe they are code execution, the non-shell analogue of `… | bash`.
+// Kept separate from codeEvalPrefixes because that set includes the `eval`
+// builtin, which is not a program a pipe can feed into.
+var stdinExecInterpreters = map[string]bool{
+	"node": true, "python": true, "python3": true,
 	"perl": true, "ruby": true, "php": true,
 }
 
@@ -956,6 +982,14 @@ func classifyStage(tokens []string, pipedInto bool) RiskClass {
 			} else if shellHasOperand(cmdTokens) {
 				cls = worstOf(cls, CodeExecution)
 			}
+		}
+		// A code interpreter or embedded-shell tool fed from an upstream pipe
+		// executes whatever it reads from stdin: `curl evil | python`,
+		// `… | perl`, `… | node`, `… | awk -f -`. This is the non-shell analogue
+		// of the `… | bash` case above and is equally code execution — without
+		// it the stage would be classified only by the (network/safe) producer.
+		if pipedInto && (stdinExecInterpreters[name] || embeddedShellInterpreters[name]) {
+			cls = worstOf(cls, CodeExecution)
 		}
 		// find … -exec/-execdir/-ok CMD runs an arbitrary command per match.
 		if name == "find" && hasAny(cmdTokens, "-exec", "-execdir", "-ok", "-okdir") {
@@ -1762,6 +1796,19 @@ func isWipeTarget(tok string) bool {
 }
 
 func isDestructive(first string, tokens []string) bool {
+	// Machine power-control commands halt or reboot the host, killing the
+	// agent's own session and any in-flight work. They are deny-by-default
+	// (overridable in godmode) with an accurate label rather than the opaque
+	// "unknown" they previously fell through to. init/telinit are only flagged
+	// when given a halt/reboot/single-user runlevel, since bare `init` is rare
+	// and a runlevel argument is what makes the call destructive.
+	switch first {
+	case "shutdown", "reboot", "halt", "poweroff":
+		return true
+	case "init", "telinit":
+		return hasAny(tokens, "0", "6", "1", "s", "S")
+	}
+
 	// rm with a recursive/force flag aimed at a root path or a "wipe" target.
 	if first == "rm" {
 		if !rmRecursiveOrForce(tokens) {
@@ -1769,6 +1816,22 @@ func isDestructive(first string, tokens []string) bool {
 		}
 		for _, tok := range tokens[1:] {
 			if isWipeTarget(tok) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// shred permanently overwrites its targets — irreversible. Like rm, it is
+	// only destructive when aimed at a raw block device or a catastrophic wipe
+	// target (an absolute path outside the work/temp dirs, the home dir, etc.);
+	// shredding a local working file falls through to local_write below.
+	if first == "shred" {
+		for _, tok := range tokens[1:] {
+			if strings.HasPrefix(tok, "-") {
+				continue
+			}
+			if isBlockDevice(tok) || isWipeTarget(tok) {
 				return true
 			}
 		}
@@ -1810,6 +1873,27 @@ func isSystemWrite(first string, tokens []string) bool {
 	if systemPrefixes[first] {
 		return true
 	}
+	// chmod that sets the setuid/setgid bit is privilege escalation regardless
+	// of the target path: a setuid binary runs with its owner's privileges, so
+	// `chmod u+s`, `chmod 4755`, `chmod 6755`, etc. must require approval. Plain
+	// chmod (e.g. `chmod +x script.sh`) stays local_write below.
+	if first == "chmod" && chmodSetsSUIDGID(tokens) {
+		return true
+	}
+	// A filesystem-mutating command (cp/mv/tee/ln/install/touch/mkdir/chmod/…)
+	// whose operand is a system path writes outside the workspace — classic
+	// persistence/escalation (e.g. `cp x /etc/cron.d/job`, `tee /usr/bin/foo`,
+	// `mv x /etc/profile.d/y`). isLocalWrite would otherwise short-circuit these
+	// to local_write (auto-allow) before the touchesSystemPath fallback runs,
+	// because that fallback only fires for commands that fell through every
+	// write check. Escalate them here so they prompt instead.
+	if writePrefixes[first] || first == "ln" || first == "install" {
+		for _, tok := range tokens[1:] {
+			if isSystemPath(tok) {
+				return true
+			}
+		}
+	}
 	// Check redirect targets for system paths
 	for _, tok := range tokens {
 		if tok == ">" || tok == ">>" {
@@ -1825,6 +1909,53 @@ func isSystemWrite(first string, tokens []string) bool {
 		}
 	}
 	return false
+}
+
+// chmodSetsSUIDGID reports whether a chmod invocation sets the setuid or setgid
+// bit, either symbolically (u+s, g+s, +s) or via an octal mode whose leading
+// special-permission digit includes 4 (setuid) or 2 (setgid) — e.g. 4755, 2755,
+// 6755. A plain 3- or 4-digit mode with a 0 special digit (0755) does not.
+//
+// Only the mode argument (the first non-flag operand) is inspected; trailing
+// tokens are filenames and must not trigger on an incidental "+...s" or octal
+// shape (e.g. a file named build+gen.s).
+func chmodSetsSUIDGID(tokens []string) bool {
+	for _, tok := range tokens[1:] {
+		if strings.HasPrefix(tok, "-") {
+			continue // flag (e.g. -R, --recursive, --reference=FILE)
+		}
+		// Symbolic: any clause that adds the 's' permission (u+s, g+s, a+s, +s,
+		// ug+rs, …). We only care about additions, so look for "+...s".
+		if plus := strings.IndexByte(tok, '+'); plus >= 0 {
+			if strings.ContainsRune(tok[plus+1:], 's') {
+				return true
+			}
+		}
+		// Octal: a 4-digit mode whose first digit has bit 4 (setuid) or 2
+		// (setgid) set. 3-digit modes have no special-permission digit.
+		if len(tok) == 4 && isOctalMode(tok) {
+			switch tok[0] {
+			case '2', '3', '4', '5', '6', '7':
+				return true
+			}
+		}
+		// First non-flag operand is the mode; everything after is a filename.
+		return false
+	}
+	return false
+}
+
+// isOctalMode reports whether s is composed entirely of octal digits (0-7).
+func isOctalMode(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '7' {
+			return false
+		}
+	}
+	return true
 }
 
 func isLocalWrite(first string, tokens []string) bool {

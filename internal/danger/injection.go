@@ -51,6 +51,34 @@ var injectionPatterns = []InjectionPattern{
 	{regexp.MustCompile(`(from now on|henceforth|starting now),? (you (are|will|must|shall))`), "permanent override"},
 	{regexp.MustCompile(`^\s*#+ (new|updated|revised|corrected) (system prompt|instructions?)`), "markdown header injection"},
 
+	// ── Concealment instructions ───────────────────────────────────
+	// Untrusted content that tells the agent to hide its actions from the user
+	// is a hallmark of injection: the attacker wants the malicious step to run
+	// silently. Legitimate data has no reason to instruct concealment.
+	{regexp.MustCompile(`(do not|don't|never)\s+(tell|inform|notify|alert|mention (this )?to|warn)\s+(the\s+)?(user|human|operator|owner)`), "concealment instruction"},
+	{regexp.MustCompile(`(without|don't|do not)\s+(telling|informing|notifying|alerting|asking|warning)\s+(the\s+)?(user|human|operator|anyone)`), "concealment instruction"},
+	{regexp.MustCompile(`(keep|hide)\s+this\s+(a\s+)?(secret|hidden|between us|confidential|to yourself)`), "concealment instruction"},
+	{regexp.MustCompile(`(silently|secretly|quietly|covertly)\s+(run|execute|send|delete|exfiltrate|fetch|download|install|modify)`), "covert action instruction"},
+
+	// ── Model control-token / role-marker injection ────────────────
+	// Untrusted data should never contain the special tokens or role markers a
+	// chat template uses to delimit turns. Their presence is an attempt to
+	// forge a system/assistant turn or break out of the user turn.
+	{regexp.MustCompile(`<\|(im_start|im_end|system|user|assistant|endoftext|eot_id|start_header_id|end_header_id)\|>`), "chat control-token injection"},
+	{regexp.MustCompile(`<\|(start|end)_of_turn\|>|<start_of_turn>|<end_of_turn>`), "chat control-token injection"},
+	{regexp.MustCompile(`\[/?inst\]|<</?sys>>`), "instruction-marker injection"},
+	{regexp.MustCompile(`<(system|assistant|developer)>\s*(you|your|ignore|new|always|must)`), "forged role tag"},
+
+	// ── Data exfiltration beacons ──────────────────────────────────
+	// A markdown image whose URL carries query/path data is the classic
+	// zero-click exfiltration channel: the agent "renders" it and the secret
+	// rides along in the request. Flag image targets whose URL names a data/
+	// secret query parameter or interpolates a variable, plus curl/wget
+	// requests that splice a shell variable into a query string.
+	{regexp.MustCompile(`!\[[^\]]*\]\(https?://[^)\s]*[?&/](data|token|key|secret|prompt|q|c)=`), "markdown image exfiltration"},
+	{regexp.MustCompile(`!\[[^\]]*\]\(https?://[^)\s]*\$\{?[a-z_]`), "markdown image exfiltration"},
+	{regexp.MustCompile(`(curl|wget|fetch)\b[^|;]*\?[^|;]*(=\s*\$|=\$\{|\{\{)`), "templated exfiltration request"},
+
 	// ── Non-English injection markers ──────────────────────────────
 	// French
 	{regexp.MustCompile(`ignor(er|ez|e|ons|ent)? (toutes? )?(les? )?instructions? (précédentes?|antérieures?)`), "non-english: ignore previous instructions"},
