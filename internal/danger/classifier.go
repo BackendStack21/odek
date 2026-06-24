@@ -1622,7 +1622,7 @@ func isAssignment(tok string) bool {
 		return false
 	}
 	for _, r := range tok[:eq] {
-		if !(r == '_' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')) {
+		if r != '_' && (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9') {
 			return false
 		}
 	}
@@ -1912,9 +1912,10 @@ func isSystemWrite(first string, tokens []string) bool {
 }
 
 // chmodSetsSUIDGID reports whether a chmod invocation sets the setuid or setgid
-// bit, either symbolically (u+s, g+s, +s) or via an octal mode whose leading
-// special-permission digit includes 4 (setuid) or 2 (setgid) — e.g. 4755, 2755,
-// 6755. A plain 3- or 4-digit mode with a 0 special digit (0755) does not.
+// bit, either symbolically (u+s, g+s, +s, u=rws, a=rwxs, …) or via an octal
+// mode whose leading special-permission digit includes 4 (setuid) or 2
+// (setgid) — e.g. 4755, 2755, 6755. A plain 3- or 4-digit mode with a 0
+// special digit (0755) does not.
 //
 // Only the mode argument (the first non-flag operand) is inspected; trailing
 // tokens are filenames and must not trigger on an incidental "+...s" or octal
@@ -1924,10 +1925,16 @@ func chmodSetsSUIDGID(tokens []string) bool {
 		if strings.HasPrefix(tok, "-") {
 			continue // flag (e.g. -R, --recursive, --reference=FILE)
 		}
-		// Symbolic: any clause that adds the 's' permission (u+s, g+s, a+s, +s,
-		// ug+rs, …). We only care about additions, so look for "+...s".
+		// Symbolic: any clause that sets the 's' permission (u+s, g+s, a+s, +s,
+		// ug+rs, u=rws, a=rwxs, …). Both '+' (add) and '=' (set exactly) can
+		// introduce the setuid/setgid bit.
 		if plus := strings.IndexByte(tok, '+'); plus >= 0 {
 			if strings.ContainsRune(tok[plus+1:], 's') {
+				return true
+			}
+		}
+		if eq := strings.IndexByte(tok, '='); eq >= 0 {
+			if strings.ContainsRune(tok[eq+1:], 's') {
 				return true
 			}
 		}
