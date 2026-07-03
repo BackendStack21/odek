@@ -1,6 +1,8 @@
 package danger
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -191,6 +193,19 @@ func TestScanInjection_ParaphrasedExfiltration(t *testing.T) {
 		if results := ScanInjection(p); len(results) == 0 {
 			t.Errorf("expected paraphrased exfiltration detection for: %q", p)
 		}
+	}
+}
+
+func TestScanInjection_RepoAGENTSmd_Clean(t *testing.T) {
+	// Regression: the project's own AGENTS.md is legitimate documentation and
+	// must not trip the paraphrased-exfiltration detector across paragraphs.
+	path := filepath.Join("..", "..", "AGENTS.md")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf("AGENTS.md not found at %s: %v", path, err)
+	}
+	if results := ScanInjection(string(content)); len(results) > 0 {
+		t.Errorf("repo AGENTS.md flagged as injection: %v", results)
 	}
 }
 

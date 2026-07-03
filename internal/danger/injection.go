@@ -34,8 +34,12 @@ var injectionPatterns = []InjectionPattern{
 	{regexp.MustCompile(`(what|tell me)\s+(is\s+)?(your|the)\s+(system prompt|initial instructions?)`), "prompt interrogation"},
 	// Paraphrased exfiltration: requests to include secrets/system prompts in
 	// the final answer, or urgency words paired with an exfiltration verb.
-	{regexp.MustCompile(`(include|reveal|share|output|print|display|send|post|expose|leak|disclose)\s+.*?(api[_ -]?key|apikey|password|secret|token|credentials?|system prompt|instructions?)\s*.*?\b(final answer|your response|your reply|the output)`), "paraphrased exfiltration"},
-	{regexp.MustCompile(`(always|must|should|need to)\s+(include|reveal|share|output|print|display|send|post|expose|leak|disclose)\s+.*?(api[_ -]?key|apikey|password|secret|token|credentials?|system prompt|instructions?)`), "paraphrased exfiltration"},
+	// The three components (verb, secret/prompt, response destination) must sit
+	// within a short window so long legitimate documents (e.g. AGENTS.md) that
+	// happen to contain all three words scattered across paragraphs are not
+	// flagged. Real exfiltration instructions are a single phrase/sentence.
+	{regexp.MustCompile(`\b(include|reveal|share|output|print|display|send|post|expose|leak|disclose)\s.{0,60}?(api[_ -]?key|apikey|password|secret|token|credentials?|system prompt|instructions?)\s.{0,60}?\b(final answer|your response|your reply|the output)\b`), "paraphrased exfiltration"},
+	{regexp.MustCompile(`\b(always|must|should|need to)\s+(include|reveal|share|output|print|display|send|post|expose|leak|disclose)\s.{0,60}?(api[_ -]?key|apikey|password|secret|token|credentials?|system prompt|instructions?)\b`), "paraphrased exfiltration"},
 
 	// ── Encoded / obfuscated instructions ──────────────────────────
 	{regexp.MustCompile(`base64\s*(decode|encoded)\s*:?\s*[A-Za-z0-9+/=]{20,}`), "base64-encoded payload"},
