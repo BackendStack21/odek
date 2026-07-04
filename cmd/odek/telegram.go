@@ -1214,6 +1214,11 @@ func handleChatMessage(
 	// Build the agent with Telegram approver.
 	tools := builtinTools(resolved.Dangerous, nil, approver, resolved.MaxConcurrency, resolved.APIKey, toolConfig{Transcription: resolved.Transcription, Vision: resolved.Vision, WebSearch: resolved.WebSearch}, sessionManager.Store)
 
+	// Apply tool filtering based on configuration, but preserve Telegram's
+	// required tools so the bot can always respond and ask clarifications.
+	requiredTelegramTools := map[string]bool{"send_message": true, "clarify": true}
+	tools = filterBuiltinTools(tools, resolved.Tools, requiredTelegramTools)
+
 	modelLabel := odek.ProfileLabel(resolved.Model)
 	if modelLabel == "" {
 		modelLabel = "deepseek-v4-flash"
@@ -1516,6 +1521,7 @@ func handleChatMessage(
 		Skills:           skillsCfg,
 		Thinking:         resolved.Thinking,
 		Tools:            agentTools,
+		ToolFilter:       odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
 		Renderer:         rend,
 		ToolEventHandler: func(event string, name string, data string) {
 			// Enhance mode: send new messages with narrated descriptions.

@@ -76,6 +76,9 @@ Flags:
 	// Build tools
 	toolSet := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{WebSearch: resolved.WebSearch}, nil)
 
+	// Apply tool filtering based on configuration.
+	toolSet = filterBuiltinTools(toolSet, resolved.Tools)
+
 	// MCP server tools — connect and discover before sandbox
 	var mcpCleanup func()
 	if len(resolved.MCPServers) > 0 {

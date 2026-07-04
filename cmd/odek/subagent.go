@@ -352,6 +352,10 @@ func subagentCmd(args []string) error {
 		)
 	}
 	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{WebSearch: resolved.WebSearch}, nil)
+
+	// Apply tool filtering based on configuration.
+	tools = filterBuiltinTools(tools, resolved.Tools)
+
 	var sandboxCleanup func() error
 
 	// MCP server tools
@@ -416,6 +420,7 @@ func subagentCmd(args []string) error {
 		NoProjectFile:  resolved.NoAgents,
 		Thinking:       resolved.Thinking,
 		Tools:          tools,
+		ToolFilter:     odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
 		SandboxCleanup: sandboxCleanup,
 		Renderer:       rend,
 		Skills:         &resolved.Skills,

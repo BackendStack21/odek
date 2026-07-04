@@ -94,7 +94,7 @@ func TestFilterTools_EmptyEnabled(t *testing.T) {
 	tools := []Tool{fakeTool{"shell"}, fakeTool{"read_file"}}
 	got := FilterTools(tools, []string{}, nil, nil)
 	if len(got) != 0 {
-		t.Fatalf("want 0 tools when enabled is empty, got %d", len(got))
+		t.Fatalf("want 0 tools when enabled is explicitly empty, got %d", len(got))
 	}
 }
 

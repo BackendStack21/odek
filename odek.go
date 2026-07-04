@@ -79,6 +79,12 @@ type Config struct {
 	// Tools available to the agent.
 	Tools []Tool
 
+	// ToolFilter controls which tools are exposed to the LLM. It is applied
+	// to both the caller-supplied Tools and to any tools odek.New would
+	// auto-register (such as the memory tool). Enabled is a whitelist;
+	// Disabled is a blacklist. Empty Enabled means "no whitelist".
+	ToolFilter ToolFilterConfig
+
 	// MaxIterations caps the number of think→act cycles (default: 90).
 	MaxIterations int
 
@@ -217,6 +223,16 @@ type Agent struct {
 // the model prefix, a human-readable label, and any defaults (thinking,
 // timeout). The rest of odek picks it up automatically — no changes to
 // the LLM client, loop engine, or CLI parsing needed.
+
+// ToolFilterConfig controls which tools are exposed to the LLM.
+type ToolFilterConfig struct {
+	// Enabled is a whitelist. When non-nil, only tools whose names appear
+	// here are registered. An empty (but non-nil) slice means no tools.
+	Enabled []string
+	// Disabled is a blacklist. Tools whose names appear here are removed
+	// after the whitelist is applied.
+	Disabled []string
+}
 
 // ModelProfile holds per-model defaults applied when the user hasn't
 // explicitly provided a value. Zero values leave the system default.
@@ -526,8 +542,10 @@ func New(cfg Config) (*Agent, error) {
 	// and the loop engine refreshes it before each LLM call.
 	// (Memory is injected per-turn via SetMemoryPromptFunc below.)
 
-	// Append memory tool to registry
-	tools = append(tools, &toolAdapter{memory.NewMemoryTool(memoryManager)})
+	// Append memory tool to registry unless the filter excludes it.
+	if shouldRegisterTool("memory", cfg.ToolFilter) {
+		tools = append(tools, &toolAdapter{memory.NewMemoryTool(memoryManager)})
+	}
 	registry := tool.NewRegistry(tools)
 
 	engine := loop.New(client, registry, cfg.MaxIterations, cfg.SystemMessage, cfg.Renderer, maxContext)
@@ -739,6 +757,40 @@ func (a *Agent) SwitchThinking(thinking string) {
 	if a.engine != nil {
 		a.engine.SetThinking(thinking)
 	}
+}
+
+// shouldRegisterTool reports whether a built-in tool name should be registered
+// given a ToolFilterConfig. If Enabled is non-nil, the name must be present.
+// The name must not be present in Disabled.
+func shouldRegisterTool(name string, filter ToolFilterConfig) bool {
+	if filter.Enabled != nil {
+		found := false
+		for _, n := range filter.Enabled {
+			if n == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	for _, n := range filter.Disabled {
+		if n == name {
+			return false
+		}
+	}
+	return true
+}
+
+// sliceContains reports whether needle is in haystack.
+func sliceContains(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
 }
 
 // expandHome replaces the leading ~/ with the user's home directory.

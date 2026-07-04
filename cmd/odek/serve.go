@@ -185,6 +185,7 @@ func serveCmd(args []string) error {
 	var sandboxReadonly *bool
 	var promptCaching *bool
 	var sandboxImage, sandboxNetwork, sandboxMemory, sandboxCPUs, sandboxUser string
+	var toolsEnabled, toolsDisabled []string
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -232,6 +233,16 @@ func serveCmd(args []string) error {
 			}
 		case "--prompt-caching":
 			promptCaching = boolPtr(true)
+		case "--tool":
+			i++
+			if i < len(args) {
+				toolsEnabled = append(toolsEnabled, args[i])
+			}
+		case "--no-tool":
+			i++
+			if i < len(args) {
+				toolsDisabled = append(toolsDisabled, args[i])
+			}
 		default:
 			return fmt.Errorf("unknown flag %q for serve", args[i])
 		}
@@ -246,6 +257,8 @@ func serveCmd(args []string) error {
 		SandboxMemory:   sandboxMemory,
 		SandboxCPUs:     sandboxCPUs,
 		SandboxUser:     sandboxUser,
+		ToolsEnabled:    toolsEnabled,
+		ToolsDisabled:   toolsDisabled,
 	})
 	// Serve mode default-on for sandbox: the Web UI surface is the
 	// largest blast radius (browser-driven tool calls, untrusted-page
@@ -331,6 +344,8 @@ Flags:
   --sandbox-memory limit   Container memory limit (e.g. 512m, 2g)
   --sandbox-cpus limit     Container CPU limit (e.g. 0.5, 2, 4)
   --sandbox-user user      Container user (e.g. 1000:1000)
+  --tool name              Enable a tool for the LLM (repeatable)
+  --no-tool name           Disable a tool for the LLM (repeatable)
   --help, -h               Show this help`)
 }
 
@@ -411,6 +426,9 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 	resolved.Dangerous.Approver = approver
 
 	tools := builtinTools(resolved.Dangerous, sm, approver, resolved.MaxConcurrency, resolved.APIKey, toolConfig{WebSearch: resolved.WebSearch}, nil)
+
+	// Apply tool filtering based on configuration.
+	tools = filterBuiltinTools(tools, resolved.Tools)
 
 	// Find the delegateTasksTool to wire up sub-agent log streaming
 	var subagentTool *delegateTasksTool
@@ -503,6 +521,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 		Thinking:        resolved.Thinking,
 		InteractionMode: resolved.InteractionMode,
 		Tools:           tools,
+		ToolFilter:      odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
 		// SandboxCleanup is intentionally NOT passed here. In serve mode,
 		// cleanup is the caller's responsibility (handleWS defers it).
 		// Passing it here would cause agent.Close() to call docker rm -f,

@@ -51,6 +51,8 @@
 | `--session` | bool | false | Save conversation as a multi-turn session |
 | `--learn` | bool | `true` | Enable skill learning mode (detects patterns, saves skills). On by default |
 | `--no-learn` | bool | `false` | Disable skill learning mode (overrides config/default) |
+| `--tool <name>` | string | — | Enable a specific tool for the LLM (repeatable). Highest-priority layer for the tool whitelist. |
+| `--no-tool <name>` | string | — | Disable a specific tool for the LLM (repeatable). Merges with lower-priority disabled lists. |
 | `--system <prompt>` | string | built-in | Override system prompt |
 | `--ctx <files>` / `-c` | string | — | Attach comma-separated files as context blocks |
 

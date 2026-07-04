@@ -108,8 +108,10 @@ func TestToolConfig_ProjectConfigCanOnlyDisable(t *testing.T) {
 	defer os.Chdir(origWd)
 
 	cfg := LoadConfig(CLIFlags{})
-	if cfg.Tools.Enabled != nil {
-		t.Errorf("project-level tools.enabled must be ignored; got %v", cfg.Tools.Enabled)
+	// Global whitelist was present, project tried to override it; project
+	// enablement is ignored so the global whitelist should still stand.
+	if cfg.Tools.Enabled == nil || !stringSlicesEqual(cfg.Tools.Enabled, []string{"web_search", "vision"}) {
+		t.Errorf("Tools.Enabled = %v, want global value [web_search vision]", cfg.Tools.Enabled)
 	}
 	wantDisabled := []string{"delegate_tasks", "read_file"}
 	if !stringSlicesEqual(cfg.Tools.Disabled, wantDisabled) {

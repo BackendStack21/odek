@@ -26,6 +26,7 @@ import (
 	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/skills"
 	"github.com/BackendStack21/odek/internal/telegram"
+	"github.com/BackendStack21/odek/internal/tool"
 )
 
 // version is set at build time via ldflags: -ldflags "-X main.version=v0.2.1"
@@ -253,8 +254,14 @@ type runFlags struct {
 	NoAgents       *bool   // nil = not set
 	PromptCaching  *bool   // nil = not set; true = enable prompt caching
 	Session        *bool   // nil = not set; true = save session after run
-	Learn          *bool   // nil = not set; true = enable skills learning mode
-	Task           string
+	Learn    *bool // nil = not set; true = enable skills learning mode
+	Task     string
+
+	// ToolsEnabled and ToolsDisabled control which tools are exposed to the LLM.
+	// Repeated --tool/--no-tool flags accumulate. They are the highest priority
+	// layer after file config and env vars.
+	ToolsEnabled  []string
+	ToolsDisabled []string
 	Ctx            []string // --ctx files to attach
 
 	// Sandbox-specific CLI flags
@@ -333,6 +340,18 @@ func parseRunFlags(args []string) (runFlags, error) {
 		case "--no-learn":
 			f.Learn = boolPtr(false)
 			i++
+		case "--tool":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--tool requires a value")
+			}
+			f.ToolsEnabled = append(f.ToolsEnabled, args[i+1])
+			i += 2
+		case "--no-tool":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--no-tool requires a value")
+			}
+			f.ToolsDisabled = append(f.ToolsDisabled, args[i+1])
+			i += 2
 		case "--no-color":
 			f.NoColor = boolPtr(true)
 			i++
@@ -604,6 +623,8 @@ Run flags:
   --session            Save conversation as a multi-turn session
   --learn              Enable skill learning mode — on by default, no flag needed
   --no-learn           Disable skill learning mode (overrides config/default)
+  --tool <name>        Enable a tool for the LLM (repeatable)
+  --no-tool <name>     Disable a tool for the LLM (repeatable)
   --system <prompt>    System prompt override
 
 Skill commands:
@@ -641,6 +662,8 @@ Environment variables:
   ODEK_NO_COLOR        true/false — disable colors
   ODEK_NO_AGENTS       true/false — skip AGENTS.md
   ODEK_SYSTEM          System prompt override
+  ODEK_TOOLS_ENABLED   Comma-separated tool whitelist
+  ODEK_TOOLS_DISABLED  Comma-separated tool blacklist
   ODEK_SANDBOX_IMAGE   Docker image for sandbox container
   ODEK_SANDBOX_NETWORK Network mode (none | bridge | host)
   ODEK_SANDBOX_READONLY true/false — mount read-only
@@ -669,6 +692,10 @@ const defaultConfigTemplate = `{
   "sandbox_user": "",
   "sandbox_env": {},
   "sandbox_volumes": [],
+  "tools": {
+    "enabled": [],
+    "disabled": []
+  },
   "dangerous": {
     "action": "prompt",
     "non_interactive": "deny",
@@ -835,6 +862,8 @@ func run(args []string) error {
 		Learn:         f.Learn,
 		System:        f.System,
 		Task:          f.Task,
+		ToolsEnabled:  f.ToolsEnabled,
+		ToolsDisabled: f.ToolsDisabled,
 
 		SandboxImage:    f.SandboxImage,
 		SandboxNetwork:  f.SandboxNetwork,
@@ -880,6 +909,9 @@ func run(args []string) error {
 	// Sandbox setup
 	var sandboxCleanup func() error
 	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{Transcription: resolved.Transcription, Vision: resolved.Vision, WebSearch: resolved.WebSearch}, nil)
+
+	// Apply tool filtering based on configuration.
+	tools = filterBuiltinTools(tools, resolved.Tools)
 
 	// MCP server tools
 	var mcpCleanup func()
@@ -951,6 +983,7 @@ func run(args []string) error {
 		ThinkingBudget:  f.ThinkingBudget,
 		Temperature:     0, // deterministic by default; override with --temperature
 		Tools:           tools,
+		ToolFilter:      odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
 		SandboxCleanup:  sandboxCleanup,
 		Renderer:        rend,
 		Skills:          skillsCfg,
@@ -1233,6 +1266,38 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 	}
 
 	return tools
+}
+
+// filterBuiltinTools applies the configured tools.enabled / tools.disabled
+// lists to a slice of tools. Unknown names are ignored. Required tools are
+// always preserved.
+func filterBuiltinTools(tools []odek.Tool, cfg config.ToolConfig, required ...map[string]bool) []odek.Tool {
+	var req map[string]bool
+	if len(required) > 0 {
+		req = required[0]
+	}
+	adapted := make([]tool.Tool, len(tools))
+	for i, t := range tools {
+		adapted[i] = odekToolAdapter{t}
+	}
+	filtered := tool.FilterTools(adapted, cfg.Enabled, cfg.Disabled, req)
+	out := make([]odek.Tool, len(filtered))
+	for i, t := range filtered {
+		out[i] = t.(odekToolAdapter).tool
+	}
+	return out
+}
+
+// odekToolAdapter bridges odek.Tool to internal/tool.Tool.
+type odekToolAdapter struct {
+	tool odek.Tool
+}
+
+func (a odekToolAdapter) Name() string        { return a.tool.Name() }
+func (a odekToolAdapter) Description() string { return a.tool.Description() }
+func (a odekToolAdapter) Schema() any         { return a.tool.Schema() }
+func (a odekToolAdapter) Call(args string) (string, error) {
+	return a.tool.Call(args)
 }
 
 // loadMCPTools connects to configured MCP servers and appends their tools
@@ -1792,6 +1857,10 @@ func continueCmd(args []string) error {
 		)
 	}
 	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{Transcription: resolved.Transcription, Vision: resolved.Vision, WebSearch: resolved.WebSearch}, store)
+
+	// Apply tool filtering based on configuration.
+	tools = filterBuiltinTools(tools, resolved.Tools)
+
 	var sandboxCleanup func() error
 
 	// MCP server tools
@@ -1853,6 +1922,7 @@ func continueCmd(args []string) error {
 		Thinking:        resolved.Thinking,
 		Temperature:     0, // deterministic by default; override with --temperature
 		Tools:           tools,
+		ToolFilter:      odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
 		SandboxCleanup:  sandboxCleanup,
 		Renderer:        rend,
 		Skills:          skillsCfg,

@@ -14,6 +14,7 @@ import (
 	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/render"
 	"github.com/BackendStack21/odek/internal/skills"
+	"github.com/BackendStack21/odek/internal/tool"
 )
 
 func TestLoadProjectFile_CapsSize(t *testing.T) {
@@ -364,6 +365,75 @@ func TestNew_WithTools(t *testing.T) {
 	if !names["memory"] {
 		t.Errorf("expected memory tool in registry, got %v", names)
 	}
+}
+
+// Test that ToolFilter can disable the auto-registered memory tool.
+func TestNew_ToolFilterDisablesMemory(t *testing.T) {
+	cfg := Config{
+		APIKey: "sk-test",
+		ToolFilter: ToolFilterConfig{
+			Disabled: []string{"memory"},
+		},
+	}
+	agent, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	tools := agent.registry.Tools()
+	for _, tt := range tools {
+		if tt.Name() == "memory" {
+			t.Fatalf("memory tool should be excluded by ToolFilter, got %d tools", len(tools))
+		}
+	}
+}
+
+// Test that ToolFilter whitelist without memory excludes it.
+func TestNew_ToolFilterWhitelistExcludesMemory(t *testing.T) {
+	fake := &fakeKodeTool{name: "test_tool", schema: map[string]any{"type": "object"}}
+	cfg := Config{
+		APIKey: "sk-test",
+		Tools:  []Tool{fake},
+		ToolFilter: ToolFilterConfig{
+			Enabled: []string{"test_tool"},
+		},
+	}
+	agent, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	tools := agent.registry.Tools()
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+	if tools[0].Name() != "test_tool" {
+		t.Errorf("expected test_tool, got %q", tools[0].Name())
+	}
+}
+
+// Test that ToolFilter whitelist including memory keeps it.
+func TestNew_ToolFilterWhitelistIncludesMemory(t *testing.T) {
+	cfg := Config{
+		APIKey: "sk-test",
+		ToolFilter: ToolFilterConfig{
+			Enabled: []string{"memory"},
+		},
+	}
+	agent, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	tools := agent.registry.Tools()
+	if len(tools) != 1 || tools[0].Name() != "memory" {
+		t.Fatalf("expected only memory tool, got %v", toolNames(tools))
+	}
+}
+
+func toolNames(tools []tool.Tool) []string {
+	out := make([]string, len(tools))
+	for i, tt := range tools {
+		out[i] = tt.Name()
+	}
+	return out
 }
 
 // ── Model Profile Tests ───────────────────────────────────────────────
