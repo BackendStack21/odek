@@ -556,6 +556,52 @@ Project-level `odek.json` cannot set `schedules.dangerous`; configure it via `~/
 
 Full guide: [docs/SCHEDULES.md](SCHEDULES.md).
 
+## Tool configuration
+
+Control which tools are exposed to the LLM. Use this to deploy locked-down
+agents — for example, a chatbot with only `web_search`, `transcribe`, and
+`vision`, or a read-only research assistant with no write tools.
+
+```json
+{
+  "tools": {
+    "enabled": ["web_search", "transcribe", "vision"],
+    "disabled": ["shell", "write_file", "patch"]
+  }
+}
+```
+
+| Field | Env | Default | Description |
+|---|---|---|---|
+| `enabled` | `ODEK_TOOLS_ENABLED` | unset | Whitelist. When set, only these tools are registered. Comma-separated in env. |
+| `disabled` | `ODEK_TOOLS_DISABLED` | unset | Blacklist. These tools are removed from the default set. Comma-separated in env. |
+
+CLI flags override file and env config:
+
+```bash
+# Whitelist mode: only these tools
+odek run --tool web_search --tool vision "what's new in Go?"
+
+# Blacklist mode: remove specific tools
+odek run --no-tool shell --no-tool write_file "review this code"
+
+# Environment
+ODEK_TOOLS_ENABLED=web_search,vision odek run "search and summarize"
+```
+
+Resolution rules:
+
+- `enabled` is set by the highest-priority layer that provides it.
+- `disabled` is merged across layers.
+- If both are present: start from `enabled`, then subtract `disabled`.
+- Unknown tool names are silently ignored.
+- The `memory` tool is also subject to this filter, so a whitelist must
+  include `"memory"` if you want persistent memory.
+
+Project-level `./odek.json` **cannot enable tools** — it may only append to
+`disabled`. This prevents a malicious repository from widening the tool
+surface.
+
 ## Tool Progress
 
 Controls how per-tool progress messages appear inside the Telegram bot during agent runs. Independent from `interaction_mode` — you can have engaging terminal output with minimal Telegram progress, or verbose terminal with rich progress bubbles.

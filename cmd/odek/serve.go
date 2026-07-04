@@ -185,6 +185,7 @@ func serveCmd(args []string) error {
 	var sandboxReadonly *bool
 	var promptCaching *bool
 	var sandboxImage, sandboxNetwork, sandboxMemory, sandboxCPUs, sandboxUser string
+	var toolsEnabled, toolsDisabled []string
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -232,6 +233,18 @@ func serveCmd(args []string) error {
 			}
 		case "--prompt-caching":
 			promptCaching = boolPtr(true)
+		case "--tool":
+			i++
+			if i >= len(args) {
+				return fmt.Errorf("--tool requires a value")
+			}
+			toolsEnabled = append(toolsEnabled, args[i])
+		case "--no-tool":
+			i++
+			if i >= len(args) {
+				return fmt.Errorf("--no-tool requires a value")
+			}
+			toolsDisabled = append(toolsDisabled, args[i])
 		default:
 			return fmt.Errorf("unknown flag %q for serve", args[i])
 		}
@@ -246,6 +259,8 @@ func serveCmd(args []string) error {
 		SandboxMemory:   sandboxMemory,
 		SandboxCPUs:     sandboxCPUs,
 		SandboxUser:     sandboxUser,
+		ToolsEnabled:    toolsEnabled,
+		ToolsDisabled:   toolsDisabled,
 	})
 	// Serve mode default-on for sandbox: the Web UI surface is the
 	// largest blast radius (browser-driven tool calls, untrusted-page
@@ -331,6 +346,8 @@ Flags:
   --sandbox-memory limit   Container memory limit (e.g. 512m, 2g)
   --sandbox-cpus limit     Container CPU limit (e.g. 0.5, 2, 4)
   --sandbox-user user      Container user (e.g. 1000:1000)
+  --tool name              Enable a tool for the LLM (repeatable)
+  --no-tool name           Disable a tool for the LLM (repeatable)
   --help, -h               Show this help`)
 }
 
@@ -412,6 +429,20 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 
 	tools := builtinTools(resolved.Dangerous, sm, approver, resolved.MaxConcurrency, resolved.APIKey, toolConfig{WebSearch: resolved.WebSearch}, nil)
 
+	// MCP server tools
+	var mcpCleanup func()
+	if len(resolved.MCPServers) > 0 {
+		cl, err := loadMCPTools(resolved, &tools)
+		if err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("mcp: %w", err)
+		}
+		mcpCleanup = cl
+	}
+
+	// Apply tool filtering based on configuration (after MCP tools are loaded
+	// so disabled/enabled lists can reference MCP tool names too).
+	tools = filterBuiltinTools(tools, resolved.Tools, nil)
+
 	// Find the delegateTasksTool to wire up sub-agent log streaming
 	var subagentTool *delegateTasksTool
 	for _, t := range tools {
@@ -440,16 +471,6 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 		}
 	}
 	var sandboxCleanup func() error
-
-	// MCP server tools
-	var mcpCleanup func()
-	if len(resolved.MCPServers) > 0 {
-		cl, err := loadMCPTools(resolved, &tools)
-		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("mcp: %w", err)
-		}
-		mcpCleanup = cl
-	}
 
 	if resolved.Sandbox {
 		cfg := sandboxConfig{
@@ -503,6 +524,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 		Thinking:        resolved.Thinking,
 		InteractionMode: resolved.InteractionMode,
 		Tools:           tools,
+		ToolFilter:      odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
 		// SandboxCleanup is intentionally NOT passed here. In serve mode,
 		// cleanup is the caller's responsibility (handleWS defers it).
 		// Passing it here would cause agent.Close() to call docker rm -f,

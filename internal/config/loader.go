@@ -60,6 +60,11 @@ type CLIFlags struct {
 	Learn    *bool // nil = not set
 	Task     string
 
+	// ToolsEnabled and ToolsDisabled control which tools are exposed to the LLM.
+	// These override file/env config.
+	ToolsEnabled  []string
+	ToolsDisabled []string
+
 	// PromptCaching enables prompt caching markers for supported providers.
 	// Config: prompt_caching, ODEK_PROMPT_CACHING, --prompt-caching.
 	PromptCaching *bool // nil = not set
@@ -152,6 +157,19 @@ type WebSearchConfig struct {
 	Timeout int `json:"timeout_seconds,omitempty"`
 }
 
+// ToolConfig controls which tools are exposed to the LLM.
+// Config: tools.enabled, tools.disabled; ODEK_TOOLS_ENABLED,
+// ODEK_TOOLS_DISABLED; --tool, --no-tool.
+type ToolConfig struct {
+	Enabled  []string `json:"enabled,omitempty"`
+	Disabled []string `json:"disabled,omitempty"`
+}
+
+// ToolsConfig is the "tools" section of odek.json. It is intentionally a
+// pointer in FileConfig so "not set" can be distinguished from an explicit
+// empty list.
+type ToolsConfig = ToolConfig
+
 // FileConfig is the JSON schema used by ~/.odek/config.json and ./odek.json.
 // Pointer booleans distinguish "explicitly set to false" from "not set".
 type FileConfig struct {
@@ -237,6 +255,10 @@ type FileConfig struct {
 
 	// Schedules configures the native in-process task scheduler.
 	Schedules *SchedulesConfig `json:"schedules,omitempty"`
+
+	// Tools controls which tools are exposed to the LLM.
+	// Project-level ./odek.json may only disable tools, not enable them.
+	Tools *ToolsConfig `json:"tools,omitempty"`
 
 	// InteractionMode controls how the agent communicates tool/progress updates.
 	// "engaging" (default) = emoji-rich narration, progress message edited.
@@ -368,6 +390,10 @@ type ResolvedConfig struct {
 	// Schedules is the resolved scheduler config.
 	// Default: enabled=true, max_concurrent=2, timezone="UTC", catchup=false.
 	Schedules ScheduleConfig
+
+	// Tools is the resolved tool-list configuration.
+	// Empty Enabled/Disabled means "no restriction" for that direction.
+	Tools ToolConfig
 
 	// InteractionMode is the resolved interaction style.
 	// Values: "engaging" (default), "enhance", "verbose", or "off".
@@ -743,6 +769,12 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring web_search from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
 		project.WebSearch = nil
 	}
+	// A malicious repo must not be able to widen the tool surface. It may only
+	// disable tools, never enable them.
+	if project.Tools != nil && len(project.Tools.Enabled) > 0 {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring tools.enabled from project config (%s); set it via ~/.odek/config.json, ODEK_TOOLS_ENABLED, or --tool\n", ProjectConfigPath())
+		project.Tools.Enabled = nil
+	}
 	// A malicious repo must not be able to turn OFF the sandbox or its
 	// read-only mode via ./odek.json — that would undo the container isolation
 	// the operator opted into. Only the weakening direction is ignored; a
@@ -883,6 +915,19 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	mergedTelegram := telegram.ConfigFromEnv(baseTelegram)
 	cfg.Telegram = &mergedTelegram
 
+	if v := envStringList("TOOLS_ENABLED"); v != nil {
+		if cfg.Tools == nil {
+			cfg.Tools = &ToolsConfig{}
+		}
+		cfg.Tools.Enabled = v
+	}
+	if v := envStringList("TOOLS_DISABLED"); v != nil {
+		if cfg.Tools == nil {
+			cfg.Tools = &ToolsConfig{}
+		}
+		cfg.Tools.Disabled = v
+	}
+
 	// Layer 4: CLI flags (highest priority)
 	if cli.Model != "" {
 		cfg.Model = cli.Model
@@ -938,6 +983,18 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if cli.InteractionMode != "" {
 		cfg.InteractionMode = cli.InteractionMode
 	}
+	if len(cli.ToolsEnabled) > 0 {
+		if cfg.Tools == nil {
+			cfg.Tools = &ToolsConfig{}
+		}
+		cfg.Tools.Enabled = cli.ToolsEnabled
+	}
+	if len(cli.ToolsDisabled) > 0 {
+		if cfg.Tools == nil {
+			cfg.Tools = &ToolsConfig{}
+		}
+		cfg.Tools.Disabled = append(cfg.Tools.Disabled, cli.ToolsDisabled...)
+	}
 
 	// Build resolved config with concrete values
 	resolved := ResolvedConfig{
@@ -966,6 +1023,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		Vision:                resolveVision(cfg.Vision),
 		WebSearch:             resolveWebSearch(cfg.WebSearch),
 		Schedules:             resolveSchedules(cfg.Schedules),
+		Tools:                 resolveTools(cfg.Tools),
 		InteractionMode:       ifZero(cfg.InteractionMode, "engaging"),
 		ToolProgress:          ifZero(cfg.ToolProgress, "all"),
 	}
@@ -1051,6 +1109,18 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	redact.RegisterSecretsFromEnv()
 
 	return resolved
+}
+
+// resolveTools returns a concrete ToolConfig from a possibly-nil file config.
+// Empty Enabled/Disabled slices mean "no restriction" for that direction.
+func resolveTools(cfg *ToolsConfig) ToolConfig {
+	if cfg == nil {
+		return ToolConfig{}
+	}
+	return ToolConfig{
+		Enabled:  cfg.Enabled,
+		Disabled: cfg.Disabled,
+	}
 }
 
 // ifZero returns the default value if s is empty, otherwise returns s.
@@ -1529,6 +1599,15 @@ func overlayFile(base, override FileConfig) FileConfig {
 	}
 	if override.Schedules != nil {
 		base.Schedules = override.Schedules
+	}
+	if override.Tools != nil {
+		if base.Tools == nil {
+			base.Tools = &ToolsConfig{}
+		}
+		if len(override.Tools.Enabled) > 0 {
+			base.Tools.Enabled = override.Tools.Enabled
+		}
+		base.Tools.Disabled = append(base.Tools.Disabled, override.Tools.Disabled...)
 	}
 	return base
 }

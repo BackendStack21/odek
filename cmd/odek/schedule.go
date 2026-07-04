@@ -671,7 +671,12 @@ func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system
 	dangerCfg := buildHeadlessDangerConfig(resolved)
 
 	tools := builtinTools(dangerCfg, nil, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{Transcription: resolved.Transcription, Vision: resolved.Vision, WebSearch: resolved.WebSearch}, nil)
+
 	tools = append(tools, mcpTools...)
+
+	// Apply tool filtering based on configuration (after MCP tools are appended
+	// so disabled/enabled lists can reference MCP tool names too).
+	tools = filterBuiltinTools(tools, resolved.Tools, nil)
 
 	// Capture cumulative token usage from the final iteration so the Runner
 	// can report it (the engine logs it; the bot bills it against the budget).
@@ -691,6 +696,7 @@ func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system
 		Thinking:          resolved.Thinking,
 		Temperature:       0,
 		Tools:             tools,
+		ToolFilter:        odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
 		Renderer:          render.New(io.Discard, false), // silent: unattended
 		InteractionMode:   "off",
 		PromptCaching:     resolved.PromptCaching,

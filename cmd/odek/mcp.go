@@ -87,6 +87,10 @@ Flags:
 		defer mcpCleanup()
 	}
 
+	// Apply tool filtering based on configuration (after MCP tools are loaded
+	// so disabled/enabled lists can reference MCP tool names too).
+	toolSet = filterBuiltinTools(toolSet, resolved.Tools, nil)
+
 	// Sandbox setup (must happen after tools are created)
 	var sandboxCleanup func() error
 	if resolved.Sandbox {

@@ -352,7 +352,6 @@ func subagentCmd(args []string) error {
 		)
 	}
 	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{WebSearch: resolved.WebSearch}, nil)
-	var sandboxCleanup func() error
 
 	// MCP server tools
 	var mcpCleanup func()
@@ -364,6 +363,12 @@ func subagentCmd(args []string) error {
 		mcpCleanup = cl
 		defer mcpCleanup()
 	}
+
+	// Apply tool filtering based on configuration (after MCP tools are loaded
+	// so disabled/enabled lists can reference MCP tool names too).
+	tools = filterBuiltinTools(tools, resolved.Tools, nil)
+
+	var sandboxCleanup func() error
 
 	if resolved.Sandbox {
 		sbCfg := sandboxConfig{
@@ -416,6 +421,7 @@ func subagentCmd(args []string) error {
 		NoProjectFile:  resolved.NoAgents,
 		Thinking:       resolved.Thinking,
 		Tools:          tools,
+		ToolFilter:     odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
 		SandboxCleanup: sandboxCleanup,
 		Renderer:       rend,
 		Skills:         &resolved.Skills,
