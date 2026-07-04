@@ -672,10 +672,11 @@ func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system
 
 	tools := builtinTools(dangerCfg, nil, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{Transcription: resolved.Transcription, Vision: resolved.Vision, WebSearch: resolved.WebSearch}, nil)
 
-	// Apply tool filtering based on configuration.
-	tools = filterBuiltinTools(tools, resolved.Tools)
-
 	tools = append(tools, mcpTools...)
+
+	// Apply tool filtering based on configuration (after MCP tools are appended
+	// so disabled/enabled lists can reference MCP tool names too).
+	tools = filterBuiltinTools(tools, resolved.Tools, nil)
 
 	// Capture cumulative token usage from the final iteration so the Runner
 	// can report it (the engine logs it; the bot bills it against the budget).

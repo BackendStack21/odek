@@ -80,11 +80,6 @@ func replCmd(args []string) error {
 	}
 	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{WebSearch: resolved.WebSearch}, nil)
 
-	// Apply tool filtering based on configuration.
-	tools = filterBuiltinTools(tools, resolved.Tools)
-
-	var sandboxCleanup func() error
-
 	// MCP server tools
 	var mcpCleanup func()
 	if len(resolved.MCPServers) > 0 {
@@ -95,6 +90,12 @@ func replCmd(args []string) error {
 		mcpCleanup = cl
 		defer mcpCleanup()
 	}
+
+	// Apply tool filtering based on configuration (after MCP tools are loaded
+	// so disabled/enabled lists can reference MCP tool names too).
+	tools = filterBuiltinTools(tools, resolved.Tools, nil)
+
+	var sandboxCleanup func() error
 
 	if resolved.Sandbox {
 		sbCfg := sandboxConfig{

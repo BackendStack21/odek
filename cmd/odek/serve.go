@@ -235,14 +235,16 @@ func serveCmd(args []string) error {
 			promptCaching = boolPtr(true)
 		case "--tool":
 			i++
-			if i < len(args) {
-				toolsEnabled = append(toolsEnabled, args[i])
+			if i >= len(args) {
+				return fmt.Errorf("--tool requires a value")
 			}
+			toolsEnabled = append(toolsEnabled, args[i])
 		case "--no-tool":
 			i++
-			if i < len(args) {
-				toolsDisabled = append(toolsDisabled, args[i])
+			if i >= len(args) {
+				return fmt.Errorf("--no-tool requires a value")
 			}
+			toolsDisabled = append(toolsDisabled, args[i])
 		default:
 			return fmt.Errorf("unknown flag %q for serve", args[i])
 		}
@@ -427,8 +429,19 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 
 	tools := builtinTools(resolved.Dangerous, sm, approver, resolved.MaxConcurrency, resolved.APIKey, toolConfig{WebSearch: resolved.WebSearch}, nil)
 
-	// Apply tool filtering based on configuration.
-	tools = filterBuiltinTools(tools, resolved.Tools)
+	// MCP server tools
+	var mcpCleanup func()
+	if len(resolved.MCPServers) > 0 {
+		cl, err := loadMCPTools(resolved, &tools)
+		if err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("mcp: %w", err)
+		}
+		mcpCleanup = cl
+	}
+
+	// Apply tool filtering based on configuration (after MCP tools are loaded
+	// so disabled/enabled lists can reference MCP tool names too).
+	tools = filterBuiltinTools(tools, resolved.Tools, nil)
 
 	// Find the delegateTasksTool to wire up sub-agent log streaming
 	var subagentTool *delegateTasksTool
@@ -458,16 +471,6 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 		}
 	}
 	var sandboxCleanup func() error
-
-	// MCP server tools
-	var mcpCleanup func()
-	if len(resolved.MCPServers) > 0 {
-		cl, err := loadMCPTools(resolved, &tools)
-		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("mcp: %w", err)
-		}
-		mcpCleanup = cl
-	}
 
 	if resolved.Sandbox {
 		cfg := sandboxConfig{

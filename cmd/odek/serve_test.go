@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -953,7 +954,7 @@ func dialTestWS(t *testing.T, addr string) *golangws.Conn {
 
 // serveSandboxFlags returns the sandbox CLI flags parsed by serveCmd.
 // Used by tests to verify flag parsing without starting the server.
-func serveSandboxFlags(args []string) (addr string, open bool, sb *bool, sbr *bool, sbi, sbn, sbm, sbc, sbu string, err error) {
+func serveSandboxFlags(args []string) (addr string, open bool, sb *bool, sbr *bool, sbi, sbn, sbm, sbc, sbu string, toolsEnabled, toolsDisabled []string, err error) {
 	addr = "127.0.0.1:8080"
 	open = false
 
@@ -997,6 +998,20 @@ func serveSandboxFlags(args []string) (addr string, open bool, sb *bool, sbr *bo
 			if i < len(args) {
 				sbu = args[i]
 			}
+		case "--tool":
+			i++
+			if i >= len(args) {
+				err = fmt.Errorf("--tool requires a value")
+				return
+			}
+			toolsEnabled = append(toolsEnabled, args[i])
+		case "--no-tool":
+			i++
+			if i >= len(args) {
+				err = fmt.Errorf("--no-tool requires a value")
+				return
+			}
+			toolsDisabled = append(toolsDisabled, args[i])
 		default:
 			err = fmt.Errorf("unknown flag %q for serve", args[i])
 			return
@@ -1085,7 +1100,7 @@ func TestServeCmd_SandboxFlags(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			addr, open, sb, sbr, sbi, sbn, sbm, sbc, sbu, err := serveSandboxFlags(tt.args)
+			addr, open, sb, sbr, sbi, sbn, sbm, sbc, sbu, _, _, err := serveSandboxFlags(tt.args)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1094,8 +1109,34 @@ func TestServeCmd_SandboxFlags(t *testing.T) {
 	}
 }
 
+func TestServeCmd_ToolFlags(t *testing.T) {
+	_, _, _, _, _, _, _, _, _, enabled, disabled, err := serveSandboxFlags([]string{"--tool", "web_search", "--no-tool", "shell"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	wantEnabled := []string{"web_search"}
+	wantDisabled := []string{"shell"}
+	if !reflect.DeepEqual(enabled, wantEnabled) {
+		t.Errorf("toolsEnabled = %v, want %v", enabled, wantEnabled)
+	}
+	if !reflect.DeepEqual(disabled, wantDisabled) {
+		t.Errorf("toolsDisabled = %v, want %v", disabled, wantDisabled)
+	}
+}
+
+func TestServeCmd_ToolFlagsRequireValue(t *testing.T) {
+	_, _, _, _, _, _, _, _, _, _, _, err := serveSandboxFlags([]string{"--tool"})
+	if err == nil {
+		t.Fatal("expected error for --tool without value")
+	}
+	_, _, _, _, _, _, _, _, _, _, _, err = serveSandboxFlags([]string{"--no-tool"})
+	if err == nil {
+		t.Fatal("expected error for --no-tool without value")
+	}
+}
+
 func TestServeCmd_UnknownFlag(t *testing.T) {
-	_, _, _, _, _, _, _, _, _, err := serveSandboxFlags([]string{"--bogus"})
+	_, _, _, _, _, _, _, _, _, _, _, err := serveSandboxFlags([]string{"--bogus"})
 	if err == nil {
 		t.Fatal("expected error for unknown flag")
 	}

@@ -6,9 +6,6 @@ import (
 	"testing"
 )
 
-// RED tests for the proposed ToolConfig contract.
-// These tests will fail until the ToolConfig feature is implemented.
-
 func TestToolConfig_Defaults(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	cfg := LoadConfig(CLIFlags{})

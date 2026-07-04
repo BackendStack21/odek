@@ -8,7 +8,7 @@
 | `odek run --session [flags] <task>` | Execute and save conversation as a multi-turn session |
 | `odek run [--no-learn] [flags] <task>` | Execute with skill learning (on by default, use --no-learn to disable) |
 | `odek continue [--id <id>] <task>` | Continue the most recent session (or by `--id`) |
-| `odek repl [flags]` | Interactive REPL mode (persistent multi-turn session). Accepts `--model`, `--thinking`, `--sandbox`, and `--sandbox-*` flags. |
+| `odek repl [flags]` | Interactive REPL mode (persistent multi-turn session). Accepts `--model`, `--thinking`, `--sandbox`, `--sandbox-*`, `--tool`, and `--no-tool` flags. |
 | `odek session list` | List sessions |
 | `odek session show [id]` | Show session details (default: latest) |
 | `odek session delete <id>` | Delete a session |
@@ -25,7 +25,7 @@
 || `odek skill reset-skips [name]` | Reset skip list (all or specific skill) |
 | `odek audit <session-id>` | Print the prompt-injection audit log for a session (JSON) |
 | `odek audit --list` | List sessions with non-zero ingest counts and divergence flags |
-|| `odek serve [--addr :8080] [--open] [--no-sandbox]` | Web UI server. Sandbox is on by default; pass `--no-sandbox` to disable |
+|| `odek serve [--addr :8080] [--open] [--no-sandbox]` | Web UI server. Sandbox is on by default; pass `--no-sandbox` to disable. Accepts `--tool` and `--no-tool` flags. |
 || `odek subagent --goal <string> [flags]` | Run a focused sub-task; outputs JSON on stdout. Spawned by `delegate_tasks` tool |
 | `odek init [--global] [--force]` | Create a config file template |
 | `odek mcp [--sandbox]` | Start MCP server (expose tools to Claude Code) or connect to external MCP servers (via `mcp_servers` config) |

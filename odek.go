@@ -79,10 +79,11 @@ type Config struct {
 	// Tools available to the agent.
 	Tools []Tool
 
-	// ToolFilter controls which tools are exposed to the LLM. It is applied
-	// to both the caller-supplied Tools and to any tools odek.New would
-	// auto-register (such as the memory tool). Enabled is a whitelist;
-	// Disabled is a blacklist. Empty Enabled means "no whitelist".
+	// ToolFilter controls which auto-registered tools are exposed to the LLM
+	// (for example the memory tool when a MemoryManager is provided). It is
+	// not applied to caller-supplied Tools; callers are responsible for
+	// filtering their own tool slices. Enabled is a whitelist; Disabled is a
+	// blacklist. Empty Enabled means "no whitelist".
 	ToolFilter ToolFilterConfig
 
 	// MaxIterations caps the number of think→act cycles (default: 90).
@@ -781,16 +782,6 @@ func shouldRegisterTool(name string, filter ToolFilterConfig) bool {
 		}
 	}
 	return true
-}
-
-// sliceContains reports whether needle is in haystack.
-func sliceContains(haystack []string, needle string) bool {
-	for _, s := range haystack {
-		if s == needle {
-			return true
-		}
-	}
-	return false
 }
 
 // expandHome replaces the leading ~/ with the user's home directory.

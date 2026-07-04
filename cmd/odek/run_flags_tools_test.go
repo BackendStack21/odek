@@ -5,9 +5,6 @@ import (
 	"testing"
 )
 
-// RED tests for the proposed --tool / --no-tool CLI flags.
-// These will fail until parseRunFlags supports them.
-
 func TestParseRunFlags_ToolWhitelist(t *testing.T) {
 	f, err := parseRunFlags([]string{
 		"--tool", "web_search",

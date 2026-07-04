@@ -55,7 +55,9 @@ func FilterTools(tools []Tool, enabled, disabled []string, required map[string]b
 
 	var out []Tool
 	if enabled != nil {
-		for name := range enabledSet {
+		// Preserve whitelist order so the result is deterministic and matches
+		// the order the user configured.
+		for _, name := range enabled {
 			if tt, ok := byName[name]; ok {
 				out = append(out, tt)
 			}

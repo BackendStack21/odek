@@ -14,9 +14,6 @@ func (f fakeTool) Call(args string) (string, error) {
 	return "", nil
 }
 
-// RED tests for the proposed ToolFilter contract.
-// These tests will fail until ToolFilter is implemented.
-
 func TestFilterTools_NoFilter(t *testing.T) {
 	tools := []Tool{fakeTool{"shell"}, fakeTool{"read_file"}, fakeTool{"web_search"}}
 	got := FilterTools(tools, nil, nil, nil)

@@ -692,10 +692,6 @@ const defaultConfigTemplate = `{
   "sandbox_user": "",
   "sandbox_env": {},
   "sandbox_volumes": [],
-  "tools": {
-    "enabled": [],
-    "disabled": []
-  },
   "dangerous": {
     "action": "prompt",
     "non_interactive": "deny",
@@ -910,9 +906,6 @@ func run(args []string) error {
 	var sandboxCleanup func() error
 	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{Transcription: resolved.Transcription, Vision: resolved.Vision, WebSearch: resolved.WebSearch}, nil)
 
-	// Apply tool filtering based on configuration.
-	tools = filterBuiltinTools(tools, resolved.Tools)
-
 	// MCP server tools
 	var mcpCleanup func()
 	if len(resolved.MCPServers) > 0 {
@@ -923,6 +916,10 @@ func run(args []string) error {
 		mcpCleanup = cl
 		defer mcpCleanup()
 	}
+
+	// Apply tool filtering based on configuration (after MCP tools are loaded
+	// so disabled/enabled lists can reference MCP tool names too).
+	tools = filterBuiltinTools(tools, resolved.Tools, nil)
 
 	if resolved.Sandbox {
 		var containerName string
@@ -1271,16 +1268,12 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 // filterBuiltinTools applies the configured tools.enabled / tools.disabled
 // lists to a slice of tools. Unknown names are ignored. Required tools are
 // always preserved.
-func filterBuiltinTools(tools []odek.Tool, cfg config.ToolConfig, required ...map[string]bool) []odek.Tool {
-	var req map[string]bool
-	if len(required) > 0 {
-		req = required[0]
-	}
+func filterBuiltinTools(tools []odek.Tool, cfg config.ToolConfig, required map[string]bool) []odek.Tool {
 	adapted := make([]tool.Tool, len(tools))
 	for i, t := range tools {
 		adapted[i] = odekToolAdapter{t}
 	}
-	filtered := tool.FilterTools(adapted, cfg.Enabled, cfg.Disabled, req)
+	filtered := tool.FilterTools(adapted, cfg.Enabled, cfg.Disabled, required)
 	out := make([]odek.Tool, len(filtered))
 	for i, t := range filtered {
 		out[i] = t.(odekToolAdapter).tool
@@ -1858,11 +1851,6 @@ func continueCmd(args []string) error {
 	}
 	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{Transcription: resolved.Transcription, Vision: resolved.Vision, WebSearch: resolved.WebSearch}, store)
 
-	// Apply tool filtering based on configuration.
-	tools = filterBuiltinTools(tools, resolved.Tools)
-
-	var sandboxCleanup func() error
-
 	// MCP server tools
 	var mcpCleanup func()
 	if len(resolved.MCPServers) > 0 {
@@ -1874,9 +1862,14 @@ func continueCmd(args []string) error {
 		defer mcpCleanup()
 	}
 
+	// Apply tool filtering based on configuration (after MCP tools are loaded
+	// so disabled/enabled lists can reference MCP tool names too).
+	tools = filterBuiltinTools(tools, resolved.Tools, nil)
+
 	systemMessage := buildSystemPrompt(resolved)
 
-	// Sandbox (if enabled in config) (second occurrence)
+	var sandboxCleanup func() error
+
 	if resolved.Sandbox {
 		sbCfg := sandboxConfig{
 			Image:    resolved.SandboxImage,
