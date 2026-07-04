@@ -64,31 +64,58 @@ across layers.
 
 ## Examples
 
-### Chatbot with web search and voice
+### ChatBot
+
+A minimal chatbot that can answer questions, search the web, and process voice
+or image input, but cannot touch files or run shell commands.
+
+```json
+// ~/.odek/config.json
+{
+  "model": "deepseek-v4-flash",
+  "tools": {
+    "enabled": ["web_search", "transcribe", "vision", "memory"]
+  }
+}
+```
+
+Run interactively:
 
 ```bash
-# CLI only
+odek run "what's new in Go?"
+```
+
+Or serve it via the Web UI:
+
+```bash
+odek serve
+```
+
+Why these tools:
+
+- `web_search` — answers current-events questions via SearXNG (requires
+  `web_search.base_url` in config)
+- `transcribe` — converts voice messages to text
+- `vision` — describes images
+- `memory` — remembers facts across conversations
+
+Everything else is excluded, including `shell`, `write_file`, `patch`,
+`delegate_tasks`, and all file tools.
+
+### Chatbot with web search and voice (CLI override)
+
+You can override the config for a single run:
+
+```bash
 odek run \
   --tool web_search \
   --tool transcribe \
   --tool vision \
-  --tool send_message \
-  --no-tool shell \
-  --no-tool write_file \
-  --no-tool patch \
-  --no-tool delegate_tasks \
+  --tool memory \
   "what's the weather in Tokyo?"
 ```
 
-Or set it once in `~/.odek/config.json`:
-
-```json
-{
-  "tools": {
-    "enabled": ["web_search", "transcribe", "vision", "send_message"]
-  }
-}
-```
+Because `--tool` sets a whitelist, only those four tools are registered.
 
 ### Read-only research assistant
 
@@ -182,7 +209,7 @@ Use these exact names in config, env vars, and CLI flags:
 | Network | `browser`, `web_search` |
 | Memory | `memory` |
 | Skills | `skill_load`, `skill_list`, `skill_save`, `skill_patch`, `skill_delete` |
-| Telegram | `send_message`, `clarify` |
+| Telegram-only | `send_message`, `clarify` (auto-injected by `odek telegram`; ignored by other modes) |
 | MCP | `<server>__<tool_name>` |
 
 Unknown names are silently ignored, so typos do not crash startup.
@@ -194,6 +221,9 @@ Some odek modes preserve tools they need to function:
 - **Telegram** always keeps `send_message` and `clarify` so the bot can respond
   and ask clarifications, even if you disable them.
 - Other modes respect the filter exactly as configured.
+
+`send_message` and `clarify` are only meaningful in `odek telegram`; in other
+modes they are not registered, so including them in a whitelist has no effect.
 
 ## Choosing between whitelist and blacklist
 
