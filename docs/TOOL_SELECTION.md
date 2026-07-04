@@ -208,11 +208,17 @@ Use these exact names in config, env vars, and CLI flags:
 | Media | `transcribe`, `vision` |
 | Network | `browser`, `web_search` |
 | Memory | `memory` |
+| Session search | `session_search` |
 | Skills | `skill_load`, `skill_list`, `skill_save`, `skill_patch`, `skill_delete` |
 | Telegram-only | `send_message`, `clarify` (auto-injected by `odek telegram`; ignored by other modes) |
 | MCP | `<server>__<tool_name>` |
 
 Unknown names are silently ignored, so typos do not crash startup.
+
+There is only one session-related tool: `session_search`. Session
+management (save, list, delete, trim, continue) is handled by the `odek
+session` command and by flags such as `--session` and `--continue`, not by
+tools exposed to the LLM.
 
 ## Mode-specific required tools
 
