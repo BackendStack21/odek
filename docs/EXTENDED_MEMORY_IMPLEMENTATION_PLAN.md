@@ -8,7 +8,7 @@ The first deliverable covers **P0, P1, and P2** from the reference design:
 
 - P0: Atom store + dedicated LLM wiring + trusted write path.
 - P1: Vector index + semantic recall (top-K, configurable).
-- P2: 100 MB size cap + `lru_decay` eviction + compaction.
+- P2: 100 MB size cap + `retention_decay` eviction + compaction.
 
 P3-P5 (user-state model, quarantine flow, predictive/proactive surfaces) are out of scope for the initial implementation but are designed in and have extension points reserved.
 
@@ -30,7 +30,7 @@ internal/memory/extended/
 ├── index.go                  # atomVectorIndex: go-vector wrapper
 ├── extractor.go              # per-turn atom extraction via memory LLM
 ├── recall.go                 # semantic search + ranking + budget
-├── eviction.go               # size cap + lru_decay policy
+├── eviction.go               # size cap + retention_decay policy
 ├── quarantine.go             # tainted atom storage (P0 stub, P4 full)
 ├── usermodel.go              # user-state model (P0 stub, P3 full)
 ├── associations.go           # atom linking (P0 stub, P3 full)
@@ -121,7 +121,7 @@ func DefaultExtendedConfig() ExtendedConfig {
         MemoryBudgetChars:      2000,
         DecayHalfLifeDays:      30,
         QuarantineTTLDays:      7,
-        EvictionPolicy:         "lru_decay",
+        EvictionPolicy:         "retention_decay",
         PredictiveIntents:      3,
         AutoExtractPerTurn:     boolPtr(true),
         InferUserState:         boolPtr(true),
@@ -339,11 +339,11 @@ if cfg.MemoryConfig.Extended != nil && cfg.MemoryConfig.Extended.LLM != nil {
 **Tasks:**
 
 1. Implement `Evictor` interface with `SelectForEviction(atoms []MemoryAtom, needBytes int64) []string`.
-2. Implement `lruDecayEvictor`:
+2. Implement `retentionDecayEvictor`:
    - Compute retention score for each atom.
    - Sort ascending.
    - Return IDs whose removal frees `needBytes`.
-3. Skip pinned atoms and atoms with `TrustBoost == 0` (quarantine handled separately).
+3. Skip pinned atoms and atoms with `trust_boost == 0` (quarantine handled separately).
 4. Call `AtomStore.Remove` for selected IDs and update `atomVectorIndex`.
 
 **Acceptance criteria:**

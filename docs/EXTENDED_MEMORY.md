@@ -49,7 +49,7 @@ The atom is the atomic unit of Extended Memory.
 
 ```go
 type MemoryAtom struct {
-    ID          string        // stable identifier
+    ID          string        // stable identifier, 128-bit random hex
     CreatedAt   time.Time     // UTC
     SourceClass string        // user_said | inferred | user_approved | tool_output | file_read | web | mcp | subagent | agent_generated
     Type        string        // preference | intent | fact | decision | goal | convention | file | error | question
@@ -57,8 +57,14 @@ type MemoryAtom struct {
     Context     AtomContext   // session, project, turn, related atom IDs
     Vector      []float32     // embedding of Text
     Confidence  float32       // 0.0 - 1.0
-    Decay       float32       // current recall weight multiplier
-    TrustBoost  float32       // user_said=1.0, inferred=0.8, user_approved=1.0, tainted=0.0
+    // Decay and TrustBoost are computed at recall/eviction time from CreatedAt and SourceClass.
+}
+
+type AtomContext struct {
+    SessionID      string   `json:"session_id"`      // originating session
+    Turn           int      `json:"turn"`            // turn within the session
+    Project        string   `json:"project"`         // working directory at creation
+    RelatedAtomIDs []string `json:"related_atoms"`   // semantic/temporal/task links
 }
 ```
 
@@ -100,7 +106,9 @@ All files are written atomically and use `0600` permissions. The vector store an
 
 Extended Memory can use its own LLM, separate from the main agent. This is ideal because memory work is a stream of small, structured tasks: atom extraction, user-state inference, and intent prediction. A 7B-14B local model is usually sufficient and costs orders of magnitude less than calling a large reasoning model every turn.
 
-If `memory.extended.llm` is omitted, the module **MUST** use the default global model. The default global model is the fully resolved main agent LLM after all config layers have been merged: top-level `model`, `base_url`, `api_key`, `thinking`, `max_tokens`, `temperature`, and `timeout` from `~/.odek/config.json`, `./odek.json`, `ODEK_*` environment variables, and CLI flags. Extended Memory does not read any of those values again; it reuses the exact `llm.Client` instance constructed for the main agent loop.
+If `memory.extended.llm` is omitted, the module **MUST** use the default global model. The default global model is the fully resolved main agent LLM after all config layers have been merged: top-level `model`, `base_url`, `api_key`, `thinking`, `max_tokens`, `temperature`, and `timeout` from `~/.odek/config.json`, `ODEK_*` environment variables, and CLI flags. Extended Memory does not read any of those values again; it reuses the exact `llm.Client` instance constructed for the main agent loop.
+
+If the default global model has reasoning/thinking enabled, memory extraction and reranking may be expensive. In that case the operator should configure a dedicated `memory.extended.llm` for cost isolation; a warning is emitted when thinking is enabled and no dedicated memory LLM is configured.
 
 ### Memory LLM Responsibilities
 
@@ -139,10 +147,11 @@ Output a JSON array of objects:
 
 Extracted atoms are immediately:
 
-1. Scanned for injection patterns and credential patterns.
-2. Assigned `source_class: user_said`.
-3. Embedded and written to the atom store.
-4. Checked against the 100 MB size cap; low-retention atoms are evicted if needed.
+1. Wrapped untrusted content (`<untrusted_content_*>`) is stripped from the user message before extraction.
+2. Scanned for injection patterns and credential patterns.
+3. Assigned `source_class: user_said`.
+4. Embedded and written to the atom store.
+5. Checked against the 100 MB size cap; low-retention atoms are evicted if needed.
 
 ## Semantic Search
 
@@ -167,7 +176,6 @@ Candidate atoms are scored by a composite function before injection into the sys
 score = cosine_similarity(query_vector, atom_vector)
         * confidence
         * decay_factor
-        * reference_count_boost
         * trust_boost
 
 decay_factor = 0.5 ^ (age_days / decay_half_life_days)
@@ -244,7 +252,7 @@ Promotion commands move an atom from `quarantine.json` to `atoms.json` and recla
 
 ## Size Cap and Eviction
 
-Extended Memory enforces a hard disk budget. The default is 100 MB and is configurable via `max_size_mb`.
+Extended Memory enforces a hard disk budget. The default is 100 MB and is configurable via `max_size_mb`. The cap applies only to the `extended/` directory; existing `facts/` and `episodes/` keep their own lifecycle controls and are not counted.
 
 ### Storage Budget at 100 MB
 
@@ -260,17 +268,20 @@ At `atom_max_chars: 300`, this holds roughly 16,000-18,000 atoms.
 
 ### Eviction Policy
 
-The default policy is `lru_decay`. When a write would exceed `max_size_mb`, the module evicts atoms with the lowest retention score until the budget is met.
+The default policy is `retention_decay`. When a write would exceed `max_size_mb`, the module evicts atoms with the lowest retention score until the budget is met.
 
 ```
 retention_score = confidence
                   * decay_factor
-                  * reference_count
                   * trust_boost
                   * pin_boost
 
 pin_boost = infinity for pinned atoms, 1.0 otherwise
 decay_factor = 0.5 ^ (age_days / decay_half_life_days)
+
+trust_boost  = 1.0 for user_said and user_approved
+             = 0.8 for inferred
+             = 0.0 for tainted
 ```
 
 Eviction order:
@@ -301,7 +312,7 @@ Extended Memory is configured under the `memory.extended` section.
       "memory_budget_chars": 2000,
       "decay_half_life_days": 30,
       "quarantine_ttl_days": 7,
-      "eviction_policy": "lru_decay",
+      "eviction_policy": "retention_decay",
       "predictive_intents": 3,
       "auto_extract_per_turn": true,
       "infer_user_state": true,
@@ -337,13 +348,13 @@ Extended Memory is configured under the `memory.extended` section.
 | `semantic_search_rerank` | `true` | Use the memory LLM to rerank candidates. |
 | `atom_max_chars` | `300` | Maximum stored text length per atom. |
 | `memory_budget_chars` | `2000` | Maximum injected memory context per turn. |
-| `decay_half_life_days` | `30` | Days until an unreferenced atom's recall weight halves. |
+| `decay_half_life_days` | `30` | Days until an atom's recall/eviction weight halves, based on creation age. |
 | `quarantine_ttl_days` | `7` | Days before a tainted atom is auto-deleted. |
-| `eviction_policy` | `"lru_decay"` | Eviction algorithm. `"lru_decay"` is the only supported policy initially. |
+| `eviction_policy` | `"retention_decay"` | Eviction algorithm. `"retention_decay"` scores atoms by confidence, age-based decay, and trust; lowest scores are evicted first. |
 | `predictive_intents` | `3` | Number of follow-up intents to predict per turn. |
 | `auto_extract_per_turn` | `true` | Extract atoms after every user message. |
 | `infer_user_state` | `true` | Update the user model in the background. |
-| `llm` | omitted | Dedicated memory LLM config. **If omitted, the default global model is used.** |
+| `llm` | omitted | Dedicated memory LLM config. **If omitted, the default global model is used.** A warning is emitted if that model has thinking enabled. |
 | `embedding` | omitted | Dedicated embedding backend. If omitted, uses the shared `embedding` config. |
 
 ## CLI and Tool Surface
@@ -428,7 +439,7 @@ This runs memory extraction, prediction, and embedding locally while the main ag
 |---|---|
 | **P0 — Atom store and dedicated LLM** | Config schema, dedicated `llm.Client` wiring, atom schema, per-turn extraction, trusted write path, `memory` tool extensions. |
 | **P1 — Vector index and semantic recall** | go-vector store over atoms, top-K semantic search, provenance filtering, min-score gate, optional LLM rerank. |
-| **P2 — Size enforcement** | 100 MB cap tracking, `lru_decay` eviction, background compaction. |
+| **P2 — Size enforcement** | 100 MB cap tracking, `retention_decay` eviction, background compaction. |
 | **P3 — User-state model** | Background inference of `user_model.json`, pending-review queue, user correction flow. |
 | **P4 — Quarantine and promotion** | Tainted atom quarantine, inline promotion commands, `quarantine_ttl_days`. |
 | **P5 — Predictive and proactive surfaces** | Predicted-intent recall, return-after-break summary, anaphora resolution, style mirroring. |
