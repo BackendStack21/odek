@@ -100,7 +100,7 @@ All files are written atomically and use `0600` permissions. The vector store an
 
 Extended Memory can use its own LLM, separate from the main agent. This is ideal because memory work is a stream of small, structured tasks: atom extraction, user-state inference, and intent prediction. A 7B-14B local model is usually sufficient and costs orders of magnitude less than calling a large reasoning model every turn.
 
-If `memory.extended.llm` is omitted, the module falls back to the main agent LLM.
+If `memory.extended.llm` is omitted, the module **MUST** use the default global model. The default global model is the fully resolved main agent LLM after all config layers have been merged: top-level `model`, `base_url`, `api_key`, `thinking`, `max_tokens`, `temperature`, and `timeout` from `~/.odek/config.json`, `./odek.json`, `ODEK_*` environment variables, and CLI flags. Extended Memory does not read any of those values again; it reuses the exact `llm.Client` instance constructed for the main agent loop.
 
 ### Memory LLM Responsibilities
 
@@ -343,7 +343,7 @@ Extended Memory is configured under the `memory.extended` section.
 | `predictive_intents` | `3` | Number of follow-up intents to predict per turn. |
 | `auto_extract_per_turn` | `true` | Extract atoms after every user message. |
 | `infer_user_state` | `true` | Update the user model in the background. |
-| `llm` | omitted | Dedicated memory LLM config. If omitted, uses the main agent LLM. |
+| `llm` | omitted | Dedicated memory LLM config. **If omitted, the default global model is used.** |
 | `embedding` | omitted | Dedicated embedding backend. If omitted, uses the shared `embedding` config. |
 
 ## CLI and Tool Surface
