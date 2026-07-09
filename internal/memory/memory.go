@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BackendStack21/odek/internal/memory/extended"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -102,6 +103,12 @@ type MemoryConfig struct {
 	// See EmbeddingConfig for the "http" provider that enables real
 	// semantic similarity via any OpenAI-compatible embeddings API.
 	Embedding *EmbeddingConfig `json:"embedding,omitempty"`
+
+	// Extended configures the Extended Memory subsystem (atomic facts/
+	// observations extracted from user messages and recalled via semantic
+	// search). nil means "use subsystem defaults"; the subsystem is opt-in
+	// and invisible when Extended.Enabled is false.
+	Extended *extended.Config `json:"extended,omitempty"`
 }
 
 // BoolPtr returns a pointer to a bool value.
@@ -131,6 +138,7 @@ func DefaultMemoryConfig() MemoryConfig {
 		EpisodeDedupThreshold: defaultEpisodeDedupThreshold,
 		MaxEpisodes:           defaultMaxEpisodes,
 		EpisodeTTLDays:        0, // TTL disabled by default
+		Extended:              nil,
 	}
 }
 
@@ -150,6 +158,13 @@ type MemoryManager struct {
 	merge    *MergeDetector
 	llm      LLMClient
 	cfg      MemoryConfig
+	extended *extended.ExtendedMemory
+
+	// extendedContext caches the current session context for user-message
+	// extraction callbacks that arrive without explicit provenance.
+	extSessionID string
+	extProject   string
+	extTurn      int
 
 	// notifier receives memory lifecycle events (facts + episodes). Defaults to
 	// a NoopMemoryNotifier so the fire path is always safe without a nil check.
@@ -230,6 +245,9 @@ func NewMemoryManager(memoryDir string, llc LLMClient, cfg MemoryConfig) *Memory
 	if cfg.Embedding != nil {
 		def.Embedding = cfg.Embedding
 	}
+	if cfg.Extended != nil {
+		def.Extended = cfg.Extended
+	}
 	cfg = def
 
 	factsDir := memoryDir
@@ -279,6 +297,76 @@ func (m *MemoryManager) SetNotifier(n MemoryNotifier) {
 	if m.episodes != nil {
 		m.episodes.SetNotifier(n)
 	}
+}
+
+// InitExtended creates the Extended Memory subsystem using the provided
+// dedicated memory LLM client. It is safe to call multiple times; subsequent
+// calls are ignored. Callers should invoke this after NewMemoryManager once
+// the memory LLM has been resolved.
+func (m *MemoryManager) InitExtended(memoryLLM extended.LLMClient, memoryDir string) {
+	if m.extended != nil {
+		return
+	}
+	if m.cfg.Extended == nil {
+		m.cfg.Extended = &extended.Config{}
+	}
+	cfg := extended.Resolve(*m.cfg.Extended)
+	if cfg.Embedding == nil && m.cfg.Embedding != nil {
+		cfg.Embedding = m.cfg.Embedding
+	}
+	if memoryDir == "" {
+		memoryDir = m.facts.dir
+	}
+	extDir := filepath.Join(memoryDir, "extended")
+	m.extended = extended.New(extDir, memoryLLM, cfg)
+}
+
+// OnUserMessage routes a user message to Extended Memory for atom extraction.
+func (m *MemoryManager) OnUserMessage(ctx extended.AtomContext, msg string) {
+	if m.extended == nil {
+		return
+	}
+	m.extended.OnUserMessage(ctx, msg)
+}
+
+// FormatExtendedContext returns ranked Extended Memory context for the query.
+func (m *MemoryManager) FormatExtendedContext(query string) string {
+	if m.extended == nil {
+		return ""
+	}
+	return m.extended.FormatExtendedContext(query)
+}
+
+// SetSessionContext propagates session/project identifiers to all memory tiers
+// that need them (currently Extended Memory).
+func (m *MemoryManager) SetSessionContext(sessionID, project string) {
+	m.extSessionID = sessionID
+	m.extProject = project
+	if m.extended != nil {
+		m.extended.SetSessionContext(sessionID, project)
+	}
+}
+
+// OnUserMessageLoop routes a user message to Extended Memory using the
+// session context previously set via SetSessionContext. It is the callback
+// used by the agent loop to trigger atom extraction when a new user message
+// arrives.
+func (m *MemoryManager) OnUserMessageLoop(msg string) {
+	if m.extended == nil {
+		return
+	}
+	m.extTurn++
+	ctx := extended.AtomContext{
+		SessionID: m.extSessionID,
+		Project:   m.extProject,
+		Turn:      m.extTurn,
+	}
+	m.extended.OnUserMessage(ctx, msg)
+}
+
+// Extended returns the Extended Memory subsystem, or nil if not initialized.
+func (m *MemoryManager) Extended() *extended.ExtendedMemory {
+	return m.extended
 }
 
 // notify fires an event on the configured notifier, stamping the UTC timestamp

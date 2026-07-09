@@ -31,6 +31,7 @@ import (
 	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/memory"
+	"github.com/BackendStack21/odek/internal/memory/extended"
 	"github.com/BackendStack21/odek/internal/narrate"
 	"github.com/BackendStack21/odek/internal/render"
 	"github.com/BackendStack21/odek/internal/skills"
@@ -519,6 +520,15 @@ func New(cfg Config) (*Agent, error) {
 	}
 	memoryManager := memory.NewMemoryManager(memoryDir, client, cfg.MemoryConfig)
 
+	// Resolve a dedicated LLM for Extended Memory. Falls back to the main agent
+	// LLM when not configured; warns if the main model has thinking enabled
+	// because reasoning tokens are wasted on memory-only calls.
+	var memoryLLM extended.LLMClient = client
+	if cfg.MemoryConfig.Extended != nil {
+		memoryLLM = extended.ResolveLLM(*cfg.MemoryConfig.Extended, client, cfg.Thinking)
+	}
+	memoryManager.InitExtended(memoryLLM, memoryDir)
+
 	// Wire memory lifecycle observability: fan out events to the programmatic
 	// handler (WebUI/Telegram/embedders) and the terminal renderer. Mirrors the
 	// skills notifier pattern so memory activity is no longer silent.
@@ -648,6 +658,24 @@ func New(cfg Config) (*Agent, error) {
 	// Only active when memory is enabled.
 	engine.SetEpisodeContextFunc(func(userInput string) string {
 		return memoryManager.FormatEpisodeContext(userInput)
+	})
+
+	// Wire per-turn Extended Memory search. Injected after the legacy memory
+	// prompt block so recent facts/buffer take precedence.
+	engine.SetExtendedMemoryContextFunc(func(userInput string) string {
+		return memoryManager.FormatExtendedContext(userInput)
+	})
+
+	// Notify memory manager when a new user message arrives so Extended Memory
+	// can extract atomic facts/preferences.
+	engine.SetUserMessageHandler(func(msg string) {
+		memoryManager.OnUserMessageLoop(msg)
+	})
+
+	// Wire per-turn Extended Memory search. Injected after the legacy memory
+	// prompt block so recent facts/buffer take precedence.
+	engine.SetExtendedMemoryContextFunc(func(userInput string) string {
+		return memoryManager.FormatExtendedContext(userInput)
 	})
 
 	agent.engine = engine
