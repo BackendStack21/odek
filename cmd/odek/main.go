@@ -272,6 +272,12 @@ type runFlags struct {
 	SandboxUser     string // Container user (e.g. "1000:1000")
 	SandboxReadonly *bool  // nil = not set; true = read-only mount
 
+	// Extended memory subsystem CLI overrides.
+	MemoryExtendedEnabled         *bool // nil = not set
+	MemoryExtendedMaxSizeMB       int   // 0 = not set
+	MemoryExtendedAtomMaxChars    int   // 0 = not set
+	MemoryExtendedMemoryBudgetChars int // 0 = not set
+
 	Deliver *bool // nil = not set; true = deliver result to default channel
 }
 
@@ -403,6 +409,27 @@ func parseRunFlags(args []string) (runFlags, error) {
 			}
 			f.Ctx = strings.Split(args[i+1], ",")
 			i += 2
+		case "--memory-extended-enabled":
+			f.MemoryExtendedEnabled = boolPtr(true)
+			i++
+		case "--memory-extended-max-size-mb":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--memory-extended-max-size-mb requires a value")
+			}
+			fmt.Sscanf(args[i+1], "%d", &f.MemoryExtendedMaxSizeMB)
+			i += 2
+		case "--memory-extended-atom-max-chars":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--memory-extended-atom-max-chars requires a value")
+			}
+			fmt.Sscanf(args[i+1], "%d", &f.MemoryExtendedAtomMaxChars)
+			i += 2
+		case "--memory-extended-memory-budget-chars":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--memory-extended-memory-budget-chars requires a value")
+			}
+			fmt.Sscanf(args[i+1], "%d", &f.MemoryExtendedMemoryBudgetChars)
+			i += 2
 		case "--deliver":
 			f.Deliver = boolPtr(true)
 			i++
@@ -452,6 +479,10 @@ done:
 			j--
 		case "--sandbox-readonly":
 			f.SandboxReadonly = boolPtr(true)
+			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+			j--
+		case "--memory-extended-enabled":
+			f.MemoryExtendedEnabled = boolPtr(true)
 			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
 			j--
 		}
@@ -646,6 +677,12 @@ Sandbox flags:
   --sandbox-cpus <n>   CPU limit (e.g. 0.5, 2, 4)
   --sandbox-user <s>   Run as user (uid:gid or name)
 
+Extended memory flags:
+  --memory-extended-enabled                 Enable Extended Memory (opt-in)
+  --memory-extended-max-size-mb <n>         Max on-disk size in MiB (default: 100)
+  --memory-extended-atom-max-chars <n>      Max chars per atom (default: 300)
+  --memory-extended-memory-budget-chars <n> Max chars injected into prompt (default: 2000)
+
 Config sources (lowest to highest priority):
   ~/.odek/config.json   Global defaults (shared across projects)
   ./odek.json          Project-level overrides
@@ -669,7 +706,11 @@ Environment variables:
   ODEK_SANDBOX_READONLY true/false — mount read-only
   ODEK_SANDBOX_MEMORY  Memory limit (e.g. 512m, 2g)
   ODEK_SANDBOX_CPUS    CPU limit (e.g. 0.5, 2)
-  ODEK_SANDBOX_USER    Container user (uid:gid or name)`)
+  ODEK_SANDBOX_USER    Container user (uid:gid or name)
+  ODEK_MEMORY_EXTENDED_ENABLED                 true/false — enable Extended Memory
+  ODEK_MEMORY_EXTENDED_MAX_SIZE_MB             Max on-disk size in MiB
+  ODEK_MEMORY_EXTENDED_ATOM_MAX_CHARS          Max chars per atom
+  ODEK_MEMORY_EXTENDED_MEMORY_BUDGET_CHARS     Max chars injected into prompt`)
 }
 
 // ── Init ──────────────────────────────────────────────────────────────
@@ -867,6 +908,11 @@ func run(args []string) error {
 		SandboxMemory:   f.SandboxMemory,
 		SandboxCPUs:     f.SandboxCPUs,
 		SandboxUser:     f.SandboxUser,
+
+		MemoryExtendedEnabled:         f.MemoryExtendedEnabled,
+		MemoryExtendedMaxSizeMB:       f.MemoryExtendedMaxSizeMB,
+		MemoryExtendedAtomMaxChars:    f.MemoryExtendedAtomMaxChars,
+		MemoryExtendedMemoryBudgetChars: f.MemoryExtendedMemoryBudgetChars,
 	})
 
 	// Resolve @references and --ctx file attachments in the task
@@ -1048,6 +1094,11 @@ func run(args []string) error {
 			}
 			store.Save(sess)
 			fmt.Fprintf(os.Stderr, "odek: session %s saved — continue with: odek continue \"...\"\n", sess.ID)
+			// Tag any atoms extracted during this run with the session ID so
+			// future review can trace their origin.
+			if mm := agent.Memory(); mm != nil {
+				mm.SetSessionContext(sess.ID, "")
+			}
 		}
 	} else {
 		// Single-shot mode (default)
@@ -1930,6 +1981,12 @@ func continueCmd(args []string) error {
 	// Restore buffer from session
 	if mm := agent.Memory(); mm != nil && len(sess.Buffer) > 0 {
 		mm.RestoreBuffer(sess.Buffer)
+	}
+
+	// Propagate session context to Extended Memory so extracted atoms are
+	// tagged with the session they came from.
+	if mm := agent.Memory(); mm != nil {
+		mm.SetSessionContext(sess.ID, "")
 	}
 
 	// Build message history: session messages + new user message

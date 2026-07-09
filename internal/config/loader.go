@@ -27,6 +27,7 @@ import (
 	"github.com/BackendStack21/odek/internal/embedding"
 	"github.com/BackendStack21/odek/internal/mcpclient"
 	"github.com/BackendStack21/odek/internal/memory"
+	"github.com/BackendStack21/odek/internal/memory/extended"
 	"github.com/BackendStack21/odek/internal/redact"
 	"github.com/BackendStack21/odek/internal/skills"
 	"github.com/BackendStack21/odek/internal/telegram"
@@ -83,6 +84,12 @@ type CLIFlags struct {
 	// "verbose" = raw tool names, args, and results.
 	// "off" = no intermediate progress output, clean answer only.
 	InteractionMode string
+
+	// Extended memory subsystem CLI overrides.
+	MemoryExtendedEnabled         *bool // nil = not set
+	MemoryExtendedMaxSizeMB       int   // 0 = not set
+	MemoryExtendedAtomMaxChars    int   // 0 = not set
+	MemoryExtendedMemoryBudgetChars int // 0 = not set
 }
 
 // SkillsConfig holds the skills configuration section from JSON files.
@@ -627,6 +634,14 @@ func envStringList(key string) []string {
 	return out
 }
 
+// ensureExtended returns a non-nil *extended.Config, allocating one if needed.
+func ensureExtended(cfg *extended.Config) *extended.Config {
+	if cfg == nil {
+		return &extended.Config{}
+	}
+	return cfg
+}
+
 // envScheduleDangerousConfig parses ODEK_SCHEDULES_DANGEROUS_* env vars into a
 // DangerousConfig. Returns nil if none are set.
 func envScheduleDangerousConfig(prefix string) *danger.DangerousConfig {
@@ -872,6 +887,36 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		cfg.InteractionMode = v
 	}
 
+	// Extended memory env overrides
+	if v := envBool("MEMORY_EXTENDED_ENABLED"); v != nil {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.Enabled = v
+	}
+	if v := envInt("MEMORY_EXTENDED_MAX_SIZE_MB"); v > 0 {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.MaxSizeMB = v
+	}
+	if v := envInt("MEMORY_EXTENDED_ATOM_MAX_CHARS"); v > 0 {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.AtomMaxChars = v
+	}
+	if v := envInt("MEMORY_EXTENDED_MEMORY_BUDGET_CHARS"); v > 0 {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.MemoryBudgetChars = v
+	}
+
 	// Schedules env overrides (ODEK_SCHEDULES_*): lets the scheduler be tuned
 	// from the environment, like everything else in a containerised deploy.
 	// Allocate once — an all-zero SchedulesConfig resolves identically to nil.
@@ -982,6 +1027,34 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	}
 	if cli.InteractionMode != "" {
 		cfg.InteractionMode = cli.InteractionMode
+	}
+	if cli.MemoryExtendedEnabled != nil {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.Enabled = cli.MemoryExtendedEnabled
+	}
+	if cli.MemoryExtendedMaxSizeMB > 0 {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.MaxSizeMB = cli.MemoryExtendedMaxSizeMB
+	}
+	if cli.MemoryExtendedAtomMaxChars > 0 {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.AtomMaxChars = cli.MemoryExtendedAtomMaxChars
+	}
+	if cli.MemoryExtendedMemoryBudgetChars > 0 {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.MemoryBudgetChars = cli.MemoryExtendedMemoryBudgetChars
 	}
 	if len(cli.ToolsEnabled) > 0 {
 		if cfg.Tools == nil {
@@ -1291,6 +1364,10 @@ func resolveMemory(cfg *memory.MemoryConfig) memory.MemoryConfig {
 	}
 	if cfg.Embedding != nil {
 		def.Embedding = cfg.Embedding
+	}
+	if cfg.Extended != nil {
+		resolved := extended.Resolve(*cfg.Extended)
+		def.Extended = &resolved
 	}
 	return def
 }

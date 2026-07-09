@@ -2,8 +2,13 @@ package memory
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/BackendStack21/go-vector/pkg/vector"
+	"github.com/BackendStack21/odek/internal/embedding"
+	"github.com/BackendStack21/odek/internal/memory/extended"
 )
 
 func TestMemoryToolName(t *testing.T) {
@@ -312,3 +317,94 @@ func TestMergeEntriesWithLLM(t *testing.T) {
 		t.Errorf("mergeEntries nil LLM = %q, want 'A. B'", got3)
 	}
 }
+
+func TestMemoryToolAddAtom(t *testing.T) {
+	cfg := DefaultMemoryConfig()
+	cfg.Extended = &extended.Config{Enabled: boolPtr(true)}
+	mm := NewMemoryManager(t.TempDir(), nil, cfg)
+	mm.InitExtended(nil, t.TempDir())
+	tool := NewMemoryTool(mm)
+
+	result, err := tool.Call(`{"action":"add_atom","content":"User prefers Go","atom_type":"preference","confidence":0.9}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "true") {
+		t.Errorf("expected success, got %q", result)
+	}
+	atoms, _ := mm.extended.List()
+	if len(atoms) != 1 {
+		t.Fatalf("expected 1 atom, got %d", len(atoms))
+	}
+	if atoms[0].SourceClass != extended.SourceUserApproved {
+		t.Errorf("source class = %q, want %q", atoms[0].SourceClass, extended.SourceUserApproved)
+	}
+}
+
+func TestMemoryToolSearchAndForgetAtom(t *testing.T) {
+	cfg := DefaultMemoryConfig()
+	cfg.Extended = &extended.Config{
+		Enabled:                boolPtr(true),
+		SemanticSearchMinScore: 0.0,
+	}
+	mm := NewMemoryManager(t.TempDir(), nil, cfg)
+	mm.InitExtended(nil, t.TempDir())
+	mm.extended.SetEmbedderFactory(func() embedding.TextEmbedder { return newTestEmbedder(256) })
+	mm.extended.SetEmbedder(newTestEmbedder(256))
+	mm.extended.MarkDirty()
+	tool := NewMemoryTool(mm)
+
+	mm.extended.AddAtom(nil, extended.MemoryAtom{Text: "Project uses Postgres", SourceClass: extended.SourceUserApproved, Type: extended.TypeFact})
+
+	result, err := tool.Call(`{"action":"search_atoms","query":"Postgres"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "Postgres") {
+		t.Errorf("expected Postgres in result, got %q", result)
+	}
+
+	atoms, _ := mm.extended.List()
+	id := atoms[0].ID
+	result, err = tool.Call(`{"action":"forget_atom","atom_id":"` + id + `"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "true") {
+		t.Errorf("expected success, got %q", result)
+	}
+	atoms, _ = mm.extended.List()
+	if len(atoms) != 0 {
+		t.Errorf("expected 0 atoms after forget, got %d", len(atoms))
+	}
+}
+
+// testEmbedder is a tiny deterministic embedding backend for tests.
+type testEmbedder struct {
+	dims int
+}
+
+func newTestEmbedder(dims int) *testEmbedder { return &testEmbedder{dims: dims} }
+func (e *testEmbedder) Fit(corpus []string) error { return nil }
+func (e *testEmbedder) Embed(text string) (vector.Vector, error) {
+	vec := make(vector.Vector, e.dims)
+	for _, c := range strings.ToLower(text) {
+		idx := int(c) % e.dims
+		vec[idx] += 1.0
+	}
+	return vec, nil
+}
+func (e *testEmbedder) EmbedAll(texts []string) ([]vector.Vector, error) {
+	out := make([]vector.Vector, len(texts))
+	for i, t := range texts {
+		vec, err := e.Embed(t)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = vec
+	}
+	return out, nil
+}
+func (e *testEmbedder) Fingerprint() string { return fmt.Sprintf("test/%d", e.dims) }
+func (e *testEmbedder) SaveState(path string) {}
+func (e *testEmbedder) LoadState(path string) bool { return false }

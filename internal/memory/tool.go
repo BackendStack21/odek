@@ -1,10 +1,12 @@
 package memory
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 
+	"github.com/BackendStack21/odek/internal/memory/extended"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -15,7 +17,7 @@ var memoryToolSchema = map[string]any{
 	"properties": map[string]any{
 		"action": map[string]any{
 			"type":        "string",
-			"enum":        []string{"add", "replace", "remove", "consolidate", "read", "search", "view"},
+			"enum":        []string{"add", "replace", "remove", "consolidate", "read", "search", "view", "add_atom", "search_atoms", "forget_atom"},
 			"description": "What to do with memory",
 		},
 		"target": map[string]any{
@@ -25,7 +27,7 @@ var memoryToolSchema = map[string]any{
 		},
 		"content": map[string]any{
 			"type":        "string",
-			"description": "The entry content (for add/replace)",
+			"description": "The entry content (for add/replace/add_atom)",
 		},
 		"old_text": map[string]any{
 			"type":        "string",
@@ -33,7 +35,20 @@ var memoryToolSchema = map[string]any{
 		},
 		"query": map[string]any{
 			"type":        "string",
-			"description": "Search query for episode recall (for search)",
+			"description": "Search query for episode recall (for search) or atom search (for search_atoms)",
+		},
+		"atom_id": map[string]any{
+			"type":        "string",
+			"description": "Atom ID (for forget_atom)",
+		},
+		"atom_type": map[string]any{
+			"type":        "string",
+			"enum":        []string{"fact", "observation", "preference", "intent"},
+			"description": "Atom type for add_atom (default: observation)",
+		},
+		"confidence": map[string]any{
+			"type":        "number",
+			"description": "Confidence 0.0-1.0 for add_atom (default: 1.0)",
 		},
 	},
 	"required": []string{"action"},
@@ -57,11 +72,14 @@ func (t *MemoryTool) Schema() any { return memoryToolSchema }
 
 func (t *MemoryTool) Call(args string) (string, error) {
 	var params struct {
-		Action  string `json:"action"`
-		Target  string `json:"target"`
-		Content string `json:"content"`
-		OldText string `json:"old_text"`
-		Query   string `json:"query"`
+		Action     string  `json:"action"`
+		Target     string  `json:"target"`
+		Content    string  `json:"content"`
+		OldText    string  `json:"old_text"`
+		Query      string  `json:"query"`
+		AtomID     string  `json:"atom_id"`
+		AtomType   string  `json:"atom_type"`
+		Confidence float32 `json:"confidence"`
 	}
 	if err := json.Unmarshal([]byte(args), &params); err != nil {
 		return errorJSON("invalid arguments: " + err.Error()), nil
@@ -82,6 +100,12 @@ func (t *MemoryTool) Call(args string) (string, error) {
 		return t.handleSearch(params.Query)
 	case "view":
 		return t.handleView(params.Target, params.Query)
+	case "add_atom":
+		return t.handleAddAtom(params.Content, params.AtomType, params.Confidence)
+	case "search_atoms":
+		return t.handleSearchAtoms(params.Query)
+	case "forget_atom":
+		return t.handleForgetAtom(params.AtomID)
 	default:
 		return errorJSON(fmt.Sprintf("unknown action: %q", params.Action)), nil
 	}
@@ -226,3 +250,71 @@ func truncate(s string, n int) string {
 	}
 	return s[:n-3] + "..."
 }
+
+func (t *MemoryTool) handleAddAtom(content, atomType string, confidence float32) (string, error) {
+	if content == "" {
+		return errorJSON("content is required for add_atom"), nil
+	}
+	if atomType == "" {
+		atomType = extended.TypeObservation
+	}
+	if !extended.ValidType(atomType) {
+		return errorJSON(fmt.Sprintf("invalid atom_type: %q", atomType)), nil
+	}
+	if confidence <= 0 || confidence > 1.0 {
+		confidence = 1.0
+	}
+	if t.manager.extended == nil {
+		return errorJSON("extended memory is not initialized or disabled"), nil
+	}
+	atom := extended.MemoryAtom{
+		Text:        content,
+		SourceClass: extended.SourceUserApproved,
+		Type:        atomType,
+		Confidence:  confidence,
+	}
+	if err := t.manager.extended.AddAtom(nilContext, atom); err != nil {
+		return errorJSON(err.Error()), nil
+	}
+	return successJSON(fmt.Sprintf("added atom: %s", truncate(content, 60))), nil
+}
+
+func (t *MemoryTool) handleSearchAtoms(query string) (string, error) {
+	if query == "" {
+		return errorJSON("query is required for search_atoms"), nil
+	}
+	if t.manager.extended == nil {
+		return errorJSON("extended memory is not initialized or disabled"), nil
+	}
+	atoms, err := t.manager.extended.SearchAtoms(nilContext, query)
+	if err != nil {
+		return errorJSON(err.Error()), nil
+	}
+	if len(atoms) == 0 {
+		return successJSON("no matching atoms found"), nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Found %d matching atom(s):\n\n", len(atoms))
+	for _, a := range atoms {
+		fmt.Fprintf(&b, "• [%s] %s (confidence %.2f, source %s)\n", a.Type, truncate(a.Text, 120), a.Confidence, a.SourceClass)
+	}
+	return successJSON(b.String()), nil
+}
+
+func (t *MemoryTool) handleForgetAtom(id string) (string, error) {
+	if id == "" {
+		return errorJSON("atom_id is required for forget_atom"), nil
+	}
+	if err := session.ValidateSessionID(id); err != nil {
+		return errorJSON("invalid atom_id: " + err.Error()), nil
+	}
+	if t.manager.extended == nil {
+		return errorJSON("extended memory is not initialized or disabled"), nil
+	}
+	if err := t.manager.extended.ForgetAtom(id); err != nil {
+		return errorJSON(err.Error()), nil
+	}
+	return successJSON(fmt.Sprintf("forgot atom %s", id)), nil
+}
+
+var nilContext = context.Background()
