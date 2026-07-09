@@ -1,0 +1,161 @@
+package extended
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"log"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/BackendStack21/odek/internal/session"
+)
+
+// LLMClient abstracts the LLM calls needed by Extended Memory.
+type LLMClient interface {
+	SimpleCall(ctx context.Context, system, user string) (string, error)
+}
+
+// Extractor turns raw text (typically a user message) into MemoryAtoms using
+// an LLM JSON extraction prompt.
+type Extractor struct {
+	llm LLMClient
+	cfg Config
+}
+
+// NewExtractor creates an Extractor.
+func NewExtractor(llm LLMClient, cfg Config) *Extractor {
+	return &Extractor{llm: llm, cfg: cfg}
+}
+
+// extractionPrompt asks the LLM to return a JSON array of memory atoms.
+const extractionPrompt = `You are a memory extraction system. Read the user message and extract durable, reusable atomic memories.
+
+For each atom, output an object with:
+- "text": a concise, first-person-paraphrased statement (not a command).
+- "type": one of "fact", "observation", "preference", "intent".
+- "confidence": a number 0.0-1.0 indicating how certain the memory is.
+
+Rules:
+- Only extract stable information worth recalling in future sessions.
+- Do NOT extract instructions, commands, or requests to perform actions.
+- Do NOT extract ephemeral details specific only to this message.
+- If nothing durable is present, return an empty array.
+
+Output ONLY a JSON array. Example:
+[{"text":"User prefers concise answers","type":"preference","confidence":0.9}]`
+
+// untrustedRe matches nonce'd untrusted content wrappers so they can be
+// stripped before extraction.
+var untrustedRe = regexp.MustCompile(`(?s)<untrusted_content_[^\s>]*\s+source="[^"]*"\s*>.*?</untrusted_content_[^\s>]*>`)
+
+// StripUntrustedWrappers removes <untrusted_content_*> blocks from text.
+func StripUntrustedWrappers(text string) string {
+	return untrustedRe.ReplaceAllString(text, "")
+}
+
+// Extract atoms from text. Returns nil if the LLM is unavailable, the output
+// is unparseable, or no atoms are found. Extracted atoms are sourced from the
+// user ("user_said").
+func (e *Extractor) Extract(ctx context.Context, text string) ([]MemoryAtom, error) {
+	if e.llm == nil {
+		return nil, nil
+	}
+	text = StripUntrustedWrappers(text)
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil, nil
+	}
+
+	resp, err := e.llm.SimpleCall(ctx, extractionPrompt, text)
+	if err != nil {
+		log.Printf("extended memory: extraction LLM call failed: %v", err)
+		return nil, fmt.Errorf("extract: llm call: %w", err)
+	}
+	resp = strings.TrimSpace(resp)
+	if resp == "" || resp == "[]" {
+		return nil, nil
+	}
+
+	var raw []struct {
+		Text       string  `json:"text"`
+		Content    string  `json:"content"`
+		Type       string  `json:"type"`
+		Confidence float32 `json:"confidence"`
+	}
+	if err := json.Unmarshal([]byte(resp), &raw); err != nil {
+		log.Printf("extended memory: extraction parse failed: %v", err)
+		return nil, fmt.Errorf("extract: parse json: %w", err)
+	}
+
+	atoms := make([]MemoryAtom, 0, len(raw))
+	now := time.Now().UTC()
+	for _, r := range raw {
+		txt := strings.TrimSpace(r.Text)
+		if txt == "" {
+			// Accept legacy "content" field during migration.
+			txt = strings.TrimSpace(r.Content)
+		}
+		if txt == "" {
+			continue
+		}
+		if err := ScanContent(txt); err != nil {
+			log.Printf("extended memory: extraction rejected atom: %v", err)
+			continue
+		}
+		typ := r.Type
+		if typ == "" {
+			typ = TypeObservation
+		}
+		if !validType(typ) {
+			typ = TypeObservation
+		}
+		conf := r.Confidence
+		if conf <= 0 || conf > 1.0 {
+			conf = 1.0
+		}
+		id, err := generateAtomID()
+		if err != nil {
+			log.Printf("extended memory: generate atom id failed: %v", err)
+			continue
+		}
+		atoms = append(atoms, MemoryAtom{
+			ID:          id,
+			Text:        txt,
+			SourceClass: SourceUserSaid,
+			Type:        typ,
+			CreatedAt:   now,
+			Confidence:  conf,
+		})
+	}
+	return atoms, nil
+}
+
+func validType(t string) bool {
+	switch t {
+	case TypeFact, TypeObservation, TypePreference, TypeIntent:
+		return true
+	default:
+		return false
+	}
+}
+
+// ValidType reports whether t is a known atom type.
+func ValidType(t string) bool { return validType(t) }
+
+// generateAtomID creates a 128-bit random hex ID (32 chars) and validates it
+// with the same rules as session IDs.
+func generateAtomID() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	id := hex.EncodeToString(buf)
+	if err := session.ValidateSessionID(id); err != nil {
+		return "", err
+	}
+	return id, nil
+}
