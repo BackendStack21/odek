@@ -113,6 +113,7 @@ type Engine struct {
 	skillLoader      SkillLoader              // optional: loads matching skills
 	lastSkillMsg     string                   // last user message that triggered skill loading (dedup)
 	lastEpiMsg       string                   // last user message that triggered episode search (dedup)
+	lastExtMsg       string                   // last user message that triggered extended memory search (dedup)
 	lastUserMsg      string                   // last user message passed to userMsgHandler (dedup)
 	skillVerbose     bool                     // show full skill banners (default: condensed)
 	episodeCtx       EpisodeContextFunc       // optional: per-turn episode search
@@ -762,10 +763,10 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		}
 
 		// Inject Extended Memory context after the legacy memory prompt block.
-		// We use the same dedup key as episode search so we only run once per
-		// new user message.
+		// Uses a dedicated dedup key so repeated queries do not suppress new
+		// user messages.
 		if e.extendedCtx != nil {
-			if userMsg := lastUserMessage(messages); userMsg != "" && userMsg != e.lastEpiMsg {
+			if userMsg := lastUserMessage(messages); userMsg != "" && userMsg != e.lastExtMsg {
 				if extContext := e.extendedCtx(userMsg); extContext != "" {
 					wrapped := extContext
 					if e.wrapUntrusted != nil {
@@ -788,6 +789,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 					newMsgs = append(newMsgs, messages[insertIdx:]...)
 					messages = newMsgs
 				}
+				e.lastExtMsg = userMsg
 			}
 		}
 

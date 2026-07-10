@@ -3,6 +3,7 @@ package extended
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 
@@ -83,9 +84,17 @@ func (e *mockEmbedder) EmbedAll(texts []string) ([]vector.Vector, error) {
 
 func (e *mockEmbedder) Fingerprint() string { return fmt.Sprintf("mock/%d", e.dims) }
 
-func (e *mockEmbedder) SaveState(path string) {}
+func (e *mockEmbedder) SaveState(path string) {
+	_ = os.WriteFile(path, []byte(e.Fingerprint()), 0600)
+}
 
-func (e *mockEmbedder) LoadState(path string) bool { return false }
+func (e *mockEmbedder) LoadState(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	return string(data) == e.Fingerprint()
+}
 
 func (e *mockEmbedder) cacheSize() int {
 	e.mu.Lock()

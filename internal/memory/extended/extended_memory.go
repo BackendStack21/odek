@@ -45,7 +45,7 @@ func New(dir string, llm LLMClient, cfg Config) *ExtendedMemory {
 	index := newAtomVectorIndex(dir, newEmb, func() ([]MemoryAtom, error) {
 		return store.List()
 	})
-	return &ExtendedMemory{
+	em := &ExtendedMemory{
 		cfg:        cfg,
 		dir:        dir,
 		store:      store,
@@ -58,6 +58,13 @@ func New(dir string, llm LLMClient, cfg Config) *ExtendedMemory {
 		assoc:      NewAssociations(),
 		llm:        llm,
 	}
+	em.quarantine.SetTTLDays(cfg.QuarantineTTLDays)
+	if removed, err := em.quarantine.EvictExpired(cfg.QuarantineTTLDays); err != nil {
+		log.Printf("extended memory: startup quarantine eviction failed: %v", err)
+	} else if removed > 0 {
+		log.Printf("extended memory: evicted %d expired quarantined atom(s) at startup", removed)
+	}
+	return em
 }
 
 // Enabled reports whether Extended Memory is active.
@@ -78,7 +85,7 @@ func (em *ExtendedMemory) SetSessionContext(sessionID, project string) {
 
 // AddAtom manually adds an atom. Manual adds are treated as user-approved.
 func (em *ExtendedMemory) AddAtom(ctx context.Context, atom MemoryAtom) error {
-	if em == nil {
+	if em == nil || !em.Enabled() {
 		return fmt.Errorf("extended memory: disabled")
 	}
 	NormalizeAtom(&atom)
@@ -99,24 +106,27 @@ func (em *ExtendedMemory) AddAtom(ctx context.Context, atom MemoryAtom) error {
 	atom.Context.Project = em.project
 	em.mu.RUnlock()
 
+	// Security scan before persistence, regardless of trust boundary.
+	if err := ScanContent(atom.Text); err != nil {
+		return err
+	}
+
+	incoming := projectedAtomSize(atom)
+	if err := em.enforceCap(ctx, incoming); err != nil {
+		log.Printf("extended memory: cap enforcement failed: %v", err)
+		return err
+	}
+
 	// Tainted atoms go to quarantine instead of the live store.
 	if IsTaintedSourceClass(atom.SourceClass) {
 		if err := em.quarantine.Store(atom); err != nil {
 			log.Printf("extended memory: quarantine store failed: %v", err)
 			return err
 		}
-		em.enforceCap(ctx)
 		return nil
 	}
 
-	if err := ScanContent(atom.Text); err != nil {
-		return err
-	}
 	if err := em.ensureDir(); err != nil {
-		return err
-	}
-	if err := em.enforceCap(ctx); err != nil {
-		log.Printf("extended memory: cap enforcement failed: %v", err)
 		return err
 	}
 	if err := em.store.Add(atom, em.cfg.AtomMaxChars); err != nil {
@@ -128,10 +138,15 @@ func (em *ExtendedMemory) AddAtom(ctx context.Context, atom MemoryAtom) error {
 	return nil
 }
 
+// projectedAtomSize estimates the on-disk bytes this atom will consume.
+func projectedAtomSize(atom MemoryAtom) int64 {
+	return int64(len(atom.Text)) + 256
+}
+
 // AddAtoms adds multiple atoms in one call. It batches embeddings indirectly
 // by marking the index dirty once at the end.
 func (em *ExtendedMemory) AddAtoms(ctx context.Context, atoms []MemoryAtom) error {
-	if em == nil {
+	if em == nil || !em.Enabled() {
 		return fmt.Errorf("extended memory: disabled")
 	}
 	if len(atoms) == 0 {
@@ -161,7 +176,7 @@ func (em *ExtendedMemory) SearchAtoms(ctx context.Context, query string) ([]Memo
 
 // ForgetAtom removes an atom by ID from both the live store and quarantine.
 func (em *ExtendedMemory) ForgetAtom(id string) error {
-	if em == nil {
+	if em == nil || !em.Enabled() {
 		return fmt.Errorf("extended memory: disabled")
 	}
 	if err := em.store.Remove(id); err != nil {
@@ -170,6 +185,33 @@ func (em *ExtendedMemory) ForgetAtom(id string) error {
 	}
 	em.index.markDirty()
 	return nil
+}
+
+// PromoteAtom moves an atom from quarantine into the live store with
+// SourceUserApproved. This is the human-gated escape hatch for tainted atoms.
+func (em *ExtendedMemory) PromoteAtom(id string) error {
+	if em == nil || !em.Enabled() {
+		return fmt.Errorf("extended memory: disabled")
+	}
+	atom, err := em.quarantine.Promote(id)
+	if err != nil {
+		return err
+	}
+	atom.SourceClass = SourceUserApproved
+	if err := em.AddAtom(context.Background(), atom); err != nil {
+		return err
+	}
+	_ = em.quarantine.Forget(id)
+	em.index.markDirty()
+	return nil
+}
+
+// PinAtom pins a live atom by ID so it is never evicted.
+func (em *ExtendedMemory) PinAtom(id string) error {
+	if em == nil || !em.Enabled() {
+		return fmt.Errorf("extended memory: disabled")
+	}
+	return em.store.Pin(id, true)
 }
 
 // FormatExtendedContext returns formatted Extended Memory context for the
@@ -225,7 +267,7 @@ func (em *ExtendedMemory) OnUserMessage(ctx AtomContext, msg string) {
 }
 
 // enforceCap evicts atoms if adding newBytes would exceed max_size_mb.
-func (em *ExtendedMemory) enforceCap(ctx context.Context) error {
+func (em *ExtendedMemory) enforceCap(ctx context.Context, newBytes int64) error {
 	var maxBytes int64
 	if em.testCapBytes > 0 {
 		maxBytes = em.testCapBytes
@@ -254,7 +296,7 @@ func (em *ExtendedMemory) enforceCap(ctx context.Context) error {
 		quarantineSize = 0
 	}
 	indexSize := em.index.Size()
-	total := storeSize + quarantineSize + indexSize
+	total := storeSize + quarantineSize + indexSize + newBytes
 
 	if total <= maxBytes {
 		return nil

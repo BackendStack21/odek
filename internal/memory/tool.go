@@ -17,7 +17,7 @@ var memoryToolSchema = map[string]any{
 	"properties": map[string]any{
 		"action": map[string]any{
 			"type":        "string",
-			"enum":        []string{"add", "replace", "remove", "consolidate", "read", "search", "view", "add_atom", "search_atoms", "forget_atom"},
+			"enum":        []string{"add", "replace", "remove", "consolidate", "read", "search", "view", "add_atom", "search_atoms", "forget_atom", "list_quarantine", "pin_atom"},
 			"description": "What to do with memory",
 		},
 		"target": map[string]any{
@@ -39,12 +39,12 @@ var memoryToolSchema = map[string]any{
 		},
 		"atom_id": map[string]any{
 			"type":        "string",
-			"description": "Atom ID (for forget_atom)",
+			"description": "Atom ID (for forget_atom/pin_atom)",
 		},
 		"atom_type": map[string]any{
 			"type":        "string",
-			"enum":        []string{"fact", "observation", "preference", "intent"},
-			"description": "Atom type for add_atom (default: observation)",
+			"enum":        []string{"fact", "preference", "intent", "decision", "goal", "convention", "file", "error", "question"},
+			"description": "Atom type for add_atom (default: fact)",
 		},
 		"confidence": map[string]any{
 			"type":        "number",
@@ -106,6 +106,10 @@ func (t *MemoryTool) Call(args string) (string, error) {
 		return t.handleSearchAtoms(params.Query)
 	case "forget_atom":
 		return t.handleForgetAtom(params.AtomID)
+	case "list_quarantine":
+		return t.handleListQuarantine()
+	case "pin_atom":
+		return t.handlePinAtom(params.AtomID)
 	default:
 		return errorJSON(fmt.Sprintf("unknown action: %q", params.Action)), nil
 	}
@@ -256,7 +260,7 @@ func (t *MemoryTool) handleAddAtom(content, atomType string, confidence float32)
 		return errorJSON("content is required for add_atom"), nil
 	}
 	if atomType == "" {
-		atomType = extended.TypeObservation
+		atomType = extended.TypeFact
 	}
 	if !extended.ValidType(atomType) {
 		return errorJSON(fmt.Sprintf("invalid atom_type: %q", atomType)), nil
@@ -315,6 +319,41 @@ func (t *MemoryTool) handleForgetAtom(id string) (string, error) {
 		return errorJSON(err.Error()), nil
 	}
 	return successJSON(fmt.Sprintf("forgot atom %s", id)), nil
+}
+
+func (t *MemoryTool) handleListQuarantine() (string, error) {
+	if t.manager.extended == nil {
+		return errorJSON("extended memory is not initialized or disabled"), nil
+	}
+	atoms, err := t.manager.extended.ListQuarantine()
+	if err != nil {
+		return errorJSON(err.Error()), nil
+	}
+	if len(atoms) == 0 {
+		return successJSON("no atoms in quarantine"), nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d atom(s) in quarantine:\n\n", len(atoms))
+	for _, a := range atoms {
+		fmt.Fprintf(&b, "• %s [%s] %s\n", a.ID, a.SourceClass, truncate(a.Text, 120))
+	}
+	return successJSON(b.String()), nil
+}
+
+func (t *MemoryTool) handlePinAtom(id string) (string, error) {
+	if id == "" {
+		return errorJSON("atom_id is required for pin_atom"), nil
+	}
+	if err := session.ValidateSessionID(id); err != nil {
+		return errorJSON("invalid atom_id: " + err.Error()), nil
+	}
+	if t.manager.extended == nil {
+		return errorJSON("extended memory is not initialized or disabled"), nil
+	}
+	if err := t.manager.extended.PinAtom(id); err != nil {
+		return errorJSON(err.Error()), nil
+	}
+	return successJSON(fmt.Sprintf("pinned atom %s", id)), nil
 }
 
 var nilContext = context.Background()

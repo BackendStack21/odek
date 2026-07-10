@@ -37,6 +37,60 @@ func TestQuarantineEvictExpiredByAge(t *testing.T) {
 	}
 }
 
+func TestQuarantinePromoteAndForget(t *testing.T) {
+	q := NewQuarantine(t.TempDir())
+	id, _ := generateAtomID()
+	atom := MemoryAtom{ID: id, Text: "promote me", SourceClass: SourceWeb}
+	if err := q.Store(atom); err != nil {
+		t.Fatal(err)
+	}
+	got, err := q.Promote(id)
+	if err != nil {
+		t.Fatalf("Promote failed: %v", err)
+	}
+	if got.Text != atom.Text {
+		t.Errorf("Promote returned %q, want %q", got.Text, atom.Text)
+	}
+	if err := q.Forget(id); err != nil {
+		t.Fatalf("Forget failed: %v", err)
+	}
+	atoms, _ := q.List()
+	if len(atoms) != 0 {
+		t.Errorf("expected 0 atoms after forget, got %d", len(atoms))
+	}
+	if _, err := q.Promote(id); err == nil {
+		t.Error("expected Promote to fail after forget")
+	}
+}
+
+func TestQuarantineInvalidID(t *testing.T) {
+	q := NewQuarantine(t.TempDir())
+	if err := q.Store(MemoryAtom{ID: "../bad", Text: "x"}); err == nil {
+		t.Error("expected Store to reject invalid ID")
+	}
+	if _, err := q.Promote("../bad"); err == nil {
+		t.Error("expected Promote to reject invalid ID")
+	}
+	if err := q.Forget("../bad"); err == nil {
+		t.Error("expected Forget to reject invalid ID")
+	}
+}
+
+func TestQuarantineListSortsNewestFirst(t *testing.T) {
+	q := NewQuarantine(t.TempDir())
+	id1, _ := generateAtomID()
+	id2, _ := generateAtomID()
+	q.Store(MemoryAtom{ID: id1, Text: "first", SourceClass: SourceWeb})
+	q.Store(MemoryAtom{ID: id2, Text: "second", SourceClass: SourceWeb})
+	atoms, _ := q.List()
+	if len(atoms) != 2 {
+		t.Fatal("expected 2 atoms")
+	}
+	if atoms[0].ID != id2 {
+		t.Error("expected newest atom first")
+	}
+}
+
 func TestQuarantineTTLDisabled(t *testing.T) {
 	q := NewQuarantine(t.TempDir())
 	q.mu.Lock()
@@ -58,3 +112,4 @@ func TestQuarantineTTLDisabled(t *testing.T) {
 		t.Errorf("expected 0 evicted with TTL disabled, got %d", removed)
 	}
 }
+

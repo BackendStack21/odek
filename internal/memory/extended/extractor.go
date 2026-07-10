@@ -36,7 +36,7 @@ const extractionPrompt = `You are a memory extraction system. Read the user mess
 
 For each atom, output an object with:
 - "text": a concise, first-person-paraphrased statement (not a command).
-- "type": one of "fact", "observation", "preference", "intent".
+- "type": one of "fact", "preference", "intent", "decision", "goal", "convention", "file", "error", "question".
 - "confidence": a number 0.0-1.0 indicating how certain the memory is.
 
 Rules:
@@ -107,9 +107,6 @@ func (e *Extractor) Extract(ctx context.Context, text string) ([]MemoryAtom, err
 			continue
 		}
 		typ := r.Type
-		if typ == "" {
-			typ = TypeObservation
-		}
 		if !validType(typ) {
 			typ = TypeObservation
 		}
@@ -136,15 +133,13 @@ func (e *Extractor) Extract(ctx context.Context, text string) ([]MemoryAtom, err
 
 func validType(t string) bool {
 	switch t {
-	case TypeFact, TypeObservation, TypePreference, TypeIntent:
+	case TypeFact, TypePreference, TypeIntent, TypeDecision, TypeGoal,
+		TypeConvention, TypeFile, TypeError, TypeQuestion, TypeObservation:
 		return true
 	default:
 		return false
 	}
 }
-
-// ValidType reports whether t is a known atom type.
-func ValidType(t string) bool { return validType(t) }
 
 // generateAtomID creates a 128-bit random hex ID (32 chars) and validates it
 // with the same rules as session IDs.

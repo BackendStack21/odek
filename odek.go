@@ -672,12 +672,6 @@ func New(cfg Config) (*Agent, error) {
 		memoryManager.OnUserMessageLoop(msg)
 	})
 
-	// Wire per-turn Extended Memory search. Injected after the legacy memory
-	// prompt block so recent facts/buffer take precedence.
-	engine.SetExtendedMemoryContextFunc(func(userInput string) string {
-		return memoryManager.FormatExtendedContext(userInput)
-	})
-
 	agent.engine = engine
 	agent.registry = registry
 	agent.sandboxCleanup = cfg.SandboxCleanup

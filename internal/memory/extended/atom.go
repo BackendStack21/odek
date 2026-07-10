@@ -44,12 +44,22 @@ const (
 	SourceAgentGenerated = "agent_generated"
 )
 
-// Atom types.
+// Atom types. The design recognizes durable, reusable categories; unknown
+// or legacy values fall back to TypeObservation (kept for backward compat).
 const (
-	TypeFact        = "fact"
+	TypeFact       = "fact"
+	TypePreference = "preference"
+	TypeIntent     = "intent"
+	TypeDecision   = "decision"
+	TypeGoal       = "goal"
+	TypeConvention = "convention"
+	TypeFile       = "file"
+	TypeError      = "error"
+	TypeQuestion   = "question"
+
+	// TypeObservation is a fallback for unknown atom types. It is no longer
+	// part of the recommended design set, but preserved so older data loads.
 	TypeObservation = "observation"
-	TypePreference  = "preference"
-	TypeIntent      = "intent"
 )
 
 // TrustBoost returns a multiplicative boost for high-trust source classes.
@@ -70,7 +80,7 @@ func TrustBoost(sourceClass string) float32 {
 // trust boundary.
 func IsTaintedSourceClass(sourceClass string) bool {
 	switch sourceClass {
-	case SourceToolOutput, SourceFileRead, SourceWeb, SourceMCP, SourceSubagent, SourceAgentGenerated:
+	case SourceToolOutput, SourceFileRead, SourceWeb, SourceMCP, SourceSubagent, SourceAgentGenerated, SourceInferred:
 		return true
 	default:
 		return false
@@ -116,6 +126,8 @@ func RetentionScore(atom MemoryAtom, halfLifeDays int) float32 {
 // NormalizeAtom sanitizes atom fields, applying safe defaults.
 func NormalizeAtom(atom *MemoryAtom) {
 	if atom.Type == "" {
+		atom.Type = TypeFact
+	} else if !ValidType(atom.Type) {
 		atom.Type = TypeObservation
 	}
 	if atom.SourceClass == "" {
@@ -130,4 +142,14 @@ func NormalizeAtom(atom *MemoryAtom) {
 	if atom.CreatedAt.IsZero() {
 		atom.CreatedAt = time.Now().UTC()
 	}
+}
+
+// ValidType reports whether t is a known atom type.
+func ValidType(t string) bool {
+	switch t {
+	case TypeFact, TypePreference, TypeIntent, TypeDecision, TypeGoal,
+		TypeConvention, TypeFile, TypeError, TypeQuestion, TypeObservation:
+		return true
+	}
+	return false
 }

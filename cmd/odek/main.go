@@ -1032,6 +1032,8 @@ func run(args []string) error {
 		Skills:          skillsCfg,
 		SkillManager:    sm,
 		PromptCaching:   resolved.PromptCaching,
+		MemoryDir:       expandHome("~/.odek/memory"),
+		MemoryConfig:    resolved.Memory,
 	})
 	if err != nil {
 		return err
@@ -1049,6 +1051,39 @@ func run(args []string) error {
 	var allMessages []llm.Message
 	var runErr error
 	var result string
+	var sessionID string
+
+	cwd, _ = os.Getwd()
+	if mm := agent.Memory(); mm != nil {
+		if f.Session != nil && *f.Session {
+			// Pre-create the session so extracted atoms can be tagged with the
+			// session ID before the agent run starts.
+			store, err := session.NewStore()
+			if err != nil {
+				return fmt.Errorf("session store: %w", err)
+			}
+			messages := []llm.Message{
+				{Role: "user", Content: f.Task},
+			}
+			if systemMessage != "" {
+				messages = append([]llm.Message{{Role: "system", Content: systemMessage}}, messages...)
+			}
+			sess, err := store.Create(messages, resolved.Model, f.Task)
+			if err != nil {
+				return fmt.Errorf("save session: %w", err)
+			}
+			sess.Sandbox = resolved.Sandbox
+			store.Save(sess)
+			sessionID = sess.ID
+			mm.SetSessionContext(sessionID, cwd)
+			fmt.Fprintf(os.Stderr, "odek: session %s created\n", sessionID)
+		} else {
+			// Non-session mode still needs a transient ID so extracted atoms can
+			// be traced back to this run for review.
+			sessionID = session.GenerateID()
+			mm.SetSessionContext(sessionID, cwd)
+		}
+	}
 
 	if f.Session != nil && *f.Session {
 		// Multi-turn session mode: save conversation history
@@ -1083,22 +1118,27 @@ func run(args []string) error {
 			if err != nil {
 				return fmt.Errorf("session store: %w", err)
 			}
-			sess, err := store.Create(allMessages, resolved.Model, f.Task)
+			// Re-load the pre-created session and append the messages produced
+			// by the run. The pre-created session contains the system + user task;
+			// append only the assistant/tool turns that follow.
+			latest, err := store.Load(sessionID)
 			if err != nil {
+				return fmt.Errorf("load session: %w", err)
+			}
+			newMsgs := allMessages[len(latest.GetMessages()):]
+			if err := store.Append(sessionID, newMsgs); err != nil {
 				return fmt.Errorf("save session: %w", err)
 			}
-			sess.Sandbox = resolved.Sandbox
-			// Persist buffer to session
-			if mm := agent.Memory(); mm != nil {
-				sess.Buffer = mm.GetBuffer()
+			updated, err := store.Load(sessionID)
+			if err != nil {
+				return fmt.Errorf("reload session: %w", err)
 			}
-			store.Save(sess)
-			fmt.Fprintf(os.Stderr, "odek: session %s saved — continue with: odek continue \"...\"\n", sess.ID)
-			// Tag any atoms extracted during this run with the session ID so
-			// future review can trace their origin.
+			updated.Sandbox = resolved.Sandbox
 			if mm := agent.Memory(); mm != nil {
-				mm.SetSessionContext(sess.ID, "")
+				updated.Buffer = mm.GetBuffer()
 			}
+			store.Save(updated)
+			fmt.Fprintf(os.Stderr, "odek: session %s saved — continue with: odek continue \"...\"\n", updated.ID)
 		}
 	} else {
 		// Single-shot mode (default)
@@ -1128,11 +1168,11 @@ func run(args []string) error {
 
 	// ── Session end — extract episode if enough turns ──
 	// Run asynchronously so episode extraction does not delay process exit.
-	if mm := agent.Memory(); mm != nil && f.Session != nil && *f.Session {
+	if mm := agent.Memory(); mm != nil && f.Session != nil && *f.Session && sessionID != "" {
 		go func() {
-			sess, err := session.NewStore()
+			store, err := session.NewStore()
 			if err == nil {
-				latest, err := sess.Latest()
+				latest, err := store.Load(sessionID)
 				if err == nil {
 					msgStrs := makeSessionMessageStrings(latest)
 					prov := memory.DeriveProvenance(latest.Messages)
@@ -1954,25 +1994,27 @@ func continueCmd(args []string) error {
 		skillsCfg = &resolved.Skills
 	}
 
-	agent, err := odek.New(odek.Config{
-		Model:            resolved.Model,
-		BaseURL:          resolved.BaseURL,
-		APIKey:           resolved.APIKey,
-		MaxIterations:    resolved.MaxIter,
-		MaxToolParallel:  resolved.MaxToolParallel,
-		SystemMessage:    systemMessage,
-		UntrustedWrapper: func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
-		NoProjectFile:    resolved.NoAgents,
-		Thinking:        resolved.Thinking,
-		Temperature:     0, // deterministic by default; override with --temperature
-		Tools:           tools,
-		ToolFilter:      odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
-		SandboxCleanup:  sandboxCleanup,
-		Renderer:        rend,
-		Skills:          skillsCfg,
-		SkillManager:    sm,
-		PromptCaching:   resolved.PromptCaching,
-	})
+		agent, err := odek.New(odek.Config{
+			Model:            resolved.Model,
+			BaseURL:          resolved.BaseURL,
+			APIKey:           resolved.APIKey,
+			MaxIterations:    resolved.MaxIter,
+			MaxToolParallel:  resolved.MaxToolParallel,
+			SystemMessage:    systemMessage,
+			UntrustedWrapper: func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
+			NoProjectFile:   resolved.NoAgents,
+			Thinking:        resolved.Thinking,
+			Temperature:     0, // deterministic by default; override with --temperature
+			Tools:           tools,
+			ToolFilter:      odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
+			SandboxCleanup:  sandboxCleanup,
+			Renderer:        rend,
+			Skills:          skillsCfg,
+			SkillManager:    sm,
+			PromptCaching:   resolved.PromptCaching,
+			MemoryDir:       expandHome("~/.odek/memory"),
+			MemoryConfig:    resolved.Memory,
+		})
 	if err != nil {
 		return err
 	}
@@ -1985,8 +2027,9 @@ func continueCmd(args []string) error {
 
 	// Propagate session context to Extended Memory so extracted atoms are
 	// tagged with the session they came from.
+	cwd, _ = os.Getwd()
 	if mm := agent.Memory(); mm != nil {
-		mm.SetSessionContext(sess.ID, "")
+		mm.SetSessionContext(sess.ID, cwd)
 	}
 
 	// Build message history: session messages + new user message

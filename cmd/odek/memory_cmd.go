@@ -73,7 +73,7 @@ func memoryCmd(args []string) error {
 // extendedMemoryCmd handles `odek memory extended forget|quarantine|compact`.
 func extendedMemoryCmd(dir string, args []string) error {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "Usage: odek memory extended <forget|quarantine|compact> [args]\n")
+		fmt.Fprintf(os.Stderr, "Usage: odek memory extended <forget|promote|pin|quarantine|compact> [args]\n")
 		return nil
 	}
 
@@ -94,6 +94,28 @@ func extendedMemoryCmd(dir string, args []string) error {
 			return err
 		}
 		fmt.Printf("odek: forgot atom %q\n", id)
+		return nil
+
+	case "promote":
+		if len(subArgs) == 0 {
+			return fmt.Errorf("usage: odek memory extended promote <atom_id>")
+		}
+		id := subArgs[0]
+		if err := em.PromoteAtom(id); err != nil {
+			return err
+		}
+		fmt.Printf("odek: promoted atom %q — it can now be recalled into future sessions\n", id)
+		return nil
+
+	case "pin":
+		if len(subArgs) == 0 {
+			return fmt.Errorf("usage: odek memory extended pin <atom_id>")
+		}
+		id := subArgs[0]
+		if err := em.PinAtom(id); err != nil {
+			return err
+		}
+		fmt.Printf("odek: pinned atom %q\n", id)
 		return nil
 
 	case "quarantine":
@@ -117,6 +139,6 @@ func extendedMemoryCmd(dir string, args []string) error {
 		return nil
 
 	default:
-		return fmt.Errorf("unknown extended memory subcommand %q (expected: forget, quarantine, compact)", sub)
+		return fmt.Errorf("unknown extended memory subcommand %q (expected: forget, promote, pin, quarantine, compact)", sub)
 	}
 }

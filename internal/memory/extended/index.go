@@ -245,14 +245,20 @@ func (vi *atomVectorIndex) persistLocked() {
 	if tmp := storePath + ".tmp"; vi.store.Save(tmp) == nil {
 		if err := os.Rename(tmp, storePath); err != nil {
 			os.Remove(tmp)
+		} else {
+			_ = os.Chmod(storePath, 0600)
 		}
 	}
-	vi.emb.SaveState(filepath.Join(vi.dir, vectorFile+".emb"))
+	embPath := filepath.Join(vi.dir, vectorFile+".emb")
+	vi.emb.SaveState(embPath)
+	_ = os.Chmod(embPath, 0600)
 	if data, err := json.Marshal(vectorMeta{Fingerprint: vi.emb.Fingerprint()}); err == nil {
 		tmp := filepath.Join(vi.dir, vectorMetaFile+".tmp")
 		if os.WriteFile(tmp, data, 0600) == nil {
 			if err := os.Rename(tmp, filepath.Join(vi.dir, vectorMetaFile)); err != nil {
 				os.Remove(tmp)
+			} else {
+				_ = os.Chmod(filepath.Join(vi.dir, vectorMetaFile), 0600)
 			}
 		}
 	}
