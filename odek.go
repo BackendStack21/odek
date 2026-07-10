@@ -662,14 +662,18 @@ func New(cfg Config) (*Agent, error) {
 
 	// Wire per-turn Extended Memory search. Injected after the legacy memory
 	// prompt block so recent facts/buffer take precedence.
-	engine.SetExtendedMemoryContextFunc(func(userInput string) string {
-		return memoryManager.FormatExtendedContext(userInput)
+	engine.SetExtendedMemoryContextFunc(func(ctx context.Context, userInput string) string {
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		return memoryManager.FormatExtendedContext(ctx, userInput)
 	})
 
 	// Notify memory manager when a new user message arrives so Extended Memory
 	// can extract atomic facts/preferences.
-	engine.SetUserMessageHandler(func(msg string) {
-		memoryManager.OnUserMessageLoop(msg)
+	engine.SetUserMessageHandler(func(ctx context.Context, msg string) {
+		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		memoryManager.OnUserMessageLoop(ctx, msg)
 	})
 
 	agent.engine = engine

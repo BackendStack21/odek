@@ -330,25 +330,25 @@ func (m *MemoryManager) OnUserMessage(ctx extended.AtomContext, msg string) {
 }
 
 // FormatExtendedContext returns ranked Extended Memory context for the query.
-func (m *MemoryManager) FormatExtendedContext(query string) string {
+func (m *MemoryManager) FormatExtendedContext(ctx context.Context, query string) string {
 	if m.extended == nil {
 		return ""
 	}
-	return m.extended.FormatExtendedContext(query)
+	return m.extended.FormatExtendedContext(ctx, query)
 }
 
 // FormatUserStateContext returns the user-model block for system-prompt
 // injection.
-func (m *MemoryManager) FormatUserStateContext() string {
+func (m *MemoryManager) FormatUserStateContext(ctx context.Context) string {
 	if m.extended == nil {
 		return ""
 	}
-	ctx := m.extended.FormatUserStateContext()
-	if ctx == "" {
+	stateCtx := m.extended.FormatUserStateContext(ctx)
+	if stateCtx == "" {
 		return ""
 	}
 	m.markPromptDirty()
-	return ctx
+	return stateCtx
 }
 
 // FormatReturnAfterBreak generates a resume summary from Extended Memory.
@@ -360,11 +360,11 @@ func (m *MemoryManager) FormatReturnAfterBreak(ctx context.Context) string {
 }
 
 // AnaphoraResolve resolves pronouns in a user message against trusted atoms.
-func (m *MemoryManager) AnaphoraResolve(msg string) string {
+func (m *MemoryManager) AnaphoraResolve(ctx context.Context, msg string) (string, bool) {
 	if m.extended == nil {
-		return msg
+		return msg, false
 	}
-	return m.extended.AnaphoraResolve(msg)
+	return m.extended.AnaphoraResolve(ctx, msg)
 }
 
 // SetSessionContext propagates session/project identifiers to all memory tiers
@@ -381,18 +381,20 @@ func (m *MemoryManager) SetSessionContext(sessionID, project string) {
 // session context previously set via SetSessionContext. It is the callback
 // used by the agent loop to trigger atom extraction when a new user message
 // arrives.
-func (m *MemoryManager) OnUserMessageLoop(msg string) {
+func (m *MemoryManager) OnUserMessageLoop(ctx context.Context, msg string) {
 	if m.extended == nil {
 		return
 	}
 	m.extTurn++
-	resolved := m.AnaphoraResolve(msg)
-	ctx := extended.AtomContext{
+	if resolved, ok := m.AnaphoraResolve(ctx, msg); ok {
+		msg = resolved
+	}
+	atomCtx := extended.AtomContext{
 		SessionID: m.extSessionID,
 		Project:   m.extProject,
 		Turn:      m.extTurn,
 	}
-	m.extended.OnUserMessage(ctx, resolved)
+	m.extended.OnUserMessage(atomCtx, msg)
 }
 
 // Extended returns the Extended Memory subsystem, or nil if not initialized.
@@ -1125,9 +1127,11 @@ func (m *MemoryManager) BuildSystemPrompt() string {
 			b.WriteString(styleDirective)
 			b.WriteString("\n")
 		}
-		if userState := m.FormatUserStateContext(); userState != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if userState := m.FormatUserStateContext(ctx); userState != "" {
 			b.WriteString(userState)
 		}
+		cancel()
 	}
 
 	b.WriteString("───────────────────────────────\n")

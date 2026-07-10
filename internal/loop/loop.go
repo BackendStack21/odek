@@ -68,12 +68,12 @@ type EpisodeContextFunc func(userInput string) string
 // ExtendedMemoryContextFunc is an optional callback that returns formatted
 // Extended Memory context for the latest user input. It is injected as a
 // system message after the legacy memory prompt block.
-type ExtendedMemoryContextFunc func(userInput string) string
+type ExtendedMemoryContextFunc func(ctx context.Context, userInput string) string
 
 // UserMessageHandler is an optional callback invoked once per new user
 // message. It is used by callers (e.g. odek.New) to trigger Extended Memory
 // atom extraction.
-type UserMessageHandler func(msg string)
+type UserMessageHandler func(ctx context.Context, msg string)
 
 // ToolEventHandler is an optional callback invoked for each tool execution
 // during the agent loop — fires before (tool_call) and after (tool_result)
@@ -103,23 +103,23 @@ type IterationCallback func(info IterationInfo)
 
 // Engine runs the agent loop: observe → think → act → repeat.
 type Engine struct {
-	client       *llm.Client
-	registry     *tool.Registry
-	renderer     *render.Renderer // optional: colored terminal output
-	maxIter      int
-	system       string
-	baseSystem   string             // original system message without memory/skills
-	maxContext   int                // max context tokens (0 = no limit)
-	skillLoader      SkillLoader              // optional: loads matching skills
-	lastSkillMsg     string                   // last user message that triggered skill loading (dedup)
-	lastEpiMsg       string                   // last user message that triggered episode search (dedup)
-	lastExtMsg       string                   // last user message that triggered extended memory search (dedup)
-	lastUserMsg      string                   // last user message passed to userMsgHandler (dedup)
-	skillVerbose     bool                     // show full skill banners (default: condensed)
-	episodeCtx       EpisodeContextFunc       // optional: per-turn episode search
-	extendedCtx      ExtendedMemoryContextFunc // optional: per-turn extended memory search
-	userMsgHandler   UserMessageHandler       // optional: called once per new user message
-	wrapUntrusted    func(source, content string) string // optional: wraps skill/episode content
+	client         *llm.Client
+	registry       *tool.Registry
+	renderer       *render.Renderer // optional: colored terminal output
+	maxIter        int
+	system         string
+	baseSystem     string                              // original system message without memory/skills
+	maxContext     int                                 // max context tokens (0 = no limit)
+	skillLoader    SkillLoader                         // optional: loads matching skills
+	lastSkillMsg   string                              // last user message that triggered skill loading (dedup)
+	lastEpiMsg     string                              // last user message that triggered episode search (dedup)
+	lastExtMsg     string                              // last user message that triggered extended memory search (dedup)
+	lastUserMsg    string                              // last user message passed to userMsgHandler (dedup)
+	skillVerbose   bool                                // show full skill banners (default: condensed)
+	episodeCtx     EpisodeContextFunc                  // optional: per-turn episode search
+	extendedCtx    ExtendedMemoryContextFunc           // optional: per-turn extended memory search
+	userMsgHandler UserMessageHandler                  // optional: called once per new user message
+	wrapUntrusted  func(source, content string) string // optional: wraps skill/episode content
 
 	toolEventHandler ToolEventHandler // optional: fires during tool execution
 	signalHandler    SignalHandler    // optional: fires on internal loop signals
@@ -654,7 +654,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		if e.userMsgHandler != nil {
 			if userMsg := lastUserMessage(messages); userMsg != "" && userMsg != e.lastUserMsg {
 				e.lastUserMsg = userMsg
-				e.userMsgHandler(userMsg)
+				e.userMsgHandler(ctx, userMsg)
 			}
 		}
 
@@ -767,7 +767,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		// user messages.
 		if e.extendedCtx != nil {
 			if userMsg := lastUserMessage(messages); userMsg != "" && userMsg != e.lastExtMsg {
-				if extContext := e.extendedCtx(userMsg); extContext != "" {
+				if extContext := e.extendedCtx(ctx, userMsg); extContext != "" {
 					wrapped := extContext
 					if e.wrapUntrusted != nil {
 						wrapped = e.wrapUntrusted("extended_memory", extContext)

@@ -37,11 +37,11 @@ type QueryResult struct {
 
 // Query searches for relevant atoms. It returns a formatted context string
 // bounded by MemoryBudgetChars, or empty string if nothing matches.
-func (r *Recall) Query(ctx context.Context, query string) (string, error) {
+func (r *Recall) Query(ctx context.Context, query string, recent []string, state UserState) (string, error) {
 	if r.store == nil || r.index == nil {
 		return "", nil
 	}
-	res, err := r.queryAtomsWithPrediction(ctx, query)
+	res, err := r.queryAtomsWithPrediction(ctx, query, recent, state)
 	if err != nil {
 		log.Printf("extended memory: recall query failed: %v", err)
 		return "", err
@@ -54,7 +54,7 @@ func (r *Recall) Query(ctx context.Context, query string) (string, error) {
 
 // queryAtomsWithPrediction unions literal-query results with predicted-intent
 // results when prediction is enabled.
-func (r *Recall) queryAtomsWithPrediction(ctx context.Context, query string) ([]MemoryAtom, error) {
+func (r *Recall) queryAtomsWithPrediction(ctx context.Context, query string, recent []string, state UserState) ([]MemoryAtom, error) {
 	all := make(map[string]MemoryAtom)
 	literal, err := r.queryAtoms(ctx, query)
 	if err != nil {
@@ -66,7 +66,7 @@ func (r *Recall) queryAtomsWithPrediction(ctx context.Context, query string) ([]
 
 	if r.predictor != nil && r.cfg.PredictiveIntents > 0 &&
 		r.cfg.FollowUpAnticipationEnabled != nil && *r.cfg.FollowUpAnticipationEnabled {
-		intents, err := r.predictor.Predict(ctx, query, nil, UserState{})
+		intents, err := r.predictor.Predict(ctx, query, recent, state)
 		if err != nil {
 			log.Printf("extended memory: predicted-intent generation failed: %v", err)
 		}

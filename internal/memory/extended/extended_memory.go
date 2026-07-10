@@ -41,7 +41,15 @@ type ExtendedMemory struct {
 	closeOnce      sync.Once
 	pendingWg      sync.WaitGroup
 	userStateTurns int
+
+	recentUserMessages []string
+	recentMu           sync.Mutex
+
+	inferenceMu sync.Mutex
+	closed      bool
 }
+
+const recentUserMessageLimit = 10
 
 // New creates an ExtendedMemory instance rooted at dir.
 func New(dir string, llm LLMClient, cfg Config) *ExtendedMemory {
@@ -268,8 +276,15 @@ func (em *ExtendedMemory) triggerBackgroundInference() {
 	if em == nil || !em.Enabled() || em.userModel == nil || !em.userModel.Enabled() {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	em.inferenceMu.Lock()
+	if em.closed {
+		em.inferenceMu.Unlock()
+		return
+	}
 	em.pendingWg.Add(1)
+	em.inferenceMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	go func() {
 		defer func() {
 			cancel()
@@ -313,7 +328,7 @@ func (em *ExtendedMemory) ListPendingReview() ([]PendingReview, error) {
 }
 
 // FormatUserStateContext returns formatted user-model context.
-func (em *ExtendedMemory) FormatUserStateContext() string {
+func (em *ExtendedMemory) FormatUserStateContext(ctx context.Context) string {
 	if em == nil || !em.Enabled() || em.userModel == nil {
 		return ""
 	}
@@ -369,23 +384,44 @@ User model: %s`, recentJSON, stateJSON)
 
 var pronounRE = regexp.MustCompile(`(?i)\b(it|that|this|them|those)\b`)
 
-// AnaphoraResolve replaces pronouns in a user message with the most likely
-// antecedent from recent trusted atoms when the semantic score is high enough.
-func (em *ExtendedMemory) AnaphoraResolve(msg string) string {
+// AnaphoraResolve replaces the first pronoun in a user message with the
+// most likely antecedent from recent trusted atoms when the semantic score
+// is high enough. It returns the resolved message and true when a replacement
+// happened, otherwise the original message and false.
+func (em *ExtendedMemory) AnaphoraResolve(ctx context.Context, msg string) (string, bool) {
 	if em == nil || !em.Enabled() || em.recall == nil || em.cfg.AnaphoraResolutionEnabled == nil || !*em.cfg.AnaphoraResolutionEnabled {
-		return msg
+		return msg, false
 	}
 	if !pronounRE.MatchString(msg) {
-		return msg
+		return msg, false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+
 	atoms, err := em.recall.queryAtoms(ctx, msg)
 	if err != nil || len(atoms) == 0 {
-		return msg
+		return msg, false
 	}
-	resolved := pronounRE.ReplaceAllString(msg, atoms[0].Text)
-	return resolved
+
+	// Match the top returned atom to its vector similarity score.
+	candidates := em.index.search(msg, em.cfg.SemanticSearchTopK*em.cfg.SemanticSearchOverfetch)
+	var topScore float32
+	for _, c := range candidates {
+		if c.ID == atoms[0].ID {
+			topScore = c.Score
+			break
+		}
+	}
+	if topScore < em.cfg.SemanticSearchMinScore {
+		return msg, false
+	}
+
+	loc := pronounRE.FindStringIndex(msg)
+	if loc == nil {
+		return msg, false
+	}
+	resolved := msg[:loc[0]] + atoms[0].Text + msg[loc[1]:]
+	return resolved, true
 }
 
 // SearchAtoms performs an explicit semantic search and returns ranked atoms.
@@ -448,13 +484,19 @@ func (em *ExtendedMemory) PinAtom(id string) error {
 
 // FormatExtendedContext returns formatted Extended Memory context for the
 // query, or empty string if nothing matches or Extended Memory is disabled.
-func (em *ExtendedMemory) FormatExtendedContext(query string) string {
+func (em *ExtendedMemory) FormatExtendedContext(ctx context.Context, query string) string {
 	if em == nil || !em.Enabled() {
 		return ""
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	context, err := em.recall.Query(ctx, query)
+
+	em.recentMu.Lock()
+	recent := make([]string, len(em.recentUserMessages))
+	copy(recent, em.recentUserMessages)
+	em.recentMu.Unlock()
+
+	context, err := em.recall.Query(ctx, query, recent, em.userModel.State())
 	if err != nil {
 		log.Printf("extended memory: format context failed: %v", err)
 		return ""
@@ -464,7 +506,7 @@ func (em *ExtendedMemory) FormatExtendedContext(query string) string {
 
 // FormatContext is an alias for FormatExtendedContext.
 func (em *ExtendedMemory) FormatContext(ctx context.Context, query string) string {
-	return em.FormatExtendedContext(query)
+	return em.FormatExtendedContext(ctx, query)
 }
 
 // OnUserMessage extracts atoms from a user message and stores them.
@@ -472,9 +514,7 @@ func (em *ExtendedMemory) OnUserMessage(ctx AtomContext, msg string) {
 	if em == nil || !em.Enabled() {
 		return
 	}
-	if em.cfg.AutoExtractPerTurn == nil || !*em.cfg.AutoExtractPerTurn {
-		return
-	}
+
 	em.mu.Lock()
 	em.lastUser = msg
 	if ctx.SessionID != "" {
@@ -489,6 +529,17 @@ func (em *ExtendedMemory) OnUserMessage(ctx AtomContext, msg string) {
 		em.userModel.ResetFocusChanged()
 	}
 	em.mu.Unlock()
+
+	em.recentMu.Lock()
+	em.recentUserMessages = append(em.recentUserMessages, msg)
+	if len(em.recentUserMessages) > recentUserMessageLimit {
+		em.recentUserMessages = em.recentUserMessages[len(em.recentUserMessages)-recentUserMessageLimit:]
+	}
+	em.recentMu.Unlock()
+
+	if em.cfg.AutoExtractPerTurn == nil || !*em.cfg.AutoExtractPerTurn {
+		return
+	}
 
 	c, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -613,6 +664,9 @@ func (em *ExtendedMemory) Close() error {
 		return nil
 	}
 	em.closeOnce.Do(func() {
+		em.inferenceMu.Lock()
+		em.closed = true
+		em.inferenceMu.Unlock()
 		em.index.Wait()
 		em.pendingWg.Wait()
 	})

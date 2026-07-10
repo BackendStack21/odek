@@ -974,7 +974,7 @@ func TestExtendedMemoryFormatUserStateContext(t *testing.T) {
 	em.OnUserMessage(AtomContext{SessionID: "s1", Turn: 1}, "Use dry tone, I code in Go")
 	em.Close()
 
-	ctx := em.FormatUserStateContext()
+	ctx := em.FormatUserStateContext(context.Background())
 	if ctx == "" {
 		t.Error("expected non-empty user state context")
 	}
@@ -1036,7 +1036,10 @@ func TestExtendedMemoryAnaphoraResolve(t *testing.T) {
 	_ = em.AddAtom(context.Background(), MemoryAtom{Text: "Postgres database", SourceClass: SourceUserSaid, Type: TypeFact})
 	em.index.Compact()
 
-	resolved := em.AnaphoraResolve("How do I configure it?")
+	resolved, ok := em.AnaphoraResolve(context.Background(), "How do I configure it?")
+	if !ok {
+		t.Fatal("expected anaphora resolution to replace pronoun")
+	}
 	if !strings.Contains(resolved, "Postgres database") {
 		t.Errorf("expected anaphora resolution to replace pronoun, got %q", resolved)
 	}
@@ -1050,8 +1053,8 @@ func TestExtendedMemoryAnaphoraResolveDisabled(t *testing.T) {
 	em := New(dir, newMockLLM(), cfg)
 	defer em.Close()
 	msg := "How do I configure it?"
-	if got := em.AnaphoraResolve(msg); got != msg {
-		t.Errorf("expected unchanged message when disabled, got %q", got)
+	if got, ok := em.AnaphoraResolve(context.Background(), msg); got != msg || ok {
+		t.Errorf("expected unchanged message when disabled, got %q (ok=%v)", got, ok)
 	}
 }
 
@@ -1060,10 +1063,10 @@ func TestExtendedMemoryNilSafeMethods(t *testing.T) {
 	if em.UserStateStyle() != nil {
 		t.Error("expected nil UserStateStyle on nil em")
 	}
-	if em.FormatUserStateContext() != "" {
+	if em.FormatUserStateContext(context.Background()) != "" {
 		t.Error("expected empty FormatUserStateContext on nil em")
 	}
-	if em.AnaphoraResolve("x") != "x" {
+	if got, ok := em.AnaphoraResolve(context.Background(), "x"); got != "x" || ok {
 		t.Error("expected AnaphoraResolve passthrough on nil em")
 	}
 	if em.ReturnAfterBreak(context.Background()) != "" {
@@ -1072,4 +1075,31 @@ func TestExtendedMemoryNilSafeMethods(t *testing.T) {
 	if _, err := em.ListPendingReview(); err != nil {
 		t.Error("expected ListPendingReview no error on nil em")
 	}
+}
+
+func TestExtendedMemoryCloseRace(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.Enabled = boolPtr(true)
+	cfg.UserStateTurnInterval = 1
+	em := New(dir, newMockLLM(), cfg)
+	defer em.Close()
+	em.SetSessionContext("s1", "p1")
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 20; j++ {
+				em.OnUserMessage(AtomContext{SessionID: "s1", Turn: j}, "race test message")
+			}
+		}()
+	}
+	go func() {
+		for i := 0; i < 50; i++ {
+			_ = em.Close()
+		}
+	}()
+	wg.Wait()
 }
