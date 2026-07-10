@@ -193,7 +193,7 @@ func TestExtendedMemoryAddAndSearch(t *testing.T) {
 	}
 
 	atom := MemoryAtom{
-		Text:     "User prefers Go for backend services",
+		Text:        "User prefers Go for backend services",
 		SourceClass: SourceUserSaid,
 		Type:        TypePreference,
 	}
@@ -838,4 +838,3 @@ func TestAddAtomsBatchFailurePath(t *testing.T) {
 		t.Errorf("expected 2 live atoms, got %d", len(live))
 	}
 }
-

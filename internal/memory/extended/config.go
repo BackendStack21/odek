@@ -16,21 +16,21 @@ import (
 
 // Config controls the Extended Memory subsystem.
 type Config struct {
-	Enabled                 *bool            `json:"enabled,omitempty"`
-	MaxSizeMB               int              `json:"max_size_mb,omitempty"`
-	SemanticSearchTopK      int              `json:"semantic_search_top_k,omitempty"`
-	SemanticSearchOverfetch int              `json:"semantic_search_overfetch,omitempty"`
-	SemanticSearchMinScore  float32          `json:"semantic_search_min_score,omitempty"`
-	SemanticSearchRerank    *bool            `json:"semantic_search_rerank,omitempty"`
-	AtomMaxChars            int              `json:"atom_max_chars,omitempty"`
-	MemoryBudgetChars       int              `json:"memory_budget_chars,omitempty"`
-	DecayHalfLifeDays       int              `json:"decay_half_life_days,omitempty"`
-	QuarantineTTLDays       int              `json:"quarantine_ttl_days,omitempty"`
-	EvictionPolicy          string           `json:"eviction_policy,omitempty"`
-	PredictiveIntents       int              `json:"predictive_intents,omitempty"`
-	AutoExtractPerTurn      *bool            `json:"auto_extract_per_turn,omitempty"`
-	InferUserState          *bool            `json:"infer_user_state,omitempty"`
-	LLM                     *LLMConfig       `json:"llm,omitempty"`
+	Enabled                 *bool             `json:"enabled,omitempty"`
+	MaxSizeMB               int               `json:"max_size_mb,omitempty"`
+	SemanticSearchTopK      int               `json:"semantic_search_top_k,omitempty"`
+	SemanticSearchOverfetch int               `json:"semantic_search_overfetch,omitempty"`
+	SemanticSearchMinScore  float32           `json:"semantic_search_min_score,omitempty"`
+	SemanticSearchRerank    *bool             `json:"semantic_search_rerank,omitempty"`
+	AtomMaxChars            int               `json:"atom_max_chars,omitempty"`
+	MemoryBudgetChars       int               `json:"memory_budget_chars,omitempty"`
+	DecayHalfLifeDays       int               `json:"decay_half_life_days,omitempty"`
+	QuarantineTTLDays       int               `json:"quarantine_ttl_days,omitempty"`
+	EvictionPolicy          string            `json:"eviction_policy,omitempty"`
+	PredictiveIntents       int               `json:"predictive_intents,omitempty"`
+	AutoExtractPerTurn      *bool             `json:"auto_extract_per_turn,omitempty"`
+	InferUserState          *bool             `json:"infer_user_state,omitempty"`
+	LLM                     *LLMConfig        `json:"llm,omitempty"`
 	Embedding               *embedding.Config `json:"embedding,omitempty"`
 }
 

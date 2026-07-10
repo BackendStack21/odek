@@ -112,4 +112,3 @@ func TestQuarantineTTLDisabled(t *testing.T) {
 		t.Errorf("expected 0 evicted with TTL disabled, got %d", removed)
 	}
 }
-

@@ -317,6 +317,9 @@ func (em *ExtendedMemory) enforceCap(ctx context.Context, newBytes int64) error 
 	need := total - maxBytes + 4096 // headroom
 	before := len(atoms)
 	ids, _, ok := em.evictor.SelectForEviction(sized, need)
+	if !ok {
+		return fmt.Errorf("extended memory: cannot free %s; all atoms are pinned or no evictable atoms exist", sizeLabel(need))
+	}
 	for _, id := range ids {
 		_ = em.store.Remove(id)
 		em.index.markDirty()
@@ -329,9 +332,6 @@ func (em *ExtendedMemory) enforceCap(ctx context.Context, newBytes int64) error 
 		}
 	}
 
-	if !ok {
-		return fmt.Errorf("extended memory: cannot free %s; all atoms are pinned or no evictable atoms exist", sizeLabel(need))
-	}
 	return nil
 }
 

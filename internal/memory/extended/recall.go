@@ -12,10 +12,10 @@ import (
 
 // Recall performs semantic search over the atom store.
 type Recall struct {
-	store  *AtomStore
-	index  *atomVectorIndex
-	llm    LLMClient
-	cfg    Config
+	store *AtomStore
+	index *atomVectorIndex
+	llm   LLMClient
+	cfg   Config
 }
 
 // NewRecall creates a Recall instance.
