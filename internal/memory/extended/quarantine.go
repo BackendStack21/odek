@@ -142,8 +142,8 @@ func (q *Quarantine) Promote(id string) (MemoryAtom, error) {
 	if err := session.ValidateSessionID(id); err != nil {
 		return MemoryAtom{}, fmt.Errorf("extended quarantine: invalid atom id: %w", err)
 	}
-	q.mu.RLock()
-	defer q.mu.RUnlock()
+	q.mu.Lock()
+	defer q.mu.Unlock()
 
 	entries, err := q.loadLocked()
 	if err != nil {

@@ -98,6 +98,9 @@ func (u *UserModel) Enabled() bool {
 }
 
 // Load reads the persisted user model, if any. Missing files are not errors.
+// Loaded string values are scanned for injection patterns; fields that fail
+// the scan are dropped so a tampered user_model.json cannot poison the
+// system prompt.
 func (u *UserModel) Load() error {
 	if u == nil || u.store == nil {
 		return nil
@@ -106,6 +109,7 @@ func (u *UserModel) Load() error {
 	if err != nil {
 		return err
 	}
+	state = scanUserState(state)
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.state = state
@@ -384,6 +388,59 @@ func appendUnique(base, add []string) []string {
 	return base
 }
 
+// scanUserState scans every string value in a loaded UserState and clears
+// any field or slice entry that fails the content scan. This prevents a
+// tampered user_model.json from injecting instructions into the system prompt.
+func scanUserState(s UserState) UserState {
+	if ScanContent(s.Style.Verbosity) != nil {
+		s.Style.Verbosity = ""
+	}
+	if ScanContent(s.Style.Humor) != nil {
+		s.Style.Humor = ""
+	}
+	if ScanContent(s.Style.Formality) != nil {
+		s.Style.Formality = ""
+	}
+	if ScanContent(s.Style.ExplanationDepth) != nil {
+		s.Style.ExplanationDepth = ""
+	}
+	if ScanContent(s.Style.Tone) != nil {
+		s.Style.Tone = ""
+	}
+
+	s.Technical.Languages = filterScanned(s.Technical.Languages)
+	s.Technical.Patterns = filterScanned(s.Technical.Patterns)
+	s.Technical.Tools = filterScanned(s.Technical.Tools)
+
+	if ScanContent(s.CurrentFocus.Project) != nil {
+		s.CurrentFocus.Project = ""
+	}
+	if ScanContent(s.CurrentFocus.Task) != nil {
+		s.CurrentFocus.Task = ""
+	}
+	if ScanContent(s.CurrentFocus.Blocker) != nil {
+		s.CurrentFocus.Blocker = ""
+	}
+
+	s.InteractionPatterns.CommonOpeners = filterScanned(s.InteractionPatterns.CommonOpeners)
+	if ScanContent(s.InteractionPatterns.FollowupAfterRefactor) != nil {
+		s.InteractionPatterns.FollowupAfterRefactor = ""
+	}
+	if ScanContent(s.InteractionPatterns.FollowupAfterBugfix) != nil {
+		s.InteractionPatterns.FollowupAfterBugfix = ""
+	}
+
+	var pending []PendingReview
+	for _, p := range s.PendingReview {
+		if ScanContent(p.Field) != nil || ScanContent(p.Value) != nil || ScanContent(p.Evidence) != nil {
+			continue
+		}
+		pending = append(pending, p)
+	}
+	s.PendingReview = pending
+	return s
+}
+
 // ConfirmPendingReview applies a pending review to the model and persists it.
 func (u *UserModel) ConfirmPendingReview(id string) error {
 	if u == nil {
@@ -451,7 +508,9 @@ func (u *UserModel) State() UserState {
 	return u.state
 }
 
-// Summary formats the user model for system-prompt injection.
+// Summary formats the user model for system-prompt injection. The formatted
+// output is scanned before being returned; if it fails the scan, an empty
+// string is returned so a poisoned value cannot reach the system prompt.
 func (u *UserModel) Summary() string {
 	if u == nil {
 		return ""
@@ -524,7 +583,12 @@ func (u *UserModel) Summary() string {
 		}
 	}
 	b.WriteString("────────────────────\n")
-	return b.String()
+	summary := b.String()
+	if err := ScanContent(summary); err != nil {
+		log.Printf("extended memory: user-model summary rejected by scan: %v", err)
+		return ""
+	}
+	return summary
 }
 
 func applyPendingValue(state *UserState, p PendingReview) {
