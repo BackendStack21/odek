@@ -82,6 +82,8 @@ func extendedMemoryCmd(dir string, args []string) error {
 
 	extDir := filepath.Join(dir, "extended")
 	cfg := extended.DefaultConfig()
+	enabled := true
+	cfg.Enabled = &enabled
 	em := extended.New(extDir, nil, cfg)
 
 	switch sub {
