@@ -295,15 +295,18 @@ func TestEvictionCapEnforced(t *testing.T) {
 	dir := t.TempDir()
 	cfg := DefaultConfig()
 	cfg.Enabled = boolPtr(true)
-	cfg.MaxSizeMB = 1
-	cfg.AtomMaxChars = 1_000_000
+	cfg.AtomMaxChars = 100_000
 	em := New(dir, newMockLLM(), cfg)
-	for i := 0; i < 4; i++ {
-		atom := MemoryAtom{Text: strings.Repeat("x", 600_000), SourceClass: SourceUserSaid}
+	em.testCapBytes = 50 * 1024
+	em.index.newEmb = func() embedding.TextEmbedder { return newMockEmbedder(vectorDim) }
+	em.index.emb = newMockEmbedder(vectorDim)
+	defer em.Close()
+	for i := 0; i < 10; i++ {
+		atom := MemoryAtom{Text: strings.Repeat("x", 8_000), SourceClass: SourceUserSaid}
 		_ = em.AddAtom(context.Background(), atom)
 	}
 	atoms, _ := em.List()
-	if len(atoms) >= 4 {
+	if len(atoms) >= 10 {
 		t.Errorf("expected eviction to reduce atom count, got %d", len(atoms))
 	}
 }
@@ -312,10 +315,13 @@ func TestEvictionPinProtected(t *testing.T) {
 	dir := t.TempDir()
 	cfg := DefaultConfig()
 	cfg.Enabled = boolPtr(true)
-	cfg.MaxSizeMB = 1
-	cfg.AtomMaxChars = 1_000_000
+	cfg.AtomMaxChars = 100_000
 	em := New(dir, newMockLLM(), cfg)
-	pinned := MemoryAtom{Text: strings.Repeat("pinned", 150_000), SourceClass: SourceUserSaid}
+	em.testCapBytes = 50 * 1024
+	em.index.newEmb = func() embedding.TextEmbedder { return newMockEmbedder(vectorDim) }
+	em.index.emb = newMockEmbedder(vectorDim)
+	defer em.Close()
+	pinned := MemoryAtom{Text: strings.Repeat("pinned", 5_000), SourceClass: SourceUserSaid}
 	_ = em.AddAtom(context.Background(), pinned)
 	atoms, _ := em.List()
 	if len(atoms) != 1 {
@@ -324,8 +330,8 @@ func TestEvictionPinProtected(t *testing.T) {
 	if err := em.store.Pin(atoms[0].ID, true); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 4; i++ {
-		_ = em.AddAtom(context.Background(), MemoryAtom{Text: strings.Repeat("x", 600_000), SourceClass: SourceUserSaid})
+	for i := 0; i < 10; i++ {
+		_ = em.AddAtom(context.Background(), MemoryAtom{Text: strings.Repeat("x", 8_000), SourceClass: SourceUserSaid})
 	}
 	got, _ := em.store.Get(atoms[0].ID)
 	if got.ID != atoms[0].ID {
@@ -377,10 +383,14 @@ func TestQuarantineCountsTowardSize(t *testing.T) {
 	dir := t.TempDir()
 	cfg := DefaultConfig()
 	cfg.Enabled = boolPtr(true)
-	cfg.MaxSizeMB = 1
+	cfg.AtomMaxChars = 100_000
 	em := New(dir, newMockLLM(), cfg)
-	for i := 0; i < 4; i++ {
-		_ = em.AddAtom(context.Background(), MemoryAtom{Text: strings.Repeat("x", 600_000), SourceClass: SourceWeb})
+	em.testCapBytes = 50 * 1024
+	em.index.newEmb = func() embedding.TextEmbedder { return newMockEmbedder(vectorDim) }
+	em.index.emb = newMockEmbedder(vectorDim)
+	defer em.Close()
+	for i := 0; i < 10; i++ {
+		_ = em.AddAtom(context.Background(), MemoryAtom{Text: strings.Repeat("x", 8_000), SourceClass: SourceWeb})
 	}
 	if em.Size() == 0 {
 		t.Error("expected non-zero size from quarantined atoms")
@@ -391,13 +401,14 @@ func TestCompactionTriggeredAfterHeavyEviction(t *testing.T) {
 	dir := t.TempDir()
 	cfg := DefaultConfig()
 	cfg.Enabled = boolPtr(true)
-	cfg.MaxSizeMB = 1
-	cfg.AtomMaxChars = 1_000_000
+	cfg.AtomMaxChars = 100_000
 	em := New(dir, newMockLLM(), cfg)
+	em.testCapBytes = 50 * 1024
 	em.index.newEmb = func() embedding.TextEmbedder { return newMockEmbedder(vectorDim) }
 	em.index.emb = newMockEmbedder(vectorDim)
-	for i := 0; i < 8; i++ {
-		_ = em.AddAtom(context.Background(), MemoryAtom{Text: strings.Repeat("x", 200_000), SourceClass: SourceUserSaid})
+	defer em.Close()
+	for i := 0; i < 12; i++ {
+		_ = em.AddAtom(context.Background(), MemoryAtom{Text: strings.Repeat("x", 6_000), SourceClass: SourceUserSaid})
 	}
 	// Heavy eviction should have triggered compaction.
 	if em.Size() == 0 {
@@ -613,22 +624,70 @@ func TestEvictionAllPinned(t *testing.T) {
 	dir := t.TempDir()
 	cfg := DefaultConfig()
 	cfg.Enabled = boolPtr(true)
-	cfg.MaxSizeMB = 1
-	cfg.AtomMaxChars = 1_000_000
+	cfg.AtomMaxChars = 100_000
 	em := New(dir, newMockLLM(), cfg)
+	em.testCapBytes = 50 * 1024
+	em.index.newEmb = func() embedding.TextEmbedder { return newMockEmbedder(vectorDim) }
+	em.index.emb = newMockEmbedder(vectorDim)
+	defer em.Close()
 	for i := 0; i < 3; i++ {
-		_ = em.AddAtom(context.Background(), MemoryAtom{Text: strings.Repeat("p", 150_000), SourceClass: SourceUserSaid})
+		_ = em.AddAtom(context.Background(), MemoryAtom{Text: strings.Repeat("p", 8_000), SourceClass: SourceUserSaid})
 	}
 	live, _ := em.List()
 	for _, a := range live {
 		_ = em.store.Pin(a.ID, true)
 	}
-	// Adding another atom should not evict pinned atoms; error or no-op is acceptable.
-	_ = em.AddAtom(context.Background(), MemoryAtom{Text: strings.Repeat("x", 600_000), SourceClass: SourceUserSaid})
+	// Adding another atom should fail because no evictable atoms exist.
+	err := em.AddAtom(context.Background(), MemoryAtom{Text: strings.Repeat("x", 30_000), SourceClass: SourceUserSaid})
+	if err == nil {
+		t.Error("expected AddAtom to fail when all atoms are pinned and cap would be exceeded")
+	}
 	for _, a := range live {
 		if _, err := em.store.Get(a.ID); err != nil {
 			t.Error("pinned atom was evicted")
 		}
+	}
+}
+
+func TestCapFailClosedWhenAllPinned(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.Enabled = boolPtr(true)
+	cfg.AtomMaxChars = 100_000
+	em := New(dir, newMockLLM(), cfg)
+	em.testCapBytes = 50 * 1024
+	em.index.newEmb = func() embedding.TextEmbedder { return newMockEmbedder(vectorDim) }
+	em.index.emb = newMockEmbedder(vectorDim)
+	defer em.Close()
+
+	// Fill the store with pinned atoms that consume nearly the whole cap.
+	for i := 0; i < 5; i++ {
+		a := MemoryAtom{Text: strings.Repeat("p", 8_000), SourceClass: SourceUserSaid}
+		if err := em.AddAtom(context.Background(), a); err != nil {
+			break
+		}
+	}
+	live, _ := em.List()
+	if len(live) == 0 {
+		t.Fatal("expected at least one live atom")
+	}
+	for _, a := range live {
+		_ = em.store.Pin(a.ID, true)
+	}
+
+	before, _ := em.store.List()
+	sz, _ := em.store.Size()
+	if sz <= 0 {
+		t.Fatal("expected positive store size")
+	}
+	// Attempt to add another atom; it must be rejected.
+	incoming := MemoryAtom{Text: strings.Repeat("x", 30_000), SourceClass: SourceUserSaid}
+	if err := em.AddAtom(context.Background(), incoming); err == nil {
+		t.Error("expected AddAtom to fail when cap exceeded and all atoms pinned")
+	}
+	after, _ := em.store.List()
+	if len(after) != len(before) {
+		t.Errorf("expected pinned atom count unchanged, got %d before %d after", len(before), len(after))
 	}
 }
 
@@ -702,3 +761,81 @@ func TestQuarantineScanBeforeStore(t *testing.T) {
 		t.Errorf("expected 0 quarantined atoms after scan rejection, got %d", len(quarantined))
 	}
 }
+
+func TestSetEmbedderAndFactory(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.Enabled = boolPtr(true)
+	em := New(dir, newMockLLM(), cfg)
+	defer em.Close()
+
+	emb := newMockEmbedder(vectorDim)
+	em.SetEmbedder(emb)
+	if em.index.emb != emb {
+		t.Error("SetEmbedder did not set active embedder")
+	}
+
+	called := false
+	em.SetEmbedderFactory(func() embedding.TextEmbedder {
+		called = true
+		return newMockEmbedder(vectorDim)
+	})
+	_ = em.index.newEmb()
+	if !called {
+		t.Error("SetEmbedderFactory did not replace factory")
+	}
+}
+
+func TestMarkDirtyAndCompact(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.Enabled = boolPtr(true)
+	em := New(dir, newMockLLM(), cfg)
+	em.index.newEmb = func() embedding.TextEmbedder { return newMockEmbedder(vectorDim) }
+	em.index.emb = newMockEmbedder(vectorDim)
+	em.MarkDirty()
+	if !em.index.dirty {
+		t.Error("MarkDirty did not mark index dirty")
+	}
+	em.Compact()
+	em.Close()
+	// Compaction should complete without panic; background goroutine drains.
+}
+
+func TestUserModelAndAssociationsStubs(t *testing.T) {
+	um := NewUserModel()
+	um.Update(MemoryAtom{Text: "x"}) // should not panic
+	if got := um.Summary(); got != "" {
+		t.Errorf("expected empty summary, got %q", got)
+	}
+
+	assoc := NewAssociations()
+	assoc.Link("a", "b") // should not panic
+	if got := assoc.Related("a"); got != nil {
+		t.Errorf("expected nil related atoms, got %v", got)
+	}
+}
+
+func TestAddAtomsBatchFailurePath(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.Enabled = boolPtr(true)
+	em := New(dir, newMockLLM(), cfg)
+	defer em.Close()
+
+	// Inject an invalid atom that the store will reject to exercise the error
+	// logging path; valid atoms should still be added.
+	atoms := []MemoryAtom{
+		{ID: "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6", Text: "valid one", SourceClass: SourceUserSaid},
+		{ID: "", Text: "", SourceClass: SourceUserSaid}, // empty text will be rejected
+		{ID: "b1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6", Text: "valid two", SourceClass: SourceUserSaid},
+	}
+	if err := em.AddAtoms(context.Background(), atoms); err != nil {
+		t.Fatalf("AddAtoms returned unexpected error: %v", err)
+	}
+	live, _ := em.List()
+	if len(live) != 2 {
+		t.Errorf("expected 2 live atoms, got %d", len(live))
+	}
+}
+
