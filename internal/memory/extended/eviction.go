@@ -100,11 +100,6 @@ func vectorCost(totalAtoms int) int64 {
 	return bytesPerVec + overhead
 }
 
-// projectSize returns the estimated total size if newBytes were added.
-func projectSize(storeSize, quarantineSize, newBytes int64) int64 {
-	return storeSize + quarantineSize + newBytes
-}
-
 func sizeLabel(n int64) string {
 	if n >= 1024*1024 {
 		return fmt.Sprintf("%.1f MiB", float64(n)/(1024*1024))
