@@ -404,7 +404,15 @@ func (em *ExtendedMemory) AnaphoraResolve(ctx context.Context, msg string) (stri
 	}
 
 	// Match the top returned atom to its vector similarity score.
-	candidates := em.index.search(msg, em.cfg.SemanticSearchTopK*em.cfg.SemanticSearchOverfetch)
+	k := em.cfg.SemanticSearchTopK
+	if k <= 0 {
+		k = DefaultConfig().SemanticSearchTopK
+	}
+	overfetch := em.cfg.SemanticSearchOverfetch
+	if overfetch <= 0 {
+		overfetch = DefaultConfig().SemanticSearchOverfetch
+	}
+	candidates := em.index.search(msg, k*overfetch)
 	var topScore float32
 	for _, c := range candidates {
 		if c.ID == atoms[0].ID {
