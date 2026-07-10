@@ -4,7 +4,7 @@ This document describes the **Extended Memory** subsystem for odek. It is a refe
 
 Extended Memory is opt-in. When disabled, odek keeps the existing three-tier memory system described in [MEMORY.md](MEMORY.md) unchanged.
 
-**Implementation status:** Phases P0–P2 are implemented and active: atom store, dedicated LLM wiring, semantic recall, and size-cap eviction. Phases P3–P5 (user-state model, full quarantine promotion flow, and predictive/proactive surfaces) are reserved extension points: their config fields exist, but the runtime behavior is currently a stub or partially implemented.
+**Implementation status:** Phases P0–P5 are implemented and active: atom store, dedicated LLM wiring, semantic recall, size-cap eviction, user-state model, quarantine promotion, atom associations, and predictive/proactive surfaces.
 
 ## Goals
 
@@ -37,13 +37,13 @@ The single most important design decision is the trust boundary.
 | `subagent` | Tainted | No |
 | `agent_generated` | Tainted | No |
 
-User inputs and explicitly user-approved atoms are trusted because they come from the operator. Indirect content may be prompt-injected, malicious, or simply noisy, so it is never auto-recalled. `inferred` atoms are treated as tainted: they are quarantined until a user explicitly promotes them, matching the code's `IsTaintedSourceClass` classification. Planned promotion paths include inline commands such as:
+User inputs and explicitly user-approved atoms are trusted because they come from the operator. Indirect content may be prompt-injected, malicious, or simply noisy, so it is never auto-recalled. `inferred` atoms are treated as tainted: they are quarantined until a user explicitly promotes them, matching the code's `IsTaintedSourceClass` classification. Promotion paths include inline commands such as:
 
 - `odek, remember that`
 - `odek, remember the browser output`
-- `odek memory extended promote <atom-id>` (reserved for P4)
+- `odek memory extended promote <atom-id>`
 
-Promoted atoms would change source class to `user_approved` and become recallable. In the current release, atom quarantine is implemented but there is no promotion command; tainted atoms can be removed with `odek memory extended forget <atom-id>` or age out via `quarantine_ttl_days`.
+Promoted atoms change source class to `user_approved` and become recallable. Tainted atoms can be removed with `odek memory extended forget <atom-id>` or age out via `quarantine_ttl_days`.
 
 ## Memory Atom
 
@@ -54,7 +54,7 @@ type MemoryAtom struct {
     ID          string        // stable identifier, 128-bit random hex (32 chars)
     CreatedAt   time.Time     // UTC
     SourceClass string        // user_said | inferred | user_approved | tool_output | file_read | web | mcp | subagent | agent_generated
-    Type        string        // fact | observation | preference | intent
+    Type        string        // preference | intent | fact | decision | goal | convention | file | error | question | observation (legacy)
     Text        string        // the memory itself, capped to atom_max_chars
     Context     AtomContext   // session, project, turn, related atom IDs
     Vector      vector.Vector // embedding of Text; NOT persisted in JSON, rebuilt from chunk text
@@ -74,12 +74,18 @@ type AtomContext struct {
 
 | Type | Meaning |
 |---|---|
+| `preference` | User style choices: verbosity, humor, formality, tone, explanation depth. |
+| `intent` | A goal or direction the user stated or strongly implied. |
 | `fact` | A durable fact the user asserted about themselves or the project. |
-| `observation` | A stable observation worth recalling in future sessions. |
-| `preference` | User style choices: verbosity, humor, formality, tool preferences. |
-| `intent` | A goal the user stated or strongly implied. |
+| `decision` | A recorded decision the user made (e.g., "use PostgreSQL over MySQL"). |
+| `goal` | A longer-term objective distinct from a single intent. |
+| `convention` | A recurring pattern or rule the user follows (e.g., "always add tests after auth changes"). |
+| `file` | A file or path the user referenced as important. |
+| `error` | A recurring error or failure mode the user encountered. |
+| `question` | A durable question the user asked that may be worth recalling. |
+| `observation` | Legacy fallback for unknown atom types. Preserved for backward compatibility; new atoms should use one of the nine types above. |
 
-Additional types such as `decision`, `goal`, `convention`, `file`, `error`, and `question` are reserved for future phases (P3–P5). The current extraction prompt and tool schema only accept the four types above. Unknown types supplied by the LLM are normalized to `observation`.
+The current extraction prompt and tool schema accept all nine primary types. Unknown types supplied by the LLM are normalized to `observation`.
 
 ## On-Disk Layout
 
@@ -94,12 +100,12 @@ Additional types such as `decision`, `goal`, `convention`, `file`, `error`, and 
     ├── vectors.gob              # persisted go-vector store
     ├── vectors.gob.emb          # persisted embedder state (RP vocabulary / HTTP fingerprint)
     ├── vectors_meta.json        # embedding-space fingerprint for invalidation
-    └── quarantine.json          # tainted atoms awaiting promotion
+    ├── quarantine.json          # tainted atoms awaiting promotion
+    ├── user_model.json          # persisted inferred user state + pending review queue
+    └── associations.json        # bidirectional atom association links
 ```
 
-`user_model.json` and `associations.json` are reserved for future phases (P3/P5) and are not currently written to disk.
-
-All files are written atomically and use `0600` permissions. The vector store and metadata are rebuilt from the chunk files if they are ever corrupted.
+All files are written atomically and use `0600` permissions. The vector store and metadata are rebuilt from the chunk files if they are ever corrupted. The user model and associations are loaded at startup and persisted on every change.
 
 ## Dedicated Memory LLM
 
@@ -112,8 +118,8 @@ If the default global model has reasoning/thinking enabled, memory extraction an
 ### Memory LLM Responsibilities
 
 1. **Per-turn atom extraction**: read the latest user message, emit 0-N JSON atoms.
-2. **User-state inference** (reserved, P3): every N turns, update a persistent user model from recent atoms. Currently a no-op stub.
-3. **Predictive intent generation** (reserved, P5): produce 2-3 likely follow-up questions before the main agent answers. Currently a no-op stub.
+2. **User-state inference**: every `user_state_turn_interval` turns (or when the inferred focus changes), update a persistent user model from recent trusted atoms.
+3. **Predictive intent generation**: produce up to `predictive_intents` likely follow-up questions before the main agent answers, and recall atoms for those predicted intents.
 4. **Optional reranking**: rerank semantic-search candidates before they are injected into the system prompt.
 
 ### Security Constraint on the Memory LLM
@@ -136,7 +142,7 @@ You are a memory extraction system. Read the user message and extract durable, r
 
 For each atom, output an object with:
 - "text": a concise, first-person-paraphrased statement (not a command).
-- "type": one of "fact", "observation", "preference", "intent".
+- "type": one of "fact", "preference", "intent", "decision", "goal", "convention", "file", "error", "question".
 - "confidence": a number 0.0-1.0 indicating how certain the memory is.
 
 Rules:
@@ -168,9 +174,8 @@ Extended Memory replaces episode-based recall with semantic search over atom vec
 3. Drop tainted atoms and atoms below `semantic_search_min_score`.
 4. Compute a composite score: `0.6 * cosine_similarity + 0.4 * retention_score`.
 5. Optionally rerank the candidate set with the memory LLM.
-6. Return the top-K atoms, bounded by `memory_budget_chars`.
-
-Predictive-intent recall (using `predictive_intents`) is reserved for phase P5 and is currently a stub.
+6. If `follow_up_anticipation_enabled` is true, generate predicted intents from the current message, recent messages, and the user model, and union their recall results with the literal-query results (including type-targeted recall for `convention`, `file`, and `error` atoms).
+7. Deduplicate, re-rank by retention score, and return the top-K atoms, bounded by `memory_budget_chars`.
 
 ### Ranking Formula
 
@@ -189,21 +194,11 @@ composite_score = 0.6 * cosine_similarity(query_vector, atom_vector)
                   + 0.4 * retention_score
 ```
 
-The final recall result is also bounded by `memory_budget_chars`. Tainted atoms are excluded regardless of score.
+The final recall result is also bounded by `memory_budget_chars`. Tainted atoms are excluded regardless of score. When predictive intent recall is enabled, results from predicted intents are deduplicated with the literal-query results and then re-ranked by retention score before the top-K cut.
 
 ## Predictive Recall
 
-> **Status:** Reserved for phase P5. The config field `predictive_intents` exists and defaults to `3`, but the runtime currently does not generate or search predicted intents. Only the literal user-message query is used for recall.
-
-Predictive recall is the mechanism that creates the "telepathy" effect.
-
-When implemented, the memory LLM will receive:
-
-- The current user message.
-- The current user-state model.
-- The last 5 user messages.
-
-It will return a JSON array of likely follow-up intents. Each intent will be embedded and searched. The union of literal-query matches and predicted-intent matches will be injected into the main agent's system prompt.
+When `follow_up_anticipation_enabled` is true (default), the memory LLM receives the current user message, the last several user messages, and the current user-state model. It returns a JSON array of up to `predictive_intents` likely follow-up intents. Each intent is embedded and searched, and the union of literal-query matches and predicted-intent matches is injected into the main agent's context. For each predicted intent, the system also performs a type-targeted recall for `convention`, `file`, and `error` atoms so the agent can pre-load relevant conventions, references, and known failure modes.
 
 Example:
 
@@ -211,11 +206,11 @@ Example:
 - Predicted intents: "how do I migrate refresh tokens?", "which tests should I update?", "what replaces JWT?"
 - Agent's context now includes prior atoms about auth conventions, prior JWT discussions, and the user's preferred test style before the user asks the next question.
 
+Predicted intents are generated by the dedicated memory LLM when configured; otherwise the main LLM is used. A generation failure falls back to literal-query recall only.
+
 ## User-State Model
 
-> **Status:** Reserved for phase P3. The `UserModel` type and `infer_user_state` config field exist, but the model is not persisted to `extended/user_model.json` and `Summary()` returns empty.
-
-The user model is a planned live, evolving JSON document stored in `extended/user_model.json`.
+The user model is a live, evolving JSON document stored in `extended/user_model.json`.
 
 ```json
 {
@@ -223,7 +218,8 @@ The user model is a planned live, evolving JSON document stored in `extended/use
     "verbosity": "low",
     "humor": "dry",
     "formality": "casual",
-    "explanation_depth": "medium"
+    "explanation_depth": "medium",
+    "tone": "direct"
   },
   "technical": {
     "languages": ["Go"],
@@ -240,15 +236,38 @@ The user model is a planned live, evolving JSON document stored in `extended/use
     "followup_after_refactor": "asks for tests",
     "followup_after_bugfix": "asks for benchmark"
   },
-  "inferred_preferences_pending_review": []
+  "pending_review": [
+    {
+      "id": "<pending-id>",
+      "field": "style.tone",
+      "value": "direct",
+      "evidence": "user said 'get to the point'",
+      "confidence": 0.9,
+      "created_at": "2026-01-01T12:00:00Z"
+    }
+  ]
 }
 ```
 
-When implemented, the model will be updated in a background goroutine every N turns or whenever the inferred focus changes. Inferred preferences will sit in `inferred_preferences_pending_review` until the user confirms or corrects them.
+### Inference
+
+When `infer_user_state` is enabled (default), the model is updated in a background goroutine every `user_state_turn_interval` turns or whenever the inferred project focus changes. The memory LLM receives the current model and recent trusted atoms and returns a JSON diff. Direct, scan-safe field updates are applied immediately; speculative or high-impact inferences are placed in `pending_review` with a field path, value, evidence, and confidence.
+
+### Confirmation and Rejection
+
+Pending reviews must be explicitly confirmed or rejected by the user. They are not recalled until confirmed.
+
+- `odek memory extended pending` lists pending reviews.
+- `odek memory extended confirm <pending-id>` applies the inference to the model and persists it.
+- `odek memory extended reject <pending-id>` removes the inference without applying it.
+
+The agent's `memory` tool can list pending reviews (`list_pending_review`) and reject them (`reject_pending_review`), but it cannot confirm them — confirmation is deliberately reserved for the human-gated CLI to prevent a prompt-injected agent from approving its own inferences.
+
+Loaded and summarized user-model values are scanned for injection patterns; any field that fails the scan is dropped so a tampered `user_model.json` cannot poison the system prompt.
 
 ## Indirect Content Quarantine
 
-Atoms with a tainted `source_class` (`tool_output`, `file_read`, `web`, `mcp`, `subagent`, `agent_generated`) are stored in `extended/quarantine.json` instead of the live atom corpus.
+Atoms with a tainted `source_class` (`tool_output`, `file_read`, `web`, `mcp`, `subagent`, `agent_generated`, `inferred`) are stored in `extended/quarantine.json` instead of the live atom corpus.
 
 A quarantined atom has the same schema as a trusted atom but:
 
@@ -257,13 +276,16 @@ A quarantined atom has the same schema as a trusted atom but:
 - It is excluded from semantic search.
 - It is subject to `quarantine_ttl_days` and may be auto-deleted.
 
-Per-turn extraction only produces `user_said` atoms, so normal user messages do not land in quarantine. Quarantine is used when an atom is explicitly added (via the tool/API or programmatically) with a tainted source class, or when future flows produce such atoms.
+Per-turn extraction only produces `user_said` atoms, so normal user messages do not land in quarantine. Quarantine is used when an atom is explicitly added (via the tool/API or programmatically) with a tainted source class, or when an `inferred` atom is produced by a future flow.
 
-Promotion from quarantine to the live store is reserved for phase P4. Currently the only way to remove a quarantined atom is via `odek memory extended forget <atom-id>` or waiting for the TTL to expire.
+Promotion from quarantine to the live store is implemented and human-gated:
+
+- `odek memory extended promote <atom-id>` moves the atom to the live store with `source_class: user_approved`.
+- `odek memory extended pin <atom-id>` pins a live atom so it is never evicted.
 
 ## Size Cap and Eviction
 
-Extended Memory enforces a hard disk budget. The default is 100 MB and is configurable via `max_size_mb`. The cap applies only to the `extended/` directory; existing `facts/` and `episodes/` keep their own lifecycle controls and are not counted.
+Extended Memory enforces a hard disk budget. The default is 100 MB and is configurable via `max_size_mb`. The cap applies to the `extended/` directory as a whole (atom chunks, vector store, metadata, quarantine, user model, and associations); existing `facts/` and `episodes/` keep their own lifecycle controls and are not counted.
 
 ### Storage Budget at 100 MB
 
@@ -272,8 +294,10 @@ Extended Memory enforces a hard disk budget. The default is 100 MB and is config
 | Atom chunks (`chunks/*.md`) | ~70 MB |
 | Vector store (`vectors.gob` + `vectors.gob.emb`) | ~20 MB |
 | Vector meta (`vectors_meta.json`) | ~1 MB |
-| Metadata (`atoms.json`) | ~8 MB |
+| Metadata (`atoms.json`) | ~5 MB |
 | Quarantine (`quarantine.json`) | ~1 MB |
+| User model (`user_model.json`) | ~1 MB |
+| Associations (`associations.json`) | ~1 MB |
 
 At `atom_max_chars: 300`, this holds roughly 16,000-18,000 atoms.
 
@@ -299,7 +323,7 @@ Eviction order:
 2. Lowest-scoring trusted atoms.
 3. Never evict: pinned atoms.
 
-The vector index is rebuilt from surviving chunks in the background if a large eviction frees enough space (currently >10% of the corpus). The index skeleton (`vectors_meta.json`) and quarantine file are always retained; their growth is bounded by the overall cap. User model and association files are reserved for future phases and are not currently persisted.
+The vector index is rebuilt from surviving chunks in the background if a large eviction frees enough space (currently >10% of the corpus). The index skeleton (`vectors_meta.json`), quarantine file, user model, and associations file are always retained; their growth is bounded by the overall cap.
 
 ## Configuration
 
@@ -325,6 +349,14 @@ Extended Memory is configured under the `memory.extended` section.
       "predictive_intents": 3,
       "auto_extract_per_turn": true,
       "infer_user_state": true,
+      "user_state_turn_interval": 5,
+      "user_state_max_pending": 20,
+      "associations_enabled": true,
+      "association_semantic_top_k": 3,
+      "proactive_return_after_break": true,
+      "style_mirroring_enabled": true,
+      "anaphora_resolution_enabled": true,
+      "follow_up_anticipation_enabled": true,
 
       "llm": {
         "base_url": "http://localhost:11434/v1",
@@ -350,7 +382,7 @@ Extended Memory is configured under the `memory.extended` section.
 | Field | Default | Description |
 |---|---|---|
 | `enabled` | `false` | Master switch for Extended Memory. |
-| `max_size_mb` | `100` | Hard disk budget. |
+| `max_size_mb` | `100` | Hard disk budget for the `extended/` directory. |
 | `semantic_search_top_k` | `10` | Number of atoms returned to the system prompt. |
 | `semantic_search_overfetch` | `4` | Candidate multiplier before filtering and reranking. |
 | `semantic_search_min_score` | `0.55` | Minimum cosine similarity for a candidate to be considered. |
@@ -360,9 +392,17 @@ Extended Memory is configured under the `memory.extended` section.
 | `decay_half_life_days` | `30` | Days until an atom's recall/eviction weight halves, based on creation age. |
 | `quarantine_ttl_days` | `7` | Days before a tainted atom is auto-deleted. |
 | `eviction_policy` | `"retention_decay"` | Eviction algorithm. `"retention_decay"` scores atoms by confidence, age-based decay, and trust; lowest scores are evicted first. Currently the only supported value. |
-| `predictive_intents` | `3` | Reserved for phase P5. Config is accepted but ignored by the current runtime. |
+| `predictive_intents` | `3` | Maximum number of predicted follow-up intents generated per turn when `follow_up_anticipation_enabled` is true. |
 | `auto_extract_per_turn` | `true` | Extract atoms after every user message. |
-| `infer_user_state` | `true` | Reserved for phase P3. Config is accepted but ignored by the current runtime. |
+| `infer_user_state` | `true` | Enable background inference of the persistent user-state model. |
+| `user_state_turn_interval` | `5` | Run user-state inference every N turns (and immediately on focus change). |
+| `user_state_max_pending` | `20` | Maximum pending-review entries kept in the user model. |
+| `associations_enabled` | `true` | Enable bidirectional atom associations (temporal, task, semantic). |
+| `association_semantic_top_k` | `3` | Number of semantic neighbours linked when building associations. |
+| `proactive_return_after_break` | `true` | On session resume, inject a "where you left off" summary. |
+| `style_mirroring_enabled` | `true` | Inject a style-guidance directive based on the inferred user model. |
+| `anaphora_resolution_enabled` | `true` | Resolve the first pronoun in a user message against recent trusted atoms when the top atom's score is high enough. |
+| `follow_up_anticipation_enabled` | `true` | Generate predicted intents and recall atoms for them. |
 | `llm` | omitted | Dedicated memory LLM config. **If omitted, the default global model is used.** A warning is emitted if that model has thinking enabled. |
 | `embedding` | omitted | Dedicated embedding backend. If omitted, uses the shared `embedding` config. |
 
@@ -385,21 +425,27 @@ The existing `memory` tool is extended with new actions:
 {
   "name": "memory",
   "parameters": {
-    "action": "add_atom | search_atoms | forget_atom",
+    "action": "add_atom | search_atoms | forget_atom | pin_atom | list_quarantine | confirm_pending_review | reject_pending_review | list_pending_review",
     "content": "string",
-    "atom_type": "fact | observation | preference | intent",
+    "atom_type": "fact | preference | intent | decision | goal | convention | file | error | question",
     "confidence": 0.0-1.0,
     "query": "string",
-    "atom_id": "string"
+    "atom_id": "string",
+    "pending_id": "string"
   }
 }
 ```
 
 | Action | Parameters | Effect |
 |---|---|---|
-| `add_atom` | `content` (required), `atom_type` (default: `observation`), `confidence` (default: `1.0`) | Manually add a user-approved atom. |
+| `add_atom` | `content` (required), `atom_type` (default: `fact`), `confidence` (default: `1.0`) | Manually add a user-approved atom. |
 | `search_atoms` | `query` (required) | Explicit semantic search over the trusted atom corpus. |
 | `forget_atom` | `atom_id` (required) | Remove an atom by ID from the live store or quarantine. |
+| `pin_atom` | `atom_id` (required) | Pin a live atom so it is never evicted. |
+| `list_quarantine` | — | List tainted atoms awaiting promotion. |
+| `confirm_pending_review` | `pending_id` (required) | **Blocked**: pending reviews must be confirmed via the CLI. |
+| `reject_pending_review` | `pending_id` (required) | Reject a pending user-model inference. |
+| `list_pending_review` | — | List pending user-model inferences. |
 
 Additional CLI commands:
 
@@ -407,24 +453,36 @@ Additional CLI commands:
 odek memory extended forget <atom-id>
 odek memory extended quarantine
 odek memory extended compact
+odek memory extended promote <atom-id>
+odek memory extended pin <atom-id>
+odek memory extended pending
+odek memory extended confirm <pending-id>
+odek memory extended reject <pending-id>
 ```
 
-- `forget` removes an atom from the live store or quarantine.
-- `quarantine` lists tainted atoms awaiting promotion.
-- `compact` triggers a background rebuild of the vector index to reclaim space.
+| Command | Effect |
+|---|---|
+| `forget` | Removes an atom from the live store or quarantine. |
+| `quarantine` | Lists tainted atoms awaiting promotion. |
+| `compact` | Triggers a background rebuild of the vector index to reclaim space. |
+| `promote` | Moves a quarantined atom to the live store as `user_approved`. |
+| `pin` | Pins a live atom so it is never evicted. |
+| `pending` | Lists pending user-model inferences. |
+| `confirm` | Applies a pending user-model inference to the authoritative model. |
+| `reject` | Removes a pending user-model inference without applying it. |
 
-The `promote` and `pin` actions for quarantined atoms are reserved for phase P4 and are not yet exposed via the CLI or the tool surface. The `odek memory promote <session-id>` command that already exists promotes **episodes**, not atoms. Pinning is only available programmatically via `AtomStore.Pin` in the current release.
+The `odek memory promote <session-id>` command that already exists promotes **episodes**, not atoms. Atom promotion and pinning are explicitly human-gated and not exposed as agent tool confirmations.
 
 ## Proactive Behaviors
 
-Once Extended Memory is enabled, the following proactive behaviors are planned:
+Once Extended Memory is enabled, the following proactive behaviors are active by default (each can be disabled via its config flag):
 
-- **Return after break**: on session resume, summarize where the user left off and what the next likely step is.
-- **Anaphora resolution**: the first pronoun in a user message (e.g. "that" or "it") is resolved against recent trusted atoms only when the top atom's semantic similarity is above `semantic_search_min_score`; otherwise the message is passed through unchanged. Only the first pronoun occurrence is replaced.
-- **Follow-up anticipation**: the agent pre-loads related conventions, test patterns, and file references based on predicted intent.
-- **Style mirroring**: tone, verbosity, and explanation depth adapt automatically to the user model.
+- **Return after break**: on session resume, a concise summary of where the user left off and the next likely step is injected as a system message (config: `proactive_return_after_break`).
+- **Anaphora resolution**: the first pronoun in a user message (e.g. "that" or "it") is resolved against recent trusted atoms when the top atom's semantic similarity is above `semantic_search_min_score`; otherwise the message is passed through unchanged. Only the first pronoun occurrence is replaced (config: `anaphora_resolution_enabled`).
+- **Follow-up anticipation**: the agent pre-loads related conventions, file references, and error patterns by generating predicted follow-up intents and recalling atoms for them (config: `follow_up_anticipation_enabled`).
+- **Style mirroring**: tone, verbosity, formality, humor, and explanation depth inferred from the user model are injected as a style-guidance directive into the system prompt (config: `style_mirroring_enabled`).
 
-These behaviors are reserved for phases P3–P5. The current P0–P2 implementation only performs per-turn atom extraction and literal-query semantic recall. When implemented, they will always be data-driven by trusted atoms and the user model, never by tainted content.
+These behaviors are always data-driven by trusted atoms and the user model, never by tainted content.
 
 ## Security Architecture
 
@@ -434,7 +492,7 @@ Extended Memory inherits and extends the provenance model from [MEMORY.md](MEMOR
 - **Taint quarantine**: indirect content is never embedded into the recallable vector space until promoted.
 - **Scan on write**: every atom is scanned for injection patterns, invisible Unicode, and credential patterns before persistence.
 - **Untrusted wrapper**: content from file reads, web fetches, MCP, and subagents is wrapped as untrusted before the main model ever sees it; the memory subsystem treats it as tainted.
-- **No self-promotion**: the agent cannot promote a quarantined atom. Promotion requires an explicit user action or user message.
+- **No self-promotion**: the agent cannot promote a quarantined atom or confirm a pending user-model inference. Promotion and confirmation require an explicit user action or user message.
 - **Bounded storage**: the size cap prevents a memory-DoS where an attacker fills disk with recalled junk.
 - **Dedicated LLM isolation**: a compromised memory LLM can only add atoms; it cannot bypass provenance filtering or inject instructions into the main model's prompt.
 
@@ -466,7 +524,7 @@ For the best cost/latency trade-off:
 }
 ```
 
-This runs memory extraction and embedding locally while the main agent uses a powerful remote reasoning model. Predictive intent generation (P5) will run on the same local stack when implemented.
+This runs memory extraction, user-state inference, predictive intent generation, and embedding locally while the main agent uses a powerful remote reasoning model.
 
 ## Implementation Phases
 
@@ -475,11 +533,9 @@ This runs memory extraction and embedding locally while the main agent uses a po
 | **P0 — Atom store and dedicated LLM** | Config schema, dedicated `llm.Client` wiring, atom schema, per-turn extraction, trusted write path, `memory` tool extensions. | Implemented |
 | **P1 — Vector index and semantic recall** | go-vector store over atoms, top-K semantic search, provenance filtering, min-score gate, optional LLM rerank. | Implemented |
 | **P2 — Size enforcement** | 100 MB cap tracking, `retention_decay` eviction, background compaction. | Implemented |
-| **P3 — User-state model** | Background inference of a persistent user model, pending-review queue, user correction flow. | Reserved stub |
-| **P4 — Quarantine and promotion** | Tainted atom quarantine, inline promotion commands, `quarantine_ttl_days`. Quarantine storage is implemented; atom promotion/pin CLI is reserved. | Partially implemented |
-| **P5 — Predictive and proactive surfaces** | Predicted-intent recall, return-after-break summary, anaphora resolution, style mirroring. | Reserved stub |
-
-Phases P0 and P1 deliver the core "remembers nearly everything" behavior. P2 adds the resource bound. P3-P5 create the anticipatory, telepathic feel and will land in follow-up work.
+| **P3 — User-state model** | Background inference of a persistent user model, pending-review queue, user correction flow. | Implemented |
+| **P4 — Quarantine and promotion** | Tainted atom quarantine, inline promotion commands, `quarantine_ttl_days`, atom pinning. | Implemented |
+| **P5 — Predictive and proactive surfaces** | Predicted-intent recall, return-after-break summary, anaphora resolution, style mirroring, follow-up anticipation. | Implemented |
 
 ## Relationship to Existing Memory
 
@@ -493,10 +549,12 @@ The per-turn system prompt injection order is:
 
 1. Frozen facts.
 2. Buffer summary.
-3. Episode summaries (if still enabled).
-4. Extended Memory atoms (ranked, budgeted).
+3. Style guidance (from the inferred user model, when `style_mirroring_enabled` is true).
+4. User-state block (from the inferred user model, when `infer_user_state` is true).
+5. Episode summaries (if still enabled).
+6. Extended Memory atoms (ranked, budgeted).
 
-Operators can disable Extended Memory at any time and fall back to the original behavior.
+Operators can disable Extended Memory at any time and fall back to the original behavior. Individual P3–P5 surfaces can also be disabled independently via their config flags.
 
 ## Open Questions / Future Work
 
@@ -504,6 +562,6 @@ Operators can disable Extended Memory at any time and fall back to the original 
 2. Should inferred preferences require explicit confirmation, or should they be recallable immediately with a confidence threshold?
 3. Should quarantined atoms still be searchable via an explicit `memory search_quarantine` tool? The current `quarantine` CLI lists them but does not search by embedding.
 4. Should associations be auto-discovered by cosine similarity only, or also extracted explicitly by the memory LLM?
-5. When will the P3–P5 reserved extension points (user-state model, full quarantine promotion, predictive/proactive surfaces) be fully implemented?
+5. Should the user model support richer structured types (e.g., nested project history, timeline of blockers)?
 
 These questions can be resolved behind config flags so operators can choose their preferred privacy/convenience trade-off.

@@ -145,9 +145,6 @@ func (u *UserModel) Update(atom MemoryAtom) {
 	if atom.Context.Project != "" && atom.Context.Project != u.state.CurrentFocus.Project {
 		u.focusChanged = true
 	}
-	if atom.Context.Project == "" && atom.Context.Project != u.state.CurrentFocus.Project {
-		// no change: empty project means no provenance
-	}
 	// Task focus changes are inferred from the LLM, not individual atoms.
 }
 

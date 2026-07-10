@@ -164,12 +164,12 @@ Subagents do NOT get a `memory` tool — they cannot modify parent memory.
 Key properties:
 
 - **Opt-in only**: `memory.extended.enabled` defaults to `false`.
-- **Atoms**, not episodes: stores fine-grained facts, observations, preferences, and intents extracted from user messages.
+- **Atoms**, not episodes: stores fine-grained facts, preferences, intents, decisions, goals, conventions, file references, errors, and questions extracted from user messages.
 - **Semantic recall**: uses the same embedding backend as episodes (`memory.embedding` or the shared top-level `embedding`) to rank atoms by cosine similarity.
-- **Trust boundary**: per-turn extraction only produces `user_said` atoms. Tainted source classes (`tool_output`, `file_read`, `web`, `mcp`, `subagent`, `agent_generated`) can be stored but are quarantined and excluded from recall until promoted.
+- **Trust boundary**: per-turn extraction only produces `user_said` atoms. Tainted source classes (`tool_output`, `file_read`, `web`, `mcp`, `subagent`, `agent_generated`, `inferred`) can be stored but are quarantined and excluded from recall until promoted.
 - **Size cap**: defaults to 100 MB with `retention_decay` eviction; pinned atoms are never evicted.
-- **Tool surface**: `memory` tool actions `add_atom`, `search_atoms`, and `forget_atom`.
-- **CLI surface**: `odek memory extended forget|quarantine|compact`.
+- **Tool surface**: `memory` tool actions `add_atom`, `search_atoms`, `forget_atom`, `pin_atom`, `list_quarantine`, `confirm_pending_review`, `reject_pending_review`, and `list_pending_review`.
+- **CLI surface**: `odek memory extended forget|promote|pin|quarantine|compact|pending|confirm|reject`.
 
 When enabled, Extended Memory atoms are injected as a separate system message after the legacy memory block and episode summaries on each turn. For the full design, config reference, and implementation status, see [docs/EXTENDED_MEMORY.md](EXTENDED_MEMORY.md).
 
