@@ -15,8 +15,10 @@ type sizedAtom struct {
 // Evictor selects atoms for eviction when the store approaches its size cap.
 type Evictor interface {
 	// SelectForEviction returns atom IDs to remove to free at least needBytes.
-	// sizedAtoms provides the actual disk size for each atom.
-	SelectForEviction(sizedAtoms []sizedAtom, needBytes int64) []string
+	// sizedAtoms provides the actual disk size for each atom. freed reports the
+	// number of bytes that removing ids would release, and ok is true when the
+	// requested needBytes can be covered by non-pinned atoms.
+	SelectForEviction(sizedAtoms []sizedAtom, needBytes int64) (ids []string, freed int64, ok bool)
 }
 
 // newEvictor builds the eviction strategy selected by cfg.EvictionPolicy.
@@ -36,9 +38,9 @@ type retentionDecayEvictor struct {
 }
 
 // SelectForEviction returns IDs to remove. Pinned atoms are never selected.
-func (e *retentionDecayEvictor) SelectForEviction(sizedAtoms []sizedAtom, needBytes int64) []string {
+func (e *retentionDecayEvictor) SelectForEviction(sizedAtoms []sizedAtom, needBytes int64) (ids []string, freed int64, ok bool) {
 	if needBytes <= 0 {
-		return nil
+		return nil, 0, true
 	}
 	scored := make([]struct {
 		sized sizedAtom
@@ -58,8 +60,6 @@ func (e *retentionDecayEvictor) SelectForEviction(sizedAtoms []sizedAtom, needBy
 		return scored[i].score < scored[j].score
 	})
 
-	var freed int64
-	var ids []string
 	for _, s := range scored {
 		if freed >= needBytes {
 			break
@@ -72,8 +72,9 @@ func (e *retentionDecayEvictor) SelectForEviction(sizedAtoms []sizedAtom, needBy
 	}
 	if freed < needBytes {
 		log.Printf("extended memory: eviction freed only %d of %d requested bytes", freed, needBytes)
+		return ids, freed, false
 	}
-	return ids
+	return ids, freed, true
 }
 
 // buildSizedAtoms resolves the actual on-disk size for each atom. If the store

@@ -33,6 +33,8 @@ type ExtendedMemory struct {
 
 	// testCapBytes overrides cfg.MaxSizeMB in tests. 0 means use cfg.
 	testCapBytes int64
+
+	closeOnce sync.Once
 }
 
 // New creates an ExtendedMemory instance rooted at dir.
@@ -285,28 +287,16 @@ func (em *ExtendedMemory) enforceCap(ctx context.Context, newBytes int64) error 
 		log.Printf("extended memory: evicted %d expired quarantined atom(s)", removed)
 	}
 
-	storeSize, err := em.store.Size()
-	if err != nil {
-		log.Printf("extended memory: store size failed: %v", err)
-		storeSize = 0
-	}
 	quarantineSize, err := em.quarantine.Size()
 	if err != nil {
 		log.Printf("extended memory: quarantine size failed: %v", err)
 		quarantineSize = 0
 	}
-	indexSize := em.index.Size()
-	total := storeSize + quarantineSize + indexSize + newBytes
 
-	if total <= maxBytes {
-		return nil
-	}
-
-	need := total - maxBytes + 4096 // headroom
 	atoms, err := em.store.List()
 	if err != nil {
 		log.Printf("extended memory: list atoms for eviction failed: %v", err)
-		return nil
+		return fmt.Errorf("extended memory: list atoms: %w", err)
 	}
 	sized := buildSizedAtoms(em.store, atoms)
 	// Include amortized vector cost in each atom's footprint.
@@ -314,8 +304,19 @@ func (em *ExtendedMemory) enforceCap(ctx context.Context, newBytes int64) error 
 		sized[i].size += vectorCost(len(atoms))
 	}
 
+	var existingEffective int64
+	for _, s := range sized {
+		existingEffective += s.size
+	}
+	total := existingEffective + quarantineSize + newBytes
+
+	if total <= maxBytes {
+		return nil
+	}
+
+	need := total - maxBytes + 4096 // headroom
 	before := len(atoms)
-	ids := em.evictor.SelectForEviction(sized, need)
+	ids, _, ok := em.evictor.SelectForEviction(sized, need)
 	for _, id := range ids {
 		_ = em.store.Remove(id)
 		em.index.markDirty()
@@ -326,6 +327,10 @@ func (em *ExtendedMemory) enforceCap(ctx context.Context, newBytes int64) error 
 		if float64(len(ids)) > 0.1*float64(before) {
 			em.index.Compact()
 		}
+	}
+
+	if !ok {
+		return fmt.Errorf("extended memory: cannot free %s; all atoms are pinned or no evictable atoms exist", sizeLabel(need))
 	}
 	return nil
 }
@@ -360,6 +365,18 @@ func (em *ExtendedMemory) Compact() {
 		return
 	}
 	em.index.Compact()
+}
+
+// Close waits for background operations to finish. It is safe to call
+// multiple times.
+func (em *ExtendedMemory) Close() error {
+	if em == nil {
+		return nil
+	}
+	em.closeOnce.Do(func() {
+		em.index.Wait()
+	})
+	return nil
 }
 
 // Size returns the current on-disk size of the Extended Memory store.

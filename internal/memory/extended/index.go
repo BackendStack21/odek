@@ -37,6 +37,7 @@ type vectorMeta struct {
 // recall. It rebuilds from disk when dirty and caches the result.
 type atomVectorIndex struct {
 	mu     sync.RWMutex
+	wg     sync.WaitGroup
 	dir    string
 	store  *vector.Store
 	emb    textEmbedder
@@ -203,10 +204,20 @@ func (vi *atomVectorIndex) Compact() {
 	vi.dirty = true
 	vi.dirtySeq++
 	vi.mu.Unlock()
+	vi.wg.Add(1)
 	go func() {
+		defer vi.wg.Done()
 		vi.ensureFresh()
 		log.Printf("extended memory: vector index compacted")
 	}()
+}
+
+// Wait blocks until in-flight background compaction goroutines finish.
+func (vi *atomVectorIndex) Wait() {
+	if vi == nil {
+		return
+	}
+	vi.wg.Wait()
 }
 
 // tryLoadLocked attempts to load persisted state. Caller must hold vi.mu.
