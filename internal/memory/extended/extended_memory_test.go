@@ -811,8 +811,8 @@ func TestUserModelAndAssociationsStubs(t *testing.T) {
 
 	assoc := NewAssociations()
 	assoc.Link("a", "b") // should not panic
-	if got := assoc.Related("a"); got != nil {
-		t.Errorf("expected nil related atoms, got %v", got)
+	if got := assoc.Related("a"); len(got) != 1 || got[0] != "b" {
+		t.Errorf("expected related [b], got %v", got)
 	}
 }
 
@@ -836,5 +836,240 @@ func TestAddAtomsBatchFailurePath(t *testing.T) {
 	live, _ := em.List()
 	if len(live) != 2 {
 		t.Errorf("expected 2 live atoms, got %d", len(live))
+	}
+}
+
+func TestExtendedMemoryUserStateStyle(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.Enabled = boolPtr(true)
+	cfg.UserStateTurnInterval = 1
+	llm := newMockLLM(extractJSONResponse("User prefers formal tone"), `{"style":{"tone":"formal"}}`)
+	em := New(dir, llm, cfg)
+	defer em.Close()
+	em.index.newEmb = func() embedding.TextEmbedder { return newMockEmbedder(vectorDim) }
+	em.index.emb = newMockEmbedder(vectorDim)
+
+	em.OnUserMessage(AtomContext{SessionID: "s1", Turn: 1}, "Use a formal tone please")
+	em.Close()
+
+	style := em.UserStateStyle()
+	if style == nil {
+		t.Fatal("expected UserStateStyle, got nil")
+	}
+	if style.Tone != "formal" {
+		t.Errorf("tone = %q, want formal", style.Tone)
+	}
+}
+
+func TestExtendedMemoryUserStateStyleDisabled(t *testing.T) {
+	dir := t.TempDir()
+	em := New(dir, newMockLLM(), DefaultConfig())
+	defer em.Close()
+	if em.UserStateStyle() != nil {
+		t.Error("expected nil style when disabled")
+	}
+}
+
+func TestExtendedMemoryPendingReviewLifecycle(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.Enabled = boolPtr(true)
+	cfg.UserStateTurnInterval = 1
+	llm := newMockLLM(
+		extractJSONResponse("User likes concise output"),
+		`{"pending":[{"field":"style.verbosity","value":"low","evidence":"user said concise","confidence":0.9}]}`,
+	)
+	em := New(dir, llm, cfg)
+	defer em.Close()
+	em.index.newEmb = func() embedding.TextEmbedder { return newMockEmbedder(vectorDim) }
+	em.index.emb = newMockEmbedder(vectorDim)
+
+	em.OnUserMessage(AtomContext{SessionID: "s1", Turn: 1}, "Keep it concise")
+	em.Close()
+
+	pending, err := em.ListPendingReview()
+	if err != nil {
+		t.Fatalf("ListPendingReview failed: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("expected 1 pending review, got %d", len(pending))
+	}
+	if pending[0].Field != "style.verbosity" {
+		t.Errorf("field = %q, want style.verbosity", pending[0].Field)
+	}
+
+	if err := em.ConfirmPendingReview(pending[0].ID); err != nil {
+		t.Fatalf("ConfirmPendingReview failed: %v", err)
+	}
+	style := em.UserStateStyle()
+	if style == nil || style.Verbosity != "low" {
+		t.Errorf("expected verbosity low after confirm, got %+v", style)
+	}
+
+	pending, _ = em.ListPendingReview()
+	if len(pending) != 0 {
+		t.Errorf("expected 0 pending after confirm, got %d", len(pending))
+	}
+}
+
+func TestExtendedMemoryRejectPendingReview(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.Enabled = boolPtr(true)
+	cfg.UserStateTurnInterval = 1
+	llm := newMockLLM(
+		extractJSONResponse("User likes concise output"),
+		`{"pending":[{"field":"style.verbosity","value":"low","evidence":"user said concise","confidence":0.9}]}`,
+	)
+	em := New(dir, llm, cfg)
+	defer em.Close()
+
+	em.OnUserMessage(AtomContext{SessionID: "s1", Turn: 1}, "Keep it concise")
+	em.Close()
+
+	pending, _ := em.ListPendingReview()
+	if len(pending) != 1 {
+		t.Fatal("expected pending review")
+	}
+	if err := em.RejectPendingReview(pending[0].ID); err != nil {
+		t.Fatalf("RejectPendingReview failed: %v", err)
+	}
+	pending, _ = em.ListPendingReview()
+	if len(pending) != 0 {
+		t.Errorf("expected 0 pending after reject, got %d", len(pending))
+	}
+}
+
+func TestExtendedMemoryPendingReviewDisabled(t *testing.T) {
+	dir := t.TempDir()
+	em := New(dir, newMockLLM(), DefaultConfig())
+	defer em.Close()
+
+	if _, err := em.ListPendingReview(); err != nil {
+		t.Errorf("ListPendingReview on disabled should not error, got %v", err)
+	}
+	if err := em.ConfirmPendingReview("x"); err == nil {
+		t.Error("expected ConfirmPendingReview to fail when disabled")
+	}
+	if err := em.RejectPendingReview("x"); err == nil {
+		t.Error("expected RejectPendingReview to fail when disabled")
+	}
+}
+
+func TestExtendedMemoryFormatUserStateContext(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.Enabled = boolPtr(true)
+	cfg.UserStateTurnInterval = 1
+	llm := newMockLLM(
+		extractJSONResponse("User prefers dark mode"),
+		`{"style":{"tone":"dry"},"technical":{"languages":["Go"]}}`,
+	)
+	em := New(dir, llm, cfg)
+	defer em.Close()
+	em.index.newEmb = func() embedding.TextEmbedder { return newMockEmbedder(vectorDim) }
+	em.index.emb = newMockEmbedder(vectorDim)
+
+	em.OnUserMessage(AtomContext{SessionID: "s1", Turn: 1}, "Use dry tone, I code in Go")
+	em.Close()
+
+	ctx := em.FormatUserStateContext()
+	if ctx == "" {
+		t.Error("expected non-empty user state context")
+	}
+	if !strings.Contains(ctx, "dry") {
+		t.Errorf("expected context to contain tone, got %q", ctx)
+	}
+	if !strings.Contains(ctx, "Go") {
+		t.Errorf("expected context to contain Go, got %q", ctx)
+	}
+}
+
+func TestExtendedMemoryReturnAfterBreak(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.Enabled = boolPtr(true)
+	llm := newMockLLM("You were reviewing the auth refactor.")
+	em := New(dir, llm, cfg)
+	defer em.Close()
+	em.index.newEmb = func() embedding.TextEmbedder { return newMockEmbedder(vectorDim) }
+	em.index.emb = newMockEmbedder(vectorDim)
+
+	_ = em.AddAtom(context.Background(), MemoryAtom{Text: "Review auth refactor", SourceClass: SourceUserSaid, Type: TypeFact})
+	resume := em.ReturnAfterBreak(context.Background())
+	if resume == "" {
+		t.Fatal("expected return-after-break summary")
+	}
+	if !strings.Contains(resume, "WHERE YOU LEFT OFF") {
+		t.Errorf("expected banner, got %q", resume)
+	}
+	if !strings.Contains(resume, "auth refactor") {
+		t.Errorf("expected summary, got %q", resume)
+	}
+}
+
+func TestExtendedMemoryReturnAfterBreakDisabled(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.Enabled = boolPtr(true)
+	cfg.ProactiveReturnAfterBreak = boolPtr(false)
+	em := New(dir, newMockLLM(), cfg)
+	defer em.Close()
+	_ = em.AddAtom(context.Background(), MemoryAtom{Text: "Review auth refactor", SourceClass: SourceUserSaid, Type: TypeFact})
+	if em.ReturnAfterBreak(context.Background()) != "" {
+		t.Error("expected empty return-after-break when disabled")
+	}
+}
+
+func TestExtendedMemoryAnaphoraResolve(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.Enabled = boolPtr(true)
+	cfg.SemanticSearchMinScore = 0.001 // mock embedder gives low similarity; accept any match
+	em := New(dir, newMockLLM(), cfg)
+	defer em.Close()
+	em.index.newEmb = func() embedding.TextEmbedder { return newMockEmbedder(vectorDim) }
+	em.index.emb = newMockEmbedder(vectorDim)
+	em.index.markDirty()
+
+	_ = em.AddAtom(context.Background(), MemoryAtom{Text: "Postgres database", SourceClass: SourceUserSaid, Type: TypeFact})
+	em.index.Compact()
+
+	resolved := em.AnaphoraResolve("How do I configure it?")
+	if !strings.Contains(resolved, "Postgres database") {
+		t.Errorf("expected anaphora resolution to replace pronoun, got %q", resolved)
+	}
+}
+
+func TestExtendedMemoryAnaphoraResolveDisabled(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.Enabled = boolPtr(true)
+	cfg.AnaphoraResolutionEnabled = boolPtr(false)
+	em := New(dir, newMockLLM(), cfg)
+	defer em.Close()
+	msg := "How do I configure it?"
+	if got := em.AnaphoraResolve(msg); got != msg {
+		t.Errorf("expected unchanged message when disabled, got %q", got)
+	}
+}
+
+func TestExtendedMemoryNilSafeMethods(t *testing.T) {
+	var em *ExtendedMemory
+	if em.UserStateStyle() != nil {
+		t.Error("expected nil UserStateStyle on nil em")
+	}
+	if em.FormatUserStateContext() != "" {
+		t.Error("expected empty FormatUserStateContext on nil em")
+	}
+	if em.AnaphoraResolve("x") != "x" {
+		t.Error("expected AnaphoraResolve passthrough on nil em")
+	}
+	if em.ReturnAfterBreak(context.Background()) != "" {
+		t.Error("expected empty ReturnAfterBreak on nil em")
+	}
+	if _, err := em.ListPendingReview(); err != nil {
+		t.Error("expected ListPendingReview no error on nil em")
 	}
 }

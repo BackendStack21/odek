@@ -16,22 +16,30 @@ import (
 
 // Config controls the Extended Memory subsystem.
 type Config struct {
-	Enabled                 *bool             `json:"enabled,omitempty"`
-	MaxSizeMB               int               `json:"max_size_mb,omitempty"`
-	SemanticSearchTopK      int               `json:"semantic_search_top_k,omitempty"`
-	SemanticSearchOverfetch int               `json:"semantic_search_overfetch,omitempty"`
-	SemanticSearchMinScore  float32           `json:"semantic_search_min_score,omitempty"`
-	SemanticSearchRerank    *bool             `json:"semantic_search_rerank,omitempty"`
-	AtomMaxChars            int               `json:"atom_max_chars,omitempty"`
-	MemoryBudgetChars       int               `json:"memory_budget_chars,omitempty"`
-	DecayHalfLifeDays       int               `json:"decay_half_life_days,omitempty"`
-	QuarantineTTLDays       int               `json:"quarantine_ttl_days,omitempty"`
-	EvictionPolicy          string            `json:"eviction_policy,omitempty"`
-	PredictiveIntents       int               `json:"predictive_intents,omitempty"`
-	AutoExtractPerTurn      *bool             `json:"auto_extract_per_turn,omitempty"`
-	InferUserState          *bool             `json:"infer_user_state,omitempty"`
-	LLM                     *LLMConfig        `json:"llm,omitempty"`
-	Embedding               *embedding.Config `json:"embedding,omitempty"`
+	Enabled                     *bool             `json:"enabled,omitempty"`
+	MaxSizeMB                   int               `json:"max_size_mb,omitempty"`
+	SemanticSearchTopK          int               `json:"semantic_search_top_k,omitempty"`
+	SemanticSearchOverfetch     int               `json:"semantic_search_overfetch,omitempty"`
+	SemanticSearchMinScore      float32           `json:"semantic_search_min_score,omitempty"`
+	SemanticSearchRerank        *bool             `json:"semantic_search_rerank,omitempty"`
+	AtomMaxChars                int               `json:"atom_max_chars,omitempty"`
+	MemoryBudgetChars           int               `json:"memory_budget_chars,omitempty"`
+	DecayHalfLifeDays           int               `json:"decay_half_life_days,omitempty"`
+	QuarantineTTLDays           int               `json:"quarantine_ttl_days,omitempty"`
+	EvictionPolicy              string            `json:"eviction_policy,omitempty"`
+	PredictiveIntents           int               `json:"predictive_intents,omitempty"`
+	AutoExtractPerTurn          *bool             `json:"auto_extract_per_turn,omitempty"`
+	InferUserState              *bool             `json:"infer_user_state,omitempty"`
+	UserStateTurnInterval       int               `json:"user_state_turn_interval,omitempty"`
+	UserStateMaxPending         int               `json:"user_state_max_pending,omitempty"`
+	AssociationsEnabled         *bool             `json:"associations_enabled,omitempty"`
+	AssociationSemanticTopK     int               `json:"association_semantic_top_k,omitempty"`
+	ProactiveReturnAfterBreak   *bool             `json:"proactive_return_after_break,omitempty"`
+	StyleMirroringEnabled       *bool             `json:"style_mirroring_enabled,omitempty"`
+	AnaphoraResolutionEnabled   *bool             `json:"anaphora_resolution_enabled,omitempty"`
+	FollowUpAnticipationEnabled *bool             `json:"follow_up_anticipation_enabled,omitempty"`
+	LLM                         *LLMConfig        `json:"llm,omitempty"`
+	Embedding                   *embedding.Config `json:"embedding,omitempty"`
 }
 
 // LLMConfig selects a dedicated LLM for Extended Memory extraction and
@@ -53,20 +61,28 @@ func boolPtr(b bool) *bool { return &b }
 // Extended Memory is opt-in: Enabled defaults to false.
 func DefaultConfig() Config {
 	return Config{
-		Enabled:                 boolPtr(false),
-		MaxSizeMB:               100,
-		SemanticSearchTopK:      10,
-		SemanticSearchOverfetch: 4,
-		SemanticSearchMinScore:  0.55,
-		SemanticSearchRerank:    boolPtr(true),
-		AtomMaxChars:            300,
-		MemoryBudgetChars:       2000,
-		DecayHalfLifeDays:       30,
-		QuarantineTTLDays:       7,
-		EvictionPolicy:          "retention_decay",
-		PredictiveIntents:       3,
-		AutoExtractPerTurn:      boolPtr(true),
-		InferUserState:          boolPtr(true),
+		Enabled:                     boolPtr(false),
+		MaxSizeMB:                   100,
+		SemanticSearchTopK:          10,
+		SemanticSearchOverfetch:     4,
+		SemanticSearchMinScore:      0.55,
+		SemanticSearchRerank:        boolPtr(true),
+		AtomMaxChars:                300,
+		MemoryBudgetChars:           2000,
+		DecayHalfLifeDays:           30,
+		QuarantineTTLDays:           7,
+		EvictionPolicy:              "retention_decay",
+		PredictiveIntents:           3,
+		AutoExtractPerTurn:          boolPtr(true),
+		InferUserState:              boolPtr(true),
+		UserStateTurnInterval:       5,
+		UserStateMaxPending:         20,
+		AssociationsEnabled:         boolPtr(true),
+		AssociationSemanticTopK:     3,
+		ProactiveReturnAfterBreak:   boolPtr(true),
+		StyleMirroringEnabled:       boolPtr(true),
+		AnaphoraResolutionEnabled:   boolPtr(true),
+		FollowUpAnticipationEnabled: boolPtr(true),
 	}
 }
 
@@ -114,6 +130,30 @@ func Resolve(cfg Config) Config {
 	}
 	if cfg.InferUserState != nil {
 		def.InferUserState = cfg.InferUserState
+	}
+	if cfg.UserStateTurnInterval > 0 {
+		def.UserStateTurnInterval = cfg.UserStateTurnInterval
+	}
+	if cfg.UserStateMaxPending > 0 {
+		def.UserStateMaxPending = cfg.UserStateMaxPending
+	}
+	if cfg.AssociationsEnabled != nil {
+		def.AssociationsEnabled = cfg.AssociationsEnabled
+	}
+	if cfg.AssociationSemanticTopK > 0 {
+		def.AssociationSemanticTopK = cfg.AssociationSemanticTopK
+	}
+	if cfg.ProactiveReturnAfterBreak != nil {
+		def.ProactiveReturnAfterBreak = cfg.ProactiveReturnAfterBreak
+	}
+	if cfg.StyleMirroringEnabled != nil {
+		def.StyleMirroringEnabled = cfg.StyleMirroringEnabled
+	}
+	if cfg.AnaphoraResolutionEnabled != nil {
+		def.AnaphoraResolutionEnabled = cfg.AnaphoraResolutionEnabled
+	}
+	if cfg.FollowUpAnticipationEnabled != nil {
+		def.FollowUpAnticipationEnabled = cfg.FollowUpAnticipationEnabled
 	}
 	if cfg.LLM != nil {
 		def.LLM = cfg.LLM

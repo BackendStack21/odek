@@ -12,15 +12,21 @@ import (
 
 // Recall performs semantic search over the atom store.
 type Recall struct {
-	store *AtomStore
-	index *atomVectorIndex
-	llm   LLMClient
-	cfg   Config
+	store     *AtomStore
+	index     *atomVectorIndex
+	llm       LLMClient
+	predictor *Predictor
+	cfg       Config
 }
 
 // NewRecall creates a Recall instance.
 func NewRecall(store *AtomStore, index *atomVectorIndex, llm LLMClient, cfg Config) *Recall {
 	return &Recall{store: store, index: index, llm: llm, cfg: cfg}
+}
+
+// SetPredictor sets the optional predictor used for predictive recall.
+func (r *Recall) SetPredictor(p *Predictor) {
+	r.predictor = p
 }
 
 // QueryResult carries the atoms and formatted context from a recall query.
@@ -35,7 +41,7 @@ func (r *Recall) Query(ctx context.Context, query string) (string, error) {
 	if r.store == nil || r.index == nil {
 		return "", nil
 	}
-	res, err := r.queryAtoms(ctx, query)
+	res, err := r.queryAtomsWithPrediction(ctx, query)
 	if err != nil {
 		log.Printf("extended memory: recall query failed: %v", err)
 		return "", err
@@ -44,6 +50,80 @@ func (r *Recall) Query(ctx context.Context, query string) (string, error) {
 		return "", nil
 	}
 	return r.formatContext(res), nil
+}
+
+// queryAtomsWithPrediction unions literal-query results with predicted-intent
+// results when prediction is enabled.
+func (r *Recall) queryAtomsWithPrediction(ctx context.Context, query string) ([]MemoryAtom, error) {
+	all := make(map[string]MemoryAtom)
+	literal, err := r.queryAtoms(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	for _, a := range literal {
+		all[a.ID] = a
+	}
+
+	if r.predictor != nil && r.cfg.PredictiveIntents > 0 &&
+		r.cfg.FollowUpAnticipationEnabled != nil && *r.cfg.FollowUpAnticipationEnabled {
+		intents, err := r.predictor.Predict(ctx, query, nil, UserState{})
+		if err != nil {
+			log.Printf("extended memory: predicted-intent generation failed: %v", err)
+		}
+		for _, intent := range intents {
+			predicted, err := r.queryAtoms(ctx, intent.Text)
+			if err != nil {
+				continue
+			}
+			for _, a := range predicted {
+				all[a.ID] = a
+			}
+			// Follow-up anticipation: recall convention/file/error atoms.
+			typed, err := r.queryAtomsByType(ctx, intent.Text, []string{TypeConvention, TypeFile, TypeError})
+			if err != nil {
+				continue
+			}
+			for _, a := range typed {
+				all[a.ID] = a
+			}
+		}
+	}
+
+	out := make([]MemoryAtom, 0, len(all))
+	for _, a := range all {
+		out = append(out, a)
+	}
+	// Re-rank by the composite score already computed by queryAtoms.
+	sort.Slice(out, func(i, j int) bool {
+		return RetentionScore(out[i], r.cfg.DecayHalfLifeDays) > RetentionScore(out[j], r.cfg.DecayHalfLifeDays)
+	})
+	k := r.cfg.SemanticSearchTopK
+	if k <= 0 {
+		k = DefaultConfig().SemanticSearchTopK
+	}
+	if len(out) > k {
+		out = out[:k]
+	}
+	return out, nil
+}
+
+// queryAtomsByType returns atoms matching the query whose type is in types.
+func (r *Recall) queryAtomsByType(ctx context.Context, query string, types []string) ([]MemoryAtom, error) {
+	atoms, err := r.queryAtoms(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	want := make(map[string]bool, len(types))
+	for _, t := range types {
+		want[t] = true
+	}
+	out := make([]MemoryAtom, 0, len(atoms))
+	for _, a := range atoms {
+		if want[a.Type] {
+			out = append(out, a)
+		}
+	}
+	return out, nil
 }
 
 // queryAtoms returns ranked atoms for the query.

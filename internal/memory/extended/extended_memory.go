@@ -2,9 +2,12 @@ package extended
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,6 +26,7 @@ type ExtendedMemory struct {
 	quarantine *Quarantine
 	userModel  *UserModel
 	assoc      *Associations
+	predictor  *Predictor
 	llm        LLMClient
 
 	dir      string
@@ -34,7 +38,9 @@ type ExtendedMemory struct {
 	// testCapBytes overrides cfg.MaxSizeMB in tests. 0 means use cfg.
 	testCapBytes int64
 
-	closeOnce sync.Once
+	closeOnce      sync.Once
+	pendingWg      sync.WaitGroup
+	userStateTurns int
 }
 
 // New creates an ExtendedMemory instance rooted at dir.
@@ -56,10 +62,13 @@ func New(dir string, llm LLMClient, cfg Config) *ExtendedMemory {
 		recall:     NewRecall(store, index, llm, cfg),
 		evictor:    newEvictor(cfg),
 		quarantine: NewQuarantine(dir),
-		userModel:  NewUserModel(),
-		assoc:      NewAssociations(),
+		userModel:  NewUserModelWithStore(dir, llm, cfg),
+		assoc:      NewAssociationsWithDir(dir),
+		predictor:  NewPredictor(llm, cfg),
 		llm:        llm,
 	}
+	em.recall.SetPredictor(em.predictor)
+	_ = em.userModel.Load()
 	em.quarantine.SetTTLDays(cfg.QuarantineTTLDays)
 	if removed, err := em.quarantine.EvictExpired(cfg.QuarantineTTLDays); err != nil {
 		log.Printf("extended memory: startup quarantine eviction failed: %v", err)
@@ -135,9 +144,33 @@ func (em *ExtendedMemory) AddAtom(ctx context.Context, atom MemoryAtom) error {
 		log.Printf("extended memory: atom store add failed: %v", err)
 		return err
 	}
-	em.index.markDirty()
 	em.userModel.Update(atom)
+	if em.cfg.AssociationsEnabled != nil && *em.cfg.AssociationsEnabled {
+		em.buildAssociations(atom)
+		atom.Context.RelatedAtomIDs = em.assoc.Related(atom.ID)
+		if err := em.store.Add(atom, em.cfg.AtomMaxChars); err != nil {
+			log.Printf("extended memory: association context update failed: %v", err)
+		}
+		_ = em.assoc.Persist()
+	}
+	em.index.markDirty()
 	return nil
+}
+
+// UserStateStyle returns the inferred style state for style mirroring, or nil
+// if style mirroring is disabled or no style has been inferred.
+func (em *ExtendedMemory) UserStateStyle() *StyleState {
+	if em == nil || !em.Enabled() || em.userModel == nil {
+		return nil
+	}
+	if em.cfg.StyleMirroringEnabled == nil || !*em.cfg.StyleMirroringEnabled {
+		return nil
+	}
+	style := em.userModel.State().Style
+	if styleEmpty(style) {
+		return nil
+	}
+	return &style
 }
 
 // projectedAtomSize estimates the on-disk bytes this atom will consume.
@@ -163,6 +196,198 @@ func (em *ExtendedMemory) AddAtoms(ctx context.Context, atoms []MemoryAtom) erro
 	return nil
 }
 
+// buildAssociations links a new atom to related atoms.
+func (em *ExtendedMemory) buildAssociations(atom MemoryAtom) {
+	if em.assoc == nil {
+		return
+	}
+	atoms, err := em.store.List()
+	if err != nil {
+		log.Printf("extended memory: list atoms for associations failed: %v", err)
+		return
+	}
+	// Temporal: adjacent turns in the same session.
+	for _, other := range atoms {
+		if other.ID == atom.ID {
+			continue
+		}
+		if other.Context.SessionID == "" || other.Context.SessionID != atom.Context.SessionID {
+			continue
+		}
+		if abs(other.Context.Turn-atom.Context.Turn) <= 2 {
+			em.assoc.Link(atom.ID, other.ID)
+		}
+	}
+	// Task: same project and durable task-related types.
+	taskTypes := map[string]bool{TypeGoal: true, TypeDecision: true, TypeConvention: true, TypeIntent: true}
+	if atom.Context.Project != "" && taskTypes[atom.Type] {
+		for _, other := range atoms {
+			if other.ID == atom.ID {
+				continue
+			}
+			if other.Context.Project == atom.Context.Project && taskTypes[other.Type] {
+				em.assoc.Link(atom.ID, other.ID)
+			}
+		}
+	}
+	// Semantic: top-K cosine neighbours.
+	k := em.cfg.AssociationSemanticTopK
+	if k > 0 && em.index != nil {
+		candidates := em.index.search(atom.Text, k+1)
+		for _, c := range candidates {
+			if c.ID == atom.ID {
+				continue
+			}
+			if c.Score >= em.cfg.SemanticSearchMinScore {
+				em.assoc.Link(atom.ID, c.ID)
+			}
+		}
+	}
+}
+
+func abs(a int) int {
+	if a < 0 {
+		return -a
+	}
+	return a
+}
+
+// inferUserState runs the background user-model inference goroutine.
+func (em *ExtendedMemory) inferUserState(ctx context.Context) {
+	if em == nil || em.userModel == nil {
+		return
+	}
+	if err := em.userModel.Infer(ctx); err != nil {
+		log.Printf("extended memory: user-state inference failed: %v", err)
+	}
+}
+
+// triggerBackgroundInference starts a goroutine to infer the user model if
+// the turn interval is reached or the focus shifted.
+func (em *ExtendedMemory) triggerBackgroundInference() {
+	if em == nil || !em.Enabled() || em.userModel == nil || !em.userModel.Enabled() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	em.pendingWg.Add(1)
+	go func() {
+		defer func() {
+			cancel()
+			em.pendingWg.Done()
+		}()
+		em.inferUserState(ctx)
+	}()
+}
+
+// ConfirmPendingReview applies a pending review to the user model.
+func (em *ExtendedMemory) ConfirmPendingReview(id string) error {
+	if em == nil || !em.Enabled() {
+		return fmt.Errorf("extended memory: disabled")
+	}
+	if em.userModel == nil {
+		return fmt.Errorf("extended memory: user model not initialized")
+	}
+	return em.userModel.ConfirmPendingReview(id)
+}
+
+// RejectPendingReview removes a pending review from the user model.
+func (em *ExtendedMemory) RejectPendingReview(id string) error {
+	if em == nil || !em.Enabled() {
+		return fmt.Errorf("extended memory: disabled")
+	}
+	if em.userModel == nil {
+		return fmt.Errorf("extended memory: user model not initialized")
+	}
+	return em.userModel.RejectPendingReview(id)
+}
+
+// ListPendingReview lists pending user-model inferences.
+func (em *ExtendedMemory) ListPendingReview() ([]PendingReview, error) {
+	if em == nil {
+		return nil, nil
+	}
+	if em.userModel == nil {
+		return nil, nil
+	}
+	return em.userModel.ListPendingReview(), nil
+}
+
+// FormatUserStateContext returns formatted user-model context.
+func (em *ExtendedMemory) FormatUserStateContext() string {
+	if em == nil || !em.Enabled() || em.userModel == nil {
+		return ""
+	}
+	return em.userModel.Summary()
+}
+
+// ReturnAfterBreak generates a resume summary from recent atoms and the user
+// model. It returns empty string if there is no data or the feature is disabled.
+func (em *ExtendedMemory) ReturnAfterBreak(ctx context.Context) string {
+	if em == nil || !em.Enabled() || em.userModel == nil || em.llm == nil {
+		return ""
+	}
+	if em.cfg.ProactiveReturnAfterBreak == nil || !*em.cfg.ProactiveReturnAfterBreak {
+		return ""
+	}
+	atoms, err := em.store.List()
+	if err != nil {
+		log.Printf("extended memory: return after break list failed: %v", err)
+		return ""
+	}
+	// Use the most recent trusted atoms (up to 5).
+	var recent []MemoryAtom
+	for i := len(atoms) - 1; i >= 0 && len(recent) < 5; i-- {
+		if IsTaintedSourceClass(atoms[i].SourceClass) {
+			continue
+		}
+		recent = append(recent, atoms[i])
+	}
+	if len(recent) == 0 {
+		return ""
+	}
+	state := em.userModel.State()
+	stateJSON, _ := json.Marshal(state)
+	recentJSON, _ := json.Marshal(recent)
+	prompt := fmt.Sprintf(`You are a context-resumption system. The user is returning after a break. Summarize where they left off and what the next likely step is, based on the recent atoms and user model. Be concise (1-2 sentences). Return only the summary.
+
+Recent atoms: %s
+User model: %s`, recentJSON, stateJSON)
+	resp, err := em.llm.SimpleCall(ctx,
+		"You are a context-resumption system. Return only a concise summary.",
+		prompt,
+	)
+	if err != nil {
+		log.Printf("extended memory: return after break LLM failed: %v", err)
+		return ""
+	}
+	resp = strings.TrimSpace(resp)
+	if resp == "" {
+		return ""
+	}
+	return "\n═══ WHERE YOU LEFT OFF ═══\n" + resp + "\n─────────────────────────\n"
+}
+
+var pronounRE = regexp.MustCompile(`(?i)\b(it|that|this|them|those)\b`)
+
+// AnaphoraResolve replaces pronouns in a user message with the most likely
+// antecedent from recent trusted atoms when the semantic score is high enough.
+func (em *ExtendedMemory) AnaphoraResolve(msg string) string {
+	if em == nil || !em.Enabled() || em.recall == nil || em.cfg.AnaphoraResolutionEnabled == nil || !*em.cfg.AnaphoraResolutionEnabled {
+		return msg
+	}
+	if !pronounRE.MatchString(msg) {
+		return msg
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	atoms, err := em.recall.queryAtoms(ctx, msg)
+	if err != nil || len(atoms) == 0 {
+		return msg
+	}
+	resolved := pronounRE.ReplaceAllString(msg, atoms[0].Text)
+	return resolved
+}
+
 // SearchAtoms performs an explicit semantic search and returns ranked atoms.
 func (em *ExtendedMemory) SearchAtoms(ctx context.Context, query string) ([]MemoryAtom, error) {
 	if em == nil {
@@ -172,6 +397,9 @@ func (em *ExtendedMemory) SearchAtoms(ctx context.Context, query string) ([]Memo
 	if err != nil {
 		log.Printf("extended memory: search_atoms failed: %v", err)
 		return nil, err
+	}
+	for i := range atoms {
+		atoms[i].Context.RelatedAtomIDs = em.assoc.Related(atoms[i].ID)
 	}
 	return atoms, nil
 }
@@ -185,6 +413,8 @@ func (em *ExtendedMemory) ForgetAtom(id string) error {
 		_ = em.quarantine.Forget(id)
 		return err
 	}
+	em.assoc.RemoveAtom(id)
+	_ = em.assoc.Persist()
 	em.index.markDirty()
 	return nil
 }
@@ -253,6 +483,11 @@ func (em *ExtendedMemory) OnUserMessage(ctx AtomContext, msg string) {
 	if ctx.Project != "" {
 		em.project = ctx.Project
 	}
+	em.userStateTurns++
+	triggerInference := em.userModel.Enabled() && (em.userStateTurns%em.cfg.UserStateTurnInterval == 0 || em.userModel.FocusChanged())
+	if em.userModel.FocusChanged() {
+		em.userModel.ResetFocusChanged()
+	}
 	em.mu.Unlock()
 
 	c, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -265,6 +500,10 @@ func (em *ExtendedMemory) OnUserMessage(ctx AtomContext, msg string) {
 	for _, atom := range atoms {
 		atom.Context = ctx
 		_ = em.AddAtom(c, atom)
+	}
+
+	if triggerInference {
+		em.triggerBackgroundInference()
 	}
 }
 
@@ -375,6 +614,7 @@ func (em *ExtendedMemory) Close() error {
 	}
 	em.closeOnce.Do(func() {
 		em.index.Wait()
+		em.pendingWg.Wait()
 	})
 	return nil
 }

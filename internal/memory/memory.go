@@ -337,6 +337,36 @@ func (m *MemoryManager) FormatExtendedContext(query string) string {
 	return m.extended.FormatExtendedContext(query)
 }
 
+// FormatUserStateContext returns the user-model block for system-prompt
+// injection.
+func (m *MemoryManager) FormatUserStateContext() string {
+	if m.extended == nil {
+		return ""
+	}
+	ctx := m.extended.FormatUserStateContext()
+	if ctx == "" {
+		return ""
+	}
+	m.markPromptDirty()
+	return ctx
+}
+
+// FormatReturnAfterBreak generates a resume summary from Extended Memory.
+func (m *MemoryManager) FormatReturnAfterBreak(ctx context.Context) string {
+	if m.extended == nil {
+		return ""
+	}
+	return m.extended.ReturnAfterBreak(ctx)
+}
+
+// AnaphoraResolve resolves pronouns in a user message against trusted atoms.
+func (m *MemoryManager) AnaphoraResolve(msg string) string {
+	if m.extended == nil {
+		return msg
+	}
+	return m.extended.AnaphoraResolve(msg)
+}
+
 // SetSessionContext propagates session/project identifiers to all memory tiers
 // that need them (currently Extended Memory).
 func (m *MemoryManager) SetSessionContext(sessionID, project string) {
@@ -356,17 +386,50 @@ func (m *MemoryManager) OnUserMessageLoop(msg string) {
 		return
 	}
 	m.extTurn++
+	resolved := m.AnaphoraResolve(msg)
 	ctx := extended.AtomContext{
 		SessionID: m.extSessionID,
 		Project:   m.extProject,
 		Turn:      m.extTurn,
 	}
-	m.extended.OnUserMessage(ctx, msg)
+	m.extended.OnUserMessage(ctx, resolved)
 }
 
 // Extended returns the Extended Memory subsystem, or nil if not initialized.
 func (m *MemoryManager) Extended() *extended.ExtendedMemory {
 	return m.extended
+}
+
+// ConfirmPendingReview confirms a pending user-model inference.
+func (m *MemoryManager) ConfirmPendingReview(id string) error {
+	if m.extended == nil {
+		return fmt.Errorf("extended memory is not initialized or disabled")
+	}
+	if err := m.extended.ConfirmPendingReview(id); err != nil {
+		return err
+	}
+	m.markPromptDirty()
+	return nil
+}
+
+// RejectPendingReview rejects a pending user-model inference.
+func (m *MemoryManager) RejectPendingReview(id string) error {
+	if m.extended == nil {
+		return fmt.Errorf("extended memory is not initialized or disabled")
+	}
+	if err := m.extended.RejectPendingReview(id); err != nil {
+		return err
+	}
+	m.markPromptDirty()
+	return nil
+}
+
+// ListPendingReview lists pending user-model inferences.
+func (m *MemoryManager) ListPendingReview() ([]extended.PendingReview, error) {
+	if m.extended == nil {
+		return nil, nil
+	}
+	return m.extended.ListPendingReview()
 }
 
 // notify fires an event on the configured notifier, stamping the UTC timestamp
@@ -1056,12 +1119,53 @@ func (m *MemoryManager) BuildSystemPrompt() string {
 		}
 	}
 
+	if m.extended != nil && m.extended.Enabled() {
+		if styleDirective := m.formatStyleDirective(); styleDirective != "" {
+			b.WriteString("§\n── Style Guidance ──\n")
+			b.WriteString(styleDirective)
+			b.WriteString("\n")
+		}
+		if userState := m.FormatUserStateContext(); userState != "" {
+			b.WriteString(userState)
+		}
+	}
+
 	b.WriteString("───────────────────────────────\n")
 	m.promptMu.Lock()
 	m.promptCache = b.String()
 	m.promptDirty = false
 	m.promptMu.Unlock()
 	return m.promptCache
+}
+
+func (m *MemoryManager) formatStyleDirective() string {
+	if m.extended == nil {
+		return ""
+	}
+	style := m.extended.UserStateStyle()
+	if style == nil {
+		return ""
+	}
+	var parts []string
+	if style.Verbosity != "" {
+		parts = append(parts, fmt.Sprintf("verbosity=%s", style.Verbosity))
+	}
+	if style.Humor != "" {
+		parts = append(parts, fmt.Sprintf("humor=%s", style.Humor))
+	}
+	if style.Formality != "" {
+		parts = append(parts, fmt.Sprintf("formality=%s", style.Formality))
+	}
+	if style.ExplanationDepth != "" {
+		parts = append(parts, fmt.Sprintf("explanation_depth=%s", style.ExplanationDepth))
+	}
+	if style.Tone != "" {
+		parts = append(parts, fmt.Sprintf("tone=%s", style.Tone))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("Match the user's preferred style: %s.", strings.Join(parts, ", "))
 }
 
 // ── Private helpers ──────────────────────────────────────────────────

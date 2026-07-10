@@ -73,7 +73,7 @@ func memoryCmd(args []string) error {
 // extendedMemoryCmd handles `odek memory extended forget|quarantine|compact`.
 func extendedMemoryCmd(dir string, args []string) error {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "Usage: odek memory extended <forget|promote|pin|quarantine|compact> [args]\n")
+		fmt.Fprintf(os.Stderr, "Usage: odek memory extended <forget|promote|pin|quarantine|compact|pending|confirm|reject> [args]\n")
 		return nil
 	}
 
@@ -140,7 +140,48 @@ func extendedMemoryCmd(dir string, args []string) error {
 		fmt.Println("odek: Extended Memory vector index compaction triggered in the background")
 		return nil
 
+	case "pending":
+		pending, err := em.ListPendingReview()
+		if err != nil {
+			return err
+		}
+		if len(pending) == 0 {
+			fmt.Println("No pending user-model reviews.")
+			return nil
+		}
+		fmt.Printf("%d pending review(s):\n\n", len(pending))
+		for _, p := range pending {
+			fmt.Printf("• %s | %s = %q (confidence %.2f)\n", p.ID, p.Field, truncate(p.Value, 120), p.Confidence)
+			if p.Evidence != "" {
+				fmt.Printf("  evidence: %s\n", truncate(p.Evidence, 120))
+			}
+		}
+		fmt.Println("\nConfirm with: odek memory extended confirm <id>")
+		return nil
+
+	case "confirm":
+		if len(subArgs) == 0 {
+			return fmt.Errorf("usage: odek memory extended confirm <pending_id>")
+		}
+		id := subArgs[0]
+		if err := em.ConfirmPendingReview(id); err != nil {
+			return err
+		}
+		fmt.Printf("odek: confirmed pending review %q\n", id)
+		return nil
+
+	case "reject":
+		if len(subArgs) == 0 {
+			return fmt.Errorf("usage: odek memory extended reject <pending_id>")
+		}
+		id := subArgs[0]
+		if err := em.RejectPendingReview(id); err != nil {
+			return err
+		}
+		fmt.Printf("odek: rejected pending review %q\n", id)
+		return nil
+
 	default:
-		return fmt.Errorf("unknown extended memory subcommand %q (expected: forget, promote, pin, quarantine, compact)", sub)
+		return fmt.Errorf("unknown extended memory subcommand %q (expected: forget, promote, pin, quarantine, compact, pending, confirm, reject)", sub)
 	}
 }

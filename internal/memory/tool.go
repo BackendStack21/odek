@@ -17,7 +17,7 @@ var memoryToolSchema = map[string]any{
 	"properties": map[string]any{
 		"action": map[string]any{
 			"type":        "string",
-			"enum":        []string{"add", "replace", "remove", "consolidate", "read", "search", "view", "add_atom", "search_atoms", "forget_atom", "list_quarantine", "pin_atom"},
+			"enum":        []string{"add", "replace", "remove", "consolidate", "read", "search", "view", "add_atom", "search_atoms", "forget_atom", "list_quarantine", "pin_atom", "confirm_pending_review", "reject_pending_review", "list_pending_review"},
 			"description": "What to do with memory",
 		},
 		"target": map[string]any{
@@ -40,6 +40,10 @@ var memoryToolSchema = map[string]any{
 		"atom_id": map[string]any{
 			"type":        "string",
 			"description": "Atom ID (for forget_atom/pin_atom)",
+		},
+		"pending_id": map[string]any{
+			"type":        "string",
+			"description": "Pending review ID (for confirm_pending_review/reject_pending_review)",
 		},
 		"atom_type": map[string]any{
 			"type":        "string",
@@ -78,6 +82,7 @@ func (t *MemoryTool) Call(args string) (string, error) {
 		OldText    string  `json:"old_text"`
 		Query      string  `json:"query"`
 		AtomID     string  `json:"atom_id"`
+		PendingID  string  `json:"pending_id"`
 		AtomType   string  `json:"atom_type"`
 		Confidence float32 `json:"confidence"`
 	}
@@ -110,6 +115,12 @@ func (t *MemoryTool) Call(args string) (string, error) {
 		return t.handleListQuarantine()
 	case "pin_atom":
 		return t.handlePinAtom(params.AtomID)
+	case "confirm_pending_review":
+		return t.handleConfirmPendingReview(params.PendingID)
+	case "reject_pending_review":
+		return t.handleRejectPendingReview(params.PendingID)
+	case "list_pending_review":
+		return t.handleListPendingReview()
 	default:
 		return errorJSON(fmt.Sprintf("unknown action: %q", params.Action)), nil
 	}
@@ -354,6 +365,53 @@ func (t *MemoryTool) handlePinAtom(id string) (string, error) {
 		return errorJSON(err.Error()), nil
 	}
 	return successJSON(fmt.Sprintf("pinned atom %s", id)), nil
+}
+
+func (t *MemoryTool) handleConfirmPendingReview(id string) (string, error) {
+	if id == "" {
+		return errorJSON("pending_id is required for confirm_pending_review"), nil
+	}
+	// Security: the agent cannot confirm its own inferences. This action is
+	// reserved for the human-gated CLI surface.
+	return errorJSON("pending reviews must be confirmed by the user via the CLI (odek memory extended confirm <id>)"), nil
+}
+
+func (t *MemoryTool) handleRejectPendingReview(id string) (string, error) {
+	if id == "" {
+		return errorJSON("pending_id is required for reject_pending_review"), nil
+	}
+	if err := session.ValidateSessionID(id); err != nil {
+		return errorJSON("invalid pending_id: " + err.Error()), nil
+	}
+	if t.manager.extended == nil {
+		return errorJSON("extended memory is not initialized or disabled"), nil
+	}
+	if err := t.manager.extended.RejectPendingReview(id); err != nil {
+		return errorJSON(err.Error()), nil
+	}
+	return successJSON(fmt.Sprintf("rejected pending review %s", id)), nil
+}
+
+func (t *MemoryTool) handleListPendingReview() (string, error) {
+	if t.manager.extended == nil {
+		return errorJSON("extended memory is not initialized or disabled"), nil
+	}
+	pending, err := t.manager.extended.ListPendingReview()
+	if err != nil {
+		return errorJSON(err.Error()), nil
+	}
+	if len(pending) == 0 {
+		return successJSON("no pending reviews"), nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d pending review(s):\n\n", len(pending))
+	for _, p := range pending {
+		fmt.Fprintf(&b, "• %s | %s = %q (confidence %.2f)\n", p.ID, p.Field, truncate(p.Value, 120), p.Confidence)
+		if p.Evidence != "" {
+			fmt.Fprintf(&b, "  evidence: %s\n", truncate(p.Evidence, 120))
+		}
+	}
+	return successJSON(b.String()), nil
 }
 
 var nilContext = context.Background()
