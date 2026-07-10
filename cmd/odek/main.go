@@ -2121,10 +2121,26 @@ func continueCmd(args []string) error {
 	// The system message is already in the session
 	messages := sess.GetMessages()
 
+	// Create the run context early so that the return-after-break summary can
+	// be recorded in the audit log before the turn starts.
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	// Audit: record every untrusted-content ingestion that fires during
+	// this turn. The recorder is scoped to the run context so a later turn
+	// (or background goroutine) cannot accidentally write to the wrong
+	// session's audit log.
+	auditStore := session.NewAuditStore(store.Dir())
+	currentTurn := sess.Turns + 1
+	sessIDCapture := sess.ID
+	ctx = loop.WithIngestRecorder(ctx, func(source, content string) {
+		_ = auditStore.RecordIngest(sessIDCapture, currentTurn, source, content)
+	})
+
 	// Return-after-break: on session resume, load a concise summary of where
 	// the user left off and the next likely step.
 	if mm := agent.Memory(); mm != nil {
-		rbCtx, rbCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		rbCtx, rbCancel := context.WithTimeout(ctx, 5*time.Second)
 		if rb := mm.FormatReturnAfterBreak(rbCtx); rb != "" {
 			insertIdx := -1
 			for i := len(messages) - 1; i >= 0; i-- {
@@ -2133,7 +2149,8 @@ func continueCmd(args []string) error {
 					break
 				}
 			}
-			rbMsg := llm.Message{Role: "system", Content: rb}
+			wrapped := wrapUntrusted(rbCtx, "return_after_break", rb)
+			rbMsg := llm.Message{Role: "system", Content: wrapped}
 			if insertIdx >= 0 {
 				messages = append(messages[:insertIdx+1], append([]llm.Message{rbMsg}, messages[insertIdx+1:]...)...)
 			} else {
@@ -2149,20 +2166,6 @@ func continueCmd(args []string) error {
 	if mm := agent.Memory(); mm != nil {
 		mm.AppendBuffer("user", task)
 	}
-
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer cancel()
-
-	// Audit: record every untrusted-content ingestion that fires during
-	// this turn. The recorder is scoped to the run context so a later turn
-	// (or background goroutine) cannot accidentally write to the wrong
-	// session's audit log.
-	auditStore := session.NewAuditStore(store.Dir())
-	currentTurn := sess.Turns + 1
-	sessIDCapture := sess.ID
-	ctx = loop.WithIngestRecorder(ctx, func(source, content string) {
-		_ = auditStore.RecordIngest(sessIDCapture, currentTurn, source, content)
-	})
 
 	rend.Start(task)
 	result, allMessages, err := agent.RunWithMessages(ctx, messages)

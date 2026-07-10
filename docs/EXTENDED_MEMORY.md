@@ -29,7 +29,7 @@ The single most important design decision is the trust boundary.
 |---|---|---|
 | `user_said` | Trusted | Yes |
 | `user_approved` | Trusted | Yes |
-| `inferred` | Trusted, but flagged `inferred` | Yes, with lower trust boost |
+| `inferred` | Tainted / quarantined | No |
 | `tool_output` | Tainted | No |
 | `file_read` | Tainted | No |
 | `web` | Tainted | No |
@@ -37,7 +37,7 @@ The single most important design decision is the trust boundary.
 | `subagent` | Tainted | No |
 | `agent_generated` | Tainted | No |
 
-User inputs are trusted because they come from the operator. Indirect content may be prompt-injected, malicious, or simply noisy, so it is never auto-recalled. Planned promotion paths include inline commands such as:
+User inputs and explicitly user-approved atoms are trusted because they come from the operator. Indirect content may be prompt-injected, malicious, or simply noisy, so it is never auto-recalled. `inferred` atoms are treated as tainted: they are quarantined until a user explicitly promotes them, matching the code's `IsTaintedSourceClass` classification. Planned promotion paths include inline commands such as:
 
 - `odek, remember that`
 - `odek, remember the browser output`
@@ -183,8 +183,7 @@ retention_score = confidence
 
 decay_factor = 0.5 ^ (age_days / decay_half_life_days)
 trust_boost  = 1.0 for user_said and user_approved
-             = 0.8 for inferred
-             = 0.0 for tainted
+             = 0.0 for inferred and all tainted source classes
 
 composite_score = 0.6 * cosine_similarity(query_vector, atom_vector)
                   + 0.4 * retention_score
@@ -291,8 +290,7 @@ pin_boost = infinity for pinned atoms, 1.0 otherwise
 decay_factor = 0.5 ^ (age_days / decay_half_life_days)
 
 trust_boost  = 1.0 for user_said and user_approved
-             = 0.8 for inferred
-             = 0.0 for tainted
+             = 0.0 for inferred and all tainted source classes
 ```
 
 Eviction order:
@@ -422,7 +420,7 @@ The `promote` and `pin` actions for quarantined atoms are reserved for phase P4 
 Once Extended Memory is enabled, the following proactive behaviors are planned:
 
 - **Return after break**: on session resume, summarize where the user left off and what the next likely step is.
-- **Anaphora resolution**: pronouns like "that" or "it" are resolved against recent atoms, not just the last buffer line.
+- **Anaphora resolution**: the first pronoun in a user message (e.g. "that" or "it") is resolved against recent trusted atoms only when the top atom's semantic similarity is above `semantic_search_min_score`; otherwise the message is passed through unchanged. Only the first pronoun occurrence is replaced.
 - **Follow-up anticipation**: the agent pre-loads related conventions, test patterns, and file references based on predicted intent.
 - **Style mirroring**: tone, verbosity, and explanation depth adapt automatically to the user model.
 

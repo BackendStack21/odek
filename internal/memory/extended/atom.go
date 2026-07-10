@@ -64,13 +64,12 @@ const (
 
 // TrustBoost returns a multiplicative boost for high-trust source classes.
 // External / generated sources receive a zero boost so they cannot be
-// recalled without promotion.
+// recalled without promotion. Inferred atoms are also untrusted because
+// they are not directly user-sourced and are quarantined until promotion.
 func TrustBoost(sourceClass string) float32 {
 	switch sourceClass {
 	case SourceUserSaid, SourceUserApproved:
 		return 1.0
-	case SourceInferred:
-		return 0.8
 	default:
 		return 0.0
 	}
