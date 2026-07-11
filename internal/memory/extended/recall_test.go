@@ -206,27 +206,6 @@ func TestRecallQueryReturnsContext(t *testing.T) {
 	}
 }
 
-func TestEmbedderRanker(t *testing.T) {
-	cfg := DefaultConfig()
-	ranker := embedderRanker(cfg)
-	atoms := []MemoryAtom{
-		{Text: "alpha beta gamma", Type: TypeFact},
-		{Text: "beta gamma delta", Type: TypeFact},
-		{Text: "zeta eta theta", Type: TypeFact},
-	}
-	ranked, err := ranker("beta gamma", atoms)
-	if err != nil {
-		t.Fatalf("ranker failed: %v", err)
-	}
-	if len(ranked) != 3 {
-		t.Fatalf("expected 3 ranked atoms, got %d", len(ranked))
-	}
-	// The first two atoms should be ranked above the unrelated third.
-	if ranked[0].Text != "alpha beta gamma" && ranked[0].Text != "beta gamma delta" {
-		t.Errorf("expected top atom to be related to query, got %q", ranked[0].Text)
-	}
-}
-
 func TestRecallRerankIgnoresInvalidIndices(t *testing.T) {
 	dir := t.TempDir()
 	cfg := DefaultConfig()

@@ -6,8 +6,6 @@ import (
 	"log"
 	"sort"
 	"strings"
-
-	"github.com/BackendStack21/odek/internal/embedding"
 )
 
 // Recall performs semantic search over the atom store.
@@ -273,42 +271,4 @@ func (r *Recall) formatContext(atoms []MemoryAtom) string {
 	}
 	b.WriteString("────────────────────────\n")
 	return b.String()
-}
-
-// embedderRanker provides a fallback ranker using the configured embedder.
-func embedderRanker(cfg Config) func(query string, atoms []MemoryAtom) ([]MemoryAtom, error) {
-	return func(query string, atoms []MemoryAtom) ([]MemoryAtom, error) {
-		emb := embedding.New(cfg.Embedding, vectorDim)
-		corpus := make([]string, len(atoms))
-		for i, a := range atoms {
-			corpus[i] = a.Text
-		}
-		if err := emb.Fit(append(corpus, query)); err != nil {
-			return atoms, nil
-		}
-		qvec, err := emb.Embed(query)
-		if err != nil {
-			return atoms, nil
-		}
-		vecs, err := emb.EmbedAll(corpus)
-		if err != nil {
-			return atoms, nil
-		}
-		type scored struct {
-			idx   int
-			score float32
-		}
-		scores := make([]scored, len(atoms))
-		for i, v := range vecs {
-			scores[i] = scored{idx: i, score: embedding.Cosine(qvec, v)}
-		}
-		sort.Slice(scores, func(i, j int) bool {
-			return scores[i].score > scores[j].score
-		})
-		out := make([]MemoryAtom, len(atoms))
-		for i, s := range scores {
-			out[i] = atoms[s.idx]
-		}
-		return out, nil
-	}
 }

@@ -41,16 +41,6 @@ type quarantineEntry struct {
 	QuarantinedAt time.Time `json:"quarantined_at"`
 }
 
-// Accept returns nil for trusted atoms. For tainted atoms it stores them in
-// quarantine and returns nil (the atom is accepted into quarantine, not the
-// live store).
-func (q *Quarantine) Accept(atom MemoryAtom) error {
-	if !IsTaintedSourceClass(atom.SourceClass) {
-		return nil
-	}
-	return q.Store(atom)
-}
-
 // Store persists a tainted atom in quarantine.
 func (q *Quarantine) Store(atom MemoryAtom) error {
 	if atom.ID == "" {

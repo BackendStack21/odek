@@ -108,7 +108,7 @@ func TestAtomStorePin(t *testing.T) {
 func TestQuarantineStoresTainted(t *testing.T) {
 	q := NewQuarantine(t.TempDir())
 	atom := MemoryAtom{ID: "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6", SourceClass: SourceWeb, Text: "x"}
-	if err := q.Accept(atom); err != nil {
+	if err := q.Store(atom); err != nil {
 		t.Fatalf("expected tainted source to be quarantined: %v", err)
 	}
 	atoms, err := q.List()
@@ -117,9 +117,6 @@ func TestQuarantineStoresTainted(t *testing.T) {
 	}
 	if len(atoms) != 1 {
 		t.Errorf("expected 1 quarantined atom, got %d", len(atoms))
-	}
-	if err := q.Accept(MemoryAtom{SourceClass: SourceUserSaid, Text: "x"}); err != nil {
-		t.Errorf("expected user source to be accepted: %v", err)
 	}
 }
 
