@@ -429,6 +429,10 @@ func (em *ExtendedMemory) AnaphoraResolve(ctx context.Context, msg string) (stri
 		return msg, false
 	}
 	resolved := msg[:loc[0]] + atoms[0].Text + msg[loc[1]:]
+	if err := ScanContent(resolved); err != nil {
+		log.Printf("extended memory: anaphora resolution rejected by scan: %v", err)
+		return msg, false
+	}
 	return resolved, true
 }
 
