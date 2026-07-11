@@ -40,7 +40,10 @@
     "llm_extract": true,
     "llm_consolidate": true,
     "merge_threshold": 0.7,
-    "add_threshold": 0.3
+    "add_threshold": 0.3,
+    "extended": {
+      "enabled": true
+    }
   },
   "dangerous": {
     "non_interactive": "deny",
