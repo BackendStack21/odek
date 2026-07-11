@@ -254,15 +254,15 @@ type runFlags struct {
 	NoAgents       *bool   // nil = not set
 	PromptCaching  *bool   // nil = not set; true = enable prompt caching
 	Session        *bool   // nil = not set; true = save session after run
-	Learn    *bool // nil = not set; true = enable skills learning mode
-	Task     string
+	Learn          *bool   // nil = not set; true = enable skills learning mode
+	Task           string
 
 	// ToolsEnabled and ToolsDisabled control which tools are exposed to the LLM.
 	// Repeated --tool/--no-tool flags accumulate. They are the highest priority
 	// layer after file config and env vars.
 	ToolsEnabled  []string
 	ToolsDisabled []string
-	Ctx            []string // --ctx files to attach
+	Ctx           []string // --ctx files to attach
 
 	// Sandbox-specific CLI flags
 	SandboxImage    string // Docker image (e.g. "node:20-alpine")
@@ -271,6 +271,20 @@ type runFlags struct {
 	SandboxCPUs     string // CPU limit (e.g. "0.5", "2")
 	SandboxUser     string // Container user (e.g. "1000:1000")
 	SandboxReadonly *bool  // nil = not set; true = read-only mount
+
+	// Extended memory subsystem CLI overrides.
+	MemoryExtendedEnabled                     *bool // nil = not set
+	MemoryExtendedMaxSizeMB                   int   // 0 = not set
+	MemoryExtendedAtomMaxChars                int   // 0 = not set
+	MemoryExtendedMemoryBudgetChars           int   // 0 = not set
+	MemoryExtendedUserStateTurnInterval       int   // 0 = not set
+	MemoryExtendedUserStateMaxPending         int   // 0 = not set
+	MemoryExtendedAssociationsEnabled         *bool // nil = not set
+	MemoryExtendedAssociationSemanticTopK     int   // 0 = not set
+	MemoryExtendedProactiveReturnAfterBreak   *bool // nil = not set
+	MemoryExtendedStyleMirroringEnabled       *bool // nil = not set
+	MemoryExtendedAnaphoraResolutionEnabled   *bool // nil = not set
+	MemoryExtendedFollowUpAnticipationEnabled *bool // nil = not set
 
 	Deliver *bool // nil = not set; true = deliver result to default channel
 }
@@ -403,6 +417,75 @@ func parseRunFlags(args []string) (runFlags, error) {
 			}
 			f.Ctx = strings.Split(args[i+1], ",")
 			i += 2
+		case "--memory-extended-enabled":
+			f.MemoryExtendedEnabled = boolPtr(true)
+			i++
+		case "--memory-extended-max-size-mb":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--memory-extended-max-size-mb requires a value")
+			}
+			fmt.Sscanf(args[i+1], "%d", &f.MemoryExtendedMaxSizeMB)
+			i += 2
+		case "--memory-extended-atom-max-chars":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--memory-extended-atom-max-chars requires a value")
+			}
+			fmt.Sscanf(args[i+1], "%d", &f.MemoryExtendedAtomMaxChars)
+			i += 2
+		case "--memory-extended-memory-budget-chars":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--memory-extended-memory-budget-chars requires a value")
+			}
+			fmt.Sscanf(args[i+1], "%d", &f.MemoryExtendedMemoryBudgetChars)
+			i += 2
+		case "--memory-extended-user-state-turn-interval":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--memory-extended-user-state-turn-interval requires a value")
+			}
+			fmt.Sscanf(args[i+1], "%d", &f.MemoryExtendedUserStateTurnInterval)
+			i += 2
+		case "--memory-extended-user-state-max-pending":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--memory-extended-user-state-max-pending requires a value")
+			}
+			fmt.Sscanf(args[i+1], "%d", &f.MemoryExtendedUserStateMaxPending)
+			i += 2
+		case "--memory-extended-associations-enabled":
+			f.MemoryExtendedAssociationsEnabled = boolPtr(true)
+			i++
+		case "--memory-extended-associations-disabled":
+			f.MemoryExtendedAssociationsEnabled = boolPtr(false)
+			i++
+		case "--memory-extended-association-semantic-top-k":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--memory-extended-association-semantic-top-k requires a value")
+			}
+			fmt.Sscanf(args[i+1], "%d", &f.MemoryExtendedAssociationSemanticTopK)
+			i += 2
+		case "--memory-extended-proactive-return-after-break":
+			f.MemoryExtendedProactiveReturnAfterBreak = boolPtr(true)
+			i++
+		case "--memory-extended-no-proactive-return-after-break":
+			f.MemoryExtendedProactiveReturnAfterBreak = boolPtr(false)
+			i++
+		case "--memory-extended-style-mirroring-enabled":
+			f.MemoryExtendedStyleMirroringEnabled = boolPtr(true)
+			i++
+		case "--memory-extended-style-mirroring-disabled":
+			f.MemoryExtendedStyleMirroringEnabled = boolPtr(false)
+			i++
+		case "--memory-extended-anaphora-resolution-enabled":
+			f.MemoryExtendedAnaphoraResolutionEnabled = boolPtr(true)
+			i++
+		case "--memory-extended-anaphora-resolution-disabled":
+			f.MemoryExtendedAnaphoraResolutionEnabled = boolPtr(false)
+			i++
+		case "--memory-extended-follow-up-anticipation-enabled":
+			f.MemoryExtendedFollowUpAnticipationEnabled = boolPtr(true)
+			i++
+		case "--memory-extended-follow-up-anticipation-disabled":
+			f.MemoryExtendedFollowUpAnticipationEnabled = boolPtr(false)
+			i++
 		case "--deliver":
 			f.Deliver = boolPtr(true)
 			i++
@@ -452,6 +535,10 @@ done:
 			j--
 		case "--sandbox-readonly":
 			f.SandboxReadonly = boolPtr(true)
+			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+			j--
+		case "--memory-extended-enabled":
+			f.MemoryExtendedEnabled = boolPtr(true)
 			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
 			j--
 		}
@@ -646,6 +733,25 @@ Sandbox flags:
   --sandbox-cpus <n>   CPU limit (e.g. 0.5, 2, 4)
   --sandbox-user <s>   Run as user (uid:gid or name)
 
+Extended memory flags:
+  --memory-extended-enabled                                Enable Extended Memory (opt-in)
+  --memory-extended-max-size-mb <n>                        Max on-disk size in MiB (default: 100)
+  --memory-extended-atom-max-chars <n>                   Max chars per atom (default: 300)
+  --memory-extended-memory-budget-chars <n>              Max chars injected into prompt (default: 2000)
+  --memory-extended-user-state-turn-interval <n>         Turns between user-state inferences (default: 5)
+  --memory-extended-user-state-max-pending <n>            Max pending user-state inferences (default: 20)
+  --memory-extended-associations-enabled                   Enable atom associations (default: true)
+  --memory-extended-associations-disabled                  Disable atom associations
+  --memory-extended-association-semantic-top-k <n>         Semantic neighbours per atom (default: 3)
+  --memory-extended-proactive-return-after-break           Resume summary on continue (default: true)
+  --memory-extended-no-proactive-return-after-break        Disable resume summary
+  --memory-extended-style-mirroring-enabled                Mirror inferred user style (default: true)
+  --memory-extended-style-mirroring-disabled               Disable style mirroring
+  --memory-extended-anaphora-resolution-enabled            Resolve pronouns against atoms (default: true)
+  --memory-extended-anaphora-resolution-disabled         Disable anaphora resolution
+  --memory-extended-follow-up-anticipation-enabled         Pre-load follow-up context (default: true)
+  --memory-extended-follow-up-anticipation-disabled        Disable follow-up anticipation
+
 Config sources (lowest to highest priority):
   ~/.odek/config.json   Global defaults (shared across projects)
   ./odek.json          Project-level overrides
@@ -669,7 +775,19 @@ Environment variables:
   ODEK_SANDBOX_READONLY true/false — mount read-only
   ODEK_SANDBOX_MEMORY  Memory limit (e.g. 512m, 2g)
   ODEK_SANDBOX_CPUS    CPU limit (e.g. 0.5, 2)
-  ODEK_SANDBOX_USER    Container user (uid:gid or name)`)
+  ODEK_SANDBOX_USER    Container user (uid:gid or name)
+  ODEK_MEMORY_EXTENDED_ENABLED                 true/false — enable Extended Memory
+  ODEK_MEMORY_EXTENDED_MAX_SIZE_MB             Max on-disk size in MiB
+  ODEK_MEMORY_EXTENDED_ATOM_MAX_CHARS          Max chars per atom
+  ODEK_MEMORY_EXTENDED_MEMORY_BUDGET_CHARS     Max chars injected into prompt
+  ODEK_MEMORY_EXTENDED_USER_STATE_TURN_INTERVAL  Turns between user-state inferences
+  ODEK_MEMORY_EXTENDED_USER_STATE_MAX_PENDING    Max pending user-state inferences
+  ODEK_MEMORY_EXTENDED_ASSOCIATIONS_ENABLED    true/false — enable atom associations
+  ODEK_MEMORY_EXTENDED_ASSOCIATION_SEMANTIC_TOP_K Semantic neighbours per atom
+  ODEK_MEMORY_EXTENDED_PROACTIVE_RETURN_AFTER_BREAK true/false — resume summary on continue
+  ODEK_MEMORY_EXTENDED_STYLE_MIRRORING_ENABLED true/false — mirror inferred user style
+  ODEK_MEMORY_EXTENDED_ANAPHORA_RESOLUTION_ENABLED true/false — resolve pronouns against atoms
+  ODEK_MEMORY_EXTENDED_FOLLOW_UP_ANTICIPATION_ENABLED true/false — pre-load follow-up context`)
 }
 
 // ── Init ──────────────────────────────────────────────────────────────
@@ -867,6 +985,19 @@ func run(args []string) error {
 		SandboxMemory:   f.SandboxMemory,
 		SandboxCPUs:     f.SandboxCPUs,
 		SandboxUser:     f.SandboxUser,
+
+		MemoryExtendedEnabled:                     f.MemoryExtendedEnabled,
+		MemoryExtendedMaxSizeMB:                   f.MemoryExtendedMaxSizeMB,
+		MemoryExtendedAtomMaxChars:                f.MemoryExtendedAtomMaxChars,
+		MemoryExtendedMemoryBudgetChars:           f.MemoryExtendedMemoryBudgetChars,
+		MemoryExtendedUserStateTurnInterval:       f.MemoryExtendedUserStateTurnInterval,
+		MemoryExtendedUserStateMaxPending:         f.MemoryExtendedUserStateMaxPending,
+		MemoryExtendedAssociationsEnabled:         f.MemoryExtendedAssociationsEnabled,
+		MemoryExtendedAssociationSemanticTopK:     f.MemoryExtendedAssociationSemanticTopK,
+		MemoryExtendedProactiveReturnAfterBreak:   f.MemoryExtendedProactiveReturnAfterBreak,
+		MemoryExtendedStyleMirroringEnabled:       f.MemoryExtendedStyleMirroringEnabled,
+		MemoryExtendedAnaphoraResolutionEnabled:   f.MemoryExtendedAnaphoraResolutionEnabled,
+		MemoryExtendedFollowUpAnticipationEnabled: f.MemoryExtendedFollowUpAnticipationEnabled,
 	})
 
 	// Resolve @references and --ctx file attachments in the task
@@ -976,16 +1107,18 @@ func run(args []string) error {
 		SystemMessage:    systemMessage,
 		UntrustedWrapper: func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
 		NoProjectFile:    resolved.NoAgents,
-		Thinking:        resolved.Thinking,
-		ThinkingBudget:  f.ThinkingBudget,
-		Temperature:     0, // deterministic by default; override with --temperature
-		Tools:           tools,
-		ToolFilter:      odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
-		SandboxCleanup:  sandboxCleanup,
-		Renderer:        rend,
-		Skills:          skillsCfg,
-		SkillManager:    sm,
-		PromptCaching:   resolved.PromptCaching,
+		Thinking:         resolved.Thinking,
+		ThinkingBudget:   f.ThinkingBudget,
+		Temperature:      0, // deterministic by default; override with --temperature
+		Tools:            tools,
+		ToolFilter:       odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
+		SandboxCleanup:   sandboxCleanup,
+		Renderer:         rend,
+		Skills:           skillsCfg,
+		SkillManager:     sm,
+		PromptCaching:    resolved.PromptCaching,
+		MemoryDir:        expandHome("~/.odek/memory"),
+		MemoryConfig:     resolved.Memory,
 	})
 	if err != nil {
 		return err
@@ -1003,6 +1136,39 @@ func run(args []string) error {
 	var allMessages []llm.Message
 	var runErr error
 	var result string
+	var sessionID string
+
+	cwd, _ = os.Getwd()
+	if mm := agent.Memory(); mm != nil {
+		if f.Session != nil && *f.Session {
+			// Pre-create the session so extracted atoms can be tagged with the
+			// session ID before the agent run starts.
+			store, err := session.NewStore()
+			if err != nil {
+				return fmt.Errorf("session store: %w", err)
+			}
+			messages := []llm.Message{
+				{Role: "user", Content: f.Task},
+			}
+			if systemMessage != "" {
+				messages = append([]llm.Message{{Role: "system", Content: systemMessage}}, messages...)
+			}
+			sess, err := store.Create(messages, resolved.Model, f.Task)
+			if err != nil {
+				return fmt.Errorf("save session: %w", err)
+			}
+			sess.Sandbox = resolved.Sandbox
+			store.Save(sess)
+			sessionID = sess.ID
+			mm.SetSessionContext(sessionID, cwd)
+			fmt.Fprintf(os.Stderr, "odek: session %s created\n", sessionID)
+		} else {
+			// Non-session mode still needs a transient ID so extracted atoms can
+			// be traced back to this run for review.
+			sessionID = session.GenerateID()
+			mm.SetSessionContext(sessionID, cwd)
+		}
+	}
 
 	if f.Session != nil && *f.Session {
 		// Multi-turn session mode: save conversation history
@@ -1037,17 +1203,27 @@ func run(args []string) error {
 			if err != nil {
 				return fmt.Errorf("session store: %w", err)
 			}
-			sess, err := store.Create(allMessages, resolved.Model, f.Task)
+			// Re-load the pre-created session and append the messages produced
+			// by the run. The pre-created session contains the system + user task;
+			// append only the assistant/tool turns that follow.
+			latest, err := store.Load(sessionID)
 			if err != nil {
+				return fmt.Errorf("load session: %w", err)
+			}
+			newMsgs := allMessages[len(latest.GetMessages()):]
+			if err := store.Append(sessionID, newMsgs); err != nil {
 				return fmt.Errorf("save session: %w", err)
 			}
-			sess.Sandbox = resolved.Sandbox
-			// Persist buffer to session
-			if mm := agent.Memory(); mm != nil {
-				sess.Buffer = mm.GetBuffer()
+			updated, err := store.Load(sessionID)
+			if err != nil {
+				return fmt.Errorf("reload session: %w", err)
 			}
-			store.Save(sess)
-			fmt.Fprintf(os.Stderr, "odek: session %s saved — continue with: odek continue \"...\"\n", sess.ID)
+			updated.Sandbox = resolved.Sandbox
+			if mm := agent.Memory(); mm != nil {
+				updated.Buffer = mm.GetBuffer()
+			}
+			store.Save(updated)
+			fmt.Fprintf(os.Stderr, "odek: session %s saved — continue with: odek continue \"...\"\n", updated.ID)
 		}
 	} else {
 		// Single-shot mode (default)
@@ -1077,11 +1253,11 @@ func run(args []string) error {
 
 	// ── Session end — extract episode if enough turns ──
 	// Run asynchronously so episode extraction does not delay process exit.
-	if mm := agent.Memory(); mm != nil && f.Session != nil && *f.Session {
+	if mm := agent.Memory(); mm != nil && f.Session != nil && *f.Session && sessionID != "" {
 		go func() {
-			sess, err := session.NewStore()
+			store, err := session.NewStore()
 			if err == nil {
-				latest, err := sess.Latest()
+				latest, err := store.Load(sessionID)
 				if err == nil {
 					msgStrs := makeSessionMessageStrings(latest)
 					prov := memory.DeriveProvenance(latest.Messages)
@@ -1912,15 +2088,17 @@ func continueCmd(args []string) error {
 		SystemMessage:    systemMessage,
 		UntrustedWrapper: func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
 		NoProjectFile:    resolved.NoAgents,
-		Thinking:        resolved.Thinking,
-		Temperature:     0, // deterministic by default; override with --temperature
-		Tools:           tools,
-		ToolFilter:      odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
-		SandboxCleanup:  sandboxCleanup,
-		Renderer:        rend,
-		Skills:          skillsCfg,
-		SkillManager:    sm,
-		PromptCaching:   resolved.PromptCaching,
+		Thinking:         resolved.Thinking,
+		Temperature:      0, // deterministic by default; override with --temperature
+		Tools:            tools,
+		ToolFilter:       odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
+		SandboxCleanup:   sandboxCleanup,
+		Renderer:         rend,
+		Skills:           skillsCfg,
+		SkillManager:     sm,
+		PromptCaching:    resolved.PromptCaching,
+		MemoryDir:        expandHome("~/.odek/memory"),
+		MemoryConfig:     resolved.Memory,
 	})
 	if err != nil {
 		return err
@@ -1932,16 +2110,19 @@ func continueCmd(args []string) error {
 		mm.RestoreBuffer(sess.Buffer)
 	}
 
+	// Propagate session context to Extended Memory so extracted atoms are
+	// tagged with the session they came from.
+	cwd, _ = os.Getwd()
+	if mm := agent.Memory(); mm != nil {
+		mm.SetSessionContext(sess.ID, cwd)
+	}
+
 	// Build message history: session messages + new user message
 	// The system message is already in the session
 	messages := sess.GetMessages()
-	messages = append(messages, llm.Message{Role: "user", Content: task})
 
-	// Append user input to buffer (AppendBuffer summarizes raw text).
-	if mm := agent.Memory(); mm != nil {
-		mm.AppendBuffer("user", task)
-	}
-
+	// Create the run context early so that the return-after-break summary can
+	// be recorded in the audit log before the turn starts.
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
@@ -1955,6 +2136,36 @@ func continueCmd(args []string) error {
 	ctx = loop.WithIngestRecorder(ctx, func(source, content string) {
 		_ = auditStore.RecordIngest(sessIDCapture, currentTurn, source, content)
 	})
+
+	// Return-after-break: on session resume, load a concise summary of where
+	// the user left off and the next likely step.
+	if mm := agent.Memory(); mm != nil {
+		rbCtx, rbCancel := context.WithTimeout(ctx, 5*time.Second)
+		if rb := mm.FormatReturnAfterBreak(rbCtx); rb != "" {
+			insertIdx := -1
+			for i := len(messages) - 1; i >= 0; i-- {
+				if messages[i].Role == "system" {
+					insertIdx = i
+					break
+				}
+			}
+			wrapped := wrapUntrusted(rbCtx, "return_after_break", rb)
+			rbMsg := llm.Message{Role: "system", Content: wrapped}
+			if insertIdx >= 0 {
+				messages = append(messages[:insertIdx+1], append([]llm.Message{rbMsg}, messages[insertIdx+1:]...)...)
+			} else {
+				messages = append([]llm.Message{rbMsg}, messages...)
+			}
+		}
+		rbCancel()
+	}
+
+	messages = append(messages, llm.Message{Role: "user", Content: task})
+
+	// Append user input to buffer (AppendBuffer summarizes raw text).
+	if mm := agent.Memory(); mm != nil {
+		mm.AppendBuffer("user", task)
+	}
 
 	rend.Start(task)
 	result, allMessages, err := agent.RunWithMessages(ctx, messages)

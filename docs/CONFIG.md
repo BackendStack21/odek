@@ -122,6 +122,10 @@ Every config knob has a `ODEK_*` counterpart:
 | `ODEK_SANDBOX_CPUS` | `--sandbox-cpus` | string |
 | `ODEK_SANDBOX_USER` | `--sandbox-user` | string |
 | `ODEK_MAX_TOOL_PARALLEL` | `max_tool_parallel` | int |
+| `ODEK_MEMORY_EXTENDED_ENABLED` | `--memory-extended-enabled` | bool |
+| `ODEK_MEMORY_EXTENDED_MAX_SIZE_MB` | `--memory-extended-max-size-mb` | int |
+| `ODEK_MEMORY_EXTENDED_ATOM_MAX_CHARS` | `--memory-extended-atom-max-chars` | int |
+| `ODEK_MEMORY_EXTENDED_MEMORY_BUDGET_CHARS` | `--memory-extended-memory-budget-chars` | int |
 
 ## API key fallback order
 
@@ -251,6 +255,67 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
 | `max_episodes` | 500 | Maximum number of stored episodes. On each write, episodes beyond this count are evicted oldest-first (both the summary file and the index entry). `0` disables the cap. |
 | `episode_ttl_days` | 0 | Evict episodes older than this many days. `0` (default) disables TTL-based eviction. |
 | `embedding` | *(inherits top-level `embedding`)* | Optional override of the embedding backend for episode recall, dedup, the non-LLM episode ranker, and fact merge-on-write. When unset, memory inherits the shared top-level [`embedding`](#shared-embedding-backend-embedding--memory-sessions--skills) default; if neither is set, local RandomProjections (lexical bag-of-words — fast, zero-cost, but no real semantics). See below. |
+
+### Extended Memory (`memory.extended`)
+
+`memory.extended` is an **opt-in** atomic memory layer. It extracts small, typed memory atoms from user messages and recalls them via semantic search over the atom corpus. It does not replace facts, the buffer, or episodes; it adds a fourth source of context that is injected after episodes on each turn. See [docs/EXTENDED_MEMORY.md](EXTENDED_MEMORY.md) for the full design.
+
+> **Security note:** Project-level `./odek.json` cannot set the `memory` or `embedding` sections. Configure `memory.extended` in `~/.odek/config.json`, via the `ODEK_MEMORY_EXTENDED_*` environment variables, or with the CLI flags listed below.
+
+```json
+{
+  "memory": {
+    "extended": {
+      "enabled": true,
+      "max_size_mb": 100,
+      "semantic_search_top_k": 10,
+      "semantic_search_overfetch": 4,
+      "semantic_search_min_score": 0.55,
+      "semantic_search_rerank": true,
+      "atom_max_chars": 300,
+      "memory_budget_chars": 2000,
+      "decay_half_life_days": 30,
+      "quarantine_ttl_days": 7,
+      "eviction_policy": "retention_decay",
+      "predictive_intents": 3,
+      "auto_extract_per_turn": true,
+      "infer_user_state": true,
+      "llm": {
+        "base_url": "http://localhost:11434/v1",
+        "api_key": "",
+        "model": "qwen2.5:7b",
+        "max_tokens": 1024,
+        "temperature": 0.2,
+        "timeout_seconds": 30
+      },
+      "embedding": {
+        "provider": "http",
+        "base_url": "http://localhost:11434/v1",
+        "model": "nomic-embed-text"
+      }
+    }
+  }
+}
+```
+
+| Field | Default | Env var | CLI flag | Description |
+|-------|---------|---------|----------|-------------|
+| `enabled` | `false` | `ODEK_MEMORY_EXTENDED_ENABLED` | `--memory-extended-enabled` | Master switch for Extended Memory. |
+| `max_size_mb` | `100` | `ODEK_MEMORY_EXTENDED_MAX_SIZE_MB` | `--memory-extended-max-size-mb` | Hard disk budget for the `extended/` directory. |
+| `semantic_search_top_k` | `10` | — | — | Number of atoms returned to the system prompt. |
+| `semantic_search_overfetch` | `4` | — | — | Candidate multiplier before filtering and reranking. |
+| `semantic_search_min_score` | `0.55` | — | — | Minimum cosine similarity for a candidate to be considered. |
+| `semantic_search_rerank` | `true` | — | — | Use the memory LLM to rerank candidates. |
+| `atom_max_chars` | `300` | `ODEK_MEMORY_EXTENDED_ATOM_MAX_CHARS` | `--memory-extended-atom-max-chars` | Maximum stored text length per atom. |
+| `memory_budget_chars` | `2000` | `ODEK_MEMORY_EXTENDED_MEMORY_BUDGET_CHARS` | `--memory-extended-memory-budget-chars` | Maximum injected Extended Memory context per turn. |
+| `decay_half_life_days` | `30` | — | — | Days until an atom's recall/eviction weight halves. |
+| `quarantine_ttl_days` | `7` | — | — | Days before a tainted atom is auto-deleted from quarantine. |
+| `eviction_policy` | `"retention_decay"` | — | — | Eviction algorithm. `"retention_decay"` is the only supported value. |
+| `predictive_intents` | `3` | — | — | Reserved for future predictive-intent recall (P5). Currently accepted but ignored. |
+| `auto_extract_per_turn` | `true` | — | — | Extract atoms after every user message. |
+| `infer_user_state` | `true` | — | — | Reserved for future user-state model inference (P3). Currently accepted but ignored. |
+| `llm` | omitted | — | — | Dedicated memory LLM. If omitted, the main agent LLM is reused. A warning is emitted if that model has thinking enabled. |
+| `embedding` | omitted | — | — | Dedicated embedding backend for atoms. If omitted, inherits `memory.embedding` or the shared top-level `embedding`. |
 
 ### `embedding` — real semantic embeddings (optional)
 
@@ -680,6 +745,12 @@ ODEK_SANDBOX=true odek run "run untrusted script"
 
 # Enable skill learning via env var
 ODEK_SKILLS_LEARN=true odek run "set up CI"
+
+# Enable Extended Memory via CLI flag
+odek run --memory-extended-enabled "remember that I prefer Go over Python"
+
+# Or configure it globally in ~/.odek/config.json (memory cannot be set in ./odek.json)
+# { "memory": { "extended": { "enabled": true } } }
 
 # Sub-agent config (project-level)
 echo '{"subagent": {"max_concurrency": 5, "timeout_seconds": 300}}' > ./odek.json

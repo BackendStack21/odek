@@ -20,3 +20,6 @@ docker/.odek/*
 .claude/
 
 sec_findings.md
+
+# opencode agent local memory
+.kai/

@@ -65,6 +65,16 @@ type SkillLoader func(userInput string) string
 // formatted episode context to inject, or empty string if nothing matches.
 type EpisodeContextFunc func(userInput string) string
 
+// ExtendedMemoryContextFunc is an optional callback that returns formatted
+// Extended Memory context for the latest user input. It is injected as a
+// system message after the legacy memory prompt block.
+type ExtendedMemoryContextFunc func(ctx context.Context, userInput string) string
+
+// UserMessageHandler is an optional callback invoked once per new user
+// message. It is used by callers (e.g. odek.New) to trigger Extended Memory
+// atom extraction.
+type UserMessageHandler func(ctx context.Context, msg string)
+
 // ToolEventHandler is an optional callback invoked for each tool execution
 // during the agent loop — fires before (tool_call) and after (tool_result)
 // each tool invocation. Used by the WebUI for live streaming of tool events.
@@ -93,19 +103,23 @@ type IterationCallback func(info IterationInfo)
 
 // Engine runs the agent loop: observe → think → act → repeat.
 type Engine struct {
-	client       *llm.Client
-	registry     *tool.Registry
-	renderer     *render.Renderer // optional: colored terminal output
-	maxIter      int
-	system       string
-	baseSystem   string             // original system message without memory/skills
-	maxContext   int                // max context tokens (0 = no limit)
-	skillLoader      SkillLoader              // optional: loads matching skills
-	lastSkillMsg     string                   // last user message that triggered skill loading (dedup)
-	lastEpiMsg       string                   // last user message that triggered episode search (dedup)
-	skillVerbose     bool                     // show full skill banners (default: condensed)
-	episodeCtx       EpisodeContextFunc       // optional: per-turn episode search
-	wrapUntrusted    func(source, content string) string // optional: wraps skill/episode content
+	client         *llm.Client
+	registry       *tool.Registry
+	renderer       *render.Renderer // optional: colored terminal output
+	maxIter        int
+	system         string
+	baseSystem     string                              // original system message without memory/skills
+	maxContext     int                                 // max context tokens (0 = no limit)
+	skillLoader    SkillLoader                         // optional: loads matching skills
+	lastSkillMsg   string                              // last user message that triggered skill loading (dedup)
+	lastEpiMsg     string                              // last user message that triggered episode search (dedup)
+	lastExtMsg     string                              // last user message that triggered extended memory search (dedup)
+	lastUserMsg    string                              // last user message passed to userMsgHandler (dedup)
+	skillVerbose   bool                                // show full skill banners (default: condensed)
+	episodeCtx     EpisodeContextFunc                  // optional: per-turn episode search
+	extendedCtx    ExtendedMemoryContextFunc           // optional: per-turn extended memory search
+	userMsgHandler UserMessageHandler                  // optional: called once per new user message
+	wrapUntrusted  func(source, content string) string // optional: wraps skill/episode content
 
 	toolEventHandler ToolEventHandler // optional: fires during tool execution
 	signalHandler    SignalHandler    // optional: fires on internal loop signals
@@ -199,6 +213,15 @@ func (e *Engine) SetSkillLoader(sl SkillLoader) { e.skillLoader = sl }
 // past session episodes. The returned context is injected as a system
 // message before the LLM invocation.
 func (e *Engine) SetEpisodeContextFunc(ef EpisodeContextFunc) { e.episodeCtx = ef }
+
+// SetExtendedMemoryContextFunc sets the optional per-turn Extended Memory
+// search callback. The returned context is injected as a system message
+// after the legacy memory prompt block.
+func (e *Engine) SetExtendedMemoryContextFunc(ef ExtendedMemoryContextFunc) { e.extendedCtx = ef }
+
+// SetUserMessageHandler sets an optional callback invoked once per new user
+// message. It is used by callers to trigger Extended Memory atom extraction.
+func (e *Engine) SetUserMessageHandler(fn UserMessageHandler) { e.userMsgHandler = fn }
 
 // SetInteractionMode sets how progress is surfaced.
 // "off" suppresses all per-iteration render output except the final answer.
@@ -625,6 +648,16 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 			}
 		}
 
+		// Notify callers when a new user message arrives. This triggers
+		// Extended Memory atom extraction without coupling the loop to the
+		// memory subsystem.
+		if e.userMsgHandler != nil {
+			if userMsg := lastUserMessage(messages); userMsg != "" && userMsg != e.lastUserMsg {
+				e.lastUserMsg = userMsg
+				e.userMsgHandler(ctx, userMsg)
+			}
+		}
+
 		// Load relevant skills based on latest user input (once per message)
 		if e.skillLoader != nil {
 			if userMsg := lastUserMessage(messages); userMsg != "" && userMsg != e.lastSkillMsg {
@@ -726,6 +759,37 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 				// No memory block — remove the memory message if present.
 				messages = append(messages[:e.memMsgIdx], messages[e.memMsgIdx+1:]...)
 				e.memMsgIdx = -1
+			}
+		}
+
+		// Inject Extended Memory context after the legacy memory prompt block.
+		// Uses a dedicated dedup key so repeated queries do not suppress new
+		// user messages.
+		if e.extendedCtx != nil {
+			if userMsg := lastUserMessage(messages); userMsg != "" && userMsg != e.lastExtMsg {
+				if extContext := e.extendedCtx(ctx, userMsg); extContext != "" {
+					wrapped := extContext
+					if e.wrapUntrusted != nil {
+						wrapped = e.wrapUntrusted("extended_memory", extContext)
+					}
+					if fn := IngestRecorderFrom(ctx); fn != nil {
+						fn("extended_memory", extContext)
+					}
+					insertIdx := len(messages)
+					for j := len(messages) - 1; j >= 0; j-- {
+						if messages[j].Role == "system" && j != 0 {
+							insertIdx = j + 1
+							break
+						}
+					}
+					extMsg := llm.Message{Role: "system", Content: wrapped}
+					newMsgs := make([]llm.Message, 0, len(messages)+1)
+					newMsgs = append(newMsgs, messages[:insertIdx]...)
+					newMsgs = append(newMsgs, extMsg)
+					newMsgs = append(newMsgs, messages[insertIdx:]...)
+					messages = newMsgs
+				}
+				e.lastExtMsg = userMsg
 			}
 		}
 

@@ -1,10 +1,12 @@
 package memory
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 
+	"github.com/BackendStack21/odek/internal/memory/extended"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -15,7 +17,7 @@ var memoryToolSchema = map[string]any{
 	"properties": map[string]any{
 		"action": map[string]any{
 			"type":        "string",
-			"enum":        []string{"add", "replace", "remove", "consolidate", "read", "search", "view"},
+			"enum":        []string{"add", "replace", "remove", "consolidate", "read", "search", "view", "add_atom", "search_atoms", "forget_atom", "list_quarantine", "pin_atom", "confirm_pending_review", "reject_pending_review", "list_pending_review"},
 			"description": "What to do with memory",
 		},
 		"target": map[string]any{
@@ -25,7 +27,7 @@ var memoryToolSchema = map[string]any{
 		},
 		"content": map[string]any{
 			"type":        "string",
-			"description": "The entry content (for add/replace)",
+			"description": "The entry content (for add/replace/add_atom)",
 		},
 		"old_text": map[string]any{
 			"type":        "string",
@@ -33,7 +35,24 @@ var memoryToolSchema = map[string]any{
 		},
 		"query": map[string]any{
 			"type":        "string",
-			"description": "Search query for episode recall (for search)",
+			"description": "Search query for episode recall (for search) or atom search (for search_atoms)",
+		},
+		"atom_id": map[string]any{
+			"type":        "string",
+			"description": "Atom ID (for forget_atom/pin_atom)",
+		},
+		"pending_id": map[string]any{
+			"type":        "string",
+			"description": "Pending review ID (for confirm_pending_review/reject_pending_review)",
+		},
+		"atom_type": map[string]any{
+			"type":        "string",
+			"enum":        []string{"fact", "preference", "intent", "decision", "goal", "convention", "file", "error", "question"},
+			"description": "Atom type for add_atom (default: fact)",
+		},
+		"confidence": map[string]any{
+			"type":        "number",
+			"description": "Confidence 0.0-1.0 for add_atom (default: 1.0)",
 		},
 	},
 	"required": []string{"action"},
@@ -57,11 +76,15 @@ func (t *MemoryTool) Schema() any { return memoryToolSchema }
 
 func (t *MemoryTool) Call(args string) (string, error) {
 	var params struct {
-		Action  string `json:"action"`
-		Target  string `json:"target"`
-		Content string `json:"content"`
-		OldText string `json:"old_text"`
-		Query   string `json:"query"`
+		Action     string  `json:"action"`
+		Target     string  `json:"target"`
+		Content    string  `json:"content"`
+		OldText    string  `json:"old_text"`
+		Query      string  `json:"query"`
+		AtomID     string  `json:"atom_id"`
+		PendingID  string  `json:"pending_id"`
+		AtomType   string  `json:"atom_type"`
+		Confidence float32 `json:"confidence"`
 	}
 	if err := json.Unmarshal([]byte(args), &params); err != nil {
 		return errorJSON("invalid arguments: " + err.Error()), nil
@@ -82,6 +105,22 @@ func (t *MemoryTool) Call(args string) (string, error) {
 		return t.handleSearch(params.Query)
 	case "view":
 		return t.handleView(params.Target, params.Query)
+	case "add_atom":
+		return t.handleAddAtom(params.Content, params.AtomType, params.Confidence)
+	case "search_atoms":
+		return t.handleSearchAtoms(params.Query)
+	case "forget_atom":
+		return t.handleForgetAtom(params.AtomID)
+	case "list_quarantine":
+		return t.handleListQuarantine()
+	case "pin_atom":
+		return t.handlePinAtom(params.AtomID)
+	case "confirm_pending_review":
+		return t.handleConfirmPendingReview(params.PendingID)
+	case "reject_pending_review":
+		return t.handleRejectPendingReview(params.PendingID)
+	case "list_pending_review":
+		return t.handleListPendingReview()
 	default:
 		return errorJSON(fmt.Sprintf("unknown action: %q", params.Action)), nil
 	}
@@ -226,3 +265,153 @@ func truncate(s string, n int) string {
 	}
 	return s[:n-3] + "..."
 }
+
+func (t *MemoryTool) handleAddAtom(content, atomType string, confidence float32) (string, error) {
+	if content == "" {
+		return errorJSON("content is required for add_atom"), nil
+	}
+	if atomType == "" {
+		atomType = extended.TypeFact
+	}
+	if !extended.ValidType(atomType) {
+		return errorJSON(fmt.Sprintf("invalid atom_type: %q", atomType)), nil
+	}
+	if confidence <= 0 || confidence > 1.0 {
+		confidence = 1.0
+	}
+	if t.manager.extended == nil {
+		return errorJSON("extended memory is not initialized or disabled"), nil
+	}
+	atom := extended.MemoryAtom{
+		Text:        content,
+		SourceClass: extended.SourceUserApproved,
+		Type:        atomType,
+		Confidence:  confidence,
+	}
+	if err := t.manager.extended.AddAtom(nilContext, atom); err != nil {
+		return errorJSON(err.Error()), nil
+	}
+	return successJSON(fmt.Sprintf("added atom: %s", truncate(content, 60))), nil
+}
+
+func (t *MemoryTool) handleSearchAtoms(query string) (string, error) {
+	if query == "" {
+		return errorJSON("query is required for search_atoms"), nil
+	}
+	if t.manager.extended == nil {
+		return errorJSON("extended memory is not initialized or disabled"), nil
+	}
+	atoms, err := t.manager.extended.SearchAtoms(nilContext, query)
+	if err != nil {
+		return errorJSON(err.Error()), nil
+	}
+	if len(atoms) == 0 {
+		return successJSON("no matching atoms found"), nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Found %d matching atom(s):\n\n", len(atoms))
+	for _, a := range atoms {
+		fmt.Fprintf(&b, "• [%s] %s (confidence %.2f, source %s)\n", a.Type, truncate(a.Text, 120), a.Confidence, a.SourceClass)
+	}
+	return successJSON(b.String()), nil
+}
+
+func (t *MemoryTool) handleForgetAtom(id string) (string, error) {
+	if id == "" {
+		return errorJSON("atom_id is required for forget_atom"), nil
+	}
+	if err := session.ValidateSessionID(id); err != nil {
+		return errorJSON("invalid atom_id: " + err.Error()), nil
+	}
+	if t.manager.extended == nil {
+		return errorJSON("extended memory is not initialized or disabled"), nil
+	}
+	if err := t.manager.extended.ForgetAtom(id); err != nil {
+		return errorJSON(err.Error()), nil
+	}
+	return successJSON(fmt.Sprintf("forgot atom %s", id)), nil
+}
+
+func (t *MemoryTool) handleListQuarantine() (string, error) {
+	if t.manager.extended == nil {
+		return errorJSON("extended memory is not initialized or disabled"), nil
+	}
+	atoms, err := t.manager.extended.ListQuarantine()
+	if err != nil {
+		return errorJSON(err.Error()), nil
+	}
+	if len(atoms) == 0 {
+		return successJSON("no atoms in quarantine"), nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d atom(s) in quarantine:\n\n", len(atoms))
+	for _, a := range atoms {
+		fmt.Fprintf(&b, "• %s [%s] %s\n", a.ID, a.SourceClass, truncate(a.Text, 120))
+	}
+	return successJSON(b.String()), nil
+}
+
+func (t *MemoryTool) handlePinAtom(id string) (string, error) {
+	if id == "" {
+		return errorJSON("atom_id is required for pin_atom"), nil
+	}
+	if err := session.ValidateSessionID(id); err != nil {
+		return errorJSON("invalid atom_id: " + err.Error()), nil
+	}
+	if t.manager.extended == nil {
+		return errorJSON("extended memory is not initialized or disabled"), nil
+	}
+	if err := t.manager.extended.PinAtom(id); err != nil {
+		return errorJSON(err.Error()), nil
+	}
+	return successJSON(fmt.Sprintf("pinned atom %s", id)), nil
+}
+
+func (t *MemoryTool) handleConfirmPendingReview(id string) (string, error) {
+	if id == "" {
+		return errorJSON("pending_id is required for confirm_pending_review"), nil
+	}
+	// Security: the agent cannot confirm its own inferences. This action is
+	// reserved for the human-gated CLI surface.
+	return errorJSON("pending reviews must be confirmed by the user via the CLI (odek memory extended confirm <id>)"), nil
+}
+
+func (t *MemoryTool) handleRejectPendingReview(id string) (string, error) {
+	if id == "" {
+		return errorJSON("pending_id is required for reject_pending_review"), nil
+	}
+	if err := session.ValidateSessionID(id); err != nil {
+		return errorJSON("invalid pending_id: " + err.Error()), nil
+	}
+	if t.manager.extended == nil {
+		return errorJSON("extended memory is not initialized or disabled"), nil
+	}
+	if err := t.manager.extended.RejectPendingReview(id); err != nil {
+		return errorJSON(err.Error()), nil
+	}
+	return successJSON(fmt.Sprintf("rejected pending review %s", id)), nil
+}
+
+func (t *MemoryTool) handleListPendingReview() (string, error) {
+	if t.manager.extended == nil {
+		return errorJSON("extended memory is not initialized or disabled"), nil
+	}
+	pending, err := t.manager.extended.ListPendingReview()
+	if err != nil {
+		return errorJSON(err.Error()), nil
+	}
+	if len(pending) == 0 {
+		return successJSON("no pending reviews"), nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d pending review(s):\n\n", len(pending))
+	for _, p := range pending {
+		fmt.Fprintf(&b, "• %s | %s = %q (confidence %.2f)\n", p.ID, p.Field, truncate(p.Value, 120), p.Confidence)
+		if p.Evidence != "" {
+			fmt.Fprintf(&b, "  evidence: %s\n", truncate(p.Evidence, 120))
+		}
+	}
+	return successJSON(b.String()), nil
+}
+
+var nilContext = context.Background()

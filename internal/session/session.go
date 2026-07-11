@@ -113,6 +113,11 @@ func generateID() string {
 	return now + "-" + hexEncode(buf)
 }
 
+// GenerateID returns a fresh, cryptographically random session ID. It is
+// exported for callers (e.g. the CLI) that need to tag memory/context before
+// a session is persisted.
+func GenerateID() string { return generateID() }
+
 // GenerateAuthToken creates a 256-bit URL-safe secret for session-scoped
 // authentication in the Web UI. It is generated once when a session is created
 // and required by serve handlers for any access to session details.

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BackendStack21/odek/internal/memory/extended"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -102,6 +103,12 @@ type MemoryConfig struct {
 	// See EmbeddingConfig for the "http" provider that enables real
 	// semantic similarity via any OpenAI-compatible embeddings API.
 	Embedding *EmbeddingConfig `json:"embedding,omitempty"`
+
+	// Extended configures the Extended Memory subsystem (atomic facts/
+	// observations extracted from user messages and recalled via semantic
+	// search). nil means "use subsystem defaults"; the subsystem is opt-in
+	// and invisible when Extended.Enabled is false.
+	Extended *extended.Config `json:"extended,omitempty"`
 }
 
 // BoolPtr returns a pointer to a bool value.
@@ -131,6 +138,7 @@ func DefaultMemoryConfig() MemoryConfig {
 		EpisodeDedupThreshold: defaultEpisodeDedupThreshold,
 		MaxEpisodes:           defaultMaxEpisodes,
 		EpisodeTTLDays:        0, // TTL disabled by default
+		Extended:              nil,
 	}
 }
 
@@ -150,6 +158,13 @@ type MemoryManager struct {
 	merge    *MergeDetector
 	llm      LLMClient
 	cfg      MemoryConfig
+	extended *extended.ExtendedMemory
+
+	// extendedContext caches the current session context for user-message
+	// extraction callbacks that arrive without explicit provenance.
+	extSessionID string
+	extProject   string
+	extTurn      int
 
 	// notifier receives memory lifecycle events (facts + episodes). Defaults to
 	// a NoopMemoryNotifier so the fire path is always safe without a nil check.
@@ -230,6 +245,9 @@ func NewMemoryManager(memoryDir string, llc LLMClient, cfg MemoryConfig) *Memory
 	if cfg.Embedding != nil {
 		def.Embedding = cfg.Embedding
 	}
+	if cfg.Extended != nil {
+		def.Extended = cfg.Extended
+	}
 	cfg = def
 
 	factsDir := memoryDir
@@ -279,6 +297,141 @@ func (m *MemoryManager) SetNotifier(n MemoryNotifier) {
 	if m.episodes != nil {
 		m.episodes.SetNotifier(n)
 	}
+}
+
+// InitExtended creates the Extended Memory subsystem using the provided
+// dedicated memory LLM client. It is safe to call multiple times; subsequent
+// calls are ignored. Callers should invoke this after NewMemoryManager once
+// the memory LLM has been resolved.
+func (m *MemoryManager) InitExtended(memoryLLM extended.LLMClient, memoryDir string) {
+	if m.extended != nil {
+		return
+	}
+	if m.cfg.Extended == nil {
+		m.cfg.Extended = &extended.Config{}
+	}
+	cfg := extended.Resolve(*m.cfg.Extended)
+	if cfg.Embedding == nil && m.cfg.Embedding != nil {
+		cfg.Embedding = m.cfg.Embedding
+	}
+	if memoryDir == "" {
+		memoryDir = m.facts.dir
+	}
+	extDir := filepath.Join(memoryDir, "extended")
+	m.extended = extended.New(extDir, memoryLLM, cfg)
+}
+
+// OnUserMessage routes a user message to Extended Memory for atom extraction.
+func (m *MemoryManager) OnUserMessage(ctx extended.AtomContext, msg string) {
+	if m.extended == nil {
+		return
+	}
+	m.extended.OnUserMessage(ctx, msg)
+}
+
+// FormatExtendedContext returns ranked Extended Memory context for the query.
+func (m *MemoryManager) FormatExtendedContext(ctx context.Context, query string) string {
+	if m.extended == nil {
+		return ""
+	}
+	return m.extended.FormatExtendedContext(ctx, query)
+}
+
+// FormatUserStateContext returns the user-model block for system-prompt
+// injection.
+func (m *MemoryManager) FormatUserStateContext(ctx context.Context) string {
+	if m.extended == nil {
+		return ""
+	}
+	stateCtx := m.extended.FormatUserStateContext(ctx)
+	if stateCtx == "" {
+		return ""
+	}
+	m.markPromptDirty()
+	return stateCtx
+}
+
+// FormatReturnAfterBreak generates a resume summary from Extended Memory.
+func (m *MemoryManager) FormatReturnAfterBreak(ctx context.Context) string {
+	if m.extended == nil {
+		return ""
+	}
+	return m.extended.ReturnAfterBreak(ctx)
+}
+
+// AnaphoraResolve resolves pronouns in a user message against trusted atoms.
+func (m *MemoryManager) AnaphoraResolve(ctx context.Context, msg string) (string, bool) {
+	if m.extended == nil {
+		return msg, false
+	}
+	return m.extended.AnaphoraResolve(ctx, msg)
+}
+
+// SetSessionContext propagates session/project identifiers to all memory tiers
+// that need them (currently Extended Memory).
+func (m *MemoryManager) SetSessionContext(sessionID, project string) {
+	m.extSessionID = sessionID
+	m.extProject = project
+	if m.extended != nil {
+		m.extended.SetSessionContext(sessionID, project)
+	}
+}
+
+// OnUserMessageLoop routes a user message to Extended Memory using the
+// session context previously set via SetSessionContext. It is the callback
+// used by the agent loop to trigger atom extraction when a new user message
+// arrives.
+func (m *MemoryManager) OnUserMessageLoop(ctx context.Context, msg string) {
+	if m.extended == nil {
+		return
+	}
+	m.extTurn++
+	if resolved, ok := m.AnaphoraResolve(ctx, msg); ok {
+		msg = resolved
+	}
+	atomCtx := extended.AtomContext{
+		SessionID: m.extSessionID,
+		Project:   m.extProject,
+		Turn:      m.extTurn,
+	}
+	m.extended.OnUserMessage(atomCtx, msg)
+}
+
+// Extended returns the Extended Memory subsystem, or nil if not initialized.
+func (m *MemoryManager) Extended() *extended.ExtendedMemory {
+	return m.extended
+}
+
+// ConfirmPendingReview confirms a pending user-model inference.
+func (m *MemoryManager) ConfirmPendingReview(id string) error {
+	if m.extended == nil {
+		return fmt.Errorf("extended memory is not initialized or disabled")
+	}
+	if err := m.extended.ConfirmPendingReview(id); err != nil {
+		return err
+	}
+	m.markPromptDirty()
+	return nil
+}
+
+// RejectPendingReview rejects a pending user-model inference.
+func (m *MemoryManager) RejectPendingReview(id string) error {
+	if m.extended == nil {
+		return fmt.Errorf("extended memory is not initialized or disabled")
+	}
+	if err := m.extended.RejectPendingReview(id); err != nil {
+		return err
+	}
+	m.markPromptDirty()
+	return nil
+}
+
+// ListPendingReview lists pending user-model inferences.
+func (m *MemoryManager) ListPendingReview() ([]extended.PendingReview, error) {
+	if m.extended == nil {
+		return nil, nil
+	}
+	return m.extended.ListPendingReview()
 }
 
 // notify fires an event on the configured notifier, stamping the UTC timestamp
@@ -968,12 +1121,55 @@ func (m *MemoryManager) BuildSystemPrompt() string {
 		}
 	}
 
+	if m.extended != nil && m.extended.Enabled() {
+		if styleDirective := m.formatStyleDirective(); styleDirective != "" {
+			b.WriteString("§\n── Style Guidance ──\n")
+			b.WriteString(styleDirective)
+			b.WriteString("\n")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if userState := m.FormatUserStateContext(ctx); userState != "" {
+			b.WriteString(userState)
+		}
+		cancel()
+	}
+
 	b.WriteString("───────────────────────────────\n")
 	m.promptMu.Lock()
 	m.promptCache = b.String()
 	m.promptDirty = false
 	m.promptMu.Unlock()
 	return m.promptCache
+}
+
+func (m *MemoryManager) formatStyleDirective() string {
+	if m.extended == nil {
+		return ""
+	}
+	style := m.extended.UserStateStyle()
+	if style == nil {
+		return ""
+	}
+	var parts []string
+	if style.Verbosity != "" {
+		parts = append(parts, fmt.Sprintf("verbosity=%s", style.Verbosity))
+	}
+	if style.Humor != "" {
+		parts = append(parts, fmt.Sprintf("humor=%s", style.Humor))
+	}
+	if style.Formality != "" {
+		parts = append(parts, fmt.Sprintf("formality=%s", style.Formality))
+	}
+	if style.ExplanationDepth != "" {
+		parts = append(parts, fmt.Sprintf("explanation_depth=%s", style.ExplanationDepth))
+	}
+	if style.Tone != "" {
+		parts = append(parts, fmt.Sprintf("tone=%s", style.Tone))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("Match the user's preferred style: %s.", strings.Join(parts, ", "))
 }
 
 // ── Private helpers ──────────────────────────────────────────────────

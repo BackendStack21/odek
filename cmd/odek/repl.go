@@ -150,6 +150,7 @@ func replCmd(args []string) error {
 		Skills:         skillsCfg,
 		SkillManager:   sm,
 		MemoryConfig:   resolved.Memory,
+		MemoryDir:      expandHome("~/.odek/memory"),
 		PromptCaching:  resolved.PromptCaching,
 	})
 	if err != nil {
@@ -176,6 +177,10 @@ func replCmd(args []string) error {
 		}
 		sess.Sandbox = resolved.Sandbox
 		store.Save(sess)
+	}
+	cwd, _ := os.Getwd()
+	if mm := agent.Memory(); mm != nil {
+		mm.SetSessionContext(sess.ID, cwd)
 	}
 
 	fmt.Fprintf(os.Stderr, "\nodek ⚡ %s · session %s\n\n", modelLabel, sess.ID)

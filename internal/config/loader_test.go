@@ -1414,3 +1414,74 @@ func TestLoadConfig_SecretsEnvPermissionCheck(t *testing.T) {
 		t.Errorf("owner-only secrets.env not loaded, got %q", os.Getenv("ODEK_TEST_SECRET"))
 	}
 }
+
+func TestLoadConfig_ExtendedMemoryEnv(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ODEK_MEMORY_EXTENDED_ENABLED", "true")
+	t.Setenv("ODEK_MEMORY_EXTENDED_MAX_SIZE_MB", "200")
+	t.Setenv("ODEK_MEMORY_EXTENDED_ATOM_MAX_CHARS", "500")
+	t.Setenv("ODEK_MEMORY_EXTENDED_MEMORY_BUDGET_CHARS", "4000")
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.Memory.Extended == nil {
+		t.Fatal("Extended memory config not loaded from env")
+	}
+	if cfg.Memory.Extended.Enabled == nil || !*cfg.Memory.Extended.Enabled {
+		t.Error("Extended memory should be enabled")
+	}
+	if cfg.Memory.Extended.MaxSizeMB != 200 {
+		t.Errorf("MaxSizeMB = %d, want 200", cfg.Memory.Extended.MaxSizeMB)
+	}
+	if cfg.Memory.Extended.AtomMaxChars != 500 {
+		t.Errorf("AtomMaxChars = %d, want 500", cfg.Memory.Extended.AtomMaxChars)
+	}
+	if cfg.Memory.Extended.MemoryBudgetChars != 4000 {
+		t.Errorf("MemoryBudgetChars = %d, want 4000", cfg.Memory.Extended.MemoryBudgetChars)
+	}
+}
+
+func TestLoadConfig_ExtendedMemoryCLIOverridesEnv(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ODEK_MEMORY_EXTENDED_MAX_SIZE_MB", "200")
+	cfg := LoadConfig(CLIFlags{
+		MemoryExtendedEnabled:         boolPtr(true),
+		MemoryExtendedMaxSizeMB:       300,
+		MemoryExtendedAtomMaxChars:    600,
+		MemoryExtendedMemoryBudgetChars: 5000,
+	})
+	if cfg.Memory.Extended == nil {
+		t.Fatal("Extended memory config not resolved")
+	}
+	if !*cfg.Memory.Extended.Enabled {
+		t.Error("Extended memory should be enabled")
+	}
+	if cfg.Memory.Extended.MaxSizeMB != 300 {
+		t.Errorf("MaxSizeMB = %d, want 300", cfg.Memory.Extended.MaxSizeMB)
+	}
+	if cfg.Memory.Extended.AtomMaxChars != 600 {
+		t.Errorf("AtomMaxChars = %d, want 600", cfg.Memory.Extended.AtomMaxChars)
+	}
+	if cfg.Memory.Extended.MemoryBudgetChars != 5000 {
+		t.Errorf("MemoryBudgetChars = %d, want 5000", cfg.Memory.Extended.MemoryBudgetChars)
+	}
+}
+
+func TestLoadConfig_ProjectMemoryRejected(t *testing.T) {
+	wd := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ODEK_MEMORY_EXTENDED_ENABLED", "true")
+	if err := os.WriteFile(filepath.Join(wd, "odek.json"), []byte(`{"memory":{"extended":{"enabled":false,"max_size_mb":50}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PWD", wd)
+	origGetwd, _ := os.Getwd()
+	os.Chdir(wd)
+	defer os.Chdir(origGetwd)
+	cfg := LoadConfig(CLIFlags{})
+	// Project memory should be rejected, so env-true wins.
+	if cfg.Memory.Extended == nil || cfg.Memory.Extended.Enabled == nil || !*cfg.Memory.Extended.Enabled {
+		t.Error("project memory should be rejected; env enabled should win")
+	}
+	if cfg.Memory.Extended.MaxSizeMB != 100 {
+		t.Errorf("MaxSizeMB = %d, want default 100 (project rejected)", cfg.Memory.Extended.MaxSizeMB)
+	}
+}

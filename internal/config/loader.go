@@ -27,6 +27,7 @@ import (
 	"github.com/BackendStack21/odek/internal/embedding"
 	"github.com/BackendStack21/odek/internal/mcpclient"
 	"github.com/BackendStack21/odek/internal/memory"
+	"github.com/BackendStack21/odek/internal/memory/extended"
 	"github.com/BackendStack21/odek/internal/redact"
 	"github.com/BackendStack21/odek/internal/skills"
 	"github.com/BackendStack21/odek/internal/telegram"
@@ -83,6 +84,20 @@ type CLIFlags struct {
 	// "verbose" = raw tool names, args, and results.
 	// "off" = no intermediate progress output, clean answer only.
 	InteractionMode string
+
+	// Extended memory subsystem CLI overrides.
+	MemoryExtendedEnabled                     *bool // nil = not set
+	MemoryExtendedMaxSizeMB                   int   // 0 = not set
+	MemoryExtendedAtomMaxChars                int   // 0 = not set
+	MemoryExtendedMemoryBudgetChars           int   // 0 = not set
+	MemoryExtendedUserStateTurnInterval       int   // 0 = not set
+	MemoryExtendedUserStateMaxPending         int   // 0 = not set
+	MemoryExtendedAssociationsEnabled         *bool // nil = not set
+	MemoryExtendedAssociationSemanticTopK     int   // 0 = not set
+	MemoryExtendedProactiveReturnAfterBreak   *bool // nil = not set
+	MemoryExtendedStyleMirroringEnabled       *bool // nil = not set
+	MemoryExtendedAnaphoraResolutionEnabled   *bool // nil = not set
+	MemoryExtendedFollowUpAnticipationEnabled *bool // nil = not set
 }
 
 // SkillsConfig holds the skills configuration section from JSON files.
@@ -627,6 +642,14 @@ func envStringList(key string) []string {
 	return out
 }
 
+// ensureExtended returns a non-nil *extended.Config, allocating one if needed.
+func ensureExtended(cfg *extended.Config) *extended.Config {
+	if cfg == nil {
+		return &extended.Config{}
+	}
+	return cfg
+}
+
 // envScheduleDangerousConfig parses ODEK_SCHEDULES_DANGEROUS_* env vars into a
 // DangerousConfig. Returns nil if none are set.
 func envScheduleDangerousConfig(prefix string) *danger.DangerousConfig {
@@ -872,6 +895,92 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		cfg.InteractionMode = v
 	}
 
+	// Extended memory env overrides
+	if v := envBool("MEMORY_EXTENDED_ENABLED"); v != nil {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.Enabled = v
+	}
+	if v := envInt("MEMORY_EXTENDED_MAX_SIZE_MB"); v > 0 {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.MaxSizeMB = v
+	}
+	if v := envInt("MEMORY_EXTENDED_ATOM_MAX_CHARS"); v > 0 {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.AtomMaxChars = v
+	}
+	if v := envInt("MEMORY_EXTENDED_MEMORY_BUDGET_CHARS"); v > 0 {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.MemoryBudgetChars = v
+	}
+	if v := envInt("MEMORY_EXTENDED_USER_STATE_TURN_INTERVAL"); v > 0 {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.UserStateTurnInterval = v
+	}
+	if v := envInt("MEMORY_EXTENDED_USER_STATE_MAX_PENDING"); v > 0 {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.UserStateMaxPending = v
+	}
+	if v := envBool("MEMORY_EXTENDED_ASSOCIATIONS_ENABLED"); v != nil {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.AssociationsEnabled = v
+	}
+	if v := envInt("MEMORY_EXTENDED_ASSOCIATION_SEMANTIC_TOP_K"); v > 0 {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.AssociationSemanticTopK = v
+	}
+	if v := envBool("MEMORY_EXTENDED_PROACTIVE_RETURN_AFTER_BREAK"); v != nil {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.ProactiveReturnAfterBreak = v
+	}
+	if v := envBool("MEMORY_EXTENDED_STYLE_MIRRORING_ENABLED"); v != nil {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.StyleMirroringEnabled = v
+	}
+	if v := envBool("MEMORY_EXTENDED_ANAPHORA_RESOLUTION_ENABLED"); v != nil {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.AnaphoraResolutionEnabled = v
+	}
+	if v := envBool("MEMORY_EXTENDED_FOLLOW_UP_ANTICIPATION_ENABLED"); v != nil {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.FollowUpAnticipationEnabled = v
+	}
+
 	// Schedules env overrides (ODEK_SCHEDULES_*): lets the scheduler be tuned
 	// from the environment, like everything else in a containerised deploy.
 	// Allocate once — an all-zero SchedulesConfig resolves identically to nil.
@@ -982,6 +1091,90 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	}
 	if cli.InteractionMode != "" {
 		cfg.InteractionMode = cli.InteractionMode
+	}
+	if cli.MemoryExtendedEnabled != nil {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.Enabled = cli.MemoryExtendedEnabled
+	}
+	if cli.MemoryExtendedMaxSizeMB > 0 {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.MaxSizeMB = cli.MemoryExtendedMaxSizeMB
+	}
+	if cli.MemoryExtendedAtomMaxChars > 0 {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.AtomMaxChars = cli.MemoryExtendedAtomMaxChars
+	}
+	if cli.MemoryExtendedMemoryBudgetChars > 0 {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.MemoryBudgetChars = cli.MemoryExtendedMemoryBudgetChars
+	}
+	if cli.MemoryExtendedUserStateTurnInterval > 0 {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.UserStateTurnInterval = cli.MemoryExtendedUserStateTurnInterval
+	}
+	if cli.MemoryExtendedUserStateMaxPending > 0 {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.UserStateMaxPending = cli.MemoryExtendedUserStateMaxPending
+	}
+	if cli.MemoryExtendedAssociationsEnabled != nil {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.AssociationsEnabled = cli.MemoryExtendedAssociationsEnabled
+	}
+	if cli.MemoryExtendedAssociationSemanticTopK > 0 {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.AssociationSemanticTopK = cli.MemoryExtendedAssociationSemanticTopK
+	}
+	if cli.MemoryExtendedProactiveReturnAfterBreak != nil {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.ProactiveReturnAfterBreak = cli.MemoryExtendedProactiveReturnAfterBreak
+	}
+	if cli.MemoryExtendedStyleMirroringEnabled != nil {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.StyleMirroringEnabled = cli.MemoryExtendedStyleMirroringEnabled
+	}
+	if cli.MemoryExtendedAnaphoraResolutionEnabled != nil {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.AnaphoraResolutionEnabled = cli.MemoryExtendedAnaphoraResolutionEnabled
+	}
+	if cli.MemoryExtendedFollowUpAnticipationEnabled != nil {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.FollowUpAnticipationEnabled = cli.MemoryExtendedFollowUpAnticipationEnabled
 	}
 	if len(cli.ToolsEnabled) > 0 {
 		if cfg.Tools == nil {
@@ -1291,6 +1484,10 @@ func resolveMemory(cfg *memory.MemoryConfig) memory.MemoryConfig {
 	}
 	if cfg.Embedding != nil {
 		def.Embedding = cfg.Embedding
+	}
+	if cfg.Extended != nil {
+		resolved := extended.Resolve(*cfg.Extended)
+		def.Extended = &resolved
 	}
 	return def
 }

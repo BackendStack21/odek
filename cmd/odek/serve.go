@@ -534,6 +534,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 		Skills:       &resolved.Skills,
 		SkillManager: sm,
 		MemoryConfig: resolved.Memory,
+		MemoryDir:    expandHome("~/.odek/memory"),
 		ToolEventHandler: func(event, name, data string) {
 			sendFn(map[string]any{
 				"type": event,
@@ -965,6 +966,11 @@ func handlePrompt(
 			sess.Sandbox = resolved.Sandbox
 			store.Save(sess)
 		}
+	}
+
+	cwd, _ := os.Getwd()
+	if agent.Memory() != nil && sess != nil {
+		agent.Memory().SetSessionContext(sess.ID, cwd)
 	}
 
 	// Send session info
