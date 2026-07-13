@@ -22,10 +22,13 @@ For the full walkthrough, threat model, and tuning, see
 docker/
 ├── Dockerfile               # multi-stage build of the odek binary
 ├── Dockerfile.embeddings    # llama.cpp embeddings sidecar (bundled GGUF)
-├── docker-compose.yml       # odek (4 profiles) + searxng + llama-embeddings
+├── docker-compose.yml       # odek (4 profiles) + searxng + llama-embeddings + piguard
 ├── config.restricted.json   # Restricted permission policy
 ├── config.godmode.json      # Godmode (YOLO) permission policy
 ├── .env.example             # copy to .env, add your API key
+├── piguard/                 # PIGuard model download helper
+│   ├── download-model.sh
+│   └── models/              # populated once by download-model.sh
 └── workspace/               # the dir the agent works in (mounted in)
 ```
 
@@ -245,6 +248,79 @@ See [`../docs/MEMORY.md`](../docs/MEMORY.md) → *Pluggable Embeddings*,
   fact entries, and skill text are all sent there for embedding. Here it's the in-network
   sidecar, so nothing leaves the compose network; if you repoint it at a cloud API, that
   text egresses.
+
+## Prompt-injection guard (PIGuard sidecar)
+
+The compose setup can run a private **[go-prompt-injection-guard](https://github.com/BackendStack21/go-prompt-injection-guard)**
+sidecar for a semantic second opinion on high-trust inputs — no external guard API, no keys.
+
+What it guards:
+
+- **Memory** — legacy facts, `memory` tool writes, Extended Memory atoms/recall/user model.
+- **System prompt** — `IDENTITY.md`, `--system`, and project-level `AGENTS.md`.
+- **MCP descriptions** — tool descriptions supplied by MCP servers.
+- Optionally: skills, Telegram captions/transcripts, and external tool outputs.
+
+Both bundled configs (`config.restricted.json` and `config.godmode.json`) set:
+
+```json
+"guard": {
+  "provider": "piguard",
+  "url": "http://piguard-gateway:8080/detect",
+  "scan": { "memory": true, "system_prompt": true, "mcp_descriptions": true }
+}
+```
+
+The sidecar is internal-only (no host port) and reachable only by the odek containers
+over the compose network at `http://piguard-gateway:8080`.
+
+### One-time model download
+
+The PIGuard model (~735 MB) is **not** baked into the image — it is exported once and
+mounted read-only from `./piguard/models`. Before starting odek with the guard for the
+first time, run:
+
+```bash
+./piguard/download-model.sh
+```
+
+This downloads the export script and requirements from the guard repo, exports the ONNX
+model and tokenizer inside a disposable Python container, and copies the result to
+`docker/piguard/models/`. It is safe to re-run; it skips if the model is already present.
+
+### Running with the guard
+
+No extra flags are needed — the bundled configs already point at the sidecar. The guard
+container (`piguard`) and its HTTP bridge (`piguard-gateway`) co-start with every odek
+profile:
+
+```bash
+docker compose --profile restricted up --build
+```
+
+If the sidecar is unavailable, the odek guard falls back to the local rule-based scan
+(`danger.ScanInjection`) because `fallback_to_local` is `true`.
+
+### Disabling the sidecar
+
+To use the local rule scan only (no model download, no extra container), set in `.env`:
+
+```bash
+ODEK_GUARD_PROVIDER=local
+```
+
+Or edit the `guard` block in `config.*.json` to `"provider": "local"`.
+
+### Optional guard surfaces
+
+The bundled configs enable only the core surfaces. To also guard skills, tool outputs, or
+Telegram media, set the corresponding `guard.scan.*` flag in `config.*.json` or via env:
+
+```bash
+ODEK_GUARD_SCAN_SKILLS=true
+ODEK_GUARD_SCAN_TOOL_OUTPUTS=true
+ODEK_GUARD_SCAN_TELEGRAM=true
+```
 
 ## Verify the profiles differ
 
