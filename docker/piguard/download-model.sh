@@ -25,11 +25,21 @@ echo "Output directory: ${MODEL_DIR}"
 #
 # DEBIAN_FRONTEND=noninteractive keeps apt-get quiet on headless hosts.
 # GIT_CONFIG_GLOBAL turns off the detached-HEAD advice and clone progress spam.
+# HF_TRUST_REMOTE_CODE=1 allows the PIGuard model's custom modeling code to run
+# without an interactive prompt. Pass through HF_TOKEN if set on the host.
+DOCKER_ENVS=(
+  -e HF_HOME=/tmp
+  -e DEBIAN_FRONTEND=noninteractive
+  -e GIT_CONFIG_GLOBAL=/tmp/.gitconfig
+  -e HF_TRUST_REMOTE_CODE=1
+)
+if [ -n "${HF_TOKEN:-}" ]; then
+  DOCKER_ENVS+=(-e "HF_TOKEN=${HF_TOKEN}")
+fi
+
 docker run --rm \
   -v "${MODEL_DIR}:/out" \
-  -e HF_HOME=/tmp \
-  -e DEBIAN_FRONTEND=noninteractive \
-  -e GIT_CONFIG_GLOBAL=/tmp/.gitconfig \
+  "${DOCKER_ENVS[@]}" \
   python:3.12-slim bash -c "
     set -euo pipefail
 
@@ -45,6 +55,13 @@ docker run --rm \
       https://github.com/BackendStack21/go-prompt-injection-guard.git /src
 
     cd /src
+
+    # The PIGuard model uses custom HF modeling code. The upstream export script
+    # does not pass trust_remote_code=True, so we patch it to avoid the interactive
+    # y/N prompt that would hang in a non-TTY container.
+    echo '==> Patching export script to allow custom HF modeling code...'
+    sed -i 's/AutoTokenizer.from_pretrained(MODEL_ID, revision=MODEL_REVISION)/AutoTokenizer.from_pretrained(MODEL_ID, revision=MODEL_REVISION, trust_remote_code=True)/' scripts/export_onnx.py
+    sed -i 's/AutoModelForSequenceClassification.from_pretrained(/AutoModelForSequenceClassification.from_pretrained(trust_remote_code=True, /' scripts/export_onnx.py
 
     echo '==> Installing Python export requirements (this may take a minute)...'
     pip install --no-cache-dir --quiet -r scripts/requirements.txt
