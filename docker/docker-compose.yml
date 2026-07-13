@@ -163,7 +163,13 @@ services:
   # its existing HTTP-based piguard client without sharing a socket volume.
   piguard:
     profiles: ["restricted", "godmode", "telegram-restricted", "telegram-godmode"]
-    image: ghcr.io/backendstack21/go-prompt-injection-guard:v1.0.0
+    # GHCR packages for this repo are private, so we build the daemon image locally
+    # from the public source. The first build clones the repo and compiles the
+    # binary; subsequent starts reuse the cached image.
+    build:
+      context: https://github.com/BackendStack21/go-prompt-injection-guard.git#v1.0.0
+      dockerfile: Dockerfile
+    image: piguard:local
     command:
       - "--socket=/run/piguard/piguard.sock"
       - "--model-dir=/models"
@@ -182,7 +188,11 @@ services:
 
   piguard-gateway:
     profiles: ["restricted", "godmode", "telegram-restricted", "telegram-godmode"]
-    image: ghcr.io/backendstack21/go-prompt-injection-guard-gateway:v1.0.0
+    # Built locally from the public guard repo source (GHCR packages are private).
+    build:
+      context: https://github.com/BackendStack21/go-prompt-injection-guard.git#v1.0.0
+      dockerfile: examples/http-gateway/Dockerfile
+    image: piguard-gateway:local
     command: ["--addr=:8080", "--socket=/run/piguard/piguard.sock"]
     volumes:
       - piguard-sock:/run/piguard

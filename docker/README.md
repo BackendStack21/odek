@@ -275,6 +275,12 @@ Both bundled configs (`config.restricted.json` and `config.godmode.json`) set:
 The sidecar is internal-only (no host port) and reachable only by the odek containers
 over the compose network at `http://piguard-gateway:8080`.
 
+The `piguard` and `piguard-gateway` images are **built locally** from the public
+go-prompt-injection-guard source repository (the GHCR packages are private). The first
+`docker compose --profile ... up --build` clones the guard repo and compiles both
+binaries; after that, the cached `piguard:local` / `piguard-gateway:local` images are
+reused.
+
 ### One-time model download
 
 The PIGuard model (~735 MB) is **not** baked into the image — it is exported once and
