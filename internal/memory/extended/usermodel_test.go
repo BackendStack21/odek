@@ -312,7 +312,7 @@ func TestUserModelUpdateFocusFromEmpty(t *testing.T) {
 func TestUserModelTechnicalDedup(t *testing.T) {
 	um := NewUserModelWithStore(t.TempDir(), newMockLLM(), DefaultConfig())
 	um.state.Technical.Languages = []string{"Go"}
-	um.applyDiff(userStateDiff{Technical: &TechnicalState{Languages: []string{"Go", "Rust", "Go"}}})
+	um.applyDiff(context.Background(), userStateDiff{Technical: &TechnicalState{Languages: []string{"Go", "Rust", "Go"}}})
 	if len(um.State().Technical.Languages) != 2 {
 		t.Errorf("expected 2 languages, got %d: %v", len(um.State().Technical.Languages), um.State().Technical.Languages)
 	}
@@ -320,7 +320,7 @@ func TestUserModelTechnicalDedup(t *testing.T) {
 
 func TestUserModelApplyPendingTechnical(t *testing.T) {
 	um := NewUserModelWithStore(t.TempDir(), newMockLLM(), DefaultConfig())
-	um.applyDiff(userStateDiff{Pending: []PendingReview{{Field: "technical.tools", Value: "docker", Confidence: 0.9}}})
+	um.applyDiff(context.Background(), userStateDiff{Pending: []PendingReview{{Field: "technical.tools", Value: "docker", Confidence: 0.9}}})
 	um.ConfirmPendingReview(um.State().PendingReview[0].ID)
 	if len(um.State().Technical.Tools) != 1 || um.State().Technical.Tools[0] != "docker" {
 		t.Errorf("expected tools [docker], got %v", um.State().Technical.Tools)
@@ -329,7 +329,7 @@ func TestUserModelApplyPendingTechnical(t *testing.T) {
 
 func TestUserModelApplyPendingInteraction(t *testing.T) {
 	um := NewUserModelWithStore(t.TempDir(), newMockLLM(), DefaultConfig())
-	um.applyDiff(userStateDiff{Pending: []PendingReview{{Field: "interaction.followup_after_refactor", Value: "ask for tests", Confidence: 0.9}}})
+	um.applyDiff(context.Background(), userStateDiff{Pending: []PendingReview{{Field: "interaction.followup_after_refactor", Value: "ask for tests", Confidence: 0.9}}})
 	um.ConfirmPendingReview(um.State().PendingReview[0].ID)
 	if um.State().InteractionPatterns.FollowupAfterRefactor != "ask for tests" {
 		t.Errorf("expected followup_after_refactor = ask for tests, got %q", um.State().InteractionPatterns.FollowupAfterRefactor)

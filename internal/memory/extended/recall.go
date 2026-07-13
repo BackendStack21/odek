@@ -6,6 +6,8 @@ import (
 	"log"
 	"sort"
 	"strings"
+
+	"github.com/BackendStack21/odek/internal/guard"
 )
 
 // Recall performs semantic search over the atom store.
@@ -15,11 +17,27 @@ type Recall struct {
 	llm       LLMClient
 	predictor *Predictor
 	cfg       Config
+	guard     guard.Guard
+	guardCfg  guard.Config
 }
 
 // NewRecall creates a Recall instance.
 func NewRecall(store *AtomStore, index *atomVectorIndex, llm LLMClient, cfg Config) *Recall {
 	return &Recall{store: store, index: index, llm: llm, cfg: cfg}
+}
+
+// SetGuard installs the shared prompt-injection detector.
+func (r *Recall) SetGuard(g guard.Guard, cfg guard.Config) {
+	r.guard = g
+	r.guardCfg = cfg
+}
+
+// scanContent runs the guard against a memory-scoped input.
+func (r *Recall) scanContent(ctx context.Context, content string) error {
+	if err := guard.ScanContentWithScope(ctx, content, r.guard, &r.guardCfg, "memory"); err != nil {
+		return fmt.Errorf("extended memory: %v", err)
+	}
+	return nil
 }
 
 // SetPredictor sets the optional predictor used for predictive recall.
@@ -270,5 +288,10 @@ func (r *Recall) formatContext(atoms []MemoryAtom) string {
 		return ""
 	}
 	b.WriteString("────────────────────────\n")
-	return b.String()
+	formatted := b.String()
+	if err := r.scanContent(context.Background(), formatted); err != nil {
+		log.Printf("extended memory: recalled context rejected by scan: %v", err)
+		return ""
+	}
+	return formatted
 }

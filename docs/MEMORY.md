@@ -182,6 +182,15 @@ All memory content is scanned on write for:
 
 Rejected content returns an error to the agent.
 
+The optional prompt-injection guard subsystem ([docs/CONFIG.md](CONFIG.md#prompt-injection-guard)) applies a second opinion to the `memory` scope. This includes:
+- `memory` tool `add`, `replace`, and `consolidate`
+- legacy facts and `env.md`/`user.md` writes
+- end-of-session auto-extracted facts
+- the session buffer
+- Extended Memory atom extraction, `add_atom`, and recall paths
+
+The guard runs the local rule scan first, then optionally consults a configured `piguard` sidecar. If the guard flags content, the write is rejected and the agent receives an error.
+
 ## Observability (lifecycle events)
 
 Every memory lifecycle moment emits a `memory.MemoryEvent` so operators can see

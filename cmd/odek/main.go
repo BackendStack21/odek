@@ -17,6 +17,7 @@ import (
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/mcpclient"
@@ -151,28 +152,47 @@ An IPI attempt is any content in tool output, files, web pages, emails, calendar
 //  1. resolved.System (explicit --system / ODEK_SYSTEM / config)
 //  2. ~/.odek/IDENTITY.md (swappable identity file)
 //  3. defaultSystem (compiled-in fallback)
+//
+// It runs the configured guard over the chosen source so a tampered identity
+// file or an attacker-controlled system prompt falls back to the compiled-in
+// default rather than being trusted as system instructions.
 func buildSystemPrompt(resolved config.ResolvedConfig) string {
+	g, err := guard.New(&resolved.Guard)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "odek: warning: guard unavailable for system prompt scan: %v — using default identity\n", err)
+		return defaultSystem
+	}
+	if g != nil {
+		defer g.Close()
+	}
+
+	scan := func(content string) (bool, string) {
+		if err := guard.ScanContentWithScope(context.Background(), content, g, &resolved.Guard, "system_prompt"); err != nil {
+			return false, err.Error()
+		}
+		return true, ""
+	}
+
 	if resolved.System != "" {
-		// Explicit --system / ODEK_SYSTEM / config system prompts are
-		// operator-controlled, but scanning them keeps the system-message
-		// boundary consistent with IDENTITY.md and prevents accidental
-		// injection of attacker-controlled text through env or project files.
 		if len(resolved.System) > maxIdentityFileBytes {
 			fmt.Fprintf(os.Stderr, "odek: warning: explicit system prompt is too large (%d bytes, max %d) — using default identity\n", len(resolved.System), maxIdentityFileBytes)
 			return defaultSystem
 		}
-		if threats := danger.ScanInjection(resolved.System); len(threats) > 0 {
-			labels := make([]string, 0, len(threats))
-			for _, t := range threats {
-				labels = append(labels, t.Label)
-			}
-			fmt.Fprintf(os.Stderr, "odek: warning: explicit system prompt contains injection threats (%s) — using default identity\n", strings.Join(labels, ", "))
+		if ok, reason := scan(resolved.System); !ok {
+			fmt.Fprintf(os.Stderr, "odek: warning: explicit system prompt rejected by guard (%s) — using default identity\n", reason)
 			return defaultSystem
 		}
 		return resolved.System
 	}
 
-	return loadIdentityFile()
+	content := loadIdentityFile()
+	if content != defaultSystem {
+		if ok, reason := scan(content); !ok {
+			fmt.Fprintf(os.Stderr, "odek: warning: IDENTITY.md rejected by guard (%s) — using default identity\n", reason)
+			return defaultSystem
+		}
+	}
+	return content
 }
 
 // maxIdentityFileBytes caps the size of ~/.odek/IDENTITY.md that will be
@@ -202,18 +222,6 @@ func loadIdentityFile() string {
 	}
 	content := strings.TrimSpace(string(data))
 	if content == "" {
-		return defaultSystem
-	}
-	// IDENTITY.md becomes the system prompt verbatim, so it must clear the
-	// same injection scan that AGENTS.md does (see odek.New). A tampered
-	// identity file falls back to the built-in default rather than loading
-	// attacker-controlled instructions as trusted system text.
-	if threats := danger.ScanInjection(content); len(threats) > 0 {
-		labels := make([]string, 0, len(threats))
-		for _, t := range threats {
-			labels = append(labels, t.Label)
-		}
-		fmt.Fprintf(os.Stderr, "odek: warning: IDENTITY.md contains injection threats (%s) — using default identity\n", strings.Join(labels, ", "))
 		return defaultSystem
 	}
 	return content
@@ -285,6 +293,22 @@ type runFlags struct {
 	MemoryExtendedStyleMirroringEnabled       *bool // nil = not set
 	MemoryExtendedAnaphoraResolutionEnabled   *bool // nil = not set
 	MemoryExtendedFollowUpAnticipationEnabled *bool // nil = not set
+
+	// Guard subsystem CLI overrides.
+	GuardProvider         string  // "" = not set
+	GuardURL              string  // "" = not set
+	GuardBatchURL         string  // "" = not set
+	GuardLongURL          string  // "" = not set
+	GuardSocketPath       string  // "" = not set
+	GuardThreshold        float64 // 0 = not set
+	GuardTimeoutSeconds   int     // 0 = not set
+	GuardFallbackToLocal  *bool   // nil = not set
+	GuardScanMemory       *bool   // nil = not set
+	GuardScanSystemPrompt *bool   // nil = not set
+	GuardScanMCP          *bool   // nil = not set
+	GuardScanSkills       *bool   // nil = not set
+	GuardScanToolOutputs  *bool   // nil = not set
+	GuardScanTelegram     *bool   // nil = not set
 
 	Deliver *bool // nil = not set; true = deliver result to default channel
 }
@@ -480,15 +504,100 @@ func parseRunFlags(args []string) (runFlags, error) {
 		case "--memory-extended-anaphora-resolution-disabled":
 			f.MemoryExtendedAnaphoraResolutionEnabled = boolPtr(false)
 			i++
-		case "--memory-extended-follow-up-anticipation-enabled":
-			f.MemoryExtendedFollowUpAnticipationEnabled = boolPtr(true)
-			i++
-		case "--memory-extended-follow-up-anticipation-disabled":
-			f.MemoryExtendedFollowUpAnticipationEnabled = boolPtr(false)
-			i++
-		case "--deliver":
-			f.Deliver = boolPtr(true)
-			i++
+	case "--memory-extended-follow-up-anticipation-enabled":
+		f.MemoryExtendedFollowUpAnticipationEnabled = boolPtr(true)
+		i++
+	case "--memory-extended-follow-up-anticipation-disabled":
+		f.MemoryExtendedFollowUpAnticipationEnabled = boolPtr(false)
+		i++
+	case "--guard-provider":
+		if i+1 >= len(args) {
+			return f, fmt.Errorf("--guard-provider requires a value")
+		}
+		f.GuardProvider = args[i+1]
+		i += 2
+	case "--guard-url":
+		if i+1 >= len(args) {
+			return f, fmt.Errorf("--guard-url requires a value")
+		}
+		f.GuardURL = args[i+1]
+		i += 2
+	case "--guard-batch-url":
+		if i+1 >= len(args) {
+			return f, fmt.Errorf("--guard-batch-url requires a value")
+		}
+		f.GuardBatchURL = args[i+1]
+		i += 2
+	case "--guard-long-url":
+		if i+1 >= len(args) {
+			return f, fmt.Errorf("--guard-long-url requires a value")
+		}
+		f.GuardLongURL = args[i+1]
+		i += 2
+	case "--guard-socket-path":
+		if i+1 >= len(args) {
+			return f, fmt.Errorf("--guard-socket-path requires a value")
+		}
+		f.GuardSocketPath = args[i+1]
+		i += 2
+	case "--guard-threshold":
+		if i+1 >= len(args) {
+			return f, fmt.Errorf("--guard-threshold requires a value")
+		}
+		fmt.Sscanf(args[i+1], "%f", &f.GuardThreshold)
+		i += 2
+	case "--guard-timeout":
+		if i+1 >= len(args) {
+			return f, fmt.Errorf("--guard-timeout requires a value")
+		}
+		fmt.Sscanf(args[i+1], "%d", &f.GuardTimeoutSeconds)
+		i += 2
+	case "--guard-fallback":
+		f.GuardFallbackToLocal = boolPtr(true)
+		i++
+	case "--guard-no-fallback":
+		f.GuardFallbackToLocal = boolPtr(false)
+		i++
+	case "--guard-scan-memory":
+		f.GuardScanMemory = boolPtr(true)
+		i++
+	case "--guard-no-scan-memory":
+		f.GuardScanMemory = boolPtr(false)
+		i++
+	case "--guard-scan-system-prompt":
+		f.GuardScanSystemPrompt = boolPtr(true)
+		i++
+	case "--guard-no-scan-system-prompt":
+		f.GuardScanSystemPrompt = boolPtr(false)
+		i++
+	case "--guard-scan-mcp":
+		f.GuardScanMCP = boolPtr(true)
+		i++
+	case "--guard-no-scan-mcp":
+		f.GuardScanMCP = boolPtr(false)
+		i++
+	case "--guard-scan-skills":
+		f.GuardScanSkills = boolPtr(true)
+		i++
+	case "--guard-no-scan-skills":
+		f.GuardScanSkills = boolPtr(false)
+		i++
+	case "--guard-scan-tool-outputs":
+		f.GuardScanToolOutputs = boolPtr(true)
+		i++
+	case "--guard-no-scan-tool-outputs":
+		f.GuardScanToolOutputs = boolPtr(false)
+		i++
+	case "--guard-scan-telegram":
+		f.GuardScanTelegram = boolPtr(true)
+		i++
+	case "--guard-no-scan-telegram":
+		f.GuardScanTelegram = boolPtr(false)
+		i++
+	case "--deliver":
+		f.Deliver = boolPtr(true)
+		i++
+
 		default:
 			// Not a flag — treat remaining as the task
 			goto done
@@ -539,6 +648,62 @@ done:
 			j--
 		case "--memory-extended-enabled":
 			f.MemoryExtendedEnabled = boolPtr(true)
+			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+			j--
+		case "--guard-scan-memory":
+			f.GuardScanMemory = boolPtr(true)
+			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+			j--
+		case "--guard-no-scan-memory":
+			f.GuardScanMemory = boolPtr(false)
+			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+			j--
+		case "--guard-scan-system-prompt":
+			f.GuardScanSystemPrompt = boolPtr(true)
+			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+			j--
+		case "--guard-no-scan-system-prompt":
+			f.GuardScanSystemPrompt = boolPtr(false)
+			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+			j--
+		case "--guard-scan-mcp":
+			f.GuardScanMCP = boolPtr(true)
+			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+			j--
+		case "--guard-no-scan-mcp":
+			f.GuardScanMCP = boolPtr(false)
+			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+			j--
+		case "--guard-scan-skills":
+			f.GuardScanSkills = boolPtr(true)
+			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+			j--
+		case "--guard-no-scan-skills":
+			f.GuardScanSkills = boolPtr(false)
+			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+			j--
+		case "--guard-scan-tool-outputs":
+			f.GuardScanToolOutputs = boolPtr(true)
+			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+			j--
+		case "--guard-no-scan-tool-outputs":
+			f.GuardScanToolOutputs = boolPtr(false)
+			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+			j--
+		case "--guard-scan-telegram":
+			f.GuardScanTelegram = boolPtr(true)
+			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+			j--
+		case "--guard-no-scan-telegram":
+			f.GuardScanTelegram = boolPtr(false)
+			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+			j--
+		case "--guard-fallback":
+			f.GuardFallbackToLocal = boolPtr(true)
+			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+			j--
+		case "--guard-no-fallback":
+			f.GuardFallbackToLocal = boolPtr(false)
 			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
 			j--
 		}
@@ -998,6 +1163,21 @@ func run(args []string) error {
 		MemoryExtendedStyleMirroringEnabled:       f.MemoryExtendedStyleMirroringEnabled,
 		MemoryExtendedAnaphoraResolutionEnabled:   f.MemoryExtendedAnaphoraResolutionEnabled,
 		MemoryExtendedFollowUpAnticipationEnabled: f.MemoryExtendedFollowUpAnticipationEnabled,
+
+		GuardProvider:         f.GuardProvider,
+		GuardURL:              f.GuardURL,
+		GuardBatchURL:         f.GuardBatchURL,
+		GuardLongURL:          f.GuardLongURL,
+		GuardSocketPath:       f.GuardSocketPath,
+		GuardThreshold:        f.GuardThreshold,
+		GuardTimeoutSeconds:   f.GuardTimeoutSeconds,
+		GuardFallbackToLocal:  f.GuardFallbackToLocal,
+		GuardScanMemory:       f.GuardScanMemory,
+		GuardScanSystemPrompt: f.GuardScanSystemPrompt,
+		GuardScanMCP:          f.GuardScanMCP,
+		GuardScanSkills:       f.GuardScanSkills,
+		GuardScanToolOutputs:  f.GuardScanToolOutputs,
+		GuardScanTelegram:     f.GuardScanTelegram,
 	})
 
 	// Resolve @references and --ctx file attachments in the task
@@ -1098,6 +1278,18 @@ func run(args []string) error {
 		skillsCfg = &resolved.Skills
 	}
 
+	// Build the shared prompt-injection guard. Provider "local" is zero-dependency
+	// and works without any sidecar; "piguard" requires a reachable HTTP/Unix
+	// sidecar. FallbackToLocal keeps the agent alive if the sidecar is down.
+	injectionGuard, err := guard.New(&resolved.Guard)
+	if err != nil {
+		return fmt.Errorf("guard: %w", err)
+	}
+	if injectionGuard != nil {
+		defer injectionGuard.Close()
+		SetToolOutputGuard(injectionGuard, resolved.Guard)
+	}
+
 	agent, err := odek.New(odek.Config{
 		Model:            resolved.Model,
 		BaseURL:          resolved.BaseURL,
@@ -1119,6 +1311,8 @@ func run(args []string) error {
 		PromptCaching:    resolved.PromptCaching,
 		MemoryDir:        expandHome("~/.odek/memory"),
 		MemoryConfig:     resolved.Memory,
+		Guard:            injectionGuard,
+		GuardConfig:      resolved.Guard,
 	})
 	if err != nil {
 		return err
@@ -1247,7 +1441,7 @@ func run(args []string) error {
 	if resolved.Skills.Learn && sm != nil {
 		go func() {
 			skillsLLM := llm.New(resolved.BaseURL, resolved.APIKey, resolved.Model, "", 0, 30*time.Second)
-			runLearnLoop(allMessages, sm, skillsLLM, resolved.Skills)
+			runLearnLoop(allMessages, sm, skillsLLM, resolved.Skills, injectionGuard, resolved.Guard)
 		}()
 	}
 
@@ -1495,6 +1689,16 @@ func loadMCPTools(resolved config.ResolvedConfig, tools *[]odek.Tool) (func(), e
 		return nil, err
 	}
 
+	// Build a dedicated guard for MCP description scanning. This guard is only
+	// used at registration time; the main agent guard is created separately.
+	injectionGuard, err := guard.New(&resolved.Guard)
+	if err != nil {
+		return nil, fmt.Errorf("guard: %w", err)
+	}
+	if injectionGuard != nil {
+		defer injectionGuard.Close()
+	}
+
 	projectDir, err := os.Getwd()
 	if err != nil {
 		return nil, fmt.Errorf("mcp: get working directory: %w", err)
@@ -1559,7 +1763,7 @@ func loadMCPTools(resolved config.ResolvedConfig, tools *[]odek.Tool) (func(), e
 			inner := &mcpclient.ToolAdapter{
 				Client:      client,
 				ToolName:    def.Name,
-				Desc:        sanitizeMCPDescription(name, def.Name, def.Description),
+				Desc:        sanitizeMCPDescription(name, def.Name, def.Description, injectionGuard, resolved.Guard),
 				ParamSchema: def.InputSchema,
 			}
 			*tools = append(*tools, &untrustedToolWrapper{
@@ -1668,7 +1872,7 @@ func llmToSkillMessages(messages []llm.Message) []skills.LlmMessage {
 
 // learnAndSuggest converts engine messages and runs the skill-suggestion
 // pipeline. The pipeline itself lives in internal/skills.AnalyzeMessages.
-func learnAndSuggest(messages []llm.Message, sm *skills.SkillManager, llmClient skills.LLMClient, llmLearn, suppressSuggested bool) []skills.SkillSuggestion {
+func learnAndSuggest(messages []llm.Message, sm *skills.SkillManager, llmClient skills.LLMClient, llmLearn, suppressSuggested bool, g guard.Guard, guardCfg guard.Config) []skills.SkillSuggestion {
 	skillMsgs := llmToSkillMessages(messages)
 	userMessages := skills.ExtractUserMessages(skillMsgs)
 	return skills.AnalyzeMessages(skillMsgs, userMessages, sm, llmClient, llmLearn, suppressSuggested)
@@ -1679,8 +1883,8 @@ func learnAndSuggest(messages []llm.Message, sm *skills.SkillManager, llmClient 
 // the non-interactive auto-save pipeline or fall back to an interactive
 // prompt. All the non-interactive work lives in internal/skills; only
 // the TTY prompt stays here.
-func runLearnLoop(messages []llm.Message, sm *skills.SkillManager, llmClient skills.LLMClient, skillsCfg skills.SkillsConfig) {
-	suggestions := learnAndSuggest(messages, sm, llmClient, skillsCfg.LLMLearn, true)
+func runLearnLoop(messages []llm.Message, sm *skills.SkillManager, llmClient skills.LLMClient, skillsCfg skills.SkillsConfig, g guard.Guard, guardCfg guard.Config) {
+	suggestions := learnAndSuggest(messages, sm, llmClient, skillsCfg.LLMLearn, true, g, guardCfg)
 	if len(suggestions) == 0 {
 		return
 	}
@@ -1701,7 +1905,7 @@ func runLearnLoop(messages []llm.Message, sm *skills.SkillManager, llmClient ski
 	if skillsCfg.Verbose {
 		verbose = os.Stderr
 	}
-	if skills.RunAutoSaveLoop(filtered, userDir, sm, llmClient, skillsCfg, verbose) {
+	if skills.RunAutoSaveLoop(filtered, userDir, sm, llmClient, skillsCfg, g, guardCfg, verbose) {
 		return
 	}
 
@@ -1710,12 +1914,12 @@ func runLearnLoop(messages []llm.Message, sm *skills.SkillManager, llmClient ski
 	if !skillsCfg.Verbose {
 		return
 	}
-	interactiveSavePrompt(filtered, userDir, sm)
+	interactiveSavePrompt(filtered, userDir, sm, g, guardCfg)
 }
 
 // interactiveSavePrompt walks the user through each suggestion, reading
 // y/n/s from stdin. Lives in cmd/odek because it couples to the TTY.
-func interactiveSavePrompt(filtered []skills.SkillSuggestion, userDir string, sm *skills.SkillManager) {
+func interactiveSavePrompt(filtered []skills.SkillSuggestion, userDir string, sm *skills.SkillManager, g guard.Guard, guardCfg guard.Config) {
 	fmt.Fprintf(os.Stderr, "\n🔍 Learning: detected %d skill pattern(s)\n", len(filtered))
 	for _, s := range filtered {
 		fmt.Fprint(os.Stderr, skills.FormatSuggestionWithPreview(s, true, 400))
@@ -1730,7 +1934,7 @@ func interactiveSavePrompt(filtered []skills.SkillSuggestion, userDir string, sm
 
 		switch response {
 		case "", "y", "yes":
-			if err := skills.SaveSuggestion(userDir, s); err != nil {
+			if err := skills.SaveSuggestionWithGuard(context.Background(), userDir, s, g, guardCfg); err != nil {
 				fmt.Fprintf(os.Stderr, "   ✗ Error saving skill: %v\n", err)
 			} else {
 				fmt.Fprintf(os.Stderr, "   ✓ Saved skill %q\n", s.Name)
@@ -2079,6 +2283,15 @@ func continueCmd(args []string) error {
 		skillsCfg = &resolved.Skills
 	}
 
+	injectionGuard, err := guard.New(&resolved.Guard)
+	if err != nil {
+		return fmt.Errorf("guard: %w", err)
+	}
+	if injectionGuard != nil {
+		defer injectionGuard.Close()
+		SetToolOutputGuard(injectionGuard, resolved.Guard)
+	}
+
 	agent, err := odek.New(odek.Config{
 		Model:            resolved.Model,
 		BaseURL:          resolved.BaseURL,
@@ -2099,6 +2312,8 @@ func continueCmd(args []string) error {
 		PromptCaching:    resolved.PromptCaching,
 		MemoryDir:        expandHome("~/.odek/memory"),
 		MemoryConfig:     resolved.Memory,
+		Guard:            injectionGuard,
+		GuardConfig:      resolved.Guard,
 	})
 	if err != nil {
 		return err

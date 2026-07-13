@@ -23,6 +23,7 @@ import (
 
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/memory"
@@ -413,7 +414,7 @@ func serveOnListener(listener net.Listener, mux *http.ServeMux) error {
 
 // ── Agent Builder ──────────────────────────────────────────────────────
 
-func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v any) error) (*odek.Agent, func() error, func(), *wsApprover, error) {
+func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v any) error) (*odek.Agent, func() error, func(), func() error, guard.Guard, *wsApprover, error) {
 	var sm *skills.SkillManager
 	if resolved.Skills.Learn {
 		sm = skills.NewSkillManagerWithEmbedding(
@@ -434,7 +435,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 	if len(resolved.MCPServers) > 0 {
 		cl, err := loadMCPTools(resolved, &tools)
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("mcp: %w", err)
+			return nil, nil, nil, nil, nil, approver, fmt.Errorf("mcp: %w", err)
 		}
 		mcpCleanup = cl
 	}
@@ -487,7 +488,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 		var sandboxErr error
 		sbContainerName, sandboxCleanup, sandboxErr = setupSandbox(tools, cfg)
 		if sandboxErr != nil {
-			return nil, nil, nil, nil, fmt.Errorf("sandbox: %w", sandboxErr)
+			return nil, nil, nil, nil, nil, approver, fmt.Errorf("sandbox: %w", sandboxErr)
 		}
 		_ = sbContainerName // not used in serve mode
 	} else {
@@ -509,6 +510,21 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 			"Keep responses concise and visual."
 	} else {
 		runtimeCtx = odek.BuildRuntimeContext("web")
+	}
+
+	// Build the shared prompt-injection guard for this connection.
+	injectionGuard, err := guard.New(&resolved.Guard)
+	if err != nil {
+		return nil, nil, nil, nil, nil, approver, fmt.Errorf("guard: %w", err)
+	}
+	guardCleanup := func() error {
+		if injectionGuard != nil {
+			return injectionGuard.Close()
+		}
+		return nil
+	}
+	if injectionGuard != nil {
+		SetToolOutputGuard(injectionGuard, resolved.Guard)
 	}
 
 	agent, err := odek.New(odek.Config{
@@ -533,8 +549,10 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 		Renderer:     nil, // silent — we stream via WebSocket
 		Skills:       &resolved.Skills,
 		SkillManager: sm,
-		MemoryConfig: resolved.Memory,
+		MemoryConfig:   resolved.Memory,
 		MemoryDir:    expandHome("~/.odek/memory"),
+		Guard:        injectionGuard,
+		GuardConfig:  resolved.Guard,
 		ToolEventHandler: func(event, name, data string) {
 			sendFn(map[string]any{
 				"type": event,
@@ -593,10 +611,10 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 		if mcpCleanup != nil {
 			mcpCleanup()
 		}
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, approver, err
 	}
 
-	return agent, sandboxCleanup, mcpCleanup, approver, nil
+	return agent, sandboxCleanup, mcpCleanup, guardCleanup, injectionGuard, approver, nil
 }
 
 // ── WebSocket Types ────────────────────────────────────────────────────
@@ -645,7 +663,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 
 	// Create ONE agent per WebSocket connection — provides buffer
 	// continuity across turns within the same session.
-	agent, sandboxCleanup, mcpCleanup, approver, err := newServeAgent(resolved, system, func(v any) error {
+	agent, sandboxCleanup, mcpCleanup, guardCleanup, injectionGuard, approver, err := newServeAgent(resolved, system, func(v any) error {
 		writeWSJSON(conn, v)
 		return nil
 	})
@@ -654,6 +672,9 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 		return
 	}
 	defer agent.Close()
+	if guardCleanup != nil {
+		defer guardCleanup()
+	}
 	if approver != nil {
 		defer approver.Cancel() // release any pending approval on disconnect
 	}
@@ -830,7 +851,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 		// Derived from connCtx so a disconnect also aborts the running prompt.
 		promptCtx, promptCancel := context.WithCancel(connCtx)
 
-		currentSession = handlePrompt(promptCtx, conn, store, resources, resolved, agent, currentSession, msg, &sessionInputTokens, &sessionOutputTokens, promptCancel)
+		currentSession = handlePrompt(promptCtx, conn, store, resources, resolved, agent, injectionGuard, currentSession, msg, &sessionInputTokens, &sessionOutputTokens, promptCancel)
 
 		// Cancel the prompt context once the run is complete.
 		promptCancel()
@@ -858,6 +879,7 @@ func handlePrompt(
 	resources *resource.Registry,
 	resolved config.ResolvedConfig,
 	agent *odek.Agent,
+	g guard.Guard,
 	currSess *session.Session,
 	msg wsClientMsg,
 	sessionInputTokens, sessionOutputTokens *int,
@@ -1135,7 +1157,7 @@ func handlePrompt(
 	// ── Learn loop: run self-improvement heuristics ──
 	if agent.SkillManager() != nil {
 		sm := agent.SkillManager()
-		suggestions := learnAndSuggest(allMessages, sm, nil, false, resolved.Skills.AutoSave.Enabled)
+		suggestions := learnAndSuggest(allMessages, sm, nil, false, resolved.Skills.AutoSave.Enabled, g, resolved.Guard)
 		if len(suggestions) > 0 {
 			userDir := expandHome("~/.odek/skills")
 			os.MkdirAll(userDir, 0755)
@@ -1143,7 +1165,7 @@ func handlePrompt(
 				resolved.Skills.Curation.SkipThreshold, resolved.Skills.Curation.SkipResetDays)
 			_ = skipped
 			if resolved.Skills.AutoSave.Enabled {
-				result := skills.AutoSaveSuggestions(filtered, userDir, resolved.Skills, false)
+				result := skills.AutoSaveSuggestions(filtered, userDir, resolved.Skills, g, resolved.Guard, false)
 				for _, name := range result.Saved {
 					sm.Notifier.Notify(skills.SkillEvent{
 						Type: "saved", SkillName: name, Timestamp: time.Now().UTC(),

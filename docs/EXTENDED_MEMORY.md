@@ -158,7 +158,7 @@ Output ONLY a JSON array. Example:
 Extracted atoms are immediately:
 
 1. Wrapped untrusted content (`<untrusted_content_*>`) is stripped from the user message before extraction.
-2. Scanned for injection patterns, invisible Unicode, confusable scripts, and credential patterns (`sk-...`, PEM private keys, bearer tokens).
+2. Scanned for injection patterns, invisible Unicode, confusable scripts, and credential patterns (`sk-...`, PEM private keys, bearer tokens). If the optional guard is enabled for `memory`, the same content is also sent to the configured sidecar for a second opinion.
 3. Assigned `source_class: user_said`.
 4. Embedded and written to the atom store.
 5. Checked against the 100 MB size cap; low-retention atoms are evicted if needed.
@@ -490,7 +490,7 @@ Extended Memory inherits and extends the provenance model from [MEMORY.md](MEMOR
 
 - **Source-class tagging**: every atom records where its content came from.
 - **Taint quarantine**: indirect content is never embedded into the recallable vector space until promoted.
-- **Scan on write**: every atom is scanned for injection patterns, invisible Unicode, and credential patterns before persistence.
+- **Scan on write**: every atom is scanned for injection patterns, invisible Unicode, and credential patterns before persistence. The optional prompt-injection guard (see [docs/CONFIG.md](CONFIG.md#prompt-injection-guard)) can apply a second opinion to the `memory` scope; when enabled, it covers atom extraction, `add_atom`, user-model inference, and anaphora resolution.
 - **Untrusted wrapper**: content from file reads, web fetches, MCP, and subagents is wrapped as untrusted before the main model ever sees it; the memory subsystem treats it as tainted.
 - **No self-promotion**: the agent cannot promote a quarantined atom or confirm a pending user-model inference. Promotion and confirmation require an explicit user action or user message.
 - **Bounded storage**: the size cap prevents a memory-DoS where an attacker fills disk with recalled junk.

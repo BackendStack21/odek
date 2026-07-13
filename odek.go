@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/memory"
@@ -147,6 +148,14 @@ type Config struct {
 	// MemoryConfig controls the memory system (facts, buffer, episodes).
 	// Default: memory.DefaultMemoryConfig()
 	MemoryConfig memory.MemoryConfig
+
+	// Guard is the prompt-injection detector shared across subsystems.
+	// When nil, subsystems fall back to local rule-based scanning on demand.
+	Guard guard.Guard
+
+	// GuardConfig is the resolved guard configuration used to decide which
+	// surfaces are scanned. It mirrors the guard instance passed above.
+	GuardConfig guard.Config
 
 	// PromptCaching enables prompt caching markers for supported providers.
 	// When enabled (default: false), the system prompt and first user message
@@ -445,12 +454,8 @@ func New(cfg Config) (*Agent, error) {
 	// Content is scanned for prompt injection before being trusted.
 	if !cfg.NoProjectFile {
 		if projectContent := LoadProjectFile(); projectContent != "" {
-			if threats := danger.ScanInjection(projectContent); len(threats) > 0 {
-				var labels []string
-				for _, t := range threats {
-					labels = append(labels, t.Label)
-				}
-				log.Printf("skipping AGENTS.md: injection threats detected: %s", strings.Join(labels, ", "))
+			if err := guard.ScanContentWithScope(context.Background(), projectContent, cfg.Guard, &cfg.GuardConfig, "system_prompt"); err != nil {
+				log.Printf("skipping AGENTS.md: guard rejected: %v", err)
 			} else if cfg.SystemMessage != "" {
 				cfg.SystemMessage += "\n\n# Project Instructions\n\n" + projectContent
 			} else {
@@ -486,6 +491,10 @@ func New(cfg Config) (*Agent, error) {
 		if len(notifiers) > 0 {
 			sm.SetNotifier(skills.NewMultiNotifier(notifiers...))
 		}
+
+		// Install the shared guard so skill loading and saving are scanned
+		// when the skills scan scope is enabled.
+		sm.SetGuard(cfg.Guard, cfg.GuardConfig)
 
 		// Append auto-load skills to system message
 		var skillContext string
@@ -528,6 +537,7 @@ func New(cfg Config) (*Agent, error) {
 		memoryLLM = extended.ResolveLLM(*cfg.MemoryConfig.Extended, client, cfg.Thinking)
 	}
 	memoryManager.InitExtended(memoryLLM, memoryDir)
+	memoryManager.SetGuard(cfg.Guard, cfg.GuardConfig)
 
 	// Wire memory lifecycle observability: fan out events to the programmatic
 	// handler (WebUI/Telegram/embedders) and the terminal renderer. Mirrors the

@@ -17,6 +17,7 @@ import (
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/redact"
@@ -683,6 +684,16 @@ func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system
 	// RunWithMessages drives the loop synchronously on this goroutine, so the
 	// callback needs no synchronisation.
 	var lastInfo loop.IterationInfo
+
+	injectionGuard, err := guard.New(&resolved.Guard)
+	if err != nil {
+		return "", 0, fmt.Errorf("guard: %w", err)
+	}
+	if injectionGuard != nil {
+		defer injectionGuard.Close()
+		SetToolOutputGuard(injectionGuard, resolved.Guard)
+	}
+
 	agent, err := odek.New(odek.Config{
 		Model:             resolved.Model,
 		BaseURL:           resolved.BaseURL,
@@ -701,6 +712,8 @@ func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system
 		InteractionMode:   "off",
 		PromptCaching:     resolved.PromptCaching,
 		IterationCallback: func(info loop.IterationInfo) { lastInfo = info },
+		Guard:             injectionGuard,
+		GuardConfig:       resolved.Guard,
 	})
 	if err != nil {
 		return "", 0, err

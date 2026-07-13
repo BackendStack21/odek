@@ -102,6 +102,23 @@ Regression suites (`internal/danger/classifier_bypass_test.go` and `hardening_te
 
 `~/.odek/IDENTITY.md` and explicit `--system` / `ODEK_SYSTEM` / `~/.odek/config.json` overrides are capped at 256 KiB and scanned with `danger.ScanInjection` before becoming the system prompt. If the scan detects injection patterns or the prompt exceeds the size cap, odek warns on stderr and falls back to the compiled-in default identity. This keeps the system-message boundary consistent regardless of which source supplied it.
 
+### 3b. Prompt-injection guard (optional sidecar)
+
+For operators who want a second opinion, odek can send the same content that `ScanInjection` checks to an external `go-prompt-injection-guard` sidecar (HTTP or Unix socket). The guard is **optional** — the local rule scan always runs first, and without a sidecar the system behaves exactly as before.
+
+Covered surfaces (each controlled by `guard.scan.<scope>`):
+
+- `memory` — legacy facts, `memory` tool writes, Extended Memory atoms, and session-buffer text.
+- `system_prompt` — `IDENTITY.md`, explicit `--system`, and `AGENTS.md`.
+- `mcp_descriptions` — MCP server tool descriptions.
+- `skills` — skill bodies at load time and skill save/patch suggestions.
+- `tool_outputs` — external tool outputs (warning-only; the existing untrusted wrapper remains the primary boundary).
+- `telegram` — photo captions and voice transcripts before they are injected into the user message stream.
+
+If the sidecar flags content, the behavior mirrors a local scan flag: writes are rejected, system-prompt sources fall back to the default identity, MCP descriptions are withheld, and tainted skill/Telegram inputs are dropped or wrapped with a warning.
+
+The `guard` section is operator-controlled: project-level `./odek.json` cannot set it, so a malicious repository cannot disable the local scan or redirect memory/system-prompt content to an attacker-controlled endpoint.
+
 ### 4. Tool-call approval
 
 When a classification is set to `prompt`, an approver pauses the agent until the user decides. Two implementations:
@@ -330,8 +347,9 @@ exceed the cap are rejected before they are written.
 - `embedding` / `memory` / `sessions` / `skills.dirs` / `skills.embedding` — can redirect memory, session, or skill embeddings to an attacker-controlled endpoint.
 - `telegram` — can send final results or bot traffic to an attacker-controlled Telegram bot/chat.
 - `web_search` — can leak every search query to an attacker-controlled backend.
+- `guard` — can disable the local scan or redirect memory/system-prompt content to an attacker-controlled endpoint.
 
-These fields can only be set from operator-controlled sources: `~/.odek/config.json` (and `ODEK_TELEGRAM_*` env vars for `telegram`).
+These fields can only be set from operator-controlled sources: `~/.odek/config.json` (and `ODEK_TELEGRAM_*` env vars for `telegram`, `ODEK_GUARD_*` env vars for `guard`).
 
 ### SSRF guard and configured-backend allowlist
 
@@ -617,6 +635,7 @@ A prompt-injected agent could overwrite `schedules.json` to install persistent c
 | Config file swapped for a huge file after size check | `loadFile` reads via a single `Open` + `LimitReader` |
 | Non-cooperating process ignores advisory flock | Documented in package doc; permissions are the real access gate |
 | Prompt-injected task runs unattended in CI/pipe | Default `non_interactive` is `"deny"` |
+| Prompt-injected content reaches memory/system prompt/MCP descriptions | Local `ScanInjection` + optional `piguard` sidecar second opinion |
 | Malicious repo redirects embeddings/memory/session search to attacker | Project-level `embedding`/`memory`/`sessions`/`skills.dirs`/`skills.embedding` rejected |
 | Malicious repo exfiltrates results via Telegram | Project-level `telegram` rejected |
 | Malicious repo logs every search query | Project-level `web_search` rejected |

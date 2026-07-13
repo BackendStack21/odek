@@ -1,8 +1,10 @@
 package skills
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/embedding"
+	"github.com/BackendStack21/odek/internal/guard"
 )
 
 // ── Agent Tools ────────────────────────────────────────────────────────
@@ -43,6 +46,12 @@ type SkillManager struct {
 	// semantic skill matching. nil (default) = local RandomProjections. Set via
 	// NewSkillManagerWithEmbedding; used when (re)building the VectorMatcher.
 	embeddingCfg *embedding.Config
+
+	// guard and guardCfg provide optional prompt-injection scanning for skill
+	// bodies at load and save time. When nil or disabled, skill loading and
+	// saving proceed without scanning.
+	guard    guard.Guard
+	guardCfg guard.Config
 }
 
 // NewSkillManager creates a SkillManager with the given directories.
@@ -113,6 +122,55 @@ func (sm *SkillManager) SetNotifier(n SkillNotifier) {
 	sm.Notifier = n
 }
 
+// SetGuard installs a prompt-injection guard and its config. The guard is used
+// when skills are loaded (flagged auto-load skills are moved to lazy) and when
+// skills are saved or patched via the skill management tools.
+func (sm *SkillManager) SetGuard(g guard.Guard, cfg guard.Config) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.guard = g
+	sm.guardCfg = cfg
+}
+
+// scanSkill checks a skill body for prompt-injection patterns using the
+// configured guard. If the body is flagged, it sets Provenance.NeedsReview so
+// the skill cannot be auto-loaded without explicit promotion.
+func (sm *SkillManager) scanSkill(ctx context.Context, s *Skill) bool {
+	if sm.guard == nil || !guard.IsEnabled(sm.guardCfg.Scan, "skills") {
+		return false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := guard.ScanContent(ctx, s.Body, sm.guard, &sm.guardCfg); err != nil {
+		log.Printf("guard: skill %q body flagged: %v", s.Name, err)
+		s.Provenance.NeedsReview = true
+		return true
+	}
+	return false
+}
+
+// applyGuardToSkills scans loaded skills and moves flagged auto-load skills to
+// the lazy list so they are never injected into the system prompt automatically.
+func (sm *SkillManager) applyGuardToSkills() {
+	if sm.guard == nil || !guard.IsEnabled(sm.guardCfg.Scan, "skills") || sm.Result == nil {
+		return
+	}
+	kept := make([]Skill, 0, len(sm.Result.AutoLoad))
+	for i := range sm.Result.AutoLoad {
+		if sm.scanSkill(context.Background(), &sm.Result.AutoLoad[i]) {
+			sm.Result.Lazy = append(sm.Result.Lazy, sm.Result.AutoLoad[i])
+		} else {
+			kept = append(kept, sm.Result.AutoLoad[i])
+		}
+	}
+	sm.Result.AutoLoad = kept
+
+	for i := range sm.Result.Lazy {
+		sm.scanSkill(context.Background(), &sm.Result.Lazy[i])
+	}
+}
+
 // MarkDirty forces the next Reload() to do a full rescan, bypassing the
 // file modification time cache. Call after writing, patching, or deleting
 // skill files from outside the SkillManager (e.g. auto-save, import).
@@ -159,6 +217,8 @@ func (sm *SkillManager) reloadLocked() {
 	// Build vector matcher for semantic skill matching (RP by default, or the
 	// opt-in HTTP embedding backend when configured).
 	sm.VectorMatcher = NewVectorMatcherWithConfig(sm.Result.Lazy, DefaultMatcherConfig, sm.embeddingCfg)
+
+	sm.applyGuardToSkills()
 }
 
 // GetResult returns a read-locked copy of the scan result.
@@ -485,6 +545,10 @@ func (t *SkillSaveTool) Call(args string) (string, error) {
 		}
 	}
 
+	if t.Manager.scanSkill(context.Background(), &skill) {
+		warnings = append(warnings, "body flagged by guard — skill saved but requires manual review before auto-load")
+	}
+
 	if err := WriteSkill(t.Manager.UserDir, skill); err != nil {
 		return "", fmt.Errorf("skill_save: write: %w", err)
 	}
@@ -583,8 +647,25 @@ func (t *SkillPatchTool) Call(args string) (string, error) {
 		return "", fmt.Errorf("skill_patch: write: %w", err)
 	}
 
+	// Scan the patched body. If the guard flags it, pin the skill to manual
+	// review by rewriting its provenance.
+	flagged := false
+	if patched := parseSkillContent(newBody, skill.Source.Path); patched != nil {
+		if t.Manager.scanSkill(context.Background(), patched) {
+			flagged = true
+			patched.Source = skill.Source
+			content := MarshalSkill(*patched)
+			if err := os.WriteFile(skill.Source.Path, []byte(content), 0644); err != nil {
+				return "", fmt.Errorf("skill_patch: rewrite flagged provenance: %w", err)
+			}
+		}
+	}
+
 	t.Manager.MarkDirty()
 	t.Manager.Reload()
+	if flagged {
+		return fmt.Sprintf("✓ Patched skill %q: replaced %d characters (guard flagged; pinned to manual review)", input.Name, len(input.OldText)), nil
+	}
 	return fmt.Sprintf("✓ Patched skill %q: replaced %d characters", input.Name, len(input.OldText)), nil
 }
 

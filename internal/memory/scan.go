@@ -1,10 +1,11 @@
 package memory
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 
-	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/guard"
 )
 
 // ScanContent checks memory content for security threats. Returns an error if
@@ -16,26 +17,9 @@ import (
 //   - Prompt injection markers ("ignore previous instructions", etc.)
 //   - Credential exfiltration patterns (API keys, private keys, bearer tokens)
 func ScanContent(content string) error {
-	// 1. Invisible Unicode
-	if danger.ContainsInvisible(content) {
-		return fmt.Errorf("memory: content contains invisible Unicode characters")
+	if err := guard.ScanContent(context.Background(), content, nil, nil); err != nil {
+		return fmt.Errorf("memory: %v", err)
 	}
-
-	// 2. Mixed confusable scripts
-	if danger.HasConfusableScript(content) {
-		return fmt.Errorf("memory: content contains mixed confusable scripts")
-	}
-
-	// 3. Injection patterns (normalized for homoglyph/zero-width resilience)
-	if threats := danger.ScanInjection(content); len(threats) > 0 {
-		return fmt.Errorf("memory: content contains injection pattern: %q", threats[0].Label)
-	}
-
-	// 4. Credential exfiltration
-	if hasCredentials(content) {
-		return fmt.Errorf("memory: content contains potential credential material")
-	}
-
 	return nil
 }
 
@@ -58,27 +42,4 @@ var (
 // but it closes the concrete download-and-run class.
 func FactLooksUnsafe(fact string) bool {
 	return remoteExecRe.MatchString(fact) || evalFetchRe.MatchString(fact)
-}
-
-// reSKKey matches OpenAI-style sk- prefixed keys.
-var reSKKey = regexp.MustCompile(`\bsk-[a-zA-Z0-9_-]{20,}\b`)
-
-// rePrivateKey matches PEM private key headers.
-var rePrivateKey = regexp.MustCompile(`-----BEGIN\s+(?:RSA|DSA|EC|OPENSSH|PGP)\s+PRIVATE\s+KEY`)
-
-// reBearerToken matches inline bearer tokens.
-var reBearerToken = regexp.MustCompile(`(?i)\bbearer\s+[a-zA-Z0-9._-]{20,}\b`)
-
-// hasCredentials checks for patterns that look like leaked secrets.
-func hasCredentials(s string) bool {
-	if reSKKey.MatchString(s) {
-		return true
-	}
-	if rePrivateKey.MatchString(s) {
-		return true
-	}
-	if reBearerToken.MatchString(s) {
-		return true
-	}
-	return false
 }

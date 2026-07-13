@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/embedding"
+	"github.com/BackendStack21/odek/internal/guard"
 )
 
 // ExtendedMemory orchestrates atom storage, embedding, extraction, recall,
@@ -28,6 +29,9 @@ type ExtendedMemory struct {
 	assoc      *Associations
 	predictor  *Predictor
 	llm        LLMClient
+
+	guard    guard.Guard
+	guardCfg guard.Config
 
 	dir      string
 	mu       sync.RWMutex
@@ -91,6 +95,33 @@ func (em *ExtendedMemory) Enabled() bool {
 	return em != nil && em.cfg.Enabled != nil && *em.cfg.Enabled
 }
 
+// SetGuard installs the shared prompt-injection detector and propagates it to
+// the extractor, user-model, and recall sub-components.
+func (em *ExtendedMemory) SetGuard(g guard.Guard, cfg guard.Config) {
+	if em == nil {
+		return
+	}
+	em.guard = g
+	em.guardCfg = cfg
+	if em.extractor != nil {
+		em.extractor.SetGuard(g, cfg)
+	}
+	if em.userModel != nil {
+		em.userModel.SetGuard(g, cfg)
+	}
+	if em.recall != nil {
+		em.recall.SetGuard(g, cfg)
+	}
+}
+
+// scanContent runs the guard against an extended-memory-scoped input.
+func (em *ExtendedMemory) scanContent(ctx context.Context, content string) error {
+	if err := guard.ScanContentWithScope(ctx, content, em.guard, &em.guardCfg, "memory"); err != nil {
+		return fmt.Errorf("extended memory: %v", err)
+	}
+	return nil
+}
+
 // SetSessionContext sets the current session and project identifiers.
 func (em *ExtendedMemory) SetSessionContext(sessionID, project string) {
 	if em == nil {
@@ -126,7 +157,7 @@ func (em *ExtendedMemory) AddAtom(ctx context.Context, atom MemoryAtom) error {
 	em.mu.RUnlock()
 
 	// Security scan before persistence, regardless of trust boundary.
-	if err := ScanContent(atom.Text); err != nil {
+	if err := em.scanContent(ctx, atom.Text); err != nil {
 		return err
 	}
 
@@ -429,7 +460,7 @@ func (em *ExtendedMemory) AnaphoraResolve(ctx context.Context, msg string) (stri
 		return msg, false
 	}
 	resolved := msg[:loc[0]] + atoms[0].Text + msg[loc[1]:]
-	if err := ScanContent(resolved); err != nil {
+	if err := em.scanContent(context.Background(), resolved); err != nil {
 		log.Printf("extended memory: anaphora resolution rejected by scan: %v", err)
 		return msg, false
 	}
