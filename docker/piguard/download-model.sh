@@ -22,19 +22,39 @@ echo "Output directory: ${MODEL_DIR}"
 # Run the export in a disposable Python container so no host Python/toolchain is
 # required. The guard repo's export_onnx.py downloads the model from HuggingFace
 # and converts it to ONNX.
+#
+# DEBIAN_FRONTEND=noninteractive keeps apt-get quiet on headless hosts.
+# GIT_CONFIG_GLOBAL turns off the detached-HEAD advice and clone progress spam.
 docker run --rm \
   -v "${MODEL_DIR}:/out" \
   -e HF_HOME=/tmp \
+  -e DEBIAN_FRONTEND=noninteractive \
+  -e GIT_CONFIG_GLOBAL=/tmp/.gitconfig \
   python:3.12-slim bash -c "
     set -euo pipefail
-    apt-get update >/dev/null
-    apt-get install -y --no-install-recommends git curl ca-certificates >/dev/null
-    git clone --depth 1 --branch '${PIGUARD_REF}' \
+
+    # Silence git advice / progress noise inside the container.
+    printf '[advice]\ndetachedHead = false\n' > /tmp/.gitconfig
+
+    echo '==> Installing git and curl inside container...'
+    apt-get -qq update
+    apt-get -qq install -y --no-install-recommends git curl ca-certificates >/dev/null
+
+    echo '==> Cloning go-prompt-injection-guard (${PIGUARD_REF})...'
+    git clone --quiet --depth 1 --branch '${PIGUARD_REF}' \
       https://github.com/BackendStack21/go-prompt-injection-guard.git /src
+
     cd /src
-    pip install --no-cache-dir -r scripts/requirements.txt >/dev/null
-    python scripts/export_onnx.py
+
+    echo '==> Installing Python export requirements (this may take a minute)...'
+    pip install --no-cache-dir --quiet -r scripts/requirements.txt
+
+    echo '==> Exporting PIGuard model from HuggingFace to ONNX (~735 MB, be patient)...'
+    python -u scripts/export_onnx.py
+
+    echo '==> Copying exported model to host volume...'
     cp ~/.cache/piguard/onnx/* /out/
+    chmod 644 /out/*
   "
 
 echo "Done. Model files written to ${MODEL_DIR}:"
