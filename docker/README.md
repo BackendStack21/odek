@@ -28,6 +28,7 @@ docker/
 ├── .env.example             # copy to .env, add your API key
 ├── piguard/                 # PIGuard model download helper
 │   ├── download-model.sh
+│   ├── export_onnx.py       # non-interactive ONNX exporter
 │   └── models/              # populated once by download-model.sh
 └── workspace/               # the dir the agent works in (mounted in)
 ```
@@ -284,9 +285,13 @@ first time, run:
 ./piguard/download-model.sh
 ```
 
-This downloads the export script and requirements from the guard repo, exports the ONNX
-model and tokenizer inside a disposable Python container, and copies the result to
-`docker/piguard/models/`. It is safe to re-run; it skips if the model is already present.
+This runs a self-contained Python container that downloads the model from HuggingFace
+and converts it to ONNX. It can take **5–15 minutes** depending on bandwidth and CPU.
+Set `HF_TOKEN` if you have one (higher rate limits):
+
+```bash
+HF_TOKEN=hf_xxx ./piguard/download-model.sh
+```
 
 ### Running with the guard
 
