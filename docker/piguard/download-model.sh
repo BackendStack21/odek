@@ -60,11 +60,10 @@ docker run --rm \
     # does not pass trust_remote_code=True, so we patch it to avoid the interactive
     # y/N prompt that would hang in a non-TTY container.
     echo '==> Patching export script to allow custom HF modeling code...'
-    sed -i 's/AutoTokenizer.from_pretrained(MODEL_ID, revision=MODEL_REVISION)/AutoTokenizer.from_pretrained(MODEL_ID, revision=MODEL_REVISION, trust_remote_code=True)/' scripts/export_onnx.py
-    sed -i 's/AutoModelForSequenceClassification.from_pretrained(/AutoModelForSequenceClassification.from_pretrained(trust_remote_code=True, /' scripts/export_onnx.py
+    sed -i 's/revision=MODEL_REVISION)/revision=MODEL_REVISION, trust_remote_code=True)/g' scripts/export_onnx.py
 
     echo '==> Installing Python export requirements (this may take a minute)...'
-    pip install --no-cache-dir --quiet -r scripts/requirements.txt
+    pip install --root-user-action=ignore --disable-pip-version-check --no-cache-dir --quiet -r scripts/requirements.txt
 
     echo '==> Exporting PIGuard model from HuggingFace to ONNX (~735 MB, be patient)...'
     python -u scripts/export_onnx.py
