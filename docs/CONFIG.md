@@ -64,6 +64,7 @@ Same schema as global. Only set the fields you want to override:
 > - `dangerous` — use `~/.odek/config.json`
 > - `embedding` / `memory` / `sessions` / `skills.dirs` / `skills.embedding` / `web_search` — use `~/.odek/config.json`
 > - `telegram` — use `~/.odek/config.json` or `ODEK_TELEGRAM_*` env vars
+> - `guard` — use `~/.odek/config.json` or `ODEK_GUARD_*` env vars
 >
 > If any of these appear in `./odek.json`, odek ignores them and prints a warning.
 
@@ -126,10 +127,97 @@ Every config knob has a `ODEK_*` counterpart:
 | `ODEK_MEMORY_EXTENDED_MAX_SIZE_MB` | `--memory-extended-max-size-mb` | int |
 | `ODEK_MEMORY_EXTENDED_ATOM_MAX_CHARS` | `--memory-extended-atom-max-chars` | int |
 | `ODEK_MEMORY_EXTENDED_MEMORY_BUDGET_CHARS` | `--memory-extended-memory-budget-chars` | int |
+| `ODEK_GUARD_PROVIDER` | `--guard-provider` | string |
+| `ODEK_GUARD_URL` | `--guard-url` | string |
+| `ODEK_GUARD_BATCH_URL` | `--guard-batch-url` | string |
+| `ODEK_GUARD_LONG_URL` | `--guard-long-url` | string |
+| `ODEK_GUARD_SOCKET_PATH` | `--guard-socket-path` | string |
+| `ODEK_GUARD_THRESHOLD` | `--guard-threshold` | float |
+| `ODEK_GUARD_TIMEOUT_SECONDS` | `--guard-timeout` | int |
+| `ODEK_GUARD_FALLBACK_TO_LOCAL` | `--guard-fallback` / `--guard-no-fallback` | bool |
+| `ODEK_GUARD_SCAN_MEMORY` | `--guard-scan-memory` / `--guard-no-scan-memory` | bool |
+| `ODEK_GUARD_SCAN_SYSTEM_PROMPT` | `--guard-scan-system-prompt` / `--guard-no-scan-system-prompt` | bool |
+| `ODEK_GUARD_SCAN_MCP_DESCRIPTIONS` | `--guard-scan-mcp` / `--guard-no-scan-mcp` | bool |
+| `ODEK_GUARD_SCAN_SKILLS` | `--guard-scan-skills` / `--guard-no-scan-skills` | bool |
+| `ODEK_GUARD_SCAN_TOOL_OUTPUTS` | `--guard-scan-tool-outputs` / `--guard-no-scan-tool-outputs` | bool |
+| `ODEK_GUARD_SCAN_TELEGRAM` | `--guard-scan-telegram` / `--guard-no-scan-telegram` | bool |
 
 ## API key fallback order
 
 `ODEK_API_KEY` → `DEEPSEEK_API_KEY` → `OPENAI_API_KEY`
+
+## Prompt-injection guard
+
+Odek ships a pluggable prompt-injection guard subsystem that can be applied to high-trust surfaces. The guard is **defense-in-depth**: the fast, local rule-based scan (`danger.ScanInjection`) always runs first, and an optional external sidecar (`go-prompt-injection-guard`) can provide a second opinion when configured.
+
+The guard is **off by default** in the sense that no sidecar is needed; the local scan always runs. To enable the optional sidecar, set `provider: "piguard"` and point `url` at the sidecar endpoint.
+
+### Configuration
+
+```json
+{
+  "guard": {
+    "provider": "local",
+    "url": "http://127.0.0.1:8080/detect",
+    "batch_url": "",
+    "long_url": "",
+    "socket_path": "",
+    "threshold": 0.9,
+    "timeout_seconds": 5,
+    "fallback_to_local": true,
+    "max_text_length": 0,
+    "scan": {
+      "memory": true,
+      "system_prompt": true,
+      "mcp_descriptions": true,
+      "skills": false,
+      "tool_outputs": false,
+      "telegram": false
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `provider` | `"local"` | `"local"` uses the built-in rule scan; `"piguard"` uses an external sidecar |
+| `url` | `""` | Single-text detection endpoint (e.g. `http://127.0.0.1:8080/detect`) |
+| `batch_url` | `""` | Batch detection endpoint; if unset, derived from `url` by substituting the endpoint path |
+| `long_url` | `""` | Long-text detection endpoint; if unset, derived from `url` by substituting the endpoint path |
+| `socket_path` | `""` | Unix socket path for the sidecar (alternative to `url`) |
+| `threshold` | `0.9` | Score above which content is treated as injected |
+| `timeout_seconds` | `5` | Per-request timeout |
+| `fallback_to_local` | `true` | If the sidecar fails, fall back to the local rule scan |
+| `max_text_length` | `0` | Truncate text sent to the sidecar; `0` means no limit. The local scan still sees the full text |
+
+### Scan scopes
+
+| Scope | Default | Surfaces covered |
+|-------|---------|------------------|
+| `memory` | `true` | `memory` add/replace/consolidate, legacy facts, auto-extracted facts, session buffer, and Extended Memory atom extraction/addition/recall/user-model inference |
+| `system_prompt` | `true` | `~/.odek/IDENTITY.md`, explicit `--system` / `ODEK_SYSTEM`, and project-level `AGENTS.md` |
+| `mcp_descriptions` | `true` | MCP server tool descriptions supplied via `tools/list` |
+| `skills` | `false` | Skill bodies loaded at startup; skill save/patch suggestions |
+| `tool_outputs` | `false` | External tool outputs wrapped as `<untrusted_content_*>` (warning-only scan) |
+| `telegram` | `false` | Telegram photo captions and voice transcripts before injection |
+
+When a scope is not explicitly set, the core surfaces (`memory`, `system_prompt`, `mcp_descriptions`) default to `true`; the optional expansion surfaces default to `false`.
+
+### Examples
+
+```bash
+# Run with a local piguard sidecar
+odek run --guard-provider piguard --guard-url http://127.0.0.1:8080/detect "task"
+
+# Enable the optional skill and Telegram guards via environment
+ODEK_GUARD_PROVIDER=piguard \
+ODEK_GUARD_URL=http://127.0.0.1:8080/detect \
+ODEK_GUARD_SCAN_SKILLS=true \
+ODEK_GUARD_SCAN_TELEGRAM=true \
+odek run "task"
+```
+
+> **Security note:** The entire `guard` section is rejected from project-level `./odek.json`. A malicious repository cannot disable the local scan or redirect memory/system-prompt content to an attacker-controlled endpoint.
 
 ## Parallel tool execution
 

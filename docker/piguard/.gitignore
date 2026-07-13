@@ -1,0 +1,7 @@
+# PIGuard model files — downloaded once by download-model.sh; do not commit.
+*.onnx
+*.data
+*.json
+tokenizer.*
+!/.gitkeep
+!/.gitignore

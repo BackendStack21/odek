@@ -12,6 +12,7 @@ import (
 
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/memory"
 	"github.com/BackendStack21/odek/internal/render"
@@ -133,6 +134,15 @@ func replCmd(args []string) error {
 		skillsCfg = &resolved.Skills
 	}
 
+	injectionGuard, err := guard.New(&resolved.Guard)
+	if err != nil {
+		return fmt.Errorf("guard: %w", err)
+	}
+	if injectionGuard != nil {
+		defer injectionGuard.Close()
+		SetToolOutputGuard(injectionGuard, resolved.Guard)
+	}
+
 	agent, err := odek.New(odek.Config{
 		Model:            resolved.Model,
 		BaseURL:          resolved.BaseURL,
@@ -152,6 +162,8 @@ func replCmd(args []string) error {
 		MemoryConfig:   resolved.Memory,
 		MemoryDir:      expandHome("~/.odek/memory"),
 		PromptCaching:  resolved.PromptCaching,
+		Guard:          injectionGuard,
+		GuardConfig:    resolved.Guard,
 	})
 	if err != nil {
 		return err

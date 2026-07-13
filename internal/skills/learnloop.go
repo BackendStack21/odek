@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"time"
+
+	"github.com/BackendStack21/odek/internal/guard"
 )
 
 // AnalyzeMessages runs heuristic + LLM skill extraction over a conversation
@@ -83,7 +85,7 @@ func AnalyzeMessages(messages []LlmMessage, userMessages []string, sm *SkillMana
 // verbose, when non-nil, receives human-readable progress lines. Pass
 // nil (or io.Discard) for silent operation; the notifier events still
 // fire either way so the WebUI/Telegram surfaces always see saves.
-func RunAutoSaveLoop(filtered []SkillSuggestion, userDir string, sm *SkillManager, llmClient LLMClient, cfg SkillsConfig, verbose io.Writer) bool {
+func RunAutoSaveLoop(filtered []SkillSuggestion, userDir string, sm *SkillManager, llmClient LLMClient, cfg SkillsConfig, g guard.Guard, guardCfg guard.Config, verbose io.Writer) bool {
 	if !cfg.AutoSave.Enabled {
 		return false
 	}
@@ -91,7 +93,7 @@ func RunAutoSaveLoop(filtered []SkillSuggestion, userDir string, sm *SkillManage
 		return false
 	}
 
-	result := AutoSaveSuggestions(filtered, userDir, cfg, false)
+	result := AutoSaveSuggestions(filtered, userDir, cfg, g, guardCfg, false)
 
 	if verbose != nil {
 		for _, name := range result.Saved {
@@ -106,6 +108,9 @@ func RunAutoSaveLoop(filtered []SkillSuggestion, userDir string, sm *SkillManage
 		}
 		for _, name := range result.Declined {
 			fmt.Fprintf(verbose, "   ⚠ Declined to auto-save tainted skill %q (review with --force to save)\n", name)
+		}
+		for _, name := range result.GuardFlagged {
+			fmt.Fprintf(verbose, "   ⚠ Guard flagged skill %q (saved but pinned to manual review)\n", name)
 		}
 		for _, name := range result.Failed {
 			fmt.Fprintf(verbose, "   ⚠ Quality gate failed for %q (use --no-auto-save to review manually)\n", name)

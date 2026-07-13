@@ -25,6 +25,7 @@ import (
 
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/embedding"
+	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/mcpclient"
 	"github.com/BackendStack21/odek/internal/memory"
 	"github.com/BackendStack21/odek/internal/memory/extended"
@@ -98,6 +99,22 @@ type CLIFlags struct {
 	MemoryExtendedStyleMirroringEnabled       *bool // nil = not set
 	MemoryExtendedAnaphoraResolutionEnabled   *bool // nil = not set
 	MemoryExtendedFollowUpAnticipationEnabled *bool // nil = not set
+
+	// Guard subsystem CLI overrides.
+	GuardProvider         string // "" = not set
+	GuardURL              string // "" = not set
+	GuardBatchURL         string // "" = not set
+	GuardLongURL          string // "" = not set
+	GuardSocketPath       string // "" = not set
+	GuardThreshold        float64 // 0 = not set
+	GuardTimeoutSeconds   int     // 0 = not set
+	GuardFallbackToLocal  *bool   // nil = not set
+	GuardScanMemory       *bool   // nil = not set
+	GuardScanSystemPrompt *bool   // nil = not set
+	GuardScanMCP          *bool   // nil = not set
+	GuardScanSkills       *bool   // nil = not set
+	GuardScanToolOutputs  *bool   // nil = not set
+	GuardScanTelegram     *bool   // nil = not set
 }
 
 // SkillsConfig holds the skills configuration section from JSON files.
@@ -222,6 +239,10 @@ type FileConfig struct {
 
 	// Memory section controls the persistent memory system.
 	Memory *memory.MemoryConfig `json:"memory,omitempty"`
+
+	// Guard configures the prompt-injection guard subsystem.
+	// Operator-controlled: rejected from project-level ./odek.json.
+	Guard *guard.Config `json:"guard,omitempty"`
 
 	// Embedding is the shared default embedding backend for semantic retrieval.
 	// Every subsystem (memory, sessions, skills) uses it unless that subsystem
@@ -358,6 +379,9 @@ type ResolvedConfig struct {
 
 	// Memory is the resolved memory config with default values.
 	Memory memory.MemoryConfig
+
+	// Guard is the resolved injection-guard config with default values.
+	Guard guard.Config
 
 	// Embedding is the resolved shared embedding backend — the default every
 	// subsystem inherits unless it overrides. nil = default RandomProjections.
@@ -604,6 +628,19 @@ func envInt(key string) int {
 	return n
 }
 
+// envFloat parses a ODEK_* env var as a float64. Returns 0 if unset/unparseable.
+func envFloat(key string) float64 {
+	v := os.Getenv("ODEK_" + key)
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
 // envInt64List parses a comma-separated ODEK_* env var into a slice of int64.
 // Empty/unparseable entries are silently dropped.
 func envInt64List(key string) []int64 {
@@ -646,6 +683,18 @@ func envStringList(key string) []string {
 func ensureExtended(cfg *extended.Config) *extended.Config {
 	if cfg == nil {
 		return &extended.Config{}
+	}
+	return cfg
+}
+
+// ensureGuard returns a non-nil *guard.Config, allocating one with defaults if needed.
+// It also ensures the Scan sub-config is non-nil so callers can set individual toggles.
+func ensureGuard(cfg *guard.Config) *guard.Config {
+	if cfg == nil {
+		return guard.DefaultConfig()
+	}
+	if cfg.Scan == nil {
+		cfg.Scan = guard.DefaultScanConfig()
 	}
 	return cfg
 }
@@ -769,6 +818,10 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if project.Memory != nil {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring memory from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
 		project.Memory = nil
+	}
+	if project.Guard != nil {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring guard from project config (%s); set it via ~/.odek/config.json, ODEK_GUARD_*, or the CLI\n", ProjectConfigPath())
+		project.Guard = nil
 	}
 	if project.Sessions != nil {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring sessions from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
@@ -981,6 +1034,64 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		cfg.Memory.Extended.FollowUpAnticipationEnabled = v
 	}
 
+	// Guard env overrides
+	if v := envString("GUARD_PROVIDER"); v != "" {
+		cfg.Guard = ensureGuard(cfg.Guard)
+		cfg.Guard.Provider = v
+	}
+	if v := envString("GUARD_URL"); v != "" {
+		cfg.Guard = ensureGuard(cfg.Guard)
+		cfg.Guard.URL = v
+	}
+	if v := envString("GUARD_BATCH_URL"); v != "" {
+		cfg.Guard = ensureGuard(cfg.Guard)
+		cfg.Guard.BatchURL = v
+	}
+	if v := envString("GUARD_LONG_URL"); v != "" {
+		cfg.Guard = ensureGuard(cfg.Guard)
+		cfg.Guard.LongURL = v
+	}
+	if v := envString("GUARD_SOCKET_PATH"); v != "" {
+		cfg.Guard = ensureGuard(cfg.Guard)
+		cfg.Guard.SocketPath = v
+	}
+	if v := envFloat("GUARD_THRESHOLD"); v != 0 {
+		cfg.Guard = ensureGuard(cfg.Guard)
+		cfg.Guard.Threshold = v
+	}
+	if v := envInt("GUARD_TIMEOUT_SECONDS"); v > 0 {
+		cfg.Guard = ensureGuard(cfg.Guard)
+		cfg.Guard.TimeoutSeconds = v
+	}
+	if v := envBool("GUARD_FALLBACK_TO_LOCAL"); v != nil {
+		cfg.Guard = ensureGuard(cfg.Guard)
+		cfg.Guard.FallbackToLocal = v
+	}
+	if v := envBool("GUARD_SCAN_MEMORY"); v != nil {
+		cfg.Guard = ensureGuard(cfg.Guard)
+		cfg.Guard.Scan.Memory = v
+	}
+	if v := envBool("GUARD_SCAN_SYSTEM_PROMPT"); v != nil {
+		cfg.Guard = ensureGuard(cfg.Guard)
+		cfg.Guard.Scan.SystemPrompt = v
+	}
+	if v := envBool("GUARD_SCAN_MCP_DESCRIPTIONS"); v != nil {
+		cfg.Guard = ensureGuard(cfg.Guard)
+		cfg.Guard.Scan.MCPDescriptions = v
+	}
+	if v := envBool("GUARD_SCAN_SKILLS"); v != nil {
+		cfg.Guard = ensureGuard(cfg.Guard)
+		cfg.Guard.Scan.Skills = v
+	}
+	if v := envBool("GUARD_SCAN_TOOL_OUTPUTS"); v != nil {
+		cfg.Guard = ensureGuard(cfg.Guard)
+		cfg.Guard.Scan.ToolOutputs = v
+	}
+	if v := envBool("GUARD_SCAN_TELEGRAM"); v != nil {
+		cfg.Guard = ensureGuard(cfg.Guard)
+		cfg.Guard.Scan.Telegram = v
+	}
+
 	// Schedules env overrides (ODEK_SCHEDULES_*): lets the scheduler be tuned
 	// from the environment, like everything else in a containerised deploy.
 	// Allocate once — an all-zero SchedulesConfig resolves identically to nil.
@@ -1176,6 +1287,65 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
 		cfg.Memory.Extended.FollowUpAnticipationEnabled = cli.MemoryExtendedFollowUpAnticipationEnabled
 	}
+
+	// Guard CLI overrides
+	if cli.GuardProvider != "" {
+		cfg.Guard = ensureGuard(cfg.Guard)
+		cfg.Guard.Provider = cli.GuardProvider
+	}
+	if cli.GuardURL != "" {
+		cfg.Guard = ensureGuard(cfg.Guard)
+		cfg.Guard.URL = cli.GuardURL
+	}
+	if cli.GuardBatchURL != "" {
+		cfg.Guard = ensureGuard(cfg.Guard)
+		cfg.Guard.BatchURL = cli.GuardBatchURL
+	}
+	if cli.GuardLongURL != "" {
+		cfg.Guard = ensureGuard(cfg.Guard)
+		cfg.Guard.LongURL = cli.GuardLongURL
+	}
+	if cli.GuardSocketPath != "" {
+		cfg.Guard = ensureGuard(cfg.Guard)
+		cfg.Guard.SocketPath = cli.GuardSocketPath
+	}
+	if cli.GuardThreshold != 0 {
+		cfg.Guard = ensureGuard(cfg.Guard)
+		cfg.Guard.Threshold = cli.GuardThreshold
+	}
+	if cli.GuardTimeoutSeconds > 0 {
+		cfg.Guard = ensureGuard(cfg.Guard)
+		cfg.Guard.TimeoutSeconds = cli.GuardTimeoutSeconds
+	}
+	if cli.GuardFallbackToLocal != nil {
+		cfg.Guard = ensureGuard(cfg.Guard)
+		cfg.Guard.FallbackToLocal = cli.GuardFallbackToLocal
+	}
+	if cli.GuardScanMemory != nil {
+		cfg.Guard = ensureGuard(cfg.Guard)
+		cfg.Guard.Scan.Memory = cli.GuardScanMemory
+	}
+	if cli.GuardScanSystemPrompt != nil {
+		cfg.Guard = ensureGuard(cfg.Guard)
+		cfg.Guard.Scan.SystemPrompt = cli.GuardScanSystemPrompt
+	}
+	if cli.GuardScanMCP != nil {
+		cfg.Guard = ensureGuard(cfg.Guard)
+		cfg.Guard.Scan.MCPDescriptions = cli.GuardScanMCP
+	}
+	if cli.GuardScanSkills != nil {
+		cfg.Guard = ensureGuard(cfg.Guard)
+		cfg.Guard.Scan.Skills = cli.GuardScanSkills
+	}
+	if cli.GuardScanToolOutputs != nil {
+		cfg.Guard = ensureGuard(cfg.Guard)
+		cfg.Guard.Scan.ToolOutputs = cli.GuardScanToolOutputs
+	}
+	if cli.GuardScanTelegram != nil {
+		cfg.Guard = ensureGuard(cfg.Guard)
+		cfg.Guard.Scan.Telegram = cli.GuardScanTelegram
+	}
+
 	if len(cli.ToolsEnabled) > 0 {
 		if cfg.Tools == nil {
 			cfg.Tools = &ToolsConfig{}
@@ -1208,6 +1378,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		Skills:                resolveSkills(cfg.Skills),
 		Dangerous:             resolveDangerous(cfg.Dangerous),
 		Memory:                resolveMemory(cfg.Memory),
+		Guard:                 resolveGuard(cfg.Guard),
 		Embedding:             cfg.Embedding,
 		MCPServers:            cfg.MCPServers,
 		ProjectMCPServerNames: projectMCPNames,
@@ -1492,6 +1663,64 @@ func resolveMemory(cfg *memory.MemoryConfig) memory.MemoryConfig {
 	return def
 }
 
+// resolveGuard merges file-level guard config with defaults.
+// Starts from DefaultConfig and overlays any non-zero/non-nil fields from
+// cfg. A partial config won't disable the local scan or the default surfaces.
+func resolveGuard(cfg *guard.Config) guard.Config {
+	def := guard.DefaultConfig()
+	if cfg == nil {
+		return *def
+	}
+	if cfg.Provider != "" {
+		def.Provider = cfg.Provider
+	}
+	if cfg.URL != "" {
+		def.URL = cfg.URL
+	}
+	if cfg.LongURL != "" {
+		def.LongURL = cfg.LongURL
+	}
+	if cfg.BatchURL != "" {
+		def.BatchURL = cfg.BatchURL
+	}
+	if cfg.SocketPath != "" {
+		def.SocketPath = cfg.SocketPath
+	}
+	if cfg.Threshold > 0 {
+		def.Threshold = cfg.Threshold
+	}
+	if cfg.TimeoutSeconds > 0 {
+		def.TimeoutSeconds = cfg.TimeoutSeconds
+	}
+	if cfg.FallbackToLocal != nil {
+		def.FallbackToLocal = cfg.FallbackToLocal
+	}
+	if cfg.MaxTextLength > 0 {
+		def.MaxTextLength = cfg.MaxTextLength
+	}
+	if cfg.Scan != nil {
+		if cfg.Scan.Memory != nil {
+			def.Scan.Memory = cfg.Scan.Memory
+		}
+		if cfg.Scan.SystemPrompt != nil {
+			def.Scan.SystemPrompt = cfg.Scan.SystemPrompt
+		}
+		if cfg.Scan.MCPDescriptions != nil {
+			def.Scan.MCPDescriptions = cfg.Scan.MCPDescriptions
+		}
+		if cfg.Scan.Skills != nil {
+			def.Scan.Skills = cfg.Scan.Skills
+		}
+		if cfg.Scan.ToolOutputs != nil {
+			def.Scan.ToolOutputs = cfg.Scan.ToolOutputs
+		}
+		if cfg.Scan.Telegram != nil {
+			def.Scan.Telegram = cfg.Scan.Telegram
+		}
+	}
+	return *def
+}
+
 // resolveTelegram merges file-level telegram config with defaults.
 // Starts from DefaultConfig and overlays any non-zero fields from the
 // file config, so users only need to specify the fields they want to
@@ -1749,6 +1978,9 @@ func overlayFile(base, override FileConfig) FileConfig {
 	}
 	if override.Memory != nil {
 		base.Memory = override.Memory
+	}
+	if override.Guard != nil {
+		base.Guard = override.Guard
 	}
 	if override.Embedding != nil {
 		base.Embedding = override.Embedding

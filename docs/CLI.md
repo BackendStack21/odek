@@ -55,6 +55,20 @@
 | `--no-tool <name>` | string | — | Disable a specific tool for the LLM (repeatable). Merges with lower-priority disabled lists. |
 | `--system <prompt>` | string | built-in | Override system prompt |
 | `--ctx <files>` / `-c` | string | — | Attach comma-separated files as context blocks |
+| `--guard-provider <local|piguard>` | string | `local` | Prompt-injection guard provider |
+| `--guard-url <url>` | string | — | Guard sidecar single-text endpoint |
+| `--guard-batch-url <url>` | string | — | Guard sidecar batch endpoint |
+| `--guard-long-url <url>` | string | — | Guard sidecar long-text endpoint |
+| `--guard-socket-path <path>` | string | — | Guard sidecar Unix socket path |
+| `--guard-threshold <score>` | float | `0.9` | Injection score threshold |
+| `--guard-timeout <seconds>` | int | `5` | Guard sidecar request timeout |
+| `--guard-fallback` / `--guard-no-fallback` | bool | `true` | Fall back to local scan if sidecar fails |
+| `--guard-scan-memory` / `--guard-no-scan-memory` | bool | `true` | Guard legacy/Extended Memory surfaces |
+| `--guard-scan-system-prompt` / `--guard-no-scan-system-prompt` | bool | `true` | Guard system-prompt sources |
+| `--guard-scan-mcp` / `--guard-no-scan-mcp` | bool | `true` | Guard MCP tool descriptions |
+| `--guard-scan-skills` / `--guard-no-scan-skills` | bool | `false` | Guard skill bodies and suggestions |
+| `--guard-scan-tool-outputs` / `--guard-no-scan-tool-outputs` | bool | `false` | Guard external tool outputs (warning-only) |
+| `--guard-scan-telegram` / `--guard-no-scan-telegram` | bool | `false` | Guard Telegram captions/transcripts |
 
 ## File attachments
 

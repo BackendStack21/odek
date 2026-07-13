@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/BackendStack21/odek/internal/guard"
 )
 
 func TestExtractUserMessages_PicksOnlyUserRole(t *testing.T) {
@@ -46,7 +48,7 @@ func TestAnalyzeMessages_EmptyConversation(t *testing.T) {
 // caller fall back to the interactive prompt when auto-save is off.
 func TestRunAutoSaveLoop_DisabledReturnsFalse(t *testing.T) {
 	cfg := SkillsConfig{} // AutoSave.Enabled defaults to false
-	if RunAutoSaveLoop(nil, "", nil, nil, cfg, nil) {
+	if RunAutoSaveLoop(nil, "", nil, nil, cfg, nil, guard.Config{}, nil) {
 		t.Error("RunAutoSaveLoop should return false when AutoSave disabled")
 	}
 }
@@ -59,7 +61,7 @@ func TestRunAutoSaveLoop_RequireLLMWithoutLLMReturnsFalse(t *testing.T) {
 		AutoSave: AutoSaveConfig{Enabled: true, RequireLLM: true},
 		LLMLearn: false,
 	}
-	if RunAutoSaveLoop(nil, "", nil, nil, cfg, nil) {
+	if RunAutoSaveLoop(nil, "", nil, nil, cfg, nil, guard.Config{}, nil) {
 		t.Error("RunAutoSaveLoop should return false when RequireLLM is set but LLMLearn is off")
 	}
 }
@@ -72,7 +74,7 @@ func TestRunAutoSaveLoop_EnabledEmptySuggestions(t *testing.T) {
 		AutoSave: AutoSaveConfig{Enabled: true},
 	}
 	var buf bytes.Buffer
-	got := RunAutoSaveLoop(nil, t.TempDir(), nil, nil, cfg, &buf)
+	got := RunAutoSaveLoop(nil, t.TempDir(), nil, nil, cfg, nil, guard.Config{}, &buf)
 	if !got {
 		t.Error("RunAutoSaveLoop should return true when AutoSave is enabled and the gate passes")
 	}
@@ -99,7 +101,7 @@ func TestRunAutoSaveLoop_DeclinesTaintedSkill(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	got := RunAutoSaveLoop([]SkillSuggestion{tainted}, t.TempDir(), nil, nil, cfg, &buf)
+	got := RunAutoSaveLoop([]SkillSuggestion{tainted}, t.TempDir(), nil, nil, cfg, nil, guard.Config{}, &buf)
 	if !got {
 		t.Fatal("RunAutoSaveLoop should return true when AutoSave is enabled")
 	}
@@ -122,7 +124,7 @@ func TestRunAutoSaveLoop_VerboseWriterReceivesFailedMessage(t *testing.T) {
 		// Body intentionally empty so the quality gate rejects it.
 	}
 	var buf bytes.Buffer
-	got := RunAutoSaveLoop([]SkillSuggestion{bad}, t.TempDir(), nil, nil, cfg, &buf)
+	got := RunAutoSaveLoop([]SkillSuggestion{bad}, t.TempDir(), nil, nil, cfg, nil, guard.Config{}, &buf)
 	if !got {
 		t.Fatal("RunAutoSaveLoop should return true when AutoSave is enabled")
 	}

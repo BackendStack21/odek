@@ -1,0 +1,2 @@
+# Placeholder so the empty models directory is tracked by git.
+# Real model files (*.onnx, tokenizer.json, config.json) are gitignored.

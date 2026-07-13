@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/BackendStack21/odek/internal/guard"
 )
 
 // UserState is a live, evolving model of the user inferred from trusted atoms.
@@ -69,6 +71,8 @@ type UserModel struct {
 	state        UserState
 	llm          LLMClient
 	cfg          Config
+	guard        guard.Guard
+	guardCfg     guard.Config
 	recent       []MemoryAtom
 	recentMu     sync.Mutex
 	focusChanged bool
@@ -97,6 +101,20 @@ func (u *UserModel) Enabled() bool {
 	return u != nil && u.cfg.InferUserState != nil && *u.cfg.InferUserState
 }
 
+// SetGuard installs the shared prompt-injection detector.
+func (u *UserModel) SetGuard(g guard.Guard, cfg guard.Config) {
+	u.guard = g
+	u.guardCfg = cfg
+}
+
+// scanContent runs the guard against a memory-scoped input.
+func (u *UserModel) scanContent(ctx context.Context, content string) error {
+	if err := guard.ScanContentWithScope(ctx, content, u.guard, &u.guardCfg, "memory"); err != nil {
+		return fmt.Errorf("extended memory: %v", err)
+	}
+	return nil
+}
+
 // Load reads the persisted user model, if any. Missing files are not errors.
 // Loaded string values are scanned for injection patterns; fields that fail
 // the scan are dropped so a tampered user_model.json cannot poison the
@@ -109,7 +127,7 @@ func (u *UserModel) Load() error {
 	if err != nil {
 		return err
 	}
-	state = scanUserState(state)
+	state = scanUserState(state, func(v string) bool { return u.scanContent(context.Background(), v) == nil })
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.state = state
@@ -254,20 +272,22 @@ func (u *UserModel) Infer(ctx context.Context) error {
 		log.Printf("extended memory: user-state inference parse failed: %v", err)
 		return fmt.Errorf("user model: parse diff: %w", err)
 	}
-	if err := u.applyDiff(diff); err != nil {
+	if err := u.applyDiff(ctx, diff); err != nil {
 		return err
 	}
 	return u.Save()
 }
 
-func (u *UserModel) applyDiff(diff userStateDiff) error {
+func (u *UserModel) applyDiff(ctx context.Context, diff userStateDiff) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
-	applyStyle(&u.state.Style, diff.Style)
-	applyTechnical(&u.state.Technical, diff.Technical)
-	applyFocus(&u.state.CurrentFocus, diff.Focus)
-	applyInteraction(&u.state.InteractionPatterns, diff.Interaction)
+	scanner := func(v string) bool { return u.scanContent(ctx, v) == nil }
+
+	applyStyle(&u.state.Style, diff.Style, scanner)
+	applyTechnical(&u.state.Technical, diff.Technical, scanner)
+	applyFocus(&u.state.CurrentFocus, diff.Focus, scanner)
+	applyInteraction(&u.state.InteractionPatterns, diff.Interaction, scanner)
 
 	maxPending := u.cfg.UserStateMaxPending
 	if maxPending <= 0 {
@@ -277,8 +297,8 @@ func (u *UserModel) applyDiff(diff userStateDiff) error {
 		if p.Field == "" || p.Value == "" {
 			continue
 		}
-		if err := ScanContent(p.Value); err != nil {
-			log.Printf("extended memory: rejected pending review value: %v", err)
+		if !scanner(p.Value) {
+			log.Printf("extended memory: rejected pending review value: %v", p.Value)
 			continue
 		}
 		if p.ID == "" {
@@ -299,69 +319,69 @@ func (u *UserModel) applyDiff(diff userStateDiff) error {
 	return nil
 }
 
-func applyStyle(s *StyleState, d *StyleState) {
+func applyStyle(s *StyleState, d *StyleState, scanner func(string) bool) {
 	if d == nil {
 		return
 	}
-	if d.Verbosity != "" && ScanContent(d.Verbosity) == nil {
+	if d.Verbosity != "" && scanner(d.Verbosity) {
 		s.Verbosity = d.Verbosity
 	}
-	if d.Humor != "" && ScanContent(d.Humor) == nil {
+	if d.Humor != "" && scanner(d.Humor) {
 		s.Humor = d.Humor
 	}
-	if d.Formality != "" && ScanContent(d.Formality) == nil {
+	if d.Formality != "" && scanner(d.Formality) {
 		s.Formality = d.Formality
 	}
-	if d.ExplanationDepth != "" && ScanContent(d.ExplanationDepth) == nil {
+	if d.ExplanationDepth != "" && scanner(d.ExplanationDepth) {
 		s.ExplanationDepth = d.ExplanationDepth
 	}
-	if d.Tone != "" && ScanContent(d.Tone) == nil {
+	if d.Tone != "" && scanner(d.Tone) {
 		s.Tone = d.Tone
 	}
 }
 
-func applyTechnical(t *TechnicalState, d *TechnicalState) {
+func applyTechnical(t *TechnicalState, d *TechnicalState, scanner func(string) bool) {
 	if d == nil {
 		return
 	}
-	t.Languages = appendUnique(t.Languages, filterScanned(d.Languages))
-	t.Patterns = appendUnique(t.Patterns, filterScanned(d.Patterns))
-	t.Tools = appendUnique(t.Tools, filterScanned(d.Tools))
+	t.Languages = appendUnique(t.Languages, filterScanned(d.Languages, scanner))
+	t.Patterns = appendUnique(t.Patterns, filterScanned(d.Patterns, scanner))
+	t.Tools = appendUnique(t.Tools, filterScanned(d.Tools, scanner))
 }
 
-func applyFocus(f *FocusState, d *FocusState) {
+func applyFocus(f *FocusState, d *FocusState, scanner func(string) bool) {
 	if d == nil {
 		return
 	}
-	if d.Project != "" && ScanContent(d.Project) == nil {
+	if d.Project != "" && scanner(d.Project) {
 		f.Project = d.Project
 	}
-	if d.Task != "" && ScanContent(d.Task) == nil {
+	if d.Task != "" && scanner(d.Task) {
 		f.Task = d.Task
 	}
-	if d.Blocker != "" && ScanContent(d.Blocker) == nil {
+	if d.Blocker != "" && scanner(d.Blocker) {
 		f.Blocker = d.Blocker
 	}
 }
 
-func applyInteraction(i *InteractionPatterns, d *InteractionPatterns) {
+func applyInteraction(i *InteractionPatterns, d *InteractionPatterns, scanner func(string) bool) {
 	if d == nil {
 		return
 	}
-	i.CommonOpeners = appendUnique(i.CommonOpeners, filterScanned(d.CommonOpeners))
-	if d.FollowupAfterRefactor != "" && ScanContent(d.FollowupAfterRefactor) == nil {
+	i.CommonOpeners = appendUnique(i.CommonOpeners, filterScanned(d.CommonOpeners, scanner))
+	if d.FollowupAfterRefactor != "" && scanner(d.FollowupAfterRefactor) {
 		i.FollowupAfterRefactor = d.FollowupAfterRefactor
 	}
-	if d.FollowupAfterBugfix != "" && ScanContent(d.FollowupAfterBugfix) == nil {
+	if d.FollowupAfterBugfix != "" && scanner(d.FollowupAfterBugfix) {
 		i.FollowupAfterBugfix = d.FollowupAfterBugfix
 	}
 }
 
-func filterScanned(in []string) []string {
+func filterScanned(in []string, scanner func(string) bool) []string {
 	out := make([]string, 0, len(in))
 	for _, s := range in {
 		s = strings.TrimSpace(s)
-		if s == "" || ScanContent(s) != nil {
+		if s == "" || !scanner(s) {
 			continue
 		}
 		out = append(out, s)
@@ -388,48 +408,48 @@ func appendUnique(base, add []string) []string {
 // scanUserState scans every string value in a loaded UserState and clears
 // any field or slice entry that fails the content scan. This prevents a
 // tampered user_model.json from injecting instructions into the system prompt.
-func scanUserState(s UserState) UserState {
-	if ScanContent(s.Style.Verbosity) != nil {
+func scanUserState(s UserState, scanner func(string) bool) UserState {
+	if !scanner(s.Style.Verbosity) {
 		s.Style.Verbosity = ""
 	}
-	if ScanContent(s.Style.Humor) != nil {
+	if !scanner(s.Style.Humor) {
 		s.Style.Humor = ""
 	}
-	if ScanContent(s.Style.Formality) != nil {
+	if !scanner(s.Style.Formality) {
 		s.Style.Formality = ""
 	}
-	if ScanContent(s.Style.ExplanationDepth) != nil {
+	if !scanner(s.Style.ExplanationDepth) {
 		s.Style.ExplanationDepth = ""
 	}
-	if ScanContent(s.Style.Tone) != nil {
+	if !scanner(s.Style.Tone) {
 		s.Style.Tone = ""
 	}
 
-	s.Technical.Languages = filterScanned(s.Technical.Languages)
-	s.Technical.Patterns = filterScanned(s.Technical.Patterns)
-	s.Technical.Tools = filterScanned(s.Technical.Tools)
+	s.Technical.Languages = filterScanned(s.Technical.Languages, scanner)
+	s.Technical.Patterns = filterScanned(s.Technical.Patterns, scanner)
+	s.Technical.Tools = filterScanned(s.Technical.Tools, scanner)
 
-	if ScanContent(s.CurrentFocus.Project) != nil {
+	if !scanner(s.CurrentFocus.Project) {
 		s.CurrentFocus.Project = ""
 	}
-	if ScanContent(s.CurrentFocus.Task) != nil {
+	if !scanner(s.CurrentFocus.Task) {
 		s.CurrentFocus.Task = ""
 	}
-	if ScanContent(s.CurrentFocus.Blocker) != nil {
+	if !scanner(s.CurrentFocus.Blocker) {
 		s.CurrentFocus.Blocker = ""
 	}
 
-	s.InteractionPatterns.CommonOpeners = filterScanned(s.InteractionPatterns.CommonOpeners)
-	if ScanContent(s.InteractionPatterns.FollowupAfterRefactor) != nil {
+	s.InteractionPatterns.CommonOpeners = filterScanned(s.InteractionPatterns.CommonOpeners, scanner)
+	if !scanner(s.InteractionPatterns.FollowupAfterRefactor) {
 		s.InteractionPatterns.FollowupAfterRefactor = ""
 	}
-	if ScanContent(s.InteractionPatterns.FollowupAfterBugfix) != nil {
+	if !scanner(s.InteractionPatterns.FollowupAfterBugfix) {
 		s.InteractionPatterns.FollowupAfterBugfix = ""
 	}
 
 	var pending []PendingReview
 	for _, p := range s.PendingReview {
-		if ScanContent(p.Field) != nil || ScanContent(p.Value) != nil || ScanContent(p.Evidence) != nil {
+		if !scanner(p.Field) || !scanner(p.Value) || !scanner(p.Evidence) {
 			continue
 		}
 		pending = append(pending, p)
@@ -581,7 +601,7 @@ func (u *UserModel) Summary() string {
 	}
 	b.WriteString("────────────────────\n")
 	summary := b.String()
-	if err := ScanContent(summary); err != nil {
+	if err := u.scanContent(context.Background(), summary); err != nil {
 		log.Printf("extended memory: user-model summary rejected by scan: %v", err)
 		return ""
 	}

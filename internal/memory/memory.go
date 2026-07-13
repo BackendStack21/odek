@@ -11,6 +11,7 @@ import (
 
 	"github.com/BackendStack21/odek/internal/memory/extended"
 	"github.com/BackendStack21/odek/internal/session"
+	"github.com/BackendStack21/odek/internal/guard"
 )
 
 // factsDirLocks serializes fact-file mutations across every MemoryManager /
@@ -160,6 +161,11 @@ type MemoryManager struct {
 	cfg      MemoryConfig
 	extended *extended.ExtendedMemory
 
+	// guard is the shared prompt-injection detector.
+	guard guard.Guard
+	// guardCfg is the resolved guard configuration used for scope checks.
+	guardCfg guard.Config
+
 	// extendedContext caches the current session context for user-message
 	// extraction callbacks that arrive without explicit provenance.
 	extSessionID string
@@ -299,6 +305,24 @@ func (m *MemoryManager) SetNotifier(n MemoryNotifier) {
 	}
 }
 
+// SetGuard installs the shared prompt-injection detector and propagates it to
+// the Extended Memory subsystem if it has been initialized.
+func (m *MemoryManager) SetGuard(g guard.Guard, cfg guard.Config) {
+	m.guard = g
+	m.guardCfg = cfg
+	if m.extended != nil {
+		m.extended.SetGuard(g, cfg)
+	}
+}
+
+// scanContent runs the guard against a memory-scoped input.
+func (m *MemoryManager) scanContent(ctx context.Context, content string) error {
+	if err := guard.ScanContentWithScope(ctx, content, m.guard, &m.guardCfg, "memory"); err != nil {
+		return fmt.Errorf("memory: %v", err)
+	}
+	return nil
+}
+
 // InitExtended creates the Extended Memory subsystem using the provided
 // dedicated memory LLM client. It is safe to call multiple times; subsequent
 // calls are ignored. Callers should invoke this after NewMemoryManager once
@@ -319,6 +343,9 @@ func (m *MemoryManager) InitExtended(memoryLLM extended.LLMClient, memoryDir str
 	}
 	extDir := filepath.Join(memoryDir, "extended")
 	m.extended = extended.New(extDir, memoryLLM, cfg)
+	if m.guard != nil {
+		m.extended.SetGuard(m.guard, m.guardCfg)
+	}
 }
 
 // OnUserMessage routes a user message to Extended Memory for atom extraction.
@@ -479,7 +506,7 @@ func (m *MemoryManager) AddFact(target, content string) error {
 	defer m.fireAfterUnlock(lock, &pending)
 
 	// Security scan
-	if err := ScanContent(content); err != nil {
+	if err := m.scanContent(context.Background(), content); err != nil {
 		return err
 	}
 
@@ -593,7 +620,7 @@ func (m *MemoryManager) ReplaceFact(target, oldText, content string) error {
 	lock.Lock()
 	var pending []MemoryEvent
 	defer m.fireAfterUnlock(lock, &pending)
-	if err := ScanContent(content); err != nil {
+	if err := m.scanContent(context.Background(), content); err != nil {
 		return err
 	}
 	if err := m.facts.Replace(target, oldText, content); err != nil {
@@ -707,7 +734,7 @@ Entries for %s:
 		if entry == "" {
 			continue
 		}
-		if err := ScanContent(entry); err != nil {
+		if err := m.scanContent(context.Background(), entry); err != nil {
 			return fmt.Errorf("memory: consolidated entry rejected: %w", err)
 		}
 	}
@@ -1073,14 +1100,14 @@ func (m *MemoryManager) BuildSystemPrompt() string {
 	hasInjection := false
 	for _, content := range []string{userFact, envFact} {
 		if content != "" {
-			if err := ScanContent(content); err != nil {
+			if err := m.scanContent(context.Background(), content); err != nil {
 				hasInjection = true
 			}
 		}
 	}
 	if !hasInjection {
 		for _, line := range bufferLines {
-			if err := ScanContent(line); err != nil {
+			if err := m.scanContent(context.Background(), line); err != nil {
 				hasInjection = true
 				break
 			}

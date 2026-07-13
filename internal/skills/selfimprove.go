@@ -1,10 +1,12 @@
 package skills
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 
+	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/memory"
 )
 
@@ -516,6 +518,32 @@ func bodyPreview(body string) string {
 	return result
 }
 
+// ScanSuggestionBody checks a skill suggestion body for prompt-injection patterns.
+// If the guard is enabled for skills and detects an issue, it sets the
+// suggestion's Provenance.NeedsReview flag and returns true. The caller may
+// still save the suggestion; it will be pinned to lazy/manual review.
+func ScanSuggestionBody(ctx context.Context, s *SkillSuggestion, g guard.Guard, cfg guard.Config) bool {
+	if g == nil || !guard.IsEnabled(cfg.Scan, "skills") {
+		return false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := guard.ScanContent(ctx, s.Body, g, &cfg); err != nil {
+		s.Provenance.NeedsReview = true
+		return true
+	}
+	return false
+}
+
+// SaveSuggestionWithGuard is like SaveSuggestion but scans the body before
+// writing. Flagged suggestions are saved with Provenance.NeedsReview set so
+// they cannot be auto-loaded.
+func SaveSuggestionWithGuard(ctx context.Context, dir string, s SkillSuggestion, g guard.Guard, cfg guard.Config) error {
+	ScanSuggestionBody(ctx, &s, g, cfg)
+	return SaveSuggestion(dir, s)
+}
+
 // SaveSuggestion saves a SkillSuggestion as a SKILL.md in the given directory.
 func SaveSuggestion(dir string, s SkillSuggestion) error {
 	// Untrusted suggestions are never auto-loaded — they must go through
@@ -642,18 +670,21 @@ func DeriveProvenance(messages []LlmMessage) SkillProvenance {
 
 // AutoSaveResult reports what auto-save did.
 type AutoSaveResult struct {
-	Saved      []string          // names of auto-saved skills
-	Skipped    int               // count of suggestions filtered by skip list
-	Failed     []string          // names that failed quality gate
-	Declined   []string          // names declined because they were tainted and allowUntrusted was false
-	Heuristics map[string]string // heuristic labels for saved skills
+	Saved       []string          // names of auto-saved skills
+	Skipped     int               // count of suggestions filtered by skip list
+	Failed      []string          // names that failed quality gate
+	Declined    []string          // names declined because they were tainted and allowUntrusted was false
+	GuardFlagged []string         // names flagged by the prompt-injection guard
+	Heuristics  map[string]string // heuristic labels for saved skills
 }
 
 // AutoSaveSuggestions runs auto-save logic on a set of suggestions.
 // It filters skipped suggestions, declines tainted suggestions unless
 // allowUntrusted is true, then auto-saves those that pass the quality gate
-// (up to maxPerRun), recording the rest as Failed.
-func AutoSaveSuggestions(suggestions []SkillSuggestion, userDir string, cfg SkillsConfig, allowUntrusted bool) AutoSaveResult {
+// (up to maxPerRun), recording the rest as Failed. When a guard is provided
+// and skills scanning is enabled, each body is scanned; flagged skills are
+// saved with Provenance.NeedsReview so they cannot auto-load.
+func AutoSaveSuggestions(suggestions []SkillSuggestion, userDir string, cfg SkillsConfig, g guard.Guard, guardCfg guard.Config, allowUntrusted bool) AutoSaveResult {
 	result := AutoSaveResult{Heuristics: make(map[string]string)}
 
 	// Load skip list and filter
@@ -678,6 +709,9 @@ func AutoSaveSuggestions(suggestions []SkillSuggestion, userDir string, cfg Skil
 			continue
 		}
 		if PassesQualityGate(s) {
+			if ScanSuggestionBody(context.Background(), &s, g, guardCfg) {
+				result.GuardFlagged = append(result.GuardFlagged, s.Name)
+			}
 			if err := SaveSuggestion(userDir, s); err == nil {
 				result.Saved = append(result.Saved, s.Name)
 				result.Heuristics[s.Name] = s.Heuristic

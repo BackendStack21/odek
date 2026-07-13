@@ -30,7 +30,7 @@ services:
       - ./workspace:/workspace
       - ./config.restricted.json:/home/odek/.odek/config.json:ro
     restart: "no"
-    depends_on: [searxng, llama-embeddings]
+    depends_on: [searxng, llama-embeddings, piguard-gateway]
 
   # ── Godmode (all permissions) — non-interactive, disposable container ──
   odek-godmode:
@@ -50,7 +50,7 @@ services:
       - ./workspace:/workspace
       - ./config.godmode.json:/home/odek/.odek/config.json:ro
     restart: "no"
-    depends_on: [searxng, llama-embeddings]
+    depends_on: [searxng, llama-embeddings, piguard-gateway]
 
   # ── Telegram bot — Restricted (approvals via inline keyboards) ──
   # State (sessions, skills, telegram.pid) lives in the local ./.odek folder —
@@ -74,7 +74,7 @@ services:
       - ./.odek:/home/odek/.odek
       - ./config.restricted.json:/home/odek/.odek/config.json:ro
     restart: unless-stopped
-    depends_on: [searxng, llama-embeddings]
+    depends_on: [searxng, llama-embeddings, piguard-gateway]
 
   # ── Telegram bot — Godmode (no prompts; unrestricted) ──
   # Same ./.odek state folder; config.godmode.json is layered on top of
@@ -93,7 +93,7 @@ services:
       - ./.odek:/home/odek/.odek
       - ./config.godmode.json:/home/odek/.odek/config.json:ro
     restart: unless-stopped
-    depends_on: [searxng, llama-embeddings]
+    depends_on: [searxng, llama-embeddings, piguard-gateway]
 
   # ── llama.cpp embeddings — local backend for the shared "embedding" block ──
   # Co-starts with every odek profile so semantic embeddings work out of the box
@@ -151,3 +151,45 @@ services:
     # SearXNG needs outbound internet to query upstream engines (Google, Bing,
     # DuckDuckGo, …). Behind the advanced allowlisting egress proxy, permit those.
     restart: unless-stopped
+
+  # ── PIGuard prompt-injection sidecar ─────────────────────────────────────
+  # Optional semantic second-opinion guard for memory, system prompt, MCP
+  # descriptions, skills, Telegram, and tool outputs. The daemon loads a
+  # one-time-exported ONNX model (~735 MB); run ./piguard/download-model.sh
+  # before starting an odek profile to populate ./piguard/models.
+  #
+  # The daemon speaks newline-delimited JSON over a private Unix socket; the
+  # gateway bridges that to plain HTTP on the compose network so odek can use
+  # its existing HTTP-based piguard client without sharing a socket volume.
+  piguard:
+    profiles: ["restricted", "godmode", "telegram-restricted", "telegram-godmode"]
+    image: ghcr.io/backendstack21/go-prompt-injection-guard:v1.0.0
+    command:
+      - "--socket=/run/piguard/piguard.sock"
+      - "--model-dir=/models"
+      - "--max-batch=32"
+      - "--batch-wait=5ms"
+    volumes:
+      - ./piguard/models:/models:ro
+      - piguard-sock:/run/piguard
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /run/piguard/piguard.sock"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  piguard-gateway:
+    profiles: ["restricted", "godmode", "telegram-restricted", "telegram-godmode"]
+    image: ghcr.io/backendstack21/go-prompt-injection-guard-gateway:v1.0.0
+    command: ["--addr=:8080", "--socket=/run/piguard/piguard.sock"]
+    volumes:
+      - piguard-sock:/run/piguard
+    depends_on:
+      piguard:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  piguard-sock:

@@ -3,6 +3,8 @@ package skills
 import (
 	"fmt"
 	"testing"
+
+	"github.com/BackendStack21/odek/internal/guard"
 )
 
 func TestRunAllHeuristics(t *testing.T) {
@@ -489,7 +491,7 @@ func TestAutoSaveSuggestions_WithHeuristics(t *testing.T) {
 
 	cfg := DefaultSkillsConfig()
 	cfg.AutoSave.MaxPerRun = 5
-	result := AutoSaveSuggestions(suggestions, dir, cfg, false)
+	result := AutoSaveSuggestions(suggestions, dir, cfg, nil, guard.Config{}, false)
 
 	if len(result.Saved) != 2 {
 		t.Fatalf("expected 2 saved, got %d", len(result.Saved))
@@ -509,7 +511,7 @@ func TestAutoSaveSuggestions_QualityGateFails(t *testing.T) {
 	}
 
 	cfg := DefaultSkillsConfig()
-	result := AutoSaveSuggestions(suggestions, dir, cfg, false)
+	result := AutoSaveSuggestions(suggestions, dir, cfg, nil, guard.Config{}, false)
 
 	if len(result.Saved) != 0 {
 		t.Errorf("expected 0 saved, got %d", len(result.Saved))
@@ -531,7 +533,7 @@ func TestAutoSaveSuggestions_MaxPerRun(t *testing.T) {
 
 	cfg := DefaultSkillsConfig()
 	cfg.AutoSave.MaxPerRun = 2
-	result := AutoSaveSuggestions(suggestions, dir, cfg, false)
+	result := AutoSaveSuggestions(suggestions, dir, cfg, nil, guard.Config{}, false)
 
 	if len(result.Saved) != 2 {
 		t.Errorf("expected 2 saved (max per run), got %d", len(result.Saved))
@@ -546,7 +548,7 @@ func TestAutoSaveSuggestions_DeclinesTaintedByDefault(t *testing.T) {
 	}
 
 	cfg := DefaultSkillsConfig()
-	result := AutoSaveSuggestions(suggestions, dir, cfg, false)
+	result := AutoSaveSuggestions(suggestions, dir, cfg, nil, guard.Config{}, false)
 
 	if len(result.Saved) != 0 {
 		t.Errorf("expected 0 saved for tainted skill by default, got %d", len(result.Saved))
@@ -564,7 +566,7 @@ func TestAutoSaveSuggestions_AllowsTaintedWhenForced(t *testing.T) {
 	}
 
 	cfg := DefaultSkillsConfig()
-	result := AutoSaveSuggestions(suggestions, dir, cfg, true)
+	result := AutoSaveSuggestions(suggestions, dir, cfg, nil, guard.Config{}, true)
 
 	if len(result.Saved) != 1 || result.Saved[0] != "tainted-skill" {
 		t.Errorf("expected 1 saved tainted skill when allowUntrusted=true, got %v", result.Saved)

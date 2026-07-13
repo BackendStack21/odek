@@ -28,6 +28,21 @@
     "dims": 768,
     "timeout_seconds": 10
   },
+  "guard": {
+    "provider": "piguard",
+    "url": "http://piguard-gateway:8080/detect",
+    "threshold": 0.9,
+    "timeout_seconds": 5,
+    "fallback_to_local": true,
+    "scan": {
+      "memory": true,
+      "system_prompt": true,
+      "mcp_descriptions": true,
+      "skills": false,
+      "tool_outputs": false,
+      "telegram": false
+    }
+  },
   "memory": {
     "enabled": true,
     "facts_limit_user": 1500,
