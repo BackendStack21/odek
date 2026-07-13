@@ -5,3 +5,8 @@
 tokenizer.*
 !/.gitkeep
 !/.gitignore
+
+# Python artifacts from local py_compile / test runs.
+__pycache__/
+*.pyc
+*.pyo
