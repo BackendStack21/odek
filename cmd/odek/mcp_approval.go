@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 	"path/filepath"
@@ -33,10 +34,10 @@ func mcpApprovalEnv() bool {
 // approval.
 //
 // Approval can be granted in three ways:
-//   1. Set ODEK_APPROVE_MCP=1 (useful for CI/non-interactive use).
-//   2. Answer the interactive y/N prompt when running on a TTY.
-//   3. A prior approval for the same project/server/command/args fingerprint is
-//      persisted in ~/.odek/mcp_approvals.json.
+//  1. Set ODEK_APPROVE_MCP=1 (useful for CI/non-interactive use).
+//  2. Answer the interactive y/N prompt when running on a TTY.
+//  3. A prior approval for the same project/server/command/args fingerprint is
+//     persisted in ~/.odek/mcp_approvals.json.
 //
 // If approval is required and cannot be obtained, approveMCPServers returns an
 // error and the command should abort before spawning any MCP subprocess.
@@ -97,12 +98,11 @@ func approveMCPServersWithTTY(resolved config.ResolvedConfig, stdin io.Reader, s
 			fmt.Fprintf(stdout, "  args:    %s\n", strings.Join(cfg.Args, " "))
 		}
 		if len(cfg.Env) > 0 {
-			envKeys := make([]string, 0, len(cfg.Env))
-			for k := range cfg.Env {
-				envKeys = append(envKeys, k)
+			envKeys := sortedEnvKeys(cfg.Env)
+			fmt.Fprintf(stdout, "  env:\n")
+			for _, k := range envKeys {
+				fmt.Fprintf(stdout, "    %s=%s\n", k, cfg.Env[k])
 			}
-			sort.Strings(envKeys)
-			fmt.Fprintf(stdout, "  env:     %s\n", strings.Join(envKeys, ", "))
 		}
 		fmt.Fprintf(stdout, "Approve? [y/N] ")
 
@@ -125,14 +125,15 @@ func approveMCPServersWithTTY(resolved config.ResolvedConfig, stdin io.Reader, s
 }
 
 // mcpApprovalKey returns a stable key for the persisted approval store. It
-// includes the project directory, server name, command, and arguments so a
-// change to any of those invalidates the prior approval.
+// includes the project directory, server name, command, arguments, and env
+// overrides so a change to any of those invalidates the prior approval.
 func mcpApprovalKey(projectDir, name string, cfg mcpclient.ServerConfig) string {
 	h := sha256.New()
 	fmt.Fprintf(h, "%s\x00%s\x00%s", projectDir, name, cfg.Command)
 	for _, a := range cfg.Args {
 		fmt.Fprintf(h, "\x00%s", a)
 	}
+	hashEnv(h, cfg.Env)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -252,6 +253,7 @@ func mcpToolApprovalKey(projectDir, serverName, toolName string, cfg mcpclient.S
 	for _, a := range cfg.Args {
 		fmt.Fprintf(h, "\x00%s", a)
 	}
+	hashEnv(h, cfg.Env)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -288,6 +290,26 @@ func saveMCPToolApprovals(approvals map[string]bool) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0600)
+}
+
+// sortedEnvKeys returns the keys of an env map in deterministic order.
+func sortedEnvKeys(env map[string]string) []string {
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// hashEnv writes a canonical representation of the env map into h.
+// The order is deterministic and key/value pairs are separated by NUL bytes
+// so that distinct key/value boundaries cannot collide.
+func hashEnv(h hash.Hash, env map[string]string) {
+	keys := sortedEnvKeys(env)
+	for _, k := range keys {
+		fmt.Fprintf(h, "\x00env\x00%s\x00%s", k, env[k])
+	}
 }
 
 // truncateDescription limits a tool description for the approval prompt.

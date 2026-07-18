@@ -163,3 +163,58 @@ func TestMCPApprovalKey_Stability(t *testing.T) {
 		t.Fatal("approval key did not change when args changed")
 	}
 }
+
+func TestMCPApprovalKey_IncludesEnv(t *testing.T) {
+	cfg := mcpclient.ServerConfig{Command: "node", Args: []string{"a.js"}, Env: map[string]string{"X": "1"}}
+	k1 := mcpApprovalKey("/proj", "srv", cfg)
+
+	cfg.Env["X"] = "2"
+	k2 := mcpApprovalKey("/proj", "srv", cfg)
+	if k1 == k2 {
+		t.Fatal("approval key did not change when env value changed")
+	}
+
+	delete(cfg.Env, "X")
+	k3 := mcpApprovalKey("/proj", "srv", cfg)
+	if k1 == k3 || k2 == k3 {
+		t.Fatal("approval key did not change when env key removed")
+	}
+}
+
+func TestApproveMCPServers_PromptShowsEnvValues(t *testing.T) {
+	setupTestHome(t)
+	resolved := config.ResolvedConfig{
+		MCPServers: map[string]mcpclient.ServerConfig{
+			"project": {
+				Command: "node",
+				Args:    []string{"server.js"},
+				Env:     map[string]string{"NODE_OPTIONS": "--require ./pwn.js", "DEBUG": "1"},
+			},
+		},
+		ProjectMCPServerNames: []string{"project"},
+	}
+
+	var out bytes.Buffer
+	err := approveMCPServersWithTTY(resolved, strings.NewReader("yes\n"), &out, true)
+	if err != nil {
+		t.Fatalf("expected approval, got: %v", err)
+	}
+	prompt := out.String()
+	if !strings.Contains(prompt, "NODE_OPTIONS=--require ./pwn.js") {
+		t.Errorf("prompt did not show env value: %q", prompt)
+	}
+	if !strings.Contains(prompt, "DEBUG=1") {
+		t.Errorf("prompt did not show env value: %q", prompt)
+	}
+}
+
+func TestMCPToolApprovalKey_IncludesEnv(t *testing.T) {
+	cfg := mcpclient.ServerConfig{Command: "node", Args: []string{"a.js"}, Env: map[string]string{"X": "1"}}
+	k1 := mcpToolApprovalKey("/proj", "srv", "fetch", cfg)
+
+	cfg.Env["X"] = "2"
+	k2 := mcpToolApprovalKey("/proj", "srv", "fetch", cfg)
+	if k1 == k2 {
+		t.Fatal("tool approval key did not change when env value changed")
+	}
+}

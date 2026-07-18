@@ -528,6 +528,14 @@ func (t *SkillSaveTool) Call(args string) (string, error) {
 		},
 		Body:     input.Body,
 		BodyHash: HashBody(input.Body),
+		// Agent-created skills always require explicit review before they can
+		// be auto-loaded. This closes the skill_save → skill_patch → auto_load
+		// persistence bypass documented in the security roadmap.
+		Provenance: SkillProvenance{
+			Untrusted:   true,
+			NeedsReview: true,
+			Sources:     []string{"skill_save"},
+		},
 	}
 
 	// Check for duplicate
@@ -642,23 +650,36 @@ func (t *SkillPatchTool) Call(args string) (string, error) {
 		return "", fmt.Errorf("skill_patch: text %q not found in skill %q", input.OldText, input.Name)
 	}
 
+	// Refuse any patch whose matched text lives inside the YAML frontmatter.
+	// Editing frontmatter would let an injected agent flip auto_load or
+	// needs_review without human approval.
+	if bodyOffset := skillBodyStart(body); bodyOffset > 0 && idx < bodyOffset {
+		return "", fmt.Errorf("skill_patch: old_text matches the YAML frontmatter / odek metadata section; editing frontmatter is not permitted")
+	}
+
 	newBody := strings.Replace(body, input.OldText, input.NewText, 1) // n=1: unique match enforced above
 	if err := os.WriteFile(skill.Source.Path, []byte(newBody), 0644); err != nil {
 		return "", fmt.Errorf("skill_patch: write: %w", err)
 	}
 
-	// Scan the patched body. If the guard flags it, pin the skill to manual
-	// review by rewriting its provenance.
+	// Re-parse and force the patched skill into a reviewed state. Even a
+	// body-only patch can be used to smuggle instructions, so agent-patched
+	// skills must never auto-load until explicitly promoted.
 	flagged := false
-	if patched := parseSkillContent(newBody, skill.Source.Path); patched != nil {
-		if t.Manager.scanSkill(context.Background(), patched) {
-			flagged = true
-			patched.Source = skill.Source
-			content := MarshalSkill(*patched)
-			if err := os.WriteFile(skill.Source.Path, []byte(content), 0644); err != nil {
-				return "", fmt.Errorf("skill_patch: rewrite flagged provenance: %w", err)
-			}
-		}
+	patched := parseSkillContent(newBody, skill.Source.Path)
+	if patched == nil {
+		return "", fmt.Errorf("skill_patch: patched file is no longer a valid SKILL.md")
+	}
+	patched.Source = skill.Source
+	patched.Provenance.Untrusted = true
+	patched.Provenance.NeedsReview = true
+	patched.Provenance.Sources = append(patched.Provenance.Sources, "skill_patch")
+	if t.Manager.scanSkill(context.Background(), patched) {
+		flagged = true
+	}
+	marshaled := MarshalSkill(*patched)
+	if err := os.WriteFile(skill.Source.Path, []byte(marshaled), 0644); err != nil {
+		return "", fmt.Errorf("skill_patch: rewrite provenance: %w", err)
 	}
 
 	t.Manager.MarkDirty()
@@ -744,6 +765,21 @@ func (t *SkillDeleteTool) Call(args string) (string, error) {
 	}
 
 	return fmt.Sprintf("✓ Deleted skill %q", input.Name), nil
+}
+
+// skillBodyStart returns the byte offset in a SKILL.md where the body begins
+// (immediately after the closing `---` frontmatter delimiter). If the file has
+// no recognizable frontmatter it returns -1.
+func skillBodyStart(content string) int {
+	content = strings.TrimSpace(content)
+	if !strings.HasPrefix(content, "---") {
+		return -1
+	}
+	closing := strings.Index(content, "\n---")
+	if closing < 0 {
+		return -1
+	}
+	return closing + len("\n---")
 }
 
 // findAnySkill searches for a skill in both auto-load and lazy lists.

@@ -219,6 +219,102 @@ func TestSkillSaveTool(t *testing.T) {
 	}
 }
 
+func TestSkillSaveTool_SetsProvenance(t *testing.T) {
+	dir := t.TempDir()
+	sm := NewSkillManager(dir, "")
+	tool := &SkillSaveTool{Manager: sm}
+
+	body := strings.ReplaceAll(`## Overview
+This is a test skill for provenance.
+
+## Step-by-Step
+1. Do one thing.
+
+## Common Pitfalls
+- None
+
+## Verification
+- Check provenance.
+This part adds length so the body exceeds the 300 character body length requirement for skill_save. More content here to ensure we pass validation. And more.`, "\n", "\\n")
+	args := fmt.Sprintf(`{"name": "prov-test", "description": "Provenance test", "body": "%s"}`, body)
+	if _, err := tool.Call(args); err != nil {
+		t.Fatalf("save failed: %v", err)
+	}
+
+	sm.Reload()
+	for _, s := range sm.Result.Lazy {
+		if s.Name == "prov-test" {
+			if !s.Provenance.Untrusted {
+				t.Error("expected saved skill to be marked Untrusted")
+			}
+			if !s.Provenance.NeedsReview {
+				t.Error("expected saved skill to require review")
+			}
+			if !contains(s.Source.Path, "prov-test") {
+				t.Errorf("expected source path to contain skill name: %s", s.Source.Path)
+			}
+			return
+		}
+	}
+	t.Error("saved skill not found after reload")
+}
+
+func TestSkillPatchTool_RejectsFrontmatterEdit(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "frontmatter-skill")
+	os.MkdirAll(skillDir, 0755)
+	content := "---\nname: frontmatter-skill\nodek:\n  auto_load: false\n---\n\n## Overview\nBody\n## Common Pitfalls\n- None"
+	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0644)
+
+	sm := NewSkillManager(dir, "")
+	tool := &SkillPatchTool{Manager: sm}
+
+	// Try to flip auto_load by matching frontmatter text.
+	_, err := tool.Call(`{"name": "frontmatter-skill", "old_text": "auto_load: false", "new_text": "auto_load: true"}`)
+	if err == nil {
+		t.Fatal("expected error for frontmatter patch")
+	}
+	if !strings.Contains(err.Error(), "frontmatter") {
+		t.Errorf("expected frontmatter error, got: %v", err)
+	}
+}
+
+func TestSkillPatchTool_PreservesProvenance(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "patch-provenance")
+	os.MkdirAll(skillDir, 0755)
+	content := "---\nname: patch-provenance\nodek:\n  provenance:\n    untrusted: true\n    needs_review: true\n    sources: original\n---\n\n## Overview\nOld body\n## Common Pitfalls\n- None"
+	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0644)
+
+	sm := NewSkillManager(dir, "")
+	tool := &SkillPatchTool{Manager: sm}
+
+	result, err := tool.Call(`{"name": "patch-provenance", "old_text": "Old body", "new_text": "New body"}`)
+	if err != nil {
+		t.Fatalf("patch failed: %v", err)
+	}
+	if !strings.Contains(result, "Patched") {
+		t.Errorf("expected patched message: %s", result)
+	}
+
+	sm.Reload()
+	for _, s := range sm.Result.Lazy {
+		if s.Name == "patch-provenance" {
+			if !s.Provenance.Untrusted {
+				t.Error("expected patched skill to remain Untrusted")
+			}
+			if !s.Provenance.NeedsReview {
+				t.Error("expected patched skill to remain NeedsReview")
+			}
+			if !strings.Contains(s.Body, "New body") {
+				t.Errorf("expected body to contain new text: %s", s.Body)
+			}
+			return
+		}
+	}
+	t.Error("patched skill not found after reload")
+}
+
 func TestSkillSaveTool_ShortBody(t *testing.T) {
 	dir := t.TempDir()
 	sm := NewSkillManager(dir, "")
