@@ -62,6 +62,9 @@ func replCmd(args []string) error {
 		SandboxCPUs:     f.SandboxCPUs,
 		SandboxUser:     f.SandboxUser,
 	})
+	if err := approveProjectSandbox(resolved, os.Stdin, os.Stdout); err != nil {
+		return err
+	}
 	systemMessage := buildSystemPrompt(resolved)
 
 	// session resume

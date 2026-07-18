@@ -166,6 +166,9 @@ func telegramCmd(args []string) error {
 
 	// 1. Load config from all sources (file → env).
 	resolved := config.LoadConfig(config.CLIFlags{})
+	if err := approveProjectSandbox(resolved, os.Stdin, os.Stdout); err != nil {
+		return err
+	}
 
 	// 1b. If the parent handed us an API key via an inherited file descriptor
 	// (FD-based handoff used on Telegram restart), use it. This keeps the key

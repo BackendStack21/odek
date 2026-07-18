@@ -316,6 +316,9 @@ func subagentCmd(args []string) error {
 
 	// Resolve config (inherits everything from normal chain)
 	resolved := config.LoadConfig(config.CLIFlags{})
+	if err := approveProjectSandbox(resolved, os.Stdin, os.Stdout); err != nil {
+		return err
+	}
 
 	// If the parent handed us an API key via FD 3, prefer it over any
 	// env-resolved value. This keeps the key out of the child's process

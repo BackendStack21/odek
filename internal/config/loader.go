@@ -315,6 +315,23 @@ type FileConfig struct {
 	ToolProgressCleanup *bool `json:"tool_progress_cleanup,omitempty"`
 }
 
+// ProjectSandboxOverride records which sandbox knobs were supplied by the
+// project-level ./odek.json config. These require explicit operator approval
+// before they are applied, because a malicious repo could otherwise
+// exfiltrate host secrets (via ${VAR} interpolation in sandbox_env), pull an
+// attacker-controlled image, or widen the container's network access.
+type ProjectSandboxOverride struct {
+	HasEnv              bool
+	EnvKeys             []string
+	EnvHasInterpolation bool
+	HasImage            bool
+	Image               string
+	HasNetwork          bool
+	Network             string
+	HasVolumes          bool
+	Volumes             []string
+}
+
 // ResolvedConfig is the fully merged result. Every field has a concrete
 // value — callers can read directly without checking for "not set".
 type ResolvedConfig struct {
@@ -400,6 +417,12 @@ type ResolvedConfig struct {
 	// before their subprocesses are spawned, because a malicious repo could
 	// otherwise execute arbitrary code via the mcp_servers section.
 	ProjectMCPServerNames []string
+
+	// ProjectSandboxOverride records sandbox knobs supplied by the project-level
+	// ./odek.json config. These require explicit operator approval before they
+	// are applied, because a malicious repo could otherwise exfiltrate host
+	// secrets or pull an attacker-controlled sandbox image.
+	ProjectSandboxOverride ProjectSandboxOverride
 
 	// MaxConcurrency limits how many sub-agent tasks run in parallel.
 	// Config: max_concurrency, ODEK_MAX_CONCURRENCY.
@@ -865,6 +888,34 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if project.SandboxReadonly != nil && !*project.SandboxReadonly {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring sandbox_readonly=false from project config (%s); set it via ~/.odek/config.json or CLI\n", ProjectConfigPath())
 		project.SandboxReadonly = nil
+	}
+
+	// Capture which sandbox knobs the project requested, before the overlay
+	// hides them behind CLI/env values. This drives the approval gate in cmd/odek.
+	var projectSandboxOverride ProjectSandboxOverride
+	if len(project.SandboxEnv) > 0 {
+		projectSandboxOverride.HasEnv = true
+		projectSandboxOverride.EnvKeys = make([]string, 0, len(project.SandboxEnv))
+		for k, v := range project.SandboxEnv {
+			projectSandboxOverride.EnvKeys = append(projectSandboxOverride.EnvKeys, k)
+			if strings.Contains(v, "${") {
+				projectSandboxOverride.EnvHasInterpolation = true
+			}
+		}
+		sort.Strings(projectSandboxOverride.EnvKeys)
+	}
+	if project.SandboxImage != "" {
+		projectSandboxOverride.HasImage = true
+		projectSandboxOverride.Image = project.SandboxImage
+	}
+	if project.SandboxNetwork != "" {
+		projectSandboxOverride.HasNetwork = true
+		projectSandboxOverride.Network = project.SandboxNetwork
+	}
+	if len(project.SandboxVolumes) > 0 {
+		projectSandboxOverride.HasVolumes = true
+		projectSandboxOverride.Volumes = append([]string(nil), project.SandboxVolumes...)
+		sort.Strings(projectSandboxOverride.Volumes)
 	}
 
 	// Start with global, overlay project
@@ -1380,9 +1431,10 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		Memory:                resolveMemory(cfg.Memory),
 		Guard:                 resolveGuard(cfg.Guard),
 		Embedding:             cfg.Embedding,
-		MCPServers:            cfg.MCPServers,
-		ProjectMCPServerNames: projectMCPNames,
-		Telegram:              resolveTelegram(cfg.Telegram),
+		MCPServers:             cfg.MCPServers,
+		ProjectMCPServerNames:  projectMCPNames,
+		ProjectSandboxOverride: projectSandboxOverride,
+		Telegram:               resolveTelegram(cfg.Telegram),
 		Transcription:         resolveTranscription(cfg.Transcription),
 		Vision:                resolveVision(cfg.Vision),
 		WebSearch:             resolveWebSearch(cfg.WebSearch),
