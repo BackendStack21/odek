@@ -28,7 +28,33 @@ import (
 // otherwise allowed. This prevents a prompt-injected agent from exfiltrating
 // arbitrary files such as /home/user/.ssh/id_rsa via MEDIA:... or
 // send_message(file=...), especially when the bot was launched from $HOME or /.
+//
+// For Telegram callers that know the originating chat, use
+// ResolveMediaPathForChat instead. It scopes the ~/.odek/media directory to
+// files whose names contain the chat-specific "_chat<chatID>_" tag, preventing
+// one chat from requesting media downloaded for another chat.
 func ResolveMediaPath(path string) (string, error) {
+	return resolveMediaPath(path, 0)
+}
+
+// ResolveMediaPathForChat is like ResolveMediaPath but additionally binds files
+// inside ~/.odek/media to the supplied chat ID. Files downloaded from Telegram
+// are named with a "_chat<chatID>_" prefix (e.g. "doc_chat12345_report.pdf"),
+// so a path inside ~/.odek/media is accepted only when its basename contains
+// that prefix or it lives under ~/.odek/media/chat<chatID>/. This prevents a
+// chat from re-disclosing documents or media that originated in another chat.
+//
+// A chatID of 0 disables the chat-scoped check and behaves like
+// ResolveMediaPath. Real Telegram chat IDs are never zero, so callers should
+// pass the actual chat ID whenever it is available.
+func ResolveMediaPathForChat(path string, chatID int64) (string, error) {
+	return resolveMediaPath(path, chatID)
+}
+
+// resolveMediaPath implements the shared validation for ResolveMediaPath and
+// ResolveMediaPathForChat. When chatID != 0, paths inside the odek media
+// directory must be scoped to that chat.
+func resolveMediaPath(path string, chatID int64) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("media path is empty")
 	}
@@ -66,7 +92,7 @@ func ResolveMediaPath(path string) (string, error) {
 	}
 	resolved = filepath.Clean(resolved)
 
-	allowed, err := mediaBaseDirs()
+	allowed, mediaDir, err := mediaBaseDirs()
 	if err != nil {
 		return "", fmt.Errorf("media path: allowed dirs: %w", err)
 	}
@@ -75,6 +101,12 @@ func ResolveMediaPath(path string) (string, error) {
 		if isPathInside(resolved, base) {
 			if err := checkMediaPathSensitivity(resolved); err != nil {
 				return "", err
+			}
+			// Enforce per-chat isolation inside the shared media directory.
+			if chatID != 0 && mediaDir != "" && isPathInside(resolved, mediaDir) {
+				if err := checkChatMediaScope(resolved, mediaDir, chatID); err != nil {
+					return "", err
+				}
 			}
 			return resolved, nil
 		}
@@ -133,20 +165,43 @@ func BroadBaseWarning() string {
 	return ""
 }
 
+// checkChatMediaScope rejects media files inside ~/.odek/media that do not
+// belong to the requesting chat. Telegram downloads are tagged with
+// "_chat<chatID>_" in the basename; future per-chat subdirectories are also
+// allowed under ~/.odek/media/chat<chatID>/.
+func checkChatMediaScope(resolved, mediaDir string, chatID int64) error {
+	// Allow files under a per-chat subdirectory.
+	chatSubdir := filepath.Join(mediaDir, fmt.Sprintf("chat%d", chatID))
+	if isPathInside(resolved, chatSubdir) {
+		return nil
+	}
+
+	// Allow files whose basename contains the chat tag (e.g. doc_chat12345_x.pdf).
+	base := filepath.Base(resolved)
+	tag := fmt.Sprintf("_chat%d_", chatID)
+	if strings.Contains(base, tag) {
+		return nil
+	}
+
+	return fmt.Errorf("media path: file belongs to a different chat: %s", resolved)
+}
+
 // mediaBaseDirs returns the resolved, cleaned allowed base directories for
-// outbound media paths. Errors retrieving individual directories are ignored
+// outbound media paths and the resolved odek media directory (empty string if
+// it cannot be located). Errors retrieving individual directories are ignored
 // where safe to do so (a directory that cannot be located cannot contain a
 // valid media file), but the current working directory and temp directory are
 // always included.
-func mediaBaseDirs() ([]string, error) {
+func mediaBaseDirs() (dirs []string, mediaDir string, err error) {
 	cwd, err := os.Getwd()
 	if err != nil {
-		return nil, fmt.Errorf("getwd: %w", err)
+		return nil, "", fmt.Errorf("getwd: %w", err)
 	}
 
-	dirs := []string{cwd}
+	dirs = []string{cwd}
 
-	if mediaDir, err := MediaDir(); err == nil {
+	if md, err := MediaDir(); err == nil {
+		mediaDir = md
 		dirs = append(dirs, mediaDir)
 	}
 
@@ -160,7 +215,14 @@ func mediaBaseDirs() ([]string, error) {
 		}
 		resolved = append(resolved, d)
 	}
-	return resolved, nil
+	// Return the resolved media dir, not the unresolved one.
+	if mediaDir != "" {
+		mediaDir = filepath.Clean(mediaDir)
+		if real, err := filepath.EvalSymlinks(mediaDir); err == nil {
+			mediaDir = filepath.Clean(real)
+		}
+	}
+	return resolved, mediaDir, nil
 }
 
 // isPathInside reports whether child is equal to or inside parent, using

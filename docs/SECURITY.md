@@ -428,6 +428,8 @@ The path is resolved to an absolute, cleaned form with `filepath.Abs`, symlinks 
 
 On top of the allowlist, `ResolveMediaPath` now rejects well-known secret subtrees (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.odek` trust anchors, etc.) and any file whose basename starts with `.env`, so project API keys and host secrets cannot be uploaded even when the bot is launched from a broad base such as `$HOME` or `/`.
 
+The shared `~/.odek/media/` directory is additionally scoped per chat. Telegram callers use `ResolveMediaPathForChat`, which accepts a file inside `~/.odek/media/` only when its basename contains the originating chat's tag (`_chat<chatID>_`, matching the names produced by `DownloadVoice`, `DownloadPhoto`, and `DownloadDocument`) or when it lives under `~/.odek/media/chat<chatID>/`. This prevents a chat from asking the bot to re-send documents or media that were uploaded by a different chat.
+
 Finally, every outbound media upload requires explicit user approval via `TelegramApprover.PromptMedia` (`internal/telegram/approver.go`). The approval card shows the full file path and the `network_egress` risk class, and adds an explicit warning when the current working directory is `$HOME` or `/`. If no approver is registered (e.g. a standalone `Handler` outside the bot runtime), the upload is denied outright.
 
 ### 24. Session ID entropy + session-scoped auth tokens

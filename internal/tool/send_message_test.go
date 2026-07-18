@@ -220,6 +220,54 @@ func TestSendMessageTool_Call_SenderError(t *testing.T) {
 	}
 }
 
+func TestSendMessageTool_Call_ChatScopedMedia(t *testing.T) {
+	realHome, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+	defer os.Setenv("HOME", realHome)
+	defer os.Setenv("USERPROFILE", os.Getenv("USERPROFILE"))
+
+	home := t.TempDir()
+	os.Setenv("HOME", home)
+	os.Setenv("USERPROFILE", home)
+
+	mediaDir := filepath.Join(home, ".odek", "media")
+	if err := os.MkdirAll(mediaDir, 0755); err != nil {
+		t.Fatalf("mkdir media dir: %v", err)
+	}
+
+	ownerChat := int64(111)
+	attackerChat := int64(222)
+	ownerFile := filepath.Join(mediaDir, fmt.Sprintf("doc_chat%d_report.pdf", ownerChat))
+	if err := os.WriteFile(ownerFile, []byte("x"), 0644); err != nil {
+		t.Fatalf("write owner file: %v", err)
+	}
+
+	// Owner's chat should be allowed to send its own downloaded document.
+	ownerTool := &SendMessageTool{
+		ChatID: ownerChat,
+		Sender: func(text, file string, buttons [][]map[string]string) error { return nil },
+	}
+	_, err = ownerTool.Call(fmt.Sprintf(`{"text": "here", "file": %q}`, ownerFile))
+	if err != nil {
+		t.Fatalf("owner chat should be allowed to send its own file: %v", err)
+	}
+
+	// Another chat must not be able to request the same file.
+	attackerTool := &SendMessageTool{
+		ChatID: attackerChat,
+		Sender: func(text, file string, buttons [][]map[string]string) error { return nil },
+	}
+	_, err = attackerTool.Call(fmt.Sprintf(`{"text": "here", "file": %q}`, ownerFile))
+	if err == nil {
+		t.Fatal("attacker chat should be rejected for another chat's file")
+	}
+	if !strings.Contains(err.Error(), "different chat") {
+		t.Errorf("expected 'different chat' error, got: %v", err)
+	}
+}
+
 func TestSendMessageTool_Call_InvalidJSON(t *testing.T) {
 	tool := &SendMessageTool{
 		Sender: func(text, file string, buttons [][]map[string]string) error {
