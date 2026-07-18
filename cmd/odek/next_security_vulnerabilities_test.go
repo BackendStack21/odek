@@ -37,6 +37,32 @@ func TestBrowser_HistoryCap(t *testing.T) {
 	}
 }
 
+func TestBrowser_SnapshotByteCap(t *testing.T) {
+	huge := strings.Repeat("<p>word</p>", 300000) // ~1.5 MB of extracted text
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "<html><body>%s</body></html>", huge)
+	}))
+	defer srv.Close()
+
+	tool := newTestBrowserTool()
+	result := callJSON(t, tool, fmt.Sprintf(`{"action":"navigate","url":%q}`, srv.URL))
+	var r struct {
+		Content string `json:"content"`
+		Error   string `json:"error,omitempty"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error != "" {
+		t.Fatalf("navigate error: %s", r.Error)
+	}
+	body := unwrapUntrusted(r.Content)
+	if len(body) > maxBrowserSnapshotBytes+200 {
+		t.Fatalf("snapshot content = %d bytes, expected cap near %d", len(body), maxBrowserSnapshotBytes)
+	}
+	if !strings.Contains(body, "truncated") {
+		t.Fatalf("expected truncation marker in capped content")
+	}
+}
+
 // ── 2. search_files / multi_grep must cap limit and result size ──────────
 
 func TestSearchFiles_LimitCap(t *testing.T) {

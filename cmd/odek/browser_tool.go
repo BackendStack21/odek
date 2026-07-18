@@ -56,6 +56,10 @@ const maxBrowserHistory = 50
 // or buttons.
 const maxBrowserElements = 500
 
+// maxBrowserSnapshotBytes caps the extracted text retained per snapshot so the
+// history limit cannot be bypassed by a small number of huge pages.
+const maxBrowserSnapshotBytes = 1 * 1024 * 1024
+
 // browserState holds the shared state for one browser session.
 type browserState struct {
 	mu      sync.Mutex
@@ -467,6 +471,10 @@ func parseHTML(ctx context.Context, html, pageURL string, status int) browserSna
 	}
 
 	snap.Content = strings.Join(contentParts, "\n")
+	if len(snap.Content) > maxBrowserSnapshotBytes {
+		snap.Content = snap.Content[:maxBrowserSnapshotBytes] +
+			"\n[content truncated: exceeds per-snapshot byte cap]"
+	}
 	snap.Elements = elements
 
 	// Title, element text, and link URLs come from the page — wrap them as
