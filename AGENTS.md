@@ -182,6 +182,14 @@ Layered prompt-injection / approval-fatigue defenses. Full reference: [docs/SECU
 - **Secrets.env permission gate** (`internal/config/loader.go`) — refuses to load `~/.odek/secrets.env` when it is group/world-readable, preventing local users from reading API keys injected into the environment.
 - **Secret redaction** (`internal/redact/redact.go`) — 20+ patterns: OpenAI, Anthropic, GitHub PAT, AWS, PEM, JWT, Vault, Google OAuth, SendGrid, Discord, DB URLs, etc.
 
+### Security findings (`sec_findings.md`)
+
+`sec_findings.md` at the repository root is the running security audit log. It is
+intentionally listed in `.gitignore` so that audit output and in-progress
+findings are not committed to the repository by default. Do not commit this
+file in pull requests unless you explicitly intend to publish a finalized
+audit snapshot.
+
 ### Platform Support
 CLI, REPL, Web UI, Telegram bot — all in a single binary.
 
