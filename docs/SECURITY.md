@@ -119,6 +119,10 @@ If the sidecar flags content, the behavior mirrors a local scan flag: writes are
 
 The `guard` section is operator-controlled: project-level `./odek.json` cannot set it, so a malicious repository cannot disable the local scan or redirect memory/system-prompt content to an attacker-controlled endpoint.
 
+### 3c. Path classification for broad searches
+
+`search_files` and `multi_grep` do not stop at classifying the search root. Every descended directory and every discovered file is run through the same `danger.ClassifyPath` check used by `read_file` and `write_file`. If a discovered path is more sensitive than the root (for example, a `~/.odek/config.json` or `~/.bashrc` encountered while scanning a broader directory), it is skipped and reported in the tool result's `skipped` field instead of being read or returned silently. This closes the gap where a prompt-injected broad search smuggles out files that would be gated if read individually.
+
 ### 4. Tool-call approval
 
 When a classification is set to `prompt`, an approver pauses the agent until the user decides. Two implementations:
