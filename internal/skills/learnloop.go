@@ -41,15 +41,19 @@ func AnalyzeMessages(messages []LlmMessage, userMessages []string, sm *SkillMana
 				cmds = append(cmds, c.Input)
 			}
 			convSkill.CommandLog = cmds
+			convSkill.Provenance = prov
 			suggestions = append(suggestions, *convSkill)
 		}
 	}
 
-	// Apply LLM enhancement to each suggestion.
+	// Apply LLM enhancement to each suggestion. The LLM only produces name,
+	// description, and body — it must not be allowed to strip the provenance
+	// that was derived from the session's tool calls.
 	if llmLearn && llmClient != nil {
 		calls := ExtractToolCalls(messages)
 		for i := range suggestions {
 			if enhanced := GenerateSkillWithLLM(llmClient, calls, userMessages, suggestions[i].Heuristic); enhanced != nil {
+				enhanced.Provenance = suggestions[i].Provenance
 				enhanced.CommandLog = suggestions[i].CommandLog
 				enhanced.Heuristic = suggestions[i].Heuristic
 				suggestions[i] = *enhanced

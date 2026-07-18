@@ -2,6 +2,7 @@ package skills
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -130,5 +131,99 @@ func TestRunAutoSaveLoop_VerboseWriterReceivesFailedMessage(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "Quality gate failed") {
 		t.Errorf("verbose output should mention Quality gate failed for empty-body suggestion, got:\n%s", buf.String())
+	}
+}
+
+// validLLMSkillResponse returns the exact format GenerateSkillWithLLM and
+// ExtractSkillsFromConversation expect, with a body long enough to pass the
+// quality gate.
+func validLLMSkillResponse(name string) string {
+	return fmt.Sprintf(`NAME: %s
+DESCRIPTION: A test skill
+TOPICS: test, ci
+ACTIONS: create, run
+BODY:
+## Overview
+This is a test skill body with enough padding to exceed the two hundred character minimum required by the quality gate. Keep typing filler words until we are safely over the limit for sure.
+
+## Step-by-Step
+1. Do the thing
+
+## Common Pitfalls
+- Nothing
+
+## Verification
+- Check output
+`, name)
+}
+
+// TestAnalyzeMessages_PreservesProvenanceThroughEnhancement verifies that
+// LLM-enhanced suggestions keep the provenance derived from the session, so
+// tainted sessions cannot produce clean-looking auto-saved skills.
+func TestAnalyzeMessages_PreservesProvenanceThroughEnhancement(t *testing.T) {
+	sm := NewSkillManager(t.TempDir(), t.TempDir())
+	messages := []LlmMessage{
+		{Role: "user", Content: "fetch a page"},
+		{Role: "assistant", Content: "ok", ToolCalls: []LlmToolCall{
+			{Function: struct {
+				Name      string
+				Arguments string
+			}{Name: "browser", Arguments: `{"action":"navigate","url":"https://example.com"}`}},
+		}},
+		{Role: "tool", Content: "page text"},
+	}
+	userMsgs := []string{"fetch a page"}
+
+	llm := &mockLLMClient{resp: validLLMSkillResponse("enhanced-skill")}
+	got := AnalyzeMessages(messages, userMsgs, sm, llm, true, true)
+	if len(got) == 0 {
+		t.Fatal("expected at least one suggestion")
+	}
+	for _, s := range got {
+		if !s.Provenance.Untrusted {
+			t.Errorf("suggestion %q lost tainted provenance after LLM enhancement: %+v", s.Name, s.Provenance)
+		}
+		if len(s.Provenance.Sources) == 0 || s.Provenance.Sources[0] != "browser" {
+			t.Errorf("suggestion %q lost provenance sources after LLM enhancement: %+v", s.Name, s.Provenance.Sources)
+		}
+	}
+}
+
+// TestAnalyzeMessages_ConversationExtractedIsTagged verifies that skills
+// extracted from the full conversation receive the session provenance before
+// they enter the auto-save pipeline.
+func TestAnalyzeMessages_ConversationExtractedIsTagged(t *testing.T) {
+	sm := NewSkillManager(t.TempDir(), t.TempDir())
+	messages := []LlmMessage{
+		{Role: "user", Content: "how do I do this"},
+		{Role: "assistant", Content: "use curl", ToolCalls: []LlmToolCall{
+			{Function: struct {
+				Name      string
+				Arguments string
+			}{Name: "http_batch", Arguments: `{"urls":["https://example.com"]}`}},
+		}},
+		{Role: "tool", Content: "ok"},
+	}
+	userMsgs := []string{"how do I do this"}
+
+	llm := &mockLLMClient{resp: validLLMSkillResponse("conversation-skill")}
+	got := AnalyzeMessages(messages, userMsgs, sm, llm, true, true)
+	if len(got) == 0 {
+		t.Fatal("expected at least one suggestion")
+	}
+	found := false
+	for _, s := range got {
+		if s.Heuristic == "conversation-extracted" {
+			found = true
+			if !s.Provenance.Untrusted {
+				t.Errorf("conversation-extracted skill %q should be tainted, got %+v", s.Name, s.Provenance)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected a conversation-extracted suggestion, got heuristics: ")
+		for _, s := range got {
+			t.Logf("  %s: %s", s.Name, s.Heuristic)
+		}
 	}
 }
