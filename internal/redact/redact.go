@@ -34,9 +34,17 @@ import (
 // The first matching pattern wins — subsequent patterns are skipped for
 // that portion of text.
 var patterns = []*regexp.Regexp{
-	// OpenAI / AI provider keys: sk-<alphanumeric+hyphens>
-	// sk-proj- variant for project-scoped keys
-	regexp.MustCompile(`sk-[a-zA-Z0-9-]{32,}`),
+	// Provider-specific AI API keys (ordered before the generic sk- pattern).
+	// Groq: gsk_<alphanumeric>
+	regexp.MustCompile(`gsk_[a-zA-Z0-9]{32,}`),
+	// xAI: xai-<alphanumeric+hyphens/underscores>
+	regexp.MustCompile(`xai-[a-zA-Z0-9_-]{32,}`),
+	// HuggingFace: hf_<alphanumeric>
+	regexp.MustCompile(`hf_[a-zA-Z0-9]{32,}`),
+	// OpenAI / generic AI provider keys: sk-<alphanumeric+hyphens+underscores>
+	// sk-proj- variant for project-scoped keys. The underscore is required
+	// because Anthropic keys (sk-ant-...) and some provider keys contain it.
+	regexp.MustCompile(`sk-[a-zA-Z0-9_-]{32,}`),
 
 	// GitHub personal access tokens (classic + fine-grained)
 	regexp.MustCompile(`ghp_[a-zA-Z0-9]{36,}`),
