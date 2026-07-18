@@ -806,6 +806,27 @@ func TestClassify_ShellRCTargets(t *testing.T) {
 	}
 }
 
+func TestClassify_OdekSelfInvocation(t *testing.T) {
+	tests := []struct {
+		cmd  string
+		want RiskClass
+	}{
+		{"odek memory promote abc123", SystemWrite},
+		{"odek memory extended confirm xyz", SystemWrite},
+		{"odek skill promote evil-skill --force", SystemWrite},
+		{"./odek memory list", SystemWrite},
+		{"/usr/local/bin/odek --version", SystemWrite},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			got := Classify(tt.cmd)
+			if got != tt.want {
+				t.Errorf("Classify(%q) = %s, want %s", tt.cmd, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestClassify_PythonDashC(t *testing.T) {
 	got := Classify("python -c 'print(1)'")
 	if got != CodeExecution {
