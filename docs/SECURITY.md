@@ -571,6 +571,12 @@ MCP servers supply not only tool descriptions but also `inputSchema` JSON schema
 - Caps the serialized schema JSON at 256 KiB per tool. Oversized schemas are rejected before they can be used for prompt stuffing.
 - Computes a SHA-256 hash of the canonical schema JSON and displays it in the interactive approval prompt (`schema: sha256:<hash> (<size> bytes)`), so the operator can notice when a previously-approved tool's schema has changed.
 
+### 39f. MCP tool calls classified as `unknown` in the batch gate
+
+MCP tool names are registered as `<server>__<tool>`. They were not handled by `internal/loop.classifyToolCall`, so the batch approval gate returned empty for them and the `SetTrustAll` path could silently approve whole batches that included MCP calls. In delegated (untrusted) sub-agents, the missing classification meant the documented forced-Deny damage cap never engaged for MCP tools.
+
+`classifyToolCall` now detects the `__` naming convention and returns `unknown` for any MCP tool. This makes the batch gate display the tool instead of hiding it, and `applySubagentTrust` forces `unknown` to `deny` for untrusted sub-agents.
+
 ### 40. `/api/resources` result limit cap
 
 The `/api/resources?q=...&limit=N` autocomplete endpoint previously accepted any positive `limit` value. It is now capped to 100 results both in the HTTP handler and in `Registry.Search`. This prevents a prompt-injected or attacker-forged request from forcing an unbounded directory walk and returning a multi-megabyte JSON response.
