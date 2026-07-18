@@ -1745,7 +1745,7 @@ func loadMCPTools(resolved config.ResolvedConfig, tools *[]odek.Tool) (func(), e
 			}
 		}
 
-		defs, err = approveMCPTools(projectDir, name, cfg, defs, os.Stdin, os.Stdout)
+		defs, err = approveMCPTools(projectDir, name, cfg, defs, os.Stdin, os.Stdout, injectionGuard, resolved.Guard)
 		if err != nil {
 			client.Close()
 			for _, c := range cleaners {

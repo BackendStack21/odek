@@ -561,6 +561,16 @@ Human-gated trust mutations such as `odek memory promote <session>`, `odek memor
 
 The danger classifier now treats any shell stage whose program basename is `odek` as `system_write`, so every self-invocation requires explicit operator approval and cannot be used to bypass the memory/skill provenance gates from inside an agent session.
 
+### 39e. MCP `inputSchema` guard-scan, size cap, and approval hash
+
+MCP servers supply not only tool descriptions but also `inputSchema` JSON schemas that are serialized into the model's function catalogue. Previously only descriptions were guard-scanned; a malicious server could hide instructions in property descriptions, default values, or enum strings inside the schema, poisoning the tool definition without ever executing the tool.
+
+`cmd/odek/mcp_approval.go` now:
+
+- Recursively walks every string in `def.InputSchema` and runs it through the same `guard.ScanContentWithScope` scan used for descriptions (scope `mcp_schema`). If any string triggers the guard, the tool is skipped with a stderr warning instead of being registered.
+- Caps the serialized schema JSON at 256 KiB per tool. Oversized schemas are rejected before they can be used for prompt stuffing.
+- Computes a SHA-256 hash of the canonical schema JSON and displays it in the interactive approval prompt (`schema: sha256:<hash> (<size> bytes)`), so the operator can notice when a previously-approved tool's schema has changed.
+
 ### 40. `/api/resources` result limit cap
 
 The `/api/resources?q=...&limit=N` autocomplete endpoint previously accepted any positive `limit` value. It is now capped to 100 results both in the HTTP handler and in `Registry.Search`. This prevents a prompt-injected or attacker-forged request from forcing an unbounded directory walk and returning a multi-megabyte JSON response.

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/mcpclient"
 	"golang.org/x/term"
 )
@@ -183,13 +185,13 @@ const mcpToolApprovalsFile = "mcp_tool_approvals.json"
 //
 // Approval can be granted via ODEK_APPROVE_MCP=1, an interactive y/N prompt,
 // or a prior persisted approval in ~/.odek/mcp_tool_approvals.json.
-func approveMCPTools(projectDir, serverName string, cfg mcpclient.ServerConfig, defs []mcpclient.ToolDef, stdin io.Reader, stdout io.Writer) ([]mcpclient.ToolDef, error) {
+func approveMCPTools(projectDir, serverName string, cfg mcpclient.ServerConfig, defs []mcpclient.ToolDef, stdin io.Reader, stdout io.Writer, g guard.Guard, guardCfg guard.Config) ([]mcpclient.ToolDef, error) {
 	isTTY := stdin == os.Stdin && term.IsTerminal(int(os.Stdin.Fd()))
-	return approveMCPToolsWithTTY(projectDir, serverName, cfg, defs, stdin, stdout, isTTY)
+	return approveMCPToolsWithTTY(projectDir, serverName, cfg, defs, stdin, stdout, isTTY, g, guardCfg)
 }
 
 // approveMCPToolsWithTTY is the testable core.
-func approveMCPToolsWithTTY(projectDir, serverName string, cfg mcpclient.ServerConfig, defs []mcpclient.ToolDef, stdin io.Reader, stdout io.Writer, tty bool) ([]mcpclient.ToolDef, error) {
+func approveMCPToolsWithTTY(projectDir, serverName string, cfg mcpclient.ServerConfig, defs []mcpclient.ToolDef, stdin io.Reader, stdout io.Writer, tty bool, g guard.Guard, guardCfg guard.Config) ([]mcpclient.ToolDef, error) {
 	if len(defs) == 0 {
 		return nil, nil
 	}
@@ -207,6 +209,24 @@ func approveMCPToolsWithTTY(projectDir, serverName string, cfg mcpclient.ServerC
 	var out []mcpclient.ToolDef
 
 	for _, def := range defs {
+		// Guard-scan every string in the input schema and cap its size. A
+		// tainted or oversized schema is rejected before it can enter the
+		// model's tool catalogue.
+		if err := scanMCPSchema(def.InputSchema, serverName, def.Name, g, guardCfg); err != nil {
+			fmt.Fprintf(os.Stderr, "odek: warning: %v; skipping tool %q\n", err, def.Name)
+			continue
+		}
+		schemaHash, schemaSize, err := mcpSchemaSummary(def.InputSchema)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "odek: warning: mcp server %q tool %q: schema serialization failed: %v; skipping\n", serverName, def.Name, err)
+			continue
+		}
+		if schemaSize > maxMCPSchemaBytes {
+			fmt.Fprintf(os.Stderr, "odek: warning: mcp server %q tool %q: schema too large (%d bytes, max %d); skipping\n",
+				serverName, def.Name, schemaSize, maxMCPSchemaBytes)
+			continue
+		}
+
 		key := mcpToolApprovalKey(projectDir, serverName, def.Name, cfg)
 		if approved[key] {
 			out = append(out, def)
@@ -225,6 +245,7 @@ func approveMCPToolsWithTTY(projectDir, serverName string, cfg mcpclient.ServerC
 		if def.Description != "" {
 			fmt.Fprintf(stdout, "  description: %s\n", truncateDescription(def.Description, 200))
 		}
+		fmt.Fprintf(stdout, "  schema: sha256:%s (%d bytes)\n", schemaHash, schemaSize)
 		fmt.Fprintf(stdout, "Approve? [y/N] ")
 
 		line, err := reader.ReadString('\n')
@@ -321,4 +342,57 @@ func truncateDescription(desc string, max int) string {
 		return desc[:max]
 	}
 	return desc[:max-3] + "..."
+}
+
+// maxMCPSchemaBytes caps the serialized JSON schema size for a single MCP tool.
+// Schemas are part of the model's tool catalogue, so an oversized schema can be
+// used for prompt stuffing. Real-world MCP schemas are typically small; 256 KiB
+// is generous while preventing abuse.
+const maxMCPSchemaBytes = 256 * 1024
+
+// mcpSchemaSummary returns the canonical JSON bytes for a schema and a short
+// SHA-256 hash for display in approval prompts.
+func mcpSchemaSummary(schema any) (hash string, size int, err error) {
+	data, err := json.Marshal(schema)
+	if err != nil {
+		return "", 0, err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])[:16], len(data), nil
+}
+
+// scanMCPSchema recursively walks an MCP inputSchema and guard-scans every
+// string value for injection patterns. It is intentionally strict: a single
+// tainted string causes the whole schema to be rejected, because a malicious
+// server can hide instructions in property descriptions, defaults, or enum
+// values.
+func scanMCPSchema(schema any, serverName, toolName string, g guard.Guard, cfg guard.Config) error {
+	return walkMCPSchema(schema, func(s string) error {
+		if err := guard.ScanContentWithScope(context.Background(), s, g, &cfg, "mcp_schema"); err != nil {
+			return fmt.Errorf("mcp server %q tool %q: schema guard scan failed: %w", serverName, toolName, err)
+		}
+		return nil
+	})
+}
+
+// walkMCPSchema recursively invokes fn on every string in a JSON-schema-like
+// value (maps, slices, and scalars).
+func walkMCPSchema(v any, fn func(string) error) error {
+	switch x := v.(type) {
+	case string:
+		return fn(x)
+	case map[string]any:
+		for _, val := range x {
+			if err := walkMCPSchema(val, fn); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for _, val := range x {
+			if err := walkMCPSchema(val, fn); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
