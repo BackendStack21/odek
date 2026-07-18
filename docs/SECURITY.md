@@ -139,6 +139,7 @@ Both:
 
 - Disable the "Trust class for session" shortcut for `destructive` and `blocked`. A forged or stale UI that sends `"trust"` for those classes is coerced to a single approve.
 - Engage **friction mode** after 3 approvals of the same class in 60 s: require typing the literal word `approve` (no single-letter / button shortcut) and impose a 1.5 s pause before accepting input. This breaks reflex click-through under sustained LLM-driven approval pressure.
+- In CLI mode, the `shell` and `parallel_shell` tools reuse a single `TTYApprover` instance per process, so the friction counter and trust cache persist across prompts. Previously each prompt created a fresh approver, disabling friction entirely.
 - Default to `non_interactive: deny` for sub-agents and any context without a TTY (configurable).
 
 ### 5. Memory taint tracking

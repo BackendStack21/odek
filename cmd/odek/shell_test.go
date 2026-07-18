@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/BackendStack21/odek/internal/danger"
 )
 
 func TestShellTool_Name(t *testing.T) {
@@ -387,4 +390,39 @@ func stringSlicesEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func TestShellTool_PromptUser_ReusesTTYApprover(t *testing.T) {
+	dir := t.TempDir()
+	ttyPath := filepath.Join(dir, "tty")
+	// Two approval lines; friction threshold is 3, so both non-friction
+	// prompts accept the single-letter "a" shortcut.
+	if err := os.WriteFile(ttyPath, []byte("a\na\n"), 0644); err != nil {
+		t.Fatalf("write tty input: %v", err)
+	}
+
+	st := &shellTool{
+		dangerousConfig: danger.DangerousConfig{
+			Classes: map[danger.RiskClass]danger.Action{
+				danger.NetworkEgress: danger.Prompt,
+			},
+		},
+		ttyPath: ttyPath,
+	}
+
+	cmd := "curl http://example.com"
+	if err := st.promptUser(cmd, "test"); err != nil {
+		t.Fatalf("first prompt failed: %v", err)
+	}
+	first := st.approver
+	if first == nil {
+		t.Fatal("first prompt did not create an approver")
+	}
+
+	if err := st.promptUser(cmd, "test"); err != nil {
+		t.Fatalf("second prompt failed: %v", err)
+	}
+	if st.approver != first {
+		t.Error("promptUser created a new TTYApprover instead of reusing the existing one")
+	}
 }

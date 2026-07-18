@@ -444,19 +444,22 @@ func (t *parallelShellTool) Call(argsJSON string) (result string, err error) {
 // parallel_shell cannot bypass interactive approval when no explicit approver
 // is injected.
 func (t *parallelShellTool) promptCommand(cls danger.RiskClass, cmd, description string) error {
+	// Reuse a single TTYApprover per tool instance so the friction counter
+	// and trust cache survive across multiple prompts.
+	t.trustedMu.Lock()
 	approver := t.approver
 	if approver == nil {
 		ttyApprover := danger.NewTTYApprover(&t.dangerousConfig)
-		t.trustedMu.Lock()
 		if t.trustedClasses != nil {
 			ttyApprover.SetTrustedClasses(t.trustedClasses)
 		}
-		t.trustedMu.Unlock()
 		if t.ttyPath != "" {
 			ttyApprover.TTYPath = t.ttyPath
 		}
+		t.approver = ttyApprover
 		approver = ttyApprover
 	}
+	t.trustedMu.Unlock()
 
 	err := approver.PromptCommand(cls, cmd, description)
 	if err == nil {

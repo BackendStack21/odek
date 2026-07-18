@@ -251,20 +251,22 @@ func (t *shellTool) checkApproval(cmd, description string) error {
 func (t *shellTool) promptUser(cmd, description string) error {
 	cls := danger.Classify(cmd)
 
-	// Get or create the approver
+	// Get or create the approver. Reuse a single TTYApprover per tool instance
+	// so the friction counter and trust cache survive across multiple prompts.
+	t.trustedMu.Lock()
 	approver := t.approver
 	if approver == nil {
 		ttyApprover := danger.NewTTYApprover(&t.dangerousConfig)
-		t.trustedMu.Lock()
 		if t.trustedClasses != nil {
 			ttyApprover.SetTrustedClasses(t.trustedClasses)
 		}
-		t.trustedMu.Unlock()
 		if t.ttyPath != "" {
 			ttyApprover.TTYPath = t.ttyPath
 		}
+		t.approver = ttyApprover
 		approver = ttyApprover
 	}
+	t.trustedMu.Unlock()
 
 	err := approver.PromptCommand(cls, cmd, description)
 	if err == nil {
