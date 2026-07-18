@@ -21,6 +21,11 @@ import (
 // user's message, or (b) were introduced by the untrusted content itself.
 // This is exactly the footprint of a successful prompt injection that
 // steered the agent toward an attacker-chosen resource.
+//
+// userText must be the original user prompt *before* @-reference,
+// --ctx, or attachment expansion. Passing the enriched text would make
+// attacker-injected resource literals count as "user-mentioned" and
+// neuter the divergence check.
 func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, userText string, newMsgs []llm.Message) {
 	if store == nil {
 		return
@@ -38,6 +43,20 @@ func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, user
 			toolCalls = append(toolCalls, tc.Function.Name)
 			actionText.WriteString(tc.Function.Arguments)
 			actionText.WriteByte(' ')
+		}
+		if m.Role == "user" && hasUntrustedWrapper(m.Content) {
+			// @-references, --ctx files, and Web-UI attachments are injected
+			// into the user message as wrapped untrusted content. The audit
+			// must treat them as ingested untrusted input so a later
+			// divergence heuristic can fire, and must consider the resources
+			// they introduce when looking for reused-resource injection.
+			ingestedUntrusted = true
+			bodies, srcs := extractUntrustedAll(m.Content)
+			for _, body := range bodies {
+				untrustedBodies.WriteString(body)
+				untrustedBodies.WriteByte(' ')
+			}
+			untrustedSources = append(untrustedSources, srcs...)
 		}
 		if m.Role == "tool" {
 			if hasUntrustedWrapper(m.Content) {
