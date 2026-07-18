@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -225,6 +226,32 @@ func TestWebSearch_SSRF_ResolvesInternal(t *testing.T) {
 
 // TestSSRFGuardedTransport_Installed is a guard against regressions that would
 // silently drop the SSRF protection from the production constructors.
+func TestSSRFGuardedTransport_RefusesProxy(t *testing.T) {
+	// Replace the default transport with one whose Proxy function always returns
+	// a proxy URL. This avoids depending on the test environment's proxy env
+	// vars and proves the guard refuses proxy-routed requests regardless of how
+	// the proxy was configured.
+	orig := http.DefaultTransport
+	http.DefaultTransport = &http.Transport{
+		Proxy: http.ProxyURL(&url.URL{Scheme: "http", Host: "proxy.example.com:8080"}),
+	}
+	defer func() { http.DefaultTransport = orig }()
+
+	tr := ssrfGuardedTransport()
+	client := &http.Client{Transport: tr}
+
+	resp, err := client.Get("http://example.com/")
+	if err == nil {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		t.Fatal("expected request to be refused when a proxy is configured")
+	}
+	if !strings.Contains(err.Error(), "refusing request through HTTP(S)_PROXY") {
+		t.Errorf("error %q should mention proxy refusal", err)
+	}
+}
+
 func TestSSRFGuardedTransport_Installed(t *testing.T) {
 	b := newBrowserTool(danger.DangerousConfig{})
 	if b.client.Transport == nil {
