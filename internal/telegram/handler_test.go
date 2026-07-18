@@ -1133,6 +1133,9 @@ func TestSendResponse_MediaPhoto(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	approver := NewTelegramApprover(bot, 123, 0)
+	approver.SetTrustAll(true)
+	h.SetApprover(123, approver)
 
 	h.SendResponse(123, "MEDIA:photo:"+tmpPath, 0)
 
@@ -1163,6 +1166,9 @@ func TestSendResponse_MediaVoice(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	approver := NewTelegramApprover(bot, 456, 0)
+	approver.SetTrustAll(true)
+	h.SetApprover(456, approver)
 
 	h.SendResponse(456, "MEDIA:voice:"+tmpPath, 0)
 
@@ -1185,6 +1191,9 @@ func TestSendResponse_MediaFileNotFound(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	approver := NewTelegramApprover(bot, 123, 0)
+	approver.SetTrustAll(true)
+	h.SetApprover(123, approver)
 
 	errCalled := false
 	h.OnError = func(_ int64, err error) {
@@ -1218,6 +1227,9 @@ func TestSendResponse_MediaUnknownType(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	approver := NewTelegramApprover(bot, 123, 0)
+	approver.SetTrustAll(true)
+	h.SetApprover(123, approver)
 
 	h.SendResponse(123, "MEDIA:video:"+tmpPath, 0)
 
@@ -1248,6 +1260,9 @@ func TestSendResponse_MediaDocument(t *testing.T) {
 	defer ts.Close()
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
+	approver := NewTelegramApprover(bot, 456, 0)
+	approver.SetTrustAll(true)
+	h.SetApprover(456, approver)
 
 	h.SendResponse(456, "MEDIA:document:"+tmpPath, 0)
 

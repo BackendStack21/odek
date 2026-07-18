@@ -620,6 +620,11 @@ func TestE2E_MediaFlow(t *testing.T) {
 	handler := NewHandler(bot)
 	handler.Config.AllowAllUsers = true // routing test
 
+	// Auto-approve outbound media so the test verifies the upload path.
+	approver := NewTelegramApprover(bot, 777, 0)
+	approver.SetTrustAll(true)
+	handler.SetApprover(777, approver)
+
 	// OnTextMessage returns a MEDIA:photo response.
 	handler.OnTextMessage = func(chatID int64, messageID int, text string, _ bool, _ int64) (string, error) {
 		return "MEDIA:photo:" + tmpPath, nil
@@ -721,6 +726,11 @@ func TestE2E_VoiceMediaFlow(t *testing.T) {
 	poller.Timeout = 0
 	handler := NewHandler(bot)
 	handler.Config.AllowAllUsers = true // routing test
+
+	// Auto-approve outbound media so the test verifies the upload path.
+	approver := NewTelegramApprover(bot, 888, 0)
+	approver.SetTrustAll(true)
+	handler.SetApprover(888, approver)
 
 	handler.OnTextMessage = func(chatID int64, messageID int, text string, _ bool, _ int64) (string, error) {
 		return "MEDIA:voice:" + tmpPath, nil

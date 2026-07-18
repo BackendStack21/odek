@@ -40,6 +40,26 @@ func setupMediaPathTest(t *testing.T) (outsideDir string) {
 	return outsideDir
 }
 
+// makeTestHome creates a temporary directory that is treated as $HOME for the
+// duration of the test. It is placed under the real user home directory so it
+// is not classified as a system temp directory by danger.ClassifyPath, which
+// would otherwise mask secret-subtree checks.
+func makeTestHome(t *testing.T) string {
+	t.Helper()
+	realHome, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+	home, err := os.MkdirTemp(realHome, "odek_test_home_*")
+	if err != nil {
+		t.Fatalf("mkdir test home: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	return home
+}
+
 // TestResolveMediaPath_AllowedDirs verifies that files inside the allowed
 // directories (cwd, ~/.odek/media, temp dir) are accepted.
 func TestResolveMediaPath_AllowedDirs(t *testing.T) {
@@ -314,4 +334,121 @@ func TestResolveMediaPath_RejectsSymlinkToAllowedFile(t *testing.T) {
 	if !strings.Contains(err.Error(), "symlinks are not allowed") {
 		t.Errorf("expected 'symlinks are not allowed' in error, got: %v", err)
 	}
+}
+
+// TestResolveMediaPath_RejectsSensitiveSubtrees verifies that secret subtrees
+// under $HOME are rejected even when CWD == $HOME makes them technically
+// inside the allowlist.
+func TestResolveMediaPath_RejectsSensitiveSubtrees(t *testing.T) {
+	home := makeTestHome(t)
+	t.Chdir(home)
+
+	cases := []string{".ssh/id_rsa", ".aws/credentials", ".gnupg/secring.gpg"}
+	for _, sub := range cases {
+		t.Run(sub, func(t *testing.T) {
+			f := filepath.Join(home, sub)
+			if err := os.MkdirAll(filepath.Dir(f), 0700); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			if err := os.WriteFile(f, []byte("secret"), 0600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			_, err := ResolveMediaPath(f)
+			if err == nil {
+				t.Fatalf("expected rejection for sensitive path %s", f)
+			}
+			if !strings.Contains(err.Error(), "rejected sensitive path") {
+				t.Errorf("expected 'rejected sensitive path' in error, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestResolveMediaPath_RejectsEnvFiles verifies that .env* files are rejected
+// even when they live inside an otherwise allowed project directory.
+func TestResolveMediaPath_RejectsEnvFiles(t *testing.T) {
+	home := makeTestHome(t)
+	t.Chdir(home)
+
+	project := filepath.Join(home, "project")
+	if err := os.MkdirAll(project, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	f := filepath.Join(project, ".env.local")
+	if err := os.WriteFile(f, []byte("SECRET=1"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, err := ResolveMediaPath(f)
+	if err == nil {
+		t.Fatal("expected rejection for .env file")
+	}
+	if !strings.Contains(err.Error(), "rejected .env file") {
+		t.Errorf("expected 'rejected .env file' in error, got: %v", err)
+	}
+}
+
+// TestResolveMediaPath_RejectsOdekTrustAnchors verifies that ~/.odek trust
+// anchors are rejected while ~/.odek/media remains allowed for re-upload.
+func TestResolveMediaPath_RejectsOdekTrustAnchors(t *testing.T) {
+	home := makeTestHome(t)
+	t.Chdir(home)
+
+	// Trust anchor must be rejected.
+	cfg := filepath.Join(home, ".odek", "config.json")
+	if err := os.MkdirAll(filepath.Dir(cfg), 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(cfg, []byte("{}"), 0600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := ResolveMediaPath(cfg); err == nil {
+		t.Fatal("expected rejection for ~/.odek/config.json")
+	} else if !strings.Contains(err.Error(), "rejected sensitive path") {
+		t.Errorf("expected 'rejected sensitive path' in error, got: %v", err)
+	}
+
+	// Media dir must remain allowed.
+	mediaDir, err := MediaDir()
+	if err != nil {
+		t.Fatalf("MediaDir: %v", err)
+	}
+	mf := filepath.Join(mediaDir, "allowed-media.txt")
+	if err := os.WriteFile(mf, []byte("x"), 0644); err != nil {
+		t.Fatalf("write media file: %v", err)
+	}
+	if _, err := ResolveMediaPath(mf); err != nil {
+		t.Fatalf("media dir file should be allowed: %v", err)
+	}
+}
+
+// TestBroadBaseWarning verifies that a warning is produced when the bot is
+// launched from $HOME or /.
+func TestBroadBaseWarning(t *testing.T) {
+	home := makeTestHome(t)
+
+	t.Run("home cwd warns", func(t *testing.T) {
+		t.Chdir(home)
+		if w := BroadBaseWarning(); w == "" {
+			t.Error("expected warning when cwd == $HOME")
+		}
+	})
+
+	t.Run("root cwd warns", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("root cwd test is Unix-specific")
+		}
+		t.Chdir("/")
+		if w := BroadBaseWarning(); w == "" {
+			t.Error("expected warning when cwd == /")
+		}
+	})
+
+	t.Run("normal cwd is silent", func(t *testing.T) {
+		sub := t.TempDir()
+		t.Chdir(sub)
+		if w := BroadBaseWarning(); w != "" {
+			t.Errorf("expected no warning, got %q", w)
+		}
+	})
 }

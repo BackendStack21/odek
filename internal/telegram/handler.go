@@ -473,6 +473,26 @@ func (h *Handler) sendMedia(chatID int64, text string, replyToMessageID int) {
 	mediaType := parts[0]
 	filePath := parts[1]
 
+	// Outbound media can exfiltrate arbitrary files, so it requires an
+	// explicit user approval before the path is resolved or uploaded. The
+	// Telegram bot registers a per-chat approver in production; without one
+	// we fail closed.
+	a := h.GetApprover(chatID)
+	if a == nil {
+		h.log.Error("media upload rejected: no approver configured", "chat_id", chatID, "path", filePath)
+		if h.OnError != nil {
+			h.OnError(chatID, fmt.Errorf("telegram: media upload rejected: no approver configured"))
+		}
+		return
+	}
+	if err := a.PromptMedia(filePath); err != nil {
+		h.log.Error("media upload denied", "chat_id", chatID, "path", filePath, "error", err)
+		if h.OnError != nil {
+			h.OnError(chatID, fmt.Errorf("telegram: media upload denied: %s: %w", filePath, err))
+		}
+		return
+	}
+
 	// Validate and resolve the media path against the allowlist.
 	resolved, err := ResolveMediaPath(filePath)
 	if err != nil {

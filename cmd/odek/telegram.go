@@ -1512,6 +1512,11 @@ func handleChatMessage(
 			safeText := telegram.EscapeMarkdown(text)
 
 			if file != "" {
+				// Outbound media can exfiltrate arbitrary files; require explicit
+				// user approval before resolving or uploading the path.
+				if err := approver.PromptMedia(file); err != nil {
+					return fmt.Errorf("send_message: media upload denied: %w", err)
+				}
 				// Detect media type from extension.
 				mediaType := mediaTypeFromExt(file)
 				return sendTelegramMedia(bot, chatID, mediaType, file, safeText, buttons)
