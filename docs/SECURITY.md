@@ -239,9 +239,11 @@ On Windows, where you cannot `unlink` an open file, a 0600 temp file is used and
 
 - injected into the served `index.html` as `<meta name="odek-ws-token" content="...">`,
 - delivered as an `HttpOnly` `SameSite=Strict` cookie named `odek_ws_token`, and
-- required by the `/ws` handshake via the cookie, an `X-Odek-Ws-Token` header, or a WebSocket subprotocol of the form `odek.<token>`.
+- required by the `/ws` handshake and by every `/api/*` endpoint via the cookie, an `X-Odek-Ws-Token` header, or a WebSocket subprotocol of the form `odek.<token>`.
 
-The origin allowlist (`localhost`, `127.0.0.1`, `[::1]`, and empty Origin for non-browser clients) remains as defense-in-depth, but the token is the primary protection against cross-port localhost CSRF: a malicious page served by another local port cannot obtain the token and therefore cannot open an agent-controlling WebSocket.
+The origin allowlist (`localhost`, `127.0.0.1`, `[::1]`, and empty Origin for non-browser clients) remains as defense-in-depth, but the token is the primary protection against cross-port localhost CSRF: a malicious page served by another local port cannot obtain the token and therefore cannot open an agent-controlling WebSocket or read from `/api/sessions`, `/api/resources`, `/api/models`, etc.
+
+On top of the token, all `/api/*` handlers validate the `Host` header and reject any request whose host is not `localhost`, `127.0.0.1`, or `[::1]`. This closes DNS-rebinding attacks that point an external domain at the loopback interface and then drive the local API from a malicious web page.
 
 ### 9a. Web UI file attachments
 

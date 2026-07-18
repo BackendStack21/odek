@@ -694,8 +694,14 @@ func TestServe_E2E_SessionMessagesStoredWithoutSystemInjections(t *testing.T) {
 	}
 
 	// Fetch the stored session and verify no system messages are stored.
+	// The production API auth middleware requires the per-instance serve token.
+	testTokenMu.Lock()
+	serveToken := testLastToken
+	testTokenMu.Unlock()
+
 	req, _ := http.NewRequest(http.MethodGet, "http://"+ln.Addr().String()+"/api/sessions/"+sid, nil)
 	req.Header.Set("X-Session-Token", authToken)
+	req.Header.Set(wsTokenHeaderName, serveToken)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET session: %v", err)
@@ -728,7 +734,14 @@ func TestServe_E2E_SessionMessagesStoredWithoutSystemInjections(t *testing.T) {
 func buildServeMuxWithSessionByID(t *testing.T, store *session.Store) (net.Listener, *http.ServeMux) {
 	t.Helper()
 	ln, mux := buildServeMux(t, store)
-	mux.HandleFunc("/api/sessions/", handleSessionByID(store))
+	// Mirror production authentication stack for session-by-ID endpoint.
+	testTokenMu.Lock()
+	token := testLastToken
+	testTokenMu.Unlock()
+	apiAuth := func(h http.Handler) http.Handler {
+		return requireServeToken(token)(requireLocalHost(requireLocalOrigin(h)))
+	}
+	mux.Handle("/api/sessions/", apiAuth(handleSessionByID(store)))
 	return ln, mux
 }
 

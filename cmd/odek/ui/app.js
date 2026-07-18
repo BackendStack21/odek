@@ -208,6 +208,17 @@ function getWsToken() {
   return meta ? meta.getAttribute('content') : '';
 }
 
+// Build API request headers that include the per-instance CSRF token. The
+// server requires this token on every /api/* endpoint to block DNS-rebinding
+// and cross-site driven reads. Browser same-origin requests also send the
+// cookie, but the header defends-in-depth and works when cookies are blocked.
+function apiHeaders(extra) {
+  const token = getWsToken();
+  const headers = token ? { 'X-Odek-Ws-Token': token } : {};
+  if (extra) Object.assign(headers, extra);
+  return headers;
+}
+
 function connect() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const token = getWsToken();
@@ -954,7 +965,9 @@ window.executeDeleteSession = async function() {
   let token = getSessionToken(sid);
   if (!token) {
     try {
-      const bootstrap = await fetch('/api/sessions/' + encodeURIComponent(sid));
+      const bootstrap = await fetch('/api/sessions/' + encodeURIComponent(sid), {
+        headers: apiHeaders()
+      });
       if (bootstrap.ok) {
         const bs = await bootstrap.json();
         token = bootstrap.headers.get('X-Session-Token') || bs.auth_token;
@@ -965,7 +978,7 @@ window.executeDeleteSession = async function() {
 
   fetch('/api/sessions/' + encodeURIComponent(sid), {
     method: 'DELETE',
-    headers: token ? { 'X-Session-Token': token } : {}
+    headers: apiHeaders(token ? { 'X-Session-Token': token } : {})
   })
     .then(() => {
       clearSessionToken(sid);
@@ -995,7 +1008,7 @@ async function fetchModels() {
   const picker = document.getElementById('model-picker');
   try {
     picker.disabled = true;
-    const resp = await fetch('/api/models');
+    const resp = await fetch('/api/models', { headers: apiHeaders() });
     if (!resp.ok) { picker.innerHTML = '<option value="">Models unavailable</option>'; return; }
     const models = await resp.json();
     availableModels = models;
@@ -1098,7 +1111,9 @@ window.renameSession = async function(sid, el) {
   let token = getSessionToken(sid);
   if (!token) {
     try {
-      const bootstrap = await fetch('/api/sessions/' + encodeURIComponent(sid));
+      const bootstrap = await fetch('/api/sessions/' + encodeURIComponent(sid), {
+        headers: apiHeaders()
+      });
       if (bootstrap.ok) {
         const bs = await bootstrap.json();
         token = bootstrap.headers.get('X-Session-Token') || bs.auth_token;
@@ -1109,10 +1124,10 @@ window.renameSession = async function(sid, el) {
 
   fetch('/api/sessions/' + encodeURIComponent(sid), {
     method: 'POST',
-    headers: {
+    headers: apiHeaders({
       'Content-Type': 'application/json',
       ...(token ? { 'X-Session-Token': token } : {})
-    },
+    }),
     body: JSON.stringify({ name: newName })
   })
     .then(resp => {
@@ -1630,7 +1645,9 @@ async function checkCompletion() {
   compQuery = query;
 
   try {
-    const resp = await fetch('/api/resources?q=' + encodeURIComponent(query) + '&limit=8');
+    const resp = await fetch('/api/resources?q=' + encodeURIComponent(query) + '&limit=8', {
+      headers: apiHeaders()
+    });
     const results = await resp.json();
     if (!results || results.length === 0) {
       completionEl.classList.remove('visible');
@@ -1714,8 +1731,9 @@ sessionListEl.addEventListener('click', (e) => {
 async function loadAndRenderSession(sid) {
   try {
     let token = getSessionToken(sid);
-    const headers = token ? { 'X-Session-Token': token } : {};
-    const resp = await fetch('/api/sessions/' + encodeURIComponent(sid), { headers });
+    const resp = await fetch('/api/sessions/' + encodeURIComponent(sid), {
+      headers: apiHeaders(token ? { 'X-Session-Token': token } : {})
+    });
     if (!resp.ok) { showToast('Failed to load session'); return; }
     const sess = await resp.json();
 
@@ -1801,7 +1819,7 @@ sidebarSearch.addEventListener('input', () => {
 
 async function loadSessions() {
   try {
-    const resp = await fetch('/api/sessions');
+    const resp = await fetch('/api/sessions', { headers: apiHeaders() });
     const sessions = await resp.json();
     if (!sessions || !Array.isArray(sessions)) return;
     allSessions = sessions;
@@ -1893,7 +1911,7 @@ window.cancelAgent = function() {
   }
   fetch('/api/cancel?session_id=' + encodeURIComponent(sessionId), {
     method: 'POST',
-    headers: { 'X-Session-Token': getSessionToken(sessionId) || '' }
+    headers: apiHeaders({ 'X-Session-Token': getSessionToken(sessionId) || '' })
   }).catch(function(){});
   hideCancel();
   addSystemMessage('⏹ Canceled');

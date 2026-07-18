@@ -311,11 +311,17 @@ func serveCmd(args []string) error {
 			handleWS(store, resourceReg, resolved, systemMessage, conn)
 		},
 	})
-	mux.Handle("/api/resources", requireLocalOrigin(handleResourceSearch(resourceReg)))
-	mux.Handle("/api/sessions", requireLocalOrigin(handleSessionList(store)))
-	mux.Handle("/api/sessions/", requireLocalOrigin(handleSessionByID(store)))
-	mux.Handle("/api/models", requireLocalOrigin(handleModelList(resolved.Model)))
-	mux.Handle("/api/cancel", requireLocalOrigin(handleCancel(store)))
+	// All API endpoints require the per-instance CSRF token, a loopback Host,
+	// and (for state-changing methods) a local Origin. This blocks DNS-rebinding
+	// and cross-site reads of sessions/resources/models.
+	apiAuth := func(h http.Handler) http.Handler {
+		return requireServeToken(wsToken)(requireLocalHost(requireLocalOrigin(h)))
+	}
+	mux.Handle("/api/resources", apiAuth(handleResourceSearch(resourceReg)))
+	mux.Handle("/api/sessions", apiAuth(handleSessionList(store)))
+	mux.Handle("/api/sessions/", apiAuth(handleSessionByID(store)))
+	mux.Handle("/api/models", apiAuth(handleModelList(resolved.Model)))
+	mux.Handle("/api/cancel", apiAuth(handleCancel(store)))
 
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -1353,6 +1359,63 @@ func isStateChangingMethod(method string) bool {
 		return false
 	}
 	return true
+}
+
+// requireLocalHost rejects requests whose Host header does not name a
+// loopback interface. This closes DNS-rebinding attacks that point an external
+// domain at 127.0.0.1 and then drive the local API from a malicious web page.
+func requireLocalHost(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		if host != "localhost" && host != "127.0.0.1" && host != "::1" {
+			http.Error(w, "Host not allowed", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// validateServeTokenHTTP verifies the per-instance CSRF token on an HTTP
+// request. It accepts the same cookie and header transports as the WebSocket
+// handshake, but not the WebSocket subprotocol.
+func validateServeTokenHTTP(req *http.Request, token string) error {
+	if token == "" {
+		return fmt.Errorf("server token not configured")
+	}
+
+	// Cookie (browser same-origin / same-site requests).
+	if c, err := req.Cookie(wsTokenCookieName); err == nil && c.Value != "" {
+		if subtle.ConstantTimeCompare([]byte(c.Value), []byte(token)) == 1 {
+			return nil
+		}
+	}
+
+	// Explicit header (non-browser clients).
+	if h := req.Header.Get(wsTokenHeaderName); h != "" {
+		if subtle.ConstantTimeCompare([]byte(h), []byte(token)) == 1 {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("missing or invalid server token")
+}
+
+// requireServeToken requires the per-instance CSRF token on every request.
+// This blocks DNS-rebinding and cross-site driven reads of API endpoints that
+// were previously unauthenticated on GET.
+func requireServeToken(token string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if err := validateServeTokenHTTP(r, token); err != nil {
+				http.Error(w, "Forbidden", http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // sessionTokenFromRequest returns the session auth token from the
