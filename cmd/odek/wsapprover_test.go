@@ -76,6 +76,49 @@ func TestWSApprover_HandleResponse_NonMatching(t *testing.T) {
 	}
 }
 
+// TestWSApprover_HandleResponse_DoesNotBlock verifies that a duplicate or
+// late approval response is dropped instead of blocking the WebSocket read
+// goroutine. This is a regression test for the L3 relay race: previously the
+// second response could wedge on a buffer-1 channel and exhaust the connection
+// semaphore.
+func TestWSApprover_HandleResponse_DoesNotBlock(t *testing.T) {
+	a := newWSApprover(func(v any) error { return nil })
+	id := "test-id-block"
+
+	a.mu.Lock()
+	a.pending[id] = make(chan string, 1)
+	a.mu.Unlock()
+
+	// First response fills the buffer-1 channel.
+	if !a.HandleResponse(id, "approve") {
+		t.Fatal("first HandleResponse should match")
+	}
+
+	// Second response must return promptly even though the channel is full.
+	done := make(chan struct{})
+	go func() {
+		a.HandleResponse(id, "approve")
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// expected
+	case <-time.After(2 * time.Second):
+		t.Fatal("second HandleResponse blocked on a full response channel")
+	}
+
+	// Only one value should have been delivered.
+	select {
+	case action := <-a.pending[id]:
+		if action != "approve" {
+			t.Errorf("expected 'approve', got %q", action)
+		}
+	default:
+		t.Fatal("expected exactly one buffered response")
+	}
+}
+
 func TestWSApprover_PromptCommand_TrustedClass(t *testing.T) {
 	callCount := 0
 	a := newWSApprover(func(v any) error {

@@ -145,6 +145,7 @@ Layered prompt-injection / approval-fatigue defenses. Full reference: [docs/SECU
 - **write_file content cap** (`cmd/odek/file_tool.go`) — the `content` argument is capped at 1 MiB to prevent disk exhaustion and memory pressure from a single enormous tool call.
 - **file_info confinement + wrapping** (`cmd/odek/file_tool.go`) — `file_info` respects the same `restrictToCWD` path confinement as `write_file`/`patch`, and the returned path is wrapped as untrusted content.
 - **WebSocket message-size cap** (`cmd/odek/serve.go`) — `odek serve` sets `MaxPayloadBytes` on every WebSocket connection so a local client cannot OOM the server with a huge frame.
+- **WebSocket approval relay non-blocking** (`cmd/odek/wsapprover.go`) — `HandleResponse` uses a non-blocking send on the pending response channel, so duplicate or late approval responses are dropped instead of blocking the WebSocket read goroutine and exhausting the global connection semaphore.
 - **Session file size cap** (`internal/session/session.go`) — session files larger than 32 MiB are rejected by `Load()` to prevent OOM from tampered or corrupted transcripts.
 - **Skill file size cap** (`internal/skills/loader.go`) — `SKILL.md` files larger than 1 MiB are skipped so a malicious project cannot OOM the process at startup or bloat the system prompt.
 - **Serve sandbox default-on** — `odek serve` enables `--sandbox` automatically unless `--no-sandbox` is passed.

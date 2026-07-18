@@ -201,12 +201,20 @@ func (a *wsApprover) PromptOperation(op danger.ToolOperation) error {
 // HandleResponse processes a response from the browser.
 // Called by the WebSocket read loop when an approval_response arrives.
 // Returns true if the response matched a pending request.
+//
+// The send to the response channel is non-blocking: the channel has capacity
+// 1, so if a duplicate or late response races with the first one, or if the
+// request has already timed out and the reader is gone, the send drops the
+// response instead of wedging the WebSocket read goroutine.
 func (a *wsApprover) HandleResponse(id, action string) bool {
 	a.mu.Lock()
 	resp, ok := a.pending[id]
 	a.mu.Unlock()
 	if ok {
-		resp <- action
+		select {
+		case resp <- action:
+		default:
+		}
 	}
 	return ok
 }
