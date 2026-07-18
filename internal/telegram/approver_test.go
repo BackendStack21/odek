@@ -48,7 +48,7 @@ func TestHandleCallback_Approve(t *testing.T) {
 	a.pending[id] = pr
 
 	// Handle an approve callback.
-	handled := a.HandleCallback(cbPrefixApprove + id, 0)
+	handled := a.HandleCallback(cbPrefixApprove+id, 0)
 	if !handled {
 		t.Fatal("HandleCallback should return true for approval callback")
 	}
@@ -71,7 +71,7 @@ func TestHandleCallback_Deny(t *testing.T) {
 	pr := &pendingRequest{resp: make(chan string, 1)}
 	a.pending[id] = pr
 
-	handled := a.HandleCallback(cbPrefixDeny + id, 0)
+	handled := a.HandleCallback(cbPrefixDeny+id, 0)
 	if !handled {
 		t.Fatal("HandleCallback should return true for deny callback")
 	}
@@ -93,7 +93,7 @@ func TestHandleCallback_Trust(t *testing.T) {
 	pr := &pendingRequest{resp: make(chan string, 1)}
 	a.pending[id] = pr
 
-	handled := a.HandleCallback(cbPrefixTrust + id, 0)
+	handled := a.HandleCallback(cbPrefixTrust+id, 0)
 	if !handled {
 		t.Fatal("HandleCallback should return true for trust callback")
 	}
@@ -127,7 +127,7 @@ func TestHandleCallback_UnknownID(t *testing.T) {
 
 	// Valid prefix but unknown ID — should return true (recognition)
 	// but not panic (no channel to send to).
-	handled := a.HandleCallback(cbPrefixApprove + "nonexistent", 0)
+	handled := a.HandleCallback(cbPrefixApprove+"nonexistent", 0)
 	if !handled {
 		t.Fatal("HandleCallback should return true for known prefix even with unknown ID")
 	}
@@ -368,7 +368,7 @@ func TestPromptCommand_SendsFullCommand(t *testing.T) {
 	if id == "" {
 		t.Fatal("no pending request registered")
 	}
-	a.HandleCallback(cbPrefixDeny + id, 0)
+	a.HandleCallback(cbPrefixDeny+id, 0)
 	<-done
 
 	var sent string
@@ -486,7 +486,7 @@ func TestPromptCommand_Deny(t *testing.T) {
 	if pendingID == "" {
 		t.Fatal("expected a pending request ID")
 	}
-	a.HandleCallback(cbPrefixDeny + pendingID, 0)
+	a.HandleCallback(cbPrefixDeny+pendingID, 0)
 
 	select {
 	case err := <-done:
@@ -526,4 +526,93 @@ func TestPromptCommand_Timeout(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("PromptCommand did not return after cancel within 3s")
 	}
+}
+
+// ── Trust-class guard (M-1) ────────────────────────────────────────────────
+
+func TestTelegramApprover_TrustDisabledForHighImpactClasses(t *testing.T) {
+	rec := new(requestRecorder)
+	ts := testServer(t, rec)
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	a := NewTelegramApprover(bot, 1, 0)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- a.PromptCommand(danger.Destructive, "rm -rf /", "")
+	}()
+
+	// Wait for the prompt request to be sent.
+	var body string
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rec.mu.Lock()
+		if len(rec.requests) > 0 {
+			body = rec.requests[len(rec.requests)-1].Body
+		}
+		rec.mu.Unlock()
+		if body != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if body == "" {
+		t.Fatal("prompt request was not sent")
+	}
+	if strings.Contains(body, "Trust Session") {
+		t.Errorf("destructive prompt should not offer Trust Session: %q", body)
+	}
+
+	// Extract the callback ID and send an approve so PromptCommand returns.
+	id := extractCallbackID(body, cbPrefixApprove)
+	if id == "" {
+		t.Fatal("could not extract approve callback id")
+	}
+	a.HandleCallback(cbPrefixApprove+id, 0)
+	if err := <-done; err != nil {
+		t.Fatalf("approve should succeed: %v", err)
+	}
+}
+
+func TestTelegramApprover_TrustDeniedForToolBatch(t *testing.T) {
+	ts := testServer(t, nil)
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	a := NewTelegramApprover(bot, 1, 0)
+	id := a.newID()
+	pr := &pendingRequest{resp: make(chan string, 1), class: "tool_batch", allowTrust: false}
+	a.pending[id] = pr
+
+	handled := a.HandleCallback(cbPrefixTrust+id, 0)
+	if !handled {
+		t.Fatal("HandleCallback should return true for trust callback")
+	}
+
+	action := <-pr.resp
+	if action != "trust" {
+		t.Fatalf("expected trust action in channel, got %q", action)
+	}
+
+	// Simulate the post-receive handling: a trust action for tool_batch must
+	// be treated as a denial because class-trusting the synthetic batch class
+	// would blanket-approve hidden tools.
+	if allowTrustForClass(pr.class) {
+		t.Error("allowTrustForClass(tool_batch) should be false")
+	}
+}
+
+// extractCallbackID pulls the callback payload suffix for the given prefix
+// from a Telegram sendMessage request body.
+func extractCallbackID(body, prefix string) string {
+	idx := strings.Index(body, prefix)
+	if idx < 0 {
+		return ""
+	}
+	rest := body[idx+len(prefix):]
+	if end := strings.IndexAny(rest, `"'\`); end >= 0 {
+		return rest[:end]
+	}
+	return rest
 }
