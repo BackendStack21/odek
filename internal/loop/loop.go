@@ -1412,6 +1412,14 @@ func classifyToolCall(name, args string) (danger.RiskClass, string) {
 	case "http_batch":
 		return danger.NetworkEgress, args
 	default:
+		// MCP tools are registered with names of the form <server>__<tool>.
+		// They bypass the built-in danger classifier because the server, not
+		// odek, implements the Call() method. Treat them as Unknown so the
+		// batch gate shows them instead of auto-allowing, and so untrusted
+		// sub-agents force Deny for them.
+		if strings.Contains(name, "__") {
+			return danger.Unknown, name
+		}
 		// For unrecognized tools, return empty — they are handled by
 		// the tool's own Call() method individually. The batch gate
 		// will skip them (no pre-classification available).

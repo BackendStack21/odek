@@ -1851,6 +1851,16 @@ func TestClassifyToolCall_UnknownTool(t *testing.T) {
 	}
 }
 
+func TestClassifyToolCall_MCPTool(t *testing.T) {
+	risk, resource := classifyToolCall("myserver__run_command", `{}`)
+	if risk != danger.Unknown {
+		t.Errorf("MCP tool risk = %q, want unknown", risk)
+	}
+	if resource != "myserver__run_command" {
+		t.Errorf("MCP tool resource = %q, want tool name", resource)
+	}
+}
+
 // ── Skills + Episode dedup regression tests ─────────────────────────
 //
 // TestEngine_SkillsAndEpisodesBothLoad verifies that when both skillLoader
