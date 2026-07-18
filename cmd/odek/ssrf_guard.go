@@ -87,7 +87,9 @@ func ssrfGuardedDial(base dialFunc, lookup ipLookupFunc, allowedHosts ...string)
 		if !hostAllowed {
 			for _, ipa := range ips {
 				if danger.IsBlockedIP(ipa.IP) {
-					return nil, fmt.Errorf("blocked connection to %q: resolves to internal address %s (possible SSRF / DNS rebinding)", host, ipa.IP)
+					// Do not include the resolved IP in the error: it would leak an
+					// internal DNS oracle to the model/audit log.
+					return nil, fmt.Errorf("blocked connection to %q: resolves to an internal address (possible SSRF / DNS rebinding)", host)
 				}
 			}
 		}

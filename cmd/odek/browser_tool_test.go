@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -450,6 +451,41 @@ func TestBrowser_ExtractsInteractiveElements(t *testing.T) {
 	if !strings.Contains(r.Content, "e1") {
 		t.Errorf("snapshot should contain ref IDs, got: %q", r.Content)
 	}
+}
+
+// TestBrowser_Navigate_ErrorWrapped verifies that network/TLS errors from the
+// HTTP client are wrapped as untrusted content so attacker-controlled text
+// (e.g. x509 SANs) cannot reach the model outside the untrusted boundary.
+func TestBrowser_Navigate_ErrorWrapped(t *testing.T) {
+	allow := "allow"
+	b := &browserTool{
+		state:           &browserState{nextRef: 1},
+		dangerousConfig: danger.DangerousConfig{NonInteractive: &allow},
+	}
+	b.client = &http.Client{
+		Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			return nil, fmt.Errorf("x509: certificate is valid for attacker-controlled.example.com, not example.com")
+		}),
+	}
+
+	result := callJSON(t, b, `{"action":"navigate","url":"https://example.com/"}`)
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" {
+		t.Fatal("expected error")
+	}
+	if !strings.HasPrefix(r.Error, "<untrusted_content_") {
+		t.Errorf("browser error should be wrapped as untrusted, got: %q", r.Error)
+	}
+}
+
+// roundTripperFunc adapts a function to http.RoundTripper.
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 // ── URL Resolution Tests ───────────────────────────────────────────────

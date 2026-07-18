@@ -705,7 +705,9 @@ func (t *httpBatchTool) fetchOne(r httpBatchReq) httpBatchEntry {
 
 	resp, err := t.client.Do(httpReq)
 	if err != nil {
-		entry.Error = err.Error()
+		// Wrap network/TLS errors as untrusted so attacker-controlled text in
+		// x509 / dial errors cannot reach the model outside the untrusted boundary.
+		entry.Error = wrapUntrusted(t.toolCtx(), r.URL, err.Error())
 		return entry
 	}
 	defer resp.Body.Close()
