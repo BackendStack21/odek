@@ -246,7 +246,7 @@ Files attached through the Web UI are sourced from the browser trust boundary. T
 
 ### 10. Secret redaction
 
-`internal/redact` scans every tool output and session/memory write for known secret formats and replaces matches with `[REDACTED]` before they reach Telegram replies, persistent sessions, or memory. Patterns include OpenAI `sk-`, Anthropic `sk-ant-`, GitHub PATs (classic + fine-grained), AWS access keys, multi-line PEM private keys, JWT, generic `api_key=` / `password=` env lines, Slack `xoxb-`, Stripe `sk_live_`, Google API keys, Twilio `SK`, HashiCorp Vault `hvs.` / `hvb.`, Google OAuth `ya29.` / `1//0`, SendGrid `SG.`, Discord bot tokens (M/N/O-anchored), and DB URLs with embedded credentials (`postgresql://`, `mongodb://`, etc.).
+`internal/redact` scans every tool output and session/memory write for known secret formats and replaces matches with `[REDACTED]` before they reach Telegram replies, persistent sessions, or memory. Patterns include OpenAI `sk-` (and underscore-bearing bodies such as Anthropic `sk-ant-...`), Groq `gsk_`, xAI `xai-`, HuggingFace `hf_`, GitHub PATs (classic + fine-grained), AWS access keys, multi-line PEM private keys, JWT, generic `api_key=` / `password=` env lines, Slack `xoxb-`, Stripe `sk_live_`, Google API keys, Twilio `SK`, HashiCorp Vault `hvs.` / `hvb.`, Google OAuth `ya29.` / `1//0`, SendGrid `SG.`, Discord bot tokens (M/N/O-anchored), and DB URLs with embedded credentials (`postgresql://`, `mongodb://`, etc.).
 
 If you find a format that leaks, add a regex to `internal/redact/redact.go:31-100` and a row to `TestReport_RedactMissesRealSecretFormats` in `cmd/odek/security_report_validation_test.go`.
 

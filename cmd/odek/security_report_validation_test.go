@@ -181,6 +181,10 @@ func TestReport_RedactMissesRealSecretFormats(t *testing.T) {
 		{"db_url_mongo", "mongodb+srv://root:VeryLongMongoPassword1234@cluster.mongodb.net/db", "Mongo URL with embedded password"},
 		{"discord_bot", "N01234567890123456789012345.aBcDe.6789abcdef0123456789abcdef012345678", "Discord bot token (synthetic test value)"},
 		{"sendgrid", "SG.dQw4w9WgXcQ-AbCdEfGh.JkLmNoPqRsTuVwXyZ0123456789abcdefghij", "SendGrid API key"},
+		{"groq", "gsk_abcdefghijklmnopqrstuvwxyz1234567890", "Groq API key (gsk_ prefix)"},
+		{"xai", "xai-abcdefghijklmnopqrstuvwxyz1234567890_0123456789", "xAI API key (xai- prefix)"},
+		{"huggingface", "hf_abcdefghijklmnopqrstuvwxyz1234567890", "HuggingFace token (hf_ prefix)"},
+		{"anthropic_underscore", "sk-ant-api03-abcdefghijklmnopqrstuvwxyz_1234567890", "Anthropic key with underscore in body"},
 	}
 
 	for _, tc := range cases {

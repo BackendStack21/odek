@@ -22,12 +22,33 @@ func TestRedactSecrets_OpenAIKey(t *testing.T) {
 	tests := []string{
 		"sk-proj-abcdefghijklmnopqrstuvwxyz123456",
 		"sk-1234567890abcdefghijklmnopqrstuv",
+		// Anthropic-style keys contain underscores in the body.
+		"sk-ant-api03-abcdefghijklmnopqrstuvwxyz_1234567890",
 	}
 	for _, input := range tests {
 		result := RedactSecrets(input)
 		if result != "[REDACTED]" {
 			t.Errorf("OpenAI key not redacted: %q → %q", input, result)
 		}
+	}
+}
+
+func TestRedactSecrets_ProviderKeys(t *testing.T) {
+	cases := []struct {
+		name   string
+		secret string
+	}{
+		{"groq", "gsk_abcdefghijklmnopqrstuvwxyz1234567890"},
+		{"xai", "xai-abcdefghijklmnopqrstuvwxyz1234567890_0123456789"},
+		{"huggingface", "hf_abcdefghijklmnopqrstuvwxyz1234567890"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := RedactSecrets(tc.secret)
+			if result != "[REDACTED]" {
+				t.Errorf("%s key not redacted: %q → %q", tc.name, tc.secret, result)
+			}
+		})
 	}
 }
 

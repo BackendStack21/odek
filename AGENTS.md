@@ -193,7 +193,7 @@ Layered prompt-injection / approval-fatigue defenses. Full reference: [docs/SECU
 - **git config code execution** (`internal/danger/classifier.go`) — `git -c alias.*=!<cmd>`, `git -c core.pager=...`, `git -c core.fsmonitor=...`, `git -c credential.helper=...`, and the `git config` subcommand are classified as `code_execution` because they can inject arbitrary shell commands.
 - **find / rsync destructive flags** (`internal/danger/classifier.go`) — `find -delete` and `rsync --delete` / `--del` / `--remove-source-files` are classified as `destructive`; `find -fprint` / `-fprintf` are classified as `local_write`.
 - **Shell operand path classification** (`internal/danger/classifier.go`) — file operands and redirect targets of shell commands are checked with `ClassifyPath`, so writes to `~/.bashrc`, `~/.zshrc`, `~/.profile`, `~/.ssh`, `~/.odek`, etc. are escalated to `system_write` instead of auto-allowed `local_write`.
-- **Secret redaction** (`internal/redact/redact.go`) — 20+ patterns: OpenAI, Anthropic, GitHub PAT, AWS, PEM, JWT, Vault, Google OAuth, SendGrid, Discord, DB URLs, etc.
+- **Secret redaction** (`internal/redact/redact.go`) — 20+ patterns: OpenAI/Anthropic `sk-` (including underscore-bearing bodies), Groq `gsk_`, xAI `xai-`, HuggingFace `hf_`, GitHub PAT, AWS, PEM, JWT, Vault, Google OAuth, SendGrid, Discord, DB URLs, etc.
 
 ### Security findings (`sec_findings.md`)
 
