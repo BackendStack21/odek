@@ -324,7 +324,7 @@ odek mcp                                    # stdio transport
 | `file_info` | Stat metadata (size, mod_time, mode, type) |
 | `sort` | Sort lines asc/desc/unique/numeric/case-insensitive |
 | `head_tail` | First/last N lines, streaming, parallel |
-| `search_files` | Regex content search or glob file find |
+| `search_files` | Regex content search or glob file find; sensitive discovered paths are returned in `skipped` |
 
 ### Data Processing (in-process, no shell fork)
 | Tool | Description |
@@ -348,7 +348,7 @@ odek mcp                                    # stdio transport
 ### Multi-Pattern (parallel goroutine search)
 | Tool | Description |
 |------|-------------|
-| `multi_grep` | Search N regex patterns in parallel |
+| `multi_grep` | Search N regex patterns in parallel; sensitive discovered paths are returned in `skipped` |
 | `search_files` | Single-pattern content/file search |
 
 ### Execution (shell replacement)

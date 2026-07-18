@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/BackendStack21/odek/internal/danger"
@@ -1217,6 +1218,179 @@ func TestWriteFile_SecurityDenied(t *testing.T) {
 	mustUnmarshal(t, result, &r)
 	if r.Error == "" {
 		t.Fatal("expected error when dangerous config denies operation")
+	}
+}
+
+// ── Search path classification tests (H-4 / H-5) ────────────────────────
+
+// countingApprover is a test double that approves the first N prompt requests
+// and denies the rest. It lets us approve a search root while denying the
+// sensitive files discovered underneath it.
+type countingApprover struct {
+	mu          sync.Mutex
+	calls       int
+	allowFirstN int
+}
+
+func (a *countingApprover) PromptCommand(cls danger.RiskClass, cmd, description string) error {
+	return a.prompt()
+}
+
+func (a *countingApprover) PromptOperation(op danger.ToolOperation) error {
+	return a.prompt()
+}
+
+func (a *countingApprover) prompt() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.calls++
+	if a.calls <= a.allowFirstN {
+		return nil
+	}
+	return fmt.Errorf("denied by test approver")
+}
+
+// makeTestHomeDir creates a HOME directory outside /tmp and /var so that
+// ClassifyPath treats paths under it as real home-directory paths rather than
+// temporary/system paths. The directory is created under the current working
+// directory and removed when the test ends.
+func makeTestHomeDir(t *testing.T) string {
+	t.Helper()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("cannot get cwd: %v", err)
+	}
+	home, err := os.MkdirTemp(cwd, "odek-test-home-*")
+	if err != nil {
+		t.Fatalf("cannot create test home: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(home) })
+	return home
+}
+
+func TestSearchFiles_TargetFiles_SkipsSensitiveOdekPaths(t *testing.T) {
+	home := makeTestHomeDir(t)
+	t.Setenv("HOME", home)
+
+	odekDir := filepath.Join(home, ".odek")
+	if err := os.MkdirAll(odekDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(odekDir, "config.json"), []byte("api-key-secret\n"), 0644)
+	os.WriteFile(filepath.Join(odekDir, "notes.md"), []byte("hello world\n"), 0644)
+
+	cfg := danger.DangerousConfig{
+		Classes: map[danger.RiskClass]danger.Action{danger.SystemWrite: danger.Prompt},
+		Approver: &countingApprover{allowFirstN: 1}, // approve the search root only
+	}
+	tool := &searchFilesTool{dangerousConfig: cfg}
+
+	args := fmt.Sprintf(`{"pattern":"*","target":"files","path":%q}`, odekDir)
+	result := callJSON(t, tool, args)
+
+	var r struct {
+		Matches []struct {
+			Path string `json:"path"`
+		} `json:"matches"`
+		Skipped []string `json:"skipped"`
+		Error   string   `json:"error,omitempty"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error != "" {
+		t.Fatalf("unexpected error: %s", r.Error)
+	}
+	if len(r.Matches) != 1 {
+		t.Fatalf("expected 1 allowed match, got %d", len(r.Matches))
+	}
+	if !strings.Contains(unwrapUntrusted(r.Matches[0].Path), "notes.md") {
+		t.Errorf("expected notes.md match, got %q", r.Matches[0].Path)
+	}
+	if len(r.Skipped) != 1 {
+		t.Fatalf("expected 1 skipped sensitive path, got %d: %v", len(r.Skipped), r.Skipped)
+	}
+	if !strings.Contains(r.Skipped[0], "config.json") {
+		t.Errorf("expected config.json in skipped list, got %q", r.Skipped[0])
+	}
+}
+
+func TestSearchFiles_TargetFiles_SkipsCaseInsensitiveAnchor(t *testing.T) {
+	home := makeTestHomeDir(t)
+	t.Setenv("HOME", home)
+
+	odekDir := filepath.Join(home, ".odek")
+	if err := os.MkdirAll(odekDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(odekDir, "CONFIG.JSON"), []byte("api-key-secret\n"), 0644)
+	os.WriteFile(filepath.Join(odekDir, "notes.md"), []byte("hello world\n"), 0644)
+
+	cfg := danger.DangerousConfig{
+		Classes: map[danger.RiskClass]danger.Action{danger.SystemWrite: danger.Prompt},
+		Approver: &countingApprover{allowFirstN: 1},
+	}
+	tool := &searchFilesTool{dangerousConfig: cfg}
+
+	args := fmt.Sprintf(`{"pattern":"*","target":"files","path":%q}`, odekDir)
+	result := callJSON(t, tool, args)
+
+	var r struct {
+		Matches []struct {
+			Path string `json:"path"`
+		} `json:"matches"`
+		Skipped []string `json:"skipped"`
+		Error   string   `json:"error,omitempty"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error != "" {
+		t.Fatalf("unexpected error: %s", r.Error)
+	}
+	if len(r.Matches) != 1 {
+		t.Fatalf("expected 1 allowed match, got %d", len(r.Matches))
+	}
+	if len(r.Skipped) != 1 || !strings.Contains(strings.ToLower(r.Skipped[0]), "config.json") {
+		t.Fatalf("expected CONFIG.JSON skipped, got %v", r.Skipped)
+	}
+}
+
+func TestSearchFiles_CheckSearchPath_DeniesSystemWrite(t *testing.T) {
+	home := makeTestHomeDir(t)
+	t.Setenv("HOME", home)
+
+	cfg := danger.DangerousConfig{
+		Classes: map[danger.RiskClass]danger.Action{danger.SystemWrite: danger.Deny},
+	}
+	tool := &searchFilesTool{dangerousConfig: cfg}
+
+	skip, reason := tool.checkSearchPath(filepath.Join(home, ".odek", "config.json"))
+	if !skip {
+		t.Fatalf("expected checkSearchPath to skip ~/.odek/config.json")
+	}
+	if !strings.Contains(reason, "system_write") {
+		t.Errorf("expected system_write denial, got %q", reason)
+	}
+
+	skip, _ = tool.checkSearchPath(filepath.Join(home, ".odek", "notes.md"))
+	if skip {
+		t.Errorf("expected non-anchor ~/.odek path to be allowed")
+	}
+}
+
+// TestIsProtectedOdekPath_CaseInsensitive verifies the file-tool write guard
+// rejects case variants of trust anchors on case-insensitive filesystems.
+func TestIsProtectedOdekPath_CaseInsensitive(t *testing.T) {
+	cases := []string{
+		"CONFIG.JSON",
+		"Secrets.Env",
+		"IDENTITY.MD",
+		"SKILLS/evil/SKILL.md",
+		"SESSIONS/abc.json",
+		"AUDIT/turn.json",
+		"PLANS/evil.md",
+	}
+	for _, c := range cases {
+		if !isProtectedOdekPath(c) {
+			t.Errorf("isProtectedOdekPath(%q) = false, want true", c)
+		}
 	}
 }
 

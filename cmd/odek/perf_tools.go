@@ -1198,6 +1198,7 @@ type grepPatternResult struct {
 	Pattern string      `json:"pattern"`
 	Matches []grepMatch `json:"matches"`
 	Count   int         `json:"count"`
+	Skipped []string    `json:"skipped,omitempty"`
 	Error   string      `json:"error,omitempty"`
 }
 
@@ -1269,6 +1270,20 @@ func (t *multiGrepTool) Call(argsJSON string) (string, error) {
 	return jsonResult(multiGrepResult{Results: results})
 }
 
+// checkSearchPath classifies a discovered path the same way the root path was
+// checked in Call. If the path is more restrictive (e.g. a file under ~/.odek
+// discovered while searching $HOME), it returns skip=true so the walker does
+// not silently read sensitive files.
+func (t *multiGrepTool) checkSearchPath(path string) (skip bool, reason string) {
+	risk := danger.ClassifyPath(path)
+	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
+		Name: "multi_grep", Resource: path, Risk: risk,
+	}, nil); err != nil {
+		return true, err.Error()
+	}
+	return false, ""
+}
+
 func (t *multiGrepTool) searchPattern(pattern, root, fileGlob string, limit int) (result grepPatternResult) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -1283,6 +1298,7 @@ func (t *multiGrepTool) searchPattern(pattern, root, fileGlob string, limit int)
 	var matches []grepMatch
 	resultBytes := 0
 
+	var skipped []string
 	filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info == nil {
 			return nil
@@ -1294,10 +1310,20 @@ func (t *multiGrepTool) searchPattern(pattern, root, fileGlob string, limit int)
 			if skipDir(info.Name()) {
 				return filepath.SkipDir
 			}
+			// Security: classify each directory before descending.
+			if skip, reason := t.checkSearchPath(path); skip {
+				skipped = append(skipped, path+": "+reason)
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		// Skip symlinks — prevents TOCTOU and listing unreadable files.
 		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		// Security: classify each file before reading.
+		if skip, reason := t.checkSearchPath(path); skip {
+			skipped = append(skipped, path+": "+reason)
 			return nil
 		}
 		if fileGlob != "" {
@@ -1352,6 +1378,7 @@ func (t *multiGrepTool) searchPattern(pattern, root, fileGlob string, limit int)
 		Pattern: pattern,
 		Matches: matches,
 		Count:   len(matches),
+		Skipped: skipped,
 	}
 }
 

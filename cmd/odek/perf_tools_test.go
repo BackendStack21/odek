@@ -540,6 +540,29 @@ func TestMultiGrep_EmptyPatterns(t *testing.T) {
 	}
 }
 
+func TestMultiGrep_CheckSearchPath_DeniesSystemWrite(t *testing.T) {
+	home := makeTestHomeDir(t)
+	t.Setenv("HOME", home)
+
+	cfg := danger.DangerousConfig{
+		Classes: map[danger.RiskClass]danger.Action{danger.SystemWrite: danger.Deny},
+	}
+	tool := &multiGrepTool{dangerousConfig: cfg}
+
+	skip, reason := tool.checkSearchPath(filepath.Join(home, ".odek", "config.json"))
+	if !skip {
+		t.Fatalf("expected checkSearchPath to skip ~/.odek/config.json")
+	}
+	if !strings.Contains(reason, "system_write") {
+		t.Errorf("expected system_write denial, got %q", reason)
+	}
+
+	skip, _ = tool.checkSearchPath(filepath.Join(home, ".odek", "notes.md"))
+	if skip {
+		t.Errorf("expected non-anchor ~/.odek path to be allowed")
+	}
+}
+
 // ── JSONQuery Tests ───────────────────────────────────────────────────
 
 func TestJSONQuery_Basic(t *testing.T) {

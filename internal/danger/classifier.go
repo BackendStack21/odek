@@ -215,7 +215,8 @@ func ClassifyPath(path string) RiskClass {
 		}
 		// Shell rc/profile files execute on the user's next shell start —
 		// writing them is persistence/escalation, not a local file edit.
-		if filepath.Dir(abs) == home && shellRCFiles[filepath.Base(abs)] {
+		// Case-folding defends against case-insensitive filesystems (macOS APFS).
+		if filepath.Dir(abs) == home && shellRCFilesLower[strings.ToLower(filepath.Base(abs))] {
 			return SystemWrite
 		}
 	}
@@ -234,6 +235,17 @@ var shellRCFiles = map[string]bool{
 	".login": true, ".logout": true,
 }
 
+// ClassifyPath uses shellRCFiles with case-folding because macOS APFS is
+// case-insensitive by default: ~/.odek/BASHRC and ~/.bashrc refer to the
+// same file.
+var shellRCFilesLower = func() map[string]bool {
+	m := make(map[string]bool, len(shellRCFiles))
+	for k := range shellRCFiles {
+		m[strings.ToLower(k)] = true
+	}
+	return m
+}()
+
 // isOdekTrustAnchor reports whether abs is a file or directory under ~/.odek
 // that must not be writable through auto-approved local_write tools. It must
 // stay in sync with cmd/odek/file_tool.go::isProtectedOdekPath.
@@ -241,16 +253,20 @@ func isOdekTrustAnchor(home, abs string) bool {
 	if home == "" {
 		return false
 	}
-	prefix := home + "/.odek/"
-	if !strings.HasPrefix(abs, prefix) {
+	prefix := home + "/.odek"
+	if abs != prefix && !strings.HasPrefix(abs, prefix+"/") {
 		return false
 	}
-	rel := filepath.Clean(abs[len(prefix):])
+	// The ~/.odek directory itself is an anchor.
+	if abs == prefix {
+		return true
+	}
+	rel := strings.ToLower(filepath.Clean(abs[len(prefix+"/"):]))
 
 	protectedExact := []string{
 		"config.json",
 		"secrets.env",
-		"IDENTITY.md",
+		"identity.md",
 		"schedules.json",
 		"schedule-state.json",
 		"schedules.lock",
