@@ -231,12 +231,12 @@ The agent can send files back to the chat either by emitting a `MEDIA:` prefix i
 | `/mode` | Show current agent modes (interaction_mode, sandbox, skills) |
 | `/restart` | Gracefully restart the bot process. Restricted to operator chats/users and rate-limited to once per 60 seconds. |
 | `/plan <description>` | Create a new plan from a natural language description |
-| `/plans` | List all saved plans |
-| `/plan-view <slug>` | View a specific plan's content |
-| `/plan-delete <slug>` | Delete a saved plan |
-| `/sessions` | List recent conversation sessions |
-| `/resume <session_id>` | Resume a previous session by ID |
-| `/prune [days]` | Clean up old sessions (default: 30 days) |
+| `/plans` | List saved plans for this chat |
+| `/plan-view <slug>` | View a specific plan's content for this chat |
+| `/plan-delete <slug>` | Delete a saved plan for this chat |
+| `/sessions` | List recent conversation sessions for this chat |
+| `/resume <session_id>` | Resume a previous session owned by this chat |
+| `/prune [days]` | Clean up old sessions and plans for this chat (default: 30 days) |
 | `/schedules` | List scheduled tasks (id, on/off, cron, next fire, last status) |
 | `/schedule <subcommand>` | Manage scheduled tasks — `add`, `rm`, `enable`, `disable`, `run`, `next`, `view`. Mutating commands are restricted to configured operator chats/users. See [Managing schedules from Telegram](SCHEDULES.md#managing-from-telegram) |
 
@@ -262,6 +262,7 @@ The `SessionManager` manages per-chat Telegram agent conversations, backed by th
 5. **Session recall** — the user message is saved to the session store *before* the agent loop runs, enabling `session_search` to find the current conversation's data during the same turn
 6. Active sessions survive bot restarts — on reconnect, the session is loaded from disk
 7. **/now archives** — using `/new` archives the current session with a timestamped ID (`tg-<chatID>-<YYYYMMDD>-<HHMMSS>`) before starting fresh. Archived sessions remain on disk and are visible via `odek session list`.
+8. **Chat-scoped listing/resume/prune** — `/sessions`, `/resume`, and `/prune` only operate on sessions belonging to the requesting chat. A chat cannot list, resume, or delete another chat's sessions.
 
 ### Key Methods
 
@@ -278,7 +279,7 @@ The `clarifyChannels` sync.Map provides per-chat channels for the agent to ask t
 
 ## Plan Management (`plan.go`)
 
-Plans are stored as markdown files in `~/.odek/plans/<slug>.md`. Each plan is created from a natural language description and persisted for later review.
+Plans are stored as markdown files in `~/.odek/plans/chat<chatID>/<slug>.md`, isolating each Telegram chat's plans. Each plan is created from a natural language description and persisted for later review. The `/plan` command instructs the agent to save plans into the caller's per-chat directory, and `/plans`, `/plan_view`, `/plan_delete`, and `/plan_resume` only see plans belonging to that chat.
 
 ### Size Cap
 
@@ -292,11 +293,11 @@ To prevent a prompt-injected agent from causing an out-of-memory condition, plan
 | Function | Purpose |
 |---|---|
 | `Slugify(description)` | Convert description to filesystem-safe slug (max 60 chars) |
-| `ListPlans(limit)` | List plans sorted by modification time (newest first) |
-| `ReadPlan(slug)` | Load plan content by exact slug or prefix match |
-| `DeletePlan(slug)` | Delete plan by exact slug or prefix match |
-| `MostRecentPlan()` | Return the most recently modified plan's content |
-| `EnsurePlansDir()` | Create plans directory if it doesn't exist |
+| `ListPlans(chatID, limit)` | List plans for a chat sorted by modification time (newest first) |
+| `ReadPlan(chatID, slug)` | Load a chat's plan content by exact slug or prefix match |
+| `DeletePlan(chatID, slug)` | Delete a chat's plan by exact slug or prefix match |
+| `MostRecentPlan(chatID)` | Return the most recently modified plan's content for a chat |
+| `EnsurePlansDir(chatID)` | Create per-chat plans directory if it doesn't exist |
 
 ### Slug Generation
 

@@ -385,9 +385,9 @@ func telegramCmd(args []string) error {
 			return formatStats(cs), nil
 		}
 
-		// Handle /sessions — list recent sessions from the store.
+		// Handle /sessions — list recent sessions belonging to this chat.
 		if cmdName == "sessions" {
-			infos, err := sessionManager.ListSessions(10)
+			infos, err := sessionManager.ListSessions(chatID, 10)
 			if err != nil {
 				return fmt.Sprintf("❌ Failed to list sessions: %v", err), nil
 			}
@@ -411,7 +411,7 @@ func telegramCmd(args []string) error {
 			return b.String(), nil
 		}
 
-		// Handle /resume <id> — switch to a different session.
+		// Handle /resume <id> — switch to a different session owned by this chat.
 		if cmdName == "resume" {
 			sessionID := strings.TrimSpace(argsStr)
 			if sessionID == "" {
@@ -431,7 +431,7 @@ func telegramCmd(args []string) error {
 			), nil
 		}
 
-		// Handle /prune [days] — clean up old sessions and plans.
+		// Handle /prune [days] — clean up old sessions and plans for this chat.
 		if cmdName == "prune" {
 			days := 30
 			if strings.TrimSpace(argsStr) != "" {
@@ -441,11 +441,11 @@ func telegramCmd(args []string) error {
 					return "❗ Usage: `/prune [days]`\n\nExample: `/prune 7` to remove sessions and plans older than 7 days.", nil
 				}
 			}
-			sessionsRemoved, err := sessionManager.PruneSessions(days)
+			sessionsRemoved, err := sessionManager.PruneSessions(chatID, days)
 			if err != nil {
 				return fmt.Sprintf("❌ Failed to prune sessions: %v", err), nil
 			}
-			plansRemoved, err := sessionManager.PrunePlans(days)
+			plansRemoved, err := sessionManager.PrunePlans(chatID, days)
 			if err != nil {
 				return fmt.Sprintf("❌ Failed to prune plans: %v", err), nil
 			}
@@ -471,9 +471,10 @@ func telegramCmd(args []string) error {
 				return "❗ Usage: `/plan <description>`\n\nExample: `/plan Add user authentication with OAuth2`", nil
 			}
 			slug := telegram.Slugify(description)
+			planFile := fmt.Sprintf("~/.odek/plans/chat%d/%s.md", chatID, slug)
 			prompt := fmt.Sprintf(
 				"Create a detailed implementation plan for: %s\n\n"+
-					"Save the plan as a markdown file to `~/.odek/plans/%s.md`. "+
+					"Save the plan as a markdown file to `%s`. "+
 					"The plan should include:\n"+
 					"- Overview and goals\n"+
 					"- Architecture / design\n"+
@@ -481,16 +482,67 @@ func telegramCmd(args []string) error {
 					"- File paths and key code locations\n"+
 					"- Testing strategy\n\n"+
 					"Use your write_file tool to save the plan.",
-				description, slug,
+				description, planFile,
 			)
 			go handleChatMessage(chatID, messageID, userID, prompt, bot, handler, sessionManager,
 				resolved, systemMessage, handlerLog)
 			return fmt.Sprintf("📝 *Planning* `%s`…\n\n_Generating plan for: %s_", slug, description), nil
 		}
 
-		// Handle /plan-resume — inject most recent plan into session context.
+		// Handle /plans — list saved plans for this chat.
+		if cmdName == "plans" {
+			infos, err := telegram.ListPlans(chatID, 20)
+			if err != nil {
+				return fmt.Sprintf("❌ Failed to list plans: %v", err), nil
+			}
+			if len(infos) == 0 {
+				return "📋 *Plans* — No plans found.\n\nCreate one with `/plan <description>`", nil
+			}
+			var b strings.Builder
+			b.WriteString("📋 *Plans*\n\n")
+			for _, p := range infos {
+				ago := time.Since(p.ModTime).Round(time.Minute)
+				fmt.Fprintf(&b, "`%s` — %s ago\n", p.Slug, ago)
+				if p.Preview != "" {
+					fmt.Fprintf(&b, "  _%s_\n", truncateStr(p.Preview, 60))
+				}
+			}
+			b.WriteString("\nUse `/plan_view <slug>` to read a plan.")
+			return b.String(), nil
+		}
+
+		// Handle /plan_view <slug> — read a plan for this chat.
+		if cmdName == "plan_view" {
+			slug := strings.TrimSpace(argsStr)
+			if slug == "" {
+				return "❗ Usage: `/plan_view <slug>`\n\nUse `/plans` to see available plans.", nil
+			}
+			matched, content, err := telegram.ReadPlan(chatID, slug)
+			if err != nil {
+				return fmt.Sprintf("❌ %v", err), nil
+			}
+			if len(content) > 3900 {
+				content = content[:3900] + "\n\n… _(truncated — plan too long for Telegram)_"
+			}
+			return fmt.Sprintf("📄 *Plan: `%s`*\n\n%s", matched, content), nil
+		}
+
+		// Handle /plan_delete <slug> — delete a plan for this chat.
+		if cmdName == "plan_delete" {
+			slug := strings.TrimSpace(argsStr)
+			if slug == "" {
+				return "❗ Usage: `/plan_delete <slug>`\n\nUse `/plans` to see available plans.", nil
+			}
+			matched, err := telegram.DeletePlan(chatID, slug)
+			if err != nil {
+				return fmt.Sprintf("❌ %v", err), nil
+			}
+			return fmt.Sprintf("🗑️ *Plan deleted*: `%s`", matched), nil
+		}
+
+		// Handle /plan-resume — inject most recent plan for this chat into session context.
 		if cmdName == "plan_resume" {
-			slug, content, err := telegram.MostRecentPlan()
+			slug, content, err := telegram.MostRecentPlan(chatID)
 			if err != nil {
 				return fmt.Sprintf("❌ %v", err), nil
 			}
@@ -2278,6 +2330,14 @@ func buttonsToMarkup(buttons [][]map[string]string) *telegram.InlineKeyboardMark
 		}
 	}
 	return markup
+}
+
+// truncateStr shortens s to maxLen, appending "…" if trimmed.
+func truncateStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "…"
 }
 
 // deleteToolTraceMessages deletes all individual tool trace messages for a chat.

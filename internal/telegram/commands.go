@@ -3,7 +3,6 @@ package telegram
 import (
 	"fmt"
 	"strings"
-	"time"
 )
 
 // CommandDescriptor describes a slash command and its handler.
@@ -183,55 +182,9 @@ func pruneHandler(args string) (string, error) { return "", nil }
 
 func planHandler(args string) (string, error) { return "", nil }
 
-func plansHandler(args string) (string, error) {
-	infos, err := ListPlans(20)
-	if err != nil {
-		return fmt.Sprintf("❌ Failed to list plans: %v", err), nil
-	}
-	if len(infos) == 0 {
-		return "📋 *Plans* — No plans found.\n\nCreate one with `/plan <description>`", nil
-	}
-	var b strings.Builder
-	b.WriteString("📋 *Plans*\n\n")
-	for _, p := range infos {
-		ago := time.Since(p.ModTime).Round(time.Minute)
-		fmt.Fprintf(&b, "`%s` — %s ago\n", p.Slug, ago)
-		if p.Preview != "" {
-			fmt.Fprintf(&b, "  _%s_\n", truncateStr(p.Preview, 60))
-		}
-	}
-	b.WriteString("\nUse `/plan_view <slug>` to read a plan.")
-	return b.String(), nil
-}
-
-func planViewHandler(args string) (string, error) {
-	slug := strings.TrimSpace(args)
-	if slug == "" {
-		return "❗ Usage: `/plan_view <slug>`\n\nUse `/plans` to see available plans.", nil
-	}
-	matched, content, err := ReadPlan(slug)
-	if err != nil {
-		return fmt.Sprintf("❌ %v", err), nil
-	}
-	// Telegram messages have a 4096 char limit. Truncate if needed.
-	if len(content) > 3900 {
-		content = content[:3900] + "\n\n… _(truncated — plan too long for Telegram)_"
-	}
-	return fmt.Sprintf("📄 *Plan: `%s`*\n\n%s", matched, content), nil
-}
-
-func planDeleteHandler(args string) (string, error) {
-	slug := strings.TrimSpace(args)
-	if slug == "" {
-		return "❗ Usage: `/plan_delete <slug>`\n\nUse `/plans` to see available plans.", nil
-	}
-	matched, err := DeletePlan(slug)
-	if err != nil {
-		return fmt.Sprintf("❌ %v", err), nil
-	}
-	return fmt.Sprintf("🗑️ *Plan deleted*: `%s`", matched), nil
-}
-
+func plansHandler(args string) (string, error) { return "", nil }
+func planViewHandler(args string) (string, error) { return "", nil }
+func planDeleteHandler(args string) (string, error) { return "", nil }
 func planResumeHandler(args string) (string, error) { return "", nil }
 
 // Schedule command handlers are intercepted in the bot's OnCommand callback

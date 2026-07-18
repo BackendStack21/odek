@@ -36,7 +36,7 @@ func TestEnsurePlansDir(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
 
-	dir, err := ensurePlansDir()
+	dir, err := ensurePlansDir(0)
 	if err != nil {
 		t.Fatalf("ensurePlansDir: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestListPlans(t *testing.T) {
 	}
 
 	// No limit.
-	infos, err := ListPlans(0)
+	infos, err := ListPlans(0, 0)
 	if err != nil {
 		t.Fatalf("ListPlans: %v", err)
 	}
@@ -90,9 +90,9 @@ func TestListPlans(t *testing.T) {
 	}
 
 	// With limit.
-	infos, _ = ListPlans(1)
+	infos, _ = ListPlans(0, 1)
 	if len(infos) != 1 {
-		t.Fatalf("ListPlans(1) = %d items, want 1", len(infos))
+		t.Fatalf("ListPlans(0, 1) = %d items, want 1", len(infos))
 	}
 }
 
@@ -101,7 +101,7 @@ func TestListPlans_NoDir(t *testing.T) {
 	t.Setenv("HOME", tmp)
 	// Don't create .odek/plans.
 
-	infos, err := ListPlans(10)
+	infos, err := ListPlans(0, 10)
 	if err != nil {
 		t.Fatalf("ListPlans with no dir: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestReadPlan_ExactMatch(t *testing.T) {
 	os.MkdirAll(dir, 0755)
 	os.WriteFile(filepath.Join(dir, "my-plan.md"), []byte("# My Plan\n\nDo things."), 0644)
 
-	slug, content, err := ReadPlan("my-plan")
+	slug, content, err := ReadPlan(0, "my-plan")
 	if err != nil {
 		t.Fatalf("ReadPlan: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestReadPlan_PrefixMatch(t *testing.T) {
 	os.MkdirAll(dir, 0755)
 	os.WriteFile(filepath.Join(dir, "long-plan-name.md"), []byte("# Long Plan"), 0644)
 
-	slug, _, err := ReadPlan("long")
+	slug, _, err := ReadPlan(0, "long")
 	if err != nil {
 		t.Fatalf("ReadPlan prefix: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestReadPlan_Ambiguous(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "fix-login.md"), []byte("login"), 0644)
 	os.WriteFile(filepath.Join(dir, "fix-logout.md"), []byte("logout"), 0644)
 
-	_, _, err := ReadPlan("fix")
+	_, _, err := ReadPlan(0, "fix")
 	if err == nil {
 		t.Fatal("expected ambiguous match error")
 	}
@@ -172,7 +172,7 @@ func TestReadPlan_NoMatch(t *testing.T) {
 	dir := filepath.Join(tmp, ".odek", "plans")
 	os.MkdirAll(dir, 0755)
 
-	_, _, err := ReadPlan("nonexistent")
+	_, _, err := ReadPlan(0, "nonexistent")
 	if err == nil {
 		t.Fatal("expected not found error")
 	}
@@ -190,7 +190,7 @@ func TestReadPlan_OversizeRejected(t *testing.T) {
 	path := filepath.Join(dir, "huge-plan.md")
 	os.WriteFile(path, []byte(strings.Repeat("x", maxPlanBytes+1)), 0644)
 
-	_, _, err := ReadPlan("huge-plan")
+	_, _, err := ReadPlan(0, "huge-plan")
 	if err == nil {
 		t.Fatal("expected error for oversized plan")
 	}
@@ -209,7 +209,7 @@ func TestReadPlan_AtSizeCapAllowed(t *testing.T) {
 	content := strings.Repeat("x", maxPlanBytes)
 	os.WriteFile(path, []byte(content), 0644)
 
-	slug, got, err := ReadPlan("max-plan")
+	slug, got, err := ReadPlan(0, "max-plan")
 	if err != nil {
 		t.Fatalf("ReadPlan at size cap: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestMostRecentPlan_OversizeRejected(t *testing.T) {
 	path := filepath.Join(dir, "huge-plan.md")
 	os.WriteFile(path, []byte(strings.Repeat("x", maxPlanBytes+1)), 0644)
 
-	_, _, err := MostRecentPlan()
+	_, _, err := MostRecentPlan(0)
 	if err == nil {
 		t.Fatal("expected error for oversized most-recent plan")
 	}
@@ -248,7 +248,7 @@ func TestListPlans_OversizePreview(t *testing.T) {
 	path := filepath.Join(dir, "huge-plan.md")
 	os.WriteFile(path, []byte(strings.Repeat("x", maxPlanBytes+1)), 0644)
 
-	infos, err := ListPlans(0)
+	infos, err := ListPlans(0, 0)
 	if err != nil {
 		t.Fatalf("ListPlans: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestDeletePlan(t *testing.T) {
 	path := filepath.Join(dir, "delete-me.md")
 	os.WriteFile(path, []byte("bye"), 0644)
 
-	slug, err := DeletePlan("delete-me")
+	slug, err := DeletePlan(0, "delete-me")
 	if err != nil {
 		t.Fatalf("DeletePlan: %v", err)
 	}
@@ -293,7 +293,7 @@ func TestDeletePlan_Ambiguous(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "a-plan.md"), []byte("a"), 0644)
 	os.WriteFile(filepath.Join(dir, "a-plan-2.md"), []byte("a2"), 0644)
 
-	_, err := DeletePlan("a")
+	_, err := DeletePlan(0, "a")
 	if err == nil {
 		t.Fatal("expected ambiguous match error")
 	}
@@ -315,7 +315,7 @@ func TestMostRecentPlan(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "new.md"), []byte("# new plan\n\nContent."), 0644)
 	os.Chtimes(filepath.Join(dir, "new.md"), now, now.Add(-1*time.Minute))
 
-	slug, content, err := MostRecentPlan()
+	slug, content, err := MostRecentPlan(0)
 	if err != nil {
 		t.Fatalf("MostRecentPlan: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestMostRecentPlan_Empty(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
 
-	_, _, err := MostRecentPlan()
+	_, _, err := MostRecentPlan(0)
 	if err == nil {
 		t.Fatal("expected error for empty plans dir")
 	}
@@ -391,7 +391,7 @@ func TestPlanPath(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
 
-	path, err := planPath("my-plan")
+	path, err := planPath(0, "my-plan")
 	if err != nil {
 		t.Fatalf("planPath error: %v", err)
 	}
@@ -409,7 +409,7 @@ func TestEnsurePlansDir_MkdirAllError(t *testing.T) {
 	}
 	t.Setenv("HOME", tmp)
 
-	_, err := ensurePlansDir()
+	_, err := ensurePlansDir(0)
 	if err == nil {
 		t.Fatal("expected error when MkdirAll fails")
 	}
@@ -425,14 +425,14 @@ func TestListPlans_ReadDirError(t *testing.T) {
 	}
 	t.Setenv("HOME", tmp)
 
-	_, err := ListPlans(0)
+	_, err := ListPlans(0, 0)
 	if err == nil {
 		t.Fatal("expected error when plans is not a directory")
 	}
 }
 
 func TestReadPlan_EmptySlug(t *testing.T) {
-	_, _, err := ReadPlan("")
+	_, _, err := ReadPlan(0, "")
 	if err == nil {
 		t.Fatal("expected error for empty slug")
 	}
@@ -443,7 +443,7 @@ func TestReadPlan_NoPlansDir(t *testing.T) {
 	t.Setenv("HOME", tmp)
 	// No .odek/plans at all.
 
-	_, _, err := ReadPlan("anything")
+	_, _, err := ReadPlan(0, "anything")
 	if err == nil {
 		t.Fatal("expected error when no plans directory exists")
 	}
@@ -458,7 +458,7 @@ func TestReadPlan_ReadDirError(t *testing.T) {
 	}
 	t.Setenv("HOME", tmp)
 
-	_, _, err := ReadPlan("x")
+	_, _, err := ReadPlan(0, "x")
 	if err == nil {
 		t.Fatal("expected error when plans is not a directory")
 	}
@@ -475,14 +475,14 @@ func TestReadPlan_ReadFileError(t *testing.T) {
 	// Delete the file so ReadFile fails.
 	os.Remove(filepath.Join(dir, "exists.md"))
 
-	_, _, err := ReadPlan("exists")
+	_, _, err := ReadPlan(0, "exists")
 	if err == nil {
 		t.Fatal("expected error when file can't be read")
 	}
 }
 
 func TestDeletePlan_EmptySlug(t *testing.T) {
-	_, err := DeletePlan("")
+	_, err := DeletePlan(0, "")
 	if err == nil {
 		t.Fatal("expected error for empty slug")
 	}
@@ -492,7 +492,7 @@ func TestDeletePlan_NoPlansDir(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
 
-	_, err := DeletePlan("x")
+	_, err := DeletePlan(0, "x")
 	if err == nil {
 		t.Fatal("expected error when no plans directory")
 	}
@@ -505,7 +505,7 @@ func TestDeletePlan_ReadDirError(t *testing.T) {
 	os.WriteFile(filepath.Join(odekDir, "plans"), []byte("x"), 0644)
 	t.Setenv("HOME", tmp)
 
-	_, err := DeletePlan("x")
+	_, err := DeletePlan(0, "x")
 	if err == nil {
 		t.Fatal("expected error when plans is not a directory")
 	}
@@ -520,7 +520,7 @@ func TestDeletePlan_RemoveError(t *testing.T) {
 	t.Setenv("HOME", tmp)
 
 	// Try to delete — if we're root this may still succeed.
-	_, err := DeletePlan("locked")
+	_, err := DeletePlan(0, "locked")
 	if err != nil {
 		// Error is acceptable — test that it propagates.
 		t.Logf("DeletePlan error (acceptable if running as root): %v", err)
@@ -535,7 +535,7 @@ func TestMostRecentPlan_ReadFileError(t *testing.T) {
 	os.Remove(filepath.Join(dir, "plan.md")) // remove after listing
 	t.Setenv("HOME", tmp)
 
-	_, _, err := MostRecentPlan()
+	_, _, err := MostRecentPlan(0)
 	// May or may not error depending on ListPlans caching behavior.
 	// If it errors, verify it's a read error.
 	if err != nil {
@@ -552,7 +552,7 @@ func TestListPlans_SkipsNonMarkdown(t *testing.T) {
 	os.MkdirAll(filepath.Join(dir, "subdir"), 0755)
 	t.Setenv("HOME", tmp)
 
-	infos, err := ListPlans(0)
+	infos, err := ListPlans(0, 0)
 	if err != nil {
 		t.Fatalf("ListPlans error: %v", err)
 	}
@@ -573,7 +573,7 @@ func TestReadPlan_MultiplePrefixMatches(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "fix-db.md"), []byte("db"), 0644)
 	t.Setenv("HOME", tmp)
 
-	_, _, err := ReadPlan("fix")
+	_, _, err := ReadPlan(0, "fix")
 	if err == nil {
 		t.Fatal("expected error for ambiguous prefix with >2 matches")
 	}
@@ -589,7 +589,7 @@ func TestDeletePlan_NoMatchFound(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "some-plan.md"), []byte("x"), 0644)
 	t.Setenv("HOME", tmp)
 
-	_, err := DeletePlan("nonexistent")
+	_, err := DeletePlan(0, "nonexistent")
 	if err == nil {
 		t.Fatal("expected error for non-matching slug")
 	}

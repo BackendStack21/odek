@@ -744,14 +744,6 @@ func narratorToolCallMessage(name, args string) string {
 	}
 }
 
-// truncateStr truncates a string for display in test logs.
-func truncateStr(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
-}
-
 // ── Tool Latency ────────────────────────────────────────────────────
 
 // TestToolLatencyTracking verifies that recordToolStart and popToolLatency

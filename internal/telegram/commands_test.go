@@ -1,8 +1,6 @@
 package telegram
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -192,7 +190,7 @@ func TestAllHandlers_ReturnNoError(t *testing.T) {
 	// handlers are stubs that return "".
 	inlineOnly := map[string]bool{
 		"sessions": true, "resume": true, "prune": true,
-		"plan": true, "plan_resume": true,
+		"plan": true, "plans": true, "plan_view": true, "plan_delete": true, "plan_resume": true,
 		"schedule": true, "schedules": true,
 	}
 
@@ -206,127 +204,6 @@ func TestAllHandlers_ReturnNoError(t *testing.T) {
 				t.Errorf("%s handler returned empty string", cmd.Command)
 			}
 		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Plan command handler tests
-// ---------------------------------------------------------------------------
-
-func TestPlansHandler_Empty(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-
-	got, err := plansHandler("")
-	if err != nil {
-		t.Fatalf("plansHandler: %v", err)
-	}
-	if !strings.Contains(got, "No plans found") {
-		t.Errorf("expected 'No plans found', got: %s", got)
-	}
-}
-
-func TestPlansHandler_WithPlans(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-	dir := filepath.Join(tmp, ".odek", "plans")
-	os.MkdirAll(dir, 0755)
-	os.WriteFile(filepath.Join(dir, "test-plan.md"), []byte("# Test Plan\n\nDo something."), 0644)
-
-	got, err := plansHandler("")
-	if err != nil {
-		t.Fatalf("plansHandler: %v", err)
-	}
-	if !strings.Contains(got, "test-plan") {
-		t.Errorf("expected 'test-plan' in output, got: %s", got)
-	}
-	if !strings.Contains(got, "/plan_view") {
-		t.Errorf("expected '/plan_view' hint, got: %s", got)
-	}
-}
-
-func TestPlanViewHandler_NoSlug(t *testing.T) {
-	got, err := planViewHandler("")
-	if err != nil {
-		t.Fatalf("planViewHandler: %v", err)
-	}
-	if !strings.Contains(got, "Usage") {
-		t.Errorf("expected usage message, got: %s", got)
-	}
-}
-
-func TestPlanViewHandler_Found(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-	dir := filepath.Join(tmp, ".odek", "plans")
-	os.MkdirAll(dir, 0755)
-	os.WriteFile(filepath.Join(dir, "my-plan.md"), []byte("# My Plan\n\nStep 1. Step 2."), 0644)
-
-	got, err := planViewHandler("my-plan")
-	if err != nil {
-		t.Fatalf("planViewHandler: %v", err)
-	}
-	if !strings.Contains(got, "My Plan") {
-		t.Errorf("expected plan content, got: %s", got)
-	}
-	if !strings.Contains(got, "Step 1") {
-		t.Errorf("expected 'Step 1' in content, got: %s", got)
-	}
-}
-
-func TestPlanViewHandler_NotFound(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-
-	got, err := planViewHandler("nonexistent")
-	if err != nil {
-		t.Fatalf("planViewHandler: %v", err)
-	}
-	if !strings.Contains(got, "❌") {
-		t.Errorf("expected error message, got: %s", got)
-	}
-}
-
-func TestPlanDeleteHandler_NoSlug(t *testing.T) {
-	got, err := planDeleteHandler("")
-	if err != nil {
-		t.Fatalf("planDeleteHandler: %v", err)
-	}
-	if !strings.Contains(got, "Usage") {
-		t.Errorf("expected usage message, got: %s", got)
-	}
-}
-
-func TestPlanDeleteHandler_Success(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-	dir := filepath.Join(tmp, ".odek", "plans")
-	os.MkdirAll(dir, 0755)
-	os.WriteFile(filepath.Join(dir, "delete-me.md"), []byte("bye"), 0644)
-
-	got, err := planDeleteHandler("delete-me")
-	if err != nil {
-		t.Fatalf("planDeleteHandler: %v", err)
-	}
-	if !strings.Contains(got, "deleted") {
-		t.Errorf("expected 'deleted' message, got: %s", got)
-	}
-	// Verify file is gone.
-	if _, err := os.Stat(filepath.Join(dir, "delete-me.md")); !os.IsNotExist(err) {
-		t.Error("plan file still exists after delete")
-	}
-}
-
-func TestPlanDeleteHandler_NotFound(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-
-	got, err := planDeleteHandler("nonexistent")
-	if err != nil {
-		t.Fatalf("planDeleteHandler: %v", err)
-	}
-	if !strings.Contains(got, "❌") {
-		t.Errorf("expected error message, got: %s", got)
 	}
 }
 

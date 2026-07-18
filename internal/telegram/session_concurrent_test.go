@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -150,15 +151,17 @@ func TestSave_RaceFreeLoadAfterSave(t *testing.T) {
 // this captures the address of the reused loop variable, not the element.
 func TestResumeSession_LoopVariableBug(t *testing.T) {
 	sm, store := setupTestSessionManager(t)
+	const chatID int64 = 42
+	prefix := fmt.Sprintf("tg-%d", chatID)
 
-	// Create multiple sessions with known IDs.
+	// Create multiple sessions belonging to the same chat.
 	for _, s := range []struct {
 		id   string
 		task string
 	}{
-		{"sess-alpha", "Fix login page"},
-		{"sess-beta", "Implement API rate limiting"},
-		{"sess-gamma", "Refactor database layer"},
+		{prefix + "-alpha", "Fix login page"},
+		{prefix + "-beta", "Implement API rate limiting"},
+		{prefix + "-gamma", "Refactor database layer"},
 	} {
 		if err := store.Save(&session.Session{
 			ID:        s.id,
@@ -172,15 +175,15 @@ func TestResumeSession_LoopVariableBug(t *testing.T) {
 	}
 
 	// Resume by session ID prefix — should find the matching session.
-	cs, err := sm.ResumeSession(42, "sess-beta")
+	cs, err := sm.ResumeSession(chatID, prefix+"-beta")
 	if err != nil {
 		t.Fatalf("ResumeSession failed: %v", err)
 	}
 	if cs == nil {
 		t.Fatal("ResumeSession returned nil")
 	}
-	if cs.SessionID != "sess-beta" {
-		t.Errorf("SessionID = %q, want %q", cs.SessionID, "sess-beta")
+	if cs.SessionID != prefix+"-beta" {
+		t.Errorf("SessionID = %q, want %q", cs.SessionID, prefix+"-beta")
 	}
 	if cs.TurnCount != 0 {
 		t.Errorf("TurnCount = %d, want 0", cs.TurnCount)
