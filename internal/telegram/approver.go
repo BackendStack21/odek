@@ -32,9 +32,11 @@ const (
 // pending approval request, so HandleCallback can edit the message
 // text and remove the inline keyboard after the user responds.
 type pendingRequest struct {
-	resp      chan string
-	messageID int
-	userID    int64 // originating user; 0 means unknown (legacy allow-all)
+	resp       chan string
+	messageID  int
+	userID     int64 // originating user; 0 means unknown (legacy allow-all)
+	class      danger.RiskClass
+	allowTrust bool
 }
 
 // TelegramApprover implements danger.Approver by sending approval requests
@@ -104,6 +106,14 @@ func (a *TelegramApprover) Cancel() {
 
 // PromptCommand sends an approval request with inline keyboard and waits
 // for the user to respond. Returns nil on approve/trust, error on deny/timeout.
+// allowTrustForClass mirrors the TTY/Web approver policy: the highest-impact
+// classes must never be session-trusted, and the synthetic `tool_batch` class
+// must not be trusted because a single batch approval could hide multiple
+// unrelated dangerous tools.
+func allowTrustForClass(cls danger.RiskClass) bool {
+	return cls != danger.Destructive && cls != danger.Blocked && cls != danger.Unknown && cls != "tool_batch"
+}
+
 func (a *TelegramApprover) PromptCommand(cls danger.RiskClass, cmd, description string) error {
 	// Check session trust cache
 	a.mu.Lock()
@@ -114,14 +124,17 @@ func (a *TelegramApprover) PromptCommand(cls danger.RiskClass, cmd, description 
 	a.mu.Unlock()
 
 	id := a.newID()
+	allowTrust := allowTrustForClass(cls)
 
 	// Build the approval message — the full command is always shown so the
 	// user can make an informed decision.
 	text := buildApprovalText(cls, cmd, description)
 
-	// Send with inline keyboard.
-	markup := InlineKeyboardMarkup{
-		InlineKeyboard: [][]InlineKeyboardButton{
+	// Send with inline keyboard. Hide the Trust Session button for classes
+	// that must be approved per-call.
+	var keyboard [][]InlineKeyboardButton
+	if allowTrust {
+		keyboard = [][]InlineKeyboardButton{
 			{
 				{Text: "✅ Approve", CallbackData: cbPrefixApprove + id},
 				{Text: "❌ Deny", CallbackData: cbPrefixDeny + id},
@@ -129,8 +142,16 @@ func (a *TelegramApprover) PromptCommand(cls danger.RiskClass, cmd, description 
 			{
 				{Text: "🔒 Trust Session", CallbackData: cbPrefixTrust + id},
 			},
-		},
+		}
+	} else {
+		keyboard = [][]InlineKeyboardButton{
+			{
+				{Text: "✅ Approve", CallbackData: cbPrefixApprove + id},
+				{Text: "❌ Deny", CallbackData: cbPrefixDeny + id},
+			},
+		}
 	}
+	markup := InlineKeyboardMarkup{InlineKeyboard: keyboard}
 
 	msg, err := a.bot.SendMessage(a.ChatID, text, &SendOpts{
 		ParseMode:   ParseModeMarkdownV2,
@@ -141,7 +162,7 @@ func (a *TelegramApprover) PromptCommand(cls danger.RiskClass, cmd, description 
 	}
 
 	// Register the pending request with message ID and originating user.
-	pr := &pendingRequest{resp: make(chan string, 1), messageID: msg.ID, userID: a.userID}
+	pr := &pendingRequest{resp: make(chan string, 1), messageID: msg.ID, userID: a.userID, class: cls, allowTrust: allowTrust}
 	a.mu.Lock()
 	a.pending[id] = pr
 	a.mu.Unlock()
@@ -176,6 +197,9 @@ func (a *TelegramApprover) PromptCommand(cls danger.RiskClass, cmd, description 
 		case "approve":
 			return nil
 		case "trust":
+			if !allowTrust {
+				return fmt.Errorf("operation denied: trust-session not available for %s", cls)
+			}
 			a.mu.Lock()
 			a.trusted[cls] = true
 			a.mu.Unlock()

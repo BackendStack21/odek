@@ -496,6 +496,23 @@ It now uses `exec.CommandContext` with the agent context, runs each command in i
 
 `write_file` and `patch` pass their cached `trustedClasses` to `CheckOperation`, but `batch_patch` was passing `nil`. This meant a user who trusted `local_write` for the session still got re-prompted (or denied in non-interactive mode) for every patch in a batch. `batch_patch` now has its own `trustedClasses` field and passes it through, giving consistent approval behavior across the file-editing tools.
 
+### 35a. Batch approval card shows all classifiable commands
+
+The batch approval gate in `internal/loop/loop.go::classifyToolCall` only understood flat `command`/`path` arguments, so `parallel_shell` (an array of commands), `batch_patch` (an array of paths), and the modern `browser` tool were invisible in the approval card. After one tap on Approve, `SetTrustAll(true)` let hidden payloads run without further prompting.
+
+`classifyToolCall` now:
+
+- Walks every command inside `parallel_shell` and every path inside `batch_patch`, classifies each one, and lists all of them in the batch card.
+- Recognises the modern `browser` tool (action + URL) as `network_egress`.
+- Shows the full command/path text instead of truncating at 120 characters, so the user sees exactly what is being authorized.
+- Refuses to grant blanket trust (`SetTrustAll`) for any iteration that still contains an unclassifiable tool; those tools must be approved individually by their own internal gates.
+
+### 35b. Telegram class-trust guard
+
+`internal/telegram/approver.go` previously offered a "Trust Session" button for every risk class, including `destructive`, `blocked`, `unknown`, and the synthetic `tool_batch` class. One tap on Trust Session cached approval for that class, so trusting a benign `tool_batch` card also silently approved every later destructive operation in the same session.
+
+The Telegram approver now mirrors the TTY/Web policy: the Trust Session button is hidden for `destructive`, `blocked`, `unknown`, and `tool_batch`, and a trust callback for those classes is treated as a denial. This closes the approval-fatigue path where an injected batch of mixed-risk tools is reduced to a single tap.
+
 ### 36. Browser link URL wrapping
 
 `browser` already wrapped page title, content, and interactive-element text as untrusted, but the `URL` field of each `clickableRef` was emitted as a raw JSON string. A hostile page could set `href` to a `javascript:`, `data:`, or attacker-controlled URL containing instruction-like text. The `URL` field is now wrapped as untrusted before serialization. An unexported `rawURL` preserves the original value so internal click resolution continues to work.

@@ -984,10 +984,16 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 				resource string
 			}
 			var risky []riskyCall
+			hasUnclassifiable := false
 			for i, tc := range result.ToolCalls {
 				risk, resource := classifyToolCall(tc.Function.Name, tc.Function.Arguments)
 				if risk == "" {
-					continue // tool not classifiable — skip in batch, handled individually
+					// Tool not classifiable by this helper. It will be handled
+					// individually by the tool's own Call() method, but because we
+					// cannot show it in the batch card we must not grant blanket
+					// trust for this iteration.
+					hasUnclassifiable = true
+					continue
 				}
 				// Check the user's configured action for this risk class.
 				// If the DangerousConfig says Allow, skip it — no approval needed.
@@ -1012,11 +1018,10 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 					sb.WriteString(fmt.Sprintf("⚠️ %d tool actions require approval:\n\n", len(risky)))
 				}
 				for i, rc := range risky {
-					resource := rc.resource
-					if len(resource) > 120 {
-						resource = resource[:120] + "…"
-					}
-					sb.WriteString(fmt.Sprintf("  %d. `%s` — `%s`\n", i+1, rc.name, resource))
+					// Show the full resource/command. Telegram/Web UI renderers
+					// truncate responsibly; hiding part of a command is exactly
+					// what lets a hidden payload slip through a single approval.
+					sb.WriteString(fmt.Sprintf("  %d. `%s` — `%s`\n", i+1, rc.name, rc.resource))
 				}
 				description := sb.String()
 
@@ -1026,7 +1031,9 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 
 				// Approved: set trustAll on the approver if supported, so
 				// individual tool-level PromptCommand calls auto-pass.
-				if !batchDenied {
+				// Never grant blanket trust when an unclassifiable tool is part
+				// of the same iteration — those tools must prompt individually.
+				if !batchDenied && !hasUnclassifiable {
 					if ta, ok := e.approver.(trustAllSetter); ok {
 						ta.SetTrustAll(true)
 						trustAllApprover = ta
@@ -1275,9 +1282,36 @@ func (e *Engine) buildToolDefs() []llm.ToolDef {
 // This mirrors the classification that the actual tool's Call() method
 // performs, so the batch gate only prompts for tools that would
 // actually require user approval.
+// riskClassFromRank is the inverse of danger.Rank. It is used when the
+// highest-ranked classification is selected from a list of commands/paths.
+func riskClassFromRank(r int) danger.RiskClass {
+	switch r {
+	case 9:
+		return danger.Blocked
+	case 8:
+		return danger.Destructive
+	case 7:
+		return danger.Unknown
+	case 6:
+		return danger.SystemWrite
+	case 5:
+		return danger.CodeExecution
+	case 4:
+		return danger.NetworkEgress
+	case 3:
+		return danger.Install
+	case 2:
+		return danger.LocalWrite
+	case 1:
+		return danger.Safe
+	default:
+		return ""
+	}
+}
+
 func classifyToolCall(name, args string) (danger.RiskClass, string) {
 	switch name {
-	case "shell", "terminal", "parallel_shell":
+	case "shell", "terminal":
 		// Extract the command from JSON args.
 		var cmd struct {
 			Command string `json:"command"`
@@ -1286,8 +1320,41 @@ func classifyToolCall(name, args string) (danger.RiskClass, string) {
 			return "", ""
 		}
 		return danger.Classify(cmd.Command), cmd.Command
+	case "parallel_shell":
+		// The commands live inside a JSON array. Classify every command and
+		// surface all of them in the batch approval prompt so one cannot hide
+		// behind another.
+		var p struct {
+			Commands []struct {
+				Command     string `json:"command"`
+				Description string `json:"description,omitempty"`
+			} `json:"commands"`
+		}
+		if err := json.Unmarshal([]byte(args), &p); err != nil || len(p.Commands) == 0 {
+			return "", ""
+		}
+		var maxRank int
+		var parts []string
+		for _, c := range p.Commands {
+			if c.Command == "" {
+				continue
+			}
+			cls := danger.Classify(c.Command)
+			if r := danger.Rank(cls); r > maxRank {
+				maxRank = r
+			}
+			if c.Description != "" {
+				parts = append(parts, fmt.Sprintf("%s (%s)", c.Command, c.Description))
+			} else {
+				parts = append(parts, c.Command)
+			}
+		}
+		if len(parts) == 0 {
+			return "", ""
+		}
+		return riskClassFromRank(maxRank), strings.Join(parts, "; ")
 	case "read_file", "write_file", "patch", "search_files", "batch_read", "file_info", "glob",
-		"diff", "multi_grep", "json_query", "tree", "batch_patch", "count_lines", "checksum",
+		"diff", "multi_grep", "json_query", "tree", "count_lines", "checksum",
 		"sort", "head_tail", "base64", "tr", "word_count", "transcribe":
 		// Extract the path from JSON args.
 		var p struct {
@@ -1297,7 +1364,52 @@ func classifyToolCall(name, args string) (danger.RiskClass, string) {
 			return "", ""
 		}
 		return danger.ClassifyPath(p.Path), p.Path
-	case "browser_navigate", "browser_click", "browser_type", "http_batch":
+	case "batch_patch":
+		// Each patch has its own path; classify every path so a destructive
+		// edit cannot hide behind a benign first patch.
+		var p struct {
+			Patches []struct {
+				Path string `json:"path"`
+			} `json:"patches"`
+		}
+		if err := json.Unmarshal([]byte(args), &p); err != nil || len(p.Patches) == 0 {
+			return "", ""
+		}
+		var maxRank int
+		var paths []string
+		for _, patch := range p.Patches {
+			if patch.Path == "" {
+				continue
+			}
+			cls := danger.ClassifyPath(patch.Path)
+			if r := danger.Rank(cls); r > maxRank {
+				maxRank = r
+			}
+			paths = append(paths, patch.Path)
+		}
+		if len(paths) == 0 {
+			return "", ""
+		}
+		return riskClassFromRank(maxRank), strings.Join(paths, "; ")
+	case "browser":
+		// The modern browser tool is a single `browser` call with an action
+		// field. Network-bearing actions are egress; everything else is safe.
+		var p struct {
+			Action string `json:"action"`
+			URL    string `json:"url,omitempty"`
+		}
+		if err := json.Unmarshal([]byte(args), &p); err != nil {
+			return "", ""
+		}
+		switch p.Action {
+		case "navigate":
+			return danger.NetworkEgress, p.URL
+		case "click", "back", "snapshot":
+			return danger.NetworkEgress, fmt.Sprintf("browser %s", p.Action)
+		default:
+			return danger.NetworkEgress, args
+		}
+	case "http_batch":
 		return danger.NetworkEgress, args
 	default:
 		// For unrecognized tools, return empty — they are handled by
