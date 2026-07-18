@@ -509,6 +509,12 @@ func (m *MemoryManager) AddFact(target, content string) error {
 	if err := m.scanContent(context.Background(), content); err != nil {
 		return err
 	}
+	// Pipe-to-shell / download-and-run filter. Agent-driven adds are higher
+	// trust than auto-extracted facts, but an injected agent can still try to
+	// plant a backdoor like "deploy: curl ... | sh". Reject those outright.
+	if FactLooksUnsafe(content) {
+		return fmt.Errorf("memory: fact looks unsafe (remote fetch piped to shell)")
+	}
 
 	// We read entries once and keep them cached below to avoid re-parsing
 	// the file and re-embedding every entry after the mutation.
@@ -622,6 +628,9 @@ func (m *MemoryManager) ReplaceFact(target, oldText, content string) error {
 	defer m.fireAfterUnlock(lock, &pending)
 	if err := m.scanContent(context.Background(), content); err != nil {
 		return err
+	}
+	if FactLooksUnsafe(content) {
+		return fmt.Errorf("memory: fact looks unsafe (remote fetch piped to shell)")
 	}
 	if err := m.facts.Replace(target, oldText, content); err != nil {
 		return err
