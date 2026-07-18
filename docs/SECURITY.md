@@ -536,6 +536,10 @@ In addition, a friction counter tracks approvals per class. After 3 approvals of
 
 `browser` already wrapped page title, content, and interactive-element text as untrusted, but the `URL` field of each `clickableRef` was emitted as a raw JSON string. A hostile page could set `href` to a `javascript:`, `data:`, or attacker-controlled URL containing instruction-like text. The `URL` field is now wrapped as untrusted before serialization. An unexported `rawURL` preserves the original value so internal click resolution continues to work.
 
+### 36a. Browser post-redirect URL attribution
+
+`browser_navigate` previously attributed the fetched content to the URL originally requested, even when the HTTP client followed redirects. An attacker could point a reputable-looking URL at a redirector and have the resulting page content labeled with the reputable domain, and relative links on the landing page resolved against the wrong origin. `browser_navigate` now uses `resp.Request.URL` (the final post-redirect URL) for the snapshot URL, the untrusted-content wrapper source, and click resolution.
+
 ### 37. Telegram message length by UTF-16 code units
 
 Telegram's message and caption limits are defined in UTF-16 code units, but `internal/telegram/handler.go` was using `len(msg.Text)` and `len(msg.Caption)`, which count UTF-8 bytes. Emoji and other supplementary-plane characters consume 4 UTF-8 bytes but 2 UTF-16 code units, so emoji-heavy messages could pass the local check and then be rejected by Telegram. The handler now counts UTF-16 code units via `utf16Len`.

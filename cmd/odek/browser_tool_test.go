@@ -58,6 +58,69 @@ func TestBrowser_Navigate(t *testing.T) {
 	}
 }
 
+func TestBrowser_Navigate_FollowsRedirect(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/redirect":
+			http.Redirect(w, r, "/target", http.StatusFound)
+		case "/target":
+			w.Write([]byte(`<html><head><title>Target</title></head><body>
+				<h1>Target Page</h1>
+				<a href="/final">Final</a>
+			</body></html>`))
+		case "/final":
+			w.Write([]byte(`<html><head><title>Final</title></head><body>
+				<h1>Final Page</h1>
+			</body></html>`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	b := newTestBrowserTool()
+	result := callJSON(t, b, `{"action":"navigate","url":"`+ts.URL+`/redirect"}`)
+	var r struct {
+		Title    string `json:"title"`
+		Content  string `json:"content"`
+		URL      string `json:"url"`
+		Elements []struct {
+			Ref string `json:"ref"`
+			URL string `json:"url"`
+		} `json:"elements"`
+		Error string `json:"error,omitempty"`
+	}
+	mustUnmarshal(t, result, &r)
+
+	if r.Error != "" {
+		t.Fatalf("navigate error: %s", r.Error)
+	}
+	if r.URL != ts.URL+"/target" {
+		t.Errorf("url = %q, want %q (post-redirect)", r.URL, ts.URL+"/target")
+	}
+	if !strings.Contains(r.Content, "Target Page") {
+		t.Errorf("content missing target page text: %q", r.Content)
+	}
+
+	// Verify the relative link on the post-redirect page resolves against the
+	// final URL, not the original redirect URL.
+	if len(r.Elements) == 0 {
+		t.Fatal("expected at least one element")
+	}
+	clickResult := callJSON(t, b, `{"action":"click","ref":"`+r.Elements[0].Ref+`"}`)
+	var click struct {
+		URL   string `json:"url"`
+		Error string `json:"error,omitempty"`
+	}
+	mustUnmarshal(t, clickResult, &click)
+	if click.Error != "" {
+		t.Fatalf("click error: %s", click.Error)
+	}
+	if click.URL != ts.URL+"/final" {
+		t.Errorf("click resolved to %q, want %q", click.URL, ts.URL+"/final")
+	}
+}
+
 func TestBrowser_Navigate_InvalidURL(t *testing.T) {
 	b := newTestBrowserTool()
 	result := callJSON(t, b, `{"action":"navigate","url":"not-a-valid-url"}`)
