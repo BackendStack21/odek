@@ -133,9 +133,7 @@ The `guard` section is operator-controlled: project-level `./odek.json` cannot s
 When a classification is set to `prompt`, an approver pauses the agent until the user decides. Two implementations:
 
 - **TTYApprover** (CLI / REPL) — reads from `/dev/tty`.
-- **WSApprover** (Web UI) — sends `approval_request` over WebSocket; the browser shows a modal.
-
-Both:
+- **WSApprover** (Web UI) — sends `approval_request` over WebSocket; the browser shows a modal. Responses are relayed to the pending prompt via a non-blocking send on a capacity-1 channel, so a duplicate, late, or raced response cannot block the WebSocket read goroutine and exhaust the global connection semaphore.
 
 - Disable the "Trust class for session" shortcut for `destructive` and `blocked`. A forged or stale UI that sends `"trust"` for those classes is coerced to a single approve.
 - Engage **friction mode** after 3 approvals of the same class in 60 s: require typing the literal word `approve` (no single-letter / button shortcut) and impose a 1.5 s pause before accepting input. This breaks reflex click-through under sustained LLM-driven approval pressure.
