@@ -322,12 +322,24 @@ func serveCmd(args []string) error {
 		return fmt.Errorf("listen: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "odek serve ⚡  http://%s\n", listener.Addr())
+	// Print the WebSocket token to the console only (Jupyter-style). It is
+	// never served over plain HTTP, so a network attacker who can only make
+	// `GET /` cannot retrieve it. Browser clients get it via the token URL;
+	// non-browser clients can supply it as a header or subprotocol.
+	tokenURL := "http://" + listener.Addr().String() + "/?token=" + wsToken
+	fmt.Fprintf(os.Stderr, "odek serve ⚡  %s\n", tokenURL)
 	fmt.Fprintf(os.Stderr, "  WebSocket: ws://%s/ws\n", listener.Addr())
+	fmt.Fprintf(os.Stderr, "  WS token:  %s\n", wsToken)
 	fmt.Fprintf(os.Stderr, "  Type @ to reference files, drop or attach files inline.\n")
 
+	if !isLoopbackAddr(listener.Addr()) {
+		fmt.Fprintf(os.Stderr, "\n⚠️  WARNING: odek serve is bound to a non-loopback address.\n")
+		fmt.Fprintf(os.Stderr, "   Anyone who can reach this port can control the agent once they have the token above.\n")
+		fmt.Fprintf(os.Stderr, "   Use --addr 127.0.0.1:<port> (or a firewall) to restrict access.\n\n")
+	}
+
 	if openBrowser {
-		openInBrowser("http://" + listener.Addr().String())
+		openInBrowser(tokenURL)
 	}
 
 	return serveOnListener(listener, mux)
@@ -539,11 +551,11 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 		SystemMessage:    system,
 		UntrustedWrapper: func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
 		RuntimeContext:   runtimeCtx,
-		NoProjectFile:   resolved.NoAgents,
-		Thinking:        resolved.Thinking,
-		InteractionMode: resolved.InteractionMode,
-		Tools:           tools,
-		ToolFilter:      odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
+		NoProjectFile:    resolved.NoAgents,
+		Thinking:         resolved.Thinking,
+		InteractionMode:  resolved.InteractionMode,
+		Tools:            tools,
+		ToolFilter:       odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
 		// SandboxCleanup is intentionally NOT passed here. In serve mode,
 		// cleanup is the caller's responsibility (handleWS defers it).
 		// Passing it here would cause agent.Close() to call docker rm -f,
@@ -552,7 +564,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 		Renderer:     nil, // silent — we stream via WebSocket
 		Skills:       &resolved.Skills,
 		SkillManager: sm,
-		MemoryConfig:   resolved.Memory,
+		MemoryConfig: resolved.Memory,
 		MemoryDir:    expandHome("~/.odek/memory"),
 		Guard:        injectionGuard,
 		GuardConfig:  resolved.Guard,
@@ -1647,19 +1659,30 @@ func handleStatic(wsToken string) http.HandlerFunc {
 			return
 		}
 
-		// The HTML entry point gets the per-instance CSRF token both as a
+		// The HTML entry point only receives the per-instance CSRF token when
+		// the request presents the token in the `?token=` query parameter. This
+		// prevents a network attacker from retrieving the token with a simple
+		// `GET /`. The token is delivered both as a SameSite=Strict HttpOnly
 		// cookie (sent automatically on same-site WebSocket upgrades) and as a
 		// meta tag (read by app.js and sent as a WebSocket subprotocol).
 		if r.URL.Path == "/" && wsToken != "" {
-			http.SetCookie(w, &http.Cookie{
-				Name:     wsTokenCookieName,
-				Value:    wsToken,
-				Path:     "/",
-				SameSite: http.SameSiteStrictMode,
-				HttpOnly: true,
-				// No explicit MaxAge/Expires so the cookie is a session cookie.
-			})
-			data = []byte(strings.Replace(string(data), "{{ODEK_WS_TOKEN}}", wsToken, 1))
+			if r.URL.Query().Get("token") == wsToken {
+				http.SetCookie(w, &http.Cookie{
+					Name:     wsTokenCookieName,
+					Value:    wsToken,
+					Path:     "/",
+					SameSite: http.SameSiteStrictMode,
+					HttpOnly: true,
+					// No explicit MaxAge/Expires so the cookie is a session cookie.
+				})
+				data = []byte(strings.Replace(string(data), "{{ODEK_WS_TOKEN}}", wsToken, 1))
+				w.Header().Set("Cache-Control", "no-store")
+			} else {
+				// No valid token in the URL: serve the UI but leave the meta tag
+				// empty so the browser cannot connect until the user uses the
+				// token URL printed to the console.
+				data = []byte(strings.Replace(string(data), "{{ODEK_WS_TOKEN}}", "", 1))
+			}
 		}
 
 		w.Header().Set("Content-Type", entry[1])
@@ -1691,4 +1714,15 @@ func openInBrowser(url string) {
 			return
 		}
 	}
+}
+
+// isLoopbackAddr reports whether a TCP listener is bound to a loopback
+// address. Unix sockets and non-TCP listeners are treated as non-loopback
+// (fail safe) because we cannot reason about their exposure.
+func isLoopbackAddr(a net.Addr) bool {
+	ta, ok := a.(*net.TCPAddr)
+	if !ok {
+		return false
+	}
+	return ta.IP.IsLoopback()
 }

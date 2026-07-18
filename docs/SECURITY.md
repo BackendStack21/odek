@@ -550,6 +550,20 @@ The `/api/resources?q=...&limit=N` autocomplete endpoint previously accepted any
 
 This bounds the memory/container blast radius if a local process or malicious page tries to spawn many agent sessions.
 
+### 41a. WebSocket token no longer served over plain HTTP
+
+`odek serve` previously embedded the per-instance WebSocket token in every `GET /` response (as an HTML meta tag and an HttpOnly cookie). Because `GET /` was not behind any authentication, any network attacker who could reach the port could fetch the token, upgrade to `/ws`, and drive the agent using the operator's model, tools, and API key.
+
+The token is now treated like a Jupyter notebook token:
+
+- It is printed to the console on startup, together with a URL of the form `http://<addr>/?token=<token>`.
+- The browser only receives the cookie/meta tag when it requests `/` with the correct `?token=` query parameter.
+- A plain `GET /` returns the UI but leaves the token field empty, so it cannot connect.
+- Non-browser clients can supply the token via the `X-Odek-Ws-Token` header or the `odek.<token>` WebSocket subprotocol.
+- A loud warning is printed when the server is bound to a non-loopback address.
+
+This removes the unauthenticated token disclosure path while preserving the same browser experience for the operator who has access to the startup console output.
+
 ### 42. Sub-agent progress stream limits
 
 `delegate_tasks` streams NDJSON progress lines from each sub-agent. A runaway or malicious sub-agent could emit an unbounded number of `tool_call`/`tool_result` events, causing unbounded memory growth in the parent. `scanSubagentStream` now caps the total progress stream at 100 000 lines and 100 MiB of data; exceeding either limit aborts the scan and cancels the sub-agent context so the child process is killed instead of continuing to flood stdout.
