@@ -6,16 +6,27 @@ import (
 	"github.com/BackendStack21/odek/internal/danger"
 )
 
-// TestApplySubagentTrust_Noop confirms that with neither trust_level nor
-// max_risk set, the DangerousConfig is unchanged.
-func TestApplySubagentTrust_Noop(t *testing.T) {
+// TestApplySubagentTrust_EmptyDefaultsToUntrusted confirms that a missing
+// trust_level is treated as untrusted, so a parent cannot spawn a full-trust
+// sub-agent simply by omitting the field.
+func TestApplySubagentTrust_EmptyDefaultsToUntrusted(t *testing.T) {
 	dc := danger.DangerousConfig{}
 	applySubagentTrust(&dc, "", "")
-	if len(dc.Classes) != 0 {
-		t.Errorf("Classes mutated for noop call: %+v", dc.Classes)
+	if dc.NonInteractive == nil || *dc.NonInteractive != "deny" {
+		t.Errorf("NonInteractive should default to 'deny' when trust_level is empty, got %v", dc.NonInteractive)
 	}
-	if dc.NonInteractive != nil {
-		t.Errorf("NonInteractive mutated for noop call: %v", *dc.NonInteractive)
+	for _, cls := range []danger.RiskClass{
+		danger.Destructive,
+		danger.CodeExecution,
+		danger.Install,
+		danger.SystemWrite,
+		danger.NetworkEgress,
+		danger.Unknown,
+		danger.Blocked,
+	} {
+		if got := dc.Classes[cls]; got != danger.Deny {
+			t.Errorf("Class %s = %q, want %q when trust_level is empty", cls, got, danger.Deny)
+		}
 	}
 }
 
