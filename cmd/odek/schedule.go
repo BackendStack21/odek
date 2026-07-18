@@ -266,6 +266,9 @@ func scheduleRunNow(args []string) error {
 	}
 
 	resolved := config.LoadConfig(config.CLIFlags{})
+	if err := approveProjectSandbox(resolved, os.Stdin, os.Stdout); err != nil {
+		return err
+	}
 	system := buildSystemPrompt(resolved)
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -297,6 +300,9 @@ func scheduleDaemon(_ []string) error {
 	defer unlock()
 
 	resolved := config.LoadConfig(config.CLIFlags{})
+	if err := approveProjectSandbox(resolved, os.Stdin, os.Stdout); err != nil {
+		return err
+	}
 	system := buildSystemPrompt(resolved)
 	st, err := schedule.NewStore()
 	if err != nil {

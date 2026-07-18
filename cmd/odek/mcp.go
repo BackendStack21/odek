@@ -50,6 +50,9 @@ Flags:
 
 	// Load config
 	resolved := config.LoadConfig(cliFlags)
+	if err := approveProjectSandbox(resolved, os.Stdin, os.Stdout); err != nil {
+		return err
+	}
 
 	// Start agent loop (mcp)
 	sbCfg := sandboxConfig{

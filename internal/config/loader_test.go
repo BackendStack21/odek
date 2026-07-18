@@ -438,6 +438,82 @@ func TestLoadConfig_ProjectCanEnableSandbox(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_ProjectSandboxOverride(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+
+	if err := os.WriteFile(filepath.Join(dir, "odek.json"), []byte(`{
+		"sandbox": true,
+		"sandbox_image": "alpine:latest",
+		"sandbox_network": "bridge",
+		"sandbox_env": {"X": "${HOME}", "Y": "literal"},
+		"sandbox_volumes": ["/tmp:/host-tmp"]
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	if !cfg.ProjectSandboxOverride.HasImage {
+		t.Error("ProjectSandboxOverride.HasImage = false, want true")
+	}
+	if cfg.ProjectSandboxOverride.Image != "alpine:latest" {
+		t.Errorf("ProjectSandboxOverride.Image = %q, want alpine:latest", cfg.ProjectSandboxOverride.Image)
+	}
+	if !cfg.ProjectSandboxOverride.HasNetwork {
+		t.Error("ProjectSandboxOverride.HasNetwork = false, want true")
+	}
+	if cfg.ProjectSandboxOverride.Network != "bridge" {
+		t.Errorf("ProjectSandboxOverride.Network = %q, want bridge", cfg.ProjectSandboxOverride.Network)
+	}
+	if !cfg.ProjectSandboxOverride.HasEnv {
+		t.Error("ProjectSandboxOverride.HasEnv = false, want true")
+	}
+	wantKeys := []string{"X", "Y"}
+	if !sliceEqual(cfg.ProjectSandboxOverride.EnvKeys, wantKeys) {
+		t.Errorf("ProjectSandboxOverride.EnvKeys = %v, want %v", cfg.ProjectSandboxOverride.EnvKeys, wantKeys)
+	}
+	if !cfg.ProjectSandboxOverride.EnvHasInterpolation {
+		t.Error("ProjectSandboxOverride.EnvHasInterpolation = false, want true")
+	}
+	if !cfg.ProjectSandboxOverride.HasVolumes {
+		t.Error("ProjectSandboxOverride.HasVolumes = false, want true")
+	}
+	if len(cfg.ProjectSandboxOverride.Volumes) != 1 || cfg.ProjectSandboxOverride.Volumes[0] != "/tmp:/host-tmp" {
+		t.Errorf("ProjectSandboxOverride.Volumes = %v, want [/tmp:/host-tmp]", cfg.ProjectSandboxOverride.Volumes)
+	}
+}
+
+func TestLoadConfig_NoProjectSandboxOverride(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+
+	if err := os.WriteFile(filepath.Join(dir, "odek.json"), []byte(`{
+		"model": "project-model"
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.ProjectSandboxOverride.HasEnv || cfg.ProjectSandboxOverride.HasImage ||
+		cfg.ProjectSandboxOverride.HasNetwork || cfg.ProjectSandboxOverride.HasVolumes {
+		t.Errorf("ProjectSandboxOverride = %+v, want empty", cfg.ProjectSandboxOverride)
+	}
+}
+
+func sliceEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestLoadConfig_ProjectDangerousIgnored(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)

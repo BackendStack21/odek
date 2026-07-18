@@ -263,6 +263,9 @@ func serveCmd(args []string) error {
 		ToolsEnabled:    toolsEnabled,
 		ToolsDisabled:   toolsDisabled,
 	})
+	if err := approveProjectSandbox(resolved, os.Stdin, os.Stdout); err != nil {
+		return err
+	}
 	// Serve mode default-on for sandbox: the Web UI surface is the
 	// largest blast radius (browser-driven tool calls, untrusted-page
 	// fetches), and the user opted into a long-running process. If no

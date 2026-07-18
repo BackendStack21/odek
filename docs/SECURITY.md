@@ -351,6 +351,17 @@ exceed the cap are rejected before they are written.
 
 These fields can only be set from operator-controlled sources: `~/.odek/config.json` (and `ODEK_TELEGRAM_*` env vars for `telegram`, `ODEK_GUARD_*` env vars for `guard`).
 
+### 18a. Project-level sandbox config approval
+
+`./odek.json` can also set sandbox knobs (`sandbox_env`, `sandbox_image`, `sandbox_network`, `sandbox_volumes`). Rather than silently rejecting them, odek gates them behind explicit operator approval, mirroring the MCP-server approval flow:
+
+- Interactive TTY prompt (`y` = once, `t` = trust this project, `N` = deny).
+- Persistent per-project approvals stored in `~/.odek/project_sandbox_approvals.json`.
+- `ODEK_APPROVE_PROJECT_SANDBOX=1` bypass for CI/non-interactive use.
+- Non-TTY runs without the bypass fail closed.
+
+This prevents a malicious repo from exfiltrating host secrets via `${VAR}` interpolation in `sandbox_env`, pulling an attacker-controlled image, or widening the container's network access without the operator's consent.
+
 ### SSRF guard and configured-backend allowlist
 
 The `browser`, `http_batch`, and `web_search` tools use a shared SSRF / DNS-rebinding dial guard (`cmd/odek/ssrf_guard.go`). After the policy gate classifies a hostname as `network_egress`, the guard resolves the name itself and refuses any answer that points at a loopback, RFC1918, RFC4193, link-local, or metadata IP. It then pins the dial to the validated IP so the kernel cannot re-resolve to a different address.

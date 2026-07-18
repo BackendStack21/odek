@@ -265,3 +265,57 @@ func TestReport_SubagentSchemaHasTrustGates(t *testing.T) {
 		}
 	}
 }
+
+// ── Claim 7 (post-fix) ─────────────────────────────────────────────────
+//
+// Original report claim (sec_findings.md C-1): "Project ./odek.json can
+// exfiltrate host secrets via sandbox_env ${VAR} expansion + attacker
+// image/network." After the fix, project-level sandbox knobs require
+// explicit operator approval before they are applied. This test pins the
+// approval gate so a regression that silently applies project sandbox
+// config is caught.
+func TestReport_ProjectSandboxRequiresApproval(t *testing.T) {
+	dir := t.TempDir()
+	prevHome := os.Getenv("HOME")
+	os.Setenv("HOME", dir)
+	defer os.Setenv("HOME", prevHome)
+
+	prevWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(prevWd)
+
+	if err := os.WriteFile(filepath.Join(dir, "odek.json"), []byte(`{
+		"sandbox": true,
+		"sandbox_image": "alpine:latest",
+		"sandbox_network": "bridge",
+		"sandbox_env": {"X": "${HOME}"}
+	}`), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	resolved := config.LoadConfig(config.CLIFlags{})
+	if !resolved.ProjectSandboxOverride.HasEnv {
+		t.Fatal("LoadConfig did not record project sandbox_env override")
+	}
+
+	// Non-interactive, no env bypass: approval must fail.
+	os.Unsetenv("ODEK_APPROVE_PROJECT_SANDBOX")
+	err = approveProjectSandboxWithTTY(resolved, strings.NewReader(""), &strings.Builder{}, false)
+	if err == nil {
+		t.Fatal("project sandbox config was applied without approval in non-interactive mode")
+	}
+	if !strings.Contains(err.Error(), "ODEK_APPROVE_PROJECT_SANDBOX") {
+		t.Errorf("error = %q, want ODEK_APPROVE_PROJECT_SANDBOX hint", err.Error())
+	}
+
+	// Env bypass must succeed.
+	t.Setenv("ODEK_APPROVE_PROJECT_SANDBOX", "1")
+	if err := approveProjectSandboxWithTTY(resolved, strings.NewReader(""), &strings.Builder{}, false); err != nil {
+		t.Fatalf("env bypass should approve, got: %v", err)
+	}
+}

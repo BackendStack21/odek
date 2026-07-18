@@ -296,6 +296,8 @@ Use `odek skill reset-skips` to clear the skip list and re-enable suppressed sug
 
 `odek serve` enables `--sandbox` by default. `odek run` and `odek repl` keep sandbox opt-in but print a startup warning when running unsandboxed. Set `ODEK_SUPPRESS_SANDBOX_WARNING=1` to silence the warning if you've made an informed decision.
 
+**Project-level sandbox approval:** if `./odek.json` sets `sandbox_env`, `sandbox_image`, `sandbox_network`, or `sandbox_volumes`, odek prompts for approval before applying them. In CI or scripted invocations, set `ODEK_APPROVE_PROJECT_SANDBOX=1` to auto-approve, or place sandbox config in `~/.odek/config.json` / `ODEK_*` env vars / CLI flags instead, which do not require approval.
+
 ## Audit log
 
 `odek audit` reads the per-session prompt-injection audit log written under `<sessions>/audit/<id>.json`. Every time the agent ingests externally-sourced content (browser fetch, file read, MCP tool response, audio transcript) the log records:

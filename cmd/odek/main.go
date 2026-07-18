@@ -1179,6 +1179,9 @@ func run(args []string) error {
 		GuardScanToolOutputs:  f.GuardScanToolOutputs,
 		GuardScanTelegram:     f.GuardScanTelegram,
 	})
+	if err := approveProjectSandbox(resolved, os.Stdin, os.Stdout); err != nil {
+		return err
+	}
 
 	// Resolve @references and --ctx file attachments in the task
 	cwd, _ := os.Getwd()

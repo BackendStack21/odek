@@ -122,6 +122,7 @@ Every config knob has a `ODEK_*` counterpart:
 | `ODEK_SANDBOX_MEMORY` | `--sandbox-memory` | string |
 | `ODEK_SANDBOX_CPUS` | `--sandbox-cpus` | string |
 | `ODEK_SANDBOX_USER` | `--sandbox-user` | string |
+| `ODEK_APPROVE_PROJECT_SANDBOX` | — | bool | approve project-level `./odek.json` sandbox config without prompting |
 | `ODEK_MAX_TOOL_PARALLEL` | `max_tool_parallel` | int |
 | `ODEK_MEMORY_EXTENDED_ENABLED` | `--memory-extended-enabled` | bool |
 | `ODEK_MEMORY_EXTENDED_MAX_SIZE_MB` | `--memory-extended-max-size-mb` | int |
@@ -827,6 +828,11 @@ odek run "list files"
 # Per-project override
 echo '{"max_iterations": 30}' > ./odek.json
 odek run "quick status"
+
+# Project-level sandbox knobs require explicit approval (or the CI bypass)
+# because they can read host env vars and pick arbitrary images/networks.
+echo '{"sandbox": true, "sandbox_env": {"X": "${HOME}"}}' > ./odek.json
+ODEK_APPROVE_PROJECT_SANDBOX=1 odek run "run untrusted script"
 
 # Env var override for one-off
 ODEK_SANDBOX=true odek run "run untrusted script"
