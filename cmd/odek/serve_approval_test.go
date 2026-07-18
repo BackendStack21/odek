@@ -48,6 +48,9 @@ func buildServeMuxPromptAll(t *testing.T, store *session.Store) (net.Listener, *
 	if err != nil {
 		t.Fatalf("CSRF token: %v", err)
 	}
+	testTokenMu.Lock()
+	testLastToken = wsToken
+	testTokenMu.Unlock()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handleStatic(wsToken))
