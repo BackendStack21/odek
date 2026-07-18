@@ -1861,6 +1861,16 @@ func TestClassifyToolCall_MCPTool(t *testing.T) {
 	}
 }
 
+func TestClassifyToolCall_DelegateTasks(t *testing.T) {
+	risk, resource := classifyToolCall("delegate_tasks", `{"tasks":[{"goal":"x"}]}`)
+	if risk != danger.SystemWrite {
+		t.Errorf("delegate_tasks risk = %q, want system_write", risk)
+	}
+	if resource == "" {
+		t.Error("delegate_tasks resource should not be empty")
+	}
+}
+
 // ── Skills + Episode dedup regression tests ─────────────────────────
 //
 // TestEngine_SkillsAndEpisodesBothLoad verifies that when both skillLoader

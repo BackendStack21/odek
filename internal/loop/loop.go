@@ -1411,6 +1411,12 @@ func classifyToolCall(name, args string) (danger.RiskClass, string) {
 		}
 	case "http_batch":
 		return danger.NetworkEgress, args
+	case "delegate_tasks":
+		// Spawning sub-agents is a trust-mutating operation: a compromised or
+		// prompt-injected parent can use it to escape its own approval gate by
+		// running commands in a child that shares the parent's terminal. Treat
+		// the call itself as system_write so it requires explicit approval.
+		return danger.SystemWrite, args
 	default:
 		// MCP tools are registered with names of the form <server>__<tool>.
 		// They bypass the built-in danger classifier because the server, not

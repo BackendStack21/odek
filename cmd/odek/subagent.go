@@ -572,12 +572,16 @@ func applySubagentTrust(dc *danger.DangerousConfig, trustLevel, maxRisk string) 
 	if dc == nil {
 		return
 	}
-	if trustLevel == "" && maxRisk == "" {
-		return
-	}
 
 	if dc.Classes == nil {
 		dc.Classes = make(map[danger.RiskClass]danger.Action)
+	}
+
+	// Default to untrusted: if a parent agent omits trust_level, the sub-agent
+	// must not inherit the parent's TTY/approval context. This closes the path
+	// where a prompt-injected parent silently spawns a full-trust child.
+	if trustLevel == "" {
+		trustLevel = "untrusted"
 	}
 
 	if trustLevel == "untrusted" {

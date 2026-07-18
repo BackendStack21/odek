@@ -577,6 +577,18 @@ MCP tool names are registered as `<server>__<tool>`. They were not handled by `i
 
 `classifyToolCall` now detects the `__` naming convention and returns `unknown` for any MCP tool. This makes the batch gate display the tool instead of hiding it, and `applySubagentTrust` forces `unknown` to `deny` for untrusted sub-agents.
 
+### 39g. Sub-agent trust defaults + `delegate_tasks` gate
+
+The `delegate_tasks` tool spawns child `odek subagent` processes. Previously:
+
+- `trust_level` was optional and `applySubagentTrust` no-oped when it was empty. A prompt-injected parent could omit the field and the child inherited the parent's TTY, so its approval prompts appeared indistinguishable from the parent's and its dangerous classes were not clamped.
+- `delegate_tasks` itself had no classification, so the batch approval gate did not surface it.
+
+Now:
+
+- `cmd/odek/subagent.go::applySubagentTrust` treats a missing `trust_level` as `untrusted`, forcing `non_interactive: deny` and denying Destructive/CodeExecution/Install/SystemWrite/NetworkEgress/Unknown/Blocked.
+- `internal/loop/loop.go::classifyToolCall` classifies `delegate_tasks` as `system_write`, so spawning sub-agents requires explicit operator approval and cannot be used to escape the parent's approval gate.
+
 ### 40. `/api/resources` result limit cap
 
 The `/api/resources?q=...&limit=N` autocomplete endpoint previously accepted any positive `limit` value. It is now capped to 100 results both in the HTTP handler and in `Registry.Search`. This prevents a prompt-injected or attacker-forged request from forcing an unbounded directory walk and returning a multi-megabyte JSON response.
