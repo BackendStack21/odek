@@ -181,6 +181,9 @@ Layered prompt-injection / approval-fatigue defenses. Full reference: [docs/SECU
 - **Web UI prompt/model validation** (`cmd/odek/serve.go`) — server-side cap on WebSocket prompt size (1 MiB) and validation of model ID length/characters, preventing oversized or unusual payloads from reaching the LLM.
 - **Sub-agent runaway limits** (`cmd/odek/subagent.go`) — `--timeout` is capped at 3600s and `--max-iter` at 100, so a single `odek subagent` invocation cannot run indefinitely.
 - **Secrets.env permission gate** (`internal/config/loader.go`) — refuses to load `~/.odek/secrets.env` when it is group/world-readable, preventing local users from reading API keys injected into the environment.
+- **git config code execution** (`internal/danger/classifier.go`) — `git -c alias.*=!<cmd>`, `git -c core.pager=...`, `git -c core.fsmonitor=...`, `git -c credential.helper=...`, and the `git config` subcommand are classified as `code_execution` because they can inject arbitrary shell commands.
+- **find / rsync destructive flags** (`internal/danger/classifier.go`) — `find -delete` and `rsync --delete` / `--del` / `--remove-source-files` are classified as `destructive`; `find -fprint` / `-fprintf` are classified as `local_write`.
+- **Shell operand path classification** (`internal/danger/classifier.go`) — file operands and redirect targets of shell commands are checked with `ClassifyPath`, so writes to `~/.bashrc`, `~/.zshrc`, `~/.profile`, `~/.ssh`, `~/.odek`, etc. are escalated to `system_write` instead of auto-allowed `local_write`.
 - **Secret redaction** (`internal/redact/redact.go`) — 20+ patterns: OpenAI, Anthropic, GitHub PAT, AWS, PEM, JWT, Vault, Google OAuth, SendGrid, Discord, DB URLs, etc.
 
 ### Security findings (`sec_findings.md`)

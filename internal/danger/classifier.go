@@ -1572,6 +1572,86 @@ func isSensitiveOdekPath(tok string) bool {
 	return isOdekTrustAnchor(home, abs)
 }
 
+// classifyShellTokenPath expands ~ and common environment-variable shorthands
+// in a shell token, strips prefixes like "of=", and returns the ClassifyPath
+// result for the filesystem path it names. It lets shell commands be checked
+// against the same home-sensitive-dir and rc-file lists used by the file tools,
+// closing the gap where `echo x >> ~/.bashrc` was auto-allowed as local_write.
+func classifyShellTokenPath(tok string) RiskClass {
+	path := tok
+
+	// Strip common key=value prefixes used by dd and similar tools.
+	for _, prefix := range []string{"of=", "if="} {
+		if strings.HasPrefix(strings.ToLower(path), prefix) {
+			path = path[len(prefix):]
+			break
+		}
+	}
+	if path == "" {
+		return Safe
+	}
+
+	// Expand ~ and simple $HOME/${HOME} forms that appear in shell commands.
+	home, _ := os.UserHomeDir()
+	if home != "" {
+		if strings.HasPrefix(path, "~") {
+			path = home + path[1:]
+		} else if path == "$HOME" || strings.HasPrefix(path, "$HOME/") {
+			path = home + path[len("$HOME"):]
+		} else if path == "${HOME}" || strings.HasPrefix(path, "${HOME}/") {
+			path = home + path[len("${HOME}"):]
+		}
+	}
+
+	return ClassifyPath(path)
+}
+
+// shellPathIsSensitive reports whether a shell token names a path that should
+// be treated as system_write or worse. It is used for both write operands and
+// general path arguments so reads of rc files and trust anchors are gated.
+func shellPathIsSensitive(tok string) bool {
+	cls := classifyShellTokenPath(tok)
+	return Rank(cls) >= Rank(SystemWrite)
+}
+
+// shellPathIsHomeSensitive reports whether a shell token names a path under
+// the user's home directory that ClassifyPath considers system_write or worse
+// (e.g. ~/.bashrc, ~/.ssh/id_rsa, ~/.odek/config.json). It is narrower than
+// shellPathIsSensitive so that touching /etc itself does not break the existing
+// classification of commands like `cd /etc`.
+func shellPathIsHomeSensitive(tok string) bool {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return false
+	}
+	path := tok
+	for _, prefix := range []string{"of=", "if="} {
+		if strings.HasPrefix(strings.ToLower(path), prefix) {
+			path = path[len(prefix):]
+			break
+		}
+	}
+	if path == "" {
+		return false
+	}
+	if strings.HasPrefix(path, "~") {
+		path = home + path[1:]
+	} else if path == "$HOME" || strings.HasPrefix(path, "$HOME/") {
+		path = home + path[len("$HOME"):]
+	} else if path == "${HOME}" || strings.HasPrefix(path, "${HOME}/") {
+		path = home + path[len("${HOME}"):]
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	abs = filepath.Clean(abs)
+	if abs != home && !strings.HasPrefix(abs, home+"/") {
+		return false
+	}
+	return Rank(ClassifyPath(abs)) >= Rank(SystemWrite)
+}
+
 // ── Small token helpers ────────────────────────────────────────────────
 
 // commandName returns the program name from a token, taking the basename of
@@ -1624,6 +1704,21 @@ func hasAny(tokens []string, names ...string) bool {
 			if t == n {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// rsyncDeleteFlags are flags that cause rsync to delete files on the
+// destination or remove them from the source — unrecoverable bulk deletion.
+func hasAnyRsyncDelete(tokens []string) bool {
+	for _, t := range tokens {
+		if strings.HasPrefix(t, "--delete") {
+			return true
+		}
+		switch t {
+		case "--del", "--remove-source-files":
+			return true
 		}
 	}
 	return false
@@ -1854,6 +1949,16 @@ func isDestructive(first string, tokens []string) bool {
 		return false
 	}
 
+	// find -delete removes every matched file; rsync --delete / --remove-source-files
+	// can wipe a directory tree. Both are unrecoverable bulk deletion, equivalent to
+	// rm -rf, so they classify as destructive.
+	if first == "find" && hasAny(tokens, "-delete") {
+		return true
+	}
+	if first == "rsync" && hasAnyRsyncDelete(tokens) {
+		return true
+	}
+
 	if !destructivePrefixes[first] || len(tokens) < 2 {
 		return false
 	}
@@ -1905,22 +2010,31 @@ func isSystemWrite(first string, tokens []string) bool {
 	// write check. Escalate them here so they prompt instead.
 	if writePrefixes[first] || first == "ln" || first == "install" {
 		for _, tok := range tokens[1:] {
-			if isSystemPath(tok) {
+			if shellPathIsSensitive(tok) {
 				return true
 			}
 		}
 	}
-	// Check redirect targets for system paths
+	// Check redirect targets for sensitive paths
 	for _, tok := range tokens {
 		if tok == ">" || tok == ">>" {
 			continue
 		}
-		if isSystemPath(tok) {
+		if shellPathIsSensitive(tok) {
 			// Check if it's a redirect target (token follows > or >>)
 			for i, t := range tokens {
 				if (t == ">" || t == ">>") && i+1 < len(tokens) && tokens[i+1] == tok {
 					return true
 				}
+			}
+		}
+	}
+	// dd of=... writes its output to an arbitrary path; catch writes to
+	// rc files and trust anchors that would otherwise slip through as safe.
+	if first == "dd" {
+		for _, tok := range tokens {
+			if strings.HasPrefix(strings.ToLower(tok), "of=") && shellPathIsSensitive(tok) {
+				return true
 			}
 		}
 	}
@@ -1992,6 +2106,10 @@ func isLocalWrite(first string, tokens []string) bool {
 		return false
 	}
 	if writePrefixes[first] {
+		return true
+	}
+	// find -fprint/-fprintf write match lists to a file (arbitrary path)
+	if first == "find" && hasAny(tokens, "-fprint", "-fprintf") {
 		return true
 	}
 	// Any command with > or >> is a write
@@ -2067,7 +2185,72 @@ func isNetworkEgress(first string, tokens []string) bool {
 	return true
 }
 
+// gitCodeExecConfigKeys are git config keys whose values cause arbitrary
+// command execution when set via -c/--config-env or git config.
+var gitCodeExecConfigKeys = map[string]bool{
+	"core.pager":       true,
+	"core.fsmonitor":   true,
+	"credential.helper": true,
+}
+
+// isGitCodeExecution reports whether a git invocation carries a config override
+// or subcommand that can execute arbitrary shell code. It deliberately errs on
+// the side of classification rather than parsing the full git config grammar:
+// aliases whose value starts with "!" run shell commands, and a small set of
+// core/credential keys spawn pagers or helpers.
+func isGitCodeExecution(tokens []string) bool {
+	for i := 0; i < len(tokens); i++ {
+		tok := tokens[i]
+		if tok == "git" {
+			continue
+		}
+
+		var val string
+		consumed := false
+		switch {
+		case tok == "-c" || tok == "--config-env":
+			if i+1 < len(tokens) {
+				val = tokens[i+1]
+				consumed = true
+			}
+		case strings.HasPrefix(tok, "-c"):
+			val = tok[2:]
+		case strings.HasPrefix(tok, "--config-env="):
+			val = tok[len("--config-env="):]
+		case !strings.HasPrefix(tok, "-"):
+			// Once we hit the subcommand, global options are done.
+			if tok == "config" {
+				return true
+			}
+		}
+
+		if consumed {
+			i++
+		}
+		if val == "" {
+			continue
+		}
+
+		key, value, _ := strings.Cut(val, "=")
+		key = strings.ToLower(key)
+		if strings.HasPrefix(key, "alias.") && strings.HasPrefix(value, "!") {
+			return true
+		}
+		if gitCodeExecConfigKeys[key] {
+			return true
+		}
+	}
+	return false
+}
+
 func isCodeExecution(first string, tokens []string) bool {
+	// git -c/--config-env can inject arbitrary shell commands via aliases,
+	// core.pager, core.fsmonitor, credential.helper, etc.; git config writes
+	// can persist the same payloads.
+	if first == "git" && isGitCodeExecution(tokens) {
+		return true
+	}
+
 	// Pipe to shell interpreter
 	for i, tok := range tokens {
 		if tok == "|" && i+1 < len(tokens) && pipedShells[commandName(tokens[i+1])] {
@@ -2317,16 +2500,18 @@ func hasArgAfter(tokens []string, after, target string) bool {
 	return false
 }
 
-// touchesSystemPath reports whether any token names a system path (an
+// touchesSystemPath reports whether any token names a sensitive path (an
 // argument or a redirect target alike). It is intentionally broader than the
 // redirect-only scan in isSystemWrite — it catches reads/args such as
-// `cat /etc/foo` or an unknown tool pointed at /usr — so both checks exist.
+// `cat /etc/foo`, `cat ~/.bashrc`, or an unknown tool pointed at /usr — so both
+// checks exist. It keeps the legacy trailing-slash system-prefix check and
+// additionally uses ClassifyPath for home rc files and trust anchors.
 func touchesSystemPath(tokens []string) bool {
 	for _, tok := range tokens {
 		if tok == ">" || tok == ">>" {
 			continue
 		}
-		if isSystemPath(tok) {
+		if isSystemPath(tok) || shellPathIsHomeSensitive(tok) {
 			return true
 		}
 	}

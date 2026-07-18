@@ -95,6 +95,9 @@ The classifier is hardened against common evasion tricks (see the package doc in
 - `wipefs`, `blkdiscard`, `sgdisk`/`gdisk`/`cfdisk`/`sfdisk`, `mkswap`, `badblocks`, `cryptsetup`, and the `mkfs.*` family are `destructive`; `shred` is target-aware (local file → `local_write`, raw device / wipe target → `destructive`).
 - `shutdown`, `reboot`, `halt`, `poweroff`, `init 0`/`init 6` — machine power-control commands are `destructive` (deny-by-default) with an accurate label instead of falling through to `unknown`.
 - `env` and `printenv` — a full process-environment dump is classified as `system_write` because it can leak secrets that the redaction scanner does not recognise. `env FOO=bar <cmd>` still classifies the real `<cmd>` normally.
+- `git -c alias.x='!id' x`, `git -c core.pager='sh -c id' --paginate log`, `git config --global alias.pwn '!cmd'` — `git -c` / `--config-env` overrides and the `git config` subcommand are `code_execution` because they can define arbitrary shell commands.
+- `find . -delete`, `rsync -a --delete /empty/ ~`, `rsync --remove-source-files` — bulk-deletion flags are `destructive`; `find -fprint` / `-fprintf` are `local_write` because they write match lists to arbitrary files.
+- `echo x >> ~/.bashrc`, `cp evil ~/.profile`, `dd if=evil of=~/.bashrc` — shell file operands and redirect targets are run through `ClassifyPath`, so writes to shell rc files, `~/.ssh`, `~/.odek` trust anchors, and other home-sensitive paths are `system_write` instead of auto-allowed `local_write`.
 
 Regression suites (`internal/danger/classifier_bypass_test.go` and `hardening_test.go`) pin these as known-closed evasions. If you find a new bypass, those test files are the place to add it.
 

