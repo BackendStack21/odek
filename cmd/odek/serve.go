@@ -921,7 +921,41 @@ func handlePrompt(
 		}
 	}
 
-	// Resolve @ references
+	originalPrompt := prompt
+
+	// Load or create session early so the audit recorder can be attached
+	// before @-references and Web-UI attachments are wrapped.
+	var sess *session.Session
+	var err error
+	if sessionID != "" {
+		sess, err = store.Load(sessionID)
+		if err != nil {
+			sess = nil
+		}
+	}
+
+	// Run agent. Audit recorder wired around the loop so every
+	// wrapUntrusted call (including @-refs and attachments below) is logged
+	// to this session's audit log under <sessions>/audit/.
+	auditStore := session.NewAuditStore(store.Dir())
+	var auditSessID string
+	var auditTurn int
+	if sess != nil {
+		auditSessID = sess.ID
+		auditTurn = sess.Turns + 1
+	} else if currSess != nil {
+		auditSessID = currSess.ID
+		auditTurn = currSess.Turns + 1
+	}
+	if auditSessID != "" {
+		// Scope the ingest recorder to this prompt's context so concurrent
+		// sessions cannot overwrite each other's audit attribution.
+		ctx = loop.WithIngestRecorder(ctx, func(source, content string) {
+			_ = auditStore.RecordIngest(auditSessID, auditTurn, source, content)
+		})
+	}
+
+	// Resolve @ references (now recorded if a session is active)
 	refs := resource.ParseRefs(prompt)
 	resolvedRefs := make(map[string]string)
 	for _, ref := range refs {
@@ -964,17 +998,6 @@ func handlePrompt(
 			} else {
 				enrichedPrompt = strings.Join(wrapped, "\n\n")
 			}
-		}
-	}
-
-	// Load or create session
-	var sess *session.Session
-	var err error
-
-	if sessionID != "" {
-		sess, err = store.Load(sessionID)
-		if err != nil {
-			sess = nil
 		}
 	}
 
@@ -1030,27 +1053,6 @@ func handlePrompt(
 		mm.AppendBuffer("user", prompt)
 	}
 
-	// Run agent. Audit recorder wired around the loop so every
-	// wrapUntrusted call inside the agent's tool invocations is logged
-	// to this session's audit log under <sessions>/audit/.
-	auditStore := session.NewAuditStore(store.Dir())
-	var auditSessID string
-	var auditTurn int
-	if sess != nil {
-		auditSessID = sess.ID
-		auditTurn = sess.Turns + 1
-	} else if currSess != nil {
-		auditSessID = currSess.ID
-		auditTurn = currSess.Turns + 1
-	}
-	if auditSessID != "" {
-		// Scope the ingest recorder to this prompt's context so concurrent
-		// sessions cannot overwrite each other's audit attribution.
-		ctx = loop.WithIngestRecorder(ctx, func(source, content string) {
-			_ = auditStore.RecordIngest(auditSessID, auditTurn, source, content)
-		})
-	}
-
 	origLen := len(messages) - 1 // initial estimate: index of the user message we appended
 	start := time.Now()
 	_, allMessages, err := agent.RunWithMessages(ctx, messages)
@@ -1072,9 +1074,10 @@ func handlePrompt(
 		}
 	}
 
-	// Record per-turn divergence assessment.
+	// Record per-turn divergence assessment. Use the original prompt so
+	// injected resources from @-refs/attachments do not count as user-mentioned.
 	if auditSessID != "" {
-		recordTurnAudit(auditStore, auditSessID, auditTurn, prompt, allMessages[origLen:])
+		recordTurnAudit(auditStore, auditSessID, auditTurn, originalPrompt, allMessages[origLen:])
 	}
 
 	// New messages = user message we added + everything the agent appended.

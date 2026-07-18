@@ -153,20 +153,20 @@ func replCmd(args []string) error {
 		MaxIterations:    resolved.MaxIter,
 		SystemMessage:    systemMessage,
 		UntrustedWrapper: func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
-		NoProjectFile:  resolved.NoAgents,
-		Thinking:       resolved.Thinking,
-		ThinkingBudget: f.ThinkingBudget,
-		Tools:          tools,
-		ToolFilter:     odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
-		SandboxCleanup: sandboxCleanup,
-		Renderer:       rend,
-		Skills:         skillsCfg,
-		SkillManager:   sm,
-		MemoryConfig:   resolved.Memory,
-		MemoryDir:      expandHome("~/.odek/memory"),
-		PromptCaching:  resolved.PromptCaching,
-		Guard:          injectionGuard,
-		GuardConfig:    resolved.Guard,
+		NoProjectFile:    resolved.NoAgents,
+		Thinking:         resolved.Thinking,
+		ThinkingBudget:   f.ThinkingBudget,
+		Tools:            tools,
+		ToolFilter:       odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
+		SandboxCleanup:   sandboxCleanup,
+		Renderer:         rend,
+		Skills:           skillsCfg,
+		SkillManager:     sm,
+		MemoryConfig:     resolved.Memory,
+		MemoryDir:        expandHome("~/.odek/memory"),
+		PromptCaching:    resolved.PromptCaching,
+		Guard:            injectionGuard,
+		GuardConfig:      resolved.Guard,
 	})
 	if err != nil {
 		return err
@@ -243,7 +243,7 @@ func replCmd(args []string) error {
 
 		// Resolve @references in REPL input
 		cwd, _ := os.Getwd()
-		if enriched, err := enrichTask(input, nil, cwd); err == nil {
+		if enriched, err := enrichTask(context.Background(), input, nil, cwd); err == nil {
 			input = enriched
 		}
 

@@ -657,7 +657,7 @@ func TestEnrichTask_WrapsCtxContent(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "note.txt"), []byte("hello world"), 0644)
 
-	enriched, err := enrichTask("check @note.txt", nil, dir)
+	enriched, err := enrichTask(context.Background(), "check @note.txt", nil, dir)
 	if err != nil {
 		t.Fatalf("enrichTask error: %v", err)
 	}
@@ -670,7 +670,7 @@ func TestEnrichTask_WrapsCtxFiles(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "data.txt"), []byte("sensitive data"), 0644)
 
-	enriched, err := enrichTask("analyze", []string{"data.txt"}, dir)
+	enriched, err := enrichTask(context.Background(), "analyze", []string{"data.txt"}, dir)
 	if err != nil {
 		t.Fatalf("enrichTask error: %v", err)
 	}

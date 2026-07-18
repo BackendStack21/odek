@@ -604,6 +604,22 @@ Now:
 - Conversation-extracted suggestions receive the session provenance before being added to the suggestion list.
 - The enhancement loop copies the original suggestion's `Provenance` onto the LLM-enhanced result, so `IsTainted()` remains true and `AutoSaveSuggestions` declines the skill unless `allowUntrusted` is set.
 
+### 39j. Audit ingest recording for @-references, `--ctx`, and Web-UI attachments
+
+The per-turn audit log and divergence heuristic only inspected `tool` messages for the nonce'd `<untrusted_content_*>` wrapper. @-references, `--ctx` files, and Web-UI attachments were also wrapped before entering the user message, but:
+
+- `cmd/odek/refs.go` called `wrapUntrusted` with `context.Background()`, so `recordIngest` found no active recorder.
+- `cmd/odek/serve.go` resolved @-refs and attachments before attaching the per-session ingest recorder.
+- `recordTurnAudit` only scanned `tool` messages, so `ingested_untrusted` stayed false for these vectors.
+- The enriched prompt (including injected resource literals) was passed as the "user message" to the divergence check, making attacker resources count as user-mentioned and disabling the heuristic.
+
+Now:
+
+- `enrichTask` accepts a `context.Context` and uses it for every `wrapUntrusted` call.
+- In `odek run --session`, `odek continue`, and `odek serve`, the audit recorder is attached before `@`-reference/`--ctx`/attachment resolution.
+- `recordTurnAudit` scans `user` messages for untrusted wrappers as well as `tool` messages.
+- The divergence check receives the original, pre-enrichment user prompt, so injected resources are treated as novel when the agent acts on them.
+
 ### 40. `/api/resources` result limit cap
 
 The `/api/resources?q=...&limit=N` autocomplete endpoint previously accepted any positive `limit` value. It is now capped to 100 results both in the HTTP handler and in `Registry.Search`. This prevents a prompt-injected or attacker-forged request from forcing an unbounded directory walk and returning a multi-megabyte JSON response.

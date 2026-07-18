@@ -25,7 +25,7 @@ import (
 //
 //	odek run --ctx lib.go,util.go "@main.go compare these"
 //	  → both ctx files + @ref resolution
-func enrichTask(task string, ctxFiles []string, cwd string) (string, error) {
+func enrichTask(ctx context.Context, task string, ctxFiles []string, cwd string) (string, error) {
 	reg := resource.NewRegistry(resource.NewFileResolver(cwd))
 
 	// Step 1: Resolve @ references in the task
@@ -34,12 +34,12 @@ func enrichTask(task string, ctxFiles []string, cwd string) (string, error) {
 	if len(refs) > 0 {
 		resolved := make(map[string]string)
 		for _, ref := range refs {
-			content, err := reg.Load(context.Background(), ref.Raw)
+			content, err := reg.Load(ctx, ref.Raw)
 			if err != nil {
 				// Leave unresolved refs as-is
 				continue
 			}
-			resolved[ref.Raw] = wrapUntrusted(context.Background(), "resource:"+ref.Raw, content)
+			resolved[ref.Raw] = wrapUntrusted(ctx, "resource:"+ref.Raw, content)
 		}
 		enriched = resource.ReplaceRefs(task, resolved)
 	}
@@ -52,11 +52,11 @@ func enrichTask(task string, ctxFiles []string, cwd string) (string, error) {
 			if f == "" {
 				continue
 			}
-			content, err := reg.Load(context.Background(), "@"+f)
+			content, err := reg.Load(ctx, "@"+f)
 			if err != nil {
 				return "", fmt.Errorf("ctx file %q: %w", f, err)
 			}
-			blocks = append(blocks, fmt.Sprintf("--- %s ---\n%s\n--- end %s ---", f, wrapUntrusted(context.Background(), "ctx:"+f, content), f))
+			blocks = append(blocks, fmt.Sprintf("--- %s ---\n%s\n--- end %s ---", f, wrapUntrusted(ctx, "ctx:"+f, content), f))
 		}
 		if len(blocks) > 0 {
 			// Log attached files to stderr

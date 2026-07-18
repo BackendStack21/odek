@@ -504,99 +504,99 @@ func parseRunFlags(args []string) (runFlags, error) {
 		case "--memory-extended-anaphora-resolution-disabled":
 			f.MemoryExtendedAnaphoraResolutionEnabled = boolPtr(false)
 			i++
-	case "--memory-extended-follow-up-anticipation-enabled":
-		f.MemoryExtendedFollowUpAnticipationEnabled = boolPtr(true)
-		i++
-	case "--memory-extended-follow-up-anticipation-disabled":
-		f.MemoryExtendedFollowUpAnticipationEnabled = boolPtr(false)
-		i++
-	case "--guard-provider":
-		if i+1 >= len(args) {
-			return f, fmt.Errorf("--guard-provider requires a value")
-		}
-		f.GuardProvider = args[i+1]
-		i += 2
-	case "--guard-url":
-		if i+1 >= len(args) {
-			return f, fmt.Errorf("--guard-url requires a value")
-		}
-		f.GuardURL = args[i+1]
-		i += 2
-	case "--guard-batch-url":
-		if i+1 >= len(args) {
-			return f, fmt.Errorf("--guard-batch-url requires a value")
-		}
-		f.GuardBatchURL = args[i+1]
-		i += 2
-	case "--guard-long-url":
-		if i+1 >= len(args) {
-			return f, fmt.Errorf("--guard-long-url requires a value")
-		}
-		f.GuardLongURL = args[i+1]
-		i += 2
-	case "--guard-socket-path":
-		if i+1 >= len(args) {
-			return f, fmt.Errorf("--guard-socket-path requires a value")
-		}
-		f.GuardSocketPath = args[i+1]
-		i += 2
-	case "--guard-threshold":
-		if i+1 >= len(args) {
-			return f, fmt.Errorf("--guard-threshold requires a value")
-		}
-		fmt.Sscanf(args[i+1], "%f", &f.GuardThreshold)
-		i += 2
-	case "--guard-timeout":
-		if i+1 >= len(args) {
-			return f, fmt.Errorf("--guard-timeout requires a value")
-		}
-		fmt.Sscanf(args[i+1], "%d", &f.GuardTimeoutSeconds)
-		i += 2
-	case "--guard-fallback":
-		f.GuardFallbackToLocal = boolPtr(true)
-		i++
-	case "--guard-no-fallback":
-		f.GuardFallbackToLocal = boolPtr(false)
-		i++
-	case "--guard-scan-memory":
-		f.GuardScanMemory = boolPtr(true)
-		i++
-	case "--guard-no-scan-memory":
-		f.GuardScanMemory = boolPtr(false)
-		i++
-	case "--guard-scan-system-prompt":
-		f.GuardScanSystemPrompt = boolPtr(true)
-		i++
-	case "--guard-no-scan-system-prompt":
-		f.GuardScanSystemPrompt = boolPtr(false)
-		i++
-	case "--guard-scan-mcp":
-		f.GuardScanMCP = boolPtr(true)
-		i++
-	case "--guard-no-scan-mcp":
-		f.GuardScanMCP = boolPtr(false)
-		i++
-	case "--guard-scan-skills":
-		f.GuardScanSkills = boolPtr(true)
-		i++
-	case "--guard-no-scan-skills":
-		f.GuardScanSkills = boolPtr(false)
-		i++
-	case "--guard-scan-tool-outputs":
-		f.GuardScanToolOutputs = boolPtr(true)
-		i++
-	case "--guard-no-scan-tool-outputs":
-		f.GuardScanToolOutputs = boolPtr(false)
-		i++
-	case "--guard-scan-telegram":
-		f.GuardScanTelegram = boolPtr(true)
-		i++
-	case "--guard-no-scan-telegram":
-		f.GuardScanTelegram = boolPtr(false)
-		i++
-	case "--deliver":
-		f.Deliver = boolPtr(true)
-		i++
+		case "--memory-extended-follow-up-anticipation-enabled":
+			f.MemoryExtendedFollowUpAnticipationEnabled = boolPtr(true)
+			i++
+		case "--memory-extended-follow-up-anticipation-disabled":
+			f.MemoryExtendedFollowUpAnticipationEnabled = boolPtr(false)
+			i++
+		case "--guard-provider":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--guard-provider requires a value")
+			}
+			f.GuardProvider = args[i+1]
+			i += 2
+		case "--guard-url":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--guard-url requires a value")
+			}
+			f.GuardURL = args[i+1]
+			i += 2
+		case "--guard-batch-url":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--guard-batch-url requires a value")
+			}
+			f.GuardBatchURL = args[i+1]
+			i += 2
+		case "--guard-long-url":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--guard-long-url requires a value")
+			}
+			f.GuardLongURL = args[i+1]
+			i += 2
+		case "--guard-socket-path":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--guard-socket-path requires a value")
+			}
+			f.GuardSocketPath = args[i+1]
+			i += 2
+		case "--guard-threshold":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--guard-threshold requires a value")
+			}
+			fmt.Sscanf(args[i+1], "%f", &f.GuardThreshold)
+			i += 2
+		case "--guard-timeout":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--guard-timeout requires a value")
+			}
+			fmt.Sscanf(args[i+1], "%d", &f.GuardTimeoutSeconds)
+			i += 2
+		case "--guard-fallback":
+			f.GuardFallbackToLocal = boolPtr(true)
+			i++
+		case "--guard-no-fallback":
+			f.GuardFallbackToLocal = boolPtr(false)
+			i++
+		case "--guard-scan-memory":
+			f.GuardScanMemory = boolPtr(true)
+			i++
+		case "--guard-no-scan-memory":
+			f.GuardScanMemory = boolPtr(false)
+			i++
+		case "--guard-scan-system-prompt":
+			f.GuardScanSystemPrompt = boolPtr(true)
+			i++
+		case "--guard-no-scan-system-prompt":
+			f.GuardScanSystemPrompt = boolPtr(false)
+			i++
+		case "--guard-scan-mcp":
+			f.GuardScanMCP = boolPtr(true)
+			i++
+		case "--guard-no-scan-mcp":
+			f.GuardScanMCP = boolPtr(false)
+			i++
+		case "--guard-scan-skills":
+			f.GuardScanSkills = boolPtr(true)
+			i++
+		case "--guard-no-scan-skills":
+			f.GuardScanSkills = boolPtr(false)
+			i++
+		case "--guard-scan-tool-outputs":
+			f.GuardScanToolOutputs = boolPtr(true)
+			i++
+		case "--guard-no-scan-tool-outputs":
+			f.GuardScanToolOutputs = boolPtr(false)
+			i++
+		case "--guard-scan-telegram":
+			f.GuardScanTelegram = boolPtr(true)
+			i++
+		case "--guard-no-scan-telegram":
+			f.GuardScanTelegram = boolPtr(false)
+			i++
+		case "--deliver":
+			f.Deliver = boolPtr(true)
+			i++
 
 		default:
 			// Not a flag — treat remaining as the task
@@ -1183,13 +1183,11 @@ func run(args []string) error {
 		return err
 	}
 
-	// Resolve @references and --ctx file attachments in the task
+	// Keep the original prompt for the audit divergence check. @-references,
+	// --ctx files, and attachments will be expanded later, but the user text
+	// used for comparison must not include attacker-injected content.
+	originalTask := f.Task
 	cwd, _ := os.Getwd()
-	enriched, err := enrichTask(f.Task, f.Ctx, cwd)
-	if err != nil {
-		return err
-	}
-	f.Task = enriched
 
 	// Build system prompt: explicit override > IDENTITY.md > compiled default
 	systemMessage := buildSystemPrompt(resolved)
@@ -1325,15 +1323,16 @@ func run(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	if resolved.InteractionMode != "off" {
-		rend.Start(f.Task)
-	}
-
 	// Shared agent run — capture messages for --learn mode
 	var allMessages []llm.Message
 	var runErr error
 	var result string
 	var sessionID string
+
+	var auditStore *session.AuditStore
+	var sessIDCapture string
+	var currentTurn int
+	var sessionStore *session.Store
 
 	cwd, _ = os.Getwd()
 	if mm := agent.Memory(); mm != nil {
@@ -1359,12 +1358,55 @@ func run(args []string) error {
 			sessionID = sess.ID
 			mm.SetSessionContext(sessionID, cwd)
 			fmt.Fprintf(os.Stderr, "odek: session %s created\n", sessionID)
+
+			// Wire the audit recorder now that the session ID is known, so
+			// @-refs and --ctx expansions below are logged as ingested content.
+			auditStore = session.NewAuditStore(store.Dir())
+			currentTurn = sess.Turns + 1
+			sessIDCapture = sess.ID
+			sessionStore = store
+			ctx = loop.WithIngestRecorder(ctx, func(source, content string) {
+				_ = auditStore.RecordIngest(sessIDCapture, currentTurn, source, content)
+			})
 		} else {
 			// Non-session mode still needs a transient ID so extracted atoms can
 			// be traced back to this run for review.
 			sessionID = session.GenerateID()
 			mm.SetSessionContext(sessionID, cwd)
 		}
+	}
+
+	// Resolve @references and --ctx file attachments. In session mode this
+	// happens after the audit recorder is attached, so the wrapped content is
+	// recorded in the session's audit log.
+	enrichCtx := ctx
+	if f.Session == nil || !*f.Session {
+		enrichCtx = context.Background()
+	}
+	enriched, err := enrichTask(enrichCtx, originalTask, f.Ctx, cwd)
+	if err != nil {
+		return err
+	}
+	f.Task = enriched
+
+	// Update the pre-created session's user message to the enriched prompt
+	// so resuming the session keeps the attached context.
+	if f.Session != nil && *f.Session && sessionStore != nil {
+		latest, err := sessionStore.Load(sessionID)
+		if err == nil {
+			msgs := latest.GetMessages()
+			for i := len(msgs) - 1; i >= 0; i-- {
+				if msgs[i].Role == "user" {
+					msgs[i].Content = enriched
+					break
+				}
+			}
+			_ = sessionStore.Save(latest)
+		}
+	}
+
+	if resolved.InteractionMode != "off" {
+		rend.Start(f.Task)
 	}
 
 	if f.Session != nil && *f.Session {
@@ -1396,22 +1438,18 @@ func run(args []string) error {
 		}
 
 		if runErr == nil {
-			store, err := session.NewStore()
-			if err != nil {
-				return fmt.Errorf("session store: %w", err)
-			}
 			// Re-load the pre-created session and append the messages produced
 			// by the run. The pre-created session contains the system + user task;
 			// append only the assistant/tool turns that follow.
-			latest, err := store.Load(sessionID)
+			latest, err := sessionStore.Load(sessionID)
 			if err != nil {
 				return fmt.Errorf("load session: %w", err)
 			}
 			newMsgs := allMessages[len(latest.GetMessages()):]
-			if err := store.Append(sessionID, newMsgs); err != nil {
+			if err := sessionStore.Append(sessionID, newMsgs); err != nil {
 				return fmt.Errorf("save session: %w", err)
 			}
-			updated, err := store.Load(sessionID)
+			updated, err := sessionStore.Load(sessionID)
 			if err != nil {
 				return fmt.Errorf("reload session: %w", err)
 			}
@@ -1419,8 +1457,14 @@ func run(args []string) error {
 			if mm := agent.Memory(); mm != nil {
 				updated.Buffer = mm.GetBuffer()
 			}
-			store.Save(updated)
+			sessionStore.Save(updated)
 			fmt.Fprintf(os.Stderr, "odek: session %s saved — continue with: odek continue \"...\"\n", updated.ID)
+		}
+
+		// Record per-turn divergence assessment. Use the original prompt so
+		// injected resources from @-refs/--ctx do not count as user-mentioned.
+		if auditStore != nil {
+			recordTurnAudit(auditStore, sessIDCapture, currentTurn, originalTask, allMessages[len(messages):])
 		}
 	} else {
 		// Single-shot mode (default)
@@ -2184,13 +2228,7 @@ func continueCmd(args []string) error {
 		return fmt.Errorf("no task provided for continue")
 	}
 	task := strings.Join(args[i:], " ")
-
-	// Resolve @references in the continue task
-	cwd, _ := os.Getwd()
-	enriched, err := enrichTask(task, nil, cwd)
-	if err == nil {
-		task = enriched
-	}
+	originalTask := task
 
 	store, err := session.NewStore()
 	if err != nil {
@@ -2209,6 +2247,8 @@ func continueCmd(args []string) error {
 
 	fmt.Fprintf(os.Stderr, "odek: continuing session %s (turn %d → %d)\n",
 		sess.ID, sess.Turns, sess.Turns+1)
+
+	cwd, _ := os.Getwd()
 
 	// Resolve config (no CLI flags for continue — uses session's model)
 	resolved := config.LoadConfig(config.CLIFlags{Model: sess.Model})
@@ -2355,6 +2395,13 @@ func continueCmd(args []string) error {
 		_ = auditStore.RecordIngest(sessIDCapture, currentTurn, source, content)
 	})
 
+	// Resolve @references in the continue task now that the audit recorder
+	// is attached, so attached file content is logged as ingested input.
+	enriched, err := enrichTask(ctx, originalTask, nil, cwd)
+	if err == nil {
+		task = enriched
+	}
+
 	// Return-after-break: on session resume, load a concise summary of where
 	// the user left off and the next likely step.
 	if mm := agent.Memory(); mm != nil {
@@ -2393,7 +2440,9 @@ func continueCmd(args []string) error {
 	_ = result
 
 	// Record per-turn divergence assessment after the turn completes.
-	recordTurnAudit(auditStore, sessIDCapture, currentTurn, task, allMessages[len(sess.GetMessages()):])
+	// Use the original prompt so injected resources from @-refs/--ctx do
+	// not count as user-mentioned.
+	recordTurnAudit(auditStore, sessIDCapture, currentTurn, originalTask, allMessages[len(sess.GetMessages()):])
 
 	// Append agent response to buffer
 	if len(allMessages) > 0 {
