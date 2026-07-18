@@ -511,11 +511,13 @@ The batch approval gate in `internal/loop/loop.go::classifyToolCall` only unders
 - Shows the full command/path text instead of truncating at 120 characters, so the user sees exactly what is being authorized.
 - Refuses to grant blanket trust (`SetTrustAll`) for any iteration that still contains an unclassifiable tool; those tools must be approved individually by their own internal gates.
 
-### 35b. Telegram class-trust guard
+### 35b. Telegram class-trust guard + friction
 
 `internal/telegram/approver.go` previously offered a "Trust Session" button for every risk class, including `destructive`, `blocked`, `unknown`, and the synthetic `tool_batch` class. One tap on Trust Session cached approval for that class, so trusting a benign `tool_batch` card also silently approved every later destructive operation in the same session.
 
-The Telegram approver now mirrors the TTY/Web policy: the Trust Session button is hidden for `destructive`, `blocked`, `unknown`, and `tool_batch`, and a trust callback for those classes is treated as a denial. This closes the approval-fatigue path where an injected batch of mixed-risk tools is reduced to a single tap.
+The Telegram approver now mirrors the TTY/Web policy: the Trust Session button is hidden for `destructive`, `blocked`, `unknown`, and `tool_batch`, and a trust callback for those classes is treated as a denial.
+
+In addition, a friction counter tracks approvals per class. After 3 approvals of the same class within 60 seconds, the next prompt for that class hides the Trust Session shortcut and adds a warning banner, forcing a per-call approval. This breaks the reflexive tap-through pattern that sustained LLM-driven approval pressure exploits.
 
 ### 36. Browser link URL wrapping
 

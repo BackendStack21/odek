@@ -603,6 +603,112 @@ func TestTelegramApprover_TrustDeniedForToolBatch(t *testing.T) {
 	}
 }
 
+// TestTelegramApprover_FrictionDisablesTrust verifies that after enough
+// approvals of a class within the friction window the Trust Session shortcut
+// is hidden and a warning is shown.
+func TestTelegramApprover_FrictionDisablesTrust(t *testing.T) {
+	rec := new(requestRecorder)
+	ts := testServer(t, rec)
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	a := NewTelegramApprover(bot, 1, 0)
+	a.FrictionThreshold = 2
+	a.FrictionWindow = 5 * time.Minute
+
+	// Record two prior system_write approvals to trigger friction.
+	a.recordApproval(danger.SystemWrite)
+	a.recordApproval(danger.SystemWrite)
+
+	done := make(chan error, 1)
+	go func() { done <- a.PromptCommand(danger.SystemWrite, "echo third", "test friction") }()
+
+	var body string
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rec.mu.Lock()
+		if len(rec.requests) > 0 {
+			body = rec.requests[len(rec.requests)-1].Body
+		}
+		rec.mu.Unlock()
+		if body != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if body == "" {
+		t.Fatal("prompt request was not sent")
+	}
+	if !strings.Contains(body, "Trust Session is disabled") {
+		t.Errorf("friction prompt should contain a warning, got body:\n%s", body)
+	}
+	if strings.Contains(body, "🔒 Trust Session") {
+		t.Errorf("friction prompt should not offer Trust Session, got body:\n%s", body)
+	}
+
+	id := extractCallbackID(body, cbPrefixApprove)
+	if id == "" {
+		t.Fatal("could not extract approve callback id")
+	}
+	a.HandleCallback(cbPrefixApprove+id, 0)
+	if err := <-done; err != nil {
+		t.Fatalf("approve should succeed: %v", err)
+	}
+}
+
+// TestTelegramApprover_NoFrictionBelowThreshold verifies that the Trust
+// Session shortcut is still offered when the approval count is below the
+// friction threshold.
+func TestTelegramApprover_NoFrictionBelowThreshold(t *testing.T) {
+	rec := new(requestRecorder)
+	ts := testServer(t, rec)
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	a := NewTelegramApprover(bot, 1, 0)
+	a.FrictionThreshold = 3
+	a.FrictionWindow = 5 * time.Minute
+
+	// Record only two approvals — below the threshold.
+	a.recordApproval(danger.SystemWrite)
+	a.recordApproval(danger.SystemWrite)
+
+	done := make(chan error, 1)
+	go func() { done <- a.PromptCommand(danger.SystemWrite, "echo third", "test no friction") }()
+
+	var body string
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rec.mu.Lock()
+		if len(rec.requests) > 0 {
+			body = rec.requests[len(rec.requests)-1].Body
+		}
+		rec.mu.Unlock()
+		if body != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if body == "" {
+		t.Fatal("prompt request was not sent")
+	}
+	if !strings.Contains(body, "🔒 Trust Session") {
+		t.Errorf("prompt below threshold should still offer Trust Session, got body:\n%s", body)
+	}
+	if strings.Contains(body, "Trust Session is disabled") {
+		t.Errorf("prompt below threshold should not show friction warning, got body:\n%s", body)
+	}
+
+	id := extractCallbackID(body, cbPrefixDeny)
+	if id == "" {
+		t.Fatal("could not extract deny callback id")
+	}
+	a.HandleCallback(cbPrefixDeny+id, 0)
+	if err := <-done; err == nil {
+		t.Fatal("deny should return an error")
+	}
+}
+
 // extractCallbackID pulls the callback payload suffix for the given prefix
 // from a Telegram sendMessage request body.
 func extractCallbackID(body, prefix string) string {

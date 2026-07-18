@@ -67,6 +67,16 @@ type TelegramApprover struct {
 	// approver will accept. Callbacks from other users are rejected to prevent
 	// group-chat approval hijacking. Zero means unknown (legacy allow-all).
 	userID int64
+
+	// FrictionThreshold is the number of approvals of the same class within
+	// FrictionWindow that triggers high-friction mode. In friction mode the
+	// Trust Session shortcut is hidden for that class, forcing a per-call
+	// approval and breaking reflexive tap-through. Zero disables friction.
+	FrictionThreshold int
+	FrictionWindow    time.Duration
+
+	// approvalLog records approval timestamps per class for friction detection.
+	approvalLog map[danger.RiskClass][]time.Time
 }
 
 // NewTelegramApprover creates a TelegramApprover for the given chat and
@@ -74,13 +84,16 @@ type TelegramApprover struct {
 // callbacks from any user (legacy behavior, not recommended for groups).
 func NewTelegramApprover(bot *Bot, chatID, userID int64) *TelegramApprover {
 	return &TelegramApprover{
-		bot:     bot,
-		ChatID:  chatID,
-		userID:  userID,
-		pending: make(map[string]*pendingRequest),
-		trusted: make(map[danger.RiskClass]bool),
-		log:     NewNopLogger(),
-		cancel:  make(chan struct{}),
+		bot:               bot,
+		ChatID:            chatID,
+		userID:            userID,
+		pending:           make(map[string]*pendingRequest),
+		trusted:           make(map[danger.RiskClass]bool),
+		log:               NewNopLogger(),
+		cancel:            make(chan struct{}),
+		FrictionThreshold: 3,
+		FrictionWindow:    60 * time.Second,
+		approvalLog:       make(map[danger.RiskClass][]time.Time),
 	}
 }
 
@@ -104,6 +117,39 @@ func (a *TelegramApprover) Cancel() {
 	}
 }
 
+// shouldFriction reports whether the user has approved at least
+// FrictionThreshold operations of cls within FrictionWindow. As a side effect
+// it prunes stale entries from the per-class approval log.
+func (a *TelegramApprover) shouldFriction(cls danger.RiskClass) bool {
+	if a.FrictionThreshold <= 0 || a.FrictionWindow <= 0 {
+		return false
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	cutoff := time.Now().Add(-a.FrictionWindow)
+	log := a.approvalLog[cls]
+	kept := log[:0]
+	for _, ts := range log {
+		if ts.After(cutoff) {
+			kept = append(kept, ts)
+		}
+	}
+	a.approvalLog[cls] = kept
+	return len(kept) >= a.FrictionThreshold
+}
+
+// recordApproval logs an approval timestamp for the given class.
+func (a *TelegramApprover) recordApproval(cls danger.RiskClass) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.approvalLog == nil {
+		a.approvalLog = make(map[danger.RiskClass][]time.Time)
+	}
+	a.approvalLog[cls] = append(a.approvalLog[cls], time.Now())
+}
+
 // PromptCommand sends an approval request with inline keyboard and waits
 // for the user to respond. Returns nil on approve/trust, error on deny/timeout.
 // allowTrustForClass mirrors the TTY/Web approver policy: the highest-impact
@@ -125,6 +171,21 @@ func (a *TelegramApprover) PromptCommand(cls danger.RiskClass, cmd, description 
 
 	id := a.newID()
 	allowTrust := allowTrustForClass(cls)
+
+	// Approval-fatigue mitigation: after FrictionThreshold approvals of the
+	// same class within FrictionWindow, force a per-call approval by hiding
+	// the Trust Session shortcut and surfacing a warning. This breaks the
+	// reflexive tap-through pattern that an injected batch of benign-looking
+	// operations is designed to exploit.
+	if a.shouldFriction(cls) {
+		allowTrust = false
+		warning := fmt.Sprintf("⚠️ You have approved %d %s operations in the last %s. Trust Session is disabled for this request.", a.FrictionThreshold, cls, a.FrictionWindow)
+		if description != "" {
+			description = warning + "\n" + description
+		} else {
+			description = warning
+		}
+	}
 
 	// Build the approval message — the full command is always shown so the
 	// user can make an informed decision.
@@ -195,6 +256,7 @@ func (a *TelegramApprover) PromptCommand(cls danger.RiskClass, cmd, description 
 
 		switch action {
 		case "approve":
+			a.recordApproval(cls)
 			return nil
 		case "trust":
 			if !allowTrust {
