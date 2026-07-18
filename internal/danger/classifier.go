@@ -1898,7 +1898,8 @@ func containsBlockDevice(tok string) bool {
 
 // rmRecursiveOrForce reports whether rm's flags include a recursive or force
 // option, in any spelling: -r, -R, -f, combined (-rf, -fr, -rfv, -Rf),
-// or long (--recursive, --force, --no-preserve-root).
+// long (--recursive, --force, --no-preserve-root), or a shell default
+// substitution whose default value is a flag string such as ${X:--rf}.
 func rmRecursiveOrForce(tokens []string) bool {
 	for _, tok := range tokens[1:] {
 		switch tok {
@@ -1915,16 +1916,36 @@ func rmRecursiveOrForce(tokens []string) bool {
 				}
 			}
 		}
+		// Fail closed on ${VAR:-<flags>} / ${VAR:--rf}: the shell expands
+		// the default when VAR is unset, so a token that looks like a
+		// substitution whose default contains rm flags executes as those flags.
+		if strings.HasPrefix(tok, "${") && strings.Contains(tok, ":-") {
+			if idx := strings.Index(tok, ":-"); idx >= 0 {
+				defaultVal := tok[idx+2:]
+				if strings.Contains(defaultVal, "-") && strings.ContainsAny(defaultVal, "rRf") {
+					return true
+				}
+			}
+		}
 	}
 	return false
 }
 
 // isWipeTarget reports whether an rm argument denotes a catastrophic target:
 // any absolute path outside /tmp and /workspace, or a relative target that
-// expands to the current/parent/home directory or a glob.
+// expands to the current/parent/home directory or a glob. A leading `./` is
+// normalized so `rm -rf ./` and `rm -rf ./..` are caught the same as `.` and
+// `..`.
 func isWipeTarget(tok string) bool {
 	if strings.HasPrefix(tok, "/") {
 		return !strings.HasPrefix(tok, "/tmp") && !strings.HasPrefix(tok, "/workspace")
+	}
+	// Normalize leading `./` so `./` → `.` and `./..` → `..` for matching.
+	if strings.HasPrefix(tok, "./") {
+		tok = tok[2:]
+		if tok == "" {
+			return true
+		}
 	}
 	switch tok {
 	case "*", ".", "..", "~", "$HOME", "$PWD", "${HOME}", "${PWD}":
