@@ -394,6 +394,8 @@ client := &http.Client{
 
 There is no user-facing allowlist config field today; the list is derived from each tool's own operator-controlled `base_url`. If you need a broader or user-editable allowlist, add a `dangerous.ssrf_allowed_hosts` (or `network.allowed_hosts`) array to the config and merge it into the set passed to `ssrfGuardedTransport`.
 
+When `HTTP(S)_PROXY` is set, the transport would dial the proxy address instead of the target, so the dial-time guard would validate only the proxy and the real target could be an internal/rebound address. `ssrfGuardedTransport` detects an active proxy and refuses the request with a clear error rather than silently disabling SSRF protection. Outbound tool traffic therefore requires direct connections.
+
 ### 18b. CGNAT and benchmark IP blocking
 
 Go's `net.IP.IsPrivate()` covers RFC1918 and RFC4193 private ranges, but it does not cover RFC 6598 CGNAT (`100.64.0.0/10`) or the RFC 2544 benchmark-testing range (`198.18.0.0/15`). Tailscale and similar overlay networks use `100.64/10` addresses, so an attacker who could steer the agent to `http://100.x.x.x` (or a hostname that rebinding resolves to such an address) could reach unauthenticated internal services that the operator expected to be unreachable from the agent.

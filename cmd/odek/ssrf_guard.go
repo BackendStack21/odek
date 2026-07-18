@@ -5,10 +5,17 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
+	"os"
+	"sync"
 	"time"
 
 	"github.com/BackendStack21/odek/internal/danger"
 )
+
+// proxyWarnOnce ensures the proxy-disabled warning is logged only once per
+// process even though ssrfGuardedTransport is called for several tools.
+var proxyWarnOnce sync.Once
 
 // SSRF / DNS-rebinding dial guard.
 //
@@ -116,6 +123,42 @@ func ssrfGuardedTransport(allowedHosts ...string) *http.Transport {
 	} else {
 		tr = &http.Transport{Proxy: http.ProxyFromEnvironment}
 	}
+
+	// Proxies bypass the dial-layer SSRF guard: the transport dials the proxy,
+	// and the target address is sent inside the CONNECT/request envelope. An
+	// attacker-controlled proxy (or a rebinding target reachable through a
+	// legitimate proxy) would therefore defeat the guard. Fail closed: if a proxy
+	// is configured for a request, refuse it rather than silently void protection.
+	if tr.Proxy != nil {
+		if proxyEnvSet() {
+			proxyWarnOnce.Do(func() {
+				fmt.Fprintf(os.Stderr, "warning: HTTP(S)_PROXY is set but odek's SSRF guard cannot validate target addresses through a proxy; proxy routing is disabled for outbound tool traffic\n")
+			})
+		}
+		originalProxy := tr.Proxy
+		tr.Proxy = func(req *http.Request) (*url.URL, error) {
+			proxyURL, err := originalProxy(req)
+			if err != nil {
+				return nil, err
+			}
+			if proxyURL != nil {
+				return nil, fmt.Errorf("refusing request through HTTP(S)_PROXY: SSRF guard cannot validate target address via a proxy")
+			}
+			return nil, nil
+		}
+	}
+
 	tr.DialContext = ssrfGuardedDial(base.DialContext, net.DefaultResolver.LookupIPAddr, allowedHosts...)
 	return tr
+}
+
+// proxyEnvSet reports whether any of the standard HTTP(S)_PROXY environment
+// variables are set, so callers can warn that outbound proxying is disabled.
+func proxyEnvSet() bool {
+	for _, v := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy"} {
+		if os.Getenv(v) != "" {
+			return true
+		}
+	}
+	return false
 }
