@@ -1227,6 +1227,44 @@ func TestClassifyPath_ShellRCFiles(t *testing.T) {
 	}
 }
 
+// TestClassifyPath_CaseInsensitiveAnchors verifies that case variants of
+// odek trust anchors and shell rc files still classify as SystemWrite on
+// case-insensitive filesystems (e.g. macOS APFS).
+func TestClassifyPath_CaseInsensitiveAnchors(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		t.Skip("no home dir")
+	}
+	if strings.HasPrefix(home, "/root") {
+		t.Skip("running as root")
+	}
+	tests := []struct {
+		path string
+		want RiskClass
+	}{
+		// odek trust anchors
+		{home + "/.odek/CONFIG.JSON", SystemWrite},
+		{home + "/.odek/Secrets.Env", SystemWrite},
+		{home + "/.odek/IDENTITY.MD", SystemWrite},
+		{home + "/.odek/SKILLS/evil/SKILL.md", SystemWrite},
+		{home + "/.odek/SESSIONS/abc.json", SystemWrite},
+		{home + "/.odek/AUDIT/turn-1.json", SystemWrite},
+		{home + "/.odek/PLANS/evil.md", SystemWrite},
+		// shell rc files
+		{home + "/.BASHRC", SystemWrite},
+		{home + "/.Zshrc", SystemWrite},
+		{home + "/.PROFILE", SystemWrite},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			got := ClassifyPath(tt.path)
+			if got != tt.want {
+				t.Errorf("ClassifyPath(%q) = %s, want %s", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestClassifyPath_CrontabPaths locks in that crontab locations classify
 // as SystemWrite via the existing /etc, /var, /usr prefix checks — a
 // crontab entry is persistence/code-execution on a schedule.

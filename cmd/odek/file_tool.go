@@ -525,6 +525,7 @@ type searchMatch struct {
 
 type searchFilesResult struct {
 	Matches []searchMatch `json:"matches"`
+	Skipped []string      `json:"skipped,omitempty"`
 	Error   string        `json:"error,omitempty"`
 }
 
@@ -567,6 +568,20 @@ func (t *searchFilesTool) Call(argsJSON string) (string, error) {
 	}
 }
 
+// checkSearchPath classifies a discovered path the same way the root path was
+// classified. If the path is more restrictive (e.g. a file under ~/.odek
+// discovered while searching $HOME), it returns skip=true so the walker does
+// not silently read sensitive files.
+func (t *searchFilesTool) checkSearchPath(path string) (skip bool, reason string) {
+	risk := danger.ClassifyPath(path)
+	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
+		Name: "search_files", Resource: path, Risk: risk,
+	}, nil); err != nil {
+		return true, err.Error()
+	}
+	return false, ""
+}
+
 func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 	re, err := regexp.Compile(args.Pattern)
 	if err != nil {
@@ -574,6 +589,7 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 	}
 
 	var matches []searchMatch
+	var skipped []string
 	limit := args.Limit
 	resultBytes := 0
 
@@ -590,11 +606,25 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 			if skipDir(info.Name()) {
 				return filepath.SkipDir
 			}
+			// Security: a broad search root may contain a sensitive subtree
+			// (e.g. ~/.odek under $HOME). Classify the directory before
+			// descending; if it would require approval/denial, skip it.
+			if skip, reason := t.checkSearchPath(path); skip {
+				skipped = append(skipped, path+": "+reason)
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		// Skip symlinks — prevents TOCTOU on the path and avoids listing
 		// files the agent can't read (O_NOFOLLOW opens would fail anyway).
 		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+
+		// Security: classify each file before reading. This prevents a broad
+		// search from silently returning files that read_file would gate.
+		if skip, reason := t.checkSearchPath(path); skip {
+			skipped = append(skipped, path+": "+reason)
 			return nil
 		}
 
@@ -659,7 +689,7 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 		return jsonError(fmt.Sprintf("search failed: %v", err))
 	}
 
-	return jsonResult(searchFilesResult{Matches: matches})
+	return jsonResult(searchFilesResult{Matches: matches, Skipped: skipped})
 }
 
 func (t *searchFilesTool) searchFiles(args searchFilesArgs) (string, error) {
@@ -673,7 +703,15 @@ func (t *searchFilesTool) searchFiles(args searchFilesArgs) (string, error) {
 	}
 
 	var matches []searchMatch
+	var skipped []string
 	for _, p := range paths {
+		// Security: each discovered path is classified the same way the root
+		// path is. Sensitive files (e.g. under ~/.odek, /etc) are skipped
+		// rather than returned silently.
+		if skip, reason := t.checkSearchPath(p); skip {
+			skipped = append(skipped, p+": "+reason)
+			continue
+		}
 		matches = append(matches, searchMatch{Path: wrapUntrusted(t.toolCtx(), "search_files:"+p, p)})
 	}
 
@@ -688,7 +726,7 @@ func (t *searchFilesTool) searchFiles(args searchFilesArgs) (string, error) {
 		return fi.ModTime().After(fj.ModTime())
 	})
 
-	return jsonResult(searchFilesResult{Matches: matches})
+	return jsonResult(searchFilesResult{Matches: matches, Skipped: skipped})
 }
 
 // ── Patch Tool ─────────────────────────────────────────────────────────
@@ -1091,14 +1129,16 @@ func confineToCWD(path string) (string, error) {
 // must not be writable through the generic file tools. Keep in sync with
 // the SystemWrite escalation in danger.ClassifyPath.
 func isProtectedOdekPath(rel string) bool {
-	rel = filepath.Clean(rel)
+	// Case-folding defends against case-insensitive filesystems (macOS APFS):
+	// ~/.odek/CONFIG.JSON and ~/.odek/config.json are the same file.
+	rel = strings.ToLower(filepath.Clean(rel))
 
 	// Exact-file trust anchors. Rewriting any of these can disable safety
 	// policy, exfiltrate secrets, or persist attacker control.
 	protectedExact := []string{
 		"config.json",
 		"secrets.env",
-		"IDENTITY.md",
+		"identity.md",
 		"schedules.json",
 		"schedule-state.json",
 		"schedules.lock",
