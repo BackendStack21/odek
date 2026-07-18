@@ -229,6 +229,8 @@ Flags: `--sandbox`, `--sandbox-image`, `--sandbox-network`, `--sandbox-readonly`
 
 Env vars: `ODEK_SANDBOX=true`, `ODEK_SANDBOX_IMAGE`, `ODEK_SANDBOX_NETWORK`, etc.
 
+> **Project config approval:** sandbox knobs set in `./odek.json` (`sandbox_env`, `sandbox_image`, `sandbox_network`, `sandbox_volumes`) require an interactive approval prompt. Use `ODEK_APPROVE_PROJECT_SANDBOX=1` in CI/scripts, or set sandbox config via `~/.odek/config.json` / env vars / CLI flags instead.
+
 Default network: `bridge` (internet access). Set `none` for air-gapped execution.
 
 ## Telegram Bot
@@ -289,6 +291,7 @@ odek mcp                                    # stdio transport
 | `ODEK_SANDBOX_MEMORY` | sandbox_memory |
 | `ODEK_SANDBOX_CPUS` | sandbox_cpus |
 | `ODEK_SANDBOX_USER` | sandbox_user |
+| `ODEK_APPROVE_PROJECT_SANDBOX` | auto-approve project-level sandbox config (CI) |
 | `ODEK_SYSTEM` | system |
 | `ODEK_NO_COLOR` | no_color |
 | `ODEK_NO_AGENTS` | no_agents |

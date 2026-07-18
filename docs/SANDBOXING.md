@@ -68,6 +68,46 @@ All sandbox settings are available in `~/.odek/config.json`, `./odek.json`, `ODE
 > or symlinks are rejected. Relative paths are resolved relative to the working
 > directory and must stay inside it.
 
+## Project-level sandbox approval
+
+`./odek.json` can be shipped by any repository the agent runs in. Because
+project-level sandbox knobs (`sandbox_env`, `sandbox_image`, `sandbox_network`,
+`sandbox_volumes`) can exfiltrate host secrets via `${VAR}` interpolation, pull
+an attacker-controlled image, or widen network access, odek requires explicit
+operator approval before applying them.
+
+When a project requests any sandbox override, odek prints a warning and prompts:
+
+```text
+WARNING: project config (./odek.json) requests sandbox overrides:
+  image:   alpine:latest
+  network: bridge
+  env:     X
+  ⚠️  sandbox_env values contain ${...} interpolation against host environment variables
+
+Allowing this means code in the sandbox can read workspace files and,
+depending on network mode, contact external hosts.
+
+Approve? [y = once / t = trust this project / N]
+```
+
+Approval options:
+
+- `y` / `yes` — approve once for this run.
+- `t` / `trust` — persist approval for this project/sandbox fingerprint in
+  `~/.odek/project_sandbox_approvals.json`.
+- `N` / empty — abort.
+
+For non-interactive use (CI, cron, scheduled tasks), set:
+
+```bash
+export ODEK_APPROVE_PROJECT_SANDBOX=1
+```
+
+Operator-controlled sources (`~/.odek/config.json`, `ODEK_*` env vars, and CLI
+flags) do not require approval — only values coming from the project-level
+`./odek.json` are gated.
+
 ### Env var examples
 
 ```bash
