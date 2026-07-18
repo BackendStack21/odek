@@ -223,6 +223,48 @@ func TestLoadConfig_GlobalFile(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_InvalidNonInteractiveFlooredToDeny(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	cfgDir := filepath.Join(dir, ".odek")
+	os.MkdirAll(cfgDir, 0755)
+	cfgPath := filepath.Join(cfgDir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{
+		"dangerous": {
+			"non_interactive": "prompt"
+		}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.Dangerous.NonInteractive == nil || *cfg.Dangerous.NonInteractive != "deny" {
+		t.Errorf("invalid non_interactive should be floored to 'deny', got %v", cfg.Dangerous.NonInteractive)
+	}
+}
+
+func TestLoadConfig_ValidNonInteractivePreserved(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	cfgDir := filepath.Join(dir, ".odek")
+	os.MkdirAll(cfgDir, 0755)
+	cfgPath := filepath.Join(cfgDir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{
+		"dangerous": {
+			"non_interactive": "allow"
+		}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.Dangerous.NonInteractive == nil || *cfg.Dangerous.NonInteractive != "allow" {
+		t.Errorf("valid non_interactive='allow' should be preserved, got %v", cfg.Dangerous.NonInteractive)
+	}
+}
+
 func TestLoadConfig_ProjectOverridesGlobal(t *testing.T) {
 	dir := t.TempDir()
 

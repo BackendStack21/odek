@@ -589,11 +589,31 @@ func (c *DangerousConfig) ActionForCommand(cmd string) Action {
 // NonInteractiveAction returns the action to use when no TTY is available.
 // Defaults to Deny so unattended/headless runs fail closed rather than
 // auto-approving dangerous operations.
+//
+// Only "allow" and "deny" are accepted; any other value (including "prompt")
+// is treated as "deny" because a non-interactive environment cannot prompt.
 func (c *DangerousConfig) NonInteractiveAction() Action {
 	if c.NonInteractive != nil {
-		return parseAction(*c.NonInteractive)
+		action, ok := ParseNonInteractiveAction(*c.NonInteractive)
+		if ok {
+			return action
+		}
 	}
 	return Deny
+}
+
+// ParseNonInteractiveAction parses the non_interactive config value. It accepts
+// only "allow" and "deny"; "prompt" and any other value are rejected because
+// prompting is impossible without a TTY.
+func ParseNonInteractiveAction(s string) (Action, bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "allow":
+		return Allow, true
+	case "deny":
+		return Deny, true
+	default:
+		return Deny, false
+	}
 }
 
 // CheckOperation checks whether a tool operation is allowed, denied,

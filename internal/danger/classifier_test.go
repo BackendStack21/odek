@@ -961,6 +961,46 @@ func TestNonInteractiveAction_Deny(t *testing.T) {
 	}
 }
 
+func TestNonInteractiveAction_InvalidFailsClosed(t *testing.T) {
+	// Any value other than "allow" or "deny" (including the previously
+	// accepted "prompt") must fail closed to Deny, because a non-interactive
+	// environment cannot prompt.
+	for _, s := range []string{"prompt", "maybe", "yes", "", "  prompt  "} {
+		s := s
+		t.Run(s, func(t *testing.T) {
+			cfg := &DangerousConfig{NonInteractive: &s}
+			if got := cfg.NonInteractiveAction(); got != Deny {
+				t.Errorf("non-interactive %q = %s, want deny", s, got)
+			}
+		})
+	}
+}
+
+func TestParseNonInteractiveAction(t *testing.T) {
+	cases := []struct {
+		input   string
+		want    Action
+		wantOK  bool
+	}{
+		{"allow", Allow, true},
+		{"deny", Deny, true},
+		{"ALLOW", Allow, true},
+		{"Deny", Deny, true},
+		{"prompt", Deny, false},
+		{"", Deny, false},
+		{"maybe", Deny, false},
+	}
+	for _, tc := range cases {
+		got, ok := ParseNonInteractiveAction(tc.input)
+		if ok != tc.wantOK {
+			t.Errorf("ParseNonInteractiveAction(%q) ok=%v, want %v", tc.input, ok, tc.wantOK)
+		}
+		if got != tc.want {
+			t.Errorf("ParseNonInteractiveAction(%q) = %s, want %s", tc.input, got, tc.want)
+		}
+	}
+}
+
 func TestActionFor_UnknownClass(t *testing.T) {
 	cfg := &DangerousConfig{}
 	action := cfg.ActionFor(RiskClass("nonexistent"))
