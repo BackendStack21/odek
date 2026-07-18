@@ -70,7 +70,7 @@ func TestHandleSessionByID_GET_ReturnsSession(t *testing.T) {
 		t.Fatalf("Create session: %v", err)
 	}
 
-	handler := handleSessionByID(store)
+	handler := handleSessionByID(store, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
 	req.Header.Set("X-Session-Token", sess.AuthToken)
 	w := httptest.NewRecorder()
@@ -106,7 +106,7 @@ func TestHandleSessionByID_GET_ReturnsSession(t *testing.T) {
 
 func TestHandleSessionByID_GET_NotFound(t *testing.T) {
 	store := newTestSessionStore(t)
-	handler := handleSessionByID(store)
+	handler := handleSessionByID(store, nil)
 
 	// Valid ID format but doesn't exist on disk.
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/20260101-aabbcc", nil)
@@ -120,7 +120,7 @@ func TestHandleSessionByID_GET_NotFound(t *testing.T) {
 
 func TestHandleSessionByID_GET_MissingID(t *testing.T) {
 	store := newTestSessionStore(t)
-	handler := handleSessionByID(store)
+	handler := handleSessionByID(store, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/", nil)
 	w := httptest.NewRecorder()
@@ -145,7 +145,7 @@ func TestHandleSessionByID_GET_MessagesArePresent(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	handler := handleSessionByID(store)
+	handler := handleSessionByID(store, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
 	req.Header.Set("X-Session-Token", sess.AuthToken)
 	w := httptest.NewRecorder()
@@ -161,7 +161,7 @@ func TestHandleSessionByID_GET_MessagesArePresent(t *testing.T) {
 
 func TestHandleSessionByID_MethodNotAllowed(t *testing.T) {
 	store := newTestSessionStore(t)
-	handler := handleSessionByID(store)
+	handler := handleSessionByID(store, nil)
 
 	for _, method := range []string{http.MethodPatch, http.MethodPut, http.MethodHead} {
 		req := httptest.NewRequest(method, "/api/sessions/20260101-aabbcc", nil)
@@ -182,7 +182,7 @@ func TestHandleSessionByID_DELETE_StillWorks(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	handler := handleSessionByID(store)
+	handler := handleSessionByID(store, nil)
 	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+sess.ID, nil)
 	req.Header.Set("X-Session-Token", sess.AuthToken)
 	w := httptest.NewRecorder()
@@ -209,7 +209,7 @@ func TestHandleSessionByID_POST_RenameStillWorks(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	handler := handleSessionByID(store)
+	handler := handleSessionByID(store, nil)
 	body := strings.NewReader(`{"name":"renamed task"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+sess.ID, body)
 	req.Header.Set("Content-Type", "application/json")
@@ -232,7 +232,7 @@ func TestHandleSessionByID_GET_InvalidToken(t *testing.T) {
 	store := newTestSessionStore(t)
 	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
 
-	handler := handleSessionByID(store)
+	handler := handleSessionByID(store, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
 	req.Header.Set("X-Session-Token", "wrong-token")
 	w := httptest.NewRecorder()
@@ -247,7 +247,7 @@ func TestHandleSessionByID_GET_MissingToken(t *testing.T) {
 	store := newTestSessionStore(t)
 	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
 
-	handler := handleSessionByID(store)
+	handler := handleSessionByID(store, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
 	w := httptest.NewRecorder()
 	handler(w, req)
@@ -268,7 +268,7 @@ func TestHandleSessionByID_GET_LazyTokenBootstrap(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	handler := handleSessionByID(store)
+	handler := handleSessionByID(store, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
 	w := httptest.NewRecorder()
 	handler(w, req)
@@ -301,7 +301,7 @@ func TestHandleSessionByID_DELETE_RequiresToken(t *testing.T) {
 	store := newTestSessionStore(t)
 	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
 
-	handler := handleSessionByID(store)
+	handler := handleSessionByID(store, nil)
 	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+sess.ID, nil)
 	req.Header.Set("X-Session-Token", "wrong-token")
 	w := httptest.NewRecorder()
@@ -316,7 +316,7 @@ func TestHandleSessionByID_POST_RequiresToken(t *testing.T) {
 	store := newTestSessionStore(t)
 	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
 
-	handler := handleSessionByID(store)
+	handler := handleSessionByID(store, nil)
 	body := strings.NewReader(`{"name":"renamed"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+sess.ID, body)
 	req.Header.Set("Content-Type", "application/json")
@@ -336,7 +336,7 @@ func TestHandleSessionByID_GET_RateLimit(t *testing.T) {
 	sessionLookupLimiter.reset()
 	defer sessionLookupLimiter.reset()
 
-	handler := handleSessionByID(store)
+	handler := handleSessionByID(store, nil)
 	// Exhaust the 60/min allowance.
 	for i := 0; i < 60; i++ {
 		req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
@@ -741,7 +741,7 @@ func buildServeMuxWithSessionByID(t *testing.T, store *session.Store) (net.Liste
 	apiAuth := func(h http.Handler) http.Handler {
 		return requireServeToken(token)(requireLocalHost(requireLocalOrigin(h)))
 	}
-	mux.Handle("/api/sessions/", apiAuth(handleSessionByID(store)))
+	mux.Handle("/api/sessions/", apiAuth(handleSessionByID(store, nil)))
 	return ln, mux
 }
 

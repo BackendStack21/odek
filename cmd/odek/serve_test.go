@@ -571,7 +571,7 @@ func TestServe_E2E_WebSocketPipeline(t *testing.T) {
 	mux.HandleFunc("/", handleStatic(wsToken))
 	mux.Handle("/ws", &golangws.Server{
 		Handshake: func(cfg *golangws.Config, req *http.Request) error {
-			return wsHandshakeWithLimits(cfg, req, wsToken)
+			return wsHandshakeWithLimits(cfg, req, wsToken, nil)
 		},
 		Handler: func(conn *golangws.Conn) {
 			handleWS(store, resourceReg, resolved, systemMessage, conn)
@@ -909,7 +909,7 @@ func buildServeMux(t *testing.T, store *session.Store) (net.Listener, *http.Serv
 	mux.HandleFunc("/", handleStatic(wsToken))
 	mux.Handle("/ws", &golangws.Server{
 		Handshake: func(cfg *golangws.Config, req *http.Request) error {
-			return wsHandshakeWithLimits(cfg, req, wsToken)
+			return wsHandshakeWithLimits(cfg, req, wsToken, nil)
 		},
 		Handler: func(conn *golangws.Conn) {
 			handleWS(store, resourceReg, resolved, systemMessage, conn)

@@ -304,6 +304,107 @@ func TestServe_API_AcceptsServeTokenCookie(t *testing.T) {
 	}
 }
 
+// ── 4c. rate-limiting clientIP must not trust X-Forwarded-From by default ─
+
+func TestClientIP_IgnoresForwardedHeadersByDefault(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+	if got := clientIP(req, nil); got != "127.0.0.1" {
+		t.Fatalf("expected loopback address without trusted proxies, got %q", got)
+	}
+}
+
+func TestClientIP_HonorsForwardedHeadersFromTrustedProxy(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.0.0.1:12345"
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+	if got := clientIP(req, []string{"10.0.0.1"}); got != "1.2.3.4" {
+		t.Fatalf("expected forwarded IP from trusted proxy, got %q", got)
+	}
+}
+
+func TestClientIP_HonorsForwardedHeadersFromTrustedCIDR(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.0.0.42:12345"
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+	if got := clientIP(req, []string{"10.0.0.0/8"}); got != "1.2.3.4" {
+		t.Fatalf("expected forwarded IP from trusted CIDR, got %q", got)
+	}
+}
+
+func TestClientIP_RejectsForwardedHeadersFromUntrustedProxy(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "192.168.1.1:12345"
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+	if got := clientIP(req, []string{"10.0.0.0/8"}); got != "192.168.1.1" {
+		t.Fatalf("expected direct remote address for untrusted proxy, got %q", got)
+	}
+}
+
+func TestIsTrustedProxy(t *testing.T) {
+	if !isTrustedProxy("127.0.0.1", []string{"127.0.0.1"}) {
+		t.Error("expected exact IP match")
+	}
+	if !isTrustedProxy("10.0.0.5", []string{"10.0.0.0/8"}) {
+		t.Error("expected CIDR match")
+	}
+	if isTrustedProxy("192.168.1.1", []string{"10.0.0.0/8"}) {
+		t.Error("expected no match for IP outside CIDR")
+	}
+	if isTrustedProxy("127.0.0.1", nil) {
+		t.Error("expected no match for empty trusted list")
+	}
+}
+
+func TestLoadConfig_TrustedProxiesFromEnv(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("ODEK_TRUSTED_PROXIES", "10.0.0.0/8, 127.0.0.1")
+
+	cfg := config.LoadConfig(config.CLIFlags{})
+	want := []string{"10.0.0.0/8", "127.0.0.1"}
+	if len(cfg.TrustedProxies) != len(want) {
+		t.Fatalf("TrustedProxies = %v, want %v", cfg.TrustedProxies, want)
+	}
+	for i := range want {
+		if cfg.TrustedProxies[i] != want[i] {
+			t.Errorf("TrustedProxies[%d] = %q, want %q", i, cfg.TrustedProxies[i], want[i])
+		}
+	}
+}
+
+func TestLoadConfig_TrustedProxiesFromCLI(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	cfg := config.LoadConfig(config.CLIFlags{TrustedProxies: []string{"10.0.0.0/8", "127.0.0.1"}})
+	want := []string{"10.0.0.0/8", "127.0.0.1"}
+	if len(cfg.TrustedProxies) != len(want) {
+		t.Fatalf("TrustedProxies = %v, want %v", cfg.TrustedProxies, want)
+	}
+}
+
+func TestLoadConfig_TrustedProxiesFromFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	cfgDir := filepath.Join(dir, ".odek")
+	os.MkdirAll(cfgDir, 0755)
+	cfgPath := filepath.Join(cfgDir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{
+		"trusted_proxies": ["10.0.0.0/8", "127.0.0.1"]
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.LoadConfig(config.CLIFlags{})
+	want := []string{"10.0.0.0/8", "127.0.0.1"}
+	if len(cfg.TrustedProxies) != len(want) {
+		t.Fatalf("TrustedProxies = %v, want %v", cfg.TrustedProxies, want)
+	}
+}
+
 func TestServe_StaticSecurityHeaders(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rr := httptest.NewRecorder()

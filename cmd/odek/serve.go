@@ -186,7 +186,7 @@ func serveCmd(args []string) error {
 	var sandboxReadonly *bool
 	var promptCaching *bool
 	var sandboxImage, sandboxNetwork, sandboxMemory, sandboxCPUs, sandboxUser string
-	var toolsEnabled, toolsDisabled []string
+	var toolsEnabled, toolsDisabled, trustedProxies []string
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -246,6 +246,15 @@ func serveCmd(args []string) error {
 				return fmt.Errorf("--no-tool requires a value")
 			}
 			toolsDisabled = append(toolsDisabled, args[i])
+		case "--trusted-proxies":
+			i++
+			if i >= len(args) {
+				return fmt.Errorf("--trusted-proxies requires a value")
+			}
+			trustedProxies = strings.Split(args[i], ",")
+			for j := range trustedProxies {
+				trustedProxies[j] = strings.TrimSpace(trustedProxies[j])
+			}
 		default:
 			return fmt.Errorf("unknown flag %q for serve", args[i])
 		}
@@ -262,6 +271,7 @@ func serveCmd(args []string) error {
 		SandboxUser:     sandboxUser,
 		ToolsEnabled:    toolsEnabled,
 		ToolsDisabled:   toolsDisabled,
+		TrustedProxies:  trustedProxies,
 	})
 	if err := approveProjectSandbox(resolved, os.Stdin, os.Stdout); err != nil {
 		return err
@@ -305,7 +315,7 @@ func serveCmd(args []string) error {
 	mux.HandleFunc("/", handleStatic(wsToken))
 	mux.Handle("/ws", &golangws.Server{
 		Handshake: func(cfg *golangws.Config, req *http.Request) error {
-			return wsHandshakeWithLimits(cfg, req, wsToken)
+			return wsHandshakeWithLimits(cfg, req, wsToken, resolved.TrustedProxies)
 		},
 		Handler: func(conn *golangws.Conn) {
 			handleWS(store, resourceReg, resolved, systemMessage, conn)
@@ -319,7 +329,7 @@ func serveCmd(args []string) error {
 	}
 	mux.Handle("/api/resources", apiAuth(handleResourceSearch(resourceReg)))
 	mux.Handle("/api/sessions", apiAuth(handleSessionList(store)))
-	mux.Handle("/api/sessions/", apiAuth(handleSessionByID(store)))
+	mux.Handle("/api/sessions/", apiAuth(handleSessionByID(store, resolved.TrustedProxies)))
 	mux.Handle("/api/models", apiAuth(handleModelList(resolved.Model)))
 	mux.Handle("/api/cancel", apiAuth(handleCancel(store)))
 
@@ -370,6 +380,7 @@ Flags:
   --sandbox-user user      Container user (e.g. 1000:1000)
   --tool name              Enable a tool for the LLM (repeatable)
   --no-tool name           Disable a tool for the LLM (repeatable)
+  --trusted-proxies list   Comma-separated IPs/CIDRs whose X-Forwarded-For headers are trusted
   --help, -h               Show this help`)
 }
 
@@ -1311,14 +1322,14 @@ func validateServeToken(cfg *golangws.Config, req *http.Request, token string) e
 // applies a per-IP upgrade rate limit and acquires the global
 // concurrent-connection semaphore. The semaphore is acquired before the
 // WebSocket handshake completes and released when the handler exits.
-func wsHandshakeWithLimits(cfg *golangws.Config, req *http.Request, token string) error {
+func wsHandshakeWithLimits(cfg *golangws.Config, req *http.Request, token string, trustedProxies []string) error {
 	if err := validateServeToken(cfg, req, token); err != nil {
 		return err
 	}
 	if err := checkLocalOrigin(nil, req); err != nil {
 		return err
 	}
-	if !wsUpgradeLimiter.allow(clientIP(req)) {
+	if !wsUpgradeLimiter.allow(clientIP(req, trustedProxies)) {
 		return fmt.Errorf("WebSocket upgrade rate limit exceeded")
 	}
 	select {
@@ -1519,7 +1530,7 @@ func handleSessionList(store *session.Store) http.HandlerFunc {
 	}
 }
 
-func handleSessionByID(store *session.Store) http.HandlerFunc {
+func handleSessionByID(store *session.Store, trustedProxies []string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
 		if id == "" {
@@ -1531,7 +1542,7 @@ func handleSessionByID(store *session.Store) http.HandlerFunc {
 		case http.MethodGet:
 			// Rate-limit session detail lookups per IP to slow brute-force
 			// enumeration of the 128-bit ID space.
-			if !sessionLookupLimiter.allow(clientIP(r)) {
+			if !sessionLookupLimiter.allow(clientIP(r, trustedProxies)) {
 				http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 				return
 			}
@@ -1599,16 +1610,16 @@ func handleSessionByID(store *session.Store) http.HandlerFunc {
 	}
 }
 
-// clientIP returns a best-effort client identifier for rate limiting. It prefers
-// X-Forwarded-For / X-Real-Ip only when the direct remote address is a loopback
-// proxy, otherwise uses RemoteAddr. This avoids trusting spoofed headers from
-// arbitrary clients while still working behind a local reverse proxy.
-func clientIP(r *http.Request) string {
+// clientIP returns a best-effort client identifier for rate limiting.
+// X-Forwarded-For / X-Real-Ip headers are only honored when the direct remote
+// address is in trustedProxies. An empty trustedProxies list means headers are
+// ignored even from loopback, closing the X-Forwarded-For spoofing bypass.
+func clientIP(r *http.Request, trustedProxies []string) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
-	if host == "127.0.0.1" || host == "::1" || host == "localhost" {
+	if isTrustedProxy(host, trustedProxies) {
 		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
 			if i := strings.Index(fwd, ","); i > 0 {
 				return strings.TrimSpace(fwd[:i])
@@ -1620,6 +1631,28 @@ func clientIP(r *http.Request) string {
 		}
 	}
 	return host
+}
+
+// isTrustedProxy reports whether host is in the trusted proxy list. Entries may
+// be exact IPs or CIDR ranges.
+func isTrustedProxy(host string, trusted []string) bool {
+	if host == "" {
+		return false
+	}
+	ip := net.ParseIP(host)
+	for _, entry := range trusted {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if entry == host {
+			return true
+		}
+		if _, cidr, err := net.ParseCIDR(entry); err == nil && ip != nil && cidr.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func handleModelList(configuredModel string) http.HandlerFunc {

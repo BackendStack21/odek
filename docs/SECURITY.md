@@ -444,6 +444,8 @@ The defense has three layers:
 2. **Session-scoped auth tokens** — every new session is created with a 256-bit `AuthToken` stored in the session JSON. `GET /api/sessions/<id>`, `DELETE /api/sessions/<id>`, `POST /api/sessions/<id>` (rename), `POST /api/cancel?session_id=<id>`, and WebSocket session-resume messages require the token via the `X-Session-Token` header, `session_token` cookie, or `auth_token` WebSocket field. Missing or invalid tokens return 401.
 3. **Per-IP rate limiting** — `GET /api/sessions/<id>` is rate-limited to 60 lookups per minute per IP, adding a backstop against any remaining enumeration attempts.
 
+The IP used for rate limiting is taken from `X-Forwarded-For` / `X-Real-Ip` only when the direct remote address is in the configured `trusted_proxies` list (IPs or CIDRs). By default the list is empty, so a client cannot bypass the limiters by spoofing forwarding headers.
+
 Legacy sessions created before this defense have no `AuthToken`; the first access bootstraps one and returns it to the client, preserving backward compatibility without weakening protection for newly created sessions.
 
 ### 25. Skill and episode context wrapped as untrusted

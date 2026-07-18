@@ -115,6 +115,11 @@ type CLIFlags struct {
 	GuardScanSkills       *bool   // nil = not set
 	GuardScanToolOutputs  *bool   // nil = not set
 	GuardScanTelegram     *bool   // nil = not set
+
+	// TrustedProxies is a list of IP addresses or CIDR ranges of reverse proxies
+	// whose X-Forwarded-For / X-Real-Ip headers are trusted. Empty means headers
+	// are ignored even from loopback. Only used by `odek serve`.
+	TrustedProxies []string
 }
 
 // SkillsConfig holds the skills configuration section from JSON files.
@@ -276,6 +281,12 @@ type FileConfig struct {
 	// agent iteration. Config: max_tool_parallel.
 	// Default: 0 (loop uses default of 4).
 	MaxToolParallel int `json:"max_tool_parallel,omitempty"`
+
+	// TrustedProxies lists IP addresses or CIDR ranges of reverse proxies whose
+	// X-Forwarded-For / X-Real-Ip headers are trusted. Empty means headers are
+	// ignored even from loopback. Config: trusted_proxies, ODEK_TRUSTED_PROXIES.
+	// Only used by `odek serve`.
+	TrustedProxies []string `json:"trusted_proxies,omitempty"`
 
 	// Telegram configures the Telegram bot integration.
 	Telegram *telegram.TelegramConfig `json:"telegram,omitempty"`
@@ -469,6 +480,10 @@ type ResolvedConfig struct {
 	// ToolProgressCleanup controls whether progress messages are deleted
 	// after the final answer. Default: true.
 	ToolProgressCleanup bool
+
+	// TrustedProxies lists IP addresses or CIDR ranges of reverse proxies whose
+	// X-Forwarded-For / X-Real-Ip headers are trusted by `odek serve`.
+	TrustedProxies []string
 }
 
 // ── Defaults ───────────────────────────────────────────────────────────
@@ -1143,6 +1158,12 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		cfg.Guard.Scan.Telegram = v
 	}
 
+	// Trusted proxy list for `odek serve`. Empty means X-Forwarded-For /
+	// X-Real-Ip headers are ignored even from loopback.
+	if v := envStringList("TRUSTED_PROXIES"); v != nil {
+		cfg.TrustedProxies = v
+	}
+
 	// Schedules env overrides (ODEK_SCHEDULES_*): lets the scheduler be tuned
 	// from the environment, like everything else in a containerised deploy.
 	// Allocate once — an all-zero SchedulesConfig resolves identically to nil.
@@ -1409,6 +1430,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		}
 		cfg.Tools.Disabled = append(cfg.Tools.Disabled, cli.ToolsDisabled...)
 	}
+	if len(cli.TrustedProxies) > 0 {
+		cfg.TrustedProxies = cli.TrustedProxies
+	}
 
 	// Build resolved config with concrete values
 	resolved := ResolvedConfig{
@@ -1499,6 +1523,8 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	} else {
 		resolved.ToolProgressCleanup = true // default: delete progress messages
 	}
+
+	resolved.TrustedProxies = cfg.TrustedProxies
 
 	// API key fallback chain: resolved → DEEPSEEK_API_KEY → OPENAI_API_KEY
 	if resolved.APIKey == "" {
@@ -2062,6 +2088,9 @@ func overlayFile(base, override FileConfig) FileConfig {
 	}
 	if override.MaxToolParallel > 0 {
 		base.MaxToolParallel = override.MaxToolParallel
+	}
+	if len(override.TrustedProxies) > 0 {
+		base.TrustedProxies = override.TrustedProxies
 	}
 	if override.MCPServers != nil {
 		if base.MCPServers == nil {
