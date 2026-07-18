@@ -222,6 +222,17 @@ func (a *TelegramApprover) PromptOperation(op danger.ToolOperation) error {
 	return a.PromptCommand(op.Risk, desc, "")
 }
 
+// PromptMedia asks the user to approve an outbound Telegram media upload.
+// The file path is shown in full and, when the bot was launched from a broad
+// base such as $HOME or /, an explicit warning is added to the prompt.
+func (a *TelegramApprover) PromptMedia(path string) error {
+	desc := "Outbound Telegram media upload"
+	if w := BroadBaseWarning(); w != "" {
+		desc += "\n⚠️ " + w
+	}
+	return a.PromptCommand(danger.NetworkEgress, path, desc)
+}
+
 // HandleCallback processes a callback query from an inline keyboard approval.
 // It parses the callback data, looks up the pending request, and unblocks
 // the waiting goroutine. Callbacks are only accepted from the originating

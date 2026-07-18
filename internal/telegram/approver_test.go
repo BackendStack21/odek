@@ -616,3 +616,139 @@ func extractCallbackID(body, prefix string) string {
 	}
 	return rest
 }
+
+// TestPromptMedia_Approves verifies that PromptMedia sends an approval prompt
+// for an outbound media upload and returns nil when the user approves.
+func TestPromptMedia_Approves(t *testing.T) {
+	rec := new(requestRecorder)
+	ts := testServer(t, rec)
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	a := NewTelegramApprover(bot, 1, 0)
+	done := make(chan error, 1)
+	go func() { done <- a.PromptMedia("/tmp/photo.jpg") }()
+
+	// Wait for the prompt to be registered.
+	var body string
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rec.mu.Lock()
+		if len(rec.requests) > 0 {
+			body = rec.requests[len(rec.requests)-1].Body
+		}
+		rec.mu.Unlock()
+		if body != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if body == "" {
+		t.Fatal("prompt request was not sent")
+	}
+	if !strings.Contains(body, "/tmp/photo.jpg") {
+		t.Errorf("approval prompt must show the media path, got body:\n%s", body)
+	}
+	if !strings.Contains(body, "network_egress") {
+		t.Errorf("approval prompt must show the network_egress risk class, got body:\n%s", body)
+	}
+
+	id := extractCallbackID(body, cbPrefixApprove)
+	if id == "" {
+		t.Fatal("could not extract approve callback id")
+	}
+	a.HandleCallback(cbPrefixApprove+id, 0)
+	if err := <-done; err != nil {
+		t.Fatalf("approve should succeed: %v", err)
+	}
+}
+
+// TestPromptMedia_Deny verifies that PromptMedia returns an error when the
+// user denies the upload.
+func TestPromptMedia_Deny(t *testing.T) {
+	rec := new(requestRecorder)
+	ts := testServer(t, rec)
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	a := NewTelegramApprover(bot, 1, 0)
+	done := make(chan error, 1)
+	go func() { done <- a.PromptMedia("/tmp/photo.jpg") }()
+
+	var body string
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rec.mu.Lock()
+		if len(rec.requests) > 0 {
+			body = rec.requests[len(rec.requests)-1].Body
+		}
+		rec.mu.Unlock()
+		if body != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if body == "" {
+		t.Fatal("prompt request was not sent")
+	}
+
+	id := extractCallbackID(body, cbPrefixDeny)
+	if id == "" {
+		t.Fatal("could not extract deny callback id")
+	}
+	a.HandleCallback(cbPrefixDeny+id, 0)
+	err := <-done
+	if err == nil {
+		t.Fatal("deny should return an error")
+	}
+	if !strings.Contains(err.Error(), "denied") {
+		t.Errorf("expected 'denied' in error, got: %v", err)
+	}
+}
+
+// TestPromptMedia_BroadBaseWarning verifies that the approval prompt includes
+// a warning when the bot is launched from $HOME.
+func TestPromptMedia_BroadBaseWarning(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Chdir(home)
+
+	rec := new(requestRecorder)
+	ts := testServer(t, rec)
+	defer ts.Close()
+	bot := testBot(t, ts)
+
+	a := NewTelegramApprover(bot, 1, 0)
+	done := make(chan error, 1)
+	go func() { done <- a.PromptMedia("/home/user/project/plot.png") }()
+
+	var body string
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rec.mu.Lock()
+		if len(rec.requests) > 0 {
+			body = rec.requests[len(rec.requests)-1].Body
+		}
+		rec.mu.Unlock()
+		if body != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if body == "" {
+		t.Fatal("prompt request was not sent")
+	}
+	if !strings.Contains(body, "$HOME") {
+		t.Errorf("approval prompt must warn when cwd == $HOME, got body:\n%s", body)
+	}
+
+	id := extractCallbackID(body, cbPrefixApprove)
+	if id == "" {
+		t.Fatal("could not extract approve callback id")
+	}
+	a.HandleCallback(cbPrefixApprove+id, 0)
+	if err := <-done; err != nil {
+		t.Fatalf("approve should succeed: %v", err)
+	}
+}

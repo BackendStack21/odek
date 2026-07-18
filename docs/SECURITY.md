@@ -407,7 +407,7 @@ The Telegram bot previously used a PID file at `~/.odek/telegram.pid` to enforce
 
 The `send_message` tool lets the agent send inline keyboard buttons. Each button's `callback_data` is validated by the tool and again by the Telegram sender closure: any value that starts with a reserved internal prefix (`apr:`, `den:`, `trs:`, `clarify:`, `skill_save:`, `skill_skip:`) is rejected. Only user-facing `cb:` callbacks are allowed. This prevents a compromised or prompt-injected agent from presenting a button that, when clicked, would forge an approval decision or trigger a skill action.
 
-### 23. Telegram outbound media path allowlist
+### 23. Telegram outbound media hardening
 
 When the agent emits `MEDIA:photo:/path`, `MEDIA:voice:/path`, `MEDIA:document:/path`, or `send_message` with a `file`, the path is validated by `internal/telegram.ResolveMediaPath` before upload. Only paths inside an allowed base directory are permitted:
 
@@ -415,7 +415,11 @@ When the agent emits `MEDIA:photo:/path`, `MEDIA:voice:/path`, `MEDIA:document:/
 - `~/.odek/media/`, and
 - the system temporary directory.
 
-The path is resolved to an absolute, cleaned form with `filepath.Abs`, symlinks are resolved with `filepath.EvalSymlinks`, and the final component is verified with an atomic `O_NOFOLLOW` open + `fstat` (Unix). If the final component is a symlink, or if the resolved path escapes the allowlist, the upload is rejected. This closes the arbitrary-file-read/exfiltration vector where a prompt-injected agent asks the bot to send files such as `/home/user/.ssh/id_rsa`.
+The path is resolved to an absolute, cleaned form with `filepath.Abs`, symlinks are resolved with `filepath.EvalSymlinks`, and the final component is verified with an atomic `O_NOFOLLOW` open + `fstat` (Unix). If the final component is a symlink, or if the resolved path escapes the allowlist, the upload is rejected.
+
+On top of the allowlist, `ResolveMediaPath` now rejects well-known secret subtrees (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.odek` trust anchors, etc.) and any file whose basename starts with `.env`, so project API keys and host secrets cannot be uploaded even when the bot is launched from a broad base such as `$HOME` or `/`.
+
+Finally, every outbound media upload requires explicit user approval via `TelegramApprover.PromptMedia` (`internal/telegram/approver.go`). The approval card shows the full file path and the `network_egress` risk class, and adds an explicit warning when the current working directory is `$HOME` or `/`. If no approver is registered (e.g. a standalone `Handler` outside the bot runtime), the upload is denied outright.
 
 ### 24. Session ID entropy + session-scoped auth tokens
 
@@ -663,7 +667,7 @@ A prompt-injected agent could overwrite `schedules.json` to install persistent c
 | Local process brute-forces session IDs to read transcripts | 128-bit IDs + session-scoped auth tokens + per-IP rate limiting |
 | Telegram bot scanned by random user | Allowlist enforced before any tool call |
 | Agent sends fake approval/skill button via `send_message` | Reserved internal callback prefixes rejected; only `cb:` allowed |
-| Agent exfiltrates arbitrary file via Telegram media | Outbound paths restricted to cwd, `~/.odek/media/`, and temp dir; symlinks rejected |
+| Agent exfiltrates arbitrary file via Telegram media | Outbound paths restricted to cwd, `~/.odek/media/`, and temp dir; secret subtrees and `.env*` files rejected; explicit user approval required for every upload |
 | Auto-saved skill auto-activates on next session | Provenance gate pins NeedsReview skills to Lazy |
 | Memory replays a previously-injected episode forever | Tainted episodes filtered from `Search` |
 | User reflex-approves a destructive class after many benign ones | Friction mode requires typed `approve` + 1.5 s pause |
