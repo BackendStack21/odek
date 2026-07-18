@@ -185,6 +185,8 @@ Promotion is **CLI-only and human-gated** — it is deliberately *not* exposed a
 
 `internal/skills` carries the same provenance model and shares the exact taint decision (`memory.ToolCallTaints`). Skills auto-saved from sessions that crossed the trust boundary — `browser` / `http_batch` / `transcribe` / `vision` / any MCP tool, or a `read_file` / `search_files` / `multi_grep` of a **sensitive** path — are tagged with `Provenance.Untrusted=true` and `NeedsReview=true`. The skill loader pins those skills to the Lazy set regardless of their `auto_load` flag.
 
+Skills created or edited through the agent-facing `skill_save` and `skill_patch` tools are also marked `Untrusted` with `NeedsReview=true`, and `skill_patch` refuses to edit the YAML frontmatter. This prevents an injected agent from silently creating an auto-loading skill or from patching `auto_load` / `needs_review` flags to bypass the promotion gate.
+
 The non-interactive auto-save path (`RunAutoSaveLoop`) now **declines to persist tainted suggestions by default**, so a prompt-injected turn cannot silently leave a poisoned skill on disk. Tainted suggestions are still surfaced in the interactive TUI and can be saved explicitly by the user after review.
 
 After reviewing the skill body, promote it with `--force`:
@@ -459,6 +461,8 @@ MCP servers supply both the names and descriptions of the tools they expose via 
    - **Persisted approvals** — approved tools are stored in `~/.odek/mcp_tool_approvals.json` (0600), keyed by project directory, server name, and tool name. Changing the tool name or server configuration invalidates the approval.
 
 4. **Description scanning** — tool descriptions are already scanned with `ScanInjection` at registration and withheld if injection patterns are found.
+
+5. **Env-aware approval fingerprint** — both server and tool approval keys hash the server's `env` map as sorted key/value pairs, so adding, removing, or changing an environment variable invalidates any previously persisted approval. The interactive approval prompt also prints each env variable with its value, so the operator can see code-execution vectors such as `NODE_OPTIONS=--require ./pwn.js` before approving.
 
 ### 29. Read-only perf-tool file-size cap
 
