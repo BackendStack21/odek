@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -419,6 +420,118 @@ func TestResolveMediaPath_RejectsOdekTrustAnchors(t *testing.T) {
 	}
 	if _, err := ResolveMediaPath(mf); err != nil {
 		t.Fatalf("media dir file should be allowed: %v", err)
+	}
+}
+
+// TestResolveMediaPathForChat_AllowsOwnChat verifies that files tagged for the
+// requesting chat inside ~/.odek/media are accepted.
+func TestResolveMediaPathForChat_AllowsOwnChat(t *testing.T) {
+	setupMediaPathTest(t)
+
+	mediaDir, err := MediaDir()
+	if err != nil {
+		t.Fatalf("MediaDir: %v", err)
+	}
+
+	chatID := int64(12345)
+	cases := []string{
+		fmt.Sprintf("doc_chat%d_report.pdf", chatID),
+		fmt.Sprintf("photo_chat%d_abc.jpg", chatID),
+		fmt.Sprintf("voice_chat%d_def.ogg", chatID),
+	}
+
+	for _, name := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := filepath.Join(mediaDir, name)
+			if err := os.WriteFile(f, []byte("x"), 0644); err != nil {
+				t.Fatalf("write media file: %v", err)
+			}
+			if _, err := ResolveMediaPathForChat(f, chatID); err != nil {
+				t.Fatalf(" ResolveMediaPathForChat(%q, %d) error: %v", f, chatID, err)
+			}
+		})
+	}
+}
+
+// TestResolveMediaPathForChat_RejectsOtherChat verifies that files tagged for a
+// different chat inside ~/.odek/media are rejected, preventing cross-chat
+// re-disclosure of downloaded documents or media.
+func TestResolveMediaPathForChat_RejectsOtherChat(t *testing.T) {
+	setupMediaPathTest(t)
+
+	mediaDir, err := MediaDir()
+	if err != nil {
+		t.Fatalf("MediaDir: %v", err)
+	}
+
+	ownerChat := int64(12345)
+	attackerChat := int64(99999)
+
+	cases := []string{
+		fmt.Sprintf("doc_chat%d_report.pdf", ownerChat),
+		fmt.Sprintf("photo_chat%d_abc.jpg", ownerChat),
+		fmt.Sprintf("voice_chat%d_def.ogg", ownerChat),
+	}
+
+	for _, name := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := filepath.Join(mediaDir, name)
+			if err := os.WriteFile(f, []byte("x"), 0644); err != nil {
+				t.Fatalf("write media file: %v", err)
+			}
+			_, err := ResolveMediaPathForChat(f, attackerChat)
+			if err == nil {
+				t.Fatalf("expected rejection for other chat's file: %s", f)
+			}
+			if !strings.Contains(err.Error(), "different chat") {
+				t.Errorf("expected 'different chat' in error, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestResolveMediaPathForChat_AllowsChatSubdir verifies that files under a
+// per-chat subdirectory inside ~/.odek/media are accepted.
+func TestResolveMediaPathForChat_AllowsChatSubdir(t *testing.T) {
+	setupMediaPathTest(t)
+
+	mediaDir, err := MediaDir()
+	if err != nil {
+		t.Fatalf("MediaDir: %v", err)
+	}
+
+	chatID := int64(12345)
+	subdir := filepath.Join(mediaDir, fmt.Sprintf("chat%d", chatID))
+	if err := os.MkdirAll(subdir, 0755); err != nil {
+		t.Fatalf("mkdir chat subdir: %v", err)
+	}
+
+	f := filepath.Join(subdir, "shared-notes.pdf")
+	if err := os.WriteFile(f, []byte("x"), 0644); err != nil {
+		t.Fatalf("write media file: %v", err)
+	}
+	if _, err := ResolveMediaPathForChat(f, chatID); err != nil {
+		t.Fatalf("ResolveMediaPathForChat(%q, %d) error: %v", f, chatID, err)
+	}
+}
+
+// TestResolveMediaPathForChat_BackwardCompatibility verifies that the
+// unscoped ResolveMediaPath still accepts any file in ~/.odek/media, preserving
+// behavior for callers that do not know the originating chat.
+func TestResolveMediaPathForChat_BackwardCompatibility(t *testing.T) {
+	setupMediaPathTest(t)
+
+	mediaDir, err := MediaDir()
+	if err != nil {
+		t.Fatalf("MediaDir: %v", err)
+	}
+
+	f := filepath.Join(mediaDir, "doc_chat12345_report.pdf")
+	if err := os.WriteFile(f, []byte("x"), 0644); err != nil {
+		t.Fatalf("write media file: %v", err)
+	}
+	if _, err := ResolveMediaPath(f); err != nil {
+		t.Fatalf("ResolveMediaPath(%q) should still allow any media file: %v", f, err)
 	}
 }
 

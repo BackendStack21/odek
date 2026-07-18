@@ -1550,7 +1550,7 @@ func handleChatMessage(
 	// Wire the send_message tool so the agent can send intermediate
 	// messages, files, and interactive keyboards mid-task — not just
 	// at the final answer.
-	agentTools = append(agentTools, toolpkg.NewSendMessageTool(
+	agentTools = append(agentTools, toolpkg.NewSendMessageToolForChat(chatID,
 		func(text string, file string, buttons [][]map[string]string) error {
 			// Defense-in-depth: never send buttons that use reserved internal
 			// callback prefixes, even if the tool validation was bypassed.
@@ -2272,8 +2272,9 @@ func mediaTypeFromExt(path string) string {
 // sendTelegramMedia sends a file as a Telegram media message with caption
 // and optional inline keyboard. Detects the media type from file extension.
 func sendTelegramMedia(bot *telegram.Bot, chatID int64, mediaType, path, caption string, buttons [][]map[string]string) error {
-	// Defense-in-depth: validate the path against the media allowlist.
-	resolved, err := telegram.ResolveMediaPath(path)
+	// Defense-in-depth: validate the path against the media allowlist, scoped to
+	// this chat so one chat cannot request another chat's downloaded media.
+	resolved, err := telegram.ResolveMediaPathForChat(path, chatID)
 	if err != nil {
 		return fmt.Errorf("telegram media: %w", err)
 	}

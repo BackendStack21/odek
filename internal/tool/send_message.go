@@ -48,6 +48,10 @@ type SendMessageTool struct {
 	// success or an error if delivery failed. The tool does NOT wait for
 	// user response; use clarify for interactive prompts.
 	Sender func(text string, file string, buttons [][]map[string]string) error
+
+	// ChatID scopes outbound media path validation to the originating chat.
+	// When non-zero, files inside ~/.odek/media must be tagged for this chat.
+	ChatID int64
 }
 
 // sendMessageArgs is the JSON schema for send_message tool arguments.
@@ -131,12 +135,20 @@ func (t *SendMessageTool) Call(argsJSON string) (string, error) {
 	}
 
 	// Validate file path if provided. Outbound media is restricted to an
-	// allowlist of directories and symlinks are rejected.
+	// allowlist of directories and symlinks are rejected. When a chat ID is
+	// available, files inside ~/.odek/media must belong to that chat so one
+	// chat cannot exfiltrate another chat's downloads.
 	if args.File != "" {
 		if !filepath.IsAbs(args.File) {
 			return "", fmt.Errorf("send_message: file path must be absolute: %s", args.File)
 		}
-		resolved, err := telegram.ResolveMediaPath(args.File)
+		var resolved string
+		var err error
+		if t.ChatID != 0 {
+			resolved, err = telegram.ResolveMediaPathForChat(args.File, t.ChatID)
+		} else {
+			resolved, err = telegram.ResolveMediaPath(args.File)
+		}
 		if err != nil {
 			return "", fmt.Errorf("send_message: file not found or not allowed: %s: %w", args.File, err)
 		}
@@ -184,6 +196,14 @@ func (t *SendMessageTool) Call(argsJSON string) (string, error) {
 // ── Convenience ────────────────────────────────────────────────────────
 
 // NewSendMessageTool creates a SendMessageTool with the given sender function.
+// It does not enforce chat-scoped media isolation; prefer
+// NewSendMessageToolForChat for Telegram callers that know the chat ID.
 func NewSendMessageTool(sender func(text string, file string, buttons [][]map[string]string) error) *SendMessageTool {
 	return &SendMessageTool{Sender: sender}
+}
+
+// NewSendMessageToolForChat creates a SendMessageTool scoped to chatID.
+// Outbound media paths inside ~/.odek/media must be tagged for this chat.
+func NewSendMessageToolForChat(chatID int64, sender func(text string, file string, buttons [][]map[string]string) error) *SendMessageTool {
+	return &SendMessageTool{Sender: sender, ChatID: chatID}
 }

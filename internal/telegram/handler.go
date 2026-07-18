@@ -493,8 +493,9 @@ func (h *Handler) sendMedia(chatID int64, text string, replyToMessageID int) {
 		return
 	}
 
-	// Validate and resolve the media path against the allowlist.
-	resolved, err := ResolveMediaPath(filePath)
+	// Validate and resolve the media path against the allowlist, scoped to this
+	// chat so one chat cannot request another chat's downloaded media.
+	resolved, err := ResolveMediaPathForChat(filePath, chatID)
 	if err != nil {
 		h.log.Error("media file rejected", "chat_id", chatID, "path", filePath, "error", err)
 		if h.OnError != nil {

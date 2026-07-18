@@ -210,12 +210,13 @@ The handler uses `sync.Map` for `TelegramApprover` instances, keyed by `chatID`.
 
 ### Outbound Media
 
-The agent can send files back to the chat either by emitting a `MEDIA:` prefix in its final answer (`MEDIA:photo:/path`, `MEDIA:voice:/path`, `MEDIA:document:/path`) or by calling `send_message` with the `file` parameter. Before any upload, the path is validated by `internal/telegram.ResolveMediaPath`:
+The agent can send files back to the chat either by emitting a `MEDIA:` prefix in its final answer (`MEDIA:photo:/path`, `MEDIA:voice:/path`, `MEDIA:document:/path`) or by calling `send_message` with the `file` parameter. Before any upload, the path is validated by `internal/telegram.ResolveMediaPathForChat`:
 
 - Allowed directories: current working directory, `~/.odek/media/`, and the system temporary directory.
 - The path is resolved to an absolute, cleaned form and checked against the allowlist.
 - Symlinks are rejected: on Unix the final component is opened with `O_NOFOLLOW` and verified with `fstat` to close a TOCTOU race; on other platforms it is checked with `os.Lstat`. The resolved path must not escape the allowlist.
 - Files outside the allowlist (e.g. `/home/user/.ssh/id_rsa`) are refused, closing prompt-injection-driven exfiltration.
+- Files inside the shared `~/.odek/media/` directory are additionally scoped to the originating chat. A file is accepted only when its basename contains the chat's `_chat<chatID>_` tag (matching files downloaded by the bot) or when it lives under `~/.odek/media/chat<chatID>/`. This prevents one chat from asking the bot to re-send documents or media uploaded by another chat.
 
 ## Slash Commands (`commands.go`)
 
