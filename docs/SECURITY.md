@@ -391,6 +391,12 @@ client := &http.Client{
 
 There is no user-facing allowlist config field today; the list is derived from each tool's own operator-controlled `base_url`. If you need a broader or user-editable allowlist, add a `dangerous.ssrf_allowed_hosts` (or `network.allowed_hosts`) array to the config and merge it into the set passed to `ssrfGuardedTransport`.
 
+### 18b. CGNAT and benchmark IP blocking
+
+Go's `net.IP.IsPrivate()` covers RFC1918 and RFC4193 private ranges, but it does not cover RFC 6598 CGNAT (`100.64.0.0/10`) or the RFC 2544 benchmark-testing range (`198.18.0.0/15`). Tailscale and similar overlay networks use `100.64/10` addresses, so an attacker who could steer the agent to `http://100.x.x.x` (or a hostname that rebinding resolves to such an address) could reach unauthenticated internal services that the operator expected to be unreachable from the agent.
+
+`internal/danger.IsBlockedIP` now blocks both ranges in addition to loopback, RFC1918, RFC4193, link-local, and unspecified addresses. Because this is the single source of truth used by `ClassifyURL` and the dial-time SSRF guard, the policy gate and the transport stay in sync.
+
 ### 19. MCP server environment sanitisation
 
 MCP server subprocesses no longer inherit the full odek process environment. They receive only a minimal allowlist of safe variables (e.g. `PATH`, `HOME`, `LANG`, `TMPDIR`) plus any explicit `env` overrides from the server config. Keys matching secret patterns — `*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `*_CREDENTIAL`, `*_PRIVATE_KEY`, etc. — are stripped even when listed in `env`. This prevents a compromised or malicious MCP server from reading secrets loaded from `~/.odek/secrets.env` or other provider keys that were present in the parent environment.
