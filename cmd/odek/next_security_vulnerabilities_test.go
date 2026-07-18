@@ -590,6 +590,37 @@ func TestParallelShell_CapsOutputSize(t *testing.T) {
 	}
 }
 
+// ── 6a. http_batch must wrap network/TLS errors as untrusted ─────────────
+
+func TestHTTPBatch_WrapsErrors(t *testing.T) {
+	allow := "allow"
+	tool := &httpBatchTool{
+		dangerousConfig: danger.DangerousConfig{NonInteractive: &allow},
+	}
+	tool.client = &http.Client{
+		Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			return nil, fmt.Errorf("x509: certificate is valid for attacker.com, not target.com")
+		}),
+	}
+
+	result := callJSON(t, tool, `{"requests":[{"url":"https://target.com/"}]}`)
+	var r struct {
+		Results []struct {
+			Error string `json:"error"`
+		} `json:"results"`
+	}
+	mustUnmarshal(t, result, &r)
+	if len(r.Results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(r.Results))
+	}
+	if r.Results[0].Error == "" {
+		t.Fatal("expected error")
+	}
+	if !strings.HasPrefix(r.Results[0].Error, "<untrusted_content_") {
+		t.Errorf("http_batch error should be wrapped as untrusted, got: %q", r.Results[0].Error)
+	}
+}
+
 // ── 7. Browser must enforce an HTTP request timeout ──────────────────────
 
 func TestBrowser_NavigateTimeout(t *testing.T) {

@@ -55,6 +55,19 @@ func TestSSRFGuardedDial_ImplicitlyInternalDialedDirect(t *testing.T) {
 	}
 }
 
+func TestSSRFGuardedDial_ErrorOmitsInternalIP(t *testing.T) {
+	var dialed []string
+	guard := ssrfGuardedDial(recordingDial(&dialed), stubLookup("10.0.0.1"))
+
+	_, err := guard(context.Background(), "tcp", "evil.example.com:80")
+	if err == nil {
+		t.Fatal("expected refusal")
+	}
+	if strings.Contains(err.Error(), "10.0.0.1") {
+		t.Errorf("error must not leak resolved IP: %v", err)
+	}
+}
+
 func TestSSRFGuardedDial_ExternalResolvingInternalRefused(t *testing.T) {
 	// The SSRF / rebinding core case: a host that presents as external but
 	// resolves to an internal address must be refused, and no dial attempted.

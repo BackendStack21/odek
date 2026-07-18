@@ -236,7 +236,10 @@ func (t *browserTool) doNavigate(rawURL string) (string, error) {
 
 	resp, err := t.client.Do(req)
 	if err != nil {
-		return jsonError(fmt.Sprintf("cannot fetch %q: %v", rawURL, err))
+		// Wrap network/TLS errors as untrusted: x509 errors can contain
+		// attacker-controlled SAN text, and dial errors can expose internal IPs.
+		msg := fmt.Sprintf("cannot fetch %q: %v", rawURL, err)
+		return jsonError(wrapUntrusted(t.toolCtx(), rawURL, msg))
 	}
 	defer resp.Body.Close()
 
