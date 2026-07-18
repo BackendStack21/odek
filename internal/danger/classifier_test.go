@@ -1499,9 +1499,12 @@ func TestIsBlockedIP(t *testing.T) {
 		{"1.1.1.1", false},
 		{"93.184.216.34", false},
 		{"2606:4700:4700::1111", false},
-		// CGNAT 100.64/10 is not covered by Go's IsPrivate — documents the
-		// current (allowed) behavior so a future tightening is a conscious change.
-		{"100.64.0.1", false},
+		// CGNAT 100.64/10 (RFC 6598) and RFC 2544 benchmark testing
+		// 198.18/15 are not covered by Go's IsPrivate.
+		{"100.64.0.1", true},
+		{"100.127.255.255", true},
+		{"198.18.0.1", true},
+		{"198.19.255.255", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.ip, func(t *testing.T) {

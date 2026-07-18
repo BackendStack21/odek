@@ -330,10 +330,27 @@ func ClassifyURL(rawURL string) RiskClass {
 	return NetworkEgress
 }
 
+// extraBlockedNets contains IPv4 ranges that net.IP.IsPrivate does not cover
+// but which must still be unreachable to the agent's web tools:
+//   - 100.64.0.0/10  RFC 6598 CGNAT (includes Tailscale)
+//   - 198.18.0.0/15  RFC 2544 benchmark testing
+var extraBlockedNets []*net.IPNet
+
+func init() {
+	for _, cidr := range []string{"100.64.0.0/10", "198.18.0.0/15"} {
+		_, n, err := net.ParseCIDR(cidr)
+		if err != nil {
+			panic(fmt.Sprintf("danger: invalid blocked CIDR %q: %v", cidr, err))
+		}
+		extraBlockedNets = append(extraBlockedNets, n)
+	}
+}
+
 // IsBlockedIP reports whether ip falls in a range that the agent's web tools
 // must never reach: loopback (127/8, ::1), RFC1918 / RFC4193 private (incl.
 // IPv6 ULA fc00::/7), link-local (169.254/16 — which covers the
-// 169.254.169.254 cloud-metadata endpoint — and fe80::/10), or the unspecified
+// 169.254.169.254 cloud-metadata endpoint — and fe80::/10), RFC 6598 CGNAT
+// (100.64/10), RFC 2544 benchmark testing (198.18/15), or the unspecified
 // address (0.0.0.0, ::). It is the single source of truth shared by both
 // ClassifyURL's literal-host gate and the dial-time SSRF guard, so the two
 // cannot drift apart. A nil IP is treated as blocked (fail closed).
@@ -341,9 +358,17 @@ func IsBlockedIP(ip net.IP) bool {
 	if ip == nil {
 		return true
 	}
-	return ip.IsLoopback() || ip.IsPrivate() ||
+	if ip.IsLoopback() || ip.IsPrivate() ||
 		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-		ip.IsUnspecified()
+		ip.IsUnspecified() {
+		return true
+	}
+	for _, n := range extraBlockedNets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // hostnameIsInternal reports whether a non-IP hostname denotes a well-known
@@ -2196,8 +2221,8 @@ func isNetworkEgress(first string, tokens []string) bool {
 // gitCodeExecConfigKeys are git config keys whose values cause arbitrary
 // command execution when set via -c/--config-env or git config.
 var gitCodeExecConfigKeys = map[string]bool{
-	"core.pager":       true,
-	"core.fsmonitor":   true,
+	"core.pager":        true,
+	"core.fsmonitor":    true,
 	"credential.helper": true,
 }
 
