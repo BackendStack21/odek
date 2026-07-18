@@ -242,7 +242,12 @@ func (t *browserTool) doNavigate(rawURL string) (string, error) {
 	}
 
 	html := string(body)
-	snap := parseHTML(t.toolCtx(), html, rawURL, resp.StatusCode)
+	// Use the post-redirect URL for attribution and relative-link resolution.
+	finalURL := rawURL
+	if resp.Request != nil && resp.Request.URL != nil {
+		finalURL = resp.Request.URL.String()
+	}
+	snap := parseHTML(t.toolCtx(), html, finalURL, resp.StatusCode)
 
 	// Store in state. Keep a persistent copy of the snapshot for current; the
 	// local variable's address would otherwise escape to the heap implicitly.
