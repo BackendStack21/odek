@@ -589,6 +589,15 @@ Now:
 - `cmd/odek/subagent.go::applySubagentTrust` treats a missing `trust_level` as `untrusted`, forcing `non_interactive: deny` and denying Destructive/CodeExecution/Install/SystemWrite/NetworkEgress/Unknown/Blocked.
 - `internal/loop/loop.go::classifyToolCall` classifies `delegate_tasks` as `system_write`, so spawning sub-agents requires explicit operator approval and cannot be used to escape the parent's approval gate.
 
+### 39h. Skill learn-loop provenance propagation
+
+Pattern-detected suggestions in `internal/skills/learnloop.go` were tagged with `DeriveProvenance`, but conversation-extracted suggestions (`ExtractSkillsFromConversation`) were appended without provenance, and the LLM enhancement step (`GenerateSkillWithLLM`) replaced the whole `SkillSuggestion` with the LLM-generated version, dropping the provenance. A tainted session could therefore produce a clean-looking auto-saved skill.
+
+Now:
+
+- Conversation-extracted suggestions receive the session provenance before being added to the suggestion list.
+- The enhancement loop copies the original suggestion's `Provenance` onto the LLM-enhanced result, so `IsTainted()` remains true and `AutoSaveSuggestions` declines the skill unless `allowUntrusted` is set.
+
 ### 40. `/api/resources` result limit cap
 
 The `/api/resources?q=...&limit=N` autocomplete endpoint previously accepted any positive `limit` value. It is now capped to 100 results both in the HTTP handler and in `Registry.Search`. This prevents a prompt-injected or attacker-forged request from forcing an unbounded directory walk and returning a multi-megabyte JSON response.
