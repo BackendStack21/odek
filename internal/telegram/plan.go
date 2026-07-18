@@ -39,8 +39,8 @@ type PlanInfo struct {
 	Preview string    // first line or ~80 chars of content
 }
 
-// plansDir returns the plans directory path (~/.odek/plans/).
-func plansDir() (string, error) {
+// plansRoot returns the root plans directory path (~/.odek/plans/).
+func plansRoot() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("plans: home dir: %w", err)
@@ -48,9 +48,24 @@ func plansDir() (string, error) {
 	return filepath.Join(home, ".odek", "plans"), nil
 }
 
-// ensurePlansDir creates the plans directory if it doesn't exist.
-func ensurePlansDir() (string, error) {
-	dir, err := plansDir()
+// plansDirForChat returns the plans directory for chatID. ChatID 0 is a
+// special global/admin scope that maps to the root plans directory; real
+// Telegram chat IDs are non-zero, so production plans are always isolated
+// under ~/.odek/plans/chat<chatID>/.
+func plansDirForChat(chatID int64) (string, error) {
+	root, err := plansRoot()
+	if err != nil {
+		return "", err
+	}
+	if chatID == 0 {
+		return root, nil
+	}
+	return filepath.Join(root, fmt.Sprintf("chat%d", chatID)), nil
+}
+
+// ensurePlansDir creates the per-chat plans directory if it doesn't exist.
+func ensurePlansDir(chatID int64) (string, error) {
+	dir, err := plansDirForChat(chatID)
 	if err != nil {
 		return "", err
 	}
@@ -131,9 +146,9 @@ func slugify(desc string) string {
 	return slug
 }
 
-// planPath returns the full path for a plan file given its slug.
-func planPath(slug string) (string, error) {
-	dir, err := plansDir()
+// planPath returns the full path for a plan file belonging to chatID.
+func planPath(chatID int64, slug string) (string, error) {
+	dir, err := plansDirForChat(chatID)
 	if err != nil {
 		return "", err
 	}
@@ -142,11 +157,11 @@ func planPath(slug string) (string, error) {
 
 // ── CRUD ────────────────────────────────────────────────────────────────
 
-// ListPlans returns all .md plan files sorted by modification time
+// ListPlans returns all .md plan files for chatID sorted by modification time
 // (newest first). If limit > 0, only the most recent `limit` plans are
-// returned. Returns an empty slice if the plans directory doesn't exist.
-func ListPlans(limit int) ([]PlanInfo, error) {
-	dir, err := plansDir()
+// returned. Returns an empty slice if the chat's plans directory doesn't exist.
+func ListPlans(chatID int64, limit int) ([]PlanInfo, error) {
+	dir, err := plansDirForChat(chatID)
 	if err != nil {
 		return nil, err
 	}
@@ -193,24 +208,24 @@ func ListPlans(limit int) ([]PlanInfo, error) {
 	return infos, nil
 }
 
-// ReadPlan loads a plan by slug prefix match. Returns the slug, content,
-// and any error. If multiple plans match the prefix, the first exact match
-// is preferred, then the first prefix match. Returns an error if no match
-// is found.
-func ReadPlan(slugPrefix string) (string, string, error) {
+// ReadPlan loads a plan for chatID by slug prefix match. Returns the slug,
+// content, and any error. If multiple plans match the prefix, the first exact
+// match is preferred, then the first prefix match. Returns an error if no
+// match is found.
+func ReadPlan(chatID int64, slugPrefix string) (string, string, error) {
 	slugPrefix = strings.ToLower(strings.TrimSpace(slugPrefix))
 	if slugPrefix == "" {
 		return "", "", fmt.Errorf("plan slug required")
 	}
 
-	dir, err := plansDir()
+	dir, err := plansDirForChat(chatID)
 	if err != nil {
 		return "", "", err
 	}
 
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
-		return "", "", fmt.Errorf("no plans directory found")
+		return "", "", fmt.Errorf("no plans found for this chat")
 	}
 	if err != nil {
 		return "", "", fmt.Errorf("read plan: %w", err)
@@ -250,22 +265,22 @@ func ReadPlan(slugPrefix string) (string, string, error) {
 	return match, string(data), nil
 }
 
-// DeletePlan removes a plan file by slug prefix match. Uses the same
-// matching logic as ReadPlan. Returns the slug of the deleted plan.
-func DeletePlan(slugPrefix string) (string, error) {
+// DeletePlan removes a plan file for chatID by slug prefix match. Uses the
+// same matching logic as ReadPlan. Returns the slug of the deleted plan.
+func DeletePlan(chatID int64, slugPrefix string) (string, error) {
 	slugPrefix = strings.ToLower(strings.TrimSpace(slugPrefix))
 	if slugPrefix == "" {
 		return "", fmt.Errorf("plan slug required")
 	}
 
-	dir, err := plansDir()
+	dir, err := plansDirForChat(chatID)
 	if err != nil {
 		return "", err
 	}
 
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
-		return "", fmt.Errorf("no plans directory found")
+		return "", fmt.Errorf("no plans found for this chat")
 	}
 	if err != nil {
 		return "", fmt.Errorf("delete plan: %w", err)
@@ -305,9 +320,9 @@ func DeletePlan(slugPrefix string) (string, error) {
 }
 
 // MostRecentPlan returns the slug and full content of the most recently
-// modified plan file. Returns an error if no plans exist.
-func MostRecentPlan() (string, string, error) {
-	infos, err := ListPlans(1)
+// modified plan file for chatID. Returns an error if no plans exist.
+func MostRecentPlan(chatID int64) (string, string, error) {
+	infos, err := ListPlans(chatID, 1)
 	if err != nil {
 		return "", "", err
 	}

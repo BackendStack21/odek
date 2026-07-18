@@ -543,6 +543,18 @@ Plan files live in `~/.odek/plans/` and are loaded by `/plan_view` and injected 
 
 Telegram log files were created with world-readable `0644` permissions, exposing chat IDs and task snippets to other local users. `NewFileLogger` now creates log files with `0600` and `os.Chmod`'s existing files to the same mode.
 
+### 39c. Telegram chat-scoped sessions and plans
+
+The Telegram bot's `/sessions`, `/resume`, `/prune`, `/plans`, `/plan_view`, `/plan_delete`, and `/plan_resume` commands previously operated on the global `~/.odek/sessions` and `~/.odek/plans` stores that are shared with the CLI. Any allowed chat could list the operator's CLI sessions (including task snippets that often contain secrets), resume one so its history entered the attacker's chat context, prune the operator's history, or read/delete plans created by other chats.
+
+These commands are now scoped to the requesting chat:
+
+- Each Telegram chat owns sessions with IDs of the form `tg-<chatID>` (and timestamped archives `tg-<chatID>-<YYYYMMDD>-<HHMMSS>`). `ListSessions`, `ResumeSession`, and `PruneSessions` only consider sessions whose ID starts with the caller's `tg-<chatID>` prefix.
+- `ResumeSession` explicitly rejects a direct ID that belongs to a different chat.
+- Plans are stored under `~/.odek/plans/chat<chatID>/`. `ListPlans`, `ReadPlan`, `DeletePlan`, and `MostRecentPlan` only look inside the caller's per-chat directory. Chat ID `0` is reserved as a global/admin scope mapping to the root `~/.odek/plans/` directory.
+
+This removes the cross-chat session/plan disclosure path while keeping the CLI and admin flows functional.
+
 ### 40. `/api/resources` result limit cap
 
 The `/api/resources?q=...&limit=N` autocomplete endpoint previously accepted any positive `limit` value. It is now capped to 100 results both in the HTTP handler and in `Registry.Search`. This prevents a prompt-injected or attacker-forged request from forcing an unbounded directory walk and returning a multi-megabyte JSON response.

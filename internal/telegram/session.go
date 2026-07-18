@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -298,46 +299,69 @@ type SessionInfo struct {
 	Turns     int       // number of user turns
 }
 
-// ListSessions returns metadata for all sessions in the backing store,
-// sorted by most-recent-first, limited to `limit` entries. If limit <= 0,
-// all sessions are returned.
-func (sm *SessionManager) ListSessions(limit int) ([]SessionInfo, error) {
-	sessions, err := sm.Store.List(limit)
+// ListSessions returns metadata for sessions belonging to chatID, sorted by
+// most-recent-first and limited to `limit` entries. If limit <= 0, all
+// matching sessions are returned.
+func (sm *SessionManager) ListSessions(chatID int64, limit int) ([]SessionInfo, error) {
+	all, err := sm.Store.List(0)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
-	infos := make([]SessionInfo, len(sessions))
-	for i, s := range sessions {
-		infos[i] = SessionInfo{
+
+	prefix := fmt.Sprintf("tg-%d", chatID)
+	var infos []SessionInfo
+	for _, s := range all {
+		if !strings.HasPrefix(s.ID, prefix) {
+			continue
+		}
+		infos = append(infos, SessionInfo{
 			ID:        s.ID,
 			Task:      s.Task,
 			CreatedAt: s.CreatedAt,
 			UpdatedAt: s.UpdatedAt,
 			Turns:     s.Turns,
-		}
+		})
+	}
+
+	// Sort newest first.
+	sort.Slice(infos, func(i, j int) bool {
+		return infos[i].UpdatedAt.After(infos[j].UpdatedAt)
+	})
+
+	if limit > 0 && len(infos) > limit {
+		infos = infos[:limit]
 	}
 	return infos, nil
 }
 
-// ResumeSession loads a session from the backing store and binds it to
-// the given chatID. This replaces any existing session for that chat.
-// sessionID can be a partial prefix match — the first matching session
-// (by ID prefix or task contains) is used. Returns the new ChatSession
-// or an error if no matching session is found.
+// ResumeSession loads a session belonging to chatID from the backing store
+// and binds it to that chat. This replaces any existing session for that
+// chat. sessionID can be a partial prefix match — the first matching session
+// (by ID prefix or task contains) among this chat's sessions is used.
+// Returns an error if the matched session belongs to a different chat.
 func (sm *SessionManager) ResumeSession(chatID int64, sessionID string) (*ChatSession, error) {
 	if sessionID == "" {
 		return nil, fmt.Errorf("session ID required — use /sessions to list")
 	}
 
+	prefix := fmt.Sprintf("tg-%d", chatID)
+
 	// Try direct load first.
 	sess, err := sm.Store.Load(sessionID)
+	if err == nil && sess != nil && !strings.HasPrefix(sess.ID, prefix) {
+		return nil, fmt.Errorf("session %q belongs to a different chat", sess.ID)
+	}
+
 	if err != nil || sess == nil {
-		// Prefix match: search all sessions for a match.
+		// Prefix match: search only this chat's sessions.
 		all, listErr := sm.Store.List(0)
 		if listErr != nil {
 			return nil, fmt.Errorf("list sessions: %w", listErr)
 		}
 		for i, s := range all {
+			if !strings.HasPrefix(s.ID, prefix) {
+				continue
+			}
 			if strings.HasPrefix(s.ID, sessionID) ||
 				strings.Contains(strings.ToLower(s.Task), strings.ToLower(sessionID)) {
 				sess = &all[i]
@@ -367,30 +391,47 @@ func (sm *SessionManager) ResumeSession(chatID int64, sessionID string) (*ChatSe
 	return cs, nil
 }
 
-// PruneSessions deletes sessions that haven't been updated in `days` days
-// or more. Returns the number of sessions removed.
-func (sm *SessionManager) PruneSessions(days int) (int, error) {
+// PruneSessions deletes sessions belonging to chatID that haven't been
+// updated in `days` days or more. Returns the number of sessions removed.
+func (sm *SessionManager) PruneSessions(chatID int64, days int) (int, error) {
 	if days <= 0 {
 		days = 30
 	}
 	before := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
-	return sm.Store.Cleanup(before)
+	prefix := fmt.Sprintf("tg-%d", chatID)
+
+	all, err := sm.Store.List(0)
+	if err != nil {
+		return 0, fmt.Errorf("list sessions: %w", err)
+	}
+
+	removed := 0
+	for _, s := range all {
+		if !strings.HasPrefix(s.ID, prefix) {
+			continue
+		}
+		if s.UpdatedAt.Before(before) {
+			if err := sm.Store.Delete(s.ID); err != nil {
+				return removed, fmt.Errorf("delete session %s: %w", s.ID, err)
+			}
+			removed++
+		}
+	}
+	return removed, nil
 }
 
-// PrunePlans deletes plan files (~/.odek/plans/*.md) older than `days` days.
-// Plans don't have a formal store yet — this scans the directory and checks
-// file modification times. Returns the number of plan files removed. If the
-// plans directory doesn't exist, returns 0, nil.
-func (sm *SessionManager) PrunePlans(days int) (int, error) {
+// PrunePlans deletes plan files for chatID (~/.odek/plans/chat<chatID>/*.md)
+// older than `days` days. Returns the number of plan files removed. If the
+// chat's plans directory doesn't exist, returns 0, nil.
+func (sm *SessionManager) PrunePlans(chatID int64, days int) (int, error) {
 	if days <= 0 {
 		days = 30
 	}
-	home, err := os.UserHomeDir()
+	dir, err := plansDirForChat(chatID)
 	if err != nil {
 		return 0, nil
 	}
-	plansDir := filepath.Join(home, ".odek", "plans")
-	entries, err := os.ReadDir(plansDir)
+	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return 0, nil
 	}
@@ -409,7 +450,7 @@ func (sm *SessionManager) PrunePlans(days int) (int, error) {
 			continue
 		}
 		if info.ModTime().Before(before) {
-			path := filepath.Join(plansDir, e.Name())
+			path := filepath.Join(dir, e.Name())
 			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 				return removed, fmt.Errorf("prune plans: remove %q: %w", e.Name(), err)
 			}

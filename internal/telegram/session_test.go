@@ -715,12 +715,29 @@ func TestCacheMissAfterDelete(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestListSessions(t *testing.T) {
-	sm, _ := setupTestSessionManager(t)
-	for i := int64(1); i <= 3; i++ {
-		sm.Save(i, []llm.Message{{Role: "user", Content: fmt.Sprintf("msg %d", i)}}) //nolint:errcheck
+	sm, st := setupTestSessionManager(t)
+	const chatID int64 = 42
+
+	// Current session for the chat.
+	if err := sm.Save(chatID, []llm.Message{{Role: "user", Content: "current"}}); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+	// Plus a couple of archived sessions for the same chat.
+	for _, suffix := range []string{"alpha", "beta"} {
+		id := fmt.Sprintf("tg-%d-%s", chatID, suffix)
+		sess := &session.Session{
+			ID:        id,
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+			Task:      id,
+			Messages:  nil,
+		}
+		if err := st.Save(sess); err != nil {
+			t.Fatalf("store.Save(%q) failed: %v", id, err)
+		}
 	}
 
-	infos, err := sm.ListSessions(0)
+	infos, err := sm.ListSessions(chatID, 0)
 	if err != nil {
 		t.Fatalf("ListSessions failed: %v", err)
 	}
@@ -730,17 +747,29 @@ func TestListSessions(t *testing.T) {
 }
 
 func TestListSessions_Limited(t *testing.T) {
-	sm, _ := setupTestSessionManager(t)
-	for i := int64(1); i <= 5; i++ {
-		sm.Save(i, []llm.Message{{Role: "user", Content: fmt.Sprintf("msg %d", i)}}) //nolint:errcheck
+	sm, st := setupTestSessionManager(t)
+	const chatID int64 = 42
+
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("tg-%d-archive-%d", chatID, i)
+		sess := &session.Session{
+			ID:        id,
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now().Add(-time.Duration(i) * time.Minute),
+			Task:      id,
+			Messages:  nil,
+		}
+		if err := st.Save(sess); err != nil {
+			t.Fatalf("store.Save(%q) failed: %v", id, err)
+		}
 	}
 
-	infos, err := sm.ListSessions(3)
+	infos, err := sm.ListSessions(chatID, 3)
 	if err != nil {
-		t.Fatalf("ListSessions(3) failed: %v", err)
+		t.Fatalf("ListSessions(%d, 3) failed: %v", chatID, err)
 	}
-	if len(infos) > 3 {
-		t.Errorf("ListSessions(3) returned %d, want <= 3", len(infos))
+	if len(infos) != 3 {
+		t.Errorf("ListSessions(%d, 3) returned %d, want 3", chatID, len(infos))
 	}
 }
 
@@ -750,8 +779,9 @@ func TestListSessions_Limited(t *testing.T) {
 
 func TestResumeSession_DirectID(t *testing.T) {
 	sm, _ := setupTestSessionManager(t)
+	const chatID int64 = 999
 
-	err := sm.Save(999, []llm.Message{
+	err := sm.Save(chatID, []llm.Message{
 		{Role: "user", Content: "resume test"},
 		{Role: "assistant", Content: "resume response"},
 	})
@@ -759,15 +789,15 @@ func TestResumeSession_DirectID(t *testing.T) {
 		t.Fatalf("Save failed: %v", err)
 	}
 
-	cs, err := sm.ResumeSession(100, "tg-999")
+	cs, err := sm.ResumeSession(chatID, fmt.Sprintf("tg-%d", chatID))
 	if err != nil {
 		t.Fatalf("ResumeSession failed: %v", err)
 	}
-	if cs.ChatID != 100 {
-		t.Errorf("ChatID = %d, want 100", cs.ChatID)
+	if cs.ChatID != chatID {
+		t.Errorf("ChatID = %d, want %d", cs.ChatID, chatID)
 	}
-	if cs.SessionID != "tg-999" {
-		t.Errorf("SessionID = %q, want tg-999", cs.SessionID)
+	if cs.SessionID != fmt.Sprintf("tg-%d", chatID) {
+		t.Errorf("SessionID = %q, want tg-%d", cs.SessionID, chatID)
 	}
 	if len(cs.Messages) != 2 {
 		t.Errorf("Messages length = %d, want 2", len(cs.Messages))
@@ -776,9 +806,9 @@ func TestResumeSession_DirectID(t *testing.T) {
 		t.Errorf("Messages[0] = %q, want %q", cs.Messages[0].Content, "resume test")
 	}
 
-	cached, ok := sm.Cache[100]
+	cached, ok := sm.Cache[chatID]
 	if !ok {
-		t.Fatal("expected chat 100 to be cached after ResumeSession")
+		t.Fatalf("expected chat %d to be cached after ResumeSession", chatID)
 	}
 	if cached != cs {
 		t.Errorf("cached pointer differs")
@@ -803,18 +833,19 @@ func TestResumeSession_NotFound(t *testing.T) {
 
 func TestPruneSessions(t *testing.T) {
 	sm, _ := setupTestSessionManager(t)
+	const chatID int64 = 1
 
-	err := sm.Save(1, []llm.Message{{Role: "user", Content: "keep"}})
+	err := sm.Save(chatID, []llm.Message{{Role: "user", Content: "keep"}})
 	if err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
 
-	removed, err := sm.PruneSessions(0)
+	removed, err := sm.PruneSessions(chatID, 0)
 	if err != nil {
 		t.Fatalf("PruneSessions failed: %v", err)
 	}
 	if removed != 0 {
-		t.Errorf("PruneSessions(0) removed %d, want 0 (no old sessions)", removed)
+		t.Errorf("PruneSessions(%d, 0) removed %d, want 0 (no old sessions)", chatID, removed)
 	}
 }
 
@@ -824,11 +855,12 @@ func TestPruneSessions(t *testing.T) {
 
 func TestPrunePlans(t *testing.T) {
 	sm, _ := setupTestSessionManager(t)
+	const chatID int64 = 1
 
-	// Create a plans directory with temp files.
+	// Create a per-chat plans directory with temp files.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	plansDir := filepath.Join(home, ".odek", "plans")
+	plansDir := filepath.Join(home, ".odek", "plans", fmt.Sprintf("chat%d", chatID))
 	if err := os.MkdirAll(plansDir, 0755); err != nil {
 		t.Fatalf("MkdirAll plans: %v", err)
 	}
@@ -846,12 +878,12 @@ func TestPrunePlans(t *testing.T) {
 	}
 
 	// Prune with 30 days — should only remove old.md.
-	removed, err := sm.PrunePlans(30)
+	removed, err := sm.PrunePlans(chatID, 30)
 	if err != nil {
 		t.Fatalf("PrunePlans failed: %v", err)
 	}
 	if removed != 1 {
-		t.Errorf("PrunePlans(30) = %d, want 1", removed)
+		t.Errorf("PrunePlans(%d, 30) = %d, want 1", chatID, removed)
 	}
 
 	// old.md should be gone, recent.md should remain.
@@ -865,12 +897,13 @@ func TestPrunePlans(t *testing.T) {
 
 func TestPrunePlans_NoDir(t *testing.T) {
 	sm, _ := setupTestSessionManager(t)
+	const chatID int64 = 1
 
 	// Set HOME to a temp dir with no plans subdirectory.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	removed, err := sm.PrunePlans(30)
+	removed, err := sm.PrunePlans(chatID, 30)
 	if err != nil {
 		t.Fatalf("PrunePlans failed: %v", err)
 	}
