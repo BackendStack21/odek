@@ -1766,6 +1766,14 @@ func classifyCommand(tokens []string) RiskClass {
 		return SystemWrite
 	}
 
+	// odek self-invocations can reach human-gated trust mutations (`odek memory
+	// promote`, `odek memory extended confirm`, `odek skill promote --force`).
+	// Treating the whole binary as system_write prevents a prompt-injected agent
+	// from using the shell tool to flip its own taint gates.
+	if first == "odek" {
+		return SystemWrite
+	}
+
 	// Blocked
 	if isBlocked(tokens) {
 		return Blocked

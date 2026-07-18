@@ -555,6 +555,12 @@ These commands are now scoped to the requesting chat:
 
 This removes the cross-chat session/plan disclosure path while keeping the CLI and admin flows functional.
 
+### 39d. odek self-invocations classified as `system_write`
+
+Human-gated trust mutations such as `odek memory promote <session>`, `odek memory extended confirm <id>`, and `odek skill promote <name> --force` are intentionally exposed only through the CLI, not as agent tools. Because the shell tool would otherwise resolve a bare `odek` command through `commandName` and let it fall through to an interactive prompt (or auto-allow depending on policy), a prompt-injected agent could invoke these commands itself and flip its own taint gates.
+
+The danger classifier now treats any shell stage whose program basename is `odek` as `system_write`, so every self-invocation requires explicit operator approval and cannot be used to bypass the memory/skill provenance gates from inside an agent session.
+
 ### 40. `/api/resources` result limit cap
 
 The `/api/resources?q=...&limit=N` autocomplete endpoint previously accepted any positive `limit` value. It is now capped to 100 results both in the HTTP handler and in `Registry.Search`. This prevents a prompt-injected or attacker-forged request from forcing an unbounded directory walk and returning a multi-megabyte JSON response.
