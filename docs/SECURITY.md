@@ -721,7 +721,7 @@ Defaults: `FrictionThreshold=3`, `FrictionWindow=60s`. To opt out (TTYApprover o
 
 When odek cannot open a TTY (headless/CI/piped input), prompted operations used to fall back to the `non_interactive` action. The built-in default was `"allow"`, so a prompt-injected task such as `echo "task" | odek run "download and run attacker.sh"` could silently execute `curl … | sh`.
 
-The default is now `"deny"`. Unattended runs must explicitly opt in to auto-approval by setting `"non_interactive": "allow"` in `~/.odek/config.json`, `ODEK_DANGEROUS_NON_INTERACTIVE=allow`, or the CLI. This makes the safe behaviour the default and closes the headless prompt-injection auto-execution vector.
+The default is now `"deny"`. Unattended runs must explicitly opt in to auto-approval by setting `"non_interactive": "allow"` in `~/.odek/config.json` or the CLI. Any other value — including the previously accepted `"prompt"` — is rejected at load time with a warning and treated as `"deny"`, because a non-interactive environment cannot prompt. This makes the safe behaviour the default and closes the headless prompt-injection auto-execution vector.
 
 ### 26. Generic file tools cannot write `~/.odek` trust anchors
 

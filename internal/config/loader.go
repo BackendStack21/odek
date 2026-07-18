@@ -1427,7 +1427,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		SandboxEnv:            cfg.SandboxEnv,
 		SandboxVolumes:        cfg.SandboxVolumes,
 		Skills:                resolveSkills(cfg.Skills),
-		Dangerous:             resolveDangerous(cfg.Dangerous),
+		Dangerous:             resolveDangerous(cfg.Dangerous, true),
 		Memory:                resolveMemory(cfg.Memory),
 		Guard:                 resolveGuard(cfg.Guard),
 		Embedding:             cfg.Embedding,
@@ -1632,11 +1632,22 @@ func resolveSkills(cfg *SkillsConfig) skills.SkillsConfig {
 
 // resolveDangerous merges file-level and potential env-level dangerous config.
 // If no config is provided, returns an empty DangerousConfig (safe defaults).
-func resolveDangerous(cfg *danger.DangerousConfig) danger.DangerousConfig {
-	if cfg != nil {
-		return *cfg
+// When validate is true, invalid non_interactive values are rejected with a
+// warning and forced to "deny" so headless runs cannot accidentally
+// auto-approve dangerous ops.
+func resolveDangerous(cfg *danger.DangerousConfig, validate bool) danger.DangerousConfig {
+	if cfg == nil {
+		return danger.DangerousConfig{}
 	}
-	return danger.DangerousConfig{}
+	resolved := *cfg
+	if validate && resolved.NonInteractive != nil {
+		if _, ok := danger.ParseNonInteractiveAction(*resolved.NonInteractive); !ok {
+			fmt.Fprintf(os.Stderr, "odek: warning: invalid non_interactive value %q — must be 'allow' or 'deny'; using 'deny'\n", *resolved.NonInteractive)
+			deny := "deny"
+			resolved.NonInteractive = &deny
+		}
+	}
+	return resolved
 }
 
 // resolveMemory merges file-level memory config with defaults.
@@ -1955,7 +1966,7 @@ func resolveSchedules(cfg *SchedulesConfig) ScheduleConfig {
 	}
 	out.TelegramAdminChats = cfg.TelegramAdminChats
 	out.TelegramAdminUsers = cfg.TelegramAdminUsers
-	out.Dangerous = resolveDangerous(cfg.Dangerous)
+	out.Dangerous = resolveDangerous(cfg.Dangerous, false)
 	return out
 }
 
