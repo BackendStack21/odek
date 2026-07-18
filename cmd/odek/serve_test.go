@@ -915,9 +915,14 @@ func buildServeMux(t *testing.T, store *session.Store) (net.Listener, *http.Serv
 			handleWS(store, resourceReg, resolved, systemMessage, conn)
 		},
 	})
-	mux.HandleFunc("/api/resources", handleResourceSearch(resourceReg))
-	mux.HandleFunc("/api/sessions", handleSessionList(store))
-	mux.HandleFunc("/api/cancel", handleCancel(store))
+	// Mirror the production API authentication stack so E2E tests exercise the
+	// real security controls (token + loopback Host + local Origin).
+	apiAuth := func(h http.Handler) http.Handler {
+		return requireServeToken(wsToken)(requireLocalHost(requireLocalOrigin(h)))
+	}
+	mux.Handle("/api/resources", apiAuth(handleResourceSearch(resourceReg)))
+	mux.Handle("/api/sessions", apiAuth(handleSessionList(store)))
+	mux.Handle("/api/cancel", apiAuth(handleCancel(store)))
 
 	return ln, mux
 }
@@ -2056,7 +2061,9 @@ func readSessionID(t *testing.T, conn *golangws.Conn) string {
 	return sid
 }
 
-// postCancel makes an authenticated POST /api/cancel request.
+// postCancel makes an authenticated POST /api/cancel request. It sends both
+// the per-instance CSRF token (required by the API auth middleware) and the
+// per-session auth token (required by handleCancel).
 func postCancel(t *testing.T, url, sessionID, token string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodPost, url+"/api/cancel?session_id="+sessionID, nil)
@@ -2065,6 +2072,13 @@ func postCancel(t *testing.T, url, sessionID, token string) *http.Response {
 	}
 	if token != "" {
 		req.Header.Set("X-Session-Token", token)
+	}
+	// Tests that exercise the production mux must supply the serve token.
+	testTokenMu.Lock()
+	serveToken := testLastToken
+	testTokenMu.Unlock()
+	if serveToken != "" {
+		req.Header.Set(wsTokenHeaderName, serveToken)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

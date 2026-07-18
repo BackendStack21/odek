@@ -211,6 +211,99 @@ func TestServe_CSRF_AllowsLocalhostOrigin(t *testing.T) {
 	}
 }
 
+// ── 4b. serve API endpoints must require the serve token and loopback Host ─
+
+func TestServe_API_RequiresServeToken(t *testing.T) {
+	store := newTestSessionStore(t)
+	ln, mux := buildServeMux(t, store)
+	defer ln.Close()
+
+	go serveOnListener(ln, mux)
+	waitForHTTP(t, ln.Addr().String())
+
+	resp, err := http.Get("http://" + ln.Addr().String() + "/api/sessions")
+	if err != nil {
+		t.Fatalf("GET /api/sessions: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 without serve token, got %d", resp.StatusCode)
+	}
+}
+
+func TestServe_API_RequiresLocalHost(t *testing.T) {
+	store := newTestSessionStore(t)
+	ln, mux := buildServeMux(t, store)
+	defer ln.Close()
+
+	testTokenMu.Lock()
+	token := testLastToken
+	testTokenMu.Unlock()
+
+	go serveOnListener(ln, mux)
+	waitForHTTP(t, ln.Addr().String())
+
+	req, _ := http.NewRequest(http.MethodGet, "http://"+ln.Addr().String()+"/api/sessions", nil)
+	req.Header.Set(wsTokenHeaderName, token)
+	req.Host = "attacker.example.com"
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /api/sessions: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-loopback Host, got %d", resp.StatusCode)
+	}
+}
+
+func TestServe_API_AcceptsServeTokenHeader(t *testing.T) {
+	store := newTestSessionStore(t)
+	ln, mux := buildServeMux(t, store)
+	defer ln.Close()
+
+	testTokenMu.Lock()
+	token := testLastToken
+	testTokenMu.Unlock()
+
+	go serveOnListener(ln, mux)
+	waitForHTTP(t, ln.Addr().String())
+
+	req, _ := http.NewRequest(http.MethodGet, "http://"+ln.Addr().String()+"/api/sessions", nil)
+	req.Header.Set(wsTokenHeaderName, token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /api/sessions: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 with serve token header, got %d", resp.StatusCode)
+	}
+}
+
+func TestServe_API_AcceptsServeTokenCookie(t *testing.T) {
+	store := newTestSessionStore(t)
+	ln, mux := buildServeMux(t, store)
+	defer ln.Close()
+
+	testTokenMu.Lock()
+	token := testLastToken
+	testTokenMu.Unlock()
+
+	go serveOnListener(ln, mux)
+	waitForHTTP(t, ln.Addr().String())
+
+	req, _ := http.NewRequest(http.MethodGet, "http://"+ln.Addr().String()+"/api/sessions", nil)
+	req.AddCookie(&http.Cookie{Name: wsTokenCookieName, Value: token})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /api/sessions: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 with serve token cookie, got %d", resp.StatusCode)
+	}
+}
+
 func TestServe_StaticSecurityHeaders(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rr := httptest.NewRecorder()
