@@ -2248,8 +2248,6 @@ func continueCmd(args []string) error {
 	fmt.Fprintf(os.Stderr, "odek: continuing session %s (turn %d → %d)\n",
 		sess.ID, sess.Turns, sess.Turns+1)
 
-	cwd, _ := os.Getwd()
-
 	// Resolve config (no CLI flags for continue — uses session's model)
 	resolved := config.LoadConfig(config.CLIFlags{Model: sess.Model})
 
@@ -2370,7 +2368,7 @@ func continueCmd(args []string) error {
 
 	// Propagate session context to Extended Memory so extracted atoms are
 	// tagged with the session they came from.
-	cwd, _ = os.Getwd()
+	cwd, _ := os.Getwd()
 	if mm := agent.Memory(); mm != nil {
 		mm.SetSessionContext(sess.ID, cwd)
 	}
