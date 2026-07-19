@@ -336,7 +336,7 @@ func TestE2E_FullCallbackFlow(t *testing.T) {
 		capturedChatID int64
 		capturedData   string
 	)
-	handler.OnCallbackQuery = func(chatID int64, callbackData string) (string, error) {
+	handler.OnCallbackQuery = func(chatID int64, callbackData string, userID int64) (string, error) {
 		capturedChatID = chatID
 		capturedData = callbackData
 		return "You selected option 1!", nil

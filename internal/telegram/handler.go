@@ -57,9 +57,11 @@ type Handler struct {
 	OnTextMessage func(chatID int64, messageID int, text string, forwarded bool, userID int64) (string, error)
 
 	// OnCallbackQuery is called when a callback query is received and
-	// it was NOT handled by the TelegramApprover. Returns the response
-	// text (may be empty).
-	OnCallbackQuery func(chatID int64, callbackData string) (string, error)
+	// it was NOT handled by the TelegramApprover. userID is the Telegram
+	// user who pressed the button, so callers can bind callbacks to the
+	// originating user and reject stale or cross-user button presses.
+	// Returns the response text (may be empty).
+	OnCallbackQuery func(chatID int64, callbackData string, userID int64) (string, error)
 
 	// OnCommand is called when a bot command (e.g. /start) is received.
 	// userID is the Telegram user who sent the command.
@@ -149,8 +151,8 @@ func defaultTextHandler() func(int64, int, string, bool, int64) (string, error) 
 }
 
 // defaultCallbackHandler returns a default OnCallbackQuery callback.
-func defaultCallbackHandler() func(int64, string) (string, error) {
-	return func(_ int64, _ string) (string, error) {
+func defaultCallbackHandler() func(int64, string, int64) (string, error) {
+	return func(_ int64, _ string, _ int64) (string, error) {
 		return "Not implemented yet: callback query", nil
 	}
 }
@@ -409,7 +411,7 @@ func (h *Handler) handleCallback(cq *CallbackQuery) {
 	}
 
 	if h.OnCallbackQuery != nil {
-		resp, err := h.OnCallbackQuery(cq.Message.Chat.ID, cq.Data)
+		resp, err := h.OnCallbackQuery(cq.Message.Chat.ID, cq.Data, userID)
 		if err != nil {
 			h.log.Error("callback query handler failed", "chat_id", cq.Message.Chat.ID, "data", cq.Data, "error", err)
 			if h.OnError != nil {

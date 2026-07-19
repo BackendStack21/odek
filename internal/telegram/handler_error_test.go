@@ -60,7 +60,7 @@ func TestHandleCallback_ErrorSentToUser(t *testing.T) {
 	h := NewHandler(bot)
 	h.Config.AllowAllUsers = true // routing test
 
-	h.OnCallbackQuery = func(chatID int64, data string) (string, error) {
+	h.OnCallbackQuery = func(chatID int64, data string, userID int64) (string, error) {
 		return "", fmt.Errorf("simulated callback failure: %s", data)
 	}
 
