@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 type request struct {
@@ -31,6 +32,7 @@ type rpcError struct {
 var (
 	toolsJSON    = os.Getenv("FAKE_TOOLS")
 	errorOnCall  = os.Getenv("FAKE_ERROR_ON_CALL")
+	delayStr     = os.Getenv("FAKE_DELAY")
 )
 
 func main() {
@@ -44,6 +46,12 @@ func main() {
 		var req request
 		if err := json.Unmarshal([]byte(line), &req); err != nil {
 			continue
+		}
+
+		if delayStr != "" {
+			if d, err := time.ParseDuration(delayStr); err == nil {
+				time.Sleep(d)
+			}
 		}
 
 		switch req.Method {

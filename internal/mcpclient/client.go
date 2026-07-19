@@ -44,8 +44,7 @@ import (
 // ── Protocol Constants ──────────────────────────────────────────────────
 
 const (
-	ProtocolVersion    = "2025-03-26"
-	DefaultTimeout     = 30 * time.Second
+	ProtocolVersion = "2025-03-26"
 	// maxMCPResponseLine caps the size of a single JSON-RPC response line
 	// from an MCP server. A malicious or broken server that emits a huge
 	// line without a newline would otherwise be buffered entirely in memory
@@ -53,6 +52,10 @@ const (
 	// and the connection is closed.
 	maxMCPResponseLine = 10 << 20 // 10 MiB
 )
+
+// DefaultTimeout bounds each MCP request when the caller does not supply a
+// context deadline. It is a var so tests can temporarily lower it.
+var DefaultTimeout = 30 * time.Second
 
 // ── JSON-RPC Types ─────────────────────────────────────────────────────
 
@@ -118,6 +121,9 @@ func validateToolName(name string) error {
 	}
 	if len(name) > 64 {
 		return fmt.Errorf("tool name %q exceeds 64 characters", name)
+	}
+	if strings.Contains(name, "__") {
+		return fmt.Errorf("tool name %q cannot contain %q", name, "__")
 	}
 	for _, r := range name {
 		switch {
@@ -192,9 +198,38 @@ type Client struct {
 	pending map[int]chan callResponse // routes responses to waiting callers
 }
 
+// validateName checks that an MCP server or tool name is safe to use as part
+// of an odek tool identifier. Names must be non-empty, ≤64 chars, contain only
+// ASCII letters/digits/underscore/hyphen, and must not contain the double-
+// underscore separator used to qualify tool names.
+func validateName(kind, name string) error {
+	if name == "" {
+		return fmt.Errorf("%s name cannot be empty", kind)
+	}
+	if len(name) > 64 {
+		return fmt.Errorf("%s name %q too long (%d > 64)", kind, name, len(name))
+	}
+	if strings.Contains(name, "__") {
+		return fmt.Errorf("%s name %q cannot contain %q", kind, name, "__")
+	}
+	for i, r := range name {
+		isLetter := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+		isDigit := r >= '0' && r <= '9'
+		if isLetter || isDigit || r == '_' || r == '-' {
+			continue
+		}
+		return fmt.Errorf("%s name %q contains invalid character %q at position %d", kind, name, r, i)
+	}
+	return nil
+}
+
 // New spawns an MCP server process and returns a client connected to it.
 // The server process is started immediately and cleaned up on Close().
 func New(name string, cfg ServerConfig) (*Client, error) {
+	if err := validateName("server", name); err != nil {
+		return nil, err
+	}
+
 	cmd := exec.Command(cfg.Command, cfg.Args...)
 
 	// Apply env overrides. Always build a sanitized environment so MCP children
@@ -429,6 +464,14 @@ func (c *Client) CallTool(ctx context.Context, name string, argsJSON string) (st
 func (c *Client) call(ctx context.Context, method string, params json.RawMessage) (json.RawMessage, error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	// Bound the request with the package default timeout unless the caller
+	// already supplied a deadline. A hung MCP server must not deadlock the
+	// agent loop or startup discovery.
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
+		defer cancel()
 	}
 
 	// Assign unique ID and register a response channel.
