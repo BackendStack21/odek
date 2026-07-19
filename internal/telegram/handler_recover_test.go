@@ -65,7 +65,7 @@ func TestHandleUpdate_RecoverFromPanicCallback(t *testing.T) {
 	h := NewHandler(bot)
 	h.Config.AllowAllUsers = true // routing test
 
-	h.OnCallbackQuery = func(chatID int64, data string) (string, error) {
+	h.OnCallbackQuery = func(chatID int64, data string, userID int64) (string, error) {
 		panic("simulated callback panic")
 	}
 

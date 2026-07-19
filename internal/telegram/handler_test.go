@@ -167,7 +167,7 @@ func TestNewHandler_defaults(t *testing.T) {
 		t.Errorf("default OnTextMessage = %q, want %q", textResp, "Not implemented yet: text")
 	}
 
-	cbResp, _ := h.OnCallbackQuery(1, "data")
+	cbResp, _ := h.OnCallbackQuery(1, "data", 100)
 	if cbResp != "Not implemented yet: callback query" {
 		t.Errorf("default OnCallbackQuery = %q, want %q", cbResp, "Not implemented yet: callback query")
 	}
@@ -311,7 +311,7 @@ func TestHandleUpdate_CallbackQuery(t *testing.T) {
 	bot := testBot(t, ts)
 	h := NewHandler(bot)
 	h.Config.AllowAllUsers = true // callback routing test
-	h.OnCallbackQuery = func(chatID int64, data string) (string, error) {
+	h.OnCallbackQuery = func(chatID int64, data string, userID int64) (string, error) {
 		capturedChatID = chatID
 		capturedCallbackID = data
 		return "callback response", nil
@@ -834,7 +834,7 @@ func TestHandleCallback_RespectsAllowlist(t *testing.T) {
 	h.Config.AllowedChats = []int64{100} // only chat 100 allowed
 
 	var called bool
-	h.OnCallbackQuery = func(chatID int64, data string) (string, error) {
+	h.OnCallbackQuery = func(chatID int64, data string, userID int64) (string, error) {
 		called = true
 		return "", nil
 	}
@@ -1634,7 +1634,7 @@ func TestHandler_HandleCallback_FallbackToOnCallbackQuery(t *testing.T) {
 		capturedChatID int64
 		capturedData   string
 	)
-	h.OnCallbackQuery = func(chatID int64, data string) (string, error) {
+	h.OnCallbackQuery = func(chatID int64, data string, userID int64) (string, error) {
 		capturedChatID = chatID
 		capturedData = data
 		return "fallback response", nil
@@ -1893,7 +1893,7 @@ func TestHandleUpdate_CallbackQueryNotAllowed(t *testing.T) {
 	h.Config.AllowedUsers = []int64{100}
 
 	called := false
-	h.OnCallbackQuery = func(_ int64, _ string) (string, error) {
+	h.OnCallbackQuery = func(_ int64, _ string, _ int64) (string, error) {
 		called = true
 		return "", nil
 	}

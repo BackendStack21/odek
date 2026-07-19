@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,10 +49,89 @@ var chatCancels sync.Map // map[int64]context.CancelFunc
 // interrupted task.
 var chatRunInfos sync.Map // map[int64]loop.IterationInfo
 
-// clarifyMsgIDs stores the message ID of the active clarify prompt
-// per chat, so the callback handler can edit/remove it after the user
-// responds. Cleared when the clarify tool completes or times out.
-var clarifyMsgIDs sync.Map // map[int64]int
+// pendingClarifyReqs stores active clarify prompts keyed by a random
+// request ID embedded in the callback data. Each entry records the
+// originating user, the response channel, and the prompt message ID so
+// callback queries can be validated against the user who triggered the
+// clarify and rejected if the prompt has expired or was answered by
+// someone else. Cleared when the clarify tool completes, times out, or
+// the user responds.
+type pendingClarifyReq struct {
+	userID int64
+	ch     chan string
+	msgID  int
+}
+
+var pendingClarifyReqs sync.Map // map[string]*pendingClarifyReq
+
+// generateClarifyReqID returns a random request ID for a clarify prompt.
+// The ID is embedded in the callback data so each prompt is independent
+// and stale keyboards cannot answer later clarifies.
+func generateClarifyReqID() string {
+	buf := make([]byte, 8)
+	if _, err := rand.Read(buf); err != nil {
+		// crypto/rand.Read only fails on catastrophic system failure. Fail
+		// closed rather than minting a predictable ID, which would let an
+		// attacker pre-compute callback data.
+		panic(fmt.Sprintf("telegram: crypto/rand unavailable: %v", err))
+	}
+	return hex.EncodeToString(buf)
+}
+
+// parseClarifyCallback parses callback data of the form
+// "clarify:<reqID>:<yes|no>". It returns the request ID, the answer, and
+// true if the data is a valid clarify callback.
+func parseClarifyCallback(data string) (reqID, answer string, ok bool) {
+	rest, ok := strings.CutPrefix(data, "clarify:")
+	if !ok {
+		return "", "", false
+	}
+	idx := strings.LastIndex(rest, ":")
+	if idx < 0 {
+		return "", "", false
+	}
+	reqID = rest[:idx]
+	answer = rest[idx+1:]
+	if reqID == "" || (answer != "yes" && answer != "no") {
+		return "", "", false
+	}
+	return reqID, answer, true
+}
+
+// handleClarifyCallback routes a Telegram inline-button press for a clarify
+// prompt. It validates the embedded request ID, binds the answer to the
+// originating user, and unblocks the waiting agent goroutine. The returned
+// bool is true when the callback data was a clarify callback (whether valid
+// or expired); callers should not process it further.
+func handleClarifyCallback(chatID, userID int64, data string, bot *telegram.Bot) (string, bool) {
+	reqID, answer, ok := parseClarifyCallback(data)
+	if !ok {
+		return "", false
+	}
+	v, ok := pendingClarifyReqs.Load(reqID)
+	if !ok {
+		return "⚠️ This clarify prompt has expired or already been answered.", true
+	}
+	req := v.(*pendingClarifyReq)
+	// Bind the callback to the user who triggered the clarify.
+	if req.userID != 0 && req.userID != userID {
+		return "⚠️ This button was meant for another user.", true
+	}
+	// Accept the answer and remove the request atomically.
+	pendingClarifyReqs.Delete(reqID)
+	select {
+	case req.ch <- answer:
+	default:
+		// Channel full or closed — clarify already resolved.
+	}
+	// Remove the inline keyboard and update text to show the answer.
+	if req.msgID != 0 && bot != nil {
+		bot.EditMessageText(chatID, req.msgID,
+			"✅ *User answered:* "+answer,
+			&telegram.SendOpts{ParseMode: telegram.ParseModeMarkdownV2, ReplyMarkup: &telegram.InlineKeyboardMarkup{InlineKeyboard: [][]telegram.InlineKeyboardButton{}}})
+	}
+	return "", true
+}
 
 // pendingSuggestions stores SkillSuggestion values keyed by skill name,
 // awaiting user approval via inline keyboard callbacks.
@@ -594,24 +675,10 @@ func telegramCmd(args []string) error {
 		return cmd.Handler(argsStr)
 	}
 
-	handler.OnCallbackQuery = func(chatID int64, data string) (string, error) {
+	handler.OnCallbackQuery = func(chatID int64, data string, userID int64) (string, error) {
 		// Route clarify callbacks — the user clicked Yes/No on a clarify question.
-		if answer, ok := strings.CutPrefix(data, "clarify:"); ok {
-			if ch, ok := sessionManager.GetClarifyChannel(chatID); ok {
-				select {
-				case ch <- answer:
-				default:
-					// Channel full or closed — clarify already resolved.
-				}
-			}
-			// Remove the inline keyboard and update text to show the answer.
-			if msgID, ok := clarifyMsgIDs.Load(chatID); ok {
-				bot.EditMessageText(chatID, msgID.(int),
-					"✅ *User answered:* "+answer,
-					&telegram.SendOpts{ParseMode: telegram.ParseModeMarkdownV2, ReplyMarkup: &telegram.InlineKeyboardMarkup{InlineKeyboard: [][]telegram.InlineKeyboardButton{}}})
-				clarifyMsgIDs.Delete(chatID)
-			}
-			return "", nil
+		if resp, ok := handleClarifyCallback(chatID, userID, data, bot); ok {
+			return resp, nil
 		}
 
 		// Route skill suggestion callbacks — Save or Skip.
@@ -1514,26 +1581,29 @@ func handleChatMessage(
 	// keyboard message and blocks until the user responds.
 	agentTools := append([]odek.Tool{}, tools...)
 	agentTools = append(agentTools, toolpkg.NewClarifyTool(func(question string) (string, error) {
+		reqID := generateClarifyReqID()
 		ch := make(chan string, 1)
-		sessionManager.SetClarifyChannel(chatID, ch)
-		defer sessionManager.DeleteClarifyChannel(chatID)
+		req := &pendingClarifyReq{userID: userID, ch: ch}
+		pendingClarifyReqs.Store(reqID, req)
+		defer pendingClarifyReqs.Delete(reqID)
 
-		// Send the question with Yes/No buttons.
+		// Send the question with Yes/No buttons. Each prompt gets a unique
+		// request ID so stale keyboards cannot answer later clarifies and
+		// the callback can be bound to the originating user.
 		replyMarkup := &telegram.InlineKeyboardMarkup{
 			InlineKeyboard: [][]telegram.InlineKeyboardButton{
 				{
-					{Text: "Yes", CallbackData: "clarify:yes"},
-					{Text: "No", CallbackData: "clarify:no"},
+					{Text: "Yes", CallbackData: fmt.Sprintf("clarify:%s:yes", reqID)},
+					{Text: "No", CallbackData: fmt.Sprintf("clarify:%s:no", reqID)},
 				},
 			},
 		}
-		if msg, err := bot.SendMessage(chatID, "❓ "+question,
-			&telegram.SendOpts{ReplyMarkup: replyMarkup, ParseMode: "Markdown", ReplyToMessageID: messageID}); err != nil {
+		msg, err := bot.SendMessage(chatID, "❓ "+question,
+			&telegram.SendOpts{ReplyMarkup: replyMarkup, ParseMode: "Markdown", ReplyToMessageID: messageID})
+		if err != nil {
 			return "", fmt.Errorf("clarify: send message: %w", err)
-		} else {
-			clarifyMsgIDs.Store(chatID, msg.ID)
-			defer clarifyMsgIDs.Delete(chatID)
 		}
+		req.msgID = msg.ID
 
 		// Wait for the user to click a button (or timeout).
 		select {

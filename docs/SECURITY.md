@@ -667,6 +667,12 @@ Now:
 
 `persist()` now hardens any existing file with `os.Chmod(path, 0600)` and opens the file with `os.O_WRONLY|os.O_CREATE|os.O_TRUNC` and mode `0600`, matching the permission model already applied to sessions, audit logs, and Telegram logs.
 
+### 39n. Telegram clarify callback binding
+
+The Telegram bot's `clarify` tool sent inline keyboard buttons with literal callback data `clarify:yes` and `clarify:no`. Because the data carried no request identifier or user binding, any group member (or a stale keyboard from an earlier task) could answer a clarify prompt intended for someone else, and a later clarify could be answered by a stale button from an earlier one.
+
+Each clarify prompt now generates a random request ID (embedded in callback data as `clarify:<reqID>:yes/no`). The handler validates the request ID, rejects callbacks from a different user than the one who triggered the prompt, and ignores callbacks for expired or already-answered prompts. The `Handler.OnCallbackQuery` signature now receives the originating `userID` so other callback handlers can apply the same binding.
+
 ### 40. `/api/resources` result limit cap
 
 The `/api/resources?q=...&limit=N` autocomplete endpoint previously accepted any positive `limit` value. It is now capped to 100 results both in the HTTP handler and in `Registry.Search`. This prevents a prompt-injected or attacker-forged request from forcing an unbounded directory walk and returning a multi-megabyte JSON response.
