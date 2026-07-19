@@ -634,6 +634,16 @@ Now:
 The per-turn audit log and divergence heuristic only inspected `tool` messages for the nonce'd `<untrusted_content_*>` wrapper. @-references, `--ctx` files, and Web-UI attachments were also wrapped before entering the user message, but:
 
 - `cmd/odek/refs.go` called `wrapUntrusted` with `context.Background()`, so `recordIngest` found no active recorder.
+
+### 39k. MCP client robustness (timeouts, name validation, terminal output)
+
+Three MCP client hardening fixes close availability and spoofing issues:
+
+1. **Request timeout** — `internal/mcpclient/client.go` declared `DefaultTimeout` but never applied it. A hung MCP server would block `Discover` or `CallTool` indefinitely. The timeout is now applied automatically when the caller does not supply a context deadline.
+
+2. **Server-name validation** — MCP server names are used as the prefix in registered tool names (`<server>__<tool>`). Names are now validated to be non-empty, ≤ 64 characters, ASCII letters/digits/underscore/hyphen only, and must not contain `__`. This prevents invalid API identifiers from killing every LLM turn and blocks the collision where server `a` + tool `b__c` produces the same effective name as server `a__b` + tool `c`. Tool names are also rejected if they contain `__`.
+
+3. **Terminal-sanitized approval prompt** — the interactive MCP tool approval prompt printed the server-supplied description verbatim. A malicious server could hide cursor movement or colour codes in the description to disguise what was being approved. Descriptions are now passed through `sanitizeTerminal`, which strips ANSI escape sequences and replaces other control characters before printing.
 - `cmd/odek/serve.go` resolved @-refs and attachments before attaching the per-session ingest recorder.
 - `recordTurnAudit` only scanned `tool` messages, so `ingested_untrusted` stayed false for these vectors.
 - The enriched prompt (including injected resource literals) was passed as the "user message" to the divergence check, making attacker resources count as user-mentioned and disabling the heuristic.

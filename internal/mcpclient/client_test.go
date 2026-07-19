@@ -504,6 +504,78 @@ func TestClient_CloseWithoutDiscover(t *testing.T) {
 	}
 }
 
+// ── L-8 regression tests ────────────────────────────────────────────────
+
+func TestNew_RejectsInvalidServerName(t *testing.T) {
+	cases := []struct {
+		name string
+	}{
+		{""},
+		{"has space"},
+		{"has__double"},
+		{"tool?name"},
+		{"a" + strings.Repeat("x", 64)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := New(tc.name, ServerConfig{Command: "echo"})
+			if err == nil {
+				t.Fatal("expected error for invalid server name")
+			}
+		})
+	}
+}
+
+func TestDiscover_RejectsToolWithDoubleUnderscore(t *testing.T) {
+	client, err := New("valid", ServerConfig{
+		Command: fakeServerPath(t),
+		Env: map[string]string{
+			"FAKE_TOOLS": `[{"name":"a__b","description":"bad"}]`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer client.Close()
+
+	_, err = client.Discover(context.Background())
+	if err == nil {
+		t.Fatal("expected Discover to reject tool name containing __")
+	}
+}
+
+func TestCall_DefaultTimeout(t *testing.T) {
+	// A client whose read loop never answers must time out via DefaultTimeout.
+	client, err := New("timeout", ServerConfig{
+		Command: fakeServerPath(t),
+		Env: map[string]string{
+			"FAKE_DELAY": "10s",
+			"FAKE_TOOLS": `[{"name":"x","description":"y"}]`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer client.Close()
+
+	// Restore DefaultTimeout after the test.
+	orig := DefaultTimeout
+	DefaultTimeout = 100 * time.Millisecond
+	defer func() { DefaultTimeout = orig }()
+
+	start := time.Now()
+	_, err = client.Discover(context.Background())
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !contains(err.Error(), "context deadline exceeded") {
+		t.Errorf("expected context deadline exceeded, got: %v", err)
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Errorf("timeout took too long: %v", time.Since(start))
+	}
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────
 
 func contains(s, substr string) bool {

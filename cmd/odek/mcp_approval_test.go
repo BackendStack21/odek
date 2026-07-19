@@ -301,3 +301,18 @@ func TestApproveMCPTools_OversizeSchemaSkipped(t *testing.T) {
 		t.Errorf("approved %d tools, want 0 (oversized schema should be skipped)", len(got))
 	}
 }
+
+func TestSanitizeTerminal_StripsANSIAndControlChars(t *testing.T) {
+	// ANSI red colour + cursor-up sequence, then a bell and normal text.
+	input := "\x1b[31m\x1b[2A\x07normal"
+	got := sanitizeTerminal(input)
+	if strings.Contains(got, "\x1b") {
+		t.Errorf("ANSI escapes should be stripped, got: %q", got)
+	}
+	if strings.Contains(got, "\x07") {
+		t.Errorf("control characters should be removed, got: %q", got)
+	}
+	if !strings.Contains(got, "normal") {
+		t.Errorf("normal text should be preserved, got: %q", got)
+	}
+}

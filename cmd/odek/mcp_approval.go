@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -243,7 +244,7 @@ func approveMCPToolsWithTTY(projectDir, serverName string, cfg mcpclient.ServerC
 
 		fmt.Fprintf(stdout, "\nMCP server %q wants to register tool %q\n", serverName, def.Name)
 		if def.Description != "" {
-			fmt.Fprintf(stdout, "  description: %s\n", truncateDescription(def.Description, 200))
+			fmt.Fprintf(stdout, "  description: %s\n", sanitizeTerminal(truncateDescription(def.Description, 200)))
 		}
 		fmt.Fprintf(stdout, "  schema: sha256:%s (%d bytes)\n", schemaHash, schemaSize)
 		fmt.Fprintf(stdout, "Approve? [y/N] ")
@@ -342,6 +343,28 @@ func truncateDescription(desc string, max int) string {
 		return desc[:max]
 	}
 	return desc[:max-3] + "..."
+}
+
+// sanitizeTerminal removes ANSI escape sequences and replaces other terminal
+// control characters with a replacement character so a malicious MCP server
+// cannot disguise an approval prompt with cursor movement or colour codes.
+func sanitizeTerminal(s string) string {
+	// Strip ANSI escape sequences: ESC [ ... m (and similar).
+	ansi := regexp.MustCompile("\x1b\\[[0-9;]*[a-zA-Z]")
+	s = ansi.ReplaceAllString(s, "")
+	// Replace remaining control characters (except tab/newline) with �.
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r == '\t' || r == '\n' || r == '\r':
+			b.WriteRune(r)
+		case r < 0x20 || r == 0x7f:
+			b.WriteRune('�')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // maxMCPSchemaBytes caps the serialized JSON schema size for a single MCP tool.
