@@ -145,6 +145,10 @@ func TestParallelShell_Danger_MultipleCommandsPrompted(t *testing.T) {
 // class in the TTY fallback persists across parallel_shell calls on the same
 // tool instance.
 func TestParallelShell_Danger_TrustedClassCached(t *testing.T) {
+	// Reset the process-wide approval log so earlier parallel_shell tests
+	// do not trip friction mode for this single trust-session prompt.
+	danger.ResetTTYFrictionStateForTest()
+
 	tty, cleanup := writeTTY(t, "t") // trust session
 	defer cleanup()
 

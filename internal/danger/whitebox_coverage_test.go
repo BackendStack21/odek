@@ -207,16 +207,17 @@ func TestPrompt_ReadErrorWhenNoNewline(t *testing.T) {
 	}
 }
 
-func TestRecordApproval_InitialisesNilLog(t *testing.T) {
-	// A zero-value TTYApprover (no NewTTYApprover) has a nil approvalLog;
-	// recordApproval must lazily initialise it.
+func TestRecordApproval_PopulatesGlobalLog(t *testing.T) {
+	// recordApproval writes to the process-wide approval log used by
+	// friction mode, even on a zero-value TTYApprover.
+	ResetTTYFrictionStateForTest()
 	a := &TTYApprover{}
 	a.recordApproval(SystemWrite)
-	a.mu.Lock()
-	n := len(a.approvalLog[SystemWrite])
-	a.mu.Unlock()
+	ttyApprovalMu.Lock()
+	n := len(ttyApprovalLog[SystemWrite])
+	ttyApprovalMu.Unlock()
 	if n != 1 {
-		t.Errorf("approvalLog[SystemWrite] = %d entries, want 1", n)
+		t.Errorf("ttyApprovalLog[SystemWrite] = %d entries, want 1", n)
 	}
 }
 

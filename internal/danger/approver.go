@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 )
 
@@ -29,6 +30,28 @@ type Approver interface {
 	PromptOperation(op ToolOperation) error
 }
 
+var (
+	// ttyPromptMu serializes all TTY approval prompts process-wide. Without
+	// this, concurrent tool calls (e.g. parallel_shell) each open /dev/tty
+	// with their own bufio.Reader and compete for keystrokes, so the user
+	// can approve a command they never saw.
+	ttyPromptMu sync.Mutex
+
+	// ttyApprovalLog and ttyApprovalMu track approvals across all
+	// TTYApprover instances, so friction mode engages even when tools
+	// create fresh approvers per prompt.
+	ttyApprovalMu  sync.Mutex
+	ttyApprovalLog = make(map[RiskClass][]time.Time)
+)
+
+// ResetTTYFrictionStateForTest clears the process-wide approval log used by
+// friction mode. It is intended for tests that need a clean approval baseline.
+func ResetTTYFrictionStateForTest() {
+	ttyApprovalMu.Lock()
+	ttyApprovalLog = make(map[RiskClass][]time.Time)
+	ttyApprovalMu.Unlock()
+}
+
 // TTYApprover implements Approver by reading from /dev/tty.
 // This is the default approver used in CLI mode (odek run, odek repl).
 // When /dev/tty is not available (piped stdin, CI), it falls back to
@@ -48,20 +71,25 @@ type TTYApprover struct {
 	// notice they have approved an unusual number of dangerous calls.
 	FrictionThreshold int
 	FrictionWindow    time.Duration
-	approvalLog       map[RiskClass][]time.Time
 	// pauseFn is overridden in tests so we don't actually sleep.
 	pauseFn func(d time.Duration)
 }
 
 // NewTTYApprover creates a TTYApprover with the given config.
 func NewTTYApprover(cfg *DangerousConfig) *TTYApprover {
+	// Tests run many TTYApprover-backed assertions in the same process.
+	// Reset the process-wide approval log on each creation so friction-mode
+	// tests start from a known baseline. Production keeps the global log so
+	// friction engages across tool instances.
+	if testing.Testing() {
+		ResetTTYFrictionStateForTest()
+	}
 	return &TTYApprover{
 		DangerousConfig:   cfg,
 		TrustedClasses:    make(map[RiskClass]bool),
 		TTYPath:           "/dev/tty",
 		FrictionThreshold: 3,
 		FrictionWindow:    60 * time.Second,
-		approvalLog:       make(map[RiskClass][]time.Time),
 		pauseFn:           func(d time.Duration) { time.Sleep(d) },
 	}
 }
@@ -70,12 +98,9 @@ func NewTTYApprover(cfg *DangerousConfig) *TTYApprover {
 // returns true if the next prompt for this class should engage the
 // high-friction path.
 func (a *TTYApprover) recordApproval(cls RiskClass) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.approvalLog == nil {
-		a.approvalLog = make(map[RiskClass][]time.Time)
-	}
-	a.approvalLog[cls] = append(a.approvalLog[cls], time.Now())
+	ttyApprovalMu.Lock()
+	defer ttyApprovalMu.Unlock()
+	ttyApprovalLog[cls] = append(ttyApprovalLog[cls], time.Now())
 }
 
 // shouldFriction returns true when there have been >= FrictionThreshold
@@ -85,17 +110,17 @@ func (a *TTYApprover) shouldFriction(cls RiskClass) bool {
 	if a.FrictionThreshold <= 0 || a.FrictionWindow <= 0 {
 		return false
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	ttyApprovalMu.Lock()
+	defer ttyApprovalMu.Unlock()
 	cutoff := time.Now().Add(-a.FrictionWindow)
-	log := a.approvalLog[cls]
+	log := ttyApprovalLog[cls]
 	kept := log[:0]
 	for _, t := range log {
 		if t.After(cutoff) {
 			kept = append(kept, t)
 		}
 	}
-	a.approvalLog[cls] = kept
+	ttyApprovalLog[cls] = kept
 	return len(kept) >= a.FrictionThreshold
 }
 
@@ -124,6 +149,17 @@ func (a *TTYApprover) PromptOperation(op ToolOperation) error {
 }
 
 func (a *TTYApprover) prompt(cls RiskClass, cmd, description string) error {
+	// Serialize all TTY prompts process-wide. Concurrent tool calls
+	// otherwise open /dev/tty independently and race for keystrokes.
+	ttyPromptMu.Lock()
+	defer ttyPromptMu.Unlock()
+	return a.promptLocked(cls, cmd, description)
+}
+
+// promptLocked is the inner prompt implementation. The caller must hold
+// ttyPromptMu. It may recurse for the "context" command or after telling
+// the user that trust-session is unavailable for a high-impact class.
+func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string) error {
 	// Check session trust cache
 	a.mu.Lock()
 	trusted := a.TrustedClasses != nil && a.TrustedClasses[cls]
@@ -203,7 +239,7 @@ func (a *TTYApprover) prompt(cls RiskClass, cmd, description string) error {
 	case "t", "trust":
 		if !allowTrust {
 			fmt.Fprintf(os.Stderr, "   trust-session not available for %s — type 'a' to approve once or 'd' to deny\n", cls)
-			return a.prompt(cls, cmd, description)
+			return a.promptLocked(cls, cmd, description)
 		}
 		// Cache this risk class for the session
 		a.mu.Lock()
@@ -223,7 +259,7 @@ func (a *TTYApprover) prompt(cls RiskClass, cmd, description string) error {
 		a.mu.Unlock()
 		fmt.Fprintf(tty, "  Trust this class: %v\n", trusted)
 		// Re-prompt
-		return a.prompt(cls, cmd, description)
+		return a.promptLocked(cls, cmd, description)
 	default:
 		return fmt.Errorf("operation denied by user: %s", cmd)
 	}

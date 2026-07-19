@@ -673,6 +673,12 @@ The Telegram bot's `clarify` tool sent inline keyboard buttons with literal call
 
 Each clarify prompt now generates a random request ID (embedded in callback data as `clarify:<reqID>:yes/no`). The handler validates the request ID, rejects callbacks from a different user than the one who triggered the prompt, and ignores callbacks for expired or already-answered prompts. The `Handler.OnCallbackQuery` signature now receives the originating `userID` so other callback handlers can apply the same binding.
 
+### 39o. Process-wide TTY prompt serialization and friction accounting
+
+In CLI mode, concurrent tool calls (for example, `parallel_shell`) each opened `/dev/tty` with their own reader and printed prompts simultaneously. A user could approve a command they never saw, and the per-instance approval log meant friction mode never engaged across prompts.
+
+`TTYApprover` now serializes all TTY prompts with a process-wide mutex, and the approval log that drives friction mode is shared across all instances. Concurrent prompts queue behind the active prompt, and repeated approvals of the same class within the friction window correctly trigger the high-friction "type `approve`" path.
+
 ### 40. `/api/resources` result limit cap
 
 The `/api/resources?q=...&limit=N` autocomplete endpoint previously accepted any positive `limit` value. It is now capped to 100 results both in the HTTP handler and in `Registry.Search`. This prevents a prompt-injected or attacker-forged request from forcing an unbounded directory walk and returning a multi-megabyte JSON response.
