@@ -661,6 +661,12 @@ Now:
 
 `saveLocked` now calls `ValidateSessionID` before computing the filesystem path, and `Load` checks that the ID inside the file matches the filename it was loaded from. Any mismatch aborts the operation instead of following the attacker-controlled embedded ID.
 
+### 39m. REPL history file permissions
+
+`cmd/odek/repl_editor.go` created `~/.odek/repl_history` with `os.Create`, which uses mode `0666` masked by the process umask. On systems with a permissive umask, the file could be world-readable, leaking pasted API keys, tokens, and URLs to other local users.
+
+`persist()` now hardens any existing file with `os.Chmod(path, 0600)` and opens the file with `os.O_WRONLY|os.O_CREATE|os.O_TRUNC` and mode `0600`, matching the permission model already applied to sessions, audit logs, and Telegram logs.
+
 ### 40. `/api/resources` result limit cap
 
 The `/api/resources?q=...&limit=N` autocomplete endpoint previously accepted any positive `limit` value. It is now capped to 100 results both in the HTTP handler and in `Registry.Search`. This prevents a prompt-injected or attacker-forged request from forcing an unbounded directory walk and returning a multi-megabyte JSON response.
