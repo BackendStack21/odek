@@ -774,6 +774,64 @@ func TestStore_Delete_PathTraversalRejected(t *testing.T) {
 	}
 }
 
+// TestStore_Save_RejectMalformedID verifies that Save refuses to write a
+// session whose embedded ID contains path traversal.
+func TestStore_Save_RejectMalformedID(t *testing.T) {
+	store := newTestStore(t)
+	msgs := []llm.Message{{Role: "user", Content: "test"}}
+	sess, _ := store.Create(msgs, "m", "test")
+
+	sess.ID = "../config"
+	err := store.Save(sess)
+	if err == nil {
+		t.Fatal("Save() with traversal ID should return error")
+	}
+	if !strings.Contains(err.Error(), "invalid ID") {
+		t.Errorf("error should mention 'invalid ID', got: %v", err)
+	}
+}
+
+// TestStore_Load_RejectEmbeddedIDMismatch verifies that Load detects a
+// session file whose embedded ID does not match its filename.
+func TestStore_Load_RejectEmbeddedIDMismatch(t *testing.T) {
+	store := newTestStore(t)
+
+	// Plant a session file whose filename is benign but whose JSON ID is not.
+	plantedID := "20260718-plant001"
+	malicious := `{"id":"../config","created_at":"2026-07-18T00:00:00Z","updated_at":"2026-07-18T00:00:00Z","model":"m","turns":1,"task":"x","messages":[]}`
+	if err := os.WriteFile(store.Path(plantedID), []byte(malicious), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := store.Load(plantedID)
+	if err == nil {
+		t.Fatal("Load() of mismatched embedded ID should return error")
+	}
+	if !strings.Contains(err.Error(), "ID mismatch") {
+		t.Errorf("error should mention 'ID mismatch', got: %v", err)
+	}
+}
+
+// TestStore_Append_RejectEmbeddedIDMismatch verifies that Append refuses to
+// rewrite a planted session file whose embedded ID differs from the filename.
+func TestStore_Append_RejectEmbeddedIDMismatch(t *testing.T) {
+	store := newTestStore(t)
+
+	plantedID := "20260718-plant002"
+	malicious := `{"id":"../config","created_at":"2026-07-18T00:00:00Z","updated_at":"2026-07-18T00:00:00Z","model":"m","turns":1,"task":"x","messages":[]}`
+	if err := os.WriteFile(store.Path(plantedID), []byte(malicious), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := store.Append(plantedID, []llm.Message{{Role: "user", Content: "more"}})
+	if err == nil {
+		t.Fatal("Append() to planted mismatched file should return error")
+	}
+	if !strings.Contains(err.Error(), "ID mismatch") {
+		t.Errorf("error should mention 'ID mismatch', got: %v", err)
+	}
+}
+
 // ── Additional edge-case coverage ──────────────────────────────────────
 
 func TestValidateSessionID_NullByte(t *testing.T) {
