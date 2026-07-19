@@ -1561,9 +1561,9 @@ func TestLoadConfig_ExtendedMemoryCLIOverridesEnv(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ODEK_MEMORY_EXTENDED_MAX_SIZE_MB", "200")
 	cfg := LoadConfig(CLIFlags{
-		MemoryExtendedEnabled:         boolPtr(true),
-		MemoryExtendedMaxSizeMB:       300,
-		MemoryExtendedAtomMaxChars:    600,
+		MemoryExtendedEnabled:           boolPtr(true),
+		MemoryExtendedMaxSizeMB:         300,
+		MemoryExtendedAtomMaxChars:      600,
 		MemoryExtendedMemoryBudgetChars: 5000,
 	})
 	if cfg.Memory.Extended == nil {
@@ -1601,5 +1601,47 @@ func TestLoadConfig_ProjectMemoryRejected(t *testing.T) {
 	}
 	if cfg.Memory.Extended.MaxSizeMB != 100 {
 		t.Errorf("MaxSizeMB = %d, want default 100 (project rejected)", cfg.Memory.Extended.MaxSizeMB)
+	}
+}
+
+func TestIsVarStart(t *testing.T) {
+	cases := []struct {
+		c    byte
+		want bool
+	}{
+		{'a', true},
+		{'z', true},
+		{'A', true},
+		{'Z', true},
+		{'_', true},
+		{'0', false},
+		{'9', false},
+		{'$', false},
+		{' ', false},
+	}
+	for _, tc := range cases {
+		if got := isVarStart(tc.c); got != tc.want {
+			t.Errorf("isVarStart(%q) = %v, want %v", tc.c, got, tc.want)
+		}
+	}
+}
+
+func TestIsVarCont(t *testing.T) {
+	cases := []struct {
+		c    byte
+		want bool
+	}{
+		{'a', true},
+		{'A', true},
+		{'_', true},
+		{'0', true},
+		{'9', true},
+		{'$', false},
+		{' ', false},
+	}
+	for _, tc := range cases {
+		if got := isVarCont(tc.c); got != tc.want {
+			t.Errorf("isVarCont(%q) = %v, want %v", tc.c, got, tc.want)
+		}
 	}
 }

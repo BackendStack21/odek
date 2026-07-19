@@ -51,10 +51,12 @@ Interactive Web UI with approval prompts.
 docker compose --profile restricted up --build
 ```
 
-Open <http://127.0.0.1:8080>, type a task. When the agent attempts a higher-risk
-command (network, install, code execution) an **approval modal** appears — approve
-or deny. Destructive commands are rejected automatically. Stop with `Ctrl-C`, then
-`docker compose --profile restricted down`.
+The startup logs print a full URL with the per-instance WebSocket token, e.g.
+`http://127.0.0.1:8080/?token=...`. Open that exact URL in your browser (plain
+`http://127.0.0.1:8080` no longer receives the token). Type a task. When the
+agent attempts a higher-risk command (network, install, code execution) an
+**approval modal** appears — approve or deny. Destructive commands are rejected
+automatically. Stop with `Ctrl-C`, then `docker compose --profile restricted down`.
 
 Prefer a terminal REPL (approvals come from the TTY, so `-it` is required):
 
@@ -97,8 +99,8 @@ docker compose --profile telegram-restricted up --build -d   # approvals in chat
 docker compose --profile telegram-godmode up --build -d      # no prompts
 ```
 
-Message your bot `/start`. State (sessions, skills, `telegram.pid`) persists in the
-local `./.odek` folder — an external host folder, just like `./workspace`.
+Message your bot `/start`. State (sessions, skills, `telegram.lock`) persists in
+the local `./.odek` folder — an external host folder, just like `./workspace`.
 
 > **Only run one Telegram profile at a time per token** — Telegram allows a single
 > long-poller per bot (a second gets `409 Conflict`). Create a second bot via

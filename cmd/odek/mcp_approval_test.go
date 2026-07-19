@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -314,5 +315,86 @@ func TestSanitizeTerminal_StripsANSIAndControlChars(t *testing.T) {
 	}
 	if !strings.Contains(got, "normal") {
 		t.Errorf("normal text should be preserved, got: %q", got)
+	}
+}
+
+// TestLoadSaveMCPApprovalsRoundTrip verifies that server approvals can be
+// persisted and reloaded.
+func TestLoadSaveMCPApprovalsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", dir)
+	defer os.Setenv("HOME", origHome)
+
+	approvals := map[string]bool{"project/server": true}
+	if err := saveMCPApprovals(approvals); err != nil {
+		t.Fatalf("saveMCPApprovals: %v", err)
+	}
+
+	loaded, err := loadMCPApprovals()
+	if err != nil {
+		t.Fatalf("loadMCPApprovals: %v", err)
+	}
+	if !loaded["project/server"] {
+		t.Errorf("loaded approval missing: %v", loaded)
+	}
+}
+
+// TestLoadMCPApprovals_MissingFile returns an empty map when no approvals file
+// exists yet.
+func TestLoadMCPApprovals_MissingFile(t *testing.T) {
+	dir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", dir)
+	defer os.Setenv("HOME", origHome)
+
+	loaded, err := loadMCPApprovals()
+	if err != nil {
+		t.Fatalf("loadMCPApprovals: %v", err)
+	}
+	if len(loaded) != 0 {
+		t.Errorf("expected empty map, got %v", loaded)
+	}
+}
+
+// TestLoadSaveMCPToolApprovalsRoundTrip verifies that per-tool approvals can
+// be persisted and reloaded.
+func TestLoadSaveMCPToolApprovalsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", dir)
+	defer os.Setenv("HOME", origHome)
+
+	approvals := map[string]bool{"dir/server/tool": true}
+	if err := saveMCPToolApprovals(approvals); err != nil {
+		t.Fatalf("saveMCPToolApprovals: %v", err)
+	}
+
+	loaded, err := loadMCPToolApprovals()
+	if err != nil {
+		t.Fatalf("loadMCPToolApprovals: %v", err)
+	}
+	if !loaded["dir/server/tool"] {
+		t.Errorf("loaded tool approval missing: %v", loaded)
+	}
+}
+
+// TestLoadMCPToolApprovals_CorruptFile returns an error for invalid JSON.
+func TestLoadMCPToolApprovals_CorruptFile(t *testing.T) {
+	dir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", dir)
+	defer os.Setenv("HOME", origHome)
+
+	path := filepath.Join(dir, ".odek", mcpToolApprovalsFile)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("not-json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := loadMCPToolApprovals(); err == nil {
+		t.Error("expected error for corrupt approvals file")
 	}
 }

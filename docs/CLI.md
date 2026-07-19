@@ -25,8 +25,8 @@
 || `odek skill reset-skips [name]` | Reset skip list (all or specific skill) |
 | `odek audit <session-id>` | Print the prompt-injection audit log for a session (JSON) |
 | `odek audit --list` | List sessions with non-zero ingest counts and divergence flags |
-|| `odek serve [--addr :8080] [--open] [--no-sandbox]` | Web UI server. Sandbox is on by default; pass `--no-sandbox` to disable. Accepts `--tool` and `--no-tool` flags. |
-|| `odek subagent --goal <string> [flags]` | Run a focused sub-task; outputs JSON on stdout. Spawned by `delegate_tasks` tool |
+|| `odek serve [--addr :8080] [--open] [--no-sandbox] [--trusted-proxies <ips/cidrs>]` | Web UI server. Sandbox is on by default; pass `--no-sandbox` to disable. Accepts `--tool` and `--no-tool` flags. Binding to a non-loopback address prints a loud warning because anyone with the token can drive the agent. `--trusted-proxies` honours `X-Forwarded-For`/`X-Real-Ip` only from those addresses. |
+|| `odek subagent --goal <string> [flags]` | Run a focused sub-task; outputs JSON on stdout. Spawned by `delegate_tasks` tool. Flags: `--goal`, `--task <file>`, `--context`, `--timeout` (≤3600s), `--max-iter` (≤100), `--quiet`, `--stream`. |
 | `odek init [--global] [--force]` | Create a config file template |
 | `odek mcp [--sandbox]` | Start MCP server (expose tools to Claude Code) or connect to external MCP servers (via `mcp_servers` config) |
 | `odek telegram` | Start the Telegram bot (long-polling). Hosts the embedded scheduler unless `schedules.enabled=false` |
@@ -128,6 +128,29 @@ When `--sandbox` is active, `--ctx` files are automatically **copied into the sa
 }
 ```
 
+## `delegate_tasks` tool schema
+
+Spawn focused sub-agents. Each task carries parent-side trust signals:
+
+```json
+{
+  "tasks": [
+    {
+      "goal": "Find and fix the failing test",
+      "context": "The test in internal/foo/bar_test.go started failing after commit abc123.",
+      "guidance": "Use grep and go test only; do not edit files outside internal/foo.",
+      "trust_level": "untrusted",
+      "max_risk": "local_write"
+    }
+  ]
+}
+```
+
+- `trust_level`: `"untrusted"` (default when omitted) or `"trusted"`. Untrusted tasks force `non_interactive: deny` and deny `destructive`, `code_execution`, `install`, `system_write`, `network_egress`, `unknown`, and `blocked`.
+- `max_risk`: highest risk class the sub-agent may execute. Anything ranked above it is forced to `deny`.
+
+MCP servers are not loaded into untrusted sub-agents, because MCP tool adapters do not perform their own danger classification.
+
 ## Dangerous operations
 
 When running without `--sandbox`, odek classifies every shell command by risk and prompts for high-risk operations:
@@ -141,10 +164,10 @@ When running without `--sandbox`, odek classifies every shell command by risk an
 | 🔴 network_egress | **prompt** | `curl`, `git push`, `ssh`, `scp` |
 | 🔴 code_execution | **prompt** | `curl url \| bash`, `eval`, `node -e`, `go run` |
 | 🟠 install | **prompt** | `npm install`, `pip install`, `go install <path>` |
-| 🔴 unknown | **deny** | any command whose program name isn't recognised |
+| 🔴 unknown | **deny** | any command whose program name isn't recognised; MCP tools (`<server>__<tool>`) |
 | ⬛ blocked | **deny** | Fork bombs, `dd` to block devices |
 
-odek **fails closed**: a command whose verb matches no known-safe or known-dangerous
+odek **fails closed**: a command or MCP tool whose name matches no known-safe or known-dangerous
 pattern is classified `unknown` and denied by default. Permit a specific tool by adding
 its exact invocation to `allowlist`, or soften the class with `"unknown": "prompt"`.
 
@@ -171,6 +194,8 @@ Configurable via `dangerous` section in `~/.odek/config.json` or `./odek.json`:
   }
 }
 ```
+
+Only `"allow"` and `"deny"` are valid `non_interactive` values; anything else (including the previously accepted `"prompt"`) is rejected at load time with a warning and treated as `"deny"`, because a non-interactive environment cannot prompt.
 
 See [docs/SECURITY.md](docs/SECURITY.md) for details.
 

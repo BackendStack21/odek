@@ -239,3 +239,12 @@ func TestFindCommand_PlanCommands(t *testing.T) {
 		})
 	}
 }
+
+func TestTruncateStr(t *testing.T) {
+	if got := truncateStr("short", 10); got != "short" {
+		t.Errorf("truncateStr(short, 10) = %q", got)
+	}
+	if got := truncateStr("hello world", 5); got != "hello…" {
+		t.Errorf("truncateStr(hello world, 5) = %q, want hello…", got)
+	}
+}

@@ -208,15 +208,32 @@ All callbacks return a response string (may be empty) and an error. The `Handle`
 
 The handler uses `sync.Map` for `TelegramApprover` instances, keyed by `chatID`. This allows the agent to send inline keyboard approval requests (yes/no) and receive responses via callback queries. The handler intercepts callback queries matching pending approval requests before dispatching to `OnCallbackQuery`.
 
+Each approval prompt shows the full command and risk class. The **Trust Session**
+shortcut is hidden for the highest-impact classes (`destructive`, `blocked`,
+`unknown`, and the synthetic `tool_batch` class) so they must be approved
+per-call. After three approvals of the same class within 60 seconds, friction
+mode hides the Trust Session shortcut and adds a warning, breaking reflexive
+tap-through.
+
 ### Outbound Media
 
-The agent can send files back to the chat either by emitting a `MEDIA:` prefix in its final answer (`MEDIA:photo:/path`, `MEDIA:voice:/path`, `MEDIA:document:/path`) or by calling `send_message` with the `file` parameter. Before any upload, the path is validated by `internal/telegram.ResolveMediaPathForChat`:
+The agent can send files back to the chat either by emitting a `MEDIA:` prefix in its final answer (`MEDIA:photo:/path`, `MEDIA:voice:/path`, `MEDIA:document:/path`) or by calling `send_message` with the `file` parameter. Before any upload, the user must explicitly approve the operation, and the path is validated by `internal/telegram.ResolveMediaPathForChat`:
 
 - Allowed directories: current working directory, `~/.odek/media/`, and the system temporary directory.
 - The path is resolved to an absolute, cleaned form and checked against the allowlist.
 - Symlinks are rejected: on Unix the final component is opened with `O_NOFOLLOW` and verified with `fstat` to close a TOCTOU race; on other platforms it is checked with `os.Lstat`. The resolved path must not escape the allowlist.
 - Files outside the allowlist (e.g. `/home/user/.ssh/id_rsa`) are refused, closing prompt-injection-driven exfiltration.
 - Files inside the shared `~/.odek/media/` directory are additionally scoped to the originating chat. A file is accepted only when its basename contains the chat's `_chat<chatID>_` tag (matching files downloaded by the bot) or when it lives under `~/.odek/media/chat<chatID>/`. This prevents one chat from asking the bot to re-send documents or media uploaded by another chat.
+- When the bot was launched from a broad base directory such as `$HOME` or `/`, the approval prompt includes an extra warning, because a path that looks harmless may still reach sensitive files.
+
+### `send_message` callback restrictions
+
+The `send_message` tool supports inline keyboard buttons with custom
+`callback_data`. To prevent a compromised agent from forging internal UI flows,
+callback data must start with `cb:` for agent-routed callbacks. Reserved
+internal prefixes (`apr:`, `den:`, `trs:`, `clarify:`, `skill_save:`,
+`skill_skip:`) are rejected. The Telegram sender validates this again as
+defense-in-depth.
 
 ## Slash Commands (`commands.go`)
 
@@ -277,6 +294,11 @@ The `SessionManager` manages per-chat Telegram agent conversations, backed by th
 ### Clarify Channels
 
 The `clarifyChannels` sync.Map provides per-chat channels for the agent to ask the user questions and receive answers asynchronously. This bridges the gap between the agent's synchronous `clarify` tool call and Telegram's asynchronous message flow.
+
+Each clarify prompt uses a random request ID embedded in the inline-keyboard
+callback data (`clarify:<reqID>:yes/no`). The handler validates the request ID
+and binds the answer to the originating user, so a group member or stale
+keyboard cannot answer someone else's clarify prompt.
 
 ## Plan Management (`plan.go`)
 

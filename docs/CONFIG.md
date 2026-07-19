@@ -39,6 +39,8 @@ Shared across all projects:
   "no_color": false,
   "no_agents": false,
   "max_tool_parallel": 4,
+  "max_concurrency": 4,
+  "trusted_proxies": [],
   "tool_progress": "all",
   "tool_progress_cleanup": true,
   "system": ""
@@ -65,6 +67,7 @@ Same schema as global. Only set the fields you want to override:
 > - `embedding` / `memory` / `sessions` / `skills.dirs` / `skills.embedding` / `web_search` — use `~/.odek/config.json`
 > - `telegram` — use `~/.odek/config.json` or `ODEK_TELEGRAM_*` env vars
 > - `guard` — use `~/.odek/config.json` or `ODEK_GUARD_*` env vars
+> - `trusted_proxies` — use `~/.odek/config.json` or `ODEK_TRUSTED_PROXIES`
 >
 > If any of these appear in `./odek.json`, odek ignores them and prints a warning.
 
@@ -123,7 +126,9 @@ Every config knob has a `ODEK_*` counterpart:
 | `ODEK_SANDBOX_CPUS` | `--sandbox-cpus` | string |
 | `ODEK_SANDBOX_USER` | `--sandbox-user` | string |
 | `ODEK_APPROVE_PROJECT_SANDBOX` | — | bool | approve project-level `./odek.json` sandbox config without prompting |
+| `ODEK_MAX_CONCURRENCY` | `max_concurrency` | int |
 | `ODEK_MAX_TOOL_PARALLEL` | `max_tool_parallel` | int |
+| `ODEK_TRUSTED_PROXIES` | `trusted_proxies` | string (comma-separated IPs/CIDRs) |
 | `ODEK_MEMORY_EXTENDED_ENABLED` | `--memory-extended-enabled` | bool |
 | `ODEK_MEMORY_EXTENDED_MAX_SIZE_MB` | `--memory-extended-max-size-mb` | int |
 | `ODEK_MEMORY_EXTENDED_ATOM_MAX_CHARS` | `--memory-extended-atom-max-chars` | int |
@@ -231,6 +236,15 @@ When a model emits multiple tool calls in one response (`tool_calls` array with 
 I/O-bound tools (read_file, search_files, shell) benefit most — latency drops from `sum(latencies)` to `max(latency)`.
 
 **Approval gate:** When an approver is configured and the LLM returns multiple tool calls, a single batch approval prompt is shown before any tool executes. If approved, all tools run in parallel. If denied, no tools run.
+
+## Concurrency and reverse-proxy trust
+
+| Field | Default | Env var | Description |
+|-------|---------|---------|-------------|
+| `max_concurrency` | `4` | `ODEK_MAX_CONCURRENCY` | Max concurrent sub-agent tasks spawned by `delegate_tasks`. 0 = default 4. |
+| `trusted_proxies` | `[]` | `ODEK_TRUSTED_PROXIES` | Comma-separated list of IP addresses or CIDR ranges whose `X-Forwarded-For` / `X-Real-Ip` headers are honoured by `odek serve` for rate-limit attribution. Empty list means forwarding headers are ignored. |
+
+`trusted_proxies` is security-relevant: misconfiguring it can allow clients to spoof their IP and bypass the per-IP rate limiters on `/ws` upgrades and session lookups. Configure it only in operator-controlled sources (`~/.odek/config.json` or `ODEK_TRUSTED_PROXIES`).
 
 ## Skills configuration
 

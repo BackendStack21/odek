@@ -99,7 +99,7 @@ The classifier is hardened against common evasion tricks (see the package doc in
 - `env` and `printenv` — a full process-environment dump is classified as `system_write` because it can leak secrets that the redaction scanner does not recognise. `env FOO=bar <cmd>` still classifies the real `<cmd>` normally.
 - `git -c alias.x='!id' x`, `git -c core.pager='sh -c id' --paginate log`, `git config --global alias.pwn '!cmd'` — `git -c` / `--config-env` overrides and the `git config` subcommand are `code_execution` because they can define arbitrary shell commands.
 - `find . -delete`, `rsync -a --delete /empty/ ~`, `rsync --remove-source-files` — bulk-deletion flags are `destructive`; `find -fprint` / `-fprintf` are `local_write` because they write match lists to arbitrary files.
-- `echo x >> ~/.bashrc`, `cp evil ~/.profile`, `dd if=evil of=~/.bashrc` — shell file operands and redirect targets are run through `ClassifyPath`, so writes to shell rc files, `~/.ssh`, `~/.odek` trust anchors, and other home-sensitive paths are `system_write` instead of auto-allowed `local_write`.
+- `echo x >> ~/.bashrc`, `cp evil ~/.profile`, `dd if=evil of=~/.bashrc` — shell file operands and redirect targets are run through `ClassifyPath`, so writes to shell rc files, `~/.ssh`, `~/.odek` trust anchors, and other home-sensitive paths are `system_write` instead of auto-allowed `local_write`. Matching is case-insensitive so variants such as `~/.BASHRC` or `~/.odek/CONFIG.JSON` are escalated on case-insensitive filesystems.
 
 Regression suites (`internal/danger/classifier_bypass_test.go` and `hardening_test.go`) pin these as known-closed evasions. If you find a new bypass, those test files are the place to add it.
 
@@ -205,10 +205,11 @@ Plain `odek skill promote my-skill` refuses to clear `NeedsReview` when `Untrust
 - `trust_level: "untrusted"` — the goal / guidance / context strings may contain attacker-controllable text.
 - `max_risk: "<class>"` — the highest risk class the sub-agent may execute.
 
-The sub-agent process reads both at startup. `applySubagentTrust` clamps its `DangerousConfig`:
+The sub-agent process reads both at startup. `applySubagentTrust` clamps its `DangerousConfig`, which is then passed into the agent engine so the batch gate and individual tool checks enforce the cap:
 
-- Untrusted ⇒ `NonInteractive=deny`; `destructive`, `code_execution`, `install`, `system_write`, `network_egress` all forced to Deny. `local_write` and below remain allowed so the sub-agent can still do real work.
+- Untrusted ⇒ `NonInteractive=deny`; `destructive`, `code_execution`, `install`, `system_write`, `network_egress`, `unknown`, and `blocked` all forced to Deny. `local_write` and below remain allowed so the sub-agent can still do real work.
 - `max_risk` ⇒ every class strictly above the cap is forced to Deny.
+- **MCP tools are excluded from untrusted sub-agents.** MCP tools are classified as `unknown` by the batch gate, but the MCP `ToolAdapter` does not perform its own danger check. To remove that bypass surface, untrusted sub-agents do not load MCP servers at all. Trusted/capped sub-agents still receive MCP tools, but the passed `DangerousConfig` forces Deny for any class above the configured cap.
 
 #### Sub-agent system prompt is a fixed trust boundary
 
@@ -233,11 +234,11 @@ On Windows, where you cannot `unlink` an open file, a 0600 temp file is used and
 
 ### 9. Web UI CSRF token
 
-`odek serve` issues a fresh 256-bit random token at startup. The token is:
+`odek serve` issues a fresh 256-bit random token at startup and prints the token URL to the console. The token is:
 
-- injected into the served `index.html` as `<meta name="odek-ws-token" content="...">`,
-- delivered as an `HttpOnly` `SameSite=Strict` cookie named `odek_ws_token`, and
-- required by the `/ws` handshake and by every `/api/*` endpoint via the cookie, an `X-Odek-Ws-Token` header, or a WebSocket subprotocol of the form `odek.<token>`.
+- delivered into the served `index.html` (as `<meta name="odek-ws-token" content="...">`) and set as an `HttpOnly` `SameSite=Strict` cookie named `odek_ws_token` **only when the request includes the correct `?token=<token>` query parameter**,
+- required by the `/ws` handshake and by every `/api/*` endpoint via the cookie, an `X-Odek-Ws-Token` header, or a WebSocket subprotocol of the form `odek.<token>`, and
+- accompanied by a loud warning when `odek serve` binds to a non-loopback address, because anyone who can reach the port and guess/read the token can drive the agent.
 
 The origin allowlist (`localhost`, `127.0.0.1`, `[::1]`, and empty Origin for non-browser clients) remains as defense-in-depth, but the token is the primary protection against cross-port localhost CSRF: a malicious page served by another local port cannot obtain the token and therefore cannot open an agent-controlling WebSocket or read from `/api/sessions`, `/api/resources`, `/api/models`, etc.
 
@@ -372,7 +373,7 @@ These fields can only be set from operator-controlled sources: `~/.odek/config.j
 - `ODEK_APPROVE_PROJECT_SANDBOX=1` bypass for CI/non-interactive use.
 - Non-TTY runs without the bypass fail closed.
 
-This prevents a malicious repo from exfiltrating host secrets via `${VAR}` interpolation in `sandbox_env`, pulling an attacker-controlled image, or widening the container's network access without the operator's consent.
+This gates project-level sandbox overrides behind explicit operator approval, including a warning when `sandbox_env` values contain `${...}` host-environment interpolation, so a malicious repo cannot silently exfiltrate host secrets, pull an attacker-controlled image, or widen the container's network access. If the operator approves, the config is applied normally; if they deny or run non-interactively without the bypass, the overrides fail closed.
 
 ### SSRF guard and configured-backend allowlist
 
@@ -634,16 +635,6 @@ Now:
 The per-turn audit log and divergence heuristic only inspected `tool` messages for the nonce'd `<untrusted_content_*>` wrapper. @-references, `--ctx` files, and Web-UI attachments were also wrapped before entering the user message, but:
 
 - `cmd/odek/refs.go` called `wrapUntrusted` with `context.Background()`, so `recordIngest` found no active recorder.
-
-### 39k. MCP client robustness (timeouts, name validation, terminal output)
-
-Three MCP client hardening fixes close availability and spoofing issues:
-
-1. **Request timeout** — `internal/mcpclient/client.go` declared `DefaultTimeout` but never applied it. A hung MCP server would block `Discover` or `CallTool` indefinitely. The timeout is now applied automatically when the caller does not supply a context deadline.
-
-2. **Server-name validation** — MCP server names are used as the prefix in registered tool names (`<server>__<tool>`). Names are now validated to be non-empty, ≤ 64 characters, ASCII letters/digits/underscore/hyphen only, and must not contain `__`. This prevents invalid API identifiers from killing every LLM turn and blocks the collision where server `a` + tool `b__c` produces the same effective name as server `a__b` + tool `c`. Tool names are also rejected if they contain `__`.
-
-3. **Terminal-sanitized approval prompt** — the interactive MCP tool approval prompt printed the server-supplied description verbatim. A malicious server could hide cursor movement or colour codes in the description to disguise what was being approved. Descriptions are now passed through `sanitizeTerminal`, which strips ANSI escape sequences and replaces other control characters before printing.
 - `cmd/odek/serve.go` resolved @-refs and attachments before attaching the per-session ingest recorder.
 - `recordTurnAudit` only scanned `tool` messages, so `ingested_untrusted` stayed false for these vectors.
 - The enriched prompt (including injected resource literals) was passed as the "user message" to the divergence check, making attacker resources count as user-mentioned and disabling the heuristic.
@@ -654,6 +645,16 @@ Now:
 - In `odek run --session`, `odek continue`, and `odek serve`, the audit recorder is attached before `@`-reference/`--ctx`/attachment resolution.
 - `recordTurnAudit` scans `user` messages for untrusted wrappers as well as `tool` messages.
 - The divergence check receives the original, pre-enrichment user prompt, so injected resources are treated as novel when the agent acts on them.
+
+### 39k. MCP client robustness (timeouts, name validation, terminal output)
+
+Three MCP client hardening fixes close availability and spoofing issues:
+
+1. **Request timeout** — `internal/mcpclient/client.go` declared `DefaultTimeout` but never applied it. A hung MCP server would block `Discover` or `CallTool` indefinitely. The timeout is now applied automatically when the caller does not supply a context deadline.
+
+2. **Server-name validation** — MCP server names are used as the prefix in registered tool names (`<server>__<tool>`). Names are now validated to be non-empty, ≤ 64 characters, ASCII letters/digits/underscore/hyphen only, and must not contain `__`. This prevents invalid API identifiers from killing every LLM turn and blocks the collision where server `a` + tool `b__c` produces the same effective name as server `a__b` + tool `c`. Tool names are also rejected if they contain `__`.
+
+3. **Terminal-sanitized approval prompt** — the interactive MCP tool approval prompt printed the server-supplied description verbatim. A malicious server could hide cursor movement or colour codes in the description to disguise what was being approved. Descriptions are now passed through `sanitizeTerminal`, which strips ANSI escape sequences and replaces other control characters before printing.
 
 ### 39l. Session store write-path validates the embedded session ID
 
@@ -776,12 +777,13 @@ The default is now `"deny"`. Unattended runs must explicitly opt in to auto-appr
 - `schedules.json`, `schedule-state.json`, `schedules.lock`
 - `sessions/` (conversation history and auth tokens)
 - `mcp_approvals.json`, `mcp_tool_approvals.json`
+- `project_sandbox_approvals.json`
 - `restart.json`
 - `audit/`
 - `telegram.lock`, `telegram.pid`, `schedule.pid`, `schedule.log`
 - `plans/`
 
-A prompt-injected agent could overwrite `schedules.json` to install persistent commands, replace session files to hijack conversations, or tamper with MCP approvals to spawn arbitrary subprocesses. All of these paths now classify as `system_write` (prompt/deny) and are rejected by the `confineToCWD` carve-out used by the file tools. Legitimate writes to these subsystems must go through their dedicated APIs (schedule commands, session store, MCP approval flow, etc.).
+A prompt-injected agent could overwrite `schedules.json` to install persistent commands, replace session files to hijack conversations, or tamper with MCP approvals to spawn arbitrary subprocesses. All of these paths now classify as `system_write` (prompt/deny) and are rejected by the `confineToCWD` carve-out used by the file tools. Matching is case-insensitive so variants such as `CONFIG.JSON`, `SECRETS.ENV`, or `Skills/` are also blocked on case-insensitive filesystems (e.g., macOS APFS). Legitimate writes to these subsystems must go through their dedicated APIs (schedule commands, session store, MCP approval flow, etc.).
 
 ---
 

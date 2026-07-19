@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/BackendStack21/odek/internal/danger"
@@ -107,6 +109,70 @@ func TestApplySubagentTrust_MaxRiskUnknown_KeepsSafeOpen(t *testing.T) {
 	for _, cls := range []danger.RiskClass{danger.Destructive, danger.Blocked} {
 		if got := dc.Classes[cls]; got != danger.Deny {
 			t.Errorf("Class %s = %q, want deny with max_risk=unknown", cls, got)
+		}
+	}
+}
+
+// TestSubagentAllowsMCP_UntrustedDeniesLoading verifies the M5 mitigation:
+// untrusted sub-agents must not load MCP servers, because MCP tool adapters
+// do not perform their own danger classification and the parent-controlled
+// trust cap would otherwise be illusory.
+func TestSubagentAllowsMCP_UntrustedDeniesLoading(t *testing.T) {
+	for _, tc := range []struct {
+		trust string
+		want  bool
+	}{
+		{"untrusted", false},
+		{"", false}, // empty defaults to untrusted
+		{"trusted", true},
+		{"destructive", true},
+	} {
+		t.Run(tc.trust, func(t *testing.T) {
+			if got := subagentAllowsMCP(tc.trust); got != tc.want {
+				t.Errorf("subagentAllowsMCP(%q) = %v, want %v", tc.trust, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSubagentTrust_ForcesUnknownDenyForMCP verifies that the DangerousConfig
+// applied to untrusted sub-agents denies the Unknown risk class, which is the
+// class returned by classifyToolCall for MCP tools (<server>__<tool>).
+func TestSubagentTrust_ForcesUnknownDenyForMCP(t *testing.T) {
+	dc := danger.DangerousConfig{}
+	applySubagentTrust(&dc, "untrusted", "")
+	if got := dc.ActionFor(danger.Unknown); got != danger.Deny {
+		t.Errorf("untrusted sub-agent ActionFor(Unknown) = %q, want deny", got)
+	}
+}
+
+// TestIsOdekTempTaskFile verifies the path guard used when cleaning up the
+// task file handed from parent to sub-agent.
+func TestIsOdekTempTaskFile(t *testing.T) {
+	tmp := t.TempDir()
+	origTmp := os.Getenv("TMPDIR")
+	os.Setenv("TMPDIR", tmp)
+	defer os.Setenv("TMPDIR", origTmp)
+
+	valid := filepath.Join(tmp, "odek-task-abc123.json")
+	if err := os.WriteFile(valid, []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{valid, true},
+		{filepath.Join(tmp, "odek-task-abc123.json") + "/extra", false},
+		{filepath.Join(tmp, "other-task-abc123.json"), false},
+		{filepath.Join(t.TempDir(), "odek-task-abc123.json"), false},
+		{"/etc/passwd", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := isOdekTempTaskFile(tc.path); got != tc.want {
+			t.Errorf("isOdekTempTaskFile(%q) = %v, want %v", tc.path, got, tc.want)
 		}
 	}
 }

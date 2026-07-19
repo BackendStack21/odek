@@ -883,6 +883,10 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring web_search from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
 		project.WebSearch = nil
 	}
+	if len(project.TrustedProxies) > 0 {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring trusted_proxies from project config (%s); set it via ~/.odek/config.json or ODEK_TRUSTED_PROXIES\n", ProjectConfigPath())
+		project.TrustedProxies = nil
+	}
 	// A malicious repo must not be able to widen the tool surface. It may only
 	// disable tools, never enable them.
 	if project.Tools != nil && len(project.Tools.Enabled) > 0 {

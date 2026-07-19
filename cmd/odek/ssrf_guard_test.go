@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 
@@ -288,5 +289,24 @@ func TestSSRFGuardedTransport_Installed(t *testing.T) {
 	}
 	if tr, ok := w.client.Transport.(*http.Transport); !ok || tr.DialContext == nil {
 		t.Error("web_search tool Transport is missing the guarded DialContext")
+	}
+}
+
+func TestProxyEnvSet(t *testing.T) {
+	// Ensure no proxy env vars are set at start.
+	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy"} {
+		os.Unsetenv(k)
+	}
+	if proxyEnvSet() {
+		t.Error("proxyEnvSet = true with no proxy env vars set")
+	}
+
+	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy"} {
+		t.Run(k, func(t *testing.T) {
+			t.Setenv(k, "http://proxy.example:8080")
+			if !proxyEnvSet() {
+				t.Errorf("proxyEnvSet = false with %s set", k)
+			}
+		})
 	}
 }

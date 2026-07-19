@@ -174,6 +174,7 @@ func parseSubagentConfig(data string) subagentConfig {
 //	1 = task error (status: "error" with message)
 //	2 = timeout (killed by parent/context)
 //	3 = internal setup error
+//
 // subagentFlags holds the parsed flags for `odek subagent`.
 type subagentFlags struct {
 	goal          string
@@ -357,8 +358,16 @@ func subagentCmd(args []string) error {
 	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{WebSearch: resolved.WebSearch}, nil)
 
 	// MCP server tools
+	//
+	// Untrusted sub-agents process content from outside the trust boundary
+	// (fetched pages, unfamiliar files, MCP server responses). MCP tools are
+	// classified as Unknown by the batch gate, but the ToolAdapter itself does
+	// not perform danger checks. To remove that attack surface, we do not load
+	// MCP servers into untrusted sub-agents. Trusted/capped sub-agents still
+	// get them, but the passed DangerousConfig forces Deny for any class above
+	// the operator-configured cap.
 	var mcpCleanup func()
-	if len(resolved.MCPServers) > 0 {
+	if len(resolved.MCPServers) > 0 && subagentAllowsMCP(taskTrust) {
 		cl, err := loadMCPTools(resolved, &tools)
 		if err != nil {
 			return fmt.Errorf("mcp: %w", err)
@@ -414,22 +423,23 @@ func subagentCmd(args []string) error {
 
 	// Build agent config, optionally with streaming
 	aCfg := odek.Config{
-		Model:          resolved.Model,
-		BaseURL:        resolved.BaseURL,
-		APIKey:         resolved.APIKey,
-		MaxIterations:  cfg.maxIter,
+		Model:            resolved.Model,
+		BaseURL:          resolved.BaseURL,
+		APIKey:           resolved.APIKey,
+		MaxIterations:    cfg.maxIter,
 		SystemMessage:    systemMsg,
 		UntrustedWrapper: func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
-		RuntimeContext: odek.BuildRuntimeContext("terminal"),
-		NoProjectFile:  resolved.NoAgents,
-		Thinking:       resolved.Thinking,
-		Tools:          tools,
-		ToolFilter:     odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
-		SandboxCleanup: sandboxCleanup,
-		Renderer:       rend,
-		Skills:         &resolved.Skills,
-		SkillManager:   sm,
-		MemoryConfig:   resolved.Memory,
+		RuntimeContext:   odek.BuildRuntimeContext("terminal"),
+		NoProjectFile:    resolved.NoAgents,
+		Thinking:         resolved.Thinking,
+		Tools:            tools,
+		ToolFilter:       odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
+		SandboxCleanup:   sandboxCleanup,
+		Renderer:         rend,
+		Skills:           &resolved.Skills,
+		SkillManager:     sm,
+		MemoryConfig:     resolved.Memory,
+		DangerousConfig:  &resolved.Dangerous,
 	}
 	if cfg.stream {
 		aCfg.ToolEventHandler = func(event, name, data string) {
@@ -552,6 +562,22 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(runes[:n]) + "…"
+}
+
+// subagentAllowsMCP reports whether MCP servers should be loaded into a
+// sub-agent with the given parent-supplied trust level. Untrusted sub-agents
+// process content from outside the trust boundary, and MCP tool adapters do
+// not perform their own danger classification, so we deny them that attack
+// surface entirely. Trusted/capped sub-agents still receive MCP tools, but
+// the DangerousConfig passed to the engine forces Deny for any class above
+// the configured cap.
+func subagentAllowsMCP(trustLevel string) bool {
+	// An empty trust_level is normalized to "untrusted" by applySubagentTrust,
+	// so we use the same default here to stay consistent.
+	if trustLevel == "" {
+		trustLevel = "untrusted"
+	}
+	return trustLevel != "untrusted"
 }
 
 // applySubagentTrust narrows a sub-agent's danger config based on the

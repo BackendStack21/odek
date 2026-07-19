@@ -59,7 +59,7 @@ All shell commands run inside a Docker container with `--cap-drop ALL`,
 ### Security
 
 Same `DangerousConfig` as `odek run`. No TTY in MCP mode → `non_interactive`
-fallback applies (default: allow). Configure per-class overrides in `odek.json`:
+fallback applies (default: deny). Configure per-class overrides in `odek.json`:
 
 ```json
 {
@@ -153,7 +153,8 @@ Approval methods:
    ```
 3. **Persisted approvals** — approvals are stored in
    `~/.odek/mcp_approvals.json` (0600) keyed by project directory + server name
-   + command + args. If the config changes, you are prompted again.
+   + command + args + sorted `env` map hash. If the config changes, you are
+   prompted again.
 
 If approval is required and cannot be obtained, odek aborts before spawning any
 MCP server.
@@ -173,8 +174,8 @@ Tool approval uses the same methods as server approval:
    server for the invocation.
 3. **Persisted approvals** — approved tools are stored in
    `~/.odek/mcp_tool_approvals.json` (0600), keyed by project directory + server
-   name + tool name. If a tool is renamed or a new tool appears, it must be
-   approved again.
+   name + tool name + sorted `env` map hash. If a tool is renamed, a new tool
+   appears, or the server's `env` changes, it must be approved again.
 
 Tools from global servers (`~/.odek/config.json`) are operator-trusted and do
 not require per-tool approval.
@@ -198,9 +199,26 @@ Tools are prefixed with the server name to avoid collisions between servers:
 - `github__search_issues` — from the `github` server
 
 Tool names must be ASCII letters, digits, underscores, or hyphens and no longer
-than 64 characters. Names that do not match this pattern, or that collide with
-odek's built-in tool names (even before prefixing), are rejected at startup with
-a warning.
+than 64 characters; they must not contain `__`. Names that do not match this
+pattern, or that collide with odek's built-in tool names (even before prefixing),
+are rejected at startup with a warning. Server names follow the same rules and
+also must not contain `__`, preventing collisions where server `a` + tool
+`b__c` would otherwise look identical to server `a__b` + tool `c`.
+
+### Tool schema hardening
+
+MCP servers supply an `inputSchema` JSON for every tool. That schema is
+serialized into the model's function catalogue, so a malicious server could hide
+instructions in property descriptions, default values, or enum strings.
+
+Before a tool is registered, odek:
+
+- Recursively scans every string in `inputSchema` with the same injection guard
+  used for tool descriptions. Tools that trigger the guard are skipped.
+- Rejects serialized schemas larger than 256 KiB to prevent prompt stuffing.
+- Displays a SHA-256 hash and byte size of the canonical schema in the
+  interactive tool-approval prompt, so you can notice when a previously-approved
+  tool's schema has changed.
 
 ### What MCP servers work
 
@@ -219,6 +237,9 @@ Any server that implements the MCP stdio transport with `tools/list` and
 MCP server processes are spawned when odek starts and killed when odek exits
 (via `defer`). Each process gets its own stdin/stdout pipes — stderr from
 MCP servers is shown in the odek console.
+
+Each MCP request uses a default timeout when the caller does not supply one, so
+a hung server cannot block discovery or tool calls indefinitely.
 
 ### Logging
 

@@ -120,6 +120,10 @@ ODEK_BASE_URL=https://api.deepseek.com/v1
 # the "running without --sandbox" startup warning that run/repl print.
 ODEK_SUPPRESS_SANDBOX_WARNING=1
 
+# If you front `odek serve` with a reverse proxy, list the proxy IPs/CIDRs here
+# so X-Forwarded-For / X-Real-Ip are trusted. Empty / unset means ignored.
+# ODEK_TRUSTED_PROXIES=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+
 # OpenAI:
 # ODEK_MODEL=gpt-4o
 # ODEK_BASE_URL=https://api.openai.com/v1
@@ -353,7 +357,9 @@ docker compose --profile restricted up --build
 
 Then:
 
-1. Open **http://127.0.0.1:8080** in your browser.
+1. Look at the container logs for the full Web UI URL with the per-instance
+   WebSocket token, e.g. `http://127.0.0.1:8080/?token=...`. Open that exact URL
+   in your browser (plain `http://127.0.0.1:8080` no longer receives the token).
 2. Type a task, e.g. *"List the files in this directory and summarize the README."*
 3. When the agent attempts a higher‑risk command (network, install, code execution), an
    **approval modal** appears showing the command and its risk class. Approve or deny.
@@ -613,8 +619,8 @@ Voice and photo messages are supported too. Sessions persist per chat in the loc
 - **One poller per token.** Telegram allows a single long‑poller per bot token; a second
   one gets `409 Conflict`. So you **cannot run the Restricted and Godmode bot services at
   the same time with the same token** — pick one, or create a second bot via @BotFather
-  for the other. A singleton PID lock at `~/.odek/telegram.pid` (kept in the shared `./.odek`
-  folder) backs this up — a second `odek telegram` that finds a live lock won't start.
+  for the other. A singleton advisory lock on `~/.odek/telegram.lock` (kept in the shared
+  `./.odek` folder) backs this up — a second `odek telegram` that holds the lock won't start.
 - **Optional health endpoint.** The `telegram` command takes no CLI flags — configure it
   via env. Set `ODEK_TELEGRAM_HEALTH_ADDR=0.0.0.0:9090` in `.env` (and add a `ports:`
   mapping) to expose `GET /health` for an orchestrator's liveness probe.
