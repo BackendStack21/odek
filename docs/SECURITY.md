@@ -655,6 +655,12 @@ Now:
 - `recordTurnAudit` scans `user` messages for untrusted wrappers as well as `tool` messages.
 - The divergence check receives the original, pre-enrichment user prompt, so injected resources are treated as novel when the agent acts on them.
 
+### 39l. Session store write-path validates the embedded session ID
+
+`internal/session/session.go` built the destination path from `sess.ID` without validating it, while `Load` only validated the filename requested by the caller. A planted session file (for example, dropped by a malicious local process or extracted from an archive) whose JSON contained `"id": "../config"` would cause the next `Append` or `Save` to write outside the session directory, such as overwriting `~/.odek/config.json`.
+
+`saveLocked` now calls `ValidateSessionID` before computing the filesystem path, and `Load` checks that the ID inside the file matches the filename it was loaded from. Any mismatch aborts the operation instead of following the attacker-controlled embedded ID.
+
 ### 40. `/api/resources` result limit cap
 
 The `/api/resources?q=...&limit=N` autocomplete endpoint previously accepted any positive `limit` value. It is now capped to 100 results both in the HTTP handler and in `Registry.Search`. This prevents a prompt-injected or attacker-forged request from forcing an unbounded directory walk and returning a multi-megabyte JSON response.

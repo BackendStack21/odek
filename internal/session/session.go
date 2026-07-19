@@ -311,6 +311,14 @@ func (s *Store) Save(sess *Session) error {
 // read and write gets replaced with a regular file.
 // Also atomically updates the session index with the session's metadata.
 func (s *Store) saveLocked(sess *Session) error {
+	// Reject malformed or traversal-bearing session IDs before the ID is used
+	// to build a filesystem path. A planted session file with an embedded
+	// "id":"../config" must not cause a subsequent Save/Append to overwrite
+	// files outside the session directory.
+	if err := ValidateSessionID(sess.ID); err != nil {
+		return fmt.Errorf("session: refusing unsafe save: %w", err)
+	}
+
 	// Redact secrets from all messages and the task label before writing to
 	// disk. This is defense-in-depth: the loop engine already redacts tool
 	// outputs, but this catches any secrets that slipped through
@@ -368,6 +376,12 @@ func (s *Store) Load(id string) (*Session, error) {
 	var sess Session
 	if err := json.Unmarshal(data, &sess); err != nil {
 		return nil, fmt.Errorf("session: parse %q: %w", id, err)
+	}
+	// The on-disk ID must match the filename it was loaded from. This prevents
+	// a planted session file from redirecting a later Save/Append to a path
+	// derived from an attacker-controlled embedded ID.
+	if sess.ID != id {
+		return nil, fmt.Errorf("session: load %q: ID mismatch (file contains %q)", id, sess.ID)
 	}
 	return &sess, nil
 }
