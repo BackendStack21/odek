@@ -488,7 +488,9 @@ func (h *replHistory) persist() {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return
 	}
-	f, err := os.Create(path)
+	// Harden any existing history file created with looser permissions.
+	_ = os.Chmod(path, 0600)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return
 	}
