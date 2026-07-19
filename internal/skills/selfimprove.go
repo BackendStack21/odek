@@ -345,16 +345,16 @@ func buildSuggestionFromSequence(seq []ToolCall, heuristic string) *SkillSuggest
 
 func generateProcedureBody(topic string, steps []string) string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("## Overview\n\nProcedure for: %s\n\n", topic))
+	fmt.Fprintf(&b, "## Overview\n\nProcedure for: %s\n\n", topic)
 	b.WriteString("## Step-by-Step\n\n")
 	for i, step := range steps {
-		b.WriteString(fmt.Sprintf("%d. `%s`\n", i+1, step))
+		fmt.Fprintf(&b, "%d. `%s`\n", i+1, step)
 	}
 	b.WriteString("\n## Common Pitfalls\n\n")
 	b.WriteString("- Verify each step's output before proceeding\n")
 	b.WriteString("- Exit code 0 means success\n")
 	b.WriteString("\n## Verification\n\n")
-	b.WriteString(fmt.Sprintf("- `%s` should exit with code 0\n", steps[len(steps)-1]))
+	fmt.Fprintf(&b, "- `%s` should exit with code 0\n", steps[len(steps)-1])
 	return b.String()
 }
 
@@ -730,16 +730,16 @@ func AutoSaveSuggestions(suggestions []SkillSuggestion, userDir string, cfg Skil
 // FormatSuggestionWithPreview formats a suggestion with optional body preview.
 func FormatSuggestionWithPreview(s SkillSuggestion, preview bool, previewLen int) string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("📝 Skill suggestion: %s\n", s.Name))
-	b.WriteString(fmt.Sprintf("   %s\n", s.Description))
-	b.WriteString(fmt.Sprintf("   Detected by: %s\n", s.Heuristic))
+	fmt.Fprintf(&b, "📝 Skill suggestion: %s\n", s.Name)
+	fmt.Fprintf(&b, "   %s\n", s.Description)
+	fmt.Fprintf(&b, "   Detected by: %s\n", s.Heuristic)
 	if len(s.CommandLog) > 0 {
 		b.WriteString("   Commands:\n")
 		for _, cmd := range s.CommandLog {
 			if len(cmd) > 80 {
 				cmd = cmd[:80] + "..."
 			}
-			b.WriteString(fmt.Sprintf("     • %s\n", cmd))
+			fmt.Fprintf(&b, "     • %s\n", cmd)
 		}
 	}
 	if preview && len(s.Body) > 0 {
@@ -754,7 +754,7 @@ func FormatSuggestionWithPreview(s SkillSuggestion, preview bool, previewLen int
 		}
 		b.WriteString("   ── Preview ──\n")
 		for _, line := range strings.Split(body, "\n") {
-			b.WriteString(fmt.Sprintf("   %s\n", line))
+			fmt.Fprintf(&b, "   %s\n", line)
 		}
 	}
 	return b.String()

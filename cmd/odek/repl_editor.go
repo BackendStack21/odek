@@ -136,8 +136,8 @@ func (e *replEditor) handleEscape() (bool, error) {
 		return false, err
 	}
 
-	switch {
-	case buf[0] == '[':
+	switch buf[0] {
+	case '[':
 		// CSI sequence
 		n, err = os.Stdin.Read(buf[:1])
 		if err != nil || n < 1 {
@@ -164,7 +164,7 @@ func (e *replEditor) handleEscape() (bool, error) {
 		case '1': // Bracketed paste end \x1b[201~
 			e.readTildeOrBracketed("")
 		}
-	case buf[0] == 'O': // Old-style home/end
+	case 'O': // Old-style home/end
 		n, err = os.Stdin.Read(buf[:1])
 		if err != nil || n < 1 {
 			return false, err

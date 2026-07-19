@@ -55,7 +55,7 @@ func confinedGlob(root, pattern string, limit int, includeDirs bool) ([]string, 
 	// does not match "..", but a pattern like "../.ssh/id_*" combined with
 	// filepath.Glob would traverse upward. We block it explicitly.
 	if strings.Contains(pattern, "..") {
-		return nil, fmt.Errorf("pattern cannot contain ..")
+		return nil, fmt.Errorf("pattern cannot contain parent directory references")
 	}
 	if filepath.IsAbs(pattern) {
 		return nil, fmt.Errorf("pattern cannot be absolute")

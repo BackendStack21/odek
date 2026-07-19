@@ -250,7 +250,7 @@ func FormatMicroCurationResult(r *MicroCurationResult) string {
 	b.WriteString(strings.Join(parts, "; "))
 	b.WriteString("\n")
 	for _, note := range r.Notes {
-		b.WriteString(fmt.Sprintf("   %s\n", note))
+		fmt.Fprintf(&b, "   %s\n", note)
 	}
 	return b.String()
 }
@@ -263,38 +263,38 @@ func FormatCurationReport(r *CurationReport) string {
 
 	b.WriteString("📦 Skill Curation Report\n")
 	b.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━\n")
-	b.WriteString(fmt.Sprintf("Total skills analyzed: %d\n\n", r.TotalSkills))
+	fmt.Fprintf(&b, "Total skills analyzed: %d\n\n", r.TotalSkills)
 
 	if len(r.StaleSkills) > 0 {
-		b.WriteString(fmt.Sprintf("⚠  Stale skills (%d):\n", len(r.StaleSkills)))
+		fmt.Fprintf(&b, "⚠  Stale skills (%d):\n", len(r.StaleSkills))
 		for _, s := range r.StaleSkills {
-			b.WriteString(fmt.Sprintf("   %-20s → run with --apply to mark stale\n", s.Name))
+			fmt.Fprintf(&b, "   %-20s → run with --apply to mark stale\n", s.Name)
 		}
 		b.WriteString("\n")
 	}
 
 	if len(r.OverlapGroups) > 0 {
-		b.WriteString(fmt.Sprintf("🔗  Overlap groups (%d):\n", len(r.OverlapGroups)))
+		fmt.Fprintf(&b, "🔗  Overlap groups (%d):\n", len(r.OverlapGroups))
 		for _, g := range r.OverlapGroups {
-			b.WriteString(fmt.Sprintf("   %s\n", strings.Join(g.Skills, " + ")))
-			b.WriteString(fmt.Sprintf("     %s\n", g.Message))
+			fmt.Fprintf(&b, "   %s\n", strings.Join(g.Skills, " + "))
+			fmt.Fprintf(&b, "     %s\n", g.Message)
 		}
 		b.WriteString("\n")
 	}
 
 	if len(r.QualityIssues) > 0 {
-		b.WriteString(fmt.Sprintf("📋  Quality issues (%d):\n", len(r.QualityIssues)))
+		fmt.Fprintf(&b, "📋  Quality issues (%d):\n", len(r.QualityIssues))
 		for _, qi := range r.QualityIssues {
-			b.WriteString(fmt.Sprintf("   %s:\n", qi.Name))
+			fmt.Fprintf(&b, "   %s:\n", qi.Name)
 			for _, issue := range qi.Issues {
-				b.WriteString(fmt.Sprintf("     - %s\n", issue))
+				fmt.Fprintf(&b, "     - %s\n", issue)
 			}
 		}
 		b.WriteString("\n")
 	}
 
 	if r.Deduplicated > 0 {
-		b.WriteString(fmt.Sprintf("🔍  Deduplicated: %d skills share body hashes\n", r.Deduplicated))
+		fmt.Fprintf(&b, "🔍  Deduplicated: %d skills share body hashes\n", r.Deduplicated)
 	}
 
 	b.WriteString("\nRun `odek skill curate --apply` to apply all suggestions\n")

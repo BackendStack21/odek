@@ -33,7 +33,7 @@ func llamaMtmdBinary(cfg config.VisionConfig) (string, error) {
 	if path, err := exec.LookPath("llama-mtmd-cli"); err == nil {
 		return path, nil
 	}
-	return "", fmt.Errorf(`llama-mtmd-cli not found on PATH.
+	fmt.Fprintln(os.Stderr, `llama-mtmd-cli not found on PATH.
 
 The vision tool requires llama.cpp's multimodal CLI (build b9549+).
 
@@ -45,6 +45,7 @@ To install manually:
   install build/bin/llama-mtmd-cli /usr/local/bin/
 
 Or set binary_path in the vision config.`)
+	return "", fmt.Errorf("llama-mtmd-cli not found")
 }
 
 // visionModelPaths resolves the model.gguf and mmproj.gguf paths.
@@ -69,7 +70,7 @@ func visionModelPaths(cfg config.VisionConfig) (modelPath, mmprojPath string, er
 	mmp := filepath.Join(dir, "mmproj.gguf")
 
 	if _, err := os.Stat(mp); err != nil {
-		return "", "", fmt.Errorf(`MiniCPM-V model not found at %q.
+		fmt.Fprintf(os.Stderr, `MiniCPM-V model not found at %q.
 
 Download and install:
   mkdir -p %s
@@ -80,6 +81,7 @@ Download and install:
   mv mmproj-model-f16.gguf mmproj.gguf
 
 Or set models_dir in the vision config.`, mp, dir, dir)
+		return "", "", fmt.Errorf("MiniCPM-V model not found")
 	}
 	if _, err := os.Stat(mmp); err != nil {
 		return "", "", fmt.Errorf("MiniCPM-V projector not found at %q — download mmproj-model-f16.gguf to %s and rename to mmproj.gguf", mmp, dir)

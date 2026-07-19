@@ -1260,7 +1260,7 @@ func checkLocalOrigin(_ *golangws.Config, req *http.Request) error {
 	if host == "localhost" || host == "127.0.0.1" || host == "::1" {
 		return nil
 	}
-	return fmt.Errorf("Origin %q not allowed (only localhost is accepted)", origin)
+	return fmt.Errorf("origin %q not allowed (only localhost is accepted)", origin)
 }
 
 const (

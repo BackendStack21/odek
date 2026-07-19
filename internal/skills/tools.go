@@ -390,9 +390,9 @@ func (t *SkillListTool) Call(args string) (string, error) {
 			continue
 		}
 
-		b.WriteString(fmt.Sprintf("  %-20s [%s]  %s\n", s.Name, s.Quality, s.Description))
+		fmt.Fprintf(&b, "  %-20s [%s]  %s\n", s.Name, s.Quality, s.Description)
 		if len(s.Trigger.TopicKeywords) > 0 {
-			b.WriteString(fmt.Sprintf("  %-20s  triggers on: %s\n", "", strings.Join(s.Trigger.TopicKeywords, ", ")))
+			fmt.Fprintf(&b, "  %-20s  triggers on: %s\n", "", strings.Join(s.Trigger.TopicKeywords, ", "))
 		}
 		b.WriteString("\n")
 	}

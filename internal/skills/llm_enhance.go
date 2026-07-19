@@ -35,7 +35,7 @@ func GenerateSkillWithLLM(llm LLMClient, calls []ToolCall, userMessages []string
 		if len(msg) > 200 {
 			msg = msg[:197] + "..."
 		}
-		b.WriteString(fmt.Sprintf("User: %s\n", msg))
+		fmt.Fprintf(&b, "User: %s\n", msg)
 	}
 
 	// Add tool calls (capped)
@@ -53,13 +53,13 @@ func GenerateSkillWithLLM(llm LLMClient, calls []ToolCall, userMessages []string
 		if c.ExitCode != 0 {
 			status = "✗"
 		}
-		b.WriteString(fmt.Sprintf("[%s] %s: %s\n", status, c.Tool, input))
+		fmt.Fprintf(&b, "[%s] %s: %s\n", status, c.Tool, input)
 	}
 	if len(calls) > limit {
-		b.WriteString(fmt.Sprintf("... and %d more calls\n", len(calls)-limit))
+		fmt.Fprintf(&b, "... and %d more calls\n", len(calls)-limit)
 	}
 
-	b.WriteString(fmt.Sprintf("\nHeuristic trigger: %s\n", heuristic))
+	fmt.Fprintf(&b, "\nHeuristic trigger: %s\n", heuristic)
 	b.WriteString("\nGenerate a skill file for this pattern. Output in this exact format:\n")
 	b.WriteString("NAME: <short kebab-case name>\n")
 	b.WriteString("DESCRIPTION: <one-line description, max 100 chars>\n")
@@ -142,10 +142,10 @@ func EnhanceCurationWithLLM(llm LLMClient, report *CurationReport) string {
 	var b strings.Builder
 	b.WriteString("Review these skills and identify quality issues, overlap, or improvement suggestions:\n\n")
 	for _, s := range report.QualityIssues {
-		b.WriteString(fmt.Sprintf("- %s: %s\n", s.Name, strings.Join(s.Issues, "; ")))
+		fmt.Fprintf(&b, "- %s: %s\n", s.Name, strings.Join(s.Issues, "; "))
 	}
 	for _, g := range report.OverlapGroups {
-		b.WriteString(fmt.Sprintf("- Overlap: %s share keywords: %s\n", strings.Join(g.Skills, ", "), strings.Join(g.Shared, ", ")))
+		fmt.Fprintf(&b, "- Overlap: %s share keywords: %s\n", strings.Join(g.Skills, ", "), strings.Join(g.Shared, ", "))
 	}
 	b.WriteString("\nSuggest specific improvements or merge recommendations. Be concise.")
 
@@ -195,7 +195,7 @@ func ExtractSkillsFromConversation(llm LLMClient, messages []LlmMessage, userMes
 		if m.Name != "" {
 			label = m.Role + ":" + m.Name
 		}
-		b.WriteString(fmt.Sprintf("[%s] %s\n", label, content))
+		fmt.Fprintf(&b, "[%s] %s\n", label, content)
 	}
 
 	b.WriteString("\nDid the agent demonstrate a reusable skill or procedure? ")

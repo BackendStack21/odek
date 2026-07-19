@@ -1712,13 +1712,14 @@ func handleChatMessage(
 					return
 				}
 
-				if toolProgress == "verbose" {
+				switch toolProgress {
+				case "verbose":
 					recordToolStart()
 					line := fmt.Sprintf("%s `%s` %s", render.ToolEmoji(name), name, truncateToolArgs(data, 2000))
 					line = telegram.EscapeMarkdown(line)
 					bot.SendMessage(chatID, line,
 						&telegram.SendOpts{ParseMode: telegram.ParseModeMarkdownV2})
-				} else if toolProgress == "all" || toolProgress == "new" {
+				case "all", "new":
 					// Insert reasoning header (first sentence) at top of bubble
 					if reasoningProgressLine != "" {
 						if len(progressLines) == 0 || progressLines[0] != reasoningProgressLine {

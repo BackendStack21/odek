@@ -407,31 +407,31 @@ func WriteSkill(dir string, s Skill) error {
 func MarshalSkill(s Skill) string {
 	var b strings.Builder
 	b.WriteString("---\n")
-	b.WriteString(fmt.Sprintf("name: %s\n", s.Name))
+	fmt.Fprintf(&b, "name: %s\n", s.Name)
 	if s.Description != "" {
-		b.WriteString(fmt.Sprintf("description: %s\n", s.Description))
+		fmt.Fprintf(&b, "description: %s\n", s.Description)
 	}
 	if s.Version != "" {
-		b.WriteString(fmt.Sprintf("version: %s\n", s.Version))
+		fmt.Fprintf(&b, "version: %s\n", s.Version)
 	}
 	if s.Author != "" {
-		b.WriteString(fmt.Sprintf("author: %s\n", s.Author))
+		fmt.Fprintf(&b, "author: %s\n", s.Author)
 	}
 	b.WriteString("odek:\n")
 	if len(s.Trigger.TopicKeywords) > 0 || len(s.Trigger.ActionKeywords) > 0 {
 		b.WriteString("  trigger:\n")
 		if len(s.Trigger.TopicKeywords) > 0 {
-			b.WriteString(fmt.Sprintf("    topic: %s\n", strings.Join(s.Trigger.TopicKeywords, " ")))
+			fmt.Fprintf(&b, "    topic: %s\n", strings.Join(s.Trigger.TopicKeywords, " "))
 		}
 		if len(s.Trigger.ActionKeywords) > 0 {
-			b.WriteString(fmt.Sprintf("    action: %s\n", strings.Join(s.Trigger.ActionKeywords, " ")))
+			fmt.Fprintf(&b, "    action: %s\n", strings.Join(s.Trigger.ActionKeywords, " "))
 		}
 	}
 	if s.AutoLoad {
 		b.WriteString("  auto_load: true\n")
 	}
 	if s.Quality != "" && s.Quality != QualityManual {
-		b.WriteString(fmt.Sprintf("  quality: %s\n", s.Quality))
+		fmt.Fprintf(&b, "  quality: %s\n", s.Quality)
 	}
 	if s.Provenance.Untrusted || len(s.Provenance.Sources) > 0 || s.Provenance.NeedsReview {
 		b.WriteString("  provenance:\n")
@@ -442,7 +442,7 @@ func MarshalSkill(s Skill) string {
 			b.WriteString("    needs_review: true\n")
 		}
 		if len(s.Provenance.Sources) > 0 {
-			b.WriteString(fmt.Sprintf("    sources: %s\n", strings.Join(s.Provenance.Sources, " ")))
+			fmt.Fprintf(&b, "    sources: %s\n", strings.Join(s.Provenance.Sources, " "))
 		}
 	}
 	b.WriteString("---\n\n")

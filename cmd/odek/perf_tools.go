@@ -2414,7 +2414,7 @@ func (t *trTool) Call(argsJSON string) (result string, err error) {
 					return r
 				}, text)
 			} else {
-				text = strings.Replace(text, tf.From, tf.To, -1)
+				text = strings.ReplaceAll(text, tf.From, tf.To)
 			}
 		case "string":
 			if tf.From == "" {

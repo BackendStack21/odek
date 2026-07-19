@@ -2119,9 +2119,10 @@ func skillCmd(args []string) error {
 			fmt.Fprintf(os.Stderr, "━━━━━━━━━━━━━━━\n")
 			if assessment != nil {
 				riskSymbol := "🟢"
-				if assessment.RiskClass == "elevated" {
+				switch assessment.RiskClass {
+				case "elevated":
 					riskSymbol = "🟡"
-				} else if assessment.RiskClass == "dangerous" {
+				case "dangerous":
 					riskSymbol = "🔴"
 				}
 				fmt.Fprintf(os.Stderr, "Risk: %s %s\n", riskSymbol, assessment.RiskClass)

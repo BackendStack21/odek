@@ -72,7 +72,7 @@ func whisperBinary(cfg config.TranscriptionConfig) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf(`whisper CLI not found. Install it:
+	fmt.Fprintln(os.Stderr, `whisper CLI not found. Install it:
 
   macOS: brew install whisper-cpp
   Linux: apt install whisper-cpp  or  git clone https://github.com/ggerganov/whisper.cpp && cd whisper.cpp && make
@@ -83,6 +83,7 @@ Then download a model:
   curl -LO https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin
 
 Or set binary_path in config if installed elsewhere.`)
+	return "", fmt.Errorf("whisper CLI not found")
 }
 
 // modelPath resolves the absolute path to the whisper model file.
@@ -131,7 +132,7 @@ func modelPath(cfg config.TranscriptionConfig) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf(`whisper model "ggml-%s.bin" not found.
+	fmt.Fprintf(os.Stderr, `whisper model "ggml-%s.bin" not found.
 
 Download it:
   mkdir -p %s
@@ -141,6 +142,7 @@ Download it:
 Available models: tiny (75MB, fastest), base (150MB), small (500MB), medium (1.5GB)
 Set "model" in transcription config to change which model is expected.`,
 		model, modelsDir, modelsDir, model)
+	return "", fmt.Errorf("whisper model not found")
 }
 
 // ═════════════════════════════════════════════════════════════════════════

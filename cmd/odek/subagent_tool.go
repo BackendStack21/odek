@@ -162,7 +162,7 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 	var buf strings.Builder
 	buf.WriteString("📋 Sub-agent results:\n\n")
 	for i, r := range results {
-		buf.WriteString(fmt.Sprintf("─── Task %d: %s ───\n", i+1, truncate(input.Tasks[i].Goal, 60)))
+		fmt.Fprintf(&buf, "─── Task %d: %s ───\n", i+1, truncate(input.Tasks[i].Goal, 60))
 		if len(r) > maxSubagentSummaryResultBytes {
 			buf.WriteString(r[:maxSubagentSummaryResultBytes])
 			buf.WriteString("\n... [result truncated]")
