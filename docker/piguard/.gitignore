@@ -3,6 +3,7 @@
 *.data
 *.json
 tokenizer.*
+modeling_*.py
 !/.gitkeep
 !/.gitignore
 

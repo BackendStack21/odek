@@ -211,8 +211,14 @@ func (p *piguardClient) post(ctx context.Context, urlStr string, body []byte) (*
 
 // resultFromResponse converts a PIGuard response into a Result, applying the
 // configured threshold.
+//
+// The sidecar's score is the confidence of the predicted label — whichever
+// label that is — not the injection probability (a confident BENIGN result
+// also scores ~1.0). The threshold therefore only applies to INJECTION
+// labels; comparing it against the score of a BENIGN result would reject
+// virtually everything, since the model is confident on most inputs.
 func resultFromResponse(r detectResponse, start time.Time, threshold float64) Result {
-	injected := r.Label == "INJECTION" || r.Score >= threshold
+	injected := r.Label == "INJECTION" && r.Score >= threshold
 	return Result{
 		Label:    r.Label,
 		Score:    r.Score,

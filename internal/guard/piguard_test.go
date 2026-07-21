@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakePiguardServer returns an httptest.Server that mimics the PIGuard HTTP gateway.
@@ -29,7 +30,7 @@ func fakePiguardServer(t *testing.T) *httptest.Server {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			resp := detectResponse{Label: "BENIGN", Score: 0.1}
+			resp := detectResponse{Label: "BENIGN", Score: 0.9997} // realistic high-confidence BENIGN
 			if strings.Contains(strings.ToLower(req.Text), "ignore") {
 				resp.Label = "INJECTION"
 				resp.Score = 0.999
@@ -42,7 +43,7 @@ func fakePiguardServer(t *testing.T) *httptest.Server {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			resp := detectResponse{Label: "BENIGN", Score: 0.1}
+			resp := detectResponse{Label: "BENIGN", Score: 0.9997} // realistic high-confidence BENIGN
 			if strings.Contains(strings.ToLower(req.Long), "ignore") {
 				resp.Label = "INJECTION"
 				resp.Score = 0.999
@@ -57,7 +58,7 @@ func fakePiguardServer(t *testing.T) *httptest.Server {
 			}
 			results := make([]detectResponse, len(req.Texts))
 			for i, text := range req.Texts {
-				results[i] = detectResponse{Label: "BENIGN", Score: 0.1}
+				results[i] = detectResponse{Label: "BENIGN", Score: 0.9997}
 				if strings.Contains(strings.ToLower(text), "ignore") {
 					results[i] = detectResponse{Label: "INJECTION", Score: 0.999}
 				}
@@ -222,5 +223,37 @@ func TestPiguardClient_NonOKStatus(t *testing.T) {
 	_, err = g.Detect(ctx, "hello")
 	if err == nil {
 		t.Fatal("expected error for non-OK status")
+	}
+}
+
+// TestResultFromResponse_ThresholdSemantics pins the score semantics of the
+// PIGuard sidecar: the score is the confidence of the predicted label, not
+// the injection probability. A high-confidence BENIGN result (score ~1.0)
+// must NOT be treated as an injection, and the threshold only gates INJECTION
+// labels. Regression test for the bug where every confident BENIGN memory
+// fact was rejected with score >= threshold (default 0.9).
+func TestResultFromResponse_ThresholdSemantics(t *testing.T) {
+	cases := []struct {
+		name      string
+		label     string
+		score     float64
+		threshold float64
+		want      bool
+	}{
+		{"confident benign passes", "BENIGN", 0.9999, 0.9, false},
+		{"weak benign passes", "BENIGN", 0.55, 0.9, false},
+		{"confident injection rejected", "INJECTION", 0.98, 0.9, true},
+		{"injection at threshold rejected", "INJECTION", 0.9, 0.9, true},
+		{"weak injection below threshold passes", "INJECTION", 0.62, 0.9, false},
+		{"unknown label passes regardless of score", "SOMETHING", 1.0, 0.9, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resultFromResponse(detectResponse{Label: tc.label, Score: tc.score}, time.Now(), tc.threshold)
+			if got.Injected != tc.want {
+				t.Errorf("resultFromResponse(%s, %.4f, thr %.2f).Injected = %v, want %v",
+					tc.label, tc.score, tc.threshold, got.Injected, tc.want)
+			}
+		})
 	}
 }
