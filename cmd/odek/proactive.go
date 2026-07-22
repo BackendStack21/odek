@@ -62,13 +62,15 @@ const maxFollowUpSuggestions = 3
 
 // printFollowUpSuggestions prints a compact block of follow-up suggestions
 // after a completed turn. Presentation-only: the block is written to w
-// (never appended to the agent response), and only in engaging/enhance
-// interaction modes — verbose and off stay machine-clean.
+// (never appended to the agent response), and suppressed only in verbose and
+// off modes, which stay machine-clean. Anything else — including empty,
+// unknown, or legacy mode strings — behaves like engaging, matching the
+// loop's own default-engaging interpretation (internal/loop).
 func printFollowUpSuggestions(w io.Writer, mm followUpSuggester, interactionMode string) {
 	if mm == nil {
 		return
 	}
-	if interactionMode != "engaging" && interactionMode != "enhance" {
+	if interactionMode == "verbose" || interactionMode == "off" {
 		return
 	}
 	fmt.Fprint(w, formatFollowUpSuggestions(mm.FollowUpSuggestions()))

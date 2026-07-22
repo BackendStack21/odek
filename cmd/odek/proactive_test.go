@@ -75,6 +75,18 @@ func TestPrintFollowUpSuggestions(t *testing.T) {
 		}
 	})
 
+	t.Run("printed in unknown/legacy mode", func(t *testing.T) {
+		// Unknown or legacy mode strings (e.g. "all", "") behave like
+		// engaging, matching the loop's default-engaging interpretation.
+		for _, mode := range []string{"all", "", "something-else"} {
+			var buf bytes.Buffer
+			printFollowUpSuggestions(&buf, &fakeSuggester{suggestions: sugs}, mode)
+			if buf.Len() == 0 {
+				t.Errorf("expected suggestion block in mode %q", mode)
+			}
+		}
+	})
+
 	t.Run("suppressed in off mode", func(t *testing.T) {
 		var buf bytes.Buffer
 		fs := &fakeSuggester{suggestions: sugs}
