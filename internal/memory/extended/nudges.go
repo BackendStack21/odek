@@ -173,6 +173,24 @@ func (em *ExtendedMemory) computeNudges(ctx context.Context, maxN int) ([]Nudge,
 		log.Printf("extended memory: nudge open-loops failed: %v", err)
 		return nil, nil
 	}
+	// Age-gate question atoms: per-turn extraction runs on the user message
+	// BEFORE the assistant answers, so every freshly asked question looks
+	// "unanswered" at extraction time. Nudging about a question that was just
+	// answered (or is still being discussed) is exactly the kind of proactive
+	// noise that destroys trust, so only questions older than
+	// NudgeOpenQuestionMinAgeHours are candidates. Goals and intents are
+	// unaffected — they have their own staleness window.
+	minAge := time.Duration(em.openQuestionMinAgeHours()) * time.Hour
+	cutoff := time.Now().UTC().Add(-minAge)
+	candidates := openLoops[:0]
+	for _, a := range openLoops {
+		if a.Type == TypeQuestion && a.CreatedAt.After(cutoff) {
+			continue
+		}
+		candidates = append(candidates, a)
+	}
+	openLoops = candidates
+
 	stale := em.staleGoals()
 	var focus FocusState
 	if em.userModel != nil {
@@ -268,6 +286,15 @@ func (em *ExtendedMemory) staleGoalDays() int {
 		return em.cfg.NudgeStaleGoalDays
 	}
 	return DefaultConfig().NudgeStaleGoalDays
+}
+
+// openQuestionMinAgeHours returns the minimum age before a question atom may
+// become a nudge candidate.
+func (em *ExtendedMemory) openQuestionMinAgeHours() int {
+	if em.cfg.NudgeOpenQuestionMinAgeHours > 0 {
+		return em.cfg.NudgeOpenQuestionMinAgeHours
+	}
+	return DefaultConfig().NudgeOpenQuestionMinAgeHours
 }
 
 // loadNudgeState reads nudges.json. Missing or corrupt files yield a fresh

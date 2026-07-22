@@ -2003,14 +2003,14 @@ func handleChatMessage(
 			allToolsMu.Unlock()
 
 			statsLine := formatTelegramStats(runInfo, toolList)
+			// No ReplyToMessageID: the answer message already quotes the
+			// user's text — quoting it again in the stats block doubles the
+			// visual noise per turn.
 			if _, err := bot.SendMessage(chatID, statsLine, &telegram.SendOpts{
-				ParseMode:        telegram.ParseModeMarkdownV2,
-				ReplyToMessageID: messageID,
+				ParseMode: telegram.ParseModeMarkdownV2,
 			}); err != nil {
 				// Fallback: send as plain text so the info isn't lost
-				if _, err2 := bot.SendMessage(chatID, statsLine, &telegram.SendOpts{
-					ReplyToMessageID: messageID,
-				}); err2 != nil {
+				if _, err2 := bot.SendMessage(chatID, statsLine, nil); err2 != nil {
 					fmt.Fprintf(os.Stderr, "odek telegram: stats send fallback failed: %v (orig: %v)\n", err2, err)
 				}
 			}
@@ -2024,9 +2024,10 @@ func handleChatMessage(
 	// LLM call) never delays the reply; Agent.Close drains it on shutdown.
 	if mm := agent.Memory(); mm != nil && proactiveNudgesEnabled(resolved.Memory) {
 		pushTelegramNudge(mm, func(text string) {
+			// Standalone message (no reply quote): a nudge refers to older
+			// memory, not to the message that triggered it.
 			if _, err := bot.SendMessage(chatID, telegram.EscapeMarkdown(text), &telegram.SendOpts{
-				ParseMode:        telegram.ParseModeMarkdownV2,
-				ReplyToMessageID: messageID,
+				ParseMode: telegram.ParseModeMarkdownV2,
 			}); err != nil {
 				fmt.Fprintf(os.Stderr, "odek telegram: nudge send chat %d: %v\n", chatID, err)
 			}
@@ -2138,7 +2139,7 @@ func formatTelegramStats(info loop.IterationInfo, toolList []string) string {
 	}
 
 	// Always include cache stats so the user can see them even when zero.
-	cacheStr := fmt.Sprintf(" · cache: %dcr+%drd+%dct",
+	cacheStr := fmt.Sprintf(" · cache: %d write / %d read / %d total",
 		info.CacheCreationTokens, info.CacheReadTokens, info.CachedTokens)
 
 	return fmt.Sprintf(

@@ -1172,7 +1172,7 @@ func TestFormatTelegramStats(t *testing.T) {
 	if !strings.Contains(out, "100 in / 50 out") {
 		t.Errorf("missing token counts: %s", out)
 	}
-	if !strings.Contains(out, "cache: 10cr+20rd+30ct") {
+	if !strings.Contains(out, "cache: 10 write / 20 read / 30 total") {
 		t.Errorf("missing cache stats: %s", out)
 	}
 	if !strings.Contains(out, "tools: read_file, shell") {
