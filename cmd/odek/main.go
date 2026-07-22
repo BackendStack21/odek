@@ -1523,6 +1523,13 @@ func run(args []string) error {
 		fmt.Println(result)
 	}
 
+	// ── Follow-up suggestions: compact block after a successful turn ──
+	// Presentation-only (engaging/enhance modes) — never appended to the
+	// response string, so session/memory transcripts stay clean.
+	if mm := agent.Memory(); mm != nil {
+		printFollowUpSuggestions(os.Stdout, mm, resolved.InteractionMode)
+	}
+
 	return nil
 }
 
@@ -2408,26 +2415,7 @@ func continueCmd(args []string) error {
 
 	// Return-after-break: on session resume, load a concise summary of where
 	// the user left off and the next likely step.
-	if mm := agent.Memory(); mm != nil {
-		rbCtx, rbCancel := context.WithTimeout(ctx, 5*time.Second)
-		if rb := mm.FormatReturnAfterBreak(rbCtx); rb != "" {
-			insertIdx := -1
-			for i := len(messages) - 1; i >= 0; i-- {
-				if messages[i].Role == "system" {
-					insertIdx = i
-					break
-				}
-			}
-			wrapped := wrapUntrusted(rbCtx, "return_after_break", rb)
-			rbMsg := llm.Message{Role: "system", Content: wrapped}
-			if insertIdx >= 0 {
-				messages = append(messages[:insertIdx+1], append([]llm.Message{rbMsg}, messages[insertIdx+1:]...)...)
-			} else {
-				messages = append([]llm.Message{rbMsg}, messages...)
-			}
-		}
-		rbCancel()
-	}
+	messages = injectReturnAfterBreak(ctx, agent.Memory(), messages)
 
 	messages = append(messages, llm.Message{Role: "user", Content: task})
 

@@ -78,7 +78,7 @@ func memoryCmd(args []string) error {
 // extendedMemoryCmd handles `odek memory extended <subcommand>`.
 func extendedMemoryCmd(dir string, args []string) error {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "Usage: odek memory extended <forget|promote|pin|quarantine|compact|stats|consolidate|pending|confirm|reject> [args]\n")
+		fmt.Fprintf(os.Stderr, "Usage: odek memory extended <forget|promote|pin|quarantine|compact|stats|consolidate|nudges|pending|confirm|reject> [args]\n")
 		return nil
 	}
 
@@ -191,6 +191,34 @@ func extendedMemoryCmd(dir string, args []string) error {
 		fmt.Printf("odek: consolidation complete — %d atom(s) merged into existing or new entries\n", merged)
 		return nil
 
+	case "nudges":
+		// Generating nudges needs an LLM; resolve the operator backend the
+		// same way the agent does (same pattern as consolidate).
+		resolved := config.LoadConfig(config.CLIFlags{})
+		if resolved.APIKey == "" {
+			return fmt.Errorf("memory extended nudges requires an LLM backend (no API key resolved)")
+		}
+		llmClient := llm.New(resolved.BaseURL, resolved.APIKey, resolved.Model, "", 0, 120*time.Second)
+		emLLM := extended.New(extDir, llmClient, cfg)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		nudges, err := emLLM.ProactiveNudges(ctx, 2)
+		if err != nil {
+			return err
+		}
+		if len(nudges) == 0 {
+			fmt.Println("No nudges right now.")
+			return nil
+		}
+		fmt.Println("Proactive nudges (preview — does not consume the daily cap):")
+		for _, n := range nudges {
+			fmt.Printf("• [%s] %s\n", n.Kind, n.Text)
+			if len(n.SourceAtomIDs) > 0 {
+				fmt.Printf("    atoms: %s\n", strings.Join(n.SourceAtomIDs, ", "))
+			}
+		}
+		return nil
+
 	case "pending":
 		pending, err := em.ListPendingReview()
 		if err != nil {
@@ -233,6 +261,6 @@ func extendedMemoryCmd(dir string, args []string) error {
 		return nil
 
 	default:
-		return fmt.Errorf("unknown extended memory subcommand %q (expected: forget, promote, pin, quarantine, compact, stats, consolidate, pending, confirm, reject)", sub)
+		return fmt.Errorf("unknown extended memory subcommand %q (expected: forget, promote, pin, quarantine, compact, stats, consolidate, nudges, pending, confirm, reject)", sub)
 	}
 }
