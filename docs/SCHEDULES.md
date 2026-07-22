@@ -12,6 +12,10 @@ container-only behaviour.
 # A weekday stand-up nudge delivered to Telegram
 odek schedule add --cron "0 9 * * 1-5" --deliver telegram "Remind me: stand-up in 15 minutes"
 
+# A weekly proactive-nudge digest from Extended Memory (opt in with
+# memory.extended.proactive_nudges_enabled: true first)
+odek schedule add --cron "0 9 * * 1" --deliver telegram "Review my proactive nudges (open questions, stale goals) and summarize what deserves attention this week"
+
 # Run the scheduler (headless), or just start `odek telegram` — it hosts one too
 odek schedule daemon
 ```

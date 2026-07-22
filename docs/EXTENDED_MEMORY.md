@@ -380,6 +380,12 @@ Extended Memory is configured under the `memory.extended` section.
       "style_mirroring_enabled": true,
       "anaphora_resolution_enabled": true,
       "follow_up_anticipation_enabled": true,
+      "follow_up_suggestions_enabled": true,
+      "follow_up_suggestion_min_confidence": 0.6,
+      "proactive_nudges_enabled": false,
+      "nudge_max_per_day": 1,
+      "nudge_cooldown_hours": 24,
+      "nudge_stale_goal_days": 7,
 
       "llm": {
         "base_url": "http://localhost:11434/v1",
@@ -428,6 +434,12 @@ Extended Memory is configured under the `memory.extended` section.
 | `style_mirroring_enabled` | `true` | Inject a style-guidance directive based on the inferred user model. |
 | `anaphora_resolution_enabled` | `true` | Resolve the first pronoun in a user message against recent trusted atoms when the top atom's score is high enough. |
 | `follow_up_anticipation_enabled` | `true` | Generate predicted intents and recall atoms for them. |
+| `follow_up_suggestions_enabled` | `true` | Capture high-confidence predicted intents at recall time and expose them as follow-up suggestions (zero extra LLM cost). |
+| `follow_up_suggestion_min_confidence` | `0.6` | Minimum predicted-intent confidence for a follow-up suggestion to be captured. |
+| `proactive_nudges_enabled` | `false` | Master switch for proactive nudge delivery via `TakeNudges`. Opt-in. |
+| `nudge_max_per_day` | `1` | Maximum proactive nudges delivered per day. |
+| `nudge_cooldown_hours` | `24` | Per-kind cooldown before a nudge of the same kind can fire again. |
+| `nudge_stale_goal_days` | `7` | Days without activity before a goal/intent atom counts as stale for nudges. |
 | `llm` | omitted | Dedicated memory LLM config. **If omitted, the default global model is used.** A warning is emitted if that model has thinking enabled. |
 | `embedding` | omitted | Dedicated embedding backend. If omitted, uses the shared `embedding` config. |
 
@@ -513,6 +525,32 @@ Once Extended Memory is enabled, the following proactive behaviors are active by
 
 These behaviors are always data-driven by trusted atoms and the user model, never by tainted content.
 
+## P6 — Proactive Engagement
+
+P6 turns Extended Memory from a passive recall layer into a source of proactive, user-facing suggestions. All three surfaces are read-only over trusted atoms and degrade to "nothing" on any failure — a broken LLM backend or malformed response can never break a session.
+
+### Follow-up suggestions
+
+Predictive recall (P5) already generates likely follow-up intents on every recall to widen the search. P6 captures those intents instead of discarding them: after the `minPredictedIntentConfidence` (0.3) noise floor, intents at or above `follow_up_suggestion_min_confidence` (default `0.6`) are kept — at most 3 per recall — and exposed via `ExtendedMemory.LastFollowUps()` / `MemoryManager.FollowUpSuggestions()` for the CLI/Web/Telegram surfaces to render as suggested next steps. The capture costs zero extra LLM calls (it reuses the prediction the recall pipeline already paid for) and is replaced on every recall. Disable with `follow_up_suggestions_enabled: false` (recall behavior is unchanged either way).
+
+### Open loops
+
+The extraction prompt now emits `question` atoms for user questions that went unanswered in the session and `goal` atoms for stated intentions ("I want to…", "we should…", "next week I'll…"). Commands and action requests are still rejected. Exact and semantic write-path dedup collapse repeats automatically.
+
+`ExtendedMemory.OpenLoops(ctx, limit)` returns the trusted `question`/`goal`/`intent` atoms, newest first — the machine-readable "what is still open" view that powers the nudges engine and any presentation-layer listing. Tainted atoms are always excluded.
+
+### Proactive nudges
+
+`ExtendedMemory.ProactiveNudges(ctx, maxN)` (preview) and `ExtendedMemory.TakeNudges(ctx, maxN)` (delivery) synthesize up to `maxN` (default 2) concise, user-facing nudges from: open loops, stale goals (goal/intent atoms with no activity in `nudge_stale_goal_days`, default 7), and the user model's current focus (blockers, project drift). Each nudge carries a `kind` (`open_question`, `stale_goal`, `blocker`, `drift`) and the source atom IDs it was derived from. Synthesis is a single memory-LLM call with defensive JSON parsing; any failure returns an empty result with no error.
+
+Anti-annoyance caps are enforced by `TakeNudges` only and persisted to `nudges.json` in the extended directory (atomic, 0600):
+
+- **Master switch**: `proactive_nudges_enabled` (default `false` — strictly opt-in).
+- **Daily budget**: at most `nudge_max_per_day` nudges per day (default `1`); the budget resets on day rollover, per-kind cooldowns persist.
+- **Per-kind cooldown**: a kind that fired cannot fire again within `nudge_cooldown_hours` (default `24`).
+
+`ProactiveNudges` is a pure preview: it computes nudges without checking or recording any cap, so a CLI/Telegram "what would you nudge me about?" surface never consumes the daily budget. `MemoryManager.PreviewNudges` / `MemoryManager.TakeNudges` are nil-safe passthroughs that return empty when Extended Memory is disabled.
+
 ## Security Architecture
 
 Extended Memory inherits and extends the provenance model from [MEMORY.md](MEMORY.md).
@@ -565,6 +603,7 @@ This runs memory extraction, user-state inference, predictive intent generation,
 | **P3 — User-state model** | Background inference of a persistent user model, pending-review queue, user correction flow. | Implemented |
 | **P4 — Quarantine and promotion** | Tainted atom quarantine, inline promotion commands, `quarantine_ttl_days`, atom pinning. | Implemented |
 | **P5 — Predictive and proactive surfaces** | Predicted-intent recall, return-after-break summary, anaphora resolution, style mirroring, follow-up anticipation. | Implemented |
+| **P6 — Proactive engagement** | Follow-up suggestions captured at recall time, open-loop (`question`/`goal`) atoms, proactive nudges engine with daily budget and per-kind cooldown. | Implemented |
 
 ## Relationship to Existing Memory
 
