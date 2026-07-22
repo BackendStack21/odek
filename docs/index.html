@@ -90,6 +90,57 @@
     .hero .install-block .btn:hover { opacity: .85; }
     .cta-block { margin-top: 0; }
 
+    /* ── Hero stats bar ── */
+    .hero .stats {
+      display: flex; justify-content: center; gap: 40px; margin-top: 44px;
+      flex-wrap: wrap;
+    }
+    .hero .stats .stat { text-align: center; }
+    .hero .stats .stat .v {
+      font-size: 1.5rem; font-weight: 800; color: var(--accent);
+      font-family: var(--font-mono); letter-spacing: -.02em;
+    }
+    .hero .stats .stat .k {
+      font-size: 0.75rem; color: var(--text-secondary); margin-top: 2px;
+    }
+    .hero .stats .stat a .v { transition: opacity .15s; }
+    .hero .stats .stat a:hover .v { opacity: .8; text-decoration: none; }
+
+    /* ── Section nav (sticky) ── */
+    .section-nav {
+      position: sticky; top: 0; z-index: 20;
+      display: flex; justify-content: center; gap: 4px; flex-wrap: wrap;
+      padding: 10px 16px;
+      background: color-mix(in srgb, var(--bg-primary) 88%, transparent);
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .section-nav a {
+      color: var(--text-secondary); font-size: 0.75rem; padding: 4px 10px;
+      border-radius: 6px; transition: all .15s;
+    }
+    .section-nav a:hover { color: var(--accent); background: var(--bg-card); text-decoration: none; }
+
+    /* ── "New" badge ── */
+    .badge-new {
+      display: inline-block; background: var(--green); color: #000;
+      font-size: 0.625rem; font-weight: 700; padding: 2px 7px; border-radius: 4px;
+      margin-left: 8px; vertical-align: middle; letter-spacing: .04em;
+    }
+
+    /* ── What's-new cards ── */
+    .whatsnew { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .whatsnew .card {
+      background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: 12px;
+      padding: 24px; border-left: 3px solid var(--accent);
+    }
+    .whatsnew .card h4 { font-size: 1rem; font-weight: 600; margin-bottom: 6px; }
+    .whatsnew .card h4 .ver { color: var(--text-secondary); font-weight: 400; font-size: 0.75rem; font-family: var(--font-mono); margin-left: 8px; }
+    .whatsnew .card p { font-size: 0.8125rem; line-height: 1.5; }
+    .whatsnew .card p code { font-size: 0.75rem; }
+    .whatsnew .card a { font-size: 0.8125rem; }
+    @media (max-width: 700px) { .whatsnew { grid-template-columns: 1fr; } }
+
     /* ── Copy button ── */
     .copy-btn {
       background: transparent; border: 1px solid var(--border-subtle); color: var(--text-secondary);
@@ -420,7 +471,7 @@
       "name": "Which LLM providers does odek support?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Any OpenAI-compatible endpoint: Deepseek, OpenAI, Anthropic, Ollama, vLLM, Groq, Together, and Fireworks. odek is provider-agnostic, so you are not locked into a single vendor."
+        "text": "Any OpenAI-compatible endpoint: DeepSeek, OpenAI, Anthropic, Ollama, vLLM, Groq, Together, and Fireworks. odek is provider-agnostic, so you are not locked into a single vendor."
       }
     },
     {
@@ -466,6 +517,14 @@
       <code>go install github.com/BackendStack21/odek/cmd/odek@latest</code>
       <button class="copy-btn" onclick="copyText(this,'go install github.com/BackendStack21/odek/cmd/odek@latest')">📋 Copy</button>
       <a class="btn" href="#install">Get Started →</a>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><div class="v">~12 MB</div><div class="k">static binary</div></div>
+      <div class="stat"><div class="v">80.3%</div><div class="k">AIEB v2.0 score</div></div>
+      <div class="stat"><div class="v">25+</div><div class="k">built-in tools</div></div>
+      <div class="stat"><div class="v">4</div><div class="k">interfaces: CLI · REPL · Web · Telegram</div></div>
+      <div class="stat"><a href="https://github.com/BackendStack21/odek/releases/tag/v1.15.3"><div class="v">v1.15.3</div><div class="k">latest release ↗</div></a></div>
     </div>
 
     <!-- ═══ Hero carousel — zero → Telegram bot ═══ -->
@@ -659,7 +718,7 @@
                   <span class="tg-sender">Principal</span>
                   <div class="tg-bbl">
                     <div class="tg-reply">Hi</div>
-                    <div class="tg-code">✅ Done · 1 turn · 10095 in / 155 out · cache: 0cr+0rd+0ct · 2s — tools: none</div>
+                    <div class="tg-code">✅ Done · 1 turn · 10095 in / 155 out · cache: 8143 write / 0 read / 0 total · 2s — tools: none</div>
                   </div>
                   <span class="tg-time">13:10</span>
                 </div>
@@ -677,6 +736,52 @@
 
 <div class="container">
 
+<nav class="section-nav" aria-label="Section navigation">
+  <a href="#whats-new">What's new</a>
+  <a href="#five-whys">Why</a>
+  <a href="#demos">Demos</a>
+  <a href="#features">Features</a>
+  <a href="#install">Install</a>
+  <a href="#cheatsheet">Cheatsheet</a>
+  <a href="#docs">Docs</a>
+</nav>
+
+<!-- ═══ What's new in v1.15 ═══ -->
+<section id="whats-new">
+  <h2>What's new in <span class="hl">v1.15</span></h2>
+  <p style="margin-bottom:20px;color:var(--text-secondary);font-size:0.9375rem">
+    The biggest release since Extended Memory: the agent now anticipates, and cleans up after itself.
+    Full notes in the <a href="https://github.com/BackendStack21/odek/releases/tag/v1.15.0">v1.15.0 release</a>.
+  </p>
+
+  <div class="whatsnew">
+    <div class="card">
+      <h4>💡 Proactive Engagement <span class="ver">v1.15.0</span></h4>
+      <p>The agent ends answers with <strong>follow-up suggestions</strong> it already predicted, tracks your <strong>open loops</strong> (unanswered questions, stated goals), and can send <strong>opt-in proactive nudges</strong> — with hard anti-annoyance caps so it never becomes noise. Scheduled jobs are memory-wired, so a cron task can analyze your memory and sessions. <a href="https://github.com/BackendStack21/odek/blob/main/docs/EXTENDED_MEMORY.md#p6--proactive-engagement">docs ↗</a></p>
+    </div>
+    <div class="card">
+      <h4>🧹 Storage Maintenance <span class="ver">v1.15.0</span></h4>
+      <p>A janitor goroutine keeps long-lived agents (Telegram bot, <code>serve</code>) clean forever: session/audit/log/plan/media retention driven by an operator-only <code>maintenance</code> config. <code>odek cleanup --dry-run</code> previews exactly what would be deleted before anything is touched. <a href="https://github.com/BackendStack21/odek/blob/main/docs/MAINTENANCE.md">docs ↗</a></p>
+    </div>
+    <div class="card">
+      <h4>🧠 Memory overhaul <span class="ver">v1.15.0</span></h4>
+      <p>Semantic dedup of stored atoms, relevance-preserving recall ranking, atom consolidation, index staleness detection, and <code>odek memory extended stats</code> for operators. Guard-rejected memories go to quarantine for human review instead of vanishing.</p>
+    </div>
+    <div class="card">
+      <h4>🛡️ PIGuard + guard fixes <span class="ver">v1.15.x</span></h4>
+      <p>The prompt-injection sidecar got its score semantics fixed (confident-benign memories no longer rejected), a JSON-faithful HTTP gateway, NDJSON socket transport, and Apple-Silicon-safe builds. Skill auto-learn is hardened against project-repo injection.</p>
+    </div>
+    <div class="card">
+      <h4>🗣️ Multilingual voice (STT) <span class="ver">v1.15.2</span></h4>
+      <p>Docker images ship the multilingual <code>ggml-small</code> whisper model — usable <strong>German, English, and Spanish</strong> voice transcription out of the box (was effectively English-only).</p>
+    </div>
+    <div class="card">
+      <h4>📊 Honest cache metrics <span class="ver">v1.15.3</span></h4>
+      <p>DeepSeek's native cache fields are parsed, and providers that report nothing show <code>cache: n/a</code> instead of misleading zeros.</p>
+    </div>
+  </div>
+</section>
+
 <!-- ═══ Five Whys ═══ -->
 <section id="five-whys">
   <h2>The <span class="hl">Five Whys</span></h2>
@@ -691,7 +796,7 @@
     </li>
     <li>
       <span class="q">Why?</span>
-      <span class="a">Because locking into one LLM provider is a strategic mistake. odek is <strong>provider-agnostic</strong> — Deepseek, OpenAI, Anthropic, Ollama, vLLM, Groq, Together, Fireworks. Any OpenAI-compatible endpoint.</span>
+      <span class="a">Because locking into one LLM provider is a strategic mistake. odek is <strong>provider-agnostic</strong> — DeepSeek, OpenAI, Anthropic, Ollama, vLLM, Groq, Together, Fireworks. Any OpenAI-compatible endpoint.</span>
     </li>
     <li>
       <span class="q">Why?</span>
@@ -817,6 +922,21 @@
         <span class="info">🏆 80.3% — highest published agent score</span>
       </div>
 
+      <!-- Slide 8 -->
+      <div class="slide">
+        <span class="info"># Proactive engagement — the agent anticipates</span><br>
+        <span class="prompt">$ odek run --session "I plan to migrate Postgres 14 → 17 next quarter"</span><br>
+        <span class="output">Good call to plan early. Watch out for: logical replication</span><br>
+        <span class="output">slots, removed GUCs, and driver upgrades…</span><br>
+        <span class="info">── You might also want to ──</span><br>
+        <span class="output">• What are the breaking changes between PG 14 and 17?</span><br>
+        <span class="output">• How do I test the migration with minimal downtime?</span><br>
+        <span class="info"># … days later, via Telegram — an opt-in nudge:</span><br>
+        <span class="output">💡 Your Postgres migration goal has been quiet for a week —</span><br>
+        <span class="output">   want a pg_upgrade dry-run checklist?</span><br>
+        <span class="info"># capped: max/day + per-kind cooldown. Never noisy.</span>
+      </div>
+
     </div>
     <div class="nav"></div>
   </div>
@@ -848,8 +968,26 @@
 
     <div class="card">
       <div class="icon">💾</div>
-      <h4>Persistent Memory</h4>
-      <p>Three tiers: facts (markdown on disk), session buffer, and searchable episodes. Merge-on-write via go-vector cosine similarity saves ~80% LLM calls. go-vector RP is ephemeral &mdash; rebuilt from text on every write, no embedding state to persist.</p>
+      <h4>Extended Memory</h4>
+      <p>Semantic, atomic memory: facts, preferences, goals extracted per turn, deduplicated by meaning, ranked by relevance and recency. Quarantine for untrusted content, associations between atoms, and a stats surface for operators. Legacy three-tier facts/buffer/episodes included too.</p>
+    </div>
+
+    <div class="card">
+      <div class="icon">💡</div>
+      <h4>Proactive Engagement <span class="badge-new">NEW</span></h4>
+      <p>The agent anticipates: follow-up suggestions after answers, open-loop tracking of your questions and goals, and opt-in proactive nudges with anti-annoyance caps. Scheduled jobs are memory-wired, so cron tasks can analyze memory and sessions.</p>
+    </div>
+
+    <div class="card">
+      <div class="icon">🧹</div>
+      <h4>Storage Maintenance <span class="badge-new">NEW</span></h4>
+      <p>Long-lived agents stay clean forever: a janitor handles session, audit-log, log, plan, and media retention on an operator-only config. <code>odek cleanup --dry-run</code> shows exactly what would be removed, first.</p>
+    </div>
+
+    <div class="card">
+      <div class="icon">🛡️</div>
+      <h4>PIGuard Sidecar</h4>
+      <p>Optional ML prompt-injection guard (ONNX, local) as a semantic second opinion on top of the rule-based scan — guarding memory writes, skill bodies, system prompts, and MCP descriptions. Docker Compose sidecar included.</p>
     </div>
 
     <div class="card">
@@ -891,7 +1029,7 @@
     <div class="card">
       <div class="icon">💬</div>
       <h4>Interaction Modes</h4>
-      <p>Three modes: <strong>engaging</strong> (emoji-rich LLM narration), <strong>enhance</strong> (narration persists after response), and <strong>verbose</strong> (raw tool traces). Per-tool trace messages with LLM reasoning content. Works across CLI, Telegram, and Web UI.</p>
+      <p>Four modes: <strong>engaging</strong> (emoji-rich LLM narration), <strong>enhance</strong> (narration persists after response), <strong>verbose</strong> (raw tool traces), and <strong>off</strong> (clean, machine-friendly). Per-tool trace messages with LLM reasoning content. Works across CLI, Telegram, and Web UI.</p>
     </div>
 
     <div class="card">
@@ -1013,7 +1151,13 @@ $ odek run <span class="hljs-string">"@README.md summarize this project"</span>
     <li><span class="cmd">odek mcp</span><span class="desc">Start MCP server (stdio)</span></li>
     <li><span class="cmd">odek mcp --sse-addr :8081</span><span class="desc">Start MCP server (SSE)</span></li>
     <li><span class="cmd">odek telegram</span><span class="desc">Start Telegram bot</span></li>
-    <li><span class="cmd">odek run --deliver <task></span><span class="desc">Run task, deliver to Telegram</span></li>
+    <li><span class="cmd">odek schedule add &lt;task&gt;</span><span class="desc">Schedule a recurring agent task (cron)</span></li>
+    <li><span class="cmd">odek cleanup --dry-run</span><span class="desc">Preview storage maintenance, delete nothing</span></li>
+    <li><span class="cmd">odek cleanup</span><span class="desc">Run one storage maintenance sweep</span></li>
+    <li><span class="cmd">odek memory extended stats</span><span class="desc">Memory store, index, quarantine, recall health</span></li>
+    <li><span class="cmd">odek memory extended nudges</span><span class="desc">Preview proactive nudges (no cap consumed)</span></li>
+    <li><span class="cmd">odek skill list</span><span class="desc">List learned/installed skills</span></li>
+    <li><span class="cmd">odek run --deliver &lt;task&gt;</span><span class="desc">Run task, deliver to Telegram</span></li>
     <li><span class="cmd">odek init [--global]</span><span class="desc">Create config file</span></li>
     <li><span class="cmd">odek version</span><span class="desc">Show version</span></li>
   </ul>
@@ -1028,6 +1172,7 @@ $ odek run <span class="hljs-string">"@README.md summarize this project"</span>
     <li><span class="cmd">--no-learn</span><span class="desc">Disable skill learning</span></li>
     <li><span class="cmd">--max-iter &lt;n&gt;</span><span class="desc">Max think→act cycles (default 90)</span></li>
     <li><span class="cmd">--ctx &lt;files&gt; / -c</span><span class="desc">Attach files as context blocks (comma-separated)</span></li>
+    <li><span class="cmd">--memory-extended-enabled</span><span class="desc">Enable Extended Memory (opt-in)</span></li>
     <li><span class="cmd">--system &lt;prompt&gt;</span><span class="desc">Override system prompt</span></li>
     <li><span class="cmd">--no-color</span><span class="desc">Disable colored output</span></li>
     <li><span class="cmd">--deliver</span><span class="desc">Deliver result to Telegram default chat</span></li>
@@ -1045,10 +1190,12 @@ $ odek run <span class="hljs-string">"@README.md summarize this project"</span>
     <a href="https://github.com/BackendStack21/odek/blob/main/docs/CHEATSHEET.md">Cheat Sheet<span>Quick reference: commands, config, memory, subagents, env vars</span></a>
     <a href="https://github.com/BackendStack21/odek/blob/main/docs/API.md">Go SDK Guide<span>Import, Agent, Tools, memory, multi-turn sessions, examples</span></a>
     <a href="https://github.com/BackendStack21/odek/blob/main/docs/CONFIG.md">Configuration<span>Config files, env vars, priority chain</span></a>
-    <a href="https://github.com/BackendStack21/odek/blob/main/docs/PROVIDERS.md">Providers & Models<span>Deepseek, OpenAI, Anthropic, Ollama, vLLM, more</span></a>
+    <a href="https://github.com/BackendStack21/odek/blob/main/docs/PROVIDERS.md">Providers & Models<span>DeepSeek, OpenAI, Anthropic, Ollama, vLLM, more</span></a>
     <a href="https://github.com/BackendStack21/odek/blob/main/docs/CACHING.md">Prompt Caching<span>Cache markers for lower latency and cost on repeats</span></a>
     <a href="https://github.com/BackendStack21/odek/blob/main/docs/MCP.md">MCP (Two-Way)<span>Serve tools + connect to external MCP servers</span></a>
-    <a href="https://github.com/BackendStack21/odek/blob/main/docs/MEMORY.md">Memory System<span>Three-tier facts, buffer, episodes</span></a>
+    <a href="https://github.com/BackendStack21/odek/blob/main/docs/MEMORY.md">Memory System<span>Legacy facts, buffer, episodes</span></a>
+    <a href="https://github.com/BackendStack21/odek/blob/main/docs/EXTENDED_MEMORY.md">Extended Memory<span>Semantic atoms, recall, quarantine, proactive engagement</span></a>
+    <a href="https://github.com/BackendStack21/odek/blob/main/docs/MAINTENANCE.md">Storage Maintenance<span>Janitor, retention config, odek cleanup</span></a>
     <a href="https://github.com/BackendStack21/odek/blob/main/docs/SESSIONS.md">Multi-Turn Sessions<span>Save, resume, list, trim, cleanup</span></a>
     <a href="https://github.com/BackendStack21/odek/blob/main/docs/SANDBOXING.md">Sandboxing<span>Docker isolation, config, security model</span></a>
     <a href="https://github.com/BackendStack21/odek/blob/main/docs/DOCKER_COMPOSE_USER_GUIDE.md">Docker Compose<span>Run odek in Docker with Compose, step by step</span></a>
@@ -1058,6 +1205,8 @@ $ odek run <span class="hljs-string">"@README.md summarize this project"</span>
     <a href="https://github.com/BackendStack21/odek/blob/main/docs/WEBUI.md">Web UI<span>odek serve, WebSocket protocol, @ resources</span></a>
     <a href="https://github.com/BackendStack21/odek/blob/main/docs/SCHEDULES.md">Scheduled Tasks<span>Native cron — run agent tasks and deliver results</span></a>
     <a href="https://github.com/BackendStack21/odek/blob/main/docs/TELEGRAM.md">Telegram Bot<span>Run agent tasks from Telegram: voice, photos, sessions</span></a>
+    <a href="https://github.com/BackendStack21/odek/blob/main/docs/TOOL_SELECTION.md">Tool Selection<span>Enable/disable tools per profile, MCP naming</span></a>
+    <a href="https://github.com/BackendStack21/odek/blob/main/docs/DAILY-WORKER.md">Daily Worker<span>odek as your daily chief-of-staff assistant</span></a>
     <a href="https://github.com/BackendStack21/odek/blob/main/docs/DEVELOPMENT.md">Development<span>Building, testing, contributing</span></a>
   </div>
 </section>
