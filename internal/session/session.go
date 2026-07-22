@@ -42,16 +42,16 @@ const MaxSessionFileBytes = 32 * 1024 * 1024 // 32 MiB
 // Session represents a single multi-turn conversation with the agent.
 // All fields are exported for direct manipulation at the CLI layer.
 type Session struct {
-	ID        string        `json:"id"`                 // e.g. "20260518-abc123…" (128-bit random suffix)
+	ID        string        `json:"id"`                   // e.g. "20260518-abc123…" (128-bit random suffix)
 	AuthToken string        `json:"auth_token,omitempty"` // session-scoped secret required by serve handlers
-	CreatedAt time.Time     `json:"created_at"`         // first message time
-	UpdatedAt time.Time     `json:"updated_at"`         // last append time
-	Model     string        `json:"model"`              // model name used
-	Turns     int           `json:"turns"`              // number of user turns
-	Task      string        `json:"task"`               // first user message (label)
-	Sandbox   bool          `json:"sandbox"`            // was sandboxed — auto-apply on resume
-	Messages  []llm.Message `json:"messages"`           // full conversation history
-	Buffer    []string      `json:"buffer,omitempty"`   // last N turn summaries (memory tier 2)
+	CreatedAt time.Time     `json:"created_at"`           // first message time
+	UpdatedAt time.Time     `json:"updated_at"`           // last append time
+	Model     string        `json:"model"`                // model name used
+	Turns     int           `json:"turns"`                // number of user turns
+	Task      string        `json:"task"`                 // first user message (label)
+	Sandbox   bool          `json:"sandbox"`              // was sandboxed — auto-apply on resume
+	Messages  []llm.Message `json:"messages"`             // full conversation history
+	Buffer    []string      `json:"buffer,omitempty"`     // last N turn summaries (memory tier 2)
 }
 
 // ── Store ──────────────────────────────────────────────────────────────
@@ -280,16 +280,20 @@ func (s *Store) Create(messages []llm.Message, model, task string) (*Session, er
 // concurrent-write data loss and symlink-swap TOCTOU attacks.
 func (s *Store) Append(id string, newMsgs []llm.Message) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	sess, err := s.Load(id)
 	if err != nil {
+		s.mu.Unlock()
 		return err
 	}
 	sess.Messages = append(sess.Messages, newMsgs...)
 	sess.UpdatedAt = time.Now().UTC()
 	sess.Turns = countUserTurns(sess.Messages)
-	return s.saveLocked(sess)
+	err = s.saveLocked(sess)
+	s.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return s.addToVectorIndex(sess)
 }
 
 // Save writes a session to disk atomically and durably via fsatomic.WriteFile
@@ -300,8 +304,28 @@ func (s *Store) Append(id string, newMsgs []llm.Message) error {
 //     directory entry itself — it does NOT follow symlinks)
 func (s *Store) Save(sess *Session) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.saveLocked(sess)
+	err := s.saveLocked(sess)
+	s.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return s.addToVectorIndex(sess)
+}
+
+// addToVectorIndex updates the semantic search index for a session that is
+// already persisted. It runs AFTER the store mutex is released: embedding can
+// be a remote HTTP call (seconds), and holding s.mu across it would serialize
+// every concurrent Load/List/Save behind network latency. The vector index
+// has its own locking, and the session file is already on disk, so a
+// not-ready index that rebuilds from disk picks this session up.
+func (s *Store) addToVectorIndex(sess *Session) error {
+	if s.Vec == nil {
+		return nil
+	}
+	if err := s.Vec.Add(sess.ID, sess.Messages); err != nil {
+		return fmt.Errorf("session: vector index add: %w", err)
+	}
+	return nil
 }
 
 // saveLocked is the internal write path — caller must hold s.mu.
@@ -346,12 +370,9 @@ func (s *Store) saveLocked(sess *Session) error {
 		return err
 	}
 
-	// Update the vector index for semantic search.
-	if s.Vec != nil {
-		if err := s.Vec.Add(sess.ID, sess.Messages); err != nil {
-			return fmt.Errorf("session: vector index add: %w", err)
-		}
-	}
+	// Note: the vector index is updated by the caller (addToVectorIndex) after
+	// s.mu is released — embedding may be a slow remote call and must not run
+	// under the store mutex.
 
 	return nil
 }

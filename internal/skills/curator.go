@@ -347,7 +347,38 @@ func MergeSkills(keep, remove Skill) Skill {
 	}
 	merged.Quality = QualityDraft // merged skills are always draft
 
+	// Provenance: the merged body contains remove's content, so the result can
+	// never be MORE trusted than either input. Keep the worse of the two —
+	// otherwise merging a tainted skill into a clean one would launder the
+	// taint away and let the merged skill auto-load without review.
+	merged.Provenance.Untrusted = keep.Provenance.Untrusted || remove.Provenance.Untrusted
+	merged.Provenance.NeedsReview = keep.Provenance.NeedsReview || remove.Provenance.NeedsReview
+	merged.Provenance.Sources = unionStrings(keep.Provenance.Sources, remove.Provenance.Sources)
+
 	return merged
+}
+
+// unionStrings returns the order-stable union of a and b (a's elements first,
+// then b's elements not already present).
+func unionStrings(a, b []string) []string {
+	seen := make(map[string]bool, len(a)+len(b))
+	out := make([]string, 0, len(a)+len(b))
+	for _, s := range a {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	for _, s := range b {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func keysFromSet(set map[string]bool) []string {

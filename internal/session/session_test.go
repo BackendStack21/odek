@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -201,6 +202,58 @@ func TestStore_SaveWithVectorIndex(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("session %s not found in vector search results: %+v", sess.ID, results)
+	}
+}
+
+// TestStore_ConcurrentSave is a smoke test that concurrent Save calls with an
+// active vector index complete without deadlock and that every session
+// persists. The vector-index update runs outside the store mutex so a slow
+// embedding backend cannot serialize concurrent saves behind network I/O.
+func TestStore_ConcurrentSave(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.InitVectorIndex(nil); err != nil {
+		t.Fatalf("InitVectorIndex(nil): %v", err)
+	}
+
+	const n = 16
+	ids := make([]string, n)
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			msgs := []llm.Message{
+				{Role: "system", Content: "You are a bot."},
+				{Role: "user", Content: fmt.Sprintf("concurrent save %d", i)},
+			}
+			sess, err := store.Create(msgs, "test-model", fmt.Sprintf("task %d", i))
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			ids[i] = sess.ID
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent Create %d failed: %v", i, err)
+		}
+	}
+	// All sessions persisted and loadable.
+	for i, id := range ids {
+		if _, err := store.Load(id); err != nil {
+			t.Errorf("session %d (%s) did not persist: %v", i, id, err)
+		}
+	}
+	listed, err := store.List(0)
+	if err != nil {
+		t.Fatalf("List() error: %v", err)
+	}
+	if len(listed) != n {
+		t.Errorf("expected %d sessions in list, got %d", n, len(listed))
 	}
 }
 

@@ -233,6 +233,89 @@ func TestMergeSkills_NameOrder(t *testing.T) {
 	}
 }
 
+func TestMergeSkills_ProvenanceKeepsWorse(t *testing.T) {
+	clean := Skill{
+		Name:    "clean",
+		Body:    "## Overview\n\nClean\n\n## Common Pitfalls\n\n- None\n\n## Verification\n\n- Check",
+		Trigger: SkillTrigger{TopicKeywords: []string{"clean"}},
+	}
+	tainted := Skill{
+		Name:    "tainted",
+		Body:    "## Overview\n\nTainted\n\n## Common Pitfalls\n\n- None\n\n## Verification\n\n- Check",
+		Trigger: SkillTrigger{TopicKeywords: []string{"tainted"}},
+		Provenance: SkillProvenance{
+			Untrusted:   true,
+			NeedsReview: true,
+			Sources:     []string{"browser:https://example.com", "session:abc"},
+		},
+	}
+
+	// Tainted merged INTO clean: the merged body contains tainted content, so
+	// the result must inherit the worse provenance, not the keeper's clean one.
+	merged := MergeSkills(clean, tainted)
+	if !merged.Provenance.Untrusted {
+		t.Error("merged provenance should be Untrusted when either input is")
+	}
+	if !merged.Provenance.NeedsReview {
+		t.Error("merged provenance should be NeedsReview when either input is")
+	}
+	wantSources := []string{"browser:https://example.com", "session:abc"}
+	if len(merged.Provenance.Sources) != len(wantSources) {
+		t.Fatalf("merged Sources = %v, want %v", merged.Provenance.Sources, wantSources)
+	}
+	for i, s := range wantSources {
+		if merged.Provenance.Sources[i] != s {
+			t.Errorf("merged Sources[%d] = %q, want %q", i, merged.Provenance.Sources[i], s)
+		}
+	}
+
+	// Sources are unioned deduped and order-stable (keeper's first).
+	keep := Skill{
+		Name:    "keep",
+		Body:    "## Overview\n\nKeep\n\n## Common Pitfalls\n\n- None\n\n## Verification\n\n- Check",
+		Trigger: SkillTrigger{TopicKeywords: []string{"keep"}},
+		Provenance: SkillProvenance{
+			Untrusted:   true,
+			NeedsReview: true,
+			Sources:     []string{"session:abc", "browser:https://a.dev"},
+		},
+	}
+	merged = MergeSkills(keep, tainted)
+	want := []string{"session:abc", "browser:https://a.dev", "browser:https://example.com"}
+	if len(merged.Provenance.Sources) != len(want) {
+		t.Fatalf("merged Sources = %v, want %v", merged.Provenance.Sources, want)
+	}
+	for i, s := range want {
+		if merged.Provenance.Sources[i] != s {
+			t.Errorf("merged Sources[%d] = %q, want %q", i, merged.Provenance.Sources[i], s)
+		}
+	}
+}
+
+func TestMergeSkills_ProvenanceCleanStaysClean(t *testing.T) {
+	a := Skill{
+		Name:    "a",
+		Body:    "## Overview\n\nA\n\n## Common Pitfalls\n\n- None\n\n## Verification\n\n- Check",
+		Trigger: SkillTrigger{TopicKeywords: []string{"a"}},
+	}
+	b := Skill{
+		Name:    "b",
+		Body:    "## Overview\n\nB\n\n## Common Pitfalls\n\n- None\n\n## Verification\n\n- Check",
+		Trigger: SkillTrigger{TopicKeywords: []string{"b"}},
+	}
+
+	merged := MergeSkills(a, b)
+	if merged.Provenance.Untrusted {
+		t.Error("clean+clean merge should stay trusted")
+	}
+	if merged.Provenance.NeedsReview {
+		t.Error("clean+clean merge should not need review")
+	}
+	if len(merged.Provenance.Sources) != 0 {
+		t.Errorf("clean+clean merge should have no sources, got %v", merged.Provenance.Sources)
+	}
+}
+
 func TestExecuteMicroCuration_Merge(t *testing.T) {
 	dir := t.TempDir()
 
