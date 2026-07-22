@@ -69,11 +69,16 @@ func (p *Predictor) Predict(ctx context.Context, userMsg string, recent []string
 	if resp == "" || resp == "[]" {
 		return nil, nil
 	}
+	jsonResp, ok := extractJSON(resp)
+	if !ok {
+		log.Printf("extended memory: predictor parse failed: no JSON in response")
+		return nil, fmt.Errorf("predictor: parse: no JSON in response")
+	}
 	var raw []struct {
 		Text       string  `json:"text"`
 		Confidence float32 `json:"confidence"`
 	}
-	if err := json.Unmarshal([]byte(resp), &raw); err != nil {
+	if err := json.Unmarshal([]byte(jsonResp), &raw); err != nil {
 		log.Printf("extended memory: predictor parse failed: %v", err)
 		return nil, fmt.Errorf("predictor: parse: %w", err)
 	}

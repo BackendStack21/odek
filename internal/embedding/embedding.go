@@ -156,6 +156,28 @@ func New(cfg *Config, rpDims int) TextEmbedder {
 	}
 }
 
+// Shared returns an embedder factory like New, except that for stateless
+// (HTTP) backends every call yields the SAME instance so its text→vector
+// cache is shared across consumers — e.g. episode dedup and the episode
+// vector-index rebuild then embed each corpus text once per process instead
+// of once per pass. Corpus-fitted backends (RandomProjections) still get a
+// FRESH instance per call: their Fit state is per-corpus, so sharing would
+// produce degenerate vectors. The HTTP embedder is internally mutex-guarded
+// and its Fit only warms the cache, so sharing it across goroutines is safe.
+func Shared(cfg *Config, rpDims int) func() TextEmbedder {
+	if emb := New(cfg, rpDims); isStateless(emb) {
+		return func() TextEmbedder { return emb }
+	}
+	return func() TextEmbedder { return New(cfg, rpDims) }
+}
+
+// isStateless reports whether the embedder is safe to share across consumers
+// (Fit does not capture corpus state).
+func isStateless(emb TextEmbedder) bool {
+	_, ok := emb.(*httpTextEmbedder)
+	return ok
+}
+
 // ── RandomProjections backend (default) ──────────────────────────────────────
 
 // rpTextEmbedder wraps go-vector RandomProjections behind TextEmbedder,

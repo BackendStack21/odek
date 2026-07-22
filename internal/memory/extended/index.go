@@ -103,8 +103,12 @@ func (vi *atomVectorIndex) search(query string, k int) []scoredAtom {
 }
 
 // ensureFresh rebuilds the index if needed. The expensive embedding work runs
-// off-lock on a fresh embedder instance. Concurrent callers wait for the first
-// rebuild rather than starting redundant work.
+// off-lock on the shared embedder instance, which is reused across rebuilds so
+// stateful backends keep their caches (the HTTP embedder's per-instance
+// text→vector cache makes a re-fit of a mostly-unchanged corpus cheap; the
+// local RandomProjections embedder resets its vocabulary on every Fit, so
+// re-fitting a reused instance is safe). Concurrent callers wait for the
+// first rebuild rather than starting redundant work.
 func (vi *atomVectorIndex) ensureFresh() {
 	vi.mu.RLock()
 	ready := vi.ready && !vi.dirty
@@ -139,7 +143,11 @@ func (vi *atomVectorIndex) ensureFresh() {
 
 	vi.rebuilding = true
 	seq := vi.dirtySeq
-	emb := vi.newEmb()
+	emb := vi.emb
+	if emb == nil {
+		emb = vi.newEmb()
+		vi.emb = emb
+	}
 	listFn := vi.listAtoms
 	vi.mu.Unlock()
 
@@ -154,7 +162,6 @@ func (vi *atomVectorIndex) ensureFresh() {
 		return
 	}
 	vi.store = store
-	vi.emb = emb
 	vi.ready = true
 	vi.failedAt = time.Time{}
 	if vi.dirtySeq == seq {

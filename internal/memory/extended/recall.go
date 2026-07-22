@@ -69,15 +69,18 @@ func (r *Recall) Query(ctx context.Context, query string, recent []string, state
 }
 
 // queryAtomsWithPrediction unions literal-query results with predicted-intent
-// results when prediction is enabled.
+// results when prediction is enabled. The union keeps, per atom ID, the best
+// composite score (0.6*similarity + 0.4*retention) computed by queryAtoms and
+// is sorted by that score, so predicted-intent matches cannot override the
+// blended ranking with a pure retention ordering.
 func (r *Recall) queryAtomsWithPrediction(ctx context.Context, query string, recent []string, state UserState) ([]MemoryAtom, error) {
-	all := make(map[string]MemoryAtom)
-	literal, err := r.queryAtoms(ctx, query)
+	all := make(map[string]scoredAtomMeta)
+	literal, err := r.queryAtomsScored(ctx, query, false)
 	if err != nil {
 		return nil, err
 	}
-	for _, a := range literal {
-		all[a.ID] = a
+	for _, s := range literal {
+		all[s.atom.ID] = s
 	}
 
 	if r.predictor != nil && r.cfg.PredictiveIntents > 0 &&
@@ -87,31 +90,29 @@ func (r *Recall) queryAtomsWithPrediction(ctx context.Context, query string, rec
 			log.Printf("extended memory: predicted-intent generation failed: %v", err)
 		}
 		for _, intent := range intents {
-			predicted, err := r.queryAtoms(ctx, intent.Text)
+			// Predicted intents reuse the composite score but skip the paid
+			// LLM rerank, which is reserved for the literal query.
+			predicted, err := r.queryAtomsScored(ctx, intent.Text, true)
 			if err != nil {
 				continue
 			}
-			for _, a := range predicted {
-				all[a.ID] = a
-			}
-			// Follow-up anticipation: recall convention/file/error atoms.
-			typed, err := r.queryAtomsByType(ctx, intent.Text, []string{TypeConvention, TypeFile, TypeError})
-			if err != nil {
-				continue
-			}
-			for _, a := range typed {
-				all[a.ID] = a
+			// Follow-up anticipation: recall convention/file/error atoms from
+			// the same candidate set instead of re-running the search.
+			predicted = append(predicted, filterScoredByType(predicted, []string{TypeConvention, TypeFile, TypeError})...)
+			for _, s := range predicted {
+				if cur, ok := all[s.atom.ID]; !ok || s.score > cur.score {
+					all[s.atom.ID] = s
+				}
 			}
 		}
 	}
 
-	out := make([]MemoryAtom, 0, len(all))
-	for _, a := range all {
-		out = append(out, a)
+	out := make([]scoredAtomMeta, 0, len(all))
+	for _, s := range all {
+		out = append(out, s)
 	}
-	// Re-rank by the composite score already computed by queryAtoms.
 	sort.Slice(out, func(i, j int) bool {
-		return RetentionScore(out[i], r.cfg.DecayHalfLifeDays) > RetentionScore(out[j], r.cfg.DecayHalfLifeDays)
+		return out[i].score > out[j].score
 	})
 	k := r.cfg.SemanticSearchTopK
 	if k <= 0 {
@@ -120,30 +121,61 @@ func (r *Recall) queryAtomsWithPrediction(ctx context.Context, query string, rec
 	if len(out) > k {
 		out = out[:k]
 	}
-	return out, nil
+	atoms := make([]MemoryAtom, len(out))
+	for i, s := range out {
+		atoms[i] = s.atom
+	}
+	return atoms, nil
 }
 
-// queryAtomsByType returns atoms matching the query whose type is in types.
-func (r *Recall) queryAtomsByType(ctx context.Context, query string, types []string) ([]MemoryAtom, error) {
-	atoms, err := r.queryAtoms(ctx, query)
-	if err != nil {
-		return nil, err
-	}
+// filterScoredByType returns the candidates whose atom type is in types.
+func filterScoredByType(scored []scoredAtomMeta, types []string) []scoredAtomMeta {
 	want := make(map[string]bool, len(types))
 	for _, t := range types {
 		want[t] = true
 	}
-	out := make([]MemoryAtom, 0, len(atoms))
-	for _, a := range atoms {
-		if want[a.Type] {
-			out = append(out, a)
+	out := make([]scoredAtomMeta, 0, len(scored))
+	for _, s := range scored {
+		if want[s.atom.Type] {
+			out = append(out, s)
 		}
+	}
+	return out
+}
+
+// queryAtomsByType returns atoms matching the query whose type is in types.
+func (r *Recall) queryAtomsByType(ctx context.Context, query string, types []string) ([]MemoryAtom, error) {
+	scored, err := r.queryAtomsScored(ctx, query, false)
+	if err != nil {
+		return nil, err
+	}
+	filtered := filterScoredByType(scored, types)
+	out := make([]MemoryAtom, len(filtered))
+	for i, s := range filtered {
+		out[i] = s.atom
 	}
 	return out, nil
 }
 
 // queryAtoms returns ranked atoms for the query.
 func (r *Recall) queryAtoms(ctx context.Context, query string) ([]MemoryAtom, error) {
+	scored, err := r.queryAtomsScored(ctx, query, false)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]MemoryAtom, len(scored))
+	for i, s := range scored {
+		out[i] = s.atom
+	}
+	return out, nil
+}
+
+// queryAtomsScored returns ranked candidates with their composite score
+// (0.6*similarity + 0.4*retention, or the rerank-adjusted order). Atoms are
+// loaded from the store exactly once per query and served from an in-memory
+// map. skipRerank suppresses the paid LLM rerank for auxiliary (predicted
+// intent) queries.
+func (r *Recall) queryAtomsScored(ctx context.Context, query string, skipRerank bool) ([]scoredAtomMeta, error) {
 	k := r.cfg.SemanticSearchTopK
 	if k <= 0 {
 		k = DefaultConfig().SemanticSearchTopK
@@ -162,53 +194,45 @@ func (r *Recall) queryAtoms(ctx context.Context, query string) ([]MemoryAtom, er
 		return nil, nil
 	}
 
-	byID := make(map[string]MemoryAtom, len(candidates))
+	stored, err := r.store.List()
+	if err != nil {
+		return nil, fmt.Errorf("extended memory: recall list atoms: %w", err)
+	}
+	storedByID := make(map[string]MemoryAtom, len(stored))
+	for _, a := range stored {
+		storedByID[a.ID] = a
+	}
+
+	scored := make([]scoredAtomMeta, 0, len(candidates))
 	for _, c := range candidates {
-		atom, err := r.store.Get(c.ID)
-		if err != nil {
-			log.Printf("extended memory: recall failed to load atom %s: %v", c.ID, err)
+		if c.Score < minScore {
+			continue
+		}
+		atom, ok := storedByID[c.ID]
+		if !ok {
 			continue
 		}
 		if IsTaintedSourceClass(atom.SourceClass) {
 			continue
 		}
-		if c.Score < minScore {
-			continue
-		}
 		atom.Vector = nil // not needed here
-		byID[c.ID] = atom
-	}
-
-	scored := make([]scoredAtomMeta, 0, len(byID))
-	for _, atom := range byID {
-		score := RetentionScore(atom, r.cfg.DecayHalfLifeDays)
 		// Blend vector similarity with retention score.
-		for _, c := range candidates {
-			if c.ID == atom.ID {
-				score = 0.6*c.Score + 0.4*score
-				break
-			}
-		}
+		score := 0.6*c.Score + 0.4*RetentionScore(atom, r.cfg.DecayHalfLifeDays)
 		scored = append(scored, scoredAtomMeta{atom: atom, score: score})
 	}
 
-	if r.cfg.SemanticSearchRerank != nil && *r.cfg.SemanticSearchRerank && r.llm != nil && len(scored) > 1 {
+	if !skipRerank && r.cfg.SemanticSearchRerank != nil && *r.cfg.SemanticSearchRerank && r.llm != nil && len(scored) > 1 {
 		scored = r.rerank(ctx, query, scored)
 	}
 
-	sort.Slice(scored, func(i, j int) bool {
+	sort.SliceStable(scored, func(i, j int) bool {
 		return scored[i].score > scored[j].score
 	})
 
 	if len(scored) > k {
 		scored = scored[:k]
 	}
-
-	out := make([]MemoryAtom, len(scored))
-	for i, s := range scored {
-		out[i] = s.atom
-	}
-	return out, nil
+	return scored, nil
 }
 
 type scoredAtomMeta struct {

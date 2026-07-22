@@ -173,9 +173,9 @@ Extended Memory replaces episode-based recall with semantic search over atom vec
 2. Query the go-vector store for the top `semantic_search_top_k * semantic_search_overfetch` candidates.
 3. Drop tainted atoms and atoms below `semantic_search_min_score`.
 4. Compute a composite score: `0.6 * cosine_similarity + 0.4 * retention_score`.
-5. Optionally rerank the candidate set with the memory LLM.
-6. If `follow_up_anticipation_enabled` is true, generate predicted intents from the current message, recent messages, and the user model, and union their recall results with the literal-query results (including type-targeted recall for `convention`, `file`, and `error` atoms).
-7. Deduplicate, re-rank by retention score, and return the top-K atoms, bounded by `memory_budget_chars`.
+5. Optionally rerank the literal query's candidate set with the memory LLM (predicted-intent queries are not reranked).
+6. If `follow_up_anticipation_enabled` is true, generate predicted intents from the current message, recent messages, and the user model, and union their recall results with the literal-query results (including type-targeted recall for `convention`, `file`, and `error` atoms, filtered from the same candidate set).
+7. Deduplicate by atom ID (keeping the best composite score), re-rank by the composite score, and return the top-K atoms, bounded by `memory_budget_chars`.
 
 ### Ranking Formula
 
@@ -194,7 +194,7 @@ composite_score = 0.6 * cosine_similarity(query_vector, atom_vector)
                   + 0.4 * retention_score
 ```
 
-The final recall result is also bounded by `memory_budget_chars`. Tainted atoms are excluded regardless of score. When predictive intent recall is enabled, results from predicted intents are deduplicated with the literal-query results and then re-ranked by retention score before the top-K cut.
+The final recall result is also bounded by `memory_budget_chars`. Tainted atoms are excluded regardless of score. When predictive intent recall is enabled, results from predicted intents are deduplicated with the literal-query results (keeping the best composite score per atom ID) and then re-ranked by the composite score before the top-K cut.
 
 ## Predictive Recall
 

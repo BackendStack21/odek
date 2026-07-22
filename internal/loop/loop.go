@@ -559,6 +559,7 @@ func trimToSurvival(msgs []llm.Message) []llm.Message {
 // Run executes the loop for a given task and returns the final response.
 func (e *Engine) Run(ctx context.Context, task string) (string, error) {
 	e.memMsgIdx = -1
+	e.resetDedupKeys()
 	messages := []llm.Message{
 		{Role: "user", Content: task},
 	}
@@ -580,12 +581,24 @@ func (e *Engine) Run(ctx context.Context, task string) (string, error) {
 func (e *Engine) RunWithMessages(ctx context.Context, messages []llm.Message) (string, []llm.Message, error) {
 	// Reset token accounting for this run
 	e.memMsgIdx = -1
+	e.resetDedupKeys()
 	e.TotalInputTokens = 0
 	e.TotalOutputTokens = 0
 	e.TotalCacheCreationTokens = 0
 	e.TotalCacheReadTokens = 0
 	e.TotalCachedTokens = 0
 	return e.runLoop(ctx, messages)
+}
+
+// resetDedupKeys clears the per-message dedup keys so a repeated user
+// message in a later run (e.g. the REPL sending the same text twice)
+// re-triggers the memory hooks (user-message handler, skill loading,
+// episode recall, extended-memory recall).
+func (e *Engine) resetDedupKeys() {
+	e.lastUserMsg = ""
+	e.lastSkillMsg = ""
+	e.lastEpiMsg = ""
+	e.lastExtMsg = ""
 }
 
 // trustAllSetter is implemented by approvers (wsApprover, TelegramApprover)
@@ -661,8 +674,11 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		// Load relevant skills based on latest user input (once per message)
 		if e.skillLoader != nil {
 			if userMsg := lastUserMessage(messages); userMsg != "" && userMsg != e.lastSkillMsg {
+				// Assign the dedup key unconditionally — even when the loader
+				// finds no match — so a no-match doesn't re-run the (potentially
+				// slow) skill matcher on every remaining iteration of the turn.
+				e.lastSkillMsg = userMsg
 				if skillContext := e.skillLoader(userMsg); skillContext != "" {
-					e.lastSkillMsg = userMsg
 					// Inject skill context as a system message right before the user message.
 					// The skill manager gates NeedsReview/tainted skills, but we treat any
 					// loaded skill content as externally-sourced and wrap it with the
@@ -704,8 +720,11 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		// Only runs once per new user message (same dedup as skill loading).
 		if e.episodeCtx != nil {
 			if userMsg := lastUserMessage(messages); userMsg != "" && userMsg != e.lastEpiMsg {
+				// Assign the dedup key unconditionally — even when recall finds
+				// no match — so a no-match doesn't re-run the (potentially slow
+				// HTTP embed) episode search on every iteration of the turn.
+				e.lastEpiMsg = userMsg
 				if episodeContext := e.episodeCtx(userMsg); episodeContext != "" {
-					e.lastEpiMsg = userMsg
 					// Episode context comes from past session content and crosses the
 					// trust boundary; wrap it as untrusted before injecting.
 					wrappedContext := episodeContext

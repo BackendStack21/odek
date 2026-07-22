@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,6 +24,13 @@ const maxEpisodeSummaryBytes = 1024
 
 // episodeIndexFile is the index filename inside the episodes dir.
 const episodeIndexFile = "index.json"
+
+// errNoRelevantEpisodes is returned by a RankStrategy when it examined the
+// candidates and explicitly judged NONE of them relevant — as opposed to a
+// ranking failure (LLM error, unparseable output), which returns a real
+// error or a degraded fallback ranking. Callers must honor it by returning
+// an empty result instead of falling back to unranked candidates.
+var errNoRelevantEpisodes = errors.New("memory: ranker found no relevant episodes")
 
 // EpisodeMeta holds metadata for a single episode.
 type EpisodeMeta struct {
@@ -384,6 +392,10 @@ func (e *EpisodeStore) Search(query string, limit int) ([]EpisodeMeta, error) {
 	}
 
 	ranked, err := e.rankFn(query, filtered)
+	if errors.Is(err, errNoRelevantEpisodes) {
+		// Explicit "none relevant" — honor it with an empty result.
+		return nil, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("memory: search episodes: %w", err)
 	}
@@ -659,8 +671,8 @@ func trustRank(p EpisodeProvenance) int {
 
 // writeIndex serializes the index to disk atomically (temp + rename).
 // Caller must hold e.mu.
-// Invalidates the in-memory cache after a successful write so the next
-// ReadIndex call picks up the new data.
+// Invalidates the in-memory index cache and the Search query cache after a
+// successful write so the next ReadIndex/Search picks up the new data.
 func (e *EpisodeStore) writeIndex(idx []EpisodeMeta) error {
 	// Write atomically and durably (temp → fsync → rename → dir fsync).
 	idxPath := filepath.Join(e.dir, episodeIndexFile)
@@ -682,6 +694,14 @@ func (e *EpisodeStore) writeIndex(idx []EpisodeMeta) error {
 	e.muCache.Lock()
 	e.idxCache = sorted
 	e.muCache.Unlock()
+
+	// The corpus changed — a cached Search result (lastQuery/lastResult) would
+	// keep serving the pre-mutation ranking. Drop it so the next identical
+	// query re-reads and re-ranks.
+	e.muQuery.Lock()
+	e.lastQuery = ""
+	e.lastResult = nil
+	e.muQuery.Unlock()
 
 	return nil
 }
@@ -737,7 +757,10 @@ func NewLLMRanker(llm LLMClient) RankStrategy {
 
 		resp = strings.TrimSpace(resp)
 		if resp == "none" {
-			return nil, nil
+			// The ranker examined the candidates and explicitly judged none
+			// relevant — signal that distinctly from a rerank failure so the
+			// caller returns an empty result instead of unranked candidates.
+			return nil, errNoRelevantEpisodes
 		}
 
 		// Parse "3,0,1" or "3, 0, 1" into indices

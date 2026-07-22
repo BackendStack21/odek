@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/llm"
@@ -287,6 +288,33 @@ func TestAgent_Close_WithSandboxError(t *testing.T) {
 	err = agent.Close()
 	if err == nil {
 		t.Fatal("expected error from cleanup")
+	}
+}
+
+// TestAgent_Close_DrainsMemoryBackground verifies Close waits for tracked
+// background memory work (session-end extraction/consolidation) before
+// returning, so CLI exit does not silently lose it.
+func TestAgent_Close_DrainsMemoryBackground(t *testing.T) {
+	agent, err := New(Config{APIKey: "sk-test", MemoryDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mm := agent.Memory()
+	if mm == nil {
+		t.Fatal("expected a memory manager")
+	}
+	done := make(chan struct{})
+	mm.RunBackground(func() {
+		time.Sleep(50 * time.Millisecond)
+		close(done)
+	})
+	if err := agent.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	default:
+		t.Error("Close returned before background memory work finished")
 	}
 }
 
@@ -1218,9 +1246,9 @@ type ctxAwareTool struct {
 	ctx context.Context
 }
 
-func (c *ctxAwareTool) Name() string        { return "ctx_aware" }
-func (c *ctxAwareTool) Description() string { return "captures context" }
-func (c *ctxAwareTool) Schema() any         { return map[string]any{"type": "object"} }
+func (c *ctxAwareTool) Name() string                     { return "ctx_aware" }
+func (c *ctxAwareTool) Description() string              { return "captures context" }
+func (c *ctxAwareTool) Schema() any                      { return map[string]any{"type": "object"} }
 func (c *ctxAwareTool) Call(args string) (string, error) { return "ok", nil }
 func (c *ctxAwareTool) SetContext(ctx context.Context)   { c.ctx = ctx }
 
@@ -1251,9 +1279,9 @@ func TestToolAdapter_SetContextNonContextAware(t *testing.T) {
 // nonCtxAwareTool does not implement SetContext.
 type nonCtxAwareTool struct{}
 
-func (n *nonCtxAwareTool) Name() string        { return "non_ctx" }
-func (n *nonCtxAwareTool) Description() string { return "no SetContext" }
-func (n *nonCtxAwareTool) Schema() any         { return map[string]any{"type": "object"} }
+func (n *nonCtxAwareTool) Name() string                     { return "non_ctx" }
+func (n *nonCtxAwareTool) Description() string              { return "no SetContext" }
+func (n *nonCtxAwareTool) Schema() any                      { return map[string]any{"type": "object"} }
 func (n *nonCtxAwareTool) Call(args string) (string, error) { return "ok", nil }
 
 // ── Guard integration tests ────────────────────────────────────────────

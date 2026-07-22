@@ -280,3 +280,28 @@ func TestHTTPEmbedderCacheResetWhenFull(t *testing.T) {
 		t.Errorf("cache size = %d, want ≤ %d", size, maxEmbedCacheEntries)
 	}
 }
+
+// TestSharedFactory: the Shared factory returns ONE cache-warm instance for
+// stateless (HTTP) backends so consumers like episode dedup and the vector
+// index rebuild share the text→vector cache, but a FRESH instance per call
+// for corpus-fitted (RandomProjections) backends whose Fit state is per-corpus.
+func TestSharedFactory(t *testing.T) {
+	rpFactory := Shared(nil, 0)
+	if rpFactory() == rpFactory() {
+		t.Error("rp backend: Shared must return a fresh instance per call (per-corpus Fit state)")
+	}
+
+	srv, _, _ := mockEmbedServer(t)
+	httpFactory := Shared(&Config{Provider: "http", BaseURL: srv.URL + "/v1", Model: "mock-embed"}, 0)
+	first, second := httpFactory(), httpFactory()
+	if first != second {
+		t.Fatal("http backend: Shared must return the same cache-warm instance")
+	}
+	// Sanity: the shared instance works and caches across Fit calls.
+	if err := first.Fit([]string{"hello world"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.Embed("hello world"); err != nil {
+		t.Fatal(err)
+	}
+}

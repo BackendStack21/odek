@@ -390,3 +390,61 @@ func TestFactStore_ConcurrentAdd_NoDataLoss(t *testing.T) {
 		seen[e] = true
 	}
 }
+
+// TestFactStore_ReplaceAt covers the index-based replace used by the
+// merge-on-write path: it must succeed where a substring Replace fails
+// because several entries share a long common prefix.
+func TestFactStore_ReplaceAt(t *testing.T) {
+	dir := t.TempDir()
+	fs := NewFactStore(dir, 5000, 5000)
+
+	a := "prefix-shared-0123456789abcdef first fact"
+	b := "prefix-shared-0123456789abcdef second fact"
+	if err := fs.Add("user", a); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Add("user", b); err != nil {
+		t.Fatal(err)
+	}
+
+	// The substring form is ambiguous here — both entries share the prefix.
+	if err := fs.Replace("user", "prefix-shared-0123456789", "x"); err == nil {
+		t.Fatal("substring Replace should fail on multiple matches")
+	}
+
+	// Index-based replace targets exactly one entry.
+	if err := fs.ReplaceAt("user", 1, "replaced second"); err != nil {
+		t.Fatalf("ReplaceAt: %v", err)
+	}
+	entries, err := fs.Entries("user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 || entries[0] != a || entries[1] != "replaced second" {
+		t.Errorf("entries = %v, want [%q %q]", entries, a, "replaced second")
+	}
+
+	// Out-of-range and empty-content guards.
+	if err := fs.ReplaceAt("user", 5, "x"); err == nil {
+		t.Error("ReplaceAt out of range should fail")
+	}
+	if err := fs.ReplaceAt("user", 0, "  "); err == nil {
+		t.Error("ReplaceAt with empty content should fail")
+	}
+	if err := fs.ReplaceAt("bogus", 0, "x"); err == nil {
+		t.Error("ReplaceAt with invalid target should fail")
+	}
+}
+
+// TestFactStore_ReplaceAtCapExceeded verifies ReplaceAt enforces the same
+// character cap as Replace.
+func TestFactStore_ReplaceAtCapExceeded(t *testing.T) {
+	dir := t.TempDir()
+	fs := NewFactStore(dir, 50, 50)
+	if err := fs.Add("user", "short"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.ReplaceAt("user", 0, strings.Repeat("x", 100)); err == nil {
+		t.Error("ReplaceAt beyond the cap should fail")
+	}
+}

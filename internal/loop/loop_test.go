@@ -750,6 +750,132 @@ func TestEngine_SkillLoader_CalledOncePerInput(t *testing.T) {
 	}
 }
 
+// twoIterationServer returns an httptest server whose first response requests
+// a tool call and whose second response is the final answer, forcing the loop
+// through exactly two iterations with the same user message.
+func twoIterationServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount%2 == 1 {
+			// Odd iteration: request a tool call
+			fmt.Fprint(w, `{
+				"choices":[{
+					"message":{
+						"content":"Let me think.",
+						"tool_calls":[{
+							"id":"call_1",
+							"function":{
+								"name":"echo",
+								"arguments":"{}"
+							}
+						}]
+					}
+				}]
+			}`)
+		} else {
+			// Even iteration: final answer
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"done"}}]}`)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func TestEngine_SkillLoader_NoMatchCalledOncePerInput(t *testing.T) {
+	// Regression: when the skill loader finds no match it must still record the
+	// dedup key, otherwise the matcher re-runs on every remaining iteration of
+	// the turn (each a potentially slow lookup).
+	skillLoadCount := 0
+	skillLoader := func(userInput string) string {
+		skillLoadCount++
+		return "" // no match
+	}
+
+	server := twoIterationServer(t)
+	echoTool := &fakeTool{name: "echo", description: "echo", output: "ok"}
+	registry := tool.NewRegistry([]tool.Tool{echoTool})
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	engine := New(client, registry, 10, "", nil, 0)
+	engine.SetSkillLoader(skillLoader)
+
+	if _, err := engine.Run(context.Background(), "do the task"); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if skillLoadCount != 1 {
+		t.Errorf("SkillLoader called %d times on a no-match, want 1 (dedup key must be set even when empty)", skillLoadCount)
+	}
+}
+
+func TestEngine_EpisodeCtx_NoMatchCalledOncePerInput(t *testing.T) {
+	// Regression: same dedup contract as the skill loader — a no-match episode
+	// recall must not re-run the (potentially slow) search every iteration.
+	episodeSearchCount := 0
+	episodeCtx := func(userInput string) string {
+		episodeSearchCount++
+		return "" // no match
+	}
+
+	server := twoIterationServer(t)
+	echoTool := &fakeTool{name: "echo", description: "echo", output: "ok"}
+	registry := tool.NewRegistry([]tool.Tool{echoTool})
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	engine := New(client, registry, 10, "", nil, 0)
+	engine.SetEpisodeContextFunc(episodeCtx)
+
+	if _, err := engine.Run(context.Background(), "do the task"); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if episodeSearchCount != 1 {
+		t.Errorf("episodeCtx called %d times on a no-match, want 1 (dedup key must be set even when empty)", episodeSearchCount)
+	}
+}
+
+func TestEngine_DedupKeysResetBetweenRuns(t *testing.T) {
+	// Regression: Run/RunWithMessages must reset the per-message dedup keys, so
+	// a REPL user sending the same text twice still gets the memory hooks
+	// (skill loading, episode recall, user-message handler) the second time.
+	skillLoadCount := 0
+	skillLoader := func(userInput string) string {
+		skillLoadCount++
+		return "skill ctx"
+	}
+	episodeSearchCount := 0
+	episodeCtx := func(userInput string) string {
+		episodeSearchCount++
+		return "episode ctx"
+	}
+	userMsgCount := 0
+	var userMsgHandler UserMessageHandler = func(ctx context.Context, msg string) {
+		userMsgCount++
+	}
+
+	server := twoIterationServer(t)
+	echoTool := &fakeTool{name: "echo", description: "echo", output: "ok"}
+	registry := tool.NewRegistry([]tool.Tool{echoTool})
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	engine := New(client, registry, 10, "", nil, 0)
+	engine.SetSkillLoader(skillLoader)
+	engine.SetEpisodeContextFunc(episodeCtx)
+	engine.SetUserMessageHandler(userMsgHandler)
+
+	for i := 0; i < 2; i++ {
+		if _, err := engine.Run(context.Background(), "same task twice"); err != nil {
+			t.Fatalf("Run() error: %v", err)
+		}
+	}
+	if skillLoadCount != 2 {
+		t.Errorf("SkillLoader called %d times across 2 identical runs, want 2", skillLoadCount)
+	}
+	if episodeSearchCount != 2 {
+		t.Errorf("episodeCtx called %d times across 2 identical runs, want 2", episodeSearchCount)
+	}
+	if userMsgCount != 2 {
+		t.Errorf("userMsgHandler called %d times across 2 identical runs, want 2", userMsgCount)
+	}
+}
+
 func TestEngine_ToolEventHandler(t *testing.T) {
 	// Verify that ToolEventHandler fires tool_call before and tool_result
 	// after each tool invocation, and does so live (during the loop).

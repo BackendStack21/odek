@@ -267,8 +267,13 @@ func (u *UserModel) Infer(ctx context.Context) error {
 	if resp == "" || resp == "{}" {
 		return nil
 	}
+	jsonResp, ok := extractJSON(resp)
+	if !ok {
+		log.Printf("extended memory: user-state inference parse failed: no JSON in response")
+		return fmt.Errorf("user model: parse diff: no JSON in response")
+	}
 	var diff userStateDiff
-	if err := json.Unmarshal([]byte(resp), &diff); err != nil {
+	if err := json.Unmarshal([]byte(jsonResp), &diff); err != nil {
 		log.Printf("extended memory: user-state inference parse failed: %v", err)
 		return fmt.Errorf("user model: parse diff: %w", err)
 	}
@@ -293,6 +298,10 @@ func (u *UserModel) applyDiff(ctx context.Context, diff userStateDiff) error {
 	if maxPending <= 0 {
 		maxPending = DefaultConfig().UserStateMaxPending
 	}
+	existing := make(map[string]bool, len(u.state.PendingReview))
+	for _, p := range u.state.PendingReview {
+		existing[p.Field+"\x00"+p.Value] = true
+	}
 	for _, p := range diff.Pending {
 		if p.Field == "" || p.Value == "" {
 			continue
@@ -301,6 +310,13 @@ func (u *UserModel) applyDiff(ctx context.Context, diff userStateDiff) error {
 			log.Printf("extended memory: rejected pending review value: %v", p.Value)
 			continue
 		}
+		// Dedup by (field, value): repeated inferences of the same fact must
+		// not pile up duplicate review entries.
+		key := p.Field + "\x00" + p.Value
+		if existing[key] {
+			continue
+		}
+		existing[key] = true
 		if p.ID == "" {
 			id, err := generateAtomID()
 			if err != nil {

@@ -292,9 +292,11 @@ func replCmd(args []string) error {
 	}
 
 	// Session end — extract episode if enough turns.
-	// Run asynchronously so episode extraction does not delay process exit.
+	// Run in the background (tracked by the memory manager's WaitGroup) so
+	// episode extraction does not delay REPL exit; the deferred Agent.Close
+	// drains it via WaitForBackground so it is not silently lost.
 	if mm := agent.Memory(); mm != nil {
-		go func() {
+		mm.RunBackground(func() {
 			messages := sess.GetMessages()
 			msgStrs := make([]string, 0, len(messages))
 			for _, m := range messages {
@@ -302,7 +304,7 @@ func replCmd(args []string) error {
 			}
 			prov := memory.DeriveProvenance(messages)
 			mm.OnSessionEndWithProvenance(sess.ID, sess.Turns, msgStrs, prov)
-		}()
+		})
 	}
 
 	return nil

@@ -49,8 +49,9 @@ type ExtendedMemory struct {
 	recentUserMessages []string
 	recentMu           sync.Mutex
 
-	inferenceMu sync.Mutex
-	closed      bool
+	inferenceMu  sync.Mutex
+	closed       bool
+	inferRunning bool
 }
 
 const recentUserMessageLimit = 10
@@ -134,87 +135,158 @@ func (em *ExtendedMemory) SetSessionContext(sessionID, project string) {
 
 // AddAtom manually adds an atom. Manual adds are treated as user-approved.
 func (em *ExtendedMemory) AddAtom(ctx context.Context, atom MemoryAtom) error {
-	return em.addAtom(ctx, atom, false)
+	return em.addAtoms(ctx, []MemoryAtom{atom}, false)
 }
 
-// addAtom is the persistence path for all atoms. The guard scan runs before
+// addAtoms is the persistence path for all atoms. The guard scan runs before
 // anything is stored, regardless of trust boundary. A scan rejection does NOT
 // drop the atom: it is quarantined with a scan_rejected reason so a human can
 // review guard false positives (odek memory extended quarantine/promote)
 // instead of silently losing memories. skipScan is reserved for PromoteAtom,
 // where a human has explicitly approved the atom after review — without the
 // bypass, a guard-rejected atom could never be promoted.
-func (em *ExtendedMemory) addAtom(ctx context.Context, atom MemoryAtom, skipScan bool) error {
+//
+// The vector index is marked dirty once for the whole batch and association
+// building runs only after every atom is stored, so a turn that extracts M
+// atoms costs a single index rebuild instead of M.
+func (em *ExtendedMemory) addAtoms(ctx context.Context, atoms []MemoryAtom, skipScan bool) error {
 	if em == nil || !em.Enabled() {
 		return fmt.Errorf("extended memory: disabled")
 	}
-	NormalizeAtom(&atom)
-	if atom.SourceClass == SourceUserSaid {
-		// Manual addition through the tool/API is explicitly approved.
-		atom.SourceClass = SourceUserApproved
-	}
-	if atom.ID == "" {
-		id, err := generateAtomID()
-		if err != nil {
-			return fmt.Errorf("extended memory: generate id: %w", err)
+	var firstErr error
+	stored := make([]MemoryAtom, 0, len(atoms))
+	for _, atom := range atoms {
+		NormalizeAtom(&atom)
+		if atom.SourceClass == SourceUserSaid {
+			// Manual addition through the tool/API is explicitly approved.
+			atom.SourceClass = SourceUserApproved
 		}
-		atom.ID = id
-	}
-
-	em.mu.RLock()
-	atom.Context.SessionID = em.session
-	atom.Context.Project = em.project
-	em.mu.RUnlock()
-
-	// Security scan before persistence, regardless of trust boundary.
-	if !skipScan {
-		if err := em.scanContent(ctx, atom.Text); err != nil {
-			reason := "scan_rejected: " + err.Error()
-			if len(reason) > 200 {
-				reason = reason[:200]
+		if atom.ID == "" {
+			id, err := generateAtomID()
+			if err != nil {
+				return fmt.Errorf("extended memory: generate id: %w", err)
 			}
-			if qerr := em.quarantine.StoreWithReason(atom, reason); qerr != nil {
-				log.Printf("extended memory: quarantine store failed: %v", qerr)
-				return qerr
+			atom.ID = id
+		}
+
+		em.mu.RLock()
+		atom.Context.SessionID = em.session
+		atom.Context.Project = em.project
+		em.mu.RUnlock()
+
+		// Security scan before persistence, regardless of trust boundary.
+		if !skipScan {
+			if err := em.scanContent(ctx, atom.Text); err != nil {
+				reason := "scan_rejected: " + err.Error()
+				if len(reason) > 200 {
+					reason = reason[:200]
+				}
+				// Quarantine counts toward max_size_mb, so the cap must be
+				// enforced on this path too, or a rejection storm can wedge
+				// the store (the evictor only evicts trusted atoms).
+				if cerr := em.enforceCap(ctx, projectedAtomSize(atom)); cerr != nil {
+					log.Printf("extended memory: cap enforcement failed: %v", cerr)
+					if firstErr == nil {
+						firstErr = cerr
+					}
+					continue
+				}
+				if qerr := em.quarantine.StoreWithReason(atom, reason); qerr != nil {
+					log.Printf("extended memory: quarantine store failed: %v", qerr)
+					if firstErr == nil {
+						firstErr = qerr
+					}
+					continue
+				}
+				log.Printf("extended memory: atom quarantined after guard rejection: %v", err)
+				continue
 			}
-			log.Printf("extended memory: atom quarantined after guard rejection: %v", err)
-			return nil
 		}
-	}
 
-	incoming := projectedAtomSize(atom)
-	if err := em.enforceCap(ctx, incoming); err != nil {
-		log.Printf("extended memory: cap enforcement failed: %v", err)
-		return err
-	}
-
-	// Tainted atoms go to quarantine instead of the live store.
-	if IsTaintedSourceClass(atom.SourceClass) {
-		if err := em.quarantine.Store(atom); err != nil {
-			log.Printf("extended memory: quarantine store failed: %v", err)
-			return err
+		incoming := projectedAtomSize(atom)
+		if err := em.enforceCap(ctx, incoming); err != nil {
+			log.Printf("extended memory: cap enforcement failed: %v", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
-		return nil
-	}
 
-	if err := em.ensureDir(); err != nil {
-		return err
-	}
-	if err := em.store.Add(atom, em.cfg.AtomMaxChars); err != nil {
-		log.Printf("extended memory: atom store add failed: %v", err)
-		return err
-	}
-	em.userModel.Update(atom)
-	if em.cfg.AssociationsEnabled != nil && *em.cfg.AssociationsEnabled {
-		em.buildAssociations(atom)
-		atom.Context.RelatedAtomIDs = em.assoc.Related(atom.ID)
+		// Tainted atoms go to quarantine instead of the live store.
+		if IsTaintedSourceClass(atom.SourceClass) {
+			if err := em.quarantine.Store(atom); err != nil {
+				log.Printf("extended memory: quarantine store failed: %v", err)
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
+			continue
+		}
+
+		if err := em.ensureDir(); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		// Exact-match dedup: a re-stated fact refreshes the existing live atom
+		// (new CreatedAt, higher confidence, original ID) instead of
+		// appending a duplicate with a fresh random ID.
+		if existing, ok, err := em.findDuplicateAtom(atom); err != nil {
+			log.Printf("extended memory: dedup lookup failed: %v", err)
+		} else if ok {
+			existing.CreatedAt = atom.CreatedAt
+			if atom.Confidence > existing.Confidence {
+				existing.Confidence = atom.Confidence
+			}
+			atom = existing
+		}
 		if err := em.store.Add(atom, em.cfg.AtomMaxChars); err != nil {
-			log.Printf("extended memory: association context update failed: %v", err)
+			log.Printf("extended memory: atom store add failed: %v", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		em.userModel.Update(atom)
+		stored = append(stored, atom)
+	}
+	if len(stored) == 0 {
+		return firstErr
+	}
+
+	// One index invalidation for the whole batch: the first association
+	// search below triggers a single rebuild that already sees every new
+	// atom, and subsequent searches reuse the fresh index.
+	em.index.markDirty()
+	if em.cfg.AssociationsEnabled != nil && *em.cfg.AssociationsEnabled {
+		for _, atom := range stored {
+			em.buildAssociations(atom)
+			atom.Context.RelatedAtomIDs = em.assoc.Related(atom.ID)
+			// Metadata-only update: must NOT re-dirty the index.
+			if err := em.store.Add(atom, em.cfg.AtomMaxChars); err != nil {
+				log.Printf("extended memory: association context update failed: %v", err)
+			}
 		}
 		_ = em.assoc.Persist()
 	}
-	em.index.markDirty()
-	return nil
+	return firstErr
+}
+
+// findDuplicateAtom returns the live atom with the same normalized text as
+// atom, if any. Exact normalized match only — no similarity search.
+func (em *ExtendedMemory) findDuplicateAtom(atom MemoryAtom) (MemoryAtom, bool, error) {
+	atoms, err := em.store.List()
+	if err != nil {
+		return MemoryAtom{}, false, err
+	}
+	want := normalizeAtomText(atom.Text)
+	for _, a := range atoms {
+		if normalizeAtomText(a.Text) == want {
+			return a, true, nil
+		}
+	}
+	return MemoryAtom{}, false, nil
 }
 
 // UserStateStyle returns the inferred style state for style mirroring, or nil
@@ -239,7 +311,8 @@ func projectedAtomSize(atom MemoryAtom) int64 {
 }
 
 // AddAtoms adds multiple atoms in one call. It batches embeddings indirectly
-// by marking the index dirty once at the end.
+// by marking the index dirty once at the end. Per-atom failures are logged
+// and tolerated: the remaining atoms are still stored.
 func (em *ExtendedMemory) AddAtoms(ctx context.Context, atoms []MemoryAtom) error {
 	if em == nil || !em.Enabled() {
 		return fmt.Errorf("extended memory: disabled")
@@ -247,12 +320,9 @@ func (em *ExtendedMemory) AddAtoms(ctx context.Context, atoms []MemoryAtom) erro
 	if len(atoms) == 0 {
 		return nil
 	}
-	for _, atom := range atoms {
-		if err := em.AddAtom(ctx, atom); err != nil {
-			log.Printf("extended memory: batch add failed for atom %s: %v", atom.ID, err)
-		}
+	if err := em.addAtoms(ctx, atoms, false); err != nil {
+		log.Printf("extended memory: batch add incomplete: %v", err)
 	}
-	em.index.markDirty()
 	return nil
 }
 
@@ -323,16 +393,19 @@ func (em *ExtendedMemory) inferUserState(ctx context.Context) {
 }
 
 // triggerBackgroundInference starts a goroutine to infer the user model if
-// the turn interval is reached or the focus shifted.
+// the turn interval is reached or the focus shifted. Only one inference runs
+// at a time: concurrent triggers are coalesced so overlapping Infer runs
+// cannot pile up duplicate pending-review entries.
 func (em *ExtendedMemory) triggerBackgroundInference() {
 	if em == nil || !em.Enabled() || em.userModel == nil || !em.userModel.Enabled() {
 		return
 	}
 	em.inferenceMu.Lock()
-	if em.closed {
+	if em.closed || em.inferRunning {
 		em.inferenceMu.Unlock()
 		return
 	}
+	em.inferRunning = true
 	em.pendingWg.Add(1)
 	em.inferenceMu.Unlock()
 
@@ -340,6 +413,9 @@ func (em *ExtendedMemory) triggerBackgroundInference() {
 	go func() {
 		defer func() {
 			cancel()
+			em.inferenceMu.Lock()
+			em.inferRunning = false
+			em.inferenceMu.Unlock()
 			em.pendingWg.Done()
 		}()
 		em.inferUserState(ctx)
@@ -401,9 +477,9 @@ func (em *ExtendedMemory) ReturnAfterBreak(ctx context.Context) string {
 		log.Printf("extended memory: return after break list failed: %v", err)
 		return ""
 	}
-	// Use the most recent trusted atoms (up to 5).
+	// Use the most recent trusted atoms (up to 5). List returns newest first.
 	var recent []MemoryAtom
-	for i := len(atoms) - 1; i >= 0 && len(recent) < 5; i-- {
+	for i := 0; i < len(atoms) && len(recent) < 5; i++ {
 		if IsTaintedSourceClass(atoms[i].SourceClass) {
 			continue
 		}
@@ -450,29 +526,10 @@ func (em *ExtendedMemory) AnaphoraResolve(ctx context.Context, msg string) (stri
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	atoms, err := em.recall.queryAtoms(ctx, msg)
-	if err != nil || len(atoms) == 0 {
-		return msg, false
-	}
-
-	// Match the top returned atom to its vector similarity score.
-	k := em.cfg.SemanticSearchTopK
-	if k <= 0 {
-		k = DefaultConfig().SemanticSearchTopK
-	}
-	overfetch := em.cfg.SemanticSearchOverfetch
-	if overfetch <= 0 {
-		overfetch = DefaultConfig().SemanticSearchOverfetch
-	}
-	candidates := em.index.search(msg, k*overfetch)
-	var topScore float32
-	for _, c := range candidates {
-		if c.ID == atoms[0].ID {
-			topScore = c.Score
-			break
-		}
-	}
-	if topScore < em.cfg.SemanticSearchMinScore {
+	// queryAtomsScored already filters by min score and ranks by the blended
+	// similarity/retention score, so the top candidate is the antecedent.
+	scored, err := em.recall.queryAtomsScored(ctx, msg, false)
+	if err != nil || len(scored) == 0 {
 		return msg, false
 	}
 
@@ -480,7 +537,7 @@ func (em *ExtendedMemory) AnaphoraResolve(ctx context.Context, msg string) (stri
 	if loc == nil {
 		return msg, false
 	}
-	resolved := msg[:loc[0]] + atoms[0].Text + msg[loc[1]:]
+	resolved := msg[:loc[0]] + scored[0].atom.Text + msg[loc[1]:]
 	if err := em.scanContent(context.Background(), resolved); err != nil {
 		log.Printf("extended memory: anaphora resolution rejected by scan: %v", err)
 		return msg, false
@@ -505,13 +562,16 @@ func (em *ExtendedMemory) SearchAtoms(ctx context.Context, query string) ([]Memo
 }
 
 // ForgetAtom removes an atom by ID from both the live store and quarantine.
+// An atom that exists in only one of them is still reported as forgotten; an
+// error is returned only when the ID is found in neither.
 func (em *ExtendedMemory) ForgetAtom(id string) error {
 	if em == nil || !em.Enabled() {
 		return fmt.Errorf("extended memory: disabled")
 	}
-	if err := em.store.Remove(id); err != nil {
-		_ = em.quarantine.Forget(id)
-		return err
+	storeErr := em.store.Remove(id)
+	quarantineErr := em.quarantine.Forget(id)
+	if storeErr != nil && quarantineErr != nil {
+		return storeErr
 	}
 	em.assoc.RemoveAtom(id)
 	_ = em.assoc.Persist()
@@ -532,7 +592,7 @@ func (em *ExtendedMemory) PromoteAtom(id string) error {
 		return err
 	}
 	atom.SourceClass = SourceUserApproved
-	if err := em.addAtom(context.Background(), atom, true); err != nil {
+	if err := em.addAtoms(context.Background(), []MemoryAtom{atom}, true); err != nil {
 		return err
 	}
 	_ = em.quarantine.Forget(id)
@@ -614,9 +674,11 @@ func (em *ExtendedMemory) OnUserMessage(ctx AtomContext, msg string) {
 		log.Printf("extended memory: user message extraction failed: %v", err)
 		return
 	}
-	for _, atom := range atoms {
-		atom.Context = ctx
-		_ = em.AddAtom(c, atom)
+	for i := range atoms {
+		atoms[i].Context = ctx
+	}
+	if err := em.addAtoms(c, atoms, false); err != nil {
+		log.Printf("extended memory: batch atom add failed: %v", err)
 	}
 
 	if triggerInference {
@@ -678,9 +740,11 @@ func (em *ExtendedMemory) enforceCap(ctx context.Context, newBytes int64) error 
 	}
 	for _, id := range ids {
 		_ = em.store.Remove(id)
-		em.index.markDirty()
+		em.assoc.RemoveAtom(id)
 	}
 	if len(ids) > 0 {
+		em.index.markDirty()
+		_ = em.assoc.Persist()
 		log.Printf("extended memory: evicted %d atom(s) to stay under %s cap", len(ids), sizeLabel(maxBytes))
 		// Trigger background compaction if we removed more than 10%.
 		if float64(len(ids)) > 0.1*float64(before) {

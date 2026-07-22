@@ -93,10 +93,11 @@ func (q *Quarantine) StoreWithReason(atom MemoryAtom, reason string) error {
 	return q.saveLocked(entries)
 }
 
-// List returns all quarantined atoms (newest first).
+// List returns all quarantined atoms (newest first). The full write lock is
+// required because loadLocked may evict expired entries and rewrite the file.
 func (q *Quarantine) List() ([]MemoryAtom, error) {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
+	q.mu.Lock()
+	defer q.mu.Unlock()
 
 	entries, err := q.loadLocked()
 	if err != nil {
@@ -113,10 +114,11 @@ func (q *Quarantine) List() ([]MemoryAtom, error) {
 }
 
 // ListEntries returns all quarantined atoms with their review metadata
-// (quarantine time and reason), newest first.
+// (quarantine time and reason), newest first. The full write lock is required
+// because loadLocked may evict expired entries and rewrite the file.
 func (q *Quarantine) ListEntries() ([]QuarantinedAtom, error) {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
+	q.mu.Lock()
+	defer q.mu.Unlock()
 
 	entries, err := q.loadLocked()
 	if err != nil {
