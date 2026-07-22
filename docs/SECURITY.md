@@ -146,7 +146,7 @@ When a classification is set to `prompt`, an approver pauses the agent until the
 
 Taint is decided per tool call by `memory.ToolCallTaints` (the single source of truth, shared with skills):
 
-- **Always untrusted:** `browser`, `http_batch`, `transcribe` (network / opaque-audio content), `vision` (opaque-image/video content), `session_search` (recall of prior-session transcripts, which may carry earlier-injected text), and any MCP tool (`server__tool`).
+- **Always untrusted:** `browser`, `http_batch`, `transcribe` (network / opaque-audio content), `vision` (opaque-image/video content), `web_search` (search-engine results), `delegate_tasks` (sub-agent output), `session_search` (recall of prior-session transcripts, which may carry earlier-injected text), and any MCP tool (`server__tool`). `shell` is deliberately excluded even though its output can carry untrusted bytes — it is the agent's primary work tool and tainting it would taint nearly every session.
 - **Path-reading tools** (`read_file`, `search_files`, `multi_grep`, `batch_read`, `json_query`, `head_tail`, `count_lines`, `checksum`, `word_count`, `sort`, `tr`, `diff`, `file_info`, `glob`, `tree`, `base64`) taint when **any** of their path arguments resolves **outside the workspace trust zone** — the workspace dir, the sandbox `/workspace` mount, or `~/.odek`. Reads confined to the workspace stay trusted, so ordinary coding sessions remain recallable; reads of anything else (system/credential paths, home files, sibling repos) taint. The check is a workspace-containment allowlist rather than a sensitive-path denylist, and it resolves symlinks (so e.g. `/etc` → `/private/etc` on macOS cannot disguise an escape). A malformed argument string is treated conservatively as untrusted. When adding a new file-reading tool, add it to `PathReadingTools`.
 
 **Auto-extracted durable facts are opt-in and trusted-only.** At session end odek
@@ -184,7 +184,11 @@ Promotion is **CLI-only and human-gated** — it is deliberately *not* exposed a
 
 ### 6. Skill provenance gate
 
-`internal/skills` carries the same provenance model and shares the exact taint decision (`memory.ToolCallTaints`). Skills auto-saved from sessions that crossed the trust boundary — `browser` / `http_batch` / `transcribe` / `vision` / any MCP tool, or a `read_file` / `search_files` / `multi_grep` of a **sensitive** path — are tagged with `Provenance.Untrusted=true` and `NeedsReview=true`. The skill loader pins those skills to the Lazy set regardless of their `auto_load` flag.
+`internal/skills` carries the same provenance model and shares the exact taint decision (`memory.ToolCallTaints`). Skills auto-saved from sessions that crossed the trust boundary — `browser` / `http_batch` / `transcribe` / `vision` / `web_search` / `delegate_tasks` / any MCP tool, or a `read_file` / `search_files` / `multi_grep` of a **sensitive** path — are tagged with `Provenance.Untrusted=true` and `NeedsReview=true`. The skill loader pins those skills to the Lazy set regardless of their `auto_load` flag, and `NeedsReview` skills are additionally excluded from the lazy trigger matchers, so a flagged or tainted skill cannot be injected into context on a single keyword match — it stays visible in listings until promoted.
+
+Skills scanned from the project-local `./.odek/skills/` directory are distrusted the same way `./odek.json` is: a cloned repository can ship arbitrary `SKILL.md` files, so they are forced to `NeedsReview` (with `"project"` recorded in `Sources`) even when they declare `auto_load: true`. Operator-controlled locations (`~/.odek/skills`, configured extra dirs) are unaffected.
+
+All skill-body scans — load time, `skill_save` / `skill_patch`, and auto-save suggestions — go through `guard.ScanContentWithScope`, so the fast local rule scan runs even when the `skills` guard scope or the guard itself is disabled; the optional sidecar second opinion only runs when the scope is enabled (it is on by default, `guard.scan.skills: true`).
 
 Skills created or edited through the agent-facing `skill_save` and `skill_patch` tools are also marked `Untrusted` with `NeedsReview=true`, and `skill_patch` refuses to edit the YAML frontmatter. This prevents an injected agent from silently creating an auto-loading skill or from patching `auto_load` / `needs_review` flags to bypass the promotion gate.
 
@@ -453,7 +457,7 @@ Legacy sessions created before this defense have no `AuthToken`; the first acces
 
 ### 25. Skill and episode context wrapped as untrusted
 
-Skill content and retrieved session episodes are externally-sourced data that cross the trust boundary. Before injecting them as `system` messages, the loop passes them through the same nonce'd `<untrusted_content_*>` wrapper used for tool output. The skill manager already gates `NeedsReview`/tainted skills, and the memory manager filters tainted episodes from search, but the wrapper provides defense-in-depth so a compromised skill or episode cannot pose as trusted system instructions.
+Skill content and retrieved session episodes are externally-sourced data that cross the trust boundary. Before injecting them as `system` messages, the auto-load path (`odek.go`) and the lazy-match path (the loop) pass them through the same nonce'd `<untrusted_content_*>` wrapper used for tool output; the `skill_load` tool output is wrapped the same way at registration. The skill manager already gates `NeedsReview`/tainted skills, and the memory manager filters tainted episodes from search, but the wrapper provides defense-in-depth so a compromised skill or episode cannot pose as trusted system instructions.
 
 ### 26. Session vector index rebuild hardening
 

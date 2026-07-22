@@ -1673,7 +1673,10 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 
 	if sm != nil {
 		tools = append(tools,
-			&skills.SkillLoadTool{Manager: sm},
+			// skill_load returns skill bodies, which are externally-sourced
+			// content (project dirs, prior auto-saves). Wrap the output as
+			// untrusted so a poisoned skill cannot pose as instructions.
+			&untrustedToolWrapper{inner: &skills.SkillLoadTool{Manager: sm}, source: "skill_load"},
 			&skills.SkillListTool{Manager: sm},
 			&skills.SkillSaveTool{Manager: sm},
 			&skills.SkillPatchTool{Manager: sm},

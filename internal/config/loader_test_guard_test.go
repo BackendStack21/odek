@@ -32,8 +32,8 @@ func TestLoadConfig_GuardDefaults(t *testing.T) {
 	if !guard.IsEnabled(cfg.Guard.Scan, "mcp_descriptions") {
 		t.Error("Guard.Scan.MCPDescriptions should default to enabled")
 	}
-	if guard.IsEnabled(cfg.Guard.Scan, "skills") {
-		t.Error("Guard.Scan.Skills should default to disabled")
+	if !guard.IsEnabled(cfg.Guard.Scan, "skills") {
+		t.Error("Guard.Scan.Skills should default to enabled")
 	}
 }
 

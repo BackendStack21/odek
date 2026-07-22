@@ -176,7 +176,7 @@ The guard is **off by default** in the sense that no sidecar is needed; the loca
       "memory": true,
       "system_prompt": true,
       "mcp_descriptions": true,
-      "skills": false,
+      "skills": true,
       "tool_outputs": false,
       "telegram": false
     }
@@ -203,11 +203,11 @@ The guard is **off by default** in the sense that no sidecar is needed; the loca
 | `memory` | `true` | `memory` add/replace/consolidate, legacy facts, auto-extracted facts, session buffer, and Extended Memory atom extraction/addition/recall/user-model inference |
 | `system_prompt` | `true` | `~/.odek/IDENTITY.md`, explicit `--system` / `ODEK_SYSTEM`, and project-level `AGENTS.md` |
 | `mcp_descriptions` | `true` | MCP server tool descriptions supplied via `tools/list` |
-| `skills` | `false` | Skill bodies loaded at startup; skill save/patch suggestions |
+| `skills` | `true` | Skill bodies loaded at startup; skill save/patch suggestions |
 | `tool_outputs` | `false` | External tool outputs wrapped as `<untrusted_content_*>` (warning-only scan) |
 | `telegram` | `false` | Telegram photo captions and voice transcripts before injection |
 
-When a scope is not explicitly set, the core surfaces (`memory`, `system_prompt`, `mcp_descriptions`) default to `true`; the optional expansion surfaces default to `false`.
+When a scope is not explicitly set, the core surfaces (`memory`, `system_prompt`, `mcp_descriptions`, `skills`) default to `true`; the optional expansion surfaces default to `false`. Regardless of scope, the fast local rule scan always runs on every guarded surface — the scope only toggles the sidecar second opinion.
 
 ### Examples
 

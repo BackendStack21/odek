@@ -47,9 +47,10 @@ type SkillManager struct {
 	// NewSkillManagerWithEmbedding; used when (re)building the VectorMatcher.
 	embeddingCfg *embedding.Config
 
-	// guard and guardCfg provide optional prompt-injection scanning for skill
-	// bodies at load and save time. When nil or disabled, skill loading and
-	// saving proceed without scanning.
+	// guard and guardCfg provide prompt-injection scanning for skill
+	// bodies at load and save time. The fast local rule scan always runs;
+	// the guard sidecar is only consulted when the "skills" scan scope is
+	// enabled (see guard.ScanContentWithScope).
 	guard    guard.Guard
 	guardCfg guard.Config
 }
@@ -132,17 +133,17 @@ func (sm *SkillManager) SetGuard(g guard.Guard, cfg guard.Config) {
 	sm.guardCfg = cfg
 }
 
-// scanSkill checks a skill body for prompt-injection patterns using the
-// configured guard. If the body is flagged, it sets Provenance.NeedsReview so
-// the skill cannot be auto-loaded without explicit promotion.
+// scanSkill checks a skill body for prompt-injection patterns. The fast
+// local rule scan always runs (even when the skills scope or the guard
+// itself is disabled); the sidecar second opinion only runs when the
+// "skills" scope is enabled. If the body is flagged, it sets
+// Provenance.NeedsReview so the skill cannot be auto-loaded without
+// explicit promotion.
 func (sm *SkillManager) scanSkill(ctx context.Context, s *Skill) bool {
-	if sm.guard == nil || !guard.IsEnabled(sm.guardCfg.Scan, "skills") {
-		return false
-	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := guard.ScanContent(ctx, s.Body, sm.guard, &sm.guardCfg); err != nil {
+	if err := guard.ScanContentWithScope(ctx, s.Body, sm.guard, &sm.guardCfg, "skills"); err != nil {
 		log.Printf("guard: skill %q body flagged: %v", s.Name, err)
 		s.Provenance.NeedsReview = true
 		return true
@@ -152,8 +153,10 @@ func (sm *SkillManager) scanSkill(ctx context.Context, s *Skill) bool {
 
 // applyGuardToSkills scans loaded skills and moves flagged auto-load skills to
 // the lazy list so they are never injected into the system prompt automatically.
+// It runs even without a configured guard — the local rule scan still catches
+// pattern injections.
 func (sm *SkillManager) applyGuardToSkills() {
-	if sm.guard == nil || !guard.IsEnabled(sm.guardCfg.Scan, "skills") || sm.Result == nil {
+	if sm.Result == nil {
 		return
 	}
 	kept := make([]Skill, 0, len(sm.Result.AutoLoad))
@@ -208,17 +211,31 @@ func (sm *SkillManager) reloadLocked() {
 	// are re-scanned on each project switch.
 	savePersistentCache(sm.UserDir, sm.fileTimes, sm.prevSkills)
 
+	// Scan first so flagged auto-load skills are demoted before the
+	// trigger matchers are built.
+	sm.applyGuardToSkills()
+
+	// Build trigger matchers from the lazy skills eligible for injection.
+	// NeedsReview skills stay in ScanResult.Lazy (listing and promotion
+	// still show them) but are excluded here so a flagged or tainted skill
+	// cannot be trigger-injected into context until explicitly promoted.
+	matchable := make([]Skill, 0, len(sm.Result.Lazy))
+	for _, s := range sm.Result.Lazy {
+		if s.Provenance.NeedsReview {
+			continue
+		}
+		matchable = append(matchable, s)
+	}
+
 	// Build index from all lazy skills only (auto-load skills are always in context)
-	sm.TrieIndex = BuildTriggerIndex(sm.Result.Lazy)
+	sm.TrieIndex = BuildTriggerIndex(matchable)
 
 	// Build scoring-based matcher (fixes AND-lock, adds stemming + synonyms)
-	sm.ScoredMatcher = NewScoredMatcher(sm.Result.Lazy, DefaultScoredConfig())
+	sm.ScoredMatcher = NewScoredMatcher(matchable, DefaultScoredConfig())
 
 	// Build vector matcher for semantic skill matching (RP by default, or the
 	// opt-in HTTP embedding backend when configured).
-	sm.VectorMatcher = NewVectorMatcherWithConfig(sm.Result.Lazy, DefaultMatcherConfig, sm.embeddingCfg)
-
-	sm.applyGuardToSkills()
+	sm.VectorMatcher = NewVectorMatcherWithConfig(matchable, DefaultMatcherConfig, sm.embeddingCfg)
 }
 
 // GetResult returns a read-locked copy of the scan result.

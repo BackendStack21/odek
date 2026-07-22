@@ -92,6 +92,20 @@ func TestDeriveProvenance_MCPAdapterTaints(t *testing.T) {
 	}
 }
 
+// Web search, vision, and sub-agent results all cross the trust boundary,
+// so a session using them must produce a tainted skill.
+func TestDeriveProvenance_ExternalResultToolsTaint(t *testing.T) {
+	for _, name := range []string{"web_search", "vision", "delegate_tasks"} {
+		prov := DeriveProvenance([]LlmMessage{msgWithTool(name)})
+		if !prov.Untrusted || !prov.NeedsReview {
+			t.Errorf("%s should taint provenance (Untrusted+NeedsReview), got %+v", name, prov)
+		}
+		if len(prov.Sources) != 1 || prov.Sources[0] != name {
+			t.Errorf("Sources should list %q, got %v", name, prov.Sources)
+		}
+	}
+}
+
 func TestDeriveProvenance_MultipleSourcesDeduped(t *testing.T) {
 	msgs := []LlmMessage{
 		msgWithTool("browser"),

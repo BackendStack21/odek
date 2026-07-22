@@ -191,3 +191,29 @@ func TestScanSingleSkill_MissingFile(t *testing.T) {
 		t.Errorf("expected nil for missing file, got %+v", got)
 	}
 }
+
+func TestPromoteSkill_ProjectDirFallback(t *testing.T) {
+	// Project-dir skills are forced NeedsReview at scan time, so they must
+	// be promotable even though they don't live in the user dir.
+	t.Chdir(t.TempDir())
+	userDir := t.TempDir()
+	projSkills := ".odek/skills"
+	writeTestSkill(t, projSkills, "proj-skill",
+		"name: proj-skill\ndescription: a project skill\nodek:\n  provenance:\n    needs_review: true\n    sources: project\n",
+		"# body\n")
+
+	// Project skills carry Sources, so promotion requires --force.
+	if err := promoteSkill(userDir, "proj-skill", false); err == nil {
+		t.Fatal("expected refusal without --force for sourced project skill")
+	}
+	if err := promoteSkill(userDir, "proj-skill", true); err != nil {
+		t.Fatalf("promote with --force: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(projSkills, "proj-skill", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read after promote: %v", err)
+	}
+	if strings.Contains(string(data), "needs_review: true") {
+		t.Errorf("needs_review should be cleared after promote, got:\n%s", data)
+	}
+}

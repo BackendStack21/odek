@@ -289,6 +289,9 @@ func ScanDirs(projectDir, userDir string, extraDirs []string) *ScanResult {
 				continue
 			}
 			seen[s.Name] = true
+			if projectDir != "" && dir == projectDir {
+				markProjectSkill(&s)
+			}
 			// Provenance gate: a skill whose originating session
 			// ingested untrusted content (browser, MCP, etc.) is
 			// pinned to lazy regardless of its auto_load flag. The
@@ -304,6 +307,22 @@ func ScanDirs(projectDir, userDir string, extraDirs []string) *ScanResult {
 	}
 
 	return &ScanResult{AutoLoad: autoLoad, Lazy: lazy}
+}
+
+// markProjectSkill distrusts a skill loaded from the project-local skills
+// directory (./.odek/skills). Like ./odek.json, the project directory is
+// attacker-controllable (a cloned repo can ship arbitrary SKILL.md files),
+// so its skills are pinned to NeedsReview — out of auto-load and out of
+// lazy trigger matching — until the operator explicitly promotes them
+// (see `odek skill promote`). User-dir and extra-dir skills are
+// operator-controlled and stay trusted.
+func markProjectSkill(s *Skill) {
+	s.Provenance.NeedsReview = true
+	// Copy the slice before appending: the caller may hold a shallow copy
+	// of a cached Skill, and append could clobber the shared backing array.
+	sources := make([]string, 0, len(s.Provenance.Sources)+1)
+	sources = append(sources, s.Provenance.Sources...)
+	s.Provenance.Sources = append(sources, "project")
 }
 
 // scanDir reads all SKILL.md files in a single skill directory.

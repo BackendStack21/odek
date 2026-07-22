@@ -519,17 +519,16 @@ func bodyPreview(body string) string {
 }
 
 // ScanSuggestionBody checks a skill suggestion body for prompt-injection patterns.
-// If the guard is enabled for skills and detects an issue, it sets the
+// The fast local rule scan always runs (even when the skills scope or the
+// guard itself is disabled); the sidecar second opinion only runs when the
+// "skills" scope is enabled. If a scan flags the body, it sets the
 // suggestion's Provenance.NeedsReview flag and returns true. The caller may
 // still save the suggestion; it will be pinned to lazy/manual review.
 func ScanSuggestionBody(ctx context.Context, s *SkillSuggestion, g guard.Guard, cfg guard.Config) bool {
-	if g == nil || !guard.IsEnabled(cfg.Scan, "skills") {
-		return false
-	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := guard.ScanContent(ctx, s.Body, g, &cfg); err != nil {
+	if err := guard.ScanContentWithScope(ctx, s.Body, g, &cfg, "skills"); err != nil {
 		s.Provenance.NeedsReview = true
 		return true
 	}
@@ -670,12 +669,12 @@ func DeriveProvenance(messages []LlmMessage) SkillProvenance {
 
 // AutoSaveResult reports what auto-save did.
 type AutoSaveResult struct {
-	Saved       []string          // names of auto-saved skills
-	Skipped     int               // count of suggestions filtered by skip list
-	Failed      []string          // names that failed quality gate
-	Declined    []string          // names declined because they were tainted and allowUntrusted was false
-	GuardFlagged []string         // names flagged by the prompt-injection guard
-	Heuristics  map[string]string // heuristic labels for saved skills
+	Saved        []string          // names of auto-saved skills
+	Skipped      int               // count of suggestions filtered by skip list
+	Failed       []string          // names that failed quality gate
+	Declined     []string          // names declined because they were tainted and allowUntrusted was false
+	GuardFlagged []string          // names flagged by the prompt-injection guard
+	Heuristics   map[string]string // heuristic labels for saved skills
 }
 
 // AutoSaveSuggestions runs auto-save logic on a set of suggestions.

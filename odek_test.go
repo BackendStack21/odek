@@ -1078,6 +1078,38 @@ func TestAgent_Memory_Configured(t *testing.T) {
 
 // ── Skill Event Handler Integration Tests ──────────────────────────────
 
+func TestAgent_AutoLoadSkillContextWrappedAsUntrusted(t *testing.T) {
+	// Auto-load skill bodies are externally-sourced content: when an
+	// UntrustedWrapper is configured, the injected system-prompt context
+	// must pass through it (same as lazy skill context in the loop).
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "auto-skill")
+	os.MkdirAll(skillDir, 0755)
+	content := "---\nname: auto-skill\nodek:\n  auto_load: true\n---\n\n## Overview\nBody.\n\n## Common Pitfalls\n- None\n\n## Verification\n- Check"
+	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0644)
+
+	sm := skills.NewSkillManager(dir, "")
+
+	cfg := Config{
+		APIKey:       "sk-test",
+		Skills:       &skills.SkillsConfig{MaxAutoLoad: 3, MaxLazySlots: 5},
+		SkillManager: sm,
+		UntrustedWrapper: func(source, content string) string {
+			return "[untrusted:" + source + "]" + content + "[/untrusted]"
+		},
+	}
+
+	agent, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer agent.Close()
+
+	if !strings.Contains(agent.config.SystemMessage, "[untrusted:skill]") {
+		t.Errorf("auto-load skill context should be wrapped as untrusted, system message:\n%s", agent.config.SystemMessage)
+	}
+}
+
 func TestAgent_SkillEventHandler_AutoLoad(t *testing.T) {
 	// Create a temp dir with an auto-load skill
 	dir := t.TempDir()

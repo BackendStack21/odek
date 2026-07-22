@@ -37,6 +37,9 @@ func scanDirsCached(projectDir, userDir string, extraDirs []string, fc fileCache
 				continue
 			}
 			seen[s.Name] = true
+			if projectDir != "" && dir == projectDir {
+				markProjectSkill(&s)
+			}
 			// Provenance gate — see loader.go ScanDirs for rationale.
 			if s.AutoLoad && !s.Provenance.NeedsReview {
 				autoLoad = append(autoLoad, s)
