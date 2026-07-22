@@ -46,6 +46,7 @@ type Config struct {
 	NudgeMaxPerDay                  int               `json:"nudge_max_per_day,omitempty"`
 	NudgeCooldownHours              int               `json:"nudge_cooldown_hours,omitempty"`
 	NudgeStaleGoalDays              int               `json:"nudge_stale_goal_days,omitempty"`
+	NudgeOpenQuestionMinAgeHours    int               `json:"nudge_open_question_min_age_hours,omitempty"`
 	LLM                             *LLMConfig        `json:"llm,omitempty"`
 	Embedding                       *embedding.Config `json:"embedding,omitempty"`
 }
@@ -102,6 +103,7 @@ func DefaultConfig() Config {
 		NudgeMaxPerDay:                  1,
 		NudgeCooldownHours:              24,
 		NudgeStaleGoalDays:              7,
+		NudgeOpenQuestionMinAgeHours:    24,
 	}
 }
 
@@ -197,6 +199,9 @@ func Resolve(cfg Config) Config {
 	}
 	if cfg.NudgeStaleGoalDays > 0 {
 		def.NudgeStaleGoalDays = cfg.NudgeStaleGoalDays
+	}
+	if cfg.NudgeOpenQuestionMinAgeHours > 0 {
+		def.NudgeOpenQuestionMinAgeHours = cfg.NudgeOpenQuestionMinAgeHours
 	}
 	if cfg.LLM != nil {
 		def.LLM = cfg.LLM

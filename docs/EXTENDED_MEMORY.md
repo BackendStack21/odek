@@ -386,6 +386,7 @@ Extended Memory is configured under the `memory.extended` section.
       "nudge_max_per_day": 1,
       "nudge_cooldown_hours": 24,
       "nudge_stale_goal_days": 7,
+      "nudge_open_question_min_age_hours": 24,
 
       "llm": {
         "base_url": "http://localhost:11434/v1",
@@ -440,6 +441,7 @@ Extended Memory is configured under the `memory.extended` section.
 | `nudge_max_per_day` | `1` | Maximum proactive nudges delivered per day. |
 | `nudge_cooldown_hours` | `24` | Per-kind cooldown before a nudge of the same kind can fire again. |
 | `nudge_stale_goal_days` | `7` | Days without activity before a goal/intent atom counts as stale for nudges. |
+| `nudge_open_question_min_age_hours` | `24` | Minimum age before a `question` atom may become a nudge candidate. Per-turn extraction runs before the assistant answers, so younger questions are almost always about to be answered — nudging about them is noise. |
 | `llm` | omitted | Dedicated memory LLM config. **If omitted, the default global model is used.** A warning is emitted if that model has thinking enabled. |
 | `embedding` | omitted | Dedicated embedding backend. If omitted, uses the shared `embedding` config. |
 
@@ -541,7 +543,7 @@ The extraction prompt now emits `question` atoms for user questions that went un
 
 ### Proactive nudges
 
-`ExtendedMemory.ProactiveNudges(ctx, maxN)` (preview) and `ExtendedMemory.TakeNudges(ctx, maxN)` (delivery) synthesize up to `maxN` (default 2) concise, user-facing nudges from: open loops, stale goals (goal/intent atoms with no activity in `nudge_stale_goal_days`, default 7), and the user model's current focus (blockers, project drift). Each nudge carries a `kind` (`open_question`, `stale_goal`, `blocker`, `drift`) and the source atom IDs it was derived from. Synthesis is a single memory-LLM call with defensive JSON parsing; any failure returns an empty result with no error.
+`ExtendedMemory.ProactiveNudges(ctx, maxN)` (preview) and `ExtendedMemory.TakeNudges(ctx, maxN)` (delivery) synthesize up to `maxN` (default 2) concise, user-facing nudges from: open loops, stale goals (goal/intent atoms with no activity in `nudge_stale_goal_days`, default 7), and the user model's current focus (blockers, project drift). Each nudge carries a `kind` (`open_question`, `stale_goal`, `blocker`, `drift`) and the source atom IDs it was derived from. Synthesis is a single memory-LLM call with defensive JSON parsing; any failure returns an empty result with no error. `question` atoms are additionally age-gated: only questions older than `nudge_open_question_min_age_hours` (default 24) are candidates, because per-turn extraction runs before the assistant answers and a freshly asked question is almost always about to be answered.
 
 Anti-annoyance caps are enforced by `TakeNudges` only and persisted to `nudges.json` in the extended directory (atomic, 0600):
 

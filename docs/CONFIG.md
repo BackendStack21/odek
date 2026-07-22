@@ -433,6 +433,7 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
 | `nudge_max_per_day` | `1` | `ODEK_MEMORY_EXTENDED_NUDGE_MAX_PER_DAY` | — | Maximum proactive nudges delivered per day. |
 | `nudge_cooldown_hours` | `24` | `ODEK_MEMORY_EXTENDED_NUDGE_COOLDOWN_HOURS` | — | Per-kind cooldown before a nudge of the same kind can fire again. |
 | `nudge_stale_goal_days` | `7` | `ODEK_MEMORY_EXTENDED_NUDGE_STALE_GOAL_DAYS` | — | Days without activity before a goal/intent atom counts as stale for nudges. |
+| `nudge_open_question_min_age_hours` | `24` | `ODEK_MEMORY_EXTENDED_NUDGE_OPEN_QUESTION_MIN_AGE_HOURS` | — | Minimum age before a `question` atom may become a nudge candidate (younger questions are usually about to be answered). |
 | `llm` | omitted | — | — | Dedicated memory LLM. If omitted, the main agent LLM is reused. A warning is emitted if that model has thinking enabled. |
 | `embedding` | omitted | — | — | Dedicated embedding backend for atoms. If omitted, inherits `memory.embedding` or the shared top-level `embedding`. |
 

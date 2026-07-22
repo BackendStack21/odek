@@ -1246,6 +1246,13 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
 		cfg.Memory.Extended.NudgeStaleGoalDays = v
 	}
+	if v := envInt("MEMORY_EXTENDED_NUDGE_OPEN_QUESTION_MIN_AGE_HOURS"); v > 0 {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.NudgeOpenQuestionMinAgeHours = v
+	}
 
 	// Guard env overrides
 	if v := envString("GUARD_PROVIDER"); v != "" {

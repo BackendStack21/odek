@@ -234,7 +234,8 @@ func newNudgeEM(t *testing.T, llm LLMClient, mutate func(*Config)) *ExtendedMemo
 			mutate(c)
 		}
 	})
-	seedAtom(t, em, nudgeTestAtomID, "How does the eviction policy work?", TypeQuestion, time.Hour)
+	// Seeded 48h old so it passes the default 24h open-question nudge gate.
+	seedAtom(t, em, nudgeTestAtomID, "How does the eviction policy work?", TypeQuestion, 48*time.Hour)
 	return em
 }
 
@@ -512,5 +513,54 @@ func TestNudgeStateRoundTrip(t *testing.T) {
 	}
 	if !got.LastFiredByKind[NudgeKindBlocker].Equal(now) {
 		t.Errorf("last_fired_by_kind = %v, want %v", got.LastFiredByKind, want.LastFiredByKind)
+	}
+}
+
+// TestNudgeOpenQuestionAgeGate verifies freshly asked questions never become
+// nudge candidates: per-turn extraction runs before the assistant answers, so
+// a young "unanswered" question is usually about to be answered — nudging
+// about it is noise. Only questions older than the configured minimum age
+// reach the synthesis prompt; goals/intents are unaffected.
+func TestNudgeOpenQuestionAgeGate(t *testing.T) {
+	llm := newMockLLM(`[]`)
+	em := newProactiveEM(t, llm, func(c *Config) { c.ProactiveNudgesEnabled = boolPtr(true) })
+	seedAtom(t, em, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2", "What is the fresh question?", TypeQuestion, time.Hour)
+	seedAtom(t, em, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb3", "What is the ancient question?", TypeQuestion, 72*time.Hour)
+	seedAtom(t, em, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb4", "I plan to refactor the scheduler.", TypeGoal, time.Hour)
+
+	if _, err := em.ProactiveNudges(context.Background(), 2); err != nil {
+		t.Fatalf("ProactiveNudges failed: %v", err)
+	}
+	prompt := llm.lastUserPrompt()
+	if strings.Contains(prompt, "fresh question") {
+		t.Errorf("1h-old question should be gated out of the nudge prompt:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "ancient question") {
+		t.Errorf("72h-old question should reach the nudge prompt:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "refactor the scheduler") {
+		t.Errorf("young goal atom should be unaffected by the question gate:\n%s", prompt)
+	}
+}
+
+// TestNudgeOpenQuestionAgeGateConfigurable verifies the gate honors a custom
+// minimum age (and that non-positive values fall back to the default).
+func TestNudgeOpenQuestionAgeGateConfigurable(t *testing.T) {
+	llm := newMockLLM(`[]`)
+	em := newProactiveEM(t, llm, func(c *Config) {
+		c.ProactiveNudgesEnabled = boolPtr(true)
+		c.NudgeOpenQuestionMinAgeHours = 2
+	})
+	seedAtom(t, em, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2", "What is the fresh question?", TypeQuestion, time.Hour)
+	seedAtom(t, em, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb3", "What is the older question?", TypeQuestion, 3*time.Hour)
+	if _, err := em.ProactiveNudges(context.Background(), 2); err != nil {
+		t.Fatalf("ProactiveNudges failed: %v", err)
+	}
+	prompt := llm.lastUserPrompt()
+	if strings.Contains(prompt, "fresh question") {
+		t.Errorf("1h-old question should be gated out with a 2h gate")
+	}
+	if !strings.Contains(prompt, "older question") {
+		t.Errorf("3h-old question should pass a 2h gate")
 	}
 }
