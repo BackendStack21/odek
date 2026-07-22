@@ -394,7 +394,7 @@ Voice message received → DownloadVoice (OGG Opus to disk)
 
 **Fallback:** If auto-transcribe fails (ffmpeg unavailable, corrupt audio, whisper error), the agent receives the file path with a suggestion to use the `transcribe()` tool manually.
 
-**Docker:** the official image bundles the whisper.cpp CLI, the `tiny` model, and ffmpeg, with `auto_transcribe` enabled in the shipped configs — so voice transcription works out of the box with no host install. See [../docker/README.md](../docker/README.md#voice-transcription-out-of-the-box).
+**Docker:** the official image bundles the whisper.cpp CLI, the `small` (multilingual) model, and ffmpeg, with `auto_transcribe` enabled in the shipped configs — so voice transcription works out of the box with no host install, at usable German/English/Spanish quality. See [../docker/README.md](../docker/README.md#voice-transcription-out-of-the-box).
 
 ### Tool Progress (Narrator)
 
