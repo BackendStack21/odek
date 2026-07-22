@@ -650,7 +650,7 @@ The `telegram` section configures the Telegram bot integration and the `--delive
 | `poll_interval` | — | 1 | Seconds between poll cycles |
 | `poll_timeout` | — | 30 | Long-poll timeout (1-60 seconds) |
 | `max_msg_length` | — | 4096 | Max characters per message |
-| `session_ttl_hours` | — | 24 | Hours before inactive session expires |
+| `session_ttl_hours` | — | 24 | Hours an inactive chat's session stays in the in-memory cache before being reloaded from disk. This is cache-only — on-disk session expiry is `maintenance.sessions_max_age_days` (see [MAINTENANCE.md](MAINTENANCE.md)) |
 | `max_download_size` | `ODEK_TELEGRAM_MAX_DOWNLOAD_SIZE` | 5242880 (5 MiB) | Per-file byte cap for Telegram voice/photo/document downloads. Set to `-1` to disable. |
 | `media_quota_per_chat` | `ODEK_TELEGRAM_MEDIA_QUOTA_PER_CHAT` | 0 (disabled) | Total bytes of downloaded media allowed per chat. `0` disables the quota. |
 | `log_level` | — | info | Log level: debug, info, warn, error |
@@ -739,6 +739,46 @@ Safety floor that cannot be overridden:
 Project-level `odek.json` cannot set `schedules.dangerous`; configure it via `~/.odek/config.json` or environment variables.
 
 Full guide: [docs/SCHEDULES.md](SCHEDULES.md).
+
+## Storage maintenance
+
+Configures the background storage janitor (`internal/maintenance`). It runs a
+sweep over `~/.odek` every `interval_minutes`: expiring old sessions and
+audit records, rotating oversized logs, deleting stale Telegram plans and
+downloaded media, and garbage-collecting expired skill skip-list entries.
+Every field has an `ODEK_MAINTENANCE_*` environment override.
+
+```json
+{
+  "maintenance": {
+    "enabled": true,
+    "interval_minutes": 60,
+    "sessions_max_age_days": 30,
+    "audit_max_age_days": 14,
+    "log_max_mb": 50,
+    "plans_max_age_days": 30,
+    "skills_skip_max_age_days": 90
+  }
+}
+```
+
+| Field | Env | Default | Description |
+|---|---|---|---|
+| `enabled` | `ODEK_MAINTENANCE_ENABLED` | `true` | Run the janitor. Set false to disable all storage maintenance. |
+| `interval_minutes` | `ODEK_MAINTENANCE_INTERVAL_MINUTES` | `60` | Minutes between sweeps. The first sweep runs after one interval, never at startup. |
+| `sessions_max_age_days` | `ODEK_MAINTENANCE_SESSIONS_MAX_AGE_DAYS` | `30` | Delete sessions (and their index/vector-index entries) older than this. `0` = keep forever. |
+| `audit_max_age_days` | `ODEK_MAINTENANCE_AUDIT_MAX_AGE_DAYS` | `14` | Delete `~/.odek/sessions/audit/*.json` records older than this. `0` = keep forever. |
+| `log_max_mb` | `ODEK_MAINTENANCE_LOG_MAX_MB` | `50` | Rotate `~/.odek/telegram.log` and `~/.odek/schedule.log` larger than this: current log becomes `<name>.1` (one backup generation) and a fresh empty log is started. `0` = no rotation. |
+| `plans_max_age_days` | `ODEK_MAINTENANCE_PLANS_MAX_AGE_DAYS` | `30` | Delete Telegram plan files (`~/.odek/plans/**/*.md`) older than this; emptied chat directories are removed. `0` = keep forever. |
+| `skills_skip_max_age_days` | `ODEK_MAINTENANCE_SKILLS_SKIP_MAX_AGE_DAYS` | `90` | Remove skill skip-list entries (`~/.odek/skills/.skipped.json`) older than this. `0` = keep forever. |
+
+Downloaded Telegram media (`~/.odek/media/`, including per-chat `chat<id>/`
+subdirectories) is always swept after 1 hour; that policy is not configurable.
+
+The `maintenance` section is **operator-only**: it governs deletion of user
+data, so the project-level `./odek.json` cannot set it (a `maintenance`
+section there is ignored with a stderr warning). Configure it via
+`~/.odek/config.json` or the `ODEK_MAINTENANCE_*` environment variables.
 
 ## Tool configuration
 

@@ -13,7 +13,8 @@
 | `odek session show [id]` | Show session details (default: latest) |
 | `odek session delete <id>` | Delete a session |
 | `odek session trim <id> <n>` | Keep only the `n` most recent messages |
-| `odek session cleanup <days>` | Delete sessions older than N days |
+| `odek session cleanup <days>` | Delete sessions older than N days (see also: automatic storage maintenance below) |
+| `odek cleanup [--dry-run]` | One-shot storage sweep of `~/.odek`: expired sessions, audit records, plans, skill skip entries, and oversized-log rotation, per the `[maintenance]` config. `--dry-run` previews without deleting. The same sweep runs automatically in the Telegram bot, `odek serve`, and `odek schedule daemon`. See [MAINTENANCE.md](MAINTENANCE.md) |
 | `odek skill list` | List all available skills |
 | `odek skill view <name>` | View a skill's full content |
 | `odek skill delete <name>` | Delete a skill |
@@ -388,6 +389,12 @@ odek session cleanup 30
 
 # Wipe all sessions
 odek session cleanup 0
+
+# Sweep all expired storage (sessions, audit, plans, skips, log rotation)
+odek cleanup
+
+# Preview the sweep without deleting anything
+odek cleanup --dry-run
 
 # OpenAI
 odek run --model gpt-4o --base-url https://api.openai.com/v1 "Explain this code"
