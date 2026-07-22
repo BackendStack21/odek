@@ -236,9 +236,10 @@ ODEK_E2E=true go test -v -count=1 ./cmd/odek/ -run "TestMCPE2E_"
 # Sandbox integration tests (requires Docker)
 go test -v -count=1 ./cmd/odek/ -run "TestSandbox"
 
-# PIGuard sidecar E2E (requires the docker piguard stack running;
-# runs in CI via .github/workflows/piguard-e2e.yml)
-ODEK_E2E_GUARD=1 go test -v -count=1 ./internal/guard/ -run "TestE2E_"
+# PIGuard sidecar E2E (local only — too heavy for CI; provisions the
+# docker stack, runs the env-gated test, tears down. Use --linux on macOS
+# for full socket-mode coverage.)
+docker/piguard-e2e.sh
 
 # Fuzz soaks (extractJSON, SKILL.md parsing, session loading)
 go test -fuzz=FuzzExtractJSON -fuzztime=30s ./internal/memory/extended/

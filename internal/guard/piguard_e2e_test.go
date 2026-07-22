@@ -15,10 +15,12 @@ import (
 //     default http://127.0.0.1:18080/detect), and
 //   - the daemon's Unix socket is reachable on the host (env PIGUARD_SOCKET,
 //     default /tmp/piguard-e2e/piguard.sock); the socket subtest is skipped
-//     when the socket file does not exist.
+//     when the socket file does not exist or is not connectable (on macOS,
+//     unix sockets do not cross the Docker Desktop VM boundary).
 //
-// See .github/workflows/piguard-e2e.yml for how the stack is provisioned
-// in CI.
+// docker/piguard-e2e.sh provisions the stack, runs this test, and tears it
+// down. It was kept out of CI (the ~735 MB model + image builds make the
+// job too slow); run it locally before merging guard changes.
 const (
 	e2eDefaultURL    = "http://127.0.0.1:18080/detect"
 	e2eDefaultSocket = "/tmp/piguard-e2e/piguard.sock"
