@@ -288,10 +288,55 @@ func (t *MemoryTool) handleAddAtom(content, atomType string, confidence float32)
 		Type:        atomType,
 		Confidence:  confidence,
 	}
+	// AddAtom returns nil even when the guard scan rejected the atom and it
+	// was routed to quarantine (by design — a human reviews false positives).
+	// Diff the quarantine list before/after so the agent is told the truth
+	// instead of a false "added atom". ListQuarantineEntries exposes the
+	// rejection reason; the store is small and this is not a hot path.
+	beforeIDs := quarantineIDs(t.manager.extended)
 	if err := t.manager.extended.AddAtom(nilContext, atom); err != nil {
 		return errorJSON(err.Error()), nil
 	}
+	if reason, ok := newQuarantinedEntry(t.manager.extended, beforeIDs, content); ok {
+		return successJSON(fmt.Sprintf("quarantined for human review (reason: %s): %s", reason, truncate(content, 60))), nil
+	}
 	return successJSON(fmt.Sprintf("added atom: %s", truncate(content, 60))), nil
+}
+
+// quarantineIDs returns the set of quarantined atom IDs currently in the
+// extended store. A listing error yields an empty set — the after-diff then
+// simply finds no match and the caller falls back to the "added" message.
+func quarantineIDs(em *extended.ExtendedMemory) map[string]bool {
+	ids := make(map[string]bool)
+	entries, err := em.ListQuarantineEntries()
+	if err != nil {
+		return ids
+	}
+	for _, e := range entries {
+		ids[e.ID] = true
+	}
+	return ids
+}
+
+// newQuarantinedEntry reports whether an atom matching text appeared in
+// quarantine that was not in beforeIDs, returning its rejection reason.
+func newQuarantinedEntry(em *extended.ExtendedMemory, beforeIDs map[string]bool, text string) (string, bool) {
+	entries, err := em.ListQuarantineEntries()
+	if err != nil {
+		return "", false
+	}
+	for _, e := range entries {
+		if beforeIDs[e.ID] {
+			continue
+		}
+		if strings.TrimSpace(e.Text) == strings.TrimSpace(text) {
+			if e.Reason == "" {
+				return "untrusted content", true
+			}
+			return e.Reason, true
+		}
+	}
+	return "", false
 }
 
 func (t *MemoryTool) handleSearchAtoms(query string) (string, error) {

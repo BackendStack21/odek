@@ -235,6 +235,16 @@ ODEK_E2E=true go test -v -count=1 ./cmd/odek/ -run "TestMCPE2E_"
 
 # Sandbox integration tests (requires Docker)
 go test -v -count=1 ./cmd/odek/ -run "TestSandbox"
+
+# PIGuard sidecar E2E (local only — too heavy for CI; provisions the
+# docker stack, runs the env-gated test, tears down. Use --linux on macOS
+# for full socket-mode coverage.)
+docker/piguard-e2e.sh
+
+# Fuzz soaks (extractJSON, SKILL.md parsing, session loading)
+go test -fuzz=FuzzExtractJSON -fuzztime=30s ./internal/memory/extended/
+go test -fuzz=FuzzParseSkillContent -fuzztime=30s ./internal/skills/
+go test -fuzz=FuzzSessionLoad -fuzztime=30s ./internal/session/
 ```
 
 Note: MCP client E2E tests build the fakeserver from `internal/mcpclient/testdata/main.go` at test time (no pre-compiled binary). macOS temp dirs are classified as `LocalWrite` (not `SystemWrite`), and the Docker availability check verifies daemon reachability before running sandbox tests.

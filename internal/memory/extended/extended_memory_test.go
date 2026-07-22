@@ -690,6 +690,9 @@ func TestEvictionAllPinned(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Enabled = boolPtr(true)
 	cfg.AtomMaxChars = 100_000
+	// The filler texts differ by a single character and would be merged by
+	// semantic dedup; this test exercises the cap, not dedup.
+	cfg.SemanticDedupThreshold = floatPtr(0)
 	em := New(dir, newMockLLM(), cfg)
 	em.testCapBytes = 50 * 1024
 	em.index.newEmb = func() embedding.TextEmbedder { return newMockEmbedder(vectorDim) }
@@ -719,6 +722,9 @@ func TestCapFailClosedWhenAllPinned(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Enabled = boolPtr(true)
 	cfg.AtomMaxChars = 100_000
+	// The filler texts differ by a single character and would be merged by
+	// semantic dedup; this test exercises the cap, not dedup.
+	cfg.SemanticDedupThreshold = floatPtr(0)
 	em := New(dir, newMockLLM(), cfg)
 	em.testCapBytes = 50 * 1024
 	em.index.newEmb = func() embedding.TextEmbedder { return newMockEmbedder(vectorDim) }
@@ -761,6 +767,9 @@ func TestCapDisabled(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Enabled = boolPtr(true)
 	cfg.MaxSizeMB = 0
+	// "atom N" texts are near-identical and would be merged by semantic
+	// dedup; this test exercises the cap, not dedup.
+	cfg.SemanticDedupThreshold = floatPtr(0)
 	em := New(dir, newMockLLM(), cfg)
 	for i := 0; i < 10; i++ {
 		if err := em.AddAtom(context.Background(), MemoryAtom{Text: fmt.Sprintf("atom %d", i), SourceClass: SourceUserSaid}); err != nil {
@@ -1310,6 +1319,9 @@ func TestAddAtomDeduplicatesByNormalizedText(t *testing.T) {
 	dir := t.TempDir()
 	cfg := DefaultConfig()
 	cfg.Enabled = boolPtr(true)
+	// Disable the semantic tier so this test exercises exact-match dedup only
+	// (the mock embedder rates "Go" vs "Rust" variants as near-duplicates).
+	cfg.SemanticDedupThreshold = floatPtr(0)
 	em := New(dir, newMockLLM(), cfg)
 	defer em.Close()
 	em.index.newEmb = func() embedding.TextEmbedder { return newMockEmbedder(vectorDim) }

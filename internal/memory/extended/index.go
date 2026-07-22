@@ -2,9 +2,12 @@ package extended
 
 import (
 	"encoding/json"
+	"fmt"
+	"hash/fnv"
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -28,9 +31,30 @@ type scoredAtom struct {
 	Score float32
 }
 
-// vectorMeta records the embedding-space fingerprint of the persisted vectors.
+// vectorMeta records the embedding-space fingerprint of the persisted vectors
+// plus a fingerprint of the atom corpus they were built from. The corpus
+// fingerprint detects a stale index at load time (atoms added or removed
+// after the last persist); it is empty in files written before it was
+// introduced, which is treated as a mismatch so the index rebuilds once.
 type vectorMeta struct {
 	Fingerprint string `json:"fingerprint"`
+	Corpus      string `json:"corpus,omitempty"`
+}
+
+// corpusFingerprint returns a cheap fingerprint of the atom corpus: the atom
+// count plus an FNV-1a hash of the sorted atom IDs.
+func corpusFingerprint(atoms []MemoryAtom) string {
+	ids := make([]string, 0, len(atoms))
+	for _, a := range atoms {
+		ids = append(ids, a.ID)
+	}
+	sort.Strings(ids)
+	h := fnv.New64a()
+	for _, id := range ids {
+		h.Write([]byte(id))
+		h.Write([]byte{0})
+	}
+	return fmt.Sprintf("%d:%016x", len(ids), h.Sum64())
 }
 
 // atomVectorIndex is a persisted embedder + brute-force k-NN store for atom
@@ -83,6 +107,21 @@ func (vi *atomVectorIndex) search(query string, k int) []scoredAtom {
 	vi.ensureFresh()
 	vi.mu.RLock()
 	defer vi.mu.RUnlock()
+	return vi.searchLocked(query, k)
+}
+
+// searchCurrent queries the index in its current state without triggering a
+// rebuild. Semantic dedup inside addAtoms uses it so the one-rebuild-per-batch
+// invariant holds even when the index went stale mid-batch (e.g. after a
+// cap-enforcement eviction).
+func (vi *atomVectorIndex) searchCurrent(query string, k int) []scoredAtom {
+	vi.mu.RLock()
+	defer vi.mu.RUnlock()
+	return vi.searchLocked(query, k)
+}
+
+// searchLocked implements search. Caller must hold vi.mu (read or write).
+func (vi *atomVectorIndex) searchLocked(query string, k int) []scoredAtom {
 	if !vi.ready || vi.store == nil || vi.store.Len() == 0 || vi.emb == nil {
 		return nil
 	}
@@ -100,6 +139,50 @@ func (vi *atomVectorIndex) search(query string, k int) []scoredAtom {
 		out = append(out, scoredAtom{ID: r.ID, Score: 1 - r.Distance})
 	}
 	return out
+}
+
+// similarity returns the cosine similarity between two texts embedded with
+// the index's shared embedder, or 0 when no embedder is available. It is used
+// to compare atoms that are not yet indexed (e.g. stored earlier in the same
+// add batch).
+func (vi *atomVectorIndex) similarity(a, b string) float32 {
+	vi.mu.RLock()
+	emb := vi.emb
+	vi.mu.RUnlock()
+	if emb == nil {
+		return 0
+	}
+	va, err := emb.Embed(a)
+	if err != nil {
+		return 0
+	}
+	vb, err := emb.Embed(b)
+	if err != nil {
+		return 0
+	}
+	return cosine(va, vb)
+}
+
+// embedTexts embeds a batch of texts with the index's shared embedder.
+func (vi *atomVectorIndex) embedTexts(texts []string) ([]vector.Vector, error) {
+	vi.mu.RLock()
+	emb := vi.emb
+	vi.mu.RUnlock()
+	if emb == nil {
+		return nil, fmt.Errorf("extended memory: no embedder available")
+	}
+	return emb.EmbedAll(texts)
+}
+
+// stats reports the number of indexed vectors and whether the index needs a
+// rebuild (dirty or never built).
+func (vi *atomVectorIndex) stats() (vectors int, dirty bool) {
+	vi.mu.RLock()
+	defer vi.mu.RUnlock()
+	if vi.store != nil {
+		vectors = vi.store.Len()
+	}
+	return vectors, vi.dirty || !vi.ready
 }
 
 // ensureFresh rebuilds the index if needed. The expensive embedding work runs
@@ -151,7 +234,7 @@ func (vi *atomVectorIndex) ensureFresh() {
 	listFn := vi.listAtoms
 	vi.mu.Unlock()
 
-	store := vi.build(emb, listFn)
+	store, corpusFP := vi.build(emb, listFn)
 
 	vi.mu.Lock()
 	defer vi.mu.Unlock()
@@ -167,19 +250,20 @@ func (vi *atomVectorIndex) ensureFresh() {
 	if vi.dirtySeq == seq {
 		vi.dirty = false
 	}
-	vi.persistLocked()
+	vi.persistLocked(corpusFP)
 }
 
 // build fits the embedder on the current atom corpus and returns a populated
-// vector store, or nil on embedding failure.
-func (vi *atomVectorIndex) build(emb textEmbedder, listAtoms func() ([]MemoryAtom, error)) *vector.Store {
+// vector store plus the corpus fingerprint, or nil on embedding failure.
+func (vi *atomVectorIndex) build(emb textEmbedder, listAtoms func() ([]MemoryAtom, error)) (*vector.Store, string) {
 	atoms, err := listAtoms()
 	if err != nil {
 		log.Printf("extended memory: index build failed listing atoms: %v", err)
-		return nil
+		return nil, ""
 	}
+	fp := corpusFingerprint(atoms)
 	if len(atoms) == 0 {
-		return vector.NewStore(vector.CosineDistance)
+		return vector.NewStore(vector.CosineDistance), fp
 	}
 	corpus := make([]string, len(atoms))
 	for i, a := range atoms {
@@ -187,12 +271,12 @@ func (vi *atomVectorIndex) build(emb textEmbedder, listAtoms func() ([]MemoryAto
 	}
 	if err := emb.Fit(corpus); err != nil {
 		log.Printf("extended memory: embedder Fit failed: %v", err)
-		return nil
+		return nil, ""
 	}
 	vecs, err := emb.EmbedAll(corpus)
 	if err != nil {
 		log.Printf("extended memory: EmbedAll failed: %v", err)
-		return nil
+		return nil, ""
 	}
 	store := vector.NewStore(vector.CosineDistance)
 	for i, a := range atoms {
@@ -201,7 +285,7 @@ func (vi *atomVectorIndex) build(emb textEmbedder, listAtoms func() ([]MemoryAto
 		}
 		store.Add(a.ID, vecs[i])
 	}
-	return store
+	return store, fp
 }
 
 // Compact rebuilds the persisted vector store from the current atom corpus in
@@ -238,6 +322,13 @@ func (vi *atomVectorIndex) tryLoadLocked() bool {
 	if json.Unmarshal(data, &meta) != nil || meta.Fingerprint != fp {
 		return false
 	}
+	// The persisted vectors must match the current atom corpus. A missing
+	// corpus fingerprint (file written before it was tracked) or a mismatch
+	// means the index is stale and must rebuild once.
+	atoms, err := vi.listAtoms()
+	if err != nil || meta.Corpus == "" || meta.Corpus != corpusFingerprint(atoms) {
+		return false
+	}
 	store := vector.NewStore(vector.CosineDistance)
 	if err := store.Load(filepath.Join(vi.dir, vectorFile)); err != nil {
 		return false
@@ -252,7 +343,7 @@ func (vi *atomVectorIndex) tryLoadLocked() bool {
 
 // persistLocked saves the vector store and embedding-space meta. Caller must
 // hold vi.mu.
-func (vi *atomVectorIndex) persistLocked() {
+func (vi *atomVectorIndex) persistLocked(corpusFP string) {
 	if vi.store == nil || vi.emb == nil || vi.dir == "" {
 		return
 	}
@@ -270,7 +361,7 @@ func (vi *atomVectorIndex) persistLocked() {
 	embPath := filepath.Join(vi.dir, vectorFile+".emb")
 	vi.emb.SaveState(embPath)
 	_ = os.Chmod(embPath, 0600)
-	if data, err := json.Marshal(vectorMeta{Fingerprint: vi.emb.Fingerprint()}); err == nil {
+	if data, err := json.Marshal(vectorMeta{Fingerprint: vi.emb.Fingerprint(), Corpus: corpusFP}); err == nil {
 		tmp := filepath.Join(vi.dir, vectorMetaFile+".tmp")
 		if os.WriteFile(tmp, data, 0600) == nil {
 			if err := os.Rename(tmp, filepath.Join(vi.dir, vectorMetaFile)); err != nil {

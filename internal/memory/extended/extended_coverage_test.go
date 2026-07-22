@@ -228,6 +228,9 @@ func TestBuildAssociationsTaskAndSemantic(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Enabled = boolPtr(true)
 	cfg.SemanticSearchMinScore = 0.01
+	// Near-identical texts must stay separate atoms so association links can
+	// be observed; disable semantic dedup.
+	cfg.SemanticDedupThreshold = floatPtr(0)
 	em := New(dir, newMockLLM(), cfg)
 	em.index.newEmb = func() embedding.TextEmbedder { return newMockEmbedder(vectorDim) }
 	em.index.emb = newMockEmbedder(vectorDim)
@@ -666,8 +669,8 @@ func TestExtractorInvalidTypeAndConfidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Extract failed: %v", err)
 	}
-	if len(atoms) != 1 || atoms[0].Type != TypeObservation || atoms[0].Confidence != 1.0 {
-		t.Errorf("expected observation fallback with confidence 1.0, got %+v", atoms[0])
+	if len(atoms) != 1 || atoms[0].Type != TypeObservation || atoms[0].Confidence != defaultExtractionConfidence {
+		t.Errorf("expected observation fallback with confidence %v, got %+v", defaultExtractionConfidence, atoms[0])
 	}
 }
 
@@ -757,7 +760,7 @@ func TestQuarantineSaveLockedMkdirError(t *testing.T) {
 func TestBuildListAtomsError(t *testing.T) {
 	dir := t.TempDir()
 	vi := newAtomVectorIndex(dir, func() embedding.TextEmbedder { return newMockEmbedder(vectorDim) }, func() ([]MemoryAtom, error) { return nil, errors.New("list fail") })
-	store := vi.build(newMockEmbedder(vectorDim), func() ([]MemoryAtom, error) { return nil, errors.New("list fail") })
+	store, _ := vi.build(newMockEmbedder(vectorDim), func() ([]MemoryAtom, error) { return nil, errors.New("list fail") })
 	if store != nil {
 		t.Error("expected nil store when listAtoms fails")
 	}
@@ -767,7 +770,7 @@ func TestBuildFitError(t *testing.T) {
 	dir := t.TempDir()
 	vi := newAtomVectorIndex(dir, func() embedding.TextEmbedder { return newMockEmbedder(vectorDim) }, func() ([]MemoryAtom, error) { return nil, nil })
 	emb := &mockEmbedderErr{failFit: true, dims: vectorDim}
-	store := vi.build(emb, func() ([]MemoryAtom, error) {
+	store, _ := vi.build(emb, func() ([]MemoryAtom, error) {
 		return []MemoryAtom{{ID: "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6", Text: "x"}}, nil
 	})
 	if store != nil {
@@ -779,7 +782,7 @@ func TestBuildEmbedAllError(t *testing.T) {
 	dir := t.TempDir()
 	vi := newAtomVectorIndex(dir, func() embedding.TextEmbedder { return newMockEmbedder(vectorDim) }, func() ([]MemoryAtom, error) { return nil, nil })
 	emb := &mockEmbedderErr{failEmbedAll: true, dims: vectorDim}
-	store := vi.build(emb, func() ([]MemoryAtom, error) {
+	store, _ := vi.build(emb, func() ([]MemoryAtom, error) {
 		return []MemoryAtom{{ID: "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6", Text: "x"}}, nil
 	})
 	if store != nil {
@@ -1043,7 +1046,7 @@ func TestTryLoadLockedMissingFiles(t *testing.T) {
 
 func TestVectorIndexPersistLockedNilStore(t *testing.T) {
 	vi := newAtomVectorIndex(t.TempDir(), func() embedding.TextEmbedder { return newMockEmbedder(vectorDim) }, func() ([]MemoryAtom, error) { return nil, nil })
-	vi.persistLocked() // should not panic with nil store
+	vi.persistLocked("") // should not panic with nil store
 }
 
 func TestFormatExtendedContextEmpty(t *testing.T) {
@@ -1183,6 +1186,9 @@ func TestRecallRerankNone(t *testing.T) {
 	cfg.Enabled = boolPtr(true)
 	cfg.SemanticSearchRerank = boolPtr(true)
 	cfg.SemanticSearchMinScore = 0.01
+	// The mock embedder rates these two English sentences as near-duplicates;
+	// disable semantic dedup so both atoms reach the rerank path.
+	cfg.SemanticDedupThreshold = floatPtr(0)
 	llm := newMockLLM("none")
 	em := New(dir, llm, cfg)
 	em.index.newEmb = func() embedding.TextEmbedder { return newMockEmbedder(vectorDim) }
@@ -1210,5 +1216,35 @@ func TestAtomStorePinNotFound(t *testing.T) {
 	store := NewAtomStore(t.TempDir())
 	if err := store.Pin("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6", true); err == nil {
 		t.Error("expected error pinning missing atom")
+	}
+}
+
+// TestExtractorConfidenceDefault verifies that extraction-origin atoms get
+// defaultExtractionConfidence when the LLM omits confidence or returns an
+// out-of-range value, while explicit values in (0,1] are kept.
+func TestExtractorConfidenceDefault(t *testing.T) {
+	cases := []struct {
+		name     string
+		response string
+		want     float32
+	}{
+		{"missing", `[{"text":"x","type":"fact"}]`, defaultExtractionConfidence},
+		{"zero", `[{"text":"x","type":"fact","confidence":0}]`, defaultExtractionConfidence},
+		{"negative", `[{"text":"x","type":"fact","confidence":-0.5}]`, defaultExtractionConfidence},
+		{"above one", `[{"text":"x","type":"fact","confidence":1.5}]`, defaultExtractionConfidence},
+		{"explicit", `[{"text":"x","type":"fact","confidence":0.9}]`, 0.9},
+		{"one", `[{"text":"x","type":"fact","confidence":1.0}]`, 1.0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ex := NewExtractor(newMockLLM(tc.response), DefaultConfig())
+			atoms, err := ex.Extract(context.Background(), "hello")
+			if err != nil {
+				t.Fatalf("Extract failed: %v", err)
+			}
+			if len(atoms) != 1 || atoms[0].Confidence != tc.want {
+				t.Errorf("expected confidence %v, got %+v", tc.want, atoms)
+			}
+		})
 	}
 }

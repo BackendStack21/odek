@@ -2,6 +2,7 @@ package extended
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -9,6 +10,11 @@ import (
 
 	"github.com/BackendStack21/odek/internal/guard"
 )
+
+// minPredictedIntentConfidence is the floor below which a predicted intent is
+// treated as noise: its recall results would only dilute the ranking, so the
+// intent is skipped entirely.
+const minPredictedIntentConfidence = 0.3
 
 // Recall performs semantic search over the atom store.
 type Recall struct {
@@ -19,6 +25,7 @@ type Recall struct {
 	cfg       Config
 	guard     guard.Guard
 	guardCfg  guard.Config
+	stats     *recallStats
 }
 
 // NewRecall creates a Recall instance.
@@ -68,6 +75,20 @@ func (r *Recall) Query(ctx context.Context, query string, recent []string, state
 	return r.formatContext(res), nil
 }
 
+// trackErr records a recall-path error in the observability counters backing
+// ExtendedMemory.Stats: deadline-exceeded errors count as timeouts, anything
+// else as a failure.
+func (r *Recall) trackErr(err error) {
+	if err == nil || r.stats == nil {
+		return
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		r.stats.timeouts.Add(1)
+	} else {
+		r.stats.failures.Add(1)
+	}
+}
+
 // queryAtomsWithPrediction unions literal-query results with predicted-intent
 // results when prediction is enabled. The union keeps, per atom ID, the best
 // composite score (0.6*similarity + 0.4*retention) computed by queryAtoms and
@@ -77,6 +98,7 @@ func (r *Recall) queryAtomsWithPrediction(ctx context.Context, query string, rec
 	all := make(map[string]scoredAtomMeta)
 	literal, err := r.queryAtomsScored(ctx, query, false)
 	if err != nil {
+		r.trackErr(err)
 		return nil, err
 	}
 	for _, s := range literal {
@@ -87,19 +109,27 @@ func (r *Recall) queryAtomsWithPrediction(ctx context.Context, query string, rec
 		r.cfg.FollowUpAnticipationEnabled != nil && *r.cfg.FollowUpAnticipationEnabled {
 		intents, err := r.predictor.Predict(ctx, query, recent, state)
 		if err != nil {
+			r.trackErr(err)
 			log.Printf("extended memory: predicted-intent generation failed: %v", err)
 		}
 		for _, intent := range intents {
+			if intent.Confidence < minPredictedIntentConfidence {
+				continue
+			}
 			// Predicted intents reuse the composite score but skip the paid
 			// LLM rerank, which is reserved for the literal query.
 			predicted, err := r.queryAtomsScored(ctx, intent.Text, true)
 			if err != nil {
+				r.trackErr(err)
 				continue
 			}
 			// Follow-up anticipation: recall convention/file/error atoms from
 			// the same candidate set instead of re-running the search.
 			predicted = append(predicted, filterScoredByType(predicted, []string{TypeConvention, TypeFile, TypeError})...)
 			for _, s := range predicted {
+				// Weight predicted-intent matches by the intent's confidence
+				// so a speculative intent cannot outrank literal matches.
+				s.score *= intent.Confidence
 				if cur, ok := all[s.atom.ID]; !ok || s.score > cur.score {
 					all[s.atom.ID] = s
 				}

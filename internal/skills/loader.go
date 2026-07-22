@@ -213,9 +213,11 @@ func parseYAMLValue(s string) any {
 	if s == "false" || s == "no" || s == "off" {
 		return false
 	}
-	// Quoted string
-	if (strings.HasPrefix(s, "\"") && strings.HasSuffix(s, "\"")) ||
-		(strings.HasPrefix(s, "'") && strings.HasSuffix(s, "'")) {
+	// Quoted string (a lone quote char is not a quoted string: the same
+	// byte would serve as both delimiters and the slice would be empty)
+	if len(s) >= 2 &&
+		((strings.HasPrefix(s, "\"") && strings.HasSuffix(s, "\"")) ||
+			(strings.HasPrefix(s, "'") && strings.HasSuffix(s, "'"))) {
 		return s[1 : len(s)-1]
 	}
 	// Integer

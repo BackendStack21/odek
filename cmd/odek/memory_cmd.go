@@ -1,11 +1,16 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
+	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/memory"
 	"github.com/BackendStack21/odek/internal/memory/extended"
 )
@@ -70,10 +75,10 @@ func memoryCmd(args []string) error {
 	}
 }
 
-// extendedMemoryCmd handles `odek memory extended forget|quarantine|compact`.
+// extendedMemoryCmd handles `odek memory extended <subcommand>`.
 func extendedMemoryCmd(dir string, args []string) error {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "Usage: odek memory extended <forget|promote|pin|quarantine|compact|pending|confirm|reject> [args]\n")
+		fmt.Fprintf(os.Stderr, "Usage: odek memory extended <forget|promote|pin|quarantine|compact|stats|consolidate|pending|confirm|reject> [args]\n")
 		return nil
 	}
 
@@ -144,6 +149,48 @@ func extendedMemoryCmd(dir string, args []string) error {
 		fmt.Println("odek: Extended Memory vector index compaction triggered in the background")
 		return nil
 
+	case "stats":
+		st := em.Stats()
+		fmt.Println("Extended Memory stats:")
+		fmt.Printf("  live atoms:        %d\n", st.LiveAtoms)
+		fmt.Printf("  quarantined atoms: %d\n", st.QuarantinedAtoms)
+		if len(st.QuarantineReasons) > 0 {
+			reasons := make([]string, 0, len(st.QuarantineReasons))
+			for r := range st.QuarantineReasons {
+				reasons = append(reasons, r)
+			}
+			sort.Strings(reasons)
+			for _, r := range reasons {
+				fmt.Printf("    %-16s %d\n", r+":", st.QuarantineReasons[r])
+			}
+		}
+		fmt.Printf("  index vectors:     %d (dirty: %v)\n", st.IndexVectors, st.IndexDirty)
+		fmt.Printf("  store size:        %.1f MiB\n", float64(st.StoreSizeBytes)/(1<<20))
+		fmt.Printf("  recall timeouts:   %d\n", st.RecallTimeouts)
+		fmt.Printf("  recall failures:   %d\n", st.RecallFailures)
+		if st.RecallTimeouts+st.RecallFailures > 0 {
+			fmt.Println("  warning: recall degraded this process — check LLM/embedding backend latency")
+		}
+		return nil
+
+	case "consolidate":
+		// Merging near-duplicate atoms needs an LLM; resolve the operator
+		// backend the same way the agent does.
+		resolved := config.LoadConfig(config.CLIFlags{})
+		if resolved.APIKey == "" {
+			return fmt.Errorf("memory extended consolidate requires an LLM backend (no API key resolved)")
+		}
+		llmClient := llm.New(resolved.BaseURL, resolved.APIKey, resolved.Model, "", 0, 120*time.Second)
+		emLLM := extended.New(extDir, llmClient, cfg)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		merged, err := emLLM.ConsolidateAtoms(ctx)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("odek: consolidation complete — %d atom(s) merged into existing or new entries\n", merged)
+		return nil
+
 	case "pending":
 		pending, err := em.ListPendingReview()
 		if err != nil {
@@ -186,6 +233,6 @@ func extendedMemoryCmd(dir string, args []string) error {
 		return nil
 
 	default:
-		return fmt.Errorf("unknown extended memory subcommand %q (expected: forget, promote, pin, quarantine, compact, pending, confirm, reject)", sub)
+		return fmt.Errorf("unknown extended memory subcommand %q (expected: forget, promote, pin, quarantine, compact, stats, consolidate, pending, confirm, reject)", sub)
 	}
 }
