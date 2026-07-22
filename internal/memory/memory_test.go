@@ -128,6 +128,21 @@ func TestMemoryManagerDisabled(t *testing.T) {
 	}
 }
 
+// TestProactivePassthroughsNilExtended verifies the proactive-engagement
+// passthroughs are nil-safe when Extended Memory is not initialized.
+func TestProactivePassthroughsNilExtended(t *testing.T) {
+	mm := NewMemoryManager(t.TempDir(), nil, DefaultMemoryConfig())
+	if got := mm.FollowUpSuggestions(); got != nil {
+		t.Errorf("FollowUpSuggestions = %v, want nil", got)
+	}
+	if got, err := mm.PreviewNudges(context.Background(), 2); got != nil || err != nil {
+		t.Errorf("PreviewNudges = %v, %v, want nil, nil", got, err)
+	}
+	if got, err := mm.TakeNudges(context.Background(), 2); got != nil || err != nil {
+		t.Errorf("TakeNudges = %v, %v, want nil, nil", got, err)
+	}
+}
+
 func TestMemoryManagerSecurityScan(t *testing.T) {
 	dir := t.TempDir()
 	mm := NewMemoryManager(dir, nil, DefaultMemoryConfig())

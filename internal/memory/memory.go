@@ -527,6 +527,46 @@ func (m *MemoryManager) ListPendingReview() ([]extended.PendingReview, error) {
 	return m.extended.ListPendingReview()
 }
 
+// FollowUpSuggestions returns the follow-up intent texts captured during the
+// most recent Extended Memory recall. It returns nil when Extended Memory is
+// disabled or uninitialized, or when no suggestions were captured.
+func (m *MemoryManager) FollowUpSuggestions() []string {
+	if m.extended == nil || !m.extended.Enabled() {
+		return nil
+	}
+	intents := m.extended.LastFollowUps()
+	if len(intents) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(intents))
+	for _, intent := range intents {
+		if intent.Text != "" {
+			out = append(out, intent.Text)
+		}
+	}
+	return out
+}
+
+// PreviewNudges computes proactive nudges without checking or recording the
+// anti-annoyance caps. It returns an empty result when Extended Memory is
+// disabled or uninitialized.
+func (m *MemoryManager) PreviewNudges(ctx context.Context, maxN int) ([]extended.Nudge, error) {
+	if m.extended == nil {
+		return nil, nil
+	}
+	return m.extended.ProactiveNudges(ctx, maxN)
+}
+
+// TakeNudges computes proactive nudges and delivers the ones allowed by the
+// anti-annoyance caps, recording delivery. It returns an empty result when
+// Extended Memory is disabled or uninitialized.
+func (m *MemoryManager) TakeNudges(ctx context.Context, maxN int) ([]extended.Nudge, error) {
+	if m.extended == nil {
+		return nil, nil
+	}
+	return m.extended.TakeNudges(ctx, maxN)
+}
+
 // notify fires an event on the configured notifier, stamping the UTC timestamp
 // when the caller left it zero. Safe even before SetNotifier (nil → no-op).
 func (m *MemoryManager) notify(ev MemoryEvent) {

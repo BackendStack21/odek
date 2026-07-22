@@ -49,6 +49,15 @@ type ExtendedMemory struct {
 	recentUserMessages []string
 	recentMu           sync.Mutex
 
+	// lastFollowUps holds the high-confidence predicted intents captured
+	// during the most recent recall, surfaced as follow-up suggestions.
+	followUpsMu   sync.Mutex
+	lastFollowUps []PredictedIntent
+
+	// nudgeMu serializes TakeNudges so concurrent takers cannot both spend
+	// the same daily budget.
+	nudgeMu sync.Mutex
+
 	inferenceMu  sync.Mutex
 	closed       bool
 	inferRunning bool
@@ -84,6 +93,7 @@ func New(dir string, llm LLMClient, cfg Config) *ExtendedMemory {
 		llm:        llm,
 	}
 	em.recall.SetPredictor(em.predictor)
+	em.recall.SetFollowUpSink(em.setLastFollowUps)
 	em.recall.stats = &em.stats
 	_ = em.userModel.Load()
 	em.quarantine.SetTTLDays(cfg.QuarantineTTLDays)
@@ -135,6 +145,28 @@ func (em *ExtendedMemory) SetSessionContext(sessionID, project string) {
 	defer em.mu.Unlock()
 	em.session = sessionID
 	em.project = project
+}
+
+// setLastFollowUps replaces the captured follow-up suggestions. It is the
+// sink wired into Recall so every recall refreshes the list; a nil slice
+// clears it.
+func (em *ExtendedMemory) setLastFollowUps(intents []PredictedIntent) {
+	em.followUpsMu.Lock()
+	defer em.followUpsMu.Unlock()
+	em.lastFollowUps = intents
+}
+
+// LastFollowUps returns a copy of the predicted follow-up intents captured
+// during the most recent recall, or nil when none were captured.
+func (em *ExtendedMemory) LastFollowUps() []PredictedIntent {
+	if em == nil {
+		return nil
+	}
+	em.followUpsMu.Lock()
+	defer em.followUpsMu.Unlock()
+	out := make([]PredictedIntent, len(em.lastFollowUps))
+	copy(out, em.lastFollowUps)
+	return out
 }
 
 // AddAtom manually adds an atom. Manual adds are treated as user-approved.
@@ -598,6 +630,40 @@ func (em *ExtendedMemory) AnaphoraResolve(ctx context.Context, msg string) (stri
 		return msg, false
 	}
 	return resolved, true
+}
+
+// openLoopTypes are the atom types that represent unresolved threads: user
+// questions that went unanswered and stated goals/intentions.
+var openLoopTypes = map[string]bool{
+	TypeQuestion: true,
+	TypeGoal:     true,
+	TypeIntent:   true,
+}
+
+// OpenLoops returns trusted question/goal/intent atoms, newest first, capped
+// at limit (limit <= 0 returns all). It lists the store directly instead of
+// running a semantic query: open loops are a recency-ordered data view, so
+// the embedding search, min-score filtering, and LLM rerank of the recall
+// pipeline would only add cost without improving the answer.
+func (em *ExtendedMemory) OpenLoops(ctx context.Context, limit int) ([]MemoryAtom, error) {
+	if em == nil || !em.Enabled() {
+		return nil, nil
+	}
+	atoms, err := em.store.List() // newest first
+	if err != nil {
+		return nil, fmt.Errorf("extended memory: open loops list: %w", err)
+	}
+	out := make([]MemoryAtom, 0, len(atoms))
+	for _, atom := range atoms {
+		if !openLoopTypes[atom.Type] || IsTaintedSourceClass(atom.SourceClass) {
+			continue
+		}
+		out = append(out, atom)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
 }
 
 // SearchAtoms performs an explicit semantic search and returns ranked atoms.

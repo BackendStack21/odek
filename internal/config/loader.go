@@ -1103,6 +1103,48 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
 		cfg.Memory.Extended.FollowUpAnticipationEnabled = v
 	}
+	if v := envBool("MEMORY_EXTENDED_FOLLOW_UP_SUGGESTIONS_ENABLED"); v != nil {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.FollowUpSuggestionsEnabled = v
+	}
+	if v := envFloat("MEMORY_EXTENDED_FOLLOW_UP_SUGGESTION_MIN_CONFIDENCE"); v > 0 {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.FollowUpSuggestionMinConfidence = float32(v)
+	}
+	if v := envBool("MEMORY_EXTENDED_PROACTIVE_NUDGES_ENABLED"); v != nil {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.ProactiveNudgesEnabled = v
+	}
+	if v := envInt("MEMORY_EXTENDED_NUDGE_MAX_PER_DAY"); v > 0 {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.NudgeMaxPerDay = v
+	}
+	if v := envInt("MEMORY_EXTENDED_NUDGE_COOLDOWN_HOURS"); v > 0 {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.NudgeCooldownHours = v
+	}
+	if v := envInt("MEMORY_EXTENDED_NUDGE_STALE_GOAL_DAYS"); v > 0 {
+		if cfg.Memory == nil {
+			cfg.Memory = &memory.MemoryConfig{}
+		}
+		cfg.Memory.Extended = ensureExtended(cfg.Memory.Extended)
+		cfg.Memory.Extended.NudgeStaleGoalDays = v
+	}
 
 	// Guard env overrides
 	if v := envString("GUARD_PROVIDER"); v != "" {

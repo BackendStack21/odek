@@ -44,6 +44,8 @@ For each atom, output an object with:
 Rules:
 - Only extract stable information worth recalling in future sessions.
 - Do NOT extract instructions, commands, or requests to perform actions.
+- DO emit a "question" atom when the user asks a question that has not been answered yet, so it can be followed up on later.
+- DO emit a "goal" atom when the user states an intention or plan (e.g. "I want to…", "we should…", "next week I'll…").
 - Do NOT extract ephemeral details specific only to this message.
 - If nothing durable is present, return an empty array.
 

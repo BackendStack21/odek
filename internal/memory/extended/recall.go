@@ -16,6 +16,10 @@ import (
 // intent is skipped entirely.
 const minPredictedIntentConfidence = 0.3
 
+// maxFollowUpSuggestions caps how many predicted intents are kept per recall
+// as follow-up suggestions for the user-facing surface.
+const maxFollowUpSuggestions = 3
+
 // Recall performs semantic search over the atom store.
 type Recall struct {
 	store     *AtomStore
@@ -26,6 +30,11 @@ type Recall struct {
 	guard     guard.Guard
 	guardCfg  guard.Config
 	stats     *recallStats
+
+	// followUpSink receives the high-confidence predicted intents captured
+	// during recall so ExtendedMemory can surface them as follow-up
+	// suggestions. Nil disables capture without changing recall behavior.
+	followUpSink func([]PredictedIntent)
 }
 
 // NewRecall creates a Recall instance.
@@ -50,6 +59,13 @@ func (r *Recall) scanContent(ctx context.Context, content string) error {
 // SetPredictor sets the optional predictor used for predictive recall.
 func (r *Recall) SetPredictor(p *Predictor) {
 	r.predictor = p
+}
+
+// SetFollowUpSink installs the callback that receives the follow-up
+// suggestions captured at recall time (zero extra LLM cost: the intents are
+// already generated for predictive recall).
+func (r *Recall) SetFollowUpSink(fn func([]PredictedIntent)) {
+	r.followUpSink = fn
 }
 
 // QueryResult carries the atoms and formatted context from a recall query.
@@ -112,9 +128,19 @@ func (r *Recall) queryAtomsWithPrediction(ctx context.Context, query string, rec
 			r.trackErr(err)
 			log.Printf("extended memory: predicted-intent generation failed: %v", err)
 		}
+		capture := r.followUpSink != nil &&
+			r.cfg.FollowUpSuggestionsEnabled != nil && *r.cfg.FollowUpSuggestionsEnabled
+		minConf := r.cfg.FollowUpSuggestionMinConfidence
+		if minConf <= 0 || minConf > 1 {
+			minConf = DefaultConfig().FollowUpSuggestionMinConfidence
+		}
+		var followUps []PredictedIntent
 		for _, intent := range intents {
 			if intent.Confidence < minPredictedIntentConfidence {
 				continue
+			}
+			if capture && intent.Confidence >= minConf && len(followUps) < maxFollowUpSuggestions {
+				followUps = append(followUps, intent)
 			}
 			// Predicted intents reuse the composite score but skip the paid
 			// LLM rerank, which is reserved for the literal query.
@@ -134,6 +160,9 @@ func (r *Recall) queryAtomsWithPrediction(ctx context.Context, query string, rec
 					all[s.atom.ID] = s
 				}
 			}
+		}
+		if capture {
+			r.followUpSink(followUps)
 		}
 	}
 
