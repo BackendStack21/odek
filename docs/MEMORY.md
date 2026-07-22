@@ -45,9 +45,9 @@ HH:MM  agent  pushed 19 tests, tagged v0.8.19
 
 ### Tier 3 — Episodes (on-disk, searchable)
 
-After sessions with ≥3 turns, the MemoryManager runs SimpleCall to extract 1-3 durable facts. Written to `episodes/<session-id>.md`. Searchable via `memory(search=...)` which uses **RandomProjections** (go-vector) to rank episodes by cosine similarity to the query — zero LLM calls per search. Set `llm_search: true` in config to use LLM-based ranking instead.
+After sessions with ≥3 turns, the MemoryManager extracts a session summary. When both episode extraction (`extract_on_end`) and fact extraction (`extract_facts`) are enabled, a **single combined LLM call** produces the episode summary and the durable facts in one JSON response (falling back to the two single-purpose calls if the combined response is unparseable). Written to `episodes/<session-id>.md`. Searchable via `memory(search=...)` which uses **RandomProjections** (go-vector) to rank episodes by cosine similarity to the query — zero LLM calls per search. Set `llm_search: true` in config to use LLM-based ranking instead.
 
-Episode extraction runs **asynchronously** — it does not block process exit. The session summary is a best-effort post-processing step that completes in a background goroutine.
+Episode extraction runs **asynchronously** — it does not block the agent loop. Session-end work is tracked by the MemoryManager and drained with a bounded wait (~15s) in `Agent.Close`, so episodes survive CLI exit without hanging the process.
 
 ## Memory Tool — Unified API
 
@@ -56,7 +56,7 @@ Episode extraction runs **asynchronously** — it does not block process exit. T
   "name": "memory",
   "description": "Manage persistent memory across sessions.",
   "parameters": {
-    "action": { "enum": ["add", "replace", "remove", "consolidate", "read", "search"] },
+    "action": { "enum": ["add", "replace", "remove", "consolidate", "read", "search", "view", "add_atom", "search_atoms", "forget_atom", "list_quarantine", "pin_atom", "confirm_pending_review", "reject_pending_review", "list_pending_review"] },
     "target": { "enum": ["user", "env"], "description": "For add/replace/remove/consolidate" },
     "content": { "type": "string", "description": "For add/replace" },
     "old_text": { "type": "string", "description": "Unique substring for replace/remove" },
@@ -169,7 +169,7 @@ Key properties:
 - **Trust boundary**: per-turn extraction only produces `user_said` atoms. Tainted source classes (`tool_output`, `file_read`, `web`, `mcp`, `subagent`, `agent_generated`, `inferred`) can be stored but are quarantined and excluded from recall until promoted.
 - **Size cap**: defaults to 100 MB with `retention_decay` eviction; pinned atoms are never evicted.
 - **Tool surface**: `memory` tool actions `add_atom`, `search_atoms`, `forget_atom`, `pin_atom`, `list_quarantine`, `confirm_pending_review`, `reject_pending_review`, and `list_pending_review`.
-- **CLI surface**: `odek memory extended forget|promote|pin|quarantine|compact|pending|confirm|reject`.
+- **CLI surface**: `odek memory extended forget|promote|pin|quarantine|compact|stats|consolidate|pending|confirm|reject`.
 
 When enabled, Extended Memory atoms are injected as a separate system message after the legacy memory block and episode summaries on each turn. For the full design, config reference, and implementation status, see [docs/EXTENDED_MEMORY.md](EXTENDED_MEMORY.md).
 
@@ -189,9 +189,11 @@ The optional prompt-injection guard subsystem ([docs/CONFIG.md](CONFIG.md#prompt
 - the session buffer
 - Extended Memory atom extraction, `add_atom`, and recall paths
 
-The guard runs the local rule scan first, then optionally consults a configured `piguard` sidecar. If the guard flags content, the write is rejected and the agent receives an error.
+The guard runs the local rule scan first, then optionally consults a configured `piguard` sidecar. Legacy fact writes that fail the scan are rejected with an error. Extended Memory atoms that fail the scan are instead **quarantined** with a `scan_rejected` reason (visible via `odek memory extended quarantine`) so guard false positives can be reviewed and promoted instead of silently lost; the `add_atom` tool result then reports "quarantined for human review" rather than "added".
 
 ## Observability (lifecycle events)
+
+`odek memory extended stats` prints a snapshot of the Extended Memory store: live/quarantined atom counts, quarantine reason breakdown (`tainted` vs `scan_rejected` — the guard false-positive signal), index vector count and dirty flag, store size, and recall timeout/failure counters, with a degradation warning when recall errors have occurred in the process.
 
 Every memory lifecycle moment emits a `memory.MemoryEvent` so operators can see
 activity that was previously silent. Events fan out (via `MultiMemoryNotifier`)

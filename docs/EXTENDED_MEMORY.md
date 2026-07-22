@@ -174,11 +174,11 @@ Atoms are deduplicated in two tiers at persistence time:
 
 ### Atom Consolidation
 
-`ExtendedMemory.ConsolidateAtoms(ctx)` (no CLI yet) merges groups of live atoms that are near-duplicates (pairwise cosine similarity at or above `consolidate_similarity_threshold`). For each group it asks the memory LLM — one call per group — to merge the texts into a single concise atom, stores the merged atom through the normal add path (scan and size cap apply) keeping the group's highest confidence, a refreshed `CreatedAt`, and the union of the group's outward associations, then removes the originals. Quarantined atoms are never consolidated. On any failure for a group (LLM error, empty response, scan rejection) the originals are kept untouched.
+`ExtendedMemory.ConsolidateAtoms(ctx)` — exposed as `odek memory extended consolidate` — merges groups of live atoms that are near-duplicates (pairwise cosine similarity at or above `consolidate_similarity_threshold`). For each group it asks the memory LLM — one call per group — to merge the texts into a single concise atom, stores the merged atom through the normal add path (scan and size cap apply) keeping the group's highest confidence, a refreshed `CreatedAt`, and the union of the group's outward associations, then removes the originals. Quarantined atoms are never consolidated. On any failure for a group (LLM error, empty response, scan rejection) the originals are kept untouched.
 
 ### Observability
 
-`ExtendedMemory.Stats()` returns a `Stats` snapshot for operators and monitoring: live/quarantined atom counts, quarantine entries grouped by reason prefix (`tainted`, `scan_rejected`), index vector count and dirty flag, on-disk store size, and recall error counters (`RecallTimeouts` for context-deadline-exceeded errors, `RecallFailures` for all other recall errors).
+`ExtendedMemory.Stats()` returns a `Stats` snapshot — surfaced as `odek memory extended stats` — for operators and monitoring: live/quarantined atom counts, quarantine entries grouped by reason prefix (`tainted`, `scan_rejected`), index vector count and dirty flag, on-disk store size, and recall error counters (`RecallTimeouts` for context-deadline-exceeded errors, `RecallFailures` for all other recall errors). The CLI prints a degradation warning when either counter is non-zero.
 
 ## Semantic Search
 
