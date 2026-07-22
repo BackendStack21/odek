@@ -1163,6 +1163,7 @@ func TestFormatTelegramStats(t *testing.T) {
 		CacheCreationTokens: 10,
 		CacheReadTokens:     20,
 		CachedTokens:        30,
+		CacheReported:       true,
 		TotalLatency:        5*time.Second + 500*time.Millisecond,
 	}
 	out := formatTelegramStats(info, []string{"read_file", "shell"})
@@ -1186,6 +1187,18 @@ func TestFormatTelegramStats_SingularTurn(t *testing.T) {
 	out := formatTelegramStats(info, nil)
 	if !strings.Contains(out, "1 turn") || strings.Contains(out, "1 turns") {
 		t.Errorf("singular turn formatting wrong: %s", out)
+	}
+}
+
+// TestFormatTelegramStats_CacheNotReported verifies the honest display when
+// the provider returned no cache metrics at all (vs. real zeros).
+func TestFormatTelegramStats_CacheNotReported(t *testing.T) {
+	out := formatTelegramStats(loop.IterationInfo{Turn: 1}, nil)
+	if !strings.Contains(out, "cache: n/a") {
+		t.Errorf("expected cache n/a when provider reports nothing, got: %s", out)
+	}
+	if strings.Contains(out, "write") || strings.Contains(out, "read /") {
+		t.Errorf("must not show fake zero cache numbers when unreported: %s", out)
 	}
 }
 

@@ -2138,9 +2138,16 @@ func formatTelegramStats(info loop.IterationInfo, toolList []string) string {
 		iters += "s"
 	}
 
-	// Always include cache stats so the user can see them even when zero.
-	cacheStr := fmt.Sprintf(" · cache: %d write / %d read / %d total",
-		info.CacheCreationTokens, info.CacheReadTokens, info.CachedTokens)
+	// Show real numbers when the provider reports cache metrics; otherwise
+	// say so — "0 write / 0 read" would wrongly imply caching ran and
+	// missed, when in fact the provider returned no data at all.
+	var cacheStr string
+	if info.CacheReported {
+		cacheStr = fmt.Sprintf(" · cache: %d write / %d read / %d total",
+			info.CacheCreationTokens, info.CacheReadTokens, info.CachedTokens)
+	} else {
+		cacheStr = " · cache: n/a (provider reports no cache metrics)"
+	}
 
 	return fmt.Sprintf(
 		"```\n✅ Done · %s · %d in / %d out%s · %s — tools: %s\n```",

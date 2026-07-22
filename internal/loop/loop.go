@@ -91,6 +91,7 @@ type IterationInfo struct {
 	CacheCreationTokens int           // cumulative cache creation tokens
 	CacheReadTokens     int           // cumulative cache read tokens
 	CachedTokens        int           // cumulative cached tokens (OpenAI)
+	CacheReported       bool          // provider returned cache metrics at least once
 	TotalLatency        time.Duration // cumulative wall time
 	HasFinalAnswer      bool          // true when the agent reached a final answer
 	ReasoningContent    string        // LLM reasoning before tool calls (empty if none)
@@ -185,9 +186,10 @@ type Engine struct {
 	TotalOutputTokens int
 
 	// Cache metrics accumulated across all iterations.
-	TotalCacheCreationTokens int // Anthropic: tokens written to cache
-	TotalCacheReadTokens     int // Anthropic: tokens read from cache
-	TotalCachedTokens        int // OpenAI: cached prompt tokens
+	TotalCacheCreationTokens int  // Anthropic: tokens written to cache
+	TotalCacheReadTokens     int  // Anthropic: tokens read from cache
+	TotalCachedTokens        int  // OpenAI: cached prompt tokens
+	TotalCacheReported       bool // provider returned cache metrics at least once
 }
 
 // New creates a new loop Engine.
@@ -587,6 +589,7 @@ func (e *Engine) RunWithMessages(ctx context.Context, messages []llm.Message) (s
 	e.TotalCacheCreationTokens = 0
 	e.TotalCacheReadTokens = 0
 	e.TotalCachedTokens = 0
+	e.TotalCacheReported = false
 	return e.runLoop(ctx, messages)
 }
 
@@ -867,6 +870,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		e.TotalCacheCreationTokens += result.CacheCreationTokens
 		e.TotalCacheReadTokens += result.CacheReadTokens
 		e.TotalCachedTokens += result.CachedTokens
+		e.TotalCacheReported = e.TotalCacheReported || result.CacheReported
 
 		// No tool calls = final answer
 		if len(result.ToolCalls) == 0 {
@@ -901,6 +905,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 					CacheCreationTokens: e.TotalCacheCreationTokens,
 					CacheReadTokens:     e.TotalCacheReadTokens,
 					CachedTokens:        e.TotalCachedTokens,
+					CacheReported:       e.TotalCacheReported,
 					TotalLatency:        time.Since(startTime),
 					HasFinalAnswer:      true,
 					ReasoningContent:    result.ReasoningContent,
@@ -955,6 +960,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 				CacheCreationTokens: e.TotalCacheCreationTokens,
 				CacheReadTokens:     e.TotalCacheReadTokens,
 				CachedTokens:        e.TotalCachedTokens,
+				CacheReported:       e.TotalCacheReported,
 				TotalLatency:        time.Since(startTime),
 				HasFinalAnswer:      false,
 				ReasoningContent:    result.ReasoningContent,
@@ -1244,6 +1250,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 				CacheCreationTokens: e.TotalCacheCreationTokens,
 				CacheReadTokens:     e.TotalCacheReadTokens,
 				CachedTokens:        e.TotalCachedTokens,
+				CacheReported:       e.TotalCacheReported,
 				TotalLatency:        time.Since(startTime),
 				HasFinalAnswer:      false,
 			})

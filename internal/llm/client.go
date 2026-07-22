@@ -135,9 +135,13 @@ type CallResult struct {
 	// Cache metrics. Only populated when the provider returns them.
 	// Anthropic: cache_creation_input_tokens, cache_read_input_tokens
 	// OpenAI: prompt_tokens_details.cached_tokens
+	// DeepSeek: prompt_cache_hit_tokens (read), prompt_cache_miss_tokens (write)
 	CacheCreationTokens int // Anthropic — tokens written to cache
 	CacheReadTokens     int // Anthropic — tokens read from cache hit
 	CachedTokens        int // OpenAI — cached tokens in prompt
+	// CacheReported is true when the provider returned any cache metrics at
+	// all; false means "no data", which is different from "0 tokens cached".
+	CacheReported bool
 }
 
 // toolChoiceNone forces the model to not call tools.
@@ -451,6 +455,11 @@ func parseResponse(data []byte) (*CallResult, error) {
 			PromptTokensDetails *struct {
 				CachedTokens int `json:"cached_tokens"`
 			} `json:"prompt_tokens_details"`
+			// DeepSeek native prompt caching (always present on DeepSeek
+			// endpoints, unlike prompt_tokens_details which varies by
+			// gateway/proxy).
+			PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
+			PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -472,6 +481,18 @@ func parseResponse(data []byte) (*CallResult, error) {
 		result.CacheReadTokens = raw.Usage.CacheReadTokens
 		if raw.Usage.PromptTokensDetails != nil {
 			result.CachedTokens = raw.Usage.PromptTokensDetails.CachedTokens
+			result.CacheReported = true
+		}
+		if raw.Usage.CacheCreationTokens > 0 || raw.Usage.CacheReadTokens > 0 {
+			result.CacheReported = true
+		}
+		// DeepSeek native fields: a hit is prompt content read from cache;
+		// a miss is newly processed content that DeepSeek then caches for
+		// future requests, i.e. a cache write.
+		if raw.Usage.PromptCacheHitTokens > 0 || raw.Usage.PromptCacheMissTokens > 0 {
+			result.CacheReadTokens += raw.Usage.PromptCacheHitTokens
+			result.CacheCreationTokens += raw.Usage.PromptCacheMissTokens
+			result.CacheReported = true
 		}
 	}
 	for _, tc := range msg.ToolCalls {
