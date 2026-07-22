@@ -326,6 +326,10 @@ func scheduleDaemon(_ []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	// Start the storage-maintenance janitor (expired sessions, audit records,
+	// plans, skill skips, log rotation), tied to the daemon's lifetime.
+	startStorageMaintenance(ctx, resolved)
+
 	jobs, _ := st.List()
 	enabled := 0
 	for _, j := range jobs {

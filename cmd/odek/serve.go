@@ -358,6 +358,13 @@ func serveCmd(args []string) error {
 		openInBrowser(tokenURL)
 	}
 
+	// Start the storage-maintenance janitor (expired sessions, audit records,
+	// plans, skill skips, log rotation) for the life of the server. The
+	// context is cancelled when serveOnListener returns on shutdown.
+	maintCtx, maintCancel := context.WithCancel(context.Background())
+	defer maintCancel()
+	startStorageMaintenance(maintCtx, resolved)
+
 	return serveOnListener(listener, mux)
 }
 

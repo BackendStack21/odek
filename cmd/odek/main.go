@@ -822,6 +822,7 @@ func printUsage() {
   odek telegram
   odek schedule <list|add|rm|enable|disable|run|next|daemon>
   odek memory <list|promote <session_id>>
+  odek cleanup [--dry-run]
   odek version
 
 Commands:
@@ -851,6 +852,8 @@ Commands:
                        list: show episodes excluded from recall (untrusted)
                        promote <session_id>: approve one so it can be recalled.
                        Human-gated on purpose — not available to the agent.
+  cleanup             One-shot storage sweep of ~/.odek (sessions, audit,
+                       plans, skill skips, log rotation). --dry-run previews.
   init                Create a config file (default: ./odek.json)
   version             Print version and exit
 
