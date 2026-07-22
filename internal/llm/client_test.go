@@ -787,6 +787,45 @@ func TestParseResponse_OpenAICacheMetrics(t *testing.T) {
 	}
 }
 
+func TestParseResponse_DeepSeekCacheMetrics(t *testing.T) {
+	raw := `{
+		"choices": [{"message": {"content": "deepseek response"}}],
+		"usage": {
+			"prompt_tokens": 1000,
+			"completion_tokens": 40,
+			"prompt_cache_hit_tokens": 750,
+			"prompt_cache_miss_tokens": 250
+		}
+	}`
+	result, err := parseResponse([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CacheReadTokens != 750 {
+		t.Errorf("CacheReadTokens = %d, want 750 (deepseek hit)", result.CacheReadTokens)
+	}
+	if result.CacheCreationTokens != 250 {
+		t.Errorf("CacheCreationTokens = %d, want 250 (deepseek miss)", result.CacheCreationTokens)
+	}
+	if !result.CacheReported {
+		t.Error("CacheReported should be true when deepseek cache fields are present")
+	}
+}
+
+func TestParseResponse_CacheNotReported(t *testing.T) {
+	raw := `{
+		"choices": [{"message": {"content": "plain response"}}],
+		"usage": {"prompt_tokens": 100, "completion_tokens": 10}
+	}`
+	result, err := parseResponse([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CacheReported {
+		t.Error("CacheReported should be false when no cache fields are present")
+	}
+}
+
 func TestApplyCacheMarkers_WithSystemPrompt(t *testing.T) {
 	messages := []Message{
 		{Role: "system", Content: "You are a helpful assistant."},
