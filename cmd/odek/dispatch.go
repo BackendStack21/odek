@@ -55,6 +55,8 @@ func dispatch(args []string) int {
 		return cliExit(scheduleCmd(rest))
 	case "memory":
 		return cliExit(memoryCmd(rest))
+	case "cleanup":
+		return cliExit(cleanupCmd(rest))
 	default:
 		fmt.Fprintf(os.Stderr, "odek: unknown command %q\n", cmd)
 		printUsage()

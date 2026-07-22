@@ -913,6 +913,10 @@ func telegramCmd(args []string) error {
 	stopScheduler := startSchedulerForBot(ctx, bot, resolved, systemMessage, handlerLog, scheduleStore, sessionManager)
 	defer stopScheduler()
 
+	// 16c. Start the storage-maintenance janitor (expired sessions, audit
+	// records, plans, skill skips, log rotation), tied to the bot's lifetime.
+	startStorageMaintenance(ctx, resolved)
+
 	// 17. Process updates until the channel is closed (ctx cancelled).
 	for upd := range updates {
 		handler.HandleUpdate(upd)

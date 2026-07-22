@@ -48,6 +48,7 @@ cmd/odek/
   skill_promote.go            `odek skill promote` — clear NeedsReview on a tainted skill
   schedule.go                 `odek schedule` command and scheduler wiring
   memory_cmd.go               `odek memory` command
+  cleanup.go                  `odek cleanup [--dry-run]` one-shot storage sweep + janitor wiring (telegram/serve/schedule daemon)
   parallel.go                 Parallelism helpers
   toolctx.go                  Tool-call context plumbing
   security_report_validation_test.go  Regression bar for every documented mitigation
@@ -60,6 +61,7 @@ internal/
   auth/                       Interactive approval system
   memory/                     MemoryManager (facts, buffer, episodes, merge, scan). EpisodeProvenance — tainted episodes never auto-replayed.
   session/                    Session store (CRUD, trim, cleanup, compact JSON). AuditStore + divergence heuristic.
+  maintenance/                Storage-maintenance janitor (session/audit/plan retention, log rotation, media sweep, skill skip-list GC). Config: `maintenance` section (operator-only).
   skills/                     Skill system (types, loader, triggers, self-improve, curator, import, cache). SkillProvenance gate.
   config/                     Config file loading, env vars, secrets.env, priority merge
   telegram/                   Telegram bot: bot.go, poller.go, handler.go, commands.go, session.go, health.go, plan.go, media_path.go
@@ -91,6 +93,7 @@ ReAct cycle: observe → think → act → repeat.
 - **Interaction modes** — engaging (narrated), enhance (persistent), verbose (raw), off.
 - Max 300 iterations by default.
 - **Post-response async processing** — skill learning, episode extraction, and per-turn extended-memory extraction run in background goroutines tracked by `MemoryManager.RunBackground`; `Agent.Close` drains them via `WaitForBackground` (bounded, ~15s) so the work survives CLI exit without hanging `odek run`.
+- **Storage maintenance janitor** — `maintenance.Start` (internal/maintenance) runs a periodic sweep of `~/.odek` (expired sessions/audit/plans, oversized-log rotation, media sweep, skill skip-list GC) inside `odek telegram`, `odek serve`, and `odek schedule daemon` when `maintenance.enabled` is set; `odek cleanup [--dry-run]` runs the same sweep on demand. Session files are also trimmed at write time (oldest groups first, system message kept) when they would exceed `MaxSessionFileBytes`, so a session can never grow past the load cap. Operator-only config — project `./odek.json` cannot set it. See docs/MAINTENANCE.md.
 - **Artifact-aware file search** — `search_files` and `multi_grep` skip build/artifact directories (`node_modules`, `vendor`, `.git`, `__pycache__`, `.venv`, etc.) automatically, reducing noise and speeding scans.
 - **Semantic session search** — the `session_search` tool uses go-vector RandomProjections + k-NN for semantic similarity search through session content, with a two-tier pipeline: vector index (fast, ~1ms) → deepSearch fallback (exhaustive, slower).
 - **Security-first defaults** — the latest hardening closes the high/medium/low findings tracked in `sec_findings.md`: default `non_interactive` is `deny`, project-level `odek.json` cannot redirect backends or hijack delivery, project-level sandbox knobs require explicit operator approval, `~/.odek` trust anchors are protected, WebSocket upgrades require a per-instance CSRF token, and all untrusted content is wrapped before reaching the model. See Security Architecture below for the full list.

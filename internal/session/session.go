@@ -35,7 +35,9 @@ import (
 // MaxSessionFileBytes caps the on-disk size of a session file that Load will
 // read into memory. This prevents a tampered or corrupted multi-gigabyte
 // session file from causing an OOM when any caller loads it.
-const MaxSessionFileBytes = 32 * 1024 * 1024 // 32 MiB
+// It is a var, not a const, so tests can temporarily shrink it instead of
+// building multi-MiB fixtures — production code should treat it as fixed.
+var MaxSessionFileBytes = 32 * 1024 * 1024 // 32 MiB
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -52,6 +54,14 @@ type Session struct {
 	Sandbox   bool          `json:"sandbox"`              // was sandboxed — auto-apply on resume
 	Messages  []llm.Message `json:"messages"`             // full conversation history
 	Buffer    []string      `json:"buffer,omitempty"`     // last N turn summaries (memory tier 2)
+
+	// RedactBoundary records how many leading messages have already been
+	// secret-redacted by a previous save. Redacting the full transcript on
+	// every save is O(history) per write — O(n²) over a session's life —
+	// and dominates save time on long sessions (20+ regexes over tens of
+	// MB). Sessions are append-only, so only messages at or beyond the
+	// boundary need scanning. Old files default to 0 (= redact all once).
+	RedactBoundary int `json:"redact_boundary,omitempty"`
 }
 
 // ── Store ──────────────────────────────────────────────────────────────
@@ -61,6 +71,11 @@ type Session struct {
 type Store struct {
 	dir string // e.g. /home/user/.odek/sessions/
 	mu  sync.Mutex
+
+	// trimWarned records session IDs for which the write-path size-cap trim
+	// warning has already been emitted, so the warning fires once per session
+	// per process instead of on every Append of an oversized session.
+	trimWarned map[string]struct{}
 
 	// Vec is the optional semantic search index. When non-nil, every
 	// Save/Delete/Cleanup call updates the vector index automatically.
@@ -75,7 +90,14 @@ func NewStore() (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("session: home dir: %w", err)
 	}
-	dir := filepath.Join(home, ".odek", "sessions")
+	return NewStoreWithDir(filepath.Join(home, ".odek", "sessions"))
+}
+
+// NewStoreWithDir creates a session store rooted at the given directory.
+// The directory is created if it doesn't exist. Used by subsystems (e.g.
+// storage maintenance) that operate on an explicit home directory rather
+// than the current user's default.
+func NewStoreWithDir(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("session: create dir: %w", err)
 	}
@@ -343,18 +365,56 @@ func (s *Store) saveLocked(sess *Session) error {
 		return fmt.Errorf("session: refusing unsafe save: %w", err)
 	}
 
-	// Redact secrets from all messages and the task label before writing to
-	// disk. This is defense-in-depth: the loop engine already redacts tool
-	// outputs, but this catches any secrets that slipped through
-	// (e.g. LLM hallucinations, direct API usage, or the first user prompt
-	// stored as the session title).
+	// Redact secrets before writing to disk. This is defense-in-depth: the
+	// loop engine already redacts tool outputs, but this catches any secrets
+	// that slipped through (e.g. LLM hallucinations, direct API usage, or
+	// the first user prompt stored as the session title). Sessions are
+	// append-only, so only messages at or beyond sess.RedactBoundary are
+	// scanned — messages already redacted by a previous save are not
+	// re-scanned (see the field comment for the O(n²) rationale).
 	sess.Task = redact.RedactSecrets(sess.Task)
-	for i := range sess.Messages {
+	boundary := sess.RedactBoundary
+	if boundary < 0 {
+		boundary = 0
+	}
+	if boundary > len(sess.Messages) {
+		boundary = len(sess.Messages)
+	}
+	for i := boundary; i < len(sess.Messages); i++ {
 		sess.Messages[i].Content = redact.RedactSecrets(sess.Messages[i].Content)
 		sess.Messages[i].ReasoningContent = redact.RedactSecrets(sess.Messages[i].ReasoningContent)
 	}
 
 	data, err := json.Marshal(sess)
+	if err != nil {
+		return fmt.Errorf("session: marshal: %w", err)
+	}
+
+	// Write-path size cap: MaxSessionFileBytes is enforced at Load, so a
+	// session allowed to grow past it on disk would become unloadable. Trim
+	// the oldest message groups (keeping the system message at index 0 and
+	// the most recent turns, mirroring the loop's trim semantics) until the
+	// serialized form fits.
+	if len(data) > MaxSessionFileBytes {
+		// The trim's own marshaled form is discarded: the final marshal
+		// below recomputes it after RedactBoundary is updated.
+		if _, err = s.trimToFileCapLocked(sess, data); err != nil {
+			return err
+		}
+		if s.trimWarned == nil {
+			s.trimWarned = make(map[string]struct{})
+		}
+		if _, ok := s.trimWarned[sess.ID]; !ok {
+			s.trimWarned[sess.ID] = struct{}{}
+			fmt.Fprintf(os.Stderr, "odek: warning: session %s exceeded %d bytes on write — oldest messages trimmed to stay within the load cap\n", sess.ID, MaxSessionFileBytes)
+		}
+	}
+	// Every surviving message is now redacted: those before the boundary by
+	// earlier saves, the rest just now — and trimming only removes messages,
+	// so the boundary is simply the surviving count. Set it before the final
+	// marshal so it is actually persisted.
+	sess.RedactBoundary = len(sess.Messages)
+	data, err = json.Marshal(sess)
 	if err != nil {
 		return fmt.Errorf("session: marshal: %w", err)
 	}
@@ -377,6 +437,60 @@ func (s *Store) saveLocked(sess *Session) error {
 	return nil
 }
 
+// trimToFileCapLocked drops the oldest message groups from sess until its
+// serialized form fits within MaxSessionFileBytes, returning the trimmed
+// JSON. Caller must hold s.mu.
+//
+// Group semantics mirror the loop's context trimming: the system message at
+// index 0 is always kept, and an assistant tool_calls message is dropped
+// together with its following tool-result messages so a stored transcript
+// never contains orphaned tool messages (which strict providers reject).
+// The turn count is recounted to match the surviving messages. If nothing
+// droppable remains (a degenerate case, e.g. a single oversized system
+// message), the session is written as-is — failing the save would lose data.
+func (s *Store) trimToFileCapLocked(sess *Session, data []byte) ([]byte, error) {
+	for len(data) > MaxSessionFileBytes {
+		start := 0
+		if len(sess.Messages) > 0 && sess.Messages[0].Role == "system" {
+			start = 1 // keep system
+		}
+		if start >= len(sess.Messages) {
+			break // nothing left to drop
+		}
+		// Drop enough oldest groups in ONE pass to get back under the cap.
+		// Dropping a single group per re-marshal is O(n²) for long
+		// transcripts (thousands of messages × full-session marshal) and
+		// effectively hangs on oversized fixtures. Each pass drops at least
+		// one group, so the outer loop still terminates; groups are
+		// marshaled once each to size them exactly.
+		excess := len(data) - MaxSessionFileBytes
+		freed := 0
+		dropEnd := start
+		for dropEnd < len(sess.Messages) && freed <= excess {
+			groupEnd := dropEnd + 1
+			if sess.Messages[dropEnd].Role == "assistant" && len(sess.Messages[dropEnd].ToolCalls) > 0 {
+				for groupEnd < len(sess.Messages) && sess.Messages[groupEnd].Role == "tool" {
+					groupEnd++
+				}
+			}
+			groupJSON, err := json.Marshal(sess.Messages[dropEnd:groupEnd])
+			if err != nil {
+				return nil, fmt.Errorf("session: marshal trim candidate: %w", err)
+			}
+			freed += len(groupJSON)
+			dropEnd = groupEnd
+		}
+		sess.Messages = append(sess.Messages[:start], sess.Messages[dropEnd:]...)
+		sess.Turns = countUserTurns(sess.Messages)
+		var err error
+		data, err = json.Marshal(sess)
+		if err != nil {
+			return nil, fmt.Errorf("session: marshal after trim: %w", err)
+		}
+	}
+	return data, nil
+}
+
 // Load reads a session from disk by ID. Returns an error if the file
 // doesn't exist or can't be parsed.
 func (s *Store) Load(id string) (*Session, error) {
@@ -387,7 +501,7 @@ func (s *Store) Load(id string) (*Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("session: load %q: %w", id, err)
 	}
-	if info.Size() > MaxSessionFileBytes {
+	if info.Size() > int64(MaxSessionFileBytes) {
 		return nil, fmt.Errorf("session: load %q: file too large (%d bytes, max %d)", id, info.Size(), MaxSessionFileBytes)
 	}
 	data, err := os.ReadFile(s.path(id))

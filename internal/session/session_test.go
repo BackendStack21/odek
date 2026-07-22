@@ -1282,3 +1282,134 @@ func TestBuildConversationText(t *testing.T) {
 		t.Error("tool messages should be excluded")
 	}
 }
+
+// ── Write-path size cap ────────────────────────────────────────────────
+
+// TestSave_TrimsOversizedSession forces a session past MaxSessionFileBytes and
+// verifies the write path trims the oldest messages so the file stays under
+// the cap and remains Load-able. The system message at index 0 and the
+// trailing messages must survive; the oldest turns are dropped.
+func TestSave_TrimsOversizedSession(t *testing.T) {
+	store := newTestStore(t)
+	withFileCap(t, 64<<10)
+
+	// 20 KiB per message × 4 messages ≈ 80 KiB serialized — past the 64 KiB
+	// test cap. Few large messages keep the trim loop's re-marshal cycles
+	// cheap; the small cap (see withFileCap) keeps this fast in CI.
+	big := strings.Repeat("x", 20<<10)
+	msgs := []llm.Message{{Role: "system", Content: "you are odek"}}
+	for i := 0; i < 4; i++ {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		msgs = append(msgs, llm.Message{Role: role, Content: big})
+	}
+	// Distinct trailing messages we expect to survive the trim.
+	msgs = append(msgs,
+		llm.Message{Role: "user", Content: "final question"},
+		llm.Message{Role: "assistant", Content: "final answer"},
+	)
+
+	sess, err := store.Create(msgs, "test", "oversized session")
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+
+	info, err := os.Stat(store.Path(sess.ID))
+	if err != nil {
+		t.Fatalf("stat session file: %v", err)
+	}
+	if info.Size() > int64(MaxSessionFileBytes) {
+		t.Errorf("session file size = %d, exceeds MaxSessionFileBytes %d", info.Size(), MaxSessionFileBytes)
+	}
+
+	loaded, err := store.Load(sess.ID)
+	if err != nil {
+		t.Fatalf("Load() after trim: %v", err)
+	}
+	if loaded.Messages[0].Role != "system" || loaded.Messages[0].Content != "you are odek" {
+		t.Errorf("system message not preserved at index 0: %+v", loaded.Messages[0])
+	}
+	last := loaded.Messages[len(loaded.Messages)-1]
+	if last.Role != "assistant" || last.Content != "final answer" {
+		t.Errorf("trailing message not preserved: role=%q content=%q", last.Role, last.Content)
+	}
+	if len(loaded.Messages) >= len(msgs) {
+		t.Errorf("expected oldest messages to be dropped, still have %d of %d", len(loaded.Messages), len(msgs))
+	}
+	if got, want := loaded.Turns, countUserTurns(loaded.Messages); got != want {
+		t.Errorf("Turns = %d, want %d (recounted after trim)", got, want)
+	}
+
+	// A second save of the same session must not warn again (once-per-session
+	// warning) and must not error — covered implicitly by Save succeeding.
+	if err := store.Save(loaded); err != nil {
+		t.Fatalf("second Save() error: %v", err)
+	}
+}
+
+// TestSave_TrimKeepsToolGroupsIntact verifies the write-path trim drops an
+// assistant tool_calls message together with its tool results, so a stored
+// transcript never starts with an orphaned tool message.
+func TestSave_TrimKeepsToolGroupsIntact(t *testing.T) {
+	store := newTestStore(t)
+	withFileCap(t, 64<<10)
+
+	// 6 × 12 KiB ≈ 72 KiB — past the 64 KiB test cap.
+	big := strings.Repeat("y", 12<<10)
+	msgs := []llm.Message{{Role: "system", Content: "you are odek"}}
+	for i := 0; i < 3; i++ {
+		call := llm.Message{Role: "assistant", Content: big}
+		call.ToolCalls = append(call.ToolCalls, llm.ToolCall{ID: "c1", Type: "function"})
+		call.ToolCalls[0].Function.Name = "shell"
+		msgs = append(msgs,
+			call,
+			llm.Message{Role: "tool", Name: "shell", ToolCallID: "c1", Content: big},
+		)
+	}
+	msgs = append(msgs, llm.Message{Role: "user", Content: "latest task"})
+
+	sess, err := store.Create(msgs, "test", "tool-group trim")
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+	loaded, err := store.Load(sess.ID)
+	if err != nil {
+		t.Fatalf("Load() after trim: %v", err)
+	}
+	// Every surviving tool message must be preceded by an assistant message
+	// carrying tool calls.
+	for i, m := range loaded.Messages {
+		if m.Role == "tool" {
+			if i == 0 || loaded.Messages[i-1].Role == "system" || (loaded.Messages[i-1].Role == "assistant" && len(loaded.Messages[i-1].ToolCalls) == 0) {
+				t.Errorf("orphaned tool message at index %d", i)
+			}
+		}
+	}
+}
+
+// TestSave_SmallSessionUntouched verifies sessions well under the cap are
+// written verbatim — no trimming, no warning bookkeeping.
+func TestSave_SmallSessionUntouched(t *testing.T) {
+	store := newTestStore(t)
+	msgs := []llm.Message{
+		{Role: "system", Content: "you are odek"},
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "hi there"},
+	}
+	sess, err := store.Create(msgs, "test", "small session")
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+	loaded, err := store.Load(sess.ID)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if len(loaded.Messages) != len(msgs) {
+		t.Errorf("small session trimmed: got %d messages, want %d", len(loaded.Messages), len(msgs))
+	}
+	if len(store.trimWarned) != 0 {
+		t.Errorf("trim warning recorded for a small session: %v", store.trimWarned)
+	}
+}

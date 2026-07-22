@@ -26,6 +26,7 @@ import (
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/embedding"
 	"github.com/BackendStack21/odek/internal/guard"
+	"github.com/BackendStack21/odek/internal/maintenance"
 	"github.com/BackendStack21/odek/internal/mcpclient"
 	"github.com/BackendStack21/odek/internal/memory"
 	"github.com/BackendStack21/odek/internal/memory/extended"
@@ -101,11 +102,11 @@ type CLIFlags struct {
 	MemoryExtendedFollowUpAnticipationEnabled *bool // nil = not set
 
 	// Guard subsystem CLI overrides.
-	GuardProvider         string // "" = not set
-	GuardURL              string // "" = not set
-	GuardBatchURL         string // "" = not set
-	GuardLongURL          string // "" = not set
-	GuardSocketPath       string // "" = not set
+	GuardProvider         string  // "" = not set
+	GuardURL              string  // "" = not set
+	GuardBatchURL         string  // "" = not set
+	GuardLongURL          string  // "" = not set
+	GuardSocketPath       string  // "" = not set
 	GuardThreshold        float64 // 0 = not set
 	GuardTimeoutSeconds   int     // 0 = not set
 	GuardFallbackToLocal  *bool   // nil = not set
@@ -200,6 +201,21 @@ type WebSearchConfig struct {
 type ToolConfig struct {
 	Enabled  []string `json:"enabled,omitempty"`
 	Disabled []string `json:"disabled,omitempty"`
+}
+
+// MaintenanceConfig is the file-level "maintenance" section. Pointer fields
+// distinguish "not set" (inherit the default) from an explicit 0, which is
+// meaningful for the retention knobs (0 = keep forever / disable).
+// Operator-controlled: rejected from project-level ./odek.json because it
+// governs DELETION of user data.
+type MaintenanceConfig struct {
+	Enabled              *bool  `json:"enabled,omitempty"`
+	IntervalMinutes      *int   `json:"interval_minutes,omitempty"`
+	SessionsMaxAgeDays   *int   `json:"sessions_max_age_days,omitempty"`
+	AuditMaxAgeDays      *int   `json:"audit_max_age_days,omitempty"`
+	LogMaxMB             *int64 `json:"log_max_mb,omitempty"`
+	PlansMaxAgeDays      *int   `json:"plans_max_age_days,omitempty"`
+	SkillsSkipMaxAgeDays *int   `json:"skills_skip_max_age_days,omitempty"`
 }
 
 // ToolsConfig is the "tools" section of odek.json. It is intentionally a
@@ -302,6 +318,11 @@ type FileConfig struct {
 
 	// Schedules configures the native in-process task scheduler.
 	Schedules *SchedulesConfig `json:"schedules,omitempty"`
+
+	// Maintenance configures the storage-maintenance janitor (retention and
+	// deletion of sessions, audit records, plans, logs, skip-list entries).
+	// Operator-controlled: rejected from project-level ./odek.json.
+	Maintenance *MaintenanceConfig `json:"maintenance,omitempty"`
 
 	// Tools controls which tools are exposed to the LLM.
 	// Project-level ./odek.json may only disable tools, not enable them.
@@ -463,6 +484,11 @@ type ResolvedConfig struct {
 	// Schedules is the resolved scheduler config.
 	// Default: enabled=true, max_concurrent=2, timezone="UTC", catchup=false.
 	Schedules ScheduleConfig
+
+	// Maintenance is the resolved storage-maintenance config.
+	// Default: maintenance.DefaultConfig() (enabled, 60min tick, sessions 30d,
+	// audit 14d, logs 50MB, plans 30d, skip-list 90d).
+	Maintenance maintenance.Config
 
 	// Tools is the resolved tool-list configuration.
 	// Empty Enabled/Disabled means "no restriction" for that direction.
@@ -666,6 +692,35 @@ func envInt(key string) int {
 	return n
 }
 
+// envIntPtr parses a ODEK_* env var as an integer. Returns nil if unset or
+// unparseable, so an explicit 0 (meaningful for retention knobs) stays
+// distinguishable from "not set".
+func envIntPtr(key string) *int {
+	v := os.Getenv("ODEK_" + key)
+	if v == "" {
+		return nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return nil
+	}
+	return &n
+}
+
+// envInt64Ptr parses a ODEK_* env var as an int64. Returns nil if unset or
+// unparseable, like envIntPtr.
+func envInt64Ptr(key string) *int64 {
+	v := os.Getenv("ODEK_" + key)
+	if v == "" {
+		return nil
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return nil
+	}
+	return &n
+}
+
 // envFloat parses a ODEK_* env var as a float64. Returns 0 if unset/unparseable.
 func envFloat(key string) float64 {
 	v := os.Getenv("ODEK_" + key)
@@ -735,6 +790,46 @@ func ensureGuard(cfg *guard.Config) *guard.Config {
 		cfg.Scan = guard.DefaultScanConfig()
 	}
 	return cfg
+}
+
+// ensureMaintenance returns a non-nil *MaintenanceConfig, allocating one if needed.
+func ensureMaintenance(cfg *MaintenanceConfig) *MaintenanceConfig {
+	if cfg == nil {
+		return &MaintenanceConfig{}
+	}
+	return cfg
+}
+
+// resolveMaintenance merges the file-level maintenance section over the
+// package defaults. Unset (nil) fields inherit the default; explicit 0 keeps
+// its meaning (keep forever / disable).
+func resolveMaintenance(cfg *MaintenanceConfig) maintenance.Config {
+	def := maintenance.DefaultConfig()
+	if cfg == nil {
+		return def
+	}
+	if cfg.Enabled != nil {
+		def.Enabled = *cfg.Enabled
+	}
+	if cfg.IntervalMinutes != nil {
+		def.IntervalMinutes = *cfg.IntervalMinutes
+	}
+	if cfg.SessionsMaxAgeDays != nil {
+		def.SessionsMaxAgeDays = *cfg.SessionsMaxAgeDays
+	}
+	if cfg.AuditMaxAgeDays != nil {
+		def.AuditMaxAgeDays = *cfg.AuditMaxAgeDays
+	}
+	if cfg.LogMaxMB != nil {
+		def.LogMaxMB = *cfg.LogMaxMB
+	}
+	if cfg.PlansMaxAgeDays != nil {
+		def.PlansMaxAgeDays = *cfg.PlansMaxAgeDays
+	}
+	if cfg.SkillsSkipMaxAgeDays != nil {
+		def.SkillsSkipMaxAgeDays = *cfg.SkillsSkipMaxAgeDays
+	}
+	return def
 }
 
 // envScheduleDangerousConfig parses ODEK_SCHEDULES_DANGEROUS_* env vars into a
@@ -856,6 +951,12 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if project.Memory != nil {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring memory from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
 		project.Memory = nil
+	}
+	// The maintenance section governs DELETION of user data (sessions, audit
+	// records, plans, logs). A malicious repo must not be able to set it.
+	if project.Maintenance != nil {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring maintenance from project config (%s); set it via ~/.odek/config.json or ODEK_MAINTENANCE_*\n", ProjectConfigPath())
+		project.Maintenance = nil
 	}
 	if project.Guard != nil {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring guard from project config (%s); set it via ~/.odek/config.json, ODEK_GUARD_*, or the CLI\n", ProjectConfigPath())
@@ -1245,6 +1346,38 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		}
 	}
 
+	// Maintenance env overrides (ODEK_MAINTENANCE_*). Explicit 0 is meaningful
+	// for the retention knobs (0 = keep forever / disable), so they parse via
+	// the pointer helpers rather than envInt.
+	if v := envBool("MAINTENANCE_ENABLED"); v != nil {
+		cfg.Maintenance = ensureMaintenance(cfg.Maintenance)
+		cfg.Maintenance.Enabled = v
+	}
+	if v := envIntPtr("MAINTENANCE_INTERVAL_MINUTES"); v != nil {
+		cfg.Maintenance = ensureMaintenance(cfg.Maintenance)
+		cfg.Maintenance.IntervalMinutes = v
+	}
+	if v := envIntPtr("MAINTENANCE_SESSIONS_MAX_AGE_DAYS"); v != nil {
+		cfg.Maintenance = ensureMaintenance(cfg.Maintenance)
+		cfg.Maintenance.SessionsMaxAgeDays = v
+	}
+	if v := envIntPtr("MAINTENANCE_AUDIT_MAX_AGE_DAYS"); v != nil {
+		cfg.Maintenance = ensureMaintenance(cfg.Maintenance)
+		cfg.Maintenance.AuditMaxAgeDays = v
+	}
+	if v := envInt64Ptr("MAINTENANCE_LOG_MAX_MB"); v != nil {
+		cfg.Maintenance = ensureMaintenance(cfg.Maintenance)
+		cfg.Maintenance.LogMaxMB = v
+	}
+	if v := envIntPtr("MAINTENANCE_PLANS_MAX_AGE_DAYS"); v != nil {
+		cfg.Maintenance = ensureMaintenance(cfg.Maintenance)
+		cfg.Maintenance.PlansMaxAgeDays = v
+	}
+	if v := envIntPtr("MAINTENANCE_SKILLS_SKIP_MAX_AGE_DAYS"); v != nil {
+		cfg.Maintenance = ensureMaintenance(cfg.Maintenance)
+		cfg.Maintenance.SkillsSkipMaxAgeDays = v
+	}
+
 	// Telegram env overrides: merge env vars on top of file config.
 	baseTelegram := telegram.DefaultConfig()
 	if cfg.Telegram != nil {
@@ -1489,29 +1622,30 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		MaxIter:  cfg.MaxIter,
 		System:   cfg.System,
 
-		SandboxImage:          cfg.SandboxImage, // empty = resolve at call site (Dockerfile.odek or alpine:latest)
-		SandboxNetwork:        ifZero(cfg.SandboxNetwork, DefaultSandboxNetwork),
-		SandboxMemory:         cfg.SandboxMemory,
-		SandboxCPUs:           cfg.SandboxCPUs,
-		SandboxUser:           cfg.SandboxUser,
-		SandboxEnv:            cfg.SandboxEnv,
-		SandboxVolumes:        cfg.SandboxVolumes,
-		Skills:                resolveSkills(cfg.Skills),
-		Dangerous:             resolveDangerous(cfg.Dangerous, true),
-		Memory:                resolveMemory(cfg.Memory),
-		Guard:                 resolveGuard(cfg.Guard),
-		Embedding:             cfg.Embedding,
+		SandboxImage:           cfg.SandboxImage, // empty = resolve at call site (Dockerfile.odek or alpine:latest)
+		SandboxNetwork:         ifZero(cfg.SandboxNetwork, DefaultSandboxNetwork),
+		SandboxMemory:          cfg.SandboxMemory,
+		SandboxCPUs:            cfg.SandboxCPUs,
+		SandboxUser:            cfg.SandboxUser,
+		SandboxEnv:             cfg.SandboxEnv,
+		SandboxVolumes:         cfg.SandboxVolumes,
+		Skills:                 resolveSkills(cfg.Skills),
+		Dangerous:              resolveDangerous(cfg.Dangerous, true),
+		Memory:                 resolveMemory(cfg.Memory),
+		Guard:                  resolveGuard(cfg.Guard),
+		Embedding:              cfg.Embedding,
 		MCPServers:             cfg.MCPServers,
 		ProjectMCPServerNames:  projectMCPNames,
 		ProjectSandboxOverride: projectSandboxOverride,
 		Telegram:               resolveTelegram(cfg.Telegram),
-		Transcription:         resolveTranscription(cfg.Transcription),
-		Vision:                resolveVision(cfg.Vision),
-		WebSearch:             resolveWebSearch(cfg.WebSearch),
-		Schedules:             resolveSchedules(cfg.Schedules),
-		Tools:                 resolveTools(cfg.Tools),
-		InteractionMode:       ifZero(cfg.InteractionMode, "engaging"),
-		ToolProgress:          ifZero(cfg.ToolProgress, "all"),
+		Transcription:          resolveTranscription(cfg.Transcription),
+		Vision:                 resolveVision(cfg.Vision),
+		WebSearch:              resolveWebSearch(cfg.WebSearch),
+		Schedules:              resolveSchedules(cfg.Schedules),
+		Maintenance:            resolveMaintenance(cfg.Maintenance),
+		Tools:                  resolveTools(cfg.Tools),
+		InteractionMode:        ifZero(cfg.InteractionMode, "engaging"),
+		ToolProgress:           ifZero(cfg.ToolProgress, "all"),
 	}
 
 	// Every subsystem inherits the shared top-level embedding default unless it
@@ -2113,6 +2247,9 @@ func overlayFile(base, override FileConfig) FileConfig {
 	}
 	if override.Memory != nil {
 		base.Memory = override.Memory
+	}
+	if override.Maintenance != nil {
+		base.Maintenance = override.Maintenance
 	}
 	if override.Guard != nil {
 		base.Guard = override.Guard

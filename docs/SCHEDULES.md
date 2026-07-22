@@ -39,6 +39,10 @@ running, just without scheduling); if the bot holds it, a standalone
 bot's embedded scheduler with `schedules.enabled = false` if you prefer to run
 the daemon separately.)
 
+Both also host the storage-maintenance janitor, which expires old sessions,
+audit records, and plans and rotates oversized logs — see
+[MAINTENANCE.md](MAINTENANCE.md).
+
 ---
 
 ## Managing jobs
