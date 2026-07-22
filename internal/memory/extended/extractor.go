@@ -150,6 +150,12 @@ func normalizeAtomText(text string) string {
 	return strings.ToLower(strings.Join(strings.Fields(text), " "))
 }
 
+// defaultExtractionConfidence is assigned to extraction-origin atoms when the
+// LLM omits the confidence field or returns an out-of-range value. It is
+// deliberately below 1.0 so unqualified extracted memories do not inflate
+// their retention score. Explicit LLM-provided values in (0,1] are kept.
+const defaultExtractionConfidence = 0.7
+
 // Extract atoms from text. Returns nil if the LLM is unavailable, the output
 // is unparseable, or no atoms are found. Extracted atoms are sourced from the
 // user ("user_said").
@@ -206,7 +212,7 @@ func (e *Extractor) Extract(ctx context.Context, text string) ([]MemoryAtom, err
 		}
 		conf := r.Confidence
 		if conf <= 0 || conf > 1.0 {
-			conf = 1.0
+			conf = defaultExtractionConfidence
 		}
 		id, err := generateAtomID()
 		if err != nil {

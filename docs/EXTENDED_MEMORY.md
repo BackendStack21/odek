@@ -99,13 +99,13 @@ The current extraction prompt and tool schema accept all nine primary types. Unk
     │   └── <atom-id>.md
     ├── vectors.gob              # persisted go-vector store
     ├── vectors.gob.emb          # persisted embedder state (RP vocabulary / HTTP fingerprint)
-    ├── vectors_meta.json        # embedding-space fingerprint for invalidation
+    ├── vectors_meta.json        # embedding-space + corpus fingerprints for invalidation/staleness
     ├── quarantine.json          # tainted atoms awaiting promotion
     ├── user_model.json          # persisted inferred user state + pending review queue
     └── associations.json        # bidirectional atom association links
 ```
 
-All files are written atomically and use `0600` permissions. The vector store and metadata are rebuilt from the chunk files if they are ever corrupted. The user model and associations are loaded at startup and persisted on every change.
+All files are written atomically and use `0600` permissions. The vector store and metadata are rebuilt from the chunk files if they are ever corrupted. `vectors_meta.json` records both the embedding-space fingerprint (which embedding backend produced the vectors) and a corpus fingerprint (atom count plus a hash of the sorted atom IDs); a mismatch on either — including a missing corpus fingerprint in files written before it was tracked — marks the persisted index stale so it is rebuilt once instead of silently serving an outdated corpus. The user model and associations are loaded at startup and persisted on every change.
 
 ## Dedicated Memory LLM
 
@@ -163,6 +163,23 @@ Extracted atoms are immediately:
 4. Embedded and written to the atom store.
 5. Checked against the 100 MB size cap; low-retention atoms are evicted if needed.
 
+Explicit LLM-provided `confidence` values in (0, 1] are kept. A missing or out-of-range confidence defaults to **0.7** for extraction-origin atoms, so unqualified extracted memories do not inflate their retention score.
+
+### Write-Path Deduplication
+
+Atoms are deduplicated in two tiers at persistence time:
+
+1. **Exact match**: an atom whose normalized text (lowercased, whitespace-collapsed) equals an existing live atom refreshes it — new `CreatedAt`, the higher confidence wins, the original ID is kept — instead of appending a duplicate.
+2. **Semantic match**: if no exact match exists and `semantic_dedup_threshold` is non-zero, the incoming atom is compared against the live corpus via the vector index (top-1 similarity); atoms stored earlier in the same batch, which the index does not cover yet, are compared by embedding both texts directly. A match at or above the threshold is refreshed the same way. The dedup search uses the pre-batch index state and never triggers extra index rebuilds: the single index invalidation after the batch is preserved.
+
+### Atom Consolidation
+
+`ExtendedMemory.ConsolidateAtoms(ctx)` (no CLI yet) merges groups of live atoms that are near-duplicates (pairwise cosine similarity at or above `consolidate_similarity_threshold`). For each group it asks the memory LLM — one call per group — to merge the texts into a single concise atom, stores the merged atom through the normal add path (scan and size cap apply) keeping the group's highest confidence, a refreshed `CreatedAt`, and the union of the group's outward associations, then removes the originals. Quarantined atoms are never consolidated. On any failure for a group (LLM error, empty response, scan rejection) the originals are kept untouched.
+
+### Observability
+
+`ExtendedMemory.Stats()` returns a `Stats` snapshot for operators and monitoring: live/quarantined atom counts, quarantine entries grouped by reason prefix (`tainted`, `scan_rejected`), index vector count and dirty flag, on-disk store size, and recall error counters (`RecallTimeouts` for context-deadline-exceeded errors, `RecallFailures` for all other recall errors).
+
 ## Semantic Search
 
 Extended Memory replaces episode-based recall with semantic search over atom vectors.
@@ -199,6 +216,8 @@ The final recall result is also bounded by `memory_budget_chars`. Tainted atoms 
 ## Predictive Recall
 
 When `follow_up_anticipation_enabled` is true (default), the memory LLM receives the current user message, the last several user messages, and the current user-state model. It returns a JSON array of up to `predictive_intents` likely follow-up intents. Each intent is embedded and searched, and the union of literal-query matches and predicted-intent matches is injected into the main agent's context. For each predicted intent, the system also performs a type-targeted recall for `convention`, `file`, and `error` atoms so the agent can pre-load relevant conventions, references, and known failure modes.
+
+Intents carry a `confidence` (0.0-1.0). Intents below 0.3 are skipped entirely; otherwise the composite score of every atom found via a predicted intent is multiplied by that intent's confidence, so a speculative intent cannot outrank literal-query matches.
 
 Example:
 
@@ -355,6 +374,8 @@ Extended Memory is configured under the `memory.extended` section.
       "user_state_max_pending": 20,
       "associations_enabled": true,
       "association_semantic_top_k": 3,
+      "semantic_dedup_threshold": 0.92,
+      "consolidate_similarity_threshold": 0.9,
       "proactive_return_after_break": true,
       "style_mirroring_enabled": true,
       "anaphora_resolution_enabled": true,
@@ -401,6 +422,8 @@ Extended Memory is configured under the `memory.extended` section.
 | `user_state_max_pending` | `20` | Maximum pending-review entries kept in the user model. |
 | `associations_enabled` | `true` | Enable bidirectional atom associations (temporal, task, semantic). |
 | `association_semantic_top_k` | `3` | Number of semantic neighbours linked when building associations. |
+| `semantic_dedup_threshold` | `0.92` | Cosine similarity at or above which an incoming atom is treated as a paraphrase of an existing live atom and refreshes it instead of appending. `0` disables the semantic tier (exact-match dedup always runs). |
+| `consolidate_similarity_threshold` | `0.9` | Cosine similarity at or above which live atoms are grouped as near-duplicates for `ConsolidateAtoms` merging. |
 | `proactive_return_after_break` | `true` | On session resume, inject a "where you left off" summary. |
 | `style_mirroring_enabled` | `true` | Inject a style-guidance directive based on the inferred user model. |
 | `anaphora_resolution_enabled` | `true` | Resolve the first pronoun in a user message against recent trusted atoms when the top atom's score is high enough. |
@@ -455,6 +478,8 @@ Additional CLI commands:
 odek memory extended forget <atom-id>
 odek memory extended quarantine
 odek memory extended compact
+odek memory extended stats
+odek memory extended consolidate
 odek memory extended promote <atom-id>
 odek memory extended pin <atom-id>
 odek memory extended pending
@@ -467,6 +492,8 @@ odek memory extended reject <pending-id>
 | `forget` | Removes an atom from the live store or quarantine. |
 | `quarantine` | Lists tainted atoms awaiting promotion. |
 | `compact` | Triggers a background rebuild of the vector index to reclaim space. |
+| `stats` | Shows store/index sizes, quarantine reason breakdown, and recall degradation counters (timeouts/failures). |
+| `consolidate` | Merges near-duplicate live atoms via the LLM (requires a configured backend). |
 | `promote` | Moves a quarantined atom to the live store as `user_approved`. |
 | `pin` | Pins a live atom so it is never evicted. |
 | `pending` | Lists pending user-model inferences. |

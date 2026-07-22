@@ -52,6 +52,9 @@ type ExtendedMemory struct {
 	inferenceMu  sync.Mutex
 	closed       bool
 	inferRunning bool
+
+	// stats holds the atomic recall-failure counters backing Stats().
+	stats recallStats
 }
 
 const recentUserMessageLimit = 10
@@ -81,6 +84,7 @@ func New(dir string, llm LLMClient, cfg Config) *ExtendedMemory {
 		llm:        llm,
 	}
 	em.recall.SetPredictor(em.predictor)
+	em.recall.stats = &em.stats
 	_ = em.userModel.Load()
 	em.quarantine.SetTTLDays(cfg.QuarantineTTLDays)
 	if removed, err := em.quarantine.EvictExpired(cfg.QuarantineTTLDays); err != nil {
@@ -152,6 +156,17 @@ func (em *ExtendedMemory) AddAtom(ctx context.Context, atom MemoryAtom) error {
 func (em *ExtendedMemory) addAtoms(ctx context.Context, atoms []MemoryAtom, skipScan bool) error {
 	if em == nil || !em.Enabled() {
 		return fmt.Errorf("extended memory: disabled")
+	}
+	dedupThreshold := float32(0)
+	if em.cfg.SemanticDedupThreshold != nil {
+		dedupThreshold = *em.cfg.SemanticDedupThreshold
+	}
+	if dedupThreshold > 0 {
+		// Refresh the index once for the whole batch so semantic dedup
+		// searches see the pre-batch corpus. This is a no-op when the index
+		// is already fresh, so the one-rebuild-per-batch invariant (the
+		// single markDirty after the adds) is preserved.
+		em.index.ensureFresh()
 	}
 	var firstErr error
 	stored := make([]MemoryAtom, 0, len(atoms))
@@ -231,15 +246,17 @@ func (em *ExtendedMemory) addAtoms(ctx context.Context, atoms []MemoryAtom, skip
 		}
 		// Exact-match dedup: a re-stated fact refreshes the existing live atom
 		// (new CreatedAt, higher confidence, original ID) instead of
-		// appending a duplicate with a fresh random ID.
+		// appending a duplicate with a fresh random ID. When no exact match
+		// exists, a semantic tier refreshes a near-duplicate live atom whose
+		// similarity reaches semantic_dedup_threshold.
 		if existing, ok, err := em.findDuplicateAtom(atom); err != nil {
 			log.Printf("extended memory: dedup lookup failed: %v", err)
 		} else if ok {
-			existing.CreatedAt = atom.CreatedAt
-			if atom.Confidence > existing.Confidence {
-				existing.Confidence = atom.Confidence
+			atom = refreshDuplicate(existing, atom)
+		} else if dedupThreshold > 0 {
+			if existing, found := em.findSemanticDuplicate(atom, dedupThreshold, stored); found {
+				atom = refreshDuplicate(existing, atom)
 			}
-			atom = existing
 		}
 		if err := em.store.Add(atom, em.cfg.AtomMaxChars); err != nil {
 			log.Printf("extended memory: atom store add failed: %v", err)
@@ -271,6 +288,44 @@ func (em *ExtendedMemory) addAtoms(ctx context.Context, atoms []MemoryAtom, skip
 		_ = em.assoc.Persist()
 	}
 	return firstErr
+}
+
+// refreshDuplicate merges an incoming atom into the existing live atom it
+// duplicates: the original ID is kept, CreatedAt is refreshed, and the higher
+// confidence wins.
+func refreshDuplicate(existing, incoming MemoryAtom) MemoryAtom {
+	existing.CreatedAt = incoming.CreatedAt
+	if incoming.Confidence > existing.Confidence {
+		existing.Confidence = incoming.Confidence
+	}
+	return existing
+}
+
+// findSemanticDuplicate returns the live atom most similar to atom when its
+// cosine similarity reaches threshold. The vector index (refreshed once per
+// batch) covers atoms stored before this batch; atoms stored earlier in the
+// same batch are not yet indexed, so they are compared by embedding both
+// texts directly.
+func (em *ExtendedMemory) findSemanticDuplicate(atom MemoryAtom, threshold float32, batchStored []MemoryAtom) (MemoryAtom, bool) {
+	best := threshold
+	var match MemoryAtom
+	found := false
+	for _, c := range em.index.searchCurrent(atom.Text, 1) {
+		if c.Score < best {
+			continue
+		}
+		existing, err := em.store.Get(c.ID)
+		if err != nil {
+			continue // stale index entry (evicted/removed atom)
+		}
+		best, match, found = c.Score, existing, true
+	}
+	for _, prev := range batchStored {
+		if score := em.index.similarity(prev.Text, atom.Text); score >= best {
+			best, match, found = score, prev, true
+		}
+	}
+	return match, found
 }
 
 // findDuplicateAtom returns the live atom with the same normalized text as

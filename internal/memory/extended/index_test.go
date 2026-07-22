@@ -1,6 +1,7 @@
 package extended
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -200,5 +201,131 @@ func TestVectorIndexReusesEmbedderAcrossRebuilds(t *testing.T) {
 	}
 	if !vi.ready {
 		t.Error("expected index ready after second rebuild")
+	}
+}
+
+func TestCorpusFingerprint(t *testing.T) {
+	atom := func(id string) MemoryAtom { return MemoryAtom{ID: id, Text: "x"} }
+	a1 := atom("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6")
+	a2 := atom("b1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6")
+
+	cases := []struct {
+		name  string
+		atoms []MemoryAtom
+		want  string // exact match only checked against itself; compared below
+	}{
+		{"empty", nil, ""},
+		{"one", []MemoryAtom{a1}, ""},
+		{"two", []MemoryAtom{a1, a2}, ""},
+	}
+	fps := make([]string, len(cases))
+	for i, tc := range cases {
+		fps[i] = corpusFingerprint(tc.atoms)
+		if fps[i] == "" {
+			t.Errorf("%s: expected non-empty fingerprint", tc.name)
+		}
+		if fps[i] != corpusFingerprint(tc.atoms) {
+			t.Errorf("%s: fingerprint not deterministic", tc.name)
+		}
+	}
+	for i := 0; i < len(fps); i++ {
+		for j := i + 1; j < len(fps); j++ {
+			if fps[i] == fps[j] {
+				t.Errorf("fingerprints for %q and %q must differ", cases[i].name, cases[j].name)
+			}
+		}
+	}
+	// Order of atoms must not matter: IDs are sorted before hashing.
+	if corpusFingerprint([]MemoryAtom{a1, a2}) != corpusFingerprint([]MemoryAtom{a2, a1}) {
+		t.Error("fingerprint must be order-independent")
+	}
+}
+
+// TestVectorIndexStaleCorpusDetectedOnLoad verifies that a persisted index
+// whose corpus fingerprint no longer matches the atom store is treated as
+// dirty and rebuilt instead of silently serving a stale corpus.
+func TestVectorIndexStaleCorpusDetectedOnLoad(t *testing.T) {
+	dir := t.TempDir()
+	store := NewAtomStore(dir)
+	newEmb := func() embedding.TextEmbedder { return newMockEmbedder(vectorDim) }
+	vi := newAtomVectorIndex(dir, newEmb, func() ([]MemoryAtom, error) { return store.List() })
+	vi.emb = newMockEmbedder(vectorDim)
+
+	_ = store.Add(MemoryAtom{ID: "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6", Text: "hello world", SourceClass: SourceUserSaid}, 300)
+	vi.markDirty()
+	vi.ensureFresh()
+
+	// The persisted meta must carry the corpus fingerprint.
+	data, err := os.ReadFile(filepath.Join(dir, vectorMetaFile))
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
+	var meta vectorMeta
+	if err := json.Unmarshal(data, &meta); err != nil {
+		t.Fatalf("parse meta: %v", err)
+	}
+	atoms, _ := store.List()
+	if meta.Corpus == "" || meta.Corpus != corpusFingerprint(atoms) {
+		t.Errorf("expected persisted corpus fingerprint %q, got %q", corpusFingerprint(atoms), meta.Corpus)
+	}
+
+	// An atom added after the last persist (process exited before rebuild)
+	// must make the persisted index stale: the next process rebuilds.
+	_ = store.Add(MemoryAtom{ID: "b1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6", Text: "fresh atom", SourceClass: SourceUserSaid}, 300)
+	vi2 := newAtomVectorIndex(dir, newEmb, func() ([]MemoryAtom, error) { return store.List() })
+	vi2.emb = newMockEmbedder(vectorDim)
+	vi2.ensureFresh()
+	if !vi2.ready {
+		t.Fatal("expected index to rebuild from stale persisted state")
+	}
+	vi2.mu.RLock()
+	vectors := vi2.store.Len()
+	vi2.mu.RUnlock()
+	if vectors != 2 {
+		t.Errorf("expected rebuilt index to hold 2 vectors, got %d", vectors)
+	}
+	res := vi2.searchCurrent("fresh atom", 1)
+	if len(res) != 1 || res[0].ID != "b1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6" {
+		t.Errorf("expected rebuilt index to find the post-persist atom, got %v", res)
+	}
+}
+
+// TestVectorIndexLegacyMetaWithoutCorpusRebuilds verifies that a meta file
+// written before corpus fingerprints were tracked (no corpus field) is
+// treated as dirty and rebuilt once, then re-persisted with a fingerprint.
+func TestVectorIndexLegacyMetaWithoutCorpusRebuilds(t *testing.T) {
+	dir := t.TempDir()
+	store := NewAtomStore(dir)
+	newEmb := func() embedding.TextEmbedder { return newMockEmbedder(vectorDim) }
+	vi := newAtomVectorIndex(dir, newEmb, func() ([]MemoryAtom, error) { return store.List() })
+	vi.emb = newMockEmbedder(vectorDim)
+
+	_ = store.Add(MemoryAtom{ID: "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6", Text: "hello world", SourceClass: SourceUserSaid}, 300)
+	vi.markDirty()
+	vi.ensureFresh()
+
+	// Simulate a legacy meta file: embedder fingerprint only, no corpus.
+	legacy, _ := json.Marshal(vectorMeta{Fingerprint: newMockEmbedder(vectorDim).Fingerprint()})
+	if err := os.WriteFile(filepath.Join(dir, vectorMetaFile), legacy, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	vi2 := newAtomVectorIndex(dir, newEmb, func() ([]MemoryAtom, error) { return store.List() })
+	vi2.emb = newMockEmbedder(vectorDim)
+	vi2.ensureFresh()
+	if !vi2.ready {
+		t.Fatal("expected index to rebuild for legacy meta without corpus fingerprint")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, vectorMetaFile))
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
+	var meta vectorMeta
+	if err := json.Unmarshal(data, &meta); err != nil {
+		t.Fatalf("parse meta: %v", err)
+	}
+	atoms, _ := store.List()
+	if meta.Corpus != corpusFingerprint(atoms) {
+		t.Errorf("expected re-persisted corpus fingerprint %q, got %q", corpusFingerprint(atoms), meta.Corpus)
 	}
 }

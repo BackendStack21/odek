@@ -2,6 +2,7 @@ package extended
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -40,6 +41,9 @@ func TestRecallRerank(t *testing.T) {
 	cfg.SemanticSearchRerank = boolPtr(true)
 	cfg.SemanticSearchTopK = 2
 	cfg.SemanticSearchMinScore = 0.01
+	// The mock embedder rates these two English sentences as near-duplicates;
+	// disable semantic dedup so both atoms reach the rerank path.
+	cfg.SemanticDedupThreshold = floatPtr(0)
 
 	llm := newMockLLM("1,0") // reorder: second atom first
 	em := New(dir, llm, cfg)
@@ -156,6 +160,9 @@ func TestRecallRerankErrorFallsBack(t *testing.T) {
 	cfg.Enabled = boolPtr(true)
 	cfg.SemanticSearchRerank = boolPtr(true)
 	cfg.SemanticSearchMinScore = 0.01
+	// The mock embedder rates these two English sentences as near-duplicates;
+	// disable semantic dedup so both atoms reach the rerank path.
+	cfg.SemanticDedupThreshold = floatPtr(0)
 
 	llm := newMockLLM() // returns empty
 	em := New(dir, llm, cfg)
@@ -299,5 +306,79 @@ func TestQueryAtomsWithPredictionCompositeOrdering(t *testing.T) {
 	}
 	if atoms[0].Text != query {
 		t.Errorf("expected composite score to rank the similar atom first, got %q", atoms[0].Text)
+	}
+}
+
+// newIntentWeightedRecallEM builds an enabled ExtendedMemory whose recall
+// uses the mock embedder, no rerank, and prediction enabled. The corpus is
+// two atoms with (almost) disjoint character sets so the literal query
+// matches only literalAtom and the predicted intent matches only intentAtom.
+func newIntentWeightedRecallEM(t *testing.T, intentJSON string) *ExtendedMemory {
+	t.Helper()
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.Enabled = boolPtr(true)
+	cfg.SemanticSearchMinScore = 0.5
+	cfg.SemanticSearchRerank = boolPtr(false)
+	cfg.PredictiveIntents = 1
+	cfg.FollowUpAnticipationEnabled = boolPtr(true)
+	em := New(dir, newMockLLM(), cfg)
+	em.index.newEmb = func() embedding.TextEmbedder { return newMockEmbedder(vectorDim) }
+	em.index.emb = newMockEmbedder(vectorDim)
+	em.recall.predictor = NewPredictor(newMockLLM(intentJSON), cfg)
+	t.Cleanup(func() { em.Close() })
+
+	// Literal match: composite 0.6*~0.92 + 0.4*1.0 ≈ 0.95.
+	if err := em.AddAtom(context.Background(), makeSearchableAtom("mmm nnn ooo ppp qqq")); err != nil {
+		t.Fatal(err)
+	}
+	// Predicted-intent match: similarity 1.0 to the intent text, composite
+	// 1.0 before confidence weighting.
+	if err := em.AddAtom(context.Background(), makeSearchableAtom("xxx yyy zzz")); err != nil {
+		t.Fatal(err)
+	}
+	return em
+}
+
+// TestPredictedIntentConfidenceWeightsScore verifies that atoms found via a
+// predicted intent have their composite score multiplied by the intent's
+// confidence: a high-confidence intent can outrank the literal match, a
+// mediocre one cannot.
+func TestPredictedIntentConfidenceWeightsScore(t *testing.T) {
+	cases := []struct {
+		name       string
+		confidence float32
+		wantFirst  string
+	}{
+		{"high confidence outranks literal", 0.99, "xxx yyy zzz"},
+		{"mediocre confidence ranks below literal", 0.5, "mmm nnn ooo ppp qqq"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			em := newIntentWeightedRecallEM(t, `[{"text":"xxx yyy zzz","confidence":`+fmt.Sprintf("%v", tc.confidence)+`}]`)
+			atoms, err := em.recall.queryAtomsWithPrediction(context.Background(), "mmm nnn ooo ppp", nil, UserState{})
+			if err != nil {
+				t.Fatalf("queryAtomsWithPrediction failed: %v", err)
+			}
+			if len(atoms) != 2 {
+				t.Fatalf("expected 2 atoms, got %d", len(atoms))
+			}
+			if atoms[0].Text != tc.wantFirst {
+				t.Errorf("confidence %v: expected %q first, got %q", tc.confidence, tc.wantFirst, atoms[0].Text)
+			}
+		})
+	}
+}
+
+// TestPredictedIntentLowConfidenceSkipped verifies that predicted intents
+// below minPredictedIntentConfidence are not searched at all.
+func TestPredictedIntentLowConfidenceSkipped(t *testing.T) {
+	em := newIntentWeightedRecallEM(t, `[{"text":"xxx yyy zzz","confidence":0.2}]`)
+	atoms, err := em.recall.queryAtomsWithPrediction(context.Background(), "mmm nnn ooo ppp", nil, UserState{})
+	if err != nil {
+		t.Fatalf("queryAtomsWithPrediction failed: %v", err)
+	}
+	if len(atoms) != 1 || atoms[0].Text != "mmm nnn ooo ppp qqq" {
+		t.Errorf("expected only the literal match for a low-confidence intent, got %+v", atoms)
 	}
 }
