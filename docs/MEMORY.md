@@ -169,7 +169,9 @@ Key properties:
 - **Trust boundary**: per-turn extraction only produces `user_said` atoms. Tainted source classes (`tool_output`, `file_read`, `web`, `mcp`, `subagent`, `agent_generated`, `inferred`) can be stored but are quarantined and excluded from recall until promoted.
 - **Size cap**: defaults to 100 MB with `retention_decay` eviction; pinned atoms are never evicted.
 - **Tool surface**: `memory` tool actions `add_atom`, `search_atoms`, `forget_atom`, `pin_atom`, `list_quarantine`, `confirm_pending_review`, `reject_pending_review`, and `list_pending_review`.
-- **CLI surface**: `odek memory extended forget|promote|pin|quarantine|compact|stats|consolidate|pending|confirm|reject`.
+- **CLI surface**: `odek memory extended forget|promote|pin|quarantine|compact|stats|consolidate|nudges|pending|confirm|reject`.
+
+**Proactive nudges** (opt-in): when `memory.extended.proactive_nudges_enabled` is `true` (default `false`), Extended Memory can synthesize short, user-facing nudges from trusted atoms — open questions, stale goals, blockers, and drift. Delivery is capped by `nudge_max_per_day` with a per-kind cooldown (`nudge_cooldown_hours`); goals only become "stale" after `nudge_stale_goal_days`. The Telegram bot pushes at most one nudge after a completed turn (in the background, prefixed with 💡). `odek memory extended nudges` prints a preview of up to 2 nudges without consuming the daily cap.
 
 When enabled, Extended Memory atoms are injected as a separate system message after the legacy memory block and episode summaries on each turn. For the full design, config reference, and implementation status, see [docs/EXTENDED_MEMORY.md](EXTENDED_MEMORY.md).
 

@@ -57,7 +57,12 @@
     "merge_threshold": 0.7,
     "add_threshold": 0.3,
     "extended": {
-      "enabled": true
+      "enabled": true,
+      "follow_up_suggestions_enabled": true,
+      "proactive_nudges_enabled": true,
+      "nudge_max_per_day": 5,
+      "nudge_cooldown_hours": 24,
+      "nudge_stale_goal_days": 7
     }
   },
   "dangerous": {

@@ -27,6 +27,7 @@ import (
 
 	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/memory"
+	"github.com/BackendStack21/odek/internal/memory/extended"
 	"github.com/BackendStack21/odek/internal/render"
 	"github.com/BackendStack21/odek/internal/schedule"
 	"github.com/BackendStack21/odek/internal/session"
@@ -502,6 +503,14 @@ func telegramCmd(args []string) error {
 			if err != nil {
 				return fmt.Sprintf("❌ %v", err), nil
 			}
+			// Return-after-break: inject a concise "where you left off"
+			// summary into the resumed context (same as `odek continue` and
+			// the REPL resume path). A throwaway manager is built here because
+			// the /resume command runs outside any per-message agent.
+			resumeMM := memory.NewMemoryManager(expandHome("~/.odek/memory"), nil, resolved.Memory)
+			resumeMM.InitExtended(llm.New(resolved.BaseURL, resolved.APIKey, resolved.Model, "", 0, 120*time.Second),
+				expandHome("~/.odek/memory"))
+			cs.Messages = injectReturnAfterBreak(context.Background(), resumeMM, cs.Messages)
 			taskPreview := cs.Messages[0].Content
 			if len(taskPreview) > 80 {
 				taskPreview = taskPreview[:80] + "…"
@@ -1679,6 +1688,8 @@ func handleChatMessage(
 		Tools:            agentTools,
 		ToolFilter:       odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
 		Renderer:         rend,
+		MemoryConfig:     resolved.Memory,
+		MemoryDir:        expandHome("~/.odek/memory"),
 		ToolEventHandler: func(event string, name string, data string) {
 			// Enhance mode: send new messages with narrated descriptions.
 			if isEnhance {
@@ -2004,6 +2015,20 @@ func handleChatMessage(
 		}
 	}
 
+	// ── Proactive nudge push (opt-in) ──
+	// Runs in the background via the memory manager so nudge generation (an
+	// LLM call) never delays the reply; Agent.Close drains it on shutdown.
+	if mm := agent.Memory(); mm != nil && proactiveNudgesEnabled(resolved.Memory) {
+		pushTelegramNudge(mm, func(text string) {
+			if _, err := bot.SendMessage(chatID, telegram.EscapeMarkdown(text), &telegram.SendOpts{
+				ParseMode:        telegram.ParseModeMarkdownV2,
+				ReplyToMessageID: messageID,
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "odek telegram: nudge send chat %d: %v\n", chatID, err)
+			}
+		})
+	}
+
 	// ── Learn loop: run self-improvement heuristics ──
 	if skillsCfg != nil && skillsCfg.Learn && agent.SkillManager() != nil {
 		sm := agent.SkillManager()
@@ -2184,6 +2209,43 @@ func truncateToolArgs(data string, maxLen int) string {
 		return data
 	}
 	return data[:maxLen] + fmt.Sprintf("… [%d more bytes]", len(data)-maxLen)
+}
+
+// ── Proactive Nudge Push ───────────────────────────────────────────────
+
+// nudgeMemory is the subset of *memory.MemoryManager needed for the
+// proactive-nudge push; an interface so tests can substitute a fake.
+type nudgeMemory interface {
+	RunBackground(fn func())
+	TakeNudges(ctx context.Context, maxN int) ([]extended.Nudge, error)
+}
+
+// proactiveNudgesEnabled reports whether the operator opted in to proactive
+// nudges (memory.extended.proactive_nudges_enabled: true). Opt-in only: the
+// default (unset) is off.
+func proactiveNudgesEnabled(cfg memory.MemoryConfig) bool {
+	return cfg.Extended != nil &&
+		cfg.Extended.ProactiveNudgesEnabled != nil &&
+		*cfg.Extended.ProactiveNudgesEnabled
+}
+
+// pushTelegramNudge takes at most one proactive nudge and delivers it via
+// send as a short follow-up message. The nudge generation (an LLM call)
+// runs as tracked background memory work so it never delays the reply.
+func pushTelegramNudge(mm nudgeMemory, send func(text string)) {
+	mm.RunBackground(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		nudges, err := mm.TakeNudges(ctx, 1)
+		if err != nil || len(nudges) == 0 {
+			return
+		}
+		text := strings.TrimSpace(nudges[0].Text)
+		if text == "" {
+			return
+		}
+		send("💡 " + text)
+	})
 }
 
 // ── Singleton Lock ─────────────────────────────────────────────────────

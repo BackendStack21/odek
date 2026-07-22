@@ -205,6 +205,9 @@ func replCmd(args []string) error {
 	defer cancel()
 
 	turn := 0
+	// resumedSession gates the one-shot return-after-break injection on the
+	// first turn after resuming with `odek repl --id <session>`.
+	resumedSession := sessionID != ""
 
 	// Line editor with history and tab completion for slash commands
 	editor := newReplEditor(
@@ -249,6 +252,14 @@ func replCmd(args []string) error {
 
 		// Build message history: session messages + new user input
 		messages := sess.GetMessages()
+		if resumedSession {
+			// Return-after-break: on session resume, inject a concise
+			// summary of where the user left off (first turn only).
+			messages = injectReturnAfterBreak(ctx, agent.Memory(), messages)
+			resumedSession = false
+		}
+		// origLen is computed after the (ephemeral) injection so only the
+		// new user/assistant turns are persisted back to the session.
 		origLen := len(messages)
 		messages = append(messages, llm.Message{Role: "user", Content: input})
 
@@ -285,6 +296,12 @@ func replCmd(args []string) error {
 				sess.Buffer = mm.GetBuffer()
 				store.Save(sess)
 			}
+		}
+
+		// Follow-up suggestions after the turn (presentation-only, printed
+		// on stderr like the rest of the REPL's turn output; not persisted).
+		if mm := agent.Memory(); mm != nil {
+			printFollowUpSuggestions(os.Stderr, mm, resolved.InteractionMode)
 		}
 		turn++
 

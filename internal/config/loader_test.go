@@ -1557,6 +1557,39 @@ func TestLoadConfig_ExtendedMemoryEnv(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_ExtendedMemoryProactiveEnv(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ODEK_MEMORY_EXTENDED_FOLLOW_UP_SUGGESTIONS_ENABLED", "false")
+	t.Setenv("ODEK_MEMORY_EXTENDED_FOLLOW_UP_SUGGESTION_MIN_CONFIDENCE", "0.75")
+	t.Setenv("ODEK_MEMORY_EXTENDED_PROACTIVE_NUDGES_ENABLED", "true")
+	t.Setenv("ODEK_MEMORY_EXTENDED_NUDGE_MAX_PER_DAY", "3")
+	t.Setenv("ODEK_MEMORY_EXTENDED_NUDGE_COOLDOWN_HOURS", "12")
+	t.Setenv("ODEK_MEMORY_EXTENDED_NUDGE_STALE_GOAL_DAYS", "14")
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.Memory.Extended == nil {
+		t.Fatal("Extended memory config not loaded from env")
+	}
+	ext := cfg.Memory.Extended
+	if ext.FollowUpSuggestionsEnabled == nil || *ext.FollowUpSuggestionsEnabled {
+		t.Error("FollowUpSuggestionsEnabled should be false")
+	}
+	if ext.FollowUpSuggestionMinConfidence != 0.75 {
+		t.Errorf("FollowUpSuggestionMinConfidence = %v, want 0.75", ext.FollowUpSuggestionMinConfidence)
+	}
+	if ext.ProactiveNudgesEnabled == nil || !*ext.ProactiveNudgesEnabled {
+		t.Error("ProactiveNudgesEnabled should be true")
+	}
+	if ext.NudgeMaxPerDay != 3 {
+		t.Errorf("NudgeMaxPerDay = %d, want 3", ext.NudgeMaxPerDay)
+	}
+	if ext.NudgeCooldownHours != 12 {
+		t.Errorf("NudgeCooldownHours = %d, want 12", ext.NudgeCooldownHours)
+	}
+	if ext.NudgeStaleGoalDays != 14 {
+		t.Errorf("NudgeStaleGoalDays = %d, want 14", ext.NudgeStaleGoalDays)
+	}
+}
+
 func TestLoadConfig_ExtendedMemoryCLIOverridesEnv(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("ODEK_MEMORY_EXTENDED_MAX_SIZE_MB", "200")

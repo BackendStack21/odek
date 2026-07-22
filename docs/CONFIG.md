@@ -133,6 +133,12 @@ Every config knob has a `ODEK_*` counterpart:
 | `ODEK_MEMORY_EXTENDED_MAX_SIZE_MB` | `--memory-extended-max-size-mb` | int |
 | `ODEK_MEMORY_EXTENDED_ATOM_MAX_CHARS` | `--memory-extended-atom-max-chars` | int |
 | `ODEK_MEMORY_EXTENDED_MEMORY_BUDGET_CHARS` | `--memory-extended-memory-budget-chars` | int |
+| `ODEK_MEMORY_EXTENDED_FOLLOW_UP_SUGGESTIONS_ENABLED` | — | bool |
+| `ODEK_MEMORY_EXTENDED_FOLLOW_UP_SUGGESTION_MIN_CONFIDENCE` | — | float |
+| `ODEK_MEMORY_EXTENDED_PROACTIVE_NUDGES_ENABLED` | — | bool |
+| `ODEK_MEMORY_EXTENDED_NUDGE_MAX_PER_DAY` | — | int |
+| `ODEK_MEMORY_EXTENDED_NUDGE_COOLDOWN_HOURS` | — | int |
+| `ODEK_MEMORY_EXTENDED_NUDGE_STALE_GOAL_DAYS` | — | int |
 | `ODEK_GUARD_PROVIDER` | `--guard-provider` | string |
 | `ODEK_GUARD_URL` | `--guard-url` | string |
 | `ODEK_GUARD_BATCH_URL` | `--guard-batch-url` | string |
@@ -421,6 +427,12 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
 | `predictive_intents` | `3` | — | — | Reserved for future predictive-intent recall (P5). Currently accepted but ignored. |
 | `auto_extract_per_turn` | `true` | — | — | Extract atoms after every user message. |
 | `infer_user_state` | `true` | — | — | Reserved for future user-state model inference (P3). Currently accepted but ignored. |
+| `follow_up_suggestions_enabled` | `true` | `ODEK_MEMORY_EXTENDED_FOLLOW_UP_SUGGESTIONS_ENABLED` | — | Capture high-confidence predicted intents at recall time as follow-up suggestions (zero extra LLM cost). |
+| `follow_up_suggestion_min_confidence` | `0.6` | `ODEK_MEMORY_EXTENDED_FOLLOW_UP_SUGGESTION_MIN_CONFIDENCE` | — | Minimum predicted-intent confidence for a follow-up suggestion. |
+| `proactive_nudges_enabled` | `false` | `ODEK_MEMORY_EXTENDED_PROACTIVE_NUDGES_ENABLED` | — | Master switch for proactive nudge delivery (`TakeNudges`). Opt-in. |
+| `nudge_max_per_day` | `1` | `ODEK_MEMORY_EXTENDED_NUDGE_MAX_PER_DAY` | — | Maximum proactive nudges delivered per day. |
+| `nudge_cooldown_hours` | `24` | `ODEK_MEMORY_EXTENDED_NUDGE_COOLDOWN_HOURS` | — | Per-kind cooldown before a nudge of the same kind can fire again. |
+| `nudge_stale_goal_days` | `7` | `ODEK_MEMORY_EXTENDED_NUDGE_STALE_GOAL_DAYS` | — | Days without activity before a goal/intent atom counts as stale for nudges. |
 | `llm` | omitted | — | — | Dedicated memory LLM. If omitted, the main agent LLM is reused. A warning is emitted if that model has thinking enabled. |
 | `embedding` | omitted | — | — | Dedicated embedding backend for atoms. If omitted, inherits `memory.embedding` or the shared top-level `embedding`. |
 

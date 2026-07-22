@@ -720,6 +720,11 @@ func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system
 		IterationCallback: func(info loop.IterationInfo) { lastInfo = info },
 		Guard:             injectionGuard,
 		GuardConfig:       resolved.Guard,
+		// Scheduled jobs may analyze memory and past sessions (e.g. proactive
+		// nudges over open goals), so they get the same memory wiring as
+		// interactive runs (see cmd/odek/main.go).
+		MemoryDir:    expandHome("~/.odek/memory"),
+		MemoryConfig: resolved.Memory,
 	})
 	if err != nil {
 		return "", 0, err
