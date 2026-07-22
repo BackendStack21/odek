@@ -96,16 +96,15 @@ func (em *ExtendedMemory) Enabled() bool {
 }
 
 // SetGuard installs the shared prompt-injection detector and propagates it to
-// the extractor, user-model, and recall sub-components.
+// the user-model and recall sub-components. The extractor is deliberately not
+// guarded: atoms are scanned once at persistence time in addAtom, which
+// quarantines rejections for human review instead of dropping them.
 func (em *ExtendedMemory) SetGuard(g guard.Guard, cfg guard.Config) {
 	if em == nil {
 		return
 	}
 	em.guard = g
 	em.guardCfg = cfg
-	if em.extractor != nil {
-		em.extractor.SetGuard(g, cfg)
-	}
 	if em.userModel != nil {
 		em.userModel.SetGuard(g, cfg)
 	}
@@ -135,6 +134,17 @@ func (em *ExtendedMemory) SetSessionContext(sessionID, project string) {
 
 // AddAtom manually adds an atom. Manual adds are treated as user-approved.
 func (em *ExtendedMemory) AddAtom(ctx context.Context, atom MemoryAtom) error {
+	return em.addAtom(ctx, atom, false)
+}
+
+// addAtom is the persistence path for all atoms. The guard scan runs before
+// anything is stored, regardless of trust boundary. A scan rejection does NOT
+// drop the atom: it is quarantined with a scan_rejected reason so a human can
+// review guard false positives (odek memory extended quarantine/promote)
+// instead of silently losing memories. skipScan is reserved for PromoteAtom,
+// where a human has explicitly approved the atom after review — without the
+// bypass, a guard-rejected atom could never be promoted.
+func (em *ExtendedMemory) addAtom(ctx context.Context, atom MemoryAtom, skipScan bool) error {
 	if em == nil || !em.Enabled() {
 		return fmt.Errorf("extended memory: disabled")
 	}
@@ -157,8 +167,19 @@ func (em *ExtendedMemory) AddAtom(ctx context.Context, atom MemoryAtom) error {
 	em.mu.RUnlock()
 
 	// Security scan before persistence, regardless of trust boundary.
-	if err := em.scanContent(ctx, atom.Text); err != nil {
-		return err
+	if !skipScan {
+		if err := em.scanContent(ctx, atom.Text); err != nil {
+			reason := "scan_rejected: " + err.Error()
+			if len(reason) > 200 {
+				reason = reason[:200]
+			}
+			if qerr := em.quarantine.StoreWithReason(atom, reason); qerr != nil {
+				log.Printf("extended memory: quarantine store failed: %v", qerr)
+				return qerr
+			}
+			log.Printf("extended memory: atom quarantined after guard rejection: %v", err)
+			return nil
+		}
 	}
 
 	incoming := projectedAtomSize(atom)
@@ -499,7 +520,9 @@ func (em *ExtendedMemory) ForgetAtom(id string) error {
 }
 
 // PromoteAtom moves an atom from quarantine into the live store with
-// SourceUserApproved. This is the human-gated escape hatch for tainted atoms.
+// SourceUserApproved. This is the human-gated escape hatch for tainted and
+// guard-rejected atoms. The guard rescan is skipped: the human review IS the
+// approval, and a rescan would reject guard false positives again.
 func (em *ExtendedMemory) PromoteAtom(id string) error {
 	if em == nil || !em.Enabled() {
 		return fmt.Errorf("extended memory: disabled")
@@ -509,7 +532,7 @@ func (em *ExtendedMemory) PromoteAtom(id string) error {
 		return err
 	}
 	atom.SourceClass = SourceUserApproved
-	if err := em.AddAtom(context.Background(), atom); err != nil {
+	if err := em.addAtom(context.Background(), atom, true); err != nil {
 		return err
 	}
 	_ = em.quarantine.Forget(id)
@@ -741,6 +764,15 @@ func (em *ExtendedMemory) ListQuarantine() ([]MemoryAtom, error) {
 		return nil, nil
 	}
 	return em.quarantine.List()
+}
+
+// ListQuarantineEntries returns all quarantined atoms with their review
+// metadata (quarantine time and reason).
+func (em *ExtendedMemory) ListQuarantineEntries() ([]QuarantinedAtom, error) {
+	if em == nil {
+		return nil, nil
+	}
+	return em.quarantine.ListEntries()
 }
 
 // ensureDir creates the Extended Memory directory with restricted permissions.

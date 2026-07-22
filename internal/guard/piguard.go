@@ -1,6 +1,7 @@
 package guard
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -14,26 +15,32 @@ import (
 )
 
 // piguardClient is a Guard implementation that calls a go-prompt-injection-guard
-// sidecar over HTTP or a Unix domain socket.
+// sidecar. With url it speaks HTTP JSON (via the docker HTTP gateway); with
+// socket_path it speaks the daemon's native newline-delimited JSON protocol
+// directly over the Unix socket.
 type piguardClient struct {
 	cfg        *Config
 	client     *http.Client
+	socketPath string
 	detectURL  string
 	longURL    string
 	batchURL   string
 }
 
-// detectRequest is the body for POST /detect.
+// detectRequest is the body for POST /detect (HTTP) or a {"text":...} daemon
+// line (socket).
 type detectRequest struct {
 	Text string `json:"text"`
 }
 
-// batchRequest is the body for POST /raw.
+// batchRequest is the body for POST /raw (HTTP) or a {"texts":[...]} daemon
+// line (socket).
 type batchRequest struct {
 	Texts []string `json:"texts"`
 }
 
-// longRequest is the body for POST /long.
+// longRequest is the body for POST /long (HTTP) or a {"long":...} daemon
+// line (socket).
 type longRequest struct {
 	Long string `json:"long"`
 }
@@ -42,6 +49,11 @@ type longRequest struct {
 type detectResponse struct {
 	Label string  `json:"label"`
 	Score float64 `json:"score"`
+}
+
+// errorResponse is the daemon's reply to a malformed request line.
+type errorResponse struct {
+	Error string `json:"error"`
 }
 
 // batchResponse is the response body for POST /raw.
@@ -58,25 +70,13 @@ func newPiguardClient(cfg *Config) (Guard, error) {
 		return nil, fmt.Errorf("piguard requires url or socket_path")
 	}
 
-	timeout := timeout(cfg)
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-
-	var client *http.Client
-	if cfg.SocketPath != "" {
-		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return net.Dial("unix", cfg.SocketPath)
-		}
-		client = &http.Client{Timeout: timeout, Transport: transport}
-	} else {
-		client = &http.Client{Timeout: timeout}
-	}
-
 	return &piguardClient{
-		cfg:       cfg,
-		client:    client,
-		detectURL: endpoint(cfg, "detect"),
-		longURL:   endpoint(cfg, "long"),
-		batchURL:  endpoint(cfg, "raw"),
+		cfg:        cfg,
+		client:     &http.Client{Timeout: timeout(cfg)},
+		socketPath: cfg.SocketPath,
+		detectURL:  endpoint(cfg, "detect"),
+		longURL:    endpoint(cfg, "long"),
+		batchURL:   endpoint(cfg, "raw"),
 	}, nil
 }
 
@@ -110,7 +110,7 @@ func endpoint(cfg *Config, name string) string {
 	return u.String()
 }
 
-// Detect calls POST /detect.
+// Detect classifies a single text.
 func (p *piguardClient) Detect(ctx context.Context, text string) (Result, error) {
 	start := time.Now()
 	payload := detectRequest{Text: truncateForGuard(text, p.cfg)}
@@ -119,20 +119,19 @@ func (p *piguardClient) Detect(ctx context.Context, text string) (Result, error)
 		return Result{}, fmt.Errorf("marshal detect request: %w", err)
 	}
 
-	resp, err := p.post(ctx, p.detectURL, body)
+	resp, err := p.rpc(ctx, p.detectURL, body)
 	if err != nil {
 		return Result{}, err
 	}
-	defer resp.Body.Close()
 
 	var dr detectResponse
-	if err := json.NewDecoder(resp.Body).Decode(&dr); err != nil {
+	if err := json.Unmarshal(resp, &dr); err != nil {
 		return Result{}, fmt.Errorf("decode detect response: %w", err)
 	}
 	return resultFromResponse(dr, start, threshold(p.cfg)), nil
 }
 
-// DetectBatch calls POST /raw.
+// DetectBatch classifies many texts in one round-trip.
 func (p *piguardClient) DetectBatch(ctx context.Context, texts []string) ([]Result, error) {
 	start := time.Now()
 	truncated := make([]string, len(texts))
@@ -145,14 +144,13 @@ func (p *piguardClient) DetectBatch(ctx context.Context, texts []string) ([]Resu
 		return nil, fmt.Errorf("marshal batch request: %w", err)
 	}
 
-	resp, err := p.post(ctx, p.batchURL, body)
+	resp, err := p.rpc(ctx, p.batchURL, body)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 
 	var br batchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&br); err != nil {
+	if err := json.Unmarshal(resp, &br); err != nil {
 		return nil, fmt.Errorf("decode batch response: %w", err)
 	}
 
@@ -164,7 +162,7 @@ func (p *piguardClient) DetectBatch(ctx context.Context, texts []string) ([]Resu
 	return results, nil
 }
 
-// DetectLong calls POST /long.
+// DetectLong scans a document larger than the model's token window in full.
 func (p *piguardClient) DetectLong(ctx context.Context, text string) (Result, error) {
 	start := time.Now()
 	payload := longRequest{Long: truncateForGuard(text, p.cfg)}
@@ -173,14 +171,13 @@ func (p *piguardClient) DetectLong(ctx context.Context, text string) (Result, er
 		return Result{}, fmt.Errorf("marshal long request: %w", err)
 	}
 
-	resp, err := p.post(ctx, p.longURL, body)
+	resp, err := p.rpc(ctx, p.longURL, body)
 	if err != nil {
 		return Result{}, err
 	}
-	defer resp.Body.Close()
 
 	var dr detectResponse
-	if err := json.NewDecoder(resp.Body).Decode(&dr); err != nil {
+	if err := json.Unmarshal(resp, &dr); err != nil {
 		return Result{}, fmt.Errorf("decode long response: %w", err)
 	}
 	return resultFromResponse(dr, start, threshold(p.cfg)), nil
@@ -189,8 +186,52 @@ func (p *piguardClient) DetectLong(ctx context.Context, text string) (Result, er
 // Close is a no-op for the HTTP client.
 func (p *piguardClient) Close() error { return nil }
 
-// post sends a JSON POST request and returns the response.
-func (p *piguardClient) post(ctx context.Context, urlStr string, body []byte) (*http.Response, error) {
+// rpc sends one request payload to the sidecar and returns the raw response
+// body. In socket mode it speaks the daemon's native newline-delimited JSON
+// protocol over the Unix socket; otherwise it POSTs the payload as JSON to
+// the given HTTP endpoint.
+func (p *piguardClient) rpc(ctx context.Context, endpoint string, body []byte) ([]byte, error) {
+	var resp []byte
+	var err error
+	if p.socketPath != "" {
+		resp, err = p.rpcSocket(body)
+	} else {
+		resp, err = p.rpcHTTP(ctx, endpoint, body)
+	}
+	if err != nil {
+		return nil, err
+	}
+	// The daemon answers malformed lines with {"error": "..."} instead of a
+	// classification; surface it rather than decoding empty label/score.
+	var er errorResponse
+	if jsonErr := json.Unmarshal(resp, &er); jsonErr == nil && er.Error != "" {
+		return nil, fmt.Errorf("piguard daemon error: %s", er.Error)
+	}
+	return resp, nil
+}
+
+// rpcSocket forwards the payload as one newline-delimited JSON line to the
+// daemon's Unix socket and returns its single-line reply.
+func (p *piguardClient) rpcSocket(body []byte) ([]byte, error) {
+	conn, err := net.DialTimeout("unix", p.socketPath, 2*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("dial piguard socket: %w", err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(timeout(p.cfg)))
+
+	if _, err := conn.Write(append(bytes.TrimRight(body, "\n"), '\n')); err != nil {
+		return nil, fmt.Errorf("write piguard socket: %w", err)
+	}
+	resp, err := bufio.NewReader(conn).ReadBytes('\n')
+	if err != nil && len(resp) == 0 {
+		return nil, fmt.Errorf("read piguard socket: %w", err)
+	}
+	return bytes.TrimSpace(resp), nil
+}
+
+// rpcHTTP sends a JSON POST request and returns the response body.
+func (p *piguardClient) rpcHTTP(ctx context.Context, urlStr string, body []byte) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, urlStr, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
@@ -201,12 +242,12 @@ func (p *piguardClient) post(ctx context.Context, urlStr string, body []byte) (*
 	if err != nil {
 		return nil, err
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
 		return nil, fmt.Errorf("unexpected status %d from %s", resp.StatusCode, urlStr)
 	}
-	return resp, nil
+	return io.ReadAll(resp.Body)
 }
 
 // resultFromResponse converts a PIGuard response into a Result, applying the

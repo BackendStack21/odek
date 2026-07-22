@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -21,31 +20,17 @@ type LLMClient interface {
 }
 
 // Extractor turns raw text (typically a user message) into MemoryAtoms using
-// an LLM JSON extraction prompt.
+// an LLM JSON extraction prompt. Extracted atoms are NOT scanned here: the
+// single guard gate is at persistence time (ExtendedMemory.addAtom), which
+// quarantines rejections for human review instead of silently dropping them.
 type Extractor struct {
-	llm      LLMClient
-	cfg      Config
-	guard    guard.Guard
-	guardCfg guard.Config
+	llm LLMClient
+	cfg Config
 }
 
 // NewExtractor creates an Extractor.
 func NewExtractor(llm LLMClient, cfg Config) *Extractor {
 	return &Extractor{llm: llm, cfg: cfg}
-}
-
-// SetGuard installs the shared prompt-injection detector.
-func (e *Extractor) SetGuard(g guard.Guard, cfg guard.Config) {
-	e.guard = g
-	e.guardCfg = cfg
-}
-
-// scanContent runs the guard against a memory-scoped input.
-func (e *Extractor) scanContent(ctx context.Context, content string) error {
-	if err := guard.ScanContentWithScope(ctx, content, e.guard, &e.guardCfg, "memory"); err != nil {
-		return fmt.Errorf("extended memory: %v", err)
-	}
-	return nil
 }
 
 // extractionPrompt asks the LLM to return a JSON array of memory atoms.
@@ -117,10 +102,6 @@ func (e *Extractor) Extract(ctx context.Context, text string) ([]MemoryAtom, err
 			txt = strings.TrimSpace(r.Content)
 		}
 		if txt == "" {
-			continue
-		}
-		if err := e.scanContent(ctx, txt); err != nil {
-			log.Printf("extended memory: extraction rejected atom: %v", err)
 			continue
 		}
 		typ := r.Type
