@@ -62,6 +62,11 @@ type Store struct {
 	dir string // e.g. /home/user/.odek/sessions/
 	mu  sync.Mutex
 
+	// trimWarned records session IDs for which the write-path size-cap trim
+	// warning has already been emitted, so the warning fires once per session
+	// per process instead of on every Append of an oversized session.
+	trimWarned map[string]struct{}
+
 	// Vec is the optional semantic search index. When non-nil, every
 	// Save/Delete/Cleanup call updates the vector index automatically.
 	// Call InitVectorIndex() to initialize.
@@ -75,7 +80,14 @@ func NewStore() (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("session: home dir: %w", err)
 	}
-	dir := filepath.Join(home, ".odek", "sessions")
+	return NewStoreWithDir(filepath.Join(home, ".odek", "sessions"))
+}
+
+// NewStoreWithDir creates a session store rooted at the given directory.
+// The directory is created if it doesn't exist. Used by subsystems (e.g.
+// storage maintenance) that operate on an explicit home directory rather
+// than the current user's default.
+func NewStoreWithDir(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("session: create dir: %w", err)
 	}
@@ -359,6 +371,25 @@ func (s *Store) saveLocked(sess *Session) error {
 		return fmt.Errorf("session: marshal: %w", err)
 	}
 
+	// Write-path size cap: MaxSessionFileBytes is enforced at Load, so a
+	// session allowed to grow past it on disk would become unloadable. Trim
+	// the oldest message groups (keeping the system message at index 0 and
+	// the most recent turns, mirroring the loop's trim semantics) until the
+	// serialized form fits.
+	if len(data) > MaxSessionFileBytes {
+		data, err = s.trimToFileCapLocked(sess, data)
+		if err != nil {
+			return err
+		}
+		if s.trimWarned == nil {
+			s.trimWarned = make(map[string]struct{})
+		}
+		if _, ok := s.trimWarned[sess.ID]; !ok {
+			s.trimWarned[sess.ID] = struct{}{}
+			fmt.Fprintf(os.Stderr, "odek: warning: session %s exceeded %d bytes on write — oldest messages trimmed to stay within the load cap\n", sess.ID, MaxSessionFileBytes)
+		}
+	}
+
 	if err := fsatomic.WriteFile(s.path(sess.ID), data, 0600); err != nil {
 		return fmt.Errorf("session: write: %w", err)
 	}
@@ -375,6 +406,60 @@ func (s *Store) saveLocked(sess *Session) error {
 	// under the store mutex.
 
 	return nil
+}
+
+// trimToFileCapLocked drops the oldest message groups from sess until its
+// serialized form fits within MaxSessionFileBytes, returning the trimmed
+// JSON. Caller must hold s.mu.
+//
+// Group semantics mirror the loop's context trimming: the system message at
+// index 0 is always kept, and an assistant tool_calls message is dropped
+// together with its following tool-result messages so a stored transcript
+// never contains orphaned tool messages (which strict providers reject).
+// The turn count is recounted to match the surviving messages. If nothing
+// droppable remains (a degenerate case, e.g. a single oversized system
+// message), the session is written as-is — failing the save would lose data.
+func (s *Store) trimToFileCapLocked(sess *Session, data []byte) ([]byte, error) {
+	for len(data) > MaxSessionFileBytes {
+		start := 0
+		if len(sess.Messages) > 0 && sess.Messages[0].Role == "system" {
+			start = 1 // keep system
+		}
+		if start >= len(sess.Messages) {
+			break // nothing left to drop
+		}
+		// Drop enough oldest groups in ONE pass to get back under the cap.
+		// Dropping a single group per re-marshal is O(n²) for long
+		// transcripts (thousands of messages × full-session marshal) and
+		// effectively hangs on oversized fixtures. Each pass drops at least
+		// one group, so the outer loop still terminates; groups are
+		// marshaled once each to size them exactly.
+		excess := len(data) - MaxSessionFileBytes
+		freed := 0
+		dropEnd := start
+		for dropEnd < len(sess.Messages) && freed <= excess {
+			groupEnd := dropEnd + 1
+			if sess.Messages[dropEnd].Role == "assistant" && len(sess.Messages[dropEnd].ToolCalls) > 0 {
+				for groupEnd < len(sess.Messages) && sess.Messages[groupEnd].Role == "tool" {
+					groupEnd++
+				}
+			}
+			groupJSON, err := json.Marshal(sess.Messages[dropEnd:groupEnd])
+			if err != nil {
+				return nil, fmt.Errorf("session: marshal trim candidate: %w", err)
+			}
+			freed += len(groupJSON)
+			dropEnd = groupEnd
+		}
+		sess.Messages = append(sess.Messages[:start], sess.Messages[dropEnd:]...)
+		sess.Turns = countUserTurns(sess.Messages)
+		var err error
+		data, err = json.Marshal(sess)
+		if err != nil {
+			return nil, fmt.Errorf("session: marshal after trim: %w", err)
+		}
+	}
+	return data, nil
 }
 
 // Load reads a session from disk by ID. Returns an error if the file
