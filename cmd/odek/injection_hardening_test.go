@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +15,7 @@ import (
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/loop"
+	"github.com/BackendStack21/odek/internal/skills"
 )
 
 func testSanitizeMCPDescription(server, tool, desc string) string {
@@ -357,6 +360,46 @@ func TestBuiltinTools_SessionSearchWrappedAsUntrusted(t *testing.T) {
 	}
 	if len(ingestedSources) == 0 {
 		t.Error("session_search retrieval was not recorded in the audit log")
+	}
+}
+
+// skill_load returns skill bodies, which are externally-sourced content
+// (project dirs, prior auto-saves). Its output must be wrapped as untrusted
+// at registration so a poisoned skill cannot pose as instructions.
+func TestBuiltinTools_SkillLoadWrappedAsUntrusted(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "test-skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: test-skill\ndescription: d\nodek:\n  auto_load: true\n---\n\n## Overview\nTest body.\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	sm := skills.NewSkillManager(dir, "")
+
+	tools := builtinTools(danger.DangerousConfig{}, sm, nil, 4, "", toolConfig{}, nil)
+
+	var sl odek.Tool
+	for _, tool := range tools {
+		if tool.Name() == "skill_load" {
+			sl = tool
+			break
+		}
+	}
+	if sl == nil {
+		t.Fatal("skill_load tool not found in builtinTools output")
+	}
+
+	out, err := sl.Call(`{"name":"test-skill"}`)
+	if err != nil {
+		t.Fatalf("skill_load: %v", err)
+	}
+	if !hasUntrustedWrapper(out) {
+		t.Errorf("skill_load output is not wrapped as untrusted: %s", out)
+	}
+	if !strings.Contains(out, "Test body.") {
+		t.Errorf("expected skill body in output, got: %s", out)
 	}
 }
 

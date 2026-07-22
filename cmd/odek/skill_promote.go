@@ -10,7 +10,10 @@ import (
 )
 
 // promoteSkill clears Provenance.NeedsReview on a skill stored under
-// userDir, allowing it to be auto-loaded. The skill body is left
+// userDir, allowing it to be auto-loaded. If the skill is not in userDir,
+// the project skills dir (./.odek/skills) is searched as a fallback —
+// project-dir skills are forced NeedsReview at scan time (see ScanDirs),
+// so they must be promotable too. The skill body is left
 // unchanged. The user is expected to have read the body before
 // invoking this command; we do not enforce a confirmation prompt
 // because shipping a noisy mandatory `--yes` flag teaches users to
@@ -24,7 +27,12 @@ func promoteSkill(userDir, name string, force bool) error {
 	skillDir := filepath.Join(userDir, name)
 	path := filepath.Join(skillDir, "SKILL.md")
 	if _, err := os.Stat(path); err != nil {
-		return fmt.Errorf("promote: skill %q not found at %s", name, path)
+		projDir := filepath.Join(skills.ProjectSkillsDir(), name)
+		projPath := filepath.Join(projDir, "SKILL.md")
+		if _, perr := os.Stat(projPath); perr != nil {
+			return fmt.Errorf("promote: skill %q not found at %s", name, path)
+		}
+		skillDir, path = projDir, projPath
 	}
 
 	// We re-parse via the scanner to keep all other fields intact, then

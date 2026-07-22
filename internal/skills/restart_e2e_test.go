@@ -33,7 +33,7 @@ Run build-and-restart-telegram.sh --restart-only with nohup. Do NOT use go build
 		t.Fatalf("failed to write SKILL.md: %v", err)
 	}
 
-	return NewSkillManager("", dir)
+	return NewSkillManager(dir, "")
 }
 
 // TestRestartSkill_Triggers_ScoredMatcher verifies the scored matcher

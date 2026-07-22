@@ -160,7 +160,9 @@ func TestScanDirsCached_AutoLoadSeparation(t *testing.T) {
 	fc := make(fileCache)
 	prev := make(map[string]Skill)
 
-	result := scanDirsCached(dir, "", nil, fc, prev)
+	// Scan as the user dir — project-dir skills are distrusted (forced to
+	// NeedsReview) and would never land in AutoLoad.
+	result := scanDirsCached("", dir, nil, fc, prev)
 
 	if len(result.AutoLoad) != 1 {
 		t.Fatalf("expected 1 auto-load skill, got %d", len(result.AutoLoad))

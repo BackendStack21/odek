@@ -38,7 +38,7 @@
       "memory": true,
       "system_prompt": true,
       "mcp_descriptions": true,
-      "skills": false,
+      "skills": true,
       "tool_outputs": false,
       "telegram": false
     }

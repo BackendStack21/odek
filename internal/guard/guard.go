@@ -30,16 +30,16 @@ const (
 // an attacker-controlled endpoint. Therefore the entire guard section must be
 // rejected from project-level ./odek.json.
 type Config struct {
-	Provider        string      `json:"provider,omitempty"`        // "local" or "piguard"
-	URL             string      `json:"url,omitempty"`             // e.g. http://127.0.0.1:8080/detect
-	LongURL         string      `json:"long_url,omitempty"`        // e.g. http://127.0.0.1:8080/long
-	BatchURL        string      `json:"batch_url,omitempty"`       // e.g. http://127.0.0.1:8080/raw
-	SocketPath      string      `json:"socket_path,omitempty"`     // /tmp/piguard.sock (unix mode)
-	Threshold       float64     `json:"threshold,omitempty"`       // default 0.9
-	TimeoutSeconds  int         `json:"timeout_seconds,omitempty"` // default 5
+	Provider        string      `json:"provider,omitempty"`          // "local" or "piguard"
+	URL             string      `json:"url,omitempty"`               // e.g. http://127.0.0.1:8080/detect
+	LongURL         string      `json:"long_url,omitempty"`          // e.g. http://127.0.0.1:8080/long
+	BatchURL        string      `json:"batch_url,omitempty"`         // e.g. http://127.0.0.1:8080/raw
+	SocketPath      string      `json:"socket_path,omitempty"`       // /tmp/piguard.sock (unix mode)
+	Threshold       float64     `json:"threshold,omitempty"`         // default 0.9
+	TimeoutSeconds  int         `json:"timeout_seconds,omitempty"`   // default 5
 	FallbackToLocal *bool       `json:"fallback_to_local,omitempty"` // default true
-	MaxTextLength   int         `json:"max_text_length,omitempty"` // default 0 = unlimited
-	Scan            *ScanConfig `json:"scan,omitempty"`            // per-subsystem toggles
+	MaxTextLength   int         `json:"max_text_length,omitempty"`   // default 0 = unlimited
+	Scan            *ScanConfig `json:"scan,omitempty"`              // per-subsystem toggles
 }
 
 // ScanConfig toggles which subsystems use the guard.
@@ -47,9 +47,9 @@ type ScanConfig struct {
 	Memory          *bool `json:"memory,omitempty"`           // default true
 	SystemPrompt    *bool `json:"system_prompt,omitempty"`    // default true
 	MCPDescriptions *bool `json:"mcp_descriptions,omitempty"` // default true
-	Skills          *bool `json:"skills,omitempty"`           // default false
+	Skills          *bool `json:"skills,omitempty"`           // default true
 	ToolOutputs     *bool `json:"tool_outputs,omitempty"`     // default false
-	Telegram        *bool `json:"telegram,omitempty"`           // default false
+	Telegram        *bool `json:"telegram,omitempty"`         // default false
 }
 
 // boolPtr returns a pointer to a bool value.
@@ -66,7 +66,8 @@ func DefaultConfig() *Config {
 	}
 }
 
-// DefaultScanConfig enables memory, system_prompt, and mcp_descriptions by default.
+// DefaultScanConfig enables memory, system_prompt, mcp_descriptions, and
+// skills by default.
 func DefaultScanConfig() *ScanConfig {
 	t := true
 	f := false
@@ -74,7 +75,7 @@ func DefaultScanConfig() *ScanConfig {
 		Memory:          &t,
 		SystemPrompt:    &t,
 		MCPDescriptions: &t,
-		Skills:          &f,
+		Skills:          &t,
 		ToolOutputs:     &f,
 		Telegram:        &f,
 	}
@@ -193,4 +194,3 @@ func fallback(cfg *Config, err error) (Guard, error) {
 	}
 	return nil, fmt.Errorf("guard: sidecar unavailable: %w", err)
 }
-

@@ -492,11 +492,14 @@ func New(cfg Config) (*Agent, error) {
 			sm.SetNotifier(skills.NewMultiNotifier(notifiers...))
 		}
 
-		// Install the shared guard so skill loading and saving are scanned
+		// Install the shared guard so skill loading and saving are scanned.
+		// The local rule scan always runs; the sidecar second opinion runs
 		// when the skills scan scope is enabled.
 		sm.SetGuard(cfg.Guard, cfg.GuardConfig)
 
-		// Append auto-load skills to system message
+		// Append auto-load skills to system message. Skill bodies are
+		// externally-sourced content, so they pass through the caller's
+		// untrusted wrapper (same as lazy skill context in the loop).
 		var skillContext string
 		var autoLoadNames []string
 		count := 0
@@ -504,7 +507,11 @@ func New(cfg Config) (*Agent, error) {
 			if count >= cfg.Skills.MaxAutoLoad {
 				break
 			}
-			skillContext += "\n\n" + skills.FormatAsContext(s)
+			content := skills.FormatAsContext(s)
+			if cfg.UntrustedWrapper != nil {
+				content = cfg.UntrustedWrapper("skill", content)
+			}
+			skillContext += "\n\n" + content
 			autoLoadNames = append(autoLoadNames, s.Name)
 			count++
 		}

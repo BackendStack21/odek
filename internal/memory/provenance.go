@@ -36,13 +36,22 @@ type EpisodeProvenance struct {
 
 // AlwaysExternalTools are tools whose RESULT content originates outside the
 // agent's trust boundary regardless of their arguments: network fetches,
-// opaque transcribed audio, and recall of prior-session transcripts (which may
-// themselves carry previously-injected content).
+// search-engine results, opaque transcribed audio, model-described images,
+// sub-agent output (a delegated task runs its own tool calls and returns
+// attacker-influenceable text), and recall of prior-session transcripts
+// (which may themselves carry previously-injected content).
+//
+// `shell` is deliberately NOT in this set even though its output can carry
+// untrusted bytes: it is the agent's primary work tool and tainting it would
+// taint nearly every session, making the provenance gate useless.
 var AlwaysExternalTools = map[string]bool{
 	"browser":        true,
 	"http_batch":     true,
 	"transcribe":     true,
 	"session_search": true,
+	"web_search":     true,
+	"vision":         true,
+	"delegate_tasks": true,
 }
 
 // PathReadingTools are tools that read filesystem content (or structure) into
