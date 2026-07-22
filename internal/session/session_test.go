@@ -1291,10 +1291,12 @@ func TestBuildConversationText(t *testing.T) {
 // trailing messages must survive; the oldest turns are dropped.
 func TestSave_TrimsOversizedSession(t *testing.T) {
 	store := newTestStore(t)
+	withFileCap(t, 64<<10)
 
-	// ~10 MiB per message × 4 messages ≈ 40 MiB serialized — past the 32 MiB
-	// cap. Few large messages keep the trim loop's re-marshal cycles cheap.
-	big := strings.Repeat("x", 10<<20)
+	// 20 KiB per message × 4 messages ≈ 80 KiB serialized — past the 64 KiB
+	// test cap. Few large messages keep the trim loop's re-marshal cycles
+	// cheap; the small cap (see withFileCap) keeps this fast in CI.
+	big := strings.Repeat("x", 20<<10)
 	msgs := []llm.Message{{Role: "system", Content: "you are odek"}}
 	for i := 0; i < 4; i++ {
 		role := "user"
@@ -1318,7 +1320,7 @@ func TestSave_TrimsOversizedSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat session file: %v", err)
 	}
-	if info.Size() > MaxSessionFileBytes {
+	if info.Size() > int64(MaxSessionFileBytes) {
 		t.Errorf("session file size = %d, exceeds MaxSessionFileBytes %d", info.Size(), MaxSessionFileBytes)
 	}
 
@@ -1352,8 +1354,10 @@ func TestSave_TrimsOversizedSession(t *testing.T) {
 // transcript never starts with an orphaned tool message.
 func TestSave_TrimKeepsToolGroupsIntact(t *testing.T) {
 	store := newTestStore(t)
+	withFileCap(t, 64<<10)
 
-	big := strings.Repeat("y", 7<<20)
+	// 6 × 12 KiB ≈ 72 KiB — past the 64 KiB test cap.
+	big := strings.Repeat("y", 12<<10)
 	msgs := []llm.Message{{Role: "system", Content: "you are odek"}}
 	for i := 0; i < 3; i++ {
 		call := llm.Message{Role: "assistant", Content: big}

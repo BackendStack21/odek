@@ -43,9 +43,20 @@ func TestSave_IndexWriteError(t *testing.T) {
 	}
 }
 
+// withFileCap temporarily shrinks MaxSessionFileBytes so cap-trimming tests
+// can use small fixtures instead of multi-MiB transcripts (which made the
+// session suite time out in CI).
+func withFileCap(t *testing.T, n int) {
+	t.Helper()
+	orig := MaxSessionFileBytes
+	MaxSessionFileBytes = n
+	t.Cleanup(func() { MaxSessionFileBytes = orig })
+}
+
 // TestTrimToFileCap_NothingDroppable covers the degenerate break branch: a
 // single system message with nothing left to drop is returned as-is.
 func TestTrimToFileCap_NothingDroppable(t *testing.T) {
+	withFileCap(t, 64<<10)
 	store, err := NewStoreWithDir(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStoreWithDir() error: %v", err)
@@ -71,6 +82,7 @@ func TestTrimToFileCap_NothingDroppable(t *testing.T) {
 // an assistant tool_calls message is dropped together with its tool results,
 // and the trim ends once the re-marshaled session fits.
 func TestTrimToFileCap_DropsToolGroups(t *testing.T) {
+	withFileCap(t, 64<<10)
 	store, err := NewStoreWithDir(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStoreWithDir() error: %v", err)
@@ -105,5 +117,50 @@ func TestTrimToFileCap_DropsToolGroups(t *testing.T) {
 		if m.Role == "tool" {
 			t.Error("trimmed transcript must not contain orphaned tool messages")
 		}
+	}
+}
+
+// TestSave_IncrementalRedaction verifies secrets are redacted only in
+// messages at or beyond the persisted RedactBoundary: the first save redacts
+// everything, later saves scan only newly appended messages.
+func TestSave_IncrementalRedaction(t *testing.T) {
+	store, err := NewStoreWithDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStoreWithDir() error: %v", err)
+	}
+	secret1 := "sk-" + strings.Repeat("a1", 20)
+	secret2 := "sk-" + strings.Repeat("b2", 20)
+
+	sess, err := store.Create([]llm.Message{
+		{Role: "system", Content: "you are odek"},
+		{Role: "user", Content: "here is my key " + secret1},
+	}, "test", "redact boundary")
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+	loaded, err := store.Load(sess.ID)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if !strings.Contains(loaded.Messages[1].Content, "[REDACTED]") {
+		t.Errorf("secret in first save not redacted: %q", loaded.Messages[1].Content)
+	}
+	if loaded.RedactBoundary != len(loaded.Messages) {
+		t.Errorf("RedactBoundary = %d, want %d after first save", loaded.RedactBoundary, len(loaded.Messages))
+	}
+
+	loaded.Messages = append(loaded.Messages, llm.Message{Role: "assistant", Content: "try " + secret2})
+	if err := store.Save(loaded); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+	reloaded, err := store.Load(sess.ID)
+	if err != nil {
+		t.Fatalf("Load() after second save: %v", err)
+	}
+	if !strings.Contains(reloaded.Messages[2].Content, "[REDACTED]") {
+		t.Errorf("secret in appended message not redacted: %q", reloaded.Messages[2].Content)
+	}
+	if reloaded.RedactBoundary != len(reloaded.Messages) {
+		t.Errorf("RedactBoundary = %d, want %d after second save", reloaded.RedactBoundary, len(reloaded.Messages))
 	}
 }

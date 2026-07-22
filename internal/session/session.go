@@ -35,7 +35,9 @@ import (
 // MaxSessionFileBytes caps the on-disk size of a session file that Load will
 // read into memory. This prevents a tampered or corrupted multi-gigabyte
 // session file from causing an OOM when any caller loads it.
-const MaxSessionFileBytes = 32 * 1024 * 1024 // 32 MiB
+// It is a var, not a const, so tests can temporarily shrink it instead of
+// building multi-MiB fixtures — production code should treat it as fixed.
+var MaxSessionFileBytes = 32 * 1024 * 1024 // 32 MiB
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -52,6 +54,14 @@ type Session struct {
 	Sandbox   bool          `json:"sandbox"`              // was sandboxed — auto-apply on resume
 	Messages  []llm.Message `json:"messages"`             // full conversation history
 	Buffer    []string      `json:"buffer,omitempty"`     // last N turn summaries (memory tier 2)
+
+	// RedactBoundary records how many leading messages have already been
+	// secret-redacted by a previous save. Redacting the full transcript on
+	// every save is O(history) per write — O(n²) over a session's life —
+	// and dominates save time on long sessions (20+ regexes over tens of
+	// MB). Sessions are append-only, so only messages at or beyond the
+	// boundary need scanning. Old files default to 0 (= redact all once).
+	RedactBoundary int `json:"redact_boundary,omitempty"`
 }
 
 // ── Store ──────────────────────────────────────────────────────────────
@@ -355,13 +365,22 @@ func (s *Store) saveLocked(sess *Session) error {
 		return fmt.Errorf("session: refusing unsafe save: %w", err)
 	}
 
-	// Redact secrets from all messages and the task label before writing to
-	// disk. This is defense-in-depth: the loop engine already redacts tool
-	// outputs, but this catches any secrets that slipped through
-	// (e.g. LLM hallucinations, direct API usage, or the first user prompt
-	// stored as the session title).
+	// Redact secrets before writing to disk. This is defense-in-depth: the
+	// loop engine already redacts tool outputs, but this catches any secrets
+	// that slipped through (e.g. LLM hallucinations, direct API usage, or
+	// the first user prompt stored as the session title). Sessions are
+	// append-only, so only messages at or beyond sess.RedactBoundary are
+	// scanned — messages already redacted by a previous save are not
+	// re-scanned (see the field comment for the O(n²) rationale).
 	sess.Task = redact.RedactSecrets(sess.Task)
-	for i := range sess.Messages {
+	boundary := sess.RedactBoundary
+	if boundary < 0 {
+		boundary = 0
+	}
+	if boundary > len(sess.Messages) {
+		boundary = len(sess.Messages)
+	}
+	for i := boundary; i < len(sess.Messages); i++ {
 		sess.Messages[i].Content = redact.RedactSecrets(sess.Messages[i].Content)
 		sess.Messages[i].ReasoningContent = redact.RedactSecrets(sess.Messages[i].ReasoningContent)
 	}
@@ -377,8 +396,9 @@ func (s *Store) saveLocked(sess *Session) error {
 	// the most recent turns, mirroring the loop's trim semantics) until the
 	// serialized form fits.
 	if len(data) > MaxSessionFileBytes {
-		data, err = s.trimToFileCapLocked(sess, data)
-		if err != nil {
+		// The trim's own marshaled form is discarded: the final marshal
+		// below recomputes it after RedactBoundary is updated.
+		if _, err = s.trimToFileCapLocked(sess, data); err != nil {
 			return err
 		}
 		if s.trimWarned == nil {
@@ -388,6 +408,15 @@ func (s *Store) saveLocked(sess *Session) error {
 			s.trimWarned[sess.ID] = struct{}{}
 			fmt.Fprintf(os.Stderr, "odek: warning: session %s exceeded %d bytes on write — oldest messages trimmed to stay within the load cap\n", sess.ID, MaxSessionFileBytes)
 		}
+	}
+	// Every surviving message is now redacted: those before the boundary by
+	// earlier saves, the rest just now — and trimming only removes messages,
+	// so the boundary is simply the surviving count. Set it before the final
+	// marshal so it is actually persisted.
+	sess.RedactBoundary = len(sess.Messages)
+	data, err = json.Marshal(sess)
+	if err != nil {
+		return fmt.Errorf("session: marshal: %w", err)
 	}
 
 	if err := fsatomic.WriteFile(s.path(sess.ID), data, 0600); err != nil {
@@ -472,7 +501,7 @@ func (s *Store) Load(id string) (*Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("session: load %q: %w", id, err)
 	}
-	if info.Size() > MaxSessionFileBytes {
+	if info.Size() > int64(MaxSessionFileBytes) {
 		return nil, fmt.Errorf("session: load %q: file too large (%d bytes, max %d)", id, info.Size(), MaxSessionFileBytes)
 	}
 	data, err := os.ReadFile(s.path(id))
