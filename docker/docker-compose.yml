@@ -161,6 +161,12 @@ services:
   # The daemon speaks newline-delimited JSON over a private Unix socket; the
   # gateway bridges that to plain HTTP on the compose network so odek can use
   # its existing HTTP-based piguard client without sharing a socket volume.
+  #
+  # Apple Silicon note: the upstream daemon Dockerfile pins its base images by
+  # amd64 digest, which yields x86-64 binaries that crash under Rosetta on
+  # macOS. If `docker compose up` fails with "rosetta error", build the daemon
+  # locally from the guard repo with the digest pins removed and tag it
+  # piguard:local (compose reuses the existing image).
   piguard:
     profiles: ["restricted", "godmode", "telegram-restricted", "telegram-godmode"]
     # GHCR packages for this repo are private, so we build the daemon image locally
@@ -188,10 +194,12 @@ services:
 
   piguard-gateway:
     profiles: ["restricted", "godmode", "telegram-restricted", "telegram-godmode"]
-    # Built locally from the public guard repo source (GHCR packages are private).
+    # Vendored gateway (./piguard-gateway): forwards odek's JSON protocol
+    # ({"text"|"long"|"texts"}) verbatim to the daemon socket. The upstream
+    # examples/http-gateway is a raw-text demo that double-encodes odek's JSON
+    # bodies, making the model score the wrapper instead of the content.
     build:
-      context: https://github.com/BackendStack21/go-prompt-injection-guard.git#v1.0.0
-      dockerfile: examples/http-gateway/Dockerfile
+      context: ./piguard-gateway
     image: piguard-gateway:local
     command: ["--addr=:8080", "--socket=/run/piguard/piguard.sock"]
     volumes:
