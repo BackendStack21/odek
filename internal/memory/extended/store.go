@@ -8,6 +8,7 @@ import (
 	"sort"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/fsatomic"
 	"github.com/BackendStack21/odek/internal/session"
@@ -57,6 +58,11 @@ func (s *AtomStore) Add(atom MemoryAtom, maxChars int) error {
 	}
 	if maxChars > 0 && len(atom.Text) > maxChars {
 		atom.Text = atom.Text[:maxChars]
+		// Back off to the last rune boundary so truncation cannot split a
+		// multi-byte UTF-8 character.
+		for len(atom.Text) > 0 && !utf8.ValidString(atom.Text) {
+			atom.Text = atom.Text[:len(atom.Text)-1]
+		}
 	}
 
 	lock := dirLock(s.dir)

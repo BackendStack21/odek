@@ -169,3 +169,36 @@ func TestVectorIndexCosine(t *testing.T) {
 		t.Errorf("expected orthogonal vectors to have cosine 0, got %f", score)
 	}
 }
+
+// TestVectorIndexReusesEmbedderAcrossRebuilds verifies that index rebuilds
+// reuse a single embedder instance (preserving backend caches) instead of
+// constructing a fresh one per rebuild.
+func TestVectorIndexReusesEmbedderAcrossRebuilds(t *testing.T) {
+	dir := t.TempDir()
+	store := NewAtomStore(dir)
+	factoryCalls := 0
+	newEmb := func() embedding.TextEmbedder {
+		factoryCalls++
+		return newMockEmbedder(vectorDim)
+	}
+	vi := newAtomVectorIndex(dir, newEmb, func() ([]MemoryAtom, error) { return store.List() })
+
+	_ = store.Add(MemoryAtom{ID: "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6", Text: "hello", SourceClass: SourceUserSaid}, 300)
+	vi.markDirty()
+	vi.ensureFresh()
+	first := vi.emb
+
+	_ = store.Add(MemoryAtom{ID: "b1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6", Text: "world", SourceClass: SourceUserSaid}, 300)
+	vi.markDirty()
+	vi.ensureFresh()
+
+	if vi.emb != first {
+		t.Error("expected the embedder instance to be reused across rebuilds")
+	}
+	if factoryCalls != 1 {
+		t.Errorf("expected embedder factory to be called once, got %d", factoryCalls)
+	}
+	if !vi.ready {
+		t.Error("expected index ready after second rebuild")
+	}
+}

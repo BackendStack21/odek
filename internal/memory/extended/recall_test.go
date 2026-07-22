@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BackendStack21/odek/internal/embedding"
 )
@@ -225,5 +226,78 @@ func TestRecallRerankIgnoresInvalidIndices(t *testing.T) {
 	}
 	if len(atoms) != 1 {
 		t.Errorf("expected 1 atom after filtering invalid indices, got %d", len(atoms))
+	}
+}
+
+// TestPredictiveRecallSkipsRerank verifies that predicted-intent searches
+// reuse the first query's candidate set and do not trigger additional paid
+// LLM reranks — only the literal query is reranked.
+func TestPredictiveRecallSkipsRerank(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.Enabled = boolPtr(true)
+	cfg.SemanticSearchRerank = boolPtr(true)
+	cfg.SemanticSearchMinScore = 0.01
+	cfg.PredictiveIntents = 1
+	cfg.FollowUpAnticipationEnabled = boolPtr(true)
+
+	llm := newMockLLM("0,1", `[{"text":"follow-up question","confidence":0.9}]`)
+	em := New(dir, llm, cfg)
+	em.index.newEmb = func() embedding.TextEmbedder { return newMockEmbedder(vectorDim) }
+	em.index.emb = newMockEmbedder(vectorDim)
+	defer em.Close()
+
+	_ = em.AddAtom(context.Background(), makeSearchableAtom("User prefers Go for backend services"))
+	_ = em.AddAtom(context.Background(), makeSearchableAtom("Run go test ./... to verify"))
+
+	if _, err := em.recall.queryAtomsWithPrediction(context.Background(), "Go backend", nil, UserState{}); err != nil {
+		t.Fatalf("queryAtomsWithPrediction failed: %v", err)
+	}
+	// 1 rerank for the literal query + 1 prediction call. The predicted-intent
+	// searches must not trigger additional reranks (old behavior: 4 calls).
+	if got := llm.calls(); got != 2 {
+		t.Errorf("expected 2 LLM calls (literal rerank + prediction), got %d", got)
+	}
+}
+
+// TestQueryAtomsWithPredictionCompositeOrdering verifies the final union is
+// sorted by the blended composite score (0.6*similarity + 0.4*retention), not
+// by pure retention: a highly similar but decayed atom must outrank a fresh
+// but barely similar one.
+func TestQueryAtomsWithPredictionCompositeOrdering(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.Enabled = boolPtr(true)
+	cfg.SemanticSearchMinScore = 0.01
+	cfg.SemanticSearchRerank = boolPtr(false)
+	cfg.FollowUpAnticipationEnabled = boolPtr(false)
+
+	em := New(dir, newMockLLM(), cfg)
+	em.index.newEmb = func() embedding.TextEmbedder { return newMockEmbedder(vectorDim) }
+	em.index.emb = newMockEmbedder(vectorDim)
+	defer em.Close()
+
+	query := "zzzz qqqq wwww"
+	// Identical to the query (similarity 1.0) but almost fully decayed.
+	decayed := makeSearchableAtom(query)
+	decayed.CreatedAt = time.Now().UTC().Add(-300 * 24 * time.Hour)
+	// Barely similar but brand new: pure retention ranks this one first.
+	fresh := makeSearchableAtom("completely unrelated memory entry")
+	if err := em.AddAtom(context.Background(), decayed); err != nil {
+		t.Fatal(err)
+	}
+	if err := em.AddAtom(context.Background(), fresh); err != nil {
+		t.Fatal(err)
+	}
+
+	atoms, err := em.recall.queryAtomsWithPrediction(context.Background(), query, nil, UserState{})
+	if err != nil {
+		t.Fatalf("queryAtomsWithPrediction failed: %v", err)
+	}
+	if len(atoms) != 2 {
+		t.Fatalf("expected 2 atoms, got %d", len(atoms))
+	}
+	if atoms[0].Text != query {
+		t.Errorf("expected composite score to rank the similar atom first, got %q", atoms[0].Text)
 	}
 }

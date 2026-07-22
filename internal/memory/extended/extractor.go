@@ -59,6 +59,97 @@ func StripUntrustedWrappers(text string) string {
 	return untrustedRe.ReplaceAllString(text, "")
 }
 
+// fenceRe matches a leading/trailing markdown code fence (``` or ```json)
+// around an LLM response.
+var fenceRe = regexp.MustCompile("(?s)^\\s*```[a-zA-Z]*\\s*\n?(.*?)\\s*```\\s*$")
+
+// extractJSON normalizes an LLM JSON response: it strips a surrounding
+// markdown code fence and extracts the first complete JSON array or object
+// span (balanced, string-aware), tolerating preamble/prose around it. The
+// second return value reports whether a candidate span was found.
+func extractJSON(resp string) (string, bool) {
+	s := strings.TrimSpace(resp)
+	if m := fenceRe.FindStringSubmatch(s); m != nil {
+		s = strings.TrimSpace(m[1])
+	}
+	if s == "" {
+		return "", false
+	}
+	if s[0] == '[' || s[0] == '{' {
+		if json.Valid([]byte(s)) {
+			return s, true
+		}
+	}
+	// Find the first JSON opening bracket outside any string and scan for the
+	// matching close.
+	start := -1
+	var open, close byte
+	inString := false
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			if escaped {
+				escaped = false
+			} else if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				inString = false
+			}
+			continue
+		}
+		if c == '"' {
+			inString = true
+			continue
+		}
+		if c == '[' || c == '{' {
+			start = i
+			open, close = c, ']'
+			if open == '{' {
+				close = '}'
+			}
+			break
+		}
+	}
+	if start < 0 {
+		return "", false
+	}
+	depth := 0
+	inString = false
+	escaped = false
+	for i := start; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			if escaped {
+				escaped = false
+			} else if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case open:
+			depth++
+		case close:
+			depth--
+			if depth == 0 {
+				return s[start : i+1], true
+			}
+		}
+	}
+	return "", false
+}
+
+// normalizeAtomText canonicalizes atom text for exact-match dedup: lowercase
+// with whitespace collapsed and trimmed.
+func normalizeAtomText(text string) string {
+	return strings.ToLower(strings.Join(strings.Fields(text), " "))
+}
+
 // Extract atoms from text. Returns nil if the LLM is unavailable, the output
 // is unparseable, or no atoms are found. Extracted atoms are sourced from the
 // user ("user_said").
@@ -81,6 +172,11 @@ func (e *Extractor) Extract(ctx context.Context, text string) ([]MemoryAtom, err
 	if resp == "" || resp == "[]" {
 		return nil, nil
 	}
+	jsonResp, ok := extractJSON(resp)
+	if !ok {
+		log.Printf("extended memory: extraction parse failed: no JSON in response")
+		return nil, fmt.Errorf("extract: parse json: no JSON in response")
+	}
 
 	var raw []struct {
 		Text       string  `json:"text"`
@@ -88,7 +184,7 @@ func (e *Extractor) Extract(ctx context.Context, text string) ([]MemoryAtom, err
 		Type       string  `json:"type"`
 		Confidence float32 `json:"confidence"`
 	}
-	if err := json.Unmarshal([]byte(resp), &raw); err != nil {
+	if err := json.Unmarshal([]byte(jsonResp), &raw); err != nil {
 		log.Printf("extended memory: extraction parse failed: %v", err)
 		return nil, fmt.Errorf("extract: parse json: %w", err)
 	}

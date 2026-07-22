@@ -3,10 +3,15 @@ package memory
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 	"unicode/utf8"
+
+	"github.com/BackendStack21/odek/internal/memory/extended"
 )
 
 // mockLLM is a simple LLMClient mock for testing.
@@ -823,5 +828,310 @@ func TestMemoryConfig_LLMSearchDefault(t *testing.T) {
 		t.Error("LLMSearch defaults to false — episodes are ranked by recency only, not relevance. " +
 			"Now that episodes ARE injected (lastEpiMsg fix), enable LLM ranking by default " +
 			"so cross-session memory is relevance-ordered, not just chronological.")
+	}
+}
+
+// ── Merge-on-write prefix collision ──────────────────────────────
+
+// TestAddFactMergeOnWriteSharedPrefix is a regression test: the merge path
+// used to replace the merged entry via a 30-char prefix substring match.
+// When two entries shared that prefix, FactStore.Replace failed with an
+// ambiguous match and AddFact propagated the error — the new fact was lost.
+// The merge path now replaces by entry index.
+func TestAddFactMergeOnWriteSharedPrefix(t *testing.T) {
+	dir := t.TempDir()
+	mm := NewMemoryManager(dir, nil, DefaultMemoryConfig())
+
+	a := "shared-prefix-0123456789abcdef user prefers concise answers"
+	b := "shared-prefix-0123456789abcdef build uses bazel remote cache"
+	// Seed directly through the store so no merge happens between a and b.
+	if err := mm.facts.Add("user", a); err != nil {
+		t.Fatal(err)
+	}
+	if err := mm.facts.Add("user", b); err != nil {
+		t.Fatal(err)
+	}
+
+	// A superset of a — similarity vs a is maximal, so merge-on-write
+	// targets a. The old code matched a's 30-char prefix, which also matches
+	// b, and returned an error, dropping the fact.
+	c := "shared-prefix-0123456789abcdef user prefers concise answers always"
+	if err := mm.AddFact("user", c); err != nil {
+		t.Fatalf("merge-on-write dropped the fact on a prefix collision: %v", err)
+	}
+	entries, err := mm.facts.Entries("user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("want 2 entries after merge, got %v", entries)
+	}
+	found := false
+	for _, e := range entries {
+		if e == c {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("merged entry %q missing from %v", c, entries)
+	}
+}
+
+// ── Consolidation cap + trimming ─────────────────────────────────
+
+// TestConsolidateEnforcesCharCap verifies that Consolidate refuses to write
+// LLM output that exceeds the target's character cap, keeping the old file —
+// previously writeEntries persisted uncapped content, bypassing the cap that
+// Add/Replace enforce.
+func TestConsolidateEnforcesCharCap(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultMemoryConfig()
+	cfg.FactsLimitUser = 100 // tiny cap so the LLM output overflows it
+	llm := &mockLLM{responses: map[string]string{
+		"Consolidate": `["` + strings.Repeat("a", 90) + `", "` + strings.Repeat("b", 90) + `"]`,
+	}}
+	mm := NewMemoryManager(dir, llm, cfg)
+
+	if err := mm.facts.Add("user", "fact one"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mm.facts.Add("user", "fact two"); err != nil {
+		t.Fatal(err)
+	}
+
+	err := mm.Consolidate("user")
+	if err == nil {
+		t.Fatal("consolidation beyond the character cap must fail")
+	}
+	entries, _ := mm.facts.Entries("user")
+	if len(entries) != 2 || entries[0] != "fact one" || entries[1] != "fact two" {
+		t.Errorf("old file must be preserved on cap overflow, got %v", entries)
+	}
+}
+
+// TestConsolidateTrimsEntries verifies that consolidated entries are trimmed
+// before persisting — the old scan loop trimmed a loop-local copy, so the
+// untrimmed strings (and empty entries) were written to disk.
+func TestConsolidateTrimsEntries(t *testing.T) {
+	dir := t.TempDir()
+	llm := &mockLLM{responses: map[string]string{
+		"Consolidate": `["  padded fact  ", "", " second fact "]`,
+	}}
+	mm := NewMemoryManager(dir, llm, DefaultMemoryConfig())
+
+	if err := mm.facts.Add("user", "padded fact x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mm.facts.Add("user", "second fact y"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mm.facts.Add("user", "third fact z"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mm.Consolidate("user"); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := mm.facts.Entries("user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 || entries[0] != "padded fact" || entries[1] != "second fact" {
+		t.Errorf("entries must be persisted trimmed with empties dropped, got %q", entries)
+	}
+}
+
+// ── Background work tracking ─────────────────────────────────────
+
+// blockingLLM blocks every SimpleCall until release is closed (or the call
+// context expires), so tests can observe async behavior deterministically.
+type blockingLLM struct {
+	calls   atomic.Int32
+	release chan struct{}
+}
+
+func (b *blockingLLM) SimpleCall(ctx context.Context, system, user string) (string, error) {
+	b.calls.Add(1)
+	select {
+	case <-b.release:
+		return "", nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+func TestRunBackgroundAndWaitForBackground(t *testing.T) {
+	dir := t.TempDir()
+	mm := NewMemoryManager(dir, nil, DefaultMemoryConfig())
+
+	done := make(chan struct{})
+	mm.RunBackground(func() { close(done) })
+	if !mm.WaitForBackground(5 * time.Second) {
+		t.Fatal("WaitForBackground should drain a completed task")
+	}
+	select {
+	case <-done:
+	default:
+		t.Fatal("background task did not run")
+	}
+
+	// A still-blocked task must report a timeout (false) rather than hang.
+	release := make(chan struct{})
+	defer close(release)
+	mm.RunBackground(func() { <-release })
+	if mm.WaitForBackground(50 * time.Millisecond) {
+		t.Fatal("WaitForBackground should report timeout while work is blocked")
+	}
+}
+
+// TestOnUserMessageLoopIsAsync verifies the per-turn extraction runs on a
+// tracked background goroutine: the loop callback returns immediately even
+// when the extraction LLM call is blocked, and WaitForBackground drains it.
+func TestOnUserMessageLoopIsAsync(t *testing.T) {
+	dir := t.TempDir()
+	b := &blockingLLM{release: make(chan struct{})}
+	cfg := DefaultMemoryConfig()
+	cfg.Extended = &extended.Config{Enabled: BoolPtr(true)}
+	mm := NewMemoryManager(dir, nil, cfg)
+	mm.InitExtended(b, dir)
+
+	done := make(chan struct{})
+	go func() {
+		mm.OnUserMessageLoop(context.Background(), "please refactor the parser")
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnUserMessageLoop blocked on the extraction LLM call — must be async")
+	}
+
+	// The extraction goroutine is tracked: WaitForBackground times out while
+	// the LLM call is blocked, then drains once it is released.
+	if mm.WaitForBackground(200 * time.Millisecond) {
+		t.Fatal("WaitForBackground should time out while extraction is blocked")
+	}
+	close(b.release)
+	if !mm.WaitForBackground(5 * time.Second) {
+		t.Fatal("WaitForBackground should drain after the LLM call is released")
+	}
+	if b.calls.Load() == 0 {
+		t.Error("extraction LLM was never called — the background work did not run")
+	}
+}
+
+// TestOnSessionEndConsolidationTracked verifies the session-end consolidation
+// goroutine is tracked by the manager's WaitGroup, so a caller draining it
+// (Agent.Close before process exit) deterministically observes the result.
+func TestOnSessionEndConsolidationTracked(t *testing.T) {
+	dir := t.TempDir()
+	llm := &mockLLM{responses: map[string]string{
+		"Summarize":   "fixed the parser and added tests",
+		"Consolidate": `["Project uses Go"]`,
+	}}
+	mm := NewMemoryManager(dir, llm, DefaultMemoryConfig())
+
+	if err := mm.facts.Add("user", "Project uses Go 1.22"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mm.facts.Add("user", "Project uses Go modules"); err != nil {
+		t.Fatal(err)
+	}
+
+	mm.OnSessionEnd("sess-bg", 5, []string{
+		"user: fix the parser",
+		"assistant: done, added tests",
+		"user: thanks",
+	})
+	if !mm.WaitForBackground(5 * time.Second) {
+		t.Fatal("session-end background work did not finish")
+	}
+	entries, err := mm.facts.Entries("user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0] != "Project uses Go" {
+		t.Errorf("consolidation result not persisted after drain: %v", entries)
+	}
+}
+
+// ── Ranker "none relevant" ───────────────────────────────────────
+
+// TestSearchEpisodesHonorsRankerNoneRelevant verifies that an explicit "none"
+// verdict from the LLM ranker yields an empty result instead of being treated
+// as a rerank failure and falling back to the raw vector candidates.
+func TestSearchEpisodesHonorsRankerNoneRelevant(t *testing.T) {
+	dir := t.TempDir()
+	llm := &mockLLM{responses: map[string]string{
+		"Rank these memory": "none",
+	}}
+	mm := NewMemoryManager(dir, llm, DefaultMemoryConfig())
+
+	if err := mm.episodes.WriteWithProvenance("sess-none", "refactored the parser tokenizer", 5, EpisodeProvenance{}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := mm.SearchEpisodes("parser tokenizer", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Errorf("explicit ranker 'none relevant' must yield 0 results, got %d (raw candidates leaked through)", len(got))
+	}
+}
+
+// ── System prompt caching + extended block ───────────────────────
+
+// TestBuildSystemPromptCachesEmptyResult verifies the "nothing to show" case
+// is cached as valid — previously promptCache=="" was treated as a cache miss,
+// so a memory-less session re-read the fact files on every loop iteration.
+func TestBuildSystemPromptCachesEmptyResult(t *testing.T) {
+	dir := t.TempDir()
+	mm := NewMemoryManager(dir, nil, DefaultMemoryConfig())
+
+	if got := mm.BuildSystemPrompt(); got != "" {
+		t.Fatalf("expected empty prompt, got %q", got)
+	}
+	mm.promptMu.RLock()
+	valid, dirty := mm.promptCacheValid, mm.promptDirty
+	mm.promptMu.RUnlock()
+	if !valid || dirty {
+		t.Errorf("empty prompt was not cached: promptCacheValid=%v promptDirty=%v", valid, dirty)
+	}
+
+	// A mutation invalidates the cached empty result and forces a rebuild.
+	if err := mm.AddFact("user", "User prefers Go"); err != nil {
+		t.Fatal(err)
+	}
+	if got := mm.BuildSystemPrompt(); !strings.Contains(got, "User prefers Go") {
+		t.Errorf("prompt should rebuild after mutation, got %q", got)
+	}
+}
+
+// TestBuildSystemPromptExtendedBlockWithEmptyLegacy verifies the Extended
+// Memory user-state/style block reaches the system prompt even when legacy
+// facts and buffer are empty — previously the early empty-return skipped it.
+func TestBuildSystemPromptExtendedBlockWithEmptyLegacy(t *testing.T) {
+	dir := t.TempDir()
+	// Seed a user-model state so Extended Memory has a style to report. The
+	// extended subsystem loads user_model.json at construction.
+	extDir := filepath.Join(dir, "extended")
+	if err := os.MkdirAll(extDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	state := `{"version":"test","style":{"verbosity":"concise","tone":"dry"}}`
+	if err := os.WriteFile(filepath.Join(extDir, "user_model.json"), []byte(state), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := DefaultMemoryConfig()
+	cfg.Extended = &extended.Config{Enabled: BoolPtr(true)}
+	mm := NewMemoryManager(dir, nil, cfg)
+	mm.InitExtended(nil, dir)
+
+	prompt := mm.BuildSystemPrompt()
+	if !strings.Contains(prompt, "Style Guidance") {
+		t.Errorf("style guidance missing from prompt with empty legacy memory, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "USER MODEL") {
+		t.Errorf("user-state block missing from prompt with empty legacy memory, got %q", prompt)
 	}
 }

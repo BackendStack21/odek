@@ -255,6 +255,39 @@ func (f *FactStore) Replace(target, oldText, content string) error {
 	})
 }
 
+// ReplaceAt replaces the entry at the given index (as returned by Entries)
+// with new content. Unlike Replace it does not substring-match, so it cannot
+// fail with an ambiguous "N entries contain ..." error when several entries
+// share a long common prefix — the merge-on-write path in
+// MemoryManager.AddFact already knows the exact entry index from the merge
+// detector and must not lose the merged fact to a prefix collision.
+func (f *FactStore) ReplaceAt(target string, idx int, content string) error {
+	if _, err := f.validateTarget(target); err != nil {
+		return err
+	}
+	if strings.TrimSpace(content) == "" {
+		return fmt.Errorf("memory: empty replacement content")
+	}
+
+	content = strings.TrimSpace(content)
+
+	return f.readModifyWrite(target, func(entries []string) ([]string, error) {
+		if idx < 0 || idx >= len(entries) {
+			return nil, fmt.Errorf("memory: entry index %d out of range (%d entries)", idx, len(entries))
+		}
+
+		// Calculate new size
+		newSize := f.sizeOf(entries) - len(entries[idx]) + len(content)
+		maxCap := f.cap(target)
+		if newSize > maxCap {
+			return nil, fmt.Errorf("memory: replacement (%d chars) would exceed cap (%d chars)", newSize, maxCap)
+		}
+
+		entries[idx] = content
+		return entries, nil
+	})
+}
+
 // Remove finds an entry by substring match and removes it. Returns error if
 // the substring doesn't match exactly one entry.
 func (f *FactStore) Remove(target, oldText string) error {

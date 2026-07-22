@@ -44,6 +44,12 @@ func (m *mockLLM) lastUserPrompt() string {
 	return m.lastUser
 }
 
+func (m *mockLLM) calls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.callCount
+}
+
 // mockEmbedder is a deterministic embedding backend for tests. It produces
 // a one-hot vector based on the hash of the text so cosine similarity is
 // deterministic and stable across Fit/Embed calls.

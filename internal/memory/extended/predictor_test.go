@@ -123,3 +123,19 @@ func TestPredictorTrimsWhitespace(t *testing.T) {
 		t.Errorf("expected trimmed text, got %q", intents[0].Text)
 	}
 }
+
+// TestPredictorFencedResponse verifies that a markdown-fenced or
+// preamble-wrapped LLM response still parses into intents.
+func TestPredictorFencedResponse(t *testing.T) {
+	llm := newMockLLM("```json\n[{\"text\":\"next step?\",\"confidence\":0.8}]\n```")
+	cfg := DefaultConfig()
+	cfg.PredictiveIntents = 3
+	p := NewPredictor(llm, cfg)
+	intents, err := p.Predict(context.Background(), "x", nil, UserState{})
+	if err != nil {
+		t.Fatalf("Predict failed: %v", err)
+	}
+	if len(intents) != 1 || intents[0].Text != "next step?" {
+		t.Errorf("expected fenced response to parse, got %+v", intents)
+	}
+}

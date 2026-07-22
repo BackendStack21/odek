@@ -3,15 +3,17 @@ package memory
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/BackendStack21/odek/internal/embedding"
+	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/memory/extended"
 	"github.com/BackendStack21/odek/internal/session"
-	"github.com/BackendStack21/odek/internal/guard"
 )
 
 // factsDirLocks serializes fact-file mutations across every MemoryManager /
@@ -178,10 +180,19 @@ type MemoryManager struct {
 
 	// prompt caching avoids rebuilding the system prompt block on every
 	// iteration when memory hasn't changed. The cache is invalidated
-	// whenever facts or buffer are modified.
-	promptMu    sync.RWMutex
-	promptCache string
-	promptDirty bool
+	// whenever facts or buffer are modified. promptCacheValid is separate
+	// from the content so an empty build ("nothing to show") is cached too.
+	promptMu         sync.RWMutex
+	promptCache      string
+	promptCacheValid bool
+	promptDirty      bool
+
+	// bg tracks background memory work: per-turn atom extraction (see
+	// OnUserMessageLoop) and session-end episode/fact extraction +
+	// consolidation (see OnSessionEndWithProvenance and RunBackground).
+	// Drained via WaitForBackground before process exit so the work is not
+	// silently lost when the CLI terminates.
+	bg sync.WaitGroup
 }
 
 // NewMemoryManager creates a fully wired MemoryManager.
@@ -262,11 +273,15 @@ func NewMemoryManager(memoryDir string, llc LLMClient, cfg MemoryConfig) *Memory
 	factStore := NewFactStore(factsDir, cfg.FactsLimitUser, cfg.FactsLimitEnv)
 
 	// Embedding backend for all semantic paths (recall index, dedup, ranker,
-	// merge-on-write). A factory, not a shared instance: the default RP
-	// embedder is stateful per fitted corpus (see textEmbedder). Each factory
-	// call passes the legacy RP dims for its consumer so persisted RP state
-	// stays loadable when embedding is unconfigured.
-	embFactory := func() textEmbedder { return newTextEmbedder(cfg.Embedding, episodeVectorDim) }
+	// merge-on-write). A factory, not a single shared instance: the default RP
+	// embedder is stateful per fitted corpus (see textEmbedder), so each
+	// consumer needs its own. For stateless HTTP backends the factory returns
+	// ONE cache-warm instance (embedding.Shared) so the dedup pass and the
+	// vector-index rebuild embed each corpus text once instead of running two
+	// cold full-corpus embedding passes per session end. The factory passes
+	// the legacy RP dims for its consumer so persisted RP state stays loadable
+	// when embedding is unconfigured.
+	embFactory := embedding.Shared(cfg.Embedding, episodeVectorDim)
 
 	// Use LLM-based episode ranker when an LLM client is available and enabled.
 	// Otherwise rank by embedding similarity — fast, no LLM cost.
@@ -408,20 +423,70 @@ func (m *MemoryManager) SetSessionContext(sessionID, project string) {
 // session context previously set via SetSessionContext. It is the callback
 // used by the agent loop to trigger atom extraction when a new user message
 // arrives.
+//
+// The heavy per-turn work (anaphora resolution + LLM atom extraction, up to
+// 30s) runs on a background goroutine tracked by m.bg so the ReAct loop is
+// never blocked waiting on it; the loop's next iteration does not depend on
+// the extraction result (recall reads whatever atoms are already stored, and
+// the extended subsystem guards its own state with internal mutexes). The
+// context is detached from the caller's cancellation — the loop wires a
+// handler whose context is canceled as soon as the handler returns, which
+// would otherwise kill the background work instantly. Call WaitForBackground
+// before process exit to drain in-flight extraction.
 func (m *MemoryManager) OnUserMessageLoop(ctx context.Context, msg string) {
 	if m.extended == nil {
 		return
 	}
 	m.extTurn++
-	if resolved, ok := m.AnaphoraResolve(ctx, msg); ok {
-		msg = resolved
-	}
 	atomCtx := extended.AtomContext{
 		SessionID: m.extSessionID,
 		Project:   m.extProject,
 		Turn:      m.extTurn,
 	}
-	m.extended.OnUserMessage(atomCtx, msg)
+	ctx = context.WithoutCancel(ctx)
+	m.RunBackground(func() {
+		if resolved, ok := m.AnaphoraResolve(ctx, msg); ok {
+			msg = resolved
+		}
+		m.extended.OnUserMessage(atomCtx, msg)
+	})
+}
+
+// RunBackground runs fn as background memory work tracked by the manager's
+// WaitGroup. Use it for session-end extraction/consolidation goroutines so
+// WaitForBackground can drain them before process exit instead of losing the
+// work when main() calls os.Exit.
+func (m *MemoryManager) RunBackground(fn func()) {
+	m.bg.Add(1)
+	go func() {
+		defer m.bg.Done()
+		fn()
+	}()
+}
+
+// WaitForBackground blocks until all tracked background memory work (per-turn
+// atom extraction, session-end episode/fact extraction, consolidation) has
+// finished or the timeout elapses. Returns true when the queue drained,
+// false on timeout (the work keeps running). A timeout <= 0 waits without a
+// bound.
+func (m *MemoryManager) WaitForBackground(timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		m.bg.Wait()
+		close(done)
+	}()
+	if timeout <= 0 {
+		<-done
+		return true
+	}
+	t := time.NewTimer(timeout)
+	defer t.Stop()
+	select {
+	case <-done:
+		return true
+	case <-t.C:
+		return false
+	}
 }
 
 // Extended returns the Extended Memory subsystem, or nil if not initialized.
@@ -537,8 +602,11 @@ func (m *MemoryManager) AddFact(target, content string) error {
 				// on a network round-trip. The simple merge handles the common
 				// substring case well; LLM quality is recovered at session end by
 				// the background consolidation that runs when consolidate_on_end=true.
+				// Replace by index, not by substring prefix: entries sharing a
+				// >30-char common prefix would make the substring match
+				// ambiguous and silently drop the merged fact.
 				merged := mergeEntries(nil, entries[similarIdx], content)
-				if err := m.facts.Replace(target, entries[similarIdx][:min(30, len(entries[similarIdx]))], merged); err != nil {
+				if err := m.facts.ReplaceAt(target, similarIdx, merged); err != nil {
 					return err
 				}
 				// Update merge detector incrementally — only re-embed the changed entry
@@ -737,7 +805,10 @@ Entries for %s:
 		newEntries = newEntries[:len(entries)]
 	}
 
-	// Security: scan LLM output before persisting
+	// Security: scan LLM output before persisting. Trim in place — the loop
+	// variable is a copy, so trimming it alone would persist the untrimmed
+	// strings — and drop entries that are empty after trimming.
+	kept := newEntries[:0]
 	for _, entry := range newEntries {
 		entry = strings.TrimSpace(entry)
 		if entry == "" {
@@ -746,6 +817,19 @@ Entries for %s:
 		if err := m.scanContent(context.Background(), entry); err != nil {
 			return fmt.Errorf("memory: consolidated entry rejected: %w", err)
 		}
+		kept = append(kept, entry)
+	}
+	newEntries = kept
+	if len(newEntries) == 0 {
+		return nil // nothing survived the scan — keep the old file
+	}
+
+	// Enforce the same character cap Add/Replace apply. writeEntries has no
+	// cap check of its own, so without this a bloated LLM response could
+	// exceed the target's cap. On overflow keep the old file and report the
+	// error rather than silently dropping facts to fit.
+	if size := m.facts.sizeOf(newEntries); size > m.facts.cap(target) {
+		return fmt.Errorf("memory: consolidated entries (%d chars) would exceed cap (%d chars); keeping existing entries", size, m.facts.cap(target))
 	}
 
 	// Write back
@@ -856,13 +940,15 @@ func (m *MemoryManager) OnSessionEndWithProvenance(sessionID string, turns int, 
 	if m.llm != nil && turns >= minTurns &&
 		m.cfg.ConsolidateOnEnd != nil && *m.cfg.ConsolidateOnEnd &&
 		m.cfg.LLMConsolidate != nil && *m.cfg.LLMConsolidate {
-		go func() {
+		// Tracked by m.bg so WaitForBackground drains it before process exit —
+		// a bare goroutine would be silently killed mid-LLM-call by os.Exit.
+		m.RunBackground(func() {
 			for _, target := range []string{"user", "env"} {
 				// Best-effort: errors (e.g. only 1 entry, nothing to consolidate)
 				// are silently ignored — consolidation is a quality pass, not critical.
 				_ = m.Consolidate(target)
 			}
-		}()
+		})
 	}
 
 	// Preconditions shared by episode summary + fact extraction.
@@ -1009,7 +1095,14 @@ func (m *MemoryManager) SearchEpisodes(query string, limit int) ([]EpisodeMeta, 
 	}
 	// LLM-rerank the bounded candidate set.
 	reranked, err := m.episodes.rankFn(query, candidates)
+	if errors.Is(err, errNoRelevantEpisodes) {
+		// The ranker explicitly judged none of the candidates relevant —
+		// honor that instead of overriding it with the raw vector ranking.
+		return nil, nil
+	}
 	if err != nil || len(reranked) == 0 {
+		// Rerank failed (LLM error, unparseable output) — fall back to the
+		// index-ranked candidates.
 		if limit < len(candidates) {
 			candidates = candidates[:limit]
 		}
@@ -1079,9 +1172,12 @@ func (m *MemoryManager) BuildSystemPrompt() string {
 		return ""
 	}
 
-	// Return cached prompt if memory hasn't changed since last build.
+	// Return cached prompt if memory hasn't changed since last build. The
+	// validity flag is separate from the content so the empty case ("nothing
+	// to show") is cached too — otherwise a memory-less session re-reads the
+	// fact files on every loop iteration.
 	m.promptMu.RLock()
-	if !m.promptDirty && m.promptCache != "" {
+	if !m.promptDirty && m.promptCacheValid {
 		cached := m.promptCache
 		m.promptMu.RUnlock()
 		return cached
@@ -1092,7 +1188,30 @@ func (m *MemoryManager) BuildSystemPrompt() string {
 	envFact, _ := m.facts.Read("env")
 	bufferLines := m.GetBuffer()
 
-	if userFact == "" && envFact == "" && len(bufferLines) == 0 {
+	// Extended user-state/style block. Computed BEFORE the empty-check below
+	// so an Extended-only memory (no legacy facts/buffer yet) still reaches
+	// the system prompt instead of being skipped by the early return.
+	var extBlock strings.Builder
+	if m.extended != nil && m.extended.Enabled() {
+		if styleDirective := m.formatStyleDirective(); styleDirective != "" {
+			extBlock.WriteString("§\n── Style Guidance ──\n")
+			extBlock.WriteString(styleDirective)
+			extBlock.WriteString("\n")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if userState := m.FormatUserStateContext(ctx); userState != "" {
+			extBlock.WriteString(userState)
+		}
+		cancel()
+	}
+
+	if userFact == "" && envFact == "" && len(bufferLines) == 0 && extBlock.Len() == 0 {
+		// Cache the empty result as well (see the validity-flag note above).
+		m.promptMu.Lock()
+		m.promptCache = ""
+		m.promptDirty = false
+		m.promptCacheValid = true
+		m.promptMu.Unlock()
 		return ""
 	}
 
@@ -1157,23 +1276,15 @@ func (m *MemoryManager) BuildSystemPrompt() string {
 		}
 	}
 
-	if m.extended != nil && m.extended.Enabled() {
-		if styleDirective := m.formatStyleDirective(); styleDirective != "" {
-			b.WriteString("§\n── Style Guidance ──\n")
-			b.WriteString(styleDirective)
-			b.WriteString("\n")
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if userState := m.FormatUserStateContext(ctx); userState != "" {
-			b.WriteString(userState)
-		}
-		cancel()
+	if extBlock.Len() > 0 {
+		b.WriteString(extBlock.String())
 	}
 
 	b.WriteString("───────────────────────────────\n")
 	m.promptMu.Lock()
 	m.promptCache = b.String()
 	m.promptDirty = false
+	m.promptCacheValid = true
 	m.promptMu.Unlock()
 	return m.promptCache
 }

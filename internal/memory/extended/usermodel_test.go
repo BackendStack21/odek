@@ -551,3 +551,33 @@ func TestUserModelConfirmPendingNotFound(t *testing.T) {
 		t.Error("expected error for missing pending review")
 	}
 }
+
+// TestUserModelInferFencedResponse verifies that a markdown-fenced LLM diff
+// still parses and applies.
+func TestUserModelInferFencedResponse(t *testing.T) {
+	llm := newMockLLM("```json\n{\"style\":{\"tone\":\"dry\"}}\n```")
+	um := NewUserModelWithStore(t.TempDir(), llm, DefaultConfig())
+	um.Update(MemoryAtom{Text: "x", SourceClass: SourceUserSaid})
+	if err := um.Infer(context.Background()); err != nil {
+		t.Fatalf("Infer failed: %v", err)
+	}
+	if got := um.State().Style.Tone; got != "dry" {
+		t.Errorf("expected fenced diff to apply, tone = %q", got)
+	}
+}
+
+// TestApplyDiffDeduplicatesPending verifies that repeated inferences of the
+// same (field, value) do not pile up duplicate pending-review entries.
+func TestApplyDiffDeduplicatesPending(t *testing.T) {
+	um := NewUserModelWithStore(t.TempDir(), newMockLLM(), DefaultConfig())
+	diff := userStateDiff{Pending: []PendingReview{{Field: "style.tone", Value: "dry", Confidence: 0.9}}}
+	if err := um.applyDiff(context.Background(), diff); err != nil {
+		t.Fatal(err)
+	}
+	if err := um.applyDiff(context.Background(), diff); err != nil {
+		t.Fatal(err)
+	}
+	if got := um.ListPendingReview(); len(got) != 1 {
+		t.Errorf("expected identical pending reviews to dedup, got %d", len(got))
+	}
+}

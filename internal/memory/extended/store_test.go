@@ -1,6 +1,10 @@
 package extended
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"unicode/utf8"
+)
 
 func TestAtomStoreRefresh(t *testing.T) {
 	s := NewAtomStore(t.TempDir())
@@ -72,5 +76,27 @@ func TestAtomStorePinRoundTrip(t *testing.T) {
 	}
 	if atom.Pin {
 		t.Error("expected atom to be unpinned")
+	}
+}
+
+// TestAtomStoreTruncatesAtRuneBoundary verifies that the maxChars truncation
+// backs off to a rune boundary instead of splitting a multi-byte UTF-8
+// character.
+func TestAtomStoreTruncatesAtRuneBoundary(t *testing.T) {
+	s := NewAtomStore(t.TempDir())
+	id := "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
+	// "€" is 3 bytes; maxChars=8 lands mid-rune without boundary back-off.
+	if err := s.Add(MemoryAtom{ID: id, Text: strings.Repeat("€", 10)}, 8); err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+	got, err := s.Get(id)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if !utf8.ValidString(got.Text) {
+		t.Errorf("expected valid UTF-8 after truncation, got %q", got.Text)
+	}
+	if got.Text != "€€" {
+		t.Errorf("expected truncation to back off to 2 runes, got %q", got.Text)
 	}
 }

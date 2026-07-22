@@ -1,6 +1,7 @@
 package extended
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -110,5 +111,44 @@ func TestQuarantineTTLDisabled(t *testing.T) {
 	}
 	if removed != 0 {
 		t.Errorf("expected 0 evicted with TTL disabled, got %d", removed)
+	}
+}
+
+// TestQuarantineConcurrentListWithTTL exercises concurrent List/ListEntries/
+// EvictExpired calls with TTL eviction enabled. List paths may evict expired
+// entries (a write), so they must hold the write lock — run with -race to
+// catch regressions.
+func TestQuarantineConcurrentListWithTTL(t *testing.T) {
+	dir := t.TempDir()
+	q := NewQuarantine(dir)
+	q.SetTTLDays(1)
+	q.mu.Lock()
+	entries := []quarantineEntry{{
+		MemoryAtom:    MemoryAtom{ID: "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6", Text: "old", SourceClass: SourceWeb},
+		QuarantinedAt: time.Now().UTC().AddDate(0, 0, -2),
+	}}
+	if err := q.saveLocked(entries); err != nil {
+		q.mu.Unlock()
+		t.Fatal(err)
+	}
+	q.mu.Unlock()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = q.List()
+			_, _ = q.ListEntries()
+			_, _ = q.EvictExpired(1)
+		}()
+	}
+	wg.Wait()
+	atoms, err := q.List()
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(atoms) != 0 {
+		t.Errorf("expected expired atom evicted, got %d", len(atoms))
 	}
 }

@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -277,8 +278,11 @@ func TestNewLLMRanker_NoneRelevant(t *testing.T) {
 	}
 
 	results, err := ranker("irrelevant", eps)
-	if err != nil {
-		t.Fatal(err)
+	// An explicit "none relevant" is signalled with the sentinel error so
+	// callers can distinguish it from a rerank FAILURE (which falls back to
+	// the unranked candidates).
+	if !errors.Is(err, errNoRelevantEpisodes) {
+		t.Fatalf("expected errNoRelevantEpisodes for 'none', got %v", err)
 	}
 	if len(results) != 0 {
 		t.Errorf("expected 0 results for 'none', got %d", len(results))
@@ -424,5 +428,85 @@ func TestEpisodeStore_SearchConcurrent(t *testing.T) {
 	}
 	for i := 0; i < N; i++ {
 		<-done
+	}
+}
+
+// ── Search query cache invalidation ─────────────────────────────
+
+// TestEpisodeSearchQueryCacheInvalidatedOnWrite verifies that a write drops
+// the cached Search result — previously a repeated query kept serving the
+// pre-write ranking because writeIndex never cleared lastQuery/lastResult.
+func TestEpisodeSearchQueryCacheInvalidatedOnWrite(t *testing.T) {
+	rankCalls := 0
+	rankFn := func(query string, eps []EpisodeMeta) ([]EpisodeMeta, error) {
+		rankCalls++
+		out := make([]EpisodeMeta, len(eps))
+		copy(out, eps)
+		return out, nil
+	}
+	dir := t.TempDir()
+	store := NewEpisodeStore(dir, rankFn)
+
+	if err := store.Write("sess-1", "first episode summary", 5); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Search("anything", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 episode, got %d", len(got))
+	}
+
+	if err := store.Write("sess-2", "second episode summary", 5); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.Search("anything", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Errorf("query cache not invalidated after write: got %d episodes, want 2", len(got))
+	}
+	if rankCalls != 2 {
+		t.Errorf("rankFn called %d times, want 2 (cache must be dropped on write)", rankCalls)
+	}
+}
+
+// TestEpisodeSearchQueryCacheInvalidatedOnPromote verifies that promoting a
+// tainted episode drops the cached Search result so the next identical query
+// includes the newly-approved episode.
+func TestEpisodeSearchQueryCacheInvalidatedOnPromote(t *testing.T) {
+	rankFn := func(query string, eps []EpisodeMeta) ([]EpisodeMeta, error) {
+		out := make([]EpisodeMeta, len(eps))
+		copy(out, eps)
+		return out, nil
+	}
+	dir := t.TempDir()
+	store := NewEpisodeStore(dir, rankFn)
+
+	if err := store.Write("sess-1", "trusted episode", 5); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteWithProvenance("sess-2", "tainted episode", 5, EpisodeProvenance{Untrusted: true}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Search("anything", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("tainted episode must be filtered: got %d episodes, want 1", len(got))
+	}
+
+	if err := store.Promote("sess-2"); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.Search("anything", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Errorf("query cache not invalidated after promote: got %d episodes, want 2", len(got))
 	}
 }

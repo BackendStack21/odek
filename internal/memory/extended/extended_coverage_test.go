@@ -267,7 +267,7 @@ func TestBuildAssociationsTaskAndSemantic(t *testing.T) {
 	}
 	semantic2 := MemoryAtom{
 		ID:          "d1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6",
-		Text:        "Postgres database",
+		Text:        "Postgres database setup",
 		SourceClass: SourceUserSaid,
 		Type:        TypeFact,
 	}
@@ -1109,7 +1109,7 @@ func TestBuildAssociationsSemanticDisabled(t *testing.T) {
 	em.index.emb = newMockEmbedder(vectorDim)
 	defer em.Close()
 	_ = em.AddAtom(context.Background(), MemoryAtom{ID: "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6", Text: "x", SourceClass: SourceUserSaid, Type: TypeFact})
-	_ = em.AddAtom(context.Background(), MemoryAtom{ID: "b1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6", Text: "x", SourceClass: SourceUserSaid, Type: TypeFact})
+	_ = em.AddAtom(context.Background(), MemoryAtom{ID: "b1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6", Text: "y", SourceClass: SourceUserSaid, Type: TypeFact})
 	if related := em.assoc.Related("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"); len(related) != 0 {
 		t.Errorf("expected no semantic links when semantic top K is 0, got %v", related)
 	}

@@ -1493,9 +1493,11 @@ func run(args []string) error {
 	}
 
 	// ── Session end — extract episode if enough turns ──
-	// Run asynchronously so episode extraction does not delay process exit.
+	// Run in the background (tracked by the memory manager's WaitGroup) so
+	// episode extraction does not delay the response; Agent.Close drains it
+	// via WaitForBackground before process exit so it is not silently lost.
 	if mm := agent.Memory(); mm != nil && f.Session != nil && *f.Session && sessionID != "" {
-		go func() {
+		mm.RunBackground(func() {
 			store, err := session.NewStore()
 			if err == nil {
 				latest, err := store.Load(sessionID)
@@ -1505,7 +1507,7 @@ func run(args []string) error {
 					mm.OnSessionEndWithProvenance(latest.ID, latest.Turns, msgStrs, prov)
 				}
 			}
-		}()
+		})
 	}
 
 	// ── Delivery: send result to default channel ──
@@ -2472,13 +2474,15 @@ func continueCmd(args []string) error {
 	fmt.Fprintf(os.Stderr, "odek: session %s saved (%d turns)\n", sess.ID, sess.Turns+1)
 
 	// ── Session end — extract episode ──
-	// Run asynchronously so episode extraction does not delay process exit.
+	// Run in the background (tracked by the memory manager's WaitGroup) so
+	// episode extraction does not delay the response; Agent.Close drains it
+	// via WaitForBackground before process exit so it is not silently lost.
 	if mm := agent.Memory(); mm != nil {
-		go func() {
+		mm.RunBackground(func() {
 			msgStrs := makeSessionMessageStrings(sess)
 			prov := memory.DeriveProvenance(sess.Messages)
 			mm.OnSessionEndWithProvenance(sess.ID, sess.Turns+1, msgStrs, prov)
-		}()
+		})
 	}
 
 	return nil

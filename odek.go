@@ -739,9 +739,24 @@ func (a *Agent) TotalCachedTokens() int {
 	return a.engine.TotalCachedTokens
 }
 
+// memoryBackgroundTimeout bounds how long Close waits for in-flight
+// background memory work (per-turn atom extraction, session-end episode/fact
+// extraction, consolidation) before giving up and shutting down anyway.
+const memoryBackgroundTimeout = 15 * time.Second
+
 // Close cleans up resources. If a sandbox container was created, it is
 // destroyed. Always call Close() when done with the agent.
+//
+// Close first drains background memory work with a bounded wait: session-end
+// episode extraction and consolidation run on tracked goroutines (see
+// MemoryManager.RunBackground) and would otherwise be silently killed when
+// the CLI process exits right after a run. This is the single choke point
+// every CLI path reaches via `defer agent.Close()` (run, continue, REPL,
+// serve, telegram), so the drain lives here rather than at each call site.
 func (a *Agent) Close() error {
+	if a.memoryManager != nil {
+		a.memoryManager.WaitForBackground(memoryBackgroundTimeout)
+	}
 	if a.sandboxCleanup != nil {
 		return a.sandboxCleanup()
 	}

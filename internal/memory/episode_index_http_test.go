@@ -177,3 +177,45 @@ func TestEpisodeIndexRebuildBackoff(t *testing.T) {
 		t.Error("failedAt should be recent")
 	}
 }
+
+// TestSharedEmbedderWarmsDedupAndRebuild verifies the production wiring
+// (NewMemoryManager → embedding.Shared): with an HTTP backend the write-time
+// dedup pass and the vector-index rebuild share ONE cache-warm embedder, so
+// each corpus text is embedded once per process instead of once per pass.
+func TestSharedEmbedderWarmsDedupAndRebuild(t *testing.T) {
+	resetEpIdxes()
+	srv, _, texts := mockEmbedServer(t)
+	dir := t.TempDir()
+
+	cfg := DefaultMemoryConfig()
+	cfg.Embedding = &EmbeddingConfig{Provider: "http", BaseURL: srv.URL + "/v1", Model: "mock-embed"}
+	mm := NewMemoryManager(dir, nil, cfg)
+
+	write := func(id, summary string) {
+		if err := mm.episodes.WriteWithProvenance(id, summary, 5, EpisodeProvenance{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	write("sess-1", "investigated the feline behavior module")
+	if _, err := mm.episodes.recallByVector("cats", 1); err != nil { // triggers the rebuild
+		t.Fatal(err)
+	}
+	afterFirst := texts.Load()
+
+	write("sess-2", "tuned postgres sql indexes")
+	// The dedup pass fits [sess-1, sess-2] — with a shared embedder only the
+	// NEW text is a cache miss. Two cold embedders would re-embed both.
+	if got := texts.Load() - afterFirst; got != 1 {
+		t.Errorf("dedup embedded %d texts for the second write, want 1 (shared cache)", got)
+	}
+
+	afterSecond := texts.Load()
+	if _, err := mm.episodes.recallByVector("database", 1); err != nil { // triggers another rebuild
+		t.Fatal(err)
+	}
+	// The rebuild must be fully cache-warm: only the recall query embeds.
+	if got := texts.Load() - afterSecond; got != 1 {
+		t.Errorf("rebuild + recall embedded %d texts, want 1 (query only)", got)
+	}
+}
