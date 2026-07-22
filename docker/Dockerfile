@@ -18,16 +18,18 @@ COPY . .
 RUN CGO_ENABLED=0 go build -ldflags "-s -w" -o /out/odek ./cmd/odek
 
 # ---- whisper stage ----
-# Build whisper.cpp's CLI and fetch the `tiny` model so the `transcribe` tool
+# Build whisper.cpp's CLI and fetch the `small` model so the `transcribe` tool
 # (and Telegram voice auto-transcription) work out of the box — no host
-# install, no first-run model download. Same Debian base as the runtime stage
+# install, no first-run model download. `small` (not `small.en`) is the
+# multilingual variant: usable German/English/Spanish quality, unlike `tiny`
+# which is effectively English-grade. Same Debian base as the runtime stage
 # so the glibc ABI matches; OpenMP is disabled to keep the runtime dependency
 # surface down to just libstdc++6. To ship a different model, override the build
 # arg: `--build-arg WHISPER_MODEL=base` (tiny | base | small | medium) — size
 # and RAM grow accordingly. WHISPER_VERSION pins the whisper.cpp release so the
 # build is reproducible — bump it deliberately rather than tracking master.
 FROM debian:bookworm-slim AS whisper
-ARG WHISPER_MODEL=tiny
+ARG WHISPER_MODEL=small
 ARG WHISPER_VERSION=v1.8.6
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git cmake make g++ curl ca-certificates \

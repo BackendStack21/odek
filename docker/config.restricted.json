@@ -8,7 +8,7 @@
     "verbose": false
   },
   "transcription": {
-    "model": "tiny",
+    "model": "small",
     "auto_transcribe": true,
     "models_dir": "/usr/local/share/whisper/models"
   },
