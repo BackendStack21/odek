@@ -269,6 +269,8 @@ Loaded and summarized user-model values are scanned for injection patterns; any 
 
 Atoms with a tainted `source_class` (`tool_output`, `file_read`, `web`, `mcp`, `subagent`, `agent_generated`, `inferred`) are stored in `extended/quarantine.json` instead of the live atom corpus.
 
+Atoms that fail the injection guard scan at persistence time are also quarantined rather than dropped, so guard false positives can be reviewed and restored instead of silently lost. Each quarantine entry records a `reason`: `tainted` for untrusted source classes, or `scan_rejected: ...` with the guard's verdict.
+
 A quarantined atom has the same schema as a trusted atom but:
 
 - `source_class` is one of the tainted classes.
@@ -276,11 +278,11 @@ A quarantined atom has the same schema as a trusted atom but:
 - It is excluded from semantic search.
 - It is subject to `quarantine_ttl_days` and may be auto-deleted.
 
-Per-turn extraction only produces `user_said` atoms, so normal user messages do not land in quarantine. Quarantine is used when an atom is explicitly added (via the tool/API or programmatically) with a tainted source class, or when an `inferred` atom is produced by a future flow.
+Per-turn extraction only produces `user_said` atoms, so normal user messages do not land in quarantine. Quarantine is used when an atom is explicitly added (via the tool/API or programmatically) with a tainted source class, when the guard scan rejects an atom, or when an `inferred` atom is produced by a future flow.
 
 Promotion from quarantine to the live store is implemented and human-gated:
 
-- `odek memory extended promote <atom-id>` moves the atom to the live store with `source_class: user_approved`.
+- `odek memory extended promote <atom-id>` moves the atom to the live store with `source_class: user_approved`. The guard rescan is skipped on promote — the human review is the approval, and a rescan would reject guard false positives again.
 - `odek memory extended pin <atom-id>` pins a live atom so it is never evicted.
 
 ## Size Cap and Eviction

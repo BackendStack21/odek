@@ -190,8 +190,8 @@ The guard is **off by default** in the sense that no sidecar is needed; the loca
 | `url` | `""` | Single-text detection endpoint (e.g. `http://127.0.0.1:8080/detect`) |
 | `batch_url` | `""` | Batch detection endpoint; if unset, derived from `url` by substituting the endpoint path |
 | `long_url` | `""` | Long-text detection endpoint; if unset, derived from `url` by substituting the endpoint path |
-| `socket_path` | `""` | Unix socket path for the sidecar (alternative to `url`) |
-| `threshold` | `0.9` | Score above which content is treated as injected |
+| `socket_path` | `""` | Unix socket of the piguard daemon (alternative to `url`); speaks the daemon's native newline-delimited JSON protocol directly, no HTTP gateway needed |
+| `threshold` | `0.9` | Confidence above which an `INJECTION` verdict is treated as injected. The sidecar score is the confidence of the predicted label, so the threshold never applies to `BENIGN` results |
 | `timeout_seconds` | `5` | Per-request timeout |
 | `fallback_to_local` | `true` | If the sidecar fails, fall back to the local rule scan |
 | `max_text_length` | `0` | Truncate text sent to the sidecar; `0` means no limit. The local scan still sees the full text |

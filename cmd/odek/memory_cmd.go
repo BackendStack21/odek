@@ -121,18 +121,22 @@ func extendedMemoryCmd(dir string, args []string) error {
 		return nil
 
 	case "quarantine":
-		atoms, err := em.ListQuarantine()
+		entries, err := em.ListQuarantineEntries()
 		if err != nil {
 			return err
 		}
-		if len(atoms) == 0 {
+		if len(entries) == 0 {
 			fmt.Println("No atoms in quarantine.")
 			return nil
 		}
-		fmt.Printf("%d atom(s) in quarantine (excluded from recall):\n\n", len(atoms))
-		for _, a := range atoms {
-			fmt.Printf("• %s [%s] %s\n", a.ID, a.SourceClass, truncate(a.Text, 120))
+		fmt.Printf("%d atom(s) in quarantine (excluded from recall):\n\n", len(entries))
+		for _, e := range entries {
+			fmt.Printf("• %s [%s] %s\n", e.ID, e.SourceClass, truncate(e.Text, 120))
+			if e.Reason != "" {
+				fmt.Printf("  reason: %s\n", truncate(e.Reason, 120))
+			}
 		}
+		fmt.Println("\nReview and restore with: odek memory extended promote <atom_id>")
 		return nil
 
 	case "compact":

@@ -39,10 +39,27 @@ func (q *Quarantine) SetTTLDays(days int) {
 type quarantineEntry struct {
 	MemoryAtom
 	QuarantinedAt time.Time `json:"quarantined_at"`
+	// Reason records why the atom was quarantined: "tainted" (untrusted
+	// source class) or "scan_rejected: ..." (guard rejection). Empty for
+	// entries written before reasons were tracked.
+	Reason string `json:"reason,omitempty"`
+}
+
+// QuarantinedAtom is a quarantined atom with its review metadata, as returned
+// by ListEntries for human inspection.
+type QuarantinedAtom struct {
+	MemoryAtom
+	QuarantinedAt time.Time
+	Reason        string
 }
 
 // Store persists a tainted atom in quarantine.
 func (q *Quarantine) Store(atom MemoryAtom) error {
+	return q.StoreWithReason(atom, "tainted")
+}
+
+// StoreWithReason persists an atom in quarantine, recording why it was held.
+func (q *Quarantine) StoreWithReason(atom MemoryAtom, reason string) error {
 	if atom.ID == "" {
 		return fmt.Errorf("extended quarantine: atom id required")
 	}
@@ -60,6 +77,7 @@ func (q *Quarantine) Store(atom MemoryAtom) error {
 	entry := quarantineEntry{
 		MemoryAtom:    atom,
 		QuarantinedAt: time.Now().UTC(),
+		Reason:        reason,
 	}
 	replaced := false
 	for i, e := range entries {
@@ -90,6 +108,26 @@ func (q *Quarantine) List() ([]MemoryAtom, error) {
 	atoms := make([]MemoryAtom, len(entries))
 	for i, e := range entries {
 		atoms[i] = e.MemoryAtom
+	}
+	return atoms, nil
+}
+
+// ListEntries returns all quarantined atoms with their review metadata
+// (quarantine time and reason), newest first.
+func (q *Quarantine) ListEntries() ([]QuarantinedAtom, error) {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+
+	entries, err := q.loadLocked()
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].QuarantinedAt.After(entries[j].QuarantinedAt)
+	})
+	atoms := make([]QuarantinedAtom, len(entries))
+	for i, e := range entries {
+		atoms[i] = QuarantinedAtom(e)
 	}
 	return atoms, nil
 }
