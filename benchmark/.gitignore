@@ -1,7 +1,0 @@
-__pycache__/
-benchmark_data/output/
-benchmark_data/refactored.py
-benchmark_data/test_*.py
-benchmark_data/under_tested_test.py
-results.json
-odek
