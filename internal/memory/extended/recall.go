@@ -112,6 +112,26 @@ func (r *Recall) trackErr(err error) {
 // blended ranking with a pure retention ordering.
 func (r *Recall) queryAtomsWithPrediction(ctx context.Context, query string, recent []string, state UserState) ([]MemoryAtom, error) {
 	all := make(map[string]scoredAtomMeta)
+
+	// Run intent prediction concurrently with the literal query (which may
+	// include a paid LLM rerank). Sequentially, the rerank can consume most of
+	// the recall context deadline, starving the predictor of budget and making
+	// it fail with context-deadline-exceeded before its LLM call even starts.
+	predicting := r.predictor != nil && r.cfg.PredictiveIntents > 0 &&
+		r.cfg.FollowUpAnticipationEnabled != nil && *r.cfg.FollowUpAnticipationEnabled
+	type predictResult struct {
+		intents []PredictedIntent
+		err     error
+	}
+	var predCh chan predictResult
+	if predicting {
+		predCh = make(chan predictResult, 1)
+		go func() {
+			intents, err := r.predictor.Predict(ctx, query, recent, state)
+			predCh <- predictResult{intents, err}
+		}()
+	}
+
 	literal, err := r.queryAtomsScored(ctx, query, false)
 	if err != nil {
 		r.trackErr(err)
@@ -121,9 +141,9 @@ func (r *Recall) queryAtomsWithPrediction(ctx context.Context, query string, rec
 		all[s.atom.ID] = s
 	}
 
-	if r.predictor != nil && r.cfg.PredictiveIntents > 0 &&
-		r.cfg.FollowUpAnticipationEnabled != nil && *r.cfg.FollowUpAnticipationEnabled {
-		intents, err := r.predictor.Predict(ctx, query, recent, state)
+	if predicting {
+		res := <-predCh
+		intents, err := res.intents, res.err
 		if err != nil {
 			r.trackErr(err)
 			log.Printf("extended memory: predicted-intent generation failed: %v", err)
