@@ -149,10 +149,12 @@ type Engine struct {
 	// across turns — only the memory message changes each iteration.
 	memMsgIdx int
 
-	// PromptCaching enables Anthropic/OpenAI/DeepSeek prompt caching markers.
-	// When enabled, the system prompt and first user message are annotated
-	// with cache_control markers, and the system prompt is moved to the
-	// dedicated "system" field for Anthropic compatibility.
+	// PromptCaching enables Anthropic prompt caching markers. When enabled
+	// and the LLM endpoint is Anthropic, the system prompt and first user
+	// message are annotated with cache_control markers, and the system
+	// prompt is moved to the dedicated "system" field. For non-Anthropic
+	// endpoints (OpenAI, DeepSeek) the markers are skipped entirely — those
+	// providers cache automatically or reject the Anthropic request shape.
 	PromptCaching bool
 
 	// MaxToolParallel controls how many tool calls run concurrently per
@@ -818,10 +820,13 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		// THINK (timed)
 		start := time.Now()
 
-		// Apply prompt caching markers when enabled
+		// Apply prompt caching markers when enabled — but only for Anthropic
+		// endpoints. OpenAI rejects the Anthropic request shape (top-level
+		// "system" field) with a 400, and DeepSeek caches automatically,
+		// so markers would be harmful or useless there.
 		var systemBlocks []llm.SystemBlock
 		callMsgs := messages
-		if e.PromptCaching {
+		if e.PromptCaching && e.client.IsAnthropic() {
 			callMsgs, systemBlocks = llm.ApplyCacheMarkers(messages)
 		}
 

@@ -3,8 +3,11 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 )
@@ -1048,5 +1051,134 @@ func TestParseResponse_AnthropicAndOpenAICache(t *testing.T) {
 	}
 	if result.CachedTokens != 999 {
 		t.Errorf("CachedTokens = %d, want 999", result.CachedTokens)
+	}
+}
+
+func TestClient_IsAnthropic(t *testing.T) {
+	cases := []struct {
+		baseURL string
+		want    bool
+	}{
+		{"https://api.anthropic.com/v1", true},
+		{"https://api.openai.com/v1", false},
+		{"https://api.deepseek.com/v1", false},
+		{"http://localhost:11434/v1", false},
+	}
+	for _, tc := range cases {
+		c := New(tc.baseURL, "sk-test", "model", "", 0, 0)
+		if got := c.IsAnthropic(); got != tc.want {
+			t.Errorf("IsAnthropic(%q) = %v, want %v", tc.baseURL, got, tc.want)
+		}
+	}
+}
+
+// OpenAI reasoning models (o1/o3/o4, gpt-5 family) reject any explicit
+// temperature other than the default (1) with a 400. The client must omit
+// the field for those models while still sending odek's deterministic
+// default (0) to models that accept it.
+func TestCall_OmitsTemperatureForReasoningModels(t *testing.T) {
+	cases := []struct {
+		model        string
+		wantTempSent bool
+	}{
+		{"gpt-5-nano", false},
+		{"gpt-5", false},
+		{"o3-mini", false},
+		{"o1-preview", false},
+		{"o4-mini", false},
+		{"GPT-5-MINI", false}, // case-insensitive
+		{"gpt-4o-mini", true},
+		{"deepseek-chat", true},
+		{"claude-sonnet-4-5", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			var captured []byte
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				captured, _ = io.ReadAll(r.Body)
+				fmt.Fprint(w, `{"choices":[{"message":{"content":"ok"}}]}`)
+			}))
+			defer server.Close()
+
+			c := New(server.URL, "sk-test", tc.model, "", 0, 0)
+			c.Temperature = 0 // odek's deterministic default
+			if _, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, nil); err != nil {
+				t.Fatalf("Call: %v", err)
+			}
+
+			var body map[string]any
+			if err := json.Unmarshal(captured, &body); err != nil {
+				t.Fatalf("captured request is not JSON: %v", err)
+			}
+			_, sent := body["temperature"]
+			if sent != tc.wantTempSent {
+				t.Errorf("model %q: temperature sent = %v, want %v (body: %s)", tc.model, sent, tc.wantTempSent, captured)
+			}
+		})
+	}
+}
+
+// Models like gpt-5.6-luna reject function tools combined with any
+// reasoning_effort other than "none" — and their default effort is not
+// "none", so omitting the field still 400s. The client must learn the
+// constraint from the 400, retry with reasoning_effort "none", and pin it
+// for subsequent calls without further failed round-trips.
+func TestCall_LearnsReasoningEffortNoneWithTools(t *testing.T) {
+	tools := []ToolDef{{
+		Type: "function",
+		Function: FunctionDef{
+			Name:        "echo",
+			Description: "echoes input",
+			Parameters:  map[string]any{"type": "object"},
+		},
+	}}
+
+	var mu sync.Mutex
+	var efforts []string // recorded reasoning_effort per request ("" = absent)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var parsed map[string]any
+		_ = json.Unmarshal(body, &parsed)
+		effort, _ := parsed["reasoning_effort"].(string)
+		mu.Lock()
+		efforts = append(efforts, effort)
+		mu.Unlock()
+		toolsArr, _ := parsed["tools"].([]any)
+		if len(toolsArr) > 0 && effort != "none" {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":{"message":"Function tools with reasoning_effort are not supported","type":"invalid_request_error","param":"reasoning_effort"}}`)
+			return
+		}
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"ok"}}]}`)
+	}))
+	defer server.Close()
+
+	c := New(server.URL, "sk-test", "gpt-5.6-luna", "high", 0, 0)
+	msgs := []Message{{Role: "user", Content: "hi"}}
+
+	// First call: 400 (effort "high") → learned retry with "none" → success.
+	if _, err := c.Call(context.Background(), msgs, nil, tools); err != nil {
+		t.Fatalf("first Call: %v", err)
+	}
+	// Second call: must send "none" immediately, no failed attempt first.
+	if _, err := c.Call(context.Background(), msgs, nil, tools); err != nil {
+		t.Fatalf("second Call: %v", err)
+	}
+	// Calls without tools keep the configured effort.
+	if _, err := c.Call(context.Background(), msgs, nil, nil); err != nil {
+		t.Fatalf("tool-less Call: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"high", "none", "none", "high"}
+	if len(efforts) != len(want) {
+		t.Fatalf("requests = %v, want %v", efforts, want)
+	}
+	for i := range want {
+		if efforts[i] != want[i] {
+			t.Fatalf("requests = %v, want %v", efforts, want)
+		}
 	}
 }

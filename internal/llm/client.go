@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/BackendStack21/odek/internal/transport"
@@ -25,6 +26,11 @@ type Client struct {
 	MaxTokens      int     // max output tokens (0 = provider default)
 	Temperature    float64 // 0 = use provider default, <0 = omit from request
 	http           *http.Client
+
+	// forceNoneEffort is learned at runtime: set when the provider rejects
+	// reasoning_effort combined with function tools (e.g. gpt-5.6-luna),
+	// so subsequent calls pin effort to "none" without a failed round-trip.
+	forceNoneEffort atomic.Bool
 }
 
 // maxResponseSize limits the LLM response body read to prevent DoS/OOM.
@@ -54,8 +60,35 @@ func NewWithMaxTokens(baseURL, apiKey, model, thinking string, thinkingBudget in
 	}
 }
 
+// IsAnthropic reports whether the client's base URL targets the Anthropic
+// API. Anthropic-specific request features (the top-level "system" field,
+// cache_control markers) must only be sent when this is true — other
+// providers reject them (OpenAI answers 400 unknown_parameter).
+func (c *Client) IsAnthropic() bool {
+	return strings.Contains(c.BaseURL, "anthropic")
+}
+
+// modelForbidsTemperature reports whether the model rejects an explicit
+// temperature parameter. OpenAI reasoning models (o1/o3/o4 families and the
+// gpt-5 series) only accept the default temperature (1); sending any other
+// value — including odek's deterministic default 0 — returns a 400
+// "unsupported_value" error. Matching is model-name-based and
+// provider-agnostic, since OpenAI-compatible proxies serving these model
+// IDs enforce the same constraint.
+func modelForbidsTemperature(model string) bool {
+	m := strings.ToLower(model)
+	for _, prefix := range []string{"o1", "o3", "o4", "gpt-5"} {
+		if strings.HasPrefix(m, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // CacheControl marks a message or system block as cacheable by Anthropic.
-// Providers that don't support it (OpenAI, DeepSeek) silently ignore the field.
+// Only send it to Anthropic endpoints: OpenAI rejects Anthropic-style
+// request shapes with a 400 (e.g. the top-level "system" field), so the
+// loop only applies cache markers when Client.IsAnthropic reports true.
 type CacheControl struct {
 	Type string `json:"type"` // "ephemeral"
 }
@@ -154,7 +187,8 @@ var toolChoiceNone = "none"
 //
 // Returns the updated messages and a System field (populated if the system
 // message was moved out of the messages array for Anthropic compatibility).
-// Providers that don't support prompt caching silently ignore these fields.
+// Callers must only use this when the target provider is Anthropic
+// (see Client.IsAnthropic) — OpenAI rejects the resulting request shape.
 func ApplyCacheMarkers(messages []Message) ([]Message, []SystemBlock) {
 	var systemBlocks []SystemBlock
 	annotated := make([]Message, 0, len(messages))
@@ -270,16 +304,25 @@ func (c *Client) Call(ctx context.Context, messages []Message, systemBlocks []Sy
 		body.Temperature = &one
 	case "disabled":
 		body.Thinking = &ThinkingConfig{Type: "disabled"}
-		if c.Temperature >= 0 {
+		if c.Temperature >= 0 && !modelForbidsTemperature(c.Model) {
 			body.Temperature = &c.Temperature
 		}
 	default:
-		if c.Temperature >= 0 {
+		if c.Temperature >= 0 && !modelForbidsTemperature(c.Model) {
 			body.Temperature = &c.Temperature
 		}
 		if c.Thinking == "low" || c.Thinking == "medium" || c.Thinking == "high" {
 			body.ReasoningEffort = c.Thinking
 		}
+	}
+
+	// Some models (e.g. gpt-5.6-luna) reject function tools combined with
+	// any reasoning_effort other than "none" on /chat/completions — and
+	// their DEFAULT effort is not "none", so merely omitting the field is
+	// not enough. Once that constraint has been learned from a 400 (see
+	// below), pin effort to "none" whenever tools are present.
+	if c.forceNoneEffort.Load() && len(tools) > 0 {
+		body.ReasoningEffort = "none"
 	}
 
 	reqBytes, err := json.Marshal(body)
@@ -288,10 +331,31 @@ func (c *Client) Call(ctx context.Context, messages []Message, systemBlocks []Sy
 	}
 
 	respBytes, err := c.postChatWithRetry(ctx, reqBytes)
+	if err != nil && len(tools) > 0 && !c.forceNoneEffort.Load() && reasoningEffortRejected(err) {
+		// Learn the constraint once, then every later call sends
+		// reasoning_effort "none" directly (no more failed round-trips).
+		c.forceNoneEffort.Store(true)
+		body.ReasoningEffort = "none"
+		reqBytes, mErr := json.Marshal(body)
+		if mErr != nil {
+			return nil, fmt.Errorf("llm: marshal request: %w", mErr)
+		}
+		respBytes, err = c.postChatWithRetry(ctx, reqBytes)
+	}
 	if err != nil {
 		return nil, err
 	}
 	return parseResponse(respBytes)
+}
+
+// reasoningEffortRejected reports whether err is a 400 whose provider
+// response names reasoning_effort as the offending parameter.
+func reasoningEffortRejected(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "400") && strings.Contains(msg, `"reasoning_effort"`)
 }
 
 // postChatWithRetry POSTs reqBytes to /chat/completions and returns the raw 200
