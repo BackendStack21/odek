@@ -8,4 +8,3 @@ odek-bin
 .hermes/
 docker/.env
 docker/workspace/
-benchmark/

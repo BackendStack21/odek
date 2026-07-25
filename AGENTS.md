@@ -11,7 +11,6 @@ It provides context about the project's architecture, conventions, and how to up
 - **What it is:** Minimal Go autonomous agent runtime — ReAct (Reasoning + Acting) loop with zero frameworks (stdlib + a few focused packages).
 - **Binary:** `odek` — single static binary, ~12 MB, instant startup.
 - **Config:** Five-layer priority: `~/.odek/secrets.env` → `~/.odek/config.json` → `./odek.json` → `ODEK_*` env vars → CLI flags.
-- **Benchmark:** AIEB v2.0 — 80.3% (highest published agent score on the Autonomous Intelligence Engineering Benchmark).
 - **Releases:** see [GitHub Releases](https://github.com/BackendStack21/odek/releases) for the current version and changelog.
 
 ## Source Layout
@@ -78,7 +77,6 @@ internal/
   transport/                  Shared HTTP transport with connection pooling
   ws/                         RFC 6455 WebSocket framing
 docs/                         Documentation (CLI, API, CONFIG, MCP, MEMORY, TELEGRAM, SECURITY, etc.)
-benchmark/                    AIEB v2.0 benchmark suite (9 tasks, 4 tiers, automated scoring)
 ```
 
 ## How It Works
