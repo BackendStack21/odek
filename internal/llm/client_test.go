@@ -409,30 +409,11 @@ func TestClient_Call_HTTPError(t *testing.T) {
 }
 
 func TestClient_Call_WithThinking(t *testing.T) {
-	var receivedBody map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewDecoder(r.Body).Decode(&receivedBody)
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"choices":[{"message":{"content":"thinking response"}}]}`))
-	}))
-	defer server.Close()
-
-	c := New(server.URL, "sk-test", "deepseek-chat", "enabled", 0, 0)
-	result, err := c.Call(context.Background(), []Message{{Role: "user", Content: "think"}}, nil, nil)
-	if err != nil {
-		t.Fatalf("Call() error: %v", err)
-	}
-	if result.Content != "thinking response" {
-		t.Errorf("Content = %q", result.Content)
-	}
-	// Verify thinking was sent in the request
-	thinking, ok := receivedBody["thinking"]
-	if !ok {
-		t.Error("thinking field not sent in request")
-	}
-	thinkingMap, ok := thinking.(map[string]any)
-	if !ok || thinkingMap["type"] != "enabled" {
-		t.Errorf("thinking = %v, want {type: enabled}", thinking)
+	// DeepSeek supports the Anthropic-style thinking object natively.
+	c := New("https://api.deepseek.com/v1", "sk-test", "deepseek-chat", "enabled", 0, 0)
+	body := c.buildCallParams([]Message{{Role: "user", Content: "think"}}, nil, nil)
+	if body.Thinking == nil || body.Thinking.Type != "enabled" {
+		t.Errorf("thinking = %v, want {type: enabled}", body.Thinking)
 	}
 }
 
@@ -723,29 +704,14 @@ func TestClient_Call_FlashVsProThinkingContrast(t *testing.T) {
 	})
 
 	t.Run("pro_thinking_enabled", func(t *testing.T) {
-		var body map[string]any
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			json.NewDecoder(r.Body).Decode(&body)
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
-		}))
-		defer server.Close()
-
-		c := New(server.URL, "sk-test", "deepseek-v4-pro", "enabled", 0, 0)
-		_, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		thinking, ok := body["thinking"]
-		if !ok {
+		// DeepSeek supports the Anthropic-style thinking object natively.
+		c := New("https://api.deepseek.com/v1", "sk-test", "deepseek-v4-pro", "enabled", 0, 0)
+		body := c.buildCallParams([]Message{{Role: "user", Content: "hi"}}, nil, nil)
+		if body.Thinking == nil {
 			t.Fatal("Pro: thinking field should be present")
 		}
-		thinkingMap, ok := thinking.(map[string]any)
-		if !ok {
-			t.Fatal("Pro: thinking should be an object")
-		}
-		if thinkingMap["type"] != "enabled" {
-			t.Errorf("Pro: thinking.type = %v, want 'enabled'", thinkingMap["type"])
+		if body.Thinking.Type != "enabled" {
+			t.Errorf("Pro: thinking.type = %v, want 'enabled'", body.Thinking.Type)
 		}
 	})
 }
@@ -1180,5 +1146,48 @@ func TestCall_LearnsReasoningEffortNoneWithTools(t *testing.T) {
 		if efforts[i] != want[i] {
 			t.Fatalf("requests = %v, want %v", efforts, want)
 		}
+	}
+}
+
+// The thinking configuration must be mapped onto the shape each provider
+// accepts: the Anthropic-style "thinking" object for Anthropic/DeepSeek,
+// reasoning_effort for OpenAI reasoning models, and nothing otherwise —
+// OpenAI rejects unknown top-level parameters with a 400.
+func TestBuildCallParams_ThinkingMapping(t *testing.T) {
+	cases := []struct {
+		name         string
+		baseURL      string
+		model        string
+		thinking     string
+		wantThinking string // "" = no thinking object
+		wantEffort   string // "" = no reasoning_effort
+	}{
+		{"deepseek enabled", "https://api.deepseek.com/v1", "deepseek-chat", "enabled", "enabled", ""},
+		{"deepseek disabled", "https://api.deepseek.com/v1", "deepseek-chat", "disabled", "disabled", ""},
+		{"anthropic enabled", "https://api.anthropic.com/v1", "claude-sonnet-4-5", "enabled", "enabled", ""},
+		{"anthropic disabled", "https://api.anthropic.com/v1", "claude-sonnet-4-5", "disabled", "disabled", ""},
+		{"openai reasoning disabled", "https://api.openai.com/v1", "gpt-5-nano", "disabled", "", "none"},
+		{"openai reasoning enabled", "https://api.openai.com/v1", "gpt-5.6-luna", "enabled", "", "high"},
+		{"openai reasoning effort passthrough", "https://api.openai.com/v1", "gpt-5-nano", "medium", "", "medium"},
+		{"openai non-reasoning disabled", "https://api.openai.com/v1", "gpt-4o-mini", "disabled", "", ""},
+		{"openai non-reasoning enabled", "https://api.openai.com/v1", "gpt-4o-mini", "enabled", "", ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := New(tc.baseURL, "sk-test", tc.model, tc.thinking, 0, 0)
+			body := c.buildCallParams([]Message{{Role: "user", Content: "hi"}}, nil, nil)
+
+			gotThinking := ""
+			if body.Thinking != nil {
+				gotThinking = body.Thinking.Type
+			}
+			if gotThinking != tc.wantThinking {
+				t.Errorf("thinking object = %q, want %q", gotThinking, tc.wantThinking)
+			}
+			if body.ReasoningEffort != tc.wantEffort {
+				t.Errorf("reasoning_effort = %q, want %q", body.ReasoningEffort, tc.wantEffort)
+			}
+		})
 	}
 }
