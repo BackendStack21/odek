@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -306,6 +307,80 @@ func TestQueryAtomsWithPredictionCompositeOrdering(t *testing.T) {
 	}
 	if atoms[0].Text != query {
 		t.Errorf("expected composite score to rank the similar atom first, got %q", atoms[0].Text)
+	}
+}
+
+// rerankGateLLM blocks its SimpleCall until the predictor has started,
+// simulating a slow rerank that would otherwise consume the recall deadline.
+type rerankGateLLM struct {
+	wait <-chan struct{}
+}
+
+func (m *rerankGateLLM) SimpleCall(ctx context.Context, _, _ string) (string, error) {
+	select {
+	case <-m.wait:
+		return "", nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+// predictorSignalLLM closes the channel on its first call so the test can
+// observe that prediction started while the rerank was still blocked.
+type predictorSignalLLM struct {
+	ch   chan struct{}
+	once sync.Once
+	resp string
+}
+
+func (m *predictorSignalLLM) SimpleCall(_ context.Context, _, _ string) (string, error) {
+	m.once.Do(func() { close(m.ch) })
+	return m.resp, nil
+}
+
+// TestPredictionRunsConcurrentWithRerank is a regression test for the
+// "predictor: context deadline exceeded" failure: the predictor must run
+// concurrently with the literal query (including its paid rerank) so a slow
+// rerank cannot consume the shared recall deadline before prediction starts.
+// Under the old sequential behavior the rerank gate never opens and the
+// recall deadlocks, failing this test via the outer timeout.
+func TestPredictionRunsConcurrentWithRerank(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.Enabled = boolPtr(true)
+	cfg.SemanticSearchRerank = boolPtr(true)
+	cfg.SemanticSearchMinScore = 0.01
+	cfg.PredictiveIntents = 1
+	cfg.FollowUpAnticipationEnabled = boolPtr(true)
+	// The mock embedder rates these two English sentences as near-duplicates;
+	// disable semantic dedup so both atoms reach the rerank path.
+	cfg.SemanticDedupThreshold = floatPtr(0)
+
+	predictorStarted := make(chan struct{})
+	em := New(dir, &rerankGateLLM{wait: predictorStarted}, cfg)
+	em.index.newEmb = func() embedding.TextEmbedder { return newMockEmbedder(vectorDim) }
+	em.index.emb = newMockEmbedder(vectorDim)
+	em.recall.predictor = NewPredictor(&predictorSignalLLM{
+		ch:   predictorStarted,
+		resp: `[{"text":"follow-up question","confidence":0.9}]`,
+	}, cfg)
+	defer em.Close()
+
+	_ = em.AddAtom(context.Background(), makeSearchableAtom("User prefers Go for backend services"))
+	_ = em.AddAtom(context.Background(), makeSearchableAtom("Run go test ./... to verify"))
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := em.recall.queryAtomsWithPrediction(context.Background(), "Go backend", nil, UserState{})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("queryAtomsWithPrediction failed: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("recall deadlocked: predictor did not run concurrently with the rerank")
 	}
 }
 
