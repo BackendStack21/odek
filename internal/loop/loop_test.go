@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -2517,5 +2518,48 @@ func TestClassifyToolCall_ShellStillWorks(t *testing.T) {
 	}
 	if resource != "rm -rf /" {
 		t.Errorf("shell resource = %q, want command", resource)
+	}
+}
+
+// Regression test: prompt caching markers are Anthropic-only. When
+// PromptCaching is enabled against a non-Anthropic endpoint (e.g. OpenAI),
+// the request must not contain the Anthropic-style top-level "system" field
+// or cache_control markers — OpenAI rejects them with 400 unknown_parameter.
+func TestEngine_PromptCaching_NonAnthropicSkipsMarkers(t *testing.T) {
+	var captured []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured, _ = io.ReadAll(r.Body)
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"done"}}]}`)
+	}))
+	defer server.Close()
+
+	// server.URL (127.0.0.1) is not an Anthropic endpoint.
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	registry := tool.NewRegistry(nil)
+	engine := New(client, registry, 10, "You are a test agent.", nil, 0)
+	engine.PromptCaching = true
+
+	if _, err := engine.Run(context.Background(), "hi"); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(captured, &body); err != nil {
+		t.Fatalf("captured request is not JSON: %v", err)
+	}
+	if _, ok := body["system"]; ok {
+		t.Errorf("non-Anthropic request must not contain top-level system field: %s", captured)
+	}
+	if strings.Contains(string(captured), "cache_control") {
+		t.Errorf("non-Anthropic request must not contain cache_control markers: %s", captured)
+	}
+	// The system prompt must still reach the model as a system message.
+	msgs, _ := body["messages"].([]any)
+	if len(msgs) == 0 {
+		t.Fatalf("no messages in request: %s", captured)
+	}
+	first, _ := msgs[0].(map[string]any)
+	if first["role"] != "system" {
+		t.Errorf("first message role = %v, want system", first["role"])
 	}
 }

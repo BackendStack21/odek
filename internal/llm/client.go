@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/BackendStack21/odek/internal/transport"
@@ -25,6 +26,11 @@ type Client struct {
 	MaxTokens      int     // max output tokens (0 = provider default)
 	Temperature    float64 // 0 = use provider default, <0 = omit from request
 	http           *http.Client
+
+	// forceNoneEffort is learned at runtime: set when the provider rejects
+	// reasoning_effort combined with function tools (e.g. gpt-5.6-luna),
+	// so subsequent calls pin effort to "none" without a failed round-trip.
+	forceNoneEffort atomic.Bool
 }
 
 // maxResponseSize limits the LLM response body read to prevent DoS/OOM.
@@ -54,8 +60,44 @@ func NewWithMaxTokens(baseURL, apiKey, model, thinking string, thinkingBudget in
 	}
 }
 
+// IsAnthropic reports whether the client's base URL targets the Anthropic
+// API. Anthropic-specific request features (the top-level "system" field,
+// cache_control markers) must only be sent when this is true — other
+// providers reject them (OpenAI answers 400 unknown_parameter).
+func (c *Client) IsAnthropic() bool {
+	return strings.Contains(c.BaseURL, "anthropic")
+}
+
+// sendsThinkingObject reports whether the provider accepts the
+// Anthropic-style "thinking" request object. Anthropic requires it for
+// extended thinking and DeepSeek supports it natively (deepseek-reasoner);
+// other providers (OpenAI and compatibles) reject unknown top-level
+// parameters, so thinking intent must be mapped to reasoning_effort instead.
+func (c *Client) sendsThinkingObject() bool {
+	return c.IsAnthropic() || strings.Contains(c.BaseURL, "deepseek")
+}
+
+// modelForbidsTemperature reports whether the model rejects an explicit
+// temperature parameter. OpenAI reasoning models (o1/o3/o4 families and the
+// gpt-5 series) only accept the default temperature (1); sending any other
+// value — including odek's deterministic default 0 — returns a 400
+// "unsupported_value" error. Matching is model-name-based and
+// provider-agnostic, since OpenAI-compatible proxies serving these model
+// IDs enforce the same constraint.
+func modelForbidsTemperature(model string) bool {
+	m := strings.ToLower(model)
+	for _, prefix := range []string{"o1", "o3", "o4", "gpt-5"} {
+		if strings.HasPrefix(m, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // CacheControl marks a message or system block as cacheable by Anthropic.
-// Providers that don't support it (OpenAI, DeepSeek) silently ignore the field.
+// Only send it to Anthropic endpoints: OpenAI rejects Anthropic-style
+// request shapes with a 400 (e.g. the top-level "system" field), so the
+// loop only applies cache markers when Client.IsAnthropic reports true.
 type CacheControl struct {
 	Type string `json:"type"` // "ephemeral"
 }
@@ -154,7 +196,8 @@ var toolChoiceNone = "none"
 //
 // Returns the updated messages and a System field (populated if the system
 // message was moved out of the messages array for Anthropic compatibility).
-// Providers that don't support prompt caching silently ignore these fields.
+// Callers must only use this when the target provider is Anthropic
+// (see Client.IsAnthropic) — OpenAI rejects the resulting request shape.
 func ApplyCacheMarkers(messages []Message) ([]Message, []SystemBlock) {
 	var systemBlocks []SystemBlock
 	annotated := make([]Message, 0, len(messages))
@@ -238,12 +281,11 @@ func (c *Client) SimpleCall(ctx context.Context, systemPrompt, userPrompt string
 	return raw.Choices[0].Message.Content, nil
 }
 
-// Call sends a chat completion request and returns the result.
-// systemBlocks is optional — pass nil for providers that don't support
-// the separate System field (OpenAI, DeepSeek). When non-nil, the system
-// prompt is sent in the "system" field instead of as a system message in
-// the messages array (Anthropic format for prompt caching).
-func (c *Client) Call(ctx context.Context, messages []Message, systemBlocks []SystemBlock, tools []ToolDef) (*CallResult, error) {
+// buildCallParams assembles the request body for a Call, mapping the
+// thinking configuration onto whatever shape the target provider accepts:
+// the Anthropic-style "thinking" object for Anthropic/DeepSeek,
+// reasoning_effort for OpenAI reasoning models, and nothing otherwise.
+func (c *Client) buildCallParams(messages []Message, systemBlocks []SystemBlock, tools []ToolDef) CallParams {
 	body := CallParams{
 		Model:     c.Model,
 		Messages:  messages,
@@ -255,26 +297,44 @@ func (c *Client) Call(ctx context.Context, messages []Message, systemBlocks []Sy
 
 	switch c.Thinking {
 	case "enabled":
-		// Anthropic requires budget_tokens when enabling thinking.
-		// 5000 is a safe default: leaves ample room for the text response
-		// even on models with 8K max output (e.g. Claude Haiku).
-		// DeepSeek silently ignores the field.
-		budget := c.ThinkingBudget
-		if budget <= 0 {
-			budget = 5000
+		if c.sendsThinkingObject() {
+			// Anthropic requires budget_tokens when enabling thinking.
+			// 5000 is a safe default: leaves ample room for the text response
+			// even on models with 8K max output (e.g. Claude Haiku).
+			// DeepSeek silently ignores the field.
+			budget := c.ThinkingBudget
+			if budget <= 0 {
+				budget = 5000
+			}
+			body.Thinking = &ThinkingConfig{Type: "enabled", BudgetTokens: budget}
+			// Anthropic also requires temperature=1 when thinking is enabled.
+			// Force it regardless of the configured temperature to avoid a 400.
+			one := float64(1)
+			body.Temperature = &one
+		} else if modelForbidsTemperature(c.Model) {
+			// OpenAI reasoning models have no "thinking" object; the closest
+			// mapping for enabled extended thinking is maximum effort.
+			// Temperature stays omitted — only the provider default is accepted.
+			body.ReasoningEffort = "high"
+		} else if c.Temperature >= 0 {
+			// Non-reasoning models (e.g. gpt-4o) have no thinking to enable;
+			// just honor the configured temperature.
+			body.Temperature = &c.Temperature
 		}
-		body.Thinking = &ThinkingConfig{Type: "enabled", BudgetTokens: budget}
-		// Anthropic also requires temperature=1 when thinking is enabled.
-		// Force it regardless of the configured temperature to avoid a 400.
-		one := float64(1)
-		body.Temperature = &one
 	case "disabled":
-		body.Thinking = &ThinkingConfig{Type: "disabled"}
-		if c.Temperature >= 0 {
+		if c.sendsThinkingObject() {
+			body.Thinking = &ThinkingConfig{Type: "disabled"}
+		} else if modelForbidsTemperature(c.Model) {
+			// OpenAI reasoning models: disabling thinking maps to effort
+			// "none" (accepted on the gpt-5 series). Non-reasoning models
+			// have nothing to disable, so the field is omitted entirely.
+			body.ReasoningEffort = "none"
+		}
+		if c.Temperature >= 0 && !modelForbidsTemperature(c.Model) {
 			body.Temperature = &c.Temperature
 		}
 	default:
-		if c.Temperature >= 0 {
+		if c.Temperature >= 0 && !modelForbidsTemperature(c.Model) {
 			body.Temperature = &c.Temperature
 		}
 		if c.Thinking == "low" || c.Thinking == "medium" || c.Thinking == "high" {
@@ -282,16 +342,57 @@ func (c *Client) Call(ctx context.Context, messages []Message, systemBlocks []Sy
 		}
 	}
 
+	// Some models (e.g. gpt-5.6-luna) reject function tools combined with
+	// any reasoning_effort other than "none" on /chat/completions — and
+	// their DEFAULT effort is not "none", so merely omitting the field is
+	// not enough. Once that constraint has been learned from a 400 (see
+	// Call), pin effort to "none" whenever tools are present.
+	if c.forceNoneEffort.Load() && len(tools) > 0 {
+		body.ReasoningEffort = "none"
+	}
+
+	return body
+}
+
+// Call sends a chat completion request and returns the result.
+// systemBlocks is optional — pass nil for providers that don't support
+// the separate System field (OpenAI, DeepSeek). When non-nil, the system
+// prompt is sent in the "system" field instead of as a system message in
+// the messages array (Anthropic format for prompt caching).
+func (c *Client) Call(ctx context.Context, messages []Message, systemBlocks []SystemBlock, tools []ToolDef) (*CallResult, error) {
+	body := c.buildCallParams(messages, systemBlocks, tools)
+
 	reqBytes, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("llm: marshal request: %w", err)
 	}
 
 	respBytes, err := c.postChatWithRetry(ctx, reqBytes)
+	if err != nil && len(tools) > 0 && !c.forceNoneEffort.Load() && reasoningEffortRejected(err) {
+		// Learn the constraint once, then every later call sends
+		// reasoning_effort "none" directly (no more failed round-trips).
+		c.forceNoneEffort.Store(true)
+		body.ReasoningEffort = "none"
+		reqBytes, mErr := json.Marshal(body)
+		if mErr != nil {
+			return nil, fmt.Errorf("llm: marshal request: %w", mErr)
+		}
+		respBytes, err = c.postChatWithRetry(ctx, reqBytes)
+	}
 	if err != nil {
 		return nil, err
 	}
 	return parseResponse(respBytes)
+}
+
+// reasoningEffortRejected reports whether err is a 400 whose provider
+// response names reasoning_effort as the offending parameter.
+func reasoningEffortRejected(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "400") && strings.Contains(msg, `"reasoning_effort"`)
 }
 
 // postChatWithRetry POSTs reqBytes to /chat/completions and returns the raw 200
