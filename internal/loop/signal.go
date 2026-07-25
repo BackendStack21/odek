@@ -12,8 +12,10 @@ type SignalEvent struct {
 	// Type is the signal kind. One of:
 	//   "context_trimmed"  — prior message groups were dropped to fit the token
 	//                        budget (Count = groups dropped, Detail = "proactive"
-	//                        for the pre-call budget trim or "survival" for the
-	//                        post-error nuclear trim)
+	//                        for the pre-call budget trim, "survival" for the
+	//                        post-error nuclear trim, or "margin_calibrated"
+	//                        when the safety margin tightened after the provider
+	//                        reported more input tokens than estimated)
 	//   "tool_recovery"    — a tool failed repeatedly and the engine injected a
 	//                        corrective hint so the model changes approach
 	//                        (Tool = failing tool, Detail = the correction)

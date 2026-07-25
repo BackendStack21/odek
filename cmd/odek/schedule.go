@@ -721,6 +721,7 @@ func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system
 		Renderer:          render.New(io.Discard, false), // silent: unattended
 		InteractionMode:   "off",
 		PromptCaching:     resolved.PromptCaching,
+		Compaction:        resolved.Compaction,
 		IterationCallback: func(info loop.IterationInfo) { lastInfo = info },
 		Guard:             injectionGuard,
 		GuardConfig:       resolved.Guard,

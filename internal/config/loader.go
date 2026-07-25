@@ -72,6 +72,10 @@ type CLIFlags struct {
 	// Config: prompt_caching, ODEK_PROMPT_CACHING, --prompt-caching.
 	PromptCaching *bool // nil = not set
 
+	// Compaction enables LLM-based rolling compaction of trimmed context.
+	// Config: compaction, ODEK_COMPACTION, --compaction.
+	Compaction *bool // nil = not set
+
 	// Sandbox-specific
 	SandboxImage    string
 	SandboxNetwork  string
@@ -240,6 +244,9 @@ type FileConfig struct {
 	// PromptCaching enables prompt caching markers for supported providers.
 	PromptCaching *bool `json:"prompt_caching,omitempty"`
 
+	// Compaction enables LLM-based rolling compaction of trimmed context.
+	Compaction *bool `json:"compaction,omitempty"`
+
 	System string `json:"system,omitempty"`
 
 	// Sandbox-specific fields.
@@ -376,6 +383,7 @@ type ResolvedConfig struct {
 	NoColor       bool
 	NoAgents      bool
 	PromptCaching bool
+	Compaction    bool
 	System        string
 
 	// SandboxImage is the Docker image for the sandbox container.
@@ -1078,6 +1086,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if v := envBool("PROMPT_CACHING"); v != nil {
 		cfg.PromptCaching = v
 	}
+	if v := envBool("COMPACTION"); v != nil {
+		cfg.Compaction = v
+	}
 	if v := envString("SYSTEM"); v != "" {
 		cfg.System = v
 	}
@@ -1431,6 +1442,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if cli.PromptCaching != nil {
 		cfg.PromptCaching = cli.PromptCaching
 	}
+	if cli.Compaction != nil {
+		cfg.Compaction = cli.Compaction
+	}
 	if cli.Learn != nil {
 		if cfg.Skills == nil {
 			cfg.Skills = &SkillsConfig{}
@@ -1701,6 +1715,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	}
 	if cfg.PromptCaching != nil {
 		resolved.PromptCaching = *cfg.PromptCaching
+	}
+	if cfg.Compaction != nil {
+		resolved.Compaction = *cfg.Compaction
 	}
 	if cfg.SandboxReadonly != nil {
 		resolved.SandboxReadonly = *cfg.SandboxReadonly
@@ -2272,6 +2289,9 @@ func overlayFile(base, override FileConfig) FileConfig {
 	}
 	if override.PromptCaching != nil {
 		base.PromptCaching = override.PromptCaching
+	}
+	if override.Compaction != nil {
+		base.Compaction = override.Compaction
 	}
 	if override.MaxConcurrency > 0 {
 		base.MaxConcurrency = override.MaxConcurrency

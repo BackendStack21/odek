@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -192,6 +193,23 @@ type Engine struct {
 	TotalCacheReadTokens     int  // Anthropic: tokens read from cache
 	TotalCachedTokens        int  // OpenAI: cached prompt tokens
 	TotalCacheReported       bool // provider returned cache metrics at least once
+
+	// Context trimming state, cumulative for the engine lifetime so repeated
+	// trims update a single warning message instead of stacking new ones.
+	trimGroupsTotal  int            // total turn groups dropped by trimming
+	trimTruncTotal   int            // total tool results truncated by trimming
+	trimDroppedTools map[string]int // tool names seen in dropped groups
+
+	// Self-calibrating context margin: when the provider reports substantially
+	// more input tokens than the local estimate, the margin tightens once.
+	lastReportedInputTokens int
+	lastEstimatedTotal      int
+	tightMargin             bool
+
+	// compaction enables LLM-based rolling summarization of dropped turn
+	// groups (Config.Compaction). compactDigest holds the current summary.
+	compaction    bool
+	compactDigest string
 }
 
 // New creates a new loop Engine.
@@ -206,6 +224,7 @@ func New(client *llm.Client, registry *tool.Registry, maxIterations int, systemM
 		system:                   systemMessage,
 		maxContext:               maxContext,
 		maxConsecutiveToolErrors: make(map[string]int),
+		trimDroppedTools:         make(map[string]int),
 	}
 }
 
@@ -280,6 +299,13 @@ func (e *Engine) SetApprover(a danger.Approver) { e.approver = a }
 // risk classes require approval and would skip pre-checking.
 func (e *Engine) SetDangerousConfig(cfg *danger.DangerousConfig) { e.dangerousCfg = cfg }
 
+// SetCompaction enables or disables LLM-based rolling compaction of dropped
+// context. When enabled, turn groups dropped by context trimming are
+// summarized into a rolling digest system message instead of vanishing
+// entirely. The digest is derived from (potentially untrusted) tool output,
+// so it is wrapped with the engine's untrusted-content wrapper when set.
+func (e *Engine) SetCompaction(enabled bool) { e.compaction = enabled }
+
 // ── Token Estimation ─────────────────────────────────────────────────
 //
 // Zero-dependency heuristic: 1 token ≈ 4 chars for English text.
@@ -296,6 +322,30 @@ const toolCallOverhead = 30
 // Input (messages + tools) should not exceed this fraction.
 const contextSafetyMargin = 0.75
 
+// contextSafetyMarginTight is the tightened margin applied once token
+// calibration detects that the local heuristic is underestimating real
+// usage (dense code, reasoning tokens, large tool schemas).
+const contextSafetyMarginTight = 0.65
+
+// toolTruncateMinBytes is the minimum size of a tool result body eligible
+// for graduated truncation during trimming. Small results are kept intact —
+// truncating them saves little and destroys information.
+const toolTruncateMinBytes = 2000
+
+// keepRecentToolResults is the number of most recent tool result messages
+// that graduated truncation never touches, so the agent always sees its
+// latest tool output in full.
+const keepRecentToolResults = 4
+
+// digestMsgPrefix marks the rolling compaction digest system message so
+// trimming can recognize, preserve, and update it.
+const digestMsgPrefix = "[Compacted earlier context:"
+
+// isDigestMessage reports whether m is the rolling compaction digest.
+func isDigestMessage(m llm.Message) bool {
+	return m.Role == "system" && strings.HasPrefix(m.Content, digestMsgPrefix)
+}
+
 // estimateTokens returns a rough upper-bound token count for a string.
 // Conservative: ~4 chars per token. Dense content (code, JSON) is
 // closer to 2-3 chars/token; this is safe for both.
@@ -309,6 +359,7 @@ func estimateMessages(messages []llm.Message) int {
 	for _, m := range messages {
 		total += messageOverhead
 		total += estimateTokens(m.Content)
+		total += estimateTokens(m.ReasoningContent)
 		total += estimateTokens(m.Name)
 		total += estimateTokens(m.ToolCallID)
 		for _, tc := range m.ToolCalls {
@@ -323,6 +374,8 @@ func estimateMessages(messages []llm.Message) int {
 
 // estimateToolDefs returns the estimated tokens for tool definitions.
 // These are sent with every request and count toward the context budget.
+// The parameter schema is the bulk of every definition, so it is marshaled
+// and counted; an unmarshalable schema falls back to a flat allowance.
 func estimateToolDefs(defs []llm.ToolDef) int {
 	total := 0
 	for _, d := range defs {
@@ -330,6 +383,13 @@ func estimateToolDefs(defs []llm.ToolDef) int {
 		total += estimateTokens(d.Type)
 		total += estimateTokens(d.Function.Name)
 		total += estimateTokens(d.Function.Description)
+		if d.Function.Parameters != nil {
+			if schemaJSON, err := json.Marshal(d.Function.Parameters); err == nil {
+				total += estimateTokens(string(schemaJSON))
+			} else {
+				total += 200 // fallback allowance
+			}
+		}
 	}
 	return total
 }
@@ -344,69 +404,134 @@ func contextBudget(maxContext int) int {
 
 // ── Context Trimming ─────────────────────────────────────────────────
 
+// headLen returns the number of leading messages that trimming must never
+// drop: the base system prompt plus any other leading system messages
+// (volatile memory block) and the first user message (the original task).
+// After the task, only the rolling compaction digest is protected — other
+// system messages that land there (skill/episode injections, trim warnings)
+// remain droppable.
+func headLen(messages []llm.Message) int {
+	start := 0
+	seenTask := false
+	for start < len(messages) {
+		m := messages[start]
+		switch {
+		case m.Role == "system" && !seenTask:
+			start++
+		case m.Role == "user" && !seenTask:
+			seenTask = true
+			start++
+		case seenTask && isDigestMessage(m):
+			start++
+		default:
+			return start
+		}
+	}
+	return start
+}
+
 // trimContext trims the message history to stay within the context budget.
-// It preserves:
-//   - System message (always first, if present)
-//   - The first user message (the original task)
 //
-// It drops the oldest non-essential message triples (assistant tool-call
-// message + its tool result(s)) to avoid orphaning tool results without
-// their preceding tool_calls — DeepSeek rejects orphaned tool messages.
+// It preserves the protected head (see headLen): system prompt, leading
+// system messages (memory block, compaction digest), and the first user
+// message (the original task).
 //
-// When trimming occurs, a system message is injected to warn the agent
-// that context was lost, preventing it from confidently operating on
-// incomplete information.
+// Trimming is graduated:
+//  1. Old, large tool result bodies (the token hogs) are replaced with a
+//     short marker, preserving the assistant's reasoning and the fact that
+//     the tool ran. The most recent tool results are never truncated.
+//  2. If still over budget, the oldest complete turn groups (assistant
+//     tool-call message + its tool result(s)) are dropped atomically to
+//     avoid orphaning tool results — DeepSeek rejects orphaned tool messages.
+//     When compaction is enabled, dropped groups are first summarized into
+//     a rolling digest message (see refreshDigest).
+//
+// When trimming occurs, a system message is injected (before the most recent
+// user message, keeping the cache-stable head untouched) to warn the agent
+// that context was lost. Repeated trims update the single existing warning
+// in place with cumulative totals.
 //
 // Performance: uses a running token total to avoid O(n²) re-scanning of
-// the full message list on every iteration. Previously, estimateMessages
-// was called at the top of the loop, re-summing ALL messages each time
-// a single group was dropped. For large conversations near the context
-// limit, this was O(n²) — now it's O(n).
-func (e *Engine) trimContext(messages []llm.Message, toolDefs []llm.ToolDef) []llm.Message {
+// the full message list on every iteration.
+func (e *Engine) trimContext(ctx context.Context, messages []llm.Message, toolDefs []llm.ToolDef) []llm.Message {
 	budget := contextBudget(e.maxContext)
 	if budget <= 0 {
 		return messages
 	}
 
+	// Self-calibration: when the provider's reported input-token count for
+	// the previous call exceeded the local estimate by more than 15%, the
+	// heuristic is underestimating real usage. Tighten the safety margin
+	// for the rest of this engine's lifetime so proactive trimming kicks in
+	// earlier instead of relying on provider context-length errors.
+	if !e.tightMargin && e.lastReportedInputTokens > 0 && e.lastEstimatedTotal > 0 &&
+		float64(e.lastReportedInputTokens) > 1.15*float64(e.lastEstimatedTotal) {
+		e.tightMargin = true
+		e.emitSignal(SignalEvent{Type: "context_trimmed", Detail: "margin_calibrated"})
+	}
+	if e.tightMargin {
+		budget = int(float64(e.maxContext) * contextSafetyMarginTight)
+	}
+
 	// Estimate tool definitions once (they don't change between iterations)
 	defTokens := estimateToolDefs(toolDefs)
 
-	// Compute the running total ONCE — each group drop then subtracts only
-	// the dropped group's tokens instead of re-scanning all messages.
+	// Compute the running total ONCE — each truncation/drop then subtracts
+	// only the affected tokens instead of re-scanning all messages.
 	totalTokens := estimateMessages(messages) + defTokens
 
+	head := headLen(messages)
+
+	// Pass 1 — graduated truncation: replace old, large tool results with a
+	// short marker before resorting to deleting whole turn groups. The most
+	// recent tool results and the protected head are never touched.
+	truncated := 0
+	if totalTokens > budget {
+		protected := make(map[int]struct{}, keepRecentToolResults)
+		for i, n := len(messages)-1, 0; i >= 0 && n < keepRecentToolResults; i-- {
+			if messages[i].Role == "tool" {
+				protected[i] = struct{}{}
+				n++
+			}
+		}
+		for i := head; i < len(messages) && totalTokens > budget; i++ {
+			if messages[i].Role != "tool" {
+				continue
+			}
+			if _, ok := protected[i]; ok {
+				continue
+			}
+			if len(messages[i].Content) <= toolTruncateMinBytes {
+				continue
+			}
+			oldEst := estimateTokens(messages[i].Content)
+			messages[i].Content = fmt.Sprintf(
+				"[tool output trimmed: %d bytes dropped to fit context budget]",
+				len(messages[i].Content),
+			)
+			truncated++
+			totalTokens -= oldEst - estimateTokens(messages[i].Content)
+		}
+	}
+
+	// Pass 2 — drop the oldest complete turn groups. A group is either:
+	//   - A standalone message (user text, assistant text)
+	//   - An assistant tool_calls message + all following tool results
+	if e.trimDroppedTools == nil {
+		e.trimDroppedTools = make(map[string]int)
+	}
 	droppedGroups := 0
-	droppedTools := make(map[string]int)
-
-	for {
-		if totalTokens <= budget {
-			break
+	var droppedForDigest []llm.Message
+	for totalTokens > budget {
+		if len(messages) <= head {
+			break // can't trim further — only the protected head remains
 		}
-		if len(messages) <= 2 {
-			break // can't trim further (need system + task at minimum)
-		}
-
-		// Find the first droppable index.
-		// Keep messages[0] if it's the system message.
-		// Keep the next message too (first user message = the task).
-		start := 0
-		if messages[0].Role == "system" {
-			start = 1 // keep system
-		}
-		start++ // keep system + task
-		if start >= len(messages) {
-			break
-		}
-
-		// Find the first complete droppable group starting at `start`.
-		// A group is either:
-		//   - A standalone message (user text, assistant text)
-		//   - An assistant tool_calls message + all following tool results
+		start := head
 		groupEnd := start + 1
 		if messages[start].Role == "assistant" && len(messages[start].ToolCalls) > 0 {
 			// Track which tools were called in dropped groups
 			for _, tc := range messages[start].ToolCalls {
-				droppedTools[tc.Function.Name]++
+				e.trimDroppedTools[tc.Function.Name]++
 			}
 			// Include all following tool result messages
 			for groupEnd < len(messages) && messages[groupEnd].Role == "tool" {
@@ -414,6 +539,9 @@ func (e *Engine) trimContext(messages []llm.Message, toolDefs []llm.ToolDef) []l
 			}
 		}
 		droppedGroups++
+		if e.compaction {
+			droppedForDigest = append(droppedForDigest, messages[start:groupEnd]...)
+		}
 
 		// Subtract the dropped group's tokens from the running total.
 		// This avoids O(n²) behavior: we only scan the N messages being
@@ -425,21 +553,17 @@ func (e *Engine) trimContext(messages []llm.Message, toolDefs []llm.ToolDef) []l
 		messages = append(messages[:start], messages[groupEnd:]...)
 	}
 
-	// Inject context trim warning if we dropped messages
-	if droppedGroups > 0 && len(messages) > 1 {
-		warning := fmt.Sprintf(
-			"[Context trimmed: %d prior message group(s) dropped to stay within token budget. "+
-				"Some earlier tool calls and their results are no longer available. "+
-				"If the user references earlier work, ask them to summarize what was done.]",
-			droppedGroups,
-		)
-		// Insert after system message (index 0), before task (index 1)
-		trimMsg := llm.Message{Role: "system", Content: warning}
-		newMsgs := make([]llm.Message, 0, len(messages)+1)
-		newMsgs = append(newMsgs, messages[0])
-		newMsgs = append(newMsgs, trimMsg)
-		newMsgs = append(newMsgs, messages[1:]...)
-		messages = newMsgs
+	// Rolling compaction: summarize the dropped groups into a digest system
+	// message so the information survives in compressed form.
+	if e.compaction && len(droppedForDigest) > 0 {
+		messages = e.refreshDigest(ctx, messages, droppedForDigest)
+	}
+
+	// Inject or update the context trim warning if we trimmed anything.
+	if (droppedGroups > 0 || truncated > 0) && len(messages) > 1 {
+		e.trimGroupsTotal += droppedGroups
+		e.trimTruncTotal += truncated
+		messages = upsertTrimWarning(messages, e.buildTrimWarning())
 
 		e.emitSignal(SignalEvent{
 			Type:   "context_trimmed",
@@ -448,7 +572,78 @@ func (e *Engine) trimContext(messages []llm.Message, toolDefs []llm.ToolDef) []l
 		})
 	}
 
+	// Record the final estimate so the next call can calibrate the margin
+	// against the provider's reported input tokens.
+	e.lastEstimatedTotal = estimateMessages(messages) + defTokens
+
 	return messages
+}
+
+// buildTrimWarning renders the cumulative trim warning text, including how
+// much was truncated/dropped and which tools lost their earlier results.
+func (e *Engine) buildTrimWarning() string {
+	var sb strings.Builder
+	sb.WriteString("[Context trimmed: ")
+	parts := make([]string, 0, 2)
+	if e.trimTruncTotal > 0 {
+		parts = append(parts, fmt.Sprintf("%d tool output(s) truncated", e.trimTruncTotal))
+	}
+	if e.trimGroupsTotal > 0 {
+		parts = append(parts, fmt.Sprintf("%d prior message group(s) dropped", e.trimGroupsTotal))
+	}
+	sb.WriteString(strings.Join(parts, ", "))
+	sb.WriteString(" to stay within the token budget. Some earlier tool calls and their results are no longer available.")
+	if len(e.trimDroppedTools) > 0 {
+		names := make([]string, 0, len(e.trimDroppedTools))
+		for name := range e.trimDroppedTools {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		if len(names) > 5 {
+			names = names[:5]
+		}
+		sb.WriteString(" Earlier calls to these tools were dropped: ")
+		sb.WriteString(strings.Join(names, ", "))
+		sb.WriteString(".")
+	}
+	if e.compaction && e.compactDigest != "" {
+		sb.WriteString(" A model-generated summary of the dropped turns is available in the '" + digestMsgPrefix + "...' system message.")
+	}
+	sb.WriteString(" If the user references earlier work, ask them to summarize what was done.]")
+	return sb.String()
+}
+
+// upsertTrimWarning inserts the trim warning immediately before the most
+// recent user message — keeping the cache-stable head untouched — or updates
+// the existing warning in place when one is already present. The warning is
+// never placed at index 0 so a session without a system prompt still starts
+// with the task.
+func upsertTrimWarning(messages []llm.Message, warning string) []llm.Message {
+	for i := range messages {
+		if messages[i].Role == "system" && strings.HasPrefix(messages[i].Content, "[Context trimmed:") {
+			messages[i].Content = warning
+			return messages
+		}
+	}
+	insertIdx := 1
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			insertIdx = i
+			break
+		}
+	}
+	if insertIdx < 1 {
+		insertIdx = 1
+	}
+	if insertIdx > len(messages) {
+		insertIdx = len(messages)
+	}
+	trimMsg := llm.Message{Role: "system", Content: warning}
+	newMsgs := make([]llm.Message, 0, len(messages)+1)
+	newMsgs = append(newMsgs, messages[:insertIdx]...)
+	newMsgs = append(newMsgs, trimMsg)
+	newMsgs = append(newMsgs, messages[insertIdx:]...)
+	return newMsgs
 }
 
 // isContextLengthError returns true for API errors that indicate the
@@ -475,9 +670,11 @@ func isContextLengthError(err error) bool {
 		strings.Contains(msg, "reduce the length")
 }
 
-// trimToSurvival drops all but the system prompt, first user message,
-// and the most recent 2 complete turn groups. This is the nuclear option
-// used when the API rejects the request as context-length-exceeded.
+// trimToSurvival drops all but the system prompt, the rolling compaction
+// digest (if present), the first user message (the original task, when it
+// differs from the latest one), the most recent 2 complete turn groups, and
+// the last user message. This is the nuclear option used when the API
+// rejects the request as context-length-exceeded.
 // Unlike trimContext which gives up when it can't stay under budget,
 // trimToSurvival always produces a drastically reduced message list
 // that nearly every model can handle.
@@ -489,12 +686,22 @@ func trimToSurvival(msgs []llm.Message) []llm.Message {
 	if msgs[0].Role == "system" {
 		start = 1 // keep system
 	}
+
+	// First user message (the original task) — kept when it differs from the
+	// last user message, so a long multi-turn session does not silently lose
+	// what it was asked to do.
+	firstUserIdx := -1
+	for i := start; i < len(msgs); i++ {
+		if msgs[i].Role == "user" {
+			firstUserIdx = i
+			break
+		}
+	}
+
 	// Last user message (the current task/input) — always keep it.
-	var lastUser llm.Message
 	lastUserIdx := -1
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == "user" {
-			lastUser = msgs[i]
 			lastUserIdx = i
 			break
 		}
@@ -502,9 +709,13 @@ func trimToSurvival(msgs []llm.Message) []llm.Message {
 
 	// Collect the last 2 complete assistant→tool groups before the user msg.
 	// Each group is a sub-slice in correct internal order: [system*, assistant, tool*].
+	scanFrom := lastUserIdx - 1
+	if lastUserIdx < 0 {
+		scanFrom = len(msgs) - 1
+	}
 	var groups [][]llm.Message
 	seen := 0
-	for i := lastUserIdx - 1; i > start && seen < 2; i-- {
+	for i := scanFrom; i > start && seen < 2; i-- {
 		if msgs[i].Role == "assistant" && len(msgs[i].ToolCalls) > 0 {
 			var group []llm.Message
 
@@ -531,19 +742,36 @@ func trimToSurvival(msgs []llm.Message) []llm.Message {
 		}
 	}
 
-	// Build survival set: system + task + recent groups + last user
-	// Calculate total messages across all groups for capacity hint
+	// Preserve the rolling compaction digest if one is present in the head.
+	digestIdx := -1
+	for i := start; i < len(msgs) && i < start+4; i++ {
+		if isDigestMessage(msgs[i]) {
+			digestIdx = i
+			break
+		}
+	}
+
+	// Build survival set: system + warning + digest + task + recent groups + last user
 	totalGroupMsgs := 0
 	for _, g := range groups {
 		totalGroupMsgs += len(g)
 	}
-	survival := make([]llm.Message, 0, start+1+totalGroupMsgs+1)
+	survival := make([]llm.Message, 0, start+3+totalGroupMsgs+1)
 	if start > 0 {
 		survival = append(survival, msgs[0]) // system message
 	}
 	// Add a context-warning system message
 	warning := "[Context trimmed to survive: the conversation history exceeded the model's context window. Earlier turns have been dropped. If you need information from earlier in the conversation, the agent may ask for a summary.]"
 	survival = append(survival, llm.Message{Role: "system", Content: warning})
+
+	if digestIdx >= 0 {
+		survival = append(survival, msgs[digestIdx])
+	}
+
+	// Add the original task when it differs from the last user message.
+	if firstUserIdx >= 0 && firstUserIdx != lastUserIdx {
+		survival = append(survival, msgs[firstUserIdx])
+	}
 
 	// Add the recent groups in chronological order (groups were collected
 	// from newest to oldest, so reverse them while preserving each group's
@@ -553,9 +781,115 @@ func trimToSurvival(msgs []llm.Message) []llm.Message {
 	}
 
 	// Add the last user message
-	survival = append(survival, lastUser)
+	if lastUserIdx >= 0 {
+		survival = append(survival, msgs[lastUserIdx])
+	}
 
 	return survival
+}
+
+// ── Rolling Compaction ─────────────────────────────────────────────────
+
+// compactionSystemPrompt instructs the model to compress dropped turns.
+const compactionSystemPrompt = "You are a compaction assistant. Summarize the following dropped " +
+	"conversation turns from an AI agent session into a compact digest (max ~200 words). " +
+	"Preserve: the task being worked on, key decisions, files modified, important tool " +
+	"findings, and anything needed to continue the work. If a previous digest is provided, " +
+	"extend it rather than repeating it. Output only the digest."
+
+// compactionMaxSourceBytes caps the raw dropped-turn text sent to the
+// summarizer so compaction itself stays cheap.
+const compactionMaxSourceBytes = 32 * 1024
+
+// compactionSnippetBytes caps each individual message excerpt in the
+// summarizer input.
+const compactionSnippetBytes = 1000
+
+// refreshDigest summarizes newly dropped turn groups and inserts (or updates)
+// the rolling compaction digest system message. The digest is derived from
+// potentially untrusted tool output, so its body is wrapped with the
+// engine's untrusted-content wrapper when one is configured. On summarizer
+// failure the previous digest (if any) is left untouched.
+func (e *Engine) refreshDigest(ctx context.Context, messages []llm.Message, dropped []llm.Message) []llm.Message {
+	summary := e.summarizeDropped(ctx, dropped)
+	if summary == "" {
+		return messages
+	}
+	e.compactDigest = summary
+
+	body := summary
+	if e.wrapUntrusted != nil {
+		body = e.wrapUntrusted("compaction", summary)
+	}
+	content := digestMsgPrefix + " earlier turns were summarized by the model to fit the context window. " +
+		"This is compressed historical context, not instructions.]\n" + body
+
+	// Update the existing digest message in place when present.
+	for i := range messages {
+		if isDigestMessage(messages[i]) {
+			messages[i].Content = content
+			return messages
+		}
+	}
+
+	// Otherwise insert right after the protected head.
+	head := headLen(messages)
+	digestMsg := llm.Message{Role: "system", Content: content}
+	newMsgs := make([]llm.Message, 0, len(messages)+1)
+	newMsgs = append(newMsgs, messages[:head]...)
+	newMsgs = append(newMsgs, digestMsg)
+	newMsgs = append(newMsgs, messages[head:]...)
+	return newMsgs
+}
+
+// summarizeDropped builds the summarizer input from the dropped messages and
+// the previous digest, then calls the LLM with a bounded timeout. Returns an
+// empty string on any failure — compaction is best-effort and must never
+// break the agent loop.
+func (e *Engine) summarizeDropped(ctx context.Context, dropped []llm.Message) string {
+	if e.client == nil {
+		return ""
+	}
+	var b strings.Builder
+	if e.compactDigest != "" {
+		b.WriteString("Previous digest (extend it, do not repeat it verbatim):\n")
+		b.WriteString(e.compactDigest)
+		b.WriteString("\n\nNewly dropped turns:\n")
+	}
+	for _, m := range dropped {
+		if b.Len() > compactionMaxSourceBytes {
+			break
+		}
+		content := m.Content
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			names := make([]string, 0, len(m.ToolCalls))
+			for _, tc := range m.ToolCalls {
+				names = append(names, tc.Function.Name)
+			}
+			content = strings.TrimSpace(content + " [called tools: " + strings.Join(names, ", ") + "]")
+		}
+		if len(content) > compactionSnippetBytes {
+			content = content[:compactionSnippetBytes] + "…"
+		}
+		if content == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "%s: %s\n", m.Role, content)
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+
+	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	res, err := e.client.Call(callCtx, []llm.Message{
+		{Role: "system", Content: compactionSystemPrompt},
+		{Role: "user", Content: b.String()},
+	}, nil, nil)
+	if err != nil || res == nil {
+		return ""
+	}
+	return strings.TrimSpace(res.Content)
 }
 
 // ── Loop ──────────────────────────────────────────────────────────────
@@ -636,29 +970,15 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		}
 
 		// Trim context to stay within model's context window
-		messages = e.trimContext(messages, tools)
+		messages = e.trimContext(ctx, messages, tools)
 
-		// Resync memMsgIdx after trimContext — when trimContext injects a
-		// context-warning message at index 1, all subsequent messages shift
-		// right by 1, making e.memMsgIdx point to the warning instead of
-		// memory. Detect this by checking if the message at our tracked
-		// position is a trim warning.
-		if e.memMsgIdx > 0 && e.memMsgIdx < len(messages) {
-			if strings.Contains(messages[e.memMsgIdx].Content, "[Context trimmed:") {
-				// Trim warning was injected before our memory message.
-				// The actual memory message is now at memMsgIdx + 1.
-				e.memMsgIdx++
-			}
-		}
-
-		// After trimContext, verify the memory message still exists at the
-		// tracked position. trimContext starts dropping from index 2 onward,
-		// and the memory message can shift into that range after a trim
-		// warning is injected (shifting it from index 1 to 2). Once at index
-		// 2, it can be dropped by subsequent trimContext calls, leaving
-		// memMsgIdx pointing to the wrong message (a user/assistant message
-		// that shifted into that slot). When this happens, reset memMsgIdx
-		// so the memory is re-inserted at the correct position.
+		// Verify the memory message still exists at the tracked position.
+		// trimContext protects the leading run of system messages (base
+		// prompt + memory block) via headLen, so the memory message can no
+		// longer be dropped or shifted by trimming — but trimToSurvival (on
+		// a provider context-length error) still removes it. When that
+		// happens, reset memMsgIdx so memory is re-inserted at the correct
+		// position.
 		if e.memMsgIdx >= 0 && e.memMsgIdx < len(messages) {
 			if messages[e.memMsgIdx].Role != "system" {
 				// Memory message was dropped — re-insert on next update.
@@ -820,6 +1140,12 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		// THINK (timed)
 		start := time.Now()
 
+		// Re-check the budget after all context injections (memory block,
+		// skills, episodes, extended memory) — those are added after the
+		// top-of-loop trim and can push an already-near-budget request over
+		// the model's context window on this very call.
+		messages = e.trimContext(ctx, messages, tools)
+
 		// Apply prompt caching markers when enabled — but only for Anthropic
 		// endpoints. OpenAI rejects the Anthropic request shape (top-level
 		// "system" field) with a 400, and DeepSeek caches automatically,
@@ -869,6 +1195,10 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		// Accumulate token usage across iterations
 		e.TotalInputTokens += result.InputTokens
 		e.TotalOutputTokens += result.OutputTokens
+
+		// Feed the margin calibration in trimContext: provider-reported input
+		// tokens are ground truth for how accurate the local estimate is.
+		e.lastReportedInputTokens = result.InputTokens
 
 		// Accumulate cache metrics
 		// Accumulate cache metrics across iterations

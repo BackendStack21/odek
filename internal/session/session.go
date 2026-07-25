@@ -445,10 +445,14 @@ func (s *Store) saveLocked(sess *Session) error {
 // index 0 is always kept, and an assistant tool_calls message is dropped
 // together with its following tool-result messages so a stored transcript
 // never contains orphaned tool messages (which strict providers reject).
-// The turn count is recounted to match the surviving messages. If nothing
-// droppable remains (a degenerate case, e.g. a single oversized system
-// message), the session is written as-is — failing the save would lose data.
+// The turn count is recounted to match the surviving messages. When any
+// groups were dropped, a marker system message is inserted after the system
+// prompt so a resumed session can see that earlier history was removed.
+// If nothing droppable remains (a degenerate case, e.g. a single oversized
+// system message), the session is written as-is — failing the save would
+// lose data.
 func (s *Store) trimToFileCapLocked(sess *Session, data []byte) ([]byte, error) {
+	droppedGroups := 0
 	for len(data) > MaxSessionFileBytes {
 		start := 0
 		if len(sess.Messages) > 0 && sess.Messages[0].Role == "system" {
@@ -478,6 +482,7 @@ func (s *Store) trimToFileCapLocked(sess *Session, data []byte) ([]byte, error) 
 				return nil, fmt.Errorf("session: marshal trim candidate: %w", err)
 			}
 			freed += len(groupJSON)
+			droppedGroups++
 			dropEnd = groupEnd
 		}
 		sess.Messages = append(sess.Messages[:start], sess.Messages[dropEnd:]...)
@@ -486,6 +491,38 @@ func (s *Store) trimToFileCapLocked(sess *Session, data []byte) ([]byte, error) 
 		data, err = json.Marshal(sess)
 		if err != nil {
 			return nil, fmt.Errorf("session: marshal after trim: %w", err)
+		}
+	}
+
+	// Persist a marker so a resumed session knows earlier turns were removed
+	// (the stderr warning alone never reaches the transcript).
+	if droppedGroups > 0 {
+		marker := llm.Message{
+			Role: "system",
+			Content: fmt.Sprintf(
+				"[Session storage limit: %d oldest message group(s) were removed from this transcript to stay within the %d-byte file cap. Earlier conversation context is unavailable.]",
+				droppedGroups, MaxSessionFileBytes,
+			),
+		}
+		insertAt := 0
+		if len(sess.Messages) > 0 && sess.Messages[0].Role == "system" {
+			insertAt = 1
+		}
+		withMarker := make([]llm.Message, 0, len(sess.Messages)+1)
+		withMarker = append(withMarker, sess.Messages[:insertAt]...)
+		withMarker = append(withMarker, marker)
+		withMarker = append(withMarker, sess.Messages[insertAt:]...)
+
+		candidate := *sess
+		candidate.Messages = withMarker
+		markerData, err := json.Marshal(&candidate)
+		if err != nil {
+			return nil, fmt.Errorf("session: marshal trim marker: %w", err)
+		}
+		// Keep the marker only if the transcript still fits the cap.
+		if len(markerData) <= MaxSessionFileBytes {
+			sess.Messages = withMarker
+			data = markerData
 		}
 	}
 	return data, nil

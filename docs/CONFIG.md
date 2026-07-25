@@ -118,6 +118,7 @@ Every config knob has a `ODEK_*` counterpart:
 | `ODEK_SYSTEM` | `--system` | string |
 | `ODEK_SKILLS_LEARN` | `skills.learn` | bool |
 | `ODEK_PROMPT_CACHING` | `prompt_caching` | bool |
+| `ODEK_COMPACTION` | `compaction` | bool |
 | `ODEK_TOOL_PROGRESS` | `tool_progress` | string (all\|new\|verbose\|off) |
 | `ODEK_SANDBOX_IMAGE` | `--sandbox-image` | string |
 | `ODEK_SANDBOX_NETWORK` | `--sandbox-network` | string |
@@ -242,6 +243,14 @@ When a model emits multiple tool calls in one response (`tool_calls` array with 
 I/O-bound tools (read_file, search_files, shell) benefit most — latency drops from `sum(latencies)` to `max(latency)`.
 
 **Approval gate:** When an approver is configured and the LLM returns multiple tool calls, a single batch approval prompt is shown before any tool executes. If approved, all tools run in parallel. If denied, no tools run.
+
+## Rolling compaction (`compaction`)
+
+When context trimming drops old conversation turns to stay within the model's context window, those turns are normally lost. With `compaction` enabled, the dropped turns are instead summarized by the model into a rolling digest message, preserving a compressed history of the session.
+
+| Field | Default | Env var | CLI flag | Description |
+|-------|---------|---------|----------|-------------|
+| `compaction` | `false` | `ODEK_COMPACTION` | `--compaction` | Enable LLM-based rolling compaction of trimmed context. Each compaction costs one extra LLM call per trim. |
 
 ## Concurrency and reverse-proxy trust
 

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,8 +111,16 @@ func TestTrimToFileCap_DropsToolGroups(t *testing.T) {
 	if len(data) > MaxSessionFileBytes {
 		t.Errorf("len(data) = %d, exceeds cap %d", len(data), MaxSessionFileBytes)
 	}
-	if len(sess.Messages) != 2 || sess.Messages[0].Role != "system" || sess.Messages[1].Role != "user" {
-		t.Errorf("system + trailing user message should survive: %+v", sess.Messages)
+	// system + trim marker + trailing user message should survive.
+	if len(sess.Messages) != 3 || sess.Messages[0].Role != "system" || sess.Messages[2].Role != "user" {
+		t.Errorf("system + marker + trailing user message should survive: %+v", sess.Messages)
+	}
+	marker := sess.Messages[1]
+	if marker.Role != "system" || !strings.Contains(marker.Content, "[Session storage limit:") {
+		t.Errorf("expected storage-limit trim marker at index 1, got %+v", marker)
+	}
+	if !strings.Contains(marker.Content, "1 oldest message group(s)") {
+		t.Errorf("marker should report 1 dropped group, got %q", marker.Content)
 	}
 	for _, m := range sess.Messages {
 		if m.Role == "tool" {
@@ -162,5 +171,48 @@ func TestSave_IncrementalRedaction(t *testing.T) {
 	}
 	if reloaded.RedactBoundary != len(reloaded.Messages) {
 		t.Errorf("RedactBoundary = %d, want %d after second save", reloaded.RedactBoundary, len(reloaded.Messages))
+	}
+}
+
+// TestTrimToFileCap_MarkerSkippedWhenItWouldExceedCap covers the edge where
+// the trimmed transcript lands so close to the cap that inserting the trim
+// marker would push it back over — the marker must be omitted rather than
+// breaking the cap.
+func TestTrimToFileCap_MarkerSkippedWhenItWouldExceedCap(t *testing.T) {
+	withFileCap(t, 64<<10)
+	store, err := NewStoreWithDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStoreWithDir() error: %v", err)
+	}
+	sess := &Session{
+		ID: "20260101-dddddddddddddddddddddddddddddddd",
+		Messages: []llm.Message{
+			{Role: "system", Content: ""}, // sized below
+			{Role: "user", Content: "droppable question"},
+		},
+	}
+	// Size the protected system message so the post-trim transcript lands
+	// just under the cap, leaving no room for the ~230-byte marker.
+	base, err := json.Marshal(sess)
+	if err != nil {
+		t.Fatalf("marshal base session: %v", err)
+	}
+	sess.Messages[0].Content = strings.Repeat("s", MaxSessionFileBytes-len(base)-50)
+
+	oversized := make([]byte, MaxSessionFileBytes+1)
+	data, err := store.trimToFileCapLocked(sess, oversized)
+	if err != nil {
+		t.Fatalf("trimToFileCapLocked() error: %v", err)
+	}
+	if len(data) > MaxSessionFileBytes {
+		t.Errorf("len(data) = %d, exceeds cap %d", len(data), MaxSessionFileBytes)
+	}
+	if len(sess.Messages) != 1 || sess.Messages[0].Role != "system" {
+		t.Errorf("only the protected system message should survive: %+v", sess.Messages)
+	}
+	for _, m := range sess.Messages {
+		if strings.Contains(m.Content, "[Session storage limit:") {
+			t.Error("marker must be omitted when it would push the transcript over the cap")
+		}
 	}
 }

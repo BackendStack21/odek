@@ -185,6 +185,7 @@ func serveCmd(args []string) error {
 	var sandbox *bool
 	var sandboxReadonly *bool
 	var promptCaching *bool
+	var compaction *bool
 	var sandboxImage, sandboxNetwork, sandboxMemory, sandboxCPUs, sandboxUser string
 	var toolsEnabled, toolsDisabled, trustedProxies []string
 
@@ -234,6 +235,8 @@ func serveCmd(args []string) error {
 			}
 		case "--prompt-caching":
 			promptCaching = boolPtr(true)
+		case "--compaction":
+			compaction = boolPtr(true)
 		case "--tool":
 			i++
 			if i >= len(args) {
@@ -263,6 +266,7 @@ func serveCmd(args []string) error {
 	resolved := config.LoadConfig(config.CLIFlags{
 		Sandbox:         sandbox,
 		PromptCaching:   promptCaching,
+		Compaction:      compaction,
 		SandboxImage:    sandboxImage,
 		SandboxNetwork:  sandboxNetwork,
 		SandboxReadonly: sandboxReadonly,
