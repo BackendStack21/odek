@@ -214,7 +214,10 @@ func Resolve(cfg Config) Config {
 
 // ResolveLLM returns the LLM client to use for Extended Memory. If cfg.LLM is
 // set, it builds a dedicated client; otherwise it returns the provided main
-// client unchanged. When falling back to the main client and the main model
+// client unchanged. Fields left empty in cfg.LLM are inherited from the main
+// client (when it is an *llm.Client), so operators can override a single knob
+// — e.g. `"llm": {"thinking": "disabled"}` — without duplicating base_url,
+// api_key, and model. When falling back to the main client and the main model
 // has thinking enabled, a warning is logged because reasoning tokens are
 // wasted on memory-only calls.
 func ResolveLLM(cfg Config, mainLLM LLMClient, thinking string) LLMClient {
@@ -224,7 +227,27 @@ func ResolveLLM(cfg Config, mainLLM LLMClient, thinking string) LLMClient {
 		}
 		return mainLLM
 	}
-	lmc := cfg.LLM
+	lmc := *cfg.LLM
+	if main, ok := mainLLM.(*llm.Client); ok {
+		if lmc.BaseURL == "" {
+			lmc.BaseURL = main.BaseURL
+		}
+		if lmc.APIKey == "" {
+			lmc.APIKey = main.APIKey
+		}
+		if lmc.Model == "" {
+			lmc.Model = main.Model
+		}
+		if lmc.Thinking == "" {
+			lmc.Thinking = main.Thinking
+		}
+		if lmc.MaxTokens == 0 {
+			lmc.MaxTokens = main.MaxTokens
+		}
+		if lmc.Temperature == 0 {
+			lmc.Temperature = main.Temperature
+		}
+	}
 	if lmc.BaseURL == "" || lmc.Model == "" {
 		fmt.Fprintf(os.Stderr, "odek: warning: extended memory llm requires base_url and model; falling back to main LLM\n")
 		return mainLLM

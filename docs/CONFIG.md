@@ -434,7 +434,7 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
 | `nudge_cooldown_hours` | `24` | `ODEK_MEMORY_EXTENDED_NUDGE_COOLDOWN_HOURS` | — | Per-kind cooldown before a nudge of the same kind can fire again. |
 | `nudge_stale_goal_days` | `7` | `ODEK_MEMORY_EXTENDED_NUDGE_STALE_GOAL_DAYS` | — | Days without activity before a goal/intent atom counts as stale for nudges. |
 | `nudge_open_question_min_age_hours` | `24` | `ODEK_MEMORY_EXTENDED_NUDGE_OPEN_QUESTION_MIN_AGE_HOURS` | — | Minimum age before a `question` atom may become a nudge candidate (younger questions are usually about to be answered). |
-| `llm` | omitted | — | — | Dedicated memory LLM. If omitted, the main agent LLM is reused. A warning is emitted if that model has thinking enabled. |
+| `llm` | omitted | — | — | Dedicated memory LLM. If omitted, the main agent LLM is reused. A warning is emitted if that model has thinking enabled. Fields left empty inside `llm` are inherited from the main agent LLM, so a partial override such as `"llm": {"thinking": "disabled"}` reuses the parent `base_url`/`api_key`/`model`/`max_tokens`/`temperature` while disabling reasoning for memory calls. |
 | `embedding` | omitted | — | — | Dedicated embedding backend for atoms. If omitted, inherits `memory.embedding` or the shared top-level `embedding`. |
 
 ### `embedding` — real semantic embeddings (optional)

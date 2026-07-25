@@ -113,6 +113,8 @@ Extended Memory can use its own LLM, separate from the main agent. This is ideal
 
 If `memory.extended.llm` is omitted, the module **MUST** use the default global model. The default global model is the fully resolved main agent LLM after all config layers have been merged: top-level `model`, `base_url`, `api_key`, `thinking`, `max_tokens`, `temperature`, and `timeout` from `~/.odek/config.json`, `ODEK_*` environment variables, and CLI flags. Extended Memory does not read any of those values again; it reuses the exact `llm.Client` instance constructed for the main agent loop.
 
+When `memory.extended.llm` is present, any field left empty (`base_url`, `api_key`, `model`, `thinking`, `max_tokens`, `temperature`) is inherited from that same main agent client, so a partial override reuses the parent connection while changing only what it sets. For example, `"llm": {"thinking": "disabled"}` keeps the main model and endpoint but disables reasoning for memory calls, and `"llm": {"model": "qwen2.5:7b"}` switches to a cheaper model on the same backend.
+
 If the default global model has reasoning/thinking enabled, memory extraction and reranking may be expensive. In that case the operator should configure a dedicated `memory.extended.llm` for cost isolation; a warning is emitted when thinking is enabled and no dedicated memory LLM is configured.
 
 ### Memory LLM Responsibilities
