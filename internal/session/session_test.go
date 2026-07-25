@@ -1335,8 +1335,21 @@ func TestSave_TrimsOversizedSession(t *testing.T) {
 	if last.Role != "assistant" || last.Content != "final answer" {
 		t.Errorf("trailing message not preserved: role=%q content=%q", last.Role, last.Content)
 	}
-	if len(loaded.Messages) >= len(msgs) {
-		t.Errorf("expected oldest messages to be dropped, still have %d of %d", len(loaded.Messages), len(msgs))
+	bigLeft := 0
+	markerFound := false
+	for _, m := range loaded.Messages {
+		if m.Content == big {
+			bigLeft++
+		}
+		if strings.Contains(m.Content, "[Session storage limit:") {
+			markerFound = true
+		}
+	}
+	if bigLeft >= 4 {
+		t.Errorf("expected oldest big messages to be dropped, still have %d of 4", bigLeft)
+	}
+	if !markerFound {
+		t.Error("expected a [Session storage limit: ...] marker in the trimmed transcript")
 	}
 	if got, want := loaded.Turns, countUserTurns(loaded.Messages); got != want {
 		t.Errorf("Turns = %d, want %d (recounted after trim)", got, want)

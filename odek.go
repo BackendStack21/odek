@@ -213,6 +213,13 @@ type Config struct {
 	// nil, skill/episode content is injected directly (not recommended for
 	// production surfaces).
 	UntrustedWrapper func(source, content string) string
+
+	// Compaction enables LLM-based rolling compaction (default: false). When
+	// enabled, conversation turn groups dropped by context trimming are
+	// summarized by the model into a rolling digest system message instead of
+	// vanishing entirely, so long sessions retain a compressed memory of
+	// earlier work. Each compaction costs one extra LLM call per trim.
+	Compaction bool
 }
 
 // Agent is the agent loop runtime.
@@ -578,6 +585,7 @@ func New(cfg Config) (*Agent, error) {
 
 	engine := loop.New(client, registry, cfg.MaxIterations, cfg.SystemMessage, cfg.Renderer, maxContext)
 	engine.PromptCaching = cfg.PromptCaching
+	engine.SetCompaction(cfg.Compaction)
 	engine.SetUntrustedWrapper(cfg.UntrustedWrapper)
 	if cfg.MaxToolParallel > 0 {
 		engine.SetMaxToolParallel(cfg.MaxToolParallel)

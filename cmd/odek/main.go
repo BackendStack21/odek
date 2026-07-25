@@ -274,6 +274,7 @@ type runFlags struct {
 	NoColor        *bool   // nil = not set
 	NoAgents       *bool   // nil = not set
 	PromptCaching  *bool   // nil = not set; true = enable prompt caching
+	Compaction     *bool   // nil = not set; true = enable rolling compaction
 	Session        *bool   // nil = not set; true = save session after run
 	Learn          *bool   // nil = not set; true = enable skills learning mode
 	Task           string
@@ -411,6 +412,9 @@ func parseRunFlags(args []string) (runFlags, error) {
 			i++
 		case "--prompt-caching":
 			f.PromptCaching = boolPtr(true)
+			i++
+		case "--compaction":
+			f.Compaction = boolPtr(true)
 			i++
 		case "--session":
 			f.Session = boolPtr(true)
@@ -655,6 +659,10 @@ done:
 			f.PromptCaching = boolPtr(true)
 			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
 			j--
+		case "--compaction":
+			f.Compaction = boolPtr(true)
+			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+			j--
 		case "--sandbox-readonly":
 			f.SandboxReadonly = boolPtr(true)
 			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
@@ -740,6 +748,7 @@ type replFlags struct {
 	ThinkingBudget  int   // 0 = not set; use default
 	Sandbox         *bool // nil = not set
 	PromptCaching   *bool // nil = not set; true = enable prompt caching
+	Compaction      *bool // nil = not set; true = enable rolling compaction
 	InteractionMode string
 
 	// Sandbox-specific CLI flags
@@ -808,6 +817,9 @@ func parseReplFlags(args []string) (replFlags, error) {
 			i += 2
 		case "--prompt-caching":
 			f.PromptCaching = boolPtr(true)
+			i++
+		case "--compaction":
+			f.Compaction = boolPtr(true)
 			i++
 		case "--interaction-mode":
 			f.InteractionMode = args[i+1]
@@ -888,6 +900,7 @@ Run flags:
   --no-color           Disable colored terminal output
   --no-agents          Skip loading AGENTS.md from working directory
   --prompt-caching     Enable prompt caching markers (Anthropic/DeepSeek/OpenAI)
+  --compaction         Enable LLM-based rolling compaction of trimmed context
   --session            Save conversation as a multi-turn session
   --learn              Enable skill learning mode — on by default, no flag needed
   --no-learn           Disable skill learning mode (overrides config/default)
@@ -1154,6 +1167,7 @@ func run(args []string) error {
 		NoColor:       f.NoColor,
 		NoAgents:      f.NoAgents,
 		PromptCaching: f.PromptCaching,
+		Compaction:    f.Compaction,
 		Learn:         f.Learn,
 		System:        f.System,
 		Task:          f.Task,
@@ -1326,6 +1340,7 @@ func run(args []string) error {
 		Skills:           skillsCfg,
 		SkillManager:     sm,
 		PromptCaching:    resolved.PromptCaching,
+		Compaction:       resolved.Compaction,
 		MemoryDir:        expandHome("~/.odek/memory"),
 		MemoryConfig:     resolved.Memory,
 		Guard:            injectionGuard,
@@ -2380,6 +2395,7 @@ func continueCmd(args []string) error {
 		Skills:           skillsCfg,
 		SkillManager:     sm,
 		PromptCaching:    resolved.PromptCaching,
+		Compaction:       resolved.Compaction,
 		MemoryDir:        expandHome("~/.odek/memory"),
 		MemoryConfig:     resolved.Memory,
 		Guard:            injectionGuard,

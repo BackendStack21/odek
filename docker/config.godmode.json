@@ -1,5 +1,6 @@
 {
   "sandbox": false,
+  "compaction": true,
   "interaction_mode": "engaging",
   "tool_progress": "verbose",
   "tool_progress_cleanup": false,

@@ -543,7 +543,7 @@ func TestTrimContext_NoLimit(t *testing.T) {
 		{Role: "system", Content: "You are a bot."},
 		{Role: "user", Content: "hello"},
 	}
-	result := engine.trimContext(msgs, nil)
+	result := engine.trimContext(context.Background(), msgs, nil)
 	if len(result) != 2 {
 		t.Errorf("trimContext with no limit should not change messages, got %d", len(result))
 	}
@@ -558,7 +558,7 @@ func TestTrimContext_UnderBudget(t *testing.T) {
 		{Role: "assistant", Content: "Hi there", ToolCalls: nil},
 		{Role: "tool", Content: "result", ToolCallID: "call_1"},
 	}
-	result := engine.trimContext(msgs, nil)
+	result := engine.trimContext(context.Background(), msgs, nil)
 	if len(result) != 4 {
 		t.Errorf("trimContext under budget should keep all messages, got %d", len(result))
 	}
@@ -577,7 +577,7 @@ func TestTrimContext_OverBudget(t *testing.T) {
 		{Role: "assistant", Content: strings.Repeat("final reasoning... ", 20)},
 		{Role: "tool", Content: strings.Repeat("final data ", 20), ToolCallID: "call_3"},
 	}
-	result := engine.trimContext(msgs, nil)
+	result := engine.trimContext(context.Background(), msgs, nil)
 
 	// Should have preserved system + task (first user)
 	if len(result) < 2 {
@@ -608,7 +608,7 @@ func TestTrimContext_VeryTightBudget(t *testing.T) {
 		{Role: "assistant", Content: strings.Repeat("data ", 50)},
 		{Role: "tool", Content: strings.Repeat("result ", 50), ToolCallID: "call_1"},
 	}
-	result := engine.trimContext(msgs, nil)
+	result := engine.trimContext(context.Background(), msgs, nil)
 
 	// Must keep system + task at minimum
 	if len(result) < 2 {
@@ -632,7 +632,7 @@ func TestTrimContext_NoSystemMessage(t *testing.T) {
 		{Role: "assistant", Content: strings.Repeat("data ", 30)},
 		{Role: "tool", Content: strings.Repeat("result ", 30), ToolCallID: "call_1"},
 	}
-	result := engine.trimContext(msgs, nil)
+	result := engine.trimContext(context.Background(), msgs, nil)
 
 	// Without system, keep at least the task
 	if len(result) < 1 {
@@ -680,7 +680,7 @@ func TestTrimContext_IncludesToolDefTokens(t *testing.T) {
 		},
 	}}
 
-	result := engine.trimContext(msgs, defs)
+	result := engine.trimContext(context.Background(), msgs, defs)
 	if len(result) >= len(msgs) {
 		t.Errorf("trimContext with tool defs should trim, got %d >= %d", len(result), len(msgs))
 	}
@@ -1281,7 +1281,7 @@ func BenchmarkTrimContext(b *testing.B) {
 				// Copy messages each iteration to avoid modifying shared state.
 				cp := make([]llm.Message, len(msgs))
 				copy(cp, msgs)
-				engine.trimContext(cp, nil)
+				engine.trimContext(context.Background(), cp, nil)
 			}
 		})
 	}
@@ -1298,7 +1298,7 @@ func BenchmarkTrimContext_NoTrim(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		engine.trimContext(msgs, nil)
+		engine.trimContext(context.Background(), msgs, nil)
 	}
 }
 

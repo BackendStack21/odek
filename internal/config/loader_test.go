@@ -1238,6 +1238,32 @@ func TestGlobalOverlay_PromptCaching(t *testing.T) {
 	}
 }
 
+// TestGlobalOverlay_Compaction verifies that Compaction from global config
+// survives the merge.
+func TestGlobalOverlay_Compaction(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	globalDir := filepath.Join(os.Getenv("HOME"), ".odek")
+	os.MkdirAll(globalDir, 0755)
+
+	if err := os.WriteFile(filepath.Join(globalDir, "config.json"), []byte(`{
+		"compaction": true
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile("odek.json", []byte(`{
+		"model": "project-model"
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	if !cfg.Compaction {
+		t.Error("Compaction should be true (global value should survive project merge)")
+	}
+}
+
 // TestGlobalOverlay_MCPServers verifies that MCPServers from global config
 // survive the merge. BUG: overlayFile doesn't transfer MCPServers.
 func TestGlobalOverlay_MCPServers(t *testing.T) {
@@ -1676,5 +1702,29 @@ func TestIsVarCont(t *testing.T) {
 		if got := isVarCont(tc.c); got != tc.want {
 			t.Errorf("isVarCont(%q) = %v, want %v", tc.c, got, tc.want)
 		}
+	}
+}
+
+// TestEnvVar_Compaction verifies ODEK_COMPACTION enables compaction.
+func TestEnvVar_Compaction(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+	t.Setenv("ODEK_COMPACTION", "true")
+
+	cfg := LoadConfig(CLIFlags{})
+	if !cfg.Compaction {
+		t.Error("Compaction should be true when ODEK_COMPACTION=true")
+	}
+}
+
+// TestCLIFlags_Compaction verifies the --compaction CLI flag enables compaction.
+func TestCLIFlags_Compaction(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+
+	enabled := true
+	cfg := LoadConfig(CLIFlags{Compaction: &enabled})
+	if !cfg.Compaction {
+		t.Error("Compaction should be true when CLIFlags.Compaction is set")
 	}
 }
