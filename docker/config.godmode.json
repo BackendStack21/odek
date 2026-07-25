@@ -62,7 +62,10 @@
       "proactive_nudges_enabled": true,
       "nudge_max_per_day": 5,
       "nudge_cooldown_hours": 24,
-      "nudge_stale_goal_days": 7
+      "nudge_stale_goal_days": 7,
+      "llm": {
+        "thinking": "disabled"
+      }
     }
   },
   "dangerous": {
