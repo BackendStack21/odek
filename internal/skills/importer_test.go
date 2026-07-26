@@ -424,6 +424,11 @@ func TestIsPrivateHost(t *testing.T) {
 		{"0x7f000001", true},      // hex 127.0.0.1
 		{"127.1", true},           // short form 127.0.0.1
 		{"0x0.0x0.0x0.0x0", true}, // hex-dotted
+		// Out-of-range parts are rejected (browser semantics: invalid IP →
+		// hostname), not silently truncated — 10.300.1.1 must not parse as
+		// 10.44.1.1 and slip into the private range.
+		{"10.300.1.1", false},
+		{"300.1.1.1", false},
 		// RFC 6598 carrier-grade NAT
 		{"100.64.0.1", true},
 		{"100.127.255.254", true},

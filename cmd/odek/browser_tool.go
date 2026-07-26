@@ -408,7 +408,14 @@ func parseHTML(ctx context.Context, html, pageURL string, status int) browserSna
 		}
 		href := strings.TrimSpace(m[1])
 		text := strings.TrimSpace(m[2])
-		if href == "" || text == "" || href == "#" || strings.HasPrefix(href, "javascript:") {
+		// Skip non-navigable schemes. The check is case-insensitive and
+		// covers javascript:, data:, and vbscript: — all of which can carry
+		// script/active content the agent must never be sent into.
+		lowerHref := strings.ToLower(href)
+		if href == "" || text == "" || href == "#" ||
+			strings.HasPrefix(lowerHref, "javascript:") ||
+			strings.HasPrefix(lowerHref, "data:") ||
+			strings.HasPrefix(lowerHref, "vbscript:") {
 			continue
 		}
 		// Skip duplicates

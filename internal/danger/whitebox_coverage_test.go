@@ -314,6 +314,12 @@ func TestParseBrowserIP(t *testing.T) {
 		{"::1", false, "::1"},              // IPv6
 		{"1.2.3.4.5", true, ""},            // too many parts
 		{"99999999999.1", true, ""},        // part exceeds 32 bits → nil
+		{"300.1.1.1", true, ""},            // leading part > 0xFF → nil, not 44.1.1.1
+		{"256.1", true, ""},                // leading part > 0xFF in short form
+		{"1.16777216", true, ""},           // final part > 0xFFFFFF in a.b form
+		{"1.2.65536", true, ""},            // final part > 0xFFFF in a.b.c form
+		{"1.2.3.256", true, ""},            // final part > 0xFF in a.b.c.d form
+		{"255.255.255.255", false, "255.255.255.255"}, // boundary: all parts at max
 		{"0xZZ.0.0.1", true, ""},           // bad hex
 		{"not.an.ip.addr", true, ""},       // non-numeric
 		{"", true, ""},                     // empty

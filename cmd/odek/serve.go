@@ -1783,6 +1783,13 @@ func handleStatic(wsToken string) http.HandlerFunc {
 					Path:     "/",
 					SameSite: http.SameSiteStrictMode,
 					HttpOnly: true,
+					// Secure is set even though the server usually runs on
+					// plain-http loopback: modern browsers treat localhost as a
+					// potentially trustworthy origin and accept Secure cookies
+					// there, and the UI always sends the token as a WebSocket
+					// subprotocol (and /api header), so a browser that drops
+					// the cookie loses nothing.
+					Secure: true,
 					// No explicit MaxAge/Expires so the cookie is a session cookie.
 				})
 				data = []byte(strings.Replace(string(data), "{{ODEK_WS_TOKEN}}", wsToken, 1))

@@ -463,6 +463,21 @@ func parseBrowserIP(host string) net.IP {
 		nums = append(nums, uint32(val))
 	}
 
+	// inet_aton requires every leading part to fit in one byte and the final
+	// part to fit in the remaining bytes (a.b → b ≤ 0xFFFFFF, a.b.c →
+	// c ≤ 0xFFFF, a.b.c.d → d ≤ 0xFF). Reject out-of-range parts instead of
+	// silently truncating them — "300.1.1.1" must not parse as 44.1.1.1 and
+	// mislead the internal-IP checks downstream.
+	for i, n := range nums {
+		max := uint64(0xFF)
+		if i == len(nums)-1 {
+			max = (uint64(1) << (8 * uint(5-len(nums)))) - 1
+		}
+		if uint64(n) > max {
+			return nil
+		}
+	}
+
 	switch len(nums) {
 	case 1:
 		// Single number: full 32-bit address
