@@ -126,7 +126,8 @@ Every config knob has a `ODEK_*` counterpart:
 | `ODEK_SANDBOX_MEMORY` | `--sandbox-memory` | string |
 | `ODEK_SANDBOX_CPUS` | `--sandbox-cpus` | string |
 | `ODEK_SANDBOX_USER` | `--sandbox-user` | string |
-| `ODEK_APPROVE_PROJECT_SANDBOX` | — | bool | approve project-level `./odek.json` sandbox config without prompting |
+| `ODEK_APPROVE_PROJECT_SANDBOX` | — | bool | approve project-level `./odek.json` sandbox config and implicit `Dockerfile.odek` builds without prompting |
+| `ODEK_SANDBOX_BUILD_NETWORK` | — | bool | allow networked `Dockerfile.odek` builds (default: builds run with `--network=none`) |
 | `ODEK_MAX_CONCURRENCY` | `max_concurrency` | int |
 | `ODEK_MAX_TOOL_PARALLEL` | `max_tool_parallel` | int |
 | `ODEK_TRUSTED_PROXIES` | `trusted_proxies` | string (comma-separated IPs/CIDRs) |
@@ -913,6 +914,11 @@ odek run "quick status"
 # because they can read host env vars and pick arbitrary images/networks.
 echo '{"sandbox": true, "sandbox_env": {"X": "${HOME}"}}' > ./odek.json
 ODEK_APPROVE_PROJECT_SANDBOX=1 odek run "run untrusted script"
+
+# An implicit Dockerfile.odek build is gated the same way (docker build runs
+# repo-controlled RUN steps with the whole working directory as context).
+# Builds use --network=none unless you opt in:
+ODEK_SANDBOX_BUILD_NETWORK=1 odek run --sandbox "build the project"
 
 # Env var override for one-off
 ODEK_SANDBOX=true odek run "run untrusted script"

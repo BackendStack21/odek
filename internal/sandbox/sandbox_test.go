@@ -367,3 +367,27 @@ func contains(haystack []string, needle string) bool {
 	}
 	return false
 }
+
+// ── dockerBuildArgs ────────────────────────────────────────────────────
+
+func TestDockerBuildArgs_NetworkNoneByDefault(t *testing.T) {
+	os.Unsetenv("ODEK_SANDBOX_BUILD_NETWORK")
+	args := dockerBuildArgs("odek-sandbox:test")
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--network=none") {
+		t.Errorf("dockerBuildArgs default = %q, want --network=none", joined)
+	}
+	for _, want := range []string{"-t", "odek-sandbox:test", "-f", DockerfileName} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("dockerBuildArgs = %q, missing %q", joined, want)
+		}
+	}
+}
+
+func TestDockerBuildArgs_NetworkOptIn(t *testing.T) {
+	t.Setenv("ODEK_SANDBOX_BUILD_NETWORK", "1")
+	args := dockerBuildArgs("odek-sandbox:test")
+	if strings.Contains(strings.Join(args, " "), "--network=none") {
+		t.Errorf("dockerBuildArgs with ODEK_SANDBOX_BUILD_NETWORK=1 = %q, want no --network=none", strings.Join(args, " "))
+	}
+}

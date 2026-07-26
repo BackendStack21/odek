@@ -382,6 +382,15 @@ These fields can only be set from operator-controlled sources: `~/.odek/config.j
 
 This gates project-level sandbox overrides behind explicit operator approval, including a warning when `sandbox_env` values contain `${...}` host-environment interpolation, so a malicious repo cannot silently exfiltrate host secrets, pull an attacker-controlled image, or widen the container's network access. If the operator approves, the config is applied normally; if they deny or run non-interactively without the bypass, the overrides fail closed.
 
+### 18b. Implicit `Dockerfile.odek` build approval
+
+A `Dockerfile.odek` in the working directory is repo-controlled, and `docker build` executes its `RUN` instructions **outside the sandbox threat model**: default capabilities, and the entire working directory readable as build context. Without a gate, merely running odek inside a malicious repository (e.g. `odek serve`, which sandboxes by default) would grant host-adjacent code execution and workspace exfiltration. The implicit build is therefore gated behind the same approval mechanism as project sandbox overrides:
+
+- Interactive TTY prompt at startup (`y` = once, `t` = trust this project), persisted approvals in `~/.odek/project_sandbox_approvals.json`, or `ODEK_APPROVE_PROJECT_SANDBOX=1` for CI. Non-TTY runs without approval fail closed.
+- The approval key includes the **Dockerfile content hash**, so editing `Dockerfile.odek` invalidates a prior "trust" approval and forces re-review.
+- **Build-time enforcement:** `setupSandbox` re-verifies approval (env bypass, persisted trust, or a once-approval recorded in-process) immediately before building. This closes the gap where a Dockerfile appears or changes *after* startup — e.g. a serve-mode sandbox created per WebSocket connection, or a resumed session that re-enables the sandbox.
+- The build runs with **`--network=none` by default**, so `RUN` steps cannot fetch attacker payloads or exfiltrate build-context data over the network. `ODEK_SANDBOX_BUILD_NETWORK=1` (operator-only) opts back into networked builds for legitimate package installs.
+
 ### SSRF guard and configured-backend allowlist
 
 The `browser`, `http_batch`, and `web_search` tools use a shared SSRF / DNS-rebinding dial guard (`cmd/odek/ssrf_guard.go`). After the policy gate classifies a hostname as `network_egress`, the guard resolves the name itself and refuses any answer that points at a loopback, RFC1918, RFC4193, link-local, or metadata IP. It then pins the dial to the validated IP so the kernel cannot re-resolve to a different address.

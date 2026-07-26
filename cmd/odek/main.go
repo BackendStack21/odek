@@ -1597,6 +1597,16 @@ func deliverToTelegram(text string, resolved config.ResolvedConfig) error {
 // The returned cleanup function destroys the container; always invoke it
 // via Agent.Close().
 func setupSandbox(tools []odek.Tool, cfg sandboxConfig) (containerName string, cleanup func() error, err error) {
+	// An implicit Dockerfile.odek build executes repo-controlled code on the
+	// host; refuse to proceed unless it was approved (startup prompt, trusted
+	// project, or ODEK_APPROVE_PROJECT_SANDBOX=1). Skipped when an explicit
+	// image is configured because ResolveImage ignores the Dockerfile then.
+	if cfg.Image == "" {
+		if err := requireDockerfileBuildApproval(); err != nil {
+			return "", nil, err
+		}
+	}
+
 	image, err := sandbox.ResolveImage(cfg)
 	if err != nil {
 		return "", nil, err
@@ -2303,6 +2313,13 @@ func continueCmd(args []string) error {
 	if sess.Sandbox && !resolved.Sandbox {
 		resolved.Sandbox = true
 		fmt.Fprintf(os.Stderr, "odek: session was sandboxed — enabling sandbox for this continuation\n")
+	}
+
+	// Gate project-level sandbox knobs and any implicit Dockerfile.odek build
+	// on explicit operator approval, same as `odek run` — a continued session
+	// must not bypass the approval flow.
+	if err := approveProjectSandbox(resolved, os.Stdin, os.Stdout); err != nil {
+		return err
 	}
 
 	// Build tools
