@@ -94,27 +94,6 @@
   </div>
 </div>
 
-<!-- Approval Dialog -->
-<div id="approval-overlay">
-  <div id="approval-dialog">
-    <div class="approval-header">
-      <div class="approval-icon" id="approval-icon">🛡</div>
-      <div>
-        <div class="approval-title">Approval required</div>
-        <div class="approval-subtitle">agent wants to execute a command</div>
-      </div>
-    </div>
-    <div class="approval-risk" id="approval-risk"></div>
-    <div id="approval-command"></div>
-    <div id="approval-desc" style="display:none"></div>
-    <div id="approval-actions">
-      <button class="deny" onclick="sendApproval('deny')">Deny</button>
-      <button class="trust" onclick="sendApproval('trust')">Trust session</button>
-      <button class="approve" onclick="sendApproval('approve')">Approve</button>
-    </div>
-  </div>
-</div>
-
 <!-- Keyboard Shortcuts -->
 <div id="shortcuts-overlay">
   <div id="shortcuts-dialog">
@@ -127,6 +106,9 @@
     <div class="shortcut-row"><span class="sc-label">Toggle shortcuts</span><span class="sc-key">?</span></div>
     <div class="shortcut-row"><span class="sc-label">Refresh sessions</span><span class="sc-key">⌘R</span></div>
     <div class="shortcut-row"><span class="sc-label">Toggle thinking</span><span class="sc-key">Alt+T</span></div>
+    <div class="shortcut-row"><span class="sc-label">Approve (when prompted)</span><span class="sc-key">A</span></div>
+    <div class="shortcut-row"><span class="sc-label">Deny (when prompted)</span><span class="sc-key">D</span></div>
+    <div class="shortcut-row"><span class="sc-label">Trust session (when prompted)</span><span class="sc-key">T</span></div>
   </div>
 </div>
 

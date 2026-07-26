@@ -1486,7 +1486,7 @@ body.light {
 }
 
 /* ── Dialogs ───────────────────────────────────────────────────────── */
-#approval-overlay, #shortcuts-overlay, #confirm-overlay {
+#shortcuts-overlay, #confirm-overlay {
   display: none;
   position: fixed;
   inset: 0;
@@ -1497,13 +1497,13 @@ body.light {
   align-items: center;
   justify-content: center;
 }
-#approval-overlay.active, #shortcuts-overlay.active, #confirm-overlay.active {
+#shortcuts-overlay.active, #confirm-overlay.active {
   display: flex;
   animation: fadeIn .15s ease-out;
 }
 
 /* Shared dialog card */
-#approval-dialog, #shortcuts-dialog, #confirm-dialog {
+#shortcuts-dialog, #confirm-dialog {
   background: var(--bg-2);
   border: 1px solid var(--border-2);
   border-radius: 6px;
@@ -1515,7 +1515,6 @@ body.light {
   overflow: hidden;
 }
 /* Hairline amber accent at top of every dialog */
-#approval-dialog::before,
 #shortcuts-dialog::before,
 #confirm-dialog::before {
   content: '';
@@ -1530,50 +1529,102 @@ body.light {
   to   { transform: translateY(0)    scale(1);   opacity: 1; filter: blur(0); }
 }
 
-/* Approval */
-#approval-dialog { max-width: 480px; padding: 24px 26px; }
-.approval-header { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
-.approval-icon { font-size: 22px; flex-shrink: 0; }
-.approval-title { font-family: var(--ui); font-size: 13px; font-weight: 500; color: var(--text); letter-spacing: .02em; }
-.approval-subtitle { font-family: var(--ui); font-size: 11px; color: var(--text-3); margin-top: 1px; letter-spacing: .04em; }
-.approval-risk {
-  display: inline-flex;
-  align-items: center;
+/* ── Approval card (inline, pinned in message stream) ─────────────── */
+.approval-card {
+  position: sticky;
+  bottom: var(--space-2);
+  z-index: 15;
+  width: min(560px, 100%);
+  margin: var(--space-3) auto;
+  padding: var(--space-4) var(--space-5);
+  background: var(--bg-2);
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-md);
+  box-shadow: 0 18px 48px rgba(0,0,0,.55),
+              0 0 0 1px rgba(200,134,10,.08);
+  overflow: hidden;
+  animation: dialogUp .28s var(--ease);
+}
+/* Hairline amber accent at top */
+.approval-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent 0%, var(--amber) 50%, transparent 100%);
+  opacity: .6;
+}
+.approval-card[data-level="danger"] {
+  border-color: rgba(224,82,82,.35);
+  box-shadow: 0 18px 48px rgba(0,0,0,.55),
+              0 0 0 1px rgba(224,82,82,.12);
+}
+.approval-card[data-level="danger"]::before {
+  background: linear-gradient(90deg, transparent 0%, var(--red) 50%, transparent 100%);
+}
+.approval-card:focus { outline: none; box-shadow: 0 18px 48px rgba(0,0,0,.55), var(--ring); }
+
+.ac-head { display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-2); }
+.ac-icon { font-size: 20px; flex-shrink: 0; }
+.ac-titles { flex: 1; min-width: 0; }
+.ac-title { font-size: var(--fs-base); font-weight: 500; color: var(--text); letter-spacing: .02em; }
+.ac-sub { font-size: var(--fs-xs); color: var(--text-3); margin-top: 1px; letter-spacing: .04em; }
+.ac-risk {
   padding: 2px 8px;
-  border-radius: 2px;
-  font-family: var(--ui);
-  font-size: 11px;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-xs);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: .1em;
-  margin-bottom: 14px;
+  flex-shrink: 0;
 }
-.approval-risk.🟡 { background: rgba(246,166,35,.12); color: #f6a623; }
-.approval-risk.🔴 { background: rgba(224,82,82,.12); color: var(--red); }
-.approval-risk.🟢 { background: rgba(46,184,122,.12); color: var(--green); }
-#approval-command {
+.ac-risk[data-level="warn"]   { background: rgba(246,166,35,.12); color: #f6a623; }
+.ac-risk[data-level="danger"] { background: rgba(224,82,82,.12); color: var(--red); }
+.ac-risk[data-level="ok"]     { background: rgba(46,184,122,.12); color: var(--green); }
+
+.ac-why { font-size: var(--fs-xs); color: var(--text-2); letter-spacing: .03em; margin-bottom: var(--space-3); line-height: 1.5; }
+
+.ac-command {
   font-family: var(--code);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   background: #04040a;
   border: 1px solid var(--border);
-  border-radius: 3px;
-  padding: 10px 14px;
+  border-radius: var(--r-sm);
+  padding: var(--space-3) var(--space-4);
   color: var(--text);
   white-space: pre-wrap;
   word-break: break-all;
-  margin-bottom: 10px;
-  max-height: 160px;
+  margin-bottom: var(--space-3);
+  max-height: 180px;
   overflow-y: auto;
   line-height: 1.55;
 }
-#approval-desc { font-family: var(--ui); font-size: 11px; color: var(--text-2); margin-bottom: 18px; line-height: 1.55; }
-#approval-actions { display: flex; gap: 8px; justify-content: flex-end; }
-#approval-actions button {
+body.light .ac-command { background: var(--bg-3); }
+
+.ac-desc { font-size: var(--fs-xs); color: var(--text-2); margin-bottom: var(--space-3); line-height: 1.55; }
+
+.ac-friction { margin-bottom: var(--space-3); }
+.ac-friction-msg { color: var(--amber-2); font-size: var(--fs-sm); margin-bottom: var(--space-2); line-height: 1.5; }
+.ac-friction-input {
+  width: 100%;
   font-family: var(--ui);
-  padding: 8px 18px;
-  border-radius: 4px;
+  font-size: var(--fs-sm);
+  padding: 6px var(--space-2);
+  background: var(--bg-3);
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  outline: none;
+}
+.ac-friction-input:focus { border-color: var(--amber); box-shadow: var(--ring); }
+
+.ac-actions { display: flex; gap: var(--space-2); justify-content: flex-end; }
+.ac-actions button {
+  font-family: var(--ui);
+  padding: 8px 16px;
+  border-radius: var(--r-sm);
   border: none;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 500;
   letter-spacing: .06em;
   text-transform: lowercase;
@@ -1582,23 +1633,35 @@ body.light {
               border-color .18s var(--ease), transform .15s var(--ease),
               box-shadow .25s var(--ease);
 }
-#approval-actions button:active { transform: scale(.96); transition-duration: .08s; }
-#approval-actions .deny  { background: transparent; color: var(--red); border: 1px solid rgba(224,82,82,.3); }
-#approval-actions .deny:hover  { background: rgba(224,82,82,.12); border-color: var(--red); box-shadow: 0 4px 14px -4px rgba(224,82,82,.4); }
-#approval-actions .trust { background: transparent; color: var(--text-2); border: 1px solid var(--border-2); }
-#approval-actions .trust:hover { background: var(--bg-3); border-color: var(--border-3); color: var(--text); }
-#approval-actions .approve {
+.ac-actions button:disabled { opacity: .45; cursor: not-allowed; }
+.ac-actions button:active { transform: scale(.96); transition-duration: .08s; }
+.ac-actions kbd {
+  font-family: var(--ui);
+  font-size: inherit;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  padding: 0 3px;
+  opacity: .55;
+  margin-left: 2px;
+}
+.ac-actions .deny  { background: transparent; color: var(--red); border: 1px solid rgba(224,82,82,.3); }
+.ac-actions .deny:hover  { background: rgba(224,82,82,.12); border-color: var(--red); box-shadow: 0 4px 14px -4px rgba(224,82,82,.4); }
+.ac-actions .trust { background: transparent; color: var(--text-2); border: 1px solid var(--border-2); }
+.ac-actions .trust:hover { background: var(--bg-3); border-color: var(--border-3); color: var(--text); }
+.ac-actions .approve {
   background: linear-gradient(135deg, var(--amber-2) 0%, var(--amber) 100%);
   color: #0e0b04;
   border: 1px solid transparent;
   box-shadow: 0 1px 0 rgba(255,210,140,.3) inset,
               0 4px 14px -4px rgba(200,134,10,.4);
 }
-#approval-actions .approve:hover {
+.ac-actions .approve:hover:not(:disabled) {
   box-shadow: 0 1px 0 rgba(255,210,140,.4) inset,
               0 8px 22px -6px rgba(200,134,10,.6);
   transform: translateY(-1px);
 }
+
+.ac-queue-pos { margin-top: var(--space-2); font-size: var(--fs-xs); color: var(--text-3); letter-spacing: .05em; text-align: right; }
 
 /* Shortcuts */
 #shortcuts-dialog { max-width: 360px; padding: 22px 26px; }
@@ -1682,7 +1745,6 @@ body.light #messages { background: var(--bg); }
 body.light #input-area { background: var(--bg); }
 body.light .code-block { background: var(--bg-3); }
 body.light .code-block pre { background: var(--bg-3); color: #3a3530; }
-body.light #approval-command { background: var(--bg-3); }
 body.light .tb-body { background: var(--bg-3); }
 body.light .msg.assistant .bubble .content { color: var(--text); }
 
