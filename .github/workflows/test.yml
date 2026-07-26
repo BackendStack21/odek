@@ -14,6 +14,8 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
+          # Minimum supported build toolchain is Go 1.25.12 (go.mod floor);
+          # "1.25" resolves to the latest 1.25.x patch release.
           go-version: "1.25"
 
       - name: build
@@ -42,3 +44,19 @@ jobs:
         with:
           version: v2.12.2
           args: --timeout=10m
+
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # Latest stable toolchain: stdlib advisories are assessed against
+          # the newest patch release, and module advisories (e.g. x/net) are
+          # toolchain-independent. The go.mod floor (go 1.25.12) pins the
+          # minimum toolchain for downstream builders.
+          go-version: "stable"
+
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...

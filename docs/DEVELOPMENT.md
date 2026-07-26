@@ -8,7 +8,7 @@ no maintained changelog file — create a release/tag and GitHub produces the no
 
 ## Prerequisites
 
-- Go 1.25+ (matches `go.mod`; CI builds with the same toolchain)
+- Go 1.25.12+ (matches `go.mod`; CI builds with the same toolchain line and runs `govulncheck` on every push/PR)
 - Docker (for sandbox integration tests only)
 
 ## Building
