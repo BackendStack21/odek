@@ -423,7 +423,7 @@ Go's `net.IP.IsPrivate()` covers RFC1918 and RFC4193 private ranges, but it does
 
 ### 19. MCP server environment sanitisation
 
-MCP server subprocesses no longer inherit the full odek process environment. They receive only a minimal allowlist of safe variables (e.g. `PATH`, `HOME`, `LANG`, `TMPDIR`) plus any explicit `env` overrides from the server config. Keys matching secret patterns — `*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `*_CREDENTIAL`, `*_PRIVATE_KEY`, etc. — are stripped even when listed in `env`. This prevents a compromised or malicious MCP server from reading secrets loaded from `~/.odek/secrets.env` or other provider keys that were present in the parent environment.
+MCP server subprocesses no longer inherit the full odek process environment. They receive only a minimal allowlist of safe variables (e.g. `PATH`, `HOME`, `LANG`, `TMPDIR`) plus any explicit `env` overrides from the server config. Keys matching secret patterns — `*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `*_CREDENTIAL`, `*_PRIVATE_KEY`, etc. — are stripped even when listed in `env`. Matching normalises each name first (uppercased, `-` and `_` removed), so non-underscore spellings like `API-KEY` or `APIKEY` — both legal in environment variable names — cannot bypass the filter through the override path. This prevents a compromised or malicious MCP server from reading secrets loaded from `~/.odek/secrets.env` or other provider keys that were present in the parent environment.
 
 ### 20. Schedule file atomic-write hardening
 

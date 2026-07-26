@@ -308,13 +308,18 @@ var allowedEnvVars = map[string]bool{
 // isSensitiveEnvVar reports whether a key looks like a secret. These patterns
 // are blocked from being forwarded to MCP children even if they are present in
 // the parent environment or explicitly supplied as overrides.
+//
+// The name is normalised (uppercased, "-" and "_" stripped) before matching so
+// non-underscore spellings — API-KEY, APIKEY, Private-Key — cannot slip a
+// secret past the filter; environment variable names legally contain hyphens
+// or no separator at all.
 func isSensitiveEnvVar(key string) bool {
-	upper := strings.ToUpper(key)
+	norm := strings.NewReplacer("-", "", "_", "").Replace(strings.ToUpper(key))
 	for _, pat := range []string{
-		"API_KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "CREDS",
-		"PRIVATE_KEY", "ACCESS_KEY",
+		"APIKEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "CREDS",
+		"PRIVATEKEY", "ACCESSKEY",
 	} {
-		if strings.Contains(upper, pat) {
+		if strings.Contains(norm, pat) {
 			return true
 		}
 	}

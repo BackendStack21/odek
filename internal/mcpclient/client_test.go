@@ -417,18 +417,46 @@ func TestBuildEnv_OverridesCannotInjectSecrets(t *testing.T) {
 	defer func() { osEnviron = orig }()
 
 	result := buildEnv(map[string]string{
-		"LEGIT_VAR":   "ok",
+		"LEGIT_VAR":    "ok",
 		"EVIL_API_KEY": "sk-stolen",
 		"BOT_TOKEN":    "tok-stolen",
+		// Non-underscore spellings: env var names legally contain hyphens or
+		// no separator, and must be caught by the normalised matching.
+		"API-KEY":     "sk-stolen",
+		"APIKEY":      "sk-stolen",
+		"PRIVATE-KEY": "pem-stolen",
+		"SECRET-KEY":  "shh",
 	})
 	m := envToMap(result)
 
 	if m["LEGIT_VAR"] != "ok" {
 		t.Errorf("LEGIT_VAR = %q, want ok", m["LEGIT_VAR"])
 	}
-	for _, k := range []string{"EVIL_API_KEY", "BOT_TOKEN"} {
+	for _, k := range []string{"EVIL_API_KEY", "BOT_TOKEN", "API-KEY", "APIKEY", "PRIVATE-KEY", "SECRET-KEY"} {
 		if _, ok := m[k]; ok {
 			t.Errorf("sensitive override %q should be dropped", k)
+		}
+	}
+}
+
+func TestIsSensitiveEnvVar_NormalizesSeparators(t *testing.T) {
+	blocked := []string{
+		"MY_API_KEY", "API-KEY", "APIKEY", "Api-Key",
+		"PRIVATE-KEY", "PRIVATEKEY", "ACCESS-KEY", "ACCESSKEY",
+		"SECRET-KEY", "SECRETKEY", "AUTH-TOKEN", "AUTHTOKEN",
+		"DB-PASSWORD", "PASSWORD", "AWS-CREDS", "CREDENTIALS",
+	}
+	for _, k := range blocked {
+		if !isSensitiveEnvVar(k) {
+			t.Errorf("isSensitiveEnvVar(%q) = false, want true", k)
+		}
+	}
+	allowed := []string{
+		"PATH", "HOME", "EDITOR", "NODE_ENV", "MCP_SERVER_NAME", "KEYSTONE",
+	}
+	for _, k := range allowed {
+		if isSensitiveEnvVar(k) {
+			t.Errorf("isSensitiveEnvVar(%q) = true, want false", k)
 		}
 	}
 }
