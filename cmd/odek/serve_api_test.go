@@ -70,7 +70,7 @@ func TestHandleSessionByID_GET_ReturnsSession(t *testing.T) {
 		t.Fatalf("Create session: %v", err)
 	}
 
-	handler := handleSessionByID(store, nil)
+	handler := handleSessionByID(store, nil, "")
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
 	req.Header.Set("X-Session-Token", sess.AuthToken)
 	w := httptest.NewRecorder()
@@ -106,7 +106,7 @@ func TestHandleSessionByID_GET_ReturnsSession(t *testing.T) {
 
 func TestHandleSessionByID_GET_NotFound(t *testing.T) {
 	store := newTestSessionStore(t)
-	handler := handleSessionByID(store, nil)
+	handler := handleSessionByID(store, nil, "")
 
 	// Valid ID format but doesn't exist on disk.
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/20260101-aabbcc", nil)
@@ -120,7 +120,7 @@ func TestHandleSessionByID_GET_NotFound(t *testing.T) {
 
 func TestHandleSessionByID_GET_MissingID(t *testing.T) {
 	store := newTestSessionStore(t)
-	handler := handleSessionByID(store, nil)
+	handler := handleSessionByID(store, nil, "")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/", nil)
 	w := httptest.NewRecorder()
@@ -145,7 +145,7 @@ func TestHandleSessionByID_GET_MessagesArePresent(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	handler := handleSessionByID(store, nil)
+	handler := handleSessionByID(store, nil, "")
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
 	req.Header.Set("X-Session-Token", sess.AuthToken)
 	w := httptest.NewRecorder()
@@ -161,7 +161,7 @@ func TestHandleSessionByID_GET_MessagesArePresent(t *testing.T) {
 
 func TestHandleSessionByID_MethodNotAllowed(t *testing.T) {
 	store := newTestSessionStore(t)
-	handler := handleSessionByID(store, nil)
+	handler := handleSessionByID(store, nil, "")
 
 	for _, method := range []string{http.MethodPatch, http.MethodPut, http.MethodHead} {
 		req := httptest.NewRequest(method, "/api/sessions/20260101-aabbcc", nil)
@@ -182,7 +182,7 @@ func TestHandleSessionByID_DELETE_StillWorks(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	handler := handleSessionByID(store, nil)
+	handler := handleSessionByID(store, nil, "")
 	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+sess.ID, nil)
 	req.Header.Set("X-Session-Token", sess.AuthToken)
 	w := httptest.NewRecorder()
@@ -209,7 +209,7 @@ func TestHandleSessionByID_POST_RenameStillWorks(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	handler := handleSessionByID(store, nil)
+	handler := handleSessionByID(store, nil, "")
 	body := strings.NewReader(`{"name":"renamed task"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+sess.ID, body)
 	req.Header.Set("Content-Type", "application/json")
@@ -232,7 +232,7 @@ func TestHandleSessionByID_GET_InvalidToken(t *testing.T) {
 	store := newTestSessionStore(t)
 	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
 
-	handler := handleSessionByID(store, nil)
+	handler := handleSessionByID(store, nil, "")
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
 	req.Header.Set("X-Session-Token", "wrong-token")
 	w := httptest.NewRecorder()
@@ -247,7 +247,7 @@ func TestHandleSessionByID_GET_MissingToken(t *testing.T) {
 	store := newTestSessionStore(t)
 	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
 
-	handler := handleSessionByID(store, nil)
+	handler := handleSessionByID(store, nil, "")
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
 	w := httptest.NewRecorder()
 	handler(w, req)
@@ -268,7 +268,7 @@ func TestHandleSessionByID_GET_LazyTokenBootstrap(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	handler := handleSessionByID(store, nil)
+	handler := handleSessionByID(store, nil, "")
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
 	w := httptest.NewRecorder()
 	handler(w, req)
@@ -297,11 +297,79 @@ func TestHandleSessionByID_GET_LazyTokenBootstrap(t *testing.T) {
 	}
 }
 
+func TestHandleSessionByID_GET_InstanceHeaderBootstrap(t *testing.T) {
+	// Cross-front-end interop: a session created by another client (e.g.
+	// bodek) carries an auth token the browser doesn't have. When the caller
+	// proves knowledge of the per-instance CSRF token via the
+	// X-Odek-Ws-Token header, the GET bootstraps the session token.
+	store := newTestSessionStore(t)
+	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
+	const wsToken = "test-instance-token"
+
+	handler := handleSessionByID(store, nil, wsToken)
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
+	req.Header.Set(wsTokenHeaderName, wsToken)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("X-Session-Token"); got != sess.AuthToken {
+		t.Errorf("X-Session-Token = %q, want bootstrapped session token %q", got, sess.AuthToken)
+	}
+
+	// The bootstrapped token works for subsequent requests (rename/delete).
+	req2 := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
+	req2.Header.Set("X-Session-Token", sess.AuthToken)
+	w2 := httptest.NewRecorder()
+	handler(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Errorf("second GET status = %d, want 200", w2.Code)
+	}
+}
+
+func TestHandleSessionByID_GET_InstanceHeaderBootstrap_WrongInstanceToken(t *testing.T) {
+	// A wrong instance token proves nothing — no bootstrap.
+	store := newTestSessionStore(t)
+	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
+
+	handler := handleSessionByID(store, nil, "real-token")
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
+	req.Header.Set(wsTokenHeaderName, "wrong-token")
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", w.Code)
+	}
+}
+
+func TestHandleSessionByID_GET_NoBootstrapWithoutInstanceHeader(t *testing.T) {
+	// Ambient-cookie-only callers (e.g. a DNS-rebinding page that cannot set
+	// custom headers) must NOT get the bootstrap even with the instance
+	// token configured: without the X-Odek-Ws-Token header the request is
+	// indistinguishable from the pre-fix behavior.
+	store := newTestSessionStore(t)
+	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
+
+	handler := handleSessionByID(store, nil, "real-token")
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
+	// No X-Session-Token, no X-Odek-Ws-Token — only a (valid) instance cookie.
+	req.AddCookie(&http.Cookie{Name: wsTokenCookieName, Value: "real-token"})
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", w.Code)
+	}
+}
+
 func TestHandleSessionByID_DELETE_RequiresToken(t *testing.T) {
 	store := newTestSessionStore(t)
 	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
 
-	handler := handleSessionByID(store, nil)
+	handler := handleSessionByID(store, nil, "")
 	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+sess.ID, nil)
 	req.Header.Set("X-Session-Token", "wrong-token")
 	w := httptest.NewRecorder()
@@ -316,7 +384,7 @@ func TestHandleSessionByID_POST_RequiresToken(t *testing.T) {
 	store := newTestSessionStore(t)
 	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
 
-	handler := handleSessionByID(store, nil)
+	handler := handleSessionByID(store, nil, "")
 	body := strings.NewReader(`{"name":"renamed"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+sess.ID, body)
 	req.Header.Set("Content-Type", "application/json")
@@ -336,7 +404,7 @@ func TestHandleSessionByID_GET_RateLimit(t *testing.T) {
 	sessionLookupLimiter.reset()
 	defer sessionLookupLimiter.reset()
 
-	handler := handleSessionByID(store, nil)
+	handler := handleSessionByID(store, nil, "")
 	// Exhaust the 60/min allowance.
 	for i := 0; i < 60; i++ {
 		req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
@@ -741,7 +809,7 @@ func buildServeMuxWithSessionByID(t *testing.T, store *session.Store) (net.Liste
 	apiAuth := func(h http.Handler) http.Handler {
 		return requireServeToken(token)(requireLocalHost(requireLocalOrigin(h)))
 	}
-	mux.Handle("/api/sessions/", apiAuth(handleSessionByID(store, nil)))
+	mux.Handle("/api/sessions/", apiAuth(handleSessionByID(store, nil, "")))
 	return ln, mux
 }
 

@@ -333,7 +333,7 @@ func serveCmd(args []string) error {
 	}
 	mux.Handle("/api/resources", apiAuth(handleResourceSearch(resourceReg)))
 	mux.Handle("/api/sessions", apiAuth(handleSessionList(store)))
-	mux.Handle("/api/sessions/", apiAuth(handleSessionByID(store, resolved.TrustedProxies)))
+	mux.Handle("/api/sessions/", apiAuth(handleSessionByID(store, resolved.TrustedProxies, wsToken)))
 	mux.Handle("/api/models", apiAuth(handleModelList(resolved.Model)))
 	mux.Handle("/api/cancel", apiAuth(handleCancel(store)))
 
@@ -1440,6 +1440,22 @@ func requireServeToken(token string) func(http.Handler) http.Handler {
 	}
 }
 
+// presentsInstanceTokenHeader reports whether the request carries the
+// per-instance CSRF token in the X-Odek-Ws-Token header. Header presentation
+// is a KNOWLEDGE proof — unlike the ambient SameSite=Strict cookie, a
+// cross-origin (e.g. DNS-rebinding) page can neither read the token value
+// nor set the header (the custom header triggers a CORS preflight, which
+// odek does not answer). It therefore distinguishes legitimate front-ends
+// (the WebUI, bodek, curl with the token URL) from a rebinding page that
+// merely holds the cookie.
+func presentsInstanceTokenHeader(r *http.Request, wsToken string) bool {
+	if wsToken == "" {
+		return false
+	}
+	h := r.Header.Get(wsTokenHeaderName)
+	return h != "" && subtle.ConstantTimeCompare([]byte(h), []byte(wsToken)) == 1
+}
+
 // sessionTokenFromRequest returns the session auth token from the
 // X-Session-Token header or the session_token cookie, in that order.
 func sessionTokenFromRequest(r *http.Request) string {
@@ -1541,7 +1557,7 @@ func handleSessionList(store *session.Store) http.HandlerFunc {
 	}
 }
 
-func handleSessionByID(store *session.Store, trustedProxies []string) http.HandlerFunc {
+func handleSessionByID(store *session.Store, trustedProxies []string, wsToken string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
 		if id == "" {
@@ -1564,6 +1580,17 @@ func handleSessionByID(store *session.Store, trustedProxies []string) http.Handl
 			}
 			token := sessionTokenFromRequest(r)
 			effectiveToken, ok := validateSessionToken(store, sess, token)
+			if !ok && presentsInstanceTokenHeader(r, wsToken) {
+				// Bootstrap the session token for callers that prove
+				// knowledge of the per-instance CSRF token via the
+				// X-Odek-Ws-Token header. Without this, sessions created by
+				// one front-end (e.g. bodek, or a WebUI in another browser
+				// profile) can never be loaded by another: the per-session
+				// token only reaches the client that created the session,
+				// and the legacy bootstrap only covers sessions that have
+				// no token at all.
+				effectiveToken, ok = sess.AuthToken, true
+			}
 			if !ok {
 				http.Error(w, "invalid session token", http.StatusUnauthorized)
 				return
