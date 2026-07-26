@@ -39,6 +39,26 @@ function clearSessionToken(sid) {
   localStorage.removeItem('odek_session_token_' + sid);
 }
 
+// ensureSessionToken returns a stored token for sid, bootstrapping one from
+// the server (GET /api/sessions/<id>) when missing. Used by session REST
+// mutations (rename/delete) whose tokens may predate this browser. Returns
+// '' on failure — the server will answer 401 if a token was required.
+async function ensureSessionToken(sid) {
+  let token = getSessionToken(sid);
+  if (token) return token;
+  try {
+    const bootstrap = await fetch('/api/sessions/' + encodeURIComponent(sid), {
+      headers: apiHeaders()
+    });
+    if (bootstrap.ok) {
+      const bs = await bootstrap.json();
+      token = bootstrap.headers.get('X-Session-Token') || bs.auth_token;
+      if (token) setSessionToken(sid, token);
+    }
+  } catch { /* continue — server will return 401 if token required */ }
+  return token || '';
+}
+
 // ── DOM ──
 const messagesEl = document.getElementById('messages');
 const promptEl = document.getElementById('prompt');
@@ -47,7 +67,6 @@ const completionEl = document.getElementById('completion');
 const statusEl = document.getElementById('ws-status');
 const dotEl = document.getElementById('ws-dot');
 const modelLabel = document.getElementById('model-label');
-const statsBar = document.getElementById('stats-bar');
 const sessionListEl = document.getElementById('session-list');
 const sidebarSearch = document.getElementById('sidebar-search');
 const emptyState = document.getElementById('empty-state');
@@ -72,6 +91,24 @@ const toolBlockQueues = new Map();
 let inToolGroup = false;
 // Timestamps for tool latency (name → start ms, queue-based like above).
 const toolStartQueues = new Map();
+
+// resetTurnState clears all per-turn streaming/tool/sub-agent state. Called
+// before a new turn (send), on new session, and when loading a session.
+function resetTurnState() {
+  streamBuffer = '';
+  if (streamRAF) {
+    cancelAnimationFrame(streamRAF);
+    streamRAF = null;
+  }
+  streamBubbleEl = null;
+  streamContentEl = null;
+  currentToolBlock = null;
+  subagentGroup = null;
+  thinkingContentEl = null;
+  toolBlockQueues.clear();
+  toolStartQueues.clear();
+  inToolGroup = false;
+}
 
 // ── Sub-agent state ──
 let subagentGroup = null;
@@ -173,10 +210,10 @@ function formatNum(n) {
   return String(n);
 }
 
-// ── Mesage cap ──
+// ── Message cap ──
 const MAX_MESSAGES = 80;
 function pruneMessages() {
-  const items = messagesEl.querySelectorAll(':scope > .msg, :scope > .tool-block, :scope > .subagent-group, :scope > .thinking-block, :scope > .typing-indicator');
+  const items = messagesEl.querySelectorAll(':scope > .msg, :scope > .tool-block, :scope > .subagent-group, :scope > .thinking-block');
   if (items.length > MAX_MESSAGES) {
     for (let i = 0, n = items.length - MAX_MESSAGES; i < n; i++) {
       items[i].remove();
@@ -189,22 +226,6 @@ promptEl.addEventListener('input', () => {
   promptEl.style.height = 'auto';
   promptEl.style.height = Math.min(promptEl.scrollHeight, 200) + 'px';
 });
-
-// ── Particles ──
-function initParticles() {
-  const el = document.getElementById('particles');
-  if (!el) return;
-  for (let i = 0; i < 15; i++) {
-    const p = document.createElement('div');
-    p.className = 'particle';
-    p.style.left = Math.random() * 100 + '%';
-    p.style.animationDelay = Math.random() * 6 + 's';
-    p.style.animationDuration = (4 + Math.random() * 4) + 's';
-    p.style.width = p.style.height = (1 + Math.random() * 3) + 'px';
-    el.appendChild(p);
-  }
-}
-initParticles();
 
 // ── WebSocket ──
 function getWsToken() {
@@ -233,7 +254,6 @@ function connect() {
     dotEl.className = 'dot connected';
     statusEl.textContent = 'connected';
     sendBtn.disabled = false;
-    statsBar.textContent = '';
     // Hide loading skeleton when connected
     if (skeletonEl) skeletonEl.classList.remove('visible');
   };
@@ -536,15 +556,6 @@ function addSystemMessage(content) {
   messagesEl.appendChild(el);
   pruneMessages();
   scrollBottom();
-}
-
-function addTypingIndicator() {
-  const el = document.createElement('div');
-  el.className = 'typing-indicator';
-  el.innerHTML = '<div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div>';
-  messagesEl.appendChild(el);
-  scrollBottom();
-  return el;
 }
 
 function addDivider(text) {
@@ -906,8 +917,7 @@ window.showApprovalDialog = function(event) {
       frictionMsg = document.createElement('div');
       frictionMsg.id = 'approval-friction-msg';
       frictionMsg.style.cssText = 'color: var(--accent); font-size: 13px; margin-top: 8px;';
-      overlay.querySelector('.approval-dialog')?.appendChild(frictionMsg)
-        || document.getElementById('approval-actions').parentNode.insertBefore(frictionMsg, document.getElementById('approval-actions'));
+      document.getElementById('approval-actions').parentNode.insertBefore(frictionMsg, document.getElementById('approval-actions'));
     }
     frictionMsg.textContent =
       `⚠️ You have approved ${event.friction_approvals || 0} ${event.risk} operations in the last minute. ` +
@@ -968,19 +978,7 @@ window.executeDeleteSession = async function() {
   pendingDeleteId = null;
   document.getElementById('confirm-overlay').classList.remove('active');
 
-  let token = getSessionToken(sid);
-  if (!token) {
-    try {
-      const bootstrap = await fetch('/api/sessions/' + encodeURIComponent(sid), {
-        headers: apiHeaders()
-      });
-      if (bootstrap.ok) {
-        const bs = await bootstrap.json();
-        token = bootstrap.headers.get('X-Session-Token') || bs.auth_token;
-        if (token) setSessionToken(sid, token);
-      }
-    } catch { /* continue — server will return 401 if token required */ }
-  }
+  const token = await ensureSessionToken(sid);
 
   fetch('/api/sessions/' + encodeURIComponent(sid), {
     method: 'DELETE',
@@ -1114,19 +1112,7 @@ window.renameSession = async function(sid, el) {
   const newName = prompt('Rename session:', currentName);
   if (!newName || newName === currentName) return;
 
-  let token = getSessionToken(sid);
-  if (!token) {
-    try {
-      const bootstrap = await fetch('/api/sessions/' + encodeURIComponent(sid), {
-        headers: apiHeaders()
-      });
-      if (bootstrap.ok) {
-        const bs = await bootstrap.json();
-        token = bootstrap.headers.get('X-Session-Token') || bs.auth_token;
-        if (token) setSessionToken(sid, token);
-      }
-    } catch { /* continue — server will return 401 if token required */ }
-  }
+  const token = await ensureSessionToken(sid);
 
   fetch('/api/sessions/' + encodeURIComponent(sid), {
     method: 'POST',
@@ -1229,11 +1215,7 @@ window.newSession = function() {
   sessionId = null;
 
   // Reset all streaming + tool state.
-  streamBuffer = '';
-  if (streamRAF) { cancelAnimationFrame(streamRAF); streamRAF = null; }
-  streamBubbleEl = null; streamContentEl = null;
-  currentToolBlock = null; subagentGroup = null; thinkingContentEl = null;
-  toolBlockQueues.clear(); toolStartQueues.clear(); inToolGroup = false;
+  resetTurnState();
   busy = false;
   hideLoading(); hideCancel();
   sendBtn.disabled = !ws || ws.readyState !== WebSocket.OPEN;
@@ -1276,7 +1258,8 @@ function escapeAttr(s) {
   if (!s) return '';
   // & must be replaced first — doing it last double-escapes the entities
   // introduced by the quote replacements (&quot; → &amp;quot;).
-  return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')
+          .replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
 // ── Markdown to HTML (safe, no DOMPurify needed since we control input) ──
@@ -1346,30 +1329,38 @@ function markdownToHtml(text) {
   return html;
 }
 
-// ── Copy code ──
-window.copyCode = function(el) {
-  const block = el.closest('.code-block');
-  if (!block) return;
-  const code = block.querySelector('pre code');
-  if (!code) return;
-  const text = code.textContent;
-  navigator.clipboard.writeText(text).then(() => {
-    el.textContent = '✓ copied';
-    el.classList.add('copied');
-    setTimeout(() => {
-      el.textContent = '📋 copy';
-      el.classList.remove('copied');
-    }, 2000);
-  }).catch(() => {
-    // Fallback
+// ── Copy helpers ──
+// copyTextToClipboard writes text to the clipboard, falling back to the
+// legacy execCommand path when the async Clipboard API is unavailable or
+// denied (non-secure contexts). Returns a Promise.
+function copyTextToClipboard(text) {
+  const fallback = () => {
     const ta = document.createElement('textarea');
     ta.value = text;
     document.body.appendChild(ta);
     ta.select();
     document.execCommand('copy');
     document.body.removeChild(ta);
+  };
+  if (!navigator.clipboard || !navigator.clipboard.writeText) {
+    fallback();
+    return Promise.resolve();
+  }
+  return navigator.clipboard.writeText(text).catch(fallback);
+}
+
+window.copyCode = function(el) {
+  const block = el.closest('.code-block');
+  if (!block) return;
+  const code = block.querySelector('pre code');
+  if (!code) return;
+  copyTextToClipboard(code.textContent).then(() => {
     el.textContent = '✓ copied';
-    setTimeout(() => { el.textContent = '📋 copy'; }, 2000);
+    el.classList.add('copied');
+    setTimeout(() => {
+      el.textContent = '📋 copy';
+      el.classList.remove('copied');
+    }, 2000);
   });
 };
 
@@ -1403,19 +1394,7 @@ function send() {
   addMessage('user', display);
 
   // Reset streaming + tool state for the new turn.
-  streamBuffer = '';
-  if (streamRAF) {
-    cancelAnimationFrame(streamRAF);
-    streamRAF = null;
-  }
-  streamBubbleEl = null;
-  streamContentEl = null;
-  currentToolBlock = null;
-  subagentGroup = null;
-  thinkingContentEl = null;
-  toolBlockQueues.clear();
-  toolStartQueues.clear();
-  inToolGroup = false;
+  resetTurnState();
 
   busy = true;
   sendBtn.disabled = true;
@@ -1769,11 +1748,7 @@ async function loadAndRenderSession(sid) {
     sessionId = sid;
 
     // Clear current messages and reset all streaming state.
-    streamBuffer = '';
-    if (streamRAF) { cancelAnimationFrame(streamRAF); streamRAF = null; }
-    streamBubbleEl = null; streamContentEl = null;
-    currentToolBlock = null; subagentGroup = null; thinkingContentEl = null;
-    toolBlockQueues.clear(); toolStartQueues.clear(); inToolGroup = false;
+    resetTurnState();
     busy = false; hideLoading(); hideCancel();
     sendBtn.disabled = !ws || ws.readyState !== WebSocket.OPEN;
     promptEl.disabled = false;
@@ -1972,14 +1947,14 @@ window.copyMessage = function(btn, content) {
     }
   }
   if (!content) return;
-  navigator.clipboard.writeText(content).then(function() {
+  copyTextToClipboard(content).then(function() {
     btn.classList.add('copied');
     btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Copied';
     setTimeout(function() {
       btn.classList.remove('copied');
       btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
     }, 2000);
-  }).catch(function(){});
+  });
 };
 
 // ── Phase 1: Add copy buttons to rendered messages ──
@@ -1994,9 +1969,11 @@ function addCopyButton(bubble) {
 }
 
 // ── Phase 1: Collapse long messages after rendering ──
+// Must match the max-height of .bubble.collapsible in style.css.
+const COLLAPSE_MAX_HEIGHT_PX = 460;
 function checkCollapse(bubble) {
   var content = bubble.querySelector('.content');
-  if (!content || content.scrollHeight <= 500) return;
+  if (!content || content.scrollHeight <= COLLAPSE_MAX_HEIGHT_PX) return;
   bubble.classList.add('collapsible');
   var toggle = document.createElement('div');
   toggle.className = 'collapse-toggle';

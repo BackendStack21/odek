@@ -4,6 +4,15 @@
    Incandescent amber on deep carbon. Brutally precise.
 ═══════════════════════════════════════════════════════════════════════ */
 
+/* Self-hosted variable font (weights 100–700) — no CDN dependency, works offline */
+@font-face {
+  font-family: 'Azeret Mono';
+  font-style: normal;
+  font-weight: 100 700;
+  font-display: swap;
+  src: url('/fonts/azeret-mono.woff2') format('woff2');
+}
+
 /* ── Design tokens ─────────────────────────────────────────────────── */
 :root {
   /* Carbon palette */
@@ -18,7 +27,7 @@
   /* Text — calibrated for #060608 background */
   --text:   #f0ede6;   /* primary   — full brightness */
   --text-2: #a8a49a;   /* secondary — was #78756e, lifted for readability */
-  --text-3: #706e68;   /* tertiary  — was #3e3c38 (~2.8:1), now ~4.6:1 */
+  --text-3: #8a8880;   /* tertiary  — lifted from #706e68 to ~5.5:1 for WCAG AA at 11px */
 
   /* Amber accent */
   --amber:      #c8860a;
@@ -34,6 +43,30 @@
   /* Typography */
   --ui:    'Azeret Mono', 'JetBrains Mono', 'Fira Mono', monospace;
   --code:  'Azeret Mono', 'JetBrains Mono', 'Fira Mono', monospace;
+
+  /* Type scale — --fs-xs (11px) is the floor for any text (WCAG AA);
+     icon glyphs may go smaller only when purely decorative */
+  --fs-xs:   11px;
+  --fs-sm:   12px;
+  --fs-base: 13px;
+  --fs-md:   14px;
+  --fs-lg:   18px;
+  --fs-xl:   24px;
+
+  /* Spacing scale (4px grid) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  /* Radius scale */
+  --r-sm: 3px;
+  --r-md: 6px;
+  --r-lg: 12px;
 
   /* Motion — one humanist ease everywhere, one snappy ease for press feedback */
   --ease:        cubic-bezier(.2, .7, .2, 1);
@@ -108,7 +141,6 @@ body.light {
 }
 
 /* ── Topbar ────────────────────────────────────────────────────────── */
-/* ── Topbar ────────────────────────────────────────────────────────── */
 #topbar {
   grid-column: 1 / -1;
   display: flex;
@@ -130,13 +162,13 @@ body.light {
 }
 
 /* Mark + brand wordmark */
-.tb-brand {
+.top-brand {
   display: flex;
   align-items: center;
   gap: 7px;
   flex-shrink: 0;
 }
-.tb-brand::before {
+.top-brand::before {
   content: '';
   display: inline-block;
   width: 7px;
@@ -148,11 +180,11 @@ body.light {
   flex-shrink: 0;
   transition: transform .5s var(--ease-spring), box-shadow .3s var(--ease);
 }
-.tb-brand:hover::before {
+.top-brand:hover::before {
   transform: rotate(102deg) scale(1.15);
   box-shadow: 0 0 14px rgba(200,134,10,.85);
 }
-.tb-brand-text {
+.top-brand-text {
   font-size: 13px;
   font-weight: 600;
   color: var(--text);
@@ -161,7 +193,7 @@ body.light {
 }
 
 /* Status group */
-.tb-status-group {
+.top-status-group {
   display: flex;
   align-items: center;
   gap: 7px;
@@ -185,7 +217,7 @@ body.light {
 
 .status {
   color: var(--text-2);
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: .05em;
   text-transform: lowercase;
 }
@@ -198,10 +230,10 @@ body.light {
 }
 #sandbox-badge:hover { opacity: 1; }
 
-.tb-spacer { flex: 1; }
+.top-spacer { flex: 1; }
 
 /* Right-side controls group: slight separation from content */
-.tb-controls {
+.top-controls {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -209,14 +241,14 @@ body.light {
   border-left: 1px solid var(--border-2);
 }
 
-.stats, .model {
-  font-size: 10px;
+.model {
+  font-size: 11px;
   color: var(--text-2);
   letter-spacing: .02em;
 }
 
 #session-stats {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-2);
   padding-left: 10px;
   border-left: 1px solid var(--border-2);
@@ -226,7 +258,7 @@ body.light {
 
 #model-picker {
   font-family: var(--ui);
-  font-size: 10px;
+  font-size: 11px;
   background: var(--bg-3);
   border: 1px solid var(--border-2);
   border-radius: 3px;
@@ -246,7 +278,7 @@ body.light {
 
 #custom-model-input {
   font-family: var(--ui);
-  font-size: 10px;
+  font-size: 11px;
   background: var(--bg-3);
   border: 1px solid var(--amber);
   border-radius: 3px;
@@ -282,7 +314,7 @@ body.light {
   color: var(--red);
   cursor: pointer;
   font-family: var(--ui);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
   padding: 3px 10px;
   letter-spacing: .04em;
@@ -340,7 +372,7 @@ body.light {
   margin-bottom: 2px;
 }
 #sidebar-header h3 {
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: .18em;
@@ -373,7 +405,7 @@ body.light {
   border-radius: 4px;
   color: var(--text);
   font-family: var(--ui);
-  font-size: 10.5px;
+  font-size: 11px;
   outline: none;
   letter-spacing: .02em;
   transition: border-color .22s var(--ease), background .22s var(--ease), box-shadow .22s var(--ease);
@@ -436,7 +468,7 @@ body.light {
 /* Session ID line — de-emphasised */
 .session-item .id {
   font-family: var(--ui);
-  font-size: 8.5px;
+  font-size: 11px;
   color: var(--text-3);
   letter-spacing: .07em;
   text-transform: uppercase;
@@ -455,7 +487,7 @@ body.light {
 .session-item .task.untitled { font-style: italic; opacity: 0.55; }
 
 .session-item .meta {
-  font-size: 9px;
+  font-size: 11px;
   color: var(--text-3);
   margin-top: 4px;
   display: flex;
@@ -468,7 +500,7 @@ body.light {
   border: 1px solid rgba(200,134,10,.14);
   padding: 0 4px;
   border-radius: 2px;
-  font-size: 8px;
+  font-size: 11px;
   color: rgba(200,134,10,.7);
   letter-spacing: .04em;
 }
@@ -480,7 +512,7 @@ body.light {
 .session-item .del-btn, .session-item .rename-btn {
   opacity: 0;
   transition: opacity .12s;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-3);
   cursor: pointer;
   padding: 0 3px;
@@ -576,7 +608,7 @@ body.light {
   animation: esSubFade 1.4s var(--ease) both;
 }
 .es-hints span {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-3);
   cursor: pointer;
   letter-spacing: .06em;
@@ -664,7 +696,7 @@ body.light {
   background: transparent;
   border: none;
   color: var(--text-3);
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: .04em;
   padding: 4px 12px;
   text-transform: lowercase;
@@ -672,7 +704,7 @@ body.light {
 
 /* Sender label */
 .bubble .sender {
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: .14em;
@@ -768,7 +800,7 @@ body.light {
   background: rgba(255,255,255,.02);
   border-bottom: 1px solid var(--border);
   font-family: var(--ui);
-  font-size: 9px;
+  font-size: 11px;
   color: var(--text-3);
   text-transform: uppercase;
   letter-spacing: .1em;
@@ -794,7 +826,7 @@ body.light {
   color: var(--text-3);
   cursor: pointer;
   font-family: var(--ui);
-  font-size: 9px;
+  font-size: 11px;
   text-transform: uppercase;
   letter-spacing: .1em;
   padding: 4px 8px;
@@ -830,7 +862,7 @@ body.light {
   display: flex;
   align-items: center;
   gap: 12px;
-  font-size: 9px;
+  font-size: 11px;
   color: var(--text-3);
   letter-spacing: .12em;
   text-transform: uppercase;
@@ -876,17 +908,17 @@ body.light {
   pointer-events: none;
 }
 .tb-emoji { font-size: 12px; flex-shrink: 0; opacity: .7; }
-.tb-name  { color: var(--amber-2); font-weight: 500; font-size: 10.5px; letter-spacing: .04em; }
+.tb-name  { color: var(--amber-2); font-weight: 500; font-size: 11px; letter-spacing: .04em; }
 .tb-preview {
   color: var(--text-3);
-  font-size: 10px;
+  font-size: 11px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 260px;
   flex-shrink: 1;
 }
-.arrow { transition: transform .18s; font-size: 8px; color: var(--text-3); flex-shrink: 0; font-style: normal; }
+.arrow { transition: transform .18s; font-size: 11px; color: var(--text-3); flex-shrink: 0; font-style: normal; }
 .arrow.open { transform: rotate(90deg); }
 .tb-spinner {
   display: none;
@@ -899,7 +931,7 @@ body.light {
 }
 .tb-spinner.running { display: inline-block; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.tb-latency { font-size: 9px; color: var(--text-3); margin-left: auto; flex-shrink: 0; letter-spacing: .04em; }
+.tb-latency { font-size: 11px; color: var(--text-3); margin-left: auto; flex-shrink: 0; letter-spacing: .04em; }
 
 .tb-body {
   display: none;
@@ -925,7 +957,7 @@ body.light {
   border-radius: 3px;
   padding: 8px 12px;
   font-family: var(--ui);
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-2);
   white-space: pre-wrap;
   max-height: 160px;
@@ -935,7 +967,7 @@ body.light {
 .tb-result-more {
   color: var(--amber);
   cursor: pointer;
-  font-size: 10px;
+  font-size: 11px;
   display: block;
   margin-top: 4px;
   letter-spacing: .04em;
@@ -945,7 +977,7 @@ body.light {
 /* ── Sub-agent cards ───────────────────────────────────────────────── */
 .subagent-group { margin: 12px 0; }
 .sg-header {
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: .12em;
@@ -965,22 +997,22 @@ body.light {
 .subagent-card.completed { border-left-color: var(--green); }
 .subagent-card.error     { border-left-color: var(--red); }
 .sa-top { display: flex; align-items: center; gap: 8px; }
-.sa-icon { width: 16px; height: 16px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 9px; flex-shrink: 0; }
+.sa-icon { width: 16px; height: 16px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; flex-shrink: 0; }
 .subagent-card.pending   .sa-icon { background: var(--border); color: var(--text-3); }
 .subagent-card.running   .sa-icon { background: var(--amber-dim); color: var(--amber-2); animation: pulseSa 1.5s ease-in-out infinite; }
 .subagent-card.completed .sa-icon { background: rgba(46,184,122,.15); color: var(--green); }
 .subagent-card.error     .sa-icon { background: rgba(224,82,82,.15); color: var(--red); }
 @keyframes pulseSa { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
 .sa-goal { flex: 1; font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sa-status { font-size: 9px; color: var(--text-3); flex-shrink: 0; letter-spacing: .04em; text-transform: lowercase; }
+.sa-status { font-size: 11px; color: var(--text-3); flex-shrink: 0; letter-spacing: .04em; text-transform: lowercase; }
 .subagent-card.running   .sa-status { color: var(--amber); }
 .subagent-card.completed .sa-status { color: var(--green); }
 .subagent-card.error     .sa-status { color: var(--red); }
 .sa-details { display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
 .sa-details.open { display: block; animation: fadeIn .15s ease-out; }
-.sa-meta    { font-size: 9px; color: var(--text-3); margin-bottom: 5px; letter-spacing: .04em; }
+.sa-meta    { font-size: 11px; color: var(--text-3); margin-bottom: 5px; letter-spacing: .04em; }
 .sa-summary { font-size: 11px; color: var(--text-2); line-height: 1.55; white-space: pre-wrap; }
-.sa-log .log-line { font-size: 10px; color: var(--text-3); line-height: 1.5; }
+.sa-log .log-line { font-size: 11px; color: var(--text-3); line-height: 1.5; }
 
 /* ── Streaming cursor — incandescent amber bar with soft glow ─────── */
 .stream-cursor {
@@ -1031,18 +1063,9 @@ body.light {
   0%, 80%, 100% { transform: scale(.5); opacity: .4; }
   40%           { transform: scale(1);  opacity: 1; }
 }
-.li-spinner {
-  /* legacy spinner kept for backward compat with any other call site */
-  width: 12px; height: 12px;
-  border: 1.5px solid rgba(200,134,10,.2);
-  border-top-color: var(--amber);
-  border-radius: 50%;
-  animation: spin .7s linear infinite;
-  flex-shrink: 0;
-}
 .li-text {
   font-family: var(--ui);
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-3);
   letter-spacing: .08em;
   text-transform: lowercase;
@@ -1061,7 +1084,7 @@ body.light {
   border: 1px solid rgba(46,184,122,.14);
   border-radius: 3px;
   font-family: var(--ui);
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-2);
   letter-spacing: .02em;
   animation: arrive .18s ease-out both;
@@ -1070,7 +1093,7 @@ body.light {
 /* ── Message stats ─────────────────────────────────────────────────── */
 .msg-stats {
   font-family: var(--ui);
-  font-size: 9.5px;
+  font-size: 11px;
   color: var(--text-3);
   margin-top: 10px;
   padding-top: 8px;
@@ -1101,7 +1124,7 @@ body.light {
   background: var(--bg-3);
   border: 1px solid var(--border-2);
   font-family: var(--ui);
-  font-size: 9px;
+  font-size: 11px;
   color: var(--text-3);
   letter-spacing: .04em;
   display: flex;
@@ -1124,7 +1147,7 @@ body.light {
   cursor: pointer;
   padding: 5px 0;
   font-family: var(--ui);
-  font-size: 9px;
+  font-size: 11px;
   letter-spacing: .08em;
   text-transform: lowercase;
   color: var(--amber);
@@ -1203,7 +1226,7 @@ body.light {
   border-radius: 3px;
   padding: 3px 4px 3px 8px;
   font-family: var(--ui);
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--amber-2);
   animation: chipIn .22s var(--ease-spring);
   transition: border-color .15s var(--ease), background .15s var(--ease);
@@ -1215,7 +1238,7 @@ body.light {
 }
 .chip-icon { font-size: 11px; opacity: .9; line-height: 1; }
 .chip-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
-.chip-size { color: var(--text-3); font-size: 9px; letter-spacing: .04em; }
+.chip-size { color: var(--text-3); font-size: 11px; letter-spacing: .04em; }
 .chip-remove {
   cursor: pointer;
   opacity: .45;
@@ -1267,7 +1290,7 @@ body.light {
   padding-left: 14px;
 }
 .comp-type {
-  font-size: 8px;
+  font-size: 11px;
   text-transform: uppercase;
   letter-spacing: .1em;
   color: var(--amber);
@@ -1277,7 +1300,7 @@ body.light {
   flex-shrink: 0;
 }
 .comp-label { color: var(--text); }
-.comp-detail { margin-left: auto; font-size: 9px; color: var(--text-3); flex-shrink: 0; }
+.comp-detail { margin-left: auto; font-size: 11px; color: var(--text-3); flex-shrink: 0; }
 
 /* Input row */
 #input-row { display: flex; align-items: flex-end; gap: 8px; position: relative; }
@@ -1347,7 +1370,7 @@ body.light {
   color: var(--text-3);
   cursor: pointer;
   font-family: var(--ui);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 500;
   letter-spacing: .12em;
   text-transform: uppercase;
@@ -1512,14 +1535,14 @@ body.light {
 .approval-header { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
 .approval-icon { font-size: 22px; flex-shrink: 0; }
 .approval-title { font-family: var(--ui); font-size: 13px; font-weight: 500; color: var(--text); letter-spacing: .02em; }
-.approval-subtitle { font-family: var(--ui); font-size: 10px; color: var(--text-3); margin-top: 1px; letter-spacing: .04em; }
+.approval-subtitle { font-family: var(--ui); font-size: 11px; color: var(--text-3); margin-top: 1px; letter-spacing: .04em; }
 .approval-risk {
   display: inline-flex;
   align-items: center;
   padding: 2px 8px;
   border-radius: 2px;
   font-family: var(--ui);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: .1em;
@@ -1600,7 +1623,7 @@ body.light {
 .sc-label { font-family: var(--ui); font-size: 11px; color: var(--text); }
 .sc-key {
   font-family: var(--ui);
-  font-size: 10px;
+  font-size: 11px;
   background: var(--bg-3);
   border: 1px solid var(--border-2);
   border-bottom-width: 2px;
@@ -1694,8 +1717,8 @@ body.light .msg.assistant .bubble .content { color: var(--text); }
   }
   #sidebar.active { transform: translateX(0); }
   #hamburger-btn { display: flex; }
-  .stats, #session-stats, .model { display: none !important; }
-  .tb-controls { border-left: none; padding-left: 0; }
+  #session-stats, .model { display: none !important; }
+  .top-controls { border-left: none; padding-left: 0; }
   #cancel-btn.visible { display: inline-flex; }
   .es-name { font-size: 36px; }
 }
