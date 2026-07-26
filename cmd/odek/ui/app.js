@@ -665,6 +665,25 @@ function addToolCall(name, data) {
   scrollBottom();
 }
 
+// appendToolResultContent renders a tool result into a block, truncating
+// long output behind a "show all" expander. Shared by the live path
+// (addToolResult) and session-history rendering.
+function appendToolResultContent(block, output) {
+  const MAX_RESULT = 600;
+  const truncated = output && output.length > MAX_RESULT;
+  const resultEl = document.createElement('div');
+  resultEl.className = 'tb-result';
+  block.appendChild(resultEl);
+  if (truncated) {
+    resultEl.innerHTML =
+      escapeHtml(output.slice(0, MAX_RESULT)) +
+      '<span class="tb-result-more" onclick="expandToolResult(this)" data-full="' +
+        escapeAttr(output) + '"> …show all (' + output.length + ' chars)</span>';
+  } else {
+    resultEl.textContent = output || '';
+  }
+}
+
 function addToolResult(name, output) {
   // Route to the matching pending block via FIFO queue.
   const queue = toolBlockQueues.get(name);
@@ -682,23 +701,7 @@ function addToolResult(name, output) {
     if (latEl) latEl.textContent = ms < 1000 ? Math.round(ms) + 'ms' : (ms / 1000).toFixed(1) + 's';
   }
 
-  // Show result, truncated if long.
-  const MAX_RESULT = 600;
-  const truncated = output && output.length > MAX_RESULT;
-  let resultEl = block.querySelector('.tb-result');
-  if (!resultEl) {
-    resultEl = document.createElement('div');
-    resultEl.className = 'tb-result';
-    block.appendChild(resultEl);
-  }
-  if (truncated) {
-    resultEl.innerHTML =
-      escapeHtml(output.slice(0, MAX_RESULT)) +
-      '<span class="tb-result-more" onclick="expandToolResult(this)" data-full="' +
-        escapeAttr(output) + '"> …show all (' + output.length + ' chars)</span>';
-  } else {
-    resultEl.textContent = output || '';
-  }
+  appendToolResultContent(block, output || '');
   scrollBottom();
 }
 
@@ -759,13 +762,11 @@ function addSubagentGroup(command) {
   scrollBottom();
 }
 
-function completeSubagents(output) {
-  if (!subagentGroup) return;
-
-  // Parse sub-agent results from the output text
-  // The delegate_tasks tool returns formatted text like:
-  // "📋 Sub-agent results:\n\n─── Task 1: goal ───\n{json}\n\n─── Task 2: ..."
-  const lines = output.split('\n');
+// parseSubagentResults parses delegate_tasks output text of the form
+// "📋 Sub-agent results:\n\n─── Task 1: goal ───\n{json}\n\n─── Task 2: ..."
+// into a map of task index → parsed result object.
+function parseSubagentResults(output) {
+  const lines = (output || '').split('\n');
   let currentTaskIdx = -1;
   const taskResults = {};
 
@@ -790,49 +791,60 @@ function completeSubagents(output) {
       }
     }
   }
+  return taskResults;
+}
 
-  const cards = subagentGroup.querySelectorAll('.subagent-card');
-  cards.forEach((card, i) => {
-    const result = taskResults[i];
-    card.querySelector('.sa-icon').textContent = '✓';
-    card.classList.remove('running');
-    card.querySelector('.sa-status').textContent = 'done';
+// finalizeSubagentCard marks a card done/error and fills its details from
+// the parsed result. Shared by the live path (completeSubagents) and
+// session-history rendering.
+function finalizeSubagentCard(card, result) {
+  card.querySelector('.sa-icon').textContent = '✓';
+  card.classList.remove('running');
+  card.querySelector('.sa-status').textContent = 'done';
 
-    if (result) {
-      const status = result.status || 'success';
-      if (status === 'error') {
-        card.classList.add('error');
-        card.querySelector('.sa-icon').textContent = '✗';
-        card.querySelector('.sa-status').textContent = 'error';
-      } else {
-        card.classList.add('completed');
-      }
+  if (!result) {
+    card.classList.add('completed');
+    return;
+  }
 
-      // Auto-open details for error or when there's a summary
-      const details = card.querySelector('.sa-details');
-      const summary = result.summary || '';
-      const files = result.files_changed || [];
-      const tokens = result.tokens_used || 0;
-      const iters = result.iterations || 0;
+  const status = result.status || 'success';
+  if (status === 'error') {
+    card.classList.add('error');
+    card.querySelector('.sa-icon').textContent = '✗';
+    card.querySelector('.sa-status').textContent = 'error';
+  } else {
+    card.classList.add('completed');
+  }
 
-      if (summary || files.length > 0) {
-        const meta = details.querySelector('.sa-meta');
-        if (tokens) meta.textContent = tokens + ' tokens' + (iters ? ' · ' + iters + ' iters' : '');
+  // Auto-open details for error or when there's a summary
+  const details = card.querySelector('.sa-details');
+  const summary = result.summary || '';
+  const files = result.files_changed || [];
+  const tokens = result.tokens_used || 0;
+  const iters = result.iterations || 0;
 
-        const summaryEl = details.querySelector('.sa-summary');
-        summaryEl.textContent = typeof summary === 'string' ? summary : '';
+  if (summary || files.length > 0) {
+    const meta = details.querySelector('.sa-meta');
+    if (tokens) meta.textContent = tokens + ' tokens' + (iters ? ' · ' + iters + ' iters' : '');
 
-        if (files.length > 0) {
-          const filesEl = details.querySelector('.sa-files');
-          filesEl.innerHTML = files.map(f => '<span class="file-chip"><span class="icon">📄</span>' + escapeHtml(f) + '</span>').join('');
-        }
+    const summaryEl = details.querySelector('.sa-summary');
+    summaryEl.textContent = typeof summary === 'string' ? summary : '';
 
-        details.classList.add('open');
-      }
-    } else {
-      card.classList.add('completed');
+    if (files.length > 0) {
+      const filesEl = details.querySelector('.sa-files');
+      filesEl.innerHTML = files.map(f => '<span class="file-chip"><span class="icon">📄</span>' + escapeHtml(f) + '</span>').join('');
     }
-  });
+
+    details.classList.add('open');
+  }
+}
+
+function completeSubagents(output) {
+  if (!subagentGroup) return;
+
+  const taskResults = parseSubagentResults(output);
+  const cards = subagentGroup.querySelectorAll('.subagent-card');
+  cards.forEach((card, i) => finalizeSubagentCard(card, taskResults[i]));
 
   pruneMessages();
   scrollBottom();
@@ -1885,6 +1897,117 @@ sessionListEl.addEventListener('click', (e) => {
   loadAndRenderSession(sid);
 });
 
+// ── Session history rendering ──
+// Renders the full persisted transcript on session load: user/assistant
+// text, thinking (reasoning_content), tool calls with their results, and
+// delegate_tasks sub-agent groups. Previously only user/assistant text was
+// re-rendered, so a reloaded session silently dropped most of what happened.
+function renderSessionHistory(messages) {
+  // Index tool results by call id for matching against assistant tool_calls.
+  const resultsById = new Map();
+  messages.forEach(m => {
+    if (m.role === 'tool' && m.tool_call_id) resultsById.set(m.tool_call_id, m.content || '');
+  });
+
+  let toolDividerShown = false;
+  messages.forEach(msg => {
+    if (msg.role === 'user') {
+      addMessage('user', stripAttachmentBodies(msg.content || ''));
+      toolDividerShown = false;
+      return;
+    }
+    if (msg.role !== 'assistant') return; // skip system/tool internals
+
+    if (msg.reasoning_content) renderHistoricalThinking(msg.reasoning_content);
+
+    const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+    if (msg.content) {
+      renderAssistantMessage(msg.content);
+    }
+    if (toolCalls.length > 0) {
+      if (!toolDividerShown) {
+        addDivider('tool calls');
+        toolDividerShown = true;
+      }
+      toolCalls.forEach(tc => {
+        const name = (tc.function && tc.function.name) || 'tool';
+        const args = (tc.function && tc.function.arguments) || '';
+        const result = resultsById.get(tc.id) || '';
+        if (name === 'delegate_tasks') {
+          renderHistoricalSubagents(args, result);
+        } else {
+          renderHistoricalToolBlock(name, args, result);
+        }
+      });
+    }
+  });
+}
+
+// renderHistoricalThinking renders a completed reasoning block (collapsed).
+function renderHistoricalThinking(content) {
+  const block = document.createElement('div');
+  block.className = 'thinking-block';
+  block.innerHTML =
+    '<div class="thinking-toggle" onclick="toggleThinking(this)">' +
+      '<span class="arrow">▶</span> reasoning' +
+    '</div>' +
+    '<div class="thinking-content">' + escapeHtml(content) + '</div>';
+  messagesEl.appendChild(block);
+}
+
+// renderHistoricalToolBlock renders a completed tool call with its result
+// (no spinner, no latency — those are live-turn concerns).
+function renderHistoricalToolBlock(name, args, result) {
+  const preview = buildToolPreview(name, args);
+  const el = document.createElement('div');
+  el.className = 'tool-block';
+  el.innerHTML =
+    '<div class="tb-header" onclick="toggleToolBody(this)">' +
+      '<span class="arrow">▶</span>' +
+      ' <span class="tb-emoji">' + toolEmoji(name) + '</span>' +
+      ' <span class="tb-name">' + escapeHtml(name) + '</span>' +
+      (preview ? ' <span class="tb-preview">' + escapeHtml(preview) + '</span>' : '') +
+    '</div>' +
+    '<div class="tb-body">' + escapeHtml(formatToolArgs(args)) + '</div>';
+  messagesEl.appendChild(el);
+  if (result) appendToolResultContent(el, result);
+}
+
+// renderHistoricalSubagents renders a completed delegate_tasks group with
+// per-task final states parsed from the tool result.
+function renderHistoricalSubagents(args, output) {
+  addDivider('delegated tasks');
+
+  let tasks = [];
+  try { tasks = JSON.parse(args).tasks || []; } catch { tasks = []; }
+  const taskResults = parseSubagentResults(output);
+
+  const group = document.createElement('div');
+  group.className = 'subagent-group';
+  group.innerHTML = '<div class="sg-header">Sub-agents</div><div class="subagent-grid"></div>';
+  messagesEl.appendChild(group);
+  const grid = group.querySelector('.subagent-grid');
+
+  tasks.forEach((task, i) => {
+    const card = document.createElement('div');
+    card.className = 'subagent-card running';
+    card.dataset.index = i;
+    card.innerHTML =
+      '<div class="sa-top">' +
+        '<div class="sa-icon">⟳</div>' +
+        '<div class="sa-goal" title="' + escapeAttr(task.goal || 'Task ' + (i+1)) + '">' + escapeHtml(task.goal || 'Task ' + (i+1)) + '</div>' +
+        '<div class="sa-status">running</div>' +
+      '</div>' +
+      '<div class="sa-details" onclick="toggleSaDetails(this)">' +
+        '<div class="sa-meta"></div>' +
+        '<div class="sa-summary"></div>' +
+        '<div class="sa-files"></div>' +
+      '</div>';
+    grid.appendChild(card);
+    finalizeSubagentCard(card, taskResults[i]);
+  });
+}
+
 async function loadAndRenderSession(sid) {
   try {
     let token = getSessionToken(sid);
@@ -1916,7 +2039,8 @@ async function loadAndRenderSession(sid) {
     if (savedScrollBtnNode) messagesEl.appendChild(savedScrollBtnNode);
 
     const messages = sess.messages || [];
-    // Only render user and assistant messages; skip system/tool internals.
+    // The full transcript renders now (tool calls, thinking, sub-agents);
+    // the empty check still keys on conversational messages only.
     const visible = messages.filter(m => m.role === 'user' || m.role === 'assistant');
 
     if (visible.length === 0) {
@@ -1925,13 +2049,7 @@ async function loadAndRenderSession(sid) {
       return;
     }
 
-    visible.forEach(msg => {
-      if (msg.role === 'user') {
-        addMessage('user', stripAttachmentBodies(msg.content || ''));
-      } else if (msg.role === 'assistant' && msg.content) {
-        renderAssistantMessage(msg.content);
-      }
-    });
+    renderSessionHistory(messages);
 
     forceScrollBottom();
     showToast('Session loaded');
