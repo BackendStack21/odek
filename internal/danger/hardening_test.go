@@ -305,3 +305,144 @@ func TestHardening_NoRegressionOnBenign(t *testing.T) {
 		}
 	}
 }
+
+// TestHardening_XargsPipedPayload pins the fix for the pipe-fed xargs
+// bypass: `echo "/" | xargs rm -rf` executes `rm -rf /` but previously
+// classified as local_write (auto-allow) because the payload never appears
+// as a token of the xargs stage. The classifier now composes statically
+// determinable upstream payloads onto the xargs command line and fails
+// closed (unknown → deny) when the payload is not determinable and the
+// inner verb can turn a piped path into destructive/system damage.
+func TestHardening_XargsPipedPayload(t *testing.T) {
+	cases := []struct {
+		cmd string
+		cls RiskClass
+	}{
+		// Statically determinable payloads compose onto the inner command.
+		{`echo "/" | xargs rm -rf`, Destructive},
+		{`echo "/etc" | xargs rm -rf`, Destructive},
+		{`echo "/home/user" | xargs rm -rf`, Destructive},
+		{`echo "~" | xargs rm -rf`, Destructive},
+		{`printf "/\n" | xargs rm -rf`, Destructive},
+		{`echo "/dev/sda" | xargs shred`, Destructive},
+		{`echo "/" | xargs -0 rm -rf`, Destructive},
+		{`echo "/" | xargs -I P rm -rf P`, Destructive},
+		{`echo "/" | timeout 5 xargs rm -rf`, Destructive},
+		{`echo /etc/passwd | xargs chmod 777`, SystemWrite},
+		// Payload not statically determinable + dangerous verb ⇒ fail closed.
+		{`cat /tmp/paths | xargs rm -rf`, Unknown},
+		{`find / -name core | xargs rm`, Unknown},
+		{`yes / | xargs rm -rf`, Unknown},
+		{`echo "$P" | xargs rm -rf`, Unknown},
+		{`echo / | head -1 | xargs rm -rf`, Unknown},
+		{`cat files | xargs chmod 600`, Unknown},
+		// Benign compositions keep their original classification.
+		{`echo "./tmpfile" | xargs rm`, LocalWrite},
+		{`echo hi | xargs echo`, Safe},
+		{`git ls-files | xargs grep foo`, Safe},
+		{`find . -name '*.o' | xargs wc -l`, Safe},
+	}
+	for _, tc := range cases {
+		if got := Classify(tc.cmd); got != tc.cls {
+			t.Errorf("Classify(%q) = %s, want %s", tc.cmd, got, tc.cls)
+		}
+	}
+
+	// The report's core complaint: the pipeline executed a root-destructive
+	// command with no prompt and no deny under default policy.
+	cfg := &DangerousConfig{}
+	if got := cfg.ActionForCommand(`echo "/" | xargs rm -rf`); got != Deny {
+		t.Errorf("ActionForCommand(echo / | xargs rm -rf) = %s, want deny", got)
+	}
+	if got := cfg.ActionForCommand(`cat /tmp/paths | xargs rm -rf`); got != Deny {
+		t.Errorf("ActionForCommand(cat | xargs rm -rf) = %s, want deny (fail closed)", got)
+	}
+}
+
+// TestHardening_RootLevelMutationTargets pins the fix for recursive
+// permission/attribute flips and moves aimed at the filesystem root:
+// ClassifyPath("/") used to fall through to local_write, so `chmod -R 777 /`
+// and `mv / /tmp/x` ran without approval while `chown -R nobody /` prompted.
+func TestHardening_RootLevelMutationTargets(t *testing.T) {
+	if got := ClassifyPath("/"); got != SystemWrite {
+		t.Errorf("ClassifyPath(/) = %s, want system_write", got)
+	}
+	cases := []struct {
+		cmd string
+		cls RiskClass
+	}{
+		{"chmod -R 777 /", SystemWrite},
+		{"chmod 777 /", SystemWrite},
+		{"chmod -R 777 /etc", SystemWrite},
+		{"chmod -R 777 /usr", SystemWrite},
+		{"chattr -R +i /", SystemWrite},
+		{"chown -R nobody /", SystemWrite},
+		{"mv / /tmp/x", SystemWrite},
+		{"mv ~/.ssh /tmp/stolen", SystemWrite},
+		// Benign local use keeps its original classification.
+		{"chmod -R 755 ./dist", LocalWrite},
+		{"chmod +x script.sh", LocalWrite},
+		{"chattr +i ./file", LocalWrite},
+	}
+	for _, tc := range cases {
+		if got := Classify(tc.cmd); got != tc.cls {
+			t.Errorf("Classify(%q) = %s, want %s", tc.cmd, got, tc.cls)
+		}
+	}
+}
+
+// TestHardening_GitDataLossVerbs pins the fix for irreversible git verbs
+// that were classified Safe (auto-allow): clean -f, reset --hard,
+// checkout --, restore, branch -D, stash drop/clear, reflog expire. They
+// now require approval (system_write → prompt by default); dry-run and
+// non-destructive forms stay Safe.
+func TestHardening_GitDataLossVerbs(t *testing.T) {
+	cases := []struct {
+		cmd string
+		cls RiskClass
+	}{
+		{"git clean -fdx", SystemWrite},
+		{"git clean -f", SystemWrite},
+		{"git clean --force", SystemWrite},
+		{"git reset --hard", SystemWrite},
+		{"git reset --hard HEAD~3", SystemWrite},
+		{"git -C /repo reset --hard", SystemWrite},
+		{"git checkout -- .", SystemWrite},
+		{"git checkout .", SystemWrite},
+		{"git checkout -f main", SystemWrite},
+		{"git restore .", SystemWrite},
+		{"git restore --worktree src/", SystemWrite},
+		{"git branch -D feature", SystemWrite},
+		{"git branch --delete --force feature", SystemWrite},
+		{"git branch -df feature", SystemWrite},
+		{"git stash drop", SystemWrite},
+		{"git stash clear", SystemWrite},
+		{"git reflog expire --expire=now --all", SystemWrite},
+		// Non-destructive forms stay Safe.
+		{"git clean -n", Safe},
+		{"git clean -ndx", Safe},
+		{"git clean -fdx -n", Safe},
+		{"git reset", Safe},
+		{"git reset --soft HEAD~1", Safe},
+		{"git checkout main", Safe},
+		{"git checkout -b feature", Safe},
+		{"git restore --staged file", Safe},
+		{"git branch -d feature", Safe},
+		{"git stash", Safe},
+		{"git stash pop", Safe},
+		{"git reflog", Safe},
+		{"git status", Safe},
+	}
+	for _, tc := range cases {
+		if got := Classify(tc.cmd); got != tc.cls {
+			t.Errorf("Classify(%q) = %s, want %s", tc.cmd, got, tc.cls)
+		}
+	}
+
+	// Data-loss verbs require a prompt under default policy instead of
+	// running silently.
+	cfg := &DangerousConfig{}
+	if got := cfg.ActionForCommand("git reset --hard"); got != Prompt {
+		t.Errorf("ActionForCommand(git reset --hard) = %s, want prompt", got)
+	}
+}

@@ -38,7 +38,11 @@
 //     &&, ||), each segment into pipe stages (on |), and EVERY stage is
 //     classified — not just the head — so `true | dd of=/dev/sda` and
 //     `echo x | sudo rm -rf /home` are seen for what their later stages do.
-//     The worst class across all parts wins (see rank).
+//     A stage that pipes INTO xargs running a destructive/system verb has its
+//     upstream literal payload (echo/printf args) composed onto the inner
+//     command (`echo "/" | xargs rm -rf` classifies like `rm -rf /`); when
+//     the payload is not statically determinable the pipeline fails closed
+//     (unknown → deny). The worst class across all parts wins (see rank).
 //
 //  3. Wrapper unwrapping (unwrapWrappers). Leading execution wrappers
 //     (env, xargs, nohup, nice, setsid, timeout, …) are stripped so the
@@ -142,6 +146,7 @@ type ToolOperation struct {
 //
 // Classification rules (highest wins):
 //   - /boot, /dev, /proc, /sys, /mnt, /media → destructive
+//   - / (the filesystem root itself) → system_write
 //   - /tmp, $TMPDIR → local_write
 //   - /etc, /root, /var, /run, /lib, /usr → system_write
 //   - $HOME/.ssh, .config, .gnupg, .aws, .kube, .docker, .gitconfig, .env → system_write
@@ -168,6 +173,13 @@ func ClassifyPath(path string) RiskClass {
 	// still resolve to the temp dir (local_write).
 	if strings.HasPrefix(abs, "/private/") {
 		abs = strings.TrimPrefix(abs, "/private")
+	}
+
+	// The filesystem root itself. A mutation aimed at / (chmod -R 777 /,
+	// mv / /tmp/x, dd of=/, …) is system-wide damage and must never fall
+	// through to local_write just because "/" carries no directory prefix.
+	if abs == string(filepath.Separator) {
+		return SystemWrite
 	}
 
 	for _, prefix := range []string{"/boot", "/dev", "/proc", "/sys", "/mnt", "/media"} {
@@ -774,6 +786,11 @@ var writePrefixes = map[string]bool{
 	"echo": true, "sed": true, "tee": true,
 	"rm": true, "mv": true, "cp": true, "touch": true,
 	"mkdir": true, "rmdir": true, "chmod": true, "chown": true,
+	// chattr mutates file attributes (including the immutable flag) the same
+	// way chmod mutates permissions; recursive use at a system root is
+	// escalated by the same operand scan, and formerly it fell through to
+	// Unknown.
+	"chattr": true,
 	// shred overwrites/removes files like rm. isDestructive escalates it to
 	// destructive when aimed at a block device or catastrophic wipe target;
 	// otherwise a local-file shred is a write (local_write / system_write).
@@ -1003,8 +1020,159 @@ func classifyPipeline(tokens []string) RiskClass {
 	for idx, stage := range stages {
 		// idx > 0 means this stage receives piped input from the previous one.
 		worst = worstOf(worst, classifyStage(stage, idx > 0))
+		if idx > 0 {
+			// A pipe-fed xargs turns upstream stdout into command arguments,
+			// so `echo "/" | xargs rm -rf` executes `rm -rf /` even though no
+			// stage literally contains that command. Compose the payload.
+			worst = worstOf(worst, classifyXargsSink(stages[:idx], stage))
+		}
 	}
 	return worst
+}
+
+// classifyXargsSink handles a pipe stage whose command is reached through an
+// xargs wrapper while receiving piped stdin. xargs appends each line of stdin
+// to the inner command line, so the effective command is `inner <payload>…`
+// even though the payload never appears as a token of the sink stage.
+//
+// When the upstream pipeline is a statically determinable literal producer
+// (`echo <args>` / `printf <args>`) the payload tokens are composed onto the
+// inner command and the composition is classified — `echo "/" | xargs rm -rf`
+// then classifies exactly like `rm -rf /` (destructive). When the payload is
+// not statically determinable (`cat file | …`, `find … | …`, variables) and
+// the inner verb can turn a piped path into destructive or system-level
+// damage, the pipeline fails closed as Unknown (deny-by-default): the same
+// treatment an unrecognised verb gets, because the command that will actually
+// run is unknowable at classification time.
+func classifyXargsSink(upstream [][]string, stage []string) RiskClass {
+	inner, ok := xargsInnerCommand(stage)
+	if !ok || len(inner) == 0 {
+		return Safe
+	}
+	if payload, static := staticPipePayload(upstream); static {
+		composed := make([]string, 0, len(inner)+len(payload))
+		composed = append(composed, inner...)
+		composed = append(composed, payload...)
+		return classifyStage(composed, false)
+	}
+	if xargsDangerousVerb(commandName(inner[0])) {
+		return Unknown
+	}
+	return Safe
+}
+
+// xargsInnerCommand returns the tokens of the command an xargs wrapper in the
+// stage's leading wrapper chain will execute (everything after xargs and its
+// options). ok reports whether such an xargs wrapper was found; a bare xargs
+// (default command is echo) yields an empty inner slice with ok=true.
+func xargsInnerCommand(tokens []string) (inner []string, ok bool) {
+	i := 0
+	for i < len(tokens) && isAssignment(tokens[i]) {
+		i++ // leading VAR=value assignment prefix
+	}
+	for i < len(tokens) {
+		name := commandName(tokens[i])
+		if name == "xargs" {
+			i++
+			for i < len(tokens) {
+				t := tokens[i]
+				if !strings.HasPrefix(t, "-") || t == "-" {
+					return tokens[i:], true
+				}
+				// Option flags. Value-taking flags consume the next token so
+				// the value is not mistaken for the inner command.
+				if xargsValueFlags[t] && i+1 < len(tokens) {
+					i += 2
+					continue
+				}
+				i++
+			}
+			return nil, true
+		}
+		if !privilegedWrappers[name] && !execWrappers[name] {
+			return nil, false
+		}
+		i++ // consume the wrapper itself
+		for i < len(tokens) {
+			t := tokens[i]
+			switch {
+			case strings.HasPrefix(t, "-") && t != "-":
+				i++ // wrapper option flag
+			case name == "env" && isAssignment(t):
+				i++ // env VAR=VALUE
+			case (name == "timeout" || name == "nice" || name == "ionice") && isNumericish(t):
+				i++ // timeout 5s / nice 10
+			default:
+				goto nextWrapper
+			}
+		}
+	nextWrapper:
+	}
+	return nil, false
+}
+
+// xargsValueFlags are xargs options that take a separate value token
+// (short and long forms). `--flag=value` spellings need no entry — they are
+// a single token and are skipped like any other flag.
+var xargsValueFlags = map[string]bool{
+	"-I": true, "-L": true, "-n": true, "-P": true, "-s": true,
+	"-E": true, "-e": true, "-d": true, "-a": true,
+	"--replace": true, "--max-lines": true, "--max-args": true,
+	"--max-procs": true, "--max-chars": true, "--eof": true,
+	"--delimiter": true, "--arg-file": true,
+}
+
+// staticPipePayload returns the literal tokens an upstream pipeline feeds
+// into the sink's stdin when they are statically determinable: a single
+// producer stage of `echo <args>` or `printf <args>` with no shell
+// substitutions or variable expansions in its arguments. Anything else
+// (file readers, find, command output, $VARS, multi-stage transforms) is
+// not statically determinable and reports ok=false.
+func staticPipePayload(upstream [][]string) (payload []string, ok bool) {
+	if len(upstream) != 1 {
+		return nil, false
+	}
+	stage := upstream[0]
+	if len(stage) == 0 {
+		return nil, false
+	}
+	var args []string
+	switch commandName(stage[0]) {
+	case "echo":
+		args = stage[1:]
+		for len(args) > 0 && (args[0] == "-n" || args[0] == "-e" || args[0] == "-E") {
+			args = args[1:]
+		}
+	case "printf":
+		args = stage[1:]
+		for len(args) > 0 && strings.HasPrefix(args[0], "-") {
+			args = args[1:]
+		}
+	default:
+		return nil, false
+	}
+	for _, a := range args {
+		// A token containing $ or a backtick expands at runtime, so the real
+		// payload is not statically determinable.
+		if strings.ContainsAny(a, "$`") {
+			return nil, false
+		}
+	}
+	return args, true
+}
+
+// xargsDangerousVerb reports whether a verb invoked through pipe-fed xargs
+// can turn an undeterminable piped path into destructive or system-level
+// damage. For these the pipeline fails closed (Unknown) when the payload
+// cannot be composed statically; benign verbs (grep, wc, …) are unaffected.
+func xargsDangerousVerb(name string) bool {
+	switch name {
+	case "rm", "shred", "dd",
+		"chmod", "chown", "chgrp", "chattr",
+		"mv", "cp", "ln", "install", "tee":
+		return true
+	}
+	return destructivePrefixes[name]
 }
 
 // classifyStage classifies a single pipe stage. It first strips leading
@@ -1834,6 +2002,17 @@ func classifyCommand(tokens []string) RiskClass {
 		return SystemWrite
 	}
 
+	// Irreversible git data-loss verbs (clean -f, reset --hard, checkout --,
+	// restore, branch -D, stash drop/clear, reflog expire) destroy uncommitted
+	// work or delete history with no undo. They were previously classified
+	// Safe because git is a "network" command whose non-remote subcommands
+	// fell through every check — a prompt-injection payload could wipe a
+	// working tree with zero friction. They now require explicit approval
+	// (system_write → prompt by default), like other irreversible mutations.
+	if first == "git" && isGitDataLoss(tokens) {
+		return SystemWrite
+	}
+
 	// Code execution checks (pipe to shell, eval, -e/-c flags)
 	if isCodeExecution(first, tokens) {
 		return CodeExecution
@@ -2315,6 +2494,147 @@ func isGitCodeExecution(tokens []string) bool {
 		}
 	}
 	return false
+}
+
+// gitSubcommandAndArgs returns the git subcommand and the tokens that follow
+// it, skipping global options. Options that take a separate value token
+// (-C, -c, --git-dir, …) consume that token so it is not mistaken for the
+// subcommand.
+func gitSubcommandAndArgs(tokens []string) (sub string, args []string) {
+	seenGit := false
+	skipNext := false
+	for i, tok := range tokens {
+		if !seenGit {
+			if commandName(tok) == "git" {
+				seenGit = true
+			}
+			continue
+		}
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		if strings.HasPrefix(tok, "-") {
+			switch tok {
+			case "-C", "-c", "--git-dir", "--work-tree", "--namespace",
+				"--exec-path", "--super-prefix", "--config-env":
+				// These consume the following token as their value.
+				skipNext = true
+			}
+			continue
+		}
+		return tok, tokens[i+1:]
+	}
+	return "", nil
+}
+
+// isGitDataLoss reports whether a git invocation irreversibly destroys
+// uncommitted work, branches, stashes, or history:
+//
+//	git clean -f…            (unless -n/--dry-run is also given)
+//	git reset --hard
+//	git checkout -f | -- <path> | <pathspec>
+//	git restore <pathspec>   (worktree restore; --staged-only is safe)
+//	git branch -D | -d -f
+//	git stash drop | clear
+//	git reflog expire
+//
+// These are classified system_write (prompt-by-default), not destructive,
+// because they are routine recovery verbs with legitimate uses — but they
+// must never run silently, since a prompt-injection payload can wipe a
+// working tree through them with zero friction.
+func isGitDataLoss(tokens []string) bool {
+	sub, args := gitSubcommandAndArgs(tokens)
+	switch sub {
+	case "clean":
+		// Only -f/--force deletes; -n/--dry-run prints and wins if both given.
+		force, dryRun := false, false
+		for _, a := range args {
+			switch {
+			case a == "--force":
+				force = true
+			case a == "--dry-run":
+				dryRun = true
+			case isShortFlagToken(a):
+				if strings.ContainsRune(a[1:], 'f') {
+					force = true
+				}
+				if strings.ContainsRune(a[1:], 'n') {
+					dryRun = true
+				}
+			}
+		}
+		return force && !dryRun
+	case "reset":
+		return hasAny(args, "--hard")
+	case "checkout":
+		// -f/--force or a pathspec (-- <path>, ".", "./…") discards local
+		// changes. A bare branch operand (git checkout main) switches, keeps
+		// the worktree, and is not data loss.
+		for _, a := range args {
+			switch {
+			case a == "--force" || (isShortFlagToken(a) && strings.ContainsRune(a[1:], 'f')):
+				return true
+			case a == "--":
+				return true
+			case a == "." || strings.HasPrefix(a, "./"):
+				return true
+			}
+		}
+		return false
+	case "restore":
+		// Default restores the worktree from the index, discarding local
+		// changes; --staged alone only unstages. --source/-s consumes a value.
+		staged := hasAny(args, "--staged", "-S")
+		for i := 0; i < len(args); i++ {
+			a := args[i]
+			if a == "--source" || a == "-s" {
+				i++ // skip the source value
+				continue
+			}
+			if a == "--worktree" || a == "-W" {
+				return true
+			}
+			if (a == "--" || !strings.HasPrefix(a, "-")) && !staged {
+				return true
+			}
+		}
+		return false
+	case "branch":
+		// -D, or -d/--delete combined with -f/--force, deletes a branch
+		// regardless of merge state.
+		del, force := false, false
+		for _, a := range args {
+			switch {
+			case a == "--delete":
+				del = true
+			case a == "--force":
+				force = true
+			case isShortFlagToken(a):
+				if strings.ContainsRune(a[1:], 'D') {
+					return true
+				}
+				if strings.ContainsRune(a[1:], 'd') {
+					del = true
+				}
+				if strings.ContainsRune(a[1:], 'f') {
+					force = true
+				}
+			}
+		}
+		return del && force
+	case "stash":
+		return hasAny(args, "drop", "clear")
+	case "reflog":
+		return hasAny(args, "expire")
+	}
+	return false
+}
+
+// isShortFlagToken reports whether a token is a single-dash option cluster
+// like -f, -fdx, -Df (as opposed to a --long flag or an operand).
+func isShortFlagToken(tok string) bool {
+	return strings.HasPrefix(tok, "-") && !strings.HasPrefix(tok, "--") && len(tok) > 1
 }
 
 func isCodeExecution(first string, tokens []string) bool {
