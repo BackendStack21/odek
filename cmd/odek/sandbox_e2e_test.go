@@ -218,3 +218,80 @@ func TestE2E_SandboxFileInjection_MultipleFiles(t *testing.T) {
 		}
 	}
 }
+
+// TestE2E_SandboxTimeoutKillsInContainerProcesses verifies finding 7's fix:
+// when a sandboxed shell command times out, the in-container process group
+// is killed — not just the host-side `docker exec` client. Before the fix,
+// the in-container processes kept running until the container was destroyed.
+func TestE2E_SandboxTimeoutKillsInContainerProcesses(t *testing.T) {
+	skipIfNoE2E(t)
+
+	workDir := t.TempDir()
+	containerName := fmt.Sprintf("odek-test-timeout-%d", time.Now().UnixNano())
+	args := sandbox.BuildRunArgs(sandboxConfig{
+		Image:   "alpine:latest",
+		Network: "none",
+	}, containerName, workDir, "alpine:latest")
+	createCmd := exec.Command("docker", args...)
+	createCmd.Stderr = os.Stderr
+	if err := createCmd.Run(); err != nil {
+		t.Fatalf("create container: %v", err)
+	}
+	defer exec.Command("docker", "rm", "-f", containerName).Run()
+	time.Sleep(500 * time.Millisecond)
+
+	st := &shellTool{containerName: containerName, timeout: 1 * time.Second}
+	// Fork a background child AND block in the foreground: both must die.
+	_, err := st.Call(`{"command": "sleep 300 & sleep 300"}`)
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("expected timeout error, got: %v", err)
+	}
+
+	// The follow-up runs synchronously before Call returns. PID 1 is
+	// "sleep infinity" — assert no leftover "sleep 300" processes remain.
+	out, err := exec.Command("docker", "exec", containerName, "ps").CombinedOutput()
+	if err != nil {
+		t.Fatalf("docker exec ps: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), "sleep 300") {
+		t.Errorf("in-container processes survived the timeout:\n%s", out)
+	}
+	if !strings.Contains(string(out), "sleep infinity") {
+		t.Errorf("container init process missing — unexpected container state:\n%s", out)
+	}
+}
+
+// TestE2E_SandboxParallelTimeoutKillsInContainerProcesses is the
+// parallel_shell analogue: a per-command timeout must kill the in-container
+// process group, not just the host-side client.
+func TestE2E_SandboxParallelTimeoutKillsInContainerProcesses(t *testing.T) {
+	skipIfNoE2E(t)
+
+	workDir := t.TempDir()
+	containerName := fmt.Sprintf("odek-test-ptimeout-%d", time.Now().UnixNano())
+	args := sandbox.BuildRunArgs(sandboxConfig{
+		Image:   "alpine:latest",
+		Network: "none",
+	}, containerName, workDir, "alpine:latest")
+	createCmd := exec.Command("docker", args...)
+	createCmd.Stderr = os.Stderr
+	if err := createCmd.Run(); err != nil {
+		t.Fatalf("create container: %v", err)
+	}
+	defer exec.Command("docker", "rm", "-f", containerName).Run()
+	time.Sleep(500 * time.Millisecond)
+
+	pt := &parallelShellTool{containerName: containerName}
+	_, err := pt.Call(`{"commands": [{"command": "sleep 300 & sleep 300", "timeout": 1}]}`)
+	if err != nil {
+		t.Fatalf("parallel_shell Call: %v", err)
+	}
+
+	out, err := exec.Command("docker", "exec", containerName, "ps").CombinedOutput()
+	if err != nil {
+		t.Fatalf("docker exec ps: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), "sleep 300") {
+		t.Errorf("in-container processes survived the parallel_shell timeout:\n%s", out)
+	}
+}

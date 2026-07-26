@@ -498,8 +498,11 @@ func (t *parallelShellTool) runOne(cmd parallelShellCmd) parallelShellEntry {
 	defer cancel()
 
 	var shCmd *exec.Cmd
+	var killInContainer func()
 	if t.containerName != "" {
-		shCmd = exec.CommandContext(ctx, "docker", "exec", "-w", "/workspace", t.containerName, "sh", "-c", cmd.Command)
+		argv, followUp := wrapSandboxCommand(t.containerName, cmd.Command)
+		shCmd = exec.CommandContext(ctx, "docker", argv...)
+		killInContainer = followUp
 	} else {
 		shCmd = exec.CommandContext(ctx, "sh", "-c", cmd.Command)
 	}
@@ -521,6 +524,12 @@ func (t *parallelShellTool) runOne(cmd parallelShellCmd) parallelShellEntry {
 	shCmd.WaitDelay = 3 * time.Second
 
 	err := shCmd.Run()
+	// Killing the host-side `docker exec` client does not terminate the
+	// in-container process (Docker does not propagate the signal); kill its
+	// process group explicitly so a timed-out command cannot linger.
+	if ctx.Err() != nil && killInContainer != nil {
+		killInContainer()
+	}
 	entry.Stdout = strings.TrimSpace(stdout.String())
 	entry.Stderr = strings.TrimSpace(stderr.String())
 	entry.DurationMs = time.Since(start).Milliseconds()
