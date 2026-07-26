@@ -5,7 +5,7 @@
 One binary. One loop. Zero frameworks. ReAct (Reasoning + Acting) — think, therefore act.
 
 ```bash
-# Install
+# Install (requires Go ≥ 1.25.12 — see "Build requirements" below)
 go install github.com/BackendStack21/odek/cmd/odek@latest
 
 # Use (set ODEK_API_KEY, DEEPSEEK_API_KEY, or OPENAI_API_KEY)
@@ -13,6 +13,8 @@ export ODEK_API_KEY=sk-...
 odek run "How many lines in go.mod?"
 # → 3 lines
 ```
+
+**Build requirements:** Go **1.25.12 or newer**. The `go` directive in `go.mod` pins this floor because earlier 1.25.x toolchains ship reachable standard-library CVEs; CI additionally runs `govulncheck` on every push/PR so new advisories fail the build.
 
 ---
 

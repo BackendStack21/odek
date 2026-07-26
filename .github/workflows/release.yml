@@ -16,6 +16,8 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
+          # Minimum supported build toolchain is Go 1.25.12 (go.mod floor);
+          # "1.25" resolves to the latest 1.25.x patch release.
           go-version: "1.25"
 
       - name: build
