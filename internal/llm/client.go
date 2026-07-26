@@ -81,12 +81,14 @@ func (c *Client) sendsThinkingObject() bool {
 // temperature parameter. OpenAI reasoning models (o1/o3/o4 families and the
 // gpt-5 series) only accept the default temperature (1); sending any other
 // value — including odek's deterministic default 0 — returns a 400
-// "unsupported_value" error. Matching is model-name-based and
+// "unsupported_value" error. Kimi Code models (kimi-for-coding*, k3*) behave
+// the same way: the endpoint answers 400 "invalid temperature: only 1 is
+// allowed for this model". Matching is model-name-based and
 // provider-agnostic, since OpenAI-compatible proxies serving these model
 // IDs enforce the same constraint.
 func modelForbidsTemperature(model string) bool {
 	m := strings.ToLower(model)
-	for _, prefix := range []string{"o1", "o3", "o4", "gpt-5"} {
+	for _, prefix := range []string{"o1", "o3", "o4", "gpt-5", "kimi-for-coding", "k3"} {
 		if strings.HasPrefix(m, prefix) {
 			return true
 		}

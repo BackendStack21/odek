@@ -1038,10 +1038,11 @@ func TestClient_IsAnthropic(t *testing.T) {
 	}
 }
 
-// OpenAI reasoning models (o1/o3/o4, gpt-5 family) reject any explicit
-// temperature other than the default (1) with a 400. The client must omit
-// the field for those models while still sending odek's deterministic
-// default (0) to models that accept it.
+// OpenAI reasoning models (o1/o3/o4, gpt-5 family) and Kimi Code models
+// (kimi-for-coding*, k3*) reject any explicit temperature other than the
+// default (1) with a 400. The client must omit the field for those models
+// while still sending odek's deterministic default (0) to models that
+// accept it.
 func TestCall_OmitsTemperatureForReasoningModels(t *testing.T) {
 	cases := []struct {
 		model        string
@@ -1053,9 +1054,15 @@ func TestCall_OmitsTemperatureForReasoningModels(t *testing.T) {
 		{"o1-preview", false},
 		{"o4-mini", false},
 		{"GPT-5-MINI", false}, // case-insensitive
+		{"kimi-for-coding", false},
+		{"kimi-for-coding-highspeed", false},
+		{"k3", false},
+		{"k3-256k", false},
+		{"Kimi-For-Coding", false}, // case-insensitive
 		{"gpt-4o-mini", true},
 		{"deepseek-chat", true},
 		{"claude-sonnet-4-5", true},
+		{"kimi-latest", true}, // Moonshot platform models accept temperature
 	}
 
 	for _, tc := range cases {
