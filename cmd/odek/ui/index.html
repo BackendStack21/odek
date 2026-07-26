@@ -11,8 +11,8 @@
 <body>
 <div id="app">
   <!-- Top Bar -->
-  <div id="topbar">
-    <button id="hamburger-btn" onclick="toggleSidebar()" aria-label="Toggle sidebar">
+  <header id="topbar">
+    <button id="hamburger-btn" aria-label="Toggle sidebar">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
     </button>
     <span class="top-brand"><span class="top-brand-text">odek</span></span>
@@ -25,38 +25,38 @@
     <span class="session-stats" id="session-stats"></span>
     <span class="model" id="model-label"></span>
     <div class="top-controls">
-      <select id="model-picker" onchange="onPickerChange(this.value)" title="Switch model">
+      <select id="model-picker" title="Switch model">
         <option value="">Loading...</option>
       </select>
       <input id="custom-model-input" type="text" placeholder="model id…" title="Custom model ID — press Enter to apply" />
-      <button id="theme-btn" onclick="toggleTheme()" title="Toggle theme" aria-label="Toggle theme">◐</button>
-      <button id="cancel-btn" onclick="cancelAgent()" aria-label="Stop">
+      <button id="theme-btn" title="Toggle theme" aria-label="Toggle theme">◐</button>
+      <button id="cancel-btn" aria-label="Stop">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </button>
     </div>
-  </div>
+  </header>
 
   <!-- Sidebar -->
-  <div id="sidebar">
+  <nav id="sidebar" aria-label="Sessions">
     <div id="sidebar-header">
       <h3>Sessions</h3>
-      <button class="new-session-btn" onclick="newSession()" title="New session">＋</button>
+      <button class="new-session-btn" title="New session">＋</button>
     </div>
     <input id="sidebar-search" type="text" placeholder="Filter…" />
     <div id="session-list"></div>
-  </div>
+  </nav>
 
-  <div id="sidebar-overlay" onclick="toggleSidebar()"></div>
+  <div id="sidebar-overlay"></div>
 
   <!-- Main Chat -->
-  <div id="main">
+  <main id="main">
     <div id="loading-skeleton">
       <div class="skeleton-bar"></div>
       <div class="skeleton-bar"></div>
       <div class="skeleton-bar"></div>
     </div>
-    <div id="messages">
-      <button id="scroll-bottom-btn" onclick="scrollToBottom()" aria-label="Scroll to bottom">
+    <div id="messages" role="log" aria-live="polite" aria-relevant="additions">
+      <button id="scroll-bottom-btn" aria-label="Scroll to bottom">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
       </button>
       <div id="empty-state">
@@ -65,8 +65,8 @@
           <div class="es-name">odek</div>
           <p class="es-sub">autonomous agent runtime</p>
           <div class="es-hints">
-            <span onclick="toggleShortcuts()">shortcuts /?/</span>
-            <span onclick="loadSessions()">refresh sessions</span>
+            <span role="button" tabindex="0">shortcuts /?/</span>
+            <span role="button" tabindex="0">refresh sessions</span>
           </div>
         </div>
       </div>
@@ -76,7 +76,7 @@
     <div id="input-area">
       <div class="input-inner">
         <div id="file-chips"></div>
-        <div id="completion"></div>
+        <div id="completion" role="listbox" aria-label="Resource completion"></div>
         <div id="input-row">
           <button id="attach-btn" title="Attach files">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
@@ -86,65 +86,51 @@
             <span class="input-prompt">❯</span>
             <textarea id="prompt" rows="1" placeholder="ask anything…  (@ to reference)"></textarea>
           </div>
-          <button id="think-btn" onclick="toggleThinkingMode()" title="Toggle extended thinking for next prompt (Alt+T)">think</button>
+          <button id="think-btn" title="Toggle extended thinking for next prompt (Alt+T)">think</button>
           <button id="send-btn" disabled>↵</button>
         </div>
       </div>
     </div>
-  </div>
-</div>
-
-<!-- Approval Dialog -->
-<div id="approval-overlay">
-  <div id="approval-dialog">
-    <div class="approval-header">
-      <div class="approval-icon" id="approval-icon">🛡</div>
-      <div>
-        <div class="approval-title">Approval required</div>
-        <div class="approval-subtitle">agent wants to execute a command</div>
-      </div>
-    </div>
-    <div class="approval-risk" id="approval-risk"></div>
-    <div id="approval-command"></div>
-    <div id="approval-desc" style="display:none"></div>
-    <div id="approval-actions">
-      <button class="deny" onclick="sendApproval('deny')">Deny</button>
-      <button class="trust" onclick="sendApproval('trust')">Trust session</button>
-      <button class="approve" onclick="sendApproval('approve')">Approve</button>
-    </div>
-  </div>
+  </main>
 </div>
 
 <!-- Keyboard Shortcuts -->
 <div id="shortcuts-overlay">
-  <div id="shortcuts-dialog">
-    <h3>Keyboard shortcuts</h3>
+  <div id="shortcuts-dialog" role="dialog" aria-modal="true" aria-labelledby="shortcuts-title" tabindex="-1">
+    <h3 id="shortcuts-title">Keyboard shortcuts</h3>
     <div class="shortcut-row"><span class="sc-label">Send message</span><span class="sc-key">Enter</span></div>
     <div class="shortcut-row"><span class="sc-label">New line</span><span class="sc-key">Shift+Enter</span></div>
     <div class="shortcut-row"><span class="sc-label">History up</span><span class="sc-key">↑</span></div>
     <div class="shortcut-row"><span class="sc-label">History down</span><span class="sc-key">↓</span></div>
     <div class="shortcut-row"><span class="sc-label">File/session reference</span><span class="sc-key">@</span></div>
+    <div class="shortcut-row"><span class="sc-label">Completion navigation</span><span class="sc-key">↑↓ · Enter/Tab · Esc</span></div>
     <div class="shortcut-row"><span class="sc-label">Toggle shortcuts</span><span class="sc-key">?</span></div>
     <div class="shortcut-row"><span class="sc-label">Refresh sessions</span><span class="sc-key">⌘R</span></div>
     <div class="shortcut-row"><span class="sc-label">Toggle thinking</span><span class="sc-key">Alt+T</span></div>
+    <div class="shortcut-row"><span class="sc-label">Approve (when prompted)</span><span class="sc-key">A</span></div>
+    <div class="shortcut-row"><span class="sc-label">Deny (when prompted)</span><span class="sc-key">D</span></div>
+    <div class="shortcut-row"><span class="sc-label">Trust session (when prompted)</span><span class="sc-key">T</span></div>
   </div>
 </div>
 
 <!-- Confirm Dialog -->
 <div id="confirm-overlay">
-  <div id="confirm-dialog">
+  <div id="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
     <div class="confirm-icon">⚠</div>
-    <h3>Delete session?</h3>
+    <h3 id="confirm-title">Delete session?</h3>
     <p id="confirm-msg">This action cannot be undone.</p>
     <div id="confirm-actions">
-      <button class="cancel" onclick="hideConfirmDialog()">Cancel</button>
-      <button class="delete-confirm" id="confirm-delete-btn" onclick="executeDeleteSession()">Delete</button>
+      <button class="cancel" data-autofocus>Cancel</button>
+      <button class="delete-confirm" id="confirm-delete-btn">Delete</button>
     </div>
   </div>
 </div>
 
+<!-- Screen-reader-only live status region (announce() in js/utils.js) -->
+<div id="sr-status" class="sr-only" role="status" aria-live="polite"></div>
+
 <div class="toast" id="toast"></div>
 
-<script src="/app.js"></script>
+<script type="module" src="/app.js"></script>
 </body>
 </html>
