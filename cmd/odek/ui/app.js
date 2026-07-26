@@ -1268,16 +1268,46 @@ window.switchModel = function(modelId) {
 };
 
 // ── Session Rename ──
-window.renameSession = async function(sid, el) {
+// Inline edit: swaps the task label for an input; Enter commits, Esc
+// cancels, blur commits. No window.prompt.
+window.renameSession = function(sid, el) {
   const item = el.closest('.session-item');
   if (!item) return;
   const taskEl = item.querySelector('.task');
-  const currentName = taskEl ? taskEl.textContent : '';
-  const newName = prompt('Rename session:', currentName);
-  if (!newName || newName === currentName) return;
+  if (!taskEl || taskEl.querySelector('.si-rename-input')) return;
+  const currentName = taskEl.textContent;
 
+  const input = document.createElement('input');
+  input.className = 'si-rename-input';
+  input.type = 'text';
+  input.value = currentName === 'untitled' ? '' : currentName;
+  input.placeholder = 'session name…';
+  taskEl.textContent = '';
+  taskEl.appendChild(input);
+  input.focus();
+  input.select();
+
+  let done = false;
+  const finish = (commit) => {
+    if (done) return;
+    done = true;
+    const newName = input.value.trim();
+    taskEl.textContent = currentName;
+    if (commit && newName && newName !== currentName) {
+      doRenameSession(sid, newName);
+    }
+  };
+  input.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  });
+  input.addEventListener('click', (e) => e.stopPropagation());
+  input.addEventListener('blur', () => finish(true));
+};
+
+async function doRenameSession(sid, newName) {
   const token = await ensureSessionToken(sid);
-
   fetch('/api/sessions/' + encodeURIComponent(sid), {
     method: 'POST',
     headers: apiHeaders({
@@ -1292,7 +1322,7 @@ window.renameSession = async function(sid, el) {
       showToast('Session renamed');
     })
     .catch(() => showToast('Failed to rename session'));
-};
+}
 
 // ── Skill Events ──
 function handleSkillEvent(event) {
@@ -1596,7 +1626,7 @@ function addAttachedFile(file) {
   // Check total size (max 10MB total)
   const totalSize = attachedFiles.reduce((s, f) => s + f.size, 0) + file.size;
   if (totalSize > 10 * 1024 * 1024) {
-    showToast('Total attachment size exceeds 10 MB');
+    addErrorChip(file.name, 'total attachments exceed 10 MB');
     return;
   }
   attachedFiles.push(file);
@@ -1641,6 +1671,38 @@ function renderFileChips() {
     chip.append(icon, name, size, remove);
     fileChips.appendChild(chip);
   });
+
+  // Total-size meter against the 10 MB cap.
+  if (attachedFiles.length > 0) {
+    const total = attachedFiles.reduce((s, f) => s + f.size, 0);
+    const meter = document.createElement('span');
+    meter.className = 'chips-total';
+    meter.textContent = formatFileSize(total) + ' / 10 MB';
+    if (total > 8 * 1024 * 1024) meter.classList.add('warn');
+    fileChips.appendChild(meter);
+  }
+}
+
+// addErrorChip shows a transient error chip for a file that could not be
+// attached (too large, unreadable). Dismisses on click or after 6s.
+function addErrorChip(name, reason) {
+  const chip = document.createElement('span');
+  chip.className = 'file-chip error';
+  chip.title = reason;
+  const icon = document.createElement('span');
+  icon.className = 'chip-icon';
+  icon.textContent = '⚠️';
+  const label = document.createElement('span');
+  label.className = 'chip-name';
+  label.textContent = name + ' — ' + reason;
+  const remove = document.createElement('span');
+  remove.className = 'chip-remove';
+  remove.textContent = '✕';
+  chip.append(icon, label, remove);
+  fileChips.appendChild(chip);
+  const dismiss = () => chip.remove();
+  remove.addEventListener('click', dismiss);
+  setTimeout(dismiss, 6000);
 }
 
 function readFileAsText(file) {
@@ -1665,7 +1727,7 @@ function handleFiles(fileList) {
       readFileAsText(file).then(content => {
         addAttachedFile({name: file.name, size: file.size, content});
       }).catch(err => {
-        showToast(err.message);
+        addErrorChip(file.name, err.message || 'could not read file');
       })
     );
   }
@@ -1705,6 +1767,26 @@ messagesEl.addEventListener('drop', (e) => {
 
 // ── Input handlers ──
 promptEl.addEventListener('keydown', (e) => {
+  // @-completion keyboard navigation takes precedence while visible:
+  // ↑/↓ move, Enter/Tab accept, Esc dismisses.
+  if (completionEl.classList.contains('visible')) {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      moveCompletionSelection(e.key === 'ArrowDown' ? 1 : -1);
+      return;
+    }
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      selectCompletion();
+      return;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      completionEl.classList.remove('visible');
+      return;
+    }
+  }
+
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     send();
@@ -1784,8 +1866,10 @@ completionEl.addEventListener('click', (e) => {
 completionEl.addEventListener('mousemove', (e) => {
   const item = e.target.closest('.comp-item');
   if (!item) return;
-  completionEl.querySelectorAll('.comp-item').forEach(el => el.classList.remove('selected'));
-  item.classList.add('selected');
+  completionEl.querySelectorAll('.comp-item').forEach(el => {
+    el.classList.toggle('selected', el === item);
+    el.setAttribute('aria-selected', el === item);
+  });
 });
 
 let lastAtIdx = -1;
@@ -1824,7 +1908,7 @@ async function checkCompletion() {
     }
 
     completionEl.innerHTML = results.map((r, i) =>
-      `<div class="comp-item${i === 0 ? ' selected' : ''}" data-id="${escapeAttr(r.id)}">
+      `<div class="comp-item${i === 0 ? ' selected' : ''}" role="option" aria-selected="${i === 0}" data-id="${escapeAttr(r.id)}">
         <span class="comp-type">${escapeAttr(r.type)}</span>
         <span class="comp-label">${escapeHtml(r.label)}</span>
         <span class="comp-detail">${escapeHtml(r.detail || '')}</span>
@@ -1835,6 +1919,19 @@ async function checkCompletion() {
   } catch {
     completionEl.classList.remove('visible');
   }
+}
+
+// moveCompletionSelection moves the .selected marker by delta (+1/-1),
+// keeping aria-selected in sync for assistive technology.
+function moveCompletionSelection(delta) {
+  const items = Array.from(completionEl.querySelectorAll('.comp-item'));
+  if (items.length === 0) return;
+  let idx = items.findIndex(el => el.classList.contains('selected'));
+  idx = (idx + delta + items.length) % items.length;
+  items.forEach((el, i) => {
+    el.classList.toggle('selected', i === idx);
+    el.setAttribute('aria-selected', i === idx);
+  });
 }
 
 function selectCompletion() {
@@ -1867,14 +1964,16 @@ function relativeTime(dateStr) {
 // ── Sessions ──
 let allSessions = [];
 let pendingDeleteId = null;
+let sessionsSig = '';
 
 sessionListEl.addEventListener('click', (e) => {
+  const item = e.target.closest('.session-item');
+  if (!item) return;
+  const sid = item.dataset.id;
+  if (!sid) return;
+
   // Delete button
-  if (e.target.classList.contains('del-btn')) {
-    const item = e.target.closest('.session-item');
-    if (!item) return;
-    const sid = item.dataset.id;
-    if (!sid) return;
+  if (e.target.closest('.del-btn')) {
     e.stopPropagation();
     pendingDeleteId = sid;
     document.getElementById('confirm-msg').textContent = 'Delete session ' + sid.slice(0, 8) + '...?';
@@ -1883,19 +1982,73 @@ sessionListEl.addEventListener('click', (e) => {
   }
 
   // Rename button
-  if (e.target.classList.contains('rename-btn')) return; // handled by inline onclick
+  if (e.target.closest('.rename-btn')) {
+    e.stopPropagation();
+    renameSession(sid, e.target);
+    return;
+  }
 
-  // Load and render session
-  const item = e.target.closest('.session-item');
-  if (!item) return;
-  const sid = item.dataset.id;
-  if (!sid || sid === sessionId) return;
-
-  sessionListEl.querySelectorAll('.session-item').forEach(s => s.classList.remove('active'));
-  item.classList.add('active');
-
-  loadAndRenderSession(sid);
+  // Load and render session (click on the item body)
+  if (e.target.closest('.si-body')) {
+    if (sid === sessionId) return;
+    sessionListEl.querySelectorAll('.session-item').forEach(s => s.classList.remove('active'));
+    item.classList.add('active');
+    loadAndRenderSession(sid);
+  }
 });
+
+// updateActiveSessionItem syncs the .active marker with the current
+// sessionId without re-rendering the list.
+function updateActiveSessionItem() {
+  sessionListEl.querySelectorAll('.session-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.id === sessionId);
+  });
+}
+
+async function loadSessions() {
+  // Skeleton rows only on cold start (empty list); refreshes keep the
+  // existing items so scroll position and hover state survive.
+  if (!sessionListEl.querySelector('.session-item')) {
+    sessionListEl.innerHTML = '<div class="session-skel"></div>'.repeat(3);
+  }
+  try {
+    const resp = await fetch('/api/sessions', { headers: apiHeaders() });
+    const sessions = await resp.json();
+    if (!sessions || !Array.isArray(sessions)) {
+      sessionListEl.querySelectorAll('.session-skel').forEach(el => el.remove());
+      return;
+    }
+    allSessions = sessions;
+
+    // Skip the full re-render when nothing changed — this runs after every
+    // turn, and re-rendering would steal scroll position and hover state.
+    const sig = sessions.map(s => [s.id, s.task, s.turns, s.updated_at, s.model].join('|')).join('\n');
+    if (sig === sessionsSig) {
+      updateActiveSessionItem();
+      return;
+    }
+    sessionsSig = sig;
+
+    sessionListEl.innerHTML = sessions.map(s =>
+      `<div class="session-item${s.id === sessionId ? ' active' : ''}" data-id="${escapeAttr(s.id)}">
+        <button class="si-body" type="button" title="Open session">
+          <span class="id">${escapeHtml(s.id.slice(0, 8))}</span>
+          <span class="task${!s.task ? ' untitled' : ''}">${escapeHtml(s.task || 'untitled')}</span>
+          <span class="meta">
+            <span>${s.turns || 0} turn${s.turns !== 1 ? 's' : ''}</span><span>${relativeTime(s.updated_at)}</span>
+            ${s.model ? `<span class="model-chip">${escapeHtml(s.model)}</span>` : ''}
+          </span>
+        </button>
+        <span class="si-actions">
+          <button class="rename-btn" type="button" title="Rename">✎</button>
+          <button class="del-btn" type="button" title="Delete">✕</button>
+        </span>
+      </div>`
+    ).join('');
+  } catch {
+    sessionListEl.querySelectorAll('.session-skel').forEach(el => el.remove());
+  }
+}
 
 // ── Session history rendering ──
 // Renders the full persisted transcript on session load: user/assistant
@@ -2091,30 +2244,6 @@ sidebarSearch.addEventListener('input', () => {
     item.style.display = text.includes(q) ? '' : 'none';
   });
 });
-
-async function loadSessions() {
-  try {
-    const resp = await fetch('/api/sessions', { headers: apiHeaders() });
-    const sessions = await resp.json();
-    if (!sessions || !Array.isArray(sessions)) return;
-    allSessions = sessions;
-
-    sessionListEl.innerHTML = sessions.map(s =>
-      `<div class="session-item${s.id === sessionId ? ' active' : ''}" data-id="${escapeAttr(s.id)}">
-        <div style="display:flex;align-items:center;gap:4px">
-          <div class="id">${escapeHtml(s.id.slice(0, 8))}</div>
-          <span class="rename-btn" title="Rename" onclick="event.stopPropagation();renameSession('${escapeAttr(s.id)}', this)">✎</span>
-          <span class="del-btn" title="Delete">✕</span>
-        </div>
-        <div class="task${!s.task ? ' untitled' : ''}">${escapeHtml(s.task || 'untitled')}</div>
-        <div class="meta">
-          <span>${s.turns || 0} turn${s.turns !== 1 ? 's' : ''}</span><span>${relativeTime(s.updated_at)}</span>
-          ${s.model ? `<span class="model-chip">${escapeHtml(s.model)}</span>` : ''}
-        </div>
-      </div>`
-    ).join('');
-  } catch { /* ignore */ }
-}
 
 // ── Init ──
 // Save references so newSession() can restore the empty state after clearing.

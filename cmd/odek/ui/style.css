@@ -427,9 +427,11 @@ body.light {
 
 /* ── Session items ── */
 .session-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
   padding: 9px 10px 8px 12px;
   border-radius: 3px;
-  cursor: pointer;
   margin-bottom: 2px;
   transition: background .18s var(--ease), padding-left .2s var(--ease);
   position: relative;
@@ -464,6 +466,22 @@ body.light {
   background: var(--amber);
   box-shadow: 0 0 8px rgba(200,134,10,.5);
 }
+
+/* Item body: the whole clickable area is a real <button> */
+.si-body {
+  flex: 1;
+  min-width: 0;
+  display: block;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+}
+.si-body .id, .si-body .task, .si-body .meta { display: block; }
 
 /* Session ID line — de-emphasised */
 .session-item .id {
@@ -509,17 +527,57 @@ body.light {
   color: var(--amber-2);
 }
 
-.session-item .del-btn, .session-item .rename-btn {
-  opacity: 0;
-  transition: opacity .12s;
+/* Row actions: visible on hover, keyboard focus, and touch devices */
+.si-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.si-actions button {
+  background: none;
+  border: none;
+  padding: 0 3px;
+  font: inherit;
   font-size: 11px;
   color: var(--text-3);
   cursor: pointer;
-  padding: 0 3px;
+  opacity: 0;
+  transition: opacity .12s;
 }
-.session-item:hover .del-btn, .session-item:hover .rename-btn { opacity: .7; }
-.session-item .del-btn:hover { opacity: 1; color: var(--red); }
-.session-item .rename-btn:hover { opacity: 1; color: var(--amber-2); }
+.session-item:hover .si-actions button,
+.session-item:focus-within .si-actions button { opacity: .7; }
+@media (hover: none) {
+  .si-actions button { opacity: .7; }
+}
+.si-actions .del-btn:hover { opacity: 1; color: var(--red); }
+.si-actions .rename-btn:hover { opacity: 1; color: var(--amber-2); }
+
+/* Inline rename input */
+.si-rename-input {
+  width: 100%;
+  font-family: var(--ui);
+  font-size: 12px;
+  background: var(--bg-3);
+  border: 1px solid var(--amber);
+  border-radius: 2px;
+  color: var(--text);
+  padding: 1px 4px;
+  outline: none;
+}
+
+/* Loading skeleton rows */
+.session-skel {
+  height: 54px;
+  border-radius: 3px;
+  margin-bottom: 2px;
+  background: linear-gradient(90deg, var(--bg-2) 25%, var(--bg-3) 50%, var(--bg-2) 75%);
+  background-size: 200% 100%;
+  animation: skelSlide 1.4s infinite;
+}
+@keyframes skelSlide {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
 
 /* ── Main ──────────────────────────────────────────────────────────── */
 #main { display: flex; flex-direction: column; overflow: hidden; background: var(--bg); }
@@ -1250,6 +1308,23 @@ body.light {
   transition: opacity .12s var(--ease), color .12s var(--ease), background .12s var(--ease);
 }
 .chip-remove:hover { opacity: 1; color: var(--red); background: rgba(224,82,82,.12); }
+
+/* Attachment error chip + total-size meter */
+.file-chip.error {
+  background: rgba(224,82,82,.1);
+  border-color: rgba(224,82,82,.35);
+  color: var(--red);
+}
+.file-chip.error .chip-name { color: var(--red); }
+.chips-total {
+  align-self: center;
+  font-size: 11px;
+  color: var(--text-3);
+  letter-spacing: .04em;
+  margin-left: auto;
+  padding-right: 2px;
+}
+.chips-total.warn { color: var(--amber-2); }
 
 /* Completion */
 #completion {
