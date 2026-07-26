@@ -1748,6 +1748,9 @@ var staticFiles = map[string][2]string{
 	"/":          {"ui/index.html", "text/html; charset=utf-8"},
 	"/style.css": {"ui/style.css", "text/css; charset=utf-8"},
 	"/app.js":    {"ui/app.js", "application/javascript; charset=utf-8"},
+	// Self-hosted font (variable weight 100–700) so the UI works offline and
+	// does not depend on the Google Fonts CDN.
+	"/fonts/azeret-mono.woff2": {"ui/fonts/azeret-mono.woff2", "font/woff2"},
 }
 
 func handleStatic(wsToken string) http.HandlerFunc {

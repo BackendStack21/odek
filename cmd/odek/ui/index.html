@@ -5,10 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <meta name="odek-ws-token" content="{{ODEK_WS_TOKEN}}"/>
 <title>odek ⚡</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Azeret+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/style.css"/>
+<link rel="preload" href="/fonts/azeret-mono.woff2" as="font" type="font/woff2" crossorigin>
 </head>
 <body>
 <div id="app">
@@ -17,17 +15,16 @@
     <button id="hamburger-btn" onclick="toggleSidebar()" aria-label="Toggle sidebar">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
     </button>
-    <span class="tb-brand"><span class="tb-brand-text">odek</span></span>
-    <span class="tb-status-group">
+    <span class="top-brand"><span class="top-brand-text">odek</span></span>
+    <span class="top-status-group">
       <span class="dot" id="ws-dot"></span>
       <span class="status" id="ws-status">connecting</span>
       <span id="sandbox-badge" style="display:none" title="Sandbox mode — shell commands run in an isolated Docker container">🔒</span>
     </span>
-    <div class="tb-spacer"></div>
-    <div class="stats" id="stats-bar"></div>
+    <div class="top-spacer"></div>
     <span class="session-stats" id="session-stats"></span>
     <span class="model" id="model-label"></span>
-    <div class="tb-controls">
+    <div class="top-controls">
       <select id="model-picker" onchange="onPickerChange(this.value)" title="Switch model">
         <option value="">Loading...</option>
       </select>
