@@ -1332,7 +1332,7 @@ func run(args []string) error {
 		NoProjectFile:    resolved.NoAgents,
 		Thinking:         resolved.Thinking,
 		ThinkingBudget:   f.ThinkingBudget,
-		Temperature:      0, // deterministic by default; override with --temperature
+		Temperature:      f.Temp, // 0 = deterministic default; negative = omit from request
 		Tools:            tools,
 		ToolFilter:       odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
 		SandboxCleanup:   sandboxCleanup,
@@ -2404,7 +2404,7 @@ func continueCmd(args []string) error {
 		UntrustedWrapper: func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
 		NoProjectFile:    resolved.NoAgents,
 		Thinking:         resolved.Thinking,
-		Temperature:      0, // deterministic by default; override with --temperature
+		Temperature:      0, // deterministic by default; continue takes no CLI flags
 		Tools:            tools,
 		ToolFilter:       odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
 		SandboxCleanup:   sandboxCleanup,
