@@ -2,7 +2,7 @@
 // inline decision card pinned at the bottom of the message stream.
 import { S } from './state.js';
 import { messagesEl } from './dom.js';
-import { forceScrollBottom } from './utils.js';
+import { forceScrollBottom, announce } from './utils.js';
 import { hideEmptyState } from './render.js';
 
 // Approval requests are queued and rendered one at a time as an inline
@@ -193,6 +193,7 @@ function renderApprovalCard(event) {
   messagesEl.appendChild(card);
   forceScrollBottom();
   card.focus({ preventScroll: true });
+  announce('Approval required: ' + (event.risk || 'unknown') + ' risk operation');
 }
 
 export function sendApproval(action) {
@@ -211,6 +212,8 @@ export function sendApproval(action) {
   S.approvalQueue.shift();
   removeActiveApprovalCard();
   showNextApproval();
+  announce(action === 'trust' ? 'Risk class trusted for this session' :
+           action === 'approve' ? 'Approved' : 'Denied');
 }
 
 // Keyboard operation while an approval card is active. Ignored when the

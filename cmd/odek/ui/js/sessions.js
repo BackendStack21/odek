@@ -3,7 +3,7 @@
 import { S, getSessionToken, setSessionToken, clearSessionToken, ensureSessionToken } from './state.js';
 import { apiHeaders } from './net.js';
 import { messagesEl, promptEl, sendBtn, sessionListEl, sidebarSearch, sidebarOverlay } from './dom.js';
-import { escapeHtml, escapeAttr, relativeTime, showToast, forceScrollBottom, hideCancel } from './utils.js';
+import { escapeHtml, escapeAttr, relativeTime, showToast, forceScrollBottom, hideCancel, announce, openDialog, closeDialog, isDialogOpen } from './utils.js';
 import { resetTurnState, hideLoading, renderSessionHistory } from './render.js';
 import { removeActiveApprovalCard } from './approvals.js';
 
@@ -131,6 +131,7 @@ export async function loadAndRenderSession(sid) {
 
     forceScrollBottom();
     showToast('Session loaded');
+    announce('Session loaded');
   } catch (err) {
     showToast('Error loading session');
   }
@@ -189,13 +190,16 @@ async function doRenameSession(sid, newName) {
       if (!resp.ok) throw new Error('rename failed');
       loadSessions();
       showToast('Session renamed');
+      announce('Session renamed');
     })
     .catch(() => showToast('Failed to rename session'));
 }
 
 // ── Confirm Dialog ──
 export function hideConfirmDialog() {
-  document.getElementById('confirm-overlay').classList.remove('active');
+  const overlay = document.getElementById('confirm-overlay');
+  if (isDialogOpen(overlay)) closeDialog();
+  else overlay.classList.remove('active');
   S.pendingDeleteId = null;
 }
 
@@ -203,7 +207,7 @@ export async function executeDeleteSession() {
   if (!S.pendingDeleteId) return;
   const sid = S.pendingDeleteId;
   S.pendingDeleteId = null;
-  document.getElementById('confirm-overlay').classList.remove('active');
+  hideConfirmDialog();
 
   const token = await ensureSessionToken(sid);
 
@@ -215,6 +219,7 @@ export async function executeDeleteSession() {
       clearSessionToken(sid);
       if (S.sessionId === sid) newSession();
       loadSessions();
+      announce('Session deleted');
     })
     .catch(() => showToast('Failed to delete session'));
 }
@@ -225,6 +230,8 @@ export function toggleSidebar() {
   if (!sidebar) return;
   sidebar.classList.toggle('active');
   if (sidebarOverlay) sidebarOverlay.classList.toggle('active');
+  const hamburger = document.getElementById('hamburger-btn');
+  if (hamburger) hamburger.setAttribute('aria-expanded', sidebar.classList.contains('active'));
 }
 
 // ── Session list click delegation ──
@@ -239,7 +246,7 @@ sessionListEl.addEventListener('click', (e) => {
     e.stopPropagation();
     S.pendingDeleteId = sid;
     document.getElementById('confirm-msg').textContent = 'Delete session ' + sid.slice(0, 8) + '...?';
-    document.getElementById('confirm-overlay').classList.add('active');
+    openDialog(document.getElementById('confirm-overlay'));
     return;
   }
 

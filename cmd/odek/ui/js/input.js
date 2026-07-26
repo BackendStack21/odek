@@ -107,7 +107,13 @@ function renderFileChips() {
     const remove = document.createElement('span');
     remove.className = 'chip-remove';
     remove.textContent = '✕';
+    remove.setAttribute('role', 'button');
+    remove.setAttribute('tabindex', '0');
+    remove.setAttribute('aria-label', 'Remove ' + f.name);
     remove.addEventListener('click', () => removeAttachedFile(i));
+    remove.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); removeAttachedFile(i); }
+    });
 
     chip.append(icon, name, size, remove);
     fileChips.appendChild(chip);
@@ -139,10 +145,16 @@ function addErrorChip(name, reason) {
   const remove = document.createElement('span');
   remove.className = 'chip-remove';
   remove.textContent = '✕';
+  remove.setAttribute('role', 'button');
+  remove.setAttribute('tabindex', '0');
+  remove.setAttribute('aria-label', 'Dismiss');
   chip.append(icon, label, remove);
   fileChips.appendChild(chip);
   const dismiss = () => chip.remove();
   remove.addEventListener('click', dismiss);
+  remove.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); dismiss(); }
+  });
   setTimeout(dismiss, 6000);
 }
 

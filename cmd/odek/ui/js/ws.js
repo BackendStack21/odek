@@ -2,7 +2,7 @@
 import { S, setSessionToken } from './state.js';
 import { getWsToken } from './net.js';
 import { dotEl, statusEl, sendBtn, skeletonEl, messagesEl, modelLabel } from './dom.js';
-import { formatNum, formatErrorMessage, showToast, scrollBottom, escapeHtml } from './utils.js';
+import { formatNum, formatErrorMessage, showToast, scrollBottom, escapeHtml, announce } from './utils.js';
 import {
   streamToken, streamThinking, streamFlush, endThinking, endStream,
   addToolCall, addToolResult, addSubagentGroup, completeSubagents,
@@ -23,12 +23,14 @@ export function connect() {
     sendBtn.disabled = false;
     // Hide loading skeleton when connected
     if (skeletonEl) skeletonEl.classList.remove('visible');
+    announce('Connected');
   };
 
   S.ws.onclose = () => {
     dotEl.className = 'dot disconnected';
     statusEl.textContent = 'reconnecting...';
     sendBtn.disabled = true;
+    announce('Connection lost — reconnecting');
     setTimeout(connect, 2000);
   };
 

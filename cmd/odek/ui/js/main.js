@@ -3,7 +3,7 @@
 import { S, getSessionToken } from './state.js';
 import { apiHeaders } from './net.js';
 import { promptEl, skeletonEl, thinkBtn } from './dom.js';
-import { escapeHtml, escapeAttr, showToast, toggleShortcuts, hideCancel } from './utils.js';
+import { escapeHtml, escapeAttr, showToast, toggleShortcuts, hideCancel, closeDialog } from './utils.js';
 import { addSystemMessage } from './render.js';
 import { loadSessions } from './sessions.js';
 import { connect } from './ws.js';
@@ -16,11 +16,18 @@ S.savedEmptyStateNode = document.getElementById('empty-state');
 S.savedScrollBtnNode = document.getElementById('scroll-bottom-btn');
 
 // Empty-state hint actions (the saved node is re-appended on session
-// switches, so direct listeners persist).
+// switches, so direct listeners persist). The hints are role="button"
+// spans, so Enter/Space must activate them like a click.
+function activateOnKey(el, fn) {
+  el.addEventListener('click', fn);
+  el.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn(); }
+  });
+}
 if (S.savedEmptyStateNode) {
   const hints = S.savedEmptyStateNode.querySelectorAll('.es-hints span');
-  if (hints[0]) hints[0].addEventListener('click', toggleShortcuts);
-  if (hints[1]) hints[1].addEventListener('click', loadSessions);
+  if (hints[0]) activateOnKey(hints[0], toggleShortcuts);
+  if (hints[1]) activateOnKey(hints[1], loadSessions);
 }
 
 // ── Theme Toggle ──
@@ -189,8 +196,7 @@ document.addEventListener('keydown', (e) => {
   // Escape closes overlays. Approval cards are deliberately NOT dismissed —
   // a decision must be made explicitly.
   if (e.key === 'Escape') {
-    document.getElementById('shortcuts-overlay').classList.remove('active');
-    document.getElementById('confirm-overlay').classList.remove('active');
+    closeDialog(); // whichever overlay dialog is open (shortcuts / confirm)
     S.pendingDeleteId = null;
   }
   // Ctrl+R refreshes sessions

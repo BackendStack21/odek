@@ -6,7 +6,7 @@ import { messagesEl, promptEl, sendBtn, emptyState } from './dom.js';
 import {
   escapeHtml, escapeAttr, truncateStr, copyTextToClipboard,
   pruneMessages, scrollBottom, forceScrollBottom, stripAttachmentBodies,
-  showCancel, hideCancel,
+  showCancel, hideCancel, announce,
 } from './utils.js';
 import { markdownToHtml } from './markdown.js';
 
@@ -88,7 +88,7 @@ export function streamThinking(content) {
     const block = document.createElement('div');
     block.className = 'thinking-block';
     block.innerHTML =
-      '<div class="thinking-toggle">' +
+      '<div class="thinking-toggle" role="button" tabindex="0" aria-expanded="false">' +
         '<span class="arrow">▶</span> reasoning' +
       '</div>' +
       '<div class="thinking-content">' + escapeHtml(content) + '</div>';
@@ -110,6 +110,7 @@ function toggleThinking(el) {
   if (content) {
     content.classList.toggle('open');
     arrow.classList.toggle('open');
+    el.setAttribute('aria-expanded', content.classList.contains('open'));
     // Auto-open on first click
     if (content.classList.contains('open')) {
       scrollBottom();
@@ -248,6 +249,7 @@ export function addSystemMessage(content) {
   el.className = 'msg system';
   el.innerHTML = '<div class="bubble"><div class="content">' + escapeHtml(content) + '</div></div>';
   messagesEl.appendChild(el);
+  announce(content);
   pruneMessages();
   scrollBottom();
 }
@@ -346,7 +348,7 @@ export function addToolCall(name, data) {
   const el = document.createElement('div');
   el.className = 'tool-block';
   el.innerHTML =
-    '<div class="tb-header">' +
+    '<div class="tb-header" role="button" tabindex="0" aria-expanded="false">' +
       '<span class="arrow">▶</span>' +
       ' <span class="tb-emoji">' + emoji + '</span>' +
       ' <span class="tb-name">' + escapeHtml(name) + '</span>' +
@@ -381,7 +383,7 @@ function appendToolResultContent(block, output) {
   if (truncated) {
     resultEl.innerHTML =
       escapeHtml(output.slice(0, MAX_RESULT)) +
-      '<span class="tb-result-more" data-full="' +
+      '<span class="tb-result-more" role="button" tabindex="0" data-full="' +
         escapeAttr(output) + '"> …show all (' + output.length + ' chars)</span>';
   } else {
     resultEl.textContent = output || '';
@@ -421,6 +423,7 @@ function toggleToolBody(header) {
   if (body) {
     body.classList.toggle('open');
     arrow.classList.toggle('open');
+    header.setAttribute('aria-expanded', body.classList.contains('open'));
   }
 }
 
@@ -645,7 +648,7 @@ function renderHistoricalThinking(content) {
   const block = document.createElement('div');
   block.className = 'thinking-block';
   block.innerHTML =
-    '<div class="thinking-toggle">' +
+    '<div class="thinking-toggle" role="button" tabindex="0" aria-expanded="false">' +
       '<span class="arrow">▶</span> reasoning' +
     '</div>' +
     '<div class="thinking-content">' + escapeHtml(content) + '</div>';
@@ -659,7 +662,7 @@ function renderHistoricalToolBlock(name, args, result) {
   const el = document.createElement('div');
   el.className = 'tool-block';
   el.innerHTML =
-    '<div class="tb-header">' +
+    '<div class="tb-header" role="button" tabindex="0" aria-expanded="false">' +
       '<span class="arrow">▶</span>' +
       ' <span class="tb-emoji">' + toolEmoji(name) + '</span>' +
       ' <span class="tb-name">' + escapeHtml(name) + '</span>' +
@@ -722,6 +725,8 @@ function checkCollapse(bubble) {
   bubble.classList.add('collapsible');
   const toggle = document.createElement('div');
   toggle.className = 'collapse-toggle';
+  toggle.setAttribute('role', 'button');
+  toggle.setAttribute('tabindex', '0');
   toggle.textContent = 'Show more ▼';
   bubble.appendChild(toggle);
 }
@@ -796,4 +801,14 @@ messagesEl.addEventListener('click', (e) => {
 
   const saDetails = t.closest('.sa-details');
   if (saDetails) { toggleSaDetails(saDetails); return; }
+});
+
+// Keyboard activation for the role="button" elements above: Enter/Space
+// re-dispatches as a click so the same delegation handles it.
+messagesEl.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const btn = e.target.closest('[role="button"]');
+  if (!btn || !messagesEl.contains(btn)) return;
+  e.preventDefault();
+  btn.click();
 });

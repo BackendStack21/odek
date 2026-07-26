@@ -135,5 +135,66 @@ export function hideCancel() {
 }
 
 export function toggleShortcuts() {
-  document.getElementById('shortcuts-overlay').classList.toggle('active');
+  const overlay = document.getElementById('shortcuts-overlay');
+  if (isDialogOpen(overlay)) closeDialog();
+  else openDialog(overlay);
 }
+
+// ── Screen-reader announcements ──
+// announce writes to the visually-hidden #sr-status live region. The clear-
+// then-set cycle forces re-announcement of identical consecutive messages.
+export function announce(msg) {
+  const el = document.getElementById('sr-status');
+  if (!el) return;
+  el.textContent = '';
+  setTimeout(() => { el.textContent = msg; }, 30);
+}
+
+// ── Modal dialog focus management ──
+// openDialog moves focus into the dialog, closeDialog returns it to the
+// previously focused element, and a global Tab handler cycles focus within
+// the open dialog (focus trap). Only one modal dialog is open at a time.
+const FOCUSABLE_SEL = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+let activeDialog = null; // { overlay, returnFocus }
+
+export function openDialog(overlay) {
+  if (!overlay) return;
+  closeDialog();
+  const dialog = overlay.querySelector('[role="dialog"]');
+  activeDialog = { overlay, returnFocus: document.activeElement };
+  overlay.classList.add('active');
+  if (dialog) {
+    const preferred = dialog.querySelector('[data-autofocus]') || dialog.querySelector(FOCUSABLE_SEL);
+    (preferred || dialog).focus();
+  }
+}
+
+export function closeDialog() {
+  if (!activeDialog) return;
+  const { overlay, returnFocus } = activeDialog;
+  activeDialog = null;
+  overlay.classList.remove('active');
+  if (returnFocus && returnFocus.focus) returnFocus.focus();
+}
+
+export function isDialogOpen(overlay) {
+  return !!(activeDialog && activeDialog.overlay === overlay);
+}
+
+// Focus trap: keep Tab / Shift+Tab cycling inside the open dialog.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Tab' || !activeDialog) return;
+  const dialog = activeDialog.overlay.querySelector('[role="dialog"]');
+  if (!dialog) return;
+  const items = Array.from(dialog.querySelectorAll(FOCUSABLE_SEL)).filter(el => !el.disabled);
+  if (!items.length) { e.preventDefault(); dialog.focus(); return; }
+  const first = items[0], last = items[items.length - 1];
+  const active = document.activeElement;
+  if (e.shiftKey && (active === first || active === dialog)) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && (active === last || active === dialog)) {
+    e.preventDefault();
+    first.focus();
+  }
+});

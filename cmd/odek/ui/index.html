@@ -11,7 +11,7 @@
 <body>
 <div id="app">
   <!-- Top Bar -->
-  <div id="topbar">
+  <header id="topbar">
     <button id="hamburger-btn" aria-label="Toggle sidebar">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
     </button>
@@ -34,28 +34,28 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </button>
     </div>
-  </div>
+  </header>
 
   <!-- Sidebar -->
-  <div id="sidebar">
+  <nav id="sidebar" aria-label="Sessions">
     <div id="sidebar-header">
       <h3>Sessions</h3>
       <button class="new-session-btn" title="New session">＋</button>
     </div>
     <input id="sidebar-search" type="text" placeholder="Filter…" />
     <div id="session-list"></div>
-  </div>
+  </nav>
 
   <div id="sidebar-overlay"></div>
 
   <!-- Main Chat -->
-  <div id="main">
+  <main id="main">
     <div id="loading-skeleton">
       <div class="skeleton-bar"></div>
       <div class="skeleton-bar"></div>
       <div class="skeleton-bar"></div>
     </div>
-    <div id="messages">
+    <div id="messages" role="log" aria-live="polite" aria-relevant="additions">
       <button id="scroll-bottom-btn" aria-label="Scroll to bottom">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
       </button>
@@ -65,8 +65,8 @@
           <div class="es-name">odek</div>
           <p class="es-sub">autonomous agent runtime</p>
           <div class="es-hints">
-            <span>shortcuts /?/</span>
-            <span>refresh sessions</span>
+            <span role="button" tabindex="0">shortcuts /?/</span>
+            <span role="button" tabindex="0">refresh sessions</span>
           </div>
         </div>
       </div>
@@ -91,18 +91,19 @@
         </div>
       </div>
     </div>
-  </div>
+  </main>
 </div>
 
 <!-- Keyboard Shortcuts -->
 <div id="shortcuts-overlay">
-  <div id="shortcuts-dialog">
-    <h3>Keyboard shortcuts</h3>
+  <div id="shortcuts-dialog" role="dialog" aria-modal="true" aria-labelledby="shortcuts-title" tabindex="-1">
+    <h3 id="shortcuts-title">Keyboard shortcuts</h3>
     <div class="shortcut-row"><span class="sc-label">Send message</span><span class="sc-key">Enter</span></div>
     <div class="shortcut-row"><span class="sc-label">New line</span><span class="sc-key">Shift+Enter</span></div>
     <div class="shortcut-row"><span class="sc-label">History up</span><span class="sc-key">↑</span></div>
     <div class="shortcut-row"><span class="sc-label">History down</span><span class="sc-key">↓</span></div>
     <div class="shortcut-row"><span class="sc-label">File/session reference</span><span class="sc-key">@</span></div>
+    <div class="shortcut-row"><span class="sc-label">Completion navigation</span><span class="sc-key">↑↓ · Enter/Tab · Esc</span></div>
     <div class="shortcut-row"><span class="sc-label">Toggle shortcuts</span><span class="sc-key">?</span></div>
     <div class="shortcut-row"><span class="sc-label">Refresh sessions</span><span class="sc-key">⌘R</span></div>
     <div class="shortcut-row"><span class="sc-label">Toggle thinking</span><span class="sc-key">Alt+T</span></div>
@@ -114,16 +115,19 @@
 
 <!-- Confirm Dialog -->
 <div id="confirm-overlay">
-  <div id="confirm-dialog">
+  <div id="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
     <div class="confirm-icon">⚠</div>
-    <h3>Delete session?</h3>
+    <h3 id="confirm-title">Delete session?</h3>
     <p id="confirm-msg">This action cannot be undone.</p>
     <div id="confirm-actions">
-      <button class="cancel">Cancel</button>
+      <button class="cancel" data-autofocus>Cancel</button>
       <button class="delete-confirm" id="confirm-delete-btn">Delete</button>
     </div>
   </div>
 </div>
+
+<!-- Screen-reader-only live status region (announce() in js/utils.js) -->
+<div id="sr-status" class="sr-only" role="status" aria-live="polite"></div>
 
 <div class="toast" id="toast"></div>
 
