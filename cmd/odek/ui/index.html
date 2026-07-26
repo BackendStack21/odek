@@ -12,7 +12,7 @@
 <div id="app">
   <!-- Top Bar -->
   <div id="topbar">
-    <button id="hamburger-btn" onclick="toggleSidebar()" aria-label="Toggle sidebar">
+    <button id="hamburger-btn" aria-label="Toggle sidebar">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
     </button>
     <span class="top-brand"><span class="top-brand-text">odek</span></span>
@@ -25,12 +25,12 @@
     <span class="session-stats" id="session-stats"></span>
     <span class="model" id="model-label"></span>
     <div class="top-controls">
-      <select id="model-picker" onchange="onPickerChange(this.value)" title="Switch model">
+      <select id="model-picker" title="Switch model">
         <option value="">Loading...</option>
       </select>
       <input id="custom-model-input" type="text" placeholder="model id…" title="Custom model ID — press Enter to apply" />
-      <button id="theme-btn" onclick="toggleTheme()" title="Toggle theme" aria-label="Toggle theme">◐</button>
-      <button id="cancel-btn" onclick="cancelAgent()" aria-label="Stop">
+      <button id="theme-btn" title="Toggle theme" aria-label="Toggle theme">◐</button>
+      <button id="cancel-btn" aria-label="Stop">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </button>
     </div>
@@ -40,13 +40,13 @@
   <div id="sidebar">
     <div id="sidebar-header">
       <h3>Sessions</h3>
-      <button class="new-session-btn" onclick="newSession()" title="New session">＋</button>
+      <button class="new-session-btn" title="New session">＋</button>
     </div>
     <input id="sidebar-search" type="text" placeholder="Filter…" />
     <div id="session-list"></div>
   </div>
 
-  <div id="sidebar-overlay" onclick="toggleSidebar()"></div>
+  <div id="sidebar-overlay"></div>
 
   <!-- Main Chat -->
   <div id="main">
@@ -56,7 +56,7 @@
       <div class="skeleton-bar"></div>
     </div>
     <div id="messages">
-      <button id="scroll-bottom-btn" onclick="scrollToBottom()" aria-label="Scroll to bottom">
+      <button id="scroll-bottom-btn" aria-label="Scroll to bottom">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
       </button>
       <div id="empty-state">
@@ -65,8 +65,8 @@
           <div class="es-name">odek</div>
           <p class="es-sub">autonomous agent runtime</p>
           <div class="es-hints">
-            <span onclick="toggleShortcuts()">shortcuts /?/</span>
-            <span onclick="loadSessions()">refresh sessions</span>
+            <span>shortcuts /?/</span>
+            <span>refresh sessions</span>
           </div>
         </div>
       </div>
@@ -86,7 +86,7 @@
             <span class="input-prompt">❯</span>
             <textarea id="prompt" rows="1" placeholder="ask anything…  (@ to reference)"></textarea>
           </div>
-          <button id="think-btn" onclick="toggleThinkingMode()" title="Toggle extended thinking for next prompt (Alt+T)">think</button>
+          <button id="think-btn" title="Toggle extended thinking for next prompt (Alt+T)">think</button>
           <button id="send-btn" disabled>↵</button>
         </div>
       </div>
@@ -119,14 +119,14 @@
     <h3>Delete session?</h3>
     <p id="confirm-msg">This action cannot be undone.</p>
     <div id="confirm-actions">
-      <button class="cancel" onclick="hideConfirmDialog()">Cancel</button>
-      <button class="delete-confirm" id="confirm-delete-btn" onclick="executeDeleteSession()">Delete</button>
+      <button class="cancel">Cancel</button>
+      <button class="delete-confirm" id="confirm-delete-btn">Delete</button>
     </div>
   </div>
 </div>
 
 <div class="toast" id="toast"></div>
 
-<script src="/app.js"></script>
+<script type="module" src="/app.js"></script>
 </body>
 </html>

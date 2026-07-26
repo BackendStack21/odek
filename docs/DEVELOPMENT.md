@@ -118,7 +118,10 @@ cmd/odek/
   race_on_test.go / race_off_test.go  Build-tag-gated `raceEnabled` const for race-sensitive tests
   ui/
     index.html                Single-page web UI (vanilla JS + CSS)
-    app.js, style.css         Extracted JS / CSS
+    app.js                    ES-module entry point (imports ./js/main.js)
+    js/                       Native ES modules (state, dom, utils, markdown, render,
+                              approvals, sessions, input, ws, main, net) — no build step
+    style.css                 Stylesheet
 docs/                         Documentation
   CLI.md                      CLI reference
   API.md                      Programmatic API (Go library)
@@ -195,7 +198,7 @@ CI (`.github/workflows/test.yml`) runs the unit suite under `-race` on every pus
 
 - **serve.go**: HTTP server with embedded WebSocket handler, `@` resource API, session list API
 - **ws/ws.go**: Zero-dependency RFC 6455 WebSocket. Handles upgrade, text frames, close, ping/pong
-- **ui/index.html + app.js + style.css**: Vanilla JS + CSS SPA. Streaming, collapsible tool blocks, `@` autocomplete, session sidebar
+- **ui/index.html + app.js + js/ + style.css**: Vanilla JS + CSS SPA, split into native ES modules (`ui/js/`, no build step). Streaming, collapsible tool blocks, `@` autocomplete, session sidebar
 
 See [docs/WEBUI.md](docs/WEBUI.md) for the WebSocket protocol and full documentation.
 

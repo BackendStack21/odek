@@ -1762,6 +1762,17 @@ func handleStatic(wsToken string) http.HandlerFunc {
 			return
 		}
 		entry, ok := staticFiles[r.URL.Path]
+		if !ok && strings.HasPrefix(r.URL.Path, "/js/") {
+			// ES modules under /js/ are served from the embedded ui/js
+			// directory. Sanitize to a flat .js file name so path traversal
+			// is impossible.
+			name := strings.TrimPrefix(r.URL.Path, "/js/")
+			if name != "" && !strings.Contains(name, "..") &&
+				!strings.ContainsAny(name, "/\\") && strings.HasSuffix(name, ".js") {
+				entry = [2]string{"ui/js/" + name, "application/javascript; charset=utf-8"}
+				ok = true
+			}
+		}
 		if !ok {
 			http.NotFound(w, r)
 			return
