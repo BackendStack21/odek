@@ -48,6 +48,18 @@ jobs:
           version: v2.12.2
           args: --timeout=10m
 
+  ui-js:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: test
+        run: node --test "cmd/odek/ui/js/**/*.test.js"
+
   vuln:
     runs-on: ubuntu-latest
     steps:

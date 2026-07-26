@@ -119,8 +119,10 @@ cmd/odek/
   ui/
     index.html                Single-page web UI (vanilla JS + CSS)
     app.js                    ES-module entry point (imports ./js/main.js)
-    js/                       Native ES modules (state, dom, utils, markdown, render,
-                              approvals, sessions, input, ws, main, net) — no build step
+    js/                       Native ES modules (state, dom, utils, escape, markdown,
+                              render, approvals, sessions, input, ws, main, net) — no build step.
+                              UI unit tests (node:test golden tests for markdown.js, etc.):
+                              node --test "cmd/odek/ui/js/**/*.test.js"
     style.css                 Stylesheet
 docs/                         Documentation
   CLI.md                      CLI reference

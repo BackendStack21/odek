@@ -3,19 +3,9 @@
 import { S } from './state.js';
 import { messagesEl, scrollBottomBtn, cancelBtn } from './dom.js';
 
-// ── Escape helpers ──
-export function escapeHtml(s) {
-  if (!s) return '';
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
-
-export function escapeAttr(s) {
-  if (!s) return '';
-  // & must be replaced first — doing it last double-escapes the entities
-  // introduced by the quote replacements (&quot; → &amp;quot;).
-  return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')
-          .replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
+// ── Escape helpers (implemented in escape.js so markdown.js can use them
+// without importing the browser-dependent modules) ──
+export { escapeHtml, escapeAttr } from './escape.js';
 
 // ── Number formatting ──
 export function formatNum(n) {

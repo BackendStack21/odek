@@ -1820,7 +1820,10 @@ func handleStatic(wsToken string) http.HandlerFunc {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+		// Strict CSP: no inline scripts (all handlers are addEventListener /
+		// delegation), styles only from self + the few style="" attributes in
+		// index.html. frame-ancestors replaces the old standalone CSP line.
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
 		w.Write(data)
 	}
 }
