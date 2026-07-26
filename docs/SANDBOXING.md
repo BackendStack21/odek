@@ -169,11 +169,18 @@ odek run --sandbox --sandbox-image nvidia/cuda:12.2-runtime "nvidia-smi"
 
 Place a `Dockerfile.odek` in your working directory for **project-specific, pre-baked tooling**. odek auto-detects it and builds an image with a content-hash tag.
 
+> **⚠️ Security: building runs repo-controlled code on your host.**
+> `docker build` executes the Dockerfile's `RUN` instructions *outside* the sandbox threat model — with default capabilities and the **entire working directory readable as build context**. A malicious repository could use this for host-adjacent code execution or to copy workspace files into the image. For this reason:
+>
+> - The implicit build requires **explicit operator approval**, exactly like project-level sandbox overrides: an interactive prompt at startup (`y` = once, `t` = trust this project), a persisted approval in `~/.odek/project_sandbox_approvals.json`, or `ODEK_APPROVE_PROJECT_SANDBOX=1` for CI. The approval is keyed on the Dockerfile's content hash — editing the file forces re-approval.
+> - The build runs with **`--network=none` by default**, so `RUN` steps cannot fetch remote payloads or exfiltrate build-context data over the network. If your Dockerfile legitimately needs network (e.g. `RUN apk add …`), opt in with `ODEK_SANDBOX_BUILD_NETWORK=1` (operator-only; a project cannot set it).
+> - Builds that would start *after* startup (e.g. a new WebUI connection, or a resumed sandboxed session) re-verify the approval and fail closed if the Dockerfile appeared or changed in the meantime.
+
 ```dockerfile
 # Dockerfile.odek
 FROM node:20-alpine
 
-# Pre-install project dependencies
+# Pre-install project dependencies (requires ODEK_SANDBOX_BUILD_NETWORK=1)
 RUN apk add --no-cache git openssh
 RUN npm install -g typescript tsx prettier
 
@@ -184,7 +191,7 @@ WORKDIR /workspace
 
 Build behavior:
 - odek check for `Dockerfile.odek` in the working directory
-- If found and no explicit `sandbox_image` is configured, odek builds it
+- If found and no explicit `sandbox_image` is configured, odek builds it — after the approval gate above
 - The image is tagged as `odek-sandbox:<sha256[:12]>` based on file content hash
 - **Cached:** the image is only rebuilt when `Dockerfile.odek` changes
 - First build takes ~5–30s depending on the image; subsequent runs are instant

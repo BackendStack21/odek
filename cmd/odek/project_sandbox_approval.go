@@ -10,8 +10,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/sandbox"
 	"golang.org/x/term"
 )
 
@@ -21,16 +23,26 @@ import (
 const projectSandboxApprovalsFile = "project_sandbox_approvals.json"
 
 // approveProjectSandbox requires explicit operator approval before any
-// project-level ./odek.json sandbox knobs are applied. This closes the C-1
-// vector where a malicious repo exfiltrates host secrets via ${VAR}
-// interpolation in sandbox_env, pulls an attacker-controlled image, or widens
-// the container's network access.
+// project-controlled sandbox inputs are applied. This covers two surfaces:
+//
+//  1. Project-level ./odek.json sandbox knobs (sandbox_env, sandbox_image,
+//     sandbox_network, sandbox_volumes) — the C-1 vector where a malicious
+//     repo exfiltrates host secrets via ${VAR} interpolation in sandbox_env,
+//     pulls an attacker-controlled image, or widens the container's network
+//     access.
+//  2. An implicit Dockerfile.odek build — docker build executes the
+//     repo-controlled Dockerfile's RUN instructions outside the sandbox
+//     threat model (default capabilities, full read access to the entire
+//     working directory as build context), so merely running odek inside a
+//     malicious repository would otherwise grant host-adjacent code
+//     execution. The approval is keyed on the Dockerfile content hash, so
+//     changing the file invalidates a prior approval.
 //
 // Approval can be granted in three ways:
-//   1. Set ODEK_APPROVE_PROJECT_SANDBOX=1 (useful for CI/non-interactive use).
-//   2. Answer the interactive prompt when running on a TTY.
-//   3. A prior approval for the same project/sandbox fingerprint is persisted
-//      in ~/.odek/project_sandbox_approvals.json.
+//  1. Set ODEK_APPROVE_PROJECT_SANDBOX=1 (useful for CI/non-interactive use).
+//  2. Answer the interactive prompt when running on a TTY.
+//  3. A prior approval for the same project/sandbox fingerprint is persisted
+//     in ~/.odek/project_sandbox_approvals.json.
 //
 // If approval is required and cannot be obtained, approveProjectSandbox
 // returns an error and the command should abort before creating the sandbox.
@@ -42,7 +54,9 @@ func approveProjectSandbox(resolved config.ResolvedConfig, stdin io.Reader, stdo
 // approveProjectSandboxWithTTY is the testable core of approveProjectSandbox.
 func approveProjectSandboxWithTTY(resolved config.ResolvedConfig, stdin io.Reader, stdout io.Writer, tty bool) error {
 	o := resolved.ProjectSandboxOverride
-	if !o.HasEnv && !o.HasImage && !o.HasNetwork && !o.HasVolumes {
+	hasOverride := o.HasEnv || o.HasImage || o.HasNetwork || o.HasVolumes
+	dfHash, dfRequired := dockerfileBuildRequirement(resolved)
+	if !hasOverride && !dfRequired {
 		return nil
 	}
 
@@ -64,41 +78,60 @@ func approveProjectSandboxWithTTY(resolved config.ResolvedConfig, stdin io.Reade
 		return fmt.Errorf("project sandbox approval: load approvals: %w", err)
 	}
 
-	key := projectSandboxApprovalKey(projectDir, o)
-	if approved[key] {
+	overrideKey := projectSandboxApprovalKey(projectDir, o)
+	dfKey := dockerfileApprovalKey(projectDir, dfHash)
+	overrideOK := !hasOverride || approved[overrideKey]
+	dfOK := !dfRequired || approved[dfKey] || sessionDockerfileApproved(dfKey)
+	if overrideOK && dfOK {
 		return nil
 	}
 
 	if !tty {
+		what := fmt.Sprintf("project-level sandbox config in %s", config.ProjectConfigPath())
+		switch {
+		case !hasOverride:
+			what = fmt.Sprintf("%s in the working directory (implicit docker build)", sandbox.DockerfileName)
+		case dfRequired:
+			what += fmt.Sprintf(" and %s (implicit docker build)", sandbox.DockerfileName)
+		}
 		return fmt.Errorf(
-			"project-level sandbox config in %s requires explicit approval\n"+
+			"%s requires explicit approval\n"+
 				"set ODEK_APPROVE_PROJECT_SANDBOX=1 to approve, or run interactively",
-			config.ProjectConfigPath(),
+			what,
 		)
 	}
 
 	reader := bufio.NewReader(stdin)
 
 	fmt.Fprintln(stdout)
-	fmt.Fprintf(stdout, "WARNING: project config (%s) requests sandbox overrides:\n", config.ProjectConfigPath())
-	if o.HasImage {
-		fmt.Fprintf(stdout, "  image:   %s\n", o.Image)
-	}
-	if o.HasNetwork {
-		fmt.Fprintf(stdout, "  network: %s\n", o.Network)
-	}
-	if o.HasEnv {
-		fmt.Fprintf(stdout, "  env:     %s\n", strings.Join(o.EnvKeys, ", "))
-		if o.EnvHasInterpolation {
-			fmt.Fprintln(stdout, "  ⚠️  sandbox_env values contain ${...} interpolation against host environment variables")
+	if hasOverride {
+		fmt.Fprintf(stdout, "WARNING: project config (%s) requests sandbox overrides:\n", config.ProjectConfigPath())
+		if o.HasImage {
+			fmt.Fprintf(stdout, "  image:   %s\n", o.Image)
 		}
+		if o.HasNetwork {
+			fmt.Fprintf(stdout, "  network: %s\n", o.Network)
+		}
+		if o.HasEnv {
+			fmt.Fprintf(stdout, "  env:     %s\n", strings.Join(o.EnvKeys, ", "))
+			if o.EnvHasInterpolation {
+				fmt.Fprintln(stdout, "  ⚠️  sandbox_env values contain ${...} interpolation against host environment variables")
+			}
+		}
+		if o.HasVolumes {
+			fmt.Fprintf(stdout, "  volumes: %s\n", strings.Join(o.Volumes, ", "))
+		}
+		fmt.Fprintln(stdout)
+		fmt.Fprintln(stdout, "Allowing this means code in the sandbox can read workspace files and,")
+		fmt.Fprintln(stdout, "depending on network mode, contact external hosts.")
 	}
-	if o.HasVolumes {
-		fmt.Fprintf(stdout, "  volumes: %s\n", strings.Join(o.Volumes, ", "))
+	if dfRequired {
+		fmt.Fprintf(stdout, "WARNING: %s found in the working directory — odek will build a sandbox image from it.\n", sandbox.DockerfileName)
+		fmt.Fprintln(stdout, "  docker build executes the Dockerfile's RUN instructions as repo-controlled code")
+		fmt.Fprintln(stdout, "  on this host, with the ENTIRE working directory readable as build context.")
+		fmt.Fprintln(stdout, "  (Build network is disabled by default; set ODEK_SANDBOX_BUILD_NETWORK=1 to")
+		fmt.Fprintln(stdout, "  allow networked builds such as `RUN apk add …`.)")
 	}
-	fmt.Fprintln(stdout)
-	fmt.Fprintln(stdout, "Allowing this means code in the sandbox can read workspace files and,")
-	fmt.Fprintln(stdout, "depending on network mode, contact external hosts.")
 	fmt.Fprintln(stdout)
 	fmt.Fprint(stdout, "Approve? [y = once / t = trust this project / N] ")
 
@@ -110,9 +143,18 @@ func approveProjectSandboxWithTTY(resolved config.ResolvedConfig, stdin io.Reade
 
 	switch line {
 	case "y", "yes":
+		if dfRequired {
+			recordSessionDockerfileApproval(dfKey)
+		}
 		return nil
 	case "t", "trust":
-		approved[key] = true
+		if hasOverride {
+			approved[overrideKey] = true
+		}
+		if dfRequired {
+			approved[dfKey] = true
+			recordSessionDockerfileApproval(dfKey)
+		}
 		if err := saveProjectSandboxApprovals(approved); err != nil {
 			return fmt.Errorf("project sandbox approval: save approvals: %w", err)
 		}
@@ -120,6 +162,88 @@ func approveProjectSandboxWithTTY(resolved config.ResolvedConfig, stdin io.Reade
 	default:
 		return fmt.Errorf("project sandbox config was not approved")
 	}
+}
+
+// dockerfileBuildRequirement reports whether the resolved config will trigger
+// an implicit Dockerfile.odek build: sandbox is active, no explicit image is
+// configured (an explicit image makes ResolveImage ignore the Dockerfile),
+// and Dockerfile.odek exists in the working directory. The returned hash is
+// the SHA-256 of the file content, used to key approvals so that changing
+// the Dockerfile invalidates a prior approval.
+func dockerfileBuildRequirement(resolved config.ResolvedConfig) (hash string, required bool) {
+	if !resolved.Sandbox || resolved.SandboxImage != "" {
+		return "", false
+	}
+	data, err := os.ReadFile(sandbox.DockerfileName)
+	if err != nil {
+		return "", false
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), true
+}
+
+// requireDockerfileBuildApproval enforces the Dockerfile.odek build gate at
+// the point of container creation. It is intentionally non-interactive:
+// approval must already have been granted — interactively at startup
+// (recorded as a session approval), persisted via "trust this project", or
+// given via ODEK_APPROVE_PROJECT_SANDBOX=1. Enforcing here (in addition to
+// the startup prompt) closes the gap where a Dockerfile appears or changes
+// AFTER startup — e.g. a serve-mode sandbox created per WebSocket
+// connection, or a resumed session that flips sandbox on — would otherwise
+// build unapproved repo-controlled code.
+func requireDockerfileBuildApproval() error {
+	data, err := os.ReadFile(sandbox.DockerfileName)
+	if err != nil {
+		return nil // no Dockerfile → ResolveImage falls back to alpine:latest
+	}
+	if os.Getenv("ODEK_APPROVE_PROJECT_SANDBOX") == "1" {
+		return nil
+	}
+
+	projectDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("dockerfile build approval: get working directory: %w", err)
+	}
+	projectDir, err = filepath.Abs(projectDir)
+	if err != nil {
+		return fmt.Errorf("dockerfile build approval: abs working directory: %w", err)
+	}
+
+	sum := sha256.Sum256(data)
+	key := dockerfileApprovalKey(projectDir, hex.EncodeToString(sum[:]))
+	if sessionDockerfileApproved(key) {
+		return nil
+	}
+	if approved, err := loadProjectSandboxApprovals(); err == nil && approved[key] {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s requires explicit approval before odek builds it — docker build executes\n"+
+			"repo-controlled RUN instructions with the entire working directory as build context.\n"+
+			"Approve interactively at startup, or set ODEK_APPROVE_PROJECT_SANDBOX=1",
+		sandbox.DockerfileName,
+	)
+}
+
+// sessionDockerfileApprovals records Dockerfile content approvals granted
+// interactively in this process ("y" = once), so the build-time enforcement
+// in setupSandbox can honour an approval that was given seconds earlier
+// without persisting it. Keyed the same as the persisted store.
+var (
+	sessionDockerfileApprovalsMu sync.Mutex
+	sessionDockerfileApprovals   = map[string]bool{}
+)
+
+func recordSessionDockerfileApproval(key string) {
+	sessionDockerfileApprovalsMu.Lock()
+	defer sessionDockerfileApprovalsMu.Unlock()
+	sessionDockerfileApprovals[key] = true
+}
+
+func sessionDockerfileApproved(key string) bool {
+	sessionDockerfileApprovalsMu.Lock()
+	defer sessionDockerfileApprovalsMu.Unlock()
+	return sessionDockerfileApprovals[key]
 }
 
 // projectSandboxApprovalKey returns a stable key for the persisted approval
@@ -134,6 +258,16 @@ func projectSandboxApprovalKey(projectDir string, o config.ProjectSandboxOverrid
 	for _, v := range o.Volumes {
 		fmt.Fprintf(h, "\x00vol:%s", v)
 	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// dockerfileApprovalKey returns the persisted-approval key for an implicit
+// Dockerfile.odek build. It is keyed on the project directory and the
+// Dockerfile content hash, so editing the Dockerfile invalidates the prior
+// approval and forces re-review.
+func dockerfileApprovalKey(projectDir, contentHash string) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "dockerfile\x00%s\x00%s", projectDir, contentHash)
 	return hex.EncodeToString(h.Sum(nil))
 }
 

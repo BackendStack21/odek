@@ -54,7 +54,10 @@ type Config struct {
 // ResolveImage determines the Docker image for a sandbox container.
 // Resolution order:
 //  1. cfg.Image is explicit → return it unchanged.
-//  2. Dockerfile.odek exists in CWD → build (or reuse cached) image.
+//  2. Dockerfile.odek exists in CWD → build (or reuse cached) image. The
+//     caller is responsible for gating this on operator approval (see
+//     cmd/odek/project_sandbox_approval.go) — the Dockerfile and its build
+//     context are repo-controlled.
 //  3. Otherwise → "alpine:latest".
 func ResolveImage(cfg Config) (string, error) {
 	if cfg.Image != "" {
@@ -71,6 +74,11 @@ func ResolveImage(cfg Config) (string, error) {
 // changing the Dockerfile produces a new tag, identical content reuses the
 // existing image instantly. Build output is piped to stderr so the user
 // sees progress on first build.
+//
+// Callers must gate this behind operator approval before invoking it (see
+// cmd/odek/project_sandbox_approval.go): Dockerfile.odek is repo-controlled,
+// and docker build executes its RUN instructions outside the sandbox threat
+// model with the entire working directory as build context.
 func buildFromDockerfile() (string, error) {
 	data, err := os.ReadFile(DockerfileName)
 	if err != nil {
@@ -81,7 +89,7 @@ func buildFromDockerfile() (string, error) {
 
 	if _, err := exec.Command("docker", "image", "inspect", tag).CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "odek: building sandbox image from %s...\n", DockerfileName)
-		build := exec.Command("docker", "build", "-t", tag, "-f", DockerfileName, ".")
+		build := exec.Command("docker", dockerBuildArgs(tag)...)
 		build.Stderr = os.Stderr
 		build.Stdout = os.Stderr
 		if err := build.Run(); err != nil {
@@ -90,6 +98,21 @@ func buildFromDockerfile() (string, error) {
 		fmt.Fprintf(os.Stderr, "odek: built image %s\n", tag)
 	}
 	return tag, nil
+}
+
+// dockerBuildArgs returns the "docker build" argument slice for the given
+// tag. The build runs with --network=none by default: a repo-controlled
+// Dockerfile.odek must not be able to exfiltrate build-context data (the
+// entire working directory) or fetch attacker payloads during RUN steps.
+// Operators who need networked builds (e.g. `RUN apk add …`) can opt in
+// with ODEK_SANDBOX_BUILD_NETWORK=1 — an operator-only setting, since a
+// project cannot set environment variables for the odek process.
+func dockerBuildArgs(tag string) []string {
+	args := []string{"build"}
+	if os.Getenv("ODEK_SANDBOX_BUILD_NETWORK") != "1" {
+		args = append(args, "--network=none")
+	}
+	return append(args, "-t", tag, "-f", DockerfileName, ".")
 }
 
 // BuildRunArgs returns the "docker run" argument slice for the given
