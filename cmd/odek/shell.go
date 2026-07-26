@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -161,10 +163,10 @@ func (t *shellTool) Call(args string) (string, error) {
 
 	// Bound execution: cancel with the agent context (Ctrl-C / turn timeout)
 	// and a generous backstop timeout so a stuck command can never wedge the
-	// agent forever. Note: in sandbox mode this kills the host-side
-	// `docker exec` client, which unblocks the agent, but Docker does not
-	// propagate the signal to the in-container process — that lingers until the
-	// container is torn down at session end.
+	// agent forever. In sandbox mode this kills the host-side `docker exec`
+	// client, which unblocks the agent — but Docker does not propagate the
+	// signal to the in-container process, so buildCmd also returns a
+	// follow-up that kills the in-container process group explicitly.
 	base := t.toolCtx()
 	timeout := t.timeout
 	if timeout <= 0 {
@@ -173,7 +175,7 @@ func (t *shellTool) Call(args string) (string, error) {
 	ctx, cancel := context.WithTimeout(base, timeout)
 	defer cancel()
 
-	cmd := t.buildCmd(ctx, input.Command)
+	cmd, killInContainer := t.buildCmd(ctx, input.Command)
 	// Run the command in its own process group and, on cancel/timeout, kill the
 	// WHOLE group — not just the `sh` leader. `sh -c "<cmd>"` may fork children
 	// (e.g. `sleep`); killing only the leader leaves them alive holding the
@@ -197,6 +199,15 @@ func (t *shellTool) Call(args string) (string, error) {
 	cmd.Stderr = errW
 
 	err := cmd.Run()
+
+	// On timeout/cancel the host-side `docker exec` client was killed by the
+	// group kill above, but the in-container process survives it (Docker does
+	// not propagate the signal). Kill its process group explicitly so a
+	// timed-out command cannot keep burning CPU/memory or leave half-written
+	// files in /workspace until the container is torn down.
+	if ctx.Err() != nil && killInContainer != nil {
+		killInContainer()
+	}
 
 	// Surface cancellation/timeout as a clear, actionable error rather than an
 	// opaque "signal: killed".
@@ -283,15 +294,52 @@ func (t *shellTool) promptUser(cmd, description string) error {
 // buildCmd constructs the exec.Cmd for the given shell command.
 //
 // When sandbox mode is active (containerName is non-empty), the command
-// is wrapped in "docker exec -w /workspace <container> sh -c <cmd>".
-// The -w /workspace flag ensures the command runs in the working directory
-// that was mounted into the container during setupSandbox().
+// is wrapped in "docker exec -w /workspace <container>" with a pid-marker
+// wrapper (see wrapSandboxCommand), and the returned follow-up kills the
+// in-container process group — call it when the command's context is
+// cancelled or times out. The -w /workspace flag ensures the command runs
+// in the working directory that was mounted into the container during
+// setupSandbox(). The follow-up is nil in host mode.
 //
 // When running on the host (default), the command executes via "sh -c"
 // in odek's current working directory.
-func (t *shellTool) buildCmd(ctx context.Context, command string) *exec.Cmd {
+func (t *shellTool) buildCmd(ctx context.Context, command string) (*exec.Cmd, func()) {
 	if t.containerName != "" {
-		return exec.CommandContext(ctx, "docker", "exec", "-w", "/workspace", t.containerName, "sh", "-c", command)
+		argv, followUp := wrapSandboxCommand(t.containerName, command)
+		return exec.CommandContext(ctx, "docker", argv...), followUp
 	}
-	return exec.CommandContext(ctx, "sh", "-c", command)
+	return exec.CommandContext(ctx, "sh", "-c", command), nil
+}
+
+// sandboxCmdSeq numbers sandboxed command invocations so each gets a unique
+// pid-marker file inside the container.
+var sandboxCmdSeq atomic.Uint64
+
+// wrapSandboxCommand builds the "docker exec" argv that runs command inside
+// the container with a pid-marker wrapper, plus a follow-up function that
+// kills the in-container process group and removes the marker.
+//
+// Killing the host-side `docker exec` client on timeout/cancel does NOT
+// terminate the in-container process — Docker does not propagate the signal
+// — so without a follow-up, timed-out commands keep running (CPU/memory,
+// half-written files in /workspace) until the container is destroyed.
+//
+// The wrapper records the container-side pid of the shell in a
+// per-invocation pidfile. docker exec processes are their own process-group
+// leaders (pgid == pid; verified on alpine and debian images), so
+// signalling the negative pid tears down the command and every child it
+// forked. Children that call setsid/setpgid themselves escape the group —
+// this is best-effort, not a hard guarantee. The command string travels as
+// a positional argument ($1), never interpolated into the wrapper, so
+// quoting cannot break out of it.
+func wrapSandboxCommand(containerName, command string) (argv []string, followUp func()) {
+	pidFile := fmt.Sprintf("/tmp/.odek-cmd-%d-%d.pid", os.Getpid(), sandboxCmdSeq.Add(1))
+	wrapper := "echo $$ > " + pidFile + "; sh -c \"$1\"; rc=$?; rm -f " + pidFile + "; exit $rc"
+	argv = []string{"exec", "-w", "/workspace", containerName, "sh", "-c", wrapper, "odek-cmd", command}
+	followUp = func() {
+		// Best-effort: the container may already be gone (session cleanup).
+		_ = exec.Command("docker", "exec", containerName, "sh", "-c",
+			"kill -KILL -$(cat "+pidFile+") 2>/dev/null; rm -f "+pidFile).Run()
+	}
+	return argv, followUp
 }

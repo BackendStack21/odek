@@ -189,20 +189,39 @@ func TestShellTool_Call_StdoutAndStderr(t *testing.T) {
 
 func TestShellTool_BuildCmd_Local(t *testing.T) {
 	st := &shellTool{}
-	cmd := st.buildCmd(context.Background(), "echo test")
+	cmd, followUp := st.buildCmd(context.Background(), "echo test")
 	args := cmd.Args
 	if args[0] != "sh" || args[1] != "-c" || args[2] != "echo test" {
 		t.Errorf("local cmd args = %v, want [sh -c 'echo test']", args)
+	}
+	if followUp != nil {
+		t.Error("host mode must not return an in-container follow-up")
 	}
 }
 
 func TestShellTool_BuildCmd_Docker(t *testing.T) {
 	st := &shellTool{containerName: "odek-12345"}
-	cmd := st.buildCmd(context.Background(), "echo test")
+	cmd, followUp := st.buildCmd(context.Background(), "echo test")
 	args := cmd.Args
-	expected := []string{"docker", "exec", "-w", "/workspace", "odek-12345", "sh", "-c", "echo test"}
-	if !stringSlicesEqual(args, expected) {
-		t.Errorf("docker cmd args = %v, want %v", args, expected)
+	// Shape: docker exec -w /workspace <container> sh -c <wrapper> odek-cmd <command>
+	if len(args) != 10 {
+		t.Fatalf("docker cmd args = %v, want 10 elements", args)
+	}
+	if args[0] != "docker" || args[1] != "exec" || args[2] != "-w" || args[3] != "/workspace" ||
+		args[4] != "odek-12345" || args[5] != "sh" || args[6] != "-c" || args[8] != "odek-cmd" || args[9] != "echo test" {
+		t.Errorf("docker cmd args = %v, unexpected shape", args)
+	}
+	// The wrapper records the group-leader pid in a marker file and the
+	// command travels as $1, never interpolated.
+	wrapper := args[7]
+	if !strings.Contains(wrapper, "echo $$ > /tmp/.odek-cmd-") || !strings.Contains(wrapper, `sh -c "$1"`) {
+		t.Errorf("wrapper = %q, want pid-marker + $1 dispatch", wrapper)
+	}
+	if strings.Contains(wrapper, "echo test") {
+		t.Errorf("wrapper = %q, command must not be interpolated into it", wrapper)
+	}
+	if followUp == nil {
+		t.Error("sandbox mode must return an in-container kill follow-up")
 	}
 }
 
@@ -362,7 +381,7 @@ func TestShellTool_CheckApproval(t *testing.T) {
 
 func TestShellTool_BuildCmd_Default(t *testing.T) {
 	st := &shellTool{}
-	cmd := st.buildCmd(context.Background(), "echo hello")
+	cmd, _ := st.buildCmd(context.Background(), "echo hello")
 	if cmd.Args[0] != "sh" {
 		t.Errorf("expected sh, got %s", cmd.Args[0])
 	}
