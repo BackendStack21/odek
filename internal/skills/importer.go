@@ -412,6 +412,19 @@ func parsePrivateIP(host string) net.IP {
 		}
 		nums = append(nums, uint32(val))
 	}
+	// inet_aton requires every leading part to fit in one byte and the final
+	// part to fit in the remaining bytes (a.b → b ≤ 0xFFFFFF, a.b.c →
+	// c ≤ 0xFFFF, a.b.c.d → d ≤ 0xFF). Reject out-of-range parts instead of
+	// silently truncating them (e.g. "300.1.1.1" → 44.1.1.1).
+	for i, n := range nums {
+		max := uint64(0xFF)
+		if i == len(nums)-1 {
+			max = (uint64(1) << (8 * uint(5-len(nums)))) - 1
+		}
+		if uint64(n) > max {
+			return nil
+		}
+	}
 	switch len(nums) {
 	case 1:
 		return net.IPv4(byte(nums[0]>>24), byte(nums[0]>>16), byte(nums[0]>>8), byte(nums[0]))

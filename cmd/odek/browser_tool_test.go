@@ -596,3 +596,37 @@ func TestBrowser_WrapsLinkURL(t *testing.T) {
 		t.Errorf("link URL should be wrapped as untrusted, got %q", r.Elements[0].URL)
 	}
 }
+
+// TestBrowser_SkipsDangerousLinkSchemes pins the incomplete-scheme-check fix:
+// links with script/active-content schemes (javascript:, data:, vbscript:,
+// any casing) are excluded from the extracted interactive elements.
+func TestBrowser_SkipsDangerousLinkSchemes(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`<html><body>
+			<a href="javascript:alert(1)">js</a>
+			<a href="JavaScript:alert(1)">js-caps</a>
+			<a href="data:text/html,<script>alert(1)</script>">data</a>
+			<a href="vbscript:msgbox(1)">vbs</a>
+			<a href="/safe">safe link</a>
+		</body></html>`))
+	}))
+	defer ts.Close()
+
+	b := newTestBrowserTool()
+	callJSON(t, b, `{"action":"navigate","url":"`+ts.URL+`"}`)
+
+	result := callJSON(t, b, `{"action":"snapshot"}`)
+	var r struct {
+		Content string `json:"content"`
+	}
+	mustUnmarshal(t, result, &r)
+
+	for _, bad := range []string{"javascript:", "JavaScript:", "data:", "vbscript:"} {
+		if strings.Contains(r.Content, bad) {
+			t.Errorf("snapshot contains %q link, want it filtered: %q", bad, r.Content)
+		}
+	}
+	if !strings.Contains(r.Content, "/safe") {
+		t.Errorf("snapshot missing the safe link: %q", r.Content)
+	}
+}

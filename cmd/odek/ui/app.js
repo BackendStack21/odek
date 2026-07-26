@@ -165,6 +165,10 @@ function formatErrorMessage(msg) {
 
 // ── Number formatting ──
 function formatNum(n) {
+  // Coerce to a finite number so a crafted (non-numeric) value can never be
+  // reinterpreted as HTML when the result lands in an innerHTML assignment.
+  n = Number(n);
+  if (!isFinite(n)) n = 0;
   if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k';
   return String(n);
 }
@@ -305,8 +309,10 @@ function connect() {
           if (lastAssistant) {
             const stats = document.createElement('div');
             stats.className = 'msg-stats';
+            const lat = Number(event.latency);
+            const latSafe = isFinite(lat) ? lat : 0;
             const spans = [];
-            spans.push('<span title="Response time">⚡ ' + (event.latency < 1 ? (event.latency * 1000).toFixed(0) + 'ms' : event.latency.toFixed(1) + 's') + '</span>');
+            spans.push('<span title="Response time">⚡ ' + (latSafe < 1 ? (latSafe * 1000).toFixed(0) + 'ms' : latSafe.toFixed(1) + 's') + '</span>');
             if (event.contextTokens != null) spans.push('<span title="Input tokens (prompt)">' + formatNum(event.contextTokens) + ' in</span>');
             if (event.outputTokens != null) spans.push('<span title="Output tokens (completion)">' + formatNum(event.outputTokens) + ' out</span>');
             // Cache metrics — show only when non-zero
@@ -1268,7 +1274,9 @@ function escapeHtml(s) {
 
 function escapeAttr(s) {
   if (!s) return '';
-  return s.replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/&/g,'&amp;');
+  // & must be replaced first — doing it last double-escapes the entities
+  // introduced by the quote replacements (&quot; → &amp;quot;).
+  return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 // ── Markdown to HTML (safe, no DOMPurify needed since we control input) ──
@@ -1460,18 +1468,33 @@ function clearAttachedFiles() {
 }
 
 function renderFileChips() {
-  if (attachedFiles.length === 0) {
-    fileChips.innerHTML = '';
-    return;
-  }
-  fileChips.innerHTML = attachedFiles.map((f, i) =>
-    '<span class="file-chip">' +
-      '<span class="chip-icon">📎</span>' +
-      '<span class="chip-name">' + escapeHtml(f.name) + '</span>' +
-      '<span class="chip-size">' + formatFileSize(f.size) + '</span>' +
-      '<span class="chip-remove" onclick="removeAttachedFile(' + i + ')">✕</span>' +
-    '</span>'
-  ).join('');
+  // Build nodes with textContent rather than innerHTML so a file name can
+  // never be reinterpreted as markup.
+  fileChips.textContent = '';
+  attachedFiles.forEach((f, i) => {
+    const chip = document.createElement('span');
+    chip.className = 'file-chip';
+
+    const icon = document.createElement('span');
+    icon.className = 'chip-icon';
+    icon.textContent = '📎';
+
+    const name = document.createElement('span');
+    name.className = 'chip-name';
+    name.textContent = f.name;
+
+    const size = document.createElement('span');
+    size.className = 'chip-size';
+    size.textContent = formatFileSize(f.size);
+
+    const remove = document.createElement('span');
+    remove.className = 'chip-remove';
+    remove.textContent = '✕';
+    remove.addEventListener('click', () => removeAttachedFile(i));
+
+    chip.append(icon, name, size, remove);
+    fileChips.appendChild(chip);
+  });
 }
 
 function readFileAsText(file) {
