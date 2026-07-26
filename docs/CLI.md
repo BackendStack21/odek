@@ -161,12 +161,12 @@ When running without `--sandbox`, odek classifies every shell command by risk an
 |-------|---------|----------|
 | 🟢 safe | allow | `ls`, `cat`, `grep`, `go build` |
 | 🟡 local_write | allow | `rm file`, `mv`, `echo > file` |
-| 🟠 system_write | **prompt** | `sudo`, `apt install`, writes to `/etc/` |
+| 🟠 system_write | **prompt** | `sudo`, `apt install`, writes to `/etc/`, `chmod -R 777 /`, `git reset --hard`, `git clean -fdx` |
 | 🔴 destructive | **deny** | `rm -rf /`, `dd if=/dev/zero`, `mkfs` |
 | 🔴 network_egress | **prompt** | `curl`, `git push`, `ssh`, `scp` |
 | 🔴 code_execution | **prompt** | `curl url \| bash`, `eval`, `node -e`, `go run` |
 | 🟠 install | **prompt** | `npm install`, `pip install`, `go install <path>` |
-| 🔴 unknown | **deny** | any command whose program name isn't recognised; MCP tools (`<server>__<tool>`) |
+| 🔴 unknown | **deny** | any command whose program name isn't recognised; MCP tools (`<server>__<tool>`); pipe-fed `xargs <verb>` whose stdin payload isn't statically determinable |
 | ⬛ blocked | **deny** | Fork bombs, `dd` to block devices |
 
 odek **fails closed**: a command or MCP tool whose name matches no known-safe or known-dangerous
