@@ -1,8 +1,10 @@
 package skills
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -361,6 +363,118 @@ func TestExecuteMicroCuration_Merge(t *testing.T) {
 	}
 }
 
+// TestMicroCuration_ConfinedToUserDir is the project→global boundary
+// regression test: a project-dir skill must never participate in
+// micro-curation. Without confinement, the exact-duplicate check would
+// merge the project skill's body into a global skill written under
+// userDir — silently promoting project content to a global skill.
+func TestMicroCuration_ConfinedToUserDir(t *testing.T) {
+	userDir := t.TempDir()
+	projectDir := filepath.Join(t.TempDir(), ".odek", "skills")
+
+	global := Skill{
+		Name:     "global-draft",
+		Body:     "shared body",
+		BodyHash: "samehash",
+		Quality:  QualityDraft,
+		Source:   SkillSource{Dir: userDir},
+	}
+	project := Skill{
+		Name:     "project-draft",
+		Body:     "shared body",
+		BodyHash: "samehash",
+		Quality:  QualityDraft,
+		Source:   SkillSource{Dir: projectDir},
+	}
+
+	result := MicroCuration(userDir, []Skill{global, project}, []Skill{global, project}, CurationConfig{StalenessDays: 90, AutoPrune: true})
+	if len(result.Merged) != 0 {
+		t.Errorf("project skill must not participate in merges, got %v", result.Merged)
+	}
+	if len(result.Deleted) != 0 {
+		t.Errorf("project skill must not be deleted, got %v", result.Deleted)
+	}
+
+	// Sanity: two global drafts with the same body DO merge (confinement
+	// does not neuter curation of global skills).
+	other := global
+	other.Name = "other-global-draft"
+	result = MicroCuration(userDir, []Skill{global}, []Skill{global, other}, CurationConfig{})
+	if len(result.Merged) == 0 {
+		t.Errorf("expected duplicate global drafts to merge, got %v", result.Merged)
+	}
+}
+
+// TestExecuteMicroCurationWithLLM_SynthesizedMergeBody: when an LLM is
+// available its synthesized body replaces the mechanical concatenation.
+func TestExecuteMicroCurationWithLLM_SynthesizedMergeBody(t *testing.T) {
+	dir := t.TempDir()
+	body := "## Overview\n\nTest body that is long enough to pass validation checks. Adding more text here to make sure the body is at least 300 characters long. Still more text needed. Almost there. Just a bit more. Done now yes.\n\n## Common Pitfalls\n\n- Test pitfall\n\n## Verification\n\n- Test verification body text."
+	a := Skill{Name: "skill-keep", Body: body, Quality: QualityDraft}
+	b := Skill{Name: "skill-remove", Body: body + " different", Quality: QualityDraft}
+	if err := WriteSkill(dir, a); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteSkill(dir, b); err != nil {
+		t.Fatal(err)
+	}
+
+	synthesized := "## Overview\n\nUnified procedure synthesized by the model, deduplicating both overlapping skills into one coherent guide with enough text to pass the sanity bounds comfortably.\n\n## Step-by-Step\n\n1. Do it once\n\n## Common Pitfalls\n\n- none\n\n## Verification\n\n- works"
+	llm := &mockLLMClient{resp: synthesized}
+
+	result := &MicroCurationResult{Merged: []string{"skill-keep", "skill-remove"}}
+	if err := ExecuteMicroCurationWithLLM(dir, result, []Skill{a, b}, llm); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "skill-keep", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "Unified procedure synthesized by the model") {
+		t.Error("expected LLM-synthesized body in merged skill")
+	}
+	if strings.Contains(string(data), "Merged from") {
+		t.Error("mechanical concatenation marker must not appear when LLM merge succeeds")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "skill-remove")); !os.IsNotExist(err) {
+		t.Error("skill-remove should be deleted after merge")
+	}
+}
+
+// TestExecuteMicroCurationWithLLM_FallbackOnFailure: any LLM failure or
+// invalid output falls back to mechanical MergeSkills concatenation.
+func TestExecuteMicroCurationWithLLM_FallbackOnFailure(t *testing.T) {
+	body := "## Overview\n\nTest body that is long enough to pass validation checks. Adding more text here to make sure the body is at least 300 characters long. Still more text needed. Almost there. Just a bit more. Done now yes.\n\n## Common Pitfalls\n\n- Test pitfall\n\n## Verification\n\n- Test verification body text."
+	for name, llm := range map[string]LLMClient{
+		"call-error":     &mockLLMClient{err: errors.New("boom")},
+		"invalid-output": &mockLLMClient{resp: "too short"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			a := Skill{Name: "skill-keep", Body: body, Quality: QualityDraft}
+			b := Skill{Name: "skill-remove", Body: body + " different", Quality: QualityDraft}
+			if err := WriteSkill(dir, a); err != nil {
+				t.Fatal(err)
+			}
+			if err := WriteSkill(dir, b); err != nil {
+				t.Fatal(err)
+			}
+			result := &MicroCurationResult{Merged: []string{"skill-keep", "skill-remove"}}
+			if err := ExecuteMicroCurationWithLLM(dir, result, []Skill{a, b}, llm); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(filepath.Join(dir, "skill-keep", "SKILL.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(data), "Merged from skill-remove") {
+				t.Error("expected mechanical concatenation fallback")
+			}
+		})
+	}
+}
+
 func TestExecuteMicroCuration_Delete(t *testing.T) {
 	dir := t.TempDir()
 
@@ -396,12 +510,14 @@ func TestMicroCuration_OverlapGroups(t *testing.T) {
 		Body:    body,
 		Trigger: SkillTrigger{TopicKeywords: []string{"docker", "container", "build"}},
 		Quality: QualityDraft,
+		Source:  SkillSource{Dir: dir},
 	}
 	b := Skill{
 		Name:    "skill-y",
 		Body:    body + " different",
 		Trigger: SkillTrigger{TopicKeywords: []string{"docker", "container", "deploy"}},
 		Quality: QualityDraft,
+		Source:  SkillSource{Dir: dir},
 	}
 
 	result := MicroCuration(dir, nil, []Skill{a, b}, CurationConfig{StalenessDays: 90})
@@ -421,6 +537,7 @@ func TestRunAutoCurate_SkipsDeleted(t *testing.T) {
 		Body:    body,
 		Trigger: SkillTrigger{TopicKeywords: []string{"test"}},
 		Quality: QualityDraft,
+		Source:  SkillSource{Dir: dir},
 	}
 	if err := WriteSkill(dir, s); err != nil {
 		t.Fatal(err)
@@ -461,12 +578,13 @@ func TestMicroCuration_StaleFlagging(t *testing.T) {
 
 	body := "## Overview\n\nTest body that is long enough to pass validation checks. Adding more text here to make sure the body is at least 300 characters long. Still more text needed. Almost there. Just a bit more. Done now yes.\n\n## Common Pitfalls\n\n- Test pitfall\n\n## Verification\n\n- Test verification. Adding more text to reach the minimum body length threshold for validation. More text still needed. OK this should be enough."
 
+	dir := t.TempDir()
 	skills := []Skill{
-		{Name: "stale-draft", Quality: QualityDraft, LastUsed: old, Body: body, Trigger: SkillTrigger{TopicKeywords: []string{"test"}}},
-		{Name: "stale-manual", Quality: QualityManual, LastUsed: old, Body: body, Trigger: SkillTrigger{TopicKeywords: []string{"test"}}},
+		{Name: "stale-draft", Quality: QualityDraft, LastUsed: old, Body: body, Trigger: SkillTrigger{TopicKeywords: []string{"test"}}, Source: SkillSource{Dir: dir}},
+		{Name: "stale-manual", Quality: QualityManual, LastUsed: old, Body: body, Trigger: SkillTrigger{TopicKeywords: []string{"test"}}, Source: SkillSource{Dir: dir}},
 	}
 
-	result := MicroCuration("", nil, skills, CurationConfig{StalenessDays: 90, AutoCurate: true})
+	result := MicroCuration(dir, nil, skills, CurationConfig{StalenessDays: 90, AutoCurate: true})
 
 	// stale-draft should be flagged (draft, old)
 	foundDraft := false

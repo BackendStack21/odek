@@ -219,6 +219,55 @@ func TestSkillSaveTool(t *testing.T) {
 	}
 }
 
+// TestSkillSaveTool_ProjectScope saves with scope=project and verifies
+// the skill lands in the project dir only.
+func TestSkillSaveTool_ProjectScope(t *testing.T) {
+	userDir := t.TempDir()
+	projectDir := filepath.Join(t.TempDir(), ".odek", "skills")
+	sm := NewSkillManager(userDir, projectDir)
+	tool := &SkillSaveTool{Manager: sm}
+
+	body := "## Overview\nRelease this project.\n\n## Step-by-Step\n1. ./scripts/release.sh\n\n## Common Pitfalls\n- Tag mismatch\n\n## Verification\n- git ls-remote --tags origin\nPadding to exceed the three hundred character minimum body requirement easily with extra descriptive text here and even more padding to be safe."
+	jsonBody := strings.ReplaceAll(body, "\n", "\\n")
+	jsonStr := `{"name":"project-release","description":"Release flow","body":"` + jsonBody + `","scope":"project"}`
+	if _, err := tool.Call(jsonStr); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, "project-release", "SKILL.md")); err != nil {
+		t.Error("expected skill in project dir:", err)
+	}
+	if _, err := os.Stat(filepath.Join(userDir, "project-release")); !os.IsNotExist(err) {
+		t.Error("project-scoped skill must not land in the global dir")
+	}
+}
+
+// TestSkillSaveTool_ProjectScopeRefusedWhenSameDir: when the project dir
+// resolves to the global dir (odek run from $HOME), scope=project is an
+// error, not a silent global save.
+func TestSkillSaveTool_ProjectScopeRefusedWhenSameDir(t *testing.T) {
+	userDir := t.TempDir()
+	sm := NewSkillManager(userDir, userDir)
+	tool := &SkillSaveTool{Manager: sm}
+
+	body := strings.Repeat("## Overview\nx\n## Common Pitfalls\n- y\n", 8)
+	jsonBody := strings.ReplaceAll(body, "\n", "\\n")
+	jsonStr := `{"name":"x","description":"d","body":"` + jsonBody + `","scope":"project"}`
+	if _, err := tool.Call(jsonStr); err == nil {
+		t.Error("expected refusal when project dir resolves to global dir")
+	}
+}
+
+// TestSkillSaveTool_InvalidScope covers the enum validation.
+func TestSkillSaveTool_InvalidScope(t *testing.T) {
+	sm := NewSkillManager(t.TempDir(), "")
+	tool := &SkillSaveTool{Manager: sm}
+	body := strings.Repeat("## Overview\nx\n## Common Pitfalls\n- y\n", 8)
+	jsonBody := strings.ReplaceAll(body, "\n", "\\n")
+	if _, err := tool.Call(`{"name":"x","description":"d","body":"` + jsonBody + `","scope":"mars"}`); err == nil {
+		t.Error("expected error for invalid scope")
+	}
+}
+
 func TestSkillSaveTool_SetsProvenance(t *testing.T) {
 	dir := t.TempDir()
 	sm := NewSkillManager(dir, "")

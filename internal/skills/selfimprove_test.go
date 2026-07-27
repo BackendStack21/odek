@@ -44,6 +44,7 @@ func TestRunAllHeuristics_Empty(t *testing.T) {
 
 func TestDefaultSkillsConfig(t *testing.T) {
 	cfg := DefaultSkillsConfig()
+	cfg.AutoSave.MinOccurrences = 1 // single-run test: bypass recurrence gate
 	if cfg.MaxAutoLoad != 3 {
 		t.Errorf("MaxAutoLoad = %d", cfg.MaxAutoLoad)
 	}
@@ -203,9 +204,9 @@ func TestDetectExplicitInstruction_NoMatch(t *testing.T) {
 func TestDetectCorrection_Found(t *testing.T) {
 	msgs := []string{"no, do it differently"}
 	calls := []ToolCall{
-		{Tool: "terminal", Input: "wrong-approach", ExitCode: 0, Turn: 0},
-		{Tool: "terminal", Input: "correct-approach", ExitCode: 0, Turn: 1},
-		{Tool: "terminal", Input: "verify-result", ExitCode: 0, Turn: 2},
+		{Tool: "terminal", Input: "deploy --target staging", ExitCode: 0, Turn: 0},
+		{Tool: "terminal", Input: "deploy --rollback staging", ExitCode: 0, Turn: 1},
+		{Tool: "terminal", Input: "deploy --verify staging", ExitCode: 0, Turn: 2},
 	}
 	suggestions := DetectCorrection(calls, msgs)
 	if len(suggestions) == 0 {
@@ -490,8 +491,9 @@ func TestAutoSaveSuggestions_WithHeuristics(t *testing.T) {
 	}
 
 	cfg := DefaultSkillsConfig()
+	cfg.AutoSave.MinOccurrences = 1 // single-run test: bypass recurrence gate
 	cfg.AutoSave.MaxPerRun = 5
-	result := AutoSaveSuggestions(suggestions, dir, cfg, nil, guard.Config{}, false)
+	result := AutoSaveSuggestions(suggestions, dir, "", cfg, nil, guard.Config{}, false)
 
 	if len(result.Saved) != 2 {
 		t.Fatalf("expected 2 saved, got %d", len(result.Saved))
@@ -511,13 +513,38 @@ func TestAutoSaveSuggestions_QualityGateFails(t *testing.T) {
 	}
 
 	cfg := DefaultSkillsConfig()
-	result := AutoSaveSuggestions(suggestions, dir, cfg, nil, guard.Config{}, false)
+	cfg.AutoSave.MinOccurrences = 1 // single-run test: bypass recurrence gate
+	result := AutoSaveSuggestions(suggestions, dir, "", cfg, nil, guard.Config{}, false)
 
 	if len(result.Saved) != 0 {
 		t.Errorf("expected 0 saved, got %d", len(result.Saved))
 	}
 	if len(result.Failed) != 1 {
 		t.Errorf("expected 1 failed, got %d", len(result.Failed))
+	}
+}
+
+// TestAutoSaveSuggestions_ScoreRanked verifies the MaxPerRun budget goes
+// to the strongest suggestion rather than the first in heuristic order.
+func TestAutoSaveSuggestions_ScoreRanked(t *testing.T) {
+	dir := t.TempDir()
+	weakBody := "## Overview\n\nTest with enough body text to pass the quality gate minimum of 200 characters. Adding more padding here to ensure we cross that threshold. Still going with more text content for the body length requirement.\n\n## Common Pitfalls\n\n- Pitfall"
+	strongBody := weakBody + "\n\n## Verification\n\n- Run command"
+
+	suggestions := []SkillSuggestion{
+		// Weak first: no verification section, no command log, no description.
+		{Name: "weak-skill", Heuristic: "multi-step", Body: weakBody},
+		// Strong: verification + command log + description + LLM provenance.
+		{Name: "strong-skill", Heuristic: "llm-enhanced", Body: strongBody, Description: "solid", CommandLog: []string{"go build ./...", "go test ./...", "go vet ./..."}},
+	}
+
+	cfg := DefaultSkillsConfig()
+	cfg.AutoSave.MinOccurrences = 1 // single-run test: bypass recurrence gate
+	cfg.AutoSave.MaxPerRun = 1
+	result := AutoSaveSuggestions(suggestions, dir, "", cfg, nil, guard.Config{}, false)
+
+	if len(result.Saved) != 1 || result.Saved[0] != "strong-skill" {
+		t.Errorf("expected strong-skill to win the budget, got saved=%v", result.Saved)
 	}
 }
 
@@ -532,8 +559,9 @@ func TestAutoSaveSuggestions_MaxPerRun(t *testing.T) {
 	}
 
 	cfg := DefaultSkillsConfig()
+	cfg.AutoSave.MinOccurrences = 1 // single-run test: bypass recurrence gate
 	cfg.AutoSave.MaxPerRun = 2
-	result := AutoSaveSuggestions(suggestions, dir, cfg, nil, guard.Config{}, false)
+	result := AutoSaveSuggestions(suggestions, dir, "", cfg, nil, guard.Config{}, false)
 
 	if len(result.Saved) != 2 {
 		t.Errorf("expected 2 saved (max per run), got %d", len(result.Saved))
@@ -548,7 +576,8 @@ func TestAutoSaveSuggestions_DeclinesTaintedByDefault(t *testing.T) {
 	}
 
 	cfg := DefaultSkillsConfig()
-	result := AutoSaveSuggestions(suggestions, dir, cfg, nil, guard.Config{}, false)
+	cfg.AutoSave.MinOccurrences = 1 // single-run test: bypass recurrence gate
+	result := AutoSaveSuggestions(suggestions, dir, "", cfg, nil, guard.Config{}, false)
 
 	if len(result.Saved) != 0 {
 		t.Errorf("expected 0 saved for tainted skill by default, got %d", len(result.Saved))
@@ -566,7 +595,8 @@ func TestAutoSaveSuggestions_AllowsTaintedWhenForced(t *testing.T) {
 	}
 
 	cfg := DefaultSkillsConfig()
-	result := AutoSaveSuggestions(suggestions, dir, cfg, nil, guard.Config{}, true)
+	cfg.AutoSave.MinOccurrences = 1 // single-run test: bypass recurrence gate
+	result := AutoSaveSuggestions(suggestions, dir, "", cfg, nil, guard.Config{}, true)
 
 	if len(result.Saved) != 1 || result.Saved[0] != "tainted-skill" {
 		t.Errorf("expected 1 saved tainted skill when allowUntrusted=true, got %v", result.Saved)
@@ -578,6 +608,7 @@ func TestAutoSaveSuggestions_AllowsTaintedWhenForced(t *testing.T) {
 
 func TestDefaultSkipThreshold(t *testing.T) {
 	cfg := DefaultSkillsConfig()
+	cfg.AutoSave.MinOccurrences = 1 // single-run test: bypass recurrence gate
 	if cfg.Curation.SkipThreshold != 3 {
 		t.Errorf("SkipThreshold = %d, want 3 (one accidental skip should not permanently suppress)", cfg.Curation.SkipThreshold)
 	}

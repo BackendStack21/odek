@@ -59,6 +59,10 @@ odek run --learn "set up CI with GitHub Actions"
 - **Auto-curation runs silently** — after every session where skills were saved, overlaps are merged, duplicates removed, and stale skills pruned.
 - **Learning is non-blocking** — skill detection and auto-save run in a background goroutine after the agent's response is delivered. The process exits immediately; learning completes asynchronously on a best-effort basis.
 - **Tainted skills require explicit promotion** — skills learned from `browser`, MCP tools, or sensitive file reads are saved with `Provenance.Untrusted=true` and `NeedsReview=true`. They cannot be auto-loaded until you run `odek skill promote <name> --force` after reviewing the body.
+- **Scope gates keep garbage out** — machine-specific suggestions (absolute home-directory paths) are dropped entirely. Project-specific suggestions (repo-rooted `./scripts/...` invocations, hardcoded release version tags) are redirected to the project skills dir `./.odek/skills` instead of the global `~/.odek/skills` — project-related skills are never promoted to global, and project-dir skills stay pinned to `NeedsReview` until promoted locally. Auto-curation (merge/prune) is confined to the global dir, so project skills can never be merged into or deleted by the global curator.
+- **Recurrence before persistence** — a pattern must be seen in at least `auto_save.min_occurrences` distinct sessions (default 2) before it is eligible for auto-save; first sightings are recorded in `~/.odek/skills/.candidates.json` and reported as pending.
+- **Save-time hygiene** — suggestions are score-ranked (verification section, command-log evidence, LLM-judged) so the `max_per_run` budget goes to the strongest candidates; near-duplicates of existing skills (Jaccard word-set similarity ≥ 0.85) are skipped instead of creating parallel skills; and every SKILL.md write is secret-scanned, with detected credentials replaced by `[REDACTED]` and the skill pinned to `NeedsReview`.
+- **LLM curation** — with `llm_curate` enabled, merge bodies are synthesized by the model (deduplicated, coherent) instead of mechanically concatenated; failures fall back to concatenation.
 
 ## CLI Usage
 
@@ -118,10 +122,10 @@ odek skill promote procedure-browser --force
    - Verify each step's output before proceeding
    - Exit code 0 means success
 
-   Save as skill? [Y/n/s=skip always]:
+   Save as skill? [Y/n/p=save to project/s=skip always]:
 ```
 
-Type `y` (or Enter) to save, `n` to skip (temporarily), `s` to skip permanently.
+Type `y` (or Enter) to save globally, `p` to save to the project skills dir (`./.odek/skills`, for project-specific procedures), `n` to skip (temporarily), `s` to skip permanently.
 
 ### Skip Persistence
 
@@ -378,7 +382,7 @@ After the agent completes:
    ## Overview
    Procedure for: docker
    ...
-   Save as skill? [Y/n/s=skip always]: y
+   Save as skill? [Y/n/p=save to project/s=skip always]: y
    ✓ Saved skill "procedure-docker"
 ```
 
@@ -393,7 +397,7 @@ odek skill list
 ```
 📝 Skill suggestion: repeated-ls
    ...
-   Save as skill? [Y/n/s=skip always]: s
+   Save as skill? [Y/n/p=save to project/s=skip always]: s
    Skipped permanently. Use `odek skill reset-skips` to re-enable.
 ```
 
@@ -407,7 +411,7 @@ odek skill reset-skips repeated-ls
 - **Heuristic detection is deterministic** — same tool calls always produce the same suggestions. Skip persistence prevents repeats (one skip = permanent suppression).
 - **Max 1 per heuristic** — if an agent session has 10 multi-step sequences, only the first is suggested.
 - **Max 5 suggestions total** — one per heuristic type.
-- **Auto-curation handles dedup** — overlapping skills are automatically merged after each session.
+- **Dedup at save and curation time** — near-duplicates of existing skills are rejected at save time (Jaccard similarity ≥ 0.85); remaining overlaps are merged by auto-curation after each session.
 - **Command-only** — the heuristics work on terminal (`shell`) tool calls. Other tools (read_file, write_file) are visible in the transcript but aren't analyzed for patterns.
 - **LLM enhancement requires API calls** — when `llm_learn: true`, each suggestion triggers an LLM call for enrichment. Set to `false` for zero-cost heuristic-only mode.
 - **No REPL integration** — learning currently only works with `odek run`, not in REPL mode.
@@ -423,7 +427,8 @@ odek skill reset-skips repeated-ls
     "auto_save": {
       "enabled": true,
       "require_llm": true,
-      "max_per_run": 3
+      "max_per_run": 3,
+      "min_occurrences": 2
     },
     "curation": {
       "staleness_days": 90,
@@ -440,10 +445,11 @@ odek skill reset-skips repeated-ls
 |-------|---------|-------------|
 | `learn` | `true` | Enable skill learning |
 | `llm_learn` | `true` | Use LLM to enhance detected patterns |
-| `llm_curate` | `true` | Use LLM for curation suggestions |
+| `llm_curate` | `true` | Use LLM for curation suggestions and merge-body synthesis |
 | `auto_save.enabled` | `true` | Auto-save without prompting |
 | `auto_save.require_llm` | `true` | Only auto-save LLM-enhanced skills |
-| `auto_save.max_per_run` | `3` | Max skills to auto-save per session |
+| `auto_save.max_per_run` | `3` | Max skills to auto-save per session (strongest suggestions win the budget) |
+| `auto_save.min_occurrences` | `2` | Sessions a pattern must recur in before it may be auto-saved (`1` disables the recurrence gate) |
 | `curation.auto_curate` | `true` | Run auto-curation after sessions |
 | `curation.skip_threshold` | `1` | Skips needed for permanent suppression |
 | `curation.skip_reset_days` | `30` | Days before skip expires |

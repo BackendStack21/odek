@@ -1396,8 +1396,10 @@ func TestRunLearn_MultiStepProcedure(t *testing.T) {
 	}()
 
 	// Create local odek.json with auto_save enabled, LLM enhancement disabled
-	// (mock server can't handle enhancement prompts)
-	configContent := `{"skills": {"verbose": true, "auto_save": {"enabled": true, "require_llm": false}, "llm_learn": false}}`
+	// (mock server can't handle enhancement prompts). min_occurrences=1
+	// bypasses the recurrence gate — this test covers the save path; the
+	// gate itself has dedicated unit tests in internal/skills.
+	configContent := `{"skills": {"verbose": true, "auto_save": {"enabled": true, "require_llm": false, "min_occurrences": 1}, "llm_learn": false}}`
 	os.WriteFile("odek.json", []byte(configContent), 0644)
 	defer os.Remove("odek.json")
 

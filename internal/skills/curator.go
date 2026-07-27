@@ -163,6 +163,31 @@ func countDupBodies(skills []Skill) int {
 
 // ── Post-Session Micro-Curation ──────────────────────────────────────
 
+// globalOnly filters allSkills to the skills physically stored under
+// userDir. Project-dir and extra-dir skills must stay out of auto-curation:
+// merges write the combined body into userDir (silently promoting project
+// content to a global skill — project-related skills must never become
+// global), and deletions resolve names against userDir only, so acting on
+// foreign skills is either a leak or a no-op. Skills without a recorded
+// source dir are excluded as well (fail-closed).
+func globalOnly(allSkills []Skill, userDir string) []Skill {
+	ua, err := filepath.Abs(userDir)
+	if err != nil {
+		return nil
+	}
+	out := make([]Skill, 0, len(allSkills))
+	for _, s := range allSkills {
+		if s.Source.Dir == "" {
+			continue
+		}
+		sa, err := filepath.Abs(s.Source.Dir)
+		if err == nil && sa == ua {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // MicroCurationResult reports actions taken by MicroCuration.
 type MicroCurationResult struct {
 	Merged  []string // skill names that were merged (kept, removed)
@@ -171,10 +196,13 @@ type MicroCurationResult struct {
 	Notes   []string // informational messages
 }
 
-// MicroCuration runs lightweight curation after a session.
+// MicroCuration runs lightweight curation after a session. Only skills
+// stored under userDir are considered (see globalOnly).
 // Returns a result describing actions taken.
 func MicroCuration(userDir string, newSkills []Skill, allSkills []Skill, cfg CurationConfig) *MicroCurationResult {
 	result := &MicroCurationResult{}
+	newSkills = globalOnly(newSkills, userDir)
+	allSkills = globalOnly(allSkills, userDir)
 
 	// Check for exact duplicates against existing skills
 	for _, newS := range newSkills {
@@ -394,6 +422,14 @@ func keysFromSet(set map[string]bool) []string {
 // ExecuteMicroCuration runs a MicroCurationResult's merges and deletions.
 // It writes updated skill files and removes merged/deleted skill directories.
 func ExecuteMicroCuration(userDir string, result *MicroCurationResult, allSkills []Skill) error {
+	return ExecuteMicroCurationWithLLM(userDir, result, allSkills, nil)
+}
+
+// ExecuteMicroCurationWithLLM is ExecuteMicroCuration with optional
+// LLM-synthesized merge bodies (MergeBodyWithLLM). A nil llm or any LLM
+// failure falls back to mechanical concatenation, and the merged skill
+// keeps the worst-of provenance union either way.
+func ExecuteMicroCurationWithLLM(userDir string, result *MicroCurationResult, allSkills []Skill, llm LLMClient) error {
 	if result == nil || userDir == "" {
 		return nil
 	}
@@ -424,6 +460,12 @@ func ExecuteMicroCuration(userDir string, result *MicroCurationResult, allSkills
 		}
 
 		merged := MergeSkills(keep, remove)
+		if llm != nil {
+			if body := MergeBodyWithLLM(llm, keep, remove); body != "" {
+				merged.Body = body
+				merged.BodyHash = HashBody(body)
+			}
+		}
 		if err := WriteSkill(userDir, merged); err != nil {
 			return fmt.Errorf("merge: write %s: %w", keepName, err)
 		}
@@ -457,6 +499,11 @@ func RunAutoCurate(userDir string, newSkills, allSkills []Skill, cfg SkillsConfi
 	// Build skip list to check skip-threshold deletions
 	skipList := LoadSkipList(userDir)
 
+	// Auto-curation is confined to global (userDir) skills; project-dir
+	// skills are never merged into or deleted from the global dir.
+	newSkills = globalOnly(newSkills, userDir)
+	allSkills = globalOnly(allSkills, userDir)
+
 	// Run micro-curation
 	result := MicroCuration(userDir, newSkills, allSkills, cfg.Curation)
 
@@ -475,9 +522,14 @@ func RunAutoCurate(userDir string, newSkills, allSkills []Skill, cfg SkillsConfi
 		}
 	}
 
-	// Execute merges and deletions
+	// Execute merges and deletions. When LLM curation is enabled, merge
+	// bodies are synthesized by the model instead of concatenated.
 	if len(result.Merged) > 0 || len(result.Deleted) > 0 {
-		if err := ExecuteMicroCuration(userDir, result, allSkills); err != nil {
+		var mergeLLM LLMClient
+		if cfg.LLMCurate {
+			mergeLLM = llmClient
+		}
+		if err := ExecuteMicroCurationWithLLM(userDir, result, allSkills, mergeLLM); err != nil {
 			result.Notes = append(result.Notes, fmt.Sprintf("execution error: %v", err))
 		}
 	}

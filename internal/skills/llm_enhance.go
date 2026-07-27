@@ -164,6 +164,38 @@ func EnhanceCurationWithLLM(llm LLMClient, report *CurationReport) string {
 	return resp
 }
 
+// MergeBodyWithLLM asks the LLM to synthesize one coherent, deduplicated
+// skill body from two overlapping skills. Returns "" on any failure or on
+// output that fails sanity checks — the caller falls back to mechanical
+// concatenation (MergeSkills).
+func MergeBodyWithLLM(llm LLMClient, keep, remove Skill) string {
+	if llm == nil {
+		return ""
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Merge these two overlapping skills into a single coherent skill.\n\n")
+	fmt.Fprintf(&b, "── SKILL A (%s) ──\n%s\n\n", keep.Name, keep.Body)
+	fmt.Fprintf(&b, "── SKILL B (%s) ──\n%s\n\n", remove.Name, remove.Body)
+	b.WriteString("Output ONLY the merged markdown body with ## Overview, ## Step-by-Step, ## Common Pitfalls, and ## Verification sections. ")
+	b.WriteString("Deduplicate overlapping steps and keep the most specific guidance from both inputs.")
+
+	resp, err := llm.SimpleCall(context.Background(),
+		"You are a skill curation system. Merge overlapping skill bodies into one deduplicated, coherent procedure. Output only the merged body, no commentary.",
+		b.String(),
+	)
+	if err != nil {
+		return ""
+	}
+	resp = strings.TrimSpace(resp)
+	// Sanity checks: the merged body must keep the required structure and
+	// stay within sane bounds; anything else gets the mechanical fallback.
+	if !strings.Contains(resp, "## Overview") || len(resp) < 200 || len(resp) > 20000 {
+		return ""
+	}
+	return resp
+}
+
 // ExtractSkillsFromConversation takes the full conversation history (all messages)
 // and asks the LLM to identify whether a reusable skill was demonstrated.
 // Unlike GenerateSkillWithLLM (which only enhances pattern-detected tool call

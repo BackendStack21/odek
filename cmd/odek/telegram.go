@@ -2047,13 +2047,18 @@ func handleChatMessage(
 
 		// Auto-save if enabled
 		if skillsCfg.AutoSave.Enabled {
-			result := skills.AutoSaveSuggestions(filtered, userDir, *skillsCfg, telegramGuard, telegramGuardCfg, false)
+			result := skills.AutoSaveSuggestions(filtered, userDir, skills.ProjectSkillsDir(), *skillsCfg, telegramGuard, telegramGuardCfg, false)
 			for _, name := range result.Saved {
 				sm.Notifier.Notify(skills.SkillEvent{
 					Type: "saved", SkillName: name, Timestamp: time.Now().UTC(),
 				})
 			}
-			if len(result.Saved) > 0 {
+			for _, name := range result.ProjectSaved {
+				sm.Notifier.Notify(skills.SkillEvent{
+					Type: "saved", SkillName: name, Timestamp: time.Now().UTC(),
+				})
+			}
+			if len(result.Saved)+len(result.ProjectSaved) > 0 {
 				sm.MarkDirty()
 				sm.Reload()
 				// Run micro-curation

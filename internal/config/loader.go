@@ -1842,6 +1842,9 @@ func resolveSkills(cfg *SkillsConfig) skills.SkillsConfig {
 			def.AutoSave.MaxPerRun = cfg.AutoSave.MaxPerRun
 		}
 		def.AutoSave.RequireLLM = cfg.AutoSave.RequireLLM
+		if cfg.AutoSave.MinOccurrences > 0 {
+			def.AutoSave.MinOccurrences = cfg.AutoSave.MinOccurrences
+		}
 	}
 	if cfg.LLMLearn != nil {
 		def.LLMLearn = *cfg.LLMLearn

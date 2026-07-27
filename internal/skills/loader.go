@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/BackendStack21/odek/internal/redact"
 )
 
 // MaxSkillFileBytes caps the size of a single SKILL.md file that the loader
@@ -408,9 +410,20 @@ func FormatAsContext(s Skill) string {
 // WriteSkill writes a skill to the given directory as <name>/SKILL.md.
 // Creates the directory if it doesn't exist. Returns an error if the
 // skill name is unsafe for filesystem use (path traversal, etc.).
+//
+// Skill bodies are session content persisted to disk permanently, so the
+// body and description are secret-scanned before writing: recognized
+// credentials are replaced with [REDACTED], and any skill that needed
+// redaction is pinned to NeedsReview — a session that handled secrets
+// deserves an operator look before the skill can auto-load.
 func WriteSkill(dir string, s Skill) error {
 	if err := ValidateSkillName(s.Name); err != nil {
 		return fmt.Errorf("write skill: %w", err)
+	}
+	if redact.HasSecrets(s.Body) || redact.HasSecrets(s.Description) {
+		s.Body = redact.RedactSecrets(s.Body)
+		s.Description = redact.RedactSecrets(s.Description)
+		s.Provenance.NeedsReview = true
 	}
 	skillDir := filepath.Join(dir, s.Name)
 	if err := os.MkdirAll(skillDir, 0755); err != nil {

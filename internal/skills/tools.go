@@ -432,7 +432,8 @@ func containsKeyword(kws []string, filter string) bool {
 
 // ── skill_save ─────────────────────────────────────────────────────────
 
-// SkillSaveTool saves a new skill to the user directory.
+// SkillSaveTool saves a new skill to the user directory, or to the
+// project skills directory when scope="project".
 type SkillSaveTool struct {
 	Manager *SkillManager
 }
@@ -443,7 +444,12 @@ func (t *SkillSaveTool) Description() string {
 	return `Save a new skill. The skill will be available in future sessions.
 
 Required: name, description, body
-Optional: topic_keywords, action_keywords
+Optional: topic_keywords, action_keywords, scope
+
+Scope: "global" (default) saves to the user skills dir; "project" saves
+project-specific procedures to ./.odek/skills so they stay local to this
+repository and are never promoted to the global dir. Project skills
+require manual promotion (odek skill promote) before they can auto-load.
 
 Quality gates enforced:
 - Overview section required
@@ -480,6 +486,11 @@ func (t *SkillSaveTool) Schema() any {
 				"items":       map[string]any{"type": "string"},
 				"description": "Action keywords for trigger matching (e.g. build, deploy)",
 			},
+			"scope": map[string]any{
+				"type":        "string",
+				"enum":        []string{"global", "project"},
+				"description": "Where to save: 'global' (default, user skills dir) or 'project' (./.odek/skills, for project-specific procedures)",
+			},
 		},
 		"required": []string{"name", "description", "body"},
 	}
@@ -492,6 +503,7 @@ func (t *SkillSaveTool) Call(args string) (string, error) {
 		Body           string   `json:"body"`
 		TopicKeywords  []string `json:"topic_keywords,omitempty"`
 		ActionKeywords []string `json:"action_keywords,omitempty"`
+		Scope          string   `json:"scope,omitempty"`
 	}
 	if err := json.Unmarshal([]byte(args), &input); err != nil {
 		return "", fmt.Errorf("skill_save: parse args: %w", err)
@@ -574,7 +586,26 @@ func (t *SkillSaveTool) Call(args string) (string, error) {
 		warnings = append(warnings, "body flagged by guard — skill saved but requires manual review before auto-load")
 	}
 
-	if err := WriteSkill(t.Manager.UserDir, skill); err != nil {
+	// Resolve target dir. Project scope keeps project-specific procedures
+	// out of the global dir; it requires a configured, distinct project
+	// skills dir (when odek runs from $HOME they coincide, and mixing
+	// scopes would defeat the boundary).
+	targetDir := t.Manager.UserDir
+	switch input.Scope {
+	case "", "global":
+	case "project":
+		if t.Manager.ProjectDir == "" {
+			return "", fmt.Errorf("skill_save: scope=project requested but no project skills dir is configured")
+		}
+		if sameSkillsDir(t.Manager.ProjectDir, t.Manager.UserDir) {
+			return "", fmt.Errorf("skill_save: scope=project refused: project dir resolves to the global dir")
+		}
+		targetDir = t.Manager.ProjectDir
+	default:
+		return "", fmt.Errorf("skill_save: invalid scope %q (want \"global\" or \"project\")", input.Scope)
+	}
+
+	if err := WriteSkill(targetDir, skill); err != nil {
 		return "", fmt.Errorf("skill_save: write: %w", err)
 	}
 
@@ -591,7 +622,7 @@ func (t *SkillSaveTool) Call(args string) (string, error) {
 		})
 	}
 
-	result := fmt.Sprintf("✓ Saved skill %q to %s\n", skill.Name, t.Manager.UserDir)
+	result := fmt.Sprintf("✓ Saved skill %q to %s\n", skill.Name, targetDir)
 	if len(warnings) > 0 {
 		result += fmt.Sprintf("⚠  Quality warnings:\n  - %s\n", strings.Join(warnings, "\n  - "))
 		result += "  Run `odek skill curate` to improve quality."

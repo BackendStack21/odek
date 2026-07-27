@@ -156,6 +156,72 @@ func TestWriteAndParseSkill(t *testing.T) {
 	}
 }
 
+// TestWriteSkill_RedactsSecrets pins the write-time secret scan: a skill
+// whose body captures session content containing credentials must never
+// persist them to disk, and the skill is pinned to NeedsReview so the
+// operator sees why before it can auto-load.
+func TestWriteSkill_RedactsSecrets(t *testing.T) {
+	dir := t.TempDir()
+	token := "ghp_" + strings.Repeat("a1", 20) // 40-char GitHub PAT shape
+	skill := Skill{
+		Name:        "leaky-skill",
+		Description: "Uses token " + token,
+		Quality:     QualityDraft,
+		Body:        "## Overview\n\nCall the API.\n\n## Step-by-Step\n\n1. curl -H \"Authorization: token " + token + "\" https://api.github.com\n\n## Common Pitfalls\n\n- none",
+	}
+
+	if err := WriteSkill(dir, skill); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "leaky-skill", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), token) {
+		t.Error("secret token persisted to SKILL.md")
+	}
+	if !strings.Contains(string(data), "[REDACTED]") {
+		t.Error("expected [REDACTED] placeholder in SKILL.md")
+	}
+
+	parsed := parseSkillContent(string(data), filepath.Join(dir, "leaky-skill", "SKILL.md"))
+	if parsed == nil {
+		t.Fatal("re-parse failed")
+	}
+	if !parsed.Provenance.NeedsReview {
+		t.Error("skill that needed redaction must be pinned to NeedsReview")
+	}
+}
+
+// TestWriteSkill_NoSecretsUntouched confirms the scan does not alter
+// clean skills (no NeedsReview pinning, body byte-identical).
+func TestWriteSkill_NoSecretsUntouched(t *testing.T) {
+	dir := t.TempDir()
+	skill := Skill{
+		Name:    "clean-skill",
+		Quality: QualityDraft,
+		Body:    "## Overview\n\nRun go test -race ./...\n\n## Common Pitfalls\n\n- none",
+	}
+	if err := WriteSkill(dir, skill); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "clean-skill", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed := parseSkillContent(string(data), filepath.Join(dir, "clean-skill", "SKILL.md"))
+	if parsed == nil {
+		t.Fatal("re-parse failed")
+	}
+	if parsed.Provenance.NeedsReview {
+		t.Error("clean skill must not be pinned to NeedsReview")
+	}
+	if parsed.Body != skill.Body {
+		t.Errorf("body altered: got %q want %q", parsed.Body, skill.Body)
+	}
+}
+
 func TestScanDirs_Empty(t *testing.T) {
 	dir := t.TempDir() // empty dir, no skills
 	result := ScanDirs(dir, "", nil)

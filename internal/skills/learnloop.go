@@ -3,6 +3,7 @@ package skills
 import (
 	"fmt"
 	"io"
+	"sort"
 	"time"
 
 	"github.com/BackendStack21/odek/internal/guard"
@@ -79,6 +80,9 @@ func AnalyzeMessages(messages []LlmMessage, userMessages []string, sm *SkillMana
 // RunAutoSaveLoop drives the non-interactive auto-save pipeline:
 // filter against the skip list, save eligible suggestions, fire notifier
 // events, and trigger micro-curation on any newly saved drafts.
+// projectDir is the project-local skills dir (e.g. ./.odek/skills);
+// project-specific suggestions are redirected there instead of userDir
+// (pass "" to drop them instead).
 //
 // Returns true when auto-save was *attempted* (regardless of whether any
 // individual save succeeded). A true return signals the caller to skip
@@ -89,7 +93,7 @@ func AnalyzeMessages(messages []LlmMessage, userMessages []string, sm *SkillMana
 // verbose, when non-nil, receives human-readable progress lines. Pass
 // nil (or io.Discard) for silent operation; the notifier events still
 // fire either way so the WebUI/Telegram surfaces always see saves.
-func RunAutoSaveLoop(filtered []SkillSuggestion, userDir string, sm *SkillManager, llmClient LLMClient, cfg SkillsConfig, g guard.Guard, guardCfg guard.Config, verbose io.Writer) bool {
+func RunAutoSaveLoop(filtered []SkillSuggestion, userDir, projectDir string, sm *SkillManager, llmClient LLMClient, cfg SkillsConfig, g guard.Guard, guardCfg guard.Config, verbose io.Writer) bool {
 	if !cfg.AutoSave.Enabled {
 		return false
 	}
@@ -97,7 +101,7 @@ func RunAutoSaveLoop(filtered []SkillSuggestion, userDir string, sm *SkillManage
 		return false
 	}
 
-	result := AutoSaveSuggestions(filtered, userDir, cfg, g, guardCfg, false)
+	result := AutoSaveSuggestions(filtered, userDir, projectDir, cfg, g, guardCfg, false)
 
 	if verbose != nil {
 		for _, name := range result.Saved {
@@ -107,14 +111,33 @@ func RunAutoSaveLoop(filtered []SkillSuggestion, userDir string, sm *SkillManage
 				fmt.Fprintf(verbose, "   ✓ Auto-saved skill %q\n", name)
 			}
 		}
+		for _, name := range result.ProjectSaved {
+			fmt.Fprintf(verbose, "   ✓ Saved project-scoped skill %q to %s (project-local; `odek skill promote` there to use)\n", name, projectDir)
+		}
 		if result.Skipped > 0 {
 			fmt.Fprintf(verbose, "   (%d previously skipped, suppressed)\n", result.Skipped)
+		}
+		for _, name := range result.Pending {
+			fmt.Fprintf(verbose, "   ↻ Suggestion %q recorded; will auto-save after it recurs in another session\n", name)
+		}
+		if len(result.DuplicateOf) > 0 {
+			names := make([]string, 0, len(result.DuplicateOf))
+			for name := range result.DuplicateOf {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			for _, name := range names {
+				fmt.Fprintf(verbose, "   ⚭ Skipped %q — near-duplicate of existing skill %q\n", name, result.DuplicateOf[name])
+			}
 		}
 		for _, name := range result.Declined {
 			fmt.Fprintf(verbose, "   ⚠ Declined to auto-save tainted skill %q (review with --force to save)\n", name)
 		}
 		for _, name := range result.GuardFlagged {
 			fmt.Fprintf(verbose, "   ⚠ Guard flagged skill %q (saved but pinned to manual review)\n", name)
+		}
+		for _, name := range result.NonReusable {
+			fmt.Fprintf(verbose, "   ⚠ Skipped non-reusable skill %q (machine-specific, or no project dir to redirect to; save manually if intended)\n", name)
 		}
 		for _, name := range result.Failed {
 			fmt.Fprintf(verbose, "   ⚠ Quality gate failed for %q (use --no-auto-save to review manually)\n", name)
@@ -131,9 +154,16 @@ func RunAutoSaveLoop(filtered []SkillSuggestion, userDir string, sm *SkillManage
 				Timestamp: time.Now().UTC(),
 			})
 		}
+		for _, name := range result.ProjectSaved {
+			sm.Notifier.Notify(SkillEvent{
+				Type:      "saved",
+				SkillName: name,
+				Timestamp: time.Now().UTC(),
+			})
+		}
 	}
 
-	if len(result.Saved) > 0 && sm != nil {
+	if len(result.Saved)+len(result.ProjectSaved) > 0 && sm != nil {
 		sm.MarkDirty()
 		sm.Reload()
 		runPostSaveCurate(userDir, sm, cfg, llmClient, verbose)

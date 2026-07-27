@@ -289,7 +289,8 @@ The `skills` section controls the skill system:
     "auto_save": {
       "enabled": true,
       "require_llm": true,
-      "max_per_run": 3
+      "max_per_run": 3,
+      "min_occurrences": 2
     }
   }
 }
@@ -313,7 +314,8 @@ The `skills` section controls the skill system:
 | `curation.skip_reset_days` | — | 30 | Days after which a skip expires (re-allows suggestion) |
 | `auto_save.enabled` | — | true | Auto-save quality skill suggestions without prompting |
 | `auto_save.require_llm` | — | true | Only auto-save if LLM enhancement was applied |
-| `auto_save.max_per_run` | — | 3 | Max skills to auto-save per session |
+| `auto_save.max_per_run` | — | 3 | Max skills to auto-save per session (score-ranked) |
+| `auto_save.min_occurrences` | — | 2 | Distinct sessions a pattern must recur in before auto-save (1 disables) |
 | `embedding` | — | *(inherits top-level `embedding`)* | Optional override of the shared embedding backend for semantic skill matching. When unset, skills inherit the top-level `embedding` default with the per-turn query timeout bounded to 2s. See [Shared embedding backend](#shared-embedding-backend-embedding--memory-sessions--skills). |
 
 ## Memory configuration
