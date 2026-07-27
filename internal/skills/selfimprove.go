@@ -781,6 +781,17 @@ func ProjectScopeReason(s SkillSuggestion) string {
 	return ""
 }
 
+// sameSkillsDir reports whether two directory paths resolve to the same
+// filesystem location.
+func sameSkillsDir(a, b string) bool {
+	aa, err1 := filepath.Abs(a)
+	bb, err2 := filepath.Abs(b)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return aa == bb
+}
+
 // projectRedirectDir returns the project skills dir a project-scoped
 // suggestion should be saved into, or "" when redirecting is unsafe:
 // either no project dir was provided, or it resolves to the same location
@@ -788,12 +799,7 @@ func ProjectScopeReason(s SkillSuggestion) string {
 // the global dir — saving there would defeat the boundary this gate
 // enforces, so the caller drops the suggestion instead).
 func projectRedirectDir(projectDir, userDir string) string {
-	if projectDir == "" {
-		return ""
-	}
-	pa, perr := filepath.Abs(projectDir)
-	ua, uerr := filepath.Abs(userDir)
-	if perr != nil || uerr != nil || pa == ua {
+	if projectDir == "" || sameSkillsDir(projectDir, userDir) {
 		return ""
 	}
 	return projectDir

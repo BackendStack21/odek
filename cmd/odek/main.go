@@ -2024,7 +2024,7 @@ func runLearnLoop(messages []llm.Message, sm *skills.SkillManager, llmClient ski
 }
 
 // interactiveSavePrompt walks the user through each suggestion, reading
-// y/n/s from stdin. Lives in cmd/odek because it couples to the TTY.
+// y/n/p/s from stdin. Lives in cmd/odek because it couples to the TTY.
 func interactiveSavePrompt(filtered []skills.SkillSuggestion, userDir string, sm *skills.SkillManager, g guard.Guard, guardCfg guard.Config) {
 	fmt.Fprintf(os.Stderr, "\n🔍 Learning: detected %d skill pattern(s)\n", len(filtered))
 	for _, s := range filtered {
@@ -2032,7 +2032,7 @@ func interactiveSavePrompt(filtered []skills.SkillSuggestion, userDir string, sm
 		if s.IsTainted() {
 			fmt.Fprintf(os.Stderr, "   ⚠ This suggestion is tainted (sources: %s). It will be saved but cannot be auto-loaded until promoted with --force.\n", strings.Join(s.Provenance.Sources, ", "))
 		}
-		fmt.Fprintf(os.Stderr, "   Save as skill? [Y/n/s=skip always]: ")
+		fmt.Fprintf(os.Stderr, "   Save as skill? [Y/n/p=save to project/s=skip always]: ")
 
 		var response string
 		fmt.Scanf("%s", &response)
@@ -2044,6 +2044,24 @@ func interactiveSavePrompt(filtered []skills.SkillSuggestion, userDir string, sm
 				fmt.Fprintf(os.Stderr, "   ✗ Error saving skill: %v\n", err)
 			} else {
 				fmt.Fprintf(os.Stderr, "   ✓ Saved skill %q\n", s.Name)
+				sm.MarkDirty()
+				sm.Reload()
+			}
+		case "p", "project":
+			// Project-scoped save: keeps project-specific procedures out
+			// of the global dir. Refused when the project dir resolves to
+			// the global one (odek run from $HOME).
+			projDir := skills.ProjectSkillsDir()
+			pa, perr := filepath.Abs(projDir)
+			ua, uerr := filepath.Abs(userDir)
+			if perr != nil || uerr != nil || pa == ua {
+				fmt.Fprintf(os.Stderr, "   ✗ Cannot save to project: no distinct project skills dir from here\n")
+				break
+			}
+			if err := skills.SaveSuggestionWithGuard(context.Background(), projDir, s, g, guardCfg); err != nil {
+				fmt.Fprintf(os.Stderr, "   ✗ Error saving skill: %v\n", err)
+			} else {
+				fmt.Fprintf(os.Stderr, "   ✓ Saved project skill %q to %s (promote with `odek skill promote` to use)\n", s.Name, projDir)
 				sm.MarkDirty()
 				sm.Reload()
 			}
