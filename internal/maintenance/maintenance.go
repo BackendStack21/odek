@@ -128,6 +128,11 @@ func Sweep(ctx context.Context, home string, cfg Config) (Report, error) {
 	return rep, firstErr
 }
 
+// tickInterval, when positive, overrides the configured janitor tick. It is
+// a test hook so the janitor loop can be exercised without waiting a full
+// minute; production code never sets it.
+var tickInterval time.Duration
+
 // Start runs Sweep on an interval until ctx is cancelled. It launches a
 // background janitor goroutine and returns immediately. The first sweep runs
 // after one interval (not immediately, so process startup isn't slowed).
@@ -137,9 +142,12 @@ func Start(ctx context.Context, home string, cfg Config) {
 	if !cfg.Enabled {
 		return
 	}
-	interval := time.Duration(cfg.IntervalMinutes) * time.Minute
+	interval := tickInterval
 	if interval <= 0 {
-		interval = time.Duration(DefaultConfig().IntervalMinutes) * time.Minute
+		interval = time.Duration(cfg.IntervalMinutes) * time.Minute
+		if interval <= 0 {
+			interval = time.Duration(DefaultConfig().IntervalMinutes) * time.Minute
+		}
 	}
 	go func() {
 		ticker := time.NewTicker(interval)

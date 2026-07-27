@@ -110,13 +110,14 @@ func TestStartDefaultIntervalFallback(t *testing.T) {
 	cancel() // janitor goroutine must exit
 }
 
-// TestStartRunsSweepOnTick waits for the janitor's first tick (the smallest
-// configurable interval is 1 minute) and verifies a failing sweep is reported
-// on stderr. Slow by necessity — skipped in -short mode.
+// TestStartRunsSweepOnTick waits for the janitor's first tick and verifies a
+// failing sweep is reported on stderr. The tick interval is overridden to
+// milliseconds so the test does not wait for a real 1-minute tick.
 func TestStartRunsSweepOnTick(t *testing.T) {
-	if testing.Short() {
-		t.Skip("requires waiting for the 1-minute janitor tick")
-	}
+	oldTick := tickInterval
+	tickInterval = 25 * time.Millisecond
+	defer func() { tickInterval = oldTick }()
+
 	home := t.TempDir()
 	// Force the sweep to fail so the janitor reports it on stderr.
 	if err := os.WriteFile(filepath.Join(home, "sessions"), []byte("x"), 0644); err != nil {
@@ -148,8 +149,8 @@ func TestStartRunsSweepOnTick(t *testing.T) {
 		if !strings.Contains(msg, "maintenance sweep") {
 			t.Errorf("stderr = %q, want a maintenance sweep error report", msg)
 		}
-	case <-time.After(75 * time.Second):
-		t.Error("janitor did not run a sweep within 75s of Start")
+	case <-time.After(5 * time.Second):
+		t.Error("janitor did not run a sweep within 5s of Start")
 	}
 	cancel()
 	os.Stderr = old
