@@ -422,6 +422,14 @@ func keysFromSet(set map[string]bool) []string {
 // ExecuteMicroCuration runs a MicroCurationResult's merges and deletions.
 // It writes updated skill files and removes merged/deleted skill directories.
 func ExecuteMicroCuration(userDir string, result *MicroCurationResult, allSkills []Skill) error {
+	return ExecuteMicroCurationWithLLM(userDir, result, allSkills, nil)
+}
+
+// ExecuteMicroCurationWithLLM is ExecuteMicroCuration with optional
+// LLM-synthesized merge bodies (MergeBodyWithLLM). A nil llm or any LLM
+// failure falls back to mechanical concatenation, and the merged skill
+// keeps the worst-of provenance union either way.
+func ExecuteMicroCurationWithLLM(userDir string, result *MicroCurationResult, allSkills []Skill, llm LLMClient) error {
 	if result == nil || userDir == "" {
 		return nil
 	}
@@ -452,6 +460,12 @@ func ExecuteMicroCuration(userDir string, result *MicroCurationResult, allSkills
 		}
 
 		merged := MergeSkills(keep, remove)
+		if llm != nil {
+			if body := MergeBodyWithLLM(llm, keep, remove); body != "" {
+				merged.Body = body
+				merged.BodyHash = HashBody(body)
+			}
+		}
 		if err := WriteSkill(userDir, merged); err != nil {
 			return fmt.Errorf("merge: write %s: %w", keepName, err)
 		}
@@ -508,9 +522,14 @@ func RunAutoCurate(userDir string, newSkills, allSkills []Skill, cfg SkillsConfi
 		}
 	}
 
-	// Execute merges and deletions
+	// Execute merges and deletions. When LLM curation is enabled, merge
+	// bodies are synthesized by the model instead of concatenated.
 	if len(result.Merged) > 0 || len(result.Deleted) > 0 {
-		if err := ExecuteMicroCuration(userDir, result, allSkills); err != nil {
+		var mergeLLM LLMClient
+		if cfg.LLMCurate {
+			mergeLLM = llmClient
+		}
+		if err := ExecuteMicroCurationWithLLM(userDir, result, allSkills, mergeLLM); err != nil {
 			result.Notes = append(result.Notes, fmt.Sprintf("execution error: %v", err))
 		}
 	}

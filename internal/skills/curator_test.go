@@ -1,8 +1,10 @@
 package skills
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -400,6 +402,76 @@ func TestMicroCuration_ConfinedToUserDir(t *testing.T) {
 	result = MicroCuration(userDir, []Skill{global}, []Skill{global, other}, CurationConfig{})
 	if len(result.Merged) == 0 {
 		t.Errorf("expected duplicate global drafts to merge, got %v", result.Merged)
+	}
+}
+
+// TestExecuteMicroCurationWithLLM_SynthesizedMergeBody: when an LLM is
+// available its synthesized body replaces the mechanical concatenation.
+func TestExecuteMicroCurationWithLLM_SynthesizedMergeBody(t *testing.T) {
+	dir := t.TempDir()
+	body := "## Overview\n\nTest body that is long enough to pass validation checks. Adding more text here to make sure the body is at least 300 characters long. Still more text needed. Almost there. Just a bit more. Done now yes.\n\n## Common Pitfalls\n\n- Test pitfall\n\n## Verification\n\n- Test verification body text."
+	a := Skill{Name: "skill-keep", Body: body, Quality: QualityDraft}
+	b := Skill{Name: "skill-remove", Body: body + " different", Quality: QualityDraft}
+	if err := WriteSkill(dir, a); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteSkill(dir, b); err != nil {
+		t.Fatal(err)
+	}
+
+	synthesized := "## Overview\n\nUnified procedure synthesized by the model, deduplicating both overlapping skills into one coherent guide with enough text to pass the sanity bounds comfortably.\n\n## Step-by-Step\n\n1. Do it once\n\n## Common Pitfalls\n\n- none\n\n## Verification\n\n- works"
+	llm := &mockLLMClient{resp: synthesized}
+
+	result := &MicroCurationResult{Merged: []string{"skill-keep", "skill-remove"}}
+	if err := ExecuteMicroCurationWithLLM(dir, result, []Skill{a, b}, llm); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "skill-keep", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "Unified procedure synthesized by the model") {
+		t.Error("expected LLM-synthesized body in merged skill")
+	}
+	if strings.Contains(string(data), "Merged from") {
+		t.Error("mechanical concatenation marker must not appear when LLM merge succeeds")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "skill-remove")); !os.IsNotExist(err) {
+		t.Error("skill-remove should be deleted after merge")
+	}
+}
+
+// TestExecuteMicroCurationWithLLM_FallbackOnFailure: any LLM failure or
+// invalid output falls back to mechanical MergeSkills concatenation.
+func TestExecuteMicroCurationWithLLM_FallbackOnFailure(t *testing.T) {
+	body := "## Overview\n\nTest body that is long enough to pass validation checks. Adding more text here to make sure the body is at least 300 characters long. Still more text needed. Almost there. Just a bit more. Done now yes.\n\n## Common Pitfalls\n\n- Test pitfall\n\n## Verification\n\n- Test verification body text."
+	for name, llm := range map[string]LLMClient{
+		"call-error":     &mockLLMClient{err: errors.New("boom")},
+		"invalid-output": &mockLLMClient{resp: "too short"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			a := Skill{Name: "skill-keep", Body: body, Quality: QualityDraft}
+			b := Skill{Name: "skill-remove", Body: body + " different", Quality: QualityDraft}
+			if err := WriteSkill(dir, a); err != nil {
+				t.Fatal(err)
+			}
+			if err := WriteSkill(dir, b); err != nil {
+				t.Fatal(err)
+			}
+			result := &MicroCurationResult{Merged: []string{"skill-keep", "skill-remove"}}
+			if err := ExecuteMicroCurationWithLLM(dir, result, []Skill{a, b}, llm); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(filepath.Join(dir, "skill-keep", "SKILL.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(data), "Merged from skill-remove") {
+				t.Error("expected mechanical concatenation fallback")
+			}
+		})
 	}
 }
 
