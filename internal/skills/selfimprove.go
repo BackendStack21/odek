@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/BackendStack21/odek/internal/guard"
@@ -129,8 +131,10 @@ func DetectCorrection(calls []ToolCall, userMessages []string) []SkillSuggestion
 		return nil
 	}
 
-	// Look for correction patterns in user messages
-	correctionWords := []string{"no", "instead", "try", "actually", "wrong", "not what", "different"}
+	// Look for correction patterns in user messages. Only explicit
+	// correction phrases qualify — conversational fillers like "no" or
+	// "try" fire on almost any session and produced garbage skills.
+	correctionWords := []string{"instead", "not what", "wrong", "differently"}
 	for _, msg := range userMessages {
 		lower := strings.ToLower(msg)
 		for _, word := range correctionWords {
@@ -138,7 +142,8 @@ func DetectCorrection(calls []ToolCall, userMessages []string) []SkillSuggestion
 				// Found a correction — check if the next terminal sequence succeeded
 				for i := len(calls) - 1; i >= 2; i-- {
 					if isTerminalTool(calls[i].Tool) && calls[i].ExitCode == 0 &&
-						isTerminalTool(calls[i-1].Tool) && calls[i-1].ExitCode == 0 {
+						isTerminalTool(calls[i-1].Tool) && calls[i-1].ExitCode == 0 &&
+						shareLeadVerb(calls[i-1].Input, calls[i].Input) {
 						return []SkillSuggestion{
 							{
 								Name:        "corrected-" + extractTopic(calls[i].Input),
@@ -384,6 +389,49 @@ func extractRelevantChange(oldCmd, newCmd string) string {
 	return ""
 }
 
+// shellPlumbing are leading tokens that carry no topic meaning: directory
+// changes, privilege wrappers, and shell operators. Skipping them lets
+// "cd /repo && git tag v1" resolve to "git" instead of "cd".
+var shellPlumbing = map[string]bool{
+	"cd": true, "sudo": true, "env": true, "command": true, "exec": true,
+	"&&": true, "||": true, "|": true, ";": true, ">": true, ">>": true, "<": true,
+}
+
+// isPlumbingToken reports whether a command token is shell plumbing, a
+// path, or a flag — none of which identify the command's topic.
+func isPlumbingToken(word string) bool {
+	if shellPlumbing[word] {
+		return true
+	}
+	if strings.HasPrefix(word, "-") {
+		return true // flag
+	}
+	if strings.ContainsAny(word, "/\\") || word == "." || word == ".." {
+		return true // path
+	}
+	return false
+}
+
+// leadVerb returns the first meaningful token of a command, skipping
+// shell plumbing (cd, sudo, operators, paths, flags).
+func leadVerb(cmd string) string {
+	for _, word := range strings.Fields(strings.TrimSpace(cmd)) {
+		if isPlumbingToken(word) {
+			continue
+		}
+		return strings.Trim(word, "\"'`")
+	}
+	return ""
+}
+
+// shareLeadVerb reports whether two commands start with the same
+// meaningful verb — a cheap relatedness check so a "correction" is never
+// assembled from two unrelated one-off commands.
+func shareLeadVerb(a, b string) bool {
+	va, vb := leadVerb(a), leadVerb(b)
+	return va != "" && va == vb
+}
+
 func extractTopic(cmd string) string {
 	// Take the first meaningful word from the command
 	words := strings.Fields(strings.TrimSpace(cmd))
@@ -391,8 +439,11 @@ func extractTopic(cmd string) string {
 		return "unknown"
 	}
 
-	// Skip common prefixes
+	// Skip common prefixes and shell plumbing
 	for _, word := range words {
+		if isPlumbingToken(word) {
+			continue
+		}
 		if !IsStopword(word) && len(word) > 1 {
 			return strings.Trim(word, "\"'`")
 		}
@@ -669,21 +720,91 @@ func DeriveProvenance(messages []LlmMessage) SkillProvenance {
 
 // AutoSaveResult reports what auto-save did.
 type AutoSaveResult struct {
-	Saved        []string          // names of auto-saved skills
+	Saved        []string          // names of auto-saved skills (global user dir)
+	ProjectSaved []string          // names redirected to the project skills dir (project-scoped)
 	Skipped      int               // count of suggestions filtered by skip list
 	Failed       []string          // names that failed quality gate
 	Declined     []string          // names declined because they were tainted and allowUntrusted was false
 	GuardFlagged []string          // names flagged by the prompt-injection guard
+	NonReusable  []string          // names dropped as machine-specific (not reusable knowledge anywhere)
 	Heuristics   map[string]string // heuristic labels for saved skills
+}
+
+// ── Scope gates ───────────────────────────────────────────────────────
+
+var (
+	// absoluteUserPath matches home-directory absolute paths. A skill whose
+	// procedure only works on one machine is not reusable knowledge anywhere.
+	absoluteUserPath = regexp.MustCompile(`(/Users/|/home/|/root/|C:\\Users\\)\S+`)
+	// hardcodedVersion matches literal version tags such as v0.0.14 or v1.2.
+	// A transferable procedure uses placeholders; a concrete release number
+	// ties the skill to one project's history.
+	hardcodedVersion = regexp.MustCompile(`\bv\d+\.\d+`)
+	// projectRelScript matches invocations of repo-rooted scripts such as
+	// ./scripts/deploy.sh or ./bin/release — they only exist inside that
+	// project's checkout.
+	projectRelScript = regexp.MustCompile(`(?:^|[\s;&|]\s*)\./[^\s/]+/\S+`)
+)
+
+// NonReusableReason explains why a suggestion is machine-specific and
+// therefore unfit to save anywhere. Returns "" when the suggestion carries
+// no machine-specific markers. Manual saves (skill_save) are unaffected —
+// this gate only guards the unattended pipeline.
+func NonReusableReason(s SkillSuggestion) string {
+	haystack := s.Body + "\n" + strings.Join(s.CommandLog, "\n")
+	if m := absoluteUserPath.FindString(haystack); m != "" {
+		return fmt.Sprintf("absolute user path %q", m)
+	}
+	return ""
+}
+
+// ProjectScopeReason explains why a suggestion is project-specific:
+// reusable knowledge, but only inside the project it was learned in. Such
+// suggestions are redirected to the project skills dir (./.odek/skills)
+// instead of the global user dir — project-related skills must never be
+// promoted to global skills. Returns "" for transferable knowledge.
+func ProjectScopeReason(s SkillSuggestion) string {
+	haystack := s.Body + "\n" + strings.Join(s.CommandLog, "\n")
+	for _, m := range projectRelScript.FindAllString(haystack, -1) {
+		// Go package patterns (./internal/...) are generic, not scripts.
+		if !strings.Contains(m, "...") {
+			return fmt.Sprintf("project-relative script %q", strings.TrimSpace(m))
+		}
+	}
+	if m := hardcodedVersion.FindString(haystack); m != "" {
+		return fmt.Sprintf("hardcoded version tag %q", m)
+	}
+	return ""
+}
+
+// projectRedirectDir returns the project skills dir a project-scoped
+// suggestion should be saved into, or "" when redirecting is unsafe:
+// either no project dir was provided, or it resolves to the same location
+// as the global userDir (e.g. odek run from $HOME, where ./.odek/skills IS
+// the global dir — saving there would defeat the boundary this gate
+// enforces, so the caller drops the suggestion instead).
+func projectRedirectDir(projectDir, userDir string) string {
+	if projectDir == "" {
+		return ""
+	}
+	pa, perr := filepath.Abs(projectDir)
+	ua, uerr := filepath.Abs(userDir)
+	if perr != nil || uerr != nil || pa == ua {
+		return ""
+	}
+	return projectDir
 }
 
 // AutoSaveSuggestions runs auto-save logic on a set of suggestions.
 // It filters skipped suggestions, declines tainted suggestions unless
 // allowUntrusted is true, then auto-saves those that pass the quality gate
-// (up to maxPerRun), recording the rest as Failed. When a guard is provided
-// and skills scanning is enabled, each body is scanned; flagged skills are
-// saved with Provenance.NeedsReview so they cannot auto-load.
-func AutoSaveSuggestions(suggestions []SkillSuggestion, userDir string, cfg SkillsConfig, g guard.Guard, guardCfg guard.Config, allowUntrusted bool) AutoSaveResult {
+// (up to maxPerRun), recording the rest as Failed. Machine-specific
+// suggestions (NonReusableReason) are dropped entirely; project-specific
+// ones (ProjectScopeReason) are redirected to projectDir so project-related
+// skills are never promoted to the global user dir. When a guard is
+// provided and skills scanning is enabled, each body is scanned; flagged
+// skills are saved with Provenance.NeedsReview so they cannot auto-load.
+func AutoSaveSuggestions(suggestions []SkillSuggestion, userDir, projectDir string, cfg SkillsConfig, g guard.Guard, guardCfg guard.Config, allowUntrusted bool) AutoSaveResult {
 	result := AutoSaveResult{Heuristics: make(map[string]string)}
 
 	// Load skip list and filter
@@ -705,6 +826,33 @@ func AutoSaveSuggestions(suggestions []SkillSuggestion, userDir string, cfg Skil
 		}
 		if !allowUntrusted && s.IsTainted() {
 			result.Declined = append(result.Declined, s.Name)
+			continue
+		}
+		if reason := NonReusableReason(s); reason != "" {
+			result.NonReusable = append(result.NonReusable, s.Name)
+			continue
+		}
+		if reason := ProjectScopeReason(s); reason != "" {
+			// Project-related skills must never reach the global dir.
+			// Redirect to the project skills dir; drop when no distinct
+			// project dir is available.
+			dir := projectRedirectDir(projectDir, userDir)
+			if dir == "" {
+				result.NonReusable = append(result.NonReusable, s.Name)
+				continue
+			}
+			if !PassesQualityGate(s) {
+				result.Failed = append(result.Failed, s.Name)
+				continue
+			}
+			if ScanSuggestionBody(context.Background(), &s, g, guardCfg) {
+				result.GuardFlagged = append(result.GuardFlagged, s.Name)
+			}
+			if err := SaveSuggestion(dir, s); err == nil {
+				result.ProjectSaved = append(result.ProjectSaved, s.Name)
+				result.Heuristics[s.Name] = s.Heuristic
+				saved++
+			}
 			continue
 		}
 		if PassesQualityGate(s) {

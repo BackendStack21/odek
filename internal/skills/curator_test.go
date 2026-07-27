@@ -361,6 +361,48 @@ func TestExecuteMicroCuration_Merge(t *testing.T) {
 	}
 }
 
+// TestMicroCuration_ConfinedToUserDir is the project→global boundary
+// regression test: a project-dir skill must never participate in
+// micro-curation. Without confinement, the exact-duplicate check would
+// merge the project skill's body into a global skill written under
+// userDir — silently promoting project content to a global skill.
+func TestMicroCuration_ConfinedToUserDir(t *testing.T) {
+	userDir := t.TempDir()
+	projectDir := filepath.Join(t.TempDir(), ".odek", "skills")
+
+	global := Skill{
+		Name:     "global-draft",
+		Body:     "shared body",
+		BodyHash: "samehash",
+		Quality:  QualityDraft,
+		Source:   SkillSource{Dir: userDir},
+	}
+	project := Skill{
+		Name:     "project-draft",
+		Body:     "shared body",
+		BodyHash: "samehash",
+		Quality:  QualityDraft,
+		Source:   SkillSource{Dir: projectDir},
+	}
+
+	result := MicroCuration(userDir, []Skill{global, project}, []Skill{global, project}, CurationConfig{StalenessDays: 90, AutoPrune: true})
+	if len(result.Merged) != 0 {
+		t.Errorf("project skill must not participate in merges, got %v", result.Merged)
+	}
+	if len(result.Deleted) != 0 {
+		t.Errorf("project skill must not be deleted, got %v", result.Deleted)
+	}
+
+	// Sanity: two global drafts with the same body DO merge (confinement
+	// does not neuter curation of global skills).
+	other := global
+	other.Name = "other-global-draft"
+	result = MicroCuration(userDir, []Skill{global}, []Skill{global, other}, CurationConfig{})
+	if len(result.Merged) == 0 {
+		t.Errorf("expected duplicate global drafts to merge, got %v", result.Merged)
+	}
+}
+
 func TestExecuteMicroCuration_Delete(t *testing.T) {
 	dir := t.TempDir()
 
@@ -396,12 +438,14 @@ func TestMicroCuration_OverlapGroups(t *testing.T) {
 		Body:    body,
 		Trigger: SkillTrigger{TopicKeywords: []string{"docker", "container", "build"}},
 		Quality: QualityDraft,
+		Source:  SkillSource{Dir: dir},
 	}
 	b := Skill{
 		Name:    "skill-y",
 		Body:    body + " different",
 		Trigger: SkillTrigger{TopicKeywords: []string{"docker", "container", "deploy"}},
 		Quality: QualityDraft,
+		Source:  SkillSource{Dir: dir},
 	}
 
 	result := MicroCuration(dir, nil, []Skill{a, b}, CurationConfig{StalenessDays: 90})
@@ -421,6 +465,7 @@ func TestRunAutoCurate_SkipsDeleted(t *testing.T) {
 		Body:    body,
 		Trigger: SkillTrigger{TopicKeywords: []string{"test"}},
 		Quality: QualityDraft,
+		Source:  SkillSource{Dir: dir},
 	}
 	if err := WriteSkill(dir, s); err != nil {
 		t.Fatal(err)
@@ -461,12 +506,13 @@ func TestMicroCuration_StaleFlagging(t *testing.T) {
 
 	body := "## Overview\n\nTest body that is long enough to pass validation checks. Adding more text here to make sure the body is at least 300 characters long. Still more text needed. Almost there. Just a bit more. Done now yes.\n\n## Common Pitfalls\n\n- Test pitfall\n\n## Verification\n\n- Test verification. Adding more text to reach the minimum body length threshold for validation. More text still needed. OK this should be enough."
 
+	dir := t.TempDir()
 	skills := []Skill{
-		{Name: "stale-draft", Quality: QualityDraft, LastUsed: old, Body: body, Trigger: SkillTrigger{TopicKeywords: []string{"test"}}},
-		{Name: "stale-manual", Quality: QualityManual, LastUsed: old, Body: body, Trigger: SkillTrigger{TopicKeywords: []string{"test"}}},
+		{Name: "stale-draft", Quality: QualityDraft, LastUsed: old, Body: body, Trigger: SkillTrigger{TopicKeywords: []string{"test"}}, Source: SkillSource{Dir: dir}},
+		{Name: "stale-manual", Quality: QualityManual, LastUsed: old, Body: body, Trigger: SkillTrigger{TopicKeywords: []string{"test"}}, Source: SkillSource{Dir: dir}},
 	}
 
-	result := MicroCuration("", nil, skills, CurationConfig{StalenessDays: 90, AutoCurate: true})
+	result := MicroCuration(dir, nil, skills, CurationConfig{StalenessDays: 90, AutoCurate: true})
 
 	// stale-draft should be flagged (draft, old)
 	foundDraft := false

@@ -1,9 +1,33 @@
 package skills
 
 import (
+	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 )
+
+// versionFragment matches pure numbers and version fragments (14, 0.0, v0)
+// that survive tokenization of shell commands. They carry no topic meaning.
+var versionFragment = regexp.MustCompile(`^v?\d+(\.\d+)*$`)
+
+// isKeywordToken reports whether a tokenized word is meaningful enough to
+// serve as a trigger keyword. Filters shell operators (&&, ##), flags
+// (-m), and bare numbers/version fragments that leak from command bodies.
+func isKeywordToken(w string) bool {
+	if len(w) < 2 || strings.HasPrefix(w, "-") {
+		return false
+	}
+	if versionFragment.MatchString(w) {
+		return false
+	}
+	for _, r := range w {
+		if unicode.IsLetter(r) {
+			return true
+		}
+	}
+	return false
+}
 
 // ── Keyword Derivation ────────────────────────────────────────────────
 //
@@ -21,7 +45,13 @@ type scoredWord struct {
 // Uses word frequency + heuristic POS detection.
 // Returns (topics, actions) slices.
 func DeriveKeywords(body string) ([]string, []string) {
-	words := tokenize(body)
+	raw := tokenize(body)
+	var words []string
+	for _, w := range raw {
+		if isKeywordToken(w) {
+			words = append(words, w)
+		}
+	}
 	if len(words) < 3 {
 		return extractFromHeadwords(words), nil
 	}

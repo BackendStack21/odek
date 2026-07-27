@@ -2011,7 +2011,7 @@ func runLearnLoop(messages []llm.Message, sm *skills.SkillManager, llmClient ski
 	if skillsCfg.Verbose {
 		verbose = os.Stderr
 	}
-	if skills.RunAutoSaveLoop(filtered, userDir, sm, llmClient, skillsCfg, g, guardCfg, verbose) {
+	if skills.RunAutoSaveLoop(filtered, userDir, skills.ProjectSkillsDir(), sm, llmClient, skillsCfg, g, guardCfg, verbose) {
 		return
 	}
 

@@ -59,6 +59,7 @@ odek run --learn "set up CI with GitHub Actions"
 - **Auto-curation runs silently** — after every session where skills were saved, overlaps are merged, duplicates removed, and stale skills pruned.
 - **Learning is non-blocking** — skill detection and auto-save run in a background goroutine after the agent's response is delivered. The process exits immediately; learning completes asynchronously on a best-effort basis.
 - **Tainted skills require explicit promotion** — skills learned from `browser`, MCP tools, or sensitive file reads are saved with `Provenance.Untrusted=true` and `NeedsReview=true`. They cannot be auto-loaded until you run `odek skill promote <name> --force` after reviewing the body.
+- **Scope gates keep garbage out** — machine-specific suggestions (absolute home-directory paths) are dropped entirely. Project-specific suggestions (repo-rooted `./scripts/...` invocations, hardcoded release version tags) are redirected to the project skills dir `./.odek/skills` instead of the global `~/.odek/skills` — project-related skills are never promoted to global, and project-dir skills stay pinned to `NeedsReview` until promoted locally. Auto-curation (merge/prune) is confined to the global dir, so project skills can never be merged into or deleted by the global curator.
 
 ## CLI Usage
 

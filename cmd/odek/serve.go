@@ -1211,13 +1211,13 @@ func handlePrompt(
 				resolved.Skills.Curation.SkipThreshold, resolved.Skills.Curation.SkipResetDays)
 			_ = skipped
 			if resolved.Skills.AutoSave.Enabled {
-				result := skills.AutoSaveSuggestions(filtered, userDir, resolved.Skills, g, resolved.Guard, false)
+				result := skills.AutoSaveSuggestions(filtered, userDir, skills.ProjectSkillsDir(), resolved.Skills, g, resolved.Guard, false)
 				for _, name := range result.Saved {
 					sm.Notifier.Notify(skills.SkillEvent{
 						Type: "saved", SkillName: name, Timestamp: time.Now().UTC(),
 					})
 				}
-				if len(result.Saved) > 0 {
+				if len(result.Saved)+len(result.ProjectSaved) > 0 {
 					sm.MarkDirty()
 					sm.Reload()
 				}

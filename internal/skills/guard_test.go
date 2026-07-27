@@ -136,7 +136,7 @@ func TestAutoSaveSuggestions_GuardFlagged(t *testing.T) {
 	cfg := DefaultSkillsConfig()
 	cfg.AutoSave.MaxPerRun = 5
 
-	result := AutoSaveSuggestions([]SkillSuggestion{s}, t.TempDir(), cfg, guard.NewLocalGuard(), guardConfigWithSkills(), false)
+	result := AutoSaveSuggestions([]SkillSuggestion{s}, t.TempDir(), "", cfg, guard.NewLocalGuard(), guardConfigWithSkills(), false)
 	if len(result.Saved) != 1 || result.Saved[0] != "flagged" {
 		t.Fatalf("expected 1 saved skill 'flagged', got %v", result.Saved)
 	}
@@ -156,7 +156,7 @@ func TestAutoSaveSuggestions_ScanDisabledLocalFloorStillFlags(t *testing.T) {
 
 	guardCfg := guard.DefaultConfig()
 	guardCfg.Scan.Skills = boolPtr(false) // scope explicitly off — sidecar skipped
-	result := AutoSaveSuggestions([]SkillSuggestion{s}, t.TempDir(), cfg, guard.NewLocalGuard(), *guardCfg, false)
+	result := AutoSaveSuggestions([]SkillSuggestion{s}, t.TempDir(), "", cfg, guard.NewLocalGuard(), *guardCfg, false)
 	if len(result.Saved) != 1 || result.Saved[0] != "flagged" {
 		t.Fatalf("expected 1 saved skill 'flagged', got %v", result.Saved)
 	}
@@ -174,7 +174,7 @@ func TestAutoSaveSuggestions_ScanDisabledCleanBodyNotFlagged(t *testing.T) {
 
 	guardCfg := guard.DefaultConfig()
 	guardCfg.Scan.Skills = boolPtr(false)
-	result := AutoSaveSuggestions([]SkillSuggestion{s}, t.TempDir(), cfg, guard.NewLocalGuard(), *guardCfg, false)
+	result := AutoSaveSuggestions([]SkillSuggestion{s}, t.TempDir(), "", cfg, guard.NewLocalGuard(), *guardCfg, false)
 	if len(result.Saved) != 1 || result.Saved[0] != "clean" {
 		t.Fatalf("expected 1 saved skill 'clean', got %v", result.Saved)
 	}
