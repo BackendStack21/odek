@@ -848,6 +848,7 @@ func printUsage() {
   odek schedule <list|add|rm|enable|disable|run|next|daemon>
   odek memory <list|promote <session_id>>
   odek cleanup [--dry-run]
+  odek upgrade [--check]
   odek version
 
 Commands:
@@ -880,6 +881,11 @@ Commands:
   cleanup             One-shot storage sweep of ~/.odek (sessions, audit,
                        plans, skill skips, log rotation). --dry-run previews.
   init                Create a config file (default: ./odek.json)
+  upgrade             Self-upgrade to the latest GitHub release
+                       Downloads the asset for the current OS/arch, verifies
+                       it against the release checksums.txt (SHA-256), and
+                       installs it atomically. --check reports without
+                       installing.
   version             Print version and exit
 
 Init flags:
