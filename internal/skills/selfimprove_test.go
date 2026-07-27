@@ -521,6 +521,29 @@ func TestAutoSaveSuggestions_QualityGateFails(t *testing.T) {
 	}
 }
 
+// TestAutoSaveSuggestions_ScoreRanked verifies the MaxPerRun budget goes
+// to the strongest suggestion rather than the first in heuristic order.
+func TestAutoSaveSuggestions_ScoreRanked(t *testing.T) {
+	dir := t.TempDir()
+	weakBody := "## Overview\n\nTest with enough body text to pass the quality gate minimum of 200 characters. Adding more padding here to ensure we cross that threshold. Still going with more text content for the body length requirement.\n\n## Common Pitfalls\n\n- Pitfall"
+	strongBody := weakBody + "\n\n## Verification\n\n- Run command"
+
+	suggestions := []SkillSuggestion{
+		// Weak first: no verification section, no command log, no description.
+		{Name: "weak-skill", Heuristic: "multi-step", Body: weakBody},
+		// Strong: verification + command log + description + LLM provenance.
+		{Name: "strong-skill", Heuristic: "llm-enhanced", Body: strongBody, Description: "solid", CommandLog: []string{"go build ./...", "go test ./...", "go vet ./..."}},
+	}
+
+	cfg := DefaultSkillsConfig()
+	cfg.AutoSave.MaxPerRun = 1
+	result := AutoSaveSuggestions(suggestions, dir, "", cfg, nil, guard.Config{}, false)
+
+	if len(result.Saved) != 1 || result.Saved[0] != "strong-skill" {
+		t.Errorf("expected strong-skill to win the budget, got saved=%v", result.Saved)
+	}
+}
+
 func TestAutoSaveSuggestions_MaxPerRun(t *testing.T) {
 	dir := t.TempDir()
 	body := "## Overview\n\nTest with enough body text to pass the quality gate minimum of 200 characters. Adding more padding here to ensure we cross that threshold. Still going with more text content for the body length requirement.\n\n## Step-by-Step\n\n1. Step\n\n## Common Pitfalls\n\n- Pitfall\n\n## Verification\n\n- Run command"

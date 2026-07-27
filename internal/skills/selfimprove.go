@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/BackendStack21/odek/internal/guard"
@@ -795,6 +796,32 @@ func projectRedirectDir(projectDir, userDir string) string {
 	return projectDir
 }
 
+// scoreSuggestion ranks a suggestion's substance so the MaxPerRun budget
+// goes to the strongest candidates instead of whichever the heuristics
+// emitted first. Deterministic and cheap — no LLM involved.
+func scoreSuggestion(s SkillSuggestion) int {
+	score := 0
+	if strings.Contains(s.Body, "## Verification") {
+		score += 2 // the author verified the procedure works
+	}
+	switch {
+	case len(s.CommandLog) >= 3:
+		score += 2 // multi-step evidence
+	case len(s.CommandLog) >= 1:
+		score += 1
+	}
+	if len(s.Body) >= 600 {
+		score += 1 // substantive write-up
+	}
+	if s.Description != "" {
+		score += 1
+	}
+	if s.Heuristic == "llm-enhanced" || s.Heuristic == "conversation-extracted" {
+		score += 1 // passed through the LLM's own reusability judgement
+	}
+	return score
+}
+
 // AutoSaveSuggestions runs auto-save logic on a set of suggestions.
 // It filters skipped suggestions, declines tainted suggestions unless
 // allowUntrusted is true, then auto-saves those that pass the quality gate
@@ -804,6 +831,8 @@ func projectRedirectDir(projectDir, userDir string) string {
 // skills are never promoted to the global user dir. When a guard is
 // provided and skills scanning is enabled, each body is scanned; flagged
 // skills are saved with Provenance.NeedsReview so they cannot auto-load.
+// Eligible suggestions are score-ranked (scoreSuggestion) so the MaxPerRun
+// budget goes to the strongest candidates.
 func AutoSaveSuggestions(suggestions []SkillSuggestion, userDir, projectDir string, cfg SkillsConfig, g guard.Guard, guardCfg guard.Config, allowUntrusted bool) AutoSaveResult {
 	result := AutoSaveResult{Heuristics: make(map[string]string)}
 
@@ -817,6 +846,12 @@ func AutoSaveSuggestions(suggestions []SkillSuggestion, userDir, projectDir stri
 		}
 		eligible = append(eligible, s)
 	}
+
+	// Rank by substance: the MaxPerRun cap below keeps the first N, so the
+	// strongest suggestions must come first.
+	sort.SliceStable(eligible, func(i, j int) bool {
+		return scoreSuggestion(eligible[i]) > scoreSuggestion(eligible[j])
+	})
 
 	// Auto-save eligible suggestions that pass quality gate
 	saved := 0
