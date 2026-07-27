@@ -1044,6 +1044,17 @@ body.light {
   letter-spacing: .04em;
 }
 .tb-result-more:hover { text-decoration: underline; }
+.tb-source {
+  display: inline-block;
+  font-size: 10px;
+  color: var(--text-3);
+  background: rgba(255,255,255,.05);
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 3px;
+  padding: 1px 6px;
+  margin-bottom: 2px;
+  white-space: nowrap;
+}
 
 /* ── Sub-agent cards ───────────────────────────────────────────────── */
 .subagent-group { margin: 12px 0; }
