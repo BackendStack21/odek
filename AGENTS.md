@@ -48,6 +48,7 @@ cmd/odek/
   schedule.go                 `odek schedule` command and scheduler wiring
   memory_cmd.go               `odek memory` command
   cleanup.go                  `odek cleanup [--dry-run]` one-shot storage sweep + janitor wiring (telegram/serve/schedule daemon)
+  upgrade.go                  `odek upgrade [--check]` self-upgrade from GitHub Releases (OS/arch autodetection, checksums.txt SHA-256 verification, atomic binary replace)
   parallel.go                 Parallelism helpers
   toolctx.go                  Tool-call context plumbing
   security_report_validation_test.go  Regression bar for every documented mitigation
