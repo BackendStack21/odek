@@ -1,7 +1,11 @@
 // Pure-ish helpers: escaping, formatting, clipboard, toast, scrolling, and
-// small DOM toggles. Imports only from state.js and dom.js.
+// small DOM toggles. Imports only from state.js, dom.js, and untrusted.js.
 import { S } from './state.js';
 import { messagesEl, scrollBottomBtn, cancelBtn } from './dom.js';
+
+// stripAttachmentBodies lives in untrusted.js (pure, node-testable);
+// re-exported here so render.js keeps a single utils import.
+export { stripAttachmentBodies } from './untrusted.js';
 
 // ── Escape helpers (implemented in escape.js so markdown.js can use them
 // without importing the browser-dependent modules) ──
@@ -106,14 +110,6 @@ export function pruneMessages() {
       items[i].remove();
     }
   }
-}
-
-// Replace inlined attachment blocks (--- name (size) ---\n...\n--- end name ---)
-// with chip-style placeholders so reloaded user messages don't dump file bodies.
-export function stripAttachmentBodies(content) {
-  if (!content) return '';
-  const re = /^--- (.+?) \(([^)]+)\) ---\n[\s\S]*?\n--- end \1 ---\n?/gm;
-  return content.replace(re, (m, name, size) => '📎 ' + name + ' (' + size + ')\n');
 }
 
 // ── Error message normalization ──

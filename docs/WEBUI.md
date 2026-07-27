@@ -119,24 +119,57 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 
 | Event Type | When | Fields |
 |------------|------|--------|
-| `session` | At start of response | `session_id`, `model` |
+| `session` | At start of response | `session_id`, `auth_token`, `model`, `sandbox` |
 | `token` | Streamed text content | `content` (markdown) |
-| `tool_call` | Agent invokes a tool | `name`, `command` |
-| `tool_result` | Tool returns output | `name`, `output` (truncated to 500 chars) |
-| `done` | Agent finishes | `latency` (seconds), `contextTokens`, `outputTokens`, `sessionContextTokens`, `sessionOutputTokens` |
+| `thinking` | Streamed reasoning content | `content` |
+| `tool_call` | Agent invokes a tool | `name`, `data` (raw tool-arguments JSON) |
+| `tool_result` | Tool returns output | `name`, `data` (full, untruncated output) |
+| `subagent_log` | Sub-agent progress within `delegate_tasks` | `task_idx`, `name`, `event`, `data` |
+| `done` | Agent finishes | `latency` (seconds), `contextTokens`, `outputTokens`, `cacheCreationTokens`, `cacheReadTokens`, `cachedTokens`, `sessionContextTokens`, `sessionOutputTokens` |
 | `error` | Agent or server error | `message` |
-| `approval_request` | Agent needs user approval for dangerous operation | `id`, `risk` (class name), `command` (or resource), `description`, `is_operation` |
+| `approval_request` | Agent needs user approval for dangerous operation | `id`, `risk` (class name), `command` (or resource), `description`, `is_operation`, `allow_trust`, `friction`, `friction_approvals` |
+| `approval_ack` | Server confirms an approval response | `id`, `action` |
+| `skill_event` | Skill lifecycle event | `event`, `skill_name`, `skills`, `heuristic` |
+| `memory_event` | Memory lifecycle event | `event`, `target`, `session_id`, `content`, `count`, `new_count`, `untrusted` |
+| `agent_signal` | Agent self-observability signal | `event`, `detail`, `tool`, `count` |
 
 Example event sequence:
 
 ```jsonc
 {"type":"session","session_id":"20260519-x1y2z3","model":"deepseek-v4-flash"}
 {"type":"token","content":"Let me look at the source directory."}
-{"type":"tool_call","name":"shell","command":"ls -la src/"}
-{"type":"tool_result","name":"shell","output":"total 24\ndrwxr-xr-x ..."}
+{"type":"tool_call","name":"shell","data":"{\"command\":\"ls -la src/\"}"}
+{"type":"tool_result","name":"shell","data":"<untrusted_content_a1b2c3d4 source=\"shell\">\ntotal 24\ndrwxr-xr-x ...\n</untrusted_content_a1b2c3d4>"}
 {"type":"token","content":"The `src/` directory contains 3 files:"}
 {"type":"done","latency":4.2}
 ```
+
+### Content sanitization contract
+
+The server sends all message content **raw and unsanitized**. HTML-escaping
+is the client's responsibility: any frontend (the bundled WebUI or a
+third-party client) MUST escape/sanitize every string field before inserting
+it into a DOM, terminal UI, or other rendering surface. Untrusted fields
+include `token.content`, `thinking.content`, `tool_call.data`,
+`tool_result.data`, `subagent_log.data`, `error.message`, all
+`approval_request` strings, `skill_event.*`, `memory_event.*`, and
+`agent_signal.*`.
+
+Tool results (and user messages containing attachments or `@`-resource
+references) may embed the nonce'd untrusted-content envelope:
+
+```
+<untrusted_content_<nonce> source="shell">
+...raw body...
+</untrusted_content_<nonce>>
+```
+
+The envelope is **model-facing trust metadata** (prompt-injection defense),
+not user content. Clients SHOULD unwrap it for display: render the body
+(escaped) and, optionally, present the `source` attribute as a badge. The
+closing tag repeats the opening nonce — treat envelopes whose nonces don't
+match as plain text. The bundled WebUI implements this in
+`cmd/odek/ui/js/untrusted.js`.
 
 ## Implementation details
 
@@ -159,14 +192,17 @@ Example event sequence:
 - Thread-safe writes via `sync.Mutex`
 - Error handling: returns `io.EOF` on clean close, raw `net.Error` on broken connection
 
-### Frontend (`cmd/odek/ui/index.html`)
+### Frontend (`cmd/odek/ui/`)
 
-- ~1,200 lines: single file with embedded CSS and vanilla JS (no frameworks)
+- Vanilla JS + CSS SPA split into native ES modules under `js/` (state, dom, utils, escape, markdown, untrusted, render, approvals, sessions, input, ws, main, net) — no build step
+- **Escaping**: all server-controlled strings are inserted escaped (`escapeHtml`/`escapeAttr`/`textContent`); `markdownToHtml` HTML-escapes all input by default and allowlists link schemes — see "Content sanitization contract" above
+- **Untrusted envelope**: `js/untrusted.js` unwraps the model-facing `<untrusted_content_*>` envelope before display (body shown, source as badge)
 - **Design system**: loaded from `https://assets.21no.de/css/tokens.css` — dark theme with CSS custom properties (`--bg-primary`, `--accent`, `--text-primary`, etc.)
 - **Typeface**: loaded from `https://assets.21no.de/fonts/fonts.css` — uses `var(--font-sans)` and `var(--font-mono)`
 - **Streaming**: token content is batch-rendered via `requestAnimationFrame` to avoid layout thrashing
-- **DOM budget**: message list is capped at 100 elements (`MAX_MESSAGES`), older messages are pruned
+- **DOM budget**: message list is capped at 80 elements (`MAX_MESSAGES`), older messages are pruned
 - **Resilience**: auto-reconnects WebSocket on disconnect with 2s backoff
+- **Tests**: `node --test "cmd/odek/ui/js/**/*.test.js"` (golden tests for the markdown renderer and the untrusted-envelope parser)
 
 ## Tips
 

@@ -1,6 +1,6 @@
 // Message rendering: streaming, thinking, tool blocks, sub-agent cards,
 // session-history rendering, collapse/copy affordances, and the loading
-// indicator. Imports only from state/dom/utils/markdown.
+// indicator. Imports only from state/dom/utils/markdown/untrusted.
 import { S } from './state.js';
 import { messagesEl, promptEl, sendBtn, emptyState } from './dom.js';
 import {
@@ -9,6 +9,7 @@ import {
   showCancel, hideCancel, announce,
 } from './utils.js';
 import { markdownToHtml } from './markdown.js';
+import { parseUntrusted } from './untrusted.js';
 
 // ── Turn state ──
 // resetTurnState clears all per-turn streaming/tool/sub-agent state. Called
@@ -230,7 +231,7 @@ export function addMessage(role, content) {
   wrapper.innerHTML =
     '<div class="bubble">' +
       '<div class="sender">' + sender + '</div>' +
-      '<div class="content">' + markdownToHtml(escapeHtml(content)) + '</div>' +
+      '<div class="content">' + markdownToHtml(content) + '</div>' +
     '</div>';
   messagesEl.appendChild(wrapper);
   // Copy button and collapse check on the freshly appended bubble.
@@ -270,7 +271,7 @@ export function renderAssistantMessage(content) {
   wrapper.innerHTML =
     '<div class="bubble">' +
       '<div class="sender">assistant</div>' +
-      '<div class="content">' + markdownToHtml(escapeHtml(content)) + '</div>' +
+      '<div class="content">' + markdownToHtml(content) + '</div>' +
     '</div>';
   messagesEl.appendChild(wrapper);
   const bubble = wrapper.querySelector('.bubble');
@@ -375,18 +376,42 @@ export function addToolCall(name, data) {
 // long output behind a "show all" expander. Shared by the live path
 // (addToolResult) and session-history rendering.
 function appendToolResultContent(block, output) {
-  const MAX_RESULT = 600;
-  const truncated = output && output.length > MAX_RESULT;
   const resultEl = document.createElement('div');
   resultEl.className = 'tb-result';
   block.appendChild(resultEl);
-  if (truncated) {
-    resultEl.innerHTML =
-      escapeHtml(output.slice(0, MAX_RESULT)) +
-      '<span class="tb-result-more" role="button" tabindex="0" data-full="' +
-        escapeAttr(output) + '"> …show all (' + output.length + ' chars)</span>';
-  } else {
-    resultEl.textContent = output || '';
+  fillToolResult(resultEl, output || '', true);
+}
+
+// fillToolResult renders tool output into resultEl. The server sends raw,
+// unsanitized content; tool output may embed the model-facing
+// <untrusted_content_*> envelope, which is unwrapped for display — the body
+// is inserted as text (never HTML) and the envelope source is shown as a
+// badge instead of the literal tag text. When truncate is true, long bodies
+// are cut behind a "show all" expander carrying the full output.
+function fillToolResult(resultEl, output, truncate) {
+  const MAX_RESULT = 600;
+  const segments = parseUntrusted(output);
+  for (const seg of segments) {
+    if (seg.source) {
+      const badge = document.createElement('span');
+      badge.className = 'tb-source';
+      badge.textContent = '🔒 ' + seg.source;
+      resultEl.appendChild(badge);
+      resultEl.appendChild(document.createTextNode('\n'));
+    }
+    const body = seg.body;
+    if (truncate && body.length > MAX_RESULT) {
+      resultEl.appendChild(document.createTextNode(body.slice(0, MAX_RESULT)));
+      const more = document.createElement('span');
+      more.className = 'tb-result-more';
+      more.setAttribute('role', 'button');
+      more.tabIndex = 0;
+      more.dataset.full = output;
+      more.textContent = ' …show all (' + body.length + ' chars)';
+      resultEl.appendChild(more);
+    } else {
+      resultEl.appendChild(document.createTextNode(body));
+    }
   }
 }
 
@@ -414,7 +439,10 @@ export function addToolResult(name, output) {
 function expandToolResult(el) {
   const full = el.dataset.full || '';
   const resultEl = el.parentElement;
-  if (resultEl) resultEl.textContent = full;
+  if (resultEl) {
+    resultEl.textContent = '';
+    fillToolResult(resultEl, full, false);
+  }
 }
 
 function toggleToolBody(header) {
