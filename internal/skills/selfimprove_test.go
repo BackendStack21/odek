@@ -44,6 +44,7 @@ func TestRunAllHeuristics_Empty(t *testing.T) {
 
 func TestDefaultSkillsConfig(t *testing.T) {
 	cfg := DefaultSkillsConfig()
+	cfg.AutoSave.MinOccurrences = 1 // single-run test: bypass recurrence gate
 	if cfg.MaxAutoLoad != 3 {
 		t.Errorf("MaxAutoLoad = %d", cfg.MaxAutoLoad)
 	}
@@ -490,6 +491,7 @@ func TestAutoSaveSuggestions_WithHeuristics(t *testing.T) {
 	}
 
 	cfg := DefaultSkillsConfig()
+	cfg.AutoSave.MinOccurrences = 1 // single-run test: bypass recurrence gate
 	cfg.AutoSave.MaxPerRun = 5
 	result := AutoSaveSuggestions(suggestions, dir, "", cfg, nil, guard.Config{}, false)
 
@@ -511,6 +513,7 @@ func TestAutoSaveSuggestions_QualityGateFails(t *testing.T) {
 	}
 
 	cfg := DefaultSkillsConfig()
+	cfg.AutoSave.MinOccurrences = 1 // single-run test: bypass recurrence gate
 	result := AutoSaveSuggestions(suggestions, dir, "", cfg, nil, guard.Config{}, false)
 
 	if len(result.Saved) != 0 {
@@ -536,6 +539,7 @@ func TestAutoSaveSuggestions_ScoreRanked(t *testing.T) {
 	}
 
 	cfg := DefaultSkillsConfig()
+	cfg.AutoSave.MinOccurrences = 1 // single-run test: bypass recurrence gate
 	cfg.AutoSave.MaxPerRun = 1
 	result := AutoSaveSuggestions(suggestions, dir, "", cfg, nil, guard.Config{}, false)
 
@@ -555,6 +559,7 @@ func TestAutoSaveSuggestions_MaxPerRun(t *testing.T) {
 	}
 
 	cfg := DefaultSkillsConfig()
+	cfg.AutoSave.MinOccurrences = 1 // single-run test: bypass recurrence gate
 	cfg.AutoSave.MaxPerRun = 2
 	result := AutoSaveSuggestions(suggestions, dir, "", cfg, nil, guard.Config{}, false)
 
@@ -571,6 +576,7 @@ func TestAutoSaveSuggestions_DeclinesTaintedByDefault(t *testing.T) {
 	}
 
 	cfg := DefaultSkillsConfig()
+	cfg.AutoSave.MinOccurrences = 1 // single-run test: bypass recurrence gate
 	result := AutoSaveSuggestions(suggestions, dir, "", cfg, nil, guard.Config{}, false)
 
 	if len(result.Saved) != 0 {
@@ -589,6 +595,7 @@ func TestAutoSaveSuggestions_AllowsTaintedWhenForced(t *testing.T) {
 	}
 
 	cfg := DefaultSkillsConfig()
+	cfg.AutoSave.MinOccurrences = 1 // single-run test: bypass recurrence gate
 	result := AutoSaveSuggestions(suggestions, dir, "", cfg, nil, guard.Config{}, true)
 
 	if len(result.Saved) != 1 || result.Saved[0] != "tainted-skill" {
@@ -601,6 +608,7 @@ func TestAutoSaveSuggestions_AllowsTaintedWhenForced(t *testing.T) {
 
 func TestDefaultSkipThreshold(t *testing.T) {
 	cfg := DefaultSkillsConfig()
+	cfg.AutoSave.MinOccurrences = 1 // single-run test: bypass recurrence gate
 	if cfg.Curation.SkipThreshold != 3 {
 		t.Errorf("SkipThreshold = %d, want 3 (one accidental skip should not permanently suppress)", cfg.Curation.SkipThreshold)
 	}

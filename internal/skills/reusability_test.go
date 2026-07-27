@@ -109,6 +109,7 @@ func TestAutoSaveSuggestions_SkipsNonReusable(t *testing.T) {
 	}
 
 	cfg := DefaultSkillsConfig()
+	cfg.AutoSave.MinOccurrences = 1 // single-run test: bypass recurrence gate
 	cfg.AutoSave.MaxPerRun = 5
 	result := AutoSaveSuggestions(suggestions, dir, "", cfg, nil, guard.Config{}, false)
 
@@ -130,6 +131,7 @@ func TestAutoSaveSuggestions_RedirectsProjectScoped(t *testing.T) {
 	}
 
 	cfg := DefaultSkillsConfig()
+	cfg.AutoSave.MinOccurrences = 1 // single-run test: bypass recurrence gate
 	cfg.AutoSave.MaxPerRun = 5
 	result := AutoSaveSuggestions(suggestions, userDir, projectDir, cfg, nil, guard.Config{}, false)
 
@@ -165,6 +167,7 @@ func TestAutoSaveSuggestions_DropsProjectScopedWhenNoProjectDir(t *testing.T) {
 	}
 
 	cfg := DefaultSkillsConfig()
+	cfg.AutoSave.MinOccurrences = 1 // single-run test: bypass recurrence gate
 	cfg.AutoSave.MaxPerRun = 5
 
 	// No project dir at all.

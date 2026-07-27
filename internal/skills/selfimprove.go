@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/memory"
@@ -723,6 +724,7 @@ func DeriveProvenance(messages []LlmMessage) SkillProvenance {
 type AutoSaveResult struct {
 	Saved        []string          // names of auto-saved skills (global user dir)
 	ProjectSaved []string          // names redirected to the project skills dir (project-scoped)
+	Pending      []string          // names recorded but below the recurrence threshold (MinOccurrences)
 	Skipped      int               // count of suggestions filtered by skip list
 	Failed       []string          // names that failed quality gate
 	Declined     []string          // names declined because they were tainted and allowUntrusted was false
@@ -853,6 +855,17 @@ func AutoSaveSuggestions(suggestions []SkillSuggestion, userDir, projectDir stri
 		return scoreSuggestion(eligible[i]) > scoreSuggestion(eligible[j])
 	})
 
+	// Recurrence gate: a suggestion must recur across sessions before it
+	// may be saved, so a one-off session cannot become a skill.
+	minOcc := cfg.AutoSave.MinOccurrences
+	if minOcc <= 0 {
+		minOcc = 1
+	}
+	var candidates *CandidateStore
+	if minOcc > 1 && len(eligible) > 0 {
+		candidates = LoadCandidates(userDir)
+	}
+
 	// Auto-save eligible suggestions that pass quality gate
 	saved := 0
 	for _, s := range eligible {
@@ -862,6 +875,12 @@ func AutoSaveSuggestions(suggestions []SkillSuggestion, userDir, projectDir stri
 		if !allowUntrusted && s.IsTainted() {
 			result.Declined = append(result.Declined, s.Name)
 			continue
+		}
+		if candidates != nil {
+			if candidates.Record(candidateFingerprint(s), time.Now().UTC()) < minOcc {
+				result.Pending = append(result.Pending, s.Name)
+				continue
+			}
 		}
 		if reason := NonReusableReason(s); reason != "" {
 			result.NonReusable = append(result.NonReusable, s.Name)
@@ -902,6 +921,12 @@ func AutoSaveSuggestions(suggestions []SkillSuggestion, userDir, projectDir stri
 		} else {
 			result.Failed = append(result.Failed, s.Name)
 		}
+	}
+
+	if candidates != nil {
+		// Persist updated recurrence counts; a failed write only delays a
+		// future save, so it is not surfaced as an error.
+		_ = candidates.Save(userDir)
 	}
 
 	return result

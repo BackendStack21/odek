@@ -116,6 +116,9 @@ func RunAutoSaveLoop(filtered []SkillSuggestion, userDir, projectDir string, sm 
 		if result.Skipped > 0 {
 			fmt.Fprintf(verbose, "   (%d previously skipped, suppressed)\n", result.Skipped)
 		}
+		for _, name := range result.Pending {
+			fmt.Fprintf(verbose, "   ↻ Suggestion %q recorded; will auto-save after it recurs in another session\n", name)
+		}
 		for _, name := range result.Declined {
 			fmt.Fprintf(verbose, "   ⚠ Declined to auto-save tainted skill %q (review with --force to save)\n", name)
 		}

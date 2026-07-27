@@ -133,6 +133,10 @@ type AutoSaveConfig struct {
 	Enabled    bool `json:"enabled"`
 	RequireLLM bool `json:"require_llm"`
 	MaxPerRun  int  `json:"max_per_run"`
+	// MinOccurrences is how many distinct sessions must produce a
+	// suggestion before it may be auto-saved. 1 disables the recurrence
+	// gate; the default of 2 keeps one-off sessions from becoming skills.
+	MinOccurrences int `json:"min_occurrences"`
 }
 
 // DefaultSkillsConfig returns sensible defaults for the skills system.
@@ -155,9 +159,10 @@ func DefaultSkillsConfig() SkillsConfig {
 			SkipResetDays: 30,
 		},
 		AutoSave: AutoSaveConfig{
-			Enabled:    true,
-			RequireLLM: true,
-			MaxPerRun:  3,
+			Enabled:        true,
+			RequireLLM:     true,
+			MaxPerRun:      3,
+			MinOccurrences: 2,
 		},
 		LLMLearn:  true,
 		LLMCurate: true,
