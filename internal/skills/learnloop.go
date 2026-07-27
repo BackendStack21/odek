@@ -3,6 +3,7 @@ package skills
 import (
 	"fmt"
 	"io"
+	"sort"
 	"time"
 
 	"github.com/BackendStack21/odek/internal/guard"
@@ -118,6 +119,16 @@ func RunAutoSaveLoop(filtered []SkillSuggestion, userDir, projectDir string, sm 
 		}
 		for _, name := range result.Pending {
 			fmt.Fprintf(verbose, "   ↻ Suggestion %q recorded; will auto-save after it recurs in another session\n", name)
+		}
+		if len(result.DuplicateOf) > 0 {
+			names := make([]string, 0, len(result.DuplicateOf))
+			for name := range result.DuplicateOf {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			for _, name := range names {
+				fmt.Fprintf(verbose, "   ⚭ Skipped %q — near-duplicate of existing skill %q\n", name, result.DuplicateOf[name])
+			}
 		}
 		for _, name := range result.Declined {
 			fmt.Fprintf(verbose, "   ⚠ Declined to auto-save tainted skill %q (review with --force to save)\n", name)

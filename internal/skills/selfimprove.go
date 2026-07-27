@@ -730,6 +730,7 @@ type AutoSaveResult struct {
 	Declined     []string          // names declined because they were tainted and allowUntrusted was false
 	GuardFlagged []string          // names flagged by the prompt-injection guard
 	NonReusable  []string          // names dropped as machine-specific (not reusable knowledge anywhere)
+	DuplicateOf  map[string]string // suggestions skipped as near-duplicates: name → existing skill name
 	Heuristics   map[string]string // heuristic labels for saved skills
 }
 
@@ -824,6 +825,52 @@ func scoreSuggestion(s SkillSuggestion) int {
 	return score
 }
 
+// ── Near-duplicate gate ───────────────────────────────────────────────
+
+// dupSimilarityThreshold is the Jaccard word-set similarity at or above
+// which a suggestion is treated as a near-duplicate of an existing skill.
+const dupSimilarityThreshold = 0.85
+
+// bodyTokenSet returns the stopword-filtered lowercase word set of a body.
+func bodyTokenSet(body string) map[string]bool {
+	set := make(map[string]bool, 64)
+	for _, w := range tokenize(body) {
+		set[w] = true
+	}
+	return set
+}
+
+// jaccard computes |A∩B| / |A∪B| over word sets.
+func jaccard(a, b map[string]bool) float64 {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+	inter := 0
+	for w := range a {
+		if b[w] {
+			inter++
+		}
+	}
+	return float64(inter) / float64(len(a)+len(b)-inter)
+}
+
+// duplicateOf returns the name of an existing skill whose body is a
+// near-duplicate of the suggestion's body, or "" when the suggestion is
+// novel. Same-named skills never count — re-saving a name is an update,
+// not a duplicate.
+func duplicateOf(s SkillSuggestion, existing []Skill) string {
+	st := bodyTokenSet(s.Body)
+	for _, e := range existing {
+		if e.Name == s.Name {
+			continue
+		}
+		if jaccard(st, bodyTokenSet(e.Body)) >= dupSimilarityThreshold {
+			return e.Name
+		}
+	}
+	return ""
+}
+
 // AutoSaveSuggestions runs auto-save logic on a set of suggestions.
 // It filters skipped suggestions, declines tainted suggestions unless
 // allowUntrusted is true, then auto-saves those that pass the quality gate
@@ -836,7 +883,7 @@ func scoreSuggestion(s SkillSuggestion) int {
 // Eligible suggestions are score-ranked (scoreSuggestion) so the MaxPerRun
 // budget goes to the strongest candidates.
 func AutoSaveSuggestions(suggestions []SkillSuggestion, userDir, projectDir string, cfg SkillsConfig, g guard.Guard, guardCfg guard.Config, allowUntrusted bool) AutoSaveResult {
-	result := AutoSaveResult{Heuristics: make(map[string]string)}
+	result := AutoSaveResult{Heuristics: make(map[string]string), DuplicateOf: make(map[string]string)}
 
 	// Load skip list and filter
 	sl := LoadSkipList(userDir)
@@ -867,6 +914,17 @@ func AutoSaveSuggestions(suggestions []SkillSuggestion, userDir, projectDir stri
 	}
 
 	// Auto-save eligible suggestions that pass quality gate
+	existingByDir := make(map[string][]Skill)
+	existingFor := func(dir string) []Skill {
+		if ex, ok := existingByDir[dir]; ok {
+			return ex
+		}
+		res := ScanDirs("", dir, nil)
+		ex := append(append([]Skill{}, res.AutoLoad...), res.Lazy...)
+		existingByDir[dir] = ex
+		return ex
+	}
+
 	saved := 0
 	for _, s := range eligible {
 		if saved >= cfg.AutoSave.MaxPerRun {
@@ -899,6 +957,10 @@ func AutoSaveSuggestions(suggestions []SkillSuggestion, userDir, projectDir stri
 				result.Failed = append(result.Failed, s.Name)
 				continue
 			}
+			if dup := duplicateOf(s, existingFor(dir)); dup != "" {
+				result.DuplicateOf[s.Name] = dup
+				continue
+			}
 			if ScanSuggestionBody(context.Background(), &s, g, guardCfg) {
 				result.GuardFlagged = append(result.GuardFlagged, s.Name)
 			}
@@ -910,6 +972,10 @@ func AutoSaveSuggestions(suggestions []SkillSuggestion, userDir, projectDir stri
 			continue
 		}
 		if PassesQualityGate(s) {
+			if dup := duplicateOf(s, existingFor(userDir)); dup != "" {
+				result.DuplicateOf[s.Name] = dup
+				continue
+			}
 			if ScanSuggestionBody(context.Background(), &s, g, guardCfg) {
 				result.GuardFlagged = append(result.GuardFlagged, s.Name)
 			}
