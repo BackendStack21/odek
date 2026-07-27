@@ -122,10 +122,10 @@ odek skill promote procedure-browser --force
    - Verify each step's output before proceeding
    - Exit code 0 means success
 
-   Save as skill? [Y/n/s=skip always]:
+   Save as skill? [Y/n/p=save to project/s=skip always]:
 ```
 
-Type `y` (or Enter) to save, `n` to skip (temporarily), `s` to skip permanently.
+Type `y` (or Enter) to save globally, `p` to save to the project skills dir (`./.odek/skills`, for project-specific procedures), `n` to skip (temporarily), `s` to skip permanently.
 
 ### Skip Persistence
 
@@ -382,7 +382,7 @@ After the agent completes:
    ## Overview
    Procedure for: docker
    ...
-   Save as skill? [Y/n/s=skip always]: y
+   Save as skill? [Y/n/p=save to project/s=skip always]: y
    ✓ Saved skill "procedure-docker"
 ```
 
@@ -397,7 +397,7 @@ odek skill list
 ```
 📝 Skill suggestion: repeated-ls
    ...
-   Save as skill? [Y/n/s=skip always]: s
+   Save as skill? [Y/n/p=save to project/s=skip always]: s
    Skipped permanently. Use `odek skill reset-skips` to re-enable.
 ```
 
@@ -411,7 +411,7 @@ odek skill reset-skips repeated-ls
 - **Heuristic detection is deterministic** — same tool calls always produce the same suggestions. Skip persistence prevents repeats (one skip = permanent suppression).
 - **Max 1 per heuristic** — if an agent session has 10 multi-step sequences, only the first is suggested.
 - **Max 5 suggestions total** — one per heuristic type.
-- **Auto-curation handles dedup** — overlapping skills are automatically merged after each session.
+- **Dedup at save and curation time** — near-duplicates of existing skills are rejected at save time (Jaccard similarity ≥ 0.85); remaining overlaps are merged by auto-curation after each session.
 - **Command-only** — the heuristics work on terminal (`shell`) tool calls. Other tools (read_file, write_file) are visible in the transcript but aren't analyzed for patterns.
 - **LLM enhancement requires API calls** — when `llm_learn: true`, each suggestion triggers an LLM call for enrichment. Set to `false` for zero-cost heuristic-only mode.
 - **No REPL integration** — learning currently only works with `odek run`, not in REPL mode.
@@ -427,7 +427,8 @@ odek skill reset-skips repeated-ls
     "auto_save": {
       "enabled": true,
       "require_llm": true,
-      "max_per_run": 3
+      "max_per_run": 3,
+      "min_occurrences": 2
     },
     "curation": {
       "staleness_days": 90,

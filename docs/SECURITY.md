@@ -197,6 +197,8 @@ Skills created or edited through the agent-facing `skill_save` and `skill_patch`
 
 The non-interactive auto-save path (`RunAutoSaveLoop`) now **declines to persist tainted suggestions by default**, so a prompt-injected turn cannot silently leave a poisoned skill on disk. Tainted suggestions are still surfaced in the interactive TUI and can be saved explicitly by the user after review.
 
+The auto-save pipeline additionally classifies every suggestion by **scope** before writing: machine-specific suggestions (absolute home-directory paths) are dropped, and project-specific ones (repo-rooted `./scripts/...` invocations, hardcoded release version tags) are redirected to `./.odek/skills` — project-related skills are never promoted to the global `~/.odek/skills`, and micro-curation is confined to the global dir via `Skill.Source.Dir` so a project skill can never be merged into a global one. Save-time hygiene gates further require cross-session recurrence (`auto_save.min_occurrences`, default 2), reject near-duplicates of existing skills, and run `internal/redact` over every SKILL.md write — detected credentials are replaced with `[REDACTED]` and the skill pinned to `NeedsReview`.
+
 After reviewing the skill body, promote it with `--force`:
 
 ```bash
