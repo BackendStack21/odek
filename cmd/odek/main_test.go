@@ -793,11 +793,31 @@ func TestInitConfig_Local(t *testing.T) {
 		t.Fatalf("odek.json not created: %v", err)
 	}
 	content := string(data)
-	if !strings.Contains(content, "deepseek-v4-flash") {
-		t.Errorf("config should contain deepseek-v4-flash, got: %s", content)
+	// Local template uses the project-safe field set.
+	if !strings.Contains(content, "max_tool_parallel") {
+		t.Errorf("local config should contain max_tool_parallel, got: %s", content)
 	}
-	if !strings.Contains(content, "api_key") {
-		t.Errorf("config should contain api_key field, got: %s", content)
+	if !strings.Contains(content, "interaction_mode") {
+		t.Errorf("local config should contain interaction_mode, got: %s", content)
+	}
+	// Operator-only fields must NOT appear in a local (project) config —
+	// the loader would ignore them with warnings on every run.
+	for _, field := range []string{"api_key", "base_url", "\"system\"", "\"dangerous\"", "\"telegram\"", "\"memory\"", "\"maintenance\"", "\"web_search\""} {
+		if strings.Contains(content, field) {
+			t.Errorf("local config must not contain operator-only field %q, got: %s", field, content)
+		}
+	}
+	// "sandbox": false / "sandbox_readonly": false are rejected from
+	// project configs, so neither key may be present at all.
+	for _, field := range []string{"\"sandbox\"", "sandbox_readonly"} {
+		if strings.Contains(content, field) {
+			t.Errorf("local config must not contain %q (project configs may only enable it), got: %s", field, content)
+		}
+	}
+	// Must be valid JSON.
+	var parsed map[string]any
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Errorf("local config is not valid JSON: %v", err)
 	}
 }
 
@@ -819,6 +839,18 @@ func TestInitConfig_Global(t *testing.T) {
 	content := string(data)
 	if !strings.Contains(content, "deepseek-v4-flash") {
 		t.Errorf("config should contain deepseek-v4-flash, got: %s", content)
+	}
+	// Global (operator) config includes the sensitive sections that are
+	// rejected from project-level ./odek.json files.
+	for _, field := range []string{"api_key", "base_url", "dangerous", "telegram", "memory", "maintenance", "web_search", "prompt_caching", "compaction", "interaction_mode", "max_tool_parallel"} {
+		if !strings.Contains(content, field) {
+			t.Errorf("global config should contain %q, got: %s", field, content)
+		}
+	}
+	// Must be valid JSON.
+	var parsed map[string]any
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Errorf("global config is not valid JSON: %v", err)
 	}
 }
 
@@ -870,8 +902,8 @@ func TestInitConfig_LocalForce(t *testing.T) {
 	if strings.Contains(string(data), "old") {
 		t.Error("config should have been overwritten")
 	}
-	if !strings.Contains(string(data), "deepseek-v4-flash") {
-		t.Errorf("config should contain template, got: %s", string(data))
+	if !strings.Contains(string(data), "max_tool_parallel") {
+		t.Errorf("config should contain local template, got: %s", string(data))
 	}
 }
 
@@ -899,6 +931,78 @@ func TestInitConfig_ShortFlags(t *testing.T) {
 	// Verify
 	if _, err := os.Stat(dir + "/.odek/config.json"); err != nil {
 		t.Errorf("global config should exist after -g -f: %v", err)
+	}
+}
+
+func TestInitConfig_LocalFlag(t *testing.T) {
+	// --local explicitly selects the project config (same as no flag).
+	dir := t.TempDir()
+	cwd, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(cwd)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", t.TempDir())
+	defer os.Setenv("HOME", origHome)
+
+	if err := initConfig([]string{"--local"}); err != nil {
+		t.Fatalf("initConfig() --local error: %v", err)
+	}
+
+	if _, err := os.Stat("odek.json"); err != nil {
+		t.Errorf("local odek.json should exist after --local: %v", err)
+	}
+	// --local must not touch the global config.
+	if _, err := os.Stat(os.Getenv("HOME") + "/.odek/config.json"); err == nil {
+		t.Error("--local must not create a global config")
+	}
+}
+
+func TestInitConfig_LocalTemplateLoadsClean(t *testing.T) {
+	// The local template must round-trip through the real config loader
+	// as a project config: valid FileConfig JSON with no operator-only
+	// fields that the loader would reject.
+	var fc config.FileConfig
+	if err := json.Unmarshal([]byte(localConfigTemplate), &fc); err != nil {
+		t.Fatalf("localConfigTemplate does not unmarshal into FileConfig: %v", err)
+	}
+	if fc.APIKey != "" || fc.BaseURL != "" || fc.System != "" {
+		t.Error("localConfigTemplate contains operator-only connection fields")
+	}
+	if fc.Dangerous != nil || fc.Memory != nil || fc.Telegram != nil ||
+		fc.WebSearch != nil || fc.Maintenance != nil || fc.Embedding != nil ||
+		fc.Guard != nil || fc.Sessions != nil {
+		t.Error("localConfigTemplate contains operator-only sections")
+	}
+	if fc.Sandbox != nil || fc.SandboxReadonly != nil {
+		t.Error("localConfigTemplate must not pin sandbox/sandbox_readonly (project configs may only enable, never disable)")
+	}
+	if fc.Skills != nil && len(fc.Skills.Dirs) > 0 {
+		t.Error("localConfigTemplate must not set skills.dirs (rejected from project configs)")
+	}
+	if fc.Tools != nil && len(fc.Tools.Enabled) > 0 {
+		t.Error("localConfigTemplate must not set tools.enabled (project configs may only disable tools)")
+	}
+}
+
+func TestInitConfig_GlobalTemplateLoadsClean(t *testing.T) {
+	// The global template must unmarshal into FileConfig and carry the
+	// documented current defaults.
+	var fc config.FileConfig
+	if err := json.Unmarshal([]byte(globalConfigTemplate), &fc); err != nil {
+		t.Fatalf("globalConfigTemplate does not unmarshal into FileConfig: %v", err)
+	}
+	if fc.Model != "deepseek-v4-flash" {
+		t.Errorf("global template model = %q, want deepseek-v4-flash", fc.Model)
+	}
+	if fc.MaxIter != 90 {
+		t.Errorf("global template max_iterations = %d, want 90", fc.MaxIter)
+	}
+	if fc.Dangerous == nil {
+		t.Error("global template should include the dangerous section")
+	}
+	if fc.Skills == nil || fc.Skills.AutoSave == nil {
+		t.Error("global template should include skills.auto_save")
 	}
 }
 

@@ -841,7 +841,7 @@ func printUsage() {
   odek repl [flags]
   odek serve [--addr :8080] [--open]
   odek subagent --goal <string> [--context <string>] [flags]
-  odek init [--global | -g] [--force | -f]
+  odek init [--global | -g | --local | -l] [--force | -f]
   odek skill <list|view|save|delete|promote|import|curate>
   odek mcp [--sandbox]
   odek telegram
@@ -992,16 +992,28 @@ Environment variables:
 
 // ── Init ──────────────────────────────────────────────────────────────
 
-const defaultConfigTemplate = `{
+// globalConfigTemplate is written to ~/.odek/config.json by `odek init --global`.
+// The global config is operator-controlled, so every field is honored here,
+// including the sensitive ones (api_key, base_url, system, dangerous, …)
+// that project-level ./odek.json files are not allowed to set.
+//
+// Sections that are rarely tuned by hand (mcp_servers, transcription,
+// vision, embedding, trusted_proxies) are intentionally omitted from the
+// template to keep it maintainable — see docs/CONFIG.md for the full schema.
+const globalConfigTemplate = `{
   "model": "deepseek-v4-flash",
   "base_url": "https://api.deepseek.com/v1",
   "api_key": "${ODEK_API_KEY}",
   "thinking": "",
   "max_iterations": 90,
-  "sandbox": false,
+  "max_tool_parallel": 4,
+  "prompt_caching": false,
+  "compaction": false,
+  "interaction_mode": "engaging",
   "no_color": false,
   "no_agents": false,
   "system": "",
+  "sandbox": false,
   "sandbox_image": "",
   "sandbox_network": "none",
   "sandbox_readonly": false,
@@ -1023,13 +1035,24 @@ const defaultConfigTemplate = `{
     "allowlist": [],
     "denylist": []
   },
+  "tools": {
+    "enabled": [],
+    "disabled": []
+  },
   "skills": {
     "max_auto_load": 3,
     "max_lazy_slots": 5,
     "learn": true,
     "llm_learn": true,
     "llm_curate": true,
+    "verbose": false,
     "dirs": [],
+    "auto_save": {
+      "enabled": true,
+      "require_llm": true,
+      "max_per_run": 3,
+      "min_occurrences": 2
+    },
     "import": {
       "max_size_bytes": 1048576,
       "timeout_seconds": 5,
@@ -1037,13 +1060,45 @@ const defaultConfigTemplate = `{
     },
     "curation": {
       "staleness_days": 90,
-      "auto_prune": false
+      "auto_prune": false,
+      "auto_curate": true,
+      "skip_threshold": 3,
+      "skip_reset_days": 30
     }
+  },
+  "memory": {
+    "enabled": true,
+    "buffer_enabled": true,
+    "extract_on_end": true
   },
   "subagent": {
     "max_concurrency": 3,
     "timeout_seconds": 120,
-    "max_iterations": 15
+    "max_iterations": 15,
+    "system_prompt": ""
+  },
+  "mcp_servers": {},
+  "web_search": {
+    "base_url": "",
+    "categories": "general",
+    "language": "en",
+    "max_results": 10,
+    "timeout_seconds": 15
+  },
+  "schedules": {
+    "enabled": true,
+    "max_concurrent": 2,
+    "timezone": "UTC",
+    "catchup": false
+  },
+  "maintenance": {
+    "enabled": true,
+    "interval_minutes": 60,
+    "sessions_max_age_days": 30,
+    "audit_max_age_days": 14,
+    "log_max_mb": 50,
+    "plans_max_age_days": 30,
+    "skills_skip_max_age_days": 90
   },
   "telegram": {
     "bot_token": "",
@@ -1061,18 +1116,72 @@ const defaultConfigTemplate = `{
   }
 }`
 
-// initConfig creates a new config file (local ./odek.json or global ~/.odek/config.json).
+// localConfigTemplate is written to ./odek.json by `odek init`.
+// Project configs are untrusted: the loader ignores sensitive fields
+// (api_key, base_url, system, dangerous, memory, sessions, embedding,
+// guard, maintenance, telegram, web_search, trusted_proxies,
+// tools.enabled, skills.dirs) with a warning, and rejects sandbox=false /
+// sandbox_readonly=false outright. The template therefore contains only
+// fields a project may legitimately set, so a fresh `odek init` produces
+// a config that loads warning-free. Empty/zero values inherit from the
+// global config and the layers below.
+const localConfigTemplate = `{
+  "model": "",
+  "thinking": "",
+  "max_iterations": 0,
+  "max_tool_parallel": 0,
+  "prompt_caching": false,
+  "compaction": false,
+  "interaction_mode": "",
+  "no_color": false,
+  "no_agents": false,
+  "sandbox_image": "",
+  "sandbox_network": "none",
+  "sandbox_memory": "",
+  "sandbox_cpus": "",
+  "sandbox_user": "",
+  "sandbox_env": {},
+  "sandbox_volumes": [],
+  "tools": {
+    "disabled": []
+  },
+  "skills": {
+    "max_auto_load": 3,
+    "max_lazy_slots": 5,
+    "learn": true,
+    "llm_learn": true,
+    "llm_curate": true,
+    "verbose": false
+  },
+  "subagent": {
+    "max_concurrency": 3,
+    "timeout_seconds": 120,
+    "max_iterations": 15
+  },
+  "mcp_servers": {},
+  "schedules": {
+    "enabled": true,
+    "max_concurrent": 2,
+    "timezone": "UTC",
+    "catchup": false
+  }
+}`
+
+// initConfig creates a new config file — local ./odek.json by default, or
+// global ~/.odek/config.json with --global / -g.
 //
-// The file is populated with the defaultConfigTemplate showing every
-// available field with sensible defaults. ${VAR} substitution works
-// for api_key so users can reference environment variables.
+// The two scopes use different templates (globalConfigTemplate vs
+// localConfigTemplate) because the loader treats project configs as
+// untrusted: sensitive fields set there are ignored with warnings, so the
+// local template only includes project-safe fields. ${VAR} substitution
+// works for api_key so users can reference environment variables.
 //
 // The function is safe by default: it refuses to overwrite an existing
 // file unless --force / -f is passed. Parent directories are created
 // automatically (os.MkdirAll handles "." as a no-op for local configs).
 //
-// After creation, a summary is printed showing all available fields and
-// a reminder of the config priority chain.
+// After creation, a scope-appropriate summary is printed showing the
+// available fields and the config priority chain.
 func initConfig(args []string) error {
 	global := false
 	force := false
@@ -1081,6 +1190,8 @@ func initConfig(args []string) error {
 		switch args[i] {
 		case "--global", "-g":
 			global = true
+		case "--local", "-l":
+			global = false
 		case "--force", "-f":
 			force = true
 		default:
@@ -1090,12 +1201,15 @@ func initConfig(args []string) error {
 
 	var configPath string
 	var scope string
+	var template string
 	if global {
 		configPath = config.GlobalConfigPath()
 		scope = "global"
+		template = globalConfigTemplate
 	} else {
 		configPath = config.ProjectConfigPath()
 		scope = "local"
+		template = localConfigTemplate
 	}
 
 	// Check if file already exists
@@ -1111,33 +1225,46 @@ func initConfig(args []string) error {
 		return fmt.Errorf("create directory %s: %w", dir, err)
 	}
 
-	if err := os.WriteFile(configPath, []byte(defaultConfigTemplate+"\n"), 0600); err != nil {
+	if err := os.WriteFile(configPath, []byte(template+"\n"), 0600); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 
 	fmt.Printf("✓ Created %s config: %s\n", scope, configPath)
 	fmt.Println()
-	fmt.Println("  Edit this file to set your preferences. Available fields:")
-	fmt.Println("    model           LLM model name")
-	fmt.Println("    base_url        API endpoint URL")
-	fmt.Println("    api_key         API key (supports ${VAR} substitution)")
-	fmt.Println("    thinking        Reasoning depth (enabled/disabled/low/medium/high)")
-	fmt.Println("    max_iterations  Max think->act cycles")
-	fmt.Println("    sandbox         Run in Docker sandbox (true/false)")
-	fmt.Println("    no_color        Disable colored output (true/false)")
-	fmt.Println("    no_agents       Skip AGENTS.md (true/false)")
-	fmt.Println("    system          System prompt override")
-	fmt.Println("    sandbox_image   Docker image (alpine:latest if empty)")
-	fmt.Println("    sandbox_network Network mode (none | bridge | host)")
-	fmt.Println("    sandbox_readonly Mount working directory read-only")
-	fmt.Println("    sandbox_memory  Memory limit (e.g. 512m, 2g)")
-	fmt.Println("    sandbox_cpus    CPU limit (e.g. 0.5, 2)")
-	fmt.Println("    sandbox_user    Container user (uid:gid)")
-	fmt.Println("    sandbox_env     Extra env vars (object)")
-	fmt.Println("    sandbox_volumes Extra volume mounts (array)")
+	if global {
+		fmt.Println("  Edit this file to set your preferences. Common fields:")
+		fmt.Println("    model             LLM model name (default: deepseek-v4-flash)")
+		fmt.Println("    base_url          API endpoint URL")
+		fmt.Println("    api_key           API key (supports ${VAR} substitution)")
+		fmt.Println("    thinking          Reasoning depth (enabled/disabled/low/medium/high)")
+		fmt.Println("    max_iterations    Max think→act cycles (default: 90)")
+		fmt.Println("    prompt_caching    Provider prompt caching (true/false)")
+		fmt.Println("    compaction        Rolling LLM context compaction (true/false)")
+		fmt.Println("    interaction_mode  engaging | enhance | verbose | off")
+		fmt.Println("    sandbox           Run in Docker sandbox (true/false)")
+		fmt.Println("    system            System prompt override")
+		fmt.Println()
+		fmt.Println("  Sections: dangerous, tools, skills, memory, subagent,")
+		fmt.Println("  mcp_servers, web_search, schedules, maintenance, telegram,")
+		fmt.Println("  plus sandbox_image/network/readonly/memory/cpus/user/env/volumes.")
+		fmt.Println("  Full schema (also mcp_servers, transcription, vision, embedding):")
+		fmt.Println("  see docs/CONFIG.md and docs/SANDBOXING.md.")
+	} else {
+		fmt.Println("  Project config — only project-safe fields are honored here.")
+		fmt.Println("  Empty values inherit from your global config.")
+		fmt.Println()
+		fmt.Println("  The loader ignores operator-only fields in ./odek.json:")
+		fmt.Println("    api_key, base_url, system, dangerous, memory, sessions,")
+		fmt.Println("    embedding, guard, maintenance, telegram, web_search,")
+		fmt.Println("    trusted_proxies, tools.enabled, skills.dirs")
+		fmt.Println("  Set those in ~/.odek/config.json instead: odek init --global")
+		fmt.Println()
+		fmt.Println("  Note: project configs may only enable the sandbox")
+		fmt.Println("  (\"sandbox\": true) — sandbox=false is rejected.")
+		fmt.Println("  Full schema: see docs/CONFIG.md.")
+	}
 	fmt.Println()
-	fmt.Println("  See docs/SANDBOXING.md for full sandbox documentation.")
-	fmt.Println("  Priority: config file < ODEK_* env < CLI flags")
+	fmt.Println("  Priority: ~/.odek/secrets.env → ~/.odek/config.json → ./odek.json → ODEK_* env → CLI flags")
 	return nil
 }
 

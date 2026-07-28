@@ -884,18 +884,23 @@ Key behaviors:
 
 ## odek init
 
-Create a config file template:
+Create a config file template. The two scopes use **different templates** because project configs are untrusted — the loader ignores sensitive fields in `./odek.json` (see [Project overrides](#project-overrides-odekjson) above), so the local template only contains project-safe fields and loads warning-free.
 
 ```bash
-# Local project config (./odek.json)
+# Local project config (./odek.json) — project-safe fields only
 odek init
+odek init --local   # explicit equivalent
 
-# Global config (~/.odek/config.json)
+# Global config (~/.odek/config.json) — full operator schema
 odek init --global
 
 # Overwrite existing file
 odek init --force
 ```
+
+The **global template** covers the full schema: connection (`model`, `base_url`, `api_key`), execution (`max_iterations`, `max_tool_parallel`, `prompt_caching`, `compaction`, `interaction_mode`), sandboxing, `dangerous`, `tools`, `skills` (incl. `auto_save` and `curation`), `memory`, `subagent`, `mcp_servers`, `web_search`, `schedules`, `maintenance`, and `telegram`.
+
+The **local template** contains only fields a project may legitimately set (`model`, `thinking`, iteration/parallelism limits, `prompt_caching`, `compaction`, `interaction_mode`, sandbox resource knobs, `tools.disabled`, `skills` without `dirs`, `subagent`, `mcp_servers`, `schedules`). Operator-only fields (`api_key`, `base_url`, `system`, `dangerous`, `memory`, `sessions`, `embedding`, `guard`, `maintenance`, `telegram`, `web_search`, `trusted_proxies`, `tools.enabled`, `skills.dirs`) belong in `~/.odek/config.json`. Note that project configs may only *enable* the sandbox — `"sandbox": false` is rejected, so neither template pins it locally.
 
 ## Quick examples
 
