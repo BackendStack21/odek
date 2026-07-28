@@ -1,0 +1,49 @@
+# odek
+
+> odek is a minimal autonomous agent runtime written in Go — a ReAct (Reasoning + Acting) loop with zero frameworks (stdlib plus a few focused packages), shipped as a single ~12 MB static binary with instant startup. It runs tasks from the CLI, an interactive REPL, a web UI, a Telegram bot, scheduled jobs, or as a Go library, and can execute shell commands, edit files, browse the web, transcribe audio, analyze images, spawn sub-agents, and connect to MCP servers.
+
+Module path: `github.com/BackendStack21/odek`. Repository: https://github.com/BackendStack21/odek
+
+## Start here
+
+- [Cheat Sheet](https://odek.21no.de/CHEATSHEET.md): CLI quick reference and the most common commands at a glance
+- [CLI Reference](https://odek.21no.de/CLI.md): every command, flag, and subcommand (`run`, `serve`, `telegram`, `schedule`, `subagent`, `memory`, `skill`, `audit`, `cleanup`, `upgrade`, `mcp`)
+- [Configuration](https://odek.21no.de/CONFIG.md): five-layer config priority (`~/.odek/secrets.env` → `~/.odek/config.json` → `./odek.json` → `ODEK_*` env vars → CLI flags) and every config field
+- [Providers](https://odek.21no.de/PROVIDERS.md): supported OpenAI-compatible LLM providers, model profiles, and API key setup
+
+## Architecture and internals
+
+- [Security Architecture](https://odek.21no.de/SECURITY.md): prompt-injection defenses, untrusted-content wrapping, danger classifier, approval gates, sandboxing model — read this before modifying any security-sensitive code
+- [Sandboxing](https://odek.21no.de/SANDBOXING.md): Docker sandbox lifecycle, volume confinement, read-only enforcement, project sandbox approval flow
+- [Sub-agents](https://odek.21no.de/SUBAGENTS.md): `delegate_tasks` tool and `odek subagent` — real OS processes with trust levels, risk caps, and FD-based API key handoff
+- [Tool Selection](https://odek.21no.de/TOOL_SELECTION.md): restricting which built-in tools the LLM can see
+- [Prompt Caching](https://odek.21no.de/CACHING.md): provider prompt-caching support, cost and latency effects
+- [MCP Integration](https://odek.21no.de/MCP.md): odek as MCP server (stdio/SSE) and as MCP client, per-tool approval flow
+- [Development](https://odek.21no.de/DEVELOPMENT.md): build, test, release workflow, and contributor notes
+
+## Memory, learning, and sessions
+
+- [Memory System](https://odek.21no.de/MEMORY.md): three-tier memory (facts, buffer, episodes), `odek memory` commands
+- [Extended Memory](https://odek.21no.de/EXTENDED_MEMORY.md): opt-in atom store, semantic recall, user-state model, quarantine/promotion trust flow
+- [Self-Learning (Skills)](https://odek.21no.de/LEARNING.md): how odek learns reusable skills from sessions, provenance gates, `odek skill` commands
+- [Sessions](https://odek.21no.de/SESSIONS.md): session storage, resume, semantic session search, audit logs
+- [Storage Maintenance](https://odek.21no.de/MAINTENANCE.md): the janitor sweep and `odek cleanup` for bounded local state
+
+## Interfaces and deployment
+
+- [Web UI](https://odek.21no.de/WEBUI.md): `odek serve` — embedded single-page UI, WebSocket protocol, CSRF/session tokens, REST API
+- [Telegram Bot](https://odek.21no.de/TELEGRAM.md): bot setup, slash commands, voice/photo handling, chat-scoped sessions and plans
+- [Schedules](https://odek.21no.de/SCHEDULES.md): `odek schedule` — recurring/one-shot autonomous runs
+- [Docker Compose Guide](https://odek.21no.de/DOCKER_COMPOSE_USER_GUIDE.md): running odek in Docker under two permission profiles
+- [Go SDK](https://odek.21no.de/API.md): using odek as a Go library — `Config`, `New`, `Run`, custom `Tool` implementations
+
+## Optional
+
+- [Redaction Hardening](https://odek.21no.de/REDACTION_HARDENING.md): secret-redaction patterns and coverage
+- [Daily Worker Proposals](https://odek.21no.de/DAILY-WORKER.md): integration proposals comparing odek with other agent setups
+
+## Notes for coding agents
+
+- Tests: `go test ./... -count=1` (unit), `go test -race ./... -count=1` (race), `ODEK_E2E=true go test -v -count=1 ./cmd/odek/ -run "TestE2E_"` (end-to-end). Sandbox tests need Docker.
+- The repo root contains an `AGENTS.md` maintenance guide with the full source layout (`cmd/odek/`, `internal/`) and conventions — read it before making code changes.
+- Documentation pages above are served as raw Markdown; fetch the specific page that matches your task rather than this index.
