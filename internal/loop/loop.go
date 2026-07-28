@@ -19,6 +19,41 @@ import (
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
+// toolHeartbeatInterval is how often a "tool_running" signal fires while a
+// single tool call is still executing. Package-level var so tests can
+// override it.
+var toolHeartbeatInterval = time.Minute
+
+// startToolHeartbeat launches a watchdog goroutine that emits a
+// "tool_running" SignalEvent every toolHeartbeatInterval until the returned
+// channel is closed or ctx is cancelled. The SignalHandler contract is
+// non-blocking, so the heartbeat never delays tool execution or the loop.
+// Callers must close the returned channel when the tool call ends (including
+// panic paths) so the watchdog goroutine cannot leak.
+func (e *Engine) startToolHeartbeat(ctx context.Context, toolName string) chan<- struct{} {
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(toolHeartbeatInterval)
+		defer ticker.Stop()
+		start := time.Now()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				e.emitSignal(SignalEvent{
+					Type:   "tool_running",
+					Tool:   toolName,
+					Detail: fmt.Sprintf("running for %s", time.Since(start).Round(time.Second)),
+				})
+			}
+		}
+	}()
+	return done
+}
+
 // ingestRecorderKey is the context key used to carry the per-run audit
 // ingest recorder through the agent loop to tool implementations.
 type ingestRecorderKey struct{}
@@ -1451,11 +1486,18 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 						if ctxTool, ok := t.(interface{ SetContext(context.Context) }); ok {
 							ctxTool.SetContext(ctx)
 						}
+						// Heartbeat watchdog: emit "tool_running" signals while
+						// this call is still executing so long-running tools
+						// (e.g. a shell test suite) don't look like a hang.
+						// Closed when the call returns, on panic paths too, so
+						// the watchdog goroutine always terminates.
+						stopHeartbeat := e.startToolHeartbeat(ctx, tcRef.Function.Name)
 						// Capture any panic from the tool so it does not kill the agent.
 						// The recovered message falls through to results[idx] like any
 						// other tool error, so the LLM sees it and the consecutive-error
 						// tracking counts it.
 						func() {
+							defer close(stopHeartbeat)
 							defer func() {
 								if r := recover(); r != nil {
 									output = fmt.Sprintf("error: tool %q panicked: %v", tcRef.Function.Name, r)

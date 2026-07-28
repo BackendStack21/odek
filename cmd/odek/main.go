@@ -2447,6 +2447,19 @@ func expandHome(path string) string {
 
 // ── Continue (Multi-Turn) ─────────────────────────────────────────────
 
+// dropDanglingToolCalls returns messages with any trailing assistant messages
+// that carry unanswered tool calls removed. Their tool results never
+// completed, and resuming with dangling tool calls is an invalid request for
+// OpenAI-compatible APIs.
+func dropDanglingToolCalls(messages []llm.Message) []llm.Message {
+	for len(messages) > 0 &&
+		messages[len(messages)-1].Role == "assistant" &&
+		len(messages[len(messages)-1].ToolCalls) > 0 {
+		messages = messages[:len(messages)-1]
+	}
+	return messages
+}
+
 // persistPartialMessages saves the in-flight message history of an
 // interrupted/failed run so the session keeps progress up to the last
 // completed step. A trailing assistant message with unanswered tool calls
@@ -2456,11 +2469,7 @@ func persistPartialMessages(store *session.Store, sess *session.Session, message
 	if store == nil || sess == nil || len(messages) == 0 {
 		return
 	}
-	for len(messages) > 0 &&
-		messages[len(messages)-1].Role == "assistant" &&
-		len(messages[len(messages)-1].ToolCalls) > 0 {
-		messages = messages[:len(messages)-1]
-	}
+	messages = dropDanglingToolCalls(messages)
 	if len(messages) < len(sess.Messages) {
 		// The loop trimmed history in place — keep the richer state already
 		// persisted by the per-turn callback instead of overwriting it.

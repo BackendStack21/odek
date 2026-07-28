@@ -19,6 +19,11 @@ type SignalEvent struct {
 	//   "tool_recovery"    — a tool failed repeatedly and the engine injected a
 	//                        corrective hint so the model changes approach
 	//                        (Tool = failing tool, Detail = the correction)
+	//   "tool_running"     — a single tool call is still executing after the
+	//                        heartbeat interval (Tool = tool name, Detail =
+	//                        human-readable elapsed, e.g. "running for 2m0s").
+	//                        Fires every interval until the call returns, so
+	//                        long-running tools no longer look like a hang.
 	Type      string
 	Detail    string    // human-readable detail (mode, correction text, etc.)
 	Tool      string    // tool name for tool_recovery

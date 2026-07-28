@@ -1,6 +1,37 @@
 package loop
 
-import "testing"
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/tool"
+)
+
+// blockingTool simulates a long-running tool call.
+type blockingTool struct {
+	name  string
+	delay time.Duration
+}
+
+func (b *blockingTool) Name() string        { return b.name }
+func (b *blockingTool) Description() string { return "blocks for a fixed delay" }
+func (b *blockingTool) Schema() any {
+	return map[string]any{
+		"type":       "object",
+		"properties": map[string]any{},
+	}
+}
+func (b *blockingTool) Call(args string) (string, error) {
+	time.Sleep(b.delay)
+	return "ok", nil
+}
 
 func TestEmitSignal_NilHandlerIsSafe(t *testing.T) {
 	e := &Engine{}
@@ -38,5 +69,77 @@ func TestSetSignalHandler_NilDisables(t *testing.T) {
 	e.emitSignal(SignalEvent{Type: "tool_recovery"})
 	if called {
 		t.Error("handler should not fire after being set to nil")
+	}
+}
+
+func TestToolHeartbeat_LongRunningToolEmitsSignals(t *testing.T) {
+	old := toolHeartbeatInterval
+	toolHeartbeatInterval = 50 * time.Millisecond
+	defer func() { toolHeartbeatInterval = old }()
+
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"","tool_calls":[{"id":"call_1","function":{"name":"slow","arguments":"{}"}}]}}]}`)
+		} else {
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"done"}}]}`)
+		}
+	}))
+	defer server.Close()
+
+	slowTool := &blockingTool{name: "slow", delay: 300 * time.Millisecond}
+	registry := tool.NewRegistry([]tool.Tool{slowTool})
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	engine := New(client, registry, 10, "", nil, 0)
+
+	var mu sync.Mutex
+	var signals []SignalEvent
+	engine.SetSignalHandler(func(ev SignalEvent) {
+		mu.Lock()
+		signals = append(signals, ev)
+		mu.Unlock()
+	})
+
+	if _, err := engine.Run(context.Background(), "run the slow tool"); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	countBeats := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		n := 0
+		for _, ev := range signals {
+			if ev.Type == "tool_running" {
+				n++
+			}
+		}
+		return n
+	}
+
+	mu.Lock()
+	for _, ev := range signals {
+		if ev.Type != "tool_running" {
+			continue
+		}
+		if ev.Tool != "slow" {
+			t.Errorf("tool_running signal tool = %q, want %q", ev.Tool, "slow")
+		}
+		if !strings.HasPrefix(ev.Detail, "running for ") {
+			t.Errorf("tool_running signal detail = %q, want \"running for ...\"", ev.Detail)
+		}
+	}
+	mu.Unlock()
+
+	beats := countBeats()
+	if beats == 0 {
+		t.Fatal("expected at least one tool_running signal for a 300ms tool call at a 50ms interval")
+	}
+
+	// After the call returned the watchdog must have stopped: the count
+	// stays stable across two more intervals.
+	time.Sleep(2 * toolHeartbeatInterval)
+	if after := countBeats(); after != beats {
+		t.Errorf("tool_running signals kept firing after the call returned: %d -> %d", beats, after)
 	}
 }

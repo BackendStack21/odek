@@ -411,6 +411,83 @@ func stringSlicesEqual(a, b []string) bool {
 	return true
 }
 
+// TestShellTool_TimeoutSeconds verifies an explicit timeout_seconds from the
+// LLM overrides the generous default: a 1s timeout kills `sleep 5` promptly
+// and reports a timeout error.
+func TestShellTool_TimeoutSeconds(t *testing.T) {
+	st := &shellTool{}
+	done := make(chan struct{})
+	var err error
+	go func() {
+		_, err = st.Call(`{"command":"sleep 5","timeout_seconds":1}`)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Call did not return after timeout_seconds=1 — timeout_seconds was ignored")
+	}
+	if err == nil {
+		t.Fatal("expected a timeout error")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("error should mention the timeout, got: %v", err)
+	}
+}
+
+// TestShellTool_TimeoutSeconds_FastCommand verifies a fast command succeeds
+// with an explicit timeout_seconds well above its runtime.
+func TestShellTool_TimeoutSeconds_FastCommand(t *testing.T) {
+	st := &shellTool{}
+	result, err := st.Call(`{"command":"echo hello","timeout_seconds":10}`)
+	if err != nil {
+		t.Fatalf("Call() error: %v", err)
+	}
+	if !strings.Contains(result, "hello") {
+		t.Errorf("result = %q, want it to contain 'hello'", result)
+	}
+}
+
+// TestClampShellTimeoutSeconds covers the clamp boundaries: values below 1
+// floor to 1, values above the 1800s max clamp down, in-range values pass
+// through unchanged.
+func TestClampShellTimeoutSeconds(t *testing.T) {
+	cases := []struct {
+		in, want int
+	}{
+		{1, 1},
+		{10, 10},
+		{1800, 1800},
+		{1801, 1800},
+		{3600, 1800},
+		{1 << 30, 1800},
+	}
+	for _, c := range cases {
+		if got := clampShellTimeoutSeconds(c.in); got != c.want {
+			t.Errorf("clampShellTimeoutSeconds(%d) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
+// TestShellTool_TimeoutSeconds_NonPositive verifies zero and negative
+// timeout_seconds values are treated as absent (same as parallel_shell):
+// a fast command succeeds without being clamped to an immediate timeout.
+func TestShellTool_TimeoutSeconds_NonPositive(t *testing.T) {
+	st := &shellTool{}
+	for _, args := range []string{
+		`{"command":"echo ok","timeout_seconds":0}`,
+		`{"command":"echo ok","timeout_seconds":-5}`,
+	} {
+		result, err := st.Call(args)
+		if err != nil {
+			t.Fatalf("Call(%s) error: %v", args, err)
+		}
+		if !strings.Contains(result, "ok") {
+			t.Errorf("Call(%s) result = %q, want it to contain 'ok'", args, result)
+		}
+	}
+}
+
 func TestShellTool_PromptUser_ReusesTTYApprover(t *testing.T) {
 	dir := t.TempDir()
 	ttyPath := filepath.Join(dir, "tty")

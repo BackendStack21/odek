@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -765,7 +766,10 @@ func dockerAvailable() bool {
 		return false
 	}
 	// Verify the daemon is actually reachable (not just the CLI installed).
-	cmd := exec.Command("docker", "info")
+	// Bounded so a stopped/starting daemon cannot hang the test suite.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "info")
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	return cmd.Run() == nil

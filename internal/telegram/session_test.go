@@ -911,3 +911,72 @@ func TestPrunePlans_NoDir(t *testing.T) {
 		t.Errorf("PrunePlans on missing dir = %d, want 0", removed)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TestSessionManager_SaveNoIndex — per-turn persistence path: messages are
+// persisted and load back, but the vector index is NOT updated (embedding
+// can be a remote HTTP call and must not fire every loop iteration). A
+// final Save still indexes the completed session.
+// ---------------------------------------------------------------------------
+
+func TestSessionManager_SaveNoIndex(t *testing.T) {
+	sm, st := setupTestSessionManager(t)
+	if err := st.InitVectorIndex(nil); err != nil {
+		t.Fatalf("InitVectorIndex(nil): %v", err)
+	}
+
+	const chatID int64 = 4242
+	msgs := []llm.Message{
+		{Role: "user", Content: "quixotic telegram per-turn persistence marker"},
+	}
+	if err := sm.SaveNoIndex(chatID, msgs); err != nil {
+		t.Fatalf("SaveNoIndex() error: %v", err)
+	}
+
+	// Persisted to disk and loadable through the manager and the store.
+	loaded, err := sm.Load(chatID)
+	if err != nil {
+		t.Fatalf("Load() after SaveNoIndex error: %v", err)
+	}
+	if loaded == nil || len(loaded.Messages) != 1 ||
+		loaded.Messages[0].Content != "quixotic telegram per-turn persistence marker" {
+		t.Fatalf("loaded messages = %+v, want the saved user message", loaded)
+	}
+
+	// NOT in the vector index.
+	if results, err := st.Vec.Search("quixotic", 5); err == nil {
+		for _, r := range results {
+			if r.SessionID == "tg-4242" {
+				t.Errorf("session tg-4242 must not appear in vector index after SaveNoIndex")
+			}
+		}
+	}
+
+	// SaveNoIndex checkpoints mid-turn progress — it must NOT advance the
+	// user-visible TurnCount (only a completed turn's final Save may).
+	if loaded.TurnCount != 0 {
+		t.Errorf("TurnCount = %d after SaveNoIndex, want 0 (per-step saves must not inflate it)", loaded.TurnCount)
+	}
+
+	// A final Save still indexes the completed session.
+	if err := sm.Save(chatID, msgs); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+	if cs, _ := sm.Load(chatID); cs.TurnCount != 1 {
+		t.Errorf("TurnCount = %d after final Save, want 1", cs.TurnCount)
+	}
+	results, err := st.Vec.Search("quixotic", 5)
+	if err != nil {
+		t.Fatalf("Search error: %v", err)
+	}
+	found := false
+	for _, r := range results {
+		if r.SessionID == "tg-4242" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("session tg-4242 not found in vector search results after Save: %+v", results)
+	}
+}

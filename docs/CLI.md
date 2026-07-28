@@ -7,7 +7,7 @@
 | `odek run [flags] <task>` | Execute a task with the agent loop (single-shot by default) |
 | `odek run --session [flags] <task>` | Execute and save conversation as a multi-turn session |
 | `odek run [--no-learn] [flags] <task>` | Execute with skill learning (on by default, use --no-learn to disable) |
-| `odek continue [--id <id>] <task>` | Continue the most recent session (or by `--id`) |
+| `odek continue [--id <id>] <task>` | Continue the most recent session (or by `--id`). Sessions persist per completed step: Ctrl-C/SIGTERM resumes from the last step; SIGKILL may lose the in-flight step |
 | `odek repl [flags]` | Interactive REPL mode (persistent multi-turn session). Accepts `--model`, `--thinking`, `--sandbox`, `--sandbox-*`, `--tool`, and `--no-tool` flags. |
 | `odek session list` | List sessions |
 | `odek session show [id]` | Show session details (default: latest) |

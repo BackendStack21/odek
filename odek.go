@@ -657,6 +657,8 @@ func New(cfg Config) (*Agent, error) {
 					renderer.ContextTrimmed(ev.Detail, ev.Count)
 				case "tool_recovery":
 					renderer.ToolRecovery(ev.Tool, ev.Detail)
+				case "tool_running":
+					renderer.ToolRunning(ev.Tool, ev.Detail)
 				}
 			}
 		})

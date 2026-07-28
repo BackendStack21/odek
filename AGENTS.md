@@ -20,7 +20,7 @@ odek.go                       Public API (Config, New, Run, Close, ModelProfile,
 cmd/odek/
   main.go                     CLI entry point, flag parsing, commands, sandbox setup, system prompt
   dispatch.go                 CLI subcommand dispatch
-  shell.go                    Built-in shell tool (local or docker exec; danger-gated)
+  shell.go                    Built-in shell tool (local or docker exec; danger-gated; optional timeout_seconds)
   serve.go                    Web UI server (HTTP + WebSocket; @-resource completion)
   repl.go                     Interactive REPL with multi-turn session support
   repl_editor.go              Terminal raw-mode input editor
@@ -55,7 +55,7 @@ cmd/odek/
   *_test.go                   250+ unit + E2E tests covering all tools
 internal/
   llm/                        OpenAI-compatible HTTP client with reasoning_content support
-  loop/                       ReAct engine: observe → think → parallel-act → repeat. signal.go — SignalEvent observability (context_trimmed, tool_recovery).
+  loop/                       ReAct engine: observe → think → parallel-act → repeat. signal.go — SignalEvent observability (context_trimmed, tool_recovery, tool_running heartbeat).
   tool/                       Thread-safe tool registry, clarify.go, send_message.go
   danger/                     Command/URL classification + bypass-resistant tokenizer. TTYApprover with friction mode.
   auth/                       Interactive approval system
@@ -92,7 +92,7 @@ ReAct cycle: observe → think → act → repeat.
 - **Interaction modes** — engaging (narrated), enhance (persistent), verbose (raw), off.
 - Max 300 iterations by default.
 - **Post-response async processing** — skill learning, episode extraction, and per-turn extended-memory extraction run in background goroutines tracked by `MemoryManager.RunBackground`; `Agent.Close` drains them via `WaitForBackground` (bounded, ~15s) so the work survives CLI exit without hanging `odek run`.
-- **Per-turn session persistence** — the loop fires an optional `SetMessagesPersistCallback` after each completed step (after a tool batch's result messages, and after the final assistant message) with a freshly-copied message snapshot. `run --session`, `continue`, the REPL, and `odek serve` wire it to `Store.SaveNoIndex` — an atomic save that skips the vector-index update (embedding can be a remote HTTP call and must not fire every iteration) — so an interrupted run (Ctrl-C, SIGTERM, crash) can be resumed via `odek continue` from the last completed step. Error/interrupt paths additionally persist the partial history minus any trailing assistant message with unanswered tool calls (`persistPartialMessages`). The final successful save still goes through `Save`/`Append`, updating the semantic index once per completed turn. If the loop trimmed history in place, the callback skips the save rather than overwriting richer persisted state. `odek serve` filters dynamically-injected system messages (skills/memory/episodes) out of persisted snapshots, preserving the session's original leading system message.
+- **Per-turn session persistence** — the loop fires an optional `SetMessagesPersistCallback` after each completed step (after a tool batch's result messages, and after the final assistant message) with a freshly-copied message snapshot. `run --session`, `continue`, the REPL, `odek serve`, and the Telegram bot wire it to `Store.SaveNoIndex` (Telegram via `SessionManager.SaveNoIndex`) — an atomic save that skips the vector-index update (embedding can be a remote HTTP call and must not fire every iteration) — so an interrupted run (Ctrl-C, SIGTERM, crash) can be resumed via `odek continue` from the last completed step. Error/interrupt paths additionally persist the partial history minus any trailing assistant message with unanswered tool calls (`persistPartialMessages` / `dropDanglingToolCalls`). The final successful save still goes through `Save`/`Append`, updating the semantic index once per completed turn. If the loop trimmed history in place, the callback skips the save rather than overwriting richer persisted state. `odek serve` filters dynamically-injected system messages (skills/memory/episodes) out of persisted snapshots, preserving the session's original leading system message.
 - **Storage maintenance janitor** — `maintenance.Start` (internal/maintenance) runs a periodic sweep of `~/.odek` (expired sessions/audit/plans, oversized-log rotation, media sweep, skill skip-list GC) inside `odek telegram`, `odek serve`, and `odek schedule daemon` when `maintenance.enabled` is set; `odek cleanup [--dry-run]` runs the same sweep on demand. Session files are also trimmed at write time (oldest groups first, system message kept, `[Session storage limit: ...]` marker persisted into the transcript) when they would exceed `MaxSessionFileBytes`, so a session can never grow past the load cap. Operator-only config — project `./odek.json` cannot set it. See docs/MAINTENANCE.md.
 - **Artifact-aware file search** — `search_files` and `multi_grep` skip build/artifact directories (`node_modules`, `vendor`, `.git`, `__pycache__`, `.venv`, etc.) automatically, reducing noise and speeding scans.
 - **Semantic session search** — the `session_search` tool uses go-vector RandomProjections + k-NN for semantic similarity search through session content, with a two-tier pipeline: vector index (fast, ~1ms) → deepSearch fallback (exhaustive, slower).
@@ -257,4 +257,9 @@ go test -fuzz=FuzzParseSkillContent -fuzztime=30s ./internal/skills/
 go test -fuzz=FuzzSessionLoad -fuzztime=30s ./internal/session/
 ```
 
-Note: MCP client E2E tests build the fakeserver from `internal/mcpclient/testdata/main.go` at test time (no pre-compiled binary). macOS temp dirs are classified as `LocalWrite` (not `SystemWrite`), and the Docker availability check verifies daemon reachability before running sandbox tests.
+Note: MCP client E2E tests build the fakeserver from `internal/mcpclient/testdata/main.go` at test time (no pre-compiled binary). macOS temp dirs are classified as `LocalWrite` (not `SystemWrite`), and the Docker availability check verifies daemon reachability (5s timeout) before running sandbox tests.
+
+Agent workflow notes:
+
+- **Scope test runs.** Prefer `go test -count=1 <changed packages>` over `./...`; run `-race` only on changed packages. A full `go test -race ./...` takes several minutes (race-instrumented build + 5–10× runtime slowdown).
+- **The `shell` tool is fully buffered.** Nothing is shown or returned until the command exits, and the default timeout is 30 minutes — a long command looks "stuck" even though it is running (a `tool_running` heartbeat signal fires every 60s). Set `timeout_seconds` explicitly for known long-running commands (builds, test suites) so a genuinely stuck command fails fast, and pass `go test -timeout` for test runs.

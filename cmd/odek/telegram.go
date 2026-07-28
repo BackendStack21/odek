@@ -1882,15 +1882,21 @@ func handleChatMessage(
 			sendAsync(bot, chatID, msg, &telegram.SendOpts{ReplyToMessageID: messageID})
 		},
 		AgentSignalHandler: func(event loop.SignalEvent) {
-			if skillsCfg == nil || !skillsCfg.Verbose {
-				return
-			}
 			var msg string
 			switch event.Type {
-			case "context_trimmed":
-				msg = fmt.Sprintf("✂️ Context trimmed (%s): %d group(s) dropped", event.Detail, event.Count)
-			case "tool_recovery":
-				msg = "🔁 Tool recovery: " + event.Tool
+			case "tool_running":
+				// Long-running tool heartbeat — surface even when not verbose:
+				// a silent multi-minute tool call looks like a hang.
+				msg = fmt.Sprintf("⏳ %s still running (%s)", event.Tool, event.Detail)
+			case "context_trimmed", "tool_recovery":
+				if skillsCfg == nil || !skillsCfg.Verbose {
+					return
+				}
+				if event.Type == "context_trimmed" {
+					msg = fmt.Sprintf("✂️ Context trimmed (%s): %d group(s) dropped", event.Detail, event.Count)
+				} else {
+					msg = "🔁 Tool recovery: " + event.Tool
+				}
 			default:
 				return
 			}
@@ -1927,6 +1933,25 @@ func handleChatMessage(
 		chatCancels.LoadAndDelete(chatID)
 		chatRunInfos.LoadAndDelete(chatID)
 	}()
+
+	// Persist per-turn progress so an interrupted run (/stop, restart, crash)
+	// can be resumed from the last completed step instead of losing the whole
+	// in-progress turn. Uses SaveNoIndex: embedding can be a remote HTTP call
+	// and must not fire every loop iteration — the final Save below still
+	// updates the vector index once per completed turn.
+	persistedLen := len(cs.Messages)
+	agent.SetMessagesPersistCallback(func(snapshot []llm.Message) {
+		trimmed := dropDanglingToolCalls(snapshot)
+		if len(trimmed) < persistedLen {
+			// The loop trimmed history in place — keep the richer state
+			// already persisted instead of overwriting it.
+			return
+		}
+		if err := sessionManager.SaveNoIndex(chatID, trimmed); err != nil {
+			log.Error("per-turn session persist", "chat_id", chatID, "error", err)
+		}
+		persistedLen = len(trimmed)
+	})
 
 	// Run the agent with the full message history (multi-turn).
 	response, updatedMessages, err := agent.RunWithMessages(agentCtx, cs.Messages)

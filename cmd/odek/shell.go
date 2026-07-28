@@ -24,6 +24,19 @@ import (
 // immediately regardless of this backstop.
 const defaultShellTimeout = 30 * time.Minute
 
+// clampShellTimeoutSeconds bounds an LLM-provided timeout_seconds to
+// [1, 1800] seconds, mirroring parallel_shell's per-command cap so the
+// agent can tighten the backstop but never exceed it.
+func clampShellTimeoutSeconds(sec int) int {
+	if sec < 1 {
+		return 1
+	}
+	if max := int(defaultShellTimeout / time.Second); sec > max {
+		return max
+	}
+	return sec
+}
+
 // maxShellOutputBytes caps the stdout + stderr captured from a single shell
 // command to prevent memory DoS from commands that dump huge files.
 const maxShellOutputBytes = 1 << 20 // 1 MiB
@@ -121,7 +134,10 @@ In host mode (default), commands run with the same permissions as the odek proce
 
 Risk classes: safe, local_write, system_write, destructive, network_egress, code_execution, install, unknown, blocked
 High-risk operations may prompt for approval (configurable via dangerous section in odek.json).
-The gate fails closed: an unrecognised command classifies as "unknown" and is denied by default.`
+The gate fails closed: an unrecognised command classifies as "unknown" and is denied by default.
+
+Output is fully buffered: nothing is returned until the command finishes. For known long-running
+commands (builds, test suites), set timeout_seconds explicitly so a stuck command fails fast.`
 }
 
 func (t *shellTool) Schema() any {
@@ -136,6 +152,10 @@ func (t *shellTool) Schema() any {
 				"type":        "string",
 				"description": "Optional: explain what this command does and why. Shown in the approval prompt for high-risk operations.",
 			},
+			"timeout_seconds": map[string]any{
+				"type":        "integer",
+				"description": "Optional: per-command timeout in seconds. Set it explicitly for known long-running commands (builds, test suites); values are clamped to 1800 max. Default: 1800.",
+			},
 		},
 		"required": []string{"command"},
 	}
@@ -146,8 +166,9 @@ func (t *shellTool) Schema() any {
 // Both stdout and stderr are captured and merged into the return string.
 func (t *shellTool) Call(args string) (string, error) {
 	var input struct {
-		Command     string `json:"command"`
-		Description string `json:"description,omitempty"`
+		Command        string `json:"command"`
+		Description    string `json:"description,omitempty"`
+		TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
 	}
 	if err := json.Unmarshal([]byte(args), &input); err != nil {
 		return "", fmt.Errorf("shell: parse args: %w", err)
@@ -162,8 +183,9 @@ func (t *shellTool) Call(args string) (string, error) {
 	}
 
 	// Bound execution: cancel with the agent context (Ctrl-C / turn timeout)
-	// and a generous backstop timeout so a stuck command can never wedge the
-	// agent forever. In sandbox mode this kills the host-side `docker exec`
+	// and a timeout — an LLM-provided timeout_seconds when set, otherwise a
+	// generous backstop — so a stuck command can never wedge the agent
+	// forever. In sandbox mode this kills the host-side `docker exec`
 	// client, which unblocks the agent — but Docker does not propagate the
 	// signal to the in-container process, so buildCmd also returns a
 	// follow-up that kills the in-container process group explicitly.
@@ -171,6 +193,11 @@ func (t *shellTool) Call(args string) (string, error) {
 	timeout := t.timeout
 	if timeout <= 0 {
 		timeout = defaultShellTimeout
+	}
+	// An explicit timeout_seconds from the LLM overrides the tool default.
+	// Zero or negative is treated as absent (same as parallel_shell).
+	if input.TimeoutSeconds > 0 {
+		timeout = time.Duration(clampShellTimeoutSeconds(input.TimeoutSeconds)) * time.Second
 	}
 	ctx, cancel := context.WithTimeout(base, timeout)
 	defer cancel()
