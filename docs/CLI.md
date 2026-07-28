@@ -7,7 +7,7 @@
 | `odek run [flags] <task>` | Execute a task with the agent loop (single-shot by default) |
 | `odek run --session [flags] <task>` | Execute and save conversation as a multi-turn session |
 | `odek run [--no-learn] [flags] <task>` | Execute with skill learning (on by default, use --no-learn to disable) |
-| `odek continue [--id <id>] <task>` | Continue the most recent session (or by `--id`) |
+| `odek continue [--id <id>] <task>` | Continue the most recent session (or by `--id`). Sessions persist per completed step: Ctrl-C/SIGTERM resumes from the last step; SIGKILL may lose the in-flight step |
 | `odek repl [flags]` | Interactive REPL mode (persistent multi-turn session). Accepts `--model`, `--thinking`, `--sandbox`, `--sandbox-*`, `--tool`, and `--no-tool` flags. |
 | `odek session list` | List sessions |
 | `odek session show [id]` | Show session details (default: latest) |
@@ -49,7 +49,8 @@
 | `--interaction-mode <mode>` | string | `engaging` | Tool-call rendering: `engaging` (emoji narration) or `verbose` (raw tool output) |
 | `--no-color` | bool | false | Disable colored terminal output |
 | `--prompt-caching` | bool | false | Enable Anthropic/OpenAI/DeepSeek prompt caching markers |
-| `--compaction` | bool | false | Enable LLM-based rolling compaction of trimmed context |
+| `--compaction` | bool | `true` | Enable LLM-based rolling compaction of trimmed context. On by default |
+| `--no-compaction` | bool | `false` | Disable rolling compaction (overrides config/default) |
 | `--no-agents` | bool | false | Skip loading AGENTS.md |
 | `--session` | bool | false | Save conversation as a multi-turn session |
 | `--learn` | bool | `true` | Enable skill learning mode (detects patterns, saves skills). On by default |

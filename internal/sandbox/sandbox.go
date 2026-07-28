@@ -12,6 +12,7 @@
 package sandbox
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/BackendStack21/odek/internal/pathutil"
 )
@@ -87,7 +89,12 @@ func buildFromDockerfile() (string, error) {
 	hash := sha256.Sum256(data)
 	tag := "odek-sandbox:" + hex.EncodeToString(hash[:12])
 
-	if _, err := exec.Command("docker", "image", "inspect", tag).CombinedOutput(); err != nil {
+	// Image-existence probe, bounded so a stopped/starting daemon cannot
+	// hang sandbox setup.
+	inspectCtx, inspectCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	_, inspectErr := exec.CommandContext(inspectCtx, "docker", "image", "inspect", tag).CombinedOutput()
+	inspectCancel()
+	if inspectErr != nil {
 		fmt.Fprintf(os.Stderr, "odek: building sandbox image from %s...\n", DockerfileName)
 		build := exec.Command("docker", dockerBuildArgs(tag)...)
 		build.Stderr = os.Stderr

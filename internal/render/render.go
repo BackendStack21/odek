@@ -559,6 +559,17 @@ func (r *Renderer) ToolRecovery(tool, detail string) {
 	fmt.Fprintln(r.w, r.style(yellow, fmt.Sprintf("🔁 tool recovery [%s]: %s", tool, r.truncate(detail, 80))))
 }
 
+// ToolRunning reports that a single tool call is still executing after the
+// heartbeat interval, so a long-running tool does not look like a hang.
+// Unlike the other signal renderers it is NOT gated behind memoryVerbose —
+// the heartbeat is the only feedback during a multi-minute tool call.
+func (r *Renderer) ToolRunning(tool, elapsed string) {
+	if r.disable() {
+		return
+	}
+	fmt.Fprintln(r.w, r.style(yellow, fmt.Sprintf("⏳ %s still running (%s)", tool, elapsed)))
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────
 
 // style wraps text in ANSI codes. Returns plain text when color is off.

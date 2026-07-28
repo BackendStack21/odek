@@ -1728,3 +1728,58 @@ func TestCLIFlags_Compaction(t *testing.T) {
 		t.Error("Compaction should be true when CLIFlags.Compaction is set")
 	}
 }
+
+// TestCompaction_DefaultOn verifies compaction resolves to true when no
+// layer (config file, env, CLI) sets it.
+func TestCompaction_DefaultOn(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+
+	cfg := LoadConfig(CLIFlags{})
+	if !cfg.Compaction {
+		t.Error("Compaction should default to true when no layer sets it")
+	}
+}
+
+// TestCompaction_ExplicitFalseWins verifies an explicit false from any
+// layer (env, CLI, config file) disables compaction despite the default-on.
+func TestCompaction_ExplicitFalseWins(t *testing.T) {
+	t.Run("env", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		t.Chdir(t.TempDir())
+		t.Setenv("ODEK_COMPACTION", "false")
+
+		cfg := LoadConfig(CLIFlags{})
+		if cfg.Compaction {
+			t.Error("Compaction should be false when ODEK_COMPACTION=false")
+		}
+	})
+	t.Run("cli", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		t.Chdir(t.TempDir())
+
+		disabled := false
+		cfg := LoadConfig(CLIFlags{Compaction: &disabled})
+		if cfg.Compaction {
+			t.Error("Compaction should be false when CLIFlags.Compaction is explicitly false")
+		}
+	})
+	t.Run("file", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Chdir(t.TempDir())
+
+		odekDir := filepath.Join(home, ".odek")
+		if err := os.MkdirAll(odekDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(odekDir, "config.json"), []byte(`{"compaction": false}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg := LoadConfig(CLIFlags{})
+		if cfg.Compaction {
+			t.Error("Compaction should be false when config.json sets compaction=false")
+		}
+	})
+}

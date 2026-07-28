@@ -72,8 +72,9 @@ type CLIFlags struct {
 	// Config: prompt_caching, ODEK_PROMPT_CACHING, --prompt-caching.
 	PromptCaching *bool // nil = not set
 
-	// Compaction enables LLM-based rolling compaction of trimmed context.
-	// Config: compaction, ODEK_COMPACTION, --compaction.
+	// Compaction enables LLM-based rolling compaction of trimmed context
+	// (default: on). Config: compaction, ODEK_COMPACTION,
+	// --compaction / --no-compaction.
 	Compaction *bool // nil = not set
 
 	// Sandbox-specific
@@ -244,7 +245,8 @@ type FileConfig struct {
 	// PromptCaching enables prompt caching markers for supported providers.
 	PromptCaching *bool `json:"prompt_caching,omitempty"`
 
-	// Compaction enables LLM-based rolling compaction of trimmed context.
+	// Compaction enables LLM-based rolling compaction of trimmed context
+	// (default: on; set false to explicitly disable).
 	Compaction *bool `json:"compaction,omitempty"`
 
 	System string `json:"system,omitempty"`
@@ -1703,7 +1705,8 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	// MaxToolParallel: 0 = use loop engine default (4)
 	resolved.MaxToolParallel = cfg.MaxToolParallel
 
-	// Booleans: default to false if not set
+	// Booleans: default to false if not set (Compaction below is the
+	// exception — it defaults to true).
 	if cfg.Sandbox != nil {
 		resolved.Sandbox = *cfg.Sandbox
 	}
@@ -1716,6 +1719,11 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if cfg.PromptCaching != nil {
 		resolved.PromptCaching = *cfg.PromptCaching
 	}
+	// Compaction defaults to ON: for long sessions, turn groups dropped by
+	// context trimming are summarized into a rolling digest instead of
+	// vanishing. An explicit false from any layer (config file,
+	// ODEK_COMPACTION=false, --no-compaction) disables it.
+	resolved.Compaction = true
 	if cfg.Compaction != nil {
 		resolved.Compaction = *cfg.Compaction
 	}

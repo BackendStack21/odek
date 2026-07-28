@@ -1,22 +1,27 @@
 package sandbox
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // dockerAvailable returns true if the docker CLI is installed and the
 // daemon is reachable. Tests that exercise real docker invocations skip
-// otherwise.
+// otherwise. The probe is bounded so a stopped/starting daemon cannot
+// hang the test suite.
 func dockerAvailable() bool {
 	if _, err := exec.LookPath("docker"); err != nil {
 		return false
 	}
-	cmd := exec.Command("docker", "info")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "info")
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	return cmd.Run() == nil

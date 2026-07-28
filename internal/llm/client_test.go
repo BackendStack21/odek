@@ -395,6 +395,7 @@ func TestClient_Call_Success(t *testing.T) {
 }
 
 func TestClient_Call_HTTPError(t *testing.T) {
+	stubRetrySleep(t) // 500 is retryable — full exhaustion without the stub takes ~90s
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte(`{"error":"internal"}`))
@@ -441,6 +442,7 @@ func TestClient_Call_WithReasoningEffort(t *testing.T) {
 }
 
 func TestClient_Call_InvalidEndpoint(t *testing.T) {
+	stubRetrySleep(t) // connection refused is retryable — stub the backoff
 	c := New("http://127.0.0.1:1", "sk-test", "model", "", 0, 0)
 	_, err := c.Call(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil, nil)
 	if err == nil {
@@ -491,8 +493,11 @@ func TestClient_Call_Unauthorized(t *testing.T) {
 	}
 }
 
-// Test Call() with invalid JSON in the response body.
+// Test Call() with invalid JSON in the response body. Malformed 200 bodies
+// are retried (transient gateway artifact), so the error surfaces only after
+// the full retry budget is spent.
 func TestClient_Call_InvalidJSONResponse(t *testing.T) {
+	stubRetrySleep(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`not json`))
@@ -625,6 +630,7 @@ func TestClient_SimpleCall_HTTPError(t *testing.T) {
 }
 
 func TestClient_SimpleCall_EmptyResponse(t *testing.T) {
+	stubRetrySleep(t) // zero-choices 200 is retried — stub the backoff
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"choices":[]}`))

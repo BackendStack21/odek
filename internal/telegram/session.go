@@ -143,6 +143,52 @@ func (sm *SessionManager) Save(chatID int64, messages []llm.Message) error {
 	return sm.Store.Save(sess)
 }
 
+// SaveNoIndex mirrors Save but persists through Store.SaveNoIndex, skipping
+// the vector-index update. Embedding can be a remote HTTP call and must not
+// fire every loop iteration — this is used by the per-turn persist callback
+// for crash/interrupt-safe resume. The semantic index is still updated once
+// per completed turn by the final Save. Unlike Save it does NOT increment
+// TurnCount: it checkpoints mid-turn progress, and TurnCount is
+// user-visible in /sessions — only a completed turn may advance it.
+func (sm *SessionManager) SaveNoIndex(chatID int64, messages []llm.Message) error {
+	sm.Mu.Lock()
+	cs, ok := sm.Cache[chatID]
+	if ok {
+		// Copy-on-write: create a new ChatSession so existing pointers
+		// held by Load() callers are not mutated, avoiding data races.
+		updated := *cs
+		updated.Messages = messages
+		updated.LastActive = time.Now()
+		cs = &updated
+		sm.Cache[chatID] = cs
+	} else {
+		cs = &ChatSession{
+			ChatID:     chatID,
+			SessionID:  fmt.Sprintf("tg-%d", chatID),
+			Messages:   messages,
+			LastActive: time.Now(),
+		}
+		sm.Cache[chatID] = cs
+	}
+	// Snapshot fields needed after unlock to avoid data race:
+	sessionID := cs.SessionID
+	createdAt := cs.CreatedAt
+	turnCount := cs.TurnCount
+	sm.Mu.Unlock()
+
+	sess := &session.Session{
+		ID:        sessionID,
+		CreatedAt: createdAt,
+		UpdatedAt: time.Now(),
+		Model:     "",
+		Turns:     turnCount,
+		Task:      fmt.Sprintf("tg-%d", chatID),
+		Messages:  messages,
+	}
+
+	return sm.Store.SaveNoIndex(sess)
+}
+
 // Load retrieves a ChatSession from the cache first, then from the
 // backing store. If the session exists in the store but not in cache,
 // it is loaded from disk, converted to a ChatSession, and cached.

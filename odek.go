@@ -214,11 +214,14 @@ type Config struct {
 	// production surfaces).
 	UntrustedWrapper func(source, content string) string
 
-	// Compaction enables LLM-based rolling compaction (default: false). When
-	// enabled, conversation turn groups dropped by context trimming are
+	// Compaction enables LLM-based rolling compaction. When enabled,
+	// conversation turn groups dropped by context trimming are
 	// summarized by the model into a rolling digest system message instead of
 	// vanishing entirely, so long sessions retain a compressed memory of
 	// earlier work. Each compaction costs one extra LLM call per trim.
+	// The CLI resolves it to ON by default (an explicit compaction=false,
+	// ODEK_COMPACTION=false, or --no-compaction disables it); library
+	// users of New must opt in explicitly here.
 	Compaction bool
 }
 
@@ -657,6 +660,8 @@ func New(cfg Config) (*Agent, error) {
 					renderer.ContextTrimmed(ev.Detail, ev.Count)
 				case "tool_recovery":
 					renderer.ToolRecovery(ev.Tool, ev.Detail)
+				case "tool_running":
+					renderer.ToolRunning(ev.Tool, ev.Detail)
 				}
 			}
 		})

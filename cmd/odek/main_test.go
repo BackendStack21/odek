@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -125,6 +126,56 @@ func TestParseRunFlags_AllFlags(t *testing.T) {
 	}
 	if f.Task != "do the thing" {
 		t.Errorf("Task = %q", f.Task)
+	}
+}
+
+func TestParseRunFlags_CompactionFlags(t *testing.T) {
+	// --compaction and --no-compaction are explicit overrides; absent means
+	// "not set" (nil), so config/default resolution decides.
+	f, err := parseRunFlags([]string{"--compaction", "do the thing"})
+	if err != nil {
+		t.Fatalf("parseRunFlags error: %v", err)
+	}
+	if f.Compaction == nil || !*f.Compaction {
+		t.Error("--compaction should set Compaction to true")
+	}
+
+	f, err = parseRunFlags([]string{"--no-compaction", "do the thing"})
+	if err != nil {
+		t.Fatalf("parseRunFlags error: %v", err)
+	}
+	if f.Compaction == nil || *f.Compaction {
+		t.Error("--no-compaction should set Compaction to false")
+	}
+
+	// Trailing form after the task phrase.
+	f, err = parseRunFlags([]string{"do the thing", "--no-compaction"})
+	if err != nil {
+		t.Fatalf("parseRunFlags error: %v", err)
+	}
+	if f.Compaction == nil || *f.Compaction {
+		t.Error("trailing --no-compaction should set Compaction to false")
+	}
+	if f.Task != "do the thing" {
+		t.Errorf("Task = %q, want %q", f.Task, "do the thing")
+	}
+
+	f, err = parseRunFlags([]string{"do the thing"})
+	if err != nil {
+		t.Fatalf("parseRunFlags error: %v", err)
+	}
+	if f.Compaction != nil {
+		t.Error("Compaction should be nil (not set) without a compaction flag")
+	}
+}
+
+func TestParseReplFlags_NoCompaction(t *testing.T) {
+	f, err := parseReplFlags([]string{"--no-compaction", "x"})
+	if err != nil {
+		t.Fatalf("parseReplFlags error: %v", err)
+	}
+	if f.Compaction == nil || *f.Compaction {
+		t.Error("--no-compaction should set Compaction to false")
 	}
 }
 
@@ -765,7 +816,10 @@ func dockerAvailable() bool {
 		return false
 	}
 	// Verify the daemon is actually reachable (not just the CLI installed).
-	cmd := exec.Command("docker", "info")
+	// Bounded so a stopped/starting daemon cannot hang the test suite.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "info")
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	return cmd.Run() == nil
@@ -814,6 +868,12 @@ func TestInitConfig_Local(t *testing.T) {
 			t.Errorf("local config must not contain %q (project configs may only enable it), got: %s", field, content)
 		}
 	}
+	// compaction defaults to ON; an explicit "compaction": false in a fresh
+	// project config would silently disable it, so the key must be omitted
+	// (inherit) rather than pinned.
+	if strings.Contains(content, "compaction") {
+		t.Errorf("local config must not pin compaction (default-on; omit to inherit), got: %s", content)
+	}
 	// Must be valid JSON.
 	var parsed map[string]any
 	if err := json.Unmarshal(data, &parsed); err != nil {
@@ -846,6 +906,11 @@ func TestInitConfig_Global(t *testing.T) {
 		if !strings.Contains(content, field) {
 			t.Errorf("global config should contain %q, got: %s", field, content)
 		}
+	}
+	// Compaction is default-on; the global template must pin it to true so a
+	// fresh operator config matches the documented default explicitly.
+	if !strings.Contains(content, `"compaction": true`) {
+		t.Errorf("global config should set compaction to true, got: %s", content)
 	}
 	// Must be valid JSON.
 	var parsed map[string]any
@@ -977,6 +1042,9 @@ func TestInitConfig_LocalTemplateLoadsClean(t *testing.T) {
 	if fc.Sandbox != nil || fc.SandboxReadonly != nil {
 		t.Error("localConfigTemplate must not pin sandbox/sandbox_readonly (project configs may only enable, never disable)")
 	}
+	if fc.Compaction != nil {
+		t.Error("localConfigTemplate must not pin compaction (default-on; omit the key to inherit)")
+	}
 	if fc.Skills != nil && len(fc.Skills.Dirs) > 0 {
 		t.Error("localConfigTemplate must not set skills.dirs (rejected from project configs)")
 	}
@@ -1003,6 +1071,9 @@ func TestInitConfig_GlobalTemplateLoadsClean(t *testing.T) {
 	}
 	if fc.Skills == nil || fc.Skills.AutoSave == nil {
 		t.Error("global template should include skills.auto_save")
+	}
+	if fc.Compaction == nil || !*fc.Compaction {
+		t.Error("global template should pin compaction to true (the documented default)")
 	}
 }
 

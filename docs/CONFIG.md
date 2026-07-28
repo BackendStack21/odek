@@ -247,11 +247,11 @@ I/O-bound tools (read_file, search_files, shell) benefit most — latency drops 
 
 ## Rolling compaction (`compaction`)
 
-When context trimming drops old conversation turns to stay within the model's context window, those turns are normally lost. With `compaction` enabled, the dropped turns are instead summarized by the model into a rolling digest message, preserving a compressed history of the session.
+When context trimming drops old conversation turns to stay within the model's context window, those turns are normally lost. With `compaction` enabled (the default), the dropped turns are instead summarized by the model into a rolling digest message, preserving a compressed history of the session.
 
 | Field | Default | Env var | CLI flag | Description |
 |-------|---------|---------|----------|-------------|
-| `compaction` | `false` | `ODEK_COMPACTION` | `--compaction` | Enable LLM-based rolling compaction of trimmed context. Each compaction costs one extra LLM call per trim. |
+| `compaction` | `true` | `ODEK_COMPACTION` | `--compaction` / `--no-compaction` | Enable LLM-based rolling compaction of trimmed context. Each compaction costs one extra LLM call per trim. Set to `false` (or pass `--no-compaction`) to disable. |
 
 ## Concurrency and reverse-proxy trust
 
@@ -900,7 +900,7 @@ odek init --force
 
 The **global template** covers the full schema: connection (`model`, `base_url`, `api_key`), execution (`max_iterations`, `max_tool_parallel`, `prompt_caching`, `compaction`, `interaction_mode`), sandboxing, `dangerous`, `tools`, `skills` (incl. `auto_save` and `curation`), `memory`, `subagent`, `mcp_servers`, `web_search`, `schedules`, `maintenance`, and `telegram`.
 
-The **local template** contains only fields a project may legitimately set (`model`, `thinking`, iteration/parallelism limits, `prompt_caching`, `compaction`, `interaction_mode`, sandbox resource knobs, `tools.disabled`, `skills` without `dirs`, `subagent`, `mcp_servers`, `schedules`). Operator-only fields (`api_key`, `base_url`, `system`, `dangerous`, `memory`, `sessions`, `embedding`, `guard`, `maintenance`, `telegram`, `web_search`, `trusted_proxies`, `tools.enabled`, `skills.dirs`) belong in `~/.odek/config.json`. Note that project configs may only *enable* the sandbox — `"sandbox": false` is rejected, so neither template pins it locally.
+The **local template** contains only fields a project may legitimately set (`model`, `thinking`, iteration/parallelism limits, `prompt_caching`, `interaction_mode`, sandbox resource knobs, `tools.disabled`, `skills` without `dirs`, `subagent`, `mcp_servers`, `schedules`). Operator-only fields (`api_key`, `base_url`, `system`, `dangerous`, `memory`, `sessions`, `embedding`, `guard`, `maintenance`, `telegram`, `web_search`, `trusted_proxies`, `tools.enabled`, `skills.dirs`) belong in `~/.odek/config.json`. Note that project configs may only *enable* the sandbox — `"sandbox": false` is rejected, so neither template pins it locally. `compaction` is likewise omitted from the local template: it defaults to on, and pinning `"compaction": false` in a fresh project config would silently disable it (add the key explicitly if you want it off).
 
 ## Quick examples
 

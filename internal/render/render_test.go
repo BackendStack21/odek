@@ -744,12 +744,16 @@ func TestRenderer_SignalEvents(t *testing.T) {
 
 	r.ContextTrimmed("survival", 4)
 	r.ToolRecovery("shell", "try a different approach to the failing command")
+	r.ToolRunning("shell", "running for 2m0s")
 	out := buf.String()
 	if !strings.Contains(out, "context trimmed") || !strings.Contains(out, "survival") {
 		t.Errorf("missing context trim signal: %q", out)
 	}
 	if !strings.Contains(out, "tool recovery") || !strings.Contains(out, "shell") {
 		t.Errorf("missing tool recovery signal: %q", out)
+	}
+	if !strings.Contains(out, "still running") || !strings.Contains(out, "2m0s") {
+		t.Errorf("missing tool running signal: %q", out)
 	}
 }
 
@@ -760,6 +764,7 @@ func TestRenderer_MemoryEvents_NilSafe(t *testing.T) {
 	r.MemoryEpisode("stored", "x")
 	r.ContextTrimmed("proactive", 1)
 	r.ToolRecovery("shell", "x")
+	r.ToolRunning("shell", "x")
 }
 
 func TestRenderer_NarratorMessage(t *testing.T) {
