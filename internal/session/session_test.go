@@ -205,6 +205,75 @@ func TestStore_SaveWithVectorIndex(t *testing.T) {
 	}
 }
 
+// TestStore_SaveNoIndex verifies that SaveNoIndex persists the session to
+// disk and refreshes metadata like Append, but does NOT update the vector
+// index — per-turn saves must not fire a remote embedding call every loop
+// iteration. A final Save still indexes the completed session.
+func TestStore_SaveNoIndex(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.InitVectorIndex(nil); err != nil {
+		t.Fatalf("InitVectorIndex(nil): %v", err)
+	}
+
+	sess := &Session{
+		ID:        GenerateID(),
+		CreatedAt: time.Now().UTC(),
+		Model:     "test-model",
+		Task:      "noindex test",
+		Messages: []llm.Message{
+			{Role: "user", Content: "quixotic per-turn persistence marker"},
+		},
+	}
+	if err := store.SaveNoIndex(sess); err != nil {
+		t.Fatalf("SaveNoIndex() error: %v", err)
+	}
+
+	// Persisted to disk and loadable.
+	loaded, err := store.Load(sess.ID)
+	if err != nil {
+		t.Fatalf("Load() after SaveNoIndex error: %v", err)
+	}
+	if len(loaded.Messages) != 1 || loaded.Messages[0].Content != "quixotic per-turn persistence marker" {
+		t.Errorf("loaded messages = %+v, want the saved user message", loaded.Messages)
+	}
+
+	// Metadata refreshed like Append does.
+	if sess.Turns != 1 {
+		t.Errorf("Turns = %d, want 1", sess.Turns)
+	}
+	if sess.UpdatedAt.IsZero() {
+		t.Error("UpdatedAt should be set by SaveNoIndex")
+	}
+
+	// NOT in the vector index.
+	if results, err := store.Vec.Search("quixotic", 5); err == nil {
+		for _, r := range results {
+			if r.SessionID == sess.ID {
+				t.Errorf("session %s must not appear in vector index after SaveNoIndex", sess.ID)
+			}
+		}
+	}
+
+	// A final Save still indexes the completed session.
+	if err := store.Save(sess); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+	results, err := store.Vec.Search("quixotic", 5)
+	if err != nil {
+		t.Fatalf("Search error: %v", err)
+	}
+	found := false
+	for _, r := range results {
+		if r.SessionID == sess.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("session %s not found in vector search results after Save: %+v", sess.ID, results)
+	}
+}
+
 // TestStore_ConcurrentSave is a smoke test that concurrent Save calls with an
 // active vector index complete without deadlock and that every session
 // persists. The vector-index update runs outside the store mutex so a slow

@@ -78,8 +78,9 @@ type Store struct {
 	trimWarned map[string]struct{}
 
 	// Vec is the optional semantic search index. When non-nil, every
-	// Save/Delete/Cleanup call updates the vector index automatically.
-	// Call InitVectorIndex() to initialize.
+	// Save/Delete/Cleanup call updates the vector index automatically
+	// (SaveNoIndex is the deliberate per-turn exception). Call
+	// InitVectorIndex() to initialize.
 	Vec *VectorIndex
 }
 
@@ -332,6 +333,22 @@ func (s *Store) Save(sess *Session) error {
 		return err
 	}
 	return s.addToVectorIndex(sess)
+}
+
+// SaveNoIndex persists a session exactly like Save — redaction, file-cap
+// trimming, atomic write, and index.json metadata update all still happen —
+// but skips the vector-index update. It also refreshes UpdatedAt and Turns
+// like Append does, so per-turn saves keep session metadata current.
+// Used by the loop's per-turn persistence callback: embedding can be a
+// remote HTTP call and must not fire on every loop iteration; the final
+// end-of-run Save still indexes the completed session.
+func (s *Store) SaveNoIndex(sess *Session) error {
+	s.mu.Lock()
+	sess.UpdatedAt = time.Now().UTC()
+	sess.Turns = countUserTurns(sess.Messages)
+	err := s.saveLocked(sess)
+	s.mu.Unlock()
+	return err
 }
 
 // addToVectorIndex updates the semantic search index for a session that is

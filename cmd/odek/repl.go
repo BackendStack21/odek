@@ -195,6 +195,20 @@ func replCmd(args []string) error {
 		sess.Sandbox = resolved.Sandbox
 		store.Save(sess)
 	}
+
+	// Persist per-turn progress so an interrupted turn (Ctrl-C) survives up
+	// to the last completed step instead of losing the whole turn.
+	agent.SetMessagesPersistCallback(func(snapshot []llm.Message) {
+		if sess == nil || len(snapshot) < len(sess.Messages) {
+			// The loop trimmed history in place — keep the richer state
+			// already persisted instead of overwriting it.
+			return
+		}
+		sess.Messages = snapshot
+		if err := store.SaveNoIndex(sess); err != nil {
+			fmt.Fprintf(os.Stderr, "odek: save error: %v\n", err)
+		}
+	})
 	cwd, _ := os.Getwd()
 	if mm := agent.Memory(); mm != nil {
 		mm.SetSessionContext(sess.ID, cwd)
@@ -260,9 +274,6 @@ func replCmd(args []string) error {
 			messages = injectReturnAfterBreak(ctx, agent.Memory(), messages)
 			resumedSession = false
 		}
-		// origLen is computed after the (ephemeral) injection so only the
-		// new user/assistant turns are persisted back to the session.
-		origLen := len(messages)
 		messages = append(messages, llm.Message{Role: "user", Content: input})
 
 		// Append user input to buffer (AppendBuffer summarizes raw text).
@@ -274,6 +285,9 @@ func replCmd(args []string) error {
 		rend.Start(input)
 		_, allMessages, err := agent.RunWithMessages(ctx, messages)
 		if err != nil {
+			// Persist the partial history so the interrupted turn survives
+			// up to the last completed step (mirrors the Telegram cancel path).
+			persistPartialMessages(store, sess, allMessages)
 			fmt.Fprintf(os.Stderr, "odek: agent error: %v\n", err)
 			continue
 		}
@@ -285,18 +299,16 @@ func replCmd(args []string) error {
 			}
 		}
 
-		// Save new messages to session
-		newMsgs := allMessages[origLen:]
-		if err := store.Append(sess.ID, newMsgs); err != nil {
-			fmt.Fprintf(os.Stderr, "odek: save error: %v\n", err)
-		}
-
-		// Reload session to get updated turn count + persist buffer
+		// The per-turn persist callback already saved the full history;
+		// reload and Save once more to persist the buffer and update the
+		// vector index for the completed turn.
 		sess, _ = store.Load(sess.ID)
 		if sess != nil {
 			if mm := agent.Memory(); mm != nil {
 				sess.Buffer = mm.GetBuffer()
-				store.Save(sess)
+			}
+			if err := store.Save(sess); err != nil {
+				fmt.Fprintf(os.Stderr, "odek: save error: %v\n", err)
 			}
 		}
 

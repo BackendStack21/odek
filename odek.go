@@ -826,6 +826,19 @@ func (a *Agent) SwitchThinking(thinking string) {
 	}
 }
 
+// SetMessagesPersistCallback registers a callback the loop fires after each
+// completed step — once a tool batch's result messages are appended, and
+// again after the final assistant message — with a copy of the current
+// message history. Callers use it to persist per-turn progress so an
+// interrupted run (Ctrl-C, SIGTERM, crash) can be resumed from the last
+// completed step. Safe to call between RunWithMessages calls.
+func (a *Agent) SetMessagesPersistCallback(cb loop.MessagesPersistCallback) {
+	if a == nil || a.engine == nil {
+		return
+	}
+	a.engine.SetMessagesPersistCallback(cb)
+}
+
 // shouldRegisterTool reports whether a built-in tool name should be registered
 // given a ToolFilterConfig. If Enabled is non-nil, the name must be present.
 // The name must not be present in Disabled.
