@@ -221,6 +221,17 @@ type Engine struct {
 	// LLM keep retrying the same failing tool.
 	maxConsecutiveToolErrors map[string]int
 
+	// lastToolFingerprint + toolRepeatStreak track consecutive identical
+	// successful tool calls (fingerprint = tool name + "\x00" + args). A
+	// model stuck polling the same call with the same arguments burns
+	// iterations undetected — only failures got a corrective hint — so after
+	// a few repeats the loop injects a stall warning (same machinery as the
+	// error-recovery correction) and resets the streak. Any different or
+	// failed call resets it. This is a hint, not enforcement: legitimate
+	// polling is allowed to continue.
+	lastToolFingerprint string
+	toolRepeatStreak    int
+
 	// approver gates dangerous operations. When set and the LLM returns
 	// multiple tool calls in one iteration, a single batch approval prompt
 	// is shown before any tool executes, but ONLY for tools whose risk
@@ -859,6 +870,29 @@ const compactionMaxSourceBytes = 32 * 1024
 // summarizer input.
 const compactionSnippetBytes = 1000
 
+// ── Iteration-budget summary ───────────────────────────────────────────
+
+// budgetSummaryMarker prefixes the final answer when the iteration budget
+// was exhausted and the engine summarized partial progress instead of
+// reaching a real completion.
+const budgetSummaryMarker = "[Iteration budget reached — partial summary]"
+
+// budgetSummarySystemPrompt instructs the model to summarize partial
+// progress when the iteration budget is exhausted. Kept short — this is a
+// single bounded side-call, not a new turn of the loop.
+const budgetSummarySystemPrompt = "You are a progress summarizer. The agent ran out of its " +
+	"iteration budget before completing the task. Based on the conversation below, summarize " +
+	"in a few short paragraphs: what was accomplished, the current state, and what remains " +
+	"to be done. Output only the summary."
+
+// budgetSummaryMaxMessages caps how many recent messages are rendered into
+// the budget-summarizer input so the side-call stays cheap.
+const budgetSummaryMaxMessages = 30
+
+// budgetSummarySnippetBytes caps each message excerpt in the
+// budget-summarizer input.
+const budgetSummarySnippetBytes = 2000
+
 // refreshDigest summarizes newly dropped turn groups and inserts (or updates)
 // the rolling compaction digest system message. The digest is derived from
 // potentially untrusted tool output, so its body is wrapped with the
@@ -946,6 +980,60 @@ func (e *Engine) summarizeDropped(ctx context.Context, dropped []llm.Message) st
 	return strings.TrimSpace(res.Content)
 }
 
+// summarizeProgress renders the tail of the conversation into a bounded
+// summarizer input and makes one final tool-less LLM call (30s bound, same
+// pattern as the compaction side-call) asking for a progress summary.
+// Returns an empty string on any failure — including a non-compliant
+// response that still requests tool calls — so the caller can fall back to
+// the plain budget-exhaustion error.
+func (e *Engine) summarizeProgress(ctx context.Context, messages []llm.Message) string {
+	if e.client == nil {
+		return ""
+	}
+	tail := messages
+	if len(tail) > budgetSummaryMaxMessages {
+		tail = tail[len(tail)-budgetSummaryMaxMessages:]
+	}
+	var b strings.Builder
+	for _, m := range tail {
+		content := m.Content
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			names := make([]string, 0, len(m.ToolCalls))
+			for _, tc := range m.ToolCalls {
+				names = append(names, tc.Function.Name)
+			}
+			content = strings.TrimSpace(content + " [called tools: " + strings.Join(names, ", ") + "]")
+		}
+		if len(content) > budgetSummarySnippetBytes {
+			content = content[:budgetSummarySnippetBytes] + "…"
+		}
+		if content == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "%s: %s\n", m.Role, content)
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+
+	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	res, err := e.client.Call(callCtx, []llm.Message{
+		{Role: "system", Content: budgetSummarySystemPrompt},
+		{Role: "user", Content: b.String()},
+	}, nil, nil)
+	if err != nil || res == nil {
+		return ""
+	}
+	// The summary call passes no tools; a response that still requests tool
+	// calls is not a summary (its content is pre-tool chatter), so treat it
+	// as a failure and keep the original error path.
+	if len(res.ToolCalls) > 0 {
+		return ""
+	}
+	return strings.TrimSpace(res.Content)
+}
+
 // ── Loop ──────────────────────────────────────────────────────────────
 
 // Run executes the loop for a given task and returns the final response.
@@ -1006,6 +1094,9 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 	startTime := time.Now()
 	// Reset per-session tool error tracking
 	e.maxConsecutiveToolErrors = make(map[string]int)
+	// Reset per-session repeated-call (stall) tracking
+	e.lastToolFingerprint = ""
+	e.toolRepeatStreak = 0
 
 	// Backstop: clear any batch trustAll grant when this run returns, even on
 	// early exit or panic, so it never leaks into a later prompt that reuses
@@ -1577,8 +1668,9 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		// system message so the LLM picks a different approach instead
 		// of retrying the same failing tool.
 		const (
-			errThreshold  = 3            // consecutive errors before intervention
-			errPrefixRead = "\"error\":" // JSON error indicator
+			errThreshold   = 3            // consecutive errors before intervention
+			errPrefixRead  = "\"error\":" // JSON error indicator
+			stallThreshold = 3            // consecutive identical successful calls before intervention
 		)
 		var corrections []string
 		for idx, tc := range result.ToolCalls {
@@ -1589,8 +1681,41 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 
 			if isErr {
 				e.maxConsecutiveToolErrors[toolName]++
+				// A failed call is not an identical successful call — the
+				// stall streak only counts successes.
+				e.lastToolFingerprint = ""
+				e.toolRepeatStreak = 0
 			} else {
 				e.maxConsecutiveToolErrors[toolName] = 0
+
+				// ── Stall detection: repeated identical successful calls ──
+				// A model polling the same tool with the same arguments
+				// burns iterations without failing, so the error tracker
+				// above never fires. Track the fingerprint (name + args) of
+				// the most recent successful call; on enough consecutive
+				// repeats, inject a corrective hint and reset — a hint, not
+				// enforcement, since legitimate polling exists.
+				fp := toolName + "\x00" + tc.Function.Arguments
+				if fp == e.lastToolFingerprint {
+					e.toolRepeatStreak++
+				} else {
+					e.lastToolFingerprint = fp
+					e.toolRepeatStreak = 1
+				}
+				if e.toolRepeatStreak >= stallThreshold {
+					correction := fmt.Sprintf(
+						"⚠️ You called %q with identical arguments %d times in a row with no new information. Change approach: vary the arguments, switch to a different tool, or move on to the next step — repeating the same call will not produce a different result.",
+						toolName, e.toolRepeatStreak)
+					corrections = append(corrections, correction)
+					e.emitSignal(SignalEvent{
+						Type:   "tool_recovery",
+						Tool:   toolName,
+						Detail: fmt.Sprintf("repeated identical call (%dx in a row)", e.toolRepeatStreak),
+					})
+					// Reset streak after injecting suggestion (same
+					// semantics as the error-recovery counter).
+					e.toolRepeatStreak = 0
+				}
 			}
 
 			if e.maxConsecutiveToolErrors[toolName] >= errThreshold {
@@ -1656,6 +1781,49 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 				HasFinalAnswer:      false,
 			})
 		}
+	}
+
+	// Iteration budget exhausted. Rather than discarding all progress with a
+	// bare error, make one final tool-less LLM call asking the model to
+	// summarize what was accomplished, the current state, and what remains —
+	// then return that summary as the final answer (mirroring the normal
+	// completion path: render, iteration callback, assistant message
+	// appended, persist callback) so callers persist and display it like a
+	// normal completion. On summarizer failure, fall back to the error.
+	if summary := e.summarizeProgress(ctx, messages); summary != "" {
+		final := budgetSummaryMarker + "\n\n" + summary
+
+		if e.renderer != nil && e.interactionMode != "off" {
+			e.renderer.FinalAnswer(final)
+			e.renderer.Summary(
+				e.TotalInputTokens,
+				e.TotalOutputTokens,
+				e.TotalCacheCreationTokens,
+				e.TotalCacheReadTokens,
+				e.TotalCachedTokens,
+			)
+		}
+		if e.iterationCallback != nil {
+			e.iterationCallback(IterationInfo{
+				Turn:                e.maxIter,
+				MaxTurns:            e.maxIter,
+				ToolNames:           nil,
+				InputTokens:         e.TotalInputTokens,
+				OutputTokens:        e.TotalOutputTokens,
+				CacheCreationTokens: e.TotalCacheCreationTokens,
+				CacheReadTokens:     e.TotalCacheReadTokens,
+				CachedTokens:        e.TotalCachedTokens,
+				CacheReported:       e.TotalCacheReported,
+				TotalLatency:        time.Since(startTime),
+				HasFinalAnswer:      true,
+			})
+		}
+		messages = append(messages, llm.Message{
+			Role:    "assistant",
+			Content: final,
+		})
+		e.emitMessagesPersist(messages)
+		return final, messages, nil
 	}
 
 	return "", messages, fmt.Errorf("reached max iterations (%d) without final answer", e.maxIter)

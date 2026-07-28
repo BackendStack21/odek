@@ -49,7 +49,8 @@
 | `--interaction-mode <mode>` | string | `engaging` | Tool-call rendering: `engaging` (emoji narration) or `verbose` (raw tool output) |
 | `--no-color` | bool | false | Disable colored terminal output |
 | `--prompt-caching` | bool | false | Enable Anthropic/OpenAI/DeepSeek prompt caching markers |
-| `--compaction` | bool | false | Enable LLM-based rolling compaction of trimmed context |
+| `--compaction` | bool | `true` | Enable LLM-based rolling compaction of trimmed context. On by default |
+| `--no-compaction` | bool | `false` | Disable rolling compaction (overrides config/default) |
 | `--no-agents` | bool | false | Skip loading AGENTS.md |
 | `--session` | bool | false | Save conversation as a multi-turn session |
 | `--learn` | bool | `true` | Enable skill learning mode (detects patterns, saves skills). On by default |

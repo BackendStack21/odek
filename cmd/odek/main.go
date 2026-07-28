@@ -416,6 +416,9 @@ func parseRunFlags(args []string) (runFlags, error) {
 		case "--compaction":
 			f.Compaction = boolPtr(true)
 			i++
+		case "--no-compaction":
+			f.Compaction = boolPtr(false)
+			i++
 		case "--session":
 			f.Session = boolPtr(true)
 			i++
@@ -663,6 +666,10 @@ done:
 			f.Compaction = boolPtr(true)
 			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
 			j--
+		case "--no-compaction":
+			f.Compaction = boolPtr(false)
+			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+			j--
 		case "--sandbox-readonly":
 			f.SandboxReadonly = boolPtr(true)
 			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
@@ -821,6 +828,9 @@ func parseReplFlags(args []string) (replFlags, error) {
 		case "--compaction":
 			f.Compaction = boolPtr(true)
 			i++
+		case "--no-compaction":
+			f.Compaction = boolPtr(false)
+			i++
 		case "--interaction-mode":
 			f.InteractionMode = args[i+1]
 			i += 2
@@ -906,7 +916,8 @@ Run flags:
   --no-color           Disable colored terminal output
   --no-agents          Skip loading AGENTS.md from working directory
   --prompt-caching     Enable prompt caching markers (Anthropic/DeepSeek/OpenAI)
-  --compaction         Enable LLM-based rolling compaction of trimmed context
+  --compaction         Enable LLM-based rolling compaction of trimmed context (default: on)
+  --no-compaction      Disable rolling compaction (overrides config/default)
   --session            Save conversation as a multi-turn session
   --learn              Enable skill learning mode — on by default, no flag needed
   --no-learn           Disable skill learning mode (overrides config/default)
@@ -1008,7 +1019,7 @@ const globalConfigTemplate = `{
   "max_iterations": 90,
   "max_tool_parallel": 4,
   "prompt_caching": false,
-  "compaction": false,
+  "compaction": true,
   "interaction_mode": "engaging",
   "no_color": false,
   "no_agents": false,
@@ -1131,7 +1142,6 @@ const localConfigTemplate = `{
   "max_iterations": 0,
   "max_tool_parallel": 0,
   "prompt_caching": false,
-  "compaction": false,
   "interaction_mode": "",
   "no_color": false,
   "no_agents": false,
@@ -1239,7 +1249,7 @@ func initConfig(args []string) error {
 		fmt.Println("    thinking          Reasoning depth (enabled/disabled/low/medium/high)")
 		fmt.Println("    max_iterations    Max think→act cycles (default: 90)")
 		fmt.Println("    prompt_caching    Provider prompt caching (true/false)")
-		fmt.Println("    compaction        Rolling LLM context compaction (true/false)")
+		fmt.Println("    compaction        Rolling LLM context compaction (default: true)")
 		fmt.Println("    interaction_mode  engaging | enhance | verbose | off")
 		fmt.Println("    sandbox           Run in Docker sandbox (true/false)")
 		fmt.Println("    system            System prompt override")

@@ -850,3 +850,68 @@ func TestHandleResourceSearch_LimitCapped(t *testing.T) {
 		t.Errorf("expected results capped to 100, got %d", len(results))
 	}
 }
+
+// TestFilterPersistSnapshot verifies the per-turn persist filter: the
+// session's leading system message and rolling-compaction digest system
+// messages survive, while dynamically-injected system messages (skills,
+// memory, episodes, trim warnings) are dropped.
+func TestFilterPersistSnapshot(t *testing.T) {
+	head := []llm.Message{{Role: "system", Content: "You are odek."}}
+	snapshot := []llm.Message{
+		{Role: "system", Content: "You are odek."},
+		{Role: "system", Content: "## Skill: deploy\nDo the deploy dance."},
+		{Role: "system", Content: "[Compacted earlier context: turns 1-8 summarized. User asked about the migration.]"},
+		{Role: "user", Content: "continue the migration"},
+		{Role: "system", Content: "[Context trimmed: 2 turn groups dropped]"},
+		{Role: "assistant", Content: "On it."},
+	}
+
+	got := filterPersistSnapshot(head, snapshot)
+
+	var systemMsgs []string
+	for _, m := range got {
+		if m.Role == "system" {
+			systemMsgs = append(systemMsgs, m.Content)
+		}
+	}
+
+	// Exactly two system messages survive: the session head and the
+	// compaction digest. Skill injection and trim warning are dropped.
+	if len(systemMsgs) != 2 {
+		t.Fatalf("expected 2 system messages, got %d: %q", len(systemMsgs), systemMsgs)
+	}
+	if systemMsgs[0] != "You are odek." {
+		t.Errorf("system[0] = %q, want session head", systemMsgs[0])
+	}
+	if !strings.HasPrefix(systemMsgs[1], compactionDigestPrefix) {
+		t.Errorf("system[1] = %q, want compaction digest (prefix %q)", systemMsgs[1], compactionDigestPrefix)
+	}
+	for _, s := range systemMsgs {
+		if strings.Contains(s, "Skill: deploy") || strings.HasPrefix(s, "[Context trimmed:") {
+			t.Errorf("dynamically-injected system message survived: %q", s)
+		}
+	}
+
+	// Non-system messages pass through untouched.
+	var roles []string
+	for _, m := range got {
+		roles = append(roles, m.Role)
+	}
+	want := []string{"system", "system", "user", "assistant"}
+	if strings.Join(roles, ",") != strings.Join(want, ",") {
+		t.Errorf("roles = %v, want %v", roles, want)
+	}
+}
+
+// TestFilterPersistSnapshot_NoHead verifies the filter also keeps digests
+// when the session has no leading system message.
+func TestFilterPersistSnapshot_NoHead(t *testing.T) {
+	snapshot := []llm.Message{
+		{Role: "system", Content: "[Compacted earlier context: digest]"},
+		{Role: "user", Content: "hi"},
+	}
+	got := filterPersistSnapshot(nil, snapshot)
+	if len(got) != 2 || got[0].Role != "system" {
+		t.Fatalf("digest should survive with empty head, got %+v", got)
+	}
+}

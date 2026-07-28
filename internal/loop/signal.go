@@ -16,9 +16,12 @@ type SignalEvent struct {
 	//                        post-error nuclear trim, or "margin_calibrated"
 	//                        when the safety margin tightened after the provider
 	//                        reported more input tokens than estimated)
-	//   "tool_recovery"    — a tool failed repeatedly and the engine injected a
-	//                        corrective hint so the model changes approach
-	//                        (Tool = failing tool, Detail = the correction)
+	//   "tool_recovery"    — a tool failed repeatedly, or the same successful
+	//                        call was repeated with identical arguments, and
+	//                        the engine injected a corrective hint so the model
+	//                        changes approach
+	//                        (Tool = failing/stalled tool, Detail = the
+	//                        correction or "repeated identical call (Nx)")
 	//   "tool_running"     — a single tool call is still executing after the
 	//                        heartbeat interval (Tool = tool name, Detail =
 	//                        human-readable elapsed, e.g. "running for 2m0s").

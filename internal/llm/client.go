@@ -4,6 +4,8 @@ package llm
 import (
 	"bytes"
 	"context"
+	crand "crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -397,29 +399,63 @@ func reasoningEffortRejected(err error) bool {
 	return strings.Contains(msg, "400") && strings.Contains(msg, `"reasoning_effort"`)
 }
 
+// retrySleep waits d before the next retry attempt, returning early with
+// ctx.Err() on cancellation. A package var so tests can stub out the wait.
+var retrySleep = func(ctx context.Context, d time.Duration) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(d):
+		return nil
+	}
+}
+
+// maxRetryBackoff caps the exponential backoff between attempts.
+const maxRetryBackoff = 30 * time.Second
+
+// jitterBackoff scales d by a random factor in [0.75, 1.25) to decorrelate
+// retries across concurrent clients (crypto/rand, like the rest of the
+// codebase). Falls back to d if the entropy source fails.
+func jitterBackoff(d time.Duration) time.Duration {
+	var b [8]byte
+	if _, err := crand.Read(b[:]); err != nil {
+		return d
+	}
+	f := float64(binary.LittleEndian.Uint64(b[:])) / (1 << 64) // [0, 1)
+	return time.Duration(float64(d) * (0.75 + 0.5*f))
+}
+
 // postChatWithRetry POSTs reqBytes to /chat/completions and returns the raw 200
-// response body, retrying transient network errors and retryable HTTP statuses
-// (429, 502, 503, 504) with exponential backoff. Shared by every chat call so
+// response body, retrying transient network errors, retryable HTTP statuses
+// (408, 429, 500, 502, 503, 504, 529), and malformed completions (unparseable
+// JSON or zero choices — often a transient gateway/proxy artifact during an
+// incident) with jittered exponential backoff. Shared by every chat call so
 // the main loop and the lightweight secondary calls (SimpleCall) get identical
 // resilience. Respects ctx cancellation during the backoff sleep.
 func (c *Client) postChatWithRetry(ctx context.Context, reqBytes []byte) ([]byte, error) {
 	url := c.BaseURL + "/chat/completions"
 
-	const maxRetries = 3
+	// 8 attempts total; worst-case backoff sum ≈ 91s before jitter
+	// (1+2+4+8+16+30+30), ~114s with worst-case +25% jitter — covers
+	// minute-scale provider incidents without wedging a turn for too long.
+	const maxRetries = 7
 	var lastErr error
 	var wait time.Duration // how long to sleep before the next attempt
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(wait):
+			if err := retrySleep(ctx, wait); err != nil {
+				return nil, err
 			}
 		}
-		// Default backoff for the next attempt if this one fails: 1s, 2s, 4s.
-		// A Retry-After header on a 429/503 overrides it below.
+		// Default backoff for the next attempt if this one fails:
+		// 1s, 2s, 4s, 8s, 16s, 30s, 30s (capped), each ±25% jitter.
+		// A Retry-After header on a retryable status overrides it below.
 		wait = time.Duration(1<<attempt) * time.Second
+		if wait > maxRetryBackoff {
+			wait = maxRetryBackoff
+		}
+		wait = jitterBackoff(wait)
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBytes))
 		if err != nil {
@@ -459,14 +495,22 @@ func (c *Client) postChatWithRetry(ctx context.Context, reqBytes []byte) ([]byte
 			if isRetryableHTTPStatus(resp.StatusCode) {
 				// Honor the server's Retry-After (seconds or HTTP-date) when it
 				// asks us to wait longer than our default backoff — otherwise a
-				// rate-limited turn burns all three retries in ~7s and fails
-				// even though the server told us exactly when to come back.
+				// rate-limited turn burns its retries in seconds and fails even
+				// though the server told us exactly when to come back.
 				if ra := parseRetryAfter(retryAfter); ra > 0 {
 					wait = ra
 				}
 				continue
 			}
 			return nil, lastErr
+		}
+
+		// A 200 with an unparseable body or zero choices is often a transient
+		// gateway/proxy artifact during an incident — retry it through the
+		// same budget instead of aborting the turn on the first bad body.
+		if err := validateCompletionBody(respBytes); err != nil {
+			lastErr = err
+			continue
 		}
 
 		return respBytes, nil
@@ -478,7 +522,7 @@ func (c *Client) postChatWithRetry(ctx context.Context, reqBytes []byte) ([]byte
 // maxRetryAfter caps how long we'll honor a server's Retry-After. A pathological
 // or hostile value (e.g. "Retry-After: 86400") must not wedge a turn for hours;
 // ctx cancellation can still break the wait sooner.
-const maxRetryAfter = 60 * time.Second
+const maxRetryAfter = 120 * time.Second
 
 // parseRetryAfter interprets an HTTP Retry-After header, which is either an
 // integer number of seconds or an HTTP-date. Returns 0 when absent or
@@ -510,12 +554,37 @@ func parseRetryAfter(v string) time.Duration {
 }
 
 // isRetryableHTTPStatus returns true for HTTP status codes that indicate
-// a transient error safe to retry after a backoff.
+// a transient error safe to retry after a backoff: 408 (request timeout),
+// 429 (rate limited), 500 (internal server error), 502/503/504 (gateway
+// errors), and 529 (Anthropic "overloaded" — their most common incident
+// response during capacity events).
 func isRetryableHTTPStatus(code int) bool {
-	return code == http.StatusTooManyRequests ||
+	return code == http.StatusRequestTimeout ||
+		code == http.StatusTooManyRequests ||
+		code == http.StatusInternalServerError ||
 		code == http.StatusBadGateway ||
 		code == http.StatusServiceUnavailable ||
-		code == http.StatusGatewayTimeout
+		code == http.StatusGatewayTimeout ||
+		code == 529
+}
+
+// validateCompletionBody checks that a 200 response body looks like a chat
+// completion before the retry loop accepts it. Gateways and proxies
+// occasionally answer 200 with an HTML error page, truncated JSON, or a
+// zero-choices body during incidents; these are retried like any other
+// transient failure. Error strings match parseResponse so callers see the
+// same messages after exhaustion.
+func validateCompletionBody(data []byte) error {
+	var raw struct {
+		Choices []json.RawMessage `json:"choices"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("llm: parse response: %w", err)
+	}
+	if len(raw.Choices) == 0 {
+		return fmt.Errorf("llm: no choices in response")
+	}
+	return nil
 }
 
 // isRetryableNetworkError returns true for network errors that are likely

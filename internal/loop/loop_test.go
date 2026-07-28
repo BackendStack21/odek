@@ -104,12 +104,106 @@ func TestEngine_Run_ToolCallLoop(t *testing.T) {
 }
 
 func TestEngine_Run_MaxIterations(t *testing.T) {
-	// Server that always requests a tool call, never gives a final answer.
+	// Server that always requests a tool call during loop iterations, then
+	// answers the final budget-summary side-call with plain text.
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount <= 3 {
+			fmt.Fprint(w, `{
+				"choices":[{
+					"message":{
+						"content":"",
+						"tool_calls":[{
+							"id":"call_1",
+							"function":{
+								"name":"echo",
+								"arguments":"{}"
+							}
+						}]
+					}
+				}]
+			}`)
+		} else {
+			// Budget-summary call (no tools passed): return a text summary.
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"Did some work. Still TODO: finish."}}]}`)
+		}
+	}))
+	defer server.Close()
+
+	echoTool := &fakeTool{name: "echo", description: "echo", output: "ok"}
+	registry := tool.NewRegistry([]tool.Tool{echoTool})
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	engine := New(client, registry, 3, "", nil, 0)
+
+	// Budget exhaustion no longer errors: the engine summarizes partial
+	// progress in one final tool-less call and returns it as the answer.
+	result, err := engine.Run(context.Background(), "Loop forever")
+	if err != nil {
+		t.Fatalf("expected graceful budget-exhaustion summary, got error: %v", err)
+	}
+	if !strings.HasPrefix(result, "[Iteration budget reached") {
+		t.Errorf("result missing partial-summary marker: %q", result)
+	}
+	if !strings.Contains(result, "Did some work") {
+		t.Errorf("result missing summary body: %q", result)
+	}
+	if callCount != 4 {
+		t.Errorf("expected 3 loop calls + 1 summary call, got %d", callCount)
+	}
+}
+
+func TestEngine_Run_MaxIterationsSummaryFallback(t *testing.T) {
+	// The budget-summary side-call fails (HTTP 500) — the engine must fall
+	// back to the original max-iterations error.
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			fmt.Fprint(w, `{
+				"choices":[{
+					"message":{
+						"content":"",
+						"tool_calls":[{
+							"id":"call_1",
+							"function":{
+								"name":"echo",
+								"arguments":"{}"
+							}
+						}]
+					}
+				}]
+			}`)
+		} else {
+			// 400 is non-retryable, so the summary call fails fast (a 500
+			// would burn the full 30s summary-call budget in retries).
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	echoTool := &fakeTool{name: "echo", description: "echo", output: "ok"}
+	registry := tool.NewRegistry([]tool.Tool{echoTool})
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	engine := New(client, registry, 1, "", nil, 0)
+
+	_, err := engine.Run(context.Background(), "Loop forever")
+	if err == nil {
+		t.Fatal("expected max iterations error when the summary call fails")
+	}
+	if !strings.Contains(err.Error(), "reached max iterations") {
+		t.Errorf("error = %v, want max-iterations error", err)
+	}
+}
+
+func TestEngine_Run_MaxIterationsSummaryIgnoresToolCalls(t *testing.T) {
+	// A budget-summary response that still requests tool calls is not a
+	// summary — the engine must fall back to the original error.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{
 			"choices":[{
 				"message":{
-					"content":"",
+					"content":"Running.",
 					"tool_calls":[{
 						"id":"call_1",
 						"function":{
@@ -126,11 +220,71 @@ func TestEngine_Run_MaxIterations(t *testing.T) {
 	echoTool := &fakeTool{name: "echo", description: "echo", output: "ok"}
 	registry := tool.NewRegistry([]tool.Tool{echoTool})
 	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
-	engine := New(client, registry, 3, "", nil, 0)
+	engine := New(client, registry, 1, "", nil, 0)
 
 	_, err := engine.Run(context.Background(), "Loop forever")
 	if err == nil {
-		t.Fatal("expected max iterations error")
+		t.Fatal("expected max iterations error when the summary call returns tool calls")
+	}
+}
+
+func TestEngine_Run_MaxIterationsSummaryAppended(t *testing.T) {
+	// The partial summary must be appended to the message history like a
+	// normal final assistant message, so callers can persist it.
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			fmt.Fprint(w, `{
+				"choices":[{
+					"message":{
+						"content":"",
+						"tool_calls":[{
+							"id":"call_1",
+							"function":{
+								"name":"echo",
+								"arguments":"{}"
+							}
+						}]
+					}
+				}]
+			}`)
+		} else {
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"Progress so far."}}]}`)
+		}
+	}))
+	defer server.Close()
+
+	echoTool := &fakeTool{name: "echo", description: "echo", output: "ok"}
+	registry := tool.NewRegistry([]tool.Tool{echoTool})
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	engine := New(client, registry, 1, "", nil, 0)
+
+	var snapshots [][]llm.Message
+	engine.SetMessagesPersistCallback(func(msgs []llm.Message) {
+		snapshots = append(snapshots, msgs)
+	})
+
+	result, messages, err := engine.RunWithMessages(context.Background(), []llm.Message{
+		{Role: "user", Content: "Loop forever"},
+	})
+	if err != nil {
+		t.Fatalf("expected graceful budget-exhaustion summary, got error: %v", err)
+	}
+	if !strings.HasPrefix(result, "[Iteration budget reached") {
+		t.Errorf("result missing partial-summary marker: %q", result)
+	}
+	last := messages[len(messages)-1]
+	if last.Role != "assistant" || last.Content != result {
+		t.Errorf("last message = %+v, want assistant message with the summary", last)
+	}
+	// Persist callback: tool batch + summary answer.
+	if len(snapshots) != 2 {
+		t.Fatalf("expected 2 persist callbacks, got %d", len(snapshots))
+	}
+	if got := snapshots[1][len(snapshots[1])-1]; got.Role != "assistant" ||
+		!strings.Contains(got.Content, "Progress so far.") {
+		t.Errorf("final snapshot missing summary assistant message: %+v", got)
 	}
 }
 
@@ -537,6 +691,98 @@ func (e *errorTool) Name() string                     { return e.name }
 func (e *errorTool) Description() string              { return e.description }
 func (e *errorTool) Schema() any                      { return map[string]any{"type": "object"} }
 func (e *errorTool) Call(args string) (string, error) { return "", fmt.Errorf("tool error") }
+
+// TestEngine_Run_StallDetection verifies that repeating the SAME successful
+// tool call with identical arguments triggers a corrective system message
+// and a tool_recovery signal after 3 consecutive repeats, and that a
+// different call resets the streak.
+func TestEngine_Run_StallDetection(t *testing.T) {
+	// Iteration plan:
+	//   1-3: echo {"text":"a"} → streak hits 3 → correction injected, reset
+	//   4-5: echo {"text":"b"} → different args reset the streak (max 2)
+	//   6:   final answer
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		switch {
+		case callCount <= 3:
+			fmt.Fprint(w, `{
+				"choices":[{
+					"message":{
+						"content":"",
+						"tool_calls":[{
+							"id":"call_a",
+							"function":{"name":"echo","arguments":"{\"text\":\"a\"}"}
+						}]
+					}
+				}]
+			}`)
+		case callCount <= 5:
+			fmt.Fprint(w, `{
+				"choices":[{
+					"message":{
+						"content":"",
+						"tool_calls":[{
+							"id":"call_b",
+							"function":{"name":"echo","arguments":"{\"text\":\"b\"}"}
+						}]
+					}
+				}]
+			}`)
+		default:
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"done"}}]}`)
+		}
+	}))
+	defer server.Close()
+
+	echoTool := &fakeTool{name: "echo", description: "echo", output: "ok"}
+	registry := tool.NewRegistry([]tool.Tool{echoTool})
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	engine := New(client, registry, 10, "", nil, 0)
+
+	var signals []SignalEvent
+	engine.SetSignalHandler(func(ev SignalEvent) { signals = append(signals, ev) })
+
+	result, messages, err := engine.RunWithMessages(context.Background(), []llm.Message{
+		{Role: "user", Content: "poll away"},
+	})
+	if err != nil {
+		t.Fatalf("RunWithMessages() error: %v", err)
+	}
+	if result != "done" {
+		t.Errorf("result = %q, want %q", result, "done")
+	}
+
+	// Exactly one corrective system message: injected when the identical
+	// "a" call hit 3 repeats. The "b" calls (2 consecutive) must not
+	// trigger another one — a different call resets the streak.
+	stallCorrections := 0
+	for _, m := range messages {
+		if m.Role == "system" && strings.Contains(m.Content, "identical arguments") {
+			stallCorrections++
+			if !strings.Contains(m.Content, `"echo"`) {
+				t.Errorf("correction should name the stalled tool: %q", m.Content)
+			}
+		}
+	}
+	if stallCorrections != 1 {
+		t.Errorf("expected exactly 1 stall correction, got %d", stallCorrections)
+	}
+
+	// A tool_recovery signal fired with Detail mentioning the repetition.
+	recoverySignals := 0
+	for _, ev := range signals {
+		if ev.Type == "tool_recovery" && strings.Contains(ev.Detail, "repeated identical call") {
+			recoverySignals++
+			if ev.Tool != "echo" {
+				t.Errorf("signal Tool = %q, want %q", ev.Tool, "echo")
+			}
+		}
+	}
+	if recoverySignals != 1 {
+		t.Errorf("expected exactly 1 stall tool_recovery signal, got %d (all: %+v)", recoverySignals, signals)
+	}
+}
 
 // ═════════════════════════════════════════════════════════════════════
 // Context Trimming Tests

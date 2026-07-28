@@ -49,6 +49,35 @@ const maxPromptBytes = 1 * 1024 * 1024 // 1 MiB
 // maxModelIDBytes caps the length of a model ID supplied by the Web UI.
 const maxModelIDBytes = 128
 
+// compactionDigestPrefix mirrors the unexported digestMsgPrefix in
+// internal/loop/loop.go (kept as a literal here to avoid widening the
+// loop package's API surface). Rolling-compaction digest system messages
+// must survive the per-turn persist filter — dropping them would make a
+// resumed serve session lose its compacted history.
+const compactionDigestPrefix = "[Compacted earlier context:"
+
+// filterPersistSnapshot selects which messages of a per-turn snapshot are
+// persisted for a serve session. The session's own leading system message
+// (head) is preserved; dynamically-injected system messages (skills,
+// memory, episodes, trim warnings) are dropped so persisted snapshots
+// don't accumulate internal injections or corrupt future origLen
+// calculations; compaction digest system messages are kept so a resumed
+// session retains its compacted history.
+func filterPersistSnapshot(head, snapshot []llm.Message) []llm.Message {
+	filtered := make([]llm.Message, 0, len(snapshot))
+	filtered = append(filtered, head...)
+	for i, m := range snapshot {
+		if i == 0 && len(head) > 0 {
+			continue // replaced by the session's original head
+		}
+		if m.Role == "system" && !strings.HasPrefix(m.Content, compactionDigestPrefix) {
+			continue
+		}
+		filtered = append(filtered, m)
+	}
+	return filtered
+}
+
 // modelIDPattern restricts model IDs to printable ASCII characters commonly
 // used by model providers (alphanumeric, punctuation, and path separators).
 var modelIDPattern = regexp.MustCompile(`^[A-Za-z0-9_.:/@-]+$`)
@@ -1088,7 +1117,9 @@ func handlePrompt(
 	// Mirror the store path below: dynamically-injected system messages
 	// (skills, memory, episodes) are filtered out so persisted snapshots
 	// don't accumulate internal injections or corrupt future origLen
-	// calculations. The session's own leading system message is preserved.
+	// calculations. The session's own leading system message and rolling-
+	// compaction digest system messages are preserved (see
+	// filterPersistSnapshot).
 	if sess != nil {
 		var head []llm.Message
 		if len(sess.Messages) > 0 && sess.Messages[0].Role == "system" {
@@ -1100,18 +1131,7 @@ func handlePrompt(
 				// already persisted instead of overwriting it.
 				return
 			}
-			filtered := make([]llm.Message, 0, len(snapshot))
-			filtered = append(filtered, head...)
-			for i, m := range snapshot {
-				if i == 0 && len(head) > 0 {
-					continue // replaced by the session's original head
-				}
-				if m.Role == "system" {
-					continue
-				}
-				filtered = append(filtered, m)
-			}
-			sess.Messages = filtered
+			sess.Messages = filterPersistSnapshot(head, snapshot)
 			_ = store.SaveNoIndex(sess)
 		})
 	}
