@@ -103,6 +103,14 @@ type IterationInfo struct {
 // of the agent loop. Used by Telegram/WebUI for progress reporting.
 type IterationCallback func(info IterationInfo)
 
+// MessagesPersistCallback is an optional callback invoked after each
+// completed step of the agent loop (after a tool batch's result messages
+// are appended, and after the final assistant message). It receives a
+// freshly-allocated copy of the current message history so callers can
+// persist per-turn progress; an interrupted run can then be resumed from
+// the last completed step instead of losing the whole in-progress turn.
+type MessagesPersistCallback func(messages []llm.Message)
+
 // Engine runs the agent loop: observe → think → act → repeat.
 type Engine struct {
 	client         *llm.Client
@@ -137,6 +145,11 @@ type Engine struct {
 
 	// iterationCallback is an optional callback fired after each iteration.
 	iterationCallback IterationCallback
+
+	// messagesPersistCallback is an optional callback fired after each
+	// completed step with a copy of the current message history, so callers
+	// can persist per-turn progress for crash/interrupt recovery.
+	messagesPersistCallback MessagesPersistCallback
 
 	// memoryPromptFunc is called before each LLM invocation to get fresh
 	// memory content. This ensures memory mutations during a session
@@ -282,6 +295,12 @@ func (e *Engine) SetNarrator(n *narrate.Narrator) { e.narrator = n }
 // SetIterationCallback sets the iteration progress callback.
 // If nil, no callback is fired.
 func (e *Engine) SetIterationCallback(cb IterationCallback) { e.iterationCallback = cb }
+
+// SetMessagesPersistCallback sets the per-step message persistence callback.
+// If nil, no callback is fired.
+func (e *Engine) SetMessagesPersistCallback(cb MessagesPersistCallback) {
+	e.messagesPersistCallback = cb
+}
 
 // SetMaxToolParallel sets the maximum concurrency for tool execution per
 // iteration. 0 or negative = use default (4).
@@ -1253,6 +1272,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 				Content:          result.Content,
 				ReasoningContent: result.ReasoningContent,
 			})
+			e.emitMessagesPersist(messages)
 			return result.Content, messages, nil
 		}
 
@@ -1574,6 +1594,10 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 			})
 		}
 
+		// Persist per-turn progress now that the tool batch's result
+		// messages are appended — an interrupted run can resume from here.
+		e.emitMessagesPersist(messages)
+
 		// Fire iteration callback with tool call results
 		if e.iterationCallback != nil {
 			e.iterationCallback(IterationInfo{
@@ -1596,6 +1620,19 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
+
+// emitMessagesPersist fires the per-step persistence callback with a
+// freshly-allocated copy of the message history. The copy is required
+// because trimContext mutates the loop's slice in place — a handed-out
+// snapshot must not change under the caller. Nil callback = no-op.
+func (e *Engine) emitMessagesPersist(messages []llm.Message) {
+	if e.messagesPersistCallback == nil {
+		return
+	}
+	snapshot := make([]llm.Message, len(messages))
+	copy(snapshot, messages)
+	e.messagesPersistCallback(snapshot)
+}
 
 // lastUserMessage returns the content of the most recent user message.
 func lastUserMessage(messages []llm.Message) string {

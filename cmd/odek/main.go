@@ -1497,6 +1497,7 @@ func run(args []string) error {
 	var sessIDCapture string
 	var currentTurn int
 	var sessionStore *session.Store
+	var runSess *session.Session
 
 	cwd, _ = os.Getwd()
 	if mm := agent.Memory(); mm != nil {
@@ -1520,6 +1521,7 @@ func run(args []string) error {
 			sess.Sandbox = resolved.Sandbox
 			store.Save(sess)
 			sessionID = sess.ID
+			runSess = sess
 			mm.SetSessionContext(sessionID, cwd)
 			fmt.Fprintf(os.Stderr, "odek: session %s created\n", sessionID)
 
@@ -1587,6 +1589,21 @@ func run(args []string) error {
 			mm.AppendBuffer("user", f.Task)
 		}
 
+		// Persist per-turn progress so an interrupted run (Ctrl-C, SIGTERM,
+		// crash) can be resumed via `odek continue` from the last completed
+		// step instead of losing the whole in-progress turn.
+		if runSess != nil {
+			agent.SetMessagesPersistCallback(func(snapshot []llm.Message) {
+				if len(snapshot) < len(runSess.Messages) {
+					// The loop trimmed history in place — keep the richer
+					// state already persisted instead of overwriting it.
+					return
+				}
+				runSess.Messages = snapshot
+				_ = sessionStore.SaveNoIndex(runSess)
+			})
+		}
+
 		result, allMessages, runErr = agent.RunWithMessages(ctx, messages)
 
 		// Append agent response to buffer
@@ -1603,13 +1620,17 @@ func run(args []string) error {
 
 		if runErr == nil {
 			// Re-load the pre-created session and append the messages produced
-			// by the run. The pre-created session contains the system + user task;
-			// append only the assistant/tool turns that follow.
+			// by the run. The per-turn persist callback above already saved the
+			// full history, so this delta is usually empty — Append still
+			// refreshes metadata and updates the vector index.
 			latest, err := sessionStore.Load(sessionID)
 			if err != nil {
 				return fmt.Errorf("load session: %w", err)
 			}
-			newMsgs := allMessages[len(latest.GetMessages()):]
+			var newMsgs []llm.Message
+			if n := len(latest.GetMessages()); n < len(allMessages) {
+				newMsgs = allMessages[n:]
+			}
 			if err := sessionStore.Append(sessionID, newMsgs); err != nil {
 				return fmt.Errorf("save session: %w", err)
 			}
@@ -1639,6 +1660,13 @@ func run(args []string) error {
 			messages = append([]llm.Message{{Role: "system", Content: systemMessage}}, messages...)
 		}
 		result, allMessages, runErr = agent.RunWithMessages(ctx, messages)
+	}
+
+	if runErr != nil && runSess != nil {
+		// Interrupted/failed session run — persist the partial history so
+		// the in-progress turn survives up to the last completed step
+		// (mirrors the Telegram cancellation path).
+		persistPartialMessages(sessionStore, runSess, allMessages)
 	}
 
 	if runErr != nil {
@@ -2419,6 +2447,29 @@ func expandHome(path string) string {
 
 // ── Continue (Multi-Turn) ─────────────────────────────────────────────
 
+// persistPartialMessages saves the in-flight message history of an
+// interrupted/failed run so the session keeps progress up to the last
+// completed step. A trailing assistant message with unanswered tool calls
+// is dropped first: its tool results never completed, and resuming with
+// dangling tool calls is an invalid request for OpenAI-compatible APIs.
+func persistPartialMessages(store *session.Store, sess *session.Session, messages []llm.Message) {
+	if store == nil || sess == nil || len(messages) == 0 {
+		return
+	}
+	for len(messages) > 0 &&
+		messages[len(messages)-1].Role == "assistant" &&
+		len(messages[len(messages)-1].ToolCalls) > 0 {
+		messages = messages[:len(messages)-1]
+	}
+	if len(messages) < len(sess.Messages) {
+		// The loop trimmed history in place — keep the richer state already
+		// persisted by the per-turn callback instead of overwriting it.
+		return
+	}
+	sess.Messages = messages
+	_ = store.SaveNoIndex(sess)
+}
+
 // continueCmd handles `odek continue [--id <id>] <task>`.
 // It loads an existing session (latest or by ID), appends the new task,
 // runs the agent with full history, and saves the updated session.
@@ -2589,6 +2640,10 @@ func continueCmd(args []string) error {
 	// Build message history: session messages + new user message
 	// The system message is already in the session
 	messages := sess.GetMessages()
+	// histLen is the pre-run history length used for the audit delta below;
+	// the per-turn persist callback replaces sess.Messages during the run,
+	// so it cannot be derived from sess afterwards.
+	histLen := len(messages)
 
 	// Create the run context early so that the return-after-break summary can
 	// be recorded in the audit log before the turn starts.
@@ -2625,8 +2680,25 @@ func continueCmd(args []string) error {
 	}
 
 	rend.Start(task)
+
+	// Persist per-turn progress so an interrupted run (Ctrl-C, SIGTERM,
+	// crash) can be resumed again from the last completed step instead of
+	// losing the whole in-progress turn.
+	agent.SetMessagesPersistCallback(func(snapshot []llm.Message) {
+		if len(snapshot) < len(sess.Messages) {
+			// The loop trimmed history in place — keep the richer state
+			// already persisted instead of overwriting it.
+			return
+		}
+		sess.Messages = snapshot
+		_ = store.SaveNoIndex(sess)
+	})
+
 	result, allMessages, err := agent.RunWithMessages(ctx, messages)
 	if err != nil {
+		// Persist the partial history so the interrupted turn survives up
+		// to the last completed step (mirrors the Telegram cancel path).
+		persistPartialMessages(store, sess, allMessages)
 		return err
 	}
 	_ = result
@@ -2634,7 +2706,7 @@ func continueCmd(args []string) error {
 	// Record per-turn divergence assessment after the turn completes.
 	// Use the original prompt so injected resources from @-refs/--ctx do
 	// not count as user-mentioned.
-	recordTurnAudit(auditStore, sessIDCapture, currentTurn, originalTask, allMessages[len(sess.GetMessages()):])
+	recordTurnAudit(auditStore, sessIDCapture, currentTurn, originalTask, allMessages[histLen:])
 
 	// Append agent response to buffer
 	if len(allMessages) > 0 {
@@ -2648,18 +2720,18 @@ func continueCmd(args []string) error {
 		}
 	}
 
-	// Save updated session — persist messages AND buffer
-	newMsgs := allMessages[len(sess.GetMessages()):]
-	if err := store.Append(sess.ID, newMsgs); err != nil {
-		return fmt.Errorf("save session: %w", err)
+	// The per-turn persist callback already saved the full message history;
+	// finish with one Save to persist the buffer and update the vector index
+	// for the completed turn.
+	updated, err := store.Load(sess.ID)
+	if err != nil {
+		return fmt.Errorf("reload session: %w", err)
 	}
-	// Re-load session to persist buffer (Append reads from disk)
 	if mm := agent.Memory(); mm != nil {
-		updated, err := store.Load(sess.ID)
-		if err == nil {
-			updated.Buffer = mm.GetBuffer()
-			store.Save(updated)
-		}
+		updated.Buffer = mm.GetBuffer()
+	}
+	if err := store.Save(updated); err != nil {
+		return fmt.Errorf("save session: %w", err)
 	}
 
 	fmt.Fprintf(os.Stderr, "odek: session %s saved (%d turns)\n", sess.ID, sess.Turns+1)

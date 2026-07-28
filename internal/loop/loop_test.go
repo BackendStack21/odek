@@ -134,6 +134,79 @@ func TestEngine_Run_MaxIterations(t *testing.T) {
 	}
 }
 
+func TestEngine_MessagesPersistCallback(t *testing.T) {
+	// One tool round-trip, then a final answer. The persist callback must
+	// fire after the tool batch (with the tool-result message included) and
+	// again after the final assistant message.
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			fmt.Fprint(w, `{
+				"choices":[{
+					"message":{
+						"content":"Let me check.",
+						"tool_calls":[{
+							"id":"call_1",
+							"function":{
+								"name":"echo",
+								"arguments":"{\"text\":\"hello\"}"
+							}
+						}]
+					}
+				}]
+			}`)
+		} else {
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"The tool said: hello output"}}]}`)
+		}
+	}))
+	defer server.Close()
+
+	echoTool := &fakeTool{name: "echo", description: "echoes input", output: "hello output"}
+	registry := tool.NewRegistry([]tool.Tool{echoTool})
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	engine := New(client, registry, 10, "", nil, 0)
+
+	var snapshots [][]llm.Message
+	engine.SetMessagesPersistCallback(func(msgs []llm.Message) {
+		snapshots = append(snapshots, msgs)
+	})
+
+	result, err := engine.Run(context.Background(), "Echo hello")
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if result != "The tool said: hello output" {
+		t.Errorf("result = %q, want %q", result, "The tool said: hello output")
+	}
+
+	if len(snapshots) != 2 {
+		t.Fatalf("expected 2 persist callbacks (tool batch + final answer), got %d", len(snapshots))
+	}
+
+	// First snapshot: fired after the tool batch — the last message is the
+	// tool result, preceded by the assistant tool-call message.
+	first := snapshots[0]
+	if last := first[len(first)-1]; last.Role != "tool" ||
+		!strings.Contains(last.Content, "hello output") {
+		t.Errorf("first snapshot last message = %+v, want tool result containing %q", last, "hello output")
+	}
+	if prev := first[len(first)-2]; prev.Role != "assistant" || len(prev.ToolCalls) == 0 {
+		t.Errorf("first snapshot should include the assistant tool-call message, got %+v", prev)
+	}
+
+	// Second snapshot: fired after the final assistant message, one message
+	// longer than the first.
+	second := snapshots[1]
+	if len(second) != len(first)+1 {
+		t.Errorf("second snapshot len = %d, want %d", len(second), len(first)+1)
+	}
+	if last := second[len(second)-1]; last.Role != "assistant" ||
+		last.Content != "The tool said: hello output" {
+		t.Errorf("second snapshot last message = %+v, want final assistant answer", last)
+	}
+}
+
 func TestEngine_Run_ContextCancellation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"choices":[{"message":{"content":"answer"}}]}`)

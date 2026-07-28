@@ -1082,6 +1082,40 @@ func handlePrompt(
 	}
 
 	origLen := len(messages) - 1 // initial estimate: index of the user message we appended
+
+	// Persist per-turn progress so an interrupted run can be resumed from
+	// the last completed step instead of losing the whole in-progress turn.
+	// Mirror the store path below: dynamically-injected system messages
+	// (skills, memory, episodes) are filtered out so persisted snapshots
+	// don't accumulate internal injections or corrupt future origLen
+	// calculations. The session's own leading system message is preserved.
+	if sess != nil {
+		var head []llm.Message
+		if len(sess.Messages) > 0 && sess.Messages[0].Role == "system" {
+			head = sess.Messages[:1]
+		}
+		agent.SetMessagesPersistCallback(func(snapshot []llm.Message) {
+			if len(snapshot) < len(sess.Messages) {
+				// The loop trimmed history in place — keep the richer state
+				// already persisted instead of overwriting it.
+				return
+			}
+			filtered := make([]llm.Message, 0, len(snapshot))
+			filtered = append(filtered, head...)
+			for i, m := range snapshot {
+				if i == 0 && len(head) > 0 {
+					continue // replaced by the session's original head
+				}
+				if m.Role == "system" {
+					continue
+				}
+				filtered = append(filtered, m)
+			}
+			sess.Messages = filtered
+			_ = store.SaveNoIndex(sess)
+		})
+	}
+
 	start := time.Now()
 	_, allMessages, err := agent.RunWithMessages(ctx, messages)
 	latency := time.Since(start)
@@ -1183,21 +1217,16 @@ func handlePrompt(
 		"sessionOutputTokens":  *sessionOutputTokens,
 	})
 
-	// Save session — persist messages AND buffer.
-	// Filter out dynamically-injected system messages (skills, memory, episodes)
-	// so they are not stored in the session and don't corrupt future origLen
-	// calculations on subsequent turns. Only user/assistant/tool messages persist.
+	// Save session — persist buffer and update the vector index.
+	// The message history was already persisted per-turn by the persist
+	// callback above (which filters dynamically-injected system messages —
+	// skills, memory, episodes — so they are not stored in the session and
+	// don't corrupt future origLen calculations on subsequent turns).
 	if sess != nil {
 		if mm := agent.Memory(); mm != nil {
 			sess.Buffer = mm.GetBuffer()
 		}
-		var toStore []llm.Message
-		for _, m := range newMsgs {
-			if m.Role != "system" {
-				toStore = append(toStore, m)
-			}
-		}
-		store.Append(sess.ID, toStore)
+		store.Save(sess)
 	}
 
 	// ── Learn loop: run self-improvement heuristics ──
