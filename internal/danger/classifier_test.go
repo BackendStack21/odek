@@ -198,6 +198,44 @@ func TestClassify_NetworkEgress_GitPushNeedsRemote(t *testing.T) {
 	}
 }
 
+func TestClassify_NetworkEgress_Gh(t *testing.T) {
+	// gh gets the same classification as git: every real subcommand contacts
+	// the GitHub API (network egress); meta invocations stay local (safe).
+	tests := []struct {
+		cmd string
+		cls RiskClass
+	}{
+		{"gh pr view 123", NetworkEgress},
+		{"gh pr merge 125 --squash", NetworkEgress},
+		{"gh repo clone owner/repo", NetworkEgress},
+		{"gh repo delete owner/repo --yes", NetworkEgress},
+		{"gh api /user", NetworkEgress},
+		{"gh auth login", NetworkEgress},
+		{"gh release delete v1.0.0 --yes", NetworkEgress},
+		{"/usr/local/bin/gh pr checks", NetworkEgress},
+		// -R/--repo consumes the following token as its value; it must not be
+		// mistaken for the subcommand (parity with git -C).
+		{"gh -R owner/repo pr list", NetworkEgress},
+		{"gh --repo owner/repo pr list", NetworkEgress},
+
+		{"gh", Safe},
+		{"gh --version", Safe},
+		{"gh --help", Safe},
+		{"gh help", Safe},
+		{"gh help pr", Safe},
+		{"gh completion -s bash", Safe},
+		{"gh -R owner/repo help", Safe},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			got := Classify(tt.cmd)
+			if got != tt.cls {
+				t.Errorf("Classify(%q) = %s, want %s", tt.cmd, got, tt.cls)
+			}
+		})
+	}
+}
+
 func TestClassify_CodeExecution_Commands(t *testing.T) {
 	tests := []struct {
 		cmd string

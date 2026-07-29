@@ -836,6 +836,9 @@ var networkPrefixes = map[string]bool{
 	"curl": true, "wget": true, "scp": true, "rsync": true,
 	"nc": true, "ncat": true, "ssh": true, "sftp": true,
 	"ftp": true, "tftp": true, "telnet": true, "git": true,
+	// gh is the GitHub CLI: like git's remote-contacting subcommands, every
+	// real gh subcommand talks to the GitHub API (see isNetworkEgress).
+	"gh": true,
 	// reverse-shell / tunnelling relays
 	"socat": true, "rclone": true,
 	// DNS lookups double as exfiltration channels
@@ -2435,6 +2438,34 @@ func isNetworkEgress(first string, tokens []string) bool {
 			// "git push" with no remote is harmless (prints upstream info).
 			return hasArgAfter(tokens, "push", "")
 		}
+		return false
+	}
+	// gh subcommands inherently contact the GitHub API — the same class as
+	// git's remote-contacting subcommands. Only meta invocations (help,
+	// completion, version queries) stay local and fall through to Safe.
+	if first == "gh" {
+		skipNext := false
+		for _, tok := range tokens[1:] {
+			if skipNext {
+				skipNext = false
+				continue
+			}
+			if strings.HasPrefix(tok, "-") {
+				// -R/--repo consumes the following token as its value; it must
+				// not be mistaken for the subcommand (parity with git -C).
+				if tok == "-R" || tok == "--repo" {
+					skipNext = true
+				}
+				continue
+			}
+			// First non-flag token is the subcommand.
+			switch tok {
+			case "help", "completion", "version":
+				return false
+			}
+			return true
+		}
+		// Bare gh or flags only (e.g. gh --version, gh --help).
 		return false
 	}
 	// rsync with remote target (contains :)
