@@ -125,6 +125,7 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 | `tool_call` | Agent invokes a tool | `name`, `data` (raw tool-arguments JSON) |
 | `tool_result` | Tool returns output | `name`, `data` (full, untruncated output) |
 | `subagent_log` | Sub-agent progress within `delegate_tasks` | `task_idx`, `name`, `event`, `data` |
+| `usage` | After each LLM turn within a run | `contextTokens`, `outputTokens` (cumulative for the run) |
 | `done` | Agent finishes | `latency` (seconds), `contextTokens`, `outputTokens`, `cacheCreationTokens`, `cacheReadTokens`, `cachedTokens`, `sessionContextTokens`, `sessionOutputTokens` |
 | `error` | Agent or server error | `message` |
 | `approval_request` | Agent needs user approval for dangerous operation | `id`, `risk` (class name), `command` (or resource), `description`, `is_operation`, `allow_trust`, `friction`, `friction_approvals` |
