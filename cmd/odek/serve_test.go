@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -836,6 +837,37 @@ func newTestSessionStore(t *testing.T) *session.Store {
 	return store
 }
 
+// waitForOdekTreeQuiet blocks until a write newer than `since` has been seen
+// under dir and no file has been modified for quietWindow (bounded by
+// timeout). The serve handler issues its final store.Save — session file plus
+// vector-index files — and runs the learn loop AFTER sending the "done"
+// event (serve.go), so a test that returns on "done" can race those writes
+// and fail t.TempDir cleanup with "directory not empty". Best-effort: a
+// timeout is not a test failure.
+func waitForOdekTreeQuiet(dir string, since time.Time, quietWindow, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	sawWrite := false
+	for {
+		var latest time.Time
+		_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			if fi, err := d.Info(); err == nil && fi.ModTime().After(latest) {
+				latest = fi.ModTime()
+			}
+			return nil
+		})
+		if latest.After(since) {
+			sawWrite = true
+		}
+		if (sawWrite && time.Since(latest) >= quietWindow) || time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 // mockLLM creates an httptest.Server that handles both the model discovery call
 // (GET /models — called once by odek.New during agent initialization) and chat
 // completion requests. The chat handler receives a 1-based callCount that
@@ -1403,6 +1435,7 @@ statsCheck:
 
 	conn.SetReadDeadline(time.Now().Add(15 * time.Second))
 	var done2 map[string]any
+	var done2At time.Time
 	for i := 0; i < 15; i++ {
 		var raw []byte
 		if err := golangws.Message.Receive(conn, &raw); err != nil {
@@ -1416,6 +1449,7 @@ statsCheck:
 		}
 		if evt["type"] == "done" {
 			done2 = evt
+			done2At = time.Now()
 			goto sessionCheck
 		}
 		if evt["type"] == "error" {
@@ -1425,6 +1459,10 @@ statsCheck:
 	t.Fatal("did not receive second done event")
 
 sessionCheck:
+	// The final store.Save runs after "done" is sent — wait for the writes
+	// to settle so t.TempDir cleanup doesn't race them.
+	waitForOdekTreeQuiet(filepath.Join(os.Getenv("HOME"), ".odek"), done2At, 300*time.Millisecond, 10*time.Second)
+
 	if done2 == nil {
 		t.Fatal("second done event not found")
 	}
@@ -1489,6 +1527,7 @@ func TestServe_E2E_UsageEvents(t *testing.T) {
 
 	conn.SetReadDeadline(time.Now().Add(15 * time.Second))
 	var usages []map[string]any
+	var doneAt time.Time
 	for i := 0; i < 20; i++ {
 		var raw []byte
 		if err := golangws.Message.Receive(conn, &raw); err != nil {
@@ -1504,6 +1543,7 @@ func TestServe_E2E_UsageEvents(t *testing.T) {
 		case "usage":
 			usages = append(usages, evt)
 		case "done":
+			doneAt = time.Now()
 			goto usageCheck
 		case "error":
 			t.Fatalf("unexpected error: %v", evt["message"])
@@ -1512,6 +1552,11 @@ func TestServe_E2E_UsageEvents(t *testing.T) {
 	t.Fatal("did not receive done event")
 
 usageCheck:
+	// The final store.Save (session file + vector index) and the learn loop
+	// run after "done" is sent — wait for those writes to settle so
+	// t.TempDir cleanup doesn't race them ("directory not empty").
+	waitForOdekTreeQuiet(filepath.Join(os.Getenv("HOME"), ".odek"), doneAt, 300*time.Millisecond, 10*time.Second)
+
 	if len(usages) < 2 {
 		t.Fatalf("got %d usage events before done, want at least 2 (one per LLM turn)", len(usages))
 	}
@@ -1572,6 +1617,7 @@ func TestServe_E2E_LiveToolEvents(t *testing.T) {
 
 	var toolCallTime, toolResultTime, doneTime int
 	var eventOrder []string
+	var doneAt time.Time
 
 	for i := 0; i < 10; i++ {
 		var raw []byte
@@ -1598,6 +1644,7 @@ func TestServe_E2E_LiveToolEvents(t *testing.T) {
 			}
 		case "done":
 			doneTime = i
+			doneAt = time.Now()
 			goto doneCheck
 		case "error":
 			t.Fatalf("unexpected error: %v", evt["message"])
@@ -1605,6 +1652,10 @@ func TestServe_E2E_LiveToolEvents(t *testing.T) {
 	}
 
 doneCheck:
+	// The final store.Save runs after "done" is sent — wait for the writes
+	// to settle so t.TempDir cleanup doesn't race them.
+	waitForOdekTreeQuiet(filepath.Join(os.Getenv("HOME"), ".odek"), doneAt, 300*time.Millisecond, 10*time.Second)
+
 	t.Logf("Event order: %v", eventOrder)
 
 	if toolCallTime == 0 {
