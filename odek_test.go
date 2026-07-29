@@ -542,15 +542,21 @@ func TestLookupProfile_KimiMatch(t *testing.T) {
 		t.Errorf("MaxContext = %d, want 262144", p.MaxContext)
 	}
 
-	// The k3 family (k3, k3-256k) is the same Kimi Code line under a
-	// different prefix — it must get the same profile.
-	for _, model := range []string{"k3", "k3-256k"} {
-		p := LookupProfile(model)
+	// The k3 family is the same Kimi Code line under a different prefix —
+	// longest prefix wins: k3-256k is the 256K variant, bare k3 is 1M.
+	for _, tc := range []struct {
+		model      string
+		maxContext int
+	}{
+		{"k3", 1_000_000},
+		{"k3-256k", 262_144},
+	} {
+		p := LookupProfile(tc.model)
 		if p == nil {
-			t.Fatalf("LookupProfile(%q) returned nil", model)
+			t.Fatalf("LookupProfile(%q) returned nil", tc.model)
 		}
-		if p.Timeout != 300 || p.MaxContext != 262_144 {
-			t.Errorf("LookupProfile(%q) = %+v, want Timeout=300 MaxContext=262144", model, p)
+		if p.Timeout != 300 || p.MaxContext != tc.maxContext {
+			t.Errorf("LookupProfile(%q) = %+v, want Timeout=300 MaxContext=%d", tc.model, p, tc.maxContext)
 		}
 	}
 }

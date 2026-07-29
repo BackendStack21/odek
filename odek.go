@@ -293,13 +293,22 @@ var KnownProfiles = []struct {
 		},
 	},
 	{
-		// Kimi Code also ships models under the "k3" family name (k3, k3-256k),
-		// which the "kimi-" prefix does not match.
+		// Kimi Code also ships models under the "k3" family name, which the
+		// "kimi-" prefix does not match. Longest prefix wins: k3-256k is the
+		// 256K variant, bare k3 has a 1M context window.
+		Prefix: "k3-256k",
+		Profile: ModelProfile{
+			Label:      "Kimi",
+			Timeout:    300,
+			MaxContext: 262_144, // 256K token context window
+		},
+	},
+	{
 		Prefix: "k3",
 		Profile: ModelProfile{
 			Label:      "Kimi",
 			Timeout:    300,
-			MaxContext: 262_144,
+			MaxContext: 1_000_000, // 1M token context window
 		},
 	},
 	{
