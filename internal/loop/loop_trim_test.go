@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/tool"
@@ -615,6 +616,21 @@ func TestTrimToSurvival_IncludesPrecedingSystemMessages(t *testing.T) {
 }
 
 // ── Coverage: summarizeDropped branches ────────────────────────────────
+
+func TestSideTimeout_DefaultAndOverride(t *testing.T) {
+	engine := &Engine{}
+	if got := engine.sideTimeout(); got != 30*time.Second {
+		t.Errorf("default sideTimeout = %v, want 30s", got)
+	}
+	engine.SetSideCallTimeout(120 * time.Second)
+	if got := engine.sideTimeout(); got != 120*time.Second {
+		t.Errorf("sideTimeout = %v, want 120s", got)
+	}
+	engine.SetSideCallTimeout(0)
+	if got := engine.sideTimeout(); got != 30*time.Second {
+		t.Errorf("zero SetSideCallTimeout must restore 30s default, got %v", got)
+	}
+}
 
 func TestSummarizeDropped_NilClient(t *testing.T) {
 	engine := &Engine{}

@@ -269,6 +269,11 @@ type Engine struct {
 	// groups (Config.Compaction). compactDigest holds the current summary.
 	compaction    bool
 	compactDigest string
+
+	// sideCallTimeout bounds the compaction and progress-summary side calls.
+	// Zero means use the default (30s). Callers scale it off the resolved
+	// client timeout so slow providers don't silently lose the digest.
+	sideCallTimeout time.Duration
 }
 
 // New creates a new loop Engine.
@@ -370,6 +375,22 @@ func (e *Engine) SetDangerousConfig(cfg *danger.DangerousConfig) { e.dangerousCf
 // entirely. The digest is derived from (potentially untrusted) tool output,
 // so it is wrapped with the engine's untrusted-content wrapper when set.
 func (e *Engine) SetCompaction(enabled bool) { e.compaction = enabled }
+
+// SetSideCallTimeout sets the bound for the compaction digest and
+// progress-summary side calls. 0 or negative restores the default (30s).
+func (e *Engine) SetSideCallTimeout(d time.Duration) { e.sideCallTimeout = d }
+
+// SideCallTimeout returns the effective bound for the compaction digest and
+// progress-summary side calls (default 30s).
+func (e *Engine) SideCallTimeout() time.Duration { return e.sideTimeout() }
+
+// sideTimeout returns the effective side-call timeout.
+func (e *Engine) sideTimeout() time.Duration {
+	if e.sideCallTimeout > 0 {
+		return e.sideCallTimeout
+	}
+	return 30 * time.Second
+}
 
 // ── Token Estimation ─────────────────────────────────────────────────
 //
@@ -931,9 +952,9 @@ func (e *Engine) refreshDigest(ctx context.Context, messages []llm.Message, drop
 }
 
 // summarizeDropped builds the summarizer input from the dropped messages and
-// the previous digest, then calls the LLM with a bounded timeout. Returns an
-// empty string on any failure — compaction is best-effort and must never
-// break the agent loop.
+// the previous digest, then calls the LLM with a bounded timeout (sideTimeout).
+// Returns an empty string on any failure — compaction is best-effort and must
+// never break the agent loop.
 func (e *Engine) summarizeDropped(ctx context.Context, dropped []llm.Message) string {
 	if e.client == nil {
 		return ""
@@ -968,7 +989,7 @@ func (e *Engine) summarizeDropped(ctx context.Context, dropped []llm.Message) st
 		return ""
 	}
 
-	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	callCtx, cancel := context.WithTimeout(ctx, e.sideTimeout())
 	defer cancel()
 	res, err := e.client.Call(callCtx, []llm.Message{
 		{Role: "system", Content: compactionSystemPrompt},
@@ -981,8 +1002,9 @@ func (e *Engine) summarizeDropped(ctx context.Context, dropped []llm.Message) st
 }
 
 // summarizeProgress renders the tail of the conversation into a bounded
-// summarizer input and makes one final tool-less LLM call (30s bound, same
-// pattern as the compaction side-call) asking for a progress summary.
+// summarizer input and makes one final tool-less LLM call (bounded by
+// sideTimeout, same pattern as the compaction side-call) asking for a
+// progress summary.
 // Returns an empty string on any failure — including a non-compliant
 // response that still requests tool calls — so the caller can fall back to
 // the plain budget-exhaustion error.
@@ -1016,7 +1038,7 @@ func (e *Engine) summarizeProgress(ctx context.Context, messages []llm.Message) 
 		return ""
 	}
 
-	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	callCtx, cancel := context.WithTimeout(ctx, e.sideTimeout())
 	defer cancel()
 	res, err := e.client.Call(callCtx, []llm.Message{
 		{Role: "system", Content: budgetSummarySystemPrompt},

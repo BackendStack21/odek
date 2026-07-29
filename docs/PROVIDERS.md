@@ -38,6 +38,7 @@ odek ships with built-in **model profiles** that automatically apply sensible de
 | `deepseek-chat` | DeepSeek (legacy) | (provider default) | 120s | 128K | General |
 | `deepseek-v4-flash` | DeepSeek v4 Flash | — (faster/cheaper) | 90s | 128K | Quick tasks, coding |
 | `deepseek-v4-pro` | DeepSeek v4 Pro | `enabled` | 180s | **1M** | Deep reasoning |
+| `kimi-…`, `k3…` (e.g. `kimi-for-coding`, `k3-256k`) | Kimi | (provider default) | 300s | 256K | Agentic coding |
 | *(any other)* | Generic | (profile default) | 120s | (no limit) | Custom models |
 
 ### How profiles work
