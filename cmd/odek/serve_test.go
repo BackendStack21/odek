@@ -1452,6 +1452,87 @@ sessionCheck:
 	t.Log("✅ Token stats verified: turn-level + session-level accumulation")
 }
 
+// TestServe_E2E_UsageEvents verifies that per-iteration "usage" events stream
+// live during a run (before "done"), so clients can refresh their context
+// gauge per LLM turn instead of only at the end of the whole agent loop.
+func TestServe_E2E_UsageEvents(t *testing.T) {
+	// Mock LLM: one tool call, then final answer — usage in every response.
+	llmSrv := mockLLM(t, func(w http.ResponseWriter, callCount int) {
+		w.Header().Set("Content-Type", "application/json")
+		if callCount == 1 {
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"Running.","tool_calls":[{"id":"c_1","function":{"name":"shell","arguments":"{\"command\":\"echo ok\"}"}}]}}],"usage":{"prompt_tokens":100,"completion_tokens":20}}`)
+		} else {
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"All done."}}],"usage":{"prompt_tokens":200,"completion_tokens":40}}`)
+		}
+	})
+	defer llmSrv.Close()
+
+	envCleanup := setTestEnv(t, llmSrv.URL)
+	defer envCleanup()
+
+	store := newTestSessionStore(t)
+	ln, mux := buildServeMux(t, store)
+	defer ln.Close()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- serveOnListener(ln, mux) }()
+	waitForHTTP(t, ln.Addr().String())
+
+	conn := dialTestWS(t, ln.Addr().String())
+	defer conn.Close()
+
+	prompt := map[string]string{"type": "prompt", "content": "run a command"}
+	payload, _ := json.Marshal(prompt)
+	if err := golangws.Message.Send(conn, string(payload)); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+	var usages []map[string]any
+	for i := 0; i < 20; i++ {
+		var raw []byte
+		if err := golangws.Message.Receive(conn, &raw); err != nil {
+			t.Fatalf("Receive event %d: %v", i, err)
+		}
+		t.Logf("  event[%d]: %s", i, string(raw))
+
+		var evt map[string]any
+		if err := json.Unmarshal(raw, &evt); err != nil {
+			t.Fatalf("unmarshal event %d: %v", i, err)
+		}
+		switch evt["type"] {
+		case "usage":
+			usages = append(usages, evt)
+		case "done":
+			goto usageCheck
+		case "error":
+			t.Fatalf("unexpected error: %v", evt["message"])
+		}
+	}
+	t.Fatal("did not receive done event")
+
+usageCheck:
+	if len(usages) < 2 {
+		t.Fatalf("got %d usage events before done, want at least 2 (one per LLM turn)", len(usages))
+	}
+	// First iteration: 100 in / 20 out.
+	if got := usages[0]["contextTokens"]; got != float64(100) {
+		t.Errorf("usage[0].contextTokens = %v, want 100", got)
+	}
+	if got := usages[0]["outputTokens"]; got != float64(20) {
+		t.Errorf("usage[0].outputTokens = %v, want 20", got)
+	}
+	// Final iteration: cumulative 300 in / 60 out.
+	last := usages[len(usages)-1]
+	if got := last["contextTokens"]; got != float64(300) {
+		t.Errorf("usage[last].contextTokens = %v, want 300", got)
+	}
+	if got := last["outputTokens"]; got != float64(60) {
+		t.Errorf("usage[last].outputTokens = %v, want 60", got)
+	}
+	t.Log("✅ Per-iteration usage events stream live before done")
+}
+
 // TestServe_E2E_LiveToolEvents verifies that tool_call and tool_result
 // events stream LIVE via ToolEventHandler (before the done event).
 // This confirms the live streaming pipeline works.

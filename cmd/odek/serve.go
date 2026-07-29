@@ -672,6 +672,16 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 					"content": info.ReasoningContent,
 				})
 			}
+			// Stream per-iteration token usage so clients can refresh their
+			// context gauge live during a run instead of waiting for "done"
+			// (which only fires once, after the whole agent loop).
+			if info.InputTokens > 0 {
+				sendFn(map[string]any{
+					"type":          "usage",
+					"contextTokens": info.InputTokens,
+					"outputTokens":  info.OutputTokens,
+				})
+			}
 		},
 	})
 	if err != nil {
