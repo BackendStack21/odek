@@ -285,6 +285,24 @@ var KnownProfiles = []struct {
 	Profile ModelProfile
 }{
 	{
+		Prefix: "kimi-",
+		Profile: ModelProfile{
+			Label:      "Kimi",
+			Timeout:    300,     // reasoning models can be slow to first byte
+			MaxContext: 262_144, // 256K safe default; /models discovery takes priority
+		},
+	},
+	{
+		// Kimi Code also ships models under the "k3" family name (k3, k3-256k),
+		// which the "kimi-" prefix does not match.
+		Prefix: "k3",
+		Profile: ModelProfile{
+			Label:      "Kimi",
+			Timeout:    300,
+			MaxContext: 262_144,
+		},
+	},
+	{
 		Prefix: "deepseek-v4-pro",
 		Profile: ModelProfile{
 			Label:           "DeepSeek v4 Pro",
@@ -589,6 +607,14 @@ func New(cfg Config) (*Agent, error) {
 	engine := loop.New(client, registry, cfg.MaxIterations, cfg.SystemMessage, cfg.Renderer, maxContext)
 	engine.PromptCaching = cfg.PromptCaching
 	engine.SetCompaction(cfg.Compaction)
+	// Side calls (compaction digest, progress summary) use the same client and
+	// model, so scale their bound off the resolved request timeout — a slow
+	// provider would otherwise blow the 30s default and silently drop the digest.
+	sideTimeout := time.Duration(timeout) * time.Second
+	if sideTimeout > 120*time.Second {
+		sideTimeout = 120 * time.Second
+	}
+	engine.SetSideCallTimeout(sideTimeout)
 	engine.SetUntrustedWrapper(cfg.UntrustedWrapper)
 	if cfg.MaxToolParallel > 0 {
 		engine.SetMaxToolParallel(cfg.MaxToolParallel)

@@ -528,6 +528,33 @@ func TestLookupProfile_NoMatch(t *testing.T) {
 	}
 }
 
+func TestLookupProfile_KimiMatch(t *testing.T) {
+	// Any kimi-* model (e.g. kimi-for-coding) matches the "kimi-" profile:
+	// a longer timeout for slow reasoning responses, 256K context fallback.
+	p := LookupProfile("kimi-for-coding")
+	if p == nil {
+		t.Fatal("LookupProfile(\"kimi-for-coding\") returned nil")
+	}
+	if p.Timeout != 300 {
+		t.Errorf("Timeout = %d, want 300", p.Timeout)
+	}
+	if p.MaxContext != 262_144 {
+		t.Errorf("MaxContext = %d, want 262144", p.MaxContext)
+	}
+
+	// The k3 family (k3, k3-256k) is the same Kimi Code line under a
+	// different prefix — it must get the same profile.
+	for _, model := range []string{"k3", "k3-256k"} {
+		p := LookupProfile(model)
+		if p == nil {
+			t.Fatalf("LookupProfile(%q) returned nil", model)
+		}
+		if p.Timeout != 300 || p.MaxContext != 262_144 {
+			t.Errorf("LookupProfile(%q) = %+v, want Timeout=300 MaxContext=262144", model, p)
+		}
+	}
+}
+
 func TestProfileLabel_Known(t *testing.T) {
 	if label := ProfileLabel("deepseek-v4-pro"); label != "DeepSeek v4 Pro" {
 		t.Errorf("ProfileLabel = %q, want %q", label, "DeepSeek v4 Pro")
@@ -597,6 +624,30 @@ func TestNew_ProfileTimeout_Pro(t *testing.T) {
 	_, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New() with deepseek-v4-pro should succeed: %v", err)
+	}
+}
+
+func TestNew_SideCallTimeoutScaling(t *testing.T) {
+	// The compaction/progress-summary side-call bound scales off the resolved
+	// client timeout, capped at 120s.
+	cases := []struct {
+		model string
+		want  time.Duration
+	}{
+		{"kimi-for-coding", 120 * time.Second}, // 300s client timeout → capped at 120s
+		{"k3-256k", 120 * time.Second},         // same profile via the k3 prefix
+		{"deepseek-v4-pro", 120 * time.Second}, // 180s → capped at 120s
+		{"deepseek-v4-flash", 90 * time.Second},
+		{"gpt-4o", 120 * time.Second}, // unknown model → 120s default
+	}
+	for _, tc := range cases {
+		agent, err := New(Config{APIKey: "sk-test", Model: tc.model})
+		if err != nil {
+			t.Fatalf("New(%q): %v", tc.model, err)
+		}
+		if got := agent.engine.SideCallTimeout(); got != tc.want {
+			t.Errorf("New(%q) side-call timeout = %v, want %v", tc.model, got, tc.want)
+		}
 	}
 }
 
