@@ -11,6 +11,20 @@ import (
 
 func boolPtr(b bool) *bool { return &b }
 
+// TestMain isolates the suite from the developer's shell: ODEK_* variables
+// (and legacy provider keys) leak into LoadConfig through os.Getenv and break
+// tests that expect zero-valued defaults. Tests that exercise env vars set
+// their own via t.Setenv, which still works after this scrub.
+func TestMain(m *testing.M) {
+	for _, env := range os.Environ() {
+		key, _, _ := strings.Cut(env, "=")
+		if strings.HasPrefix(key, "ODEK_") || key == "DEEPSEEK_API_KEY" || key == "OPENAI_API_KEY" {
+			os.Unsetenv(key)
+		}
+	}
+	os.Exit(m.Run())
+}
+
 func TestLoadConfig_Defaults(t *testing.T) {
 	// No files, no env, no CLI — everything should be zero-valued
 	t.Setenv("HOME", t.TempDir())
