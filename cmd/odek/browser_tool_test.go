@@ -14,9 +14,15 @@ import (
 // newTestBrowserTool returns a browserTool configured with non_interactive=allow
 // so unit tests that hit local httptest servers are not blocked by the default
 // deny policy.
+// newTestBrowserTool permits network egress without prompting, so the tool's
+// gating doesn't block the hermetic test on an interactive TTY approval.
+// Loopback httptest URLs classify as system_write (internal IP), so that
+// class must be allowed too.
 func newTestBrowserTool() *browserTool {
-	allow := "allow"
-	return newBrowserTool(danger.DangerousConfig{NonInteractive: &allow})
+	return newBrowserTool(danger.DangerousConfig{Classes: map[danger.RiskClass]danger.Action{
+		danger.NetworkEgress: danger.Allow,
+		danger.SystemWrite:   danger.Allow,
+	}})
 }
 
 // ── Browser Navigate ──────────────────────────────────────────────────
