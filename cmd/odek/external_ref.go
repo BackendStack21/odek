@@ -24,7 +24,7 @@ func parseExternalRefFlag(spec string) (session.ExternalRef, error) {
 		// Shorthand: kind=uri (the URI may itself contain '=').
 		kind, uri, ok := strings.Cut(spec, "=")
 		if !ok {
-			return ref, fmt.Errorf("invalid --external-ref %q: want kind=uri or kind=...,uri=...,created_by=...", spec)
+			return ref, fmt.Errorf("invalid --external-ref %q: want the kind=uri shorthand or comma-separated key=value pairs", spec)
 		}
 		ref.Kind, ref.URI = kind, uri
 	} else {

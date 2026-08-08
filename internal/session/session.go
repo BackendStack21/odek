@@ -91,7 +91,7 @@ func (r ExternalRef) Validate() error {
 		return fmt.Errorf("session: external ref kind must be 1-64 chars, got %d", len(r.Kind))
 	}
 	for _, c := range r.Kind {
-		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '_' && c != '-' {
 			return fmt.Errorf("session: external ref kind %q: only lowercase ASCII letters, digits, '_' and '-' allowed", r.Kind)
 		}
 	}
