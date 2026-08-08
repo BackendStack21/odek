@@ -1180,6 +1180,16 @@ const globalConfigTemplate = `{
     "max_iterations": 15,
     "system_prompt": ""
   },
+  "limits": {
+    "max_runtime_seconds": 0,
+    "max_tool_calls": 0,
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "max_cost_usd": 0,
+    "input_cost_per_million_usd": 0,
+    "output_cost_per_million_usd": 0,
+    "model_prices": {}
+  },
   "mcp_servers": {},
   "web_search": {
     "base_url": "",
@@ -1346,7 +1356,7 @@ func initConfig(args []string) error {
 		fmt.Println("    sandbox           Run in Docker sandbox (true/false)")
 		fmt.Println("    system            System prompt override")
 		fmt.Println()
-		fmt.Println("  Sections: dangerous, tools, skills, memory, subagent,")
+		fmt.Println("  Sections: dangerous, tools, skills, memory, subagent, limits,")
 		fmt.Println("  mcp_servers, web_search, schedules, maintenance, telegram,")
 		fmt.Println("  plus sandbox_image/network/readonly/memory/cpus/user/env/volumes.")
 		fmt.Println("  Full schema (also mcp_servers, transcription, vision, embedding):")
