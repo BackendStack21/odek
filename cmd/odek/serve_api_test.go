@@ -3,6 +3,7 @@ package main
 // Tests for backend API changes:
 //   - GET /api/sessions/:id  (new endpoint)
 //   - handleModelList        (returns only configured model, not KnownProfiles)
+//   - handleLimits           (execution-budget config + effective prices)
 //   - serveOnListener        (stops cleanly when listener is closed)
 //   - handlePrompt origLen   (second turn must not repeat first turn's response)
 
@@ -18,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/resource"
 	"github.com/BackendStack21/odek/internal/session"
@@ -497,6 +499,164 @@ func TestHandleModelList_UnknownModelStillReturned(t *testing.T) {
 	// max_context should be zero/absent for an unknown model
 	if ctx, ok := models[0]["max_context"].(float64); ok && ctx != 0 {
 		t.Errorf("max_context = %.0f, want 0 for unknown model", ctx)
+	}
+}
+
+// ── handleLimits ─────────────────────────────────────────────────────
+
+// wrapLimitsAPI mirrors the production apiAuth stack (per-instance token +
+// loopback Host + local Origin) around the limits handler.
+func wrapLimitsAPI(token string, h http.Handler) http.Handler {
+	return requireServeToken(token)(requireLocalHost(requireLocalOrigin(h)))
+}
+
+func TestHandleLimits_RequiresServeToken(t *testing.T) {
+	limits := budget.Limits{MaxToolCalls: 10, InputCostPerMillionUSD: 2.0, OutputCostPerMillionUSD: 8.0}
+	handler := wrapLimitsAPI("test-token", handleLimits("test-model", limits))
+
+	// No token → 403 (same as /api/models through the apiAuth stack).
+	req := httptest.NewRequest(http.MethodGet, "/api/limits", nil)
+	req.Host = "localhost"
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("no token: status = %d, want 403", w.Code)
+	}
+
+	// Wrong token → 403.
+	req = httptest.NewRequest(http.MethodGet, "/api/limits", nil)
+	req.Host = "localhost"
+	req.Header.Set(wsTokenHeaderName, "wrong-token")
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("wrong token: status = %d, want 403", w.Code)
+	}
+}
+
+func TestHandleLimits_RejectsNonLoopbackHost(t *testing.T) {
+	handler := wrapLimitsAPI("test-token", handleLimits("test-model", budget.Limits{}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/limits", nil)
+	req.Host = "attacker.example.com"
+	req.Header.Set(wsTokenHeaderName, "test-token")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("non-loopback Host: status = %d, want 403", w.Code)
+	}
+}
+
+func TestHandleLimits_OK_ReturnsLimitsAndPrices(t *testing.T) {
+	limits := budget.Limits{
+		MaxRuntimeSeconds:       300,
+		MaxToolCalls:            50,
+		MaxCostUSD:              0.50,
+		InputCostPerMillionUSD:  2.0,
+		OutputCostPerMillionUSD: 8.0,
+		ModelPrices:             map[string]budget.ModelPrice{"test-model": {InputCostPerMillionUSD: 0.14, OutputCostPerMillionUSD: 0.28}},
+	}
+	handler := wrapLimitsAPI("test-token", handleLimits("test-model", limits))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/limits", nil)
+	req.Host = "localhost"
+	req.Header.Set(wsTokenHeaderName, "test-token")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+
+	var got struct {
+		Model  string        `json:"model"`
+		Limits budget.Limits `json:"limits"`
+		Prices struct {
+			Input  float64 `json:"input_cost_per_million_usd"`
+			Output float64 `json:"output_cost_per_million_usd"`
+		} `json:"effective_prices"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Model != "test-model" {
+		t.Errorf("model = %q, want 'test-model'", got.Model)
+	}
+	if got.Limits.MaxToolCalls != 50 || got.Limits.MaxRuntimeSeconds != 300 || got.Limits.MaxCostUSD != 0.50 {
+		t.Errorf("limits not reflected as-is: %+v", got.Limits)
+	}
+	if got.Limits.ModelPrices["test-model"].InputCostPerMillionUSD != 0.14 {
+		t.Errorf("model_prices not included: %+v", got.Limits.ModelPrices)
+	}
+	// Server model has a model_prices entry → effective_prices resolve from it.
+	if got.Prices.Input != 0.14 || got.Prices.Output != 0.28 {
+		t.Errorf("effective_prices = %v/%v, want 0.14/0.28 (model_prices entry)",
+			got.Prices.Input, got.Prices.Output)
+	}
+}
+
+func TestHandleLimits_EffectivePricesFallbackToFlatPair(t *testing.T) {
+	limits := budget.Limits{
+		InputCostPerMillionUSD:  2.0,
+		OutputCostPerMillionUSD: 8.0,
+		ModelPrices:             map[string]budget.ModelPrice{"other-model": {InputCostPerMillionUSD: 0.14, OutputCostPerMillionUSD: 0.28}},
+	}
+	handler := handleLimits("test-model", limits)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/limits", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	var got struct {
+		Prices struct {
+			Input  float64 `json:"input_cost_per_million_usd"`
+			Output float64 `json:"output_cost_per_million_usd"`
+		} `json:"effective_prices"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// No model_prices entry for the server model → flat pair.
+	if got.Prices.Input != 2.0 || got.Prices.Output != 8.0 {
+		t.Errorf("effective_prices = %v/%v, want 2.0/8.0 (flat pair fallback)",
+			got.Prices.Input, got.Prices.Output)
+	}
+}
+
+func TestHandleLimits_NoPricesConfigured_ZeroPrices(t *testing.T) {
+	handler := handleLimits("test-model", budget.Limits{MaxToolCalls: 10})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/limits", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	var got struct {
+		Prices struct {
+			Input  float64 `json:"input_cost_per_million_usd"`
+			Output float64 `json:"output_cost_per_million_usd"`
+		} `json:"effective_prices"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Prices.Input != 0 || got.Prices.Output != 0 {
+		t.Errorf("effective_prices = %v/%v, want 0/0 (costs unavailable)",
+			got.Prices.Input, got.Prices.Output)
+	}
+}
+
+func TestHandleLimits_MethodNotAllowed(t *testing.T) {
+	handler := handleLimits("m", budget.Limits{})
+	for _, method := range []string{http.MethodPost, http.MethodDelete, http.MethodPut} {
+		req := httptest.NewRequest(method, "/api/limits", nil)
+		w := httptest.NewRecorder()
+		handler(w, req)
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s /api/limits: status = %d, want 405", method, w.Code)
+		}
 	}
 }
 
