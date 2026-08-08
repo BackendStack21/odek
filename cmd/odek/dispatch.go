@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+
+	"github.com/BackendStack21/odek/internal/budget"
 )
 
 // dispatch routes a top-level CLI invocation to its handler. It takes the
@@ -27,7 +29,7 @@ func dispatch(args []string) int {
 
 	switch cmd {
 	case "run":
-		return cliExit(run(rest))
+		return runExit(run(rest))
 	case "version":
 		printVersion()
 		return 0
@@ -73,6 +75,21 @@ func cliExit(err error) int {
 		return 0
 	}
 	fmt.Fprintf(os.Stderr, "odek: %v\n", err)
+	return 1
+}
+
+// runExit is the `odek run` error→exit translator: like cliExit, but maps a
+// typed budget.Error to exit code 4 (execution budget exhausted —
+// odek-extension/v1, see docs/EXTENSIONS.md) so orchestrators can tell a
+// budget stop apart from a task/model/tool failure (1).
+func runExit(err error) int {
+	if err == nil {
+		return 0
+	}
+	fmt.Fprintf(os.Stderr, "odek: %v\n", err)
+	if _, ok := budget.As(err); ok {
+		return 4
+	}
 	return 1
 }
 

@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/BackendStack21/odek/internal/embedding"
 	"github.com/BackendStack21/odek/internal/fsatomic"
@@ -62,6 +63,80 @@ type Session struct {
 	// MB). Sessions are append-only, so only messages at or beyond the
 	// boundary need scanning. Old files default to 0 (= redact all once).
 	RedactBoundary int `json:"redact_boundary,omitempty"`
+
+	// ExternalRefs carries operator-supplied pointers to state that lives
+	// outside odek (CI runs, dashboards, object stores — schema
+	// odek-extension/v1, see docs/EXTENSIONS.md). odek stores and returns
+	// these refs verbatim; it NEVER resolves or dereferences their URIs.
+	ExternalRefs []ExternalRef `json:"external_refs,omitempty"`
+}
+
+// ExternalRef is an operator-supplied pointer to state that lives outside
+// odek (a CI run, a dashboard, an object-store entry, …). odek stores and
+// transports refs verbatim — it NEVER resolves or dereferences the URI.
+// Schema: odek-extension/v1 (docs/EXTENSIONS.md).
+type ExternalRef struct {
+	Kind      string    `json:"kind"`                 // 1-64 chars, [a-z0-9_-]
+	URI       string    `json:"uri"`                  // 1-2048 chars, no control characters
+	CreatedBy string    `json:"created_by"`           // 1-128 chars
+	ReadOnly  bool      `json:"read_only,omitempty"`  // hint for consumers; not enforced by odek
+	CreatedAt time.Time `json:"created_at,omitempty"` // zero = stamped on first AddExternalRefs
+}
+
+// Validate checks the ref against the odek-extension/v1 constraints:
+// kind 1-64 chars of [a-z0-9_-], uri 1-2048 chars without control
+// characters, created_by 1-128 chars.
+func (r ExternalRef) Validate() error {
+	if len(r.Kind) == 0 || len(r.Kind) > 64 {
+		return fmt.Errorf("session: external ref kind must be 1-64 chars, got %d", len(r.Kind))
+	}
+	for _, c := range r.Kind {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '_' && c != '-' {
+			return fmt.Errorf("session: external ref kind %q: only lowercase ASCII letters, digits, '_' and '-' allowed", r.Kind)
+		}
+	}
+	if len(r.URI) == 0 || len(r.URI) > 2048 {
+		return fmt.Errorf("session: external ref uri must be 1-2048 chars, got %d", len(r.URI))
+	}
+	for _, c := range r.URI {
+		if unicode.IsControl(c) {
+			return fmt.Errorf("session: external ref uri contains a control character (U+%04X)", c)
+		}
+	}
+	if len(r.CreatedBy) == 0 || len(r.CreatedBy) > 128 {
+		return fmt.Errorf("session: external ref created_by must be 1-128 chars, got %d", len(r.CreatedBy))
+	}
+	return nil
+}
+
+// AddExternalRefs validates and appends refs to the session, skipping any
+// that duplicate an existing ref on (kind, uri, created_by). It stamps
+// CreatedAt on refs that leave it zero, and returns the number of refs
+// actually added. The first invalid ref aborts with an error; refs already
+// added stay added.
+func (s *Session) AddExternalRefs(refs ...ExternalRef) (int, error) {
+	added := 0
+	for _, r := range refs {
+		if err := r.Validate(); err != nil {
+			return added, err
+		}
+		duplicate := false
+		for _, e := range s.ExternalRefs {
+			if e.Kind == r.Kind && e.URI == r.URI && e.CreatedBy == r.CreatedBy {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		if r.CreatedAt.IsZero() {
+			r.CreatedAt = time.Now().UTC()
+		}
+		s.ExternalRefs = append(s.ExternalRefs, r)
+		added++
+	}
+	return added, nil
 }
 
 // ── Store ──────────────────────────────────────────────────────────────

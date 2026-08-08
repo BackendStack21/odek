@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek"
+	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/llm"
@@ -364,6 +365,7 @@ func serveCmd(args []string) error {
 	mux.Handle("/api/sessions", apiAuth(handleSessionList(store)))
 	mux.Handle("/api/sessions/", apiAuth(handleSessionByID(store, resolved.TrustedProxies, wsToken)))
 	mux.Handle("/api/models", apiAuth(handleModelList(resolved.Model)))
+	mux.Handle("/api/limits", apiAuth(handleLimits(resolved.Model, resolved.Limits)))
 	mux.Handle("/api/cancel", apiAuth(handleCancel(store)))
 
 	listener, err := net.Listen("tcp", addr)
@@ -1792,6 +1794,41 @@ func handleModelList(configuredModel string) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(models)
+	}
+}
+
+// handleLimits returns the execution-budget configuration resolved at server
+// start plus the effective per-million token prices for the configured model
+// (Limits.ResolvePrices). Clients rendering session costs use
+// effective_prices directly; limits.model_prices lets them price other
+// models. When no prices are configured, effective_prices is 0/0 — clients
+// should treat that as "costs unavailable".
+func handleLimits(configuredModel string, limits budget.Limits) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		type effectivePrices struct {
+			InputCostPerMillionUSD  float64 `json:"input_cost_per_million_usd"`
+			OutputCostPerMillionUSD float64 `json:"output_cost_per_million_usd"`
+		}
+		type limitsResponse struct {
+			Model           string          `json:"model"`
+			Limits          budget.Limits   `json:"limits"`
+			EffectivePrices effectivePrices `json:"effective_prices"`
+		}
+		inPrice, outPrice := limits.ResolvePrices(configuredModel)
+		resp := limitsResponse{
+			Model:  configuredModel,
+			Limits: limits,
+			EffectivePrices: effectivePrices{
+				InputCostPerMillionUSD:  inPrice,
+				OutputCostPerMillionUSD: outPrice,
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
 	}
 }
 

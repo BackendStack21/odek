@@ -11,7 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BackendStack21/odek/internal/artifact"
+	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/events"
 	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/narrate"
 	"github.com/BackendStack21/odek/internal/redact"
@@ -169,6 +172,12 @@ type Engine struct {
 	toolEventHandler ToolEventHandler // optional: fires during tool execution
 	signalHandler    SignalHandler    // optional: fires on internal loop signals
 
+	// eventHandler, when set, receives structured runtime events
+	// (schema odek.event/v1): iteration_completed, tool_call_started /
+	// completed / failed, and context_trimmed. Wired by odek.New to the
+	// non-blocking events.Emitter; see docs/EXTENSIONS.md.
+	eventHandler func(events.Event)
+
 	// interactionMode controls how progress is surfaced to the user.
 	// "engaging" (default), "verbose", "enhance", or "off" (silent).
 	// When "off", all per-iteration render output is suppressed.
@@ -274,6 +283,15 @@ type Engine struct {
 	// Zero means use the default (30s). Callers scale it off the resolved
 	// client timeout so slow providers don't silently lose the digest.
 	sideCallTimeout time.Duration
+
+	// budgetLimits holds the hard execution budgets for a run
+	// (odek-extension/v1 — see docs/EXTENSIONS.md). Zero value = no budgets.
+	// The per-run checker is created in runLoop so runtime is measured from
+	// the run start.
+	budgetLimits budget.Limits
+	budget       *budget.Checker
+	// budgetNow overrides the budget clock; nil = time.Now. Tests only.
+	budgetNow func() time.Time
 }
 
 // New creates a new loop Engine.
@@ -339,6 +357,26 @@ func (e *Engine) SetMemoryPromptFunc(fn func() string) {
 // SetToolEventHandler sets the optional tool event callback for live streaming.
 func (e *Engine) SetToolEventHandler(cb ToolEventHandler) { e.toolEventHandler = cb }
 
+// SetEventHandler sets the optional structured runtime event sink
+// (schema odek.event/v1). The handler must be non-blocking — events fire
+// inside the hot loop; odek.New wires it to a drop-on-full events.Emitter.
+// Passing nil disables event emission.
+func (e *Engine) SetEventHandler(cb func(events.Event)) { e.eventHandler = cb }
+
+// emitEvent fires a structured runtime event if a handler is configured,
+// stamping the timestamp when the caller left it zero. Safe to call
+// unconditionally. Run-level metadata (schema, run_id, session_id) is
+// stamped centrally by the events.Emitter the handler is wired to.
+func (e *Engine) emitEvent(ev events.Event) {
+	if e.eventHandler == nil {
+		return
+	}
+	if ev.Timestamp.IsZero() {
+		ev.Timestamp = time.Now().UTC()
+	}
+	e.eventHandler(ev)
+}
+
 // SetNarrator sets the optional narrator for engaging mode.
 // When nil (the default), tools render in verbose mode via the Renderer.
 func (e *Engine) SetNarrator(n *narrate.Narrator) { e.narrator = n }
@@ -379,6 +417,15 @@ func (e *Engine) SetCompaction(enabled bool) { e.compaction = enabled }
 // SetSideCallTimeout sets the bound for the compaction digest and
 // progress-summary side calls. 0 or negative restores the default (30s).
 func (e *Engine) SetSideCallTimeout(d time.Duration) { e.sideCallTimeout = d }
+
+// SetLimits configures hard execution budgets (odek-extension/v1): runtime,
+// tool-call count, input/output token totals, and estimated cost. The zero
+// value disables enforcement. Wired by odek.New from Config.Limits. The
+// model ID is fixed per run, so per-model prices (Limits.ModelPrices) are
+// resolved once here into the effective flat prices every cost check uses.
+func (e *Engine) SetLimits(l budget.Limits, model string) {
+	e.budgetLimits = l.ResolveForModel(model)
+}
 
 // SideCallTimeout returns the effective bound for the compaction digest and
 // progress-summary side calls (default 30s).
@@ -656,6 +703,14 @@ func (e *Engine) trimContext(ctx context.Context, messages []llm.Message, toolDe
 			Detail: "proactive",
 			Count:  droppedGroups,
 		})
+		e.emitEvent(events.Event{
+			Type: events.TypeContextTrimmed,
+			Data: map[string]any{
+				"mode":              "proactive",
+				"dropped_groups":    droppedGroups,
+				"truncated_results": truncated,
+			},
+		})
 	}
 
 	// Record the final estimate so the next call can calibrate the margin
@@ -914,6 +969,11 @@ const budgetSummaryMaxMessages = 30
 // budget-summarizer input.
 const budgetSummarySnippetBytes = 2000
 
+// execBudgetSummaryMarker prefixes the assistant message carrying the
+// partial-progress summary when a hard execution budget (not the iteration
+// cap) stopped the run and the summary side call was still within budget.
+const execBudgetSummaryMarker = "[Execution budget reached — partial summary]"
+
 // refreshDigest summarizes newly dropped turn groups and inserts (or updates)
 // the rolling compaction digest system message. The digest is derived from
 // potentially untrusted tool output, so its body is wrapped with the
@@ -1056,6 +1116,58 @@ func (e *Engine) summarizeProgress(ctx context.Context, messages []llm.Message) 
 	return strings.TrimSpace(res.Content)
 }
 
+// ── Hard execution budgets ─────────────────────────────────────────────
+
+// budgetExceeded is the shared exhaustion path for hard execution budgets
+// (odek-extension/v1): emit the budget_exceeded event, optionally append a
+// partial-progress summary, persist the latest safe state via the per-step
+// callback, and return the typed budget.Error. Callers must pass a messages
+// slice that ends in a safe state (no unanswered assistant tool calls).
+func (e *Engine) budgetExceeded(ctx context.Context, messages []llm.Message, berr *budget.Error, iteration int) (string, []llm.Message, error) {
+	data := map[string]any{
+		"limit_name": berr.Limit,
+		"observed":   berr.Observed,
+		"limit":      berr.Maximum,
+	}
+	if berr.Limit == budget.LimitCostUSD {
+		// Cost errors carry micro-USD; the event stream reports USD.
+		data["observed"] = budget.MicroToUSD(berr.Observed)
+		data["limit"] = budget.MicroToUSD(berr.Maximum)
+	}
+	e.emitEvent(events.Event{
+		Type:      events.TypeBudgetExceeded,
+		Iteration: iteration,
+		Data:      data,
+	})
+
+	// The partial-summary side call itself consumes runtime, tokens, and
+	// cost — allow it only when the exhausted limit is the tool-call count
+	// (which a tool-less summary does not consume) and every other budget
+	// still has headroom. For runtime/token/cost exhaustion, skip it.
+	if berr.Limit == budget.LimitToolCalls && e.budgetAllowsSideCall() {
+		if summary := e.summarizeProgress(ctx, messages); summary != "" {
+			messages = append(messages, llm.Message{
+				Role:    "assistant",
+				Content: execBudgetSummaryMarker + "\n\n" + summary,
+			})
+		}
+	}
+
+	// Persist the latest safe state so an interrupted run resumes from here.
+	e.emitMessagesPersist(messages)
+	return "", messages, berr
+}
+
+// budgetAllowsSideCall reports whether one extra bounded LLM side call
+// (progress summary) is currently within every configured budget.
+func (e *Engine) budgetAllowsSideCall() bool {
+	if e.budget == nil {
+		return true
+	}
+	return e.budget.CheckRuntime() == nil &&
+		e.budget.CheckUsage(int64(e.TotalInputTokens), int64(e.TotalOutputTokens)) == nil
+}
+
 // ── Loop ──────────────────────────────────────────────────────────────
 
 // Run executes the loop for a given task and returns the final response.
@@ -1114,6 +1226,12 @@ type trustAllSetter interface{ SetTrustAll(bool) }
 func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, []llm.Message, error) {
 	tools := e.buildToolDefs()
 	startTime := time.Now()
+	// Hard execution budgets (odek-extension/v1): nil when no limits are
+	// configured, in which case every check below is a no-op.
+	e.budget = budget.NewChecker(e.budgetLimits, startTime)
+	if e.budget != nil && e.budgetNow != nil {
+		e.budget.SetNowFunc(e.budgetNow)
+	}
 	// Reset per-session tool error tracking
 	e.maxConsecutiveToolErrors = make(map[string]int)
 	// Reset per-session repeated-call (stall) tracking
@@ -1304,6 +1422,13 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 			}
 		}
 
+		// Hard execution budget: runtime is checked before every LLM call so a
+		// runaway loop stops deterministically instead of burning provider
+		// spend until the iteration cap.
+		if berr := e.budget.CheckRuntime(); berr != nil {
+			return e.budgetExceeded(ctx, messages, berr, i+1)
+		}
+
 		// THINK (timed)
 		start := time.Now()
 
@@ -1339,6 +1464,14 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 						Detail: "survival",
 						Count:  len(messages) - len(trimmed),
 					})
+					e.emitEvent(events.Event{
+						Type: events.TypeContextTrimmed,
+						Data: map[string]any{
+							"mode":              "survival",
+							"dropped_groups":    len(messages) - len(trimmed),
+							"truncated_results": 0,
+						},
+					})
 					messages = trimmed
 					// Reset memory index — trimToSurvival drops it.
 					e.memMsgIdx = -1
@@ -1373,6 +1506,14 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		e.TotalCacheReadTokens += result.CacheReadTokens
 		e.TotalCachedTokens += result.CachedTokens
 		e.TotalCacheReported = e.TotalCacheReported || result.CacheReported
+
+		// Hard execution budget: token totals and estimated cost are checked
+		// after every LLM response, before the result is acted on. messages
+		// still ends in a safe state here (the assistant message for this
+		// response has not been appended yet).
+		if berr := e.budget.CheckUsage(int64(e.TotalInputTokens), int64(e.TotalOutputTokens)); berr != nil {
+			return e.budgetExceeded(ctx, messages, berr, i+1)
+		}
 
 		// No tool calls = final answer
 		if len(result.ToolCalls) == 0 {
@@ -1420,6 +1561,15 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 				Content:          result.Content,
 				ReasoningContent: result.ReasoningContent,
 			})
+			e.emitEvent(events.Event{
+				Type:      events.TypeIterationCompleted,
+				Iteration: i + 1,
+				Data: map[string]any{
+					"input_tokens":  e.TotalInputTokens,
+					"output_tokens": e.TotalOutputTokens,
+					"tools_called":  0,
+				},
+			})
 			e.emitMessagesPersist(messages)
 			return result.Content, messages, nil
 		}
@@ -1443,6 +1593,14 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 			ReasoningContent: result.ReasoningContent,
 			ToolCalls:        result.ToolCalls,
 		}
+
+		// Hard execution budget: the tool-call count is checked BEFORE the
+		// batch is scheduled, so an exhausted budget stops new tool work
+		// entirely. messages has no unanswered tool calls at this point.
+		if berr := e.budget.CheckToolBatch(len(result.ToolCalls)); berr != nil {
+			return e.budgetExceeded(ctx, messages, berr, i+1)
+		}
+
 		messages = append(messages, assistantMsg)
 
 		// ACT: execute each tool call in parallel with bounded concurrency
@@ -1471,6 +1629,10 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 			})
 		}
 
+		// iterNum is the 1-based iteration number for events emitted below —
+		// the Phase 3 range loop shadows the outer i, so capture it here.
+		iterNum := i + 1
+
 		// Phase 1: fire all tool_call events synchronously (rendering + events)
 		for _, tc := range result.ToolCalls {
 			if e.narrator != nil {
@@ -1485,6 +1647,17 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 			if e.toolEventHandler != nil {
 				e.toolEventHandler("tool_call", tc.Function.Name, tc.Function.Arguments)
 			}
+			e.emitEvent(events.Event{
+				Type:      events.TypeToolCallStarted,
+				Iteration: iterNum,
+				Tool:      tc.Function.Name,
+				Data: map[string]any{
+					// Never raw args: digest + size correlate start/complete
+					// without leaking argument content into the event stream.
+					"args_sha256": events.ArgsDigest(tc.Function.Arguments),
+					"args_bytes":  len(tc.Function.Arguments),
+				},
+			})
 		}
 
 		// Phase 1.5: batch approval gate
@@ -1572,7 +1745,8 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 
 		// Phase 2: execute tools in parallel (bounded by semaphore)
 		type execResult struct {
-			output string
+			output     string
+			durationMs int64
 		}
 		parallel := e.MaxToolParallel
 		if parallel <= 0 {
@@ -1591,6 +1765,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 				go func(idx int, tcRef llm.ToolCall) {
 					defer func() { <-sem }() // release
 
+					callStart := time.Now()
 					t := e.registry.Get(tcRef.Function.Name)
 					output := fmt.Sprintf("error: tool %q not found", tcRef.Function.Name)
 					if t != nil {
@@ -1624,13 +1799,19 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 							}
 						}()
 					}
-					results[idx] = execResult{output: output}
+					results[idx] = execResult{output: output, durationMs: time.Since(callStart).Milliseconds()}
 				}(i, tc)
 			}
 			// Drain the semaphore — wait for all goroutines to finish.
 			for i := 0; i < cap(sem); i++ {
 				sem <- struct{}{}
 			}
+		}
+
+		// Account the executed batch against the tool-call budget. Denied
+		// batches never ran, so they do not count.
+		if !batchDenied {
+			e.budget.RecordToolCalls(len(result.ToolCalls))
 		}
 
 		// Reset the batch trustAll grant now that this iteration's tools have
@@ -1651,6 +1832,30 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 			}
 			if e.toolEventHandler != nil {
 				e.toolEventHandler("tool_result", tc.Function.Name, output)
+			}
+
+			// Structured runtime event for this call. Failure classification
+			// mirrors the error-recovery heuristic below. Raw results are
+			// never emitted — size and artifact count only.
+			if e.eventHandler != nil {
+				failed := strings.HasPrefix(results[i].output, "error:") ||
+					strings.Contains(results[i].output, "\"error\":")
+				ev := events.Event{
+					Iteration: iterNum,
+					Tool:      tc.Function.Name,
+					Data: map[string]any{
+						"duration_ms": results[i].durationMs,
+					},
+				}
+				if failed {
+					ev.Type = events.TypeToolCallFailed
+					ev.Data["error_class"] = "tool_error"
+				} else {
+					ev.Type = events.TypeToolCallCompleted
+					ev.Data["result_bytes"] = len(results[i].output)
+					ev.Data["artifact_count"] = artifact.CountRendered(results[i].output)
+				}
+				e.emitEvent(ev)
 			}
 
 			// Compress large tool outputs to save context window.
@@ -1787,6 +1992,16 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		// messages are appended — an interrupted run can resume from here.
 		e.emitMessagesPersist(messages)
 
+		e.emitEvent(events.Event{
+			Type:      events.TypeIterationCompleted,
+			Iteration: i + 1,
+			Data: map[string]any{
+				"input_tokens":  e.TotalInputTokens,
+				"output_tokens": e.TotalOutputTokens,
+				"tools_called":  len(result.ToolCalls),
+			},
+		})
+
 		// Fire iteration callback with tool call results
 		if e.iterationCallback != nil {
 			e.iterationCallback(IterationInfo{
@@ -1812,7 +2027,13 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 	// completion path: render, iteration callback, assistant message
 	// appended, persist callback) so callers persist and display it like a
 	// normal completion. On summarizer failure, fall back to the error.
-	if summary := e.summarizeProgress(ctx, messages); summary != "" {
+	// The summary side call is skipped when a configured execution budget is
+	// already exhausted — it would itself consume runtime/tokens/cost.
+	var progressSummary string
+	if e.budgetAllowsSideCall() {
+		progressSummary = e.summarizeProgress(ctx, messages)
+	}
+	if summary := progressSummary; summary != "" {
 		final := budgetSummaryMarker + "\n\n" + summary
 
 		if e.renderer != nil && e.interactionMode != "off" {

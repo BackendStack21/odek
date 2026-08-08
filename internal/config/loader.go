@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/embedding"
 	"github.com/BackendStack21/odek/internal/guard"
@@ -126,6 +127,14 @@ type CLIFlags struct {
 	// whose X-Forwarded-For / X-Real-Ip headers are trusted. Empty means headers
 	// are ignored even from loopback. Only used by `odek serve`.
 	TrustedProxies []string
+
+	// Execution-budget CLI overrides (odek-extension/v1). CLI flags are
+	// operator intent: they set limits explicitly, 0 = flag not passed.
+	MaxRuntimeSeconds int64
+	MaxToolCalls      int64
+	MaxInputTokens    int64
+	MaxOutputTokens   int64
+	MaxCostUSD        float64
 }
 
 // SkillsConfig holds the skills configuration section from JSON files.
@@ -354,6 +363,11 @@ type FileConfig struct {
 	// ToolProgressCleanup controls whether progress messages are deleted after
 	// the final answer. Default: true (delete progress messages).
 	ToolProgressCleanup *bool `json:"tool_progress_cleanup,omitempty"`
+
+	// Limits is the "limits" section: hard execution budgets
+	// (odek-extension/v1). The global config may set any limit; the project
+	// config may only LOWER an existing one (see clampProjectLimits).
+	Limits *budget.Limits `json:"limits,omitempty"`
 }
 
 // ProjectSandboxOverride records which sandbox knobs were supplied by the
@@ -520,6 +534,13 @@ type ResolvedConfig struct {
 	// TrustedProxies lists IP addresses or CIDR ranges of reverse proxies whose
 	// X-Forwarded-For / X-Real-Ip headers are trusted by `odek serve`.
 	TrustedProxies []string
+
+	// Limits is the resolved execution-budget configuration
+	// (odek-extension/v1). Zero fields mean "no limit". Merge rule: the global
+	// config may set any limit; the untrusted project ./odek.json may only
+	// LOWER an existing limit (never raise, never disable); CLI flags are
+	// operator intent and set limits explicitly.
+	Limits budget.Limits
 }
 
 // ── Defaults ───────────────────────────────────────────────────────────
@@ -1019,6 +1040,13 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring sandbox_readonly=false from project config (%s); set it via ~/.odek/config.json or CLI\n", ProjectConfigPath())
 		project.SandboxReadonly = nil
 	}
+
+	// Execution budgets ("limits" section): the global config may set any
+	// limit; the untrusted project config may only LOWER an existing limit —
+	// never raise it and never disable (zero-out) one. Unlike the sections
+	// above this is a clamp, not an outright rejection: a repo tightening its
+	// own budgets is safe, loosening the operator's budgets is not.
+	clampProjectLimits(global.Limits, project.Limits)
 
 	// Capture which sandbox knobs the project requested, before the overlay
 	// hides them behind CLI/env values. This drives the approval gate in cmd/odek.
@@ -1636,6 +1664,30 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		cfg.TrustedProxies = cli.TrustedProxies
 	}
 
+	// Execution-budget CLI flags (operator intent — set explicitly; they may
+	// raise or lower any file-configured limit).
+	if cli.MaxRuntimeSeconds > 0 || cli.MaxToolCalls > 0 || cli.MaxInputTokens > 0 ||
+		cli.MaxOutputTokens > 0 || cli.MaxCostUSD > 0 {
+		if cfg.Limits == nil {
+			cfg.Limits = &budget.Limits{}
+		}
+		if cli.MaxRuntimeSeconds > 0 {
+			cfg.Limits.MaxRuntimeSeconds = cli.MaxRuntimeSeconds
+		}
+		if cli.MaxToolCalls > 0 {
+			cfg.Limits.MaxToolCalls = cli.MaxToolCalls
+		}
+		if cli.MaxInputTokens > 0 {
+			cfg.Limits.MaxInputTokens = cli.MaxInputTokens
+		}
+		if cli.MaxOutputTokens > 0 {
+			cfg.Limits.MaxOutputTokens = cli.MaxOutputTokens
+		}
+		if cli.MaxCostUSD > 0 {
+			cfg.Limits.MaxCostUSD = cli.MaxCostUSD
+		}
+	}
+
 	// Build resolved config with concrete values
 	resolved := ResolvedConfig{
 		Model:    cfg.Model,
@@ -1737,6 +1789,22 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	}
 
 	resolved.TrustedProxies = cfg.TrustedProxies
+
+	// Execution budgets: concrete value; zero fields = no limit.
+	if cfg.Limits != nil {
+		resolved.Limits = *cfg.Limits
+	}
+	// Cost enforcement needs operator-configured per-million prices — odek
+	// never hard-codes provider prices. Warn loudly when the operator set a
+	// cost cap but neither model_prices[model] nor the flat pair yields
+	// positive prices, so a silent no-op is impossible; token budgets stay
+	// active regardless.
+	if resolved.Limits.MaxCostUSD > 0 {
+		inPrice, outPrice := resolved.Limits.ResolvePrices(resolved.Model)
+		if inPrice <= 0 || outPrice <= 0 {
+			fmt.Fprintf(os.Stderr, "odek: warning: limits.max_cost_usd is set but input/output per-million prices are not both configured — cost enforcement is DISABLED (token budgets remain active)\n")
+		}
+	}
 
 	// API key fallback chain: resolved → DEEPSEEK_API_KEY → OPENAI_API_KEY
 	if resolved.APIKey == "" {
@@ -2214,6 +2282,73 @@ func resolveSchedules(cfg *SchedulesConfig) ScheduleConfig {
 // overlayFile overlays a higher-priority FileConfig onto a lower-priority one.
 // Only fields that are explicitly set (non-zero for scalars, non-nil for
 // pointers) override the base value.
+// clampProjectLimits enforces the execution-budget merge rule (review note 5
+// of the extension MVP): the global (operator) config may set any limit, but
+// the untrusted project ./odek.json may only LOWER an existing limit — never
+// raise it and never disable (zero-out) a globally-set limit. A project may
+// still set a limit the global config does not have (that only tightens the
+// run). Per-million prices (flat and per-model) are NOT limits — a lower
+// project price would silently weaken cost enforcement — so project-set
+// prices are ignored outright and the global values are kept.
+//
+// The clamp fills every globally-set field back into project.Limits, so the
+// plain pointer overlay in overlayFile cannot drop a global limit when the
+// project sets a different one.
+func clampProjectLimits(global, project *budget.Limits) {
+	if project == nil {
+		return
+	}
+	var g budget.Limits
+	if global != nil {
+		g = *global
+	}
+	clampInt := func(name string, g, p int64) int64 {
+		switch {
+		case g <= 0:
+			return p // no global limit — any project value only tightens
+		case p > g:
+			fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring limits.%s=%d from project config (%s) — it would raise the global limit %d\n", name, p, ProjectConfigPath(), g)
+			return g
+		case p <= 0:
+			return g // a global limit cannot be disabled/zero-outed by the project
+		default:
+			return p // lowered — allowed
+		}
+	}
+	clampFloat := func(name string, g, p float64) float64 {
+		switch {
+		case g <= 0:
+			return p
+		case p > g:
+			fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring limits.%s=%g from project config (%s) — it would raise the global limit %g\n", name, p, ProjectConfigPath(), g)
+			return g
+		case p <= 0:
+			return g
+		default:
+			return p
+		}
+	}
+	project.MaxRuntimeSeconds = clampInt("max_runtime_seconds", g.MaxRuntimeSeconds, project.MaxRuntimeSeconds)
+	project.MaxToolCalls = clampInt("max_tool_calls", g.MaxToolCalls, project.MaxToolCalls)
+	project.MaxInputTokens = clampInt("max_input_tokens", g.MaxInputTokens, project.MaxInputTokens)
+	project.MaxOutputTokens = clampInt("max_output_tokens", g.MaxOutputTokens, project.MaxOutputTokens)
+	project.MaxCostUSD = clampFloat("max_cost_usd", g.MaxCostUSD, project.MaxCostUSD)
+
+	// Prices come from operator-controlled sources only.
+	if project.InputCostPerMillionUSD != 0 {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring limits.input_cost_per_million_usd from project config (%s); set prices via ~/.odek/config.json\n", ProjectConfigPath())
+	}
+	if project.OutputCostPerMillionUSD != 0 {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring limits.output_cost_per_million_usd from project config (%s); set prices via ~/.odek/config.json\n", ProjectConfigPath())
+	}
+	if len(project.ModelPrices) > 0 {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring limits.model_prices from project config (%s); set prices via ~/.odek/config.json\n", ProjectConfigPath())
+	}
+	project.InputCostPerMillionUSD = g.InputCostPerMillionUSD
+	project.OutputCostPerMillionUSD = g.OutputCostPerMillionUSD
+	project.ModelPrices = g.ModelPrices
+}
+
 func overlayFile(base, override FileConfig) FileConfig {
 	if override.Model != "" {
 		base.Model = override.Model
@@ -2332,6 +2467,11 @@ func overlayFile(base, override FileConfig) FileConfig {
 	}
 	if override.Transcription != nil {
 		base.Transcription = override.Transcription
+	}
+	if override.Limits != nil {
+		// Reached only after clampProjectLimits ran, so the override already
+		// carries every globally-set field (clamped or inherited).
+		base.Limits = override.Limits
 	}
 	if override.Vision != nil {
 		base.Vision = override.Vision

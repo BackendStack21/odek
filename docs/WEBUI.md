@@ -85,6 +85,46 @@ The dropdown fetches from `GET /api/resources?q=<query>&limit=8`. Results includ
 - **Sidebar**: lists all saved sessions (max 50), highlights the active one
 - **Session data**: stored in `~/.odek/sessions/` as JSON files, same format used by `odek session`
 
+## REST endpoints
+
+All `/api/*` endpoints require the per-instance CSRF token (`odek_ws_token` cookie or `X-Odek-Ws-Token` header) and a loopback `Host` header; state-changing methods additionally require a local `Origin`. Missing/invalid credentials return 403.
+
+### `GET /api/limits`
+
+Returns the execution-budget configuration resolved at server start, so clients can render session costs without duplicating the price-resolution rule.
+
+```jsonc
+{
+  "model": "deepseek-v4-flash",   // the server's configured model
+  "limits": {                     // resolved budget.Limits as-is (see docs/CONFIG.md)
+    "max_runtime_seconds": 300,
+    "max_tool_calls": 50,
+    "max_cost_usd": 0.50,
+    "input_cost_per_million_usd": 2.0,
+    "output_cost_per_million_usd": 8.0,
+    "model_prices": {
+      "deepseek-v4-flash": {
+        "input_cost_per_million_usd": 0.14,
+        "output_cost_per_million_usd": 0.28
+      }
+    }
+  },
+  "effective_prices": {           // limits.ResolvePrices(model) — model_prices entry wins, flat pair otherwise
+    "input_cost_per_million_usd": 0.14,
+    "output_cost_per_million_usd": 0.28
+  }
+}
+```
+
+Cost rendering for the current session model uses `effective_prices` directly:
+
+```
+cost_usd = input_tokens / 1e6 * input_cost_per_million_usd
+         + output_tokens / 1e6 * output_cost_per_million_usd
+```
+
+When no prices are configured, `effective_prices` is `0`/`0` — treat that as "costs unavailable". To price a different model, look it up in `limits.model_prices` and fall back to the flat pair per field.
+
 ## Flags
 
 | Flag | Default | Description |
@@ -184,6 +224,7 @@ match as plain text. The bundled WebUI implements this in
 | Prompt handler | `serve.go` (`handlePrompt`) | Resolves `@` refs, runs agent, streams result |
 | Resource API | `serve.go` (`handleResourceSearch`) | `@` completion search endpoint |
 | Session API | `serve.go` (`handleSessionList`) | Session listing endpoint |
+| Limits API | `serve.go` (`handleLimits`) | Execution-budget config + effective prices endpoint |
 
 ### WebSocket implementation (`internal/ws/ws.go`)
 

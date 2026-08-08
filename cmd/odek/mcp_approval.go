@@ -107,6 +107,18 @@ func approveMCPServersWithTTY(resolved config.ResolvedConfig, stdin io.Reader, s
 				fmt.Fprintf(stdout, "    %s=%s\n", k, cfg.Env[k])
 			}
 		}
+		if cfg.TimeoutSeconds > 0 {
+			fmt.Fprintf(stdout, "  timeout_seconds: %d\n", cfg.TimeoutSeconds)
+		}
+		if cfg.MaxResponseBytes > 0 {
+			fmt.Fprintf(stdout, "  max_response_bytes: %d\n", cfg.MaxResponseBytes)
+		}
+		if cfg.MaxResultChars > 0 {
+			fmt.Fprintf(stdout, "  max_result_chars: %d\n", cfg.MaxResultChars)
+		}
+		if len(cfg.ArtifactRoots) > 0 {
+			fmt.Fprintf(stdout, "  artifact_roots: %s\n", strings.Join(cfg.ArtifactRoots, ", "))
+		}
 		fmt.Fprintf(stdout, "Approve? [y/N] ")
 
 		line, err := reader.ReadString('\n')
@@ -128,8 +140,11 @@ func approveMCPServersWithTTY(resolved config.ResolvedConfig, stdin io.Reader, s
 }
 
 // mcpApprovalKey returns a stable key for the persisted approval store. It
-// includes the project directory, server name, command, arguments, and env
-// overrides so a change to any of those invalidates the prior approval.
+// includes the project directory, server name, command, arguments, env
+// overrides, and the odek-extension/v1 limit fields (timeout, response/result
+// caps, artifact roots) so a change to any of those invalidates the prior
+// approval — artifact_roots in particular define which files the server may
+// hand back to the agent, so editing them must re-prompt.
 func mcpApprovalKey(projectDir, name string, cfg mcpclient.ServerConfig) string {
 	h := sha256.New()
 	fmt.Fprintf(h, "%s\x00%s\x00%s", projectDir, name, cfg.Command)
@@ -137,6 +152,7 @@ func mcpApprovalKey(projectDir, name string, cfg mcpclient.ServerConfig) string 
 		fmt.Fprintf(h, "\x00%s", a)
 	}
 	hashEnv(h, cfg.Env)
+	hashServerLimits(h, cfg)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -276,6 +292,7 @@ func mcpToolApprovalKey(projectDir, serverName, toolName string, cfg mcpclient.S
 		fmt.Fprintf(h, "\x00%s", a)
 	}
 	hashEnv(h, cfg.Env)
+	hashServerLimits(h, cfg)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -331,6 +348,24 @@ func hashEnv(h hash.Hash, env map[string]string) {
 	keys := sortedEnvKeys(env)
 	for _, k := range keys {
 		fmt.Fprintf(h, "\x00env\x00%s\x00%s", k, env[k])
+	}
+}
+
+// hashServerLimits writes a canonical representation of the odek-extension/v1
+// per-server limit fields into h, mirroring hashEnv's deterministic,
+// NUL-separated style. These fields change the trust surface (artifact_roots
+// decide which files a server may hand to the agent; the caps decide how much
+// output it can push into context), so editing any of them must invalidate
+// prior approvals. Artifact roots are sorted so reordering alone does not
+// force a re-prompt.
+func hashServerLimits(h hash.Hash, cfg mcpclient.ServerConfig) {
+	fmt.Fprintf(h, "\x00timeout_seconds\x00%d", cfg.TimeoutSeconds)
+	fmt.Fprintf(h, "\x00max_response_bytes\x00%d", cfg.MaxResponseBytes)
+	fmt.Fprintf(h, "\x00max_result_chars\x00%d", cfg.MaxResultChars)
+	roots := append([]string(nil), cfg.ArtifactRoots...)
+	sort.Strings(roots)
+	for _, r := range roots {
+		fmt.Fprintf(h, "\x00artifact_root\x00%s", r)
 	}
 }
 

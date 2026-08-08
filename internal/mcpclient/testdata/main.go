@@ -30,9 +30,9 @@ type rpcError struct {
 
 // Configurable via env vars
 var (
-	toolsJSON    = os.Getenv("FAKE_TOOLS")
-	errorOnCall  = os.Getenv("FAKE_ERROR_ON_CALL")
-	delayStr     = os.Getenv("FAKE_DELAY")
+	toolsJSON   = os.Getenv("FAKE_TOOLS")
+	errorOnCall = os.Getenv("FAKE_ERROR_ON_CALL")
+	delayStr    = os.Getenv("FAKE_DELAY")
 )
 
 func main() {
@@ -65,13 +65,19 @@ func main() {
 
 		case "tools/list":
 			var defs []map[string]any
-			if toolsJSON != "" {
+			if artifactMode {
+				defs = artifactToolDefs
+			} else if toolsJSON != "" {
 				json.Unmarshal([]byte(toolsJSON), &defs)
 			}
 			listResult, _ := json.Marshal(map[string]any{"tools": defs})
 			writeResp(req.ID, listResult, nil)
 
 		case "tools/call":
+			if artifactMode {
+				handleArtifactCall(req)
+				continue
+			}
 			if errorOnCall != "" {
 				writeResp(req.ID, nil, &rpcError{Code: -32000, Message: errorOnCall})
 				continue

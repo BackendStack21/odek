@@ -17,6 +17,7 @@ import (
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/events"
 	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/loop"
@@ -325,6 +326,22 @@ type runFlags struct {
 	GuardScanTelegram     *bool   // nil = not set
 
 	Deliver *bool // nil = not set; true = deliver result to default channel
+
+	// EventsJSONL, when set, appends the structured runtime event stream
+	// (schema odek.event/v1) to this file — one JSON object per line.
+	EventsJSONL string
+
+	// ExternalRefs holds the raw repeatable --external-ref values
+	// (kind=uri shorthand or kind=...,uri=...,created_by=... form).
+	// Parsed and validated in runCmd before the agent starts.
+	ExternalRefs []string
+
+	// Execution-budget flags (odek-extension/v1). 0 = flag not passed.
+	MaxRuntime      int64   // --max-runtime (seconds)
+	MaxToolCalls    int64   // --max-tool-calls
+	MaxInputTokens  int64   // --max-input-tokens
+	MaxOutputTokens int64   // --max-output-tokens
+	MaxCostUSD      float64 // --max-cost-usd
 }
 
 // parseRunFlags parses `odek run` arguments and returns the parsed flags.
@@ -422,6 +439,68 @@ func parseRunFlags(args []string) (runFlags, error) {
 		case "--session":
 			f.Session = boolPtr(true)
 			i++
+		case "--events-jsonl":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--events-jsonl requires a value")
+			}
+			f.EventsJSONL = args[i+1]
+			i += 2
+		case "--external-ref":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--external-ref requires a value")
+			}
+			f.ExternalRefs = append(f.ExternalRefs, args[i+1])
+			i += 2
+		case "--max-runtime":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--max-runtime requires a value")
+			}
+			var n int64
+			if _, err := fmt.Sscanf(args[i+1], "%d", &n); err != nil || n <= 0 {
+				return f, fmt.Errorf("--max-runtime requires a positive integer (seconds), got %q", args[i+1])
+			}
+			f.MaxRuntime = n
+			i += 2
+		case "--max-tool-calls":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--max-tool-calls requires a value")
+			}
+			var n int64
+			if _, err := fmt.Sscanf(args[i+1], "%d", &n); err != nil || n <= 0 {
+				return f, fmt.Errorf("--max-tool-calls requires a positive integer, got %q", args[i+1])
+			}
+			f.MaxToolCalls = n
+			i += 2
+		case "--max-input-tokens":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--max-input-tokens requires a value")
+			}
+			var n int64
+			if _, err := fmt.Sscanf(args[i+1], "%d", &n); err != nil || n <= 0 {
+				return f, fmt.Errorf("--max-input-tokens requires a positive integer, got %q", args[i+1])
+			}
+			f.MaxInputTokens = n
+			i += 2
+		case "--max-output-tokens":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--max-output-tokens requires a value")
+			}
+			var n int64
+			if _, err := fmt.Sscanf(args[i+1], "%d", &n); err != nil || n <= 0 {
+				return f, fmt.Errorf("--max-output-tokens requires a positive integer, got %q", args[i+1])
+			}
+			f.MaxOutputTokens = n
+			i += 2
+		case "--max-cost-usd":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--max-cost-usd requires a value")
+			}
+			var v float64
+			if _, err := fmt.Sscanf(args[i+1], "%f", &v); err != nil || v <= 0 {
+				return f, fmt.Errorf("--max-cost-usd requires a positive number, got %q", args[i+1])
+			}
+			f.MaxCostUSD = v
+			i += 2
 		case "--sandbox-image":
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("--sandbox-image requires a value")
@@ -846,7 +925,7 @@ func printUsage() {
 	fmt.Println(`Usage:
   odek run [flags] <task>
   odek run --session [flags] <task>
-  odek continue [--id <id>] <task>
+  odek continue [--id <id>] [--external-ref <ref>] <task>
   odek session <list|show [id]|trim <id> <n>|delete <id>|cleanup <days>>
   odek repl [flags]
   odek serve [--addr :8080] [--open]
@@ -919,6 +998,19 @@ Run flags:
   --compaction         Enable LLM-based rolling compaction of trimmed context (default: on)
   --no-compaction      Disable rolling compaction (overrides config/default)
   --session            Save conversation as a multi-turn session
+  --events-jsonl <path> Append structured runtime events (odek.event/v1) to a
+                        JSONL file. Parent dir must exist; symlinks refused.
+  --external-ref <ref>  Attach an external-state reference to the session
+                        (repeatable; needs --session to persist). Forms:
+                        kind=uri  or  kind=...,uri=...,created_by=...
+                        odek stores refs verbatim and never resolves them.
+  --max-runtime <sec>   Hard execution budget: max wall-clock runtime
+  --max-tool-calls <n>  Hard execution budget: max total tool calls
+  --max-input-tokens <n>  Hard execution budget: max cumulative input tokens
+  --max-output-tokens <n> Hard execution budget: max cumulative output tokens
+  --max-cost-usd <n>    Hard execution budget: max estimated cost in USD
+                        (needs limits.*_cost_per_million_usd prices in
+                        ~/.odek/config.json; budget exhaustion exits with code 4)
   --learn              Enable skill learning mode — on by default, no flag needed
   --no-learn           Disable skill learning mode (overrides config/default)
   --tool <name>        Enable a tool for the LLM (repeatable)
@@ -1088,6 +1180,16 @@ const globalConfigTemplate = `{
     "max_iterations": 15,
     "system_prompt": ""
   },
+  "limits": {
+    "max_runtime_seconds": 0,
+    "max_tool_calls": 0,
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "max_cost_usd": 0,
+    "input_cost_per_million_usd": 0,
+    "output_cost_per_million_usd": 0,
+    "model_prices": {}
+  },
   "mcp_servers": {},
   "web_search": {
     "base_url": "",
@@ -1254,7 +1356,7 @@ func initConfig(args []string) error {
 		fmt.Println("    sandbox           Run in Docker sandbox (true/false)")
 		fmt.Println("    system            System prompt override")
 		fmt.Println()
-		fmt.Println("  Sections: dangerous, tools, skills, memory, subagent,")
+		fmt.Println("  Sections: dangerous, tools, skills, memory, subagent, limits,")
 		fmt.Println("  mcp_servers, web_search, schedules, maintenance, telegram,")
 		fmt.Println("  plus sandbox_image/network/readonly/memory/cpus/user/env/volumes.")
 		fmt.Println("  Full schema (also mcp_servers, transcription, vision, embedding):")
@@ -1298,6 +1400,16 @@ func run(args []string) error {
 	f, err := parseRunFlags(args)
 	if err != nil {
 		return err
+	}
+
+	// Parse and validate --external-ref values up front: a malformed ref is
+	// a fatal startup error, not something to discover after the agent run.
+	externalRefs, err := parseExternalRefFlags(f.ExternalRefs)
+	if err != nil {
+		return err
+	}
+	if len(externalRefs) > 0 && (f.Session == nil || !*f.Session) {
+		fmt.Fprintf(os.Stderr, "odek: warning: --external-ref given without --session — refs will not be persisted\n")
 	}
 
 	// Load config from all sources (file → env → CLI)
@@ -1351,6 +1463,12 @@ func run(args []string) error {
 		GuardScanSkills:       f.GuardScanSkills,
 		GuardScanToolOutputs:  f.GuardScanToolOutputs,
 		GuardScanTelegram:     f.GuardScanTelegram,
+
+		MaxRuntimeSeconds: f.MaxRuntime,
+		MaxToolCalls:      f.MaxToolCalls,
+		MaxInputTokens:    f.MaxInputTokens,
+		MaxOutputTokens:   f.MaxOutputTokens,
+		MaxCostUSD:        f.MaxCostUSD,
 	})
 	if err := approveProjectSandbox(resolved, os.Stdin, os.Stdout); err != nil {
 		return err
@@ -1464,6 +1582,26 @@ func run(args []string) error {
 		SetToolOutputGuard(injectionGuard, resolved.Guard)
 	}
 
+	// Structured runtime event stream (--events-jsonl): append one JSON
+	// object per line (schema odek.event/v1). Open failures are fatal — the
+	// operator explicitly asked for the stream, so silently dropping it
+	// would violate least surprise.
+	var eventSink *events.JSONLSink
+	var eventHandler func(events.Event)
+	if f.EventsJSONL != "" {
+		eventSink, err = events.OpenJSONLSink(f.EventsJSONL)
+		if err != nil {
+			return fmt.Errorf("events-jsonl: %w", err)
+		}
+		defer eventSink.Close()
+		sink := eventSink
+		eventHandler = func(ev events.Event) {
+			if err := sink.Write(ev); err != nil {
+				fmt.Fprintf(os.Stderr, "odek: events-jsonl write failed: %v\n", err)
+			}
+		}
+	}
+
 	agent, err := odek.New(odek.Config{
 		Model:            resolved.Model,
 		BaseURL:          resolved.BaseURL,
@@ -1488,6 +1626,9 @@ func run(args []string) error {
 		MemoryConfig:     resolved.Memory,
 		Guard:            injectionGuard,
 		GuardConfig:      resolved.Guard,
+		EventHandler:     eventHandler,
+		ExternalRefs:     externalRefs,
+		Limits:           resolved.Limits,
 	})
 	if err != nil {
 		return err
@@ -1528,11 +1669,22 @@ func run(args []string) error {
 			if err != nil {
 				return fmt.Errorf("save session: %w", err)
 			}
+			// Attach operator-supplied external-state refs at creation time.
+			// Already validated at startup; AddExternalRefs dedupes on
+			// (kind, uri, created_by). odek never dereferences the URIs.
+			if len(externalRefs) > 0 {
+				if _, err := sess.AddExternalRefs(externalRefs...); err != nil {
+					return fmt.Errorf("external-ref: %w", err)
+				}
+			}
 			sess.Sandbox = resolved.Sandbox
 			store.Save(sess)
 			sessionID = sess.ID
 			runSess = sess
 			mm.SetSessionContext(sessionID, cwd)
+			// Stamp the session ID on subsequent runtime events; run_started
+			// already fired without it (the session did not exist yet).
+			agent.SetEventSessionID(sessionID)
 			fmt.Fprintf(os.Stderr, "odek: session %s created\n", sessionID)
 
 			// Wire the audit recorder now that the session ID is known, so
@@ -1611,6 +1763,11 @@ func run(args []string) error {
 				}
 				runSess.Messages = snapshot
 				_ = sessionStore.SaveNoIndex(runSess)
+				agent.EmitEvent(events.Event{
+					Type:      events.TypeSessionSaved,
+					SessionID: sessionID,
+					Data:      map[string]any{"message_count": len(snapshot)},
+				})
 			})
 		}
 
@@ -1989,6 +2146,9 @@ func loadMCPTools(resolved config.ResolvedConfig, tools *[]odek.Tool) (func(), e
 				c()
 			}
 			return nil, fmt.Errorf("mcp server %q: %w", name, err)
+		}
+		for _, w := range client.Warnings() {
+			fmt.Fprintf(os.Stderr, "odek: warning: %s\n", w)
 		}
 
 		defs, err := client.Discover(context.Background())
@@ -2489,21 +2649,22 @@ func persistPartialMessages(store *session.Store, sess *session.Session, message
 	_ = store.SaveNoIndex(sess)
 }
 
-// continueCmd handles `odek continue [--id <id>] <task>`.
+// continueCmd handles `odek continue [--id <id>] [--external-ref <ref>] <task>`.
 // It loads an existing session (latest or by ID), appends the new task,
 // runs the agent with full history, and saves the updated session.
 func continueCmd(args []string) error {
-	sessionID := ""
-	i := 0
-	for i < len(args)-1 && args[i] == "--id" {
-		sessionID = args[i+1]
-		i += 2
+	sessionID, refSpecs, task, err := parseContinueArgs(args)
+	if err != nil {
+		return err
 	}
-	if i >= len(args) {
-		return fmt.Errorf("no task provided for continue")
-	}
-	task := strings.Join(args[i:], " ")
 	originalTask := task
+
+	// Parse and validate --external-ref values up front; a malformed ref is
+	// a fatal startup error. Continue may ADD refs — it never removes any.
+	externalRefs, err := parseExternalRefFlags(refSpecs)
+	if err != nil {
+		return err
+	}
 
 	store, err := session.NewStore()
 	if err != nil {
@@ -2529,6 +2690,21 @@ func continueCmd(args []string) error {
 	// Initialize semantic search index (non-fatal on failure). Sessions use the
 	// shared embedding backend (or a sessions.embedding override).
 	_ = store.InitVectorIndex(resolved.SessionEmbedding)
+
+	// Attach new external-state refs and persist immediately, so they
+	// survive even if this continuation is interrupted before its first
+	// per-turn save.
+	if len(externalRefs) > 0 {
+		added, err := sess.AddExternalRefs(externalRefs...)
+		if err != nil {
+			return fmt.Errorf("external-ref: %w", err)
+		}
+		if added > 0 {
+			if err := store.Save(sess); err != nil {
+				return fmt.Errorf("save session: %w", err)
+			}
+		}
+	}
 
 	// Auto-apply sandbox if session was sandboxed (even if config changed)
 	if sess.Sandbox && !resolved.Sandbox {

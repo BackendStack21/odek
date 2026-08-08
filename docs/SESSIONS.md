@@ -134,11 +134,41 @@ Sessions are stored as compact JSON at `~/.odek/sessions/<id>.json` (no indentat
   "messages": [
     {"role": "system", "content": "..."},
     {"role": "user", "content": "Refactor the auth module..."}
+  ],
+  "external_refs": [
+    {"kind": "ci-run", "uri": "https://ci.example.test/runs/4821", "created_by": "ci-orchestrator", "read_only": true, "created_at": "2026-05-18T07:17:00Z"}
   ]
 }
 ```
 
 The `Session` struct has all public fields, enabling direct manipulation. This makes advanced operations (editing, truncating, merging) trivial — load, mutate, save.
+
+## External state references
+
+Sessions may carry operator-supplied pointers to state that lives **outside** odek — a CI run, a dashboard, an object-store key (schema `odek-extension/v1`, see [EXTENSIONS.md](EXTENSIONS.md)). The **opacity guarantee**: odek stores and transports these refs verbatim but **never resolves or dereferences** their URIs — there is no fetch/resolve code path, so a ref can never become an exfiltration or SSRF vector.
+
+```bash
+# Attach at session creation (repeatable)
+odek run --session \
+  --external-ref kind=ci-run,uri=https://ci.example.test/runs/4821,created_by=ci-orchestrator,read_only=true \
+  "Summarize the failing tests"
+
+# Shorthand kind=uri (created_by defaults to "cli")
+odek run --session --external-ref ci-run=https://ci.example.test/runs/4821 "…"
+
+# Attach to an existing session on continue (adds, never removes)
+odek continue --external-ref dashboard=https://grafana.example.test/d/abc "…"
+```
+
+Rules:
+
+- `kind`: 1–64 chars, `[a-z0-9_-]`; `uri`: 1–2048 chars, no control characters; `created_by`: 1–128 chars
+- Refs are deduplicated on `(kind, uri, created_by)`; `created_at` is stamped when absent
+- Malformed `--external-ref` values are **fatal** with a message naming the flag — the operator explicitly asked for the ref, so silently dropping it would violate least surprise
+- On `odek run`, refs given without `--session` print a warning and are not persisted
+- Refs survive `Save`/`Append`, the write-path size-cap trim, the redaction boundary, and `odek continue`; session files written before the field existed load unchanged
+
+Programmatically: `Config.ExternalRefs []session.ExternalRef` (validated by `odek.New`) or `sess.AddExternalRefs(...)` on a loaded session. Tests: `internal/session/external_ref_test.go`, `cmd/odek/external_ref_test.go`.
 
 ## Sandbox persistence
 
