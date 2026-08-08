@@ -755,6 +755,18 @@ This removes the unauthenticated token disclosure path while preserving the same
 
 `internal/flock` provides an advisory lock: it serializes cooperating callers but does not prevent a non-cooperating process with filesystem access from reading or writing the protected file. The package doc now explicitly documents this limitation and notes that file/directory permissions are the primary access control for sensitive data.
 
+### 49. MCP artifact references validated fail-closed
+
+Extension MCP servers can return `odek.tool-result/v1` envelopes carrying `odek.artifact-ref/v1` references to on-disk files (`internal/artifact`, enforced in `mcpclient.CallTool`). Every reference is validated before anything reaches the model: exact schema match, `file://` URIs only, absolute clean path, containment inside a configured `artifact_roots` entry after `filepath.EvalSymlinks` on both the path and the roots (closing `..` traversal and symlink escapes), regular-file check, and `sha256`/`size_bytes` verification against the real file when present. Empty `artifact_roots` (the default) rejects every reference, and any single violation fails the whole tool call naming server, tool, ref id, and reason. Artifact content is never auto-read into the model context — the model sees compact metadata lines (id, media type, size, 12-char hash prefix, summary), never absolute paths — so a malicious server cannot use an artifact ref to exfiltrate arbitrary files through the transcript. The MCP approval key hashes `artifact_roots` (plus the other odek-extension/v1 limit fields), so a project server that widens its roots cannot silently reuse an old approval; approvals persisted before the extension fields existed re-prompt once after upgrade.
+
+### 50. Execution budgets cannot be raised by a malicious repo
+
+The `limits` config section (`internal/budget` + `clampProjectLimits` in `internal/config/loader.go`) uses a clamp merge instead of the usual overlay: the global `~/.odek/config.json` may set any execution budget, but the untrusted project `./odek.json` may only *lower* one — raise attempts are clamped to the global value with a stderr warning, and zeroing/omitting a field re-inherits the global limit, so a checked-in config can never disable the operator's runtime/token/cost caps. Project-set per-million prices are rejected outright because a lower price would silently weaken cost enforcement. CLI flags are layer-4 operator intent and may set limits explicitly in either direction. Enforcement is fail-stop: on exhaustion the loop emits `budget_exceeded`, persists the latest safe session state, and returns a typed `budget.Error` (CLI exit code 4).
+
+### 51. Runtime event stream carries no secrets
+
+The structured event stream (`internal/events`, schema `odek.event/v1`, `odek run --events-jsonl`) is observability data that may leave the machine, so it is redacted by construction: tool arguments are never logged raw — only a SHA-256 digest (`args_sha256`) and byte sizes — raw error text is collapsed into low-cardinality `error_class` strings, and the emitter runs `internal/redact` over the tool name and every string `data` value before dispatch. The JSONL sink creates/hardens the file `0600`, refuses a symlink at the target path, requires the parent directory to exist, and fsyncs every event. Dispatch is non-blocking (buffered, drop-on-full) and panic-isolated, so a hostile or broken consumer cannot stall the loop or use backpressure as a DoS.
+
 ### YOLO mode
 
 ```json
@@ -823,6 +835,9 @@ A prompt-injected agent could overwrite `schedules.json` to install persistent c
 | `$(echo rm) -rf /` smuggled through shell | Classifier recursively expands substitution |
 | Attacker-controlled task delegated to sub-agent | Parent sets `trust_level=untrusted`; sub-agent clamps Destructive/CodeExec/Install/SystemWrite/NetworkEgress to Deny |
 | Sub-agent reads parent's API key from `/proc/<pid>/environ` | Key passed via unlinked FD, never in env |
+| Malicious MCP server hands the agent a `file://` artifact outside its roots | Artifact refs validated fail-closed: symlink-resolved root containment, sha256/size verification, content never auto-read |
+| Malicious repo disables the operator's execution budgets via `./odek.json` | `limits` merge is a clamp: project may only lower; prices rejected at project level |
+| Secrets leak into the `--events-jsonl` event stream via tool args | Args hashed (SHA-256) + sizes only; `internal/redact` on string fields; sink file `0600`, no symlinks |
 | Browser drive-by on localhost web UI | WS handshake rejects non-local Origin |
 | Local process brute-forces session IDs to read transcripts | 128-bit IDs + session-scoped auth tokens + per-IP rate limiting |
 | Telegram bot scanned by random user | Allowlist enforced before any tool call |

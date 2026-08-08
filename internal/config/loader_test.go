@@ -1316,6 +1316,84 @@ func TestGlobalOverlay_MCPServers(t *testing.T) {
 	}
 }
 
+// TestLoadConfig_MCPServerExtensionLimits verifies that the odek-extension/v1
+// per-server fields (timeout_seconds, max_response_bytes, max_result_chars,
+// artifact_roots) parse through the mcp_servers section unchanged.
+func TestLoadConfig_MCPServerExtensionLimits(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	globalDir := filepath.Join(os.Getenv("HOME"), ".odek")
+	os.MkdirAll(globalDir, 0755)
+
+	if err := os.WriteFile(filepath.Join(globalDir, "config.json"), []byte(`{
+		"mcp_servers": {
+			"log-analyzer": {
+				"command": "log-analyzer-mcp",
+				"args": ["--serve"],
+				"timeout_seconds": 120,
+				"max_response_bytes": 2097152,
+				"max_result_chars": 100000,
+				"artifact_roots": ["/var/ci-artifacts", "/tmp/reports"]
+			}
+		}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Chdir(t.TempDir())
+
+	cfg := LoadConfig(CLIFlags{})
+	srv, ok := cfg.MCPServers["log-analyzer"]
+	if !ok {
+		t.Fatal("missing 'log-analyzer' in MCPServers")
+	}
+	if srv.TimeoutSeconds != 120 {
+		t.Errorf("TimeoutSeconds = %d, want 120", srv.TimeoutSeconds)
+	}
+	if srv.MaxResponseBytes != 2097152 {
+		t.Errorf("MaxResponseBytes = %d, want 2097152", srv.MaxResponseBytes)
+	}
+	if srv.MaxResultChars != 100000 {
+		t.Errorf("MaxResultChars = %d, want 100000", srv.MaxResultChars)
+	}
+	if len(srv.ArtifactRoots) != 2 || srv.ArtifactRoots[0] != "/var/ci-artifacts" || srv.ArtifactRoots[1] != "/tmp/reports" {
+		t.Errorf("ArtifactRoots = %v, want [/var/ci-artifacts /tmp/reports]", srv.ArtifactRoots)
+	}
+}
+
+// TestLoadConfig_ProjectMCPServerLimitsKeptForApproval verifies that a
+// project-level MCP server may carry the new limit fields (the trust split is
+// preserved: project servers stay flagged in ProjectMCPServerNames so the
+// approval gate in cmd/odek covers them, and the approval key hashes the new
+// fields — see TestMCPApprovalKey_IncludesExtensionLimits).
+func TestLoadConfig_ProjectMCPServerLimitsKeptForApproval(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	os.MkdirAll(filepath.Join(os.Getenv("HOME"), ".odek"), 0755)
+
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile("odek.json", []byte(`{
+		"mcp_servers": {
+			"project-srv": {
+				"command": "srv",
+				"artifact_roots": ["/srv/out"]
+			}
+		}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	srv, ok := cfg.MCPServers["project-srv"]
+	if !ok {
+		t.Fatal("missing 'project-srv' in MCPServers")
+	}
+	if len(srv.ArtifactRoots) != 1 || srv.ArtifactRoots[0] != "/srv/out" {
+		t.Errorf("ArtifactRoots = %v, want [/srv/out]", srv.ArtifactRoots)
+	}
+	if len(cfg.ProjectMCPServerNames) != 1 || cfg.ProjectMCPServerNames[0] != "project-srv" {
+		t.Errorf("ProjectMCPServerNames = %v, want [project-srv] (approval gate must still apply)", cfg.ProjectMCPServerNames)
+	}
+}
+
 // ── Red test: API key env vars cleared, not re-injected ────────────────────
 
 // TestLoadConfig_LegacyAPIKeyEnvVarLost tests that a user relying solely on

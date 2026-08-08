@@ -7,7 +7,7 @@
 | `odek run [flags] <task>` | Execute a task with the agent loop (single-shot by default) |
 | `odek run --session [flags] <task>` | Execute and save conversation as a multi-turn session |
 | `odek run [--no-learn] [flags] <task>` | Execute with skill learning (on by default, use --no-learn to disable) |
-| `odek continue [--id <id>] <task>` | Continue the most recent session (or by `--id`). Sessions persist per completed step: Ctrl-C/SIGTERM resumes from the last step; SIGKILL may lose the in-flight step |
+| `odek continue [--id <id>] [--external-ref <ref>] <task>` | Continue the most recent session (or by `--id`). Sessions persist per completed step: Ctrl-C/SIGTERM resumes from the last step; SIGKILL may lose the in-flight step |
 | `odek repl [flags]` | Interactive REPL mode (persistent multi-turn session). Accepts `--model`, `--thinking`, `--sandbox`, `--sandbox-*`, `--tool`, and `--no-tool` flags. |
 | `odek session list` | List sessions |
 | `odek session show [id]` | Show session details (default: latest) |
@@ -53,6 +53,13 @@
 | `--no-compaction` | bool | `false` | Disable rolling compaction (overrides config/default) |
 | `--no-agents` | bool | false | Skip loading AGENTS.md |
 | `--session` | bool | false | Save conversation as a multi-turn session |
+| `--events-jsonl <path>` | string | — | Append the structured runtime event stream (schema `odek.event/v1`, one JSON object per line). File is created/hardened `0600`; the parent directory must already exist; a symlink at the target path is refused. See [Extensions](EXTENSIONS.md) |
+| `--external-ref <ref>` | string | — | Attach an external-state reference to the session (repeatable; also on `odek continue`). Forms: `kind=...,uri=...,created_by=...[,read_only=...]` or shorthand `kind=uri` (`created_by` defaults to `cli`). odek stores refs verbatim and never dereferences them. Persisted only with `--session` (a warning is printed otherwise). See [Sessions](SESSIONS.md#external-state-references) |
+| `--max-runtime <sec>` | int | — | Hard execution budget: max wall-clock seconds per run |
+| `--max-tool-calls <n>` | int | — | Hard execution budget: max total tool calls |
+| `--max-input-tokens <n>` | int | — | Hard execution budget: max cumulative input tokens |
+| `--max-output-tokens <n>` | int | — | Hard execution budget: max cumulative output tokens |
+| `--max-cost-usd <n>` | float | — | Hard execution budget: max estimated cost in USD (requires configured per-million prices — see [CONFIG.md → limits](CONFIG.md#execution-budgets-limits)). Budget exhaustion exits with code 4 |
 | `--learn` | bool | `true` | Enable skill learning mode (detects patterns, saves skills). On by default |
 | `--no-learn` | bool | `false` | Disable skill learning mode (overrides config/default) |
 | `--tool <name>` | string | — | Enable a specific tool for the LLM (repeatable). Highest-priority layer for the tool whitelist. |
@@ -73,6 +80,34 @@
 | `--guard-scan-skills` / `--guard-no-scan-skills` | bool | `false` | Guard skill bodies and suggestions |
 | `--guard-scan-tool-outputs` / `--guard-no-scan-tool-outputs` | bool | `false` | Guard external tool outputs (warning-only) |
 | `--guard-scan-telegram` / `--guard-no-scan-telegram` | bool | `false` | Guard Telegram captions/transcripts |
+
+## Execution budgets
+
+`odek run` supports hard execution budgets (odek-extension/v1): wall-clock runtime, total tool calls, cumulative input/output tokens, and estimated cost. Sources: the `limits` section of `~/.odek/config.json` (a project `./odek.json` may only *lower* them — see [CONFIG.md → limits](CONFIG.md#execution-budgets-limits)) and the five `--max-*` flags above. There is no `ODEK_*` env-var layer for limits.
+
+Enforcement points: runtime is checked before every LLM call, token totals and estimated cost after every LLM response, and the tool-call count before each tool batch is scheduled.
+
+On exhaustion odek:
+
+1. emits a `budget_exceeded` runtime event (`limit_name`, `observed`, `limit`) — visible via `--events-jsonl`,
+2. persists the latest safe session state (when `--session` is active),
+3. returns a typed budget error naming the limit, observed value, and maximum, and exits with code **4**.
+
+A partial-progress summary (`[Execution budget reached — partial summary]`) is produced only when the tool-call budget fired and the other budgets still have headroom.
+
+Cost enforcement is active only when `max_cost_usd` **and** both per-million prices (`input_cost_per_million_usd`, `output_cost_per_million_usd`) are configured; otherwise a stderr warning is printed and the token budgets stay active. odek never hard-codes provider prices.
+
+**Current limitation:** budgets apply to `odek run` only — not `continue`, the REPL, `serve`, or Telegram.
+
+## Exit codes
+
+| Code | Meaning | Commands |
+|------|---------|----------|
+| `0` | Success | all |
+| `1` | Task/model/tool error | all |
+| `2` | Overall timeout (killed by parent/context) | `subagent` |
+| `3` | Setup/contract error | `subagent` |
+| `4` | Execution budget exhausted (typed `budget.Error`) | `run` |
 
 ## File attachments
 
@@ -427,6 +462,12 @@ odek run "Set up CI with GitHub Actions"
 odek run --ctx go.mod "check go version"
 odek run -c main.go,util.go "refactor both files"
 odek run "&#64;schema.sql design a migration plan"
+
+# Bounded run with event stream + external ref (CI orchestration)
+odek run --session --events-jsonl /tmp/odek-events.jsonl \
+  --max-runtime 300 --max-tool-calls 50 --max-cost-usd 0.25 \
+  --external-ref ci-run=https://ci.example.test/runs/4821 \
+  "Summarize the failing tests in this repo"
 
 # Cron integration: deliver agent result to Telegram
 odek run --deliver "Daily weather forecast for Berlin"

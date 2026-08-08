@@ -123,6 +123,44 @@ Each server is defined by:
 - `command` — the executable to run
 - `args` — optional command-line arguments
 - `env` — optional environment variable overrides (empty string removes the variable)
+- `timeout_seconds` — optional per-request timeout (default `30`, hard cap `3600`;
+  values above the cap are clamped with a startup warning)
+- `max_response_bytes` — optional cap on a single JSON-RPC response line
+  (default 10 MiB; absolute ceiling 64 MiB — a config above the ceiling is
+  rejected and the server is not started). An oversized response **fails
+  closed**: the line is dropped and the connection closed
+- `max_result_chars` — optional cap on tool result text forwarded to the model
+  (default `200000`, hard cap `1000000`, clamped with a warning). A valid
+  result over the cap gets a structured truncation notice naming the server,
+  tool, limit, and observed size; `odek.tool-result/v1` envelopes keep their
+  artifact refs. Malformed results are never silently truncated into place
+- `artifact_roots` — optional directories under which `file://` artifact refs
+  are accepted; **empty (default) rejects every artifact ref (fail closed)**
+
+The four limit fields are the **odek-extension/v1** server config schema;
+see [EXTENSIONS.md](EXTENSIONS.md) for the normative contract.
+
+### Artifact references (`odek.artifact-ref/v1`)
+
+A server whose full output is too large for the model context can return an
+`odek.tool-result/v1` envelope: a compact text summary plus references to
+on-disk artifacts. odek validates every reference **fail-closed** before
+anything reaches the model:
+
+- exact schema match; `file://` URIs only; absolute, clean paths
+- the resolved path (after `filepath.EvalSymlinks` on both path and roots)
+  must lie inside a configured `artifact_roots` entry — empty roots reject
+  every ref
+- `sha256` and `size_bytes` are verified against the real file when present;
+  missing files are errors
+- any violation fails the whole tool call, naming server, tool, ref id, and
+  reason
+
+Artifact **content is never auto-read into the model context** — the model
+sees the envelope text plus one metadata line per artifact (id, media type,
+size, short hash, summary), never an absolute path. Validated paths stay
+local. See [EXTENSIONS.md](EXTENSIONS.md) for the schema; a reference mock
+server lives at `internal/mcpclient/testdata/artifact_server.go`.
 
 > **Environment sanitisation.** MCP server children receive only a minimal
 > allowlist of safe variables (e.g. `PATH`, `HOME`, `LANG`) plus the overrides
@@ -153,8 +191,13 @@ Approval methods:
    ```
 3. **Persisted approvals** — approvals are stored in
    `~/.odek/mcp_approvals.json` (0600) keyed by project directory + server name
-   + command + args + sorted `env` map hash. If the config changes, you are
-   prompted again.
+   + command + args + sorted `env` map hash + the odek-extension/v1 limit
+   fields (`timeout_seconds`, `max_response_bytes`, `max_result_chars`,
+   `artifact_roots`). If any of these change, you are prompted again — editing
+   `artifact_roots` widens the set of files a server may hand to the agent, so
+   it can never silently reuse an old approval. **Upgrade note:** because the
+   odek-extension/v1 limit fields joined the hash, approvals persisted by an
+   older odek re-prompt **once** after upgrading, then stick.
 
 If approval is required and cannot be obtained, odek aborts before spawning any
 MCP server.
@@ -238,8 +281,9 @@ MCP server processes are spawned when odek starts and killed when odek exits
 (via `defer`). Each process gets its own stdin/stdout pipes — stderr from
 MCP servers is shown in the odek console.
 
-Each MCP request uses a default timeout when the caller does not supply one, so
-a hung server cannot block discovery or tool calls indefinitely.
+Each MCP request uses a default timeout of 30s when neither the caller nor the
+server config (`timeout_seconds`) supplies one, so a hung server cannot block
+discovery or tool calls indefinitely.
 
 ### Logging
 
@@ -264,7 +308,11 @@ odek continues with the remaining servers.
       "env": {
         "API_KEY": "${MY_API_KEY}",
         "REMOVE_ME": ""
-      }
+      },
+      "timeout_seconds": 120,
+      "max_response_bytes": 2097152,
+      "max_result_chars": 100000,
+      "artifact_roots": ["/var/ci-artifacts"]
     }
   }
 }

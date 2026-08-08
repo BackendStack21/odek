@@ -174,10 +174,120 @@ type Config struct {
     // approval prompt is shown instead of N individual prompts.
     // If denied, no tools run for that iteration.
     Approver danger.Approver
+
+    // EventHandler, if set, receives the structured runtime event
+    // stream (schema odek.event/v1): run_started, iteration_completed,
+    // tool_call_started/completed/failed, session_saved,
+    // context_trimmed, budget_exceeded, run_completed, run_failed.
+    // Dispatch is non-blocking (buffered, drop-on-full) and
+    // panic-isolated — a slow or panicking handler can never stall
+    // or crash the loop. Events never contain raw tool arguments
+    // (SHA-256 digest + sizes only). See docs/EXTENSIONS.md.
+    EventHandler func(event events.Event)
+
+    // ExternalRefs carries operator-supplied pointers to state that
+    // lives outside odek (CI runs, dashboards, object stores).
+    // The caller attaches them to the session via
+    // session.Session.AddExternalRefs; odek stores and returns them
+    // verbatim and NEVER resolves or dereferences their URIs.
+    // New rejects invalid refs with a descriptive error.
+    ExternalRefs []session.ExternalRef
+
+    // Limits configures hard execution budgets for a run: wall-clock
+    // runtime, tool-call count, cumulative input/output tokens, and
+    // estimated cost. The zero value disables enforcement. On
+    // exhaustion the loop emits a budget_exceeded event, persists the
+    // latest safe session state, and returns a typed *budget.Error
+    // (match with budget.As). Cost enforcement is active only when
+    // MaxCostUSD and both per-million prices are configured.
+    Limits budget.Limits
 }
 ```
 
-> **Note:** Some types (`render.Renderer`, `skills.SkillsConfig`, `memory.MemoryConfig`) live in `internal/` packages and are not directly accessible outside the module. For most SDK use cases, you only need `Model`, `APIKey`, `Tools`, `SystemMessage`, and `MaxIterations`.
+### Runtime events
+
+When `EventHandler` is set, `New` emits `run_started` and every `Run` /
+`RunWithMessages` call ends with `run_completed` or `run_failed`. A random
+128-bit `run_id` is generated per agent and stamped on every event;
+`Agent.RunID()` returns it. Call `Agent.SetEventSessionID(id)` as soon as the
+session ID is known so later events carry `session_id` (earlier events simply
+omit it). `Agent.EmitEvent(ev)` lets the caller push its own events (e.g.
+`session_saved` from a persistence layer) through the same pipeline. Events
+are dispatched from a dedicated goroutine over a buffered channel; when the
+buffer fills, new events are dropped rather than blocking the loop, and
+handler panics are recovered. `Agent.Close()` drains the queue.
+
+```go
+import "github.com/BackendStack21/odek/internal/events"
+
+agent, err := odek.New(odek.Config{
+    Model:  "deepseek-v4-flash",
+    APIKey: os.Getenv("ODEK_API_KEY"),
+    EventHandler: func(ev events.Event) {
+        // e.g. append to your own JSONL sink or metrics pipeline
+        fmt.Printf("%s %s\n", ev.Type, ev.RunID)
+    },
+})
+```
+
+### External session references
+
+`Config.ExternalRefs` attaches operator-supplied pointers to state outside
+odek (a CI run, a dashboard, an object-store key) to the session. odek stores
+and transports the refs verbatim — it **never resolves or dereferences** the
+URIs, so a ref is opaque metadata, not a fetch instruction. Refs are validated
+(`kind` 1–64 chars `[a-z0-9_-]`; `uri` 1–2048 chars, no control characters;
+`created_by` 1–128 chars), deduplicated on `(kind, uri, created_by)`, and
+survive `Save`/`Append`, session trimming, and `odek continue`.
+
+```go
+import "github.com/BackendStack21/odek/internal/session"
+
+agent, err := odek.New(odek.Config{
+    Model:  "deepseek-v4-flash",
+    APIKey: os.Getenv("ODEK_API_KEY"),
+    ExternalRefs: []session.ExternalRef{
+        {Kind: "ci-run", URI: "https://ci.example.test/runs/4821", CreatedBy: "ci-orchestrator", ReadOnly: true},
+    },
+})
+```
+
+### Execution budgets
+
+`Config.Limits` sets hard per-run budgets. On exhaustion the run stops
+deterministically: a `budget_exceeded` event is emitted, the latest safe
+session state is persisted via the messages-persist callback, and `Run`
+returns a typed `*budget.Error`:
+
+```go
+import "github.com/BackendStack21/odek/internal/budget"
+
+agent, err := odek.New(odek.Config{
+    Model:  "deepseek-v4-flash",
+    APIKey: os.Getenv("ODEK_API_KEY"),
+    Limits: budget.Limits{
+        MaxRuntimeSeconds: 600,
+        MaxToolCalls:      200,
+        MaxInputTokens:    500000,
+        MaxCostUSD:        0.50,
+        InputCostPerMillionUSD:  0.28,
+        OutputCostPerMillionUSD: 0.42,
+    },
+})
+
+result, err := agent.Run(ctx, task)
+if berr, ok := budget.As(err); ok {
+    // Budget stop, not a model/tool failure: berr.Limit is one of
+    // "runtime", "tool_calls", "input_tokens", "output_tokens", "cost_usd".
+    fmt.Fprintf(os.Stderr, "budget exhausted: %v\n", berr)
+}
+```
+
+Cost enforcement is active only when `MaxCostUSD` and both per-million prices
+are set (`Limits.CostEnforcementActive()`); odek never hard-codes provider
+prices. The CLI maps a budget error to exit code 4.
+
+> **Note:** Some types (`render.Renderer`, `skills.SkillsConfig`, `memory.MemoryConfig`, `events.Event`, `session.ExternalRef`, `budget.Limits`) live in `internal/` packages and are not directly accessible outside the module. For most SDK use cases, you only need `Model`, `APIKey`, `Tools`, `SystemMessage`, and `MaxIterations`.
 
 ### `odek.Tool` Interface
 

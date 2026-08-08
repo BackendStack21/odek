@@ -18,7 +18,7 @@ It provides context about the project's architecture, conventions, and how to up
 ```
 odek.go                       Public API (Config, New, Run, Close, ModelProfile, KnownProfiles, Tool interface)
 cmd/odek/
-  main.go                     CLI entry point, flag parsing, commands, sandbox setup, system prompt
+  main.go                     CLI entry point, flag parsing, commands, sandbox setup, system prompt, --events-jsonl/--external-ref/budget flag wiring
   dispatch.go                 CLI subcommand dispatch
   shell.go                    Built-in shell tool (local or docker exec; danger-gated; optional timeout_seconds)
   serve.go                    Web UI server (HTTP + WebSocket; @-resource completion)
@@ -30,6 +30,7 @@ cmd/odek/
   subagent_key.go             FD-based API key handoff (parent → sub-agent, never via env)
   browser_tool.go             Built-in browser tool (HTTP fetch + headless navigation)
   file_tool.go                Built-in file tools (read_file, write_file, search_files, patch, batch_read, glob, file_info)
+  external_ref.go             --external-ref flag parsing (run + continue) → session.ExternalRef
   perf_tools.go               Performance/parallelism tools (batch_patch, parallel_shell, http_batch, math_eval, diff, count_lines, multi_grep, json_query, tree, checksum, sort, head_tail, base64, tr, word_count)
   mcp.go                      MCP server implementation (stdio + SSE transport)
   mcp_approval.go             Per-tool MCP server approval UI and persistence
@@ -55,21 +56,24 @@ cmd/odek/
   *_test.go                   250+ unit + E2E tests covering all tools
 internal/
   llm/                        OpenAI-compatible HTTP client with reasoning_content support
-  loop/                       ReAct engine: observe → think → parallel-act → repeat. signal.go — SignalEvent observability (context_trimmed, tool_recovery, tool_running heartbeat).
+  loop/                       ReAct engine: observe → think → parallel-act → repeat. signal.go — SignalEvent observability (context_trimmed, tool_recovery, tool_running heartbeat). Execution-budget enforcement (budget.Checker) + odek.event/v1 emission.
   tool/                       Thread-safe tool registry, clarify.go, send_message.go
   danger/                     Command/URL classification + bypass-resistant tokenizer. TTYApprover with friction mode.
   auth/                       Interactive approval system
   memory/                     MemoryManager (facts, buffer, episodes, merge, scan). EpisodeProvenance — tainted episodes never auto-replayed.
-  session/                    Session store (CRUD, trim, cleanup, compact JSON). AuditStore + divergence heuristic.
+  session/                    Session store (CRUD, trim, cleanup, compact JSON). AuditStore + divergence heuristic. ExternalRef — opaque operator-supplied refs, never dereferenced.
+  artifact/                   odek.artifact-ref/v1 + odek.tool-result/v1: fail-closed ref validation (roots/symlinks/sha256/size) and model-safe rendering (metadata only, no paths/content).
+  events/                     odek.event/v1 runtime event stream: Event, non-blocking panic-isolated Emitter (args hashed, redact applied), JSONLSink (0600, no symlinks, flush per event).
+  budget/                     Hard execution budgets: Limits, typed Error, per-run Checker (runtime/tokens/cost/tool-calls).
   maintenance/                Storage-maintenance janitor (session/audit/plan retention, log rotation, media sweep, skill skip-list GC). Config: `maintenance` section (operator-only).
   skills/                     Skill system (types, loader, triggers, self-improve, curator, import, cache). SkillProvenance gate.
-  config/                     Config file loading, env vars, secrets.env, priority merge
+  config/                     Config file loading, env vars, secrets.env, priority merge, limits clamp (project may only lower budgets)
   telegram/                   Telegram bot: bot.go, poller.go, handler.go, commands.go, session.go, health.go, plan.go, media_path.go
   render/                     Terminal output and narrator support
   narrate/                    LLM-powered emoji-rich progress messages
   redact/                     Secret redaction (20+ patterns)
   mcp/                        MCP server handler (tools/list, tools/call, SSE streaming)
-  mcpclient/                  MCP client (connect to external MCP servers)
+  mcpclient/                  MCP client (connect to external MCP servers); per-server limits (timeout/response bytes/result chars/artifact roots) + odek-extension/v1 contract (contract.go), artifact-ref enforcement in CallTool
   sandbox/                    Docker sandbox lifecycle
   flock/                      Advisory file-locking helpers
   fsatomic/                   Atomic file-write helpers
@@ -77,7 +81,7 @@ internal/
   resource/                   @-resource resolver (files, sessions) with size/symlink hardening
   transport/                  Shared HTTP transport with connection pooling
   ws/                         RFC 6455 WebSocket framing
-docs/                         Documentation (CLI, API, CONFIG, MCP, MEMORY, TELEGRAM, SECURITY, etc.)
+docs/                         Documentation (CLI, API, CONFIG, MCP, EXTENSIONS, MEMORY, TELEGRAM, SECURITY, etc.)
 ```
 
 ## How It Works
@@ -200,6 +204,11 @@ Layered prompt-injection / approval-fatigue defenses. Full reference: [docs/SECU
 - **MCP inputSchema hardening** (`cmd/odek/mcp_approval.go`) — every string in an MCP tool's `inputSchema` is recursively guard-scanned for injection patterns; schemas larger than 256 KiB are rejected; the interactive approval prompt shows a SHA-256 hash and byte size of the schema so operators can detect changes.
 - **MCP tool batch classification** (`internal/loop/loop.go`) — MCP tools (`<server>__<tool>`) are classified as `unknown` by `classifyToolCall`, so the batch approval gate shows them and untrusted sub-agents force them to `deny`.
 - **MCP client robustness** (`internal/mcpclient/client.go`, `cmd/odek/mcp_approval.go`) — MCP calls use a default timeout when the caller supplies no deadline; server names and tool names are validated (tool names are rejected if they contain `__` to prevent collisions with odek's `<server>__<tool>` namespace); the interactive approval prompt sanitises tool descriptions to strip ANSI escape sequences and terminal control characters.
+- **MCP per-server limits + approval-key coverage** (`internal/mcpclient/client.go`, `cmd/odek/mcp_approval.go`) — extension servers are bounded per server: `timeout_seconds` (default 30s, cap 3600s), `max_response_bytes` (default 10 MiB, hard ceiling 64 MiB — oversized lines fail closed), `max_result_chars` (default 200000, cap 1000000 — structured truncation notice, never a silent cut), and `artifact_roots` (empty ⇒ all artifact refs rejected). Persisted MCP approval keys hash all four fields, so a project server editing them (e.g. widening `artifact_roots`) re-prompts instead of reusing an old approval; pre-extension approvals re-prompt once after upgrade.
+- **MCP artifact-ref validation** (`internal/artifact/`, `internal/mcpclient/client.go`) — `odek.artifact-ref/v1` refs from `odek.tool-result/v1` envelopes are validated fail-closed before anything reaches the model: exact schema match, `file://` only, absolute clean path, containment inside a configured root after `EvalSymlinks` on both sides, regular-file check, sha256/size verification when present. Artifact content is never auto-read into context; the model sees metadata lines only (id, media type, size, short hash, summary) — never absolute paths.
+- **Execution-budget clamp merge** (`internal/budget/`, `internal/config/loader.go::clampProjectLimits`, `internal/loop/loop.go`) — the `limits` section uses a clamp, not an overlay: global config may set any budget; project `./odek.json` may only *lower* one (raises clamped with a warning, zero-outs re-inherit the global value); project-set per-million prices (flat pair and `model_prices` alike) are rejected outright (a lower price would weaken cost enforcement); `model_prices` maps exact model IDs to per-model prices, resolved once per run with per-field fallback to the flat pair; CLI flags set limits explicitly. On exhaustion the loop emits `budget_exceeded`, persists the latest safe session state, and returns a typed `budget.Error` (CLI exit code 4). Currently enforced by `odek run` only; no `ODEK_*` env layer.
+- **Runtime event stream redaction** (`internal/events/`) — the `odek.event/v1` stream never carries raw tool arguments (SHA-256 `args_sha256` + sizes only), collapses errors into low-cardinality `error_class` strings, and runs `internal/redact` over the tool name and string `data` values before dispatch. The JSONL sink (`--events-jsonl`) is 0600, refuses symlink targets, requires an existing parent dir, and fsyncs per event; dispatch is non-blocking (drop-on-full) and panic-isolated.
+- **External session refs are opaque** (`internal/session/session.go`, `cmd/odek/external_ref.go`) — `Session.ExternalRefs` (kind/uri/created_by/read_only/created_at) are validated (charset/length), deduped, and persisted verbatim; odek has no code path that resolves or dereferences their URIs, so a ref can never become a fetch/exfiltration vector.
 - **Sub-agent trust defaults + delegate_tasks gate** (`cmd/odek/subagent.go`, `internal/loop/loop.go`) — a missing `trust_level` in `delegate_tasks` defaults to `untrusted`; `delegate_tasks` itself is classified as `system_write` so it requires explicit approval before spawning child processes.
 - **Memory add/replace pipe-to-shell filter** (`internal/memory/memory.go`) — `AddFact` and `ReplaceFact` now run `FactLooksUnsafe` in addition to the general guard scan, blocking agent-driven planting of download-and-execute facts.
 - **Skill learn-loop provenance propagation** (`internal/skills/learnloop.go`) — conversation-extracted suggestions and LLM-enhanced suggestions both retain the session's `SkillProvenance`, so tainted sessions cannot produce clean-looking auto-saved skills.

@@ -39,22 +39,46 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
+
+	"github.com/BackendStack21/odek/internal/artifact"
 )
 
 // ── Protocol Constants ──────────────────────────────────────────────────
 
 const (
 	ProtocolVersion = "2025-03-26"
-	// maxMCPResponseLine caps the size of a single JSON-RPC response line
-	// from an MCP server. A malicious or broken server that emits a huge
-	// line without a newline would otherwise be buffered entirely in memory
-	// by ReadString, leading to OOM. Lines exceeding this limit are dropped
-	// and the connection is closed.
+	// maxMCPResponseLine is the default per-server cap on the size of a
+	// single JSON-RPC response line from an MCP server. A malicious or broken
+	// server that emits a huge line without a newline would otherwise be
+	// buffered entirely in memory by ReadString, leading to OOM. Lines
+	// exceeding the limit are dropped and the connection is closed.
+	// Servers may tune it via ServerConfig.MaxResponseBytes.
 	maxMCPResponseLine = 10 << 20 // 10 MiB
+
+	// MaxResponseBytesCeiling is the absolute ceiling for
+	// ServerConfig.MaxResponseBytes. No configuration may raise the response
+	// cap above this value; attempting to do so is an error.
+	MaxResponseBytesCeiling = 64 << 20 // 64 MiB
+
+	// MaxTimeoutSeconds is the hard cap for ServerConfig.TimeoutSeconds.
+	// Values above it are clamped to this cap with a warning.
+	MaxTimeoutSeconds = 3600
+
+	// DefaultMaxResultChars is the default cap on tool result text forwarded
+	// to the model. Oversized (but valid) results receive a structured
+	// truncation notice instead of being silently cut.
+	DefaultMaxResultChars = 200000
+
+	// MaxResultCharsCap is the hard cap for ServerConfig.MaxResultChars.
+	// Values above it are clamped to this cap with a warning.
+	MaxResultCharsCap = 1000000
 )
 
-// DefaultTimeout bounds each MCP request when the caller does not supply a
-// context deadline. It is a var so tests can temporarily lower it.
+// DefaultTimeout bounds each MCP request when neither the caller nor the
+// server config supplies a deadline. It is a var so tests can temporarily
+// lower it. Per-server config never mutates this global; it is only read as
+// the default value source.
 var DefaultTimeout = 30 * time.Second
 
 // ── JSON-RPC Types ─────────────────────────────────────────────────────
@@ -159,7 +183,8 @@ type contentItem struct {
 // ── Server Config ──────────────────────────────────────────────────────
 
 // ServerConfig defines an external MCP server to connect to.
-// Matches the Claude Code MCP server config format.
+// Matches the Claude Code MCP server config format, extended with the
+// odek-extension/v1 timeout/limit fields (see docs/EXTENSIONS.md).
 type ServerConfig struct {
 	// Command is the executable to run (e.g., "node", "python3", "uvx").
 	Command string `json:"command"`
@@ -168,6 +193,30 @@ type ServerConfig struct {
 	// Env overrides environment variables for the subprocess.
 	// Empty strings remove the variable from the environment.
 	Env map[string]string `json:"env,omitempty"`
+
+	// TimeoutSeconds bounds each request to this server when the caller does
+	// not supply a deadline. Zero uses DefaultTimeout (30s). Values above
+	// MaxTimeoutSeconds (3600) are clamped to the cap with a warning.
+	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
+
+	// MaxResponseBytes caps the size of a single JSON-RPC response line from
+	// this server. Zero uses the 10 MiB default. The absolute ceiling is
+	// MaxResponseBytesCeiling (64 MiB); exceeding it is an error.
+	MaxResponseBytes int64 `json:"max_response_bytes,omitempty"`
+
+	// MaxResultChars caps the tool result text forwarded to the model. Zero
+	// uses DefaultMaxResultChars (200000). Values above MaxResultCharsCap
+	// (1000000) are clamped to the cap with a warning. Valid-but-oversized
+	// results get a structured truncation notice (artifact refs retained),
+	// never a silent cut.
+	MaxResultChars int `json:"max_result_chars,omitempty"`
+
+	// ArtifactRoots lists directories under which file:// artifact refs from
+	// this server are accepted. Empty means every artifact ref is rejected
+	// (fail closed). Refs in odek.tool-result/v1 envelopes are validated
+	// against these roots by the artifact subsystem (internal/artifact)
+	// before the result is rendered for the model.
+	ArtifactRoots []string `json:"artifact_roots,omitempty"`
 }
 
 // lineResult carries the result of a single readLine from the reader goroutine.
@@ -193,9 +242,67 @@ type Client struct {
 	lineCh chan lineResult // single-reader goroutine sends lines here
 	done   chan struct{}   // closed when process exits
 
+	// Per-server limits, resolved from ServerConfig at construction time.
+	// A zero timeout means "fall back to DefaultTimeout at call time" (the
+	// package var stays the default value source and is never mutated from
+	// config). Zero caps are treated as their defaults defensively, so a
+	// hand-constructed Client behaves like a default-configured one.
+	timeout          time.Duration // per-request deadline fallback
+	maxResponseBytes int64         // scanner.Buffer cap in readLoop
+	maxResultChars   int           // model-facing result text cap
+	artifactRoots    []string      // configured roots for artifact ref validation (internal/artifact)
+	warnings         []string      // non-fatal config issues (e.g. clamped values)
+
 	mu      sync.Mutex
 	nextID  int
 	pending map[int]chan callResponse // routes responses to waiting callers
+}
+
+// normalizeLimits resolves the effective per-server limits from cfg, applying
+// defaults, rejecting values that may not be exceeded, and clamping values
+// above their hard caps (recording a warning for each clamp).
+func normalizeLimits(name string, cfg ServerConfig) (timeout time.Duration, maxResp int64, maxChars int, warnings []string, err error) {
+	if cfg.TimeoutSeconds < 0 {
+		return 0, 0, 0, nil, fmt.Errorf("mcpclient %s: timeout_seconds must be >= 0, got %d", name, cfg.TimeoutSeconds)
+	}
+	if cfg.MaxResponseBytes < 0 {
+		return 0, 0, 0, nil, fmt.Errorf("mcpclient %s: max_response_bytes must be >= 0, got %d", name, cfg.MaxResponseBytes)
+	}
+	if cfg.MaxResultChars < 0 {
+		return 0, 0, 0, nil, fmt.Errorf("mcpclient %s: max_result_chars must be >= 0, got %d", name, cfg.MaxResultChars)
+	}
+	if cfg.MaxResponseBytes > MaxResponseBytesCeiling {
+		// Absolute ceiling: no configuration may raise the response cap above
+		// 64 MiB. Reject rather than clamp so a typo cannot silently weaken or
+		// silently differ from the operator's intent.
+		return 0, 0, 0, nil, fmt.Errorf("mcpclient %s: max_response_bytes %d exceeds the absolute ceiling of %d bytes", name, cfg.MaxResponseBytes, MaxResponseBytesCeiling)
+	}
+
+	// Zero timeout_seconds means "no per-server override": the client falls
+	// back to DefaultTimeout at call time.
+	timeout = 0
+	if cfg.TimeoutSeconds > 0 {
+		timeout = time.Duration(cfg.TimeoutSeconds) * time.Second
+		if cfg.TimeoutSeconds > MaxTimeoutSeconds {
+			timeout = time.Duration(MaxTimeoutSeconds) * time.Second
+			warnings = append(warnings, fmt.Sprintf("mcp server %q: timeout_seconds %d exceeds the hard cap; clamped to %d", name, cfg.TimeoutSeconds, MaxTimeoutSeconds))
+		}
+	}
+
+	maxResp = maxMCPResponseLine
+	if cfg.MaxResponseBytes > 0 {
+		maxResp = cfg.MaxResponseBytes
+	}
+
+	maxChars = DefaultMaxResultChars
+	if cfg.MaxResultChars > 0 {
+		maxChars = cfg.MaxResultChars
+		if cfg.MaxResultChars > MaxResultCharsCap {
+			maxChars = MaxResultCharsCap
+			warnings = append(warnings, fmt.Sprintf("mcp server %q: max_result_chars %d exceeds the hard cap; clamped to %d", name, cfg.MaxResultChars, MaxResultCharsCap))
+		}
+	}
+	return timeout, maxResp, maxChars, warnings, nil
 }
 
 // validateName checks that an MCP server or tool name is safe to use as part
@@ -230,6 +337,11 @@ func New(name string, cfg ServerConfig) (*Client, error) {
 		return nil, err
 	}
 
+	timeout, maxResp, maxChars, warnings, err := normalizeLimits(name, cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	cmd := exec.Command(cfg.Command, cfg.Args...)
 
 	// Apply env overrides. Always build a sanitized environment so MCP children
@@ -256,13 +368,18 @@ func New(name string, cfg ServerConfig) (*Client, error) {
 	}
 
 	c := &Client{
-		name:    name,
-		cmd:     cmd,
-		stdin:   stdin,
-		stdout:  bufio.NewReader(stdout),
-		lineCh:  make(chan lineResult, 10),
-		done:    make(chan struct{}),
-		pending: make(map[int]chan callResponse),
+		name:             name,
+		cmd:              cmd,
+		stdin:            stdin,
+		stdout:           bufio.NewReader(stdout),
+		lineCh:           make(chan lineResult, 10),
+		done:             make(chan struct{}),
+		pending:          make(map[int]chan callResponse),
+		timeout:          timeout,
+		maxResponseBytes: maxResp,
+		maxResultChars:   maxChars,
+		artifactRoots:    append([]string(nil), cfg.ArtifactRoots...),
+		warnings:         warnings,
 	}
 
 	// Start single-reader goroutine
@@ -281,28 +398,28 @@ func New(name string, cfg ServerConfig) (*Client, error) {
 // forwarded to MCP server subprocesses. It contains only non-sensitive,
 // commonly-required variables (e.g. PATH so the server can find binaries).
 var allowedEnvVars = map[string]bool{
-	"PATH": true,
-	"HOME": true,
-	"USER": true,
-	"LOGNAME": true,
-	"SHELL": true,
-	"TMPDIR": true,
-	"LANG": true,
-	"LC_ALL": true,
-	"LC_CTYPE": true,
-	"LC_MESSAGES": true,
-	"LC_NUMERIC": true,
-	"LC_TIME": true,
-	"LC_COLLATE": true,
-	"LC_MONETARY": true,
-	"LC_PAPER": true,
-	"LC_NAME": true,
-	"LC_ADDRESS": true,
-	"LC_TELEPHONE": true,
-	"LC_MEASUREMENT": true,
+	"PATH":              true,
+	"HOME":              true,
+	"USER":              true,
+	"LOGNAME":           true,
+	"SHELL":             true,
+	"TMPDIR":            true,
+	"LANG":              true,
+	"LC_ALL":            true,
+	"LC_CTYPE":          true,
+	"LC_MESSAGES":       true,
+	"LC_NUMERIC":        true,
+	"LC_TIME":           true,
+	"LC_COLLATE":        true,
+	"LC_MONETARY":       true,
+	"LC_PAPER":          true,
+	"LC_NAME":           true,
+	"LC_ADDRESS":        true,
+	"LC_TELEPHONE":      true,
+	"LC_MEASUREMENT":    true,
 	"LC_IDENTIFICATION": true,
-	"TZ": true,
-	"TERM": true,
+	"TZ":                true,
+	"TERM":              true,
 }
 
 // isSensitiveEnvVar reports whether a key looks like a secret. These patterns
@@ -393,6 +510,16 @@ func (c *Client) Close() error {
 // Name returns the server name for this client.
 func (c *Client) Name() string { return c.name }
 
+// Warnings returns non-fatal configuration issues recorded at construction
+// time (e.g. timeout_seconds or max_result_chars clamped to their hard caps).
+// Callers should surface these to the operator.
+func (c *Client) Warnings() []string { return append([]string(nil), c.warnings...) }
+
+// ArtifactRoots returns the configured artifact roots for this server. Empty
+// means every artifact ref from this server must be rejected (fail closed).
+// Validation against these roots is performed by the artifact subsystem.
+func (c *Client) ArtifactRoots() []string { return append([]string(nil), c.artifactRoots...) }
+
 // Discover performs the MCP handshake and returns all available tools.
 func (c *Client) Discover(ctx context.Context) ([]ToolDef, error) {
 	// Step 1: Initialize
@@ -462,7 +589,77 @@ func (c *Client) CallTool(ctx context.Context, name string, argsJSON string) (st
 			parts = append(parts, item.Text)
 		}
 	}
-	return strings.Join(parts, "\n"), nil
+	text := strings.Join(parts, "\n")
+
+	// odek.tool-result/v1 envelope: validate every artifact ref against the
+	// server's configured roots (fail closed on any violation) and render the
+	// compact model-facing form (text + metadata lines, never raw paths or
+	// artifact content).
+	env, err := artifact.ParseEnvelope(text)
+	if err != nil {
+		return "", fmt.Errorf("mcpclient %s: tool %s: %w", c.name, name, err)
+	}
+	if env != nil {
+		for i := range env.Artifacts {
+			// The resolved path is intentionally discarded here: it is
+			// local bookkeeping for a future event log (WP4) and must
+			// never reach the model-facing result.
+			if _, err := artifact.Validate(env.Artifacts[i], c.artifactRoots); err != nil {
+				return "", fmt.Errorf("mcpclient %s: tool %s: artifact ref rejected: %w", c.name, name, err)
+			}
+		}
+		// Bound the envelope text within the per-server result cap; the
+		// compact metadata lines are appended by Render afterwards.
+		env.Text = c.applyResultLimit(name, env.Text)
+		return artifact.Render(env), nil
+	}
+
+	return c.applyResultLimit(name, text), nil
+}
+
+// truncationNotice builds the structured marker appended to (or replacing part
+// of) an oversized but valid tool result. It names the server, the tool, the
+// configured limit, and the observed size so the model and the operator can
+// tell exactly what happened. The marker text deliberately contains no angle
+// brackets so it cannot be confused with the untrusted-content wrapper.
+func truncationNotice(server, tool string, limit, observed int) string {
+	return fmt.Sprintf("\n[odek: result truncated — server %q tool %q produced %d chars, exceeding the configured max_result_chars=%d; the full result is available via the retained artifact references, if any]", server, tool, observed, limit)
+}
+
+// applyResultLimit enforces the per-server max_result_chars cap on a valid,
+// fully parsed piece of result text. Text within the limit passes through
+// unchanged. Oversized text is never silently cut: it gets a structured
+// truncation notice naming the server, tool, configured limit, and observed
+// size. odek.tool-result/v1 envelopes are detected before this function runs
+// (see CallTool), so their artifact refs are validated and rendered as
+// metadata lines; this cap applies to the envelope's compact text field and
+// to plain (non-envelope) results.
+func (c *Client) applyResultLimit(tool, text string) string {
+	limit := c.maxResultChars
+	if limit <= 0 {
+		limit = DefaultMaxResultChars
+	}
+	observed := utf8.RuneCountInString(text)
+	if observed <= limit {
+		return text
+	}
+
+	notice := truncationNotice(c.name, tool, limit, observed)
+	budget := limit - utf8.RuneCountInString(notice)
+	if budget < 0 {
+		budget = 0
+	}
+	return truncateRunes(text, budget) + notice
+}
+
+// truncateRunes returns s cut to at most n runes (never splitting a multi-byte
+// character).
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
 }
 
 // call sends a JSON-RPC request and waits for the matching response.
@@ -470,12 +667,17 @@ func (c *Client) call(ctx context.Context, method string, params json.RawMessage
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	// Bound the request with the package default timeout unless the caller
-	// already supplied a deadline. A hung MCP server must not deadlock the
-	// agent loop or startup discovery.
+	// Bound the request with the per-server timeout (or DefaultTimeout when
+	// the server has no override) unless the caller already supplied a
+	// deadline. A hung MCP server must not deadlock the agent loop or startup
+	// discovery.
 	if _, ok := ctx.Deadline(); !ok {
+		timeout := c.timeout
+		if timeout <= 0 {
+			timeout = DefaultTimeout
+		}
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, DefaultTimeout)
+		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
 
@@ -535,8 +737,12 @@ func (c *Client) call(ctx context.Context, method string, params json.RawMessage
 // are reading from the same connection.
 // Exits when stdout returns an error (EOF on pipe close).
 func (c *Client) readLoop() {
+	maxResp := c.maxResponseBytes
+	if maxResp <= 0 {
+		maxResp = maxMCPResponseLine
+	}
 	scanner := bufio.NewScanner(c.stdout)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxMCPResponseLine)
+	scanner.Buffer(make([]byte, 0, 64*1024), int(maxResp))
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -585,7 +791,7 @@ func (c *Client) readLoop() {
 	for _, ch := range pending {
 		if oversized {
 			select {
-			case ch <- callResponse{err: fmt.Errorf("mcpclient %s: response line exceeded %d byte limit", c.name, maxMCPResponseLine)}:
+			case ch <- callResponse{err: fmt.Errorf("mcpclient %s: response line exceeded configured max_response_bytes limit of %d bytes", c.name, maxResp)}:
 			default:
 			}
 		}

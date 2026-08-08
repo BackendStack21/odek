@@ -27,7 +27,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/events"
 	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/loop"
@@ -35,6 +37,7 @@ import (
 	"github.com/BackendStack21/odek/internal/memory/extended"
 	"github.com/BackendStack21/odek/internal/narrate"
 	"github.com/BackendStack21/odek/internal/render"
+	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/skills"
 	"github.com/BackendStack21/odek/internal/tool"
 )
@@ -194,6 +197,37 @@ type Config struct {
 	// handled silently. Used for observability across all surfaces.
 	AgentSignalHandler func(event loop.SignalEvent)
 
+	// EventHandler, if set, receives the structured runtime event stream
+	// (schema odek.event/v1 — see docs/EXTENSIONS.md): run_started,
+	// iteration_completed, tool_call_started/completed/failed,
+	// session_saved, context_trimmed, budget_exceeded, run_completed,
+	// run_failed.
+	//
+	// Dispatch is non-blocking (buffered channel, drop-on-full) and
+	// panic-isolated: a slow or panicking handler can never stall or crash
+	// the agent loop. Events never carry raw tool arguments (SHA-256 digest
+	// + sizes only) and human-readable fields pass through secret redaction.
+	EventHandler func(event events.Event)
+
+	// ExternalRefs carries operator-supplied pointers to state that lives
+	// outside odek (schema odek-extension/v1 — see docs/EXTENSIONS.md).
+	// The caller attaches them to the session at creation time via
+	// session.Session.AddExternalRefs; odek stores and returns these refs
+	// verbatim and NEVER resolves or dereferences their URIs. New rejects
+	// invalid refs with a descriptive error.
+	ExternalRefs []session.ExternalRef
+
+	// Limits configures hard execution budgets for a run
+	// (odek-extension/v1 — see docs/EXTENSIONS.md): wall-clock runtime,
+	// tool-call count, cumulative input/output tokens, and estimated cost.
+	// The zero value disables enforcement. On exhaustion the loop emits a
+	// budget_exceeded event, persists the latest safe session state via the
+	// messages-persist callback, and returns a typed *budget.Error (match
+	// with budget.As). Cost enforcement is active only when MaxCostUSD and
+	// both per-million prices are configured — odek never hard-codes
+	// provider prices.
+	Limits budget.Limits
+
 	// Approver gates dangerous tool operations. When set and the LLM returns
 	// multiple tool calls in one iteration, a single batch approval prompt
 	// is shown instead of N individual prompts. If denied, no tools run
@@ -233,6 +267,7 @@ type Agent struct {
 	sandboxCleanup func() error // destroys the sandbox container on Close()
 	skillManager   *skills.SkillManager
 	memoryManager  *memory.MemoryManager
+	emitter        *events.Emitter // non-nil when Config.EventHandler is set
 }
 
 // ── Model Profiles ────────────────────────────────────────────────────
@@ -419,6 +454,11 @@ const (
 // Close() is invoked. The caller is responsible for creating the sandbox
 // container and wiring up tool executables to use it before calling New().
 func New(cfg Config) (*Agent, error) {
+	for i, r := range cfg.ExternalRefs {
+		if err := r.Validate(); err != nil {
+			return nil, fmt.Errorf("odek: config external_refs[%d]: %w", i, err)
+		}
+	}
 	if cfg.MaxIterations <= 0 {
 		cfg.MaxIterations = defaultMaxIter
 	}
@@ -616,6 +656,16 @@ func New(cfg Config) (*Agent, error) {
 	engine := loop.New(client, registry, cfg.MaxIterations, cfg.SystemMessage, cfg.Renderer, maxContext)
 	engine.PromptCaching = cfg.PromptCaching
 	engine.SetCompaction(cfg.Compaction)
+	engine.SetLimits(cfg.Limits, cfg.Model)
+	// Cost enforcement needs operator-configured per-million prices; warn
+	// when a cost cap is set without them (resolved for the run's model) so
+	// the gap is not silent.
+	if cfg.Limits.MaxCostUSD > 0 {
+		inPrice, outPrice := cfg.Limits.ResolvePrices(cfg.Model)
+		if inPrice <= 0 || outPrice <= 0 {
+			log.Printf("odek: warning: limits.max_cost_usd is set but per-million prices are not configured — cost enforcement is disabled (token budgets remain active)")
+		}
+	}
 	// Side calls (compaction digest, progress summary) use the same client and
 	// model, so scale their bound off the resolved request timeout — a slow
 	// provider would otherwise blow the 30s default and silently drop the digest.
@@ -707,6 +757,15 @@ func New(cfg Config) (*Agent, error) {
 		engine.SetIterationCallback(cfg.IterationCallback)
 	}
 
+	// Wire the structured runtime event stream (schema odek.event/v1). The
+	// emitter dispatches on its own goroutine — buffered, drop-on-full,
+	// panic-isolated — so a slow or panicking handler can never stall or
+	// crash the loop.
+	if cfg.EventHandler != nil {
+		agent.emitter = events.NewEmitter(cfg.EventHandler, events.NewRunID())
+		engine.SetEventHandler(agent.emitter.Emit)
+	}
+
 	// Wire narrator for engaging/enhance interaction modes.
 	// In verbose mode, narrator stays nil → existing renderer behavior.
 	// In "off" mode, narrator stays nil and render output is suppressed.
@@ -744,12 +803,28 @@ func New(cfg Config) (*Agent, error) {
 	agent.engine = engine
 	agent.registry = registry
 	agent.sandboxCleanup = cfg.SandboxCleanup
+
+	// Emit run_started now that the engine is fully wired. The session ID is
+	// stamped onto later events via SetEventSessionID once the caller knows it.
+	if agent.emitter != nil {
+		agent.emitter.Emit(events.Event{
+			Type: events.TypeRunStarted,
+			Data: map[string]any{
+				"model":          cfg.Model,
+				"sandbox":        cfg.SandboxCleanup != nil,
+				"max_iterations": cfg.MaxIterations,
+			},
+		})
+	}
 	return agent, nil
 }
 
 // Run executes the agent loop for the given task and returns the final answer.
 func (a *Agent) Run(ctx context.Context, task string) (string, error) {
-	return a.engine.Run(ctx, task)
+	start := time.Now()
+	result, err := a.engine.Run(ctx, task)
+	a.emitRunFinished(start, err)
+	return result, err
 }
 
 // RunWithMessages executes the agent loop starting from a pre-built
@@ -761,7 +836,67 @@ func (a *Agent) Run(ctx context.Context, task string) (string, error) {
 // The caller should persist the history (e.g. to a session file) so
 // the conversation can be continued in a future call.
 func (a *Agent) RunWithMessages(ctx context.Context, messages []llm.Message) (string, []llm.Message, error) {
-	return a.engine.RunWithMessages(ctx, messages)
+	start := time.Now()
+	result, msgs, err := a.engine.RunWithMessages(ctx, messages)
+	a.emitRunFinished(start, err)
+	return result, msgs, err
+}
+
+// emitRunFinished emits run_completed / run_failed for a finished Run or
+// RunWithMessages call. No-op when no EventHandler is configured.
+func (a *Agent) emitRunFinished(start time.Time, err error) {
+	if a.emitter == nil {
+		return
+	}
+	durationMs := time.Since(start).Milliseconds()
+	if err != nil {
+		a.emitter.Emit(events.Event{
+			Type: events.TypeRunFailed,
+			Data: map[string]any{
+				"duration_ms": durationMs,
+				"error_class": events.ErrorClass(err),
+			},
+		})
+		return
+	}
+	a.emitter.Emit(events.Event{
+		Type: events.TypeRunCompleted,
+		Data: map[string]any{
+			"duration_ms":   durationMs,
+			"input_tokens":  a.engine.TotalInputTokens,
+			"output_tokens": a.engine.TotalOutputTokens,
+		},
+	})
+}
+
+// RunID returns the random identifier stamped on every runtime event of this
+// agent's run, or "" when no EventHandler is configured.
+func (a *Agent) RunID() string {
+	if a == nil || a.emitter == nil {
+		return ""
+	}
+	return a.emitter.RunID()
+}
+
+// SetEventSessionID stamps the session identifier on subsequent runtime
+// events. Call it as soon as the session ID is known (events emitted earlier
+// simply carry no session_id). No-op when no EventHandler is configured.
+func (a *Agent) SetEventSessionID(id string) {
+	if a == nil || a.emitter == nil {
+		return
+	}
+	a.emitter.SetSessionID(id)
+}
+
+// EmitEvent emits a caller-originated runtime event (e.g. session_saved from
+// the session persistence layer, budget_exceeded from budget enforcement)
+// through the same non-blocking, run-scoped pipeline as engine events.
+// No-op when no EventHandler is configured.
+func (a *Agent) EmitEvent(ev events.Event) {
+	if a == nil || a.emitter == nil {
+		return
+	}
+	a.emitter.Emit(ev)
 }
 
 // TotalInputTokens returns the cumulative prompt tokens consumed across all
@@ -811,6 +946,11 @@ const memoryBackgroundTimeout = 15 * time.Second
 func (a *Agent) Close() error {
 	if a.memoryManager != nil {
 		a.memoryManager.WaitForBackground(memoryBackgroundTimeout)
+	}
+	// Drain the event stream after the run and background work are done so
+	// late events (e.g. run_completed) are not lost on process exit.
+	if a.emitter != nil {
+		a.emitter.Close()
 	}
 	if a.sandboxCleanup != nil {
 		return a.sandboxCleanup()

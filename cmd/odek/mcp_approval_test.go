@@ -221,6 +221,90 @@ func TestMCPToolApprovalKey_IncludesEnv(t *testing.T) {
 	}
 }
 
+// TestMCPApprovalKey_IncludesExtensionLimits verifies that the
+// odek-extension/v1 limit fields are part of the persisted approval key:
+// editing artifact_roots (or any limit) must invalidate a prior approval,
+// because those fields change what the server may hand back to the agent.
+func TestMCPApprovalKey_IncludesExtensionLimits(t *testing.T) {
+	base := mcpclient.ServerConfig{Command: "node", Args: []string{"a.js"}}
+	k1 := mcpApprovalKey("/proj", "srv", base)
+
+	withRoots := base
+	withRoots.ArtifactRoots = []string{"/var/ci-artifacts"}
+	if k2 := mcpApprovalKey("/proj", "srv", withRoots); k1 == k2 {
+		t.Fatal("approval key did not change when artifact_roots were added")
+	}
+
+	otherRoots := base
+	otherRoots.ArtifactRoots = []string{"/etc"}
+	if k3 := mcpApprovalKey("/proj", "srv", withRoots); k3 == mcpApprovalKey("/proj", "srv", otherRoots) {
+		t.Fatal("approval key did not change when artifact_roots changed")
+	}
+
+	withTimeout := base
+	withTimeout.TimeoutSeconds = 120
+	if k4 := mcpApprovalKey("/proj", "srv", withTimeout); k1 == k4 {
+		t.Fatal("approval key did not change when timeout_seconds changed")
+	}
+
+	withRespCap := base
+	withRespCap.MaxResponseBytes = 1 << 20
+	if k5 := mcpApprovalKey("/proj", "srv", withRespCap); k1 == k5 {
+		t.Fatal("approval key did not change when max_response_bytes changed")
+	}
+
+	withCharCap := base
+	withCharCap.MaxResultChars = 50000
+	if k6 := mcpApprovalKey("/proj", "srv", withCharCap); k1 == k6 {
+		t.Fatal("approval key did not change when max_result_chars changed")
+	}
+
+	// Reordering roots alone must not force a re-prompt (same trust surface).
+	reordered := base
+	reordered.ArtifactRoots = []string{"/b", "/a"}
+	sorted := base
+	sorted.ArtifactRoots = []string{"/a", "/b"}
+	if mcpApprovalKey("/proj", "srv", reordered) != mcpApprovalKey("/proj", "srv", sorted) {
+		t.Fatal("approval key should be insensitive to artifact_roots ordering")
+	}
+}
+
+// TestMCPToolApprovalKey_IncludesExtensionLimits verifies the per-tool
+// approval key also covers the new limit fields.
+func TestMCPToolApprovalKey_IncludesExtensionLimits(t *testing.T) {
+	base := mcpclient.ServerConfig{Command: "node", Args: []string{"a.js"}}
+	k1 := mcpToolApprovalKey("/proj", "srv", "fetch", base)
+
+	withRoots := base
+	withRoots.ArtifactRoots = []string{"/var/ci-artifacts"}
+	if k2 := mcpToolApprovalKey("/proj", "srv", "fetch", withRoots); k1 == k2 {
+		t.Fatal("tool approval key did not change when artifact_roots were added")
+	}
+}
+
+func TestApproveMCPServers_PromptShowsExtensionLimits(t *testing.T) {
+	setupTestHome(t)
+	resolved := config.ResolvedConfig{
+		MCPServers: map[string]mcpclient.ServerConfig{
+			"project": {
+				Command:       "log-analyzer-mcp",
+				Args:          []string{"--serve"},
+				ArtifactRoots: []string{"/var/ci-artifacts"},
+			},
+		},
+		ProjectMCPServerNames: []string{"project"},
+	}
+
+	var out bytes.Buffer
+	err := approveMCPServersWithTTY(resolved, strings.NewReader("yes\n"), &out, true)
+	if err != nil {
+		t.Fatalf("expected approval, got: %v", err)
+	}
+	if !strings.Contains(out.String(), "artifact_roots: /var/ci-artifacts") {
+		t.Errorf("prompt did not show artifact_roots: %q", out.String())
+	}
+}
+
 func TestApproveMCPTools_SchemaHashShown(t *testing.T) {
 	setupTestHome(t)
 	defs := []mcpclient.ToolDef{

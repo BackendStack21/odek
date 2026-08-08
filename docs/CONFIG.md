@@ -70,6 +70,8 @@ Same schema as global. Only set the fields you want to override:
 > - `trusted_proxies` — use `~/.odek/config.json` or `ODEK_TRUSTED_PROXIES`
 >
 > If any of these appear in `./odek.json`, odek ignores them and prints a warning.
+>
+> The `limits` section is neither rejected nor freely settable in `./odek.json`: a project may only *lower* globally-set execution budgets, never raise or disable them. See [Execution budgets](#execution-budgets-limits).
 
 Both files are optional. Missing files are silently ignored. String values support `${VAR}` environment variable substitution — useful for API keys without plaintext storage.
 
@@ -252,6 +254,53 @@ When context trimming drops old conversation turns to stay within the model's co
 | Field | Default | Env var | CLI flag | Description |
 |-------|---------|---------|----------|-------------|
 | `compaction` | `true` | `ODEK_COMPACTION` | `--compaction` / `--no-compaction` | Enable LLM-based rolling compaction of trimmed context. Each compaction costs one extra LLM call per trim. Set to `false` (or pass `--no-compaction`) to disable. |
+
+## Execution budgets (`limits`)
+
+Hard per-run execution budgets (part of the **odek-extension/v1** contract — see [EXTENSIONS.md](EXTENSIONS.md)). All fields are optional; zero or absent means "no limit".
+
+```json
+{
+  "limits": {
+    "max_runtime_seconds": 600,
+    "max_tool_calls": 200,
+    "max_input_tokens": 500000,
+    "max_output_tokens": 100000,
+    "max_cost_usd": 0.50,
+    "input_cost_per_million_usd": 0.28,
+    "output_cost_per_million_usd": 0.42,
+    "model_prices": {
+      "example-fast-model": {"input_cost_per_million_usd": 0.14, "output_cost_per_million_usd": 0.28},
+      "example-pro-model": {"input_cost_per_million_usd": 1.25, "output_cost_per_million_usd": 10.0}
+    }
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `max_runtime_seconds` | Wall-clock cap for a run; checked before every LLM call |
+| `max_tool_calls` | Total tool calls executed; checked before each tool batch is scheduled (a denied batch does not count) |
+| `max_input_tokens` / `max_output_tokens` | Cumulative prompt/completion tokens; checked after every LLM response |
+| `max_cost_usd` | Estimated-spend cap — enforced only when **both** resolved per-million prices are also configured |
+| `input_cost_per_million_usd` / `output_cost_per_million_usd` | Operator-configured token prices for the cost estimate (the flat fallback pair). odek never hard-codes provider prices |
+| `model_prices` | Optional map of exact model ID → per-model prices. When the run's model ID matches a key **exactly** (no normalization, no prefix matching), that entry's prices are used instead of the flat pair; a missing price in the entry falls back to the flat value individually. Unknown models use the flat pair. Prices are resolved once at run setup. |
+
+On exhaustion odek emits a `budget_exceeded` runtime event, persists the latest safe session state, and `odek run` exits with **code 4** via a typed error naming the limit, the observed value, and the configured maximum (see [CLI.md → Exit codes](CLI.md#exit-codes)).
+
+**Merge semantics (security-relevant):** unlike every other section, `limits` is *clamped*, not blindly overlaid:
+
+- The **global** `~/.odek/config.json` may set any limit.
+- The project `./odek.json` may only **lower** an existing limit: a higher value is clamped down to the global one with a stderr warning, and zeroing/omitting a field re-inherits the global limit — a malicious repo can never raise or disable an operator budget. A project *may* set a limit the global config lacks (that only tightens its own runs).
+- Project-set per-million **prices are rejected outright** — flat pair and `model_prices` alike — a lower project price would silently weaken cost enforcement — and the global values are kept. Prices belong in `~/.odek/config.json`.
+- **CLI flags** (`--max-runtime`, `--max-tool-calls`, `--max-input-tokens`, `--max-output-tokens`, `--max-cost-usd`) are operator intent and set limits explicitly in either direction.
+- There is **no `ODEK_*` env-var layer** for limits.
+
+**Cost-disabled warning:** when `max_cost_usd` is set but neither `model_prices[model]` nor the flat pair yields both positive prices for the run's model, odek prints a stderr warning that cost enforcement is disabled (token budgets stay active) — the gap is never silent.
+
+**Current limitation:** budget enforcement is wired into `odek run` only. `odek continue`, the REPL, `odek serve`, and the Telegram bot do not yet enforce limits.
+
+Tests: `internal/budget/`, `internal/config/limits_test.go`, `internal/loop/budget_test.go`, `cmd/odek/budget_test.go`.
 
 ## Concurrency and reverse-proxy trust
 
@@ -626,6 +675,13 @@ Any MCP server that works with Claude Code works with odek — same config forma
 | `command` | The executable to run |
 | `args` | Optional command-line arguments |
 | `env` | Optional environment variable overrides (empty string removes from env) |
+| `timeout_seconds` | Optional per-request timeout (default `30`; values above the hard cap of `3600` are clamped with a warning) |
+| `max_response_bytes` | Optional cap on a single JSON-RPC response line (default `10485760` = 10 MiB; absolute ceiling 64 MiB — exceeding it is rejected) |
+| `max_result_chars` | Optional cap on tool result text forwarded to the model (default `200000`; hard cap `1000000`, clamped with a warning). Oversized valid results get a structured truncation notice, never a silent cut |
+| `artifact_roots` | Optional list of directories under which `file://` artifact refs from this server are accepted. **Empty (default) ⇒ every artifact ref is rejected (fail closed).** |
+
+These per-server limit fields are part of the **odek-extension/v1** contract;
+see [docs/EXTENSIONS.md](docs/EXTENSIONS.md) for the full semantics.
 
 Tools are registered as `<server_name>__<tool_name>` (e.g., `playwright__navigate`)
 and are available in `odek run`, `odek repl`, `odek continue`, and `odek serve`.
