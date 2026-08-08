@@ -53,7 +53,10 @@ Three tiers: **facts** (agent-managed durable entries), **session buffer** (auto
 Save, resume, list, trim, and clean up conversations. Sessions persist as JSON in `~/.odek/sessions/`. Continue any session with `odek continue`. [docs/SESSIONS.md](docs/SESSIONS.md)
 
 ### 🏗️ Layerable Config
-Four-layer priority chain: `global (~/.odek/config.json)` → `project (./odek.json)` → `ODEK_*` env vars → CLI flags. `${VAR}` substitution in config files. [docs/CONFIG.md](docs/CONFIG.md)
+Five-layer priority chain: `~/.odek/secrets.env` → `global (~/.odek/config.json)` → `project (./odek.json)` → `ODEK_*` env vars → CLI flags. `${VAR}` substitution in config files. Project configs are untrusted — operator-only fields set there are ignored. [docs/CONFIG.md](docs/CONFIG.md)
+
+### ⏱️ Execution Budgets & Runtime Events
+Hard stop runaway tasks: `--max-runtime`, `--max-tool-calls`, `--max-input-tokens`, `--max-output-tokens`, `--max-cost-usd` (or the `limits` config section, with per-model pricing via `limits.model_prices`). On exhaustion the session is persisted for resume and the CLI exits with dedicated **exit code 4**. Follow any run from an external process with `--events-jsonl` (structured `odek.event/v1` JSONL, secrets-redacted, args hashed) or the `EventHandler` Go API; `GET /api/limits` on `odek serve` exposes limits + effective prices for cost rendering. [docs/EXTENSIONS.md](docs/EXTENSIONS.md)
 
 ### 🔌 LLM-Agnostic
 Any OpenAI-compatible endpoint: Deepseek, OpenAI, Anthropic, Ollama, vLLM, Groq, Together, Fireworks — anything that speaks `/chat/completions`. Per-model profiles for thinking depth and context windows. [docs/PROVIDERS.md](docs/PROVIDERS.md)
@@ -71,7 +74,7 @@ Run agent tasks on a cron schedule and deliver results to Telegram, stdout, or a
 Attach files to any prompt with `--ctx` / `-c` (CLI), `@filename` inline references (CLI + REPL + Web UI), or drag-and-drop (Web UI). File content is injected as context blocks before the task — no tool calls needed. Comma-separate multiple files: `--ctx main.go,lib.go`. [docs/CLI.md#file-attachments](docs/CLI.md#file-attachments)
 
 ### 🔗 MCP (Two-Way)
-**Server** (`odek mcp`) — expose odek's native tools (shell, read/write/search files, patch, browser) to Claude Code, Cursor, and any MCP client. **Client** (`mcp_servers` config) — odek connects to external MCP servers (Playwright, Fetch, GitHub, SQLite, etc.) and makes their tools available to the agent as `<server>__<tool>`. Both directions in one binary. [docs/MCP.md](docs/MCP.md)
+**Server** (`odek mcp`) — expose odek's native tools (shell, read/write/search files, patch, browser) to Claude Code, Cursor, and any MCP client. **Client** (`mcp_servers` config) — odek connects to external MCP servers (Playwright, Fetch, GitHub, SQLite, etc.) and makes their tools available to the agent as `<server>__<tool>`. Per-server limits (`timeout_seconds`, `max_response_bytes`, `max_result_chars`, `artifact_roots`) and validated `file://` artifact references keep large tool outputs out of the model context — see the versioned `odek-extension/v1` contract in [docs/EXTENSIONS.md](docs/EXTENSIONS.md). Both directions in one binary. [docs/MCP.md](docs/MCP.md)
 
 ### 🔍 Native Tools
 Built-in `read_file`, `write_file`, `search_files`, `patch`, `shell`, and `browser` tools. All gated by a unified security layer (`dangerous` config) — classify operations as `allow` / `deny` / `prompt` per risk class. No third-party dependencies. [docs/SECURITY.md](docs/SECURITY.md)
@@ -156,6 +159,9 @@ odek run "@README.md what does this project do?"
 | `--no-color` | Disable colored output |
 | `--ctx <files>` / `-c` | Attach files as context blocks (comma-separated) |
 | `--no-agents` | Skip AGENTS.md project file |
+| `--events-jsonl <path>` | Stream structured runtime events (`odek.event/v1`) to a JSONL file |
+| `--external-ref <ref>` | Attach an opaque external-state reference to the session (repeatable) |
+| `--max-runtime/--max-tool-calls/--max-input-tokens/--max-output-tokens/--max-cost-usd` | Hard execution budgets — exhaustion exits with code 4 |
 
 ---
 
@@ -180,6 +186,7 @@ odek run "@README.md what does this project do?"
 | [Self-Learning](docs/LEARNING.md) | LLM-enhanced skill learning, pattern detection, auto-curation |
 | [Skills](docs/CLI.md#skills) | Trigger-matched skills, learning, import, curation |
 | [MCP](docs/MCP.md) | Serve tools to Claude Code + connect to external MCP servers |
+| [Extensions](docs/EXTENSIONS.md) | `odek-extension/v1` contract: MCP limits, artifact refs, event stream, external refs, budgets |
 | [Development](docs/DEVELOPMENT.md) | Building, testing, contributing, project structure |
 
 ---
@@ -201,7 +208,7 @@ defer agent.Close()
 result, err := agent.Run(context.Background(), "Refactor this module")
 ```
 
-The full `Config` struct supports: `BaseURL`, `Thinking`, `SandboxCleanup`, `Renderer`, `MemoryConfig`, `MemoryDir`, `Skills`, `SkillManager`, and `NoProjectFile`.
+The full `Config` struct supports: `BaseURL`, `Thinking`, `SandboxCleanup`, `Renderer`, `MemoryConfig`, `MemoryDir`, `Skills`, `SkillManager`, `NoProjectFile`, plus the extension API — `EventHandler` (structured runtime events), `ExternalRefs` (opaque session references), and `Limits` (execution budgets).
 
 ---
 
