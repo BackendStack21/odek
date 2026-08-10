@@ -1525,7 +1525,9 @@ func TestParseReplFlags_ExtraArgsIgnored(t *testing.T) {
 
 // multiTurnServer returns an httptest server that simulates a multi-turn
 // conversation: n terminal tool calls followed by a final text response.
-// Each tool call executes echo step N (safe, no side effects).
+// Each tool call executes `true step N` — exits 0 with no side effects, and
+// is an action verb so the multi-step substance bar lets the sequence
+// through (a pure-inspection sequence like `echo ...` is now rejected).
 // Handles /models discovery requests from llm.DiscoverModelContext.
 func multiTurnServer(t *testing.T, terminalCalls int) *httptest.Server {
 	t.Helper()
@@ -1542,7 +1544,7 @@ func multiTurnServer(t *testing.T, terminalCalls int) *httptest.Server {
 		callCount++
 		w.Header().Set("Content-Type", "application/json")
 		if callCount <= terminalCalls {
-			fmt.Fprintf(w, `{"choices":[{"message":{"content":"Running step %d.","tool_calls":[{"id":"call_%d","function":{"name":"shell","arguments":"{\"command\":\"echo step %d\"}"}}]}}]}`,
+			fmt.Fprintf(w, `{"choices":[{"message":{"content":"Running step %d.","tool_calls":[{"id":"call_%d","function":{"name":"shell","arguments":"{\"command\":\"true step %d\"}"}}]}}]}`,
 				callCount, callCount, callCount)
 		} else {
 			w.Write([]byte(`{"choices":[{"message":{"content":"All steps completed successfully."}}]}`))
@@ -1608,7 +1610,7 @@ func TestRunLearn_MultiStepProcedure(t *testing.T) {
 	}
 
 	// Skill file written to disk — poll since the goroutine may still be writing.
-	skillDir := filepath.Join(homeDir, ".odek", "skills", "procedure-echo")
+	skillDir := filepath.Join(homeDir, ".odek", "skills", "procedure-true")
 	skillFile := filepath.Join(skillDir, "SKILL.md")
 	for i := 0; i < 10; i++ {
 		if _, err := os.Stat(skillFile); err == nil {
@@ -1678,7 +1680,7 @@ func TestRunLearn_InteractiveReject(t *testing.T) {
 	}
 
 	// Verify no skill file written
-	skillDir := filepath.Join(homeDir, ".odek", "skills", "procedure-echo")
+	skillDir := filepath.Join(homeDir, ".odek", "skills", "procedure-true")
 	skillFile := filepath.Join(skillDir, "SKILL.md")
 	if _, err := os.Stat(skillFile); !os.IsNotExist(err) {
 		t.Errorf("skill file should NOT exist after rejection: %s", skillFile)

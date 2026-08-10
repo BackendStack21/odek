@@ -64,6 +64,47 @@ func TestAutoSaveSuggestions_RecurrenceDisabled(t *testing.T) {
 	}
 }
 
+// TestCandidateFingerprint_KeysOnCommandLog pins the fix for generic-name
+// collisions: two sessions that both yield "procedure-ls" but ran
+// different commands are NOT the same pattern recurring, so the gate must
+// keep them pending forever.
+func TestCandidateFingerprint_KeysOnCommandLog(t *testing.T) {
+	a := SkillSuggestion{Name: "procedure-ls", Heuristic: "multi-step", CommandLog: []string{"ls -d cmd/*", "go test ./...", "git status", "make build"}}
+	b := SkillSuggestion{Name: "procedure-ls", Heuristic: "multi-step", CommandLog: []string{"ls -la", "grep -rn foo .", "git log", "git push"}}
+	if candidateFingerprint(a) == candidateFingerprint(b) {
+		t.Error("same generic name with different command logs must not share a fingerprint")
+	}
+	if candidateFingerprint(a) != candidateFingerprint(a) {
+		t.Error("identical suggestion must have a stable fingerprint")
+	}
+}
+
+// TestAutoSaveSuggestions_NoFalseRecurrence: the same generic suggestion
+// name from two unrelated sessions must not reach MinOccurrences.
+func TestAutoSaveSuggestions_NoFalseRecurrence(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultSkillsConfig() // MinOccurrences: 2
+	cfg.AutoSave.MaxPerRun = 5
+
+	session1 := []SkillSuggestion{
+		{Name: "procedure-ls", Heuristic: "multi-step", Body: recurringBody, CommandLog: []string{"ls -d cmd/*", "go build ./...", "git status", "make test"}},
+	}
+	session2 := []SkillSuggestion{
+		{Name: "procedure-ls", Heuristic: "multi-step", Body: recurringBody, CommandLog: []string{"ls -la /tmp", "go build ./cmd/app", "git diff", "make lint"}},
+	}
+
+	if r := AutoSaveSuggestions(session1, dir, "", cfg, nil, guard.Config{}, false); len(r.Pending) != 1 {
+		t.Fatalf("session 1 should pend, got %+v", r)
+	}
+	r := AutoSaveSuggestions(session2, dir, "", cfg, nil, guard.Config{}, false)
+	if len(r.Saved) != 0 {
+		t.Errorf("unrelated sessions sharing a generic name must not trigger recurrence, saved %v", r.Saved)
+	}
+	if len(r.Pending) != 1 {
+		t.Errorf("session 2 should also pend as a distinct pattern, got %+v", r)
+	}
+}
+
 // TestCandidateStore_PrunesStaleEntries covers the age-based pruning that
 // bounds the store file.
 func TestCandidateStore_PrunesStaleEntries(t *testing.T) {

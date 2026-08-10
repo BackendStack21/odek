@@ -60,7 +60,7 @@ odek run --learn "set up CI with GitHub Actions"
 - **Learning is non-blocking** — skill detection and auto-save run in a background goroutine after the agent's response is delivered. The process exits immediately; learning completes asynchronously on a best-effort basis.
 - **Tainted skills require explicit promotion** — skills learned from `browser`, MCP tools, or sensitive file reads are saved with `Provenance.Untrusted=true` and `NeedsReview=true`. They cannot be auto-loaded until you run `odek skill promote <name> --force` after reviewing the body.
 - **Scope gates keep garbage out** — machine-specific suggestions (absolute home-directory paths) are dropped entirely. Project-specific suggestions (repo-rooted `./scripts/...` invocations, hardcoded release version tags) are redirected to the project skills dir `./.odek/skills` instead of the global `~/.odek/skills` — project-related skills are never promoted to global, and project-dir skills stay pinned to `NeedsReview` until promoted locally. Auto-curation (merge/prune) is confined to the global dir, so project skills can never be merged into or deleted by the global curator.
-- **Recurrence before persistence** — a pattern must be seen in at least `auto_save.min_occurrences` distinct sessions (default 2) before it is eligible for auto-save; first sightings are recorded in `~/.odek/skills/.candidates.json` and reported as pending.
+- **Recurrence before persistence** — a pattern must be seen in at least `auto_save.min_occurrences` distinct sessions (default 2) before it is eligible for auto-save; first sightings are recorded in `~/.odek/skills/.candidates.json` and reported as pending. The recurrence fingerprint keys on heuristic + name + a digest of the normalized command log, so two unrelated sessions that merely share a generic name (`procedure-ls`) do not count as a recurrence.
 - **Save-time hygiene** — suggestions are score-ranked (verification section, command-log evidence, LLM-judged) so the `max_per_run` budget goes to the strongest candidates; near-duplicates of existing skills (Jaccard word-set similarity ≥ 0.85) are skipped instead of creating parallel skills; and every SKILL.md write is secret-scanned, with detected credentials replaced by `[REDACTED]` and the skill pinned to `NeedsReview`.
 - **LLM curation** — with `llm_curate` enabled, merge bodies are synthesized by the model (deduplicated, coherent) instead of mechanically concatenated; failures fall back to concatenation.
 
@@ -166,6 +166,10 @@ Detects **4 or more sequential successful terminal calls**. Failed commands brea
 **What triggers it:**
 - 4+ consecutive `shell` tool calls that all succeeded (no `error:` in output)
 - Non-terminal tools (read_file, write_file, etc.) are skipped — they don't count but don't break the sequence
+
+**Substance bar (keeps exploration transcripts out):**
+- Every step must be a short single-line command (≤ 200 chars) — a step carrying a session-specific payload (full commit message, heredoc) disqualifies the whole sequence.
+- Read-only inspection commands (`ls`, `grep`, `cat`, `head`, `sed -n`, `echo`, `git status/log/diff`, `go test/vet`, …) must not dominate: if more than half the steps only observe state, the sequence was exploration, not a reusable procedure, and no suggestion is made.
 
 **Example:**
 ```bash
