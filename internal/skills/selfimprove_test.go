@@ -2,6 +2,7 @@ package skills
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/BackendStack21/odek/internal/guard"
@@ -128,6 +129,73 @@ func TestDetectMultiStepProcedure_FailureBreaksSequence(t *testing.T) {
 	suggestions := DetectMultiStepProcedure(calls)
 	if len(suggestions) != 2 {
 		t.Fatalf("expected 2 sequences (before and after failure), got %d", len(suggestions))
+	}
+}
+
+// TestDetectMultiStepProcedure_RejectsExplorationTranscript pins the
+// substance bar: a session that was mostly read-only inspection
+// (ls/grep/sed -n/head/echo/git status/go test) is an exploration
+// transcript, not a reusable procedure, and must not become a skill.
+func TestDetectMultiStepProcedure_RejectsExplorationTranscript(t *testing.T) {
+	calls := []ToolCall{
+		{Tool: "shell", Input: "ls -d cmd/* internal/*", ExitCode: 0},
+		{Tool: "shell", Input: "head -15 internal/foo/SKILL.md", ExitCode: 0},
+		{Tool: "shell", Input: "go test ./internal/foo/... -count=1 2>&1 | tail -15", ExitCode: 0},
+		{Tool: "shell", Input: "grep -rn \"validate\" internal/foo/*_test.go | head", ExitCode: 0},
+		{Tool: "shell", Input: "sed -n 40,140p internal/foo/foo_test.go; echo ---; grep -n foo internal/foo/bar.go", ExitCode: 0},
+		{Tool: "shell", Input: "git status --short && git log --oneline -3", ExitCode: 0},
+	}
+	if got := DetectMultiStepProcedure(calls); len(got) != 0 {
+		t.Errorf("exploration transcript must not produce a skill, got %+v", got)
+	}
+}
+
+// TestDetectMultiStepProcedure_RejectsOversizedStep: a step carrying a
+// session-specific payload (a full commit message) can never be replayed
+// as written — the whole sequence is transcript, not procedure.
+func TestDetectMultiStepProcedure_RejectsOversizedStep(t *testing.T) {
+	longCommit := `git commit -m "` + strings.Repeat("very detailed session-specific message ", 10) + `"`
+	calls := []ToolCall{
+		{Tool: "shell", Input: "npm install", ExitCode: 0},
+		{Tool: "shell", Input: "npm run build", ExitCode: 0},
+		{Tool: "shell", Input: "npm test", ExitCode: 0},
+		{Tool: "shell", Input: longCommit, ExitCode: 0},
+	}
+	if got := DetectMultiStepProcedure(calls); len(got) != 0 {
+		t.Errorf("sequence with oversized one-off step must be rejected, got %+v", got)
+	}
+}
+
+// TestDetectMultiStepProcedure_RejectsMultilineStep: multi-line commands
+// (heredocs, embedded scripts) are session transcripts, not steps.
+func TestDetectMultiStepProcedure_RejectsMultilineStep(t *testing.T) {
+	calls := []ToolCall{
+		{Tool: "shell", Input: "npm install", ExitCode: 0},
+		{Tool: "shell", Input: "npm run build", ExitCode: 0},
+		{Tool: "shell", Input: "cat <<EOF > out.txt\nhello\nEOF", ExitCode: 0},
+		{Tool: "shell", Input: "npm test", ExitCode: 0},
+	}
+	if got := DetectMultiStepProcedure(calls); len(got) != 0 {
+		t.Errorf("sequence with multi-line step must be rejected, got %+v", got)
+	}
+}
+
+// TestDetectMultiStepProcedure_AcceptsActionSequence: a genuine build /
+// release procedure (mostly mutating commands) must still be detected.
+func TestDetectMultiStepProcedure_AcceptsActionSequence(t *testing.T) {
+	calls := []ToolCall{
+		{Tool: "shell", Input: "git status --short", ExitCode: 0},
+		{Tool: "shell", Input: "make build", ExitCode: 0},
+		{Tool: "shell", Input: "make test", ExitCode: 0},
+		{Tool: "shell", Input: "git tag v1.2.3", ExitCode: 0},
+		{Tool: "shell", Input: "git push --tags", ExitCode: 0},
+	}
+	got := DetectMultiStepProcedure(calls)
+	if len(got) != 1 {
+		t.Fatalf("action sequence should produce one suggestion, got %d", len(got))
+	}
+	if got[0].Heuristic != "multi-step" {
+		t.Errorf("Heuristic = %q", got[0].Heuristic)
 	}
 }
 

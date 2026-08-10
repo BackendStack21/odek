@@ -1,9 +1,12 @@
 package skills
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -13,9 +16,12 @@ import (
 // CandidateStore persists how often each suggestion fingerprint has been
 // seen across sessions (<userDir>/.candidates.json); a suggestion is only
 // eligible for saving once its count reaches
-// AutoSaveConfig.MinOccurrences. Suggestion names are deterministic per
-// pattern ("corrected-git", "procedure-docker", ...), so heuristic+name is
-// a stable fingerprint even though body text varies between sessions.
+// AutoSaveConfig.MinOccurrences. The fingerprint keys on heuristic, name,
+// AND a digest of the normalized command log — keying on the name alone
+// let unrelated sessions collide ("procedure-ls" fires in any session that
+// starts with `ls`), so the recurrence gate passed without the pattern
+// actually recurring. With the content digest, only the same normalized
+// command pattern seen again counts as a recurrence.
 
 // CandidateFileName is the store file inside the skills user dir.
 const CandidateFileName = ".candidates.json"
@@ -36,9 +42,17 @@ type CandidateStore struct {
 	Candidates map[string]CandidateEntry `json:"candidates"`
 }
 
-// candidateFingerprint identifies a suggestion across sessions.
+// candidateFingerprint identifies a suggestion across sessions: heuristic
+// and name, plus a short digest of the normalized command log so that two
+// unrelated sessions sharing only a generic name ("procedure-ls") do not
+// count as the same pattern recurring.
 func candidateFingerprint(s SkillSuggestion) string {
-	return s.Heuristic + "|" + s.Name
+	norm := make([]string, 0, len(s.CommandLog))
+	for _, c := range s.CommandLog {
+		norm = append(norm, normalizeCommand(c))
+	}
+	sum := sha256.Sum256([]byte(strings.Join(norm, "\n")))
+	return s.Heuristic + "|" + s.Name + "|" + hex.EncodeToString(sum[:])[:12]
 }
 
 // LoadCandidates reads the candidate store from disk. A missing or

@@ -334,6 +334,9 @@ func buildSuggestionFromSequence(seq []ToolCall, heuristic string) *SkillSuggest
 	if len(seq) < 4 {
 		return nil
 	}
+	if !isReusableProcedure(seq) {
+		return nil
+	}
 
 	topic := extractTopic(seq[0].Input)
 	var steps []string
@@ -348,6 +351,122 @@ func buildSuggestionFromSequence(seq []ToolCall, heuristic string) *SkillSuggest
 		Body:        generateProcedureBody(topic, steps),
 		CommandLog:  steps,
 	}
+}
+
+// maxProcedureStepLen caps one step's command length. Longer commands are
+// session-specific payloads (full commit messages, heredocs, one-off
+// pipelines) that can never be replayed as written.
+const maxProcedureStepLen = 200
+
+// inspectionVerbs are read-only commands: they observe state but change
+// nothing. A sequence dominated by them is an exploration transcript, not
+// a reusable procedure.
+var inspectionVerbs = map[string]bool{
+	"ls": true, "cat": true, "head": true, "tail": true, "grep": true,
+	"find": true, "wc": true, "echo": true, "printf": true, "pwd": true,
+	"file": true, "stat": true, "tree": true, "which": true, "env": true,
+	"gofmt": true, "sort": true, "uniq": true, "diff": true, "jq": true,
+	"less": true, "more": true,
+}
+
+// gitReadOnlySubcommands are the git verbs that only observe repository
+// state; every other subcommand (commit, push, tag, add, ...) mutates and
+// counts as an action.
+var gitReadOnlySubcommands = map[string]bool{
+	"status": true, "log": true, "diff": true, "show": true, "blame": true,
+	"describe": true, "rev-parse": true, "ls-files": true, "grep": true,
+	"shortlog": true, "branch": true, "remote": true,
+}
+
+// isInspectionCommand reports whether a command only observes state.
+// Pipelines and separators are judged by their lead command — `grep foo
+// file | head` is inspection, `go test ./... | tail` is an action.
+func isInspectionCommand(cmd string) bool {
+	verb := leadVerb(cmd)
+	switch verb {
+	case "git":
+		return gitLeadSubcommandIsReadOnly(cmd)
+	case "go":
+		// `go test/vet` verify; `go build/install/run` produce effects.
+		// Neither dominates a real procedure on its own, but test/vet are
+		// the verbs that pad exploration transcripts, so count them as
+		// inspection.
+		sub := secondToken(cmd)
+		return sub == "test" || sub == "vet" || sub == "list" || sub == "env" || sub == "doc"
+	case "sed", "awk":
+		// Without -i, sed/awk only print.
+		return !strings.Contains(cmd, "-i")
+	}
+	return inspectionVerbs[verb]
+}
+
+// secondToken returns the first non-flag token after the lead verb, or "".
+func secondToken(cmd string) string {
+	fields := strings.Fields(strings.TrimSpace(cmd))
+	seenVerb := false
+	for _, f := range fields {
+		if isPlumbingToken(f) {
+			continue
+		}
+		if !seenVerb {
+			seenVerb = true
+			continue
+		}
+		if strings.HasPrefix(f, "-") {
+			continue
+		}
+		return strings.Trim(f, "\"'`")
+	}
+	return ""
+}
+
+// gitLeadSubcommandIsReadOnly extracts the subcommand of the leading `git`
+// invocation (skipping global flags and their values) and reports whether
+// it only reads state. Unrecognized subcommands count as actions — a
+// conservative default, since unknown git verbs usually mutate.
+func gitLeadSubcommandIsReadOnly(cmd string) bool {
+	fields := strings.Fields(strings.TrimSpace(cmd))
+	seenGit := false
+	skipNext := false
+	for _, f := range fields {
+		if !seenGit {
+			if f == "git" {
+				seenGit = true
+			}
+			continue
+		}
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		if strings.HasPrefix(f, "-") {
+			// Global flags that take a separate value (-C dir, -c k=v).
+			if f == "-C" || f == "-c" {
+				skipNext = true
+			}
+			continue
+		}
+		return gitReadOnlySubcommands[strings.Trim(f, "\"'`")]
+	}
+	return false
+}
+
+// isReusableProcedure applies the substance bar to a candidate sequence:
+// every step must be a short single-line command (no embedded transcripts),
+// and read-only inspection commands must not dominate — a session that was
+// mostly `ls`/`grep`/`sed -n` exploration is not a reusable procedure, no
+// matter how often its first verb recurs.
+func isReusableProcedure(seq []ToolCall) bool {
+	inspection := 0
+	for _, c := range seq {
+		if strings.Contains(c.Input, "\n") || len(c.Input) > maxProcedureStepLen {
+			return false
+		}
+		if isInspectionCommand(c.Input) {
+			inspection++
+		}
+	}
+	return inspection*2 <= len(seq)
 }
 
 func generateProcedureBody(topic string, steps []string) string {
