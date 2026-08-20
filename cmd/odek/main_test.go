@@ -1361,10 +1361,13 @@ func TestBuildSandboxArgs_EmptyEnvAndVolumes(t *testing.T) {
 	}
 	args := sandbox.BuildRunArgs(cfg, "odek-test", "/tmp/workdir", cfg.Image)
 
-	// Should not contain any -e or extra -v beyond the workspace mount
+	// With empty env the only permitted -e is the default HOME=/tmp pair
+	// for the numeric container user; no other env flags may appear.
 	for i, a := range args {
 		if a == "-e" {
-			t.Errorf("unexpected -e at position %d with empty env", i)
+			if i+1 >= len(args) || args[i+1] != "HOME=/tmp" {
+				t.Errorf("unexpected -e at position %d with empty env", i)
+			}
 		}
 	}
 	// Count -v occurrences (should be exactly 1: workspace mount)
