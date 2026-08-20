@@ -246,6 +246,31 @@ func loadIdentityFile() string {
 // and behaviour live in internal/sandbox.
 type sandboxConfig = sandbox.Config
 
+// streamDeltaPrinter returns the terminal delta consumer for run/REPL when
+// streaming is enabled, nil otherwise (which keeps the engine on the
+// buffered path). Reasoning and content fragments print as they arrive; the
+// renderer suppresses the duplicate Thinking/FinalAnswer bodies for text
+// that was already streamed (Renderer.SetStreamedOutput).
+func streamDeltaPrinter(enabled bool) func(llm.Delta) error {
+	if !enabled {
+		return nil
+	}
+	lastKind := llm.DeltaReasoning
+	return func(d llm.Delta) error {
+		switch d.Kind {
+		case llm.DeltaContent, llm.DeltaReasoning:
+			// Separate the reasoning block from the answer body so the
+			// first content line doesn't glue onto the last thought.
+			if d.Kind == llm.DeltaContent && lastKind == llm.DeltaReasoning {
+				fmt.Println()
+			}
+			lastKind = d.Kind
+			fmt.Print(d.Text)
+		}
+		return nil
+	}
+}
+
 func boolPtr(b bool) *bool { return &b }
 
 func main() {
@@ -275,6 +300,7 @@ type runFlags struct {
 	NoColor        *bool   // nil = not set
 	NoAgents       *bool   // nil = not set
 	PromptCaching  *bool   // nil = not set; true = enable prompt caching
+	Stream         *bool   // nil = not set; true = stream LLM responses live
 	Compaction     *bool   // nil = not set; true = enable rolling compaction
 	Session        *bool   // nil = not set; true = save session after run
 	Learn          *bool   // nil = not set; true = enable skills learning mode
@@ -429,6 +455,9 @@ func parseRunFlags(args []string) (runFlags, error) {
 			i++
 		case "--prompt-caching":
 			f.PromptCaching = boolPtr(true)
+			i++
+		case "--stream":
+			f.Stream = boolPtr(true)
 			i++
 		case "--compaction":
 			f.Compaction = boolPtr(true)
@@ -741,6 +770,10 @@ done:
 			f.PromptCaching = boolPtr(true)
 			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
 			j--
+		case "--stream":
+			f.Stream = boolPtr(true)
+			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+			j--
 		case "--compaction":
 			f.Compaction = boolPtr(true)
 			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
@@ -834,6 +867,7 @@ type replFlags struct {
 	ThinkingBudget  int   // 0 = not set; use default
 	Sandbox         *bool // nil = not set
 	PromptCaching   *bool // nil = not set; true = enable prompt caching
+	Stream          *bool // nil = not set; true = stream LLM responses live
 	Compaction      *bool // nil = not set; true = enable rolling compaction
 	InteractionMode string
 
@@ -903,6 +937,9 @@ func parseReplFlags(args []string) (replFlags, error) {
 			i += 2
 		case "--prompt-caching":
 			f.PromptCaching = boolPtr(true)
+			i++
+		case "--stream":
+			f.Stream = boolPtr(true)
 			i++
 		case "--compaction":
 			f.Compaction = boolPtr(true)
@@ -1111,6 +1148,7 @@ const globalConfigTemplate = `{
   "max_iterations": 90,
   "max_tool_parallel": 4,
   "prompt_caching": false,
+  "stream": false,
   "compaction": true,
   "interaction_mode": "engaging",
   "no_color": false,
@@ -1244,6 +1282,7 @@ const localConfigTemplate = `{
   "max_iterations": 0,
   "max_tool_parallel": 0,
   "prompt_caching": false,
+  "stream": false,
   "interaction_mode": "",
   "no_color": false,
   "no_agents": false,
@@ -1351,6 +1390,7 @@ func initConfig(args []string) error {
 		fmt.Println("    thinking          Reasoning depth (enabled/disabled/low/medium/high)")
 		fmt.Println("    max_iterations    Max think→act cycles (default: 90)")
 		fmt.Println("    prompt_caching    Provider prompt caching (true/false)")
+		fmt.Println("    stream            Stream LLM responses live (true/false)")
 		fmt.Println("    compaction        Rolling LLM context compaction (default: true)")
 		fmt.Println("    interaction_mode  engaging | enhance | verbose | off")
 		fmt.Println("    sandbox           Run in Docker sandbox (true/false)")
@@ -1422,6 +1462,7 @@ func run(args []string) error {
 		NoColor:       f.NoColor,
 		NoAgents:      f.NoAgents,
 		PromptCaching: f.PromptCaching,
+		Stream:        f.Stream,
 		Compaction:    f.Compaction,
 		Learn:         f.Learn,
 		System:        f.System,
@@ -1621,6 +1662,8 @@ func run(args []string) error {
 		Skills:           skillsCfg,
 		SkillManager:     sm,
 		PromptCaching:    resolved.PromptCaching,
+		Stream:           resolved.Stream,
+		DeltaHandler:     streamDeltaPrinter(resolved.Stream),
 		Compaction:       resolved.Compaction,
 		MemoryDir:        expandHome("~/.odek/memory"),
 		MemoryConfig:     resolved.Memory,
@@ -2809,6 +2852,7 @@ func continueCmd(args []string) error {
 		Skills:           skillsCfg,
 		SkillManager:     sm,
 		PromptCaching:    resolved.PromptCaching,
+		Stream:           resolved.Stream,
 		Compaction:       resolved.Compaction,
 		MemoryDir:        expandHome("~/.odek/memory"),
 		MemoryConfig:     resolved.Memory,

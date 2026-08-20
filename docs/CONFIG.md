@@ -120,6 +120,7 @@ Every config knob has a `ODEK_*` counterpart:
 | `ODEK_SYSTEM` | `--system` | string |
 | `ODEK_SKILLS_LEARN` | `skills.learn` | bool |
 | `ODEK_PROMPT_CACHING` | `prompt_caching` | bool |
+| `ODEK_STREAM` | `stream` | bool |
 | `ODEK_COMPACTION` | `compaction` | bool |
 | `ODEK_TOOL_PROGRESS` | `tool_progress` | string (all\|new\|verbose\|off) |
 | `ODEK_SANDBOX_IMAGE` | `--sandbox-image` | string |
