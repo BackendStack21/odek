@@ -255,13 +255,19 @@ func (c *Client) postChatStream(ctx context.Context, reqBytes []byte, cb func(De
 func readSSE(parent, reqCtx context.Context, cancelReq context.CancelFunc, body io.Reader, cb func(Delta) error) (*CallResult, bool, error) {
 	defer cancelReq()
 
+	// Snapshot the idle timeout on this (caller-joined) goroutine: reading
+	// the package var inside the watchdog would race with tests overriding
+	// it after the spawning test completed but before the goroutine got
+	// scheduled.
+	idle := streamIdleTimeout
+
 	// Idle watchdog goroutine: reset on every line read (including
 	// keepalives); fires by canceling reqCtx, which unblocks the reader.
 	idleReset := make(chan struct{}, 1)
 	watchdogDone := make(chan struct{})
 	go func() {
 		defer close(watchdogDone)
-		timer := time.NewTimer(streamIdleTimeout)
+		timer := time.NewTimer(idle)
 		defer timer.Stop()
 		for {
 			select {
@@ -274,7 +280,7 @@ func readSSE(parent, reqCtx context.Context, cancelReq context.CancelFunc, body 
 					default:
 					}
 				}
-				timer.Reset(streamIdleTimeout)
+				timer.Reset(idle)
 			case <-timer.C:
 				cancelReq()
 				return
@@ -346,7 +352,7 @@ func readSSE(parent, reqCtx context.Context, cancelReq context.CancelFunc, body 
 		// Distinguish the watchdog firing (reqCtx canceled, parent alive)
 		// from a parent cancellation/deadline the caller caused.
 		if reqCtx.Err() != nil && parent.Err() == nil {
-			return acc.result(), emitted, fmt.Errorf("llm: stream idle for over %v without an event", streamIdleTimeout)
+			return acc.result(), emitted, fmt.Errorf("llm: stream idle for over %v without an event", idle)
 		}
 		return acc.result(), emitted, fmt.Errorf("llm: read stream: %w", err)
 	}
