@@ -320,6 +320,24 @@ var KnownProfiles = []struct {
 	Profile ModelProfile
 }{
 	{
+		// Z.ai GLM-5.3: 1M context, 128K max output, forced thinking with
+		// reasoning_effort low/high/max (mapping in internal/llm).
+		Prefix: "glm-5.3",
+		Profile: ModelProfile{
+			Label:      "GLM 5.3 (Z.ai)",
+			Timeout:    300,       // reasoning is always on; slow to first byte
+			MaxContext: 1_000_000, // 1M token context window
+		},
+	},
+	{
+		Prefix: "glm-",
+		Profile: ModelProfile{
+			Label:      "GLM (Z.ai)",
+			Timeout:    180,
+			MaxContext: 131_072, // 128K safe default; /models discovery takes priority
+		},
+	},
+	{
 		Prefix: "kimi-",
 		Profile: ModelProfile{
 			Label:      "Kimi",
