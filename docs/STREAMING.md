@@ -1,8 +1,10 @@
 # LLM Response Streaming — Design Assessment
 
 Status: **assessment / RFC — not implemented**. This document maps the current
-request path, records the wire format as validated against the live Z.ai API,
-and proposes a phased introduction of `stream: true` support end to end.
+request path, records the OpenAI-compatible SSE wire contract (validated
+against the live Z.ai API), and proposes a phased introduction of `stream:
+true` support end to end — for **every** provider and model odek supports,
+implemented once at the protocol level rather than per provider.
 
 ---
 
@@ -26,6 +28,19 @@ output. Streaming converts dead wait time into visible thinking/answer text,
 enables first-token latency as a metric, and lays groundwork for mid-generation
 cancellation.
 
+**Scope: every provider and model odek supports, not a Z.ai feature.** All
+odek-supported backends — OpenAI, Anthropic (via its OpenAI-compat
+`/chat/completions` surface), DeepSeek, Z.ai, Kimi/Moonshot, and self-hosted
+OpenAI-compatible servers (Ollama, vLLM, LiteLLM, Groq, Together, Fireworks) —
+speak the same de facto standard: OpenAI-style SSE on `/chat/completions`.
+Streaming is therefore implemented **once, at the protocol level**, with
+per-provider quirks absorbed by the parser (§3) and a learn-once fallback to
+today's buffered path for anything that rejects streaming or emits a
+non-SSE body. The GLM measurements above are one instance of a general
+property: any thinking-default model (GLM-5.x, DeepSeek v4 Pro with thinking
+enabled, Kimi, OpenAI o-series/gpt-5 reasoning models) spends most of its
+wall clock before the first content token.
+
 ## 2. Current architecture (integration points)
 
 | Component | Today | Streaming touchpoint |
@@ -40,10 +55,12 @@ cancellation.
 | `internal/events` (`odek.event/v1`) | `iteration_completed` carries sizes/hashes only | optional additive `first_token_ms` timing field — no content, preserving the no-secrets posture |
 | Sessions / audit / untrusted wrapper | operate on the assembled assistant message and tool results | unchanged; persistence still snapshots the assembled result |
 
-## 3. Wire format (validated against the live API)
+## 3. Wire format — one protocol, per-provider variance
 
-Captured from `https://api.z.ai/api/coding/paas/v4/chat/completions`
-(`glm-5.3`, `stream: true`, `stream_options: {"include_usage": true}`):
+The parser targets the **OpenAI-compatible SSE contract**, which every
+odek-supported backend speaks on `/chat/completions`. Reference capture from
+the live Z.ai coding endpoint (`glm-5.3`, `stream: true`,
+`stream_options: {"include_usage": true}`):
 
 1. **Reasoning deltas first** (thinking models):
    `data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"The"}}]}`
@@ -57,15 +74,29 @@ Captured from `https://api.z.ai/api/coding/paas/v4/chat/completions`
    `{"choices":[{"index":0,"finish_reason":"length","delta":{"role":"assistant","content":""}}],"usage":{"prompt_tokens":14,"completion_tokens":200,"total_tokens":214,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":199}}}`
 5. **Sentinel:** `data: [DONE]`.
 
-Provider variance to absorb in the parser:
+Per-provider and per-model variance the parser must absorb:
 
-- OpenAI only returns `usage` when `stream_options.include_usage` is set, and
-  sends it in a **separate chunk with an empty `choices` array** after the last
-  content chunk; Z.ai attaches it to the finish chunk either way. DeepSeek
-  attaches cache fields (`prompt_cache_hit_tokens`/`prompt_cache_miss_tokens`)
-  to the final chunk. The parser must accept usage from any chunk and treat
-  empty-choices chunks as usage-only, not as a malformed body.
-- `delta.content` can be `null` (not merely empty) on reasoning-only chunks.
+| Backend | Usage in stream | Reasoning deltas | Notes |
+|---------|----------------|------------------|-------|
+| Z.ai (GLM) | on the finish chunk, with or without `stream_options` | `delta.reasoning_content` | validated live (traces above) |
+| OpenAI (gpt-5/o-series) | only with `stream_options.include_usage`, in a **separate chunk with empty `choices`** | none — chat/completions does not return reasoning text | content-only deltas; send `stream_options` always |
+| OpenAI (non-reasoning) | as above | none | |
+| DeepSeek | final chunk, incl. `prompt_cache_hit_tokens`/`prompt_cache_miss_tokens` | `delta.reasoning_content` (deepseek-reasoner) | cache metrics must survive into `CallResult` |
+| Anthropic (OpenAI-compat endpoint) | final chunk | thinking text surfaces as reasoning deltas where exposed | odek already sends `anthropic-version`; buffered fallback otherwise |
+| Kimi / Moonshot | final chunk | `delta.reasoning_content` on thinking variants | |
+| Ollama / vLLM / LiteLLM / Groq / Together / Fireworks | often **absent** or partial | implementation-dependent | absent usage ⇒ `CallResult` token fields stay 0 — exactly today's buffered behavior for such endpoints (budget falls back to estimates/flat prices) |
+
+Parser rules that fall out of the table:
+
+- Usage may arrive on the finish chunk or in a usage-only chunk with empty
+  `choices`; both are valid, and neither is a "malformed body".
+- `delta.content` (and `reasoning_content`) can be `null`, not merely empty,
+  on reasoning-only or keepalive chunks.
+- Tool arguments concatenate per `index`; `id`/`name` arrive on the first
+  fragment for that index.
+- Model-level, not just provider-level: reasoning models emit reasoning
+  deltas; non-reasoning models emit content only. The parser treats both
+  identically — reasoning absence is normal, not an error.
 
 ## 4. Proposed design (phased)
 
@@ -144,7 +175,15 @@ gains an SSE mode for E2E.
 
 - **Provider variance** is the main surface area; the §3 parser rules are the
   contract. `null` content fields, usage-chunk placement, and per-index tool
-  fragments each need dedicated tests.
+  fragments each need dedicated tests. Live validation so far covers Z.ai
+  only — the §3 table for other backends is specification-derived, which is
+  exactly why the buffered fallback is the rollout safety net and why the
+  fakeserver SSE mode (§4 rollout gate) must encode one hostile/quirky stream
+  per column of the table.
+- **No-regression for non-streaming backends:** endpoints that never
+  advertise SSE, or answer `stream: true` with a buffered body, take the
+  fallback path transparently — streaming must never narrow the set of
+  working providers.
 - **Partial-output retries** are intentionally not attempted (§ Phase 1);
   a mid-stream failure shows an error next to the partial text instead of
   duplicating it.
