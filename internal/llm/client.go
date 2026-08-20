@@ -62,6 +62,14 @@ func NewWithMaxTokens(baseURL, apiKey, model, thinking string, thinkingBudget in
 	}
 }
 
+// RequestTimeout reports the per-request HTTP timeout the client was
+// configured with. Callers that derive their own context deadlines for
+// background LLM calls (extended memory) use it so their deadline never
+// cuts a call off before the HTTP client itself would give up.
+func (c *Client) RequestTimeout() time.Duration {
+	return c.http.Timeout
+}
+
 // IsAnthropic reports whether the client's base URL targets the Anthropic
 // API. Anthropic-specific request features (the top-level "system" field,
 // cache_control markers) must only be sent when this is true — other
@@ -77,6 +85,23 @@ func (c *Client) IsAnthropic() bool {
 // parameters, so thinking intent must be mapped to reasoning_effort instead.
 func (c *Client) sendsThinkingObject() bool {
 	return c.IsAnthropic() || strings.Contains(c.BaseURL, "deepseek")
+}
+
+// isGLM reports whether the client targets a Z.ai (or Zhipu bigmodel.cn)
+// GLM endpoint. GLM models speak the OpenAI chat protocol and accept the
+// "thinking" object ({"type": "enabled"|"disabled"}) plus — from GLM-5.3 —
+// reasoning_effort levels. Detection is URL-based so proxied GLM access
+// through other gateways keeps generic OpenAI semantics.
+func (c *Client) isGLM() bool {
+	return strings.Contains(c.BaseURL, "z.ai") || strings.Contains(c.BaseURL, "bigmodel.cn")
+}
+
+// glmForcesThinking reports whether the model rejects thinking.type
+// "disabled". GLM-5.3 always reasons; the documented migration for clients
+// that used to disable thinking is {"type": "enabled"} with
+// reasoning_effort "low" — sending "disabled" fails the request outright.
+func glmForcesThinking(model string) bool {
+	return strings.HasPrefix(strings.ToLower(model), "glm-5.3")
 }
 
 // modelForbidsTemperature reports whether the model rejects an explicit
@@ -299,6 +324,11 @@ func (c *Client) buildCallParams(messages []Message, systemBlocks []SystemBlock,
 		MaxTokens: c.MaxTokens,
 	}
 
+	if c.isGLM() {
+		applyGLMThinking(&body, c.Thinking, c.Model, c.Temperature)
+		return body
+	}
+
 	switch c.Thinking {
 	case "enabled":
 		if c.sendsThinkingObject() {
@@ -356,6 +386,39 @@ func (c *Client) buildCallParams(messages []Message, systemBlocks []SystemBlock,
 	}
 
 	return body
+}
+
+// applyGLMThinking maps odek's thinking configuration onto the Z.ai GLM
+// request shape: the "thinking" object ({"type": ...}) plus reasoning_effort
+// levels where supported. GLM-5.3 forces thinking on — type "disabled" fails
+// the request — so it maps to the documented migration form (enabled with
+// minimal effort). GLM has no "medium" effort level; odek's medium maps to
+// "high". ThinkingConfig carries no budget for GLM, so it marshals to
+// exactly {"type": ...}.
+func applyGLMThinking(body *CallParams, thinking, model string, temperature float64) {
+	switch thinking {
+	case "disabled":
+		if glmForcesThinking(model) {
+			body.Thinking = &ThinkingConfig{Type: "enabled"}
+			body.ReasoningEffort = "low"
+		} else {
+			body.Thinking = &ThinkingConfig{Type: "disabled"}
+		}
+	case "low", "high", "max":
+		body.Thinking = &ThinkingConfig{Type: "enabled"}
+		body.ReasoningEffort = thinking
+	case "medium":
+		body.Thinking = &ThinkingConfig{Type: "enabled"}
+		body.ReasoningEffort = "high"
+	case "enabled":
+		body.Thinking = &ThinkingConfig{Type: "enabled"}
+	default:
+		// Empty: GLM-5+ models think by default; send nothing and let the
+		// provider default apply.
+	}
+	if temperature >= 0 {
+		body.Temperature = &temperature
+	}
 }
 
 // Call sends a chat completion request and returns the result.
@@ -492,6 +555,13 @@ func (c *Client) postChatWithRetry(ctx context.Context, reqBytes []byte) ([]byte
 			} else {
 				lastErr = fmt.Errorf("llm: %s (status %d)", resp.Status, resp.StatusCode)
 			}
+			if isBillingError(resp.StatusCode, errBody) {
+				// An account-state problem (empty balance, exhausted quota)
+				// is not transient. Retrying it burns the turn's deadline and
+				// surfaces as an opaque "context deadline exceeded" instead
+				// of the provider's actionable message.
+				return nil, fmt.Errorf("%w — billing/quota error, not retried (check your provider balance or plan)", lastErr)
+			}
 			if isRetryableHTTPStatus(resp.StatusCode) {
 				// Honor the server's Retry-After (seconds or HTTP-date) when it
 				// asks us to wait longer than our default backoff — otherwise a
@@ -551,6 +621,31 @@ func parseRetryAfter(v string) time.Duration {
 		d = maxRetryAfter
 	}
 	return d
+}
+
+// isBillingError reports whether an HTTP error response describes an
+// account-state problem — empty balance, exhausted quota, or a missing
+// resource package — rather than a transient rate limit. Providers reuse
+// 429 for both, but only the rate limit is retryable: Z.ai answers
+// 429 code 1113 "Insufficient balance or no resource package", OpenAI
+// answers 429 insufficient_quota, and DeepSeek answers "Insufficient
+// Balance". Matching is on the response body, case-insensitive.
+func isBillingError(status int, body string) bool {
+	if status != http.StatusTooManyRequests {
+		return false
+	}
+	b := strings.ToLower(body)
+	for _, marker := range []string{
+		"insufficient balance",
+		"insufficient_quota",
+		"no resource package",
+		"exceeded your current quota",
+	} {
+		if strings.Contains(b, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // isRetryableHTTPStatus returns true for HTTP status codes that indicate
