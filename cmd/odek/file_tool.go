@@ -375,6 +375,15 @@ func (t *writeFileTool) Call(argsJSON string) (string, error) {
 		args.Path = resolved
 	}
 
+	// Resolve directory symlinks so the classifier — and the write itself —
+	// target the real location: a workspace symlink "etc -> /etc" must make
+	// a write to "etc/cron.d/x" classify as system_write, not local_write.
+	resolved, err := resolveWritePath(args.Path)
+	if err != nil {
+		return jsonError(err.Error())
+	}
+	args.Path = resolved
+
 	// Security: classify and check write operation
 	risk := danger.ClassifyPath(args.Path)
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
@@ -809,6 +818,14 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 		args.Path = resolved
 	}
 
+	// Resolve directory symlinks so the classifier — and the write itself —
+	// target the real location, same as write_file.
+	resolved, err := resolveWritePath(args.Path)
+	if err != nil {
+		return jsonError(err.Error())
+	}
+	args.Path = resolved
+
 	// Security: classify and check patch operation
 	risk := danger.ClassifyPath(args.Path)
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
@@ -1033,6 +1050,42 @@ func resolveReadPath(path string) (string, error) {
 	}
 
 	return filepath.Join(resolvedDir, base), nil
+}
+
+// resolveWritePath resolves directory symlinks in path for write operations
+// (write_file, patch, batch_patch). Like resolveReadPath it leaves the final
+// component untouched — writes go through temp+rename, which replaces the
+// directory entry instead of following a final symlink — but it also handles
+// targets that do not exist yet: the path is walked up to its deepest
+// existing ancestor, that ancestor is resolved with EvalSymlinks, and the
+// missing suffix is re-attached (missing components cannot be symlinks, so
+// they cannot redirect the write). Classifying the resolved path is what
+// makes "workspace/etc/cron.d/x" (with etc -> /etc) surface as system_write
+// instead of local_write; callers must use the returned path for the actual
+// write so that what was classified is what gets written.
+func resolveWritePath(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("path is empty")
+	}
+
+	abs := path
+	if !filepath.IsAbs(abs) {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("cannot determine working directory: %v", err)
+		}
+		abs = filepath.Join(cwd, path)
+	}
+	abs = filepath.Clean(abs)
+
+	cur := filepath.Dir(abs)
+	for cur != "/" && cur != "" {
+		if r, err := filepath.EvalSymlinks(cur); err == nil {
+			return filepath.Join(r, strings.TrimPrefix(abs, cur)), nil
+		}
+		cur = filepath.Dir(cur)
+	}
+	return abs, nil
 }
 
 // classifyResolvedPath resolves directory symlinks in path (leaving the final

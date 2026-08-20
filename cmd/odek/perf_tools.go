@@ -181,6 +181,17 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 			entry.Path = resolved
 		}
 
+		// Resolve directory symlinks so the classifier — and the write
+		// itself — target the real location, same as write_file/patch.
+		resolved, err := resolveWritePath(p.Path)
+		if err != nil {
+			entry.Error = err.Error()
+			results[idx] = entry
+			continue
+		}
+		p.Path = resolved
+		entry.Path = resolved
+
 		if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
 			Name: "batch_patch", Resource: p.Path, Risk: danger.ClassifyPath(p.Path),
 		}, t.trustedClasses); err != nil {

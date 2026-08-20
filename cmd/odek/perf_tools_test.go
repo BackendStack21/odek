@@ -2310,3 +2310,28 @@ func TestParallelShell_ContextCancel_Explicit(t *testing.T) {
 		t.Errorf("expected cancelled error, got %q", entry.Error)
 	}
 }
+
+// TestBatchPatch_DirSymlinkClassifiedByTarget verifies that batch_patch
+// entries are classified after directory-symlink resolution, so a workspace
+// "etc -> /etc" link cannot downgrade a system_write to local_write.
+func TestBatchPatch_DirSymlinkClassifiedByTarget(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, "etc")
+	if err := os.Symlink("/etc", link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	tool := &batchPatchTool{dangerousConfig: denySystemWrites()}
+	out := callJSON(t, tool, `{"patches":[{"path":"`+filepath.Join(link, "hosts")+`","old_string":"x","new_string":"y"}]}`)
+
+	var res struct {
+		Results []struct {
+			Path  string `json:"path"`
+			Error string `json:"error"`
+		} `json:"results"`
+	}
+	mustUnmarshal(t, out, &res)
+	if len(res.Results) != 1 || !strings.Contains(res.Results[0].Error, "system_write") {
+		t.Errorf("batch_patch entry was not classified by its real target: %s", out)
+	}
+}
