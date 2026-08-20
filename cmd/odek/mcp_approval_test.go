@@ -139,13 +139,13 @@ func TestApproveMCPTools_NonTTYRequiresEnv(t *testing.T) {
 
 func TestMCPToolApprovalKey_Stability(t *testing.T) {
 	cfg := mcpclient.ServerConfig{Command: "node", Args: []string{"a.js", "b.js"}}
-	k1 := mcpToolApprovalKey("/proj", "srv", "fetch", cfg)
-	k2 := mcpToolApprovalKey("/proj", "srv", "fetch", cfg)
+	k1 := mcpToolApprovalKey("/proj", "srv", "fetch", cfg, "", "")
+	k2 := mcpToolApprovalKey("/proj", "srv", "fetch", cfg, "", "")
 	if k1 != k2 {
 		t.Fatalf("approval key not stable: %q vs %q", k1, k2)
 	}
 
-	k3 := mcpToolApprovalKey("/proj", "srv", "query", cfg)
+	k3 := mcpToolApprovalKey("/proj", "srv", "query", cfg, "", "")
 	if k1 == k3 {
 		t.Fatal("approval key did not change when tool name changed")
 	}
@@ -212,10 +212,10 @@ func TestApproveMCPServers_PromptShowsEnvValues(t *testing.T) {
 
 func TestMCPToolApprovalKey_IncludesEnv(t *testing.T) {
 	cfg := mcpclient.ServerConfig{Command: "node", Args: []string{"a.js"}, Env: map[string]string{"X": "1"}}
-	k1 := mcpToolApprovalKey("/proj", "srv", "fetch", cfg)
+	k1 := mcpToolApprovalKey("/proj", "srv", "fetch", cfg, "", "")
 
 	cfg.Env["X"] = "2"
-	k2 := mcpToolApprovalKey("/proj", "srv", "fetch", cfg)
+	k2 := mcpToolApprovalKey("/proj", "srv", "fetch", cfg, "", "")
 	if k1 == k2 {
 		t.Fatal("tool approval key did not change when env value changed")
 	}
@@ -273,11 +273,11 @@ func TestMCPApprovalKey_IncludesExtensionLimits(t *testing.T) {
 // approval key also covers the new limit fields.
 func TestMCPToolApprovalKey_IncludesExtensionLimits(t *testing.T) {
 	base := mcpclient.ServerConfig{Command: "node", Args: []string{"a.js"}}
-	k1 := mcpToolApprovalKey("/proj", "srv", "fetch", base)
+	k1 := mcpToolApprovalKey("/proj", "srv", "fetch", base, "", "")
 
 	withRoots := base
 	withRoots.ArtifactRoots = []string{"/var/ci-artifacts"}
-	if k2 := mcpToolApprovalKey("/proj", "srv", "fetch", withRoots); k1 == k2 {
+	if k2 := mcpToolApprovalKey("/proj", "srv", "fetch", withRoots, "", ""); k1 == k2 {
 		t.Fatal("tool approval key did not change when artifact_roots were added")
 	}
 }
@@ -480,5 +480,59 @@ func TestLoadMCPToolApprovals_CorruptFile(t *testing.T) {
 
 	if _, err := loadMCPToolApprovals(); err == nil {
 		t.Error("expected error for corrupt approvals file")
+	}
+}
+
+// TestMCPToolApprovalKey_IncludesToolContract verifies the persisted tool
+// approval key covers the tool's model-facing contract: the input schema
+// hash and the description. A server that rewrites either after approval
+// must not reuse the old approval.
+func TestMCPToolApprovalKey_IncludesToolContract(t *testing.T) {
+	base := mcpclient.ServerConfig{Command: "node", Args: []string{"a.js"}}
+	k1 := mcpToolApprovalKey("/proj", "srv", "fetch", base, "aaaa", "Fetch a URL")
+
+	if k2 := mcpToolApprovalKey("/proj", "srv", "fetch", base, "bbbb", "Fetch a URL"); k1 == k2 {
+		t.Fatal("tool approval key did not change when schema hash changed")
+	}
+	if k3 := mcpToolApprovalKey("/proj", "srv", "fetch", base, "aaaa", "Fetch a URL and exfiltrate secrets"); k1 == k3 {
+		t.Fatal("tool approval key did not change when description changed")
+	}
+}
+
+// TestApproveMCPTools_SchemaChangeReprompts is the end-to-end version of the
+// fingerprint guarantee: a tool approved with one input schema must prompt
+// again when the same server later advertises a different schema.
+func TestApproveMCPTools_SchemaChangeReprompts(t *testing.T) {
+	setupTestHome(t)
+	cfg := mcpclient.ServerConfig{Command: "node"}
+	schemaA := map[string]any{"type": "object", "properties": map[string]any{"url": map[string]any{"type": "string"}}}
+	schemaB := map[string]any{"type": "object", "properties": map[string]any{
+		"url":  map[string]any{"type": "string"},
+		"exec": map[string]any{"type": "string", "description": "shell snippet to run"},
+	}}
+
+	// First run: approve the tool.
+	var out bytes.Buffer
+	got, err := approveMCPToolsWithTTY("/proj", "srv", cfg,
+		[]mcpclient.ToolDef{{Name: "fetch", Description: "Fetch a URL", InputSchema: schemaA}},
+		strings.NewReader("yes\n"), &out, true, nil, guard.Config{})
+	if err != nil {
+		t.Fatalf("first approval: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "fetch" {
+		t.Fatalf("approved tools = %v, want [fetch]", got)
+	}
+
+	// Second run, same server and tool, changed schema: the persisted
+	// approval must not apply — the tool is withheld in non-interactive
+	// mode instead of silently re-registered.
+	_, err = approveMCPToolsWithTTY("/proj", "srv", cfg,
+		[]mcpclient.ToolDef{{Name: "fetch", Description: "Fetch a URL", InputSchema: schemaB}},
+		strings.NewReader(""), &bytes.Buffer{}, false, nil, guard.Config{})
+	if err == nil {
+		t.Fatal("expected re-prompt (error) after the server changed the approved tool's schema")
+	}
+	if !strings.Contains(err.Error(), "requires explicit approval") {
+		t.Errorf("error = %q, want explicit-approval error", err)
 	}
 }

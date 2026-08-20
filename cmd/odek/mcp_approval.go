@@ -201,7 +201,10 @@ const mcpToolApprovalsFile = "mcp_tool_approvals.json"
 // cannot silently register a spoofed or unwanted tool.
 //
 // Approval can be granted via ODEK_APPROVE_MCP=1, an interactive y/N prompt,
-// or a prior persisted approval in ~/.odek/mcp_tool_approvals.json.
+// or a prior persisted approval in ~/.odek/mcp_tool_approvals.json. A
+// persisted approval is keyed to the tool's input schema and description as
+// well as the server identity, so a server that changes either must
+// re-prompt instead of reusing the old approval.
 func approveMCPTools(projectDir, serverName string, cfg mcpclient.ServerConfig, defs []mcpclient.ToolDef, stdin io.Reader, stdout io.Writer, g guard.Guard, guardCfg guard.Config) ([]mcpclient.ToolDef, error) {
 	isTTY := stdin == os.Stdin && term.IsTerminal(int(os.Stdin.Fd()))
 	return approveMCPToolsWithTTY(projectDir, serverName, cfg, defs, stdin, stdout, isTTY, g, guardCfg)
@@ -244,7 +247,7 @@ func approveMCPToolsWithTTY(projectDir, serverName string, cfg mcpclient.ServerC
 			continue
 		}
 
-		key := mcpToolApprovalKey(projectDir, serverName, def.Name, cfg)
+		key := mcpToolApprovalKey(projectDir, serverName, def.Name, cfg, schemaHash, def.Description)
 		if approved[key] {
 			out = append(out, def)
 			continue
@@ -262,7 +265,7 @@ func approveMCPToolsWithTTY(projectDir, serverName string, cfg mcpclient.ServerC
 		if def.Description != "" {
 			fmt.Fprintf(stdout, "  description: %s\n", sanitizeTerminal(truncateDescription(def.Description, 200)))
 		}
-		fmt.Fprintf(stdout, "  schema: sha256:%s (%d bytes)\n", schemaHash, schemaSize)
+		fmt.Fprintf(stdout, "  schema: sha256:%s (%d bytes)\n", schemaHash[:16], schemaSize)
 		fmt.Fprintf(stdout, "Approve? [y/N] ")
 
 		line, err := reader.ReadString('\n')
@@ -284,8 +287,13 @@ func approveMCPToolsWithTTY(projectDir, serverName string, cfg mcpclient.ServerC
 	return out, nil
 }
 
-// mcpToolApprovalKey returns a stable key for the persisted tool approval store.
-func mcpToolApprovalKey(projectDir, serverName, toolName string, cfg mcpclient.ServerConfig) string {
+// mcpToolApprovalKey returns a stable key for the persisted tool approval
+// store. Beyond the server identity fields (project, server, command, args,
+// env, extension limits) it includes the tool's model-facing contract: the
+// input schema hash and the description. Both shape what the model sends and
+// reads, so a server that rewrites either after the tool was approved must
+// re-prompt instead of silently reusing the approval.
+func mcpToolApprovalKey(projectDir, serverName, toolName string, cfg mcpclient.ServerConfig, schemaHash, description string) string {
 	h := sha256.New()
 	fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s", projectDir, serverName, toolName, cfg.Command)
 	for _, a := range cfg.Args {
@@ -293,6 +301,8 @@ func mcpToolApprovalKey(projectDir, serverName, toolName string, cfg mcpclient.S
 	}
 	hashEnv(h, cfg.Env)
 	hashServerLimits(h, cfg)
+	fmt.Fprintf(h, "\x00schema\x00%s", schemaHash)
+	fmt.Fprintf(h, "\x00description\x00%s", description)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -408,15 +418,16 @@ func sanitizeTerminal(s string) string {
 // is generous while preventing abuse.
 const maxMCPSchemaBytes = 256 * 1024
 
-// mcpSchemaSummary returns the canonical JSON bytes for a schema and a short
-// SHA-256 hash for display in approval prompts.
+// mcpSchemaSummary returns the canonical JSON bytes for a schema and its
+// full SHA-256 hash. The hash is part of the persisted tool-approval
+// fingerprint (see mcpToolApprovalKey); callers truncate it for display.
 func mcpSchemaSummary(schema any) (hash string, size int, err error) {
 	data, err := json.Marshal(schema)
 	if err != nil {
 		return "", 0, err
 	}
 	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])[:16], len(data), nil
+	return hex.EncodeToString(sum[:]), len(data), nil
 }
 
 // scanMCPSchema recursively walks an MCP inputSchema and guard-scans every
