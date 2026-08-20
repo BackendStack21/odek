@@ -247,8 +247,14 @@ func TestWriteFile_Create(t *testing.T) {
 	if !r.Success {
 		t.Fatal("WriteFile should succeed")
 	}
-	if r.Path != path {
-		t.Errorf("Path = %q, want %q", r.Path, path)
+	// The tool reports the write target after directory-symlink resolution
+	// (on macOS the temp dir lives under /var → /private/var).
+	wantPath, err := resolveWritePath(path)
+	if err != nil {
+		t.Fatalf("resolveWritePath: %v", err)
+	}
+	if r.Path != wantPath {
+		t.Errorf("Path = %q, want %q", r.Path, wantPath)
 	}
 
 	data, _ := os.ReadFile(path)
@@ -1491,6 +1497,137 @@ func TestWriteFile_TOCTOU_SymlinkRejected(t *testing.T) {
 	// The call should have succeeded (it writes to a temp file + renames,
 	// which replaces the symlink entry not the target)
 	_ = result
+}
+
+// denySystemWrites returns a config that hard-denies system_write so
+// classification outcomes are observable in tests without a TTY approver.
+func denySystemWrites() danger.DangerousConfig {
+	return danger.DangerousConfig{
+		Classes: map[danger.RiskClass]danger.Action{danger.SystemWrite: danger.Deny},
+	}
+}
+
+// TestWriteFile_DirSymlinkClassifiedByTarget verifies that write_file
+// classifies (and writes) through directory symlinks: a workspace
+// "etc -> /etc" link must make a write to etc/… classify as system_write,
+// not auto-allowed local_write.
+func TestWriteFile_DirSymlinkClassifiedByTarget(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, "etc")
+	if err := os.Symlink("/etc", link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	const marker = "odek-selftest-DELETEME"
+	tool := &writeFileTool{dangerousConfig: denySystemWrites()}
+	out := callJSON(t, tool, `{"path":"`+filepath.Join(link, marker)+`","content":"pwned"}`)
+
+	if !strings.Contains(out, "system_write") {
+		t.Errorf("write through directory symlink was not classified by its real target: %s", out)
+	}
+	if _, err := os.Stat(filepath.Join("/etc", marker)); err == nil {
+		os.Remove(filepath.Join("/etc", marker))
+		t.Fatal("file was created under /etc despite the system_write denial")
+	}
+}
+
+// TestWriteFile_DirSymlinkWritesToResolvedTarget verifies the positive path:
+// a directory symlink to a writable target resolves, and the write lands in
+// the real target directory (including newly created subdirectories).
+func TestWriteFile_DirSymlinkWritesToResolvedTarget(t *testing.T) {
+	target := t.TempDir()
+	dir := t.TempDir()
+	link := filepath.Join(dir, "out")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	tool := &writeFileTool{}
+	callJSON(t, tool, `{"path":"`+filepath.Join(link, "made", "file.txt")+`","content":"hi"}`)
+
+	data, err := os.ReadFile(filepath.Join(target, "made", "file.txt"))
+	if err != nil || string(data) != "hi" {
+		t.Errorf("write through directory symlink did not land in the real target: %v %q", err, data)
+	}
+}
+
+// TestPatch_DirSymlinkClassifiedByTarget is the patch-tool analogue: the
+// write target is classified after directory-symlink resolution, so the
+// danger gate fires before the file is even opened.
+func TestPatch_DirSymlinkClassifiedByTarget(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, "etc")
+	if err := os.Symlink("/etc", link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	tool := &patchTool{dangerousConfig: denySystemWrites()}
+	out := callJSON(t, tool, `{"path":"`+filepath.Join(link, "hosts")+`","old_string":"x","new_string":"y"}`)
+	if !strings.Contains(out, "system_write") {
+		t.Errorf("patch through directory symlink was not classified by its real target: %s", out)
+	}
+}
+
+func TestResolveWritePath(t *testing.T) {
+	dir := t.TempDir()
+	target := t.TempDir()
+	targetResolved, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatalf("resolve target: %v", err)
+	}
+	dirResolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("resolve dir: %v", err)
+	}
+	link := filepath.Join(dir, "linked")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	// Directory symlinks resolve to the real target.
+	got, err := resolveWritePath(filepath.Join(link, "out.txt"))
+	if err != nil {
+		t.Fatalf("resolveWritePath: %v", err)
+	}
+	if want := filepath.Join(targetResolved, "out.txt"); got != want {
+		t.Errorf("resolveWritePath(link/out.txt) = %q, want %q", got, want)
+	}
+
+	// Missing suffix components are re-attached after the deepest existing
+	// ancestor (write targets often do not exist yet).
+	got, err = resolveWritePath(filepath.Join(link, "new", "deep", "out.txt"))
+	if err != nil {
+		t.Fatalf("resolveWritePath: %v", err)
+	}
+	if want := filepath.Join(targetResolved, "new", "deep", "out.txt"); got != want {
+		t.Errorf("resolveWritePath with missing dirs = %q, want %q", got, want)
+	}
+
+	// A final-component symlink stays unresolved: writes replace the
+	// directory entry rather than following the link.
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	finalLink := filepath.Join(dir, "alias.txt")
+	if err := os.Symlink(filepath.Join(dir, "f.txt"), finalLink); err != nil {
+		t.Fatal(err)
+	}
+	got, err = resolveWritePath(finalLink)
+	if err != nil {
+		t.Fatalf("resolveWritePath: %v", err)
+	}
+	if want := filepath.Join(dirResolved, "alias.txt"); got != want {
+		t.Errorf("resolveWritePath(final symlink) = %q, want %q (final component must stay unresolved)", got, want)
+	}
+
+	// Relative paths resolve against the working directory.
+	got, err = resolveWritePath("rel.txt")
+	if err != nil {
+		t.Fatalf("resolveWritePath: %v", err)
+	}
+	if !filepath.IsAbs(got) || filepath.Base(got) != "rel.txt" {
+		t.Errorf("resolveWritePath(rel.txt) = %q, want an absolute path ending in rel.txt", got)
+	}
 }
 
 // TestReadFile_CountAndContentSinglePass verifies that readLinesWithCount
