@@ -56,7 +56,7 @@ All sandbox settings are available in `~/.odek/config.json`, `./odek.json`, `ODE
 | `sandbox_readonly` | `ODEK_SANDBOX_READONLY` | `--sandbox-readonly` | bool | `false` | Mount working directory read-only |
 | `sandbox_memory` | `ODEK_SANDBOX_MEMORY` | `--sandbox-memory` | string | `""` | Memory limit (e.g. `512m`, `2g`) |
 | `sandbox_cpus` | `ODEK_SANDBOX_CPUS` | `--sandbox-cpus` | string | `""` | CPU limit (e.g. `0.5`, `2`) |
-| `sandbox_user` | `ODEK_SANDBOX_USER` | `--sandbox-user` | string | `""` | Run as user (`uid:gid` or name) |
+| `sandbox_user` | `ODEK_SANDBOX_USER` | `--sandbox-user` | string | invoking user's `uid:gid` | Run as user (`uid:gid` or name); unset maps the host identity instead of the image default (root) |
 | `sandbox_env` | — | — | object | `{}` | Extra env vars injected into container |
 | `sandbox_volumes` | — | — | array | `[]` | Extra volume mounts (`host:container`) |
 
@@ -240,6 +240,7 @@ odek's sandbox follows the principle of **least privilege with progressive opt-i
 | Hardening | How it's enforced |
 |-----------|------------------|
 | **No capabilities** | `--cap-drop ALL` — even root has zero Linux capabilities |
+| **Non-root by default** | `--user <invoking uid:gid>` when no user is configured — the container cannot `chown`/`chmod` the workspace bind mount or plant root-owned files on the host; `HOME` points at the writable tmpfs `/tmp` |
 | **No privilege escalation** | `--security-opt no-new-privileges` — `setuid` binaries can't escalate |
 | **No executable /tmp** | `--tmpfs /tmp:noexec` — can't download+run binaries from temp |
 | **Auto-cleanup** | `--rm` — container is destroyed on exit, no state persists |

@@ -48,7 +48,7 @@ type Config struct {
 	Readonly bool              // Mount the working directory read-only
 	Memory   string            // Memory limit (e.g. "512m", "2g")
 	CPUs     string            // CPU limit (e.g. "0.5", "2")
-	User     string            // Container user (e.g. "1000:1000")
+	User     string            // Container user (e.g. "1000:1000"); empty defaults to the invoking uid:gid (see BuildRunArgs)
 	Env      map[string]string // Extra environment variables
 	Volumes  []string          // Extra volume mounts (filtered against ForbiddenMountPrefixes)
 }
@@ -130,8 +130,11 @@ func dockerBuildArgs(tag string) []string {
 // Security defaults applied unconditionally:
 //
 //	--rm, --detach, --cap-drop ALL, --security-opt no-new-privileges,
-//	--tmpfs /tmp:noexec. Volume mounts are filtered against
-//	ForbiddenMountPrefixes; "host" network is forced to "none".
+//	--tmpfs /tmp:noexec, --network none (bridge only when explicitly
+//	requested), and --user <invoking uid:gid> when no user is configured.
+//
+// Volume mounts are filtered against ForbiddenMountPrefixes; "host" network
+// is forced to "none".
 func BuildRunArgs(cfg Config, containerName, workdir, image string) []string {
 	args := []string{
 		"run",
@@ -144,12 +147,14 @@ func BuildRunArgs(cfg Config, containerName, workdir, image string) []string {
 
 	network := cfg.Network
 	switch network {
-	case "", "bridge":
-		// Docker default bridge network; "bridge" is the only non-isolated
-		// mode we allow besides "none".
-		network = "bridge"
-	case "none":
-		// Fully isolated mode.
+	case "", "none":
+		// Fully isolated mode. Empty (direct Config construction) resolves
+		// to "none" to match the config layer's DefaultSandboxNetwork —
+		// bridge is the only non-isolated mode allowed, and it must be an
+		// explicit choice.
+		network = "none"
+	case "bridge":
+		// Docker default bridge network; explicit opt-in only.
 	case "host":
 		fmt.Fprintf(os.Stderr, "odek: WARNING: --sandbox-network host destroys container isolation. Forcing 'none'.\n")
 		network = "none"
@@ -174,8 +179,29 @@ func BuildRunArgs(cfg Config, containerName, workdir, image string) []string {
 	if cfg.CPUs != "" {
 		args = append(args, "--cpus", cfg.CPUs)
 	}
-	if cfg.User != "" {
-		args = append(args, "--user", cfg.User)
+
+	// Run as the invoking user's uid:gid instead of the image default
+	// (root). A root container user can chown/chmod the rw /workspace bind
+	// mount and plant root-owned files on the host; mapping the host
+	// identity keeps workspace writes owned by the real user. Platforms
+	// without a numeric uid (Windows) keep the image default. The numeric
+	// user has no passwd entry, so HOME points at the writable tmpfs /tmp
+	// unless the config supplies one.
+	user := cfg.User
+	home := ""
+	if user == "" {
+		if uid, gid := os.Getuid(), os.Getgid(); uid >= 0 && gid >= 0 {
+			user = fmt.Sprintf("%d:%d", uid, gid)
+			if _, ok := cfg.Env["HOME"]; !ok {
+				home = "/tmp"
+			}
+		}
+	}
+	if user != "" {
+		args = append(args, "--user", user)
+	}
+	if home != "" {
+		args = append(args, "-e", "HOME="+home)
 	}
 
 	for k, v := range cfg.Env {

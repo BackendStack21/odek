@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -153,17 +154,60 @@ func TestBuildRunArgs_BridgeNetworkAllowed(t *testing.T) {
 	t.Error("--network flag not found in args")
 }
 
-func TestBuildRunArgs_EmptyNetworkDefaultsToBridge(t *testing.T) {
+func TestBuildRunArgs_EmptyNetworkDefaultsToNone(t *testing.T) {
+	// Empty Network must match the config layer's DefaultSandboxNetwork
+	// ("none") when Config is constructed directly — bridge is an
+	// explicit opt-in, never a fallback.
 	args := BuildRunArgs(Config{}, "odek-test", "/workspace", "alpine:latest")
 	for i, a := range args {
 		if a == "--network" && i+1 < len(args) {
-			if args[i+1] != "bridge" {
-				t.Errorf("network arg = %q, want 'bridge' for empty Network", args[i+1])
+			if args[i+1] != "none" {
+				t.Errorf("network arg = %q, want 'none' for empty Network", args[i+1])
 			}
 			return
 		}
 	}
 	t.Error("--network flag not found in args")
+}
+
+// TestBuildRunArgs_DefaultUserMapsInvokingUser verifies that an unset user
+// no longer means root: the container runs as the invoking uid:gid, with
+// HOME pointed at the writable tmpfs /tmp.
+func TestBuildRunArgs_DefaultUserMapsInvokingUser(t *testing.T) {
+	if os.Getuid() < 0 {
+		t.Skip("platform without numeric uid; image default applies")
+	}
+	args := BuildRunArgs(Config{}, "odek-test", "/workspace", "alpine:latest")
+	wantUser := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
+	if !contains(args, wantUser) {
+		t.Errorf("BuildRunArgs missing --user %q\nargs: %v", wantUser, args)
+	}
+	if !contains(args, "HOME=/tmp") {
+		t.Errorf("BuildRunArgs missing default HOME=/tmp for the numeric user\nargs: %v", args)
+	}
+}
+
+func TestBuildRunArgs_ExplicitUserHonored(t *testing.T) {
+	args := BuildRunArgs(Config{User: "1000:1000"}, "odek-test", "/workspace", "alpine:latest")
+	if !contains(args, "1000:1000") {
+		t.Errorf("BuildRunArgs missing explicit --user 1000:1000\nargs: %v", args)
+	}
+	if contains(args, "HOME=/tmp") {
+		t.Errorf("explicit user must not get the default HOME override\nargs: %v", args)
+	}
+}
+
+func TestBuildRunArgs_EnvHomeSuppressesDefaultHome(t *testing.T) {
+	if os.Getuid() < 0 {
+		t.Skip("platform without numeric uid; image default applies")
+	}
+	args := BuildRunArgs(Config{Env: map[string]string{"HOME": "/home/builder"}}, "odek-test", "/workspace", "alpine:latest")
+	if contains(args, "HOME=/tmp") {
+		t.Errorf("config-supplied HOME must suppress the /tmp default\nargs: %v", args)
+	}
+	if !contains(args, "HOME=/home/builder") {
+		t.Errorf("config-supplied HOME missing from args\nargs: %v", args)
+	}
 }
 
 func TestBuildRunArgs_ReadonlyAppendsRoSuffix(t *testing.T) {
