@@ -29,10 +29,27 @@ type Client struct {
 	Temperature    float64 // 0 = use provider default, <0 = omit from request
 	http           *http.Client
 
+	// streamHTTP has no whole-request timeout: a client-level Timeout would
+	// kill an SSE body read mid-stream. Streaming calls enforce a hard
+	// wall-clock deadline plus an idle watchdog via context instead
+	// (CallStream). It shares the pooled transport with http.
+	streamHTTP *http.Client
+
 	// forceNoneEffort is learned at runtime: set when the provider rejects
 	// reasoning_effort combined with function tools (e.g. gpt-5.6-luna),
 	// so subsequent calls pin effort to "none" without a failed round-trip.
 	forceNoneEffort atomic.Bool
+
+	// dropStreamOptions is learned at runtime: set when the provider rejects
+	// the stream_options field (usage-in-stream opt-in) with a 400, so
+	// subsequent streaming requests omit it while keeping the stream.
+	dropStreamOptions atomic.Bool
+
+	// forceBuffered is learned at runtime: set when the provider rejects
+	// streaming outright (400 naming "stream") or answers a streamed request
+	// with a non-SSE body, so subsequent CallStream calls use the buffered
+	// path without a failed round-trip.
+	forceBuffered atomic.Bool
 }
 
 // maxResponseSize limits the LLM response body read to prevent DoS/OOM.
@@ -59,7 +76,18 @@ func NewWithMaxTokens(baseURL, apiKey, model, thinking string, thinkingBudget in
 		ThinkingBudget: thinkingBudget,
 		MaxTokens:      maxTokens,
 		http:           transport.NewPooledClient(timeout),
+		streamHTTP:     transport.NewPooledClientNoDeadline(),
 	}
+}
+
+// requestTimeout returns the per-request wall-clock budget. Streaming calls
+// use it as the hard overall deadline (ADR-1 in docs/STREAMING.md); the
+// buffered path gets it from http.Client.Timeout.
+func (c *Client) requestTimeout() time.Duration {
+	if t := c.http.Timeout; t > 0 {
+		return t
+	}
+	return transport.DefaultTimeout
 }
 
 // RequestTimeout reports the per-request HTTP timeout the client was
@@ -182,10 +210,18 @@ type CallParams struct {
 	System          []SystemBlock   `json:"system,omitempty"` // Anthropic-style system blocks
 	Tools           []ToolDef       `json:"tools,omitempty"`
 	Stream          bool            `json:"stream"`
-	MaxTokens       int             `json:"max_tokens,omitempty"`  // max output tokens (0 = omit/provider default)
-	Temperature     *float64        `json:"temperature,omitempty"` // 0–2, nil = provider default
+	StreamOptions   *streamOptions  `json:"stream_options,omitempty"` // streaming only: request usage in-stream (OpenAI dialect)
+	MaxTokens       int             `json:"max_tokens,omitempty"`     // max output tokens (0 = omit/provider default)
+	Temperature     *float64        `json:"temperature,omitempty"`    // 0–2, nil = provider default
 	Thinking        *ThinkingConfig `json:"thinking,omitempty"`
 	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
+}
+
+// streamOptions is the OpenAI streaming extension requesting usage stats in
+// the stream. Z.ai and vLLM honor it too; providers that reject unknown
+// fields trigger the dropStreamOptions learn-once retry (ADR-4).
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 // ThinkingConfig controls extended thinking for DeepSeek and Anthropic models.
@@ -712,22 +748,7 @@ func parseResponse(data []byte) (*CallResult, error) {
 				} `json:"tool_calls"`
 			} `json:"message"`
 		} `json:"choices"`
-		Usage *struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-			// Anthropic prompt caching
-			CacheCreationTokens int `json:"cache_creation_input_tokens"`
-			CacheReadTokens     int `json:"cache_read_input_tokens"`
-			// OpenAI prompt caching (nested details)
-			PromptTokensDetails *struct {
-				CachedTokens int `json:"cached_tokens"`
-			} `json:"prompt_tokens_details"`
-			// DeepSeek native prompt caching (always present on DeepSeek
-			// endpoints, unlike prompt_tokens_details which varies by
-			// gateway/proxy).
-			PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
-			PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
-		} `json:"usage"`
+		Usage *usageJSON `json:"usage"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("llm: parse response: %w", err)
@@ -741,27 +762,7 @@ func parseResponse(data []byte) (*CallResult, error) {
 		Content:          msg.Content,
 		ReasoningContent: msg.ReasoningContent,
 	}
-	if raw.Usage != nil {
-		result.InputTokens = raw.Usage.PromptTokens
-		result.OutputTokens = raw.Usage.CompletionTokens
-		result.CacheCreationTokens = raw.Usage.CacheCreationTokens
-		result.CacheReadTokens = raw.Usage.CacheReadTokens
-		if raw.Usage.PromptTokensDetails != nil {
-			result.CachedTokens = raw.Usage.PromptTokensDetails.CachedTokens
-			result.CacheReported = true
-		}
-		if raw.Usage.CacheCreationTokens > 0 || raw.Usage.CacheReadTokens > 0 {
-			result.CacheReported = true
-		}
-		// DeepSeek native fields: a hit is prompt content read from cache;
-		// a miss is newly processed content that DeepSeek then caches for
-		// future requests, i.e. a cache write.
-		if raw.Usage.PromptCacheHitTokens > 0 || raw.Usage.PromptCacheMissTokens > 0 {
-			result.CacheReadTokens += raw.Usage.PromptCacheHitTokens
-			result.CacheCreationTokens += raw.Usage.PromptCacheMissTokens
-			result.CacheReported = true
-		}
-	}
+	applyUsage(raw.Usage, result)
 	for _, tc := range msg.ToolCalls {
 		result.ToolCalls = append(result.ToolCalls, ToolCall{
 			ID:   tc.ID,
@@ -776,4 +777,51 @@ func parseResponse(data []byte) (*CallResult, error) {
 		})
 	}
 	return result, nil
+}
+
+// usageJSON is the provider usage object, shared by the buffered parser and
+// the SSE stream assembler. Field set per docs/STREAMING.md §3: Anthropic
+// cache tokens, OpenAI nested cached_tokens, DeepSeek native hit/miss.
+type usageJSON struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	// Anthropic prompt caching
+	CacheCreationTokens int `json:"cache_creation_input_tokens"`
+	CacheReadTokens     int `json:"cache_read_input_tokens"`
+	// OpenAI prompt caching (nested details)
+	PromptTokensDetails *struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+	// DeepSeek native prompt caching (always present on DeepSeek endpoints,
+	// unlike prompt_tokens_details which varies by gateway/proxy).
+	PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
+	PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
+}
+
+// applyUsage merges a provider usage object into a CallResult. A nil usage
+// (absent entirely — common on local servers) leaves the token fields at
+// zero, which is exactly the buffered path's behavior for such endpoints.
+func applyUsage(u *usageJSON, res *CallResult) {
+	if u == nil {
+		return
+	}
+	res.InputTokens = u.PromptTokens
+	res.OutputTokens = u.CompletionTokens
+	res.CacheCreationTokens = u.CacheCreationTokens
+	res.CacheReadTokens = u.CacheReadTokens
+	if u.PromptTokensDetails != nil {
+		res.CachedTokens = u.PromptTokensDetails.CachedTokens
+		res.CacheReported = true
+	}
+	if u.CacheCreationTokens > 0 || u.CacheReadTokens > 0 {
+		res.CacheReported = true
+	}
+	// DeepSeek native fields: a hit is prompt content read from cache; a
+	// miss is newly processed content that DeepSeek then caches for future
+	// requests, i.e. a cache write.
+	if u.PromptCacheHitTokens > 0 || u.PromptCacheMissTokens > 0 {
+		res.CacheReadTokens += u.PromptCacheHitTokens
+		res.CacheCreationTokens += u.PromptCacheMissTokens
+		res.CacheReported = true
+	}
 }
