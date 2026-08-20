@@ -16,8 +16,8 @@
       "output_cost_per_million_usd": 12.0
     },
     "gpt-5.6-luna": {
-      "input_cost_per_million_usd": 0.20,
-      "output_cost_per_million_usd": 1.20
+      "input_cost_per_million_usd": 0.2,
+      "output_cost_per_million_usd": 1.2
     },
     "gpt-5.5": {
       "input_cost_per_million_usd": 5.0,
@@ -26,6 +26,38 @@
     "deepseek-v4-pro": {
       "input_cost_per_million_usd": 0.435,
       "output_cost_per_million_usd": 0.87
+    },
+    "glm-5.3": {
+      "input_cost_per_million_usd": 1.4,
+      "output_cost_per_million_usd": 4.4
+    },
+    "glm-5.2": {
+      "input_cost_per_million_usd": 1.4,
+      "output_cost_per_million_usd": 4.4
+    },
+    "glm-5.1": {
+      "input_cost_per_million_usd": 1.4,
+      "output_cost_per_million_usd": 4.4
+    },
+    "glm-5": {
+      "input_cost_per_million_usd": 1.0,
+      "output_cost_per_million_usd": 3.2
+    },
+    "glm-5-turbo": {
+      "input_cost_per_million_usd": 1.2,
+      "output_cost_per_million_usd": 4.0
+    },
+    "glm-4.7": {
+      "input_cost_per_million_usd": 0.6,
+      "output_cost_per_million_usd": 2.2
+    },
+    "glm-4.6": {
+      "input_cost_per_million_usd": 0.6,
+      "output_cost_per_million_usd": 2.2
+    },
+    "glm-4.5": {
+      "input_cost_per_million_usd": 0.6,
+      "output_cost_per_million_usd": 2.2
     },
     "deepseek-v4-flash": {
       "input_cost_per_million_usd": 0.14,

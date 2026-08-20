@@ -59,7 +59,7 @@ Five-layer priority chain: `~/.odek/secrets.env` → `global (~/.odek/config.jso
 Hard stop runaway tasks: `--max-runtime`, `--max-tool-calls`, `--max-input-tokens`, `--max-output-tokens`, `--max-cost-usd` (or the `limits` config section, with per-model pricing via `limits.model_prices`). On exhaustion the session is persisted for resume and the CLI exits with dedicated **exit code 4**. Follow any run from an external process with `--events-jsonl` (structured `odek.event/v1` JSONL, secrets-redacted, args hashed) or the `EventHandler` Go API; `GET /api/limits` on `odek serve` exposes limits + effective prices for cost rendering. [docs/EXTENSIONS.md](docs/EXTENSIONS.md)
 
 ### 🔌 LLM-Agnostic
-Any OpenAI-compatible endpoint: Deepseek, OpenAI, Anthropic, Ollama, vLLM, Groq, Together, Fireworks — anything that speaks `/chat/completions`. Per-model profiles for thinking depth and context windows. [docs/PROVIDERS.md](docs/PROVIDERS.md)
+Any OpenAI-compatible endpoint: Deepseek, OpenAI, Anthropic, Z.ai (GLM), Ollama, vLLM, Groq, Together, Fireworks — anything that speaks `/chat/completions`. Per-model profiles for thinking depth and context windows. [docs/PROVIDERS.md](docs/PROVIDERS.md)
 
 ### 🌐 Web UI
 `odek serve` — browser-based agent with `@` resource completion (`@file.go`, `@sess:abc123`), **drag-and-drop file attachments**, WebSocket streaming, and a full IDE-style console. [docs/WEBUI.md](docs/WEBUI.md)

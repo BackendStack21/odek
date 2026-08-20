@@ -30,6 +30,13 @@ type ExtendedMemory struct {
 	predictor  *Predictor
 	llm        LLMClient
 
+	// llmTimeout is the deadline for background LLM calls (predictor,
+	// per-turn extraction). It follows the memory LLM client's own
+	// per-request timeout when the client exposes one, so a slow provider
+	// (e.g. a concurrency-limited coding-plan endpoint queuing behind the
+	// main call) is not cut off at an arbitrary hard-coded mark.
+	llmTimeout time.Duration
+
 	guard    guard.Guard
 	guardCfg guard.Config
 
@@ -68,6 +75,28 @@ type ExtendedMemory struct {
 
 const recentUserMessageLimit = 10
 
+// defaultLLMTimeout bounds background memory LLM calls when the client does
+// not expose its own per-request timeout (test fakes, custom clients).
+const defaultLLMTimeout = 30 * time.Second
+
+// timeoutHinter is implemented by LLM clients that can report their
+// per-request HTTP timeout (*llm.Client does).
+type timeoutHinter interface {
+	RequestTimeout() time.Duration
+}
+
+// llmDeadline returns the deadline for background LLM calls: the client's
+// own per-request timeout when available and longer than the default, the
+// default otherwise.
+func llmDeadline(llm LLMClient) time.Duration {
+	if h, ok := llm.(timeoutHinter); ok {
+		if t := h.RequestTimeout(); t > defaultLLMTimeout {
+			return t
+		}
+	}
+	return defaultLLMTimeout
+}
+
 // New creates an ExtendedMemory instance rooted at dir.
 func New(dir string, llm LLMClient, cfg Config) *ExtendedMemory {
 	cfg = Resolve(cfg)
@@ -92,6 +121,7 @@ func New(dir string, llm LLMClient, cfg Config) *ExtendedMemory {
 		predictor:  NewPredictor(llm, cfg),
 		llm:        llm,
 	}
+	em.llmTimeout = llmDeadline(llm)
 	em.recall.SetPredictor(em.predictor)
 	em.recall.SetFollowUpSink(em.setLastFollowUps)
 	em.recall.stats = &em.stats
@@ -496,7 +526,7 @@ func (em *ExtendedMemory) triggerBackgroundInference() {
 	em.pendingWg.Add(1)
 	em.inferenceMu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), em.llmTimeout)
 	go func() {
 		defer func() {
 			cancel()
@@ -788,7 +818,7 @@ func (em *ExtendedMemory) OnUserMessage(ctx AtomContext, msg string) {
 		return
 	}
 
-	c, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	c, cancel := context.WithTimeout(context.Background(), em.llmTimeout)
 	defer cancel()
 	atoms, err := em.extractor.Extract(c, msg)
 	if err != nil {

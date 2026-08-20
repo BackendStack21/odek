@@ -2495,7 +2495,7 @@ func skillCmd(args []string) error {
 			if basicOnly {
 				return "", fmt.Errorf("basic mode — no LLM call")
 			}
-			client := llm.New(cfg.BaseURL, cfg.APIKey, cfg.Model, "", 0, 30)
+			client := llm.New(cfg.BaseURL, cfg.APIKey, cfg.Model, "", 0, 30*time.Second)
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			return client.SimpleCall(ctx,

@@ -320,6 +320,44 @@ var KnownProfiles = []struct {
 	Profile ModelProfile
 }{
 	{
+		// Z.ai GLM-5.3: 1M context, 128K max output, forced thinking with
+		// reasoning_effort low/high/max (mapping in internal/llm).
+		Prefix: "glm-5.3",
+		Profile: ModelProfile{
+			Label:      "GLM 5.3 (Z.ai)",
+			Timeout:    300,       // reasoning is always on; slow to first byte
+			MaxContext: 1_000_000, // 1M token context window
+		},
+	},
+	{
+		// Z.ai GLM-5.2: same 1M/128K window as 5.3 (shared base model,
+		// post-training differs); thinking is disableable, unlike 5.3.
+		Prefix: "glm-5.2",
+		Profile: ModelProfile{
+			Label:      "GLM 5.2 (Z.ai)",
+			Timeout:    300,
+			MaxContext: 1_000_000,
+		},
+	},
+	{
+		// Z.ai GLM-5-Turbo: 200K context / 128K output, optimized for tool
+		// invocation and long execution chains; thinking disableable.
+		Prefix: "glm-5-turbo",
+		Profile: ModelProfile{
+			Label:      "GLM 5 Turbo (Z.ai)",
+			Timeout:    180,
+			MaxContext: 200_000,
+		},
+	},
+	{
+		Prefix: "glm-",
+		Profile: ModelProfile{
+			Label:      "GLM (Z.ai)",
+			Timeout:    180,
+			MaxContext: 131_072, // 128K safe default; /models discovery takes priority
+		},
+	},
+	{
 		Prefix: "kimi-",
 		Profile: ModelProfile{
 			Label:      "Kimi",

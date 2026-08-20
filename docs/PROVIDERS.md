@@ -18,6 +18,21 @@ export ODEK_API_KEY=sk-...
 odek run --model gpt-4o --base-url https://api.openai.com/v1 "task"
 ```
 
+## Z.ai (GLM)
+
+```bash
+export ODEK_API_KEY=<z.ai api key>
+export ODEK_BASE_URL=https://api.z.ai/api/paas/v4
+odek run --model glm-5.3 "task"
+```
+
+Notes:
+
+- **Thinking control** — GLM models accept a `thinking` object (`{"type": "enabled"|"disabled"}`). odek maps its `--thinking` levels onto it: `low`/`high`/`max` become `thinking: enabled` plus `reasoning_effort` of the same name; `medium` maps to `high` (GLM has no medium level).
+- **GLM-5.3 forces thinking** — per z.ai's platform-API docs, `thinking: disabled` fails requests on GLM-5.3, so odek maps `--thinking disabled` to the documented migration form (`enabled` + `reasoning_effort: low`) instead of risking the failure. (The coding-plan endpoint currently accepts and honors `disabled` even for 5.3; the mapping is kept as the safe behavior on both.) GLM-5.2 and GLM-5-Turbo accept `disabled` normally, and `reasoning_effort` was validated against all three models.
+- **Billing errors fail fast** — an empty balance comes back as HTTP 429 (`Insufficient balance or no resource package`, code 1113). odek detects billing/quota 429s and reports them immediately instead of retrying into an opaque `context deadline exceeded`.
+- Coding Plan subscribers should use the coding endpoint `https://api.z.ai/api/coding/paas/v4` as `ODEK_BASE_URL` instead.
+
 ## Custom / self-hosted
 
 Any endpoint that accepts `POST /chat/completions` with an OpenAI-compatible JSON body works — Ollama, vLLM, LiteLLM, etc. No provider-specific code in odek.
@@ -38,6 +53,10 @@ odek ships with built-in **model profiles** that automatically apply sensible de
 | `deepseek-chat` | DeepSeek (legacy) | (provider default) | 120s | 128K | General |
 | `deepseek-v4-flash` | DeepSeek v4 Flash | — (faster/cheaper) | 90s | 128K | Quick tasks, coding |
 | `deepseek-v4-pro` | DeepSeek v4 Pro | `enabled` | 180s | **1M** | Deep reasoning |
+| `glm-5.3` | GLM 5.3 (Z.ai) | (always on — forced) | 300s | **1M** | Agentic coding |
+| `glm-5.2` | GLM 5.2 (Z.ai) | (provider default) | 300s | **1M** | Agentic coding |
+| `glm-5-turbo` | GLM 5 Turbo (Z.ai) | (provider default) | 180s | 200K | Tool-heavy agents |
+| `glm-…` (other) | GLM (Z.ai) | (provider default) | 180s | 128K | General |
 | `kimi-…` (e.g. `kimi-for-coding`) | Kimi | (provider default) | 300s | 256K | Agentic coding |
 | `k3` | Kimi | (provider default) | 300s | **1M** | Agentic coding |
 | `k3-256k` | Kimi | (provider default) | 300s | 256K | Agentic coding |

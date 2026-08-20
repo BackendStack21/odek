@@ -1430,3 +1430,46 @@ func TestToolAdapter_SetContextNoPanic(t *testing.T) {
 	adapter := &toolAdapter{t: &nonCtxAwareTool{}}
 	adapter.SetContext(context.Background()) // should not panic
 }
+
+func TestLookupProfile_GLM(t *testing.T) {
+	p := LookupProfile("glm-5.3")
+	if p == nil {
+		t.Fatal("LookupProfile(\"glm-5.3\") returned nil")
+	}
+	if p.Label != "GLM 5.3 (Z.ai)" {
+		t.Errorf("Label = %q, want %q", p.Label, "GLM 5.3 (Z.ai)")
+	}
+	if p.Timeout != 300 {
+		t.Errorf("Timeout = %d, want 300 (forced reasoning is slow to first byte)", p.Timeout)
+	}
+	if p.MaxContext != 1_000_000 {
+		t.Errorf("MaxContext = %d, want 1000000 (1M context window)", p.MaxContext)
+	}
+
+	// Longest prefix wins: glm-5.3 over the generic glm- entry.
+	g := LookupProfile("glm-4.6")
+	if g == nil {
+		t.Fatal("LookupProfile(\"glm-4.6\") returned nil")
+	}
+	if g.MaxContext != 131_072 {
+		t.Errorf("generic GLM MaxContext = %d, want 131072", g.MaxContext)
+	}
+}
+
+func TestLookupProfile_GLM52AndTurbo(t *testing.T) {
+	p := LookupProfile("glm-5.2")
+	if p == nil {
+		t.Fatal("LookupProfile(\"glm-5.2\") returned nil")
+	}
+	if p.Label != "GLM 5.2 (Z.ai)" || p.MaxContext != 1_000_000 || p.Timeout != 300 {
+		t.Errorf("glm-5.2 profile = %+v, want 1M context / 300s", *p)
+	}
+
+	turbo := LookupProfile("glm-5-turbo")
+	if turbo == nil {
+		t.Fatal("LookupProfile(\"glm-5-turbo\") returned nil")
+	}
+	if turbo.Label != "GLM 5 Turbo (Z.ai)" || turbo.MaxContext != 200_000 || turbo.Timeout != 180 {
+		t.Errorf("glm-5-turbo profile = %+v, want 200K context / 180s", *turbo)
+	}
+}
