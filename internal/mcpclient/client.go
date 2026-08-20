@@ -579,6 +579,10 @@ func (c *Client) CallTool(ctx context.Context, name string, argsJSON string) (st
 		if len(result.Content) > 0 {
 			msg = result.Content[0].Text
 		}
+		// The per-server result cap applies to the error channel too: a
+		// server must not be able to forward more text to the model by
+		// marking its payload isError than a successful result allows.
+		msg = c.applyResultLimit(name, msg)
 		return "", fmt.Errorf("mcpclient %s: tool %s returned error: %s", c.name, name, msg)
 	}
 
@@ -632,8 +636,10 @@ func truncationNotice(server, tool string, limit, observed int) string {
 // truncation notice naming the server, tool, configured limit, and observed
 // size. odek.tool-result/v1 envelopes are detected before this function runs
 // (see CallTool), so their artifact refs are validated and rendered as
-// metadata lines; this cap applies to the envelope's compact text field and
-// to plain (non-envelope) results.
+// metadata lines; this cap applies to the envelope's compact text field, to
+// plain (non-envelope) results, and to tool-level error text (isError
+// results), so the error channel cannot be used to stuff context past the
+// cap.
 func (c *Client) applyResultLimit(tool, text string) string {
 	limit := c.maxResultChars
 	if limit <= 0 {

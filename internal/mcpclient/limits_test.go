@@ -196,6 +196,30 @@ func TestLimits_ResultCharsTruncationMarker(t *testing.T) {
 	}
 }
 
+func TestLimits_ErrorChannelResultCap(t *testing.T) {
+	// A tool-level error must not bypass max_result_chars: the isError text
+	// is capped exactly like a successful result, with the same structured
+	// truncation notice (previously only the success path was capped).
+	const limit = 1000
+	client := artifactClientWithLimits(t, ServerConfig{MaxResultChars: limit},
+		map[string]string{"FAKE_ERROR_SIZE": "5000"})
+
+	_, err := client.CallTool(context.Background(), "error_result", `{}`)
+	if err == nil {
+		t.Fatal("expected error from error_result tool")
+	}
+	for _, want := range []string{"result truncated", `"error_result"`, "max_result_chars=1000", "5000 chars"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("capped error missing %q: %s", want, err.Error())
+		}
+	}
+	// The "mcpclient …: tool … returned error:" envelope prefix is the only
+	// text allowed outside the cap.
+	if n := utf8.RuneCountInString(err.Error()); n > limit+64 {
+		t.Errorf("error string = %d chars, want <= %d (cap + envelope prefix)", n, limit+64)
+	}
+}
+
 func TestLimits_EnvelopeTruncationRetainsArtifacts(t *testing.T) {
 	path := writeTempArtifact(t, "ok pkg/a 0.3s\n")
 	client := artifactClientWithLimits(t,

@@ -15,7 +15,8 @@ package main
 //                     /nonexistent/outside-allowed-roots.log, overridable via
 //                     FAKE_BAD_ARTIFACT_PATH)
 //   slow            — sleeps "seconds" (default 30) before answering
-//   error_result    — returns a result with isError: true
+//   error_result    — returns a result with isError: true (text length
+//                     overridable via FAKE_ERROR_SIZE for cap tests)
 //
 // All fixtures are neutral (log-analysis style) and contain no secrets.
 
@@ -25,6 +26,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -192,7 +194,13 @@ func handleArtifactCall(req request) bool {
 		writeResp(req.ID, textResult("slow: done", false), nil)
 
 	case "error_result":
-		writeResp(req.ID, textResult("simulated tool failure: log file is empty", true), nil)
+		msg := "simulated tool failure: log file is empty"
+		if s := os.Getenv("FAKE_ERROR_SIZE"); s != "" {
+			if n, err := strconv.Atoi(s); err == nil && n > 0 {
+				msg = strings.Repeat("e", n)
+			}
+		}
+		writeResp(req.ID, textResult(msg, true), nil)
 
 	default:
 		writeResp(req.ID, nil, &rpcError{Code: -32602, Message: fmt.Sprintf("unknown tool: %s", params.Name)})
