@@ -34,9 +34,13 @@ var toolHeartbeatInterval = time.Minute
 // Callers must close the returned channel when the tool call ends (including
 // panic paths) so the watchdog goroutine cannot leak.
 func (e *Engine) startToolHeartbeat(ctx context.Context, toolName string) chan<- struct{} {
+	// Snapshot the interval on the caller's goroutine: reading the package
+	// var inside the watchdog would race with tests overriding it after the
+	// spawning test completed but before the goroutine got scheduled.
+	interval := toolHeartbeatInterval
 	done := make(chan struct{})
 	go func() {
-		ticker := time.NewTicker(toolHeartbeatInterval)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		start := time.Now()
 		for {
