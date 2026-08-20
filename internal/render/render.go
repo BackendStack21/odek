@@ -90,6 +90,23 @@ type Renderer struct {
 	model         string
 	skillVerbose  bool // show skill notifications (auto-load, save, suggest, etc.)
 	memoryVerbose bool // show memory lifecycle + agent-signal notifications
+
+	// streamedOutput marks that the current iteration's reasoning/content
+	// were already streamed to the terminal live (see SetStreamedOutput);
+	// Thinking and FinalAnswer then suppress their bodies so nothing
+	// double-prints.
+	streamedOutput bool
+}
+
+// SetStreamedOutput marks that this iteration's reasoning and content were
+// already streamed to the terminal live by a delta consumer. While set,
+// Thinking and FinalAnswer suppress their bodies; stats headers and Summary
+// still render. The loop sets this per think call and clears it for
+// non-streamed renders (e.g. the iteration-budget partial summary).
+func (r *Renderer) SetStreamedOutput(v bool) {
+	if r != nil {
+		r.streamedOutput = v
+	}
 }
 
 // New creates a Renderer that writes to w. If color is false, ANSI escape
@@ -168,7 +185,7 @@ func (r *Renderer) Iteration(n, maxN int, latency time.Duration, inTokens, outTo
 
 // Thinking prints the model's reasoning text with a brain emoji.
 func (r *Renderer) Thinking(text string) {
-	if r.disable() || text == "" {
+	if r.disable() || text == "" || r.streamedOutput {
 		return
 	}
 	fmt.Fprintln(r.w, r.style(dim+italic, "🧠 "+text))
@@ -398,6 +415,12 @@ func (r *Renderer) ToolResult(output string) {
 // FinalAnswer prints the model's concluding response with a checkmark emoji.
 func (r *Renderer) FinalAnswer(text string) {
 	if r.disable() || text == "" {
+		return
+	}
+	if r.streamedOutput {
+		// The text was already streamed live; print only a separator so the
+		// Summary line below doesn't glue onto the streamed output.
+		fmt.Fprintln(r.w)
 		return
 	}
 	fmt.Fprintln(r.w, r.style(green, "✅ "+text))

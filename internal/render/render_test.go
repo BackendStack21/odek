@@ -859,3 +859,36 @@ func TestFirstSentence_WithExclamation(t *testing.T) {
 		t.Errorf("FirstSentence = %q, want %q", got, want)
 	}
 }
+
+// TestRenderer_SetStreamedOutput verifies that when an iteration's text was
+// already streamed live, Thinking and FinalAnswer suppress their bodies (no
+// double print) while Summary still renders.
+func TestRenderer_SetStreamedOutput(t *testing.T) {
+	var b bytes.Buffer
+	r := New(&b, false)
+
+	r.SetStreamedOutput(true)
+	r.Thinking("reasoning that was streamed")
+	r.FinalAnswer("answer that was streamed")
+	r.Summary(10, 5, 0, 0, 0)
+
+	out := b.String()
+	if strings.Contains(out, "reasoning that was streamed") {
+		t.Errorf("Thinking body double-printed under streamed mode: %q", out)
+	}
+	if strings.Contains(out, "answer that was streamed") {
+		t.Errorf("FinalAnswer body double-printed under streamed mode: %q", out)
+	}
+	if !strings.Contains(out, "10 in") {
+		t.Errorf("Summary missing under streamed mode: %q", out)
+	}
+
+	// Clearing the flag restores normal rendering (e.g. the buffered
+	// iteration-budget partial summary).
+	b.Reset()
+	r.SetStreamedOutput(false)
+	r.FinalAnswer("buffered summary")
+	if !strings.Contains(b.String(), "buffered summary") {
+		t.Errorf("FinalAnswer suppressed after clearing streamed flag: %q", b.String())
+	}
+}

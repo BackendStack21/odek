@@ -174,6 +174,18 @@ type Config struct {
 	// on cached tokens and ~60-80% TTFT latency reduction.
 	PromptCaching bool
 
+	// Stream enables SSE streaming of LLM responses for the main think
+	// step (default: false). Requires DeltaHandler to display anything
+	// incrementally; without one the behavior matches the buffered path.
+	// Auxiliary LLM calls (compaction, progress summaries, memory) always
+	// stay buffered. See docs/STREAMING.md.
+	Stream bool
+
+	// DeltaHandler receives streamed output fragments when Stream is
+	// enabled. It is invoked synchronously and must be non-blocking;
+	// returning an error aborts generation for that call.
+	DeltaHandler func(llm.Delta) error
+
 	// MaxToolParallel controls how many tool calls run concurrently per
 	// agent iteration. 0 = use default (4). Models that emit multiple
 	// parallel tool calls benefit from concurrent execution of I/O-bound
@@ -693,6 +705,12 @@ func New(cfg Config) (*Agent, error) {
 
 	engine := loop.New(client, registry, cfg.MaxIterations, cfg.SystemMessage, cfg.Renderer, maxContext)
 	engine.PromptCaching = cfg.PromptCaching
+	if cfg.Stream {
+		engine.SetStream(true)
+	}
+	if cfg.DeltaHandler != nil {
+		engine.SetDeltaHandler(cfg.DeltaHandler)
+	}
 	engine.SetCompaction(cfg.Compaction)
 	engine.SetLimits(cfg.Limits, cfg.Model)
 	// Cost enforcement needs operator-configured per-million prices; warn
