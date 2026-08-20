@@ -1455,3 +1455,21 @@ func TestLookupProfile_GLM(t *testing.T) {
 		t.Errorf("generic GLM MaxContext = %d, want 131072", g.MaxContext)
 	}
 }
+
+func TestLookupProfile_GLM52AndTurbo(t *testing.T) {
+	p := LookupProfile("glm-5.2")
+	if p == nil {
+		t.Fatal("LookupProfile(\"glm-5.2\") returned nil")
+	}
+	if p.Label != "GLM 5.2 (Z.ai)" || p.MaxContext != 1_000_000 || p.Timeout != 300 {
+		t.Errorf("glm-5.2 profile = %+v, want 1M context / 300s", *p)
+	}
+
+	turbo := LookupProfile("glm-5-turbo")
+	if turbo == nil {
+		t.Fatal("LookupProfile(\"glm-5-turbo\") returned nil")
+	}
+	if turbo.Label != "GLM 5 Turbo (Z.ai)" || turbo.MaxContext != 200_000 || turbo.Timeout != 180 {
+		t.Errorf("glm-5-turbo profile = %+v, want 200K context / 180s", *turbo)
+	}
+}

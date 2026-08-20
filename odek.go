@@ -330,6 +330,26 @@ var KnownProfiles = []struct {
 		},
 	},
 	{
+		// Z.ai GLM-5.2: same 1M/128K window as 5.3 (shared base model,
+		// post-training differs); thinking is disableable, unlike 5.3.
+		Prefix: "glm-5.2",
+		Profile: ModelProfile{
+			Label:      "GLM 5.2 (Z.ai)",
+			Timeout:    300,
+			MaxContext: 1_000_000,
+		},
+	},
+	{
+		// Z.ai GLM-5-Turbo: 200K context / 128K output, optimized for tool
+		// invocation and long execution chains; thinking disableable.
+		Prefix: "glm-5-turbo",
+		Profile: ModelProfile{
+			Label:      "GLM 5 Turbo (Z.ai)",
+			Timeout:    180,
+			MaxContext: 200_000,
+		},
+	},
+	{
 		Prefix: "glm-",
 		Profile: ModelProfile{
 			Label:      "GLM (Z.ai)",
