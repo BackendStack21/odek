@@ -1,4 +1,7 @@
-// WebSocket connection and the server-event dispatch switch.
+// WebSocket connection and the server-event dispatch switch (protocol v2).
+// New in v2: token_delta/thinking_delta live streaming, pong heartbeat
+// replies carrying server info, cancelled confirmations, and the server_info
+// hello pushed on connect.
 import { S, setSessionToken } from './state.js';
 import { getWsToken } from './net.js';
 import { dotEl, statusEl, sendBtn, skeletonEl, messagesEl, modelLabel } from './dom.js';
@@ -10,6 +13,12 @@ import {
 } from './render.js';
 import { queueApproval, dismissApproval } from './approvals.js';
 import { loadSessions } from './sessions.js';
+import { onPong, onServerInfo, startHeartbeat } from './health.js';
+import { metricsLiveContext, metricsDone, flashTrim, turnCostUSD, setMetricsModel } from './metrics.js';
+
+// Reconnect backoff: 1s doubling to a 30s cap; reset after a clean interval
+// of connected silence.
+let reconnectDelay = 1000;
 
 export function connect() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -21,9 +30,11 @@ export function connect() {
     dotEl.className = 'dot connected';
     statusEl.textContent = 'connected';
     sendBtn.disabled = false;
+    reconnectDelay = 1000;
     // Hide loading skeleton when connected
     if (skeletonEl) skeletonEl.classList.remove('visible');
     announce('Connected');
+    startHeartbeat();
   };
 
   S.ws.onclose = () => {
@@ -31,7 +42,8 @@ export function connect() {
     statusEl.textContent = 'reconnecting...';
     sendBtn.disabled = true;
     announce('Connection lost — reconnecting');
-    setTimeout(connect, 2000);
+    setTimeout(connect, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, 30000);
   };
 
   S.ws.onerror = () => { S.ws.close(); };
@@ -41,6 +53,10 @@ export function connect() {
     try { event = JSON.parse(e.data); } catch { return; }
 
     switch (event.type) {
+      case 'server_info':
+        onServerInfo(event);
+        break;
+
       case 'session':
         S.sessionId = event.session_id || null;
         if (event.auth_token) setSessionToken(S.sessionId, event.auth_token);
@@ -48,6 +64,7 @@ export function connect() {
         // (no user-selected model yet). After that the user's choice wins.
         if (event.model && !S.currentModel) {
           S.currentModel = event.model;
+          setMetricsModel(event.model);
           const picker = document.getElementById('model-picker');
           if (picker && picker.value !== event.model) picker.value = event.model;
         }
@@ -57,6 +74,18 @@ export function connect() {
           sandboxBadge.style.display = event.sandbox ? 'inline-flex' : 'none';
         }
         loadSessions();
+        break;
+
+      // ── Live streaming fragments (protocol v2) ──
+      // token_delta appends to the streaming answer bubble through the same
+      // rAF-batched pipeline the bulk token event used; thinking_delta
+      // appends to the collapsible reasoning block.
+      case 'token_delta':
+        streamToken(event.content);
+        break;
+
+      case 'thinking_delta':
+        streamThinking(event.content);
         break;
 
       case 'token':
@@ -88,6 +117,24 @@ export function connect() {
         appendSubagentLog(event.task_idx, event);
         break;
 
+      case 'usage':
+        // Per-iteration usage — feeds the live context gauge while the
+        // run is in flight (final totals arrive on done).
+        S.runIterations = (S.runIterations || 0) + 1;
+        metricsLiveContext(event.contextTokens);
+        break;
+
+      case 'pong':
+        onPong(event);
+        break;
+
+      case 'cancelled':
+        streamFlush();
+        endThinking();
+        endStream();
+        addSystemMessage(event.idle ? '⏹ Nothing to cancel' : '⏹ Cancelled');
+        break;
+
       case 'done':
         streamFlush();
         endThinking();
@@ -108,31 +155,16 @@ export function connect() {
             if (event.cacheCreationTokens > 0) spans.push('<span title="Cache write: tokens stored on first cache-controlled request">' + formatNum(event.cacheCreationTokens) + ' stored</span>');
             if (event.cacheReadTokens > 0) spans.push('<span title="Cache hit: tokens served from cache on subsequent requests">' + formatNum(event.cacheReadTokens) + ' read</span>');
             if (event.cachedTokens > 0) spans.push('<span title="Cached tokens (automatic prefix match)">' + formatNum(event.cachedTokens) + ' cached</span>');
+            const turnCost = turnCostUSD(event.contextTokens || 0, event.outputTokens || 0);
+            if (turnCost != null && turnCost > 0) {
+              spans.push('<span title="Estimated cost of this turn at current prices">◈ $' + turnCost.toFixed(4) + '</span>');
+            }
             stats.innerHTML = spans.join('  ·  ');
             lastAssistant.appendChild(stats);
           }
         }
-        // Update session-level token stats in top bar
-        const sessionStatsEl = document.getElementById('session-stats');
-        if (event.sessionContextTokens != null && event.sessionOutputTokens != null) {
-          const sessSpans = ['<span title="Session total input tokens">∑ ' + formatNum(event.sessionContextTokens) + ' in</span>', '<span title="Session total output tokens">' + formatNum(event.sessionOutputTokens) + ' out</span>'];
-          if (event.cacheReadTokens > 0 || event.cacheCreationTokens > 0 || event.cachedTokens > 0) {
-            // Count total session cache stats (accumulated across the session)
-            // We store cache totals on the session-stats element's dataset
-            const el = document.getElementById('session-stats');
-            const cc = (parseInt(el.dataset.cacheCreate || '0') + (event.cacheCreationTokens || 0));
-            const cr = (parseInt(el.dataset.cacheRead || '0') + (event.cacheReadTokens || 0));
-            const cd = (parseInt(el.dataset.cached || '0') + (event.cachedTokens || 0));
-            el.dataset.cacheCreate = cc;
-            el.dataset.cacheRead = cr;
-            el.dataset.cached = cd;
-            if (cr > 0) sessSpans.push('<span title="Session total cache hits">' + formatNum(cr) + ' read</span>');
-            if (cc > 0) sessSpans.push('<span title="Session total cache writes">' + formatNum(cc) + ' stored</span>');
-            if (cd > 0) sessSpans.push('<span title="Session total cached tokens (automatic)">' + formatNum(cd) + ' cached</span>');
-          }
-          sessionStatsEl.innerHTML = sessSpans.join('  ·  ');
-          sessionStatsEl.classList.add('visible');
-        }
+        // Consolidated metrics (context gauge + session tokens + cost).
+        metricsDone(event);
         if (S.sessionId) loadSessions();
         break;
 
@@ -164,6 +196,15 @@ export function connect() {
         break;
     }
   };
+}
+
+// wsSend safely sends a JSON message when the socket is open.
+export function wsSend(obj) {
+  if (S.ws && S.ws.readyState === WebSocket.OPEN) {
+    S.ws.send(JSON.stringify(obj));
+    return true;
+  }
+  return false;
 }
 
 // ── Skill Events ──
@@ -233,6 +274,7 @@ function handleMemoryEvent(event) {
 function handleAgentSignal(event) {
   switch (event.event) {
     case 'context_trimmed':
+      flashTrim();
       showToast('✂️ Context trimmed (' + (event.detail || '') + '): ' +
         (event.count || 0) + ' group(s) dropped');
       break;

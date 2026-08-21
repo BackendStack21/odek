@@ -56,6 +56,17 @@ type Session struct {
 	Messages  []llm.Message `json:"messages"`             // full conversation history
 	Buffer    []string      `json:"buffer,omitempty"`     // last N turn summaries (memory tier 2)
 
+	// Pinned marks an operator-favorited session. Serve lists pinned
+	// sessions first; it is pure presentation metadata.
+	Pinned bool `json:"pinned,omitempty"`
+
+	// Cumulative token usage across all turns of this session (provider
+	// totals summed at each turn's completion). Presentation/observability
+	// only — never used for budget enforcement (that is per-run, in
+	// internal/budget).
+	InputTokens  int64 `json:"input_tokens,omitempty"`
+	OutputTokens int64 `json:"output_tokens,omitempty"`
+
 	// RedactBoundary records how many leading messages have already been
 	// secret-redacted by a previous save. Redacting the full transcript on
 	// every save is O(history) per write — O(n²) over a session's life —
@@ -292,6 +303,13 @@ type IndexEntry struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Turns     int       `json:"turns"`
+
+	// Presentation metadata surfaced by listings (serve /api/sessions,
+	// bodek). Older index files simply lack them — zero values.
+	Model        string `json:"model,omitempty"`
+	Pinned       bool   `json:"pinned,omitempty"`
+	InputTokens  int64  `json:"input_tokens,omitempty"`
+	OutputTokens int64  `json:"output_tokens,omitempty"`
 }
 
 func (s *Store) indexPath() string {
@@ -337,11 +355,15 @@ func (s *Store) saveIndexLocked(idx map[string]*IndexEntry) error {
 // indexEntry builds an IndexEntry from a Session.
 func indexEntry(sess *Session) *IndexEntry {
 	return &IndexEntry{
-		ID:        sess.ID,
-		Title:     sess.Task,
-		CreatedAt: sess.CreatedAt,
-		UpdatedAt: sess.UpdatedAt,
-		Turns:     sess.Turns,
+		ID:           sess.ID,
+		Title:        sess.Task,
+		CreatedAt:    sess.CreatedAt,
+		UpdatedAt:    sess.UpdatedAt,
+		Turns:        sess.Turns,
+		Model:        sess.Model,
+		Pinned:       sess.Pinned,
+		InputTokens:  sess.InputTokens,
+		OutputTokens: sess.OutputTokens,
 	}
 }
 
@@ -719,12 +741,16 @@ func (s *Store) List(limit int) ([]Session, error) {
 		sessions := make([]Session, len(entries))
 		for i, e := range entries {
 			sessions[i] = Session{
-				ID:        e.ID,
-				CreatedAt: e.CreatedAt,
-				UpdatedAt: e.UpdatedAt,
-				Task:      e.Title,
-				Turns:     e.Turns,
-				Messages:  nil,
+				ID:           e.ID,
+				CreatedAt:    e.CreatedAt,
+				UpdatedAt:    e.UpdatedAt,
+				Task:         e.Title,
+				Turns:        e.Turns,
+				Model:        e.Model,
+				Pinned:       e.Pinned,
+				InputTokens:  e.InputTokens,
+				OutputTokens: e.OutputTokens,
+				Messages:     nil,
 			}
 		}
 		return sessions, nil

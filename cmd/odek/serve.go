@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"embed"
 	"encoding/hex"
@@ -18,12 +19,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/events"
 	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/loop"
@@ -216,6 +219,7 @@ func serveCmd(args []string) error {
 	var sandboxReadonly *bool
 	var promptCaching *bool
 	var compaction *bool
+	var stream *bool
 	var sandboxImage, sandboxNetwork, sandboxMemory, sandboxCPUs, sandboxUser string
 	var toolsEnabled, toolsDisabled, trustedProxies []string
 
@@ -267,6 +271,10 @@ func serveCmd(args []string) error {
 			promptCaching = boolPtr(true)
 		case "--compaction":
 			compaction = boolPtr(true)
+		case "--stream":
+			stream = boolPtr(true)
+		case "--no-stream":
+			stream = boolPtr(false)
 		case "--tool":
 			i++
 			if i >= len(args) {
@@ -297,6 +305,7 @@ func serveCmd(args []string) error {
 		Sandbox:         sandbox,
 		PromptCaching:   promptCaching,
 		Compaction:      compaction,
+		Stream:          stream,
 		SandboxImage:    sandboxImage,
 		SandboxNetwork:  sandboxNetwork,
 		SandboxReadonly: sandboxReadonly,
@@ -345,28 +354,17 @@ func serveCmd(args []string) error {
 		return fmt.Errorf("CSRF token: %w", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", handleStatic(wsToken))
-	mux.Handle("/ws", &golangws.Server{
-		Handshake: func(cfg *golangws.Config, req *http.Request) error {
-			return wsHandshakeWithLimits(cfg, req, wsToken, resolved.TrustedProxies)
-		},
-		Handler: func(conn *golangws.Conn) {
-			handleWS(store, resourceReg, resolved, systemMessage, conn)
-		},
+	memoryDir := expandHome("~/.odek/memory")
+	state := &serveState{startedAt: time.Now(), resolved: resolved}
+	mux := newServeMux(serveMuxDeps{
+		Store:         store,
+		Resources:     resourceReg,
+		Resolved:      resolved,
+		SystemMessage: systemMessage,
+		State:         state,
+		WsToken:       wsToken,
+		MemoryDir:     memoryDir,
 	})
-	// All API endpoints require the per-instance CSRF token, a loopback Host,
-	// and (for state-changing methods) a local Origin. This blocks DNS-rebinding
-	// and cross-site reads of sessions/resources/models.
-	apiAuth := func(h http.Handler) http.Handler {
-		return requireServeToken(wsToken)(requireLocalHost(requireLocalOrigin(h)))
-	}
-	mux.Handle("/api/resources", apiAuth(handleResourceSearch(resourceReg)))
-	mux.Handle("/api/sessions", apiAuth(handleSessionList(store)))
-	mux.Handle("/api/sessions/", apiAuth(handleSessionByID(store, resolved.TrustedProxies, wsToken)))
-	mux.Handle("/api/models", apiAuth(handleModelList(resolved.Model)))
-	mux.Handle("/api/limits", apiAuth(handleLimits(resolved.Model, resolved.Limits)))
-	mux.Handle("/api/cancel", apiAuth(handleCancel(store)))
 
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -403,6 +401,107 @@ func serveCmd(args []string) error {
 	return serveOnListener(listener, mux)
 }
 
+// serveMuxDeps carries everything newServeMux needs. serveCmd builds it
+// from resolved config; tests build it directly to exercise the EXACT
+// production mounting (same routes, same auth wrappers) — there is no
+// second mux definition to drift out of sync.
+type serveMuxDeps struct {
+	Store         *session.Store
+	Resources     *resource.Registry
+	Resolved      config.ResolvedConfig
+	SystemMessage string
+	State         *serveState
+	WsToken       string
+	MemoryDir     string
+}
+
+// newServeMux builds the odek serve HTTP mux: static UI + WebSocket + the
+// full REST management surface, with the per-instance token, loopback Host,
+// and local-origin wrappers applied to every /api route.
+func newServeMux(d serveMuxDeps) *http.ServeMux {
+	resolved := d.Resolved
+	store := d.Store
+	resourceReg := d.Resources
+	wsToken := d.WsToken
+	state := d.State
+	memoryDir := d.MemoryDir
+	systemMessage := d.SystemMessage
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", handleStatic(wsToken))
+	mux.Handle("/ws", &golangws.Server{
+		Handshake: func(cfg *golangws.Config, req *http.Request) error {
+			return wsHandshakeWithLimits(cfg, req, wsToken, resolved.TrustedProxies)
+		},
+		Handler: func(conn *golangws.Conn) {
+			handleWS(store, resourceReg, resolved, systemMessage, state, conn)
+		},
+	})
+	// All API endpoints require the per-instance CSRF token, a loopback Host,
+	// and (for state-changing methods) a local Origin. This blocks DNS-rebinding
+	// and cross-site reads of sessions/resources/models.
+	apiAuth := func(h http.Handler) http.Handler {
+		return requireServeToken(wsToken)(requireLocalHost(requireLocalOrigin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// API responses are dynamic and authenticated — never cacheable.
+			// Without this, a browser's heuristic caching can hand a client
+			// a stale list right after a mutation (e.g. delete → refresh).
+			w.Header().Set("Cache-Control", "no-store")
+			h.ServeHTTP(w, r)
+		}))))
+	}
+	mux.Handle("/api/resources", apiAuth(handleResourceSearch(resourceReg)))
+	mux.Handle("/api/sessions", apiAuth(handleSessionListPaged(store)))
+	mux.Handle("/api/sessions/", apiAuth(handleSessionByID(store, resolved.TrustedProxies, wsToken)))
+	mux.Handle("/api/models", apiAuth(handleModelList(resolved.Model)))
+	mux.Handle("/api/limits", apiAuth(handleLimits(resolved.Model, resolved.Limits)))
+	mux.Handle("/api/cancel", apiAuth(handleCancel(store)))
+	mux.Handle("/api/health", apiAuth(handleHealth(state)))
+	mux.Handle("/api/memory", apiAuth(handleMemoryGet(memoryDir, resolved.Memory)))
+	mux.Handle("/api/memory/facts", apiAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			handleMemoryFactsAdd(memoryDir, resolved.Memory)(w, r)
+		case http.MethodDelete:
+			handleMemoryFactsRemove(memoryDir, resolved.Memory)(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})))
+	mux.Handle("/api/memory/episodes/promote", apiAuth(handleMemoryEpisodePromote(memoryDir)))
+	mux.Handle("/api/skills", apiAuth(handleSkills(resolved.Skills)))
+	mux.Handle("/api/skills/promote", apiAuth(handleSkillPromote()))
+	mux.Handle("/api/tools", apiAuth(handleTools(resolved)))
+	mux.Handle("/api/profiles", apiAuth(handleProfiles()))
+	mux.Handle("/api/config", apiAuth(handleConfigView(resolved)))
+	mux.Handle("/api/mcp", apiAuth(handleMCPServers(resolved)))
+
+	// Headless runs — same handlePrompt path as WebSocket prompts, with a
+	// REST approval bridge. See serve_runs.go.
+	mux.Handle("/api/prompt", apiAuth(handlePromptStart(state, store, resourceReg, systemMessage)))
+	mux.Handle("/api/runs", apiAuth(handleRunList()))
+	mux.Handle("/api/runs/", apiAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rest := strings.TrimPrefix(r.URL.Path, "/api/runs/")
+		switch {
+		case strings.HasSuffix(rest, "/approvals") && r.Method == http.MethodGet:
+			handleRunApprovalList()(w, r)
+		case strings.Contains(rest, "/approvals/"):
+			handleRunApprovalAnswer()(w, r)
+		case strings.HasSuffix(rest, "/cancel"):
+			handleRunCancel()(w, r)
+		default:
+			handleRunByID()(w, r)
+		}
+	})))
+
+	// Observability + lifecycle.
+	mux.Handle("/api/events", apiAuth(handleEvents()))
+	mux.Handle("/api/usage", apiAuth(handleUsage(resolved)))
+	mux.Handle("/api/connections", apiAuth(handleConnections()))
+	mux.Handle("/api/connections/", apiAuth(handleConnectionKick()))
+	mux.Handle("/api/memory/consolidate", apiAuth(handleMemoryConsolidate(memoryDir, resolved)))
+	mux.Handle("/api/shutdown", apiAuth(handleShutdown()))
+	return mux
+}
+
 // printServeHelp prints the serve command help text.
 func printServeHelp() {
 	fmt.Println(`Usage: odek serve [flags]
@@ -420,10 +519,25 @@ Flags:
   --sandbox-memory limit   Container memory limit (e.g. 512m, 2g)
   --sandbox-cpus limit     Container CPU limit (e.g. 0.5, 2, 4)
   --sandbox-user user      Container user (e.g. 1000:1000)
+  --stream                 Stream LLM responses live to the Web UI (token deltas)
+  --no-stream              Disable streaming (config/env may enable it)
   --tool name              Enable a tool for the LLM (repeatable)
   --no-tool name           Disable a tool for the LLM (repeatable)
   --trusted-proxies list   Comma-separated IPs/CIDRs whose X-Forwarded-For headers are trusted
   --help, -h               Show this help`)
+}
+
+// serveShutdownCh lets POST /api/shutdown trigger the same graceful drain
+// as SIGINT/SIGTERM. Closed at most once.
+var (
+	serveShutdownOnce sync.Once
+	serveShutdownCh   = make(chan struct{})
+)
+
+// requestServeShutdown starts the graceful shutdown sequence (stop
+// accepting, close WebSockets, drain containers).
+func requestServeShutdown() {
+	serveShutdownOnce.Do(func() { close(serveShutdownCh) })
 }
 
 // serveOnListener serves the odek Web UI on a pre-created listener.
@@ -449,6 +563,8 @@ func serveOnListener(listener net.Listener, mux *http.ServeMux) error {
 		return err
 	case sig := <-quit:
 		fmt.Fprintf(os.Stderr, "\nodek serve: %s received, shutting down...\n", sig)
+	case <-serveShutdownCh:
+		fmt.Fprintln(os.Stderr, "\nodek serve: shutdown requested via API, shutting down...")
 	}
 
 	// Phase 1: stop accepting new connections.
@@ -488,7 +604,44 @@ func serveOnListener(listener net.Listener, mux *http.ServeMux) error {
 
 // ── Agent Builder ──────────────────────────────────────────────────────
 
-func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v any) error) (*odek.Agent, func() error, func(), func() error, guard.Guard, *wsApprover, error) {
+// wsDeltaCounters tracks streamed-fragment activity for the prompt currently
+// executing on a WebSocket connection. Reset at prompt start; consulted by
+// the IterationCallback (to suppress the per-iteration reasoning echo while
+// deltas are flowing) and after the run (to skip the post-run bulk re-send
+// of content the client already received live). When a provider rejects SSE
+// and the LLM client falls back to the buffered path, no deltas fire, the
+// counters stay zero, and the legacy bulk events are sent as before.
+type wsDeltaCounters struct {
+	mu        sync.Mutex
+	reasoning int
+	content   int
+}
+
+func (c *wsDeltaCounters) reset() {
+	c.mu.Lock()
+	c.reasoning, c.content = 0, 0
+	c.mu.Unlock()
+}
+
+func (c *wsDeltaCounters) addReasoning() {
+	c.mu.Lock()
+	c.reasoning++
+	c.mu.Unlock()
+}
+
+func (c *wsDeltaCounters) addContent() {
+	c.mu.Lock()
+	c.content++
+	c.mu.Unlock()
+}
+
+func (c *wsDeltaCounters) snapshot() (reasoning, content int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.reasoning, c.content
+}
+
+func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v any) error, deltas *wsDeltaCounters) (*odek.Agent, func() error, func(), func() error, guard.Guard, *wsApprover, error) {
 	var sm *skills.SkillManager
 	if resolved.Skills.Learn {
 		sm = skills.NewSkillManagerWithEmbedding(
@@ -613,8 +766,13 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 		NoProjectFile:    resolved.NoAgents,
 		Thinking:         resolved.Thinking,
 		InteractionMode:  resolved.InteractionMode,
-		Tools:            tools,
-		ToolFilter:       odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
+		// Live streaming: forward SSE fragments to the browser as
+		// thinking_delta / token_delta events (docs/STREAMING.md). Off by
+		// default; enabled with --stream / ODEK_STREAM / config "stream".
+		Stream:       resolved.Stream,
+		DeltaHandler: serveDeltaHandler(sendFn, deltas),
+		Tools:        tools,
+		ToolFilter:   odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
 		// SandboxCleanup is intentionally NOT passed here. In serve mode,
 		// cleanup is the caller's responsibility (handleWS defers it).
 		// Passing it here would cause agent.Close() to call docker rm -f,
@@ -627,6 +785,12 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 		MemoryDir:    expandHome("~/.odek/memory"),
 		Guard:        injectionGuard,
 		GuardConfig:  resolved.Guard,
+		// Runtime event stream (odek.event/v1) — feeds /api/events. The
+		// emitter is panic-isolated upstream; args are hashed + redacted
+		// before they reach this handler, so the ring holds no raw data.
+		EventHandler: func(ev events.Event) {
+			serveEvents.add(ev)
+		},
 		ToolEventHandler: func(event, name, data string) {
 			sendFn(map[string]any{
 				"type": event,
@@ -666,13 +830,17 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 		},
 		// Stream thinking/reasoning content to the WebUI.
 		// Only fire for pre-tool iterations (reasoning before tool calls);
-		// post-tool callbacks have no new reasoning to display.
+		// post-tool callbacks have no new reasoning to display. Skipped when
+		// delta streaming is delivering reasoning live (thinking_delta) —
+		// the echo would duplicate it after the fact.
 		IterationCallback: func(info loop.IterationInfo) {
 			if info.IsPreTool && info.ReasoningContent != "" {
-				sendFn(map[string]any{
-					"type":    "thinking",
-					"content": info.ReasoningContent,
-				})
+				if reasoningDeltas, _ := deltas.snapshot(); reasoningDeltas == 0 {
+					sendFn(map[string]any{
+						"type":    "thinking",
+						"content": info.ReasoningContent,
+					})
+				}
 			}
 			// Stream per-iteration token usage so clients can refresh their
 			// context gauge live during a run instead of waiting for "done"
@@ -701,6 +869,53 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 	return agent, sandboxCleanup, mcpCleanup, guardCleanup, injectionGuard, approver, nil
 }
 
+// serveDeltaHandler builds the loop DeltaHandler for a serve connection:
+// reasoning fragments go out as thinking_delta, answer fragments as
+// token_delta. Counted in deltas so handlePrompt can suppress the post-run
+// bulk re-send. Tool-argument fragments are already suppressed by the engine.
+func serveDeltaHandler(sendFn func(v any) error, deltas *wsDeltaCounters) func(llm.Delta) error {
+	if deltas == nil {
+		return nil
+	}
+	return func(d llm.Delta) error {
+		switch d.Kind {
+		case llm.DeltaReasoning:
+			deltas.addReasoning()
+			sendFn(map[string]any{"type": "thinking_delta", "content": d.Text})
+		case llm.DeltaContent:
+			deltas.addContent()
+			sendFn(map[string]any{"type": "token_delta", "content": d.Text})
+		}
+		return nil
+	}
+}
+
+// serveStateStartedAt returns the tracked start time, or the process start
+// as a fallback when no serveState was wired (tests pass nil).
+func serveStateStartedAt(st *serveState) time.Time {
+	if st == nil {
+		return processStart
+	}
+	return st.startedAt
+}
+
+// processStart is stamped at init for uptime reporting when no serveState
+// is available.
+var processStart = time.Now()
+
+// wsServerInfoEvent is the compact server snapshot carried by server_info
+// (sent on connect) and pong (heartbeat replies).
+func wsServerInfoEvent(startedAt time.Time, resolved config.ResolvedConfig) map[string]any {
+	return map[string]any{
+		"version":        version,
+		"model":          resolved.Model,
+		"sandbox":        resolved.Sandbox,
+		"stream":         resolved.Stream,
+		"uptime_seconds": int64(time.Since(startedAt).Seconds()),
+		"ws_connections": atomic.LoadInt64(&serveWSConnections),
+	}
+}
+
 // ── WebSocket Types ────────────────────────────────────────────────────
 
 type wsAttachment struct {
@@ -720,7 +935,7 @@ type wsClientMsg struct {
 
 // ── WebSocket Handler ──────────────────────────────────────────────────
 
-func handleWS(store *session.Store, resources *resource.Registry, resolved config.ResolvedConfig, system string, conn *golangws.Conn) {
+func handleWS(store *session.Store, resources *resource.Registry, resolved config.ResolvedConfig, system string, state *serveState, conn *golangws.Conn) {
 	// Release the connection slot acquired by wsHandshakeWithLimits. This runs
 	// after the handler exits, whether normally or via panic/close.
 	defer func() {
@@ -729,6 +944,9 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 		default:
 		}
 	}()
+	// Track the live connection for /api/health and pong info payloads.
+	atomic.AddInt64(&serveWSConnections, 1)
+	defer atomic.AddInt64(&serveWSConnections, -1)
 
 	// Register for graceful-shutdown tracking before anything else.
 	// serveOnListener closes all tracked connections on SIGINT/SIGTERM,
@@ -741,19 +959,48 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 	}()
 	defer conn.Close()
 
+	// Connection registry for /api/connections — live management state
+	// (session, busy, prompts). Unregistered on every exit path.
+	// The HTTP peer address (e.g. "127.0.0.1:54321"). Preferred over
+	// Conn.RemoteAddr(), whose Addr.String() panics when the handshake
+	// config carries no Origin URL (in-process test handlers).
+	remote := ""
+	if req := conn.Request(); req != nil {
+		remote = req.RemoteAddr
+	}
+	connInfo := &wsConnInfo{
+		ID:          newWSConnID(),
+		RemoteAddr:  remote,
+		ConnectedAt: time.Now().UTC(),
+		conn:        conn,
+	}
+	wsConnRegister(connInfo)
+	defer wsConnUnregister(connInfo.ID)
+
 	// Cap incoming message size to prevent a local client from exhausting
 	// server memory with a single huge frame.
 	conn.MaxPayloadBytes = maxWSMessageBytes
+
+	// Per-connection streamed-fragment counters (see wsDeltaCounters).
+	var deltas wsDeltaCounters
 
 	// Create ONE agent per WebSocket connection — provides buffer
 	// continuity across turns within the same session.
 	agent, sandboxCleanup, mcpCleanup, guardCleanup, injectionGuard, approver, err := newServeAgent(resolved, system, func(v any) error {
 		writeWSJSON(conn, v)
 		return nil
-	})
+	}, &deltas)
 	if err != nil {
 		writeWSError(conn, fmt.Sprintf("agent: %v", err))
 		return
+	}
+
+	// Server hello: let the client learn version/model/sandbox/stream state
+	// without sending a prompt first.
+	if state != nil {
+		info := wsServerInfoEvent(state.startedAt, resolved)
+		info["type"] = "server_info"
+		writeWSJSON(conn, info)
 	}
 	defer agent.Close()
 	if guardCleanup != nil {
@@ -823,6 +1070,27 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 				continue
 			}
 
+			// Application-level heartbeat. Handled inline in the reader so it
+			// is answered even while a prompt occupies the processor loop.
+			if msgType.Type == "ping" {
+				pong := wsServerInfoEvent(serveStateStartedAt(state), resolved)
+				pong["type"] = "pong"
+				pong["t"] = time.Now().UnixMilli()
+				writeWSJSON(conn, pong)
+				continue
+			}
+
+			// Cancel the running prompt over the WebSocket itself (same
+			// session-scoped auth as POST /api/cancel — a cancel may only
+			// target a session whose token the caller holds).
+			if msgType.Type == "cancel" {
+				var msg wsClientMsg
+				if err := json.Unmarshal(data, &msg); err == nil {
+					handleWSCancel(store, conn, msg)
+				}
+				continue
+			}
+
 			// Approval responses are handled here, off the processor goroutine,
 			// so a prompt blocked awaiting approval can be unblocked. This is
 			// the crux of the deadlock fix.
@@ -859,6 +1127,34 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 			Type string `json:"type"`
 		}
 		if err := json.Unmarshal(data, &msgType); err != nil {
+			continue
+		}
+
+		// Session switch without sending a prompt: loads the session into
+		// this connection's agent (buffer restore) and emits the standard
+		// session event so the client's state converges immediately.
+		if msgType.Type == "session_switch" {
+			var msg wsClientMsg
+			if err := json.Unmarshal(data, &msg); err == nil && msg.SessionID != "" {
+				sess, err := store.Load(msg.SessionID)
+				if err != nil {
+					writeWSError(conn, "session not found")
+					continue
+				}
+				if _, ok := validateSessionToken(store, sess, msg.AuthToken); !ok {
+					writeWSError(conn, "invalid session token")
+					continue
+				}
+				currentSession = sess
+				connInfo.setLive(sess.ID, false)
+				if mm := agent.Memory(); mm != nil {
+					mm.ClearBuffer()
+					if len(sess.Buffer) > 0 {
+						mm.RestoreBuffer(sess.Buffer)
+					}
+				}
+				writeWSJSON(conn, map[string]any{"type": "session", "session_id": sess.ID, "auth_token": sess.AuthToken, "model": resolved.Model, "sandbox": resolved.Sandbox})
+			}
 			continue
 		}
 
@@ -935,7 +1231,15 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 		// Derived from connCtx so a disconnect also aborts the running prompt.
 		promptCtx, promptCancel := context.WithCancel(connCtx)
 
-		currentSession = handlePrompt(promptCtx, conn, store, resources, resolved, agent, injectionGuard, currentSession, msg, &sessionInputTokens, &sessionOutputTokens, promptCancel)
+		wsSend := func(m map[string]any) { writeWSJSON(conn, m) }
+		connInfo.setLive(msg.SessionID, true)
+		currentSession = handlePrompt(promptCtx, wsSend, store, resources, resolved, agent, injectionGuard, currentSession, msg, &sessionInputTokens, &sessionOutputTokens, promptCancel, &deltas)
+		connInfo.recordPrompt()
+		sid := ""
+		if currentSession != nil {
+			sid = currentSession.ID
+		}
+		connInfo.setLive(sid, false)
 
 		// Cancel the prompt context once the run is complete.
 		promptCancel()
@@ -951,6 +1255,30 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 	}
 }
 
+// handleWSCancel processes a WebSocket cancel message. Auth mirrors
+// POST /api/cancel: the caller must present the target session's auth token,
+// which prevents one connection from cancelling another's prompt.
+func handleWSCancel(store *session.Store, conn *golangws.Conn, msg wsClientMsg) {
+	if msg.SessionID == "" {
+		writeWSError(conn, "cancel: missing session_id")
+		return
+	}
+	sess, err := store.Load(msg.SessionID)
+	if err != nil {
+		writeWSError(conn, "cancel: session not found")
+		return
+	}
+	if _, ok := validateSessionToken(store, sess, msg.AuthToken); !ok {
+		writeWSError(conn, "cancel: invalid session token")
+		return
+	}
+	if cancelPrompt(msg.SessionID) {
+		writeWSJSON(conn, map[string]any{"type": "cancelled", "session_id": msg.SessionID})
+	} else {
+		writeWSJSON(conn, map[string]any{"type": "cancelled", "session_id": msg.SessionID, "idle": true})
+	}
+}
+
 // ── Prompt Handler ─────────────────────────────────────────────────────
 
 // handlePrompt processes a single user prompt within a WebSocket connection.
@@ -958,7 +1286,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 // Returns the updated session (may be a new session for first prompts).
 func handlePrompt(
 	ctx context.Context,
-	conn *golangws.Conn,
+	send func(map[string]any),
 	store *session.Store,
 	resources *resource.Registry,
 	resolved config.ResolvedConfig,
@@ -968,6 +1296,7 @@ func handlePrompt(
 	msg wsClientMsg,
 	sessionInputTokens, sessionOutputTokens *int,
 	promptCancel context.CancelFunc,
+	deltas *wsDeltaCounters,
 ) *session.Session {
 	prompt := msg.Content
 	sessionID := msg.SessionID
@@ -976,7 +1305,7 @@ func handlePrompt(
 	// up to the WebSocket frame cap; reject anything above a reasonable prompt
 	// limit before storing it in the session or forwarding it to the LLM.
 	if len(prompt) > maxPromptBytes {
-		writeWSError(conn, "prompt exceeds maximum size")
+		sendError(send, "prompt exceeds maximum size")
 		return currSess
 	}
 
@@ -985,12 +1314,13 @@ func handlePrompt(
 	// control / unusual characters to prevent oversized payloads or injection.
 	if msg.Model != "" {
 		if len(msg.Model) > maxModelIDBytes || !modelIDPattern.MatchString(msg.Model) {
-			writeWSError(conn, "invalid model ID")
+			sendError(send, "invalid model ID")
 			return currSess
 		}
 	}
 
 	originalPrompt := prompt
+	atomic.AddInt64(&serveStats.PromptsStarted, 1)
 
 	// Load or create session early so the audit recorder can be attached
 	// before @-references and Web-UI attachments are wrapped.
@@ -1050,12 +1380,12 @@ func handlePrompt(
 				continue
 			}
 			if len(att.Content) > maxAttachmentBytes {
-				writeWSError(conn, "attachment too large: "+att.Name)
+				sendError(send, "attachment too large: "+att.Name)
 				return currSess
 			}
 			total += len(att.Content)
 			if total > maxTotalAttachmentBytes {
-				writeWSError(conn, "total attachment size exceeds 10 MB")
+				sendError(send, "total attachment size exceeds 10 MB")
 				return currSess
 			}
 			header := "--- " + att.Name + " ---\n"
@@ -1101,6 +1431,11 @@ func handlePrompt(
 	if agent.Memory() != nil && sess != nil {
 		agent.Memory().SetSessionContext(sess.ID, cwd)
 	}
+	// Stamp the session onto subsequent odek.event/v1 events so /api/events
+	// can filter by session.
+	if sess != nil {
+		agent.SetEventSessionID(sess.ID)
+	}
 
 	// Send session info
 	sid := ""
@@ -1115,11 +1450,17 @@ func handlePrompt(
 		registerPromptCancel(sid, promptCancel)
 		defer unregisterPromptCancel(sid)
 	}
-	writeWSJSON(conn, map[string]any{"type": "session", "session_id": sid, "auth_token": authToken, "model": resolved.Model, "sandbox": resolved.Sandbox})
+	send(map[string]any{"type": "session", "session_id": sid, "auth_token": authToken, "model": resolved.Model, "sandbox": resolved.Sandbox})
 
 	// Append user input to buffer (AppendBuffer summarizes raw text).
 	if mm := agent.Memory(); mm != nil {
 		mm.AppendBuffer("user", prompt)
+	}
+
+	// Reset the streamed-fragment counters for this run; they decide below
+	// whether the post-run bulk re-send can be skipped.
+	if deltas != nil {
+		deltas.reset()
 	}
 
 	origLen := len(messages) - 1 // initial estimate: index of the user message we appended
@@ -1151,9 +1492,13 @@ func handlePrompt(
 	start := time.Now()
 	_, allMessages, err := agent.RunWithMessages(ctx, messages)
 	latency := time.Since(start)
+	streamedReasoning, streamedContent := 0, 0
+	if deltas != nil {
+		streamedReasoning, streamedContent = deltas.snapshot()
+	}
 
 	if err != nil {
-		writeWSError(conn, err.Error())
+		sendError(send, err.Error())
 		return currSess // return unchanged session on error
 	}
 
@@ -1210,12 +1555,16 @@ func handlePrompt(
 		}
 
 		// Final answer: send reasoning as a thinking event first (if present),
-		// then stream the response text.
-		if msg.ReasoningContent != "" {
-			writeWSJSON(conn, map[string]any{"type": "thinking", "content": msg.ReasoningContent})
+		// then stream the response text. Both bulk sends are skipped when the
+		// client already received this run's fragments live (token_delta /
+		// thinking_delta) — re-sending would duplicate the whole answer. A
+		// provider that rejected SSE leaves the counters at zero and takes
+		// this bulk path unchanged.
+		if msg.ReasoningContent != "" && streamedReasoning == 0 {
+			send(map[string]any{"type": "thinking", "content": msg.ReasoningContent})
 		}
-		if msg.Content != "" {
-			writeWSJSON(conn, map[string]any{"type": "token", "content": msg.Content})
+		if msg.Content != "" && streamedContent == 0 {
+			send(map[string]any{"type": "token", "content": msg.Content})
 		}
 	}
 
@@ -1236,18 +1585,16 @@ func handlePrompt(
 	cached := agent.TotalCachedTokens()
 	*sessionInputTokens += contextTokens
 	*sessionOutputTokens += outputTokens
+	atomic.AddInt64(&serveStats.TokensIn, int64(contextTokens))
+	atomic.AddInt64(&serveStats.TokensOut, int64(outputTokens))
+	atomic.AddInt64(&serveStats.PromptsCompleted, 1)
 
-	writeWSJSON(conn, map[string]any{
-		"type":                 "done",
-		"latency":              latency.Seconds(),
-		"contextTokens":        contextTokens,
-		"outputTokens":         outputTokens,
-		"cacheCreationTokens":  cacheCreate,
-		"cacheReadTokens":      cacheRead,
-		"cachedTokens":         cached,
-		"sessionContextTokens": *sessionInputTokens,
-		"sessionOutputTokens":  *sessionOutputTokens,
-	})
+	// Cumulative per-session usage (observability only — budgets are
+	// enforced per-run by internal/budget).
+	if sess != nil {
+		sess.InputTokens += int64(contextTokens)
+		sess.OutputTokens += int64(outputTokens)
+	}
 
 	// Save session — persist buffer and update the vector index.
 	// The message history was already persisted per-turn by the persist
@@ -1260,6 +1607,21 @@ func handlePrompt(
 		}
 		store.Save(sess)
 	}
+
+	// done is sent only AFTER the final save: clients refresh their session
+	// list the moment they see done, and a save-after-send race would hand
+	// them stale state (usage, turns, updated_at).
+	send(map[string]any{
+		"type":                 "done",
+		"latency":              latency.Seconds(),
+		"contextTokens":        contextTokens,
+		"outputTokens":         outputTokens,
+		"cacheCreationTokens":  cacheCreate,
+		"cacheReadTokens":      cacheRead,
+		"cachedTokens":         cached,
+		"sessionContextTokens": *sessionInputTokens,
+		"sessionOutputTokens":  *sessionOutputTokens,
+	})
 
 	// ── Learn loop: run self-improvement heuristics ──
 	if agent.SkillManager() != nil {
@@ -1575,6 +1937,12 @@ func writeWSError(conn *golangws.Conn, msg string) {
 	writeWSJSON(conn, map[string]string{"type": "error", "message": msg})
 }
 
+// sendError emits an error event through a generic send sink (used by the
+// headless run path, which has no socket).
+func sendError(send func(map[string]any), msg string) {
+	send(map[string]any{"type": "error", "message": msg})
+}
+
 // ── API Handlers ───────────────────────────────────────────────────────
 
 func handleResourceSearch(reg *resource.Registry) http.HandlerFunc {
@@ -1630,6 +1998,13 @@ func handleSessionList(store *session.Store) http.HandlerFunc {
 func handleSessionByID(store *session.Store, trustedProxies []string, wsToken string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
+		// /api/sessions/{id}/export — transcript download (md|json). Shares
+		// the GET auth path below (rate limit + session token).
+		exportFormat := ""
+		if strings.HasSuffix(id, "/export") {
+			id = strings.TrimSuffix(id, "/export")
+			exportFormat = r.URL.Query().Get("format")
+		}
 		if id == "" {
 			http.Error(w, "missing session id", http.StatusBadRequest)
 			return
@@ -1665,6 +2040,10 @@ func handleSessionByID(store *session.Store, trustedProxies []string, wsToken st
 				http.Error(w, "invalid session token", http.StatusUnauthorized)
 				return
 			}
+			if strings.HasSuffix(r.URL.Path, "/export") {
+				handleSessionExport(sess, exportFormat, w)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			if effectiveToken != "" {
 				w.Header().Set("X-Session-Token", effectiveToken)
@@ -1689,12 +2068,18 @@ func handleSessionByID(store *session.Store, trustedProxies []string, wsToken st
 			w.WriteHeader(http.StatusNoContent)
 
 		case http.MethodPost:
-			// Rename session
+			// Rename and/or pin a session. Pointer fields distinguish
+			// "absent" from explicit false so each may be sent alone.
 			var body struct {
-				Name string `json:"name"`
+				Name   *string `json:"name"`
+				Pinned *bool   `json:"pinned"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				http.Error(w, "invalid JSON", http.StatusBadRequest)
+				return
+			}
+			if body.Name == nil && body.Pinned == nil {
+				http.Error(w, "nothing to update (name or pinned required)", http.StatusBadRequest)
 				return
 			}
 			sess, err := store.Load(id)
@@ -1707,7 +2092,12 @@ func handleSessionByID(store *session.Store, trustedProxies []string, wsToken st
 				http.Error(w, "invalid session token", http.StatusUnauthorized)
 				return
 			}
-			sess.Task = body.Name
+			if body.Name != nil {
+				sess.Task = *body.Name
+			}
+			if body.Pinned != nil {
+				sess.Pinned = *body.Pinned
+			}
 			store.Save(sess)
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(sess)
@@ -1952,6 +2342,22 @@ func handleStatic(wsToken string) http.HandlerFunc {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Frame-Options", "DENY")
+		// Assets are content-addressed by a strong ETag with
+		// must-revalidate semantics: a browser tab left open across an
+		// odek upgrade revalidates, gets a 304 when the file is unchanged,
+		// and picks up the new UI the moment it differs — no heuristic
+		// caching serving a stale frontend after `odek upgrade`.
+		etag := `"` + fmt.Sprintf("%x", sha256.Sum256(data)) + `"`
+		w.Header().Set("ETag", etag)
+		// The token-bearing index.html keeps its stricter no-store policy
+		// (set above) — only plain assets get the revalidate contract.
+		if w.Header().Get("Cache-Control") == "" {
+			w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+		}
+		if r.Header.Get("If-None-Match") == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
 		// Strict CSP: no inline scripts (all handlers are addEventListener /
 		// delegation), styles only from self + the few style="" attributes in
 		// index.html. frame-ancestors replaces the old standalone CSP line.
