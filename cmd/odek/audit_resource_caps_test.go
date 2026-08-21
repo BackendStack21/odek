@@ -6,11 +6,13 @@ package main
 // stack-exhaustion on multi-MB inputs).
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/BackendStack21/odek/internal/config"
@@ -35,7 +37,9 @@ func TestAudit_VisionRejectsHugeFile(t *testing.T) {
 
 	tool := newVisionTool(danger.DangerousConfig{}, config.VisionConfig{})
 	out, _ := tool.Call(`{"path":` + fmt.Sprintf("%q", big) + `}`)
-	var r struct{ Error string `json:"error"` }
+	var r struct {
+		Error string `json:"error"`
+	}
 	if err := json.Unmarshal([]byte(out), &r); err != nil {
 		t.Fatalf("unmarshal: %v\nraw: %s", err, out)
 	}
@@ -65,7 +69,9 @@ func TestAudit_DiffProductCap(t *testing.T) {
 
 	tool := &diffTool{}
 	out, _ := tool.Call(`{"path_a":` + fmt.Sprintf("%q", a) + `,"path_b":` + fmt.Sprintf("%q", b) + `}`)
-	var r struct{ Error string `json:"error"` }
+	var r struct {
+		Error string `json:"error"`
+	}
 	if err := json.Unmarshal([]byte(out), &r); err != nil {
 		t.Fatalf("unmarshal: %v\nraw: %s", err, out)
 	}
@@ -82,7 +88,9 @@ func TestAudit_MathEvalDepthCap(t *testing.T) {
 	deep := strings.Repeat("(", 10000) + "1" + strings.Repeat(")", 10000)
 	tool := &mathEvalTool{}
 	out, _ := tool.Call(`{"expression":` + fmt.Sprintf("%q", deep) + `}`)
-	var r struct{ Error string `json:"error"` }
+	var r struct {
+		Error string `json:"error"`
+	}
 	if err := json.Unmarshal([]byte(out), &r); err != nil {
 		t.Fatalf("unmarshal: %v\nraw: %s", err, out)
 	}
@@ -122,4 +130,23 @@ func TestAudit_ChildEnvWithoutSecrets(t *testing.T) {
 	if !sawKeep {
 		t.Error("child env dropped an unrelated variable")
 	}
+}
+
+// TestAudit_DelegateContextNoRace pins the 2026-08 data-race fix: the loop
+// runs parallel tool calls against the SAME tool instance and calls
+// SetContext from each goroutine. delegateTasksTool used to store the
+// context in a bare field (race on t.ctx); it now embeds the mutexed
+// ctxTool like every other context-aware tool. Run with -race to verify.
+func TestAudit_DelegateContextNoRace(t *testing.T) {
+	tool := &delegateTasksTool{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(2)
+		go func() { defer wg.Done(); tool.SetContext(ctx) }()
+		go func() { defer wg.Done(); _ = tool.toolCtx() }()
+	}
+	wg.Wait()
 }

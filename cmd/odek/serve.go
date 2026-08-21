@@ -973,6 +973,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 		wsHandlerWG.Done()
 	}()
 	defer conn.Close()
+	defer releaseConnWriter(conn) // drop the per-connection write state
 
 	// Connection registry for /api/connections — live management state
 	// (session, busy, prompts). Unregistered on every exit path.
@@ -1938,21 +1939,76 @@ func validateSessionToken(store *session.Store, sess *session.Session, token str
 	return "", false
 }
 
-// wsWriteMu serializes WebSocket frame writes. golang.org/x/net/websocket is
-// not safe for concurrent Sends, and frames are written from several
-// goroutines (agent loop callbacks, subagent logs, approvals, socket
-// reader); unsynchronized writes interleave into torn JSON. Process-wide,
-// matching the TTY approver's serialization idiom.
-var wsWriteMu sync.Mutex
+// wsWriteTimeout bounds a single WebSocket frame write. A client that
+// stops reading while its run streams (SIGSTOP'd process, or a token
+// holder with --stream enabled) fills its TCP receive window and blocks
+// Send forever; the write previously held the process-wide mutex while
+// doing so, freezing every connection's writes — approval prompts and
+// pongs included — until the wedged client drained (2026-08 audit). A var
+// so tests can shrink it.
+var wsWriteTimeout = 30 * time.Second
+
+// wsConnWriters gives each connection its own write lock.
+// golang.org/x/net/websocket is not safe for concurrent Sends, and frames
+// are written from several goroutines (agent loop callbacks, subagent
+// logs, approvals, socket reader); unsynchronized writes interleave into
+// torn JSON. Serialization is per connection — a slow client must not
+// stall writes to other clients, which the old process-wide mutex did.
+var wsConnWriters sync.Map // *golangws.Conn → *connWriteState
+
+type connWriteState struct {
+	mu   sync.Mutex
+	dead bool // write timed out: fast-fail all later sends on this conn
+}
+
+func connWriter(conn *golangws.Conn) *connWriteState {
+	if v, ok := wsConnWriters.Load(conn); ok {
+		return v.(*connWriteState)
+	}
+	w := &connWriteState{}
+	actual, _ := wsConnWriters.LoadOrStore(conn, w)
+	return actual.(*connWriteState)
+}
+
+// releaseConnWriter drops a closed connection's write state. Called from
+// handleWS's teardown and after a write-timeout teardown.
+func releaseConnWriter(conn *golangws.Conn) {
+	wsConnWriters.Delete(conn)
+}
 
 func writeWSJSON(conn *golangws.Conn, data any) {
 	payload, err := json.Marshal(data)
 	if err != nil {
 		return
 	}
-	wsWriteMu.Lock()
-	defer wsWriteMu.Unlock()
-	golangws.Message.Send(conn, string(payload))
+	w := connWriter(conn)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.dead {
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		golangws.Message.Send(conn, string(payload))
+	}()
+	select {
+	case <-done:
+	case <-time.After(wsWriteTimeout):
+		// The client stopped reading: its TCP receive window is full and
+		// Send is wedged. Abandon the write (bounded caller, per-conn
+		// lock released, later sends on this conn fast-fail) and tear the
+		// connection down best-effort. The Close is asynchronous because
+		// x/net/websocket's Close writes a close frame through the same
+		// internal write lock the stuck sender holds — a synchronous call
+		// would deadlock the watchdog. If the client never drains, the
+		// parked sender and Close goroutines leak — bounded by
+		// maxWSConnections and cleaned up when the socket eventually
+		// errors out.
+		w.dead = true
+		go func() { _ = conn.Close() }()
+		releaseConnWriter(conn)
+	}
 }
 
 func writeWSError(conn *golangws.Conn, msg string) {

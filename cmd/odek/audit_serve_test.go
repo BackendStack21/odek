@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -181,5 +182,47 @@ func TestAudit_ResumeTaskPreview(t *testing.T) {
 	got := resumeTaskPreview([]llm.Message{{Role: "user", Content: long}})
 	if runes := len([]rune(got)); runes != 81 || !strings.HasSuffix(got, "…") {
 		t.Errorf("resumeTaskPreview(long) = %d runes, want 81 with ellipsis suffix", runes)
+	}
+}
+
+// TestAudit_WriteWSJSONStalledClientBounded pins the 2026-08 fix: a client
+// that stops reading while its run streams fills its TCP receive window and
+// blocks Send forever. The write previously held the PROCESS-WIDE mutex,
+// so one wedged socket froze every connection's writes — approval prompts
+// included. A write to a stalled client must return within the write
+// timeout (the connection is torn down, not waited on).
+func TestAudit_WriteWSJSONStalledClientBounded(t *testing.T) {
+	done := make(chan struct{})
+	srv := &http.Server{
+		Handler: &golangws.Server{
+			Handshake: func(*golangws.Config, *http.Request) error { return nil },
+			Handler: func(conn *golangws.Conn) {
+				defer conn.Close()
+				old := wsWriteTimeout
+				wsWriteTimeout = 300 * time.Millisecond
+				defer func() { wsWriteTimeout = old }()
+				writeWSJSON(conn, map[string]any{"type": "token", "content": strings.Repeat("x", 16<<20)})
+				close(done)
+			},
+		},
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer srv.Close()
+
+	conn, err := golangws.Dial("ws://"+ln.Addr().String(), "", "http://localhost")
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer conn.Close()
+	// Deliberately never read from conn.
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("writeWSJSON blocked on a stalled client — one wedged socket froze the write path")
 	}
 }
