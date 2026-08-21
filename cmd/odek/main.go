@@ -889,12 +889,22 @@ func parseReplFlags(args []string) (replFlags, error) {
 	i := 0
 	for i < len(args) {
 		if i == len(args)-1 {
-			// Last arg — can only be a boolean flag (no value pair needed)
+			// Last arg — can only be a boolean flag (no value pair needed).
+			// Must cover every boolean the main switch knows, or a trailing
+			// form like `odek repl --stream` is silently ignored.
 			switch args[i] {
 			case "--sandbox":
 				f.Sandbox = boolPtr(true)
 			case "--sandbox-readonly":
 				f.SandboxReadonly = boolPtr(true)
+			case "--prompt-caching":
+				f.PromptCaching = boolPtr(true)
+			case "--stream":
+				f.Stream = boolPtr(true)
+			case "--compaction":
+				f.Compaction = boolPtr(true)
+			case "--no-compaction":
+				f.Compaction = boolPtr(false)
 			}
 			break
 		}

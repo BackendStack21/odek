@@ -53,6 +53,7 @@ func replCmd(args []string) error {
 		Thinking:        f.Thinking,
 		Sandbox:         f.Sandbox,
 		PromptCaching:   f.PromptCaching,
+		Stream:          f.Stream,
 		Compaction:      f.Compaction,
 		InteractionMode: f.InteractionMode,
 
