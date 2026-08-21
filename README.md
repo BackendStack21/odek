@@ -175,6 +175,7 @@ odek run "@README.md what does this project do?"
 | [Programmatic API](docs/API.md) | **SDK Guide**: import, Agent lifecycle, Tool interface, multi-turn sessions, memory system, model profiles, complete examples |
 | [Providers & Models](docs/PROVIDERS.md) | Supported providers, thinking config, context windows |
 | [Prompt Caching](docs/CACHING.md) | Anthropic/OpenAI/DeepSeek caching support, config, metrics |
+| [Response Streaming](docs/STREAMING.md) | Live streaming of LLM responses, config, reliability semantics |
 | [Memory](docs/MEMORY.md) | Three-tier design, go-vector merge-on-write, `memory` tool |
 | [Sessions](docs/SESSIONS.md) | Multi-turn conversations, save/resume/trim/cleanup |
 | [Telegram Bot](docs/TELEGRAM.md) | Telegram integration: bot client, slash commands, session management, plans, media downloads |

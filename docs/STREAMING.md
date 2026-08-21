@@ -1,253 +1,101 @@
-# LLM Response Streaming — Implementation-Ready Design
+# Response Streaming
 
-Status: **design spec — ready to implement by milestone** (see §5). This
-document supersedes the RFC draft: every open question from review is now a
-resolved decision (§4, ADR-style) and the work is decomposed into mergeable
-milestones with acceptance criteria (§5) and a pinned test matrix (§6).
+odek can stream LLM responses to the terminal as they are generated, instead of waiting for the complete response before printing anything. Streaming is **opt-in and off by default**; with it disabled, behavior is identical to previous releases. It works with every odek-supported provider: streaming is implemented once against the OpenAI-compatible SSE protocol that all backends speak on `/chat/completions`, and any endpoint that rejects streaming or answers with a non-SSE body transparently falls back to the buffered path.
 
-Streaming is implemented **once, at the OpenAI-compatible SSE protocol
-level**, for **every** provider and model odek supports — OpenAI, Anthropic
-(via its OpenAI-compat `/chat/completions` surface), DeepSeek, Z.ai, Kimi,
-and self-hosted servers (Ollama, vLLM, LiteLLM, Groq, Together, Fireworks).
-Per-provider quirks are absorbed by the parser (§3); anything that rejects
-streaming or answers non-SSE takes a learn-once buffered fallback, so
-streaming never narrows the set of working providers.
+Streaming matters most for thinking-default models (GLM-5.x, DeepSeek v4 Pro, Kimi, OpenAI reasoning models), which spend most of their wall clock reasoning before the first answer token — a trivial turn can take 5–30 s of silent waiting without it.
 
----
+## Supported Providers
 
-## 1. Motivation
+All providers stream; the differences below are absorbed by the client and never require configuration.
 
-odek's LLM calls are fully buffered: nothing reaches the terminal, the Web UI,
-or Telegram until the provider returns the complete response. Measured on the
-Z.ai coding endpoint during the GLM support work:
+| Provider | Usage in stream | Reasoning deltas | Notes |
+|---|---|---|---|
+| **Z.ai** (GLM) | finish chunk | `reasoning_content` | validated live |
+| **OpenAI** | separate usage-only chunk (behind `stream_options`, sent automatically) | none via chat/completions | |
+| **DeepSeek** | final chunk, incl. cache hit/miss tokens | `reasoning_content` | cache metrics preserved |
+| **Anthropic** (compat endpoint) | final chunk | where exposed | |
+| **Kimi / Moonshot** | final chunk | on thinking variants | |
+| **Ollama / vLLM / LiteLLM / Groq / Together / Fireworks** | often absent | implementation-dependent | absent usage leaves token accounting at zero, same as the buffered path |
 
-| Model | Turn | Wall clock | Terminal output before completion |
-|-------|------|-----------|-----------------------------------|
-| glm-5.3 | trivial echo | 4.4 s | none |
-| glm-5-turbo | trivial echo | 27.5 s | none |
-| glm-5.3 | "Say OK" (max_tokens 200) | — | 199 of 200 tokens were `reasoning_tokens` |
+## Enabling
 
-This generalizes to any thinking-default model (GLM-5.x, DeepSeek v4 Pro with
-thinking enabled, Kimi, OpenAI o-series/gpt-5): most wall clock is spent
-before the first content token. Today's `tool_running` heartbeats and the
-narrator exist largely to mask that silence. Streaming converts dead wait
-time into visible thinking/answer text and enables first-token latency as a
-metric. Mid-generation cancellation is a **consequence**, not a goal (ADR-3).
+### CLI
+```bash
+odek run --stream "task"
+odek repl --stream
+```
 
-## 2. Current architecture (integration points)
+The `--stream` flag is available on `odek run` and `odek repl`. `odek serve` accepts it for completeness, but the Web UI does not consume deltas yet (see [Not Yet Streamed](#not-yet-streamed)).
 
-| Component | Today | Streaming touchpoint |
-|-----------|-------|---------------------|
-| `internal/llm/client.go` — `postChatWithRetry` | `Stream: false`, whole-body `io.ReadAll`, jittered retries (8 attempts), billing-429 fast-fail, `validateCompletionBody` | M1: `postChatStream` sibling; pre-first-delta failures reuse the same retry loop |
-| `internal/llm/client.go` — `parseResponse` | one JSON body → `CallResult` | M1: SSE assembler must produce a byte-identical `CallResult` for the same logical response |
-| `internal/loop/loop.go:1451` — `e.client.Call(ctx, …)` | **bare `ctx`, no per-call deadline**; only bound is `http.Client.Timeout` from `transport.NewPooledClient` (`internal/transport/client.go:33`) | M0 adds the missing per-call deadline (buffered path too); M2 switches this one call site to `CallStream` |
-| `internal/loop/loop.go:1053` (compaction), `:1103` (iteration summary) | own `sideTimeout()` ctx | **unchanged** — `Call` stays buffered (ADR-5) |
-| `internal/llm` — `SimpleCall` | buffered, own caller ctx | unchanged |
-| `internal/render` | prints complete `Iteration`/`FinalAnswer` blocks; raw-mode `\r\n` handling | M3: replace-block streaming renderer |
-| `cmd/odek/serve.go` — `writeWSJSON` | unsynchronized concurrent sends (known audit finding) | M0: send mutex. M4: per-connection coalescing delta channel (ADR-2) |
-| `cmd/odek/telegram.go` | completed iterations as messages | M5 (optional): throttled edits |
-| `internal/budget` | usage from buffered body, post-call check | unchanged — usage arrives on the final SSE chunk (§3) |
-| `internal/events` | `iteration_completed` carries sizes/hashes | M5 (optional): additive `first_token_ms` |
-| Sessions / audit / untrusted wrapper | operate on the assembled message | unchanged |
+### Config file (`~/.odek/config.json` or `./odek.json`)
+```json
+{
+  "stream": true
+}
+```
 
-## 3. Wire format — one protocol, per-provider variance
+`stream` follows the standard five-layer priority (config → env → CLI) and may be set in project configs, like `prompt_caching`.
 
-Reference capture (live, Z.ai coding endpoint, `glm-5.3`, `stream: true`,
-`stream_options: {"include_usage": true}`):
+### Environment variable
+```bash
+export ODEK_STREAM=true
+```
 
-1. **Reasoning deltas first** (thinking models):
-   `data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"The"}}]}`
-2. **Content deltas** follow:
-   `…{"delta":{"role":"assistant","content":"OK"}}`
-3. **Tool-call deltas**, keyed by `index` (arguments may split across many
-   fragments that concatenate per index; `id`/`name` arrive on the first):
-   `{"delta":{"tool_calls":[{"id":"call_…","index":0,"type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Havana\"}"}}]}}`
-4. **Final chunk** carries `finish_reason` and the full usage object
-   (`prompt_tokens`, `completion_tokens`, `prompt_tokens_details.cached_tokens`,
-   `completion_tokens_details.reasoning_tokens`).
-5. **Sentinel:** `data: [DONE]`.
-6. **Keepalives:** SSE comment lines (`: ping …`) and blank lines are legal
-   and carry no payload (ADR-6).
+### Programmatic API
+```go
+agent, err := odek.New(odek.Config{
+    Model:        "glm-5.3",
+    Stream:       true,
+    DeltaHandler: func(d llm.Delta) error {
+        if d.Kind == llm.DeltaContent {
+            fmt.Print(d.Text)
+        }
+        return nil // a non-nil error aborts generation
+    },
+})
+```
 
-| Backend | Usage in stream | Reasoning deltas | Notes |
-|---------|----------------|------------------|-------|
-| Z.ai (GLM) | finish chunk, with or without `stream_options` | `delta.reasoning_content` | validated live (traces above) |
-| OpenAI (gpt-5/o-series) | only with `stream_options.include_usage`, separate chunk with **empty `choices`** | none via chat/completions | send `stream_options` always (ADR-4) |
-| DeepSeek | final chunk, incl. `prompt_cache_hit/miss_tokens` | `delta.reasoning_content` (reasoner) | cache metrics must survive into `CallResult` |
-| Anthropic (OpenAI-compat) | final chunk | where exposed | buffered fallback otherwise |
-| Kimi / Moonshot | final chunk | on thinking variants | |
-| Ollama / vLLM / LiteLLM / Groq / Together / Fireworks | often absent | implementation-dependent | absent usage ⇒ token fields 0 — same as today's buffered behavior for these endpoints |
+The handler receives `llm.DeltaReasoning` and `llm.DeltaContent` fragments (tool-argument fragments are suppressed by the engine — they are partial JSON). It is invoked synchronously and must be non-blocking, like the other loop callbacks.
 
-Parser rules: usage may arrive on the finish chunk or in a usage-only chunk
-(empty `choices` is valid, not malformed); `delta.content`/`reasoning_content`
-may be `null`; tool arguments concatenate per `index`; reasoning absence is
-normal (non-reasoning models), not an error.
+## Terminal Output
 
-## 4. Resolved design decisions (ADRs)
+With streaming enabled, `odek run` and `odek repl` print reasoning and the answer as they arrive, then the regular per-iteration statistics:
 
-**ADR-1 — Timeouts: hard wall-clock deadline AND idle watchdog.**
-The RFC draft replaced the whole-body `http.Client.Timeout` with an idle
-watchdog. Rejected: the main call at `loop.go:1451` passes bare `ctx`, so
-that client timeout is the *only* wall-clock bound — a trickling stream (one
-chunk every 50 s) defeats an idle watchdog yet would run until the runtime
-budget (default 3600 s), an hour of billed trickle and a regression today's
-code does not have. Resolved design:
+```
+🧠 The user just said "Hi". Simple greeting. I should respond concisely…
 
-- Every streamed call is wrapped `context.WithTimeout(parent, requestTimeout)`
-  where `requestTimeout` is the client/profile timeout — the hard cap over
-  the entire stream (headers, deltas, usage chunk).
-- Idle watchdog: `streamIdleTimeout = 60 s`, reset by **any** SSE event,
-  including comment/blank keepalive lines (ADR-6); tripped ⇒ error.
-- Pooling: `transport.NewPooledClient(timeout<=0)` today falls back to
-  `DefaultTimeout`, so a no-timeout streaming client needs a new constructor
-  (`transport.NewPooledClientNoDeadline()`) that sets `http.Client.Timeout =
-  0` while **sharing the package-level `http.Transport`** so buffered and
-  streaming clients use one connection pool. The buffered client is
-  unchanged.
-- M0 additionally wraps the *buffered* main call in the same per-call
-  deadline, making both paths symmetric and closing the trickle vector even
-  without streaming.
+Morning, Rolando. Ready when you are — last open threads were the
+sharingan extension install and the M3-18 license policy.
+═══ Iter 1/90 · GLM 5.3 (Z.ai) ═══  [26189 in · 91 out · 10.4s]
 
-**ADR-2 — Fan-out: coalescing channels, never inline writes.**
-A mutex makes `writeWSJSON` *safe*, not *fast*: inline `cb → writeWSJSON →
-slow browser TCP` back-pressures the engine goroutine reading the stream.
-Resolved design: the engine's delta handler must be non-blocking; `serve`
-attaches a per-connection **coalescing buffer** — a bounded channel (256
-deltas) drained by a flusher goroutine that appends pending text and flushes
-every ~100 ms; on overflow it drops intermediate text, marks the block
-`truncated`, and the terminal `delta_end` carries the full assembled block so
-the UI repaints losslessly. Engine never blocks on a slow consumer. The
-REPL writes directly (a local tty is fast; Ctrl-S stalls are the user's
-explicit choice, same as today's printing). This mirrors the `internal/events`
-drop-on-full precedent, adapted for display via end-repaint.
+── 26189 in · 91 out · 64 cached
+```
 
-**ADR-3 — Cancellable callback: `func(Delta) error`.**
-A `func(Delta)` signature cannot abort, so the RFC's "groundwork for
-cancellation" claim was unsupported. Resolved: the handler returns an error
-to abort; the client cancels the request ctx and returns a typed
-`*llm.StreamAbortedError`; the loop maps it to "stop this call" without
-triggering retry/trim/survival paths. Changing the signature later would
-break every consumer — it is decided now.
+The reasoning block is dimmed with a single 🧠 cue, the answer follows after a blank line, and the iteration header always starts on a fresh line. Nothing double-prints: the renderer suppresses the buffered reasoning/answer blocks for text that was already streamed. Statistics headers and the token summary render as usual.
 
-**ADR-4 — Two learn-once fallbacks, field-level first.**
-Conflated in the RFC. Resolved:
-- *Field-level* (`dropStreamOptions`): a 400 naming `stream_options` ⇒ retry
-  the same streaming request without the field (usage nicety lost, streaming
-  kept). Modeled on the existing `forceNoneEffort` pattern.
-- *Path-level* (`forceBuffered`): a 400 naming `stream`, or a 200 whose body
-  is not SSE (first non-comment line fails `data:` parse / Content-Type is
-  not `text/event-stream`) ⇒ fall back once to the buffered path, remember
-  per client. Watchdog failures and mid-stream errors are **errors**, not
-  fallback triggers.
+## Behavior
 
-**ADR-5 — `Call` stays buffered; `CallStream` is a sibling.**
-The RFC made `Call` a wrapper over `CallStream`, silently changing timeout
-semantics for every auxiliary caller (compaction, iteration summary,
-`SimpleCall`). Resolved: invert it. Only the engine's main think step
-(`loop.go:1451`) calls `CallStream`, and only when streaming is enabled.
-Aux paths keep byte-identical behavior — pinned by test (§6 T12).
+1. **Only the main think step streams.** Auxiliary LLM calls — context compaction, the iteration-budget progress summary, memory extraction, skill assessment — always use the buffered path.
+2. **Tool calls arrive complete.** The model's tool invocations are assembled from their streamed fragments before execution; tool-argument fragments are not forwarded to delta consumers.
+3. **A handler error aborts generation.** Returning a non-nil error from the delta handler cancels the stream; the loop fails the turn with the wrapped `*llm.StreamAbortedError` instead of retrying.
+4. **Sessions, budgets, and the untrusted-content boundary are unchanged.** Streaming assembles the same result the buffered path returns, so token accounting, cost enforcement, session persistence, and audit operate on identical data.
 
-**ADR-6 — Keepalives reset the idle watchdog.**
-SSE comment lines (`:` prefix) and blank lines are events for liveness
-purposes and payload-free. They must reset the idle timer; they must not be
-parsed as data or counted as deltas.
+## Reliability
 
-## 5. Milestones
+- **Hard deadline + idle watchdog.** Every streamed call is bounded by a wall-clock deadline (the model profile's request timeout) covering the whole stream, plus a 60 s idle watchdog that trips when no SSE event — including provider keepalive comments — arrives. A trickling or stalled stream can never run unbounded.
+- **No duplicated partial output.** Transient failures are retried with the same backoff as the buffered path, but only until the first fragment has been delivered; after that, the failure is terminal and the partial text stays as printed.
+- **Learn-once fallbacks.** A provider that rejects the `stream_options` field is retried once without it (streaming continues); a provider that rejects `stream` outright, or answers a streamed request with a non-SSE body, switches permanently to the buffered path. Both are learned per client, not configured.
+- **Billing errors still fail fast.** A 429 reporting an empty balance or exhausted quota is returned immediately with the provider's message; it is never retried into an opaque timeout.
 
-Each milestone is independently mergeable and lands behind tests; CI green is
-the gate for all of them. `stream` ships **off** by default until M5.
+## Not Yet Streamed
 
-### M0 — prerequisites (no streaming behavior)
-Closes two known gaps; valuable regardless of streaming.
-- [ ] `writeWSJSON` send mutex in `cmd/odek/serve.go` (audit finding: concurrent
-      sends from loop/​subagent/approver goroutines can tear frames)
-- [ ] Per-call hard deadline for the buffered main call in
-      `internal/loop/loop.go` (`context.WithTimeout(ctx, requestTimeout)`)
-- **Acceptance:** race-detector test with parallel WS writers + iteration
-  flow; buffered run against a trickle server (chunk per 5 s, deadline 2 s)
-  fails at the deadline, not at 3600 s.
+- **Web UI (`odek serve`)** — a per-connection coalescing `delta` message protocol is planned; `writeWSJSON` frame serialization landed in preparation.
+- **Telegram** — completed iterations are sent as messages today; throttled in-place editing is a possible follow-up.
+- **Default** — streaming stays opt-in until it has soaked for a release; the buffered path remains the automatic fallback.
 
-### M1 — transport streaming in `internal/llm`
-- [ ] `transport.NewPooledClientNoDeadline()` sharing the package Transport
-- [ ] `Client.CallStream(ctx, msgs, sys, tools, cb func(Delta) error)
-      (*CallResult, error)` — SSE line reader, assembler (content,
-      reasoning, per-index tool args), usage capture per §3, hard deadline
-      (ADR-1) + idle watchdog (ADR-6), cancellable callback (ADR-3),
-      field/path fallbacks (ADR-4), billing-429 fast-fail unchanged
-- [ ] `Delta{Kind: DeltaReasoning|DeltaContent|DeltaToolArgs, Text}`; tool-arg
-      deltas suppressed behind an opt-in flag (noise control)
-- [ ] Config plumbing: `stream` / `ODEK_STREAM` / `--stream` (default off),
-      loader + trust-split rules (normal UX knob, project config allowed)
-- [ ] Fixture corpus `internal/llm/testdata/sse/`: the captured Z.ai trace
-      plus synthesized per-quirk streams (§6)
-- **Acceptance:** for every fixture, `CallStream(cb=nil)` returns the same
-  `CallResult` the buffered path returns for the equivalent complete body;
-  trickle-attack test proves the hard cap (§6 T9); no test touches the
-  network.
+## Implementation Details
 
-### M2 — engine wiring
-- [ ] `Engine.SetDeltaHandler(func(loop.Delta) error)` following the
-      `SetSignalHandler`/`SetToolEventHandler` optional-callback pattern;
-      forwards reasoning/content deltas, suppresses tool args by default
-- [ ] Main think step uses `CallStream` when streaming is enabled; maps
-      `StreamAbortedError` to a clean stop (no retry/trim/survival)
-- [ ] `first_token_ms` captured internally for the M5 event field
-- **Acceptance:** §6 T12 pins aux paths buffered; abort test (handler error
-  ⇒ call stops, session intact, no duplicate output on next iteration).
-
-### M3 — REPL/CLI rendering
-- [ ] Replace-block streaming renderer: streamed lines are erased (cursor-up
-      + clear, `\r\n`-safe) before the canonical `Iteration` block prints, so
-      nothing double-prints; line-count tracking; engaging mode gets a
-      reasoning ticker that resolves into the reasoning header
-- **Acceptance:** golden-terminal test — stream then completion produces
-  exactly the pre-streaming `Iteration` output plus the streamed text that
-  was erased; resize-safe best effort documented.
-
-### M4 — serve + Web UI
-- [ ] Per-connection coalescing delta channel + flusher per ADR-2 (bounded,
-      drop-with-truncation-mark, lossless `delta_end` repaint)
-- [ ] WS protocol: `{"type":"delta","kind":"content"|"reasoning","text":…}`
-      and `{"type":"delta_end","truncated":bool,"block":…}`; `ui/js` renders
-      into the in-flight iteration card
-- **Acceptance:** slow-consumer test — a client reading 1 frame/s never
-  delays the engine's think loop (measured via iteration latency); overflow
-  produces a truncated marker and a correct final repaint.
-
-### M5 — optional surfaces + default flip
-- [ ] Telegram throttled (≤1/s) message editing
-- [ ] `odek.event/v1` additive `first_token_ms` on `iteration_completed`
-      (timing only — preserves the no-secrets posture)
-- [ ] `docs/CONFIG.md` stream field; README mention
-- [ ] Default flip to streaming **after one minor release of opt-in soak**
-      with no fallback-regression reports; buffered path remains the
-      automatic fallback
-
-## 6. Test matrix (all `httptest`, no network)
-
-| # | Fixture / scenario | Asserts |
-|---|--------------------|---------|
-| T1 | Z.ai trace (reasoning → content → usage-on-finish → `[DONE]`) | CallResult equality with buffered equivalent |
-| T2 | OpenAI shape: separate empty-`choices` usage chunk (with `stream_options`) | usage captured; empty choices not "malformed" |
-| T3 | `null` content / reasoning fields | no parse error, no phantom text |
-| T4 | tool args split across N fragments, two interleaved calls (index 0/1) | correct per-index assembly |
-| T5 | keepalive comment lines interleaved | watchdog reset, no payload |
-| T6 | handler returns error mid-stream | `StreamAbortedError`, request canceled, partial result returned |
-| T7 | 400 naming `stream_options` | field-dropped retry, still streaming |
-| T8 | 400 naming `stream`; non-SSE 200 body | learn-once buffered fallback |
-| T9 | trickle server: chunk per `idle/2`, deadline < total | hard deadline enforced (ADR-1 regression pin) |
-| T10 | silent-then-die server | idle watchdog error |
-| T11 | billing 429 (code 1113 body) with `stream: true` | fast-fail, exactly one request |
-| T12 | engine run with streaming on; compaction + summary triggered | aux calls hit buffered `Call` (spy client pin, ADR-5) |
-| T13 | usage absent (local-server shape) | token fields 0, budget unchanged |
-| T14 | malformed JSON mid-stream after deltas | terminal error, partial text surfaced |
-
-## 7. Residual risks
-
-- Spec-derived variance: only Z.ai is live-validated; the fixture corpus
-  encodes the §3 table, and the fallback is the safety net — but the first
-  weeks after the default flip should watch fallback-telemetry (M5 note:
-  count learn-once fallbacks per provider in the event stream, type only).
-- Mid-stream failures intentionally do not auto-retry (partial text already
-  emitted); the error renders next to the partial output.
-- Budget enforcement stays post-call (usage arrives last); identical to today.
+- `llm.Client.CallStream` (`internal/llm/stream.go`) parses the SSE dialect and returns the same `*CallResult` as `Call`; the assembler handles usage on the finish chunk or in a separate empty-choices chunk, `null` content fields, and per-index tool-argument concatenation.
+- Streaming requests use a pooled HTTP client without a client-level timeout (`transport.NewPooledClientNoDeadline`) — a whole-request `http.Client.Timeout` would kill long body reads — sharing the connection pool with the buffered client. Deadlines are enforced per request via context.
+- The engine wires streaming through `loop.Engine.SetStream` / `SetDeltaHandler`, following the existing optional-callback pattern (`SetSignalHandler`, `SetToolEventHandler`).
+- Offline test coverage lives in `internal/llm/stream_test.go` (the provider-variance and failure-mode matrix) and `internal/loop/loop_test.go` (engine dispatch and the buffered default).
