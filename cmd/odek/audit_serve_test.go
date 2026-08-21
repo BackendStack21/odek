@@ -112,9 +112,6 @@ func TestAudit_IDGenerators(t *testing.T) {
 // real API key; the invalid model is rejected before any LLM call, so the
 // mock never answers.
 func TestAudit_WebSocketInvalidModelRejectedEarly(t *testing.T) {
-	// The mock is only here so agent construction succeeds without a real
-	// API key; side subsystems (narration/memory wiring) may ping it, but
-	// the prompt itself must never reach the LLM with the invalid model.
 	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"choices":[{"message":{"content":"x"}}]}`))
 	}))
@@ -122,7 +119,16 @@ func TestAudit_WebSocketInvalidModelRejectedEarly(t *testing.T) {
 	cleanupEnv := setTestEnv(t, llmSrv.URL)
 	defer cleanupEnv()
 
-	store := newTestSessionStore(t)
+	// Build the store directly under setTestEnv's HOME rather than via
+	// newTestSessionStore: that helper captures the *current* HOME (already
+	// switched) in its t.Cleanup, so its restore would re-leak this test's
+	// temp HOME over setTestEnv's restore and poison every later test's
+	// os.UserHomeDir(). setTestEnv's cleanup already scrubs this HOME's
+	// .odek/sessions tree.
+	store, err := session.NewStore()
+	if err != nil {
+		t.Fatalf("session.NewStore: %v", err)
+	}
 	ln, mux := buildServeMux(t, store)
 	defer ln.Close()
 	go func() { _ = serveOnListener(ln, mux) }()
