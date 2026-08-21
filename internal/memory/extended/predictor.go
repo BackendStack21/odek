@@ -48,6 +48,13 @@ func (p *Predictor) Predict(ctx context.Context, userMsg string, recent []string
 	if p.llm == nil || p.cfg.PredictiveIntents <= 0 {
 		return nil, nil
 	}
+	// The recall path wraps its context in a short budget (~5s) meant to
+	// bound local vector search; by the time the LLM prediction runs, that
+	// budget is nearly spent and the call dies as an instant "context
+	// deadline exceeded". Detach from the caller's deadline and apply the
+	// memory-LLM budget instead (client timeout, 30s floor).
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), llmDeadline(p.llm))
+	defer cancel()
 	recentJSON, err := json.Marshal(recent)
 	if err != nil {
 		return nil, fmt.Errorf("predictor: marshal recent: %w", err)

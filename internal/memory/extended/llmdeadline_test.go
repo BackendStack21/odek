@@ -48,3 +48,39 @@ func TestNewDerivesLLMDeadlineFromClient(t *testing.T) {
 		t.Errorf("em.llmTimeout = %v, want 120s (client's own fallback timeout)", em.llmTimeout)
 	}
 }
+
+// TestPredictorDetachesFromRecallBudget pins the fix for the predictor
+// inheriting the recall path's ~5s vector-search budget: even with a caller
+// context whose deadline is already spent, Predict must issue its LLM call
+// under a fresh memory-LLM budget instead of failing instantly.
+func TestPredictorDetachesFromRecallBudget(t *testing.T) {
+	captured := make(chan time.Duration, 1)
+	stub := &deadlineCapturingClient{captured: captured}
+	p := NewPredictor(stub, Config{PredictiveIntents: 3})
+
+	// Caller budget already exhausted (deadline in the past).
+	ctx, cancel := context.WithTimeout(context.Background(), -time.Second)
+	defer cancel()
+
+	go func() { p.Predict(ctx, "hi", nil, UserState{}) }() //nolint:errcheck
+
+	select {
+	case remaining := <-captured:
+		if remaining < 25*time.Second {
+			t.Errorf("predictor LLM call ran with %v left — inherited the spent recall budget, want a fresh ~30s+ budget", remaining)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("predictor never issued its LLM call")
+	}
+}
+
+type deadlineCapturingClient struct{ captured chan time.Duration }
+
+func (d *deadlineCapturingClient) SimpleCall(ctx context.Context, system, user string) (string, error) {
+	if dl, ok := ctx.Deadline(); ok {
+		d.captured <- time.Until(dl)
+	} else {
+		d.captured <- 0
+	}
+	return "[]", nil
+}
