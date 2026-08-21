@@ -23,6 +23,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/BackendStack21/odek/internal/fsatomic"
 )
 
 // AuditIngest records that the agent ingested an untrusted-source
@@ -38,8 +40,8 @@ type AuditIngest struct {
 type AuditTurn struct {
 	Turn                 int      `json:"turn"`
 	UserMessage          string   `json:"user_message"`
-	ToolCalls            []string `json:"tool_calls"`                   // names of tools called this turn
-	NovelResources       []string `json:"novel_resources,omitempty"`    // resources referenced by tools but not by user
+	ToolCalls            []string `json:"tool_calls"`                    // names of tools called this turn
+	NovelResources       []string `json:"novel_resources,omitempty"`     // resources referenced by tools but not by user
 	UntrustedResources   []string `json:"untrusted_resources,omitempty"` // resources from untrusted content that were later referenced
 	IngestedUntrusted    bool     `json:"ingested_untrusted"`
 	SuspiciousDivergence bool     `json:"suspicious_divergence"`
@@ -71,7 +73,12 @@ func (s *AuditStore) RecordIngest(sessionID string, turn int, source, content st
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	log, _ := s.loadLocked(sessionID)
+	log, lerr := s.loadLocked(sessionID)
+	if lerr != nil {
+		// Unparseable (torn/corrupt) log: keep the evidence aside and
+		// start a fresh log rather than silently discarding it.
+		s.preserveCorruptLocked(sessionID)
+	}
 	log.SessionID = sessionID
 	sum := sha256.Sum256([]byte(content))
 	log.Ingests = append(log.Ingests, AuditIngest{
@@ -90,7 +97,10 @@ func (s *AuditStore) RecordTurn(sessionID string, turn AuditTurn) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	log, _ := s.loadLocked(sessionID)
+	log, lerr := s.loadLocked(sessionID)
+	if lerr != nil {
+		s.preserveCorruptLocked(sessionID)
+	}
 	log.SessionID = sessionID
 	log.Turns = append(log.Turns, turn)
 	return s.saveLocked(sessionID, log)
@@ -128,7 +138,22 @@ func (s *AuditStore) saveLocked(sessionID string, log AuditLog) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0600)
+	// Atomic + symlink-safe (2026-08 audit): os.WriteFile followed a
+	// symlink planted at the target and truncated whatever it pointed at;
+	// a crash mid-write also left torn JSON. The temp+fsync+rename in
+	// fsatomic replaces the directory entry instead of following it.
+	return fsatomic.WriteFile(path, data, 0600)
+}
+
+// preserveCorruptLocked moves an unparseable audit log aside instead of
+// letting the next save silently destroy it. The audit log is the only
+// post-hoc evidence of prompt injection; a single truncated write used to
+// erase the whole prior trail (2026-08 audit). Best-effort — if the rename
+// fails the fresh log still overwrites, matching the old behaviour.
+func (s *AuditStore) preserveCorruptLocked(sessionID string) {
+	path := filepath.Join(s.dir, sessionID+".json")
+	side := path + ".corrupt-" + time.Now().UTC().Format("20060102T150405.000000000")
+	_ = os.Rename(path, side)
 }
 
 // ── Divergence heuristic ─────────────────────────────────────────────

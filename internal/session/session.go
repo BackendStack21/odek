@@ -17,6 +17,8 @@ package session
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -74,6 +76,15 @@ type Session struct {
 	// MB). Sessions are append-only, so only messages at or beyond the
 	// boundary need scanning. Old files default to 0 (= redact all once).
 	RedactBoundary int `json:"redact_boundary,omitempty"`
+
+	// RedactBoundaryFP anchors RedactBoundary to the content it covered: a
+	// short hash of the last message inside the boundary. An index alone is
+	// unsound when the head of the history changes between saves (mid-run
+	// context trimming drops front groups and the conversation later
+	// re-grows past the stale boundary); a mismatch invalidates the
+	// boundary and the next save re-redacts everything. Old files default
+	// to "" (= treat any nonzero boundary as stale once, then re-anchor).
+	RedactBoundaryFP string `json:"redact_boundary_fp,omitempty"`
 
 	// ExternalRefs carries operator-supplied pointers to state that lives
 	// outside odek (CI runs, dashboards, object stores — schema
@@ -470,6 +481,14 @@ func (s *Store) addToVectorIndex(sess *Session) error {
 // without following symlinks, so a symlink swapped in between
 // read and write gets replaced with a regular file.
 // Also atomically updates the session index with the session's metadata.
+// redactMessageFP fingerprints a message for the RedactBoundary anchor:
+// deterministic over the (already-redacted) persisted form, so an unchanged
+// head matches across saves and any trim/rewrite invalidates the boundary.
+func redactMessageFP(m llm.Message) string {
+	h := sha256.Sum256([]byte(m.Role + "\x00" + m.Content + "\x00" + m.ReasoningContent))
+	return hex.EncodeToString(h[:8])
+}
+
 func (s *Store) saveLocked(sess *Session) error {
 	// Reject malformed or traversal-bearing session IDs before the ID is used
 	// to build a filesystem path. A planted session file with an embedded
@@ -493,6 +512,19 @@ func (s *Store) saveLocked(sess *Session) error {
 	}
 	if boundary > len(sess.Messages) {
 		boundary = len(sess.Messages)
+	}
+	// The boundary is an INDEX, so it is only sound while the head of the
+	// history is unchanged. Mid-run context trimming drops front groups and
+	// later turns re-grow past the stale boundary, leaving never-redacted
+	// messages below it (2026-08 audit: tool *error* text is never redacted
+	// in memory, so the save-time scan is the only layer covering it).
+	// Anchor the boundary to a fingerprint of the last message it covered;
+	// on any mismatch — or a legacy session with no fingerprint — redact
+	// the whole transcript (idempotent for already-redacted text).
+	if boundary > 0 {
+		if sess.RedactBoundaryFP == "" || redactMessageFP(sess.Messages[boundary-1]) != sess.RedactBoundaryFP {
+			boundary = 0
+		}
 	}
 	for i := boundary; i < len(sess.Messages); i++ {
 		sess.Messages[i].Content = redact.RedactSecrets(sess.Messages[i].Content)
@@ -525,9 +557,13 @@ func (s *Store) saveLocked(sess *Session) error {
 	}
 	// Every surviving message is now redacted: those before the boundary by
 	// earlier saves, the rest just now — and trimming only removes messages,
-	// so the boundary is simply the surviving count. Set it before the final
-	// marshal so it is actually persisted.
+	// so the boundary is simply the surviving count. Set it (and its
+	// fingerprint anchor) before the final marshal so they persist.
 	sess.RedactBoundary = len(sess.Messages)
+	sess.RedactBoundaryFP = ""
+	if n := len(sess.Messages); n > 0 {
+		sess.RedactBoundaryFP = redactMessageFP(sess.Messages[n-1])
+	}
 	data, err = json.Marshal(sess)
 	if err != nil {
 		return fmt.Errorf("session: marshal: %w", err)

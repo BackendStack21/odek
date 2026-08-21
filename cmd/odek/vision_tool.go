@@ -260,6 +260,15 @@ func (t *visionTool) Call(argsJSON string) (result string, err error) {
 			Error: fmt.Sprintf("cannot open file %q: %v", args.Path, err),
 		})
 	}
+	// Input size cap (2026-08 audit): vision had none, so a multi-gigabyte
+	// "image"/"video" went straight to llama-mtmd-cli/ffmpeg — host
+	// memory/disk DoS with no approval. Mirror transcribe's 10 MiB cap.
+	if info, serr := f.Stat(); serr == nil && info.Size() > maxFileReadBytes {
+		f.Close()
+		return jsonResult(visionResult{
+			Error: fmt.Sprintf("file too large (%d bytes, max %d)", info.Size(), maxFileReadBytes),
+		})
+	}
 	f.Close()
 
 	binary, err := llamaMtmdBinary(t.visionCfg)

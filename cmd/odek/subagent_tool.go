@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek"
+	"github.com/BackendStack21/odek/internal/config"
 )
 
 // delegateTasksTool is a built-in tool that spawns sub-agent OS processes
@@ -23,16 +24,17 @@ import (
 // Sub-agents run in parallel up to maxConcurrency. Results are collated
 // and returned to the calling agent as a formatted summary.
 type delegateTasksTool struct {
+	// ctxTool embeds the agent-context plumbing. This tool previously
+	// reimplemented SetContext with a bare field — a data race when the
+	// loop emits two delegate_tasks calls in one turn (parallel goroutines
+	// calling SetContext on the shared instance), exactly the bug ctxTool
+	// exists to prevent (2026-08 audit).
+	ctxTool
+
 	maxConcurrency int
 	odekPath       string // path to the odek binary
 	apiKey         string // re-injected into sub-agent environment
 	timeout        time.Duration
-
-	// ctx is the parent agent's context, set by the agent loop before each
-	// Call invocation. When the parent is cancelled (Ctrl+C, restart, timeout),
-	// runTask derives its per-task context from this, so sub-agent processes
-	// are killed promptly instead of running the full timeout.
-	ctx context.Context
 
 	// OnSubagentLog, if set, is called with each NDJSON progress line
 	// emitted by a sub-agent. taskIdx is the index within the current
@@ -41,13 +43,6 @@ type delegateTasksTool struct {
 }
 
 func (t *delegateTasksTool) Name() string { return "delegate_tasks" }
-
-// SetContext sets the parent agent's context on the tool.
-// Called by the agent loop before each Call invocation to propagate
-// cancellation signals (Ctrl+C, restart, timeout) to sub-agents.
-func (t *delegateTasksTool) SetContext(ctx context.Context) {
-	t.ctx = ctx
-}
 
 func (t *delegateTasksTool) Description() string {
 	return `Spawn one or more sub-agent OS processes to work on focused sub-tasks in parallel. Each sub-agent gets its own process, config, and context window. Use this when the task has clear independent sub-tasks that can be worked on simultaneously.
@@ -174,17 +169,14 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 	// The aggregated sub-agent output comes from a separate process and may
 	// contain injected content or prompt-like text. Wrap the whole summary so
 	// the parent agent treats it as untrusted data rather than instructions.
-	return wrapUntrusted(t.ctx, "delegate_tasks", buf.String()), nil
+	return wrapUntrusted(t.toolCtx(), "delegate_tasks", buf.String()), nil
 }
 
 func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, trustLevel, maxRisk string) string {
 	// Derive per-task context from the parent's context (if set).
 	// When the parent is cancelled, all running sub-agents are killed
 	// promptly instead of running the full timeout.
-	parentCtx := context.Background()
-	if t.ctx != nil {
-		parentCtx = t.ctx
-	}
+	parentCtx := t.toolCtx()
 	ctx, cancel := context.WithTimeout(parentCtx, t.timeout)
 	defer cancel()
 
@@ -232,8 +224,10 @@ func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, tr
 	// (e.g. `env`, an injected shell call). The FD approach keeps the
 	// secret in an anonymous (unlinked) tempfile whose only readers are
 	// this process and the child, and the child closes the FD as soon
-	// as it has read the key.
-	cmd.Env = os.Environ() // parent already stripped *_API_KEY in LoadConfig
+	// as it has read the key. Everything injected from ~/.odek/secrets.env
+	// is stripped from the inherited environment too (2026-08 audit — the
+	// handoff previously covered only the primary API key).
+	cmd.Env = childEnvWithout(config.SecretsEnvNames())
 	var keyFile *os.File
 	var keyCleanup func()
 	if t.apiKey != "" {
@@ -384,3 +378,28 @@ func progressLimitExceeded(err error) bool {
 
 // Ensure delegateTasksTool implements odek.Tool
 var _ odek.Tool = (*delegateTasksTool)(nil)
+
+// childEnvWithout returns the current environment minus the named
+// variables. delegate_tasks uses it to strip the ~/.odek/secrets.env
+// values LoadConfig injected: the sub-agent receives its API key through
+// the FD handoff, and inheriting the rest would expose them in the
+// child's /proc/<pid>/environ and to any env-dumping command it runs
+// (2026-08 audit — the handoff previously covered only the primary key).
+func childEnvWithout(names []string) []string {
+	if len(names) == 0 {
+		return os.Environ()
+	}
+	strip := make(map[string]bool, len(names))
+	for _, n := range names {
+		strip[n] = true
+	}
+	env := os.Environ()
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		if !strip[name] {
+			out = append(out, kv)
+		}
+	}
+	return out
+}

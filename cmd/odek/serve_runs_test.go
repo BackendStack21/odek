@@ -736,3 +736,91 @@ func TestSession_UsageFieldsSerialize(t *testing.T) {
 		t.Errorf("round-trip lost fields: in=%d out=%d pinned=%v", back.InputTokens, back.OutputTokens, back.Pinned)
 	}
 }
+
+// ── 2026-08 audit: REST run-surface hardening ─────────────────────────
+
+// TestAudit_StartServeRun_ValidatesSessionToken pins the §24 boundary on
+// the REST run surface: a request naming an existing session must present
+// that session's auth token, like every other session-scoped endpoint.
+// The AuthToken field used to be accepted and never checked (dead field) —
+// a cookie-only caller could resume and mutate any session.
+func TestAudit_StartServeRun_ValidatesSessionToken(t *testing.T) {
+	store := newTestSessionStore(t)
+
+	sess, err := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "test-model", "test")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	sess.AuthToken = session.GenerateAuthToken()
+	if err := store.Save(sess); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	req := promptRequest{Content: "hello", SessionID: sess.ID, AuthToken: "wrong-token"}
+	_, err = startServeRun(config.ResolvedConfig{}, "system", store, nil, req)
+	if err == nil {
+		t.Fatal("startServeRun accepted a wrong session auth token")
+	}
+	if !strings.Contains(err.Error(), "session token") {
+		t.Errorf("error = %v, want it to name the session token", err)
+	}
+
+	// No token at all is equally rejected for token-carrying sessions.
+	req.AuthToken = ""
+	if _, err = startServeRun(config.ResolvedConfig{}, "system", store, nil, req); err == nil || !strings.Contains(err.Error(), "session token") {
+		t.Errorf("missing-token run err = %v, want session token rejection", err)
+	}
+}
+
+// TestAudit_ServeRunRecord_StripsAuthToken pins the §24 leak fix: the
+// session event's auth_token used to be recorded verbatim into the run's
+// event tail, so GET /api/runs/{id} handed the session token to any
+// instance-token holder — converting a cookie-only caller into a full
+// session-token holder.
+func TestAudit_ServeRunRecord_StripsAuthToken(t *testing.T) {
+	run := &serveRun{ID: "run-test", pending: map[string]*approvalRequest{}}
+	run.cond = sync.NewCond(&run.mu)
+
+	if err := run.record(map[string]any{"type": "session", "session_id": "s1", "auth_token": "topsecret", "model": "m"}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	snap := run.snapshot(true)
+	events, _ := snap["events"].([]map[string]any)
+	if len(events) == 0 {
+		t.Fatal("no recorded events in snapshot")
+	}
+	for _, ev := range events {
+		if ev["type"] == "session" {
+			if _, present := ev["auth_token"]; present {
+				t.Fatalf("session event leaked auth_token into the run event tail: %v", ev)
+			}
+		}
+	}
+	if strings.Contains(fmt.Sprint(snap), "topsecret") {
+		t.Fatal("auth token value present anywhere in the run snapshot")
+	}
+}
+
+// TestAudit_StartServeRun_ActiveRunCap pins the resource bound: the WS
+// surface caps itself at 20 connections (each spawning an agent and a
+// sandbox container); the REST run path had no cap, so a script could
+// spawn unbounded concurrent agents.
+func TestAudit_StartServeRun_ActiveRunCap(t *testing.T) {
+	resetServeRuns()
+	defer resetServeRuns()
+
+	for i := 0; i < maxActiveServeRuns; i++ {
+		r := &serveRun{ID: fmt.Sprintf("run-fake-%d", i), Status: "running", pending: map[string]*approvalRequest{}}
+		r.cond = sync.NewCond(&r.mu)
+		registerRun(r)
+	}
+
+	req := promptRequest{Content: "hello"}
+	_, err := startServeRun(config.ResolvedConfig{}, "system", nil, nil, req)
+	if err == nil {
+		t.Fatal("startServeRun exceeded the active-run cap")
+	}
+	if !strings.Contains(err.Error(), "active runs") {
+		t.Errorf("error = %v, want it to name the active-run cap", err)
+	}
+}

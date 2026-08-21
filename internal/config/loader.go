@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/danger"
@@ -2657,6 +2658,27 @@ func loadSecretsEnv() {
 		}
 		if os.Getenv(k) == "" {
 			os.Setenv(k, v)
+			// Record the name so child-process spawn sites can strip it
+			// from the inherited environment: sub-agents get their API key
+			// via the FD handoff, and every other secrets.env value must
+			// stay out of the child's /proc/<pid>/environ (2026-08 audit).
+			secretsEnvMu.Lock()
+			secretsEnvNames = append(secretsEnvNames, k)
+			secretsEnvMu.Unlock()
 		}
 	}
+}
+
+var (
+	secretsEnvMu    sync.Mutex
+	secretsEnvNames []string
+)
+
+// SecretsEnvNames returns the environment variable names that were
+// injected from ~/.odek/secrets.env during LoadConfig. Callers spawning
+// child processes strip these from the inherited environment.
+func SecretsEnvNames() []string {
+	secretsEnvMu.Lock()
+	defer secretsEnvMu.Unlock()
+	return append([]string(nil), secretsEnvNames...)
 }
