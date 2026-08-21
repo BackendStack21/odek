@@ -248,24 +248,21 @@ type sandboxConfig = sandbox.Config
 
 // streamDeltaPrinter returns the terminal delta consumer for run/REPL when
 // streaming is enabled, nil otherwise (which keeps the engine on the
-// buffered path). Reasoning and content fragments print as they arrive; the
-// renderer suppresses the duplicate Thinking/FinalAnswer bodies for text
-// that was already streamed (Renderer.SetStreamedOutput).
-func streamDeltaPrinter(enabled bool) func(llm.Delta) error {
+// buffered path). Fragments route through the renderer's stream methods —
+// reasoning prints as a dimmed 🧠 block, the answer plainly, with
+// separation on the reasoning→content transition — and the renderer
+// suppresses the duplicate Thinking/FinalAnswer bodies for text that was
+// already streamed (Renderer.SetStreamedOutput).
+func streamDeltaPrinter(enabled bool, rend *render.Renderer) func(llm.Delta) error {
 	if !enabled {
 		return nil
 	}
-	lastKind := llm.DeltaReasoning
 	return func(d llm.Delta) error {
 		switch d.Kind {
-		case llm.DeltaContent, llm.DeltaReasoning:
-			// Separate the reasoning block from the answer body so the
-			// first content line doesn't glue onto the last thought.
-			if d.Kind == llm.DeltaContent && lastKind == llm.DeltaReasoning {
-				fmt.Println()
-			}
-			lastKind = d.Kind
-			fmt.Print(d.Text)
+		case llm.DeltaReasoning:
+			rend.StreamReasoning(d.Text)
+		case llm.DeltaContent:
+			rend.StreamContent(d.Text)
 		}
 		return nil
 	}
@@ -1663,7 +1660,7 @@ func run(args []string) error {
 		SkillManager:     sm,
 		PromptCaching:    resolved.PromptCaching,
 		Stream:           resolved.Stream,
-		DeltaHandler:     streamDeltaPrinter(resolved.Stream),
+		DeltaHandler:     streamDeltaPrinter(resolved.Stream, rend),
 		Compaction:       resolved.Compaction,
 		MemoryDir:        expandHome("~/.odek/memory"),
 		MemoryConfig:     resolved.Memory,

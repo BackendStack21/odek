@@ -892,3 +892,49 @@ func TestRenderer_SetStreamedOutput(t *testing.T) {
 		t.Errorf("FinalAnswer suppressed after clearing streamed flag: %q", b.String())
 	}
 }
+
+// TestRenderer_StreamDeltaLayout pins the streamed terminal layout: a
+// dimmed reasoning block with a single cue, a blank line before the answer,
+// the answer plainly, and the iteration header on its own line.
+func TestRenderer_StreamDeltaLayout(t *testing.T) {
+	var b bytes.Buffer
+	r := New(&b, false)
+
+	r.StreamReasoning("The user said hi. ")
+	r.StreamReasoning("Keep it brief.")
+	r.StreamContent("Morning, Rolando.")
+	r.StreamContent(" Ready when you are.")
+	r.SetStreamedOutput(true) // engine does this before rendering stats
+	r.Iteration(1, 90, 0, 26221, 148, 0)
+	r.FinalAnswer("suppressed")
+	r.Summary(26221, 148, 0, 0, 0)
+
+	out := b.String()
+	for _, want := range []string{
+		"🧠 The user said hi. Keep it brief.",
+		"\n\nMorning, Rolando. Ready when you are.",
+		"\n═══ Iter 1/90",
+		"26221 in · 148 out",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("layout missing %q:\n%q", want, out)
+		}
+	}
+	if strings.Contains(out, "suppressed") {
+		t.Errorf("FinalAnswer body double-printed: %q", out)
+	}
+	if !strings.HasPrefix(out, "🧠") {
+		t.Errorf("reasoning cue missing at start: %q", out[:min(20, len(out))])
+	}
+	// No glued header: the header line starts after a newline.
+	if strings.Contains(out, "you are.══") {
+		t.Errorf("iteration header glued onto streamed text: %q", out)
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
