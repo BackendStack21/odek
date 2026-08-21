@@ -125,3 +125,33 @@ func TestAudit_LoadFileWarnsOnLoosePerms(t *testing.T) {
 		t.Errorf("0644 config must warn with a chmod hint:\n%s", out)
 	}
 }
+
+// TestAudit_SecretsEnvNamesRegistered pins the 2026-08 audit registry:
+// every KEY=VALUE injected from ~/.odek/secrets.env must be recorded so
+// child-process spawn sites (delegate_tasks) can strip it from the
+// inherited environment.
+func TestAudit_SecretsEnvNamesRegistered(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+	t.Setenv("AUDIT_REG_ANOTHER_KEY", "") // not set → will be injected
+
+	globalDir := filepath.Join(dir, ".odek")
+	if err := os.MkdirAll(globalDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(globalDir, "secrets.env"), []byte(
+		"AUDIT_REG_TEST_TOKEN=supersecret\nAUDIT_REG_ANOTHER_KEY=alsosecret\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = LoadConfig(CLIFlags{})
+	names := SecretsEnvNames()
+	saw := map[string]bool{}
+	for _, n := range names {
+		saw[n] = true
+	}
+	if !saw["AUDIT_REG_TEST_TOKEN"] || !saw["AUDIT_REG_ANOTHER_KEY"] {
+		t.Errorf("SecretsEnvNames() = %v, want both secrets.env keys registered", names)
+	}
+}

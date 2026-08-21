@@ -31,6 +31,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -316,6 +317,19 @@ const (
 	serveRunsCompletedKept = 20  // newest completed runs kept on eviction
 	maxRunApprovalWait     = 10 * time.Minute
 	serveRunEventsKept     = 200 // per-run event tail bound
+	// maxActiveServeRuns caps concurrently-running (or approval-waiting)
+	// REST runs. The WS surface caps itself at maxWSConnections (each
+	// connection spawns an agent — and a sandbox container); the REST run
+	// path spawns the same per-run cost, so it gets the same bound. Without
+	// it, a script looping POST /api/prompt could spawn unbounded agents,
+	// MCP clients, and containers (2026-08 audit).
+	maxActiveServeRuns = 20
+)
+
+// Sentinel errors mapped to HTTP statuses by handlePromptStart.
+var (
+	errInvalidSessionToken = errors.New("invalid session token")
+	errTooManyActiveRuns   = errors.New("too many active runs")
 )
 
 // serveRun is one headless agent execution started via POST /api/prompt.
@@ -377,6 +391,13 @@ func (r *serveRun) record(v any) error {
 		// only float64 after a JSON round trip) — accept both.
 		r.InputTokens = numberOf(m["contextTokens"])
 		r.OutputTokens = numberOf(m["outputTokens"])
+	case "session":
+		// The session event carries the session auth token for live WS
+		// clients; recording it into the run's event tail would hand the
+		// token to any instance-token holder via GET /api/runs/{id},
+		// defeating the §24 cookie-only-vs-token-holder boundary
+		// (2026-08 audit). Strip it from the recorded copy.
+		delete(m, "auth_token")
 	}
 	r.events = append(r.events, m)
 	if len(r.events) > serveRunEventsKept {
@@ -540,6 +561,13 @@ func registerRun(r *serveRun) {
 		}
 	}
 	sort.Slice(completed, func(i, j int) bool { return completed[i].t.Before(completed[j].t) })
+	if len(completed) == 0 {
+		// Nothing evictable: every run is still active. The active-run cap
+		// bounds that population, so the registry cannot grow without
+		// bound here (the old hard-cap clause no-oped in this case —
+		// 2026-08 audit).
+		return
+	}
 	// Evict as many of the oldest completed runs as needed to get back to
 	// the cap, but keep the newest serveRunsCompletedKept when possible.
 	evict := len(serveRuns.runs) - serveRunsCap
@@ -639,6 +667,26 @@ func startServeRun(
 	}
 	if req.Model != "" && (len(req.Model) > maxModelIDBytes || !modelIDPattern.MatchString(req.Model)) {
 		return nil, fmt.Errorf("invalid model ID")
+	}
+	// Resource bound first: refuse before spawning an agent, MCP clients,
+	// or a sandbox container. Count-then-register has a benign race — the
+	// cap defends a local management surface against runaway scripts, not
+	// a concurrent adversary holding the instance token.
+	if activeRunCount() >= maxActiveServeRuns {
+		return nil, fmt.Errorf("%w: cap is %d", errTooManyActiveRuns, maxActiveServeRuns)
+	}
+	// Session-token validation, same rule as every other session-scoped
+	// endpoint (2026-08 audit: the AuthToken field was accepted but never
+	// checked, so a cookie-only caller could resume and mutate any
+	// session). A session_id that does not load is fine — handlePrompt
+	// creates a fresh session. Legacy sessions without a token get one
+	// minted and persisted by validateSessionToken.
+	if req.SessionID != "" && store != nil {
+		if sess, err := store.Load(req.SessionID); err == nil && sess != nil {
+			if _, ok := validateSessionToken(store, sess, req.AuthToken); !ok {
+				return nil, errInvalidSessionToken
+			}
+		}
 	}
 
 	run := &serveRun{
@@ -752,7 +800,15 @@ func handlePromptStart(st *serveState, store *session.Store, resources *resource
 		}
 		run, err := startServeRun(st.resolved, system, store, resources, req)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			switch {
+			case errors.Is(err, errInvalidSessionToken):
+				http.Error(w, err.Error(), http.StatusUnauthorized)
+			case errors.Is(err, errTooManyActiveRuns):
+				w.Header().Set("Retry-After", "30")
+				http.Error(w, err.Error(), http.StatusTooManyRequests)
+			default:
+				http.Error(w, err.Error(), http.StatusBadRequest)
+			}
 			return
 		}
 		writeAPIJSON(w, http.StatusAccepted, map[string]any{

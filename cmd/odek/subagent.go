@@ -421,7 +421,11 @@ func subagentCmd(args []string) error {
 		rend = render.New(os.Stderr, false)
 	}
 
-	// Build agent config, optionally with streaming
+	// Build agent config, optionally with streaming. Limits are inherited
+	// from the resolved (operator) config: without this the child's engine
+	// had NO budget checker at all, so a cost-capped operator's sub-agents
+	// could spend without bound (2026-08 audit). Run-level CLI overrides
+	// tighter than the global config still apply only to the parent.
 	aCfg := odek.Config{
 		Model:            resolved.Model,
 		BaseURL:          resolved.BaseURL,
@@ -440,6 +444,7 @@ func subagentCmd(args []string) error {
 		SkillManager:     sm,
 		MemoryConfig:     resolved.Memory,
 		DangerousConfig:  &resolved.Dangerous,
+		Limits:           resolved.Limits,
 	}
 	if cfg.stream {
 		aCfg.ToolEventHandler = func(event, name, data string) {

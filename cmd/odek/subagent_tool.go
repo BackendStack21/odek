@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek"
+	"github.com/BackendStack21/odek/internal/config"
 )
 
 // delegateTasksTool is a built-in tool that spawns sub-agent OS processes
@@ -232,8 +233,10 @@ func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, tr
 	// (e.g. `env`, an injected shell call). The FD approach keeps the
 	// secret in an anonymous (unlinked) tempfile whose only readers are
 	// this process and the child, and the child closes the FD as soon
-	// as it has read the key.
-	cmd.Env = os.Environ() // parent already stripped *_API_KEY in LoadConfig
+	// as it has read the key. Everything injected from ~/.odek/secrets.env
+	// is stripped from the inherited environment too (2026-08 audit — the
+	// handoff previously covered only the primary API key).
+	cmd.Env = childEnvWithout(config.SecretsEnvNames())
 	var keyFile *os.File
 	var keyCleanup func()
 	if t.apiKey != "" {
@@ -384,3 +387,28 @@ func progressLimitExceeded(err error) bool {
 
 // Ensure delegateTasksTool implements odek.Tool
 var _ odek.Tool = (*delegateTasksTool)(nil)
+
+// childEnvWithout returns the current environment minus the named
+// variables. delegate_tasks uses it to strip the ~/.odek/secrets.env
+// values LoadConfig injected: the sub-agent receives its API key through
+// the FD handoff, and inheriting the rest would expose them in the
+// child's /proc/<pid>/environ and to any env-dumping command it runs
+// (2026-08 audit — the handoff previously covered only the primary key).
+func childEnvWithout(names []string) []string {
+	if len(names) == 0 {
+		return os.Environ()
+	}
+	strip := make(map[string]bool, len(names))
+	for _, n := range names {
+		strip[n] = true
+	}
+	env := os.Environ()
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		if !strip[name] {
+			out = append(out, kv)
+		}
+	}
+	return out
+}

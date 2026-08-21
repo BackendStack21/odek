@@ -799,6 +799,32 @@ func (t *mathEvalTool) Call(argsJSON string) (result string, err error) {
 }
 
 func evalMath(expr string) (float64, error) {
+	// Recursion bound (2026-08 audit): go/parser and evalNode recurse once
+	// per ParenExpr with no depth limit; a deeply nested expression is a
+	// fatal, uncatchable stack overflow that kills the whole agent process.
+	// 128 is far beyond any sane arithmetic; also bound raw length.
+	const (
+		maxMathExprLen   = 64 << 10
+		maxMathNestDepth = 128
+	)
+	if len(expr) > maxMathExprLen {
+		return 0, fmt.Errorf("expression too large (%d bytes, max %d)", len(expr), maxMathExprLen)
+	}
+	depth, maxDepth := 0, 0
+	for _, r := range expr {
+		switch r {
+		case '(':
+			depth++
+			if depth > maxDepth {
+				maxDepth = depth
+			}
+		case ')':
+			depth--
+		}
+		if maxDepth > maxMathNestDepth {
+			return 0, fmt.Errorf("expression too deeply nested (max %d levels)", maxMathNestDepth)
+		}
+	}
 	node, err := parser.ParseExpr(expr)
 	if err != nil {
 		return 0, fmt.Errorf("parse error: %v", err)
@@ -966,13 +992,18 @@ func (t *diffTool) Call(argsJSON string) (result string, err error) {
 		return jsonError("provide either path_a+path_b or path+content")
 	}
 
-	// OOM protection: the LCS table allocates (m+1)*(n+1) ints.
-	// For 10K+10K lines that's ~800MB — reject early to avoid panic.
-	const maxDiffLines = 10000
-	if len(linesA) > maxDiffLines || len(linesB) > maxDiffLines {
+	// OOM protection: the LCS table allocates (m+1)*(n+1) ints. The
+	// per-side cap alone still allowed 10K×10K ≈ 800 MB — bound the cell
+	// product too (2026-08 audit): 4M cells ≈ 32 MiB on 64-bit.
+	const (
+		maxDiffLines = 10000
+		maxDiffCells = 4_000_000
+	)
+	if len(linesA) > maxDiffLines || len(linesB) > maxDiffLines ||
+		(len(linesA)+1)*(len(linesB)+1) > maxDiffCells {
 		return jsonResult(diffResult{
-			Error: fmt.Sprintf("files too large for in-process diff (%d vs %d lines, max %d).",
-				len(linesA), len(linesB), maxDiffLines),
+			Error: fmt.Sprintf("files too large for in-process diff (%d vs %d lines; max %d lines per side and %d LCS cells).",
+				len(linesA), len(linesB), maxDiffLines, maxDiffCells),
 			PathA: pathA, PathB: pathB,
 		})
 	}
