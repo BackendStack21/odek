@@ -700,6 +700,7 @@ func handleMCPServers(resolved config.ResolvedConfig) http.HandlerFunc {
 			Command          string   `json:"command"`
 			Args             []string `json:"args,omitempty"`
 			Project          bool     `json:"project,omitempty"`
+			AutoApprove      bool     `json:"auto_approve,omitempty"`
 			TimeoutSeconds   int      `json:"timeout_seconds,omitempty"`
 			MaxResponseBytes int64    `json:"max_response_bytes,omitempty"`
 			MaxResultChars   int      `json:"max_result_chars,omitempty"`
@@ -711,6 +712,7 @@ func handleMCPServers(resolved config.ResolvedConfig) http.HandlerFunc {
 				Command:          cfg.Command,
 				Args:             cfg.Args,
 				Project:          project[name],
+				AutoApprove:      cfg.AutoApprove,
 				TimeoutSeconds:   cfg.TimeoutSeconds,
 				MaxResponseBytes: cfg.MaxResponseBytes,
 				MaxResultChars:   cfg.MaxResultChars,

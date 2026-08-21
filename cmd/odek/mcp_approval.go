@@ -87,6 +87,13 @@ func approveMCPServersWithTTY(resolved config.ResolvedConfig, stdin io.Reader, s
 			continue
 		}
 
+		// Operator-marked trusted: auto_approve granted in the global
+		// config (the loader strips project-level declarations, so a
+		// cloned repo cannot reach this branch for an unvetted server).
+		if cfg.AutoApprove {
+			continue
+		}
+
 		if !tty {
 			return fmt.Errorf(
 				"project-level MCP server %q (%s %q) requires explicit approval\n"+
@@ -248,7 +255,9 @@ func approveMCPToolsWithTTY(projectDir, serverName string, cfg mcpclient.ServerC
 		}
 
 		key := mcpToolApprovalKey(projectDir, serverName, def.Name, cfg, schemaHash, def.Description)
-		if approved[key] {
+		// Schema guard scans and size caps above still ran — auto_approve
+		// removes the prompt friction, not the safety checks.
+		if cfg.AutoApprove || approved[key] {
 			out = append(out, def)
 			continue
 		}

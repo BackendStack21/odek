@@ -199,6 +199,47 @@ func TestMCPApprovalKey_IncludesEnv(t *testing.T) {
 	}
 }
 
+// An operator-granted auto_approve (loader semantics: only the global
+// config can set it) must skip the server prompt entirely — an empty stdin
+// proves no prompt was attempted, since a prompt would fail the read.
+func TestApproveMCPServers_AutoApproveSkipsPrompt(t *testing.T) {
+	setupTestHome(t)
+	resolved := config.ResolvedConfig{
+		MCPServers: map[string]mcpclient.ServerConfig{
+			"trusted": {Command: "node", Args: []string{"server.js"}, AutoApprove: true},
+		},
+		ProjectMCPServerNames: []string{"trusted"},
+	}
+
+	var out bytes.Buffer
+	err := approveMCPServersWithTTY(resolved, strings.NewReader(""), &out, true)
+	if err != nil {
+		t.Fatalf("auto-approved server errored: %v", err)
+	}
+	if strings.Contains(out.String(), "Approve?") {
+		t.Errorf("auto-approved server still prompted: %q", out.String())
+	}
+}
+
+// Per-tool prompts are skipped for auto-approved servers, while schema
+// guard scans still run (a poisoned schema is rejected, not prompted).
+func TestApproveMCPTools_AutoApproveSkipsToolPrompts(t *testing.T) {
+	setupTestHome(t)
+	cfg := mcpclient.ServerConfig{Command: "node", Args: []string{"server.js"}, AutoApprove: true}
+	defs := []mcpclient.ToolDef{
+		{Name: "fetch", Description: "Fetch a URL"},
+		{Name: "query", Description: "Run a query"},
+	}
+	out, err := approveMCPToolsWithTTY("/proj", "trusted", cfg, defs,
+		strings.NewReader(""), &bytes.Buffer{}, true, nil, guard.Config{})
+	if err != nil {
+		t.Fatalf("auto-approved tools errored: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("auto-approved tools = %d, want 2", len(out))
+	}
+}
+
 func TestApproveMCPServers_PromptShowsEnvValues(t *testing.T) {
 	setupTestHome(t)
 	resolved := config.ResolvedConfig{

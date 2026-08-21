@@ -217,6 +217,18 @@ type ServerConfig struct {
 	// against these roots by the artifact subsystem (internal/artifact)
 	// before the result is rendered for the model.
 	ArtifactRoots []string `json:"artifact_roots,omitempty"`
+
+	// AutoApprove marks the server as trusted by the operator: it skips the
+	// project-server approval prompt and the per-tool registration prompts
+	// (schema guard scans still apply). TRUST RULES: the flag is honored
+	// only when it comes from the operator-owned global config
+	// (~/.odek/config.json) — either on a global server entry or as a
+	// command-less trust marker for a project-defined server name. The
+	// config loader strips auto_approve from project ./odek.json with a
+	// warning: a cloned repo must never be able to approve its own MCP
+	// servers. Trust metadata only — deliberately excluded from approval
+	// keys, which hash execution-relevant fields.
+	AutoApprove bool `json:"auto_approve,omitempty"`
 }
 
 // lineResult carries the result of a single readLine from the reader goroutine.

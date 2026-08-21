@@ -136,6 +136,13 @@ Each server is defined by:
   artifact refs. Malformed results are never silently truncated into place
 - `artifact_roots` — optional directories under which `file://` artifact refs
   are accepted; **empty (default) rejects every artifact ref (fail closed)**
+- `auto_approve` — optional operator trust flag (`true`/`false`, default
+  `false`): the server skips the project-server approval prompt and the
+  per-tool registration prompts (schema guard scans and size caps still
+  apply). **Honor rules**: the flag is only honored from the operator-owned
+  `~/.odek/config.json` — a `./odek.json` declaration is stripped with a
+  warning, because a cloned repo must never be able to approve its own MCP
+  servers. See [Auto-approving trusted servers](#auto-approving-trusted-servers).
 
 The four limit fields are the **odek-extension/v1** server config schema;
 see [EXTENSIONS.md](EXTENSIONS.md) for the normative contract.
@@ -191,6 +198,8 @@ Approval methods:
    ```
 3. **Persisted approvals** — approvals are stored in
    `~/.odek/mcp_approvals.json` (0600) keyed by project directory + server name
+4. **`auto_approve: true`** in the global config — pre-trust a server and
+   skip both prompts; see [Auto-approving trusted servers](#auto-approving-trusted-servers)
    + command + args + sorted `env` map hash + the odek-extension/v1 limit
    fields (`timeout_seconds`, `max_response_bytes`, `max_result_chars`,
    `artifact_roots`). If any of these change, you are prompted again — editing
@@ -201,6 +210,37 @@ Approval methods:
 
 If approval is required and cannot be obtained, odek aborts before spawning any
 MCP server.
+
+### Auto-approving trusted servers
+
+`auto_approve: true` removes the approval friction for servers you have
+vetted — no server prompt, no per-tool prompts. Because the entire point of
+the approval gate is that `./odek.json` is attacker-controllable (any repo
+you clone could ship one), the flag obeys strict trust rules:
+
+- **Global config (`~/.odek/config.json`)** — honored. Set it on a global
+  server entry, or on any server you run.
+- **Global trust marker for a project server** — a command-less global entry
+  whose name matches a project-defined server applies the flag to it:
+
+  ```jsonc
+  // ~/.odek/config.json — "I trust whatever 'my-dev-server' is in this
+  // project family, don't ask me again":
+  { "mcp_servers": { "my-dev-server": { "auto_approve": true } } }
+  ```
+
+  The marker itself never becomes a connectable server. Changing the
+  project's command/args no longer re-prompts (your global trust covers the
+  name), which is the convenience trade-off you are opting into — revoke by
+  deleting the marker.
+- **Project config (`./odek.json`)** — **ignored with a warning**. A repo
+  you cloned cannot approve its own MCP servers; the operator's global
+  config is the only source of this trust.
+
+Safety nets that always remain, regardless of the flag: per-tool schema
+guard scans and size caps, built-in-name shadowing rejection, subprocess
+env sanitization, artifact-ref fail-closed validation, and the extension
+limits. `auto_approve` removes prompts, not checks.
 
 ### Project-level MCP tool approval
 

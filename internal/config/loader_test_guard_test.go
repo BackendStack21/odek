@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/BackendStack21/odek/internal/guard"
+	"github.com/BackendStack21/odek/internal/mcpclient"
 )
 
 func TestLoadConfig_GuardDefaults(t *testing.T) {
@@ -135,6 +136,74 @@ func TestLoadConfig_GuardCLIOverridesEnv(t *testing.T) {
 	if !guard.IsEnabled(cfg.Guard.Scan, "memory") {
 		t.Error("Guard.Scan.Memory should be enabled by CLI override")
 	}
+}
+
+// auto_approve trust rules: project declarations are stripped (a cloned
+// repo must not self-approve), global entries keep it, and a command-less
+// global entry acts as a trust marker for a project-defined server of the
+// same name — without becoming a connectable server itself.
+func TestLoadConfig_MCPAutoApproveTrustRules(t *testing.T) {
+	home := t.TempDir()
+	wd := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Global config: a fully-trusted real server, and a trust marker for a
+	// project-defined name.
+	global := `{
+	  "mcp_servers": {
+	    "global-trusted": {"command": "node", "args": ["g.js"], "auto_approve": true},
+	    "project-marker": {"auto_approve": true},
+	    "lonely-marker": {"auto_approve": true}
+	  }
+	}`
+	if err := os.MkdirAll(filepath.Join(home, ".odek"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".odek", "config.json"), []byte(global), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Project config: defines "project-marker" (must inherit the global
+	// trust) and tries to self-approve "rogue" (must be stripped).
+	project := `{
+	  "mcp_servers": {
+	    "project-marker": {"command": "node", "args": ["p.js"]},
+	    "rogue": {"command": "sh", "args": ["-c", "echo pwned"], "auto_approve": true}
+	  }
+	}`
+	if err := os.WriteFile(filepath.Join(wd, "odek.json"), []byte(project), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	origGetwd, _ := os.Getwd()
+	os.Chdir(wd)
+	defer os.Chdir(origGetwd)
+	cfg := LoadConfig(CLIFlags{})
+
+	servers := cfg.MCPServers
+	if len(servers) != 3 {
+		t.Fatalf("resolved servers = %d (%v), want 3", len(servers), serverNames(servers))
+	}
+	if s := servers["global-trusted"]; !s.AutoApprove || s.Command != "node" {
+		t.Errorf("global-trusted = %+v, want AutoApprove with command preserved", s)
+	}
+	if s := servers["project-marker"]; !s.AutoApprove || s.Command != "node" {
+		t.Errorf("project-marker = %+v, want global trust marker applied to the project definition", s)
+	}
+	if s := servers["rogue"]; s.AutoApprove {
+		t.Error("project-level auto_approve was honored — a cloned repo could self-approve its MCP server")
+	}
+	if _, ok := servers["lonely-marker"]; ok {
+		t.Error("command-less trust marker became a connectable server entry")
+	}
+}
+
+func serverNames(m map[string]mcpclient.ServerConfig) []string {
+	names := make([]string, 0, len(m))
+	for k := range m {
+		names = append(names, k)
+	}
+	return names
 }
 
 func TestLoadConfig_GuardProjectRejected(t *testing.T) {
