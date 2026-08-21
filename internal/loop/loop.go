@@ -941,8 +941,16 @@ func trimToSurvival(msgs []llm.Message) []llm.Message {
 	}
 
 	// Preserve the rolling compaction digest if one is present in the head.
+	// Scan all the way to the first user message: with memory/skill/episode
+	// blocks injected the digest can sit deeper than any fixed window, and
+	// dropping it here would discard the paid-for compacted history exactly
+	// when context pressure is highest (audit 2026-08).
 	digestIdx := -1
-	for i := start; i < len(msgs) && i < start+4; i++ {
+	digestEnd := firstUserIdx
+	if digestEnd < 0 {
+		digestEnd = len(msgs)
+	}
+	for i := start; i < digestEnd; i++ {
 		if isDigestMessage(msgs[i]) {
 			digestIdx = i
 			break
@@ -1789,7 +1797,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 				}
 				description := sb.String()
 
-				if err := e.approver.PromptCommand("tool_batch", description, ""); err != nil {
+				if err := e.approver.PromptCommand(danger.ToolBatchClass, description, ""); err != nil {
 					batchDenied = true
 				}
 

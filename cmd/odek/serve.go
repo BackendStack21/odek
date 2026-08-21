@@ -541,11 +541,26 @@ func requestServeShutdown() {
 }
 
 // serveOnListener serves the odek Web UI on a pre-created listener.
+// newServeHTTPServer builds the serve HTTP server. Extracted so tests can
+// pin the unauthenticated-connection hardening (audit 2026-08): without a
+// header deadline, any local (or remote, on a non-loopback --addr) client
+// can hold thousands of half-open connections forever — the rate limiter
+// and CSRF token only apply after the request line arrives. Body reads
+// stay unbounded so long agent runs and uploads are unaffected (only the
+// pre-request header phase and idle keep-alives are timed).
+func newServeHTTPServer(mux *http.ServeMux) *http.Server {
+	return &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+}
+
 // Extracted for testing — allows E2E tests to pass a listener on a known port.
 // Handles SIGINT/SIGTERM for graceful shutdown: stops accepting new connections
 // and gives in-flight requests up to 5 seconds to finish.
 func serveOnListener(listener net.Listener, mux *http.ServeMux) error {
-	srv := &http.Server{Handler: mux}
+	srv := newServeHTTPServer(mux)
 
 	// Catch Ctrl-C and SIGTERM.
 	quit := make(chan os.Signal, 1)
@@ -1195,8 +1210,15 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 			continue
 		}
 
-		// Handle runtime model switching
+		// Handle runtime model switching. Validate first (audit 2026-08):
+		// applying the switch before handlePrompt's length/charset check
+		// left a rejected model ID active on the agent, silently reused by
+		// the next prompt sent without a model field.
 		if msg.Model != "" && msg.Model != currentModel {
+			if len(msg.Model) > maxModelIDBytes || !modelIDPattern.MatchString(msg.Model) {
+				writeWSJSON(conn, map[string]any{"type": "error", "message": "invalid model ID"})
+				continue
+			}
 			currentModel = msg.Model
 			resolved.Model = msg.Model
 			agent.SwitchModel(msg.Model)
@@ -2312,7 +2334,9 @@ func handleStatic(wsToken string) http.HandlerFunc {
 		// cookie (sent automatically on same-site WebSocket upgrades) and as a
 		// meta tag (read by app.js and sent as a WebSocket subprotocol).
 		if r.URL.Path == "/" && wsToken != "" {
-			if r.URL.Query().Get("token") == wsToken {
+			// Constant-time, like every other comparison in this file: this
+			// is the one endpoint that mints the authenticated cookie.
+			if subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("token")), []byte(wsToken)) == 1 {
 				http.SetCookie(w, &http.Cookie{
 					Name:     wsTokenCookieName,
 					Value:    wsToken,

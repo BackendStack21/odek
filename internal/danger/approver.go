@@ -30,6 +30,22 @@ type Approver interface {
 	PromptOperation(op ToolOperation) error
 }
 
+// ToolBatchClass is the synthetic risk class the agent loop uses when it
+// prompts once for a batch of tool calls together. A batch aggregates
+// multiple tools whose individual classes may differ, so it must never be
+// session-trustable: one Trust grant would blanket-approve the contents of
+// every later batch (and, via the loop's SetTrustAll, every per-tool prompt
+// in the session).
+const ToolBatchClass = RiskClass("tool_batch")
+
+// TrustShortcutAllowed reports whether cls may be session-trusted via the
+// "trust" shortcut. Destructive, Blocked, and Unknown must never be
+// (fail-closed catch-alls; blanket-trusting them is carte blanche), and
+// neither may ToolBatchClass — see its doc comment.
+func TrustShortcutAllowed(cls RiskClass) bool {
+	return cls != Destructive && cls != Blocked && cls != Unknown && cls != ToolBatchClass
+}
+
 var (
 	// ttyPromptMu serializes all TTY approval prompts process-wide. Without
 	// this, concurrent tool calls (e.g. parallel_shell) each open /dev/tty
@@ -185,8 +201,10 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string) error
 	// approval-fatigue attacks where the model batches a benign trust grant
 	// with a dangerous payload. Unknown is included because it is the
 	// fail-closed catch-all for unrecognised verbs — class-trusting it would
-	// blanket-approve every future obfuscated/novel command.
-	allowTrust := cls != Destructive && cls != Blocked && cls != Unknown
+	// blanket-approve every future obfuscated/novel command. ToolBatchClass
+	// aggregates tools of differing classes, so trusting it would
+	// blanket-approve every later batch (see TrustShortcutAllowed).
+	allowTrust := TrustShortcutAllowed(cls)
 
 	// Approval-fatigue mitigation: if the user has already approved
 	// this class FrictionThreshold times in FrictionWindow, the next

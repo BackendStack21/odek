@@ -309,6 +309,29 @@ func (e *EpisodeStore) Read(sessionID string) (string, error) {
 	return string(data), nil
 }
 
+// EpisodePendingReview reports whether the episode for sessionID is tainted
+// but unpromoted (Untrusted && !UserApproved && !AutoApproved) — the same
+// filter Search/recallByVector apply before replaying content into the
+// system prompt. Agents must not sidestep the quarantine by reading the
+// episode file directly: the content would re-enter the conversation as a
+// plain tool result and be re-extracted at session end as a trusted
+// (recallable) episode, laundering the taint. Unknown episodes and index
+// read errors fail closed (treated as pending review) — the index lives in
+// the agent-writable memory directory, so "no entry found" must not
+// degrade into an allow.
+func (e *EpisodeStore) EpisodePendingReview(sessionID string) bool {
+	idx, err := e.ReadIndex()
+	if err != nil {
+		return true
+	}
+	for _, ep := range idx {
+		if ep.SessionID == sessionID {
+			return ep.Provenance.Untrusted && !ep.Provenance.UserApproved && !ep.Provenance.AutoApproved
+		}
+	}
+	return true
+}
+
 // ReadIndex reads the episode index from disk. Returns empty slice if the
 // index file doesn't exist yet. Entries are ordered newest-first.
 //

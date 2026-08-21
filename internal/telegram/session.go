@@ -340,9 +340,19 @@ func (sm *SessionManager) DeleteClarifyChannel(chatID int64) {
 type SessionInfo struct {
 	ID        string    // session ID (e.g. "tg-12345")
 	Task      string    // first user message or label
-	CreatedAt time.Time // when the session started
+	CreatedAt time.Time // when the session was created
 	UpdatedAt time.Time // last activity
 	Turns     int       // number of user turns
+}
+
+// sessionIDBelongsToChat reports whether a store session ID belongs to
+// chatID. IDs are `tg-<chatID>` or `tg-<chatID>-<suffix>` (archives), so the
+// boundary must be the `-` separator: a bare string prefix would let one
+// chat's prefix match another chat's longer numeric ID (chat 999 vs chat
+// 9999), re-opening the cross-chat access path (audit 2026-08).
+func sessionIDBelongsToChat(id string, chatID int64) bool {
+	prefix := fmt.Sprintf("tg-%d", chatID)
+	return id == prefix || strings.HasPrefix(id, prefix+"-")
 }
 
 // ListSessions returns metadata for sessions belonging to chatID, sorted by
@@ -354,10 +364,9 @@ func (sm *SessionManager) ListSessions(chatID int64, limit int) ([]SessionInfo, 
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
 
-	prefix := fmt.Sprintf("tg-%d", chatID)
 	var infos []SessionInfo
 	for _, s := range all {
-		if !strings.HasPrefix(s.ID, prefix) {
+		if !sessionIDBelongsToChat(s.ID, chatID) {
 			continue
 		}
 		infos = append(infos, SessionInfo{
@@ -390,11 +399,9 @@ func (sm *SessionManager) ResumeSession(chatID int64, sessionID string) (*ChatSe
 		return nil, fmt.Errorf("session ID required — use /sessions to list")
 	}
 
-	prefix := fmt.Sprintf("tg-%d", chatID)
-
 	// Try direct load first.
 	sess, err := sm.Store.Load(sessionID)
-	if err == nil && sess != nil && !strings.HasPrefix(sess.ID, prefix) {
+	if err == nil && sess != nil && !sessionIDBelongsToChat(sess.ID, chatID) {
 		return nil, fmt.Errorf("session %q belongs to a different chat", sess.ID)
 	}
 
@@ -405,7 +412,7 @@ func (sm *SessionManager) ResumeSession(chatID int64, sessionID string) (*ChatSe
 			return nil, fmt.Errorf("list sessions: %w", listErr)
 		}
 		for i, s := range all {
-			if !strings.HasPrefix(s.ID, prefix) {
+			if !sessionIDBelongsToChat(s.ID, chatID) {
 				continue
 			}
 			if strings.HasPrefix(s.ID, sessionID) ||
@@ -444,7 +451,6 @@ func (sm *SessionManager) PruneSessions(chatID int64, days int) (int, error) {
 		days = 30
 	}
 	before := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
-	prefix := fmt.Sprintf("tg-%d", chatID)
 
 	all, err := sm.Store.List(0)
 	if err != nil {
@@ -453,7 +459,7 @@ func (sm *SessionManager) PruneSessions(chatID int64, days int) (int, error) {
 
 	removed := 0
 	for _, s := range all {
-		if !strings.HasPrefix(s.ID, prefix) {
+		if !sessionIDBelongsToChat(s.ID, chatID) {
 			continue
 		}
 		if s.UpdatedAt.Before(before) {

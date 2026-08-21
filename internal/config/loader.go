@@ -595,6 +595,18 @@ func loadFile(path string) FileConfig {
 	}
 	defer f.Close()
 
+	// The operator's global config can carry an api_key (and telegram bot
+	// tokens), so a group/world-readable file leaks them to other local
+	// users. secrets.env is refused outright (#78); config.json often holds
+	// only non-secret settings, so warn loudly instead of refusing
+	// (audit 2026-08: the documented "permission-checked" claim previously
+	// covered only secrets.env).
+	if info, serr := f.Stat(); serr == nil {
+		if perm := info.Mode().Perm(); perm&0077 != 0 {
+			fmt.Fprintf(os.Stderr, "odek: WARNING: config %s is group/world-readable (%04o) and may contain secrets; run `chmod 600 %s`\n", path, perm, path)
+		}
+	}
+
 	// Read at most maxConfigFileBytes+1 so we can detect files that exceed the
 	// limit without loading them entirely. Using a single Open+LimitReader
 	// closes the TOCTOU window between stat and read.
@@ -1023,6 +1035,19 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if project.WebSearch != nil {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring web_search from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
 		project.WebSearch = nil
+	}
+	// transcription.binary_path / vision.binary_path are executed verbatim
+	// by the transcribe/vision tools (and auto_transcribe triggers that
+	// execution automatically on Telegram voice notes), so a cloned repo
+	// must not be able to point them at a planted binary. Both sections are
+	// operator-only, like telegram/memory above.
+	if project.Transcription != nil {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring transcription from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
+		project.Transcription = nil
+	}
+	if project.Vision != nil {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring vision from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
+		project.Vision = nil
 	}
 	if len(project.TrustedProxies) > 0 {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring trusted_proxies from project config (%s); set it via ~/.odek/config.json or ODEK_TRUSTED_PROXIES\n", ProjectConfigPath())

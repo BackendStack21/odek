@@ -23,14 +23,18 @@ func TestClient_ConcurrentCallsNoResponseLoss(t *testing.T) {
 	clientRead, serverWrite := io.Pipe() // server writes to client
 
 	client := &Client{
-		name:    "test",
-		nextID:  0,
-		stdin:   clientWrite,
-		stdout:  bufio.NewReader(clientRead),
-		pending: make(map[int]chan callResponse),
-		done:    make(chan struct{}),
+		name:      "test",
+		nextID:    0,
+		stdin:     clientWrite,
+		stdout:    bufio.NewReader(clientRead),
+		pending:   make(map[int]chan callResponse),
+		done:      make(chan struct{}),
+		writeCh:   make(chan []byte, 32),
+		writeDone: make(chan struct{}),
+		closed:    make(chan struct{}),
 	}
 	go client.readLoop()
+	go client.writeLoop()
 
 	// Simulate a server that reads both requests, then sends responses
 	// out of order (pipelined), identifying each response by the

@@ -229,32 +229,65 @@ func exportSessionMarkdown(sess *session.Session) string {
 		case "system":
 			continue // empty head / internal injections — not part of the transcript
 		case "user":
-			b.WriteString("## user\n\n````text\n")
-			b.WriteString(stripUntrustedEnvelopes(m.Content))
-			b.WriteString("\n````\n\n")
+			body := stripUntrustedEnvelopes(m.Content)
+			fence := codeFence(body)
+			b.WriteString("## user\n\n" + fence + "text\n")
+			b.WriteString(body)
+			b.WriteString("\n" + fence + "\n\n")
 		case "assistant":
 			if m.ReasoningContent != "" {
-				b.WriteString("<details><summary>reasoning</summary>\n\n````text\n")
-				b.WriteString(stripUntrustedEnvelopes(m.ReasoningContent))
-				b.WriteString("\n````\n</details>\n\n")
+				body := stripUntrustedEnvelopes(m.ReasoningContent)
+				fence := codeFence(body)
+				b.WriteString("<details><summary>reasoning</summary>\n\n" + fence + "text\n")
+				b.WriteString(body)
+				b.WriteString("\n" + fence + "\n</details>\n\n")
 			}
 			for _, tc := range m.ToolCalls {
-				fmt.Fprintf(&b, "### tool call: %s\n\n````json\n", tc.Function.Name)
-				b.WriteString(prettyJSONArgs(tc.Function.Arguments))
-				b.WriteString("\n````\n\n")
+				args := prettyJSONArgs(tc.Function.Arguments)
+				fence := codeFence(args)
+				fmt.Fprintf(&b, "### tool call: %s\n\n%sjson\n", tc.Function.Name, fence)
+				b.WriteString(args)
+				b.WriteString("\n" + fence + "\n\n")
 			}
 			if m.Content != "" {
-				b.WriteString("## assistant\n\n````markdown\n")
-				b.WriteString(stripUntrustedEnvelopes(m.Content))
-				b.WriteString("\n````\n\n")
+				body := stripUntrustedEnvelopes(m.Content)
+				fence := codeFence(body)
+				b.WriteString("## assistant\n\n" + fence + "markdown\n")
+				b.WriteString(body)
+				b.WriteString("\n" + fence + "\n\n")
 			}
 		case "tool":
-			fmt.Fprintf(&b, "### tool result: %s\n\n````text\n", orDash(m.Name))
-			b.WriteString(stripUntrustedEnvelopes(m.Content))
-			b.WriteString("\n````\n\n")
+			body := stripUntrustedEnvelopes(m.Content)
+			fence := codeFence(body)
+			fmt.Fprintf(&b, "### tool result: %s\n\n%stext\n", orDash(m.Name), fence)
+			b.WriteString(body)
+			b.WriteString("\n" + fence + "\n\n")
 		}
 	}
 	return b.String()
+}
+
+// codeFence returns a backtick fence strictly longer than any backtick run
+// in body (minimum 4). Transcript content is model/tool generated — a fixed
+// 4-backtick fence let any content line of exactly ```` close it early and
+// forge document structure in the "human-shareable" export (audit 2026-08).
+func codeFence(body string) string {
+	longest, cur := 0, 0
+	for i := 0; i < len(body); i++ {
+		if body[i] == '`' {
+			cur++
+			if cur > longest {
+				longest = cur
+			}
+		} else {
+			cur = 0
+		}
+	}
+	n := longest + 1
+	if n < 4 {
+		n = 4
+	}
+	return strings.Repeat("`", n)
 }
 
 func orDash(s string) string {

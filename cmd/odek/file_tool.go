@@ -1157,15 +1157,24 @@ func confineToCWD(path string) (string, error) {
 	// config can disable the sandbox or enable YOLO mode on the next run,
 	// and a dropped SKILL.md is auto-loaded into future prompts. Skills
 	// are legitimately written through the dedicated skill_save/skill_patch
-	// tools, not the generic file tools.
+	// tools, not the generic file tools. Case-folded: ~/.ODEK is the same
+	// directory as ~/.odek on case-insensitive filesystems (macOS APFS).
 	home, homeErr := os.UserHomeDir()
 	if homeErr == nil {
-		odekPrefix := home + "/.odek/"
-		if strings.HasPrefix(absResolved, odekPrefix) {
-			if isProtectedOdekPath(strings.TrimPrefix(absResolved, odekPrefix)) {
-				return "", fmt.Errorf("path %q is a protected odek configuration path and cannot be written by file tools", path)
+		// absResolved has symlinks resolved; $HOME may itself be a symlinked
+		// path (macOS temp dirs), so compare against both spellings.
+		homes := []string{home}
+		if rh, rerr := filepath.EvalSymlinks(home); rerr == nil && rh != home {
+			homes = append(homes, rh)
+		}
+		for _, h := range homes {
+			odekPrefix := h + "/.odek/"
+			if len(absResolved) >= len(odekPrefix) && strings.EqualFold(absResolved[:len(odekPrefix)], odekPrefix) {
+				if isProtectedOdekPath(absResolved[len(odekPrefix):]) {
+					return "", fmt.Errorf("path %q is a protected odek configuration path and cannot be written by file tools", path)
+				}
+				return abs, nil
 			}
-			return abs, nil
 		}
 	}
 

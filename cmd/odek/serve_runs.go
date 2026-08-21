@@ -268,7 +268,12 @@ func wsConnKick(id string) bool {
 
 func newWSConnID() string {
 	b := make([]byte, 8)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		// Fail closed like session.GenerateAuthToken: on entropy failure a
+		// zero ID would be predictable AND collide across connections
+		// (kick/cancel would target the first match).
+		panic("odek: crypto/rand unavailable for connection ID: " + err.Error())
+	}
 	return "conn-" + hex.EncodeToString(b)
 }
 
@@ -495,7 +500,11 @@ func (r *serveRun) isTerminal() bool {
 
 func newRunID() string {
 	b := make([]byte, 10)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		// Fail closed: predictable/colliding run IDs would let one run's
+		// cancel/approval operations target another's.
+		panic("odek: crypto/rand unavailable for run ID: " + err.Error())
+	}
 	return "run-" + hex.EncodeToString(b)
 }
 
