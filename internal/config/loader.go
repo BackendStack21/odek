@@ -1085,9 +1085,32 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		sort.Strings(projectSandboxOverride.Volumes)
 	}
 
+	// Project-level auto_approve is a self-approval attempt surface: a
+	// cloned repo must never be able to mark its own MCP servers trusted.
+	// Strip it (the operator can grant the same trust from the global
+	// config, where it is honored).
+	for name, mc := range project.MCPServers {
+		if mc.AutoApprove {
+			fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring mcp_servers.%s.auto_approve from project config (%s); set auto_approve in ~/.odek/config.json to trust this server\n", name, ProjectConfigPath())
+			mc.AutoApprove = false
+			project.MCPServers[name] = mc
+		}
+	}
+
 	// Start with global, overlay project
 	cfg := overlayFile(FileConfig{}, global)
 	cfg = overlayFile(cfg, project)
+
+	// Global auto_approve trust markers survive the project overlay: when
+	// the global config carries the flag for a name the project defines
+	// (preserved in overlayFile below) the merged server keeps it. A marker
+	// with no definition behind it (auto_approve + empty command) is not a
+	// server — drop it so nothing tries to connect to it.
+	for name, mc := range cfg.MCPServers {
+		if mc.AutoApprove && mc.Command == "" {
+			delete(cfg.MCPServers, name)
+		}
+	}
 
 	// Remember which MCP servers came from the project config so commands can
 	// require explicit approval before spawning potentially untrusted subprocesses.
@@ -2474,6 +2497,13 @@ func overlayFile(base, override FileConfig) FileConfig {
 			base.MCPServers = make(map[string]mcpclient.ServerConfig)
 		}
 		for k, v := range override.MCPServers {
+			// An operator-set auto_approve on the base (global) entry is
+			// trust metadata for the NAME: it survives even when the
+			// project overrides the definition. (Project-side auto_approve
+			// is stripped before this point.)
+			if prev, ok := base.MCPServers[k]; ok && prev.AutoApprove {
+				v.AutoApprove = true
+			}
 			base.MCPServers[k] = v
 		}
 	}
