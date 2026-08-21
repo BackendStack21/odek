@@ -3,11 +3,21 @@ package main
 // Regression tests for the 2026-08 security audit — serve/API quick wins.
 
 import (
+	"encoding/json"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/resource"
 	"github.com/BackendStack21/odek/internal/session"
+
+	golangws "golang.org/x/net/websocket"
 )
 
 // TestAudit_ExportMarkdown_FenceBreakout audits the finding that the
@@ -53,5 +63,141 @@ func TestAudit_CodeFence(t *testing.T) {
 		if got := len(codeFence(c.body)); got != c.want {
 			t.Errorf("codeFence(%q) length = %d, want %d", c.body, got, c.want)
 		}
+	}
+}
+
+// TestAudit_ServeHTTPServerTimeouts pins the slowloris hardening: without
+// ReadHeaderTimeout/IdleTimeout, any unauthenticated client could hold
+// half-open connections forever (rate limiting and the CSRF token only
+// apply after the request line arrives).
+func TestAudit_ServeHTTPServerTimeouts(t *testing.T) {
+	srv := newServeHTTPServer(http.NewServeMux())
+	if srv.ReadHeaderTimeout <= 0 {
+		t.Errorf("ReadHeaderTimeout = %v, want > 0", srv.ReadHeaderTimeout)
+	}
+	if srv.IdleTimeout <= 0 {
+		t.Errorf("IdleTimeout = %v, want > 0", srv.IdleTimeout)
+	}
+}
+
+// TestAudit_IDGenerators pins the conn/run ID generators: correct prefix,
+// fixed length, and uniqueness. (The 2026-08 fix made them fail closed on
+// crypto/rand errors; the happy path must keep producing distinct IDs.)
+func TestAudit_IDGenerators(t *testing.T) {
+	seenConn := map[string]bool{}
+	for i := 0; i < 100; i++ {
+		id := newWSConnID()
+		if !strings.HasPrefix(id, "conn-") || len(id) != len("conn-")+16 {
+			t.Fatalf("newWSConnID() = %q, want conn- + 16 hex chars", id)
+		}
+		if seenConn[id] {
+			t.Fatalf("newWSConnID() repeated: %s", id)
+		}
+		seenConn[id] = true
+	}
+	seenRun := map[string]bool{}
+	for i := 0; i < 100; i++ {
+		id := newRunID()
+		if !strings.HasPrefix(id, "run-") || len(id) != len("run-")+20 {
+			t.Fatalf("newRunID() = %q, want run- + 20 hex chars", id)
+		}
+		if seenRun[id] {
+			t.Fatalf("newRunID() repeated: %s", id)
+		}
+		seenRun[id] = true
+	}
+}
+
+// TestAudit_WebSocketInvalidModelRejectedEarly pins the WS-loop ordering
+// fix: an invalid model ID must be rejected before the switch is applied to
+// the agent (a rejected ID used to stay active and silently reused by the
+// next prompt sent without a model field). Runs the production handleWS
+// loop — the invalid model is rejected before any LLM call, so no API key
+// is needed.
+func TestAudit_WebSocketInvalidModelRejectedEarly(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	resolved := config.LoadConfig(config.CLIFlags{})
+	store, err := session.NewStore()
+	if err != nil {
+		t.Fatalf("session store: %v", err)
+	}
+	cwd, _ := os.Getwd()
+	home, _ := os.UserHomeDir()
+	resourceReg := resource.NewRegistry(
+		resource.NewFileResolver(cwd),
+		resource.NewSessionResolver(filepath.Join(home, ".odek", "sessions")),
+	)
+	wsToken, err := newServeToken()
+	if err != nil {
+		t.Fatalf("CSRF token: %v", err)
+	}
+	testTokenMu.Lock()
+	testLastToken = wsToken
+	testTokenMu.Unlock()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", handleStatic(wsToken))
+	mux.Handle("/ws", &golangws.Server{
+		Handshake: func(cfg *golangws.Config, req *http.Request) error {
+			return wsHandshakeWithLimits(cfg, req, wsToken, nil)
+		},
+		Handler: func(conn *golangws.Conn) {
+			handleWS(store, resourceReg, resolved, defaultSystem, nil, conn)
+		},
+	})
+	go func() { _ = serveOnListener(ln, mux) }()
+
+	wsUpgradeLimiter.reset()
+	conn := dialTestWS(t, ln.Addr().String())
+	defer conn.Close()
+
+	msg := map[string]string{"type": "prompt", "content": "hi", "model": "BAD MODEL!"}
+	payload, _ := json.Marshal(msg)
+	if err := golangws.Message.Send(conn, string(payload)); err != nil {
+		t.Fatalf("Send(): %v", err)
+	}
+
+	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	for i := 0; i < 5; i++ {
+		var data []byte
+		if err := golangws.Message.Receive(conn, &data); err != nil {
+			t.Fatalf("Receive event %d: %v", i, err)
+		}
+		var evt map[string]any
+		if err := json.Unmarshal(data, &evt); err != nil {
+			t.Fatalf("unmarshal event %d: %v", i, err)
+		}
+		if evt["type"] == "error" {
+			if got, _ := evt["message"].(string); !strings.Contains(got, "invalid model ID") {
+				t.Fatalf("error message = %q, want 'invalid model ID'", got)
+			}
+			return
+		}
+	}
+	t.Fatal("no invalid-model error event received")
+}
+
+// TestAudit_ResumeTaskPreview pins the Telegram /resume guard: a zero-message
+// session must render an empty preview (the handler then reports "(empty)")
+// instead of panicking on messages[0].
+func TestAudit_ResumeTaskPreview(t *testing.T) {
+	if got := resumeTaskPreview(nil); got != "" {
+		t.Errorf("resumeTaskPreview(nil) = %q, want \"\"", got)
+	}
+	if got := resumeTaskPreview([]llm.Message{}); got != "" {
+		t.Errorf("resumeTaskPreview(empty) = %q, want \"\"", got)
+	}
+	if got := resumeTaskPreview([]llm.Message{{Role: "user", Content: "short task"}}); got != "short task" {
+		t.Errorf("resumeTaskPreview(short) = %q, want %q", got, "short task")
+	}
+	long := strings.Repeat("x", 200)
+	got := resumeTaskPreview([]llm.Message{{Role: "user", Content: long}})
+	if runes := len([]rune(got)); runes != 81 || !strings.HasSuffix(got, "…") {
+		t.Errorf("resumeTaskPreview(long) = %d runes, want 81 with ellipsis suffix", runes)
 	}
 }

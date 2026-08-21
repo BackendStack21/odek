@@ -51,6 +51,22 @@ func injectReturnAfterBreak(ctx context.Context, mm *memory.MemoryManager, messa
 	return messages
 }
 
+// resumeTaskPreview renders the first-message preview for the Telegram
+// /resume confirmation, capped at 80 runes-ish. An empty history renders
+// as "" — the handler then reports "(empty)" instead of panicking on
+// messages[0] (audit 2026-08: a persisted zero-message session crashed the
+// update loop on /resume).
+func resumeTaskPreview(messages []llm.Message) string {
+	if len(messages) == 0 {
+		return ""
+	}
+	p := messages[0].Content
+	if len(p) > 80 {
+		p = p[:80] + "…"
+	}
+	return p
+}
+
 // followUpSuggester is the subset of *memory.MemoryManager used by
 // printFollowUpSuggestions; an interface so tests can substitute a fake.
 type followUpSuggester interface {

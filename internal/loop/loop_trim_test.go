@@ -735,3 +735,34 @@ func TestRunLoop_StaleMemMsgIdxReset(t *testing.T) {
 		t.Errorf("stale memMsgIdx should be reset to -1, got %d", engine.memMsgIdx)
 	}
 }
+
+// TestAudit_TrimToSurvival_DeepDigest audits the 2026-08 finding that the
+// digest scan covered only a fixed 4-message window from the head: with
+// memory/skill/episode blocks injected the digest sits deeper (index ≥ 5)
+// and was dropped exactly when context pressure was highest. The existing
+// TestTrimToSurvival_PreservesDigest places the digest at index 1, inside
+// the old window, which is why it never caught this.
+func TestAudit_TrimToSurvival_DeepDigest(t *testing.T) {
+	msgs := []llm.Message{
+		{Role: "system", Content: "sys"},                                // 0
+		{Role: "system", Content: "memory facts"},                       // 1
+		{Role: "system", Content: "skills"},                             // 2
+		{Role: "system", Content: "episodes"},                           // 3
+		{Role: "system", Content: "extended memory"},                    // 4
+		{Role: "system", Content: digestMsgPrefix + " old work]\nbody"}, // 5 — outside the old start+4 window
+		{Role: "user", Content: "task"},                                 // 6
+		{Role: "assistant", ToolCalls: survivalTC("c1", "echo")},
+		{Role: "tool", Content: "r1", ToolCallID: "c1"},
+		{Role: "user", Content: "latest"},
+	}
+	got := trimToSurvival(msgs)
+	found := false
+	for _, m := range got {
+		if isDigestMessage(m) {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("deep compaction digest (beyond the old 4-message window) must survive the survival trim")
+	}
+}

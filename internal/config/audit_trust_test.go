@@ -7,8 +7,11 @@ package config
 // telegram/memory/web_search.
 
 import (
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -87,5 +90,38 @@ func TestLoadConfig_GlobalTranscriptionStillApplies(t *testing.T) {
 	}
 	if cfg.Vision.BinaryPath != "/opt/mtmd" {
 		t.Errorf("Vision.BinaryPath = %q, want /opt/mtmd (global config still applies)", cfg.Vision.BinaryPath)
+	}
+}
+
+// TestAudit_LoadFileWarnsOnLoosePerms pins the 2026-08 addition: the
+// operator's global config can carry an api_key, so a group/world-readable
+// file must produce a loud warning (the permission check previously covered
+// only secrets.env despite the documented claim covering both).
+func TestAudit_LoadFileWarnsOnLoosePerms(t *testing.T) {
+	dir := t.TempDir()
+
+	capture := func(perm os.FileMode) string {
+		path := filepath.Join(dir, fmt.Sprintf("cfg-%o.json", perm))
+		if err := os.WriteFile(path, []byte(`{"model":"m"}`), perm); err != nil {
+			t.Fatal(err)
+		}
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		origStderr := os.Stderr
+		os.Stderr = w
+		defer func() { os.Stderr = origStderr }()
+		_ = loadFile(path)
+		w.Close()
+		buf, _ := io.ReadAll(r)
+		return string(buf)
+	}
+
+	if out := capture(0600); strings.Contains(out, "group/world-readable") {
+		t.Errorf("0600 config must not warn:\n%s", out)
+	}
+	if out := capture(0644); !strings.Contains(out, "group/world-readable") || !strings.Contains(out, "chmod 600") {
+		t.Errorf("0644 config must warn with a chmod hint:\n%s", out)
 	}
 }

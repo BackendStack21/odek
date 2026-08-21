@@ -541,22 +541,26 @@ func requestServeShutdown() {
 }
 
 // serveOnListener serves the odek Web UI on a pre-created listener.
+// newServeHTTPServer builds the serve HTTP server. Extracted so tests can
+// pin the unauthenticated-connection hardening (audit 2026-08): without a
+// header deadline, any local (or remote, on a non-loopback --addr) client
+// can hold thousands of half-open connections forever — the rate limiter
+// and CSRF token only apply after the request line arrives. Body reads
+// stay unbounded so long agent runs and uploads are unaffected (only the
+// pre-request header phase and idle keep-alives are timed).
+func newServeHTTPServer(mux *http.ServeMux) *http.Server {
+	return &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+}
+
 // Extracted for testing — allows E2E tests to pass a listener on a known port.
 // Handles SIGINT/SIGTERM for graceful shutdown: stops accepting new connections
 // and gives in-flight requests up to 5 seconds to finish.
 func serveOnListener(listener net.Listener, mux *http.ServeMux) error {
-	srv := &http.Server{
-		Handler: mux,
-		// Unauthenticated-connection hardening (audit 2026-08): without a
-		// header deadline, any local (or remote, on a non-loopback --addr)
-		// client can hold thousands of half-open connections forever — the
-		// rate limiter and CSRF token only apply after the request line
-		// arrives. Bounds: header read 10s, idle keep-alive 120s. Body
-		// reads stay unbounded so long agent runs and uploads are unaffected
-		// (only the pre-request header phase and idle connections are timed).
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       120 * time.Second,
-	}
+	srv := newServeHTTPServer(mux)
 
 	// Catch Ctrl-C and SIGTERM.
 	quit := make(chan os.Signal, 1)

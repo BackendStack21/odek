@@ -511,12 +511,9 @@ func telegramCmd(args []string) error {
 			resumeMM.InitExtended(llm.New(resolved.BaseURL, resolved.APIKey, resolved.Model, "", 0, 120*time.Second),
 				expandHome("~/.odek/memory"))
 			cs.Messages = injectReturnAfterBreak(context.Background(), resumeMM, cs.Messages)
-			if len(cs.Messages) == 0 {
+			taskPreview := resumeTaskPreview(cs.Messages)
+			if taskPreview == "" {
 				return fmt.Sprintf("✅ *Session resumed*: `%s` (empty)\n\nSend a message to continue.", cs.SessionID), nil
-			}
-			taskPreview := cs.Messages[0].Content
-			if len(taskPreview) > 80 {
-				taskPreview = taskPreview[:80] + "…"
 			}
 			return fmt.Sprintf(
 				"✅ *Session resumed*: `%s`\n\n%d turns • %d messages\n_%s_\n\nSend a message to continue.",

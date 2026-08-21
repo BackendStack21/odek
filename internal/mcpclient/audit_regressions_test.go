@@ -13,6 +13,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -71,5 +72,28 @@ func TestAudit_CallBoundedWhenServerStopsReading(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 3*time.Second {
 		t.Fatalf("second call took %v; callers behind a full pipe must still be ctx-bounded", elapsed)
+	}
+}
+
+// TestAudit_WriteErrorStickyFailsFast pins the sticky writeErr fast path:
+// once the writer goroutine has failed (dead stdin), later callers must get
+// an immediate "write:" error instead of waiting out the full per-server
+// timeout against a connection that can never respond.
+func TestAudit_WriteErrorStickyFailsFast(t *testing.T) {
+	c, cleanup := newStuckPipeClient(10 * time.Second)
+	defer cleanup()
+
+	// Kill the writer by closing its stdin out from under it.
+	c.mu.Lock()
+	c.writeErr = fmt.Errorf("test: connection dead")
+	c.mu.Unlock()
+
+	start := time.Now()
+	_, err := c.call(context.Background(), "tools/call", json.RawMessage(`"x"`))
+	if err == nil || !strings.Contains(err.Error(), "write:") {
+		t.Fatalf("call after writer failure = %v, want immediate write error", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("call took %v; sticky writeErr must fail fast, not after the 10s timeout", elapsed)
 	}
 }
