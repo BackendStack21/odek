@@ -254,6 +254,18 @@ type Client struct {
 	lineCh chan lineResult // single-reader goroutine sends lines here
 	done   chan struct{}   // closed when process exits
 
+	// writeCh feeds a single writer goroutine. Requests must be handed to
+	// the writer instead of written inline: a server that stops reading
+	// stdin fills the pipe buffer, and an inline write would block while
+	// holding c.mu — wedging every later call() at the mutex before the
+	// ctx/select that is supposed to bound it (audit: a hung server could
+	// permanently wedge serve/telegram instances that share one Client per
+	// server for the process lifetime). Enqueueing under ctx keeps every
+	// caller bounded by the per-server timeout.
+	writeCh   chan []byte
+	writeDone chan struct{} // closed when the writer goroutine exits
+	closed    chan struct{} // closed by Close to unblock an idle writer
+
 	// Per-server limits, resolved from ServerConfig at construction time.
 	// A zero timeout means "fall back to DefaultTimeout at call time" (the
 	// package var stays the default value source and is never mutated from
@@ -265,9 +277,11 @@ type Client struct {
 	artifactRoots    []string      // configured roots for artifact ref validation (internal/artifact)
 	warnings         []string      // non-fatal config issues (e.g. clamped values)
 
-	mu      sync.Mutex
-	nextID  int
-	pending map[int]chan callResponse // routes responses to waiting callers
+	mu        sync.Mutex
+	nextID    int
+	pending   map[int]chan callResponse // routes responses to waiting callers
+	writeErr  error                     // sticky writer failure, set once
+	closeOnce sync.Once
 }
 
 // normalizeLimits resolves the effective per-server limits from cfg, applying
@@ -386,6 +400,9 @@ func New(name string, cfg ServerConfig) (*Client, error) {
 		stdout:           bufio.NewReader(stdout),
 		lineCh:           make(chan lineResult, 10),
 		done:             make(chan struct{}),
+		writeCh:          make(chan []byte, 32),
+		writeDone:        make(chan struct{}),
+		closed:           make(chan struct{}),
 		pending:          make(map[int]chan callResponse),
 		timeout:          timeout,
 		maxResponseBytes: maxResp,
@@ -396,6 +413,9 @@ func New(name string, cfg ServerConfig) (*Client, error) {
 
 	// Start single-reader goroutine
 	go c.readLoop()
+
+	// Start single-writer goroutine (see writeCh doc comment).
+	go c.writeLoop()
 
 	// Monitor process exit in background
 	go func() {
@@ -501,9 +521,17 @@ func buildEnv(overrides map[string]string) []string {
 // Close terminates the MCP server process and cleans up resources.
 // Safe to call multiple times.
 func (c *Client) Close() error {
-	// Close stdin to signal EOF to the server
+	// Unblock the writer goroutine if it is idle, then signal EOF to the
+	// server. Guarded so repeated Close calls stay safe.
+	c.closeOnce.Do(func() { close(c.closed) })
 	if c.stdin != nil {
 		c.stdin.Close()
+	}
+
+	// Wait for the writer to exit so no Write races the process teardown.
+	select {
+	case <-c.writeDone:
+	case <-time.After(time.Second):
 	}
 
 	// Wait for process with timeout
@@ -726,12 +754,22 @@ func (c *Client) call(ctx context.Context, method string, params json.RawMessage
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	// Send
+	// Hand the request to the single writer goroutine. Enqueueing is
+	// ctx-bounded: when a malicious server stops reading stdin and the
+	// pipe + channel buffers fill, callers fail with the per-server
+	// timeout instead of wedging on a mutex (see writeCh doc comment).
+	select {
+	case c.writeCh <- append(reqRaw, '\n'):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	// Surface a sticky writer failure promptly (the enqueued request would
+	// otherwise just time out later).
 	c.mu.Lock()
-	_, err = fmt.Fprintln(c.stdin, string(reqRaw))
+	werr := c.writeErr
 	c.mu.Unlock()
-	if err != nil {
-		return nil, fmt.Errorf("write: %w", err)
+	if werr != nil {
+		return nil, fmt.Errorf("write: %w", werr)
 	}
 
 	// Wait for response via channel (dispatched by readLoop).
@@ -746,6 +784,36 @@ func (c *Client) call(ctx context.Context, method string, params json.RawMessage
 			return nil, cr.err
 		}
 		return cr.result, nil
+	}
+}
+
+// writeLoop is the single writer goroutine owning c.stdin. It keeps write
+// ordering (one syscall per request) while ensuring no caller can block on
+// a full pipe — callers enqueue under their own ctx deadline instead (see
+// writeCh doc comment). On the first write error it records the sticky
+// failure and closes stdin so the server sees EOF, readLoop exits, and all
+// pending waiters unblock ("connection closed before response received").
+// Senders that are still blocked on a full channel unblock via their own
+// ctx deadline or the sticky writeErr fast path in call().
+func (c *Client) writeLoop() {
+	defer close(c.writeDone)
+	for {
+		select {
+		case req := <-c.writeCh:
+			if _, err := c.stdin.Write(req); err != nil {
+				c.mu.Lock()
+				if c.writeErr == nil {
+					c.writeErr = err
+				}
+				c.mu.Unlock()
+				// EOF to the server → readLoop exits → pending waiters
+				// unblock. A second Close error is irrelevant here.
+				c.stdin.Close()
+				return
+			}
+		case <-c.closed:
+			return
+		}
 	}
 }
 

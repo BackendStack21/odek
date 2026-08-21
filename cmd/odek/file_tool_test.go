@@ -1400,6 +1400,30 @@ func TestIsProtectedOdekPath_CaseInsensitive(t *testing.T) {
 	}
 }
 
+// TestConfineToCWD_CaseInsensitiveOdekAnchor audits the 2026-08 finding that
+// the ~/.odek carve-out in confineToCWD matched the `.odek` directory
+// component case-sensitively: with cwd = $HOME (a documented, warned-but-
+// supported mode), write_file to ~/.ODEK/config.json bypassed the protected
+// anchor check and replaced the real config on case-insensitive filesystems.
+func TestConfineToCWD_CaseInsensitiveOdekAnchor(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".odek"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(home)
+
+	if _, err := confineToCWD(filepath.Join(home, ".ODEK", "config.json")); err == nil {
+		t.Fatal("confineToCWD(~/.ODEK/config.json) allowed; want protected-odek rejection")
+	}
+
+	// The case-variant carve-out still admits non-anchor state paths
+	// (memory/ is not a trust anchor) — folding must not over-block.
+	if _, err := confineToCWD(filepath.Join(home, ".ODEK", "memory", "facts.md")); err != nil {
+		t.Fatalf("confineToCWD(~/.ODEK/memory/facts.md) = %v, want carve-out allow", err)
+	}
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────
 
 func callJSON(t *testing.T, tool interface {

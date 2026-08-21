@@ -1789,7 +1789,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 				}
 				description := sb.String()
 
-				if err := e.approver.PromptCommand("tool_batch", description, ""); err != nil {
+				if err := e.approver.PromptCommand(danger.ToolBatchClass, description, ""); err != nil {
 					batchDenied = true
 				}
 

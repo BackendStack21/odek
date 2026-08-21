@@ -225,6 +225,13 @@ func (t *MemoryTool) handleView(target, query string) (string, error) {
 	if err := session.ValidateSessionID(query); err != nil {
 		return errorJSON("invalid session_id: " + err.Error()), nil
 	}
+	// Provenance gate: a tainted, unpromoted episode is quarantined from
+	// recall; reading it directly would re-enter its content into the
+	// conversation un-wrapped and re-extract it at session end as a trusted
+	// (recallable) episode — laundering the taint. Require promotion first.
+	if t.manager.episodes.EpisodePendingReview(query) {
+		return errorJSON("episode " + query + " is pending review (untrusted provenance) — promote it with `odek memory promote` before viewing"), nil
+	}
 	content, err := t.manager.episodes.Read(query)
 	if err != nil {
 		return errorJSON(err.Error()), nil

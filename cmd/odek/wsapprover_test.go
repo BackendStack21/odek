@@ -269,6 +269,59 @@ func TestWSApprover_PromptCommand_Trust(t *testing.T) {
 	}
 }
 
+// TestWSApprover_PromptCommand_TrustToolBatchNotCachable audits the 2026-08
+// finding that the synthetic tool_batch class was trustable in the WS
+// approver (the Telegram approver had already been fixed): one Trust click
+// on a batch card cached approveAll["tool_batch"], auto-passing every later
+// batch — and via the loop's SetTrustAll, every per-tool prompt in the
+// session. A "trust" response for a batch must coerce to a one-shot
+// approve, and the card must not offer the trust shortcut at all.
+func TestWSApprover_PromptCommand_TrustToolBatchNotCachable(t *testing.T) {
+	sendCalled := make(chan struct{}, 1)
+	var gotReq approvalRequest
+	a := newWSApprover(func(v any) error {
+		if req, ok := v.(approvalRequest); ok {
+			gotReq = req
+		}
+		sendCalled <- struct{}{}
+		return nil
+	})
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- a.PromptCommand(danger.ToolBatchClass, "1. `write_file` — `x`", "batch")
+	}()
+
+	<-sendCalled
+
+	a.mu.Lock()
+	var pendingID string
+	for id := range a.pending {
+		pendingID = id
+		break
+	}
+	a.mu.Unlock()
+	if pendingID == "" {
+		t.Fatal("expected a pending request to appear")
+	}
+
+	if gotReq.AllowTrust {
+		t.Error("approval_request for tool_batch must not advertise AllowTrust")
+	}
+
+	a.HandleResponse(pendingID, "trust")
+
+	if err := <-errCh; err != nil {
+		t.Errorf("expected nil (one-shot approve), got: %v", err)
+	}
+	a.mu.Lock()
+	cached := a.approveAll[danger.ToolBatchClass]
+	a.mu.Unlock()
+	if cached {
+		t.Error("tool_batch must not be cached in approveAll by a trust response")
+	}
+}
+
 func TestWSApprover_PromptOperation(t *testing.T) {
 	// PromptOperation should call PromptCommand with Risk and Resource
 	var capturedCls danger.RiskClass

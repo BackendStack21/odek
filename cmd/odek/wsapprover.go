@@ -37,12 +37,15 @@ type approvalRequest struct {
 }
 
 // allowTrustForClass mirrors the TTYApprover policy: destructive, blocked,
-// and unknown must never be class-trusted, so an attacker cannot social-
-// engineer a single broad approval into long-term carte blanche. Unknown is
-// the fail-closed catch-all for unrecognised verbs; class-trusting it would
-// blanket-approve every future obfuscated/novel command.
+// unknown, and the synthetic tool_batch class must never be class-trusted,
+// so an attacker cannot social-engineer a single broad approval into
+// long-term carte blanche. Unknown is the fail-closed catch-all for
+// unrecognised verbs; class-trusting it would blanket-approve every future
+// obfuscated/novel command. tool_batch aggregates multiple tools of
+// differing classes in one card — trusting it would silently approve every
+// later batch (and, via the loop's SetTrustAll, every per-tool prompt).
 func allowTrustForClass(cls danger.RiskClass) bool {
-	return cls != danger.Destructive && cls != danger.Blocked && cls != danger.Unknown
+	return danger.TrustShortcutAllowed(cls)
 }
 
 // approvalResponse is received from the browser when the user responds.
