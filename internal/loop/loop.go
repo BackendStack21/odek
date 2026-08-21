@@ -34,9 +34,13 @@ var toolHeartbeatInterval = time.Minute
 // Callers must close the returned channel when the tool call ends (including
 // panic paths) so the watchdog goroutine cannot leak.
 func (e *Engine) startToolHeartbeat(ctx context.Context, toolName string) chan<- struct{} {
+	// Snapshot the interval on the caller's goroutine: reading the package
+	// var inside the watchdog would race with tests overriding it after the
+	// spawning test completed but before the goroutine got scheduled.
+	interval := toolHeartbeatInterval
 	done := make(chan struct{})
 	go func() {
-		ticker := time.NewTicker(toolHeartbeatInterval)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		start := time.Now()
 		for {
@@ -137,6 +141,13 @@ type IterationInfo struct {
 	IsPreTool           bool          // true when fired BEFORE tool execution (shows reasoning + tools)
 }
 
+// DeltaHandler receives streamed LLM output fragments when streaming is
+// enabled (see SetStream / docs/STREAMING.md). It is invoked synchronously
+// from the SSE reader and must be non-blocking. Returning a non-nil error
+// aborts generation; the loop then fails the turn with the wrapped
+// *llm.StreamAbortedError instead of retrying.
+type DeltaHandler func(llm.Delta) error
+
 // IterationCallback is an optional callback invoked after each iteration
 // of the agent loop. Used by Telegram/WebUI for progress reporting.
 type IterationCallback func(info IterationInfo)
@@ -171,6 +182,15 @@ type Engine struct {
 
 	toolEventHandler ToolEventHandler // optional: fires during tool execution
 	signalHandler    SignalHandler    // optional: fires on internal loop signals
+
+	// stream enables SSE streaming for the main think step (docs/STREAMING.md).
+	// Auxiliary LLM calls (compaction, iteration summary) stay buffered.
+	stream bool
+	// deltaHandler receives streamed fragments when stream is on.
+	deltaHandler DeltaHandler
+	// streamedThisCall reports whether the current think call forwarded any
+	// delta to the handler — used to suppress duplicate render output.
+	streamedThisCall bool
 
 	// eventHandler, when set, receives structured runtime events
 	// (schema odek.event/v1): iteration_completed, tool_call_started /
@@ -356,6 +376,43 @@ func (e *Engine) SetMemoryPromptFunc(fn func() string) {
 
 // SetToolEventHandler sets the optional tool event callback for live streaming.
 func (e *Engine) SetToolEventHandler(cb ToolEventHandler) { e.toolEventHandler = cb }
+
+// SetStream enables SSE streaming of the main think step (docs/STREAMING.md).
+// Requires a delta handler (SetDeltaHandler) to change anything user-visible;
+// without one the transport still streams but nothing is displayed
+// incrementally.
+func (e *Engine) SetStream(on bool) { e.stream = on }
+
+// SetDeltaHandler sets the streamed-fragment callback (see DeltaHandler).
+func (e *Engine) SetDeltaHandler(cb DeltaHandler) { e.deltaHandler = cb }
+
+// callLLM performs the main think-step LLM call. It enforces the per-call
+// wall-clock deadline on both paths (the buffered path previously relied
+// solely on http.Client.Timeout, which streaming cannot use — see ADR-1 in
+// docs/STREAMING.md) and dispatches to CallStream when streaming is enabled.
+// Tool-argument deltas are suppressed: they are partial JSON and noise for
+// terminal consumers (the assembled calls still arrive via the result).
+func (e *Engine) callLLM(ctx context.Context, messages []llm.Message, systemBlocks []llm.SystemBlock, tools []llm.ToolDef) (*llm.CallResult, error) {
+	callCtx := ctx
+	if t := e.client.RequestTimeout(); t > 0 {
+		var cancel context.CancelFunc
+		callCtx, cancel = context.WithTimeout(ctx, t)
+		defer cancel()
+	}
+
+	e.streamedThisCall = false
+	if !e.stream || e.deltaHandler == nil {
+		return e.client.Call(callCtx, messages, systemBlocks, tools)
+	}
+
+	return e.client.CallStream(callCtx, messages, systemBlocks, tools, func(d llm.Delta) error {
+		if d.Kind == llm.DeltaToolArgs {
+			return nil
+		}
+		e.streamedThisCall = true
+		return e.deltaHandler(d)
+	})
+}
 
 // SetEventHandler sets the optional structured runtime event sink
 // (schema odek.event/v1). The handler must be non-blocking — events fire
@@ -1448,7 +1505,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 			callMsgs, systemBlocks = llm.ApplyCacheMarkers(messages)
 		}
 
-		result, err := e.client.Call(ctx, callMsgs, systemBlocks, tools)
+		result, err := e.callLLM(ctx, callMsgs, systemBlocks, tools)
 		latency := time.Since(start)
 		if err != nil {
 			// Context-length-exceeded errors: don't die — try aggressive
@@ -1487,9 +1544,15 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 			return "", messages, fmt.Errorf("iteration %d: %w", i, err)
 		}
 
-		// Render turn statistics (re-draw iteration header with stats)
-		if e.renderer != nil && e.interactionMode != "off" {
-			e.renderer.Iteration(i+1, e.maxIter, latency, result.InputTokens, result.OutputTokens, 0)
+		// Render turn statistics (re-draw iteration header with stats).
+		// When this iteration's reasoning/content were already streamed to
+		// the terminal live, Thinking/FinalAnswer suppress their bodies so
+		// nothing double-prints; stats headers and the summary still render.
+		if e.renderer != nil {
+			e.renderer.SetStreamedOutput(e.streamedThisCall)
+			if e.interactionMode != "off" {
+				e.renderer.Iteration(i+1, e.maxIter, latency, result.InputTokens, result.OutputTokens, 0)
+			}
 		}
 
 		// Accumulate token usage across iterations
@@ -2037,6 +2100,9 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		final := budgetSummaryMarker + "\n\n" + summary
 
 		if e.renderer != nil && e.interactionMode != "off" {
+			// This summary comes from a buffered side call — nothing was
+			// streamed for it, so undo any per-iteration suppression.
+			e.renderer.SetStreamedOutput(false)
 			e.renderer.FinalAnswer(final)
 			e.renderer.Summary(
 				e.TotalInputTokens,

@@ -90,6 +90,64 @@ type Renderer struct {
 	model         string
 	skillVerbose  bool // show skill notifications (auto-load, save, suggest, etc.)
 	memoryVerbose bool // show memory lifecycle + agent-signal notifications
+
+	// streamedOutput marks that the current iteration's reasoning/content
+	// were already streamed to the terminal live (see SetStreamedOutput);
+	// Thinking and FinalAnswer then suppress their bodies so nothing
+	// double-prints.
+	streamedOutput bool
+
+	// streamLastKind tracks the kind of the last streamed fragment so kind
+	// transitions can insert separation (reasoning block → answer body).
+	// Reset by SetStreamedOutput at iteration boundaries.
+	streamLastKind int // 0 = none, 1 = reasoning, 2 = content
+}
+
+// SetStreamedOutput marks that this iteration's reasoning and content were
+// already streamed to the terminal live by a delta consumer. While set,
+// Thinking and FinalAnswer suppress their bodies; stats headers and Summary
+// still render. The loop sets this per think call and clears it for
+// non-streamed renders (e.g. the iteration-budget partial summary). It also
+// resets the stream-fragment state for the next iteration.
+func (r *Renderer) SetStreamedOutput(v bool) {
+	if r != nil {
+		r.streamedOutput = v
+		r.streamLastKind = 0
+	}
+}
+
+// StreamReasoning prints one reasoning fragment as it arrives, dimmed with
+// a single 🧠 cue at the start of the block — the streaming analogue of
+// Thinking, without the wait for the full text.
+func (r *Renderer) StreamReasoning(text string) {
+	if r.disable() || text == "" {
+		return
+	}
+	if r.streamLastKind != 1 {
+		// Entering (or re-entering) the reasoning block: cue + separation
+		// from any previously streamed answer text.
+		if r.streamLastKind == 2 {
+			fmt.Fprintln(r.w)
+		}
+		fmt.Fprint(r.w, r.style(dim+italic, "🧠 "))
+		r.streamLastKind = 1
+	}
+	fmt.Fprint(r.w, r.style(dim+italic, text))
+}
+
+// StreamContent prints one answer fragment as it arrives, plainly. The
+// transition out of the reasoning block gets a blank line so the answer
+// starts visually distinct from the dimmed thoughts above it.
+func (r *Renderer) StreamContent(text string) {
+	if r.disable() || text == "" {
+		return
+	}
+	if r.streamLastKind == 1 {
+		fmt.Fprintln(r.w)
+		fmt.Fprintln(r.w)
+	}
+	r.streamLastKind = 2
+	fmt.Fprint(r.w, text)
 }
 
 // New creates a Renderer that writes to w. If color is false, ANSI escape
@@ -145,6 +203,11 @@ func (r *Renderer) Iteration(n, maxN int, latency time.Duration, inTokens, outTo
 	if r.disable() {
 		return
 	}
+	if r.streamedOutput {
+		// Live-streamed text does not end with a newline of its own; start
+		// the header on a fresh line instead of gluing onto the answer.
+		fmt.Fprintln(r.w)
+	}
 	var prefix string
 	if r.model != "" {
 		prefix = fmt.Sprintf("Iter %d/%d · %s", n, maxN, r.model)
@@ -168,7 +231,7 @@ func (r *Renderer) Iteration(n, maxN int, latency time.Duration, inTokens, outTo
 
 // Thinking prints the model's reasoning text with a brain emoji.
 func (r *Renderer) Thinking(text string) {
-	if r.disable() || text == "" {
+	if r.disable() || text == "" || r.streamedOutput {
 		return
 	}
 	fmt.Fprintln(r.w, r.style(dim+italic, "🧠 "+text))
@@ -398,6 +461,12 @@ func (r *Renderer) ToolResult(output string) {
 // FinalAnswer prints the model's concluding response with a checkmark emoji.
 func (r *Renderer) FinalAnswer(text string) {
 	if r.disable() || text == "" {
+		return
+	}
+	if r.streamedOutput {
+		// The text was already streamed live; print only a separator so the
+		// Summary line below doesn't glue onto the streamed output.
+		fmt.Fprintln(r.w)
 		return
 	}
 	fmt.Fprintln(r.w, r.style(green, "✅ "+text))

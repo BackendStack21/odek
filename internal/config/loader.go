@@ -73,6 +73,10 @@ type CLIFlags struct {
 	// Config: prompt_caching, ODEK_PROMPT_CACHING, --prompt-caching.
 	PromptCaching *bool // nil = not set
 
+	// Stream enables SSE streaming of LLM responses for the main think
+	// step (default: off). Config: stream, ODEK_STREAM, --stream.
+	Stream *bool // nil = not set
+
 	// Compaction enables LLM-based rolling compaction of trimmed context
 	// (default: on). Config: compaction, ODEK_COMPACTION,
 	// --compaction / --no-compaction.
@@ -254,6 +258,10 @@ type FileConfig struct {
 	// PromptCaching enables prompt caching markers for supported providers.
 	PromptCaching *bool `json:"prompt_caching,omitempty"`
 
+	// Stream enables SSE streaming of LLM responses for the main think
+	// step (default: off). Config: stream, ODEK_STREAM, --stream.
+	Stream *bool `json:"stream,omitempty"`
+
 	// Compaction enables LLM-based rolling compaction of trimmed context
 	// (default: on; set false to explicitly disable).
 	Compaction *bool `json:"compaction,omitempty"`
@@ -398,6 +406,7 @@ type ResolvedConfig struct {
 	Sandbox       bool
 	NoColor       bool
 	NoAgents      bool
+	Stream        bool
 	PromptCaching bool
 	Compaction    bool
 	System        string
@@ -1116,6 +1125,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if v := envBool("PROMPT_CACHING"); v != nil {
 		cfg.PromptCaching = v
 	}
+	if v := envBool("STREAM"); v != nil {
+		cfg.Stream = v
+	}
 	if v := envBool("COMPACTION"); v != nil {
 		cfg.Compaction = v
 	}
@@ -1472,6 +1484,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if cli.PromptCaching != nil {
 		cfg.PromptCaching = cli.PromptCaching
 	}
+	if cli.Stream != nil {
+		cfg.Stream = cli.Stream
+	}
 	if cli.Compaction != nil {
 		cfg.Compaction = cli.Compaction
 	}
@@ -1770,6 +1785,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	}
 	if cfg.PromptCaching != nil {
 		resolved.PromptCaching = *cfg.PromptCaching
+	}
+	if cfg.Stream != nil {
+		resolved.Stream = *cfg.Stream
 	}
 	// Compaction defaults to ON: for long sessions, turn groups dropped by
 	// context trimming are summarized into a rolling digest instead of
@@ -2435,6 +2453,9 @@ func overlayFile(base, override FileConfig) FileConfig {
 	}
 	if override.PromptCaching != nil {
 		base.PromptCaching = override.PromptCaching
+	}
+	if override.Stream != nil {
+		base.Stream = override.Stream
 	}
 	if override.Compaction != nil {
 		base.Compaction = override.Compaction

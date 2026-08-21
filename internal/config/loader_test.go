@@ -1875,3 +1875,27 @@ func TestCompaction_ExplicitFalseWins(t *testing.T) {
 		}
 	})
 }
+
+func TestStreamLayering(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Default: off.
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.Stream {
+		t.Error("default Stream = true, want false")
+	}
+
+	// Env enables.
+	t.Setenv("ODEK_STREAM", "1")
+	cfg = LoadConfig(CLIFlags{})
+	if !cfg.Stream {
+		t.Error("ODEK_STREAM=1 not honored")
+	}
+
+	// CLI overrides env.
+	off := false
+	cfg = LoadConfig(CLIFlags{Stream: &off})
+	if cfg.Stream {
+		t.Error("CLI stream=false did not override ODEK_STREAM=1")
+	}
+}

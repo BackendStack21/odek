@@ -2493,3 +2493,36 @@ func TestDefaultSystem_RemindsLiteralToolNames(t *testing.T) {
 		t.Error("defaultSystem should include explicit 'patch NOT sed' mapping")
 	}
 }
+
+// TestParseReplFlags_TrailingBooleanFlags pins the last-argument branch: a
+// boolean flag as the final (or only) argument must be honored, not silently
+// ignored. `odek repl --stream` was dropped here before the branch covered
+// every boolean the main switch knows.
+func TestParseReplFlags_TrailingBooleanFlags(t *testing.T) {
+	f, err := parseReplFlags([]string{"--stream"})
+	if err != nil {
+		t.Fatalf("parseReplFlags: %v", err)
+	}
+	if f.Stream == nil || !*f.Stream {
+		t.Errorf("trailing --stream = %v, want true", f.Stream)
+	}
+
+	f, err = parseReplFlags([]string{"--model", "m", "--prompt-caching"})
+	if err != nil {
+		t.Fatalf("parseReplFlags: %v", err)
+	}
+	if f.Model != "m" {
+		t.Errorf("Model = %q, want m", f.Model)
+	}
+	if f.PromptCaching == nil || !*f.PromptCaching {
+		t.Errorf("trailing --prompt-caching = %v, want true", f.PromptCaching)
+	}
+
+	f, err = parseReplFlags([]string{"--no-compaction"})
+	if err != nil {
+		t.Fatalf("parseReplFlags: %v", err)
+	}
+	if f.Compaction == nil || *f.Compaction {
+		t.Errorf("trailing --no-compaction = %v, want false", f.Compaction)
+	}
+}

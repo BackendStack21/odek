@@ -1554,11 +1554,20 @@ func validateSessionToken(store *session.Store, sess *session.Session, token str
 	return "", false
 }
 
+// wsWriteMu serializes WebSocket frame writes. golang.org/x/net/websocket is
+// not safe for concurrent Sends, and frames are written from several
+// goroutines (agent loop callbacks, subagent logs, approvals, socket
+// reader); unsynchronized writes interleave into torn JSON. Process-wide,
+// matching the TTY approver's serialization idiom.
+var wsWriteMu sync.Mutex
+
 func writeWSJSON(conn *golangws.Conn, data any) {
 	payload, err := json.Marshal(data)
 	if err != nil {
 		return
 	}
+	wsWriteMu.Lock()
+	defer wsWriteMu.Unlock()
 	golangws.Message.Send(conn, string(payload))
 }
 

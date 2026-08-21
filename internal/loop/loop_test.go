@@ -2882,3 +2882,78 @@ func TestEngine_PromptCaching_NonAnthropicSkipsMarkers(t *testing.T) {
 		t.Errorf("first message role = %v, want system", first["role"])
 	}
 }
+
+// TestEngine_Run_StreamsDeltas verifies the streaming path end to end at the
+// engine level: with SetStream + SetDeltaHandler, the main think call
+// delivers fragments incrementally and the assembled result is unchanged.
+func TestEngine_Run_StreamsDeltas(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Stream bool `json:"stream"`
+		}
+		json.NewDecoder(r.Body).Decode(&req) //nolint:errcheck
+		if !req.Stream {
+			t.Errorf("engine did not request streaming")
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking\"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"Hello \"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"streamed\"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":3}}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	registry := tool.NewRegistry(nil)
+	engine := New(client, registry, 10, "", nil, 0)
+	engine.SetStream(true)
+
+	var mu sync.Mutex
+	var got []llm.Delta
+	engine.SetDeltaHandler(func(d llm.Delta) error {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, d)
+		return nil
+	})
+
+	result, err := engine.Run(context.Background(), "Say hello")
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if result != "Hello streamed" {
+		t.Errorf("result = %q, want %q", result, "Hello streamed")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 3 { // 1 reasoning + 2 content; tool-args suppressed (none here)
+		t.Errorf("deltas = %d, want 3: %+v", len(got), got)
+	}
+	if got[0].Kind != llm.DeltaReasoning || got[1].Kind != llm.DeltaContent {
+		t.Errorf("delta order wrong: %+v", got)
+	}
+}
+
+// TestEngine_Run_StreamOffKeepsBuffered pins the default: without
+// SetStream, the engine requests a non-streaming completion.
+func TestEngine_Run_StreamOffKeepsBuffered(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Stream bool `json:"stream"`
+		}
+		json.NewDecoder(r.Body).Decode(&req) //nolint:errcheck
+		if req.Stream {
+			t.Errorf("engine requested streaming although it is disabled")
+		}
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"buffered"}}]}`)
+	}))
+	defer server.Close()
+
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	engine := New(client, tool.NewRegistry(nil), 10, "", nil, 0)
+	result, err := engine.Run(context.Background(), "hi")
+	if err != nil || result != "buffered" {
+		t.Fatalf("Run() = %q, %v", result, err)
+	}
+}

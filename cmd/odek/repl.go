@@ -53,6 +53,7 @@ func replCmd(args []string) error {
 		Thinking:        f.Thinking,
 		Sandbox:         f.Sandbox,
 		PromptCaching:   f.PromptCaching,
+		Stream:          f.Stream,
 		Compaction:      f.Compaction,
 		InteractionMode: f.InteractionMode,
 
@@ -166,6 +167,8 @@ func replCmd(args []string) error {
 		MemoryConfig:     resolved.Memory,
 		MemoryDir:        expandHome("~/.odek/memory"),
 		PromptCaching:    resolved.PromptCaching,
+		Stream:           resolved.Stream,
+		DeltaHandler:     streamDeltaPrinter(resolved.Stream, rend),
 		Compaction:       resolved.Compaction,
 		Guard:            injectionGuard,
 		GuardConfig:      resolved.Guard,
