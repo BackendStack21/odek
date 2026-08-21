@@ -1024,6 +1024,19 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring web_search from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
 		project.WebSearch = nil
 	}
+	// transcription.binary_path / vision.binary_path are executed verbatim
+	// by the transcribe/vision tools (and auto_transcribe triggers that
+	// execution automatically on Telegram voice notes), so a cloned repo
+	// must not be able to point them at a planted binary. Both sections are
+	// operator-only, like telegram/memory above.
+	if project.Transcription != nil {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring transcription from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
+		project.Transcription = nil
+	}
+	if project.Vision != nil {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring vision from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
+		project.Vision = nil
+	}
 	if len(project.TrustedProxies) > 0 {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring trusted_proxies from project config (%s); set it via ~/.odek/config.json or ODEK_TRUSTED_PROXIES\n", ProjectConfigPath())
 		project.TrustedProxies = nil
