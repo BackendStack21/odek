@@ -45,6 +45,8 @@ export function send() {
   resetTurnState();
 
   S.busy = true;
+  S.runStartedAt = Date.now();
+  S.runIterations = 0;
   sendBtn.disabled = true;
   promptEl.disabled = true;
 

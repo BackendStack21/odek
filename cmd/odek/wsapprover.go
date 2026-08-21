@@ -68,6 +68,11 @@ type wsApprover struct {
 	frictionThreshold int
 	frictionWindow    time.Duration
 	approvalLog       map[danger.RiskClass][]time.Time
+
+	// approvalTimeout bounds how long PromptCommand waits for a response.
+	// Defaults to 60s (the socket UX); headless REST runs may raise it via
+	// SetApprovalTimeout (capped by the caller) for poll-based clients.
+	approvalTimeout time.Duration
 }
 
 // newWSApprover creates a wsApprover that sends requests via sendFn.
@@ -80,7 +85,20 @@ func newWSApprover(sendFn func(v any) error) *wsApprover {
 		frictionThreshold: 3,
 		frictionWindow:    60 * time.Second,
 		approvalLog:       make(map[danger.RiskClass][]time.Time),
+		approvalTimeout:   60 * time.Second,
 	}
+}
+
+// SetApprovalTimeout adjusts how long PromptCommand waits for a response.
+// Intended for headless REST runs whose operator polls at a slower cadence
+// than a browser; callers cap the value themselves.
+func (a *wsApprover) SetApprovalTimeout(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	a.mu.Lock()
+	a.approvalTimeout = d
+	a.mu.Unlock()
 }
 
 // recordApproval logs an approval timestamp for cls.
@@ -158,7 +176,13 @@ func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string
 		return fmt.Errorf("approval: send failed: %w", err)
 	}
 
-	// Wait for response, cancellation, or timeout (60s).
+	// Wait for response, cancellation, or the approval timeout.
+	a.mu.Lock()
+	timeout := a.approvalTimeout
+	a.mu.Unlock()
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
 	select {
 	case action := <-resp:
 		// Ack the user's choice back to the browser for UI feedback.
@@ -189,7 +213,7 @@ func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string
 		}
 	case <-a.cancel:
 		return fmt.Errorf("approval cancelled: %s", cmd)
-	case <-time.After(60 * time.Second):
+	case <-time.After(timeout):
 		return fmt.Errorf("approval timeout: %s", cmd)
 	}
 }

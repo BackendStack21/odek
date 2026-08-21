@@ -23,7 +23,14 @@ cmd/odek/
                               --events-jsonl/--external-ref/budget flag wiring, init config templates
   dispatch.go                 CLI subcommand dispatch (+ budget.Error → exit code 4 mapping)
   shell.go                    Built-in shell tool (local or docker exec; danger-gated; optional timeout_seconds)
-  serve.go                    Web UI server (HTTP + WebSocket; @-resource completion; /api/* incl. /api/limits)
+  serve.go                    Web UI server (HTTP + WebSocket; @-resource completion; protocol v2: delta
+                              streaming, ping/pong, WS cancel, session_switch)
+  serve_api.go                REST management API (/api/health, sessions search/pagination/pin/export,
+                              memory facts + episode promote + consolidate, skills + promote, tools,
+                              profiles, sanitized config view, MCP listing, shutdown)
+  serve_runs.go               Headless REST runs (POST /api/prompt → run registry, remote approval
+                              bridge, cancel) + events ring (/api/events), usage stats (/api/usage),
+                              WS connection registry (/api/connections, kick)
   repl.go                     Interactive REPL with multi-turn session support
   repl_editor.go              Terminal raw-mode input editor
   telegram.go                 Telegram bot command — wires odek agent into Telegram poller

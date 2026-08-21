@@ -575,7 +575,7 @@ func TestServe_E2E_WebSocketPipeline(t *testing.T) {
 			return wsHandshakeWithLimits(cfg, req, wsToken, nil)
 		},
 		Handler: func(conn *golangws.Conn) {
-			handleWS(store, resourceReg, resolved, systemMessage, conn)
+			handleWS(store, resourceReg, resolved, systemMessage, nil, conn)
 		},
 	})
 	mux.HandleFunc("/api/resources", handleResourceSearch(resourceReg))
@@ -944,7 +944,7 @@ func buildServeMux(t *testing.T, store *session.Store) (net.Listener, *http.Serv
 			return wsHandshakeWithLimits(cfg, req, wsToken, nil)
 		},
 		Handler: func(conn *golangws.Conn) {
-			handleWS(store, resourceReg, resolved, systemMessage, conn)
+			handleWS(store, resourceReg, resolved, systemMessage, nil, conn)
 		},
 	})
 	// Mirror the production API authentication stack so E2E tests exercise the

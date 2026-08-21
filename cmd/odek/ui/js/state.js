@@ -17,18 +17,32 @@ export const S = {
   sessionId: null,
   sessionTokens: {}, // session id -> auth token
   busy: false,
+  health: null,      // last server info snapshot (health.js)
   history: JSON.parse(localStorage.getItem('odek_history') || '[]'),
   historyIdx: -1,
   attachedFiles: [], // {name, size, content}
   currentModel: localStorage.getItem('odek_model') || '',
   availableModels: [],
+  availableProfiles: [], // built-in model profiles (/api/profiles)
   // Per-query thinking toggle. Persisted so it survives page refresh.
   thinkingEnabled: localStorage.getItem('odek_thinking') === '1',
+
+  // ── Sessions sidebar (server-side search + pagination) ──
+  sessionSearch: '',   // current server-side query
+  sessionOffset: 0,    // next page offset
+  sessionPages: [],    // accumulated sessions across pages
+  sessionsExhausted: false,
+
+  // ── Current run ──
+  runStartedAt: 0,   // ms timestamp while a prompt is executing
+  runIterations: 0,  // LLM iterations seen via usage events
 
   // ── Streaming ──
   streamBubbleEl: null,
   streamContentEl: null,
-  streamBuffer: '',
+  streamBuffer: '',   // unflushed fragments awaiting the next rAF
+  streamText: '',     // full accumulated answer text for this turn
+  streamCursorEl: null,
   streamRAF: null,
   thinkingContentEl: null, // current thinking block if any
 

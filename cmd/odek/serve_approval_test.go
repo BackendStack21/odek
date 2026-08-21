@@ -59,7 +59,7 @@ func buildServeMuxPromptAll(t *testing.T, store *session.Store) (net.Listener, *
 			return wsHandshakeWithLimits(cfg, req, wsToken, nil)
 		},
 		Handler: func(conn *golangws.Conn) {
-			handleWS(store, resourceReg, resolved, systemMessage, conn)
+			handleWS(store, resourceReg, resolved, systemMessage, nil, conn)
 		},
 	})
 	mux.HandleFunc("/api/cancel", handleCancel(store))

@@ -1,14 +1,18 @@
-// Entry point: init sequence, theme, model picker, thinking toggle, cancel,
-// global keyboard shortcuts. Feature modules self-register their listeners.
+// Entry point: init sequence, theme, model picker (with built-in profiles),
+// thinking toggle, cancel, global keyboard shortcuts. Feature modules
+// self-register their listeners.
 import { S, getSessionToken } from './state.js';
-import { apiHeaders } from './net.js';
+import { getModels, getProfiles, cancelSession } from './api.js';
 import { promptEl, skeletonEl, thinkBtn } from './dom.js';
 import { escapeHtml, escapeAttr, showToast, toggleShortcuts, hideCancel, closeDialog } from './utils.js';
 import { addSystemMessage } from './render.js';
 import { loadSessions } from './sessions.js';
-import { connect } from './ws.js';
+import { connect, wsSend } from './ws.js';
+import { togglePanels } from './panels.js';
+import { initMetrics, setMetricsModel } from './metrics.js';
 import './input.js';
 import './approvals.js';
+import './health.js';
 
 // ── Init ──
 // Save references so newSession() can restore the empty state after clearing.
@@ -28,6 +32,7 @@ if (S.savedEmptyStateNode) {
   const hints = S.savedEmptyStateNode.querySelectorAll('.es-hints span');
   if (hints[0]) activateOnKey(hints[0], toggleShortcuts);
   if (hints[1]) activateOnKey(hints[1], loadSessions);
+  if (hints[2]) activateOnKey(hints[2], () => togglePanels(true));
 }
 
 // ── Theme Toggle ──
@@ -70,20 +75,30 @@ async function fetchModels() {
   const picker = document.getElementById('model-picker');
   try {
     picker.disabled = true;
-    const resp = await fetch('/api/models', { headers: apiHeaders() });
-    if (!resp.ok) { picker.innerHTML = '<option value="">Models unavailable</option>'; return; }
-    const models = await resp.json();
-    S.availableModels = models;
-    if (!models || models.length === 0) {
+    const [models, profilesData] = await Promise.all([getModels(), getProfiles().catch(() => null)]);
+    S.availableModels = models || [];
+    S.availableProfiles = (profilesData && profilesData.profiles) || [];
+    if (S.availableModels.length === 0 && S.availableProfiles.length === 0) {
       picker.innerHTML = '<option value="">No models</option>';
       return;
     }
     let html = '';
-    models.forEach(m => {
+    S.availableModels.forEach(m => {
       const sel = S.currentModel === m.id ? ' selected' : '';
       const label = m.current ? '★ ' + (m.description || m.id) : (m.description || m.id);
       html += `<option value="${escapeAttr(m.id)}"${sel}>${escapeHtml(label)}</option>`;
     });
+    // Built-in profiles go under an optgroup in the "Other…" section so the
+    // configured model stays the headline entry.
+    if (S.availableProfiles.length > 0) {
+      html += '<optgroup label="known models">';
+      S.availableProfiles.forEach(p => {
+        const sel = S.currentModel === p.id ? ' selected' : '';
+        const ctx = p.max_context ? ' — ' + Math.round(p.max_context / 1024) + 'K ctx' : '';
+        html += `<option value="${escapeAttr(p.id)}"${sel}>${escapeHtml(p.label + ctx)}</option>`;
+      });
+      html += '</optgroup>';
+    }
     // "Other..." sentinel opens the free-text input.
     html += '<option value="__custom__">Other (type model ID)…</option>';
     picker.innerHTML = html;
@@ -154,29 +169,44 @@ function commitCustomModel() {
 
 function switchModel(modelId) {
   S.currentModel = modelId;
+  setMetricsModel(modelId);
   if (modelId) {
     localStorage.setItem('odek_model', modelId);
   } else {
     localStorage.removeItem('odek_model');
   }
+  const label = document.getElementById('model-label');
+  if (label) label.textContent = modelId || '';
   showToast(modelId ? 'Model: ' + modelId : 'Using default model');
 }
 
 // ── Cancel Button ──
+// Prefer the in-socket cancel (no header juggling, immediate); fall back to
+// the REST endpoint when the socket is down but the session is known.
 function cancelAgent() {
   if (!S.sessionId) {
     hideCancel();
     addSystemMessage('⏹ No active session to cancel');
     return;
   }
-  fetch('/api/cancel?session_id=' + encodeURIComponent(S.sessionId), {
-    method: 'POST',
-    headers: apiHeaders({ 'X-Session-Token': getSessionToken(S.sessionId) || '' })
-  }).catch(() => {});
+  const token = getSessionToken(S.sessionId);
+  if (wsSend({
+    type: 'cancel',
+    session_id: S.sessionId,
+    auth_token: token || undefined,
+  })) {
+    hideCancel();
+    addSystemMessage('⏹ Cancel requested');
+    return;
+  }
+  cancelSession(S.sessionId, token || undefined).catch(() => {});
   hideCancel();
   addSystemMessage('⏹ Canceled');
 }
 document.getElementById('cancel-btn').addEventListener('click', cancelAgent);
+
+// ── Management panels ──
+document.getElementById('panels-btn').addEventListener('click', () => togglePanels());
 
 // ── Shortcuts overlay ──
 document.getElementById('shortcuts-overlay').addEventListener('click', (e) => {
@@ -189,6 +219,7 @@ connect();
 if (skeletonEl) skeletonEl.classList.add('visible');
 loadSessions();
 fetchModels();
+initMetrics();
 promptEl.focus();
 
 // Handle keyboard shortcuts globally
@@ -209,5 +240,10 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 't' && e.altKey && !S.busy) {
     e.preventDefault();
     toggleThinkingMode();
+  }
+  // Alt+M toggles the management panels
+  if (e.key === 'm' && e.altKey) {
+    e.preventDefault();
+    togglePanels();
   }
 });

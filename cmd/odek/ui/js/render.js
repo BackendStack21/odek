@@ -15,7 +15,22 @@ import { parseUntrusted } from './untrusted.js';
 // resetTurnState clears all per-turn streaming/tool/sub-agent state. Called
 // before a new turn (send), on new session, and when loading a session.
 export function resetTurnState() {
+  // The finished turn's reasoning blocks were auto-expanded while it ran;
+  // collapse them now (next prompt or session switch). Only blocks this
+  // renderer opened itself (.live) are touched.
+  messagesEl.querySelectorAll('.thinking-block.live').forEach(block => {
+    const content = block.querySelector('.thinking-content');
+    const toggle = block.querySelector('.thinking-toggle');
+    const arrow = toggle ? toggle.querySelector('.arrow') : null;
+    if (content) content.classList.remove('open');
+    if (arrow) arrow.classList.remove('open');
+    if (toggle) toggle.setAttribute('aria-expanded', 'false');
+    block.classList.remove('live');
+  });
+
   S.streamBuffer = '';
+  S.streamText = '';
+  S.streamCursorEl = null;
   if (S.streamRAF) {
     cancelAnimationFrame(S.streamRAF);
     S.streamRAF = null;
@@ -55,15 +70,21 @@ export function showLoading() {
   // Insert after the last message (the user message we just added)
   messagesEl.appendChild(el);
   S.loadingEl = el;
-  // Cycle messages
+  // Cycle messages with live elapsed time and iteration count.
   let idx = 0;
   S.loadingTimer = setInterval(() => {
     if (!S.loadingEl) return;
     const textEl = S.loadingEl.querySelector('.li-text');
     if (!textEl) return;
-    textEl.textContent = loadingMessages[idx % loadingMessages.length];
+    let text = loadingMessages[idx % loadingMessages.length];
     idx++;
-  }, 2000);
+    if (S.runStartedAt) {
+      const secs = Math.floor((Date.now() - S.runStartedAt) / 1000);
+      text += ' · ' + (secs < 60 ? secs + 's' : Math.floor(secs / 60) + 'm' + (secs % 60) + 's');
+    }
+    if (S.runIterations > 0) text += ' · iter ' + S.runIterations;
+    textEl.textContent = text;
+  }, 1000);
   pruneMessages();
   // Force scroll to show the indicator (user just sent — they're at bottom)
   forceScrollBottom();
@@ -86,13 +107,16 @@ export function streamThinking(content) {
     // Remove cursor from any active stream
     removeStreamCursor();
 
+    // Live reasoning opens expanded (marked .live so the next turn can
+    // collapse exactly the blocks it auto-opened — manually opened
+    // historical blocks are never touched).
     const block = document.createElement('div');
-    block.className = 'thinking-block';
+    block.className = 'thinking-block live';
     block.innerHTML =
-      '<div class="thinking-toggle" role="button" tabindex="0" aria-expanded="false">' +
-        '<span class="arrow">▶</span> reasoning' +
+      '<div class="thinking-toggle" role="button" tabindex="0" aria-expanded="true">' +
+        '<span class="arrow open">▶</span> reasoning' +
       '</div>' +
-      '<div class="thinking-content">' + escapeHtml(content) + '</div>';
+      '<div class="thinking-content open">' + escapeHtml(content) + '</div>';
     messagesEl.appendChild(block);
 
     S.thinkingContentEl = block.querySelector('.thinking-content');
@@ -101,6 +125,11 @@ export function streamThinking(content) {
     scrollBottom();
   } else {
     S.thinkingContentEl.textContent += content;
+    // Auto-follow the newest line while the block is open — but only when
+    // it is open, so a user who collapses mid-turn isn't fought.
+    if (S.thinkingContentEl.classList.contains('open')) {
+      S.thinkingContentEl.scrollTop = S.thinkingContentEl.scrollHeight;
+    }
     scrollBottom();
   }
 }
@@ -157,21 +186,22 @@ function ensureStreamBubble() {
 
 function appendStreamText(text) {
   ensureStreamBubble();
-  // Convert MD fragments to HTML and append
-  const html = markdownToHtml(text);
-  // Use a temp container to handle multi-node fragment
-  const temp = document.createElement('div');
-  temp.innerHTML = html;
-  while (temp.firstChild) {
-    S.streamContentEl.appendChild(temp.firstChild);
+  // Accumulate and re-render the WHOLE answer so far. Fragments must never
+  // be markdown-parsed individually: a chunk boundary mid-paragraph would
+  // otherwise close one <p> and open another, splintering the answer into
+  // one-line paragraphs. Re-rendering per rAF frame keeps live formatting
+  // (fences, lists) correct while the answer streams.
+  S.streamText += text;
+  S.streamContentEl.innerHTML = markdownToHtml(S.streamText);
+  if (S.streamCursorEl && S.streamCursorEl.parentNode !== S.streamContentEl) {
+    S.streamContentEl.appendChild(S.streamCursorEl);
   }
   scrollBottom();
 }
 
 function removeStreamCursor() {
-  if (S.streamBubbleEl) {
-    const cursor = S.streamBubbleEl.querySelector('.stream-cursor');
-    if (cursor) cursor.remove();
+  if (S.streamCursorEl && S.streamCursorEl.parentNode) {
+    S.streamCursorEl.remove();
   }
 }
 
@@ -186,12 +216,16 @@ function startStream() {
   wrapper.innerHTML =
     '<div class="bubble">' +
       '<div class="sender">assistant</div>' +
-      '<div class="content" id="stream-content"><span class="stream-cursor"></span></div>' +
+      '<div class="content" id="stream-content"></div>' +
     '</div>';
   messagesEl.appendChild(wrapper);
 
+  S.streamText = '';
+  S.streamCursorEl = document.createElement('span');
+  S.streamCursorEl.className = 'stream-cursor';
   S.streamBubbleEl = wrapper;
   S.streamContentEl = wrapper.querySelector('#stream-content');
+  S.streamContentEl.appendChild(S.streamCursorEl);
   // Add copy button and collapse check to the stream bubble
   const bubble = wrapper.querySelector('.bubble');
   if (bubble) {
@@ -206,6 +240,8 @@ export function endStream() {
   removeStreamCursor();
   S.streamBubbleEl = null;
   S.streamContentEl = null;
+  S.streamText = '';
+  S.streamCursorEl = null;
   S.currentToolBlock = null;
   S.subagentGroup = null;
   S.toolBlockQueues.clear();

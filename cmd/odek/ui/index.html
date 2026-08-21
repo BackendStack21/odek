@@ -16,19 +16,32 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
     </button>
     <span class="top-brand"><span class="top-brand-text">odek</span></span>
-    <span class="top-status-group">
+    <span class="top-status-group" id="status-group" role="button" tabindex="0" title="Server status">
       <span class="dot" id="ws-dot"></span>
       <span class="status" id="ws-status">connecting</span>
+      <span id="ping-latency"></span>
       <span id="sandbox-badge" style="display:none" title="Sandbox mode — shell commands run in an isolated Docker container">🔒</span>
+      <span id="stream-badge" style="display:none" title="Live streaming — tokens arrive as they are generated">⚡</span>
     </span>
     <div class="top-spacer"></div>
-    <span class="session-stats" id="session-stats"></span>
+    <div id="metrics" aria-live="off">
+      <div class="ctx-gauge" id="ctx-gauge">
+        <span class="ctx-label" title="Context window usage">ctx</span>
+        <div class="ctx-bar"><div class="ctx-fill" id="ctx-fill"></div></div>
+        <span class="ctx-pct" id="ctx-pct">—</span>
+      </div>
+      <span class="m-tok" id="m-tok"></span>
+      <span class="m-cost" id="m-cost"></span>
+    </div>
     <span class="model" id="model-label"></span>
     <div class="top-controls">
       <select id="model-picker" title="Switch model">
         <option value="">Loading...</option>
       </select>
       <input id="custom-model-input" type="text" placeholder="model id…" title="Custom model ID — press Enter to apply" />
+      <button id="panels-btn" title="Management panels (Alt+M)" aria-label="Management panels">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+      </button>
       <button id="theme-btn" title="Toggle theme" aria-label="Toggle theme">◐</button>
       <button id="cancel-btn" aria-label="Stop">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -36,17 +49,83 @@
     </div>
   </header>
 
+  <!-- Server Health Popover -->
+  <div id="health-popover" hidden>
+    <div class="hp-row"><span class="hp-k">version</span><span class="hp-v" id="hp-version">—</span></div>
+    <div class="hp-row"><span class="hp-k">uptime</span><span class="hp-v" id="hp-uptime">—</span></div>
+    <div class="hp-row"><span class="hp-k">model</span><span class="hp-v" id="hp-model">—</span></div>
+    <div class="hp-row"><span class="hp-k">sandbox</span><span class="hp-v" id="hp-sandbox">—</span></div>
+    <div class="hp-row"><span class="hp-k">streaming</span><span class="hp-v" id="hp-stream">—</span></div>
+    <div class="hp-row"><span class="hp-k">connections</span><span class="hp-v" id="hp-conns">—</span></div>
+    <div class="hp-row"><span class="hp-k">latency</span><span class="hp-v" id="hp-latency">—</span></div>
+    <div class="hp-row"><span class="hp-k">usage</span><span class="hp-v" id="hp-usage">—</span></div>
+  </div>
+
   <!-- Sidebar -->
   <nav id="sidebar" aria-label="Sessions">
     <div id="sidebar-header">
-      <h3>Sessions</h3>
+      <h3>Sessions <span id="sidebar-count" class="sidebar-count"></span></h3>
       <button class="new-session-btn" title="New session">＋</button>
     </div>
-    <input id="sidebar-search" type="text" placeholder="Filter…" />
+    <input id="sidebar-search" type="text" placeholder="Search server-side…" autocomplete="off" />
     <div id="session-list"></div>
+    <button id="sessions-more" hidden>load more</button>
   </nav>
 
   <div id="sidebar-overlay"></div>
+
+  <!-- Management Panels Drawer -->
+  <aside id="panels" aria-label="Management panels">
+    <div id="panels-header">
+      <div id="panels-tabs" role="tablist">
+        <button class="ptab active" data-tab="memory" role="tab" aria-selected="true">memory</button>
+        <button class="ptab" data-tab="skills" role="tab" aria-selected="false">skills</button>
+        <button class="ptab" data-tab="tools" role="tab" aria-selected="false">tools</button>
+        <button class="ptab" data-tab="runs" role="tab" aria-selected="false">runs</button>
+        <button class="ptab" data-tab="events" role="tab" aria-selected="false">events</button>
+      </div>
+      <button id="panels-close" title="Close" aria-label="Close panels">✕</button>
+    </div>
+    <div id="panels-body">
+      <section class="ppanel active" data-panel="memory">
+        <div class="ppanel-scroll">
+          <div class="mf-section">
+            <div class="mf-head"><h4>user facts</h4><span class="mf-count" id="mf-user-count"></span></div>
+            <div class="mf-list" id="mf-user-list"></div>
+            <div class="mf-add">
+              <input id="mf-user-input" type="text" placeholder="add a user fact…" maxlength="2000" />
+              <button id="mf-user-add" title="Add fact">＋</button>
+            </div>
+          </div>
+          <div class="mf-section">
+            <div class="mf-head"><h4>env facts</h4><span class="mf-count" id="mf-env-count"></span></div>
+            <div class="mf-list" id="mf-env-list"></div>
+            <div class="mf-add">
+              <input id="mf-env-input" type="text" placeholder="add an env fact…" maxlength="2000" />
+              <button id="mf-env-add" title="Add fact">＋</button>
+            </div>
+          </div>
+          <div class="mf-section">
+            <div class="mf-head"><h4>episodes pending review</h4><span class="mf-count" id="mf-pending-count"></span></div>
+            <div class="mf-list" id="mf-pending-list"></div>
+          </div>
+        </div>
+      </section>
+      <section class="ppanel" data-panel="skills">
+        <div class="ppanel-scroll" id="skills-list"></div>
+      </section>
+      <section class="ppanel" data-panel="tools">
+        <div class="ppanel-scroll" id="tools-list"></div>
+      </section>
+      <section class="ppanel" data-panel="runs">
+        <div class="ppanel-scroll" id="runs-list"></div>
+      </section>
+      <section class="ppanel" data-panel="events">
+        <div class="ppanel-scroll" id="events-list"></div>
+      </section>
+    </div>
+  </aside>
+  <div id="panels-overlay"></div>
 
   <!-- Main Chat -->
   <main id="main">
@@ -67,6 +146,7 @@
           <div class="es-hints">
             <span role="button" tabindex="0">shortcuts /?/</span>
             <span role="button" tabindex="0">refresh sessions</span>
+            <span role="button" tabindex="0">manage /Alt+M/</span>
           </div>
         </div>
       </div>
@@ -107,6 +187,7 @@
     <div class="shortcut-row"><span class="sc-label">Toggle shortcuts</span><span class="sc-key">?</span></div>
     <div class="shortcut-row"><span class="sc-label">Refresh sessions</span><span class="sc-key">⌘R</span></div>
     <div class="shortcut-row"><span class="sc-label">Toggle thinking</span><span class="sc-key">Alt+T</span></div>
+    <div class="shortcut-row"><span class="sc-label">Management panels</span><span class="sc-key">Alt+M</span></div>
     <div class="shortcut-row"><span class="sc-label">Approve (when prompted)</span><span class="sc-key">A</span></div>
     <div class="shortcut-row"><span class="sc-label">Deny (when prompted)</span><span class="sc-key">D</span></div>
     <div class="shortcut-row"><span class="sc-label">Trust session (when prompted)</span><span class="sc-key">T</span></div>

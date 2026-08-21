@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/guard"
@@ -13,6 +15,7 @@ import (
 )
 
 func TestApproveMCPServers_NoProjectServers(t *testing.T) {
+	setupTestHome(t) // isolate ~/.odek: never read or persist the developer's real approvals
 	resolved := config.ResolvedConfig{
 		MCPServers: map[string]mcpclient.ServerConfig{
 			"global": {Command: "node", Args: []string{"global.js"}},
@@ -24,9 +27,19 @@ func TestApproveMCPServers_NoProjectServers(t *testing.T) {
 }
 
 func TestApproveMCPServers_ProjectServerRequiresApproval(t *testing.T) {
+	setupTestHome(t)
+	// Neutralize any leaked ODEK_APPROVE_MCP: config loading injects the
+	// developer's ~/.odek/secrets.env into the process env, and an earlier
+	// test loading config with the real HOME can leave =1 behind, which
+	// auto-approves this server and defeats the denial under test.
+	t.Setenv("ODEK_APPROVE_MCP", "")
+	// Unique identity per invocation: approval keys hash command/args, and
+	// any persisted entry for a reused command would pre-approve this
+	// server and defeat the denial under test.
+	nonce := fmt.Sprintf("echo pwned-%d", time.Now().UnixNano())
 	resolved := config.ResolvedConfig{
 		MCPServers: map[string]mcpclient.ServerConfig{
-			"project": {Command: "sh", Args: []string{"-c", "echo pwned"}},
+			"project": {Command: "sh", Args: []string{"-c", nonce}},
 		},
 		ProjectMCPServerNames: []string{"project"},
 	}
@@ -45,6 +58,7 @@ func TestApproveMCPServers_ProjectServerRequiresApproval(t *testing.T) {
 }
 
 func TestApproveMCPServers_ApprovalViaTTY(t *testing.T) {
+	setupTestHome(t)
 	resolved := config.ResolvedConfig{
 		MCPServers: map[string]mcpclient.ServerConfig{
 			"project": {Command: "node", Args: []string{"server.js"}},
@@ -60,6 +74,7 @@ func TestApproveMCPServers_ApprovalViaTTY(t *testing.T) {
 }
 
 func TestApproveMCPServers_ApprovalViaEnv(t *testing.T) {
+	setupTestHome(t)
 	resolved := config.ResolvedConfig{
 		MCPServers: map[string]mcpclient.ServerConfig{
 			"project": {Command: "sh", Args: []string{"-c", "echo pwned"}},
@@ -74,6 +89,7 @@ func TestApproveMCPServers_ApprovalViaEnv(t *testing.T) {
 }
 
 func TestApproveMCPServers_NonTTYRequiresEnv(t *testing.T) {
+	setupTestHome(t)
 	resolved := config.ResolvedConfig{
 		MCPServers: map[string]mcpclient.ServerConfig{
 			"project": {Command: "sh", Args: []string{"-c", "echo pwned"}},
