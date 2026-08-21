@@ -30,6 +30,12 @@ const (
 	SchemaArtifactRef = "odek.artifact-ref/v1"
 )
 
+// MaxArtifactsPerEnvelope caps how many artifact refs one tool-result
+// envelope may carry. Every validated ref becomes a model-facing metadata
+// line appended AFTER the envelope text has passed the server's
+// max_result_chars cap, so the count must itself be bounded.
+const MaxArtifactsPerEnvelope = 64
+
 // Ref is a single odek.artifact-ref/v1 object. Unknown fields are ignored
 // per the contract's additive rule. SizeBytes is a pointer so "absent" is
 // distinguishable from an explicit zero (verification is skipped when absent,
@@ -79,6 +85,13 @@ func ParseEnvelope(text string) (*Envelope, error) {
 	var env Envelope
 	if err := json.Unmarshal([]byte(trimmed), &env); err != nil {
 		return nil, fmt.Errorf("malformed %s envelope: %w", SchemaToolResult, err)
+	}
+	// Cap the artifact count (audit 2026-08): each ref costs one metadata
+	// line in Render AFTER the envelope text has already passed
+	// max_result_chars, so an unbounded count was a context-stuffing /
+	// cost-DoS channel for an approved server.
+	if len(env.Artifacts) > MaxArtifactsPerEnvelope {
+		return nil, fmt.Errorf("%s envelope carries %d artifacts; the cap is %d", SchemaToolResult, len(env.Artifacts), MaxArtifactsPerEnvelope)
 	}
 	return &env, nil
 }

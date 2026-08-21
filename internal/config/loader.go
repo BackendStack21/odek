@@ -595,6 +595,18 @@ func loadFile(path string) FileConfig {
 	}
 	defer f.Close()
 
+	// The operator's global config can carry an api_key (and telegram bot
+	// tokens), so a group/world-readable file leaks them to other local
+	// users. secrets.env is refused outright (#78); config.json often holds
+	// only non-secret settings, so warn loudly instead of refusing
+	// (audit 2026-08: the documented "permission-checked" claim previously
+	// covered only secrets.env).
+	if info, serr := f.Stat(); serr == nil {
+		if perm := info.Mode().Perm(); perm&0077 != 0 {
+			fmt.Fprintf(os.Stderr, "odek: WARNING: config %s is group/world-readable (%04o) and may contain secrets; run `chmod 600 %s`\n", path, perm, path)
+		}
+	}
+
 	// Read at most maxConfigFileBytes+1 so we can detect files that exceed the
 	// limit without loading them entirely. Using a single Open+LimitReader
 	// closes the TOCTOU window between stat and read.

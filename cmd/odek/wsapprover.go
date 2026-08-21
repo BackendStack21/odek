@@ -248,7 +248,11 @@ func (a *wsApprover) HandleResponse(id, action string) bool {
 
 func (a *wsApprover) newID() string {
 	b := make([]byte, 8)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		// Fail closed: on entropy failure every approval would share the
+		// zero ID, letting one response satisfy another pending request.
+		panic("odek: crypto/rand unavailable for approval ID: " + err.Error())
+	}
 	return "apr-" + hex.EncodeToString(b)
 }
 

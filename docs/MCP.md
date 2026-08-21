@@ -346,7 +346,7 @@ odek continues with the remaining servers.
       "command": "command",
       "args": ["arg1", "arg2"],
       "env": {
-        "API_KEY": "${MY_API_KEY}",
+        "MY_SERVER_SETTING": "literal-value-here",
         "REMOVE_ME": ""
       },
       "timeout_seconds": 120,
@@ -357,3 +357,10 @@ odek continues with the remaining servers.
   }
 }
 ```
+
+Note: `env` values are passed to the server process verbatim — `${VAR}`
+expansion is **not** performed for `mcp_servers.*.env` (it only applies to
+the model connection fields). Secret-pattern names (`*API_KEY*`, `*TOKEN*`,
+…) are additionally stripped from the child environment, so put secrets in
+the server's own config file under operator control rather than in
+`odek.json`.

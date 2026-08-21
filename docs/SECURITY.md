@@ -830,6 +830,26 @@ The `memory` tool's `view` action read `<sessionID>.md` directly with no provena
 
 `call()` wrote each JSON-RPC request to the server's stdin inline while holding `c.mu`, with no deadline. A server that answers `initialize`/`tools/list` and then stops reading stdin fills the pipe buffer; the write blocks holding the mutex, and every subsequent call() blocks at `c.mu.Lock()` *before* the ctx/select that should bound it — so neither `timeout_seconds` nor caller cancellation can engage. Long-lived clients (`odek serve`, `odek telegram` share one Client per server for the process lifetime) wedge permanently. Requests are now handed to a single writer goroutine (`writeLoop`) through a buffered channel: enqueueing is ctx-bounded, ordering is preserved (one write per request), and the first write failure records a sticky error, closes stdin for EOF, and lets `readLoop`'s exit unblock all pending waiters. Regression test: `TestAudit_CallBoundedWhenServerStopsReading` in `internal/mcpclient`.
 
+### 67. Serve hardening batch (2026-08 audit quick wins)
+
+- `http.Server` had no timeouts — any unauthenticated client (loopback is shared across local users; `--addr` can expose it further) could hold half-open connections forever (slowloris). `ReadHeaderTimeout` (10s) and `IdleTimeout` (120s) now bound the pre-request phase and idle keep-alives; body reads stay unbounded so long runs/uploads are unaffected.
+- The `?token=` comparison in `handleStatic` — the one endpoint that mints the authenticated cookie — used `==` while every other comparison used `subtle.ConstantTimeCompare`; now constant-time too.
+- `newWSConnID`/`newRunID`/`wsApprover.newID` ignored `crypto/rand` errors; on entropy failure every ID would be the predictable all-zero value (approval responses could satisfy the wrong pending request; kick/cancel would target the first match). They now fail closed like `session.GenerateAuthToken`.
+- The WebSocket model switch was applied to the agent *before* `handlePrompt`'s length/charset validation, leaving a rejected model ID active for the next prompt sent without a model field; validation now runs first.
+- The markdown export used a fixed 4-backtick code fence, so any transcript line of exactly ```` closed it early and let model/tool output forge document structure in a "human-shareable" export. `codeFence` now returns a fence strictly longer than the longest backtick run in the fenced body. Regression tests: `TestAudit_ExportMarkdown_FenceBreakout`, `TestAudit_CodeFence` in `cmd/odek`.
+
+### 68. Telegram chat scoping matches the ID boundary, not a string prefix
+
+Chat scoping used a bare `HasPrefix(id, "tg-"+chatID)` with no delimiter, so a chat whose numeric ID is a decimal prefix of another's (999 vs 9999) could `/resume`, `/sessions`-list, and `/prune`-delete the other chat's sessions and archives — re-opening the cross-chat path §39c closed, for prefix-related allowlisted chat IDs. `sessionIDBelongsToChat` now matches `id == prefix || HasPrefix(id, prefix+"-")` and is used by `ResumeSession`, `ListSessions`, and `PruneSessions`. `/resume` also no longer panics on a zero-message session (`cs.Messages[0]`). Regression tests: `TestAudit_SessionIDBelongsToChat_PrefixCollision`, `TestAudit_ResumeSession_PrefixCollisionRejected`, `TestAudit_ListSessions_PrefixCollisionExcluded` in `internal/telegram`.
+
+### 69. Artifact validation is size- and count-bounded
+
+Two gaps let an approved MCP server turn artifact validation into unbounded work: a ref carrying `sha256` but omitting `size_bytes` forced a streaming hash of the whole file (multi-gigabyte local I/O per tool call that no per-server timeout bounds, since the deadline expires when the response arrives), and the envelope's artifact count was uncapped while `Render` appends one model-facing metadata line per artifact *after* the envelope text has already passed `max_result_chars`. `Validate` now enforces an absolute 64 MiB ceiling at Stat time (before hashing), and `ParseEnvelope` rejects envelopes with more than `MaxArtifactsPerEnvelope` (64) refs. Regression tests: `TestAudit_ValidateRejectsHugeArtifactBeforeHashing`, `TestAudit_ParseEnvelopeCapsArtifactCount` in `internal/artifact`.
+
+### 70. Survival trimming keeps the compaction digest wherever it sits
+
+`trimToSurvival` scanned only a fixed 4-message window from the head for the rolling compaction digest, but with memory/skill/episode blocks injected the digest routinely sits deeper — so on a provider context-length error the paid-for compacted history was dropped exactly when context pressure was highest. The scan now covers the entire head up to the first user message. Additional hardening in the same audit batch: `loadFile` warns when `~/.odek/config.json` is group/world-readable (the permission check previously covered only `secrets.env`, despite the documented claim covering both), and `docs/MCP.md`'s `env` example no longer suggests `${VAR}` expansion, which was never performed for `mcp_servers.*.env`.
+
 ### YOLO mode
 
 ```json

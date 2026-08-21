@@ -11,6 +11,12 @@ import (
 	"strings"
 )
 
+// MaxArtifactBytes is the absolute ceiling on a single artifact file that
+// Validate will process (stat or hash). Enforced at Stat time so a server
+// that supplies sha256 but omits size_bytes cannot force an unbounded
+// streaming hash (see Validate).
+const MaxArtifactBytes int64 = 64 << 20
+
 // Validate checks an artifact ref fail-closed against the configured artifact
 // roots and returns the resolved (symlink-evaluated) absolute path of the
 // artifact file. The returned path is for local bookkeeping only (e.g. a
@@ -26,6 +32,7 @@ import (
 //   - the path must exist and, after filepath.EvalSymlinks, stay inside one
 //     of the roots (symlink escapes are rejected)
 //   - the target must be a regular file
+//   - the file must be at most MaxArtifactBytes (checked before hashing)
 //   - size_bytes, when present, must equal the real file size
 //   - sha256, when present, must be a lowercase hex digest matching the file
 //
@@ -93,6 +100,16 @@ func Validate(ref Ref, roots []string) (string, error) {
 	}
 	if !fi.Mode().IsRegular() {
 		return "", fmt.Errorf("artifact %q is not a regular file", ref.ID)
+	}
+
+	// Absolute size ceiling, checked at Stat time before any hashing
+	// (audit 2026-08): a ref carrying sha256 but omitting size_bytes used
+	// to force an unbounded streaming hash of whatever lives under the
+	// server's roots — gigabytes of local I/O per tool call that no
+	// per-server timeout bounds. 64 MiB matches the max_response_bytes
+	// ceiling; larger outputs should not travel as single artifacts.
+	if fi.Size() > MaxArtifactBytes {
+		return "", fmt.Errorf("artifact %q is %d bytes; the absolute artifact cap is %d bytes", ref.ID, fi.Size(), MaxArtifactBytes)
 	}
 
 	if ref.SizeBytes != nil {
