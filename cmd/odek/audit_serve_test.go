@@ -4,17 +4,13 @@ package main
 
 import (
 	"encoding/json"
-	"net"
 	"net/http"
-	"os"
-	"path/filepath"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/llm"
-	"github.com/BackendStack21/odek/internal/resource"
 	"github.com/BackendStack21/odek/internal/session"
 
 	golangws "golang.org/x/net/websocket"
@@ -112,45 +108,25 @@ func TestAudit_IDGenerators(t *testing.T) {
 // fix: an invalid model ID must be rejected before the switch is applied to
 // the agent (a rejected ID used to stay active and silently reused by the
 // next prompt sent without a model field). Runs the production handleWS
-// loop — the invalid model is rejected before any LLM call, so no API key
-// is needed.
+// loop with the mock-LLM harness so agent construction succeeds without a
+// real API key; the invalid model is rejected before any LLM call, so the
+// mock never answers.
 func TestAudit_WebSocketInvalidModelRejectedEarly(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	// The mock is only here so agent construction succeeds without a real
+	// API key; side subsystems (narration/memory wiring) may ping it, but
+	// the prompt itself must never reach the LLM with the invalid model.
+	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"choices":[{"message":{"content":"x"}}]}`))
+	}))
+	defer llmSrv.Close()
+	cleanupEnv := setTestEnv(t, llmSrv.URL)
+	defer cleanupEnv()
+
+	store := newTestSessionStore(t)
+	ln, mux := buildServeMux(t, store)
 	defer ln.Close()
-
-	resolved := config.LoadConfig(config.CLIFlags{})
-	store, err := session.NewStore()
-	if err != nil {
-		t.Fatalf("session store: %v", err)
-	}
-	cwd, _ := os.Getwd()
-	home, _ := os.UserHomeDir()
-	resourceReg := resource.NewRegistry(
-		resource.NewFileResolver(cwd),
-		resource.NewSessionResolver(filepath.Join(home, ".odek", "sessions")),
-	)
-	wsToken, err := newServeToken()
-	if err != nil {
-		t.Fatalf("CSRF token: %v", err)
-	}
-	testTokenMu.Lock()
-	testLastToken = wsToken
-	testTokenMu.Unlock()
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", handleStatic(wsToken))
-	mux.Handle("/ws", &golangws.Server{
-		Handshake: func(cfg *golangws.Config, req *http.Request) error {
-			return wsHandshakeWithLimits(cfg, req, wsToken, nil)
-		},
-		Handler: func(conn *golangws.Conn) {
-			handleWS(store, resourceReg, resolved, defaultSystem, nil, conn)
-		},
-	})
 	go func() { _ = serveOnListener(ln, mux) }()
+	waitForHTTP(t, ln.Addr().String())
 
 	wsUpgradeLimiter.reset()
 	conn := dialTestWS(t, ln.Addr().String())
