@@ -144,9 +144,11 @@ func confinedGlob(root, pattern string, limit int, includeDirs bool) ([]string, 
 	return matches, nil
 }
 
-// globToRegex converts a glob pattern with ** to a regex. ** matches any
-// characters including path separators; * matches any characters except path
-// separators; ? matches any single character except path separators.
+// globToRegex converts a glob pattern with ** to a regex. A trailing
+// `**` matches any characters including path separators; a leading or
+// slash-separated `**/` matches ZERO or more directories (standard
+// globstar semantics), so `**/*.txt` also matches root-level files; `*`
+// and `?` match within a single path segment.
 func globToRegex(pattern string) (*regexp.Regexp, error) {
 	var reStr strings.Builder
 	reStr.WriteString("^")
@@ -154,8 +156,17 @@ func globToRegex(pattern string) (*regexp.Regexp, error) {
 		ch := pattern[i]
 		switch {
 		case ch == '*' && i+1 < len(pattern) && pattern[i+1] == '*':
-			reStr.WriteString(".*")
-			i++
+			// Collapse the whole ** run.
+			for i+1 < len(pattern) && pattern[i+1] == '*' {
+				i++
+			}
+			if i+1 < len(pattern) && pattern[i+1] == '/' {
+				// `**/` — zero or more directory levels.
+				i++
+				reStr.WriteString("(?:.*/)?")
+			} else {
+				reStr.WriteString(".*")
+			}
 		case ch == '*':
 			reStr.WriteString("[^/]*")
 		case ch == '?':
@@ -687,6 +698,11 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 					break
 				}
 			}
+		}
+		if err := scanner.Err(); err != nil {
+			// The scan aborted early (e.g. a line over the 1 MiB cap):
+			// report the file instead of silently missing matches.
+			skipped = append(skipped, fmt.Sprintf("%s: %v", path, err))
 		}
 		if len(matches) >= limit {
 			return filepath.SkipAll
@@ -1358,8 +1374,11 @@ func (t *batchReadTool) readSingle(arg batchReadFileArg) batchReadFileResult {
 	if arg.Path == "" {
 		return batchReadFileResult{Error: "path is required"}
 	}
+	// Reject invalid offsets like read_file does — the pagination schema is
+	// identical across both tools, so silently coercing negative values to
+	// line 1 would hide a caller bug.
 	if arg.Offset < 0 {
-		arg.Offset = 1
+		return batchReadFileResult{Path: arg.Path, Error: "offset must be a positive integer (1-indexed)"}
 	}
 	if arg.Offset == 0 {
 		arg.Offset = 1
@@ -1635,10 +1654,19 @@ func (t *fileInfoTool) Call(argsJSON string) (result string, err error) {
 		args.Path = resolved
 	}
 
-	// Security: classify path
-	risk := danger.ClassifyPath(args.Path)
+	// Security: classify path. Like every sibling read tool, classification
+	// resolves directory symlinks first — file_info through a symlinked
+	// dir into /etc must gate on /etc/<name>, not on the harmless-looking
+	// workspace path. The unresolved path is still what gets Lstat'ed and
+	// reported below (file_info deliberately surfaces the symlink itself).
+	resolvedPath, rerr := resolveReadPath(args.Path)
+	classifyPath := args.Path
+	if rerr == nil {
+		classifyPath = resolvedPath
+	}
+	risk := danger.ClassifyPath(classifyPath)
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-		Name: "file_info", Resource: args.Path, Risk: risk,
+		Name: "file_info", Resource: classifyPath, Risk: risk,
 	}, nil); err != nil {
 		return jsonError(err.Error())
 	}

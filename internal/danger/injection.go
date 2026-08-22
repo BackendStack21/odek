@@ -29,7 +29,7 @@ var injectionPatterns = []InjectionPattern{
 	{regexp.MustCompile(`treat this as (your|the) (primary|highest|top|main|only) (instruction|directive|rule|priority|goal)`), "authority override"},
 
 	// ── Exfiltration attempts ──────────────────────────────────────
-	{regexp.MustCompile(`(print|output|display|show|echo|reveal|dump|export|write)\s+(your|the|users?|my)?\s*(system\s+(prompt|message|instructions?)|instructions?|directives?|rules?|initial\s+(message|instructions?))`), "system prompt exfiltration"},
+	{regexp.MustCompile(`(print|output|display|show|echo|reveal|dump|export|write)\s+(your|the|users?|my)?\s*(system\s+(prompt|message|instructions?)|instructions?|directives?|rules?|initial\s+(message|instructions?)|api[_ -]?key|apikey|password|secret|token|credentials?)`), "system prompt exfiltration"},
 	{regexp.MustCompile(`(send|post|upload|transmit)\s+(your|the|users?|my)?\s*(system prompt|instructions?|api key|apikey|password|secret|token|credentials?)`), "transmit secrets or prompt"},
 	{regexp.MustCompile(`(what|tell me)\s+(is\s+)?(your|the)\s+(system prompt|initial instructions?)`), "prompt interrogation"},
 	// Paraphrased exfiltration: requests to include secrets/system prompts in
@@ -42,7 +42,7 @@ var injectionPatterns = []InjectionPattern{
 	{regexp.MustCompile(`\b(always|must|should|need to)\s+(include|reveal|share|output|print|display|send|post|expose|leak|disclose)\s.{0,60}?(api[_ -]?key|apikey|password|secret|token|credentials?|system prompt|instructions?)\b`), "paraphrased exfiltration"},
 
 	// ── Encoded / obfuscated instructions ──────────────────────────
-	{regexp.MustCompile(`base64\s*(decode|encoded)\s*:?\s*[A-Za-z0-9+/=]{20,}`), "base64-encoded payload"},
+	{regexp.MustCompile(`base64\s*(decode|encoded|encode)\s*:?\s*[A-Za-z0-9+/=]{20,}`), "base64-encoded payload"},
 	{regexp.MustCompile(`(decode|interpret|execute)\s+(this|the following)\s+(base64|hex|encoded)`), "encoded instruction"},
 
 	// ── HTML / markup injections ───────────────────────────────────

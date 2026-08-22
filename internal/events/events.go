@@ -15,6 +15,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -127,6 +130,15 @@ type Emitter struct {
 	sessionID string
 	closed    bool
 
+	// dispatchGoroutine identifies the dispatch goroutine so Close can tell
+	// a reentrant call (made from inside a handler, which runs ON that
+	// goroutine) from an external call that merely races an active delivery.
+	// An external caller must always block until drained; only the dispatch
+	// goroutine itself would deadlock on its own WaitGroup.
+	dispatchGoroutine atomic.Uint64
+	inDispatch        atomic.Bool
+	closeOnce         sync.Once
+
 	dropped atomic.Uint64
 }
 
@@ -147,16 +159,39 @@ func NewEmitter(handler func(Event), runID string) *Emitter {
 // dispatch drains the queue in FIFO order until the channel is closed.
 // A panicking handler is recovered so one bad event cannot kill the stream.
 func (e *Emitter) dispatch() {
+	e.dispatchGoroutine.Store(currentGoroutineID())
 	defer e.wg.Done()
 	for ev := range e.ch {
 		e.deliver(ev)
 	}
 }
 
+// currentGoroutineID parses the running goroutine's ID from its stack
+// header ("goroutine N [running]:"). This is the only reliable way to
+// distinguish "Close called from the handler" (same goroutine as dispatch)
+// from "Close called concurrently while a delivery is in flight" — the two
+// need opposite waiting behavior. Runtime-stack parsing is a stable,
+// widely-used trick; failure parses to 0, which never matches a real ID.
+func currentGoroutineID() uint64 {
+	var buf [64]byte
+	n := runtime.Stack(buf[:], false)
+	fields := strings.Fields(string(buf[:n]))
+	if len(fields) < 2 {
+		return 0
+	}
+	id, err := strconv.ParseUint(fields[1], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return id
+}
+
 func (e *Emitter) deliver(ev Event) {
 	if e.handler == nil {
 		return
 	}
+	e.inDispatch.Store(true)
+	defer e.inDispatch.Store(false)
 	defer func() { _ = recover() }()
 	e.handler(ev)
 }
@@ -193,16 +228,25 @@ func (e *Emitter) Emit(ev Event) {
 }
 
 // redactEvent scrubs secret-looking content from the human-readable fields
-// of an event before it leaves the process.
+// of an event before it leaves the process. The caller's Data map is never
+// written through: Event is passed by value but maps are reference types,
+// and mutating shared state (or racing on it across concurrent Emits) is
+// not acceptable — so string values are redacted into a fresh map.
 func redactEvent(ev *Event) {
 	if ev.Tool != "" {
 		ev.Tool = redact.RedactSecrets(ev.Tool)
 	}
+	if len(ev.Data) == 0 {
+		return
+	}
+	data := make(map[string]any, len(ev.Data))
 	for k, v := range ev.Data {
 		if s, ok := v.(string); ok {
-			ev.Data[k] = redact.RedactSecrets(s)
+			v = redact.RedactSecrets(s)
 		}
+		data[k] = v
 	}
+	ev.Data = data
 }
 
 // SetSessionID sets the session identifier stamped on subsequent events.
@@ -226,15 +270,22 @@ func (e *Emitter) RunID() string {
 func (e *Emitter) Dropped() uint64 { return e.dropped.Load() }
 
 // Close stops accepting events, drains the queue, and waits for the dispatch
-// goroutine to finish. Safe to call more than once.
+// goroutine to finish. Safe to call more than once, and safe to call from
+// inside a handler: a reentrant call tears down state and returns without
+// waiting for itself.
 func (e *Emitter) Close() {
-	e.mu.Lock()
-	if e.closed {
+	e.closeOnce.Do(func() {
+		e.mu.Lock()
+		e.closed = true
+		close(e.ch)
 		e.mu.Unlock()
+	})
+	// A handler runs ON the dispatch goroutine; waiting here for wg would
+	// deadlock on our own Done. External callers — including those that
+	// race an in-flight delivery from another goroutine — must still wait
+	// for the queue to drain.
+	if e.inDispatch.Load() && e.dispatchGoroutine.Load() == currentGoroutineID() {
 		return
 	}
-	e.closed = true
-	close(e.ch)
-	e.mu.Unlock()
 	e.wg.Wait()
 }

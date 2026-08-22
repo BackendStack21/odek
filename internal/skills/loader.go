@@ -442,23 +442,23 @@ func MarshalSkill(s Skill) string {
 	var b strings.Builder
 	b.WriteString("---\n")
 	fmt.Fprintf(&b, "name: %s\n", s.Name)
-	if s.Description != "" {
-		fmt.Fprintf(&b, "description: %s\n", s.Description)
+	if d := yamlSafeScalar(s.Description); d != "" {
+		fmt.Fprintf(&b, "description: %s\n", d)
 	}
-	if s.Version != "" {
-		fmt.Fprintf(&b, "version: %s\n", s.Version)
+	if v := yamlSafeScalar(s.Version); v != "" {
+		fmt.Fprintf(&b, "version: %s\n", v)
 	}
-	if s.Author != "" {
-		fmt.Fprintf(&b, "author: %s\n", s.Author)
+	if a := yamlSafeScalar(s.Author); a != "" {
+		fmt.Fprintf(&b, "author: %s\n", a)
 	}
 	b.WriteString("odek:\n")
 	if len(s.Trigger.TopicKeywords) > 0 || len(s.Trigger.ActionKeywords) > 0 {
 		b.WriteString("  trigger:\n")
-		if len(s.Trigger.TopicKeywords) > 0 {
-			fmt.Fprintf(&b, "    topic: %s\n", strings.Join(s.Trigger.TopicKeywords, " "))
+		if kws := yamlSafeKeywords(s.Trigger.TopicKeywords); len(kws) > 0 {
+			fmt.Fprintf(&b, "    topic: %s\n", strings.Join(kws, " "))
 		}
-		if len(s.Trigger.ActionKeywords) > 0 {
-			fmt.Fprintf(&b, "    action: %s\n", strings.Join(s.Trigger.ActionKeywords, " "))
+		if kws := yamlSafeKeywords(s.Trigger.ActionKeywords); len(kws) > 0 {
+			fmt.Fprintf(&b, "    action: %s\n", strings.Join(kws, " "))
 		}
 	}
 	if s.AutoLoad {
@@ -475,8 +475,8 @@ func MarshalSkill(s Skill) string {
 		if s.Provenance.NeedsReview {
 			b.WriteString("    needs_review: true\n")
 		}
-		if len(s.Provenance.Sources) > 0 {
-			fmt.Fprintf(&b, "    sources: %s\n", strings.Join(s.Provenance.Sources, " "))
+		if srcs := yamlSafeKeywords(s.Provenance.Sources); len(srcs) > 0 {
+			fmt.Fprintf(&b, "    sources: %s\n", strings.Join(srcs, " "))
 		}
 	}
 	b.WriteString("---\n\n")
@@ -485,4 +485,77 @@ func MarshalSkill(s Skill) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// yamlSafeScalar makes a frontmatter scalar round-trip through the
+// line-based parser in parseYAMLMap/parseYAMLValue:
+//   - newlines/tabs are collapsed to single spaces (the parser is
+//     line-based; a raw newline would inject arbitrary keys into the
+//     frontmatter — e.g. description "line one\nversion: 9.9.9" used to
+//     materialize a fake version key on reload),
+//   - values the parser would re-type as bool/int/float ("yes", "42",
+//     "1.5") or misinterpret (": ", trailing colon, leading YAML
+//     specials, embedded quotes) are emitted quoted so they stay strings.
+//
+// The parser strips outer quotes without escape processing, so the value
+// itself must not contain the chosen delimiter; the other quote style is
+// used instead, and values containing both have double quotes neutralized
+// to single quotes (a pathological LLM output, not a real description).
+func yamlSafeScalar(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if s == "" {
+		return ""
+	}
+	if !scalarNeedsQuoting(s) {
+		return s
+	}
+	switch {
+	case !strings.ContainsAny(s, `"'`):
+		return `"` + s + `"`
+	case !strings.Contains(s, `'`):
+		return `'` + s + `'`
+	default:
+		return strings.ReplaceAll(s, `"`, `'`)
+	}
+}
+
+// scalarNeedsQuoting reports whether an already-collapsed scalar would be
+// misinterpreted by parseYAMLValue / parseYAMLMap if emitted bare.
+func scalarNeedsQuoting(s string) bool {
+	switch s {
+	case "true", "yes", "on", "false", "no", "off":
+		return true
+	}
+	if _, err := strconv.Atoi(s); err == nil {
+		return true
+	}
+	if _, err := strconv.ParseFloat(s, 64); err == nil {
+		return true
+	}
+	if strings.Contains(s, ": ") || strings.HasSuffix(s, ":") {
+		return true
+	}
+	if strings.ContainsAny(s, `"'`) {
+		return true
+	}
+	// Leading YAML syntax characters would change structure or meaning.
+	if strings.ContainsAny(s[:1], "#-?&*!|>%@`{}[],") {
+		return true
+	}
+	return false
+}
+
+// yamlSafeKeywords sanitizes keyword entries for whitespace-joined list
+// emission: entries are single-line tokens, so any entry carrying
+// newlines/tabs is collapsed (an injected "\n  auto_load: true" must never
+// survive as frontmatter) and empties dropped.
+func yamlSafeKeywords(kws []string) []string {
+	out := make([]string, 0, len(kws))
+	for _, kw := range kws {
+		kw = strings.Join(strings.Fields(kw), " ")
+		if kw != "" {
+			out = append(out, kw)
+		}
+	}
+	return out
 }

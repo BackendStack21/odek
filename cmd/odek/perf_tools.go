@@ -1219,6 +1219,23 @@ func (t *countLinesTool) countFile(path string) (entry countFileEntry) {
 		lines++
 		chars += len([]rune(scanner.Text())) + 1
 	}
+	// bufio.Scanner silently stops on tokens over its 1 MiB cap and on read
+	// errors — surfacing nothing would report wrong counts as fact.
+	if err := scanner.Err(); err != nil {
+		return countFileEntry{
+			Path:  path,
+			Error: fmt.Sprintf("cannot read %q fully: %v", path, err),
+			Lines: lines,
+			Bytes: info.Size(),
+			Chars: chars,
+		}
+	}
+
+	// The +1 per scanned line assumes a trailing newline. Files that end
+	// without one were overcounted by 1 relative to their own byte size.
+	if lines > 0 && chars > 0 && !fileEndsWithNewline(f) {
+		chars--
+	}
 
 	return countFileEntry{
 		Path:  path,
@@ -1226,6 +1243,22 @@ func (t *countLinesTool) countFile(path string) (entry countFileEntry) {
 		Bytes: info.Size(),
 		Chars: chars,
 	}
+}
+
+// fileEndsWithNewline peeks at the final byte of an open file without
+// disturbing callers that are done with it.
+func fileEndsWithNewline(f *os.File) bool {
+	info, err := f.Stat()
+	if err != nil || info.Size() == 0 {
+		return false
+	}
+	if _, err := f.Seek(-1, io.SeekEnd); err != nil {
+		return true // can't tell — keep the historical assumption
+	}
+	var one [1]byte
+	n, _ := f.Read(one[:])
+	f.Seek(0, io.SeekStart)
+	return n == 1 && one[0] == '\n'
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -1423,6 +1456,11 @@ func (t *multiGrepTool) searchPattern(pattern, root, fileGlob string, limit int)
 					return filepath.SkipAll
 				}
 			}
+		}
+		if err := scanner.Err(); err != nil {
+			// The scan aborted early (e.g. a line over the 1 MiB cap):
+			// report the file instead of silently missing matches.
+			skipped = append(skipped, fmt.Sprintf("%s: %v", path, err))
 		}
 		if len(matches) >= limit {
 			return filepath.SkipAll
@@ -1724,6 +1762,22 @@ func buildTree(ctx context.Context, root, path string, depth, maxDepth int, incl
 		return entry, nil
 	}
 
+	// Sort, then apply the hidden-file filter, and only then truncate to the
+	// entry cap. Truncating first made hidden entries consume the whole
+	// budget: in hidden-heavy directories every visible file silently
+	// vanished while the notice claimed they were "shown".
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name() < entries[j].Name()
+	})
+	if !includeHidden {
+		filtered := entries[:0]
+		for _, e := range entries {
+			if !strings.HasPrefix(e.Name(), ".") {
+				filtered = append(filtered, e)
+			}
+		}
+		entries = filtered
+	}
 	totalEntries := len(entries)
 	truncated := false
 	if totalEntries > maxTreeEntries {
@@ -1731,19 +1785,12 @@ func buildTree(ctx context.Context, root, path string, depth, maxDepth int, incl
 		truncated = true
 	}
 
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Name() < entries[j].Name()
-	})
-
 	if truncated {
 		entry.ErrMsg = fmt.Sprintf("directory truncated (%d entries shown, %d total)", maxTreeEntries, totalEntries)
 	}
 
 	entry.Children = make([]treeEntry, 0, len(entries))
 	for _, e := range entries {
-		if !includeHidden && strings.HasPrefix(e.Name(), ".") {
-			continue
-		}
 		childPath := filepath.Join(path, e.Name())
 		child, err := buildTree(ctx, root, childPath, depth+1, maxDepth, includeHidden)
 		if err != nil {
@@ -2210,7 +2257,11 @@ func (t *headTailTool) readHead(f *os.File, path string, n int) headTailFileResu
 	for i, l := range rawLines {
 		lines[i] = wrapUntrusted(t.toolCtx(), path, l)
 	}
-	return headTailFileResult{Path: path, Lines: lines, Count: len(lines), Total: total}
+	res := headTailFileResult{Path: path, Lines: lines, Count: len(lines), Total: total}
+	if err := scanner.Err(); err != nil {
+		res.Error = fmt.Sprintf("cannot read %q fully (line over 1 MiB or read error): %v", path, err)
+	}
+	return res
 }
 
 func (t *headTailTool) readTail(f *os.File, path string, n int) headTailFileResult {
@@ -2239,7 +2290,11 @@ func (t *headTailTool) readTail(f *os.File, path string, n int) headTailFileResu
 	for i, l := range rawLines {
 		lines[i] = wrapUntrusted(t.toolCtx(), path, l)
 	}
-	return headTailFileResult{Path: path, Lines: lines, Count: len(lines), Total: total}
+	res := headTailFileResult{Path: path, Lines: lines, Count: len(lines), Total: total}
+	if err := scanner.Err(); err != nil {
+		res.Error = fmt.Sprintf("cannot read %q fully (line over 1 MiB or read error): %v", path, err)
+	}
+	return res
 }
 
 // truncateHeadTailLines truncates a slice of raw lines so the total byte
@@ -2454,19 +2509,31 @@ func (t *trTool) Call(argsJSON string) (result string, err error) {
 			if tf.From == "" {
 				return jsonResult(trResult{Error: "from is required for char transformation"})
 			}
-			if len(tf.From) != len(tf.To) && len(tf.To) != 1 && len(tf.To) != 0 {
-				text = strings.Map(func(r rune) rune {
-					if i := strings.IndexRune(tf.From, r); i >= 0 {
-						if i < len(tf.To) {
-							return rune(tf.To[i])
+			// POSIX tr semantics: map each source character through the
+			// target set positionally (runes, not bytes). A shorter target
+			// set repeats its last character; an empty target set deletes
+			// mapped characters. The previous implementation fell back to
+			// whole-string ReplaceAll whenever the sets had equal byte
+			// length or a single-char target — making `char abc→xyz` a
+			// no-op — and indexed the target by BYTE offset with a RUNE
+			// index.
+			fromRunes := []rune(tf.From)
+			toRunes := []rune(tf.To)
+			text = strings.Map(func(r rune) rune {
+				for i, fr := range fromRunes {
+					if fr == r {
+						switch {
+						case len(toRunes) == 0:
+							return -1 // delete
+						case i < len(toRunes):
+							return toRunes[i]
+						default:
+							return toRunes[len(toRunes)-1]
 						}
-						return rune(tf.To[len(tf.To)-1])
 					}
-					return r
-				}, text)
-			} else {
-				text = strings.ReplaceAll(text, tf.From, tf.To)
-			}
+				}
+				return r
+			}, text)
 		case "string":
 			if tf.From == "" {
 				return jsonResult(trResult{Error: "from is required for string transformation"})
@@ -2614,6 +2681,22 @@ func (t *wordCountTool) countWords(path string) (entry wordCountEntry) {
 		line := scanner.Text()
 		chars += len([]rune(line)) + 1
 		words += len(strings.Fields(line))
+	}
+	// Surface scanner failures instead of returning truncated counts as fact
+	// (see countFile); and drop the per-line +1 when the file has no
+	// trailing newline so chars matches the reported byte size.
+	if err := scanner.Err(); err != nil {
+		return wordCountEntry{
+			Path:  path,
+			Error: fmt.Sprintf("cannot read %q fully: %v", path, err),
+			Lines: lines,
+			Words: words,
+			Chars: chars,
+			Bytes: info.Size(),
+		}
+	}
+	if lines > 0 && chars > 0 && !fileEndsWithNewline(f) {
+		chars--
 	}
 
 	return wordCountEntry{

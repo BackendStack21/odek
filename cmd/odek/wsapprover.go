@@ -67,6 +67,12 @@ type wsApprover struct {
 	trustAll   bool                      // when true, all PromptCommand calls auto-approve
 	cancel     chan struct{}             // closed by Cancel() to interrupt waiting PromptCommand
 
+	// cancelOnce guards channel closure. The select/default close idiom is
+	// racy: two concurrent Cancel calls can both observe an open channel and
+	// the second close panics — reachable in serve when the WS reader errors
+	// while teardown's deferred Cancel runs.
+	cancelOnce sync.Once
+
 	// Approval-fatigue mitigation. Parallel to the TTYApprover policy.
 	frictionThreshold int
 	frictionWindow    time.Duration
@@ -257,14 +263,9 @@ func (a *wsApprover) newID() string {
 }
 
 // Cancel interrupts any pending PromptCommand by closing the cancel channel.
-// Safe to call multiple times — subsequent calls are no-ops.
+// Safe to call multiple times, including concurrently.
 func (a *wsApprover) Cancel() {
-	select {
-	case <-a.cancel:
-		// Already closed.
-	default:
-		close(a.cancel)
-	}
+	a.cancelOnce.Do(func() { close(a.cancel) })
 }
 
 // SetTrustAll enables or disables blanket trust for all risk classes.

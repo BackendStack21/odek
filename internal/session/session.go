@@ -715,15 +715,27 @@ func (s *Store) Load(id string) (*Session, error) {
 func (s *Store) Latest() (*Session, error) {
 	idx := s.loadIndex()
 	if len(idx) > 0 {
-		var latestID string
-		var latestTime time.Time
-		for id, e := range idx {
-			if latestID == "" || e.UpdatedAt.After(latestTime) {
-				latestID = id
-				latestTime = e.UpdatedAt
-			}
+		// Walk candidates newest-first and return the first one whose file
+		// still loads. A stale entry (file deleted before the index was
+		// rewritten — Delete removes the file first, then updates the index)
+		// must not break the lookup when valid sessions exist.
+		ids := make([]string, 0, len(idx))
+		for id := range idx {
+			ids = append(ids, id)
 		}
-		return s.Load(latestID)
+		sort.Slice(ids, func(i, j int) bool {
+			return idx[ids[i]].UpdatedAt.After(idx[ids[j]].UpdatedAt)
+		})
+		for _, id := range ids {
+			if err := ValidateSessionID(id); err != nil {
+				continue // corrupt/planted entry — skip, never touch the fs
+			}
+			if _, err := os.Stat(s.path(id)); err != nil {
+				continue // stale entry
+			}
+			return s.Load(id)
+		}
+		// Every indexed entry was stale — fall through to a directory scan.
 	}
 
 	// Fallback: no index — scan directory.
@@ -769,6 +781,21 @@ func (s *Store) List(limit int) ([]Session, error) {
 		sort.Slice(entries, func(i, j int) bool {
 			return entries[i].UpdatedAt.After(entries[j].UpdatedAt)
 		})
+
+		// Drop entries whose session file no longer exists (stale index) or
+		// whose ID is unsafe for filesystem use (planted entry): listings
+		// must not show phantom sessions, and the ID is echoed to callers.
+		live := entries[:0]
+		for _, e := range entries {
+			if ValidateSessionID(e.ID) != nil {
+				continue
+			}
+			if _, err := os.Stat(s.path(e.ID)); err != nil {
+				continue
+			}
+			live = append(live, e)
+		}
+		entries = live
 
 		if limit > 0 && len(entries) > limit {
 			entries = entries[:limit]
@@ -865,8 +892,16 @@ func (s *Store) Cleanup(before time.Time) (int, error) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 
-		var deleted int
+		var deleted, purged int
 		for id, e := range idx {
+			// Validate before filesystem use: a planted/tampered index entry
+			// must not direct deletions outside the store dir (same threat
+			// model as Load/saveLocked, which reject embedded IDs).
+			if err := ValidateSessionID(id); err != nil {
+				delete(idx, id) // corrupt entry — purge from index only
+				purged++
+				continue
+			}
 			if e.UpdatedAt.Before(before) {
 				if err := os.Remove(s.path(id)); err != nil && !os.IsNotExist(err) {
 					return deleted, fmt.Errorf("session: delete %q: %w", id, err)
@@ -879,7 +914,7 @@ func (s *Store) Cleanup(before time.Time) (int, error) {
 				deleted++
 			}
 		}
-		if deleted > 0 {
+		if deleted > 0 || purged > 0 {
 			if err := s.saveIndexLocked(idx); err != nil {
 				return deleted, err
 			}

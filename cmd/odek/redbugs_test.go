@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/llm"
 )
 
 // ────────────────────────────────────────────────────────────────────────
@@ -141,15 +142,19 @@ func TestRED_GlobStarStarMatchesRootFiles(t *testing.T) {
 	gtool := &globTool{}
 	res := callJSON(t, gtool, fmt.Sprintf(`{"pattern":"**/*.txt","path":%q}`, dir))
 	var gr struct {
-		Matches []struct{ Path string `json:"path"` } `json:"matches"`
+		Matches []struct {
+			Path string `json:"path"`
+		} `json:"matches"`
 	}
 	mustUnmarshal(t, res, &gr)
 	foundRoot, foundNested := false, false
 	for _, m := range gr.Matches {
-		switch filepath.Base(m.Path) {
-		case "root.txt":
+		// Paths are wrapped in <untrusted_content_*> tags, so match on
+		// containment rather than suffix.
+		if strings.Contains(m.Path, "root.txt") {
 			foundRoot = true
-		case "nested.txt":
+		}
+		if strings.Contains(m.Path, "nested.txt") {
 			foundNested = true
 		}
 	}
@@ -255,8 +260,8 @@ func TestRED_CountLinesCharsWithoutTrailingNewline(t *testing.T) {
 	res := callJSON(t, tool, fmt.Sprintf(`{"files":[{"path":%q}]}`, p))
 	var r struct {
 		Results []struct {
-			Chars int   `json:"chars"`
-			Bytes int64 `json:"bytes"`
+			Chars int    `json:"chars"`
+			Bytes int64  `json:"bytes"`
 			Error string `json:"error"`
 		} `json:"results"`
 	}
@@ -337,6 +342,7 @@ func TestRED_WSApproverCancelConcurrentIdempotent(t *testing.T) {
 	// style implementation can never fail here; the select/default idiom
 	// eventually double-closes.
 	const rounds = 3000
+	panicCh := make(chan string, 1)
 	for r := 0; r < rounds; r++ {
 		a := newWSApprover(func(v any) error { return nil })
 		var wg sync.WaitGroup
@@ -347,7 +353,10 @@ func TestRED_WSApproverCancelConcurrentIdempotent(t *testing.T) {
 				defer wg.Done()
 				defer func() {
 					if rec := recover(); rec != nil {
-						t.Fatalf("concurrent Cancel panicked: %v", rec)
+						select {
+						case panicCh <- fmt.Sprint(rec):
+						default:
+						}
 					}
 				}()
 				<-start
@@ -356,5 +365,31 @@ func TestRED_WSApproverCancelConcurrentIdempotent(t *testing.T) {
 		}
 		close(start)
 		wg.Wait()
+		select {
+		case msg := <-panicCh:
+			t.Fatalf("concurrent Cancel panicked: %v", msg)
+		default:
+		}
+	}
+}
+
+// Regression #M1: auditTurnDelta must clamp when the engine trimmed history
+// in place during the run — the pre-run histLen can exceed the returned
+// slice and the old inline `allMessages[histLen:]` panicked.
+func TestRED_AuditTurnDeltaClampsTrimmedHistory(t *testing.T) {
+	msgs := []llm.Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "task"},
+		{Role: "assistant", Content: "answer"},
+	}
+	if got := auditTurnDelta(msgs, 20); got != nil {
+		t.Errorf("auditTurnDelta(len=%d, histLen=20) = %v, want nil (no panic)", len(msgs), got)
+	}
+	delta := auditTurnDelta(msgs, 1)
+	if len(delta) != 2 || delta[0].Content != "task" {
+		t.Errorf("auditTurnDelta(histLen=1) = %+v, want messages[1:]", delta)
+	}
+	if got := auditTurnDelta(nil, 0); got != nil {
+		t.Errorf("auditTurnDelta(nil, 0) = %v, want nil", got)
 	}
 }

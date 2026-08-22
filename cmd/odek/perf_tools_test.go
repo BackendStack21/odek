@@ -2106,8 +2106,11 @@ func TestCountLines_AcceptsExactSizeFile(t *testing.T) {
 		} `json:"results"`
 	}
 	mustUnmarshal(t, result, &r)
-	if r.Results[0].Error != "" {
-		t.Errorf("expected no error at exact size limit, got %q", r.Results[0].Error)
+	// The exact-size file must pass the size gate (not rejected as "too
+	// large"). A 10 MiB single-line file exceeds the scanner cap, which now
+	// surfaces as an explicit partial-read error instead of silent zeros.
+	if strings.Contains(r.Results[0].Error, "too large") {
+		t.Errorf("size gate must accept a file at the exact limit, got %q", r.Results[0].Error)
 	}
 }
 
@@ -2142,8 +2145,12 @@ func TestHeadTail_AcceptsExactSizeFile(t *testing.T) {
 		} `json:"results"`
 	}
 	mustUnmarshal(t, result, &r)
-	if r.Results[0].Error != "" {
-		t.Errorf("expected no error at exact size limit, got %q", r.Results[0].Error)
+	// The exact-size file must pass the size gate (not rejected as "too
+	// large"). A 10 MiB single-line file does exceed the 1 MiB scanner cap,
+	// which now surfaces as an explicit partial-read error instead of
+	// silently reporting zero lines.
+	if strings.Contains(r.Results[0].Error, "too large") {
+		t.Errorf("size gate must accept a file at the exact limit, got %q", r.Results[0].Error)
 	}
 }
 
@@ -2174,8 +2181,11 @@ func TestWordCount_AcceptsExactSizeFile(t *testing.T) {
 		} `json:"results"`
 	}
 	mustUnmarshal(t, result, &r)
-	if r.Results[0].Error != "" {
-		t.Errorf("expected no error at exact size limit, got %q", r.Results[0].Error)
+	// The exact-size file must pass the size gate (not rejected as "too
+	// large"). A 10 MiB single-line file exceeds the scanner cap, which now
+	// surfaces as an explicit partial-read error instead of silent zeros.
+	if strings.Contains(r.Results[0].Error, "too large") {
+		t.Errorf("size gate must accept a file at the exact limit, got %q", r.Results[0].Error)
 	}
 }
 
