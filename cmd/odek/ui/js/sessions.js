@@ -6,7 +6,7 @@ import { listSessions, getSession, renameSession as renameSessionAPI, deleteSess
 import { messagesEl, promptEl, sendBtn, sessionListEl, sidebarSearch, sidebarOverlay } from './dom.js';
 import { escapeHtml, escapeAttr, relativeTime, formatNum, showToast, forceScrollBottom, hideCancel, announce, openDialog, closeDialog, isDialogOpen } from './utils.js';
 import { resetTurnState, hideLoading, renderSessionHistory } from './render.js';
-import { removeActiveApprovalCard } from './approvals.js';
+import { clearApprovals } from './approvals.js';
 import { metricsFromSession, resetMetrics } from './metrics.js';
 
 const PAGE_SIZE = 50;
@@ -186,8 +186,7 @@ export function newSession() {
   // Reset all streaming + tool state.
   resetTurnState();
   // Any pending approval belongs to the previous session's run — drop it.
-  S.approvalQueue = [];
-  removeActiveApprovalCard();
+  clearApprovals();
   S.busy = false;
   hideLoading(); hideCancel();
   sendBtn.disabled = !S.ws || S.ws.readyState !== WebSocket.OPEN;
@@ -238,8 +237,7 @@ export async function loadAndRenderSession(sid) {
     resetTurnState();
     // Pending approvals belong to the previous view — drop them (the
     // server-side request times out on its own).
-    S.approvalQueue = [];
-    removeActiveApprovalCard();
+    clearApprovals();
     S.busy = false; hideLoading(); hideCancel();
     sendBtn.disabled = !S.ws || S.ws.readyState !== WebSocket.OPEN;
     promptEl.disabled = false;
