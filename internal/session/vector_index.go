@@ -237,6 +237,11 @@ func (vi *VectorIndex) Add(sessionID string, messages []llm.Message) error {
 		_ = vi.rebuildLocked()
 		return nil
 	}
+	// Respect the cool-down on the ready path too: after an Embed failure the
+	// backend is presumed down and must not be re-hit by every session save.
+	if !vi.failedAt.IsZero() && time.Since(vi.failedAt) < rebuildRetryInterval {
+		return nil
+	}
 
 	text := BuildConversationText(messages)
 	if text == "" {
@@ -299,6 +304,11 @@ func (vi *VectorIndex) Search(query string, k int) ([]SearchResult, error) {
 	}
 	if k > 20 {
 		k = 20
+	}
+	// Respect the cool-down on the ready path too (see Add): a down backend
+	// must not be re-hit on every search — degrade to the keyword fallback.
+	if !vi.failedAt.IsZero() && time.Since(vi.failedAt) < rebuildRetryInterval {
+		return nil, nil
 	}
 
 	vec, err := vi.emb.Embed(query)

@@ -564,7 +564,9 @@ func parseRunFlags(args []string) (runFlags, error) {
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("--ctx requires a value")
 			}
-			f.Ctx = strings.Split(args[i+1], ",")
+			// Repeatable flag: accumulate across occurrences (mirrors
+			// --tool); a second --ctx must not silently drop the first.
+			f.Ctx = append(f.Ctx, strings.Split(args[i+1], ",")...)
 			i += 2
 		case "--memory-extended-enabled":
 			f.MemoryExtendedEnabled = boolPtr(true)
@@ -2699,6 +2701,18 @@ func persistPartialMessages(store *session.Store, sess *session.Session, message
 	_ = store.SaveNoIndex(sess)
 }
 
+// auditTurnDelta returns this turn's new messages (those appended after the
+// pre-run history) for the audit log. When the engine trimmed history in
+// place during the run — context-limit protection can drop old turn groups,
+// shrinking the returned slice below the pre-run length — it returns nil
+// rather than panicking on a negative-bounds slice.
+func auditTurnDelta(allMessages []llm.Message, histLen int) []llm.Message {
+	if histLen < 0 || len(allMessages) <= histLen {
+		return nil
+	}
+	return allMessages[histLen:]
+}
+
 // continueCmd handles `odek continue [--id <id>] [--external-ref <ref>] <task>`.
 // It loads an existing session (latest or by ID), appends the new task,
 // runs the agent with full history, and saves the updated session.
@@ -2951,8 +2965,10 @@ func continueCmd(args []string) error {
 
 	// Record per-turn divergence assessment after the turn completes.
 	// Use the original prompt so injected resources from @-refs/--ctx do
-	// not count as user-mentioned.
-	recordTurnAudit(auditStore, sessIDCapture, currentTurn, originalTask, allMessages[histLen:])
+	// not count as user-mentioned. histLen was captured pre-run, but the
+	// engine may have trimmed history in place (context-limit protection),
+	// leaving len(allMessages) < histLen — slice defensively.
+	recordTurnAudit(auditStore, sessIDCapture, currentTurn, originalTask, auditTurnDelta(allMessages, histLen))
 
 	// Append agent response to buffer
 	if len(allMessages) > 0 {

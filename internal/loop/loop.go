@@ -940,17 +940,15 @@ func trimToSurvival(msgs []llm.Message) []llm.Message {
 		}
 	}
 
-	// Preserve the rolling compaction digest if one is present in the head.
-	// Scan all the way to the first user message: with memory/skill/episode
-	// blocks injected the digest can sit deeper than any fixed window, and
-	// dropping it here would discard the paid-for compacted history exactly
-	// when context pressure is highest (audit 2026-08).
+	// Preserve the rolling compaction digest if one is present. refreshDigest
+	// inserts (or updates) the digest right AFTER the protected head — and
+	// headLen includes the first user message — so a freshly created digest
+	// sits after firstUserIdx, not before it. Scan the whole head region up
+	// to and including the post-task zone; dropping it here would discard
+	// the paid-for compacted history exactly when context pressure is
+	// highest (audit 2026-08).
 	digestIdx := -1
-	digestEnd := firstUserIdx
-	if digestEnd < 0 {
-		digestEnd = len(msgs)
-	}
-	for i := start; i < digestEnd; i++ {
+	for i := start; i < len(msgs); i++ {
 		if isDigestMessage(msgs[i]) {
 			digestIdx = i
 			break
@@ -1237,8 +1235,17 @@ func (e *Engine) budgetAllowsSideCall() bool {
 
 // Run executes the loop for a given task and returns the final response.
 func (e *Engine) Run(ctx context.Context, task string) (string, error) {
+	// Reset per-run state — same contract as RunWithMessages ("Reset on each
+	// Run/RunWithMessages call"): totals are per-run and feed budget
+	// enforcement, so they must not accumulate across runs.
 	e.memMsgIdx = -1
 	e.resetDedupKeys()
+	e.TotalInputTokens = 0
+	e.TotalOutputTokens = 0
+	e.TotalCacheCreationTokens = 0
+	e.TotalCacheReadTokens = 0
+	e.TotalCachedTokens = 0
+	e.TotalCacheReported = false
 	messages := []llm.Message{
 		{Role: "user", Content: task},
 	}
@@ -1442,6 +1449,11 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 				if e.memMsgIdx >= 0 && e.memMsgIdx < len(messages) {
 					// Update existing memory slot — keeps position stable.
 					messages[e.memMsgIdx].Content = memBlock
+				} else if len(messages) == 0 {
+					// Degenerate history (empty slice): the memory message becomes
+					// the whole list rather than panicking on messages[:1].
+					messages = []llm.Message{memMsg}
+					e.memMsgIdx = 0
 				} else {
 					// First time: insert memory message after base system.
 					insertAt := 1

@@ -148,7 +148,7 @@ type ToolOperation struct {
 //   - /boot, /dev, /proc, /sys, /mnt, /media → destructive
 //   - / (the filesystem root itself) → system_write
 //   - /tmp, $TMPDIR → local_write
-//   - /etc, /root, /var, /run, /lib, /usr → system_write
+//   - /etc, /root, /var, /run, /lib, /usr, /bin, /sbin, /opt, /srv → system_write
 //   - $HOME/.ssh, .config, .gnupg, .aws, .kube, .docker, .gitconfig, .env → system_write
 //   - $HOME/.odek/config.json, secrets.env, IDENTITY.md, skills/, sessions/, audit/,
 //     plans/, schedules.json, schedule-state.json, mcp_approvals.json,
@@ -197,7 +197,7 @@ func ClassifyPath(path string) RiskClass {
 		return LocalWrite
 	}
 
-	for _, prefix := range []string{"/etc", "/root", "/var", "/run", "/lib", "/usr"} {
+	for _, prefix := range []string{"/etc", "/root", "/var", "/run", "/lib", "/usr", "/bin", "/sbin", "/opt", "/srv"} {
 		if strings.HasPrefix(abs, prefix) {
 			return SystemWrite
 		}
@@ -2240,12 +2240,15 @@ func isBlocked(tokens []string) bool {
 }
 
 func containsBlockDevice(tok string) bool {
-	for _, p := range blockDevicePrefixes {
-		if strings.Contains(tok, p) {
-			return true
-		}
+	// Match only real block devices via prefix checks on the path value —
+	// NOT any substring, so a regular file that merely lives under a
+	// directory named like a device (e.g. of=/tmp/dev/sda) is not treated
+	// as an unrecoverable raw-disk write.
+	value := tok
+	if idx := strings.Index(value, "="); idx >= 0 {
+		value = value[idx+1:]
 	}
-	return false
+	return isBlockDevice(value)
 }
 
 // rmRecursiveOrForce reports whether rm's flags include a recursive or force
@@ -2290,7 +2293,15 @@ func rmRecursiveOrForce(tokens []string) bool {
 // `..`.
 func isWipeTarget(tok string) bool {
 	if strings.HasPrefix(tok, "/") {
-		return !strings.HasPrefix(tok, "/tmp") && !strings.HasPrefix(tok, "/workspace")
+		// Clean resolves traversal (e.g. /tmp/../home → /home) so the /tmp
+		// carve-out can only exempt paths that really live under tmp.
+		cleaned := filepath.Clean(tok)
+		if cleaned == "/" {
+			return true
+		}
+		exempt := cleaned == "/tmp" || strings.HasPrefix(cleaned, "/tmp/") ||
+			cleaned == "/workspace" || strings.HasPrefix(cleaned, "/workspace/")
+		return !exempt
 	}
 	// Normalize leading `./` so `./` → `.` and `./..` → `..` for matching.
 	if strings.HasPrefix(tok, "./") {
@@ -2755,8 +2766,17 @@ func isGitDataLoss(tokens []string) bool {
 	case "checkout":
 		// -f/--force or a pathspec (-- <path>, ".", "./…") discards local
 		// changes. A bare branch operand (git checkout main) switches, keeps
-		// the worktree, and is not data loss.
+		// the worktree, and is not data loss. `<tree-ish> <pathspec>` without
+		// the -- separator has identical discard semantics, so more than one
+		// non-flag operand is data loss. Value-taking flags (-b/-B/--orphan/
+		// --pathspec-from-file) consume their value first.
+		operands := 0
+		skipNext := false
 		for _, a := range args {
+			if skipNext {
+				skipNext = false
+				continue
+			}
 			switch {
 			case a == "--force" || (isShortFlagToken(a) && strings.ContainsRune(a[1:], 'f')):
 				return true
@@ -2764,9 +2784,17 @@ func isGitDataLoss(tokens []string) bool {
 				return true
 			case a == "." || strings.HasPrefix(a, "./"):
 				return true
+			case a == "-b" || a == "-B" || a == "--orphan" || strings.HasPrefix(a, "--pathspec-from-file"):
+				if !strings.Contains(a, "=") {
+					skipNext = true
+				}
+			case strings.HasPrefix(a, "-"):
+				// Non-value flag (e.g. --detach, --ours).
+			default:
+				operands++
 			}
 		}
-		return false
+		return operands > 1
 	case "restore":
 		// Default restores the worktree from the index, discarding local
 		// changes; --staged alone only unstages. --source/-s consumes a value.

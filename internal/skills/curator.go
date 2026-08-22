@@ -79,7 +79,10 @@ func CurateSkills(skills []Skill, opts CurateOptions) *CurationReport {
 	return report
 }
 
-// findOverlapGroups groups skills that share trigger keywords.
+// findOverlapGroups groups skills that share trigger keywords. Groups are
+// disjoint: once a skill joins a group it never pairs again, otherwise the
+// executor would merge from a stale index and silently drop content of
+// already-merged skills.
 func findOverlapGroups(skills []Skill) []OverlapGroup {
 	var groups []OverlapGroup
 	seen := make(map[string]bool)
@@ -89,7 +92,7 @@ func findOverlapGroups(skills []Skill) []OverlapGroup {
 			continue
 		}
 		for j, b := range skills {
-			if i >= j || seen[b.Name] {
+			if i >= j || seen[b.Name] || seen[a.Name] {
 				continue
 			}
 
@@ -469,6 +472,11 @@ func ExecuteMicroCurationWithLLM(userDir string, result *MicroCurationResult, al
 		if err := WriteSkill(userDir, merged); err != nil {
 			return fmt.Errorf("merge: write %s: %w", keepName, err)
 		}
+
+		// Refresh the index with the merge result so a later pair that
+		// reuses keepName merges from the just-written content, never from
+		// the stale pre-execution snapshot.
+		skillIndex[keepName] = merged
 
 		// Remove the merged skill directory
 		removeDir := filepath.Join(userDir, removeName)

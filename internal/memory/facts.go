@@ -176,6 +176,12 @@ func (f *FactStore) Add(target, content string) error {
 	}
 
 	content = strings.TrimSpace(content)
+	// The on-disk format joins entries with entrySep; content carrying that
+	// sequence would explode into multiple entries on read-back and let
+	// injected text reshape the fact file structure.
+	if strings.Contains(content, entrySep) {
+		return fmt.Errorf("memory: content contains the internal entry separator")
+	}
 
 	return f.readModifyWrite(target, func(entries []string) ([]string, error) {
 		// Dedup: check if content already exists
@@ -223,6 +229,9 @@ func (f *FactStore) Replace(target, oldText, content string) error {
 	}
 
 	content = strings.TrimSpace(content)
+	if strings.Contains(content, entrySep) {
+		return fmt.Errorf("memory: content contains the internal entry separator")
+	}
 	oldText = strings.TrimSpace(oldText)
 
 	return f.readModifyWrite(target, func(entries []string) ([]string, error) {
@@ -270,6 +279,9 @@ func (f *FactStore) ReplaceAt(target string, idx int, content string) error {
 	}
 
 	content = strings.TrimSpace(content)
+	if strings.Contains(content, entrySep) {
+		return fmt.Errorf("memory: content contains the internal entry separator")
+	}
 
 	return f.readModifyWrite(target, func(entries []string) ([]string, error) {
 		if idx < 0 || idx >= len(entries) {
@@ -317,9 +329,10 @@ func (f *FactStore) Remove(target, oldText string) error {
 			return nil, fmt.Errorf("memory: %d entries contain %q — use a more specific old_text", matchCount, oldText)
 		}
 
-		// Remove by swapping with last and slicing
-		entries[matchIdx] = entries[len(entries)-1]
-		entries = entries[:len(entries)-1]
+		// Order-preserving removal: entries are user-visible (injected into
+		// the system prompt) and indexed by ReplaceAt, so swapping with the
+		// last element would silently reorder them.
+		entries = append(entries[:matchIdx], entries[matchIdx+1:]...)
 		return entries, nil
 	})
 }

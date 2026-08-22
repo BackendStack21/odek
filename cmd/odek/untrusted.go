@@ -140,12 +140,19 @@ func wrapUntrusted(ctx context.Context, source, content string) string {
 // wrapper, but neutralising these keeps the marker well-formed and
 // unambiguous. We use homoglyphs (consistent with neutraliseWrapperLiterals)
 // so the label stays human-readable.
+//
+// The mapping must be lossless for every character it does not itself
+// introduce: `"` becomes the DOUBLE PRIME homoglyph ″ (not ', which would
+// collide with literal apostrophes), and extractUntrustedAll reverses
+// exactly these substitutions. A literal ' in e.g. `$ grep 'TODO' x` must
+// round-trip byte-for-byte or the audit divergence check can no longer
+// match sources.
 func sanitizeWrapperSource(source string) string {
 	return wrapperSourceReplacer.Replace(source)
 }
 
 var wrapperSourceReplacer = strings.NewReplacer(
-	`"`, `'`,
+	`"`, `″`, // ″ DOUBLE PRIME — distinct from both quote characters
 	"<", "‹", // ‹ SINGLE LEFT-POINTING ANGLE QUOTATION MARK
 	">", "›", // › SINGLE RIGHT-POINTING ANGLE QUOTATION MARK
 	"\n", " ",
@@ -213,7 +220,11 @@ func extractUntrustedAll(s string) (bodies, sources []string) {
 	if len(matches) == 0 {
 		return nil, nil
 	}
-	rep := strings.NewReplacer("'", `"`, "‹", "<", "›", ">")
+	// Exact inverse of wrapperSourceReplacer (see sanitizeWrapperSource):
+	// only the three homoglyph substitutions are reversed. Literal
+	// apostrophes in the original source are never touched, so sources
+	// round-trip byte-for-byte.
+	rep := strings.NewReplacer("″", `"`, "‹", "<", "›", ">")
 	bodies = make([]string, 0, len(matches))
 	sources = make([]string, 0, len(matches))
 	for _, m := range matches {

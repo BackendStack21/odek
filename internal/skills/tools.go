@@ -344,15 +344,9 @@ func (t *SkillLoadTool) Call(args string) (string, error) {
 		return "", fmt.Errorf("skill_load: name is required")
 	}
 
-	// Search in auto-load skills first
-	for _, s := range t.Manager.Result.AutoLoad {
-		if s.Name == input.Name {
-			return FormatAsContext(s), nil
-		}
-	}
-
-	// Then search in lazy skills
-	for _, s := range t.Manager.Result.Lazy {
+	// AllSkills snapshots the skill list under the manager's read lock —
+	// RecordUsage mutates these entries concurrently under max_tool_parallel.
+	for _, s := range t.Manager.AllSkills() {
 		if s.Name == input.Name {
 			return FormatAsContext(s), nil
 		}
@@ -395,9 +389,7 @@ func (t *SkillListTool) Call(args string) (string, error) {
 	}
 	json.Unmarshal([]byte(args), &input) // ignore error — Filter stays empty
 
-	var skills []Skill
-	skills = append(skills, t.Manager.Result.AutoLoad...)
-	skills = append(skills, t.Manager.Result.Lazy...)
+	skills := t.Manager.AllSkills()
 
 	var b strings.Builder
 	b.WriteString("Available skills:\n\n")
@@ -567,13 +559,9 @@ func (t *SkillSaveTool) Call(args string) (string, error) {
 		},
 	}
 
-	// Check for duplicate
-	for _, s := range t.Manager.Result.AutoLoad {
-		if s.Name == skill.Name {
-			return "", fmt.Errorf("skill_save: skill %q already exists", skill.Name)
-		}
-	}
-	for _, s := range t.Manager.Result.Lazy {
+	// Check for duplicate against a locked snapshot — the scan result is
+	// mutated concurrently by RecordUsage/Reload.
+	for _, s := range t.Manager.AllSkills() {
 		if s.Name == skill.Name {
 			return "", fmt.Errorf("skill_save: skill %q already exists", skill.Name)
 		}
@@ -739,14 +727,12 @@ func (t *SkillPatchTool) Call(args string) (string, error) {
 }
 
 func (t *SkillPatchTool) findSkill(name string) (*Skill, error) {
-	for i := range t.Manager.Result.AutoLoad {
-		if t.Manager.Result.AutoLoad[i].Name == name {
-			return &t.Manager.Result.AutoLoad[i], nil
-		}
-	}
-	for i := range t.Manager.Result.Lazy {
-		if t.Manager.Result.Lazy[i].Name == name {
-			return &t.Manager.Result.Lazy[i], nil
+	// Locked snapshot; return a copy so the pointer never aliases an entry
+	// that RecordUsage/Reload may mutate concurrently.
+	for _, s := range t.Manager.AllSkills() {
+		if s.Name == name {
+			found := s
+			return &found, nil
 		}
 	}
 	return nil, fmt.Errorf("skill %q not found", name)
