@@ -42,7 +42,7 @@ cmd/odek/
   external_ref.go             --external-ref flag parsing (run + continue) → session.ExternalRef
   perf_tools.go               Performance/parallelism tools (batch_patch, parallel_shell, http_batch, math_eval, diff,
                               count_lines, multi_grep, json_query, tree, checksum, sort, head_tail, base64, tr, word_count)
-  mcp.go                      MCP server implementation (stdio + SSE transport)
+  mcp.go                      MCP server implementation (stdio transport)
   mcp_approval.go             Per-tool MCP server approval UI and persistence (key hashes limits/artifact_roots)
   project_sandbox_approval.go Project-level sandbox config approval gate (C-1)
   transcribe_tool.go          Whisper.cpp audio transcription

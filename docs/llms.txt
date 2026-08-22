@@ -18,7 +18,8 @@ Module path: `github.com/BackendStack21/odek`. Repository: https://github.com/Ba
 - [Sub-agents](https://odek.21no.de/SUBAGENTS.md): `delegate_tasks` tool and `odek subagent` — real OS processes with trust levels, risk caps, and FD-based API key handoff
 - [Tool Selection](https://odek.21no.de/TOOL_SELECTION.md): restricting which built-in tools the LLM can see
 - [Prompt Caching](https://odek.21no.de/CACHING.md): provider prompt-caching support, cost and latency effects
-- [MCP Integration](https://odek.21no.de/MCP.md): odek as MCP server (stdio/SSE) and as MCP client, per-tool approval flow
+- [MCP Integration](https://odek.21no.de/MCP.md): odek as MCP server (stdio) and as MCP client, per-tool approval flow
+- [Extension Contract](https://odek.21no.de/EXTENSIONS.md): odek-extension/v1 — MCP per-server limits, artifact refs, runtime events, execution budgets
 - [Development](https://odek.21no.de/DEVELOPMENT.md): build, test, release workflow, and contributor notes
 
 ## Memory, learning, and sessions

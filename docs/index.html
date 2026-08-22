@@ -517,7 +517,7 @@
   "description": "The fastest, minimal Go autonomous agent runtime. ~12 MB static binary, zero frameworks. ReAct agent with parallel tool execution, persistent memory, MCP, sandbox, Web UI, and Telegram bot.",
   "url": "https://odek.21no.de",
   "downloadUrl": "https://github.com/BackendStack21/odek",
-  "softwareVersion": "1.2.0",
+  "softwareVersion": "1.26.2",
   "license": "https://github.com/BackendStack21/odek/blob/main/LICENSE",
   "image": "https://odek.21no.de/og-image.png",
   "screenshot": "https://odek.21no.de/og-image.png",
@@ -625,8 +625,8 @@
         <div class="slide active">
           <span class="info"># 1 · Start from zero — grab the repo</span><br>
           <span class="prompt">$ git clone https://github.com/BackendStack21/odek</span><br>
-          <span class="prompt">$ cd odek</span><br>
-          <span class="output">The Docker Compose setup ships in the repo root:</span><br>
+          <span class="prompt">$ cd odek/docker</span><br>
+          <span class="output">The Docker Compose setup ships in docker/:</span><br>
           <span class="output">  Dockerfile · docker-compose.yml · config.restricted.json</span><br>
           <span class="info"># the container IS the sandbox — no --sandbox needed</span>
         </div>
@@ -803,7 +803,7 @@
         <span class="info">═══ Iter 1/15 ═══  [456 in · 21 out · 0.8s]</span><br>
         <span class="output">The <strong>go.mod</strong> file has 3 lines:</span><br>
         <span class="output">module github.com/BackendStack21/odek</span><br>
-        <span class="output">go 1.24</span><br>
+        <span class="output">go 1.25</span><br>
         <span class="output">require ( ... )</span><br>
         <span class="info">✅ Done in 0.8s</span>
       </div>
@@ -859,7 +859,7 @@
         <span class="output">Connected by Claude Code. Exposing built-in tools:</span><br>
         <span class="output">  • read_file    — read files with line numbers</span><br>
         <span class="output">  • write_file   — write files safely</span><br>
-        <span class="output">  • search_files — ripgrep-backed search</span><br>
+        <span class="output">  • search_files — regex content search</span><br>
         <span class="output">  • shell        — execute commands</span><br>
         <span class="output">  • patch        — find-and-replace edits</span><br>
         <span class="output">  — MCP stdio —</span>
@@ -964,7 +964,7 @@
     <div class="card">
       <div class="icon">🔍</div>
       <h4>Session Search</h4>
-      <p><code>session_search</code> — full-text and fuzzy search across your entire agent history. Use <code>--deep</code> for LLM-powered semantic search. Never lose a past finding, decision, or code review.</p>
+      <p><code>session_search</code> — semantic search across your entire agent history: vector matching over full conversation content finds sessions whose messages match your query, even when titles don't. Never lose a past finding, decision, or code review.</p>
     </div>
 
     <div class="card">
@@ -1097,13 +1097,12 @@ $ odek run <span class="hljs-string">"@README.md summarize this project"</span>
     <li><span class="cmd">odek run --sandbox &lt;task&gt;</span><span class="desc">Run in Docker sandbox</span></li>
     <li><span class="cmd">odek repl</span><span class="desc">Interactive multi-turn REPL</span></li>
     <li><span class="cmd">odek repl --id &lt;uuid&gt;</span><span class="desc">Resume a saved session</span></li>
-    <li><span class="cmd">odek serve</span><span class="desc">Start Web UI (http://127.0.0.1:8080)</span></li>
-    <li><span class="cmd">odek serve --sandbox</span><span class="desc">Web UI with Docker sandbox</span></li>
+    <li><span class="cmd">odek serve</span><span class="desc">Start Web UI (sandboxed by default, http://127.0.0.1:8080)</span></li>
+    <li><span class="cmd">odek serve --no-sandbox</span><span class="desc">Web UI without the Docker sandbox</span></li>
     <li><span class="cmd">odek subagent --goal &lt;s&gt;</span><span class="desc">Run a focused sub-task</span></li>
-    <li><span class="cmd">odek mcp</span><span class="desc">Start MCP server (stdio)</span></li>
-    <li><span class="cmd">odek mcp --sse-addr :8081</span><span class="desc">Start MCP server (SSE)</span></li>
+    <li><span class="cmd">odek mcp</span><span class="desc">Start MCP server (stdio; --sandbox for Docker)</span></li>
     <li><span class="cmd">odek telegram</span><span class="desc">Start Telegram bot</span></li>
-    <li><span class="cmd">odek schedule add &lt;task&gt;</span><span class="desc">Schedule a recurring agent task (cron)</span></li>
+    <li><span class="cmd">odek schedule add --cron "&lt;expr&gt;" &lt;task&gt;</span><span class="desc">Schedule a recurring agent task (cron)</span></li>
     <li><span class="cmd">odek cleanup --dry-run</span><span class="desc">Preview storage maintenance, delete nothing</span></li>
     <li><span class="cmd">odek cleanup</span><span class="desc">Run one storage maintenance sweep</span></li>
     <li><span class="cmd">odek memory extended stats</span><span class="desc">Memory store, index, quarantine, recall health</span></li>
@@ -1128,7 +1127,7 @@ $ odek run <span class="hljs-string">"@README.md summarize this project"</span>
     <li><span class="cmd">--system &lt;prompt&gt;</span><span class="desc">Override system prompt</span></li>
     <li><span class="cmd">--no-color</span><span class="desc">Disable colored output</span></li>
     <li><span class="cmd">--deliver</span><span class="desc">Deliver result to Telegram default chat</span></li>
-    <li><span class="cmd">--interaction-mode <m></span><span class="desc">engaging | verbose | enhance</span></li>
+    <li><span class="cmd">--interaction-mode &lt;mode&gt;</span><span class="desc">engaging | verbose | enhance | off</span></li>
   </ul>
 </section>
 
@@ -1146,6 +1145,7 @@ $ odek run <span class="hljs-string">"@README.md summarize this project"</span>
     <a href="https://github.com/BackendStack21/odek/blob/main/docs/PROVIDERS.md">Providers & Models<span>DeepSeek, OpenAI, Anthropic, Ollama, vLLM, more</span></a>
     <a href="https://github.com/BackendStack21/odek/blob/main/docs/CACHING.md">Prompt Caching<span>Cache markers for lower latency and cost on repeats</span></a>
     <a href="https://github.com/BackendStack21/odek/blob/main/docs/MCP.md">MCP (Two-Way)<span>Serve tools + connect to external MCP servers</span></a>
+    <a href="https://github.com/BackendStack21/odek/blob/main/docs/EXTENSIONS.md">Extension Contract<span>odek-extension/v1: limits, artifact refs, events, budgets</span></a>
     <a href="https://github.com/BackendStack21/odek/blob/main/docs/MEMORY.md">Memory System<span>Legacy facts, buffer, episodes</span></a>
     <a href="https://github.com/BackendStack21/odek/blob/main/docs/EXTENDED_MEMORY.md">Extended Memory<span>Semantic atoms, recall, quarantine, proactive engagement</span></a>
     <a href="https://github.com/BackendStack21/odek/blob/main/docs/MAINTENANCE.md">Storage Maintenance<span>Janitor, retention config, odek cleanup</span></a>
