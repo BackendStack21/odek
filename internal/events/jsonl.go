@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -37,11 +38,13 @@ func OpenJSONLSink(path string) (*JSONLSink, error) {
 	}
 	// Refuse to follow a symlink at the target path — an attacker who can
 	// plant a symlink could otherwise redirect the event stream (which may
-	// contain session IDs and token counts) over an arbitrary file.
+	// contain session IDs and token counts) over an arbitrary file. The
+	// Lstat pre-check rejects an existing symlink; O_NOFOLLOW closes the
+	// check-then-open race where the symlink is swapped in between.
 	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("refusing to write events to symlink %s", path)
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return nil, err
 	}

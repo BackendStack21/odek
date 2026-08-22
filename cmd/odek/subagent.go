@@ -495,7 +495,8 @@ func subagentCmd(args []string) error {
 	}
 
 	if err != nil {
-		if sigCtx.Err() != nil {
+		timedOut := sigCtx.Err() != nil
+		if timedOut {
 			result.Status = "error"
 			result.Error = fmt.Sprintf("timeout after %ds", cfg.timeout)
 		} else {
@@ -508,17 +509,34 @@ func subagentCmd(args []string) error {
 	// Extract files changed from tool calls
 	result.FilesChanged = extractFilesChanged(allMessages)
 
-	// Output JSON to stdout
+	// Output JSON to stdout — the envelope is emitted exactly once, here.
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "")
 	enc.Encode(result)
 
+	if result.Status != "success" {
+		fmt.Fprintf(os.Stderr, "✗ Sub-agent failed: %s\n", result.Error)
+		return &subagentRunError{timeout: err != nil && sigCtx.Err() != nil}
+	}
 	if !cfg.quiet {
 		fmt.Fprintf(os.Stderr, "✅ Sub-agent complete: %.1fs, %d tokens, %d iterations\n",
 			latency.Seconds(), tokensUsed, iterations)
 	}
 
 	return nil
+}
+
+// subagentRunError reports a task-level failure AFTER the JSON result
+// envelope has already been written by subagentCmd. dispatch maps it to the
+// documented exit codes: 2 for timeouts, 1 for other task errors (0 =
+// success, 3 = setup errors, which still travel as plain errors).
+type subagentRunError struct{ timeout bool }
+
+func (e *subagentRunError) Error() string {
+	if e.timeout {
+		return "sub-agent timed out"
+	}
+	return "sub-agent task failed"
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────

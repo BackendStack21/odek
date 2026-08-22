@@ -1222,6 +1222,7 @@ func isProtectedOdekPath(rel string) bool {
 		"schedules.lock",
 		"mcp_approvals.json",
 		"mcp_tool_approvals.json",
+		"project_sandbox_approvals.json",
 		"restart.json",
 		"telegram.lock",
 		"telegram.pid",

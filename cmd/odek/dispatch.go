@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -95,11 +96,20 @@ func runExit(err error) int {
 
 // subagentExit honours the sub-agent JSON contract: stderr gets the
 // human-readable line, stdout gets a JSON envelope the parent can parse,
-// and the exit code is 3 (reserved for setup/contract errors so the
-// parent can distinguish them from task-level failures).
+// and exit codes follow docs/EXTENSIONS.md: 0 success, 1 task error,
+// 2 timeout, 3 setup error. Task errors and timeouts arrive as
+// *subagentRunError with their envelope already printed, so they only map
+// to an exit code here.
 func subagentExit(err error) int {
 	if err == nil {
 		return 0
+	}
+	var runErr *subagentRunError
+	if errors.As(err, &runErr) {
+		if runErr.timeout {
+			return 2
+		}
+		return 1
 	}
 	fmt.Fprintf(os.Stderr, "odek: %v\n", err)
 	_ = json.NewEncoder(os.Stdout).Encode(subagentResult{

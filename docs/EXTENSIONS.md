@@ -199,11 +199,13 @@ surfaces that persist sessions per completed step (currently the `odek run
 
 Sink behavior (`--events-jsonl`): the file is created (and hardened) with
 `0600` permissions, the parent directory must already exist, a symlink at the
-target path is refused, and every event is flushed to stable storage before
-the write returns. Event dispatch from the agent loop is non-blocking: events
-flow over a buffered channel drained by a dedicated goroutine — when the
-buffer fills, new events are dropped (never blocking the loop), and a
-panicking consumer cannot crash the agent.
+target path is refused (and the subsequent open itself passes `O_NOFOLLOW`,
+so a symlink swapped in between the check and the open cannot redirect the
+stream), and every event is flushed to stable storage before the write
+returns. Event dispatch from the agent loop is non-blocking: events flow over
+a buffered channel drained by a dedicated goroutine — when the buffer fills,
+new events are dropped (never blocking the loop), and a panicking consumer
+cannot crash the agent.
 
 ## External-state-ref schema
 

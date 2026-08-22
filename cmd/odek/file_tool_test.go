@@ -2438,3 +2438,19 @@ func TestFileInfo_EmptyPath(t *testing.T) {
 		t.Errorf("error should mention 'path is required', got: %s", r.Error)
 	}
 }
+
+// TestRED_ConfinesProjectSandboxApprovals pins the same gap on the write
+// side: confineToCWD's ~/.odek carve-out must reject writes to the project
+// sandbox approval store, not only the other trust anchors.
+func TestRED_ConfinesProjectSandboxApprovals(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".odek"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(home)
+
+	if _, err := confineToCWD(filepath.Join(home, ".odek", "project_sandbox_approvals.json")); err == nil {
+		t.Fatal("confineToCWD(~/.odek/project_sandbox_approvals.json) allowed; want protected-odek rejection")
+	}
+}

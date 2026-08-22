@@ -1170,8 +1170,8 @@ func (m *MemoryManager) addExtractedFacts(facts []scopedFact) {
 			continue
 		}
 		// Drop download-and-execute / pipe-to-shell "facts": an injected session
-		// could try to persist one into the always-injected fact files. Applied
-		// only here (auto-extract), not to user-driven memory adds.
+		// could try to persist one into the always-injected fact files.
+		// AddFact/ReplaceFact enforce the same filter on agent-driven writes.
 		if FactLooksUnsafe(fact) {
 			continue
 		}

@@ -359,13 +359,21 @@ var sandboxCmdSeq atomic.Uint64
 // this is best-effort, not a hard guarantee. The command string travels as
 // a positional argument ($1), never interpolated into the wrapper, so
 // quoting cannot break out of it.
+// sandboxKillFollowupTimeout bounds the in-container kill follow-up. It
+// runs synchronously after the command's own timeout/cancel already fired;
+// without a deadline a hung Docker daemon would wedge the tool call forever
+// after its timeout — exactly what the timeout exists to prevent.
+const sandboxKillFollowupTimeout = 10 * time.Second
+
 func wrapSandboxCommand(containerName, command string) (argv []string, followUp func()) {
 	pidFile := fmt.Sprintf("/tmp/.odek-cmd-%d-%d.pid", os.Getpid(), sandboxCmdSeq.Add(1))
 	wrapper := "echo $$ > " + pidFile + "; sh -c \"$1\"; rc=$?; rm -f " + pidFile + "; exit $rc"
 	argv = []string{"exec", "-w", "/workspace", containerName, "sh", "-c", wrapper, "odek-cmd", command}
 	followUp = func() {
 		// Best-effort: the container may already be gone (session cleanup).
-		_ = exec.Command("docker", "exec", containerName, "sh", "-c",
+		ctx, cancel := context.WithTimeout(context.Background(), sandboxKillFollowupTimeout)
+		defer cancel()
+		_ = exec.CommandContext(ctx, "docker", "exec", containerName, "sh", "-c",
 			"kill -KILL -$(cat "+pidFile+") 2>/dev/null; rm -f "+pidFile).Run()
 	}
 	return argv, followUp

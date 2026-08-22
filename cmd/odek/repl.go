@@ -228,13 +228,12 @@ func replCmd(args []string) error {
 	// first turn after resuming with `odek repl --id <session>`.
 	resumedSession := sessionID != ""
 
-	// Line editor with history and tab completion for slash commands
+	// Line editor with history and tab completion for slash commands.
+	// Keep this list in sync with handleREPLCommand — completing a command
+	// that isn't implemented yields "Unknown command".
 	editor := newReplEditor(
 		fmt.Sprintf("odek %d> ", turn+1),
-		[]string{
-			"/exit", "/quit", "/help", "/info",
-			"/sandbox", "/model", "/session",
-		},
+		replCommands,
 	)
 	editor.history.Load(filepath.Join(odekDir(), historyFilename))
 	for {
@@ -342,6 +341,13 @@ func replCmd(args []string) error {
 	}
 
 	return nil
+}
+
+// replCommands lists the slash commands the REPL implements (tab
+// completion + docs source of truth). Only commands handleREPLCommand
+// actually handles may appear here.
+var replCommands = []string{
+	"/exit", "/quit", "/help", "/info",
 }
 
 // handleREPLCommand processes a REPL slash command.

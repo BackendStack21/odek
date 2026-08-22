@@ -385,8 +385,10 @@ func New(name string, cfg ServerConfig) (*Client, error) {
 		return nil, fmt.Errorf("mcpclient %s: stdout pipe: %w", name, err)
 	}
 
-	// Stderr is inherited from the parent so errors are visible
-	cmd.Stderr = nil // nil = inherit os.Stderr by default in exec.Cmd
+	// Stderr is inherited from the parent so errors are visible: a nil
+	// Stderr would connect the child to os.DevNull, silently swallowing
+	// every MCP server startup error and crash message.
+	cmd.Stderr = os.Stderr
 
 	if err := cmd.Start(); err != nil {
 		stdin.Close()

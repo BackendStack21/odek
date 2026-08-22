@@ -71,6 +71,16 @@ func (sm *SessionManager) GetOrCreate(chatID int64) (*ChatSession, error) {
 	if ok && time.Since(cs.LastActive) < sm.SessionTTL {
 		return cs, nil
 	}
+	if ok {
+		// The cached entry expired. Evict it before Load — otherwise Load
+		// finds the same stale pointer in the cache and returns it, making
+		// TTL expiry dead code.
+		sm.Mu.Lock()
+		if cur, still := sm.Cache[chatID]; still && cur == cs {
+			delete(sm.Cache, chatID)
+		}
+		sm.Mu.Unlock()
+	}
 
 	// Missed cache — try the backing store before creating fresh.
 	loaded, err := sm.Load(chatID)

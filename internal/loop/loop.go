@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/BackendStack21/odek/internal/artifact"
@@ -59,6 +60,21 @@ func (e *Engine) startToolHeartbeat(ctx context.Context, toolName string) chan<-
 		}
 	}()
 	return done
+}
+
+// insertionIndexBeforeLatestUser returns the index at which an injected
+// system block (skill/episode/extended-memory context) belongs: right
+// before the latest user message, per the documented placement. The old
+// scan skipped index 0 and fell back to appending, which put the block
+// AFTER the user message for the common [system, user] history — breaking
+// prompt-cache stability and burying the task below injected context.
+func insertionIndexBeforeLatestUser(messages []llm.Message) int {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			return i
+		}
+	}
+	return len(messages)
 }
 
 // ingestRecorderKey is the context key used to carry the per-run audit
@@ -182,6 +198,7 @@ type Engine struct {
 
 	toolEventHandler ToolEventHandler // optional: fires during tool execution
 	signalHandler    SignalHandler    // optional: fires on internal loop signals
+	signalMu         sync.Mutex       // serializes handler invocation (parallel heartbeats)
 
 	// stream enables SSE streaming for the main think step (docs/STREAMING.md).
 	// Auxiliary LLM calls (compaction, iteration summary) stay buffered.
@@ -226,6 +243,15 @@ type Engine struct {
 	// DeepSeek/Anthropic prompt caching keep the stable baseSystem cached
 	// across turns — only the memory message changes each iteration.
 	memMsgIdx int
+
+	// ctxLeadDroppableFrom marks where droppable injected context (skill/
+	// episode/extended-memory blocks) begins inside the leading system run;
+	// <=0 = no injections recorded, all leading systems protected (the zero
+	// value keeps literally-constructed Engines on the legacy behavior). headLen
+	// stops protecting at this boundary so an oversized injected block can
+	// be trimmed before its first API call instead of riding in the cached
+	// head. Reset to -1 on each Run/RunWithMessages.
+	ctxLeadDroppableFrom int
 
 	// PromptCaching enables Anthropic prompt caching markers. When enabled
 	// and the LLM endpoint is Anthropic, the system prompt and first user
@@ -600,13 +626,23 @@ func contextBudget(maxContext int) int {
 // After the task, only the rolling compaction digest is protected — other
 // system messages that land there (skill/episode injections, trim warnings)
 // remain droppable.
-func headLen(messages []llm.Message) int {
+//
+// Injected context blocks (skill/episode/extended-memory) are placed right
+// before the latest user message, which for a first-iteration history puts
+// them inside the leading system run. Once e.ctxLeadDroppableFrom marks
+// where such injections begin, everything from there on is droppable — an
+// oversized injected block must be trimmable before its first API call
+// (see TestTrimContext_PostInjectionBudget), not ride in the cached head.
+func (e *Engine) headLen(messages []llm.Message) int {
 	start := 0
 	seenTask := false
 	for start < len(messages) {
 		m := messages[start]
 		switch {
 		case m.Role == "system" && !seenTask:
+			if e.ctxLeadDroppableFrom > 0 && start >= e.ctxLeadDroppableFrom {
+				return start // droppable injected context begins here
+			}
 			start++
 		case m.Role == "user" && !seenTask:
 			seenTask = true
@@ -618,6 +654,27 @@ func headLen(messages []llm.Message) int {
 		}
 	}
 	return start
+}
+
+// noteLeadingInjection records that an injected context block now sits at
+// idx, making it — and every leading system message after it, up to the
+// first user message — droppable by trimming. Only insertions inside the
+// leading system run count; blocks placed between later turns are already
+// outside the protected head. The memory block never calls this — it stays
+// protected for prompt-cache stability; if memory lands at or before an
+// existing boundary, the boundary shifts past it instead.
+func (e *Engine) noteLeadingInjection(messages []llm.Message, idx int) {
+	if idx <= 0 || idx >= len(messages) {
+		return
+	}
+	for i := 0; i < idx; i++ {
+		if messages[i].Role != "system" {
+			return // not inside the leading system run
+		}
+	}
+	if e.ctxLeadDroppableFrom < 0 || idx < e.ctxLeadDroppableFrom {
+		e.ctxLeadDroppableFrom = idx
+	}
 }
 
 // trimContext trims the message history to stay within the context budget.
@@ -670,7 +727,7 @@ func (e *Engine) trimContext(ctx context.Context, messages []llm.Message, toolDe
 	// only the affected tokens instead of re-scanning all messages.
 	totalTokens := estimateMessages(messages) + defTokens
 
-	head := headLen(messages)
+	head := e.headLen(messages)
 
 	// Pass 1 — graduated truncation: replace old, large tool results with a
 	// short marker before resorting to deleting whole turn groups. The most
@@ -1065,7 +1122,7 @@ func (e *Engine) refreshDigest(ctx context.Context, messages []llm.Message, drop
 	}
 
 	// Otherwise insert right after the protected head.
-	head := headLen(messages)
+	head := e.headLen(messages)
 	digestMsg := llm.Message{Role: "system", Content: content}
 	newMsgs := make([]llm.Message, 0, len(messages)+1)
 	newMsgs = append(newMsgs, messages[:head]...)
@@ -1239,6 +1296,7 @@ func (e *Engine) Run(ctx context.Context, task string) (string, error) {
 	// Run/RunWithMessages call"): totals are per-run and feed budget
 	// enforcement, so they must not accumulate across runs.
 	e.memMsgIdx = -1
+	e.ctxLeadDroppableFrom = -1
 	e.resetDedupKeys()
 	e.TotalInputTokens = 0
 	e.TotalOutputTokens = 0
@@ -1267,6 +1325,7 @@ func (e *Engine) Run(ctx context.Context, task string) (string, error) {
 func (e *Engine) RunWithMessages(ctx context.Context, messages []llm.Message) (string, []llm.Message, error) {
 	// Reset token accounting for this run
 	e.memMsgIdx = -1
+	e.ctxLeadDroppableFrom = -1
 	e.resetDedupKeys()
 	e.TotalInputTokens = 0
 	e.TotalOutputTokens = 0
@@ -1372,13 +1431,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 					if fn := IngestRecorderFrom(ctx); fn != nil {
 						fn("skill", skillContext)
 					}
-					insertIdx := len(messages)
-					for j := len(messages) - 1; j >= 0; j-- {
-						if messages[j].Role == "system" && j != 0 {
-							insertIdx = j + 1
-							break
-						}
-					}
+					insertIdx := insertionIndexBeforeLatestUser(messages)
 					var wrappedSkill string
 					if e.skillVerbose {
 						wrappedSkill = "═══ SKILL LOADED (reference) ═══\n" +
@@ -1394,6 +1447,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 					newMsgs = append(newMsgs, skillMsg)
 					newMsgs = append(newMsgs, messages[insertIdx:]...)
 					messages = newMsgs
+					e.noteLeadingInjection(messages, insertIdx)
 				}
 			}
 		}
@@ -1417,19 +1471,14 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 						fn("episode", episodeContext)
 					}
 					// Inject episode context as a system message before the user message
-					insertIdx := len(messages)
-					for j := len(messages) - 1; j >= 0; j-- {
-						if messages[j].Role == "system" && j != 0 {
-							insertIdx = j + 1
-							break
-						}
-					}
+					insertIdx := insertionIndexBeforeLatestUser(messages)
 					epMsg := llm.Message{Role: "system", Content: wrappedContext}
 					newMsgs := make([]llm.Message, 0, len(messages)+1)
 					newMsgs = append(newMsgs, messages[:insertIdx]...)
 					newMsgs = append(newMsgs, epMsg)
 					newMsgs = append(newMsgs, messages[insertIdx:]...)
 					messages = newMsgs
+					e.noteLeadingInjection(messages, insertIdx)
 				}
 			}
 		}
@@ -1460,6 +1509,11 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 					messages = append(messages[:insertAt],
 						append([]llm.Message{memMsg}, messages[insertAt:]...)...)
 					e.memMsgIdx = insertAt
+					// The memory slot must stay protected even when injected
+					// context already occupies the run after it.
+					if e.ctxLeadDroppableFrom >= 0 && e.ctxLeadDroppableFrom <= insertAt {
+						e.ctxLeadDroppableFrom = insertAt + 1
+					}
 				}
 			} else if e.memMsgIdx >= 0 && e.memMsgIdx < len(messages) {
 				// No memory block — remove the memory message if present.
@@ -1481,19 +1535,14 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 					if fn := IngestRecorderFrom(ctx); fn != nil {
 						fn("extended_memory", extContext)
 					}
-					insertIdx := len(messages)
-					for j := len(messages) - 1; j >= 0; j-- {
-						if messages[j].Role == "system" && j != 0 {
-							insertIdx = j + 1
-							break
-						}
-					}
+					insertIdx := insertionIndexBeforeLatestUser(messages)
 					extMsg := llm.Message{Role: "system", Content: wrapped}
 					newMsgs := make([]llm.Message, 0, len(messages)+1)
 					newMsgs = append(newMsgs, messages[:insertIdx]...)
 					newMsgs = append(newMsgs, extMsg)
 					newMsgs = append(newMsgs, messages[insertIdx:]...)
 					messages = newMsgs
+					e.noteLeadingInjection(messages, insertIdx)
 				}
 				e.lastExtMsg = userMsg
 			}
