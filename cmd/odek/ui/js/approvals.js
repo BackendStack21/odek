@@ -34,7 +34,32 @@ export function approvalRiskMeta(risk) {
 
 export function queueApproval(event) {
   S.approvalQueue.push(event);
-  if (!S.activeApprovalId) showNextApproval();
+  if (!S.activeApprovalId) {
+    showNextApproval();
+    return;
+  }
+  // A card is already shown — it was rendered before this request arrived,
+  // so its "1 of N" hint (if any) is stale. Refresh it in place instead of
+  // re-rendering, which would wipe any friction-mode typing in progress.
+  updateQueuePosition(S.activeApprovalCard);
+}
+
+// updateQueuePosition adds, refreshes, or removes the ".ac-queue-pos" hint
+// on card so it always reflects the current queue depth.
+function updateQueuePosition(card) {
+  if (!card) return;
+  let pos = card.querySelector('.ac-queue-pos');
+  if (S.approvalQueue.length <= 1) {
+    if (pos) pos.remove();
+    return;
+  }
+  const text = 'request 1 of ' + S.approvalQueue.length + ' — more waiting';
+  if (!pos) {
+    pos = document.createElement('div');
+    pos.className = 'ac-queue-pos';
+    card.appendChild(pos); // after the actions row, matching render order
+  }
+  pos.textContent = text;
 }
 
 // dismissApproval removes a request from the queue (and its card if shown)
@@ -46,6 +71,10 @@ export function dismissApproval(id) {
   if (S.activeApprovalId === id) {
     removeActiveApprovalCard();
     showNextApproval();
+  } else if (idx >= 0) {
+    // A queued (not shown) request was answered on another client — the
+    // active card's position hint just went stale.
+    updateQueuePosition(S.activeApprovalCard);
   }
 }
 
@@ -60,11 +89,26 @@ function showNextApproval() {
   renderApprovalCard(event);
 }
 
+// removeActiveApprovalCard removes the rendered card only. It must NOT touch
+// S.activeApprovalId: renderApprovalCard calls this first, and clearing the
+// id here left every freshly rendered card with a null id — sendApproval's
+// guard then silently dropped every button press (the "approval buttons do
+// nothing" regression). The id is owned exclusively by showNextApproval,
+// which sets it to the shown request or null when the queue is empty.
 export function removeActiveApprovalCard() {
   if (S.activeApprovalCard) {
     S.activeApprovalCard.remove();
     S.activeApprovalCard = null;
   }
+}
+
+// clearApprovals drops every pending request and the rendered card — used on
+// session switch / new session, where pending approvals belong to the
+// previous run. This is the only teardown that resets all three pieces of
+// approval state together (queue + card + active id).
+export function clearApprovals() {
+  S.approvalQueue.length = 0;
+  removeActiveApprovalCard();
   S.activeApprovalId = null;
 }
 
@@ -165,13 +209,9 @@ function renderApprovalCard(event) {
   // Trust shortcut is suppressed for destructive / blocked / unknown.
   if (event.allow_trust === false) trustBtn.style.display = 'none';
 
-  // Queue position indicator
-  if (S.approvalQueue.length > 1) {
-    const pos = document.createElement('div');
-    pos.className = 'ac-queue-pos';
-    pos.textContent = 'request 1 of ' + S.approvalQueue.length + ' — more waiting';
-    card.appendChild(pos);
-  }
+  // Queue position indicator (kept live by updateQueuePosition when later
+  // requests arrive or queued ones are answered elsewhere).
+  updateQueuePosition(card);
 
   // Friction gating: approve stays disabled until the word is typed and
   // 1.5s have elapsed.
