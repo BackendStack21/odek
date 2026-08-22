@@ -866,6 +866,32 @@ All frame writes went through one process-wide mutex with no deadline. A client 
 
 `RedactBoundary` (the skip-already-redacted optimization) is an index, and indices go stale when the head of the history changes: mid-run context trimming drops front groups and later turns re-grow past the boundary, so never-redacted messages landed *below* it and persisted unredacted — tool *error* text is never redacted in memory, so the save-time scan is the only layer covering it. The boundary is now anchored by `RedactBoundaryFP`, a fingerprint of the last message it covered; any mismatch (or a legacy session with no fingerprint) re-redacts the whole transcript, idempotently. The per-session audit log — the only forensic record of injection attempts — was written with `os.WriteFile`: non-atomic (a crash left torn JSON), symlink-following (a planted symlink truncated an arbitrary file with attacker-influenceable fields), and a corrupt log was silently replaced by the next record, destroying the evidence. Writes now go through `fsatomic` (temp+fsync+rename, replacing the directory entry instead of following it), and a corrupt log is preserved as a `.corrupt-<timestamp>` sidecar before a fresh log starts. `delegate_tasks` also embeds the mutexed `ctxTool` instead of a bare context field — a data race under parallel tool calls (pinned by `TestAudit_DelegateContextNoRace` under `-race`). Regression tests: `TestAudit_RedactBoundaryInvalidatedByTrim`, `TestAudit_WritesAreSymlinkSafe`, `TestAudit_CorruptLogPreserved` in `internal/session`.
 
+### 75. Batch-2 correctness sweep: bounded sandbox kill, prompt-cancel integrity, serialized signals, real stderr, exit-code contract
+
+Five follow-ups from the 2026-08 RED/GREEN bug sweeps. The sandboxed-shell kill
+follow-up — the `docker exec` that tears down the in-container process group
+after a timeout or cancellation — ran with no deadline of its own; a hung
+Docker daemon accepted the connection and wedged the tool call forever *after*
+its timeout had already fired. It now runs under a 10-second
+`exec.CommandContext` bound (`sandboxKillFollowupTimeout`). The serve
+prompt-cancel registry let two concurrent prompts on one session overwrite
+each other's registration and removed entries unconditionally, so the first
+prompt to finish deleted the live prompt's cancel func and `/api/cancel`
+became a silent no-op; registrations are generation-guarded now and
+`registerPromptCancel` returns an unregister closure that only removes its own
+entry. Loop signal handlers (`tool_running` heartbeats) were invoked from one
+watchdog goroutine per parallel tool with no serialization while the handler
+contract only promises non-blocking — invocations are serialized behind a
+mutex so consumers like the terminal renderer cannot race. MCP child
+processes now genuinely inherit stderr (`os.Stderr`): the previous `nil`
+connected them to `/dev/null`, silently swallowing server startup errors and
+crash messages. Finally, sub-agent task failures and timeouts print their JSON
+envelope but exited 0; they now map to the documented exit codes (1 task
+error, 2 timeout) via typed `subagentRunError`. Regression tests:
+`TestRED_ShellSandboxKillFollowUpHasDeadline`, `TestRED_PromptCancelSurvivesEarlierPromptFinishing`,
+`TestRED_HeartbeatSignalHandlerNotInvokedConcurrently`, `TestRED_SubagentExitCodeContract`
+in `cmd/odek` and `internal/loop`.
+
 ### YOLO mode
 
 ```json
