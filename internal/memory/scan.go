@@ -35,11 +35,12 @@ var (
 )
 
 // FactLooksUnsafe reports whether a fact embeds a download-and-execute /
-// pipe-to-shell instruction. It is applied ONLY to AUTO-extracted facts (which
-// are lower-trust and injected into every system prompt), not to facts the user
-// adds explicitly via the memory tool. It does not catch every malicious fact —
-// turning conversation into durable memory has an irreducible residual risk —
-// but it closes the concrete download-and-run class.
+// pipe-to-shell instruction. It is applied to every path that persists a
+// fact — auto-extraction at session end and agent-driven memory add/replace
+// (AddFact/ReplaceFact) — because facts are injected into every system
+// prompt. It does not catch every malicious fact — turning conversation
+// into durable memory has an irreducible residual risk — but it closes the
+// concrete download-and-run class.
 func FactLooksUnsafe(fact string) bool {
 	return remoteExecRe.MatchString(fact) || evalFetchRe.MatchString(fact)
 }

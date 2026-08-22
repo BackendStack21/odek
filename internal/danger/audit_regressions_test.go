@@ -274,3 +274,21 @@ func TestAudit_TrustShortcutExcludesToolBatch(t *testing.T) {
 		}
 	}
 }
+
+// TestRED_ClassifyPath_ProjectSandboxApprovalsAnchor pins a trust-anchor
+// gap: ~/.odek/project_sandbox_approvals.json stores per-project sandbox
+// approvals, so a file-tool write to it could let an agent pre-approve its
+// own project's sandbox overrides. It must classify as SystemWrite like the
+// other approval stores (mcp_approvals.json, mcp_tool_approvals.json).
+func TestRED_ClassifyPath_ProjectSandboxApprovalsAnchor(t *testing.T) {
+	home := "/home/audituser"
+	t.Setenv("HOME", home)
+	for _, p := range []string{
+		home + "/.odek/project_sandbox_approvals.json",
+		home + "/.ODEK/PROJECT_SANDBOX_APPROVALS.JSON",
+	} {
+		if got := ClassifyPath(p); got != SystemWrite {
+			t.Errorf("ClassifyPath(%q) = %s, want %s", p, got, SystemWrite)
+		}
+	}
+}

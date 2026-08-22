@@ -772,3 +772,34 @@ func TestSetNotifier_MultiNotifier(t *testing.T) {
 		t.Error("both notifiers should receive 'used' event")
 	}
 }
+
+// TestRED_SkillPatchRedactsSecrets pins a redaction gap: skill_patch wrote
+// the patched body with os.WriteFile directly, bypassing the internal/redact
+// pass that every other SKILL.md write path (WriteSkill) applies.
+func TestRED_SkillPatchRedactsSecrets(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "patch-secrets")
+	os.MkdirAll(skillDir, 0755)
+	content := "---\nname: patch-secrets\nodek:\n  auto_load: false\n---\n\n## Overview\nDeploy notes\n## Common Pitfalls\n- None"
+	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0644)
+
+	sm := NewSkillManager(dir, "")
+	tool := &SkillPatchTool{Manager: sm}
+
+	secret := "sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWX"
+	_, err := tool.Call(fmt.Sprintf(`{"name": "patch-secrets", "old_text": "Deploy notes", "new_text": %q}`, "key: "+secret))
+	if err != nil {
+		t.Fatalf("patch failed: %v", err)
+	}
+
+	disk, rerr := os.ReadFile(filepath.Join(skillDir, "SKILL.md"))
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if strings.Contains(string(disk), secret) {
+		t.Error("skill_patch left the secret unredacted on disk")
+	}
+	if !strings.Contains(string(disk), "[REDACTED]") {
+		t.Error("skill_patch did not replace the secret with [REDACTED]")
+	}
+}

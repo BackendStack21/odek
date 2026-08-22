@@ -13,6 +13,7 @@ import (
 
 	"github.com/BackendStack21/odek/internal/embedding"
 	"github.com/BackendStack21/odek/internal/guard"
+	"github.com/BackendStack21/odek/internal/redact"
 )
 
 // ── Agent Tools ────────────────────────────────────────────────────────
@@ -694,6 +695,13 @@ func (t *SkillPatchTool) Call(args string) (string, error) {
 	}
 
 	newBody := strings.Replace(body, input.OldText, input.NewText, 1) // n=1: unique match enforced above
+	// Same secret bar as WriteSkill: the patched body is persisted verbatim,
+	// so credentials must never survive the patch.
+	redacted := false
+	if redact.HasSecrets(newBody) {
+		newBody = redact.RedactSecrets(newBody)
+		redacted = true
+	}
 	if err := os.WriteFile(skill.Source.Path, []byte(newBody), 0644); err != nil {
 		return "", fmt.Errorf("skill_patch: write: %w", err)
 	}
@@ -710,7 +718,7 @@ func (t *SkillPatchTool) Call(args string) (string, error) {
 	patched.Provenance.Untrusted = true
 	patched.Provenance.NeedsReview = true
 	patched.Provenance.Sources = append(patched.Provenance.Sources, "skill_patch")
-	if t.Manager.scanSkill(context.Background(), patched) {
+	if t.Manager.scanSkill(context.Background(), patched) || redacted {
 		flagged = true
 	}
 	marshaled := MarshalSkill(*patched)
