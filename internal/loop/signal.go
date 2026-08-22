@@ -40,10 +40,18 @@ type SignalHandler func(event SignalEvent)
 
 // emitSignal fires the engine's signal handler if one is configured, stamping
 // the timestamp when the caller left it zero. Safe to call unconditionally.
+//
+// Invocations are serialized: parallel tool execution spawns one heartbeat
+// watchdog per running call, so two "tool_running" signals can fire from
+// different goroutines at once — and consumers (e.g. the terminal renderer)
+// are not guaranteed to be thread-safe. The contract only requires handlers
+// to be non-blocking, never concurrent-safe.
 func (e *Engine) emitSignal(ev SignalEvent) {
 	if e.signalHandler == nil {
 		return
 	}
+	e.signalMu.Lock()
+	defer e.signalMu.Unlock()
 	if ev.Timestamp.IsZero() {
 		ev.Timestamp = time.Now().UTC()
 	}

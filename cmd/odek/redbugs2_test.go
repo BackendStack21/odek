@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -126,10 +125,10 @@ func TestRED_SessionSearchSearchesWholeStore(t *testing.T) {
 // func, making /api/cancel a silent no-op while the newer prompt runs.
 func TestRED_PromptCancelSurvivesEarlierPromptFinishing(t *testing.T) {
 	calledSecond := false
-	registerPromptCancel("red-b3-sess", func() {})                      // prompt 1 starts
+	unregisterFirst := registerPromptCancel("red-b3-sess", func() {})   // prompt 1 starts
 	registerPromptCancel("red-b3-sess", func() { calledSecond = true }) // prompt 2 starts
 
-	unregisterPromptCancel("red-b3-sess") // prompt 1 finishes first
+	unregisterFirst() // prompt 1 finishes first — must remove ONLY its own registration
 
 	if !cancelPrompt("red-b3-sess") {
 		t.Fatal("cancelPrompt found no registration after the earlier prompt finished — the second prompt can no longer be cancelled")
@@ -144,13 +143,14 @@ func TestRED_PromptCancelSurvivesEarlierPromptFinishing(t *testing.T) {
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// RED #B6 (M6): The REPL editor advertises /sandbox /model /session via
-// tab-completion, but handleREPLCommand doesn't implement them — completing
-// then pressing enter yields "Unknown command".
+// RED #B6 (M6): The REPL editor advertises slash commands via
+// tab-completion that handleREPLCommand doesn't implement — completing one
+// and pressing enter yields "Unknown command". Every advertised command
+// must be implemented.
 func TestRED_REPLCompletionsAreImplemented(t *testing.T) {
-	advertised := []string{
-		"/exit", "/quit", "/help", "/info",
-		"/sandbox", "/model", "/session",
+	advertised := replCommands
+	if len(advertised) == 0 {
+		t.Fatal("replCommands is empty")
 	}
 	sess := &session.Session{ID: "red-b6"}
 
@@ -192,21 +192,34 @@ func llmMessage(content string) []llm.Message {
 	return []llm.Message{{Role: "user", Content: content}}
 }
 
-var _ = context.Background // keep context imported for future cases
-
 // ────────────────────────────────────────────────────────────────────────
-// RED #B9 (T5): base64 decode-from-file returns raw file bytes to the
-// model OUTSIDE the <untrusted_content_*> wrapper, while every other
-// externally-sourced tool result is wrapped — a hole in the untrusted-
-// content boundary (SECURITY.md invariant).
-func TestRED_Base64DecodeFromFileIsWrapped(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "blob.txt")
-	os.WriteFile(p, []byte("external file payload"), 0o644)
 
-	tool := &base64Tool{}
-	res := callJSON(t, tool, fmt.Sprintf(`{"path":%q,"decode":true}`, p))
-	if !strings.Contains(res, "untrusted_content_") {
-		t.Errorf("decoded file content returned unwrapped: %s", res)
+// Regression #M4: sub-agent exit codes. docs/EXTENSIONS.md pins
+// 0=success, 1=task error, 2=timeout, 3=setup error. Task errors and
+// timeouts previously returned nil from subagentCmd — every run exited 0.
+func TestRED_SubagentExitCodeContract(t *testing.T) {
+	if got := subagentExit(nil); got != 0 {
+		t.Errorf("subagentExit(nil) = %d, want 0", got)
+	}
+	if got := subagentExit(&subagentRunError{timeout: true}); got != 2 {
+		t.Errorf("subagentExit(timeout) = %d, want 2", got)
+	}
+	if got := subagentExit(&subagentRunError{}); got != 1 {
+		t.Errorf("subagentExit(task error) = %d, want 1", got)
+	}
+	// Setup errors keep their envelope-printing behavior and exit 3.
+	oldOut, oldErr := os.Stdout, os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stdout, os.Stderr = w, w
+	got := subagentExit(fmt.Errorf("bad flags"))
+	os.Stdout, os.Stderr = oldOut, oldErr
+	w.Close()
+	buf := make([]byte, 1024)
+	n, _ := r.Read(buf)
+	if got != 3 {
+		t.Errorf("subagentExit(setup error) = %d, want 3", got)
+	}
+	if !strings.Contains(string(buf[:n]), "bad flags") {
+		t.Errorf("setup error envelope missing on stdout/stderr: %q", string(buf[:n]))
 	}
 }

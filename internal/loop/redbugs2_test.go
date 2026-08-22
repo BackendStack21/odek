@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -74,35 +75,53 @@ func TestRED_HeartbeatSignalHandlerNotInvokedConcurrently(t *testing.T) {
 	toolHeartbeatInterval = 15 * time.Millisecond
 	t.Cleanup(func() { toolHeartbeatInterval = oldInterval })
 
-	calls := 0 // deliberately unsynchronized: race canary
+	var inHandler, maxConcurrent, total atomic.Int32
+	detect := func() {
+		cur := inHandler.Add(1)
+		defer inHandler.Add(-1)
+		for {
+			max := maxConcurrent.Load()
+			if cur <= max || maxConcurrent.CompareAndSwap(max, cur) {
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond) // widen the overlap window
+		total.Add(1)
+	}
 
+	llmCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{
-			"choices":[{
-				"message":{
-					"content":"checking",
-					"tool_calls":[
-						{"id":"c1","function":{"name":"slow","arguments":"{}"}},
-						{"id":"c2","function":{"name":"slow","arguments":"{}"}}
-					]
-				}
-			}]
-		}`)
+		llmCalls++
+		if llmCalls == 1 {
+			fmt.Fprint(w, `{
+				"choices":[{
+					"message":{
+						"content":"checking",
+						"tool_calls":[
+							{"id":"c1","function":{"name":"slow","arguments":"{}"}},
+							{"id":"c2","function":{"name":"slow","arguments":"{}"}}
+						]
+					}
+				}]
+			}`)
+			return
+		}
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"done"}}]}`)
 	}))
 	defer server.Close()
 
 	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
 	engine := New(client, tool.NewRegistry([]tool.Tool{&slowTool{dur: 120 * time.Millisecond}}), 10, "", nil, 0)
 	engine.SetMaxToolParallel(2)
-	engine.SetSignalHandler(func(ev SignalEvent) {
-		time.Sleep(10 * time.Millisecond) // widen the overlap window
-		calls++
-	})
+	engine.SetSignalHandler(func(ev SignalEvent) { detect() })
 
 	if _, err := engine.Run(context.Background(), "run slow tools"); err != nil {
 		t.Fatalf("Run error: %v", err)
 	}
-	if calls < 1 {
+	if total.Load() < 1 {
 		t.Error("expected at least one tool_running heartbeat")
+	}
+	if maxConcurrent.Load() > 1 {
+		t.Errorf("SignalHandler invoked concurrently by parallel heartbeat watchdogs (max overlap: %d)", maxConcurrent.Load())
 	}
 }

@@ -346,13 +346,19 @@ func FirstSentence(text string) string {
 	text = strings.TrimPrefix(text, "I will")
 	text = strings.TrimSpace(text)
 
-	// Try standard sentence boundaries
+	// Find the EARLIEST sentence boundary across all separators — iterating
+	// separator types in order would let a ". " deeper in the text win over
+	// an earlier "! "/"? " boundary and return the second sentence.
+	bestIdx := -1
 	for _, sep := range []string{". ", "! ", "? ", ".\n", "!\n", "?\n", "...\n"} {
-		if idx := strings.Index(text, sep); idx > 0 {
-			sentence := strings.TrimSpace(text[:idx+1])
-			if sentence != "" {
-				return truncateWords(sentence, 20)
-			}
+		if idx := strings.Index(text, sep); idx > 0 && (bestIdx < 0 || idx < bestIdx) {
+			bestIdx = idx
+		}
+	}
+	if bestIdx > 0 {
+		sentence := strings.TrimSpace(text[:bestIdx+1])
+		if sentence != "" {
+			return truncateWords(sentence, 20)
 		}
 	}
 

@@ -104,23 +104,45 @@ var wsUpgradeLimiter = newRateLimiter(30, time.Minute)
 // WebSocket handlers and the HTTP /api/cancel endpoint can access it safely.
 // Using session IDs as keys scopes cancellation to the caller's session,
 // preventing one connection from cancelling another connection's prompt.
+// promptCancelEntry pairs a cancel func with a generation counter so an
+// earlier prompt's unregister cannot delete a newer prompt's registration.
+type promptCancelEntry struct {
+	cancel context.CancelFunc
+	gen    int64
+}
+
 var (
-	promptCancelMu sync.Mutex
-	promptCancels  = map[string]context.CancelFunc{}
+	promptCancelMu   sync.Mutex
+	promptCancels    = map[string]*promptCancelEntry{}
+	promptCancelGen  int64
 )
 
 // registerPromptCancel records cancel as the active cancel function for
-// sessionID. It must be unregistered when the prompt completes.
-func registerPromptCancel(sessionID string, cancel context.CancelFunc) {
+// sessionID. The returned unregister func removes it ONLY if it is still
+// the live registration — when two prompts run on the same session, the
+// first finisher must not strip the second's cancel func.
+func registerPromptCancel(sessionID string, cancel context.CancelFunc) (unregister func()) {
 	if sessionID == "" || cancel == nil {
-		return
+		return func() {}
 	}
+	gen := atomic.AddInt64(&promptCancelGen, 1)
 	promptCancelMu.Lock()
-	promptCancels[sessionID] = cancel
+	promptCancels[sessionID] = &promptCancelEntry{cancel: cancel, gen: gen}
 	promptCancelMu.Unlock()
+
+	return func() {
+		promptCancelMu.Lock()
+		if cur, ok := promptCancels[sessionID]; ok && cur.gen == gen {
+			delete(promptCancels, sessionID)
+		}
+		promptCancelMu.Unlock()
+	}
 }
 
-// unregisterPromptCancel removes any cancel function registered for sessionID.
+// unregisterPromptCancel removes whatever cancel function is currently
+// registered for sessionID. Prefer the unregister closure returned by
+// registerPromptCancel; this variant is kept for callers that don't track
+// their registration generation.
 func unregisterPromptCancel(sessionID string) {
 	if sessionID == "" {
 		return
@@ -137,9 +159,16 @@ func cancelPrompt(sessionID string) bool {
 		return false
 	}
 	promptCancelMu.Lock()
-	cancel, ok := promptCancels[sessionID]
+	entry, ok := promptCancels[sessionID]
 	promptCancelMu.Unlock()
 	if !ok {
+		return false
+	}
+	var cancel context.CancelFunc
+	if entry != nil {
+		cancel = entry.cancel
+	}
+	if cancel == nil {
 		return false
 	}
 	cancel()
@@ -1468,10 +1497,11 @@ func handlePrompt(
 		authToken = sess.AuthToken
 	}
 	// Register the cancel function for this session so the HTTP endpoint can
-	// abort this specific prompt. Unregister as soon as the run finishes.
+	// abort this specific prompt. The generation-guarded unregister only
+	// removes OUR registration — a concurrent newer prompt on the same
+	// session keeps its own cancel func when we finish first.
 	if sid != "" && promptCancel != nil {
-		registerPromptCancel(sid, promptCancel)
-		defer unregisterPromptCancel(sid)
+		defer registerPromptCancel(sid, promptCancel)()
 	}
 	send(map[string]any{"type": "session", "session_id": sid, "auth_token": authToken, "model": resolved.Model, "sandbox": resolved.Sandbox})
 

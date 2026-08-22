@@ -109,9 +109,23 @@ func handleSessionListPaged(store *session.Store) http.HandlerFunc {
 			offset = 0
 		}
 
-		// Fetch enough to cover the requested window before slicing.
-		sessions, err := store.List(limit + offset)
-		if err != nil {
+		// Fetch enough to cover the requested window before slicing. With a
+		// search query the window cannot be known up front: matches may sit
+		// arbitrarily deep in recency order, so scan the whole store and
+		// filter before paginating (List is an index read — cheap).
+		var sessions []session.Session
+		if q != "" {
+			all, err := store.List(0)
+			if err == nil {
+				sessions = all
+			}
+		} else {
+			s, err := store.List(limit + offset)
+			if err == nil {
+				sessions = s
+			}
+		}
+		if sessions == nil {
 			sessions = []session.Session{}
 		}
 
