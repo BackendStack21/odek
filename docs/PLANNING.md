@@ -333,6 +333,92 @@ One sentence in the compiled-in default system prompt (wording pinned by
 
 ---
 
+## Observability
+
+Two additive `odek.event/v1` types expose plan activity on the runtime event
+stream (`Config.EventHandler`, `odek run --events-jsonl`, `/api/events`):
+
+| Event | Fired when | `data` fields |
+|-------|------------|---------------|
+| `plan_created` | `create` — including wholesale replace over an existing plan | `steps`, `version` |
+| `plan_updated` | every other version-bumping mutation (`update`, `complete`) | `steps`, `done`, `in_progress`, `blocked`, `pending`, `version` |
+
+Emission: `PlanStore.SetOnChange` wires the engine's emitter at
+`SetPlanStore` time; the store fires exactly once per effective mutation
+under its mutex, so event order always matches version order even inside
+parallel tool batches. Idempotent no-ops, the read-only `get` verb, and
+resume-path `Restore`/`Reset` never fire. Payloads carry aggregate
+counts and the version ONLY — never step titles or notes (the same
+minimality invariant as the args-digest rule on tool-call events). A
+note-only update bumps the version and therefore emits `plan_updated` with
+unchanged counts — deliberate, so the version stream stays gapless for
+consumers correlating versions. There is no `iteration` field: mutations
+fire inside parallel tool goroutines with no iteration context; consumers
+correlate via the surrounding `tool_call_started`/`tool_call_completed`
+pair for the `plan` tool.
+
+---
+
+## Surface Integration
+
+### REST — `GET /api/sessions/{id}/plan`
+
+Read-only structured plan view on `odek serve`, reached through
+`handleSessionByID`, so rate limiting and session-token auth match the
+sibling session endpoints exactly. The server parses the newest parseable
+`[Current plan:` system message with the shared extractor `loop.ExtractPlan`
+— the same strict parser the restart-resume path uses — and never mutates
+anything. One deliberate divergence: extraction validates against the
+absolute step ceiling (50), not the operator's current `max_steps` — an old
+over-cap plan may still display on surfaces even when resume would drop it.
+
+```jsonc
+{
+  "session_id": "2026…", "version": 3, "found": true,
+  "steps": [
+    { "id": "s1", "title": "Scaffold command skeleton", "status": "done" },
+    { "id": "s2", "title": "Wire flag parsing", "status": "in_progress", "note": "…" }
+  ]
+}
+```
+
+- `found:false` (still HTTP 200) when the transcript carries no parseable
+  plan message; `version`/`steps` are then zero/empty. A collapsed all-done
+  plan parses to a version with no rows — `steps` is `[]`, not null.
+- **404** for an unknown session id; `note` is omitted when empty.
+- GET-only by contract: a non-GET request to `…/plan` cannot fall through
+  to the base-session mutators (POST would otherwise rename the session
+  through the plan URL).
+
+### Telegram — `/plan_status`
+
+Renders the current chat-scoped session's structured plan: a header line
+(`📋 Plan — vN · X/Y done[ · Z blocked]`) plus one line per step with a
+status glyph (✅ done, 🔄 in progress, ⬜ pending, ⛔ blocked), id, title,
+and optional truncated note. Output is bounded at 3800 chars (Telegram caps
+one message at 4096); overflow drops whole step lines behind an explicit
+`_N more step(s) omitted_` trailer instead of cutting mid-line. Absent or
+unparseable plans reply "No active plan in this session." This reads the
+**structured** loop plan (engine `plan` tool state) and coexists with the
+markdown-file `/plan` family (`~/.odek/plans/`) — different concepts,
+uncoupled by design.
+
+### WebUI — plan panel
+
+A `plan` tab in the management drawer (Alt+M) shows the active session's
+structured plan: a summary header plus glyph/id/title/note rows mirroring
+the Telegram renderer. Strictly read-only — no mutation controls — and
+model-derived step text reaches the DOM exclusively via `textContent`. The
+panel polls `GET /api/sessions/{id}/plan` every 5 s while visible (drawer
+open + plan tab active + document visible), refreshes instantly on tab
+activation, session switch, and `visibilitychange`, and stops otherwise.
+Polling — not WebSocket push — because runtime events currently land only
+in the `/api/events` ring; nothing relays them over WS today. Polling is
+the documented transport until such a relay lands; responses are tiny, so
+the cadence is cheap.
+
+---
+
 ## Security Model
 
 | Concern | Mechanism |
@@ -391,6 +477,12 @@ system-prompt pin (`TestDefaultSystem_MentionsPlanTool`).
 Parallel-batch mutation is mutex-serialized in `PlanStore` and covered by the
 package's `-race` runs (`go test -race ./internal/loop/`).
 
+Surfaces and events — `internal/loop/plan_events_test.go` (change-callback
+semantics, payload minimality, `ExtractPlan`), `cmd/odek/serve_plan_test.go`
+(endpoint shape, `found:false`, 404, POST-is-read-only),
+`cmd/odek/telegram_plan_status_test.go`, and the WebUI
+`cmd/odek/ui/js/plan.test.js` (panel rendering + polling lifecycle).
+
 ---
 
 ## Status & Roadmap
@@ -410,25 +502,35 @@ package's `-race` runs (`go test -race ./internal/loop/`).
   `ODEK_PLANNING`, `--planning`/`--no-planning` on run/repl/serve; system-prompt
   guidance sentence; test coverage as listed above.
 
+### Shipped (Phase 2/3 — events & surfaces)
+
+- `odek.event/v1` types `plan_created` / `plan_updated` — once per effective
+  version-bumping mutation via `PlanStore.SetOnChange` → the engine emit
+  path; counts + version only, never titles/notes (see Observability);
+  `docs/EXTENSIONS.md` rows added.
+- Exported extractor `loop.ExtractPlan([]llm.Message) (*PlanState, bool)` —
+  newest-parseable-wins, fail-closed corrupt-drop, unwraps the nonce'd
+  wrapper; shared by REST and Telegram.
+- Read-only REST view `GET /api/sessions/{id}/plan` (`found:false` when
+  absent; GET-only; see Surface Integration).
+- Telegram `/plan_status` — structured plan for the chat-scoped session,
+  coexisting with the markdown-file `/plan` family.
+- WebUI plan panel — session-drawer tab polling `GET …/plan` every 5 s while
+  visible.
+- Emoji mapping `plan` → 📋 in `internal/render/render.go` and the WebUI
+  mirror `cmd/odek/ui/js/render.js`; the vestigial `todo` special-case was
+  retired in both (falls through to the default 🔧).
+
 ### Planned (not yet implemented)
 
-**Phase 2 — loop integrations:** plan-aware stall-recovery hint suffix naming
+**Loop integrations:** plan-aware stall-recovery hint suffix naming
 the current step and next pending step; blocked-step streak trigger
 (consecutive `blocked` transitions fire a decompose-or-reorder hint and a
 `plan_blocked` signal); remaining-steps blocks appended locally on
-iteration-budget and execution-budget exhaustion paths; `odek.event/v1`
-event types `plan_created` / `plan_updated` (counts and version only, never
-titles/notes) with `docs/EXTENSIONS.md` rows.
+iteration-budget and execution-budget exhaustion paths.
 
-**Phase 3 — surfaces:** emoji mapping `plan` → 📋 in
-`internal/render/render.go` and the WebUI mirror `cmd/odek/ui/js/render.js`,
-retiring the vestigial `todo` arms; read-only REST view
-`GET /api/sessions/{id}/plan` (parses the persisted message with the same
-strict resume parser; `found:false` when absent); WebUI plan panel fed by the
-endpoint plus WS-relayed plan events.
-
-**Phase 4 — telemetry:** adoption/overhead aggregation surfaced via
-`/api/usage`; Telegram `/plan_status` bridge decision on evidence.
+**Telemetry:** adoption/overhead aggregation surfaced via
+`/api/usage`.
 
 ### Non-goals
 

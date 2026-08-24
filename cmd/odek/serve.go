@@ -2127,6 +2127,16 @@ func handleSessionByID(store *session.Store, trustedProxies []string, wsToken st
 			id = strings.TrimSuffix(id, "/export")
 			exportFormat = r.URL.Query().Get("format")
 		}
+		// /api/sessions/{id}/plan — read-only structured plan view. The
+		// suffix is stripped for GET only: a non-GET request must not fall
+		// through to the base-session handlers (POST would otherwise rename
+		// the session through the plan URL). The plan surface is strictly
+		// read-only.
+		planView := false
+		if r.Method == http.MethodGet && strings.HasSuffix(id, "/plan") {
+			id = strings.TrimSuffix(id, "/plan")
+			planView = true
+		}
 		if id == "" {
 			http.Error(w, "missing session id", http.StatusBadRequest)
 			return
@@ -2164,6 +2174,10 @@ func handleSessionByID(store *session.Store, trustedProxies []string, wsToken st
 			}
 			if strings.HasSuffix(r.URL.Path, "/export") {
 				handleSessionExport(sess, exportFormat, w)
+				return
+			}
+			if planView {
+				handleSessionPlan(sess, w)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")

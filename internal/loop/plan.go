@@ -63,6 +63,21 @@ type PlanState struct {
 	Steps   []PlanStep `json:"steps"`
 }
 
+// PlanChange describes one effective plan mutation for the change
+// notification path (see PlanStore.SetOnChange). It carries aggregate
+// counts and the new version ONLY — never step titles or notes — so it can
+// be mapped straight onto the minimality-constrained odek.event/v1 stream
+// (plan_created / plan_updated).
+type PlanChange struct {
+	Created    bool // true when the mutation was a create verb (wholesale replace)
+	Steps      int  // total step count after the mutation
+	Done       int
+	InProgress int
+	Blocked    int
+	Pending    int
+	Version    int // store version after the mutation
+}
+
 // Structural caps enforced by validation (docs/PLANNING.md — Fail-Closed
 // Validation). Sizes bound the rendered message so a hostile or careless
 // plan cannot blow up the prompt.
@@ -90,6 +105,7 @@ type PlanStore struct {
 	plan           *PlanState // nil until first plan(create)
 	maxSteps       int
 	maxRenderChars int
+	onChange       func(PlanChange) // optional; fired under mu after each effective mutation
 }
 
 // NewPlanStore creates a store with the given resolved caps. Degenerate
@@ -130,6 +146,23 @@ func (s *PlanStore) Reset() {
 	s.plan = nil
 }
 
+// SetOnChange registers an optional callback fired exactly once per
+// effective mutation (create, or update/complete that bumped the version).
+// Idempotent no-ops and the read-only get verb never fire it; Restore and
+// Reset are resume-path bookkeeping, not model actions, and never fire it.
+//
+// The engine registers its event emitter here at SetPlanStore time — the
+// store knows WHEN a mutation happened, the engine owns HOW it reaches the
+// odek.event/v1 stream. The callback is invoked while the store mutex is
+// held so notification order always matches mutation (== version) order even
+// when parallel tool batches race: fn must therefore be non-blocking and
+// must not call back into the PlanStore.
+func (s *PlanStore) SetOnChange(fn func(PlanChange)) {
+	s.mu.Lock()
+	s.onChange = fn
+	s.mu.Unlock()
+}
+
 // ── Tool-call envelope ────────────────────────────────────────────────
 
 type planStepArg struct {
@@ -153,6 +186,8 @@ type planArgs struct {
 
 // Execute runs one plan tool call (the full argument envelope) and returns
 // the model-facing result. Serialized internally; safe inside parallel batches.
+// Every effective mutation fires the OnChange callback exactly once per call
+// — never per-step within an atomic batch.
 func (s *PlanStore) Execute(argsJSON string) (string, error) {
 	var args planArgs
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
@@ -160,18 +195,58 @@ func (s *PlanStore) Execute(argsJSON string) (string, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	prevVersion := 0
+	if s.plan != nil {
+		prevVersion = s.plan.Version
+	}
+	var res string
+	var err error
 	switch args.Verb {
 	case "create":
-		return s.create(args.Steps)
+		res, err = s.create(args.Steps)
 	case "update":
-		return s.update(args.Updates)
+		res, err = s.update(args.Updates)
 	case "complete":
-		return s.complete(args.StepID)
+		res, err = s.complete(args.StepID)
 	case "get":
 		return s.get()
 	default:
 		return "", fmt.Errorf("plan: unknown verb %q (want create/update/complete/get)", args.Verb)
 	}
+	// A version bump is exactly the "effective mutation" contract: no-op
+	// update/complete calls return early without reassigning s.plan, so they
+	// stay silent. create always bumps (fresh state), so it maps onto
+	// plan_created; every other bumping mutation is plan_updated.
+	if err == nil && s.plan != nil && s.plan.Version != prevVersion {
+		s.notifyLocked(args.Verb == "create")
+	}
+	return res, err
+}
+
+// notifyLocked snapshots the post-mutation state into a PlanChange and fires
+// the change callback. Caller holds s.mu (see SetOnChange for the contract).
+func (s *PlanStore) notifyLocked(created bool) {
+	if s.onChange == nil || s.plan == nil {
+		return
+	}
+	ch := PlanChange{
+		Created: created,
+		Steps:   len(s.plan.Steps),
+		Version: s.plan.Version,
+	}
+	for _, st := range s.plan.Steps {
+		switch st.Status {
+		case StepDone:
+			ch.Done++
+		case StepInProgress:
+			ch.InProgress++
+		case StepBlocked:
+			ch.Blocked++
+		default:
+			ch.Pending++
+		}
+	}
+	s.onChange(ch)
 }
 
 // nextVersion returns the version the next successful mutation gets:
@@ -669,6 +744,46 @@ func parsePlanNumber(s string) (int, error) {
 		n = n*10 + int(c-'0')
 	}
 	return n, nil
+}
+
+// ── Shared extraction (serve / Telegram surfaces) ─────────────────────
+
+// extractPlanStepCap bounds step-count validation for read-only extraction.
+// It mirrors the config layer's max_steps ceiling (internal/config
+// planningMaxSteps = 50): every persisted render was validated against a cap
+// ≤ this value at creation time, so nothing legitimately persisted can
+// exceed it. internal/loop must not import internal/config — same local-
+// mirror precedent as defaultPlanMaxSteps above.
+const extractPlanStepCap = 50
+
+// ExtractPlan parses the newest parseable plan message out of a message
+// history. It is the shared read-only surface for `odek serve`'s
+// GET /api/sessions/{id}/plan endpoint and the Telegram /plan_status command,
+// so the parsing logic stays single-sourced with the engine's resume path:
+// recognition requires role system + the "[Current plan:" prefix
+// (isPlanMessage), each candidate goes through the same strict total parser
+// (parsePlanState), corrupt messages are skipped fail-closed (a stale or
+// mangled plan must never render as authoritative), and the newest
+// parseable message wins. ok=false when no parseable plan exists.
+//
+// Unlike syncPlanFromMessages this never mutates the input history and has
+// no engine state to seed; it is safe to call on any transcript snapshot.
+func ExtractPlan(messages []llm.Message) (*PlanState, bool) {
+	// Backward scan with early exit: the first parseable plan message from
+	// the end IS the newest parseable one — identical outcome to the forward
+	// scan in syncPlanFromMessages without walking the whole transcript.
+	for i := len(messages) - 1; i >= 0; i-- {
+		m := messages[i]
+		if !isPlanMessage(m) {
+			continue
+		}
+		state, err := parsePlanState(m.Content, extractPlanStepCap)
+		if err != nil {
+			continue // corrupt plan messages are dropped, never authoritative
+		}
+		return &state, true
+	}
+	return nil, false
 }
 
 // ── Tool ──────────────────────────────────────────────────────────────

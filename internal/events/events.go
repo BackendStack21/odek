@@ -41,6 +41,8 @@ const (
 	TypeBudgetExceeded     = "budget_exceeded"
 	TypeRunCompleted       = "run_completed"
 	TypeRunFailed          = "run_failed"
+	TypePlanCreated        = "plan_created"
+	TypePlanUpdated        = "plan_updated"
 )
 
 // Budget limit names carried in budget_exceeded events (data.limit_name).

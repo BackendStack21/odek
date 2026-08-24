@@ -513,8 +513,53 @@ func (e *Engine) SetCompaction(enabled bool) { e.compaction = enabled }
 // SetPlanStore wires the shared plan state (internal/loop/plan.go). The CLI
 // layer creates one store and hands it to both the plan tool and the engine;
 // nil (the zero behavior) disables planning end-to-end — no sync, no render,
-// no protected-message logic.
-func (e *Engine) SetPlanStore(s *PlanStore) { e.planStore = s }
+// no protected-message logic, and no plan events.
+//
+// Wiring the store here also registers the engine's event emitter as the
+// store's change callback: the store knows when an effective mutation
+// happened, the engine owns how that reaches the odek.event/v1 stream (same
+// emitEvent path as iteration_completed). Replacing an already-wired store
+// detaches the old one so no stale notification path survives.
+func (e *Engine) SetPlanStore(s *PlanStore) {
+	if e.planStore != nil && e.planStore != s {
+		e.planStore.SetOnChange(nil)
+	}
+	e.planStore = s
+	if s != nil {
+		s.SetOnChange(e.emitPlanChangeEvent)
+	}
+}
+
+// emitPlanChangeEvent maps one PlanStore mutation onto the structured
+// runtime event stream. create → plan_created; every other version-bumping
+// mutation → plan_updated. Payloads carry counts and version ONLY — never
+// step titles or notes (the event stream's minimality invariant, mirroring
+// the args-digest rule on tool events). Iteration is deliberately unset:
+// mutations fire inside parallel tool goroutines with no iteration context;
+// consumers correlate via the surrounding tool_call_started/completed pair.
+func (e *Engine) emitPlanChangeEvent(ch PlanChange) {
+	if ch.Created {
+		e.emitEvent(events.Event{
+			Type: events.TypePlanCreated,
+			Data: map[string]any{
+				"steps":   ch.Steps,
+				"version": ch.Version,
+			},
+		})
+		return
+	}
+	e.emitEvent(events.Event{
+		Type: events.TypePlanUpdated,
+		Data: map[string]any{
+			"steps":       ch.Steps,
+			"done":        ch.Done,
+			"in_progress": ch.InProgress,
+			"blocked":     ch.Blocked,
+			"pending":     ch.Pending,
+			"version":     ch.Version,
+		},
+	})
+}
 
 // SetSideCallTimeout sets the bound for the compaction digest and
 // progress-summary side calls. 0 or negative restores the default (30s).

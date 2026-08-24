@@ -7,6 +7,10 @@ import {
   getSkills, getTools,
   listRuns, cancelRun, answerRunApproval, getEvents,
 } from './api.js';
+// Plan panel lives in its own module (session-switch hooks from sessions.js
+// need it without dragging the whole drawer along); its lifecycle is wired
+// into the tab dispatch here like every other panel.
+import { refreshPlanPanel, startPlanPolling, stopPlanPolling } from './plan.js';
 
 const drawer = document.getElementById('panels');
 const overlay = document.getElementById('panels-overlay');
@@ -16,19 +20,26 @@ export function togglePanels(force) {
   const want = force != null ? force : !drawer.classList.contains('active');
   drawer.classList.toggle('active', want);
   overlay.classList.toggle('active', want);
-  if (want) refreshActivePanel();
-  else stopRunPolling();
+  if (want) {
+    refreshActivePanel();
+  } else {
+    stopRunPolling();
+    stopPlanPolling();
+  }
 }
 
 function refreshActivePanel() {
   const tab = drawer.querySelector('.ptab.active');
   if (!tab) return;
   const name = tab.dataset.tab;
+  // The plan panel polls while visible — switching to any other tab stops it.
+  if (name !== 'plan') stopPlanPolling();
   if (name === 'memory') loadMemory();
   else if (name === 'skills') loadSkills();
   else if (name === 'tools') loadTools();
   else if (name === 'runs') loadRuns();
   else if (name === 'events') loadEvents();
+  else if (name === 'plan') { refreshPlanPanel(); startPlanPolling(); }
 }
 
 drawer.querySelectorAll('.ptab').forEach(btn => {

@@ -8,6 +8,7 @@ import { escapeHtml, escapeAttr, relativeTime, formatNum, showToast, forceScroll
 import { resetTurnState, hideLoading, renderSessionHistory } from './render.js';
 import { clearApprovals } from './approvals.js';
 import { metricsFromSession, resetMetrics } from './metrics.js';
+import { resetPlanPanel } from './plan.js';
 
 const PAGE_SIZE = 50;
 const moreBtn = document.getElementById('sessions-more');
@@ -182,6 +183,8 @@ syncSearchClear();
 export function newSession() {
   S.sessionId = null;
   resetMetrics();
+  // The plan belongs to the previous session — drop it from the panel.
+  resetPlanPanel();
 
   // Reset all streaming + tool state.
   resetTurnState();
@@ -222,6 +225,9 @@ export async function loadAndRenderSession(sid) {
     // seed the metrics cluster from the stored totals.
     S.sessionId = sid;
     metricsFromSession(sess);
+    // Swap the plan panel over to the newly loaded session (clears the
+    // previous session's rows synchronously, then refetches if visible).
+    resetPlanPanel();
 
     // Ask the server to adopt the session on this connection (restores the
     // memory buffer into the agent). Non-fatal when the socket is closed.
