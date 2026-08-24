@@ -15,6 +15,7 @@ package main
 // inverted so a regression that re-opens the gap is caught.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -27,8 +28,11 @@ import (
 
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/redact"
 	"github.com/BackendStack21/odek/internal/skills"
+	"github.com/BackendStack21/odek/internal/tool"
 )
 
 // ── Claim 1 (partial fix: warn-on-disabled) ────────────────────────────
@@ -321,5 +325,205 @@ func TestReport_ProjectSandboxRequiresApproval(t *testing.T) {
 	t.Setenv("ODEK_APPROVE_PROJECT_SANDBOX", "1")
 	if err := approveProjectSandboxWithTTY(resolved, strings.NewReader(""), &strings.Builder{}, false); err != nil {
 		t.Fatalf("env bypass should approve, got: %v", err)
+	}
+}
+
+// ── Planning system (docs/PLANNING.md) ────────────────────────────────
+
+// batchCardApprover captures every batch-gate PromptCommand call so tests
+// can assert exactly what the approval UI surfaced.
+type batchCardApprover struct {
+	prompts []string // formatted "class|cmd" for each PromptCommand call
+}
+
+func (a *batchCardApprover) PromptCommand(cls danger.RiskClass, cmd, description string) error {
+	a.prompts = append(a.prompts, string(cls)+"|"+cmd)
+	return nil // approve everything
+}
+
+func (a *batchCardApprover) PromptOperation(op danger.ToolOperation) error {
+	return a.PromptCommand(op.Risk, op.Resource, "")
+}
+
+// TestReport_PlanToolClassifiedSafe pins that plan calls never surface in
+// the approval UI. classifyToolCall("plan", …) returns an empty class and
+// resource (explicit `case "plan"` in internal/loop), so a plan call inside
+// a parallel batch is excluded from the batch card and never prompts —
+// individually it has no approver at all. The direct return-value pin lives
+// next to the classifier (internal/loop/plan_test.go, same package); this
+// test pins the observable security property end-to-end.
+func TestReport_PlanToolClassifiedSafe(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			// Batch: one plan call + one classifiable file path. Only the
+			// read_file call may appear in the approval card.
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"","tool_calls":[
+				{"id":"c1","function":{"name":"plan","arguments":"{\"verb\":\"create\",\"steps\":[{\"id\":\"s1\",\"title\":\"Secret step title\"}]}"}},
+				{"id":"c2","function":{"name":"read_file","arguments":"{\"path\":\"/tmp/odek-batch-check.txt\"}"}}
+			]}}]}`)
+			return
+		}
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"batch done"}}]}`)
+	}))
+	defer server.Close()
+
+	store := loop.NewPlanStore(12, 2000)
+	registry := tool.NewRegistry([]tool.Tool{
+		loop.NewPlanTool(store),
+		&fakeReadFileTool{},
+	})
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	engine := loop.New(client, registry, 10, "", nil, 0)
+	engine.SetPlanStore(store)
+	approver := &batchCardApprover{}
+	engine.SetApprover(approver)
+
+	_, _, err := engine.RunWithMessages(context.Background(), []llm.Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "work"},
+	})
+	if err != nil {
+		t.Fatalf("RunWithMessages: %v", err)
+	}
+
+	if len(approver.prompts) != 1 {
+		t.Fatalf("approval prompts = %d (%v), want exactly 1 for the batch card", len(approver.prompts), approver.prompts)
+	}
+	if strings.Contains(approver.prompts[0], "plan") || strings.Contains(approver.prompts[0], "Secret step title") {
+		t.Errorf("batch card leaked the plan call: %q", approver.prompts[0])
+	}
+	state, ok := store.Snapshot()
+	if !ok || len(state.Steps) != 1 {
+		t.Errorf("plan call did not execute: ok=%v state=%+v", ok, state)
+	}
+}
+
+// fakeReadFileTool is name-classifiable by classifyToolCall ("read_file" +
+// JSON path arg) but performs no I/O — used to force a real batch prompt.
+type fakeReadFileTool struct{}
+
+func (f *fakeReadFileTool) Name() string        { return "read_file" }
+func (f *fakeReadFileTool) Description() string { return "fake" }
+func (f *fakeReadFileTool) Schema() any         { return map[string]any{"type": "object"} }
+func (f *fakeReadFileTool) Call(args string) (string, error) {
+	return `{"content":"fake"}`, nil
+}
+
+// TestReport_PlanMessageWrappedUntrusted pins that the protected plan
+// message body crosses the nonce'd untrusted-content boundary when a
+// wrapper is configured — plan content is model-generated but derived from
+// untrusted inputs, matching the compaction-digest precedent.
+func TestReport_PlanMessageWrappedUntrusted(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"","tool_calls":[{"id":"c1","function":{"name":"plan","arguments":"{\"verb\":\"create\",\"steps\":[{\"id\":\"s1\",\"title\":\"Step one\"}]}"}}]}}]}`)
+			return
+		}
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"done"}}]}`)
+	}))
+	defer server.Close()
+
+	store := loop.NewPlanStore(12, 2000)
+	registry := tool.NewRegistry([]tool.Tool{loop.NewPlanTool(store)})
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	engine := loop.New(client, registry, 10, "", nil, 0)
+	engine.SetPlanStore(store)
+	engine.SetUntrustedWrapper(func(source, content string) string {
+		return "<untrusted source=" + source + ">" + content + "</untrusted>"
+	})
+
+	_, messages, err := engine.RunWithMessages(context.Background(), []llm.Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "work"},
+	})
+	if err != nil {
+		t.Fatalf("RunWithMessages: %v", err)
+	}
+
+	found := false
+	for _, m := range messages {
+		// Prefix mirrors the unexported loop.planMsgPrefix (same pattern as
+		// compactionDigestPrefix in serve.go).
+		if m.Role == "system" && strings.HasPrefix(m.Content, "[Current plan:") {
+			found = true
+			if !strings.Contains(m.Content, "<untrusted source=plan>") {
+				t.Errorf("plan message body not wrapped as untrusted:\n%s", m.Content)
+			}
+			if !strings.Contains(m.Content, "s1 [pending] Step one") {
+				t.Errorf("plan message lost its rendered steps:\n%s", m.Content)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no plan message in history")
+	}
+}
+
+// TestReport_PlanningProjectClamp pins the planning config trust split:
+// project ./odek.json may opt out and may lower caps, but cannot raise an
+// operator-set cap or re-enable a globally-disabled feature.
+func TestReport_PlanningProjectClamp(t *testing.T) {
+	home := t.TempDir()
+	projectDir := t.TempDir()
+	prevHome := os.Getenv("HOME")
+	prevWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	os.Setenv("HOME", home)
+	os.Chdir(projectDir)
+	defer func() {
+		os.Setenv("HOME", prevHome)
+		os.Chdir(prevWd)
+	}()
+	t.Setenv("ODEK_PLANNING", "")
+
+	globalCfg := filepath.Join(home, ".odek", "config.json")
+	if err := os.MkdirAll(filepath.Dir(globalCfg), 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Case 1: project cannot raise operator-set caps.
+	writeFile(t, globalCfg, `{"planning": {"enabled": true, "max_steps": 20, "max_render_chars": 4000}}`)
+	writeFile(t, filepath.Join(projectDir, "odek.json"), `{"planning": {"enabled": true, "max_steps": 50, "max_render_chars": 9000}}`)
+	resolved := config.LoadConfig(config.CLIFlags{})
+	if !resolved.Planning.Enabled {
+		t.Error("planning should stay enabled")
+	}
+	if resolved.Planning.MaxSteps != 20 {
+		t.Errorf("MaxSteps = %d, want 20 (project raise must be clamped)", resolved.Planning.MaxSteps)
+	}
+	if resolved.Planning.MaxRenderChars != 4000 {
+		t.Errorf("MaxRenderChars = %d, want 4000 (project raise must be clamped)", resolved.Planning.MaxRenderChars)
+	}
+
+	// Case 2: global-off wins over a project enable attempt.
+	writeFile(t, globalCfg, `{"planning": {"enabled": false}}`)
+	writeFile(t, filepath.Join(projectDir, "odek.json"), `{"planning": {"enabled": true}}`)
+	resolved = config.LoadConfig(config.CLIFlags{})
+	if resolved.Planning.Enabled {
+		t.Error("project must not re-enable globally-disabled planning")
+	}
+
+	// Case 3: project may lower caps and may opt out entirely.
+	writeFile(t, globalCfg, `{"planning": {"enabled": true, "max_steps": 20, "max_render_chars": 4000}}`)
+	writeFile(t, filepath.Join(projectDir, "odek.json"), `{"planning": {"enabled": false, "max_steps": 5, "max_render_chars": 1000}}`)
+	resolved = config.LoadConfig(config.CLIFlags{})
+	if resolved.Planning.Enabled {
+		t.Error("project enabled:false should disable planning")
+	}
+	if resolved.Planning.MaxSteps != 5 || resolved.Planning.MaxRenderChars != 1000 {
+		t.Errorf("lowered caps = %d/%d, want 5/1000", resolved.Planning.MaxSteps, resolved.Planning.MaxRenderChars)
+	}
+}
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
 	}
 }

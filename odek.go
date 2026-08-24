@@ -713,6 +713,18 @@ func New(cfg Config) (*Agent, error) {
 	}
 	engine.SetCompaction(cfg.Compaction)
 	engine.SetLimits(cfg.Limits, cfg.Model)
+
+	// Wire the shared plan store: the plan tool (registered by the CLI layer
+	// in builtinTools) and the loop engine hold the same PlanStore — the
+	// object-sharing pattern used for memoryManager above. Discovery over
+	// cfg.Tools keeps Config unchanged for embedders that don't use planning;
+	// absent tool = planning disabled end-to-end.
+	for _, t := range cfg.Tools {
+		if pt, ok := t.(*loop.PlanTool); ok && pt.Store != nil {
+			engine.SetPlanStore(pt.Store)
+			break
+		}
+	}
 	// Cost enforcement needs operator-configured per-million prices; warn
 	// when a cost cap is set without them (resolved for the run's model) so
 	// the gap is not silent.

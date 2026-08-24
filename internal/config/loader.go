@@ -83,6 +83,11 @@ type CLIFlags struct {
 	// --compaction / --no-compaction.
 	Compaction *bool // nil = not set
 
+	// Planning enables the built-in plan tool and its protected plan message
+	// (default: on). Config: planning.enabled, ODEK_PLANNING,
+	// --planning / --no-planning.
+	Planning *bool // nil = not set
+
 	// Sandbox-specific
 	SandboxImage    string
 	SandboxNetwork  string
@@ -242,6 +247,41 @@ type MaintenanceConfig struct {
 // empty list.
 type ToolsConfig = ToolConfig
 
+// PlanningFileConfig is the "planning" section of odek.json. Pointer fields
+// distinguish "not set" from explicit values so partial sections merge
+// field-by-field across the global/project layers.
+type PlanningFileConfig struct {
+	Enabled        *bool `json:"enabled,omitempty"`
+	MaxSteps       *int  `json:"max_steps,omitempty"`
+	MaxRenderChars *int  `json:"max_render_chars,omitempty"`
+}
+
+// PlanningConfig is the resolved planning configuration (docs/PLANNING.md).
+type PlanningConfig struct {
+	// Enabled is the master switch: false removes the plan tool from the
+	// registry and skips all plan logic.
+	Enabled bool
+	// MaxSteps caps plan(create) size; enforced fail-closed.
+	MaxSteps int
+	// MaxRenderChars caps the rendered plan message; overflow drops the
+	// oldest done steps first with an explicit omission marker.
+	MaxRenderChars int
+}
+
+// Planning clamp ranges applied to the resolved values regardless of layer.
+const (
+	planningMinSteps       = 1
+	planningMaxSteps       = 50
+	planningMinRenderChars = 200
+	planningMaxRenderChars = 8000
+)
+
+// DefaultPlanningConfig returns the shipped defaults: planning on, 12 steps,
+// 2000-char render cap (~500 estimated tokens at ~4 chars/token).
+func DefaultPlanningConfig() PlanningConfig {
+	return PlanningConfig{Enabled: true, MaxSteps: 12, MaxRenderChars: 2000}
+}
+
 // FileConfig is the JSON schema used by ~/.odek/config.json and ./odek.json.
 // Pointer booleans distinguish "explicitly set to false" from "not set".
 type FileConfig struct {
@@ -266,6 +306,11 @@ type FileConfig struct {
 	// Compaction enables LLM-based rolling compaction of trimmed context
 	// (default: on; set false to explicitly disable).
 	Compaction *bool `json:"compaction,omitempty"`
+
+	// Planning configures the built-in plan tool (docs/PLANNING.md).
+	// The global config may set anything; the project config may set
+	// enabled:false and may only LOWER the caps (see clampProjectPlanning).
+	Planning *PlanningFileConfig `json:"planning,omitempty"`
 
 	System string `json:"system,omitempty"`
 
@@ -410,7 +455,10 @@ type ResolvedConfig struct {
 	Stream        bool
 	PromptCaching bool
 	Compaction    bool
-	System        string
+
+	// Planning is the resolved planning configuration (docs/PLANNING.md).
+	Planning PlanningConfig
+	System   string
 
 	// SandboxImage is the Docker image for the sandbox container.
 	// Default: "alpine:latest" (applied at call site, not here —
@@ -1083,6 +1131,11 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	// own budgets is safe, loosening the operator's budgets is not.
 	clampProjectLimits(global.Limits, project.Limits)
 
+	// Planning ("planning" section): same clamp philosophy. A repo may opt
+	// out entirely and may tighten its own caps, but cannot re-enable a
+	// globally-disabled feature or raise an explicitly-set global cap.
+	clampProjectPlanning(global.Planning, project.Planning)
+
 	// Capture which sandbox knobs the project requested, before the overlay
 	// hides them behind CLI/env values. This drives the approval gate in cmd/odek.
 	var projectSandboxOverride ProjectSandboxOverride
@@ -1179,6 +1232,12 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	}
 	if v := envBool("COMPACTION"); v != nil {
 		cfg.Compaction = v
+	}
+	if v := envBool("PLANNING"); v != nil {
+		if cfg.Planning == nil {
+			cfg.Planning = &PlanningFileConfig{}
+		}
+		cfg.Planning.Enabled = v
 	}
 	if v := envString("SYSTEM"); v != "" {
 		cfg.System = v
@@ -1539,6 +1598,12 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if cli.Compaction != nil {
 		cfg.Compaction = cli.Compaction
 	}
+	if cli.Planning != nil {
+		if cfg.Planning == nil {
+			cfg.Planning = &PlanningFileConfig{}
+		}
+		cfg.Planning.Enabled = cli.Planning
+	}
 	if cli.Learn != nil {
 		if cfg.Skills == nil {
 			cfg.Skills = &SkillsConfig{}
@@ -1845,6 +1910,34 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	resolved.Compaction = true
 	if cfg.Compaction != nil {
 		resolved.Compaction = *cfg.Compaction
+	}
+	// Planning defaults to ON (docs/PLANNING.md): the plan tool registers and
+	// the protected plan message logic runs. An explicit false from any layer
+	// (config file, ODEK_PLANNING=false, --no-planning) disables it. Caps are
+	// range-clamped regardless of which layer set them.
+	resolved.Planning = DefaultPlanningConfig()
+	if cfg.Planning != nil {
+		if cfg.Planning.Enabled != nil {
+			resolved.Planning.Enabled = *cfg.Planning.Enabled
+		}
+		if cfg.Planning.MaxSteps != nil {
+			resolved.Planning.MaxSteps = *cfg.Planning.MaxSteps
+		}
+		if cfg.Planning.MaxRenderChars != nil {
+			resolved.Planning.MaxRenderChars = *cfg.Planning.MaxRenderChars
+		}
+	}
+	switch {
+	case resolved.Planning.MaxSteps < planningMinSteps:
+		resolved.Planning.MaxSteps = planningMinSteps
+	case resolved.Planning.MaxSteps > planningMaxSteps:
+		resolved.Planning.MaxSteps = planningMaxSteps
+	}
+	switch {
+	case resolved.Planning.MaxRenderChars < planningMinRenderChars:
+		resolved.Planning.MaxRenderChars = planningMinRenderChars
+	case resolved.Planning.MaxRenderChars > planningMaxRenderChars:
+		resolved.Planning.MaxRenderChars = planningMaxRenderChars
 	}
 	if cfg.SandboxReadonly != nil {
 		resolved.SandboxReadonly = *cfg.SandboxReadonly
@@ -2416,6 +2509,36 @@ func clampProjectLimits(global, project *budget.Limits) {
 	project.ModelPrices = g.ModelPrices
 }
 
+// clampProjectPlanning enforces the planning merge rule (docs/PLANNING.md —
+// Config & API Surface), mirroring clampProjectLimits: the untrusted project
+// ./odek.json may set enabled:false (opt out) and may only LOWER caps the
+// global config explicitly set; it cannot re-enable a globally-disabled
+// feature or raise an operator-set cap. When the global config carries no
+// planning section, project values apply freely — they can only opt out or
+// deviate from the defaults, not override an operator decision.
+func clampProjectPlanning(global, project *PlanningFileConfig) {
+	if project == nil || global == nil {
+		return
+	}
+	if global.Enabled != nil && !*global.Enabled && project.Enabled != nil && *project.Enabled {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring planning.enabled=true from project config (%s) — planning is disabled in ~/.odek/config.json\n", ProjectConfigPath())
+		project.Enabled = nil // global-off wins
+	}
+	clampInt := func(name string, g, p *int) *int {
+		switch {
+		case g == nil || p == nil:
+			return p // nothing to clamp against / nothing requested
+		case *p > *g:
+			fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring planning.%s=%d from project config (%s) — it would raise the global cap %d\n", name, *p, ProjectConfigPath(), *g)
+			return g
+		default:
+			return p // lowered or equal — allowed
+		}
+	}
+	project.MaxSteps = clampInt("max_steps", global.MaxSteps, project.MaxSteps)
+	project.MaxRenderChars = clampInt("max_render_chars", global.MaxRenderChars, project.MaxRenderChars)
+}
+
 func overlayFile(base, override FileConfig) FileConfig {
 	if override.Model != "" {
 		base.Model = override.Model
@@ -2508,6 +2631,21 @@ func overlayFile(base, override FileConfig) FileConfig {
 	}
 	if override.Compaction != nil {
 		base.Compaction = override.Compaction
+	}
+	if override.Planning != nil {
+		if base.Planning == nil {
+			base.Planning = &PlanningFileConfig{}
+		}
+		o, b := override.Planning, base.Planning
+		if o.Enabled != nil {
+			b.Enabled = o.Enabled
+		}
+		if o.MaxSteps != nil {
+			b.MaxSteps = o.MaxSteps
+		}
+		if o.MaxRenderChars != nil {
+			b.MaxRenderChars = o.MaxRenderChars
+		}
 	}
 	if override.MaxConcurrency > 0 {
 		base.MaxConcurrency = override.MaxConcurrency

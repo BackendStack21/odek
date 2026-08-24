@@ -1373,7 +1373,7 @@ func handleChatMessage(
 	}
 
 	// Build the agent with Telegram approver.
-	tools := builtinTools(resolved.Dangerous, nil, approver, resolved.MaxConcurrency, resolved.APIKey, toolConfig{Transcription: resolved.Transcription, Vision: resolved.Vision, WebSearch: resolved.WebSearch}, sessionManager.Store)
+	tools := builtinTools(resolved.Dangerous, nil, approver, resolved.MaxConcurrency, resolved.APIKey, toolConfig{Transcription: resolved.Transcription, Vision: resolved.Vision, WebSearch: resolved.WebSearch, Planning: &resolved.Planning}, sessionManager.Store)
 
 	// Apply tool filtering based on configuration, but preserve Telegram's
 	// required tools so the bot can always respond and ask clarifications.

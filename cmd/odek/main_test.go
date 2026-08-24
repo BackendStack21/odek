@@ -179,6 +179,127 @@ func TestParseReplFlags_NoCompaction(t *testing.T) {
 	}
 }
 
+func TestParseRunFlags_PlanningFlags(t *testing.T) {
+	// --planning and --no-planning are explicit overrides; absent means
+	// "not set" (nil), so config/default resolution decides.
+	f, err := parseRunFlags([]string{"--planning", "do the thing"})
+	if err != nil {
+		t.Fatalf("parseRunFlags error: %v", err)
+	}
+	if f.Planning == nil || !*f.Planning {
+		t.Error("--planning should set Planning to true")
+	}
+
+	f, err = parseRunFlags([]string{"--no-planning", "do the thing"})
+	if err != nil {
+		t.Fatalf("parseRunFlags error: %v", err)
+	}
+	if f.Planning == nil || *f.Planning {
+		t.Error("--no-planning should set Planning to false")
+	}
+
+	// Trailing form after the task phrase.
+	f, err = parseRunFlags([]string{"do the thing", "--no-planning"})
+	if err != nil {
+		t.Fatalf("parseRunFlags error: %v", err)
+	}
+	if f.Planning == nil || *f.Planning {
+		t.Error("trailing --no-planning should set Planning to false")
+	}
+	if f.Task != "do the thing" {
+		t.Errorf("Task = %q, want %q", f.Task, "do the thing")
+	}
+
+	f, err = parseRunFlags([]string{"do the thing"})
+	if err != nil {
+		t.Fatalf("parseRunFlags error: %v", err)
+	}
+	if f.Planning != nil {
+		t.Error("Planning should be nil (not set) without a planning flag")
+	}
+}
+
+func TestParseReplFlags_NoPlanning(t *testing.T) {
+	f, err := parseReplFlags([]string{"--no-planning"})
+	if err != nil {
+		t.Fatalf("parseReplFlags error: %v", err)
+	}
+	if f.Planning == nil || *f.Planning {
+		t.Error("trailing --no-planning should set Planning to false")
+	}
+}
+
+// TestBuiltinTools_PlanRegistration pins the planning gating: the plan tool
+// registers only when resolved planning is enabled, while the name stays
+// reserved against MCP shadowing regardless of operator config.
+func TestBuiltinTools_PlanRegistration(t *testing.T) {
+	enabled := config.DefaultPlanningConfig()
+	disabled := config.DefaultPlanningConfig()
+	disabled.Enabled = false
+
+	hasPlan := func(cfg toolConfig) bool {
+		for _, tl := range builtinTools(danger.DangerousConfig{}, nil, nil, 1, "", cfg, nil) {
+			if tl.Name() == "plan" {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !hasPlan(toolConfig{Planning: &enabled}) {
+		t.Error("plan tool missing with planning enabled")
+	}
+	if hasPlan(toolConfig{Planning: &disabled}) {
+		t.Error("plan tool registered although planning is disabled")
+	}
+	if hasPlan(toolConfig{}) {
+		t.Error("plan tool registered with no planning config (zero toolConfig)")
+	}
+	if !reservedBuiltinToolNames()["plan"] {
+		t.Error(`reservedBuiltinToolNames must contain "plan" even when planning is disabled`)
+	}
+}
+
+// TestContinueCmd_WiresPlanTool pins the `odek continue` planning wiring:
+// the continue path must register a functional plan tool, otherwise a
+// resumed session carries a persisted plan message (and a system prompt
+// referencing the tool) while the tool that maintains it is missing —
+// syncPlanFromMessages would no-op and forward state would be stranded.
+func TestContinueCmd_WiresPlanTool(t *testing.T) {
+	resolved := config.LoadConfig(config.CLIFlags{})
+	tools := buildContinueTools(resolved, nil, nil)
+
+	var planTool odek.Tool
+	for _, tl := range tools {
+		if tl.Name() == "plan" {
+			planTool = tl
+			break
+		}
+	}
+	if planTool == nil {
+		t.Fatal("plan tool missing from buildContinueTools output — odek continue cannot resume plans")
+	}
+
+	// The registered tool must be functional: create + complete round-trip
+	// (a single completed step collapses to the one-line done form).
+	if _, err := planTool.Call(`{"verb":"create","steps":[{"id":"s1","title":"One"}]}`); err != nil {
+		t.Fatalf("plan create: %v", err)
+	}
+	out, err := planTool.Call(`{"verb":"complete","step_id":"s1"}`)
+	if err != nil || !strings.Contains(out, "all 1 steps complete") {
+		t.Errorf("plan complete = (%q, %v), want collapsed done render", out, err)
+	}
+
+	// Disabled planning removes the tool from the continue path too.
+	disabled := resolved
+	disabled.Planning.Enabled = false
+	for _, tl := range buildContinueTools(disabled, nil, nil) {
+		if tl.Name() == "plan" {
+			t.Error("plan tool registered although planning is disabled")
+		}
+	}
+}
+
 func TestParseRunFlags_NoTask(t *testing.T) {
 	_, err := parseRunFlags([]string{})
 	if err == nil {
@@ -870,9 +991,11 @@ func TestInitConfig_Local(t *testing.T) {
 	}
 	// compaction defaults to ON; an explicit "compaction": false in a fresh
 	// project config would silently disable it, so the key must be omitted
-	// (inherit) rather than pinned.
-	if strings.Contains(content, "compaction") {
-		t.Errorf("local config must not pin compaction (default-on; omit to inherit), got: %s", content)
+	// (inherit) rather than pinned. Same for planning (default-on).
+	for _, field := range []string{"compaction", "planning"} {
+		if strings.Contains(content, field) {
+			t.Errorf("local config must not pin %q (default-on; omit to inherit), got: %s", field, content)
+		}
 	}
 	// Must be valid JSON.
 	var parsed map[string]any
@@ -902,7 +1025,7 @@ func TestInitConfig_Global(t *testing.T) {
 	}
 	// Global (operator) config includes the sensitive sections that are
 	// rejected from project-level ./odek.json files.
-	for _, field := range []string{"api_key", "base_url", "dangerous", "telegram", "memory", "maintenance", "web_search", "prompt_caching", "compaction", "interaction_mode", "max_tool_parallel"} {
+	for _, field := range []string{"api_key", "base_url", "dangerous", "telegram", "memory", "maintenance", "web_search", "prompt_caching", "compaction", "planning", "interaction_mode", "max_tool_parallel"} {
 		if !strings.Contains(content, field) {
 			t.Errorf("global config should contain %q, got: %s", field, content)
 		}
@@ -911,6 +1034,13 @@ func TestInitConfig_Global(t *testing.T) {
 	// fresh operator config matches the documented default explicitly.
 	if !strings.Contains(content, `"compaction": true`) {
 		t.Errorf("global config should set compaction to true, got: %s", content)
+	}
+	// Planning is default-on too; the template pins enabled=true plus the
+	// documented cap defaults.
+	if !strings.Contains(content, `"planning": {`) ||
+		!strings.Contains(content, `"max_steps": 12`) ||
+		!strings.Contains(content, `"max_render_chars": 2000`) {
+		t.Errorf("global config should carry the planning section with documented defaults, got: %s", content)
 	}
 	// Must be valid JSON.
 	var parsed map[string]any
@@ -1045,6 +1175,9 @@ func TestInitConfig_LocalTemplateLoadsClean(t *testing.T) {
 	if fc.Compaction != nil {
 		t.Error("localConfigTemplate must not pin compaction (default-on; omit the key to inherit)")
 	}
+	if fc.Planning != nil {
+		t.Error("localConfigTemplate must not pin planning (default-on; omit the key to inherit)")
+	}
 	if fc.Skills != nil && len(fc.Skills.Dirs) > 0 {
 		t.Error("localConfigTemplate must not set skills.dirs (rejected from project configs)")
 	}
@@ -1074,6 +1207,15 @@ func TestInitConfig_GlobalTemplateLoadsClean(t *testing.T) {
 	}
 	if fc.Compaction == nil || !*fc.Compaction {
 		t.Error("global template should pin compaction to true (the documented default)")
+	}
+	if fc.Planning == nil || fc.Planning.Enabled == nil || !*fc.Planning.Enabled {
+		t.Error("global template should pin planning.enabled to true (the documented default)")
+	}
+	if fc.Planning.MaxSteps == nil || *fc.Planning.MaxSteps != 12 {
+		t.Error("global template should pin planning.max_steps to 12 (the documented default)")
+	}
+	if fc.Planning.MaxRenderChars == nil || *fc.Planning.MaxRenderChars != 2000 {
+		t.Error("global template should pin planning.max_render_chars to 2000 (the documented default)")
 	}
 }
 
@@ -2359,6 +2501,18 @@ func TestDefaultSystem_AntiPatternIsConcise(t *testing.T) {
 	firstLine := strings.TrimSpace(defaultSystem[:firstLineEnd])
 	if len(firstLine) > 150 {
 		t.Errorf("first line is %d chars (max 150). Keep it short.\nLine: %q", len(firstLine), firstLine)
+	}
+}
+
+// ── Plan tool guidance ───────────────────────────────────────────────
+
+// TestDefaultSystem_MentionsPlanTool pins the planning sentence: the model
+// must be told to maintain plans via the plan tool and to trust the plan
+// message over its memory of earlier turns (docs/PLANNING.md).
+func TestDefaultSystem_MentionsPlanTool(t *testing.T) {
+	want := "For multi-step work, maintain a plan with the plan tool: create steps up front, keep statuses current, replan when blocked. The plan survives context trimming — trust it over your memory of earlier turns."
+	if !strings.Contains(defaultSystem, want) {
+		t.Errorf("defaultSystem missing the planning sentence:\n%q", want)
 	}
 }
 

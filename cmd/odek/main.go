@@ -94,6 +94,7 @@ Think of the best Chief of Staff a founder could have, fused with a Principal-gr
 ## Engineering standards
 
 · Think before you act: a short plan, then the work, then verification.
+· For multi-step work, maintain a plan with the plan tool: create steps up front, keep statuses current, replan when blocked. The plan survives context trimming — trust it over your memory of earlier turns.
 · TDD for production/repo code: failing test first, make it pass, then ship. Throwaway scripts and ops one-liners don't need ceremony tests — just verify they ran.
 · Run tests with -race and -count=1 where applicable, other languages: follow project test conventions. Verify after every change; never claim a success you didn't observe.
 · Keep docs (README) in sync with code in the same commit.
@@ -299,6 +300,7 @@ type runFlags struct {
 	PromptCaching  *bool   // nil = not set; true = enable prompt caching
 	Stream         *bool   // nil = not set; true = stream LLM responses live
 	Compaction     *bool   // nil = not set; true = enable rolling compaction
+	Planning       *bool   // nil = not set; false disables the plan tool
 	Session        *bool   // nil = not set; true = save session after run
 	Learn          *bool   // nil = not set; true = enable skills learning mode
 	Task           string
@@ -461,6 +463,12 @@ func parseRunFlags(args []string) (runFlags, error) {
 			i++
 		case "--no-compaction":
 			f.Compaction = boolPtr(false)
+			i++
+		case "--planning":
+			f.Planning = boolPtr(true)
+			i++
+		case "--no-planning":
+			f.Planning = boolPtr(false)
 			i++
 		case "--session":
 			f.Session = boolPtr(true)
@@ -781,6 +789,14 @@ done:
 			f.Compaction = boolPtr(false)
 			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
 			j--
+		case "--planning":
+			f.Planning = boolPtr(true)
+			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+			j--
+		case "--no-planning":
+			f.Planning = boolPtr(false)
+			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+			j--
 		case "--sandbox-readonly":
 			f.SandboxReadonly = boolPtr(true)
 			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
@@ -868,6 +884,7 @@ type replFlags struct {
 	PromptCaching   *bool // nil = not set; true = enable prompt caching
 	Stream          *bool // nil = not set; true = stream LLM responses live
 	Compaction      *bool // nil = not set; true = enable rolling compaction
+	Planning        *bool // nil = not set; false disables the plan tool
 	InteractionMode string
 
 	// Sandbox-specific CLI flags
@@ -907,6 +924,10 @@ func parseReplFlags(args []string) (replFlags, error) {
 				f.Compaction = boolPtr(true)
 			case "--no-compaction":
 				f.Compaction = boolPtr(false)
+			case "--planning":
+				f.Planning = boolPtr(true)
+			case "--no-planning":
+				f.Planning = boolPtr(false)
 			}
 			break
 		}
@@ -955,6 +976,12 @@ func parseReplFlags(args []string) (replFlags, error) {
 			i++
 		case "--no-compaction":
 			f.Compaction = boolPtr(false)
+			i++
+		case "--planning":
+			f.Planning = boolPtr(true)
+			i++
+		case "--no-planning":
+			f.Planning = boolPtr(false)
 			i++
 		case "--interaction-mode":
 			f.InteractionMode = args[i+1]
@@ -1043,6 +1070,8 @@ Run flags:
   --prompt-caching     Enable prompt caching markers (Anthropic/DeepSeek/OpenAI)
   --compaction         Enable LLM-based rolling compaction of trimmed context (default: on)
   --no-compaction      Disable rolling compaction (overrides config/default)
+  --planning           Enable the plan tool and protected plan message (default: on)
+  --no-planning        Disable planning (overrides config/default)
   --session            Save conversation as a multi-turn session
   --events-jsonl <path> Append structured runtime events (odek.event/v1) to a
                         JSONL file. Parent dir must exist; symlinks refused.
@@ -1159,6 +1188,11 @@ const globalConfigTemplate = `{
   "prompt_caching": false,
   "stream": false,
   "compaction": true,
+  "planning": {
+    "enabled": true,
+    "max_steps": 12,
+    "max_render_chars": 2000
+  },
   "interaction_mode": "engaging",
   "no_color": false,
   "no_agents": false,
@@ -1473,6 +1507,7 @@ func run(args []string) error {
 		PromptCaching: f.PromptCaching,
 		Stream:        f.Stream,
 		Compaction:    f.Compaction,
+		Planning:      f.Planning,
 		Learn:         f.Learn,
 		System:        f.System,
 		Task:          f.Task,
@@ -1557,7 +1592,7 @@ func run(args []string) error {
 
 	// Sandbox setup
 	var sandboxCleanup func() error
-	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{Transcription: resolved.Transcription, Vision: resolved.Vision, WebSearch: resolved.WebSearch}, nil)
+	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{Transcription: resolved.Transcription, Vision: resolved.Vision, WebSearch: resolved.WebSearch, Planning: &resolved.Planning}, nil)
 
 	// MCP server tools
 	var mcpCleanup func()
@@ -2046,6 +2081,10 @@ type toolConfig struct {
 	Transcription config.TranscriptionConfig
 	Vision        config.VisionConfig
 	WebSearch     config.WebSearchConfig
+	// Planning, when non-nil and Enabled, registers the built-in plan tool.
+	// The store it carries is shared with the loop engine via odek.New's
+	// discovery of *loop.PlanTool in the returned tools slice.
+	Planning *config.PlanningConfig
 }
 
 func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver danger.Approver, maxConcurrency int, apiKey string, tcfg toolConfig, store *session.Store) []odek.Tool {
@@ -2097,6 +2136,16 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 	// confuse the agent. The Docker compose setup sets this automatically.
 	if tcfg.WebSearch.BaseURL != "" {
 		tools = append(tools, newWebSearchTool(dc, tcfg.WebSearch))
+	}
+
+	// plan is registered only when planning is enabled (docs/PLANNING.md).
+	// Disabled ⇒ absent from the registry and all plan logic skipped. The
+	// store created here is discovered by odek.New and handed to the engine,
+	// so tool mutations and the protected plan message share one state.
+	if tcfg.Planning != nil && tcfg.Planning.Enabled {
+		tools = append(tools, &loop.PlanTool{
+			Store: loop.NewPlanStore(tcfg.Planning.MaxSteps, tcfg.Planning.MaxRenderChars),
+		})
 	}
 
 	if sm != nil {
@@ -2152,7 +2201,10 @@ func (a odekToolAdapter) Call(args string) (string, error) {
 // used to stop an MCP server from registering a tool whose raw name shadows a
 // built-in and could confuse the model.
 func reservedBuiltinToolNames() map[string]bool {
-	bt := builtinTools(danger.DangerousConfig{}, nil, nil, 1, "", toolConfig{}, nil)
+	// The probe enables planning so "plan" stays reserved against MCP
+	// shadowing even when the operator disables the feature.
+	pc := config.DefaultPlanningConfig()
+	bt := builtinTools(danger.DangerousConfig{}, nil, nil, 1, "", toolConfig{Planning: &pc}, nil)
 	names := make(map[string]bool, len(bt))
 	for _, t := range bt {
 		names[t.Name()] = true
@@ -2716,6 +2768,21 @@ func auditTurnDelta(allMessages []llm.Message, histLen int) []llm.Message {
 // continueCmd handles `odek continue [--id <id>] [--external-ref <ref>] <task>`.
 // It loads an existing session (latest or by ID), appends the new task,
 // runs the agent with full history, and saves the updated session.
+// buildContinueTools constructs the builtin tool set for `odek continue`.
+// Extracted from continueCmd so the planning wiring (shared PlanStore →
+// engine via odek.New discovery) has a testable seam — omitting Planning
+// here would silently break plan resume: the persisted plan message rides
+// in the transcript while the tool that maintains it is missing.
+func buildContinueTools(resolved config.ResolvedConfig, sm *skills.SkillManager, store *session.Store) []odek.Tool {
+	return builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey,
+		toolConfig{
+			Transcription: resolved.Transcription,
+			Vision:        resolved.Vision,
+			WebSearch:     resolved.WebSearch,
+			Planning:      &resolved.Planning,
+		}, store)
+}
+
 func continueCmd(args []string) error {
 	sessionID, refSpecs, task, err := parseContinueArgs(args)
 	if err != nil {
@@ -2792,7 +2859,7 @@ func continueCmd(args []string) error {
 			resolved.Skills.Embedding,
 		)
 	}
-	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{Transcription: resolved.Transcription, Vision: resolved.Vision, WebSearch: resolved.WebSearch}, store)
+	tools := buildContinueTools(resolved, sm, store)
 
 	// MCP server tools
 	var mcpCleanup func()
