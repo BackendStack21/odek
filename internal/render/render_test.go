@@ -361,12 +361,16 @@ func TestToolEmoji(t *testing.T) {
 		{"delegate_tasks", "👥"},
 		// Cron
 		{"cronjob", "⏰"},
+		// Planning
+		{"plan", "📋"},
 		// Skills / meta
-		{"todo", "➕"},
 		{"skill_view", "➕"},
 		{"skill_manage", "➕"},
 		{"skills_list", "➕"},
 		{"clarify", "➕"},
+		// Retired name: the old todo arm was replaced by plan; todo now
+		// falls through to the default.
+		{"todo", "🔧"},
 		// Default fallback
 		{"unknown_tool", "🔧"},
 		{"random_name", "🔧"},

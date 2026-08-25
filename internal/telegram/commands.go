@@ -95,6 +95,11 @@ func init() {
 			Handler:     planResumeHandler,
 		},
 		{
+			Command:     "plan_status",
+			Description: "Show the agent's current task plan status",
+			Handler:     planStatusHandler,
+		},
+		{
 			Command:     "schedules",
 			Description: "List scheduled tasks",
 			Handler:     schedulesHandler,
@@ -186,6 +191,12 @@ func plansHandler(args string) (string, error) { return "", nil }
 func planViewHandler(args string) (string, error) { return "", nil }
 func planDeleteHandler(args string) (string, error) { return "", nil }
 func planResumeHandler(args string) (string, error) { return "", nil }
+
+// planStatusHandler reports the agent's structured task plan (the loop's
+// `plan` tool state). Like /sessions and /resume it needs the chat-scoped
+// session manager, so the descriptor handler is a stub and the real logic
+// lives in the bot's OnCommand callback (cmd/odek/telegram.go).
+func planStatusHandler(args string) (string, error) { return "", nil }
 
 // Schedule command handlers are intercepted in the bot's OnCommand callback
 // (they need the chat ID and the schedule store), so the descriptor handlers

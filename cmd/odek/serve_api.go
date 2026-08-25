@@ -5,6 +5,7 @@ package main
 //   GET  /api/health                        server info (version, uptime, model, …)
 //   GET  /api/sessions?limit=&offset=&q=    session list w/ pagination + search
 //   GET  /api/sessions/{id}/export?format=  transcript export (md | json)
+//   GET  /api/sessions/{id}/plan            read-only structured plan view
 //   GET  /api/memory                        facts + pending-review episodes
 //   POST /api/memory/facts                  add a fact          {target, content}
 //   DEL  /api/memory/facts                  remove a fact       {target, old_text}
@@ -35,6 +36,7 @@ import (
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/memory"
 	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/skills"
@@ -220,6 +222,55 @@ func shortID(id string) string {
 		return id[:8]
 	}
 	return id
+}
+
+// ── GET /api/sessions/{id}/plan ──────────────────────────────────────────
+
+// sessionPlanStep is one step of the structured plan view. Note is omitted
+// when empty so the shape stays compact for consumers that don't use it.
+type sessionPlanStep struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
+	Note   string `json:"note,omitempty"`
+}
+
+// sessionPlanResponse is the read-only plan view. found=false (still 200)
+// means the transcript carries no parseable plan message; version and steps
+// stay zero/empty in that case. A collapsed all-done plan parses to a
+// version with no step rows — steps is [] then, not null.
+type sessionPlanResponse struct {
+	SessionID string            `json:"session_id"`
+	Version   int               `json:"version"`
+	Steps     []sessionPlanStep `json:"steps"`
+	Found     bool              `json:"found"`
+}
+
+// handleSessionPlan renders the session's persisted plan state as JSON.
+// Read-only by contract: it parses the newest parseable "[Current plan:"
+// system message with the same strict resume parser the engine uses
+// (loop.ExtractPlan) and never mutates anything. Reached through
+// handleSessionByID, so rate limiting + session-token auth match the
+// sibling GET endpoints exactly.
+func handleSessionPlan(sess *session.Session, w http.ResponseWriter) {
+	resp := sessionPlanResponse{
+		SessionID: sess.ID,
+		Steps:     []sessionPlanStep{},
+	}
+	if plan, ok := loop.ExtractPlan(sess.Messages); ok {
+		resp.Found = true
+		resp.Version = plan.Version
+		for _, st := range plan.Steps {
+			resp.Steps = append(resp.Steps, sessionPlanStep{
+				ID:     st.ID,
+				Title:  st.Title,
+				Status: string(st.Status),
+				Note:   st.Note,
+			})
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // exportSessionMarkdown renders a session as a standalone markdown document.

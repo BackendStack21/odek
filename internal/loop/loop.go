@@ -325,6 +325,19 @@ type Engine struct {
 	compaction    bool
 	compactDigest string
 
+	// planStore holds the structured plan state (internal/loop/plan.go).
+	// Shared with the plan tool — one store, two holders, mirroring how the
+	// memory manager is shared with its tool. nil = planning disabled: the
+	// tool is absent from the registry and all plan logic is skipped.
+	planStore *PlanStore
+	// planRenderedVersion/planRenderedContent cache the last rendered plan
+	// message so refreshPlanMessage can reuse the nonce'd untrusted wrapper
+	// across renders of the same version instead of re-wrapping (a fresh
+	// nonce per render would churn the prompt cache and defeat the
+	// content-equality no-op).
+	planRenderedVersion int
+	planRenderedContent string
+
 	// sideCallTimeout bounds the compaction and progress-summary side calls.
 	// Zero means use the default (30s). Callers scale it off the resolved
 	// client timeout so slow providers don't silently lose the digest.
@@ -497,6 +510,57 @@ func (e *Engine) SetDangerousConfig(cfg *danger.DangerousConfig) { e.dangerousCf
 // so it is wrapped with the engine's untrusted-content wrapper when set.
 func (e *Engine) SetCompaction(enabled bool) { e.compaction = enabled }
 
+// SetPlanStore wires the shared plan state (internal/loop/plan.go). The CLI
+// layer creates one store and hands it to both the plan tool and the engine;
+// nil (the zero behavior) disables planning end-to-end — no sync, no render,
+// no protected-message logic, and no plan events.
+//
+// Wiring the store here also registers the engine's event emitter as the
+// store's change callback: the store knows when an effective mutation
+// happened, the engine owns how that reaches the odek.event/v1 stream (same
+// emitEvent path as iteration_completed). Replacing an already-wired store
+// detaches the old one so no stale notification path survives.
+func (e *Engine) SetPlanStore(s *PlanStore) {
+	if e.planStore != nil && e.planStore != s {
+		e.planStore.SetOnChange(nil)
+	}
+	e.planStore = s
+	if s != nil {
+		s.SetOnChange(e.emitPlanChangeEvent)
+	}
+}
+
+// emitPlanChangeEvent maps one PlanStore mutation onto the structured
+// runtime event stream. create → plan_created; every other version-bumping
+// mutation → plan_updated. Payloads carry counts and version ONLY — never
+// step titles or notes (the event stream's minimality invariant, mirroring
+// the args-digest rule on tool events). Iteration is deliberately unset:
+// mutations fire inside parallel tool goroutines with no iteration context;
+// consumers correlate via the surrounding tool_call_started/completed pair.
+func (e *Engine) emitPlanChangeEvent(ch PlanChange) {
+	if ch.Created {
+		e.emitEvent(events.Event{
+			Type: events.TypePlanCreated,
+			Data: map[string]any{
+				"steps":   ch.Steps,
+				"version": ch.Version,
+			},
+		})
+		return
+	}
+	e.emitEvent(events.Event{
+		Type: events.TypePlanUpdated,
+		Data: map[string]any{
+			"steps":       ch.Steps,
+			"done":        ch.Done,
+			"in_progress": ch.InProgress,
+			"blocked":     ch.Blocked,
+			"pending":     ch.Pending,
+			"version":     ch.Version,
+		},
+	})
+}
+
 // SetSideCallTimeout sets the bound for the compaction digest and
 // progress-summary side calls. 0 or negative restores the default (30s).
 func (e *Engine) SetSideCallTimeout(d time.Duration) { e.sideCallTimeout = d }
@@ -623,9 +687,9 @@ func contextBudget(maxContext int) int {
 // headLen returns the number of leading messages that trimming must never
 // drop: the base system prompt plus any other leading system messages
 // (volatile memory block) and the first user message (the original task).
-// After the task, only the rolling compaction digest is protected — other
-// system messages that land there (skill/episode injections, trim warnings)
-// remain droppable.
+// After the task, only the rolling compaction digest and the protected plan
+// message are protected — other system messages that land there (skill/
+// episode injections, trim warnings) remain droppable.
 //
 // Injected context blocks (skill/episode/extended-memory) are placed right
 // before the latest user message, which for a first-iteration history puts
@@ -647,7 +711,7 @@ func (e *Engine) headLen(messages []llm.Message) int {
 		case m.Role == "user" && !seenTask:
 			seenTask = true
 			start++
-		case seenTask && isDigestMessage(m):
+		case seenTask && (isDigestMessage(m) || isPlanMessage(m)):
 			start++
 		default:
 			return start
@@ -962,6 +1026,32 @@ func trimToSurvival(msgs []llm.Message) []llm.Message {
 		}
 	}
 
+	// Locate the protected digest and plan messages BEFORE the group walk
+	// below: the walk absorbs preceding system messages into turn groups,
+	// and absorbing these would duplicate them (they are also preserved
+	// standalone) — on resume the stale higher-index copy would win.
+	//
+	// Both scans cover the whole post-task zone, not just the leading run:
+	// refreshDigest/refreshPlanMessage insert right AFTER the protected head
+	// — and headLen includes the first user message — so a freshly created
+	// digest or plan sits after firstUserIdx. Dropping either here would
+	// discard the paid-for compacted history / forward-state plan exactly
+	// when context pressure is highest (audit 2026-08).
+	digestIdx := -1
+	for i := start; i < len(msgs); i++ {
+		if isDigestMessage(msgs[i]) {
+			digestIdx = i
+			break
+		}
+	}
+	planIdx := -1
+	for i := start; i < len(msgs); i++ {
+		if isPlanMessage(msgs[i]) {
+			planIdx = i
+			break
+		}
+	}
+
 	// Collect the last 2 complete assistant→tool groups before the user msg.
 	// Each group is a sub-slice in correct internal order: [system*, assistant, tool*].
 	scanFrom := lastUserIdx - 1
@@ -974,9 +1064,11 @@ func trimToSurvival(msgs []llm.Message) []llm.Message {
 		if msgs[i].Role == "assistant" && len(msgs[i].ToolCalls) > 0 {
 			var group []llm.Message
 
-			// Preceding system messages (corrections, warnings)
+			// Preceding system messages (corrections, warnings). The walk
+			// stops at the digest/plan messages so they are never absorbed —
+			// they are preserved standalone below (see scan above).
 			preStart := i - 1
-			for preStart > start && msgs[preStart].Role == "system" {
+			for preStart > start && msgs[preStart].Role == "system" && preStart != digestIdx && preStart != planIdx {
 				preStart--
 			}
 			for k := preStart + 1; k < i; k++ {
@@ -997,21 +1089,6 @@ func trimToSurvival(msgs []llm.Message) []llm.Message {
 		}
 	}
 
-	// Preserve the rolling compaction digest if one is present. refreshDigest
-	// inserts (or updates) the digest right AFTER the protected head — and
-	// headLen includes the first user message — so a freshly created digest
-	// sits after firstUserIdx, not before it. Scan the whole head region up
-	// to and including the post-task zone; dropping it here would discard
-	// the paid-for compacted history exactly when context pressure is
-	// highest (audit 2026-08).
-	digestIdx := -1
-	for i := start; i < len(msgs); i++ {
-		if isDigestMessage(msgs[i]) {
-			digestIdx = i
-			break
-		}
-	}
-
 	// Build survival set: system + warning + digest + task + recent groups + last user
 	totalGroupMsgs := 0
 	for _, g := range groups {
@@ -1027,6 +1104,10 @@ func trimToSurvival(msgs []llm.Message) []llm.Message {
 
 	if digestIdx >= 0 {
 		survival = append(survival, msgs[digestIdx])
+	}
+
+	if planIdx >= 0 {
+		survival = append(survival, msgs[planIdx])
 	}
 
 	// Add the original task when it differs from the last user message.
@@ -1179,6 +1260,129 @@ func (e *Engine) summarizeDropped(ctx context.Context, dropped []llm.Message) st
 		return ""
 	}
 	return strings.TrimSpace(res.Content)
+}
+
+// ── Protected plan message (digest-pattern integration) ───────────────
+
+// syncPlanFromMessages rebuilds engine plan state from a persisted plan
+// message, so `odek continue` resumes with full forward state. Called once
+// at the top of runLoop, before iteration 0. Parse is strict and the sync
+// is fail-closed in both directions: an unparseable or over-cap plan
+// message is REMOVED from the history (a stale message must not keep
+// rendering as authoritative after its state was dropped), and only a fully
+// parseable message restores engine state. The newest parseable message
+// wins.
+func (e *Engine) syncPlanFromMessages(messages []llm.Message) []llm.Message {
+	if e.planStore == nil {
+		return messages
+	}
+	e.planStore.Reset()
+	e.planRenderedVersion = 0
+	e.planRenderedContent = ""
+	out := make([]llm.Message, 0, len(messages))
+	var newest PlanState
+	var newestContent string
+	found := false
+	for _, m := range messages {
+		if !isPlanMessage(m) {
+			out = append(out, m)
+			continue
+		}
+		state, err := parsePlanState(m.Content, e.planStore.maxSteps)
+		if err != nil {
+			continue // drop the unparseable plan message entirely
+		}
+		found = true
+		newest = state // forward scan: the last parseable message wins
+		newestContent = m.Content
+		out = append(out, m)
+	}
+	if found {
+		e.planStore.Restore(newest)
+		// The persisted render already reflects this version; seed the cache
+		// so the next refresh no-ops until the state changes.
+		e.planRenderedVersion = newest.Version
+		e.planRenderedContent = newestContent
+	}
+	return out
+}
+
+// refreshPlanMessage upserts the protected plan system message after a tool
+// batch may have mutated plan state. An existing message is updated in place
+// (position fixed for session life — prompt-cache stability); otherwise the
+// message is inserted immediately after the protected head, i.e. right after
+// the compaction digest when one sits at that boundary. The step-line body
+// is wrapped by the untrusted-content wrapper when one is configured,
+// exactly like the compaction digest: plan content is model-generated but
+// derived from untrusted inputs (task text, tool results). Fresh renders are
+// recorded via the audit ingest recorder when one is active (the engine-side
+// wrapper runs on a background context, so it cannot do this itself).
+func (e *Engine) refreshPlanMessage(ctx context.Context, messages []llm.Message) []llm.Message {
+	if e.planStore == nil {
+		return messages
+	}
+	state, ok := e.planStore.Snapshot()
+	if !ok {
+		return messages // no plan yet — nothing to render
+	}
+	content := e.planMessageContent(ctx, state)
+
+	// Update the existing plan message in place when present.
+	for i := range messages {
+		if isPlanMessage(messages[i]) {
+			if messages[i].Content != content {
+				messages[i].Content = content
+			}
+			return messages
+		}
+	}
+
+	// Otherwise insert right after the protected head.
+	head := e.headLen(messages)
+	msg := llm.Message{Role: "system", Content: content}
+	newMsgs := make([]llm.Message, 0, len(messages)+1)
+	newMsgs = append(newMsgs, messages[:head]...)
+	newMsgs = append(newMsgs, msg)
+	newMsgs = append(newMsgs, messages[head:]...)
+	messages = newMsgs
+	// The plan message must stay protected even when injected context
+	// already occupies the run at/after the insertion point — same fix as
+	// the memory slot above. Without this, headLen stops at the droppable
+	// boundary (== head) and graduated trimming drops the freshly inserted
+	// plan message first.
+	if e.ctxLeadDroppableFrom >= 0 && e.ctxLeadDroppableFrom <= head {
+		e.ctxLeadDroppableFrom = head + 1
+	}
+	return messages
+}
+
+// planMessageContent renders the full message content for the given state,
+// reusing the cached wrapper-carrying content while the version is unchanged
+// so repeated refreshes don't mint a fresh wrapper nonce per call. A cache
+// miss (new version) records the rendered body with the audit ingest
+// recorder — mirroring the skill/episode injection sites, which record the
+// raw content and let the caller-supplied wrapper add the boundary.
+func (e *Engine) planMessageContent(ctx context.Context, state PlanState) string {
+	if state.Version == e.planRenderedVersion && e.planRenderedContent != "" {
+		return e.planRenderedContent
+	}
+	rendered := renderPlan(state, e.planStore.maxRenderChars)
+	content := rendered
+	if idx := strings.Index(rendered, "\n"); idx >= 0 {
+		// Header stays outside the wrapper (prefix recognition depends on
+		// it); the model-derived step lines are the wrapped payload.
+		header, body := rendered[:idx], rendered[idx+1:]
+		if fn := IngestRecorderFrom(ctx); fn != nil {
+			fn("plan", body)
+		}
+		if e.wrapUntrusted != nil {
+			body = e.wrapUntrusted("plan", body)
+		}
+		content = header + "\n" + body
+	}
+	e.planRenderedVersion = state.Version
+	e.planRenderedContent = content
+	return content
 }
 
 // summarizeProgress renders the tail of the conversation into a bounded
@@ -1368,6 +1572,12 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 	// Reset per-session repeated-call (stall) tracking
 	e.lastToolFingerprint = ""
 	e.toolRepeatStreak = 0
+
+	// Rebuild plan state from a persisted plan message so `odek continue`
+	// resumes with forward state instead of re-deriving it from history
+	// (docs/PLANNING.md — Restart Resume). Unparseable plan messages are
+	// removed from the history. No-op when planning is disabled.
+	messages = e.syncPlanFromMessages(messages)
 
 	// Backstop: clear any batch trustAll grant when this run returns, even on
 	// early exit or panic, so it never leaks into a later prompt that reuses
@@ -2120,6 +2330,12 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 			})
 		}
 
+		// Upsert the protected plan message after this batch — a plan call
+		// in it may have mutated state. No-op when planning is off or the
+		// rendered content is unchanged. Runs before the persist callback so
+		// the persisted snapshot always carries the current plan.
+		messages = e.refreshPlanMessage(ctx, messages)
+
 		// Persist per-turn progress now that the tool batch's result
 		// messages are appended — an interrupted run can resume from here.
 		e.emitMessagesPersist(messages)
@@ -2403,6 +2619,11 @@ func classifyToolCall(name, args string) (danger.RiskClass, string) {
 		// running commands in a child that shares the parent's terminal. Treat
 		// the call itself as system_write so it requires explicit approval.
 		return danger.SystemWrite, args
+	case "plan":
+		// Safe: plan calls mutate engine-held state only — no filesystem,
+		// network, or subprocess surface. An explicit case documents intent
+		// and survives future default-branch changes (docs/PLANNING.md).
+		return "", ""
 	default:
 		// MCP tools are registered with names of the form <server>__<tool>.
 		// They bypass the built-in danger classifier because the server, not

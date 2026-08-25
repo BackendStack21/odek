@@ -138,6 +138,7 @@ The right-side drawer exposes the REST management surface in the UI:
 - **tools** — the built-in registry with enabled/disabled state and the MCP server count
 - **runs** — headless REST runs (`POST /api/prompt`): live status, tokens, results, cancel, and inline approve/deny/trust for pending approvals (polled every 3s while visible)
 - **events** — the recent `odek.event/v1` feed (`run_started`, `iteration_completed`, `tool_call_*`, `run_completed`, …)
+- **plan** — the active session's structured task plan (read-only; polls `GET /api/sessions/{id}/plan` every 5s while visible — see the endpoint reference below)
 
 ### @ resource completion
 
@@ -331,6 +332,35 @@ Server-side search and pagination over the session list. With **no** query param
 ### `GET /api/sessions/{id}/export?format=md|json`
 
 Downloads a transcript. Session-token auth applies exactly like the detail read (`X-Session-Token` header, or the instance-token bootstrap). `format=md` (default) renders a standalone markdown document — metadata header, `## user` / `## assistant` sections, tool calls and results as fenced blocks, reasoning behind `<details>`, untrusted-content envelopes unwrapped; `format=json` returns the raw session record. Responses carry `Content-Disposition: attachment`.
+
+### `GET /api/sessions/{id}/plan`
+
+Read-only structured plan view (the WebUI **plan** tab's data source; see
+[PLANNING.md](PLANNING.md) for the full surface map). Session-token auth
+applies exactly like the detail read, and the same 60/min-per-IP
+session-lookup rate limit applies (**429** beyond that). The server parses
+the newest parseable `[Current plan:` system message with the same strict
+resume parser the engine uses (`loop.ExtractPlan`) — no plan state is stored
+anywhere beyond the transcript itself.
+
+```jsonc
+{
+  "session_id": "2026…",
+  "version": 3,
+  "steps": [
+    { "id": "s1", "title": "Scaffold command skeleton", "status": "done" },
+    { "id": "s2", "title": "Wire flag parsing", "status": "in_progress",
+      "note": "waiting on schema decision" }
+  ],
+  "found": true
+}
+```
+
+`found:false` (still HTTP 200) means the transcript carries no parseable
+plan message — `version`/`steps` are then zero/empty (a collapsed all-done
+plan parses to a version with `steps: []`). Unknown session ids return
+**404**; `note` is omitted when empty. Strictly GET-only: non-GET requests
+to `…/plan` do not fall through to the base-session mutators.
 
 ### `GET /api/memory` · `POST/DELETE /api/memory/facts` · `POST /api/memory/episodes/promote`
 
@@ -603,7 +633,7 @@ match as plain text. The bundled WebUI implements this in
 
 ### Frontend (`cmd/odek/ui/`)
 
-- Vanilla JS + CSS SPA split into native ES modules under `js/` — no build step, no bundler, no CDN. Module map: `main` (init/wire-up) · `ws` (protocol v2 dispatch) · `api` (typed REST client — the single place token headers are attached) · `sessions` (sidebar: search/pagination/pin/export) · `panels` (management drawer) · `health` (heartbeat + popover) · `render`/`markdown`/`untrusted` (transcript rendering) · `approvals` · `input` (send, history, `@` completion, attachments) · `state`/`dom`/`utils`/`net`/`escape`
+- Vanilla JS + CSS SPA split into native ES modules under `js/` — no build step, no bundler, no CDN. Module map: `main` (init/wire-up) · `ws` (protocol v2 dispatch) · `api` (typed REST client — the single place token headers are attached) · `sessions` (sidebar: search/pagination/pin/export) · `panels` (management drawer) · `plan` (structured-plan panel) · `health` (heartbeat + popover) · `render`/`markdown`/`untrusted` (transcript rendering) · `approvals` · `input` (send, history, `@` completion, attachments) · `state`/`dom`/`utils`/`net`/`escape`
 - **Escaping**: all server-controlled strings are inserted escaped (`escapeHtml`/`escapeAttr`/`textContent`); `markdownToHtml` HTML-escapes all input by default and allowlists link schemes — see "Content sanitization contract" above. No inline scripts or handlers anywhere (CSP `script-src 'self'`); generated content uses event delegation
 - **Untrusted envelope**: `js/untrusted.js` unwraps the model-facing `<untrusted_content_*>` envelope before display (body shown, source as badge)
 - **Design**: self-contained "EMBER" theme — electric amber on layered blue-charcoal surfaces with hairline borders, glass topbar, and ≤200ms micro-interactions. Design tokens are CSS custom properties in `style.css` (`--bg-0…4`, `--amber`, `--line`, spacing/radius/motion scales) with a full light-mode variant and `prefers-reduced-motion` support; the Azeret Mono variable font is self-hosted from `ui/fonts/` so the UI works offline

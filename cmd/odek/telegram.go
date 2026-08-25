@@ -34,6 +34,7 @@ import (
 	"github.com/BackendStack21/odek/internal/skills"
 	"github.com/BackendStack21/odek/internal/telegram"
 	toolpkg "github.com/BackendStack21/odek/internal/tool"
+	"unicode/utf8"
 )
 
 // chatMu serializes agent processing per chat to prevent same-chat message
@@ -652,6 +653,14 @@ func telegramCmd(args []string) error {
 				return fmt.Sprintf("❌ Failed to save session: %v", err), nil
 			}
 			return fmt.Sprintf("📋 *Plan loaded*: `%s`\n\n_Injected into session context. Send a message to continue._", slug), nil
+		}
+
+		// Handle /plan_status — show the agent's structured task plan for
+		// this chat's current session. Read-only informational command in
+		// the /stats mold; distinct from the markdown-file /plan family
+		// above (different concept, coexists by design — docs/PLANNING.md).
+		if cmdName == "plan_status" {
+			return telegramPlanStatusReply(chatID, sessionManager), nil
 		}
 
 		// Handle /stop — cancel the running agent task and report a summary.
@@ -1373,7 +1382,7 @@ func handleChatMessage(
 	}
 
 	// Build the agent with Telegram approver.
-	tools := builtinTools(resolved.Dangerous, nil, approver, resolved.MaxConcurrency, resolved.APIKey, toolConfig{Transcription: resolved.Transcription, Vision: resolved.Vision, WebSearch: resolved.WebSearch}, sessionManager.Store)
+	tools := builtinTools(resolved.Dangerous, nil, approver, resolved.MaxConcurrency, resolved.APIKey, toolConfig{Transcription: resolved.Transcription, Vision: resolved.Vision, WebSearch: resolved.WebSearch, Planning: &resolved.Planning}, sessionManager.Store)
 
 	// Apply tool filtering based on configuration, but preserve Telegram's
 	// required tools so the bot can always respond and ask clarifications.
@@ -2142,6 +2151,117 @@ func formatStats(cs *telegram.ChatSession) string {
 	)
 }
 
+// ── /plan_status (structured plan view) ────────────────────────────────
+
+// maxTelegramPlanChars bounds the /plan_status reply. Telegram hard-caps one
+// message at 4096 characters; the reply pipeline adds markdown overhead on
+// top, so the renderer stops well short and reports omitted steps instead of
+// truncating mid-line.
+const maxTelegramPlanChars = 3800
+
+// telegramPlanStatusReply renders the chat-scoped structured plan status for
+// the /plan_status command. The session is resolved through the chat-scoped
+// SessionManager path ("tg-<chatID>"), so a chat can only ever see its own
+// plan — cross-chat access is structurally impossible. Absent or corrupt
+// plans degrade to the plain no-plan reply.
+func telegramPlanStatusReply(chatID int64, sessionManager *telegram.SessionManager) string {
+	cs, err := sessionManager.Load(chatID)
+	if err != nil || cs == nil {
+		return "No active plan in this session."
+	}
+	plan, ok := loop.ExtractPlan(cs.Messages)
+	if !ok {
+		return "No active plan in this session."
+	}
+	return formatTelegramPlanStatus(plan)
+}
+
+// formatTelegramPlanStatus renders a parsed plan compactly: a header line
+// with version and progress counts, then one line per step with a status
+// glyph, id, title, and an optional truncated note. The output is size-
+// bounded (maxTelegramPlanChars): overflow drops whole step lines from the
+// tail and appends an explicit count instead of cutting mid-line.
+func formatTelegramPlanStatus(plan *loop.PlanState) string {
+	done, blocked := 0, 0
+	for _, st := range plan.Steps {
+		switch st.Status {
+		case loop.StepDone:
+			done++
+		case loop.StepBlocked:
+			blocked++
+		}
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "📋 *Plan* — v%d · %d/%d done", plan.Version, done, len(plan.Steps))
+	if blocked > 0 {
+		fmt.Fprintf(&b, " · %d blocked", blocked)
+	}
+	b.WriteString("\n\n")
+
+	omitted := 0
+	for i, st := range plan.Steps {
+		line := formatTelegramPlanStep(st)
+		// Reserve room for the omission trailer so it always fits.
+		if b.Len()+len(line)+64 > maxTelegramPlanChars {
+			omitted = len(plan.Steps) - i
+			break
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	if omitted > 0 {
+		fmt.Fprintf(&b, "\n… _%d more step(s) omitted_", omitted)
+	}
+	return b.String()
+}
+
+// formatTelegramPlanStep renders one step line: glyph + id + title +
+// optional note. Titles and notes are flattened by the plan validator
+// already; both are truncated defensively here because they are model-chosen
+// text echoed into a size-bounded chat message. All model-derived fields are
+// MarkdownV2-escaped: the reply is sent with ParseMode MarkdownV2 first, and
+// unescaped reserved characters would trigger a Telegram 400 parse error
+// (degrading the whole reply to plain text) or render as spoofed emphasis.
+func formatTelegramPlanStep(st loop.PlanStep) string {
+	glyph := "⬜"
+	switch st.Status {
+	case loop.StepDone:
+		glyph = "✅"
+	case loop.StepInProgress:
+		glyph = "🔄"
+	case loop.StepBlocked:
+		glyph = "⛔"
+	case loop.StepPending:
+		glyph = "⬜"
+	}
+	// ID renders inside a code span: only backslash and backtick are
+	// significant there; escaping everything else would show literal noise.
+	id := strings.NewReplacer("\\", "\\\\", "`", "\\`").Replace(st.ID)
+	line := fmt.Sprintf("%s `%s` %s", glyph, id, escapeMarkdownV2Literal(truncateStr(st.Title, 120)))
+	if note := strings.TrimSpace(st.Note); note != "" {
+		line += " — _" + escapeMarkdownV2Literal(truncateStr(note, 80)) + "_"
+	}
+	return line
+}
+
+// escapeMarkdownV2Literal escapes every MarkdownV2 reserved character,
+// including backticks — unlike telegram.EscapeMarkdown, which preserves code
+// spans for agent-authored prose. Plan titles/notes are untrusted single-line
+// fields rendered as literal text: an unbalanced backtick surviving into the
+// reply would otherwise swallow the remaining markup into a bogus code span.
+func escapeMarkdownV2Literal(s string) string {
+	const reserved = "_*[]()~`>#+-=|{}.!\\"
+	var b strings.Builder
+	b.Grow(len(s) + 8)
+	for _, r := range s {
+		if strings.ContainsRune(reserved, r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // ── Progress Callback Helpers ──────────────────────────────────────────
 
 // sortedToolKeys returns the keys of a map sorted alphabetically.
@@ -2508,10 +2628,15 @@ func buttonsToMarkup(buttons [][]map[string]string) *telegram.InlineKeyboardMark
 	return markup
 }
 
-// truncateStr shortens s to maxLen, appending "…" if trimmed.
+// truncateStr shortens s to maxLen, appending "…" if trimmed. The cut point
+// backs up to a rune boundary so multi-byte titles (CJK, emoji) never ship
+// U+FFFD replacement mojibake.
 func truncateStr(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
+	}
+	for maxLen > 0 && !utf8.RuneStart(s[maxLen]) {
+		maxLen--
 	}
 	return s[:maxLen] + "…"
 }

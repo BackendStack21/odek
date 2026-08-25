@@ -60,13 +60,19 @@ const maxModelIDBytes = 128
 // resumed serve session lose its compacted history.
 const compactionDigestPrefix = "[Compacted earlier context:"
 
+// planMessagePrefix mirrors the unexported planMsgPrefix in
+// internal/loop/plan.go. Protected plan system messages must survive the
+// per-turn persist filter just like digests — dropping them would make a
+// resumed serve session lose its forward-state plan (docs/PLANNING.md).
+const planMessagePrefix = "[Current plan:"
+
 // filterPersistSnapshot selects which messages of a per-turn snapshot are
 // persisted for a serve session. The session's own leading system message
 // (head) is preserved; dynamically-injected system messages (skills,
 // memory, episodes, trim warnings) are dropped so persisted snapshots
 // don't accumulate internal injections or corrupt future origLen
-// calculations; compaction digest system messages are kept so a resumed
-// session retains its compacted history.
+// calculations; compaction digest and protected plan system messages are
+// kept so a resumed session retains its compacted history and its plan.
 func filterPersistSnapshot(head, snapshot []llm.Message) []llm.Message {
 	filtered := make([]llm.Message, 0, len(snapshot))
 	filtered = append(filtered, head...)
@@ -74,7 +80,9 @@ func filterPersistSnapshot(head, snapshot []llm.Message) []llm.Message {
 		if i == 0 && len(head) > 0 {
 			continue // replaced by the session's original head
 		}
-		if m.Role == "system" && !strings.HasPrefix(m.Content, compactionDigestPrefix) {
+		if m.Role == "system" &&
+			!strings.HasPrefix(m.Content, compactionDigestPrefix) &&
+			!strings.HasPrefix(m.Content, planMessagePrefix) {
 			continue
 		}
 		filtered = append(filtered, m)
@@ -248,6 +256,7 @@ func serveCmd(args []string) error {
 	var sandboxReadonly *bool
 	var promptCaching *bool
 	var compaction *bool
+	var planning *bool
 	var stream *bool
 	var sandboxImage, sandboxNetwork, sandboxMemory, sandboxCPUs, sandboxUser string
 	var toolsEnabled, toolsDisabled, trustedProxies []string
@@ -300,6 +309,10 @@ func serveCmd(args []string) error {
 			promptCaching = boolPtr(true)
 		case "--compaction":
 			compaction = boolPtr(true)
+		case "--planning":
+			planning = boolPtr(true)
+		case "--no-planning":
+			planning = boolPtr(false)
 		case "--stream":
 			stream = boolPtr(true)
 		case "--no-stream":
@@ -334,6 +347,7 @@ func serveCmd(args []string) error {
 		Sandbox:         sandbox,
 		PromptCaching:   promptCaching,
 		Compaction:      compaction,
+		Planning:        planning,
 		Stream:          stream,
 		SandboxImage:    sandboxImage,
 		SandboxNetwork:  sandboxNetwork,
@@ -699,7 +713,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 	approver := newWSApprover(sendFn)
 	resolved.Dangerous.Approver = approver
 
-	tools := builtinTools(resolved.Dangerous, sm, approver, resolved.MaxConcurrency, resolved.APIKey, toolConfig{WebSearch: resolved.WebSearch}, nil)
+	tools := builtinTools(resolved.Dangerous, sm, approver, resolved.MaxConcurrency, resolved.APIKey, toolConfig{WebSearch: resolved.WebSearch, Planning: &resolved.Planning}, nil)
 
 	// MCP server tools
 	var mcpCleanup func()
@@ -2113,6 +2127,16 @@ func handleSessionByID(store *session.Store, trustedProxies []string, wsToken st
 			id = strings.TrimSuffix(id, "/export")
 			exportFormat = r.URL.Query().Get("format")
 		}
+		// /api/sessions/{id}/plan — read-only structured plan view. The
+		// suffix is stripped for GET only: a non-GET request must not fall
+		// through to the base-session handlers (POST would otherwise rename
+		// the session through the plan URL). The plan surface is strictly
+		// read-only.
+		planView := false
+		if r.Method == http.MethodGet && strings.HasSuffix(id, "/plan") {
+			id = strings.TrimSuffix(id, "/plan")
+			planView = true
+		}
 		if id == "" {
 			http.Error(w, "missing session id", http.StatusBadRequest)
 			return
@@ -2150,6 +2174,10 @@ func handleSessionByID(store *session.Store, trustedProxies []string, wsToken st
 			}
 			if strings.HasSuffix(r.URL.Path, "/export") {
 				handleSessionExport(sess, exportFormat, w)
+				return
+			}
+			if planView {
+				handleSessionPlan(sess, w)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")

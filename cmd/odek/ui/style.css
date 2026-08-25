@@ -1110,6 +1110,57 @@ button:disabled { cursor: not-allowed; }
 .event-ctx { color: var(--text-3); overflow-wrap: anywhere; }
 .event-when { color: var(--text-3); margin-left: auto; flex-shrink: 0; }
 
+/* ── Plan panel ────────────────────────────────────────────────────── */
+.plan-header {
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  padding: var(--space-2) 0 var(--space-3);
+  border-bottom: 1px solid var(--line);
+  margin-bottom: var(--space-2);
+}
+.plan-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--line-2);
+  border-radius: var(--r-md);
+  margin-bottom: var(--space-2);
+  font-size: var(--fs-sm);
+  transition: border-color var(--dur) var(--ease);
+}
+.plan-row:hover { border-color: var(--line-2); }
+/* Status accent mirrors the glyph semantics (done/blocked/in_progress). */
+.plan-row.st-done { border-left-color: var(--green); }
+.plan-row.st-blocked { border-left-color: var(--red); }
+.plan-row.st-in_progress { border-left-color: var(--amber); }
+.plan-glyph { flex-shrink: 0; line-height: 1.55; }
+.plan-body { flex: 1; min-width: 0; }
+.plan-step-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.plan-step-id {
+  font-family: var(--code);
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  flex-shrink: 0;
+}
+.plan-title { color: var(--text); overflow-wrap: anywhere; }
+.plan-note {
+  margin-top: 2px;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 /* ═══════════════════════════════════════════════════════════════════════
    MAIN — chat column
 ═══════════════════════════════════════════════════════════════════════ */

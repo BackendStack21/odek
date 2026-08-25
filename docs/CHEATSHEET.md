@@ -236,8 +236,8 @@ Default network: `bridge` (internet access). Set `none` for air-gapped execution
 ## Telegram Bot
 
 - Requires `ODEK_TELEGRAM_BOT_TOKEN` env var
-- Slash commands: `/start`, `/help`, `/new`, `/plan`, `/plans`, `/plan_view`, `/plan_delete`, `/plan_resume`, `/sessions`, `/resume`, `/prune`, `/stats`, `/stop`, `/mode`, `/restart`
-- Plans: stored as `~/.odek/plans/<slug>.md`; `/plan` generates via agent, `/plan_resume` injects most recent plan into session
+- Slash commands: `/start`, `/help`, `/new`, `/plan`, `/plans`, `/plan_view`, `/plan_delete`, `/plan_resume`, `/plan_status`, `/sessions`, `/resume`, `/prune`, `/stats`, `/stop`, `/mode`, `/restart`
+- Plans: stored as `~/.odek/plans/<slug>.md`; `/plan` generates via agent, `/plan_resume` injects most recent plan into session; `/plan_status` shows the agent's structured loop plan (distinct concept — see docs/PLANNING.md)
 - Voice messages: automatically processed via `DownloadVoice` → OGG files in `~/.odek/media/`
 - Photos: automatically processed via `DownloadPhoto` → JPG files in `~/.odek/media/`
 - Conversations persist across bot restarts (`tg-<chatID>` sessions)

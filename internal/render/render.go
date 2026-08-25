@@ -429,8 +429,11 @@ func toolEmoji(name string) string {
 	// Cron / scheduling
 	case name == "cronjob":
 		return "⏰"
+	// Planning
+	case name == "plan":
+		return "📋"
 	// Skills / meta
-	case name == "todo" || name == "skill_view" || name == "skill_manage" ||
+	case name == "skill_view" || name == "skill_manage" ||
 		name == "skills_list" || name == "clarify":
 		return "➕"
 	default:

@@ -252,6 +252,7 @@ defense-in-depth.
 | `/plans` | List saved plans for this chat |
 | `/plan-view <slug>` | View a specific plan's content for this chat |
 | `/plan-delete <slug>` | Delete a saved plan for this chat |
+| `/plan_status` | Show the agent's current structured task plan (loop `plan` tool state) for this chat's session — distinct from the markdown-file plan commands above |
 | `/sessions` | List recent conversation sessions for this chat |
 | `/resume <session_id>` | Resume a previous session owned by this chat |
 | `/prune [days]` | Clean up old sessions and plans for this chat (default: 30 days) |
@@ -333,6 +334,22 @@ Slug generation (`slugify`) collapses a description into a lowercase, hyphen-sep
 ### Prefix Matching
 
 `ReadPlan` and `DeletePlan` support prefix matching: if the given slug uniquely prefixes an existing plan file, it matches. Ambiguous prefixes return an error listing the matching plans.
+
+### Structured Plan Status (`/plan_status`)
+
+`/plan_status` is a different concept from the markdown-file commands above:
+it reads the agent's **structured** plan — the state maintained by the loop's
+built-in `plan` tool (see [PLANNING.md](PLANNING.md)) — out of the chat's
+current session transcript. The reply shows a versioned header
+(`📋 Plan — vN · X/Y done[ · Z blocked]`) plus one line per step with a
+status glyph (✅ done, 🔄 in progress, ⬜ pending, ⛔ blocked), id, title,
+and optional note. Output is bounded at 3800 chars with an explicit
+omission trailer; with no plan active (or an unparseable one) it replies
+"No active plan in this session." Like `/sessions` and `/resume`, the
+session is resolved through the chat-scoped path (`tg-<chatID>`), so a chat
+can only ever see its own plan. Parsing is shared with the engine's
+restart-resume path (`loop.ExtractPlan`), and `/plan` continues to manage
+operator-facing markdown files — the two coexist by design.
 
 ## Media Download (`download.go`)
 

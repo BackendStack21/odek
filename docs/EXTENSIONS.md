@@ -162,7 +162,7 @@ odek can emit a structured runtime event stream: **one JSON object per line
 - `type` is one of: `run_started`, `iteration_completed`,
   `tool_call_started`, `tool_call_completed`, `tool_call_failed`,
   `session_saved`, `context_trimmed`, `budget_exceeded`, `run_completed`,
-  `run_failed`.
+  `run_failed`, `plan_created`, `plan_updated`.
 - `run_id` is a random 128-bit hex identifier generated per agent run and
   stamped on every event of that run. `session_id` appears once the session
   is known; earlier events omit it. `iteration` is the 1-based loop
@@ -187,6 +187,8 @@ Per-type `data` fields:
 | `budget_exceeded` | `limit_name` (`runtime`/`tool_calls`/`input_tokens`/`output_tokens`/`cost_usd`), `observed`, `limit` |
 | `run_completed` | `duration_ms`, `input_tokens`, `output_tokens` (run totals) |
 | `run_failed` | `duration_ms`, `error_class` |
+| `plan_created` | `steps` (total count), `version` |
+| `plan_updated` | `steps`, `done`, `in_progress`, `blocked`, `pending`, `version` |
 
 `args_sha256` correlates a `tool_call_started` with the model call that
 produced it; pair it with `tool`, `iteration`, and ordering to match a
@@ -195,7 +197,16 @@ completion. `error_class` is a stable low-cardinality string
 text is never emitted. On budget exhaustion `budget_exceeded` is always
 emitted before the closing `run_failed`. `session_saved` is emitted by
 surfaces that persist sessions per completed step (currently the `odek run
---session` persist callback, with `message_count`).
+--session` persist callback, with `message_count`). The plan events are
+emitted once per effective version-bumping mutation of the built-in `plan`
+tool (see [PLANNING.md](PLANNING.md)): `create` — including wholesale
+replace — maps to `plan_created`, every other bumping mutation to
+`plan_updated`. Payloads carry aggregate counts and the version ONLY — never
+step titles or notes. A note-only update bumps the version and therefore
+emits `plan_updated` with unchanged counts (the version stream stays
+gapless). Plan events carry no `iteration`: mutations fire inside parallel
+tool goroutines, so consumers correlate via the surrounding
+`tool_call_started`/`tool_call_completed` pair for the `plan` tool.
 
 Sink behavior (`--events-jsonl`): the file is created (and hardened) with
 `0600` permissions, the parent directory must already exist, a symlink at the

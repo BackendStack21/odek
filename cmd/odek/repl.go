@@ -55,6 +55,7 @@ func replCmd(args []string) error {
 		PromptCaching:   f.PromptCaching,
 		Stream:          f.Stream,
 		Compaction:      f.Compaction,
+		Planning:        f.Planning,
 		InteractionMode: f.InteractionMode,
 
 		SandboxImage:    f.SandboxImage,
@@ -84,7 +85,7 @@ func replCmd(args []string) error {
 			resolved.Skills.Embedding,
 		)
 	}
-	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{WebSearch: resolved.WebSearch}, nil)
+	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{WebSearch: resolved.WebSearch, Planning: &resolved.Planning}, nil)
 
 	// MCP server tools
 	var mcpCleanup func()

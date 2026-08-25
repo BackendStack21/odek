@@ -317,8 +317,9 @@ export function renderAssistantMessage(content) {
 
 // ── Tool Helpers ──
 
-// Matches Go's render.ToolEmoji for consistency.
-function toolEmoji(name) {
+// Matches Go's render.ToolEmoji for consistency. Exported so tests can pin
+// the mirror (internal/render/render.go is the source of truth).
+export function toolEmoji(name) {
   if (name === 'read_file' || name === 'write_file' || name === 'search_files' ||
       name === 'patch' || name === 'execute_code' || name === 'multi_grep') return '📝';
   if (name === 'shell' || name === 'terminal' || name === 'process') return '💻';
@@ -328,7 +329,11 @@ function toolEmoji(name) {
   if (name === 'send_message') return '💬';
   if (name === 'delegate_task' || name === 'delegate_tasks') return '👥';
   if (name === 'cronjob') return '⏰';
-  if (name === 'todo' || name === 'skill_view' || name === 'skill_manage' ||
+  // Planning — mirrors the Go renderer's `case name == "plan": return "📋"`.
+  // The vestigial "todo" arm was retired there with no replacement: an
+  // unknown tool falls through to the default 🔧, and so does "todo" here.
+  if (name === 'plan') return '📋';
+  if (name === 'skill_view' || name === 'skill_manage' ||
       name === 'skills_list' || name === 'clarify') return '➕';
   if (name === 'transcribe') return '🎙️';
   if (name === 'list_directory' || name === 'create_directory') return '📁';

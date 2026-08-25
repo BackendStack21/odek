@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2955,5 +2956,506 @@ func TestEngine_Run_StreamOffKeepsBuffered(t *testing.T) {
 	result, err := engine.Run(context.Background(), "hi")
 	if err != nil || result != "buffered" {
 		t.Fatalf("Run() = %q, %v", result, err)
+	}
+}
+
+// ── Planning system (docs/PLANNING.md, Phase 1) ───────────────────────
+
+// planTC builds a tool_calls response body invoking the plan tool.
+func planTC(id, args string) string {
+	return `{"choices":[{"message":{"content":"","tool_calls":[{"id":"` + id +
+		`","function":{"name":"plan","arguments":` + strconv.Quote(args) + `}}]}}]}`
+}
+
+// TestEngine_Run_PlanLifecycle scripts a full run: plan(create) → work call
+// → plan(complete) → final answer. It pins that the plan message lands in
+// the protected head region and reflects the completed step.
+func TestEngine_Run_PlanLifecycle(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		switch callCount {
+		case 1:
+			fmt.Fprint(w, planTC("c1", `{"verb":"create","steps":[{"id":"s1","title":"One"},{"id":"s2","title":"Two"}]}`))
+		case 2:
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"","tool_calls":[{"id":"c2","function":{"name":"echo","arguments":"{}"}}]}}]}`)
+		case 3:
+			fmt.Fprint(w, planTC("c3", `{"verb":"complete","step_id":"s1"}`))
+		default:
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"all done"}}]}`)
+		}
+	}))
+	defer server.Close()
+
+	store := NewPlanStore(12, 2000)
+	registry := tool.NewRegistry([]tool.Tool{
+		&fakeTool{name: "echo", description: "echo", output: "ok"},
+		NewPlanTool(store),
+	})
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	engine := New(client, registry, 10, "", nil, 0)
+	engine.SetPlanStore(store)
+
+	result, messages, err := engine.RunWithMessages(context.Background(), []llm.Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "do the work"},
+	})
+	if err != nil {
+		t.Fatalf("RunWithMessages: %v", err)
+	}
+	if result != "all done" || callCount != 4 {
+		t.Fatalf("result = %q after %d calls, want completion after 4", result, callCount)
+	}
+
+	// Exactly one plan message, inside the protected head region.
+	idx := -1
+	for i, m := range messages {
+		if isPlanMessage(m) {
+			if idx >= 0 {
+				t.Fatal("more than one plan message in history")
+			}
+			idx = i
+		}
+	}
+	if idx < 0 {
+		t.Fatal("no plan message in returned history")
+	}
+	if head := engine.headLen(messages); idx >= head {
+		t.Errorf("plan message at %d but headLen = %d — not protected", idx, head)
+	}
+	if !strings.Contains(messages[idx].Content, "1/2 done") ||
+		!strings.Contains(messages[idx].Content, "s1 [done] One") {
+		t.Errorf("plan message missing completed state:\n%s", messages[idx].Content)
+	}
+	state, ok := store.Snapshot()
+	if !ok || state.Version != 2 || state.Steps[0].Status != StepDone {
+		t.Errorf("store state = %+v, want v2 with s1 done", state)
+	}
+}
+
+// TestTrimContext_PlanProtected forces graduated trimming with a plan
+// present: old turn groups drop while the plan message survives intact.
+func TestTrimContext_PlanProtected(t *testing.T) {
+	client := llm.New("http://unused", "sk-test", "test-model", "", 0, 0)
+	engine := New(client, tool.NewRegistry(nil), 10, "", nil, 3000)
+
+	store := NewPlanStore(12, 2000)
+	engine.SetPlanStore(store)
+	if _, err := store.Execute(`{"verb":"create","steps":[{"id":"s1","title":"Keep me"},{"id":"s2","title":"And me"}]}`); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	msgs := []llm.Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "task"},
+	}
+	msgs = engine.refreshPlanMessage(context.Background(), msgs)
+	planIdx := -1
+	for i, m := range msgs {
+		if isPlanMessage(m) {
+			planIdx = i
+		}
+	}
+	if planIdx < 0 {
+		t.Fatal("setup: no plan message inserted")
+	}
+	wantPlan := msgs[planIdx].Content
+
+	// Large old groups force trimming; a small recent group stays.
+	for i := 0; i < 5; i++ {
+		tc := llm.ToolCall{ID: fmt.Sprintf("c%d", i), Type: "function"}
+		tc.Function.Name = "echo"
+		tc.Function.Arguments = "{}"
+		msgs = append(msgs,
+			llm.Message{Role: "assistant", Content: strings.Repeat("x", 2000), ToolCalls: []llm.ToolCall{tc}},
+			llm.Message{Role: "tool", Content: strings.Repeat("y", 2000), ToolCallID: fmt.Sprintf("c%d", i)},
+		)
+	}
+	got := engine.trimContext(context.Background(), msgs, nil)
+
+	found := false
+	for _, m := range got {
+		if isPlanMessage(m) {
+			found = true
+			if m.Content != wantPlan {
+				t.Errorf("plan message content changed during trim:\n%s", m.Content)
+			}
+		}
+	}
+	if !found {
+		t.Error("plan message dropped by trimContext")
+	}
+	if len(got) >= len(msgs) {
+		t.Errorf("expected trimming to drop groups: %d -> %d messages", len(msgs), len(got))
+	}
+}
+
+// TestTrimContext_PlanProtectedAfterLeadingInjection covers the droppable-
+// boundary interaction: when a leading injection (skill/episode block) has
+// set ctxLeadDroppableFrom, a freshly inserted plan message lands AT the
+// boundary. The insertion must shift the boundary past itself (memory-slot
+// fix) or graduated trimming drops the plan first.
+func TestTrimContext_PlanProtectedAfterLeadingInjection(t *testing.T) {
+	client := llm.New("http://unused", "sk-test", "test-model", "", 0, 0)
+	engine := New(client, tool.NewRegistry(nil), 10, "", nil, 3000)
+
+	store := NewPlanStore(12, 2000)
+	engine.SetPlanStore(store)
+	if _, err := store.Execute(`{"verb":"create","steps":[{"id":"s1","title":"Survive the boundary"}]}`); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Simulate the iteration-0 injection sequence: a skill block inserted
+	// inside the leading system run marks the droppable boundary. (Run*
+	// resets ctxLeadDroppableFrom to -1 before injections happen; replicate
+	// that here since this engine never ran.)
+	engine.ctxLeadDroppableFrom = -1
+	msgs := []llm.Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "task"},
+	}
+	skillMsg := llm.Message{Role: "system", Content: strings.Repeat("SKILL ", 400)}
+	msgs = append(msgs[:1], append([]llm.Message{skillMsg}, msgs[1:]...)...)
+	engine.noteLeadingInjection(msgs, 1)
+	if engine.ctxLeadDroppableFrom != 1 {
+		t.Fatalf("setup: ctxLeadDroppableFrom = %d, want 1", engine.ctxLeadDroppableFrom)
+	}
+
+	// Plan insertion must land inside the protected region and shift the
+	// boundary past itself.
+	msgs = engine.refreshPlanMessage(context.Background(), msgs)
+	planIdx := -1
+	for i, m := range msgs {
+		if isPlanMessage(m) {
+			planIdx = i
+		}
+	}
+	if planIdx < 0 {
+		t.Fatal("setup: no plan message inserted")
+	}
+	wantPlan := msgs[planIdx].Content
+	if head := engine.headLen(msgs); planIdx >= head {
+		t.Fatalf("plan at %d not inside protected head %d after boundary shift", planIdx, head)
+	}
+	if engine.ctxLeadDroppableFrom <= planIdx {
+		t.Errorf("ctxLeadDroppableFrom = %d, must be > plan index %d", engine.ctxLeadDroppableFrom, planIdx)
+	}
+
+	// Force trimming: the injected skill block and old groups are droppable,
+	// the plan is not.
+	for i := 0; i < 5; i++ {
+		tc := llm.ToolCall{ID: fmt.Sprintf("c%d", i), Type: "function"}
+		tc.Function.Name = "echo"
+		tc.Function.Arguments = "{}"
+		msgs = append(msgs,
+			llm.Message{Role: "assistant", Content: strings.Repeat("x", 2000), ToolCalls: []llm.ToolCall{tc}},
+			llm.Message{Role: "tool", Content: strings.Repeat("y", 2000), ToolCallID: fmt.Sprintf("c%d", i)},
+		)
+	}
+	got := engine.trimContext(context.Background(), msgs, nil)
+
+	found := false
+	for _, m := range got {
+		if isPlanMessage(m) {
+			found = true
+			if m.Content != wantPlan {
+				t.Errorf("plan content changed during trim:\n%s", m.Content)
+			}
+		}
+	}
+	if !found {
+		t.Error("plan message dropped by trimContext despite boundary shift")
+	}
+}
+
+// TestTrimToSurvival_KeepsPlan pins survival-trim behavior: system +
+// warning + digest + plan + task + last user all survive.
+func TestTrimToSurvival_KeepsPlan(t *testing.T) {
+	planContent := renderPlan(PlanState{Version: 2, Steps: []PlanStep{
+		{ID: "s1", Title: "First", Status: StepDone},
+		{ID: "s2", Title: "Second", Status: StepPending},
+	}}, 2000)
+	msgs := []llm.Message{
+		{Role: "system", Content: "sys"},
+		{Role: "system", Content: digestMsgPrefix + " summary of old work]\ndigest body"},
+		{Role: "system", Content: planContent},
+		{Role: "user", Content: "original task"},
+		{Role: "assistant", ToolCalls: survivalTC("c1", "read_file")},
+		{Role: "tool", Content: "r1", ToolCallID: "c1"},
+		{Role: "assistant", ToolCalls: survivalTC("c2", "shell")},
+		{Role: "tool", Content: "r2", ToolCallID: "c2"},
+		{Role: "assistant", ToolCalls: survivalTC("c3", "shell")},
+		{Role: "tool", Content: "r3", ToolCallID: "c3"},
+		{Role: "user", Content: "latest"},
+	}
+	got := trimToSurvival(msgs)
+
+	foundDigest, foundPlan := false, false
+	for _, m := range got {
+		if isDigestMessage(m) {
+			foundDigest = true
+		}
+		if isPlanMessage(m) {
+			foundPlan = true
+			if m.Content != planContent {
+				t.Errorf("plan content altered by survival trim:\n%s", m.Content)
+			}
+		}
+	}
+	if !foundDigest {
+		t.Error("digest must survive survival trim")
+	}
+	if !foundPlan {
+		t.Error("plan message must survive survival trim")
+	}
+}
+
+// TestTrimToSurvival_NoPlanGroupAbsorption pins the duplicate-copy fix: the
+// group walk absorbs preceding system messages, and a plan (or digest)
+// sitting directly before an assistant message must NOT be absorbed into
+// the group on top of its standalone preservation — the stale higher-index
+// copy would win on newest-first resume.
+func TestTrimToSurvival_NoPlanGroupAbsorption(t *testing.T) {
+	planContent := renderPlan(PlanState{Version: 1, Steps: []PlanStep{
+		{ID: "s1", Title: "Only", Status: StepPending},
+	}}, 2000)
+	msgs := []llm.Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "original task"},
+		{Role: "system", Content: planContent}, // directly precedes the group
+		{Role: "assistant", ToolCalls: survivalTC("c1", "shell")},
+		{Role: "tool", Content: "r1", ToolCallID: "c1"},
+		{Role: "user", Content: "latest"},
+	}
+	got := trimToSurvival(msgs)
+
+	count := 0
+	for _, m := range got {
+		if isPlanMessage(m) {
+			count++
+			if m.Content != planContent {
+				t.Errorf("plan copy content differs:\n%s", m.Content)
+			}
+		}
+	}
+	if count != 1 {
+		t.Errorf("plan message count after survival trim = %d, want exactly 1", count)
+	}
+	// The digest gets the same protection.
+	digest := digestMsgPrefix + " old work]\nbody"
+	msgs[2] = llm.Message{Role: "system", Content: digest}
+	got = trimToSurvival(msgs)
+	digestCount := 0
+	for _, m := range got {
+		if isDigestMessage(m) {
+			digestCount++
+		}
+	}
+	if digestCount != 1 {
+		t.Errorf("digest message count after survival trim = %d, want exactly 1", digestCount)
+	}
+}
+
+// TestEngine_Resume_RestoresPlanFromMessages feeds RunWithMessages a
+// transcript containing a persisted plan message and pins that (a) engine
+// state matches the parsed plan and (b) the next render upserts in place.
+func TestEngine_Resume_RestoresPlanFromMessages(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"resumed fine"}}]}`)
+	}))
+	defer server.Close()
+
+	persisted := renderPlan(PlanState{Version: 2, Steps: []PlanStep{
+		{ID: "s1", Title: "First", Status: StepDone},
+		{ID: "s2", Title: "Second", Status: StepInProgress},
+	}}, 2000)
+
+	transcript := []llm.Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "original task"},
+		{Role: "system", Content: persisted},
+		{Role: "assistant", Content: "progress so far"},
+		{Role: "user", Content: "keep going"},
+	}
+
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	store := NewPlanStore(12, 2000)
+	engine := New(client, tool.NewRegistry(nil), 10, "", nil, 0)
+	engine.SetPlanStore(store)
+
+	_, messages, err := engine.RunWithMessages(context.Background(), transcript)
+	if err != nil {
+		t.Fatalf("RunWithMessages: %v", err)
+	}
+
+	state, ok := store.Snapshot()
+	if !ok || state.Version != 2 || len(state.Steps) != 2 ||
+		state.Steps[0].Status != StepDone || state.Steps[1].Status != StepInProgress {
+		t.Fatalf("restored state = %+v, want v2 [s1 done, s2 in_progress]", state)
+	}
+
+	// Mutate and refresh: the existing message must be updated IN PLACE —
+	// same index, still exactly one plan message.
+	before := -1
+	for i, m := range messages {
+		if isPlanMessage(m) {
+			before = i
+		}
+	}
+	if before < 0 {
+		t.Fatal("transcript lost its plan message")
+	}
+	if _, err := store.Execute(`{"verb":"complete","step_id":"s2"}`); err != nil {
+		t.Fatalf("complete s2: %v", err)
+	}
+	messages = engine.refreshPlanMessage(context.Background(), messages)
+	count, after := 0, -1
+	for i, m := range messages {
+		if isPlanMessage(m) {
+			count++
+			after = i
+		}
+	}
+	if count != 1 {
+		t.Fatalf("plan message count = %d, want 1", count)
+	}
+	if after != before {
+		t.Errorf("plan message moved: %d -> %d (must upsert in place)", before, after)
+	}
+	if !strings.Contains(messages[after].Content, "all 2 steps complete") {
+		t.Errorf("refreshed plan missing collapsed done form:\n%s", messages[after].Content)
+	}
+}
+
+// TestEngine_Resume_DropsCorruptPlanMessage completes the fail-closed story:
+// a persisted plan message that fails strict parse is REMOVED from the
+// history (it must not keep rendering as authoritative after its state was
+// dropped) and engine state stays empty. A valid older message still
+// restores when a newer corrupt one is dropped.
+func TestEngine_Resume_DropsCorruptPlanMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"resumed fine"}}]}`)
+	}))
+	defer server.Close()
+
+	valid := renderPlan(PlanState{Version: 1, Steps: []PlanStep{
+		{ID: "s1", Title: "Valid", Status: StepPending},
+	}}, 2000)
+
+	newEngine := func() (*Engine, *PlanStore) {
+		client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+		store := NewPlanStore(12, 2000)
+		engine := New(client, tool.NewRegistry(nil), 10, "", nil, 0)
+		engine.SetPlanStore(store)
+		return engine, store
+	}
+
+	t.Run("corrupt only", func(t *testing.T) {
+		engine, store := newEngine()
+		transcript := []llm.Message{
+			{Role: "system", Content: "sys"},
+			{Role: "user", Content: "task"},
+			{Role: "system", Content: "[Current plan: garbage that parses as nothing]"},
+			{Role: "assistant", Content: "progress"},
+			{Role: "user", Content: "continue"},
+		}
+		_, messages, err := engine.RunWithMessages(context.Background(), transcript)
+		if err != nil {
+			t.Fatalf("RunWithMessages: %v", err)
+		}
+		for i, m := range messages {
+			if isPlanMessage(m) {
+				t.Errorf("corrupt plan message survived at %d:\n%s", i, m.Content)
+			}
+		}
+		if _, ok := store.Snapshot(); ok {
+			t.Error("engine state must stay empty after dropping the corrupt plan")
+		}
+	})
+
+	t.Run("valid older survives corrupt newer", func(t *testing.T) {
+		engine, store := newEngine()
+		transcript := []llm.Message{
+			{Role: "system", Content: "sys"},
+			{Role: "user", Content: "task"},
+			{Role: "system", Content: valid},
+			{Role: "system", Content: "[Current plan: v9 — nonsense]"},
+			{Role: "assistant", Content: "progress"},
+			{Role: "user", Content: "continue"},
+		}
+		_, messages, err := engine.RunWithMessages(context.Background(), transcript)
+		if err != nil {
+			t.Fatalf("RunWithMessages: %v", err)
+		}
+		count := 0
+		for _, m := range messages {
+			if isPlanMessage(m) {
+				count++
+				if m.Content != valid {
+					t.Errorf("unexpected surviving plan copy:\n%s", m.Content)
+				}
+			}
+		}
+		if count != 1 {
+			t.Fatalf("plan message count = %d, want exactly the valid one", count)
+		}
+		state, ok := store.Snapshot()
+		if !ok || state.Version != 1 || len(state.Steps) != 1 || state.Steps[0].Title != "Valid" {
+			t.Errorf("restored state = %+v, want the valid v1 plan", state)
+		}
+	})
+}
+
+// TestEngine_Run_PlanIngestRecorded pins the audit ingest recording: a fresh
+// plan render (version-cache miss) records the rendered step-line body via
+// the ingest recorder with source "plan" — the engine-side counterpart to
+// what cmd/odek's wrapper does for tool outputs.
+func TestEngine_Run_PlanIngestRecorded(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"","tool_calls":[{"id":"c1","function":{"name":"plan","arguments":"{\"verb\":\"create\",\"steps\":[{\"id\":\"s1\",\"title\":\"Audited step\"}]}"}}]}}]}`)
+			return
+		}
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"done"}}]}`)
+	}))
+	defer server.Close()
+
+	store := NewPlanStore(12, 2000)
+	registry := tool.NewRegistry([]tool.Tool{NewPlanTool(store)})
+	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	engine := New(client, registry, 10, "", nil, 0)
+	engine.SetPlanStore(store)
+
+	var sources []string
+	var bodies []string
+	ctx := WithIngestRecorder(context.Background(), func(source, content string) {
+		sources = append(sources, source)
+		bodies = append(bodies, content)
+	})
+
+	if _, _, err := engine.RunWithMessages(ctx, []llm.Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "work"},
+	}); err != nil {
+		t.Fatalf("RunWithMessages: %v", err)
+	}
+
+	found := false
+	for i, src := range sources {
+		if src != "plan" {
+			continue
+		}
+		found = true
+		if !strings.Contains(bodies[i], "s1 [pending] Audited step") {
+			t.Errorf("recorded plan body missing rendered step:\n%s", bodies[i])
+		}
+		if strings.Contains(bodies[i], "<untrusted_content_") {
+			t.Errorf("ingest must record the raw body, not the wrapped one:\n%s", bodies[i])
+		}
+	}
+	if !found {
+		t.Fatalf("no %q ingest recorded; sources = %v", "plan", sources)
 	}
 }

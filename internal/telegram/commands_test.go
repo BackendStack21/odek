@@ -191,7 +191,8 @@ func TestAllHandlers_ReturnNoError(t *testing.T) {
 	inlineOnly := map[string]bool{
 		"sessions": true, "resume": true, "prune": true,
 		"plan": true, "plans": true, "plan_view": true, "plan_delete": true, "plan_resume": true,
-		"schedule": true, "schedules": true,
+		"plan_status": true,
+		"schedule":    true, "schedules": true,
 	}
 
 	for _, cmd := range DefaultCommands {

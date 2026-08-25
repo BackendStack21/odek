@@ -50,6 +50,14 @@ export function getSession(id, sessionToken) {
   return apiFetch('/api/sessions/' + encodeURIComponent(id), { sessionToken });
 }
 
+// getSessionPlan fetches the read-only structured plan view for a session
+// (docs/PLANNING.md). Returns {session_id, version, steps, found}; found=false
+// (still HTTP 200) means the transcript carries no parseable plan message.
+// Auth mirrors the sibling GET endpoints: session token via apiFetch.
+export function getSessionPlan(id, sessionToken) {
+  return apiFetch('/api/sessions/' + encodeURIComponent(id) + '/plan', { sessionToken });
+}
+
 export function renameSession(id, name, sessionToken) {
   return apiFetch('/api/sessions/' + encodeURIComponent(id), {
     method: 'POST',

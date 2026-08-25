@@ -1278,6 +1278,114 @@ func TestGlobalOverlay_Compaction(t *testing.T) {
 	}
 }
 
+// ── Planning config (docs/PLANNING.md) ────────────────────────────────
+
+func TestPlanning_Defaults(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+
+	def := DefaultPlanningConfig()
+	if !def.Enabled || def.MaxSteps != 12 || def.MaxRenderChars != 2000 {
+		t.Fatalf("DefaultPlanningConfig() = %+v, want enabled/12/2000", def)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	if !cfg.Planning.Enabled {
+		t.Error("Planning should default to enabled")
+	}
+	if cfg.Planning.MaxSteps != 12 || cfg.Planning.MaxRenderChars != 2000 {
+		t.Errorf("Planning caps = %d/%d, want 12/2000", cfg.Planning.MaxSteps, cfg.Planning.MaxRenderChars)
+	}
+}
+
+func TestPlanning_EnvDisable(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+	t.Setenv("ODEK_PLANNING", "false")
+
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.Planning.Enabled {
+		t.Error("ODEK_PLANNING=false should disable planning")
+	}
+}
+
+func TestPlanning_CLIFlagDisable(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+
+	disabled := false
+	cfg := LoadConfig(CLIFlags{Planning: &disabled})
+	if cfg.Planning.Enabled {
+		t.Error("--no-planning (CLIFlags.Planning=false) should disable planning")
+	}
+}
+
+func TestPlanning_RangeClamps(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	globalDir := filepath.Join(os.Getenv("HOME"), ".odek")
+	os.MkdirAll(globalDir, 0755)
+
+	if err := os.WriteFile(filepath.Join(globalDir, "config.json"), []byte(`{
+		"planning": {"max_steps": 9999, "max_render_chars": 1}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(t.TempDir())
+
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.Planning.MaxSteps != 50 {
+		t.Errorf("MaxSteps = %d, want clamped 50", cfg.Planning.MaxSteps)
+	}
+	if cfg.Planning.MaxRenderChars != 200 {
+		t.Errorf("MaxRenderChars = %d, want clamped 200", cfg.Planning.MaxRenderChars)
+	}
+}
+
+func TestPlanning_ProjectClamp(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	globalDir := filepath.Join(os.Getenv("HOME"), ".odek")
+	os.MkdirAll(globalDir, 0755)
+
+	if err := os.WriteFile(filepath.Join(globalDir, "config.json"), []byte(`{
+		"planning": {"enabled": true, "max_steps": 20, "max_render_chars": 4000}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile("odek.json", []byte(`{
+		"planning": {"enabled": true, "max_steps": 50, "max_render_chars": 9000}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	if !cfg.Planning.Enabled {
+		t.Error("planning should stay enabled")
+	}
+	if cfg.Planning.MaxSteps != 20 {
+		t.Errorf("MaxSteps = %d, want 20 (project may only lower)", cfg.Planning.MaxSteps)
+	}
+	if cfg.Planning.MaxRenderChars != 4000 {
+		t.Errorf("MaxRenderChars = %d, want 4000 (project may only lower)", cfg.Planning.MaxRenderChars)
+	}
+
+	// Global-off wins over a project enable attempt.
+	if err := os.WriteFile(filepath.Join(globalDir, "config.json"), []byte(`{
+		"planning": {"enabled": false}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("odek.json", []byte(`{
+		"planning": {"enabled": true}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg = LoadConfig(CLIFlags{})
+	if cfg.Planning.Enabled {
+		t.Error("project must not re-enable globally-disabled planning")
+	}
+}
+
 // TestGlobalOverlay_MCPServers verifies that MCPServers from global config
 // survive the merge. BUG: overlayFile doesn't transfer MCPServers.
 func TestGlobalOverlay_MCPServers(t *testing.T) {
