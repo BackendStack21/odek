@@ -3,6 +3,7 @@
 ## CLI Quick Reference
 
 ```bash
+odek --version                       # Version (aliases: `odek version`, `-v`)
 odek run "build a REST API"          # Single-shot task
 odek run --ctx schema.sql "query"     # Single-shot with file context
 odek run -c main.go,lib.go "compare"  # Multiple files via short flag
@@ -20,11 +21,21 @@ odek schedule list                   # List jobs (id, next fire, last status)
 odek schedule next "*/15 * * * *"    # Preview upcoming fire times
 odek schedule daemon                 # Run the scheduler headless
 
-# Sandbox flags (apply to run/repl/serve)
-odek run --sandbox "build safely"
+# Sandbox (ON by default for run/continue/repl — see Sandbox section)
+odek run --sandbox "build safely"     # Explicit: hard-fails if Docker is unavailable
+odek run --no-sandbox "quick task"    # Explicit opt-out
 odek serve --sandbox --sandbox-readonly --sandbox-network none
 odek repl --sandbox --sandbox-image python:3.12
+
+# Auditable event stream (odek.event/v1 JSONL)
+odek run --session --events-jsonl events.jsonl "task"              # call_id + args_summary per tool call
+odek run --events-jsonl events.jsonl --events-include-args "task"  # + raw (redacted) args, for incident review
 ```
+
+> **Strict flags:** unknown flags are a hard error — they are never folded
+> into the task text. If the task itself starts with `-`, pass it after an
+> explicit `--` separator: `odek run -- "-dash-prefixed task"`.
+
 
 ## Configuration (odek.json / ~/.odek/config.json)
 
@@ -52,7 +63,11 @@ odek repl --sandbox --sandbox-image python:3.12
   },
 
   "dangerous": {
-    "approval": "always"
+    "non_interactive": "read_only",
+    "classes": {
+      "persistence": "prompt",
+      "unread_exec": "prompt"
+    }
   },
 
   "mcp_servers": {
@@ -64,7 +79,27 @@ odek repl --sandbox --sandbox-image python:3.12
 }
 ```
 
-Priority: `~/.odek/config.json` ← `./odek.json` ← `ODEK_*` env ← CLI flags.
+Priority: `~/.odek/config.json` ← `./odek.json` ← `ODEK_*` env ← CLI flags. (The `dangerous` section is operator-only: a project `./odek.json` cannot set it, so a cloned repo can't lower its own guardrails.)
+
+### Risk Classes & Approvals
+
+Every shell command and file write is danger-classified; per-class action is allow / prompt / deny (default below, override via `dangerous.classes`):
+
+| Class | Default | Covers |
+|-------|---------|--------|
+| `safe` | allow | reads, `ls`, `cat`, `grep` |
+| `local_write` | allow | workspace writes |
+| `install` | prompt | `pip install`, `npm install`, … |
+| `network_egress` | prompt | `curl`, `git push`, browser |
+| `code_execution` | prompt | `bash -c`, `source`, pipe-to-shell |
+| `system_write` | prompt | `/etc`, `~/.ssh`, `~/.odek` trust anchors |
+| `persistence` | prompt | deferred-execution writes: shell profiles, `.envrc`, git hooks, CI workflows, cron/systemd/launchd, lifecycle scripts |
+| `unread_exec` | prompt | executing a script whose contents were not read this session |
+| `destructive` / `blocked` / `unknown` | deny | `rm -rf /`, wipe verbs, unrecognised verbs |
+
+- **Headless default is `non_interactive: "read_only"`** — inspection proceeds without a TTY, writes/exec/egress fail closed. `"deny"` blocks everything prompted; `"allow"` runs everything. An invalid explicit value fails closed to `deny`.
+- **Trust shortcuts never apply** to `persistence`, `unread_exec`, `destructive`, `blocked`, or `unknown` — each write/script is reviewed individually.
+- Reads of CI workflows / hook files stay frictionless; only **writes** escalate to `persistence`. A full-file `read_file` (or authoring the content yourself) satisfies the `unread_exec` gate; a partial or failed read licenses nothing.
 
 ### Audio Transcription
 - **`transcribe`** tool uses local whisper.cpp CLI — no cloud APIs
@@ -219,17 +254,25 @@ delegate_tasks tasks=[{goal: "task A", context: "..."}, {goal: "task B"}]
 
 ## Sandbox
 
+**On by default** for `odek run` / `odek continue` / `odek repl` — the container is the control for "agent ran attacker-controlled code", so isolation is what you get unless you deliberately give it up.
+
 ```bash
-odek run --sandbox --sandbox-image node:20 "install deps"
+odek run "install deps"                        # default-on: sandboxed when Docker is up
+odek run --sandbox --sandbox-image node:20 "install deps"   # explicit: hard-fails without Docker
+odek run --no-sandbox "quick task"             # explicit opt-out (same as ODEK_NO_SANDBOX=1)
 odek serve --sandbox --sandbox-readonly --sandbox-network none
 odek repl --sandbox --sandbox-memory 2g --sandbox-cpus 2
 ```
 
-Flags: `--sandbox`, `--sandbox-image`, `--sandbox-network`, `--sandbox-readonly`, `--sandbox-memory`, `--sandbox-cpus`, `--sandbox-user`.
+- **Implicit default + Docker unavailable** (or unapproved project `Dockerfile.odek`) → degrades to unsandboxed with a loud notice, instead of breaking Docker-less machines.
+- **`ODEK_REQUIRE_SANDBOX=1`** → any unsandboxed outcome is fatal, including explicit opt-outs (the hard constraint outranks contradictory flags).
+- `odek continue` pins the session's original sandbox posture — no mid-conversation containment flips.
 
-Env vars: `ODEK_SANDBOX=true`, `ODEK_SANDBOX_IMAGE`, `ODEK_SANDBOX_NETWORK`, etc.
+Flags: `--sandbox`, `--no-sandbox`, `--sandbox-image`, `--sandbox-network`, `--sandbox-readonly`, `--sandbox-memory`, `--sandbox-cpus`, `--sandbox-user`.
 
-> **Project config approval:** sandbox knobs set in `./odek.json` (`sandbox_env`, `sandbox_image`, `sandbox_network`, `sandbox_volumes`) require an interactive approval prompt. Use `ODEK_APPROVE_PROJECT_SANDBOX=1` in CI/scripts, or set sandbox config via `~/.odek/config.json` / env vars / CLI flags instead.
+Env vars: `ODEK_SANDBOX=true`, `ODEK_SANDBOX_IMAGE`, `ODEK_SANDBOX_NETWORK`, `ODEK_NO_SANDBOX=1`, `ODEK_REQUIRE_SANDBOX=1`, etc.
+
+> **Project config approval:** sandbox knobs set in `./odek.json` (`sandbox_env`, `sandbox_image`, `sandbox_network`, `sandbox_volumes`) require an interactive approval prompt. Use `ODEK_APPROVE_PROJECT_SANDBOX=1` in CI/scripts, or set sandbox config via `~/.odek/config.json` / env vars / CLI flags instead. A project config can enable the sandbox but never disable it.
 
 Default network: `bridge` (internet access). Set `none` for air-gapped execution.
 
@@ -259,6 +302,7 @@ See [docs/TELEGRAM.md](docs/TELEGRAM.md) for full documentation.
 
 - Stored in `~/.odek/sessions/<uuid>.json`
 - `odek repl --id <uuid>` to resume
+- `odek session show` renders TOOL CALL / TOOL RESULT pairs with matching `#call-id` labels — batched parallel calls can be paired programmatically
 - Buffer preserved across resumption
 - Sessions with ≥3 turns get episode extraction on close
 
@@ -291,6 +335,8 @@ odek mcp                                    # stdio transport
 | `ODEK_SANDBOX_MEMORY` | sandbox_memory |
 | `ODEK_SANDBOX_CPUS` | sandbox_cpus |
 | `ODEK_SANDBOX_USER` | sandbox_user |
+| `ODEK_NO_SANDBOX` | `=1` opts out of the sandbox default |
+| `ODEK_REQUIRE_SANDBOX` | `=1` makes any unsandboxed run fatal |
 | `ODEK_APPROVE_PROJECT_SANDBOX` | auto-approve project-level sandbox config (CI) |
 | `ODEK_SYSTEM` | system |
 | `ODEK_NO_COLOR` | no_color |
@@ -308,7 +354,8 @@ odek mcp                                    # stdio transport
 - **~11 MB static binary**
 - **One loop, one interface** — tool implementers write `func Call(args string) (string, error)`
 - **File-based config** — no YAML, no DSL, no schema generation
-- **Sandbox is opt-in** — no container runtime required for basic operation
+- **Sandbox on by default** (CLI) with loud unsandboxed fallback when Docker is missing — no container runtime *required*, isolation unless you opt out
+- **Auditable by construction** — `--events-jsonl` carries a stable `call_id` per tool call (batched calls pair correctly), a structured `args_summary` (argv0 / target / class), and secrets-redacted output
 
 ## Native Tools Reference
 
