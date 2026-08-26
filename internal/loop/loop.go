@@ -1975,8 +1975,23 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		// the Phase 3 range loop shadows the outer i, so capture it here.
 		iterNum := i + 1
 
+		// Stable per-call correlation IDs (P0-3): batched parallel calls are
+		// otherwise emitted as started,started,…,completed,completed,… with
+		// nothing tying each result to its call — which quietly corrupts any
+		// audit/replay tooling that pairs them sequentially. Prefer the
+		// provider's tool-call ID; fall back to a deterministic synthetic ID
+		// when the provider omits one.
+		callIDs := make([]string, len(result.ToolCalls))
+		for idx, tc := range result.ToolCalls {
+			if tc.ID != "" {
+				callIDs[idx] = tc.ID
+			} else {
+				callIDs[idx] = fmt.Sprintf("it%d-call%d", iterNum, idx)
+			}
+		}
+
 		// Phase 1: fire all tool_call events synchronously (rendering + events)
-		for _, tc := range result.ToolCalls {
+		for idx, tc := range result.ToolCalls {
 			if e.narrator != nil {
 				if msg := e.narrator.ToolCallMessage(tc.Function.Name, tc.Function.Arguments); msg != "" {
 					if e.renderer != nil {
@@ -1994,6 +2009,9 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 				Iteration: iterNum,
 				Tool:      tc.Function.Name,
 				Data: map[string]any{
+					// Stable correlation ID shared with the matching
+					// completed/failed event (P0-3).
+					"call_id": callIDs[idx],
 					// Never raw args: digest + size correlate start/complete
 					// without leaking argument content into the event stream.
 					"args_sha256": events.ArgsDigest(tc.Function.Arguments),
@@ -2186,6 +2204,8 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 					Iteration: iterNum,
 					Tool:      tc.Function.Name,
 					Data: map[string]any{
+						// Correlates with the tool_call_started event (P0-3).
+						"call_id":     callIDs[i],
 						"duration_ms": results[i].durationMs,
 					},
 				}

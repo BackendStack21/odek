@@ -3205,6 +3205,38 @@ func showSession(store *session.Store, args []string) error {
 	fmt.Printf("Task:    %s\n", sess.Task)
 	fmt.Println()
 
+	// Call-ID correlation (P0-3): parallel tool calls are stored as
+	// CALL,CALL,…,RESULT,RESULT,… with no implicit ordering link between a
+	// result and its call. Emit a stable label on both halves so audit,
+	// replay, and compliance tooling can pair them without guessing.
+	//
+	// Labels prefer the provider's tool-call ID; when a call has none (some
+	// providers omit it), a deterministic positional label is minted. Empty
+	// IDs can repeat across batches, so each side (calls and results) walks
+	// its own FIFO cursor per raw ID — matching the order in which the loop
+	// appends them.
+	callLabels := make(map[string][]string) // raw ToolCallID → labels in order
+	for i, msg := range sess.Messages {
+		for j, tc := range msg.ToolCalls {
+			label := tc.ID
+			if label == "" {
+				label = fmt.Sprintf("m%d-c%d", i, j)
+			}
+			callLabels[tc.ID] = append(callLabels[tc.ID], "#"+label)
+		}
+	}
+	callCursor := make(map[string]int)
+	resultCursor := make(map[string]int)
+	nextLabel := func(cursor map[string]int, rawID string) string {
+		labels := callLabels[rawID]
+		idx := cursor[rawID]
+		if idx >= len(labels) {
+			return "#unmatched"
+		}
+		cursor[rawID] = idx + 1
+		return labels[idx]
+	}
+
 	for i, msg := range sess.Messages {
 		content := strings.TrimSpace(msg.Content)
 		switch msg.Role {
@@ -3215,13 +3247,13 @@ func showSession(store *session.Store, args []string) error {
 		case "assistant":
 			if len(msg.ToolCalls) > 0 {
 				for _, tc := range msg.ToolCalls {
-					fmt.Printf("── [TOOL CALL: %s] ──\n%s\n\n", tc.Function.Name, tc.Function.Arguments)
+					fmt.Printf("── [TOOL CALL: %s %s] ──\n%s\n\n", tc.Function.Name, nextLabel(callCursor, tc.ID), tc.Function.Arguments)
 				}
 			} else {
 				fmt.Printf("── [ASSISTANT] ──\n%s\n\n", content)
 			}
 		case "tool":
-			fmt.Printf("── [TOOL RESULT: %s] ──\n%s\n\n", msg.Name, shorten(content, 200))
+			fmt.Printf("── [TOOL RESULT: %s %s] ──\n%s\n\n", msg.Name, nextLabel(resultCursor, msg.ToolCallID), shorten(content, 200))
 		}
 	}
 	return nil
