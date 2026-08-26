@@ -73,20 +73,38 @@ func parseExternalRefFlags(specs []string) ([]session.ExternalRef, error) {
 // parseContinueArgs splits `odek continue` arguments into the optional
 // --id / --external-ref flags (front-positioned, repeatable for the
 // latter) and the trailing task text.
+//
+// Unknown flags are a hard error (P0-1): they must never be folded into
+// the task text, where a typo'd or version-drifted flag silently corrupts
+// the prompt. An explicit "--" separator passes everything after it
+// through verbatim.
 func parseContinueArgs(args []string) (sessionID string, refSpecs []string, task string, err error) {
 	i := 0
+loop:
 	for i < len(args) {
-		if args[i] == "--id" && i+1 < len(args) {
+		if args[i] == "--" {
+			i++
+			break
+		}
+		switch args[i] {
+		case "--id":
+			if i+1 >= len(args) {
+				return "", nil, "", fmt.Errorf("--id requires a value")
+			}
 			sessionID = args[i+1]
 			i += 2
-			continue
-		}
-		if args[i] == "--external-ref" && i+1 < len(args) {
+		case "--external-ref":
+			if i+1 >= len(args) {
+				return "", nil, "", fmt.Errorf("--external-ref requires a value")
+			}
 			refSpecs = append(refSpecs, args[i+1])
 			i += 2
-			continue
+		default:
+			if isFlagLike(args[i]) {
+				return "", nil, "", unknownFlagError(args[i])
+			}
+			break loop
 		}
-		break
 	}
 	if i >= len(args) {
 		return "", nil, "", fmt.Errorf("no task provided for continue")

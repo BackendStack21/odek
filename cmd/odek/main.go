@@ -371,11 +371,37 @@ type runFlags struct {
 
 // parseRunFlags parses `odek run` arguments and returns the parsed flags.
 // Exported for testing.
+// isFlagLike reports whether an argument should be treated as a CLI flag
+// rather than task text. A bare "-" stays literal (stdin convention).
+func isFlagLike(arg string) bool {
+	return strings.HasPrefix(arg, "-") && arg != "-"
+}
+
+// unknownFlagError builds the error for an unrecognised flag. The hint is
+// load-bearing: before strict parsing, a typo'd or version-drifted flag was
+// silently folded into the task text — corrupting the prompt and handing
+// anything that controls argv (wrapper scripts, CI jobs, Makefile targets)
+// a prompt-injection vector into the CLI itself.
+func unknownFlagError(flag string) error {
+	return fmt.Errorf("unknown flag %q — flags must come before the task text; "+
+		"if the task itself starts with \"-\", separate it with \"--\" "+
+		"(e.g. odek run -- \"-dash-prefixed task\")", flag)
+}
+
 func parseRunFlags(args []string) (runFlags, error) {
 	var f runFlags
 
+	// sep records that an explicit "--" separator was seen: every argument
+	// after it is verbatim task text, even when it looks like a flag.
+	sep := false
+
 	i := 0
 	for i < len(args) {
+		if args[i] == "--" {
+			i++
+			sep = true
+			break
+		}
 		switch args[i] {
 		case "--model":
 			if i+1 >= len(args) {
@@ -734,133 +760,148 @@ func parseRunFlags(args []string) (runFlags, error) {
 			i++
 
 		default:
+			// Unknown flags are a hard error, never task text (P0-1): a
+			// typo'd flag must not silently corrupt the prompt.
+			if isFlagLike(args[i]) {
+				return f, unknownFlagError(args[i])
+			}
 			// Not a flag — treat remaining as the task
 			goto done
 		}
 	}
 done:
-	// Scan remaining args for standalone flags that may appear after the
-	// task phrase (e.g. "odek run 'hello' --deliver"). This allows flags
-	// without values to be placed anywhere on the command line.
 	taskArgs := args[i:]
-	for j := 0; j < len(taskArgs); j++ {
-		switch taskArgs[j] {
-		case "--deliver":
-			f.Deliver = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--sandbox":
-			f.Sandbox = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--session":
-			f.Session = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--no-color":
-			f.NoColor = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--no-agents":
-			f.NoAgents = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--no-learn":
-			f.Learn = boolPtr(false)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--learn":
-			f.Learn = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--prompt-caching":
-			f.PromptCaching = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--stream":
-			f.Stream = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--compaction":
-			f.Compaction = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--no-compaction":
-			f.Compaction = boolPtr(false)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--planning":
-			f.Planning = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--no-planning":
-			f.Planning = boolPtr(false)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--sandbox-readonly":
-			f.SandboxReadonly = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--memory-extended-enabled":
-			f.MemoryExtendedEnabled = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--guard-scan-memory":
-			f.GuardScanMemory = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--guard-no-scan-memory":
-			f.GuardScanMemory = boolPtr(false)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--guard-scan-system-prompt":
-			f.GuardScanSystemPrompt = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--guard-no-scan-system-prompt":
-			f.GuardScanSystemPrompt = boolPtr(false)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--guard-scan-mcp":
-			f.GuardScanMCP = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--guard-no-scan-mcp":
-			f.GuardScanMCP = boolPtr(false)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--guard-scan-skills":
-			f.GuardScanSkills = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--guard-no-scan-skills":
-			f.GuardScanSkills = boolPtr(false)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--guard-scan-tool-outputs":
-			f.GuardScanToolOutputs = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--guard-no-scan-tool-outputs":
-			f.GuardScanToolOutputs = boolPtr(false)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--guard-scan-telegram":
-			f.GuardScanTelegram = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--guard-no-scan-telegram":
-			f.GuardScanTelegram = boolPtr(false)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--guard-fallback":
-			f.GuardFallbackToLocal = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--guard-no-fallback":
-			f.GuardFallbackToLocal = boolPtr(false)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
+	if !sep {
+		// Scan remaining args for standalone flags that may appear after the
+		// task phrase (e.g. "odek run 'hello' --deliver"). This allows flags
+		// without values to be placed anywhere on the command line. Anything
+		// else flag-shaped is a hard error — it must never leak into the task.
+		for j := 0; j < len(taskArgs); j++ {
+			switch taskArgs[j] {
+			case "--deliver":
+				f.Deliver = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--sandbox":
+				f.Sandbox = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--session":
+				f.Session = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--no-color":
+				f.NoColor = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--no-agents":
+				f.NoAgents = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--no-learn":
+				f.Learn = boolPtr(false)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--learn":
+				f.Learn = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--prompt-caching":
+				f.PromptCaching = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--stream":
+				f.Stream = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--compaction":
+				f.Compaction = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--no-compaction":
+				f.Compaction = boolPtr(false)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--planning":
+				f.Planning = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--no-planning":
+				f.Planning = boolPtr(false)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--sandbox-readonly":
+				f.SandboxReadonly = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--memory-extended-enabled":
+				f.MemoryExtendedEnabled = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--guard-scan-memory":
+				f.GuardScanMemory = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--guard-no-scan-memory":
+				f.GuardScanMemory = boolPtr(false)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--guard-scan-system-prompt":
+				f.GuardScanSystemPrompt = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--guard-no-scan-system-prompt":
+				f.GuardScanSystemPrompt = boolPtr(false)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--guard-scan-mcp":
+				f.GuardScanMCP = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--guard-no-scan-mcp":
+				f.GuardScanMCP = boolPtr(false)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--guard-scan-skills":
+				f.GuardScanSkills = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--guard-no-scan-skills":
+				f.GuardScanSkills = boolPtr(false)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--guard-scan-tool-outputs":
+				f.GuardScanToolOutputs = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--guard-no-scan-tool-outputs":
+				f.GuardScanToolOutputs = boolPtr(false)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--guard-scan-telegram":
+				f.GuardScanTelegram = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--guard-no-scan-telegram":
+				f.GuardScanTelegram = boolPtr(false)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--guard-fallback":
+				f.GuardFallbackToLocal = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--guard-no-fallback":
+				f.GuardFallbackToLocal = boolPtr(false)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			default:
+				// Unknown flag-shaped token after the task starts: hard error.
+				// Silently leaving it in the task is what let a drifted
+				// `--interaction-mode` end up prepended to a prompt (P0-1).
+				if isFlagLike(taskArgs[j]) {
+					return f, unknownFlagError(taskArgs[j])
+				}
+			}
 		}
 	}
 	f.Task = strings.Join(taskArgs, " ")
@@ -928,6 +969,10 @@ func parseReplFlags(args []string) (replFlags, error) {
 				f.Planning = boolPtr(true)
 			case "--no-planning":
 				f.Planning = boolPtr(false)
+			default:
+				if isFlagLike(args[i]) {
+					return f, unknownFlagError(args[i])
+				}
 			}
 			break
 		}
@@ -987,7 +1032,12 @@ func parseReplFlags(args []string) (replFlags, error) {
 			f.InteractionMode = args[i+1]
 			i += 2
 		default:
-			// Unrecognized flag or positional — skip it
+			// Unknown flags are a hard error (P0-1): silently skipping a
+			// typo'd flag leaves the operator believing it took effect.
+			// Bare positionals are still ignored — repl takes no task text.
+			if isFlagLike(args[i]) {
+				return f, unknownFlagError(args[i])
+			}
 			i++
 		}
 	}
@@ -1011,7 +1061,7 @@ func printUsage() {
   odek memory <list|promote <session_id>>
   odek cleanup [--dry-run]
   odek upgrade [--check]
-  odek version
+  odek version | odek --version
 
 Commands:
   run                 Execute a task with the agent loop
