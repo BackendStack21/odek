@@ -70,13 +70,15 @@
     }
   },
   "dangerous": {
-    "non_interactive": "deny",
+    "non_interactive": "read_only",
     "classes": {
       "safe": "allow",
       "local_write": "allow",
       "install": "prompt",
       "network_egress": "allow",
       "code_execution": "prompt",
+      "persistence": "prompt",
+      "unread_exec": "prompt",
       "system_write": "prompt",
       "unknown": "deny",
       "destructive": "deny",

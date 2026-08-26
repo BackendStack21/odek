@@ -13,6 +13,12 @@
 #   docker compose --profile restricted up --build
 #   docker compose --profile godmode run --rm odek-godmode run "create build.sh and run it"
 #   docker compose --profile telegram-restricted up --build -d
+#
+# v1.27+ posture: odek's own Docker sandbox is ON by default outside Compose.
+# Inside these containers it stays pinned off (--no-sandbox on the serve
+# commands + "sandbox": false in both config.*.json) because the container IS
+# the boundary. Running odek outside Compose: keep the default, or make an
+# unsandboxed run fatal with ODEK_REQUIRE_SANDBOX=1.
 
 services:
   # ── Restricted (default) — interactive Web UI with approval prompts ──

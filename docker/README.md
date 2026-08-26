@@ -7,11 +7,12 @@ Ready-to-run Compose setup for Odek in two permission profiles:
 | **Restricted** (default) | Commands are risk-classified; destructive ones denied, the rest require approval. | Day-to-day use, untrusted tasks, human-in-the-loop. |
 | **Godmode** (all permissions) | "YOLO" mode — every risk class auto-allowed (except a hardcoded blocklist like fork bombs). No prompts. | Sealed, throwaway containers / CI. |
 
-> **Why no `--sandbox`?** Odek's own `--sandbox` flag spawns *nested* Docker
-> containers. Here the Compose container **is** the sandbox, so commands run
-> directly inside it. The profile controls *what the agent may do inside that
-> boundary*. (`serve` defaults sandbox on, so its command passes `--no-sandbox`;
-> `run`/`repl`/`telegram` are unsandboxed by default.)
+> **Why no sandbox-in-Docker?** Since v1.27 odek's own sandbox is **on by
+> default** everywhere (`--no-sandbox` / `ODEK_NO_SANDBOX=1` opts out). These
+> profiles pin it off explicitly — the Compose container **is** the sandbox:
+> the `serve` commands pass `--no-sandbox` and both configs set
+> `"sandbox": false`. Running odek outside Compose? Keep the new default, or
+> make an unsandboxed run fatal with `ODEK_REQUIRE_SANDBOX=1` (CI hard line).
 
 For the full walkthrough, threat model, and tuning, see
 [`../docs/DOCKER_COMPOSE_USER_GUIDE.md`](../docs/DOCKER_COMPOSE_USER_GUIDE.md).
@@ -359,13 +360,26 @@ container after editing (`... up` again) since the config is mounted at startup.
 ```jsonc
 {
   "dangerous": {
+    "non_interactive": "read_only",   // headless default since v1.27 — inspection proceeds, writes/exec/egress fail closed ("deny" = full lockdown)
     "action": "prompt",
     "allowlist": ["go test ./...", "npm test"],   // always allowed
     "denylist": ["git push --force"],              // always blocked
-    "classes": { "network_egress": "allow" }       // loosen one class
+    "classes": {
+      "network_egress": "allow",                   // loosen one class
+      "persistence": "prompt",                     // writes to shell rc / .envrc / git hooks / CI workflows / cron / systemd / npm lifecycle — never trust-shortcuttable
+      "unread_exec": "prompt"                      // executing a repo-supplied script requires reading it this session first
+    }
   }
 }
 ```
+
+**Defaults since v1.27:** `non_interactive` falls back to `read_only` (was
+`deny`); the new `persistence` and `unread_exec` classes default to `prompt`,
+are never eligible for session-trust shortcuts, and stay denied for scheduled
+jobs (the scheduler's non-overrideable floor). Godmode's blanket
+`"action": "allow"` already covers them — per-class entries beat `action`, so
+to re-enable those two gates inside godmode, add explicit
+`"persistence": "prompt"` / `"unread_exec": "prompt"` to its `classes`.
 
 ## Security notes
 
