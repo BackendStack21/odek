@@ -517,7 +517,7 @@
   "description": "The fastest, minimal Go autonomous agent runtime. ~12 MB static binary, zero frameworks. ReAct agent with parallel tool execution, persistent memory, MCP, sandbox, Web UI, and Telegram bot.",
   "url": "https://odek.21no.de",
   "downloadUrl": "https://github.com/BackendStack21/odek",
-  "softwareVersion": "1.26.2",
+  "softwareVersion": "1.27.0",
   "license": "https://github.com/BackendStack21/odek/blob/main/LICENSE",
   "image": "https://odek.21no.de/og-image.png",
   "screenshot": "https://odek.21no.de/og-image.png",
@@ -532,7 +532,8 @@
     "Parallel tool execution",
     "Persistent three-tier memory",
     "MCP server and client",
-    "Docker sandbox",
+    "Docker sandbox (on by default)",
+    "Structured task planning (plan tool)",
     "Web UI",
     "Telegram bot",
     "Provider-agnostic (any OpenAI-compatible endpoint)"
@@ -657,7 +658,8 @@
           <span class="prompt">$ $EDITOR config.restricted.json</span><br>
           <br>
           <span class="output">"dangerous": {</span><br>
-          <span class="output">&nbsp;&nbsp;"non_interactive": "deny",</span><br>
+          <span class="output">&nbsp;&nbsp;"non_interactive": </span><span class="prompt">"read_only"</span><span class="output">,</span><br>
+          <span class="info"># read_only is the v1.27 default — inspection proceeds, writes/exec/egress fail closed ("deny" locks down fully)</span><br>
           <span class="output">&nbsp;&nbsp;"classes": {</span><br>
           <span class="output">&nbsp;&nbsp;&nbsp;&nbsp;"safe": "allow",</span><br>
           <span class="output">&nbsp;&nbsp;&nbsp;&nbsp;"local_write": "allow",</span><br>
@@ -824,8 +826,8 @@
 
       <!-- Slide 3 -->
       <div class="slide">
-        <span class="info"># Sandbox mode</span><br>
-        <span class="prompt">$ odek run --sandbox "Check if curl is installed"</span><br>
+        <span class="info"># Sandbox — on by default</span><br>
+        <span class="prompt">$ odek run "Check if curl is installed"</span><br>
         <span class="info">🔒 Sandbox: ephemeral container started</span><br>
         <span class="info">═══ Iter 1/4 ═══  [389 in · 156 out · 2.1s]</span><br>
         <span class="output">Running inside a fresh Docker container:</span><br>
@@ -833,7 +835,7 @@
         <span class="output">/usr/bin/curl</span><br>
         <span class="prompt">$ curl --version</span><br>
         <span class="output">curl 8.5.0 (x86_64-pc-linux-musl)</span><br>
-        <span class="info">🔒 Container destroyed</span>
+        <span class="info">🔒 Container destroyed · opt out: --no-sandbox / ODEK_NO_SANDBOX=1 · enforce in CI: ODEK_REQUIRE_SANDBOX=1</span>
       </div>
 
       <!-- Slide 4 -->
@@ -910,7 +912,7 @@
     <div class="card">
       <div class="icon">🔒</div>
       <h4>Sandboxed Execution</h4>
-      <p><code>odek run --sandbox</code> — every session spawns an isolated Docker container. No network, no host mounts beyond the working directory, zero capabilities, destroyed on exit.</p>
+      <p>Sandboxing is on by default: every <code>odek run</code> / <code>repl</code> session executes in an isolated Docker container — no network, no host mounts beyond the working directory, zero capabilities, destroyed on exit. Opt out with <code>--no-sandbox</code>; make unsandboxed runs fatal in CI with <code>ODEK_REQUIRE_SANDBOX=1</code>.</p>
     </div>
 
     <div class="card">
@@ -950,6 +952,12 @@
     </div>
 
     <div class="card">
+      <div class="icon">🪤</div>
+      <h4>Injection Hardening</h4>
+      <p>Forged against a 22-scenario prompt-injection benchmark. Writes to shell profiles, <code>.envrc</code>, git hooks, CI workflows, cron/systemd gate under a dedicated <strong>persistence</strong> class that is never trust-shortcuttable; <strong>unread_exec</strong> requires reading a repo-supplied script before running it; and if a final reply claims “blocked” while mutations ran, a public consistency notice names what actually executed.</p>
+    </div>
+
+    <div class="card">
       <div class="icon">🔗</div>
       <h4>MCP Two-Way</h4>
       <p><strong>Server:</strong> <code>odek mcp</code> exposes native tools to Claude Code, Cursor, any MCP client. <strong>Client:</strong> odek connects to external MCP servers and makes their tools available to the agent.</p>
@@ -965,6 +973,12 @@
       <div class="icon">🔍</div>
       <h4>Session Search</h4>
       <p><code>session_search</code> — semantic search across your entire agent history: vector matching over full conversation content finds sessions whose messages match your query, even when titles don't. Never lose a past finding, decision, or code review.</p>
+    </div>
+
+    <div class="card">
+      <div class="icon">🗺️</div>
+      <h4>Structured Planning</h4>
+      <p>A native <code>plan</code> tool tracks multi-step work in protected state the engine will not trim away. Plans surface live in Telegram and the Web UI, and a restarted run resumes from its plan instead of guessing where it left off (<code>odek continue</code>).</p>
     </div>
 
     <div class="card">
@@ -1018,7 +1032,7 @@
       <tr><td>Direct dependencies</td><td class="win">Minimal — stdlib + a handful of focused pkgs</td><td>200+ packages</td></tr>
       <tr><td>Binary size</td><td class="win">Small static binary</td><td>50–200 MB (venv)</td></tr>
       <tr><td>Startup</td><td class="win">Instant</td><td>2–10 seconds</td></tr>
-      <tr><td>Sandbox</td><td class="win"><code>--sandbox</code> flag</td><td>Manual Docker setup</td></tr>
+      <tr><td>Sandbox</td><td class="win">On by default (<code>--no-sandbox</code> opt-out)</td><td>Manual Docker setup</td></tr>
       <tr><td>Tool interface</td><td class="win">One interface, one method</td><td>Class hierarchies + decorators</td></tr>
       <tr><td>Parallel tools</td><td class="win">Built-in bounded concurrency</td><td>Sequential only</td></tr>
       <tr><td>Telegram bot</td><td class="win">Full bot with keyboard, files, --deliver</td><td>Third-party adapters</td></tr>
@@ -1094,7 +1108,7 @@ $ odek run <span class="hljs-string">"@README.md summarize this project"</span>
   <h3>Commands</h3>
   <ul class="cmd-list">
     <li><span class="cmd">odek run &lt;task&gt;</span><span class="desc">Single-shot task</span></li>
-    <li><span class="cmd">odek run --sandbox &lt;task&gt;</span><span class="desc">Run in Docker sandbox</span></li>
+    <li><span class="cmd">odek run --sandbox &lt;task&gt;</span><span class="desc">Run in Docker sandbox (on by default since v1.27)</span></li>
     <li><span class="cmd">odek repl</span><span class="desc">Interactive multi-turn REPL</span></li>
     <li><span class="cmd">odek repl --id &lt;uuid&gt;</span><span class="desc">Resume a saved session</span></li>
     <li><span class="cmd">odek serve</span><span class="desc">Start Web UI (sandboxed by default, http://127.0.0.1:8080)</span></li>
@@ -1117,7 +1131,7 @@ $ odek run <span class="hljs-string">"@README.md summarize this project"</span>
   <ul class="cmd-list">
     <li><span class="cmd">--model &lt;name&gt;</span><span class="desc">LLM model (deepseek-v4-flash, gpt-4o, etc.)</span></li>
     <li><span class="cmd">--base-url &lt;url&gt;</span><span class="desc">API endpoint URL</span></li>
-    <li><span class="cmd">--sandbox</span><span class="desc">Run in Docker sandbox</span></li>
+    <li><span class="cmd">--no-sandbox</span><span class="desc">Disable the default Docker sandbox</span></li>
     <li><span class="cmd">--thinking &lt;level&gt;</span><span class="desc">Reasoning depth (enabled/disabled/low/medium/high)</span></li>
     <li><span class="cmd">--learn</span><span class="desc">Enable skill learning (on by default)</span></li>
     <li><span class="cmd">--no-learn</span><span class="desc">Disable skill learning</span></li>
