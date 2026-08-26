@@ -220,6 +220,13 @@ type Engine struct {
 	// summary. Off by default (P0-4).
 	eventsIncludeArgs bool
 
+	// runMutations records mutating tool calls completed during the current
+	// run (H-9): the final reply is reconciled against this ledger so a
+	// confident all-clear cannot misreport side effects that already
+	// happened. Reset at runLoop entry; only touched from the loop
+	// goroutine.
+	runMutations []string
+
 	// interactionMode controls how progress is surfaced to the user.
 	// "engaging" (default), "verbose", "enhance", or "off" (silent).
 	// When "off", all per-iteration render output is suppressed.
@@ -1584,6 +1591,8 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 	// Reset per-session repeated-call (stall) tracking
 	e.lastToolFingerprint = ""
 	e.toolRepeatStreak = 0
+	// Reset the run's mutation ledger (H-9)
+	e.runMutations = nil
 
 	// Rebuild plan state from a persisted plan message so `odek continue`
 	// resumes with forward state instead of re-deriving it from history
@@ -1871,6 +1880,11 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 
 		// No tool calls = final answer
 		if len(result.ToolCalls) == 0 {
+			// H-9: reconcile the reply against the action ledger before it
+			// goes out. A reply that misreports side effects ("blocked",
+			// "no changes made") after they happened is worse than silence.
+			result.Content = e.reconcileFinalReply(result.Content)
+
 			if e.renderer != nil && e.interactionMode != "off" {
 				// Show the model's reasoning for the final answer before the
 				// answer itself. For intermediate iterations this is handled
@@ -2210,6 +2224,10 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		const maxOutput = 4096
 		for i, tc := range result.ToolCalls {
 			output := results[i].output
+
+			// H-9: ledger the mutating calls that completed this run so the
+			// final reply can be reconciled against what actually happened.
+			e.recordMutation(tc.Function.Name, tc.Function.Arguments, output)
 
 			// Tool results: only shown in verbose mode.
 			if e.narrator == nil && e.renderer != nil && e.interactionMode != "off" {
