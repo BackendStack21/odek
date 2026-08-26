@@ -700,6 +700,7 @@ var defaultActions = map[RiskClass]Action{
 	LocalWrite:    Allow,
 	SystemWrite:   Prompt,
 	Persistence:   Prompt,
+	UnreadExec:    Prompt,
 	Destructive:   Deny,
 	NetworkEgress: Prompt,
 	CodeExecution: Prompt,
@@ -3419,6 +3420,10 @@ func Rank(cls RiskClass) int {
 		// persistence target is a system write PLUS later execution.
 		return 7
 	case SystemWrite:
+		return 6
+	case UnreadExec:
+		// Same "must prompt" tier as SystemWrite: executing an unread
+		// script. Kept out of TrustShortcutAllowed separately.
 		return 6
 	case CodeExecution:
 		return 5

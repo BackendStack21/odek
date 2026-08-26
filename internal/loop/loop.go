@@ -2568,7 +2568,10 @@ func classifyToolCall(name, args string) (danger.RiskClass, string) {
 		if err := json.Unmarshal([]byte(args), &cmd); err != nil || cmd.Command == "" {
 			return "", ""
 		}
-		return danger.Classify(cmd.Command), cmd.Command
+		// Script gate (H-6): executing an unread repo script surfaces as
+		// unread_exec in the batch card instead of plain code_execution.
+		cls, _ := danger.ClassifyScriptGate(cmd.Command)
+		return cls, cmd.Command
 	case "parallel_shell":
 		// The commands live inside a JSON array. Classify every command and
 		// surface all of them in the batch approval prompt so one cannot hide
@@ -2583,14 +2586,16 @@ func classifyToolCall(name, args string) (danger.RiskClass, string) {
 			return "", ""
 		}
 		var maxRank int
+		var maxCls danger.RiskClass
 		var parts []string
 		for _, c := range p.Commands {
 			if c.Command == "" {
 				continue
 			}
-			cls := danger.Classify(c.Command)
+			cls, _ := danger.ClassifyScriptGate(c.Command)
 			if r := danger.Rank(cls); r > maxRank {
 				maxRank = r
+				maxCls = cls
 			}
 			if c.Description != "" {
 				parts = append(parts, fmt.Sprintf("%s (%s)", c.Command, c.Description))
@@ -2601,7 +2606,7 @@ func classifyToolCall(name, args string) (danger.RiskClass, string) {
 		if len(parts) == 0 {
 			return "", ""
 		}
-		return riskClassFromRank(maxRank), strings.Join(parts, "; ")
+		return maxCls, strings.Join(parts, "; ")
 	case "write_file":
 		// Write targets use the write-aware classifier so deferred-execution
 		// targets (shell profiles, hooks, CI workflows, …) escalate to the

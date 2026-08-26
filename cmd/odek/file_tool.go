@@ -308,6 +308,10 @@ func (t *readFileTool) Call(argsJSON string) (string, error) {
 		return jsonError(fmt.Sprintf("cannot read %q: %v", args.Path, err))
 	}
 
+	// H-6: a successful read marks the path as read for the session, so a
+	// later execution of this file passes the unread-script gate.
+	danger.RecordRead(resolvedPath)
+
 	result := readFileResult{
 		Content:    wrapUntrusted(t.toolCtx(), resolvedPath, content),
 		TotalLines: totalLines,
@@ -424,6 +428,8 @@ func (t *writeFileTool) Call(argsJSON string) (string, error) {
 		if err := sandboxWriteFile(t.containerName, args.Path, []byte(args.Content), origMode); err != nil {
 			return jsonError(fmt.Sprintf("cannot write %q via sandbox: %v", args.Path, err))
 		}
+		// Content authored this session is content the agent has seen (H-6).
+		danger.RecordRead(args.Path)
 		return jsonResult(writeFileResult{
 			Success: true,
 			Path:    args.Path,
@@ -469,6 +475,8 @@ func (t *writeFileTool) Call(argsJSON string) (string, error) {
 		return jsonError(fmt.Sprintf("cannot rename %q: %v", args.Path, err))
 	}
 
+	// Content authored this session is content the agent has seen (H-6).
+	danger.RecordRead(args.Path)
 	return jsonResult(writeFileResult{
 		Success: true,
 		Path:    args.Path,
@@ -957,6 +965,8 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 		return jsonError(fmt.Sprintf("cannot write %q: %v", args.Path, err))
 	}
 
+	// Content (re)authored this session is content the agent has seen (H-6).
+	danger.RecordRead(args.Path)
 	return jsonResult(patchResult{
 		Success: true,
 		Diff:    wrapUntrusted(t.toolCtx(), "patch:"+args.Path, diff),
@@ -1453,6 +1463,8 @@ func (t *batchReadTool) readSingle(arg batchReadFileArg) batchReadFileResult {
 		return batchReadFileResult{Path: arg.Path, Error: fmt.Sprintf("cannot read %q: %v", arg.Path, err)}
 	}
 
+	// H-6: successful batch reads mark paths as read for the session.
+	danger.RecordRead(resolvedPath)
 	return batchReadFileResult{
 		Path:       arg.Path,
 		Content:    wrapUntrusted(t.toolCtx(), resolvedPath, content),

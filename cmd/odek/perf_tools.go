@@ -272,6 +272,7 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 			}
 			entry.Success = true
 			entry.Diff = wrapUntrusted(t.toolCtx(), "batch_patch:"+p.Path, diff)
+			danger.RecordRead(p.Path) // authored this session (H-6)
 			results[idx] = entry
 			continue
 		}
@@ -317,6 +318,7 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 
 		entry.Success = true
 		entry.Diff = wrapUntrusted(t.toolCtx(), "batch_patch:"+p.Path, diff)
+		danger.RecordRead(p.Path) // authored this session (H-6)
 		results[idx] = entry
 	}
 
@@ -421,11 +423,19 @@ func (t *parallelShellTool) Call(argsJSON string) (result string, err error) {
 	// Pre-check all commands for approval
 	for _, c := range args.Commands {
 		action := t.dangerousConfig.ActionForCommand(c.Command)
+		cls, unreadTargets := danger.ClassifyScriptGate(c.Command)
+		// H-6: unread-script execution gates under unread_exec even when
+		// code_execution was allowed or its class trusted.
+		if len(unreadTargets) > 0 && action == danger.Allow {
+			action = t.dangerousConfig.ActionFor(danger.UnreadExec)
+			if c.Description == "" {
+				c.Description = fmt.Sprintf("executes a script whose contents have not been read this session: %s", strings.Join(unreadTargets, ", "))
+			}
+		}
 		switch action {
 		case danger.Deny:
 			return jsonError(fmt.Sprintf("command denied: %s", c.Command))
 		case danger.Prompt:
-			cls := danger.Classify(c.Command)
 			if err := t.promptCommand(cls, c.Command, c.Description); err != nil {
 				return jsonError(fmt.Sprintf("command rejected: %s", c.Command))
 			}
@@ -544,6 +554,11 @@ func (t *parallelShellTool) runOne(cmd parallelShellCmd) parallelShellEntry {
 	// process group explicitly so a timed-out command cannot linger.
 	if ctx.Err() != nil && killInContainer != nil {
 		killInContainer()
+	}
+	// H-6: successful read-only viewer runs mark operands as read, same as
+	// the serial shell tool.
+	if err == nil {
+		recordViewerReads(cmd.Command)
 	}
 	entry.Stdout = strings.TrimSpace(stdout.String())
 	entry.Stderr = strings.TrimSpace(stderr.String())
