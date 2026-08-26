@@ -286,11 +286,21 @@ func (t *shellTool) checkApproval(cmd, description string) error {
 	// read this session gates under unread_exec — even when code_execution
 	// was allowed or its class trusted. The whole point is per-script
 	// review: the payload in the study sat inside the correct, documented
-	// fix and fired on the verification run.
-	if _, targets := danger.ClassifyScriptGate(cmd); len(targets) > 0 && action == danger.Allow {
-		action = t.dangerousConfig.ActionFor(danger.UnreadExec)
-		if description == "" {
-			description = fmt.Sprintf("executes a script whose contents have not been read this session: %s", strings.Join(targets, ", "))
+	// fix and fired on the verification run. An explicit unread_exec action
+	// participates in the decision: deny wins outright; allow alone does
+	// not bypass a prompting base class — both must allow.
+	if _, targets := danger.ClassifyScriptGate(cmd); len(targets) > 0 {
+		unreadAction := t.dangerousConfig.ActionFor(danger.UnreadExec)
+		switch {
+		case unreadAction == danger.Deny:
+			action = danger.Deny
+		case action == danger.Allow && unreadAction == danger.Allow:
+			action = danger.Allow
+		default:
+			action = danger.Prompt
+			if description == "" {
+				description = fmt.Sprintf("executes a script whose contents have not been read this session: %s", strings.Join(targets, ", "))
+			}
 		}
 	}
 
@@ -390,8 +400,22 @@ func recordViewerReads(cmd string) {
 	if !readViewerCommands[base] {
 		return
 	}
+	// Review finding CRIT-001: any pipe or redirect means the model did not
+	// see the operand's bytes — `cat payload.sh > run.sh` writes a copy the
+	// model never viewed, and `cat big.sh | head -1` shows a prefix. Both
+	// must license nothing: recording here would silently defeat the
+	// unread-exec gate. Only plain viewer invocations record.
 	for _, f := range fields[1:] {
-		if f == "" || strings.HasPrefix(f, "-") || f == "|" || f == ">" || f == ">>" {
+		switch f {
+		case "|", ">", ">>", "&>", "&>>", ">&", ">>&", "2>", "2>>", "||", "&&", ";":
+			return
+		}
+		if strings.HasPrefix(f, ">") || strings.HasPrefix(f, "2>") {
+			return // attached forms like >file, 2>file
+		}
+	}
+	for _, f := range fields[1:] {
+		if f == "" || strings.HasPrefix(f, "-") {
 			continue
 		}
 		if st, err := os.Stat(f); err == nil && !st.IsDir() {

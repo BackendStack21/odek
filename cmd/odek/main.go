@@ -2108,6 +2108,12 @@ func sandboxIntent(resolved config.ResolvedConfig) (want, explicit bool) {
 func ensureSandbox(resolved config.ResolvedConfig, tools []odek.Tool, cfg sandboxConfig) (containerName string, cleanup func() error, sandboxed bool, err error) {
 	want, explicit := sandboxIntent(resolved)
 	if !want {
+		if os.Getenv("ODEK_REQUIRE_SANDBOX") == "1" {
+			// The operator's hard constraint outranks every opt-out,
+			// including an explicit --no-sandbox: contradictory
+			// instructions fail loudly instead of guessing (review MED-003).
+			return "", nil, false, fmt.Errorf("sandbox required (ODEK_REQUIRE_SANDBOX=1) but sandboxing is disabled by flag/config")
+		}
 		warnSandboxDisabled()
 		return "", nil, false, nil
 	}

@@ -115,6 +115,22 @@ func TestEnsureSandbox_OptOutWarnsOnce(t *testing.T) {
 	}
 }
 
+func TestEnsureSandbox_RequireOutranksOptOut(t *testing.T) {
+	// Review MED-003: the operator's hard constraint beats every opt-out,
+	// including an explicit one — contradictory instructions fail loudly.
+	t.Setenv("ODEK_NO_SANDBOX", "1")
+	t.Setenv("ODEK_REQUIRE_SANDBOX", "1")
+	if _, _, _, err := ensureSandbox(config.ResolvedConfig{}, nil, sandboxConfig{}); err == nil {
+		t.Fatal("ODEK_REQUIRE_SANDBOX=1 + opt-out must be fatal")
+	}
+
+	// Same for an explicit config-level false.
+	t.Setenv("ODEK_NO_SANDBOX", "")
+	if _, _, _, err := ensureSandbox(config.ResolvedConfig{Sandbox: false, SandboxExplicit: true}, nil, sandboxConfig{}); err == nil {
+		t.Fatal("ODEK_REQUIRE_SANDBOX=1 + explicit false must be fatal")
+	}
+}
+
 func TestSandboxExplicit_TracksConfigLayer(t *testing.T) {
 	t.Setenv("ODEK_NO_SANDBOX", "")
 

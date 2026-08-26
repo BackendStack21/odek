@@ -2587,9 +2587,15 @@ func classifyToolCall(name, args string) (danger.RiskClass, string) {
 			return "", ""
 		}
 		// Script gate (H-6): executing an unread repo script surfaces as
-		// unread_exec in the batch card instead of plain code_execution.
-		cls, _ := danger.ClassifyScriptGate(cmd.Command)
-		return cls, cmd.Command
+		// unread_exec in the batch card instead of plain code_execution,
+		// with the gating scripts named in the card entry — the one place
+		// the user looks before granting batch trust.
+		cls, targets := danger.ClassifyScriptGate(cmd.Command)
+		resource := cmd.Command
+		if len(targets) > 0 {
+			resource = fmt.Sprintf("%s  [unread script: %s]", cmd.Command, strings.Join(targets, ", "))
+		}
+		return cls, resource
 	case "parallel_shell":
 		// The commands live inside a JSON array. Classify every command and
 		// surface all of them in the batch approval prompt so one cannot hide

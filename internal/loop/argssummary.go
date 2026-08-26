@@ -25,10 +25,18 @@ const (
 )
 
 func clampSummaryStr(s string) string {
-	if len(s) > summaryMaxStr {
-		return s[:summaryMaxStr]
+	// Truncate on a rune boundary: byte slicing mid-rune would emit U+FFFD
+	// into the JSONL stream (review LOW-2).
+	if len(s) <= summaryMaxStr {
+		return s
 	}
-	return s
+	cut := s[:summaryMaxStr]
+	for i := len(cut) - 1; i >= 0 && i >= len(cut)-4; i-- {
+		if (cut[i] & 0xC0) != 0x80 { // not a continuation byte → boundary at i+1
+			return cut[:i+1]
+		}
+	}
+	return cut[:len(cut)-4] // pathological: give up on the last few bytes
 }
 
 // argv0 returns the program name a shell command would execute: leading
@@ -79,9 +87,10 @@ func argSummary(name, argsJSON string) map[string]any {
 		if err := json.Unmarshal([]byte(argsJSON), &p); err != nil || p.Command == "" {
 			return nil
 		}
+		cls, _ := danger.ClassifyScriptGate(p.Command)
 		return map[string]any{
 			"argv0": argv0(p.Command),
-			"class": string(danger.Classify(p.Command)),
+			"class": string(cls),
 		}
 	case "parallel_shell":
 		var p struct {
@@ -92,15 +101,17 @@ func argSummary(name, argsJSON string) map[string]any {
 		if err := json.Unmarshal([]byte(argsJSON), &p); err != nil || len(p.Commands) == 0 {
 			return nil
 		}
-		maxRank := 0
+		var maxCls danger.RiskClass
+		var maxRank int
 		var argv0s []string
 		for _, c := range p.Commands {
 			if c.Command == "" {
 				continue
 			}
 			argv0s = append(argv0s, argv0(c.Command))
-			if r := danger.Rank(danger.Classify(c.Command)); r > maxRank {
-				maxRank = r
+			if cls, _ := danger.ClassifyScriptGate(c.Command); danger.Rank(cls) > maxRank {
+				maxRank = danger.Rank(cls)
+				maxCls = cls
 			}
 			if len(argv0s) >= summaryMaxList {
 				break
@@ -111,9 +122,21 @@ func argSummary(name, argsJSON string) map[string]any {
 		}
 		return map[string]any{
 			"argv0": argv0s,
-			"class": string(riskClassFromRank(maxRank)),
+			"class": string(maxCls),
 		}
-	case "read_file", "write_file", "patch", "search_files", "batch_read", "file_info",
+	case "write_file", "patch":
+		// Write tools: the class the write gate actually uses (review LOW-1).
+		var p struct {
+			Path string `json:"path"`
+		}
+		if err := json.Unmarshal([]byte(argsJSON), &p); err != nil || p.Path == "" {
+			return nil
+		}
+		return map[string]any{
+			"path":  clampSummaryStr(p.Path),
+			"class": string(danger.ClassifyPathWrite(p.Path)),
+		}
+	case "read_file", "search_files", "batch_read", "file_info",
 		"glob", "diff", "multi_grep", "json_query", "tree", "count_lines", "checksum",
 		"sort", "head_tail", "base64", "tr", "word_count", "transcribe":
 		var p struct {
@@ -142,7 +165,7 @@ func argSummary(name, argsJSON string) map[string]any {
 				continue
 			}
 			paths = append(paths, clampSummaryStr(patch.Path))
-			if r := danger.Rank(danger.ClassifyPath(patch.Path)); r > maxRank {
+			if r := danger.Rank(danger.ClassifyPathWrite(patch.Path)); r > maxRank {
 				maxRank = r
 			}
 			if len(paths) >= summaryMaxList {

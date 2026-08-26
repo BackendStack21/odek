@@ -425,11 +425,20 @@ func (t *parallelShellTool) Call(argsJSON string) (result string, err error) {
 		action := t.dangerousConfig.ActionForCommand(c.Command)
 		cls, unreadTargets := danger.ClassifyScriptGate(c.Command)
 		// H-6: unread-script execution gates under unread_exec even when
-		// code_execution was allowed or its class trusted.
-		if len(unreadTargets) > 0 && action == danger.Allow {
-			action = t.dangerousConfig.ActionFor(danger.UnreadExec)
-			if c.Description == "" {
-				c.Description = fmt.Sprintf("executes a script whose contents have not been read this session: %s", strings.Join(unreadTargets, ", "))
+		// code_execution was allowed or its class trusted (deny wins
+		// outright; both must allow to allow — see shellTool.checkApproval).
+		if len(unreadTargets) > 0 {
+			unreadAction := t.dangerousConfig.ActionFor(danger.UnreadExec)
+			switch {
+			case unreadAction == danger.Deny:
+				action = danger.Deny
+			case action == danger.Allow && unreadAction == danger.Allow:
+				action = danger.Allow
+			default:
+				action = danger.Prompt
+				if c.Description == "" {
+					c.Description = fmt.Sprintf("executes a script whose contents have not been read this session: %s", strings.Join(unreadTargets, ", "))
+				}
 			}
 		}
 		switch action {

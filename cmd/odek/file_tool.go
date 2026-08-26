@@ -308,9 +308,12 @@ func (t *readFileTool) Call(argsJSON string) (string, error) {
 		return jsonError(fmt.Sprintf("cannot read %q: %v", args.Path, err))
 	}
 
-	// H-6: a successful read marks the path as read for the session, so a
-	// later execution of this file passes the unread-script gate.
-	danger.RecordRead(resolvedPath)
+	// H-6: only a FULL-file read licenses later execution of this file
+	// (review HIGH-001): a partial read (offset/limit window over a longer
+	// file) showed the model a prefix — the payload could ride below.
+	if args.Offset <= 1 && args.Limit >= totalLines {
+		danger.RecordRead(resolvedPath)
+	}
 
 	result := readFileResult{
 		Content:    wrapUntrusted(t.toolCtx(), resolvedPath, content),
@@ -1463,8 +1466,11 @@ func (t *batchReadTool) readSingle(arg batchReadFileArg) batchReadFileResult {
 		return batchReadFileResult{Path: arg.Path, Error: fmt.Sprintf("cannot read %q: %v", arg.Path, err)}
 	}
 
-	// H-6: successful batch reads mark paths as read for the session.
-	danger.RecordRead(resolvedPath)
+	// H-6: full-file reads only (review HIGH-001) — same rationale as
+	// read_file.
+	if arg.Offset <= 1 && arg.Limit >= totalLines {
+		danger.RecordRead(resolvedPath)
+	}
 	return batchReadFileResult{
 		Path:       arg.Path,
 		Content:    wrapUntrusted(t.toolCtx(), resolvedPath, content),

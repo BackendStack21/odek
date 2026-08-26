@@ -1,6 +1,8 @@
 package loop
 
 import (
+	crand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -53,19 +55,51 @@ func mutatingShellCommand(cmd string) bool {
 	return danger.Rank(danger.Classify(cmd)) >= danger.Rank(danger.LocalWrite)
 }
 
-// toolResultFailed mirrors the loop's failure heuristic for raw outputs.
-func toolResultFailed(output string) bool {
-	return strings.HasPrefix(output, "error:") || strings.Contains(output, `"error"`)
+// shellOutputFailed matches the shell tool's failure shape only (review
+// HIGH-003): the explicit error prefix. A bare `"error"` substring in
+// successful build/JSON stdout must not drop a real mutation from the
+// ledger (false ledger entries fire a warning at worst; dropped entries
+// hide a lying all-clear at best).
+func shellOutputFailed(output string) bool {
+	return strings.HasPrefix(output, "error:")
+}
+
+// jsonToolFailed matches the file tools' failure shape: jsonError emits
+// {"error": "..."} while success is {"success":true,...}.
+func jsonToolFailed(output string) bool {
+	return strings.Contains(output, `"error"`)
+}
+
+// parallelShellEntries extracts per-command outcomes from a parallel_shell
+// result envelope so one failed entry does not erase the mutations of its
+// successful siblings.
+func parallelShellEntries(output string) []struct{ Command string } {
+	var env struct {
+		Results []struct {
+			Command string `json:"command"`
+			Error   string `json:"error"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(output), &env); err != nil {
+		return nil
+	}
+	var cmds []struct{ Command string }
+	for _, r := range env.Results {
+		if r.Error == "" && r.Command != "" {
+			cmds = append(cmds, struct{ Command string }{r.Command})
+		}
+	}
+	return cmds
 }
 
 // recordMutation updates the run ledger for one completed tool call.
 // Called from the loop's result phase, where success/failure is known.
 func (e *Engine) recordMutation(name, args, output string) {
-	if toolResultFailed(output) {
-		return
-	}
 	switch {
 	case mutatingToolNames[name]:
+		if jsonToolFailed(output) {
+			return
+		}
 		var p struct {
 			Path string `json:"path"`
 		}
@@ -76,6 +110,9 @@ func (e *Engine) recordMutation(name, args, output string) {
 			e.runMutations = append(e.runMutations, name)
 		}
 	case name == "shell", name == "terminal":
+		if shellOutputFailed(output) {
+			return
+		}
 		var p struct {
 			Command string `json:"command"`
 		}
@@ -86,17 +123,9 @@ func (e *Engine) recordMutation(name, args, output string) {
 			e.runMutations = append(e.runMutations, "shell: "+p.Command)
 		}
 	case name == "parallel_shell":
-		var p struct {
-			Commands []struct {
-				Command string `json:"command"`
-			} `json:"commands"`
-		}
-		if err := json.Unmarshal([]byte(args), &p); err != nil {
-			return
-		}
-		for _, c := range p.Commands {
-			if c.Command != "" && mutatingShellCommand(c.Command) {
-				e.runMutations = append(e.runMutations, "shell: "+c.Command)
+		for _, r := range parallelShellEntries(output) {
+			if mutatingShellCommand(r.Command) {
+				e.runMutations = append(e.runMutations, "shell: "+r.Command)
 			}
 		}
 	}
@@ -113,6 +142,19 @@ func replyDenialClaims(answer string) []string {
 	return claims
 }
 
+// noticeNonce generates a short random reference for a consistency notice.
+// The model cannot predict it, so it cannot pre-emit a matching header in
+// the reply body to borrow the runtime's attribution (review HIGH-002 —
+// best-effort, not proof: the authoritative record is the
+// reply_ledger_mismatch signal in the event stream).
+func noticeNonce() string {
+	var b [3]byte
+	if _, err := crand.Read(b[:]); err != nil {
+		return "xxxxxx"
+	}
+	return hex.EncodeToString(b[:])
+}
+
 // reconcileFinalReply diffs the final answer's claims against this run's
 // mutation ledger. It returns an amended answer (notice appended) when the
 // reply denies actions the ledger shows completed, else the answer as-is.
@@ -125,14 +167,15 @@ func (e *Engine) reconcileFinalReply(answer string) string {
 		return answer
 	}
 
+	ref := noticeNonce()
 	e.emitSignal(SignalEvent{
 		Type:   "reply_ledger_mismatch",
-		Detail: fmt.Sprintf("final reply denies %d claim pattern(s) after %d mutating action(s) completed", len(claims), len(e.runMutations)),
+		Detail: fmt.Sprintf("final reply denies %d claim pattern(s) after %d mutating action(s) completed (notice ref %s)", len(claims), len(e.runMutations), ref),
 	})
 
 	var sb strings.Builder
 	sb.WriteString(answer)
-	sb.WriteString("\n\n---\n⚠️ odek consistency notice (automated, added by the runtime — not the model): ")
+	fmt.Fprintf(&sb, "\n\n---\n⚠️ odek consistency notice [ref %s] (automated, added by the runtime — not the model): ", ref)
 	sb.WriteString("this reply claims no action was taken, but the following mutating tool calls completed during this run:\n")
 	limit := len(e.runMutations)
 	if limit > 5 {
