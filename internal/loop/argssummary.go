@@ -50,16 +50,22 @@ func argv0(cmd string) string {
 }
 
 func isEnvAssignment(tok string) bool {
-	if eq := strings.IndexByte(tok, '='); eq > 0 {
-		head := tok[:eq]
-		for _, r := range head {
-			if !(r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9' && head[0] != '_')) {
-				return false
-			}
-		}
+	eq := strings.IndexByte(tok, '=')
+	if eq <= 0 {
+		return false
+	}
+	head := tok[:eq]
+	if head[0] == '_' {
 		return true
 	}
-	return false
+	for _, r := range head {
+		isAlpha := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+		isIdent := r == '_' || isAlpha || (r >= '0' && r <= '9')
+		if !isIdent {
+			return false
+		}
+	}
+	return true
 }
 
 // argSummary builds the args_summary payload for a tool_call_started event.

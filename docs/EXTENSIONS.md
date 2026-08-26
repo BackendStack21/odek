@@ -168,9 +168,12 @@ odek can emit a structured runtime event stream: **one JSON object per line
   is known; earlier events omit it. `iteration` is the 1-based loop
   iteration; `tool` is the tool name for tool-call events.
 - `data` carries per-type fields (below). Tool arguments are **never** logged
-  raw — only a SHA-256 hash and sizes. Human-readable fields pass through
-  odek's secret redaction. No environment variables or credentials are ever
-  included.
+  raw by default — only a SHA-256 hash, sizes, and a structured
+  `args_summary`. Human-readable fields pass through odek's secret redaction.
+  No environment variables or credentials are ever included. As an explicit
+  opt-in for incident review, `odek run --events-include-args` (or Go API
+  `Config.EventsIncludeArgs`) adds the raw, still-redacted `args` to
+  `tool_call_started` events — without it, the stream stays secret-safe.
 - Unknown `type` values and unknown fields must be ignored by consumers.
 
 Per-type `data` fields:
@@ -179,9 +182,9 @@ Per-type `data` fields:
 |--------|---------------|
 | `run_started` | `model`, `sandbox` (bool), `max_iterations` |
 | `iteration_completed` | `input_tokens`, `output_tokens` (cumulative), `tools_called` |
-| `tool_call_started` | `args_sha256`, `args_bytes` |
-| `tool_call_completed` | `duration_ms`, `result_bytes`, `artifact_count` |
-| `tool_call_failed` | `duration_ms`, `error_class` |
+| `tool_call_started` | `call_id`, `args_sha256`, `args_bytes`, `args_summary`, `args` (opt-in) |
+| `tool_call_completed` | `call_id`, `duration_ms`, `result_bytes`, `artifact_count` |
+| `tool_call_failed` | `call_id`, `duration_ms`, `error_class` |
 | `session_saved` | `message_count` |
 | `context_trimmed` | `mode` (`proactive`/`survival`), `dropped_groups`, `truncated_results` |
 | `budget_exceeded` | `limit_name` (`runtime`/`tool_calls`/`input_tokens`/`output_tokens`/`cost_usd`), `observed`, `limit` |
@@ -190,8 +193,20 @@ Per-type `data` fields:
 | `plan_created` | `steps` (total count), `version` |
 | `plan_updated` | `steps`, `done`, `in_progress`, `blocked`, `pending`, `version` |
 
+`call_id` is the stable correlation key between a `tool_call_started` and
+its matching `tool_call_completed`/`tool_call_failed` event: the provider's
+tool-call ID when present, else a deterministic `it<iteration>-call<index>`
+synthetic ID. Batched parallel calls MUST be paired via `call_id` — never
+by positional order. `args_summary` is structured, low-cardinality audit
+metadata extracted from the arguments — for shell tools the program name
+(`argv0`, leading env assignments skipped) plus the danger `class`; for
+path tools the target `path`/`path` list and `class`; for browser/http
+tools the URL `host` only (full URLs can embed credentials). It is always
+present for recognized tools; values pass through secret redaction like
+every other string field.
+
 `args_sha256` correlates a `tool_call_started` with the model call that
-produced it; pair it with `tool`, `iteration`, and ordering to match a
+produced it; pair it with `call_id` to match a
 completion. `error_class` is a stable low-cardinality string
 (`context_canceled`, `deadline_exceeded`, `tool_error`, `error`) — raw error
 text is never emitted. On budget exhaustion `budget_exceeded` is always

@@ -139,10 +139,10 @@ func (e *Engine) reconcileFinalReply(answer string) string {
 		limit = 5
 	}
 	for i, m := range e.runMutations[:limit] {
-		sb.WriteString(fmt.Sprintf("  %d. %s\n", i+1, m))
+		fmt.Fprintf(&sb, "  %d. %s\n", i+1, m)
 	}
 	if len(e.runMutations) > limit {
-		sb.WriteString(fmt.Sprintf("  … and %d more\n", len(e.runMutations)-limit))
+		fmt.Fprintf(&sb, "  … and %d more\n", len(e.runMutations)-limit)
 	}
 	sb.WriteString("Verify the actual state before trusting the all-clear.\n")
 	return sb.String()

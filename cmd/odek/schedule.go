@@ -657,9 +657,14 @@ func buildHeadlessDangerConfig(resolved config.ResolvedConfig) danger.DangerousC
 	}
 	// Non-overrideable floor. Destructive and blocked are irreversible or
 	// hard-coded malicious; scheduled runs must never execute them.
+	// Persistence (deferred-execution writes) and unread_exec (unread
+	// script execution) join the floor: no human is present for the
+	// per-write/per-script review those classes exist to force.
 	for _, cls := range []danger.RiskClass{
 		danger.Destructive,
 		danger.Blocked,
+		danger.Persistence,
+		danger.UnreadExec,
 	} {
 		dangerCfg.Classes[cls] = danger.Deny
 	}
