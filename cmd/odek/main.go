@@ -459,6 +459,9 @@ func parseRunFlags(args []string) (runFlags, error) {
 		case "--sandbox":
 			f.Sandbox = boolPtr(true)
 			i++
+		case "--no-sandbox":
+			f.Sandbox = boolPtr(false)
+			i++
 		case "--learn":
 			f.Learn = boolPtr(true)
 			i++
@@ -794,6 +797,10 @@ done:
 				f.Sandbox = boolPtr(true)
 				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
 				j--
+			case "--no-sandbox":
+				f.Sandbox = boolPtr(false)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
 			case "--session":
 				f.Session = boolPtr(true)
 				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
@@ -963,6 +970,8 @@ func parseReplFlags(args []string) (replFlags, error) {
 			switch args[i] {
 			case "--sandbox":
 				f.Sandbox = boolPtr(true)
+			case "--no-sandbox":
+				f.Sandbox = boolPtr(false)
 			case "--sandbox-readonly":
 				f.SandboxReadonly = boolPtr(true)
 			case "--prompt-caching":
@@ -999,6 +1008,9 @@ func parseReplFlags(args []string) (replFlags, error) {
 			i += 2
 		case "--sandbox":
 			f.Sandbox = boolPtr(true)
+			i++
+		case "--no-sandbox":
+			f.Sandbox = boolPtr(false)
 			i++
 		case "--sandbox-image":
 			f.SandboxImage = args[i+1]
@@ -1667,25 +1679,24 @@ func run(args []string) error {
 	// so disabled/enabled lists can reference MCP tool names too).
 	tools = filterBuiltinTools(tools, resolved.Tools, nil)
 
-	if resolved.Sandbox {
-		var containerName string
-		containerName, sandboxCleanup, err = setupSandbox(tools, sbCfg)
-		if err != nil {
-			return fmt.Errorf("sandbox: %w", err)
-		}
-
+	// Sandbox (H-8): defaults ON with a loud unsandboxed fallback when
+	// Docker is unavailable; explicit --sandbox/"sandbox": true keeps the
+	// hard-fail behavior.
+	var runContainerName string
+	var runSandboxed bool
+	runContainerName, sandboxCleanup, runSandboxed, err = ensureSandbox(resolved, tools, sbCfg)
+	if err != nil {
+		return err
+	}
+	if runSandboxed && len(f.Ctx) > 0 {
 		// Inject --ctx files into the sandbox container
-		if len(f.Ctx) > 0 {
-			injected, injectErr := sandbox.InjectFiles(containerName, f.Ctx, cwd)
-			if injectErr != nil {
-				return fmt.Errorf("sandbox: inject ctx files: %w", injectErr)
-			}
-			if injected > 0 {
-				fmt.Fprintf(os.Stderr, "odek: copied %d file(s) into sandbox\n", injected)
-			}
+		injected, injectErr := sandbox.InjectFiles(runContainerName, f.Ctx, cwd)
+		if injectErr != nil {
+			return fmt.Errorf("sandbox: inject ctx files: %w", injectErr)
 		}
-	} else {
-		warnSandboxDisabled()
+		if injected > 0 {
+			fmt.Fprintf(os.Stderr, "odek: copied %d file(s) into sandbox\n", injected)
+		}
 	}
 
 	// Create terminal renderer for colored step-by-step output.
@@ -2070,6 +2081,50 @@ func deliverToTelegram(text string, resolved config.ResolvedConfig) error {
 //
 // The returned cleanup function destroys the container; always invoke it
 // via Agent.Close().
+// sandboxIntent resolves whether this run wants the sandbox and whether
+// that desire is explicit (H-8). The sandbox defaults ON for the CLI
+// surfaces (run/continue/repl) — the actual control for the
+// "ran attacker-controlled code" class is something users must now
+// deliberately give up, not discover. Opt-outs: --no-sandbox flag or
+// ODEK_NO_SANDBOX=1 (both explicit); ODEK_REQUIRE_SANDBOX=1 turns any
+// implicit fallback-to-unsandboxed into a fatal error.
+func sandboxIntent(resolved config.ResolvedConfig) (want, explicit bool) {
+	if resolved.SandboxExplicit {
+		return resolved.Sandbox, true
+	}
+	if os.Getenv("ODEK_NO_SANDBOX") == "1" {
+		return false, true
+	}
+	return true, false
+}
+
+// ensureSandbox starts the sandbox under H-8 semantics:
+//   - wanted + success        → container started, sandboxed=true
+//   - wanted + failure        → explicit want (or ODEK_REQUIRE_SANDBOX=1)
+//     is fatal; the implicit default degrades to
+//     unsandboxed with a loud warning rather than
+//     breaking every Docker-less user
+//   - not wanted              → warns once, sandboxed=false
+func ensureSandbox(resolved config.ResolvedConfig, tools []odek.Tool, cfg sandboxConfig) (containerName string, cleanup func() error, sandboxed bool, err error) {
+	want, explicit := sandboxIntent(resolved)
+	if !want {
+		warnSandboxDisabled()
+		return "", nil, false, nil
+	}
+	name, cleanup, serr := setupSandbox(tools, cfg)
+	if serr == nil {
+		return name, cleanup, true, nil
+	}
+	if explicit || os.Getenv("ODEK_REQUIRE_SANDBOX") == "1" {
+		return "", nil, false, fmt.Errorf("sandbox: %w", serr)
+	}
+	fmt.Fprintf(os.Stderr, "⚠️  odek: default sandbox unavailable (%v)\n", serr)
+	fmt.Fprintf(os.Stderr, "   continuing WITHOUT sandbox — the agent has full host access.\n")
+	fmt.Fprintf(os.Stderr, "   start Docker to get isolation; run again with --sandbox to approve a project\n")
+	fmt.Fprintf(os.Stderr, "   Dockerfile/knobs interactively; ODEK_NO_SANDBOX=1 opts out; ODEK_REQUIRE_SANDBOX=1 makes this fatal.\n")
+	return "", nil, false, nil
+}
+
 func setupSandbox(tools []odek.Tool, cfg sandboxConfig) (containerName string, cleanup func() error, err error) {
 	// An implicit Dockerfile.odek build executes repo-controlled code on the
 	// host; refuse to proceed unless it was approved (startup prompt, trusted
@@ -2896,10 +2951,16 @@ func continueCmd(args []string) error {
 		}
 	}
 
-	// Auto-apply sandbox if session was sandboxed (even if config changed)
-	if sess.Sandbox && !resolved.Sandbox {
-		resolved.Sandbox = true
-		fmt.Fprintf(os.Stderr, "odek: session was sandboxed — enabling sandbox for this continuation\n")
+	// Continuations preserve the session's sandbox posture exactly (H-8):
+	// a sandboxed session re-sandboxes (explicit intent), an unsandboxed
+	// session stays unsandboxed even under the new default-on — flipping
+	// containment mid-conversation would surprise both user and agent.
+	if !resolved.SandboxExplicit {
+		resolved.Sandbox = sess.Sandbox
+		resolved.SandboxExplicit = true
+		if sess.Sandbox {
+			fmt.Fprintf(os.Stderr, "odek: session was sandboxed — enabling sandbox for this continuation\n")
+		}
 	}
 
 	// Gate project-level sandbox knobs and any implicit Dockerfile.odek build
@@ -2939,23 +3000,19 @@ func continueCmd(args []string) error {
 
 	var sandboxCleanup func() error
 
-	if resolved.Sandbox {
-		sbCfg := sandboxConfig{
-			Image:    resolved.SandboxImage,
-			Network:  resolved.SandboxNetwork,
-			Readonly: resolved.SandboxReadonly,
-			Memory:   resolved.SandboxMemory,
-			CPUs:     resolved.SandboxCPUs,
-			User:     resolved.SandboxUser,
-			Env:      resolved.SandboxEnv,
-			Volumes:  resolved.SandboxVolumes,
-		}
-		var contContainerName string
-		contContainerName, sandboxCleanup, err = setupSandbox(tools, sbCfg)
-		if err != nil {
-			return fmt.Errorf("sandbox: %w", err)
-		}
-		_ = contContainerName
+	sbCfg := sandboxConfig{
+		Image:    resolved.SandboxImage,
+		Network:  resolved.SandboxNetwork,
+		Readonly: resolved.SandboxReadonly,
+		Memory:   resolved.SandboxMemory,
+		CPUs:     resolved.SandboxCPUs,
+		User:     resolved.SandboxUser,
+		Env:      resolved.SandboxEnv,
+		Volumes:  resolved.SandboxVolumes,
+	}
+	_, sandboxCleanup, _, err = ensureSandbox(resolved, tools, sbCfg)
+	if err != nil {
+		return err
 	}
 
 	// Renderer

@@ -104,26 +104,24 @@ func replCmd(args []string) error {
 
 	var sandboxCleanup func() error
 
-	if resolved.Sandbox {
-		sbCfg := sandboxConfig{
-			Image:    resolved.SandboxImage,
-			Network:  resolved.SandboxNetwork,
-			Readonly: resolved.SandboxReadonly,
-			Memory:   resolved.SandboxMemory,
-			CPUs:     resolved.SandboxCPUs,
-			User:     resolved.SandboxUser,
-			Env:      resolved.SandboxEnv,
-			Volumes:  resolved.SandboxVolumes,
-		}
-		var replContainerName string
-		replContainerName, cleanup, err := setupSandbox(tools, sbCfg)
-		if err != nil {
-			return fmt.Errorf("sandbox: %w", err)
-		}
-		_ = replContainerName // not used in REPL mode
+	// Sandbox (H-8): defaults ON with a loud unsandboxed fallback; explicit
+	// --sandbox keeps the hard-fail behavior.
+	sbCfg := sandboxConfig{
+		Image:    resolved.SandboxImage,
+		Network:  resolved.SandboxNetwork,
+		Readonly: resolved.SandboxReadonly,
+		Memory:   resolved.SandboxMemory,
+		CPUs:     resolved.SandboxCPUs,
+		User:     resolved.SandboxUser,
+		Env:      resolved.SandboxEnv,
+		Volumes:  resolved.SandboxVolumes,
+	}
+	_, cleanup, sandboxed, err := ensureSandbox(resolved, tools, sbCfg)
+	if err != nil {
+		return fmt.Errorf("sandbox: %w", err)
+	}
+	if sandboxed {
 		sandboxCleanup = cleanup
-	} else {
-		warnSandboxDisabled()
 	}
 
 	// Renderer

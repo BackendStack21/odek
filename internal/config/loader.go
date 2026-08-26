@@ -444,17 +444,18 @@ type ProjectSandboxOverride struct {
 // ResolvedConfig is the fully merged result. Every field has a concrete
 // value — callers can read directly without checking for "not set".
 type ResolvedConfig struct {
-	Model         string
-	BaseURL       string
-	APIKey        string
-	Thinking      string
-	MaxIter       int
-	Sandbox       bool
-	NoColor       bool
-	NoAgents      bool
-	Stream        bool
-	PromptCaching bool
-	Compaction    bool
+	Model           string
+	BaseURL         string
+	APIKey          string
+	Thinking        string
+	MaxIter         int
+	Sandbox         bool
+	SandboxExplicit bool // true when any config layer explicitly set sandbox
+	NoColor         bool
+	NoAgents        bool
+	Stream          bool
+	PromptCaching   bool
+	Compaction      bool
 
 	// Planning is the resolved planning configuration (docs/PLANNING.md).
 	Planning PlanningConfig
@@ -1888,8 +1889,12 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 
 	// Booleans: default to false if not set (Compaction below is the
 	// exception — it defaults to true).
+	// Sandbox is the second exception in effect: the loader records whether
+	// any layer set it (SandboxExplicit); when nobody did, the CLI surfaces
+	// default it ON with a loud unsandboxed fallback (H-8, cmd/odek).
 	if cfg.Sandbox != nil {
 		resolved.Sandbox = *cfg.Sandbox
+		resolved.SandboxExplicit = true
 	}
 	if cfg.NoColor != nil {
 		resolved.NoColor = *cfg.NoColor

@@ -39,6 +39,14 @@ var e2eBinary string // path to the once-built binary (stable, not per-test)
 var e2eBinDir string
 
 func TestMain(m *testing.M) {
+	// H-8: the sandbox now defaults ON for CLI runs. Tests must be
+	// hermetic and machine-independent (a Docker-capable CI host must not
+	// sandbox spawned binaries while a laptop without Docker cannot), so
+	// opt the whole test process — and every subprocess it spawns, which
+	// inherits this env — out of the default. Tests that exercise the
+	// default-on semantics clear it locally with t.Setenv.
+	os.Setenv("ODEK_NO_SANDBOX", "1")
+
 	if os.Getenv("ODEK_E2E") == "" {
 		// Not running E2E — skip build, run nothing
 		os.Exit(m.Run())
