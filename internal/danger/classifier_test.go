@@ -663,8 +663,13 @@ func TestClassify_Config_NonInteractive(t *testing.T) {
 	}
 
 	cfg3 := DangerousConfig{}
-	if got := cfg3.NonInteractiveAction(); got != Deny {
-		t.Errorf("default NonInteractiveAction() = %s, want deny", got)
+	if got := cfg3.NonInteractiveAction(); got != ReadOnly {
+		t.Errorf("default NonInteractiveAction() = %s, want read_only (H-7)", got)
+	}
+
+	cfg4 := DangerousConfig{NonInteractive: strPtr("read_only")}
+	if got := cfg4.NonInteractiveAction(); got != ReadOnly {
+		t.Errorf("NonInteractiveAction(read_only) = %s, want read_only", got)
 	}
 }
 
@@ -988,9 +993,12 @@ func TestParseAction(t *testing.T) {
 }
 
 func TestNonInteractiveAction_Default(t *testing.T) {
+	// H-7: the unset default is read_only — inspection proceeds headless,
+	// mutations fail closed. Containment via inability (deny) is not
+	// safe-and-useful: teams flip it to allow, losing every protection.
 	cfg := &DangerousConfig{}
-	if got := cfg.NonInteractiveAction(); got != Deny {
-		t.Errorf("default non-interactive = %s, want deny", got)
+	if got := cfg.NonInteractiveAction(); got != ReadOnly {
+		t.Errorf("default non-interactive = %s, want read_only", got)
 	}
 }
 
@@ -1003,10 +1011,11 @@ func TestNonInteractiveAction_Deny(t *testing.T) {
 }
 
 func TestNonInteractiveAction_InvalidFailsClosed(t *testing.T) {
-	// Any value other than "allow" or "deny" (including the previously
-	// accepted "prompt") must fail closed to Deny, because a non-interactive
-	// environment cannot prompt.
-	for _, s := range []string{"prompt", "maybe", "yes", "", "  prompt  "} {
+	// Any value other than "allow", "deny", or "read_only" (including the
+	// previously accepted "prompt") must fail closed to Deny, because a
+	// non-interactive environment cannot prompt — and a typo'd setting must
+	// never silently loosen the gate to the read_only default.
+	for _, s := range []string{"prompt", "maybe", "yes", "", "  prompt  ", "readonly", "read-only"} {
 		s := s
 		t.Run(s, func(t *testing.T) {
 			cfg := &DangerousConfig{NonInteractive: &s}

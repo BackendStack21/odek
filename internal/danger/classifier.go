@@ -139,6 +139,12 @@ const (
 	Allow  Action = "allow"
 	Prompt Action = "prompt"
 	Deny   Action = "deny"
+	// ReadOnly is not a per-class action — it is a non_interactive mode
+	// (H-7): without a TTY, read-only inspection proceeds while writes,
+	// execution, and egress stay denied. Containment via inability is not
+	// safe-and-useful; read_only keeps headless agents useful enough that
+	// nobody reaches for "allow".
+	ReadOnly Action = "read_only"
 )
 
 // ── Tool Operation ─────────────────────────────────────────────────────
@@ -682,9 +688,12 @@ type DangerousConfig struct {
 	DefaultAction *string `json:"action,omitempty"`
 
 	// NonInteractive specifies what to do when running without a TTY.
-	// "deny" (default) — block all prompted ops, "allow" — run everything.
-	// The default is deny so that headless/CI/piped usage cannot be silently
-	// auto-approved by a prompt-injection payload.
+	// "read_only" (default) — read-only inspection proceeds, writes/exec/
+	// egress are denied; "deny" — block all prompted ops; "allow" — run
+	// everything. The read_only default keeps headless/CI usage useful
+	// enough that flipping to "allow" is never the path of least
+	// resistance (H-7): under deny, an agent under a restrictive posture
+	// cannot even `ls`, and containment via inability just gets turned off.
 	NonInteractive *string `json:"non_interactive,omitempty"`
 
 	// Approver handles interactive approval prompts for dangerous operations.
@@ -766,30 +775,35 @@ func (c *DangerousConfig) ActionForCommand(cmd string) Action {
 }
 
 // NonInteractiveAction returns the action to use when no TTY is available.
-// Defaults to Deny so unattended/headless runs fail closed rather than
-// auto-approving dangerous operations.
 //
-// Only "allow" and "deny" are accepted; any other value (including "prompt")
-// is treated as "deny" because a non-interactive environment cannot prompt.
+// Unset → ReadOnly (H-7): read-only inspection proceeds, every mutation
+// fails closed — useful enough that flipping to "allow" is never the path
+// of least resistance.
+//
+// An explicitly set but INVALID value fails closed to Deny: a typo must
+// never silently loosen the gate.
 func (c *DangerousConfig) NonInteractiveAction() Action {
 	if c.NonInteractive != nil {
 		action, ok := ParseNonInteractiveAction(*c.NonInteractive)
 		if ok {
 			return action
 		}
+		return Deny
 	}
-	return Deny
+	return ReadOnly
 }
 
-// ParseNonInteractiveAction parses the non_interactive config value. It accepts
-// only "allow" and "deny"; "prompt" and any other value are rejected because
-// prompting is impossible without a TTY.
+// ParseNonInteractiveAction parses the non_interactive config value. It
+// accepts "allow", "deny", and "read_only"; "prompt" and any other value
+// are rejected because prompting is impossible without a TTY.
 func ParseNonInteractiveAction(s string) (Action, bool) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "allow":
 		return Allow, true
 	case "deny":
 		return Deny, true
+	case "read_only":
+		return ReadOnly, true
 	default:
 		return Deny, false
 	}

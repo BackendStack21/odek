@@ -2111,7 +2111,7 @@ func resolveDangerous(cfg *danger.DangerousConfig, validate bool) danger.Dangero
 	resolved := *cfg
 	if validate && resolved.NonInteractive != nil {
 		if _, ok := danger.ParseNonInteractiveAction(*resolved.NonInteractive); !ok {
-			fmt.Fprintf(os.Stderr, "odek: warning: invalid non_interactive value %q — must be 'allow' or 'deny'; using 'deny'\n", *resolved.NonInteractive)
+			fmt.Fprintf(os.Stderr, "odek: warning: invalid non_interactive value %q — must be 'allow', 'deny', or 'read_only'; using 'deny'\n", *resolved.NonInteractive)
 			deny := "deny"
 			resolved.NonInteractive = &deny
 		}
