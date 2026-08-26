@@ -65,13 +65,16 @@ type wsApprover struct {
 	mu         sync.Mutex
 	approveAll map[danger.RiskClass]bool // trust-cached risk classes
 	trustAll   bool                      // when true, all PromptCommand calls auto-approve
-	cancel     chan struct{}             // closed by Cancel() to interrupt waiting PromptCommand
 
-	// cancelOnce guards channel closure. The select/default close idiom is
-	// racy: two concurrent Cancel calls can both observe an open channel and
-	// the second close panics — reachable in serve when the WS reader errors
-	// while teardown's deferred Cancel runs.
-	cancelOnce sync.Once
+	// cancel is closed by Cancel() to interrupt waiting PromptCommand calls.
+	// Cancel() closes the active channel and installs a fresh one, so a
+	// mid-connection cancel (user aborts a run from the Web UI) breaks the
+	// CURRENT approval wait without poisoning approvals for later prompts
+	// on the same connection — a permanently closed channel would auto-deny
+	// every future approval. cancelMu guards swap+close; PromptCommand reads
+	// the active channel via cancelChan.
+	cancelMu sync.Mutex
+	cancel   chan struct{}
 
 	// Approval-fatigue mitigation. Parallel to the TTYApprover policy.
 	frictionThreshold int
@@ -96,6 +99,13 @@ func newWSApprover(sendFn func(v any) error) *wsApprover {
 		approvalLog:       make(map[danger.RiskClass][]time.Time),
 		approvalTimeout:   60 * time.Second,
 	}
+}
+
+// cancelChan returns the channel closed by the current Cancel generation.
+func (a *wsApprover) cancelChan() <-chan struct{} {
+	a.cancelMu.Lock()
+	defer a.cancelMu.Unlock()
+	return a.cancel
 }
 
 // SetApprovalTimeout adjusts how long PromptCommand waits for a response.
@@ -169,6 +179,13 @@ func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string
 	allowTrust := allowTrustForClass(cls)
 	friction, approvalCount := a.shouldFriction(cls)
 
+	// Capture THIS waiter's cancel channel before sending the request. A
+	// Cancel landing between sendFn returning and the select below would
+	// otherwise swap generations, the select would pick up the fresh (open)
+	// channel, and this waiter would miss its wakeup — blocking out the full
+	// approval timeout on a run that was already cancelled.
+	cancelCh := a.cancelChan()
+
 	// Send approval request via WebSocket
 	err := a.sendFn(approvalRequest{
 		Type:              "approval_request",
@@ -194,6 +211,17 @@ func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string
 	}
 	select {
 	case action := <-resp:
+		// Approve-vs-cancel race: both cases can be ready and select picks
+		// randomly. Before honoring the action, check whether a cancel
+		// landed — against cancelCh, the captured generation, NOT the live
+		// a.cancelChan(): every Cancel since our capture closed cancelCh,
+		// while the live accessor returns the newer (open) generation and
+		// would silently wave the approve through.
+		select {
+		case <-cancelCh:
+			return fmt.Errorf("approval cancelled: %s", cmd)
+		default:
+		}
 		// Ack the user's choice back to the browser for UI feedback.
 		a.sendFn(map[string]any{
 			"type":   "approval_ack",
@@ -220,7 +248,7 @@ func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string
 		default:
 			return fmt.Errorf("operation denied by user: %s", cmd)
 		}
-	case <-a.cancel:
+	case <-cancelCh:
 		return fmt.Errorf("approval cancelled: %s", cmd)
 	case <-time.After(timeout):
 		return fmt.Errorf("approval timeout: %s", cmd)
@@ -262,10 +290,19 @@ func (a *wsApprover) newID() string {
 	return "apr-" + hex.EncodeToString(b)
 }
 
-// Cancel interrupts any pending PromptCommand by closing the cancel channel.
-// Safe to call multiple times, including concurrently.
+// Cancel interrupts any pending PromptCommand by closing the active cancel
+// channel, then re-arms a fresh one so later prompts on the same connection
+// can still ask for approvals (a one-shot close would auto-deny every future
+// approval after a mid-run cancel — see the cancel field comment). Safe to
+// call multiple times, including concurrently.
 func (a *wsApprover) Cancel() {
-	a.cancelOnce.Do(func() { close(a.cancel) })
+	a.cancelMu.Lock()
+	ch := a.cancel
+	a.cancel = make(chan struct{})
+	a.cancelMu.Unlock()
+	if ch != nil {
+		close(ch)
+	}
 }
 
 // SetTrustAll enables or disables blanket trust for all risk classes.

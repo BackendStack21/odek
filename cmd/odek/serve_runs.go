@@ -761,10 +761,23 @@ func startServeRun(
 		Attachments: req.Attachments,
 	}
 
+	// Approval waits are ctx-blind (see cancelRun): POST /api/cancel on the
+	// run's session goes through the prompt-cancel registry and would fire
+	// only the context, leaving the loop blocked until the approval ceiling.
+	// Compose the approver interrupt into what handlePrompt registers.
+	// run.cancel stays plain — cancelRun interrupts the approver itself, and
+	// double-Cancel is safe now that Cancel re-arms.
+	cancelWithApproval := func() {
+		cancel()
+		if approver != nil {
+			approver.Cancel()
+		}
+	}
+
 	go func() {
 		defer cleanup()
 		var sessionIn, sessionOut int
-		sess := handlePrompt(ctx, func(m map[string]any) { _ = run.record(m) }, store, resources, resolved, agent, injectionGuard, nil, msg, &sessionIn, &sessionOut, cancel, &deltas)
+		sess := handlePrompt(ctx, func(m map[string]any) { _ = run.record(m) }, store, resources, resolved, agent, injectionGuard, nil, msg, &sessionIn, &sessionOut, cancelWithApproval, &deltas)
 		run.mu.Lock()
 		if sess != nil {
 			run.SessionID = sess.ID
@@ -960,9 +973,19 @@ func handleRunCancel() http.HandlerFunc {
 func cancelRun(run *serveRun) {
 	run.mu.Lock()
 	cancel := run.cancel
+	approver := run.approver
 	run.mu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+	// Approval waits are ctx-blind (wsApprover selects only on response /
+	// its own cancel channel / timeout), so cancelling the run context alone
+	// leaves the loop blocked in PromptCommand until the approval ceiling
+	// (up to maxRunApprovalWait). Interrupt the approver NOW instead of
+	// waiting for the deferred cleanup, which only runs after handlePrompt
+	// unblocks.
+	if approver != nil {
+		approver.Cancel()
 	}
 	run.finish("cancelled", "")
 }

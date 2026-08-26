@@ -257,8 +257,22 @@ The core session CRUD (session-token gated):
 ### `POST /api/cancel?session_id=`
 
 Cancels the prompt currently executing on a session (the REST twin of the
-WS `cancel` message). Requires the session's auth token; **204** on
-acceptance. Cancelling is a no-op when nothing is running.
+WS `cancel` message). Requires the session's auth token. Returns **200**
+with the outcome — `idle:true` means no live prompt was registered for
+that session, so nothing was cancelled:
+
+```jsonc
+{ "session_id": "20260519-abc123", "idle": false }
+```
+
+### Cancellation
+
+All cancel paths — the WebUI ✕ button (WS `cancel` message),
+`POST /api/cancel`, and `POST /api/runs/{id}/cancel` — interrupt a pending
+approval wait instead of leaving the run blocked until the approval
+timeout (60s by default; headless runs may raise it, capped at 10
+minutes). On the `cancelled` event the UI dismisses pending approval
+cards, so an approval cannot be answered after a cancel.
 
 ### `GET /api/limits`
 

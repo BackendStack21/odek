@@ -11,7 +11,7 @@ import {
   addToolCall, addToolResult, addSubagentGroup, completeSubagents,
   appendSubagentLog, addSystemMessage,
 } from './render.js';
-import { queueApproval, dismissApproval } from './approvals.js';
+import { queueApproval, dismissApproval, clearApprovals } from './approvals.js';
 import { loadSessions } from './sessions.js';
 import { onPong, onServerInfo, startHeartbeat } from './health.js';
 import { metricsLiveContext, metricsDone, flashTrim, turnCostUSD, setMetricsModel } from './metrics.js';
@@ -132,6 +132,12 @@ export function connect() {
         streamFlush();
         endThinking();
         endStream();
+        // The run is unwinding — drop every pending approval card so a
+        // stray click cannot approve an operation whose execution context
+        // is already dead (the server interrupts the approval wait on
+        // cancel, but the card would stay rendered waiting for an ack that
+        // never comes). Same teardown approval_ack uses, minus the ack.
+        clearApprovals();
         addSystemMessage(event.idle ? '⏹ Nothing to cancel' : '⏹ Cancelled');
         break;
 

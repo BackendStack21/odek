@@ -120,9 +120,9 @@ type promptCancelEntry struct {
 }
 
 var (
-	promptCancelMu   sync.Mutex
-	promptCancels    = map[string]*promptCancelEntry{}
-	promptCancelGen  int64
+	promptCancelMu  sync.Mutex
+	promptCancels   = map[string]*promptCancelEntry{}
+	promptCancelGen int64
 )
 
 // registerPromptCancel records cancel as the active cancel function for
@@ -1296,10 +1296,24 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 		// Create a cancelable context for this prompt (so POST /api/cancel can abort it).
 		// Derived from connCtx so a disconnect also aborts the running prompt.
 		promptCtx, promptCancel := context.WithCancel(connCtx)
+		// Approval waits are ctx-blind: wsApprover.PromptCommand selects only
+		// on {response, its own cancel channel, timeout} and never observes
+		// promptCtx, so a bare context cancel leaves the loop blocked until
+		// the 60s approval timeout. Compose the approver interrupt into the
+		// cancel func registered by handlePrompt so EVERY cancel path (WS
+		// cancel message, POST /api/cancel) also breaks a pending approval.
+		// Cancel() re-arms, so later prompts on this connection can still
+		// prompt for approval.
+		promptCancelWithApproval := func() {
+			promptCancel()
+			if approver != nil {
+				approver.Cancel()
+			}
+		}
 
 		wsSend := func(m map[string]any) { writeWSJSON(conn, m) }
 		connInfo.setLive(msg.SessionID, true)
-		currentSession = handlePrompt(promptCtx, wsSend, store, resources, resolved, agent, injectionGuard, currentSession, msg, &sessionInputTokens, &sessionOutputTokens, promptCancel, &deltas)
+		currentSession = handlePrompt(promptCtx, wsSend, store, resources, resolved, agent, injectionGuard, currentSession, msg, &sessionInputTokens, &sessionOutputTokens, promptCancelWithApproval, &deltas)
 		connInfo.recordPrompt()
 		sid := ""
 		if currentSession != nil {
@@ -1323,7 +1337,11 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 
 // handleWSCancel processes a WebSocket cancel message. Auth mirrors
 // POST /api/cancel: the caller must present the target session's auth token,
-// which prevents one connection from cancelling another's prompt.
+// which prevents one connection from cancelling another connection's prompt.
+// The registered cancel entry carries the approver interrupt alongside the
+// context cancel (approval waits are ctx-blind — see handleWS), so this
+// also breaks a pending approval wait instead of leaving the loop blocked
+// until the 60s approval timeout.
 func handleWSCancel(store *session.Store, conn *golangws.Conn, msg wsClientMsg) {
 	if msg.SessionID == "" {
 		writeWSError(conn, "cancel: missing session_id")
@@ -1366,6 +1384,21 @@ func handlePrompt(
 ) *session.Session {
 	prompt := msg.Content
 	sessionID := msg.SessionID
+
+	// Register the cancel entry BEFORE any session I/O so a cancel that
+	// races the setup window (session load/create, @-ref resolution,
+	// attachment wrapping) is honored instead of silently dropped — the
+	// registry lookup would otherwise miss and the prompt would run to
+	// completion. Chosen over a tombstone/pending-cancel flag because it
+	// reuses the generation-guarded registry as-is: the late registration
+	// below (needed for newly-created sessions whose ID exists only after
+	// store.Create) replaces this entry, and both unregister defers are
+	// generation-safe. Brand-new sessions keep a small window, but no
+	// client can learn their ID — and thus target a cancel — before the
+	// "session" event is sent.
+	if sessionID != "" && promptCancel != nil {
+		defer registerPromptCancel(sessionID, promptCancel)()
+	}
 
 	// Server-side cap on prompt size (finding #69). A client can already send
 	// up to the WebSocket frame cap; reject anything above a reasonable prompt
@@ -1511,9 +1544,11 @@ func handlePrompt(
 		authToken = sess.AuthToken
 	}
 	// Register the cancel function for this session so the HTTP endpoint can
-	// abort this specific prompt. The generation-guarded unregister only
-	// removes OUR registration — a concurrent newer prompt on the same
-	// session keeps its own cancel func when we finish first.
+	// abort this specific prompt. Needed even though handlePrompt registers
+	// msg.SessionID at the top: a newly-created session only gets its ID
+	// here. The generation-guarded unregister only removes OUR registration
+	// — a concurrent newer prompt on the same session keeps its own cancel
+	// func when we finish first.
 	if sid != "" && promptCancel != nil {
 		defer registerPromptCancel(sid, promptCancel)()
 	}
@@ -2371,6 +2406,12 @@ func handleLimits(configuredModel string, limits budget.Limits) http.HandlerFunc
 // POST /api/cancel?session_id=<id> — cancels the agent execution scoped to
 // that session. Requiring the session ID prevents one connection from
 // cancelling another connection's prompt.
+//
+// Returns 200 with {"session_id", "idle"} mirroring the WS cancel contract:
+// idle=false means a live prompt was found and cancelled, idle=true means
+// nothing was running. The old unconditional 204 hid misses from API
+// clients (asymmetric with WS/runs, which both report idle), which masked
+// exactly the dropped-cancel bugs this endpoint exists to expose.
 func handleCancel(store *session.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -2394,8 +2435,10 @@ func handleCancel(store *session.Store) http.HandlerFunc {
 			return
 		}
 
-		cancelPrompt(sessionID)
-		w.WriteHeader(http.StatusNoContent)
+		// cancelPrompt fires the registered entry — context cancel plus the
+		// approver interrupt (approval waits are ctx-blind, see handleWS).
+		idle := !cancelPrompt(sessionID)
+		writeAPIJSON(w, http.StatusOK, map[string]any{"session_id": sessionID, "idle": idle})
 	}
 }
 
