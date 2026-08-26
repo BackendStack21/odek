@@ -215,6 +215,11 @@ type Engine struct {
 	// non-blocking events.Emitter; see docs/EXTENSIONS.md.
 	eventHandler func(events.Event)
 
+	// eventsIncludeArgs opts tool_call_started events into carrying the raw
+	// (secret-redacted) arguments in addition to the digest + structured
+	// summary. Off by default (P0-4).
+	eventsIncludeArgs bool
+
 	// interactionMode controls how progress is surfaced to the user.
 	// "engaging" (default), "verbose", "enhance", or "off" (silent).
 	// When "off", all per-iteration render output is suppressed.
@@ -458,6 +463,13 @@ func (e *Engine) callLLM(ctx context.Context, messages []llm.Message, systemBloc
 // inside the hot loop; odek.New wires it to a drop-on-full events.Emitter.
 // Passing nil disables event emission.
 func (e *Engine) SetEventHandler(cb func(events.Event)) { e.eventHandler = cb }
+
+// SetEventsIncludeArgs opts tool_call_started events into carrying the raw
+// (secret-redacted) tool-call arguments alongside the digest. Off by
+// default: raw args can include sensitive task content, but incident
+// review on an opt-in basis is strictly better than a stream that cannot
+// answer "what actually ran?" once the session is gone.
+func (e *Engine) SetEventsIncludeArgs(enabled bool) { e.eventsIncludeArgs = enabled }
 
 // emitEvent fires a structured runtime event if a handler is configured,
 // stamping the timestamp when the caller left it zero. Safe to call
@@ -2004,19 +2016,32 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 			if e.toolEventHandler != nil {
 				e.toolEventHandler("tool_call", tc.Function.Name, tc.Function.Arguments)
 			}
+			data := map[string]any{
+				// Stable correlation ID shared with the matching
+				// completed/failed event (P0-3).
+				"call_id": callIDs[idx],
+				// Never raw args by default: digest + size correlate
+				// start/complete without leaking argument content into the
+				// event stream.
+				"args_sha256": events.ArgsDigest(tc.Function.Arguments),
+				"args_bytes":  len(tc.Function.Arguments),
+			}
+			// Structured audit metadata (P0-4): what would run, on what
+			// target, under what classification — no argument content.
+			if summary := argSummary(tc.Function.Name, tc.Function.Arguments); len(summary) > 0 {
+				data["args_summary"] = summary
+			}
+			// Opt-in raw arguments (P0-4): --events-include-args. The emitter
+			// still applies secret redaction to string values, but this can
+			// capture sensitive task content — off unless asked for.
+			if e.eventsIncludeArgs {
+				data["args"] = tc.Function.Arguments
+			}
 			e.emitEvent(events.Event{
 				Type:      events.TypeToolCallStarted,
 				Iteration: iterNum,
 				Tool:      tc.Function.Name,
-				Data: map[string]any{
-					// Stable correlation ID shared with the matching
-					// completed/failed event (P0-3).
-					"call_id": callIDs[idx],
-					// Never raw args: digest + size correlate start/complete
-					// without leaking argument content into the event stream.
-					"args_sha256": events.ArgsDigest(tc.Function.Arguments),
-					"args_bytes":  len(tc.Function.Arguments),
-				},
+				Data:      data,
 			})
 		}
 

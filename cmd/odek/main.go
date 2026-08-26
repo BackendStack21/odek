@@ -356,6 +356,11 @@ type runFlags struct {
 	// (schema odek.event/v1) to this file — one JSON object per line.
 	EventsJSONL string
 
+	// EventsIncludeArgs opts the event stream into carrying raw
+	// (secret-redacted) tool-call arguments in tool_call_started events.
+	// Pairs with --events-jsonl for incident review (P0-4).
+	EventsIncludeArgs *bool // nil = not set
+
 	// ExternalRefs holds the raw repeatable --external-ref values
 	// (kind=uri shorthand or kind=...,uri=...,created_by=... form).
 	// Parsed and validated in runCmd before the agent starts.
@@ -505,6 +510,9 @@ func parseRunFlags(args []string) (runFlags, error) {
 			}
 			f.EventsJSONL = args[i+1]
 			i += 2
+		case "--events-include-args":
+			f.EventsIncludeArgs = boolPtr(true)
+			i++
 		case "--external-ref":
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("--external-ref requires a value")
@@ -1738,34 +1746,35 @@ func run(args []string) error {
 	}
 
 	agent, err := odek.New(odek.Config{
-		Model:            resolved.Model,
-		BaseURL:          resolved.BaseURL,
-		APIKey:           resolved.APIKey,
-		MaxIterations:    resolved.MaxIter,
-		MaxToolParallel:  resolved.MaxToolParallel,
-		SystemMessage:    systemMessage,
-		UntrustedWrapper: func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
-		NoProjectFile:    resolved.NoAgents,
-		Thinking:         resolved.Thinking,
-		ThinkingBudget:   f.ThinkingBudget,
-		Temperature:      f.Temp, // 0 = deterministic default; negative = omit from request
-		Tools:            tools,
-		ToolFilter:       odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
-		SandboxCleanup:   sandboxCleanup,
-		Renderer:         rend,
-		Skills:           skillsCfg,
-		SkillManager:     sm,
-		PromptCaching:    resolved.PromptCaching,
-		Stream:           resolved.Stream,
-		DeltaHandler:     streamDeltaPrinter(resolved.Stream, rend),
-		Compaction:       resolved.Compaction,
-		MemoryDir:        expandHome("~/.odek/memory"),
-		MemoryConfig:     resolved.Memory,
-		Guard:            injectionGuard,
-		GuardConfig:      resolved.Guard,
-		EventHandler:     eventHandler,
-		ExternalRefs:     externalRefs,
-		Limits:           resolved.Limits,
+		Model:             resolved.Model,
+		BaseURL:           resolved.BaseURL,
+		APIKey:            resolved.APIKey,
+		MaxIterations:     resolved.MaxIter,
+		MaxToolParallel:   resolved.MaxToolParallel,
+		SystemMessage:     systemMessage,
+		UntrustedWrapper:  func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
+		NoProjectFile:     resolved.NoAgents,
+		Thinking:          resolved.Thinking,
+		ThinkingBudget:    f.ThinkingBudget,
+		Temperature:       f.Temp, // 0 = deterministic default; negative = omit from request
+		Tools:             tools,
+		ToolFilter:        odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
+		SandboxCleanup:    sandboxCleanup,
+		Renderer:          rend,
+		Skills:            skillsCfg,
+		SkillManager:      sm,
+		PromptCaching:     resolved.PromptCaching,
+		Stream:            resolved.Stream,
+		DeltaHandler:      streamDeltaPrinter(resolved.Stream, rend),
+		Compaction:        resolved.Compaction,
+		MemoryDir:         expandHome("~/.odek/memory"),
+		MemoryConfig:      resolved.Memory,
+		Guard:             injectionGuard,
+		GuardConfig:       resolved.Guard,
+		EventHandler:      eventHandler,
+		EventsIncludeArgs: f.EventsIncludeArgs != nil && *f.EventsIncludeArgs,
+		ExternalRefs:      externalRefs,
+		Limits:            resolved.Limits,
 	})
 	if err != nil {
 		return err
