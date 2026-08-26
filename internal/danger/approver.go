@@ -41,9 +41,30 @@ const ToolBatchClass = RiskClass("tool_batch")
 // TrustShortcutAllowed reports whether cls may be session-trusted via the
 // "trust" shortcut. Destructive, Blocked, and Unknown must never be
 // (fail-closed catch-alls; blanket-trusting them is carte blanche), and
-// neither may ToolBatchClass — see its doc comment.
+// neither may ToolBatchClass — see its doc comment. Persistence is also
+// excluded: its writes execute later, outside the session where the trust
+// was granted, so a one-time "trust" must not cover every future hook,
+// profile, and CI-workflow write (H-5). UnreadExec is excluded because the
+// entire point of the gate is per-script review — trusting it once would
+// blanket-approve every unread script for the session (H-6).
 func TrustShortcutAllowed(cls RiskClass) bool {
-	return cls != Destructive && cls != Blocked && cls != Unknown && cls != ToolBatchClass
+	return cls != Destructive && cls != Blocked && cls != Unknown &&
+		cls != ToolBatchClass && cls != Persistence && cls != UnreadExec
+}
+
+// readToolNames are the native tools whose entire effect on their target is
+// inspection. Used by the read_only non-interactive fallback (H-7) — the
+// description parameter of PromptOperation carries the tool name.
+var readToolNames = map[string]bool{
+	"read_file": true, "batch_read": true, "search_files": true, "glob": true,
+	"file_info": true, "tree": true, "diff": true, "multi_grep": true,
+	"json_query": true, "count_lines": true, "checksum": true, "sort": true,
+	"head_tail": true, "base64": true, "tr": true, "word_count": true,
+	"transcribe": true, "session_search": true,
+}
+
+func isReadToolName(name string) bool {
+	return readToolNames[name]
 }
 
 var (
@@ -188,9 +209,25 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string) error
 	// Open /dev/tty for interactive approval
 	tty, err := os.OpenFile(a.TTYPath, os.O_RDWR, 0)
 	if err != nil {
-		// Non-interactive: use configured fallback
-		if a.DangerousConfig != nil && a.DangerousConfig.NonInteractiveAction() == Deny {
-			return fmt.Errorf("operation denied (non-interactive mode): %s", cmd)
+		// Non-interactive: use the configured fallback (H-7).
+		if a.DangerousConfig != nil {
+			switch a.DangerousConfig.NonInteractiveAction() {
+			case Allow:
+				return nil
+			case ReadOnly:
+				// Reads proceed, mutations do not. A read is either a
+				// Safe-classified shell command (ls, cat — the classifier
+				// already judged it non-mutating) or a native read tool
+				// (description carries the tool name) targeting anything
+				// below the system_write tier — sensitive-location reads
+				// still gate.
+				if Rank(cls) < Rank(SystemWrite) && (cls == Safe || isReadToolName(description)) {
+					return nil
+				}
+				return fmt.Errorf("operation denied (non-interactive read_only mode): %s", cmd)
+			default: // deny
+				return fmt.Errorf("operation denied (non-interactive mode): %s", cmd)
+			}
 		}
 		return nil
 	}

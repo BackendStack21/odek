@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -247,6 +248,15 @@ func (t *shellTool) Call(args string) (string, error) {
 
 	output := strings.TrimSpace(outBuf.String())
 	stderrStr := strings.TrimSpace(errBuf.String())
+
+	// H-6: a successful read-only viewer run (cat/head/tail/…) marks its
+	// file operands as read for the session, so a later execution of the
+	// same script passes the unread-exec gate. Only success counts — a
+	// failed `cat env.sh` must never license executing env.sh.
+	if err == nil {
+		recordViewerReads(input.Command)
+	}
+
 	if stderrStr != "" {
 		if output != "" {
 			output += "\n"
@@ -272,6 +282,28 @@ func (t *shellTool) checkApproval(cmd, description string) error {
 	// Check allowlist/denylist + risk class via dangerous config
 	action := t.dangerousConfig.ActionForCommand(cmd)
 
+	// H-6: executing a repo-supplied script whose contents have not been
+	// read this session gates under unread_exec — even when code_execution
+	// was allowed or its class trusted. The whole point is per-script
+	// review: the payload in the study sat inside the correct, documented
+	// fix and fired on the verification run. An explicit unread_exec action
+	// participates in the decision: deny wins outright; allow alone does
+	// not bypass a prompting base class — both must allow.
+	if _, targets := danger.ClassifyScriptGate(cmd); len(targets) > 0 {
+		unreadAction := t.dangerousConfig.ActionFor(danger.UnreadExec)
+		switch {
+		case unreadAction == danger.Deny:
+			action = danger.Deny
+		case action == danger.Allow && unreadAction == danger.Allow:
+			action = danger.Allow
+		default:
+			action = danger.Prompt
+			if description == "" {
+				description = fmt.Sprintf("executes a script whose contents have not been read this session: %s", strings.Join(targets, ", "))
+			}
+		}
+	}
+
 	switch action {
 	case danger.Allow:
 		return nil
@@ -287,7 +319,14 @@ func (t *shellTool) checkApproval(cmd, description string) error {
 // promptUser classifies the command and asks the user to approve it.
 // Delegates to the configured Approver, or falls back to TTYApprover.
 func (t *shellTool) promptUser(cmd, description string) error {
-	cls := danger.Classify(cmd)
+	cls, targets := danger.ClassifyScriptGate(cmd)
+	if len(targets) > 0 && cls != danger.UnreadExec {
+		// Stronger finding alongside unread targets: still surface which
+		// scripts would run unread.
+		if description == "" {
+			description = fmt.Sprintf("also executes an unread script: %s", strings.Join(targets, ", "))
+		}
+	}
 
 	// Get or create the approver. Reuse a single TTYApprover per tool instance
 	// so the friction counter and trust cache survive across multiple prompts.
@@ -341,6 +380,49 @@ func (t *shellTool) buildCmd(ctx context.Context, command string) (*exec.Cmd, fu
 // sandboxCmdSeq numbers sandboxed command invocations so each gets a unique
 // pid-marker file inside the container.
 var sandboxCmdSeq atomic.Uint64
+
+// readViewerCommands are commands whose only effect on a file operand is to
+// show its contents. A successful run of one of these marks the operands as
+// read for the session read ledger (H-6). Best-effort field parsing: the
+// ledger is an approval affordance, not a security boundary — recording a
+// false positive would only loosen a gate, never tighten one incorrectly.
+var readViewerCommands = map[string]bool{
+	"cat": true, "head": true, "tail": true, "less": true, "more": true,
+	"bat": true, "zcat": true, "nl": true,
+}
+
+func recordViewerReads(cmd string) {
+	fields := strings.Fields(cmd)
+	if len(fields) == 0 {
+		return
+	}
+	base := filepath.Base(strings.Trim(fields[0], `"'`))
+	if !readViewerCommands[base] {
+		return
+	}
+	// Review finding CRIT-001: any pipe or redirect means the model did not
+	// see the operand's bytes — `cat payload.sh > run.sh` writes a copy the
+	// model never viewed, and `cat big.sh | head -1` shows a prefix. Both
+	// must license nothing: recording here would silently defeat the
+	// unread-exec gate. Only plain viewer invocations record.
+	for _, f := range fields[1:] {
+		switch f {
+		case "|", ">", ">>", "&>", "&>>", ">&", ">>&", "2>", "2>>", "||", "&&", ";":
+			return
+		}
+		if strings.HasPrefix(f, ">") || strings.HasPrefix(f, "2>") {
+			return // attached forms like >file, 2>file
+		}
+	}
+	for _, f := range fields[1:] {
+		if f == "" || strings.HasPrefix(f, "-") {
+			continue
+		}
+		if st, err := os.Stat(f); err == nil && !st.IsDir() {
+			danger.RecordRead(f)
+		}
+	}
+}
 
 // wrapSandboxCommand builds the "docker exec" argv that runs command inside
 // the container with a pid-marker wrapper, plus a follow-up function that

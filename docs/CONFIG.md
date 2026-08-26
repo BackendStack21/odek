@@ -34,7 +34,7 @@ Shared across all projects:
   "api_key": "${ODEK_API_KEY}",
   "thinking": "",
   "max_iterations": 90,
-  "sandbox": false,
+  "sandbox": true,
   "interaction_mode": "engaging",
   "no_color": false,
   "no_agents": false,
@@ -46,6 +46,14 @@ Shared across all projects:
   "system": ""
 }
 ```
+
+> **Sandbox default (changed):** when no layer sets `sandbox`, `odek run` /
+> `odek continue` / `odek repl` now default it **on**, degrading loudly to
+> unsandboxed only when Docker is unavailable or a project
+> `Dockerfile.odek`/sandbox knob lacks approval. Opt out explicitly with
+> `--no-sandbox`, `ODEK_NO_SANDBOX=1`, or `"sandbox": false`; make any
+> fallback fatal with `ODEK_REQUIRE_SANDBOX=1`. An explicit `--sandbox`
+> keeps the hard-fail-on-error behavior.
 
 ### Project overrides (`./odek.json`)
 
@@ -776,7 +784,7 @@ engine. Every field has an `ODEK_SCHEDULES_*` environment override.
 
 ### Schedule-specific dangerous policy
 
-Scheduled jobs run unattended, so by default the scheduler denies any class that would require an approval prompt (`network_egress`, `system_write`, `code_execution`, `install`, `unknown`). You can override this for cron jobs without widening the policy for interactive CLI/REPL/WebUI use.
+Scheduled jobs run unattended, so by default the scheduler denies any class that would require an approval prompt (`network_egress`, `system_write`, `code_execution`, `install`, `unknown`, `persistence`, `unread_exec`). You can override this for cron jobs without widening the policy for interactive CLI/REPL/WebUI use.
 
 ```json
 {
@@ -804,7 +812,7 @@ Environment overrides:
 
 Safety floor that cannot be overridden:
 - `non_interactive` is always `deny` (no human is present to approve).
-- `destructive` and `blocked` classes are always denied.
+- `destructive`, `blocked`, `persistence` (deferred-execution writes: shell profiles, git hooks, CI workflows, cron, systemd, launchd, lifecycle scripts), and `unread_exec` (executing a script whose contents were not read in the session) classes are always denied.
 
 Project-level `odek.json` cannot set `schedules.dangerous`; configure it via `~/.odek/config.json` or environment variables.
 

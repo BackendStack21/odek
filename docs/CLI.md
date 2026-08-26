@@ -33,9 +33,11 @@
 | `odek telegram` | Start the Telegram bot (long-polling). Hosts the embedded scheduler unless `schedules.enabled=false` |
 | `odek schedule <subcommand>` | Manage native in-process scheduled tasks (cron): `list`, `add`, `rm`, `enable`, `disable`, `run`, `next`, `daemon`. See [Schedules](SCHEDULES.md) |
 | `odek upgrade [--check]` | Self-upgrade to the latest GitHub release. Auto-detects OS/arch (`odek-<goos>-<goarch>` asset), verifies the download against the release `checksums.txt` (SHA-256), and installs it atomically over the current binary. `--check` reports the latest version without installing |
-| `odek version` | Print version and exit |
+| `odek version` / `odek --version` / `odek -v` | Print version and exit |
 
 ## Run flags
+
+Unknown flags are a **hard error** — they are never folded into the task text (a typo'd flag must not silently corrupt the prompt, and nothing that controls odek's argv should gain an injection vector). If your task text itself starts with `-`, pass it after an explicit `--` separator: `odek run -- "--dash-prefixed task"`.
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
@@ -44,7 +46,8 @@
 | `--max-iter <n>` | int | `90` | Max think→act cycles |
 | `--thinking <level>` | string | profile default | Reasoning depth: `enabled`/`disabled`/`low`/`medium`/`high`. Requires a model that supports extended thinking. |
 | `--thinking-budget <n>` | int | `5000` | Max thinking tokens for extended thinking (Anthropic budget_tokens). Only applied when `--thinking` is set. |
-| `--sandbox` | bool | false | Execute shell commands inside Docker container |
+| `--sandbox` | bool | default on | Execute shell commands inside Docker container. Defaults ON when no layer sets it; degrades loudly to unsandboxed when Docker is unavailable (fatal with `ODEK_REQUIRE_SANDBOX=1`). Explicit `--sandbox` keeps the hard-fail behavior. |
+| `--no-sandbox` | bool | — | Explicitly disable the sandbox (same as `ODEK_NO_SANDBOX=1`); silences the default-on behavior. |
 | `--deliver` | bool | false | Deliver the agent's final response to the configured Telegram `default_chat_id`. Requires `telegram.bot_token` + `telegram.default_chat_id` in config. Handy for host-cron one-shots; for recurring tasks prefer the native scheduler (`odek schedule`, see [Schedules](SCHEDULES.md)). |
 | `--interaction-mode <mode>` | string | `engaging` | Tool-call rendering: `engaging` (emoji narration) or `verbose` (raw tool output) |
 | `--no-color` | bool | false | Disable colored terminal output |
@@ -54,6 +57,7 @@
 | `--no-agents` | bool | false | Skip loading AGENTS.md |
 | `--session` | bool | false | Save conversation as a multi-turn session |
 | `--events-jsonl <path>` | string | — | Append the structured runtime event stream (schema `odek.event/v1`, one JSON object per line). File is created/hardened `0600`; the parent directory must already exist; a symlink at the target path is refused. See [Extensions](EXTENSIONS.md) |
+| `--events-include-args` | bool | false | With `--events-jsonl`: include raw (secret-redacted) tool-call arguments in `tool_call_started` events, for incident review. Without it the stream carries only digests plus the structured `args_summary` (program name, target, class). |
 | `--external-ref <ref>` | string | — | Attach an external-state reference to the session (repeatable; also on `odek continue`). Forms: `kind=...,uri=...,created_by=...[,read_only=...]` or shorthand `kind=uri` (`created_by` defaults to `cli`). odek stores refs verbatim and never dereferences them. Persisted only with `--session` (a warning is printed otherwise). See [Sessions](SESSIONS.md#external-state-references) |
 | `--max-runtime <sec>` | int | — | Hard execution budget: max wall-clock seconds per run |
 | `--max-tool-calls <n>` | int | — | Hard execution budget: max total tool calls |

@@ -215,6 +215,18 @@ type Engine struct {
 	// non-blocking events.Emitter; see docs/EXTENSIONS.md.
 	eventHandler func(events.Event)
 
+	// eventsIncludeArgs opts tool_call_started events into carrying the raw
+	// (secret-redacted) arguments in addition to the digest + structured
+	// summary. Off by default (P0-4).
+	eventsIncludeArgs bool
+
+	// runMutations records mutating tool calls completed during the current
+	// run (H-9): the final reply is reconciled against this ledger so a
+	// confident all-clear cannot misreport side effects that already
+	// happened. Reset at runLoop entry; only touched from the loop
+	// goroutine.
+	runMutations []string
+
 	// interactionMode controls how progress is surfaced to the user.
 	// "engaging" (default), "verbose", "enhance", or "off" (silent).
 	// When "off", all per-iteration render output is suppressed.
@@ -458,6 +470,13 @@ func (e *Engine) callLLM(ctx context.Context, messages []llm.Message, systemBloc
 // inside the hot loop; odek.New wires it to a drop-on-full events.Emitter.
 // Passing nil disables event emission.
 func (e *Engine) SetEventHandler(cb func(events.Event)) { e.eventHandler = cb }
+
+// SetEventsIncludeArgs opts tool_call_started events into carrying the raw
+// (secret-redacted) tool-call arguments alongside the digest. Off by
+// default: raw args can include sensitive task content, but incident
+// review on an opt-in basis is strictly better than a stream that cannot
+// answer "what actually ran?" once the session is gone.
+func (e *Engine) SetEventsIncludeArgs(enabled bool) { e.eventsIncludeArgs = enabled }
 
 // emitEvent fires a structured runtime event if a handler is configured,
 // stamping the timestamp when the caller left it zero. Safe to call
@@ -1572,6 +1591,8 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 	// Reset per-session repeated-call (stall) tracking
 	e.lastToolFingerprint = ""
 	e.toolRepeatStreak = 0
+	// Reset the run's mutation ledger (H-9)
+	e.runMutations = nil
 
 	// Rebuild plan state from a persisted plan message so `odek continue`
 	// resumes with forward state instead of re-deriving it from history
@@ -1859,6 +1880,11 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 
 		// No tool calls = final answer
 		if len(result.ToolCalls) == 0 {
+			// H-9: reconcile the reply against the action ledger before it
+			// goes out. A reply that misreports side effects ("blocked",
+			// "no changes made") after they happened is worse than silence.
+			result.Content = e.reconcileFinalReply(result.Content)
+
 			if e.renderer != nil && e.interactionMode != "off" {
 				// Show the model's reasoning for the final answer before the
 				// answer itself. For intermediate iterations this is handled
@@ -1975,8 +2001,23 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		// the Phase 3 range loop shadows the outer i, so capture it here.
 		iterNum := i + 1
 
+		// Stable per-call correlation IDs (P0-3): batched parallel calls are
+		// otherwise emitted as started,started,…,completed,completed,… with
+		// nothing tying each result to its call — which quietly corrupts any
+		// audit/replay tooling that pairs them sequentially. Prefer the
+		// provider's tool-call ID; fall back to a deterministic synthetic ID
+		// when the provider omits one.
+		callIDs := make([]string, len(result.ToolCalls))
+		for idx, tc := range result.ToolCalls {
+			if tc.ID != "" {
+				callIDs[idx] = tc.ID
+			} else {
+				callIDs[idx] = fmt.Sprintf("it%d-call%d", iterNum, idx)
+			}
+		}
+
 		// Phase 1: fire all tool_call events synchronously (rendering + events)
-		for _, tc := range result.ToolCalls {
+		for idx, tc := range result.ToolCalls {
 			if e.narrator != nil {
 				if msg := e.narrator.ToolCallMessage(tc.Function.Name, tc.Function.Arguments); msg != "" {
 					if e.renderer != nil {
@@ -1989,16 +2030,32 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 			if e.toolEventHandler != nil {
 				e.toolEventHandler("tool_call", tc.Function.Name, tc.Function.Arguments)
 			}
+			data := map[string]any{
+				// Stable correlation ID shared with the matching
+				// completed/failed event (P0-3).
+				"call_id": callIDs[idx],
+				// Never raw args by default: digest + size correlate
+				// start/complete without leaking argument content into the
+				// event stream.
+				"args_sha256": events.ArgsDigest(tc.Function.Arguments),
+				"args_bytes":  len(tc.Function.Arguments),
+			}
+			// Structured audit metadata (P0-4): what would run, on what
+			// target, under what classification — no argument content.
+			if summary := argSummary(tc.Function.Name, tc.Function.Arguments); len(summary) > 0 {
+				data["args_summary"] = summary
+			}
+			// Opt-in raw arguments (P0-4): --events-include-args. The emitter
+			// still applies secret redaction to string values, but this can
+			// capture sensitive task content — off unless asked for.
+			if e.eventsIncludeArgs {
+				data["args"] = tc.Function.Arguments
+			}
 			e.emitEvent(events.Event{
 				Type:      events.TypeToolCallStarted,
 				Iteration: iterNum,
 				Tool:      tc.Function.Name,
-				Data: map[string]any{
-					// Never raw args: digest + size correlate start/complete
-					// without leaking argument content into the event stream.
-					"args_sha256": events.ArgsDigest(tc.Function.Arguments),
-					"args_bytes":  len(tc.Function.Arguments),
-				},
+				Data:      data,
 			})
 		}
 
@@ -2168,6 +2225,10 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		for i, tc := range result.ToolCalls {
 			output := results[i].output
 
+			// H-9: ledger the mutating calls that completed this run so the
+			// final reply can be reconciled against what actually happened.
+			e.recordMutation(tc.Function.Name, tc.Function.Arguments, output)
+
 			// Tool results: only shown in verbose mode.
 			if e.narrator == nil && e.renderer != nil && e.interactionMode != "off" {
 				e.renderer.ToolResult(output)
@@ -2186,6 +2247,8 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 					Iteration: iterNum,
 					Tool:      tc.Function.Name,
 					Data: map[string]any{
+						// Correlates with the tool_call_started event (P0-3).
+						"call_id":     callIDs[i],
 						"duration_ms": results[i].durationMs,
 					},
 				}
@@ -2488,12 +2551,14 @@ func (e *Engine) buildToolDefs() []llm.ToolDef {
 // highest-ranked classification is selected from a list of commands/paths.
 func riskClassFromRank(r int) danger.RiskClass {
 	switch r {
-	case 9:
+	case 10:
 		return danger.Blocked
-	case 8:
+	case 9:
 		return danger.Destructive
-	case 7:
+	case 8:
 		return danger.Unknown
+	case 7:
+		return danger.Persistence
 	case 6:
 		return danger.SystemWrite
 	case 5:
@@ -2521,7 +2586,16 @@ func classifyToolCall(name, args string) (danger.RiskClass, string) {
 		if err := json.Unmarshal([]byte(args), &cmd); err != nil || cmd.Command == "" {
 			return "", ""
 		}
-		return danger.Classify(cmd.Command), cmd.Command
+		// Script gate (H-6): executing an unread repo script surfaces as
+		// unread_exec in the batch card instead of plain code_execution,
+		// with the gating scripts named in the card entry — the one place
+		// the user looks before granting batch trust.
+		cls, targets := danger.ClassifyScriptGate(cmd.Command)
+		resource := cmd.Command
+		if len(targets) > 0 {
+			resource = fmt.Sprintf("%s  [unread script: %s]", cmd.Command, strings.Join(targets, ", "))
+		}
+		return cls, resource
 	case "parallel_shell":
 		// The commands live inside a JSON array. Classify every command and
 		// surface all of them in the batch approval prompt so one cannot hide
@@ -2536,14 +2610,16 @@ func classifyToolCall(name, args string) (danger.RiskClass, string) {
 			return "", ""
 		}
 		var maxRank int
+		var maxCls danger.RiskClass
 		var parts []string
 		for _, c := range p.Commands {
 			if c.Command == "" {
 				continue
 			}
-			cls := danger.Classify(c.Command)
+			cls, _ := danger.ClassifyScriptGate(c.Command)
 			if r := danger.Rank(cls); r > maxRank {
 				maxRank = r
+				maxCls = cls
 			}
 			if c.Description != "" {
 				parts = append(parts, fmt.Sprintf("%s (%s)", c.Command, c.Description))
@@ -2554,11 +2630,44 @@ func classifyToolCall(name, args string) (danger.RiskClass, string) {
 		if len(parts) == 0 {
 			return "", ""
 		}
-		return riskClassFromRank(maxRank), strings.Join(parts, "; ")
-	case "read_file", "write_file", "patch", "search_files", "batch_read", "file_info", "glob",
+		return maxCls, strings.Join(parts, "; ")
+	case "write_file":
+		// Write targets use the write-aware classifier so deferred-execution
+		// targets (shell profiles, hooks, CI workflows, …) escalate to the
+		// persistence class in the batch card too. Content sniffing adds
+		// package.json/conftest.py lifecycle-hook detection.
+		var p struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal([]byte(args), &p); err != nil || p.Path == "" {
+			return "", ""
+		}
+		cls := danger.ClassifyPathWrite(p.Path)
+		if cls, ok := danger.LifecycleContentClass(p.Path, p.Content, cls); ok {
+			return cls, p.Path
+		}
+		return cls, p.Path
+	case "patch":
+		// A patch's new_string is the content being written — sniff it for
+		// lifecycle hooks like write_file content.
+		var p struct {
+			Path      string `json:"path"`
+			NewString string `json:"new_string"`
+		}
+		if err := json.Unmarshal([]byte(args), &p); err != nil || p.Path == "" {
+			return "", ""
+		}
+		cls := danger.ClassifyPathWrite(p.Path)
+		if cls, ok := danger.LifecycleContentClass(p.Path, p.NewString, cls); ok {
+			return cls, p.Path
+		}
+		return cls, p.Path
+	case "read_file", "search_files", "batch_read", "file_info", "glob",
 		"diff", "multi_grep", "json_query", "tree", "count_lines", "checksum",
 		"sort", "head_tail", "base64", "tr", "word_count", "transcribe":
-		// Extract the path from JSON args.
+		// Reads keep the direction-agnostic classifier — reading a CI
+		// workflow or hook file must stay frictionless.
 		var p struct {
 			Path string `json:"path"`
 		}
@@ -2571,7 +2680,8 @@ func classifyToolCall(name, args string) (danger.RiskClass, string) {
 		// edit cannot hide behind a benign first patch.
 		var p struct {
 			Patches []struct {
-				Path string `json:"path"`
+				Path      string `json:"path"`
+				NewString string `json:"new_string"`
 			} `json:"patches"`
 		}
 		if err := json.Unmarshal([]byte(args), &p); err != nil || len(p.Patches) == 0 {
@@ -2583,7 +2693,10 @@ func classifyToolCall(name, args string) (danger.RiskClass, string) {
 			if patch.Path == "" {
 				continue
 			}
-			cls := danger.ClassifyPath(patch.Path)
+			cls := danger.ClassifyPathWrite(patch.Path)
+			if lc, ok := danger.LifecycleContentClass(patch.Path, patch.NewString, cls); ok {
+				cls = lc
+			}
 			if r := danger.Rank(cls); r > maxRank {
 				maxRank = r
 			}

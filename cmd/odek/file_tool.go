@@ -308,6 +308,13 @@ func (t *readFileTool) Call(argsJSON string) (string, error) {
 		return jsonError(fmt.Sprintf("cannot read %q: %v", args.Path, err))
 	}
 
+	// H-6: only a FULL-file read licenses later execution of this file
+	// (review HIGH-001): a partial read (offset/limit window over a longer
+	// file) showed the model a prefix — the payload could ride below.
+	if args.Offset <= 1 && args.Limit >= totalLines {
+		danger.RecordRead(resolvedPath)
+	}
+
 	result := readFileResult{
 		Content:    wrapUntrusted(t.toolCtx(), resolvedPath, content),
 		TotalLines: totalLines,
@@ -395,8 +402,15 @@ func (t *writeFileTool) Call(argsJSON string) (string, error) {
 	}
 	args.Path = resolved
 
-	// Security: classify and check write operation
-	risk := danger.ClassifyPath(args.Path)
+	// Security: classify and check write operation. Write targets use the
+	// write-aware classifier: deferred-execution targets (shell profiles,
+	// git hooks, CI workflows, cron/systemd/launchd definitions) escalate
+	// to the persistence class (H-5), and content sniffing catches
+	// lifecycle hooks planted into package.json.
+	risk := danger.ClassifyPathWrite(args.Path)
+	if escalated, isHook := danger.LifecycleContentClass(args.Path, args.Content, risk); isHook {
+		risk = escalated
+	}
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
 		Name: "write_file", Resource: args.Path, Risk: risk,
 	}, t.trustedClasses); err != nil {
@@ -417,6 +431,8 @@ func (t *writeFileTool) Call(argsJSON string) (string, error) {
 		if err := sandboxWriteFile(t.containerName, args.Path, []byte(args.Content), origMode); err != nil {
 			return jsonError(fmt.Sprintf("cannot write %q via sandbox: %v", args.Path, err))
 		}
+		// Content authored this session is content the agent has seen (H-6).
+		danger.RecordRead(args.Path)
 		return jsonResult(writeFileResult{
 			Success: true,
 			Path:    args.Path,
@@ -462,6 +478,8 @@ func (t *writeFileTool) Call(argsJSON string) (string, error) {
 		return jsonError(fmt.Sprintf("cannot rename %q: %v", args.Path, err))
 	}
 
+	// Content authored this session is content the agent has seen (H-6).
+	danger.RecordRead(args.Path)
 	return jsonResult(writeFileResult{
 		Success: true,
 		Path:    args.Path,
@@ -842,8 +860,14 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 	}
 	args.Path = resolved
 
-	// Security: classify and check patch operation
-	risk := danger.ClassifyPath(args.Path)
+	// Security: classify and check patch operation. Write-aware classifier
+	// (H-5): deferred-execution targets escalate to persistence, and the
+	// new content is sniffed for lifecycle hooks (package.json scripts,
+	// conftest.py autouse).
+	risk := danger.ClassifyPathWrite(args.Path)
+	if escalated, isHook := danger.LifecycleContentClass(args.Path, args.NewString, risk); isHook {
+		risk = escalated
+	}
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
 		Name: "patch", Resource: args.Path, Risk: risk,
 	}, t.trustedClasses); err != nil {
@@ -944,6 +968,8 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 		return jsonError(fmt.Sprintf("cannot write %q: %v", args.Path, err))
 	}
 
+	// Content (re)authored this session is content the agent has seen (H-6).
+	danger.RecordRead(args.Path)
 	return jsonResult(patchResult{
 		Success: true,
 		Diff:    wrapUntrusted(t.toolCtx(), "patch:"+args.Path, diff),
@@ -1440,6 +1466,11 @@ func (t *batchReadTool) readSingle(arg batchReadFileArg) batchReadFileResult {
 		return batchReadFileResult{Path: arg.Path, Error: fmt.Sprintf("cannot read %q: %v", arg.Path, err)}
 	}
 
+	// H-6: full-file reads only (review HIGH-001) — same rationale as
+	// read_file.
+	if arg.Offset <= 1 && arg.Limit >= totalLines {
+		danger.RecordRead(resolvedPath)
+	}
 	return batchReadFileResult{
 		Path:       arg.Path,
 		Content:    wrapUntrusted(t.toolCtx(), resolvedPath, content),

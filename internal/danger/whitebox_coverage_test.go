@@ -573,11 +573,14 @@ func TestActionForCommand_EmptyAndClass(t *testing.T) {
 }
 
 func TestNonInteractiveAction(t *testing.T) {
-	if (&DangerousConfig{}).NonInteractiveAction() != Deny {
-		t.Error("default non-interactive action should be deny")
+	if (&DangerousConfig{}).NonInteractiveAction() != ReadOnly {
+		t.Error("default non-interactive action should be read_only (H-7)")
 	}
 	if (&DangerousConfig{NonInteractive: strPtr("allow")}).NonInteractiveAction() != Allow {
 		t.Error("configured non-interactive allow should be honored")
+	}
+	if (&DangerousConfig{NonInteractive: strPtr("deny")}).NonInteractiveAction() != Deny {
+		t.Error("configured non-interactive deny should be honored")
 	}
 }
 

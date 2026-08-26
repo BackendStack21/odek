@@ -356,6 +356,11 @@ type runFlags struct {
 	// (schema odek.event/v1) to this file — one JSON object per line.
 	EventsJSONL string
 
+	// EventsIncludeArgs opts the event stream into carrying raw
+	// (secret-redacted) tool-call arguments in tool_call_started events.
+	// Pairs with --events-jsonl for incident review (P0-4).
+	EventsIncludeArgs *bool // nil = not set
+
 	// ExternalRefs holds the raw repeatable --external-ref values
 	// (kind=uri shorthand or kind=...,uri=...,created_by=... form).
 	// Parsed and validated in runCmd before the agent starts.
@@ -371,11 +376,37 @@ type runFlags struct {
 
 // parseRunFlags parses `odek run` arguments and returns the parsed flags.
 // Exported for testing.
+// isFlagLike reports whether an argument should be treated as a CLI flag
+// rather than task text. A bare "-" stays literal (stdin convention).
+func isFlagLike(arg string) bool {
+	return strings.HasPrefix(arg, "-") && arg != "-"
+}
+
+// unknownFlagError builds the error for an unrecognised flag. The hint is
+// load-bearing: before strict parsing, a typo'd or version-drifted flag was
+// silently folded into the task text — corrupting the prompt and handing
+// anything that controls argv (wrapper scripts, CI jobs, Makefile targets)
+// a prompt-injection vector into the CLI itself.
+func unknownFlagError(flag string) error {
+	return fmt.Errorf("unknown flag %q — flags must come before the task text; "+
+		"if the task itself starts with \"-\", separate it with \"--\" "+
+		"(e.g. odek run -- \"-dash-prefixed task\")", flag)
+}
+
 func parseRunFlags(args []string) (runFlags, error) {
 	var f runFlags
 
+	// sep records that an explicit "--" separator was seen: every argument
+	// after it is verbatim task text, even when it looks like a flag.
+	sep := false
+
 	i := 0
 	for i < len(args) {
+		if args[i] == "--" {
+			i++
+			sep = true
+			break
+		}
 		switch args[i] {
 		case "--model":
 			if i+1 >= len(args) {
@@ -428,6 +459,9 @@ func parseRunFlags(args []string) (runFlags, error) {
 		case "--sandbox":
 			f.Sandbox = boolPtr(true)
 			i++
+		case "--no-sandbox":
+			f.Sandbox = boolPtr(false)
+			i++
 		case "--learn":
 			f.Learn = boolPtr(true)
 			i++
@@ -479,6 +513,9 @@ func parseRunFlags(args []string) (runFlags, error) {
 			}
 			f.EventsJSONL = args[i+1]
 			i += 2
+		case "--events-include-args":
+			f.EventsIncludeArgs = boolPtr(true)
+			i++
 		case "--external-ref":
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("--external-ref requires a value")
@@ -734,133 +771,152 @@ func parseRunFlags(args []string) (runFlags, error) {
 			i++
 
 		default:
+			// Unknown flags are a hard error, never task text (P0-1): a
+			// typo'd flag must not silently corrupt the prompt.
+			if isFlagLike(args[i]) {
+				return f, unknownFlagError(args[i])
+			}
 			// Not a flag — treat remaining as the task
 			goto done
 		}
 	}
 done:
-	// Scan remaining args for standalone flags that may appear after the
-	// task phrase (e.g. "odek run 'hello' --deliver"). This allows flags
-	// without values to be placed anywhere on the command line.
 	taskArgs := args[i:]
-	for j := 0; j < len(taskArgs); j++ {
-		switch taskArgs[j] {
-		case "--deliver":
-			f.Deliver = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--sandbox":
-			f.Sandbox = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--session":
-			f.Session = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--no-color":
-			f.NoColor = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--no-agents":
-			f.NoAgents = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--no-learn":
-			f.Learn = boolPtr(false)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--learn":
-			f.Learn = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--prompt-caching":
-			f.PromptCaching = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--stream":
-			f.Stream = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--compaction":
-			f.Compaction = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--no-compaction":
-			f.Compaction = boolPtr(false)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--planning":
-			f.Planning = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--no-planning":
-			f.Planning = boolPtr(false)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--sandbox-readonly":
-			f.SandboxReadonly = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--memory-extended-enabled":
-			f.MemoryExtendedEnabled = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--guard-scan-memory":
-			f.GuardScanMemory = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--guard-no-scan-memory":
-			f.GuardScanMemory = boolPtr(false)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--guard-scan-system-prompt":
-			f.GuardScanSystemPrompt = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--guard-no-scan-system-prompt":
-			f.GuardScanSystemPrompt = boolPtr(false)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--guard-scan-mcp":
-			f.GuardScanMCP = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--guard-no-scan-mcp":
-			f.GuardScanMCP = boolPtr(false)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--guard-scan-skills":
-			f.GuardScanSkills = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--guard-no-scan-skills":
-			f.GuardScanSkills = boolPtr(false)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--guard-scan-tool-outputs":
-			f.GuardScanToolOutputs = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--guard-no-scan-tool-outputs":
-			f.GuardScanToolOutputs = boolPtr(false)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--guard-scan-telegram":
-			f.GuardScanTelegram = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--guard-no-scan-telegram":
-			f.GuardScanTelegram = boolPtr(false)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--guard-fallback":
-			f.GuardFallbackToLocal = boolPtr(true)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
-		case "--guard-no-fallback":
-			f.GuardFallbackToLocal = boolPtr(false)
-			taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-			j--
+	if !sep {
+		// Scan remaining args for standalone flags that may appear after the
+		// task phrase (e.g. "odek run 'hello' --deliver"). This allows flags
+		// without values to be placed anywhere on the command line. Anything
+		// else flag-shaped is a hard error — it must never leak into the task.
+		for j := 0; j < len(taskArgs); j++ {
+			switch taskArgs[j] {
+			case "--deliver":
+				f.Deliver = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--sandbox":
+				f.Sandbox = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--no-sandbox":
+				f.Sandbox = boolPtr(false)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--session":
+				f.Session = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--no-color":
+				f.NoColor = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--no-agents":
+				f.NoAgents = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--no-learn":
+				f.Learn = boolPtr(false)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--learn":
+				f.Learn = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--prompt-caching":
+				f.PromptCaching = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--stream":
+				f.Stream = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--compaction":
+				f.Compaction = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--no-compaction":
+				f.Compaction = boolPtr(false)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--planning":
+				f.Planning = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--no-planning":
+				f.Planning = boolPtr(false)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--sandbox-readonly":
+				f.SandboxReadonly = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--memory-extended-enabled":
+				f.MemoryExtendedEnabled = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--guard-scan-memory":
+				f.GuardScanMemory = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--guard-no-scan-memory":
+				f.GuardScanMemory = boolPtr(false)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--guard-scan-system-prompt":
+				f.GuardScanSystemPrompt = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--guard-no-scan-system-prompt":
+				f.GuardScanSystemPrompt = boolPtr(false)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--guard-scan-mcp":
+				f.GuardScanMCP = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--guard-no-scan-mcp":
+				f.GuardScanMCP = boolPtr(false)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--guard-scan-skills":
+				f.GuardScanSkills = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--guard-no-scan-skills":
+				f.GuardScanSkills = boolPtr(false)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--guard-scan-tool-outputs":
+				f.GuardScanToolOutputs = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--guard-no-scan-tool-outputs":
+				f.GuardScanToolOutputs = boolPtr(false)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--guard-scan-telegram":
+				f.GuardScanTelegram = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--guard-no-scan-telegram":
+				f.GuardScanTelegram = boolPtr(false)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--guard-fallback":
+				f.GuardFallbackToLocal = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--guard-no-fallback":
+				f.GuardFallbackToLocal = boolPtr(false)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			default:
+				// Unknown flag-shaped token after the task starts: hard error.
+				// Silently leaving it in the task is what let a drifted
+				// `--interaction-mode` end up prepended to a prompt (P0-1).
+				if isFlagLike(taskArgs[j]) {
+					return f, unknownFlagError(taskArgs[j])
+				}
+			}
 		}
 	}
 	f.Task = strings.Join(taskArgs, " ")
@@ -914,6 +970,8 @@ func parseReplFlags(args []string) (replFlags, error) {
 			switch args[i] {
 			case "--sandbox":
 				f.Sandbox = boolPtr(true)
+			case "--no-sandbox":
+				f.Sandbox = boolPtr(false)
 			case "--sandbox-readonly":
 				f.SandboxReadonly = boolPtr(true)
 			case "--prompt-caching":
@@ -928,6 +986,10 @@ func parseReplFlags(args []string) (replFlags, error) {
 				f.Planning = boolPtr(true)
 			case "--no-planning":
 				f.Planning = boolPtr(false)
+			default:
+				if isFlagLike(args[i]) {
+					return f, unknownFlagError(args[i])
+				}
 			}
 			break
 		}
@@ -946,6 +1008,9 @@ func parseReplFlags(args []string) (replFlags, error) {
 			i += 2
 		case "--sandbox":
 			f.Sandbox = boolPtr(true)
+			i++
+		case "--no-sandbox":
+			f.Sandbox = boolPtr(false)
 			i++
 		case "--sandbox-image":
 			f.SandboxImage = args[i+1]
@@ -987,7 +1052,12 @@ func parseReplFlags(args []string) (replFlags, error) {
 			f.InteractionMode = args[i+1]
 			i += 2
 		default:
-			// Unrecognized flag or positional — skip it
+			// Unknown flags are a hard error (P0-1): silently skipping a
+			// typo'd flag leaves the operator believing it took effect.
+			// Bare positionals are still ignored — repl takes no task text.
+			if isFlagLike(args[i]) {
+				return f, unknownFlagError(args[i])
+			}
 			i++
 		}
 	}
@@ -1011,7 +1081,7 @@ func printUsage() {
   odek memory <list|promote <session_id>>
   odek cleanup [--dry-run]
   odek upgrade [--check]
-  odek version
+  odek version | odek --version
 
 Commands:
   run                 Execute a task with the agent loop
@@ -1609,25 +1679,24 @@ func run(args []string) error {
 	// so disabled/enabled lists can reference MCP tool names too).
 	tools = filterBuiltinTools(tools, resolved.Tools, nil)
 
-	if resolved.Sandbox {
-		var containerName string
-		containerName, sandboxCleanup, err = setupSandbox(tools, sbCfg)
-		if err != nil {
-			return fmt.Errorf("sandbox: %w", err)
-		}
-
+	// Sandbox (H-8): defaults ON with a loud unsandboxed fallback when
+	// Docker is unavailable; explicit --sandbox/"sandbox": true keeps the
+	// hard-fail behavior.
+	var runContainerName string
+	var runSandboxed bool
+	runContainerName, sandboxCleanup, runSandboxed, err = ensureSandbox(resolved, tools, sbCfg)
+	if err != nil {
+		return err
+	}
+	if runSandboxed && len(f.Ctx) > 0 {
 		// Inject --ctx files into the sandbox container
-		if len(f.Ctx) > 0 {
-			injected, injectErr := sandbox.InjectFiles(containerName, f.Ctx, cwd)
-			if injectErr != nil {
-				return fmt.Errorf("sandbox: inject ctx files: %w", injectErr)
-			}
-			if injected > 0 {
-				fmt.Fprintf(os.Stderr, "odek: copied %d file(s) into sandbox\n", injected)
-			}
+		injected, injectErr := sandbox.InjectFiles(runContainerName, f.Ctx, cwd)
+		if injectErr != nil {
+			return fmt.Errorf("sandbox: inject ctx files: %w", injectErr)
 		}
-	} else {
-		warnSandboxDisabled()
+		if injected > 0 {
+			fmt.Fprintf(os.Stderr, "odek: copied %d file(s) into sandbox\n", injected)
+		}
 	}
 
 	// Create terminal renderer for colored step-by-step output.
@@ -1688,34 +1757,35 @@ func run(args []string) error {
 	}
 
 	agent, err := odek.New(odek.Config{
-		Model:            resolved.Model,
-		BaseURL:          resolved.BaseURL,
-		APIKey:           resolved.APIKey,
-		MaxIterations:    resolved.MaxIter,
-		MaxToolParallel:  resolved.MaxToolParallel,
-		SystemMessage:    systemMessage,
-		UntrustedWrapper: func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
-		NoProjectFile:    resolved.NoAgents,
-		Thinking:         resolved.Thinking,
-		ThinkingBudget:   f.ThinkingBudget,
-		Temperature:      f.Temp, // 0 = deterministic default; negative = omit from request
-		Tools:            tools,
-		ToolFilter:       odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
-		SandboxCleanup:   sandboxCleanup,
-		Renderer:         rend,
-		Skills:           skillsCfg,
-		SkillManager:     sm,
-		PromptCaching:    resolved.PromptCaching,
-		Stream:           resolved.Stream,
-		DeltaHandler:     streamDeltaPrinter(resolved.Stream, rend),
-		Compaction:       resolved.Compaction,
-		MemoryDir:        expandHome("~/.odek/memory"),
-		MemoryConfig:     resolved.Memory,
-		Guard:            injectionGuard,
-		GuardConfig:      resolved.Guard,
-		EventHandler:     eventHandler,
-		ExternalRefs:     externalRefs,
-		Limits:           resolved.Limits,
+		Model:             resolved.Model,
+		BaseURL:           resolved.BaseURL,
+		APIKey:            resolved.APIKey,
+		MaxIterations:     resolved.MaxIter,
+		MaxToolParallel:   resolved.MaxToolParallel,
+		SystemMessage:     systemMessage,
+		UntrustedWrapper:  func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
+		NoProjectFile:     resolved.NoAgents,
+		Thinking:          resolved.Thinking,
+		ThinkingBudget:    f.ThinkingBudget,
+		Temperature:       f.Temp, // 0 = deterministic default; negative = omit from request
+		Tools:             tools,
+		ToolFilter:        odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
+		SandboxCleanup:    sandboxCleanup,
+		Renderer:          rend,
+		Skills:            skillsCfg,
+		SkillManager:      sm,
+		PromptCaching:     resolved.PromptCaching,
+		Stream:            resolved.Stream,
+		DeltaHandler:      streamDeltaPrinter(resolved.Stream, rend),
+		Compaction:        resolved.Compaction,
+		MemoryDir:         expandHome("~/.odek/memory"),
+		MemoryConfig:      resolved.Memory,
+		Guard:             injectionGuard,
+		GuardConfig:       resolved.Guard,
+		EventHandler:      eventHandler,
+		EventsIncludeArgs: f.EventsIncludeArgs != nil && *f.EventsIncludeArgs,
+		ExternalRefs:      externalRefs,
+		Limits:            resolved.Limits,
 	})
 	if err != nil {
 		return err
@@ -2011,6 +2081,56 @@ func deliverToTelegram(text string, resolved config.ResolvedConfig) error {
 //
 // The returned cleanup function destroys the container; always invoke it
 // via Agent.Close().
+// sandboxIntent resolves whether this run wants the sandbox and whether
+// that desire is explicit (H-8). The sandbox defaults ON for the CLI
+// surfaces (run/continue/repl) — the actual control for the
+// "ran attacker-controlled code" class is something users must now
+// deliberately give up, not discover. Opt-outs: --no-sandbox flag or
+// ODEK_NO_SANDBOX=1 (both explicit); ODEK_REQUIRE_SANDBOX=1 turns any
+// implicit fallback-to-unsandboxed into a fatal error.
+func sandboxIntent(resolved config.ResolvedConfig) (want, explicit bool) {
+	if resolved.SandboxExplicit {
+		return resolved.Sandbox, true
+	}
+	if os.Getenv("ODEK_NO_SANDBOX") == "1" {
+		return false, true
+	}
+	return true, false
+}
+
+// ensureSandbox starts the sandbox under H-8 semantics:
+//   - wanted + success        → container started, sandboxed=true
+//   - wanted + failure        → explicit want (or ODEK_REQUIRE_SANDBOX=1)
+//     is fatal; the implicit default degrades to
+//     unsandboxed with a loud warning rather than
+//     breaking every Docker-less user
+//   - not wanted              → warns once, sandboxed=false
+func ensureSandbox(resolved config.ResolvedConfig, tools []odek.Tool, cfg sandboxConfig) (containerName string, cleanup func() error, sandboxed bool, err error) {
+	want, explicit := sandboxIntent(resolved)
+	if !want {
+		if os.Getenv("ODEK_REQUIRE_SANDBOX") == "1" {
+			// The operator's hard constraint outranks every opt-out,
+			// including an explicit --no-sandbox: contradictory
+			// instructions fail loudly instead of guessing (review MED-003).
+			return "", nil, false, fmt.Errorf("sandbox required (ODEK_REQUIRE_SANDBOX=1) but sandboxing is disabled by flag/config")
+		}
+		warnSandboxDisabled()
+		return "", nil, false, nil
+	}
+	name, cleanup, serr := setupSandbox(tools, cfg)
+	if serr == nil {
+		return name, cleanup, true, nil
+	}
+	if explicit || os.Getenv("ODEK_REQUIRE_SANDBOX") == "1" {
+		return "", nil, false, fmt.Errorf("sandbox: %w", serr)
+	}
+	fmt.Fprintf(os.Stderr, "⚠️  odek: default sandbox unavailable (%v)\n", serr)
+	fmt.Fprintf(os.Stderr, "   continuing WITHOUT sandbox — the agent has full host access.\n")
+	fmt.Fprintf(os.Stderr, "   start Docker to get isolation; run again with --sandbox to approve a project\n")
+	fmt.Fprintf(os.Stderr, "   Dockerfile/knobs interactively; ODEK_NO_SANDBOX=1 opts out; ODEK_REQUIRE_SANDBOX=1 makes this fatal.\n")
+	return "", nil, false, nil
+}
+
 func setupSandbox(tools []odek.Tool, cfg sandboxConfig) (containerName string, cleanup func() error, err error) {
 	// An implicit Dockerfile.odek build executes repo-controlled code on the
 	// host; refuse to proceed unless it was approved (startup prompt, trusted
@@ -2837,10 +2957,16 @@ func continueCmd(args []string) error {
 		}
 	}
 
-	// Auto-apply sandbox if session was sandboxed (even if config changed)
-	if sess.Sandbox && !resolved.Sandbox {
-		resolved.Sandbox = true
-		fmt.Fprintf(os.Stderr, "odek: session was sandboxed — enabling sandbox for this continuation\n")
+	// Continuations preserve the session's sandbox posture exactly (H-8):
+	// a sandboxed session re-sandboxes (explicit intent), an unsandboxed
+	// session stays unsandboxed even under the new default-on — flipping
+	// containment mid-conversation would surprise both user and agent.
+	if !resolved.SandboxExplicit {
+		resolved.Sandbox = sess.Sandbox
+		resolved.SandboxExplicit = true
+		if sess.Sandbox {
+			fmt.Fprintf(os.Stderr, "odek: session was sandboxed — enabling sandbox for this continuation\n")
+		}
 	}
 
 	// Gate project-level sandbox knobs and any implicit Dockerfile.odek build
@@ -2880,23 +3006,19 @@ func continueCmd(args []string) error {
 
 	var sandboxCleanup func() error
 
-	if resolved.Sandbox {
-		sbCfg := sandboxConfig{
-			Image:    resolved.SandboxImage,
-			Network:  resolved.SandboxNetwork,
-			Readonly: resolved.SandboxReadonly,
-			Memory:   resolved.SandboxMemory,
-			CPUs:     resolved.SandboxCPUs,
-			User:     resolved.SandboxUser,
-			Env:      resolved.SandboxEnv,
-			Volumes:  resolved.SandboxVolumes,
-		}
-		var contContainerName string
-		contContainerName, sandboxCleanup, err = setupSandbox(tools, sbCfg)
-		if err != nil {
-			return fmt.Errorf("sandbox: %w", err)
-		}
-		_ = contContainerName
+	sbCfg := sandboxConfig{
+		Image:    resolved.SandboxImage,
+		Network:  resolved.SandboxNetwork,
+		Readonly: resolved.SandboxReadonly,
+		Memory:   resolved.SandboxMemory,
+		CPUs:     resolved.SandboxCPUs,
+		User:     resolved.SandboxUser,
+		Env:      resolved.SandboxEnv,
+		Volumes:  resolved.SandboxVolumes,
+	}
+	_, sandboxCleanup, _, err = ensureSandbox(resolved, tools, sbCfg)
+	if err != nil {
+		return err
 	}
 
 	// Renderer
@@ -3155,6 +3277,38 @@ func showSession(store *session.Store, args []string) error {
 	fmt.Printf("Task:    %s\n", sess.Task)
 	fmt.Println()
 
+	// Call-ID correlation (P0-3): parallel tool calls are stored as
+	// CALL,CALL,…,RESULT,RESULT,… with no implicit ordering link between a
+	// result and its call. Emit a stable label on both halves so audit,
+	// replay, and compliance tooling can pair them without guessing.
+	//
+	// Labels prefer the provider's tool-call ID; when a call has none (some
+	// providers omit it), a deterministic positional label is minted. Empty
+	// IDs can repeat across batches, so each side (calls and results) walks
+	// its own FIFO cursor per raw ID — matching the order in which the loop
+	// appends them.
+	callLabels := make(map[string][]string) // raw ToolCallID → labels in order
+	for i, msg := range sess.Messages {
+		for j, tc := range msg.ToolCalls {
+			label := tc.ID
+			if label == "" {
+				label = fmt.Sprintf("m%d-c%d", i, j)
+			}
+			callLabels[tc.ID] = append(callLabels[tc.ID], "#"+label)
+		}
+	}
+	callCursor := make(map[string]int)
+	resultCursor := make(map[string]int)
+	nextLabel := func(cursor map[string]int, rawID string) string {
+		labels := callLabels[rawID]
+		idx := cursor[rawID]
+		if idx >= len(labels) {
+			return "#unmatched"
+		}
+		cursor[rawID] = idx + 1
+		return labels[idx]
+	}
+
 	for i, msg := range sess.Messages {
 		content := strings.TrimSpace(msg.Content)
 		switch msg.Role {
@@ -3165,13 +3319,13 @@ func showSession(store *session.Store, args []string) error {
 		case "assistant":
 			if len(msg.ToolCalls) > 0 {
 				for _, tc := range msg.ToolCalls {
-					fmt.Printf("── [TOOL CALL: %s] ──\n%s\n\n", tc.Function.Name, tc.Function.Arguments)
+					fmt.Printf("── [TOOL CALL: %s %s] ──\n%s\n\n", tc.Function.Name, nextLabel(callCursor, tc.ID), tc.Function.Arguments)
 				}
 			} else {
 				fmt.Printf("── [ASSISTANT] ──\n%s\n\n", content)
 			}
 		case "tool":
-			fmt.Printf("── [TOOL RESULT: %s] ──\n%s\n\n", msg.Name, shorten(content, 200))
+			fmt.Printf("── [TOOL RESULT: %s %s] ──\n%s\n\n", msg.Name, nextLabel(resultCursor, msg.ToolCallID), shorten(content, 200))
 		}
 	}
 	return nil

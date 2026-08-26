@@ -15,21 +15,27 @@ func TestClassify_WriteToSystemPath_IsSystemWrite(t *testing.T) {
 	// A file-mutating command pointed at a system path must prompt, not
 	// auto-allow. Previously these short-circuited to local_write because
 	// isLocalWrite returned before the touchesSystemPath fallback ran.
-	cmds := []string{
-		"cp evil /etc/cron.d/job",
-		"cp payload /usr/local/bin/tool",
-		"tee /etc/profile.d/evil.sh",
-		"mv x /usr/bin/ls",
-		"touch /etc/cron.daily/job",
-		"mkdir /etc/evil.d",
-		"ln -s /payload /etc/systemd/system/x.service",
-		"install -m 0755 evil /usr/local/bin/y",
-		"rm /etc/hosts",
+	// Deferred-execution targets (cron.d, profile.d, systemd units) now
+	// classify as persistence — ranked above system_write — which gates at
+	// least as strongly.
+	cases := []struct {
+		cmd  string
+		want RiskClass
+	}{
+		{"cp evil /etc/cron.d/job", Persistence},
+		{"cp payload /usr/local/bin/tool", SystemWrite},
+		{"tee /etc/profile.d/evil.sh", Persistence},
+		{"mv x /usr/bin/ls", SystemWrite},
+		{"touch /etc/cron.daily/job", Persistence},
+		{"mkdir /etc/evil.d", SystemWrite},
+		{"ln -s /payload /etc/systemd/system/x.service", Persistence},
+		{"install -m 0755 evil /usr/local/bin/y", SystemWrite},
+		{"rm /etc/hosts", SystemWrite},
 	}
-	for _, c := range cmds {
-		t.Run(c, func(t *testing.T) {
-			if got := Classify(c); got != SystemWrite {
-				t.Errorf("Classify(%q) = %s, want system_write", c, got)
+	for _, tt := range cases {
+		t.Run(tt.cmd, func(t *testing.T) {
+			if got := Classify(tt.cmd); got != tt.want {
+				t.Errorf("Classify(%q) = %s, want %s", tt.cmd, got, tt.want)
 			}
 		})
 	}

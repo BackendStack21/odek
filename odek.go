@@ -217,9 +217,17 @@ type Config struct {
 	//
 	// Dispatch is non-blocking (buffered channel, drop-on-full) and
 	// panic-isolated: a slow or panicking handler can never stall or crash
-	// the agent loop. Events never carry raw tool arguments (SHA-256 digest
-	// + sizes only) and human-readable fields pass through secret redaction.
+	// the agent loop. Events never carry raw tool arguments by default
+	// (SHA-256 digest + sizes + a structured argv0/target/class summary
+	// only) and human-readable fields pass through secret redaction.
 	EventHandler func(event events.Event)
+
+	// EventsIncludeArgs opts the event stream into carrying the raw
+	// (secret-redacted) tool-call arguments in tool_call_started events.
+	// Default off: raw arguments can include sensitive task content, but
+	// incident review on an opt-in basis beats a stream that cannot answer
+	// "what actually ran?" once the session has been deleted.
+	EventsIncludeArgs bool
 
 	// ExternalRefs carries operator-supplied pointers to state that lives
 	// outside odek (schema odek-extension/v1 — see docs/EXTENSIONS.md).
@@ -832,6 +840,7 @@ func New(cfg Config) (*Agent, error) {
 	if cfg.EventHandler != nil {
 		agent.emitter = events.NewEmitter(cfg.EventHandler, events.NewRunID())
 		engine.SetEventHandler(agent.emitter.Emit)
+		engine.SetEventsIncludeArgs(cfg.EventsIncludeArgs)
 	}
 
 	// Wire narrator for engaging/enhance interaction modes.
