@@ -2533,12 +2533,14 @@ func (e *Engine) buildToolDefs() []llm.ToolDef {
 // highest-ranked classification is selected from a list of commands/paths.
 func riskClassFromRank(r int) danger.RiskClass {
 	switch r {
-	case 9:
+	case 10:
 		return danger.Blocked
-	case 8:
+	case 9:
 		return danger.Destructive
-	case 7:
+	case 8:
 		return danger.Unknown
+	case 7:
+		return danger.Persistence
 	case 6:
 		return danger.SystemWrite
 	case 5:
@@ -2600,10 +2602,43 @@ func classifyToolCall(name, args string) (danger.RiskClass, string) {
 			return "", ""
 		}
 		return riskClassFromRank(maxRank), strings.Join(parts, "; ")
-	case "read_file", "write_file", "patch", "search_files", "batch_read", "file_info", "glob",
+	case "write_file":
+		// Write targets use the write-aware classifier so deferred-execution
+		// targets (shell profiles, hooks, CI workflows, …) escalate to the
+		// persistence class in the batch card too. Content sniffing adds
+		// package.json/conftest.py lifecycle-hook detection.
+		var p struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal([]byte(args), &p); err != nil || p.Path == "" {
+			return "", ""
+		}
+		cls := danger.ClassifyPathWrite(p.Path)
+		if cls, ok := danger.LifecycleContentClass(p.Path, p.Content, cls); ok {
+			return cls, p.Path
+		}
+		return cls, p.Path
+	case "patch":
+		// A patch's new_string is the content being written — sniff it for
+		// lifecycle hooks like write_file content.
+		var p struct {
+			Path      string `json:"path"`
+			NewString string `json:"new_string"`
+		}
+		if err := json.Unmarshal([]byte(args), &p); err != nil || p.Path == "" {
+			return "", ""
+		}
+		cls := danger.ClassifyPathWrite(p.Path)
+		if cls, ok := danger.LifecycleContentClass(p.Path, p.NewString, cls); ok {
+			return cls, p.Path
+		}
+		return cls, p.Path
+	case "read_file", "search_files", "batch_read", "file_info", "glob",
 		"diff", "multi_grep", "json_query", "tree", "count_lines", "checksum",
 		"sort", "head_tail", "base64", "tr", "word_count", "transcribe":
-		// Extract the path from JSON args.
+		// Reads keep the direction-agnostic classifier — reading a CI
+		// workflow or hook file must stay frictionless.
 		var p struct {
 			Path string `json:"path"`
 		}
@@ -2616,7 +2651,8 @@ func classifyToolCall(name, args string) (danger.RiskClass, string) {
 		// edit cannot hide behind a benign first patch.
 		var p struct {
 			Patches []struct {
-				Path string `json:"path"`
+				Path      string `json:"path"`
+				NewString string `json:"new_string"`
 			} `json:"patches"`
 		}
 		if err := json.Unmarshal([]byte(args), &p); err != nil || len(p.Patches) == 0 {
@@ -2628,7 +2664,10 @@ func classifyToolCall(name, args string) (danger.RiskClass, string) {
 			if patch.Path == "" {
 				continue
 			}
-			cls := danger.ClassifyPath(patch.Path)
+			cls := danger.ClassifyPathWrite(patch.Path)
+			if lc, ok := danger.LifecycleContentClass(patch.Path, patch.NewString, cls); ok {
+				cls = lc
+			}
 			if r := danger.Rank(cls); r > maxRank {
 				maxRank = r
 			}

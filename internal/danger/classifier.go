@@ -108,6 +108,7 @@ const (
 	Safe          RiskClass = "safe"
 	LocalWrite    RiskClass = "local_write"
 	SystemWrite   RiskClass = "system_write"
+	Persistence   RiskClass = "persistence"
 	Destructive   RiskClass = "destructive"
 	NetworkEgress RiskClass = "network_egress"
 	CodeExecution RiskClass = "code_execution"
@@ -121,6 +122,15 @@ const (
 	// unprompted. Recognised-but-benign usage classifies as Safe instead.
 	Unknown RiskClass = "unknown"
 )
+
+// Persistence (H-5): writes aimed at targets whose entire purpose is
+// deferred execution — shell profiles, direnv files, git hooks, CI
+// workflow files, cron/systemd/launchd definitions, and package-manager
+// lifecycle scripts. The write is neither destructive, nor egress, nor an
+// in-session install, which is exactly why nothing used to escalate: the
+// payload fires later, in a context the user trusts (every future shell,
+// the next push, the next test run). Keyed on write targets, not command
+// shape, and gated even when the repo documents the write.
 
 // Action represents what to do when a command of a given risk class is detected.
 type Action string
@@ -262,6 +272,137 @@ var shellRCFilesLower = func() map[string]bool {
 	}
 	return m
 }()
+
+// ── Persistence targets (H-5) ───────────────────────────────────────────
+//
+// Targets whose entire purpose is deferred execution: the write itself is
+// quiet, the payload runs later in a context the user trusts (next shell,
+// next cd, next commit/push, next boot, next CI run with CI credentials,
+// next install / test run).
+
+// persistenceDirMarkers are lowercased path substrings that mark a
+// deferred-execution directory or file. Substring matching (with the
+// leading slash) keeps relative paths like .github/workflows/x.yml working
+// after filepath.Abs without reimplementing git/CI layout resolution.
+var persistenceDirMarkers = []string{
+	"/.git/hooks/",        // runs on commit, push, checkout
+	"/.github/workflows/", // runs on the next push, with CI credentials
+	"/etc/cron.d/",        // runs on a schedule
+	"/etc/crontab",        // runs on a schedule
+	"/etc/cron.daily/",    // runs daily (Debian run-parts)
+	"/etc/cron.hourly/",   // runs hourly
+	"/etc/cron.weekly/",   // runs weekly
+	"/etc/cron.monthly/",  // runs monthly
+	"/var/spool/cron/",    // per-user crontabs (Linux)
+	"/usr/lib/cron/tabs/", // per-user crontabs (macOS)
+	"/etc/systemd/",       // system units — boot / timer triggered
+	"/lib/systemd/",       // also covers /usr/lib/systemd/ as substring
+	"/etc/profile.d/",     // sourced by login shells
+	// macOS launchd — case-insensitive match covers /Library and
+	// ~/Library forms alike once ~ is expanded.
+	"/library/launchdaemons",
+	"/library/launchagents",
+}
+
+// persistenceBaseNames are exact (lowercased) file names that defer
+// execution wherever they appear in a tree.
+var persistenceBaseNames = map[string]bool{
+	".envrc":         true, // direnv: executes on cd
+	".gitlab-ci.yml": true, // runs on the next push, with CI credentials
+	".travis.yml":    true,
+	".drone.yml":     true,
+	"jenkinsfile":    true,
+	"config.fish":    true, // fish shell config (also under ~/.config)
+	"crontab":        true,
+}
+
+// IsPersistencePath reports whether path names a deferred-execution target.
+// It is direction-agnostic; callers gating reads should keep using
+// ClassifyPath (reads of these files stay at their existing class) and
+// reserve the persistence escalation for writes via ClassifyPathWrite.
+func IsPersistencePath(path string) bool {
+	// Expand ~ / $HOME shorthands so direct API callers (file tools, tests)
+	// behave identically to shell-token classification.
+	path = expandShellTokenPath(path)
+	if path == "" {
+		return false
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	abs = filepath.Clean(abs)
+	// Normalise macOS /private/* the same way ClassifyPath does.
+	if strings.HasPrefix(abs, "/private/") {
+		abs = strings.TrimPrefix(abs, "/private")
+	}
+	lower := strings.ToLower(abs)
+
+	if home, _ := os.UserHomeDir(); home != "" {
+		lowerHome := strings.ToLower(home)
+		// Shell rc/profile files: run in every future shell.
+		if filepath.Dir(lower) == lowerHome && shellRCFilesLower[filepath.Base(lower)] {
+			return true
+		}
+		// User systemd units: run at login / on timer.
+		if strings.HasPrefix(lower, lowerHome+"/.config/systemd/user/") {
+			return true
+		}
+	}
+	for _, marker := range persistenceDirMarkers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return persistenceBaseNames[filepath.Base(lower)]
+}
+
+// ClassifyPathWrite classifies a filesystem WRITE target. It wraps
+// ClassifyPath and additionally escalates deferred-execution targets to
+// Persistence (rank above SystemWrite, default action Prompt, never
+// eligible for session trust shortcuts). Reads keep using ClassifyPath —
+// reading a CI workflow file must stay as frictionless as before.
+func ClassifyPathWrite(path string) RiskClass {
+	cls := ClassifyPath(path)
+	if cls == Blocked || cls == Destructive {
+		return cls // already worse than persistence
+	}
+	if IsPersistencePath(path) && Rank(Persistence) > Rank(cls) {
+		return Persistence
+	}
+	return cls
+}
+
+// lifecycleHookPatterns match deferred-execution hooks embedded in files
+// that are not themselves persistence targets: package-manager install
+// lifecycle scripts and pytest autouse fixtures. Their whole purpose is to
+// run at install time / on every test run — the write that plants them is
+// persistence even though package.json/conftest.py are ordinary repo files.
+var lifecycleHookPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`"(preinstall|postinstall|prepare|prepublish|prepublishOnly|prepack|postpack)"\s*:`),
+	regexp.MustCompile(`autouse\s*=\s*True`),
+}
+
+// LifecycleContentClass inspects content written to path for lifecycle
+// hooks (H-5). It returns (Persistence, true) when the content plants
+// deferred execution into package.json / conftest.py, else (base, false).
+// Only ever escalates — base is returned unchanged otherwise.
+func LifecycleContentClass(path, content string, base RiskClass) (RiskClass, bool) {
+	switch strings.ToLower(filepath.Base(path)) {
+	case "package.json", "conftest.py":
+	default:
+		return base, false
+	}
+	if Rank(base) >= Rank(Persistence) {
+		return base, false // already gated at least as strongly
+	}
+	for _, re := range lifecycleHookPatterns {
+		if re.MatchString(content) {
+			return Persistence, true
+		}
+	}
+	return base, false
+}
 
 // isOdekTrustAnchor reports whether abs is a file or directory under ~/.odek
 // that must not be writable through auto-approved local_write tools. It must
@@ -558,6 +699,7 @@ var defaultActions = map[RiskClass]Action{
 	Safe:          Allow,
 	LocalWrite:    Allow,
 	SystemWrite:   Prompt,
+	Persistence:   Prompt,
 	Destructive:   Deny,
 	NetworkEgress: Prompt,
 	CodeExecution: Prompt,
@@ -1945,6 +2087,14 @@ func isSensitiveOdekPath(tok string) bool {
 // against the same home-sensitive-dir and rc-file lists used by the file tools,
 // closing the gap where `echo x >> ~/.bashrc` was auto-allowed as local_write.
 func classifyShellTokenPath(tok string) RiskClass {
+	return ClassifyPath(expandShellTokenPath(tok))
+}
+
+// expandShellTokenPath strips common key=value prefixes (dd-style) and
+// expands ~ / $HOME shorthands in a shell token into an absolute-ready
+// path. Relative paths are returned as-is; IsPersistencePath/ClassifyPath
+// resolve them against the working directory.
+func expandShellTokenPath(tok string) string {
 	path := tok
 
 	// Strip common key=value prefixes used by dd and similar tools.
@@ -1955,7 +2105,7 @@ func classifyShellTokenPath(tok string) RiskClass {
 		}
 	}
 	if path == "" {
-		return Safe
+		return path
 	}
 
 	// Expand ~ and simple $HOME/${HOME} forms that appear in shell commands.
@@ -1969,8 +2119,72 @@ func classifyShellTokenPath(tok string) RiskClass {
 			path = home + path[len("${HOME}"):]
 		}
 	}
+	return path
+}
 
-	return ClassifyPath(path)
+// isPersistenceWrite reports whether a shell command writes to a
+// deferred-execution target or mutates a package-manager lifecycle hook
+// (H-5). Checked before isSystemWrite so persistence targets keep their
+// distinct, never-trust-shortcut class.
+func isPersistenceWrite(first string, tokens []string) bool {
+	// crontab: anything other than a pure listing installs/replaces the
+	// user's crontab — `crontab file`, `crontab -`, `(crontab -l; echo …) |
+	// crontab -` all persist a scheduled job.
+	if first == "crontab" {
+		for _, tok := range tokens[1:] {
+			if tok != "-l" && tok != "--list" && tok != "--help" && tok != "--version" {
+				return true
+			}
+		}
+		return false
+	}
+	// Redirect targets: `echo hook >> ~/.zshrc`, `printf x > .envrc`.
+	for i, tok := range tokens {
+		if isRedirectToken(tok) && i+1 < len(tokens) && IsPersistencePath(expandShellTokenPath(tokens[i+1])) {
+			return true
+		}
+	}
+	// Write-command operands: `cp x .git/hooks/pre-commit`,
+	// `mv y ~/.config/systemd/user/evil.service`.
+	if writePrefixes[first] || first == "ln" || first == "install" {
+		for _, tok := range tokens[1:] {
+			if IsPersistencePath(expandShellTokenPath(tok)) {
+				return true
+			}
+		}
+	}
+	// dd of= writes its output to an arbitrary path.
+	if first == "dd" {
+		for _, tok := range tokens {
+			if strings.HasPrefix(strings.ToLower(tok), "of=") && IsPersistencePath(expandShellTokenPath(tok)) {
+				return true
+			}
+		}
+	}
+	// npm lifecycle-script mutation: `npm set-script <hook> …` always
+	// installs an install-time hook; `npm pkg set scripts.<hook>=…` only
+	// when the key sits under scripts.
+	if first == "npm" {
+		for i := 1; i < len(tokens); i++ {
+			lt := strings.ToLower(tokens[i])
+			if lt == "set-script" {
+				return true
+			}
+			if lt == "pkg" {
+				if strings.Contains(strings.ToLower(strings.Join(tokens[i+1:], " ")), "scripts") {
+					return true
+				}
+			}
+		}
+	}
+	// jq rewriting package.json scripts: `jq '.scripts.preinstall=…' package.json`.
+	if first == "jq" {
+		joined := strings.ToLower(strings.Join(tokens, " "))
+		if strings.Contains(joined, ".scripts") && strings.Contains(joined, "package.json") {
+			return true
+		}
+	}
+	return false
 }
 
 // shellPathIsSensitive reports whether a shell token names a path that should
@@ -2149,6 +2363,13 @@ func classifyCommand(tokens []string) RiskClass {
 	// Destructive
 	if isDestructive(first, tokens) {
 		return Destructive
+	}
+
+	// Persistence: writes aimed at deferred-execution targets (H-5).
+	// Checked before SystemWrite so shell-profile and hook writes keep the
+	// distinct persistence class instead of collapsing into system_write.
+	if isPersistenceWrite(first, tokens) {
+		return Persistence
 	}
 
 	// System write
@@ -3184,14 +3405,18 @@ func isSystemPath(path string) bool {
 func Rank(cls RiskClass) int {
 	switch cls {
 	case Blocked:
-		return 9
+		return 10
 	case Destructive:
-		return 8
+		return 9
 	case Unknown:
 		// Ranked above the prompt-level classes so a single unknown stage in
 		// a pipeline/compound command dominates benign siblings (e.g.
 		// `pip install x && weirdverb` stays deny-by-default), but below
 		// Destructive/Blocked so those keep their more informative label.
+		return 8
+	case Persistence:
+		// Deferred-execution writes outrank plain system writes: a
+		// persistence target is a system write PLUS later execution.
 		return 7
 	case SystemWrite:
 		return 6

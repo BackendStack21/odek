@@ -395,8 +395,15 @@ func (t *writeFileTool) Call(argsJSON string) (string, error) {
 	}
 	args.Path = resolved
 
-	// Security: classify and check write operation
-	risk := danger.ClassifyPath(args.Path)
+	// Security: classify and check write operation. Write targets use the
+	// write-aware classifier: deferred-execution targets (shell profiles,
+	// git hooks, CI workflows, cron/systemd/launchd definitions) escalate
+	// to the persistence class (H-5), and content sniffing catches
+	// lifecycle hooks planted into package.json.
+	risk := danger.ClassifyPathWrite(args.Path)
+	if escalated, isHook := danger.LifecycleContentClass(args.Path, args.Content, risk); isHook {
+		risk = escalated
+	}
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
 		Name: "write_file", Resource: args.Path, Risk: risk,
 	}, t.trustedClasses); err != nil {
@@ -842,8 +849,14 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 	}
 	args.Path = resolved
 
-	// Security: classify and check patch operation
-	risk := danger.ClassifyPath(args.Path)
+	// Security: classify and check patch operation. Write-aware classifier
+	// (H-5): deferred-execution targets escalate to persistence, and the
+	// new content is sniffed for lifecycle hooks (package.json scripts,
+	// conftest.py autouse).
+	risk := danger.ClassifyPathWrite(args.Path)
+	if escalated, isHook := danger.LifecycleContentClass(args.Path, args.NewString, risk); isHook {
+		risk = escalated
+	}
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
 		Name: "patch", Resource: args.Path, Risk: risk,
 	}, t.trustedClasses); err != nil {

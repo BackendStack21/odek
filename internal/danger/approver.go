@@ -41,9 +41,13 @@ const ToolBatchClass = RiskClass("tool_batch")
 // TrustShortcutAllowed reports whether cls may be session-trusted via the
 // "trust" shortcut. Destructive, Blocked, and Unknown must never be
 // (fail-closed catch-alls; blanket-trusting them is carte blanche), and
-// neither may ToolBatchClass — see its doc comment.
+// neither may ToolBatchClass — see its doc comment. Persistence is also
+// excluded: its writes execute later, outside the session where the trust
+// was granted, so a one-time "trust" must not cover every future hook,
+// profile, and CI-workflow write (H-5).
 func TrustShortcutAllowed(cls RiskClass) bool {
-	return cls != Destructive && cls != Blocked && cls != Unknown && cls != ToolBatchClass
+	return cls != Destructive && cls != Blocked && cls != Unknown &&
+		cls != ToolBatchClass && cls != Persistence
 }
 
 var (

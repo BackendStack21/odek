@@ -824,13 +824,16 @@ func TestClassify_ShellRCTargets(t *testing.T) {
 		cmd  string
 		want RiskClass
 	}{
-		{"echo x >> ~/.bashrc", SystemWrite},
-		{"echo x >> ~/.zshrc", SystemWrite},
-		{"echo x >> ~/.profile", SystemWrite},
-		{"echo x >> $HOME/.bashrc", SystemWrite},
-		{"cp evil ~/.profile", SystemWrite},
-		{"tee -a ~/.zshrc", SystemWrite},
-		{"dd if=evil of=~/.bashrc", SystemWrite},
+		// Writing rc files is persistence (H-5): ranked above system_write,
+		// prompts by default, never eligible for trust shortcuts.
+		{"echo x >> ~/.bashrc", Persistence},
+		{"echo x >> ~/.zshrc", Persistence},
+		{"echo x >> ~/.profile", Persistence},
+		{"echo x >> $HOME/.bashrc", Persistence},
+		{"cp evil ~/.profile", Persistence},
+		{"tee -a ~/.zshrc", Persistence},
+		{"dd if=evil of=~/.bashrc", Persistence},
+		// Reading them stays at the pre-existing read class.
 		{"cat ~/.bashrc", SystemWrite},
 		{"cat ~/.ssh/id_rsa", SystemWrite},
 		{"cat ~/.odek/config.json", SystemWrite},
@@ -1155,9 +1158,10 @@ func TestRank(t *testing.T) {
 		{"network_egress", NetworkEgress, 4},
 		{"code_execution", CodeExecution, 5},
 		{"system_write", SystemWrite, 6},
-		{"unknown", Unknown, 7},
-		{"destructive", Destructive, 8},
-		{"blocked", Blocked, 9},
+		{"persistence", Persistence, 7},
+		{"unknown", Unknown, 8},
+		{"destructive", Destructive, 9},
+		{"blocked", Blocked, 10},
 		{"unrecognized_class", RiskClass("bogus"), 0},
 	}
 	for _, tt := range tests {

@@ -192,8 +192,12 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 		p.Path = resolved
 		entry.Path = resolved
 
+		patchRisk := danger.ClassifyPathWrite(p.Path)
+		if escalated, isHook := danger.LifecycleContentClass(p.Path, p.NewString, patchRisk); isHook {
+			patchRisk = escalated
+		}
 		if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
-			Name: "batch_patch", Resource: p.Path, Risk: danger.ClassifyPath(p.Path),
+			Name: "batch_patch", Resource: p.Path, Risk: patchRisk,
 		}, t.trustedClasses); err != nil {
 			entry.Error = err.Error()
 			results[idx] = entry
