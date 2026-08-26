@@ -1796,7 +1796,7 @@ func TestServe_Cancel_GetReturns405(t *testing.T) {
 	}
 }
 
-func TestServe_Cancel_PostReturns204(t *testing.T) {
+func TestServe_Cancel_PostReturns200WithIdleBody(t *testing.T) {
 	s := startTestServer(t)
 	defer s.Close()
 
@@ -1804,8 +1804,18 @@ func TestServe_Cancel_PostReturns204(t *testing.T) {
 	resp := postCancel(t, s.url, "test-session", token)
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 204 {
-		t.Errorf("status = %d, want 204", resp.StatusCode)
+	if resp.StatusCode != 200 {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	var body struct {
+		SessionID string `json:"session_id"`
+		Idle      bool   `json:"idle"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode cancel body: %v", err)
+	}
+	if body.SessionID != "test-session" || !body.Idle {
+		t.Errorf("cancel body = %+v, want session_id=test-session idle=true", body)
 	}
 }
 
@@ -1838,7 +1848,7 @@ func TestServe_Cancel_InvalidTokenReturns401(t *testing.T) {
 }
 
 func TestServe_Cancel_NoopWhenIdle(t *testing.T) {
-	// Calling cancel when no prompt is running should be harmless (204).
+	// Calling cancel when no prompt is running should be harmless (200, idle:true).
 	s := startTestServer(t)
 	defer s.Close()
 
@@ -1846,8 +1856,8 @@ func TestServe_Cancel_NoopWhenIdle(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		resp := postCancel(t, s.url, "test-session", token)
 		resp.Body.Close()
-		if resp.StatusCode != 204 {
-			t.Errorf("attempt %d: status = %d, want 204", i, resp.StatusCode)
+		if resp.StatusCode != 200 {
+			t.Errorf("attempt %d: status = %d, want 200", i, resp.StatusCode)
 		}
 	}
 }
@@ -1932,7 +1942,7 @@ func TestServe_Cancel_WebSocketCancel(t *testing.T) {
 func TestServe_E2E_CancelWithMockLLM(t *testing.T) {
 	// Verify the cancel infrastructure at the HTTP/WS level.
 	// 1. Send a prompt via WebSocket
-	// 2. POST /api/cancel returns 204
+	// 2. POST /api/cancel returns 200 with an honest idle flag
 	// 3. WebSocket eventually receives a terminal event
 	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -2009,11 +2019,21 @@ func TestServe_E2E_CancelWithMockLLM(t *testing.T) {
 
 	// Send cancel request scoped to this session.
 	cancelResp := postCancel(t, "http://"+ln.Addr().String(), sessionID, authToken)
-	cancelResp.Body.Close()
-	if cancelResp.StatusCode != 204 {
-		t.Errorf("cancel status = %d, want 204", cancelResp.StatusCode)
+	var cancelBody struct {
+		SessionID string `json:"session_id"`
+		Idle      bool   `json:"idle"`
 	}
-	t.Log("POST /api/cancel returned 204")
+	if err := json.NewDecoder(cancelResp.Body).Decode(&cancelBody); err != nil {
+		t.Fatalf("decode cancel body: %v", err)
+	}
+	cancelResp.Body.Close()
+	if cancelResp.StatusCode != 200 {
+		t.Errorf("cancel status = %d, want 200", cancelResp.StatusCode)
+	}
+	if cancelBody.Idle {
+		t.Errorf("cancel body idle = true, want false while the prompt is live (body: %v)", cancelBody)
+	}
+	t.Log("POST /api/cancel returned 200 with idle=false")
 
 	// Verify we eventually get a terminal event
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
@@ -2107,8 +2127,8 @@ func TestServe_Cancel_CannotCrossSessions(t *testing.T) {
 	// Cancel the attacker's session.
 	cancelResp := postCancel(t, "http://"+ln.Addr().String(), attackerSessionID, attackerToken)
 	cancelResp.Body.Close()
-	if cancelResp.StatusCode != 204 {
-		t.Errorf("cancel status = %d, want 204", cancelResp.StatusCode)
+	if cancelResp.StatusCode != 200 {
+		t.Errorf("cancel status = %d, want 200", cancelResp.StatusCode)
 	}
 
 	// The attacker's prompt should terminate (error or done).

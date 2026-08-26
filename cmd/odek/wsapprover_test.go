@@ -368,8 +368,16 @@ func TestWSApprover_PromptOperation_SendError(t *testing.T) {
 // ── Test Cancel ────────────────────────────────────────────────────────
 
 func TestWSApprover_Cancel_InterruptsPrompt(t *testing.T) {
+	sent := make(chan struct{}, 1)
 	var acked bool
 	sendFn := func(v any) error {
+		if _, ok := v.(approvalRequest); ok {
+			select {
+			case sent <- struct{}{}:
+			default:
+			}
+			return nil
+		}
 		if m, ok := v.(map[string]any); ok && m["type"] == "approval_ack" {
 			acked = true
 		}
@@ -382,7 +390,10 @@ func TestWSApprover_Cancel_InterruptsPrompt(t *testing.T) {
 		done <- a.PromptCommand(danger.Safe, "test", "")
 	}()
 
-	// Cancel immediately.
+	// Wait until the approval request is actually out before cancelling —
+	// Cancel interrupts waiters that are already waiting (the production
+	// shape: the cancel lands while the approval card is up).
+	<-sent
 	a.Cancel()
 
 	select {
@@ -407,6 +418,42 @@ func TestWSApprover_Cancel_Idempotent(t *testing.T) {
 	a := newWSApprover(func(v any) error { return nil })
 	a.Cancel()
 	a.Cancel() // second call should not panic
+}
+
+// TestWSApprover_CancelRearmsForLaterPrompts pins the re-arm semantics the
+// serve cancel paths depend on: a mid-run cancel must interrupt the CURRENT
+// approval wait without poisoning approvals for later prompts on the same
+// connection (a permanently closed cancel channel would auto-deny every
+// future PromptCommand).
+func TestWSApprover_CancelRearmsForLaterPrompts(t *testing.T) {
+	sent := make(chan struct{}, 1)
+	a := newWSApprover(func(v any) error {
+		if _, ok := v.(approvalRequest); ok {
+			select {
+			case sent <- struct{}{}:
+			default:
+			}
+		}
+		return nil
+	})
+
+	done := make(chan error, 1)
+	go func() { done <- a.PromptCommand(danger.Safe, "first", "") }()
+	<-sent // wait until this waiter is live, then interrupt it
+	a.Cancel()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "cancelled") {
+			t.Fatalf("expected cancellation error, got: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("PromptCommand did not return after Cancel()")
+	}
+
+	// A later prompt on the same approver must still reach a normal approve.
+	if _, err := promptAndCaptureRequest(t, a, danger.Safe, "approve"); err != nil {
+		t.Errorf("PromptCommand after Cancel = %v, want nil (approver must re-arm)", err)
+	}
 }
 
 // promptAndCaptureRequest runs PromptCommand against a fake sendFn that
