@@ -15,6 +15,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -893,6 +894,12 @@ func evalNode(node ast.Expr) (float64, error) {
 			}
 			return x / y, nil
 		case token.REM:
+			// Modulo is an integer operation: fractional operands either panic
+			// (int64(0.5) == 0 → divide by zero) or silently truncate to a
+			// wrong answer (0.5 % 2 → 0). Reject them cleanly instead.
+			if x != math.Trunc(x) || y != math.Trunc(y) {
+				return 0, fmt.Errorf("modulo requires integer operands (got %v %% %v)", x, y)
+			}
 			if y == 0 {
 				return 0, fmt.Errorf("modulo by zero")
 			}
@@ -1762,7 +1769,19 @@ func (t *treeTool) Call(argsJSON string) (result string, err error) {
 }
 
 func buildTree(ctx context.Context, root, path string, depth, maxDepth int, includeHidden bool) (treeEntry, error) {
-	info, err := os.Lstat(path)
+	var info os.FileInfo
+	var err error
+	if depth == 0 {
+		// The explicitly-requested root may be a symlink to a directory
+		// (/tmp → /private/tmp on macOS, a user's ~/link). Follow it —
+		// otherwise the root reports as a non-directory "file" whose size
+		// is the length of the target path and the walk never happens.
+		// Descendants keep Lstat semantics below: symlinked entries inside
+		// the tree are shown as-is, never followed.
+		info, err = os.Stat(path)
+	} else {
+		info, err = os.Lstat(path)
+	}
 	if err != nil {
 		return treeEntry{Path: wrapUntrusted(ctx, "tree:"+root, path), ErrMsg: err.Error()}, nil
 	}
@@ -2050,7 +2069,23 @@ func (t *sortTool) Call(argsJSON string) (result string, err error) {
 		return jsonError("max 20 files per sort call")
 	}
 
-	desc := args.Order == "desc" || args.Reverse
+	// Direction: order selects asc/desc (case-insensitive enum — the
+	// schema pins ["asc","desc"] but models emit "DESC" etc.), and an
+	// unknown value is a clean error rather than a silent ascending sort.
+	// reverse then flips the effective direction (desc+reverse = asc).
+	desc := false
+	switch strings.ToLower(strings.TrimSpace(args.Order)) {
+	case "":
+		// default ascending
+	case "asc":
+	case "desc":
+		desc = true
+	default:
+		return jsonError(fmt.Sprintf("invalid order %q (use \"asc\" or \"desc\")", args.Order))
+	}
+	if args.Reverse {
+		desc = !desc
+	}
 
 	// Read all files
 	var allLines []string
@@ -2166,7 +2201,7 @@ type headTailTool struct {
 
 func (t *headTailTool) Name() string { return "head_tail" }
 func (t *headTailTool) Description() string {
-	return `Read the first or last N lines of one or more files. Streaming — stops after N lines (no full-file read for head). Supports multiple files in parallel. Zero-fork — pure Go scanner.`
+	return `Read the first or last N lines of one or more files. Reports the file's exact total line count (the head path scans the whole file, bounded by a 1 MiB line buffer). Supports multiple files in parallel. Zero-fork — pure Go scanner.`
 }
 
 type headTailFileArg struct {
@@ -2262,6 +2297,9 @@ func (t *headTailTool) readPreview(path string, n int, mode string) (result head
 	info, err := f.Stat()
 	if err != nil {
 		return headTailFileResult{Path: path, Error: fmt.Sprintf("cannot stat %q: %v", path, err)}
+	}
+	if info.IsDir() {
+		return headTailFileResult{Path: path, Error: fmt.Sprintf("%q is a directory — use tree or glob to explore directories", path)}
 	}
 	if info.Size() > maxFileReadBytes {
 		return headTailFileResult{Path: path, Error: fmt.Sprintf("file too large (%d bytes, max %d)", info.Size(), maxFileReadBytes)}
@@ -2698,6 +2736,9 @@ func (t *wordCountTool) countWords(path string) (entry wordCountEntry) {
 	info, err := f.Stat()
 	if err != nil {
 		return wordCountEntry{Path: path, Error: fmt.Sprintf("cannot stat: %v", err)}
+	}
+	if info.IsDir() {
+		return wordCountEntry{Path: path, Error: fmt.Sprintf("%q is a directory — use tree or glob to explore directories", path)}
 	}
 	if info.Size() > maxFileReadBytes {
 		return wordCountEntry{Path: path, Error: fmt.Sprintf("file too large (%d bytes, max %d)", info.Size(), maxFileReadBytes)}

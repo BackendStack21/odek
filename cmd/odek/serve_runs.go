@@ -72,23 +72,34 @@ func (r *eventsRing) add(ev events.Event) {
 }
 
 // snapshot returns up to limit most-recent events, filtered by run_id /
-// session_id when non-empty, oldest-first.
+// session_id when non-empty, oldest-first. With more matches than the
+// limit, the window is the MOST RECENT matches (previously it walked
+// oldest-first and stopped at the limit, serving stale events once the
+// ring held more entries than the limit). A limit <= 0 returns all
+// matching events, oldest-first.
 func (r *eventsRing) snapshot(limit int, runID, sessionID string) []events.Event {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := make([]events.Event, 0, limit)
-	for _, ev := range r.events { // already oldest-first
-		if runID != "" && ev.RunID != runID {
-			continue
-		}
-		if sessionID != "" && ev.SessionID != sessionID {
-			continue
-		}
-		out = append(out, ev)
-		if limit > 0 && len(out) >= limit {
-			break
+
+	matches := r.events
+	if runID != "" || sessionID != "" {
+		matches = make([]events.Event, 0, len(r.events))
+		for _, ev := range r.events {
+			if runID != "" && ev.RunID != runID {
+				continue
+			}
+			if sessionID != "" && ev.SessionID != sessionID {
+				continue
+			}
+			matches = append(matches, ev)
 		}
 	}
+
+	if limit > 0 && len(matches) > limit {
+		matches = matches[len(matches)-limit:]
+	}
+	out := make([]events.Event, len(matches))
+	copy(out, matches) // ring may keep appending; don't alias its slice
 	return out
 }
 

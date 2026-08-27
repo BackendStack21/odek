@@ -68,7 +68,7 @@ func parseSkillContent(content, sourcePath string) *Skill {
 		return nil
 	}
 
-	name, _ := fm["name"].(string)
+	name := fmString(fm, "name")
 	if name == "" {
 		return nil
 	}
@@ -76,9 +76,9 @@ func parseSkillContent(content, sourcePath string) *Skill {
 		return nil // reject names with path traversal at load time
 	}
 
-	desc, _ := fm["description"].(string)
-	version, _ := fm["version"].(string)
-	author, _ := fm["author"].(string)
+	desc := fmString(fm, "description")
+	version := fmString(fm, "version")
+	author := fmString(fm, "author")
 
 	// Parse odek section
 	var trigger SkillTrigger
@@ -88,11 +88,9 @@ func parseSkillContent(content, sourcePath string) *Skill {
 	var provenance SkillProvenance
 	if odek, ok := fm["odek"].(map[string]any); ok {
 		if t, ok := odek["trigger"].(map[string]any); ok {
-			topic, _ := t["topic"].(string)
-			action, _ := t["action"].(string)
 			trigger = SkillTrigger{
-				TopicKeywords:  splitKeywords(topic),
-				ActionKeywords: splitKeywords(action),
+				TopicKeywords:  splitKeywords(fmKeyString(t, "topic")),
+				ActionKeywords: splitKeywords(fmKeyString(t, "action")),
 			}
 		}
 		if al, ok := odek["auto_load"].(bool); ok {
@@ -108,8 +106,8 @@ func parseSkillContent(content, sourcePath string) *Skill {
 			if nr, ok := p["needs_review"].(bool); ok {
 				provenance.NeedsReview = nr
 			}
-			if src, ok := p["sources"].(string); ok {
-				provenance.Sources = splitKeywords(src)
+			if src, ok := p["sources"]; ok {
+				provenance.Sources = splitKeywords(fmScalarString(src))
 			}
 		}
 	} else {
@@ -204,6 +202,42 @@ func parseYAMLMap(s string) map[string]any {
 	}
 
 	return result
+}
+
+// fmString reads a top-level frontmatter key as its string form. YAML
+// scalars are type-inferred by parseYAMLValue, so `version: 1.2` arrives
+// as float64 and `version: 2` as int — a bare .(string) assertion silently
+// dropped such values. Scalar forms are coerced to their canonical string
+// (1.0 → "1"); maps/slices still yield "".
+func fmString(fm map[string]any, key string) string {
+	return fmScalarString(fm[key])
+}
+
+// fmKeyString is fmString for a nested frontmatter map (e.g. trigger
+// topic/action inside odek.trigger).
+func fmKeyString(m map[string]any, key string) string {
+	return fmScalarString(m[key])
+}
+
+func fmScalarString(v any) string {
+	switch s := v.(type) {
+	case string:
+		return s
+	case int:
+		return strconv.Itoa(s)
+	case int64:
+		return strconv.FormatInt(s, 10)
+	case float64:
+		// Shortest representation that round-trips: 1.2 → "1.2", 1.0 → "1".
+		return strconv.FormatFloat(s, 'f', -1, 64)
+	case bool:
+		if s {
+			return "true"
+		}
+		return "false"
+	default:
+		return ""
+	}
 }
 
 // parseYAMLValue converts a string to its inferred Go type.
