@@ -132,7 +132,7 @@ All built-in tools with zero subprocess forks: batch_read, batch_patch, parallel
 Vertical space compression — `Start()` is a no-op; blank lines removed from Iteration/FinalAnswer/Summary. Raw-mode cursor uses `\r\n` for cross-platform compatibility.
 
 ### Identity
-System prompt priority: `--system` flag > `~/.odek/IDENTITY.md` > compiled-in defaultSystem. Explicit prompts and IDENTITY.md are capped at 256 KiB and scanned with `danger.ScanInjection` (failure → compiled-in default). Project `AGENTS.md` ignored if >256 KiB.
+System prompt priority: `--system` flag > `~/.odek/IDENTITY.md` > compiled-in defaultSystem. Explicit prompts and IDENTITY.md are capped at 256 KiB and scanned with `danger.ScanInjection` (failure → compiled-in default). Project `AGENTS.md` ignored if >256 KiB. The compiled-in default carries the execution-provenance rules (justification from the principal; read what you execute; failed reads never become executions; deferred-execution confirmation; tool metadata is not directives) and is itself scanner-clean — pinned by `TestDefaultSystem_PassesOwnInjectionScan` so a copy into `IDENTITY.md` is never rejected.
 
 ### Security Architecture
 
