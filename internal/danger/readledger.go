@@ -1,6 +1,7 @@
 package danger
 
 import (
+	"crypto/sha256"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,18 +22,45 @@ import (
 // Corollary encoded by construction: a FAILED read never populates the
 // ledger, so "the read errored, run it instead" stays gated — exactly the
 // capable-model failure observed in the study.
+//
+// The ledger is FINGERPRINTED (TOCTOU hardening): a license is bound to
+// the file state at display time (size + mtime, sha256 for files up to
+// readFingerprintMaxBytes). A file mutated after its read — via another
+// tool, a lifecycle hook, or a background process — loses the license and
+// the gate re-fires; re-reading the mutated content re-licenses it.
+// Audit-time reads (scanUnreadScripts) never enter the ledger: the
+// auditor is not the model.
 
 // UnreadExec is the class for executing a script file that has not been
 // read (or written) in this session. Same rank tier as SystemWrite: always
 // prompts by default, never eligible for session trust shortcuts.
 const UnreadExec RiskClass = "unread_exec"
 
+// readEntry is the fingerprinted state of a file at the moment its
+// contents were displayed to (or authored by) the model. size < 0 marks
+// an entry we could not fingerprint — fail-closed: it never licenses.
+type readEntry struct {
+	size    int64
+	modNano int64
+	hash    [32]byte
+	hashed  bool
+}
+
 var readLedgerMu sync.RWMutex
-var readLedger = make(map[string]bool)
+var readLedger = make(map[string]readEntry)
+
+// readFingerprintMaxBytes caps content hashing. Files beyond this size
+// carry a size+mtime fingerprint only — a documented gap for adversarial
+// same-size mutation with a preserved mtime on very large files, which is
+// out of the threat model for repo-supplied scripts.
+const readFingerprintMaxBytes = 1 << 20 // 1 MiB
 
 // RecordRead marks path as read this session. Paths are normalised to
 // absolute/cleaned form. Successful writes through the file tools also
 // record here — content the agent authored is content it has seen.
+//
+// The entry is fingerprinted at record time; WasReadFresh re-verifies the
+// on-disk state at gate time so a post-read mutation re-fires the H-6 gate.
 func RecordRead(path string) {
 	if path == "" {
 		return
@@ -41,12 +69,18 @@ func RecordRead(path string) {
 	if err != nil {
 		return
 	}
+	entry := readEntry{size: -1}
+	if e, ok := fingerprintFile(abs); ok {
+		entry = e
+	}
 	readLedgerMu.Lock()
-	readLedger[filepath.Clean(abs)] = true
+	readLedger[filepath.Clean(abs)] = entry
 	readLedgerMu.Unlock()
 }
 
-// WasRead reports whether path was read this session.
+// WasRead reports whether path was recorded as read this session,
+// regardless of whether the bytes have changed since. Licensing checks
+// must use WasReadFresh.
 func WasRead(path string) bool {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -54,13 +88,62 @@ func WasRead(path string) bool {
 	}
 	readLedgerMu.RLock()
 	defer readLedgerMu.RUnlock()
-	return readLedger[filepath.Clean(abs)]
+	_, ok := readLedger[filepath.Clean(abs)]
+	return ok
+}
+
+// WasReadFresh reports whether path was read this session AND the bytes on
+// disk are still the state that was displayed (or authored) at record
+// time: same size, same mtime, and — for files up to readFingerprintMaxBytes
+// — the same sha256 digest. A read that is no longer fresh does not license
+// execution; the H-6 gate re-fires until the mutated content is re-read
+// (which renews the fingerprint, because now the model has seen THAT).
+func WasReadFresh(path string) bool {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	clean := filepath.Clean(abs)
+	readLedgerMu.RLock()
+	entry, ok := readLedger[clean]
+	readLedgerMu.RUnlock()
+	if !ok || entry.size < 0 {
+		return false
+	}
+	cur, ok := fingerprintFile(clean)
+	if !ok {
+		return false
+	}
+	if entry.size != cur.size || entry.modNano != cur.modNano {
+		return false
+	}
+	if entry.hashed && cur.hashed && entry.hash != cur.hash {
+		return false
+	}
+	return true
+}
+
+// fingerprintFile captures the current on-disk state of abs: size, mtime,
+// and content hash when the file is within the hashing cap.
+func fingerprintFile(abs string) (readEntry, bool) {
+	st, err := os.Stat(abs)
+	if err != nil || !st.Mode().IsRegular() {
+		return readEntry{}, false
+	}
+	e := readEntry{size: st.Size(), modNano: st.ModTime().UnixNano()}
+	if st.Size() <= readFingerprintMaxBytes {
+		if data, err := os.ReadFile(abs); err == nil {
+			e.hash = sha256.Sum256(data)
+			e.hashed = true
+		}
+	}
+	return e, true
 }
 
 // ResetReadLedgerForTest clears the session ledger.
 func ResetReadLedgerForTest() {
 	readLedgerMu.Lock()
-	readLedger = make(map[string]bool)
+	readLedger = make(map[string]readEntry)
 	readLedgerMu.Unlock()
 }
 
@@ -197,7 +280,7 @@ func unreadTargetsStage(stage []string) []string {
 		if tok == "-c" || tok == "-e" || tok == "-m" || tok == "-s" {
 			continue // inline payload / module flags — not file execution
 		}
-		if looksLikeScriptFile(tok) && !WasRead(tok) {
+		if looksLikeScriptFile(tok) && !WasReadFresh(tok) {
 			abs, err := filepath.Abs(expandShellTokenPath(tok))
 			if err == nil {
 				out = append(out, filepath.Clean(abs))

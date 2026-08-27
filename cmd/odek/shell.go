@@ -301,6 +301,12 @@ func (t *shellTool) checkApproval(cmd, description string) error {
 			if description == "" {
 				description = fmt.Sprintf("executes a script whose contents have not been read this session: %s", strings.Join(targets, ", "))
 			}
+			// Audit-then-exec (H-6 companion): the human decides with the
+			// bytes. Content evidence from the local injection scanner —
+			// read-only, ledger-neutral — rides in the approval description.
+			if findings := scanUnreadScripts(targets); len(findings) > 0 {
+				description += " — ⚠️ injection scan: " + strings.Join(findings, "; ")
+			}
 		}
 	}
 
