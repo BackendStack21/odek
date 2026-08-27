@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -62,11 +63,40 @@ func TestDefaultSystem_PassesOwnInjectionScan(t *testing.T) {
 	// The compiled-in prompt must never trip danger.ScanInjection: an
 	// operator who copies it into ~/.odek/IDENTITY.md gets it scanned, and
 	// a flagged IDENTITY.md is silently replaced with the compiled default.
+	// The scanner runs on the whole prompt and `\s+` matches newlines, so a
+	// match can span a line break — hence the line-pair bisect below.
+	locate := func(units []string, kind string) []string {
+		var bad []string
+		for _, unit := range units {
+			if threats := danger.ScanInjection(unit); len(threats) > 0 {
+				labels := make([]string, 0, len(threats))
+				for _, th := range threats {
+					labels = append(labels, th.Label)
+				}
+				bad = append(bad, fmt.Sprintf("%s trips %v: %q", kind, labels, unit))
+			}
+		}
+		return bad
+	}
+	lines := strings.Split(defaultSystem, "\n")
+	pairs := make([]string, 0, len(lines))
+	for i := 0; i+1 < len(lines); i++ {
+		pairs = append(pairs, lines[i]+"\n"+lines[i+1])
+	}
+	offending := locate(lines, "line")
+	offending = append(offending, locate(pairs, "line pair")...)
+	for _, o := range offending {
+		t.Errorf("%s", o)
+	}
 	if threats := danger.ScanInjection(defaultSystem); len(threats) > 0 {
 		labels := make([]string, 0, len(threats))
 		for _, th := range threats {
 			labels = append(labels, th.Label)
 		}
-		t.Fatalf("defaultSystem trips its own injection scanner: %v", labels)
+		if len(offending) == 0 {
+			t.Errorf("defaultSystem trips its own injection scanner (%v) but no single line or line pair does — a match spans 3+ lines", labels)
+		} else {
+			t.Errorf("defaultSystem trips its own injection scanner: %v", labels)
+		}
 	}
 }
