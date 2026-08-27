@@ -439,6 +439,10 @@ func (t *parallelShellTool) Call(argsJSON string) (result string, err error) {
 				if c.Description == "" {
 					c.Description = fmt.Sprintf("executes a script whose contents have not been read this session: %s", strings.Join(unreadTargets, ", "))
 				}
+				// Audit-then-exec enrichment — see shellTool.checkApproval.
+				if findings := scanUnreadScripts(unreadTargets); len(findings) > 0 {
+					c.Description += " — ⚠️ injection scan: " + strings.Join(findings, "; ")
+				}
 			}
 		}
 		switch action {
