@@ -152,7 +152,9 @@ func ParseRefs(text string) []Ref {
 		if text[i] != '@' {
 			continue
 		}
-		// Must have a non-@ character after
+		// Must have a non-@ character after; a doubled "@@" means the first @
+		// does not start a ref — the second one does (pinned by
+		// TestParseRefs_DoubleAt: "@@world" yields the ref "@world").
 		if i+1 >= len(text) || text[i+1] == '@' {
 			continue
 		}

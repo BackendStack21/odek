@@ -17,11 +17,13 @@
 package render
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // ── Events ────────────────────────────────────────────────────────────
@@ -270,36 +272,24 @@ func ToolPreview(name, args string) string {
 		return "file"
 	case "search_files":
 		if p := extractJSONField(args, "pattern"); p != "" {
-			if len(p) > 40 {
-				p = p[:37] + "..."
-			}
-			return p
+			return truncateRunes(p, 40)
 		}
 		return ""
 	case "shell", "terminal":
 		if cmd := extractJSONField(args, "command"); cmd != "" {
-			if len(cmd) > 60 {
-				cmd = cmd[:57] + "..."
-			}
-			return cmd
+			return truncateRunes(cmd, 60)
 		}
 		return ""
 	case "batch_read", "batch_patch", "parallel_shell":
 		return ""
 	case "http_batch", "browser":
 		if u := extractJSONField(args, "url"); u != "" {
-			if len(u) > 60 {
-				u = u[:57] + "..."
-			}
-			return u
+			return truncateRunes(u, 60)
 		}
 		return ""
 	case "memory":
 		if q := extractJSONField(args, "query"); q != "" {
-			if len(q) > 40 {
-				q = q[:37] + "..."
-			}
-			return q
+			return truncateRunes(q, 40)
 		}
 		return ""
 	case "transcribe":
@@ -312,18 +302,12 @@ func ToolPreview(name, args string) string {
 		return ""
 	case "send_message":
 		if t := extractJSONField(args, "text"); t != "" {
-			if len(t) > 60 {
-				t = t[:57] + "..."
-			}
-			return t
+			return truncateRunes(t, 60)
 		}
 		return ""
 	case "session_search":
 		if q := extractJSONField(args, "query"); q != "" {
-			if len(q) > 40 {
-				q = q[:37] + "..."
-			}
-			return q
+			return truncateRunes(q, 40)
 		}
 		return ""
 	}
@@ -388,16 +372,72 @@ func truncateWords(s string, maxWords int) string {
 	return strings.Join(words[:maxWords], " ") + "…"
 }
 
-// extractJSONField extracts the value of a top-level string field from a JSON blob.
+// extractJSONField extracts the value of a top-level string field from a
+// JSON blob. It handles both spaced and compact forms (`"key": "v"` and
+// `"key":"v"` — models emit both) and returns the DECODED value with
+// escapes resolved, not the raw JSON source. Non-string values and
+// malformed JSON yield "".
 func extractJSONField(jsonStr, field string) string {
-	prefix := `"` + field + `": "`
-	if idx := strings.Index(jsonStr, prefix); idx >= 0 {
-		rest := jsonStr[idx+len(prefix):]
-		if end := strings.Index(rest, `"`); end >= 0 {
-			return rest[:end]
+	key := `"` + field + `"`
+	rest := jsonStr
+	for {
+		idx := strings.Index(rest, key)
+		if idx < 0 {
+			return ""
+		}
+		// The match must start a key: preceded by '{', ',', whitespace, or
+		// nothing — otherwise it is the tail of a longer key ("sub_path").
+		if idx > 0 {
+			p := rest[idx-1]
+			if p != '{' && p != ',' && p != ' ' && p != '\t' && p != '\n' && p != '\r' {
+				rest = rest[idx+len(key):]
+				continue
+			}
+		}
+		rest = rest[idx+len(key):]
+		rest = rest[leadingSpace(rest):]
+		if len(rest) == 0 || rest[0] != ':' {
+			continue // not a key:value pair
+		}
+		rest = rest[1:]
+		rest = rest[leadingSpace(rest):]
+		if len(rest) == 0 || rest[0] != '"' {
+			continue // value is not a string
+		}
+		var out string
+		if err := json.NewDecoder(strings.NewReader(rest)).Decode(&out); err != nil {
+			continue
+		}
+		return out
+	}
+}
+
+// leadingSpace returns the number of leading JSON whitespace bytes.
+func leadingSpace(s string) int {
+	i := 0
+	for i < len(s) {
+		switch s[i] {
+		case ' ', '\t', '\n', '\r':
+			i++
+		default:
+			return i
 		}
 	}
-	return ""
+	return i
+}
+
+// truncateRunes limits s to max runes, appending "..." when trimmed. The
+// previous byte-slicing split multi-byte runes mid-sequence and produced
+// invalid UTF-8 (mojibake) for CJK/emoji content.
+func truncateRunes(s string, max int) string {
+	if max < 4 {
+		max = 4
+	}
+	if utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	r := []rune(s)
+	return string(r[:max-3]) + "..."
 }
 
 // toolEmoji returns an emoji that visually signals the tool category.
