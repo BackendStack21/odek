@@ -2023,9 +2023,13 @@ func validateSessionToken(store *session.Store, sess *session.Session, token str
 // holder with --stream enabled) fills its TCP receive window and blocks
 // Send forever; the write previously held the process-wide mutex while
 // doing so, freezing every connection's writes — approval prompts and
-// pongs included — until the wedged client drained (2026-08 audit). A var
-// so tests can shrink it.
-var wsWriteTimeout = 30 * time.Second
+// pongs included — until the wedged client drained (2026-08 audit). A
+// var so tests can shrink it. Atomic access: tests retune it while live
+// WS goroutines (including in-flight ones from earlier tests) read it
+// concurrently — a plain read/write here is a data race (caught by CI).
+var wsWriteTimeout atomic.Int64
+
+func init() { wsWriteTimeout.Store(int64(30 * time.Second)) }
 
 // wsConnWriters gives each connection its own write lock.
 // golang.org/x/net/websocket is not safe for concurrent Sends, and frames
@@ -2073,7 +2077,7 @@ func writeWSJSON(conn *golangws.Conn, data any) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(wsWriteTimeout):
+	case <-time.After(time.Duration(wsWriteTimeout.Load())):
 		// The client stopped reading: its TCP receive window is full and
 		// Send is wedged. Abandon the write (bounded caller, per-conn
 		// lock released, later sends on this conn fast-fail) and tear the

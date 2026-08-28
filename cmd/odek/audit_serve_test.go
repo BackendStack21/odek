@@ -198,9 +198,9 @@ func TestAudit_WriteWSJSONStalledClientBounded(t *testing.T) {
 			Handshake: func(*golangws.Config, *http.Request) error { return nil },
 			Handler: func(conn *golangws.Conn) {
 				defer conn.Close()
-				old := wsWriteTimeout
-				wsWriteTimeout = 300 * time.Millisecond
-				defer func() { wsWriteTimeout = old }()
+				old := wsWriteTimeout.Load()
+				wsWriteTimeout.Store(int64(300 * time.Millisecond))
+				defer func() { wsWriteTimeout.Store(old) }()
 				writeWSJSON(conn, map[string]any{"type": "token", "content": strings.Repeat("x", 16<<20)})
 				close(done)
 			},
