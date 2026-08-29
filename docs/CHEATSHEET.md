@@ -248,7 +248,7 @@ delegate_tasks tasks=[{goal: "task A", context: "..."}, {goal: "task B"}]
 
 - Max 8 tasks per `delegate_tasks` call
 - Max concurrency: configurable via `max_concurrency` / `ODEK_MAX_CONCURRENCY` (default 3)
-- 120s timeout per subagent
+- 30m default timeout per subagent (hard max 30m)
 - Subagents get read-only fact snapshot, no `memory` tool
 - Results collated into summary, returned to calling agent
 

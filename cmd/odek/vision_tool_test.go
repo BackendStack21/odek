@@ -102,7 +102,9 @@ func TestVision_EmptyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	var r struct{ Error string `json:"error"` }
+	var r struct {
+		Error string `json:"error"`
+	}
 	json.Unmarshal([]byte(result), &r)
 	if !strings.Contains(r.Error, "required") {
 		t.Errorf("expected 'required' in error, got: %s", r.Error)
@@ -115,7 +117,9 @@ func TestVision_InvalidJSON(t *testing.T) {
 	if err != nil {
 		return // error return is also acceptable
 	}
-	var r struct{ Error string `json:"error"` }
+	var r struct {
+		Error string `json:"error"`
+	}
 	json.Unmarshal([]byte(result), &r)
 	if !strings.Contains(r.Error, "invalid") {
 		t.Errorf("expected 'invalid' in error, got: %s", r.Error)

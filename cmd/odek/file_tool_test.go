@@ -1286,7 +1286,7 @@ func TestSearchFiles_TargetFiles_SkipsSensitiveOdekPaths(t *testing.T) {
 	os.WriteFile(filepath.Join(odekDir, "notes.md"), []byte("hello world\n"), 0644)
 
 	cfg := danger.DangerousConfig{
-		Classes: map[danger.RiskClass]danger.Action{danger.SystemWrite: danger.Prompt},
+		Classes:  map[danger.RiskClass]danger.Action{danger.SystemWrite: danger.Prompt},
 		Approver: &countingApprover{allowFirstN: 1}, // approve the search root only
 	}
 	tool := &searchFilesTool{dangerousConfig: cfg}
@@ -1331,7 +1331,7 @@ func TestSearchFiles_TargetFiles_SkipsCaseInsensitiveAnchor(t *testing.T) {
 	os.WriteFile(filepath.Join(odekDir, "notes.md"), []byte("hello world\n"), 0644)
 
 	cfg := danger.DangerousConfig{
-		Classes: map[danger.RiskClass]danger.Action{danger.SystemWrite: danger.Prompt},
+		Classes:  map[danger.RiskClass]danger.Action{danger.SystemWrite: danger.Prompt},
 		Approver: &countingApprover{allowFirstN: 1},
 	}
 	tool := &searchFilesTool{dangerousConfig: cfg}

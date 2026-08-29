@@ -112,6 +112,9 @@ func subagentExit(err error) int {
 		if runErr.timeout {
 			return 2
 		}
+		if runErr.budget {
+			return 4
+		}
 		return 1
 	}
 	fmt.Fprintf(os.Stderr, "odek: %v\n", err)

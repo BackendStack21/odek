@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/BackendStack21/odek/internal/artifact"
@@ -363,6 +364,20 @@ type Engine struct {
 	budget       *budget.Checker
 	// budgetNow overrides the budget clock; nil = time.Now. Tests only.
 	budgetNow func() time.Time
+
+	// budgetHints enables budget-awareness telemetry: when a run crosses
+	// 50/75/90% of its iteration or wall-clock budget, the engine injects
+	// a one-line hint (engine-trusted, like the stall-detection hints) and
+	// emits a budget_warning signal, so the model can pace itself and
+	// conclude cleanly instead of being cut off mid-work. Sub-agents
+	// enable this via the subagent config section.
+	budgetHints bool
+
+	// finalizeReq is set by RequestFinalization: at the next iteration
+	// boundary runLoop stops starting new tool batches and produces the
+	// partial-progress summary with the time-budget marker. Atomic because
+	// the request arrives from another goroutine (a soft-deadline watcher).
+	finalizeReq atomic.Bool
 }
 
 // New creates a new loop Engine.
@@ -482,6 +497,12 @@ func (e *Engine) SetEventsIncludeArgs(enabled bool) { e.eventsIncludeArgs = enab
 // stamping the timestamp when the caller left it zero. Safe to call
 // unconditionally. Run-level metadata (schema, run_id, session_id) is
 // stamped centrally by the events.Emitter the handler is wired to.
+// EmitEvent exposes the runtime event stream to holders of an emitter
+// reference (view-pattern, like budget.View) — e.g. delegate_tasks
+// surfacing child policy denials as subagent_denied events. Redaction
+// and the non-blocking dispatch contract are inherited from emitEvent.
+func (e *Engine) EmitEvent(ev events.Event) { e.emitEvent(ev) }
+
 func (e *Engine) emitEvent(ev events.Event) {
 	if e.eventHandler == nil {
 		return
@@ -1190,9 +1211,20 @@ const budgetSummaryMaxMessages = 30
 const budgetSummarySnippetBytes = 2000
 
 // execBudgetSummaryMarker prefixes the assistant message carrying the
-// partial-progress summary when a hard execution budget (not the iteration
+// partial-progress summary when a hard execution budgetget (not the iteration
 // cap) stopped the run and the summary side call was still within budget.
 const execBudgetSummaryMarker = "[Execution budget reached — partial summary]"
+
+// timeBudgetSummaryMarker prefixes the final answer when the wall-clock
+// budget triggered a graceful finalization (RequestFinalization, typically
+// from the sub-agent CLI's soft-deadline watcher): the engine stops starting
+// new tool batches and produces the partial-progress summary instead of
+// being killed mid-iteration.
+const timeBudgetSummaryMarker = "[Time budget reached — partial summary]"
+
+// timeBudgetFinalization is the internal finalize-reason value used by
+// runLoop to distinguish a wall-clock conclusion from iteration exhaustion.
+const timeBudgetFinalization = "time_budget"
 
 // refreshDigest summarizes newly dropped turn groups and inserts (or updates)
 // the rolling compaction digest system message. The digest is derived from
@@ -1593,6 +1625,10 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 	e.toolRepeatStreak = 0
 	// Reset the run's mutation ledger (H-9)
 	e.runMutations = nil
+	// Finalization requests never carry across runs.
+	e.finalizeReq.Store(false)
+	// Budget-awareness hint state is per-run.
+	hints := budgetHintState{}
 
 	// Rebuild plan state from a persisted plan message so `odek continue`
 	// resumes with forward state instead of re-deriving it from history
@@ -1609,11 +1645,23 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		defer ta.SetTrustAll(false)
 	}
 
+	// finalizeReason is "time_budget" when the loop exited via a graceful
+	// finalization request instead of exhausting the iteration cap; the
+	// post-loop summary path picks the matching marker from it.
+	finalizeReason := ""
+
 	for i := 0; i < e.maxIter; i++ {
 		select {
 		case <-ctx.Done():
 			return "", messages, ctx.Err()
 		default:
+		}
+		// Graceful finalization (sub-agent soft deadline): stop starting
+		// new work; the post-loop path produces the partial-progress
+		// summary with the time-budget marker.
+		if e.finalizeReq.Load() {
+			finalizeReason = timeBudgetFinalization
+			break
 		}
 
 		// Trim context to stay within model's context window
@@ -2384,6 +2432,12 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 				e.maxConsecutiveToolErrors[toolName] = 0
 			}
 		}
+		// Budget-awareness telemetry: when the run crosses 50/75/90% of its
+		// iteration or wall-clock budget, append a hint to the corrections
+		// message so the model paces itself and concludes cleanly.
+		if e.budgetHints {
+			corrections = append(corrections, e.budgetWarnings(i+1, startTime, ctx, &hints)...)
+		}
 		// Inject all corrections as a single system message
 		if len(corrections) > 0 {
 			msg := strings.Join(corrections, "\n")
@@ -2444,8 +2498,12 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 	if e.budgetAllowsSideCall() {
 		progressSummary = e.summarizeProgress(ctx, messages)
 	}
+	marker := budgetSummaryMarker
+	if finalizeReason == timeBudgetFinalization {
+		marker = timeBudgetSummaryMarker
+	}
 	if summary := progressSummary; summary != "" {
-		final := budgetSummaryMarker + "\n\n" + summary
+		final := marker + "\n\n" + summary
 
 		if e.renderer != nil && e.interactionMode != "off" {
 			// This summary comes from a buffered side call — nothing was
@@ -2483,6 +2541,9 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		return final, messages, nil
 	}
 
+	if finalizeReason == timeBudgetFinalization {
+		return "", messages, fmt.Errorf("time budget reached after %d iterations without final answer", e.maxIter)
+	}
 	return "", messages, fmt.Errorf("reached max iterations (%d) without final answer", e.maxIter)
 }
 

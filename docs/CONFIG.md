@@ -651,13 +651,48 @@ The `subagent` section controls task decomposition and parallel sub-agent execut
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `max_concurrency` | 3 | Max sub-agents running in parallel (max 8) |
-| `timeout_seconds` | 120 | Default timeout per sub-agent (overridden by `--timeout`) |
-| `max_iterations` | 15 | Default max think→act cycles per sub-agent (overridden by `--max-iter`) |
+| `max_concurrency` | global `max_concurrency` | Max sub-agents running in parallel (max 8) |
+| `timeout_seconds` | 1800 | Default wall-clock budget per sub-agent, 30 minutes (overridden by `--timeout`); clamped to 1800 |
+| `max_iterations` | 15 | Default think→act cycles per sub-agent (overridden by `--max-iter`); clamped to 100 |
+| `max_depth` | 2 | Delegation nesting cap via `ODEK_SUBAGENT_DEPTH`; clamped to 8 |
+| `announce_budget` | true | Sub-agents are told their budget at spawn and warned at 50/75/90% usage |
+| `budget_inherit` | `"operator"` | `"share"` = a sub-agent gets min(operator limits, parent's remaining budget) |
 
-This section is optional. Omitted fields inherit sensible defaults.
+This section is optional. Omitted fields inherit the defaults above.
 
-> **Note**: The `subagent` section is currently read only from `odek.json` by the `odek subagent` command in test code. Runtime values (`max_concurrency`, `timeout_seconds`) are hardcoded in production `odek run`/`odek serve`. This may be wired up fully in a future release.
+This section is **operator-only**: a `subagent` section in project-level `./odek.json` is ignored with a warning — a cloned repo must not be able to extend its own sub-agents' budgets, lift the runaway-process clamps, or re-widen budget inheritance.
+
+### Capability profiles
+
+The top-level `profiles` section defines named permission envelopes (P4). When a task selects one (via `delegate_tasks`'s `profile` field or `odek subagent --profile`), the profile's settings **override** the corresponding operator permissions for that sub-agent — the profile is the complete permission envelope, not a merge:
+
+```json
+{
+  "profiles": {
+    "research": {
+      "max_risk": "safe",
+      "tools": { "disabled": ["write_file", "patch", "batch_patch", "shell"] }
+    },
+    "builder": {
+      "max_risk": "local_write",
+      "allowlist": ["go test ./...", "go build ./..."]
+    }
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `max_risk` | Clamps every higher-ranked class to `deny` for profiled sub-agents |
+| `allowlist` | **Replaces** the global allowlist for profiled sub-agents |
+| `tools` | **Replaces** the global `tools` enabled/disabled filter for profiled sub-agents |
+
+Rules:
+
+- **Operator-authored only.** A `profiles` section in project-level `./odek.json` is ignored with a warning — a cloned repo must not author its own permission envelope.
+- **Override, not escalation.** The P2 non-interactive deny and the P3 trust lockdown are applied *after* the profile and cannot be lifted by selecting one. An untrusted task stays untrusted under any profile.
+- **Fail closed.** Selecting an unknown profile name fails the task; profiles with an invalid `max_risk` are dropped at load time with a warning.
+
 
 ## MCP server configuration
 

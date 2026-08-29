@@ -252,3 +252,76 @@ func (c *Checker) RecordToolCalls(n int) {
 		c.toolCalls += int64(n)
 	}
 }
+
+// Snapshot is a point-in-time view of consumed vs configured budget. A zero
+// Max* field means that limit is not configured (and the Remaining* field is
+// meaningless — always 0). Remaining values are clamped at 0: an exhausted
+// budget never reports negative headroom.
+type Snapshot struct {
+	MaxRuntimeSeconds       int64
+	RemainingRuntimeSeconds int64
+	MaxToolCalls            int64
+	RemainingToolCalls      int64
+	MaxInputTokens          int64
+	RemainingInputTokens    int64
+	MaxOutputTokens         int64
+	RemainingOutputTokens   int64
+	MaxCostUSD              float64
+	RemainingCostUSD        float64
+}
+
+// View exposes a point-in-time budget snapshot. The loop engine implements
+// it; tools that need the run's remaining budget (e.g. delegate_tasks
+// passing headroom down to sub-agents) accept it via SetBudgetView.
+type View interface {
+	BudgetSnapshot() Snapshot
+}
+
+// Snapshot returns the current consumed-vs-configured state of the budget.
+// The engine supplies its cumulative token totals (the Checker itself only
+// tracks tool calls and wall-clock time). Nil-safe: returns the zero
+// Snapshot (no limits configured).
+func (c *Checker) Snapshot(inputTokens, outputTokens int64) Snapshot {
+	if c == nil {
+		return Snapshot{}
+	}
+	now := time.Now
+	if c.now != nil {
+		now = c.now
+	}
+	s := Snapshot{
+		MaxRuntimeSeconds: c.limits.MaxRuntimeSeconds,
+		MaxToolCalls:      c.limits.MaxToolCalls,
+		MaxInputTokens:    c.limits.MaxInputTokens,
+		MaxOutputTokens:   c.limits.MaxOutputTokens,
+		MaxCostUSD:        c.limits.MaxCostUSD,
+	}
+	if c.limits.MaxRuntimeSeconds > 0 {
+		elapsed := int64(now().Sub(c.start).Seconds())
+		if r := c.limits.MaxRuntimeSeconds - elapsed; r > 0 {
+			s.RemainingRuntimeSeconds = r
+		}
+	}
+	if c.limits.MaxToolCalls > 0 {
+		if r := c.limits.MaxToolCalls - c.toolCalls; r > 0 {
+			s.RemainingToolCalls = r
+		}
+	}
+	if c.limits.MaxInputTokens > 0 {
+		if r := c.limits.MaxInputTokens - inputTokens; r > 0 {
+			s.RemainingInputTokens = r
+		}
+	}
+	if c.limits.MaxOutputTokens > 0 {
+		if r := c.limits.MaxOutputTokens - outputTokens; r > 0 {
+			s.RemainingOutputTokens = r
+		}
+	}
+	if c.limits.CostEnforcementActive() {
+		cost := c.limits.EstimatedCostUSD(inputTokens, outputTokens)
+		if r := c.limits.MaxCostUSD - cost; r > 0 {
+			s.RemainingCostUSD = r
+		}
+	}
+	return s
+}

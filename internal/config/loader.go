@@ -247,6 +247,21 @@ type MaintenanceConfig struct {
 // empty list.
 type ToolsConfig = ToolConfig
 
+// SubagentConfig is the file-level "subagent" section (docs/SUBAGENTS.md).
+// Pointer fields distinguish "not set" (inherit the default) from explicit
+// values, mirroring MaintenanceConfig.
+// Operator-controlled: rejected from project-level ./odek.json — a malicious
+// repo must not be able to extend its own sub-agents' runtime/iteration
+// budgets or weaken budget inheritance.
+type SubagentConfig struct {
+	MaxConcurrency *int   `json:"max_concurrency,omitempty"`
+	TimeoutSeconds *int   `json:"timeout_seconds,omitempty"`
+	MaxIterations  *int   `json:"max_iterations,omitempty"`
+	MaxDepth       *int   `json:"max_depth,omitempty"`
+	AnnounceBudget *bool  `json:"announce_budget,omitempty"`
+	BudgetInherit  string `json:"budget_inherit,omitempty"`
+}
+
 // PlanningFileConfig is the "planning" section of odek.json. Pointer fields
 // distinguish "not set" from explicit values so partial sections merge
 // field-by-field across the global/project layers.
@@ -395,6 +410,17 @@ type FileConfig struct {
 	// deletion of sessions, audit records, plans, logs, skip-list entries).
 	// Operator-controlled: rejected from project-level ./odek.json.
 	Maintenance *MaintenanceConfig `json:"maintenance,omitempty"`
+
+	// Subagent configures delegate_tasks sub-agent execution (docs/SUBAGENTS.md).
+	// Operator-controlled: rejected from project-level ./odek.json.
+	Subagent *SubagentConfig `json:"subagent,omitempty"`
+
+	// Profiles are named capability profiles (P4): when a task selects one,
+	// its settings OVERRIDE the corresponding operator permissions
+	// (max_risk clamp, allowlist, tool filter) for that sub-agent.
+	// Operator-controlled: rejected from project-level ./odek.json — a
+	// cloned repo must not be able to author its own permission envelope.
+	Profiles map[string]ProfileConfig `json:"profiles,omitempty"`
 
 	// Tools controls which tools are exposed to the LLM.
 	// Project-level ./odek.json may only disable tools, not enable them.
@@ -572,6 +598,17 @@ type ResolvedConfig struct {
 	// Default: maintenance.DefaultConfig() (enabled, 60min tick, sessions 30d,
 	// audit 14d, logs 50MB, plans 30d, skip-list 90d).
 	Maintenance maintenance.Config
+
+	// Subagent is the resolved sub-agent execution config.
+	// Default: MaxConcurrency=0 (fall back to global), TimeoutSeconds=1800 (30m),
+	// MaxIterations=15, MaxDepth=2, AnnounceBudget=true,
+	// BudgetInherit="operator".
+	Subagent SubagentResolved
+
+	// Profiles is the resolved set of operator-defined capability profiles
+	// (P4). nil when none are defined. Selecting an unknown profile name
+	// fails closed at the consumer.
+	Profiles map[string]ProfileConfig
 
 	// Tools is the resolved tool-list configuration.
 	// Empty Enabled/Disabled means "no restriction" for that direction.
@@ -934,6 +971,155 @@ func resolveMaintenance(cfg *MaintenanceConfig) maintenance.Config {
 	return def
 }
 
+// Budget inheritance modes for the subagent section.
+const (
+	// BudgetInheritOperator gives every sub-agent the operator-configured
+	// limits regardless of what the parent has already spent (pre-1.28
+	// behavior; the default).
+	BudgetInheritOperator = "operator"
+	// BudgetInheritShare gives a sub-agent min(operator limits, parent's
+	// remaining budget) so a near-exhausted parent cannot spawn children
+	// with fresh headroom.
+	BudgetInheritShare = "share"
+)
+
+// SubagentResolved is the resolved "subagent" configuration.
+type SubagentResolved struct {
+	// MaxConcurrency caps parallel sub-agent tasks per delegate_tasks call.
+	// 0 = fall back to the global max_concurrency. Clamped to 8.
+	MaxConcurrency int
+	// TimeoutSeconds is the default per-sub-agent wall-clock budget in
+	// seconds. Clamped to 3600.
+	TimeoutSeconds int
+	// MaxIterations is the default think→act cycle budget per sub-agent.
+	// Clamped to 100.
+	MaxIterations int
+	// MaxDepth caps delegation nesting via ODEK_SUBAGENT_DEPTH (1 = no
+	// sub-agent may delegate further). Clamped to 8.
+	MaxDepth int
+	// AnnounceBudget makes sub-agent engines inject budget-awareness hints
+	// (50/75/90% of the iteration or wall-clock budget) and announce the
+	// effective limits in the sub-agent system prompt.
+	AnnounceBudget bool
+	// BudgetInherit is BudgetInheritOperator or BudgetInheritShare.
+	BudgetInherit string
+}
+
+// resolveSubagent merges the file-level subagent section over the defaults.
+// Unset (nil) fields inherit the default. Numeric values are clamped to the
+// documented ceilings (max_concurrency ≤ 8, timeout_seconds ≤ 3600,
+// max_iterations ≤ 100, max_depth ≤ 8) so a config file cannot lift the
+// runaway-process guards enforced by the CLI flags.
+func resolveSubagent(cfg *SubagentConfig) SubagentResolved {
+	res := SubagentResolved{
+		TimeoutSeconds: 1800,
+		MaxIterations:  15,
+		MaxDepth:       2,
+		AnnounceBudget: true,
+		BudgetInherit:  BudgetInheritOperator,
+	}
+	if cfg == nil {
+		return res
+	}
+	if cfg.MaxConcurrency != nil {
+		v := *cfg.MaxConcurrency
+		if v < 0 {
+			v = 0
+		}
+		if v > 8 {
+			v = 8
+		}
+		res.MaxConcurrency = v
+	}
+	if cfg.TimeoutSeconds != nil {
+		v := *cfg.TimeoutSeconds
+		if v < 0 {
+			v = 0
+		}
+		if v > 1800 {
+			v = 1800
+		}
+		res.TimeoutSeconds = v
+	}
+	if cfg.MaxIterations != nil {
+		v := *cfg.MaxIterations
+		if v < 0 {
+			v = 0
+		}
+		if v > 100 {
+			v = 100
+		}
+		res.MaxIterations = v
+	}
+	if cfg.MaxDepth != nil {
+		v := *cfg.MaxDepth
+		if v < 1 {
+			v = 1
+		}
+		if v > 8 {
+			v = 8
+		}
+		res.MaxDepth = v
+	}
+	if cfg.AnnounceBudget != nil {
+		res.AnnounceBudget = *cfg.AnnounceBudget
+	}
+	if cfg.BudgetInherit != "" && cfg.BudgetInherit != BudgetInheritOperator {
+		if cfg.BudgetInherit == BudgetInheritShare {
+			res.BudgetInherit = BudgetInheritShare
+		} else {
+			fmt.Fprintf(os.Stderr, "odek: WARNING: unknown subagent.budget_inherit %q; using %q\n", cfg.BudgetInherit, BudgetInheritOperator)
+		}
+	}
+	return res
+}
+
+// ProfileConfig is one named capability profile (P4). When a task
+// selects the profile, its settings OVERRIDE the corresponding operator
+// config for that sub-agent: max_risk clamps every higher-ranked class to
+// deny, allowlist REPLACES the global allowlist, and the tools filter
+// replaces the global one. Operator-authored only (project config is
+// stripped), so the override is policy rather than escalation — the P2
+// non-interactive deny and the P3 trust lockdown are applied afterwards
+// and cannot be lifted by selecting a profile.
+type ProfileConfig struct {
+	MaxRisk   string      `json:"max_risk,omitempty"`
+	Allowlist []string    `json:"allowlist,omitempty"`
+	Tools     *ToolConfig `json:"tools,omitempty"`
+}
+
+// validRiskClass reports whether s names a known risk class.
+func validRiskClass(s string) bool {
+	switch danger.RiskClass(s) {
+	case danger.Safe, danger.LocalWrite, danger.SystemWrite, danger.Persistence,
+		danger.Destructive, danger.NetworkEgress, danger.CodeExecution,
+		danger.Install, danger.Blocked, danger.Unknown, danger.UnreadExec:
+		return true
+	}
+	return false
+}
+
+// resolveProfiles validates the operator's capability profiles. Profiles
+// with an unknown max_risk are dropped with a warning (fail closed: a
+// typo must not silently yield an unclamped envelope).
+func resolveProfiles(cfg map[string]ProfileConfig) map[string]ProfileConfig {
+	if cfg == nil {
+		return nil
+	}
+	out := make(map[string]ProfileConfig, len(cfg))
+	for name, prof := range cfg {
+		if prof.MaxRisk != "" && !validRiskClass(prof.MaxRisk) {
+			fmt.Fprintf(os.Stderr, "odek: WARNING: dropping profile %q: unknown max_risk %q\n", name, prof.MaxRisk)
+			continue
+		}
+		out[name] = prof
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // envScheduleDangerousConfig parses ODEK_SCHEDULES_DANGEROUS_* env vars into a
 // DangerousConfig. Returns nil if none are set.
 func envScheduleDangerousConfig(prefix string) *danger.DangerousConfig {
@@ -1059,6 +1245,19 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if project.Maintenance != nil {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring maintenance from project config (%s); set it via ~/.odek/config.json or ODEK_MAINTENANCE_*\n", ProjectConfigPath())
 		project.Maintenance = nil
+	}
+	// The subagent section controls sub-agent budgets (runtime, iterations,
+	// nesting depth) and budget inheritance. A malicious repo must not be
+	// able to extend its own sub-agents' lifespans or re-widen inheritance.
+	if project.Subagent != nil {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring subagent from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
+		project.Subagent = nil
+	}
+	// Profiles define permission envelopes. A malicious repo must not be
+	// able to author (or shadow) the operator's profiles.
+	if project.Profiles != nil {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring profiles from project config (%s); set them via ~/.odek/config.json\n", ProjectConfigPath())
+		project.Profiles = nil
 	}
 	if project.Guard != nil {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring guard from project config (%s); set it via ~/.odek/config.json, ODEK_GUARD_*, or the CLI\n", ProjectConfigPath())
@@ -1848,6 +2047,8 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		WebSearch:              resolveWebSearch(cfg.WebSearch),
 		Schedules:              resolveSchedules(cfg.Schedules),
 		Maintenance:            resolveMaintenance(cfg.Maintenance),
+		Subagent:               resolveSubagent(cfg.Subagent),
+		Profiles:               resolveProfiles(cfg.Profiles),
 		Tools:                  resolveTools(cfg.Tools),
 		InteractionMode:        ifZero(cfg.InteractionMode, "engaging"),
 		ToolProgress:           ifZero(cfg.ToolProgress, "all"),
@@ -2615,6 +2816,14 @@ func overlayFile(base, override FileConfig) FileConfig {
 	}
 	if override.Maintenance != nil {
 		base.Maintenance = override.Maintenance
+	}
+	if override.Subagent != nil {
+		// Reached only after the untrusted project section was stripped,
+		// so this carries the operator's global layer over the defaults.
+		base.Subagent = override.Subagent
+	}
+	if override.Profiles != nil {
+		base.Profiles = override.Profiles
 	}
 	if override.Guard != nil {
 		base.Guard = override.Guard

@@ -170,7 +170,7 @@ odek subagent --goal "Continue refactoring" --parent-session "20260519-abc123"
 | `--goal <string>` | — | **Required** unless `--task` specified. The sub-agent's goal. |
 | `--context <string>` | `""` | Background context (file paths, design decisions) |
 | `--task <file>` | — | JSON file with `{"goal":"...","context":"...}"`. Mutually exclusive with `--goal`. |
-| `--timeout <sec>` | 120 | Max seconds the sub-agent may run before being killed |
+| `--timeout <sec>` | 1800 | Max seconds the sub-agent may run before being killed (hard max 1800 = 30 min) |
 | `--max-iter <n>` | 15 | Max think→act cycles |
 | `--quiet` | false | Suppress emoji progress on stderr |
 | `--parent-session <id>` | — | Session ID from the parent (for context relay) |
@@ -215,6 +215,26 @@ Emoji-prefixed progress for terminal users:
 
 Suppressed with `--quiet`.
 
+- At iteration boundaries, when the run crosses 50% / 75% / 90% of its
+  iteration or wall-clock budget, the engine appends a one-line budget hint
+  to the corrections message and emits a `budget_warning` signal, so the
+  model can pace itself and conclude cleanly instead of being cut off
+  mid-work (`subagent.announce_budget`, default on).
+- The wall-clock budget is two-stage: a finalization window (min(15s,
+  timeout/8)) before the hard kill is reserved for a bounded
+  partial-progress summary — a timed-out sub-agent returns
+  `status: "partial"`, `partial_reason: "time_budget"` and a usable
+  report instead of nothing. Iteration-budget exhaustion reports
+  `partial_reason: "iteration_budget"`; a hard execution budget reports
+  `status: "budget_exhausted"` (exit code 4).
+- Delegation depth is capped (`subagent.max_depth`, default 2, tracked via
+  `ODEK_SUBAGENT_DEPTH`): a sub-agent at the cap refuses to fan out
+  further.
+- With `subagent.budget_inherit: "share"`, the parent writes its remaining
+  budget into each task file and the child enforces
+  min(operator limits, parent remaining) — a near-exhausted parent can no
+  longer spawn children with fresh headroom.
+
 ## System prompt & request (trust boundary)
 
 A sub-agent's **system prompt is a fixed, code-defined constant** (`subagentSystem` in
@@ -241,6 +261,32 @@ parent ingested from untrusted sources (fetched pages, MCP output, files). Keepi
 out of the system prompt means a prompt-injection payload can never rewrite the
 sub-agent's identity or strip its safety rules — at worst it's a hostile *request*, which
 the fixed SAFETY block tells the model to treat as data.
+
+### Approvals, denials & trust inheritance
+
+Sub-agents are autonomous by design and **never prompt for approvals** —
+not even trusted ones. Prompt-class operations are denied (`non_interactive:
+deny` is forced for every sub-agent); the operator `allowlist` (exact
+pre-approved invocations) is the only path to prompt-class operations.
+
+Denials are not silent: each child reports the policy denials it observed
+in its result (`denials: [{tool, class, reason}]`, capped at 20 with
+`denials_total` for the full count), and the parent emits one
+`subagent_denied` runtime event per denial — so the parent model can adapt
+("network denied → fetch it myself") and operators get uniform visibility.
+
+Trust is **non-increasing downward**: the delegate tool stamps the parent's
+effective trust into the task file (`parent_trust`), and the child runs at
+`min(parent_trust, trust_level)`. A task tree rooted in untrusted content
+cannot launder itself into trusted children.
+
+Capability profiles (P4) let the operator define named permission envelopes
+in the top-level `profiles` config (see [CONFIG.md](CONFIG.md)): a task
+selects one via `profile: "name"` and the profile's `max_risk`/`allowlist`/
+`tools` **override** the corresponding global config for that sub-agent.
+Profiles are operator-authored (project config is stripped) and selecting
+one cannot lift the non-interactive deny or the trust lockdown — policy,
+not escalation.
 
 ### Untrusted tasks are fenced
 
@@ -311,7 +357,7 @@ Config in `odek.json`:
 | Risk | Mitigation |
 |------|------------|
 | **Sub-agent hijacking** | Sub-agents are never prompted by the parent/user — they receive structured `goal`/`context` strings. No instruction injection path. |
-| **Runaway processes** | Hard timeout (`--timeout`, default 120s). Context cancellation kills via `os.Process.Kill()`. |
+| **Runaway processes** | Hard timeout (`--timeout`, default 1800s = 30 min, hard max 1800s). Context cancellation kills via `os.Process.Kill()`. |
 | **Resource exhaustion** | Concurrency semaphore (max `max_concurrency`). Sequential spawning. No fork bomb. |
 | **Panic propagation** | Each sub-agent is an OS process. Panic exits only that process with code 3 — parent sees the JSON error and continues. |
 | **Temp file leakage** | Each task file is `defer os.Remove()`'d after subprocess exit. |

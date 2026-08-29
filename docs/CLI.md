@@ -27,7 +27,7 @@
 | `odek audit <session-id>` | Print the prompt-injection audit log for a session (JSON) |
 | `odek audit --list` | List sessions with non-zero ingest counts and divergence flags |
 || `odek serve [--addr :8080] [--open] [--no-sandbox] [--trusted-proxies <ips/cidrs>]` | Web UI server. Sandbox is on by default; pass `--no-sandbox` to disable. Accepts `--tool` and `--no-tool` flags. Binding to a non-loopback address prints a loud warning because anyone with the token can drive the agent. `--trusted-proxies` honours `X-Forwarded-For`/`X-Real-Ip` only from those addresses. |
-|| `odek subagent --goal <string> [flags]` | Run a focused sub-task; outputs JSON on stdout. Spawned by `delegate_tasks` tool. Flags: `--goal`, `--task <file>`, `--context`, `--timeout` (≤3600s), `--max-iter` (≤100), `--quiet`, `--stream`. |
+|| `odek subagent --goal <string> [flags]` | Run a focused sub-task; outputs JSON on stdout. Spawned by `delegate_tasks` tool. Flags: `--goal`, `--task <file>`, `--context`, `--timeout` (≤1800s), `--max-iter` (≤100), `--profile <name>`, `--quiet`, `--stream`. |
 | `odek init [--global|--local] [--force]` | Create a config file template (scope-aware: full schema globally, project-safe fields locally) |
 | `odek mcp [--sandbox]` | Start MCP server (expose tools to Claude Code) or connect to external MCP servers (via `mcp_servers` config) |
 | `odek telegram` | Start the Telegram bot (long-polling). Hosts the embedded scheduler unless `schedules.enabled=false` |
@@ -109,9 +109,9 @@ Cost enforcement is active only when `max_cost_usd` **and** both per-million pri
 |------|---------|----------|
 | `0` | Success | all |
 | `1` | Task/model/tool error | all |
-| `2` | Overall timeout (killed by parent/context) | `subagent` |
+| `2` | Overall timeout (killed by parent/context, or the wall-clock budget fired and the sub-agent concluded with a `partial` time-budget report) | `subagent` |
 | `3` | Setup/contract error | `subagent` |
-| `4` | Execution budget exhausted (typed `budget.Error`) | `run` |
+| `4` | Execution budget exhausted (typed `budget.Error`) | `run`, `subagent` |
 
 ## File attachments
 
@@ -189,8 +189,10 @@ Spawn focused sub-agents. Each task carries parent-side trust signals:
 }
 ```
 
-- `trust_level`: `"untrusted"` (default when omitted) or `"trusted"`. Untrusted tasks force `non_interactive: deny` and deny `destructive`, `code_execution`, `install`, `system_write`, `network_egress`, `unknown`, and `blocked`.
+- `trust_level`: `"untrusted"` (default when omitted) or `"trusted"`. **Every** sub-agent runs non-interactive (`non_interactive: deny` is forced — trusted ones never prompt either). Untrusted tasks additionally deny `destructive`, `code_execution`, `install`, `system_write`, `persistence`, `unread_exec`, `network_egress`, `unknown`, and `blocked`.
 - `max_risk`: highest risk class the sub-agent may execute. Anything ranked above it is forced to `deny`.
+- **Trust is non-increasing downward**: the delegate tool stamps the parent's own effective trust into the task (`parent_trust`), and the child runs at `min(parent_trust, trust_level)`. A task tree rooted in untrusted content cannot spawn trusted children.
+- **Sub-agents never prompt for approvals.** Every sub-agent runs non-interactive — prompt-class operations are denied even for trusted sub-agents; the operator `allowlist` (exact pre-approved invocations) is the only path to prompt-class operations. Denied operations are reported in the result's `denials` array (`{tool, class, reason}`, capped at 20 with `denials_total` carrying the full count) and surfaced as `subagent_denied` runtime events, so the parent can adapt or escalate instead of failing blind.
 
 MCP servers are not loaded into untrusted sub-agents, because MCP tool adapters do not perform their own danger classification.
 
