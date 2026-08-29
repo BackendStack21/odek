@@ -262,6 +262,24 @@ out of the system prompt means a prompt-injection payload can never rewrite the
 sub-agent's identity or strip its safety rules — at worst it's a hostile *request*, which
 the fixed SAFETY block tells the model to treat as data.
 
+### Approvals, denials & trust inheritance
+
+Sub-agents are autonomous by design and **never prompt for approvals** —
+not even trusted ones. Prompt-class operations are denied (`non_interactive:
+deny` is forced for every sub-agent); the operator `allowlist` (exact
+pre-approved invocations) is the only path to prompt-class operations.
+
+Denials are not silent: each child reports the policy denials it observed
+in its result (`denials: [{tool, class, reason}]`, capped at 20 with
+`denials_total` for the full count), and the parent emits one
+`subagent_denied` runtime event per denial — so the parent model can adapt
+("network denied → fetch it myself") and operators get uniform visibility.
+
+Trust is **non-increasing downward**: the delegate tool stamps the parent's
+effective trust into the task file (`parent_trust`), and the child runs at
+`min(parent_trust, trust_level)`. A task tree rooted in untrusted content
+cannot launder itself into trusted children.
+
 ### Untrusted tasks are fenced
 
 When the parent sets `trust_level: "untrusted"`, the entire request body is wrapped in an

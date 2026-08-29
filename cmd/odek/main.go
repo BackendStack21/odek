@@ -2220,6 +2220,9 @@ type toolConfig struct {
 	// Subagent carries the resolved subagent section for delegate_tasks
 	// (timeout/concurrency/depth defaults + budget inheritance mode).
 	Subagent config.SubagentResolved
+	// SelfTrust is THIS process's own effective trust level (P3); stamped
+	// into spawned task files. Empty = top-level operator run (trusted).
+	SelfTrust string
 	// Planning, when non-nil and Enabled, registers the built-in plan tool.
 	// The store it carries is shared with the loop engine via odek.New's
 	// discovery of *loop.PlanTool in the returned tools slice.
@@ -2246,6 +2249,11 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 	if subInherit == "" {
 		subInherit = config.BudgetInheritOperator
 	}
+	selfTrust := tcfg.SelfTrust
+	if selfTrust == "" {
+		// Top-level runs (odek run/repl/serve/telegram) are operator-trusted.
+		selfTrust = "trusted"
+	}
 	tools := []odek.Tool{
 		&shellTool{
 			dangerousConfig: dc,
@@ -2258,6 +2266,7 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 			timeout:        time.Duration(subTimeout) * time.Second,
 			maxDepth:       subDepth,
 			budgetInherit:  subInherit,
+			selfTrust:      selfTrust,
 		},
 		&readFileTool{dangerousConfig: dc},
 		&writeFileTool{dangerousConfig: dc, restrictToCWD: true},

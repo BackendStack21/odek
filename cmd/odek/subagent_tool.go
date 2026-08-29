@@ -16,6 +16,7 @@ import (
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/events"
 )
 
 // delegateTasksTool is a built-in tool that spawns sub-agent OS processes
@@ -55,6 +56,17 @@ type delegateTasksTool struct {
 	budgetMu   sync.Mutex
 	budgetView budget.View
 
+	// selfTrust is THIS process's own effective trust level (P3): stamped
+	// into every spawned task file so trust cannot increase downward.
+	// Empty = top-level operator run (trusted).
+	selfTrust string
+
+	// eventMu/emitEventFn carry the runtime event emitter injected by
+	// odek.New (SetEventEmitter); used to surface child denials as
+	// subagent_denied events (P1).
+	eventMu     sync.Mutex
+	emitEventFn func(events.Event)
+
 	// OnSubagentLog, if set, is called with each NDJSON progress line
 	// emitted by a sub-agent. taskIdx is the index within the current
 	// batch. Used by the WebUI for live log streaming.
@@ -72,6 +84,15 @@ func (t *delegateTasksTool) SetBudgetView(v budget.View) {
 	t.budgetView = v
 }
 
+// SetEventEmitter is called by odek.New for tools implementing the
+// emitter interface: it hands the tool the runtime event stream so child
+// denials surface as subagent_denied events (P1).
+func (t *delegateTasksTool) SetEventEmitter(fn func(events.Event)) {
+	t.eventMu.Lock()
+	defer t.eventMu.Unlock()
+	t.emitEventFn = fn
+}
+
 func (t *delegateTasksTool) Description() string {
 	return `Spawn one or more sub-agent OS processes to work on focused sub-tasks in parallel. Each sub-agent gets its own process, config, and context window. Use this when the task has clear independent sub-tasks that can be worked on simultaneously.
 
@@ -80,7 +101,9 @@ Example: decomposing "build a REST API" into "create user model", "create auth m
 Key rules:
 - Each sub-agent has a fresh context (no parent history)
 - Sub-agents run in parallel up to the configured concurrency limit (subagent.max_concurrency, falling back to max_concurrency)
-- Each sub-agent gets a wall-clock budget (subagent.timeout_seconds, default 30m, hard max 30m) and an iteration budget (subagent.max_iterations, default 15) — it is told both at spawn and warned as it approaches them
+- Sub-agents NEVER prompt for approvals — denied operations are listed in each result's denials array (tool/class/reason); escalate by performing the operation yourself or asking the user
+- Sub-agents get a wall-clock budget (subagent.timeout_seconds, default 30m, hard max 30m) and an iteration budget (subagent.max_iterations, default 15) — it is told both at spawn and warned as it approaches them
+- Trust is non-increasing downward: a child's effective trust is min(parent trust, declared trust_level) — an untrusted task tree cannot spawn trusted children
 - Sub-agents can use all tools (shell, read/write files, etc.), capped by trust_level and max_risk
 - Delegation depth is capped (subagent.max_depth, default 2) — do leaf work yourself when close to the cap
 - After all complete, synthesize the results into a cohesive answer
@@ -190,6 +213,31 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 		sem <- struct{}{}
 	}
 
+	// P1: surface child denials on the runtime event stream (best effort —
+	// unparseable results simply carry no denials).
+	t.eventMu.Lock()
+	emit := t.emitEventFn
+	t.eventMu.Unlock()
+	if emit != nil {
+		for i := range results {
+			var r subagentResult
+			if json.Unmarshal([]byte(results[i]), &r) != nil {
+				continue
+			}
+			for _, d := range r.Denials {
+				emit(events.Event{
+					Type: subagentDeniedEvent,
+					Tool: d.Tool,
+					Data: map[string]any{
+						"task_index": i,
+						"class":      d.Class,
+						"reason":     d.Reason,
+					},
+				})
+			}
+		}
+	}
+
 	// Build summary for the calling agent. Cap each sub-agent result so the
 	// summary cannot grow without bound.
 	var buf strings.Builder
@@ -225,22 +273,10 @@ func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, tr
 	}
 	taskPath := taskFile.Name()
 
-	// Typed task envelope (M1.5): the parent's remaining budget rides
-	// along in share mode so the child clamps its own limits to it.
-	task := struct {
-		Goal       string      `json:"goal"`
-		Context    string      `json:"context,omitempty"`
-		Guidance   string      `json:"guidance,omitempty"`
-		TrustLevel string      `json:"trust_level,omitempty"`
-		MaxRisk    string      `json:"max_risk,omitempty"`
-		Budget     *taskBudget `json:"budget,omitempty"`
-	}{
-		Goal:       goal,
-		Context:    taskContext,
-		Guidance:   guidance,
-		TrustLevel: trustLevel,
-		MaxRisk:    maxRisk,
-	}
+	// Typed task envelope: the parent's remaining budget rides along in
+	// share mode (M1.5) and the parent's effective trust is stamped for
+	// the non-increasing-downward invariant (P3).
+	task := newTaskEnvelope(goal, taskContext, guidance, trustLevel, maxRisk, nil, t.selfTrust)
 	if t.budgetInherit == config.BudgetInheritShare {
 		t.budgetMu.Lock()
 		view := t.budgetView
@@ -449,6 +485,37 @@ func taskBudgetFromSnapshot(s budget.Snapshot) *taskBudget {
 	}
 	return tb
 }
+
+// taskEnvelope is the task-file JSON contract handed to `odek subagent`.
+type taskEnvelope struct {
+	Goal        string      `json:"goal"`
+	Context     string      `json:"context,omitempty"`
+	Guidance    string      `json:"guidance,omitempty"`
+	TrustLevel  string      `json:"trust_level,omitempty"`
+	MaxRisk     string      `json:"max_risk,omitempty"`
+	Budget      *taskBudget `json:"budget,omitempty"`
+	ParentTrust string      `json:"parent_trust,omitempty"`
+}
+
+// newTaskEnvelope builds the task-file envelope. parentTrust is the
+// PARENT's own effective trust (P3 — trust is non-increasing downward):
+// the child computes min(parentTrust, trustLevel) as its effective trust,
+// so an untrusted task tree can never spawn trusted children.
+func newTaskEnvelope(goal, context, guidance, trustLevel, maxRisk string, budget *taskBudget, parentTrust string) taskEnvelope {
+	return taskEnvelope{
+		Goal:        goal,
+		Context:     context,
+		Guidance:    guidance,
+		TrustLevel:  trustLevel,
+		MaxRisk:     maxRisk,
+		Budget:      budget,
+		ParentTrust: parentTrust,
+	}
+}
+
+// subagentDeniedEvent is emitted on the runtime event stream for every
+// policy denial observed by a child sub-agent (P1).
+const subagentDeniedEvent = "subagent_denied"
 
 // subagentDepthEnvVar carries the delegation depth down the process tree.
 // Each delegate_tasks spawn stamps its children with depth+1; a child at

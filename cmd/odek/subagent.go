@@ -178,17 +178,90 @@ func buildLifespanBlock(timeoutSeconds, maxIterations int, limits budget.Limits)
 	return b.String()
 }
 
+// ── Denial reporting (P1 — deny loudly) ─────────────────────────────
+
+// denialMarker is the uniform prefix produced by
+// danger.DangerousConfig.CheckOperation and the shell tool when an
+// operation is denied by policy. extractDenials parses it out of tool
+// results; a test round-trips the real producer against the parser.
+const denialMarker = "operation denied by configuration: "
+
+// maxReportedDenials caps the denials array in the result contract; the
+// total count is reported separately so the parent still sees the scale.
+const maxReportedDenials = 20
+
+// SubagentDenial is one policy denial observed during a sub-agent run.
+type SubagentDenial struct {
+	Tool   string `json:"tool"`
+	Class  string `json:"class,omitempty"`
+	Reason string `json:"reason"`
+}
+
+// extractDenials scans tool-role messages for policy denials so the
+// parent can adapt (do the operation itself, ask the user) instead of
+// seeing a naked failure. Tool is taken from the message name (the tool
+// that produced the result), class from the standard "(risk: X)" suffix
+// where present. Capped at maxReportedDenials; the total is authoritative.
+func extractDenials(messages []llm.Message) ([]SubagentDenial, int) {
+	var out []SubagentDenial
+	total := 0
+	for _, msg := range messages {
+		if msg.Role != "tool" || !strings.Contains(msg.Content, denialMarker) {
+			continue
+		}
+		for _, line := range strings.Split(msg.Content, "\n") {
+			i := strings.Index(line, denialMarker)
+			if i < 0 {
+				continue
+			}
+			total++
+			if len(out) >= maxReportedDenials {
+				continue
+			}
+			rest := strings.TrimSpace(line[i+len(denialMarker):])
+			d := SubagentDenial{Tool: msg.Name, Reason: truncate(rest, 200)}
+			if k := strings.LastIndex(rest, " (risk: "); k >= 0 && strings.HasSuffix(rest, ")") {
+				d.Class = strings.TrimSpace(rest[k+len(" (risk: ") : len(rest)-1])
+				d.Reason = truncate(strings.TrimSpace(rest[:k]), 200)
+			}
+			out = append(out, d)
+		}
+	}
+	return out, total
+}
+
+// effectiveTrust computes a child's effective trust level (P3 — trust is
+// non-increasing downward): min(parent's effective trust, declared
+// trust_level). The parent stamps its own effective trust into the task
+// file; an empty parent trust means a top-level operator run (trusted).
+// An empty declared trust normalizes to untrusted, so omitted trust_level
+// can never inherit the parent's TTY/approval context.
+func effectiveTrust(parentTrust, declared string) string {
+	if declared == "" {
+		declared = "untrusted"
+	}
+	if parentTrust == "" {
+		parentTrust = "trusted"
+	}
+	if parentTrust == "untrusted" || declared == "untrusted" {
+		return "untrusted"
+	}
+	return "trusted"
+}
+
 // subagentResult is the JSON contract written to stdout.
 type subagentResult struct {
-	Status          string   `json:"status"`                   // "success", "partial", "budget_exhausted" or "error"
-	Error           string   `json:"error,omitempty"`          // error message
-	PartialReason   string   `json:"partial_reason,omitempty"` // time_budget | iteration_budget | execution_budget
-	Summary         string   `json:"summary"`                  // task summary
-	FilesChanged    []string `json:"files_changed,omitempty"`  // changed files
-	TokensUsed      int      `json:"tokens_used"`              // total tokens consumed
-	Iterations      int      `json:"iterations"`               // think-act cycles used
-	DurationSeconds float64  `json:"duration_seconds"`         // wall-clock runtime
-	ParentSession   string   `json:"parent_session,omitempty"` // correlation id from --parent-session
+	Status          string           `json:"status"`                   // "success", "partial", "budget_exhausted" or "error"
+	Error           string           `json:"error,omitempty"`          // error message
+	PartialReason   string           `json:"partial_reason,omitempty"` // time_budget | iteration_budget | execution_budget
+	Summary         string           `json:"summary"`                  // task summary
+	FilesChanged    []string         `json:"files_changed,omitempty"`  // changed files
+	TokensUsed      int              `json:"tokens_used"`              // total tokens consumed
+	Iterations      int              `json:"iterations"`               // think-act cycles used
+	DurationSeconds float64          `json:"duration_seconds"`         // wall-clock runtime
+	Denials         []SubagentDenial `json:"denials,omitempty"`        // policy denials observed (capped)
+	DenialsTotal    int              `json:"denials_total,omitempty"`  // total denials seen
+	ParentSession   string           `json:"parent_session,omitempty"` // correlation id from --parent-session
 }
 
 // ── Subagent Command ─────────────────────────────────────────────────
@@ -303,6 +376,7 @@ func subagentCmd(args []string) error {
 	var taskTrust string    // "trusted" or "untrusted" (from parent agent)
 	var taskMaxRisk string
 	var taskBudgetBlock *taskBudget // parent's remaining budget (share mode)
+	var parentTrust string          // parent's own effective trust (P3)
 	if hasTaskFile {
 		info, err := os.Stat(cfg.taskFile)
 		if err != nil {
@@ -316,12 +390,13 @@ func subagentCmd(args []string) error {
 			return fmt.Errorf("read task file: %w", err)
 		}
 		var task struct {
-			Goal       string      `json:"goal"`
-			Context    string      `json:"context"`
-			Guidance   string      `json:"guidance,omitempty"`
-			TrustLevel string      `json:"trust_level,omitempty"`
-			MaxRisk    string      `json:"max_risk,omitempty"`
-			Budget     *taskBudget `json:"budget,omitempty"`
+			Goal        string      `json:"goal"`
+			Context     string      `json:"context"`
+			Guidance    string      `json:"guidance,omitempty"`
+			TrustLevel  string      `json:"trust_level,omitempty"`
+			MaxRisk     string      `json:"max_risk,omitempty"`
+			Budget      *taskBudget `json:"budget,omitempty"`
+			ParentTrust string      `json:"parent_trust,omitempty"`
 		}
 		if err := json.Unmarshal(data, &task); err != nil {
 			return fmt.Errorf("parse task file: %w", err)
@@ -332,6 +407,7 @@ func subagentCmd(args []string) error {
 		taskTrust = task.TrustLevel
 		taskMaxRisk = task.MaxRisk
 		taskBudgetBlock = task.Budget
+		parentTrust = task.ParentTrust
 		// Only delete the task file if the parent wrote it into an odek temp
 		// directory. This prevents `odek subagent --task /path/to/user/file`
 		// from reading and then deleting an arbitrary file.
@@ -379,7 +455,11 @@ func subagentCmd(args []string) error {
 	// page or unfamiliar file), force non-interactive denials so no
 	// dangerous operation slips through without a fresh approval. When
 	// max_risk is set, clamp every class above it to Deny.
-	applySubagentTrust(&resolved.Dangerous, taskTrust, taskMaxRisk)
+	// P3: trust is non-increasing downward — effective trust is
+	// min(parent's effective trust, declared trust_level). A task tree
+	// rooted in untrusted content cannot spawn trusted children.
+	effectiveTrustLevel := effectiveTrust(parentTrust, taskTrust)
+	applySubagentTrust(&resolved.Dangerous, effectiveTrustLevel, taskMaxRisk)
 
 	// Budget inheritance (subagent.budget_inherit="share", M1.5): the
 	// parent wrote its remaining budget into the task file; the child
@@ -405,7 +485,7 @@ func subagentCmd(args []string) error {
 			resolved.Skills.Embedding,
 		)
 	}
-	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{WebSearch: resolved.WebSearch, Planning: &resolved.Planning, Subagent: resolved.Subagent}, nil)
+	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{WebSearch: resolved.WebSearch, Planning: &resolved.Planning, Subagent: resolved.Subagent, SelfTrust: effectiveTrustLevel}, nil)
 
 	// MCP server tools
 	//
@@ -417,7 +497,7 @@ func subagentCmd(args []string) error {
 	// get them, but the passed DangerousConfig forces Deny for any class above
 	// the operator-configured cap.
 	var mcpCleanup func()
-	if len(resolved.MCPServers) > 0 && subagentAllowsMCP(taskTrust) {
+	if len(resolved.MCPServers) > 0 && subagentAllowsMCP(effectiveTrustLevel) {
 		cl, err := loadMCPTools(resolved, &tools)
 		if err != nil {
 			return fmt.Errorf("mcp: %w", err)
@@ -585,6 +665,11 @@ func subagentCmd(args []string) error {
 		}
 	}
 
+	// P1: surface policy denials so the parent can adapt or escalate.
+	denials, denialsTotal := extractDenials(allMessages)
+	result.Denials = denials
+	result.DenialsTotal = denialsTotal
+
 	// Extract files changed from tool calls
 	result.FilesChanged = extractFilesChanged(allMessages)
 
@@ -744,14 +829,13 @@ func subagentAllowsMCP(trustLevel string) bool {
 // trustLevel == "untrusted": the task strings (goal/context) were derived
 // from external content the parent ingested (a fetched page, a file
 // outside CWD, an MCP server response). We:
-//   - Force NonInteractiveAction to deny (sub-agents have no TTY).
-//   - Clamp the action for Destructive, CodeExecution, Install,
-//     SystemWrite, NetworkEgress, and Unknown to Deny so the sub-agent
-//     cannot escalate beyond LocalWrite without coming back through the
-//     parent.
 //
-// maxRisk caps the highest risk class the sub-agent will execute.
-// Anything strictly above maxRisk is forced to Deny.
+//	P2: NonInteractive is forced to deny for EVERY sub-agent — trusted
+//	included. Sub-agents never prompt for approvals (a trusted child
+//	would otherwise surface a context-free /dev/tty prompt or die
+//	silently headless); the operator allowlist remains the only path to
+//	prompt-class operations, and denials are reported in the result
+//	contract (P1) for the parent to adapt on or escalate.
 func applySubagentTrust(dc *danger.DangerousConfig, trustLevel, maxRisk string) {
 	if dc == nil {
 		return
@@ -768,9 +852,11 @@ func applySubagentTrust(dc *danger.DangerousConfig, trustLevel, maxRisk string) 
 		trustLevel = "untrusted"
 	}
 
+	// P2 — never prompt, trusted included.
+	deny := "deny"
+	dc.NonInteractive = &deny
+
 	if trustLevel == "untrusted" {
-		deny := "deny"
-		dc.NonInteractive = &deny
 		// Lock down every class that could plausibly cause out-of-task
 		// damage. LocalWrite remains the cap — sub-agents may still
 		// edit files inside the working directory.

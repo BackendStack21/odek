@@ -765,6 +765,9 @@ func New(cfg Config) (*Agent, error) {
 		if bv, ok := t.(interface{ SetBudgetView(budget.View) }); ok {
 			bv.SetBudgetView(engine)
 		}
+		if ee, ok := t.(interface{ SetEventEmitter(func(events.Event)) }); ok {
+			ee.SetEventEmitter(engine.EmitEvent)
+		}
 	}
 	if cfg.AnnounceBudget != nil {
 		engine.SetBudgetHints(*cfg.AnnounceBudget)

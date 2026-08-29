@@ -497,6 +497,12 @@ func (e *Engine) SetEventsIncludeArgs(enabled bool) { e.eventsIncludeArgs = enab
 // stamping the timestamp when the caller left it zero. Safe to call
 // unconditionally. Run-level metadata (schema, run_id, session_id) is
 // stamped centrally by the events.Emitter the handler is wired to.
+// EmitEvent exposes the runtime event stream to holders of an emitter
+// reference (view-pattern, like budget.View) — e.g. delegate_tasks
+// surfacing child policy denials as subagent_denied events. Redaction
+// and the non-blocking dispatch contract are inherited from emitEvent.
+func (e *Engine) EmitEvent(ev events.Event) { e.emitEvent(ev) }
+
 func (e *Engine) emitEvent(ev events.Event) {
 	if e.eventHandler == nil {
 		return

@@ -162,7 +162,7 @@ odek can emit a structured runtime event stream: **one JSON object per line
 - `type` is one of: `run_started`, `iteration_completed`,
   `tool_call_started`, `tool_call_completed`, `tool_call_failed`,
   `session_saved`, `context_trimmed`, `budget_exceeded`, `run_completed`,
-  `run_failed`, `plan_created`, `plan_updated`.
+  `run_failed`, `plan_created`, `plan_updated`, `subagent_denied`.
 - `run_id` is a random 128-bit hex identifier generated per agent run and
   stamped on every event of that run. `session_id` appears once the session
   is known; earlier events omit it. `iteration` is the 1-based loop
@@ -192,6 +192,7 @@ Per-type `data` fields:
 | `run_failed` | `duration_ms`, `error_class` |
 | `plan_created` | `steps` (total count), `version` |
 | `plan_updated` | `steps`, `done`, `in_progress`, `blocked`, `pending`, `version` |
+| `subagent_denied` | `task_index`, `class`, `reason` (emitted by `delegate_tasks` for each policy denial a child reports) |
 
 `call_id` is the stable correlation key between a `tool_call_started` and
 its matching `tool_call_completed`/`tool_call_failed` event: the provider's
