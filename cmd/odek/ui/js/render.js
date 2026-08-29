@@ -573,10 +573,13 @@ function parseSubagentResults(output) {
 // finalizeSubagentCard marks a card done/error and fills its details from
 // the parsed result. Shared by the live path (completeSubagents) and
 // session-history rendering.
-function finalizeSubagentCard(card, result) {
-  card.querySelector('.sa-icon').textContent = '✓';
-  card.classList.remove('running');
-  card.querySelector('.sa-status').textContent = 'done';
+function finalizeSubagentCard(card, result, keepStatus = false) {
+  if (!keepStatus) {
+    card.querySelector('.sa-icon').textContent = '✓';
+    card.classList.remove('running');
+    card.querySelector('.sa-status').textContent = 'done';
+  }
+  card.dataset.finalized = '1';
 
   if (!result) {
     card.classList.add('completed');
@@ -584,10 +587,16 @@ function finalizeSubagentCard(card, result) {
   }
 
   const status = result.status || 'success';
-  if (status === 'error') {
+  if (!keepStatus) {
+    if (status === 'error') {
+      card.classList.add('error');
+      card.querySelector('.sa-icon').textContent = '✗';
+      card.querySelector('.sa-status').textContent = 'error';
+    } else {
+      card.classList.add('completed');
+    }
+  } else if (status === 'error') {
     card.classList.add('error');
-    card.querySelector('.sa-icon').textContent = '✗';
-    card.querySelector('.sa-status').textContent = 'error';
   } else {
     card.classList.add('completed');
   }
@@ -620,10 +629,79 @@ export function completeSubagents(output) {
 
   const taskResults = parseSubagentResults(output);
   const cards = S.subagentGroup.querySelectorAll('.subagent-card');
-  cards.forEach((card, i) => finalizeSubagentCard(card, taskResults[i]));
+  cards.forEach((card, i) => {
+    // Cards already finalized by a subagent_state finished transition keep
+    // their pill/status — but still get the full result details (summary,
+    // files, tokens) which only the batch result carries.
+    finalizeSubagentCard(card, taskResults[i], card.dataset.finalized === '1');
+  });
 
   pruneMessages();
   scrollBottom();
+}
+
+// updateSubagentState applies a server subagent_state transition to the
+// matching card: started → running, active → live tool/step, finished →
+// final pill (✓ done / ✗ failed by status). Correlated by task_idx — the
+// card's DOM position matches the delegated task order.
+export function updateSubagentState(ev) {
+  if (!S.subagentGroup) return;
+  const cards = S.subagentGroup.querySelectorAll('.subagent-card');
+  const card = cards[ev.task_idx];
+  if (!card || card.dataset.finalized === '1') return;
+
+  const statusEl = card.querySelector('.sa-status');
+  const details = card.querySelector('.sa-details');
+  const meta = details ? details.querySelector('.sa-meta') : null;
+
+  switch (ev.phase) {
+    case 'started':
+      statusEl.textContent = 'running';
+      break;
+    case 'active':
+      statusEl.textContent = '⟳ ' + (ev.tool || 'working') + (ev.step ? ' · ' + ev.step : '');
+      if (meta && ev.step) meta.textContent = 'step ' + ev.step + (ev.tool ? ' · ' + ev.tool : '');
+      break;
+    case 'finished': {
+      card.dataset.finalized = '1';
+      card.classList.remove('running');
+      const failed = ev.status && ev.status !== 'success' && ev.status !== 'partial';
+      card.querySelector('.sa-icon').textContent = failed ? '✗' : '✓';
+      card.classList.add(failed ? 'error' : 'completed');
+      statusEl.textContent = failed ? (ev.status || 'failed') : (ev.status === 'partial' ? 'partial' : 'done');
+      if (meta) {
+        const parts = [];
+        if (ev.tokens_used) parts.push(ev.tokens_used + ' tokens');
+        if (ev.iterations) parts.push(ev.iterations + ' iters');
+        if (ev.duration_seconds) parts.push(ev.duration_seconds.toFixed(1) + 's');
+        meta.textContent = parts.join(' · ');
+      }
+      if (failed) {
+        const d = card.querySelector('.sa-details');
+        if (d) d.classList.add('open');
+      }
+      updateSubagentHeader();
+      break;
+    }
+  }
+}
+
+// updateSubagentHeader shows wave progress on the group header:
+// "Sub-agents · N/M complete · F failed".
+function updateSubagentHeader() {
+  if (!S.subagentGroup) return;
+  const cards = S.subagentGroup.querySelectorAll('.subagent-card');
+  if (!cards.length) return;
+  let done = 0, failed = 0;
+  cards.forEach(c => {
+    if (c.classList.contains('completed')) done++;
+    else if (c.classList.contains('error')) failed++;
+  });
+  const header = S.subagentGroup.querySelector('.sg-header');
+  if (header && (done || failed)) {
+    header.textContent = 'Sub-agents · ' + done + '/' + cards.length + ' complete' +
+      (failed ? ' · ' + failed + ' failed' : '');
+  }
 }
 
 function toggleSaDetails(el) {
