@@ -535,7 +535,9 @@ func subagentCmd(args []string) error {
 			resolved.Skills.Embedding,
 		)
 	}
-	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{WebSearch: resolved.WebSearch, Planning: &resolved.Planning, Subagent: resolved.Subagent, SelfTrust: effectiveTrustLevel, Profiles: resolved.Profiles}, nil)
+	subTcfg := toolConfigFromResolved(resolved)
+	subTcfg.SelfTrust = effectiveTrustLevel
+	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, subTcfg, nil)
 
 	// MCP server tools
 	//

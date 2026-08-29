@@ -84,6 +84,80 @@ func TestSubagentCmd_UnknownProfileFailsClosed(t *testing.T) {
 	}
 }
 
+// TestToolConfigFromResolved_CarriesOperatorSections pins the single
+// source of truth for builtinTools' toolConfig. Regression: the serve,
+// mcp, and schedule sites built toolConfig literals by hand and omitted
+// the Subagent section — Web-UI delegate_tasks ignored the operator's
+// subagent.timeout_seconds and ran on the hardcoded 1800s fallback
+// (serve.go:716 pre-fix). repl.go omitted Transcription/Vision the same
+// way.
+func TestToolConfigFromResolved_CarriesOperatorSections(t *testing.T) {
+	resolved := config.ResolvedConfig{
+		Transcription: config.TranscriptionConfig{AutoTranscribe: true, Model: "whisper-test"},
+		WebSearch:     config.WebSearchConfig{BaseURL: "http://searxng-test:8080"},
+		Subagent: config.SubagentResolved{
+			TimeoutSeconds: 500,
+			MaxConcurrency: 7,
+			MaxDepth:       3,
+		},
+		Profiles: map[string]config.ProfileConfig{
+			"judge": {MaxRisk: "safe"},
+		},
+	}
+	tc := toolConfigFromResolved(resolved)
+	if !tc.Transcription.AutoTranscribe || tc.Transcription.Model != "whisper-test" {
+		t.Errorf("Transcription = %+v, want the operator's section", tc.Transcription)
+	}
+	if tc.WebSearch.BaseURL != "http://searxng-test:8080" {
+		t.Errorf("WebSearch = %+v, want the operator's section", tc.WebSearch)
+	}
+	if tc.Subagent.TimeoutSeconds != 500 || tc.Subagent.MaxConcurrency != 7 || tc.Subagent.MaxDepth != 3 {
+		t.Errorf("Subagent = %+v, want operator values (500/7/3)", tc.Subagent)
+	}
+	if len(tc.Profiles) != 1 {
+		t.Errorf("Profiles = %+v, want the operator's profiles", tc.Profiles)
+	}
+	if tc.Planning == nil {
+		t.Error("Planning must be wired (non-nil pointer)")
+	}
+}
+
+// TestBuiltinTools_DelegateTasksUsesOperatorSubagentLimits locks the
+// helper → builtinTools → delegateTasksTool chain: the operator's
+// subagent limits must reach the tool, not a hardcoded fallback.
+func TestBuiltinTools_DelegateTasksUsesOperatorSubagentLimits(t *testing.T) {
+	resolved := config.ResolvedConfig{
+		Subagent: config.SubagentResolved{
+			TimeoutSeconds: 500,
+			MaxConcurrency: 7,
+			MaxDepth:       3,
+		},
+	}
+	tools := builtinTools(danger.DangerousConfig{}, nil, nil, 1, "", toolConfigFromResolved(resolved), nil)
+	var dt *delegateTasksTool
+	for _, tl := range tools {
+		if d, ok := tl.(*delegateTasksTool); ok {
+			dt = d
+			break
+		}
+	}
+	if dt == nil {
+		t.Fatal("builtinTools must register delegate_tasks")
+	}
+	if dt.timeout != 500*time.Second {
+		t.Errorf("delegate_tasks timeout = %v, want the operator's 500s (hardcoded-fallback regression)", dt.timeout)
+	}
+	if dt.maxConcurrency != 7 {
+		t.Errorf("delegate_tasks maxConcurrency = %d, want the operator's 7", dt.maxConcurrency)
+	}
+	if dt.maxDepth != 3 {
+		t.Errorf("delegate_tasks maxDepth = %d, want the operator's 3", dt.maxDepth)
+	}
+	if dt.profiles != nil {
+		t.Errorf("profiles = %+v, want nil (resolved.Profiles empty → child is sole authority)", dt.profiles)
+	}
+}
+
 // ── Task-file profile wiring (P4) ────────────────────────────────────────
 //
 // The delegate_tasks path passes the profile via the task file, not via

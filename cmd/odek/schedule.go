@@ -686,7 +686,7 @@ func buildHeadlessDangerConfig(resolved config.ResolvedConfig) danger.DangerousC
 func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system, task string, mcpTools []odek.Tool) (string, int64, error) {
 	dangerCfg := buildHeadlessDangerConfig(resolved)
 
-	tools := builtinTools(dangerCfg, nil, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{Transcription: resolved.Transcription, Vision: resolved.Vision, WebSearch: resolved.WebSearch, Planning: &resolved.Planning, Profiles: resolved.Profiles}, nil)
+	tools := builtinTools(dangerCfg, nil, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfigFromResolved(resolved), nil)
 
 	tools = append(tools, mcpTools...)
 
