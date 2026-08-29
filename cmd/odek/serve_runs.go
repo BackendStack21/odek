@@ -718,7 +718,7 @@ func startServeRun(
 	run.cancel = cancel
 
 	var deltas wsDeltaCounters
-	agent, sandboxCleanup, mcpCleanup, guardCleanup, injectionGuard, approver, err := newServeAgent(resolved, system, func(v any) error {
+	agent, sandboxCleanup, mcpCleanup, guardCleanup, injectionGuard, approver, err := newServeAgent(resolved, system, run.ID, func(v any) error {
 		// wsApprover sends its typed approvalRequest struct; everything
 		// else arrives as map[string]any.
 		if ar, ok := v.(approvalRequest); ok {
