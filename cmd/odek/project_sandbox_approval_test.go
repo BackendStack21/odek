@@ -20,7 +20,7 @@ func TestApproveProjectSandbox_NoOverride(t *testing.T) {
 func TestApproveProjectSandbox_EnvBypass(t *testing.T) {
 	resolved := config.ResolvedConfig{
 		ProjectSandboxOverride: config.ProjectSandboxOverride{
-			HasEnv: true,
+			HasEnv:  true,
 			EnvKeys: []string{"X"},
 		},
 	}
@@ -33,7 +33,7 @@ func TestApproveProjectSandbox_EnvBypass(t *testing.T) {
 func TestApproveProjectSandbox_NonTTYRequiresEnv(t *testing.T) {
 	resolved := config.ResolvedConfig{
 		ProjectSandboxOverride: config.ProjectSandboxOverride{
-			HasEnv: true,
+			HasEnv:  true,
 			EnvKeys: []string{"X"},
 		},
 	}
@@ -50,7 +50,7 @@ func TestApproveProjectSandbox_NonTTYRequiresEnv(t *testing.T) {
 func TestApproveProjectSandbox_TTYDeny(t *testing.T) {
 	resolved := config.ResolvedConfig{
 		ProjectSandboxOverride: config.ProjectSandboxOverride{
-			HasEnv: true,
+			HasEnv:  true,
 			EnvKeys: []string{"X"},
 		},
 	}
@@ -70,7 +70,7 @@ func TestApproveProjectSandbox_TTYDeny(t *testing.T) {
 func TestApproveProjectSandbox_TTYApproveOnce(t *testing.T) {
 	resolved := config.ResolvedConfig{
 		ProjectSandboxOverride: config.ProjectSandboxOverride{
-			HasEnv: true,
+			HasEnv:  true,
 			EnvKeys: []string{"X"},
 		},
 	}
@@ -85,7 +85,7 @@ func TestApproveProjectSandbox_TTYTrustPersists(t *testing.T) {
 	homeDir := setupTestHome(t)
 	resolved := config.ResolvedConfig{
 		ProjectSandboxOverride: config.ProjectSandboxOverride{
-			HasEnv: true,
+			HasEnv:  true,
 			EnvKeys: []string{"X"},
 		},
 	}
@@ -112,7 +112,7 @@ func TestApproveProjectSandbox_KeyChanges(t *testing.T) {
 	setupTestHome(t)
 	resolved := config.ResolvedConfig{
 		ProjectSandboxOverride: config.ProjectSandboxOverride{
-			HasEnv: true,
+			HasEnv:  true,
 			EnvKeys: []string{"X"},
 		},
 	}

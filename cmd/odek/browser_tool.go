@@ -34,8 +34,8 @@ type clickableRef struct {
 	Ref    string `json:"ref"`
 	Type   string `json:"type"` // "link", "button", "submit"
 	Text   string `json:"text"`
-	URL    string `json:"url,omitempty"`     // wrapped URL for JSON output
-	rawURL string `json:"-"`                 // unwrapped URL for internal click resolution
+	URL    string `json:"url,omitempty"` // wrapped URL for JSON output
+	rawURL string `json:"-"`             // unwrapped URL for internal click resolution
 }
 
 // browserSnapshot holds the structured view of a loaded page.
