@@ -9,7 +9,7 @@ import { formatNum, formatErrorMessage, showToast, scrollBottom, escapeHtml, ann
 import {
   streamToken, streamThinking, streamFlush, endThinking, endStream,
   addToolCall, addToolResult, addSubagentGroup, completeSubagents,
-  appendSubagentLog, addSystemMessage,
+  appendSubagentLog, addSystemMessage, updateSubagentState,
 } from './render.js';
 import { queueApproval, dismissApproval, clearApprovals } from './approvals.js';
 import { loadSessions } from './sessions.js';
@@ -115,6 +115,10 @@ export function connect() {
 
       case 'subagent_log':
         appendSubagentLog(event.task_idx, event);
+        break;
+
+      case 'subagent_state':
+        updateSubagentState(event);
         break;
 
       case 'usage':

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/BackendStack21/odek/internal/redact"
@@ -165,6 +166,12 @@ func newSubagentTelemetryRelay(send func(v any) error, runKey string) func(taskI
 				e.TokensUsed = rec.TokensUsed
 				e.FinishedAt = time.Now()
 			})
+			if rec.Status == "success" || rec.Status == "partial" {
+				subagentStats.completed.Add(1)
+			} else {
+				subagentStats.failed.Add(1)
+			}
+			subagentStats.tokens.Add(int64(rec.TokensUsed))
 		default:
 			return // tool_call/tool_result/unknown — log-only
 		}
@@ -189,6 +196,31 @@ func newSubagentTelemetryRelay(send func(v any) error, runKey string) func(taskI
 				break
 			}
 		}
+	}
+}
+
+// ── Lifetime sub-agent counters (telemetry M3) ──────────────────────
+
+var subagentStats struct {
+	completed atomic.Int64
+	failed    atomic.Int64
+	tokens    atomic.Int64
+}
+
+// subagentStatsSnapshot returns the lifetime sub-agent counters plus the
+// number of currently non-finished registry entries.
+func subagentStatsSnapshot() map[string]any {
+	active := 0
+	for _, e := range subagentRegistrySnapshot("") {
+		if e.Phase != "finished" {
+			active++
+		}
+	}
+	return map[string]any{
+		"completed":   subagentStats.completed.Load(),
+		"failed":      subagentStats.failed.Load(),
+		"active":      active,
+		"tokens_used": subagentStats.tokens.Load(),
 	}
 }
 

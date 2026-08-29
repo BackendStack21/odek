@@ -169,6 +169,7 @@ func handleUsage(resolved config.ResolvedConfig) http.HandlerFunc {
 			"model":              resolved.Model,
 			"ws_connections":     atomic.LoadInt64(&serveWSConnections),
 			"runs_active":        activeRunCount(),
+			"subagents":          subagentStatsSnapshot(),
 		})
 	}
 }
