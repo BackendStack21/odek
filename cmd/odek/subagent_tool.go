@@ -3,6 +3,9 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -75,8 +78,10 @@ type delegateTasksTool struct {
 
 	// OnSubagentLog, if set, is called with each NDJSON progress line
 	// emitted by a sub-agent. taskIdx is the index within the current
-	// batch. Used by the WebUI for live log streaming.
-	OnSubagentLog func(taskIdx int, line string)
+	// batch; taskID is the correlation id stamped into the task envelope
+	// and echoed by protocol-2 children on every record. Used by the WebUI
+	// for live log streaming.
+	OnSubagentLog func(taskIdx int, taskID string, line string)
 }
 
 func (t *delegateTasksTool) Name() string { return "delegate_tasks" }
@@ -300,8 +305,10 @@ func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, tr
 
 	// Typed task envelope: the parent's remaining budget rides along in
 	// share mode (M1.5) and the parent's effective trust is stamped for
-	// the non-increasing-downward invariant (P3).
-	task := newTaskEnvelope(goal, taskContext, guidance, trustLevel, maxRisk, profile, nil, t.selfTrust)
+	// the non-increasing-downward invariant (P3). taskID is the telemetry
+	// correlation id (sub-agent telemetry M1).
+	taskID := newTaskID()
+	task := newTaskEnvelope(taskID, goal, taskContext, guidance, trustLevel, maxRisk, profile, nil, t.selfTrust)
 	if t.budgetInherit == config.BudgetInheritShare {
 		t.budgetMu.Lock()
 		view := t.budgetView
@@ -368,6 +375,7 @@ func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, tr
 	if err := cmd.Start(); err != nil {
 		return fmt.Sprintf(`{"error":"start: %v"}`, err)
 	}
+	t.emitSubagentEvent(subagentSpawnedEvent(taskID, cmd.Process.Pid, subagentDepth()+1, int(t.timeout.Seconds()), goal))
 
 	// Read stdout line-by-line — NDJSON progress lines followed by final JSON
 	// result. A streamed tool_call event can embed full tool arguments (e.g. a
@@ -375,7 +383,7 @@ func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, tr
 	// token cap; scanSubagentStream raises the cap to avoid losing the result.
 	var onLog func(line string)
 	if t.OnSubagentLog != nil {
-		onLog = func(line string) { t.OnSubagentLog(taskIdx, line) }
+		onLog = func(line string) { t.OnSubagentLog(taskIdx, taskID, line) }
 	}
 	result, lastLine, scannerErr := scanSubagentStream(stdout, onLog)
 	// If the scanner hit its safety limits, cancel the sub-agent context so the
@@ -384,7 +392,8 @@ func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, tr
 		cancel()
 	}
 
-	if err := cmd.Wait(); err != nil {
+	if waitErr := cmd.Wait(); waitErr != nil {
+		t.emitSubagentEvent(subagentCompletedEvent(taskID, result, subagentExitStatus(result, waitErr, ctx, scannerErr)))
 		// Process exited with error — result may still be valid
 		if result != nil {
 			summary, _ := json.MarshalIndent(result, "", "  ")
@@ -396,8 +405,9 @@ func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, tr
 		if scannerErr != nil {
 			return fmt.Sprintf(`{"error":"read stdout: %v"}`, scannerErr)
 		}
-		return fmt.Sprintf(`{"error":"exit: %v"}`, err)
+		return fmt.Sprintf(`{"error":"exit: %v"}`, waitErr)
 	}
+	t.emitSubagentEvent(subagentCompletedEvent(taskID, result, subagentExitStatus(result, nil, ctx, scannerErr)))
 
 	if result != nil {
 		summary, _ := json.MarshalIndent(result, "", "  ")
@@ -457,25 +467,42 @@ func scanSubagentStream(r io.Reader, onLog func(line string)) (result map[string
 		line := scanner.Text()
 		lastLine = line
 
-		// Check if this is a progress line (NDJSON with "type":"tool_call" or "type":"tool_result")
-		var event struct {
+		// Typed line? Protocol traffic is distinguished from the legacy
+		// result by the presence of a non-empty "type" field.
+		var probe struct {
 			Type string `json:"type"`
 		}
-		if uerr := json.Unmarshal([]byte(line), &event); uerr == nil {
-			if event.Type == "tool_call" || event.Type == "tool_result" {
+		if perr := json.Unmarshal([]byte(line), &probe); perr == nil && probe.Type != "" {
+			switch probe.Type {
+			case "result":
+				// Protocol-2 framed result: the inner object is the task result.
+				var framed struct {
+					Result map[string]any `json:"result"`
+				}
+				if ferr := json.Unmarshal([]byte(line), &framed); ferr == nil && framed.Result != nil {
+					result = framed.Result
+				}
+			case "tool_call", "tool_result",
+				"subagent_started", "subagent_progress", "subagent_finished":
 				if onLog != nil {
 					onLog(line)
 				}
-				progressLines++
-				progressBytes += int64(len(line))
-				if progressLines > maxSubagentProgressLines || progressBytes > maxSubagentProgressBytes {
-					return result, lastLine, fmt.Errorf("sub-agent progress stream exceeded safety limits (%d lines / %d bytes)", progressLines, progressBytes)
+			default:
+				// Unknown typed record — version skew (newer child, older
+				// parent). Protocol traffic, never the result.
+				if onLog != nil {
+					onLog(line)
 				}
-				continue
 			}
+			progressLines++
+			progressBytes += int64(len(line))
+			if progressLines > maxSubagentProgressLines || progressBytes > maxSubagentProgressBytes {
+				return result, lastLine, fmt.Errorf("sub-agent progress stream exceeded safety limits (%d lines / %d bytes)", progressLines, progressBytes)
+			}
+			continue
 		}
 
-		// Not a progress line — parse as result JSON
+		// Untyped parseable JSON — legacy (protocol-less) result line.
 		var rmap map[string]any
 		if uerr := json.Unmarshal([]byte(line), &rmap); uerr == nil {
 			result = rmap
@@ -513,6 +540,8 @@ func taskBudgetFromSnapshot(s budget.Snapshot) *taskBudget {
 
 // taskEnvelope is the task-file JSON contract handed to `odek subagent`.
 type taskEnvelope struct {
+	TaskID      string      `json:"task_id"`
+	Protocol    int         `json:"protocol,omitempty"`
 	Goal        string      `json:"goal"`
 	Context     string      `json:"context,omitempty"`
 	Guidance    string      `json:"guidance,omitempty"`
@@ -523,14 +552,37 @@ type taskEnvelope struct {
 	ParentTrust string      `json:"parent_trust,omitempty"`
 }
 
+// subagentProtocolV2 is the telemetry protocol version stamped into task
+// envelopes (M1 of the sub-agent telemetry plan). Protocol-2 children echo
+// the task_id on every stdout record, emit lifecycle records
+// (subagent_started/progress/finished), and frame the final result as
+// {"type":"result","task_id":…,"result":{…}} so result detection no longer
+// relies on the legacy fall-through (unsafe under version skew).
+const subagentProtocolV2 = 2
+
+// newTaskID returns a random correlation id for a delegated task. It rides
+// the task envelope, is echoed on every child telemetry record, and links
+// spawn/exit events, WS messages, and (future) registry entries.
+func newTaskID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand failing is catastrophic anyway; a time-based fallback
+		// keeps the run alive with a still-mostly-unique id.
+		return "task-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return "task-" + hex.EncodeToString(b[:])
+}
+
 // newTaskEnvelope builds the task-file envelope. parentTrust is the
 // PARENT's own effective trust (P3 — trust is non-increasing downward):
 // the child computes min(parentTrust, trustLevel) as its effective trust,
 // so an untrusted task tree can never spawn trusted children. profile
 // selects an operator-defined capability profile (P4) whose settings
 // override the corresponding operator config for the child.
-func newTaskEnvelope(goal, context, guidance, trustLevel, maxRisk, profile string, budget *taskBudget, parentTrust string) taskEnvelope {
+func newTaskEnvelope(taskID, goal, context, guidance, trustLevel, maxRisk, profile string, budget *taskBudget, parentTrust string) taskEnvelope {
 	return taskEnvelope{
+		TaskID:      taskID,
+		Protocol:    subagentProtocolV2,
 		Goal:        goal,
 		Context:     context,
 		Guidance:    guidance,
@@ -545,6 +597,81 @@ func newTaskEnvelope(goal, context, guidance, trustLevel, maxRisk, profile strin
 // subagentDeniedEvent is emitted on the runtime event stream for every
 // policy denial observed by a child sub-agent (P1).
 const subagentDeniedEvent = "subagent_denied"
+
+// emitSubagentEvent forwards a sub-agent lifecycle event to the runtime
+// event stream when an emitter is wired (odek.New SetEventEmitter).
+func (t *delegateTasksTool) emitSubagentEvent(ev events.Event) {
+	t.eventMu.Lock()
+	defer t.eventMu.Unlock()
+	if t.emitEventFn != nil {
+		t.emitEventFn(ev)
+	}
+}
+
+// subagentSpawnedEvent builds the spawn lifecycle event. The goal is
+// hashed, never sent in plaintext — event streams are operator surfaces
+// but may be shipped off-host (--events-jsonl).
+func subagentSpawnedEvent(taskID string, pid, depth, timeoutSeconds int, goal string) events.Event {
+	sum := sha256.Sum256([]byte(goal))
+	return events.Event{
+		Type: events.TypeSubagentSpawned,
+		Data: map[string]any{
+			"task_id":         taskID,
+			"pid":             pid,
+			"depth":           depth,
+			"timeout_seconds": timeoutSeconds,
+			"goal_sha256":     hex.EncodeToString(sum[:8]),
+		},
+	}
+}
+
+// subagentCompletedEvent builds the exit lifecycle event. status is the
+// parent-side outcome (child status when a result was parsed; otherwise
+// timeout / killed_flood / error / no_result).
+func subagentCompletedEvent(taskID string, result map[string]any, fallbackStatus string) events.Event {
+	status := fallbackStatus
+	data := map[string]any{
+		"task_id": taskID,
+		"status":  status,
+	}
+	if result != nil {
+		if s, ok := result["status"].(string); ok && s != "" {
+			status = s // the child's own classification wins
+			data["status"] = status
+		}
+		for _, k := range []string{"iterations", "duration_seconds", "tokens_used"} {
+			if v, ok := result[k]; ok {
+				data[k] = v
+			}
+		}
+	}
+	return events.Event{
+		Type: events.TypeSubagentCompleted,
+		Data: data,
+	}
+}
+
+// subagentExitStatus resolves the parent-side outcome for a finished
+// sub-agent: the child's own status when a result was parsed; otherwise
+// the kill/timeout cause.
+func subagentExitStatus(result map[string]any, waitErr error, ctx context.Context, scannerErr error) string {
+	if result != nil {
+		if s, ok := result["status"].(string); ok && s != "" {
+			return s
+		}
+		return "completed"
+	}
+	switch {
+	case ctx != nil && ctx.Err() != nil:
+		return "timeout"
+	case scannerErr != nil && progressLimitExceeded(scannerErr):
+		return "killed_flood"
+	case waitErr == nil:
+		return "no_result"
+	default:
+		return "error"
+	}
+}
 
 // subagentDepthEnvVar carries the delegation depth down the process tree.
 // Each delegate_tasks spawn stamps its children with depth+1; a child at

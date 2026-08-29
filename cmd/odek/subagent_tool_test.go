@@ -44,7 +44,7 @@ func TestDelegateTasksTool_OnSubagentLog(t *testing.T) {
 
 	// Collect log events
 	var logEvents []string
-	tool.OnSubagentLog = func(taskIdx int, line string) {
+	tool.OnSubagentLog = func(taskIdx int, taskID string, line string) {
 		logEvents = append(logEvents, line)
 	}
 
@@ -91,7 +91,7 @@ func TestDelegateTasksTool_OnSubagentLog_NoLogLines(t *testing.T) {
 		maxConcurrency: 1,
 		odekPath:       mockScript,
 		timeout:        10 * time.Second,
-		OnSubagentLog: func(taskIdx int, line string) {
+		OnSubagentLog: func(taskIdx int, taskID string, line string) {
 			logEvents = append(logEvents, line)
 		},
 	}
@@ -123,7 +123,7 @@ func TestDelegateTasksTool_OnSubagentLog_ExitError(t *testing.T) {
 		maxConcurrency: 1,
 		odekPath:       mockScript,
 		timeout:        10 * time.Second,
-		OnSubagentLog: func(taskIdx int, line string) {
+		OnSubagentLog: func(taskIdx int, taskID string, line string) {
 			logEvents++
 		},
 	}
