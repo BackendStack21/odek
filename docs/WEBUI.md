@@ -35,7 +35,7 @@ Two surfaces, one binary:
 - **`/ws`** — the interactive chat transport (prompt → stream → done, approvals, heartbeat). One agent per connection.
 - **`/api/*`** — the REST management surface used by the UI *and* by external clients (bodek, curl, dashboards): sessions, headless runs with remote approvals, memory/skills/tools, events, usage, connections, health, config. See "REST endpoints" below.
 
-The server uses a **custom WebSocket implementation** (`internal/ws/`) — a compact hand-written RFC 6455 framer in pure Go. No gorilla/websocket, no caddy/caddylib, no external dependencies.
+The WebSocket transport is provided by `golang.org/x/net/websocket` (RFC 6455 handshake and frame I/O); `internal/ws/` holds the shared frame constants, and `serve.go` owns the per-connection lifecycle.
 
 ## Building an external client (TUI, bots, tools)
 
@@ -102,7 +102,8 @@ Two token layers:
 - **Limits**: WS frame ≤ 8 MiB; ≤ 20 concurrent WS connections; 30 WS
   upgrades/min per IP; prompt ≤ 1 MiB; attachments ≤ 5 MiB each / 10 MiB
   total; model ids ≤ 128 chars matching `[A-Za-z0-9_.:/@-]+`; REST request
-  bodies ≤ 2 MiB.
+  bodies ≤ 2 MiB on the runs surface (`POST /api/prompt`), ≤ 1 MiB on the
+  management endpoints (`/api/*` in `serve_api.go`).
 - **Token field naming**: WS event fields are camelCase
   (`contextTokens`, `outputTokens`); REST JSON is snake_case
   (`input_tokens`, `session_id`). Don't mix them up.
@@ -209,7 +210,7 @@ export, delete, cancel), **budgets** (`/api/limits`), **agent state**
 (`/api/prompt` + `/api/runs/*`), **observability** (health, usage, events,
 connections), and **administration** (config view, MCP listing, memory
 consolidate, skills promote, shutdown). Session-scoped reads and mutations
-additionally require the per-session auth token (`X-Session-Token`), which
+additionally require the per-session auth token (`X-Session-Token` header or the `session_token` cookie — the header wins when both are present), which
 the server issues when the session is created (see "Building an external
 client" above for the bootstrap flow). The agent itself cannot reach any of
 these — its browser/http tools refuse loopback via the SSRF guard and it
@@ -317,7 +318,7 @@ Server metadata for monitoring and the WebUI status popover. Never carries secre
 ```jsonc
 {
   "status": "ok",
-  "version": "1.24.0",          // ldflags build version ("" for dev builds)
+  "version": "1.28.1",          // ldflags build version ("" for dev builds)
   "started_at": "2026-08-21T08:19:29Z",
   "uptime_seconds": 1903,
   "model": "glm-5.3",           // configured model
@@ -345,7 +346,7 @@ Server-side search and pagination over the session list. With **no** query param
 
 ### `GET /api/sessions/{id}/export?format=md|json`
 
-Downloads a transcript. Session-token auth applies exactly like the detail read (`X-Session-Token` header, or the instance-token bootstrap). `format=md` (default) renders a standalone markdown document — metadata header, `## user` / `## assistant` sections, tool calls and results as fenced blocks, reasoning behind `<details>`, untrusted-content envelopes unwrapped; `format=json` returns the raw session record. Responses carry `Content-Disposition: attachment`.
+Downloads a transcript. Session-token auth applies exactly like the detail read (`X-Session-Token` header, `session_token` cookie, or the instance-token bootstrap). `format=md` (default) renders a standalone markdown document — metadata header, `## user` / `## assistant` sections, tool calls and results as fenced blocks, reasoning behind `<details>`, untrusted-content envelopes unwrapped; `format=json` returns the raw session record. Responses carry `Content-Disposition: attachment`.
 
 ### `GET /api/sessions/{id}/plan`
 
@@ -490,8 +491,11 @@ listings return pinned sessions first, and both list and detail carry
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--addr :8080` | `:8080` | Listen address (e.g. `--addr localhost:9090`) |
+| `--addr <addr>` | `127.0.0.1:8080` | Listen address (loopback by default; e.g. `--addr localhost:9090`). Binding a non-loopback address prints a loud warning |
 | `--open` | false | Open browser automatically after starting |
+| `--tool <name>` | — | Enable a specific tool for served runs (repeatable; highest-priority whitelist layer) |
+| `--no-tool <name>` | — | Disable a specific tool for served runs (repeatable; merged with lower-priority disabled lists) |
+| `--trusted-proxies <ips/cidrs>` | — | Client IPs trusted for `X-Forwarded-For` / `X-Real-Ip` resolution, used by rate limiting. **Only set this for proxies you control** — a spoofed header from an untrusted client defeats per-IP rate limits |
 | `--stream` | config | Stream LLM responses live to the WebUI (`token_delta` / `thinking_delta` events) |
 | `--no-stream` | config | Disable live streaming (bulk `token` events only) |
 | `--help`, `-h` | — | Show usage |
@@ -629,7 +633,7 @@ match as plain text. The bundled WebUI implements this in
 | Component | File | Purpose |
 |-----------|------|---------|
 | HTTP server + static | `serve.go` (`handleStatic`) | Serves the embedded UI with strict CSP; injects the per-instance token via the `?token=` URL |
-| WebSocket upgrade | `internal/ws/ws.go` | RFC 6455 handshake + framing |
+| WebSocket upgrade | `golang.org/x/net/websocket`, wired in `serve.go` | RFC 6455 handshake + framing; `internal/ws/ws.go` holds the shared frame constants |
 | WebSocket handler | `serve.go` (`handleWS`) | Per-connection agent lifecycle, connection registry, ping/pong, `cancel` / `session_switch` |
 | Prompt handler | `serve.go` (`handlePrompt`) | Transport-agnostic (event-sink) prompt path: `@` refs, attachments, audit, per-turn persistence, streaming-suppression logic — shared by the socket and headless REST runs |
 | Approvals | `wsapprover.go` | WS approver with friction, class-trust, and a configurable approval timeout |
@@ -637,13 +641,13 @@ match as plain text. The bundled WebUI implements this in
 | Runs + observability | `serve_runs.go` | headless run engine (`POST /api/prompt`), remote approval bridge, events ring, usage stats, connection registry |
 | Resource API | `serve.go` (`handleResourceSearch`) | `@` completion search endpoint |
 
-### WebSocket implementation (`internal/ws/ws.go`)
+### WebSocket implementation
 
-- ~200 lines of zero-dependency Go
-- Supports text frames, close frames, ping/pong (pong auto-reply)
-- Fragmentation is not supported (every frame is FIN=true) — fine for JSON messages
-- Thread-safe writes via `sync.Mutex`
-- Error handling: returns `io.EOF` on clean close, raw `net.Error` on broken connection
+- Transport is `golang.org/x/net/websocket`: the RFC 6455 upgrade, frame parsing, and close/ping/pong handling come from the library; `internal/ws/ws.go` defines the shared frame-type constants
+- Messages are JSON over text frames; fragmentation details are handled by the library
+- Frame writes are serialized per connection (`golang.org/x/net/websocket` is not safe for concurrent sends) and bounded by a 30-second write deadline
+- A clean client close surfaces as `io.EOF`; broken connections surface as `net.Error`
+- Per-connection agent lifecycle (registry, ping/pong, `cancel` / `session_switch`) lives in `serve.go` (`handleWS`)
 
 ### Frontend (`cmd/odek/ui/`)
 

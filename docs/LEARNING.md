@@ -55,7 +55,7 @@ odek run --learn "set up CI with GitHub Actions"
 **Key design decisions:**
 - **Auto-save is default** — quality suggestions are saved automatically (no prompt), but tainted suggestions derived from untrusted content are declined by default. Set `auto_save.enabled: false` to require manual approval.
 - **LLM enhancement is optional** — when enabled, the LLM enriches heuristic output with better names, structured bodies, and accurate keywords.
-- **One skip = permanent suppression** — skip a suggestion once and it won't appear again. Use `odek skill reset-skips` to re-enable.
+- **Skips suppress suggestions** — after `skip_threshold` skips (default 3) a suggestion stops appearing. Use `odek skill reset-skips` to re-enable.
 - **Auto-curation runs silently** — after every session where skills were saved, overlaps are merged, duplicates removed, and stale skills pruned.
 - **Learning is non-blocking** — skill detection and auto-save run in a background goroutine after the agent's response is delivered. The process exits immediately; learning completes asynchronously on a best-effort basis.
 - **Tainted skills require explicit promotion** — skills learned from `browser`, MCP tools, or sensitive file reads are saved with `Provenance.Untrusted=true` and `NeedsReview=true`. They cannot be auto-loaded until you run `odek skill promote <name> --force` after reviewing the body.
@@ -129,7 +129,7 @@ Type `y` (or Enter) to save globally, `p` to save to the project skills dir (`./
 
 ### Skip Persistence
 
-Skip decisions are persisted to `~/.odek/skills/.skipped.json`. A suggestion skipped once is permanently suppressed (default `skip_threshold: 1`). After `skip_reset_days` (default 30), skips expire and suggestions re-appear.
+Skip decisions are persisted to `~/.odek/skills/.skipped.json`. A suggestion skipped `skip_threshold` times (default `3`) is permanently suppressed. After `skip_reset_days` (default 30), skips expire and suggestions re-appear.
 
 ```bash
 # View skip list
@@ -412,7 +412,7 @@ odek skill reset-skips repeated-ls
 
 ## Limitations
 
-- **Heuristic detection is deterministic** — same tool calls always produce the same suggestions. Skip persistence prevents repeats (one skip = permanent suppression).
+- **Heuristic detection is deterministic** — same tool calls always produce the same suggestions. Skip persistence prevents repeats (suggestions are suppressed after `skip_threshold` skips).
 - **Max 1 per heuristic** — if an agent session has 10 multi-step sequences, only the first is suggested.
 - **Max 5 suggestions total** — one per heuristic type.
 - **Dedup at save and curation time** — near-duplicates of existing skills are rejected at save time (Jaccard similarity ≥ 0.85); remaining overlaps are merged by auto-curation after each session.
@@ -438,7 +438,7 @@ odek skill reset-skips repeated-ls
       "staleness_days": 90,
       "auto_prune": false,
       "auto_curate": true,
-      "skip_threshold": 1,
+      "skip_threshold": 3,
       "skip_reset_days": 30
     }
   }
@@ -455,12 +455,12 @@ odek skill reset-skips repeated-ls
 | `auto_save.max_per_run` | `3` | Max skills to auto-save per session (strongest suggestions win the budget) |
 | `auto_save.min_occurrences` | `2` | Sessions a pattern must recur in before it may be auto-saved (`1` disables the recurrence gate) |
 | `curation.auto_curate` | `true` | Run auto-curation after sessions |
-| `curation.skip_threshold` | `1` | Skips needed for permanent suppression |
+| `curation.skip_threshold` | `3` | Skips needed for permanent suppression |
 | `curation.skip_reset_days` | `30` | Days before skip expires |
 | `curation.auto_prune` | `false` | Auto-delete stale skills |
 | `embedding` | *(inherits top-level)* | Optional override of the shared embedding backend for semantic skill matching (see above). When unset, skills inherit the top-level `embedding` default with the per-turn timeout bounded to 2s. No backend anywhere = local keyword matching. |
 
 ## Related
 
-- [Skills System](#) — how skills are loaded and used during agent runs
+- [Skills](CLI.md#skills) — how skills are loaded and used during agent runs
 - [CLI Reference](CLI.md) — all CLI flags including `--learn`

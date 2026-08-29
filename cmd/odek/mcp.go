@@ -21,8 +21,9 @@ import (
 //
 // The server reads JSON-RPC 2.0 requests from stdin and writes responses
 // to stdout. Stderr is used for logging. The server exposes all odek
-// built-in tools (shell, read_file, write_file, search_files, patch,
-// browser) via the tools/list and tools/call MCP methods.
+// built-in tools except delegate_tasks and memory via the tools/list and
+// tools/call MCP methods (web_search only when a SearXNG backend is
+// configured); the standard tools.enabled/disabled filter applies.
 func mcpCmd(args []string) error {
 	// Parse CLI flags
 	cliFlags := config.CLIFlags{}
@@ -35,9 +36,10 @@ func mcpCmd(args []string) error {
 
 Start odek as an MCP server over stdio.
 
-odek exposes all its built-in tools (shell, read/write files, search,
-patch, browser) via the Model Context Protocol. Connect any MCP client
-(Claude Code, Cursor, etc.) to use odek's tools.
+odek exposes its built-in tools (file access, shell, search, patch, browser,
+perf tools, planning — all except delegate_tasks and memory) via the Model
+Context Protocol. Connect any MCP client (Claude Code, Cursor, etc.) to use
+odek's tools.
 
 Flags:
   --sandbox    Run shell commands inside Docker sandbox

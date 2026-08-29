@@ -4,8 +4,6 @@ This document describes the **Extended Memory** subsystem for odek. It is a refe
 
 Extended Memory is opt-in. When disabled, odek keeps the existing three-tier memory system described in [MEMORY.md](MEMORY.md) unchanged.
 
-**Implementation status:** Phases P0–P5 are implemented and active: atom store, dedicated LLM wiring, semantic recall, size-cap eviction, user-state model, quarantine promotion, atom associations, and predictive/proactive surfaces.
-
 ## Goals
 
 1. **Near-comprehensive recall** of the user's own statements, preferences, goals, and recurring patterns.
@@ -529,13 +527,13 @@ Once Extended Memory is enabled, the following proactive behaviors are active by
 
 These behaviors are always data-driven by trusted atoms and the user model, never by tainted content.
 
-## P6 — Proactive Engagement
+## Proactive Engagement
 
-P6 turns Extended Memory from a passive recall layer into a source of proactive, user-facing suggestions. All three surfaces are read-only over trusted atoms and degrade to "nothing" on any failure — a broken LLM backend or malformed response can never break a session.
+Proactive engagement turns Extended Memory from a passive recall layer into a source of proactive, user-facing suggestions. All three surfaces are read-only over trusted atoms and degrade to "nothing" on any failure — a broken LLM backend or malformed response can never break a session.
 
 ### Follow-up suggestions
 
-Predictive recall (P5) already generates likely follow-up intents on every recall to widen the search. P6 captures those intents instead of discarding them: after the `minPredictedIntentConfidence` (0.3) noise floor, intents at or above `follow_up_suggestion_min_confidence` (default `0.6`) are kept — at most 3 per recall — and exposed via `ExtendedMemory.LastFollowUps()` / `MemoryManager.FollowUpSuggestions()` for the CLI/Web/Telegram surfaces to render as suggested next steps. The capture costs zero extra LLM calls (it reuses the prediction the recall pipeline already paid for) and is replaced on every recall. Disable with `follow_up_suggestions_enabled: false` (recall behavior is unchanged either way).
+Predictive recall already generates likely follow-up intents on every recall to widen the search. Proactive engagement captures those intents instead of discarding them: after the internal noise floor of 0.3 confidence, intents at or above `follow_up_suggestion_min_confidence` (default `0.6`) are kept — at most 3 per recall — and exposed via `ExtendedMemory.LastFollowUps()` / `MemoryManager.FollowUpSuggestions()` for the CLI/Web/Telegram surfaces to render as suggested next steps. The capture costs zero extra LLM calls (it reuses the prediction the recall pipeline already paid for) and is replaced on every recall. Disable with `follow_up_suggestions_enabled: false` (recall behavior is unchanged either way).
 
 ### Open loops
 
@@ -597,18 +595,6 @@ For the best cost/latency trade-off:
 
 This runs memory extraction, user-state inference, predictive intent generation, and embedding locally while the main agent uses a powerful remote reasoning model.
 
-## Implementation Phases
-
-| Phase | Scope | Status |
-|---|---|---|
-| **P0 — Atom store and dedicated LLM** | Config schema, dedicated `llm.Client` wiring, atom schema, per-turn extraction, trusted write path, `memory` tool extensions. | Implemented |
-| **P1 — Vector index and semantic recall** | go-vector store over atoms, top-K semantic search, provenance filtering, min-score gate, optional LLM rerank. | Implemented |
-| **P2 — Size enforcement** | 100 MB cap tracking, `retention_decay` eviction, background compaction. | Implemented |
-| **P3 — User-state model** | Background inference of a persistent user model, pending-review queue, user correction flow. | Implemented |
-| **P4 — Quarantine and promotion** | Tainted atom quarantine, inline promotion commands, `quarantine_ttl_days`, atom pinning. | Implemented |
-| **P5 — Predictive and proactive surfaces** | Predicted-intent recall, return-after-break summary, anaphora resolution, style mirroring, follow-up anticipation. | Implemented |
-| **P6 — Proactive engagement** | Follow-up suggestions captured at recall time, open-loop (`question`/`goal`) atoms, proactive nudges engine with daily budget and per-kind cooldown. | Implemented |
-
 ## Relationship to Existing Memory
 
 Extended Memory does not replace the existing three-tier system; it augments it.
@@ -626,14 +612,6 @@ The per-turn system prompt injection order is:
 5. Episode summaries (if still enabled).
 6. Extended Memory atoms (ranked, budgeted).
 
-Operators can disable Extended Memory at any time and fall back to the original behavior. Individual P3–P5 surfaces can also be disabled independently via their config flags.
+Operators can disable Extended Memory at any time and fall back to the original behavior. Individual feature surfaces can also be disabled independently via their config flags.
 
-## Open Questions / Future Work
-
-1. Should the 100 MB cap include or exclude the existing `episodes/` and `facts/` directories? Currently it only counts `extended/`.
-2. Should inferred preferences require explicit confirmation, or should they be recallable immediately with a confidence threshold?
-3. Should quarantined atoms still be searchable via an explicit `memory search_quarantine` tool? The current `quarantine` CLI lists them but does not search by embedding.
-4. Should associations be auto-discovered by cosine similarity only, or also extracted explicitly by the memory LLM?
-5. Should the user model support richer structured types (e.g., nested project history, timeline of blockers)?
-
-These questions can be resolved behind config flags so operators can choose their preferred privacy/convenience trade-off.
+The 100 MB disk cap covers only the `extended/` store; the `episodes/` and `facts/` directories of the base memory system are not counted against it.

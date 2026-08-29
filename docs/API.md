@@ -1,5 +1,7 @@
 # Go SDK Guide
 
+> **Looking for the HTTP/WebSocket API?** The `odek serve` REST endpoints and the WS protocol are documented in [WEBUI.md](WEBUI.md). This guide covers embedding odek as a Go library.
+
 Use odek as a **Go library** — build autonomous agents, custom tools, and AI-powered workflows without any frameworks or runtime overhead.
 
 ```go

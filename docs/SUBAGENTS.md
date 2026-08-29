@@ -76,10 +76,25 @@ The `delegate_tasks` tool is available in all odek modes (CLI, REPL, Web UI). Th
       "items": {
         "type": "object",
         "properties": {
-          "goal":     { "type": "string" },  // Required. Specific goal for this sub-agent.
-          "context":  { "type": "string" },  // Optional. Background: file paths, API contracts.
-          "guidance": { "type": "string" }   // Optional. How to approach the task — delivered in
-                                             //   the request, NOT the system prompt (which is fixed).
+          "goal":       { "type": "string" },  // Required. Specific goal for this sub-agent.
+          "context":    { "type": "string" },  // Optional. Background: file paths, API contracts.
+          "guidance":   { "type": "string" },  // Optional. How to approach the task — delivered in
+                                               //   the request, NOT the system prompt (which is fixed).
+          "trust_level": { "type": "string", "enum": ["trusted", "untrusted"] },
+                                               // Optional. Trust level of the goal/context strings.
+                                               //   "untrusted" when any portion derives from external
+                                               //   content (fetched pages, files outside CWD, MCP output);
+                                               //   untrusted tasks run with stricter approval defaults.
+          "max_risk":   { "type": "string",
+                          "enum": ["safe", "local_write", "system_write", "destructive",
+                                   "code_execution", "network_egress", "install", "blocked"] },
+                                               // Optional cap on the allowed risk class. Calls above the
+                                               //   cap are denied without prompting — use for read-only
+                                               //   fan-out tasks.
+          "profile":    { "type": "string" }   // Optional. Operator-defined capability profile name
+                                               //   (top-level `profiles` config). Its max_risk, allowlist,
+                                               //   and tool filter OVERRIDE the operator's global config
+                                               //   for this sub-agent. Unknown names fail the task.
         },
         "required": ["goal"]
       }
@@ -169,11 +184,13 @@ odek subagent --goal "Continue refactoring" --parent-session "20260519-abc123"
 |------|---------|-------------|
 | `--goal <string>` | — | **Required** unless `--task` specified. The sub-agent's goal. |
 | `--context <string>` | `""` | Background context (file paths, design decisions) |
-| `--task <file>` | — | JSON file with `{"goal":"...","context":"...}"`. Mutually exclusive with `--goal`. |
+| `--task <file>` | — | JSON file with the task spec (see [Task file format](#task-file-format)). Mutually exclusive with `--goal`. |
 | `--timeout <sec>` | 1800 | Max seconds the sub-agent may run before being killed (hard max 1800 = 30 min) |
-| `--max-iter <n>` | 15 | Max think→act cycles |
+| `--max-iter <n>` | 15 | Max think→act cycles (hard max 100) |
 | `--quiet` | false | Suppress emoji progress on stderr |
+| `--stream` | false | Emit tool events as JSON lines on stdout while the run progresses (the final JSON result is also printed on stdout at exit) |
 | `--parent-session <id>` | — | Session ID from the parent (for context relay) |
+| `--profile <name>` | — | Select an operator-defined capability profile (top-level `profiles` config). The profile's `max_risk`/`allowlist`/tool filter override the operator's global config; unknown names fail the task |
 
 ## Task file format
 
@@ -182,9 +199,17 @@ For large prompts that exceed CLI argument length limits, use the `--task` flag 
 ```json
 {
   "goal": "Create a user registration endpoint in handlers/user.go",
-  "context": "Uses gin. DB connection at internal/db/db.go. User struct in models/user.go: {ID, Email, Password, CreatedAt}. Password must be bcrypt-hashed. Returns 201 with user JSON on success."
+  "context": "Uses gin. DB connection at internal/db/db.go. User struct in models/user.go: {ID, Email, Password, CreatedAt}. Password must be bcrypt-hashed. Returns 201 with user JSON on success.",
+  "guidance": "",
+  "trust_level": "trusted",
+  "max_risk": "local_write",
+  "profile": "",
+  "parent_trust": "",
+  "budget": {"max_runtime_seconds": 0, "max_tool_calls": 0, "max_input_tokens": 0, "max_output_tokens": 0, "max_cost_usd": 0}
 }
 ```
+
+All keys except `goal` are optional. `trust_level` / `max_risk` / `profile` mirror the `delegate_tasks` task fields; `parent_trust` records the spawning agent's trust; `budget` carries the parent's remaining budget when `subagent.budget_inherit` is `"share"` — the child enforces `min(operator limits, inherited values)` (zero values are ignored).
 
 The `delegate_tasks` tool always uses this file-based approach internally.
 
@@ -280,13 +305,15 @@ effective trust into the task file (`parent_trust`), and the child runs at
 `min(parent_trust, trust_level)`. A task tree rooted in untrusted content
 cannot launder itself into trusted children.
 
-Capability profiles (P4) let the operator define named permission envelopes
+Capability profiles let the operator define named permission envelopes
 in the top-level `profiles` config (see [CONFIG.md](CONFIG.md)): a task
 selects one via `profile: "name"` and the profile's `max_risk`/`allowlist`/
 `tools` **override** the corresponding global config for that sub-agent.
 Profiles are operator-authored (project config is stripped) and selecting
 one cannot lift the non-interactive deny or the trust lockdown — policy,
-not escalation.
+not escalation. A curated starter set of 21 task profiles (builders,
+reviewers, judges, researchers, orchestrators, …) ships in
+[`profiles.template.json`](../profiles.template.json).
 
 A profile may be selected by the operator's direct `odek subagent --profile`
 flag or by the parent via the task file (`delegate_tasks`'s `profile`
@@ -335,7 +362,10 @@ The temp file written by `delegate_tasks` carries the request inputs, never a sy
   "context": "Uses gin. DB connection at internal/db/db.go.",
   "guidance": "Validate inputs; return structured errors.",
   "trust_level": "trusted",
-  "max_risk": "local_write"
+  "max_risk": "local_write",
+  "profile": "",
+  "parent_trust": "trusted",
+  "budget": {"max_runtime_seconds": 0, "max_tool_calls": 0, "max_input_tokens": 0, "max_output_tokens": 0, "max_cost_usd": 0}
 }
 ```
 
@@ -347,7 +377,7 @@ Config in `odek.json`:
 {
   "subagent": {
     "max_concurrency": 3,
-    "timeout_seconds": 120,
+    "timeout_seconds": 1800,
     "max_iterations": 15
   }
 }
@@ -356,8 +386,13 @@ Config in `odek.json`:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `max_concurrency` | 3 | Max sub-agents running in parallel (max 8) |
-| `timeout_seconds` | 120 | Default timeout per sub-agent |
+| `timeout_seconds` | 1800 | Default timeout per sub-agent; hard max 1800 (values above are clamped) |
 | `max_iterations` | 15 | Default max think→act cycles per sub-agent |
+| `max_depth` | 2 | Delegation nesting cap (1 = a sub-agent may not delegate further) |
+| `announce_budget` | `true` | Inject budget-awareness hints (50/75/90% of budget) and announce effective limits in the sub-agent system prompt |
+| `budget_inherit` | `"operator"` | Budget inheritance for child runs: `"operator"` (full operator limits) or `"share"` (child enforces min of operator limits and the parent's remaining budget) |
+
+> The `subagent` section is **operator-only**: a project-level `./odek.json` cannot set it (ignored with a warning), so a cloned repository cannot relax sub-agent guards.
 
 ## Security model
 
@@ -376,7 +411,7 @@ The sub-agent system has three test layers:
 | Layer | Runner | What's verified |
 |-------|--------|-----------------|
 | **Contract tests** | `go test ./cmd/odek/` | Flag parsing, JSON stdout protocol, exit codes, tool schema, config parsing, fixed system-prompt trust boundary (`buildSubagentRequest` carries goal/guidance/context; system prompt unaffected by parent input; untrusted fencing) |
-| **E2E tests** | `ODEK_E2E=1 go test ./cmd/odek/ -run "TestE2E_"` | Real subprocess spawning, tool → binary pipeline, stderr protocol, concurrency, timeouts, custom system prompt threading |
+| **E2E tests** | `ODEK_E2E=1 go test ./cmd/odek/ -run "TestE2E_"` | Real subprocess spawning, tool → binary pipeline, stderr protocol, concurrency, timeouts, fixed system-prompt boundary (no threading — parent input never reaches the system prompt) |
 | **Full suite** | `go test -race ./...` | Every package, race-detector clean |
 
 E2E tests:

@@ -145,7 +145,7 @@ odek repl \
 
 ## Docker image control
 
-`odek provides two ways to control the sandbox environment:
+odek provides two ways to control the sandbox environment:
 
 ### 1. `sandbox_image` (simple)
 
@@ -205,11 +205,11 @@ Build behavior:
 
 | Mode | Internet | Host access | Use case |
 |------|----------|-------------|----------|
-| `bridge` (default) | ✅ Yes | ❌ No | `npm install`, `go mod download`, `git clone`, API calls |
-| `none` | ❌ No | ❌ No | Fully isolated — untrusted code, malware scans |
-| `host` | ✅ Yes | ✅ Yes | Debugging, local services, port sniffing |
+| `none` (default) | ❌ No | ❌ No | Fully isolated — every sandboxed run starts here; right choice for untrusted code and malware scans |
+| `bridge` | ✅ Yes | ❌ No | Explicit opt-in only: `npm install`, `go mod download`, `git clone`, API calls |
+| `host` / any other value | ❌ No | ❌ No | **Not supported.** `host` destroys container isolation, so odek refuses it and forces `none` with a warning; unrecognized modes (e.g. `container:<name>`) are forced to `none` the same way |
 
-**Security note:** `bridge` gives the container internet access but isolates it from the host's network stack (no access to `localhost:port` on the host, no access to your LAN). `host` mode removes that isolation — use only when you need to connect to a service on the host.
+**Security note:** `bridge` gives the container internet access but isolates it from the host's network stack (no access to `localhost:port` on the host, no access to your LAN). Because a wider network is a privilege, `bridge` must be an explicit operator choice — a project-level `./odek.json` that requests it triggers the sandbox-override approval prompt above. Anything that is not `bridge` runs isolated: `host` and unknown network modes are downgraded to `none` at container start, with a warning on stderr.
 
 ## File injection
 

@@ -12,7 +12,7 @@ odek supports prompt caching for supported LLM providers. When enabled, the syst
 
 When caching is enabled, odek:
 
-1. Moves the system prompt from the `messages[]` array into a dedicated `system` field with `cache_control: {"type": "ephemeral"}` (Anthropic format — silently ignored by other providers)
+1. Moves the system prompt from the `messages[]` array into a dedicated `system` field with `cache_control: {"type": "ephemeral"}` (Anthropic format — applied only when the endpoint is Anthropic)
 2. Marks the first user message with `cache_control: {"type": "ephemeral"}`
 3. Sends the `anthropic-version: 2023-06-01` header (required by Anthropic for caching; ignored by others)
 
@@ -50,8 +50,8 @@ agent, err := odek.New(odek.Config{
 ## When to Enable
 
 **Enable for:**
-- Anthropic models (Claude 3.5 Sonnet, Claude 3 Opus, Claude 4 Sonnet) — explicit cache markers provide the largest benefit
-- DeepSeek models — automatic prefix caching works best when the conversation prefix is stable; caching markers don't hurt
+- Anthropic models (Claude family) — explicit cache markers provide the largest benefit
+- DeepSeek models — automatic prefix caching works best when the conversation prefix is stable; cache markers are never sent to DeepSeek (they are Anthropic-only)
 - Any multi-turn session where the system prompt is large (e.g., AGENTS.md files, loaded skills) — the system prompt is cached after the first iteration
 
 **Disable for:**
@@ -102,7 +102,7 @@ Hover over any stat for a tooltip explanation.
    - Extracts the first system message and converts it to an Anthropic `SystemBlock` with `cache_control: ephemeral`
    - Marks the first user message with `cache_control: ephemeral`
 
-2. **The request is sent** with the system in the `system` field (not `messages[]`) and the cache markers in place. Providers that don't support these fields silently ignore them.
+2. **The request is sent** with the system in the `system` field (not `messages[]`) and the cache markers in place — but only when the client targets an Anthropic endpoint (`Client.IsAnthropic()`). Other providers never receive the markers; some (OpenAI) reject them with a 400 if they were sent.
 
 3. **The response is parsed** for cache metrics from both Anthropic (`cache_creation_input_tokens`, `cache_read_input_tokens`) and OpenAI (`prompt_tokens_details.cached_tokens`).
 
@@ -110,7 +110,7 @@ Hover over any stat for a tooltip explanation.
 
 ## Implementation Details
 
-- The `anthropic-version: 2023-06-01` header is always sent when caching is enabled. This header is required by Anthropic for prompt caching and is ignored by OpenAI and DeepSeek.
+- The `anthropic-version: 2023-06-01` header is sent on every request (it is not gated on caching). It is required by Anthropic and ignored by OpenAI and DeepSeek.
 - Cache markers are applied **per iteration** — the system prompt and first user message are marked on every LLM call. This is safe because the markers reference the same content each time, so the cache is populated on the first iteration and read on subsequent ones.
-- The `max_tokens` field is now included in all requests when set via `odek.Config.MaxTokens` or model profile defaults. Some providers (Anthropic) tie caching behavior to this field being present.
-- The system prompt is moved out of `messages[]` into a separate `system` field only when caching is enabled. When disabled, it stays in `messages[]` for maximum provider compatibility.
+- The `max_tokens` field is included in all requests when set via `odek.Config.MaxTokens` or model profile defaults. Some providers (Anthropic) tie caching behavior to this field being present.
+- The system prompt is moved out of `messages[]` into a separate `system` field only when caching is enabled **and** the endpoint is Anthropic. When either is false, it stays in `messages[]` for maximum provider compatibility.

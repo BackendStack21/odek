@@ -35,17 +35,17 @@ For **Cursor**, add the same entry in Cursor Settings → MCP Servers.
 
 ### Exposed tools
 
-| Tool | Description |
-|------|-------------|
-| `shell` | Run shell commands (with security classification) |
-| `read_file` | Read files with line numbers and pagination |
-| `write_file` | Write content to files (creates directories) |
-| `search_files` | Search file contents or find files by name |
-| `patch` | Find-and-replace edits with fuzzy matching |
-| `browser` | Navigate web pages, take snapshots, click elements |
+`odek mcp` exposes **all built-in tools** over `tools/list` / `tools/call`, subject to the standard `tools.enabled` / `tools.disabled` filter. Two tools are never exposed — `delegate_tasks` and `memory` are specific to odek's own agent loop. `web_search` appears only when a SearXNG backend is configured (`web_search.base_url`).
 
-The `delegate_tasks` and `memory` tools are **not** exposed via MCP — they are
-specific to odek's own agent loop.
+Default exposure (no `tools` config, no SearXNG):
+
+| Tools | |
+|------|------|
+| `shell`, `parallel_shell`, `patch`, `batch_patch` | mutation paths (danger-classified) |
+| `read_file`, `write_file`, `search_files`, `batch_read`, `glob`, `file_info` | file access |
+| `browser`, `http_batch`, `web_search`* | web access (*only when SearXNG configured) |
+| `multi_grep`, `diff`, `tree`, `count_lines`, `head_tail`, `word_count`, `checksum`, `sort`, `base64`, `tr`, `json_query`, `math_eval` | inspection & transforms |
+| `session_search`, `transcribe`, `vision`, `plan` | sessions, media, planning |
 
 ### Sandbox
 
@@ -103,10 +103,6 @@ Add `mcp_servers` to `~/.odek/config.json` (global, operator-trusted) or `odek.j
     "playwright": {
       "command": "npx",
       "args": ["@playwright/mcp"]
-    },
-    "fetch": {
-      "command": "uvx",
-      "args": ["mcp-server-fetch"]
     },
     "fetch": {
       "command": "uvx",

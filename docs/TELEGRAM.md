@@ -40,9 +40,14 @@ All configuration flows through `TelegramConfig` and can be set via environment 
 | `ODEK_TELEGRAM_MAX_MSG_LENGTH` | MaxMsgLength | 4096 |
 | `ODEK_TELEGRAM_DAILY_TOKEN_BUDGET` | DailyTokenBudget | unlimited |
 | `ODEK_TELEGRAM_SESSION_TTL_HOURS` | SessionTTL | 24h |
+| `ODEK_TELEGRAM_AGENT_TIMEOUT` | AgentTimeout (`agent_timeout_seconds`) | 900 (15m; 0 = unlimited) |
 | `ODEK_TELEGRAM_FALLBACK_URLS` | FallbackURLs | — |
+| `ODEK_TELEGRAM_HEALTH_ADDR` | HealthAddr (`health_addr`) | — (empty = health endpoint disabled) |
 | `ODEK_TELEGRAM_LOG_LEVEL` | LogLevel | info |
 | `ODEK_TELEGRAM_LOG_FILE` | LogFile | stderr |
+| `ODEK_TELEGRAM_DEFAULT_CHAT_ID` | DefaultChatID (`default_chat_id`) | — (used for `--deliver` and as admin fallback) |
+| `ODEK_TELEGRAM_MAX_DOWNLOAD_SIZE` | MaxDownloadSize (`max_download_size`) | 5 MiB (0 = default, <0 = unlimited, >0 = cap in bytes) |
+| `ODEK_TELEGRAM_MEDIA_QUOTA_PER_CHAT` | MediaQuotaPerChat (`media_quota_per_chat`) | 0 (disabled; >0 = per-chat byte quota) |
 
 ### Config Validation
 
@@ -136,7 +141,7 @@ type TelegramError struct {
 
 The `HealthServer` provides an HTTP `/health` endpoint for monitoring systems.
 
-- **Address**: configurable via `--telegram-health-addr` (e.g. `127.0.0.1:9090`). Empty string disables.
+- **Address**: configurable via `telegram.health_addr` in `odek.json` or the `ODEK_TELEGRAM_HEALTH_ADDR` environment variable (e.g. `127.0.0.1:9090`). Empty string disables.
 - **`ready` state**: uses `atomic.Bool` for thread-safe access. `/health` returns `503 Service Unavailable` with `{"status": "starting"}` until `SetReady()` is called (after polling begins).
 - **`200 OK`**: `{"status": "ok", "uptime_seconds": <N>}` once polling is active.
 - Graceful shutdown on context cancellation.
@@ -246,12 +251,13 @@ defense-in-depth.
 | `/new` | Archive the current session and start a fresh conversation. Archived sessions are timestamped (`tg-<chatID>-<YYYYMMDD>-<HHMMSS>`) and remain visible via `odek session list` |
 | `/stats` | Show session statistics (turn count, model used, etc.) |
 | `/stop` | Cancel a running agent task |
-| `/mode` | Show current agent modes (interaction_mode, sandbox, skills) |
+| `/mode` | Show current agent modes (interaction_mode, tool_progress, sandbox) |
 | `/restart` | Gracefully restart the bot process. Restricted to operator chats/users and rate-limited to once per 60 seconds. |
 | `/plan <description>` | Create a new plan from a natural language description |
 | `/plans` | List saved plans for this chat |
-| `/plan-view <slug>` | View a specific plan's content for this chat |
-| `/plan-delete <slug>` | Delete a saved plan for this chat |
+| `/plan_view <slug>` | View a specific plan's content for this chat |
+| `/plan_resume <slug>` | Resume working from a saved plan in this chat |
+| `/plan_delete <slug>` | Delete a saved plan for this chat |
 | `/plan_status` | Show the agent's current structured task plan (loop `plan` tool state) for this chat's session — distinct from the markdown-file plan commands above |
 | `/sessions` | List recent conversation sessions for this chat |
 | `/resume <session_id>` | Resume a previous session owned by this chat |

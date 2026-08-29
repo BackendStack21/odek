@@ -21,5 +21,9 @@ docker/.odek/*
 
 sec_findings.md
 
+# Docs-audit working set — local only
+docs_findings.md
+SUB_AGENTS_IMPROVEMENTS.md
+
 # opencode agent local memory
 .kai/

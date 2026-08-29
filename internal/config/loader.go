@@ -989,7 +989,7 @@ type SubagentResolved struct {
 	// 0 = fall back to the global max_concurrency. Clamped to 8.
 	MaxConcurrency int
 	// TimeoutSeconds is the default per-sub-agent wall-clock budget in
-	// seconds. Clamped to 3600.
+	// seconds. Clamped to 1800.
 	TimeoutSeconds int
 	// MaxIterations is the default think→act cycle budget per sub-agent.
 	// Clamped to 100.
@@ -1007,7 +1007,7 @@ type SubagentResolved struct {
 
 // resolveSubagent merges the file-level subagent section over the defaults.
 // Unset (nil) fields inherit the default. Numeric values are clamped to the
-// documented ceilings (max_concurrency ≤ 8, timeout_seconds ≤ 3600,
+// documented ceilings (max_concurrency ≤ 8, timeout_seconds ≤ 1800,
 // max_iterations ≤ 100, max_depth ≤ 8) so a config file cannot lift the
 // runaway-process guards enforced by the CLI flags.
 func resolveSubagent(cfg *SubagentConfig) SubagentResolved {

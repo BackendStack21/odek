@@ -7,8 +7,8 @@ odek has a **three-tier file-based memory** system. Minimal external dependencie
 ```
 ~/.odek/memory/
 ├── facts/
-│   ├── user.md          ← Global user profile (1,500 chars)
-│   └── env.md           ← Global environment facts (2,500 chars)
+│   ├── user.md          ← Global user profile (4,000 chars)
+│   └── env.md           ← Global environment facts (8,000 chars)
 ├── project-facts/       ← Optional per-project overrides (auto-layered)
 │   └── <path-hash>/
 │       ├── user.md
@@ -24,8 +24,8 @@ Two typed files, injected as frozen snapshot at session start. Managed by the ag
 
 | Target | File | Cap | Purpose |
 |--------|------|-----|---------|
-| `user` | `facts/user.md` | 1,500 | User preferences, style, pet peeves |
-| `env` | `facts/env.md` | 2,500 | OS, tools, conventions, architecture |
+| `user` | `facts/user.md` | 4,000 | User preferences, style, pet peeves |
+| `env` | `facts/env.md` | 8,000 | OS, tools, conventions, architecture |
 
 **Frozen snapshot:** Loaded once at agent start into the system prompt. Live writes via the `memory` tool persist to disk immediately but appear in the prompt next session. This preserves LLM prefix caching.
 
@@ -45,7 +45,7 @@ HH:MM  agent  pushed 19 tests, tagged v0.8.19
 
 ### Tier 3 — Episodes (on-disk, searchable)
 
-After sessions with ≥3 turns, the MemoryManager extracts a session summary. When both episode extraction (`extract_on_end`) and fact extraction (`extract_facts`) are enabled, a **single combined LLM call** produces the episode summary and the durable facts in one JSON response (falling back to the two single-purpose calls if the combined response is unparseable). Written to `episodes/<session-id>.md`. Searchable via `memory(search=...)` which uses **RandomProjections** (go-vector) to rank episodes by cosine similarity to the query — zero LLM calls per search. Set `llm_search: true` in config to use LLM-based ranking instead.
+After sessions with ≥3 turns, the MemoryManager extracts a session summary. When both episode extraction (`extract_on_end`) and fact extraction (`extract_facts`) are enabled, a **single combined LLM call** produces the episode summary and the durable facts in one JSON response (falling back to the two single-purpose calls if the combined response is unparseable). Written to `episodes/<session-id>.md`. Searchable via `memory(search=...)` — by default an LLM ranker orders episodes by relevance to the query; set `llm_search: false` to use the **RandomProjections** (go-vector) cosine ranker instead (zero LLM calls per search).
 
 Episode extraction runs **asynchronously** — it does not block the agent loop. Session-end work is tracked by the MemoryManager and drained with a bounded wait (~15s) in `Agent.Close`, so episodes survive CLI exit without hanging the process.
 
@@ -74,7 +74,7 @@ Episode extraction runs **asynchronously** — it does not block the agent loop.
 | `remove` | user/env | — | ✅ substring | Finds entry by substring, removes it |
 | `consolidate` | user/env | — | — | SimpleCall: merge related entries for density |
 | `read` | — | — | — | Returns full content of both user.md + env.md |
-| `search` | — | — | ✅ query | RP ranker: rank episodes + facts by cosine similarity (zero LLM calls) |
+| `search` | — | — | ✅ query | LLM ranker by default (relevance-oriented); `llm_search: false` switches to RP cosine ranking (zero LLM calls) |
 
 ## Merge-on-Write (go-vector Integration)
 
@@ -142,20 +142,39 @@ Subagents do NOT get a `memory` tool — they cannot modify parent memory.
 {
   "memory": {
     "enabled": true,
-    "facts_limit_user": 1500,
-    "facts_limit_env": 2500,
+    "facts_limit_user": 4000,
+    "facts_limit_env": 8000,
     "buffer_lines": 20,
     "buffer_enabled": true,
     "merge_on_write": true,
     "extract_on_end": true,
-    "llm_search": false,       // false = RP ranker (default), true = LLM-based ranking
+    "llm_search": true,        // true (default) = LLM-based ranking; false = RP cosine ranker (zero LLM calls)
     "llm_extract": true,
     "llm_consolidate": true,
     "merge_threshold": 0.7,
-    "add_threshold": 0.3
+    "add_threshold": 0.3,
+    "extract_facts": false,
+    "consolidate_on_end": true,
+    "min_turns_for_extraction": 3,
+    "episode_dedup_threshold": 0.92,
+    "max_episodes": 500,
+    "episode_ttl_days": 0,
+    "auto_approve_episodes": false
   }
 }
 ```
+
+Additional keys (defaults shown):
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `extract_facts` | `false` | Extract durable facts during session-end extraction. **Deliberately off by default**: wrong facts persist across sessions, so treat enabling it as accepting a persistent-poisoning risk (see [SECURITY.md](SECURITY.md)) |
+| `consolidate_on_end` | `true` | LLM-merge session-end facts instead of appending raw |
+| `min_turns_for_extraction` | `3` | Sessions shorter than this are not summarized |
+| `episode_dedup_threshold` | `0.92` | Cosine similarity above which a new episode is dropped as a near-duplicate |
+| `max_episodes` | `500` | Episode store cap |
+| `episode_ttl_days` | `0` | Days before episodes expire; `0` = never expire |
+| `auto_approve_episodes` | `false` | Auto-approve episodes derived from untrusted content instead of holding them for review — security escape valve, keep off |
 
 ## Extended Memory (opt-in)
 
@@ -243,7 +262,7 @@ Episode search uses **RandomProjections** (go-vector) for similarity by default:
 3. Score by cosine similarity between query vector and each summary vector
 4. Return top-3 results sorted by score
 
-This is zero LLM calls per search, ~1ms per search. Set `llm_search: true` in config to switch to LLM-based ranking (uses SimpleCall to rank episodes by relevance — higher quality, higher latency + token cost).
+This is zero LLM calls per search, ~1ms per search — available with `llm_search: false`. By default (`llm_search: true`) ranking uses an LLM SimpleCall to order episodes by relevance to the query — higher quality, higher latency + token cost.
 
 ### Pluggable Embeddings (`memory.embedding`)
 

@@ -35,19 +35,22 @@ import (
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
-// ── Claim 1 (partial fix: warn-on-disabled) ────────────────────────────
+// ── Claim 1 (sandbox default-on at the CLI layer) ─────────────────────
 //
-// Sandbox is still opt-in (Docker requirement makes default-on intrusive
-// for users without Docker installed). The mitigation we ship is an
-// explicit startup warning when the agent runs unsandboxed so the
-// dangerous mode is no longer silent.
+// Sandboxing defaults ON for odek runs: when no config layer, env var, or
+// flag sets it, the run paths enable the Docker sandbox and degrade loudly
+// (with a warning) when Docker is unavailable (SECURITY.md "Sandboxed
+// execution"; pinned end-to-end by sandbox_default_test.go).
 //
-// Test 1 pins the default. Test 2 pins the warning helper's output so a
-// regression that removes it is caught.
-func TestReport_SandboxIsOptInByDefault(t *testing.T) {
+// What this test pins is the config layer staying *neutral*: the config
+// file default for `sandbox` is false, so an explicit operator config
+// always wins and the config layer alone must not force sandboxing on.
+// The shipped mitigation for runs that end up unsandboxed is the explicit
+// startup warning, pinned by TestReport_SandboxDisabledPrintsWarning.
+func TestReport_ConfigLayerSandboxDefaultsUnset(t *testing.T) {
 	resolved := config.LoadConfig(config.CLIFlags{})
 	if resolved.Sandbox {
-		t.Fatalf("LoadConfig({}).Sandbox = true; if defaults flipped, invert this test and the warning test below")
+		t.Fatalf("LoadConfig({}).Sandbox = true; the config layer must stay neutral — default-on lives in the run paths (see sandbox_default_test.go)")
 	}
 }
 

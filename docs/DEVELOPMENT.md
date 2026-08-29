@@ -21,7 +21,7 @@ go build -o odek ./cmd/odek
 
 ```
 odek.go                       Public API (Config, New, Run, Close)
-`odek_test.go                  Config and model profile tests
+odek_test.go                  Config and model profile tests
 internal/
   config/
     loader.go                 Config file loading, env vars, priority merge
@@ -202,7 +202,7 @@ CI (`.github/workflows/test.yml`) runs the unit suite under `-race` on every pus
 - **ws/ws.go**: Zero-dependency RFC 6455 WebSocket. Handles upgrade, text frames, close, ping/pong
 - **ui/index.html + app.js + js/ + style.css**: Vanilla JS + CSS SPA, split into native ES modules (`ui/js/`, no build step). Streaming, collapsible tool blocks, `@` autocomplete, session sidebar
 
-See [docs/WEBUI.md](docs/WEBUI.md) for the WebSocket protocol and full documentation.
+See [docs/WEBUI.md](WEBUI.md) for the WebSocket protocol and full documentation.
 
 ### Sub-agents (`cmd/odek/subagent.go` + `cmd/odek/subagent_tool.go` + `cmd/odek/subagent_key.go`)
 
@@ -210,21 +210,21 @@ See [docs/WEBUI.md](docs/WEBUI.md) for the WebSocket protocol and full documenta
 - **subagent_tool.go**: `delegate_tasks` built-in tool. Spawns real OS processes via `exec.Command` with temp files for task data
 - **subagent_key.go**: API key handoff to the spawned child via an unlinked-tempfile FD passed through `ExtraFiles`, so the secret never appears in the child's `/proc/<pid>/environ`
 
-See [docs/SUBAGENTS.md](docs/SUBAGENTS.md) for full documentation.
+See [docs/SUBAGENTS.md](SUBAGENTS.md) for full documentation.
 
 ### Sandbox (`internal/sandbox/` + `cmd/odek/main.go::setupSandbox`)
 
 - **sandbox/sandbox.go**: container lifecycle inputs — image resolution (explicit / `Dockerfile.odek` / `alpine:latest`), `docker run` argument construction with mandatory hardening (`--cap-drop ALL`, `--security-opt no-new-privileges`, `--tmpfs /tmp:noexec`), and `InjectFiles` (preserves nested paths via in-container `mkdir -p`)
 - **cmd/odek/main.go::setupSandbox**: wires the resolved container into `*shellTool` / `*parallelShellTool` — kept in `cmd/odek` because the sandbox package must not know about agent-tool internals
 
-See [docs/SANDBOXING.md](docs/SANDBOXING.md) for the user-facing security model.
+See [docs/SANDBOXING.md](SANDBOXING.md) for the user-facing security model.
 
 ### Skill learning loop (`internal/skills/learnloop.go` + `cmd/odek/main.go::runLearnLoop`)
 
 - **skills/learnloop.go**: non-interactive pipeline — `AnalyzeMessages` converts a conversation into suggestions (heuristics + LLM enhancement + provenance), `RunAutoSaveLoop` filters against the skip list, persists eligible suggestions, fires notifier events, and triggers post-save micro-curation
 - **cmd/odek/main.go::runLearnLoop**: orchestration only — calls `AnalyzeMessages` → `FilterSkipped` → tries `RunAutoSaveLoop`; falls back to `interactiveSavePrompt` (the only TTY-coupled piece) when auto-save is disabled
 
-See [docs/LEARNING.md](docs/LEARNING.md) for the user-facing skill model.
+See [docs/LEARNING.md](LEARNING.md) for the user-facing skill model.
 
 ## Performance Architecture
 
