@@ -230,7 +230,7 @@ Plain `odek skill promote my-skill` refuses to clear `NeedsReview` when `Untrust
 
 The sub-agent process reads both at startup. `applySubagentTrust` clamps its `DangerousConfig`, which is then passed into the agent engine so the batch gate and individual tool checks enforce the cap:
 
-- Untrusted ⇒ `NonInteractive=deny`; `destructive`, `code_execution`, `install`, `system_write`, `network_egress`, `unknown`, and `blocked` all forced to Deny. `local_write` and below remain allowed so the sub-agent can still do real work.
+- Untrusted ⇒ `NonInteractive=deny` (forced for trusted sub-agents too — they never prompt); `destructive`, `code_execution`, `install`, `system_write`, `persistence`, `unread_exec`, `network_egress`, `unknown`, and `blocked` all forced to Deny. `local_write` and below remain allowed so the sub-agent can still do real work.
 - `max_risk` ⇒ every class strictly above the cap is forced to Deny.
 - **MCP tools are excluded from untrusted sub-agents.** MCP tools are classified as `unknown` by the batch gate, but the MCP `ToolAdapter` does not perform its own danger check. To remove that bypass surface, untrusted sub-agents do not load MCP servers at all. Trusted/capped sub-agents still receive MCP tools, but the passed `DangerousConfig` forces Deny for any class above the configured cap.
 - `delegate_tasks` itself classifies as `system_write` in the parent's batch approval gate, so spawning sub-agents requires explicit operator approval and cannot be used to escape the parent's approval gate.
@@ -275,7 +275,7 @@ The override order inside a sub-agent is: operator config → **profile** (if se
 **Selection is policy, not escalation.** Profiles are **operator-authored only**: a `profiles` section in project-level `./odek.json` is ignored with a warning, so a cloned repository cannot author (or shadow) the operator's envelopes. And the two hard invariants are applied *after* the profile and cannot be lifted by selecting one:
 
 - **P2 — sub-agents never prompt.** `non_interactive: deny` is forced for every sub-agent after profile application. A profile cannot re-enable TTY approval prompts; the operator `allowlist` (in the profile, if selected) remains the only path to prompt-class operations.
-- **P3 — trust is non-increasing downward.** The child runs at `min(parent_trust, trust_level)`; the untrusted lockdown (deny `destructive`, `code_execution`, `install`, `system_write`, `network_egress`, `unknown`, `blocked`, `persistence`, `unread_exec`) is applied after the profile. An untrusted task stays untrusted under any profile — selecting `"profile": "builder"` with `max_risk: "system_write"` still denies network egress and installs to an untrusted sub-agent, because the provenance lockdown wins over the permission envelope.
+- **P3 — trust is non-increasing downward.** The child runs at `min(parent_trust, trust_level)`; the untrusted lockdown (deny `destructive`, `code_execution`, `install`, `system_write`, `persistence`, `unread_exec`, `network_egress`, `unknown`, `blocked`) is applied after the profile. An untrusted task stays untrusted under any profile — selecting `"profile": "builder"` with `max_risk: "system_write"` still denies network egress and installs to an untrusted sub-agent, because the provenance lockdown wins over the permission envelope.
 
 Pinned by `cmd/odek/subagent_profiles_test.go` (override/clamp semantics, allowlist-only no-clamp, trust-lockdown-after-profile ordering) and `internal/config` (validation, project-config strip).
 

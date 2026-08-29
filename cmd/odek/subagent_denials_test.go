@@ -129,10 +129,16 @@ func TestApplySubagentTrust_TrustedStillNonInteractive(t *testing.T) {
 		t.Error("trusted sub-agent must keep operator class config (no lockdown)")
 	}
 
-	// Untrusted keeps the full lockdown.
+	// Untrusted keeps the full lockdown (including persistence and
+	// unread_exec — deferred-execution writes and unread scripts are
+	// exactly what an injected sub-agent must not reach).
 	dc2 := danger.DangerousConfig{}
 	applySubagentTrust(&dc2, "untrusted", "")
-	for _, cls := range []danger.RiskClass{danger.Destructive, danger.CodeExecution, danger.Install, danger.SystemWrite, danger.NetworkEgress} {
+	for _, cls := range []danger.RiskClass{
+		danger.Destructive, danger.CodeExecution, danger.Install,
+		danger.SystemWrite, danger.NetworkEgress, danger.Persistence,
+		danger.UnreadExec,
+	} {
 		if dc2.Classes[cls] != danger.Deny {
 			t.Errorf("untrusted: class %v = %v, want deny", cls, dc2.Classes[cls])
 		}

@@ -81,3 +81,14 @@ func diff(a, b float64) float64 {
 	}
 	return b - a
 }
+
+func TestCheckerLimitsGetter(t *testing.T) {
+	limits := Limits{MaxToolCalls: 7, MaxRuntimeSeconds: 90}
+	c := NewChecker(limits, time.Now())
+	if c == nil {
+		t.Fatal("NewChecker returned nil for non-empty limits")
+	}
+	if got := c.Limits(); got.MaxToolCalls != 7 || got.MaxRuntimeSeconds != 90 {
+		t.Errorf("Limits() = %+v, want the configured caps", got)
+	}
+}

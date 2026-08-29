@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BackendStack21/odek/internal/budget"
+	"github.com/BackendStack21/odek/internal/events"
 	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/tool"
 )
@@ -103,6 +105,52 @@ func TestBudgetWarnings_WallClockDimension(t *testing.T) {
 	}
 }
 
+func TestEngine_SetBudgetHints(t *testing.T) {
+	e := &Engine{}
+	e.SetBudgetHints(true)
+	if !e.budgetHints {
+		t.Error("SetBudgetHints(true) did not enable the flag")
+	}
+	e.SetBudgetHints(false)
+	if e.budgetHints {
+		t.Error("SetBudgetHints(false) did not disable the flag")
+	}
+}
+
+func TestEngine_EmitEvent(t *testing.T) {
+	e := &Engine{}
+	var got []events.Event
+	e.SetEventHandler(func(ev events.Event) { got = append(got, ev) })
+	e.EmitEvent(events.Event{Type: "subagent_denied", Tool: "shell"})
+	if len(got) != 1 || got[0].Type != "subagent_denied" {
+		t.Errorf("handler got %+v, want one subagent_denied event", got)
+	}
+	// Nil handler must not panic.
+	(&Engine{}).EmitEvent(events.Event{Type: "x"})
+}
+
+func TestEngine_BudgetSnapshot(t *testing.T) {
+	// No checker (limits unset): zero snapshot.
+	e := &Engine{}
+	if s := e.BudgetSnapshot(); s != (budget.Snapshot{}) {
+		t.Errorf("empty engine snapshot = %+v, want zero", s)
+	}
+
+	// With a checker and totals: remaining reflects both.
+	start := time.Now()
+	e.budget = budget.NewChecker(budget.Limits{MaxToolCalls: 10, MaxRuntimeSeconds: 60}, start)
+	e.budget.SetNowFunc(func() time.Time { return start.Add(10 * time.Second) })
+	e.budget.RecordToolCalls(2)
+	e.TotalInputTokens = 100
+	e.TotalOutputTokens = 50
+	s := e.BudgetSnapshot()
+	if s.RemainingToolCalls != 8 || s.RemainingRuntimeSeconds != 50 {
+		t.Errorf("snapshot = %+v, want 8 tool calls / 50s remaining", s)
+	}
+	if s.MaxInputTokens != 0 || s.MaxOutputTokens != 0 {
+		t.Errorf("unconfigured token caps must stay zero, got %+v", s)
+	}
+}
 func TestPartialSummaryReason_Markers(t *testing.T) {
 	cases := []struct {
 		in     string

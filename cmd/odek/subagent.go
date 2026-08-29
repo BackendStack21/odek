@@ -884,13 +884,18 @@ func applySubagentTrust(dc *danger.DangerousConfig, trustLevel, maxRisk string) 
 
 	if trustLevel == "untrusted" {
 		// Lock down every class that could plausibly cause out-of-task
-		// damage. LocalWrite remains the cap — sub-agents may still
-		// edit files inside the working directory.
+		// damage — including persistence (deferred-execution writes) and
+		// unread_exec (unread scripts): a deferred hook or an unread repo
+		// script is exactly what an injected sub-agent must not reach.
+		// LocalWrite remains the cap — sub-agents may still edit files
+		// inside the working directory.
 		for _, cls := range []danger.RiskClass{
 			danger.Destructive,
 			danger.CodeExecution,
 			danger.Install,
 			danger.SystemWrite,
+			danger.Persistence,
+			danger.UnreadExec,
 			danger.NetworkEgress,
 			danger.Unknown,
 			danger.Blocked,
