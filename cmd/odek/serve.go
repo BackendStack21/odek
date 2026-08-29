@@ -538,6 +538,7 @@ func newServeMux(d serveMuxDeps) *http.ServeMux {
 
 	// Observability + lifecycle.
 	mux.Handle("/api/events", apiAuth(handleEvents()))
+	mux.Handle("/api/subagents", apiAuth(handleSubagentRegistry()))
 	mux.Handle("/api/usage", apiAuth(handleUsage(resolved)))
 	mux.Handle("/api/connections", apiAuth(handleConnections()))
 	mux.Handle("/api/connections/", apiAuth(handleConnectionKick()))
@@ -700,7 +701,7 @@ func (c *wsDeltaCounters) snapshot() (reasoning, content int) {
 	return c.reasoning, c.content
 }
 
-func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v any) error, deltas *wsDeltaCounters) (*odek.Agent, func() error, func(), func() error, guard.Guard, *wsApprover, error) {
+func newServeAgent(resolved config.ResolvedConfig, system string, runKey string, sendFn func(v any) error, deltas *wsDeltaCounters) (*odek.Agent, func() error, func(), func() error, guard.Guard, *wsApprover, error) {
 	var sm *skills.SkillManager
 	if resolved.Skills.Learn {
 		sm = skills.NewSkillManagerWithEmbedding(
@@ -739,7 +740,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 		}
 	}
 	if subagentTool != nil {
-		subagentTool.OnSubagentLog = newSubagentLogRelay(sendFn)
+		subagentTool.OnSubagentLog = newSubagentTelemetryRelay(sendFn, runKey)
 	}
 	var sandboxCleanup func() error
 
@@ -1030,7 +1031,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 
 	// Create ONE agent per WebSocket connection — provides buffer
 	// continuity across turns within the same session.
-	agent, sandboxCleanup, mcpCleanup, guardCleanup, injectionGuard, approver, err := newServeAgent(resolved, system, func(v any) error {
+	agent, sandboxCleanup, mcpCleanup, guardCleanup, injectionGuard, approver, err := newServeAgent(resolved, system, connInfo.ID, func(v any) error {
 		writeWSJSON(conn, v)
 		return nil
 	}, &deltas)
