@@ -85,7 +85,7 @@ func replCmd(args []string) error {
 			resolved.Skills.Embedding,
 		)
 	}
-	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{WebSearch: resolved.WebSearch, Planning: &resolved.Planning, Subagent: resolved.Subagent}, nil)
+	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{WebSearch: resolved.WebSearch, Planning: &resolved.Planning, Subagent: resolved.Subagent, Profiles: resolved.Profiles}, nil)
 
 	// MCP server tools
 	var mcpCleanup func()

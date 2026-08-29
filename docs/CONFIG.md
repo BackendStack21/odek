@@ -691,7 +691,7 @@ Rules:
 
 - **Operator-authored only.** A `profiles` section in project-level `./odek.json` is ignored with a warning — a cloned repo must not author its own permission envelope.
 - **Override, not escalation.** The P2 non-interactive deny and the P3 trust lockdown are applied *after* the profile and cannot be lifted by selecting one. An untrusted task stays untrusted under any profile.
-- **Fail closed.** Selecting an unknown profile name fails the task; profiles with an invalid `max_risk` are dropped at load time with a warning.
+- **Fail closed.** Selecting an unknown profile name fails the task (validated by `delegate_tasks` before spawn and again by the sub-agent itself); profiles with an invalid `max_risk` are dropped at load time with a warning.
 
 
 ## MCP server configuration

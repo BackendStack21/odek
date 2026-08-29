@@ -1678,7 +1678,7 @@ func run(args []string) error {
 
 	// Sandbox setup
 	var sandboxCleanup func() error
-	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{Transcription: resolved.Transcription, Vision: resolved.Vision, WebSearch: resolved.WebSearch, Planning: &resolved.Planning, Subagent: resolved.Subagent}, nil)
+	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{Transcription: resolved.Transcription, Vision: resolved.Vision, WebSearch: resolved.WebSearch, Planning: &resolved.Planning, Subagent: resolved.Subagent, Profiles: resolved.Profiles}, nil)
 
 	// MCP server tools
 	var mcpCleanup func()
@@ -2220,6 +2220,10 @@ type toolConfig struct {
 	// Subagent carries the resolved subagent section for delegate_tasks
 	// (timeout/concurrency/depth defaults + budget inheritance mode).
 	Subagent config.SubagentResolved
+	// Profiles carries the operator's resolved capability profiles (P4) so
+	// delegate_tasks can fail closed on unknown profile names before
+	// spawning a child.
+	Profiles map[string]config.ProfileConfig
 	// SelfTrust is THIS process's own effective trust level (P3); stamped
 	// into spawned task files. Empty = top-level operator run (trusted).
 	SelfTrust string
@@ -2267,6 +2271,7 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 			maxDepth:       subDepth,
 			budgetInherit:  subInherit,
 			selfTrust:      selfTrust,
+			profiles:       tcfg.Profiles,
 		},
 		&readFileTool{dangerousConfig: dc},
 		&writeFileTool{dangerousConfig: dc, restrictToCWD: true},
@@ -2949,6 +2954,7 @@ func buildContinueTools(resolved config.ResolvedConfig, sm *skills.SkillManager,
 			Vision:        resolved.Vision,
 			WebSearch:     resolved.WebSearch,
 			Planning:      &resolved.Planning,
+			Profiles:      resolved.Profiles,
 		}, store)
 }
 

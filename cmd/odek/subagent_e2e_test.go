@@ -212,6 +212,50 @@ func TestE2E_QuietSuppressesStderr(t *testing.T) {
 	}
 }
 
+// ── Task-file profile fail-closed (P4) ──────────────────────────────────
+
+// TestE2E_TaskFileProfile_FailClosed verifies the delegate_tasks → task
+// file → child profile wiring end to end: a profile named in the task
+// file that the operator has not defined must fail the task with the
+// unknown-profile error (docs/CONFIG.md: fail closed) BEFORE any LLM
+// setup. Regression: the child-side task-file parser dropped the profile
+// field, so profiled delegate_tasks tasks silently ran bare.
+func TestE2E_TaskFileProfile_FailClosed(t *testing.T) {
+	skipIfNoE2E(t)
+	// Hermetic: no operator profiles and no API key — the unknown-profile
+	// error must fire before anything else matters.
+	t.Setenv("HOME", t.TempDir())
+
+	dir := t.TempDir()
+	taskPath := filepath.Join(dir, "task.json")
+	task := `{"goal":"say ready","profile":"e2e-unknown-profile-xyz"}`
+	if err := os.WriteFile(taskPath, []byte(task), 0644); err != nil {
+		t.Fatalf("write task file: %v", err)
+	}
+
+	cmd := exec.Command(e2eBinary, "subagent", "--task", taskPath)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+
+	combined := stdout.String() + stderr.String()
+	if !strings.Contains(combined, "unknown profile") {
+		t.Fatalf("task-file profile must fail closed with 'unknown profile' (run err: %v, stdout: %s, stderr: %s)",
+			err, stdout.String(), stderr.String())
+	}
+	var result map[string]any
+	if jerr := json.Unmarshal(stdout.Bytes(), &result); jerr != nil {
+		t.Fatalf("stdout must be valid JSON: %q", stdout.String())
+	}
+	if result["status"] != "error" {
+		t.Errorf("status = %v, want error", result["status"])
+	}
+	if tokens, _ := result["tokens_used"].(float64); tokens != 0 {
+		t.Errorf("tokens_used = %v, want 0 (must fail before any LLM call)", result["tokens_used"])
+	}
+}
+
 // ── 3. delegate_tasks Tool (Real Subprocess) ─────────────────────────
 
 // runE2EDelegateTasks creates a delegateTasksTool pointed at the real

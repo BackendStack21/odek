@@ -288,6 +288,13 @@ Profiles are operator-authored (project config is stripped) and selecting
 one cannot lift the non-interactive deny or the trust lockdown — policy,
 not escalation.
 
+A profile may be selected by the operator's direct `odek subagent --profile`
+flag or by the parent via the task file (`delegate_tasks`'s `profile`
+field); the flag outranks the task file. Unknown names fail the task twice
+over: `delegate_tasks` validates before spawning a child, and the child
+re-validates against its own resolved config (defense in depth — also
+covering manual `--task` invocation).
+
 ### Untrusted tasks are fenced
 
 When the parent sets `trust_level: "untrusted"`, the entire request body is wrapped in an
