@@ -753,15 +753,15 @@ func telegramCmd(args []string) error {
 					Text  string `json:"text"`
 					Error string `json:"error"`
 				}
-			if json.Unmarshal([]byte(result), &r) == nil && r.Error == "" && r.Text != "" {
-				// Transcribed text crosses an external trust boundary; wrap it before
-				// injecting it into the user message stream (telegramVoiceMessage).
-				transcript := telegramGuardScan(context.Background(), r.Text, "voice transcript")
-				go handleChatMessage(chatID, messageID, userID,
-					telegramVoiceMessage(chatID, transcript),
-					bot, handler, sessionManager, resolved, systemMessage, handlerLog)
-				return "", nil
-			}
+				if json.Unmarshal([]byte(result), &r) == nil && r.Error == "" && r.Text != "" {
+					// Transcribed text crosses an external trust boundary; wrap it before
+					// injecting it into the user message stream (telegramVoiceMessage).
+					transcript := telegramGuardScan(context.Background(), r.Text, "voice transcript")
+					go handleChatMessage(chatID, messageID, userID,
+						telegramVoiceMessage(chatID, transcript),
+						bot, handler, sessionManager, resolved, systemMessage, handlerLog)
+					return "", nil
+				}
 			}
 			// Transcription failed — fall through to file path message
 			handlerLog.Warn("auto-transcribe failed, falling back to path", "chat_id", chatID, "error", err)
@@ -1382,7 +1382,7 @@ func handleChatMessage(
 	}
 
 	// Build the agent with Telegram approver.
-	tools := builtinTools(resolved.Dangerous, nil, approver, resolved.MaxConcurrency, resolved.APIKey, toolConfig{Transcription: resolved.Transcription, Vision: resolved.Vision, WebSearch: resolved.WebSearch, Planning: &resolved.Planning}, sessionManager.Store)
+	tools := builtinTools(resolved.Dangerous, nil, approver, resolved.MaxConcurrency, resolved.APIKey, toolConfig{Transcription: resolved.Transcription, Vision: resolved.Vision, WebSearch: resolved.WebSearch, Planning: &resolved.Planning, Subagent: resolved.Subagent}, sessionManager.Store)
 
 	// Apply tool filtering based on configuration, but preserve Telegram's
 	// required tools so the bot can always respond and ask clarifications.

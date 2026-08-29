@@ -94,6 +94,12 @@ type Config struct {
 	// MaxIterations caps the number of think→act cycles (default: 90).
 	MaxIterations int
 
+	// AnnounceBudget, when set to true, enables budget-awareness telemetry:
+	// the engine injects one-line hints at 50/75/90% of the iteration or
+	// wall-clock budget and emits budget_warning signals. Intended for
+	// budgeted runs (sub-agents); nil/false leaves top-level runs unchanged.
+	AnnounceBudget *bool `json:"announce_budget,omitempty"`
+
 	// SystemMessage is the system prompt injected at the start of every run.
 	// Runtime context (OS, hostname, cwd, date, platform) is automatically
 	// prepended to this message before it reaches the LLM.
@@ -751,6 +757,18 @@ func New(cfg Config) (*Agent, error) {
 	}
 	engine.SetSideCallTimeout(sideTimeout)
 	engine.SetUntrustedWrapper(cfg.UntrustedWrapper)
+
+	// Budget-aware tooling: hand budget-aware tools (delegate_tasks) a view
+	// of the run's remaining budget for passdown to sub-agents, and honour
+	// the budget-hints switch.
+	for _, t := range cfg.Tools {
+		if bv, ok := t.(interface{ SetBudgetView(budget.View) }); ok {
+			bv.SetBudgetView(engine)
+		}
+	}
+	if cfg.AnnounceBudget != nil {
+		engine.SetBudgetHints(*cfg.AnnounceBudget)
+	}
 	if cfg.MaxToolParallel > 0 {
 		engine.SetMaxToolParallel(cfg.MaxToolParallel)
 	}
@@ -1081,6 +1099,18 @@ func (a *Agent) SwitchThinking(thinking string) {
 	if a.engine != nil {
 		a.engine.SetThinking(thinking)
 	}
+}
+
+// RequestFinalization asks the running agent to conclude at the next
+// iteration boundary: no new tool batches start and the engine produces a
+// partial-progress summary prefixed with the time-budget marker instead of
+// running to the iteration cap. Non-blocking; intended for soft-deadline
+// watchers that trade a hard kill for a bounded graceful conclusion.
+func (a *Agent) RequestFinalization() {
+	if a == nil || a.engine == nil {
+		return
+	}
+	a.engine.RequestFinalization()
 }
 
 // SetMessagesPersistCallback registers a callback the loop fires after each

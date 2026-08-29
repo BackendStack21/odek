@@ -11,9 +11,11 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek"
+	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/redact"
 	"github.com/BackendStack21/odek/internal/render"
 	"github.com/BackendStack21/odek/internal/skills"
@@ -105,61 +107,88 @@ func neutraliseSubagentInputLiterals(s string) string {
 	return strings.ReplaceAll(s, "untrusted_input", "untrustedˍinput")
 }
 
+// taskBudget carries the parent's remaining budget into the child when
+// subagent.budget_inherit is "share" (SUB_AGENTS_IMPROVEMENTS.md M1.5).
+// The child enforces min(operator limits, these values) and announces the
+// effective numbers in its lifespan block.
+type taskBudget struct {
+	MaxRuntimeSeconds int64   `json:"max_runtime_seconds,omitempty"`
+	MaxToolCalls      int64   `json:"max_tool_calls,omitempty"`
+	MaxCostUSD        float64 `json:"max_cost_usd,omitempty"`
+}
+
+// clampLimits narrows the operator limits by the parent-supplied task
+// budget: for each limit the child may spend at most min(operator cap,
+// parent remaining). A zero operator cap means unbounded on that dimension,
+// so the task budget becomes the cap. Prices stay operator-owned.
+func clampLimits(op budget.Limits, tb *taskBudget) budget.Limits {
+	if tb == nil {
+		return op
+	}
+	if tb.MaxRuntimeSeconds > 0 && (op.MaxRuntimeSeconds <= 0 || tb.MaxRuntimeSeconds < op.MaxRuntimeSeconds) {
+		op.MaxRuntimeSeconds = tb.MaxRuntimeSeconds
+	}
+	if tb.MaxToolCalls > 0 && (op.MaxToolCalls <= 0 || tb.MaxToolCalls < op.MaxToolCalls) {
+		op.MaxToolCalls = tb.MaxToolCalls
+	}
+	if tb.MaxCostUSD > 0 && (op.MaxCostUSD <= 0 || tb.MaxCostUSD < op.MaxCostUSD) {
+		op.MaxCostUSD = tb.MaxCostUSD
+	}
+	return op
+}
+
+// buildLifespanBlock assembles the Runtime Constraints section appended to
+// the sub-agent system prompt (M1.1 — static lifespan awareness).
+//
+// SECURITY: this block is assembled exclusively from code-computed numeric
+// limits. The parent-supplied goal/context/guidance strings are never
+// interpolated here — they stay in the user request, keeping the system
+// prompt a trust boundary (pinned by TestBuildLifespanBlock_HostileGoal).
+func buildLifespanBlock(timeoutSeconds, maxIterations int, limits budget.Limits) string {
+	var b strings.Builder
+	b.WriteString("## Runtime Constraints (enforced by the runtime, not negotiable)\n")
+	if timeoutSeconds > 0 {
+		fmt.Fprintf(&b, "- Wall-clock budget: %ds (hard stop; the runtime reserves a finalization window near the end — conclude cleanly before it).\n", timeoutSeconds)
+	} else {
+		b.WriteString("- Wall-clock budget: none configured.\n")
+	}
+	if maxIterations > 0 {
+		fmt.Fprintf(&b, "- Iteration budget: %d think→act cycles.\n", maxIterations)
+	} else {
+		b.WriteString("- Iteration budget: none configured.\n")
+	}
+	if limits.MaxRuntimeSeconds > 0 {
+		fmt.Fprintf(&b, "- Execution budget: max %ds runtime.\n", limits.MaxRuntimeSeconds)
+	}
+	if limits.MaxToolCalls > 0 {
+		fmt.Fprintf(&b, "- Execution budget: max %d tool calls.\n", limits.MaxToolCalls)
+	}
+	if limits.MaxInputTokens > 0 {
+		fmt.Fprintf(&b, "- Execution budget: max %d input tokens.\n", limits.MaxInputTokens)
+	}
+	if limits.MaxOutputTokens > 0 {
+		fmt.Fprintf(&b, "- Execution budget: max %d output tokens.\n", limits.MaxOutputTokens)
+	}
+	if limits.MaxCostUSD > 0 {
+		fmt.Fprintf(&b, "- Execution budget: max $%.4f estimated cost.\n", limits.MaxCostUSD)
+	}
+	if timeoutSeconds > 0 || maxIterations > 0 {
+		b.WriteString("- Budget policy: conclude within budget. At ~25% remaining, stop starting new work, consolidate findings, and write your final report. The runtime warns at 50/75/90% usage.\n")
+	}
+	return b.String()
+}
+
 // subagentResult is the JSON contract written to stdout.
 type subagentResult struct {
-	Status        string   `json:"status"`                   // "success" or "error"
-	Error         string   `json:"error,omitempty"`          // error message
-	Summary       string   `json:"summary"`                  // task summary
-	FilesChanged  []string `json:"files_changed,omitempty"`  // changed files
-	TokensUsed    int      `json:"tokens_used"`              // total tokens consumed
-	Iterations    int      `json:"iterations"`               // think-act cycles used
-	ParentSession string   `json:"parent_session,omitempty"` // correlation id from --parent-session
-}
-
-// ── SubagentConfig ───────────────────────────────────────────────────
-
-type subagentConfig struct {
-	MaxConcurrency int    `json:"max_concurrency"`
-	TimeoutSeconds int    `json:"timeout_seconds"`
-	MaxIterations  int    `json:"max_iterations"`
-	SystemPrompt   string `json:"system_prompt,omitempty"`
-}
-
-func defaultSubagentConfig() subagentConfig {
-	return subagentConfig{
-		MaxConcurrency: 3,
-		TimeoutSeconds: 120,
-		MaxIterations:  15,
-	}
-}
-
-// parseSubagentConfig extracts the subagent section from a config JSON string.
-func parseSubagentConfig(data string) subagentConfig {
-	cfg := defaultSubagentConfig()
-	if data == "" {
-		return cfg
-	}
-	var file struct {
-		Subagent *subagentConfig `json:"subagent"`
-	}
-	if err := json.Unmarshal([]byte(data), &file); err != nil {
-		return cfg
-	}
-	if file.Subagent != nil {
-		if file.Subagent.MaxConcurrency > 0 {
-			cfg.MaxConcurrency = file.Subagent.MaxConcurrency
-		}
-		if file.Subagent.TimeoutSeconds > 0 {
-			cfg.TimeoutSeconds = file.Subagent.TimeoutSeconds
-		}
-		if file.Subagent.MaxIterations > 0 {
-			cfg.MaxIterations = file.Subagent.MaxIterations
-		}
-		if file.Subagent.SystemPrompt != "" {
-			cfg.SystemPrompt = file.Subagent.SystemPrompt
-		}
-	}
-	return cfg
+	Status          string   `json:"status"`                   // "success", "partial", "budget_exhausted" or "error"
+	Error           string   `json:"error,omitempty"`          // error message
+	PartialReason   string   `json:"partial_reason,omitempty"` // time_budget | iteration_budget | execution_budget
+	Summary         string   `json:"summary"`                  // task summary
+	FilesChanged    []string `json:"files_changed,omitempty"`  // changed files
+	TokensUsed      int      `json:"tokens_used"`              // total tokens consumed
+	Iterations      int      `json:"iterations"`               // think-act cycles used
+	DurationSeconds float64  `json:"duration_seconds"`         // wall-clock runtime
+	ParentSession   string   `json:"parent_session,omitempty"` // correlation id from --parent-session
 }
 
 // ── Subagent Command ─────────────────────────────────────────────────
@@ -272,6 +301,7 @@ func subagentCmd(args []string) error {
 	var taskGuidance string // how-to-approach guidance from the parent (if any)
 	var taskTrust string    // "trusted" or "untrusted" (from parent agent)
 	var taskMaxRisk string
+	var taskBudgetBlock *taskBudget // parent's remaining budget (share mode)
 	if hasTaskFile {
 		info, err := os.Stat(cfg.taskFile)
 		if err != nil {
@@ -285,11 +315,12 @@ func subagentCmd(args []string) error {
 			return fmt.Errorf("read task file: %w", err)
 		}
 		var task struct {
-			Goal       string `json:"goal"`
-			Context    string `json:"context"`
-			Guidance   string `json:"guidance,omitempty"`
-			TrustLevel string `json:"trust_level,omitempty"`
-			MaxRisk    string `json:"max_risk,omitempty"`
+			Goal       string      `json:"goal"`
+			Context    string      `json:"context"`
+			Guidance   string      `json:"guidance,omitempty"`
+			TrustLevel string      `json:"trust_level,omitempty"`
+			MaxRisk    string      `json:"max_risk,omitempty"`
+			Budget     *taskBudget `json:"budget,omitempty"`
 		}
 		if err := json.Unmarshal(data, &task); err != nil {
 			return fmt.Errorf("parse task file: %w", err)
@@ -299,6 +330,7 @@ func subagentCmd(args []string) error {
 		taskGuidance = task.Guidance
 		taskTrust = task.TrustLevel
 		taskMaxRisk = task.MaxRisk
+		taskBudgetBlock = task.Budget
 		// Only delete the task file if the parent wrote it into an odek temp
 		// directory. This prevents `odek subagent --task /path/to/user/file`
 		// from reading and then deleting an arbitrary file.
@@ -307,18 +339,27 @@ func subagentCmd(args []string) error {
 		}
 	}
 
-	// Apply defaults
-	if cfg.timeout <= 0 {
-		cfg.timeout = 120
-	}
-	if cfg.maxIter <= 0 {
-		cfg.maxIter = 15
-	}
-
 	// Resolve config (inherits everything from normal chain)
 	resolved := config.LoadConfig(config.CLIFlags{})
 	if err := approveProjectSandbox(resolved, os.Stdin, os.Stdout); err != nil {
 		return err
+	}
+
+	// Apply defaults — CLI flag > operator subagent section > built-in
+	// default. The subagent config section (M1.4) replaces the old
+	// hardcoded 120s/15 values; the parseSubagentConfig dead code it
+	// orphans was removed with this wiring.
+	if cfg.timeout <= 0 {
+		cfg.timeout = resolved.Subagent.TimeoutSeconds
+	}
+	if cfg.timeout <= 0 {
+		cfg.timeout = 120
+	}
+	if cfg.maxIter <= 0 {
+		cfg.maxIter = resolved.Subagent.MaxIterations
+	}
+	if cfg.maxIter <= 0 {
+		cfg.maxIter = 15
 	}
 
 	// If the parent handed us an API key via FD 3, prefer it over any
@@ -339,11 +380,19 @@ func subagentCmd(args []string) error {
 	// max_risk is set, clamp every class above it to Deny.
 	applySubagentTrust(&resolved.Dangerous, taskTrust, taskMaxRisk)
 
+	// Budget inheritance (subagent.budget_inherit="share", M1.5): the
+	// parent wrote its remaining budget into the task file; the child
+	// spends at most min(operator limits, parent remaining).
+	resolved.Limits = clampLimits(resolved.Limits, taskBudgetBlock)
+
 	// The sub-agent system prompt is a FIXED constant — a trust boundary the
 	// parent cannot write to. Parent-supplied goal/guidance/context are
 	// delivered in the user request instead (fenced when untrusted), so they
-	// can never redefine the agent or strip its SAFETY rules.
-	systemMsg := subagentSystem
+	// can never redefine the agent or strip its SAFETY rules. The Runtime
+	// Constraints block appended below (M1.1 — lifespan awareness) is built
+	// exclusively from code-computed numeric limits; no parent-supplied
+	// string ever enters the system prompt.
+	systemMsg := subagentSystem + "\n\n" + buildLifespanBlock(cfg.timeout, cfg.maxIter, resolved.Limits)
 	prompt := buildSubagentRequest(cfg.goal, taskGuidance, cfg.context, taskTrust == "untrusted")
 
 	// Build tools
@@ -355,7 +404,7 @@ func subagentCmd(args []string) error {
 			resolved.Skills.Embedding,
 		)
 	}
-	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{WebSearch: resolved.WebSearch, Planning: &resolved.Planning}, nil)
+	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{WebSearch: resolved.WebSearch, Planning: &resolved.Planning, Subagent: resolved.Subagent}, nil)
 
 	// MCP server tools
 	//
@@ -402,12 +451,25 @@ func subagentCmd(args []string) error {
 		sandboxCleanup = cleanup
 	}
 
-	// Context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.timeout)*time.Second)
-	defer cancel()
+	// Two-stage deadline (M1.3 — graceful finalization): the soft deadline
+	// fires RequestFinalization one finalization window before the hard
+	// kill, so the engine stops starting new tool batches and produces a
+	// bounded partial-progress summary instead of being SIGKILLed with
+	// nothing to show. The hard deadline remains the backstop.
+	finalizationWindow := time.Duration(cfg.timeout) * time.Second / 8
+	if finalizationWindow > 15*time.Second {
+		finalizationWindow = 15 * time.Second
+	}
+	if finalizationWindow < time.Second {
+		finalizationWindow = time.Second
+	}
+	hardCtx, hardCancel := context.WithTimeout(context.Background(), time.Duration(cfg.timeout)*time.Second)
+	defer hardCancel()
+	softCtx, softCancel := context.WithTimeout(context.Background(), time.Duration(cfg.timeout)*time.Second-finalizationWindow)
+	defer softCancel()
 
 	// Signal handling (for user-initiated cancellation)
-	sigCtx, sigCancel := signal.NotifyContext(ctx, os.Interrupt)
+	sigCtx, sigCancel := signal.NotifyContext(hardCtx, os.Interrupt)
 	defer sigCancel()
 
 	// Human-readable progress goes to stderr
@@ -431,6 +493,7 @@ func subagentCmd(args []string) error {
 		BaseURL:          resolved.BaseURL,
 		APIKey:           resolved.APIKey,
 		MaxIterations:    cfg.maxIter,
+		AnnounceBudget:   &resolved.Subagent.AnnounceBudget,
 		SystemMessage:    systemMsg,
 		UntrustedWrapper: func(source, content string) string { return wrapUntrusted(context.Background(), source, content) },
 		RuntimeContext:   odek.BuildRuntimeContext("terminal"),
@@ -463,6 +526,16 @@ func subagentCmd(args []string) error {
 	}
 	defer agent.Close()
 
+	// Soft-deadline watcher: when the finalization window opens, ask the
+	// engine to conclude gracefully; the hard deadline still kills as a
+	// backstop. The Err check makes an explicit cancel a no-op here.
+	go func() {
+		<-softCtx.Done()
+		if softCtx.Err() == context.DeadlineExceeded {
+			agent.RequestFinalization()
+		}
+	}()
+
 	// Run
 	start := time.Now()
 	_, allMessages, err := agent.RunWithMessages(sigCtx, []llm.Message{
@@ -485,25 +558,30 @@ func subagentCmd(args []string) error {
 		tokensUsed += len(msg.Content) / 4 // rough estimate
 	}
 
+	// Classify the outcome (M1.3/M2.4 contract): typed budget errors map to
+	// budget_exhausted, partial-summary markers to partial (with reason),
+	// hard timeouts to error+timeout, everything else to success/error.
+	summary := extractSummary(allMessages)
+	reason, partial := loop.PartialSummaryReason(summary)
+	outcome := classifySubagentRun(err, partial, reason, sigCtx)
+
 	// Build result
 	result := subagentResult{
-		Status:        "success",
-		Summary:       extractSummary(allMessages),
-		TokensUsed:    tokensUsed,
-		Iterations:    iterations,
-		ParentSession: cfg.parentSession,
+		Status:          outcome.Status,
+		PartialReason:   outcome.Reason,
+		Summary:         summary,
+		TokensUsed:      tokensUsed,
+		Iterations:      iterations,
+		DurationSeconds: latency.Seconds(),
+		ParentSession:   cfg.parentSession,
 	}
 
 	if err != nil {
-		timedOut := sigCtx.Err() != nil
-		if timedOut {
-			result.Status = "error"
+		if outcome.TimedOut {
 			result.Error = fmt.Sprintf("timeout after %ds", cfg.timeout)
 		} else {
-			result.Status = "error"
 			result.Error = err.Error()
 		}
-		result.Summary = extractSummary(allMessages)
 	}
 
 	// Extract files changed from tool calls
@@ -514,27 +592,83 @@ func subagentCmd(args []string) error {
 	enc.SetIndent("", "")
 	enc.Encode(result)
 
-	if result.Status != "success" {
-		fmt.Fprintf(os.Stderr, "✗ Sub-agent failed: %s\n", result.Error)
-		return &subagentRunError{timeout: err != nil && sigCtx.Err() != nil}
+	if result.Status == "success" {
+		if !cfg.quiet {
+			fmt.Fprintf(os.Stderr, "✅ Sub-agent complete: %.1fs, %d tokens, %d iterations\n",
+				latency.Seconds(), tokensUsed, iterations)
+		}
+		return nil
 	}
-	if !cfg.quiet {
-		fmt.Fprintf(os.Stderr, "✅ Sub-agent complete: %.1fs, %d tokens, %d iterations\n",
-			latency.Seconds(), tokensUsed, iterations)
+	if result.Status == "partial" {
+		if result.PartialReason == "time_budget" {
+			// The soft deadline fired and the engine concluded gracefully —
+			// but the run did hit its wall-clock budget, so the timeout
+			// exit contract (2) is preserved for callers.
+			if !cfg.quiet {
+				fmt.Fprintf(os.Stderr, "⏱ Sub-agent concluded on its time budget: %.1fs, %d iterations\n",
+					latency.Seconds(), iterations)
+			}
+			return &subagentRunError{timeout: true}
+		}
+		if !cfg.quiet {
+			fmt.Fprintf(os.Stderr, "⏱ Sub-agent concluded on its iteration budget (%s): %d iterations\n",
+				result.PartialReason, iterations)
+		}
+		return nil
 	}
+	if result.Status == "budget_exhausted" {
+		fmt.Fprintf(os.Stderr, "✗ Sub-agent exhausted its execution budget (%s)\n", result.PartialReason)
+		return &subagentRunError{budget: true}
+	}
+	fmt.Fprintf(os.Stderr, "✗ Sub-agent failed: %s\n", result.Error)
+	return &subagentRunError{timeout: outcome.TimedOut}
+}
 
-	return nil
+// subagentOutcome is the classified result of one sub-agent run: the
+// result-contract status, its partial_reason (when applicable), and whether
+// the run ended on the wall-clock deadline.
+type subagentOutcome struct {
+	Status   string // "success" | "partial" | "budget_exhausted" | "error"
+	Reason   string // "time_budget" | "iteration_budget" | "execution_budget"
+	TimedOut bool
+}
+
+// classifySubagentRun maps a finished child run to the result contract.
+// Precedence: a typed budget error wins (it is the most informative cause),
+// then the hard-deadline timeout, then the partial-summary markers, then
+// success. Pure — unit-tested in subagent_lifespan_test.go.
+func classifySubagentRun(err error, partial bool, reason string, sigCtx context.Context) subagentOutcome {
+	if err != nil {
+		if _, isBudget := budget.As(err); isBudget {
+			return subagentOutcome{Status: "budget_exhausted", Reason: "execution_budget"}
+		}
+		if sigCtx.Err() != nil {
+			return subagentOutcome{Status: "error", TimedOut: true}
+		}
+		return subagentOutcome{Status: "error"}
+	}
+	if partial {
+		return subagentOutcome{Status: "partial", Reason: reason}
+	}
+	return subagentOutcome{Status: "success"}
 }
 
 // subagentRunError reports a task-level failure AFTER the JSON result
 // envelope has already been written by subagentCmd. dispatch maps it to the
-// documented exit codes: 2 for timeouts, 1 for other task errors (0 =
-// success, 3 = setup errors, which still travel as plain errors).
-type subagentRunError struct{ timeout bool }
+// documented exit codes: 2 for timeouts, 4 for execution-budget exhaustion
+// (aligning with the run command's budget.Error mapping), 1 for other task
+// errors (0 = success, 3 = setup errors, which still travel as plain errors).
+type subagentRunError struct {
+	timeout bool
+	budget  bool
+}
 
 func (e *subagentRunError) Error() string {
-	if e.timeout {
+	switch {
+	case e.timeout:
 		return "sub-agent timed out"
+	case e.budget:
+		return "sub-agent exhausted its execution budget"
 	}
 	return "sub-agent task failed"
 }

@@ -651,13 +651,17 @@ The `subagent` section controls task decomposition and parallel sub-agent execut
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `max_concurrency` | 3 | Max sub-agents running in parallel (max 8) |
-| `timeout_seconds` | 120 | Default timeout per sub-agent (overridden by `--timeout`) |
-| `max_iterations` | 15 | Default max think→act cycles per sub-agent (overridden by `--max-iter`) |
+| `max_concurrency` | global `max_concurrency` | Max sub-agents running in parallel (max 8) |
+| `timeout_seconds` | 120 | Default wall-clock budget per sub-agent (overridden by `--timeout`); clamped to 3600 |
+| `max_iterations` | 15 | Default think→act cycles per sub-agent (overridden by `--max-iter`); clamped to 100 |
+| `max_depth` | 2 | Delegation nesting cap via `ODEK_SUBAGENT_DEPTH`; clamped to 8 |
+| `announce_budget` | true | Sub-agents are told their budget at spawn and warned at 50/75/90% usage |
+| `budget_inherit` | `"operator"` | `"share"` = a sub-agent gets min(operator limits, parent's remaining budget) |
 
-This section is optional. Omitted fields inherit sensible defaults.
+This section is optional. Omitted fields inherit the defaults above.
 
-> **Note**: The `subagent` section is currently read only from `odek.json` by the `odek subagent` command in test code. Runtime values (`max_concurrency`, `timeout_seconds`) are hardcoded in production `odek run`/`odek serve`. This may be wired up fully in a future release.
+This section is **operator-only**: a `subagent` section in project-level `./odek.json` is ignored with a warning — a cloned repo must not be able to extend its own sub-agents' budgets, lift the runaway-process clamps, or re-widen budget inheritance.
+
 
 ## MCP server configuration
 

@@ -27,6 +27,10 @@ type SignalEvent struct {
 	//                        human-readable elapsed, e.g. "running for 2m0s").
 	//                        Fires every interval until the call returns, so
 	//                        long-running tools no longer look like a hang.
+	//   "budget_warning"   — the run crossed 50/75/90% of its iteration or
+	//                        wall-clock budget and the engine injected a
+	//                        budget-awareness hint (Detail = threshold and
+	//                        usage, e.g. "threshold_75: 11/15 iterations")
 	Type      string
 	Detail    string    // human-readable detail (mode, correction text, etc.)
 	Tool      string    // tool name for tool_recovery

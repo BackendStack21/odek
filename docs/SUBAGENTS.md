@@ -215,6 +215,26 @@ Emoji-prefixed progress for terminal users:
 
 Suppressed with `--quiet`.
 
+- At iteration boundaries, when the run crosses 50% / 75% / 90% of its
+  iteration or wall-clock budget, the engine appends a one-line budget hint
+  to the corrections message and emits a `budget_warning` signal, so the
+  model can pace itself and conclude cleanly instead of being cut off
+  mid-work (`subagent.announce_budget`, default on).
+- The wall-clock budget is two-stage: a finalization window (min(15s,
+  timeout/8)) before the hard kill is reserved for a bounded
+  partial-progress summary — a timed-out sub-agent returns
+  `status: "partial"`, `partial_reason: "time_budget"` and a usable
+  report instead of nothing. Iteration-budget exhaustion reports
+  `partial_reason: "iteration_budget"`; a hard execution budget reports
+  `status: "budget_exhausted"` (exit code 4).
+- Delegation depth is capped (`subagent.max_depth`, default 2, tracked via
+  `ODEK_SUBAGENT_DEPTH`): a sub-agent at the cap refuses to fan out
+  further.
+- With `subagent.budget_inherit: "share"`, the parent writes its remaining
+  budget into each task file and the child enforces
+  min(operator limits, parent remaining) — a near-exhausted parent can no
+  longer spawn children with fresh headroom.
+
 ## System prompt & request (trust boundary)
 
 A sub-agent's **system prompt is a fixed, code-defined constant** (`subagentSystem` in

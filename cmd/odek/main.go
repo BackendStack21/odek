@@ -1679,7 +1679,7 @@ func run(args []string) error {
 
 	// Sandbox setup
 	var sandboxCleanup func() error
-	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{Transcription: resolved.Transcription, Vision: resolved.Vision, WebSearch: resolved.WebSearch, Planning: &resolved.Planning}, nil)
+	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{Transcription: resolved.Transcription, Vision: resolved.Vision, WebSearch: resolved.WebSearch, Planning: &resolved.Planning, Subagent: resolved.Subagent}, nil)
 
 	// MCP server tools
 	var mcpCleanup func()
@@ -2218,6 +2218,9 @@ type toolConfig struct {
 	Transcription config.TranscriptionConfig
 	Vision        config.VisionConfig
 	WebSearch     config.WebSearchConfig
+	// Subagent carries the resolved subagent section for delegate_tasks
+	// (timeout/concurrency/depth defaults + budget inheritance mode).
+	Subagent config.SubagentResolved
 	// Planning, when non-nil and Enabled, registers the built-in plan tool.
 	// The store it carries is shared with the loop engine via odek.New's
 	// discovery of *loop.PlanTool in the returned tools slice.
@@ -2225,16 +2228,37 @@ type toolConfig struct {
 }
 
 func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver danger.Approver, maxConcurrency int, apiKey string, tcfg toolConfig, store *session.Store) []odek.Tool {
+	// Sub-agent execution defaults (M1.4): the operator subagent section
+	// overrides the built-in defaults; concurrency falls back to the
+	// global max_concurrency when the section does not set it.
+	subTimeout := tcfg.Subagent.TimeoutSeconds
+	if subTimeout <= 0 {
+		subTimeout = 120
+	}
+	subConcurrency := tcfg.Subagent.MaxConcurrency
+	if subConcurrency <= 0 {
+		subConcurrency = maxConcurrency
+	}
+	subDepth := tcfg.Subagent.MaxDepth
+	if subDepth <= 0 {
+		subDepth = 2
+	}
+	subInherit := tcfg.Subagent.BudgetInherit
+	if subInherit == "" {
+		subInherit = config.BudgetInheritOperator
+	}
 	tools := []odek.Tool{
 		&shellTool{
 			dangerousConfig: dc,
 			approver:        approver,
 		},
 		&delegateTasksTool{
-			maxConcurrency: maxConcurrency,
+			maxConcurrency: subConcurrency,
 			odekPath:       os.Args[0],
 			apiKey:         apiKey,
-			timeout:        120 * time.Second,
+			timeout:        time.Duration(subTimeout) * time.Second,
+			maxDepth:       subDepth,
+			budgetInherit:  subInherit,
 		},
 		&readFileTool{dangerousConfig: dc},
 		&writeFileTool{dangerousConfig: dc, restrictToCWD: true},

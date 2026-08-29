@@ -109,9 +109,9 @@ Cost enforcement is active only when `max_cost_usd` **and** both per-million pri
 |------|---------|----------|
 | `0` | Success | all |
 | `1` | Task/model/tool error | all |
-| `2` | Overall timeout (killed by parent/context) | `subagent` |
+| `2` | Overall timeout (killed by parent/context, or the wall-clock budget fired and the sub-agent concluded with a `partial` time-budget report) | `subagent` |
 | `3` | Setup/contract error | `subagent` |
-| `4` | Execution budget exhausted (typed `budget.Error`) | `run` |
+| `4` | Execution budget exhausted (typed `budget.Error`) | `run`, `subagent` |
 
 ## File attachments
 

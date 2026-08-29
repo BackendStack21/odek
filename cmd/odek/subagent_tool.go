@@ -8,11 +8,13 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/BackendStack21/odek"
+	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/config"
 )
 
@@ -36,6 +38,23 @@ type delegateTasksTool struct {
 	apiKey         string // re-injected into sub-agent environment
 	timeout        time.Duration
 
+	// maxDepth caps delegation nesting (M1.6): a process at depth N (its own
+	// level, stamped by its parent via ODEK_SUBAGENT_DEPTH) may only spawn
+	// children while N+1 <= maxDepth. 0 = uncapped (legacy/test default).
+	maxDepth int
+
+	// budgetInherit is config.BudgetInheritOperator (default) or
+	// config.BudgetInheritShare (M1.5): in share mode the run's remaining
+	// budget is written into each task file so the child enforces
+	// min(operator limits, parent remaining).
+	budgetInherit string
+
+	// budgetView is the parent engine's budget view, injected by odek.New
+	// for tools implementing SetBudgetView. Guarded: tool calls may run in
+	// parallel goroutines.
+	budgetMu   sync.Mutex
+	budgetView budget.View
+
 	// OnSubagentLog, if set, is called with each NDJSON progress line
 	// emitted by a sub-agent. taskIdx is the index within the current
 	// batch. Used by the WebUI for live log streaming.
@@ -44,6 +63,15 @@ type delegateTasksTool struct {
 
 func (t *delegateTasksTool) Name() string { return "delegate_tasks" }
 
+// SetBudgetView is called by odek.New for tools implementing the budget
+// interface: it hands the tool a view of the run's remaining budget, used
+// when subagent.budget_inherit is "share" to pass headroom to children.
+func (t *delegateTasksTool) SetBudgetView(v budget.View) {
+	t.budgetMu.Lock()
+	defer t.budgetMu.Unlock()
+	t.budgetView = v
+}
+
 func (t *delegateTasksTool) Description() string {
 	return `Spawn one or more sub-agent OS processes to work on focused sub-tasks in parallel. Each sub-agent gets its own process, config, and context window. Use this when the task has clear independent sub-tasks that can be worked on simultaneously.
 
@@ -51,9 +79,10 @@ Example: decomposing "build a REST API" into "create user model", "create auth m
 
 Key rules:
 - Each sub-agent has a fresh context (no parent history)
-- All sub-agents run in parallel (configurable via max_concurrency)
-- Each sub-agent has 120s to complete
-- Sub-agents can use all tools (shell, read/write files, etc.)
+- Sub-agents run in parallel up to the configured concurrency limit (subagent.max_concurrency, falling back to max_concurrency)
+- Each sub-agent gets a wall-clock budget (subagent.timeout_seconds, default 120s) and an iteration budget (subagent.max_iterations, default 15) — it is told both at spawn and warned as it approaches them
+- Sub-agents can use all tools (shell, read/write files, etc.), capped by trust_level and max_risk
+- Delegation depth is capped (subagent.max_depth, default 2) — do leaf work yourself when close to the cap
 - After all complete, synthesize the results into a cohesive answer
 
 Output format per sub-agent:
@@ -131,6 +160,15 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 		return `{"error":"max 8 tasks per call"}`, nil
 	}
 
+	// Delegation depth cap (M1.6): refuse to fan out beyond the configured
+	// nesting limit. Fail the whole call — every task would hit the same
+	// wall, and the parent is better served by the error than by N
+	// identical failures.
+	depth := subagentDepth()
+	if t.maxDepth > 0 && depth >= t.maxDepth {
+		return fmt.Sprintf(`{"error":"delegation depth limit reached (depth %d, max %d); do this work yourself instead of delegating"}`, depth, t.maxDepth), nil
+	}
+
 	// Run sub-agents in parallel with concurrency limit
 	results := make([]string, len(input.Tasks))
 	sem := make(chan struct{}, t.maxConcurrency)
@@ -187,12 +225,29 @@ func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, tr
 	}
 	taskPath := taskFile.Name()
 
-	task := map[string]string{
-		"goal":        goal,
-		"context":     taskContext,
-		"guidance":    guidance,
-		"trust_level": trustLevel,
-		"max_risk":    maxRisk,
+	// Typed task envelope (M1.5): the parent's remaining budget rides
+	// along in share mode so the child clamps its own limits to it.
+	task := struct {
+		Goal       string      `json:"goal"`
+		Context    string      `json:"context,omitempty"`
+		Guidance   string      `json:"guidance,omitempty"`
+		TrustLevel string      `json:"trust_level,omitempty"`
+		MaxRisk    string      `json:"max_risk,omitempty"`
+		Budget     *taskBudget `json:"budget,omitempty"`
+	}{
+		Goal:       goal,
+		Context:    taskContext,
+		Guidance:   guidance,
+		TrustLevel: trustLevel,
+		MaxRisk:    maxRisk,
+	}
+	if t.budgetInherit == config.BudgetInheritShare {
+		t.budgetMu.Lock()
+		view := t.budgetView
+		t.budgetMu.Unlock()
+		if view != nil {
+			task.Budget = taskBudgetFromSnapshot(view.BudgetSnapshot())
+		}
 	}
 	if err := json.NewEncoder(taskFile).Encode(task); err != nil {
 		taskFile.Close()
@@ -227,7 +282,8 @@ func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, tr
 	// as it has read the key. Everything injected from ~/.odek/secrets.env
 	// is stripped from the inherited environment too (2026-08 audit — the
 	// handoff previously covered only the primary API key).
-	cmd.Env = childEnvWithout(config.SecretsEnvNames())
+	cmd.Env = append(childEnvWithout(config.SecretsEnvNames()),
+		subagentDepthEnvVar+"="+strconv.Itoa(subagentDepth()+1))
 	var keyFile *os.File
 	var keyCleanup func()
 	if t.apiKey != "" {
@@ -378,6 +434,41 @@ func progressLimitExceeded(err error) bool {
 
 // Ensure delegateTasksTool implements odek.Tool
 var _ odek.Tool = (*delegateTasksTool)(nil)
+
+// taskBudgetFromSnapshot maps a budget snapshot to the task-file budget
+// block (M1.5 passdown); nil when no limit headroom is configured — there
+// is nothing to pass down, so the child keeps its operator caps.
+func taskBudgetFromSnapshot(s budget.Snapshot) *taskBudget {
+	tb := &taskBudget{
+		MaxRuntimeSeconds: s.RemainingRuntimeSeconds,
+		MaxToolCalls:      s.RemainingToolCalls,
+		MaxCostUSD:        s.RemainingCostUSD,
+	}
+	if tb.MaxRuntimeSeconds <= 0 && tb.MaxToolCalls <= 0 && tb.MaxCostUSD <= 0 {
+		return nil
+	}
+	return tb
+}
+
+// subagentDepthEnvVar carries the delegation depth down the process tree.
+// Each delegate_tasks spawn stamps its children with depth+1; a child at
+// the configured max depth refuses to delegate further (M1.6).
+const subagentDepthEnvVar = "ODEK_SUBAGENT_DEPTH"
+
+// subagentDepth returns this process's delegation depth (0 = top-level
+// agent). Unparseable or negative values are treated as 0.
+func subagentDepth() int {
+	n := 0
+	if v := os.Getenv(subagentDepthEnvVar); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil {
+			n = parsed
+		}
+	}
+	if n < 0 {
+		n = 0
+	}
+	return n
+}
 
 // childEnvWithout returns the current environment minus the named
 // variables. delegate_tasks uses it to strip the ~/.odek/secrets.env

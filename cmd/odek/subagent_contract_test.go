@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek"
+	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/llm"
 )
@@ -587,37 +588,58 @@ printf '{"status":"success","summary":"hello from subagent","files_changed":[],"
 
 // ── 6. Config ───────────────────────────────────────────────────────
 
+// findDelegateTool returns the delegate_tasks instance from a builtinTools
+// slice so contract tests can assert the operator wiring landed.
+func findDelegateTool(t *testing.T, tools []odek.Tool) *delegateTasksTool {
+	t.Helper()
+	for _, tl := range tools {
+		if d, ok := tl.(*delegateTasksTool); ok {
+			return d
+		}
+	}
+	t.Fatal("delegate_tasks tool not found in builtin tools")
+	return nil
+}
+
 func TestSubagentConfig_DefaultValues(t *testing.T) {
-	cfg := defaultSubagentConfig()
-	if cfg.MaxConcurrency != 3 {
-		t.Errorf("default MaxConcurrency = %d, want 3", cfg.MaxConcurrency)
+	dt := findDelegateTool(t, builtinTools(danger.DangerousConfig{}, nil, nil, 4, "", toolConfig{}, nil))
+	if dt.timeout != 120*time.Second {
+		t.Errorf("default timeout = %v, want 120s", dt.timeout)
 	}
-	if cfg.TimeoutSeconds != 120 {
-		t.Errorf("default TimeoutSeconds = %d, want 120", cfg.TimeoutSeconds)
+	if dt.maxDepth != 2 {
+		t.Errorf("default maxDepth = %d, want 2", dt.maxDepth)
 	}
-	if cfg.MaxIterations != 15 {
-		t.Errorf("default MaxIterations = %d, want 15", cfg.MaxIterations)
+	if dt.maxConcurrency != 4 {
+		t.Errorf("default maxConcurrency = %d, want 4 (falls back to global)", dt.maxConcurrency)
+	}
+	if dt.budgetInherit != config.BudgetInheritOperator {
+		t.Errorf("default budgetInherit = %q, want operator", dt.budgetInherit)
 	}
 }
 
 func TestSubagentConfig_FromConfigFile(t *testing.T) {
-	configJSON := `{
-		"subagent": {
-			"max_concurrency": 5,
-			"timeout_seconds": 60,
-			"max_iterations": 10
-		}
-	}`
-
-	cfg := parseSubagentConfig(configJSON)
-	if cfg.MaxConcurrency != 5 {
-		t.Errorf("MaxConcurrency = %d, want 5", cfg.MaxConcurrency)
+	// The operator subagent section (resolved by internal/config) must
+	// reach the delegate_tasks tool as its execution defaults.
+	sub := config.SubagentResolved{
+		MaxConcurrency: 5,
+		TimeoutSeconds: 60,
+		MaxIterations:  10,
+		MaxDepth:       4,
+		AnnounceBudget: true,
+		BudgetInherit:  config.BudgetInheritShare,
 	}
-	if cfg.TimeoutSeconds != 60 {
-		t.Errorf("TimeoutSeconds = %d, want 60", cfg.TimeoutSeconds)
+	dt := findDelegateTool(t, builtinTools(danger.DangerousConfig{}, nil, nil, 4, "", toolConfig{Subagent: sub}, nil))
+	if dt.timeout != 60*time.Second {
+		t.Errorf("timeout = %v, want 60s", dt.timeout)
 	}
-	if cfg.MaxIterations != 10 {
-		t.Errorf("MaxIterations = %d, want 10", cfg.MaxIterations)
+	if dt.maxConcurrency != 5 {
+		t.Errorf("maxConcurrency = %d, want 5", dt.maxConcurrency)
+	}
+	if dt.maxDepth != 4 {
+		t.Errorf("maxDepth = %d, want 4", dt.maxDepth)
+	}
+	if dt.budgetInherit != config.BudgetInheritShare {
+		t.Errorf("budgetInherit = %q, want share", dt.budgetInherit)
 	}
 }
 
@@ -935,95 +957,12 @@ func TestExtractFilesChanged_PreservesOrder(t *testing.T) {
 	}
 }
 
-// ── 15. parseSubagentConfig — Edge Cases ────────────────────────────
-
-func TestParseSubagentConfig_EmptyJSON(t *testing.T) {
-	cfg := parseSubagentConfig("")
-	if cfg.MaxConcurrency != 3 {
-		t.Errorf("empty input → MaxConcurrency = %d, want 3", cfg.MaxConcurrency)
-	}
-	if cfg.TimeoutSeconds != 120 {
-		t.Errorf("empty input → TimeoutSeconds = %d, want 120", cfg.TimeoutSeconds)
-	}
-}
-
-func TestParseSubagentConfig_MalformedJSON(t *testing.T) {
-	cfg := parseSubagentConfig("{invalid json}")
-	if cfg.MaxConcurrency != 3 {
-		t.Errorf("malformed JSON → MaxConcurrency = %d, want 3 (fallback to default)", cfg.MaxConcurrency)
-	}
-}
-
-func TestParseSubagentConfig_PartialConfig(t *testing.T) {
-	cfg := parseSubagentConfig(`{"subagent": {"max_concurrency": 7}}`)
-	if cfg.MaxConcurrency != 7 {
-		t.Errorf("MaxConcurrency = %d, want 7", cfg.MaxConcurrency)
-	}
-	if cfg.TimeoutSeconds != 120 {
-		t.Errorf("TimeoutSeconds should keep default = %d, want 120", cfg.TimeoutSeconds)
-	}
-	if cfg.MaxIterations != 15 {
-		t.Errorf("MaxIterations should keep default = %d, want 15", cfg.MaxIterations)
-	}
-}
-
-func TestParseSubagentConfig_ZeroValues(t *testing.T) {
-	cfg := parseSubagentConfig(`{"subagent": {"max_concurrency": 0, "timeout_seconds": 0, "max_iterations": 0}}`)
-	if cfg.MaxConcurrency != 3 {
-		t.Errorf("zero MaxConcurrency should fallback to default %d, got %d", 3, cfg.MaxConcurrency)
-	}
-	if cfg.TimeoutSeconds != 120 {
-		t.Errorf("zero TimeoutSeconds should fallback to default %d, got %d", 120, cfg.TimeoutSeconds)
-	}
-	if cfg.MaxIterations != 15 {
-		t.Errorf("zero MaxIterations should fallback to default %d, got %d", 15, cfg.MaxIterations)
-	}
-}
-
-func TestParseSubagentConfig_SystemPrompt(t *testing.T) {
-	cfg := parseSubagentConfig(`{"subagent": {"system_prompt": "You are a testing engineer"}}`)
-	if cfg.SystemPrompt != "You are a testing engineer" {
-		t.Errorf("SystemPrompt = %q, want %q", cfg.SystemPrompt, "You are a testing engineer")
-	}
-}
-
-func TestParseSubagentConfig_EmptySystemPrompt(t *testing.T) {
-	cfg := parseSubagentConfig(`{"subagent": {"system_prompt": ""}}`)
-	if cfg.SystemPrompt != "" {
-		t.Errorf("empty SystemPrompt should stay empty, got %q", cfg.SystemPrompt)
-	}
-}
-
-func TestParseSubagentConfig_NoSubagentSection(t *testing.T) {
-	cfg := parseSubagentConfig(`{"model": "gpt-4", "system": "hello"}`)
-	if cfg.MaxConcurrency != 3 {
-		t.Errorf("no subagent section → defaults, got MaxConcurrency = %d", cfg.MaxConcurrency)
-	}
-}
-
-func TestParseSubagentConfig_NestedConfig(t *testing.T) {
-	cfg := parseSubagentConfig(`{
-		"model": "gpt-4",
-		"subagent": {
-			"max_concurrency": 5,
-			"timeout_seconds": 60,
-			"max_iterations": 10,
-			"system_prompt": "custom prompt"
-		}
-	}`)
-	if cfg.MaxConcurrency != 5 {
-		t.Errorf("MaxConcurrency = %d, want 5", cfg.MaxConcurrency)
-	}
-	if cfg.TimeoutSeconds != 60 {
-		t.Errorf("TimeoutSeconds = %d, want 60", cfg.TimeoutSeconds)
-	}
-	if cfg.MaxIterations != 10 {
-		t.Errorf("MaxIterations = %d, want 10", cfg.MaxIterations)
-	}
-	if cfg.SystemPrompt != "custom prompt" {
-		t.Errorf("SystemPrompt = %q, want %q", cfg.SystemPrompt, "custom prompt")
-	}
-}
+// ── 15. subagent config section ─────────────────────────────────────
+//
+// The cmd-side parseSubagentConfig helper was removed when the subagent
+// section was wired through internal/config (operator-only, project
+// config stripped). Its coverage now lives in
+// internal/config/subagent_config_test.go.
 
 // ── 16. subagentCmd Flag Parsing Edge Cases ─────────────────────────
 
