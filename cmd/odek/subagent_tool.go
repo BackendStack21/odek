@@ -39,6 +39,12 @@ type delegateTasksTool struct {
 	apiKey         string // re-injected into sub-agent environment
 	timeout        time.Duration
 
+	// profiles carries the operator's resolved capability profiles (P4)
+	// for parent-side fail-closed validation: an unknown profile name must
+	// fail the task BEFORE a child is spawned. Nil = operator defined no
+	// profiles; the child remains the fail-closed authority in that case.
+	profiles map[string]config.ProfileConfig
+
 	// maxDepth caps delegation nesting (M1.6): a process at depth N (its own
 	// level, stamped by its parent via ODEK_SUBAGENT_DEPTH) may only spawn
 	// children while N+1 <= maxDepth. 0 = uncapped (legacy/test default).
@@ -264,6 +270,20 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 }
 
 func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, trustLevel, maxRisk, profile string) string {
+	// Parent-side fail-closed validation (P4): an unknown profile name must
+	// fail the task BEFORE a child is spawned — the tool schema promises
+	// "unknown names fail the task", and a silently-bare child would run
+	// without the operator's permission envelope. The child re-validates
+	// against its own resolved config (defense in depth); when the operator
+	// defines no profiles at all, this map is nil and the child remains
+	// the sole authority.
+	if profile != "" && t.profiles != nil {
+		if _, ok := t.profiles[profile]; !ok {
+			return fmt.Sprintf(`{"status":"error","error":%q,"summary":"","files_changed":null,"iterations":0,"tokens_used":0}`,
+				fmt.Sprintf("unknown profile %q (define it in the top-level profiles config section)", profile))
+		}
+	}
+
 	// Derive per-task context from the parent's context (if set).
 	// When the parent is cancelled, all running sub-agents are killed
 	// promptly instead of running the full timeout.

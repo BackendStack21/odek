@@ -713,7 +713,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 	approver := newWSApprover(sendFn)
 	resolved.Dangerous.Approver = approver
 
-	tools := builtinTools(resolved.Dangerous, sm, approver, resolved.MaxConcurrency, resolved.APIKey, toolConfig{WebSearch: resolved.WebSearch, Planning: &resolved.Planning}, nil)
+	tools := builtinTools(resolved.Dangerous, sm, approver, resolved.MaxConcurrency, resolved.APIKey, toolConfigFromResolved(resolved), nil)
 
 	// MCP server tools
 	var mcpCleanup func()

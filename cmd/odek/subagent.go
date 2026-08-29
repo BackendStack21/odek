@@ -359,6 +359,38 @@ func parseSubagentFlags(args []string) (subagentFlags, error) {
 	return cfg, nil
 }
 
+// taskFileSpec is the JSON contract of a parent-supplied task file
+// (`odek subagent --task`). The profile field (P4) selects an
+// operator-defined capability profile; it was previously dropped by the
+// inline parser, so profiled delegate_tasks tasks silently ran bare.
+type taskFileSpec struct {
+	Goal        string      `json:"goal"`
+	Context     string      `json:"context"`
+	Guidance    string      `json:"guidance,omitempty"`
+	TrustLevel  string      `json:"trust_level,omitempty"`
+	MaxRisk     string      `json:"max_risk,omitempty"`
+	Profile     string      `json:"profile,omitempty"`
+	Budget      *taskBudget `json:"budget,omitempty"`
+	ParentTrust string      `json:"parent_trust,omitempty"`
+}
+
+// decodeTaskFileSpec parses task-file bytes into a taskFileSpec.
+func decodeTaskFileSpec(data []byte) (taskFileSpec, error) {
+	var spec taskFileSpec
+	err := json.Unmarshal(data, &spec)
+	return spec, err
+}
+
+// resolveProfileName picks the effective capability profile (P4): the
+// operator's direct --profile invocation outranks the parent's task-file
+// declaration. Empty when neither selects one.
+func resolveProfileName(cliFlag, taskFile string) string {
+	if cliFlag != "" {
+		return cliFlag
+	}
+	return taskFile
+}
+
 func subagentCmd(args []string) error {
 	cfg, err := parseSubagentFlags(args)
 	if err != nil {
@@ -381,6 +413,7 @@ func subagentCmd(args []string) error {
 	var taskGuidance string // how-to-approach guidance from the parent (if any)
 	var taskTrust string    // "trusted" or "untrusted" (from parent agent)
 	var taskMaxRisk string
+	var taskProfile string          // capability profile selected by the parent (P4)
 	var taskBudgetBlock *taskBudget // parent's remaining budget (share mode)
 	var parentTrust string          // parent's own effective trust (P3)
 	if hasTaskFile {
@@ -395,25 +428,18 @@ func subagentCmd(args []string) error {
 		if err != nil {
 			return fmt.Errorf("read task file: %w", err)
 		}
-		var task struct {
-			Goal        string      `json:"goal"`
-			Context     string      `json:"context"`
-			Guidance    string      `json:"guidance,omitempty"`
-			TrustLevel  string      `json:"trust_level,omitempty"`
-			MaxRisk     string      `json:"max_risk,omitempty"`
-			Budget      *taskBudget `json:"budget,omitempty"`
-			ParentTrust string      `json:"parent_trust,omitempty"`
-		}
-		if err := json.Unmarshal(data, &task); err != nil {
+		taskSpec, err := decodeTaskFileSpec(data)
+		if err != nil {
 			return fmt.Errorf("parse task file: %w", err)
 		}
-		cfg.goal = task.Goal
-		cfg.context = task.Context
-		taskGuidance = task.Guidance
-		taskTrust = task.TrustLevel
-		taskMaxRisk = task.MaxRisk
-		taskBudgetBlock = task.Budget
-		parentTrust = task.ParentTrust
+		cfg.goal = taskSpec.Goal
+		cfg.context = taskSpec.Context
+		taskGuidance = taskSpec.Guidance
+		taskTrust = taskSpec.TrustLevel
+		taskMaxRisk = taskSpec.MaxRisk
+		taskProfile = taskSpec.Profile
+		taskBudgetBlock = taskSpec.Budget
+		parentTrust = taskSpec.ParentTrust
 		// Only delete the task file if the parent wrote it into an odek temp
 		// directory. This prevents `odek subagent --task /path/to/user/file`
 		// from reading and then deleting an arbitrary file.
@@ -467,10 +493,13 @@ func subagentCmd(args []string) error {
 	// the trust lockdown (P2/P3), which is applied on top and cannot be
 	// lifted by profile selection.
 	var profileTools *config.ToolConfig
-	if cfg.profile != "" {
-		prof, ok := resolved.Profiles[cfg.profile]
+	// P4: a profile may be selected by the operator's direct --profile flag
+	// or by the parent via the task file; the flag outranks the file.
+	profileName := resolveProfileName(cfg.profile, taskProfile)
+	if profileName != "" {
+		prof, ok := resolved.Profiles[profileName]
 		if !ok {
-			return fmt.Errorf("unknown profile %q (define it in the top-level profiles config section)", cfg.profile)
+			return fmt.Errorf("unknown profile %q (define it in the top-level profiles config section)", profileName)
 		}
 		applyProfile(&resolved.Dangerous, prof)
 		profileTools = prof.Tools
@@ -506,7 +535,9 @@ func subagentCmd(args []string) error {
 			resolved.Skills.Embedding,
 		)
 	}
-	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{WebSearch: resolved.WebSearch, Planning: &resolved.Planning, Subagent: resolved.Subagent, SelfTrust: effectiveTrustLevel}, nil)
+	subTcfg := toolConfigFromResolved(resolved)
+	subTcfg.SelfTrust = effectiveTrustLevel
+	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, subTcfg, nil)
 
 	// MCP server tools
 	//

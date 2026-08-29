@@ -1678,7 +1678,7 @@ func run(args []string) error {
 
 	// Sandbox setup
 	var sandboxCleanup func() error
-	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfig{Transcription: resolved.Transcription, Vision: resolved.Vision, WebSearch: resolved.WebSearch, Planning: &resolved.Planning, Subagent: resolved.Subagent}, nil)
+	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfigFromResolved(resolved), nil)
 
 	// MCP server tools
 	var mcpCleanup func()
@@ -2220,6 +2220,10 @@ type toolConfig struct {
 	// Subagent carries the resolved subagent section for delegate_tasks
 	// (timeout/concurrency/depth defaults + budget inheritance mode).
 	Subagent config.SubagentResolved
+	// Profiles carries the operator's resolved capability profiles (P4) so
+	// delegate_tasks can fail closed on unknown profile names before
+	// spawning a child.
+	Profiles map[string]config.ProfileConfig
 	// SelfTrust is THIS process's own effective trust level (P3); stamped
 	// into spawned task files. Empty = top-level operator run (trusted).
 	SelfTrust string
@@ -2227,6 +2231,24 @@ type toolConfig struct {
 	// The store it carries is shared with the loop engine via odek.New's
 	// discovery of *loop.PlanTool in the returned tools slice.
 	Planning *config.PlanningConfig
+}
+
+// toolConfigFromResolved builds the toolConfig for builtinTools from a
+// resolved config — the single source of truth. Regression: hand-built
+// literals at the serve/mcp/schedule sites omitted the Subagent section
+// (delegate_tasks silently ran on the hardcoded 1800s fallback instead of
+// the operator's subagent.timeout_seconds) and repl omitted
+// Transcription/Vision. New sections added to toolConfig must be wired
+// here, not per call site.
+func toolConfigFromResolved(resolved config.ResolvedConfig) toolConfig {
+	return toolConfig{
+		Transcription: resolved.Transcription,
+		Vision:        resolved.Vision,
+		WebSearch:     resolved.WebSearch,
+		Planning:      &resolved.Planning,
+		Subagent:      resolved.Subagent,
+		Profiles:      resolved.Profiles,
+	}
 }
 
 func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver danger.Approver, maxConcurrency int, apiKey string, tcfg toolConfig, store *session.Store) []odek.Tool {
@@ -2267,6 +2289,7 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 			maxDepth:       subDepth,
 			budgetInherit:  subInherit,
 			selfTrust:      selfTrust,
+			profiles:       tcfg.Profiles,
 		},
 		&readFileTool{dangerousConfig: dc},
 		&writeFileTool{dangerousConfig: dc, restrictToCWD: true},
@@ -2944,12 +2967,7 @@ func auditTurnDelta(allMessages []llm.Message, histLen int) []llm.Message {
 // in the transcript while the tool that maintains it is missing.
 func buildContinueTools(resolved config.ResolvedConfig, sm *skills.SkillManager, store *session.Store) []odek.Tool {
 	return builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey,
-		toolConfig{
-			Transcription: resolved.Transcription,
-			Vision:        resolved.Vision,
-			WebSearch:     resolved.WebSearch,
-			Planning:      &resolved.Planning,
-		}, store)
+		toolConfigFromResolved(resolved), store)
 }
 
 func continueCmd(args []string) error {
