@@ -280,6 +280,14 @@ effective trust into the task file (`parent_trust`), and the child runs at
 `min(parent_trust, trust_level)`. A task tree rooted in untrusted content
 cannot launder itself into trusted children.
 
+Capability profiles (P4) let the operator define named permission envelopes
+in the top-level `profiles` config (see [CONFIG.md](CONFIG.md)): a task
+selects one via `profile: "name"` and the profile's `max_risk`/`allowlist`/
+`tools` **override** the corresponding global config for that sub-agent.
+Profiles are operator-authored (project config is stripped) and selecting
+one cannot lift the non-interactive deny or the trust lockdown — policy,
+not escalation.
+
 ### Untrusted tasks are fenced
 
 When the parent sets `trust_level: "untrusted"`, the entire request body is wrapped in an

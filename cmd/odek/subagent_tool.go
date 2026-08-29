@@ -149,6 +149,10 @@ func (t *delegateTasksTool) Schema() any {
 							"enum":        []string{"safe", "local_write", "system_write", "destructive", "code_execution", "network_egress", "install", "blocked"},
 							"description": "Optional cap on the sub-agent's allowed risk class. Tool calls above this class will be denied in the sub-agent without prompting. Use for fan-out tasks that should be read-only.",
 						},
+						"profile": map[string]any{
+							"type":        "string",
+							"description": "Optional. Name of an operator-defined capability profile (top-level profiles config). The profile's max_risk, allowlist, and tool filter OVERRIDE the operator's global config for this sub-agent. Unknown names fail the task - use only names that the operator has defined.",
+						},
 					},
 					"required": []string{"goal"},
 				},
@@ -170,6 +174,7 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 			Guidance   string `json:"guidance,omitempty"`
 			TrustLevel string `json:"trust_level,omitempty"`
 			MaxRisk    string `json:"max_risk,omitempty"`
+			Profile    string `json:"profile,omitempty"`
 		} `json:"tasks"`
 		Description string `json:"description,omitempty"`
 	}
@@ -199,13 +204,13 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 
 	for i, task := range input.Tasks {
 		sem <- struct{}{}
-		go func(i int, goal, ctx, guidance, trust, maxRisk string) {
+		go func(i int, goal, ctx, guidance, trust, maxRisk, profile string) {
 			defer func() { <-sem }()
-			r := t.runTask(i, goal, ctx, guidance, trust, maxRisk)
+			r := t.runTask(i, goal, ctx, guidance, trust, maxRisk, profile)
 			mu.Lock()
 			results[i] = r
 			mu.Unlock()
-		}(i, task.Goal, task.Context, task.Guidance, task.TrustLevel, task.MaxRisk)
+		}(i, task.Goal, task.Context, task.Guidance, task.TrustLevel, task.MaxRisk, task.Profile)
 	}
 
 	// Drain semaphore = wait for all goroutines
@@ -258,7 +263,7 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 	return wrapUntrusted(t.toolCtx(), "delegate_tasks", buf.String()), nil
 }
 
-func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, trustLevel, maxRisk string) string {
+func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, trustLevel, maxRisk, profile string) string {
 	// Derive per-task context from the parent's context (if set).
 	// When the parent is cancelled, all running sub-agents are killed
 	// promptly instead of running the full timeout.
@@ -276,7 +281,7 @@ func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, tr
 	// Typed task envelope: the parent's remaining budget rides along in
 	// share mode (M1.5) and the parent's effective trust is stamped for
 	// the non-increasing-downward invariant (P3).
-	task := newTaskEnvelope(goal, taskContext, guidance, trustLevel, maxRisk, nil, t.selfTrust)
+	task := newTaskEnvelope(goal, taskContext, guidance, trustLevel, maxRisk, profile, nil, t.selfTrust)
 	if t.budgetInherit == config.BudgetInheritShare {
 		t.budgetMu.Lock()
 		view := t.budgetView
@@ -493,6 +498,7 @@ type taskEnvelope struct {
 	Guidance    string      `json:"guidance,omitempty"`
 	TrustLevel  string      `json:"trust_level,omitempty"`
 	MaxRisk     string      `json:"max_risk,omitempty"`
+	Profile     string      `json:"profile,omitempty"`
 	Budget      *taskBudget `json:"budget,omitempty"`
 	ParentTrust string      `json:"parent_trust,omitempty"`
 }
@@ -500,14 +506,17 @@ type taskEnvelope struct {
 // newTaskEnvelope builds the task-file envelope. parentTrust is the
 // PARENT's own effective trust (P3 — trust is non-increasing downward):
 // the child computes min(parentTrust, trustLevel) as its effective trust,
-// so an untrusted task tree can never spawn trusted children.
-func newTaskEnvelope(goal, context, guidance, trustLevel, maxRisk string, budget *taskBudget, parentTrust string) taskEnvelope {
+// so an untrusted task tree can never spawn trusted children. profile
+// selects an operator-defined capability profile (P4) whose settings
+// override the corresponding operator config for the child.
+func newTaskEnvelope(goal, context, guidance, trustLevel, maxRisk, profile string, budget *taskBudget, parentTrust string) taskEnvelope {
 	return taskEnvelope{
 		Goal:        goal,
 		Context:     context,
 		Guidance:    guidance,
 		TrustLevel:  trustLevel,
 		MaxRisk:     maxRisk,
+		Profile:     profile,
 		Budget:      budget,
 		ParentTrust: parentTrust,
 	}

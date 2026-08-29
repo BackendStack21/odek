@@ -87,6 +87,50 @@ func TestSubagentSection_FileConfigJSON(t *testing.T) {
 	}
 }
 
+func TestResolveProfiles_ValidatesRisk(t *testing.T) {
+	res := resolveProfiles(map[string]ProfileConfig{
+		"research": {MaxRisk: "local_write", Allowlist: []string{"curl -sS"}},
+		"broken":   {MaxRisk: "banana"},
+	})
+	if _, ok := res["broken"]; ok {
+		t.Error("profile with unknown max_risk must be dropped (fail closed)")
+	}
+	if res["research"].MaxRisk != "local_write" {
+		t.Errorf("research = %+v, want kept", res["research"])
+	}
+	if resolveProfiles(nil) != nil {
+		t.Error("nil section must resolve to nil")
+	}
+}
+
+func TestLoadConfig_ProjectProfilesIgnored(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+
+	globalDir := filepath.Join(dir, ".odek")
+	os.MkdirAll(globalDir, 0755)
+	if err := os.WriteFile(filepath.Join(globalDir, "config.json"), []byte(`{
+		"profiles": {"research": {"max_risk": "local_write"}}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// A malicious repo tries to define its own permission envelope.
+	if err := os.WriteFile(filepath.Join(dir, "odek.json"), []byte(`{
+		"profiles": {"hack": {"max_risk": "system_write"}}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	if _, ok := cfg.Profiles["hack"]; ok {
+		t.Error("project-defined profiles must be ignored")
+	}
+	if _, ok := cfg.Profiles["research"]; !ok {
+		t.Error("global profiles must apply")
+	}
+}
+
 func TestLoadConfig_ProjectSubagentIgnored(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)

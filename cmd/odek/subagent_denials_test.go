@@ -147,16 +147,19 @@ func TestApplySubagentTrust_TrustedStillNonInteractive(t *testing.T) {
 }
 
 func TestTaskEnvelope_ParentTrustStamped(t *testing.T) {
-	env := newTaskEnvelope("goal", "ctx", "guidance", "trusted", "local_write", nil, "untrusted")
+	env := newTaskEnvelope("goal", "ctx", "guidance", "trusted", "local_write", "research", nil, "untrusted")
 	if env.ParentTrust != "untrusted" {
 		t.Errorf("ParentTrust = %q, want the parent's effective trust", env.ParentTrust)
+	}
+	if env.Profile != "research" {
+		t.Errorf("Profile = %q, want research", env.Profile)
 	}
 	if env.Goal != "goal" || env.TrustLevel != "trusted" || env.MaxRisk != "local_write" {
 		t.Errorf("envelope = %+v, want base fields preserved", env)
 	}
 
 	tb := &taskBudget{MaxRuntimeSeconds: 30}
-	env2 := newTaskEnvelope("g", "", "", "", "", tb, "trusted")
+	env2 := newTaskEnvelope("g", "", "", "", "", "", tb, "trusted")
 	if env2.Budget != tb {
 		t.Errorf("Budget = %+v, want the passed budget", env2.Budget)
 	}

@@ -287,6 +287,7 @@ type subagentFlags struct {
 	quiet         bool
 	stream        bool
 	parentSession string
+	profile       string
 }
 
 // parseSubagentFlags parses and validates sub-agent CLI flags.
@@ -328,6 +329,11 @@ func parseSubagentFlags(args []string) (subagentFlags, error) {
 			i++
 			if i < len(args) {
 				cfg.parentSession = args[i]
+			}
+		case "--profile":
+			i++
+			if i < len(args) {
+				cfg.profile = args[i]
 			}
 		default:
 			return cfg, fmt.Errorf("unknown flag %q", args[i])
@@ -455,6 +461,21 @@ func subagentCmd(args []string) error {
 	// page or unfamiliar file), force non-interactive denials so no
 	// dangerous operation slips through without a fresh approval. When
 	// max_risk is set, clamp every class above it to Deny.
+	// P4: a selected capability profile OVERRIDES the corresponding
+	// operator permissions (max_risk clamp, allowlist, tool filter) for
+	// this run. Unknown names fail closed. The profile is applied BEFORE
+	// the trust lockdown (P2/P3), which is applied on top and cannot be
+	// lifted by profile selection.
+	var profileTools *config.ToolConfig
+	if cfg.profile != "" {
+		prof, ok := resolved.Profiles[cfg.profile]
+		if !ok {
+			return fmt.Errorf("unknown profile %q (define it in the top-level profiles config section)", cfg.profile)
+		}
+		applyProfile(&resolved.Dangerous, prof)
+		profileTools = prof.Tools
+	}
+
 	// P3: trust is non-increasing downward — effective trust is
 	// min(parent's effective trust, declared trust_level). A task tree
 	// rooted in untrusted content cannot spawn trusted children.
@@ -508,7 +529,12 @@ func subagentCmd(args []string) error {
 
 	// Apply tool filtering based on configuration (after MCP tools are loaded
 	// so disabled/enabled lists can reference MCP tool names too).
-	tools = filterBuiltinTools(tools, resolved.Tools, nil)
+	toolFilter := resolved.Tools
+	if profileTools != nil {
+		// P4: the profile's tool filter overrides the global one.
+		toolFilter = *profileTools
+	}
+	tools = filterBuiltinTools(tools, toolFilter, nil)
 
 	var sandboxCleanup func() error
 
@@ -874,22 +900,57 @@ func applySubagentTrust(dc *danger.DangerousConfig, trustLevel, maxRisk string) 
 	}
 
 	if maxRisk != "" {
-		capRank := danger.Rank(danger.RiskClass(maxRisk))
-		for _, cls := range []danger.RiskClass{
-			danger.Safe,
-			danger.LocalWrite,
-			danger.SystemWrite,
-			danger.Destructive,
-			danger.NetworkEgress,
-			danger.CodeExecution,
-			danger.Install,
-			danger.Unknown,
-			danger.Blocked,
-		} {
-			if danger.Rank(cls) > capRank {
-				dc.Classes[cls] = danger.Deny
-			}
+		clampClassesAboveMaxRisk(dc, maxRisk)
+	}
+}
+
+// clampClassesAboveMaxRisk denies every class ranked strictly above
+// maxRisk (shared by the sub-agent max_risk cap and the P4 profile
+// override). Empty maxRisk is a no-op — no cap expressed. The class list
+// is derived from danger.Rank's documented ordering; new classes must be
+// added there AND here (the compiler will not catch a missed literal, so
+// prefer extending this list via the danger package if it grows again).
+func clampClassesAboveMaxRisk(dc *danger.DangerousConfig, maxRisk string) {
+	if dc == nil || maxRisk == "" {
+		return
+	}
+	if dc.Classes == nil {
+		dc.Classes = make(map[danger.RiskClass]danger.Action)
+	}
+	capRank := danger.Rank(danger.RiskClass(maxRisk))
+	for _, cls := range []danger.RiskClass{
+		danger.Safe,
+		danger.LocalWrite,
+		danger.SystemWrite,
+		danger.Persistence,
+		danger.Destructive,
+		danger.NetworkEgress,
+		danger.CodeExecution,
+		danger.Install,
+		danger.Unknown,
+		danger.Blocked,
+	} {
+		if danger.Rank(cls) > capRank {
+			dc.Classes[cls] = danger.Deny
 		}
+	}
+}
+
+// applyProfile overlays an operator-defined capability profile (P4) onto
+// a danger config. The profile OVERRIDES the corresponding operator
+// config: its max_risk clamps every higher-ranked class to deny and its
+// allowlist REPLACES the global allowlist wholesale. Profiles are
+// operator-authored (project config cannot define them), so the override
+// is policy rather than escalation — applySubagentTrust runs afterwards
+// and the P2 non-interactive deny and P3 trust lockdown cannot be lifted
+// by profile selection.
+func applyProfile(dc *danger.DangerousConfig, prof config.ProfileConfig) {
+	if dc == nil {
+		return
+	}
+	clampClassesAboveMaxRisk(dc, prof.MaxRisk)
+	if prof.Allowlist != nil {
+		dc.Allowlist = prof.Allowlist
 	}
 }
 
