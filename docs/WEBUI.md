@@ -446,6 +446,15 @@ Server-lifetime aggregates: `prompts_started/completed/failed`,
 `prices_configured` (false ⇒ render costs as "unavailable"). Sessions also
 carry cumulative `input_tokens`/`output_tokens` (shown in list/detail).
 
+### `GET /api/subagents?key=`
+
+Sub-agent lifecycle registry snapshot (ring of 256, oldest evicted): one
+entry per delegated task — `task_id`, `run_key` (connection id for WS runs,
+run id for headless runs), redacted + truncated `goal`, `phase`
+(`started`/`active`/`finished`), `status`, `pid`, timestamps, `iterations`,
+`step`, `last_tool`, `duration_seconds`, `tokens_used`. Filter by
+`?key=<run_key>`; unfiltered returns all recent entries.
+
 ### `GET /api/connections` · `DELETE /api/connections/{id}`
 
 Live WebSocket connections (id, remote addr, connected-at, session, model,
@@ -572,7 +581,8 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 | `thinking` | Reasoning content (bulk; suppressed when `thinking_delta` streamed it) | `content` |
 | `tool_call` | Agent invokes a tool | `name`, `data` (raw tool-arguments JSON) |
 | `tool_result` | Tool returns output | `name`, `data` (full, untruncated output) |
-| `subagent_log` | Sub-agent progress within `delegate_tasks` | `task_idx`, `name`, `event`, `data` |
+| `subagent_log` | Sub-agent progress within `delegate_tasks` | `task_idx`, `task_id`, `name`, `event`, `data` (redacted, capped 8 KiB) |
+| `subagent_state` | Per-task sub-agent lifecycle transition (`started`/`active`/`finished`); child emits `subagent_started`/`subagent_progress`/`subagent_finished` records over the same protocol | `task_idx`, `task_id`, `run_key`, `phase`, `status`, `step`, `iterations`, `tool`, `duration_seconds`, `tokens_used` |
 | `done` | Agent finishes — **emitted only after the session is persisted**, so refreshing session state on `done` is race-free | `latency` (seconds), `contextTokens`, `outputTokens`, `cacheCreationTokens`, `cacheReadTokens`, `cachedTokens`, `sessionContextTokens`, `sessionOutputTokens` |
 | `usage` | After each LLM iteration of a running turn | `contextTokens`, `outputTokens` (camelCase — the per-iteration context size drives the metrics gauge) |
 | `error` | Agent or server error | `message` |
