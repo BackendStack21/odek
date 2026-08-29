@@ -1026,8 +1026,8 @@ func TestParseSubagentFlags_CapsRunawayLimits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseSubagentFlags error: %v", err)
 	}
-	if cfg.timeout != 3600 {
-		t.Errorf("timeout cap = %d, want 3600", cfg.timeout)
+	if cfg.timeout != 1800 {
+		t.Errorf("timeout cap = %d, want 1800 (30-minute maximum)", cfg.timeout)
 	}
 	if cfg.maxIter != 100 {
 		t.Errorf("max-iter cap = %d, want 100", cfg.maxIter)
