@@ -5,6 +5,7 @@ package main
 // policy, not escalation — P2/P3 invariants still apply on top).
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -155,6 +156,110 @@ func TestBuiltinTools_DelegateTasksUsesOperatorSubagentLimits(t *testing.T) {
 	}
 	if dt.profiles != nil {
 		t.Errorf("profiles = %+v, want nil (resolved.Profiles empty → child is sole authority)", dt.profiles)
+	}
+}
+
+// ── Child wiring coverage (unit-level twins of the env-gated E2E) ────────
+
+// TestSubagentCmd_TaskFileProfile_FailsClosed covers the child wiring in
+// plain unit runs: a task-file profile the operator has not defined must
+// abort before any agent setup.
+func TestSubagentCmd_TaskFileProfile_FailsClosed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // hermetic: no operator profiles, no key
+	dir := t.TempDir()
+	taskPath := filepath.Join(dir, "task.json")
+	if err := os.WriteFile(taskPath, []byte(`{"goal":"g","profile":"unit-unknown-profile-xyz"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	err := subagentCmd([]string{"--task", taskPath})
+	if err == nil || !strings.Contains(err.Error(), "unknown profile") {
+		t.Fatalf("task-file profile must fail closed with 'unknown profile', got: %v", err)
+	}
+}
+
+// TestSubagentCmd_TaskFileProfile_ValidAppliesToAgent covers the positive
+// child wiring: a profile defined in the operator config resolves, is
+// applied (applyProfile + tool filter run), and the command proceeds past
+// profile resolution — failing later on LLM setup, which needs no network.
+func TestSubagentCmd_TaskFileProfile_ValidAppliesToAgent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ODEK_API_KEY", "")
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY", "")
+	cfgDir := filepath.Join(home, ".odek")
+	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := `{"profiles":{"judge":{"max_risk":"safe","tools":{"disabled":["shell","write_file"]}}}}`
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.json"), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	taskPath := filepath.Join(home, "task.json")
+	if err := os.WriteFile(taskPath, []byte(`{"goal":"g","profile":"judge"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := subagentCmd([]string{"--task", taskPath})
+	if err == nil {
+		t.Fatal("expected LLM-setup failure (no API key) — a unit run must not hit the network")
+	}
+	if strings.Contains(err.Error(), "unknown profile") {
+		t.Fatalf("defined profile must be accepted and applied, got: %v", err)
+	}
+}
+
+// TestSubagentCmd_ProfileFlagOutranksTaskFileWiring covers precedence in
+// the wired path, not just the helper: with a VALID profile in the task
+// file and an unknown one on the flag, the lookup must fail on the flag's
+// name — inverted precedence would accept "judge" and proceed instead.
+func TestSubagentCmd_ProfileFlagOutranksTaskFileWiring(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfgDir := filepath.Join(home, ".odek")
+	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.json"), []byte(`{"profiles":{"judge":{"max_risk":"safe"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	taskPath := filepath.Join(home, "task.json")
+	if err := os.WriteFile(taskPath, []byte(`{"goal":"g","profile":"judge"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := subagentCmd([]string{"--task", taskPath, "--profile", "flag-only-profile"})
+	if err == nil || !strings.Contains(err.Error(), `"flag-only-profile"`) {
+		t.Fatalf("flag profile must outrank the valid task-file profile, got: %v", err)
+	}
+}
+
+// TestDelegateTasks_Call_MixedProfilesPartialFailure covers Call-level
+// aggregation with a bad profile among passing tasks: the unknown one
+// fails closed without spawning, the defined one runs to completion.
+func TestDelegateTasks_Call_MixedProfilesPartialFailure(t *testing.T) {
+	dir := t.TempDir()
+	resultJSON := `{"status":"success","summary":"ok","tokens_used":1,"iterations":1,"files_changed":[]}`
+	mock := filepath.Join(dir, "mock-subagent.sh")
+	if err := os.WriteFile(mock, []byte("#!/bin/sh\necho '"+resultJSON+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tool := &delegateTasksTool{
+		maxConcurrency: 2,
+		odekPath:       mock,
+		timeout:        10 * time.Second,
+		profiles: map[string]config.ProfileConfig{
+			"judge": {MaxRisk: "safe"},
+		},
+	}
+	tool.SetContext(context.Background())
+	result, err := tool.Call(`{"tasks":[{"goal":"a","profile":"judge"},{"goal":"b","profile":"nope"}],"description":"mixed profiles"}`)
+	if err != nil {
+		t.Fatalf("Call() error: %v", err)
+	}
+	if !strings.Contains(result, `"ok"`) {
+		t.Errorf("task with a defined profile must run, got: %s", result)
+	}
+	if !strings.Contains(result, "unknown profile") {
+		t.Errorf("task with an unknown profile must fail closed, got: %s", result)
 	}
 }
 
