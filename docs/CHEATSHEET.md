@@ -21,6 +21,14 @@ odek schedule list                   # List jobs (id, next fire, last status)
 odek schedule next "*/15 * * * *"    # Preview upcoming fire times
 odek schedule daemon                 # Run the scheduler headless
 
+# Memory management (see docs/MEMORY.md, docs/EXTENDED_MEMORY.md)
+odek memory list                     # Pending facts awaiting review (aliases: ls, pending)
+odek memory promote <session-id>     # Promote a session's pending facts to durable facts
+odek memory extended stats           # Extended-memory store statistics
+odek memory extended pending         # List atoms pending review
+odek memory extended confirm <id>    # Approve a pending-review atom
+odek memory extended forget <id>     # Delete an atom
+
 # Sandbox (ON by default for run/continue/repl — see Sandbox section)
 odek run --sandbox "build safely"     # Explicit: hard-fails if Docker is unavailable
 odek run --no-sandbox "quick task"    # Explicit opt-out
@@ -295,7 +303,7 @@ Default network: `bridge` (internet access). Set `none` for air-gapped execution
 - `send_message` tool escapes text for Telegram MarkdownV2 before sending, so prompt-injected formatting cannot hide links or fake buttons
 - Logging: configurable log level and log file
 
-See [docs/TELEGRAM.md](docs/TELEGRAM.md) for full documentation.
+See [docs/TELEGRAM.md](TELEGRAM.md) for full documentation.
 
 
 ## Sessions

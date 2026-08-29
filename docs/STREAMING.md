@@ -25,7 +25,7 @@ odek run --stream "task"
 odek repl --stream
 ```
 
-The `--stream` flag is available on `odek run` and `odek repl`. `odek serve` accepts it for completeness, but the Web UI does not consume deltas yet (see [Not Yet Streamed](#not-yet-streamed)).
+The `--stream` flag is available on `odek run`, `odek repl`, and `odek serve` — the Web UI consumes the stream live as `thinking_delta` / `token_delta` fragments when streaming is on (see [WEBUI.md](WEBUI.md)).
 
 ### Config file (`~/.odek/config.json` or `./odek.json`)
 ```json
@@ -62,13 +62,12 @@ The handler receives `llm.DeltaReasoning` and `llm.DeltaContent` fragments (tool
 With streaming enabled, `odek run` and `odek repl` print reasoning and the answer as they arrive, then the regular per-iteration statistics:
 
 ```
-🧠 The user just said "Hi". Simple greeting. I should respond concisely…
+🧠 Simple question — the relevant context is already loaded. Answer directly…
 
-Morning, Rolando. Ready when you are — last open threads were the
-sharingan extension install and the M3-18 license policy.
-═══ Iter 1/90 · GLM 5.3 (Z.ai) ═══  [26189 in · 91 out · 10.4s]
+Morning! The build is green and yesterday's fixes are merged. What's next?
+═══ Iter 1/90 · GLM 5.3 (Z.ai) ═══  [18432 in · 78 out · 8.1s]
 
-── 26189 in · 91 out · 64 cached
+── 18432 in · 78 out · 51 cached
 ```
 
 The reasoning block is dimmed with a single 🧠 cue, the answer follows after a blank line, and the iteration header always starts on a fresh line. Nothing double-prints: the renderer suppresses the buffered reasoning/answer blocks for text that was already streamed. Statistics headers and the token summary render as usual.
@@ -89,7 +88,6 @@ The reasoning block is dimmed with a single 🧠 cue, the answer follows after a
 
 ## Not Yet Streamed
 
-- **Web UI (`odek serve`)** — a per-connection coalescing `delta` message protocol is planned; `writeWSJSON` frame serialization landed in preparation.
 - **Telegram** — completed iterations are sent as messages today; throttled in-place editing is a possible follow-up.
 - **Default** — streaming stays opt-in until it has soaked for a release; the buffered path remains the automatic fallback.
 

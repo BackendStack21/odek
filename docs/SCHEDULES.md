@@ -180,11 +180,16 @@ client is reused (shared rate limiting).
 ## Safety: unattended tasks
 
 A scheduled task runs with **no human present to approve actions**. The
-headless runner always applies a hard "deny" floor for prompt-class operations
-and clamps destructive, code-execution, install, system-write, network-egress,
-and unknown/blocked risk classes to `deny` — regardless of the configured
-`dangerous` profile. This prevents a compromised task definition from erasing
-files or exfiltrating data while unattended.
+headless runner forces `non_interactive` to `deny` and applies a
+non-overrideable safety floor: the `destructive`, `blocked`, `persistence`
+(deferred-execution writes: shell profiles, git hooks, cron, CI lifecycle
+scripts), and `unread_exec` (executing a script whose contents were not read
+in the session) classes are always denied. Schedule-specific policy in
+`schedules.dangerous` can allow or deny the remaining classes —
+`network_egress`, `system_write`, `code_execution`, `install`, and `unknown`
+are the ones an unattended run can be granted — but the floor itself cannot
+be lifted. This prevents a compromised task definition from erasing files,
+installing persistence, or running unreviewed scripts while unattended.
 
 Read/summarise/deliver tasks work as usual. If you truly need a scheduled job
 that performs high-risk operations, run it interactively via `odek run` or the
@@ -224,6 +229,36 @@ the engine. Every field also has an `ODEK_SCHEDULES_*` environment override.
 | `allow_telegram_management` | `ODEK_SCHEDULES_ALLOW_TELEGRAM_MANAGEMENT` | `true` | Allow the in-chat `/schedule` commands to add/remove/toggle/run jobs (read-only listing always works) |
 | `telegram_admin_chats` | `ODEK_SCHEDULES_TELEGRAM_ADMIN_CHATS` | `[]` | Operator chat IDs that may use mutating `/schedule` commands |
 | `telegram_admin_users` | `ODEK_SCHEDULES_TELEGRAM_ADMIN_USERS` | `[]` | Operator user IDs that may use mutating `/schedule` commands |
+
+### Unattended danger policy (`schedules.dangerous`)
+
+The `dangerous` subsection overrides the base `dangerous` policy for scheduled
+runs — same schema (per-class actions, `allowlist`, `denylist`, `action`,
+`non_interactive`), overlaid on the global config before the safety floor is
+applied. It is operator-only: project-level `./odek.json` cannot set it.
+
+```json
+{
+  "schedules": {
+    "dangerous": {
+      "classes": { "network_egress": "allow", "system_write": "deny" },
+      "allowlist": ["go test ./...", "go build ./..."]
+    }
+  }
+}
+```
+
+Every field also has an `ODEK_SCHEDULES_DANGEROUS_*` environment override:
+
+| Env | Format |
+|---|---|
+| `ODEK_SCHEDULES_DANGEROUS_CLASSES` | JSON object, e.g. `{"network_egress":"allow","system_write":"allow"}` |
+| `ODEK_SCHEDULES_DANGEROUS_ALLOWLIST` | Comma-separated command strings |
+| `ODEK_SCHEDULES_DANGEROUS_DENYLIST` | Comma-separated command strings |
+| `ODEK_SCHEDULES_DANGEROUS_ACTION` | Global default action: `allow`, `deny`, or `prompt` |
+| `ODEK_SCHEDULES_DANGEROUS_NON_INTERACTIVE` | `allow`, `deny`, or `prompt` (ignored: scheduled runs force `deny`) |
+
+See [CONFIG.md](CONFIG.md) for the full field reference.
 
 ---
 

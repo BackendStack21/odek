@@ -25,6 +25,8 @@ Out of scope:
 
 ### Sandboxed execution
 
+Unsandboxed runs print a one-time stderr warning that the agent has full host access (`warnSandboxDisabled`). It can be silenced with `ODEK_SUPPRESS_SANDBOX_WARNING` — not recommended outside scripted environments; the notice is pinned by the regression bar (`TestReport_SandboxDisabledPrintsWarning`).
+
 `odek run --sandbox` and `odek serve` (default) spawn an isolated Docker container per session:
 
 - No filesystem access beyond the working directory (mounted read-only when configured).
@@ -170,6 +172,15 @@ Detection that lands *after* a side effect is reporting, not prevention — but 
 
 `internal/memory` tracks `EpisodeProvenance{Untrusted, Sources, UserApproved}` for every episode. An episode derived from a session that ingested untrusted content is **stored on disk for audit but never auto-replayed** into future sessions. This stops a single successful injection from becoming a persistent backdoor through the episode pipeline.
 
+These families are additionally pinned by dedicated per-module suites beyond the central regression bar (`cmd/odek/security_report_validation_test.go`):
+
+| Family | Suite |
+|---|---|
+| Approval friction (TTY / WS) | `internal/danger/approver_friction_test.go`, `cmd/odek/wsapprover_test.go` |
+| Batch-card withholding (`classifyToolCall`) | `cmd/odek/parallel_shell_danger_test.go`, `cmd/odek/security_report_validation_test.go` |
+| MCP per-server limits & per-tool approvals | `cmd/odek/mcp_approval_test.go`, `cmd/odek/mcp_e2e_test.go` |
+| SSRF dial guard | `cmd/odek/ssrf_guard_test.go` |
+
 Taint is decided per tool call by `memory.ToolCallTaints` (the single source of truth, shared with skills):
 
 - **Always untrusted:** `browser`, `http_batch`, `transcribe` (network / opaque-audio content), `vision` (opaque-image/video content), `web_search` (search-engine results), `delegate_tasks` (sub-agent output), `session_search` (recall of prior-session transcripts, which may carry earlier-injected text), and any MCP tool (`server__tool`). `shell` is deliberately excluded even though its output can carry untrusted bytes — it is the agent's primary work tool and tainting it would taint nearly every session.
@@ -243,7 +254,7 @@ The sub-agent process reads both at startup. `applySubagentTrust` clamps its `Da
 
 ### Capability profiles
 
-Capability profiles (P4) solve a gap the binary trust model leaves open: `untrusted` sub-agents can do real work but cannot reach the network, and `trusted` sub-agents inherit the operator's entire permission config — with nothing in between. A profile is a **named permission envelope authored by the operator** in the top-level `profiles` config section. A task selects one by name, and the profile's settings **override** the corresponding operator permissions for that sub-agent — the profile is the complete envelope, not a merge with the global config.
+Capability profiles solve a gap the binary trust model leaves open: `untrusted` sub-agents can do real work but cannot reach the network, and `trusted` sub-agents inherit the operator's entire permission config — with nothing in between. A profile is a **named permission envelope authored by the operator** in the top-level `profiles` config section. A task selects one by name, and the profile's settings **override** the corresponding operator permissions for that sub-agent — the profile is the complete envelope, not a merge with the global config.
 
 ```json
 {
@@ -274,14 +285,24 @@ The override order inside a sub-agent is: operator config → **profile** (if se
 
 **Selection is policy, not escalation.** Profiles are **operator-authored only**: a `profiles` section in project-level `./odek.json` is ignored with a warning, so a cloned repository cannot author (or shadow) the operator's envelopes. And the two hard invariants are applied *after* the profile and cannot be lifted by selecting one:
 
-- **P2 — sub-agents never prompt.** `non_interactive: deny` is forced for every sub-agent after profile application. A profile cannot re-enable TTY approval prompts; the operator `allowlist` (in the profile, if selected) remains the only path to prompt-class operations.
-- **P3 — trust is non-increasing downward.** The child runs at `min(parent_trust, trust_level)`; the untrusted lockdown (deny `destructive`, `code_execution`, `install`, `system_write`, `persistence`, `unread_exec`, `network_egress`, `unknown`, `blocked`) is applied after the profile. An untrusted task stays untrusted under any profile — selecting `"profile": "builder"` with `max_risk: "system_write"` still denies network egress and installs to an untrusted sub-agent, because the provenance lockdown wins over the permission envelope.
+- **Sub-agents never prompt.** `non_interactive: deny` is forced for every sub-agent after profile application. A profile cannot re-enable TTY approval prompts; the operator `allowlist` (in the profile, if selected) remains the only path to prompt-class operations.
+- **Trust is non-increasing downward.** The child runs at `min(parent_trust, trust_level)`; the untrusted lockdown (deny `destructive`, `code_execution`, `install`, `system_write`, `persistence`, `unread_exec`, `network_egress`, `unknown`, `blocked`) is applied after the profile. An untrusted task stays untrusted under any profile — selecting `"profile": "builder"` with `max_risk: "system_write"` still denies network egress and installs to an untrusted sub-agent, because the provenance lockdown wins over the permission envelope.
 
 Pinned by `cmd/odek/subagent_profiles_test.go` (override/clamp semantics, allowlist-only no-clamp, trust-lockdown-after-profile ordering) and `internal/config` (validation, project-config strip).
 
 **Fail-closed behaviors.** An unknown profile name fails the task (`unknown profile "x" …`) instead of silently running unprofiled. A profile with an invalid `max_risk` value is **dropped at load time** with a stderr warning — a typo must not silently yield an unclamped envelope. An empty `max_risk` expresses no cap: an allowlist-only profile leaves class policy untouched. With no profiles defined, selection fails and behavior is exactly as before this feature.
 
 **Residual risk (be aware).** Profile *selection* is parent-declared: a prompt-injected parent can always pick the most permissive profile the operator defined. The operator bounds that ceiling by what they author — define narrow profiles (`research` before `ops`) and treat each profile as a standing grant. Profiles also cannot express per-operation grants beyond exact-invocation `allowlist` entries, and profile selection is not session-tracked: use the `subagent_denied` runtime events and the delegate-task audit trail to see which envelopes ran.
+
+### Planning
+
+The plan tool gives the agent a protected plan message that survives context trimming. Three security properties are pinned by the regression bar and detailed in [PLANNING.md → Security Model](PLANNING.md#security-model):
+
+- **Never in the approval UI.** `classifyToolCall` returns an explicit safe class for `plan`, so plan calls (and their step titles, which may quote task content) never surface in approval prompts or batch cards (`TestReport_PlanToolClassifiedSafe`).
+- **Untrusted wrapping.** Plan step bodies derive from task/tool content and are re-injected as system context every iteration — they ride the same untrusted-content wrapper as other engine-injected context, with the audit ingest recorder recording the injection.
+- **Forgery resistance.** A hostile tool result containing a literal plan header cannot become the plan message: recognition requires the `system` role, and only the engine writes that role/content pair (`TestIsPlanMessage`).
+
+Resume parsing is strict and total — any deviation in the stored plan drops it instead of approximating. Project configs may tune the documented clamps only; they cannot re-enable a globally disabled feature.
 
 ### Web UI (`odek serve`)
 

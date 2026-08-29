@@ -1,0 +1,130 @@
+{
+  "profiles": {
+    "builder": {
+      "max_risk": "local_write",
+      "allowlist": [
+        "go test ./...", "go build ./...", "go vet ./...", "gofmt -l .",
+        "npm test", "npm run build", "npm run lint", "pnpm test", "pnpm build", "yarn build",
+        "cargo test", "cargo build", "cargo check", "cargo clippy",
+        "pytest", "python -m pytest", "ruff check .", "mypy .",
+        "make test", "make build", "make lint"
+      ],
+      "tools": { "disabled": ["browser", "http_batch", "web_search", "transcribe", "vision", "delegate_tasks"] }
+    },
+    "refactorer": {
+      "max_risk": "local_write",
+      "allowlist": [
+        "go test ./...", "go build ./...", "gofmt -l .",
+        "npm test", "npm run build",
+        "cargo test", "cargo check",
+        "pytest",
+        "make test"
+      ],
+      "tools": { "disabled": ["browser", "http_batch", "web_search", "transcribe", "vision", "delegate_tasks"] }
+    },
+    "test-runner": {
+      "max_risk": "code_execution",
+      "allowlist": [
+        "go test ./...", "go test -race ./...", "go test -count=1 ./...",
+        "npm test", "pnpm test", "yarn test",
+        "cargo test", "cargo nextest run",
+        "pytest", "python -m pytest", "python -m unittest discover",
+        "make test"
+      ],
+      "tools": { "disabled": ["write_file", "patch", "batch_patch", "browser", "http_batch", "web_search", "delegate_tasks"] }
+    },
+    "bug-investigator": {
+      "max_risk": "local_write",
+      "allowlist": [
+        "go test ./...", "go build ./...", "go vet ./...",
+        "npm test", "npm run build",
+        "cargo test", "cargo check",
+        "pytest", "python -m pytest",
+        "make test"
+      ],
+      "tools": { "disabled": ["browser", "http_batch", "web_search", "transcribe", "vision", "delegate_tasks"] }
+    },
+    "perf-profiler": {
+      "max_risk": "code_execution",
+      "allowlist": [
+        "go test -bench ./...", "go test -bench=. ./...", "go tool pprof",
+        "cargo bench",
+        "npm run bench", "make bench"
+      ],
+      "tools": { "disabled": ["browser", "http_batch", "web_search", "transcribe", "vision", "delegate_tasks"] }
+    },
+    "migrator": {
+      "max_risk": "install",
+      "allowlist": [
+        "go get", "go mod tidy", "go mod download",
+        "npm install", "npm ci", "npm update", "pnpm install", "yarn install",
+        "pip install -r requirements.txt", "python -m pip install -r requirements.txt",
+        "cargo update", "cargo check", "cargo build"
+      ],
+      "tools": { "disabled": ["browser", "transcribe", "vision", "delegate_tasks"] }
+    },
+    "code-reviewer": {
+      "max_risk": "safe",
+      "tools": { "enabled": ["plan", "read_file", "batch_read", "glob", "file_info", "search_files", "multi_grep", "tree", "count_lines", "head_tail", "diff", "word_count", "checksum", "sort", "base64", "tr", "json_query", "math_eval"] }
+    },
+    "security-auditor": {
+      "max_risk": "safe",
+      "tools": { "enabled": ["plan", "read_file", "batch_read", "glob", "file_info", "search_files", "multi_grep", "tree", "count_lines", "head_tail", "diff", "word_count", "checksum", "base64", "tr", "json_query"] }
+    },
+    "ops-inspector": {
+      "max_risk": "safe",
+      "allowlist": ["docker ps", "docker logs", "docker stats", "docker compose ps", "kubectl get", "kubectl logs", "df -h", "du -sh", "ps aux", "git status", "git log", "git diff", "git show"],
+      "tools": { "disabled": ["write_file", "patch", "batch_patch", "browser", "http_batch", "web_search", "delegate_tasks"] }
+    },
+    "release-manager": {
+      "max_risk": "network_egress",
+      "allowlist": ["git status", "git log", "git diff", "git show", "git tag", "git push", "gh pr create", "gh pr view", "gh pr checks", "gh pr merge", "gh release create", "gh release view", "gh run list", "gh run view"],
+      "tools": { "disabled": ["write_file", "patch", "batch_patch", "browser", "transcribe", "vision", "delegate_tasks"] }
+    },
+    "swarm-orchestrator": {
+      "max_risk": "safe",
+      "tools": { "enabled": ["delegate_tasks", "plan", "read_file", "batch_read", "glob", "search_files", "multi_grep", "tree"] }
+    },
+    "judge": {
+      "max_risk": "safe",
+      "tools": { "enabled": ["plan", "read_file", "batch_read", "glob", "file_info", "search_files", "multi_grep", "tree", "diff", "count_lines", "json_query", "math_eval"] }
+    },
+    "scout": {
+      "max_risk": "safe",
+      "tools": { "enabled": ["read_file", "batch_read", "glob", "search_files", "multi_grep", "tree", "head_tail"] }
+    },
+    "librarian": {
+      "max_risk": "safe",
+      "tools": { "enabled": ["plan", "read_file", "batch_read", "glob", "file_info", "search_files", "multi_grep", "tree", "count_lines", "head_tail", "word_count"] }
+    },
+    "researcher": {
+      "max_risk": "network_egress",
+      "tools": { "disabled": ["shell", "parallel_shell", "delegate_tasks", "transcribe", "vision"] }
+    },
+    "web-reader": {
+      "max_risk": "network_egress",
+      "tools": { "enabled": ["browser", "http_batch", "read_file", "batch_read", "glob", "word_count"] }
+    },
+    "writer": {
+      "max_risk": "local_write",
+      "tools": { "disabled": ["shell", "parallel_shell", "browser", "http_batch", "web_search", "delegate_tasks", "transcribe", "vision"] }
+    },
+    "translator": {
+      "max_risk": "local_write",
+      "tools": { "enabled": ["read_file", "write_file", "batch_read", "glob", "word_count", "tr"] }
+    },
+    "data-analyst": {
+      "max_risk": "code_execution",
+      "allowlist": ["make analyze", "npm run analyze", "python main.py", "python3 main.py"],
+      "tools": { "disabled": ["browser", "http_batch", "web_search", "transcribe", "vision", "delegate_tasks"] }
+    },
+    "media-describer": {
+      "max_risk": "safe",
+      "tools": { "enabled": ["transcribe", "vision", "read_file", "batch_read", "glob", "file_info", "word_count"] }
+    },
+    "summarizer": {
+      "max_risk": "safe",
+      "tools": { "enabled": ["session_search", "read_file", "batch_read", "glob", "search_files", "tree", "count_lines", "head_tail", "word_count"] }
+    }
+  }
+}

@@ -24,7 +24,7 @@ odek is not a framework. It's a **runtime** — the smallest possible surface ar
 
 | | odek | Python agents (LangChain, CrewAI, etc.) |
 |---|---|---|
-| Dependencies | **5.** 3× stdlib, 2× 21no.de | 200+ packages |
+| Dependencies | **5.** 2× 21no.de, 3× golang.org/x | 200+ packages |
 | Binary size | ~11 MB static | 50-200 MB with venv |
 | Startup | **Instant** | 2-10s (Python imports) |
 | Sandbox | `--sandbox` flag | Requires manual Docker setup |
@@ -41,7 +41,7 @@ Every session can run in an isolated Docker container: no network, no host mount
 External content the agent ingests (`browser`, `read_file`, `shell`, `search_files`, `multi_grep`, `transcribe`, `vision`, `web_search`, `session_search`, MCP tools) is wrapped in per-call nonce'd `<untrusted_content>` boundaries so the model can distinguish data from instructions. Redirect hops are re-classified (`browser`/`http_batch`), MCP tool descriptions are scanned for injection at registration, and the MCP error channel is wrapped too. The danger classifier resists 8 known shell-evasion tricks (`$()`, backticks, `$IFS`, `command`/`exec`, `\rm`, basenamed absolute paths). Approvers engage friction mode after 3 same-class approvals in 60 s. Memory episodes from tainted sessions are stored but never auto-replayed. Skill auto-save tracks provenance, declines to persist untrusted suggestions by default, and pins them for explicit `odek skill promote --force`. `odek audit <session-id>` surfaces every ingest + per-turn divergence heuristic. Full threat model in [docs/SECURITY.md](docs/SECURITY.md).
 
 ### 🧩 Sub-Agent Delegation
-Parallel OS-process sub-agents via `delegate_tasks`. True isolation — each sub-agent is a fresh `odek subagent` process with its own config, tools, and termination timeout. Up to 8 concurrent workers. [docs/SUBAGENTS.md](docs/SUBAGENTS.md)
+Parallel OS-process sub-agents via `delegate_tasks`. True isolation — each sub-agent is a fresh `odek subagent` process with its own config, tools, and termination timeout. Up to 8 concurrent workers. Operator-defined **capability profiles** (top-level `profiles` config) override a sub-agent's permissions by name and fail closed on unknown names — a curated starter set of 21 task profiles ships in [`profiles.template.json`](profiles.template.json). See [docs/SUBAGENTS.md](docs/SUBAGENTS.md) and [docs/SECURITY.md](docs/SECURITY.md).
 
 ### 🧠 Skill System (on by default)
 Skill-matched `SKILL.md` files load on-demand. Auto-learns from patterns every session — detects multi-step procedures, error recoveries, repeated actions, and user corrections. **LLM-enhanced**: each detected pattern is enriched with an LLM-generated name, description, trigger keywords, and structured body with overview, steps, pitfalls, and verification sections. Use `--no-learn` to disable. Import skills from any URI with automatic LLM risk assessment. [docs/CLI.md#skills](docs/CLI.md#skills)
@@ -137,10 +137,17 @@ odek run "@README.md what does this project do?"
 | `odek skill curate` | Audit skill quality/overlap |
 | `odek audit <session-id>` | Print the prompt-injection audit log for a session |
 | `odek audit --list` | List sessions with ingest counts and divergence flags |
-| `odek serve [--addr :8080]` | Start Web UI server (sandbox on by default; `--no-sandbox` to disable) |
+| `odek serve [--addr <addr>]` | Start Web UI server (loopback by default; sandbox on by default, `--no-sandbox` to disable) |
 | `odek subagent --goal <string>` | Run a focused sub-task |
 | `odek init [--global]` | Create config file |
 | `odek mcp [--sandbox]` | Start MCP server — expose tools to Claude Code |
+| `odek memory list` | List pending memory facts (aliases: `ls`, `pending`) |
+| `odek memory promote <session-id>` | Promote a session's pending facts to durable facts |
+| `odek memory extended <subcommand>` | Extended-memory atom management (`forget`, `promote`, `pin`, `quarantine`, `compact`, `stats`, `consolidate`, `nudges`, `pending`, `confirm`, `reject`) |
+| `odek telegram` | Run the Telegram bot (also hosts the embedded scheduler) |
+| `odek schedule <add\|list\|...>` | Native cron scheduler (see [docs/SCHEDULES.md](docs/SCHEDULES.md)) |
+| `odek cleanup [--dry-run]` | One-shot storage sweep of `~/.odek` (see [docs/MAINTENANCE.md](docs/MAINTENANCE.md)) |
+| `odek upgrade [--check]` | Self-upgrade from GitHub Releases (SHA-256 verified) |
 | `odek version` | Print version |
 
 ### Key Flags
@@ -182,12 +189,17 @@ odek run "@README.md what does this project do?"
 | [Scheduled Tasks](docs/SCHEDULES.md) | Native in-process cron: `odek schedule`, Vixie cron syntax, delivery, missed-run catchup, daemon vs embedded |
 | [Sandboxing](docs/SANDBOXING.md) | Docker isolation model, config, security hardening |
 | [Security](docs/SECURITY.md) | Threat model, prompt injection defense, sandbox model |
-| [Sub-Agents](docs/SUBAGENTS.md) | Task decomposition, delegation tool, subagent protocol |
+| [Sub-Agents](docs/SUBAGENTS.md) | Task decomposition, delegation tool, subagent protocol, capability profiles |
 | [Web UI](docs/WEBUI.md) | `odek serve`, WebSocket protocol, `@` resource resolution |
 | [Self-Learning](docs/LEARNING.md) | LLM-enhanced skill learning, pattern detection, auto-curation |
 | [Skills](docs/CLI.md#skills) | Trigger-matched skills, learning, import, curation |
 | [MCP](docs/MCP.md) | Serve tools to Claude Code + connect to external MCP servers |
 | [Extensions](docs/EXTENSIONS.md) | `odek-extension/v1` contract: MCP limits, artifact refs, event stream, external refs, budgets |
+| [Maintenance](docs/MAINTENANCE.md) | Storage janitor: retention, log rotation, `odek cleanup` |
+| [Extended Memory](docs/EXTENDED_MEMORY.md) | Atomic long-term memory layer (opt-in) |
+| [Planning](docs/PLANNING.md) | Plan tool, protected plan message, security model |
+| [Tool Selection](docs/TOOL_SELECTION.md) | Tool whitelist/blacklist guide and names reference |
+| [Daily Worker](docs/DAILY-WORKER.md) | Headless scheduled-worker patterns |
 | [Development](docs/DEVELOPMENT.md) | Building, testing, contributing, project structure |
 
 ---

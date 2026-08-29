@@ -8,7 +8,7 @@
 | `odek run --session [flags] <task>` | Execute and save conversation as a multi-turn session |
 | `odek run [--no-learn] [flags] <task>` | Execute with skill learning (on by default, use --no-learn to disable) |
 | `odek continue [--id <id>] [--external-ref <ref>] <task>` | Continue the most recent session (or by `--id`). Sessions persist per completed step: Ctrl-C/SIGTERM resumes from the last step; SIGKILL may lose the in-flight step |
-| `odek repl [flags]` | Interactive REPL mode (persistent multi-turn session). Accepts `--model`, `--thinking`, `--sandbox`, `--sandbox-*`, `--tool`, and `--no-tool` flags. |
+| `odek repl [flags]` | Interactive REPL mode (persistent multi-turn session). Flags: `--id`, `--model`, `--thinking`, `--thinking-budget`, `--sandbox`, `--sandbox-*`, `--prompt-caching`, `--stream`, `--compaction`, `--planning` / `--no-planning`, `--interaction-mode`. Unknown flags are silently ignored — in particular `--tool` / `--no-tool` are **not** supported in repl (use `odek run`, `serve`, or the `tools` config instead). |
 | `odek session list` | List sessions |
 | `odek session show [id]` | Show session details (default: latest) |
 | `odek session delete <id>` | Delete a session |
@@ -24,10 +24,14 @@
 || `odek skill curate --apply` | Apply all curation suggestions (merge, delete, prune) |
 || `odek skill curate --interactive` | Review each suggestion one-by-one |
 || `odek skill reset-skips [name]` | Reset skip list (all or specific skill) |
+| `odek memory list` | List pending (pending-review) memory facts; aliases `ls`, `pending` |
+| `odek memory promote <session-id>` | Promote a session's pending facts to the durable fact files |
+| `odek memory extended <subcommand>` | Extended-memory atom management; see below |
+| `odek memory extended <forget|promote|pin|quarantine|compact|stats|consolidate|nudges|pending|confirm|reject> [args]` | Extended-memory operations: delete/promote/pin atoms, list or confirm/reject pending-review atoms, quarantine listing, manual compaction, store stats, consolidate, and proactive-nudge management |
 | `odek audit <session-id>` | Print the prompt-injection audit log for a session (JSON) |
 | `odek audit --list` | List sessions with non-zero ingest counts and divergence flags |
-|| `odek serve [--addr :8080] [--open] [--no-sandbox] [--trusted-proxies <ips/cidrs>]` | Web UI server. Sandbox is on by default; pass `--no-sandbox` to disable. Accepts `--tool` and `--no-tool` flags. Binding to a non-loopback address prints a loud warning because anyone with the token can drive the agent. `--trusted-proxies` honours `X-Forwarded-For`/`X-Real-Ip` only from those addresses. |
-|| `odek subagent --goal <string> [flags]` | Run a focused sub-task; outputs JSON on stdout. Spawned by `delegate_tasks` tool. Flags: `--goal`, `--task <file>`, `--context`, `--timeout` (≤1800s), `--max-iter` (≤100), `--profile <name>`, `--quiet`, `--stream`. |
+| `odek serve [--addr <addr>] [--open] [--no-sandbox] [--trusted-proxies <ips/cidrs>]` | Web UI server (default `127.0.0.1:8080`). Sandbox is on by default; pass `--no-sandbox` to disable. Flags: `--tool` / `--no-tool` (repeatable), `--prompt-caching`, `--compaction` / `--no-compaction`, `--planning` / `--no-planning`, `--stream` / `--no-stream`. Binding to a non-loopback address prints a loud warning because anyone with the token can drive the agent. `--trusted-proxies` honours `X-Forwarded-For`/`X-Real-Ip` only from those addresses. |
+|| `odek subagent --goal <string> [flags]` | Run a focused sub-task; outputs JSON on stdout. Spawned by `delegate_tasks` tool. Flags: `--goal`, `--task <file>`, `--context`, `--timeout` (≤1800s), `--max-iter` (≤100), `--profile <name>`, `--parent-session <id>`, `--quiet`, `--stream`. |
 | `odek init [--global|--local] [--force]` | Create a config file template (scope-aware: full schema globally, project-safe fields locally) |
 | `odek mcp [--sandbox]` | Start MCP server (expose tools to Claude Code) or connect to external MCP servers (via `mcp_servers` config) |
 | `odek telegram` | Start the Telegram bot (long-polling). Hosts the embedded scheduler unless `schedules.enabled=false` |
@@ -41,19 +45,33 @@ Unknown flags are a **hard error** — they are never folded into the task text 
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--model <name>` | string | `deepseek-chat` | LLM model — profiles auto-set thinking/timeout (see [Providers](docs/PROVIDERS.md)). Consider using `deepseek-v4-flash` for faster/cheaper tasks. |
+| `--model <name>` | string | `deepseek-chat` | LLM model — profiles auto-set thinking/timeout (see [Providers](PROVIDERS.md)). Consider using `deepseek-v4-flash` for faster/cheaper tasks. |
 | `--base-url <url>` | string | `https://api.deepseek.com/v1` | OpenAI-compatible API endpoint |
 | `--max-iter <n>` | int | `90` | Max think→act cycles |
 | `--thinking <level>` | string | profile default | Reasoning depth: `enabled`/`disabled`/`low`/`medium`/`high`. Requires a model that supports extended thinking. |
 | `--thinking-budget <n>` | int | `5000` | Max thinking tokens for extended thinking (Anthropic budget_tokens). Only applied when `--thinking` is set. |
+| `--temperature <n>` | float | `0` | LLM sampling temperature (0.0–2.0). Forced to 1 when Anthropic extended thinking is active. |
 | `--sandbox` | bool | default on | Execute shell commands inside Docker container. Defaults ON when no layer sets it; degrades loudly to unsandboxed when Docker is unavailable (fatal with `ODEK_REQUIRE_SANDBOX=1`). Explicit `--sandbox` keeps the hard-fail behavior. |
 | `--no-sandbox` | bool | — | Explicitly disable the sandbox (same as `ODEK_NO_SANDBOX=1`); silences the default-on behavior. |
 | `--deliver` | bool | false | Deliver the agent's final response to the configured Telegram `default_chat_id`. Requires `telegram.bot_token` + `telegram.default_chat_id` in config. Handy for host-cron one-shots; for recurring tasks prefer the native scheduler (`odek schedule`, see [Schedules](SCHEDULES.md)). |
 | `--interaction-mode <mode>` | string | `engaging` | Tool-call rendering: `engaging` (emoji narration) or `verbose` (raw tool output) |
 | `--no-color` | bool | false | Disable colored terminal output |
 | `--prompt-caching` | bool | false | Enable Anthropic/OpenAI/DeepSeek prompt caching markers |
+| `--stream` | bool | config | Stream reasoning and answer text to the terminal as it arrives. Run/repl have no `--no-stream` inverse — disable via `stream: false` in config or `ODEK_STREAM=false` (`odek serve` does accept `--no-stream`) |
 | `--compaction` | bool | `true` | Enable LLM-based rolling compaction of trimmed context. On by default |
 | `--no-compaction` | bool | `false` | Disable rolling compaction (overrides config/default) |
+| `--planning` | bool | `true` | Enable the plan tool and protected plan message. On by default; accepted by `run`, `repl`, and `serve` |
+| `--no-planning` | bool | `false` | Disable planning (overrides config/default) |
+| `--memory-extended-enabled` | bool | config | Turn on Extended Memory for this run (see [EXTENDED_MEMORY.md](EXTENDED_MEMORY.md)) |
+| `--memory-extended-max-size-mb <n>` | int | config | Store size-cap override |
+| `--memory-extended-atom-max-chars <n>` | int | config | Per-atom size-cap override |
+| `--memory-extended-memory-budget-chars <n>` | int | config | Prompt-injection budget override |
+| `--memory-extended-user-state-turn-interval <n>` / `--memory-extended-user-state-max-pending <n>` | int | config | User-state inference cadence and pending-queue cap overrides |
+| `--memory-extended-associations-enabled` / `-disabled` | bool | config | Toggle atom associations; `--memory-extended-association-semantic-top-k <n>` caps semantic neighbors per atom |
+| `--memory-extended-proactive-return-after-break` / `-no-proactive-return-after-break` | bool | config | Toggle the return-after-break summary |
+| `--memory-extended-style-mirroring-enabled` / `-disabled` | bool | config | Toggle user-style mirroring |
+| `--memory-extended-anaphora-resolution-enabled` / `-disabled` | bool | config | Toggle anaphora resolution |
+| `--memory-extended-follow-up-anticipation-enabled` / `-disabled` | bool | config | Toggle follow-up anticipation |
 | `--no-agents` | bool | false | Skip loading AGENTS.md |
 | `--session` | bool | false | Save conversation as a multi-turn session |
 | `--events-jsonl <path>` | string | — | Append the structured runtime event stream (schema `odek.event/v1`, one JSON object per line). File is created/hardened `0600`; the parent directory must already exist; a symlink at the target path is refused. See [Extensions](EXTENSIONS.md) |
@@ -97,7 +115,7 @@ On exhaustion odek:
 2. persists the latest safe session state (when `--session` is active),
 3. returns a typed budget error naming the limit, observed value, and maximum, and exits with code **4**.
 
-A partial-progress summary (`[Execution budget reached — partial summary]`) is produced only when the tool-call budget fired and the other budgets still have headroom.
+A partial-progress summary is produced only when the tool-call budget fired and the other budgets still have headroom. The marker names which budget fired: `[Execution budget reached — partial summary]` (tool-call/token/cost budget), `[Time budget reached — partial summary]` (wall-clock runtime), and `[Iteration budget reached — partial summary]` (iteration cap exhausted — the engine makes one final tool-less call for the summary instead of discarding progress).
 
 Cost enforcement is active only when `max_cost_usd` **and** both per-million prices (`input_cost_per_million_usd`, `output_cost_per_million_usd`) are configured; otherwise a stderr warning is printed and the token budgets stay active. odek never hard-codes provider prices.
 
@@ -242,7 +260,7 @@ Configurable via `dangerous` section in `~/.odek/config.json` or `./odek.json`:
 
 Only `"allow"` and `"deny"` are valid `non_interactive` values; anything else (including the previously accepted `"prompt"`) is rejected at load time with a warning and treated as `"deny"`, because a non-interactive environment cannot prompt.
 
-See [docs/SECURITY.md](docs/SECURITY.md) for details.
+See [docs/SECURITY.md](SECURITY.md) for details.
 
 ## Skills
 

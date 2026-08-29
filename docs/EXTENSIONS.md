@@ -267,7 +267,7 @@ session state, and exits with a distinguishable status:
 | `1` | task/model/tool error |
 | `2` | overall timeout (currently used by `odek subagent`) |
 | `3` | setup/contract error (currently used by `odek subagent`) |
-| `4` | **execution budget exhausted** (odek-extension/v1; `odek run`) |
+| `4` | **execution budget exhausted** (odek-extension/v1; `odek run`, `odek subagent`) |
 
 Budget errors are surfaced as typed errors naming the limit, the observed
 value, and the configured maximum, so orchestrators can tell a budget stop
@@ -275,12 +275,14 @@ apart from a model or tool failure. Cost estimation uses operator-configured
 per-million prices: an exact `model_prices` key match for the run's model ID
 overrides the flat `input/output_cost_per_million_usd` pair (each missing
 price in the entry falls back individually); unknown models use the flat
-pair. Budget enforcement is currently wired
-into `odek run` only (`continue`, REPL, `serve`, and Telegram do not yet
-enforce limits), and there is no `ODEK_*` env-var layer for limits — sources
-are the `limits` config section (project configs may only *lower* global
-values, and project-set prices — flat or per-model — are rejected outright)
-and the `--max-*` CLI flags.
+pair. Budget enforcement is wired into `odek run` and `odek subagent` — the
+sub-agent enforces the operator limits (clamped by any parent-inherited
+budget when `subagent.budget_inherit` is `"share"`) and reports
+`status: "budget_exhausted"` with exit code 4. `continue`, REPL, `serve`, and
+Telegram do not yet enforce limits, and there is no `ODEK_*` env-var layer
+for limits — sources are the `limits` config section (project configs may
+only *lower* global values, and project-set prices — flat or per-model — are
+rejected outright) and the `--max-*` CLI flags.
 
 ## Building a compatible server
 

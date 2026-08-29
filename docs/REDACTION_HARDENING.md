@@ -1,10 +1,10 @@
-# Redaction Hardening Plan
+# Redaction Hardening
 
-Status: in progress. The first increment (known-value redaction + Telegram
-token pattern) ships in `internal/redact`. This document is the roadmap for
-making the redaction layer robust against the full set of known attacks on
-**the tools surface**, and an honest statement of what redaction can and
-cannot defend.
+The first increment (known-value redaction + Telegram token pattern) is
+shipped and live in `internal/redact`. This document is the reference for
+that layer and the roadmap for making it robust against the full set of
+known attacks on **the tools surface**, plus an honest statement of what
+redaction can and cannot defend.
 
 ---
 
@@ -92,7 +92,7 @@ customer's AWS key in a file, a GitHub PAT, a private key). Extended here with
 a **Telegram bot token** pattern (`<bot-id>:<35-char>`), which has no `name=`
 context for the generic rule to catch.
 
-## Implemented in this PR
+## Shipped
 
 - `internal/redact/redact.go`: known-value registry (`RegisterSecret`,
   `RegisterSecretsFromEnv`, `ResetSecrets`), encoding-aware literal matching,
@@ -103,7 +103,7 @@ context for the generic rule to catch.
 - `internal/redact/known_value_test.go`: coverage for vectors 2–4, env-scan
   selectivity, and the short-value guard.
 
-## Follow-ups (not in this PR)
+## Follow-ups (not yet implemented)
 
 1. **Streaming redaction across chunk boundaries.** A secret split across two
    streamed tool-output chunks evades per-chunk redaction. Buffer a sliding
