@@ -43,6 +43,8 @@ const (
 	TypeRunFailed          = "run_failed"
 	TypePlanCreated        = "plan_created"
 	TypePlanUpdated        = "plan_updated"
+	TypeSubagentSpawned    = "subagent_spawned"
+	TypeSubagentCompleted  = "subagent_completed"
 )
 
 // Budget limit names carried in budget_exceeded events (data.limit_name).

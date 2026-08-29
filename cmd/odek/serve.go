@@ -31,6 +31,7 @@ import (
 	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/memory"
+	"github.com/BackendStack21/odek/internal/redact"
 	"github.com/BackendStack21/odek/internal/resource"
 	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/skills"
@@ -738,23 +739,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, sendFn func(v 
 		}
 	}
 	if subagentTool != nil {
-		subagentTool.OnSubagentLog = func(taskIdx int, line string) {
-			var event struct {
-				Type string `json:"type"`
-				Name string `json:"name,omitempty"`
-				Data string `json:"data,omitempty"`
-			}
-			if err := json.Unmarshal([]byte(line), &event); err != nil {
-				return
-			}
-			sendFn(map[string]any{
-				"type":     "subagent_log",
-				"task_idx": taskIdx,
-				"name":     event.Name,
-				"event":    event.Type,
-				"data":     event.Data,
-			})
-		}
+		subagentTool.OnSubagentLog = newSubagentLogRelay(sendFn)
 	}
 	var sandboxCleanup func() error
 
@@ -2100,6 +2085,62 @@ func writeWSError(conn *golangws.Conn, msg string) {
 
 // sendError emits an error event through a generic send sink (used by the
 // headless run path, which has no socket).
+// maxSubagentRelayDataBytes caps the data field of a subagent_log WS
+// message after redaction. Child tool results are routinely larger (and
+// model-controlled); the UI needs a status line, not the payload.
+const maxSubagentRelayDataBytes = 8 << 10 // 8 KiB
+
+// newSubagentLogRelay converts raw sub-agent NDJSON lines into redacted,
+// size-capped, task-correlated WS messages (sub-agent telemetry M1 step 0:
+// child stdout is model-controlled content — it must never reach a browser
+// unredacted; loop.go tool_result data is raw tool output).
+func newSubagentLogRelay(send func(v any) error) func(taskIdx int, taskID string, line string) {
+	return func(taskIdx int, taskID string, line string) {
+		var event struct {
+			Type   string `json:"type"`
+			Name   string `json:"name,omitempty"`
+			Data   string `json:"data,omitempty"`
+			TaskID string `json:"task_id,omitempty"`
+			Status string `json:"status,omitempty"`
+			Step   any    `json:"step,omitempty"`
+		}
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			return // malformed/partial line from a killed child — drop
+		}
+		data := redact.RedactSecrets(event.Data)
+		if len(data) > maxSubagentRelayDataBytes {
+			const truncSuffix = " …[truncated]"
+			cut := maxSubagentRelayDataBytes - len(truncSuffix)
+			if cut < 0 {
+				cut = 0
+			}
+			data = data[:cut] + truncSuffix
+		}
+		if taskID == "" {
+			taskID = event.TaskID
+		}
+		msg := map[string]any{
+			"type":     "subagent_log",
+			"task_idx": taskIdx,
+			"task_id":  taskID,
+			"event":    event.Type,
+		}
+		if event.Name != "" {
+			msg["name"] = event.Name
+		}
+		if data != "" {
+			msg["data"] = data
+		}
+		if event.Status != "" {
+			msg["status"] = event.Status
+		}
+		if event.Step != nil {
+			msg["step"] = event.Step
+		}
+		_ = send(msg)
+	}
+}
+
 func sendError(send func(map[string]any), msg string) {
 	send(map[string]any{"type": "error", "message": msg})
 }

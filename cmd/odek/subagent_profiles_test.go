@@ -66,7 +66,7 @@ func TestApplyProfile_TrustLockdownStillApplies(t *testing.T) {
 }
 
 func TestTaskEnvelope_Profile(t *testing.T) {
-	env := newTaskEnvelope("goal", "ctx", "guidance", "trusted", "local_write", "research", nil, "untrusted")
+	env := newTaskEnvelope("task-1", "goal", "ctx", "guidance", "trusted", "local_write", "research", nil, "untrusted")
 	if env.Profile != "research" {
 		t.Errorf("Profile = %q, want research", env.Profile)
 	}

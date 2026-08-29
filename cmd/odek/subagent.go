@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/BackendStack21/odek"
@@ -249,6 +251,56 @@ func effectiveTrust(parentTrust, declared string) string {
 	return "trusted"
 }
 
+// subagentTelemetryWriter emits protocol-2 lifecycle records as compact
+// NDJSON on the child's stdout. Every record echoes the task_id so the
+// parent can correlate progress with the delegated task. It is active only
+// for protocol-2 envelopes under --stream (the delegate path always sets
+// --stream); standalone `odek subagent` runs without a parent keep the
+// stream silent.
+type subagentTelemetryWriter struct {
+	w      io.Writer
+	taskID string
+	step   int
+	mu     sync.Mutex
+}
+
+func newSubagentTelemetryWriter(w io.Writer, taskID string) *subagentTelemetryWriter {
+	if w == nil || taskID == "" {
+		return nil
+	}
+	return &subagentTelemetryWriter{w: w, taskID: taskID}
+}
+
+// emit writes one compact NDJSON record with the task_id echoed.
+func (t *subagentTelemetryWriter) emit(record map[string]any) {
+	record["task_id"] = t.taskID
+	line, err := json.Marshal(record)
+	if err != nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	_, _ = t.w.Write(line)
+	_, _ = t.w.Write([]byte("\n"))
+}
+
+// emitProgress reports a tool-start step. The tool NAME is included;
+// arguments and outputs never are — they are model-controlled content and
+// the telemetry path must stay argument-free (telemetry plan, security §4).
+func (t *subagentTelemetryWriter) emitProgress(tool string) {
+	t.mu.Lock()
+	t.step++
+	n := t.step
+	t.mu.Unlock()
+	t.emit(map[string]any{
+		"type": "subagent_progress",
+		"step": n,
+		"tool": tool,
+	})
+}
+
+// ── Subagent Command ─────────────────────────────────────────────────
+
 // subagentResult is the JSON contract written to stdout.
 type subagentResult struct {
 	Status          string           `json:"status"`                   // "success", "partial", "budget_exhausted" or "error"
@@ -364,6 +416,8 @@ func parseSubagentFlags(args []string) (subagentFlags, error) {
 // operator-defined capability profile; it was previously dropped by the
 // inline parser, so profiled delegate_tasks tasks silently ran bare.
 type taskFileSpec struct {
+	TaskID      string      `json:"task_id,omitempty"`
+	Protocol    int         `json:"protocol,omitempty"`
 	Goal        string      `json:"goal"`
 	Context     string      `json:"context"`
 	Guidance    string      `json:"guidance,omitempty"`
@@ -413,9 +467,13 @@ func subagentCmd(args []string) error {
 	var taskGuidance string // how-to-approach guidance from the parent (if any)
 	var taskTrust string    // "trusted" or "untrusted" (from parent agent)
 	var taskMaxRisk string
-	var taskProfile string          // capability profile selected by the parent (P4)
-	var taskBudgetBlock *taskBudget // parent's remaining budget (share mode)
-	var parentTrust string          // parent's own effective trust (P3)
+	var taskProfile string                 // capability profile selected by the parent (P4)
+	var taskBudgetBlock *taskBudget        // parent's remaining budget (share mode)
+	var parentTrust string                 // parent's own effective trust (P3)
+	var taskID string                      // telemetry correlation id (protocol-2 parents)
+	var taskProtocol int                   // telemetry protocol version from the envelope
+	var telemetry *subagentTelemetryWriter // protocol-2 lifecycle records (nil = off)
+	protocol2 := false                     // framed result mode
 	if hasTaskFile {
 		info, err := os.Stat(cfg.taskFile)
 		if err != nil {
@@ -440,6 +498,11 @@ func subagentCmd(args []string) error {
 		taskProfile = taskSpec.Profile
 		taskBudgetBlock = taskSpec.Budget
 		parentTrust = taskSpec.ParentTrust
+		// Telemetry correlation (sub-agent telemetry M1): protocol-2 parents
+		// stamp a task id; the child echoes it on every stdout record and
+		// frames its final result so the parent cannot misparse.
+		taskID = taskSpec.TaskID
+		taskProtocol = taskSpec.Protocol
 		// Only delete the task file if the parent wrote it into an odek temp
 		// directory. This prevents `odek subagent --task /path/to/user/file`
 		// from reading and then deleting an arbitrary file.
@@ -648,6 +711,17 @@ func subagentCmd(args []string) error {
 		Limits:           resolved.Limits,
 	}
 	if cfg.stream {
+		protocol2 = taskID != "" && taskProtocol >= subagentProtocolV2
+		if protocol2 {
+			telemetry = newSubagentTelemetryWriter(os.Stdout, taskID)
+			telemetry.emit(map[string]any{
+				"type":      "subagent_started",
+				"pid":       os.Getpid(),
+				"depth":     subagentDepth(),
+				"timeout_s": cfg.timeout,
+				"max_iter":  cfg.maxIter,
+			})
+		}
 		aCfg.ToolEventHandler = func(event, name, data string) {
 			line, _ := json.Marshal(map[string]string{
 				"type": event,
@@ -656,6 +730,9 @@ func subagentCmd(args []string) error {
 			})
 			os.Stdout.Write(line)
 			os.Stdout.Write([]byte("\n"))
+			if telemetry != nil && event == "tool_call" {
+				telemetry.emitProgress(name)
+			}
 		}
 	}
 	agent, err := odek.New(aCfg)
@@ -731,9 +808,40 @@ func subagentCmd(args []string) error {
 	result.FilesChanged = extractFilesChanged(allMessages)
 
 	// Output JSON to stdout — the envelope is emitted exactly once, here.
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "")
-	enc.Encode(result)
+	// Protocol-2 children emit a compact subagent_finished record followed
+	// by a FRAMED result ({"type":"result",…}) so the parent's parser
+	// cannot confuse protocol traffic with the result. Legacy children
+	// keep the bare indented encoding.
+	if telemetry != nil {
+		telemetry.emit(map[string]any{
+			"type":        "subagent_finished",
+			"status":      result.Status,
+			"iterations":  result.Iterations,
+			"duration_s":  result.DurationSeconds,
+			"tokens_used": result.TokensUsed,
+		})
+	}
+	if protocol2 {
+		raw, merr := json.Marshal(result)
+		if merr == nil {
+			var inner map[string]any
+			_ = json.Unmarshal(raw, &inner)
+			framed, _ := json.Marshal(map[string]any{
+				"type":    "result",
+				"task_id": taskID,
+				"result":  inner,
+			})
+			os.Stdout.Write(framed)
+			os.Stdout.Write([]byte("\n"))
+		} else {
+			enc := json.NewEncoder(os.Stdout)
+			enc.Encode(result)
+		}
+	} else {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "")
+		enc.Encode(result)
+	}
 
 	if result.Status == "success" {
 		if !cfg.quiet {
