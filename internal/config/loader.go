@@ -593,7 +593,7 @@ type ResolvedConfig struct {
 	Maintenance maintenance.Config
 
 	// Subagent is the resolved sub-agent execution config.
-	// Default: MaxConcurrency=0 (fall back to global), TimeoutSeconds=120,
+	// Default: MaxConcurrency=0 (fall back to global), TimeoutSeconds=1800 (30m),
 	// MaxIterations=15, MaxDepth=2, AnnounceBudget=true,
 	// BudgetInherit="operator".
 	Subagent SubagentResolved
@@ -1000,7 +1000,7 @@ type SubagentResolved struct {
 // runaway-process guards enforced by the CLI flags.
 func resolveSubagent(cfg *SubagentConfig) SubagentResolved {
 	res := SubagentResolved{
-		TimeoutSeconds: 120,
+		TimeoutSeconds: 1800,
 		MaxIterations:  15,
 		MaxDepth:       2,
 		AnnounceBudget: true,
@@ -1024,8 +1024,8 @@ func resolveSubagent(cfg *SubagentConfig) SubagentResolved {
 		if v < 0 {
 			v = 0
 		}
-		if v > 3600 {
-			v = 3600
+		if v > 1800 {
+			v = 1800
 		}
 		res.TimeoutSeconds = v
 	}

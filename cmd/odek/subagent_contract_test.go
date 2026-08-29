@@ -603,8 +603,8 @@ func findDelegateTool(t *testing.T, tools []odek.Tool) *delegateTasksTool {
 
 func TestSubagentConfig_DefaultValues(t *testing.T) {
 	dt := findDelegateTool(t, builtinTools(danger.DangerousConfig{}, nil, nil, 4, "", toolConfig{}, nil))
-	if dt.timeout != 120*time.Second {
-		t.Errorf("default timeout = %v, want 120s", dt.timeout)
+	if dt.timeout != 1800*time.Second {
+		t.Errorf("default timeout = %v, want 1800s (30 minutes)", dt.timeout)
 	}
 	if dt.maxDepth != 2 {
 		t.Errorf("default maxDepth = %d, want 2", dt.maxDepth)

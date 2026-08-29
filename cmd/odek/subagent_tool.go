@@ -80,7 +80,7 @@ Example: decomposing "build a REST API" into "create user model", "create auth m
 Key rules:
 - Each sub-agent has a fresh context (no parent history)
 - Sub-agents run in parallel up to the configured concurrency limit (subagent.max_concurrency, falling back to max_concurrency)
-- Each sub-agent gets a wall-clock budget (subagent.timeout_seconds, default 120s) and an iteration budget (subagent.max_iterations, default 15) — it is told both at spawn and warned as it approaches them
+- Each sub-agent gets a wall-clock budget (subagent.timeout_seconds, default 30m, hard max 30m) and an iteration budget (subagent.max_iterations, default 15) — it is told both at spawn and warned as it approaches them
 - Sub-agents can use all tools (shell, read/write files, etc.), capped by trust_level and max_risk
 - Delegation depth is capped (subagent.max_depth, default 2) — do leaf work yourself when close to the cap
 - After all complete, synthesize the results into a cohesive answer

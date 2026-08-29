@@ -263,10 +263,11 @@ func parseSubagentFlags(args []string) (subagentFlags, error) {
 	}
 
 	// Clamp runaway limits (finding #79). Values <= 0 fall through to the
-	// defaults in subagentCmd; explicitly huge values are capped to prevent a
-	// single sub-agent invocation from running forever.
+	// defaults in subagentCmd; explicitly huge values are capped at the
+	// 30-minute maximum so a single sub-agent invocation can never run
+	// unbounded.
 	const (
-		maxSubagentTimeout = 3600 // 1 hour
+		maxSubagentTimeout = 1800 // 30 minutes
 		maxSubagentIter    = 100
 	)
 	if cfg.timeout > maxSubagentTimeout {
@@ -353,7 +354,7 @@ func subagentCmd(args []string) error {
 		cfg.timeout = resolved.Subagent.TimeoutSeconds
 	}
 	if cfg.timeout <= 0 {
-		cfg.timeout = 120
+		cfg.timeout = 1800
 	}
 	if cfg.maxIter <= 0 {
 		cfg.maxIter = resolved.Subagent.MaxIterations

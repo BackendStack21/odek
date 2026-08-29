@@ -1344,9 +1344,8 @@ const globalConfigTemplate = `{
   },
   "subagent": {
     "max_concurrency": 3,
-    "timeout_seconds": 120,
-    "max_iterations": 15,
-    "system_prompt": ""
+    "timeout_seconds": 1800,
+    "max_iterations": 15
   },
   "limits": {
     "max_runtime_seconds": 0,
@@ -1436,7 +1435,7 @@ const localConfigTemplate = `{
   },
   "subagent": {
     "max_concurrency": 3,
-    "timeout_seconds": 120,
+    "timeout_seconds": 1800,
     "max_iterations": 15
   },
   "mcp_servers": {},
@@ -2233,7 +2232,7 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 	// global max_concurrency when the section does not set it.
 	subTimeout := tcfg.Subagent.TimeoutSeconds
 	if subTimeout <= 0 {
-		subTimeout = 120
+		subTimeout = 1800
 	}
 	subConcurrency := tcfg.Subagent.MaxConcurrency
 	if subConcurrency <= 0 {

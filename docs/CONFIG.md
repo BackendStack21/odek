@@ -652,7 +652,7 @@ The `subagent` section controls task decomposition and parallel sub-agent execut
 | Field | Default | Description |
 |-------|---------|-------------|
 | `max_concurrency` | global `max_concurrency` | Max sub-agents running in parallel (max 8) |
-| `timeout_seconds` | 120 | Default wall-clock budget per sub-agent (overridden by `--timeout`); clamped to 3600 |
+| `timeout_seconds` | 1800 | Default wall-clock budget per sub-agent, 30 minutes (overridden by `--timeout`); clamped to 1800 |
 | `max_iterations` | 15 | Default think→act cycles per sub-agent (overridden by `--max-iter`); clamped to 100 |
 | `max_depth` | 2 | Delegation nesting cap via `ODEK_SUBAGENT_DEPTH`; clamped to 8 |
 | `announce_budget` | true | Sub-agents are told their budget at spawn and warned at 50/75/90% usage |

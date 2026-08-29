@@ -27,7 +27,7 @@
 | `odek audit <session-id>` | Print the prompt-injection audit log for a session (JSON) |
 | `odek audit --list` | List sessions with non-zero ingest counts and divergence flags |
 || `odek serve [--addr :8080] [--open] [--no-sandbox] [--trusted-proxies <ips/cidrs>]` | Web UI server. Sandbox is on by default; pass `--no-sandbox` to disable. Accepts `--tool` and `--no-tool` flags. Binding to a non-loopback address prints a loud warning because anyone with the token can drive the agent. `--trusted-proxies` honours `X-Forwarded-For`/`X-Real-Ip` only from those addresses. |
-|| `odek subagent --goal <string> [flags]` | Run a focused sub-task; outputs JSON on stdout. Spawned by `delegate_tasks` tool. Flags: `--goal`, `--task <file>`, `--context`, `--timeout` (≤3600s), `--max-iter` (≤100), `--quiet`, `--stream`. |
+|| `odek subagent --goal <string> [flags]` | Run a focused sub-task; outputs JSON on stdout. Spawned by `delegate_tasks` tool. Flags: `--goal`, `--task <file>`, `--context`, `--timeout` (≤1800s), `--max-iter` (≤100), `--quiet`, `--stream`. |
 | `odek init [--global|--local] [--force]` | Create a config file template (scope-aware: full schema globally, project-safe fields locally) |
 | `odek mcp [--sandbox]` | Start MCP server (expose tools to Claude Code) or connect to external MCP servers (via `mcp_servers` config) |
 | `odek telegram` | Start the Telegram bot (long-polling). Hosts the embedded scheduler unless `schedules.enabled=false` |

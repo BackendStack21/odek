@@ -170,7 +170,7 @@ odek subagent --goal "Continue refactoring" --parent-session "20260519-abc123"
 | `--goal <string>` | — | **Required** unless `--task` specified. The sub-agent's goal. |
 | `--context <string>` | `""` | Background context (file paths, design decisions) |
 | `--task <file>` | — | JSON file with `{"goal":"...","context":"...}"`. Mutually exclusive with `--goal`. |
-| `--timeout <sec>` | 120 | Max seconds the sub-agent may run before being killed |
+| `--timeout <sec>` | 1800 | Max seconds the sub-agent may run before being killed (hard max 1800 = 30 min) |
 | `--max-iter <n>` | 15 | Max think→act cycles |
 | `--quiet` | false | Suppress emoji progress on stderr |
 | `--parent-session <id>` | — | Session ID from the parent (for context relay) |
@@ -331,7 +331,7 @@ Config in `odek.json`:
 | Risk | Mitigation |
 |------|------------|
 | **Sub-agent hijacking** | Sub-agents are never prompted by the parent/user — they receive structured `goal`/`context` strings. No instruction injection path. |
-| **Runaway processes** | Hard timeout (`--timeout`, default 120s). Context cancellation kills via `os.Process.Kill()`. |
+| **Runaway processes** | Hard timeout (`--timeout`, default 1800s = 30 min, hard max 1800s). Context cancellation kills via `os.Process.Kill()`. |
 | **Resource exhaustion** | Concurrency semaphore (max `max_concurrency`). Sequential spawning. No fork bomb. |
 | **Panic propagation** | Each sub-agent is an OS process. Panic exits only that process with code 3 — parent sees the JSON error and continues. |
 | **Temp file leakage** | Each task file is `defer os.Remove()`'d after subprocess exit. |

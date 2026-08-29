@@ -17,8 +17,8 @@ func TestResolveSubagent_Defaults(t *testing.T) {
 	if res.MaxConcurrency != 0 {
 		t.Errorf("MaxConcurrency = %d, want 0 (fall back to global)", res.MaxConcurrency)
 	}
-	if res.TimeoutSeconds != 120 || res.MaxIterations != 15 {
-		t.Errorf("defaults = %d/%d, want 120/15", res.TimeoutSeconds, res.MaxIterations)
+	if res.TimeoutSeconds != 1800 || res.MaxIterations != 15 {
+		t.Errorf("defaults = %d/%d, want 1800/15", res.TimeoutSeconds, res.MaxIterations)
 	}
 	if res.MaxDepth != 2 {
 		t.Errorf("MaxDepth = %d, want 2", res.MaxDepth)
@@ -47,8 +47,8 @@ func TestResolveSubagent_OverridesAndClamps(t *testing.T) {
 	if res.MaxConcurrency != 8 {
 		t.Errorf("MaxConcurrency = %d, want 8 (clamped)", res.MaxConcurrency)
 	}
-	if res.TimeoutSeconds != 3600 {
-		t.Errorf("TimeoutSeconds = %d, want 3600 (clamped)", res.TimeoutSeconds)
+	if res.TimeoutSeconds != 1800 {
+		t.Errorf("TimeoutSeconds = %d, want 1800 (clamped to the 30-minute max)", res.TimeoutSeconds)
 	}
 	if res.MaxIterations != 0 {
 		t.Errorf("MaxIterations = %d, want 0 (explicit non-positive falls through to the built-in default at the consumer)", res.MaxIterations)
