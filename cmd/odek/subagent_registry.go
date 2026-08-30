@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -177,25 +178,115 @@ func newSubagentTelemetryRelay(send func(v any) error, runKey string) func(taskI
 		}
 
 		// Fan the state transition out to the UI.
-		snap := subagentRegistrySnapshot("")
-		for _, e := range snap {
-			if e.TaskID == taskID {
-				_ = send(map[string]any{
-					"type":             "subagent_state",
-					"task_id":          e.TaskID,
-					"task_idx":         taskIdx,
-					"run_key":          e.RunKey,
-					"phase":            e.Phase,
-					"status":           e.Status,
-					"step":             e.Step,
-					"iterations":       e.Iterations,
-					"tool":             e.LastTool,
-					"duration_seconds": e.DurationSeconds,
-					"tokens_used":      e.TokensUsed,
-				})
-				break
-			}
+		subagentRegistryEmitState(send, taskID, taskIdx)
+	}
+}
+
+// subagentRegistryEmitState fans a task's current registry entry out to
+// the UI as a subagent_state WS message. Shared by the line relay
+// (child-driven transitions) and the done relay (parent-driven terminal
+// states for children that died without reporting).
+func subagentRegistryEmitState(send func(v any) error, taskID string, taskIdx int) {
+	snap := subagentRegistrySnapshot("")
+	for _, e := range snap {
+		if e.TaskID == taskID {
+			_ = send(map[string]any{
+				"type":             "subagent_state",
+				"task_id":          e.TaskID,
+				"task_idx":         taskIdx,
+				"run_key":          e.RunKey,
+				"phase":            e.Phase,
+				"status":           e.Status,
+				"step":             e.Step,
+				"iterations":       e.Iterations,
+				"tool":             e.LastTool,
+				"duration_seconds": e.DurationSeconds,
+				"tokens_used":      e.TokensUsed,
+			})
+			break
 		}
+	}
+}
+
+// ── Sub-agent stop control (per-card stop) ──────────────────────────
+//
+// Process-global registry of live per-task cancel functions, mirroring
+// the promptCancels precedent: the WS subagent_cancel handler resolves a
+// task_id to its cancel func without needing the owning connection's
+// tool instance. Entries exist ONLY while a task is running — runTask
+// registers before spawn and unregisters on every exit path, so the map
+// is bounded by live tasks and stale ids are naturally rejected.
+
+var subagentCtl struct {
+	mu   sync.Mutex
+	byID map[string]context.CancelFunc
+}
+
+// registerSubagentCancel records cancel as the live cancel func for
+// taskID. The returned unregister removes the entry unconditionally —
+// task ids are random per-task UUIDs, so no generation guard is needed.
+func registerSubagentCancel(taskID string, cancel context.CancelFunc) (unregister func()) {
+	if taskID == "" || cancel == nil {
+		return func() {}
+	}
+	subagentCtl.mu.Lock()
+	if subagentCtl.byID == nil {
+		subagentCtl.byID = map[string]context.CancelFunc{}
+	}
+	subagentCtl.byID[taskID] = cancel
+	subagentCtl.mu.Unlock()
+
+	return func() {
+		subagentCtl.mu.Lock()
+		delete(subagentCtl.byID, taskID)
+		subagentCtl.mu.Unlock()
+	}
+}
+
+// cancelSubagentTask cancels the running sub-agent for taskID, if any.
+// Returns true when a live task was found and its cancel func invoked.
+func cancelSubagentTask(taskID string) bool {
+	if taskID == "" {
+		return false
+	}
+	subagentCtl.mu.Lock()
+	cancel, ok := subagentCtl.byID[taskID]
+	subagentCtl.mu.Unlock()
+	if !ok || cancel == nil {
+		return false
+	}
+	cancel()
+	return true
+}
+
+// newSubagentDoneRelay bridges parent-side terminal outcomes for
+// sub-agents that died WITHOUT emitting their own subagent_finished
+// record (user cancel, turn cancel, timeout, flood-kill, crash) into the
+// registry and the WS subagent_state stream, so cards do not stay
+// "running" forever. Known double-count edge: a child that emitted
+// subagent_finished but whose framed result still failed to parse is
+// counted twice in the failure counter — a counter-only inaccuracy on a
+// malformed-output path.
+func newSubagentDoneRelay(send func(v any) error, runKey string) func(taskIdx int, taskID, status string) {
+	return func(taskIdx int, taskID, status string) {
+		if taskID == "" {
+			return
+		}
+		// Update (auto-creates) rather than Record: Record's re-record
+		// path restores accumulated state, which would clobber the
+		// terminal transition on an existing entry.
+		subagentRegistryUpdate(taskID, func(e *subagentEntry) {
+			e.Phase = "finished"
+			e.Status = status
+			e.FinishedAt = time.Now()
+		})
+		// A user-initiated cancel is neither success nor failure for the
+		// lifetime counters; every other no-result outcome is a failure.
+		if status != "cancelled" {
+			subagentStats.failed.Add(1)
+		}
+		// Fan the terminal state out to the UI.
+		subagentRegistryEmitState(send, taskID, taskIdx)
 	}
 }
 

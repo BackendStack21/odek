@@ -1781,6 +1781,30 @@ button:disabled { cursor: not-allowed; }
 }
 .subagent-card.completed .sa-status { color: var(--green); }
 .subagent-card.error .sa-status { color: var(--red); }
+.subagent-card.stopped { border-color: rgba(255, 178, 36, .4); }
+.subagent-card.stopped .sa-status { color: var(--amber); }
+
+/* Per-card stop — armed only once the task_id is known (subagent_state
+   started); removed entirely when the card finalizes. */
+.sa-stop {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 8px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.sa-stop:hover:not(:disabled) { color: var(--red); border-color: var(--red); }
+.sa-stop:disabled { opacity: .35; cursor: default; }
 
 .sa-details {
   display: none;

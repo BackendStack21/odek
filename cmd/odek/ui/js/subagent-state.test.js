@@ -225,3 +225,86 @@ test('finished without a goal-matching group is a no-op', () => {
   render.updateSubagentState({ task_idx: 0, phase: 'finished', status: 'success' });
   assert.ok(true, 'no throw without an active group');
 });
+
+// ── stop button / per-sub-agent cancellation ──
+
+test('running cards render a stop button, disabled until task_id arrives', () => {
+  const cs = delegateTwoTasks();
+
+  const stop0 = cs[0].querySelector('.sa-stop');
+  assert.ok(stop0, 'stop button rendered on the card');
+  assert.equal(stop0.disabled, true, 'disabled without a task_id (task may not have spawned yet)');
+
+  render.updateSubagentState({ task_idx: 0, phase: 'started', status: 'running', task_id: 'tid-1' });
+  assert.equal(cs[0].dataset.taskId, 'tid-1', 'card remembers the correlation id');
+  assert.equal(cs[0].querySelector('.sa-stop').disabled, false, 'armed once task_id is known');
+
+  // Sibling without a started record stays disarmed.
+  assert.equal(cs[1].querySelector('.sa-stop').disabled, true);
+});
+
+test('requestSubagentStop sends the task id once and marks the card stopping', () => {
+  const cs = delegateTwoTasks();
+  render.updateSubagentState({ task_idx: 0, phase: 'started', status: 'running', task_id: 'tid-9' });
+
+  const sent = [];
+  S.onSubagentStop = (taskID) => sent.push(taskID);
+
+  render.requestSubagentStop(0);
+  assert.deepEqual(sent, ['tid-9'], 'stop request carries the correlation id');
+  assert.equal(cs[0].dataset.stopping, '1', 'card flagged stopping');
+  assert.equal(cs[0].querySelector('.sa-status').textContent, 'stopping…');
+  assert.equal(cs[0].querySelector('.sa-stop').disabled, true, 'button disarmed while stopping');
+
+  // Second click is suppressed — one request per card.
+  render.requestSubagentStop(0);
+  assert.deepEqual(sent, ['tid-9']);
+});
+
+test('requestSubagentStop is a no-op without task_id or on finalized cards', () => {
+  const cs = delegateTwoTasks();
+  const sent = [];
+  S.onSubagentStop = (taskID) => sent.push(taskID);
+
+  // No task_id yet.
+  render.requestSubagentStop(0);
+  assert.deepEqual(sent, []);
+
+  // Finalized card.
+  render.updateSubagentState({ task_idx: 1, phase: 'started', status: 'running', task_id: 'tid-2' });
+  render.updateSubagentState({ task_idx: 1, phase: 'finished', status: 'success' });
+  render.requestSubagentStop(1);
+  assert.deepEqual(sent, []);
+});
+
+test('cancelled finish marks the card stopped and removes the stop button', () => {
+  const cs = delegateTwoTasks();
+  render.updateSubagentState({ task_idx: 1, phase: 'started', status: 'running', task_id: 'tid-2' });
+  render.updateSubagentState({
+    task_idx: 1, phase: 'finished', status: 'cancelled', duration_seconds: 3.2,
+  });
+
+  assert.equal(cs[1].querySelector('.sa-icon').textContent, '⊘');
+  assert.equal(cs[1].querySelector('.sa-status').textContent, 'stopped');
+  assert.ok(cs[1].classList.contains('stopped'), 'card carries the stopped class');
+  assert.equal(cs[1].dataset.finalized, '1');
+  assert.equal(cs[1].querySelector('.sa-stop'), null, 'stop button removed after finalize');
+});
+
+test('cancelled card keeps its pill when the batch result lands later', () => {
+  const cs = delegateTwoTasks();
+  render.updateSubagentState({ task_idx: 0, phase: 'started', status: 'running', task_id: 'tid-a' });
+  render.updateSubagentState({ task_idx: 0, phase: 'finished', status: 'cancelled' });
+
+  render.completeSubagents(
+    '📋 Sub-agent results:\n\n' +
+    '─── Task 1: alpha ───\n' +
+    '{"status":"cancelled","summary":"stopped by user"}\n\n' +
+    '─── Task 2: beta ───\n' +
+    '{"status":"success","summary":"beta ok"}'
+  );
+
+  assert.equal(cs[0].querySelector('.sa-icon').textContent, '⊘', 'cancelled pill survives the batch result');
+  assert.equal(cs[0].querySelector('.sa-status').textContent, 'stopped');
+  assert.equal(cs[1].querySelector('.sa-status').textContent, 'done');
+});
