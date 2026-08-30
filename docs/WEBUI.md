@@ -433,6 +433,17 @@ and friction behave identically. Tainted/dangerous classes still never offer
 `trust`. The registry keeps the newest ~100 runs (≥20 completed) and evicts
 oldest completed first.
 
+Failed runs keep their session linkage: the user prompt is persisted to the
+session before the first LLM call, and a failed turn closes with an explicit
+`[Turn aborted: …]` assistant note instead of ending on a dangling tool call —
+`run.session_id` is therefore always populated and the transcript never loses
+the prompt. Persistent provider rate limits (HTTP 429 past the client's retry
+budget) surface as a typed summary in the run record and the durable serve
+log: `~/.odek/serve.log` by default (`--log-file` to override, mode 0600,
+rotated by the storage janitor alongside `telegram.log`/`schedule.log`). The
+log records run/turn lifecycle — IDs, statuses, latencies, failure
+classifications — never prompt or completion content.
+
 ### `GET /api/events?limit=&run_id=&session_id=`
 
 Recent `odek.event/v1` runtime events (ring of 500, oldest-first, filtered).
@@ -505,6 +516,7 @@ listings return pinned sessions first, and both list and detail carry
 | `--tool <name>` | — | Enable a specific tool for served runs (repeatable; highest-priority whitelist layer) |
 | `--no-tool <name>` | — | Disable a specific tool for served runs (repeatable; merged with lower-priority disabled lists) |
 | `--trusted-proxies <ips/cidrs>` | — | Client IPs trusted for `X-Forwarded-For` / `X-Real-Ip` resolution, used by rate limiting. **Only set this for proxies you control** — a spoofed header from an untrusted client defeats per-IP rate limits |
+| `--log-file <path>` | `~/.odek/serve.log` | Durable run/turn log (mode 0600, symlink-resistant). Lifecycle lines only — never prompt or completion content. Rotated by the storage janitor |
 | `--stream` | config | Stream LLM responses live to the WebUI (`token_delta` / `thinking_delta` events) |
 | `--no-stream` | config | Disable live streaming (bulk `token` events only) |
 | `--help`, `-h` | — | Show usage |

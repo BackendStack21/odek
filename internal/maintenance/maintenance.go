@@ -220,7 +220,7 @@ func sweepAudit(home string, maxAgeDays int) (int, error) {
 func rotateLogs(home string, maxMB int64) ([]string, error) {
 	limit := maxMB << 20
 	var rotated []string
-	for _, name := range []string{"telegram.log", "schedule.log"} {
+	for _, name := range []string{"telegram.log", "schedule.log", "serve.log"} {
 		path := filepath.Join(home, name)
 		info, err := os.Stat(path)
 		if err != nil {

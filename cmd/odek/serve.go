@@ -8,6 +8,7 @@ import (
 	"embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -89,6 +90,32 @@ func filterPersistSnapshot(head, snapshot []llm.Message) []llm.Message {
 		filtered = append(filtered, m)
 	}
 	return filtered
+}
+
+// providerFailureSummary renders a short, safe failure classification for
+// the persisted turn-abort note. It deliberately excludes the provider's raw
+// error body — it can be large and may echo prompt content back into the
+// transcript. Typed llm errors (rate limit) get a precise, actionable line;
+// everything else is truncated to a single line.
+func providerFailureSummary(err error) string {
+	var rle *llm.RateLimitError
+	if errors.As(err, &rle) {
+		return fmt.Sprintf("provider rate limit (HTTP %d) after %d attempts", rle.StatusCode, rle.Attempts)
+	}
+	if errors.Is(err, context.Canceled) {
+		return "cancelled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timed out"
+	}
+	msg := strings.TrimSpace(err.Error())
+	if i := strings.IndexAny(msg, "\r\n"); i >= 0 {
+		msg = msg[:i]
+	}
+	if len(msg) > 160 {
+		msg = msg[:160]
+	}
+	return strings.ToValidUTF8(msg, "")
 }
 
 // modelIDPattern restricts model IDs to printable ASCII characters commonly
@@ -261,6 +288,7 @@ func serveCmd(args []string) error {
 	var stream *bool
 	var sandboxImage, sandboxNetwork, sandboxMemory, sandboxCPUs, sandboxUser string
 	var toolsEnabled, toolsDisabled, trustedProxies []string
+	var logFile string
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -339,6 +367,12 @@ func serveCmd(args []string) error {
 			for j := range trustedProxies {
 				trustedProxies[j] = strings.TrimSpace(trustedProxies[j])
 			}
+		case "--log-file":
+			i++
+			if i >= len(args) {
+				return fmt.Errorf("--log-file requires a value")
+			}
+			logFile = args[i]
 		default:
 			return fmt.Errorf("unknown flag %q for serve", args[i])
 		}
@@ -382,6 +416,24 @@ func serveCmd(args []string) error {
 
 	cwd, _ := os.Getwd()
 	home, _ := os.UserHomeDir()
+
+	// Durable run/turn log (fix 4 of the sub-agent reliability work): every
+	// serve turn and headless run is recorded with IDs, statuses, and short
+	// failure classifications so provider failures (429 saturation) are
+	// visible after the fact. Default ~/.odek/serve.log — a sibling of
+	// telegram.log/schedule.log so the storage janitor's rotation covers it.
+	logPath := logFile
+	if logPath == "" {
+		logPath = filepath.Join(home, ".odek", "serve.log")
+	}
+	if sl, err := openServeLog(logPath); err == nil {
+		setServeLog(sl)
+		defer sl.Close()
+		sl.logf("serve_started addr=%s pid=%d", addr, os.Getpid())
+	} else {
+		fmt.Fprintf(os.Stderr, "odek serve: durable run log disabled (%v)\n", err)
+	}
+
 	resourceReg := resource.NewRegistry(
 		resource.NewFileResolver(cwd),
 		resource.NewSessionResolver(filepath.Join(home, ".odek", "sessions")),
@@ -569,6 +621,7 @@ Flags:
   --tool name              Enable a tool for the LLM (repeatable)
   --no-tool name           Disable a tool for the LLM (repeatable)
   --trusted-proxies list   Comma-separated IPs/CIDRs whose X-Forwarded-For headers are trusted
+  --log-file path          Durable run/turn log (default: ~/.odek/serve.log, mode 0600)
   --help, -h               Show this help`)
 }
 
@@ -1539,6 +1592,10 @@ func handlePrompt(
 		defer registerPromptCancel(sid, promptCancel)()
 	}
 	send(map[string]any{"type": "session", "session_id": sid, "auth_token": authToken, "model": resolved.Model, "sandbox": resolved.Sandbox})
+	sl := activeServeLog()
+	if sl != nil {
+		sl.logf("turn_started session=%s model=%s", sid, resolved.Model)
+	}
 
 	// Append user input to buffer (AppendBuffer summarizes raw text).
 	if mm := agent.Memory(); mm != nil {
@@ -1577,9 +1634,23 @@ func handlePrompt(
 		})
 	}
 
+	// Persist the user turn BEFORE the run (dead-prompt fix). The per-step
+	// persist callback above only fires after a completed step, so a provider
+	// failure on the very first LLM call (rate-limit saturation, auth error,
+	// outage) would return the session unchanged and the prompt would vanish
+	// — observed repeatedly on 2026-08-29. SaveNoIndex skips the remote
+	// vector index; a successful turn re-indexes on the final save below.
+	if sess != nil {
+		sess.Messages = append(sess.Messages, llm.Message{Role: "user", Content: enrichedPrompt})
+		_ = store.SaveNoIndex(sess)
+	}
+
 	start := time.Now()
 	_, allMessages, err := agent.RunWithMessages(ctx, messages)
 	latency := time.Since(start)
+	if sl != nil {
+		sl.logf("turn_completed session=%s latency_ms=%d", sid, latency.Milliseconds())
+	}
 	streamedReasoning, streamedContent := 0, 0
 	if deltas != nil {
 		streamedReasoning, streamedContent = deltas.snapshot()
@@ -1587,7 +1658,21 @@ func handlePrompt(
 
 	if err != nil {
 		sendError(send, err.Error())
-		return currSess // return unchanged session on error
+		if sl != nil {
+			sl.logf("turn_failed session=%s summary=%s", sid, providerFailureSummary(err))
+		}
+		if sess == nil {
+			return currSess
+		}
+		// Soft-fail: close the turn with an assistant-visible note so the
+		// transcript never ends on a dangling tool result and the next turn
+		// sees coherent context. The user prompt is already persisted above;
+		// returning sess (not currSess) also keeps the caller's run record
+		// and in-memory session pointer in sync with the persisted state.
+		note := fmt.Sprintf("[Turn aborted: %s. The prompt above was preserved — send another message to retry or continue.]", providerFailureSummary(err))
+		sess.Messages = append(sess.Messages, llm.Message{Role: "assistant", Content: note})
+		_ = store.SaveNoIndex(sess)
+		return sess
 	}
 
 	// Dynamic injections (skills, memory, episodes) insert extra system messages

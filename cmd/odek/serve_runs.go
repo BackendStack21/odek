@@ -789,6 +789,7 @@ func startServeRun(
 	go func() {
 		defer cleanup()
 		var sessionIn, sessionOut int
+		serveLogf("run_started run_id=%s", run.ID)
 		sess := handlePrompt(ctx, func(m map[string]any) { _ = run.record(m) }, store, resources, resolved, agent, injectionGuard, nil, msg, &sessionIn, &sessionOut, cancelWithApproval, &deltas)
 		run.mu.Lock()
 		if sess != nil {
@@ -798,8 +799,16 @@ func startServeRun(
 		run.mu.Unlock()
 		if errMsg != "" {
 			run.finish("failed", errMsg)
+			sl := activeServeLog()
+			if sl != nil {
+				sl.logf("run_finished run_id=%s session=%s status=failed", run.ID, run.SessionID)
+			}
 		} else {
 			run.finish("completed", "")
+			sl := activeServeLog()
+			if sl != nil {
+				sl.logf("run_finished run_id=%s session=%s status=completed", run.ID, run.SessionID)
+			}
 		}
 	}()
 
