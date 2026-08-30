@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/session"
-	"github.com/BackendStack21/odek/internal/skills"
 )
 
 // mediaMaxAge is the fixed retention for downloaded Telegram media. The
@@ -33,19 +32,17 @@ type Config struct {
 	AuditMaxAgeDays      int   // delete audit records older than this; default 14; 0 = keep
 	LogMaxMB             int64 // rotate telegram/schedule logs larger than this; default 50; 0 = no rotation
 	PlansMaxAgeDays      int   // delete telegram plans older than this; default 30; 0 = keep
-	SkillsSkipMaxAgeDays int   // GC skill skip-list entries older than this; default 90; 0 = keep
 }
 
 // DefaultConfig returns the out-of-the-box maintenance policy.
 func DefaultConfig() Config {
 	return Config{
-		Enabled:              true,
-		IntervalMinutes:      60,
-		SessionsMaxAgeDays:   30,
-		AuditMaxAgeDays:      14,
-		LogMaxMB:             50,
-		PlansMaxAgeDays:      30,
-		SkillsSkipMaxAgeDays: 90,
+		Enabled:            true,
+		IntervalMinutes:    60,
+		SessionsMaxAgeDays: 30,
+		AuditMaxAgeDays:    14,
+		LogMaxMB:           50,
+		PlansMaxAgeDays:    30,
 	}
 }
 
@@ -54,7 +51,6 @@ type Report struct {
 	SessionsRemoved int
 	AuditRemoved    int
 	PlansRemoved    int
-	SkipsRemoved    int
 	MediaFreedBytes int64
 	LogsRotated     []string
 }
@@ -115,15 +111,6 @@ func Sweep(ctx context.Context, home string, cfg Config) (Report, error) {
 	freed, err := sweepMedia(home)
 	rep.MediaFreedBytes = freed
 	fail(err)
-
-	if cfg.SkillsSkipMaxAgeDays > 0 {
-		if err := ctx.Err(); err != nil {
-			return rep, err
-		}
-		n, err := gcSkipList(home, cfg.SkillsSkipMaxAgeDays)
-		rep.SkipsRemoved = n
-		fail(err)
-	}
 
 	return rep, firstErr
 }
@@ -332,30 +319,4 @@ func sweepMedia(home string) (int64, error) {
 		return freed, fmt.Errorf("maintenance: walk media dir: %w", err)
 	}
 	return freed, nil
-}
-
-// gcSkipList removes skill skip-list entries (<home>/skills/.skipped.json)
-// whose last skip is older than maxAgeDays. ShouldSkip already treats such
-// entries as expired; this just stops the file from growing forever.
-func gcSkipList(home string, maxAgeDays int) (int, error) {
-	dir := filepath.Join(home, "skills")
-	sl := skills.LoadSkipList(dir)
-	if len(sl.Skipped) == 0 {
-		return 0, nil
-	}
-	cutoff := daysAgo(maxAgeDays).UTC()
-	var removed int
-	for name, e := range sl.Skipped {
-		if e.SkippedAt.Before(cutoff) {
-			delete(sl.Skipped, name)
-			removed++
-		}
-	}
-	if removed == 0 {
-		return 0, nil
-	}
-	if err := sl.Save(dir); err != nil {
-		return removed, fmt.Errorf("maintenance: save skip list: %w", err)
-	}
-	return removed, nil
 }

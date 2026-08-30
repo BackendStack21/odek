@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -17,7 +16,7 @@ import (
 
 // cleanupCmd implements `odek cleanup [--dry-run]`: a one-shot, operator-
 // invoked storage sweep over ~/.odek (expired sessions, audit records, plans,
-// skill skip entries, oversized logs). It runs the same maintenance.Sweep the
+// oversized logs). It runs the same maintenance.Sweep the
 // background janitor uses in long-lived processes (telegram, serve, schedule
 // daemon). Like `odek session cleanup`, this deletes data without a
 // confirmation prompt — it is a local, operator-run command.
@@ -31,8 +30,8 @@ func cleanupCmd(args []string) error {
 			fmt.Println(`Usage: odek cleanup [--dry-run]
 
 Remove expired odek storage from ~/.odek per the [maintenance] config
-section: old sessions, audit records, plans, and skill skip entries, and
-rotate oversized logs.
+section: old sessions, audit records, and plans, and rotate oversized
+logs.
 
   --dry-run   Show what would be removed without removing anything.`)
 			return nil
@@ -83,7 +82,7 @@ func startStorageMaintenance(ctx context.Context, resolved config.ResolvedConfig
 // success line when there was nothing to do.
 func printCleanupReport(r maintenance.Report) {
 	if r.SessionsRemoved == 0 && r.AuditRemoved == 0 && r.PlansRemoved == 0 &&
-		r.SkipsRemoved == 0 && r.MediaFreedBytes == 0 && len(r.LogsRotated) == 0 {
+		r.MediaFreedBytes == 0 && len(r.LogsRotated) == 0 {
 		fmt.Println("Storage is clean — nothing to remove.")
 		return
 	}
@@ -91,7 +90,6 @@ func printCleanupReport(r maintenance.Report) {
 	fmt.Printf("  sessions removed:      %d\n", r.SessionsRemoved)
 	fmt.Printf("  audit records removed: %d\n", r.AuditRemoved)
 	fmt.Printf("  plans removed:         %d\n", r.PlansRemoved)
-	fmt.Printf("  skip entries removed:  %d\n", r.SkipsRemoved)
 	fmt.Printf("  media freed:           %s\n", humanBytes(r.MediaFreedBytes))
 	for _, p := range r.LogsRotated {
 		fmt.Printf("  log rotated:           %s\n", p)
@@ -123,7 +121,6 @@ type cleanupCandidates struct {
 	sessions []string
 	audit    []string
 	plans    []string
-	skips    int
 	logs     []string
 }
 
@@ -142,9 +139,6 @@ func collectCleanupCandidates(home string, cfg maintenance.Config) cleanupCandid
 	if cfg.PlansMaxAgeDays > 0 {
 		// Plans may be nested per chat (plans/chat<id>/), so walk recursively.
 		c.plans = filesOlderThan(filepath.Join(home, "plans"), now.AddDate(0, 0, -cfg.PlansMaxAgeDays), true)
-	}
-	if cfg.SkillsSkipMaxAgeDays > 0 {
-		c.skips = staleSkipEntries(filepath.Join(home, "skills", ".skipped.json"), now.AddDate(0, 0, -cfg.SkillsSkipMaxAgeDays))
 	}
 	if cfg.LogMaxMB > 0 {
 		for _, name := range []string{"schedule.log", "telegram.log"} {
@@ -214,35 +208,10 @@ func filesOlderThan(dir string, cutoff time.Time, recursive bool) []string {
 	return out
 }
 
-// staleSkipEntries counts entries in the skills .skipped.json file whose
-// skipped_at timestamp is before cutoff. An unreadable or malformed file
-// counts as zero — the sweep itself decides what to do with it.
-func staleSkipEntries(path string, cutoff time.Time) int {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return 0
-	}
-	var file struct {
-		Skipped map[string]struct {
-			SkippedAt time.Time `json:"skipped_at"`
-		} `json:"skipped"`
-	}
-	if err := json.Unmarshal(data, &file); err != nil {
-		return 0
-	}
-	n := 0
-	for _, e := range file.Skipped {
-		if e.SkippedAt.Before(cutoff) {
-			n++
-		}
-	}
-	return n
-}
-
 // printCleanupDryRun reports the candidate list without removing anything.
 func printCleanupDryRun(home string, cfg maintenance.Config) {
 	c := collectCleanupCandidates(home, cfg)
-	if len(c.sessions) == 0 && len(c.audit) == 0 && len(c.plans) == 0 && c.skips == 0 && len(c.logs) == 0 {
+	if len(c.sessions) == 0 && len(c.audit) == 0 && len(c.plans) == 0 && len(c.logs) == 0 {
 		fmt.Println("Dry run: storage is clean — nothing would be removed.")
 		return
 	}
@@ -250,7 +219,6 @@ func printCleanupDryRun(home string, cfg maintenance.Config) {
 	fmt.Printf("  sessions:            %d\n", len(c.sessions))
 	fmt.Printf("  audit records:       %d\n", len(c.audit))
 	fmt.Printf("  plans:               %d\n", len(c.plans))
-	fmt.Printf("  skip entries:        %d\n", c.skips)
 	for _, p := range c.logs {
 		fmt.Printf("  log rotated:         %s\n", p)
 	}

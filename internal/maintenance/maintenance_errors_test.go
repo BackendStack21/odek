@@ -60,7 +60,6 @@ func TestSweepStepFailureDoesNotBlockOthers(t *testing.T) {
 	cfg.AuditMaxAgeDays = 0
 	cfg.LogMaxMB = 0
 	cfg.PlansMaxAgeDays = 0
-	cfg.SkillsSkipMaxAgeDays = 0
 
 	rep, err := Sweep(context.Background(), home, cfg)
 	if err == nil {
@@ -90,7 +89,7 @@ func (c *failAfterContext) Err() error {
 // TestSweepContextCancelledAtEachGate cancels the context at every per-step
 // gate past the first (gate 1 is covered by TestSweepContextCancelled).
 func TestSweepContextCancelledAtEachGate(t *testing.T) {
-	for failAfter := 1; failAfter <= 5; failAfter++ {
+	for failAfter := 1; failAfter <= 4; failAfter++ {
 		ctx := &failAfterContext{Context: context.Background(), failAfter: failAfter}
 		if _, err := Sweep(ctx, t.TempDir(), DefaultConfig()); err == nil {
 			t.Errorf("failAfter=%d: Sweep should return the context error", failAfter)
@@ -420,46 +419,3 @@ func TestSweepMediaInfoError(t *testing.T) {
 	}
 }
 
-// ── gcSkipList ─────────────────────────────────────────────────────────
-
-// TestGCSkipListKeepsFreshEntries covers the removed == 0 early return with a
-// non-empty skip list.
-func TestGCSkipListKeepsFreshEntries(t *testing.T) {
-	home := t.TempDir()
-	writeSkipList(t, home, map[string]time.Time{"fresh-skill": time.Now().UTC()})
-
-	removed, err := gcSkipList(home, 90)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if removed != 0 {
-		t.Errorf("removed = %d, want 0 (no expired entries)", removed)
-	}
-}
-
-// TestGCSkipListSaveError makes the skip-list rewrite fail by removing the
-// write bit from the skills directory.
-func TestGCSkipListSaveError(t *testing.T) {
-	skipIfRoot(t)
-	home := t.TempDir()
-	writeSkipList(t, home, map[string]time.Time{"old-skill": time.Now().Add(-120 * 24 * time.Hour).UTC()})
-	skillsDir := filepath.Join(home, "skills")
-	// WriteFile truncates the existing .skipped.json in place, so the file
-	// itself must be read-only (dir write permission alone is not checked
-	// when opening an existing file).
-	if err := os.Chmod(filepath.Join(skillsDir, ".skipped.json"), 0400); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(skillsDir, 0500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chmod(skillsDir, 0755) })
-
-	removed, err := gcSkipList(home, 90)
-	if err == nil || !strings.Contains(err.Error(), "save skip list") {
-		t.Errorf("gcSkipList error = %v, want a save skip list error", err)
-	}
-	if removed != 1 {
-		t.Errorf("removed = %d, want 1 (counted before the save failed)", removed)
-	}
-}

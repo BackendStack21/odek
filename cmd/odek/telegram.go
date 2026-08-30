@@ -135,10 +135,6 @@ func handleClarifyCallback(chatID, userID int64, data string, bot *telegram.Bot)
 	return "", true
 }
 
-// pendingSuggestions stores SkillSuggestion values keyed by skill name,
-// awaiting user approval via inline keyboard callbacks.
-var pendingSuggestions sync.Map // map[string]skills.SkillSuggestion
-
 // activeTaskWG tracks in-flight handleChatMessage goroutines that are running
 // the agent loop. Graceful restart waits on this WaitGroup before spawning the
 // child process, ensuring in-progress tasks finish (or hit the drain timeout).
@@ -699,36 +695,10 @@ func telegramCmd(args []string) error {
 			return resp, nil
 		}
 
-		// Route skill suggestion callbacks — Save or Skip.
-		if skillName, ok := strings.CutPrefix(data, "skill_save:"); ok {
-			userDir := expandHome("~/.odek/skills")
-			os.MkdirAll(userDir, 0755)
-			// Find and save the suggestion from the pending suggestions map
-			if s, ok := pendingSuggestions.Load(skillName); ok {
-				if suggestion, ok := s.(skills.SkillSuggestion); ok {
-					if err := skills.SaveSuggestionWithGuard(context.Background(), userDir, suggestion, injectionGuard, resolved.Guard); err != nil {
-						return fmt.Sprintf("✗ Error saving skill: %v", err), nil
-					}
-					pendingSuggestions.Delete(skillName)
-					return fmt.Sprintf("✓ Saved skill %q", skillName), nil
-				}
+			if skillName, ok := strings.CutPrefix(data, "skill_save:"); ok {
+				_ = skillName
+				return "⚠️ Skill suggestions are no longer supported.", nil
 			}
-			return "⚠️ Suggestion no longer available.", nil
-		}
-		if skillName, ok := strings.CutPrefix(data, "skill_skip:"); ok {
-			// Persist the skip so it won't be suggested again
-			userDir := expandHome("~/.odek/skills")
-			sl := skills.LoadSkipList(userDir)
-			heuristic := ""
-			if s, ok := pendingSuggestions.Load(skillName); ok {
-				if suggestion, ok := s.(skills.SkillSuggestion); ok {
-					heuristic = suggestion.Heuristic
-				}
-			}
-			sl.RecordSkip(userDir, skillName, heuristic)
-			pendingSuggestions.Delete(skillName)
-			return fmt.Sprintf("⏭ Skipped %q (won't suggest again)", skillName), nil
-		}
 
 		return "", nil // approval callbacks are routed by the approver
 	}
@@ -1832,32 +1802,6 @@ func handleChatMessage(
 				if skillsCfg != nil && skillsCfg.Verbose {
 					sendAsync(bot, chatID, fmt.Sprintf("✗ Deleted skill %q", event.SkillName), &telegram.SendOpts{ReplyToMessageID: messageID})
 				}
-			case "suggested":
-				replyMarkup := &telegram.InlineKeyboardMarkup{
-					InlineKeyboard: [][]telegram.InlineKeyboardButton{
-						{
-							{Text: "💾 Save", CallbackData: "skill_save:" + event.SkillName},
-							{Text: "⏭ Skip", CallbackData: "skill_skip:" + event.SkillName},
-						},
-					},
-				}
-				// Build message with preview from the event body
-				msg := fmt.Sprintf("🔍 *Skill suggestion:* %s\n_%s_",
-					event.SkillName, event.Heuristic)
-				if len(event.Body) > 0 {
-					preview := event.Body
-					if len(preview) > 400 {
-						if lastNL := strings.LastIndexByte(preview[:400], '\n'); lastNL > 200 {
-							preview = preview[:lastNL]
-						} else {
-							preview = preview[:400]
-						}
-						preview += "\n_... (truncated)_"
-					}
-					msg += fmt.Sprintf("\n\n```\n%s\n```", preview)
-				}
-				sendAsync(bot, chatID, msg,
-					&telegram.SendOpts{ReplyMarkup: replyMarkup, ParseMode: "Markdown", ReplyToMessageID: messageID})
 			}
 		},
 		MemoryEventHandler: func(event memory.MemoryEvent) {
@@ -2066,58 +2010,6 @@ func handleChatMessage(
 				fmt.Fprintf(os.Stderr, "odek telegram: nudge send chat %d: %v\n", chatID, err)
 			}
 		})
-	}
-
-	// ── Learn loop: run self-improvement heuristics ──
-	if skillsCfg != nil && skillsCfg.Learn && agent.SkillManager() != nil {
-		sm := agent.SkillManager()
-		suggestions := learnAndSuggest(cs.Messages, sm, nil, false, skillsCfg.AutoSave.Enabled, telegramGuard, telegramGuardCfg)
-		userDir := expandHome("~/.odek/skills")
-		os.MkdirAll(userDir, 0755)
-
-		// Filter skipped suggestions
-		filtered, skipped := skills.FilterSkipped(suggestions, userDir,
-			skillsCfg.Curation.SkipThreshold, skillsCfg.Curation.SkipResetDays)
-
-		// Auto-save if enabled
-		if skillsCfg.AutoSave.Enabled {
-			result := skills.AutoSaveSuggestions(filtered, userDir, skills.ProjectSkillsDir(), *skillsCfg, telegramGuard, telegramGuardCfg, false)
-			for _, name := range result.Saved {
-				sm.Notifier.Notify(skills.SkillEvent{
-					Type: "saved", SkillName: name, Timestamp: time.Now().UTC(),
-				})
-			}
-			for _, name := range result.ProjectSaved {
-				sm.Notifier.Notify(skills.SkillEvent{
-					Type: "saved", SkillName: name, Timestamp: time.Now().UTC(),
-				})
-			}
-			if len(result.Saved)+len(result.ProjectSaved) > 0 {
-				sm.MarkDirty()
-				sm.Reload()
-				// Run micro-curation
-				allSkills := sm.AllSkills()
-				var newSkills []skills.Skill
-				for _, s := range allSkills {
-					if s.Quality == skills.QualityDraft {
-						newSkills = append(newSkills, s)
-					}
-				}
-				msg := skills.RunAutoCurate(userDir, newSkills, allSkills, *skillsCfg, nil)
-				if msg != "" && skillsCfg.Verbose {
-					sendAsync(bot, chatID, msg, nil)
-				}
-			}
-		} else {
-			// Store suggestions for inline keyboard callback handling
-			for _, s := range filtered {
-				pendingSuggestions.Store(s.Name, s)
-			}
-		}
-
-		if skipped > 0 {
-			log.Debug("skill suggestions suppressed by skip list", "count", skipped)
-		}
 	}
 
 	// ── Media cleanup ────────────────────────────────────────────────

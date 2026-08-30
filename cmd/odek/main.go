@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -2013,17 +2012,6 @@ func run(args []string) error {
 		return runErr
 	}
 
-	// ── Learn loop: run self-improvement heuristics ──
-	// Run asynchronously so the process can exit immediately after
-	// the response is delivered. Skill learning is best-effort
-	// post-processing that should not block termination.
-	if resolved.Skills.Learn && sm != nil {
-		go func() {
-			skillsLLM := llm.New(resolved.BaseURL, resolved.APIKey, resolved.Model, "", 0, 30*time.Second)
-			runLearnLoop(allMessages, sm, skillsLLM, resolved.Skills, injectionGuard, resolved.Guard)
-		}()
-	}
-
 	// ── Session end — extract episode if enough turns ──
 	// Run in the background (tracked by the memory manager's WaitGroup) so
 	// episode extraction does not delay the response; Agent.Close drains it
@@ -2563,145 +2551,11 @@ func getVCSTime() string {
 
 // ── Skill Commands ─────────────────────────────────────────────────────
 
-// ── Skill Commands ─────────────────────────────────────────────────────
+// skillCmd handles `odek skill <list|view|delete|promote|import>`.
 
-// runLearnLoop runs self-improvement heuristics on agent output and
-// offers to save detected patterns as skills.
-// learnAndSuggest runs skill heuristics on session messages, applies LLM
-// enhancement, fires "suggested" events via the SkillManager's notifier,
-// and returns the enhanced suggestions for interactive handling by callers.
-// This is the non-interactive core shared by CLI, WebUI, and Telegram.
-// When suppressSuggested is true, "suggested" notifier events are skipped
-// (caller handles presentation, e.g. when auto-save is enabled).
-// llmToSkillMessages adapts the engine's llm.Message slice into the
-// skills package's own LlmMessage shape. The conversion lives here (not
-// in internal/skills) because we don't want the skills package to depend
-// on internal/llm — it must stay usable in isolation.
-func llmToSkillMessages(messages []llm.Message) []skills.LlmMessage {
-	out := make([]skills.LlmMessage, 0, len(messages))
-	for _, m := range messages {
-		converted := skills.LlmMessage{
-			Role:       m.Role,
-			Content:    m.Content,
-			Name:       m.Name,
-			ToolCallID: m.ToolCallID,
-		}
-		for _, tc := range m.ToolCalls {
-			next := skills.LlmToolCall{ID: tc.ID}
-			next.Function.Name = tc.Function.Name
-			next.Function.Arguments = tc.Function.Arguments
-			converted.ToolCalls = append(converted.ToolCalls, next)
-		}
-		out = append(out, converted)
-	}
-	return out
-}
-
-// learnAndSuggest converts engine messages and runs the skill-suggestion
-// pipeline. The pipeline itself lives in internal/skills.AnalyzeMessages.
-func learnAndSuggest(messages []llm.Message, sm *skills.SkillManager, llmClient skills.LLMClient, llmLearn, suppressSuggested bool, g guard.Guard, guardCfg guard.Config) []skills.SkillSuggestion {
-	skillMsgs := llmToSkillMessages(messages)
-	userMessages := skills.ExtractUserMessages(skillMsgs)
-	return skills.AnalyzeMessages(skillMsgs, userMessages, sm, llmClient, llmLearn, suppressSuggested)
-}
-
-// runLearnLoop orchestrates skill learning at the end of a session:
-// generate suggestions, filter against the skip list, then either run
-// the non-interactive auto-save pipeline or fall back to an interactive
-// prompt. All the non-interactive work lives in internal/skills; only
-// the TTY prompt stays here.
-func runLearnLoop(messages []llm.Message, sm *skills.SkillManager, llmClient skills.LLMClient, skillsCfg skills.SkillsConfig, g guard.Guard, guardCfg guard.Config) {
-	suggestions := learnAndSuggest(messages, sm, llmClient, skillsCfg.LLMLearn, true, g, guardCfg)
-	if len(suggestions) == 0 {
-		return
-	}
-
-	userDir := expandHome("~/.odek/skills")
-	os.MkdirAll(userDir, 0755)
-
-	filtered, skipped := skills.FilterSkipped(suggestions, userDir,
-		skillsCfg.Curation.SkipThreshold, skillsCfg.Curation.SkipResetDays)
-	if skipped > 0 && skillsCfg.Verbose {
-		fmt.Fprintf(os.Stderr, "   (%d suggestion(s) previously skipped, suppressed)\n", skipped)
-	}
-	if len(filtered) == 0 {
-		return
-	}
-
-	var verbose io.Writer
-	if skillsCfg.Verbose {
-		verbose = os.Stderr
-	}
-	if skills.RunAutoSaveLoop(filtered, userDir, skills.ProjectSkillsDir(), sm, llmClient, skillsCfg, g, guardCfg, verbose) {
-		return
-	}
-
-	// Interactive fallback — silent unless verbose so non-TTY runs don't
-	// block on Scanf.
-	if !skillsCfg.Verbose {
-		return
-	}
-	interactiveSavePrompt(filtered, userDir, sm, g, guardCfg)
-}
-
-// interactiveSavePrompt walks the user through each suggestion, reading
-// y/n/p/s from stdin. Lives in cmd/odek because it couples to the TTY.
-func interactiveSavePrompt(filtered []skills.SkillSuggestion, userDir string, sm *skills.SkillManager, g guard.Guard, guardCfg guard.Config) {
-	fmt.Fprintf(os.Stderr, "\n🔍 Learning: detected %d skill pattern(s)\n", len(filtered))
-	for _, s := range filtered {
-		fmt.Fprint(os.Stderr, skills.FormatSuggestionWithPreview(s, true, 400))
-		if s.IsTainted() {
-			fmt.Fprintf(os.Stderr, "   ⚠ This suggestion is tainted (sources: %s). It will be saved but cannot be auto-loaded until promoted with --force.\n", strings.Join(s.Provenance.Sources, ", "))
-		}
-		fmt.Fprintf(os.Stderr, "   Save as skill? [Y/n/p=save to project/s=skip always]: ")
-
-		var response string
-		fmt.Scanf("%s", &response)
-		response = strings.ToLower(strings.TrimSpace(response))
-
-		switch response {
-		case "", "y", "yes":
-			if err := skills.SaveSuggestionWithGuard(context.Background(), userDir, s, g, guardCfg); err != nil {
-				fmt.Fprintf(os.Stderr, "   ✗ Error saving skill: %v\n", err)
-			} else {
-				fmt.Fprintf(os.Stderr, "   ✓ Saved skill %q\n", s.Name)
-				sm.MarkDirty()
-				sm.Reload()
-			}
-		case "p", "project":
-			// Project-scoped save: keeps project-specific procedures out
-			// of the global dir. Refused when the project dir resolves to
-			// the global one (odek run from $HOME).
-			projDir := skills.ProjectSkillsDir()
-			pa, perr := filepath.Abs(projDir)
-			ua, uerr := filepath.Abs(userDir)
-			if perr != nil || uerr != nil || pa == ua {
-				fmt.Fprintf(os.Stderr, "   ✗ Cannot save to project: no distinct project skills dir from here\n")
-				break
-			}
-			if err := skills.SaveSuggestionWithGuard(context.Background(), projDir, s, g, guardCfg); err != nil {
-				fmt.Fprintf(os.Stderr, "   ✗ Error saving skill: %v\n", err)
-			} else {
-				fmt.Fprintf(os.Stderr, "   ✓ Saved project skill %q to %s (promote with `odek skill promote` to use)\n", s.Name, projDir)
-				sm.MarkDirty()
-				sm.Reload()
-			}
-		case "s", "skip":
-			sl := skills.LoadSkipList(userDir)
-			sl.RecordSkip(userDir, s.Name, s.Heuristic)
-			fmt.Fprintf(os.Stderr, "   Skipped permanently. Use `odek skill reset-skips` to re-enable.\n")
-		default:
-			sl := skills.LoadSkipList(userDir)
-			sl.RecordSkip(userDir, s.Name, s.Heuristic)
-			fmt.Fprintf(os.Stderr, "   Skipped.\n")
-		}
-	}
-}
-
-// skillCmd handles `odek skill <list|view|save|delete|promote|import|curate|reset-skips>`.
 func skillCmd(args []string) error {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "Usage: odek skill <list|view|save|delete|promote|import|curate|reset-skips> [args]\n")
+		fmt.Fprintf(os.Stderr, "Usage: odek skill <list|view|delete|promote|import> [args]\n")
 		return nil
 	}
 
@@ -2853,50 +2707,8 @@ func skillCmd(args []string) error {
 		fmt.Printf("  Location: %s\n", result.Path)
 		return nil
 
-	case "curate":
-		// Parse --apply and --interactive flags
-		apply := false
-		interactive := false
-		var remainingArgs []string
-		for _, arg := range subArgs {
-			switch arg {
-			case "--apply":
-				apply = true
-			case "--interactive":
-				interactive = true
-			default:
-				remainingArgs = append(remainingArgs, arg)
-			}
-		}
-		_ = remainingArgs // future use: filter by skill name
-		sm := skills.NewSkillManager(userDir, "./.odek/skills")
-		allSkills := append(sm.Result.AutoLoad, sm.Result.Lazy...)
-		report := skills.CurateSkills(allSkills, skills.CurateOptions{
-			StalenessDays: 90,
-			Apply:         apply,
-			Interactive:   interactive,
-		})
-		fmt.Print(skills.FormatCurationReport(report))
-		return nil
-
-	case "reset-skips":
-		sl := skills.LoadSkipList(userDir)
-		if len(subArgs) == 0 {
-			if err := sl.ClearAllSkips(userDir); err != nil {
-				return fmt.Errorf("reset all skips: %w", err)
-			}
-			fmt.Println("✓ Cleared all skipped suggestions.")
-		} else {
-			name := subArgs[0]
-			if err := sl.ClearSkip(userDir, name); err != nil {
-				return fmt.Errorf("reset skip %q: %w", name, err)
-			}
-			fmt.Printf("✓ Cleared skip for %q.\n", name)
-		}
-		return nil
-
 	default:
-		return fmt.Errorf("unknown skill command %q (use list, view, delete, import, curate, reset-skips)", sub)
+		return fmt.Errorf("unknown skill command %q (use list, view, delete, import, promote)", sub)
 	}
 }
 

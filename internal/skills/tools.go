@@ -423,6 +423,18 @@ func containsKeyword(kws []string, filter string) bool {
 	return false
 }
 
+// sameSkillsDir reports whether two skill-dir paths resolve to the same
+// directory. (Lives here since its former home, selfimprove.go, was
+// removed; dies with the skill-mutation tools in M2.)
+func sameSkillsDir(a, b string) bool {
+	aa, err1 := filepath.Abs(a)
+	bb, err2 := filepath.Abs(b)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return aa == bb
+}
+
 // ── skill_save ─────────────────────────────────────────────────────────
 
 // SkillSaveTool saves a new skill to the user directory, or to the

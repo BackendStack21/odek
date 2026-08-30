@@ -239,7 +239,6 @@ type MaintenanceConfig struct {
 	AuditMaxAgeDays      *int   `json:"audit_max_age_days,omitempty"`
 	LogMaxMB             *int64 `json:"log_max_mb,omitempty"`
 	PlansMaxAgeDays      *int   `json:"plans_max_age_days,omitempty"`
-	SkillsSkipMaxAgeDays *int   `json:"skills_skip_max_age_days,omitempty"`
 }
 
 // ToolsConfig is the "tools" section of odek.json. It is intentionally a
@@ -964,9 +963,6 @@ func resolveMaintenance(cfg *MaintenanceConfig) maintenance.Config {
 	}
 	if cfg.PlansMaxAgeDays != nil {
 		def.PlansMaxAgeDays = *cfg.PlansMaxAgeDays
-	}
-	if cfg.SkillsSkipMaxAgeDays != nil {
-		def.SkillsSkipMaxAgeDays = *cfg.SkillsSkipMaxAgeDays
 	}
 	return def
 }
@@ -1740,10 +1736,6 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if v := envIntPtr("MAINTENANCE_PLANS_MAX_AGE_DAYS"); v != nil {
 		cfg.Maintenance = ensureMaintenance(cfg.Maintenance)
 		cfg.Maintenance.PlansMaxAgeDays = v
-	}
-	if v := envIntPtr("MAINTENANCE_SKILLS_SKIP_MAX_AGE_DAYS"); v != nil {
-		cfg.Maintenance = ensureMaintenance(cfg.Maintenance)
-		cfg.Maintenance.SkillsSkipMaxAgeDays = v
 	}
 
 	// Telegram env overrides: merge env vars on top of file config.

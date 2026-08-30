@@ -52,7 +52,6 @@ func TestDefaultConfig(t *testing.T) {
 		AuditMaxAgeDays:      14,
 		LogMaxMB:             50,
 		PlansMaxAgeDays:      30,
-		SkillsSkipMaxAgeDays: 90,
 	}
 	if cfg != want {
 		t.Errorf("DefaultConfig() = %+v, want %+v", cfg, want)
@@ -84,7 +83,6 @@ func TestSweepSessions(t *testing.T) {
 			cfg.AuditMaxAgeDays = 0
 			cfg.LogMaxMB = 0
 			cfg.PlansMaxAgeDays = 0
-			cfg.SkillsSkipMaxAgeDays = 0
 
 			rep, err := Sweep(context.Background(), home, cfg)
 			if err != nil {
@@ -110,7 +108,6 @@ func TestSweepSessionsIdempotent(t *testing.T) {
 	cfg.AuditMaxAgeDays = 0
 	cfg.LogMaxMB = 0
 	cfg.PlansMaxAgeDays = 0
-	cfg.SkillsSkipMaxAgeDays = 0
 
 	rep1, err := Sweep(context.Background(), home, cfg)
 	if err != nil {
@@ -138,7 +135,6 @@ func TestSweepAudit(t *testing.T) {
 	cfg.SessionsMaxAgeDays = 0
 	cfg.LogMaxMB = 0
 	cfg.PlansMaxAgeDays = 0
-	cfg.SkillsSkipMaxAgeDays = 0
 
 	rep, err := Sweep(context.Background(), home, cfg)
 	if err != nil {
@@ -165,7 +161,6 @@ func TestSweepAuditDisabledAndMissing(t *testing.T) {
 	cfg.SessionsMaxAgeDays = 0
 	cfg.LogMaxMB = 0
 	cfg.PlansMaxAgeDays = 0
-	cfg.SkillsSkipMaxAgeDays = 0
 
 	rep, err := Sweep(context.Background(), home, cfg)
 	if err != nil {
@@ -224,7 +219,6 @@ func TestRotateLogs(t *testing.T) {
 			cfg.SessionsMaxAgeDays = 0
 			cfg.AuditMaxAgeDays = 0
 			cfg.PlansMaxAgeDays = 0
-			cfg.SkillsSkipMaxAgeDays = 0
 
 			rep, err := Sweep(context.Background(), home, cfg)
 			if err != nil {
@@ -271,7 +265,6 @@ func TestSweepPlans(t *testing.T) {
 	cfg.SessionsMaxAgeDays = 0
 	cfg.AuditMaxAgeDays = 0
 	cfg.LogMaxMB = 0
-	cfg.SkillsSkipMaxAgeDays = 0
 
 	rep, err := Sweep(context.Background(), home, cfg)
 	if err != nil {
@@ -300,7 +293,6 @@ func TestSweepPlansDisabled(t *testing.T) {
 	cfg.SessionsMaxAgeDays = 0
 	cfg.AuditMaxAgeDays = 0
 	cfg.LogMaxMB = 0
-	cfg.SkillsSkipMaxAgeDays = 0
 
 	rep, err := Sweep(context.Background(), home, cfg)
 	if err != nil {
@@ -324,7 +316,6 @@ func TestSweepMedia(t *testing.T) {
 	cfg.AuditMaxAgeDays = 0
 	cfg.LogMaxMB = 0
 	cfg.PlansMaxAgeDays = 0
-	cfg.SkillsSkipMaxAgeDays = 0
 
 	rep, err := Sweep(context.Background(), home, cfg)
 	if err != nil {
@@ -340,92 +331,6 @@ func TestSweepMedia(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, "media", "chat1", "recent.jpg")); err != nil {
 		t.Error("recent media should have been kept")
-	}
-}
-
-func TestGCSkipList(t *testing.T) {
-	old := time.Now().Add(-120 * 24 * time.Hour).UTC()
-	recent := time.Now().UTC()
-
-	tests := []struct {
-		name        string
-		maxAgeDays  int
-		wantRemoved int
-		wantKept    []string
-	}{
-		{"expired entries removed", 90, 1, []string{"new-skill"}},
-		{"zero keeps everything", 0, 0, []string{"old-skill", "new-skill"}},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			home := t.TempDir()
-			skipPath := filepath.Join(home, "skills", ".skipped.json")
-			data, err := json.Marshal(map[string]any{
-				"skipped": map[string]any{
-					"old-skill": map[string]any{"skipped_at": old, "heuristic": "h", "times_skipped": 3},
-					"new-skill": map[string]any{"skipped_at": recent, "heuristic": "h", "times_skipped": 1},
-				},
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			writeFileAt(t, skipPath, data, recent)
-
-			cfg := DefaultConfig()
-			cfg.SkillsSkipMaxAgeDays = tc.maxAgeDays
-			cfg.SessionsMaxAgeDays = 0
-			cfg.AuditMaxAgeDays = 0
-			cfg.LogMaxMB = 0
-			cfg.PlansMaxAgeDays = 0
-
-			rep, err := Sweep(context.Background(), home, cfg)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if rep.SkipsRemoved != tc.wantRemoved {
-				t.Errorf("SkipsRemoved = %d, want %d", rep.SkipsRemoved, tc.wantRemoved)
-			}
-
-			raw, err := os.ReadFile(skipPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var parsed struct {
-				Skipped map[string]json.RawMessage `json:"skipped"`
-			}
-			if err := json.Unmarshal(raw, &parsed); err != nil {
-				t.Fatal(err)
-			}
-			if len(parsed.Skipped) != len(tc.wantKept) {
-				t.Errorf("skip list has %d entries, want %d", len(parsed.Skipped), len(tc.wantKept))
-			}
-			for _, name := range tc.wantKept {
-				if _, ok := parsed.Skipped[name]; !ok {
-					t.Errorf("entry %q should have been kept", name)
-				}
-			}
-		})
-	}
-}
-
-func TestGCSkipListMissingFile(t *testing.T) {
-	rep, err := Sweep(context.Background(), t.TempDir(), DefaultConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rep.SkipsRemoved != 0 {
-		t.Errorf("SkipsRemoved = %d, want 0 (missing file)", rep.SkipsRemoved)
-	}
-}
-
-func TestSweepEmptyHome(t *testing.T) {
-	rep, err := Sweep(context.Background(), t.TempDir(), DefaultConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rep.SessionsRemoved != 0 || rep.AuditRemoved != 0 || rep.PlansRemoved != 0 ||
-		rep.SkipsRemoved != 0 || rep.MediaFreedBytes != 0 || len(rep.LogsRotated) != 0 {
-		t.Errorf("empty home should produce a zero report, got %+v", rep)
 	}
 }
 
