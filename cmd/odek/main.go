@@ -2299,6 +2299,13 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 		newBrowserTool(dc),
 	}
 
+	// artifact_read is registered only for top-level runs (SelfTrust empty):
+	// sub-agents run in their own process whose artifact registry is always
+	// empty — parent-only by design (SUBAGENT_RESULT_ARTIFACTS_PLAN.md M2).
+	if artifactReadEnabled(tcfg) {
+		tools = append(tools, &artifactReadTool{})
+	}
+
 	// web_search is registered only when a SearXNG backend is configured —
 	// without a base_url there is no instance to query, so the tool would just
 	// confuse the agent. The Docker compose setup sets this automatically.

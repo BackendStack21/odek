@@ -305,6 +305,11 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 	for i, r := range results {
 		fmt.Fprintf(&buf, "─── Task %d: %s ───\n", i+1, truncate(input.Tasks[i].Goal, 60))
 		buf.WriteString(formatTaskResult(r, dirs[i]))
+		// M2: validated refs join the session registry so artifact_read can
+		// resolve them by id later in the turn.
+		if notes := registerTaskArtifacts(r, dirs[i], i); len(notes) > 0 {
+			buf.WriteString(strings.Join(notes, "\n") + "\n")
+		}
 		buf.WriteString("\n\n")
 	}
 	// The aggregated sub-agent output comes from a separate process and may
