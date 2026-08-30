@@ -52,6 +52,7 @@ func TestDefaultConfig(t *testing.T) {
 		AuditMaxAgeDays:      14,
 		LogMaxMB:             50,
 		PlansMaxAgeDays:      30,
+		ArtifactsMaxAgeHours: 24,
 	}
 	if cfg != want {
 		t.Errorf("DefaultConfig() = %+v, want %+v", cfg, want)
