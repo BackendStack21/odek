@@ -695,10 +695,10 @@ func telegramCmd(args []string) error {
 			return resp, nil
 		}
 
-			if skillName, ok := strings.CutPrefix(data, "skill_save:"); ok {
-				_ = skillName
-				return "⚠️ Skill suggestions are no longer supported.", nil
-			}
+		if skillName, ok := strings.CutPrefix(data, "skill_save:"); ok {
+			_ = skillName
+			return "⚠️ Skill suggestions are no longer supported.", nil
+		}
 
 		return "", nil // approval callbacks are routed by the approver
 	}
@@ -1650,8 +1650,7 @@ func handleChatMessage(
 		}))
 
 	// Resolve skills config (same logic as main.go run command).
-	var skillsCfg *skills.SkillsConfig
-	skillsCfg = &resolved.Skills
+	skillsCfg := &resolved.Skills
 
 	agentCfg := odek.Config{
 		Model:            resolved.Model,

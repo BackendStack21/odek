@@ -77,8 +77,7 @@ func replCmd(args []string) error {
 	}
 
 	// Build tools
-	var sm *skills.SkillManager
-	sm = skills.NewSkillManagerWithEmbedding(
+	sm := skills.NewSkillManagerWithEmbedding(
 		expandHome("~/.odek/skills"),
 		"./.odek/skills",
 		resolved.Skills.Embedding,
@@ -131,8 +130,7 @@ func replCmd(args []string) error {
 	rend := render.New(os.Stderr, color).WithModel(modelLabel)
 
 	// Resolve skills config pointer (only when learn mode is enabled)
-	var skillsCfg *skills.SkillsConfig
-	skillsCfg = &resolved.Skills
+	skillsCfg := &resolved.Skills
 
 	injectionGuard, err := guard.New(&resolved.Guard)
 	if err != nil {

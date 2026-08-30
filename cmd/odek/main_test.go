@@ -1671,7 +1671,6 @@ func multiTurnServer(t *testing.T, terminalCalls int) *httptest.Server {
 	}))
 }
 
-
 // ── shorten Tests ──────────────────────────────────────────────────────
 
 func TestShorten_ShortString(t *testing.T) {

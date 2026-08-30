@@ -755,8 +755,7 @@ func (c *wsDeltaCounters) snapshot() (reasoning, content int) {
 }
 
 func newServeAgent(resolved config.ResolvedConfig, system string, runKey string, sendFn func(v any) error, deltas *wsDeltaCounters) (*odek.Agent, func() error, func(), func() error, guard.Guard, *wsApprover, error) {
-	var sm *skills.SkillManager
-	sm = skills.NewSkillManagerWithEmbedding(
+	sm := skills.NewSkillManagerWithEmbedding(
 		expandHome("~/.odek/skills"),
 		"./.odek/skills",
 		resolved.Skills.Embedding,

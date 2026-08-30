@@ -149,12 +149,12 @@ type CLIFlags struct {
 
 // SkillsConfig holds the skills configuration section from JSON files.
 type SkillsConfig struct {
-	MaxAutoLoad  *int              `json:"max_auto_load,omitempty"`
-	MaxLazySlots *int              `json:"max_lazy_slots,omitempty"`
-	Dirs         []string          `json:"dirs,omitempty"`
+	MaxAutoLoad  *int                 `json:"max_auto_load,omitempty"`
+	MaxLazySlots *int                 `json:"max_lazy_slots,omitempty"`
+	Dirs         []string             `json:"dirs,omitempty"`
 	Import       *skills.ImportConfig `json:"import,omitempty"`
-	Verbose      *bool             `json:"verbose,omitempty"`
-	Embedding    *embedding.Config `json:"embedding,omitempty"`
+	Verbose      *bool                `json:"verbose,omitempty"`
+	Embedding    *embedding.Config    `json:"embedding,omitempty"`
 }
 
 // SessionsConfig is the "sessions" section of odek.json. It currently only
@@ -228,12 +228,12 @@ type ToolConfig struct {
 // Operator-controlled: rejected from project-level ./odek.json because it
 // governs DELETION of user data.
 type MaintenanceConfig struct {
-	Enabled              *bool  `json:"enabled,omitempty"`
-	IntervalMinutes      *int   `json:"interval_minutes,omitempty"`
-	SessionsMaxAgeDays   *int   `json:"sessions_max_age_days,omitempty"`
-	AuditMaxAgeDays      *int   `json:"audit_max_age_days,omitempty"`
-	LogMaxMB             *int64 `json:"log_max_mb,omitempty"`
-	PlansMaxAgeDays      *int   `json:"plans_max_age_days,omitempty"`
+	Enabled            *bool  `json:"enabled,omitempty"`
+	IntervalMinutes    *int   `json:"interval_minutes,omitempty"`
+	SessionsMaxAgeDays *int   `json:"sessions_max_age_days,omitempty"`
+	AuditMaxAgeDays    *int   `json:"audit_max_age_days,omitempty"`
+	LogMaxMB           *int64 `json:"log_max_mb,omitempty"`
+	PlansMaxAgeDays    *int   `json:"plans_max_age_days,omitempty"`
 }
 
 // ToolsConfig is the "tools" section of odek.json. It is intentionally a

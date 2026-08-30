@@ -104,7 +104,7 @@ The scanner normalizes invisible Unicode, folds common homoglyphs, detects mixed
 - `memory` — legacy facts, `memory` tool writes, Extended Memory atoms, and session-buffer text.
 - `system_prompt` — `IDENTITY.md`, explicit `--system`, and `AGENTS.md`.
 - `mcp_descriptions` — MCP server tool descriptions.
-- `skills` — skill bodies at load time and skill save/patch suggestions.
+- `skills` — skill bodies at load time and import.
 - `tool_outputs` — external tool outputs (warning-only; the untrusted wrapper remains the primary boundary).
 - `telegram` — photo captions and voice transcripts before they are injected into the user message stream.
 
@@ -207,19 +207,15 @@ Promotion is **human-gated and never exposed as an agent tool** — the `odek me
 
 ### Skill provenance gate
 
-`internal/skills` carries the same provenance model and shares the exact taint decision (`memory.ToolCallTaints`). Skills auto-saved from sessions that crossed the trust boundary — `browser` / `http_batch` / `transcribe` / `vision` / `web_search` / `delegate_tasks` / any MCP tool, or a path-reading tool pointed outside the workspace trust zone — are tagged with `Provenance.Untrusted=true` and `NeedsReview=true`. The skill loader pins those skills to the Lazy set regardless of their `auto_load` flag, and `NeedsReview` skills are additionally excluded from the lazy trigger matchers, so a flagged or tainted skill cannot be injected into context on a single keyword match — it stays visible in listings until promoted.
+`internal/skills` carries the same provenance model. Skills from distrusted sources — loaded from the project-local `./.odek/skills/` directory, flagged by the injection guard, or carrying `untrusted` / `needs_review` provenance in their SKILL.md frontmatter — are pinned with `Provenance.NeedsReview=true` (project-dir skills also record `"project"` in `Sources`). The skill loader pins those skills to the Lazy set regardless of their `auto_load` flag, and `NeedsReview` skills are additionally excluded from the lazy trigger matchers, so a flagged or tainted skill cannot be injected into context on a single keyword match — it stays visible in listings until promoted.
 
 Skills scanned from the project-local `./.odek/skills/` directory are distrusted the same way `./odek.json` is: a cloned repository can ship arbitrary `SKILL.md` files, so they are forced to `NeedsReview` (with `"project"` recorded in `Sources`) even when they declare `auto_load: true`. Operator-controlled locations (`~/.odek/skills`, configured extra dirs) are unaffected.
 
-All skill-body scans — load time, `skill_save` / `skill_patch`, and auto-save suggestions — go through `guard.ScanContentWithScope`, so the fast local rule scan runs even when the `skills` guard scope or the guard itself is disabled; the optional sidecar second opinion only runs when the scope is enabled (it is on by default, `guard.scan.skills: true`).
+All skill-body scans — load time and import — go through `guard.ScanContentWithScope`, so the fast local rule scan runs even when the `skills` guard scope or the guard itself is disabled; the optional sidecar second opinion only runs when the scope is enabled (it is on by default, `guard.scan.skills: true`). A guard-flagged skill is demoted to the Lazy set and pinned `NeedsReview` rather than silently auto-loading.
 
-Skills created or edited through the agent-facing `skill_save` and `skill_patch` tools are also marked `Untrusted` with `NeedsReview=true`, and `skill_patch` refuses to edit the YAML frontmatter — an injected agent cannot silently create an auto-loading skill or patch `auto_load` / `needs_review` flags to bypass the promotion gate.
+**Promotion is operator-only.** `odek skill promote <name>` clears `NeedsReview` so a reviewed skill can load again; when the skill carries `Untrusted=true` or a non-empty `Sources` list, promotion is refused unless the operator passes `--force`. The promote command is a CLI/REST surface only — it is never exposed as an agent tool, so a prompt-injected agent cannot clear the gate on its own.
 
-Provenance propagates through the whole learn loop: pattern-detected, conversation-extracted, and LLM-enhanced suggestions all carry the original session's provenance, so the enhancement step cannot launder a tainted session into a clean-looking skill.
-
-The non-interactive auto-save path declines to persist tainted suggestions by default, so a prompt-injected turn cannot silently leave a poisoned skill on disk. Tainted suggestions are surfaced in the interactive TUI and can be saved explicitly by the user after review.
-
-The auto-save pipeline classifies every suggestion by **scope** before writing: machine-specific suggestions (absolute home-directory paths) are dropped, and project-specific ones (repo-rooted `./scripts/...` invocations, hardcoded release version tags) are redirected to `./.odek/skills` — project-related skills are never promoted to the global `~/.odek/skills`, and micro-curation is confined to the global dir via `Skill.Source.Dir` so a project skill can never be merged into a global one. Save-time hygiene gates further require cross-session recurrence (`auto_save.min_occurrences`, default 2), reject near-duplicates of existing skills, and run `internal/redact` over every SKILL.md write — detected credentials are replaced with `[REDACTED]` and the skill pinned to `NeedsReview`. The loader also refuses symlinked skill directories and symlinked `SKILL.md` files.
+Skill writes (e.g. `odek skill import`) go through `WriteSkill`, which runs `internal/redact` over every SKILL.md write — detected credentials are replaced with `[REDACTED]` and the skill pinned to `NeedsReview`. The loader also refuses symlinked skill directories and symlinked `SKILL.md` files.
 
 **Skill import (`odek skill import`)** fetches skill bodies from URLs under its own SSRF guard: `file://`/`https://` schemes only, at most one redirect hop with private/internal/metadata landing hosts blocked — including `inet_aton` spellings (`0177.0.0.1`, `0x7f000001`, `127.1`, `2130706433`) and hostname-based rebinding — downloads capped at 1 MiB / 5 s, an LLM risk assessment that fails safe to "elevated" on unparseable output, an interactive confirm card, and imported skills saved with `auto_load: false`.
 
@@ -617,8 +613,8 @@ Defaults: `FrictionThreshold=3`, `FrictionWindow=60s`. To opt out (TTYApprover o
 | Session re-surfaces content from a previously-tainted session | `session_search` output wrapped + audited |
 | Memory replays a previously-injected episode forever | Taint gate filters recall and `memory view` |
 | Agent plants a pipe-to-shell "fact" via `memory add` | `FactLooksUnsafe` rejects it |
-| Auto-saved skill auto-activates on next session | Provenance gate pins NeedsReview skills out of trigger matching |
-| Skill laundered through LLM enhancement | Provenance propagates through the learn loop |
+| Imported/project skill auto-activates on next session | Provenance gate pins NeedsReview skills out of trigger matching |
+| Hostile SKILL.md shipped in a cloned repo | Project-dir skills forced `NeedsReview`; promotion requires explicit operator action |
 | Browser drive-by on localhost web UI | Token + origin allowlist + Host validation |
 | Local process brute-forces session IDs to read transcripts | 128-bit IDs + session-scoped tokens + per-IP rate limiting |
 | Cookie-only rebinding page loads another front-end's session | Session tokens require a header knowledge proof |

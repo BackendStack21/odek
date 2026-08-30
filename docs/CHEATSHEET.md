@@ -57,7 +57,6 @@ odek run --events-jsonl events.jsonl --events-include-args "task"  # + raw (reda
   "max_concurrency": 3,
 
   "skills": {
-    "learn": true,
     "max_auto_load": 5
   },
 

@@ -832,7 +832,6 @@ func TestProjectConfigPath(t *testing.T) {
 	}
 }
 
-
 func TestLoadConfig_MemoryDefaults(t *testing.T) {
 	// When no memory section is configured, the resolved config must have
 	// sensible defaults (Enabled=true, all features on).

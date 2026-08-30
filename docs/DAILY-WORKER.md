@@ -11,8 +11,6 @@ from another agent's tool loop, or on a schedule.
   (see [SANDBOXING.md](SANDBOXING.md)).
 - **Three-tier memory** (facts, buffer, episodes) plus the opt-in Extended
   Memory atom store (see [MEMORY.md](MEMORY.md)).
-- **Skill auto-learning**: recurring command patterns become trigger-matched
-  skills (see [LEARNING.md](LEARNING.md)).
 - **Native cron**: `odek schedule` for recurring jobs with delivery
   (see [SCHEDULES.md](SCHEDULES.md)).
 - **Browser, vision, and audio tools**: `browser`, `vision`, and `transcribe`

@@ -1627,8 +1627,7 @@ func run(args []string) error {
 	}
 
 	// Skills setup
-	var sm *skills.SkillManager
-	sm = skills.NewSkillManagerWithEmbedding(
+	sm := skills.NewSkillManagerWithEmbedding(
 		expandHome("~/.odek/skills"),
 		"./.odek/skills",
 		resolved.Skills.Embedding,
@@ -1690,9 +1689,8 @@ func run(args []string) error {
 	// are observable without flooding the default terminal output.
 	rend.WithMemoryVerbose(resolved.InteractionMode == "verbose")
 
-	// Resolve skills config pointer (only when learn mode is enabled)
-	var skillsCfg *skills.SkillsConfig
-	skillsCfg = &resolved.Skills
+	// Resolve skills config pointer
+	skillsCfg := &resolved.Skills
 
 	// Build the shared prompt-injection guard. Provider "local" is zero-dependency
 	// and works without any sidecar; "piguard" requires a reachable HTTP/Unix
@@ -2805,8 +2803,7 @@ func continueCmd(args []string) error {
 	}
 
 	// Build tools
-	var sm *skills.SkillManager
-	sm = skills.NewSkillManagerWithEmbedding(
+	sm := skills.NewSkillManagerWithEmbedding(
 		expandHome("~/.odek/skills"),
 		"./.odek/skills",
 		resolved.Skills.Embedding,
@@ -2856,8 +2853,7 @@ func continueCmd(args []string) error {
 	rend := render.New(os.Stderr, color).WithModel(modelLabel)
 
 	// Resolve skills config pointer (only when learn mode is enabled)
-	var skillsCfg *skills.SkillsConfig
-	skillsCfg = &resolved.Skills
+	skillsCfg := &resolved.Skills
 
 	injectionGuard, err := guard.New(&resolved.Guard)
 	if err != nil {

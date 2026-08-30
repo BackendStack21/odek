@@ -22,11 +22,10 @@ Module path: `github.com/BackendStack21/odek`. Repository: https://github.com/Ba
 - [Extension Contract](https://odek.21no.de/EXTENSIONS.md): odek-extension/v1 — MCP per-server limits, artifact refs, runtime events, execution budgets
 - [Development](https://odek.21no.de/DEVELOPMENT.md): build, test, release workflow, and contributor notes
 
-## Memory, learning, and sessions
+## Memory and sessions
 
 - [Memory System](https://odek.21no.de/MEMORY.md): three-tier memory (facts, buffer, episodes), `odek memory` commands
 - [Extended Memory](https://odek.21no.de/EXTENDED_MEMORY.md): opt-in atom store, semantic recall, user-state model, quarantine/promotion trust flow
-- [Self-Learning (Skills)](https://odek.21no.de/LEARNING.md): how odek learns reusable skills from sessions, provenance gates, `odek skill` commands
 - [Sessions](https://odek.21no.de/SESSIONS.md): session storage, resume, semantic session search, audit logs
 - [Storage Maintenance](https://odek.21no.de/MAINTENANCE.md): the janitor sweep and `odek cleanup` for bounded local state
 

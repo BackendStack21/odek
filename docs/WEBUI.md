@@ -594,14 +594,6 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
   "session_id": "20260519-abc123",
   "auth_token": "…"
 }
-
-// Skill suggestion response (save/skip from a skill_event "suggested"
-// card). Currently acknowledged; auto-save handles persistence itself.
-{
-  "type": "skill_prompt_response",
-  "action": "save",            // "save" | "skip"
-  "skill_name": "deploy-helper"
-}
 ```
 
 ### Server → Client
@@ -626,7 +618,7 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 | `error` | Agent or server error | `message` |
 | `approval_request` | Agent needs user approval for dangerous operation; blocks the run up to 60s (default) | `id`, `risk` (class name), `command` (or resource), `description`, `is_operation`, `allow_trust`, `friction`, `friction_approvals` |
 | `approval_ack` | Server confirms an approval response | `id`, `action` |
-| `skill_event` | Skill lifecycle event | `event`, `skill_name`, `skills`, `heuristic` |
+| `skill_event` | Skill lifecycle event (`loaded`/`autoloaded`/`used`/`deleted` — `skill_save`/`skill_patch` were removed with the self-learning feature) | `event`, `skill_name`, `skills`, `heuristic` |
 | `memory_event` | Memory lifecycle event | `event`, `target`, `session_id`, `content`, `count`, `new_count`, `untrusted` |
 | `agent_signal` | Agent self-observability signal | `event`, `detail`, `tool`, `count` |
 

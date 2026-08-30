@@ -590,8 +590,7 @@ func subagentCmd(args []string) error {
 	prompt := buildSubagentRequest(cfg.goal, taskGuidance, cfg.context, taskTrust == "untrusted")
 
 	// Build tools
-	var sm *skills.SkillManager
-	sm = skills.NewSkillManagerWithEmbedding(
+	sm := skills.NewSkillManagerWithEmbedding(
 		expandHome("~/.odek/skills"),
 		"./.odek/skills",
 		resolved.Skills.Embedding,

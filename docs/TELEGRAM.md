@@ -606,7 +606,7 @@ crontab -e
 - Use the **full absolute path** to the `odek` binary — cron runs with a minimal `PATH`
 - Always redirect stderr to a log file (`2>&1`) for debugging
 - Place `--deliver` **before** the task text, or anywhere after it (both work)
-- The agent runs in **single-shot mode** by default — no session persistence, no learning loop
+- The agent runs in **single-shot mode** by default — no session persistence
 - Each cron tick is a fully independent agent invocation with no memory of previous runs
 
 ### Debugging

@@ -1874,18 +1874,6 @@ button:disabled { cursor: not-allowed; }
 }
 .chips-total.warn { color: var(--red); }
 
-/* ── Skill toast ───────────────────────────────────────────────────── */
-.skill-toast {
-  padding: var(--space-3) var(--space-4);
-  margin-bottom: var(--space-4);
-  background: var(--amber-dim);
-  border: 1px solid var(--amber);
-  border-radius: var(--r-md);
-  font-size: var(--fs-sm);
-  animation: arrive var(--dur-slow) var(--ease) both;
-}
-.skill-toast em { color: var(--text-3); }
-
 /* ═══════════════════════════════════════════════════════════════════════
    APPROVAL CARDS
 ═══════════════════════════════════════════════════════════════════════ */
