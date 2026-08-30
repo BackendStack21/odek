@@ -51,7 +51,19 @@ func makeTestHome(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("UserHomeDir: %v", err)
 	}
-	home, err := os.MkdirTemp(realHome, "odek_test_home_*")
+	base := realHome
+	// Sandboxed environments run with HOME=/tmp (or similar). A fake home
+	// under a temp dir would itself be classified as temp by
+	// danger.ClassifyPath, masking the secret-subtree checks these tests
+	// exist for. /workspace is the sandbox's writable project mount and
+	// never matches the temp prefixes.
+	if strings.HasPrefix(realHome, "/tmp") || strings.HasPrefix(realHome, "/var/folders") {
+		base = "/workspace/.testhome"
+		if err := os.MkdirAll(base, 0o755); err != nil {
+			t.Fatalf("mkdir sandbox test-home base: %v", err)
+		}
+	}
+	home, err := os.MkdirTemp(base, "odek_test_home_*")
 	if err != nil {
 		t.Fatalf("mkdir test home: %v", err)
 	}

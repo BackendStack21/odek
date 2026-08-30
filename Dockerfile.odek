@@ -1,0 +1,48 @@
+# Dockerfile.odek — maintenance image for developing odek inside a sandbox.
+#
+# odek auto-detects this file when sandbox mode is on and builds it with a
+# content-hash tag (explicit operator approval required — see
+# docs/SANDBOXING.md). The FIRST build needs network:
+#
+#   ODEK_SANDBOX_BUILD_NETWORK=1
+#
+# After that one build, everything the Go quality gate needs is baked into
+# the image and every sandboxed build/test/lint run works fully offline
+# (the sandbox runs with --network=none by default).
+#
+# Pins:
+#   - Go minor version follows go.mod ("go 1.25.12") — bump FROM in lockstep.
+#   - golangci-lint matches .github/workflows/test.yml (v2.12.2).
+#   - govulncheck tracks @latest, exactly like CI.
+#
+# Toolchain notes:
+#   - build-base provides gcc/musl-dev so `go test -race` (cgo) works.
+#   - GOTOOLCHAIN=local fails fast with a clear version error if go.mod is
+#     bumped past the image's Go instead of silently downloading a toolchain
+#     the --network=none sandbox could never fetch.
+
+FROM golang:1.25-alpine
+
+ARG GOLANGCI_LINT_VERSION=v2.12.2
+
+# git: VCS module fetches + repo maintenance from inside the sandbox.
+# build-base: gcc/musl-dev for the race detector's cgo toolchain.
+# make / curl / python3 / bash: Makefile quality gate, API probes, JSON
+# tooling, and bash scripts (docker/piguard-e2e.sh).
+RUN apk add --no-cache git build-base make curl python3 bash
+
+# The workspace is a bind mount owned by the host uid — mark it trusted so
+# git operations inside the sandbox never trip dubious-ownership refusals.
+RUN git config --system --add safe.directory /workspace
+
+# Pre-warm the module cache (layer-cached; re-runs only when go.mod/go.sum
+# change) so offline `go build` / `go test` resolve every dependency.
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Quality-gate parity with CI.
+RUN go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION} \
+ && go install golang.org/x/vuln/cmd/govulncheck@latest
+
+ENV GOTOOLCHAIN=local
+WORKDIR /workspace

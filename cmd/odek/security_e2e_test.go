@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,12 +15,32 @@ import (
 //
 // These tests verify that all native tools respect the same danger
 // classification rules as the shell tool. They use explicit configs
-// (non_interactive=deny) since there's no /dev/tty in tests.
+// (non_interactive=deny) plus a deny approver: since the IPI hardening
+// (#145/#146), CheckOperation falls back to a live TTYApprover whenever an
+// operation lands in the Prompt class — credential reads like /etc/shadow
+// are system_write (prompt-by-design) — which blocks on /dev/tty and hangs
+// the suite in interactive environments. The deny approver answers the
+// Prompt deterministically, so the tests assert the real contract:
+// sensitive paths are refused, safe paths are served.
+
+// denyApprover answers every approval prompt with a denial, standing in for
+// the absent operator. Error text contains "denied", which is what the
+// assertions below match.
+type denyApprover struct{}
+
+func (denyApprover) PromptCommand(cls danger.RiskClass, cmd, description string) error {
+	return fmt.Errorf("denied by test approver: %s %s", cls, cmd)
+}
+
+func (denyApprover) PromptOperation(op danger.ToolOperation) error {
+	return fmt.Errorf("denied by test approver: %s %s (risk: %s)", op.Name, op.Resource, op.Risk)
+}
 
 func denyNonInteractive() danger.DangerousConfig {
 	deny := "deny"
 	return danger.DangerousConfig{
 		NonInteractive: &deny,
+		Approver:       denyApprover{},
 	}
 }
 
@@ -69,6 +90,16 @@ func TestSecurity_ReadFile_SSHKeyPath(t *testing.T) {
 	home, _ := os.UserHomeDir()
 	if home == "" {
 		t.Skip("no home dir")
+	}
+	// The credential-path classification only applies to real home
+	// directories. Sandboxed environments run with HOME=/tmp (or similar),
+	// where the temp-dir rule (local write) outranks the .ssh pattern and
+	// the tool legitimately reports file-not-found instead of a denial.
+	if strings.HasPrefix(home, "/tmp") || strings.HasPrefix(home, "/var/folders") {
+		t.Skip("HOME is a temp dir — .ssh paths do not classify as credentials there")
+	}
+	if _, err := os.Stat(filepath.Join(home, ".ssh")); err != nil {
+		t.Skip("no ~/.ssh dir")
 	}
 
 	tool := &readFileTool{dangerousConfig: denyNonInteractive()}
@@ -123,14 +154,24 @@ func TestSecurity_WriteFile_DestructivePath(t *testing.T) {
 }
 
 func TestSecurity_WriteFile_CustomAllowlist(t *testing.T) {
-	// /etc is system_write → deny by default in deny-non-interactive mode.
-	// But non_interactive=allow should override the security denial.
-	// The actual os.WriteFile will fail with a filesystem permission error
+	// /etc is system_write → prompt by default. An explicit per-class
+	// Classes override to allow lifts the security denial. (The old
+	// non_interactive=allow override no longer feeds ActionFor since the
+	// IPI hardening — #145/#146 — moved non_interactive out of the
+	// CheckOperation path.)
+	// The actual os.WriteFile fails with a filesystem permission error
 	// (CI runners aren't root). We test that the error is a filesystem
 	// error, NOT a security-layer denial.
+	if os.Geteuid() == 0 {
+		t.Skip("running as root would actually write /etc/passwd")
+	}
 	allow := "allow"
 	dc := danger.DangerousConfig{
+		Classes: map[danger.RiskClass]danger.Action{
+			danger.SystemWrite: danger.Allow,
+		},
 		NonInteractive: &allow,
+		Approver:       denyApprover{}, // never fall through to /dev/tty
 	}
 	tool := &writeFileTool{dangerousConfig: dc}
 	result := callJSON(t, tool, `{"path":"/etc/passwd","content":"hack"}`)
@@ -138,7 +179,12 @@ func TestSecurity_WriteFile_CustomAllowlist(t *testing.T) {
 		Error string `json:"error"`
 	}
 	mustUnmarshal(t, result, &r)
-	// With non_interactive=allow, the security layer should NOT issue
+	// A live prompt fallthrough would surface as a test-approver denial —
+	// that means CheckOperation regressed into the TTY path. Fail loudly.
+	if strings.Contains(r.Error, "test approver") {
+		t.Fatalf("security layer regressed into the prompt path: %s", r.Error)
+	}
+	// With the class override, the security layer should NOT issue
 	// a denial. A filesystem-level permission error is acceptable.
 	if r.Error != "" && (strings.Contains(r.Error, "security") || strings.Contains(r.Error, "config")) {
 		t.Errorf("expected security layer to allow, got security denial: %s", r.Error)
@@ -211,10 +257,16 @@ func TestSecurity_Patch_SystemPath(t *testing.T) {
 // ── browser ───────────────────────────────────────────────────────────
 
 func TestSecurity_Browser_ExternalURL(t *testing.T) {
-	// With non_interactive=allow, external URLs should work
+	// External URLs are network_egress → prompt by default. The per-class
+	// Classes override to allow replaces the old non_interactive=allow
+	// contract (no longer consulted by ActionFor since the IPI hardening).
 	allow := "allow"
 	dc := danger.DangerousConfig{
+		Classes: map[danger.RiskClass]danger.Action{
+			danger.NetworkEgress: danger.Allow,
+		},
 		NonInteractive: &allow,
+		Approver:       denyApprover{}, // never fall through to /dev/tty
 	}
 
 	tool := &browserTool{dangerousConfig: dc}
@@ -224,6 +276,11 @@ func TestSecurity_Browser_ExternalURL(t *testing.T) {
 		Error string `json:"error"`
 	}
 	mustUnmarshal(t, result, &r)
+	// A live prompt fallthrough would surface as a test-approver denial —
+	// fail loudly instead of letting it masquerade as a connect error.
+	if strings.Contains(r.Error, "test approver") {
+		t.Fatalf("security layer regressed into the prompt path: %s", r.Error)
+	}
 	// Error should be connection-related, not security-denial
 	if r.Error != "" && strings.Contains(r.Error, "denied") {
 		t.Errorf("external URL should not be denied: %s", r.Error)
