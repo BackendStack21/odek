@@ -143,7 +143,6 @@ Every config knob has a `ODEK_*` counterpart:
 | `ODEK_NO_COLOR` | `--no-color` | bool |
 | `ODEK_NO_AGENTS` | `--no-agents` | bool |
 | `ODEK_SYSTEM` | `--system` | string |
-| `ODEK_SKILLS_LEARN` | `skills.learn` | bool |
 | `ODEK_PROMPT_CACHING` | `prompt_caching` | bool |
 | `ODEK_STREAM` | `stream` | bool |
 | `ODEK_COMPACTION` | `compaction` | bool |
@@ -239,7 +238,7 @@ The guard is **off by default** in the sense that no sidecar is needed; the loca
 | `memory` | `true` | `memory` add/replace/consolidate, legacy facts, auto-extracted facts, session buffer, and Extended Memory atom extraction/addition/recall/user-model inference |
 | `system_prompt` | `true` | `~/.odek/IDENTITY.md`, explicit `--system` / `ODEK_SYSTEM`, and project-level `AGENTS.md` |
 | `mcp_descriptions` | `true` | MCP server tool descriptions supplied via `tools/list` |
-| `skills` | `true` | Skill bodies loaded at startup; skill save/patch suggestions |
+| `skills` | `true` | Skill bodies at load time and import |
 | `tool_outputs` | `false` | External tool outputs wrapped as `<untrusted_content_*>` (warning-only scan) |
 | `telegram` | `false` | Telegram photo captions and voice transcripts before injection |
 
@@ -420,26 +419,10 @@ The `skills` section controls the skill system:
   "skills": {
     "max_auto_load": 3,
     "max_lazy_slots": 5,
-    "learn": true,
-    "llm_learn": true,
-    "llm_curate": true,
     "import": {
       "max_size_bytes": 1048576,
       "timeout_seconds": 5,
       "require_https": false
-    },
-    "curation": {
-      "staleness_days": 90,
-      "auto_prune": false,
-      "auto_curate": true,
-      "skip_threshold": 3,
-      "skip_reset_days": 30
-    },
-    "auto_save": {
-      "enabled": true,
-      "require_llm": true,
-      "max_per_run": 3,
-      "min_occurrences": 2
     }
   }
 }
@@ -449,23 +432,11 @@ The `skills` section controls the skill system:
 |-------|---------|---------|-------------|
 | `max_auto_load` | — | 3 | Max skills injected into system prompt on start |
 | `max_lazy_slots` | — | 5 | Max skills loaded per user input via trigger matching |
-| `learn` | `ODEK_SKILLS_LEARN` | `true` | Enable skill learning mode (detects patterns, suggests skills). On by default |
-| `verbose` | — | `false` | Log skill-suggestion activity to stderr (skipped-suggestion counts, auto-save loop details) and enable the interactive save prompt on TTY runs. Off by default — headless/CI runs stay silent |
-| `llm_learn` | — | `true` | Use LLM to enrich detected patterns. **Template-only** — set via `odek init`, not parsed from JSON at runtime |
-| `llm_curate` | — | `true` | Use LLM for curation quality assessment. **Template-only** — set via `odek init`, not parsed from JSON at runtime |
+| `verbose` | — | `false` | Surface skill activity details: skill-load banners in the terminal, and skill/memory activity events in the Telegram bot. Off by default — headless/CI runs stay silent |
 | `dirs` | — | [] | Extra skill directories beyond `~/.odek/skills` and `./.odek/skills` |
 | `import.max_size_bytes` | — | 1048576 (1MB) | Max size for fetched skill content |
 | `import.timeout_seconds` | — | 5 | HTTP timeout for skill URI fetch |
 | `import.require_https` | — | false | Reject http:// URIs when true |
-| `curation.staleness_days` | — | 90 | Days without use before flagging as stale |
-| `curation.auto_prune` | — | false | Auto-delete stale skills on curate (no prompt) |
-| `curation.auto_curate` | — | true | Run auto-curation after sessions (merge, dedup, prune) |
-| `curation.skip_threshold` | — | 3 | Times a skill must be skipped before permanent suppression |
-| `curation.skip_reset_days` | — | 30 | Days after which a skip expires (re-allows suggestion) |
-| `auto_save.enabled` | — | true | Auto-save quality skill suggestions without prompting |
-| `auto_save.require_llm` | — | true | Only auto-save if LLM enhancement was applied |
-| `auto_save.max_per_run` | — | 3 | Max skills to auto-save per session (score-ranked) |
-| `auto_save.min_occurrences` | — | 2 | Distinct sessions a pattern must recur in before auto-save (1 disables) |
 | `embedding` | — | *(inherits top-level `embedding`)* | Optional override of the shared embedding backend for semantic skill matching. When unset, skills inherit the top-level `embedding` default with the per-turn query timeout bounded to 2s. See [Shared embedding backend](#shared-embedding-backend-embedding--memory-sessions--skills). |
 
 ## Memory configuration
@@ -981,7 +952,7 @@ Full guide: [docs/SCHEDULES.md](SCHEDULES.md).
 Configures the background storage janitor (`internal/maintenance`). It runs a
 sweep over `~/.odek` every `interval_minutes`: expiring old sessions and
 audit records, rotating oversized logs, deleting stale Telegram plans and
-downloaded media, and garbage-collecting expired skill skip-list entries.
+downloaded media.
 Every field has an `ODEK_MAINTENANCE_*` environment override.
 
 ```json
@@ -992,8 +963,7 @@ Every field has an `ODEK_MAINTENANCE_*` environment override.
     "sessions_max_age_days": 30,
     "audit_max_age_days": 14,
     "log_max_mb": 50,
-    "plans_max_age_days": 30,
-    "skills_skip_max_age_days": 90
+    "plans_max_age_days": 30
   }
 }
 ```
@@ -1006,7 +976,6 @@ Every field has an `ODEK_MAINTENANCE_*` environment override.
 | `audit_max_age_days` | `ODEK_MAINTENANCE_AUDIT_MAX_AGE_DAYS` | `14` | Delete `~/.odek/sessions/audit/*.json` records older than this. `0` = keep forever. |
 | `log_max_mb` | `ODEK_MAINTENANCE_LOG_MAX_MB` | `50` | Rotate `~/.odek/telegram.log` and `~/.odek/schedule.log` larger than this: current log becomes `<name>.1` (one backup generation) and a fresh empty log is started. `0` = no rotation. |
 | `plans_max_age_days` | `ODEK_MAINTENANCE_PLANS_MAX_AGE_DAYS` | `30` | Delete Telegram plan files (`~/.odek/plans/**/*.md`) older than this; emptied chat directories are removed. `0` = keep forever. |
-| `skills_skip_max_age_days` | `ODEK_MAINTENANCE_SKILLS_SKIP_MAX_AGE_DAYS` | `90` | Remove skill skip-list entries (`~/.odek/skills/.skipped.json`) older than this. `0` = keep forever. |
 
 Downloaded Telegram media (`~/.odek/media/`, including per-chat `chat<id>/`
 subdirectories) is always swept after 1 hour; that policy is not configurable.
@@ -1158,13 +1127,13 @@ odek init --global
 odek init --force
 ```
 
-The **global template** covers the full schema: connection (`model`, `base_url`, `api_key`), execution (`max_iterations`, `max_tool_parallel`, `prompt_caching`, `compaction`, `interaction_mode`), sandboxing, `dangerous`, `tools`, `skills` (incl. `auto_save` and `curation`), `memory`, `subagent`, `mcp_servers`, `web_search`, `schedules`, `maintenance`, and `telegram`.
+The **global template** covers the full schema: connection (`model`, `base_url`, `api_key`), execution (`max_iterations`, `max_tool_parallel`, `prompt_caching`, `compaction`, `interaction_mode`), sandboxing, `dangerous`, `tools`, `skills`, `memory`, `subagent`, `mcp_servers`, `web_search`, `schedules`, `maintenance`, and `telegram`.
 
 The **local template** contains only fields a project may legitimately set (`model`, `thinking`, iteration/parallelism limits, `prompt_caching`, `interaction_mode`, sandbox resource knobs, `tools.disabled`, `skills` without `dirs`, `subagent`, `mcp_servers`, `schedules`). Operator-only fields (`api_key`, `base_url`, `system`, `dangerous`, `memory`, `sessions`, `embedding`, `guard`, `maintenance`, `telegram`, `web_search`, `trusted_proxies`, `tools.enabled`, `skills.dirs`) belong in `~/.odek/config.json`. Note that project configs may only *enable* the sandbox — `"sandbox": false` is rejected, so neither template pins it locally. `compaction` is likewise omitted from the local template: it defaults to on, and pinning `"compaction": false` in a fresh project config would silently disable it (add the key explicitly if you want it off).
 
 ## Recommended minimal config
 
-A complete operator setup needs only **three files**. Everything not pinned below keeps its safe default (sandbox on, `extract_facts` off, episodes require manual approval, `skills.learn` on, compaction and planning on). The sample deliberately pins the few keys whose defaults are worth making explicit, and leaves the rest out — a shorter config is easier to audit.
+A complete operator setup needs only **three files**. Everything not pinned below keeps its safe default (sandbox on, `extract_facts` off, episodes require manual approval, compaction and planning on). The sample deliberately pins the few keys whose defaults are worth making explicit, and leaves the rest out — a shorter config is easier to audit.
 
 **1. Secrets** — `~/.odek/secrets.env` (chmod 600). Never put keys in config files:
 
@@ -1180,8 +1149,6 @@ ODEK_API_KEY=sk-...
 
   "stream": true,
   "interaction_mode": "engaging",
-
-  "skills": { "learn": true },
 
   "limits": {
     "max_runtime_seconds": 3600,
@@ -1202,7 +1169,6 @@ Why each key is pinned:
 - **`model`** — the only connection setting you truly need; `api_key` resolves from `secrets.env`, and `base_url` is only required for non-default providers.
 - **`stream: true`** — reasoning and answers render live in the terminal and Web UI. Purely preference; remove for minimal output.
 - **`interaction_mode: "engaging"`** — the default, pinned so a future odek default change cannot silently alter your output.
-- **`skills.learn: true`** — pattern detection and skill suggestions (default `true`; pin it if you manage learning policy explicitly).
 - **`limits`** — a runaway agent stops at the wall-clock, tool-call, token, and spend ceilings instead of your invoice. Cost enforcement activates only because both per-million prices are set; add `model_prices` entries keyed by exact model ID when you use several models.
 - **`maintenance.enabled`** — sessions, audit records, and logs get retention-swept automatically.
 
@@ -1252,9 +1218,6 @@ ODEK_SANDBOX_BUILD_NETWORK=1 odek run --sandbox "build the project"
 
 # Env var override for one-off
 ODEK_SANDBOX=true odek run "run untrusted script"
-
-# Enable skill learning via env var
-ODEK_SKILLS_LEARN=true odek run "set up CI"
 
 # Enable Extended Memory via CLI flag
 odek run --memory-extended-enabled "remember that I prefer Go over Python"

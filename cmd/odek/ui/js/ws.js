@@ -5,7 +5,7 @@
 import { S, setSessionToken } from './state.js';
 import { getWsToken } from './net.js';
 import { dotEl, statusEl, sendBtn, skeletonEl, messagesEl, modelLabel } from './dom.js';
-import { formatNum, formatErrorMessage, showToast, scrollBottom, escapeHtml, announce } from './utils.js';
+import { formatNum, formatErrorMessage, showToast, announce } from './utils.js';
 import {
   streamToken, streamThinking, streamFlush, endThinking, endStream,
   addToolCall, addToolResult, addSubagentGroup, completeSubagents,
@@ -225,25 +225,13 @@ export function wsSend(obj) {
 }
 
 // ── Skill Events ──
+// Remaining kinds after the self-learning removal: loaded/autoloaded
+// (silent — noisy per turn) and deleted (CLI `odek skill delete`).
 function handleSkillEvent(event) {
   switch (event.event) {
-    case 'saved':
-      showToast('✓ Skill saved: ' + (event.skill_name || ''));
-      break;
     case 'deleted':
       showToast('✗ Skill deleted: ' + (event.skill_name || ''));
       break;
-    case 'suggested': {
-      // Inline card with save/skip — shown in messages area.
-      const el = document.createElement('div');
-      el.className = 'skill-toast';
-      el.innerHTML =
-        '💡 <strong>Skill suggestion:</strong> ' + escapeHtml(event.skill_name || '') +
-        (event.heuristic ? ' — <em>' + escapeHtml(event.heuristic) + '</em>' : '');
-      messagesEl.appendChild(el);
-      scrollBottom();
-      break;
-    }
     case 'loaded': case 'autoloaded':
       // Silent — noisy to show every skill load.
       break;

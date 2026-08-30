@@ -741,7 +741,6 @@ func handleConfigView(resolved config.ResolvedConfig) http.HandlerFunc {
 				"min_turns_for_extraction": resolved.Memory.MinTurnsForExtraction,
 			},
 			"skills": map[string]any{
-				"learn":          resolved.Skills.Learn,
 				"max_auto_load":  resolved.Skills.MaxAutoLoad,
 				"max_lazy_slots": resolved.Skills.MaxLazySlots,
 			},

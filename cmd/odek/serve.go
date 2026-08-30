@@ -755,14 +755,11 @@ func (c *wsDeltaCounters) snapshot() (reasoning, content int) {
 }
 
 func newServeAgent(resolved config.ResolvedConfig, system string, runKey string, sendFn func(v any) error, deltas *wsDeltaCounters) (*odek.Agent, func() error, func(), func() error, guard.Guard, *wsApprover, error) {
-	var sm *skills.SkillManager
-	if resolved.Skills.Learn {
-		sm = skills.NewSkillManagerWithEmbedding(
-			expandHome("~/.odek/skills"),
-			"./.odek/skills",
-			resolved.Skills.Embedding,
-		)
-	}
+	sm := skills.NewSkillManagerWithEmbedding(
+		expandHome("~/.odek/skills"),
+		"./.odek/skills",
+		resolved.Skills.Embedding,
+	)
 
 	// Create WebSocket approver for dangerous operations approval
 	approver := newWSApprover(sendFn)
@@ -1840,31 +1837,6 @@ func handlePrompt(
 		"sessionContextTokens": *sessionInputTokens,
 		"sessionOutputTokens":  *sessionOutputTokens,
 	})
-
-	// ── Learn loop: run self-improvement heuristics ──
-	if agent.SkillManager() != nil {
-		sm := agent.SkillManager()
-		suggestions := learnAndSuggest(allMessages, sm, nil, false, resolved.Skills.AutoSave.Enabled, g, resolved.Guard)
-		if len(suggestions) > 0 {
-			userDir := expandHome("~/.odek/skills")
-			os.MkdirAll(userDir, 0755)
-			filtered, skipped := skills.FilterSkipped(suggestions, userDir,
-				resolved.Skills.Curation.SkipThreshold, resolved.Skills.Curation.SkipResetDays)
-			_ = skipped
-			if resolved.Skills.AutoSave.Enabled {
-				result := skills.AutoSaveSuggestions(filtered, userDir, skills.ProjectSkillsDir(), resolved.Skills, g, resolved.Guard, false)
-				for _, name := range result.Saved {
-					sm.Notifier.Notify(skills.SkillEvent{
-						Type: "saved", SkillName: name, Timestamp: time.Now().UTC(),
-					})
-				}
-				if len(result.Saved)+len(result.ProjectSaved) > 0 {
-					sm.MarkDirty()
-					sm.Reload()
-				}
-			}
-		}
-	}
 
 	// If we started a new session, return it so the WebSocket loop
 	// tracks it for future turns and OnSessionEnd.

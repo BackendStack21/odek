@@ -149,17 +149,12 @@ type CLIFlags struct {
 
 // SkillsConfig holds the skills configuration section from JSON files.
 type SkillsConfig struct {
-	MaxAutoLoad  *int                   `json:"max_auto_load,omitempty"`
-	MaxLazySlots *int                   `json:"max_lazy_slots,omitempty"`
-	Learn        *bool                  `json:"learn,omitempty"`
-	Dirs         []string               `json:"dirs,omitempty"`
-	Import       *skills.ImportConfig   `json:"import,omitempty"`
-	Curation     *skills.CurationConfig `json:"curation,omitempty"`
-	AutoSave     *skills.AutoSaveConfig `json:"auto_save,omitempty"`
-	LLMLearn     *bool                  `json:"llm_learn,omitempty"`
-	LLMCurate    *bool                  `json:"llm_curate,omitempty"`
-	Verbose      *bool                  `json:"verbose,omitempty"`
-	Embedding    *embedding.Config      `json:"embedding,omitempty"`
+	MaxAutoLoad  *int                 `json:"max_auto_load,omitempty"`
+	MaxLazySlots *int                 `json:"max_lazy_slots,omitempty"`
+	Dirs         []string             `json:"dirs,omitempty"`
+	Import       *skills.ImportConfig `json:"import,omitempty"`
+	Verbose      *bool                `json:"verbose,omitempty"`
+	Embedding    *embedding.Config    `json:"embedding,omitempty"`
 }
 
 // SessionsConfig is the "sessions" section of odek.json. It currently only
@@ -233,13 +228,12 @@ type ToolConfig struct {
 // Operator-controlled: rejected from project-level ./odek.json because it
 // governs DELETION of user data.
 type MaintenanceConfig struct {
-	Enabled              *bool  `json:"enabled,omitempty"`
-	IntervalMinutes      *int   `json:"interval_minutes,omitempty"`
-	SessionsMaxAgeDays   *int   `json:"sessions_max_age_days,omitempty"`
-	AuditMaxAgeDays      *int   `json:"audit_max_age_days,omitempty"`
-	LogMaxMB             *int64 `json:"log_max_mb,omitempty"`
-	PlansMaxAgeDays      *int   `json:"plans_max_age_days,omitempty"`
-	SkillsSkipMaxAgeDays *int   `json:"skills_skip_max_age_days,omitempty"`
+	Enabled            *bool  `json:"enabled,omitempty"`
+	IntervalMinutes    *int   `json:"interval_minutes,omitempty"`
+	SessionsMaxAgeDays *int   `json:"sessions_max_age_days,omitempty"`
+	AuditMaxAgeDays    *int   `json:"audit_max_age_days,omitempty"`
+	LogMaxMB           *int64 `json:"log_max_mb,omitempty"`
+	PlansMaxAgeDays    *int   `json:"plans_max_age_days,omitempty"`
 }
 
 // ToolsConfig is the "tools" section of odek.json. It is intentionally a
@@ -965,9 +959,6 @@ func resolveMaintenance(cfg *MaintenanceConfig) maintenance.Config {
 	if cfg.PlansMaxAgeDays != nil {
 		def.PlansMaxAgeDays = *cfg.PlansMaxAgeDays
 	}
-	if cfg.SkillsSkipMaxAgeDays != nil {
-		def.SkillsSkipMaxAgeDays = *cfg.SkillsSkipMaxAgeDays
-	}
 	return def
 }
 
@@ -1461,14 +1452,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		cfg.SandboxUser = v
 	}
 
-	// Skills env vars
-	if v := envString("SKILLS_LEARN"); v != "" {
-		b, _ := strconv.ParseBool(v)
-		if cfg.Skills == nil {
-			cfg.Skills = &SkillsConfig{}
-		}
-		cfg.Skills.Learn = &b
-	}
+	// Skills env vars: none (learning removed).
 
 	// MaxConcurrency env var
 	if v := envInt("MAX_CONCURRENCY"); v > 0 {
@@ -1741,10 +1725,6 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		cfg.Maintenance = ensureMaintenance(cfg.Maintenance)
 		cfg.Maintenance.PlansMaxAgeDays = v
 	}
-	if v := envIntPtr("MAINTENANCE_SKILLS_SKIP_MAX_AGE_DAYS"); v != nil {
-		cfg.Maintenance = ensureMaintenance(cfg.Maintenance)
-		cfg.Maintenance.SkillsSkipMaxAgeDays = v
-	}
 
 	// Telegram env overrides: merge env vars on top of file config.
 	baseTelegram := telegram.DefaultConfig()
@@ -1803,12 +1783,6 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 			cfg.Planning = &PlanningFileConfig{}
 		}
 		cfg.Planning.Enabled = cli.Planning
-	}
-	if cli.Learn != nil {
-		if cfg.Skills == nil {
-			cfg.Skills = &SkillsConfig{}
-		}
-		cfg.Skills.Learn = cli.Learn
 	}
 	if cli.System != "" {
 		cfg.System = cli.System
@@ -2250,9 +2224,6 @@ func resolveSkills(cfg *SkillsConfig) skills.SkillsConfig {
 	if cfg.MaxLazySlots != nil {
 		def.MaxLazySlots = *cfg.MaxLazySlots
 	}
-	if cfg.Learn != nil {
-		def.Learn = *cfg.Learn
-	}
 	if len(cfg.Dirs) > 0 {
 		def.Dirs = cfg.Dirs
 	}
@@ -2264,35 +2235,6 @@ func resolveSkills(cfg *SkillsConfig) skills.SkillsConfig {
 			def.Import.TimeoutSecs = cfg.Import.TimeoutSecs
 		}
 		def.Import.RequireHTTPS = cfg.Import.RequireHTTPS
-	}
-	if cfg.Curation != nil {
-		if cfg.Curation.StalenessDays > 0 {
-			def.Curation.StalenessDays = cfg.Curation.StalenessDays
-		}
-		def.Curation.AutoPrune = cfg.Curation.AutoPrune
-		if cfg.Curation.SkipThreshold > 0 {
-			def.Curation.SkipThreshold = cfg.Curation.SkipThreshold
-		}
-		if cfg.Curation.SkipResetDays > 0 {
-			def.Curation.SkipResetDays = cfg.Curation.SkipResetDays
-		}
-		def.Curation.AutoCurate = cfg.Curation.AutoCurate
-	}
-	if cfg.AutoSave != nil {
-		def.AutoSave.Enabled = cfg.AutoSave.Enabled
-		if cfg.AutoSave.MaxPerRun > 0 {
-			def.AutoSave.MaxPerRun = cfg.AutoSave.MaxPerRun
-		}
-		def.AutoSave.RequireLLM = cfg.AutoSave.RequireLLM
-		if cfg.AutoSave.MinOccurrences > 0 {
-			def.AutoSave.MinOccurrences = cfg.AutoSave.MinOccurrences
-		}
-	}
-	if cfg.LLMLearn != nil {
-		def.LLMLearn = *cfg.LLMLearn
-	}
-	if cfg.LLMCurate != nil {
-		def.LLMCurate = *cfg.LLMCurate
 	}
 	if cfg.Verbose != nil {
 		def.Verbose = *cfg.Verbose
@@ -2924,8 +2866,8 @@ func overlayFile(base, override FileConfig) FileConfig {
 }
 
 // overlaySkills merges a higher-priority SkillsConfig onto a lower-priority one
-// field-by-field. This lets a project config tune settings like `learn` or
-// `max_auto_load` without clobbering the global `dirs` or `embedding` settings.
+// field-by-field. This lets a project config tune settings like `max_auto_load`
+// without clobbering the global `dirs` or `embedding` settings.
 func overlaySkills(base, override *SkillsConfig) {
 	if override.MaxAutoLoad != nil {
 		base.MaxAutoLoad = override.MaxAutoLoad
@@ -2933,26 +2875,11 @@ func overlaySkills(base, override *SkillsConfig) {
 	if override.MaxLazySlots != nil {
 		base.MaxLazySlots = override.MaxLazySlots
 	}
-	if override.Learn != nil {
-		base.Learn = override.Learn
-	}
 	if len(override.Dirs) > 0 {
 		base.Dirs = override.Dirs
 	}
 	if override.Import != nil {
 		base.Import = override.Import
-	}
-	if override.Curation != nil {
-		base.Curation = override.Curation
-	}
-	if override.AutoSave != nil {
-		base.AutoSave = override.AutoSave
-	}
-	if override.LLMLearn != nil {
-		base.LLMLearn = override.LLMLearn
-	}
-	if override.LLMCurate != nil {
-		base.LLMCurate = override.LLMCurate
 	}
 	if override.Verbose != nil {
 		base.Verbose = override.Verbose

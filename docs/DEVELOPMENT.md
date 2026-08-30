@@ -78,12 +78,8 @@ internal/
     cache_test.go             Cache tests
     derive.go                 Keyword derivation from skill body
     trigger.go                Trigger matching
-    selfimprove.go            Heuristics + runAllHeuristics + AutoSaveSuggestions
-    learnloop.go              AnalyzeMessages + RunAutoSaveLoop (non-interactive end-of-session pipeline)
-    curator.go                Quality audit, staleness, overlap, dedup
-    llm_enhance.go            LLM enrichment for learning + curation
     importer.go               URI import with LLM risk assessment
-    tools.go                  Skill CRUD tools (list/view/save/patch/delete/load)
+    tools.go                  Agent-facing skill tools (skill_load, skill_list)
     *_test.go                 Tests across all subsystems
   telegram/
     bot.go                    Telegram bot client (getFile, download, sendMessage, sendDocument)
@@ -190,7 +186,7 @@ CI (`.github/workflows/test.yml`) runs the unit suite under `-race` on every pus
 | `internal/render` | Terminal output, no-color mode, nil safety, tool call/result rendering |
 | `internal/danger` | Command classification across 9 risk classes (incl. fail-closed `unknown`), config overrides, allow/denylist, classifier-bypass attempts, approver friction |
 | `internal/memory` | Facts CRUD, buffer ring, episodes, merge detector (go-vector), ReplaceEntry/AppendEntry, memory tool, security scan, LLM ranking, episode provenance |
-| `internal/skills` | Loading, triggers, self-improvement heuristics, curation, LLM-enhanced generation, import, tools, AnalyzeMessages/RunAutoSaveLoop, ValidateSkillName, isPrivateHost |
+| `internal/skills` | Loading, triggers, import, agent tools (skill_load/skill_list), ValidateSkillName, isPrivateHost |
 | `internal/telegram` | Bot client, long-polling, command handlers, session management, plan CRUD, voice/photo download, health server, retry/backoff |
 | `cmd/odek` | Flag parsing, init, version, dispatch table, sandbox setup wiring, subagent, serve, security E2E, shell-tool danger, browser tool, audit CLI, skill promote, untrusted-tool wrapper |
 
@@ -218,13 +214,6 @@ See [docs/SUBAGENTS.md](SUBAGENTS.md) for full documentation.
 - **cmd/odek/main.go::setupSandbox**: wires the resolved container into `*shellTool` / `*parallelShellTool` — kept in `cmd/odek` because the sandbox package must not know about agent-tool internals
 
 See [docs/SANDBOXING.md](SANDBOXING.md) for the user-facing security model.
-
-### Skill learning loop (`internal/skills/learnloop.go` + `cmd/odek/main.go::runLearnLoop`)
-
-- **skills/learnloop.go**: non-interactive pipeline — `AnalyzeMessages` converts a conversation into suggestions (heuristics + LLM enhancement + provenance), `RunAutoSaveLoop` filters against the skip list, persists eligible suggestions, fires notifier events, and triggers post-save micro-curation
-- **cmd/odek/main.go::runLearnLoop**: orchestration only — calls `AnalyzeMessages` → `FilterSkipped` → tries `RunAutoSaveLoop`; falls back to `interactiveSavePrompt` (the only TTY-coupled piece) when auto-save is disabled
-
-See [docs/LEARNING.md](LEARNING.md) for the user-facing skill model.
 
 ## Performance Architecture
 

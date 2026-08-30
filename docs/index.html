@@ -923,8 +923,8 @@
 
     <div class="card">
       <div class="icon">🧠</div>
-      <h4>Self-Learning Skills</h4>
-      <p>Detects multi-step procedures, error recoveries, and corrections during your sessions. Saves them as reusable <code>SKILL.md</code> files. On by default — <code>--no-learn</code> to disable.</p>
+      <h4>Skill System</h4>
+      <p>Skill-matched <code>SKILL.md</code> files load on-demand — author them yourself or import from any URI with automatic LLM risk assessment.</p>
     </div>
 
     <div class="card">
@@ -1133,8 +1133,6 @@ $ odek run <span class="hljs-string">"@README.md summarize this project"</span>
     <li><span class="cmd">--base-url &lt;url&gt;</span><span class="desc">API endpoint URL</span></li>
     <li><span class="cmd">--no-sandbox</span><span class="desc">Disable the default Docker sandbox</span></li>
     <li><span class="cmd">--thinking &lt;level&gt;</span><span class="desc">Reasoning depth (enabled/disabled/low/medium/high)</span></li>
-    <li><span class="cmd">--learn</span><span class="desc">Enable skill learning (on by default)</span></li>
-    <li><span class="cmd">--no-learn</span><span class="desc">Disable skill learning</span></li>
     <li><span class="cmd">--max-iter &lt;n&gt;</span><span class="desc">Max think→act cycles (default 90)</span></li>
     <li><span class="cmd">--ctx &lt;files&gt; / -c</span><span class="desc">Attach files as context blocks (comma-separated)</span></li>
     <li><span class="cmd">--memory-extended-enabled</span><span class="desc">Enable Extended Memory (opt-in)</span></li>
@@ -1168,7 +1166,6 @@ $ odek run <span class="hljs-string">"@README.md summarize this project"</span>
     <a href="https://github.com/BackendStack21/odek/blob/main/docs/DOCKER_COMPOSE_USER_GUIDE.md">Docker Compose<span>Run odek in Docker with Compose, step by step</span></a>
     <a href="https://github.com/BackendStack21/odek/blob/main/docs/SECURITY.md">Security<span>Prompt injection defense, threat model</span></a>
     <a href="https://github.com/BackendStack21/odek/blob/main/docs/SUBAGENTS.md">Sub-Agents<span>Task decomposition, delegation protocol</span></a>
-    <a href="https://github.com/BackendStack21/odek/blob/main/docs/LEARNING.md">Self-Learning<span>Skill detection, LLM enhancement, curation</span></a>
     <a href="https://github.com/BackendStack21/odek/blob/main/docs/WEBUI.md">Web UI<span>odek serve, WebSocket protocol, @ resources</span></a>
     <a href="https://github.com/BackendStack21/odek/blob/main/docs/SCHEDULES.md">Scheduled Tasks<span>Native cron — run agent tasks and deliver results</span></a>
     <a href="https://github.com/BackendStack21/odek/blob/main/docs/TELEGRAM.md">Telegram Bot<span>Run agent tasks from Telegram: voice, photos, sessions</span></a>

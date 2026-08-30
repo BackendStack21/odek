@@ -1,7 +1,6 @@
 package skills
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,45 +23,6 @@ func TestSkillLoadTool_NameDescSchema(t *testing.T) {
 func TestSkillListTool_NameDescSchema(t *testing.T) {
 	tool := &SkillListTool{}
 	if tool.Name() != "skill_list" {
-		t.Errorf("Name = %q", tool.Name())
-	}
-	if tool.Description() == "" {
-		t.Error("Description should not be empty")
-	}
-	if tool.Schema() == nil {
-		t.Error("Schema should not be nil")
-	}
-}
-
-func TestSkillSaveTool_NameDescSchema(t *testing.T) {
-	tool := &SkillSaveTool{}
-	if tool.Name() != "skill_save" {
-		t.Errorf("Name = %q", tool.Name())
-	}
-	if tool.Description() == "" {
-		t.Error("Description should not be empty")
-	}
-	if tool.Schema() == nil {
-		t.Error("Schema should not be nil")
-	}
-}
-
-func TestSkillPatchTool_NameDescSchema(t *testing.T) {
-	tool := &SkillPatchTool{}
-	if tool.Name() != "skill_patch" {
-		t.Errorf("Name = %q", tool.Name())
-	}
-	if tool.Description() == "" {
-		t.Error("Description should not be empty")
-	}
-	if tool.Schema() == nil {
-		t.Error("Schema should not be nil")
-	}
-}
-
-func TestSkillDeleteTool_NameDescSchema(t *testing.T) {
-	tool := &SkillDeleteTool{}
-	if tool.Name() != "skill_delete" {
 		t.Errorf("Name = %q", tool.Name())
 	}
 	if tool.Description() == "" {
@@ -101,33 +61,6 @@ func TestSkillLoadTool_EmptyName(t *testing.T) {
 	_, err := tool.Call(`{"name": ""}`)
 	if err == nil {
 		t.Error("expected error for empty name")
-	}
-}
-
-func TestSkillPatchTool_EmptyOldText(t *testing.T) {
-	tool := &SkillPatchTool{Manager: &SkillManager{}}
-	_, err := tool.Call(`{"name": "x", "old_text": ""}`)
-	if err == nil {
-		t.Error("expected error for empty old_text")
-	}
-}
-
-func TestSkillDeleteTool_EmptyName(t *testing.T) {
-	tool := &SkillDeleteTool{Manager: &SkillManager{}}
-	_, err := tool.Call(`{"name": ""}`)
-	if err == nil {
-		t.Error("expected error for empty name")
-	}
-}
-
-func TestSkillSaveTool_OversizeBody(t *testing.T) {
-	sm := NewSkillManager(t.TempDir(), "")
-	tool := &SkillSaveTool{Manager: sm}
-	// Body over 1MB
-	bigBody := strings.Repeat("x", MaxSkillBodySize+1)
-	_, err := tool.Call(`{"name":"big","description":"too big","body":"` + bigBody + `"}`)
-	if err == nil {
-		t.Error("expected error for oversized body")
 	}
 }
 
@@ -188,251 +121,6 @@ func TestSkillListTool(t *testing.T) {
 	if !contains(result, "skill-a") || !contains(result, "skill-b") {
 		t.Errorf("result should list both skills: %s", result)
 	}
-}
-
-func TestSkillSaveTool(t *testing.T) {
-	dir := t.TempDir()
-	sm := NewSkillManager(dir, "")
-	tool := &SkillSaveTool{Manager: sm}
-
-	body := "## Overview\nBuild Docker images\n## Step-by-Step\n1. Write Dockerfile\n## Common Pitfalls\n- Forgetting cache\n## Verification\n- docker build\nThis part adds length so the body exceeds the 300 char minimum threshold easily. More content here to ensure we pass validation. And more. Just a bit more to be absolutely safe."
-
-	// Escape backslash-n sequences for JSON
-	jsonBody := strings.ReplaceAll(body, "\n", "\\n")
-	jsonStr := `{"name":"docker-build","description":"Build Docker images","body":"` + jsonBody + `"}`
-	result, err := tool.Call(jsonStr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !contains(result, "docker-build") {
-		t.Errorf("result should mention skill name: %s", result)
-	}
-
-	// Duplicate name should fail
-	_, err = tool.Call(`{
-		"name": "docker-build",
-		"description": "Duplicate",
-		"body": "` + body + `"
-	}`)
-	if err == nil {
-		t.Error("expected error for duplicate name")
-	}
-}
-
-// TestSkillSaveTool_ProjectScope saves with scope=project and verifies
-// the skill lands in the project dir only.
-func TestSkillSaveTool_ProjectScope(t *testing.T) {
-	userDir := t.TempDir()
-	projectDir := filepath.Join(t.TempDir(), ".odek", "skills")
-	sm := NewSkillManager(userDir, projectDir)
-	tool := &SkillSaveTool{Manager: sm}
-
-	body := "## Overview\nRelease this project.\n\n## Step-by-Step\n1. ./scripts/release.sh\n\n## Common Pitfalls\n- Tag mismatch\n\n## Verification\n- git ls-remote --tags origin\nPadding to exceed the three hundred character minimum body requirement easily with extra descriptive text here and even more padding to be safe."
-	jsonBody := strings.ReplaceAll(body, "\n", "\\n")
-	jsonStr := `{"name":"project-release","description":"Release flow","body":"` + jsonBody + `","scope":"project"}`
-	if _, err := tool.Call(jsonStr); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(projectDir, "project-release", "SKILL.md")); err != nil {
-		t.Error("expected skill in project dir:", err)
-	}
-	if _, err := os.Stat(filepath.Join(userDir, "project-release")); !os.IsNotExist(err) {
-		t.Error("project-scoped skill must not land in the global dir")
-	}
-}
-
-// TestSkillSaveTool_ProjectScopeRefusedWhenSameDir: when the project dir
-// resolves to the global dir (odek run from $HOME), scope=project is an
-// error, not a silent global save.
-func TestSkillSaveTool_ProjectScopeRefusedWhenSameDir(t *testing.T) {
-	userDir := t.TempDir()
-	sm := NewSkillManager(userDir, userDir)
-	tool := &SkillSaveTool{Manager: sm}
-
-	body := strings.Repeat("## Overview\nx\n## Common Pitfalls\n- y\n", 8)
-	jsonBody := strings.ReplaceAll(body, "\n", "\\n")
-	jsonStr := `{"name":"x","description":"d","body":"` + jsonBody + `","scope":"project"}`
-	if _, err := tool.Call(jsonStr); err == nil {
-		t.Error("expected refusal when project dir resolves to global dir")
-	}
-}
-
-// TestSkillSaveTool_InvalidScope covers the enum validation.
-func TestSkillSaveTool_InvalidScope(t *testing.T) {
-	sm := NewSkillManager(t.TempDir(), "")
-	tool := &SkillSaveTool{Manager: sm}
-	body := strings.Repeat("## Overview\nx\n## Common Pitfalls\n- y\n", 8)
-	jsonBody := strings.ReplaceAll(body, "\n", "\\n")
-	if _, err := tool.Call(`{"name":"x","description":"d","body":"` + jsonBody + `","scope":"mars"}`); err == nil {
-		t.Error("expected error for invalid scope")
-	}
-}
-
-func TestSkillSaveTool_SetsProvenance(t *testing.T) {
-	dir := t.TempDir()
-	sm := NewSkillManager(dir, "")
-	tool := &SkillSaveTool{Manager: sm}
-
-	body := strings.ReplaceAll(`## Overview
-This is a test skill for provenance.
-
-## Step-by-Step
-1. Do one thing.
-
-## Common Pitfalls
-- None
-
-## Verification
-- Check provenance.
-This part adds length so the body exceeds the 300 character body length requirement for skill_save. More content here to ensure we pass validation. And more.`, "\n", "\\n")
-	args := fmt.Sprintf(`{"name": "prov-test", "description": "Provenance test", "body": "%s"}`, body)
-	if _, err := tool.Call(args); err != nil {
-		t.Fatalf("save failed: %v", err)
-	}
-
-	sm.Reload()
-	for _, s := range sm.Result.Lazy {
-		if s.Name == "prov-test" {
-			if !s.Provenance.Untrusted {
-				t.Error("expected saved skill to be marked Untrusted")
-			}
-			if !s.Provenance.NeedsReview {
-				t.Error("expected saved skill to require review")
-			}
-			if !contains(s.Source.Path, "prov-test") {
-				t.Errorf("expected source path to contain skill name: %s", s.Source.Path)
-			}
-			return
-		}
-	}
-	t.Error("saved skill not found after reload")
-}
-
-func TestSkillPatchTool_RejectsFrontmatterEdit(t *testing.T) {
-	dir := t.TempDir()
-	skillDir := filepath.Join(dir, "frontmatter-skill")
-	os.MkdirAll(skillDir, 0755)
-	content := "---\nname: frontmatter-skill\nodek:\n  auto_load: false\n---\n\n## Overview\nBody\n## Common Pitfalls\n- None"
-	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0644)
-
-	sm := NewSkillManager(dir, "")
-	tool := &SkillPatchTool{Manager: sm}
-
-	// Try to flip auto_load by matching frontmatter text.
-	_, err := tool.Call(`{"name": "frontmatter-skill", "old_text": "auto_load: false", "new_text": "auto_load: true"}`)
-	if err == nil {
-		t.Fatal("expected error for frontmatter patch")
-	}
-	if !strings.Contains(err.Error(), "frontmatter") {
-		t.Errorf("expected frontmatter error, got: %v", err)
-	}
-}
-
-func TestSkillPatchTool_PreservesProvenance(t *testing.T) {
-	dir := t.TempDir()
-	skillDir := filepath.Join(dir, "patch-provenance")
-	os.MkdirAll(skillDir, 0755)
-	content := "---\nname: patch-provenance\nodek:\n  provenance:\n    untrusted: true\n    needs_review: true\n    sources: original\n---\n\n## Overview\nOld body\n## Common Pitfalls\n- None"
-	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0644)
-
-	sm := NewSkillManager(dir, "")
-	tool := &SkillPatchTool{Manager: sm}
-
-	result, err := tool.Call(`{"name": "patch-provenance", "old_text": "Old body", "new_text": "New body"}`)
-	if err != nil {
-		t.Fatalf("patch failed: %v", err)
-	}
-	if !strings.Contains(result, "Patched") {
-		t.Errorf("expected patched message: %s", result)
-	}
-
-	sm.Reload()
-	for _, s := range sm.Result.Lazy {
-		if s.Name == "patch-provenance" {
-			if !s.Provenance.Untrusted {
-				t.Error("expected patched skill to remain Untrusted")
-			}
-			if !s.Provenance.NeedsReview {
-				t.Error("expected patched skill to remain NeedsReview")
-			}
-			if !strings.Contains(s.Body, "New body") {
-				t.Errorf("expected body to contain new text: %s", s.Body)
-			}
-			return
-		}
-	}
-	t.Error("patched skill not found after reload")
-}
-
-func TestSkillSaveTool_ShortBody(t *testing.T) {
-	dir := t.TempDir()
-	sm := NewSkillManager(dir, "")
-	tool := &SkillSaveTool{Manager: sm}
-
-	_, err := tool.Call(`{
-		"name": "short",
-		"description": "Too short",
-		"body": "short"
-	}`)
-	if err == nil {
-		t.Error("expected error for short body")
-	}
-}
-
-func TestSkillPatchTool(t *testing.T) {
-	dir := t.TempDir()
-	writeTestSkill(t, dir, "test-skill", "## Overview\n\nOld content\n\n## Common Pitfalls\n\n- None")
-	sm := NewSkillManager(dir, "")
-	tool := &SkillPatchTool{Manager: sm}
-
-	result, err := tool.Call(`{"name": "test-skill", "old_text": "Old content", "new_text": "New content"}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !contains(result, "Patched") {
-		t.Errorf("expected success message: %s", result)
-	}
-
-	// Verify by loading
-	load := &SkillLoadTool{Manager: sm}
-	loaded, _ := load.Call(`{"name": "test-skill"}`)
-	if !contains(loaded, "New content") {
-		t.Errorf("patched content not reflected: %s", loaded)
-	}
-}
-
-func TestSkillDeleteTool(t *testing.T) {
-	dir := t.TempDir()
-	writeTestSkill(t, dir, "test-skill", "## Overview\n\nContent")
-	sm := NewSkillManager(dir, "")
-	tool := &SkillDeleteTool{Manager: sm}
-
-	result, err := tool.Call(`{"name": "test-skill"}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !contains(result, "Deleted") {
-		t.Errorf("expected deletion message: %s", result)
-	}
-
-	// Verify it's gone
-	sm.Reload()
-	if len(sm.Result.Lazy)+len(sm.Result.AutoLoad) != 0 {
-		t.Error("skill should be gone after deletion")
-	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && containsStr(s, substr)
-}
-
-func containsStr(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
 
 func TestRecordUsage_UpdatesLastUsedAndUsageCount(t *testing.T) {
@@ -666,84 +354,6 @@ func TestRecordUsage_FiresNotifierEvent(t *testing.T) {
 	}
 }
 
-func TestSkillDelete_FiresNotifierEvent(t *testing.T) {
-	dir := t.TempDir()
-	writeTestSkill(t, dir, "to-delete", "## Overview\nTest\n## Common Pitfalls\n- None\n## Verification\n- Check")
-
-	sm := NewSkillManager(dir, "")
-
-	var events []SkillEvent
-	cb := &callbackNotifier{fn: func(e SkillEvent) { events = append(events, e) }}
-	sm.SetNotifier(cb)
-
-	tool := &SkillDeleteTool{Manager: sm}
-	result, err := tool.Call(`{"name": "to-delete"}`)
-	if err != nil {
-		t.Fatalf("delete failed: %v", err)
-	}
-	if !strings.Contains(result, "Deleted") {
-		t.Errorf("unexpected result: %q", result)
-	}
-
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	if events[0].Type != "deleted" {
-		t.Errorf("expected type 'deleted', got %q", events[0].Type)
-	}
-	if events[0].SkillName != "to-delete" {
-		t.Errorf("expected skill name 'to-delete', got %q", events[0].SkillName)
-	}
-}
-
-func TestSkillSave_FiresNotifierEvent(t *testing.T) {
-	dir := t.TempDir()
-
-	sm := NewSkillManager(dir, "")
-
-	var events []SkillEvent
-	cb := &callbackNotifier{fn: func(e SkillEvent) { events = append(events, e) }}
-	sm.SetNotifier(cb)
-
-	tool := &SkillSaveTool{Manager: sm}
-	// Build a valid JSON body — use fmt.Sprintf with proper escaping
-	body := strings.ReplaceAll(`## Overview
-This is a test skill for notifier validation.
-
-## Step-by-Step
-
-1. Run echo hello
-2. Verify output matches
-
-## Common Pitfalls
-
-- None — this is a test skill only
-
-## Verification
-
-- Check that the output matches the expected result string exactly.
-- Run the command again and confirm idempotent behavior.
-- This extra text is just to reach the minimum 300 character body length requirement for skill_save.`, "\n", "\\n")
-	args := fmt.Sprintf(`{"name": "test-save", "description": "A test skill for notifier", "body": "%s"}`, body)
-	result, err := tool.Call(args)
-	if err != nil {
-		t.Fatalf("save failed: %v", err)
-	}
-	if !strings.Contains(result, "Saved") {
-		t.Errorf("unexpected result: %q", result)
-	}
-
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	if events[0].Type != "saved" {
-		t.Errorf("expected type 'saved', got %q", events[0].Type)
-	}
-	if events[0].SkillName != "test-save" {
-		t.Errorf("expected skill name 'test-save', got %q", events[0].SkillName)
-	}
-}
-
 func TestSetNotifier_Nil(t *testing.T) {
 	dir := t.TempDir()
 	sm := NewSkillManager(dir, "")
@@ -776,30 +386,17 @@ func TestSetNotifier_MultiNotifier(t *testing.T) {
 // TestRED_SkillPatchRedactsSecrets pins a redaction gap: skill_patch wrote
 // the patched body with os.WriteFile directly, bypassing the internal/redact
 // pass that every other SKILL.md write path (WriteSkill) applies.
-func TestRED_SkillPatchRedactsSecrets(t *testing.T) {
-	dir := t.TempDir()
-	skillDir := filepath.Join(dir, "patch-secrets")
-	os.MkdirAll(skillDir, 0755)
-	content := "---\nname: patch-secrets\nodek:\n  auto_load: false\n---\n\n## Overview\nDeploy notes\n## Common Pitfalls\n- None"
-	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0644)
 
-	sm := NewSkillManager(dir, "")
-	tool := &SkillPatchTool{Manager: sm}
+// contains is a dependency-free substring check for assertions.
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && containsStr(s, substr)
+}
 
-	secret := "sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWX"
-	_, err := tool.Call(fmt.Sprintf(`{"name": "patch-secrets", "old_text": "Deploy notes", "new_text": %q}`, "key: "+secret))
-	if err != nil {
-		t.Fatalf("patch failed: %v", err)
+func containsStr(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
 	}
-
-	disk, rerr := os.ReadFile(filepath.Join(skillDir, "SKILL.md"))
-	if rerr != nil {
-		t.Fatal(rerr)
-	}
-	if strings.Contains(string(disk), secret) {
-		t.Error("skill_patch left the secret unredacted on disk")
-	}
-	if !strings.Contains(string(disk), "[REDACTED]") {
-		t.Error("skill_patch did not replace the secret with [REDACTED]")
-	}
+	return false
 }

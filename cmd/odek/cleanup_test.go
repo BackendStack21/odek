@@ -63,24 +63,6 @@ func seedCleanupHome(t *testing.T) (home, odekHome string) {
 	writeFile("plans/chat1/old-plan.md", old)
 	writeFile("plans/chat1/new-plan.md", time.Now())
 
-	// Skill skips: one stale, one fresh.
-	skillsDir := filepath.Join(odekHome, "skills")
-	if err := os.MkdirAll(skillsDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	skips := map[string]any{
-		"skipped": map[string]any{
-			"old-skill": map[string]any{"skipped_at": old.Format(time.RFC3339), "times_skipped": 3},
-			"new-skill": map[string]any{"skipped_at": time.Now().Format(time.RFC3339), "times_skipped": 1},
-		},
-	}
-	data, err := json.Marshal(skips)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(skillsDir, ".skipped.json"), data, 0600); err != nil {
-		t.Fatal(err)
-	}
 	return home, odekHome
 }
 
@@ -137,12 +119,11 @@ func TestCleanupCmd_DryRun(t *testing.T) {
 func TestCleanupDryRun_Candidates(t *testing.T) {
 	_, odekHome := seedCleanupHome(t)
 
-	// Default-shaped config: 30d sessions, 14d audit, 30d plans, 90d skips.
+	// Default-shaped config: 30d sessions, 14d audit, 30d plans.
 	cfg := maintenanceConfig(config.ResolvedConfig{Maintenance: maintenance.Config{
-		SessionsMaxAgeDays:   30,
-		AuditMaxAgeDays:      14,
-		PlansMaxAgeDays:      30,
-		SkillsSkipMaxAgeDays: 90,
+		SessionsMaxAgeDays: 30,
+		AuditMaxAgeDays:    14,
+		PlansMaxAgeDays:    30,
 	}})
 	c := collectCleanupCandidates(odekHome, cfg)
 	if len(c.sessions) != 1 {
@@ -154,9 +135,6 @@ func TestCleanupDryRun_Candidates(t *testing.T) {
 	if len(c.plans) != 1 {
 		t.Errorf("plans candidates = %d, want 1", len(c.plans))
 	}
-	if c.skips != 1 {
-		t.Errorf("skip candidates = %d, want 1", c.skips)
-	}
 }
 
 // TestMaintenanceConfigMapping pins the resolved-config → maintenance.Config
@@ -164,18 +142,16 @@ func TestCleanupDryRun_Candidates(t *testing.T) {
 // here first.
 func TestMaintenanceConfigMapping(t *testing.T) {
 	resolved := config.ResolvedConfig{Maintenance: maintenance.Config{
-		Enabled:              true,
-		IntervalMinutes:      60,
-		SessionsMaxAgeDays:   30,
-		AuditMaxAgeDays:      14,
-		LogMaxMB:             50,
-		PlansMaxAgeDays:      30,
-		SkillsSkipMaxAgeDays: 90,
+		Enabled:            true,
+		IntervalMinutes:    60,
+		SessionsMaxAgeDays: 30,
+		AuditMaxAgeDays:    14,
+		LogMaxMB:           50,
+		PlansMaxAgeDays:    30,
 	}}
 	cfg := maintenanceConfig(resolved)
 	if !cfg.Enabled || cfg.IntervalMinutes != 60 || cfg.SessionsMaxAgeDays != 30 ||
-		cfg.AuditMaxAgeDays != 14 || cfg.LogMaxMB != 50 || cfg.PlansMaxAgeDays != 30 ||
-		cfg.SkillsSkipMaxAgeDays != 90 {
+		cfg.AuditMaxAgeDays != 14 || cfg.LogMaxMB != 50 || cfg.PlansMaxAgeDays != 30 {
 		t.Errorf("maintenanceConfig mapping wrong: %+v", cfg)
 	}
 }

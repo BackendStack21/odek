@@ -63,7 +63,6 @@ func TestPrintCleanupReport(t *testing.T) {
 		SessionsRemoved: 2,
 		AuditRemoved:    1,
 		PlansRemoved:    3,
-		SkipsRemoved:    1,
 		MediaFreedBytes: 2048,
 		LogsRotated:     []string{filepath.Join("/tmp", "telegram.log")},
 	})
@@ -210,31 +209,4 @@ func TestFilesOlderThan_InfoError(t *testing.T) {
 	if got := filesOlderThan(dir, time.Now(), false); len(got) != 0 {
 		t.Errorf("candidates = %v, want none (unreadable entries skipped)", got)
 	}
-}
-
-func TestStaleSkipEntries_Errors(t *testing.T) {
-	// Missing file → zero candidates.
-	if got := staleSkipEntries(filepath.Join(t.TempDir(), ".skipped.json"), time.Now()); got != 0 {
-		t.Errorf("staleSkipEntries(missing) = %d, want 0", got)
-	}
-	// Malformed JSON → zero candidates.
-	dir := t.TempDir()
-	bad := filepath.Join(dir, ".skipped.json")
-	if err := os.WriteFile(bad, []byte("{not json"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if got := staleSkipEntries(bad, time.Now()); got != 0 {
-		t.Errorf("staleSkipEntries(malformed) = %d, want 0", got)
-	}
-}
-
-func TestPrintCleanupDryRun(t *testing.T) {
-	// Empty home → quiet "nothing would be removed" line.
-	printCleanupDryRun(t.TempDir(), maintenance.DefaultConfig())
-
-	// Oversized log → candidate summary incl. the rotated-log listing.
-	home := t.TempDir()
-	big := make([]byte, 2<<20)
-	writeCleanupFile(t, filepath.Join(home, "telegram.log"), big, time.Hour)
-	printCleanupDryRun(home, maintenance.Config{LogMaxMB: 1})
 }

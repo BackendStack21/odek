@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -319,7 +318,6 @@ type runFlags struct {
 	Compaction     *bool   // nil = not set; true = enable rolling compaction
 	Planning       *bool   // nil = not set; false disables the plan tool
 	Session        *bool   // nil = not set; true = save session after run
-	Learn          *bool   // nil = not set; true = enable skills learning mode
 	Task           string
 
 	// ToolsEnabled and ToolsDisabled control which tools are exposed to the LLM.
@@ -478,12 +476,6 @@ func parseRunFlags(args []string) (runFlags, error) {
 			i++
 		case "--no-sandbox":
 			f.Sandbox = boolPtr(false)
-			i++
-		case "--learn":
-			f.Learn = boolPtr(true)
-			i++
-		case "--no-learn":
-			f.Learn = boolPtr(false)
 			i++
 		case "--tool":
 			if i+1 >= len(args) {
@@ -830,14 +822,6 @@ done:
 				f.NoAgents = boolPtr(true)
 				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
 				j--
-			case "--no-learn":
-				f.Learn = boolPtr(false)
-				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-				j--
-			case "--learn":
-				f.Learn = boolPtr(true)
-				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-				j--
 			case "--prompt-caching":
 				f.PromptCaching = boolPtr(true)
 				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
@@ -1091,7 +1075,7 @@ func printUsage() {
   odek serve [--addr :8080] [--open]
   odek subagent --goal <string> [--context <string>] [flags]
   odek init [--global | -g | --local | -l] [--force | -f]
-  odek skill <list|view|save|delete|promote|import|curate>
+  odek skill <list|view|delete|promote|import>
   odek mcp [--sandbox]
   odek telegram
   odek schedule <list|add|rm|enable|disable|run|next|daemon>
@@ -1115,7 +1099,7 @@ Commands:
                        Spawned by delegate_tasks tool for task decomposition.
                        Accepts --goal, --context, --task, --timeout, --max-iter.
   session             Manage sessions: list, show, delete, trim, cleanup
-  skill               Manage skills: list, view, save, delete, import, curate
+  skill               Manage skills: list, view, delete, promote, import
   mcp                 Start MCP server (Model Context Protocol) over stdio
                         Exposes all built-in tools for Claude Code, Cursor, etc.
   telegram            Start Telegram bot (long-polling mode)
@@ -1173,8 +1157,6 @@ Run flags:
   --max-cost-usd <n>    Hard execution budget: max estimated cost in USD
                         (needs limits.*_cost_per_million_usd prices in
                         ~/.odek/config.json; budget exhaustion exits with code 4)
-  --learn              Enable skill learning mode — on by default, no flag needed
-  --no-learn           Disable skill learning mode (overrides config/default)
   --tool <name>        Enable a tool for the LLM (repeatable)
   --no-tool <name>     Disable a tool for the LLM (repeatable)
   --system <prompt>    System prompt override
@@ -1186,8 +1168,6 @@ Skill commands:
   odek skill promote <name> [--force] Promote a tainted skill after review
   odek skill import <uri> [flags]    Import a skill from file:// or https://
                                      Flags: --basic (skip LLM), --yes (auto-approve)
-  odek skill curate                  Analyze skills for quality, staleness, overlap
-                                     Flags: --apply (apply changes), --interactive (review one-by-one)
 
 Sandbox flags:
   --sandbox            Run in isolated Docker container
@@ -1313,28 +1293,12 @@ const globalConfigTemplate = `{
   "skills": {
     "max_auto_load": 3,
     "max_lazy_slots": 5,
-    "learn": true,
-    "llm_learn": true,
-    "llm_curate": true,
     "verbose": false,
     "dirs": [],
-    "auto_save": {
-      "enabled": true,
-      "require_llm": true,
-      "max_per_run": 3,
-      "min_occurrences": 2
-    },
     "import": {
       "max_size_bytes": 1048576,
       "timeout_seconds": 5,
       "require_https": false
-    },
-    "curation": {
-      "staleness_days": 90,
-      "auto_prune": false,
-      "auto_curate": true,
-      "skip_threshold": 3,
-      "skip_reset_days": 30
     }
   },
   "memory": {
@@ -1428,9 +1392,6 @@ const localConfigTemplate = `{
   "skills": {
     "max_auto_load": 3,
     "max_lazy_slots": 5,
-    "learn": true,
-    "llm_learn": true,
-    "llm_curate": true,
     "verbose": false
   },
   "subagent": {
@@ -1594,7 +1555,6 @@ func run(args []string) error {
 		Stream:        f.Stream,
 		Compaction:    f.Compaction,
 		Planning:      f.Planning,
-		Learn:         f.Learn,
 		System:        f.System,
 		Task:          f.Task,
 		ToolsEnabled:  f.ToolsEnabled,
@@ -1667,14 +1627,11 @@ func run(args []string) error {
 	}
 
 	// Skills setup
-	var sm *skills.SkillManager
-	if resolved.Skills.Learn {
-		sm = skills.NewSkillManagerWithEmbedding(
-			expandHome("~/.odek/skills"),
-			"./.odek/skills",
-			resolved.Skills.Embedding,
-		)
-	}
+	sm := skills.NewSkillManagerWithEmbedding(
+		expandHome("~/.odek/skills"),
+		"./.odek/skills",
+		resolved.Skills.Embedding,
+	)
 
 	// Sandbox setup
 	var sandboxCleanup func() error
@@ -1725,20 +1682,15 @@ func run(args []string) error {
 
 	// Wire skill verbosity to the renderer so skill lifecycle
 	// notifications (save, suggest, delete) respect the config.
-	if resolved.Skills.Learn {
-		rend.WithSkillVerbose(resolved.Skills.Verbose)
-	}
+	rend.WithSkillVerbose(resolved.Skills.Verbose)
 
 	// Surface memory lifecycle + agent-signal notifications in verbose mode so
 	// fact/episode activity and silent recoveries (context trim, tool recovery)
 	// are observable without flooding the default terminal output.
 	rend.WithMemoryVerbose(resolved.InteractionMode == "verbose")
 
-	// Resolve skills config pointer (only when learn mode is enabled)
-	var skillsCfg *skills.SkillsConfig
-	if resolved.Skills.Learn {
-		skillsCfg = &resolved.Skills
-	}
+	// Resolve skills config pointer
+	skillsCfg := &resolved.Skills
 
 	// Build the shared prompt-injection guard. Provider "local" is zero-dependency
 	// and works without any sidecar; "piguard" requires a reachable HTTP/Unix
@@ -2011,17 +1963,6 @@ func run(args []string) error {
 
 	if runErr != nil {
 		return runErr
-	}
-
-	// ── Learn loop: run self-improvement heuristics ──
-	// Run asynchronously so the process can exit immediately after
-	// the response is delivered. Skill learning is best-effort
-	// post-processing that should not block termination.
-	if resolved.Skills.Learn && sm != nil {
-		go func() {
-			skillsLLM := llm.New(resolved.BaseURL, resolved.APIKey, resolved.Model, "", 0, 30*time.Second)
-			runLearnLoop(allMessages, sm, skillsLLM, resolved.Skills, injectionGuard, resolved.Guard)
-		}()
 	}
 
 	// ── Session end — extract episode if enough turns ──
@@ -2343,13 +2284,10 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 	if sm != nil {
 		tools = append(tools,
 			// skill_load returns skill bodies, which are externally-sourced
-			// content (project dirs, prior auto-saves). Wrap the output as
+			// content (project dirs, imported skills). Wrap the output as
 			// untrusted so a poisoned skill cannot pose as instructions.
 			&untrustedToolWrapper{inner: &skills.SkillLoadTool{Manager: sm}, source: "skill_load"},
 			&skills.SkillListTool{Manager: sm},
-			&skills.SkillSaveTool{Manager: sm},
-			&skills.SkillPatchTool{Manager: sm},
-			&skills.SkillDeleteTool{Manager: sm},
 		)
 	}
 
@@ -2563,145 +2501,11 @@ func getVCSTime() string {
 
 // ── Skill Commands ─────────────────────────────────────────────────────
 
-// ── Skill Commands ─────────────────────────────────────────────────────
+// skillCmd handles `odek skill <list|view|delete|promote|import>`.
 
-// runLearnLoop runs self-improvement heuristics on agent output and
-// offers to save detected patterns as skills.
-// learnAndSuggest runs skill heuristics on session messages, applies LLM
-// enhancement, fires "suggested" events via the SkillManager's notifier,
-// and returns the enhanced suggestions for interactive handling by callers.
-// This is the non-interactive core shared by CLI, WebUI, and Telegram.
-// When suppressSuggested is true, "suggested" notifier events are skipped
-// (caller handles presentation, e.g. when auto-save is enabled).
-// llmToSkillMessages adapts the engine's llm.Message slice into the
-// skills package's own LlmMessage shape. The conversion lives here (not
-// in internal/skills) because we don't want the skills package to depend
-// on internal/llm — it must stay usable in isolation.
-func llmToSkillMessages(messages []llm.Message) []skills.LlmMessage {
-	out := make([]skills.LlmMessage, 0, len(messages))
-	for _, m := range messages {
-		converted := skills.LlmMessage{
-			Role:       m.Role,
-			Content:    m.Content,
-			Name:       m.Name,
-			ToolCallID: m.ToolCallID,
-		}
-		for _, tc := range m.ToolCalls {
-			next := skills.LlmToolCall{ID: tc.ID}
-			next.Function.Name = tc.Function.Name
-			next.Function.Arguments = tc.Function.Arguments
-			converted.ToolCalls = append(converted.ToolCalls, next)
-		}
-		out = append(out, converted)
-	}
-	return out
-}
-
-// learnAndSuggest converts engine messages and runs the skill-suggestion
-// pipeline. The pipeline itself lives in internal/skills.AnalyzeMessages.
-func learnAndSuggest(messages []llm.Message, sm *skills.SkillManager, llmClient skills.LLMClient, llmLearn, suppressSuggested bool, g guard.Guard, guardCfg guard.Config) []skills.SkillSuggestion {
-	skillMsgs := llmToSkillMessages(messages)
-	userMessages := skills.ExtractUserMessages(skillMsgs)
-	return skills.AnalyzeMessages(skillMsgs, userMessages, sm, llmClient, llmLearn, suppressSuggested)
-}
-
-// runLearnLoop orchestrates skill learning at the end of a session:
-// generate suggestions, filter against the skip list, then either run
-// the non-interactive auto-save pipeline or fall back to an interactive
-// prompt. All the non-interactive work lives in internal/skills; only
-// the TTY prompt stays here.
-func runLearnLoop(messages []llm.Message, sm *skills.SkillManager, llmClient skills.LLMClient, skillsCfg skills.SkillsConfig, g guard.Guard, guardCfg guard.Config) {
-	suggestions := learnAndSuggest(messages, sm, llmClient, skillsCfg.LLMLearn, true, g, guardCfg)
-	if len(suggestions) == 0 {
-		return
-	}
-
-	userDir := expandHome("~/.odek/skills")
-	os.MkdirAll(userDir, 0755)
-
-	filtered, skipped := skills.FilterSkipped(suggestions, userDir,
-		skillsCfg.Curation.SkipThreshold, skillsCfg.Curation.SkipResetDays)
-	if skipped > 0 && skillsCfg.Verbose {
-		fmt.Fprintf(os.Stderr, "   (%d suggestion(s) previously skipped, suppressed)\n", skipped)
-	}
-	if len(filtered) == 0 {
-		return
-	}
-
-	var verbose io.Writer
-	if skillsCfg.Verbose {
-		verbose = os.Stderr
-	}
-	if skills.RunAutoSaveLoop(filtered, userDir, skills.ProjectSkillsDir(), sm, llmClient, skillsCfg, g, guardCfg, verbose) {
-		return
-	}
-
-	// Interactive fallback — silent unless verbose so non-TTY runs don't
-	// block on Scanf.
-	if !skillsCfg.Verbose {
-		return
-	}
-	interactiveSavePrompt(filtered, userDir, sm, g, guardCfg)
-}
-
-// interactiveSavePrompt walks the user through each suggestion, reading
-// y/n/p/s from stdin. Lives in cmd/odek because it couples to the TTY.
-func interactiveSavePrompt(filtered []skills.SkillSuggestion, userDir string, sm *skills.SkillManager, g guard.Guard, guardCfg guard.Config) {
-	fmt.Fprintf(os.Stderr, "\n🔍 Learning: detected %d skill pattern(s)\n", len(filtered))
-	for _, s := range filtered {
-		fmt.Fprint(os.Stderr, skills.FormatSuggestionWithPreview(s, true, 400))
-		if s.IsTainted() {
-			fmt.Fprintf(os.Stderr, "   ⚠ This suggestion is tainted (sources: %s). It will be saved but cannot be auto-loaded until promoted with --force.\n", strings.Join(s.Provenance.Sources, ", "))
-		}
-		fmt.Fprintf(os.Stderr, "   Save as skill? [Y/n/p=save to project/s=skip always]: ")
-
-		var response string
-		fmt.Scanf("%s", &response)
-		response = strings.ToLower(strings.TrimSpace(response))
-
-		switch response {
-		case "", "y", "yes":
-			if err := skills.SaveSuggestionWithGuard(context.Background(), userDir, s, g, guardCfg); err != nil {
-				fmt.Fprintf(os.Stderr, "   ✗ Error saving skill: %v\n", err)
-			} else {
-				fmt.Fprintf(os.Stderr, "   ✓ Saved skill %q\n", s.Name)
-				sm.MarkDirty()
-				sm.Reload()
-			}
-		case "p", "project":
-			// Project-scoped save: keeps project-specific procedures out
-			// of the global dir. Refused when the project dir resolves to
-			// the global one (odek run from $HOME).
-			projDir := skills.ProjectSkillsDir()
-			pa, perr := filepath.Abs(projDir)
-			ua, uerr := filepath.Abs(userDir)
-			if perr != nil || uerr != nil || pa == ua {
-				fmt.Fprintf(os.Stderr, "   ✗ Cannot save to project: no distinct project skills dir from here\n")
-				break
-			}
-			if err := skills.SaveSuggestionWithGuard(context.Background(), projDir, s, g, guardCfg); err != nil {
-				fmt.Fprintf(os.Stderr, "   ✗ Error saving skill: %v\n", err)
-			} else {
-				fmt.Fprintf(os.Stderr, "   ✓ Saved project skill %q to %s (promote with `odek skill promote` to use)\n", s.Name, projDir)
-				sm.MarkDirty()
-				sm.Reload()
-			}
-		case "s", "skip":
-			sl := skills.LoadSkipList(userDir)
-			sl.RecordSkip(userDir, s.Name, s.Heuristic)
-			fmt.Fprintf(os.Stderr, "   Skipped permanently. Use `odek skill reset-skips` to re-enable.\n")
-		default:
-			sl := skills.LoadSkipList(userDir)
-			sl.RecordSkip(userDir, s.Name, s.Heuristic)
-			fmt.Fprintf(os.Stderr, "   Skipped.\n")
-		}
-	}
-}
-
-// skillCmd handles `odek skill <list|view|save|delete|promote|import|curate|reset-skips>`.
 func skillCmd(args []string) error {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "Usage: odek skill <list|view|save|delete|promote|import|curate|reset-skips> [args]\n")
+		fmt.Fprintf(os.Stderr, "Usage: odek skill <list|view|delete|promote|import> [args]\n")
 		return nil
 	}
 
@@ -2743,13 +2547,10 @@ func skillCmd(args []string) error {
 			return fmt.Errorf("usage: odek skill delete <name>")
 		}
 		sm := skills.NewSkillManager(userDir, "./.odek/skills")
-		tool := &skills.SkillDeleteTool{}
-		tool.Manager = sm
-		result, err := tool.Call(jsonMarshalName(subArgs[0]))
-		if err != nil {
+		if err := sm.DeleteSkill(subArgs[0]); err != nil {
 			return err
 		}
-		fmt.Println(result)
+		fmt.Printf("✓ Deleted skill %q\n", subArgs[0])
 		return nil
 
 	case "promote":
@@ -2853,50 +2654,8 @@ func skillCmd(args []string) error {
 		fmt.Printf("  Location: %s\n", result.Path)
 		return nil
 
-	case "curate":
-		// Parse --apply and --interactive flags
-		apply := false
-		interactive := false
-		var remainingArgs []string
-		for _, arg := range subArgs {
-			switch arg {
-			case "--apply":
-				apply = true
-			case "--interactive":
-				interactive = true
-			default:
-				remainingArgs = append(remainingArgs, arg)
-			}
-		}
-		_ = remainingArgs // future use: filter by skill name
-		sm := skills.NewSkillManager(userDir, "./.odek/skills")
-		allSkills := append(sm.Result.AutoLoad, sm.Result.Lazy...)
-		report := skills.CurateSkills(allSkills, skills.CurateOptions{
-			StalenessDays: 90,
-			Apply:         apply,
-			Interactive:   interactive,
-		})
-		fmt.Print(skills.FormatCurationReport(report))
-		return nil
-
-	case "reset-skips":
-		sl := skills.LoadSkipList(userDir)
-		if len(subArgs) == 0 {
-			if err := sl.ClearAllSkips(userDir); err != nil {
-				return fmt.Errorf("reset all skips: %w", err)
-			}
-			fmt.Println("✓ Cleared all skipped suggestions.")
-		} else {
-			name := subArgs[0]
-			if err := sl.ClearSkip(userDir, name); err != nil {
-				return fmt.Errorf("reset skip %q: %w", name, err)
-			}
-			fmt.Printf("✓ Cleared skip for %q.\n", name)
-		}
-		return nil
-
 	default:
-		return fmt.Errorf("unknown skill command %q (use list, view, delete, import, curate, reset-skips)", sub)
+		return fmt.Errorf("unknown skill command %q (use list, view, delete, import, promote)", sub)
 	}
 }
 
@@ -3044,14 +2803,11 @@ func continueCmd(args []string) error {
 	}
 
 	// Build tools
-	var sm *skills.SkillManager
-	if resolved.Skills.Learn {
-		sm = skills.NewSkillManagerWithEmbedding(
-			expandHome("~/.odek/skills"),
-			"./.odek/skills",
-			resolved.Skills.Embedding,
-		)
-	}
+	sm := skills.NewSkillManagerWithEmbedding(
+		expandHome("~/.odek/skills"),
+		"./.odek/skills",
+		resolved.Skills.Embedding,
+	)
 	tools := buildContinueTools(resolved, sm, store)
 
 	// MCP server tools
@@ -3097,10 +2853,7 @@ func continueCmd(args []string) error {
 	rend := render.New(os.Stderr, color).WithModel(modelLabel)
 
 	// Resolve skills config pointer (only when learn mode is enabled)
-	var skillsCfg *skills.SkillsConfig
-	if resolved.Skills.Learn {
-		skillsCfg = &resolved.Skills
-	}
+	skillsCfg := &resolved.Skills
 
 	injectionGuard, err := guard.New(&resolved.Guard)
 	if err != nil {

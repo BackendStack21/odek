@@ -6,7 +6,6 @@
 |---------|-------------|
 | `odek run [flags] <task>` | Execute a task with the agent loop (single-shot by default) |
 | `odek run --session [flags] <task>` | Execute and save conversation as a multi-turn session |
-| `odek run [--no-learn] [flags] <task>` | Execute with skill learning (on by default, use --no-learn to disable) |
 | `odek continue [--id <id>] [--external-ref <ref>] <task>` | Continue the most recent session (or by `--id`). Sessions persist per completed step: Ctrl-C/SIGTERM resumes from the last step; SIGKILL may lose the in-flight step |
 | `odek repl [flags]` | Interactive REPL mode (persistent multi-turn session). Flags: `--id`, `--model`, `--thinking`, `--thinking-budget`, `--sandbox`, `--sandbox-*`, `--prompt-caching`, `--stream`, `--compaction`, `--planning` / `--no-planning`, `--interaction-mode`. Unknown flags are silently ignored — in particular `--tool` / `--no-tool` are **not** supported in repl (use `odek run`, `serve`, or the `tools` config instead). |
 | `odek session list` | List sessions |
@@ -14,16 +13,12 @@
 | `odek session delete <id>` | Delete a session |
 | `odek session trim <id> <n>` | Keep only the `n` most recent messages |
 | `odek session cleanup <days>` | Delete sessions older than N days (see also: automatic storage maintenance below) |
-| `odek cleanup [--dry-run]` | One-shot storage sweep of `~/.odek`: expired sessions, audit records, plans, skill skip entries, and oversized-log rotation, per the `[maintenance]` config. `--dry-run` previews without deleting. The same sweep runs automatically in the Telegram bot, `odek serve`, and `odek schedule daemon`. See [MAINTENANCE.md](MAINTENANCE.md) |
+| `odek cleanup [--dry-run]` | One-shot storage sweep of `~/.odek`: expired sessions, audit records, plans, and oversized-log rotation, per the `[maintenance]` config. `--dry-run` previews without deleting. The same sweep runs automatically in the Telegram bot, `odek serve`, and `odek schedule daemon`. See [MAINTENANCE.md](MAINTENANCE.md) |
 | `odek skill list` | List all available skills |
 | `odek skill view <name>` | View a skill's full content |
 | `odek skill delete <name>` | Delete a skill |
-| `odek skill promote <name>` | Clear `NeedsReview` on a tainted auto-saved skill so it can auto-load |
+| `odek skill promote <name>` | Clear `NeedsReview` on a tainted skill so it can trigger-load |
 | `odek skill import <uri> [flags]` | Import a skill from file:// or https:// |
-|| `odek skill curate` | Analyze skills for quality, staleness, trigger overlap |
-|| `odek skill curate --apply` | Apply all curation suggestions (merge, delete, prune) |
-|| `odek skill curate --interactive` | Review each suggestion one-by-one |
-|| `odek skill reset-skips [name]` | Reset skip list (all or specific skill) |
 | `odek memory list` | List pending (pending-review) memory facts; aliases `ls`, `pending` |
 | `odek memory promote <session-id>` | Promote a session's pending facts to the durable fact files |
 | `odek memory extended <subcommand>` | Extended-memory atom management; see below |
@@ -82,8 +77,6 @@ Unknown flags are a **hard error** — they are never folded into the task text 
 | `--max-input-tokens <n>` | int | — | Hard execution budget: max cumulative input tokens |
 | `--max-output-tokens <n>` | int | — | Hard execution budget: max cumulative output tokens |
 | `--max-cost-usd <n>` | float | — | Hard execution budget: max estimated cost in USD (requires configured per-million prices — see [CONFIG.md → limits](CONFIG.md#execution-budgets-limits)). Budget exhaustion exits with code 4 |
-| `--learn` | bool | `true` | Enable skill learning mode (detects patterns, saves skills). On by default |
-| `--no-learn` | bool | `false` | Disable skill learning mode (overrides config/default) |
 | `--tool <name>` | string | — | Enable a specific tool for the LLM (repeatable). Highest-priority layer for the tool whitelist. |
 | `--no-tool <name>` | string | — | Disable a specific tool for the LLM (repeatable). Merges with lower-priority disabled lists. |
 | `--system <prompt>` | string | built-in | Override system prompt |
@@ -99,7 +92,7 @@ Unknown flags are a **hard error** — they are never folded into the task text 
 | `--guard-scan-memory` / `--guard-no-scan-memory` | bool | `true` | Guard legacy/Extended Memory surfaces |
 | `--guard-scan-system-prompt` / `--guard-no-scan-system-prompt` | bool | `true` | Guard system-prompt sources |
 | `--guard-scan-mcp` / `--guard-no-scan-mcp` | bool | `true` | Guard MCP tool descriptions |
-| `--guard-scan-skills` / `--guard-no-scan-skills` | bool | `false` | Guard skill bodies and suggestions |
+| `--guard-scan-skills` / `--guard-no-scan-skills` | bool | `false` | Guard skill bodies (load time and import) |
 | `--guard-scan-tool-outputs` / `--guard-no-scan-tool-outputs` | bool | `false` | Guard external tool outputs (warning-only) |
 | `--guard-scan-telegram` / `--guard-no-scan-telegram` | bool | `false` | Guard Telegram captions/transcripts |
 
@@ -272,7 +265,6 @@ with YAML frontmatter that define trigger keywords, quality metadata, and markdo
 1. Skills are stored in `~/.odek/skills/<name>/SKILL.md` (user-global) or `./.odek/skills/<name>/SKILL.md` (project)
 2. Skills with `auto_load: true` are injected into the system prompt on start
 3. Lazy skills are loaded on demand when the user's input matches their trigger keywords (topic × action)
-4. The `--learn` flag detects reusable patterns during a run and prompts to save as a draft skill
 
 ### Skill commands
 
@@ -286,7 +278,7 @@ odek skill view docker-build
 # Delete a skill
 odek skill delete docker-build
 
-# Promote a tainted auto-saved skill so it can auto-load.
+# Promote a tainted skill so it can trigger-load.
 # Skills derived from sessions that ingested untrusted content
 # (browser fetch, file outside CWD, MCP response, audio) are
 # saved with NeedsReview=true and pinned to the Lazy set.
@@ -301,19 +293,6 @@ odek skill import https://example.com/skills/deploy.md
 # Import with flags
 odek skill import https://example.com/skills/deploy.md --basic   # skip LLM risk assessment
 odek skill import https://example.com/skills/deploy.md --yes     # auto-approve (scripting)
-
-# Run curation (quality, staleness, overlap, dedup checks)
-odek skill curate
-
-# Apply all curation suggestions automatically
-odek skill curate --apply
-
-# Review curation suggestions one-by-one
-odek skill curate --interactive
-
-# Reset skip list (re-enable suppressed suggestions)
-odek skill reset-skips              # clear all
-odek skill reset-skips procedure-grep  # clear specific skill
 ```
 
 ### Skill file format
@@ -351,24 +330,6 @@ Procedure for building optimized Docker images.
 - `docker build` exits with code 0
 - `docker images` shows the new image
 ```
-
-### Curation
-
-The `odek skill curate` command runs four quality passes:
-
-- **Staleness** — flags skills unused for 90+ days (configurable via `skills.curation.staleness_days`)
-- **Trigger overlap** — detects skills with 2+ shared topic keywords that may need merging
-- **Quality audit** — checks for missing sections, short bodies, long descriptions
-- **Body dedup** — detects skills with identical body content by SHA256 hash
-
-**Auto-curation** runs after every session where skills are auto-saved (`skills.curation.auto_curate: true` by default):
-
-- **Merge** — overlapping draft-quality skills are automatically merged (union keywords, concatenated bodies)
-- **Skip deletion** — skills skipped ≥ `skip_threshold` times are auto-deleted
-- **Stale pruning** — if `auto_prune: true`, stale skills are deleted automatically
-
-Run `odek skill curate --apply` to manually trigger the full curation pipeline with merge execution.
-Use `odek skill reset-skips` to clear the skip list and re-enable suppressed suggestions.
 
 ## Sandbox flags
 
@@ -452,7 +413,7 @@ odek session cleanup 30
 # Wipe all sessions
 odek session cleanup 0
 
-# Sweep all expired storage (sessions, audit, plans, skips, log rotation)
+# Sweep all expired storage (sessions, audit, plans, log rotation)
 odek cleanup
 
 # Preview the sweep without deleting anything
@@ -479,7 +440,7 @@ odek repl --id 20260518-abc123
 # Custom system prompt
 odek run --system "You are a Go expert. Answer with code only." "Write HTTP server"
 
-# Run with skill learning (on by default — use --no-learn to disable)
+# Simple one-shot run
 odek run "Set up CI with GitHub Actions"
 
 # File attachments

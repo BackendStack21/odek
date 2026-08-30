@@ -45,7 +45,6 @@ func TestLoadConfig_MaintenanceGlobalFile(t *testing.T) {
 		AuditMaxAgeDays:      7,
 		LogMaxMB:             100,
 		PlansMaxAgeDays:      60,
-		SkillsSkipMaxAgeDays: 30,
 	}
 	if cfg.Maintenance != want {
 		t.Errorf("Maintenance = %+v, want %+v", cfg.Maintenance, want)
@@ -146,7 +145,6 @@ func TestLoadConfig_MaintenanceEnvVars(t *testing.T) {
 		AuditMaxAgeDays:      3,
 		LogMaxMB:             10,
 		PlansMaxAgeDays:      15,
-		SkillsSkipMaxAgeDays: 20,
 	}
 	if cfg.Maintenance != want {
 		t.Errorf("Maintenance = %+v, want %+v", cfg.Maintenance, want)

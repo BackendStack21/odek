@@ -38,13 +38,13 @@ odek is not a framework. It's a **runtime** — the smallest possible surface ar
 Every session can run in an isolated Docker container: no network, no host mounts beyond the working directory, zero capabilities, destroyed on exit. `odek serve` enables the sandbox **by default**; `odek run` keeps it opt-in but warns when running unsandboxed. `--ctx` files are auto-injected into the container at `/workspace/`. Full security model in [docs/SANDBOXING.md](docs/SANDBOXING.md).
 
 ### 🛡️ Prompt-Injection-Aware
-External content the agent ingests (`browser`, `read_file`, `shell`, `search_files`, `multi_grep`, `transcribe`, `vision`, `web_search`, `session_search`, MCP tools) is wrapped in per-call nonce'd `<untrusted_content>` boundaries so the model can distinguish data from instructions. Redirect hops are re-classified (`browser`/`http_batch`), MCP tool descriptions are scanned for injection at registration, and the MCP error channel is wrapped too. The danger classifier resists 8 known shell-evasion tricks (`$()`, backticks, `$IFS`, `command`/`exec`, `\rm`, basenamed absolute paths). Approvers engage friction mode after 3 same-class approvals in 60 s. Memory episodes from tainted sessions are stored but never auto-replayed. Skill auto-save tracks provenance, declines to persist untrusted suggestions by default, and pins them for explicit `odek skill promote --force`. `odek audit <session-id>` surfaces every ingest + per-turn divergence heuristic. Full threat model in [docs/SECURITY.md](docs/SECURITY.md).
+External content the agent ingests (`browser`, `read_file`, `shell`, `search_files`, `multi_grep`, `transcribe`, `vision`, `web_search`, `session_search`, MCP tools) is wrapped in per-call nonce'd `<untrusted_content>` boundaries so the model can distinguish data from instructions. Redirect hops are re-classified (`browser`/`http_batch`), MCP tool descriptions are scanned for injection at registration, and the MCP error channel is wrapped too. The danger classifier resists 8 known shell-evasion tricks (`$()`, backticks, `$IFS`, `command`/`exec`, `\rm`, basenamed absolute paths). Approvers engage friction mode after 3 same-class approvals in 60 s. Memory episodes from tainted sessions are stored but never auto-replayed. Imported and project skills track provenance — untrusted ones stay excluded from trigger matching until explicit `odek skill promote --force`. `odek audit <session-id>` surfaces every ingest + per-turn divergence heuristic. Full threat model in [docs/SECURITY.md](docs/SECURITY.md).
 
 ### 🧩 Sub-Agent Delegation
 Parallel OS-process sub-agents via `delegate_tasks`. True isolation — each sub-agent is a fresh `odek subagent` process with its own config, tools, and termination timeout. Up to 8 concurrent workers. Operator-defined **capability profiles** (top-level `profiles` config) override a sub-agent's permissions by name and fail closed on unknown names — a curated starter set of 21 task profiles ships in [`profiles.template.json`](profiles.template.json). See [docs/SUBAGENTS.md](docs/SUBAGENTS.md) and [docs/SECURITY.md](docs/SECURITY.md).
 
-### 🧠 Skill System (on by default)
-Skill-matched `SKILL.md` files load on-demand. Auto-learns from patterns every session — detects multi-step procedures, error recoveries, repeated actions, and user corrections. **LLM-enhanced**: each detected pattern is enriched with an LLM-generated name, description, trigger keywords, and structured body with overview, steps, pitfalls, and verification sections. Use `--no-learn` to disable. Import skills from any URI with automatic LLM risk assessment. [docs/CLI.md#skills](docs/CLI.md#skills)
+### 🧠 Skill System
+Skill-matched `SKILL.md` files load on-demand — skills are authored by you or imported, never auto-generated. Import skills from any URI with automatic LLM risk assessment. [docs/CLI.md#skills](docs/CLI.md#skills)
 
 ### 💾 Persistent Memory
 Three tiers: **facts** (agent-managed durable entries), **session buffer** (auto-appended turn summaries), **episodes** (LLM-extracted knowledge from past sessions). Merge-on-write via go-vector RandomProjections — cosine >0.7 auto-merges, <0.3 auto-adds. Saves ~80% LLM calls. Every lifecycle moment (fact add/merge/consolidate, episode store/dedup/evict/promote) emits an observable event surfaced in the terminal (verbose), Web UI, Telegram, or a programmatic `MemoryEventHandler`. [docs/MEMORY.md](docs/MEMORY.md)
@@ -100,9 +100,6 @@ odek run --sandbox "npm audit"
 # Different model
 odek run --model gpt-4o --base-url https://api.openai.com/v1 "Explain this"
 
-# With skill learning (on by default — use --no-learn to disable)
-odek run "Set up a Go project with CI"
-
 # Interactive REPL
 odek repl
 
@@ -132,9 +129,8 @@ odek run "@README.md what does this project do?"
 | `odek skill list` | List available skills |
 | `odek skill view <name>` | View skill content |
 | `odek skill delete <name>` | Delete a skill |
-| `odek skill promote <name> [--force]` | Promote a tainted auto-saved skill after review |
+| `odek skill promote <name> [--force]` | Promote a tainted skill after review |
 | `odek skill import <uri>` | Import skill from URL |
-| `odek skill curate` | Audit skill quality/overlap |
 | `odek audit <session-id>` | Print the prompt-injection audit log for a session |
 | `odek audit --list` | List sessions with ingest counts and divergence flags |
 | `odek serve [--addr <addr>]` | Start Web UI server (loopback by default; sandbox on by default, `--no-sandbox` to disable) |
@@ -158,8 +154,6 @@ odek run "@README.md what does this project do?"
 | `--base-url <url>` | API endpoint URL |
 | `--sandbox` | Run in Docker sandbox |
 | `--thinking <level>` | Reasoning depth (enabled/disabled/low/medium/high) |
-| `--learn` | Enable skill learning mode — on by default |
-| `--no-learn` | Disable skill learning mode |
 | `--system <prompt>` | Override system prompt |
 | `--max-iter <n>` | Max think→act cycles (default 90) |
 | `--prompt-caching` | Enable Anthropic/OpenAI/DeepSeek prompt caching markers |
@@ -191,8 +185,7 @@ odek run "@README.md what does this project do?"
 | [Security](docs/SECURITY.md) | Threat model, prompt injection defense, sandbox model |
 | [Sub-Agents](docs/SUBAGENTS.md) | Task decomposition, delegation tool, subagent protocol, capability profiles |
 | [Web UI](docs/WEBUI.md) | `odek serve`, WebSocket protocol, `@` resource resolution |
-| [Self-Learning](docs/LEARNING.md) | LLM-enhanced skill learning, pattern detection, auto-curation |
-| [Skills](docs/CLI.md#skills) | Trigger-matched skills, learning, import, curation |
+| [Skills](docs/CLI.md#skills) | Trigger-matched skills, import |
 | [MCP](docs/MCP.md) | Serve tools to Claude Code + connect to external MCP servers |
 | [Extensions](docs/EXTENSIONS.md) | `odek-extension/v1` contract: MCP limits, artifact refs, event stream, external refs, budgets |
 | [Maintenance](docs/MAINTENANCE.md) | Storage janitor: retention, log rotation, `odek cleanup` |

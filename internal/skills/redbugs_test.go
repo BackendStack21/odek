@@ -59,33 +59,6 @@ func TestRED_SkillToolsConcurrentWithRecordUsage(t *testing.T) {
 	wg.Wait()
 }
 
-// RED #16 (K2): findOverlapGroups lets one skill appear in several groups
-// (the inner loop never re-checks seen[a.Name]); ExecuteMicroCuration then
-// merges from a stale index and permanently loses content of already-merged
-// skills.
-func TestRED_OverlapGroupsDisjoint(t *testing.T) {
-	skills := []Skill{
-		{Name: "alpha", Trigger: SkillTrigger{TopicKeywords: []string{"k1", "k2"}}},
-		{Name: "bravo", Trigger: SkillTrigger{TopicKeywords: []string{"k1", "k2"}}},
-		{Name: "charlie", Trigger: SkillTrigger{TopicKeywords: []string{"k1", "k2"}}},
-	}
-	groups := findOverlapGroups(skills)
-
-	count := map[string]int{}
-	for _, g := range groups {
-		for _, name := range g.Skills {
-			count[name]++
-		}
-	}
-	for name, n := range count {
-		if n > 1 {
-			t.Fatalf("skill %q appears in %d overlap groups; a skill must be grouped at most once", name, n)
-		}
-	}
-}
-
-// RED #17 (K3): MarshalSkill emits scalars unquoted. A description with a
-// newline injects arbitrary frontmatter keys on round-trip ("version:
 // 9.9.9" becomes a real key), and YAML-ambiguous values like "yes" are
 // re-typed as bool and dropped by the string type assertions on parse.
 func TestRED_MarshalSkillRoundTrip(t *testing.T) {

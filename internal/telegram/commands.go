@@ -165,7 +165,7 @@ func modeHandler(args string) (string, error) {
 		"• `tool_progress_cleanup: true` — delete progress on answer\n\n" +
 		"*Other:*\n" +
 		"• `sandbox: true` — run in Docker isolation\n" +
-		"• `skills.verbose: true` — show skill learning details\n\n" +
+		"• `skills.verbose: true` — show skill and memory activity details\n\n" +
 		"Restart the bot after changing config.", nil
 }
 
