@@ -279,12 +279,7 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 	buf.WriteString("📋 Sub-agent results:\n\n")
 	for i, r := range results {
 		fmt.Fprintf(&buf, "─── Task %d: %s ───\n", i+1, truncate(input.Tasks[i].Goal, 60))
-		if len(r) > maxSubagentSummaryResultBytes {
-			buf.WriteString(r[:maxSubagentSummaryResultBytes])
-			buf.WriteString("\n... [result truncated]")
-		} else {
-			buf.WriteString(r)
-		}
+		buf.WriteString(formatTaskResult(r))
 		buf.WriteString("\n\n")
 	}
 	// The aggregated sub-agent output comes from a separate process and may
@@ -505,8 +500,84 @@ func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, tr
 
 // maxSubagentSummaryResultBytes caps how much of each sub-agent result is
 // included in the parent delegate_tasks summary, preventing memory DoS from
-// huge sub-agent outputs.
+// huge sub-agent outputs. Parsed envelopes render as bounded fields; the cap
+// now applies to the unparseable-fallback path only.
 const maxSubagentSummaryResultBytes = 100 << 10 // 100 KiB
+
+// Render bounds for the parsed fields. The JSON contract caps denials
+// server-side; the files list is model-influenced, so it is bounded here.
+const (
+	maxRenderedFiles   = 20
+	maxRenderedDenials = 3
+)
+
+// formatTaskResult renders one child's framed result as compact text for the
+// parent's context. Parsed envelopes render as fields (status, headline,
+// files, denials); anything unparseable falls back to the raw payload capped
+// at maxSubagentSummaryResultBytes. Child output is model-controlled and
+// stays inside the caller's untrusted wrapper.
+func formatTaskResult(raw string) string {
+	var r subagentResult
+	if err := json.Unmarshal([]byte(raw), &r); err != nil {
+		if len(raw) > maxSubagentSummaryResultBytes {
+			return raw[:maxSubagentSummaryResultBytes] + "\n... [result truncated]"
+		}
+		return raw
+	}
+
+	var b strings.Builder
+	status := r.Status
+	if status == "" {
+		if r.Error != "" {
+			status = "error"
+		} else {
+			status = "unknown"
+		}
+	}
+	b.WriteString("status: " + status)
+	if r.PartialReason != "" {
+		b.WriteString(" (" + r.PartialReason + ")")
+	}
+	if r.Iterations > 0 {
+		fmt.Fprintf(&b, " · %d iterations", r.Iterations)
+	}
+	if r.DurationSeconds > 0 {
+		fmt.Fprintf(&b, " · %.1fs", r.DurationSeconds)
+	}
+	if r.TokensUsed > 0 {
+		fmt.Fprintf(&b, " · ~%d tokens", r.TokensUsed)
+	}
+	b.WriteString("\n")
+	if r.Error != "" {
+		fmt.Fprintf(&b, "error: %s\n", r.Error)
+	}
+	if r.Summary != "" {
+		fmt.Fprintf(&b, "summary: %s\n", truncate(r.Summary, subagentHeadlineMaxRunes))
+	}
+	if len(r.FilesChanged) > 0 {
+		files := r.FilesChanged
+		if len(files) > maxRenderedFiles {
+			files = files[:maxRenderedFiles]
+		}
+		fmt.Fprintf(&b, "files changed: %s\n", strings.Join(files, ", "))
+	}
+	if len(r.Denials) > 0 {
+		shown := r.Denials
+		if len(shown) > maxRenderedDenials {
+			shown = shown[:maxRenderedDenials]
+		}
+		total := r.DenialsTotal
+		if total < len(r.Denials) {
+			total = len(r.Denials)
+		}
+		parts := make([]string, 0, len(shown))
+		for _, d := range shown {
+			parts = append(parts, d.Tool+"/"+d.Class+" — "+d.Reason)
+		}
+		fmt.Fprintf(&b, "denials (%d of %d): %s\n", len(shown), total, strings.Join(parts, "; "))
+	}
+	return b.String()
+}
 
 // subagentWaitDelay bounds how long cmd.Wait may drain the child's pipes
 // after the child process exits (see the WaitDelay assignment in runTask).

@@ -936,11 +936,18 @@ func (e *subagentRunError) Error() string {
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
+// subagentHeadlineMaxRunes caps the headline channel: the child's final
+// answer as returned to the parent in the result summary. The bulk-report
+// channel is the artifact protocol (SUBAGENT_RESULT_ARTIFACTS_PLAN.md M1);
+// until it ships this is the only content channel, so it carries 4× the old
+// 500-rune cut.
+const subagentHeadlineMaxRunes = 2048
+
 func extractSummary(messages []llm.Message) string {
 	// Return the last assistant message content as summary
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == "assistant" && messages[i].Content != "" {
-			return truncate(messages[i].Content, 500)
+			return truncate(messages[i].Content, subagentHeadlineMaxRunes)
 		}
 	}
 	return ""

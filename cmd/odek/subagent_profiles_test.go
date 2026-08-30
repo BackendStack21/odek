@@ -255,7 +255,7 @@ func TestDelegateTasks_Call_MixedProfilesPartialFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
 	}
-	if !strings.Contains(result, `"ok"`) {
+	if !strings.Contains(result, "summary: ok") {
 		t.Errorf("task with a defined profile must run, got: %s", result)
 	}
 	if !strings.Contains(result, "unknown profile") {
