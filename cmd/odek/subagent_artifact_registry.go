@@ -10,6 +10,9 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -169,4 +172,92 @@ func artifactIDList() string {
 		list += fmt.Sprintf(" (+%d more)", total-len(ids))
 	}
 	return list
+}
+
+// ── M3: child staging + trusted-runner relocation ────────────────────
+
+// The canonical artifact dir (~/.odek/artifacts) is doubly protected from
+// child writes: confineToCWD rejects absolute paths, and the danger
+// classifier escalates any ~/.odek write to system_write (denied for
+// approval-less children). Children therefore stage deliverables INSIDE
+// the workspace — an ordinary local_write both gates allow — and the
+// trusted child runner relocates them to the canonical dir before the
+// exit scan. Gates untouched; wire format unchanged (artifact_root still
+// names the canonical dir, v1.32.0 compatible).
+const stagingDirName = ".odek-artifacts"
+
+// stagingDirFor returns the child-visible staging dir for a task, INSIDE
+// the workspace (cwd).
+func stagingDirFor(cwd, taskID string) string {
+	return filepath.Join(cwd, stagingDirName, taskID)
+}
+
+// childArtifactNote builds the trusted runner instruction appended to the
+// child's request. It references the workspace-RELATIVE staging path only.
+func childArtifactNote(stagingRel string) string {
+	return "\n\nArtifact output: any deliverable larger than a short headline must ALSO be written as a file in " +
+		stagingRel + "/ (use your file tools; plain files, no subdirectories). Files there are delivered to the parent automatically — do not repeat their contents in your final answer."
+}
+
+// renameFailureHook lets tests force the copy fallback (rename across
+// devices). Production never sets it.
+var renameFailureHook func() bool
+
+// relocateStagingArtifacts moves every top-level regular file from the
+// staging dir into the canonical dir (rename, with a copy fallback for
+// cross-device workspaces), then removes the staging subtree. Nested
+// directories are not artifacts (scanArtifacts skips them) and are
+// discarded with the staging tree. A missing staging dir is a no-op.
+func relocateStagingArtifacts(staging, canonical string) (int, error) {
+	entries, err := os.ReadDir(staging)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("artifact staging: %w", err)
+	}
+	if err := os.MkdirAll(canonical, 0o700); err != nil {
+		return 0, fmt.Errorf("artifact canonical dir: %w", err)
+	}
+	moved := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		src := filepath.Join(staging, e.Name())
+		dst := filepath.Join(canonical, e.Name())
+		if renameFailureHook == nil || !renameFailureHook() {
+			if err := os.Rename(src, dst); err == nil {
+				moved++
+				continue
+			}
+		}
+		if err := copyFileContents(src, dst); err != nil {
+			return moved, fmt.Errorf("artifact relocate %q: %w", e.Name(), err)
+		}
+		os.Remove(src)
+		moved++
+	}
+	// Only top-level files are artifacts; anything else staged (nested
+	// dirs) is discarded with the staging tree.
+	os.RemoveAll(staging)
+	return moved, nil
+}
+
+// copyFileContents copies src to dst (0600), replacing any existing dst.
+func copyFileContents(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }

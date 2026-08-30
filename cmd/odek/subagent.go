@@ -489,7 +489,8 @@ func subagentCmd(args []string) error {
 	var taskMaxRisk string
 	var taskProfile string                 // capability profile selected by the parent (P4)
 	var taskBudgetBlock *taskBudget        // parent's remaining budget (share mode)
-	var taskArtifactRoot string           // per-task artifact dir from the envelope (M1)
+	var taskArtifactRoot string            // per-task artifact dir from the envelope (M1)
+	var taskTaskID string                  // envelope task id (M3 staging key)
 	var parentTrust string                 // parent's own effective trust (P3)
 	var taskID string                      // telemetry correlation id (protocol-2 parents)
 	var taskProtocol int                   // telemetry protocol version from the envelope
@@ -520,6 +521,7 @@ func subagentCmd(args []string) error {
 		taskBudgetBlock = taskSpec.Budget
 		parentTrust = taskSpec.ParentTrust
 		taskArtifactRoot = taskSpec.ArtifactRoot
+		taskTaskID = taskSpec.TaskID
 		// Telemetry correlation (sub-agent telemetry M1): protocol-2 parents
 		// stamp a task id; the child echoes it on every stdout record and
 		// frames its final result so the parent cannot misparse.
@@ -611,13 +613,12 @@ func subagentCmd(args []string) error {
 	systemMsg := subagentSystem + "\n\n" + buildLifespanBlock(cfg.timeout, cfg.maxIter, resolved.Limits)
 	prompt := buildSubagentRequest(cfg.goal, taskGuidance, cfg.context, taskTrust == "untrusted")
 	if taskArtifactRoot != "" {
-		// Trusted runner text OUTSIDE any untrusted fence: the dir is
-		// infrastructure the parent created (same trust as the task-file
-		// path). Inside the fence it would be neutralized for untrusted
-		// tasks, silently disabling artifacts exactly where they matter.
-		prompt += "\n\nArtifact output: any deliverable larger than a short headline must ALSO be written as a file in " +
-			taskArtifactRoot +
-			" (use your file tools; plain files, no subdirectories). Files there are delivered to the parent automatically — do not repeat their contents in your final answer."
+		// Trusted runner text OUTSIDE any untrusted fence: the staging dir
+		// is workspace-relative infrastructure (an ordinary local_write for
+		// the child's file tools). Inside the fence it would be neutralized
+		// for untrusted tasks, silently disabling artifacts exactly where
+		// they matter.
+		prompt += childArtifactNote(".odek-artifacts/" + taskTaskID)
 	}
 
 	// Build tools
@@ -835,12 +836,25 @@ func subagentCmd(args []string) error {
 	// Extract files changed from tool calls
 	result.FilesChanged = extractFilesChanged(allMessages)
 
-	// M1 artifact scan: refs are runner-built (hashes/sizes measured here,
-	// never model-fabricated); scan flags ride the summary so the parent
+	// M1/M3 artifact scan: the child staged deliverables inside the
+	// workspace (.odek-artifacts/<task_id>/ — the only location both
+	// confineToCWD and the classifier allow it to write); the trusted
+	// runner relocates them to the canonical dir, then hashes/sizes there
+	// (never model-fabricated). Scan flags ride the summary so the parent
 	// sees why an artifact is missing.
 	if taskArtifactRoot != "" {
-		refs, flags := scanArtifacts(taskArtifactRoot, maxArtifactTaskBudget)
+		var flags []string
+		cwd, cwdErr := os.Getwd()
+		if cwdErr != nil {
+			flags = append(flags, "[artifact] staging lookup failed: "+cwdErr.Error())
+		} else {
+			if _, err := relocateStagingArtifacts(stagingDirFor(cwd, taskTaskID), taskArtifactRoot); err != nil {
+				flags = append(flags, "[artifact] staging relocation failed: "+err.Error())
+			}
+		}
+		refs, scanFlags := scanArtifacts(taskArtifactRoot, maxArtifactTaskBudget)
 		result.Artifacts = refs
+		flags = append(flags, scanFlags...)
 		if len(flags) > 0 {
 			result.Summary = strings.TrimSpace(summary + "\n" + strings.Join(flags, "\n"))
 		}

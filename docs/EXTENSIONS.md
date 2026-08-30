@@ -292,3 +292,17 @@ else in this document is opt-in. A reference mock implementing every fixture
 tool (`echo`, `large_result`, `artifact_result`, `bad_artifact`, `slow`,
 `error_result`) lives at `internal/mcpclient/testdata/artifact_server.go` and
 is exercised by `internal/mcpclient/contract_test.go`.
+
+## Sub-agent result artifacts
+
+The same artifact schemas power the `delegate_tasks` result channel (no MCP
+server involved). The task envelope carries an `artifact_root` naming the
+per-task directory the parent created; the child runner relocates staged
+workspace files there, measures `sha256`/`size_bytes` itself, and returns
+`odek.artifact-ref/v1` references in `subagentResult.artifacts`. The parent
+validates every ref fail-closed against the per-task root before rendering —
+metadata-only lines in the model context, content inlined for text artifacts
+≤ 32 KiB, everything else readable by the parent via the `artifact_read`
+tool (id-keyed; paths never enter the model context). See
+`docs/SUBAGENTS.md — Result artifacts` and `docs/SECURITY.md` for the
+invariants; `SUBAGENT_RESULT_ARTIFACTS_PLAN.md` documents the design.

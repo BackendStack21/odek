@@ -872,6 +872,11 @@ func subagentCompletedEvent(taskID string, result map[string]any, fallbackStatus
 				data[k] = v
 			}
 		}
+		if arts, ok := result["artifacts"].([]any); ok && len(arts) > 0 {
+			// Count only — refs (hashes) stay out of the event stream per the
+			// hash-only event policy.
+			data["artifact_count"] = len(arts)
+		}
 	}
 	return events.Event{
 		Type: events.TypeSubagentCompleted,

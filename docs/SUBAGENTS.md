@@ -469,6 +469,21 @@ Parent synthesizes: "Created 3 files:
   Total: 8 files changed, 13100 tokens, 5s parallel"
 ```
 
+## Result artifacts
+
+When a sub-agent produces output too large for the headline summary (large reports, dumps, generated fixtures), it writes plain files into its per-task staging directory (`.odek-artifacts/<task_id>/` inside the workspace). The runner relocates them to `~/.odek/artifacts/<session>/<task>/`, measures sha256/size, and returns `odek.artifact-ref/v1` references with the result.
+
+The parent sees one metadata line per artifact — id, media type, size, short hash, first-line summary — plus the inlined content of small text artifacts (≤ 32 KiB). Everything larger is readable on demand via `artifact_read`:
+
+```
+artifact_read({ "id": "report" })                # first 64 KiB
+artifact_read({ "id": "report", "offset": 65536 })  # continue paging
+```
+
+`artifact_read` is a parent-side tool; the model passes an id, never a path — resolution goes through the session registry of validated refs. Refs that fail validation (wrong hash, path escape) are dropped with an explicit flag and never rendered.
+
+Lifecycle: deleting a session deletes its artifacts (all paths — CLI, API, Telegram, retention sweep); the storage janitor backstop sweeps orphans after `maintenance.artifacts_max_age_hours` (default 24 hours, `0` = keep forever).
+
 ## Tips
 
 - **Keep goals small** — one file, one concern per sub-agent. If a goal spans 3 files, it's probably not a good decomposition boundary.
