@@ -120,6 +120,32 @@ func (f *FactStore) sizeOf(entries []string) int {
 	return size
 }
 
+// truncateRunes cuts s to at most n runes on a rune boundary, appending an
+// ellipsis. Entry previews surface in agent-facing errors, where a mid-rune
+// cut would corrupt the UTF-8 output.
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
+// entryIndex renders a compact, decision-ready listing of the current entries
+// for cap-failure errors: one-based index, byte size (len semantics,
+// consistent with cap accounting), and a rune-safe preview. The agent can
+// pick an eviction target from this alone — no extra read round-trip.
+func entryIndex(entries []string, preview int) string {
+	if len(entries) == 0 {
+		return "(file is empty — the new entry alone exceeds the cap)"
+	}
+	parts := make([]string, 0, len(entries))
+	for i, e := range entries {
+		parts = append(parts, fmt.Sprintf("[%d] %dc %q", i+1, len(e), truncateRunes(e, preview)))
+	}
+	return strings.Join(parts, "\n")
+}
+
 // Read returns the full content of a fact file. Returns empty string if the
 // file doesn't exist yet.
 func (f *FactStore) Read(target string) (string, error) {
@@ -206,8 +232,8 @@ func (f *FactStore) Add(target, content string) error {
 
 		maxCap := f.cap(target)
 		if newSize > maxCap {
-			return nil, fmt.Errorf("memory: adding entry (%d chars) would exceed cap (%d chars); current: %d, max: %d",
-				len(content), maxCap, f.sizeOf(entries), maxCap)
+			return nil, fmt.Errorf("memory: adding entry (%d chars) would exceed cap (%d chars); current: %d, max: %d.\nEntries (oldest first):\n%s\nFree space by removing or replacing older entries (memory remove/replace), then retry",
+				len(content), maxCap, f.sizeOf(entries), maxCap, entryIndex(entries, 50))
 		}
 
 		// Append
@@ -256,7 +282,8 @@ func (f *FactStore) Replace(target, oldText, content string) error {
 		newSize := f.sizeOf(entries) - len(entries[matchIdx]) + len(content)
 		maxCap := f.cap(target)
 		if newSize > maxCap {
-			return nil, fmt.Errorf("memory: replacement (%d chars) would exceed cap (%d chars)", newSize, maxCap)
+			return nil, fmt.Errorf("memory: replacement (%d chars) would exceed cap (%d chars); current: %d, max: %d.\nEntries:\n%s\nFree space by removing older entries (memory remove), then retry",
+				newSize, maxCap, f.sizeOf(entries), maxCap, entryIndex(entries, 50))
 		}
 
 		entries[matchIdx] = content
@@ -292,7 +319,8 @@ func (f *FactStore) ReplaceAt(target string, idx int, content string) error {
 		newSize := f.sizeOf(entries) - len(entries[idx]) + len(content)
 		maxCap := f.cap(target)
 		if newSize > maxCap {
-			return nil, fmt.Errorf("memory: replacement (%d chars) would exceed cap (%d chars)", newSize, maxCap)
+			return nil, fmt.Errorf("memory: replacement (%d chars) would exceed cap (%d chars); current: %d, max: %d.\nEntries:\n%s\nFree space by removing older entries (memory remove), then retry",
+				newSize, maxCap, f.sizeOf(entries), maxCap, entryIndex(entries, 50))
 		}
 
 		entries[idx] = content

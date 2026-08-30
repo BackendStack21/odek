@@ -56,8 +56,8 @@ Episode extraction runs **asynchronously** — it does not block the agent loop.
   "name": "memory",
   "description": "Manage persistent memory across sessions.",
   "parameters": {
-    "action": { "enum": ["add", "replace", "remove", "consolidate", "read", "search", "view", "add_atom", "search_atoms", "forget_atom", "list_quarantine", "pin_atom", "confirm_pending_review", "reject_pending_review", "list_pending_review"] },
-    "target": { "enum": ["user", "env"], "description": "For add/replace/remove/consolidate" },
+    "action": { "enum": ["add", "replace", "remove", "stats", "consolidate", "read", "search", "view", "add_atom", "search_atoms", "forget_atom", "list_quarantine", "pin_atom", "confirm_pending_review", "reject_pending_review", "list_pending_review"] },
+    "target": { "enum": ["user", "env"], "description": "For add/replace/remove/consolidate/stats" },
     "content": { "type": "string", "description": "For add/replace" },
     "old_text": { "type": "string", "description": "Unique substring for replace/remove" },
     "query": { "type": "string", "description": "For search — facts + episodes" }
@@ -72,9 +72,38 @@ Episode extraction runs **asynchronously** — it does not block the agent loop.
 | `add` | user/env | ✅ new entry | — | Appends to file. Check: dedup + cap + merge |
 | `replace` | user/env | ✅ replacement | ✅ substring | Finds entry by substring, replaces it |
 | `remove` | user/env | — | ✅ substring | Finds entry by substring, removes it |
+| `stats` | user/env | — | — | Per-entry sizes + fill (used/cap) — pre-flight check before writes |
 | `consolidate` | user/env | — | — | SimpleCall: merge related entries for density |
 | `read` | — | — | — | Returns full content of both user.md + env.md |
 | `search` | — | — | ✅ query | LLM ranker by default (relevance-oriented); `llm_search: false` switches to RP cosine ranking (zero LLM calls) |
+
+## Automatic Cap Maintenance (LLM-driven eviction)
+
+The agent maintains its own fact files. When a fact file fills up, the **agent itself** evicts older entries — there is no background rewriter and no silent consolidation. Every eviction is an explicit, auditable `remove`/`replace` call inside the normal agent loop.
+
+Three affordances make this work:
+
+1. **Decision-ready cap errors.** When `add`/`replace` would exceed the cap, the error carries the full entry index — one-based index, size, preview — plus the instruction to free space with `memory remove`/`replace` and retry. The agent can pick an eviction target without an extra read.
+
+   ```
+   memory: adding entry (210 chars) would exceed cap (2500 chars); current: 2438, max: 2500.
+   Entries (oldest first):
+   [1] 480c "20260830 — odek v1.30.0 released: sub-agent cancel flow (PR #156, squas…"
+   [2] 1051c "20260830 — Skill Self-Learning removal scoped (SKILL_LEARNING_REMOVAL_P…"
+   Free space by removing or replacing older entries (memory remove/replace), then retry
+   ```
+
+2. **`stats` action.** `memory(action: "stats", target: "env")` returns `{used, cap, entries: [{index, chars, preview}]}` — a pre-flight fill check before large writes. `view` remains episodes-only by design (provenance gate).
+
+3. **Eviction policy (tool contract).** The `memory` tool description codifies the priority: when a target is at cap, remove or replace the lowest-value entries — records recoverable from git/GitHub (release notes, merged PRs) evict first; pointers to untracked local work (plan docs, pending-review findings) evict last.
+
+Additionally, the system-prompt memory block appends a one-line warning when a fact file is at ≥90% of its cap:
+
+```
+⚠ env fact file 97% full — evict stale entries via memory remove before your next add.
+```
+
+Caps are configured via `facts_limit_user` / `facts_limit_env` (defaults: 4,000 / 8,000 chars, counted as bytes — consistent with cap accounting). Deliberately **not** built: automatic consolidation on write (a mid-flow LLM rewrite risks dropping load-bearing details and amplifies provider throttling) and date-based auto-eviction (age alone says nothing about value — a days-old pointer to untracked work can be the only durable record of it).
 
 ## Merge-on-Write (go-vector Integration)
 
