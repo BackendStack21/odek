@@ -305,6 +305,33 @@ func TestRotateLogsRecreateError(t *testing.T) {
 	}
 }
 
+// TestRotateLogsRotatesServeLog pins serve.log coverage in the janitor's
+// rotation list (fix 4 of the sub-agent reliability work: the durable serve
+// log must not grow unbounded).
+func TestRotateLogsRotatesServeLog(t *testing.T) {
+	home := t.TempDir()
+	big := make([]byte, 2<<20)
+	writeFileAt(t, filepath.Join(home, "serve.log"), big, time.Now())
+
+	rotated, err := rotateLogs(home, 1)
+	if err != nil {
+		t.Fatalf("rotateLogs: %v", err)
+	}
+	want := filepath.Join(home, "serve.log")
+	found := false
+	for _, p := range rotated {
+		if p == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("serve.log not rotated; rotated = %v", rotated)
+	}
+	if _, err := os.Stat(want + ".1"); err != nil {
+		t.Errorf("backup serve.log.1 missing: %v", err)
+	}
+}
+
 // ── sweepPlans / sweepMedia ────────────────────────────────────────────
 
 // TestSweepPlansStatError covers a non-NotExist Stat failure via a symlink

@@ -176,6 +176,8 @@ Place a `Dockerfile.odek` in your working directory for **project-specific, pre-
 > - The build runs with **`--network=none` by default**, so `RUN` steps cannot fetch remote payloads or exfiltrate build-context data over the network. If your Dockerfile legitimately needs network (e.g. `RUN apk add …`), opt in with `ODEK_SANDBOX_BUILD_NETWORK=1` (operator-only; a project cannot set it).
 > - Builds that would start *after* startup (e.g. a new WebUI connection, or a resumed sandboxed session) re-verify the approval and fail closed if the Dockerfile appeared or changed in the meantime.
 
+This repository ships its own `Dockerfile.odek` for maintaining odek inside a sandbox: a Go toolchain matching `go.mod`, git, `build-base` for `go test -race`, make/curl/python3/bash, a pre-warmed module cache (layer-cached on `go.mod`/`go.sum`), and CI-pinned golangci-lint + govulncheck. Build it once with `ODEK_SANDBOX_BUILD_NETWORK=1`; afterwards sandboxed runs of the full quality gate are completely offline.
+
 ```dockerfile
 # Dockerfile.odek
 FROM node:20-alpine

@@ -539,6 +539,8 @@ func (c *Client) postChatWithRetry(ctx context.Context, reqBytes []byte) ([]byte
 	// minute-scale provider incidents without wedging a turn for too long.
 	const maxRetries = 7
 	var lastErr error
+	var lastStatus int
+	var lastBody string
 	var wait time.Duration // how long to sleep before the next attempt
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
@@ -586,6 +588,8 @@ func (c *Client) postChatWithRetry(ctx context.Context, reqBytes []byte) ([]byte
 
 		if resp.StatusCode != http.StatusOK {
 			errBody := strings.TrimSpace(string(respBytes))
+			lastStatus = resp.StatusCode
+			lastBody = truncateLLMErrBody(errBody)
 			if errBody != "" {
 				lastErr = fmt.Errorf("llm: %s (status %d): %s", resp.Status, resp.StatusCode, errBody)
 			} else {
@@ -622,7 +626,39 @@ func (c *Client) postChatWithRetry(ctx context.Context, reqBytes []byte) ([]byte
 		return respBytes, nil
 	}
 
+	if lastStatus == http.StatusTooManyRequests {
+		return nil, fmt.Errorf("llm: retry exhausted (%d attempts): %w", maxRetries+1, &RateLimitError{
+			StatusCode: lastStatus,
+			Attempts:   maxRetries + 1,
+			Body:       lastBody,
+		})
+	}
 	return nil, fmt.Errorf("llm: retry exhausted (%d attempts): %w", maxRetries+1, lastErr)
+}
+
+// RateLimitError reports a provider rate limit (HTTP 429) that persisted
+// through the full retry budget. Callers can errors.As it to render a
+// precise "provider throttled" failure — e.g. the serve turn handler, which
+// must not silently drop a throttled turn (dead-prompt incidents of
+// 2026-08-29).
+type RateLimitError struct {
+	StatusCode int    // HTTP status the provider kept returning
+	Attempts   int    // total attempts made, including the first
+	Body       string // truncated provider error body (≤512 bytes)
+}
+
+func (e *RateLimitError) Error() string {
+	return fmt.Sprintf("llm: provider rate limit (status %d) after %d attempts", e.StatusCode, e.Attempts)
+}
+
+// truncateLLMErrBody caps an error body captured for RateLimitError so a
+// chatty provider response cannot bloat persisted turn notes.
+func truncateLLMErrBody(s string) string {
+	const max = 512
+	if len(s) > max {
+		return s[:max]
+	}
+	return s
 }
 
 // maxRetryAfter caps how long we'll honor a server's Retry-After. A pathological

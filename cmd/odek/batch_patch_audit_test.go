@@ -97,6 +97,15 @@ func TestBatchPatch_AbortsOnTempFailureAndPreservesOriginal(t *testing.T) {
 	}
 	defer os.Chmod(dir, 0755) //nolint:errcheck // best-effort cleanup
 
+	// Some container mounts (e.g. fakeowner) do not enforce directory write
+	// bits at all — the probe write below succeeds and the "unwritable dir"
+	// premise cannot be constructed. Environmental, not a regression.
+	if probe, err := os.CreateTemp(dir, "probe-*"); err == nil {
+		probe.Close()
+		os.Remove(probe.Name())
+		t.Skip("filesystem does not enforce directory write bits (container mount)")
+	}
+
 	tool := &batchPatchTool{}
 	args := fmt.Sprintf(`{"patches":[{"path":%q,"old_string":"hello","new_string":"bye"}]}`, path)
 	out := callJSON(t, tool, args)

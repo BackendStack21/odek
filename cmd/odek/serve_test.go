@@ -807,14 +807,26 @@ func setTestEnv(t *testing.T, llmBaseURL string) func() {
 	os.Setenv("ODEK_BASE_URL", llmBaseURL)
 	os.Setenv("HOME", homeDir)
 
+	// restoreEnv puts the variable back exactly as it was: a previously
+	// UNSET variable must be unset again, not set to an empty value — an
+	// empty-valued ODEK_* still exists in os.Environ() and still counts as
+	// a leak (the hermetic canary trips on it).
+	restoreEnv := func(key, orig string) {
+		if orig == "" {
+			os.Unsetenv(key)
+			return
+		}
+		os.Setenv(key, orig)
+	}
+
 	return func() {
 		// Clean up session files before Go removes the temp dir
 		sessionDir := filepath.Join(homeDir, ".odek", "sessions")
 		os.RemoveAll(sessionDir)
-		os.Setenv("DEEPSEEK_API_KEY", origDS)
-		os.Setenv("OPENAI_API_KEY", origOAI)
-		os.Setenv("ODEK_BASE_URL", origKBS)
-		os.Setenv("HOME", origHome)
+		restoreEnv("DEEPSEEK_API_KEY", origDS)
+		restoreEnv("OPENAI_API_KEY", origOAI)
+		restoreEnv("ODEK_BASE_URL", origKBS)
+		restoreEnv("HOME", origHome)
 	}
 }
 

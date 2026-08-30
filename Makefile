@@ -39,8 +39,21 @@ test-internal: ## Run only internal package tests (excludes cmd/odek)
 	$(GO) list ./... | grep -v cmd/odek | xargs $(GO) test -short -count=1
 
 .PHONY: test-cmd
-test-cmd: ## Run cmd/odek unit tests (excludes TTY approval and E2E tests)
-	$(GO) test -short -count=1 -timeout 300s ./cmd/odek -skip "TestBrowser|TestModel_E2E|TestREPL_E2E|TestSandbox_E2E|TestSecurity_E2E|TestMCP_E2E|TestSubagent_E2E|TestRefs_E2E"
+test-cmd: ## Run cmd/odek unit tests (env-gated E2E/sandbox suites skipped)
+	$(GO) test -short -count=1 -timeout 600s ./cmd/odek -skip 'TestE2E_|TestMCPE2E|TestSandbox'
+
+.PHONY: test-cli-serve
+test-cli-serve: ## Serve/WS/REST headless-run surface only (~1 min)
+	$(GO) test -short -count=1 -timeout 300s -run 'TestServe|TestWS|TestRestRun|TestPrompt|TestHandlePrompt' ./cmd/odek
+
+# Sandbox-only: /tmp is noexec and fakeowner mounts don't enforce write bits,
+# so TempDir needs are split — exec-capable (cmd/odek mocks, mcpclient
+# fakeserver) vs permission-enforcing (/tmp tmpfs for flock/maintenance).
+.PHONY: test-sandbox
+test-sandbox: ## Full suite inside the odek sandbox (Dockerfile.odek image)
+	GOTMPDIR=/workspace/.gotmp TMPDIR=/workspace/.gotmp $(GO) test -short -count=1 -timeout 600s -skip 'TestE2E_|TestMCPE2E|TestSandbox' ./cmd/odek
+	GOTMPDIR=/workspace/.gotmp $(GO) test -short -count=1 -p 1 -timeout 900s $$( $(GO) list ./... | grep -vE 'cmd/odek|internal/mcpclient' )
+	GOTMPDIR=/workspace/.gotmp TMPDIR=/workspace/.gotmp $(GO) test -short -count=1 -timeout 300s ./internal/mcpclient
 
 .PHONY: test-race
 test-race: ## Run unit tests with race detector (excludes cmd/odek)

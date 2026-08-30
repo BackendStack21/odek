@@ -124,11 +124,35 @@ func NewTTYApprover(cfg *DangerousConfig) *TTYApprover {
 	return &TTYApprover{
 		DangerousConfig:   cfg,
 		TrustedClasses:    make(map[RiskClass]bool),
-		TTYPath:           "/dev/tty",
+		TTYPath:           ttyPath(),
 		FrictionThreshold: 3,
 		FrictionWindow:    60 * time.Second,
 		pauseFn:           func(d time.Duration) { time.Sleep(d) },
 	}
+}
+
+// ttyPathForTest, when non-empty, replaces the default /dev/tty for every
+// TTYApprover created afterwards.
+var ttyPathForTest string
+
+// SetTTYPathForTest overrides the device path TTYApprover opens for
+// interactive approvals. Test-only: a test process running on an operator's
+// dev machine has a real controlling terminal, so any tool call that lands
+// in the Prompt fallback would render a live approval prompt and block on
+// the operator's keyboard forever (observed 2026-08-30 with browser tests on
+// macOS). Pointing the path at a nonexistent device makes every fallback
+// open fail, which engages the documented NonInteractiveAction fallback —
+// exactly the semantics the non-interactive tests were authored against.
+// Tests that script their own TTY set TTYPath directly after construction
+// and are unaffected.
+func SetTTYPathForTest(path string) { ttyPathForTest = path }
+
+// ttyPath returns the device path TTYApprover should open.
+func ttyPath() string {
+	if ttyPathForTest != "" {
+		return ttyPathForTest
+	}
+	return "/dev/tty"
 }
 
 // recordApproval logs an approval timestamp for the given class and

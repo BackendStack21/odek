@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/BackendStack21/odek/internal/danger"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -46,6 +48,60 @@ func TestMain(m *testing.M) {
 	// inherits this env — out of the default. Tests that exercise the
 	// default-on semantics clear it locally with t.Setenv.
 	os.Setenv("ODEK_NO_SANDBOX", "1")
+
+	// No live TTY: a test process on an operator's dev machine has a real
+	// controlling terminal, so any tool call reaching the Prompt fallback
+	// would render a live approval prompt on /dev/tty and block on the
+	// operator's keyboard forever (observed 2026-08-30: browser tests hung
+	// on macOS). A dead TTY path makes every fallback open fail, engaging
+	// the documented NonInteractiveAction semantics the non-interactive
+	// tests were authored against. Tests scripting their own TTY set
+	// TTYPath directly and are unaffected.
+	danger.SetTTYPathForTest("/dev/tty-tests-forbidden")
+
+	// Hermetic home: point the whole test process (and every subprocess it
+	// spawns) at a fixture HOME so the operator's real ~/.odek/config.json,
+	// ~/.odek/secrets.env, and every UserHomeDir-derived path are invisible
+	// to tests. Without this, config.LoadConfig silently reads the operator
+	// global config — observed 2026-08-30: tests logged the operator's
+	// glm-5.3-flash model and inherited operator dangerous/limits settings
+	// (the sandbox only masked this by setting HOME=/tmp). Tests that need
+	// a specific home still t.Setenv locally; ODEK_TEST_KEEP_REAL_HOME=1 is
+	// the escape hatch for debugging config interactions.
+	if os.Getenv("ODEK_TEST_KEEP_REAL_HOME") != "1" && os.Getenv("ODEK_TEST_HOME") == "" {
+		fixture, err := os.MkdirTemp("", "odek-test-home-*")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "testmain: isolate home: %v\n", err)
+			os.Exit(1)
+		}
+		// Not removed on exit (same tradeoff as e2eBinDir) — TestMain has no
+		// cleanup phase after m.Run, and the OS reclaims /tmp.
+		os.Setenv("HOME", fixture)
+		os.Setenv("USERPROFILE", fixture)
+		os.Setenv("ODEK_TEST_HOME", fixture)
+	}
+
+	// Scrub ambient ODEK_* variables. An odek process that spawns tests
+	// (agents, sub-agents, shells inside `odek run`) carries the operator's
+	// loaded secrets.env exports — ODEK_MODEL, ODEK_BASE_URL, ODEK_*_TOKEN —
+	// and config.LoadConfig's env layer applies them regardless of HOME
+	// (observed 2026-08-30: tests resolved the operator's glm-5.3-flash
+	// despite a fixture HOME). Tests set exactly what they need via
+	// t.Setenv/setTestEnv after this point; the framework vars below are
+	// the only survivors.
+	keep := map[string]bool{
+		"ODEK_NO_SANDBOX":               true,
+		"ODEK_E2E":                      true,
+		"ODEK_TEST_HOME":                true,
+		"ODEK_TEST_KEEP_REAL_HOME":      true,
+		"ODEK_SUPPRESS_SANDBOX_WARNING": true,
+	}
+	for _, kv := range os.Environ() {
+		key, _, _ := strings.Cut(kv, "=")
+		if strings.HasPrefix(key, "ODEK_") && !keep[key] {
+			os.Unsetenv(key)
+		}
+	}
 
 	if os.Getenv("ODEK_E2E") == "" {
 		// Not running E2E — skip build, run nothing

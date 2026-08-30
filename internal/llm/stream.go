@@ -162,6 +162,8 @@ func (c *Client) postChatStream(ctx context.Context, reqBytes []byte, cb func(De
 
 	const maxRetries = 7
 	var lastErr error
+	var lastStatus int
+	var lastBody string
 	var wait time.Duration
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
@@ -206,6 +208,8 @@ func (c *Client) postChatStream(ctx context.Context, reqBytes []byte, cb func(De
 			errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 			resp.Body.Close()
 			errBodyStr := strings.TrimSpace(string(errBody))
+			lastStatus = resp.StatusCode
+			lastBody = truncateLLMErrBody(errBodyStr)
 			if errBodyStr != "" {
 				lastErr = fmt.Errorf("llm: %s (status %d): %s", resp.Status, resp.StatusCode, errBodyStr)
 			} else {
@@ -244,6 +248,13 @@ func (c *Client) postChatStream(ctx context.Context, reqBytes []byte, cb func(De
 		return res, emitted, nil
 	}
 
+	if lastStatus == http.StatusTooManyRequests {
+		return nil, false, fmt.Errorf("llm: retry exhausted (%d attempts): %w", maxRetries+1, &RateLimitError{
+			StatusCode: lastStatus,
+			Attempts:   maxRetries + 1,
+			Body:       lastBody,
+		})
+	}
 	return nil, false, fmt.Errorf("llm: retry exhausted (%d attempts): %w", maxRetries+1, lastErr)
 }
 
