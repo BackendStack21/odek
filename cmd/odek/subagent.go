@@ -617,7 +617,12 @@ func subagentCmd(args []string) error {
 		// is workspace-relative infrastructure (an ordinary local_write for
 		// the child's file tools). Inside the fence it would be neutralized
 		// for untrusted tasks, silently disabling artifacts exactly where
-		// they matter.
+		// they matter. The workspace is also self-healed here: stale
+		// sibling staging from crashed runs is swept at start.
+		if cwd, err := os.Getwd(); err == nil {
+			ensureStagingRoot(cwd)
+			sweepStagingOrphans(cwd, taskTaskID, stagingSweepMaxAge)
+		}
 		prompt += childArtifactNote(".odek-artifacts/" + taskTaskID)
 	}
 
@@ -852,6 +857,9 @@ func subagentCmd(args []string) error {
 				flags = append(flags, "[artifact] staging relocation failed: "+err.Error())
 			}
 		}
+		// Re-create the staging root with its self-gitignore (relocation
+		// removed the whole subtree, root included).
+		ensureStagingRoot(cwd)
 		refs, scanFlags := scanArtifacts(taskArtifactRoot, maxArtifactTaskBudget)
 		result.Artifacts = refs
 		flags = append(flags, scanFlags...)
