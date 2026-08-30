@@ -39,6 +39,7 @@ commands (`odek run`, `odek repl`, …) do not run the janitor — use
 | Sessions | `~/.odek/sessions/*.json` (by `updated_at`) | `sessions_max_age_days` | 30 days |
 | Audit records | `~/.odek/sessions/audit/*.json` (by mtime) | `audit_max_age_days` | 14 days |
 | Plans | `~/.odek/plans/**/*.md` (by mtime) | `plans_max_age_days` | 30 days |
+| Sub-agent artifacts | `~/.odek/artifacts/<session>/` (by mtime) | `artifacts_max_age_hours` | 24 hours (backstop — live removal happens on session delete) |
 | Telegram media | `~/.odek/media/` (by mtime) | fixed: 1 hour | freed bytes reported |
 | Logs | `~/.odek/telegram.log`, `~/.odek/schedule.log` | `log_max_mb` | 50 MB (rotated) |
 

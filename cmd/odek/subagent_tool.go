@@ -305,6 +305,11 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 	for i, r := range results {
 		fmt.Fprintf(&buf, "─── Task %d: %s ───\n", i+1, truncate(input.Tasks[i].Goal, 60))
 		buf.WriteString(formatTaskResult(r, dirs[i]))
+		// M2: validated refs join the session registry so artifact_read can
+		// resolve them by id later in the turn.
+		if notes := registerTaskArtifacts(r, dirs[i], i); len(notes) > 0 {
+			buf.WriteString(strings.Join(notes, "\n") + "\n")
+		}
 		buf.WriteString("\n\n")
 	}
 	// The aggregated sub-agent output comes from a separate process and may
@@ -866,6 +871,11 @@ func subagentCompletedEvent(taskID string, result map[string]any, fallbackStatus
 			if v, ok := result[k]; ok {
 				data[k] = v
 			}
+		}
+		if arts, ok := result["artifacts"].([]any); ok && len(arts) > 0 {
+			// Count only — refs (hashes) stay out of the event stream per the
+			// hash-only event policy.
+			data["artifact_count"] = len(arts)
 		}
 	}
 	return events.Event{

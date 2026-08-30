@@ -976,6 +976,7 @@ Every field has an `ODEK_MAINTENANCE_*` environment override.
 | `audit_max_age_days` | `ODEK_MAINTENANCE_AUDIT_MAX_AGE_DAYS` | `14` | Delete `~/.odek/sessions/audit/*.json` records older than this. `0` = keep forever. |
 | `log_max_mb` | `ODEK_MAINTENANCE_LOG_MAX_MB` | `50` | Rotate `~/.odek/telegram.log` and `~/.odek/schedule.log` larger than this: current log becomes `<name>.1` (one backup generation) and a fresh empty log is started. `0` = no rotation. |
 | `plans_max_age_days` | `ODEK_MAINTENANCE_PLANS_MAX_AGE_DAYS` | `30` | Delete Telegram plan files (`~/.odek/plans/**/*.md`) older than this; emptied chat directories are removed. `0` = keep forever. |
+| `artifacts_max_age_hours` | `ODEK_MAINTENANCE_ARTIFACTS_MAX_AGE_HOURS` | `24` | Delete sub-agent result artifact subtrees (`~/.odek/artifacts/<session>/`) older than this. This is the **backstop** — the primary lifecycle is the session-cleanup cascade (deleting a session removes its artifacts immediately). `0` = keep forever. |
 
 Downloaded Telegram media (`~/.odek/media/`, including per-chat `chat<id>/`
 subdirectories) is always swept after 1 hour; that policy is not configurable.
