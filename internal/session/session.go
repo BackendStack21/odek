@@ -16,6 +16,7 @@
 package session
 
 import (
+	"github.com/BackendStack21/odek/internal/artifact"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -179,6 +180,13 @@ type Store struct {
 	// (SaveNoIndex is the deliberate per-turn exception). Call
 	// InitVectorIndex() to initialize.
 	Vec *VectorIndex
+
+	// OnDelete, when non-nil, fires after a successful Delete or Cleanup
+	// removal of a validated session id — OUTSIDE the store mutex, errors
+	// swallowed (best-effort, like Vec.Remove). The delegate_tasks artifact
+	// cascade uses it to remove the session's artifact subtree; a default is
+	// wired in NewStoreWithDir and explicit assignments override it.
+	OnDelete func(id string)
 }
 
 // NewStore creates a session store rooted at ~/.odek/sessions/.
@@ -199,7 +207,17 @@ func NewStoreWithDir(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("session: create dir: %w", err)
 	}
-	return &Store{dir: dir}, nil
+	s := &Store{dir: dir}
+	// Default artifact cascade (SUBAGENT_RESULT_ARTIFACTS_PLAN.md §3.9):
+	// delegate_tasks artifacts live in the sibling artifacts/ dir keyed by
+	// session id; when a session is deleted its subtree dies with it, on
+	// every deletion path (CLI, serve API, telegram, janitor Cleanup).
+	// Best-effort; explicit OnDelete assignments override this default.
+	artDir := filepath.Join(filepath.Dir(dir), "artifacts")
+	s.OnDelete = func(id string) {
+		_ = artifact.RemoveSessionSubtree(artDir, id)
+	}
+	return s, nil
 }
 
 // InitVectorIndex initializes the semantic search index using the embedding
@@ -850,14 +868,30 @@ func (s *Store) List(limit int) ([]Session, error) {
 
 // Delete removes a session file from disk and removes its entry from
 // the session index. Returns nil if the file doesn't exist (idempotent delete).
+// Fires OnDelete (when set) after a successful removal.
 func (s *Store) Delete(id string) error {
 	if err := ValidateSessionID(id); err != nil {
 		return err
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	err := s.removeLocked(id)
+	if err == nil {
+		idx := s.loadIndex()
+		delete(idx, id)
+		err = s.saveIndexLocked(idx)
+	}
+	s.mu.Unlock()
 
+	if err == nil && s.OnDelete != nil {
+		s.OnDelete(id)
+	}
+	return err
+}
+
+// removeLocked deletes the session FILE and its vector-index entry. The
+// store mutex must be held. A missing file is nil (idempotent).
+func (s *Store) removeLocked(id string) error {
 	err := os.Remove(s.path(id))
 	if os.IsNotExist(err) {
 		return nil
@@ -865,19 +899,10 @@ func (s *Store) Delete(id string) error {
 	if err != nil {
 		return err
 	}
-
-	// Remove from index atomically.
-	idx := s.loadIndex()
-	delete(idx, id)
-	if err := s.saveIndexLocked(idx); err != nil {
-		return err
-	}
-
-	// Remove from vector index.
+	// Remove from vector index to prevent stale entries.
 	if s.Vec != nil {
 		_ = s.Vec.Remove(id) // best-effort
 	}
-
 	return nil
 }
 
@@ -890,9 +915,9 @@ func (s *Store) Cleanup(before time.Time) (int, error) {
 	idx := s.loadIndex()
 	if len(idx) > 0 {
 		s.mu.Lock()
-		defer s.mu.Unlock()
 
 		var deleted, purged int
+		var cascaded []string
 		for id, e := range idx {
 			// Validate before filesystem use: a planted/tampered index entry
 			// must not direct deletions outside the store dir (same threat
@@ -903,20 +928,25 @@ func (s *Store) Cleanup(before time.Time) (int, error) {
 				continue
 			}
 			if e.UpdatedAt.Before(before) {
-				if err := os.Remove(s.path(id)); err != nil && !os.IsNotExist(err) {
+				if err := s.removeLocked(id); err != nil {
+					s.mu.Unlock()
 					return deleted, fmt.Errorf("session: delete %q: %w", id, err)
 				}
 				delete(idx, id)
-				// Remove from vector index to prevent stale entries.
-				if s.Vec != nil {
-					_ = s.Vec.Remove(id) // best-effort
-				}
+				cascaded = append(cascaded, id)
 				deleted++
 			}
 		}
 		if deleted > 0 || purged > 0 {
 			if err := s.saveIndexLocked(idx); err != nil {
+				s.mu.Unlock()
 				return deleted, err
+			}
+		}
+		s.mu.Unlock()
+		if s.OnDelete != nil {
+			for _, id := range cascaded {
+				s.OnDelete(id)
 			}
 		}
 		return deleted, nil

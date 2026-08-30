@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek"
+	"github.com/BackendStack21/odek/internal/artifact"
 	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
@@ -327,6 +328,7 @@ type subagentResult struct {
 	Denials         []SubagentDenial `json:"denials,omitempty"`        // policy denials observed (capped)
 	DenialsTotal    int              `json:"denials_total,omitempty"`  // total denials seen
 	ParentSession   string           `json:"parent_session,omitempty"` // correlation id from --parent-session
+	Artifacts       []artifact.Ref   `json:"artifacts,omitempty"`      // odek.artifact-ref/v1 — runner-scanned, parent-validated
 }
 
 // ── Subagent Command ─────────────────────────────────────────────────
@@ -439,6 +441,11 @@ type taskFileSpec struct {
 	Profile     string      `json:"profile,omitempty"`
 	Budget      *taskBudget `json:"budget,omitempty"`
 	ParentTrust string      `json:"parent_trust,omitempty"`
+	// ArtifactRoot is the per-task directory the PARENT created
+	// (~/.odek/artifacts/<session>/<task>). When set, the runner scans it at
+	// exit and attaches odek.artifact-ref/v1 refs to the result. Additive
+	// field — parents that do not send it get zero artifact behavior.
+	ArtifactRoot string `json:"artifact_root,omitempty"`
 }
 
 // decodeTaskFileSpec parses task-file bytes into a taskFileSpec.
@@ -482,6 +489,7 @@ func subagentCmd(args []string) error {
 	var taskMaxRisk string
 	var taskProfile string                 // capability profile selected by the parent (P4)
 	var taskBudgetBlock *taskBudget        // parent's remaining budget (share mode)
+	var taskArtifactRoot string           // per-task artifact dir from the envelope (M1)
 	var parentTrust string                 // parent's own effective trust (P3)
 	var taskID string                      // telemetry correlation id (protocol-2 parents)
 	var taskProtocol int                   // telemetry protocol version from the envelope
@@ -511,6 +519,7 @@ func subagentCmd(args []string) error {
 		taskProfile = taskSpec.Profile
 		taskBudgetBlock = taskSpec.Budget
 		parentTrust = taskSpec.ParentTrust
+		taskArtifactRoot = taskSpec.ArtifactRoot
 		// Telemetry correlation (sub-agent telemetry M1): protocol-2 parents
 		// stamp a task id; the child echoes it on every stdout record and
 		// frames its final result so the parent cannot misparse.
@@ -601,6 +610,15 @@ func subagentCmd(args []string) error {
 	// string ever enters the system prompt.
 	systemMsg := subagentSystem + "\n\n" + buildLifespanBlock(cfg.timeout, cfg.maxIter, resolved.Limits)
 	prompt := buildSubagentRequest(cfg.goal, taskGuidance, cfg.context, taskTrust == "untrusted")
+	if taskArtifactRoot != "" {
+		// Trusted runner text OUTSIDE any untrusted fence: the dir is
+		// infrastructure the parent created (same trust as the task-file
+		// path). Inside the fence it would be neutralized for untrusted
+		// tasks, silently disabling artifacts exactly where they matter.
+		prompt += "\n\nArtifact output: any deliverable larger than a short headline must ALSO be written as a file in " +
+			taskArtifactRoot +
+			" (use your file tools; plain files, no subdirectories). Files there are delivered to the parent automatically — do not repeat their contents in your final answer."
+	}
 
 	// Build tools
 	sm := skills.NewSkillManagerWithEmbedding(
@@ -816,6 +834,17 @@ func subagentCmd(args []string) error {
 
 	// Extract files changed from tool calls
 	result.FilesChanged = extractFilesChanged(allMessages)
+
+	// M1 artifact scan: refs are runner-built (hashes/sizes measured here,
+	// never model-fabricated); scan flags ride the summary so the parent
+	// sees why an artifact is missing.
+	if taskArtifactRoot != "" {
+		refs, flags := scanArtifacts(taskArtifactRoot, maxArtifactTaskBudget)
+		result.Artifacts = refs
+		if len(flags) > 0 {
+			result.Summary = strings.TrimSpace(summary + "\n" + strings.Join(flags, "\n"))
+		}
+	}
 
 	// Output JSON to stdout — the envelope is emitted exactly once, here.
 	// Protocol-2 children emit a compact subagent_finished record followed

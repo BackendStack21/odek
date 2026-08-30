@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek"
+	"github.com/BackendStack21/odek/internal/artifact"
 	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/events"
@@ -42,6 +43,17 @@ type delegateTasksTool struct {
 	odekPath       string // path to the odek binary
 	apiKey         string // re-injected into sub-agent environment
 	timeout        time.Duration
+
+	// sessionID is the parent agent's session id (optional — SetSessionID).
+	// Artifact outputs file under <artifactsRoot>/<sessionID>/<taskID>/;
+	// empty means the unfiled subtree (janitor backstop territory).
+	sessionID string
+
+	// artifactsRoot is the artifacts home (~/.odek/artifacts in production,
+	// wired in builtinTools). When empty, no artifact dirs are created and
+	// tasks run without the artifact channel — the bare-struct tests stay
+	// side-effect free.
+	artifactsRoot string
 
 	// profiles carries the operator's resolved capability profiles (P4)
 	// for parent-side fail-closed validation: an unknown profile name must
@@ -229,18 +241,31 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 
 	// Run sub-agents in parallel with concurrency limit
 	results := make([]string, len(input.Tasks))
+	dirs := make([]string, len(input.Tasks)) // per-task artifact dirs (parent-created)
 	sem := make(chan struct{}, t.maxConcurrency)
 	var mu sync.Mutex
 
 	for i, task := range input.Tasks {
 		sem <- struct{}{}
-		go func(i int, goal, ctx, guidance, trust, maxRisk, profile string) {
+		// Task id is minted HERE (not inside runTask) so the per-task
+		// artifact dir can be created serially and correlated with the id
+		// the child echoes on every telemetry record.
+		taskID := newTaskID()
+		// Per-task artifact dir is created serially (MkdirAll idempotent, but
+		// serial keeps 0700 semantics obvious) and captured by the goroutine.
+		// Skipped entirely when no artifacts root is wired (bare-struct tests).
+		if t.artifactsRoot != "" {
+			if d, dirErr := taskArtifactDir(t.artifactsRoot, t.sessionID, taskID); dirErr == nil {
+				dirs[i] = d
+			}
+		}
+		go func(i int, taskID, goal, ctx, guidance, trust, maxRisk, profile, artifactDir string) {
 			defer func() { <-sem }()
-			r := t.runTask(i, goal, ctx, guidance, trust, maxRisk, profile)
+			r := t.runTask(i, taskID, goal, ctx, guidance, trust, maxRisk, profile, artifactDir)
 			mu.Lock()
 			results[i] = r
 			mu.Unlock()
-		}(i, task.Goal, task.Context, task.Guidance, task.TrustLevel, task.MaxRisk, task.Profile)
+		}(i, taskID, task.Goal, task.Context, task.Guidance, task.TrustLevel, task.MaxRisk, task.Profile, dirs[i])
 	}
 
 	// Drain semaphore = wait for all goroutines
@@ -279,7 +304,7 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 	buf.WriteString("📋 Sub-agent results:\n\n")
 	for i, r := range results {
 		fmt.Fprintf(&buf, "─── Task %d: %s ───\n", i+1, truncate(input.Tasks[i].Goal, 60))
-		buf.WriteString(formatTaskResult(r))
+		buf.WriteString(formatTaskResult(r, dirs[i]))
 		buf.WriteString("\n\n")
 	}
 	// The aggregated sub-agent output comes from a separate process and may
@@ -288,7 +313,7 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 	return wrapUntrusted(t.toolCtx(), "delegate_tasks", buf.String()), nil
 }
 
-func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, trustLevel, maxRisk, profile string) string {
+func (t *delegateTasksTool) runTask(taskIdx int, taskID, goal, taskContext, guidance, trustLevel, maxRisk, profile, artifactDir string) string {
 	// Parent-side fail-closed validation (P4): an unknown profile name must
 	// fail the task BEFORE a child is spawned — the tool schema promises
 	// "unknown names fail the task", and a silently-bare child would run
@@ -319,16 +344,15 @@ func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, tr
 
 	// Typed task envelope: the parent's remaining budget rides along in
 	// share mode (M1.5) and the parent's effective trust is stamped for
-	// the non-increasing-downward invariant (P3). taskID is the telemetry
-	// correlation id (sub-agent telemetry M1).
-	taskID := newTaskID()
-
-	// Register the per-task cancel func in the process-global stop
-	// control registry (WS subagent_cancel resolves task ids through it,
-	// mirroring the promptCancels precedent). Removed on every exit path.
+	// the non-increasing-downward invariant (P3). taskID is minted by the
+	// caller (delegate_tasks loop) and doubles as the artifact-dir name.
+	// Register the per-task cancel func in the process-global stop control
+	// registry (WS subagent_cancel resolves task ids through it, mirroring
+	// the promptCancels precedent). Removed on every exit path.
 	defer registerSubagentCancel(taskID, cancel)()
 
 	task := newTaskEnvelope(taskID, goal, taskContext, guidance, trustLevel, maxRisk, profile, nil, t.selfTrust)
+	task.ArtifactRoot = artifactDir
 	if t.budgetInherit == config.BudgetInheritShare {
 		t.budgetMu.Lock()
 		view := t.budgetView
@@ -513,10 +537,15 @@ const (
 
 // formatTaskResult renders one child's framed result as compact text for the
 // parent's context. Parsed envelopes render as fields (status, headline,
-// files, denials); anything unparseable falls back to the raw payload capped
-// at maxSubagentSummaryResultBytes. Child output is model-controlled and
-// stays inside the caller's untrusted wrapper.
-func formatTaskResult(raw string) string {
+// files, denials, artifacts); anything unparseable falls back to the raw
+// payload capped at maxSubagentSummaryResultBytes. Child output is
+// model-controlled and stays inside the caller's untrusted wrapper.
+//
+// artifactRoots carries the per-task artifact dir(s) the parent created:
+// every incoming ref is validated fail-closed against them before render
+// (metadata-only line; small text artifacts inlined). No roots ⇒ every ref
+// is rejected — a lost root can never become a trust upgrade.
+func formatTaskResult(raw string, artifactRoots ...string) string {
 	var r subagentResult
 	if err := json.Unmarshal([]byte(raw), &r); err != nil {
 		if len(raw) > maxSubagentSummaryResultBytes {
@@ -575,6 +604,47 @@ func formatTaskResult(raw string) string {
 			parts = append(parts, d.Tool+"/"+d.Class+" — "+d.Reason)
 		}
 		fmt.Fprintf(&b, "denials (%d of %d): %s\n", len(shown), total, strings.Join(parts, "; "))
+	}
+	b.WriteString(renderArtifacts(r.Artifacts, artifactRoots))
+	return b.String()
+}
+
+// renderArtifacts validates each incoming ref fail-closed against the
+// per-task roots and renders metadata-only lines; small text artifacts are
+// inlined from the VALIDATED path returned by artifact.Validate (symlinks
+// resolved, size+sha256 verified). Invalid refs are dropped with a flag —
+// never fatal to the summary. Raw absolute paths are never rendered.
+func renderArtifacts(refs []artifact.Ref, roots []string) string {
+	if len(refs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("artifacts:\n")
+	for _, ref := range refs {
+		path, err := artifact.Validate(ref, roots)
+		if err != nil {
+			fmt.Fprintf(&b, "  [artifact] dropped %q: %v\n", ref.ID, err)
+			continue
+		}
+		size := int64(0)
+		if ref.SizeBytes != nil {
+			size = *ref.SizeBytes
+		}
+		shaPrefix := ref.SHA256
+		if len(shaPrefix) > 12 {
+			shaPrefix = shaPrefix[:12]
+		}
+		fmt.Fprintf(&b, "  - %s (%s, %d bytes, sha256:%s)", ref.ID, ref.MediaType, size, shaPrefix)
+		if ref.Summary != "" {
+			fmt.Fprintf(&b, " — %s", truncate(ref.Summary, maxArtifactSummaryLine))
+		}
+		b.WriteString("\n")
+
+		if strings.HasPrefix(ref.MediaType, "text/") && size <= maxInlineArtifactBytes {
+			if data, err := os.ReadFile(path); err == nil {
+				fmt.Fprintf(&b, "  --- artifact: %s ---\n%s\n  --- end artifact ---\n", ref.ID, strings.TrimRight(string(data), "\n"))
+			}
+		}
 	}
 	return b.String()
 }
@@ -692,16 +762,17 @@ func taskBudgetFromSnapshot(s budget.Snapshot) *taskBudget {
 
 // taskEnvelope is the task-file JSON contract handed to `odek subagent`.
 type taskEnvelope struct {
-	TaskID      string      `json:"task_id"`
-	Protocol    int         `json:"protocol,omitempty"`
-	Goal        string      `json:"goal"`
-	Context     string      `json:"context,omitempty"`
-	Guidance    string      `json:"guidance,omitempty"`
-	TrustLevel  string      `json:"trust_level,omitempty"`
-	MaxRisk     string      `json:"max_risk,omitempty"`
-	Profile     string      `json:"profile,omitempty"`
-	Budget      *taskBudget `json:"budget,omitempty"`
-	ParentTrust string      `json:"parent_trust,omitempty"`
+	TaskID       string      `json:"task_id"`
+	Protocol     int         `json:"protocol,omitempty"`
+	Goal         string      `json:"goal"`
+	Context      string      `json:"context,omitempty"`
+	Guidance     string      `json:"guidance,omitempty"`
+	TrustLevel   string      `json:"trust_level,omitempty"`
+	MaxRisk      string      `json:"max_risk,omitempty"`
+	Profile      string      `json:"profile,omitempty"`
+	Budget       *taskBudget `json:"budget,omitempty"`
+	ParentTrust  string      `json:"parent_trust,omitempty"`
+	ArtifactRoot string      `json:"artifact_root,omitempty"`
 }
 
 // subagentProtocolV2 is the telemetry protocol version stamped into task
