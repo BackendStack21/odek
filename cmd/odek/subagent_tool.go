@@ -519,7 +519,7 @@ func (t *delegateTasksTool) runTask(taskIdx int, taskID, goal, taskContext, guid
 		}, "", "  ")
 		return string(out)
 	}
-	return `{"error":"no result from sub-agent"}`
+	return fmt.Sprintf(`{"error":"no result from sub-agent (waitErr=%v, scannerErr=%v)"}`, waitErr, scannerErr)
 }
 
 // maxSubagentSummaryResultBytes caps how much of each sub-agent result is
