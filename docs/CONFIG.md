@@ -287,7 +287,7 @@ Top-level execution knobs. Every one also exists as a CLI flag and an `ODEK_*` e
 | `interaction_mode` | `"engaging"` | Tool-call presentation: `"engaging"` (emoji narration) · `"enhance"` (per-tool narrated messages) · `"verbose"` (raw tool names, args, results) · `"off"` (no progress output, clean answer only) |
 | `no_color` | `false` | Disable colored terminal output |
 | `no_agents` | `false` | Skip loading project `AGENTS.md` |
-| `system` | built-in | Override the system prompt (operator-only; rejected from project configs) |
+| `system` | built-in | Override the system-prompt identity layer — name/mission/persona (operator-only; rejected from project configs). The invariant security pillar is always composed on top and cannot be overridden. |
 
 ## Dangerous-operations policy (`dangerous`)
 
