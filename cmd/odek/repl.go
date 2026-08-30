@@ -78,13 +78,11 @@ func replCmd(args []string) error {
 
 	// Build tools
 	var sm *skills.SkillManager
-	if resolved.Skills.Learn {
-		sm = skills.NewSkillManagerWithEmbedding(
-			expandHome("~/.odek/skills"),
-			"./.odek/skills",
-			resolved.Skills.Embedding,
-		)
-	}
+	sm = skills.NewSkillManagerWithEmbedding(
+		expandHome("~/.odek/skills"),
+		"./.odek/skills",
+		resolved.Skills.Embedding,
+	)
 	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfigFromResolved(resolved), nil)
 
 	// MCP server tools
@@ -134,9 +132,7 @@ func replCmd(args []string) error {
 
 	// Resolve skills config pointer (only when learn mode is enabled)
 	var skillsCfg *skills.SkillsConfig
-	if resolved.Skills.Learn {
-		skillsCfg = &resolved.Skills
-	}
+	skillsCfg = &resolved.Skills
 
 	injectionGuard, err := guard.New(&resolved.Guard)
 	if err != nil {

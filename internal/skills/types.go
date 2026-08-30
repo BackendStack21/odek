@@ -91,16 +91,11 @@ type SkillProvenance struct {
 
 // SkillsConfig holds the skills section of odek.json.
 type SkillsConfig struct {
-	MaxAutoLoad  int            `json:"max_auto_load"`
-	MaxLazySlots int            `json:"max_lazy_slots"`
-	Learn        bool           `json:"learn"`
-	Dirs         []string       `json:"dirs,omitempty"`
-	Import       ImportConfig   `json:"import"`
-	Curation     CurationConfig `json:"curation"`
-	AutoSave     AutoSaveConfig `json:"auto_save"`
-	LLMLearn     bool           `json:"llm_learn"`
-	LLMCurate    bool           `json:"llm_curate"`
-	Verbose      bool           `json:"verbose"` // show full skill banners when loaded
+	MaxAutoLoad  int      `json:"max_auto_load"`
+	MaxLazySlots int      `json:"max_lazy_slots"`
+	Dirs         []string `json:"dirs,omitempty"`
+	Import       ImportConfig `json:"import"`
+	Verbose      bool     `json:"verbose"` // show full skill banners when loaded
 
 	// Embedding opts skill matching into a remote (HTTP) embedding backend for
 	// real semantic matching. nil (default) = local RandomProjections. It is
@@ -116,54 +111,18 @@ type ImportConfig struct {
 	RequireHTTPS bool `json:"require_https"`
 }
 
-// CurationConfig controls automated curation.
-type CurationConfig struct {
-	StalenessDays int  `json:"staleness_days"`
-	AutoPrune     bool `json:"auto_prune"`
-	AutoCurate    bool `json:"auto_curate"`
-	SkipThreshold int  `json:"skip_threshold"`
-	SkipResetDays int  `json:"skip_reset_days"`
-}
-
-// AutoSaveConfig controls automatic skill saving behavior.
-type AutoSaveConfig struct {
-	Enabled    bool `json:"enabled"`
-	RequireLLM bool `json:"require_llm"`
-	MaxPerRun  int  `json:"max_per_run"`
-	// MinOccurrences is how many distinct sessions must produce a
-	// suggestion before it may be auto-saved. 1 disables the recurrence
-	// gate; the default of 2 keeps one-off sessions from becoming skills.
-	MinOccurrences int `json:"min_occurrences"`
-}
-
 // DefaultSkillsConfig returns sensible defaults for the skills system.
 func DefaultSkillsConfig() SkillsConfig {
 	return SkillsConfig{
 		MaxAutoLoad:  3,
 		MaxLazySlots: 5,
-		Learn:        true,
 		Dirs:         nil, // computed at runtime
 		Import: ImportConfig{
 			MaxSizeBytes: 1_048_576, // 1MB
 			TimeoutSecs:  5,
 			RequireHTTPS: false,
 		},
-		Curation: CurationConfig{
-			StalenessDays: 90,
-			AutoPrune:     false,
-			AutoCurate:    true,
-			SkipThreshold: 3,
-			SkipResetDays: 30,
-		},
-		AutoSave: AutoSaveConfig{
-			Enabled:        true,
-			RequireLLM:     true,
-			MaxPerRun:      3,
-			MinOccurrences: 2,
-		},
-		LLMLearn:  true,
-		LLMCurate: true,
-		Verbose:   false,
+		Verbose: false,
 	}
 }
 

@@ -591,13 +591,11 @@ func subagentCmd(args []string) error {
 
 	// Build tools
 	var sm *skills.SkillManager
-	if resolved.Skills.Learn {
-		sm = skills.NewSkillManagerWithEmbedding(
-			expandHome("~/.odek/skills"),
-			"./.odek/skills",
-			resolved.Skills.Embedding,
-		)
-	}
+	sm = skills.NewSkillManagerWithEmbedding(
+		expandHome("~/.odek/skills"),
+		"./.odek/skills",
+		resolved.Skills.Embedding,
+	)
 	subTcfg := toolConfigFromResolved(resolved)
 	subTcfg.SelfTrust = effectiveTrustLevel
 	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, subTcfg, nil)

@@ -663,32 +663,6 @@ func TestRun_WithMockModelAndSession(t *testing.T) {
 	}
 }
 
-func TestRun_WithMockModelAndLearn(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"choices":[{"message":{"content":"learn mock response"}}]}`))
-	}))
-	defer server.Close()
-
-	origDS := os.Getenv("DEEPSEEK_API_KEY")
-	origOAI := os.Getenv("OPENAI_API_KEY")
-	origHome := os.Getenv("HOME")
-	os.Setenv("DEEPSEEK_API_KEY", "sk-mock")
-	os.Unsetenv("OPENAI_API_KEY")
-	os.Setenv("HOME", t.TempDir())
-	defer func() {
-		os.Setenv("DEEPSEEK_API_KEY", origDS)
-		os.Setenv("OPENAI_API_KEY", origOAI)
-		os.Setenv("HOME", origHome)
-	}()
-
-	// Learn mode tests the learn loop branch of run()
-	err := run([]string{"--learn", "--base-url", server.URL, "learn test task"})
-	if err != nil {
-		t.Fatalf("run() with learn and mock model should succeed, got: %v", err)
-	}
-}
-
 // Test getVersion() when version is empty — verifies it doesn't panic
 // and returns a sensible fallback (dev, tag, or revision).
 func TestGetVersion_EmptyVersionNoPanic(t *testing.T) {
@@ -1202,8 +1176,8 @@ func TestInitConfig_GlobalTemplateLoadsClean(t *testing.T) {
 	if fc.Dangerous == nil {
 		t.Error("global template should include the dangerous section")
 	}
-	if fc.Skills == nil || fc.Skills.AutoSave == nil {
-		t.Error("global template should include skills.auto_save")
+	if fc.Skills == nil {
+		t.Error("global template should include the skills section")
 	}
 	if fc.Compaction == nil || !*fc.Compaction {
 		t.Error("global template should pin compaction to true (the documented default)")

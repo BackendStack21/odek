@@ -756,13 +756,11 @@ func (c *wsDeltaCounters) snapshot() (reasoning, content int) {
 
 func newServeAgent(resolved config.ResolvedConfig, system string, runKey string, sendFn func(v any) error, deltas *wsDeltaCounters) (*odek.Agent, func() error, func(), func() error, guard.Guard, *wsApprover, error) {
 	var sm *skills.SkillManager
-	if resolved.Skills.Learn {
-		sm = skills.NewSkillManagerWithEmbedding(
-			expandHome("~/.odek/skills"),
-			"./.odek/skills",
-			resolved.Skills.Embedding,
-		)
-	}
+	sm = skills.NewSkillManagerWithEmbedding(
+		expandHome("~/.odek/skills"),
+		"./.odek/skills",
+		resolved.Skills.Embedding,
+	)
 
 	// Create WebSocket approver for dangerous operations approval
 	approver := newWSApprover(sendFn)

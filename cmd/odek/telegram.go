@@ -1651,9 +1651,7 @@ func handleChatMessage(
 
 	// Resolve skills config (same logic as main.go run command).
 	var skillsCfg *skills.SkillsConfig
-	if resolved.Skills.Learn {
-		skillsCfg = &resolved.Skills
-	}
+	skillsCfg = &resolved.Skills
 
 	agentCfg := odek.Config{
 		Model:            resolved.Model,

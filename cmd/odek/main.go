@@ -318,7 +318,6 @@ type runFlags struct {
 	Compaction     *bool   // nil = not set; true = enable rolling compaction
 	Planning       *bool   // nil = not set; false disables the plan tool
 	Session        *bool   // nil = not set; true = save session after run
-	Learn          *bool   // nil = not set; true = enable skills learning mode
 	Task           string
 
 	// ToolsEnabled and ToolsDisabled control which tools are exposed to the LLM.
@@ -477,12 +476,6 @@ func parseRunFlags(args []string) (runFlags, error) {
 			i++
 		case "--no-sandbox":
 			f.Sandbox = boolPtr(false)
-			i++
-		case "--learn":
-			f.Learn = boolPtr(true)
-			i++
-		case "--no-learn":
-			f.Learn = boolPtr(false)
 			i++
 		case "--tool":
 			if i+1 >= len(args) {
@@ -829,14 +822,6 @@ done:
 				f.NoAgents = boolPtr(true)
 				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
 				j--
-			case "--no-learn":
-				f.Learn = boolPtr(false)
-				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-				j--
-			case "--learn":
-				f.Learn = boolPtr(true)
-				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
-				j--
 			case "--prompt-caching":
 				f.PromptCaching = boolPtr(true)
 				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
@@ -1172,8 +1157,6 @@ Run flags:
   --max-cost-usd <n>    Hard execution budget: max estimated cost in USD
                         (needs limits.*_cost_per_million_usd prices in
                         ~/.odek/config.json; budget exhaustion exits with code 4)
-  --learn              Enable skill learning mode — on by default, no flag needed
-  --no-learn           Disable skill learning mode (overrides config/default)
   --tool <name>        Enable a tool for the LLM (repeatable)
   --no-tool <name>     Disable a tool for the LLM (repeatable)
   --system <prompt>    System prompt override
@@ -1310,28 +1293,12 @@ const globalConfigTemplate = `{
   "skills": {
     "max_auto_load": 3,
     "max_lazy_slots": 5,
-    "learn": true,
-    "llm_learn": true,
-    "llm_curate": true,
     "verbose": false,
     "dirs": [],
-    "auto_save": {
-      "enabled": true,
-      "require_llm": true,
-      "max_per_run": 3,
-      "min_occurrences": 2
-    },
     "import": {
       "max_size_bytes": 1048576,
       "timeout_seconds": 5,
       "require_https": false
-    },
-    "curation": {
-      "staleness_days": 90,
-      "auto_prune": false,
-      "auto_curate": true,
-      "skip_threshold": 3,
-      "skip_reset_days": 30
     }
   },
   "memory": {
@@ -1425,9 +1392,6 @@ const localConfigTemplate = `{
   "skills": {
     "max_auto_load": 3,
     "max_lazy_slots": 5,
-    "learn": true,
-    "llm_learn": true,
-    "llm_curate": true,
     "verbose": false
   },
   "subagent": {
@@ -1591,7 +1555,6 @@ func run(args []string) error {
 		Stream:        f.Stream,
 		Compaction:    f.Compaction,
 		Planning:      f.Planning,
-		Learn:         f.Learn,
 		System:        f.System,
 		Task:          f.Task,
 		ToolsEnabled:  f.ToolsEnabled,
@@ -1665,13 +1628,11 @@ func run(args []string) error {
 
 	// Skills setup
 	var sm *skills.SkillManager
-	if resolved.Skills.Learn {
-		sm = skills.NewSkillManagerWithEmbedding(
-			expandHome("~/.odek/skills"),
-			"./.odek/skills",
-			resolved.Skills.Embedding,
-		)
-	}
+	sm = skills.NewSkillManagerWithEmbedding(
+		expandHome("~/.odek/skills"),
+		"./.odek/skills",
+		resolved.Skills.Embedding,
+	)
 
 	// Sandbox setup
 	var sandboxCleanup func() error
@@ -1722,9 +1683,7 @@ func run(args []string) error {
 
 	// Wire skill verbosity to the renderer so skill lifecycle
 	// notifications (save, suggest, delete) respect the config.
-	if resolved.Skills.Learn {
-		rend.WithSkillVerbose(resolved.Skills.Verbose)
-	}
+	rend.WithSkillVerbose(resolved.Skills.Verbose)
 
 	// Surface memory lifecycle + agent-signal notifications in verbose mode so
 	// fact/episode activity and silent recoveries (context trim, tool recovery)
@@ -1733,9 +1692,7 @@ func run(args []string) error {
 
 	// Resolve skills config pointer (only when learn mode is enabled)
 	var skillsCfg *skills.SkillsConfig
-	if resolved.Skills.Learn {
-		skillsCfg = &resolved.Skills
-	}
+	skillsCfg = &resolved.Skills
 
 	// Build the shared prompt-injection guard. Provider "local" is zero-dependency
 	// and works without any sidecar; "piguard" requires a reachable HTTP/Unix
@@ -2849,13 +2806,11 @@ func continueCmd(args []string) error {
 
 	// Build tools
 	var sm *skills.SkillManager
-	if resolved.Skills.Learn {
-		sm = skills.NewSkillManagerWithEmbedding(
-			expandHome("~/.odek/skills"),
-			"./.odek/skills",
-			resolved.Skills.Embedding,
-		)
-	}
+	sm = skills.NewSkillManagerWithEmbedding(
+		expandHome("~/.odek/skills"),
+		"./.odek/skills",
+		resolved.Skills.Embedding,
+	)
 	tools := buildContinueTools(resolved, sm, store)
 
 	// MCP server tools
@@ -2902,9 +2857,7 @@ func continueCmd(args []string) error {
 
 	// Resolve skills config pointer (only when learn mode is enabled)
 	var skillsCfg *skills.SkillsConfig
-	if resolved.Skills.Learn {
-		skillsCfg = &resolved.Skills
-	}
+	skillsCfg = &resolved.Skills
 
 	injectionGuard, err := guard.New(&resolved.Guard)
 	if err != nil {
