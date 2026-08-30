@@ -261,3 +261,52 @@ func copyFileContents(src, dst string) error {
 	}
 	return out.Close()
 }
+
+const (
+	// stagingSweepMaxAge matches the janitor backstop retention: orphaned
+	// staging subtrees (crash/kill before relocation) older than this are
+	// swept by the next artifact-bearing run in the same workspace.
+	stagingSweepMaxAge = 24 * time.Hour
+	// stagingGitignore keeps staged deliverables out of the user's
+	// repository — the staging root lives INSIDE the workspace.
+	stagingGitignore = "*\n!.gitignore\n"
+)
+
+// ensureStagingRoot creates the staging root (0700) and drops a
+// self-gitignore so staged deliverables never land in the user's
+// repository. Idempotent; best-effort.
+func ensureStagingRoot(cwd string) {
+	root := filepath.Join(cwd, stagingDirName)
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(root, ".gitignore"), []byte(stagingGitignore), 0o600)
+}
+
+// sweepStagingOrphans removes sibling staging task dirs older than maxAge —
+// crash/kill orphans the runner could not clean (the janitor only knows
+// ~/.odek, not user workspaces). The current task's dir is never touched,
+// and fresh siblings may belong to in-flight parallel tasks in the same
+// workspace. Returns the number of subtrees removed.
+func sweepStagingOrphans(cwd, currentTaskID string, maxAge time.Duration) int {
+	root := filepath.Join(cwd, stagingDirName)
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return 0
+	}
+	cutoff := time.Now().Add(-maxAge)
+	removed := 0
+	for _, e := range entries {
+		if !e.IsDir() || e.Name() == currentTaskID {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		if os.RemoveAll(filepath.Join(root, e.Name())) == nil {
+			removed++
+		}
+	}
+	return removed
+}
