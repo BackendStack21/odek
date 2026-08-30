@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -65,7 +66,22 @@ func TestShellTool_Danger_DestructiveDeniedByDefault(t *testing.T) {
 	}
 }
 
+// skipIfSudoNeedsPassword guards the approve-then-execute tests: after the
+// scripted approval, the shell tool really executes the command. On hosts
+// where sudo requires a password, sudo opens the REAL /dev/tty for the
+// password prompt and the test blocks forever (observed 2026-08-30 on
+// macOS — the watchdog eventually kills it). The approval-gate assertions
+// don't need the command to succeed, only to not be denied by the security
+// layer, so skipping is honest.
+func skipIfSudoNeedsPassword(t *testing.T) {
+	t.Helper()
+	if err := exec.Command("sudo", "-n", "true").Run(); err != nil {
+		t.Skip("sudo requires a password — approved sudo commands would block on the real TTY")
+	}
+}
+
 func TestShellTool_Danger_SystemWritePromptApprove(t *testing.T) {
+	skipIfSudoNeedsPassword(t)
 	tty, cleanup := writeTTY(t, "a")
 	defer cleanup()
 
@@ -93,6 +109,7 @@ func TestShellTool_Danger_SystemWritePromptDeny(t *testing.T) {
 }
 
 func TestShellTool_Danger_SystemWriteTrustSession(t *testing.T) {
+	skipIfSudoNeedsPassword(t)
 	tty, cleanup := writeTTY(t, "t")
 	defer cleanup()
 
@@ -117,6 +134,7 @@ func TestShellTool_Danger_SystemWriteTrustSession(t *testing.T) {
 }
 
 func TestShellTool_Danger_ConfigOverrideAllow(t *testing.T) {
+	skipIfSudoNeedsPassword(t)
 	tty, cleanup := writeTTY(t, "d") // user says deny, but config should overrule
 	defer cleanup()
 
@@ -159,6 +177,7 @@ func TestShellTool_Danger_NonInteractiveFallbackDeny(t *testing.T) {
 }
 
 func TestShellTool_Danger_NonInteractiveFallbackAllow(t *testing.T) {
+	skipIfSudoNeedsPassword(t)
 	dc := danger.DangerousConfig{
 		NonInteractive: strPtr("allow"),
 	}
@@ -174,6 +193,7 @@ func TestShellTool_Danger_NonInteractiveFallbackAllow(t *testing.T) {
 }
 
 func TestShellTool_Danger_AllowlistBypassesPrompt(t *testing.T) {
+	skipIfSudoNeedsPassword(t)
 	dc := danger.DangerousConfig{
 		Allowlist: []string{"sudo ls /root"},
 	}
@@ -224,6 +244,7 @@ func TestShellTool_Danger_Description(t *testing.T) {
 }
 
 func TestShellTool_Danger_CachedTrustNotShared(t *testing.T) {
+	skipIfSudoNeedsPassword(t)
 	// Two different tools should not share trust caches
 	tty1, cleanup1 := writeTTY(t, "t")
 	defer cleanup1()

@@ -7,7 +7,30 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
+
+// waitReq polls the recorder until a request whose path ends in suffix
+// appears, and returns the full snapshot. The handler sends media
+// (sendPhoto/sendVoice) asynchronously, so an instant snapshot races the
+// uploader goroutine — under a loaded sequential suite the race was lost
+// and the flow tests failed spuriously (observed 2026-08-30 on macOS).
+func waitReq(t *testing.T, rec *requestRecorder, suffix string) []recordedRequest {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		reqs := rec.all()
+		for _, req := range reqs {
+			if strings.HasSuffix(req.Path, suffix) {
+				return reqs
+			}
+		}
+		if time.Now().After(deadline) {
+			return reqs
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
 
 // ---------------------------------------------------------------------------
 // TestE2E_FullTextMessageFlow — complete poll → handle → response cycle
@@ -644,7 +667,7 @@ func TestE2E_MediaFlow(t *testing.T) {
 	handler.HandleUpdate(updates[0])
 
 	// Verify sendPhoto was called.
-	reqs := rec.all()
+	reqs := waitReq(t, rec, "/sendPhoto")
 	var foundSendPhoto bool
 	for _, req := range reqs {
 		if strings.HasSuffix(req.Path, "/sendPhoto") {
@@ -747,7 +770,7 @@ func TestE2E_VoiceMediaFlow(t *testing.T) {
 
 	handler.HandleUpdate(updates[0])
 
-	reqs := rec.all()
+	reqs := waitReq(t, rec, "/sendVoice")
 	var foundSendVoice bool
 	for _, req := range reqs {
 		if strings.HasSuffix(req.Path, "/sendVoice") {
