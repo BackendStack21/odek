@@ -513,6 +513,8 @@ This is the original layer 1. The `<untrusted_content>` wrappers give the model 
 
 When `AGENTS.md` exists in the working directory, odek appends it to the system prompt. It is treated as project context, not as a user instruction — identity anchoring and the anti-injection rules still apply on top of it. `--no-agents` skips loading.
 
+Operator identity surfaces — `--system`, `ODEK_SYSTEM`, the config `system` field, and `~/.odek/IDENTITY.md` — replace only the **identity layer** (name, mission, persona). Every accepted identity is composed with the invariant security pillar (`securityPillar`: Safety, Execution provenance, and IPI sections — the same text sub-agents carry), idempotently, so no operator surface can run an agent without the security rules. Scanning still fails closed to the compiled-in default. `cmd/odek/system_pillar_test.go` pins force-attachment, single-occurrence composition, and the byte-exact default round-trip.
+
 ---
 
 ## Configuration
