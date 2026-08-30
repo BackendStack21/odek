@@ -1090,7 +1090,7 @@ func printUsage() {
   odek serve [--addr :8080] [--open]
   odek subagent --goal <string> [--context <string>] [flags]
   odek init [--global | -g | --local | -l] [--force | -f]
-  odek skill <list|view|save|delete|promote|import|curate>
+  odek skill <list|view|delete|promote|import>
   odek mcp [--sandbox]
   odek telegram
   odek schedule <list|add|rm|enable|disable|run|next|daemon>
@@ -1114,7 +1114,7 @@ Commands:
                        Spawned by delegate_tasks tool for task decomposition.
                        Accepts --goal, --context, --task, --timeout, --max-iter.
   session             Manage sessions: list, show, delete, trim, cleanup
-  skill               Manage skills: list, view, save, delete, import, curate
+  skill               Manage skills: list, view, delete, promote, import
   mcp                 Start MCP server (Model Context Protocol) over stdio
                         Exposes all built-in tools for Claude Code, Cursor, etc.
   telegram            Start Telegram bot (long-polling mode)
@@ -1185,8 +1185,6 @@ Skill commands:
   odek skill promote <name> [--force] Promote a tainted skill after review
   odek skill import <uri> [flags]    Import a skill from file:// or https://
                                      Flags: --basic (skip LLM), --yes (auto-approve)
-  odek skill curate                  Analyze skills for quality, staleness, overlap
-                                     Flags: --apply (apply changes), --interactive (review one-by-one)
 
 Sandbox flags:
   --sandbox            Run in isolated Docker container
@@ -2331,13 +2329,10 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 	if sm != nil {
 		tools = append(tools,
 			// skill_load returns skill bodies, which are externally-sourced
-			// content (project dirs, prior auto-saves). Wrap the output as
+			// content (project dirs, imported skills). Wrap the output as
 			// untrusted so a poisoned skill cannot pose as instructions.
 			&untrustedToolWrapper{inner: &skills.SkillLoadTool{Manager: sm}, source: "skill_load"},
 			&skills.SkillListTool{Manager: sm},
-			&skills.SkillSaveTool{Manager: sm},
-			&skills.SkillPatchTool{Manager: sm},
-			&skills.SkillDeleteTool{Manager: sm},
 		)
 	}
 
@@ -2597,13 +2592,10 @@ func skillCmd(args []string) error {
 			return fmt.Errorf("usage: odek skill delete <name>")
 		}
 		sm := skills.NewSkillManager(userDir, "./.odek/skills")
-		tool := &skills.SkillDeleteTool{}
-		tool.Manager = sm
-		result, err := tool.Call(jsonMarshalName(subArgs[0]))
-		if err != nil {
+		if err := sm.DeleteSkill(subArgs[0]); err != nil {
 			return err
 		}
-		fmt.Println(result)
+		fmt.Printf("✓ Deleted skill %q\n", subArgs[0])
 		return nil
 
 	case "promote":
