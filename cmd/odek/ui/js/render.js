@@ -525,12 +525,18 @@ export function addSubagentGroup(command) {
         '<div class="sa-icon">⟳</div>' +
         '<div class="sa-goal" title="' + escapeAttr(task.goal || 'Task ' + (i+1)) + '">' + escapeHtml(task.goal || 'Task ' + (i+1)) + '</div>' +
         '<div class="sa-status">running</div>' +
+        '<button class="sa-stop" title="Stop this sub-agent">■</button>' +
       '</div>' +
       '<div class="sa-details">' +
         '<div class="sa-meta"></div>' +
         '<div class="sa-summary"></div>' +
         '<div class="sa-files"></div>' +
       '</div>';
+    // Disarmed until the subagent_state started record delivers the
+    // task_id — the task may still be queued behind the concurrency
+    // semaphore, in which case there is nothing to cancel yet.
+    const stopBtn = card.querySelector('.sa-stop');
+    if (stopBtn) stopBtn.disabled = true;
     grid.appendChild(card);
   });
 
@@ -574,6 +580,8 @@ function parseSubagentResults(output) {
 // the parsed result. Shared by the live path (completeSubagents) and
 // session-history rendering.
 function finalizeSubagentCard(card, result, keepStatus = false) {
+  const stopBtn = card.querySelector('.sa-stop');
+  if (stopBtn) stopBtn.remove();
   if (!keepStatus) {
     card.querySelector('.sa-icon').textContent = '✓';
     card.classList.remove('running');
@@ -654,21 +662,36 @@ export function updateSubagentState(ev) {
   const details = card.querySelector('.sa-details');
   const meta = details ? details.querySelector('.sa-meta') : null;
 
+  // Remember the correlation id so the per-card stop button can target
+  // this sub-agent; the button stays disarmed until it arrives.
+  if (ev.task_id) card.dataset.taskId = ev.task_id;
+  const armStop = () => {
+    const stopBtn = card.querySelector('.sa-stop');
+    if (stopBtn) stopBtn.disabled = !card.dataset.taskId || card.dataset.stopping === '1';
+  };
+
   switch (ev.phase) {
     case 'started':
       statusEl.textContent = 'running';
+      armStop();
       break;
     case 'active':
       statusEl.textContent = '⟳ ' + (ev.tool || 'working') + (ev.step ? ' · ' + ev.step : '');
       if (meta && ev.step) meta.textContent = 'step ' + ev.step + (ev.tool ? ' · ' + ev.tool : '');
+      armStop();
       break;
     case 'finished': {
       card.dataset.finalized = '1';
       card.classList.remove('running');
-      const failed = ev.status && ev.status !== 'success' && ev.status !== 'partial';
-      card.querySelector('.sa-icon').textContent = failed ? '✗' : '✓';
-      card.classList.add(failed ? 'error' : 'completed');
-      statusEl.textContent = failed ? (ev.status || 'failed') : (ev.status === 'partial' ? 'partial' : 'done');
+      const stopBtn = card.querySelector('.sa-stop');
+      if (stopBtn) stopBtn.remove();
+      const cancelled = ev.status === 'cancelled';
+      const failed = !cancelled && ev.status && ev.status !== 'success' && ev.status !== 'partial';
+      card.querySelector('.sa-icon').textContent = cancelled ? '⊘' : (failed ? '✗' : '✓');
+      card.classList.add(cancelled ? 'stopped' : (failed ? 'error' : 'completed'));
+      statusEl.textContent = cancelled ? 'stopped'
+        : failed ? (ev.status || 'failed')
+        : (ev.status === 'partial' ? 'partial' : 'done');
       if (meta) {
         const parts = [];
         if (ev.tokens_used) parts.push(ev.tokens_used + ' tokens');
@@ -686,21 +709,42 @@ export function updateSubagentState(ev) {
   }
 }
 
+// requestSubagentStop asks the server to cancel ONE running sub-agent
+// (per-card stop button). The transport lives behind S.onSubagentStop
+// (wired in main.js, which owns socket + session-token access) so render
+// stays transport-free. Idempotent: no-op on finalized cards, cards
+// without a known task_id, or repeat clicks.
+export function requestSubagentStop(taskIdx) {
+  if (!S.subagentGroup || !S.onSubagentStop) return;
+  const card = S.subagentGroup.querySelectorAll('.subagent-card')[taskIdx];
+  if (!card || card.dataset.finalized === '1' || card.dataset.stopping === '1') return;
+  const taskID = card.dataset.taskId;
+  if (!taskID) return;
+  card.dataset.stopping = '1';
+  const stopBtn = card.querySelector('.sa-stop');
+  if (stopBtn) stopBtn.disabled = true;
+  const statusEl = card.querySelector('.sa-status');
+  if (statusEl) statusEl.textContent = 'stopping…';
+  S.onSubagentStop(taskID);
+}
+
 // updateSubagentHeader shows wave progress on the group header:
 // "Sub-agents · N/M complete · F failed".
 function updateSubagentHeader() {
   if (!S.subagentGroup) return;
   const cards = S.subagentGroup.querySelectorAll('.subagent-card');
   if (!cards.length) return;
-  let done = 0, failed = 0;
+  let done = 0, failed = 0, stopped = 0;
   cards.forEach(c => {
     if (c.classList.contains('completed')) done++;
+    else if (c.classList.contains('stopped')) stopped++;
     else if (c.classList.contains('error')) failed++;
   });
   const header = S.subagentGroup.querySelector('.sg-header');
-  if (header && (done || failed)) {
+  if (header && (done || failed || stopped)) {
     header.textContent = 'Sub-agents · ' + done + '/' + cards.length + ' complete' +
-      (failed ? ' · ' + failed + ' failed' : '');
+      (failed ? ' · ' + failed + ' failed' : '') +
+      (stopped ? ' · ' + stopped + ' stopped' : '');
   }
 }
 

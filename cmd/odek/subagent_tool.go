@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -82,6 +83,24 @@ type delegateTasksTool struct {
 	// and echoed by protocol-2 children on every record. Used by the WebUI
 	// for live log streaming.
 	OnSubagentLog func(taskIdx int, taskID string, line string)
+
+	// OnSubagentDone, if set, is called ONCE when a sub-agent terminates
+	// WITHOUT a parsed result (user cancel, turn cancel, timeout,
+	// flood-kill, crash) — the cases where the child cannot emit its own
+	// subagent_finished record. serve wires it to the registry/WS done
+	// relay so cards do not stay "running" forever. Not called when the
+	// child reported its own finish. Signature: (taskIdx, taskID, status).
+	OnSubagentDone func(taskIdx int, taskID string, status string)
+}
+
+// CancelTask cancels the running sub-agent for taskID (user-initiated
+// stop, e.g. the WebUI card stop button). The per-task cancel func lives
+// in the process-global stop control registry, so any holder of the
+// tool's process can resolve it — same model as session prompt cancels.
+// Returns false when no such task is live (unknown id, already finished,
+// or the child exited before the stop arrived).
+func (t *delegateTasksTool) CancelTask(taskID string) bool {
+	return cancelSubagentTask(taskID)
 }
 
 func (t *delegateTasksTool) Name() string { return "delegate_tasks" }
@@ -308,6 +327,12 @@ func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, tr
 	// the non-increasing-downward invariant (P3). taskID is the telemetry
 	// correlation id (sub-agent telemetry M1).
 	taskID := newTaskID()
+
+	// Register the per-task cancel func in the process-global stop
+	// control registry (WS subagent_cancel resolves task ids through it,
+	// mirroring the promptCancels precedent). Removed on every exit path.
+	defer registerSubagentCancel(taskID, cancel)()
+
 	task := newTaskEnvelope(taskID, goal, taskContext, guidance, trustLevel, maxRisk, profile, nil, t.selfTrust)
 	if t.budgetInherit == config.BudgetInheritShare {
 		t.budgetMu.Lock()
@@ -331,6 +356,13 @@ func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, tr
 		"--quiet",
 		"--stream",
 	)
+	// WaitDelay bounds the post-exit I/O drain: a killed child's orphaned
+	// grandchildren (e.g. a backgrounded sleep) inherit stdout/stderr and
+	// hold the pipes open, which would otherwise hang cmd.Wait (its
+	// stderr copy goroutine waits for EOF) past the cancel. 1s after the
+	// process exits, exec closes the pipes and Wait returns ErrWaitDelay;
+	// result framing then falls through to the ctx-based status.
+	cmd.WaitDelay = subagentWaitDelay
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -385,19 +417,63 @@ func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, tr
 	if t.OnSubagentLog != nil {
 		onLog = func(line string) { t.OnSubagentLog(taskIdx, taskID, line) }
 	}
-	result, lastLine, scannerErr := scanSubagentStream(stdout, onLog)
-	// If the scanner hit its safety limits, cancel the sub-agent context so the
-	// child process is killed instead of continuing to flood stdout.
-	if scannerErr != nil && (progressLimitExceeded(scannerErr)) {
-		cancel()
+	// Scan the child's stdout concurrently with cmd.Wait. Ordering a
+	// full-drain read BEFORE Wait would let a killed child's orphaned
+	// grandchildren (a backgrounded sleep inheriting the stdout fd) hold
+	// the pipe open past the cancel — the stop would only land when the
+	// fd holder exits. Wait returns at process exit; we then close our
+	// pipe end so the scanner cannot hang on an inherited fd.
+	type scanResult struct {
+		result   map[string]any
+		lastLine string
+		err      error
+	}
+	scanCh := make(chan scanResult, 1)
+	go func() {
+		result, lastLine, err := scanSubagentStream(stdout, onLog)
+		// If the scanner hit its safety limits, cancel the sub-agent
+		// context so the child process is killed instead of continuing
+		// to flood stdout. Runs in the goroutine: Wait must not gate the
+		// kill on the drain finishing.
+		if err != nil && progressLimitExceeded(err) {
+			cancel()
+		}
+		scanCh <- scanResult{result, lastLine, err}
+	}()
+
+	waitErr := cmd.Wait()
+	// The process is gone; unblock the scanner if it is still reading
+	// (no-op when the scan already hit EOF). Any buffered final line lost
+	// to the close only matters on the cancel path, whose result framing
+	// is "cancelled" regardless.
+	_ = stdout.Close()
+	scan := <-scanCh
+	result, lastLine, scannerErr := scan.result, scan.lastLine, scan.err
+
+	status := subagentExitStatus(result, waitErr, ctx, scannerErr)
+	t.emitSubagentEvent(subagentCompletedEvent(taskID, result, status))
+	if result == nil && t.OnSubagentDone != nil {
+		// The child died without reporting (user cancel, turn cancel,
+		// timeout, flood-kill, crash): it cannot emit its own
+		// subagent_finished record, so the parent announces the terminal
+		// state to the registry/WS relay.
+		t.OnSubagentDone(taskIdx, taskID, status)
 	}
 
-	if waitErr := cmd.Wait(); waitErr != nil {
-		t.emitSubagentEvent(subagentCompletedEvent(taskID, result, subagentExitStatus(result, waitErr, ctx, scannerErr)))
-		// Process exited with error — result may still be valid
-		if result != nil {
-			summary, _ := json.MarshalIndent(result, "", "  ")
-			return string(summary)
+	// Process exited — result may still be valid (parseable final line
+	// before a non-zero exit).
+	if result != nil {
+		summary, _ := json.MarshalIndent(result, "", "  ")
+		return string(summary)
+	}
+
+	if waitErr != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			out, _ := json.MarshalIndent(map[string]any{
+				"status": "cancelled",
+				"error":  "sub-agent cancelled",
+			}, "", "  ")
+			return string(out)
 		}
 		if ctx.Err() != nil {
 			return fmt.Sprintf(`{"error":"timeout after %v"}`, t.timeout)
@@ -406,12 +482,6 @@ func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, tr
 			return fmt.Sprintf(`{"error":"read stdout: %v"}`, scannerErr)
 		}
 		return fmt.Sprintf(`{"error":"exit: %v"}`, waitErr)
-	}
-	t.emitSubagentEvent(subagentCompletedEvent(taskID, result, subagentExitStatus(result, nil, ctx, scannerErr)))
-
-	if result != nil {
-		summary, _ := json.MarshalIndent(result, "", "  ")
-		return string(summary)
 	}
 
 	// Last resort: try parsing the last line as JSON
@@ -423,6 +493,13 @@ func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, tr
 		}
 	}
 
+	if errors.Is(ctx.Err(), context.Canceled) {
+		out, _ := json.MarshalIndent(map[string]any{
+			"status": "cancelled",
+			"error":  "sub-agent cancelled",
+		}, "", "  ")
+		return string(out)
+	}
 	return `{"error":"no result from sub-agent"}`
 }
 
@@ -430,6 +507,10 @@ func (t *delegateTasksTool) runTask(taskIdx int, goal, taskContext, guidance, tr
 // included in the parent delegate_tasks summary, preventing memory DoS from
 // huge sub-agent outputs.
 const maxSubagentSummaryResultBytes = 100 << 10 // 100 KiB
+
+// subagentWaitDelay bounds how long cmd.Wait may drain the child's pipes
+// after the child process exits (see the WaitDelay assignment in runTask).
+const subagentWaitDelay = time.Second
 
 // maxSubagentLine caps a single NDJSON line read from a sub-agent's stdout.
 // Streamed tool_call events embed full tool arguments (e.g. a large write_file
@@ -653,7 +734,9 @@ func subagentCompletedEvent(taskID string, result map[string]any, fallbackStatus
 
 // subagentExitStatus resolves the parent-side outcome for a finished
 // sub-agent: the child's own status when a result was parsed; otherwise
-// the kill/timeout cause.
+// the kill/timeout cause. Flood-kill is checked before the context state
+// because the flood path cancels the context itself; user/turn cancels
+// surface as "cancelled", only the per-task deadline as "timeout".
 func subagentExitStatus(result map[string]any, waitErr error, ctx context.Context, scannerErr error) string {
 	if result != nil {
 		if s, ok := result["status"].(string); ok && s != "" {
@@ -662,10 +745,12 @@ func subagentExitStatus(result map[string]any, waitErr error, ctx context.Contex
 		return "completed"
 	}
 	switch {
-	case ctx != nil && ctx.Err() != nil:
-		return "timeout"
 	case scannerErr != nil && progressLimitExceeded(scannerErr):
 		return "killed_flood"
+	case ctx != nil && errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return "timeout"
+	case ctx != nil && errors.Is(ctx.Err(), context.Canceled):
+		return "cancelled"
 	case waitErr == nil:
 		return "no_result"
 	default:

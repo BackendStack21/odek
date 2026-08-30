@@ -145,6 +145,13 @@ export function connect() {
         addSystemMessage(event.idle ? '⏹ Nothing to cancel' : '⏹ Cancelled');
         break;
 
+      case 'subagent_cancelled':
+        // Ack for a per-card stop. accepted=false is a benign race (the
+        // task finished before the stop landed); the terminal card state
+        // arrives via subagent_state finished/cancelled either way.
+        showToast(event.accepted ? '⏹ Sub-agent stop requested' : 'ℹ️ Sub-agent already finished');
+        break;
+
       case 'done':
         streamFlush();
         endThinking();

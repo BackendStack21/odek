@@ -275,6 +275,19 @@ timeout (60s by default; headless runs may raise it, capped at 10
 minutes). On the `cancelled` event the UI dismisses pending approval
 cards, so an approval cannot be answered after a cancel.
 
+Sub-agents get the same lifecycle parity:
+
+- **Turn-level cancel kills sub-agents.** Each child runs under the
+  parent prompt's context; a turn cancel (or socket disconnect) SIGKILLs
+  every running sub-agent process.
+- **Per-sub-agent stop.** The WS `subagent_cancel` message (session-token
+  scoped like `cancel`) cancels one task by `task_id` without touching
+  the turn or its siblings. Children killed before reporting still emit
+  a terminal `subagent_state` (`finished`/`cancelled`) so cards and the
+  `/api/subagents` registry converge.
+- **Status framing.** A user/turn cancel reports `cancelled`; only the
+  per-task deadline reports `timeout` — the two are never conflated.
+
 ### `GET /api/limits`
 
 Returns the execution-budget configuration resolved at server start, so clients can render session costs without duplicating the price-resolution rule.
@@ -561,6 +574,18 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
   "auth_token": "…"
 }
 
+// Stop ONE running sub-agent (the card stop button). Handled inline by
+// the socket reader, so it works while delegate_tasks occupies the
+// prompt processor. Same session-scoped auth as cancel. The server
+// replies with a subagent_cancelled ack; the card's terminal state
+// arrives as a subagent_state finished/cancelled transition.
+{
+  "type": "subagent_cancel",
+  "session_id": "20260519-abc123",
+  "auth_token": "…",
+  "task_id": "task-uuid"
+}
+
 // Switch the connection to an existing session without sending a prompt:
 // restores the memory buffer into the connection's agent and emits the
 // standard `session` event.
@@ -589,12 +614,13 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 | `token_delta` | Live streamed answer fragment (streaming on) | `content` (markdown fragment) |
 | `thinking_delta` | Live streamed reasoning fragment (streaming on) | `content` |
 | `cancelled` | After a `cancel` message is honored | `session_id`, `idle` (true when nothing was running) |
+| `subagent_cancelled` | Ack for a `subagent_cancel` message | `session_id`, `task_id`, `accepted` (false is a benign race — the task already finished) |
 | `token` | Final answer text (bulk; **suppressed when streamed via `token_delta`**) | `content` (markdown) |
 | `thinking` | Reasoning content (bulk; suppressed when `thinking_delta` streamed it) | `content` |
 | `tool_call` | Agent invokes a tool | `name`, `data` (raw tool-arguments JSON) |
 | `tool_result` | Tool returns output | `name`, `data` (full, untruncated output) |
 | `subagent_log` | Sub-agent progress within `delegate_tasks` | `task_idx`, `task_id`, `name`, `event`, `data` (redacted, capped 8 KiB) |
-| `subagent_state` | Per-task sub-agent lifecycle transition (`started`/`active`/`finished`); child emits `subagent_started`/`subagent_progress`/`subagent_finished` records over the same protocol | `task_idx`, `task_id`, `run_key`, `phase`, `status`, `step`, `iterations`, `tool`, `duration_seconds`, `tokens_used` |
+| `subagent_state` | Per-task sub-agent lifecycle transition (`started`/`active`/`finished`); child emits `subagent_started`/`subagent_progress`/`subagent_finished` records over the same protocol. A sub-agent killed without reporting (user stop, turn cancel, timeout, flood-kill, crash) gets its terminal `finished` transition emitted by the parent instead, so cards never stay `running` | `task_idx`, `task_id`, `run_key`, `phase`, `status`, `step`, `iterations`, `tool`, `duration_seconds`, `tokens_used` |
 | `done` | Agent finishes — **emitted only after the session is persisted**, so refreshing session state on `done` is race-free | `latency` (seconds), `contextTokens`, `outputTokens`, `cacheCreationTokens`, `cacheReadTokens`, `cachedTokens`, `sessionContextTokens`, `sessionOutputTokens` |
 | `usage` | After each LLM iteration of a running turn | `contextTokens`, `outputTokens` (camelCase — the per-iteration context size drives the metrics gauge) |
 | `error` | Agent or server error | `message` |

@@ -794,6 +794,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 	}
 	if subagentTool != nil {
 		subagentTool.OnSubagentLog = newSubagentTelemetryRelay(sendFn, runKey)
+		subagentTool.OnSubagentDone = newSubagentDoneRelay(sendFn, runKey)
 	}
 	var sandboxCleanup func() error
 
@@ -1028,6 +1029,7 @@ type wsClientMsg struct {
 	Model       string         `json:"model,omitempty"`
 	Thinking    string         `json:"thinking,omitempty"` // "enabled" | "" — per-query toggle
 	Attachments []wsAttachment `json:"attachments,omitempty"`
+	TaskID      string         `json:"task_id,omitempty"` // subagent_cancel target
 }
 
 // ── WebSocket Handler ──────────────────────────────────────────────────
@@ -1185,6 +1187,17 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 				var msg wsClientMsg
 				if err := json.Unmarshal(data, &msg); err == nil {
 					handleWSCancel(store, conn, msg)
+				}
+				continue
+			}
+
+			// Stop ONE running sub-agent (WebUI card stop button). Handled
+			// inline like "cancel": the prompt processor is busy inside
+			// delegate_tasks while the target sub-agent runs.
+			if msgType.Type == "subagent_cancel" {
+				var msg wsClientMsg
+				if err := json.Unmarshal(data, &msg); err == nil {
+					handleWSSubagentCancel(store, conn, msg)
 				}
 				continue
 			}
@@ -1400,6 +1413,38 @@ func handleWSCancel(store *session.Store, conn *golangws.Conn, msg wsClientMsg) 
 	} else {
 		writeWSJSON(conn, map[string]any{"type": "cancelled", "session_id": msg.SessionID, "idle": true})
 	}
+}
+
+// handleWSSubagentCancel processes a WebSocket subagent_cancel message:
+// stop ONE running sub-agent by task id (WebUI card stop button). Session
+// auth mirrors handleWSCancel — the caller must present the session's
+// auth token. Accepted=false is a normal race (the task finished before
+// the stop arrived), not an error.
+func handleWSSubagentCancel(store *session.Store, conn *golangws.Conn, msg wsClientMsg) {
+	if msg.SessionID == "" {
+		writeWSError(conn, "subagent_cancel: missing session_id")
+		return
+	}
+	if msg.TaskID == "" {
+		writeWSError(conn, "subagent_cancel: missing task_id")
+		return
+	}
+	sess, err := store.Load(msg.SessionID)
+	if err != nil {
+		writeWSError(conn, "subagent_cancel: session not found")
+		return
+	}
+	if _, ok := validateSessionToken(store, sess, msg.AuthToken); !ok {
+		writeWSError(conn, "subagent_cancel: invalid session token")
+		return
+	}
+	accepted := cancelSubagentTask(msg.TaskID)
+	writeWSJSON(conn, map[string]any{
+		"type":       "subagent_cancelled",
+		"session_id": msg.SessionID,
+		"task_id":    msg.TaskID,
+		"accepted":   accepted,
+	})
 }
 
 // ── Prompt Handler ─────────────────────────────────────────────────────

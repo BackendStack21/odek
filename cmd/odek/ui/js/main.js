@@ -205,6 +205,20 @@ function cancelAgent() {
 }
 document.getElementById('cancel-btn').addEventListener('click', cancelAgent);
 
+// Per-sub-agent stop: cards call back through here; main owns socket +
+// session-token access (same auth envelope as the turn cancel). The
+// server replies with a subagent_cancelled ack; the terminal card state
+// arrives as the subagent_state finished/cancelled transition.
+S.onSubagentStop = (taskID) => {
+  if (!S.sessionId || !taskID) return;
+  wsSend({
+    type: 'subagent_cancel',
+    session_id: S.sessionId,
+    auth_token: getSessionToken(S.sessionId) || undefined,
+    task_id: taskID,
+  });
+};
+
 // ── Management panels ──
 document.getElementById('panels-btn').addEventListener('click', () => togglePanels());
 
