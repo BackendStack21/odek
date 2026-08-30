@@ -45,6 +45,7 @@ func TestLoadConfig_MaintenanceGlobalFile(t *testing.T) {
 		AuditMaxAgeDays:      7,
 		LogMaxMB:             100,
 		PlansMaxAgeDays:      60,
+		ArtifactsMaxAgeHours: 24, // absent from the file ⇒ loader default applies
 	}
 	if cfg.Maintenance != want {
 		t.Errorf("Maintenance = %+v, want %+v", cfg.Maintenance, want)
@@ -136,6 +137,7 @@ func TestLoadConfig_MaintenanceEnvVars(t *testing.T) {
 	t.Setenv("ODEK_MAINTENANCE_LOG_MAX_MB", "10")
 	t.Setenv("ODEK_MAINTENANCE_PLANS_MAX_AGE_DAYS", "15")
 	t.Setenv("ODEK_MAINTENANCE_SKILLS_SKIP_MAX_AGE_DAYS", "20")
+	t.Setenv("ODEK_MAINTENANCE_ARTIFACTS_MAX_AGE_HOURS", "0")
 
 	cfg := LoadConfig(CLIFlags{})
 	want := maintenance.Config{
@@ -145,6 +147,7 @@ func TestLoadConfig_MaintenanceEnvVars(t *testing.T) {
 		AuditMaxAgeDays:      3,
 		LogMaxMB:             10,
 		PlansMaxAgeDays:      15,
+		ArtifactsMaxAgeHours: 0, // explicit 0 via env = keep forever
 	}
 	if cfg.Maintenance != want {
 		t.Errorf("Maintenance = %+v, want %+v", cfg.Maintenance, want)

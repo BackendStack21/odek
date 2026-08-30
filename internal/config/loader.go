@@ -228,12 +228,13 @@ type ToolConfig struct {
 // Operator-controlled: rejected from project-level ./odek.json because it
 // governs DELETION of user data.
 type MaintenanceConfig struct {
-	Enabled            *bool  `json:"enabled,omitempty"`
-	IntervalMinutes    *int   `json:"interval_minutes,omitempty"`
-	SessionsMaxAgeDays *int   `json:"sessions_max_age_days,omitempty"`
-	AuditMaxAgeDays    *int   `json:"audit_max_age_days,omitempty"`
-	LogMaxMB           *int64 `json:"log_max_mb,omitempty"`
-	PlansMaxAgeDays    *int   `json:"plans_max_age_days,omitempty"`
+	Enabled              *bool  `json:"enabled,omitempty"`
+	IntervalMinutes      *int   `json:"interval_minutes,omitempty"`
+	SessionsMaxAgeDays   *int   `json:"sessions_max_age_days,omitempty"`
+	AuditMaxAgeDays      *int   `json:"audit_max_age_days,omitempty"`
+	LogMaxMB             *int64 `json:"log_max_mb,omitempty"`
+	PlansMaxAgeDays      *int   `json:"plans_max_age_days,omitempty"`
+	ArtifactsMaxAgeHours *int   `json:"artifacts_max_age_hours,omitempty"`
 }
 
 // ToolsConfig is the "tools" section of odek.json. It is intentionally a
@@ -958,6 +959,9 @@ func resolveMaintenance(cfg *MaintenanceConfig) maintenance.Config {
 	}
 	if cfg.PlansMaxAgeDays != nil {
 		def.PlansMaxAgeDays = *cfg.PlansMaxAgeDays
+	}
+	if cfg.ArtifactsMaxAgeHours != nil {
+		def.ArtifactsMaxAgeHours = *cfg.ArtifactsMaxAgeHours
 	}
 	return def
 }
@@ -1724,6 +1728,10 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if v := envIntPtr("MAINTENANCE_PLANS_MAX_AGE_DAYS"); v != nil {
 		cfg.Maintenance = ensureMaintenance(cfg.Maintenance)
 		cfg.Maintenance.PlansMaxAgeDays = v
+	}
+	if v := envIntPtr("MAINTENANCE_ARTIFACTS_MAX_AGE_HOURS"); v != nil {
+		cfg.Maintenance = ensureMaintenance(cfg.Maintenance)
+		cfg.Maintenance.ArtifactsMaxAgeHours = v
 	}
 
 	// Telegram env overrides: merge env vars on top of file config.

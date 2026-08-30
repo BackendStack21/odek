@@ -822,14 +822,16 @@ func TestExtractSummary_AssistantWithToolCallsOnly(t *testing.T) {
 	}
 }
 
+// Updated for the M0 headline cap (SUBAGENT_RESULT_ARTIFACTS_PLAN.md):
+// extractSummary now carries 2048 runes instead of the old 500-rune cut.
 func TestExtractSummary_TruncatesLongOutput(t *testing.T) {
-	longContent := strings.Repeat("a", 600)
+	longContent := strings.Repeat("a", 3000)
 	msgs := []llm.Message{
 		{Role: "assistant", Content: longContent},
 	}
 	summary := extractSummary(msgs)
-	if len([]rune(summary)) > 501 { // 500 + ellipsis
-		t.Errorf("extractSummary too long: %d runes (max 501)", len([]rune(summary)))
+	if len([]rune(summary)) > subagentHeadlineMaxRunes+1 { // cap + ellipsis
+		t.Errorf("extractSummary too long: %d runes (max %d)", len([]rune(summary)), subagentHeadlineMaxRunes+1)
 	}
 	if !strings.HasSuffix(summary, "…") {
 		t.Errorf("truncated summary should end with '…', got: %q", summary)

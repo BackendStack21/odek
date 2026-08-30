@@ -449,11 +449,18 @@ delegate_tasks({ tasks: [
   SA2: odek subagent --task /tmp/kode-task-002.json --quiet
   SA3: odek subagent --task /tmp/kode-task-003.json --quiet
 
-All complete in ~5s (2 batches of 2, max_concurrency=3):
+All complete in ~5s (2 batches of 2, max_concurrency=3). The parent receives
+each result rendered as fields — not raw JSON:
 
-  SA1: {"status":"success","files_changed":["models/todo.go"],"tokens_used":4200}
-  SA2: {"status":"success","files_changed":["middleware/auth.go"],"tokens_used":3800}
-  SA3: {"status":"success","files_changed":["handlers/todo.go"],"tokens_used":5100}
+  SA1: status: success · ~4200 tokens
+       summary: Created models/todo.go — GORM CRUD with all fields per spec.
+       files changed: models/todo.go
+  SA2: status: success · ~3800 tokens
+       summary: JWT middleware done — HS256, secret from JWT_SECRET env.
+       files changed: middleware/auth.go
+  SA3: status: success · ~5100 tokens
+       summary: Handlers wired for GET/POST/PUT/DELETE /todos.
+       files changed: handlers/todo.go
 
 Parent synthesizes: "Created 3 files:
   - models/todo.go — Todo model with CRUD

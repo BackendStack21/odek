@@ -61,7 +61,7 @@ func TestDelegateTasksTool_CancelTask_KillsRunningSubagent(t *testing.T) {
 	}
 
 	resultCh := make(chan string, 1)
-	go func() { resultCh <- tool.runTask(0, "long task", "", "", "", "", "") }()
+	go func() { resultCh <- tool.runTask(0, "task-cancel-01", "long task", "", "", "", "", "", "") }()
 
 	select {
 	case <-logged:
@@ -183,7 +183,7 @@ func TestDelegateTasksTool_OnSubagentDone_NotFiredWhenChildReports(t *testing.T)
 		fired = true
 	}
 
-	result := tool.runTask(0, "ok task", "", "", "", "", "")
+	result := tool.runTask(0, "task-cancel-02", "ok task", "", "", "", "", "", "")
 	if !strings.Contains(result, "done") {
 		t.Errorf("expected successful result, got: %s", result)
 	}

@@ -32,25 +32,29 @@ type Config struct {
 	AuditMaxAgeDays      int   // delete audit records older than this; default 14; 0 = keep
 	LogMaxMB             int64 // rotate telegram/schedule logs larger than this; default 50; 0 = no rotation
 	PlansMaxAgeDays      int   // delete telegram plans older than this; default 30; 0 = keep
+	ArtifactsMaxAgeHours int   // delete delegate_tasks artifact subtrees older than this; default 24; 0 = keep
 }
 
 // DefaultConfig returns the out-of-the-box maintenance policy.
 func DefaultConfig() Config {
 	return Config{
-		Enabled:            true,
-		IntervalMinutes:    60,
-		SessionsMaxAgeDays: 30,
-		AuditMaxAgeDays:    14,
-		LogMaxMB:           50,
-		PlansMaxAgeDays:    30,
+		Enabled:              true,
+		IntervalMinutes:      60,
+		SessionsMaxAgeDays:   30,
+		AuditMaxAgeDays:      14,
+		LogMaxMB:             50,
+		PlansMaxAgeDays:      30,
+		ArtifactsMaxAgeHours: 24,
 	}
 }
 
 // Report summarises what one Sweep pass removed.
 type Report struct {
-	SessionsRemoved int
-	AuditRemoved    int
-	PlansRemoved    int
+	SessionsRemoved    int
+	AuditRemoved       int
+	PlansRemoved       int
+	ArtifactsRemoved   int
+	ArtifactsFreed     int64
 	MediaFreedBytes int64
 	LogsRotated     []string
 }
@@ -105,6 +109,16 @@ func Sweep(ctx context.Context, home string, cfg Config) (Report, error) {
 		fail(err)
 	}
 
+	if cfg.ArtifactsMaxAgeHours > 0 {
+		if err := ctx.Err(); err != nil {
+			return rep, err
+		}
+		n, freed, err := sweepArtifacts(home, time.Duration(cfg.ArtifactsMaxAgeHours)*time.Hour)
+		rep.ArtifactsRemoved = n
+		rep.ArtifactsFreed = freed
+		fail(err)
+	}
+
 	if err := ctx.Err(); err != nil {
 		return rep, err
 	}
@@ -113,6 +127,56 @@ func Sweep(ctx context.Context, home string, cfg Config) (Report, error) {
 	fail(err)
 
 	return rep, firstErr
+}
+
+// sweepArtifacts removes delegate_tasks artifact subtrees
+// (<home>/artifacts/<session_id>/) whose modtime is older than maxAge.
+// This is the BACKSTOP for subtrees whose session was already removed by
+// other means (crash leftovers, hand deletion) — the primary lifecycle is
+// the Store.OnDelete cascade. Returns (subtrees removed, bytes freed).
+func sweepArtifacts(home string, maxAge time.Duration) (int, int64, error) {
+	if maxAge <= 0 {
+		return 0, 0, nil // 0 = keep forever
+	}
+	dir := filepath.Join(home, "artifacts")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, 0, nil
+		}
+		return 0, 0, fmt.Errorf("maintenance: read artifacts dir: %w", err)
+	}
+	cutoff := time.Now().Add(-maxAge)
+	var removed int
+	var freed int64
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(cutoff) {
+			continue
+		}
+		sub := filepath.Join(dir, e.Name())
+		size := int64(0)
+		_ = filepath.WalkDir(sub, func(_ string, d fs.DirEntry, err error) error {
+			if err == nil && d.Type().IsRegular() {
+				if fi, fiErr := d.Info(); fiErr == nil {
+					size += fi.Size()
+				}
+			}
+			return nil
+		})
+		if err := os.RemoveAll(sub); err != nil {
+			continue // one bad subtree shouldn't block the sweep
+		}
+		removed++
+		freed += size
+	}
+	return removed, freed, nil
 }
 
 // tickInterval, when positive, overrides the configured janitor tick. It is

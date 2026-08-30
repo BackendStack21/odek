@@ -255,7 +255,7 @@ func TestDelegateTasks_Call_MixedProfilesPartialFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call() error: %v", err)
 	}
-	if !strings.Contains(result, `"ok"`) {
+	if !strings.Contains(result, "summary: ok") {
 		t.Errorf("task with a defined profile must run, got: %s", result)
 	}
 	if !strings.Contains(result, "unknown profile") {
@@ -326,7 +326,7 @@ func TestDelegateTasks_UnknownProfileFailsWithoutSpawn(t *testing.T) {
 			"judge": {MaxRisk: "safe"},
 		},
 	}
-	result := tool.runTask(0, "goal", "", "", "", "", "not-defined")
+	result := tool.runTask(0, "task-p1", "goal", "", "", "", "", "not-defined", "")
 	if !strings.Contains(result, "unknown profile") {
 		t.Errorf("result should fail closed with 'unknown profile', got: %s", result)
 	}
@@ -354,7 +354,7 @@ func TestDelegateTasks_KnownProfileSpawns(t *testing.T) {
 			"judge": {MaxRisk: "safe"},
 		},
 	}
-	result := tool.runTask(0, "goal", "", "", "", "", "judge")
+	result := tool.runTask(0, "task-p2", "goal", "", "", "", "", "judge", "")
 	if !strings.Contains(result, `"ok"`) {
 		t.Errorf("defined profile must spawn normally, got: %s", result)
 	}
@@ -380,7 +380,7 @@ func TestDelegateTasks_ProfileValidationSkippedWhenNoProfiles(t *testing.T) {
 		timeout:        10 * time.Second,
 		profiles:       nil,
 	}
-	result := tool.runTask(0, "goal", "", "", "", "", "anything")
+	result := tool.runTask(0, "task-p3", "goal", "", "", "", "", "anything", "")
 	if !strings.Contains(result, `"ran"`) {
 		t.Errorf("nil profiles map must not block the task at the parent, got: %s", result)
 	}

@@ -2247,6 +2247,10 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 		// Top-level runs (odek run/repl/serve/telegram) are operator-trusted.
 		selfTrust = "trusted"
 	}
+	// Artifacts home for the delegate_tasks result channel; empty disables
+	// the channel (never fail agent startup over it).
+	artifactsRoot, _ := artifactsHome()
+
 	tools := []odek.Tool{
 		&shellTool{
 			dangerousConfig: dc,
@@ -2261,6 +2265,7 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 			budgetInherit:  subInherit,
 			selfTrust:      selfTrust,
 			profiles:       tcfg.Profiles,
+			artifactsRoot:  artifactsRoot, // empty ⇒ no artifact dirs created
 		},
 		&readFileTool{dangerousConfig: dc},
 		&writeFileTool{dangerousConfig: dc, restrictToCWD: true},
