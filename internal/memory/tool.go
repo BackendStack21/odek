@@ -17,13 +17,13 @@ var memoryToolSchema = map[string]any{
 	"properties": map[string]any{
 		"action": map[string]any{
 			"type":        "string",
-			"enum":        []string{"add", "replace", "remove", "consolidate", "read", "search", "view", "add_atom", "search_atoms", "forget_atom", "list_quarantine", "pin_atom", "confirm_pending_review", "reject_pending_review", "list_pending_review"},
+			"enum":        []string{"add", "replace", "remove", "stats", "consolidate", "read", "search", "view", "add_atom", "search_atoms", "forget_atom", "list_quarantine", "pin_atom", "confirm_pending_review", "reject_pending_review", "list_pending_review"},
 			"description": "What to do with memory",
 		},
 		"target": map[string]any{
 			"type":        "string",
 			"enum":        []string{"user", "env", "episodes"},
-			"description": "Which fact file to modify (for add/replace/remove/consolidate), or 'episodes' for view",
+			"description": "Which fact file to modify (for add/replace/remove/consolidate/stats), or 'episodes' for view",
 		},
 		"content": map[string]any{
 			"type":        "string",
@@ -70,7 +70,10 @@ func NewMemoryTool(mm *MemoryManager) *MemoryTool {
 
 func (t *MemoryTool) Name() string { return "memory" }
 func (t *MemoryTool) Description() string {
-	return "Manage persistent memory across sessions: read, add, update, remove facts, consolidate related entries, or search past episode summaries."
+	return "Manage persistent memory across sessions: read, add, update, remove facts, consolidate related entries, or search past episode summaries. " +
+		"You maintain the user/env fact files: when a target is at cap, remove or replace the lowest-value entries yourself — " +
+		"records recoverable from git/GitHub (release notes, merged PRs) evict first; pointers to untracked local work evict last. " +
+		"Use action=stats to check per-entry sizes and fill before writing."
 }
 func (t *MemoryTool) Schema() any { return memoryToolSchema }
 
@@ -97,6 +100,8 @@ func (t *MemoryTool) Call(args string) (string, error) {
 		return t.handleReplace(params.Target, params.OldText, params.Content)
 	case "remove":
 		return t.handleRemove(params.Target, params.OldText)
+	case "stats":
+		return t.handleStats(params.Target)
 	case "consolidate":
 		return t.handleConsolidate(params.Target)
 	case "read":
@@ -173,6 +178,39 @@ func (t *MemoryTool) handleConsolidate(target string) (string, error) {
 	// Read back to report actual new count
 	newEntries, _ := t.manager.facts.Entries(target)
 	return successJSON(fmt.Sprintf("consolidated %s (%d → %d entries)", target, len(entries), len(newEntries))), nil
+}
+
+// handleStats reports per-entry sizes and fill for a fact target so the
+// agent can plan evictions before hitting the cap. `view` stays
+// episodes-only (its provenance gate), so stats is a separate action.
+func (t *MemoryTool) handleStats(target string) (string, error) {
+	if target == "" {
+		return errorJSON("target is required for stats (user or env)"), nil
+	}
+	if target != "user" && target != "env" {
+		return errorJSON(fmt.Sprintf("stats target must be 'user' or 'env', got %q", target)), nil
+	}
+	entries, err := t.manager.facts.Entries(target)
+	if err != nil {
+		return errorJSON(err.Error()), nil
+	}
+	type statEntry struct {
+		Index   int    `json:"index"`
+		Chars   int    `json:"chars"`
+		Preview string `json:"preview"`
+	}
+	list := make([]statEntry, 0, len(entries))
+	for i, e := range entries {
+		list = append(list, statEntry{Index: i + 1, Chars: len(e), Preview: truncateRunes(e, 60)})
+	}
+	data, _ := json.Marshal(map[string]any{
+		"success": true,
+		"target":  target,
+		"used":    t.manager.facts.sizeOf(entries),
+		"cap":     t.manager.facts.cap(target),
+		"entries": list,
+	})
+	return string(data), nil
 }
 
 func (t *MemoryTool) handleRead() (string, error) {
