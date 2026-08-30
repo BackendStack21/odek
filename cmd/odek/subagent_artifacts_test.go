@@ -141,7 +141,7 @@ func TestFormatTaskResult_ArtifactMetadataAndInline(t *testing.T) {
 
 	ref := artifact.Ref{
 		Schema: artifact.SchemaArtifactRef, ID: "report", MediaType: "text/markdown",
-		URI: "file://" + filepath.Join(dir, "report.md"),
+		URI:    "file://" + filepath.Join(dir, "report.md"),
 		SHA256: expectedSHA(t, content), SizeBytes: ptrInt64(int64(len(content))),
 		Summary: "artifact body line",
 	}
@@ -167,7 +167,7 @@ func TestFormatTaskResult_InvalidRefDropped(t *testing.T) {
 	writeArtifactFile(t, dir, "report.md", "real content")
 	ref := artifact.Ref{
 		Schema: artifact.SchemaArtifactRef, ID: "report", MediaType: "text/markdown",
-		URI: "file://" + filepath.Join(dir, "report.md"),
+		URI:    "file://" + filepath.Join(dir, "report.md"),
 		SHA256: strings.Repeat("0", 64), // wrong hash — tampered
 	}
 	b, _ := json.Marshal([]artifact.Ref{ref})
