@@ -79,8 +79,7 @@ func TestTaskBudgetFromSnapshot_ExhaustedFlags(t *testing.T) {
 		MaxToolCalls:            10,
 		RemainingToolCalls:      4,
 		MaxCostUSD:              1.0,
-		InputCostPerMillionUSD:  1.0,
-		OutputCostPerMillionUSD: 1.0,
+		RemainingCostUSD:        0,
 		CostExhausted:           true,
 	}
 	got := taskBudgetFromSnapshot(s)

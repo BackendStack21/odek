@@ -1327,7 +1327,13 @@ func truncateDiff(s string, maxLen int) string {
 	// Take first line for diff display
 	firstLine := strings.SplitN(s, "\n", 2)[0]
 	if len(firstLine) > maxLen {
-		return firstLine[:maxLen] + "..."
+		// Back off to a UTF-8 rune boundary so a multibyte character cut in
+		// half never renders as U+FFFD mojibake in the diff preview.
+		cut := maxLen
+		for cut > 0 && !utf8.RuneStart(firstLine[cut]) {
+			cut--
+		}
+		return firstLine[:cut] + "..."
 	}
 	return firstLine
 }

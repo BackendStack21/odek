@@ -139,3 +139,60 @@ func TestUnreadScriptTargets_InlineCodeDoesNotGate(t *testing.T) {
 		t.Errorf("module form gated: %v", targets)
 	}
 }
+
+// TestUnreadScriptTargets_DollarOperandGates pins the 2026-08 sweep fix:
+// $-prefixed operands used to be skipped as "variable refs", so
+// `bash $HOME/evil.sh` stayed in the trustable class while the identical
+// `bash ~/evil.sh` gated. Expansion + stat decides now — fail toward
+// gating.
+func TestUnreadScriptTargets_DollarOperandGates(t *testing.T) {
+	dir, script := setupScripts(t)
+	t.Setenv("HOME", dir) // expandShellTokenPath resolves $HOME via UserHomeDir
+
+	cmd := "bash $HOME/env.sh"
+	targets := UnreadScriptTargets(cmd)
+	if len(targets) != 1 {
+		t.Fatalf("targets = %v, want $HOME/env.sh gated like ~/env.sh", targets)
+	}
+
+	RecordRead(script)
+	if targets := UnreadScriptTargets(cmd); len(targets) != 0 {
+		t.Fatalf("after reading, targets = %v, want none", targets)
+	}
+}
+
+// TestUnreadScriptTargets_NoShebangOperandGates pins the ENOEXEC fallback
+// fix: `bash ./no-shebang` executes the file even without a shebang, so an
+// interpreter-stage operand gates regardless. Direct invocation keeps the
+// old bar (a compiled binary has no shebang either) and bare extension-less
+// names stay ungated (flag values / subcommands are ambiguous).
+func TestUnreadScriptTargets_NoShebangOperandGates(t *testing.T) {
+	dir, _ := setupScripts(t)
+	plain := filepath.Join(dir, "no-shebang")
+	if err := os.WriteFile(plain, []byte("echo hi\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	if targets := UnreadScriptTargets("bash ./no-shebang"); len(targets) != 1 {
+		t.Fatalf("targets = %v, want ./no-shebang gated under bash (ENOEXEC fallback)", targets)
+	}
+	// source/. parse the operand as shell regardless of shebang or suffix.
+	if targets := UnreadScriptTargets("source ./no-shebang"); len(targets) != 1 {
+		t.Fatalf("targets = %v, want ./no-shebang gated under source", targets)
+	}
+
+	RecordRead(plain)
+	if targets := UnreadScriptTargets("bash ./no-shebang"); len(targets) != 0 {
+		t.Fatalf("targets = %v, want none after reading the file", targets)
+	}
+
+	// Direct invocation: unchanged (exec of a binary is not interpretation).
+	if targets := UnreadScriptTargets("./no-shebang"); len(targets) != 0 {
+		t.Fatalf("targets = %v, want direct invocation unchanged", targets)
+	}
+	// Bare names without ./: unchanged (ambiguous operand class).
+	if targets := UnreadScriptTargets("bash no-shebang"); len(targets) != 0 {
+		t.Fatalf("targets = %v, want bare extension-less names unchanged", targets)
+	}
+}

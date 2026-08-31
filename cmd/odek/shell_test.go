@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/danger"
 )
@@ -520,5 +522,55 @@ func TestShellTool_PromptUser_ReusesTTYApprover(t *testing.T) {
 	}
 	if st.approver != first {
 		t.Error("promptUser created a new TTYApprover instead of reusing the existing one")
+	}
+}
+
+// TestLimitWriter_TruncatesOnRuneBoundary pins the 2026-08 sweep fix: the
+// output cap used to cut the buffer at the exact byte boundary, splitting
+// a multibyte character into U+FFFD mojibake. The cut now backs up to a
+// rune boundary.
+func TestLimitWriter_TruncatesOnRuneBoundary(t *testing.T) {
+	buf := &bytes.Buffer{}
+	w := &limitWriter{buf: buf, limit: 11}
+	// 5×"α" (2 bytes each) = 10 bytes, then "β" straddles the cap: the
+	// boundary lands inside the first β's two-byte encoding.
+	payload := strings.Repeat("α", 5) + strings.Repeat("β", 5)
+	if _, err := w.Write([]byte(payload)); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncated output is not valid UTF-8:\n%q", got)
+	}
+	if strings.ContainsRune(got, utf8.RuneError) {
+		t.Fatalf("truncated output contains U+FFFD mojibake:\n%q", got)
+	}
+	if !strings.HasPrefix(got, strings.Repeat("α", 5)) {
+		t.Fatalf("kept prefix mismatch:\n%q", got)
+	}
+	if !strings.Contains(got, "... [output truncated]") {
+		t.Fatalf("truncation marker missing:\n%q", got)
+	}
+}
+
+// TestTruncateUTF8Safe_RuneBoundary pins the shared byte-cap helper used by
+// the untrusted-content scan window and the diff previews.
+func TestTruncateUTF8Safe_RuneBoundary(t *testing.T) {
+	s := strings.Repeat("漢", 10) // 10 runes × 3 bytes = 30 bytes
+	if got := truncateUTF8Safe(s, 30); got != s {
+		t.Errorf("cut at len(s) mutated the string: %q", got)
+	}
+	got := truncateUTF8Safe(s, 16) // 16 lands inside rune 6 (bytes 15..17)
+	if len(got) != 15 {
+		t.Errorf("len = %d, want 15 (backed off to the rune boundary)", len(got))
+	}
+	if !utf8.ValidString(got) || strings.ContainsRune(got, utf8.RuneError) {
+		t.Errorf("cut produced invalid UTF-8: %q", got)
+	}
+	if want := strings.Repeat("漢", 5); got != want {
+		t.Errorf("cut = %q, want %q", got, want)
+	}
+	if got := truncateUTF8Safe("", 5); got != "" {
+		t.Errorf("cut of empty string = %q, want empty", got)
 	}
 }

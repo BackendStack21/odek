@@ -1,8 +1,10 @@
 package danger
 
 import (
+	"crypto/sha256"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -157,5 +159,73 @@ func TestWasReadFresh_LargeFileFallsBackToStat(t *testing.T) {
 	}
 	if WasReadFresh(big) {
 		t.Fatal("size change must invalidate a large file's license")
+	}
+}
+
+// TestFingerprintFile_UnreadableFileFailsClosed pins the open-first
+// fingerprint fix: fingerprintFile used to os.Stat the path and os.ReadFile
+// it separately — a swap window between two path resolutions — and an
+// unreadable-but-stat-able file yielded a stat-only size+mtime license. A
+// file the process cannot open can never have been displayed to the model,
+// so it must fail closed instead (the H-6 corollary: a failed read never
+// licenses).
+func TestFingerprintFile_UnreadableFileFailsClosed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits not enforced on windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses permission bits; fail-closed property untestable")
+	}
+	dir, _ := setupFingerprintScript(t)
+	locked := filepath.Join(dir, "locked.sh")
+	if err := os.WriteFile(locked, []byte("#!/bin/sh\necho secret\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0600) })
+
+	if entry, ok := fingerprintFile(locked); ok {
+		t.Fatalf("fingerprintFile(unreadable) = %+v (ok) — must fail closed, never yield a stat-only license", entry)
+	}
+
+	// Ledger-level corollary: the failed read never licenses execution.
+	RecordRead(locked)
+	if WasReadFresh(locked) {
+		t.Fatal("RecordRead of an unreadable file must not yield a fresh license")
+	}
+}
+
+// TestFingerprintFile_HashMatchesContent pins the helper contract: the
+// returned entry carries the size and sha256 of the very content read
+// through the open handle, and the ledger round-trips it.
+func TestFingerprintFile_HashMatchesContent(t *testing.T) {
+	dir, _ := setupFingerprintScript(t)
+	p := filepath.Join(dir, "content.sh")
+	body := []byte("#!/bin/sh\necho fingerprinted\n")
+	if err := os.WriteFile(p, body, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	entry, ok := fingerprintFile(p)
+	if !ok {
+		t.Fatal("fingerprintFile(regular file) must succeed")
+	}
+	st, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.size != st.Size() {
+		t.Errorf("size = %d, want %d", entry.size, st.Size())
+	}
+	want := sha256.Sum256(body)
+	if !entry.hashed || entry.hash != want {
+		t.Errorf("hash mismatch: hashed=%v", entry.hashed)
+	}
+
+	RecordRead(p)
+	if !WasReadFresh(p) {
+		t.Fatal("a file recorded at fingerprint time must stay fresh")
 	}
 }

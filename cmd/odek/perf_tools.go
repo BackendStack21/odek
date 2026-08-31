@@ -255,7 +255,7 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 		}
 
 		diff := fmt.Sprintf("--- a/%s\n+++ b/%s\n@@ -1 +1 @@\n-%s\n+%s\n",
-			p.Path, p.Path, truncateDiff(original, 100), truncateDiff(modified, 100))
+			p.Path, p.Path, truncatePreviewLine(original, 100), truncatePreviewLine(modified, 100))
 
 		// Preserve the original file's mode.
 		origMode := os.FileMode(0644)
@@ -324,6 +324,20 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 	}
 
 	return jsonResult(batchPatchResult{Results: results})
+}
+
+// truncatePreviewLine shortens one side of a batch_patch preview line to max
+// bytes, backing off to a UTF-8 rune boundary so multibyte content never
+// renders as U+FFFD mojibake in the diff.
+func truncatePreviewLine(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := truncateUTF8Safe(s, max)
+	if cut == "" {
+		return "…"
+	}
+	return cut + "…"
 }
 
 // ═════════════════════════════════════════════════════════════════════════

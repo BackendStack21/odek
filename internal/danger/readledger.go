@@ -2,6 +2,7 @@ package danger
 
 import (
 	"crypto/sha256"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -124,15 +125,26 @@ func WasReadFresh(path string) bool {
 }
 
 // fingerprintFile captures the current on-disk state of abs: size, mtime,
-// and content hash when the file is within the hashing cap.
+// and content hash when the file is within the hashing cap. The file is
+// opened FIRST and stat'd/read through that single handle: the previous
+// os.Stat(path) + os.ReadFile(path) form re-resolved the path between the
+// two calls, so a swap in that window could license a size/mtime from one
+// inode with a hash (when hashed) from another. A file that cannot be
+// opened fails closed — it can never have been displayed to the model, so
+// it must never yield a stat-only license.
 func fingerprintFile(abs string) (readEntry, bool) {
-	st, err := os.Stat(abs)
+	f, err := os.Open(abs)
+	if err != nil {
+		return readEntry{}, false
+	}
+	defer f.Close()
+	st, err := f.Stat()
 	if err != nil || !st.Mode().IsRegular() {
 		return readEntry{}, false
 	}
 	e := readEntry{size: st.Size(), modNano: st.ModTime().UnixNano()}
 	if st.Size() <= readFingerprintMaxBytes {
-		if data, err := os.ReadFile(abs); err == nil {
+		if data, err := io.ReadAll(f); err == nil {
 			e.hash = sha256.Sum256(data)
 			e.hashed = true
 		}
@@ -168,14 +180,20 @@ var scriptInterpreters = map[string]bool{
 
 // looksLikeScriptFile reports whether tok names an existing regular file
 // that would be executed: a script extension, an explicit relative path
-// (./x), or a shebang header. Non-existent paths never gate (the command
+// (./x), a shebang header, or — when interpreterOperand is true — any file
+// the interpreter itself would run (the ENOEXEC fallback for extension-less
+// files, $VAR-expanded paths). Non-existent paths never gate (the command
 // will simply fail).
-func looksLikeScriptFile(tok string) bool {
+func looksLikeScriptFile(tok string, interpreterOperand bool) bool {
 	if tok == "" || strings.HasPrefix(tok, "-") {
 		return false
 	}
-	// Skip obvious non-path tokens early (URLs, variable refs).
-	if strings.Contains(tok, "://") || strings.HasPrefix(tok, "$") {
+	// URLs are never script files. $-prefixed tokens are NOT skipped:
+	// `bash $HOME/evil.sh` executes exactly like `bash ~/evil.sh`, so the
+	// old "variable ref" early-out was an H-6 gate bypass. Expand and gate
+	// on the resolved file instead; unresolvable variables fail the stat
+	// below and stay ungated.
+	if strings.Contains(tok, "://") {
 		return false
 	}
 	path := expandShellTokenPath(tok)
@@ -183,13 +201,27 @@ func looksLikeScriptFile(tok string) bool {
 	if err != nil || st.IsDir() {
 		return false
 	}
+	if strings.HasPrefix(tok, "$") {
+		// $-expanded: a script suffix gates in any execution context;
+		// extension-less expansions only gate when handed to an
+		// interpreter, which would execute them as code.
+		if scriptFileExtensions[strings.ToLower(filepath.Ext(path))] {
+			return true
+		}
+		return interpreterOperand
+	}
 	if strings.HasPrefix(tok, "./") || strings.HasPrefix(path, "/") {
 		ext := strings.ToLower(filepath.Ext(path))
 		if scriptFileExtensions[ext] {
 			return true
 		}
-		// ./tool or /abs/tool with a shebang: executed regardless of suffix.
-		return fileHasShebang(path)
+		// ./tool or /abs/tool with a shebang: executed regardless of
+		// suffix. Without a shebang an interpreter still runs the file
+		// via the ENOEXEC fallback (bash ./no-shebang), so gate it there
+		// too. Direct invocation of a shebang-less file keeps the old
+		// bar: a compiled binary has no shebang either, and exec-ing it
+		// is not script interpretation.
+		return interpreterOperand || fileHasShebang(path)
 	}
 	ext := strings.ToLower(filepath.Ext(path))
 	return scriptFileExtensions[ext]
@@ -259,11 +291,18 @@ func unreadTargetsStage(stage []string) []string {
 	operands := cmdTokens[1:]
 
 	isExec := false
+	// interpreterStage marks stages where the interpreter itself decides how
+	// to execute the operand: shell-family interpreters fall back to ENOEXEC
+	// execution for extension-less files, and source/. parse any file as
+	// shell regardless of shebang or extension.
+	interpreterStage := false
 	switch {
 	case scriptInterpreters[name]:
 		isExec = true
+		interpreterStage = true
 	case name == "source" || name == ".":
 		isExec = true
+		interpreterStage = true
 	case strings.Contains(cmdTokens[0], "/"):
 		// Direct invocation: ./scripts/build.sh, path/to/tool
 		isExec = true
@@ -280,10 +319,18 @@ func unreadTargetsStage(stage []string) []string {
 		if tok == "-c" || tok == "-e" || tok == "-m" || tok == "-s" {
 			continue // inline payload / module flags — not file execution
 		}
-		if looksLikeScriptFile(tok) && !WasReadFresh(tok) {
+		if looksLikeScriptFile(tok, interpreterStage) {
+			// Freshness is checked against the EXPANDED path — that is what
+			// RecordRead ledgers (cat $HOME/env.sh records the absolute
+			// path). Checking the raw token made a read of the same file
+			// invisible to the gate and re-gated it.
 			abs, err := filepath.Abs(expandShellTokenPath(tok))
-			if err == nil {
-				out = append(out, filepath.Clean(abs))
+			if err != nil {
+				continue
+			}
+			abs = filepath.Clean(abs)
+			if !WasReadFresh(abs) {
+				out = append(out, abs)
 			}
 		}
 	}

@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/danger"
 )
@@ -58,7 +59,14 @@ func (w *limitWriter) Write(p []byte) (int, error) {
 		w.truncated = true
 		room := w.limit - w.buf.Len()
 		if room > 0 {
-			w.buf.Write(p[:room])
+			// Back up to a UTF-8 rune boundary so a multibyte character cut
+			// by the cap never ships U+FFFD replacement mojibake.
+			for room > 0 && !utf8.RuneStart(p[room]) {
+				room--
+			}
+			if room > 0 {
+				w.buf.Write(p[:room])
+			}
 		}
 		w.buf.WriteString("\n... [output truncated]")
 		return len(p), nil
