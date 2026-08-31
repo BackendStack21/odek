@@ -266,9 +266,12 @@ func (t *shellTool) Call(args string) (string, error) {
 	if err != nil && output == "" {
 		return "", fmt.Errorf("shell: %w", err)
 	}
-	if err != nil && stderrStr != "" {
-		// Include stderr even when stdout is empty — "exit status 1" alone
-		// gives the LLM no clue why the command failed.
+	if err != nil {
+		// Failing command with captured output: return the output (the
+		// model needs stdout/stderr, not just "exit status N") but name
+		// the failure explicitly — without this, a failing test/build run
+		// was indistinguishable from a passing one.
+		output += "\n[command failed: " + err.Error() + "]"
 		return wrapUntrusted(t.toolCtx(), "$ "+input.Command, output), nil
 	}
 	if output == "" {
