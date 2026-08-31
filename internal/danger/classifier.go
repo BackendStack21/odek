@@ -827,9 +827,12 @@ func (c *DangerousConfig) CheckOperation(op ToolOperation, trustedClasses map[Ri
 		if approver == nil {
 			approver = NewTTYApprover(c)
 		}
-		// Build a TTYApprover for trustedClasses tracking if needed
+		// Build a TTYApprover for trustedClasses tracking if needed.
+		// The swap must go through SetTrustedClasses (a.mu): parallel tool
+		// calls read TrustedClasses under that same mutex, and an unguarded
+		// store here races with them (flagged by go test -race).
 		if tty, ok := approver.(*TTYApprover); ok && trustedClasses != nil {
-			tty.TrustedClasses = trustedClasses
+			tty.SetTrustedClasses(trustedClasses)
 		}
 		return approver.PromptOperation(op)
 	default:
@@ -1435,7 +1438,8 @@ func classifyStage(tokens []string, pipedInto bool) RiskClass {
 // `printenv` invocation whose only effect is to dump the process environment.
 // `env FOO=bar cmd ...` is NOT a dump (the real command is classified
 // separately after unwrapWrappers strips env); `env`, `env -i`,
-// `env -u SECRET`, and `printenv` are dumps.
+// `env -u SECRET`, `env --unset=SECRET` (equals-form long options), and
+// `printenv` are dumps.
 func isEnvironmentDump(tokens []string) bool {
 	if len(tokens) == 0 {
 		return false
@@ -1463,6 +1467,17 @@ func isEnvironmentDump(tokens []string) bool {
 			t == "-C" || t == "--chdir" ||
 			t == "-S" || t == "--split-string") && i+1 < len(tokens) {
 			i += 2
+			continue
+		}
+		// Equals-form long options carry their value inside the token
+		// (`env --unset=HOME`, `env --chdir=/tmp`): they are env
+		// manipulation, not the start of a wrapped command. unwrapWrappers
+		// strips any dash-prefixed token as a wrapper flag, so recognising
+		// them here too keeps both layers in agreement — a flag-only `env`
+		// invocation (a pure environment dump) can no longer degrade to
+		// Safe by hiding its flags inside equals-form tokens.
+		if strings.HasPrefix(t, "--") && strings.Contains(t, "=") {
+			i++
 			continue
 		}
 		// Anything else is the real command being wrapped.
@@ -2247,7 +2262,13 @@ func shellPathIsHomeSensitive(tok string) bool {
 		return false
 	}
 	abs = filepath.Clean(abs)
-	if abs != home && !strings.HasPrefix(abs, home+"/") {
+	// Case-fold the home-prefix comparison: on case-insensitive filesystems
+	// (macOS APFS, Windows NTFS) /USERS/x/.gitconfig names the same file as
+	// /Users/x/.gitconfig, and an exact-case prefix match would let a case
+	// variant slip past the guard. Mirrors the folded comparisons its peers
+	// apply in ClassifyPath and IsPersistencePath.
+	lowerAbs, lowerHome := strings.ToLower(abs), strings.ToLower(home)
+	if lowerAbs != lowerHome && !strings.HasPrefix(lowerAbs, lowerHome+"/") {
 		return false
 	}
 	return Rank(ClassifyPath(abs)) >= Rank(SystemWrite)
