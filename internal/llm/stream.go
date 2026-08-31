@@ -66,7 +66,26 @@ func (e *StreamAbortedError) Unwrap() error { return e.Reason }
 
 // streamIdleTimeout bounds the silence between SSE events (keepalive
 // comments reset it). Package var so tests can shorten it.
-var streamIdleTimeout = 60 * time.Second
+// streamIdleTimeout is the SSE idle watchdog: the time between events
+// (keepalive comment lines count) before the stream is dropped and retried.
+// Thinking models can legitimately spend minutes before their first event,
+// so the default is generous (120s) and operator-configurable via
+// llm.stream_idle_timeout_seconds / ODEK_STREAM_IDLE_TIMEOUT_SECONDS
+// (see SetStreamIdleTimeout).
+var streamIdleTimeout = 120 * time.Second
+
+// SetStreamIdleTimeout overrides the SSE idle watchdog. Call at startup,
+// before the first request; non-positive values are ignored.
+func SetStreamIdleTimeout(d time.Duration) {
+	if d > 0 {
+		streamIdleTimeout = d
+	}
+}
+
+// StreamIdleTimeout reports the active idle watchdog (introspection/tests).
+func StreamIdleTimeout() time.Duration {
+	return streamIdleTimeout
+}
 
 // CallStream sends a chat completion request with stream:true and delivers
 // fragments to cb as they arrive, returning the fully assembled result —

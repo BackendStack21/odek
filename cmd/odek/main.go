@@ -2304,6 +2304,7 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 		},
 		&delegateTasksTool{
 			maxConcurrency: subConcurrency,
+			sharedSem:      sharedChildSem(subConcurrency),
 			odekPath:       os.Args[0],
 			apiKey:         apiKey,
 			timeout:        time.Duration(subTimeout) * time.Second,
