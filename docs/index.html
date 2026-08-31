@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#0a0d12">
   <title>odek · ~12 MB, zero-framework Go agent runtime</title>
-  <meta name="description" content="The fastest, minimal Go autonomous agent runtime: a ~12 MB static binary, zero frameworks. ReAct loop, parallel tools, memory, MCP, sandbox, Web UI, Telegram bot.">
+  <meta name="description" content="The fastest, minimal Go autonomous agent runtime: ~12 MB static binary, zero frameworks. GLM 5.3 Flash (z.ai) setup guide — ReAct, MCP, sandbox.">
   <link rel="canonical" href="https://odek.21no.de/">
   <link rel="robots" href="/robots.txt">
   <link rel="sitemap" href="/sitemap.xml">
@@ -14,7 +14,7 @@
   <meta property="og:locale" content="en_US">
   <meta property="og:url" content="https://odek.21no.de/">
   <meta property="og:title" content="odek — Go Autonomous Agent Runtime">
-  <meta property="og:description" content="The fastest, minimal Go autonomous agent runtime. ~12 MB static binary, zero frameworks. ReAct agent with persistent memory, MCP, sandbox, Web UI, and Telegram bot.">
+  <meta property="og:description" content="The fastest, minimal Go autonomous agent runtime. ~12 MB static binary, zero frameworks. Getting-started guide covers GLM 5.3 Flash (z.ai) and the bodek TUI.">
   <meta property="og:image" content="https://odek.21no.de/og-image.png">
   <meta property="og:image:secure_url" content="https://odek.21no.de/og-image.png">
   <meta property="og:image:type" content="image/png">
@@ -23,10 +23,10 @@
   <meta property="og:image:alt" content="odek — ~12 MB static binary, zero-framework Go autonomous agent runtime">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="odek — Go Autonomous Agent Runtime">
-  <meta name="twitter:description" content="The fastest, minimal Go autonomous agent runtime. ~12 MB static binary, zero frameworks.">
+  <meta name="twitter:description" content="The fastest, minimal Go autonomous agent runtime. ~12 MB static binary, zero frameworks. GLM 5.3 Flash (z.ai) setup guide inside.">
   <meta name="twitter:image" content="https://odek.21no.de/og-image.png">
   <meta name="twitter:image:alt" content="odek — ~12 MB static binary, zero-framework Go autonomous agent runtime">
-  <meta name="keywords" content="Go, autonomous agent, AI agent, LLM, ReAct, MCP, parallel execution, interaction modes, Telegram bot, Docker sandbox, CLI, open-source">
+  <meta name="keywords" content="Go, autonomous agent, AI agent, LLM, ReAct, MCP, parallel execution, interaction modes, Telegram bot, Docker sandbox, CLI, open-source, getting started, GLM 5.3 Flash, z.ai, GLM Coding Plan, bodek TUI">
   <meta name="robots" content="index, follow">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://assets.21no.de; font-src https://assets.21no.de; img-src 'self' https://21no.de; connect-src 'self'">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
@@ -601,6 +601,7 @@
     <a href="#five-whys">Why</a>
     <a href="#features">Features</a>
     <a href="#install">Install</a>
+    <a href="https://github.com/BackendStack21/odek/blob/main/GETTING_STARTED.md" target="_blank">Get Started</a>
     <a href="#cheatsheet">Cheatsheet</a>
     <a href="#docs">Docs</a>
     <a href="#demos">Demos</a>
@@ -1099,6 +1100,11 @@ $ odek run --ctx data.csv <span class="hljs-string">"analyze trends"</span>
 $ odek run <span class="hljs-string">"@README.md summarize this project"</span>
 <button class="clip" onclick="copyText(this,'$ odek run \"How many lines in go.mod?\"\n3 lines\n\n$ odek run --session \"Refactor the auth module\"\n$ odek continue \"Now add error handling\"\n\n$ odek run --model gpt-4o --base-url https://api.openai.com/v1 \"Explain this\"')">📋 Copy</button>
 </pre>
+
+  <p style="margin-top:18px;color:var(--text-secondary);font-size:0.9375rem">
+    📖 Full walkthrough — config, GLM 5.3 Flash (z.ai) subscription setup, sandbox, and the optional <strong>bodek</strong> TUI — in the
+    <a href="https://github.com/BackendStack21/odek/blob/main/GETTING_STARTED.md" target="_blank" style="color:var(--accent)">Getting Started guide →</a>
+  </p>
 </section>
 
 <!-- ═══ Cheatsheet ═══ -->
@@ -1150,6 +1156,7 @@ $ odek run <span class="hljs-string">"@README.md summarize this project"</span>
 
   <div class="doc-links">
     <a href="/llms.txt">llms.txt<span>Machine-readable docs index for coding agents</span></a>
+    <a href="https://github.com/BackendStack21/odek/blob/main/GETTING_STARTED.md">Getting Started<span>Install odek, configure GLM 5.3 Flash (z.ai), add the optional bodek TUI</span></a>
     <a href="https://github.com/BackendStack21/odek/blob/main/docs/CLI.md">CLI Reference<span>All commands, subcommands, flags, examples</span></a>
     <a href="https://github.com/BackendStack21/odek/blob/main/docs/CHEATSHEET.md">Cheat Sheet<span>Quick reference: commands, config, memory, subagents, env vars</span></a>
     <a href="https://github.com/BackendStack21/odek/blob/main/docs/API.md">Go SDK Guide<span>Import, Agent, Tools, memory, multi-turn sessions, examples</span></a>
@@ -1185,6 +1192,7 @@ $ odek run <span class="hljs-string">"@README.md summarize this project"</span>
   <div class="install-block cta-block">
     <code>mkdir -p ~/.local/bin &amp;&amp; curl -fLo ~/.local/bin/odek https://github.com/BackendStack21/odek/releases/latest/download/odek-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') &amp;&amp; chmod +x ~/.local/bin/odek</code>
     <button class="copy-btn" onclick="copyText(this,'mkdir -p ~/.local/bin && curl -fLo ~/.local/bin/odek https://github.com/BackendStack21/odek/releases/latest/download/odek-$(uname -s | tr \'[:upper:]\' \'[:lower:]\')-$(uname -m | sed \'s/x86_64/amd64/;s/aarch64/arm64/\') && chmod +x ~/.local/bin/odek')">📋 Copy</button>
+    <a class="btn" href="https://github.com/BackendStack21/odek/blob/main/GETTING_STARTED.md" target="_blank">Get Started →</a>
     <a class="btn" href="https://github.com/BackendStack21/odek" target="_blank">GitHub →</a>
   </div>
 </section>
