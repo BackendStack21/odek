@@ -74,7 +74,7 @@ func readFileNoFollow(path string) ([]byte, error) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// 1. batch_patch — Apply multiple edits atomically
+// 1. batch_patch — Apply multiple find-replace edits in one call
 // ═════════════════════════════════════════════════════════════════════════
 
 const maxBatchPatches = 10
@@ -91,7 +91,7 @@ type batchPatchTool struct {
 
 func (t *batchPatchTool) Name() string { return "batch_patch" }
 func (t *batchPatchTool) Description() string {
-	return `Apply up to 10 find-replace edits across files in a single call. Edits are applied sequentially; if any fails the rest are skipped (early-stop). Each edit uses O_NOFOLLOW read + atomic temp+rename write, same as the patch tool.`
+	return `Apply up to 10 find-replace edits across files in a single call. Edits are applied sequentially — this is NOT one atomic transaction: at the first failing edit the remaining edits are skipped (early-stop) and the edits already applied are kept. Each individual edit uses O_NOFOLLOW read + atomic temp+rename write, same as the patch tool.`
 }
 
 type batchPatchArg struct {
@@ -1760,7 +1760,18 @@ func (t *treeTool) Call(argsJSON string) (result string, err error) {
 		return jsonError(err.Error())
 	}
 
-	entry, err := buildTree(t.toolCtx(), args.Path, args.Path, 0, args.MaxDepth, args.IncludeHidden)
+	// checkTreePath classifies a discovered path the same way the root path
+	// was checked above — the same rule search_files / multi_grep apply via
+	// checkSearchPath. A broad root (e.g. $HOME with include_hidden) must not
+	// silently expose sensitive subtrees such as ~/.odek or ~/.ssh: names and
+	// metadata leak structure even without file contents.
+	checkTreePath := func(p string) bool {
+		return t.dangerousConfig.CheckOperation(danger.ToolOperation{
+			Name: "tree", Resource: p, Risk: danger.ClassifyPath(p),
+		}, nil) != nil
+	}
+
+	entry, err := buildTree(t.toolCtx(), args.Path, args.Path, 0, args.MaxDepth, args.IncludeHidden, checkTreePath)
 	if err != nil {
 		return jsonResult(treeResult{Error: err.Error()})
 	}
@@ -1768,7 +1779,10 @@ func (t *treeTool) Call(argsJSON string) (result string, err error) {
 	return jsonResult(treeResult{Tree: entry})
 }
 
-func buildTree(ctx context.Context, root, path string, depth, maxDepth int, includeHidden bool) (treeEntry, error) {
+// skipPath, when non-nil, is consulted for every discovered child path;
+// paths it rejects are omitted (search tools apply the identical rule via
+// checkSearchPath).
+func buildTree(ctx context.Context, root, path string, depth, maxDepth int, includeHidden bool, skipPath func(path string) bool) (treeEntry, error) {
 	var info os.FileInfo
 	var err error
 	if depth == 0 {
@@ -1843,7 +1857,13 @@ func buildTree(ctx context.Context, root, path string, depth, maxDepth int, incl
 	entry.Children = make([]treeEntry, 0, len(entries))
 	for _, e := range entries {
 		childPath := filepath.Join(path, e.Name())
-		child, err := buildTree(ctx, root, childPath, depth+1, maxDepth, includeHidden)
+		// Security: classify each discovered path, not just the requested
+		// root. Tree output is names/metadata only, but that still leaks the
+		// structure of sensitive subtrees the search tools would skip.
+		if skipPath != nil && skipPath(childPath) {
+			continue
+		}
+		child, err := buildTree(ctx, root, childPath, depth+1, maxDepth, includeHidden, skipPath)
 		if err != nil {
 			continue
 		}
