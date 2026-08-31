@@ -181,11 +181,11 @@ The `Handler` struct routes incoming updates to the appropriate callback based o
 
 | Callback | Trigger | Signature |
 |---|---|---|
-| `OnTextMessage` | Plain text message | `(chatID int64, messageID int, text string, forwarded bool) (string, error)` |
+| `OnTextMessage` | Plain text message | `(chatID int64, messageID int, text string, forwarded bool, userID int64) (string, error)` |
 | `OnCommand` | Slash command (e.g. `/start`) | `(chatID int64, command, args string) (string, error)` |
-| `OnVoiceMessage` | Voice message (OGG Opus) | `(chatID int64, messageID int, fileID string) (string, error)` |
-| `OnPhotoMessage` | Photo message | `(chatID int64, messageID int, fileIDs []string, caption string) (string, error)` |
-| `OnCallbackQuery` | Inline keyboard callback | `(chatID int64, callbackData string) (string, error)` |
+| `OnVoiceMessage` | Voice message (OGG Opus) | `(chatID int64, messageID int, fileID string, userID int64) (string, error)` |
+| `OnPhotoMessage` | Photo message | `(chatID int64, messageID int, fileIDs []string, caption string, userID int64) (string, error)` |
+| `OnCallbackQuery` | Inline keyboard callback | `(chatID int64, callbackData string, userID int64) (string, error)` |
 
 All callbacks return a response string (may be empty) and an error. The `Handle` method:
 1. Sends `SendChatAction("typing")` immediately
@@ -256,7 +256,7 @@ defense-in-depth.
 | `/plan <description>` | Create a new plan from a natural language description |
 | `/plans` | List saved plans for this chat |
 | `/plan_view <slug>` | View a specific plan's content for this chat |
-| `/plan_resume <slug>` | Resume working from a saved plan in this chat |
+| `/plan_resume` | Resume working from the most recent saved plan in this chat |
 | `/plan_delete <slug>` | Delete a saved plan for this chat |
 | `/plan_status` | Show the agent's current structured task plan (loop `plan` tool state) for this chat's session — distinct from the markdown-file plan commands above |
 | `/sessions` | List recent conversation sessions for this chat |

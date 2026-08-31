@@ -73,7 +73,8 @@ The `[maintenance]` section (all keys optional — defaults shown):
     "sessions_max_age_days": 30,
     "audit_max_age_days": 14,
     "log_max_mb": 50,
-    "plans_max_age_days": 30
+    "plans_max_age_days": 30,
+    "artifacts_max_age_hours": 24
   }
 }
 ```
@@ -86,6 +87,7 @@ The `[maintenance]` section (all keys optional — defaults shown):
 | `audit_max_age_days` | `14` | Delete prompt-injection audit records older than this |
 | `log_max_mb` | `50` | Rotate logs larger than this |
 | `plans_max_age_days` | `30` | Delete plans older than this |
+| `artifacts_max_age_hours` | `24` | Sweep orphaned sub-agent artifacts older than this (`0` keeps them forever; live removal still happens on session delete) |
 
 The maintenance config is **operator-only**: like `base_url`, `api_key`, and
 the `dangerous` section, it is honored from `~/.odek/config.json` (and process

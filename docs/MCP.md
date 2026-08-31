@@ -45,7 +45,9 @@ Default exposure (no `tools` config, no SearXNG):
 | `read_file`, `write_file`, `search_files`, `batch_read`, `glob`, `file_info` | file access |
 | `browser`, `http_batch`, `web_search`* | web access (*only when SearXNG configured) |
 | `multi_grep`, `diff`, `tree`, `count_lines`, `head_tail`, `word_count`, `checksum`, `sort`, `base64`, `tr`, `json_query`, `math_eval` | inspection & transforms |
-| `session_search`, `transcribe`, `vision`, `plan` | sessions, media, planning |
+| `session_search`, `transcribe`, `vision` | sessions & media |
+| `plan`* | planning (*only when planning is enabled) |
+| `skill_load`, `skill_list`, `artifact_read`, `list_subagent_profiles` | skills, artifacts, sub-agent profiles |
 
 ### Sandbox
 
@@ -193,16 +195,18 @@ Approval methods:
    ODEK_APPROVE_MCP=1 odek run "task"
    ```
 3. **Persisted approvals** — approvals are stored in
-   `~/.odek/mcp_approvals.json` (0600) keyed by project directory + server name
+   `~/.odek/mcp_approvals.json` (0600) keyed by project directory + server
+   name + command + args + sorted `env` map hash + the canonical-JSON SHA-256
+   of the input schema + the full tool description text + the
+   odek-extension/v1 limit fields (`timeout_seconds`, `max_response_bytes`,
+   `max_result_chars`, `artifact_roots`). If any of these change, you are
+   prompted again — editing `artifact_roots` widens the set of files a server
+   may hand to the agent, so it can never silently reuse an old approval.
+   **Upgrade note:** because the odek-extension/v1 limit fields joined the
+   hash, approvals persisted by an older odek re-prompt **once** after
+   upgrading, then stick.
 4. **`auto_approve: true`** in the global config — pre-trust a server and
    skip both prompts; see [Auto-approving trusted servers](#auto-approving-trusted-servers)
-   + command + args + sorted `env` map hash + the odek-extension/v1 limit
-   fields (`timeout_seconds`, `max_response_bytes`, `max_result_chars`,
-   `artifact_roots`). If any of these change, you are prompted again — editing
-   `artifact_roots` widens the set of files a server may hand to the agent, so
-   it can never silently reuse an old approval. **Upgrade note:** because the
-   odek-extension/v1 limit fields joined the hash, approvals persisted by an
-   older odek re-prompt **once** after upgrading, then stick.
 
 If approval is required and cannot be obtained, odek aborts before spawning any
 MCP server.
@@ -256,8 +260,12 @@ Tool approval uses the same methods as server approval:
    name + tool name + sorted `env` map hash. If a tool is renamed, a new tool
    appears, or the server's `env` changes, it must be approved again.
 
-Tools from global servers (`~/.odek/config.json`) are operator-trusted and do
-not require per-tool approval.
+Per-tool approval is required for **every** server — global servers are not
+exempt. A globally-configured server can be pre-trusted with `auto_approve: true`
+(global config only; the field is stripped from project config with a warning),
+or per-tool prompts can be satisfied via `ODEK_APPROVE_MCP=1` or a persisted
+approval. Without one of these, tool registration fails closed in
+non-interactive runs.
 
 ### How it works
 
@@ -330,8 +338,9 @@ odek: connected MCP server "playwright" (5 tools)
 odek: connected MCP server "fetch" (1 tool)
 ```
 
-Errors during discovery are reported at startup — the server is skipped and
-odek continues with the remaining servers.
+Errors during discovery are fatal at startup: odek reports the error, shuts
+down any servers already started, and aborts rather than running with a
+partial tool set.
 
 ### Config reference
 

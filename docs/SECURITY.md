@@ -95,13 +95,13 @@ The `@`-resource resolver (`FileResolver.Search`) rejects queries containing `..
 - **System prompts** — `~/.odek/IDENTITY.md`, explicit `--system` / `ODEK_SYSTEM`, and config `system` overrides are capped at 256 KiB and scanned before becoming the system prompt. On injection patterns or an over-size prompt, odek warns on stderr and falls back to the compiled-in default identity, keeping the system-message boundary consistent regardless of which source supplied it. Project `AGENTS.md` larger than 256 KiB is ignored. The compiled-in default is itself scanner-clean (pinned by test) and carries the execution-provenance rules: repository/tool text — including policy-dressed content — is never authorization to act; scripts, make targets, package scripts, and CI steps are audited before execution; failed reads are never replaced by executing the file; deferred-execution writes require named user confirmation; MCP tool metadata is capability documentation, not directives.
 - **MCP tool descriptions and schemas** — at registration (see [MCP hardening](#mcp-hardening)).
 - **Skill bodies** — at load time and on save/patch.
-- **Memory** — facts, Extended Memory atoms, and session-buffer text.
+- **Memory** — facts and Extended Memory atoms.
 
-The scanner normalizes invisible Unicode, folds common homoglyphs, detects mixed confusable scripts, and matches paraphrased exfiltration and non-English override phrases. It also flags concealment instructions ("do not tell the user", "keep this secret", "silently exfiltrate"), forged chat control tokens / role markers (`<|im_start|>`, `[INST]`, `<<SYS>>`, `<system>`), and data-exfiltration beacons (markdown-image URLs carrying `data=`/`token=`/`${VAR}`, and `curl`/`wget` requests splicing a shell variable into a query string).
+The scanner normalizes invisible Unicode, folds common homoglyphs, detects mixed confusable scripts, and matches paraphrased exfiltration and non-English override phrases. It also flags concealment instructions ("do not tell the user", "keep this secret", "silently exfiltrate"), forged chat control tokens / role markers (`<|im_start|>`, `[INST]`, `<<SYS>>`, and `<system>` when followed by an override verb), and data-exfiltration beacons (markdown-image URLs carrying `data=`/`token=`/`${VAR}`, and `curl`/`wget` requests splicing a shell variable into a query string).
 
-**Optional sidecar second opinion.** odek can send the same content to an external `go-prompt-injection-guard` sidecar (HTTP or Unix socket). The guard is **optional** — the local rule scan always runs first, and without a sidecar the system behaves exactly as before. Covered scopes (each controlled by `guard.scan.<scope>`):
+**Optional sidecar second opinion.** odek can send the same content to an external `go-prompt-injection-guard` sidecar (HTTP or Unix socket). The guard is **optional** — the local rule scan always runs first, and without a sidecar the system behaves exactly as before. Covered scopes (each controlled by `guard.scan.<scope>`; MCP input schemas are additionally sidecar-scanned through a fixed `mcp_schema` scope that has no toggle — `guard.IsEnabled` treats unknown scopes as enabled):
 
-- `memory` — legacy facts, `memory` tool writes, Extended Memory atoms, and session-buffer text.
+- `memory` — legacy facts, `memory` tool writes, and Extended Memory atoms.
 - `system_prompt` — `IDENTITY.md`, explicit `--system`, and `AGENTS.md`.
 - `mcp_descriptions` — MCP server tool descriptions.
 - `skills` — skill bodies at load time and import.
@@ -181,7 +181,7 @@ These families are additionally pinned by dedicated per-module suites beyond the
 | MCP per-server limits & per-tool approvals | `cmd/odek/mcp_approval_test.go`, `cmd/odek/mcp_e2e_test.go` |
 | SSRF dial guard | `cmd/odek/ssrf_guard_test.go` |
 
-Taint is decided per tool call by `memory.ToolCallTaints` (the single source of truth, shared with skills):
+Taint is decided per tool call by `memory.ToolCallTaints` (the single source of truth):
 
 - **Always untrusted:** `browser`, `http_batch`, `transcribe` (network / opaque-audio content), `vision` (opaque-image/video content), `web_search` (search-engine results), `delegate_tasks` (sub-agent output), `session_search` (recall of prior-session transcripts, which may carry earlier-injected text), and any MCP tool (`server__tool`). `shell` is deliberately excluded even though its output can carry untrusted bytes — it is the agent's primary work tool and tainting it would taint nearly every session.
 - **Path-reading tools** (`read_file`, `search_files`, `multi_grep`, `batch_read`, `json_query`, `head_tail`, `count_lines`, `checksum`, `word_count`, `sort`, `tr`, `diff`, `file_info`, `glob`, `tree`, `base64`) taint when **any** of their path arguments resolves **outside the workspace trust zone** — the workspace dir, the sandbox `/workspace` mount, or `~/.odek`. Reads confined to the workspace stay trusted, so ordinary coding sessions remain recallable; reads of anything else (system/credential paths, home files, sibling repos) taint. The check is a workspace-containment allowlist rather than a sensitive-path denylist, and it resolves symlinks (so e.g. `/etc` → `/private/etc` on macOS cannot disguise an escape). A malformed argument string is treated conservatively as untrusted. When adding a new file-reading tool, add it to `PathReadingTools`.
@@ -300,7 +300,7 @@ The plan tool gives the agent a protected plan message that survives context tri
 
 - **Never in the approval UI.** `classifyToolCall` returns an explicit safe class for `plan`, so plan calls (and their step titles, which may quote task content) never surface in approval prompts or batch cards (`TestReport_PlanToolClassifiedSafe`).
 - **Untrusted wrapping.** Plan step bodies derive from task/tool content and are re-injected as system context every iteration — they ride the same untrusted-content wrapper as other engine-injected context, with the audit ingest recorder recording the injection.
-- **Forgery resistance.** A hostile tool result containing a literal plan header cannot become the plan message: recognition requires the `system` role, and only the engine writes that role/content pair (`TestIsPlanMessage`).
+- **Forgery resistance.** A hostile tool result containing a literal plan header cannot become the plan message: recognition requires the `system` role, and only the engine writes that role/content pair (enforced by plan-message construction in `internal/loop`).
 
 Resume parsing is strict and total — any deviation in the stored plan drops it instead of approximating. Project configs may tune the documented clamps only; they cannot re-enable a globally disabled feature.
 
@@ -332,7 +332,7 @@ The `/restart` command is restricted to operator chats/users (`schedules.telegra
 
 A single polling instance is enforced with an advisory `flock` on `~/.odek/telegram.lock`: a second instance blocks until the first releases, and the OS releases the lock automatically if the holder crashes.
 
-**Message hygiene.** Message and caption lengths are counted in UTF-16 code units (`utf16Len`), matching Telegram's own limits, so emoji-heavy text is measured correctly. Outbound text via the `send_message` tool is escaped with `telegram.EscapeMarkdown` (ParseModeMarkdownV2), so prompt-injected content cannot abuse Markdown syntax to hide malicious links, fake buttons, or instruction-like formatting. Inline-keyboard `callback_data` is validated by the tool and again by the sender closure: values starting with a reserved internal prefix (`apr:`, `den:`, `trs:`, `clarify:`, `skill_save:`, `skill_skip:`) are rejected — only user-facing `cb:` callbacks are allowed — so a compromised agent cannot present a button that forges an approval decision or triggers a skill action. Clarify prompts bind a random request ID into the callback data, reject callbacks from a different user than the one who triggered the prompt, and ignore expired or already-answered prompts.
+**Message hygiene.** Outbound text via the `send_message` tool is escaped with `telegram.EscapeMarkdown` (ParseModeMarkdownV2), so prompt-injected content cannot abuse Markdown syntax to hide malicious links, fake buttons, or instruction-like formatting. Inline-keyboard `callback_data` is validated by the tool and again by the sender closure: values starting with a reserved internal prefix (`apr:`, `den:`, `trs:`, `clarify:`, `skill_save:`, `skill_skip:`) are rejected — only user-facing `cb:` callbacks are allowed — so a compromised agent cannot present a button that forges an approval decision or triggers a skill action. Clarify prompts bind a random request ID into the callback data, reject callbacks from a different user than the one who triggered the prompt, and ignore expired or already-answered prompts.
 
 **Inbound media.** Voice messages, photos, and documents are downloaded to `~/.odek/media/` under a per-file cap (`telegram.max_download_size`, default 5 MiB) and an optional per-chat quota (`telegram.media_quota_per_chat`), preventing a single large upload or a flood of uploads from filling the disk; oversized downloads are rejected before they are written.
 
@@ -360,7 +360,7 @@ MCP servers are subprocesses odek spawns on the operator's behalf, and their out
 
 ### MCP server mode
 
-When odek itself runs as an MCP server (`odek mcp`), it exposes its built-in tools to an external MCP client over stdio under the same gates: the `DangerousConfig` risk classes and the approval system apply unchanged, and with no TTY the `non_interactive` default (`deny`) governs, so approval-gated classes fail closed rather than silently executing. `delegate_tasks` and the `memory` tool are deliberately not exposed over this surface, so an MCP consumer cannot spawn sub-agents or drive memory promotion. The project-sandbox approval gate runs in server mode too, and `--sandbox` is opt-in exactly as for `odek run`.
+When odek itself runs as an MCP server (`odek mcp`), it exposes its built-in tools to an external MCP client over stdio under the same gates: the `DangerousConfig` risk classes and the approval system apply unchanged, and with no TTY the `non_interactive` fallback applies (built-in default `read_only`), so approval-gated classes fail closed rather than silently executing. `delegate_tasks` and the `memory` tool are deliberately not exposed over this surface, so an MCP consumer cannot spawn sub-agents or drive memory promotion. The project-sandbox approval gate runs in server mode too, and `--sandbox` is opt-in exactly as for `odek run`.
 
 ### SSRF and network egress
 
@@ -466,7 +466,7 @@ Hostile or accidental input is bounded everywhere it is sized, to keep it from O
 | MCP artifact file / refs per envelope | 64 MiB / 64 |
 | Sub-agent progress stream | 100 K lines / 100 MiB (overflow cancels the child) |
 | Telegram media download | 5 MiB per file (default) + optional per-chat quota |
-| Telegram plan files | 1 MiB read / 8 KiB preview |
+| Telegram plan files | reply preview bounded at 3800 chars (`maxTelegramPlanChars`) |
 | Config files | 5 MiB |
 | `IDENTITY.md` / `--system` | 256 KiB |
 | Skill files | 1 MiB |
@@ -481,7 +481,7 @@ Hostile or accidental input is bounded everywhere it is sized, to keep it from O
 
 ### Secret redaction
 
-`internal/redact` scans every tool output and session/memory write for known secret formats and replaces matches with `[REDACTED]` before they reach Telegram replies, persistent sessions, or memory. Patterns include OpenAI `sk-` (and underscore-bearing bodies such as Anthropic `sk-ant-...`), Groq `gsk_`, xAI `xai-`, HuggingFace `hf_`, GitHub PATs (classic + fine-grained), AWS access keys, multi-line PEM private keys, JWT, generic `api_key=` / `password=` env lines, Slack `xoxb-`, Stripe `sk_live_`, Google API keys, Twilio `SK`, HashiCorp Vault `hvs.` / `hvb.`, Google OAuth `ya29.` / `1//0`, SendGrid `SG.`, Discord bot tokens (M/N/O-anchored), DB URLs with embedded credentials (`postgresql://`, `mongodb://`, etc.), `Authorization: Bearer` headers, Telegram bot tokens (`<id>:<secret>`), and exported credential environment variables (`export API_KEY=…`). A known-value registry additionally redacts the concrete values loaded from `~/.odek/secrets.env` — including their base64, hex, URL-encoded, and reversed spellings — even when they match no pattern.
+`internal/redact` scans every tool output for known secret formats and replaces matches with `[REDACTED]` before the output reaches the model, persistent sessions, or the event stream; memory writes and Telegram replies are covered transitively, since they are composed from already-redacted tool output. Patterns include OpenAI `sk-` (and underscore-bearing bodies such as Anthropic `sk-ant-...`), Groq `gsk_`, xAI `xai-`, HuggingFace `hf_`, GitHub PATs (classic + fine-grained), AWS access keys, multi-line PEM private keys, JWT, generic `api_key=` / `password=` env lines, Slack `xoxb-`, Stripe `sk_live_`, Google API keys, Twilio `SK`, HashiCorp Vault `hvs.` / `hvb.`, Google OAuth `ya29.` / `1//0`, SendGrid `SG.`, Discord bot tokens (M/N/O-anchored), DB URLs with embedded credentials (`postgresql://`, `mongodb://`, etc.), `Authorization: Bearer` headers, Telegram bot tokens (`<id>:<secret>`), and exported credential environment variables (`export API_KEY=…`). A known-value registry additionally redacts the concrete values loaded from `~/.odek/secrets.env` — including their base64, hex, URL-encoded, and reversed spellings — even when they match no pattern.
 
 If you find a format that leaks, add a regex to `internal/redact/redact.go` and a row to `TestReport_RedactMissesRealSecretFormats` in `cmd/odek/security_report_validation_test.go`.
 

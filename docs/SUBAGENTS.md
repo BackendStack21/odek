@@ -217,7 +217,7 @@ The `delegate_tasks` tool always uses this file-based approach internally.
 
 ### stdout (machine-readable)
 
-Pure JSON. Always parseable — even on errors. The parent `delegate_tasks` tool reads this via `json.NewDecoder`:
+Pure JSON. Always parseable — even on errors. The parent `delegate_tasks` tool parses this stream line-by-line (`json.Unmarshal` per line):
 
 ```jsonc
 // Success
@@ -397,7 +397,7 @@ Config in `odek.json`:
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `max_concurrency` | 3 | Max sub-agents running in parallel (max 8) |
+| `max_concurrency` | 3 (global default; falls back to it when unset here) | Max sub-agents running in parallel (max 8) |
 | `timeout_seconds` | 1800 | Default timeout per sub-agent; hard max 1800 (values above are clamped) |
 | `max_iterations` | 15 | Default max think→act cycles per sub-agent |
 | `max_depth` | 2 | Delegation nesting cap (1 = a sub-agent may not delegate further) |

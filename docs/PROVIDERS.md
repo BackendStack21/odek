@@ -50,7 +50,7 @@ odek ships with built-in **model profiles** that automatically apply sensible de
 
 | Model | Family | Default Thinking | Timeout | Max Context | Best For |
 |-------|--------|-----------------|---------|-------------|----------|
-| `deepseek-chat` | DeepSeek (legacy) | (provider default) | 120s | 128K | General |
+| `deepseek-chat` | DeepSeek (generic prefix match) | (provider default) | 120s | 128K | General — matched by the `deepseek-` prefix, not a dedicated profile |
 | `deepseek-v4-flash` | DeepSeek v4 Flash | — (faster/cheaper) | 90s | 128K | Quick tasks, coding |
 | `deepseek-v4-pro` | DeepSeek v4 Pro | `enabled` | 180s | **1M** | Deep reasoning |
 | `glm-5.3` | GLM 5.3 (Z.ai) | (always on — forced) | 300s | **1M** | Agentic coding |
@@ -60,7 +60,7 @@ odek ships with built-in **model profiles** that automatically apply sensible de
 | `kimi-…` (e.g. `kimi-for-coding`) | Kimi | (provider default) | 300s | 256K | Agentic coding |
 | `k3` | Kimi | (provider default) | 300s | **1M** | Agentic coding |
 | `k3-256k` | Kimi | (provider default) | 300s | 256K | Agentic coding |
-| *(any other)* | Generic | (profile default) | 120s | (no limit) | Custom models |
+| *(any other)* | — (no profile) | (provider defaults; no profile overrides apply) | 120s | — | Custom models |
 
 ### How profiles work
 

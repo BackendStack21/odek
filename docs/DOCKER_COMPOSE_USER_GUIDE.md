@@ -25,7 +25,11 @@ two permission profiles:
   local Ollama endpoint, etc.). Odek reads it from `ODEK_API_KEY` (with legacy fallbacks
   `DEEPSEEK_API_KEY` → `OPENAI_API_KEY`).
 
-All files below live in the **repository root** (next to `go.mod`). Create them as shown.
+All files below live in the **`docker/` directory** — not the repository root. The compose
+file builds with `context: ..` (repo root) and `dockerfile: docker/Dockerfile`, and all
+`docker compose` commands are meant to run from `docker/` so the relative paths and `.env`
+resolve. Everything ships with the repository — the only file you create yourself is
+`.env` (copied from `.env.example`).
 
 ---
 
@@ -35,64 +39,68 @@ After following this guide you will have added:
 
 ```
 odek/
-├── Dockerfile                 # builds the odek binary
-├── docker-compose.yml         # restricted + godmode services
-├── .env                       # your API key + model settings (gitignored)
-├── config.restricted.json     # Restricted permission policy
-├── config.godmode.json        # Godmode (YOLO) permission policy
-├── workspace/                 # the directory the agent works in (mounted into the container)
-└── .odek/                     # Telegram bot state: sessions, skills, lock (mounted in)
+├── go.mod                         # repo root — the compose build context (`context: ..`)
+└── docker/                        # run all `docker compose` commands from here
+    ├── Dockerfile                 # 4-stage image build (see §3)
+    ├── Dockerfile.embeddings      # llama.cpp embeddings sidecar (bundled GGUF)
+    ├── docker-compose.yml         # restricted + godmode + telegram profiles, sidecars
+    ├── .env.example               # template — copy to `.env`
+    ├── .env                       # your API key + model settings (you create this)
+    ├── config.restricted.json     # Restricted permission policy
+    ├── config.godmode.json        # Godmode (YOLO) permission policy
+    ├── searxng/settings.yml       # SearXNG sidecar settings
+    ├── piguard/                   # PIGuard sidecar (model download script, models dir)
+    ├── workspace/                 # the directory the agent works in (mounted into the container)
+    └── .odek/                     # Telegram bot state: sessions, skills, lock (created on first run)
 ```
 
-> Add `.env`, `workspace/`, and `.odek/` to your `.gitignore` so you never commit secrets
-> or scratch files.
+> `.env`, `workspace/`, and `.odek/` are already ignored by the repository's root `.gitignore`
+> (`docker/.env`, `docker/workspace/*`, `docker/.odek/*`), so secrets and scratch files are
+> never committed.
 
 ---
 
 ## 3. The Dockerfile
 
-A multi‑stage build: compile the static binary with the Go toolchain, then ship it on a
-small runtime image that already has a shell and common tooling for the agent to use.
+A four‑stage build: compile the static binary with the Go toolchain, build the whisper.cpp
+CLI and fetch its multilingual `small` model, build the llama‑mtmd‑cli vision runner and
+fetch the MiniCPM‑V model, then assemble a Debian (bookworm‑slim) runtime image with the
+agent's tooling. The full file lives at `docker/Dockerfile`; the annotated skeleton below
+shows what each stage does.
 
 ```dockerfile
 # syntax=docker/dockerfile:1
+# Build context MUST be the repository root (compose sets
+#   build: { context: .., dockerfile: docker/Dockerfile }).
 
 # ---- build stage ----
 FROM golang:1.25-alpine AS build
-WORKDIR /src
+# go mod download → CGO_ENABLED=0 go build -ldflags "-s -w" → /out/odek
+# (fully static, so it runs unchanged on the Debian runtime stage)
 
-# Cache modules first
-COPY go.mod go.sum ./
-RUN go mod download
+# ---- whisper stage ----
+FROM debian:bookworm-slim AS whisper
+# Builds whisper.cpp's CLI from a pinned release (WHISPER_VERSION) and fetches
+# the multilingual `small` GGML model (WHISPER_MODEL, default small) into a
+# fixed image path so the `transcribe` tool works with zero setup.
 
-# Build the static binary (mirrors the Makefile `build` target)
-COPY . .
-RUN CGO_ENABLED=0 go build -ldflags "-s -w" -o /out/odek ./cmd/odek
+# ---- minicpm-v stage ----
+FROM debian:bookworm-slim AS minicpm
+# Builds llama-mtmd-cli from source (LLAMA_VERSION) and fetches the
+# MiniCPM-V GGUF + vision projector (MINICPM_QUANT, default Q4_K_M) so the
+# `vision` tool works with zero setup.
 
 # ---- runtime stage ----
-FROM alpine:latest
-# Tooling the agent commonly needs inside the sandbox container.
-# Trim or extend this list to taste.
-RUN apk add --no-cache ca-certificates git bash coreutils curl jq
-
-# Run as a non-root user — defense in depth even inside the container.
-# Pre-create ~/.odek owned by the user so it's writable for config, sessions,
-# and the Telegram lock (whether backed by an image dir or a mounted folder).
-RUN adduser -D -u 1000 odek \
- && mkdir -p /home/odek/.odek /workspace \
- && chown -R odek:odek /home/odek/.odek /workspace
-
-COPY --from=build /out/odek /usr/local/bin/odek
-
-# Docker does NOT set $HOME from USER, but Odek resolves ~/.odek via $HOME.
-# Set it explicitly so config.json, sessions, and the Telegram lock land in
-# /home/odek/.odek (where the volume and config bind mounts are).
-ENV HOME=/home/odek
-USER odek
-WORKDIR /workspace
-
-ENTRYPOINT ["odek"]
+FROM debian:bookworm-slim
+# Agent tooling via apt: ca-certificates git bash coreutils curl jq ffmpeg
+# libstdc++6, plus gh (official apt repo), python3 + venv, Go (official
+# tarball, GO_VERSION) and Bun. Copies in the odek binary and the whisper +
+# minicpm artifacts. Runs as non-root user `odek` (uid 1000, HOME=/home/odek),
+# WORKDIR /workspace, ENTRYPOINT ["odek"].
 ```
+
+> Model sizes and build args (WHISPER_MODEL, MINICPM_QUANT, GO_VERSION, …) are documented
+> inline in `docker/Dockerfile`.
 
 > **Why no `--sandbox` inside the container?** Odek's `--sandbox` mode launches *nested*
 > Docker containers for each command, which would require mounting the Docker socket
@@ -163,24 +171,29 @@ These JSON files are mounted to `/home/odek/.odek/config.json` inside the contai
 
 ### 5a. Restricted policy — `config.restricted.json`
 
-Commands are risk‑classified; destructive and unrecognised ones are denied, the rest
-prompt for approval. Crucially, `non_interactive` is set to **`deny`** so that if the
-agent runs in a container *without* an attached terminal or Web UI, anything that would
-prompt is blocked rather than silently allowed.
+Commands are risk‑classified. Safe reads and local writes run without approval — as does
+network egress, which the LLM API and sidecars need. Installs, code execution, system
+writes, and persistence attempts prompt for approval; `unknown` and `destructive` are
+denied outright. For headless runs, `non_interactive` is **`read_only`**: read‑only
+inspection proceeds without a human channel, and anything that would prompt is denied.
 
 ```json
 {
   "sandbox": false,
   "dangerous": {
-    "action": "prompt",
-    "non_interactive": "deny",
+    "non_interactive": "read_only",
     "classes": {
-      "destructive": "deny",
-      "system_write": "prompt",
-      "network_egress": "prompt",
-      "code_execution": "prompt",
+      "safe": "allow",
+      "local_write": "allow",
       "install": "prompt",
-      "local_write": "allow"
+      "network_egress": "allow",
+      "code_execution": "prompt",
+      "persistence": "prompt",
+      "unread_exec": "prompt",
+      "system_write": "prompt",
+      "unknown": "deny",
+      "destructive": "deny",
+      "blocked": "deny"
     },
     "allowlist": [],
     "denylist": ["rm -rf /"]
@@ -194,7 +207,7 @@ prompt is blocked rather than silently allowed.
 | --- | --- |
 | `sandbox` | `false` runs commands directly in this container (the Compose setup already *is* the sandbox). `true` would nest a second Docker sandbox — not what you want here. |
 | `action` | **Global default** action for any class **not** listed under `classes`. `"prompt"` here, `"allow"` = godmode, `"deny"` = lockdown. ⚠️ This overrides the *built‑in* per‑class defaults (see the gotcha below). |
-| `non_interactive` | What to do with a **prompt**‑level command when there is no human channel (no TTY, no Web UI). `"deny"` blocks it; `"allow"` runs it. Always set this to `"deny"` for unattended/automated containers. |
+| `non_interactive` | What to do with a **prompt**‑level command when there is no human channel (no TTY, no Web UI). `"deny"` blocks it; `"allow"` runs it; `"read_only"` (the shipped Restricted value) lets read‑only/inspection commands proceed and denies the rest. |
 | `classes` | Per‑class action overrides. The most specific setting — it wins over `action` and the built‑in defaults. Only list the classes you want to pin. |
 | `allowlist` | Commands that always run, **exact string match**, no classification. Highest priority of all. Use for a handful of trusted exact commands (e.g. `"npm run deploy"`). |
 | `denylist` | Commands that are always denied, **prefix match** after trimming. Beats classification and even godmode — but **not** the allowlist. |
@@ -203,19 +216,20 @@ prompt is blocked rather than silently allowed.
 
 | Class | Examples | Built‑in default | This profile |
 | --- | --- | --- | --- |
-| `safe` | `ls`, `cat`, `grep`, `git status` | allow | prompt¹ |
+| `safe` | `ls`, `cat`, `grep`, `git status` | allow | allow |
 | `local_write` | write files in the working dir | allow | allow |
 | `install` | `npm install`, `pip install`, `apk add` | prompt | prompt |
-| `network_egress` | `curl`, `wget`, `ssh`, DNS lookups | prompt | prompt |
+| `network_egress` | `curl`, `wget`, `ssh`, DNS lookups | prompt | allow |
 | `code_execution` | `curl … \| sh`, `bash -c`, `python -c`, `go run` | prompt | prompt |
 | `system_write` | `sudo`, writes to `/etc`, reads of `~/.ssh` | prompt | prompt |
-| `unknown` | any command whose program name Odek does **not** recognise | deny | prompt¹ → denied unattended |
+| `unknown` | any command whose program name Odek does **not** recognise | deny | deny |
 | `destructive` | `rm -rf /`, `dd … of=/dev/sda`, `mkfs` | deny | **deny** |
 | `blocked` | fork bombs, fully‑specified `dd` to a block device | **always deny** | **always deny** (cannot be overridden) |
 
-> ¹ `safe` and `unknown` are not listed under `classes`, so the global
-> `action: "prompt"` applies to them — see the gotcha below. With a human channel
-> they prompt; unattended (`non_interactive: "deny"`) they are denied.
+> The shipped Restricted file pins the classes explicitly: `safe`, `local_write`, and
+> `network_egress` are allowed; `install`, `code_execution`, `persistence`, `unread_exec`,
+> and `system_write` prompt; `unknown`, `destructive`, and `blocked` are denied. See the
+> gotcha below before adding a global `action`.
 
 Odek **fails closed**: the `unknown` class catches any command whose verb isn't in the
 built‑in safe/dangerous tables, so a novel or obfuscated command can't slip through as
@@ -229,19 +243,12 @@ or relax the class with `"unknown": "prompt"`.
 3. Otherwise classify it, then: explicit **`classes`** entry → `blocked` is **always deny** → global **`action`** (if set) → built‑in class default.
 4. If the result is **prompt** and there's no human channel, **`non_interactive`** decides.
 
-> **Gotcha — `action` overrides *every* unlisted class.** Because `action: "prompt"` is
-> set, any class you don't list under `classes` resolves to *prompt*, including `safe`.
-> So with this profile as written, even `ls` prompts (and is denied unattended). Two ways
-> to get the usual "safe commands just run" behavior:
->
-> - add `"safe": "allow"` to `classes` (keep `action: "prompt"` as the catch‑all for
->   everything else, including `unknown`), **or**
-> - **omit `action` entirely** and only override the classes you care about — then unlisted
->   classes keep their built‑in defaults (safe/local_write allow; destructive/blocked/unknown
->   deny; system_write/network_egress/code_execution/install prompt).
->
-> The second form is the better default if you want `unknown` to stay deny‑by‑default
-> rather than prompt.
+> **Gotcha — `action` overrides *every* unlisted class.** The shipped Restricted file
+> does **not** set `action`; it pins the classes it cares about explicitly (see the table
+> above), so any class it omits keeps its built‑in default. If you add a global `action`,
+> it becomes the default for every class you don't list — e.g. `action: "prompt"` would
+> make even `ls` prompt (and be denied unattended). Either keep pinning classes
+> explicitly, or pick `action` with that catch‑all behavior in mind.
 
 > Approvals require a human channel: the **Web UI** (`odek serve`, modal approval over
 > WebSocket) or an **interactive terminal** (`odek repl` with `docker compose run -it`).
@@ -289,8 +296,11 @@ configurable.
 
 ## 6. The Compose file
 
-Two services share the same image but mount a different policy file. Compose
-**profiles** keep them from starting together — you opt into one at a time.
+Four odek services share the same image but mount a different policy file (the Telegram
+pair also mounts a writable `./.odek` state folder). Compose **profiles** keep them from
+starting together — you opt into one at a time. Every odek service also co‑starts three
+sidecars — `searxng`, `llama-embeddings`, and `piguard-gateway` — via `depends_on`; the
+excerpt below is abridged.
 
 ```yaml
 # docker-compose.yml
@@ -299,7 +309,9 @@ services:
   # ── Restricted (default) — interactive Web UI with approval prompts ──
   odek-restricted:
     profiles: ["restricted"]
-    build: .
+    build:
+      context: ..                  # repo root
+      dockerfile: docker/Dockerfile
     image: odek:local
     env_file: .env
     command: ["serve", "--addr", "0.0.0.0:8080", "--no-sandbox"]
@@ -309,11 +321,14 @@ services:
       - ./workspace:/workspace
       - ./config.restricted.json:/home/odek/.odek/config.json:ro
     restart: "no"
+    depends_on: [searxng, llama-embeddings, piguard-gateway]
 
   # ── Godmode (all permissions) — non-interactive, disposable container ──
   odek-godmode:
     profiles: ["godmode"]
-    build: .
+    build:
+      context: ..                  # repo root
+      dockerfile: docker/Dockerfile
     image: odek:local
     env_file: .env
     # No published ports (no inbound needed). Outbound networking stays on —
@@ -323,6 +338,7 @@ services:
       - ./workspace:/workspace
       - ./config.godmode.json:/home/odek/.odek/config.json:ro
     restart: "no"
+    depends_on: [searxng, llama-embeddings, piguard-gateway]
 ```
 
 Notes:
@@ -361,8 +377,9 @@ Then:
    WebSocket token, e.g. `http://127.0.0.1:8080/?token=...`. Open that exact URL
    in your browser (plain `http://127.0.0.1:8080` no longer receives the token).
 2. Type a task, e.g. *"List the files in this directory and summarize the README."*
-3. When the agent attempts a higher‑risk command (network, install, code execution), an
-   **approval modal** appears showing the command and its risk class. Approve or deny.
+3. When the agent attempts a higher‑risk command (an install, code execution, system
+   write, or persistence attempt), an **approval modal** appears showing the command and
+   its risk class. Approve or deny.
 4. Destructive commands are rejected automatically — you'll see the denial in the stream.
 
 Stop with `Ctrl‑C`, then `docker compose --profile restricted down`.
@@ -384,9 +401,10 @@ docker compose run --rm -it \
 > argument here.
 
 > One‑shot `odek run "<task>"` works too, but it is non‑interactive: with the Restricted
-> policy above, `prompt`‑class commands are **denied** (`non_interactive: "deny"`) and
-> destructive ones are always denied. Use this for tasks that only need safe / local‑write
-> operations, or add specific commands to the policy's `allowlist`.
+> policy above, `non_interactive: "read_only"` lets read‑only/inspection commands proceed
+> and denies everything that would prompt (`unknown` and `destructive` are denied
+> regardless). Use this for tasks that only need safe / local‑write operations, or add
+> specific commands to the policy's `allowlist`.
 
 ---
 
@@ -493,7 +511,7 @@ global `action` → built‑in defaults. The `blocked` class is always denied re
 | Symptom | Likely cause / fix |
 | --- | --- |
 | `odek serve` exits complaining about sandbox / Docker | You omitted `--no-sandbox`. Odek tried to start nested sandbox containers. Add `--no-sandbox` to the `command`. |
-| Agent says "operation denied by configuration" for normal commands | You're running non‑interactively under the Restricted policy (`non_interactive: "deny"`). Use the Web UI / `repl -it`, or add the command to `allowlist`. |
+| Agent says "operation denied by configuration" for normal commands | You're running non‑interactively under the Restricted policy (`non_interactive: "read_only"` — only read‑only commands proceed). Use the Web UI / `repl -it`, or add the command to `allowlist`. |
 | Approval modal never appears; risky commands just run | The Godmode policy is mounted, or `action` is `allow`. Check `/home/odek/.odek/config.json` inside the container. |
 | "no API key" / auth errors | `.env` not loaded or key invalid. Confirm `env_file: .env` is set and `ODEK_API_KEY` is correct. |
 | Config changes ignored | The file is mounted read‑only at startup; recreate the container (`docker compose ... up` again) after editing the JSON. |
@@ -538,40 +556,49 @@ ODEK_TELEGRAM_SESSION_TTL_HOURS=24          # optional
 
 ### 13c. Compose services
 
-Add these to `docker-compose.yml`. State (per‑chat sessions, the daily‑budget counter, and
-the singleton lock) lives in a local **`./.odek` folder** — an external host folder, just
-like `./workspace` — so it survives restarts and is easy to inspect. No `ports` are needed.
+The compose file ships these two services (shown abridged). State (per‑chat sessions, the
+daily‑budget counter, and the singleton lock) lives in a local **`./.odek` folder** — an
+external host folder, just like `./workspace` — so it survives restarts and is easy to
+inspect. No `ports` are needed.
 
 ```yaml
   # ── Telegram bot — Restricted (approvals via inline keyboards) ──
   odek-telegram-restricted:
     profiles: ["telegram-restricted"]
-    build: .
+    build:
+      context: ..                  # repo root
+      dockerfile: docker/Dockerfile
     image: odek:local
     env_file: .env
     command: ["telegram"]
+    init: true   # reaps agent child processes + forwards SIGTERM for clean shutdown
     volumes:
       - ./workspace:/workspace
       - ./.odek:/home/odek/.odek
       - ./config.restricted.json:/home/odek/.odek/config.json:ro
     restart: unless-stopped
+    depends_on: [searxng, llama-embeddings, piguard-gateway]
 
   # ── Telegram bot — Godmode (no prompts; disposable container) ──
   odek-telegram-godmode:
     profiles: ["telegram-godmode"]
-    build: .
+    build:
+      context: ..                  # repo root
+      dockerfile: docker/Dockerfile
     image: odek:local
     env_file: .env
     command: ["telegram"]
+    init: true
     volumes:
       - ./workspace:/workspace
       - ./.odek:/home/odek/.odek
       - ./config.godmode.json:/home/odek/.odek/config.json:ro
     restart: unless-stopped
+    depends_on: [searxng, llama-embeddings, piguard-gateway]
 ```
 
-Create the folder first (so the container's non‑root user can write to it) and gitignore
-its contents:
+Create the folder first (so the container's non‑root user can write to it) — the repo's
+root `.gitignore` already ignores its contents (`docker/.odek/*`):
 
 ```bash
 mkdir -p .odek && chmod 777 .odek && touch .odek/.gitkeep

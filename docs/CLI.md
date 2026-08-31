@@ -7,7 +7,7 @@
 | `odek run [flags] <task>` | Execute a task with the agent loop (single-shot by default) |
 | `odek run --session [flags] <task>` | Execute and save conversation as a multi-turn session |
 | `odek continue [--id <id>] [--external-ref <ref>] <task>` | Continue the most recent session (or by `--id`). Sessions persist per completed step: Ctrl-C/SIGTERM resumes from the last step; SIGKILL may lose the in-flight step |
-| `odek repl [flags]` | Interactive REPL mode (persistent multi-turn session). Flags: `--id`, `--model`, `--thinking`, `--thinking-budget`, `--sandbox`, `--sandbox-*`, `--prompt-caching`, `--stream`, `--compaction`, `--planning` / `--no-planning`, `--interaction-mode`. Unknown flags are silently ignored — in particular `--tool` / `--no-tool` are **not** supported in repl (use `odek run`, `serve`, or the `tools` config instead). |
+| `odek repl [flags]` | Interactive REPL mode (persistent multi-turn session). Flags: `--id`, `--model`, `--thinking`, `--thinking-budget`, `--sandbox`, `--sandbox-*`, `--prompt-caching`, `--stream`, `--compaction`, `--planning` / `--no-planning`, `--interaction-mode`. Unrecognized flags are rejected with an error — in particular `--tool` / `--no-tool` are **not** supported in repl (use `odek run`, `serve`, or the `tools` config instead). |
 | `odek session list` | List sessions |
 | `odek session show [id]` | Show session details (default: latest) |
 | `odek session delete <id>` | Delete a session |
@@ -25,8 +25,8 @@
 | `odek memory extended <forget|promote|pin|quarantine|compact|stats|consolidate|nudges|pending|confirm|reject> [args]` | Extended-memory operations: delete/promote/pin atoms, list or confirm/reject pending-review atoms, quarantine listing, manual compaction, store stats, consolidate, and proactive-nudge management |
 | `odek audit <session-id>` | Print the prompt-injection audit log for a session (JSON) |
 | `odek audit --list` | List sessions with non-zero ingest counts and divergence flags |
-| `odek serve [--addr <addr>] [--open] [--no-sandbox] [--trusted-proxies <ips/cidrs>] [--log-file <path>]` | Web UI server (default `127.0.0.1:8080`). Sandbox is on by default; pass `--no-sandbox` to disable. Flags: `--tool` / `--no-tool` (repeatable), `--prompt-caching`, `--compaction` / `--no-compaction`, `--planning` / `--no-planning`, `--stream` / `--no-stream`, `--log-file` (durable run/turn log, default `~/.odek/serve.log`). Binding to a non-loopback address prints a loud warning because anyone with the token can drive the agent. `--trusted-proxies` honours `X-Forwarded-For`/`X-Real-Ip` only from those addresses. |
-|| `odek subagent --goal <string> [flags]` | Run a focused sub-task; outputs JSON on stdout. Spawned by `delegate_tasks` tool. Flags: `--goal`, `--task <file>`, `--context`, `--timeout` (≤1800s), `--max-iter` (≤100), `--profile <name>`, `--parent-session <id>`, `--quiet`, `--stream`. |
+| `odek serve [--addr <addr>] [--open] [--no-sandbox] [--trusted-proxies <ips/cidrs>] [--log-file <path>]` | Web UI server (default `127.0.0.1:8080`). Sandbox is on by default; pass `--no-sandbox` to disable. Flags: `--tool` / `--no-tool` (repeatable), `--prompt-caching`, `--compaction`, `--planning` / `--no-planning`, `--stream` / `--no-stream`, `--log-file` (durable run/turn log, default `~/.odek/serve.log`). Binding to a non-loopback address prints a loud warning because anyone with the token can drive the agent. `--trusted-proxies` honours `X-Forwarded-For`/`X-Real-Ip` only from those addresses. |
+| `odek subagent --goal <string> [flags]` | Run a focused sub-task; outputs JSON on stdout. Spawned by `delegate_tasks` tool. Flags: `--goal`, `--task <file>`, `--context`, `--timeout` (≤1800s), `--max-iter` (≤100), `--profile <name>`, `--parent-session <id>`, `--quiet`, `--stream`. |
 | `odek init [--global|--local] [--force]` | Create a config file template (scope-aware: full schema globally, project-safe fields locally) |
 | `odek mcp [--sandbox]` | Start MCP server (expose tools to Claude Code) or connect to external MCP servers (via `mcp_servers` config) |
 | `odek telegram` | Start the Telegram bot (long-polling). Hosts the embedded scheduler unless `schedules.enabled=false` |
@@ -40,7 +40,7 @@ Unknown flags are a **hard error** — they are never folded into the task text 
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--model <name>` | string | `deepseek-chat` | LLM model — profiles auto-set thinking/timeout (see [Providers](PROVIDERS.md)). Consider using `deepseek-v4-flash` for faster/cheaper tasks. |
+| `--model <name>` | string | `deepseek-v4-flash` | LLM model — profiles auto-set thinking/timeout (see [Providers](PROVIDERS.md)). |
 | `--base-url <url>` | string | `https://api.deepseek.com/v1` | OpenAI-compatible API endpoint |
 | `--max-iter <n>` | int | `90` | Max think→act cycles |
 | `--thinking <level>` | string | profile default | Reasoning depth: `enabled`/`disabled`/`low`/`medium`/`high`. Requires a model that supports extended thinking. |
@@ -303,7 +303,7 @@ name: docker-build
 description: Build and optimize Docker images
 version: 1.0.0
 author: odek
-`odek:
+odek:
   trigger:
     topic: docker container image
     action: build optimize

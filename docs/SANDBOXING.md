@@ -1,6 +1,6 @@
 # Sandboxing
 
-odek runs agent shell commands inside an **isolated Docker container** when `--sandbox` is active. This document covers all configuration options, the `Dockerfile.odek` build system, security guarantees, and best practices.
+odek runs agent shell commands inside an **isolated Docker container** — sandboxing is **on by default** for `odek run`, `odek repl`, and `odek serve`, and can be opted out with `--no-sandbox` / `ODEK_NO_SANDBOX=1` (or made fatal-when-off with `ODEK_REQUIRE_SANDBOX=1`). This document covers all configuration options, the `Dockerfile.odek` build system, security guarantees, and best practices.
 
 ## Quick start
 
@@ -50,7 +50,7 @@ All sandbox settings are available in `~/.odek/config.json`, `./odek.json`, `ODE
 
 | Field | Env var | CLI flag | Type | Default | Description |
 |-------|---------|----------|------|---------|-------------|
-| `sandbox` | `ODEK_SANDBOX` | `--sandbox` | bool | `false` | Enable/disable sandbox isolation |
+| `sandbox` | `ODEK_SANDBOX` | `--sandbox` / `--no-sandbox` | bool | **on** (run/repl/serve) | Sandbox isolation is default-on; `--no-sandbox` or `ODEK_NO_SANDBOX=1` opts out; `ODEK_REQUIRE_SANDBOX=1` makes any unsandboxed outcome fatal |
 | `sandbox_image` | `ODEK_SANDBOX_IMAGE` | `--sandbox-image` | string | `alpine:latest` | Docker image for the sandbox container |
 | `sandbox_network` | `ODEK_SANDBOX_NETWORK` | `--sandbox-network` | string | `none` | Docker network mode |
 | `sandbox_readonly` | `ODEK_SANDBOX_READONLY` | `--sandbox-readonly` | bool | `false` | Mount working directory read-only |
