@@ -1294,7 +1294,6 @@ const globalConfigTemplate = `{
   "no_color": false,
   "no_agents": false,
   "system": "",
-  "sandbox": false,
   "sandbox_image": "",
   "sandbox_network": "none",
   "sandbox_readonly": false,
@@ -1305,7 +1304,7 @@ const globalConfigTemplate = `{
   "sandbox_volumes": [],
   "dangerous": {
     "action": "prompt",
-    "non_interactive": "deny",
+    "non_interactive": "read_only",
     "classes": {
       "destructive": "deny",
       "network_egress": "prompt",
@@ -1316,10 +1315,30 @@ const globalConfigTemplate = `{
     "allowlist": [],
     "denylist": []
   },
+  "guard": {
+    "provider": "local",
+    "url": "",
+    "batch_url": "",
+    "long_url": "",
+    "socket_path": "",
+    "threshold": 0.9,
+    "timeout_seconds": 5,
+    "fallback_to_local": true,
+    "max_text_length": 0,
+    "scan": {
+      "memory": true,
+      "system_prompt": true,
+      "mcp_descriptions": true,
+      "skills": true,
+      "tool_outputs": false,
+      "telegram": false
+    }
+  },
   "tools": {
     "enabled": [],
     "disabled": []
   },
+  "profiles": {},
   "skills": {
     "max_auto_load": 3,
     "max_lazy_slots": 5,
@@ -1334,12 +1353,20 @@ const globalConfigTemplate = `{
   "memory": {
     "enabled": true,
     "buffer_enabled": true,
-    "extract_on_end": true
+    "extract_on_end": true,
+    "min_turns_for_extraction": 3,
+    "extract_facts": false,
+    "auto_approve_episodes": false,
+    "merge_on_write": true,
+    "consolidate_on_end": true
   },
   "subagent": {
     "max_concurrency": 3,
     "timeout_seconds": 1800,
     "max_iterations": 15,
+    "max_depth": 2,
+    "announce_budget": true,
+    "budget_inherit": "operator",
     "default_profile": "default"
   },
   "limits": {
@@ -1360,6 +1387,20 @@ const globalConfigTemplate = `{
     "max_results": 10,
     "timeout_seconds": 15
   },
+  "transcription": {
+    "model": "tiny",
+    "language": "",
+    "auto_transcribe": true,
+    "models_dir": "",
+    "binary_path": ""
+  },
+  "vision": {
+    "models_dir": "",
+    "binary_path": "",
+    "video_frames": 8,
+    "auto_describe": true
+  },
+  "trusted_proxies": [],
   "schedules": {
     "enabled": true,
     "max_concurrent": 2,
@@ -1373,16 +1414,19 @@ const globalConfigTemplate = `{
     "audit_max_age_days": 14,
     "log_max_mb": 50,
     "plans_max_age_days": 30,
-    "skills_skip_max_age_days": 90
+    "artifacts_max_age_hours": 24
   },
   "telegram": {
     "bot_token": "",
     "allowed_chats": [],
     "allowed_users": [],
+    "default_chat_id": 0,
     "bot_username": "",
     "poll_interval": 1,
     "poll_timeout": 30,
     "max_msg_length": 4096,
+    "max_download_size": 5242880,
+    "media_quota_per_chat": 0,
     "daily_token_budget": 0,
     "session_ttl_hours": 24,
     "fallback_urls": [],
@@ -1517,10 +1561,11 @@ func initConfig(args []string) error {
 		fmt.Println("    sandbox           Run in Docker sandbox (true/false)")
 		fmt.Println("    system            System prompt override")
 		fmt.Println()
-		fmt.Println("  Sections: dangerous, tools, skills, memory, subagent, limits,")
-		fmt.Println("  mcp_servers, web_search, schedules, maintenance, telegram,")
-		fmt.Println("  plus sandbox_image/network/readonly/memory/cpus/user/env/volumes.")
-		fmt.Println("  Full schema (also mcp_servers, transcription, vision, embedding):")
+		fmt.Println("  Sections: dangerous, guard, tools, profiles, skills, memory,")
+		fmt.Println("  subagent, limits, planning, mcp_servers, web_search, transcription,")
+		fmt.Println("  vision, trusted_proxies, schedules, maintenance, telegram, plus")
+		fmt.Println("  sandbox_image/network/readonly/memory/cpus/user/env/volumes.")
+		fmt.Println("  Full schema (also embedding and memory.extended):")
 		fmt.Println("  see docs/CONFIG.md and docs/SANDBOXING.md.")
 	} else {
 		fmt.Println("  Project config — only project-safe fields are honored here.")
