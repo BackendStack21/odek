@@ -583,10 +583,18 @@ func subagentCmd(args []string) error {
 	// P4: a profile may be selected by the operator's direct --profile flag
 	// or by the parent via the task file; the flag outranks the file.
 	profileName := resolveProfileName(cfg.profile, taskProfile)
+	if profileName == "" && resolved.Subagent.DefaultProfile != config.DefaultProfileDisabled {
+		// Operator's default envelope (P4): the built-in "default" profile
+		// unless the operator overrode the name. Explicit task/flag
+		// selection outranks it, and "none" is honored only from the
+		// operator's own config — a task file or flag can never strip the
+		// operator's envelope.
+		profileName = resolved.Subagent.DefaultProfile
+	}
 	if profileName != "" {
 		prof, ok := resolved.Profiles[profileName]
 		if !ok {
-			return fmt.Errorf("unknown profile %q (define it in the top-level profiles config section)", profileName)
+			return fmt.Errorf("unknown profile %q (define it in the top-level profiles config section, or adjust subagent.default_profile)", profileName)
 		}
 		applyProfile(&resolved.Dangerous, prof)
 		profileTools = prof.Tools

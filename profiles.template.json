@@ -1,6 +1,7 @@
 {
   "profiles": {
     "builder": {
+      "description": "Write and verify code changes with project build/test commands allowlisted",
       "max_risk": "local_write",
       "allowlist": [
         "go test ./...", "go build ./...", "go vet ./...", "gofmt -l .",
@@ -12,6 +13,7 @@
       "tools": { "disabled": ["browser", "http_batch", "web_search", "transcribe", "vision", "delegate_tasks"] }
     },
     "refactorer": {
+      "description": "Restructure existing code behind build/test gates, without adding features",
       "max_risk": "local_write",
       "allowlist": [
         "go test ./...", "go build ./...", "gofmt -l .",
@@ -23,6 +25,7 @@
       "tools": { "disabled": ["browser", "http_batch", "web_search", "transcribe", "vision", "delegate_tasks"] }
     },
     "test-runner": {
+      "description": "Run project test suites and report failures; cannot modify files",
       "max_risk": "code_execution",
       "allowlist": [
         "go test ./...", "go test -race ./...", "go test -count=1 ./...",
@@ -34,6 +37,7 @@
       "tools": { "disabled": ["write_file", "patch", "batch_patch", "browser", "http_batch", "web_search", "delegate_tasks"] }
     },
     "bug-investigator": {
+      "description": "Diagnose failures by reading code and running build/test commands",
       "max_risk": "local_write",
       "allowlist": [
         "go test ./...", "go build ./...", "go vet ./...",
@@ -45,6 +49,7 @@
       "tools": { "disabled": ["browser", "http_batch", "web_search", "transcribe", "vision", "delegate_tasks"] }
     },
     "perf-profiler": {
+      "description": "Run benchmarks and profilers to locate performance bottlenecks",
       "max_risk": "code_execution",
       "allowlist": [
         "go test -bench ./...", "go test -bench=. ./...", "go tool pprof",
@@ -54,6 +59,7 @@
       "tools": { "disabled": ["browser", "http_batch", "web_search", "transcribe", "vision", "delegate_tasks"] }
     },
     "migrator": {
+      "description": "Upgrade dependencies and migrate configs; may install packages",
       "max_risk": "install",
       "allowlist": [
         "go get", "go mod tidy", "go mod download",
@@ -64,65 +70,80 @@
       "tools": { "disabled": ["browser", "transcribe", "vision", "delegate_tasks"] }
     },
     "code-reviewer": {
+      "description": "Strictly read-only code review with reasoning-capable tools",
       "max_risk": "safe",
       "tools": { "enabled": ["plan", "read_file", "batch_read", "glob", "file_info", "search_files", "multi_grep", "tree", "count_lines", "head_tail", "diff", "word_count", "checksum", "sort", "base64", "tr", "json_query", "math_eval"] }
     },
     "security-auditor": {
+      "description": "Read-only security review; no shell, no writes, no network",
       "max_risk": "safe",
       "tools": { "enabled": ["plan", "read_file", "batch_read", "glob", "file_info", "search_files", "multi_grep", "tree", "count_lines", "head_tail", "diff", "word_count", "checksum", "base64", "tr", "json_query"] }
     },
     "ops-inspector": {
+      "description": "Read-only infrastructure and service inspection commands",
       "max_risk": "safe",
       "allowlist": ["docker ps", "docker logs", "docker stats", "docker compose ps", "kubectl get", "kubectl logs", "df -h", "du -sh", "ps aux", "git status", "git log", "git diff", "git show"],
       "tools": { "disabled": ["write_file", "patch", "batch_patch", "browser", "http_batch", "web_search", "delegate_tasks"] }
     },
     "release-manager": {
+      "description": "Drive git/gh release flows — can push and merge; review its allowlist before trusting it",
       "max_risk": "network_egress",
       "allowlist": ["git status", "git log", "git diff", "git show", "git tag", "git push", "gh pr create", "gh pr view", "gh pr checks", "gh pr merge", "gh release create", "gh release view", "gh run list", "gh run view"],
       "tools": { "disabled": ["write_file", "patch", "batch_patch", "browser", "transcribe", "vision", "delegate_tasks"] }
     },
     "swarm-orchestrator": {
+      "description": "Decompose and delegate work via delegate_tasks; inspects nothing itself",
       "max_risk": "safe",
       "tools": { "enabled": ["delegate_tasks", "plan", "read_file", "batch_read", "glob", "search_files", "multi_grep", "tree"] }
     },
     "judge": {
+      "description": "Evaluate a proposal or result against given criteria; strictly read-only",
       "max_risk": "safe",
       "tools": { "enabled": ["plan", "read_file", "batch_read", "glob", "file_info", "search_files", "multi_grep", "tree", "diff", "count_lines", "json_query", "math_eval"] }
     },
     "scout": {
+      "description": "Fast codebase reconnaissance with a minimal read-only toolkit",
       "max_risk": "safe",
       "tools": { "enabled": ["read_file", "batch_read", "glob", "search_files", "multi_grep", "tree", "head_tail"] }
     },
     "librarian": {
+      "description": "Locate and summarize relevant code or documentation; read-only",
       "max_risk": "safe",
       "tools": { "enabled": ["plan", "read_file", "batch_read", "glob", "file_info", "search_files", "multi_grep", "tree", "count_lines", "head_tail", "word_count"] }
     },
     "researcher": {
+      "description": "Web research with network egress; no shell",
       "max_risk": "network_egress",
       "tools": { "disabled": ["shell", "parallel_shell", "delegate_tasks", "transcribe", "vision"] }
     },
     "web-reader": {
+      "description": "Fetch and extract specific pages; no shell, strict tool whitelist",
       "max_risk": "network_egress",
       "tools": { "enabled": ["browser", "http_batch", "read_file", "batch_read", "glob", "word_count"] }
     },
     "writer": {
+      "description": "Author and edit documentation and prose; no shell, no network",
       "max_risk": "local_write",
       "tools": { "disabled": ["shell", "parallel_shell", "browser", "http_batch", "web_search", "delegate_tasks", "transcribe", "vision"] }
     },
     "translator": {
+      "description": "Translate content with a minimal read/write toolkit",
       "max_risk": "local_write",
       "tools": { "enabled": ["read_file", "write_file", "batch_read", "glob", "word_count", "tr"] }
     },
     "data-analyst": {
+      "description": "Run predefined analysis entry points over local data",
       "max_risk": "code_execution",
       "allowlist": ["make analyze", "npm run analyze", "python main.py", "python3 main.py"],
       "tools": { "disabled": ["browser", "http_batch", "web_search", "transcribe", "vision", "delegate_tasks"] }
     },
     "media-describer": {
+      "description": "Transcribe audio and describe images; read-only media toolkit",
       "max_risk": "safe",
       "tools": { "enabled": ["transcribe", "vision", "read_file", "batch_read", "glob", "file_info", "word_count"] }
     },
     "summarizer": {
+      "description": "Condense sessions and documents; strictly read-only",
       "max_risk": "safe",
       "tools": { "enabled": ["session_search", "read_file", "batch_read", "glob", "search_files", "tree", "count_lines", "head_tail", "word_count"] }
     }

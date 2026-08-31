@@ -306,6 +306,145 @@ func TestResolveProfileName_CLIFlagWinsOverTaskFile(t *testing.T) {
 	}
 }
 
+// ── Built-in default profile (subagent.default_profile) ──────────────────
+
+// TestSubagentCmd_BuiltInDefaultProfileSelectable pins the built-in
+// "default" capability profile: with an empty profiles config, a task
+// selecting profile "default" must resolve (the config pipeline
+// materializes the built-in local_write envelope), not fail as unknown.
+func TestSubagentCmd_BuiltInDefaultProfileSelectable(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ODEK_API_KEY", "")
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY", "")
+	cfgDir := filepath.Join(home, ".odek")
+	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.json"), []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	taskPath := filepath.Join(home, "task.json")
+	if err := os.WriteFile(taskPath, []byte(`{"goal":"g","profile":"default"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := subagentCmd([]string{"--task", taskPath})
+	if err == nil {
+		t.Fatal("expected LLM-setup failure (no API key) — a unit run must not hit the network")
+	}
+	if strings.Contains(err.Error(), "unknown profile") {
+		t.Fatalf("built-in default profile must be selectable, got: %v", err)
+	}
+}
+
+// TestSubagentCmd_UnknownOperatorDefaultFailsClosed pins that a broken
+// subagent.default_profile (a name with no definition) surfaces as a loud
+// profile error when a task selects nothing — a config bug must not
+// silently run a bare child without the operator's envelope.
+func TestSubagentCmd_UnknownOperatorDefaultFailsClosed(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ODEK_API_KEY", "")
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY", "")
+	cfgDir := filepath.Join(home, ".odek")
+	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.json"), []byte(`{"subagent":{"default_profile":"ghost"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	taskPath := filepath.Join(home, "task.json")
+	if err := os.WriteFile(taskPath, []byte(`{"goal":"g"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := subagentCmd([]string{"--task", taskPath})
+	if err == nil || !strings.Contains(err.Error(), `unknown profile "ghost"`) {
+		t.Fatalf("broken default_profile must fail closed with the offending name, got: %v", err)
+	}
+}
+
+// TestSubagentCmd_DefaultProfileNoneOptOut pins subagent.default_profile
+// = "none": no envelope is applied when the task selects nothing, so the
+// run proceeds past profile resolution (to the expected LLM-setup error).
+func TestSubagentCmd_DefaultProfileNoneOptOut(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ODEK_API_KEY", "")
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY", "")
+	cfgDir := filepath.Join(home, ".odek")
+	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.json"), []byte(`{"subagent":{"default_profile":"none"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	taskPath := filepath.Join(home, "task.json")
+	if err := os.WriteFile(taskPath, []byte(`{"goal":"g"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := subagentCmd([]string{"--task", taskPath})
+	if err == nil {
+		t.Fatal("expected LLM-setup failure (no API key) — a unit run must not hit the network")
+	}
+	if strings.Contains(err.Error(), "unknown profile") {
+		t.Fatalf(`default_profile "none" must disable the envelope, got: %v`, err)
+	}
+}
+
+// TestSubagentCmd_ExplicitTaskProfileBeatsDefault pins precedence: an
+// explicit task-file profile wins even when the operator default names an
+// undefined profile — the broken default must never be consulted.
+func TestSubagentCmd_ExplicitTaskProfileBeatsDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ODEK_API_KEY", "")
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY", "")
+	cfgDir := filepath.Join(home, ".odek")
+	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.json"), []byte(`{"subagent":{"default_profile":"ghost"},"profiles":{"judge":{"max_risk":"safe"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	taskPath := filepath.Join(home, "task.json")
+	if err := os.WriteFile(taskPath, []byte(`{"goal":"g","profile":"judge"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := subagentCmd([]string{"--task", taskPath})
+	if err == nil {
+		t.Fatal("expected LLM-setup failure (no API key) — a unit run must not hit the network")
+	}
+	if strings.Contains(err.Error(), "unknown profile") {
+		t.Fatalf("explicit task profile must outrank the broken default, got: %v", err)
+	}
+}
+
+// TestDefaultProfileEnvelope_TrustedChildClamped pins the documented
+// hardening: a profile's max_risk is applied BEFORE the trust lockdown
+// and therefore clamps even trusted sub-agents. A trusted task cannot
+// lift the envelope above local_write without an explicit profile
+// selection — trust and capability envelopes are independent controls.
+func TestDefaultProfileEnvelope_TrustedChildClamped(t *testing.T) {
+	var dc danger.DangerousConfig
+	applyProfile(&dc, config.ProfileConfig{MaxRisk: "local_write"})
+	applySubagentTrust(&dc, "trusted", "")
+	for _, cls := range []danger.RiskClass{
+		danger.SystemWrite, danger.CodeExecution, danger.Install,
+		danger.NetworkEgress, danger.Destructive, danger.Persistence,
+	} {
+		if dc.Classes[cls] != danger.Deny {
+			t.Errorf("class %v = %v, want deny (default envelope clamps trusted children)", cls, dc.Classes[cls])
+		}
+	}
+	if dc.Classes[danger.LocalWrite] == danger.Deny {
+		t.Error("local_write must remain allowed under the local_write cap")
+	}
+}
+
 // TestDelegateTasks_UnknownProfileFailsWithoutSpawn pins parent-side
 // fail-closed: an unknown profile must fail the task BEFORE a child is
 // spawned. The marker file proves whether the mock child ever ran.

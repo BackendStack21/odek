@@ -1339,7 +1339,8 @@ const globalConfigTemplate = `{
   "subagent": {
     "max_concurrency": 3,
     "timeout_seconds": 1800,
-    "max_iterations": 15
+    "max_iterations": 15,
+    "default_profile": "default"
   },
   "limits": {
     "max_runtime_seconds": 0,
@@ -2266,6 +2267,10 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 			selfTrust:      selfTrust,
 			profiles:       tcfg.Profiles,
 			artifactsRoot:  artifactsRoot, // empty ⇒ no artifact dirs created
+		},
+		&listSubagentProfilesTool{
+			profiles:       tcfg.Profiles,
+			defaultProfile: tcfg.Subagent.DefaultProfile,
 		},
 		&readFileTool{dangerousConfig: dc},
 		&writeFileTool{dangerousConfig: dc, restrictToCWD: true},

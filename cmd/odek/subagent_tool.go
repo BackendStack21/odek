@@ -193,7 +193,7 @@ func (t *delegateTasksTool) Schema() any {
 						},
 						"profile": map[string]any{
 							"type":        "string",
-							"description": "Optional. Name of an operator-defined capability profile (top-level profiles config). The profile's max_risk, allowlist, and tool filter OVERRIDE the operator's global config for this sub-agent. Unknown names fail the task - use only names that the operator has defined.",
+							"description": "Optional. Name of an operator-defined capability profile (top-level profiles config). The profile's max_risk, allowlist, and tool filter OVERRIDE the operator's global config for this sub-agent. Invoke list_subagent_profiles first to discover available profiles and pick the right one. Unknown names fail the task; when this field is omitted, the operator's default profile (subagent.default_profile) applies.",
 						},
 					},
 					"required": []string{"goal"},
