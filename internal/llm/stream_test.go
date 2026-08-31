@@ -94,8 +94,10 @@ func TestStream_ResultEqualsBuffered(t *testing.T) {
 	if res.ReasoningContent != "think hard" {
 		t.Errorf("ReasoningContent = %q, want %q", res.ReasoningContent, "think hard")
 	}
-	if res.InputTokens != 14 || res.OutputTokens != 9 {
-		t.Errorf("tokens = %d/%d, want 14/9", res.InputTokens, res.OutputTokens)
+	// InputTokens is exclusive since the cache normalization: 14 prompt
+	// − 4 cached = 10 (see TestParseResponse_CacheExclusiveNormalization_OpenAI).
+	if res.InputTokens != 10 || res.OutputTokens != 9 {
+		t.Errorf("tokens = %d/%d, want 10/9", res.InputTokens, res.OutputTokens)
 	}
 	if res.CachedTokens != 4 || !res.CacheReported {
 		t.Errorf("cached = %d reported=%v, want 4/true", res.CachedTokens, res.CacheReported)

@@ -654,10 +654,11 @@ func (c *Client) CallTool(ctx context.Context, name string, argsJSON string) (st
 				return "", fmt.Errorf("mcpclient %s: tool %s: artifact ref rejected: %w", c.name, name, err)
 			}
 		}
-		// Bound the envelope text within the per-server result cap; the
-		// compact metadata lines are appended by Render afterwards.
-		env.Text = c.applyResultLimit(name, env.Text)
-		return artifact.Render(env), nil
+		// The per-server result cap applies to the FULL rendered envelope
+		// output — compact text plus metadata lines — not just the text
+		// field (audit 2026-08: oversized id/summary fields rode past the
+		// cap that only ever bounded env.Text).
+		return c.renderCappedEnvelope(name, env), nil
 	}
 
 	return c.applyResultLimit(name, text), nil
@@ -678,10 +679,10 @@ func truncationNotice(server, tool string, limit, observed int) string {
 // truncation notice naming the server, tool, configured limit, and observed
 // size. odek.tool-result/v1 envelopes are detected before this function runs
 // (see CallTool), so their artifact refs are validated and rendered as
-// metadata lines; this cap applies to the envelope's compact text field, to
-// plain (non-envelope) results, and to tool-level error text (isError
-// results), so the error channel cannot be used to stuff context past the
-// cap.
+// metadata lines; this cap applies to plain (non-envelope) results and to
+// tool-level error text (isError results), so the error channel cannot be
+// used to stuff context past the cap. Envelope results are capped on their
+// FULL rendered output by renderCappedEnvelope instead.
 func (c *Client) applyResultLimit(tool, text string) string {
 	limit := c.maxResultChars
 	if limit <= 0 {
@@ -698,6 +699,40 @@ func (c *Client) applyResultLimit(tool, text string) string {
 		budget = 0
 	}
 	return truncateRunes(text, budget) + notice
+}
+
+// renderCappedEnvelope renders a validated envelope and enforces the
+// per-server max_result_chars cap on the FULL model-facing output — the
+// envelope text, the per-artifact metadata lines, and (when truncating) the
+// notice combined. Render bounds each server-controlled field to
+// artifact.MaxFieldRunes, but bounded fields add up across the capped
+// artifact count, so when the total exceeds the limit the envelope text —
+// the part the cap was sized for — is shrunk first and the metadata lines,
+// the compact resolvable payload, are always preserved (they are appended
+// after the capped text by design; their size is bounded by field bounds ×
+// MaxArtifactsPerEnvelope). Only when the bounded metadata block alone
+// crowds out the text does the text give way entirely.
+func (c *Client) renderCappedEnvelope(tool string, env *artifact.Envelope) string {
+	limit := c.maxResultChars
+	if limit <= 0 {
+		limit = DefaultMaxResultChars
+	}
+	rendered := artifact.Render(env)
+	observed := utf8.RuneCountInString(rendered)
+	if observed <= limit {
+		return rendered
+	}
+
+	notice := truncationNotice(c.name, tool, limit, observed)
+	// Everything Render appends beyond the text (the separating newline and
+	// the metadata lines) plus the notice has to fit alongside the text.
+	textBudget := limit - (observed - utf8.RuneCountInString(env.Text)) - utf8.RuneCountInString(notice)
+	if textBudget < 0 {
+		textBudget = 0
+	}
+	capped := *env
+	capped.Text = truncateRunes(env.Text, textBudget)
+	return artifact.Render(&capped) + notice
 }
 
 // truncateRunes returns s cut to at most n runes (never splitting a multi-byte

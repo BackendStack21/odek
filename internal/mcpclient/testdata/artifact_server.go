@@ -153,8 +153,9 @@ func handleArtifactCall(req request) bool {
 			return true
 		}
 		ref := artifactRef("report-1", path, "Full CI test results (JUnit XML)")
-		// Test knobs: corrupt a verifiable field (WP3 fail-closed tests) or
-		// override the envelope text (envelope truncation tests).
+		// Test knobs: corrupt a verifiable field (WP3 fail-closed tests),
+		// override the envelope text (envelope truncation tests), or
+		// inflate server-controlled fields (rendered-output cap tests).
 		switch os.Getenv("FAKE_ARTIFACT_TAMPER") {
 		case "hash":
 			ref["sha256"] = strings.Repeat("0", 64)
@@ -163,7 +164,19 @@ func handleArtifactCall(req request) bool {
 				ref["size_bytes"] = n + 1
 			}
 		}
+		if s := os.Getenv("FAKE_ARTIFACT_ID_SIZE"); s != "" {
+			if n, err := strconv.Atoi(s); err == nil && n > 0 {
+				ref["id"] = "report-1-" + strings.Repeat("i", n)
+			}
+		}
 		text := os.Getenv("FAKE_ARTIFACT_TEXT")
+		if text == "" {
+			if s := os.Getenv("FAKE_ARTIFACT_TEXT_SIZE"); s != "" {
+				if n, err := strconv.Atoi(s); err == nil && n > 0 {
+					text = strings.Repeat("t", n)
+				}
+			}
+		}
 		if text == "" {
 			text = "Analyzed 1284 test cases: 1280 passed, 4 failed. Full report attached as artifact report-1."
 		}

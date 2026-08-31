@@ -813,7 +813,8 @@ func envString(key string) string {
 }
 
 // envBool parses a ODEK_* env var as a boolean. Returns nil if the env var
-// is empty or not set, or if the value can't be parsed.
+// is empty or not set, or if the value can't be parsed (a parse failure is
+// reported on stderr — the value is ignored, the default applies).
 func envBool(key string) *bool {
 	v := os.Getenv("ODEK_" + key)
 	if v == "" {
@@ -821,12 +822,21 @@ func envBool(key string) *bool {
 	}
 	b, err := strconv.ParseBool(v)
 	if err != nil {
+		warnBadEnvValue(key, v, err)
 		return nil
 	}
 	return &b
 }
 
-// envInt parses a ODEK_* env var as an integer. Returns 0 if unset/unparseable.
+// warnBadEnvValue prints the one-line warning emitted when an ODEK_* env
+// var is set but cannot be parsed and its value will be ignored (the
+// default applies), consistent with the other loader warnings.
+func warnBadEnvValue(key, v string, err error) {
+	fmt.Fprintf(os.Stderr, "odek: warning: invalid ODEK_%s value %q — ignoring: %v\n", key, v, err)
+}
+
+// envInt parses a ODEK_* env var as an integer. Returns 0 if unset.
+// A set-but-unparseable value warns on stderr and falls back to 0.
 func envInt(key string) int {
 	v := os.Getenv("ODEK_" + key)
 	if v == "" {
@@ -834,14 +844,15 @@ func envInt(key string) int {
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil {
+		warnBadEnvValue(key, v, err)
 		return 0
 	}
 	return n
 }
 
-// envIntPtr parses a ODEK_* env var as an integer. Returns nil if unset or
-// unparseable, so an explicit 0 (meaningful for retention knobs) stays
-// distinguishable from "not set".
+// envIntPtr parses a ODEK_* env var as an integer. Returns nil if unset,
+// so an explicit 0 (meaningful for retention knobs) stays distinguishable
+// from "not set". A set-but-unparseable value warns on stderr.
 func envIntPtr(key string) *int {
 	v := os.Getenv("ODEK_" + key)
 	if v == "" {
@@ -849,13 +860,14 @@ func envIntPtr(key string) *int {
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil {
+		warnBadEnvValue(key, v, err)
 		return nil
 	}
 	return &n
 }
 
-// envInt64Ptr parses a ODEK_* env var as an int64. Returns nil if unset or
-// unparseable, like envIntPtr.
+// envInt64Ptr parses a ODEK_* env var as an int64. Returns nil if unset,
+// like envIntPtr. A set-but-unparseable value warns on stderr.
 func envInt64Ptr(key string) *int64 {
 	v := os.Getenv("ODEK_" + key)
 	if v == "" {
@@ -863,12 +875,14 @@ func envInt64Ptr(key string) *int64 {
 	}
 	n, err := strconv.ParseInt(v, 10, 64)
 	if err != nil {
+		warnBadEnvValue(key, v, err)
 		return nil
 	}
 	return &n
 }
 
-// envFloat parses a ODEK_* env var as a float64. Returns 0 if unset/unparseable.
+// envFloat parses a ODEK_* env var as a float64. Returns 0 if unset.
+// A set-but-unparseable value warns on stderr and falls back to 0.
 func envFloat(key string) float64 {
 	v := os.Getenv("ODEK_" + key)
 	if v == "" {
@@ -876,13 +890,15 @@ func envFloat(key string) float64 {
 	}
 	n, err := strconv.ParseFloat(v, 64)
 	if err != nil {
+		warnBadEnvValue(key, v, err)
 		return 0
 	}
 	return n
 }
 
 // envInt64List parses a comma-separated ODEK_* env var into a slice of int64.
-// Empty/unparseable entries are silently dropped.
+// Empty entries are dropped; unparseable entries warn on stderr and are
+// dropped.
 func envInt64List(key string) []int64 {
 	v := os.Getenv("ODEK_" + key)
 	if v == "" {
@@ -894,9 +910,15 @@ func envInt64List(key string) []int64 {
 		if s == "" {
 			continue
 		}
-		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
-			out = append(out, n)
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			// Name the FULL original value, not just the offending entry:
+			// the warning should identify which environment string needs
+			// fixing without the operator reverse-engineering the split.
+			warnBadEnvValue(key, v, err)
+			continue
 		}
+		out = append(out, n)
 	}
 	return out
 }
@@ -3010,14 +3032,34 @@ func loadSecretsEnv() {
 	}
 
 	scanner := bufio.NewScanner(f)
+	// 1 MiB token buffer: a long single-line value (a signed blob, a PEM
+	// chain) previously tripped the 64 KiB default and every secret after
+	// it was silently dropped — worse than refusing the line, it looked
+	// exactly like a working configuration with keys missing.
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
+		// dotenv conveniences operators rely on (audit 2026-08-31):
+		// `export KEY=...` shell syntax, one pair of surrounding quotes,
+		// and inline comments after whitespace. A quoted value keeps any
+		// '#' inside it; comment stripping applies only to bare values.
+		line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
 		k, v, ok := strings.Cut(line, "=")
-		if !ok || k == "" {
+		if !ok {
 			continue
+		}
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(v)
+		if k == "" {
+			continue
+		}
+		if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
+			v = v[1 : len(v)-1]
+		} else if i := strings.Index(v, " #"); i >= 0 {
+			v = strings.TrimSpace(v[:i])
 		}
 		if os.Getenv(k) == "" {
 			os.Setenv(k, v)
@@ -3029,6 +3071,9 @@ func loadSecretsEnv() {
 			secretsEnvNames = append(secretsEnvNames, k)
 			secretsEnvMu.Unlock()
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: %s: %v — remaining secrets were NOT loaded\n", path, err)
 	}
 }
 

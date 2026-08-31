@@ -164,15 +164,9 @@ func (a *TTYApprover) recordApproval(cls RiskClass) {
 	ttyApprovalLog[cls] = append(ttyApprovalLog[cls], time.Now())
 }
 
-// shouldFriction returns true when there have been >= FrictionThreshold
-// approvals of cls within the last FrictionWindow. Old entries are
-// pruned as a side effect.
-func (a *TTYApprover) shouldFriction(cls RiskClass) bool {
-	if a.FrictionThreshold <= 0 || a.FrictionWindow <= 0 {
-		return false
-	}
-	ttyApprovalMu.Lock()
-	defer ttyApprovalMu.Unlock()
+// prunedApprovalCountLocked prunes approvals of cls that fell outside the
+// friction window and returns how many remain. Caller must hold ttyApprovalMu.
+func (a *TTYApprover) prunedApprovalCountLocked(cls RiskClass) int {
 	cutoff := time.Now().Add(-a.FrictionWindow)
 	log := ttyApprovalLog[cls]
 	kept := log[:0]
@@ -182,7 +176,27 @@ func (a *TTYApprover) shouldFriction(cls RiskClass) bool {
 		}
 	}
 	ttyApprovalLog[cls] = kept
-	return len(kept) >= a.FrictionThreshold
+	return len(kept)
+}
+
+// shouldFriction returns true when there have been >= FrictionThreshold
+// approvals of cls within the last FrictionWindow. Old entries are
+// pruned as a side effect.
+func (a *TTYApprover) shouldFriction(cls RiskClass) bool {
+	if a.FrictionThreshold <= 0 || a.FrictionWindow <= 0 {
+		return false
+	}
+	ttyApprovalMu.Lock()
+	defer ttyApprovalMu.Unlock()
+	return a.prunedApprovalCountLocked(cls) >= a.FrictionThreshold
+}
+
+// recentApprovalCount returns how many approvals of cls fall inside the
+// current friction window (expired entries pruned as a side effect).
+func (a *TTYApprover) recentApprovalCount(cls RiskClass) int {
+	ttyApprovalMu.Lock()
+	defer ttyApprovalMu.Unlock()
+	return a.prunedApprovalCountLocked(cls)
 }
 
 // SetTrustedClasses atomically sets the trusted classes map.
@@ -283,7 +297,7 @@ func (a *TTYApprover) promptLocked(cls RiskClass, cmd, description string) error
 	}
 	if friction {
 		fmt.Fprintf(os.Stderr, "\n   ⚠️  You have approved %d %s operations in the last %s.\n",
-			a.FrictionThreshold, cls, a.FrictionWindow)
+			a.recentApprovalCount(cls), cls, a.FrictionWindow)
 		fmt.Fprint(os.Stderr, "   Type 'approve' (full word) to proceed, anything else to deny: ")
 		if a.pauseFn != nil {
 			a.pauseFn(1500 * time.Millisecond)

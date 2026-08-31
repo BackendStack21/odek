@@ -33,8 +33,20 @@ const (
 // MaxArtifactsPerEnvelope caps how many artifact refs one tool-result
 // envelope may carry. Every validated ref becomes a model-facing metadata
 // line appended AFTER the envelope text has passed the server's
-// max_result_chars cap, so the count must itself be bounded.
+// max_result_chars cap, so the count must itself be bounded. Combined with
+// MaxFieldRunes and the full-output cap enforced by the mcpclient call
+// site, the metadata block cannot smuggle unbounded server-controlled
+// bytes into the model context.
 const MaxArtifactsPerEnvelope = 64
+
+// MaxFieldRunes bounds each server-controlled field (id, media_type,
+// summary) that Render inlines into a metadata line. The per-server
+// max_result_chars cap is enforced on the FULL rendered output by the
+// mcpclient call site (see mcpclient.renderCappedEnvelope); this bound is
+// the defense-in-depth floor that keeps any Render caller — and the
+// metadata block alone — from surfacing megabyte-sized fields
+// (audit 2026-08: a 9 MiB id rendered verbatim past the configured cap).
+const MaxFieldRunes = 4096
 
 // Ref is a single odek.artifact-ref/v1 object. Unknown fields are ignored
 // per the contract's additive rule. SizeBytes is a pointer so "absent" is
@@ -105,16 +117,20 @@ const renderedArtifactPrefix = "- artifact "
 // text plus one metadata line per artifact (id, media type, size, short hash
 // prefix, summary). It NEVER includes the resolved filesystem path or any
 // artifact content. Server-controlled strings are flattened to a single line
-// each so one artifact cannot forge additional metadata lines.
+// each so one artifact cannot forge additional metadata lines, bounded to
+// MaxFieldRunes so one huge field cannot dominate the context, and any
+// envelope-text line that would itself look like a metadata line is
+// indented so text cannot forge artifact entries (CountRendered counts
+// exactly the real metadata lines).
 func Render(env *Envelope) string {
 	var b strings.Builder
-	b.WriteString(env.Text)
+	b.WriteString(sanitizeText(env.Text))
 	for i := range env.Artifacts {
 		a := &env.Artifacts[i]
 		if b.Len() > 0 {
 			b.WriteString("\n")
 		}
-		fmt.Fprintf(&b, "%s%q (%s", renderedArtifactPrefix, oneLine(a.ID), oneLine(a.MediaType))
+		fmt.Fprintf(&b, "%s%q (%s", renderedArtifactPrefix, boundField(oneLine(a.ID)), boundField(oneLine(a.MediaType)))
 		if a.SizeBytes != nil {
 			fmt.Fprintf(&b, ", %d bytes", *a.SizeBytes)
 		}
@@ -124,10 +140,39 @@ func Render(env *Envelope) string {
 		b.WriteString(")")
 		if a.Summary != "" {
 			b.WriteString(": ")
-			b.WriteString(oneLine(a.Summary))
+			b.WriteString(boundField(oneLine(a.Summary)))
 		}
 	}
 	return b.String()
+}
+
+// boundField truncates a server-controlled field to MaxFieldRunes runes,
+// keeping a usable prefix (audit 2026-08: a 9 MiB id rendered verbatim).
+func boundField(s string) string {
+	r := []rune(s)
+	if len(r) <= MaxFieldRunes {
+		return s
+	}
+	return string(r[:MaxFieldRunes]) + "…"
+}
+
+// sanitizeText indents any envelope-text line that would otherwise be
+// indistinguishable from a per-artifact metadata line. Without this, a
+// text line beginning with "- artifact " forges an extra metadata entry in
+// the rendered output and inflates the loop-side artifact_count
+// (CountRendered). Line content is preserved — only the one-space indent
+// is added.
+func sanitizeText(text string) string {
+	if !strings.HasPrefix(text, renderedArtifactPrefix) && !strings.Contains(text, "\n"+renderedArtifactPrefix) {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, renderedArtifactPrefix) {
+			lines[i] = " " + line
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // CountRendered returns the number of artifact metadata lines in a string

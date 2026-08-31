@@ -14,7 +14,10 @@ import (
 // MaxArtifactBytes is the absolute ceiling on a single artifact file that
 // Validate will process (stat or hash). Enforced at Stat time so a server
 // that supplies sha256 but omits size_bytes cannot force an unbounded
-// streaming hash (see Validate).
+// streaming hash (see Validate), and re-enforced at hash time: the file is
+// read through a LimitReader capped at MaxArtifactBytes+1, so a file that
+// grows between the stat and the hash is rejected instead of read
+// unbounded (see fileSHA256).
 const MaxArtifactBytes int64 = 64 << 20
 
 // Validate checks an artifact ref fail-closed against the configured artifact
@@ -125,7 +128,7 @@ func Validate(ref Ref, roots []string) (string, error) {
 		if !isLowerHexSHA256(ref.SHA256) {
 			return "", fmt.Errorf("artifact %q sha256 %q is not a lowercase hex SHA-256 digest", ref.ID, ref.SHA256)
 		}
-		sum, err := fileSHA256(resolved)
+		sum, err := fileSHA256(resolved, fi.Size())
 		if err != nil {
 			return "", fmt.Errorf("artifact %q: hash: %w", ref.ID, err)
 		}
@@ -172,17 +175,33 @@ func isLowerHexSHA256(s string) bool {
 	return true
 }
 
-// fileSHA256 streams the file through a SHA-256 hasher. The content is used
+// fileSHA256 streams the file through a SHA-256 hasher, reading at most
+// limit+1 bytes: content beyond limit is rejected, never hashed. The stat
+// that capped the file size happened earlier — possibly with the file
+// smaller than it is now — so the hash read must re-enforce the cap itself
+// (audit 2026-08: a file that grew between the os.Stat and the open
+// defeated MaxArtifactBytes via unbounded io.Copy). The content is used
 // solely for verification and is never exposed to the model.
-func fileSHA256(path string) (string, error) {
+func fileSHA256(path string, limit int64) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
 	defer f.Close()
+	return hashLimited(f, limit)
+}
+
+// hashLimited hashes r, reading at most limit+1 bytes. Reading more than
+// limit is an error: the caller bounded the source by limit, so a longer
+// read means the source grew (or was misbounded) — fail closed.
+func hashLimited(r io.Reader, limit int64) (string, error) {
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
+	n, err := io.Copy(h, io.LimitReader(r, limit+1))
+	if err != nil {
 		return "", err
+	}
+	if n > limit {
+		return "", fmt.Errorf("content is at least %d bytes; the absolute artifact cap is %d bytes", n, limit)
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }

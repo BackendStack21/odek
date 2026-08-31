@@ -17,7 +17,7 @@
 | `odek skill list` | List all available skills |
 | `odek skill view <name>` | View a skill's full content |
 | `odek skill delete <name>` | Delete a skill |
-| `odek skill promote <name>` | Clear `NeedsReview` on a tainted skill so it can trigger-load |
+| `odek skill promote <name>` | Clear `NeedsReview` on a tainted skill so it can trigger-load and load via `skill_load` |
 | `odek skill import <uri> [flags]` | Import a skill from file:// or https:// |
 | `odek memory list` | List pending (pending-review) memory facts; aliases `ls`, `pending` |
 | `odek memory promote <session-id>` | Promote a session's pending facts to the durable fact files |

@@ -860,4 +860,20 @@ func applyUsage(u *usageJSON, res *CallResult) {
 		res.CacheCreationTokens += u.PromptCacheMissTokens
 		res.CacheReported = true
 	}
+	// Normalize inclusive cache reporting to exclusive. OpenAI
+	// (prompt_tokens_details.cached_tokens) and DeepSeek
+	// (prompt_cache_hit/miss_tokens) report cache volumes as subsets of
+	// prompt_tokens; Anthropic reports them exclusively. InputTokens ends
+	// up uncached-only on every provider, with cache volumes carried in
+	// the cache fields, so budget enforcement (input + cache) never
+	// double-counts. Guards keep hostile/broken payloads from driving
+	// InputTokens negative.
+	if u.PromptTokensDetails != nil && u.PromptTokensDetails.CachedTokens > 0 &&
+		u.PromptTokensDetails.CachedTokens <= res.InputTokens {
+		res.InputTokens -= u.PromptTokensDetails.CachedTokens
+		res.CacheReadTokens += u.PromptTokensDetails.CachedTokens
+	}
+	if total := u.PromptCacheHitTokens + u.PromptCacheMissTokens; total > 0 && total <= res.InputTokens {
+		res.InputTokens -= total
+	}
 }

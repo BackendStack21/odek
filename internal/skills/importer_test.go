@@ -33,7 +33,7 @@ HTTP fetched skill.
 	}))
 	defer server.Close()
 
-	result, err := fetchHTTP(server.URL, 1048576, 5)
+	result, err := fetchHTTPAllow(server.URL, 1048576, 5, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestFetchHTTP_ErrorStatus(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := fetchHTTP(server.URL, 1048576, 5)
+	_, err := fetchHTTPAllow(server.URL, 1048576, 5, true)
 	if err == nil {
 		t.Error("expected error for 404")
 	}
@@ -63,7 +63,7 @@ func TestFetchHTTP_TooLarge(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := fetchHTTP(server.URL, 100, 5)
+	_, err := fetchHTTPAllow(server.URL, 100, 5, true)
 	if err == nil {
 		t.Error("expected error for oversized response")
 	}
@@ -88,7 +88,7 @@ func TestFetchHTTP_RedirectPrivateIP(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := fetchHTTP(server.URL, 1048576, 5)
+	_, err := fetchHTTPAllow(server.URL, 1048576, 5, true)
 	if err == nil {
 		t.Fatal("expected error for redirect")
 	}
@@ -104,7 +104,7 @@ func TestFetchHTTP_ConnectionError(t *testing.T) {
 	}))
 	server.Close()
 
-	_, err := fetchHTTP(server.URL, 1048576, 5)
+	_, err := fetchHTTPAllow(server.URL, 1048576, 5, true)
 	if err == nil {
 		t.Fatal("expected error for closed server (connection refused)")
 	}

@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/danger"
 )
@@ -58,7 +59,14 @@ func (w *limitWriter) Write(p []byte) (int, error) {
 		w.truncated = true
 		room := w.limit - w.buf.Len()
 		if room > 0 {
-			w.buf.Write(p[:room])
+			// Back up to a UTF-8 rune boundary so a multibyte character cut
+			// by the cap never ships U+FFFD replacement mojibake.
+			for room > 0 && !utf8.RuneStart(p[room]) {
+				room--
+			}
+			if room > 0 {
+				w.buf.Write(p[:room])
+			}
 		}
 		w.buf.WriteString("\n... [output truncated]")
 		return len(p), nil
@@ -266,9 +274,12 @@ func (t *shellTool) Call(args string) (string, error) {
 	if err != nil && output == "" {
 		return "", fmt.Errorf("shell: %w", err)
 	}
-	if err != nil && stderrStr != "" {
-		// Include stderr even when stdout is empty — "exit status 1" alone
-		// gives the LLM no clue why the command failed.
+	if err != nil {
+		// Failing command with captured output: return the output (the
+		// model needs stdout/stderr, not just "exit status N") but name
+		// the failure explicitly — without this, a failing test/build run
+		// was indistinguishable from a passing one.
+		output += "\n[command failed: " + err.Error() + "]"
 		return wrapUntrusted(t.toolCtx(), "$ "+input.Command, output), nil
 	}
 	if output == "" {

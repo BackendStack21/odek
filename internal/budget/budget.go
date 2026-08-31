@@ -212,6 +212,17 @@ func (c *Checker) CheckRuntime() *Error {
 // CheckUsage reports exhaustion of the token budgets and (when prices are
 // configured) the estimated-cost budget, given the cumulative token totals.
 // Nil-safe.
+// CheckUsageWithCache is CheckUsage with provider cache-token totals counted
+// as input. Cache reads/writes are real prompt tokens with real cost — on
+// Anthropic they are billed on top of input_tokens — and a cache-heavy run
+// could previously blow max_input_tokens and max_cost_usd without ever
+// tripping the checker. CallResult.InputTokens is normalized to the
+// uncached portion (see internal/llm applyUsage), so callers sum input +
+// cache through this entry point instead of CheckUsage.
+func (c *Checker) CheckUsageWithCache(inputTokens, cacheReadTokens, cacheCreationTokens, outputTokens int64) *Error {
+	return c.CheckUsage(inputTokens+cacheReadTokens+cacheCreationTokens, outputTokens)
+}
+
 func (c *Checker) CheckUsage(inputTokens, outputTokens int64) *Error {
 	if c == nil {
 		return nil
@@ -256,7 +267,12 @@ func (c *Checker) RecordToolCalls(n int) {
 // Snapshot is a point-in-time view of consumed vs configured budget. A zero
 // Max* field means that limit is not configured (and the Remaining* field is
 // meaningless — always 0). Remaining values are clamped at 0: an exhausted
-// budget never reports negative headroom.
+// budget never reports negative headroom. The Exhausted* flags distinguish
+// the two ways a Remaining* can read 0: a CONFIGURED limit that is fully
+// consumed (flag true) vs an unconfigured one (flag false). Consumers that
+// turn headroom into a cap for someone else — budget share-mode passdown to
+// sub-agents — must clamp off the flags: exhausted becomes a hard cap of 0,
+// unconfigured stays unlimited.
 type Snapshot struct {
 	MaxRuntimeSeconds       int64
 	RemainingRuntimeSeconds int64
@@ -268,6 +284,12 @@ type Snapshot struct {
 	RemainingOutputTokens   int64
 	MaxCostUSD              float64
 	RemainingCostUSD        float64
+
+	RuntimeExhausted      bool
+	ToolCallsExhausted    bool
+	InputTokensExhausted  bool
+	OutputTokensExhausted bool
+	CostExhausted         bool
 }
 
 // View exposes a point-in-time budget snapshot. The loop engine implements
@@ -300,27 +322,37 @@ func (c *Checker) Snapshot(inputTokens, outputTokens int64) Snapshot {
 		elapsed := int64(now().Sub(c.start).Seconds())
 		if r := c.limits.MaxRuntimeSeconds - elapsed; r > 0 {
 			s.RemainingRuntimeSeconds = r
+		} else {
+			s.RuntimeExhausted = true
 		}
 	}
 	if c.limits.MaxToolCalls > 0 {
 		if r := c.limits.MaxToolCalls - c.toolCalls; r > 0 {
 			s.RemainingToolCalls = r
+		} else {
+			s.ToolCallsExhausted = true
 		}
 	}
 	if c.limits.MaxInputTokens > 0 {
 		if r := c.limits.MaxInputTokens - inputTokens; r > 0 {
 			s.RemainingInputTokens = r
+		} else {
+			s.InputTokensExhausted = true
 		}
 	}
 	if c.limits.MaxOutputTokens > 0 {
 		if r := c.limits.MaxOutputTokens - outputTokens; r > 0 {
 			s.RemainingOutputTokens = r
+		} else {
+			s.OutputTokensExhausted = true
 		}
 	}
 	if c.limits.CostEnforcementActive() {
 		cost := c.limits.EstimatedCostUSD(inputTokens, outputTokens)
 		if r := c.limits.MaxCostUSD - cost; r > 0 {
 			s.RemainingCostUSD = r
+		} else {
+			s.CostExhausted = true
 		}
 	}
 	return s

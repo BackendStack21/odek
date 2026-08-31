@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/danger"
@@ -42,11 +44,21 @@ const maxSearchResultBytes = maxReadBytes
 // unbounded JSON responses from broad patterns.
 const maxGlobMatches = 1000
 
-// confinedGlob walks root and returns paths matching pattern without using
-// filepath.Glob. It is workspace-confined: it resolves root to an absolute
-// path, rejects patterns containing ".." or absolute prefixes, skips every
-// symlink (files and directories), and verifies every match stays inside root.
-// This closes the path-traversal vector described in finding #22.
+// maxGlobWalkMatches bounds the confinedGlob walk itself. Matches are
+// collected up to this hard cap, sorted by mtime, and only THEN truncated to
+// the caller-visible limit: truncating during the walk kept the
+// lexically-first entries, so a recently modified file late in the walk was
+// dropped before the newest-first sort ever ran.
+const maxGlobWalkMatches = 20000
+
+// confinedGlob walks root and returns up to limit paths matching pattern
+// without using filepath.Glob, sorted newest-first. It is workspace-confined:
+// it resolves root to an absolute path, rejects patterns containing ".." or
+// absolute prefixes, skips every symlink (files and directories), and
+// verifies every match stays inside root. This closes the path-traversal
+// vector described in finding #22. Truncation to limit happens only after
+// the newest-first sort (bounded by maxGlobWalkMatches), so the newest
+// matches win regardless of their position in the lexical walk order.
 func confinedGlob(root, pattern string, limit int, includeDirs bool) ([]string, error) {
 	if limit <= 0 {
 		limit = maxGlobMatches
@@ -132,7 +144,9 @@ func confinedGlob(root, pattern string, limit int, includeDirs bool) ([]string, 
 		}
 		if matcher(rel, d.IsDir()) {
 			matches = append(matches, absPath)
-			if len(matches) >= limit {
+			if len(matches) >= maxGlobWalkMatches {
+				// Memory bound only — the caller-visible limit is applied
+				// after the newest-first sort below.
 				return fs.SkipAll
 			}
 		}
@@ -140,6 +154,19 @@ func confinedGlob(root, pattern string, limit int, includeDirs bool) ([]string, 
 	})
 	if walkErr != nil {
 		return nil, walkErr
+	}
+	// Newest first (Lstat so entry metadata, not a symlink target, is used —
+	// the walk already excludes symlinks, but stay defensive), then truncate.
+	sort.Slice(matches, func(i, j int) bool {
+		fi, _ := os.Lstat(matches[i])
+		fj, _ := os.Lstat(matches[j])
+		if fi == nil || fj == nil {
+			return matches[i] < matches[j]
+		}
+		return fi.ModTime().After(fj.ModTime())
+	})
+	if len(matches) > limit {
+		matches = matches[:limit]
 	}
 	return matches, nil
 }
@@ -991,23 +1018,43 @@ func jsonResult(v any) (string, error) {
 	return string(data), nil
 }
 
-// isBinary checks if a byte slice looks like binary content.
-// Returns true if a null byte is found or if more than 30% of bytes
-// are non-printable (excluding common whitespace like \n, \r, \t).
+// binarySampleLen caps how much input isBinary examines: the first 8 KiB is
+// enough to classify content without scanning arbitrarily large buffers.
+const binarySampleLen = 8000
+
+// isBinary checks if a byte slice looks like binary content, sampling at most
+// the first binarySampleLen bytes. The sample is binary if it contains a NUL
+// byte, if more than 30% of its bytes are ASCII control characters
+// (excluding the whitespace range 0x09-0x0D), or if it is not valid UTF-8.
+// Multi-byte UTF-8 (Cyrillic, CJK, emoji, …) is text: bytes >= 0x7F are rune
+// halves, not non-printable garbage, so they are no longer counted.
 func isBinary(data []byte) bool {
 	if len(data) == 0 {
 		return false
 	}
+	sample := data
+	if len(sample) > binarySampleLen {
+		sample = sample[:binarySampleLen]
+	}
+	if bytes.IndexByte(sample, 0) >= 0 {
+		return true
+	}
 	nonPrintable := 0
-	for _, b := range data {
-		if b == 0 {
-			return true
-		}
-		if b < 0x09 || (b > 0x0d && b < 0x20) || b > 0x7e {
+	for _, b := range sample {
+		if b < 0x09 || (b > 0x0d && b < 0x20) || b == 0x7f {
 			nonPrintable++
 		}
 	}
-	return float64(nonPrintable)/float64(len(data)) > 0.30
+	if float64(nonPrintable)/float64(len(sample)) > 0.30 {
+		return true
+	}
+	// The sample cut can split a trailing multi-byte rune; trim it (at most
+	// utf8.UTFMax-1 bytes) before judging validity, otherwise clean text is
+	// misread as invalid UTF-8. Still invalid after trimming → binary.
+	for i := 0; i < utf8.UTFMax-1 && len(sample) > 0 && !utf8.Valid(sample); i++ {
+		sample = sample[:len(sample)-1]
+	}
+	return !utf8.Valid(sample)
 }
 
 // readLinesWithCount reads lines from an open file, returning content
@@ -1280,7 +1327,13 @@ func truncateDiff(s string, maxLen int) string {
 	// Take first line for diff display
 	firstLine := strings.SplitN(s, "\n", 2)[0]
 	if len(firstLine) > maxLen {
-		return firstLine[:maxLen] + "..."
+		// Back off to a UTF-8 rune boundary so a multibyte character cut in
+		// half never renders as U+FFFD mojibake in the diff preview.
+		cut := maxLen
+		for cut > 0 && !utf8.RuneStart(firstLine[cut]) {
+			cut--
+		}
+		return firstLine[:cut] + "..."
 	}
 	return firstLine
 }

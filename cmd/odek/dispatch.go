@@ -100,7 +100,9 @@ func runExit(err error) int {
 // subagentExit honours the sub-agent JSON contract: stderr gets the
 // human-readable line, stdout gets a JSON envelope the parent can parse,
 // and exit codes follow docs/EXTENSIONS.md: 0 success, 1 task error,
-// 2 timeout, 3 setup error. Task errors and timeouts arrive as
+// 2 timeout, 3 setup error, 4 execution-budget stop (both the mid-run
+// *subagentRunError case and a pre-run typed budget.Error, e.g. the
+// share-mode exhaustion spawn gate). Task errors and timeouts arrive as
 // *subagentRunError with their envelope already printed, so they only map
 // to an exit code here.
 func subagentExit(err error) int {
@@ -116,6 +118,18 @@ func subagentExit(err error) int {
 			return 4
 		}
 		return 1
+	}
+	if _, ok := budget.As(err); ok {
+		// Pre-run budget stop (share-mode exhaustion): the typed budget
+		// error arrived before any run started. Same wire contract as a
+		// mid-run exhaustion — budget_exhausted envelope, exit code 4.
+		fmt.Fprintf(os.Stderr, "odek: %v\n", err)
+		_ = json.NewEncoder(os.Stdout).Encode(subagentResult{
+			Status:        "budget_exhausted",
+			PartialReason: "execution_budget",
+			Error:         err.Error(),
+		})
+		return 4
 	}
 	fmt.Fprintf(os.Stderr, "odek: %v\n", err)
 	_ = json.NewEncoder(os.Stdout).Encode(subagentResult{
