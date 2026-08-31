@@ -255,6 +255,11 @@ type SubagentConfig struct {
 	MaxDepth       *int   `json:"max_depth,omitempty"`
 	AnnounceBudget *bool  `json:"announce_budget,omitempty"`
 	BudgetInherit  string `json:"budget_inherit,omitempty"`
+	// DefaultProfile selects the capability profile applied when a delegated
+	// task omits the profile field: a defined profile name, or "none" to
+	// disable the built-in default envelope. Operator-controlled (rejected
+	// from project-level ./odek.json like the rest of this section).
+	DefaultProfile string `json:"default_profile,omitempty"`
 }
 
 // PlanningFileConfig is the "planning" section of odek.json. Pointer fields
@@ -976,6 +981,18 @@ const (
 	// remaining budget) so a near-exhausted parent cannot spawn children
 	// with fresh headroom.
 	BudgetInheritShare = "share"
+
+	// DefaultProfileName is the built-in default sub-agent capability
+	// profile (P4). Materialized into ResolvedConfig.Profiles by
+	// injectBuiltinDefaultProfile unless the operator defines their own
+	// profile with this name or opts out via subagent.default_profile="none".
+	DefaultProfileName = "default"
+
+	// DefaultProfileDisabled is the subagent.default_profile sentinel that
+	// disables the built-in default envelope entirely. Honored only from the
+	// operator's config — never from a task file or the --profile flag, so
+	// a delegating model cannot strip the operator's envelope.
+	DefaultProfileDisabled = "none"
 )
 
 // SubagentResolved is the resolved "subagent" configuration.
@@ -998,6 +1015,10 @@ type SubagentResolved struct {
 	AnnounceBudget bool
 	// BudgetInherit is BudgetInheritOperator or BudgetInheritShare.
 	BudgetInherit string
+	// DefaultProfile is the profile name applied when a delegated task
+	// selects none: DefaultProfileName (built-in), an operator-defined
+	// name, or DefaultProfileDisabled ("none" = no envelope).
+	DefaultProfile string
 }
 
 // resolveSubagent merges the file-level subagent section over the defaults.
@@ -1012,6 +1033,7 @@ func resolveSubagent(cfg *SubagentConfig) SubagentResolved {
 		MaxDepth:       2,
 		AnnounceBudget: true,
 		BudgetInherit:  BudgetInheritOperator,
+		DefaultProfile: DefaultProfileName,
 	}
 	if cfg == nil {
 		return res
@@ -1066,6 +1088,9 @@ func resolveSubagent(cfg *SubagentConfig) SubagentResolved {
 			fmt.Fprintf(os.Stderr, "odek: WARNING: unknown subagent.budget_inherit %q; using %q\n", cfg.BudgetInherit, BudgetInheritOperator)
 		}
 	}
+	if cfg.DefaultProfile != "" {
+		res.DefaultProfile = cfg.DefaultProfile
+	}
 	return res
 }
 
@@ -1078,9 +1103,15 @@ func resolveSubagent(cfg *SubagentConfig) SubagentResolved {
 // non-interactive deny and the P3 trust lockdown are applied afterwards
 // and cannot be lifted by selecting a profile.
 type ProfileConfig struct {
-	MaxRisk   string      `json:"max_risk,omitempty"`
-	Allowlist []string    `json:"allowlist,omitempty"`
-	Tools     *ToolConfig `json:"tools,omitempty"`
+	// Description is a short human/model-readable summary of what the
+	// profile is FOR. It is surfaced by the list_subagent_profiles tool so
+	// the delegating model can pick the right profile by intent rather
+	// than by guessing at names. Operator-authored only; never parsed for
+	// permission semantics.
+	Description string      `json:"description,omitempty"`
+	MaxRisk     string      `json:"max_risk,omitempty"`
+	Allowlist   []string    `json:"allowlist,omitempty"`
+	Tools       *ToolConfig `json:"tools,omitempty"`
 }
 
 // validRiskClass reports whether s names a known risk class.
