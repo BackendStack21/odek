@@ -548,6 +548,11 @@ var serveRuns struct {
 	runs map[string]*serveRun
 }
 
+// serveRunsWG tracks headless run goroutines so shutdown can wait (bounded,
+// see drainServeWork) for them instead of killing runs mid-flight at process
+// exit — their deferred cleanup (agent.Close → docker rm -f) would never run.
+var serveRunsWG sync.WaitGroup
+
 func init() { serveRuns.runs = map[string]*serveRun{} }
 
 // registerRun adds the run to the registry, evicting the oldest completed
@@ -786,7 +791,9 @@ func startServeRun(
 		}
 	}
 
+	serveRunsWG.Add(1)
 	go func() {
+		defer serveRunsWG.Done()
 		defer cleanup()
 		var sessionIn, sessionOut int
 		serveLogf("run_started run_id=%s", run.ID)

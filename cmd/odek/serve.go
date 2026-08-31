@@ -246,6 +246,13 @@ func (rl *rateLimiter) allow(key string) bool {
 	if rl == nil || rl.max <= 0 {
 		return true
 	}
+	if key == "" {
+		// No identifiable client (e.g. a request with no usable RemoteAddr):
+		// do not track a shared "" bucket — its map entry would never be
+		// evicted, and unidentified callers would exhaust each other's
+		// budget. Skip limiting instead of inserting an empty key.
+		return true
+	}
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
@@ -524,14 +531,18 @@ func newServeMux(d serveMuxDeps) *http.ServeMux {
 	systemMessage := d.SystemMessage
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handleStatic(wsToken))
-	mux.Handle("/ws", &golangws.Server{
-		Handshake: func(cfg *golangws.Config, req *http.Request) error {
+	// serveWSUpgrades closes the handshake-window slot leak: if
+	// x/net/websocket fails the upgrade after our Handshake callback (which
+	// acquires wsConnSem) returned nil, the Handler — and with it
+	// handleWS's release defer — never runs, and the wrapper releases.
+	mux.Handle("/ws", serveWSUpgrades(serveWSReal,
+		func(cfg *golangws.Config, req *http.Request) error {
 			return wsHandshakeWithLimits(cfg, req, wsToken, resolved.TrustedProxies)
 		},
-		Handler: func(conn *golangws.Conn) {
+		func(conn *golangws.Conn) {
 			handleWS(store, resourceReg, resolved, systemMessage, state, conn)
 		},
-	})
+	))
 	// All API endpoints require the per-instance CSRF token, a loopback Host,
 	// and (for state-changing methods) a local Origin. This blocks DNS-rebinding
 	// and cross-site reads of sessions/resources/models.
@@ -699,20 +710,39 @@ func serveOnListener(listener net.Listener, mux *http.ServeMux) error {
 		return true
 	})
 
-	// Phase 3: wait for all handleWS goroutines to finish (up to 10s).
-	// Each goroutine runs defer agent.Close() which calls docker rm -f.
-	drained := make(chan struct{})
-	go func() { wsHandlerWG.Wait(); close(drained) }()
-
-	select {
-	case <-drained:
+	// Phase 3: wait for all handleWS goroutines and headless REST-run
+	// goroutines to finish (up to 10s). Each handleWS goroutine runs defer
+	// agent.Close() which calls docker rm -f; run goroutines do the same
+	// via their cleanup func.
+	if drainServeWork(10 * time.Second) {
 		fmt.Fprintln(os.Stderr, "odek serve: all connections closed cleanly")
-	case <-time.After(10 * time.Second):
+	} else {
 		fmt.Fprintln(os.Stderr, "odek serve: drain timeout — some containers may still be running")
 	}
 
 	fmt.Fprintln(os.Stderr, "odek serve: stopped")
 	return nil
+}
+
+// drainServeWork waits (bounded) for all live WebSocket handler goroutines
+// and headless REST-run goroutines to finish. It reports whether the drain
+// completed within the timeout. Headless runs are tracked in serveRunsWG —
+// without that, a blocking run (approval wait, long agent turn) outlives
+// listener shutdown and dies at process exit with its cleanup defers never
+// running. Extracted for testing.
+func drainServeWork(timeout time.Duration) bool {
+	drained := make(chan struct{})
+	go func() {
+		wsHandlerWG.Wait()
+		serveRunsWG.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 // ── Agent Builder ──────────────────────────────────────────────────────
@@ -998,14 +1028,37 @@ func serveStateStartedAt(st *serveState) time.Time {
 // is available.
 var processStart = time.Now()
 
+// wsServerSnapshot is the immutable per-connection slice of the resolved
+// configuration used by the socket-reader goroutine. The processor loop may
+// mutate resolved.Model on a per-prompt model switch while the reader
+// answers ping heartbeats; reading the live struct from both goroutines is
+// a data race. The snapshot is taken once, before the reader starts, and is
+// never written afterwards.
+type wsServerSnapshot struct {
+	model   string
+	sandbox bool
+	stream  bool
+}
+
+// snapshotServerConfig copies the reader-visible config fields out of the
+// mutable resolved config.
+func snapshotServerConfig(resolved config.ResolvedConfig) wsServerSnapshot {
+	return wsServerSnapshot{
+		model:   resolved.Model,
+		sandbox: resolved.Sandbox,
+		stream:  resolved.Stream,
+	}
+}
+
 // wsServerInfoEvent is the compact server snapshot carried by server_info
-// (sent on connect) and pong (heartbeat replies).
-func wsServerInfoEvent(startedAt time.Time, resolved config.ResolvedConfig) map[string]any {
+// (sent on connect) and pong (heartbeat replies). It is built from the
+// immutable wsServerSnapshot, never from the live resolved config.
+func wsServerInfoEvent(startedAt time.Time, snap wsServerSnapshot) map[string]any {
 	return map[string]any{
 		"version":        version,
-		"model":          resolved.Model,
-		"sandbox":        resolved.Sandbox,
-		"stream":         resolved.Stream,
+		"model":          snap.model,
+		"sandbox":        snap.sandbox,
+		"stream":         snap.stream,
 		"uptime_seconds": int64(time.Since(startedAt).Seconds()),
 		"ws_connections": atomic.LoadInt64(&serveWSConnections),
 	}
@@ -1092,10 +1145,16 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 		return
 	}
 
+	// Immutable snapshot for the socket-reader goroutine: the pong
+	// heartbeat below runs on the reader while the processor loop may write
+	// resolved.Model (per-prompt model switch) — reading the live struct
+	// from both goroutines is a data race.
+	snap := snapshotServerConfig(resolved)
+
 	// Server hello: let the client learn version/model/sandbox/stream state
 	// without sending a prompt first.
 	if state != nil {
-		info := wsServerInfoEvent(state.startedAt, resolved)
+		info := wsServerInfoEvent(state.startedAt, snap)
 		info["type"] = "server_info"
 		writeWSJSON(conn, info)
 	}
@@ -1170,7 +1229,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 			// Application-level heartbeat. Handled inline in the reader so it
 			// is answered even while a prompt occupies the processor loop.
 			if msgType.Type == "ping" {
-				pong := wsServerInfoEvent(serveStateStartedAt(state), resolved)
+				pong := wsServerInfoEvent(serveStateStartedAt(state), snap)
 				pong["type"] = "pong"
 				pong["t"] = time.Now().UnixMilli()
 				writeWSJSON(conn, pong)
@@ -1964,6 +2023,53 @@ func wsHandshakeWithLimits(cfg *golangws.Config, req *http.Request, token string
 	}
 }
 
+// serveWSReal is the production library driver: it runs x/net/websocket's
+// server with the given guarded callbacks. It is passed to serveWSUpgrades
+// as the serve parameter (tests substitute a stub that mimics the library's
+// contract, including the post-handshake failure path).
+func serveWSReal(handshake func(*golangws.Config, *http.Request) error, handler func(*golangws.Conn), w http.ResponseWriter, req *http.Request) {
+	(&golangws.Server{Handshake: handshake, Handler: handler}).ServeHTTP(w, req)
+}
+
+// serveWSUpgrades wraps the /ws endpoint with slot-leak protection for the
+// handshake window. wsHandshakeWithLimits acquires wsConnSem inside the
+// library's Handshake callback, but x/net/websocket can still fail the
+// upgrade AFTER that callback returns (newServerConn → AcceptHandshake
+// write error): serveWebSocket then returns without ever calling the
+// Handler, and the slot — normally released by handleWS's first defer —
+// would leak. maxWSConnections such failures permanently wedge /ws.
+//
+// The wrapper observes both sides on the single request goroutine and
+// releases exactly when the handshake acquired a slot but the Handler
+// never ran. When the Handler ran, handleWS owns the release.
+func serveWSUpgrades(
+	serve func(handshake func(*golangws.Config, *http.Request) error, handler func(*golangws.Conn), w http.ResponseWriter, req *http.Request),
+	handshake func(*golangws.Config, *http.Request) error,
+	handler func(*golangws.Conn),
+) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		var acquired, handled bool
+		guardedHandshake := func(cfg *golangws.Config, req *http.Request) error {
+			err := handshake(cfg, req)
+			acquired = err == nil
+			return err
+		}
+		guardedHandler := func(conn *golangws.Conn) {
+			handled = true
+			handler(conn)
+		}
+		defer func() {
+			if acquired && !handled {
+				select {
+				case <-wsConnSem:
+				default:
+				}
+			}
+		}()
+		serve(guardedHandshake, guardedHandler, w, req)
+	}
+}
+
 // requireLocalOrigin rejects cross-origin state-changing requests to the REST
 // API. It is the HTTP counterpart to checkLocalOrigin.
 func requireLocalOrigin(next http.Handler) http.Handler {
@@ -2438,8 +2544,12 @@ func clientIP(r *http.Request, trustedProxies []string) string {
 	}
 	if isTrustedProxy(host, trustedProxies) {
 		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-			if i := strings.Index(fwd, ","); i > 0 {
-				return strings.TrimSpace(fwd[:i])
+			// Key on the LAST entry: with a trusted proxy in the path, the
+			// right-most entry is the one the trusted proxy appended, while
+			// the left-most is client-supplied and spoofable — rotating it
+			// would rotate rate-limit buckets and grow the limiter map.
+			if i := strings.LastIndex(fwd, ","); i >= 0 {
+				return strings.TrimSpace(fwd[i+1:])
 			}
 			return strings.TrimSpace(fwd)
 		}
