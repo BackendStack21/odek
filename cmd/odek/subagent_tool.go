@@ -670,7 +670,11 @@ func renderArtifacts(refs []artifact.Ref, roots []string) string {
 		b.WriteString("\n")
 
 		if strings.HasPrefix(ref.MediaType, "text/") && size <= maxInlineArtifactBytes {
-			if data, err := os.ReadFile(path); err == nil {
+			// Same read-time verification as artifact_read: the validated
+			// path is re-opened O_NOFOLLOW and re-hashed against the ref
+			// before any byte is inlined; failure just skips the inline
+			// preview (never fatal to the summary).
+			if data, _, _, err := verifyArtifactWindow(path, ref, maxInlineArtifactBytes, 0, maxInlineArtifactBytes); err == nil {
 				fmt.Fprintf(&b, "  --- artifact: %s ---\n%s\n  --- end artifact ---\n", ref.ID, strings.TrimRight(string(data), "\n"))
 			}
 		}
