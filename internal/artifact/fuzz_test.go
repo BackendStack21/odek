@@ -162,7 +162,7 @@ func FuzzValidateRef(f *testing.F) {
 			t.Fatalf("Validate accepted size mismatch: declared %d, actual %d", *ref.SizeBytes, fi.Size())
 		}
 		if ref.SHA256 != "" {
-			got, herr := fileSHA256(resolved)
+			got, herr := fileSHA256(resolved, MaxArtifactBytes)
 			if herr != nil || got != ref.SHA256 {
 				t.Fatalf("Validate accepted sha256 mismatch: declared %q", ref.SHA256)
 			}
