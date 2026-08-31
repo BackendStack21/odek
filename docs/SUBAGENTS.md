@@ -493,6 +493,60 @@ artifact_read({ "id": "report", "offset": 65536 })  # continue paging
 
 Lifecycle: deleting a session deletes its artifacts (all paths — CLI, API, Telegram, retention sweep); the storage janitor backstop sweeps orphans after `maintenance.artifacts_max_age_hours` (default 24 hours, `0` = keep forever).
 
+## Wire contract (v2)
+
+Clients (Web UI, bodek) consume sub-agent telemetry through three surfaces:
+live `subagent_state` WS frames, `GET /api/subagents` (registry snapshot —
+same fields as the frames), and the framed result envelope. All v2 fields are
+`omitempty`: old clients ignore them, and absent means "unavailable", never
+zero.
+
+**Phases.** A task's `phase` moves `queued → started → active → finished`.
+`queued` is emitted by the parent the moment `delegate_tasks` accepts a task —
+before it acquires a concurrency slot — so an 8-task delegation on a 2-slot
+operator reads `2 live · 6 queued`. Queued tasks count as neither active nor
+finished in the stats.
+
+**State frame fields.** In addition to the v1 fields (`task_id`, `task_idx`,
+`run_key`, `phase`, `status`, `step`, `iterations`, `tool`,
+`duration_seconds`, `tokens_used`):
+
+| Field | Carries | Notes |
+|---|---|---|
+| `goal` | task goal text | redacted, clamped to 2048 chars server-side (model-controlled input) |
+| `profile` | profile id | declared value while queued; the child's effective (post-clamp) value from `started` on |
+| `max_risk` | effective risk ceiling | declared while queued; effective (post operator-profile resolution) from `started` |
+| `budget_seconds`, `budget_iterations` | enforced caps | 0/absent = uncapped; present on `started` and `active` |
+| `budget_cost_usd` | enforced cost cap | only when cost enforcement is active (cap + resolved prices) |
+| `cost_usd` | server-side cost estimate | cumulative on live frames; final on `finished` |
+| `artifacts` | `[{id, path, bytes}]` | terminal only — metadata from the result envelope; content never rides the wire |
+
+The framed result envelope adds `cost_usd` (final) and `artifacts`
+(the full `odek.artifact-ref/v1` refs — a superset of the frame metadata).
+
+**Cost semantics (authoritative — do not re-derive).** `cost_usd` values are
+computed server-side with the exact `/api/usage` math (per-million prices
+resolved for the child's model over provider-reported token totals). Zero or
+absent means "prices not configured" — clients must render cost as
+unavailable, never `$0`. Totals are split, not folded: the serve-lifetime
+`tokens_in`/`tokens_out`/`estimated_cost_usd` in `/api/usage` cover **parent
+turns only** (children are separate odek processes with their own sessions);
+sub-agent spend is broken out under `subagents.tokens_used` and, as of v2,
+`subagents.cost_usd` (lifetime sum of final per-task estimates). A client
+total including sub-agents is therefore `estimated_cost_usd +
+subagents.cost_usd` — or, per batch, the sum of `cost_usd` over final
+result envelopes only (cumulative state-frame values double-count on
+replay).
+
+**Blocking model — deny, never prompt.** Sub-agents can never park waiting
+on an approval: the child runs non-interactive with `deny` forced for every
+operation that would prompt, and denied operations are listed in the result's
+`denials` array (capped, with a separate total). There is no
+`waiting_approval` state and none is planned; a card showing `running` with
+denied operations is working through them or will finish with them reported.
+Clients should treat `error` / `timeout` / `cancelled` as the only sticky
+outcomes.
+
 ## Tips
 
 - **Keep goals small** — one file, one concern per sub-agent. If a goal spans 3 files, it's probably not a good decomposition boundary.

@@ -120,6 +120,30 @@ type delegateTasksTool struct {
 // tool's process can resolve it — same model as session prompt cancels.
 // Returns false when no such task is live (unknown id, already finished,
 // or the child exited before the stop arrived).
+// emitSubagentQueued records + fans out the queued phase for a task that
+// delegate_tasks accepted but has not spawned yet (concurrency ceiling).
+// It synthesizes the same record shape the telemetry line relay parses, so
+// registry state and WS subagent_state fan-out stay on one path. profile
+// and max_risk carry the DECLARED values here; the child's started record
+// overwrites them with the effective post-clamp values.
+func (t *delegateTasksTool) emitSubagentQueued(taskIdx int, taskID, goal, profile, maxRisk string) {
+	if t.OnSubagentLog == nil {
+		return // no wire attached (bare-struct tests, non-serve runs)
+	}
+	rec := map[string]any{"type": "subagent_queued", "goal": goal}
+	if profile != "" {
+		rec["profile"] = profile
+	}
+	if maxRisk != "" {
+		rec["max_risk"] = maxRisk
+	}
+	b, err := json.Marshal(rec)
+	if err != nil {
+		return
+	}
+	t.OnSubagentLog(taskIdx, taskID, string(b))
+}
+
 func (t *delegateTasksTool) CancelTask(taskID string) bool {
 	return cancelSubagentTask(taskID)
 }
@@ -264,11 +288,14 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 	t.eventMu.Unlock()
 
 	for i, task := range input.Tasks {
-		t.acquireSem(sem, emitFn, i)
 		// Task id is minted HERE (not inside runTask) so the per-task
 		// artifact dir can be created serially and correlated with the id
 		// the child echoes on every telemetry record.
 		taskID := newTaskID()
+		// Wire v2 (P2): record + emit the queued phase BEFORE acquiring a
+		// limiter slot, so clients see every accepted task immediately —
+		// including the ones still waiting for a concurrency slot.
+		t.emitSubagentQueued(i, taskID, task.Goal, task.Profile, task.MaxRisk)
 		// Per-task artifact dir is created serially (MkdirAll idempotent, but
 		// serial keeps 0700 semantics obvious) and captured by the goroutine.
 		// Skipped entirely when no artifacts root is wired (bare-struct tests).
@@ -277,6 +304,7 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 				dirs[i] = d
 			}
 		}
+		t.acquireSem(sem, emitFn, i)
 		run := t.runTaskFn
 		if run == nil {
 			run = t.runTask
