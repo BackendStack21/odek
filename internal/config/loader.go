@@ -1094,6 +1094,30 @@ func resolveSubagent(cfg *SubagentConfig) SubagentResolved {
 	return res
 }
 
+// injectBuiltinDefaultProfile materializes the built-in default sub-agent
+// capability profile (P4) unless the operator disabled it via
+// subagent.default_profile="none" or defined their own profile with the
+// reserved name. The built-in caps delegated sub-agents at local_write:
+// the long-standing effective ceiling for untrusted children, now also
+// enforced for trusted ones. An explicit profile selection can still raise
+// it — the envelope is operator policy, applied before the trust lockdown
+// (which can never be lifted by profile selection).
+func injectBuiltinDefaultProfile(r *ResolvedConfig) {
+	if r.Subagent.DefaultProfile == DefaultProfileDisabled {
+		return
+	}
+	if _, ok := r.Profiles[DefaultProfileName]; ok {
+		return
+	}
+	if r.Profiles == nil {
+		r.Profiles = make(map[string]ProfileConfig, 1)
+	}
+	r.Profiles[DefaultProfileName] = ProfileConfig{
+		Description: "Built-in default: delegated sub-agents are capped at local_write (no system writes, code execution, installs, network egress, or destructive operations). Override per task via delegate_tasks' profile field, or globally via subagent.default_profile (\"none\" disables).",
+		MaxRisk:     "local_write",
+	}
+}
+
 // ProfileConfig is one named capability profile (P4). When a task
 // selects the profile, its settings OVERRIDE the corresponding operator
 // config for that sub-agent: max_risk clamps every higher-ranked class to
@@ -2066,6 +2090,12 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		InteractionMode:        ifZero(cfg.InteractionMode, "engaging"),
 		ToolProgress:           ifZero(cfg.ToolProgress, "all"),
 	}
+
+	// Built-in default sub-agent capability profile (P4): unless the
+	// operator disabled it or defined their own "default" profile,
+	// materialize the local_write-capped envelope so delegate_tasks and
+	// list_subagent_profiles see one consistent set.
+	injectBuiltinDefaultProfile(&resolved)
 
 	// Every subsystem inherits the shared top-level embedding default unless it
 	// set its own override. Memory and skills carry their resolved embedder on

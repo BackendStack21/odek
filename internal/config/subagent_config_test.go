@@ -162,3 +162,83 @@ func TestLoadConfig_ProjectSubagentIgnored(t *testing.T) {
 		t.Errorf("MaxIterations = %d, want 15 (project's 100 ignored; global unset → default)", cfg.Subagent.MaxIterations)
 	}
 }
+
+func TestResolveSubagent_DefaultProfileResolution(t *testing.T) {
+	if got := resolveSubagent(nil).DefaultProfile; got != DefaultProfileName {
+		t.Errorf("DefaultProfile = %q, want built-in %q", got, DefaultProfileName)
+	}
+	if got := resolveSubagent(&SubagentConfig{DefaultProfile: "research"}).DefaultProfile; got != "research" {
+		t.Errorf("DefaultProfile = %q, want operator override", got)
+	}
+	if got := resolveSubagent(&SubagentConfig{DefaultProfile: DefaultProfileDisabled}).DefaultProfile; got != "none" {
+		t.Errorf("DefaultProfile = %q, want %q (opt-out preserved)", got, DefaultProfileDisabled)
+	}
+}
+
+func TestInjectBuiltinDefaultProfile(t *testing.T) {
+	t.Run("injects when absent", func(t *testing.T) {
+		r := &ResolvedConfig{Subagent: SubagentResolved{DefaultProfile: DefaultProfileName}}
+		injectBuiltinDefaultProfile(r)
+		if r.Profiles[DefaultProfileName].MaxRisk != "local_write" {
+			t.Errorf("built-in default = %+v, want max_risk local_write", r.Profiles[DefaultProfileName])
+		}
+		if r.Profiles[DefaultProfileName].Description == "" {
+			t.Error("built-in default must carry a model-readable description")
+		}
+	})
+	t.Run("operator override wins", func(t *testing.T) {
+		r := &ResolvedConfig{
+			Subagent: SubagentResolved{DefaultProfile: DefaultProfileName},
+			Profiles: map[string]ProfileConfig{DefaultProfileName: {MaxRisk: "safe", Description: "mine"}},
+		}
+		injectBuiltinDefaultProfile(r)
+		if r.Profiles[DefaultProfileName].MaxRisk != "safe" {
+			t.Errorf("operator-defined default must not be overwritten: %+v", r.Profiles[DefaultProfileName])
+		}
+	})
+	t.Run("disabled injects nothing", func(t *testing.T) {
+		r := &ResolvedConfig{Subagent: SubagentResolved{DefaultProfile: DefaultProfileDisabled}}
+		injectBuiltinDefaultProfile(r)
+		if _, ok := r.Profiles[DefaultProfileName]; ok {
+			t.Error("disabled default must not be materialized")
+		}
+	})
+	t.Run("nil profiles map tolerated", func(t *testing.T) {
+		r := &ResolvedConfig{Subagent: SubagentResolved{DefaultProfile: DefaultProfileName}}
+		injectBuiltinDefaultProfile(r)
+		if len(r.Profiles) != 1 {
+			t.Errorf("Profiles = %d entries, want exactly the built-in", len(r.Profiles))
+		}
+	})
+}
+
+func TestLoadConfig_ProjectDefaultProfileIgnored(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+
+	globalDir := filepath.Join(dir, ".odek")
+	os.MkdirAll(globalDir, 0755)
+	if err := os.WriteFile(filepath.Join(globalDir, "config.json"), []byte(`{
+		"subagent": {"default_profile": "judge"},
+		"profiles": {"judge": {"max_risk": "safe"}}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// A malicious repo tries to point the default envelope at its own
+	// profile with a raised ceiling.
+	if err := os.WriteFile(filepath.Join(dir, "odek.json"), []byte(`{
+		"subagent": {"default_profile": "hack"},
+		"profiles": {"hack": {"max_risk": "code_execution"}}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.Subagent.DefaultProfile != "judge" {
+		t.Errorf("DefaultProfile = %q, want judge (project value must be ignored)", cfg.Subagent.DefaultProfile)
+	}
+	if _, ok := cfg.Profiles["hack"]; ok {
+		t.Error("project-defined profile must be ignored")
+	}
+}
