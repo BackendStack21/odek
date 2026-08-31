@@ -27,7 +27,7 @@ odek is not a framework. It's a **runtime** — the smallest possible surface ar
 | Dependencies | **5.** 2× 21no.de, 3× golang.org/x | 200+ packages |
 | Binary size | ~11 MB static | 50-200 MB with venv |
 | Startup | **Instant** | 2-10s (Python imports) |
-| Sandbox | `--sandbox` flag | Requires manual Docker setup |
+| Sandbox | **Default-on** Docker sandbox (`--no-sandbox` to opt out) | Requires manual Docker setup |
 | Tool interface | One interface, one method | Class hierarchies + decorators |
 
 ---
@@ -35,10 +35,10 @@ odek is not a framework. It's a **runtime** — the smallest possible surface ar
 ## Strategic Features
 
 ### 🔒 Sandboxed Execution
-Every session can run in an isolated Docker container: no network, no host mounts beyond the working directory, zero capabilities, destroyed on exit. `odek serve` enables the sandbox **by default**; `odek run` keeps it opt-in but warns when running unsandboxed. `--ctx` files are auto-injected into the container at `/workspace/`. Full security model in [docs/SANDBOXING.md](docs/SANDBOXING.md).
+Every session can run in an isolated Docker container: no network, no host mounts beyond the working directory, zero capabilities, destroyed on exit. Sandboxing is **on by default** for `odek run`, `odek repl`, and `odek serve`; opt out with `--no-sandbox` / `ODEK_NO_SANDBOX=1` (unsandboxed runs warn loudly, and `ODEK_REQUIRE_SANDBOX=1` makes them fatal). `--ctx` files are auto-injected into the container at `/workspace/`. Full security model in [docs/SANDBOXING.md](docs/SANDBOXING.md).
 
 ### 🛡️ Prompt-Injection-Aware
-External content the agent ingests (`browser`, `read_file`, `shell`, `search_files`, `multi_grep`, `transcribe`, `vision`, `web_search`, `session_search`, MCP tools) is wrapped in per-call nonce'd `<untrusted_content>` boundaries so the model can distinguish data from instructions. Redirect hops are re-classified (`browser`/`http_batch`), MCP tool descriptions are scanned for injection at registration, and the MCP error channel is wrapped too. The danger classifier resists 8 known shell-evasion tricks (`$()`, backticks, `$IFS`, `command`/`exec`, `\rm`, basenamed absolute paths). Approvers engage friction mode after 3 same-class approvals in 60 s. Memory episodes from tainted sessions are stored but never auto-replayed. Imported and project skills track provenance — untrusted ones stay excluded from trigger matching until explicit `odek skill promote --force`. `odek audit <session-id>` surfaces every ingest + per-turn divergence heuristic. Full threat model in [docs/SECURITY.md](docs/SECURITY.md).
+External content the agent ingests (`browser`, `read_file`, `shell`, `search_files`, `multi_grep`, `transcribe`, `vision`, `web_search`, `session_search`, MCP tools) is wrapped in per-call nonce'd `<untrusted_content>` boundaries so the model can distinguish data from instructions. Redirect hops are re-classified (`browser`/`http_batch`), MCP tool descriptions are scanned for injection at registration, and the MCP error channel is wrapped too. The danger classifier resists common shell-evasion tricks (`$()`/backtick substitution, `$IFS`, brace expansion, `command`/`env` wrappers, `\rm`, basenamed absolute paths, and more). Approvers engage friction mode after 3 same-class approvals in 60 s. Memory episodes from tainted sessions are stored but never auto-replayed. Imported and project skills track provenance — untrusted ones stay excluded from trigger matching until explicit `odek skill promote --force`. `odek audit <session-id>` surfaces every ingest + per-turn divergence heuristic. Full threat model in [docs/SECURITY.md](docs/SECURITY.md).
 
 ### 🧩 Sub-Agent Delegation
 Parallel OS-process sub-agents via `delegate_tasks`. True isolation — each sub-agent is a fresh `odek subagent` process with its own config, tools, and termination timeout. Up to 8 concurrent workers. Operator-defined **capability profiles** (top-level `profiles` config) override a sub-agent's permissions by name and fail closed on unknown names — a curated starter set of 21 task profiles ships in [`profiles.template.json`](profiles.template.json). See [docs/SUBAGENTS.md](docs/SUBAGENTS.md) and [docs/SECURITY.md](docs/SECURITY.md).

@@ -425,7 +425,7 @@ the cadence is cheap.
 |---------|-----------|
 | Approval fatigue | None. Explicit Safe class in `classifyToolCall` — plan calls never surface in approval prompts or the batch gate. State changes are confined to engine memory. Pinned end-to-end by `TestReport_PlanToolClassifiedSafe`. |
 | Untrusted-content boundary | Step-line bodies derive from task/tool content and are re-injected as system context every iteration. Wrapped via the engine's `SetUntrustedWrapper` with source `"plan"`, matching the compaction-digest precedent; header stays outside the wrapper so recognition survives. Audit ingest recorder records the injection where active. |
-| Forgery via tool output | A hostile tool result containing a literal `[Current plan:` line cannot become *the* plan message: recognition requires role `system`, and only `refreshPlanMessage` writes that role/content pair. Rendered plan text inside a tool result stays inside the nonce'd tool-result delimiters. `TestIsPlanMessage` pins rejection of tool/assistant roles and mid-text mentions. |
+| Forgery via tool output | A hostile tool result containing a literal `[Current plan:` line cannot become *the* plan message: recognition requires role `system`, and only `refreshPlanMessage` writes that role/content pair. Rendered plan text inside a tool result stays inside the nonce'd tool-result delimiters. Rejection of tool/assistant roles and mid-text mentions is enforced in `refreshPlanMessage`; the classification pin is `TestClassifyToolCall_PlanSafe`. |
 | Secret leakage | Plan titles/notes can echo secrets from task context. Sessions redact every message at save time (`internal/redact`) — the plan message is covered because it *is* a message riding the normal session save. |
 | Resume parsing | Strict and total: bad header, over-cap steps, unknown status token, count mismatch, duplicate ids, omission marker in any position (overflowed plans are not resumable), unterminated wrapper, content after the wrapper close tag — any deviation drops the whole plan (and removes the failed message from the history) instead of approximating. 19 rejection cases pinned by `TestPlan_ParseStrictRejections`. |
 | Config trust split | See project clamp rules above: project config cannot raise caps or flip a globally-disabled feature on. The tool reads resolved values only. |
@@ -446,8 +446,8 @@ the cadence is cheap.
   overflow (`TestPlan_OverflowDropsDoneFirst`, `TestPlan_RenderRespectsCapAlways`).
 - Strict parser: 19 rejection cases (`TestPlan_ParseStrictRejections`);
   untrusted-wrapper unwrapping (`TestPlan_ParseUnwrapsUntrustedBody`).
-- Recognition/forgery pins (`TestIsPlanMessage`); classification unit pin
-  (`TestClassifyToolCall_PlanSafe`).
+- Recognition/forgery enforced in `refreshPlanMessage` (role/content checks);
+  classification unit pin (`TestClassifyToolCall_PlanSafe`).
 
 Engine integration — additions to `internal/loop/loop_test.go`:
 `TestEngine_Run_PlanLifecycle` (scripted fake-LLM run: create → work →

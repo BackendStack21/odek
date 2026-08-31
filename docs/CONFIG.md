@@ -129,7 +129,7 @@ This lets you keep secrets out of config files entirely:
 
 ## Environment variables
 
-Every config knob has a `ODEK_*` counterpart:
+Most config knobs have a `ODEK_*` counterpart:
 
 | Variable | Maps to | Type |
 |----------|---------|------|
@@ -146,7 +146,6 @@ Every config knob has a `ODEK_*` counterpart:
 | `ODEK_PROMPT_CACHING` | `prompt_caching` | bool |
 | `ODEK_STREAM` | `stream` | bool |
 | `ODEK_COMPACTION` | `compaction` | bool |
-| `ODEK_TOOL_PROGRESS` | `tool_progress` | string (all\|new\|verbose\|off) |
 | `ODEK_SANDBOX_IMAGE` | `--sandbox-image` | string |
 | `ODEK_SANDBOX_NETWORK` | `--sandbox-network` | string |
 | `ODEK_SANDBOX_READONLY` | `--sandbox-readonly` | bool |

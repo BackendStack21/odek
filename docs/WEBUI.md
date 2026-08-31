@@ -331,7 +331,7 @@ Server metadata for monitoring and the WebUI status popover. Never carries secre
 ```jsonc
 {
   "status": "ok",
-  "version": "1.28.1",          // ldflags build version ("" for dev builds)
+  "version": "1.35.0",         // ldflags build version ("" for dev builds)
   "started_at": "2026-08-21T08:19:29Z",
   "uptime_seconds": 1903,
   "model": "glm-5.3",           // configured model

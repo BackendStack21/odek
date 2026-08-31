@@ -58,7 +58,7 @@ internal/
     sandbox_test.go           Sandbox tests (BuildRunArgs, ResolveImage, InjectFiles)
   danger/
     classifier.go             Command/URL classification for security gating
-    classifier_test.go        Risk classification, 8 classes, config overrides
+    classifier_test.go        Risk classification, 11 classes, config overrides
     approver.go               Approver interface + TTYApprover (CLI /dev/tty)
   memory/
     memory.go                 MemoryManager orchestrator (facts, buffer, episodes)
@@ -131,6 +131,20 @@ docs/                         Documentation
   SECURITY.md                 Prompt injection, security model
   SANDBOXING.md               Sandbox configuration
   MCP.md                      MCP server over stdio (Model Context Protocol)
+  EXTENSIONS.md               odek-extension/v1: limits, artifacts, events, refs, budgets
+  EXTENDED_MEMORY.md          Atom store, quarantine, consolidation, nudges
+  MEMORY.md                   Facts, buffer, episodes, promotion
+  PLANNING.md                 Plan tool + protected plan message
+  TELEGRAM.md                 Telegram bot integration
+  SCHEDULES.md                Native cron scheduler
+  STREAMING.md                Token/reasoning streaming
+  CACHING.md                  Prompt caching
+  MAINTENANCE.md              Storage janitor + odek cleanup
+  TOOL_SELECTION.md           tools.enabled/disabled reference
+  CHEATSHEET.md               Quick reference
+  REDACTION_HARDENING.md      Secret redaction patterns
+  DAILY-WORKER.md             Daily-worker usage guide
+  DOCKER_COMPOSE_USER_GUIDE.md  docker/ compose stack guide
   DEVELOPMENT.md              This file
 ```
 
@@ -184,7 +198,7 @@ CI (`.github/workflows/test.yml`) runs the unit suite under `-race` on every pus
 | `internal/ws` | WebSocket constant verification |
 | `internal/resource` | @-reference parsing, file resolution, session resolution, security |
 | `internal/render` | Terminal output, no-color mode, nil safety, tool call/result rendering |
-| `internal/danger` | Command classification across 9 risk classes (incl. fail-closed `unknown`), config overrides, allow/denylist, classifier-bypass attempts, approver friction |
+| `internal/danger` | Command classification across 11 risk classes (incl. fail-closed `unknown`), config overrides, allow/denylist, classifier-bypass attempts, approver friction |
 | `internal/memory` | Facts CRUD, buffer ring, episodes, merge detector (go-vector), ReplaceEntry/AppendEntry, memory tool, security scan, LLM ranking, episode provenance |
 | `internal/skills` | Loading, triggers, import, agent tools (skill_load/skill_list), ValidateSkillName, isPrivateHost |
 | `internal/telegram` | Bot client, long-polling, command handlers, session management, plan CRUD, voice/photo download, health server, retry/backoff |

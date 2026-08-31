@@ -241,7 +241,7 @@ via background consolidation (`consolidate_on_end`, default true).
 
 ### Memory Tool
 
-Single `memory` tool, 6 actions: `add`, `replace`, `remove`, `consolidate`, `read`, `search`. Targets: `user` or `env`. Facts are frozen in system prompt at session start — live writes appear next session.
+Single `memory` tool, 16 actions: `add`, `replace`, `remove`, `consolidate`, `read`, `search`, `view`, `stats`, `add_atom`, `search_atoms`, `forget_atom`, `pin_atom`, `list_quarantine`, `list_pending_review`, `confirm_pending_review`, `reject_pending_review`. Targets: `user` or `env`. Facts are frozen in system prompt at session start — live writes appear next session.
 
 ## Subagents
 
@@ -421,4 +421,6 @@ odek mcp                                    # stdio transport
 | `session_search` | Browse, search, and recall past sessions (semantic vector search) |
 | `clarify` | Ask the user for clarification |
 | `send_message` | Send text/photo/document to Telegram |
-| `skill_load/list/save/patch/delete` | Skill CRUD |
+| `skill_load`, `skill_list` | Read the loaded skill / list available skills |
+| `list_subagent_profiles` | Discover operator-defined sub-agent capability profiles (+ built-in default) |
+| `artifact_read` | Read a sub-agent result artifact by id |

@@ -19,8 +19,11 @@ environment supports:
 - Session search: `session_search`
 - Browser: `browser`
 - Web search: `web_search` (only when `web_search.base_url` is configured)
-- Skill tools: `skill_load`, `skill_list`, `skill_save`, `skill_patch`,
-  `skill_delete` (only when skill learning is enabled)
+- Skill tools: `skill_load`, `skill_list` (present whenever the skill system
+  is initialized)
+- Sub-agent profiles: `list_subagent_profiles` (operator-defined capability
+  profiles + the built-in default)
+- Artifacts: `artifact_read` (parent-side reader for sub-agent result artifacts)
 - MCP tools: prefixed as `<server>__<tool_name>` (only when `mcp_servers` are
   configured)
 
@@ -211,7 +214,8 @@ Use these exact names in config, env vars, and CLI flags:
 | Network | `browser`, `web_search` |
 | Memory | `memory` |
 | Session search | `session_search` |
-| Skills | `skill_load`, `skill_list`, `skill_save`, `skill_patch`, `skill_delete` |
+| Skills | `skill_load`, `skill_list` |
+| Sub-agent support | `list_subagent_profiles`, `artifact_read` |
 | Telegram-only | `send_message`, `clarify` (auto-injected by `odek telegram`; ignored by other modes) |
 | MCP | `<server>__<tool_name>` |
 
