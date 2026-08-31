@@ -103,8 +103,22 @@ func fetchLocal(path string, maxBytes int) (*FetchResult, error) {
 	}, nil
 }
 
-// fetchHTTP fetches skill content from an HTTP(S) URL.
+// fetchHTTP fetches skill content from an HTTP(S) URL. Private/internal
+// hosts are refused on the INITIAL fetch — previously only redirects were
+// checked, making `odek skill import http://169.254.169.254/...` a direct
+// SSRF.
 func fetchHTTP(urlStr string, maxBytes int, timeoutSecs int) (*FetchResult, error) {
+	return fetchHTTPAllow(urlStr, maxBytes, timeoutSecs, false)
+}
+
+// fetchHTTPAllow is fetchHTTP with an explicit private-host override for
+// callers that own the target choice (internal tests, operator tooling).
+func fetchHTTPAllow(urlStr string, maxBytes int, timeoutSecs int, allowPrivate bool) (*FetchResult, error) {
+	if !allowPrivate {
+		if u, err := url.Parse(urlStr); err == nil && isPrivateHost(u.Hostname()) {
+			return nil, fmt.Errorf("refusing to fetch private/internal host: %s", u.Hostname())
+		}
+	}
 	client := &http.Client{
 		Timeout: time.Duration(timeoutSecs) * time.Second,
 		CheckRedirect: func(r *http.Request, via []*http.Request) error {
@@ -309,6 +323,13 @@ func ImportSkill(opts ImportOptions, confirmFn func(assessment *ImportAssessment
 	skill.LastUsed = time.Now().UTC()
 	// Mark as non-auto-load by default
 	skill.AutoLoad = false
+	// Untrusted origin: pin for human review. Trigger matching excludes
+	// NeedsReview skills until `odek skill promote --force` clears the pin
+	// after review. Applied AFTER parsing so the remote frontmatter cannot
+	// clear it (audit: imported skills were trigger-matchable immediately,
+	// with DeriveKeywords building triggers from the attacker's own body
+	// vocabulary).
+	skill.Provenance.NeedsReview = true
 
 	if err := WriteSkill(opts.UserDir, *skill); err != nil {
 		return nil, fmt.Errorf("save: %w", err)
