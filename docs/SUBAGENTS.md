@@ -141,7 +141,7 @@ On failure:
 2. **Validates**: rejects empty, >8 tasks, or malformed JSON
 3. **Writes** each task to a temp file (`odek-task-*.json`) — avoids CLI argument length limits (useful for 100KB+ context)
 4. **Spawns** `odek subagent --task <file> --quiet` for each task
-5. **Limits concurrency** via a buffered channel semaphore (default: 3, max: configurable)
+5. **Limits concurrency** via a **process-wide** buffered-channel semaphore (default: 3, max: configurable) — sibling delegate_tasks calls in one batch and concurrent `odek serve` sessions share the same bound, since provider plans are account-wide
 6. **Collects** JSON result from each subprocess stdout
 7. **Returns** a formatted summary with all sub-agent results tagged by task number
 

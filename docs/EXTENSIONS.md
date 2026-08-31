@@ -163,7 +163,7 @@ odek can emit a structured runtime event stream: **one JSON object per line
   `tool_call_started`, `tool_call_completed`, `tool_call_failed`,
   `session_saved`, `context_trimmed`, `budget_exceeded`, `run_completed`,
   `run_failed`, `plan_created`, `plan_updated`, `subagent_denied`,
-  `subagent_spawned`, `subagent_completed`.
+  `subagent_spawned`, `subagent_completed`, `subagent_concurrency_wait`.
 - `run_id` is a random 128-bit hex identifier generated per agent run and
   stamped on every event of that run. `session_id` appears once the session
   is known; earlier events omit it. `iteration` is the 1-based loop

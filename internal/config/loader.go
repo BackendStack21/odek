@@ -28,6 +28,7 @@ import (
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/embedding"
 	"github.com/BackendStack21/odek/internal/guard"
+	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/maintenance"
 	"github.com/BackendStack21/odek/internal/mcpclient"
 	"github.com/BackendStack21/odek/internal/memory"
@@ -390,6 +391,13 @@ type FileConfig struct {
 	// ignored even from loopback. Config: trusted_proxies, ODEK_TRUSTED_PROXIES.
 	// Only used by `odek serve`.
 	TrustedProxies []string `json:"trusted_proxies,omitempty"`
+
+	// LLM tunes the shared LLM client (internal/llm). Currently: the SSE
+	// stream idle watchdog — time between events (keepalives count) before
+	// the stream is dropped and retried. Thinking models can spend minutes
+	// before their first event; 0 keeps the built-in default (120s).
+	// Config: llm.stream_idle_timeout_seconds, ODEK_STREAM_IDLE_TIMEOUT_SECONDS.
+	LLM *LLMConfig `json:"llm,omitempty"`
 
 	// Telegram configures the Telegram bot integration.
 	Telegram *telegram.TelegramConfig `json:"telegram,omitempty"`
@@ -2213,6 +2221,13 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		if inPrice <= 0 || outPrice <= 0 {
 			fmt.Fprintf(os.Stderr, "odek: warning: limits.max_cost_usd is set but input/output per-million prices are not both configured — cost enforcement is DISABLED (token budgets remain active)\n")
 		}
+	}
+
+	// LLM client tuning (llm section + ODEK_STREAM_IDLE_TIMEOUT_SECONDS):
+	// env wins over the file value, per the priority chain. 0/unset keeps
+	// the llm package default (120s).
+	if d := llmStreamIdleTimeoutFrom(cfg.LLM, envIntPtr("ODEK_STREAM_IDLE_TIMEOUT_SECONDS")); d > 0 {
+		llm.SetStreamIdleTimeout(d)
 	}
 
 	// API key fallback chain: resolved → DEEPSEEK_API_KEY → OPENAI_API_KEY

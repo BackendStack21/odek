@@ -146,6 +146,7 @@ Most config knobs have a `ODEK_*` counterpart:
 | `ODEK_PROMPT_CACHING` | `prompt_caching` | bool |
 | `ODEK_STREAM` | `stream` | bool |
 | `ODEK_COMPACTION` | `compaction` | bool |
+| `ODEK_STREAM_IDLE_TIMEOUT_SECONDS` | `llm.stream_idle_timeout_seconds` | int |
 | `ODEK_SANDBOX_IMAGE` | `--sandbox-image` | string |
 | `ODEK_SANDBOX_NETWORK` | `--sandbox-network` | string |
 | `ODEK_SANDBOX_READONLY` | `--sandbox-readonly` | bool |
@@ -287,6 +288,22 @@ Top-level execution knobs. Every one also exists as a CLI flag and an `ODEK_*` e
 | `no_color` | `false` | Disable colored terminal output |
 | `no_agents` | `false` | Skip loading project `AGENTS.md` |
 | `system` | built-in | Override the system-prompt identity layer — name/mission/persona (operator-only; rejected from project configs). The invariant security pillar is always composed on top and cannot be overridden. |
+
+## LLM client (`llm`)
+
+Tunes the shared LLM client (streaming and buffered calls share one retry policy):
+
+```json
+{
+  "llm": {
+    "stream_idle_timeout_seconds": 120
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `stream_idle_timeout_seconds` | `120` | Time between SSE events (keepalives count) before the stream is dropped and retried. Thinking models can spend minutes before their first event — raise it if long-thinking models hit `stream idle` errors. Floor 5s; `0` keeps the default. Eight retry attempts with jittered exponential backoff (and `Retry-After` honor) are shared with the buffered client; billing/quota errors fail fast. |
 
 ## Dangerous-operations policy (`dangerous`)
 

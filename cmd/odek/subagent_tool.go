@@ -40,9 +40,18 @@ type delegateTasksTool struct {
 	ctxTool
 
 	maxConcurrency int
-	odekPath       string // path to the odek binary
-	apiKey         string // re-injected into sub-agent environment
-	timeout        time.Duration
+
+	// sharedSem is the process-wide child limiter wired by builtinTools
+	// (sharedChildSem): provider plans are account-wide, so every
+	// delegate_tasks instance in the process — sibling tool calls in one
+	// parallel batch, and concurrent serve sessions — shares a single
+	// subagent.max_concurrency bound. Nil (bare-struct tests) falls back
+	// to a private per-call semaphore.
+	sharedSem chan struct{}
+	runTaskFn func(taskIdx int, taskID, goal, taskContext, guidance, trustLevel, maxRisk, profile, artifactDir string) string
+	odekPath  string // path to the odek binary
+	apiKey    string // re-injected into sub-agent environment
+	timeout   time.Duration
 
 	// sessionID is the parent agent's session id (optional — SetSessionID).
 	// Artifact outputs file under <artifactsRoot>/<sessionID>/<taskID>/;
@@ -239,14 +248,23 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 		return fmt.Sprintf(`{"error":"delegation depth limit reached (depth %d, max %d); do this work yourself instead of delegating"}`, depth, t.maxDepth), nil
 	}
 
-	// Run sub-agents in parallel with concurrency limit
+	// Run sub-agents in parallel with a concurrency limit. sem is the
+	// process-wide shared limiter when wired (provider plans are
+	// account-wide — sibling delegate_tasks calls in one batch and
+	// concurrent serve sessions share it); bare-struct tests fall back to
+	// a private per-call semaphore. Capacity < 1 is normalized to 1: an
+	// unbuffered channel would deadlock the acquire-before-spawn loop.
 	results := make([]string, len(input.Tasks))
 	dirs := make([]string, len(input.Tasks)) // per-task artifact dirs (parent-created)
-	sem := make(chan struct{}, t.maxConcurrency)
+	sem := t.concurrencySem()
 	var mu sync.Mutex
+	var wg sync.WaitGroup
+	t.eventMu.Lock()
+	emitFn := t.emitEventFn
+	t.eventMu.Unlock()
 
 	for i, task := range input.Tasks {
-		sem <- struct{}{}
+		t.acquireSem(sem, emitFn, i)
 		// Task id is minted HERE (not inside runTask) so the per-task
 		// artifact dir can be created serially and correlated with the id
 		// the child echoes on every telemetry record.
@@ -259,19 +277,25 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 				dirs[i] = d
 			}
 		}
+		run := t.runTaskFn
+		if run == nil {
+			run = t.runTask
+		}
+		wg.Add(1)
 		go func(i int, taskID, goal, ctx, guidance, trust, maxRisk, profile, artifactDir string) {
+			defer wg.Done()
 			defer func() { <-sem }()
-			r := t.runTask(i, taskID, goal, ctx, guidance, trust, maxRisk, profile, artifactDir)
+			r := run(i, taskID, goal, ctx, guidance, trust, maxRisk, profile, artifactDir)
 			mu.Lock()
 			results[i] = r
 			mu.Unlock()
 		}(i, taskID, task.Goal, task.Context, task.Guidance, task.TrustLevel, task.MaxRisk, task.Profile, dirs[i])
 	}
 
-	// Drain semaphore = wait for all goroutines
-	for i := 0; i < cap(sem); i++ {
-		sem <- struct{}{}
-	}
+	// Wait for every goroutine. Never refill a shared limiter's slots to
+	// "drain" it — the tokens would be permanently consumed and deadlock
+	// later calls sharing the same limiter.
+	wg.Wait()
 
 	// P1: surface child denials on the runtime event stream (best effort —
 	// unparseable results simply carry no denials).
@@ -824,6 +848,75 @@ func newTaskEnvelope(taskID, goal, context, guidance, trustLevel, maxRisk, profi
 
 // subagentDeniedEvent is emitted on the runtime event stream for every
 // policy denial observed by a child sub-agent (P1).
+// subagentWaitEventThreshold is how long a task may queue on the shared
+// child limiter before odek emits subagent_concurrency_wait. Var so tests
+// can shrink it.
+var subagentWaitEventThreshold = 5 * time.Second
+
+const subagentConcurrencyWaitEvent = "subagent_concurrency_wait"
+
+// acquireSem blocks until a limiter slot is free, emitting a
+// subagent_concurrency_wait runtime event when a task visibly queues.
+func (t *delegateTasksTool) acquireSem(sem chan struct{}, emit func(events.Event), taskIdx int) {
+	if emit == nil {
+		sem <- struct{}{}
+		return
+	}
+	start := time.Now()
+	timer := time.NewTimer(subagentWaitEventThreshold)
+	defer timer.Stop()
+	warned := false
+	for {
+		select {
+		case sem <- struct{}{}:
+			return
+		case <-timer.C:
+			if !warned && time.Since(start) >= subagentWaitEventThreshold {
+				warned = true
+				emit(events.Event{
+					Type: subagentConcurrencyWaitEvent,
+					Data: map[string]any{"task_index": taskIdx, "waited_ms": time.Since(start).Milliseconds()},
+				})
+			}
+			timer.Reset(subagentWaitEventThreshold)
+		}
+	}
+}
+
+// sharedChildSem returns the process-wide child limiter, creating it on
+// first use sized to the resolved subagent.max_concurrency. Idempotent:
+// the first caller's capacity wins (resolved config is stable per process),
+// so every builtinTools call in the process — all serve sessions — shares
+// one bound.
+func sharedChildSem(capacity int) chan struct{} {
+	if capacity < 1 {
+		capacity = 1
+	}
+	sharedSemOnce.Do(func() {
+		processChildSem = make(chan struct{}, capacity)
+	})
+	return processChildSem
+}
+
+var (
+	sharedSemOnce   sync.Once
+	processChildSem chan struct{}
+)
+
+// concurrencySem resolves the limiter for this call: the explicit shared
+// semaphore (builtinTools wiring), else a private per-call semaphore
+// (bare-struct tests).
+func (t *delegateTasksTool) concurrencySem() chan struct{} {
+	if t.sharedSem != nil {
+		return t.sharedSem
+	}
+	capacity := t.maxConcurrency
+	if capacity < 1 {
+		capacity = 1
+	}
+	return make(chan struct{}, capacity)
+}
+
 const subagentDeniedEvent = "subagent_denied"
 
 // emitSubagentEvent forwards a sub-agent lifecycle event to the runtime

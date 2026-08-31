@@ -97,3 +97,7 @@ The reasoning block is dimmed with a single 🧠 cue, the answer follows after a
 - Streaming requests use a pooled HTTP client without a client-level timeout (`transport.NewPooledClientNoDeadline`) — a whole-request `http.Client.Timeout` would kill long body reads — sharing the connection pool with the buffered client. Deadlines are enforced per request via context.
 - The engine wires streaming through `loop.Engine.SetStream` / `SetDeltaHandler`, following the existing optional-callback pattern (`SetSignalHandler`, `SetToolEventHandler`).
 - Offline test coverage lives in `internal/llm/stream_test.go` (the provider-variance and failure-mode matrix) and `internal/loop/loop_test.go` (engine dispatch and the buffered default).
+
+## Idle watchdog
+
+A stream that produces no SSE events — keepalive comment lines count — for `llm.stream_idle_timeout_seconds` (default **120s**, env `ODEK_STREAM_IDLE_TIMEOUT_SECONDS`) is dropped and retried like any transient failure, as long as nothing was emitted yet. Once deltas have been delivered, an idle abort is never retried (that would duplicate text); the partial result is surfaced with the error. Eight attempts with jittered exponential backoff are shared with the buffered client.
