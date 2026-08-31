@@ -3010,14 +3010,34 @@ func loadSecretsEnv() {
 	}
 
 	scanner := bufio.NewScanner(f)
+	// 1 MiB token buffer: a long single-line value (a signed blob, a PEM
+	// chain) previously tripped the 64 KiB default and every secret after
+	// it was silently dropped — worse than refusing the line, it looked
+	// exactly like a working configuration with keys missing.
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
+		// dotenv conveniences operators rely on (audit 2026-08-31):
+		// `export KEY=...` shell syntax, one pair of surrounding quotes,
+		// and inline comments after whitespace. A quoted value keeps any
+		// '#' inside it; comment stripping applies only to bare values.
+		line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
 		k, v, ok := strings.Cut(line, "=")
-		if !ok || k == "" {
+		if !ok {
 			continue
+		}
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(v)
+		if k == "" {
+			continue
+		}
+		if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
+			v = v[1 : len(v)-1]
+		} else if i := strings.Index(v, " #"); i >= 0 {
+			v = strings.TrimSpace(v[:i])
 		}
 		if os.Getenv(k) == "" {
 			os.Setenv(k, v)
@@ -3029,6 +3049,9 @@ func loadSecretsEnv() {
 			secretsEnvNames = append(secretsEnvNames, k)
 			secretsEnvMu.Unlock()
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: %s: %v — remaining secrets were NOT loaded\n", path, err)
 	}
 }
 
