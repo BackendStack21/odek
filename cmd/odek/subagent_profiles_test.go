@@ -445,6 +445,55 @@ func TestDefaultProfileEnvelope_TrustedChildClamped(t *testing.T) {
 	}
 }
 
+// ── P1: effective post-clamp risk cap on the wire ────────────────────
+
+// The untrusted trust lockdown denies everything above local_write, so the
+// effective cap the child reports must be local_write — exactly the
+// operator's default envelope.
+func TestEffectiveMaxRisk_UntrustedClampReportsLocalWrite(t *testing.T) {
+	var dc danger.DangerousConfig
+	applySubagentTrust(&dc, "untrusted", "")
+	if got := effectiveMaxRisk(&dc); got != "local_write" {
+		t.Errorf("effectiveMaxRisk = %q, want local_write (untrusted lockdown caps at local_write)", got)
+	}
+}
+
+// A profile's max_risk is the effective cap the child reports: classes
+// ranked above it are denied by the clamp, the cap class itself is not.
+func TestEffectiveMaxRisk_ProfileCapReportsCap(t *testing.T) {
+	var dc danger.DangerousConfig
+	applyProfile(&dc, config.ProfileConfig{MaxRisk: "code_execution"})
+	applySubagentTrust(&dc, "trusted", "")
+	if got := effectiveMaxRisk(&dc); got != "code_execution" {
+		t.Errorf("effectiveMaxRisk = %q, want code_execution (profile cap)", got)
+	}
+}
+
+// A task-file max_risk cap is reported the same way as a profile cap.
+func TestEffectiveMaxRisk_TaskMaxRiskReportsCap(t *testing.T) {
+	var dc danger.DangerousConfig
+	applySubagentTrust(&dc, "trusted", "system_write")
+	if got := effectiveMaxRisk(&dc); got != "system_write" {
+		t.Errorf("effectiveMaxRisk = %q, want system_write (task cap)", got)
+	}
+}
+
+// Total lockdown (every cap-expressible class denied) reports "" — the
+// wire omits the field rather than inventing a class. nil configs do too.
+func TestEffectiveMaxRisk_TotalLockdownEmpty(t *testing.T) {
+	var dc danger.DangerousConfig
+	dc.Classes = map[danger.RiskClass]danger.Action{}
+	for _, cls := range subagentRiskCapOrder {
+		dc.Classes[cls] = danger.Deny
+	}
+	if got := effectiveMaxRisk(&dc); got != "" {
+		t.Errorf("effectiveMaxRisk = %q, want empty under total lockdown", got)
+	}
+	if got := effectiveMaxRisk(nil); got != "" {
+		t.Errorf("effectiveMaxRisk(nil) = %q, want empty", got)
+	}
+}
+
 // TestDelegateTasks_UnknownProfileFailsWithoutSpawn pins parent-side
 // fail-closed: an unknown profile must fail the task BEFORE a child is
 // spawned. The marker file proves whether the mock child ever ran.

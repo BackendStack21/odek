@@ -279,7 +279,14 @@ price in the entry falls back individually); unknown models use the flat
 pair. Budget enforcement is wired into `odek run` and `odek subagent` — the
 sub-agent enforces the operator limits (clamped by any parent-inherited
 budget when `subagent.budget_inherit` is `"share"`) and reports
-`status: "budget_exhausted"` with exit code 4. `continue`, REPL, `serve`, and
+`status: "budget_exhausted"` with exit code 4. In share mode the task
+file's `budget` block carries the parent's remaining `max_runtime_seconds`,
+`max_tool_calls`, and `max_cost_usd` plus explicit `runtime_exhausted`,
+`tool_calls_exhausted`, and `cost_exhausted` flags — a remaining of 0 is
+wire-ambiguous with an unconfigured limit, the flags are not. An exhausted
+parent dimension is a hard cap of 0 for the child: the spawn fails fast
+with the typed budget error and exit code 4 instead of starting an
+unbounded child. `continue`, REPL, `serve`, and
 Telegram do not yet enforce limits, and there is no `ODEK_*` env-var layer
 for limits — sources are the `limits` config section (project configs may
 only *lower* global values, and project-set prices — flat or per-model — are

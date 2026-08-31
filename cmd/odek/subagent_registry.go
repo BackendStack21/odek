@@ -23,25 +23,44 @@ import (
 const (
 	// maxSubagentRegistryEntries bounds the ring; oldest entries are evicted.
 	maxSubagentRegistryEntries = 256
-	// maxSubagentRegistryGoalChars truncates stored goals.
-	maxSubagentRegistryGoalChars = 200
+	// maxSubagentRegistryGoalChars truncates stored goals. Raised from 200
+	// to 2048 (wire v2): the goal rides every subagent_state frame so
+	// clients (e.g. bodek) can render usable task text, not an ellipsis.
+	maxSubagentRegistryGoalChars = 2048
 )
+
+// subagentArtifact is the bounded metadata block the registry and the
+// subagent_state terminal frame carry for one artifact produced by a
+// sub-agent (wire v2). Metadata only — content is never inlined; the
+// model-facing render path keeps the fail-closed artifact.Validate gate.
+type subagentArtifact struct {
+	ID    string `json:"id"`
+	Path  string `json:"path,omitempty"`
+	Bytes int64  `json:"bytes,omitempty"`
+}
 
 // subagentEntry is one delegated task's lifecycle record.
 type subagentEntry struct {
-	TaskID          string    `json:"task_id"`
-	RunKey          string    `json:"run_key"`
-	Goal            string    `json:"goal,omitempty"`
-	Status          string    `json:"status,omitempty"`
-	Phase           string    `json:"phase"` // started | active | finished
-	PID             int       `json:"pid,omitempty"`
-	StartedAt       time.Time `json:"started_at"`
-	FinishedAt      time.Time `json:"finished_at,omitempty"`
-	Iterations      int       `json:"iterations,omitempty"`
-	Step            int       `json:"step,omitempty"`
-	LastTool        string    `json:"last_tool,omitempty"`
-	DurationSeconds float64   `json:"duration_seconds,omitempty"`
-	TokensUsed      int       `json:"tokens_used,omitempty"`
+	TaskID          string             `json:"task_id"`
+	RunKey          string             `json:"run_key"`
+	Goal            string             `json:"goal,omitempty"`
+	Status          string             `json:"status,omitempty"`
+	Phase           string             `json:"phase"` // queued | started | active | finished
+	PID             int                `json:"pid,omitempty"`
+	StartedAt       time.Time          `json:"started_at"`
+	FinishedAt      time.Time          `json:"finished_at,omitempty"`
+	Iterations      int                `json:"iterations,omitempty"`
+	Step            int                `json:"step,omitempty"`
+	LastTool        string             `json:"last_tool,omitempty"`
+	DurationSeconds float64            `json:"duration_seconds,omitempty"`
+	TokensUsed      int                `json:"tokens_used,omitempty"`
+	Profile         string             `json:"profile,omitempty"`    // requested on queued; effective (post-clamp) once the child reports
+	MaxRisk         string             `json:"max_risk,omitempty"`   // requested on queued; effective (post-clamp) once the child reports
+	BudgetSeconds   int                `json:"budget_seconds,omitempty"`
+	BudgetIterations int               `json:"budget_iterations,omitempty"`
+	CostUSD         float64            `json:"cost_usd,omitempty"`         // cumulative child-reported spend
+	BudgetCostUSD   float64            `json:"budget_cost_usd,omitempty"`  // present only when the child reports a cost cap
+	Artifacts       []subagentArtifact `json:"artifacts,omitempty"`        // terminal metadata from the framed result envelope
 }
 
 var subagentReg = struct {
@@ -52,21 +71,23 @@ var subagentReg = struct {
 	byID: map[string]*subagentEntry{},
 }
 
-// subagentRegistryRecord inserts a new entry (or replaces by task_id) and
-// evicts the oldest when the ring overflows.
+// subagentRegistryRecord inserts a new entry (or merges into the existing
+// one by task_id) and evicts the oldest when the ring overflows.
 func subagentRegistryRecord(e *subagentEntry) {
 	subagentReg.mu.Lock()
 	defer subagentReg.mu.Unlock()
-	if prev, ok := subagentReg.byID[e.TaskID]; ok {
-		*e = *prev // re-record keeps accumulated state
-	}
 	e.TaskID = strings.TrimSpace(e.TaskID)
 	if e.StartedAt.IsZero() {
 		e.StartedAt = time.Now()
 	}
 	if prev, ok := subagentReg.byID[e.TaskID]; ok {
-		// Replace in place, preserving ring position.
-		*prev = *e
+		// Merge: the new record's set fields win, zero/empty fields keep
+		// the accumulated state. The v1 restore-old-into-new behavior made
+		// any re-record a no-op — the wire-v2 queued → started transition
+		// relies on the started record overwriting the declared identity
+		// (profile/max_risk) with the effective values and carrying the
+		// budgets in.
+		mergeEntry(prev, e)
 		return
 	}
 	cp := *e
@@ -76,6 +97,68 @@ func subagentRegistryRecord(e *subagentEntry) {
 		oldest := subagentReg.entries[0]
 		subagentReg.entries = subagentReg.entries[1:]
 		delete(subagentReg.byID, oldest.TaskID)
+	}
+}
+
+// mergeEntry folds a fresh record into the accumulated entry: every set
+// field on src wins; zero/empty fields keep dst's accumulated value.
+func mergeEntry(dst, src *subagentEntry) {
+	if src.Goal != "" {
+		dst.Goal = src.Goal
+	}
+	if src.RunKey != "" {
+		dst.RunKey = src.RunKey
+	}
+	if src.Status != "" {
+		dst.Status = src.Status
+	}
+	if src.Phase != "" {
+		dst.Phase = src.Phase
+	}
+	if src.PID != 0 {
+		dst.PID = src.PID
+	}
+	if !src.StartedAt.IsZero() {
+		dst.StartedAt = src.StartedAt
+	}
+	if !src.FinishedAt.IsZero() {
+		dst.FinishedAt = src.FinishedAt
+	}
+	if src.Iterations != 0 {
+		dst.Iterations = src.Iterations
+	}
+	if src.Step != 0 {
+		dst.Step = src.Step
+	}
+	if src.LastTool != "" {
+		dst.LastTool = src.LastTool
+	}
+	if src.DurationSeconds != 0 {
+		dst.DurationSeconds = src.DurationSeconds
+	}
+	if src.TokensUsed != 0 {
+		dst.TokensUsed = src.TokensUsed
+	}
+	if src.Profile != "" {
+		dst.Profile = src.Profile
+	}
+	if src.MaxRisk != "" {
+		dst.MaxRisk = src.MaxRisk
+	}
+	if src.BudgetSeconds != 0 {
+		dst.BudgetSeconds = src.BudgetSeconds
+	}
+	if src.BudgetIterations != 0 {
+		dst.BudgetIterations = src.BudgetIterations
+	}
+	if src.CostUSD != 0 {
+		dst.CostUSD = src.CostUSD
+	}
+	if src.BudgetCostUSD != 0 {
+		dst.BudgetCostUSD = src.BudgetCostUSD
+	}
+	if len(src.Artifacts) > 0 {
+		dst.Artifacts = src.Artifacts
 	}
 }
 
@@ -116,16 +199,23 @@ func newSubagentTelemetryRelay(send func(v any) error, runKey string) func(taskI
 		logRelay(taskIdx, taskID, line)
 
 		var rec struct {
-			Type       string  `json:"type"`
-			TaskID     string  `json:"task_id,omitempty"`
-			PID        int     `json:"pid,omitempty"`
-			Goal       string  `json:"goal,omitempty"`
-			Status     string  `json:"status,omitempty"`
-			Step       int     `json:"step,omitempty"`
-			Tool       string  `json:"tool,omitempty"`
-			Iterations int     `json:"iterations,omitempty"`
-			DurationS  float64 `json:"duration_s,omitempty"`
-			TokensUsed int     `json:"tokens_used,omitempty"`
+			Type             string             `json:"type"`
+			TaskID           string             `json:"task_id,omitempty"`
+			PID              int                `json:"pid,omitempty"`
+			Goal             string             `json:"goal,omitempty"`
+			Status           string             `json:"status,omitempty"`
+			Step             int                `json:"step,omitempty"`
+			Tool             string             `json:"tool,omitempty"`
+			Iterations       int                `json:"iterations,omitempty"`
+			DurationS        float64            `json:"duration_s,omitempty"`
+			TokensUsed       int                `json:"tokens_used,omitempty"`
+			Profile          string             `json:"profile,omitempty"`
+			MaxRisk          string             `json:"max_risk,omitempty"`
+			BudgetSeconds    int                `json:"budget_seconds,omitempty"`
+			BudgetIterations int                `json:"budget_iterations,omitempty"`
+			CostUSD          float64            `json:"cost_usd,omitempty"`
+			BudgetCostUSD    float64            `json:"budget_cost_usd,omitempty"`
+			Artifacts        []subagentArtifact `json:"artifacts,omitempty"`
 		}
 		if err := json.Unmarshal([]byte(line), &rec); err != nil {
 			return
@@ -138,25 +228,63 @@ func newSubagentTelemetryRelay(send func(v any) error, runKey string) func(taskI
 		}
 
 		switch rec.Type {
-		case "subagent_started":
-			goal := redact.RedactSecrets(rec.Goal)
-			if len(goal) > maxSubagentRegistryGoalChars {
-				goal = goal[:maxSubagentRegistryGoalChars]
-			}
+		case "subagent_queued":
+			// Parent-synthesized (delegate_tasks pre-spawn): the task was
+			// accepted but has not been spawned — the concurrency limiter
+			// may still be holding it. profile/max_risk carry the DECLARED
+			// values; the child's started record overwrites them with the
+			// effective post-clamp values.
 			subagentRegistryRecord(&subagentEntry{
 				TaskID:    taskID,
 				RunKey:    runKey,
-				Goal:      goal,
-				Phase:     "started",
-				Status:    "running",
-				PID:       rec.PID,
+				Goal:      redactGoal(rec.Goal),
+				Profile:   rec.Profile,
+				MaxRisk:   rec.MaxRisk,
+				Phase:     "queued",
+				Status:    "queued",
 				StartedAt: time.Now(),
+			})
+		case "subagent_started":
+			subagentRegistryRecord(&subagentEntry{
+				TaskID:           taskID,
+				RunKey:           runKey,
+				Goal:             redactGoal(rec.Goal),
+				Phase:            "started",
+				Status:           "running",
+				PID:              rec.PID,
+				StartedAt:        time.Now(),
+				Profile:          rec.Profile,
+				MaxRisk:          rec.MaxRisk,
+				BudgetSeconds:    rec.BudgetSeconds,
+				BudgetIterations: rec.BudgetIterations,
+				CostUSD:          rec.CostUSD,
+				BudgetCostUSD:    rec.BudgetCostUSD,
 			})
 		case "subagent_progress":
 			subagentRegistryUpdate(taskID, func(e *subagentEntry) {
 				e.Phase = "active"
 				e.Step = rec.Step
 				e.LastTool = rec.Tool
+				// Budget/identity fields are re-asserted (and may first
+				// arrive) on progress records; last report wins.
+				if rec.Profile != "" {
+					e.Profile = rec.Profile
+				}
+				if rec.MaxRisk != "" {
+					e.MaxRisk = rec.MaxRisk
+				}
+				if rec.BudgetSeconds > 0 {
+					e.BudgetSeconds = rec.BudgetSeconds
+				}
+				if rec.BudgetIterations > 0 {
+					e.BudgetIterations = rec.BudgetIterations
+				}
+				if rec.CostUSD > 0 {
+					e.CostUSD = rec.CostUSD
+				}
+				if rec.BudgetCostUSD > 0 {
+					e.BudgetCostUSD = rec.BudgetCostUSD
+				}
 			})
 		case "subagent_finished":
 			subagentRegistryUpdate(taskID, func(e *subagentEntry) {
@@ -165,6 +293,15 @@ func newSubagentTelemetryRelay(send func(v any) error, runKey string) func(taskI
 				e.Iterations = rec.Iterations
 				e.DurationSeconds = rec.DurationS
 				e.TokensUsed = rec.TokensUsed
+				if rec.CostUSD > 0 {
+					e.CostUSD = rec.CostUSD
+				}
+				if rec.BudgetCostUSD > 0 {
+					e.BudgetCostUSD = rec.BudgetCostUSD
+				}
+				if len(rec.Artifacts) > 0 {
+					e.Artifacts = rec.Artifacts
+				}
 				e.FinishedAt = time.Now()
 			})
 			if rec.Status == "success" || rec.Status == "partial" {
@@ -173,6 +310,26 @@ func newSubagentTelemetryRelay(send func(v any) error, runKey string) func(taskI
 				subagentStats.failed.Add(1)
 			}
 			subagentStats.tokens.Add(int64(rec.TokensUsed))
+			if rec.CostUSD > 0 {
+				subagentStats.costMicros.Add(int64(rec.CostUSD * 1e6))
+			}
+		case "subagent_result":
+			// Parent-synthesized refinement: cost + artifact metadata
+			// extracted from the framed result envelope (the envelope
+			// itself never reaches this relay). Merge-only — phase,
+			// status, and lifetime counters stay owned by the
+			// subagent_finished / done-relay paths.
+			subagentRegistryUpdate(taskID, func(e *subagentEntry) {
+				if rec.CostUSD > 0 {
+					e.CostUSD = rec.CostUSD
+				}
+				if rec.BudgetCostUSD > 0 {
+					e.BudgetCostUSD = rec.BudgetCostUSD
+				}
+				if len(rec.Artifacts) > 0 {
+					e.Artifacts = rec.Artifacts
+				}
+			})
 		default:
 			return // tool_call/tool_result/unknown — log-only
 		}
@@ -180,6 +337,16 @@ func newSubagentTelemetryRelay(send func(v any) error, runKey string) func(taskI
 		// Fan the state transition out to the UI.
 		subagentRegistryEmitState(send, taskID, taskIdx)
 	}
+}
+
+// redactGoal redacts and caps a goal for storage/relay (operator surface,
+// but model-controlled text — same treatment as the log relay).
+func redactGoal(goal string) string {
+	goal = redact.RedactSecrets(goal)
+	if len(goal) > maxSubagentRegistryGoalChars {
+		goal = goal[:maxSubagentRegistryGoalChars]
+	}
+	return goal
 }
 
 // subagentRegistryEmitState fans a task's current registry entry out to
@@ -190,7 +357,7 @@ func subagentRegistryEmitState(send func(v any) error, taskID string, taskIdx in
 	snap := subagentRegistrySnapshot("")
 	for _, e := range snap {
 		if e.TaskID == taskID {
-			_ = send(map[string]any{
+			msg := map[string]any{
 				"type":             "subagent_state",
 				"task_id":          e.TaskID,
 				"task_idx":         taskIdx,
@@ -202,7 +369,34 @@ func subagentRegistryEmitState(send func(v any) error, taskID string, taskIdx in
 				"tool":             e.LastTool,
 				"duration_seconds": e.DurationSeconds,
 				"tokens_used":      e.TokensUsed,
-			})
+			}
+			// Wire v2 fields — omitted when unset (0/empty), matching the
+			// registry entry's omitempty JSON contract.
+			if e.Goal != "" {
+				msg["goal"] = e.Goal
+			}
+			if e.Profile != "" {
+				msg["profile"] = e.Profile
+			}
+			if e.MaxRisk != "" {
+				msg["max_risk"] = e.MaxRisk
+			}
+			if e.BudgetSeconds > 0 {
+				msg["budget_seconds"] = e.BudgetSeconds
+			}
+			if e.BudgetIterations > 0 {
+				msg["budget_iterations"] = e.BudgetIterations
+			}
+			if e.CostUSD > 0 {
+				msg["cost_usd"] = e.CostUSD
+			}
+			if e.BudgetCostUSD > 0 {
+				msg["budget_cost_usd"] = e.BudgetCostUSD
+			}
+			if len(e.Artifacts) > 0 {
+				msg["artifacts"] = e.Artifacts
+			}
+			_ = send(msg)
 			break
 		}
 	}
@@ -296,14 +490,21 @@ var subagentStats struct {
 	completed atomic.Int64
 	failed    atomic.Int64
 	tokens    atomic.Int64
+	// costMicros accumulates the child-reported final cost estimates in
+	// micro-USD (int64 atomic — float atomics are not available). Exposed
+	// as the subagent_cost_usd sub-total so clients can render a total
+	// including sub-agents without client-side arithmetic.
+	costMicros atomic.Int64
 }
 
 // subagentStatsSnapshot returns the lifetime sub-agent counters plus the
-// number of currently non-finished registry entries.
+// number of currently non-finished registry entries. Queued entries
+// (accepted but not yet spawned) count as neither active nor finished.
 func subagentStatsSnapshot() map[string]any {
 	active := 0
 	for _, e := range subagentRegistrySnapshot("") {
-		if e.Phase != "finished" {
+		// queued tasks are accepted-but-not-spawned: neither live nor done.
+		if e.Phase == "started" || e.Phase == "active" {
 			active++
 		}
 	}
@@ -312,6 +513,7 @@ func subagentStatsSnapshot() map[string]any {
 		"failed":      subagentStats.failed.Load(),
 		"active":      active,
 		"tokens_used": subagentStats.tokens.Load(),
+		"cost_usd":    float64(subagentStats.costMicros.Load()) / 1e6,
 	}
 }
 

@@ -318,13 +318,46 @@ type subagentTelemetryWriter struct {
 	taskID string
 	step   int
 	mu     sync.Mutex
+	wire   subagentWireContext // P1/P3 decorations; zero value = legacy records
 }
 
 func newSubagentTelemetryWriter(w io.Writer, taskID string) *subagentTelemetryWriter {
+	return newSubagentTelemetryWriterWithWire(w, taskID, subagentWireContext{})
+}
+
+// newSubagentTelemetryWriterWithWire attaches the child's post-resolution
+// wire context (P1 profile/risk identity, P3 budget block, cost estimator
+// and the engine usage probe) to the lifecycle records.
+func newSubagentTelemetryWriterWithWire(w io.Writer, taskID string, wire subagentWireContext) *subagentTelemetryWriter {
 	if w == nil || taskID == "" {
 		return nil
 	}
-	return &subagentTelemetryWriter{w: w, taskID: taskID}
+	return &subagentTelemetryWriter{w: w, taskID: taskID, wire: wire}
+}
+
+// emitStarted reports the lifecycle start record: the pre-existing
+// pid/depth/timeout/max_iter fields plus the P1 identity fields (resolved
+// profile id, effective post-clamp risk cap — each omitted when empty) and
+// the P3 budget block. cost_usd is deliberately absent: nothing has been
+// spent at start.
+func (t *subagentTelemetryWriter) emitStarted(pid, depth, timeoutSeconds, maxIterations int) {
+	rec := map[string]any{
+		"type":      "subagent_started",
+		"pid":       pid,
+		"depth":     depth,
+		"timeout_s": timeoutSeconds,
+		"max_iter":  maxIterations,
+	}
+	if t.wire.Profile != "" {
+		rec["profile"] = t.wire.Profile
+	}
+	if t.wire.MaxRisk != "" {
+		rec["max_risk"] = t.wire.MaxRisk
+	}
+	for k, v := range t.wire.Budget.fields() {
+		rec[k] = v
+	}
+	t.emit(rec)
 }
 
 // emit writes one compact NDJSON record with the task_id echoed.
@@ -343,16 +376,161 @@ func (t *subagentTelemetryWriter) emit(record map[string]any) {
 // emitProgress reports a tool-start step. The tool NAME is included;
 // arguments and outputs never are — they are model-controlled content and
 // the telemetry path must stay argument-free (telemetry plan, security §4).
+// P3: each record also carries the budget block and the cumulative cost
+// estimate (cost_usd) so a client can render %-of-budget per step without
+// remembering the started record.
 func (t *subagentTelemetryWriter) emitProgress(tool string) {
 	t.mu.Lock()
 	t.step++
 	n := t.step
 	t.mu.Unlock()
-	t.emit(map[string]any{
+	rec := map[string]any{
 		"type": "subagent_progress",
 		"step": n,
 		"tool": tool,
-	})
+	}
+	for k, v := range t.wire.Budget.fields() {
+		rec[k] = v
+	}
+	if t.wire.Usage != nil && t.wire.Cost.configured() {
+		in, out := t.wire.Usage()
+		rec["cost_usd"] = t.wire.Cost.estimate(in, out)
+	}
+	t.emit(rec)
+}
+
+// emitFinished reports the terminal lifecycle record with the final
+// estimated cost (P6). The cost rides the same /api/usage math over the
+// engine's provider-reported token totals and is omitted when no price
+// side is configured — the wire never emits a fabricated $0.
+func (t *subagentTelemetryWriter) emitFinished(status string, iterations int, durationSeconds float64, tokensUsed int) {
+	rec := map[string]any{
+		"type":        "subagent_finished",
+		"status":      status,
+		"iterations":  iterations,
+		"duration_s":  durationSeconds,
+		"tokens_used": tokensUsed,
+	}
+	if t.wire.Usage != nil && t.wire.Cost.configured() {
+		in, out := t.wire.Usage()
+		rec["cost_usd"] = t.wire.Cost.estimate(in, out)
+	}
+	t.emit(rec)
+}
+
+// ── Wire additions (P1/P3/P4/P6 — child half) ────────────────────────
+
+// subagentWireBudget is the child's effective post-resolution budget block
+// (P3): the wall-clock budget, the iteration budget, and the enforced cost
+// cap. It mirrors the three headline numbers the lifespan block
+// (buildLifespanBlock) announces to the child itself, so parents and UIs
+// render progress against exactly the budgets the child enforces.
+// CostUSD is stamped only when budget cost enforcement is active
+// (Limits.CostEnforcementActive) — a cap without resolved prices is not an
+// enforced cap, and the wire never reports $0.
+type subagentWireBudget struct {
+	Seconds    int
+	Iterations int
+	CostUSD    float64
+}
+
+func newSubagentWireBudget(limits budget.Limits, timeoutSeconds, maxIterations int) subagentWireBudget {
+	b := subagentWireBudget{Seconds: timeoutSeconds, Iterations: maxIterations}
+	if limits.CostEnforcementActive() {
+		b.CostUSD = limits.MaxCostUSD
+	}
+	return b
+}
+
+// fields renders the non-zero entries for a telemetry record. Zero values
+// are omitted: an absent field means "no cap configured on this wire
+// version" (version skew keeps old parents working), never 0.
+func (b subagentWireBudget) fields() map[string]any {
+	out := make(map[string]any, 3)
+	if b.Seconds > 0 {
+		out["budget_seconds"] = b.Seconds
+	}
+	if b.Iterations > 0 {
+		out["budget_iterations"] = b.Iterations
+	}
+	if b.CostUSD > 0 {
+		out["budget_cost_usd"] = b.CostUSD
+	}
+	return out
+}
+
+// subagentRiskCapOrder is the class set max_risk caps are expressed over,
+// ordered by danger.Rank descending. It mirrors the class list
+// clampClassesAboveMaxRisk walks (unread-script gating is enforced by the
+// trust lockdown, not the max_risk cap, so UnreadExec is not part of cap
+// semantics); extend both together if the class set grows.
+var subagentRiskCapOrder = []danger.RiskClass{
+	danger.Blocked,
+	danger.Destructive,
+	danger.Unknown,
+	danger.Persistence,
+	danger.SystemWrite,
+	danger.CodeExecution,
+	danger.NetworkEgress,
+	danger.Install,
+	danger.LocalWrite,
+	danger.Safe,
+}
+
+// effectiveMaxRisk returns the child's effective post-clamp risk cap (P1):
+// the highest-ranked class the resolved danger config does not outright
+// deny, after the operator profile (applyProfile) and the trust lockdown
+// (applySubagentTrust) ran. Under the default untrusted envelope this
+// reports local_write — the operator's default envelope. Empty when every
+// cap-expressible class is denied (total lockdown).
+func effectiveMaxRisk(dc *danger.DangerousConfig) string {
+	if dc == nil {
+		return ""
+	}
+	for _, cls := range subagentRiskCapOrder {
+		if dc.ActionFor(cls) != danger.Deny {
+			return string(cls)
+		}
+	}
+	return ""
+}
+
+// subagentCostEstimator prices cumulative token totals exactly the way
+// /api/usage does (handleUsage): the per-million prices resolved for the
+// run's model. configured() is handleUsage's prices_configured predicate —
+// when no price side is configured the cost is unknowable and the wire
+// omits it rather than emitting a fabricated $0 (odek never guesses
+// provider prices).
+type subagentCostEstimator struct {
+	inPerMillion  float64
+	outPerMillion float64
+}
+
+func newSubagentCostEstimator(limits budget.Limits, model string) subagentCostEstimator {
+	in, out := limits.ResolvePrices(model)
+	return subagentCostEstimator{inPerMillion: in, outPerMillion: out}
+}
+
+func (e subagentCostEstimator) configured() bool { return e.inPerMillion > 0 || e.outPerMillion > 0 }
+
+func (e subagentCostEstimator) estimate(inputTokens, outputTokens int64) float64 {
+	return float64(inputTokens)/1e6*e.inPerMillion + float64(outputTokens)/1e6*e.outPerMillion
+}
+
+// subagentWireContext carries everything the telemetry writer needs to
+// decorate lifecycle records with the P1/P3/P6 wire fields: the resolved
+// profile id ("" = built-in default envelope, omitted), the effective
+// post-clamp risk cap, the effective budget block, the model-resolved cost
+// estimator, and the engine usage probe for cost-so-far / final cost.
+type subagentWireContext struct {
+	Profile string
+	MaxRisk string
+	Budget  subagentWireBudget
+	Cost    subagentCostEstimator
+	// Usage returns the engine's cumulative provider-reported (input,
+	// output) token totals — the same totals the budget Checker
+	// accumulates. Nil when no engine is attached yet.
+	Usage func() (int64, int64)
 }
 
 // ── Subagent Command ─────────────────────────────────────────────────
@@ -370,6 +548,7 @@ type subagentResult struct {
 	Denials         []SubagentDenial `json:"denials,omitempty"`        // policy denials observed (capped)
 	DenialsTotal    int              `json:"denials_total,omitempty"`  // total denials seen
 	ParentSession   string           `json:"parent_session,omitempty"` // correlation id from --parent-session
+	CostUSD         float64          `json:"cost_usd,omitempty"`       // final server-side cost estimate (omitted when no prices configured)
 	Artifacts       []artifact.Ref   `json:"artifacts,omitempty"`      // odek.artifact-ref/v1 — runner-scanned, parent-validated
 }
 
@@ -660,6 +839,27 @@ func subagentCmd(args []string) error {
 		return fmt.Errorf("parent budget exhausted before start: %w", berr)
 	}
 
+	// P1/P3/P6 wire context: everything the protocol-2 telemetry records
+	// and the result envelope report about this child's run posture. All
+	// values are RESOLVED — post operator-profile application (P4), post
+	// trust lockdown (P2/P3), and post task-budget clamp (M1.5). The Usage
+	// probe reads the engine's provider-reported cumulative totals so the
+	// cost fields use the exact /api/usage estimate; agent is assigned
+	// below, before any event can fire.
+	var agent *odek.Agent
+	wireCtx := subagentWireContext{
+		Profile: profileName,
+		MaxRisk: effectiveMaxRisk(&resolved.Dangerous),
+		Budget:  newSubagentWireBudget(resolved.Limits, cfg.timeout, cfg.maxIter),
+		Cost:    newSubagentCostEstimator(resolved.Limits, resolved.Model),
+		Usage: func() (int64, int64) {
+			if agent == nil {
+				return 0, 0
+			}
+			return int64(agent.TotalInputTokens()), int64(agent.TotalOutputTokens())
+		},
+	}
+
 	// The sub-agent system prompt is a FIXED constant — a trust boundary the
 	// parent cannot write to. Parent-supplied goal/guidance/context are
 	// delivered in the user request instead (fenced when untrusted), so they
@@ -826,7 +1026,7 @@ func subagentCmd(args []string) error {
 			}
 		}
 	}
-	agent, err := odek.New(aCfg)
+	agent, err = odek.New(aCfg)
 	if err != nil {
 		return fmt.Errorf("create agent: %w", err)
 	}
@@ -925,19 +1125,49 @@ func subagentCmd(args []string) error {
 		}
 	}
 
+	// P6: final estimated cost on the result envelope — the same
+	// /api/usage estimate (model-resolved per-million prices) over the
+	// engine's provider-reported token totals. Zero (omitted on the wire)
+	// when no price side is configured: clients must render cost as
+	// unavailable, never $0.
+	if agent != nil && wireCtx.Cost.configured() {
+		result.CostUSD = wireCtx.Cost.estimate(int64(agent.TotalInputTokens()), int64(agent.TotalOutputTokens()))
+	}
+
 	// Output JSON to stdout — the envelope is emitted exactly once, here.
 	// Protocol-2 children emit a compact subagent_finished record followed
 	// by a FRAMED result ({"type":"result",…}) so the parent's parser
 	// cannot confuse protocol traffic with the result. Legacy children
 	// keep the bare indented encoding.
 	if telemetry != nil {
-		telemetry.emit(map[string]any{
+		fin := map[string]any{
 			"type":        "subagent_finished",
 			"status":      result.Status,
 			"iterations":  result.Iterations,
 			"duration_s":  result.DurationSeconds,
 			"tokens_used": result.TokensUsed,
-		})
+		}
+		// Wire v2 (P6): final cost estimate — omitted when no price side is
+		// configured, never a fabricated $0.
+		if result.CostUSD > 0 {
+			fin["cost_usd"] = result.CostUSD
+		}
+		// Wire v2 (P4): terminal artifact metadata in the spec shape
+		// {id, path, bytes} — bounded metadata only; artifact content never
+		// rides the telemetry wire. Mirrors the framed envelope's refs so a
+		// client that only watches state frames still sees the artifact list.
+		if len(result.Artifacts) > 0 {
+			arts := make([]map[string]any, 0, len(result.Artifacts))
+			for _, a := range result.Artifacts {
+				item := map[string]any{"id": a.ID, "path": a.URI}
+				if a.SizeBytes != nil {
+					item["bytes"] = *a.SizeBytes
+				}
+				arts = append(arts, item)
+			}
+			fin["artifacts"] = arts
+		}
+		telemetry.emit(fin)
 	}
 	if protocol2 {
 		raw, merr := json.Marshal(result)

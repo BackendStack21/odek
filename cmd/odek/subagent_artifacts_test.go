@@ -254,3 +254,66 @@ func TestStore_Cleanup_CascadesArtifacts(t *testing.T) {
 		t.Errorf("Cleanup (indexed path) must cascade per removed session: %v", cascaded)
 	}
 }
+
+// ── P4/P6 child half: the result envelope carries cost + artifacts ───
+
+// The framed result envelope carries the final estimated cost (P6) and the
+// runner-scanned artifact refs (P4 — the registry the artifact_read surface
+// resolves against). Artifact entries travel in the odek.artifact-ref/v1
+// shape the parent validates fail-closed: id + size_bytes (the wire's
+// "id"/"bytes") plus the file:// uri.
+func TestSubagentResult_EnvelopeCarriesCostAndArtifacts(t *testing.T) {
+	dir := t.TempDir()
+	const content = "# Report\nfindings here"
+	writeArtifactFile(t, dir, "report.md", content)
+	refs, flags := scanArtifacts(dir, 1<<20)
+	if len(refs) != 1 || len(flags) != 0 {
+		t.Fatalf("scan = %d refs, flags %v; want 1/none", len(refs), flags)
+	}
+
+	res := subagentResult{Status: "success", Summary: "done", CostUSD: 0.42, Artifacts: refs}
+	raw, err := json.Marshal(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["cost_usd"] != 0.42 {
+		t.Errorf("cost_usd = %v, want 0.42 on the envelope", m["cost_usd"])
+	}
+	arts, ok := m["artifacts"].([]any)
+	if !ok || len(arts) != 1 {
+		t.Fatalf("artifacts = %v, want exactly 1 ref", m["artifacts"])
+	}
+	a := arts[0].(map[string]any)
+	if a["id"] != "report" {
+		t.Errorf("artifact id = %v, want report", a["id"])
+	}
+	if a["size_bytes"] != float64(len(content)) {
+		t.Errorf("artifact size_bytes = %v, want %d (runner-measured)", a["size_bytes"], len(content))
+	}
+	if a["schema"] != artifact.SchemaArtifactRef {
+		t.Errorf("artifact schema = %v, want %s (parent validates this shape)", a["schema"], artifact.SchemaArtifactRef)
+	}
+	if u, _ := a["uri"].(string); !strings.HasPrefix(u, "file://") {
+		t.Errorf("artifact uri = %v, want file:// prefix", a["uri"])
+	}
+}
+
+// An envelope with no cost (prices unconfigured) and no artifacts omits
+// both fields entirely — never a $0 cost or an empty artifacts array.
+func TestSubagentResult_EnvelopeOmitsCostAndArtifactsWhenEmpty(t *testing.T) {
+	raw, err := json.Marshal(subagentResult{Status: "success", Summary: "done"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(raw)
+	if strings.Contains(s, "cost_usd") {
+		t.Errorf("cost_usd must be omitted when unset: %s", s)
+	}
+	if strings.Contains(s, "artifacts") {
+		t.Errorf("artifacts must be omitted when the task staged nothing: %s", s)
+	}
+}
