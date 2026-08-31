@@ -873,11 +873,31 @@ func (e *Engine) trimContext(ctx context.Context, messages []llm.Message, toolDe
 	}
 	droppedGroups := 0
 	var droppedForDigest []llm.Message
+	// The original task is the first user message at/after the head. When
+	// a leading injection set ctxLeadDroppableFrom, headLen stops BEFORE
+	// the task — without this guard, pass 2 drops the task as the first
+	// standalone group, violating the documented protected-head invariant
+	// ("the first user message — the original task — is never dropped").
+	taskIdx := -1
+	if e.ctxLeadDroppableFrom > 0 {
+		for i := head; i < len(messages); i++ {
+			if messages[i].Role == "user" {
+				taskIdx = i
+				break
+			}
+		}
+	}
 	for totalTokens > budget {
 		if len(messages) <= head {
 			break // can't trim further — only the protected head remains
 		}
 		start := head
+		if start == taskIdx {
+			// The scan reached the original task: everything older has
+			// been dropped, the task itself is protected, and pass 2 drops
+			// strictly oldest-first — so prefix dropping ends here.
+			break
+		}
 		groupEnd := start + 1
 		if messages[start].Role == "assistant" && len(messages[start].ToolCalls) > 0 {
 			// Track which tools were called in dropped groups
@@ -902,6 +922,9 @@ func (e *Engine) trimContext(ctx context.Context, messages []llm.Message, toolDe
 
 		// Drop the entire group atomically
 		messages = append(messages[:start], messages[groupEnd:]...)
+		if taskIdx > start {
+			taskIdx -= groupEnd - start
+		}
 	}
 
 	// Rolling compaction: summarize the dropped groups into a digest system
@@ -1540,7 +1563,7 @@ func (e *Engine) budgetAllowsSideCall() bool {
 		return true
 	}
 	return e.budget.CheckRuntime() == nil &&
-		e.budget.CheckUsage(int64(e.TotalInputTokens), int64(e.TotalOutputTokens)) == nil
+		e.budget.CheckUsageWithCache(int64(e.TotalInputTokens), int64(e.TotalCacheReadTokens), int64(e.TotalCacheCreationTokens), int64(e.TotalOutputTokens)) == nil
 }
 
 // ── Loop ──────────────────────────────────────────────────────────────
@@ -1922,7 +1945,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		// after every LLM response, before the result is acted on. messages
 		// still ends in a safe state here (the assistant message for this
 		// response has not been appended yet).
-		if berr := e.budget.CheckUsage(int64(e.TotalInputTokens), int64(e.TotalOutputTokens)); berr != nil {
+		if berr := e.budget.CheckUsageWithCache(int64(e.TotalInputTokens), int64(e.TotalCacheReadTokens), int64(e.TotalCacheCreationTokens), int64(e.TotalOutputTokens)); berr != nil {
 			return e.budgetExceeded(ctx, messages, berr, i+1)
 		}
 

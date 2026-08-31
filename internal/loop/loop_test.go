@@ -1365,8 +1365,11 @@ func TestEngine_Run_CacheAccumulation_OpenAI(t *testing.T) {
 	if engine.TotalCacheCreationTokens != 0 {
 		t.Errorf("TotalCacheCreationTokens = %d, want 0", engine.TotalCacheCreationTokens)
 	}
-	if engine.TotalCacheReadTokens != 0 {
-		t.Errorf("TotalCacheReadTokens = %d, want 0", engine.TotalCacheReadTokens)
+	if engine.TotalCacheReadTokens != 150 {
+		// Contract change (cache-normalization sweep fix): OpenAI
+		// cached_tokens now populates the CacheReadTokens accumulator so
+		// budget enforcement (CheckUsageWithCache) counts it.
+		t.Errorf("TotalCacheReadTokens = %d, want 150", engine.TotalCacheReadTokens)
 	}
 }
 

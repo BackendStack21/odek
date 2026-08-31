@@ -212,6 +212,17 @@ func (c *Checker) CheckRuntime() *Error {
 // CheckUsage reports exhaustion of the token budgets and (when prices are
 // configured) the estimated-cost budget, given the cumulative token totals.
 // Nil-safe.
+// CheckUsageWithCache is CheckUsage with provider cache-token totals counted
+// as input. Cache reads/writes are real prompt tokens with real cost — on
+// Anthropic they are billed on top of input_tokens — and a cache-heavy run
+// could previously blow max_input_tokens and max_cost_usd without ever
+// tripping the checker. CallResult.InputTokens is normalized to the
+// uncached portion (see internal/llm applyUsage), so callers sum input +
+// cache through this entry point instead of CheckUsage.
+func (c *Checker) CheckUsageWithCache(inputTokens, cacheReadTokens, cacheCreationTokens, outputTokens int64) *Error {
+	return c.CheckUsage(inputTokens+cacheReadTokens+cacheCreationTokens, outputTokens)
+}
+
 func (c *Checker) CheckUsage(inputTokens, outputTokens int64) *Error {
 	if c == nil {
 		return nil
