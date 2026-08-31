@@ -401,7 +401,7 @@ Operator-gated memory management (the REST face of `odek memory`):
 
 ### `GET /api/skills`
 
-Skill listing with provenance: `name`, `description`, `auto_load`, `usage_count`, `source` (directory), `needs_review`, `untrusted`. Bodies are omitted (size and injection hygiene — load them via the agent's `skill_load`). Skills pinned `needs_review` are excluded from trigger matching until `odek skill promote`.
+Skill listing with provenance: `name`, `description`, `auto_load`, `usage_count`, `source` (directory), `needs_review`, `untrusted`. Bodies are omitted (size and injection hygiene — load them via the agent's `skill_load`). Skills pinned `needs_review` are excluded from trigger matching and from `skill_load` (agent-side body reads) until `odek skill promote`.
 
 ### `GET /api/tools`
 

@@ -475,7 +475,11 @@ func WriteSkill(dir string, s Skill) error {
 func MarshalSkill(s Skill) string {
 	var b strings.Builder
 	b.WriteString("---\n")
-	fmt.Fprintf(&b, "name: %s\n", s.Name)
+	// The name goes through the same yamlSafeScalar quoting as the other
+	// scalars: an unquoted YAML-significant name (leading dash/colon, ": ",
+	// trailing colon) would corrupt frontmatter on reload. Quoting is the
+	// serializer's own guarantee, independent of ValidateSkillName.
+	fmt.Fprintf(&b, "name: %s\n", yamlSafeScalar(s.Name))
 	if d := yamlSafeScalar(s.Description); d != "" {
 		fmt.Fprintf(&b, "description: %s\n", d)
 	}
@@ -572,8 +576,10 @@ func scalarNeedsQuoting(s string) bool {
 	if strings.ContainsAny(s, `"'`) {
 		return true
 	}
-	// Leading YAML syntax characters would change structure or meaning.
-	if strings.ContainsAny(s[:1], "#-?&*!|>%@`{}[],") {
+	// Leading YAML syntax characters would change structure or meaning
+	// (":" included — a leading colon reads as a mapping indicator), and
+	// leading quote characters would break the quote-stripping parser.
+	if strings.ContainsAny(s[:1], "#-?&*!|>%@`{}[],:\"'") {
 		return true
 	}
 	return false

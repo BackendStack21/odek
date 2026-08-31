@@ -207,7 +207,7 @@ Promotion is **human-gated and never exposed as an agent tool** — the `odek me
 
 ### Skill provenance gate
 
-`internal/skills` carries the same provenance model. Skills from distrusted sources — loaded from the project-local `./.odek/skills/` directory, flagged by the injection guard, or carrying `untrusted` / `needs_review` provenance in their SKILL.md frontmatter — are pinned with `Provenance.NeedsReview=true` (project-dir skills also record `"project"` in `Sources`). The skill loader pins those skills to the Lazy set regardless of their `auto_load` flag, and `NeedsReview` skills are additionally excluded from the lazy trigger matchers, so a flagged or tainted skill cannot be injected into context on a single keyword match — it stays visible in listings until promoted.
+`internal/skills` carries the same provenance model. Skills from distrusted sources — loaded from the project-local `./.odek/skills/` directory, flagged by the injection guard, or carrying `untrusted` / `needs_review` provenance in their SKILL.md frontmatter — are pinned with `Provenance.NeedsReview=true` (project-dir skills also record `"project"` in `Sources`). The skill loader pins those skills to the Lazy set regardless of their `auto_load` flag, and `NeedsReview` skills are additionally excluded from the lazy trigger matchers and refused by the agent-facing `skill_load` tool, so a flagged or tainted skill cannot reach the agent's context on a keyword match or an on-demand body read — it stays visible in metadata listings until promoted.
 
 Skills scanned from the project-local `./.odek/skills/` directory are distrusted the same way `./odek.json` is: a cloned repository can ship arbitrary `SKILL.md` files, so they are forced to `NeedsReview` (with `"project"` recorded in `Sources`) even when they declare `auto_load: true`. Operator-controlled locations (`~/.odek/skills`, configured extra dirs) are unaffected.
 
@@ -619,7 +619,7 @@ Defaults: `FrictionThreshold=3`, `FrictionWindow=60s`. To opt out (TTYApprover o
 | Session re-surfaces content from a previously-tainted session | `session_search` output wrapped + audited |
 | Memory replays a previously-injected episode forever | Taint gate filters recall and `memory view` |
 | Agent plants a pipe-to-shell "fact" via `memory add` | `FactLooksUnsafe` rejects it |
-| Imported/project skill auto-activates on next session | Provenance gate pins NeedsReview skills out of trigger matching |
+| Imported/project skill auto-activates on next session | Provenance gate pins NeedsReview skills out of trigger matching and `skill_load` |
 | Hostile SKILL.md shipped in a cloned repo | Project-dir skills forced `NeedsReview`; promotion requires explicit operator action |
 | Browser drive-by on localhost web UI | Token + origin allowlist + Host validation |
 | Local process brute-forces session IDs to read transcripts | 128-bit IDs + session-scoped tokens + per-IP rate limiting |

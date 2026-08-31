@@ -216,9 +216,11 @@ func (sm *SkillManager) reloadLocked() {
 	sm.applyGuardToSkills()
 
 	// Build trigger matchers from the lazy skills eligible for injection.
-	// NeedsReview skills stay in ScanResult.Lazy (listing and promotion
-	// still show them) but are excluded here so a flagged or tainted skill
-	// cannot be trigger-injected into context until explicitly promoted.
+	// NeedsReview skills stay in ScanResult.Lazy (metadata listing and
+	// promotion still show them) but are excluded here so a flagged or
+	// tainted skill cannot be trigger-injected into context until
+	// explicitly promoted — skill_load likewise refuses to serve their
+	// bodies on demand.
 	matchable := make([]Skill, 0, len(sm.Result.Lazy))
 	for _, s := range sm.Result.Lazy {
 		if s.Provenance.NeedsReview {
@@ -317,6 +319,8 @@ func (t *SkillLoadTool) Name() string { return "skill_load" }
 func (t *SkillLoadTool) Description() string {
 	return `Load the full content of a skill by name. Returns the skill's complete text including frontmatter and body. Use this when you need detailed instructions for a specific domain.
 
+Skills pinned NeedsReview (pending human review) are refused — their bodies stay withheld until promoted via ` + "`odek skill promote`" + `.
+
 Example: {"name": "docker-build"}`
 }
 
@@ -347,9 +351,17 @@ func (t *SkillLoadTool) Call(args string) (string, error) {
 	// AllSkills snapshots the skill list under the manager's read lock —
 	// RecordUsage mutates these entries concurrently under max_tool_parallel.
 	for _, s := range t.Manager.AllSkills() {
-		if s.Name == input.Name {
-			return FormatAsContext(s), nil
+		if s.Name != input.Name {
+			continue
 		}
+		// Provenance gate: NeedsReview skills stay metadata-visible in
+		// listings, but their bodies are withheld from the agent until a
+		// human promotes them — an on-demand body read must not bypass
+		// the same gate that keeps them out of trigger matching.
+		if s.Provenance.NeedsReview {
+			return "", fmt.Errorf("skill_load: skill %q is pinned NeedsReview and cannot be loaded until a human reviews and promotes it (odek skill promote %s)", input.Name, input.Name)
+		}
+		return FormatAsContext(s), nil
 	}
 
 	return "", fmt.Errorf("skill_load: skill %q not found", input.Name)
@@ -366,6 +378,8 @@ func (t *SkillListTool) Name() string { return "skill_list" }
 
 func (t *SkillListTool) Description() string {
 	return `List all available skills with their name, description, quality, and trigger keywords. Optionally filter by topic keyword.
+
+Skills pinned NeedsReview are listed for visibility only — their bodies cannot be loaded until promoted via ` + "`odek skill promote`" + `.
 
 Example (all): {}
 Example (filtered): {"filter": "docker"}`
@@ -402,6 +416,9 @@ func (t *SkillListTool) Call(args string) (string, error) {
 		fmt.Fprintf(&b, "  %-20s [%s]  %s\n", s.Name, s.Quality, s.Description)
 		if len(s.Trigger.TopicKeywords) > 0 {
 			fmt.Fprintf(&b, "  %-20s  triggers on: %s\n", "", strings.Join(s.Trigger.TopicKeywords, ", "))
+		}
+		if s.Provenance.NeedsReview {
+			fmt.Fprintf(&b, "  %-20s  [needs review] body withheld until promoted (human runs: odek skill promote %s)\n", "", s.Name)
 		}
 		b.WriteString("\n")
 	}

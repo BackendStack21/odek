@@ -155,6 +155,27 @@ func ValidateSkillName(name string) error {
 	if strings.HasPrefix(name, ".") {
 		return fmt.Errorf("skill name %q starts with a dot (hidden)", name)
 	}
+	// Control characters are rejected outright: a newline would inject
+	// frontmatter lines when the name is serialized into SKILL.md (e.g.
+	// "evil\ninjected: true" would materialize a fake key on reload), and
+	// other controls are hostile to directory names and terminals.
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("skill name %q contains control characters", name)
+		}
+	}
+	// The name must survive yamlSafeScalar's whitespace collapse intact:
+	// leading/trailing space or repeated internal spaces would silently
+	// change on the MarshalSkill → parseSkillContent round-trip.
+	if strings.Join(strings.Fields(name), " ") != name {
+		return fmt.Errorf("skill name %q contains irregular whitespace", name)
+	}
+	// Leading YAML syntax characters (mirroring scalarNeedsQuoting) make
+	// the serialized name ambiguous, and a leading dash also collides with
+	// CLI flag parsing (e.g. `odek skill promote -x`).
+	if strings.ContainsAny(name[:1], "-?:,[]{}#&*!|>'\"%@`") {
+		return fmt.Errorf("skill name %q starts with YAML-special character %q", name, name[:1])
+	}
 	return nil
 }
 
