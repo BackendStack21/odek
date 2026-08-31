@@ -1283,7 +1283,17 @@ func (e *Engine) refreshDigest(ctx context.Context, messages []llm.Message, drop
 	newMsgs = append(newMsgs, messages[:head]...)
 	newMsgs = append(newMsgs, digestMsg)
 	newMsgs = append(newMsgs, messages[head:]...)
-	return newMsgs
+	messages = newMsgs
+	// The digest message must stay protected even when injected context
+	// already occupies the run at/after the insertion point — same boundary
+	// shift as the memory slot and the plan message. Without this, headLen
+	// stops at the droppable boundary (== head), the next trim drops the
+	// freshly inserted digest, and buildTrimWarning keeps advertising a
+	// summary that no longer exists.
+	if e.ctxLeadDroppableFrom >= 0 && e.ctxLeadDroppableFrom <= head {
+		e.ctxLeadDroppableFrom = head + 1
+	}
+	return messages
 }
 
 // summarizeDropped builds the summarizer input from the dropped messages and
@@ -2215,7 +2225,14 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 
 		// Phase 2: execute tools in parallel (bounded by semaphore)
 		type execResult struct {
-			output     string
+			output string
+			// errored records the real execution outcome, set where the
+			// error is actually known (denied batch, missing tool, Call
+			// error, panic). Downstream classification (runtime events,
+			// failure recovery) must use this instead of sniffing output
+			// text: a successful read/grep result can legitimately
+			// contain the literal `"error":` as data.
+			errored    bool
 			durationMs int64
 		}
 		parallel := e.MaxToolParallel
@@ -2227,7 +2244,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 
 		if batchDenied {
 			for i := range results {
-				results[i].output = "error: batch approval denied"
+				results[i] = execResult{output: "error: batch approval denied", errored: true}
 			}
 		} else {
 			for i, tc := range result.ToolCalls {
@@ -2237,8 +2254,13 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 
 					callStart := time.Now()
 					t := e.registry.Get(tcRef.Function.Name)
+					// errored is the real outcome: true for the not-found
+					// default below, flipped off only when a tool actually
+					// runs, and back on for Call errors and panics.
+					errored := true
 					output := fmt.Sprintf("error: tool %q not found", tcRef.Function.Name)
 					if t != nil {
+						errored = false
 						// Propagate agent context to tools that support it
 						// (e.g. delegate_tasks kills sub-agents on parent cancel).
 						if ctxTool, ok := t.(interface{ SetContext(context.Context) }); ok {
@@ -2259,17 +2281,19 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 							defer func() {
 								if r := recover(); r != nil {
 									output = fmt.Sprintf("error: tool %q panicked: %v", tcRef.Function.Name, r)
+									errored = true
 								}
 							}()
 							res, err := t.Call(tcRef.Function.Arguments)
 							if err != nil {
 								output = fmt.Sprintf("error: %s", err.Error())
+								errored = true
 							} else {
 								output = redact.RedactSecrets(res)
 							}
 						}()
 					}
-					results[idx] = execResult{output: output, durationMs: time.Since(callStart).Milliseconds()}
+					results[idx] = execResult{output: output, errored: errored, durationMs: time.Since(callStart).Milliseconds()}
 				}(i, tc)
 			}
 			// Drain the semaphore — wait for all goroutines to finish.
@@ -2309,11 +2333,12 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 			}
 
 			// Structured runtime event for this call. Failure classification
-			// mirrors the error-recovery heuristic below. Raw results are
-			// never emitted — size and artifact count only.
+			// uses the real execution outcome recorded in Phase 2 — output
+			// text is data and may legitimately contain `"error":` (error
+			// logs, grep matches) without the call having failed. Raw results
+			// are never emitted — size and artifact count only.
 			if e.eventHandler != nil {
-				failed := strings.HasPrefix(results[i].output, "error:") ||
-					strings.Contains(results[i].output, "\"error\":")
+				failed := results[i].errored
 				ev := events.Event{
 					Iteration: iterNum,
 					Tool:      tc.Function.Name,
@@ -2371,16 +2396,20 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		// system message so the LLM picks a different approach instead
 		// of retrying the same failing tool.
 		const (
-			errThreshold   = 3            // consecutive errors before intervention
-			errPrefixRead  = "\"error\":" // JSON error indicator
-			stallThreshold = 3            // consecutive identical successful calls before intervention
+			errThreshold   = 3 // consecutive errors before intervention
+			stallThreshold = 3 // consecutive identical successful calls before intervention
 		)
 		var corrections []string
 		for idx, tc := range result.ToolCalls {
 			raw := results[idx].output
 			toolName := tc.Function.Name
-			isErr := strings.Contains(raw, errPrefixRead) ||
-				strings.HasPrefix(raw, "error:")
+			// The real execution outcome recorded in Phase 2 — never an
+			// output-text scan. Successful tool results legitimately contain
+			// JSON error fields (reading error logs, searching code that
+			// matches `"error":`); counting those as failures produced false
+			// keep-failing hints and false tool_recovery signals after 3
+			// such results.
+			isErr := results[idx].errored
 
 			if isErr {
 				e.maxConsecutiveToolErrors[toolName]++
