@@ -364,6 +364,27 @@ func (t *delegateTasksTool) runTask(taskIdx int, taskID, goal, taskContext, guid
 	ctx, cancel := context.WithTimeout(parentCtx, t.timeout)
 	defer cancel()
 
+	// Share-mode budget passdown (M1.5): snapshot the parent's remaining
+	// budget BEFORE any per-task resource is allocated. An exhausted parent
+	// dimension leaves the child min(operator cap, 0) = 0 of headroom, so
+	// the task fails fast with the typed budget error instead of spawning a
+	// child that cannot do a single unit of work (share-mode exhaustion
+	// fix). Live headroom rides the task file via the exhaustion-aware
+	// flags; an unconfigured parent dimension stays unlimited.
+	var taskBudgetBlock *taskBudget
+	if t.budgetInherit == config.BudgetInheritShare {
+		t.budgetMu.Lock()
+		view := t.budgetView
+		t.budgetMu.Unlock()
+		if view != nil {
+			taskBudgetBlock = taskBudgetFromSnapshot(view.BudgetSnapshot())
+			if berr := exhaustedTaskBudget(taskBudgetBlock); berr != nil {
+				return fmt.Sprintf(`{"status":"error","error":%q,"summary":"","files_changed":null,"iterations":0,"tokens_used":0}`,
+					fmt.Sprintf("subagent not spawned: %v", berr))
+			}
+		}
+	}
+
 	// Write task to temp file (avoids CLI arg length limits)
 	taskFile, err := os.CreateTemp("", "odek-task-*.json")
 	if err != nil {
@@ -380,16 +401,8 @@ func (t *delegateTasksTool) runTask(taskIdx int, taskID, goal, taskContext, guid
 	// the promptCancels precedent). Removed on every exit path.
 	defer registerSubagentCancel(taskID, cancel)()
 
-	task := newTaskEnvelope(taskID, goal, taskContext, guidance, trustLevel, maxRisk, profile, nil, t.selfTrust)
+	task := newTaskEnvelope(taskID, goal, taskContext, guidance, trustLevel, maxRisk, profile, taskBudgetBlock, t.selfTrust)
 	task.ArtifactRoot = artifactDir
-	if t.budgetInherit == config.BudgetInheritShare {
-		t.budgetMu.Lock()
-		view := t.budgetView
-		t.budgetMu.Unlock()
-		if view != nil {
-			task.Budget = taskBudgetFromSnapshot(view.BudgetSnapshot())
-		}
-	}
 	if err := json.NewEncoder(taskFile).Encode(task); err != nil {
 		taskFile.Close()
 		os.Remove(taskPath)
@@ -779,15 +792,22 @@ func progressLimitExceeded(err error) bool {
 var _ odek.Tool = (*delegateTasksTool)(nil)
 
 // taskBudgetFromSnapshot maps a budget snapshot to the task-file budget
-// block (M1.5 passdown); nil when no limit headroom is configured — there
-// is nothing to pass down, so the child keeps its operator caps.
+// block (M1.5 passdown); nil when no limit is configured AND none is
+// exhausted — there is nothing to pass down, so the child keeps its operator
+// caps. Exhausted dimensions ride the *_exhausted flags: a remaining of 0 is
+// wire-ambiguous with "unconfigured", and the child clamps those dimensions
+// to a hard cap of 0 (exhaustedTaskBudget then fails the spawn).
 func taskBudgetFromSnapshot(s budget.Snapshot) *taskBudget {
 	tb := &taskBudget{
-		MaxRuntimeSeconds: s.RemainingRuntimeSeconds,
-		MaxToolCalls:      s.RemainingToolCalls,
-		MaxCostUSD:        s.RemainingCostUSD,
+		MaxRuntimeSeconds:  s.RemainingRuntimeSeconds,
+		MaxToolCalls:       s.RemainingToolCalls,
+		MaxCostUSD:         s.RemainingCostUSD,
+		RuntimeExhausted:   s.RuntimeExhausted,
+		ToolCallsExhausted: s.ToolCallsExhausted,
+		CostExhausted:      s.CostExhausted,
 	}
-	if tb.MaxRuntimeSeconds <= 0 && tb.MaxToolCalls <= 0 && tb.MaxCostUSD <= 0 {
+	if tb.MaxRuntimeSeconds <= 0 && tb.MaxToolCalls <= 0 && tb.MaxCostUSD <= 0 &&
+		!tb.RuntimeExhausted && !tb.ToolCallsExhausted && !tb.CostExhausted {
 		return nil
 	}
 	return tb

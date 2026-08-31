@@ -126,20 +126,40 @@ func neutraliseSubagentInputLiterals(s string) string {
 // taskBudget carries the parent's remaining budget into the child when
 // subagent.budget_inherit is "share" (SUB_AGENTS_IMPROVEMENTS.md M1.5).
 // The child enforces min(operator limits, these values) and announces the
-// effective numbers in its lifespan block.
+// effective numbers in its lifespan block. An EXHAUSTED parent dimension is
+// a hard cap of 0, not "unlimited": remaining values of 0 are
+// wire-ambiguous with an unconfigured limit, so the parent also stamps the
+// explicit *_exhausted flags (share-mode exhaustion fix). All fields are
+// optional — old children ignore the flags (version skew keeps the old
+// clamping behavior) and old parents simply never emit them.
 type taskBudget struct {
-	MaxRuntimeSeconds int64   `json:"max_runtime_seconds,omitempty"`
-	MaxToolCalls      int64   `json:"max_tool_calls,omitempty"`
-	MaxCostUSD        float64 `json:"max_cost_usd,omitempty"`
+	MaxRuntimeSeconds   int64   `json:"max_runtime_seconds,omitempty"`
+	MaxToolCalls        int64   `json:"max_tool_calls,omitempty"`
+	MaxCostUSD          float64 `json:"max_cost_usd,omitempty"`
+	RuntimeExhausted    bool    `json:"runtime_exhausted,omitempty"`
+	ToolCallsExhausted  bool    `json:"tool_calls_exhausted,omitempty"`
+	CostExhausted       bool    `json:"cost_exhausted,omitempty"`
 }
 
 // clampLimits narrows the operator limits by the parent-supplied task
 // budget: for each limit the child may spend at most min(operator cap,
 // parent remaining). A zero operator cap means unbounded on that dimension,
-// so the task budget becomes the cap. Prices stay operator-owned.
+// so the task budget becomes the cap. An EXHAUSTED parent dimension is a
+// hard cap of 0 (min(cap, 0)) — the exhaustedTaskBudget spawn gate then
+// refuses to start a child with no admissible work. Prices stay
+// operator-owned.
 func clampLimits(op budget.Limits, tb *taskBudget) budget.Limits {
 	if tb == nil {
 		return op
+	}
+	if tb.RuntimeExhausted {
+		op.MaxRuntimeSeconds = 0
+	}
+	if tb.ToolCallsExhausted {
+		op.MaxToolCalls = 0
+	}
+	if tb.CostExhausted {
+		op.MaxCostUSD = 0
 	}
 	if tb.MaxRuntimeSeconds > 0 && (op.MaxRuntimeSeconds <= 0 || tb.MaxRuntimeSeconds < op.MaxRuntimeSeconds) {
 		op.MaxRuntimeSeconds = tb.MaxRuntimeSeconds
@@ -151,6 +171,28 @@ func clampLimits(op budget.Limits, tb *taskBudget) budget.Limits {
 		op.MaxCostUSD = tb.MaxCostUSD
 	}
 	return op
+}
+
+// exhaustedTaskBudget is the share-mode spawn gate: it reports the FIRST
+// exhausted parent-budget dimension as a typed budget.Error, or nil when
+// the spawn may proceed. A parent whose limit is fully consumed leaves the
+// child min(operator cap, 0) = 0 of headroom (see clampLimits), so the
+// spawn fails fast — with the typed error dispatch maps to exit code 4 —
+// instead of the child starting unbounded and discovering its zero budget
+// mid-run.
+func exhaustedTaskBudget(tb *taskBudget) *budget.Error {
+	if tb == nil {
+		return nil
+	}
+	switch {
+	case tb.RuntimeExhausted:
+		return &budget.Error{Limit: budget.LimitRuntime}
+	case tb.ToolCallsExhausted:
+		return &budget.Error{Limit: budget.LimitToolCalls}
+	case tb.CostExhausted:
+		return &budget.Error{Limit: budget.LimitCostUSD}
+	}
+	return nil
 }
 
 // buildLifespanBlock assembles the Runtime Constraints section appended to
@@ -610,6 +652,13 @@ func subagentCmd(args []string) error {
 	// parent wrote its remaining budget into the task file; the child
 	// spends at most min(operator limits, parent remaining).
 	resolved.Limits = clampLimits(resolved.Limits, taskBudgetBlock)
+	// Share-mode exhaustion: a parent budget exhausted before the spawn
+	// leaves this child a hard cap of 0 on that dimension — fail fast with
+	// the typed budget error (subagentExit maps it to exit code 4) instead
+	// of starting a child that cannot do a single unit of work.
+	if berr := exhaustedTaskBudget(taskBudgetBlock); berr != nil {
+		return fmt.Errorf("parent budget exhausted before start: %w", berr)
+	}
 
 	// The sub-agent system prompt is a FIXED constant — a trust boundary the
 	// parent cannot write to. Parent-supplied goal/guidance/context are
