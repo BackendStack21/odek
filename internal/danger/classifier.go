@@ -1826,17 +1826,22 @@ func isKnownCommandName(name string) bool {
 		privilegedWrappers[name]
 }
 
+// rawForkBombRe matches the fork-bomb SHAPE: a `:` command at word-start
+// position opening a brace group closed by `}:` — the canonical
+// `:(){ :|:& };:` and whitespace variants like `: () { : | : & } ; :`.
+// Substring presence of `:{` and `}:` alone is NOT sufficient: innocent
+// strings like `echo "{a}:{b}"` contain both and were Blocked even in
+// godmode.
+var rawForkBombRe = regexp.MustCompile(`(^|[;&|\s]):\s*(\(\s*\))?\s*\{[^}]*\}\s*;?\s*:`)
+
 // isRawBlocked checks the raw command string for patterns that are
 // blocked regardless of tokenization artifacts.
 func isRawBlocked(cmd string) bool {
-	// Fork bomb
+	// Fork bomb (canonical form)
 	if cmd == ":(){ :|:& };:" {
 		return true
 	}
-	if strings.Contains(cmd, ":{") && strings.Contains(cmd, "}:") {
-		return true
-	}
-	return false
+	return rawForkBombRe.MatchString(cmd)
 }
 
 // splitSegments splits token sequences on command separators.
@@ -3117,6 +3122,25 @@ func isCodeExecution(first string, tokens []string) bool {
 		return true
 	}
 
+	// trap registers a payload the same shell executes on a signal or exit
+	// (`trap "<payload>" EXIT`). Only query forms (-l/-p/--list/--print)
+	// are safe; anything carrying a payload is code execution. trap was
+	// previously listed in safeCommands — a prompt-injected payload could
+	// ride an auto-allowed Safe classification.
+	if first == "trap" && !trapIsQuery(tokens) {
+		return true
+	}
+
+	// bun executes inline code via -e/--eval. bun is absent from
+	// codeEvalPrefixes (it is a package manager first), so `bun -e` fell
+	// through isPackageManagerRun — which skips flags — into the Safe
+	// install fallback while the equivalent `node -e` classifies as code
+	// execution. (Payloads containing `/` or `.` were caught by the
+	// package-run path heuristic; bare-code payloads were not.)
+	if first == "bun" && hasAny(tokens, "-e", "--eval") {
+		return true
+	}
+
 	// Package-manager subcommands that run arbitrary project-defined scripts
 	// (npm/yarn/pnpm/bun run|start|test|exec, cargo run|build|test|bench, …).
 	if isPackageManagerRun(first, tokens) {
@@ -3173,6 +3197,21 @@ func isCodeExecution(first string, tokens []string) bool {
 var interpreterInfoFlags = map[string]bool{
 	"--version": true, "-V": true, "-v": true,
 	"--help": true, "-h": true, "--help-all": true,
+}
+
+// trapIsQuery reports whether a trap invocation only queries the current
+// handler table (bare `trap`, -l/-p/--list/--print) rather than registering
+// a payload.
+func trapIsQuery(tokens []string) bool {
+	for _, tok := range tokens[1:] {
+		switch tok {
+		case "-l", "-p", "--list", "--print":
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // interpreterRunsCode reports whether a script-interpreter invocation will run
