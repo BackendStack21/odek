@@ -1339,7 +1339,8 @@ const globalConfigTemplate = `{
   "subagent": {
     "max_concurrency": 3,
     "timeout_seconds": 1800,
-    "max_iterations": 15
+    "max_iterations": 15,
+    "default_profile": "default"
   },
   "limits": {
     "max_runtime_seconds": 0,

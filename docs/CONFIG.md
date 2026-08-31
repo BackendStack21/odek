@@ -729,6 +729,7 @@ The `subagent` section controls task decomposition and parallel sub-agent execut
 | `max_depth` | 2 | Delegation nesting cap via `ODEK_SUBAGENT_DEPTH`; clamped to 8 |
 | `announce_budget` | true | Sub-agents are told their budget at spawn and warned at 50/75/90% usage |
 | `budget_inherit` | `"operator"` | `"share"` = a sub-agent gets min(operator limits, parent's remaining budget) |
+| `default_profile` | `"default"` (built-in) | Capability profile applied when a delegated task selects none: a defined profile name, or `"none"` to disable the built-in envelope (see [Capability profiles](#capability-profiles)) |
 
 This section is optional. Omitted fields inherit the defaults above.
 
@@ -742,10 +743,12 @@ The top-level `profiles` section defines named permission envelopes. When a task
 {
   "profiles": {
     "research": {
+      "description": "Read-only web research — fetches pages, never edits or runs anything",
       "max_risk": "safe",
       "tools": { "disabled": ["write_file", "patch", "batch_patch", "shell"] }
     },
     "builder": {
+      "description": "Write and verify code changes with project build/test commands allowlisted",
       "max_risk": "local_write",
       "allowlist": ["go test ./...", "go build ./..."]
     }
@@ -755,9 +758,19 @@ The top-level `profiles` section defines named permission envelopes. When a task
 
 | Field | Description |
 |-------|-------------|
+| `description` | Short summary of what the profile is FOR — surfaced by the `list_subagent_profiles` tool so the delegating model can pick by intent, not by guessing at names |
 | `max_risk` | Clamps every higher-ranked class to `deny` for profiled sub-agents |
 | `allowlist` | **Replaces** the global allowlist for profiled sub-agents |
 | `tools` | **Replaces** the global `tools` enabled/disabled filter for profiled sub-agents |
+
+### Built-in default profile and `subagent.default_profile`
+
+A built-in profile named **`default`** (`max_risk: "local_write"`) is always materialized unless you define your own profile with that name (yours wins) or set `subagent.default_profile: "none"`. **This is the envelope sub-agents run under when no profile is selected** — `delegate_tasks` tasks without a `profile` field and `odek subagent` runs without `--profile` are capped at `local_write`: no system writes, code execution, installs, network egress, or destructive operations.
+
+- **Precedence:** `--profile` flag > task-file `profile` > `subagent.default_profile` (built-in `default` unless overridden).
+- **Operator sovereignty:** `"none"` is honored only from your config — a task file or flag can never strip the operator's envelope; a task cannot opt out of it, only select a different defined profile.
+- **Behavior change vs. earlier releases:** trusted sub-agents were previously uncapped; they are now clamped to `local_write` too. Tasks needing `code_execution`/`network_egress` must select an explicit profile (e.g. `test-runner`, `researcher`).
+- **Discovery:** the agent invokes the built-in `list_subagent_profiles` tool to see every available profile — name, `description`, `max_risk`, tool filters, and which one is the effective default — before picking one for `delegate_tasks`.
 
 ### Starter set: [`profiles.template.json`](../profiles.template.json)
 
@@ -779,7 +792,7 @@ Rules:
 
 - **Operator-authored only.** A `profiles` section in project-level `./odek.json` is ignored with a warning — a cloned repo must not author its own permission envelope.
 - **Override, not escalation.** The non-interactive deny and the trust lockdown are applied *after* the profile and cannot be lifted by selecting one. An untrusted task stays untrusted under any profile.
-- **Fail closed.** Selecting an unknown profile name fails the task (validated by `delegate_tasks` before spawn and again by the sub-agent itself); profiles with an invalid `max_risk` are dropped at load time with a warning.
+- **Fail closed.** Selecting an unknown profile name fails the task (validated by `delegate_tasks` before spawn and again by the sub-agent itself); profiles with an invalid `max_risk` are dropped at load time with a warning. A broken `subagent.default_profile` (undefined name) fails the sub-agent at spawn — loudly, not silently bare.
 
 
 ## MCP server configuration

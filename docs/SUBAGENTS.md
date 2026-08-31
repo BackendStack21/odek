@@ -318,6 +318,15 @@ not escalation. A curated starter set of 21 task profiles (builders,
 reviewers, judges, researchers, orchestrators, …) ships in
 [`profiles.template.json`](../profiles.template.json).
 
+When a task selects **no** profile, the operator's default envelope applies:
+a built-in `default` profile (`max_risk: "local_write"`) unless overridden via
+`subagent.default_profile` (a defined profile name, or `"none"` to disable).
+The precedence chain is `--profile` flag > task-file profile > default
+envelope, and `"none"` is honored only from operator config — a delegating
+parent can narrow its choice but never strip the operator's envelope. The
+parent model discovers available profiles (including descriptions and the
+effective default) via the built-in `list_subagent_profiles` tool.
+
 A profile may be selected by the operator's direct `odek subagent --profile`
 flag or by the parent via the task file (`delegate_tasks`'s `profile`
 field); the flag outranks the task file. Unknown names fail the task twice

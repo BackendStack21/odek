@@ -233,7 +233,7 @@ Plain `odek skill promote my-skill` refuses to clear `NeedsReview` when `Untrust
 
 - `trust_level: "untrusted"` — the goal / guidance / context strings may contain attacker-controllable text. A missing `trust_level` is treated as `untrusted`.
 - `max_risk: "<class>"` — the highest risk class the sub-agent may execute.
-- `profile: "<name>"` — select an operator-defined capability profile; its settings override the corresponding operator permissions for this sub-agent. See [Capability profiles](#capability-profiles).
+- `profile: "<name>"` — select an operator-defined capability profile; its settings override the corresponding operator permissions for this sub-agent. When omitted, the **built-in default envelope** applies (see [Capability profiles](#capability-profiles)).
 
 The sub-agent process reads both at startup. `applySubagentTrust` clamps its `DangerousConfig`, which is then passed into the agent engine so the batch gate and individual tool checks enforce the cap:
 
@@ -269,7 +269,9 @@ Capability profiles solve a gap the binary trust model leaves open: `untrusted` 
 }
 ```
 
-A task selects a profile via `delegate_tasks`' `profile` field or `odek subagent --profile research`. Unknown names fail the task; selection is the parent model's choice per task.
+A task selects a profile via `delegate_tasks`' `profile` field or `odek subagent --profile research`. Unknown names fail the task; selection is the parent model's choice per task — informed by the built-in `list_subagent_profiles` tool, which renders every available profile (name, description, `max_risk`, tool filters, the effective default) straight from the resolved operator config.
+
+**Default envelope.** A built-in profile named `default` (`max_risk: "local_write"`) is materialized at config resolution unless the operator defines their own profile with that name (theirs wins) or opts out via `subagent.default_profile: "none"`. It is the envelope that applies when a task selects nothing: precedence is `--profile` flag > task-file `profile` > `subagent.default_profile`. Two hardening properties: the built-in cap also binds **trusted** sub-agents (previously uncapped — tasks needing `code_execution`/`network_egress` must select an explicit profile), and `"none"` is honored only from the operator's config — a task file or flag can never strip the operator's envelope; a task can only select a different defined profile. A broken `subagent.default_profile` (undefined name) fails the sub-agent at spawn instead of silently running bare.
 
 **Override semantics — the profile replaces, it does not merge.** Per operator direction, a selected profile overrides the corresponding permissions from config or env:
 
@@ -286,11 +288,11 @@ The override order inside a sub-agent is: operator config → **profile** (if se
 - **Sub-agents never prompt.** `non_interactive: deny` is forced for every sub-agent after profile application. A profile cannot re-enable TTY approval prompts; the operator `allowlist` (in the profile, if selected) remains the only path to prompt-class operations.
 - **Trust is non-increasing downward.** The child runs at `min(parent_trust, trust_level)`; the untrusted lockdown (deny `destructive`, `code_execution`, `install`, `system_write`, `persistence`, `unread_exec`, `network_egress`, `unknown`, `blocked`) is applied after the profile. An untrusted task stays untrusted under any profile — selecting `"profile": "builder"` with `max_risk: "system_write"` still denies network egress and installs to an untrusted sub-agent, because the provenance lockdown wins over the permission envelope.
 
-Pinned by `cmd/odek/subagent_profiles_test.go` (override/clamp semantics, allowlist-only no-clamp, trust-lockdown-after-profile ordering) and `internal/config` (validation, project-config strip).
+Pinned by `cmd/odek/subagent_profiles_test.go` (override/clamp semantics, allowlist-only no-clamp, trust-lockdown-after-profile ordering, built-in-default selectable, broken-default fail-closed, "none" opt-out, explicit-task-profile precedence, trusted-child clamp) and `internal/config` (validation, project-config strip, built-in injection and override, project `default_profile` rejection).
 
-**Fail-closed behaviors.** An unknown profile name fails the task (`unknown profile "x" …`) instead of silently running unprofiled. A profile with an invalid `max_risk` value is **dropped at load time** with a stderr warning — a typo must not silently yield an unclamped envelope. An empty `max_risk` expresses no cap: an allowlist-only profile leaves class policy untouched. With no profiles defined, selection fails and behavior is exactly as before this feature.
+**Fail-closed behaviors.** An unknown profile name fails the task (`unknown profile "x" …`) instead of silently running unprofiled. A profile with an invalid `max_risk` value is **dropped at load time** with a stderr warning — a typo must not silently yield an unclamped envelope. An empty `max_risk` expresses no cap: an allowlist-only profile leaves class policy untouched. The built-in `default` profile always exists (unless disabled or overridden), so unprofiled tasks still run under the operator's default envelope; only `subagent.default_profile: "none"` removes it.
 
-**Residual risk (be aware).** Profile *selection* is parent-declared: a prompt-injected parent can always pick the most permissive profile the operator defined. The operator bounds that ceiling by what they author — define narrow profiles (`research` before `ops`) and treat each profile as a standing grant. Profiles also cannot express per-operation grants beyond exact-invocation `allowlist` entries, and profile selection is not session-tracked: use the `subagent_denied` runtime events and the delegate-task audit trail to see which envelopes ran.
+**Residual risk (be aware).** Profile *selection* is parent-declared: a prompt-injected parent can always pick the most permissive profile the operator defined (it cannot strip the default envelope — omission falls through to the operator default, and only the operator config may disable it). The operator bounds that ceiling by what they author — define narrow profiles (`research` before `ops`) and treat each profile as a standing grant. Profiles also cannot express per-operation grants beyond exact-invocation `allowlist` entries, and profile selection is not session-tracked: use the `subagent_denied` runtime events and the delegate-task audit trail to see which envelopes ran.
 
 ### Planning
 
