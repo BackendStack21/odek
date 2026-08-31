@@ -1,0 +1,276 @@
+# Getting Started
+
+Install **odek** (the agent engine), configure it with a **GLM 5.3 Flash** subscription from **z.ai**, and — optionally — add **bodek**, a polished terminal UI on top.
+
+odek is a single static Go binary (~11 MB, instant startup). No Python, no Node, no framework — one binary and an API key is the whole install.
+
+---
+
+## What you need
+
+| Requirement | Notes |
+|---|---|
+| macOS or Linux | Prebuilt binaries, amd64 & arm64. Windows: build from source with Go |
+| A z.ai API key | From the [GLM Coding Plan](https://z.ai/subscribe) subscription or pay-as-you-go. Create/manage keys at [z.ai Open Platform](https://z.ai/manage-apikey/apikey-list) |
+| Go ≥ 1.25.12 | *Only* if installing from source. Not needed for prebuilt binaries |
+| Docker | *Optional* — enables the default-on sandbox. Skip it with `ODEK_NO_SANDBOX=1` (see [Step 4](#4-sandbox-docker-optional)) |
+
+---
+
+## 1. Install odek
+
+**From source** (recommended if you have Go):
+
+```bash
+go install github.com/BackendStack21/odek/cmd/odek@latest
+```
+
+**Or grab a prebuilt binary** from the
+[releases page](https://github.com/BackendStack21/odek/releases) — binaries for
+Linux and macOS (amd64 & arm64) plus a `checksums.txt` for verification.
+One-liner for Linux / macOS (installs to `~/.local/bin`):
+
+```bash
+mkdir -p ~/.local/bin && curl -fLo ~/.local/bin/odek \
+  "https://github.com/BackendStack21/odek/releases/latest/download/odek-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')" \
+  && chmod +x ~/.local/bin/odek
+```
+
+Verify:
+
+```bash
+odek version
+```
+
+Later: `odek upgrade` self-updates from GitHub Releases (SHA-256 verified) —
+see [Keeping things up to date](#keeping-things-up-to-date).
+
+---
+
+## 2. Create the config
+
+Scaffold the global config — this is where provider settings live:
+
+```bash
+odek init --global
+```
+
+This writes `~/.odek/config.json` (permissions `0600`; refuses to overwrite an
+existing file unless you pass `--force`). Open it and change the three
+provider fields at the top:
+
+```json
+{
+  "model": "glm-5.3-flash",
+  "base_url": "https://api.z.ai/api/coding/paas/v4",
+  "api_key": "${ODEK_API_KEY}",
+  ...
+}
+```
+
+- **`model`** — use the lowercase id `glm-5.3-flash` (odek matches model
+  profiles by prefix; `glm-5.3…` picks up the built-in GLM 5.3 profile:
+  1M-token context window, 300 s request timeout, always-on reasoning).
+- **`base_url`** — GLM Coding Plan (subscription) uses the OpenAI
+  Chat-Completions endpoint `https://api.z.ai/api/coding/paas/v4`. On
+  pay-as-you-go instead, use `https://api.z.ai/api/paas/v4`.
+- **`api_key`** — `${ODEK_API_KEY}` references the environment variable; keep
+  the key itself out of the config file (next step).
+
+> The exact model ids available to your plan are listed in your
+> [z.ai dashboard](https://z.ai/model-api).
+
+---
+
+## 3. Store the API key
+
+Create `~/.odek/secrets.env` — it is auto-loaded into the process environment
+on startup, so the key never has to appear in your shell history:
+
+```bash
+cat > ~/.odek/secrets.env <<'EOF'
+ODEK_API_KEY=sk-your-zai-key-here
+EOF
+chmod 600 ~/.odek/secrets.env
+```
+
+Alternative: `export ODEK_API_KEY=sk-...` per shell session. odek resolves the
+key through a five-layer priority chain:
+
+```
+~/.odek/secrets.env → ~/.odek/config.json → ./odek.json → ODEK_* env vars → CLI flags
+```
+
+Note: a project-level `./odek.json` is treated as **untrusted** — it cannot
+set `api_key`, `base_url`, or other sensitive fields. Provider settings belong
+in the global config.
+
+---
+
+## 4. Sandbox (Docker, optional)
+
+Tool execution runs inside an isolated Docker container **by default** for
+`odek run`, `odek continue`, `odek repl`, and `odek serve`. If you don't have
+Docker installed, opt out explicitly:
+
+```bash
+export ODEK_NO_SANDBOX=1     # add to ~/.zshrc / ~/.bashrc
+# or per-run:
+odek run --no-sandbox "..."
+```
+
+Unsandboxed runs warn loudly; set `ODEK_REQUIRE_SANDBOX=1` to make
+unsandboxed execution fatal instead. Full model: [docs/SANDBOXING.md](docs/SANDBOXING.md).
+
+---
+
+## 5. First run
+
+```bash
+odek run "List the Go files in this directory and count their total lines"
+```
+
+You should see **GLM 5.3 (Z.ai)** in the run header (the built-in profile
+label) and a short ReAct trace: think → act → answer.
+
+Interactive session:
+
+```bash
+odek repl
+```
+
+Web UI (streams tokens, tools, approvals in the browser):
+
+```bash
+odek serve
+# → prints a token URL like http://127.0.0.1:8080/?token=…
+```
+
+`odek serve` binds to `127.0.0.1:8080` by default (`--addr` to change) and
+never exposes itself beyond loopback unless explicitly configured.
+
+---
+
+## 6. Optional: bodek — the terminal UI
+
+[bodek](https://github.com/BackendStack21/bodek) is a Bubble Tea TUI that
+launches (or attaches to) an `odek serve` instance and renders the agent's
+live stream — reasoning, tokens, tool calls, approval prompts — with themes
+and desktop notifications. It is a **pure front-end**: every agent behaviour
+still comes from odek itself.
+
+```bash
+# Install the TUI (odek is already installed — bodek needs it on PATH)
+go install github.com/BackendStack21/bodek/cmd/bodek@latest
+```
+
+Prebuilt binaries are on the
+[bodek releases page](https://github.com/BackendStack21/bodek/releases)
+(Linux/macOS/Windows, amd64 & arm64, with `checksums.txt`):
+
+```bash
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m); [ "$ARCH" = "x86_64" ] && ARCH=amd64
+URL=$(curl -fsSL https://api.github.com/repos/BackendStack21/bodek/releases/latest \
+  | grep browser_download_url | grep "${OS}_${ARCH}" | cut -d '"' -f 4)
+curl -fsSL "$URL" | tar -xz bodek && install -m 755 bodek ~/.local/bin/
+```
+
+Start chatting:
+
+```bash
+bodek                # spawns odek serve itself and connects
+```
+
+Useful flags:
+
+```bash
+bodek --sandbox                        # force tool calls into odek's Docker sandbox
+bodek --url 'http://127.0.0.1:8080/?token=…'   # attach to an already-running odek serve
+bodek --theme ember-light              # start with a theme (/theme switches live)
+bodek --notify                         # desktop notifications on turn/approval events
+bodek --mouse                          # mouse-wheel scrolling (blocks text selection)
+```
+
+---
+
+## Keeping things up to date
+
+Both tools self-upgrade from their GitHub Releases. Each run downloads the
+latest release, verifies it against the release's `checksums.txt`
+(SHA-256), and replaces the running binary atomically — no manual download,
+no package manager.
+
+```bash
+odek upgrade          # update odek to the latest release
+bodek upgrade         # update bodek to the latest release
+```
+
+Both commands detect the current version and report that it is already up to
+date when nothing newer exists. To preview without touching the binary:
+
+```bash
+odek upgrade --check  # report the latest odek version, install nothing
+```
+
+Notes:
+
+- The upgrade replaces the binary **wherever it lives** — `~/.local/bin`
+  from the one-liner install or `~/go/bin` from `go install`. If you prefer
+  the source route instead, `go install …@latest` is equivalent.
+- Upgrade **odek first, then bodek**: bodek is only a front-end for odek's
+  serve protocol, so it always benefits from the engine's new behaviour.
+- `--check` is odek-only; bodek's upgrade has no flags.
+
+---
+
+## GLM 5.3 Flash on z.ai — quick reference
+
+| Setting | Value |
+|---|---|
+| Model id | `glm-5.3-flash` (lowercase) |
+| Context / max output | 1M tokens / 128K tokens |
+| Coding Plan endpoint (OpenAI Chat Completions) | `https://api.z.ai/api/coding/paas/v4` |
+| Pay-as-you-go endpoint | `https://api.z.ai/api/paas/v4` |
+| Reasoning | Always on. Set depth with `--thinking low\|medium\|high` (odek maps these to `reasoning_effort`; GLM has no *medium* level, so odek maps it to *high*). Note: GLM-5.3 rejects `thinking: disabled` — odek translates that request to enabled + low effort automatically |
+| Request timeout | 300 s (reasoning is slow to first byte — that's normal) |
+
+---
+
+## Tuning for sub-agents
+
+`delegate_tasks` runs sub-agents in parallel; the parent's own stream runs
+alongside them. With the default `max_concurrency: 3` that's **4 concurrent
+provider streams** — z.ai throttles around 5 concurrent streams and
+429-saturates above that. If you see 429 errors on sub-agent-heavy runs:
+
+```json
+{
+  "max_concurrency": 2
+}
+```
+
+(Top-level key in `~/.odek/config.json`, or env `ODEK_MAX_CONCURRENCY`.)
+
+---
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `failed to create sandbox container … hint: make sure Docker is running` | No Docker. Use `--no-sandbox` or `export ODEK_NO_SANDBOX=1` |
+| `429` / rate-limit errors during sub-agent runs | Lower `max_concurrency` to `2` (or `1`) — z.ai throttles ~5 concurrent streams |
+| Run header shows the raw model id instead of **GLM 5.3 (Z.ai)** | Model id must start with `glm-5.3` (lowercase — matching is case-sensitive) |
+| Auth errors / empty key | Check the priority chain — is `ODEK_API_KEY` in `~/.odek/secrets.env` (mode 0600) or the environment? A project `./odek.json` can't carry keys |
+| Slow first response | Expected: GLM-5.3 reasoning is always on (hence the 300 s default timeout) |
+
+---
+
+## Where to go next
+
+- [docs/CHEATSHEET.md](docs/CHEATSHEET.md) — every command and flag, one page
+- [docs/CONFIG.md](docs/CONFIG.md) — full configuration reference
+- [docs/CLI.md](docs/CLI.md) — command reference
+- [docs/SUBAGENTS.md](docs/SUBAGENTS.md) — parallel sub-agents (`delegate_tasks`)
+- [docs/SECURITY.md](docs/SECURITY.md) — approval system, sandbox, and the prompt-injection defenses you're benefiting from
+- [bodek README](https://github.com/BackendStack21/bodek) — full TUI feature list

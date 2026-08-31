@@ -16,6 +16,8 @@ odek run "How many lines in go.mod?"
 
 **Build requirements:** Go **1.25.12 or newer**. The `go` directive in `go.mod` pins this floor because earlier 1.25.x toolchains ship reachable standard-library CVEs; CI additionally runs `govulncheck` on every push/PR so new advisories fail the build.
 
+**New here?** The step-by-step install guide — including the GLM 5.3 Flash (z.ai) setup and the optional bodek TUI — lives in [GETTING_STARTED.md](GETTING_STARTED.md).
+
 ---
 
 ## Why odek
