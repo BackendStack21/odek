@@ -600,7 +600,7 @@ func (r *outputRing) readFrom(since, limit int64) (string, int64) {
 	window := r.buf[int(rel):]
 	if limit > 0 && int64(len(window)) > limit {
 		cut := len(window)
-		if int64(cut) > limit {
+		if limit < int64(len(window)) {
 			cut = int(limit)
 		}
 		for cut > 0 && !utf8.RuneStart(window[cut]) {
