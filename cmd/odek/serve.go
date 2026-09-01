@@ -2411,8 +2411,13 @@ func handleSessionByID(store *session.Store, trustedProxies []string, wsToken st
 		id := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
 		// /api/sessions/{id}/export — transcript download (md|json). Shares
 		// the GET auth path below (rate limit + session token).
+		// /export is a GET-only surface: the suffix is stripped for GET
+		// requests only, mirroring the /plan guard below. Stripping it for
+		// every method let DELETE /api/sessions/{id}/export fall through to
+		// the base-session delete (destroying the session through a
+		// read-only route) and POST .../export rename it.
 		exportFormat := ""
-		if strings.HasSuffix(id, "/export") {
+		if r.Method == http.MethodGet && strings.HasSuffix(id, "/export") {
 			id = strings.TrimSuffix(id, "/export")
 			exportFormat = r.URL.Query().Get("format")
 		}
