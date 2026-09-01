@@ -730,6 +730,13 @@ func serveOnListener(listener net.Listener, mux *http.ServeMux) error {
 		return true
 	})
 
+	// Phase 2.5: kill every background job across all sessions — the
+	// process-exit contract (no detach). Done before the drain so the job
+	// reapers finish inside the drain window.
+	if killedBG := shutdownServeBG(); len(killedBG) > 0 {
+		fmt.Fprintf(os.Stderr, "odek serve: killed %d background job(s)\n", len(killedBG))
+	}
+
 	// Phase 3: wait for all handleWS goroutines and headless REST-run
 	// goroutines to finish (up to 10s). Each handleWS goroutine runs defer
 	// agent.Close() which calls docker rm -f; run goroutines do the same
