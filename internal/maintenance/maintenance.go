@@ -264,14 +264,22 @@ func sweepAudit(home string, maxAgeDays int) (int, error) {
 	return removed, nil
 }
 
-// rotateLogs rotates <home>/telegram.log (when it exists) and
-// <home>/schedule.log when they exceed maxMB: the current log is renamed to
-// <name>.1 (replacing any previous generation) and a fresh empty log is
-// created. One backup generation only. Returns the rotated log paths.
+// LogRotationNames lists the log files rotateLogs may rotate. Shared with
+// the cleanup dry-run preview (cmd/odek) so the two can never drift again —
+// serve.log was once rotated by the real sweep while the preview only knew
+// about two logs.
+func LogRotationNames() []string {
+	return []string{"telegram.log", "schedule.log", "serve.log"}
+}
+
+// rotateLogs rotates each log named by LogRotationNames when it exceeds
+// maxMB: the current log is renamed to <name>.1 (replacing any previous
+// generation) and a fresh empty log is created. One backup generation only.
+// Returns the rotated log paths.
 func rotateLogs(home string, maxMB int64) ([]string, error) {
 	limit := maxMB << 20
 	var rotated []string
-	for _, name := range []string{"telegram.log", "schedule.log", "serve.log"} {
+	for _, name := range LogRotationNames() {
 		path := filepath.Join(home, name)
 		info, err := os.Stat(path)
 		if err != nil {

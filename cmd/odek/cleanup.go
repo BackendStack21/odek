@@ -114,14 +114,18 @@ func humanBytes(n int64) string {
 //
 // maintenance.Sweep has no dry-run mode, so the CLI builds the same candidate
 // list locally for display only. Media cleanup is not previewed — its
-// retention policy lives inside the maintenance package.
+// retention policy lives inside the maintenance package. Artifact subtree
+// removals ARE previewed (plain age-based deletions), and the log list is
+// shared with maintenance.LogRotationNames so preview and rotation can never
+// drift apart again.
 
 // cleanupCandidates lists what a sweep WOULD remove, per category.
 type cleanupCandidates struct {
-	sessions []string
-	audit    []string
-	plans    []string
-	logs     []string
+	sessions  []string
+	audit     []string
+	plans     []string
+	logs      []string
+	artifacts []string
 }
 
 // collectCleanupCandidates enumerates expired files under home without
@@ -140,8 +144,12 @@ func collectCleanupCandidates(home string, cfg maintenance.Config) cleanupCandid
 		// Plans may be nested per chat (plans/chat<id>/), so walk recursively.
 		c.plans = filesOlderThan(filepath.Join(home, "plans"), now.AddDate(0, 0, -cfg.PlansMaxAgeDays), true)
 	}
+	if cfg.ArtifactsMaxAgeHours > 0 {
+		// Duration-based cutoff, mirroring sweepArtifacts exactly.
+		c.artifacts = artifactCandidates(home, time.Now().Add(-time.Duration(cfg.ArtifactsMaxAgeHours)*time.Hour))
+	}
 	if cfg.LogMaxMB > 0 {
-		for _, name := range []string{"schedule.log", "telegram.log"} {
+		for _, name := range maintenance.LogRotationNames() {
 			p := filepath.Join(home, name)
 			if info, err := os.Stat(p); err == nil && info.Size() > cfg.LogMaxMB*1024*1024 {
 				c.logs = append(c.logs, p)
@@ -168,6 +176,31 @@ func sessionCandidates(home string, cutoff time.Time) []string {
 	for _, s := range sessions {
 		if s.UpdatedAt.Before(cutoff) {
 			out = append(out, store.Path(s.ID))
+		}
+	}
+	return out
+}
+
+// artifactCandidates lists delegate_tasks artifact subtrees whose modtime
+// is before cutoff — the same candidates maintenance.sweepArtifacts would
+// remove (<home>/artifacts/<session_id>/ subtrees).
+func artifactCandidates(home string, cutoff time.Time) []string {
+	dir := filepath.Join(home, "artifacts")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil // missing/unreadable dir → no candidates
+	}
+	var out []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			out = append(out, filepath.Join(dir, e.Name()))
 		}
 	}
 	return out
@@ -211,7 +244,7 @@ func filesOlderThan(dir string, cutoff time.Time, recursive bool) []string {
 // printCleanupDryRun reports the candidate list without removing anything.
 func printCleanupDryRun(home string, cfg maintenance.Config) {
 	c := collectCleanupCandidates(home, cfg)
-	if len(c.sessions) == 0 && len(c.audit) == 0 && len(c.plans) == 0 && len(c.logs) == 0 {
+	if len(c.sessions) == 0 && len(c.audit) == 0 && len(c.plans) == 0 && len(c.logs) == 0 && len(c.artifacts) == 0 {
 		fmt.Println("Dry run: storage is clean — nothing would be removed.")
 		return
 	}
@@ -219,6 +252,9 @@ func printCleanupDryRun(home string, cfg maintenance.Config) {
 	fmt.Printf("  sessions:            %d\n", len(c.sessions))
 	fmt.Printf("  audit records:       %d\n", len(c.audit))
 	fmt.Printf("  plans:               %d\n", len(c.plans))
+	for _, p := range c.artifacts {
+		fmt.Printf("  artifact subtree:    %s\n", p)
+	}
 	for _, p := range c.logs {
 		fmt.Printf("  log rotated:         %s\n", p)
 	}
