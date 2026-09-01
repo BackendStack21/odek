@@ -22,7 +22,7 @@ func TestSubagentRegistry_RecordUpdateSnapshot(t *testing.T) {
 	resetSubagentRegistry()
 
 	subagentRegistryRecord(&subagentEntry{TaskID: "task-1", RunKey: "conn-1", Goal: "write tests", Phase: "started", Status: "running"})
-	subagentRegistryUpdate("task-1", func(e *subagentEntry) {
+	subagentRegistryUpdate("task-1", "", func(e *subagentEntry) {
 		e.Phase = "active"
 		e.LastTool = "read_file"
 		e.Step = 2
@@ -74,7 +74,7 @@ func TestSubagentRegistry_ConcurrentAccess(t *testing.T) {
 			id := "task-c"
 			subagentRegistryRecord(&subagentEntry{TaskID: id, RunKey: "k"})
 			for j := 0; j < 50; j++ {
-				subagentRegistryUpdate(id, func(e *subagentEntry) { e.Step++ })
+				subagentRegistryUpdate(id, "", func(e *subagentEntry) { e.Step++ })
 				_ = subagentRegistrySnapshot("")
 			}
 		}(i)

@@ -895,8 +895,19 @@ func handleRunByID() http.HandlerFunc {
 			writeAPIJSON(w, http.StatusOK, run.snapshot(true))
 			return
 		}
-		cancelRun(run)
-		writeAPIJSON(w, http.StatusOK, map[string]any{"status": "cancelled", "run_id": id})
+		// DELETE = cancel, but a run that already reached a terminal state
+		// must be left untouched and reported under its REAL status: the
+		// hardcoded "cancelled" answer lied to clients about completed and
+		// failed runs, and cancelRun → finish re-stamped EndedAt on them.
+		idle := run.isTerminal()
+		if !idle {
+			cancelRun(run)
+		}
+		resp := map[string]any{"run_id": id, "status": run.snapshot(false)["status"]}
+		if idle {
+			resp["idle"] = true
+		}
+		writeAPIJSON(w, http.StatusOK, resp)
 	}
 }
 

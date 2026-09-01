@@ -94,8 +94,21 @@ func subagentRegistryRecord(e *subagentEntry) {
 	subagentReg.entries = append(subagentReg.entries, &cp)
 	subagentReg.byID[e.TaskID] = &cp
 	if len(subagentReg.entries) > maxSubagentRegistryEntries {
-		oldest := subagentReg.entries[0]
-		subagentReg.entries = subagentReg.entries[1:]
+		// Prefer evicting the oldest FINISHED entry: ring pressure must not
+		// erase a still-running task's card (its next progress record would
+		// recreate a hollow entry without RunKey, making it invisible to
+		// run-filtered snapshots — the reload-restore path this registry
+		// exists for). Fall back to the oldest entry only when every entry
+		// is live (unreachable in practice: concurrency ≪ ring size).
+		evictIdx := 0
+		for i, e := range subagentReg.entries {
+			if e.Phase == "finished" {
+				evictIdx = i
+				break
+			}
+		}
+		oldest := subagentReg.entries[evictIdx]
+		subagentReg.entries = append(subagentReg.entries[:evictIdx], subagentReg.entries[evictIdx+1:]...)
 		delete(subagentReg.byID, oldest.TaskID)
 	}
 }
@@ -164,9 +177,11 @@ func mergeEntry(dst, src *subagentEntry) {
 
 // subagentRegistryUpdate applies fn to the entry with the given task_id
 // (no-op when absent). New entries are auto-created so a progress line that
-// races its started record still lands.
-func subagentRegistryUpdate(taskID string, fn func(*subagentEntry)) {
-	subagentRegistryRecord(&subagentEntry{TaskID: taskID})
+// races its started record still lands; runKey stamps such recreated entries
+// (eviction race / out-of-order arrival) so run-filtered snapshots keep
+// seeing the task.
+func subagentRegistryUpdate(taskID, runKey string, fn func(*subagentEntry)) {
+	subagentRegistryRecord(&subagentEntry{TaskID: taskID, RunKey: runKey})
 	subagentReg.mu.Lock()
 	defer subagentReg.mu.Unlock()
 	if e, ok := subagentReg.byID[taskID]; ok {
@@ -261,7 +276,7 @@ func newSubagentTelemetryRelay(send func(v any) error, runKey string) func(taskI
 				BudgetCostUSD:    rec.BudgetCostUSD,
 			})
 		case "subagent_progress":
-			subagentRegistryUpdate(taskID, func(e *subagentEntry) {
+			subagentRegistryUpdate(taskID, runKey, func(e *subagentEntry) {
 				e.Phase = "active"
 				e.Step = rec.Step
 				e.LastTool = rec.Tool
@@ -287,7 +302,7 @@ func newSubagentTelemetryRelay(send func(v any) error, runKey string) func(taskI
 				}
 			})
 		case "subagent_finished":
-			subagentRegistryUpdate(taskID, func(e *subagentEntry) {
+			subagentRegistryUpdate(taskID, runKey, func(e *subagentEntry) {
 				e.Phase = "finished"
 				e.Status = rec.Status
 				e.Iterations = rec.Iterations
@@ -319,7 +334,7 @@ func newSubagentTelemetryRelay(send func(v any) error, runKey string) func(taskI
 			// itself never reaches this relay). Merge-only — phase,
 			// status, and lifetime counters stay owned by the
 			// subagent_finished / done-relay paths.
-			subagentRegistryUpdate(taskID, func(e *subagentEntry) {
+			subagentRegistryUpdate(taskID, runKey, func(e *subagentEntry) {
 				if rec.CostUSD > 0 {
 					e.CostUSD = rec.CostUSD
 				}
@@ -469,14 +484,25 @@ func newSubagentDoneRelay(send func(v any) error, runKey string) func(taskIdx in
 		// Update (auto-creates) rather than Record: Record's re-record
 		// path restores accumulated state, which would clobber the
 		// terminal transition on an existing entry.
-		subagentRegistryUpdate(taskID, func(e *subagentEntry) {
+		// First terminal report wins: this relay exists for children that
+		// died without reporting (or whose framed result never parsed). When
+		// the child itself already reported a terminal status via its
+		// telemetry stream, overwriting it flipped a reported success to
+		// "failed" on the card AND double-counted the task in the lifetime
+		// counters.
+		alreadyTerminal := false
+		subagentRegistryUpdate(taskID, runKey, func(e *subagentEntry) {
+			if e.Phase == "finished" && (e.Status == "success" || e.Status == "partial") {
+				alreadyTerminal = true
+				return
+			}
 			e.Phase = "finished"
 			e.Status = status
 			e.FinishedAt = time.Now()
 		})
 		// A user-initiated cancel is neither success nor failure for the
 		// lifetime counters; every other no-result outcome is a failure.
-		if status != "cancelled" {
+		if !alreadyTerminal && status != "cancelled" {
 			subagentStats.failed.Add(1)
 		}
 		// Fan the terminal state out to the UI.
