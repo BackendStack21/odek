@@ -434,7 +434,7 @@ func (m *Manager) Get(sessionID, jobID string) (Job, bool) {
 // read. When the ring has dropped bytes from the front, a truncation marker
 // precedes the retained window. Foreign or unknown ids yield an error
 // identical in shape for both cases.
-func (m *Manager) Output(sessionID, jobID string, since, limit int64) (string, int64, error) {
+func (m *Manager) Output(sessionID, jobID string, since int64, limit int) (string, int64, error) {
 	if since < 0 {
 		since = 0
 	}
@@ -568,10 +568,11 @@ func (r *outputRing) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// readFrom returns up to limit bytes of output after absolute offset since
-// (limit <= 0 = uncapped) and the cursor for the next read. The cursor is an
-// absolute offset into the logical stream: marker bytes are not counted.
-func (r *outputRing) readFrom(since, limit int64) (string, int64) {
+// readFrom returns up to limit bytes (int: a buffer size, bounded at the
+// caller) of output after absolute offset since, plus the cursor for the
+// next read. The cursor is an absolute offset into the logical stream:
+// marker bytes are not counted.
+func (r *outputRing) readFrom(since int64, limit int) (string, int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	end := r.dropped + int64(len(r.buf))
@@ -584,9 +585,8 @@ func (r *outputRing) readFrom(since, limit int64) (string, int64) {
 		marker = fmt.Sprintf("... [%d earlier output bytes truncated]\n", r.dropped)
 		start = r.dropped
 	}
-	// Explicit bound checks keep the int64→int conversions provably
-	// bounded (overflow-safe on 32-bit platforms; CodeQL
-	// incorrect-integer-conversion rule).
+	// Explicit bound checks keep the int64→int conversion provably
+	// bounded (overflow-safe on 32-bit platforms).
 	rel := start - r.dropped
 	if rel < 0 {
 		rel = 0
@@ -598,11 +598,8 @@ func (r *outputRing) readFrom(since, limit int64) (string, int64) {
 		rel = math.MaxInt32
 	}
 	window := r.buf[int(rel):]
-	if limit > 0 && int64(len(window)) > limit {
-		cut := len(window)
-		if limit < int64(len(window)) {
-			cut = int(limit)
-		}
+	if limit > 0 && len(window) > limit {
+		cut := limit
 		for cut > 0 && !utf8.RuneStart(window[cut]) {
 			cut--
 		}
