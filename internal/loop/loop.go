@@ -300,6 +300,13 @@ type Engine struct {
 	lastToolFingerprint string
 	toolRepeatStreak    int
 
+	// bgNoticeProvider, when set, is drained once at the top of every
+	// iteration; a non-empty return is appended to the context as a
+	// standalone user-role message flagged Name "bg-notice" (background
+	// job completion notices). The cmd layer owns formatting, redaction,
+	// and the untrusted wrap — the loop stays surface-agnostic.
+	bgNoticeProvider func() string
+
 	// approver gates dangerous operations. When set and the LLM returns
 	// multiple tool calls in one iteration, a single batch approval prompt
 	// is shown before any tool executes, but ONLY for tools whose risk
@@ -413,6 +420,10 @@ func (e *Engine) SetExtendedMemoryContextFunc(ef ExtendedMemoryContextFunc) { e.
 // SetUserMessageHandler sets an optional callback invoked once per new user
 // message. It is used by callers to trigger Extended Memory atom extraction.
 func (e *Engine) SetUserMessageHandler(fn UserMessageHandler) { e.userMsgHandler = fn }
+
+// SetBackgroundNoticeProvider sets the drained-at-iteration-start provider
+// for background job completion notices. Nil disables (the default).
+func (e *Engine) SetBackgroundNoticeProvider(fn func() string) { e.bgNoticeProvider = fn }
 
 // SetInteractionMode sets how progress is surfaced.
 // "off" suppresses all per-iteration render output except the final answer.
@@ -1697,6 +1708,24 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 			break
 		}
 
+		// Background-job completion notices: drained once per iteration
+		// and appended as standalone user messages. Flagged "bg-notice"
+		// so lastUserMessage skips them — user-input hooks (memory
+		// handler, skill loading, episode/extended-memory recall) must
+		// keep keying on the real user's message, and a notice must never
+		// shadow it. Appended before trimContext so the notice is trimmed
+		// like any other content when the window is tight.
+		if e.bgNoticeProvider != nil {
+			if notice := e.bgNoticeProvider(); notice != "" {
+				messages = append(messages, llm.Message{Role: "user", Content: notice, Name: "bg-notice"})
+				// Audit: the notice carries job output (untrusted);
+				// record the ingest like every other external content.
+				if fn := IngestRecorderFrom(ctx); fn != nil {
+					fn("bg", notice)
+				}
+			}
+		}
+
 		// Trim context to stay within model's context window
 		messages = e.trimContext(ctx, messages, tools)
 
@@ -2428,7 +2457,15 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 				// repeats, inject a corrective hint and reset — a hint, not
 				// enforcement, since legitimate polling exists.
 				fp := toolName + "\x00" + tc.Function.Arguments
-				if fp == e.lastToolFingerprint {
+				if isBGPollTool(toolName) {
+					// Background-job polling tools legitimately repeat
+					// with identical arguments — the RESULT changes
+					// between calls (job state advanced). Track the
+					// fingerprint so a later ordinary call compares
+					// fresh, but never let the streak climb.
+					e.lastToolFingerprint = fp
+					e.toolRepeatStreak = 0
+				} else if fp == e.lastToolFingerprint {
 					e.toolRepeatStreak++
 				} else {
 					e.lastToolFingerprint = fp
@@ -2614,10 +2651,19 @@ func (e *Engine) emitMessagesPersist(messages []llm.Message) {
 	e.messagesPersistCallback(snapshot)
 }
 
+// isBGPollTool reports whether the tool is a read-only background-job
+// polling tool exempt from stall detection (identical arguments are the
+// normal polling pattern; the result changes between calls).
+func isBGPollTool(name string) bool {
+	return name == "bg_status" || name == "bg_output"
+}
+
 // lastUserMessage returns the content of the most recent user message.
 func lastUserMessage(messages []llm.Message) string {
 	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == "user" {
+		// Background-notice injections are user-role messages flagged at
+		// append time; user-input hooks must never key on them.
+		if messages[i].Role == "user" && messages[i].Name != "bg-notice" {
 			return messages[i].Content
 		}
 	}
@@ -2709,6 +2755,29 @@ func classifyToolCall(name, args string) (danger.RiskClass, string) {
 			resource = fmt.Sprintf("%s  [unread script: %s]", cmd.Command, strings.Join(targets, ", "))
 		}
 		return cls, resource
+	case "bg_start":
+		// Same contract as shell: classify the embedded command at
+		// spawn time. Backgrounding may never downgrade a class.
+		var cmd struct {
+			Command string `json:"command"`
+		}
+		if err := json.Unmarshal([]byte(args), &cmd); err != nil || cmd.Command == "" {
+			return "", ""
+		}
+		cls, targets := danger.ClassifyScriptGate(cmd.Command)
+		resource := "bg: " + cmd.Command
+		if len(targets) > 0 {
+			resource = fmt.Sprintf("bg: %s  [unread script: %s]", cmd.Command, strings.Join(targets, ", "))
+		}
+		return cls, resource
+	case "bg_stop", "bg_list", "bg_status", "bg_output":
+		// Lifecycle/inspection of jobs owned by this session: no new
+		// code executes. Empty class = safe, resource names the job.
+		var id struct {
+			JobID string `json:"job_id"`
+		}
+		_ = json.Unmarshal([]byte(args), &id)
+		return "", id.JobID
 	case "parallel_shell":
 		// The commands live inside a JSON array. Classify every command and
 		// surface all of them in the batch approval prompt so one cannot hide

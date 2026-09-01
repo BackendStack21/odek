@@ -2268,7 +2268,7 @@ func toolConfigFromResolved(resolved config.ResolvedConfig) toolConfig {
 	}
 }
 
-func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver danger.Approver, maxConcurrency int, apiKey string, tcfg toolConfig, store *session.Store) []odek.Tool {
+func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver danger.Approver, maxConcurrency int, apiKey string, tcfg toolConfig, store *session.Store, bg ...*bgRuntime) []odek.Tool {
 	// Sub-agent execution defaults (M1.4): the operator subagent section
 	// overrides the built-in defaults; concurrency falls back to the
 	// global max_concurrency when the section does not set it.
@@ -2384,10 +2384,14 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 		)
 	}
 
+	// Background commands: registered only when the surface constructed a
+	// runtime (background.enabled, session-bound). Absent ⇒ clean tool list.
+	if len(bg) > 0 {
+		tools = appendBackgroundTools(tools, bg[0])
+	}
+
 	return tools
 }
-
-// filterBuiltinTools applies the configured tools.enabled / tools.disabled
 // lists to a slice of tools. Unknown names are ignored. Required tools are
 // always preserved.
 func filterBuiltinTools(tools []odek.Tool, cfg config.ToolConfig, required map[string]bool) []odek.Tool {

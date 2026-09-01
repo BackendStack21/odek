@@ -1,0 +1,416 @@
+package main
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/BackendStack21/odek"
+	"github.com/BackendStack21/odek/internal/bgproc"
+	"github.com/BackendStack21/odek/internal/events"
+	"github.com/BackendStack21/odek/internal/redact"
+)
+
+// bgOutputChunkBytes caps a single bg_output result.
+const bgOutputChunkBytes = 32 << 10
+
+// bgCommandHead caps the command echo inside list/status results.
+const bgCommandHead = 80
+
+// BackgroundSettings carries the resolved `background` config section as
+// primitives, decoupled from the config package's types.
+type BackgroundSettings struct {
+	Enabled           bool
+	MaxJobs           int
+	MaxOutputBytes    int
+	MaxTimeoutSeconds int // 0 = uncapped (jobs bounded by session lifetime)
+	Notify            bool // background.notify == "observe"
+}
+
+// bgRuntime binds the process-scoped manager to one agent session.
+// The manager must be created once per process (serve/Telegram host many
+// sessions); each construction site passes its own session id.
+type bgRuntime struct {
+	mgr      *bgproc.Manager
+	session  string
+	provider func() string // engine notice provider (drain-once)
+}
+
+// newBackgroundRuntime builds the runtime for one surface. Returns nil when
+// background commands are disabled or the session id is empty — callers then
+// simply skip tool registration (the tools stay absent from the registry).
+//
+// containerName routes spawns through the sandbox wrapper (the shell tool's
+// docker-exec pidfile mechanism) when non-empty. emit, when non-nil,
+// receives bg_started / bg_exited runtime events (command content is never
+// included — only its SHA-256).
+func newBackgroundRuntime(s BackgroundSettings, sessionID, containerName string, emit func(events.Event)) *bgRuntime {
+	if !s.Enabled || sessionID == "" {
+		return nil
+	}
+	if s.MaxJobs <= 0 {
+		s.MaxJobs = 8
+	}
+	if s.MaxOutputBytes <= 0 {
+		s.MaxOutputBytes = 1 << 20
+	}
+	cfg := bgproc.Config{
+		MaxJobsPerSession: s.MaxJobs,
+		MaxOutputBytes:    s.MaxOutputBytes,
+	}
+	if s.MaxTimeoutSeconds > 0 {
+		cfg.MaxTimeout = time.Duration(s.MaxTimeoutSeconds) * time.Second
+	}
+	if containerName != "" {
+		cfg.SandboxWrap = func(command string) ([]string, func(), error) {
+			argv, followUp := wrapSandboxCommand(containerName, command)
+			return argv, followUp, nil
+		}
+	}
+	rt := &bgRuntime{session: sessionID}
+	if emit != nil {
+		rt.mgr = bgproc.NewManager(cfg, &bgEventObserver{emit: emit})
+	} else {
+		rt.mgr = bgproc.NewManager(cfg, nil)
+	}
+	rt.provider = func() string {
+		return rt.formatNotices(rt.mgr.DrainNotices(sessionID))
+	}
+	return rt
+}
+
+// Shutdown kills every running job of the process. Deferred at each surface
+// exit (REPL quit, run end, serve/Telegram/schedule shutdown, sub-agent exit).
+func (rt *bgRuntime) Shutdown() []bgproc.Job {
+	if rt == nil || rt.mgr == nil {
+		return nil
+	}
+	return rt.mgr.Shutdown()
+}
+
+// StopAll kills every running job of the runtime's session.
+func (rt *bgRuntime) StopAll() []bgproc.Job {
+	if rt == nil || rt.mgr == nil {
+		return nil
+	}
+	return rt.mgr.StopAll(rt.session)
+}
+
+// formatNotices renders drained completion notices into the observe-phase
+// message. The whole block crosses the trust boundary (job output is hostile
+// even when the spawn was approved), so it is untrusted-wrapped; tails are
+// redacted before entering the context.
+func (rt *bgRuntime) formatNotices(notices []bgproc.Notice) string {
+	if len(notices) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "[bg] %d background job(s) finished since last check:", len(notices))
+	for _, n := range notices {
+		dur := n.Duration.Round(time.Second)
+		switch n.Status {
+		case bgproc.StatusExited:
+			fmt.Fprintf(&b, "\n- %s `%s` → exited (code %d) after %s", n.JobID, headString(n.Command, bgCommandHead), n.ExitCode, dur)
+		case bgproc.StatusFailed:
+			fmt.Fprintf(&b, "\n- %s `%s` → failed (exit %d) after %s", n.JobID, headString(n.Command, bgCommandHead), n.ExitCode, dur)
+		case bgproc.StatusTimeout:
+			fmt.Fprintf(&b, "\n- %s `%s` → timeout after %s", n.JobID, headString(n.Command, bgCommandHead), dur)
+		default:
+			fmt.Fprintf(&b, "\n- %s `%s` → %s after %s", n.JobID, headString(n.Command, bgCommandHead), n.Status, dur)
+		}
+		if n.Tail != "" {
+			fmt.Fprintf(&b, "\n  tail: %s", redact.RedactSecrets(n.Tail))
+		}
+	}
+	b.WriteString("\nFull output: bg_output(job_id, since). Status: bg_status(job_id). Stop: bg_stop(job_id).")
+	return wrapUntrusted(context.Background(), "bg", b.String())
+}
+
+// appendBackgroundTools registers the five bg_* tools when the runtime is
+// active. bg_output is wrapped with untrustedToolWrapper so job output is
+// nonce-wrapped and audit-recorded like every other external content.
+func appendBackgroundTools(tools []odek.Tool, rt *bgRuntime) []odek.Tool {
+	if rt == nil || rt.mgr == nil {
+		return tools
+	}
+	return append(tools,
+		&bgStartTool{rt: rt},
+		&bgListTool{rt: rt},
+		&bgStatusTool{rt: rt},
+		&untrustedToolWrapper{inner: &bgOutputTool{rt: rt}, source: "bg_output"},
+		&bgStopTool{rt: rt},
+	)
+}
+
+// ── event observer ───────────────────────────────────────────────────────
+
+// bgEventObserver bridges job lifecycle to the runtime event stream.
+// Command content never leaves the process: events carry its SHA-256 only.
+type bgEventObserver struct {
+	emit func(events.Event)
+}
+
+func (o *bgEventObserver) BGStarted(j bgproc.Job) {
+	o.emit(events.Event{
+		Schema:    "odek.event/v1",
+		Type:      "bg_started",
+		SessionID: j.SessionID,
+		Timestamp: time.Now().UTC(),
+		Data: map[string]any{
+			"job_id":         j.ID,
+			"command_sha256": sha256Hex(j.Command),
+			"timeout_s":      int(j.Timeout.Seconds()),
+		},
+	})
+}
+
+func (o *bgEventObserver) BGExited(n bgproc.Notice) {
+	o.emit(events.Event{
+		Schema:    "odek.event/v1",
+		Type:      "bg_exited",
+		SessionID: n.SessionID,
+		Timestamp: time.Now().UTC(),
+		Data: map[string]any{
+			"job_id":       n.JobID,
+			"status":       string(n.Status),
+			"exit_code":    n.ExitCode,
+			"duration_ms":  n.Duration.Milliseconds(),
+			"output_bytes": n.OutputBytes,
+		},
+	})
+}
+
+func sha256Hex(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+
+func headString(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := n
+	for cut > 0 && !isRuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
+}
+
+func isRuneStart(b byte) bool { return b&0xC0 != 0x80 }
+
+// ── tools ────────────────────────────────────────────────────────────────
+
+type bgStartTool struct{ rt *bgRuntime }
+
+func (t *bgStartTool) Name() string { return "bg_start" }
+
+func (t *bgStartTool) Description() string {
+	return `Start a shell command in the background and return immediately.
+Use for long-running work: dev servers, watchers, fuzz runs, batch jobs.
+The command runs detached from the conversation: you keep working while it
+runs, and a completion notice with the exit status and an output tail is
+delivered to you automatically when it finishes (if notices are enabled).
+If notices are disabled, poll with bg_status / bg_output instead.
+timeout_seconds: optional kill timer; 0 or absent = run until session end
+(operator cap may clamp explicit values). Jobs are killed when the session
+or the process ends. Output is capped; retrieve it with bg_output.`
+}
+
+func (t *bgStartTool) Schema() any {
+	return map[string]any{
+		"type":     "object",
+		"required": []string{"command"},
+		"properties": map[string]any{
+			"command": map[string]any{
+				"type":        "string",
+				"description": "Shell command to run in the background",
+			},
+			"timeout_seconds": map[string]any{
+				"type":        "integer",
+				"minimum":     0,
+				"description": "Kill timer in seconds; 0/absent = until session end",
+			},
+		},
+	}
+}
+
+func (t *bgStartTool) Call(args string) (string, error) {
+	var p struct {
+		Command        string `json:"command"`
+		TimeoutSeconds int    `json:"timeout_seconds"`
+	}
+	if err := json.Unmarshal([]byte(args), &p); err != nil || strings.TrimSpace(p.Command) == "" {
+		return "", fmt.Errorf("bg_start requires a non-empty \"command\"")
+	}
+	job, err := t.rt.mgr.Start(t.rt.session, p.Command, "", time.Duration(p.TimeoutSeconds)*time.Second)
+	if err != nil {
+		return "", err
+	}
+	out, _ := json.Marshal(map[string]any{"job_id": job.ID, "status": string(job.Status)})
+	return string(out), nil
+}
+
+type bgListTool struct{ rt *bgRuntime }
+
+func (t *bgListTool) Name() string        { return "bg_list" }
+func (t *bgListTool) Description() string { return "List this session's background jobs with id, status, runtime, and exit code." }
+func (t *bgListTool) Schema() any {
+	return map[string]any{"type": "object", "properties": map[string]any{}}
+}
+
+func (t *bgListTool) Call(args string) (string, error) {
+	jobs := t.rt.mgr.List(t.rt.session)
+	out := make([]map[string]any, 0, len(jobs))
+	for _, j := range jobs {
+		entry := map[string]any{
+			"job_id":     j.ID,
+			"command":    headString(j.Command, bgCommandHead),
+			"status":     string(j.Status),
+			"runtime_s":  jobRuntimeSeconds(j),
+		}
+		if j.Status != bgproc.StatusRunning {
+			entry["exit_code"] = j.ExitCode
+		}
+		out = append(out, entry)
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+type bgStatusTool struct{ rt *bgRuntime }
+
+func (t *bgStatusTool) Name() string { return "bg_status" }
+
+func (t *bgStatusTool) Description() string {
+	return `Get the status of one background job: running/exited/failed/timeout/killed,
+exit code, duration, and output size. Returns {"status":"unknown"} for ids
+that never existed, were started by another session, or died with a restart.`
+}
+
+func (t *bgStatusTool) Schema() any {
+	return map[string]any{
+		"type":     "object",
+		"required": []string{"job_id"},
+		"properties": map[string]any{
+			"job_id": map[string]any{"type": "string", "description": "Job id from bg_start"},
+		},
+	}
+}
+
+func (t *bgStatusTool) Call(args string) (string, error) {
+	var p struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal([]byte(args), &p); err != nil || p.JobID == "" {
+		return "", fmt.Errorf("bg_status requires \"job_id\"")
+	}
+	job, ok := t.rt.mgr.Get(t.rt.session, p.JobID)
+	if !ok {
+		b, _ := json.Marshal(map[string]any{"job_id": p.JobID, "status": "unknown"})
+		return string(b), nil
+	}
+	entry := map[string]any{
+		"job_id":     job.ID,
+		"status":     string(job.Status),
+		"runtime_s":  jobRuntimeSeconds(job),
+	}
+	if job.Status != bgproc.StatusRunning {
+		entry["exit_code"] = job.ExitCode
+	}
+	b, err := json.Marshal(entry)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+type bgOutputTool struct{ rt *bgRuntime }
+
+func (t *bgOutputTool) Name() string { return "bg_output" }
+
+func (t *bgOutputTool) Description() string {
+	return `Read a background job's captured output (stdout+stderr interleaved).
+Pass the returned next_cursor as since to continue reading; output older
+than the ring buffer is marked as truncated. Chunks are capped at 32 KiB.
+Only the job's own session can read it.`
+}
+
+func (t *bgOutputTool) Schema() any {
+	return map[string]any{
+		"type":       "object",
+		"required":   []string{"job_id"},
+		"properties": map[string]any{
+			"job_id": map[string]any{"type": "string", "description": "Job id from bg_start"},
+			"since":  map[string]any{"type": "integer", "minimum": 0, "description": "Cursor from the previous read; 0/absent = start"},
+		},
+	}
+}
+
+func (t *bgOutputTool) Call(args string) (string, error) {
+	var p struct {
+		JobID string `json:"job_id"`
+		Since int64  `json:"since"`
+	}
+	if err := json.Unmarshal([]byte(args), &p); err != nil || p.JobID == "" {
+		return "", fmt.Errorf("bg_output requires \"job_id\"")
+	}
+	chunk, next, err := t.rt.mgr.Output(t.rt.session, p.JobID, p.Since, bgOutputChunkBytes)
+	if err != nil {
+		b, _ := json.Marshal(map[string]any{"job_id": p.JobID, "status": "unknown"})
+		return string(b), nil
+	}
+	out, _ := json.Marshal(map[string]any{"job_id": p.JobID, "output": chunk, "next_cursor": next})
+	return string(out), nil
+}
+
+type bgStopTool struct{ rt *bgRuntime }
+
+func (t *bgStopTool) Name() string { return "bg_stop" }
+
+func (t *bgStopTool) Description() string {
+	return `Stop a background job (SIGTERM to the process group, SIGKILL after a
+grace window). Returns the job's terminal status; stopping an
+already-finished job is not an error.`
+}
+
+func (t *bgStopTool) Schema() any {
+	return map[string]any{
+		"type":     "object",
+		"required": []string{"job_id"},
+		"properties": map[string]any{
+			"job_id": map[string]any{"type": "string", "description": "Job id from bg_start"},
+		},
+	}
+}
+
+func (t *bgStopTool) Call(args string) (string, error) {
+	var p struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal([]byte(args), &p); err != nil || p.JobID == "" {
+		return "", fmt.Errorf("bg_stop requires \"job_id\"")
+	}
+	job, ok := t.rt.mgr.Stop(t.rt.session, p.JobID)
+	if !ok {
+		b, _ := json.Marshal(map[string]any{"job_id": p.JobID, "status": "unknown"})
+		return string(b), nil
+	}
+	out, _ := json.Marshal(map[string]any{"job_id": job.ID, "status": string(job.Status)})
+	return string(out), nil
+}
+
+// jobRuntimeSeconds is the job's elapsed (or total) runtime in seconds.
+func jobRuntimeSeconds(j bgproc.Job) float64 {
+	end := j.EndedAt
+	if end.IsZero() {
+		end = time.Now()
+	}
+	return end.Sub(j.StartedAt).Seconds()
+}
