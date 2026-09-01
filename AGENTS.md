@@ -49,6 +49,8 @@ cmd/odek/
   vision_tool.go              Vision / image-input tool
   web_search_tool.go          Web search tool
   session_search_tool.go      Session search tool
+  bg_tools.go                 Background command tools (bg_*) + per-surface runtime
+  bg_telegram.go              Telegram background-job integration
   wsapprover.go               WebSocket interactive approval relay (with friction + class-trust gates)
   refs.go                     @-resource reference resolution (files, sessions)
   untrusted.go                <untrusted_content_<nonce>> wrapper + per-call ingest recorder
@@ -117,6 +119,7 @@ ReAct cycle: observe → think → act → repeat.
 - **Storage maintenance janitor** — `maintenance.Start` sweeps `~/.odek` (retention, log rotation, media sweep) inside `odek telegram`/`serve`/`schedule daemon`; `odek cleanup [--dry-run]` runs it on demand. Session files are trimmed at write time when they would exceed `MaxSessionFileBytes`. Operator-only config. See docs/MAINTENANCE.md.
 - **Artifact-aware file search** — `search_files`/`multi_grep` skip `node_modules`, `vendor`, `.git`, `__pycache__`, `.venv`, etc.
 - **Semantic session search** — `session_search` tool: go-vector RandomProjections + k-NN, two-tier (vector index → exhaustive fallback).
+- **Background commands** — `bg_start`/`bg_list`/`bg_status`/`bg_output`/`bg_stop` tools over a process-scoped, session-keyed process manager (`internal/bgproc`): session-scoped job lifetime, bounded in-memory output rings, spawn-time danger classification parity with `shell`, group-signal stop (sandbox mode via the pidfile follow-up). Config: `background` section (docs/CONFIG.md).
 
 ### Extension capabilities (odek-extension/v1, v1.24.0)
 - **MCP per-server limits** — `timeout_seconds` (30s/3600s cap), `max_response_bytes` (10 MiB/64 MiB ceiling), `max_result_chars` (200k/1M cap, structured truncation notice), `artifact_roots` (empty ⇒ refs rejected). Resolved per client; approval keys hash all four fields.

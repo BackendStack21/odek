@@ -1141,6 +1141,38 @@ Key behaviors:
 - **Flood control fallback** — if an edit message fails with "flood" or "retry after", the system automatically switches to sending new messages instead of editing. This prevents the bot from becoming unresponsive under heavy load
 - **Content reset** — when the agent calls `send_message` mid-run to send an interim message, the progress bubble resets below that content, keeping the chat timeline in correct order
 
+## Background commands (`background`)
+
+The `bg_*` tool family lets the agent start long-running shell commands (dev
+servers, watchers, fuzz runs) that outlive the turn that started them. Jobs
+are session-scoped: they are killed when the owning session or the process
+ends — there is no detach mode in v1.
+
+```json
+"background": {
+  "enabled": true,
+  "max_jobs": 8,
+  "max_output_bytes": 1048576,
+  "max_timeout_seconds": 0,
+  "notify": "observe",
+  "on_session_end": "kill"
+}
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | Master switch; `false` removes the tools from every surface. |
+| `max_jobs` | `8` | Concurrent running jobs per session; further `bg_start` calls fail. |
+| `max_output_bytes` | `1048576` | In-memory output ring per job (oldest bytes drop first). Output is never written to disk. |
+| `max_timeout_seconds` | `0` | Cap for explicit `timeout_seconds` on `bg_start`; `0` = uncapped (session lifetime is the bound). |
+| `notify` | `"observe"` | `"observe"` injects a drained completion summary at the agent's next iteration; `"off"` requires polling with `bg_status`. |
+| `on_session_end` | `"kill"` | Job fate at session end. Only `"kill"` is supported; there is no detach. |
+
+A project `odek.json` may only LOWER the numeric caps (same clamp philosophy
+as `limits`). Headless `odek run` and scheduled runs are single-session
+processes: background jobs end when the run ends. `/jobs` (REPL and Telegram)
+lists live jobs.
+
 ## odek init
 
 Create a config file template. The two scopes use **different templates** because project configs are untrusted — the loader ignores sensitive fields in `./odek.json` (see [Project overrides](#project-overrides-odekjson) above), so the local template only contains project-safe fields and loads warning-free.

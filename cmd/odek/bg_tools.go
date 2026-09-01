@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/bgproc"
+	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/events"
 	"github.com/BackendStack21/odek/internal/redact"
 )
@@ -38,17 +40,35 @@ type bgRuntime struct {
 	mgr      *bgproc.Manager
 	session  string
 	provider func() string // engine notice provider (drain-once)
+
+	// container is the sandbox container name, readable after construction
+	// (surfaces that start the sandbox after building tools bind it late,
+	// before the agent runs — jobs only spawn once the agent iterates).
+	container atomic.Value
+}
+
+// backgroundSettingsFromResolved maps the resolved background config onto
+// the runtime settings primitives.
+func backgroundSettingsFromResolved(resolved config.ResolvedConfig) BackgroundSettings {
+	b := resolved.Background
+	return BackgroundSettings{
+		Enabled:           b.Enabled,
+		MaxJobs:           b.MaxJobs,
+		MaxOutputBytes:    b.MaxOutputBytes,
+		MaxTimeoutSeconds: b.MaxTimeoutSeconds,
+		Notify:            b.Notify == "observe",
+	}
 }
 
 // newBackgroundRuntime builds the runtime for one surface. Returns nil when
 // background commands are disabled or the session id is empty — callers then
 // simply skip tool registration (the tools stay absent from the registry).
 //
-// containerName routes spawns through the sandbox wrapper (the shell tool's
-// docker-exec pidfile mechanism) when non-empty. emit, when non-nil,
-// receives bg_started / bg_exited runtime events (command content is never
-// included — only its SHA-256).
-func newBackgroundRuntime(s BackgroundSettings, sessionID, containerName string, emit func(events.Event)) *bgRuntime {
+// emit, when non-nil, receives bg_started / bg_exited runtime events
+// (command content is never included — only its SHA-256). extraObs, when
+// given, receives the same lifecycle callbacks (e.g. the Telegram chat
+// pusher) alongside the event observer.
+func newBackgroundRuntime(s BackgroundSettings, sessionID, containerName string, emit func(events.Event), extraObs ...bgproc.Observer) *bgRuntime {
 	if !s.Enabled || sessionID == "" {
 		return nil
 	}
@@ -65,15 +85,36 @@ func newBackgroundRuntime(s BackgroundSettings, sessionID, containerName string,
 	if s.MaxTimeoutSeconds > 0 {
 		cfg.MaxTimeout = time.Duration(s.MaxTimeoutSeconds) * time.Second
 	}
-	if containerName != "" {
-		cfg.SandboxWrap = func(command string) ([]string, func(), error) {
-			argv, followUp := wrapSandboxCommand(containerName, command)
-			return argv, followUp, nil
-		}
-	}
 	rt := &bgRuntime{session: sessionID}
+	if containerName != "" {
+		rt.container.Store(containerName)
+	}
+	// The wrap resolves the container per spawn so late binding works
+	// (surfaces that start the sandbox after building tools call
+	// SetContainer before the agent runs). Empty name = host mode, the
+	// same default the manager uses without a wrapper.
+	cfg.SandboxWrap = func(command string) ([]string, func(), error) {
+		name, _ := rt.container.Load().(string)
+		if name == "" {
+			return []string{"sh", "-c", command}, nil, nil
+		}
+		argv, followUp := wrapSandboxCommand(name, command)
+		return argv, followUp, nil
+	}
+	var obs bgproc.Observer
 	if emit != nil {
-		rt.mgr = bgproc.NewManager(cfg, &bgEventObserver{emit: emit})
+		obs = &bgEventObserver{emit: emit}
+	}
+	if len(extraObs) > 0 {
+		list := make([]bgproc.Observer, 0, len(extraObs)+1)
+		if obs != nil {
+			list = append(list, obs)
+		}
+		list = append(list, extraObs...)
+		obs = &bgObserverGroup{list: list}
+	}
+	if obs != nil {
+		rt.mgr = bgproc.NewManager(cfg, obs)
 	} else {
 		rt.mgr = bgproc.NewManager(cfg, nil)
 	}
@@ -81,6 +122,16 @@ func newBackgroundRuntime(s BackgroundSettings, sessionID, containerName string,
 		return rt.formatNotices(rt.mgr.DrainNotices(sessionID))
 	}
 	return rt
+}
+
+// SetContainer binds (or rebinds) the sandbox container after construction.
+// Surfaces that start the sandbox after building tools call this before the
+// agent runs. "" selects host mode.
+func (rt *bgRuntime) SetContainer(name string) {
+	if rt == nil {
+		return
+	}
+	rt.container.Store(name)
 }
 
 // Shutdown kills every running job of the process. Deferred at each surface
@@ -105,29 +156,50 @@ func (rt *bgRuntime) StopAll() []bgproc.Job {
 // even when the spawn was approved), so it is untrusted-wrapped; tails are
 // redacted before entering the context.
 func (rt *bgRuntime) formatNotices(notices []bgproc.Notice) string {
+	plain := rt.formatNoticesPlain(notices)
+	if plain == "" {
+		return ""
+	}
+	return wrapUntrusted(context.Background(), "bg", plain)
+}
+
+// formatNoticesPlain renders notices for any consumer. The model context
+// gets the untrusted-wrapped variant (formatNotices); humans get this plain
+// text. Tails are redacted; the manager already clamped them.
+func (rt *bgRuntime) formatNoticesPlain(notices []bgproc.Notice) string {
 	if len(notices) == 0 {
 		return ""
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "[bg] %d background job(s) finished since last check:", len(notices))
 	for _, n := range notices {
-		dur := n.Duration.Round(time.Second)
-		switch n.Status {
-		case bgproc.StatusExited:
-			fmt.Fprintf(&b, "\n- %s `%s` → exited (code %d) after %s", n.JobID, headString(n.Command, bgCommandHead), n.ExitCode, dur)
-		case bgproc.StatusFailed:
-			fmt.Fprintf(&b, "\n- %s `%s` → failed (exit %d) after %s", n.JobID, headString(n.Command, bgCommandHead), n.ExitCode, dur)
-		case bgproc.StatusTimeout:
-			fmt.Fprintf(&b, "\n- %s `%s` → timeout after %s", n.JobID, headString(n.Command, bgCommandHead), dur)
-		default:
-			fmt.Fprintf(&b, "\n- %s `%s` → %s after %s", n.JobID, headString(n.Command, bgCommandHead), n.Status, dur)
-		}
-		if n.Tail != "" {
-			fmt.Fprintf(&b, "\n  tail: %s", redact.RedactSecrets(n.Tail))
+		if line := formatOneNotice(n); line != "" {
+			b.WriteString("\n- ")
+			b.WriteString(line)
 		}
 	}
 	b.WriteString("\nFull output: bg_output(job_id, since). Status: bg_status(job_id). Stop: bg_stop(job_id).")
-	return wrapUntrusted(context.Background(), "bg", b.String())
+	return b.String()
+}
+
+// formatOneNotice renders a single job-exit line (redacted tail included).
+func formatOneNotice(n bgproc.Notice) string {
+	dur := n.Duration.Round(time.Second)
+	var line string
+	switch n.Status {
+	case bgproc.StatusExited:
+		line = fmt.Sprintf("%s `%s` → exited (code %d) after %s", n.JobID, headString(n.Command, bgCommandHead), n.ExitCode, dur)
+	case bgproc.StatusFailed:
+		line = fmt.Sprintf("%s `%s` → failed (exit %d) after %s", n.JobID, headString(n.Command, bgCommandHead), n.ExitCode, dur)
+	case bgproc.StatusTimeout:
+		line = fmt.Sprintf("%s `%s` → timeout after %s", n.JobID, headString(n.Command, bgCommandHead), dur)
+	default:
+		line = fmt.Sprintf("%s `%s` → %s after %s", n.JobID, headString(n.Command, bgCommandHead), n.Status, dur)
+	}
+	if n.Tail != "" {
+		line += "\n  tail: " + redact.RedactSecrets(n.Tail)
+	}
+	return line
 }
 
 // appendBackgroundTools registers the five bg_* tools when the runtime is
@@ -182,6 +254,27 @@ func (o *bgEventObserver) BGExited(n bgproc.Notice) {
 			"output_bytes": n.OutputBytes,
 		},
 	})
+}
+
+// bgObserverGroup fans lifecycle callbacks out to several observers.
+type bgObserverGroup struct {
+	list []bgproc.Observer
+}
+
+func (g *bgObserverGroup) BGStarted(j bgproc.Job) {
+	for _, o := range g.list {
+		if o != nil {
+			o.BGStarted(j)
+		}
+	}
+}
+
+func (g *bgObserverGroup) BGExited(n bgproc.Notice) {
+	for _, o := range g.list {
+		if o != nil {
+			o.BGExited(n)
+		}
+	}
 }
 
 func sha256Hex(s string) string {

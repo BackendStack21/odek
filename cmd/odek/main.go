@@ -1290,6 +1290,14 @@ const globalConfigTemplate = `{
     "max_steps": 12,
     "max_render_chars": 2000
   },
+  "background": {
+    "enabled": true,
+    "max_jobs": 8,
+    "max_output_bytes": 1048576,
+    "max_timeout_seconds": 0,
+    "notify": "observe",
+    "on_session_end": "kill"
+  },
   "interaction_mode": "engaging",
   "no_color": false,
   "no_agents": false,
@@ -1713,6 +1721,18 @@ func run(args []string) error {
 	var sandboxCleanup func() error
 	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfigFromResolved(resolved), nil)
 
+	// Background commands: the run IS the session (headless — jobs die at
+	// process exit). Container and events handler are bound after their
+	// setup below; bg jobs only spawn once the agent iterates.
+	var bgEmit func(events.Event)
+	bgRT := newBackgroundRuntime(backgroundSettingsFromResolved(resolved), "run-"+events.NewRunID(), "", func(ev events.Event) {
+		if bgEmit != nil {
+			bgEmit(ev)
+		}
+	})
+	defer bgRT.Shutdown()
+	tools = appendBackgroundTools(tools, bgRT)
+
 	// MCP server tools
 	var mcpCleanup func()
 	if len(resolved.MCPServers) > 0 {
@@ -1835,6 +1855,11 @@ func run(args []string) error {
 		return err
 	}
 	defer agent.Close()
+	if bgRT != nil {
+		bgEmit = eventHandler
+		bgRT.SetContainer(runContainerName)
+		agent.SetBackgroundNoticeProvider(bgRT.provider)
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()

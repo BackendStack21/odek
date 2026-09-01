@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek"
+	"github.com/BackendStack21/odek/internal/bgproc"
 	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/events"
@@ -459,6 +460,13 @@ func serveCmd(args []string) error {
 
 	memoryDir := expandHome("~/.odek/memory")
 	state := &serveState{startedAt: time.Now(), resolved: resolved}
+
+	// ONE background-command manager for the whole serve process: agents
+	// are per connection/run, but jobs must outlive them. Nil when the
+	// feature is disabled (or in sandbox mode — see newServeBGManager).
+	bgMgr := newServeBGManager(resolved)
+	setServeBGManager(bgMgr)
+
 	mux := newServeMux(serveMuxDeps{
 		Store:         store,
 		Resources:     resourceReg,
@@ -467,6 +475,7 @@ func serveCmd(args []string) error {
 		State:         state,
 		WsToken:       wsToken,
 		MemoryDir:     memoryDir,
+		BGManager:     bgMgr,
 	})
 
 	listener, err := net.Listen("tcp", addr)
@@ -516,6 +525,10 @@ type serveMuxDeps struct {
 	State         *serveState
 	WsToken       string
 	MemoryDir     string
+	// BGManager is the process-scoped background-command manager shared by
+	// all agents of this serve instance (nil = feature disabled). Injected
+	// so tests can mount the exact production routes with their own manager.
+	BGManager *bgproc.Manager
 }
 
 // newServeMux builds the odek serve HTTP mux: static UI + WebSocket + the
@@ -598,6 +611,13 @@ func newServeMux(d serveMuxDeps) *http.ServeMux {
 			handleRunByID()(w, r)
 		}
 	})))
+
+	// Background jobs — list/output/stop for the session's background
+	// commands (the bg_* tool family). Same apiAuth chain as every /api
+	// route; the session scope comes from session_id + X-Session-Token,
+	// like /api/cancel. See serve_jobs.go.
+	mux.Handle("/api/jobs", apiAuth(handleJobsList(store, d.BGManager)))
+	mux.Handle("/api/jobs/", apiAuth(handleJobByID(store, d.BGManager)))
 
 	// Observability + lifecycle.
 	mux.Handle("/api/events", apiAuth(handleEvents()))
@@ -784,7 +804,7 @@ func (c *wsDeltaCounters) snapshot() (reasoning, content int) {
 	return c.reasoning, c.content
 }
 
-func newServeAgent(resolved config.ResolvedConfig, system string, runKey string, sendFn func(v any) error, deltas *wsDeltaCounters) (*odek.Agent, func() error, func(), func() error, guard.Guard, *wsApprover, error) {
+func newServeAgent(resolved config.ResolvedConfig, system string, runKey string, sendFn func(v any) error, deltas *wsDeltaCounters) (*odek.Agent, *bgRuntime, func() error, func(), func() error, guard.Guard, *wsApprover, error) {
 	sm := skills.NewSkillManagerWithEmbedding(
 		expandHome("~/.odek/skills"),
 		"./.odek/skills",
@@ -795,14 +815,19 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 	approver := newWSApprover(sendFn)
 	resolved.Dangerous.Approver = approver
 
-	tools := builtinTools(resolved.Dangerous, sm, approver, resolved.MaxConcurrency, resolved.APIKey, toolConfigFromResolved(resolved), nil)
+	// Background commands: bind this agent to the process-scoped manager
+	// (nil when the feature is disabled — the bg_* tools then stay absent
+	// from the registry). The runtime's session is bound per prompt by
+	// handlePrompt, once the stable store session id is known.
+	bgRT := newServeBGRuntime(serveBG.Load(), backgroundSettingsFrom(resolved).Notify)
+	tools := builtinTools(resolved.Dangerous, sm, approver, resolved.MaxConcurrency, resolved.APIKey, toolConfigFromResolved(resolved), nil, bgRT)
 
 	// MCP server tools
 	var mcpCleanup func()
 	if len(resolved.MCPServers) > 0 {
 		cl, err := loadMCPTools(resolved, &tools)
 		if err != nil {
-			return nil, nil, nil, nil, nil, approver, fmt.Errorf("mcp: %w", err)
+			return nil, nil, nil, nil, nil, nil, approver, fmt.Errorf("mcp: %w", err)
 		}
 		mcpCleanup = cl
 	}
@@ -840,7 +865,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 		var sandboxErr error
 		sbContainerName, sandboxCleanup, sandboxErr = setupSandbox(tools, cfg)
 		if sandboxErr != nil {
-			return nil, nil, nil, nil, nil, approver, fmt.Errorf("sandbox: %w", sandboxErr)
+			return nil, nil, nil, nil, nil, nil, approver, fmt.Errorf("sandbox: %w", sandboxErr)
 		}
 		_ = sbContainerName // not used in serve mode
 	} else {
@@ -867,7 +892,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 	// Build the shared prompt-injection guard for this connection.
 	injectionGuard, err := guard.New(&resolved.Guard)
 	if err != nil {
-		return nil, nil, nil, nil, nil, approver, fmt.Errorf("guard: %w", err)
+		return nil, nil, nil, nil, nil, nil, approver, fmt.Errorf("guard: %w", err)
 	}
 	guardCleanup := func() error {
 		if injectionGuard != nil {
@@ -988,10 +1013,16 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 		if mcpCleanup != nil {
 			mcpCleanup()
 		}
-		return nil, nil, nil, nil, nil, approver, err
+		return nil, nil, nil, nil, nil, nil, approver, err
 	}
 
-	return agent, sandboxCleanup, mcpCleanup, guardCleanup, injectionGuard, approver, nil
+	// Background-job completion notices are drained at iteration start
+	// (unless background.notify == "off", which leaves the provider nil).
+	if bgRT != nil && bgRT.provider != nil {
+		agent.SetBackgroundNoticeProvider(bgRT.provider)
+	}
+
+	return agent, bgRT, sandboxCleanup, mcpCleanup, guardCleanup, injectionGuard, approver, nil
 }
 
 // serveDeltaHandler builds the loop DeltaHandler for a serve connection:
@@ -1136,7 +1167,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 
 	// Create ONE agent per WebSocket connection — provides buffer
 	// continuity across turns within the same session.
-	agent, sandboxCleanup, mcpCleanup, guardCleanup, injectionGuard, approver, err := newServeAgent(resolved, system, connInfo.ID, func(v any) error {
+	agent, bgRT, sandboxCleanup, mcpCleanup, guardCleanup, injectionGuard, approver, err := newServeAgent(resolved, system, connInfo.ID, func(v any) error {
 		writeWSJSON(conn, v)
 		return nil
 	}, &deltas)
@@ -1314,6 +1345,9 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 				}
 				currentSession = sess
 				connInfo.setLive(sess.ID, false)
+				// Background jobs started from here on belong to the newly
+				// attached session (same binding rule as handlePrompt).
+				bindBGRuntime(bgRT, sess.ID)
 				if mm := agent.Memory(); mm != nil {
 					mm.ClearBuffer()
 					if len(sess.Buffer) > 0 {
@@ -1421,7 +1455,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 
 		wsSend := func(m map[string]any) { writeWSJSON(conn, m) }
 		connInfo.setLive(msg.SessionID, true)
-		currentSession = handlePrompt(promptCtx, wsSend, store, resources, resolved, agent, injectionGuard, currentSession, msg, &sessionInputTokens, &sessionOutputTokens, promptCancelWithApproval, &deltas)
+		currentSession = handlePrompt(promptCtx, wsSend, store, resources, resolved, agent, injectionGuard, currentSession, msg, &sessionInputTokens, &sessionOutputTokens, promptCancelWithApproval, &deltas, bgRT)
 		connInfo.recordPrompt()
 		sid := ""
 		if currentSession != nil {
@@ -1521,6 +1555,7 @@ func handlePrompt(
 	sessionInputTokens, sessionOutputTokens *int,
 	promptCancel context.CancelFunc,
 	deltas *wsDeltaCounters,
+	bg *bgRuntime,
 ) *session.Session {
 	prompt := msg.Content
 	sessionID := msg.SessionID
@@ -1674,6 +1709,10 @@ func handlePrompt(
 	// can filter by session.
 	if sess != nil {
 		agent.SetEventSessionID(sess.ID)
+		// Bind background jobs to the stable store session id so they
+		// outlive this turn, survive across runs in the same session, and
+		// stay visible to /api/jobs under this session's token.
+		bindBGRuntime(bg, sess.ID)
 	}
 
 	// Send session info

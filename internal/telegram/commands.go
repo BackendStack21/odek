@@ -40,6 +40,11 @@ func init() {
 			Handler:     statsHandler,
 		},
 		{
+			Command:     "jobs",
+			Description: "List background jobs for this chat",
+			Handler:     jobsHandler,
+		},
+		{
 			Command:     "stop",
 			Description: "Cancel running agent task",
 			Handler:     stopHandler,
@@ -180,6 +185,11 @@ func restartHandler(args string) (string, error) {
 func sessionsHandler(args string) (string, error) { return "", nil }
 
 func resumeHandler(args string) (string, error) { return "", nil }
+
+// jobsHandler is intercepted in the bot's OnCommand callback (it needs the
+// chat-scoped background runtime), so the descriptor handler is a no-op —
+// like /sessions and /resume.
+func jobsHandler(args string) (string, error) { return "", nil }
 
 func pruneHandler(args string) (string, error) { return "", nil }
 

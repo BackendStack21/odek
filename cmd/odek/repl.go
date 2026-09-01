@@ -8,9 +8,12 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BackendStack21/odek"
+	"github.com/BackendStack21/odek/internal/bgproc"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/llm"
@@ -76,6 +79,22 @@ func replCmd(args []string) error {
 		fmt.Fprintf(os.Stderr, "odek: session was sandboxed — enabling sandbox\n")
 	}
 
+	// Create session if not resuming one — before tools are built so the
+	// background runtime can bind to the session id (bg_* jobs are
+	// session-scoped: they outlive turns and die at session end).
+	if sess == nil {
+		sess, err = store.Create(
+			[]llm.Message{{Role: "system", Content: systemMessage}},
+			resolved.Model,
+			"interactive session",
+		)
+		if err != nil {
+			return fmt.Errorf("create session: %w", err)
+		}
+		sess.Sandbox = resolved.Sandbox
+		store.Save(sess)
+	}
+
 	// Build tools
 	sm := skills.NewSkillManagerWithEmbedding(
 		expandHome("~/.odek/skills"),
@@ -95,14 +114,11 @@ func replCmd(args []string) error {
 		defer mcpCleanup()
 	}
 
-	// Apply tool filtering based on configuration (after MCP tools are loaded
-	// so disabled/enabled lists can reference MCP tool names too).
-	tools = filterBuiltinTools(tools, resolved.Tools, nil)
-
 	var sandboxCleanup func() error
 
 	// Sandbox (H-8): defaults ON with a loud unsandboxed fallback; explicit
-	// --sandbox keeps the hard-fail behavior.
+	// --sandbox keeps the hard-fail behavior. Runs before tool filtering so
+	// the background runtime can route spawns through the same container.
 	sbCfg := sandboxConfig{
 		Image:    resolved.SandboxImage,
 		Network:  resolved.SandboxNetwork,
@@ -113,13 +129,24 @@ func replCmd(args []string) error {
 		Env:      resolved.SandboxEnv,
 		Volumes:  resolved.SandboxVolumes,
 	}
-	_, cleanup, sandboxed, err := ensureSandbox(resolved, tools, sbCfg)
-	if err != nil {
-		return fmt.Errorf("sandbox: %w", err)
+	bgName, bgCleanup, bgSandboxed, bgErr := ensureSandbox(resolved, tools, sbCfg)
+	if bgErr != nil {
+		return fmt.Errorf("sandbox: %w", bgErr)
 	}
-	if sandboxed {
-		sandboxCleanup = cleanup
+	if bgSandboxed {
+		sandboxCleanup = bgCleanup
 	}
+
+	// Background commands: session-scoped runtime — jobs outlive turns but
+	// die at session end / process exit (deferred Shutdown). Nil when the
+	// section is disabled; the bg_* tools then simply stay absent.
+	bgRT := newBackgroundRuntime(backgroundSettingsFromResolved(resolved), sess.ID, bgName, nil)
+	defer bgRT.Shutdown()
+	tools = appendBackgroundTools(tools, bgRT)
+
+	// Apply tool filtering based on configuration (after MCP tools are loaded
+	// so disabled/enabled lists can reference MCP tool names too).
+	tools = filterBuiltinTools(tools, resolved.Tools, nil)
 
 	// Renderer
 	modelLabel := odek.ProfileLabel(resolved.Model)
@@ -171,25 +198,18 @@ func replCmd(args []string) error {
 	}
 	defer agent.Close()
 
+	// Background completion notices: drained at the top of every iteration
+	// and injected as an observe-phase message (background.notify="observe";
+	// "off" keeps the agent on explicit bg_status/bg_output polling).
+	if bgRT != nil && resolved.Background.Notify == "observe" {
+		agent.SetBackgroundNoticeProvider(bgRT.provider)
+	}
+
 	// Restore buffer from session if resuming
 	if sess != nil && len(sess.Buffer) > 0 {
 		if mm := agent.Memory(); mm != nil {
 			mm.RestoreBuffer(sess.Buffer)
 		}
-	}
-
-	// Create session if not resuming one
-	if sess == nil {
-		sess, err = store.Create(
-			[]llm.Message{{Role: "system", Content: systemMessage}},
-			resolved.Model,
-			"interactive session",
-		)
-		if err != nil {
-			return fmt.Errorf("create session: %w", err)
-		}
-		sess.Sandbox = resolved.Sandbox
-		store.Save(sess)
 	}
 
 	// Persist per-turn progress so an interrupted turn (Ctrl-C) survives up
@@ -248,7 +268,7 @@ func replCmd(args []string) error {
 		}
 
 		if strings.HasPrefix(input, "/") {
-			if handleREPLCommand(input, sess) {
+			if handleREPLCommand(input, sess, bgRT) {
 				break
 			}
 			turn++
@@ -340,12 +360,12 @@ func replCmd(args []string) error {
 // completion + docs source of truth). Only commands handleREPLCommand
 // actually handles may appear here.
 var replCommands = []string{
-	"/exit", "/quit", "/help", "/info",
+	"/exit", "/quit", "/help", "/info", "/jobs", "/jobs stop",
 }
 
 // handleREPLCommand processes a REPL slash command.
 // Returns true if the session should exit.
-func handleREPLCommand(input string, sess *session.Session) bool {
+func handleREPLCommand(input string, sess *session.Session, rt *bgRuntime) bool {
 	switch strings.ToLower(input) {
 	case "/exit", "/quit":
 		fmt.Fprintf(os.Stderr, "Session %s saved. Continue later with: odek repl --id %s\n", sess.ID, sess.ID)
@@ -355,8 +375,14 @@ func handleREPLCommand(input string, sess *session.Session) bool {
   /exit, /quit    Exit REPL (session is saved)
   /help           Show this help
   /info           Show session info
+  /jobs           List background jobs (id, status, runtime, exit, command)
+  /jobs stop <id> Stop one background job
 
 `)
+	case "/jobs":
+		printBackgroundJobs(os.Stderr, rt)
+	case "/jobs stop":
+		fmt.Fprintf(os.Stderr, "usage: /jobs stop <id>  (see /jobs for ids)\n")
 	case "/info":
 		fmt.Fprintf(os.Stderr, "Session: %s\n", sess.ID)
 		fmt.Fprintf(os.Stderr, "Model:   %s\n", sess.Model)
@@ -365,7 +391,51 @@ func handleREPLCommand(input string, sess *session.Session) bool {
 			fmt.Fprintf(os.Stderr, "Sandbox: yes\n")
 		}
 	default:
+		if strings.HasPrefix(strings.ToLower(input), "/jobs stop ") {
+			stopBackgroundJob(rt, strings.TrimSpace(input[len("/jobs stop "):]))
+			return false
+		}
 		fmt.Fprintf(os.Stderr, "Unknown command: %s  (/help for commands)\n", input)
 	}
 	return false
+}
+
+// printBackgroundJobs renders the session's background jobs as a table:
+// id, status, runtime, exit code, command head.
+func printBackgroundJobs(w io.Writer, rt *bgRuntime) {
+	if rt == nil {
+		fmt.Fprintln(w, "Background commands are disabled (background.enabled=false).")
+		return
+	}
+	jobs := rt.mgr.List(rt.session)
+	if len(jobs) == 0 {
+		fmt.Fprintln(w, "No background jobs in this session.")
+		return
+	}
+	fmt.Fprintf(w, "%-8s %-9s %10s  %-4s  %s\n", "ID", "STATUS", "RUNTIME", "EXIT", "COMMAND")
+	for _, j := range jobs {
+		exit := "-"
+		if j.Status == bgproc.StatusExited || j.Status == bgproc.StatusFailed {
+			exit = strconv.Itoa(j.ExitCode)
+		}
+		d := j.EndedAt.Sub(j.StartedAt)
+		if j.EndedAt.IsZero() {
+			d = time.Since(j.StartedAt)
+		}
+		fmt.Fprintf(w, "%-8s %-9s %9ss  %-4s  %s\n", j.ID, j.Status, d.Round(time.Second), exit, headString(j.Command, bgCommandHead))
+	}
+}
+
+// stopBackgroundJob stops one background job by id ("/jobs stop <id>").
+func stopBackgroundJob(rt *bgRuntime, id string) {
+	if rt == nil {
+		fmt.Fprintln(os.Stderr, "Background commands are disabled.")
+		return
+	}
+	job, ok := rt.mgr.Stop(rt.session, id)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "No background job %q in this session.\n", id)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "Job %s: %s\n", job.ID, job.Status)
 }

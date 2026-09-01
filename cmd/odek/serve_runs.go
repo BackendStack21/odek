@@ -724,7 +724,7 @@ func startServeRun(
 	run.cancel = cancel
 
 	var deltas wsDeltaCounters
-	agent, sandboxCleanup, mcpCleanup, guardCleanup, injectionGuard, approver, err := newServeAgent(resolved, system, run.ID, func(v any) error {
+	agent, bgRT, sandboxCleanup, mcpCleanup, guardCleanup, injectionGuard, approver, err := newServeAgent(resolved, system, run.ID, func(v any) error {
 		// wsApprover sends its typed approvalRequest struct; everything
 		// else arrives as map[string]any.
 		if ar, ok := v.(approvalRequest); ok {
@@ -797,7 +797,7 @@ func startServeRun(
 		defer cleanup()
 		var sessionIn, sessionOut int
 		serveLogf("run_started run_id=%s", run.ID)
-		sess := handlePrompt(ctx, func(m map[string]any) { _ = run.record(m) }, store, resources, resolved, agent, injectionGuard, nil, msg, &sessionIn, &sessionOut, cancelWithApproval, &deltas)
+		sess := handlePrompt(ctx, func(m map[string]any) { _ = run.record(m) }, store, resources, resolved, agent, injectionGuard, nil, msg, &sessionIn, &sessionOut, cancelWithApproval, &deltas, bgRT)
 		run.mu.Lock()
 		if sess != nil {
 			run.SessionID = sess.ID

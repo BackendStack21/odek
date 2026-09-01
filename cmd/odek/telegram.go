@@ -441,6 +441,7 @@ func telegramCmd(args []string) error {
 		// The current session is preserved as a timestamped archive file
 		// so it can be revisited via `odek session list`.
 		if cmdName == "new" {
+			dropBGRuntimeForChat(chatID)
 			resetChatForNew(chatID, sessionManager, handler, handlerLog)
 			var b strings.Builder
 			b.WriteString("🔄 *Session archived, starting fresh*\n\n")
@@ -453,6 +454,16 @@ func telegramCmd(args []string) error {
 			}
 			b.WriteString("\n_Send a message to begin._")
 			return b.String(), nil
+		}
+
+		// Handle /jobs — list this chat's background jobs.
+		if cmdName == "jobs" {
+			if cached, ok := bgChatRuntimes.Load(chatID); ok {
+				if text := formatBGJobsForChat(cached.(*bgRuntime)); text != "" {
+					return text, nil
+				}
+			}
+			return "No background jobs for this chat. Ask me to run something in the background.", nil
 		}
 
 		// Handle /stats — read from session store.
@@ -891,6 +902,7 @@ func telegramCmd(args []string) error {
 	// the lock, this defers to it instead of double-firing.
 	stopScheduler := startSchedulerForBot(ctx, bot, resolved, systemMessage, handlerLog, scheduleStore, sessionManager)
 	defer stopScheduler()
+	defer shutdownAllBGRuntimes()
 
 	// 16c. Start the storage-maintenance janitor (expired sessions, audit
 	// records, plans, skill skips, log rotation), tied to the bot's lifetime.
@@ -1352,7 +1364,9 @@ func handleChatMessage(
 	}
 
 	// Build the agent with Telegram approver.
+	bgRT := bgRuntimeForChat(chatID, resolved, sess.ID, bot)
 	tools := builtinTools(resolved.Dangerous, nil, approver, resolved.MaxConcurrency, resolved.APIKey, toolConfigFromResolved(resolved), sessionManager.Store)
+	tools = appendBackgroundTools(tools, bgRT)
 
 	// Apply tool filtering based on configuration, but preserve Telegram's
 	// required tools so the bot can always respond and ask clarifications.
@@ -1864,6 +1878,9 @@ func handleChatMessage(
 		return
 	}
 	defer agent.Close()
+	if bgRT != nil {
+		agent.SetBackgroundNoticeProvider(bgRT.provider)
+	}
 
 	// Create a cancellable context so /stop can interrupt the agent loop.
 	// Also apply a max run timeout to prevent runaway agents.
