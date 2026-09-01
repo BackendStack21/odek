@@ -358,8 +358,12 @@ func newSubagentTelemetryRelay(send func(v any) error, runKey string) func(taskI
 // but model-controlled text — same treatment as the log relay).
 func redactGoal(goal string) string {
 	goal = redact.RedactSecrets(goal)
-	if len(goal) > maxSubagentRegistryGoalChars {
-		goal = goal[:maxSubagentRegistryGoalChars]
+	// Rune-safe truncation: the constant promises chars, and a byte slice
+	// at the boundary split multi-byte runes, corrupting the goal text with
+	// invalid UTF-8 exactly when the clamp engaged (long goals are the
+	// normal case for real tasks).
+	if r := []rune(goal); len(r) > maxSubagentRegistryGoalChars {
+		goal = string(r[:maxSubagentRegistryGoalChars])
 	}
 	return goal
 }
