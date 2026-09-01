@@ -1290,6 +1290,14 @@ const globalConfigTemplate = `{
     "max_steps": 12,
     "max_render_chars": 2000
   },
+  "background": {
+    "enabled": true,
+    "max_jobs": 8,
+    "max_output_bytes": 1048576,
+    "max_timeout_seconds": 0,
+    "notify": "observe",
+    "on_session_end": "kill"
+  },
   "interaction_mode": "engaging",
   "no_color": false,
   "no_agents": false,
@@ -1713,6 +1721,18 @@ func run(args []string) error {
 	var sandboxCleanup func() error
 	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfigFromResolved(resolved), nil)
 
+	// Background commands: the run IS the session (headless — jobs die at
+	// process exit). Container and events handler are bound after their
+	// setup below; bg jobs only spawn once the agent iterates.
+	var bgEmit func(events.Event)
+	bgRT := newBackgroundRuntime(backgroundSettingsFromResolved(resolved), "run-"+events.NewRunID(), "", func(ev events.Event) {
+		if bgEmit != nil {
+			bgEmit(ev)
+		}
+	})
+	defer bgRT.Shutdown()
+	tools = appendBackgroundTools(tools, bgRT)
+
 	// MCP server tools
 	var mcpCleanup func()
 	if len(resolved.MCPServers) > 0 {
@@ -1835,6 +1855,11 @@ func run(args []string) error {
 		return err
 	}
 	defer agent.Close()
+	if bgRT != nil {
+		bgEmit = eventHandler
+		bgRT.SetContainer(runContainerName)
+		agent.SetBackgroundNoticeProvider(bgRT.provider)
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
@@ -2268,7 +2293,7 @@ func toolConfigFromResolved(resolved config.ResolvedConfig) toolConfig {
 	}
 }
 
-func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver danger.Approver, maxConcurrency int, apiKey string, tcfg toolConfig, store *session.Store) []odek.Tool {
+func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver danger.Approver, maxConcurrency int, apiKey string, tcfg toolConfig, store *session.Store, bg ...*bgRuntime) []odek.Tool {
 	// Sub-agent execution defaults (M1.4): the operator subagent section
 	// overrides the built-in defaults; concurrency falls back to the
 	// global max_concurrency when the section does not set it.
@@ -2297,11 +2322,12 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 	// the channel (never fail agent startup over it).
 	artifactsRoot, _ := artifactsHome()
 
+	shell := &shellTool{
+		dangerousConfig: dc,
+		approver:        approver,
+	}
 	tools := []odek.Tool{
-		&shellTool{
-			dangerousConfig: dc,
-			approver:        approver,
-		},
+		shell,
 		&delegateTasksTool{
 			maxConcurrency: subConcurrency,
 			sharedSem:      sharedChildSem(subConcurrency),
@@ -2384,10 +2410,14 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 		)
 	}
 
+	// Background commands: registered only when the surface constructed a
+	// runtime (background.enabled, session-bound). Absent ⇒ clean tool list.
+	if len(bg) > 0 {
+		tools = appendBackgroundTools(tools, bg[0])
+	}
+
 	return tools
 }
-
-// filterBuiltinTools applies the configured tools.enabled / tools.disabled
 // lists to a slice of tools. Unknown names are ignored. Required tools are
 // always preserved.
 func filterBuiltinTools(tools []odek.Tool, cfg config.ToolConfig, required map[string]bool) []odek.Tool {

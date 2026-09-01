@@ -1129,6 +1129,17 @@ func (a *Agent) SetMessagesPersistCallback(cb loop.MessagesPersistCallback) {
 	a.engine.SetMessagesPersistCallback(cb)
 }
 
+// SetBackgroundNoticeProvider registers a provider drained at the top of
+// every iteration; its return value is injected as an observe-phase message
+// (used for background-command completion notices). An empty return injects
+// nothing. Safe to call between RunWithMessages calls.
+func (a *Agent) SetBackgroundNoticeProvider(fn func() string) {
+	if a == nil || a.engine == nil {
+		return
+	}
+	a.engine.SetBackgroundNoticeProvider(fn)
+}
+
 // shouldRegisterTool reports whether a built-in tool name should be registered
 // given a ToolFilterConfig. If Enabled is non-nil, the name must be present.
 // The name must not be present in Disabled.

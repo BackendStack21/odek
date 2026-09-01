@@ -298,6 +298,66 @@ func DefaultPlanningConfig() PlanningConfig {
 	return PlanningConfig{Enabled: true, MaxSteps: 12, MaxRenderChars: 2000}
 }
 
+// BackgroundFileConfig is the "background" section of odek.json. Pointer
+// fields distinguish "not set" from explicit values so partial sections
+// merge field-by-field across the global/project layers.
+type BackgroundFileConfig struct {
+	Enabled           *bool   `json:"enabled,omitempty"`
+	MaxJobs           *int    `json:"max_jobs,omitempty"`
+	MaxOutputBytes    *int    `json:"max_output_bytes,omitempty"`
+	MaxTimeoutSeconds *int    `json:"max_timeout_seconds,omitempty"`
+	Notify            *string `json:"notify,omitempty"`
+	OnSessionEnd      *string `json:"on_session_end,omitempty"`
+}
+
+// BackgroundConfig is the resolved background-commands configuration
+// (docs/CONFIG.md). It gates the bg_* tool family (bg_start, bg_list,
+// bg_status, bg_output, bg_stop): shell commands that run detached from the
+// conversation and die when the owning session ends.
+type BackgroundConfig struct {
+	// Enabled is the master switch: false removes the bg_* tools from
+	// every surface registry.
+	Enabled bool
+	// MaxJobs caps concurrent running jobs per session; further bg_start
+	// calls fail with a job-limit error.
+	MaxJobs int
+	// MaxOutputBytes caps the in-memory output ring per job. Output is
+	// bounded in memory only — never spilled to disk.
+	MaxOutputBytes int
+	// MaxTimeoutSeconds caps a job's runtime; 0 = uncapped (the job runs
+	// until it exits or the session ends).
+	MaxTimeoutSeconds int
+	// Notify controls completion notices: "observe" (default) injects a
+	// drained completion summary at the next iteration; "off" disables
+	// injection (the agent must poll with bg_status/bg_output).
+	Notify string
+	// OnSessionEnd is the job fate at session end: "kill" (the only
+	// supported value in v1) — every running job is killed; there is no
+	// detach.
+	OnSessionEnd string
+}
+
+// Valid notify / on_session_end values.
+const (
+	backgroundNotifyObserve  = "observe"
+	backgroundNotifyOff      = "off"
+	backgroundSessionEndKill = "kill"
+)
+
+// DefaultBackgroundConfig returns the shipped defaults: enabled, 8 jobs,
+// 1 MiB output ring per job, no timeout cap (session lifetime is the
+// bound), observe notices, kill-on-session-end.
+func DefaultBackgroundConfig() BackgroundConfig {
+	return BackgroundConfig{
+		Enabled:           true,
+		MaxJobs:           8,
+		MaxOutputBytes:    1 << 20,
+		MaxTimeoutSeconds: 0,
+		Notify:            backgroundNotifyObserve,
+		OnSessionEnd:      backgroundSessionEndKill,
+	}
+}
+
 // FileConfig is the JSON schema used by ~/.odek/config.json and ./odek.json.
 // Pointer booleans distinguish "explicitly set to false" from "not set".
 type FileConfig struct {
@@ -327,6 +387,12 @@ type FileConfig struct {
 	// The global config may set anything; the project config may set
 	// enabled:false and may only LOWER the caps (see clampProjectPlanning).
 	Planning *PlanningFileConfig `json:"planning,omitempty"`
+
+	// Background configures the bg_* tool family (background shell jobs
+	// scoped to the agent session). The global config may set anything;
+	// the project config may set enabled:false / notify:"off" and may
+	// only LOWER the numeric caps (see clampProjectBackground).
+	Background *BackgroundFileConfig `json:"background,omitempty"`
 
 	System string `json:"system,omitempty"`
 
@@ -493,6 +559,10 @@ type ResolvedConfig struct {
 
 	// Planning is the resolved planning configuration (docs/PLANNING.md).
 	Planning PlanningConfig
+
+	// Background is the resolved background-commands configuration
+	// (bg_* tool family; docs/CONFIG.md). Defaults on.
+	Background BackgroundConfig
 	System   string
 
 	// SandboxImage is the Docker image for the sandbox container.
@@ -1416,6 +1486,12 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	// globally-disabled feature or raise an explicitly-set global cap.
 	clampProjectPlanning(global.Planning, project.Planning)
 
+	// Background ("background" section): same clamp philosophy — a repo may
+	// disable or tighten its own background jobs (notify off, fewer jobs,
+	// smaller output rings), but cannot re-enable a globally-disabled
+	// feature, raise an operator cap, or re-enable notices.
+	clampProjectBackground(global.Background, project.Background)
+
 	// Capture which sandbox knobs the project requested, before the overlay
 	// hides them behind CLI/env values. This drives the approval gate in cmd/odek.
 	var projectSandboxOverride ProjectSandboxOverride
@@ -2218,6 +2294,54 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	case resolved.Planning.MaxRenderChars > planningMaxRenderChars:
 		resolved.Planning.MaxRenderChars = planningMaxRenderChars
 	}
+	// Background defaults to ON (docs/CONFIG.md): the bg_* tool family
+	// registers on every session-bound surface. Invalid enum values fall
+	// back to their defaults with a warning; non-positive numeric values
+	// fall back to the shipped defaults, mirroring the runtime's own
+	// fallback (newBackgroundRuntime).
+	resolved.Background = DefaultBackgroundConfig()
+	if cfg.Background != nil {
+		if cfg.Background.Enabled != nil {
+			resolved.Background.Enabled = *cfg.Background.Enabled
+		}
+		if cfg.Background.MaxJobs != nil {
+			resolved.Background.MaxJobs = *cfg.Background.MaxJobs
+		}
+		if cfg.Background.MaxOutputBytes != nil {
+			resolved.Background.MaxOutputBytes = *cfg.Background.MaxOutputBytes
+		}
+		if cfg.Background.MaxTimeoutSeconds != nil {
+			resolved.Background.MaxTimeoutSeconds = *cfg.Background.MaxTimeoutSeconds
+		}
+		if cfg.Background.Notify != nil {
+			resolved.Background.Notify = *cfg.Background.Notify
+		}
+		if cfg.Background.OnSessionEnd != nil {
+			resolved.Background.OnSessionEnd = *cfg.Background.OnSessionEnd
+		}
+	}
+	switch resolved.Background.Notify {
+	case backgroundNotifyObserve, backgroundNotifyOff:
+		// valid
+	default:
+		fmt.Fprintf(os.Stderr, "odek: warning: background.notify=%q is invalid — falling back to %q\n", resolved.Background.Notify, backgroundNotifyObserve)
+		resolved.Background.Notify = backgroundNotifyObserve
+	}
+	if resolved.Background.OnSessionEnd != backgroundSessionEndKill {
+		// v1 ships kill-only: background jobs never outlive the session.
+		// Reject any other value with a warning instead of failing startup.
+		fmt.Fprintf(os.Stderr, "odek: warning: background.on_session_end=%q is not supported (only %q in v1) — falling back to %q\n", resolved.Background.OnSessionEnd, backgroundSessionEndKill, backgroundSessionEndKill)
+		resolved.Background.OnSessionEnd = backgroundSessionEndKill
+	}
+	if resolved.Background.MaxJobs <= 0 {
+		resolved.Background.MaxJobs = DefaultBackgroundConfig().MaxJobs
+	}
+	if resolved.Background.MaxOutputBytes <= 0 {
+		resolved.Background.MaxOutputBytes = DefaultBackgroundConfig().MaxOutputBytes
+	}
+	if resolved.Background.MaxTimeoutSeconds < 0 {
+		resolved.Background.MaxTimeoutSeconds = 0 // negative = uncapped
+	}
 	if cfg.SandboxReadonly != nil {
 		resolved.SandboxReadonly = *cfg.SandboxReadonly
 	}
@@ -2793,6 +2917,42 @@ func clampProjectPlanning(global, project *PlanningFileConfig) {
 	project.MaxRenderChars = clampInt("max_render_chars", global.MaxRenderChars, project.MaxRenderChars)
 }
 
+// clampProjectBackground enforces the background-section merge rule, the same
+// philosophy as planning: the untrusted project ./odek.json may disable the
+// feature, silence notices, and LOWER the numeric caps, but cannot re-enable
+// a globally-disabled feature, re-enable globally-silenced notices, or raise
+// an operator-set cap. When the global config carries no background section,
+// project values apply freely — they can only deviate from the defaults, not
+// override an operator decision.
+func clampProjectBackground(global, project *BackgroundFileConfig) {
+	if project == nil || global == nil {
+		return
+	}
+	if global.Enabled != nil && !*global.Enabled && project.Enabled != nil && *project.Enabled {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring background.enabled=true from project config (%s) — background commands are disabled in ~/.odek/config.json\n", ProjectConfigPath())
+		project.Enabled = nil // global-off wins
+	}
+	if global.Notify != nil && *global.Notify == backgroundNotifyOff &&
+		project.Notify != nil && *project.Notify == backgroundNotifyObserve {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring background.notify=%q from project config (%s) — notices are off in ~/.odek/config.json\n", *project.Notify, ProjectConfigPath())
+		project.Notify = nil // global-off wins
+	}
+	clampInt := func(name string, g, p *int) *int {
+		switch {
+		case g == nil || p == nil:
+			return p // nothing to clamp against / nothing requested
+		case *p > *g:
+			fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring background.%s=%d from project config (%s) — it would raise the global cap %d\n", name, *p, ProjectConfigPath(), *g)
+			return g
+		default:
+			return p // lowered or equal — allowed
+		}
+	}
+	project.MaxJobs = clampInt("max_jobs", global.MaxJobs, project.MaxJobs)
+	project.MaxOutputBytes = clampInt("max_output_bytes", global.MaxOutputBytes, project.MaxOutputBytes)
+	project.MaxTimeoutSeconds = clampInt("max_timeout_seconds", global.MaxTimeoutSeconds, project.MaxTimeoutSeconds)
+}
+
 func overlayFile(base, override FileConfig) FileConfig {
 	if override.Model != "" {
 		base.Model = override.Model
@@ -2907,6 +3067,30 @@ func overlayFile(base, override FileConfig) FileConfig {
 		}
 		if o.MaxRenderChars != nil {
 			b.MaxRenderChars = o.MaxRenderChars
+		}
+	}
+	if override.Background != nil {
+		if base.Background == nil {
+			base.Background = &BackgroundFileConfig{}
+		}
+		o, b := override.Background, base.Background
+		if o.Enabled != nil {
+			b.Enabled = o.Enabled
+		}
+		if o.MaxJobs != nil {
+			b.MaxJobs = o.MaxJobs
+		}
+		if o.MaxOutputBytes != nil {
+			b.MaxOutputBytes = o.MaxOutputBytes
+		}
+		if o.MaxTimeoutSeconds != nil {
+			b.MaxTimeoutSeconds = o.MaxTimeoutSeconds
+		}
+		if o.Notify != nil {
+			b.Notify = o.Notify
+		}
+		if o.OnSessionEnd != nil {
+			b.OnSessionEnd = o.OnSessionEnd
 		}
 	}
 	if override.MaxConcurrency > 0 {

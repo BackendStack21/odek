@@ -177,7 +177,7 @@ func TestRED_REPLCompletionsAreImplemented(t *testing.T) {
 	}()
 
 	for _, cmd := range advertised {
-		handleREPLCommand(cmd, sess)
+		handleREPLCommand(cmd, sess, nil)
 	}
 	w.Close()
 	<-done

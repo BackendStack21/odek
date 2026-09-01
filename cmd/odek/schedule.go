@@ -688,6 +688,12 @@ func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system
 
 	tools := builtinTools(dangerCfg, nil, nil, resolved.MaxConcurrency, resolved.APIKey, toolConfigFromResolved(resolved), nil)
 
+	// Background commands for scheduled runs: headless semantics — jobs die
+	// when the run ends (process-scoped key, Shutdown below).
+	bgRT := newBackgroundRuntime(backgroundSettingsFromResolved(resolved), fmt.Sprintf("sched-%d", time.Now().UnixNano()), "", nil)
+	defer bgRT.Shutdown()
+	tools = appendBackgroundTools(tools, bgRT)
+
 	tools = append(tools, mcpTools...)
 
 	// Apply tool filtering based on configuration (after MCP tools are appended
@@ -740,6 +746,9 @@ func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system
 		return "", 0, err
 	}
 	defer agent.Close()
+	if bgRT != nil {
+		agent.SetBackgroundNoticeProvider(bgRT.provider)
+	}
 
 	// Use agent.Run (not RunWithMessages): the engine prepends its stored system
 	// message — which odek.New built as RuntimeContext + SystemMessage — so the

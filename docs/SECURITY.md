@@ -570,6 +570,26 @@ Defaults: `FrictionThreshold=3`, `FrictionWindow=60s`. To opt out (TTYApprover o
 
 ---
 
+### Background commands (`bg_*`)
+
+Background jobs inherit the shell tool's security model with no downgrade:
+
+- **Spawn-time classification** — `bg_start` classifies its embedded command
+  through the same danger classifier as `shell` (including unread-script
+  gating and `odek` self-invocation as `system_write`); backgrounding never
+  reduces a risk class. Lifecycle tools (`bg_status`, `bg_output`, `bg_stop`,
+  `bg_list`) execute no new code and are treated as safe reads.
+- **Session-scoped ownership** — every job-addressing call is bound to the
+  caller's session; foreign ids are indistinguishable from stale ones (no
+  existence oracle), and cross-session stop/inspect is test-pinned.
+- **Bounded memory, no disk spill** — output lives in a capped in-memory ring
+  per job; nothing is persisted. Completion-notice tails are redacted before
+  entering the model context, where all job output crosses the
+  untrusted-content boundary with audit ingest records.
+- **Kill-on-exit** — jobs die with their session (SIGTERM → SIGKILL to the
+  process group; sandbox mode reuses the pidfile group-kill follow-up). There
+  is no detach mode; pattern-based kills (`pkill`) are not used.
+
 ## Attack-vector matrix
 
 | Attack vector | Defense |

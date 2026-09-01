@@ -45,6 +45,8 @@ External content the agent ingests (`browser`, `read_file`, `shell`, `search_fil
 ### 🧩 Sub-Agent Delegation
 Parallel OS-process sub-agents via `delegate_tasks`. True isolation — each sub-agent is a fresh `odek subagent` process with its own config, tools, and termination timeout. Up to 8 concurrent workers. Operator-defined **capability profiles** (top-level `profiles` config) override a sub-agent's permissions by name and fail closed on unknown names — a curated starter set of 21 task profiles ships in [`profiles.template.json`](profiles.template.json). See [docs/SUBAGENTS.md](docs/SUBAGENTS.md) and [docs/SECURITY.md](docs/SECURITY.md).
 
+**Background commands**: `bg_start`/`bg_list`/`bg_status`/`bg_output`/`bg_stop` run long-lived processes (dev servers, watchers, fuzz runs) that outlive the turn that started them — session-scoped, bounded in-memory output, spawn-time approval parity with `shell`, killed when the session or the process ends. Config: `background` in [docs/CONFIG.md](docs/CONFIG.md); REPL and Telegram expose `/jobs`.
+
 ### 🧠 Skill System
 Skill-matched `SKILL.md` files load on-demand — skills are authored by you or imported, never auto-generated. Import skills from any URI with automatic LLM risk assessment. [docs/CLI.md#skills](docs/CLI.md#skills)
 

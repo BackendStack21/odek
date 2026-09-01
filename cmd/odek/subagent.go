@@ -893,6 +893,19 @@ func subagentCmd(args []string) error {
 	subTcfg.SelfTrust = effectiveTrustLevel
 	tools := builtinTools(resolved.Dangerous, sm, nil, resolved.MaxConcurrency, resolved.APIKey, subTcfg, nil)
 
+	// Background commands: session key falls back to a process-local id —
+	// jobs die when the sub-agent process exits (Shutdown below). The
+	// sandbox container is bound after setupSandbox below.
+	bgKey := fmt.Sprintf("sub-%d", os.Getpid())
+	bgRT := newBackgroundRuntime(backgroundSettingsFromResolved(resolved), bgKey, "", nil)
+	defer bgRT.Shutdown()
+	// Untrusted sub-agents get no bg_* tools — same policy as MCP: the
+	// child engine has no approver, so arbitrary-execution tools cannot
+	// enforce their gates there (max_risk caps stay unenforceable).
+	if subagentAllowsMCP(effectiveTrustLevel) {
+		tools = appendBackgroundTools(tools, bgRT)
+	}
+
 	// MCP server tools
 	//
 	// Untrusted sub-agents process content from outside the trust boundary
@@ -936,6 +949,7 @@ func subagentCmd(args []string) error {
 		}
 		var subContainerName string
 		subContainerName, cleanup, err := setupSandbox(tools, sbCfg)
+		bgRT.SetContainer(subContainerName)
 		if err != nil {
 			return fmt.Errorf("setup sandbox: %w", err)
 		}
@@ -1031,6 +1045,9 @@ func subagentCmd(args []string) error {
 		return fmt.Errorf("create agent: %w", err)
 	}
 	defer agent.Close()
+	if bgRT != nil {
+		agent.SetBackgroundNoticeProvider(bgRT.provider)
+	}
 
 	// Soft-deadline watcher: when the finalization window opens, ask the
 	// engine to conclude gracefully; the hard deadline still kills as a

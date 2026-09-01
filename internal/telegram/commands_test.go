@@ -193,6 +193,7 @@ func TestAllHandlers_ReturnNoError(t *testing.T) {
 		"plan": true, "plans": true, "plan_view": true, "plan_delete": true, "plan_resume": true,
 		"plan_status": true,
 		"schedule":    true, "schedules": true,
+		"jobs": true,
 	}
 
 	for _, cmd := range DefaultCommands {

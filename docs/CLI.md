@@ -380,6 +380,17 @@ See [SECURITY.md](SECURITY.md) for the full threat model.
 | `--global`, `-g` | Create global config at `~/.odek/config.json` |
 | `--force`, `-f` | Overwrite existing file without prompting |
 
+## Background commands
+
+Headless `odek run` is one run, one session, one process: background jobs
+started with `bg_start` are killed when the run ends (including budget
+exhaustion). Cross-turn scenarios — start a dev server in one turn, curl it
+in the next — belong on the interactive surfaces (repl, serve, telegram),
+where jobs are scoped to the session and killed when the session or the
+process ends. `--events-jsonl` includes `bg_started`/`bg_exited` events
+(command content is hashed, never included). `/jobs` lists live jobs in the
+REPL.
+
 ## Examples
 
 ```bash
