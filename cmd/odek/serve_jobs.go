@@ -233,9 +233,9 @@ func handleJobOutput(store *session.Store, mgr *bgproc.Manager) http.HandlerFunc
 			}
 			since = n
 		}
-		limit := int64(bgOutputChunkBytes)
+		limit := bgOutputChunkBytes
 		if v := r.URL.Query().Get("limit"); v != "" {
-			n, err := strconv.ParseInt(v, 10, 64)
+			n, err := strconv.Atoi(v)
 			if err != nil || n <= 0 {
 				http.Error(w, "invalid limit", http.StatusBadRequest)
 				return
