@@ -293,8 +293,18 @@ func (s *Schedule) Next(after time.Time) time.Time {
 			continue
 		}
 		if s.hour&(1<<uint(t.Hour())) == 0 {
-			// Jump to the top of the next hour.
-			t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, s.loc).Add(time.Hour)
+			// Jump to the top of the next hour. time.Date resolves an
+			// ambiguous wall time to its FIRST occurrence, so across a DST
+			// fall-back this +1h hop can land back on the repeated wall
+			// hour and stop advancing entirely — an infinite loop that
+			// wedges the scheduler. When the jump made no progress, fall
+			// back to plain duration arithmetic, which crosses the
+			// transition by construction.
+			next := time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, s.loc).Add(time.Hour)
+			if !next.After(t) {
+				next = t.Add(time.Hour)
+			}
+			t = next
 			continue
 		}
 		if s.minute&(1<<uint(t.Minute())) == 0 {

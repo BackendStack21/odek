@@ -246,6 +246,10 @@ func (c *Client) postChatStream(ctx context.Context, reqBytes []byte, cb func(De
 			return nil, false, lastErr
 		}
 
+		// 200 resets the stale-status window (see buffered Call): a 429
+		// earlier in the retry loop must not mask a streaming failure.
+		lastStatus = http.StatusOK
+		lastBody = ""
 		res, emitted, err := readSSE(ctx, reqCtx, cancelReq, resp.Body, cb)
 		resp.Body.Close()
 		if err != nil {
