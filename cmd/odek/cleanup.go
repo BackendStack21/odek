@@ -135,14 +135,14 @@ func collectCleanupCandidates(home string, cfg maintenance.Config) cleanupCandid
 	var c cleanupCandidates
 
 	if cfg.SessionsMaxAgeDays > 0 {
-		c.sessions = sessionCandidates(home, now.AddDate(0, 0, -cfg.SessionsMaxAgeDays))
+		c.sessions = sessionCandidates(home, maintenance.DaysAgo(now, cfg.SessionsMaxAgeDays))
 	}
 	if cfg.AuditMaxAgeDays > 0 {
-		c.audit = filesOlderThan(filepath.Join(home, "sessions", "audit"), now.AddDate(0, 0, -cfg.AuditMaxAgeDays), false)
+		c.audit = filesOlderThan(filepath.Join(home, "sessions", "audit"), maintenance.DaysAgo(now, cfg.AuditMaxAgeDays), false)
 	}
 	if cfg.PlansMaxAgeDays > 0 {
 		// Plans may be nested per chat (plans/chat<id>/), so walk recursively.
-		c.plans = filesOlderThan(filepath.Join(home, "plans"), now.AddDate(0, 0, -cfg.PlansMaxAgeDays), true)
+		c.plans = filesOlderThan(filepath.Join(home, "plans"), maintenance.DaysAgo(now, cfg.PlansMaxAgeDays), true)
 	}
 	if cfg.ArtifactsMaxAgeHours > 0 {
 		// Duration-based cutoff, mirroring sweepArtifacts exactly.

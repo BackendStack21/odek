@@ -216,6 +216,16 @@ func Start(ctx context.Context, home string, cfg Config) {
 	}()
 }
 
+// DaysAgo returns the cutoff time for a day-based retention policy at the
+// given instant: pure duration arithmetic (N*24h), NOT calendar AddDate —
+// the two diverge by an hour across DST transitions. Exported so the cleanup
+// dry-run preview (cmd/odek) computes its candidate cutoffs with the same
+// math as the sweep; preview and deletion set can no longer disagree about
+// what "3 days old" means.
+func DaysAgo(now time.Time, days int) time.Time {
+	return now.Add(-time.Duration(days) * 24 * time.Hour)
+}
+
 // daysAgo returns the cutoff time for a day-based retention policy. Duration
 // arithmetic (instead of AddDate) avoids DST-sensitive behaviour where a
 // "day" isn't always 24 hours.
