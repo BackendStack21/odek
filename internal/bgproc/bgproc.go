@@ -583,14 +583,25 @@ func (r *outputRing) readFrom(since, limit int64) (string, int64) {
 		marker = fmt.Sprintf("... [%d earlier output bytes truncated]\n", r.dropped)
 		start = r.dropped
 	}
-	off := int(start - r.dropped)
-	window := r.buf[off:]
+	// Explicit clamps keep the int64→int conversions provably bounded
+	// (overflow-safe on 32-bit platforms; CodeQL integer-conversion rule).
+	rel := start - r.dropped
+	if rel < 0 {
+		rel = 0
+	}
+	if rel > int64(len(r.buf)) {
+		rel = int64(len(r.buf))
+	}
+	window := r.buf[int(rel):]
 	if limit > 0 && int64(len(window)) > limit {
-		cut := int(limit)
-		for cut > 0 && cut < len(window) && !utf8.RuneStart(window[cut]) {
+		cut := limit
+		if cut > int64(len(window)) {
+			cut = int64(len(window))
+		}
+		for cut > 0 && !utf8.RuneStart(window[int(cut)]) {
 			cut--
 		}
-		window = window[:cut]
+		window = window[:int(cut)]
 	}
 	return marker + string(window), start + int64(len(window))
 }
