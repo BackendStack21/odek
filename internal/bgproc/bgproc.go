@@ -27,6 +27,7 @@ package bgproc
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os/exec"
 	"sync"
 	"syscall"
@@ -583,8 +584,9 @@ func (r *outputRing) readFrom(since, limit int64) (string, int64) {
 		marker = fmt.Sprintf("... [%d earlier output bytes truncated]\n", r.dropped)
 		start = r.dropped
 	}
-	// Explicit clamps keep the int64→int conversions provably bounded
-	// (overflow-safe on 32-bit platforms; CodeQL integer-conversion rule).
+	// Explicit bound checks keep the int64→int conversions provably
+	// bounded (overflow-safe on 32-bit platforms; CodeQL
+	// incorrect-integer-conversion rule).
 	rel := start - r.dropped
 	if rel < 0 {
 		rel = 0
@@ -592,16 +594,19 @@ func (r *outputRing) readFrom(since, limit int64) (string, int64) {
 	if rel > int64(len(r.buf)) {
 		rel = int64(len(r.buf))
 	}
+	if rel > math.MaxInt32 {
+		rel = math.MaxInt32
+	}
 	window := r.buf[int(rel):]
 	if limit > 0 && int64(len(window)) > limit {
-		cut := limit
-		if cut > int64(len(window)) {
-			cut = int64(len(window))
+		cut := len(window)
+		if int64(cut) > limit {
+			cut = int(limit)
 		}
-		for cut > 0 && !utf8.RuneStart(window[int(cut)]) {
+		for cut > 0 && !utf8.RuneStart(window[cut]) {
 			cut--
 		}
-		window = window[:int(cut)]
+		window = window[:cut]
 	}
 	return marker + string(window), start + int64(len(window))
 }
