@@ -618,6 +618,12 @@ func (c *Client) postChatWithRetry(ctx context.Context, reqBytes []byte) ([]byte
 		// A 200 with an unparseable body or zero choices is often a transient
 		// gateway/proxy artifact during an incident — retry it through the
 		// same budget instead of aborting the turn on the first bad body.
+		// A 200 response resets the stale-status window: lastStatus/
+		// lastBody classify the error of the FINAL attempt, and a 429
+		// earlier in the loop must not mask a malformed-200 exhaustion —
+		// serve reads RateLimitError as "provider throttled".
+		lastStatus = http.StatusOK
+		lastBody = ""
 		if err := validateCompletionBody(respBytes); err != nil {
 			lastErr = err
 			continue
