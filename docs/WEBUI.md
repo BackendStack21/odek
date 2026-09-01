@@ -201,6 +201,17 @@ The dropdown fetches from `GET /api/resources?q=<query>&limit=8`. Results includ
 
 ## REST endpoints
 
+### Background jobs
+
+- `GET /api/jobs` — the authenticated session's background jobs (id, command head, status, runtime, exit code).
+- `GET /api/jobs/{id}/output?since=N&limit=N` — output window with `next_cursor` for continuation.
+- `POST /api/jobs/{id}/stop` — kill a running job.
+
+All three require the same per-instance CSRF token, loopback Host check, and
+session authentication as the other `/api` routes; the POST additionally
+requires the local-origin check. Foreign job ids answer `{"status":"unknown"}`
+(same shape as stale ids — no existence oracle across sessions).
+
 All `/api/*` endpoints require the per-instance CSRF token (`odek_ws_token` cookie or `X-Odek-Ws-Token` header) and a loopback `Host` header; state-changing methods additionally require a local `Origin`. Missing/invalid credentials return 403.
 
 Every response carries `Cache-Control: no-store`. The surface covers six

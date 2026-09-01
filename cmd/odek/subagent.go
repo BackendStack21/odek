@@ -899,7 +899,12 @@ func subagentCmd(args []string) error {
 	bgKey := fmt.Sprintf("sub-%d", os.Getpid())
 	bgRT := newBackgroundRuntime(backgroundSettingsFromResolved(resolved), bgKey, "", nil)
 	defer bgRT.Shutdown()
-	tools = appendBackgroundTools(tools, bgRT)
+	// Untrusted sub-agents get no bg_* tools — same policy as MCP: the
+	// child engine has no approver, so arbitrary-execution tools cannot
+	// enforce their gates there (max_risk caps stay unenforceable).
+	if subagentAllowsMCP(effectiveTrustLevel) {
+		tools = appendBackgroundTools(tools, bgRT)
+	}
 
 	// MCP server tools
 	//

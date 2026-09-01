@@ -116,7 +116,7 @@ func TestBackgroundNotice_NilProvider(t *testing.T) {
 	defer server.Close()
 
 	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
-	registry := tool.NewRegistry(nil)
+	registry := tool.NewRegistry([]tool.Tool{&noopTool{}})
 	engine := New(client, registry, 10, "", nil, 0)
 
 	_, _, err := engine.RunWithMessages(context.Background(), []llm.Message{
@@ -127,6 +127,32 @@ func TestBackgroundNotice_NilProvider(t *testing.T) {
 	}
 	if len(bodies) != 1 {
 		t.Fatalf("requests = %d, want 1", len(bodies))
+	}
+}
+
+// TestClassifyBGStartParity verifies the parity property: bg_start classifies
+// its embedded command exactly like shell would — backgrounding never
+// downgrades a class.
+func TestClassifyBGStartParity(t *testing.T) {
+	for _, cmd := range []string{
+		"ls -la",
+		"git push --force origin main",
+		"odek audit x",
+		"echo $HOME",
+	} {
+		args := fmt.Sprintf(`{"command":%q}`, cmd)
+		shellCls, _ := classifyToolCall("shell", args)
+		bgCls, bgRes := classifyToolCall("bg_start", args)
+		if bgCls != shellCls {
+			t.Errorf("cmd %q: bg_start class %q != shell class %q", cmd, bgCls, shellCls)
+		}
+		if !strings.HasPrefix(bgRes, "bg: ") || !strings.Contains(bgRes, cmd) {
+			t.Errorf("cmd %q: bg resource %q missing bg: prefix or command", cmd, bgRes)
+		}
+	}
+	// Malformed args classify as unknown (empty), like shell.
+	if cls, _ := classifyToolCall("bg_start", `{`); cls != "" {
+		t.Errorf("malformed args class = %q, want empty", cls)
 	}
 }
 

@@ -1171,7 +1171,10 @@ ends — there is no detach mode in v1.
 A project `odek.json` may only LOWER the numeric caps (same clamp philosophy
 as `limits`). Headless `odek run` and scheduled runs are single-session
 processes: background jobs end when the run ends. `/jobs` (REPL and Telegram)
-lists live jobs.
+lists live jobs. On `odek serve` with sandbox mode enabled the `bg_*` tools
+are removed entirely (fail-closed: the shared manager cannot bind one
+container name across sessions) — run serve without sandbox for background
+commands.
 
 ## odek init
 

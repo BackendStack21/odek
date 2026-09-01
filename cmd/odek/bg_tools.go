@@ -209,8 +209,20 @@ func appendBackgroundTools(tools []odek.Tool, rt *bgRuntime) []odek.Tool {
 	if rt == nil || rt.mgr == nil {
 		return tools
 	}
+	// bg_start reuses the shell tool's approval gate (fail-closed: no shell
+	// tool in the registry → no bg_start).
+	var shell *shellTool
+	for _, t := range tools {
+		if st, ok := t.(*shellTool); ok {
+			shell = st
+			break
+		}
+	}
+	if shell == nil {
+		return tools
+	}
 	return append(tools,
-		&bgStartTool{rt: rt},
+		&bgStartTool{rt: rt, shell: shell},
 		&bgListTool{rt: rt},
 		&bgStatusTool{rt: rt},
 		&untrustedToolWrapper{inner: &bgOutputTool{rt: rt}, source: "bg_output"},
@@ -297,7 +309,10 @@ func isRuneStart(b byte) bool { return b&0xC0 != 0x80 }
 
 // ── tools ────────────────────────────────────────────────────────────────
 
-type bgStartTool struct{ rt *bgRuntime }
+type bgStartTool struct {
+	rt    *bgRuntime
+	shell *shellTool // approval gate — shell parity, set by appendBackgroundTools
+}
 
 func (t *bgStartTool) Name() string { return "bg_start" }
 
@@ -338,6 +353,15 @@ func (t *bgStartTool) Call(args string) (string, error) {
 	}
 	if err := json.Unmarshal([]byte(args), &p); err != nil || strings.TrimSpace(p.Command) == "" {
 		return "", fmt.Errorf("bg_start requires a non-empty \"command\"")
+	}
+	// Spawn-time approval, shell parity: the loop's batch gate only covers
+	// multi-call batches, so — exactly like shellTool — bg_start gates
+	// itself here (allowlist/denylist, unread-exec script gate, approver).
+	if t.shell == nil {
+		return "", fmt.Errorf("bg_start unavailable: approval gate not wired")
+	}
+	if err := t.shell.checkApproval(p.Command, "background job"); err != nil {
+		return "", err
 	}
 	job, err := t.rt.mgr.Start(t.rt.session, p.Command, "", time.Duration(p.TimeoutSeconds)*time.Second)
 	if err != nil {

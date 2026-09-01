@@ -2322,11 +2322,12 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 	// the channel (never fail agent startup over it).
 	artifactsRoot, _ := artifactsHome()
 
+	shell := &shellTool{
+		dangerousConfig: dc,
+		approver:        approver,
+	}
 	tools := []odek.Tool{
-		&shellTool{
-			dangerousConfig: dc,
-			approver:        approver,
-		},
+		shell,
 		&delegateTasksTool{
 			maxConcurrency: subConcurrency,
 			sharedSem:      sharedChildSem(subConcurrency),

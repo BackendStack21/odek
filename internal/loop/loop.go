@@ -2458,13 +2458,10 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 				// enforcement, since legitimate polling exists.
 				fp := toolName + "\x00" + tc.Function.Arguments
 				if isBGPollTool(toolName) {
-					// Background-job polling tools legitimately repeat
-					// with identical arguments — the RESULT changes
-					// between calls (job state advanced). Track the
-					// fingerprint so a later ordinary call compares
-					// fresh, but never let the streak climb.
-					e.lastToolFingerprint = fp
-					e.toolRepeatStreak = 0
+					// Background-job polling tools: leave the fingerprint
+					// and streak untouched — identical polling is normal,
+					// AND interleaved ordinary-call repetition must still
+					// count toward the threshold.
 				} else if fp == e.lastToolFingerprint {
 					e.toolRepeatStreak++
 				} else {

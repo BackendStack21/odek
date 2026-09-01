@@ -236,11 +236,13 @@ func (m *Manager) buildCommand(command, cwd string) (*exec.Cmd, func(), error) {
 		cmd := exec.Command(argv[0], argv[1:]...)
 		cmd.SysProcAttr = attrs
 		cmd.Dir = cwd
+		cmd.WaitDelay = 3 * time.Second
 		return cmd, followUp, nil
 	}
 	cmd := exec.Command("sh", "-c", command)
 	cmd.SysProcAttr = attrs
 	cmd.Dir = cwd
+	cmd.WaitDelay = 3 * time.Second
 	return cmd, nil, nil
 }
 
