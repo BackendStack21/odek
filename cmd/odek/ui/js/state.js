@@ -11,6 +11,21 @@ import { apiHeaders } from './net.js';
   }
 });
 
+// loadHistory reads the persisted prompt history defensively (F-B6): a
+// corrupt odek_history value used to throw at module load and crash the
+// whole client bundle. Corrupt (unparseable) or non-array values fall back
+// to [] and the bad key is purged so the next write starts clean.
+function loadHistory() {
+  const raw = localStorage.getItem('odek_history');
+  if (raw == null) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed;
+  } catch { /* fall through to purge */ }
+  localStorage.removeItem('odek_history');
+  return [];
+}
+
 export const S = {
   // ── Connection / session ──
   ws: null,
@@ -18,7 +33,7 @@ export const S = {
   sessionTokens: {}, // session id -> auth token
   busy: false,
   health: null,      // last server info snapshot (health.js)
-  history: JSON.parse(localStorage.getItem('odek_history') || '[]'),
+  history: loadHistory(),
   historyIdx: -1,
   attachedFiles: [], // {name, size, content}
   currentModel: localStorage.getItem('odek_model') || '',

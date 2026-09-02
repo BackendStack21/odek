@@ -31,7 +31,7 @@
   /* Text — calibrated for #07080b */
   --text:   #e9edf5;   /* primary */
   --text-2: #a6b0c5;   /* secondary */
-  --text-3: #66707f;   /* tertiary — floor for 11px labels */
+  --text-3: #76808f;   /* tertiary — floor for 11px labels; ≥4.5:1 on bg-0/1/2 (AA) */
 
   /* Ember accent — the brand lives here and only here */
   --amber:     #ffb224;
@@ -110,9 +110,9 @@ body.light {
   --line-3: rgba(60, 50, 30, .30);
   --text:   #22252c;
   --text-2: #5a5f6d;
-  --text-3: #6d7280;
+  --text-3: #5f6476;
   --amber:     #d98e00;
-  --amber-hi:  #b47300;
+  --amber-hi:  #8a5600;
   --amber-lo:  #e07000;
   --amber-ink: #fff8ec;
   --amber-dim: rgba(217, 142, 0, .10);
@@ -182,7 +182,7 @@ button:disabled { cursor: not-allowed; }
 *::-webkit-scrollbar-thumb:hover { background-color: var(--line-3); }
 
 :focus { outline: none; }
-:focus-visible { outline: none; box-shadow: var(--ring); border-radius: var(--r-xs); }
+:focus-visible { outline: none; box-shadow: var(--ring); }
 
 /* The prompt textarea sits inside #input-row, which already carries the
    focus state via :focus-within (amber border + glow). The global ring on
@@ -272,12 +272,12 @@ button:disabled { cursor: not-allowed; }
   animation: pulse-red 1.1s var(--ease) infinite;
 }
 @keyframes pulse-green {
-  0%   { box-shadow: 0 0 0 0 rgba(61, 220, 151, .45); }
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--green) 45%, transparent); }
   70%  { box-shadow: 0 0 0 6px transparent; }
   100% { box-shadow: 0 0 0 0 transparent; }
 }
 @keyframes pulse-red {
-  0%   { box-shadow: 0 0 0 0 rgba(255, 107, 107, .45); }
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--red) 45%, transparent); }
   70%  { box-shadow: 0 0 0 6px transparent; }
   100% { box-shadow: 0 0 0 0 transparent; }
 }
@@ -333,7 +333,7 @@ button:disabled { cursor: not-allowed; }
 }
 .ctx-gauge.on { opacity: 1; }
 .ctx-label {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   color: var(--text-3);
   text-transform: uppercase;
   letter-spacing: .1em;
@@ -518,7 +518,7 @@ button:disabled { cursor: not-allowed; }
   gap: 6px;
 }
 .sidebar-count {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   color: var(--text-3);
   border: 1px solid var(--line-2);
   border-radius: var(--r-pill);
@@ -570,7 +570,7 @@ button:disabled { cursor: not-allowed; }
   width: 16px; height: 16px;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
+  font-size: var(--fs-xs);
   color: var(--text-3);
   cursor: pointer;
   border-radius: 50%;
@@ -678,7 +678,7 @@ button:disabled { cursor: not-allowed; }
 }
 .si-tok { color: var(--text-3); }
 .model-chip {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   padding: 0 6px;
   border-radius: var(--r-pill);
   border: 1px solid var(--line-2);
@@ -705,7 +705,7 @@ button:disabled { cursor: not-allowed; }
   background: none;
   border: none;
   padding: 2px 4px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   line-height: 1.3;
   color: var(--text-3);
   border-radius: var(--r-xs);
@@ -965,7 +965,7 @@ button:disabled { cursor: not-allowed; }
 .sk-head { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; margin-bottom: var(--space-1); }
 .sk-name { font-size: var(--fs-sm); font-weight: 600; color: var(--text); }
 .sk-badge {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   padding: 1px var(--space-2);
   border-radius: var(--r-pill);
   border: 1px solid var(--line-2);
@@ -1002,7 +1002,7 @@ button:disabled { cursor: not-allowed; }
 .tool-row.off .tool-name { color: var(--text-3); }
 .tool-name { color: var(--text); overflow-wrap: anywhere; }
 .tool-state {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   flex-shrink: 0;
   padding: 1px var(--space-2);
   border-radius: var(--r-pill);
@@ -1024,7 +1024,7 @@ button:disabled { cursor: not-allowed; }
 .run-row:hover { border-color: var(--line-2); }
 .run-head { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 .run-status {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   padding: 1px var(--space-2);
   border-radius: var(--r-pill);
   border: 1px solid var(--line-2);
@@ -1197,7 +1197,7 @@ button:disabled { cursor: not-allowed; }
   overflow-y: auto;
   padding: var(--space-6) 0;
   position: relative;
-  scroll-behavior: smooth;
+  scroll-behavior: auto; /* per-frame rAF autoscroll must not animate (F-C5); smooth is applied per-call for user-initiated jumps */
   overscroll-behavior: contain;
 }
 #messages.drag-over::after {
@@ -1347,6 +1347,8 @@ button:disabled { cursor: not-allowed; }
   margin-bottom: var(--space-1);
 }
 .msg.user .sender { color: var(--amber); }
+/* Light theme: raw --amber fails AA as text ink — use the darkened token. */
+body.light .msg.user .sender { color: var(--amber-hi); }
 
 .content { font-size: var(--fs-md); line-height: 1.65; overflow-wrap: anywhere; }
 
@@ -1499,7 +1501,7 @@ button:disabled { cursor: not-allowed; }
 .thinking-toggle:hover { color: var(--text-2); background: var(--bg-2); }
 .thinking-toggle .arrow {
   display: inline-block;
-  font-size: 9px;
+  font-size: var(--fs-xs);
   transition: transform var(--dur) var(--ease);
 }
 .thinking-toggle .arrow.open { transform: rotate(90deg); }
@@ -1553,7 +1555,7 @@ button:disabled { cursor: not-allowed; }
 .content a {
   color: var(--blue);
   text-decoration: none;
-  border-bottom: 1px solid rgba(106, 173, 255, .4);
+  border-bottom: 1px solid color-mix(in srgb, var(--blue) 40%, transparent);
   transition: border-color var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 .content a:hover { border-bottom-color: var(--blue); }
@@ -1592,7 +1594,7 @@ button:disabled { cursor: not-allowed; }
   background: var(--bg-2);
 }
 .cb-lang {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   color: var(--text-3);
   text-transform: uppercase;
   letter-spacing: .12em;
@@ -1601,7 +1603,7 @@ button:disabled { cursor: not-allowed; }
   background: none;
   border: 1px solid transparent;
   border-radius: var(--r-xs);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   color: var(--text-3);
   padding: 1px 8px;
   transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease);
@@ -1646,7 +1648,7 @@ button:disabled { cursor: not-allowed; }
 }
 .tb-header:hover { background: var(--bg-2); }
 .tb-header .arrow {
-  font-size: 9px;
+  font-size: var(--fs-xs);
   color: var(--text-3);
   transition: transform var(--dur) var(--ease);
 }
@@ -1714,7 +1716,7 @@ button:disabled { cursor: not-allowed; }
 }
 .tb-source {
   display: inline-block;
-  font-size: 10px;
+  font-size: var(--fs-xs);
   color: var(--text-3);
   border: 1px solid var(--line-2);
   border-radius: var(--r-pill);
@@ -1753,8 +1755,8 @@ button:disabled { cursor: not-allowed; }
   transition: border-color var(--dur) var(--ease), transform var(--dur-fast) var(--ease-snap);
 }
 .subagent-card:hover { transform: translateY(-1px); }
-.subagent-card.completed { border-color: rgba(61, 220, 151, .35); }
-.subagent-card.error { border-color: rgba(255, 107, 107, .4); }
+.subagent-card.completed { border-color: color-mix(in srgb, var(--green) 35%, transparent); }
+.subagent-card.error { border-color: color-mix(in srgb, var(--red) 40%, transparent); }
 
 .sa-top {
   display: flex;
@@ -1773,7 +1775,7 @@ button:disabled { cursor: not-allowed; }
   text-overflow: ellipsis;
 }
 .sa-status {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   color: var(--text-3);
   text-transform: uppercase;
   letter-spacing: .08em;
@@ -1781,7 +1783,7 @@ button:disabled { cursor: not-allowed; }
 }
 .subagent-card.completed .sa-status { color: var(--green); }
 .subagent-card.error .sa-status { color: var(--red); }
-.subagent-card.stopped { border-color: rgba(255, 178, 36, .4); }
+.subagent-card.stopped { border-color: color-mix(in srgb, var(--amber) 40%, transparent); }
 .subagent-card.stopped .sa-status { color: var(--amber); }
 
 /* Per-card stop — armed only once the task_id is known (subagent_state
@@ -1798,7 +1800,7 @@ button:disabled { cursor: not-allowed; }
   border-radius: 5px;
   background: transparent;
   color: var(--text-3);
-  font-size: 8px;
+  font-size: var(--fs-xs);
   line-height: 1;
   cursor: pointer;
   transition: color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
@@ -1829,7 +1831,7 @@ button:disabled { cursor: not-allowed; }
   background: var(--bg-2);
 }
 .log-line {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   color: var(--text-3);
   white-space: nowrap;
   overflow: hidden;
@@ -1851,8 +1853,8 @@ button:disabled { cursor: not-allowed; }
   animation: arrive var(--dur-slow) var(--ease) both;
 }
 .file-chip.error { border-color: var(--red); color: var(--red); }
-.chip-icon { font-size: 11px; }
-.file-chip .icon { font-size: 11px; }
+.chip-icon { font-size: var(--fs-xs); }
+.file-chip .icon { font-size: var(--fs-xs); }
 .chip-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip-size { color: var(--text-3); }
 .chip-remove {
@@ -1862,7 +1864,7 @@ button:disabled { cursor: not-allowed; }
   width: 15px; height: 15px;
   border-radius: 50%;
   color: var(--text-3);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
 }
 .chip-remove:hover { color: var(--red); background: var(--red-dim); }
@@ -1905,7 +1907,7 @@ button:disabled { cursor: not-allowed; }
 }
 .ac-sub { font-size: var(--fs-xs); color: var(--text-3); }
 .ac-risk {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   text-transform: uppercase;
   letter-spacing: .1em;
   padding: 2px var(--space-2);
@@ -1987,7 +1989,7 @@ button:disabled { cursor: not-allowed; }
 }
 .ac-actions button kbd {
   font-family: inherit;
-  font-size: 10px;
+  font-size: var(--fs-xs);
   color: var(--text-3);
   border: 1px solid var(--line-2);
   border-radius: var(--r-xs);
@@ -2014,6 +2016,16 @@ button:disabled { cursor: not-allowed; }
   color: var(--text-3);
   text-align: center;
 }
+
+/* F-A1: approval expiry countdown; .urgent marks the last 10s. */
+.ac-deadline {
+  margin-top: var(--space-2);
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.ac-deadline.urgent { color: var(--red); }
 
 /* ═══════════════════════════════════════════════════════════════════════
    INPUT AREA
@@ -2158,7 +2170,7 @@ button:disabled { cursor: not-allowed; }
 .comp-item:hover, .comp-item.selected { background: var(--bg-3); }
 .comp-item.selected { box-shadow: inset 2px 0 0 var(--amber); }
 .comp-type {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   color: var(--text-3);
   text-transform: uppercase;
   letter-spacing: .08em;

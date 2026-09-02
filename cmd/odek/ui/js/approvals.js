@@ -3,7 +3,8 @@
 import { S } from './state.js';
 import { messagesEl } from './dom.js';
 import { forceScrollBottom, announce } from './utils.js';
-import { hideEmptyState } from './render.js';
+import { hideEmptyState, addSystemMessage } from './render.js';
+import { wsSend } from './net.js';
 
 // Approval requests are queued and rendered one at a time as an inline
 // decision card pinned at the bottom of the message stream — the user can
@@ -33,7 +34,11 @@ export function approvalRiskMeta(risk) {
 }
 
 export function queueApproval(event) {
+  // F-A1: stamp the arrival time so the local expiry deadline mirrors the
+  // server's per-approval wait (frame timeout_seconds, 60s default).
+  event._queuedAt = Date.now();
   S.approvalQueue.push(event);
+  syncSweep();
   if (!S.activeApprovalId) {
     showNextApproval();
     return;
@@ -76,6 +81,67 @@ export function dismissApproval(id) {
     // active card's position hint just went stale.
     updateQueuePosition(S.activeApprovalCard);
   }
+  syncSweep();
+}
+
+// expireApproval handles the server's approval_expired frame (F-A1): the
+// wait lapsed without an answer, so the matching request is dead. Idempotent
+// by construction — ids already answered, swept, or unknown are no-ops, so
+// a late frame (or a late approval_ack for the same id) can never resurrect
+// a closed card.
+export function expireApproval(id) {
+  dismissApproval(id);
+}
+
+// ── Expiry sweep (F-A1) ──
+// The server enforces a per-approval wait and emits approval_expired when
+// it lapses, but a frame can be lost across a socket blip — so the client
+// mirrors the deadline locally. A 1s sweep autocloses ONLY expired cards
+// (live countdown + urgent class in the last 10s) and stops itself whenever
+// the queue is empty, so no interval ever outlives the approvals.
+const DEFAULT_TIMEOUT_S = 60;
+const SWEEP_MS = 1000;
+const URGENT_S = 10;
+let sweepTimer = null;
+
+function deadlineOf(event) {
+  const secs = event && event.timeout_seconds > 0 ? event.timeout_seconds : DEFAULT_TIMEOUT_S;
+  return (event._queuedAt || 0) + secs * 1000;
+}
+
+function syncSweep() {
+  if (S.approvalQueue.length === 0) {
+    if (sweepTimer) { clearInterval(sweepTimer); sweepTimer = null; }
+  } else if (!sweepTimer) {
+    sweepTimer = setInterval(sweepExpired, SWEEP_MS);
+  }
+}
+
+function renderCountdown(card, remainingS) {
+  if (!card) return;
+  const el = card.querySelector('.ac-deadline');
+  if (!el) return;
+  el.textContent = remainingS > 0 ? 'expires in ' + remainingS + 's' : 'expired';
+  el.classList.toggle('urgent', remainingS <= URGENT_S);
+}
+
+function sweepExpired() {
+  const now = Date.now();
+  // Expired queued-but-hidden requests: their approval_expired frame may
+  // still arrive later — expireApproval is a no-op for unknown ids.
+  for (let i = S.approvalQueue.length - 1; i >= 1; i--) {
+    if (now >= deadlineOf(S.approvalQueue[i])) S.approvalQueue.splice(i, 1);
+  }
+  const active = S.approvalQueue[0];
+  if (active && now >= deadlineOf(active)) {
+    S.approvalQueue.shift();
+    removeActiveApprovalCard();
+    showNextApproval();
+    updateQueuePosition(S.activeApprovalCard);
+  } else if (active) {
+    renderCountdown(S.activeApprovalCard, Math.max(0, Math.ceil((deadlineOf(active) - now) / 1000)));
+  }
+  syncSweep();
 }
 
 function showNextApproval() {
@@ -110,6 +176,7 @@ export function clearApprovals() {
   S.approvalQueue.length = 0;
   removeActiveApprovalCard();
   S.activeApprovalId = null;
+  syncSweep();
 }
 
 function renderApprovalCard(event) {
@@ -206,6 +273,13 @@ function renderApprovalCard(event) {
   actions.append(denyBtn, trustBtn, approveBtn);
   card.appendChild(actions);
 
+  // Live expiry countdown (F-A1): stamped from the frame's timeout_seconds
+  // (60s default for pre-timeout servers) and kept fresh by the sweep.
+  const countdown = document.createElement('div');
+  countdown.className = 'ac-deadline';
+  card.appendChild(countdown);
+  renderCountdown(card, Math.max(0, Math.ceil((deadlineOf(event) - Date.now()) / 1000)));
+
   // Trust shortcut is suppressed for destructive / blocked / unknown.
   if (event.allow_trust === false) trustBtn.style.display = 'none';
 
@@ -229,6 +303,9 @@ function renderApprovalCard(event) {
   }
 
   S.activeApprovalCard = card;
+  // F-B4: stamp arrival so every approve path (button, Enter, global 'a')
+  // enforces the same 1.5s friction cool-down.
+  card.dataset.shownAt = String(Date.now());
   hideEmptyState();
   messagesEl.appendChild(card);
   forceScrollBottom();
@@ -243,15 +320,27 @@ export function sendApproval(action) {
   if (event && event.friction && action === 'approve') {
     const input = S.activeApprovalCard && S.activeApprovalCard.querySelector('.ac-friction-input');
     if (input && input.value.trim().toLowerCase() !== 'approve') return;
+    // F-B4: the global 'a' shortcut used to bypass the 1.5s cool-down the
+    // button/input paths enforce — every approve path waits it out now.
+    const shownAt = Number(S.activeApprovalCard && S.activeApprovalCard.dataset.shownAt) || 0;
+    if (Date.now() - shownAt < 1500) return;
   }
-  S.ws.send(JSON.stringify({
+  // F-B3: route through the guarded send. A dead socket must not destroy
+  // the decision — keep the card up (no success announcement) and tell the
+  // user, instead of removing the card for an answer the server will never
+  // see.
+  if (!wsSend(S.ws, {
     type: 'approval_response',
     id: S.activeApprovalId,
     action: action
-  }));
+  })) {
+    addSystemMessage('⚠ approval not delivered — connection down');
+    return;
+  }
   S.approvalQueue.shift();
   removeActiveApprovalCard();
   showNextApproval();
+  syncSweep();
   announce(action === 'trust' ? 'Risk class trusted for this session' :
            action === 'approve' ? 'Approved' : 'Denied');
 }

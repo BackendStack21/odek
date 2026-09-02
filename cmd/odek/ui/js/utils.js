@@ -95,9 +95,11 @@ export function forceScrollBottom() {
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
-// Scroll-to-bottom button handler: jump and hide the button.
+// Scroll-to-bottom button handler: smooth jump (user-initiated — the CSS
+// default is auto so streaming autoscroll never animates), then hide.
 export function scrollToBottom() {
-  messagesEl.scrollTop = messagesEl.scrollHeight;
+  if (messagesEl.scrollTo) messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: 'smooth' });
+  else messagesEl.scrollTop = messagesEl.scrollHeight;
   if (scrollBottomBtn) scrollBottomBtn.classList.remove('visible');
 }
 
