@@ -54,19 +54,25 @@ func TestArtifactRegistry_RegisterLookupEvict(t *testing.T) {
 	}
 }
 
-func TestArtifactRegistry_DuplicateIDLastWins(t *testing.T) {
+func TestArtifactRegistry_DuplicateIDFirstWins(t *testing.T) {
 	resetArtifactRegistryForTest()
 	r1, p1 := regRef(t, "dup", "first")
 	registerSubagentArtifact(artifactEntry{Ref: r1, Path: p1, TaskIdx: 0})
 	r2, p2 := regRef(t, "dup", "second")
-	dup := registerSubagentArtifact(artifactEntry{Ref: r2, Path: p2, TaskIdx: 1})
+	alias, dup := registerSubagentArtifact(artifactEntry{Ref: r2, Path: p2, TaskIdx: 1})
 
 	if !dup {
 		t.Error("duplicate registration must be reported")
 	}
 	got, _ := lookupSubagentArtifact("dup")
-	if got.Path != p2 || got.TaskIdx != 1 {
-		t.Errorf("last-wins broken: %+v", got)
+	if got.Path != p1 || got.TaskIdx != 0 {
+		t.Errorf("first-wins broken: %+v", got)
+	}
+	if alias != "dup.t2" {
+		t.Errorf("alias = %q, want dup.t2", alias)
+	}
+	if got, ok := lookupSubagentArtifact(alias); !ok || got.Path != p2 || got.TaskIdx != 1 {
+		t.Errorf("alias lookup broken: (%+v, %v)", got, ok)
 	}
 }
 
@@ -184,10 +190,10 @@ func TestRegisterTaskArtifacts_DuplicateNote(t *testing.T) {
 	raw2 := fmt.Sprintf(`{"status":"success","summary":"ok","artifacts":[{"schema":%q,"id":"dup","uri":"file://%s","media_type":"text/markdown","sha256":%q,"size_bytes":%d}]}`,
 		artifact.SchemaArtifactRef, p2, expectedSHA(t, c2), size2)
 
-	if notes := registerTaskArtifacts(raw1, dir, 0); len(notes) != 0 {
+	if notes := registerTaskArtifacts(raw1, dir, 0, "task-a"); len(notes) != 0 {
 		t.Errorf("first registration must not note: %v", notes)
 	}
-	notes := registerTaskArtifacts(raw2, dir, 1)
+	notes := registerTaskArtifacts(raw2, dir, 1, "task-b")
 	if len(notes) != 1 || !strings.Contains(notes[0], "duplicate") {
 		t.Errorf("duplicate must produce a note: %v", notes)
 	}

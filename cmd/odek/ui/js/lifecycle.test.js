@@ -387,12 +387,27 @@ test('approval_request honors the frame timeout_seconds for the countdown', () =
   assert.match(S.activeApprovalCard.querySelector('.ac-deadline').textContent, /expires in 25s/);
 });
 
+// Polls cond until truthy (20 ms cadence). Replaces fixed real-time sleeps,
+// which raced the 1s sweep interval and the 1.5s friction gate under CI load
+// (ui-js failed 2/3 runs on 2026-09-02).
+async function waitFor(cond, label, timeoutMs = 15000) {
+  const start = Date.now();
+  for (;;) {
+    if (cond()) return;
+    if (Date.now() - start > timeoutMs) {
+      assert.ok(cond(), `timed out after ${timeoutMs}ms waiting for: ${label}`);
+    }
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
 test('sweep auto-closes only the expired card and shows the next one', async () => {
   deliver({ type: 'approval_request', id: 'apr-fast', risk: 'safe', command: 'sleep', allow_trust: true, timeout_seconds: 1 });
   deliver({ type: 'approval_request', id: 'apr-slow', risk: 'safe', command: 'echo', allow_trust: true });
   assert.equal(S.activeApprovalId, 'apr-fast');
 
-  await new Promise((r) => setTimeout(r, 1400)); // one sweep tick past the 1s deadline
+  // The sweep ticks on a real 1s interval — wait for the state, not the clock.
+  await waitFor(() => S.activeApprovalId === 'apr-slow', 'expired head autoclosed, next card shown');
 
   assert.equal(S.activeApprovalId, 'apr-slow', 'expired head autoclosed, next card shown');
   assert.equal(S.approvalQueue.length, 1, 'the unexpired request survives the sweep');

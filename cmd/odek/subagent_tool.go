@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -63,6 +64,11 @@ type delegateTasksTool struct {
 	// tasks run without the artifact channel — the bare-struct tests stay
 	// side-effect free.
 	artifactsRoot string
+
+	// artifactReadAvailable mirrors artifactReadEnabled(tcfg) at construction:
+	// the truncation marker's next-action hint names artifact_read ONLY when
+	// this process actually has the tool (mid-tree parents don't — R2-3).
+	artifactReadAvailable bool
 
 	// profiles carries the operator's resolved capability profiles (P4)
 	// for parent-side fail-closed validation: an unknown profile name must
@@ -183,11 +189,16 @@ Key rules:
 - Delegation depth is capped (subagent.max_depth, default 2) — do leaf work yourself when close to the cap
 - After all complete, synthesize the results into a cohesive answer
 
-Output format per sub-agent:
-- Summary of what was built
-- Files changed
+Result delivery — two channels per sub-agent:
+- Headline: the sub-agent's final answer, capped at ~2000 characters. Treat it as a status summary, not the full result; a trailing … means it was cut.
+- Artifacts: deliverables the sub-agent wrote as files (it is instructed to stage anything larger than a headline in its task's artifact dir) are validated and listed under "artifacts:" — id, type, byte size, one-line summary. Text artifacts up to 32 KB are inlined in full; fetch larger ones with artifact_read(id).
+- For artifact-heavy tasks (reports, audits, reviews, generated files), put it in ` + "`guidance`" + `: "Write the full deliverable as a flat file in your artifact dir; keep the final answer to a short headline." Then read file-backed artifacts with artifact_read before synthesizing.
+
+Output format per sub-agent (headline stays SHORT — status, artifact names, key decisions; the files carry the detail):
+- Status: built / blocked / failed, one line
+- Artifact file names (omit when everything fit inline)
 - Key decisions made
-- Any issues encountered`
+- artifacts: file-backed deliverables (inlined when ≤32 KB; artifact_read otherwise)`
 }
 
 func (t *delegateTasksTool) Schema() any {
@@ -212,7 +223,7 @@ func (t *delegateTasksTool) Schema() any {
 						},
 						"guidance": map[string]any{
 							"type":        "string",
-							"description": "Optional. How the sub-agent should approach the task — delivered as part of its request, NOT as its system prompt. The sub-agent's identity and safety rules are fixed and cannot be overridden. Use this to steer the approach, e.g. \"Review for token-validation gaps and timing attacks\" or \"Find the root cause before changing code\".",
+							"description": "Optional. How the sub-agent should approach the task — delivered as part of its request, NOT as its system prompt. The sub-agent's identity and safety rules are fixed and cannot be overridden. Use this to steer the approach, e.g. \"Review for token-validation gaps and timing attacks\" or \"Find the root cause before changing code\". For output-heavy tasks, instruct: \"Write the full deliverable as a flat file in your artifact dir; keep the final answer to a short headline.\"",
 						},
 						"trust_level": map[string]any{
 							"type":        "string",
@@ -242,6 +253,11 @@ func (t *delegateTasksTool) Schema() any {
 }
 
 func (t *delegateTasksTool) Call(args string) (string, error) {
+	// F: per-run registry floor — this call's artifacts stay resolvable for
+	// the whole collation, even if concurrent sessions pressure the registry.
+	runMark := beginArtifactRegistryRun()
+	defer endArtifactRegistryRun(runMark)
+
 	var input struct {
 		Tasks []struct {
 			Goal       string `json:"goal"`
@@ -279,7 +295,8 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 	// a private per-call semaphore. Capacity < 1 is normalized to 1: an
 	// unbuffered channel would deadlock the acquire-before-spawn loop.
 	results := make([]string, len(input.Tasks))
-	dirs := make([]string, len(input.Tasks)) // per-task artifact dirs (parent-created)
+	dirs := make([]string, len(input.Tasks))    // per-task artifact dirs (parent-created)
+	taskIDs := make([]string, len(input.Tasks)) // per-task unique ids (artifact registry keys)
 	sem := t.concurrencySem()
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -292,6 +309,7 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 		// artifact dir can be created serially and correlated with the id
 		// the child echoes on every telemetry record.
 		taskID := newTaskID()
+		taskIDs[i] = taskID
 		// Wire v2 (P2): record + emit the queued phase BEFORE acquiring a
 		// limiter slot, so clients see every accepted task immediately —
 		// including the ones still waiting for a concurrency slot.
@@ -356,10 +374,15 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 	buf.WriteString("📋 Sub-agent results:\n\n")
 	for i, r := range results {
 		fmt.Fprintf(&buf, "─── Task %d: %s ───\n", i+1, truncate(input.Tasks[i].Goal, 60))
-		buf.WriteString(formatTaskResult(r, dirs[i]))
-		// M2: validated refs join the session registry so artifact_read can
-		// resolve them by id later in the turn.
-		if notes := registerTaskArtifacts(r, dirs[i], i); len(notes) > 0 {
+		// Register BEFORE rendering (judge P1): the render resolves effective
+		// (aliased) ids through the registry, so an aliased duplicate must
+		// already be registered or the artifacts line advertises the plain
+		// id and artifact_read resolves it to the WRONG task's bytes.
+		notes := registerTaskArtifacts(r, dirs[i], i, taskIDs[i])
+		buf.WriteString(formatTaskResultDetailed(r, i, t.artifactReadAvailable, taskIDs[i], dirs[i]))
+		// M2: ambiguity notes render after the artifacts block, same shape as
+		// the pre-aliasing output.
+		if len(notes) > 0 {
 			buf.WriteString(strings.Join(notes, "\n") + "\n")
 		}
 		buf.WriteString("\n\n")
@@ -616,6 +639,26 @@ const (
 // (metadata-only line; small text artifacts inlined). No roots ⇒ every ref
 // is rejected — a lost root can never become a trust upgrade.
 func formatTaskResult(raw string, artifactRoots ...string) string {
+	return formatTaskResultDetailed(raw, -1, true, "", artifactRoots...)
+}
+
+// formatTaskResultDetailed renders one child's framed result as compact text
+// for the parent's context. taskIdx (0-based) drives the task-provenance
+// label; taskID (per-call unique) keys the effective-id registry lookups —
+// pass "" when unknown (lookups then miss and refs render as reported).
+// artifactReadAvailable gates the truncation marker's next-action hint —
+// mid-tree parents have no artifact_read (R2-3), so pointing them at it
+// would send them chasing a tool they don't have. Parsed envelopes render
+// as fields (status, headline, files, denials, artifacts); anything
+// unparseable falls back to the raw payload capped at
+// maxSubagentSummaryResultBytes. Child output is model-controlled and stays
+// inside the caller's untrusted wrapper.
+//
+// artifactRoots carries the per-task artifact dir(s) the parent created:
+// every incoming ref is validated fail-closed against them before render
+// (metadata-only line; small text artifacts inlined). No roots ⇒ every ref
+// is rejected — a lost root can never become a trust upgrade.
+func formatTaskResultDetailed(raw string, taskIdx int, artifactReadAvailable bool, taskID string, artifactRoots ...string) string {
 	var r subagentResult
 	if err := json.Unmarshal([]byte(raw), &r); err != nil {
 		if len(raw) > maxSubagentSummaryResultBytes {
@@ -653,6 +696,13 @@ func formatTaskResult(raw string, artifactRoots ...string) string {
 	if r.Summary != "" {
 		fmt.Fprintf(&b, "summary: %s\n", truncate(r.Summary, subagentHeadlineMaxRunes))
 	}
+	if r.SummaryTruncated {
+		hint := " — fetch artifacts via artifact_read or re-run with a narrower goal"
+		if !artifactReadAvailable {
+			hint = " — re-run with a narrower goal"
+		}
+		fmt.Fprintf(&b, "headline truncated (%d of %d runes shown)%s\n", subagentHeadlineMaxRunes, r.SummaryRunes, hint)
+	}
 	if len(r.FilesChanged) > 0 {
 		files := r.FilesChanged
 		if len(files) > maxRenderedFiles {
@@ -675,19 +725,33 @@ func formatTaskResult(raw string, artifactRoots ...string) string {
 		}
 		fmt.Fprintf(&b, "denials (%d of %d): %s\n", len(shown), total, strings.Join(parts, "; "))
 	}
-	b.WriteString(renderArtifacts(r.Artifacts, artifactRoots))
+	b.WriteString(renderArtifacts(r.Artifacts, artifactRoots, taskIdx, taskID))
 	return b.String()
 }
 
+// maxInlinePerCallBytes caps the TOTAL artifact bytes inlined across one
+// render (F): 8 tasks × 64 refs × 32 KiB would otherwise inject ~16 MiB
+// into the parent's context from a single delegate_tasks call. Eligible
+// artifacts are inlined largest-first while the budget lasts; the rest
+// degrade to their metadata line (never dropped).
+const maxInlinePerCallBytes = 128 << 10 // 128 KiB
+
 // renderArtifacts validates each incoming ref fail-closed against the
-// per-task roots and renders metadata-only lines; small text artifacts are
+// per-task roots and renders metadata-only lines; text artifacts are
 // inlined from the VALIDATED path returned by artifact.Validate (symlinks
-// resolved, size+sha256 verified). Invalid refs are dropped with a flag —
-// never fatal to the summary. Raw absolute paths are never rendered.
-func renderArtifacts(refs []artifact.Ref, roots []string) string {
+// resolved, size+sha256 verified) within the per-call inline budget,
+// largest-first. Invalid refs are dropped with a flag — never fatal to the
+// summary. Raw absolute paths are never rendered.
+func renderArtifacts(refs []artifact.Ref, roots []string, taskIdx int, taskID string) string {
 	if len(refs) == 0 {
 		return ""
 	}
+	type validated struct {
+		ref  artifact.Ref
+		path string
+		size int64
+	}
+	var ok []validated
 	var b strings.Builder
 	b.WriteString("artifacts:\n")
 	for _, ref := range refs {
@@ -700,23 +764,66 @@ func renderArtifacts(refs []artifact.Ref, roots []string) string {
 		if ref.SizeBytes != nil {
 			size = *ref.SizeBytes
 		}
-		shaPrefix := ref.SHA256
+		ok = append(ok, validated{ref: ref, path: path, size: size})
+	}
+
+	// F: pick the inline set largest-first within the per-call budget.
+	type candidate struct {
+		idx  int
+		size int64
+	}
+	var elig []candidate
+	for i, v := range ok {
+		if strings.HasPrefix(v.ref.MediaType, "text/") && v.size <= maxInlineArtifactBytes {
+			elig = append(elig, candidate{idx: i, size: v.size})
+		}
+	}
+	sort.Slice(elig, func(i, j int) bool { return elig[i].size > elig[j].size })
+	inlined := make(map[int]bool, len(elig))
+	budget := int64(maxInlinePerCallBytes)
+	for _, c := range elig {
+		if c.size <= budget {
+			inlined[c.idx] = true
+			budget -= c.size
+		}
+	}
+
+	occSeen := map[string]int{}
+
+	for i, v := range ok {
+		displayID := v.ref.ID
+		if taskIdx >= 0 {
+			// Occurrence index: same-stem refs within one task (report.md +
+			// report.txt both report id "report") registered distinct byOrig
+			// slots; this render consumes them in envelope order, matching
+			// registration order.
+			occ := occSeen[v.ref.ID]
+			occSeen[v.ref.ID]++
+			if eff, found := lookupEffectiveArtifactID(v.ref.ID, taskID, occ); found {
+				displayID = eff
+			}
+		}
+		shaPrefix := v.ref.SHA256
 		if len(shaPrefix) > 12 {
 			shaPrefix = shaPrefix[:12]
 		}
-		fmt.Fprintf(&b, "  - %s (%s, %d bytes, sha256:%s)", ref.ID, ref.MediaType, size, shaPrefix)
-		if ref.Summary != "" {
-			fmt.Fprintf(&b, " — %s", truncate(ref.Summary, maxArtifactSummaryLine))
+		if taskIdx >= 0 {
+			fmt.Fprintf(&b, "  - %s (%s, %d bytes, sha256:%s, task %d)", displayID, v.ref.MediaType, v.size, shaPrefix, taskIdx+1)
+		} else {
+			fmt.Fprintf(&b, "  - %s (%s, %d bytes, sha256:%s)", displayID, v.ref.MediaType, v.size, shaPrefix)
+		}
+		if v.ref.Summary != "" {
+			fmt.Fprintf(&b, " — %s", truncate(v.ref.Summary, maxArtifactSummaryLine))
 		}
 		b.WriteString("\n")
 
-		if strings.HasPrefix(ref.MediaType, "text/") && size <= maxInlineArtifactBytes {
+		if inlined[i] {
 			// Same read-time verification as artifact_read: the validated
 			// path is re-opened O_NOFOLLOW and re-hashed against the ref
 			// before any byte is inlined; failure just skips the inline
 			// preview (never fatal to the summary).
-			if data, _, _, err := verifyArtifactWindow(path, ref, maxInlineArtifactBytes, 0, maxInlineArtifactBytes); err == nil {
-				fmt.Fprintf(&b, "  --- artifact: %s ---\n%s\n  --- end artifact ---\n", ref.ID, strings.TrimRight(string(data), "\n"))
+			if data, _, _, err := verifyArtifactWindow(v.path, v.ref, maxInlineArtifactBytes, 0, maxInlineArtifactBytes); err == nil {
+				fmt.Fprintf(&b, "  --- artifact: %s ---\n%s\n  --- end artifact ---\n", displayID, strings.TrimRight(string(data), "\n"))
 			}
 		}
 	}

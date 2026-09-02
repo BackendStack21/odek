@@ -2332,16 +2332,17 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 	tools := []odek.Tool{
 		shell,
 		&delegateTasksTool{
-			maxConcurrency: subConcurrency,
-			sharedSem:      sharedChildSem(subConcurrency),
-			odekPath:       os.Args[0],
-			apiKey:         apiKey,
-			timeout:        time.Duration(subTimeout) * time.Second,
-			maxDepth:       subDepth,
-			budgetInherit:  subInherit,
-			selfTrust:      selfTrust,
-			profiles:       tcfg.Profiles,
-			artifactsRoot:  artifactsRoot, // empty ⇒ no artifact dirs created
+			maxConcurrency:        subConcurrency,
+			sharedSem:             sharedChildSem(subConcurrency),
+			odekPath:              os.Args[0],
+			apiKey:                apiKey,
+			timeout:               time.Duration(subTimeout) * time.Second,
+			maxDepth:              subDepth,
+			budgetInherit:         subInherit,
+			selfTrust:             selfTrust,
+			profiles:              tcfg.Profiles,
+			artifactsRoot:         artifactsRoot, // empty ⇒ no artifact dirs created
+			artifactReadAvailable: artifactReadEnabled(tcfg),
 		},
 		&listSubagentProfilesTool{
 			profiles:       tcfg.Profiles,
@@ -2421,6 +2422,7 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 
 	return tools
 }
+
 // lists to a slice of tools. Unknown names are ignored. Required tools are
 // always preserved.
 func filterBuiltinTools(tools []odek.Tool, cfg config.ToolConfig, required map[string]bool) []odek.Tool {
