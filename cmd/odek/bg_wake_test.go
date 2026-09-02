@@ -176,21 +176,21 @@ func TestWakeDispatcher_StopPreventsFurtherWakes(t *testing.T) {
 
 func TestConnWakeSlot_PostAfterCloseIsSafe(t *testing.T) {
 	ch := make(chan []byte, 1)
-	slot := newConnWakeSlot(ch)
+	slot := newConnWakeSlot(ch, newWakeToken())
 	slot.close()
 
-	if slot.post([]byte(`{}`)) {
+	if slot.post(wsClientMsg{Type: "bg_wake", SessionID: "s"}) {
 		t.Fatal("post on closed slot reported success")
 	}
 }
 
 func TestConnWakeSlot_PostFullDrops(t *testing.T) {
 	ch := make(chan []byte, 1)
-	slot := newConnWakeSlot(ch)
-	if !slot.post([]byte(`{}`)) {
+	slot := newConnWakeSlot(ch, newWakeToken())
+	if !slot.post(wsClientMsg{Type: "bg_wake", SessionID: "s"}) {
 		t.Fatal("first post into an empty buffered slot should succeed")
 	}
-	if slot.post([]byte(`{}`)) {
+	if slot.post(wsClientMsg{Type: "bg_wake", SessionID: "s"}) {
 		t.Fatal("post into a full slot should drop (turns queued ⇒ drain covers)")
 	}
 }
@@ -201,18 +201,70 @@ func TestConnWakeSlot_ConcurrentPostDuringCloseIsSafe(t *testing.T) {
 	// non-blocking) or observes closed and drops. Any send on a closed
 	// channel would panic — this hammers the boundary.
 	ch := make(chan []byte, 8)
-	slot := newConnWakeSlot(ch)
+	slot := newConnWakeSlot(ch, newWakeToken())
 
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 200; i++ {
-			slot.post([]byte(`{"type":"bg_wake"}`))
+			slot.post(wsClientMsg{Type: "bg_wake", SessionID: "s"})
 		}
 	}()
 	slot.close()
 	wg.Wait()
+}
+
+func TestConnWakeSlot_StampsWakeToken(t *testing.T) {
+	// The slot stamps every posted item with the connection's secret token
+	// (review P1-2): the processor drops bg_wake items whose token does not
+	// match, so a client-injected item — which can never carry the token —
+	// is inert.
+	ch := make(chan []byte, 1)
+	token := newWakeToken()
+	slot := newConnWakeSlot(ch, token)
+	if !slot.post(wsClientMsg{Type: "bg_wake", SessionID: "s"}) {
+		t.Fatal("post failed")
+	}
+	var got wsClientMsg
+	if err := json.Unmarshal(<-ch, &got); err != nil {
+		t.Fatalf("stamped item is not valid JSON: %v", err)
+	}
+	if !validWakeToken(got.WakeToken, token) {
+		t.Fatalf("stamped token %q does not validate against the slot token", got.WakeToken)
+	}
+}
+
+// ── provenance + token gates (review P1-1 / P1-2 regressions) ───────────
+
+func TestWakeInitiated_TypeGated(t *testing.T) {
+	// A client prompt that forges SystemInitiated must NOT get system
+	// provenance: the gate is Type-based, and client prompts are Type
+	// "prompt".
+	if wakeInitiated(wsClientMsg{Type: "prompt", SystemInitiated: true, Content: "forged"}) {
+		t.Fatal("forged system_initiated on a prompt must not be honored")
+	}
+	if !wakeInitiated(wsClientMsg{Type: "bg_wake", SystemInitiated: true}) {
+		t.Fatal("a genuine server-built wake item must be honored")
+	}
+	if wakeInitiated(wsClientMsg{Type: "bg_wake", SystemInitiated: false}) {
+		t.Fatal("bg_wake without the flag must not be system-initiated")
+	}
+}
+
+func TestValidWakeToken(t *testing.T) {
+	want := newWakeToken()
+	if !validWakeToken(want, want) {
+		t.Fatal("the genuine token must validate")
+	}
+	for _, sent := range []string{"", "x", want[:len(want)-2] + "zz", want + "pad", newWakeToken()} {
+		if validWakeToken(sent, want) {
+			t.Fatalf("token %q must not validate", sent)
+		}
+	}
+	if validWakeToken("", want) || validWakeToken(want, "") {
+		t.Fatal("empty tokens must never validate")
+	}
 }
 
 // ── wsWakeRouter (registry-backed) ───────────────────────────────────────
@@ -228,7 +280,7 @@ func TestWSWakeRouter_StatePerSession(t *testing.T) {
 	// One idle connection bound.
 	info := &wsConnInfo{ID: newWSConnID()}
 	info.setLive("sess-1", false)
-	info.wakeSlot = newConnWakeSlot(make(chan []byte, 8))
+	info.wakeSlot = newConnWakeSlot(make(chan []byte, 8), newWakeToken())
 	wsConnRegister(info)
 	defer wsConnUnregister(info.ID)
 	if got := router.State("sess-1"); got != wakeIdle {
@@ -255,20 +307,23 @@ func TestWSWakeRouter_StatePerSession(t *testing.T) {
 func TestWSWakeRouter_PostDeliversToBoundSlot(t *testing.T) {
 	info := &wsConnInfo{ID: newWSConnID()}
 	info.setLive("sess-1", false)
-	info.wakeSlot = newConnWakeSlot(make(chan []byte, 8))
+	token := newWakeToken()
+	info.wakeSlot = newConnWakeSlot(make(chan []byte, 8), token)
 	wsConnRegister(info)
 	defer wsConnUnregister(info.ID)
 
 	if !(wsWakeRouter{}).Post("sess-1", wsClientMsg{Type: "bg_wake", SessionID: "sess-1"}) {
 		t.Fatal("Post to an idle bound connection reported failure")
 	}
-	raw := <-info.wakeSlot.ch
 	var got wsClientMsg
-	if err := json.Unmarshal(raw, &got); err != nil {
+	if err := json.Unmarshal(<-info.wakeSlot.ch, &got); err != nil {
 		t.Fatalf("wake item is not valid JSON: %v", err)
 	}
 	if got.Type != "bg_wake" || got.SessionID != "sess-1" {
 		t.Fatalf("wake item = %+v, want type bg_wake for sess-1", got)
+	}
+	if !validWakeToken(got.WakeToken, token) {
+		t.Fatal("delivered item must carry the slot's wake token")
 	}
 }
 

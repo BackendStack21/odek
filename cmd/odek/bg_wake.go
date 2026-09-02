@@ -35,6 +35,9 @@ package main
 //     timestamp window; the config layer clamps it to ≤240/h absolute.
 
 import (
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"sync"
 	"sync/atomic"
@@ -168,6 +171,21 @@ func (d *wakeDispatcher) dispatch(session string) {
 	}
 	d.mu.Lock()
 	d.wakes[session] = append(d.wakes[session], now)
+	// Prune stale windows across ALL sessions (review F3): sessions that
+	// never wake again must not leak their timestamp slices.
+	for s, ts := range d.wakes {
+		kept := ts[:0]
+		for _, t := range ts {
+			if now.Sub(t) < time.Hour {
+				kept = append(kept, t)
+			}
+		}
+		if len(kept) == 0 {
+			delete(d.wakes, s)
+		} else {
+			d.wakes[s] = kept
+		}
+	}
 	d.mu.Unlock()
 }
 
@@ -193,26 +211,37 @@ func (d *wakeDispatcher) Stop() {
 // panics). close() and post() synchronize on mu, and the reader performs
 // slot.close() and close(ch) while holding the slot's lock, so a successful
 // post always precedes the channel close.
+//
+// Every posted item is stamped with the connection's secret wake token
+// (review P1-2): the socket reader forwards arbitrary client messages into
+// the same channel, and the processor drops bg_wake items whose token does
+// not match — a client cannot forge a wake or bypass max_wakes_per_hour.
 type connWakeSlot struct {
 	mu     sync.Mutex
 	ch     chan []byte
+	token  string
 	closed bool
 }
 
-func newConnWakeSlot(ch chan []byte) *connWakeSlot {
-	return &connWakeSlot{ch: ch}
+func newConnWakeSlot(ch chan []byte, token string) *connWakeSlot {
+	return &connWakeSlot{ch: ch, token: token}
 }
 
-// post enqueues a raw wire item; reports false when closed or full.
-// Never blocks.
-func (s *connWakeSlot) post(b []byte) bool {
+// post enqueues the wake item stamped with the slot's wake token; reports
+// false when closed or full. Never blocks.
+func (s *connWakeSlot) post(item wsClientMsg) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
 		return false
 	}
+	item.WakeToken = s.token
+	raw, err := json.Marshal(item)
+	if err != nil {
+		return false
+	}
 	select {
-	case s.ch <- b:
+	case s.ch <- raw:
 		return true
 	default:
 		return false
@@ -231,6 +260,35 @@ func (s *connWakeSlot) close() {
 	}
 	s.closed = true
 	close(s.ch)
+}
+
+// newWakeToken returns a 256-bit random hex token. Panics on entropy
+// failure, mirroring newWSConnID: a zero token would let any client forge
+// wake items.
+func newWakeToken() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		panic("odek: crypto/rand unavailable for wake token: " + err.Error())
+	}
+	return hex.EncodeToString(b)
+}
+
+// validWakeToken constant-time compares the presented token against the
+// connection's secret. Empty values always fail.
+func validWakeToken(sent, want string) bool {
+	if sent == "" || want == "" || len(sent) != len(want) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(sent), []byte(want)) == 1
+}
+
+// wakeInitiated decides whether a message carries server-initiated
+// provenance. Type-gated by design (review P1-1): a client prompt — even
+// one that forges SystemInitiated — can never claim it, because client
+// prompts always arrive with Type "prompt" and the processor sanitizes the
+// flag before handlePrompt sees them.
+func wakeInitiated(msg wsClientMsg) bool {
+	return msg.Type == "bg_wake" && msg.SystemInitiated
 }
 
 // ── serve wiring ─────────────────────────────────────────────────────────
@@ -303,15 +361,11 @@ func (wsWakeRouter) State(sessionID string) wakeConnState {
 
 // Post delivers the wake item to an idle bound connection's slot.
 func (wsWakeRouter) Post(sessionID string, item wsClientMsg) bool {
-	raw, err := json.Marshal(item)
-	if err != nil {
-		return false
-	}
 	for _, c := range wsConnsForSession(sessionID) {
 		if c.isBusy() || c.wakeSlot == nil {
 			continue
 		}
-		if c.wakeSlot.post(raw) {
+		if c.wakeSlot.post(item) {
 			// Tell the client the agent is waking for this session so it
 			// can render progress without polling /api/jobs.
 			if c.conn != nil {
