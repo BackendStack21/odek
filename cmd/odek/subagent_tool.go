@@ -372,10 +372,15 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 	buf.WriteString("📋 Sub-agent results:\n\n")
 	for i, r := range results {
 		fmt.Fprintf(&buf, "─── Task %d: %s ───\n", i+1, truncate(input.Tasks[i].Goal, 60))
+		// Register BEFORE rendering (judge P1): the render resolves effective
+		// (aliased) ids through the registry, so an aliased duplicate must
+		// already be registered or the artifacts line advertises the plain
+		// id and artifact_read resolves it to the WRONG task's bytes.
+		notes := registerTaskArtifacts(r, dirs[i], i)
 		buf.WriteString(formatTaskResultDetailed(r, i, t.artifactReadAvailable, dirs[i]))
-		// M2: validated refs join the session registry so artifact_read can
-		// resolve them by id later in the turn.
-		if notes := registerTaskArtifacts(r, dirs[i], i); len(notes) > 0 {
+		// M2: ambiguity notes render after the artifacts block, same shape as
+		// the pre-aliasing output.
+		if len(notes) > 0 {
 			buf.WriteString(strings.Join(notes, "\n") + "\n")
 		}
 		buf.WriteString("\n\n")
@@ -781,10 +786,18 @@ func renderArtifacts(refs []artifact.Ref, roots []string, taskIdx int) string {
 		}
 	}
 
+	occSeen := map[string]int{}
+
 	for i, v := range ok {
 		displayID := v.ref.ID
 		if taskIdx >= 0 {
-			if eff, found := lookupEffectiveArtifactID(v.ref.ID, taskIdx); found {
+			// Occurrence index: same-stem refs within one task (report.md +
+			// report.txt both report id "report") registered distinct byOrig
+			// slots; this render consumes them in envelope order, matching
+			// registration order.
+			occ := occSeen[v.ref.ID]
+			occSeen[v.ref.ID]++
+			if eff, found := lookupEffectiveArtifactID(v.ref.ID, taskIdx, occ); found {
 				displayID = eff
 			}
 		}

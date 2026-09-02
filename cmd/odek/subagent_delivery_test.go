@@ -273,13 +273,13 @@ func TestLookupEffectiveArtifactID(t *testing.T) {
 	r2 := refForFile(t, dir, "dup2.md", "y")
 	r2.ID = "dup"
 	alias, _ := registerSubagentArtifact(artifactEntry{Ref: r2, Path: strings.TrimPrefix(r2.URI, "file://"), TaskIdx: 1})
-	if eff, ok := lookupEffectiveArtifactID("dup", 0); !ok || eff != "dup" {
+	if eff, ok := lookupEffectiveArtifactID("dup", 0, 0); !ok || eff != "dup" {
 		t.Errorf("task 0 effective id: (%q, %v)", eff, ok)
 	}
-	if eff, ok := lookupEffectiveArtifactID("dup", 1); !ok || eff != alias {
+	if eff, ok := lookupEffectiveArtifactID("dup", 1, 0); !ok || eff != alias {
 		t.Errorf("task 1 effective id: (%q, %v), want alias %q", eff, ok, alias)
 	}
-	if _, ok := lookupEffectiveArtifactID("missing", 3); ok {
+	if _, ok := lookupEffectiveArtifactID("missing", 3, 0); ok {
 		t.Error("unknown orig id must miss")
 	}
 }
@@ -312,14 +312,70 @@ func TestFormatTaskResult_ArtifactProvenanceLine(t *testing.T) {
 	}
 	registerTaskArtifacts(fmt.Sprintf(`{"status":"success","artifacts":[%s]}`, refJSON(p1, c1)), dir, 0)
 	raw2 := fmt.Sprintf(`{"status":"success","artifacts":[%s]}`, refJSON(p2, c2))
+	// Production order (judge P1): register first, THEN render — the render
+	// must resolve the aliased id through the registry.
 	registerTaskArtifacts(raw2, dir, 1)
 
 	got := formatTaskResultDetailed(raw2, 1, true, dir)
-	if !strings.Contains(got, "report") && !strings.Contains(got, "dup.t2") {
-		t.Errorf("render must show the effective (aliased) id:\n%s", got)
+	if !strings.Contains(got, "- dup.t2 (") {
+		t.Errorf("render must advertise the effective (aliased) id:\n%s", got)
+	}
+	if strings.Contains(got, "- dup (") {
+		t.Errorf("plain id must not be advertised for an aliased duplicate — artifact_read(plain) resolves to task 1's bytes:\n%s", got)
 	}
 	if !strings.Contains(got, "task 2") {
 		t.Errorf("artifact line missing owning-task provenance:\n%s", got)
+	}
+}
+
+func TestRegisterArtifact_SameTaskStemCollision(t *testing.T) {
+	resetArtifactRegistryForTest()
+	dir := t.TempDir()
+	// report.md + report.txt in ONE task both report id "report" (filename
+	// stems); occurrence indexing must keep both resolvable.
+	r0 := refForFile(t, dir, "report.md", "markdown body")
+	r1 := refForFile(t, dir, "report.txt", "text body")
+	r1.ID = "report"
+	id0, dup0 := registerSubagentArtifact(artifactEntry{Ref: r0, Path: strings.TrimPrefix(r0.URI, "file://"), TaskIdx: 0})
+	id1, dup1 := registerSubagentArtifact(artifactEntry{Ref: r1, Path: strings.TrimPrefix(r1.URI, "file://"), TaskIdx: 0})
+	if dup0 || id0 != "report" {
+		t.Errorf("first occurrence: got (%q, %v)", id0, dup0)
+	}
+	if !dup1 || id1 != "report.t1" {
+		t.Errorf("second occurrence must alias to report.t1, got (%q, %v)", id1, dup1)
+	}
+	if eff, ok := lookupEffectiveArtifactID("report", 0, 0); !ok || eff != "report" {
+		t.Errorf("occ 0: (%q, %v)", eff, ok)
+	}
+	if eff, ok := lookupEffectiveArtifactID("report", 0, 1); !ok || eff != "report.t1" {
+		t.Errorf("occ 1: (%q, %v)", eff, ok)
+	}
+	// The second file's bytes are reachable via its rendered id.
+	if e, ok := lookupSubagentArtifact("report.t1"); !ok || e.TaskIdx != 0 {
+		t.Errorf("aliased same-task entry: (%+v, %v)", e, ok)
+	}
+}
+
+func TestEvictionCleansEffectiveIDMap(t *testing.T) {
+	resetArtifactRegistryForTest()
+	dir := t.TempDir()
+	r := refForFile(t, dir, "old.md", "oldest")
+	registerSubagentArtifact(artifactEntry{Ref: r, Path: strings.TrimPrefix(r.URI, "file://"), TaskIdx: 0})
+	if _, ok := lookupEffectiveArtifactID("old", 0, 0); !ok {
+		t.Fatal("mapping must exist before eviction")
+	}
+	// Push past the cap: the oldest entry (and its byOrig slot) must go.
+	for i := 0; i < artifactRegistryCap+10; i++ {
+		e := artifactEntry{TaskIdx: i}
+		e.Ref = artifact.Ref{ID: fmt.Sprintf("fill-%03d", i)}
+		e.Path = "/tmp/nonexistent"
+		registerSubagentArtifact(e)
+	}
+	if _, ok := lookupSubagentArtifact("old"); ok {
+		t.Fatal("entry should have been evicted")
+	}
+	if _, ok := lookupEffectiveArtifactID("old", 0, 0); ok {
+		t.Error("byOrig slot leaked past eviction — stale alias ids would render dead ends")
 	}
 }
 

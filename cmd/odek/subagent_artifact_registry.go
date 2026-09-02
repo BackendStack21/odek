@@ -38,6 +38,9 @@ type artifactEntry struct {
 	TaskIdx      int
 	RegisteredAt time.Time
 	seq          uint64
+	OrigID       string  // id as the child reported it (pre-alias)
+	key          origKey // this entry's byOrig slot — removed on eviction
+	occBase      origKey // occ-counter key to decrement on eviction
 }
 
 // registrySlot pairs an id with the seq that inserted it; stale slots
@@ -50,12 +53,14 @@ type registrySlot struct {
 type origKey struct {
 	origID  string
 	taskIdx int
+	occ     int // occurrence of origID within the task (same stem, two extensions)
 }
 
 var artifactRegistry struct {
 	mu     sync.Mutex
 	byID   map[string]*artifactEntry
-	byOrig map[origKey]string // (original id, task) → effective registered id (D1 aliasing)
+	byOrig map[origKey]string // (original id, task, occurrence) → effective registered id (D1 aliasing)
+	occ    map[origKey]int    // registration count per (orig id, task) — assigns occurrence indices
 	order  []registrySlot
 	seq    uint64
 	marks  []uint64 // active per-run floor watermarks (F)
@@ -72,6 +77,7 @@ func resetArtifactRegistryForTest() {
 	defer artifactRegistry.mu.Unlock()
 	artifactRegistry.byID = map[string]*artifactEntry{}
 	artifactRegistry.byOrig = map[origKey]string{}
+	artifactRegistry.occ = map[origKey]int{}
 	artifactRegistry.order = nil
 	artifactRegistry.seq = 0
 	artifactRegistry.marks = nil
@@ -109,8 +115,15 @@ func registerSubagentArtifact(e artifactEntry) (string, bool) {
 		e.Ref.ID = alias
 		id = alias
 	}
+	occBase := origKey{origID: orig, taskIdx: e.TaskIdx}
+	key := occBase
+	key.occ = artifactRegistry.occ[occBase]
+	artifactRegistry.occ[occBase]++
+	e.OrigID = orig
+	e.key = key
+	e.occBase = occBase
 	artifactRegistry.byID[id] = &e
-	artifactRegistry.byOrig[origKey{origID: orig, taskIdx: e.TaskIdx}] = id
+	artifactRegistry.byOrig[key] = id
 	artifactRegistry.order = append(artifactRegistry.order, registrySlot{id: id, seq: e.seq})
 	evictArtifactRegistryLocked()
 	return id, id != orig
@@ -156,8 +169,14 @@ func evictArtifactRegistryLocked() {
 		artifactRegistry.order = artifactRegistry.order[1:]
 		// Lazy eviction: pop the slot unconditionally, but only delete the
 		// live entry when this slot is still its insertion slot (a
-		// re-registration owns the id now and has its own slot).
+		// re-registration owns the id now and has its own slot). The entry's
+		// byOrig slot and occ counter go with it — the effective-id map must
+		// never outlive the ids it maps to.
 		if cur, ok := artifactRegistry.byID[front.id]; ok && cur.seq == front.seq {
+			delete(artifactRegistry.byOrig, cur.key)
+			if artifactRegistry.occ[cur.occBase] > 0 {
+				artifactRegistry.occ[cur.occBase]--
+			}
 			delete(artifactRegistry.byID, front.id)
 		}
 	}
@@ -202,13 +221,16 @@ func minActiveMarkLocked() uint64 {
 	return min
 }
 
-// lookupEffectiveArtifactID resolves the id a given (original id, task)
-// pair registered under — the render side uses it so the parent always
-// copies an id artifact_read can actually resolve (D1 provenance).
-func lookupEffectiveArtifactID(origID string, taskIdx int) (string, bool) {
+// lookupEffectiveArtifactID resolves the id a given (original id, task,
+// occurrence) triple registered under — the render side uses it so the
+// parent always copies an id artifact_read can actually resolve (D1
+// provenance). The occurrence index disambiguates same-stem files within
+// one task (report.md + report.txt both report id "report"); callers pass
+// the ref's position among same-id refs of that task's envelope.
+func lookupEffectiveArtifactID(origID string, taskIdx int, occ int) (string, bool) {
 	artifactRegistry.mu.Lock()
 	defer artifactRegistry.mu.Unlock()
-	id, ok := artifactRegistry.byOrig[origKey{origID: origID, taskIdx: taskIdx}]
+	id, ok := artifactRegistry.byOrig[origKey{origID: origID, taskIdx: taskIdx, occ: occ}]
 	return id, ok
 }
 
