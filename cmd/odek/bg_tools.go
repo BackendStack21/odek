@@ -29,7 +29,7 @@ type BackgroundSettings struct {
 	Enabled           bool
 	MaxJobs           int
 	MaxOutputBytes    int
-	MaxTimeoutSeconds int // 0 = uncapped (jobs bounded by session lifetime)
+	MaxTimeoutSeconds int  // 0 = uncapped (jobs bounded by session lifetime)
 	Notify            bool // background.notify == "observe"
 }
 
@@ -373,8 +373,10 @@ func (t *bgStartTool) Call(args string) (string, error) {
 
 type bgListTool struct{ rt *bgRuntime }
 
-func (t *bgListTool) Name() string        { return "bg_list" }
-func (t *bgListTool) Description() string { return "List this session's background jobs with id, status, runtime, and exit code." }
+func (t *bgListTool) Name() string { return "bg_list" }
+func (t *bgListTool) Description() string {
+	return "List this session's background jobs with id, status, runtime, and exit code."
+}
 func (t *bgListTool) Schema() any {
 	return map[string]any{"type": "object", "properties": map[string]any{}}
 }
@@ -384,10 +386,10 @@ func (t *bgListTool) Call(args string) (string, error) {
 	out := make([]map[string]any, 0, len(jobs))
 	for _, j := range jobs {
 		entry := map[string]any{
-			"job_id":     j.ID,
-			"command":    headString(j.Command, bgCommandHead),
-			"status":     string(j.Status),
-			"runtime_s":  jobRuntimeSeconds(j),
+			"job_id":    j.ID,
+			"command":   headString(j.Command, bgCommandHead),
+			"status":    string(j.Status),
+			"runtime_s": jobRuntimeSeconds(j),
 		}
 		if j.Status != bgproc.StatusRunning {
 			entry["exit_code"] = j.ExitCode
@@ -434,9 +436,10 @@ func (t *bgStatusTool) Call(args string) (string, error) {
 		return string(b), nil
 	}
 	entry := map[string]any{
-		"job_id":     job.ID,
-		"status":     string(job.Status),
-		"runtime_s":  jobRuntimeSeconds(job),
+		"job_id":       job.ID,
+		"status":       string(job.Status),
+		"runtime_s":    jobRuntimeSeconds(job),
+		"output_bytes": job.OutputBytes,
 	}
 	if job.Status != bgproc.StatusRunning {
 		entry["exit_code"] = job.ExitCode
@@ -461,8 +464,8 @@ Only the job's own session can read it.`
 
 func (t *bgOutputTool) Schema() any {
 	return map[string]any{
-		"type":       "object",
-		"required":   []string{"job_id"},
+		"type":     "object",
+		"required": []string{"job_id"},
 		"properties": map[string]any{
 			"job_id": map[string]any{"type": "string", "description": "Job id from bg_start"},
 			"since":  map[string]any{"type": "integer", "minimum": 0, "description": "Cursor from the previous read; 0/absent = start"},

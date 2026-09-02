@@ -137,6 +137,20 @@ func (c *Client) CallStream(ctx context.Context, messages []Message, systemBlock
 		res, emitted, err = c.postChatStream(ctx, reqBytes, cb)
 	}
 
+	// Field-level learn-once retry (ADR-4, parity with buffered Call):
+	// some models reject reasoning_effort combined with function tools.
+	// Learn the constraint once (buildCallParams then pins effort to
+	// "none" for later tool-bearing streams) and re-stream once
+	// (B3-LLM-1).
+	if err != nil && !emitted && len(tools) > 0 && !c.forceNoneEffort.Load() && reasoningEffortRejected(err) {
+		c.forceNoneEffort.Store(true)
+		body.ReasoningEffort = "none"
+		if reqBytes, err = json.Marshal(body); err != nil {
+			return nil, fmt.Errorf("llm: marshal request: %w", err)
+		}
+		res, emitted, err = c.postChatStream(ctx, reqBytes, cb)
+	}
+
 	// Path-level learn-once fallback (ADR-4): the provider rejects streaming
 	// outright, or answered 200 with a non-SSE body, and nothing was emitted
 	// yet — transparently use the buffered path for this and later calls.
@@ -331,6 +345,38 @@ func readSSE(parent, reqCtx context.Context, cancelReq context.CancelFunc, body 
 	sawData := false
 	done := false
 
+	// dataLines buffers the data lines of the CURRENT SSE event: the spec
+	// joins same-event data lines with "\n" and terminates the event at
+	// the next blank line (or EOF). Parsing per-line misreads spec-valid
+	// multi-data-line chunks as garbage and burns the retry budget
+	// (B3-LLM-2).
+	var dataLines []string
+	flushEvent := func() error {
+		if len(dataLines) == 0 {
+			return nil
+		}
+		payload := strings.Join(dataLines, "\n")
+		dataLines = dataLines[:0]
+		if payload == "[DONE]" {
+			done = true
+			return nil
+		}
+		var chunk streamChunk
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			return fmt.Errorf("llm: parse stream chunk: %w", err)
+		}
+		return acc.apply(&chunk, cb, &emitted)
+	}
+	abortOrErr := func(err error) (*CallResult, bool, error) {
+		var abort *handlerAbort
+		if errors.As(err, &abort) {
+			cancelReq() // stop the watchdog
+			<-watchdogDone
+			return acc.result(), emitted, &StreamAbortedError{Reason: abort.err}
+		}
+		return acc.result(), emitted, err
+	}
+
 	for sc.Scan() {
 		line := sc.Text()
 		totalBytes += len(line)
@@ -345,8 +391,18 @@ func readSSE(parent, reqCtx context.Context, cancelReq context.CancelFunc, body 
 		}
 
 		trimmed := strings.TrimRight(line, "\r")
-		if trimmed == "" || strings.HasPrefix(trimmed, ":") {
-			continue // SSE keepalive / separator (ADR-6)
+		if trimmed == "" {
+			// Blank line terminates the current event.
+			if err := flushEvent(); err != nil {
+				return abortOrErr(err)
+			}
+			if done {
+				break
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, ":") {
+			continue // SSE keepalive (ADR-6)
 		}
 		if !strings.HasPrefix(trimmed, "data:") {
 			if !sawData && !emitted {
@@ -355,30 +411,23 @@ func readSSE(parent, reqCtx context.Context, cancelReq context.CancelFunc, body 
 			continue // stray line inside an established stream
 		}
 		sawData = true
-		payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
-		if payload == "" {
-			continue
-		}
-		if payload == "[DONE]" {
-			done = true
-			break
-		}
-
-		var chunk streamChunk
-		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-			if emitted {
-				return acc.result(), emitted, fmt.Errorf("llm: parse stream chunk: %w", err)
+		if linePayload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:")); linePayload != "" {
+			// Tolerate non-canonical streams that never separate events
+			// with a blank line: if the buffer already holds a complete
+			// JSON value, dispatch it before starting the next event.
+			// Spec-canonical multi-line events (incomplete JSON so far)
+			// keep accumulating; an event holding two top-level values is
+			// malformed per spec anyway and dispatching it as two chunks
+			// matches the pre-B3-LLM-2 per-line behavior.
+			if len(dataLines) > 0 && json.Valid([]byte(strings.Join(dataLines, "\n"))) {
+				if err := flushEvent(); err != nil {
+					return abortOrErr(err)
+				}
+				if done {
+					break // [DONE] without a separator — consume nothing after it
+				}
 			}
-			return acc.result(), emitted, fmt.Errorf("llm: parse stream chunk: %w", err)
-		}
-		if err := acc.apply(&chunk, cb, &emitted); err != nil {
-			var abort *handlerAbort
-			if errors.As(err, &abort) {
-				cancelReq() // stop the watchdog
-				<-watchdogDone
-				return acc.result(), emitted, &StreamAbortedError{Reason: abort.err}
-			}
-			return acc.result(), emitted, err
+			dataLines = append(dataLines, linePayload)
 		}
 	}
 
@@ -389,6 +438,14 @@ func readSSE(parent, reqCtx context.Context, cancelReq context.CancelFunc, body 
 			return acc.result(), emitted, fmt.Errorf("llm: stream idle for over %v without an event", idle)
 		}
 		return acc.result(), emitted, fmt.Errorf("llm: read stream: %w", err)
+	}
+
+	// EOF flush: a final event without a trailing blank line is still an
+	// event ([DONE] frequently arrives last with no separator).
+	if !done {
+		if err := flushEvent(); err != nil {
+			return abortOrErr(err)
+		}
 	}
 
 	if !done && !acc.finished && !acc.finishedWithUsage() {

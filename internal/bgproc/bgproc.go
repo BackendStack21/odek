@@ -63,15 +63,16 @@ var ErrTooManyJobs = errors.New("background job limit reached for session")
 
 // Job is a snapshot of a background job's state.
 type Job struct {
-	ID        string
-	SessionID string
-	Command   string
-	Status    Status
-	ExitCode  int    // meaningful once ended (bash semantics; -1 when signaled)
-	Err       string // terminal error detail, when applicable
-	StartedAt time.Time
-	EndedAt   time.Time
-	Timeout   time.Duration // 0 = until session end
+	ID          string
+	SessionID   string
+	Command     string
+	Status      Status
+	ExitCode    int    // meaningful once ended (bash semantics; -1 when signaled)
+	Err         string // terminal error detail, when applicable
+	StartedAt   time.Time
+	EndedAt     time.Time
+	Timeout     time.Duration // 0 = until session end
+	OutputBytes int64         // logical output size (dropped-front + retained); populated by Get snapshots
 }
 
 // Notice reports a job that reached a terminal state. It is delivered to the
@@ -257,21 +258,43 @@ func (m *Manager) wait(sessionID string, e *jobEntry) {
 	m.mu.Lock()
 	now := time.Now().UTC()
 	e.job.EndedAt = now
+	// ProcessState is authoritative once Wait returns. It survives
+	// exec.ErrWaitDelay — a grandchild kept the output pipes open and the
+	// WaitDelay drain timed out: output truncation, not process failure
+	// (B3-TOOLS-2). It also outranks a pending killed/timeout reason
+	// recorded by a Stop that raced a self-completing process.
+	exitCode := -1
+	if e.cmd.ProcessState != nil {
+		exitCode = e.cmd.ProcessState.ExitCode()
+	}
 	switch {
+	case exitCode >= 0:
+		e.job.ExitCode = exitCode
+		if exitCode == 0 {
+			e.job.Status = StatusExited
+		} else {
+			e.job.Status = StatusFailed
+			if err != nil && !errors.Is(err, exec.ErrWaitDelay) {
+				e.job.Err = err.Error()
+			} else {
+				e.job.Err = fmt.Sprintf("exit status %d", exitCode)
+			}
+		}
 	case e.reason == StatusKilled || e.reason == StatusTimeout:
 		e.job.Status = e.reason
 	case err == nil:
+		// Unreachable in practice (a nil Wait error implies a completed
+		// exit); kept as a fail-safe.
 		e.job.Status = StatusExited
 		e.job.ExitCode = 0
 	default:
 		e.job.Status = StatusFailed
 		if ee, ok := err.(*exec.ExitError); ok {
 			e.job.ExitCode = ee.ExitCode()
-			e.job.Err = err.Error()
 		} else {
 			e.job.ExitCode = -1
-			e.job.Err = err.Error()
 		}
+		e.job.Err = err.Error()
 	}
 	notice := Notice{
 		JobID:       e.job.ID,
@@ -419,6 +442,8 @@ func (m *Manager) List(sessionID string) []Job {
 }
 
 // Get returns the job snapshot; ok is false for unknown or foreign ids.
+// The snapshot carries the job's logical output size so callers can judge
+// whether reading the output is worthwhile (B3-TOOLS-3).
 func (m *Manager) Get(sessionID, jobID string) (Job, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -426,7 +451,9 @@ func (m *Manager) Get(sessionID, jobID string) (Job, bool) {
 	if e == nil {
 		return Job{}, false
 	}
-	return e.job, true
+	job := e.job
+	job.OutputBytes = e.ring.size() // ring lock nested under m.mu; no reverse order exists
+	return job, true
 }
 
 // Output returns up to limit bytes of output recorded after the absolute
@@ -541,8 +568,10 @@ func isBlank(s string) bool {
 // outputRing is a WriteCloser-free bounded byte ring that keeps the most
 // recent output: once the cap is hit, the OLDEST bytes are dropped from the
 // front and counted, so readers always see the freshest window plus an
-// explicit marker for what was dropped. Front-dropping is rune-boundary
-// safe: a multibyte character split by the cap is never shipped as U+FFFD.
+// explicit marker for what was dropped. Front-dropping steps back at most
+// utf8.UTFMax-1 bytes to a rune boundary, so valid multibyte characters
+// are never split; binary (invalid UTF-8) output has no boundary, and the
+// byte cap stays authoritative — the ring is bounded unconditionally.
 type outputRing struct {
 	mu      sync.Mutex
 	buf     []byte
@@ -556,16 +585,26 @@ func (r *outputRing) Write(p []byte) (int, error) {
 	r.buf = append(r.buf, p...)
 	if len(r.buf) > r.limit {
 		cut := len(r.buf) - r.limit
-		// Advance to a rune boundary so we never cut inside a character.
-		for cut < len(r.buf) && cut > 0 && !utf8.RuneStart(r.buf[cut]) {
+		// Walk back at most utf8.UTFMax-1 bytes to a rune boundary so a
+		// multibyte character is never split. Invalid UTF-8 (binary
+		// output) has no boundary — the cap is unconditional, so cut
+		// where the arithmetic lands rather than growing the ring
+		// unbounded (B3-TOOLS-1).
+		for i := 0; i < utf8.UTFMax-1 && cut > 0 && !utf8.RuneStart(r.buf[cut]); i++ {
 			cut--
 		}
-		if cut > 0 {
-			r.dropped += int64(cut)
-			r.buf = r.buf[cut:]
-		}
+		r.dropped += int64(cut)
+		r.buf = r.buf[cut:]
 	}
 	return len(p), nil
+}
+
+// size returns the logical output size: bytes dropped from the front of
+// the ring plus the retained window.
+func (r *outputRing) size() int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.dropped + int64(len(r.buf))
 }
 
 // readFrom returns up to limit bytes (int: a buffer size, bounded at the
