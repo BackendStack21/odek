@@ -14,7 +14,11 @@ import { addMessage, resetTurnState, showLoading } from './render.js';
 
 // ── Send ──
 export function send() {
+  // F-B2: guard BEFORE touching attachments — a rejected send used to
+  // clearAttachedFiles() first, silently wiping the user's staged files.
+  if (S.busy || !S.ws || S.ws.readyState !== WebSocket.OPEN) return;
   const text = promptEl.value.trim();
+  if (!text && S.attachedFiles.length === 0) return;
 
   // Build display message (filename chips only — never the file body) and a
   // separate attachments payload. The server wraps each attachment with the
@@ -27,8 +31,6 @@ export function send() {
     attachments = S.attachedFiles.map(f => ({ name: f.name, content: f.content }));
     clearAttachedFiles();
   }
-
-  if ((!text && attachments.length === 0) || S.busy || !S.ws || S.ws.readyState !== WebSocket.OPEN) return;
 
   S.history.push(text);
   if (S.history.length > 100) S.history.shift();
@@ -354,15 +356,25 @@ async function checkCompletion() {
   S.lastAtIdx = atIdx;
   S.lastCursor = cursor;
   S.compQuery = query;
+  // F-B5: staleness token — the response is dropped unless the prompt text
+  // AND cursor are exactly where they were when the request left.
+  const reqToken = val + '\u0000' + cursor;
 
   try {
     const resp = await fetch('/api/resources?q=' + encodeURIComponent(query) + '&limit=8', {
       headers: apiHeaders()
     });
-    const results = await resp.json();
-    if (!results || results.length === 0) {
+    if (!resp.ok) {
       completionEl.classList.remove('visible');
       return;
+    }
+    const results = await resp.json();
+    if (!Array.isArray(results) || results.length === 0) {
+      completionEl.classList.remove('visible');
+      return;
+    }
+    if (promptEl.value + '\u0000' + promptEl.selectionStart !== reqToken) {
+      return; // stale: keep whatever popup state matches the current input
     }
 
     completionEl.innerHTML = results.map((r, i) =>

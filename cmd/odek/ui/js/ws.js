@@ -4,14 +4,14 @@
 // hello pushed on connect.
 import { S, setSessionToken } from './state.js';
 import { getWsToken } from './net.js';
-import { dotEl, statusEl, sendBtn, skeletonEl, messagesEl, modelLabel } from './dom.js';
+import { dotEl, statusEl, sendBtn, skeletonEl, messagesEl, modelLabel, promptEl } from './dom.js';
 import { formatNum, formatErrorMessage, showToast, announce } from './utils.js';
 import {
   streamToken, streamThinking, streamFlush, endThinking, endStream,
   addToolCall, addToolResult, addSubagentGroup, completeSubagents,
   appendSubagentLog, addSystemMessage, updateSubagentState,
 } from './render.js';
-import { queueApproval, dismissApproval, clearApprovals } from './approvals.js';
+import { queueApproval, dismissApproval, clearApprovals, expireApproval } from './approvals.js';
 import { loadSessions } from './sessions.js';
 import { onPong, onServerInfo, startHeartbeat } from './health.js';
 import { metricsLiveContext, metricsDone, flashTrim, turnCostUSD, setMetricsModel } from './metrics.js';
@@ -19,6 +19,10 @@ import { metricsLiveContext, metricsDone, flashTrim, turnCostUSD, setMetricsMode
 // Reconnect backoff: 1s doubling to a 30s cap; reset after a clean interval
 // of connected silence.
 let reconnectDelay = 1000;
+// F-A3: flipped after the first successful connect, so a LATER onopen is a
+// reconnect — the previous turn died with the socket, and the input must be
+// unbricked instead of waiting for a 'done' that never comes.
+let wasConnected = false;
 
 export function connect() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -33,6 +37,16 @@ export function connect() {
     reconnectDelay = 1000;
     // Hide loading skeleton when connected
     if (skeletonEl) skeletonEl.classList.remove('visible');
+    if (wasConnected) {
+      // F-A3: reconnect, not first connect. A turn in flight died with the
+      // old socket — reset busy and re-enable the prompt, or the client
+      // stays bricked until reload. The turn's partial output stays in the
+      // transcript; only the completion is missing.
+      S.busy = false;
+      promptEl.disabled = false;
+      addSystemMessage('Connection restored — the previous turn ended before completion.');
+    }
+    wasConnected = true;
     announce('Connected');
     startHeartbeat();
   };
@@ -107,10 +121,14 @@ export function connect() {
         break;
 
       case 'tool_result':
+        // F-B1: the delegate_tasks result is rendered by the subagent group
+        // (per-card results) — routing it through addToolResult too leaked
+        // the full payload into an unrelated tool block.
         if (event.name === 'delegate_tasks' && S.subagentGroup) {
           completeSubagents(event.data);
+        } else {
+          addToolResult(event.name, event.data);
         }
-        addToolResult(event.name, event.data);
         break;
 
       case 'subagent_log':
@@ -187,6 +205,10 @@ export function connect() {
 
       case 'error':
         streamFlush(); endThinking(); endStream();
+        // The run is unwinding on error — same approval teardown as
+        // 'cancelled': a pending card would wait for an ack that never
+        // comes and block the queue.
+        clearApprovals();
         addSystemMessage('⚠ ' + formatErrorMessage(event.message));
         break;
 
@@ -198,6 +220,13 @@ export function connect() {
         // The request was answered (by this or another connected client);
         // drop it from the queue if it is still shown.
         dismissApproval(event.id);
+        break;
+
+      case 'approval_expired':
+        // The server killed this approval after its timeout (F-A1). Close
+        // the matching card; ids already answered or swept are no-ops, so
+        // late or duplicate frames can never resurrect a closed card.
+        expireApproval(event.id);
         break;
 
       case 'skill_event':

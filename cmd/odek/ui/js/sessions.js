@@ -3,7 +3,7 @@
 // export (markdown / json download).
 import { S, getSessionToken, clearSessionToken, ensureSessionToken } from './state.js';
 import { listSessions, getSession, renameSession as renameSessionAPI, deleteSession, downloadExport, pinSession } from './api.js';
-import { messagesEl, promptEl, sendBtn, sessionListEl, sidebarSearch, sidebarOverlay } from './dom.js';
+import { messagesEl, promptEl, sendBtn, sessionListEl, sidebarSearch, sidebarOverlay, cancelBtn } from './dom.js';
 import { escapeHtml, escapeAttr, relativeTime, formatNum, showToast, forceScrollBottom, hideCancel, announce, openDialog, closeDialog, isDialogOpen } from './utils.js';
 import { resetTurnState, hideLoading, renderSessionHistory } from './render.js';
 import { clearApprovals } from './approvals.js';
@@ -181,6 +181,13 @@ syncSearchClear();
 
 // ── New Session ──
 export function newSession() {
+  // F-A2: a live turn owns the transcript and the socket. Ask before
+  // tearing it down; the cancel goes through the same stop control the
+  // user would click (main.js cancelAgent). Never silently force busy off.
+  if (S.busy) {
+    if (!confirm('A turn is still running. Cancel it and switch to a new session?')) return;
+    if (cancelBtn) cancelBtn.click();
+  }
   S.sessionId = null;
   resetMetrics();
   // The plan belongs to the previous session — drop it from the panel.
@@ -212,6 +219,12 @@ export function newSession() {
 // from the REST detail. Falls back to the legacy piggyback-on-prompt path
 // when the socket is down.
 export async function loadAndRenderSession(sid) {
+  // F-A2: same mid-run guard as newSession — ask, cancel through the stop
+  // control, and only then bootstrap the switch (which fetches).
+  if (S.busy) {
+    if (!confirm('A turn is still running. Cancel it and switch sessions?')) return;
+    if (cancelBtn) cancelBtn.click();
+  }
   try {
     // Bootstrap the session token when missing (ensureSessionToken captures
     // the server's X-Session-Token echo on its detail fetch).

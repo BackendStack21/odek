@@ -59,14 +59,33 @@ class FakeElement {
     const idSel = sel.startsWith('#') ? sel.slice(1) : null;
     const walk = (el) => {
       for (const c of el.children) {
-        if ((cls && c.classList().includes(cls)) || (idSel && c.id === idSel)) out.push(c);
+        if ((cls && c.classList.contains(cls)) || (idSel && c.id === idSel)) out.push(c);
         walk(c);
       }
     };
     walk(this);
     return out;
   }
-  classList() { return String(this.className).split(/\s+/).filter(Boolean); }
+  // DOMTokenList-like view over className: stateless (re-reads on every
+  // call) so direct className assignments and classList mutations can never
+  // desync. Supports the subset production code uses: add/remove/contains/toggle.
+  get classList() {
+    const self = this;
+    const read = () => new Set(String(self.className || '').split(/\s+/).filter(Boolean));
+    const write = (s) => { self.className = [...s].join(' '); };
+    return {
+      contains: (c) => read().has(c),
+      add: (...cs) => { const s = read(); cs.forEach((c) => s.add(c)); write(s); },
+      remove: (...cs) => { const s = read(); cs.forEach((c) => s.delete(c)); write(s); },
+      toggle: (c, force) => {
+        const s = read();
+        const on = force === undefined ? !s.has(c) : !!force;
+        if (on) s.add(c); else s.delete(c);
+        write(s);
+        return on;
+      },
+    };
+  }
 }
 
 const els = new Map();
@@ -104,6 +123,9 @@ globalThis.localStorage = (() => {
     removeItem: (k) => m.delete(k),
   };
 })();
+// sendApproval now routes through ws.js's wsSend, which compares
+// readyState against WebSocket.OPEN — provide the constant.
+globalThis.WebSocket = class { static get OPEN() { return 1; } };
 globalThis.requestAnimationFrame = (fn) => setTimeout(fn, 0);
 globalThis.cancelAnimationFrame = (t) => clearTimeout(t);
 

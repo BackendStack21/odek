@@ -193,10 +193,26 @@ function appendStreamText(text) {
   // (fences, lists) correct while the answer streams.
   S.streamText += text;
   S.streamContentEl.innerHTML = markdownToHtml(S.streamText);
-  if (S.streamCursorEl && S.streamCursorEl.parentNode !== S.streamContentEl) {
-    S.streamContentEl.appendChild(S.streamCursorEl);
+  if (S.streamCursorEl) {
+    const host = streamCursorHost();
+    if (S.streamCursorEl.parentNode !== host) host.appendChild(S.streamCursorEl);
   }
   scrollBottom();
+}
+
+// streamCursorHost walks to the deepest last element so the caret sits
+// inline after the trailing text. Appending to the content root put the
+// caret BELOW the last block — an open code fence rendered it on its own
+// line, which then jumped when the fence closed (F-C4). Environments whose
+// DOM shims lack lastElementChild degrade to the content root (old behavior).
+function streamCursorHost() {
+  let host = S.streamContentEl;
+  let last = host.lastElementChild;
+  while (last && last.tagName !== 'BR') {
+    host = last;
+    last = host.lastElementChild;
+  }
+  return host;
 }
 
 function removeStreamCursor() {
@@ -238,6 +254,9 @@ function startStream() {
 
 export function endStream() {
   removeStreamCursor();
+  // F-C7: history renders re-check collapse, the live path didn't — a long
+  // streamed answer had no "Show more" until the session was reloaded.
+  if (S.streamBubbleEl) checkCollapse(S.streamBubbleEl);
   S.streamBubbleEl = null;
   S.streamContentEl = null;
   S.streamText = '';
@@ -521,7 +540,7 @@ export function addSubagentGroup(command) {
     card.className = 'subagent-card running';
     card.dataset.index = i;
     card.innerHTML =
-      '<div class="sa-top">' +
+      '<div class="sa-top" role="button" tabindex="0" aria-expanded="false">' +
         '<div class="sa-icon">⟳</div>' +
         '<div class="sa-goal" title="' + escapeAttr(task.goal || 'Task ' + (i+1)) + '">' + escapeHtml(task.goal || 'Task ' + (i+1)) + '</div>' +
         '<div class="sa-status">running</div>' +
@@ -750,6 +769,10 @@ function updateSubagentHeader() {
 
 function toggleSaDetails(el) {
   el.classList.toggle('open');
+  // Mirror state for keyboard/AT users (the header row is role="button").
+  const card = el.closest('.subagent-card');
+  const top = card && card.querySelector('.sa-top');
+  if (top) top.setAttribute('aria-expanded', el.classList.contains('open') ? 'true' : 'false');
 }
 
 export function appendSubagentLog(taskIdx, event) {
@@ -884,7 +907,7 @@ function renderHistoricalSubagents(args, output) {
     card.className = 'subagent-card running';
     card.dataset.index = i;
     card.innerHTML =
-      '<div class="sa-top">' +
+      '<div class="sa-top" role="button" tabindex="0" aria-expanded="false">' +
         '<div class="sa-icon">⟳</div>' +
         '<div class="sa-goal" title="' + escapeAttr(task.goal || 'Task ' + (i+1)) + '">' + escapeHtml(task.goal || 'Task ' + (i+1)) + '</div>' +
         '<div class="sa-status">running</div>' +
@@ -990,8 +1013,26 @@ messagesEl.addEventListener('click', (e) => {
   const thinkingToggle = t.closest('.thinking-toggle');
   if (thinkingToggle) { toggleThinking(thinkingToggle); return; }
 
-  const saDetails = t.closest('.sa-details');
-  if (saDetails) { toggleSaDetails(saDetails); return; }
+  // F-C7: toggle from the header row only — .sa-details is a content
+  // region; click-anywhere-to-collapse destroyed text selection and made
+  // .sa-log scrolling self-closing. The stop button never toggles.
+  const saTop = t.closest('.sa-top');
+  if (saTop && !t.closest('.sa-stop')) {
+    const card = saTop.closest('.subagent-card');
+    const details = card && card.querySelector('.sa-details');
+    if (details) toggleSaDetails(details);
+    return;
+  }
+
+  // F-C1: the per-card stop button. Cards carry their delegation index
+  // (dataset.index, set at render); requestSubagentStop owns all the
+  // guards (finalized / no task_id / repeat clicks) and the stopping… UI.
+  const saStop = t.closest('.sa-stop');
+  if (saStop) {
+    const card = saStop.closest('.subagent-card');
+    if (card) requestSubagentStop(parseInt(card.dataset.index, 10));
+    return;
+  }
 });
 
 // Keyboard activation for the role="button" elements above: Enter/Space

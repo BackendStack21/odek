@@ -34,6 +34,13 @@ type approvalRequest struct {
 	AllowTrust        bool   `json:"allow_trust"`
 	Friction          bool   `json:"friction"`
 	FrictionApprovals int    `json:"friction_approvals,omitempty"`
+
+	// TimeoutSeconds is the effective server-enforced wait for this
+	// approval, in whole seconds (60 by default; raised for headless REST
+	// runs via SetApprovalTimeout). The UI renders its countdown from it
+	// and autocloses the card when the matching approval_expired frame
+	// arrives. omitempty keeps pre-timeout clients unaffected.
+	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
 }
 
 // allowTrustForClass mirrors the TTYApprover policy: destructive, blocked,
@@ -186,6 +193,17 @@ func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string
 	// approval timeout on a run that was already cancelled.
 	cancelCh := a.cancelChan()
 
+	// Effective wait, resolved BEFORE the frame goes out: approvalTimeout
+	// is the single source of truth for both the wire-advertised countdown
+	// and the enforcement deadline, so the client countdown can never
+	// disagree with what the server actually enforces.
+	a.mu.Lock()
+	timeout := a.approvalTimeout
+	a.mu.Unlock()
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+
 	// Send approval request via WebSocket
 	err := a.sendFn(approvalRequest{
 		Type:              "approval_request",
@@ -197,18 +215,13 @@ func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string
 		AllowTrust:        allowTrust,
 		Friction:          friction,
 		FrictionApprovals: approvalCount,
+		TimeoutSeconds:    int(timeout / time.Second),
 	})
 	if err != nil {
 		return fmt.Errorf("approval: send failed: %w", err)
 	}
 
 	// Wait for response, cancellation, or the approval timeout.
-	a.mu.Lock()
-	timeout := a.approvalTimeout
-	a.mu.Unlock()
-	if timeout <= 0 {
-		timeout = 60 * time.Second
-	}
 	select {
 	case action := <-resp:
 		// Approve-vs-cancel race: both cases can be ready and select picks
@@ -251,6 +264,15 @@ func (a *wsApprover) PromptCommand(cls danger.RiskClass, cmd, description string
 	case <-cancelCh:
 		return fmt.Errorf("approval cancelled: %s", cmd)
 	case <-time.After(timeout):
+		// Tell the browser this card is dead BEFORE the timeout error
+		// surfaces to the run — otherwise the UI keeps a zombie approval
+		// card that blocks the whole approval queue. Late approval_response
+		// frames for this id are still dropped safely: the deferred delete
+		// has already removed the pending entry.
+		a.sendFn(map[string]any{
+			"type": "approval_expired",
+			"id":   id,
+		})
 		return fmt.Errorf("approval timeout: %s", cmd)
 	}
 }

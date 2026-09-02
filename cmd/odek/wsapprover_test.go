@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -590,5 +592,108 @@ func TestWSApprover_TrustResponse_CoercedToApprove_ForUnknown(t *testing.T) {
 	}
 	if a.approveAll[danger.Unknown] {
 		t.Error("unknown class was cached as trusted — class trust must be impossible")
+	}
+}
+
+// TestWSApprover_RequestCarriesEffectiveTimeoutSeconds verifies the outbound
+// approval_request frame advertises timeout_seconds — the EFFECTIVE wait the
+// server enforces (60s default; SetApprovalTimeout override) — so the browser
+// can render a live countdown and autoclose expired cards. The assertion runs
+// on the JSON wire form, pinning the snake_case tag and the populated value.
+func TestWSApprover_RequestCarriesEffectiveTimeoutSeconds(t *testing.T) {
+	assertTimeout := func(t *testing.T, a *wsApprover, want int) {
+		t.Helper()
+		req, err := promptAndCaptureRequest(t, a, danger.Safe, "approve")
+		if err != nil {
+			t.Fatalf("PromptCommand: %v", err)
+		}
+		b, err := json.Marshal(req)
+		if err != nil {
+			t.Fatalf("marshal approvalRequest: %v", err)
+		}
+		var wire map[string]any
+		if err := json.Unmarshal(b, &wire); err != nil {
+			t.Fatalf("unmarshal approval_request wire JSON: %v", err)
+		}
+		got, ok := wire["timeout_seconds"].(float64)
+		if !ok {
+			t.Fatalf("approval_request frame missing timeout_seconds, wire JSON: %s", b)
+		}
+		if int(got) != want {
+			t.Errorf("timeout_seconds = %d, want %d (must match the server-enforced wait)", int(got), want)
+		}
+	}
+
+	// Default socket UX timeout.
+	assertTimeout(t, newWSApprover(nil), 60)
+
+	// Headless runs raise the wait via SetApprovalTimeout — the frame must
+	// advertise the same value the enforcer will actually use.
+	configured := newWSApprover(nil)
+	configured.SetApprovalTimeout(120 * time.Second)
+	assertTimeout(t, configured, 120)
+}
+
+// TestWSApprover_TimeoutEmitsExpiredFrame verifies that when the approval
+// wait expires, the server emits an approval_expired frame carrying the
+// request id BEFORE the timeout error surfaces to the run. Without it the
+// browser keeps a zombie approval card that blocks the whole approval queue.
+// Also pins that a late response for the expired id is dropped safely.
+func TestWSApprover_TimeoutEmitsExpiredFrame(t *testing.T) {
+	var mu sync.Mutex
+	var reqID string
+	expired := make(chan string, 4)
+	sent := make(chan struct{}, 1)
+	a := newWSApprover(func(v any) error {
+		if m, ok := v.(map[string]any); ok && m["type"] == "approval_expired" {
+			id, _ := m["id"].(string)
+			expired <- id
+			return nil
+		}
+		if req, ok := v.(approvalRequest); ok {
+			mu.Lock()
+			reqID = req.ID
+			mu.Unlock()
+			select {
+			case sent <- struct{}{}:
+			default:
+			}
+		}
+		return nil
+	})
+	a.SetApprovalTimeout(50 * time.Millisecond)
+
+	done := make(chan error, 1)
+	go func() { done <- a.PromptCommand(danger.Safe, "slow", "test") }()
+	<-sent // approval card is up
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "timeout") {
+			t.Fatalf("expected timeout error, got: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("PromptCommand did not return after the approval timeout")
+	}
+
+	// sendFn is synchronous and the expired frame is emitted inside the
+	// timeout branch before the error returns, so the frame must already
+	// be out by the time the run observes the error.
+	mu.Lock()
+	wantID := reqID
+	mu.Unlock()
+	select {
+	case gotID := <-expired:
+		if gotID != wantID {
+			t.Errorf("approval_expired id = %q, want %q", gotID, wantID)
+		}
+	default:
+		t.Fatal("no approval_expired frame emitted on approval timeout")
+	}
+
+	// Late responses for the expired id must keep being dropped: the
+	// pending entry is gone, so nothing can satisfy a stale card.
+	if a.HandleResponse(wantID, "approve") {
+		t.Error("late approval_response for expired id matched a pending request")
 	}
 }

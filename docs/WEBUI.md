@@ -627,8 +627,9 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 | `done` | Agent finishes — **emitted only after the session is persisted**, so refreshing session state on `done` is race-free | `latency` (seconds), `contextTokens`, `outputTokens`, `cacheCreationTokens`, `cacheReadTokens`, `cachedTokens`, `sessionContextTokens`, `sessionOutputTokens` |
 | `usage` | After each LLM iteration of a running turn | `contextTokens`, `outputTokens` (camelCase — the per-iteration context size drives the metrics gauge) |
 | `error` | Agent or server error | `message` |
-| `approval_request` | Agent needs user approval for dangerous operation; blocks the run up to 60s (default) | `id`, `risk` (class name), `command` (or resource), `description`, `is_operation`, `allow_trust`, `friction`, `friction_approvals` |
+| `approval_request` | Agent needs user approval for dangerous operation; blocks the run up to `timeout_seconds` (60s default) | `id`, `risk` (class name), `command` (or resource), `description`, `is_operation`, `allow_trust`, `friction`, `friction_approvals`, `timeout_seconds` (the effective server-enforced wait in seconds — render the card's countdown from it) |
 | `approval_ack` | Server confirms an approval response | `id`, `action` |
+| `approval_expired` | Server declares the approval dead after `timeout_seconds` elapsed with no response — autoclose the matching card; late `approval_response` frames for the id are dropped | `id` |
 | `skill_event` | Skill lifecycle event (`loaded`/`autoloaded`/`used`/`deleted` — `skill_save`/`skill_patch` were removed with the self-learning feature) | `event`, `skill_name`, `skills`, `heuristic` |
 | `memory_event` | Memory lifecycle event | `event`, `target`, `session_id`, `content`, `count`, `new_count`, `untrusted` |
 | `agent_signal` | Agent self-observability signal | `event`, `detail`, `tool`, `count` |
