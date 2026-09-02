@@ -1804,6 +1804,7 @@ func handlePrompt(
 	}
 
 	if err != nil {
+		atomic.AddInt64(&serveStats.PromptsFailed, 1) // B3-SERVE-1: failed prompts must reach the usage aggregate
 		sendError(send, err.Error())
 		if sl != nil {
 			sl.logf("turn_failed session=%s summary=%s", sid, providerFailureSummary(err))
