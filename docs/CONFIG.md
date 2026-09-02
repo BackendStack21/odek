@@ -1155,7 +1155,10 @@ ends — there is no detach mode in v1.
   "max_output_bytes": 1048576,
   "max_timeout_seconds": 0,
   "notify": "observe",
-  "on_session_end": "kill"
+  "on_session_end": "kill",
+  "wake_on_complete": true,
+  "wake_coalesce_ms": 2000,
+  "max_wakes_per_hour": 30
 }
 ```
 
@@ -1167,6 +1170,9 @@ ends — there is no detach mode in v1.
 | `max_timeout_seconds` | `0` | Cap for explicit `timeout_seconds` on `bg_start`; `0` = uncapped (session lifetime is the bound). |
 | `notify` | `"observe"` | `"observe"` injects a drained completion summary at the agent's next iteration; `"off"` requires polling with `bg_status`. |
 | `on_session_end` | `"kill"` | Job fate at session end. Only `"kill"` is supported; there is no detach. |
+| `wake_on_complete` | `true` | Serve surface: when a job finishes while its session is idle **and** a WebUI connection is attached, start a system-initiated turn so the model reads `bg_output` and reports unprompted. Busy sessions rely on the normal notice drain; `notify: "off"` forces this off (a wake would point at notices that are never delivered). |
+| `wake_coalesce_ms` | `2000` | Window in which jobs finishing together share one wake turn. Global-only: project configs may not set it. |
+| `max_wakes_per_hour` | `30` | Per-session ceiling on system-initiated wake turns (spend control). `0` disables waking; values above `240` clamp to `240` regardless of config source. Project configs may only lower an operator-set value. |
 
 A project `odek.json` may only LOWER the numeric caps (same clamp philosophy
 as `limits`). Headless `odek run` and scheduled runs are single-session
@@ -1175,6 +1181,15 @@ lists live jobs. On `odek serve` with sandbox mode enabled the `bg_*` tools
 are removed entirely (fail-closed: the shared manager cannot bind one
 container name across sessions) — run serve without sandbox for background
 commands.
+
+Wake-on-complete also emits two WebSocket frames for clients: `bg_job` on
+every job transition (`job_id`, `session_id`, `status`, and — once terminal —
+`exit_code`, `duration_ms`, `output_bytes`, plus a secret-redacted, 80-char
+`command_head`; terminal-only fields are absent, not zero, while running),
+and `bg_wake` when the server starts a system-initiated wake turn. Frames are
+chronological; clients should upsert by `job_id` and ignore unknown types
+(old clients are unaffected — the keys are simply absent from their
+vocabulary).
 
 ## odek init
 

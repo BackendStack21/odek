@@ -232,3 +232,27 @@ func TestStallStillFiresForOrdinaryTools(t *testing.T) {
 		t.Fatal("control: tool_recovery must still fire for ordinary repeated tools")
 	}
 }
+
+// TestLastUserMessage_SkipsBGPrefixedNames verifies the wake turn's user
+// message (Name "bg-wake") is excluded from user-input hooks exactly like
+// drained bg-notice messages — the fixed preamble text must never shadow
+// the operator's last real input for skill/memory/episode triggering.
+func TestLastUserMessage_SkipsBGPrefixedNames(t *testing.T) {
+	msgs := []llm.Message{
+		{Role: "user", Content: "real prompt"},
+		{Role: "assistant", Content: "ok"},
+		{Role: "user", Content: "notice text", Name: "bg-notice"},
+		{Role: "user", Content: "wake preamble", Name: "bg-wake"},
+	}
+	if got := lastUserMessage(msgs); got != "real prompt" {
+		t.Fatalf("lastUserMessage = %q, want %q (bg-* messages must not shadow operator input)", got, "real prompt")
+	}
+	// All-systems-noise fallback: no operator user message at all.
+	onlyBG := []llm.Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "wake preamble", Name: "bg-wake"},
+	}
+	if got := lastUserMessage(onlyBG); got != "" {
+		t.Fatalf("lastUserMessage = %q, want empty when only bg-* user messages exist", got)
+	}
+}

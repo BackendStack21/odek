@@ -1118,6 +1118,11 @@ type wsClientMsg struct {
 	Thinking    string         `json:"thinking,omitempty"` // "enabled" | "" — per-query toggle
 	Attachments []wsAttachment `json:"attachments,omitempty"`
 	TaskID      string         `json:"task_id,omitempty"` // subagent_cancel target
+	// SystemInitiated marks server-initiated turns (wake-on-complete).
+	// It is set by the bg_wake processor path, never honored from the wire:
+	// a client cannot forge system provenance because the loop overwrites
+	// it server-side before handlePrompt sees it.
+	SystemInitiated bool `json:"system_initiated,omitempty"`
 }
 
 // ── WebSocket Handler ──────────────────────────────────────────────────
@@ -1242,8 +1247,19 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 	// queue absorbs the request/reply UI's normal pacing; an overflow only
 	// happens under a client flooding prompts, which is reported and dropped.
 	promptCh := make(chan []byte, 8)
+	// Wake-on-complete delivery slot: the dispatcher posts bg_wake items
+	// here from timer goroutines; the slot's lock guarantees no post lands
+	// after the channel close below (see cmd/odek/bg_wake.go, W2).
+	connInfo.wakeSlot = newConnWakeSlot(promptCh)
 	go func() {
-		defer close(promptCh)
+		defer func() {
+			// Slot close and channel close under one lock: a concurrent
+			// slot.post either lands before close (buffered, non-blocking)
+			// or observes closed and drops — never a send on a closed
+			// channel, which would panic the process.
+			connInfo.wakeSlot.close()
+			close(promptCh)
+		}()
 		for {
 			var data []byte
 			if err := golangws.Message.Receive(conn, &data); err != nil {
@@ -1385,6 +1401,47 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 					})
 				}
 			}
+			continue
+		}
+
+		// Wake-on-complete (cmd/odek/bg_wake.go): a synthetic system-initiated
+		// turn for a session whose background job finished while idle. It is
+		// enqueued by the dispatcher into this connection's prompt queue and
+		// runs HERE, on the processor goroutine, so every handlePrompt call
+		// stays serialized (same budgets, approvals, usage as any prompt).
+		if msgType.Type == "bg_wake" {
+			var wake struct {
+				SessionID string `json:"session_id"`
+			}
+			if err := json.Unmarshal(data, &wake); err != nil || wake.SessionID == "" {
+				continue
+			}
+			// The dispatcher resolved the session→connection binding at fire
+			// time, but only this processor goroutine changes bindings (the
+			// session_switch case below runs here too). A mid-flight switch
+			// must not redirect a turn to a foreign session: drop and let
+			// the payload path cover it on the next turn for that session.
+			if currentSession == nil || currentSession.ID != wake.SessionID {
+				continue
+			}
+			wakeMsg := wsClientMsg{
+				Type:            "prompt",
+				Content:         bgWakePreamble,
+				SessionID:       wake.SessionID,
+				SystemInitiated: true,
+			}
+			promptCtx, promptCancel := context.WithCancel(connCtx)
+			promptCancelWithApproval := func() {
+				promptCancel()
+				if approver != nil {
+					approver.Cancel()
+				}
+			}
+			wsSend := func(m map[string]any) { writeWSJSON(conn, m) }
+			connInfo.setLive(wake.SessionID, true)
+			currentSession = handlePrompt(promptCtx, wsSend, store, resources, resolved, agent, injectionGuard, currentSession, wakeMsg, &sessionInputTokens, &sessionOutputTokens, promptCancelWithApproval, &deltas, bgRT)
+			connInfo.setLive(wake.SessionID, false)
+			promptCancel()
 			continue
 		}
 
@@ -1684,15 +1741,22 @@ func handlePrompt(
 	// Build message history
 	var messages []llm.Message
 	isNewSession := false
+	// System-initiated wake turns carry a Name marker ("bg-wake") so the
+	// loop's user-input hooks skip them exactly like drained bg-notice
+	// messages, and so the transcript exposes their provenance.
+	userName := ""
+	if msg.SystemInitiated {
+		userName = "bg-wake"
+	}
 
 	if sess != nil {
 		messages = sess.GetMessages()
-		messages = append(messages, llm.Message{Role: "user", Content: enrichedPrompt})
+		messages = append(messages, llm.Message{Role: "user", Content: enrichedPrompt, Name: userName})
 	} else {
 		isNewSession = true
 		messages = []llm.Message{
 			{Role: "system", Content: ""},
-			{Role: "user", Content: enrichedPrompt},
+			{Role: "user", Content: enrichedPrompt, Name: userName},
 		}
 
 		// Persist new session
@@ -1738,7 +1802,11 @@ func handlePrompt(
 	if sid != "" && promptCancel != nil {
 		defer registerPromptCancel(sid, promptCancel)()
 	}
-	send(map[string]any{"type": "session", "session_id": sid, "auth_token": authToken, "model": resolved.Model, "sandbox": resolved.Sandbox})
+		sessFrame := map[string]any{"type": "session", "session_id": sid, "auth_token": authToken, "model": resolved.Model, "sandbox": resolved.Sandbox}
+	if msg.SystemInitiated {
+		sessFrame["system_initiated"] = true // absent on operator turns
+	}
+	send(sessFrame)
 	sl := activeServeLog()
 	if sl != nil {
 		sl.logf("turn_started session=%s model=%s", sid, resolved.Model)
@@ -1788,7 +1856,7 @@ func handlePrompt(
 	// — observed repeatedly on 2026-08-29. SaveNoIndex skips the remote
 	// vector index; a successful turn re-indexes on the final save below.
 	if sess != nil {
-		sess.Messages = append(sess.Messages, llm.Message{Role: "user", Content: enrichedPrompt})
+		sess.Messages = append(sess.Messages, llm.Message{Role: "user", Content: enrichedPrompt, Name: userName})
 		_ = store.SaveNoIndex(sess)
 	}
 

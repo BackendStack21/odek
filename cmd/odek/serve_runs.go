@@ -191,14 +191,40 @@ type wsConnInfo struct {
 	Busy        bool      `json:"busy"`
 
 	// Live state (never serialized; unexported).
-	mu   sync.Mutex
-	conn *golangws.Conn
+	mu       sync.Mutex
+	conn     *golangws.Conn
+	wakeSlot *connWakeSlot // guarded enqueue for wake-on-complete (nil until bound)
 }
 
 func (c *wsConnInfo) setLive(session string, busy bool) {
 	c.mu.Lock()
 	c.SessionID, c.Busy = session, busy
 	c.mu.Unlock()
+}
+
+// isBusy reports the connection's busy flag (wake dispatcher's per-session
+// exclusion reads this — see cmd/odek/bg_wake.go W3).
+func (c *wsConnInfo) isBusy() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Busy
+}
+
+// wsConnsForSession returns the live connections currently bound to a
+// session (wake delivery + per-session busy checks).
+func wsConnsForSession(sessionID string) []*wsConnInfo {
+	wsConnRegistry.mu.RLock()
+	defer wsConnRegistry.mu.RUnlock()
+	out := make([]*wsConnInfo, 0, 1)
+	for _, c := range wsConnRegistry.conns {
+		c.mu.Lock()
+		bound := c.SessionID == sessionID
+		c.mu.Unlock()
+		if bound {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // recordPrompt bumps the per-connection prompt counter under the lock.
