@@ -36,6 +36,7 @@ type artifactEntry struct {
 	Ref          artifact.Ref
 	Path         string
 	TaskIdx      int
+	TaskID       string
 	RegisteredAt time.Time
 	seq          uint64
 	OrigID       string  // id as the child reported it (pre-alias)
@@ -51,9 +52,9 @@ type registrySlot struct {
 }
 
 type origKey struct {
-	origID  string
-	taskIdx int
-	occ     int // occurrence of origID within the task (same stem, two extensions)
+	origID string
+	taskID string // per-call unique task id — two calls' task 0 must never share slots
+	occ    int    // occurrence of origID within the task (same stem, two extensions)
 }
 
 var artifactRegistry struct {
@@ -115,7 +116,7 @@ func registerSubagentArtifact(e artifactEntry) (string, bool) {
 		e.Ref.ID = alias
 		id = alias
 	}
-	occBase := origKey{origID: orig, taskIdx: e.TaskIdx}
+	occBase := origKey{origID: orig, taskID: e.TaskID}
 	key := occBase
 	key.occ = artifactRegistry.occ[occBase]
 	artifactRegistry.occ[occBase]++
@@ -224,13 +225,16 @@ func minActiveMarkLocked() uint64 {
 // lookupEffectiveArtifactID resolves the id a given (original id, task,
 // occurrence) triple registered under — the render side uses it so the
 // parent always copies an id artifact_read can actually resolve (D1
-// provenance). The occurrence index disambiguates same-stem files within
-// one task (report.md + report.txt both report id "report"); callers pass
-// the ref's position among same-id refs of that task's envelope.
-func lookupEffectiveArtifactID(origID string, taskIdx int, occ int) (string, bool) {
+// provenance). taskID is the per-call unique task id (NOT the loop index):
+// two delegate_tasks calls each have a task 0, and their registries must
+// never share slots. The occurrence index disambiguates same-stem files
+// within one task (report.md + report.txt both report id "report");
+// callers pass the ref's position among same-id refs of that task's
+// envelope.
+func lookupEffectiveArtifactID(origID string, taskID string, occ int) (string, bool) {
 	artifactRegistry.mu.Lock()
 	defer artifactRegistry.mu.Unlock()
-	id, ok := artifactRegistry.byOrig[origKey{origID: origID, taskIdx: taskIdx, occ: occ}]
+	id, ok := artifactRegistry.byOrig[origKey{origID: origID, taskID: taskID, occ: occ}]
 	return id, ok
 }
 
@@ -266,7 +270,7 @@ func listSubagentArtifactIDs() ([]string, int) {
 // child result against the task's dir, returning human-readable note lines
 // for ambiguities (duplicate ids). Validation failures are silently skipped
 // — renderArtifacts already flags them in the summary.
-func registerTaskArtifacts(raw, dir string, taskIdx int) []string {
+func registerTaskArtifacts(raw, dir string, taskIdx int, taskID string) []string {
 	var r subagentResult
 	if err := json.Unmarshal([]byte(raw), &r); err != nil || len(r.Artifacts) == 0 {
 		return nil
@@ -277,7 +281,7 @@ func registerTaskArtifacts(raw, dir string, taskIdx int) []string {
 		if err != nil {
 			continue
 		}
-		id, dup := registerSubagentArtifact(artifactEntry{Ref: ref, Path: path, TaskIdx: taskIdx})
+		id, dup := registerSubagentArtifact(artifactEntry{Ref: ref, Path: path, TaskIdx: taskIdx, TaskID: taskID})
 		if dup {
 			notes = append(notes, fmt.Sprintf("[artifact] duplicate id %q — task %d copy registered as %q", ref.ID, taskIdx+1, id))
 		}

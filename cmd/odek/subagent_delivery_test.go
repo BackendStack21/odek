@@ -136,7 +136,7 @@ func TestFormatTaskResult_TruncationMarker(t *testing.T) {
 	summary := strings.Repeat("a", 2100)
 	raw := fmt.Sprintf(`{"status":"success","summary":%q,"summary_truncated":true,"summary_runes":3000}`, summary)
 
-	got := formatTaskResultDetailed(raw, 0, true)
+	got := formatTaskResultDetailed(raw, 0, true, "task-a")
 	if !strings.Contains(got, "headline truncated (2048 of 3000 runes shown)") {
 		t.Errorf("marker missing:\n%s", got)
 	}
@@ -144,7 +144,7 @@ func TestFormatTaskResult_TruncationMarker(t *testing.T) {
 		t.Errorf("next-action hint missing:\n%s", got)
 	}
 
-	got = formatTaskResultDetailed(raw, 0, false)
+	got = formatTaskResultDetailed(raw, 0, false, "task-a")
 	if strings.Contains(got, "artifact_read") {
 		t.Error("hint must be conditional: mid-tree parents have no artifact_read")
 	}
@@ -157,7 +157,7 @@ func TestFormatTaskResult_TruncationMarker(t *testing.T) {
 
 	// Untruncated results carry no marker.
 	plain := `{"status":"success","summary":"tiny","summary_runes":4}`
-	if got = formatTaskResultDetailed(plain, 0, true); strings.Contains(got, "headline truncated") {
+	if got = formatTaskResultDetailed(plain, 0, true, "task-a"); strings.Contains(got, "headline truncated") {
 		t.Errorf("marker must not appear for untruncated summaries:\n%s", got)
 	}
 }
@@ -269,17 +269,17 @@ func TestLookupEffectiveArtifactID(t *testing.T) {
 	dir := t.TempDir()
 	r := refForFile(t, dir, "dup.md", "x")
 	r.ID = "dup"
-	registerSubagentArtifact(artifactEntry{Ref: r, Path: strings.TrimPrefix(r.URI, "file://"), TaskIdx: 0})
+	registerSubagentArtifact(artifactEntry{Ref: r, Path: strings.TrimPrefix(r.URI, "file://"), TaskIdx: 0, TaskID: "task-a"})
 	r2 := refForFile(t, dir, "dup2.md", "y")
 	r2.ID = "dup"
-	alias, _ := registerSubagentArtifact(artifactEntry{Ref: r2, Path: strings.TrimPrefix(r2.URI, "file://"), TaskIdx: 1})
-	if eff, ok := lookupEffectiveArtifactID("dup", 0, 0); !ok || eff != "dup" {
-		t.Errorf("task 0 effective id: (%q, %v)", eff, ok)
+	alias, _ := registerSubagentArtifact(artifactEntry{Ref: r2, Path: strings.TrimPrefix(r2.URI, "file://"), TaskIdx: 1, TaskID: "task-b"})
+	if eff, ok := lookupEffectiveArtifactID("dup", "task-a", 0); !ok || eff != "dup" {
+		t.Errorf("task a effective id: (%q, %v)", eff, ok)
 	}
-	if eff, ok := lookupEffectiveArtifactID("dup", 1, 0); !ok || eff != alias {
-		t.Errorf("task 1 effective id: (%q, %v), want alias %q", eff, ok, alias)
+	if eff, ok := lookupEffectiveArtifactID("dup", "task-b", 0); !ok || eff != alias {
+		t.Errorf("task b effective id: (%q, %v), want alias %q", eff, ok, alias)
 	}
-	if _, ok := lookupEffectiveArtifactID("missing", 3, 0); ok {
+	if _, ok := lookupEffectiveArtifactID("missing", "task-z", 0); ok {
 		t.Error("unknown orig id must miss")
 	}
 }
@@ -310,13 +310,13 @@ func TestFormatTaskResult_ArtifactProvenanceLine(t *testing.T) {
 		return fmt.Sprintf(`{"schema":%q,"id":"dup","uri":"file://%s","media_type":"text/markdown","sha256":%q,"size_bytes":%d}`,
 			artifact.SchemaArtifactRef, p, hex.EncodeToString(sum[:]), len(content))
 	}
-	registerTaskArtifacts(fmt.Sprintf(`{"status":"success","artifacts":[%s]}`, refJSON(p1, c1)), dir, 0)
+	registerTaskArtifacts(fmt.Sprintf(`{"status":"success","artifacts":[%s]}`, refJSON(p1, c1)), dir, 0, "task-a")
 	raw2 := fmt.Sprintf(`{"status":"success","artifacts":[%s]}`, refJSON(p2, c2))
 	// Production order (judge P1): register first, THEN render — the render
 	// must resolve the aliased id through the registry.
-	registerTaskArtifacts(raw2, dir, 1)
+	registerTaskArtifacts(raw2, dir, 1, "task-b")
 
-	got := formatTaskResultDetailed(raw2, 1, true, dir)
+	got := formatTaskResultDetailed(raw2, 1, true, "task-b", dir)
 	if !strings.Contains(got, "- dup.t2 (") {
 		t.Errorf("render must advertise the effective (aliased) id:\n%s", got)
 	}
@@ -336,18 +336,18 @@ func TestRegisterArtifact_SameTaskStemCollision(t *testing.T) {
 	r0 := refForFile(t, dir, "report.md", "markdown body")
 	r1 := refForFile(t, dir, "report.txt", "text body")
 	r1.ID = "report"
-	id0, dup0 := registerSubagentArtifact(artifactEntry{Ref: r0, Path: strings.TrimPrefix(r0.URI, "file://"), TaskIdx: 0})
-	id1, dup1 := registerSubagentArtifact(artifactEntry{Ref: r1, Path: strings.TrimPrefix(r1.URI, "file://"), TaskIdx: 0})
+	id0, dup0 := registerSubagentArtifact(artifactEntry{Ref: r0, Path: strings.TrimPrefix(r0.URI, "file://"), TaskIdx: 0, TaskID: "task-a"})
+	id1, dup1 := registerSubagentArtifact(artifactEntry{Ref: r1, Path: strings.TrimPrefix(r1.URI, "file://"), TaskIdx: 0, TaskID: "task-a"})
 	if dup0 || id0 != "report" {
 		t.Errorf("first occurrence: got (%q, %v)", id0, dup0)
 	}
 	if !dup1 || id1 != "report.t1" {
 		t.Errorf("second occurrence must alias to report.t1, got (%q, %v)", id1, dup1)
 	}
-	if eff, ok := lookupEffectiveArtifactID("report", 0, 0); !ok || eff != "report" {
+	if eff, ok := lookupEffectiveArtifactID("report", "task-a", 0); !ok || eff != "report" {
 		t.Errorf("occ 0: (%q, %v)", eff, ok)
 	}
-	if eff, ok := lookupEffectiveArtifactID("report", 0, 1); !ok || eff != "report.t1" {
+	if eff, ok := lookupEffectiveArtifactID("report", "task-a", 1); !ok || eff != "report.t1" {
 		t.Errorf("occ 1: (%q, %v)", eff, ok)
 	}
 	// The second file's bytes are reachable via its rendered id.
@@ -361,7 +361,7 @@ func TestEvictionCleansEffectiveIDMap(t *testing.T) {
 	dir := t.TempDir()
 	r := refForFile(t, dir, "old.md", "oldest")
 	registerSubagentArtifact(artifactEntry{Ref: r, Path: strings.TrimPrefix(r.URI, "file://"), TaskIdx: 0})
-	if _, ok := lookupEffectiveArtifactID("old", 0, 0); !ok {
+	if _, ok := lookupEffectiveArtifactID("old", "", 0); !ok {
 		t.Fatal("mapping must exist before eviction")
 	}
 	// Push past the cap: the oldest entry (and its byOrig slot) must go.
@@ -374,8 +374,34 @@ func TestEvictionCleansEffectiveIDMap(t *testing.T) {
 	if _, ok := lookupSubagentArtifact("old"); ok {
 		t.Fatal("entry should have been evicted")
 	}
-	if _, ok := lookupEffectiveArtifactID("old", 0, 0); ok {
+	if _, ok := lookupEffectiveArtifactID("old", "", 0); ok {
 		t.Error("byOrig slot leaked past eviction — stale alias ids would render dead ends")
+	}
+}
+
+func TestEffectiveIDs_NoCrossCallCollision(t *testing.T) {
+	resetArtifactRegistryForTest()
+	dir := t.TempDir()
+	// Two delegate_tasks calls, each with a task 0, both staging report.md.
+	// The registry key is the per-call unique task id — the loop index
+	// alone would make call 2's render resolve to call 1's bytes.
+	r1 := refForFile(t, dir, "report.md", "call one")
+	r2 := refForFile(t, dir, "report2.md", "call two")
+	r2.ID = "report"
+	id1, dup1 := registerSubagentArtifact(artifactEntry{Ref: r1, Path: strings.TrimPrefix(r1.URI, "file://"), TaskIdx: 0, TaskID: "call-1-task-0"})
+	id2, dup2 := registerSubagentArtifact(artifactEntry{Ref: r2, Path: strings.TrimPrefix(r2.URI, "file://"), TaskIdx: 0, TaskID: "call-2-task-0"})
+	if dup1 || id1 != "report" {
+		t.Fatalf("call 1: got (%q, %v)", id1, dup1)
+	}
+	if !dup2 || id2 != "report.t1" {
+		t.Fatalf("call 2 must alias, got (%q, %v)", id2, dup2)
+	}
+	// Each call's render must advertise ITS OWN id.
+	if eff, ok := lookupEffectiveArtifactID("report", "call-1-task-0", 0); !ok || eff != "report" {
+		t.Errorf("call 1 effective id: (%q, %v)", eff, ok)
+	}
+	if eff, ok := lookupEffectiveArtifactID("report", "call-2-task-0", 0); !ok || eff != "report.t1" {
+		t.Errorf("call 2 effective id: (%q, %v), want its own alias", eff, ok)
 	}
 }
 
@@ -396,7 +422,7 @@ func TestRenderArtifacts_InlineBudget(t *testing.T) {
 	}
 	raw := fmt.Sprintf(`{"status":"success","artifacts":[%s]}`, strings.Join(refs, ","))
 
-	got := formatTaskResultDetailed(raw, 0, true, dir)
+	got := formatTaskResultDetailed(raw, 0, true, "task-a", dir)
 	blocks := strings.Count(got, "--- artifact:")
 	// Budget 128 KiB, largest-first: 30+29+28+27 = 114 KiB inlined; the
 	// 26 KiB artifact would push past the budget → metadata line only.

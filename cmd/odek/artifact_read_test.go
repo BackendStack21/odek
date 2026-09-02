@@ -190,10 +190,10 @@ func TestRegisterTaskArtifacts_DuplicateNote(t *testing.T) {
 	raw2 := fmt.Sprintf(`{"status":"success","summary":"ok","artifacts":[{"schema":%q,"id":"dup","uri":"file://%s","media_type":"text/markdown","sha256":%q,"size_bytes":%d}]}`,
 		artifact.SchemaArtifactRef, p2, expectedSHA(t, c2), size2)
 
-	if notes := registerTaskArtifacts(raw1, dir, 0); len(notes) != 0 {
+	if notes := registerTaskArtifacts(raw1, dir, 0, "task-a"); len(notes) != 0 {
 		t.Errorf("first registration must not note: %v", notes)
 	}
-	notes := registerTaskArtifacts(raw2, dir, 1)
+	notes := registerTaskArtifacts(raw2, dir, 1, "task-b")
 	if len(notes) != 1 || !strings.Contains(notes[0], "duplicate") {
 		t.Errorf("duplicate must produce a note: %v", notes)
 	}

@@ -41,7 +41,7 @@ func registerArtifactForTOCTOU(t *testing.T, id, content string) (root, path str
 	}
 	raw := fmt.Sprintf(`{"status":"success","summary":"ok","artifacts":[{"schema":%q,"id":%q,"uri":"file://%s","media_type":"text/markdown","sha256":%q,"size_bytes":%d}]}`,
 		artifact.SchemaArtifactRef, id, path, expectedSHA(t, content), len(content))
-	if notes := registerTaskArtifacts(raw, root, 0); len(notes) != 0 {
+	if notes := registerTaskArtifacts(raw, root, 0, "task-a"); len(notes) != 0 {
 		t.Fatalf("clean registration must not produce notes: %v", notes)
 	}
 	// The registration helper silently skips validation failures — make

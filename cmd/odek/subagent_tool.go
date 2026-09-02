@@ -295,7 +295,8 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 	// a private per-call semaphore. Capacity < 1 is normalized to 1: an
 	// unbuffered channel would deadlock the acquire-before-spawn loop.
 	results := make([]string, len(input.Tasks))
-	dirs := make([]string, len(input.Tasks)) // per-task artifact dirs (parent-created)
+	dirs := make([]string, len(input.Tasks))    // per-task artifact dirs (parent-created)
+	taskIDs := make([]string, len(input.Tasks)) // per-task unique ids (artifact registry keys)
 	sem := t.concurrencySem()
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -308,6 +309,7 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 		// artifact dir can be created serially and correlated with the id
 		// the child echoes on every telemetry record.
 		taskID := newTaskID()
+		taskIDs[i] = taskID
 		// Wire v2 (P2): record + emit the queued phase BEFORE acquiring a
 		// limiter slot, so clients see every accepted task immediately —
 		// including the ones still waiting for a concurrency slot.
@@ -376,8 +378,8 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 		// (aliased) ids through the registry, so an aliased duplicate must
 		// already be registered or the artifacts line advertises the plain
 		// id and artifact_read resolves it to the WRONG task's bytes.
-		notes := registerTaskArtifacts(r, dirs[i], i)
-		buf.WriteString(formatTaskResultDetailed(r, i, t.artifactReadAvailable, dirs[i]))
+		notes := registerTaskArtifacts(r, dirs[i], i, taskIDs[i])
+		buf.WriteString(formatTaskResultDetailed(r, i, t.artifactReadAvailable, taskIDs[i], dirs[i]))
 		// M2: ambiguity notes render after the artifacts block, same shape as
 		// the pre-aliasing output.
 		if len(notes) > 0 {
@@ -637,13 +639,13 @@ const (
 // (metadata-only line; small text artifacts inlined). No roots ⇒ every ref
 // is rejected — a lost root can never become a trust upgrade.
 func formatTaskResult(raw string, artifactRoots ...string) string {
-	return formatTaskResultDetailed(raw, -1, true, artifactRoots...)
+	return formatTaskResultDetailed(raw, -1, true, "", artifactRoots...)
 }
 
 // formatTaskResultDetailed renders one child's framed result as compact text
-// for the parent's context. taskIdx (0-based) drives artifact-id
-// provenance: ids render under their EFFECTIVE registered id (D1 aliasing)
-// plus the owning task number; pass -1 when the task index is unknown.
+// for the parent's context. taskIdx (0-based) drives the task-provenance
+// label; taskID (per-call unique) keys the effective-id registry lookups —
+// pass "" when unknown (lookups then miss and refs render as reported).
 // artifactReadAvailable gates the truncation marker's next-action hint —
 // mid-tree parents have no artifact_read (R2-3), so pointing them at it
 // would send them chasing a tool they don't have. Parsed envelopes render
@@ -656,7 +658,7 @@ func formatTaskResult(raw string, artifactRoots ...string) string {
 // every incoming ref is validated fail-closed against them before render
 // (metadata-only line; small text artifacts inlined). No roots ⇒ every ref
 // is rejected — a lost root can never become a trust upgrade.
-func formatTaskResultDetailed(raw string, taskIdx int, artifactReadAvailable bool, artifactRoots ...string) string {
+func formatTaskResultDetailed(raw string, taskIdx int, artifactReadAvailable bool, taskID string, artifactRoots ...string) string {
 	var r subagentResult
 	if err := json.Unmarshal([]byte(raw), &r); err != nil {
 		if len(raw) > maxSubagentSummaryResultBytes {
@@ -723,7 +725,7 @@ func formatTaskResultDetailed(raw string, taskIdx int, artifactReadAvailable boo
 		}
 		fmt.Fprintf(&b, "denials (%d of %d): %s\n", len(shown), total, strings.Join(parts, "; "))
 	}
-	b.WriteString(renderArtifacts(r.Artifacts, artifactRoots, taskIdx))
+	b.WriteString(renderArtifacts(r.Artifacts, artifactRoots, taskIdx, taskID))
 	return b.String()
 }
 
@@ -740,7 +742,7 @@ const maxInlinePerCallBytes = 128 << 10 // 128 KiB
 // resolved, size+sha256 verified) within the per-call inline budget,
 // largest-first. Invalid refs are dropped with a flag — never fatal to the
 // summary. Raw absolute paths are never rendered.
-func renderArtifacts(refs []artifact.Ref, roots []string, taskIdx int) string {
+func renderArtifacts(refs []artifact.Ref, roots []string, taskIdx int, taskID string) string {
 	if len(refs) == 0 {
 		return ""
 	}
@@ -797,7 +799,7 @@ func renderArtifacts(refs []artifact.Ref, roots []string, taskIdx int) string {
 			// registration order.
 			occ := occSeen[v.ref.ID]
 			occSeen[v.ref.ID]++
-			if eff, found := lookupEffectiveArtifactID(v.ref.ID, taskIdx, occ); found {
+			if eff, found := lookupEffectiveArtifactID(v.ref.ID, taskID, occ); found {
 				displayID = eff
 			}
 		}
