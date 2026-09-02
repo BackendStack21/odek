@@ -232,3 +232,151 @@ func TestBackground_ProjectWithoutGlobalSection(t *testing.T) {
 		t.Error("Background.Enabled should stay true (default)")
 	}
 }
+
+// ── wake-on-complete (docs/CONFIG.md background section) ────────────────
+
+func TestBackground_WakeDefaults(t *testing.T) {
+	// Defaults: wake on, 2s coalesce window, 30 wakes/hour spend ceiling.
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+
+	cfg := LoadConfig(CLIFlags{})
+	bg := cfg.Background
+	if !bg.WakeOnComplete {
+		t.Error("Background.WakeOnComplete should default to true")
+	}
+	if bg.WakeCoalesceMS != 2000 {
+		t.Errorf("Background.WakeCoalesceMS = %d, want 2000", bg.WakeCoalesceMS)
+	}
+	if bg.MaxWakesPerHour != 30 {
+		t.Errorf("Background.MaxWakesPerHour = %d, want 30", bg.MaxWakesPerHour)
+	}
+}
+
+func TestBackground_WakeGlobalSection(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+	writeGlobalConfig(t, os.Getenv("HOME"), `{
+		"background": {
+			"wake_on_complete": false,
+			"wake_coalesce_ms": 5000,
+			"max_wakes_per_hour": 10
+		}
+	}`)
+
+	cfg := LoadConfig(CLIFlags{})
+	bg := cfg.Background
+	if bg.WakeOnComplete {
+		t.Error("Background.WakeOnComplete = true, want false (operator set it)")
+	}
+	if bg.WakeCoalesceMS != 5000 {
+		t.Errorf("Background.WakeCoalesceMS = %d, want 5000", bg.WakeCoalesceMS)
+	}
+	if bg.MaxWakesPerHour != 10 {
+		t.Errorf("Background.MaxWakesPerHour = %d, want 10", bg.MaxWakesPerHour)
+	}
+}
+
+func TestBackground_WakeNotifyOffForcesWakeOff(t *testing.T) {
+	// notify:"off" disables completion-notice injection; a wake turn would
+	// tell the model to read notices that are never delivered. Wake must
+	// follow notify off even when explicitly enabled.
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+	writeGlobalConfig(t, os.Getenv("HOME"), `{
+		"background": {"notify": "off", "wake_on_complete": true}
+	}`)
+
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.Background.WakeOnComplete {
+		t.Error("Background.WakeOnComplete = true, want false (notify=off forces wake off)")
+	}
+}
+
+func TestBackground_ProjectCannotReenableWake(t *testing.T) {
+	// Global wake_on_complete=false is an operator spend decision; the
+	// untrusted project config must not re-enable it.
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+	writeGlobalConfig(t, os.Getenv("HOME"), `{"background": {"wake_on_complete": false}}`)
+	if err := os.WriteFile("odek.json", []byte(`{"background": {"wake_on_complete": true}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.Background.WakeOnComplete {
+		t.Error("project must not re-enable globally-disabled wake_on_complete")
+	}
+}
+
+func TestBackground_ProjectCannotRaiseWakeCap(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+	writeGlobalConfig(t, os.Getenv("HOME"), `{"background": {"max_wakes_per_hour": 10}}`)
+	if err := os.WriteFile("odek.json", []byte(`{"background": {"max_wakes_per_hour": 50}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.Background.MaxWakesPerHour != 10 {
+		t.Errorf("Background.MaxWakesPerHour = %d, want 10 (project cannot raise operator cap)", cfg.Background.MaxWakesPerHour)
+	}
+}
+
+func TestBackground_WakeCoalesceGlobalOnly(t *testing.T) {
+	// wake_coalesce_ms is a global-only tuning knob in v1: a project value
+	// is dropped with a warning, whether or not the global section exists.
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+	writeGlobalConfig(t, os.Getenv("HOME"), `{"background": {"wake_coalesce_ms": 5000}}`)
+	if err := os.WriteFile("odek.json", []byte(`{"background": {"wake_coalesce_ms": 9999}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.Background.WakeCoalesceMS != 5000 {
+		t.Errorf("Background.WakeCoalesceMS = %d, want 5000 (global wins; project value dropped)", cfg.Background.WakeCoalesceMS)
+	}
+
+	// Project-only: dropped, default applies.
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile("odek.json", []byte(`{"background": {"wake_coalesce_ms": 9999}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg = LoadConfig(CLIFlags{})
+	if cfg.Background.WakeCoalesceMS != 2000 {
+		t.Errorf("Background.WakeCoalesceMS = %d, want 2000 (project-only coalesce dropped, default applies)", cfg.Background.WakeCoalesceMS)
+	}
+}
+
+func TestBackground_WakeAbsoluteCeiling(t *testing.T) {
+	// With no global section a project value applies freely (documented
+	// merge rule) — but max_wakes_per_hour gates billed LLM turns, so an
+	// absolute resolution-time ceiling applies regardless of config source.
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile("odek.json", []byte(`{"background": {"max_wakes_per_hour": 100000}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.Background.MaxWakesPerHour != 240 {
+		t.Errorf("Background.MaxWakesPerHour = %d, want 240 (absolute ceiling)", cfg.Background.MaxWakesPerHour)
+	}
+}
+
+func TestBackground_WakeMaxWakesZeroDisables(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+	writeGlobalConfig(t, os.Getenv("HOME"), `{"background": {"max_wakes_per_hour": 0}}`)
+
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.Background.MaxWakesPerHour != 0 {
+		t.Errorf("Background.MaxWakesPerHour = %d, want 0 (explicitly disabled)", cfg.Background.MaxWakesPerHour)
+	}
+	if cfg.Background.WakeOnComplete {
+		t.Error("Background.WakeOnComplete should resolve false when max_wakes_per_hour=0")
+	}
+}

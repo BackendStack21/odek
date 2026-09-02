@@ -308,6 +308,9 @@ type BackgroundFileConfig struct {
 	MaxTimeoutSeconds *int    `json:"max_timeout_seconds,omitempty"`
 	Notify            *string `json:"notify,omitempty"`
 	OnSessionEnd      *string `json:"on_session_end,omitempty"`
+	WakeOnComplete    *bool   `json:"wake_on_complete,omitempty"`
+	WakeCoalesceMS    *int    `json:"wake_coalesce_ms,omitempty"`
+	MaxWakesPerHour   *int    `json:"max_wakes_per_hour,omitempty"`
 }
 
 // BackgroundConfig is the resolved background-commands configuration
@@ -335,6 +338,21 @@ type BackgroundConfig struct {
 	// supported value in v1) — every running job is killed; there is no
 	// detach.
 	OnSessionEnd string
+	// WakeOnComplete starts a system-initiated turn on a session with a
+	// bound WebUI connection when a background job completes while the
+	// session is idle (docs/CONFIG.md). Forced off when Notify is "off"
+	// (a wake would point the model at notices that are never delivered)
+	// or when MaxWakesPerHour is 0.
+	WakeOnComplete bool
+	// WakeCoalesceMS is the window in which jobs finishing together share
+	// one wake turn. Global-only in v1; 2000 by default, hard-clamped to
+	// [0, 60000] at resolution.
+	WakeCoalesceMS int
+	// MaxWakesPerHour is the per-session ceiling on system-initiated wake
+	// turns (spend control). 0 disables waking; values above 240 clamp to
+	// 240 regardless of config source (the project layer may set numeric
+	// values freely when no global section exists).
+	MaxWakesPerHour int
 }
 
 // Valid notify / on_session_end values.
@@ -342,11 +360,17 @@ const (
 	backgroundNotifyObserve  = "observe"
 	backgroundNotifyOff      = "off"
 	backgroundSessionEndKill = "kill"
+
+	// Wake-on-complete resolution bounds (docs/CONFIG.md).
+	backgroundWakeCoalesceDefaultMS = 2000
+	backgroundWakeCoalesceMaxMS     = 60000
+	backgroundMaxWakesPerHourMax    = 240
 )
 
 // DefaultBackgroundConfig returns the shipped defaults: enabled, 8 jobs,
 // 1 MiB output ring per job, no timeout cap (session lifetime is the
-// bound), observe notices, kill-on-session-end.
+// bound), observe notices, kill-on-session-end, wake-on-complete with a
+// 2s coalesce window and a 30/hour per-session wake ceiling.
 func DefaultBackgroundConfig() BackgroundConfig {
 	return BackgroundConfig{
 		Enabled:           true,
@@ -355,6 +379,9 @@ func DefaultBackgroundConfig() BackgroundConfig {
 		MaxTimeoutSeconds: 0,
 		Notify:            backgroundNotifyObserve,
 		OnSessionEnd:      backgroundSessionEndKill,
+		WakeOnComplete:    true,
+		WakeCoalesceMS:    backgroundWakeCoalesceDefaultMS,
+		MaxWakesPerHour:   30,
 	}
 }
 
@@ -2319,6 +2346,15 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		if cfg.Background.OnSessionEnd != nil {
 			resolved.Background.OnSessionEnd = *cfg.Background.OnSessionEnd
 		}
+		if cfg.Background.WakeOnComplete != nil {
+			resolved.Background.WakeOnComplete = *cfg.Background.WakeOnComplete
+		}
+		if cfg.Background.WakeCoalesceMS != nil {
+			resolved.Background.WakeCoalesceMS = *cfg.Background.WakeCoalesceMS
+		}
+		if cfg.Background.MaxWakesPerHour != nil {
+			resolved.Background.MaxWakesPerHour = *cfg.Background.MaxWakesPerHour
+		}
 	}
 	switch resolved.Background.Notify {
 	case backgroundNotifyObserve, backgroundNotifyOff:
@@ -2341,6 +2377,32 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	}
 	if resolved.Background.MaxTimeoutSeconds < 0 {
 		resolved.Background.MaxTimeoutSeconds = 0 // negative = uncapped
+	}
+	// Wake-on-complete validation. notify:"off" forces wake off: the wake
+	// turn instructs the model to read completion notices that are never
+	// injected when notify is off. max_wakes_per_hour=0 disables waking
+	// outright; the spend ceiling clamps regardless of config source (the
+	// project layer applies freely when no global section exists).
+	if resolved.Background.WakeCoalesceMS <= 0 {
+		resolved.Background.WakeCoalesceMS = backgroundWakeCoalesceDefaultMS
+	}
+	if resolved.Background.WakeCoalesceMS > backgroundWakeCoalesceMaxMS {
+		resolved.Background.WakeCoalesceMS = backgroundWakeCoalesceMaxMS
+	}
+	if resolved.Background.MaxWakesPerHour < 0 {
+		resolved.Background.MaxWakesPerHour = 0
+	}
+	if resolved.Background.MaxWakesPerHour > backgroundMaxWakesPerHourMax {
+		fmt.Fprintf(os.Stderr, "odek: warning: background.max_wakes_per_hour=%d exceeds the %d/hour ceiling — clamping\n",
+			resolved.Background.MaxWakesPerHour, backgroundMaxWakesPerHourMax)
+		resolved.Background.MaxWakesPerHour = backgroundMaxWakesPerHourMax
+	}
+	if resolved.Background.MaxWakesPerHour == 0 {
+		resolved.Background.WakeOnComplete = false
+	}
+	if resolved.Background.WakeOnComplete && resolved.Background.Notify == backgroundNotifyOff {
+		fmt.Fprintf(os.Stderr, "odek: warning: background.wake_on_complete has no effect with notify=%q — wake disabled\n", backgroundNotifyOff)
+		resolved.Background.WakeOnComplete = false
 	}
 	if cfg.SandboxReadonly != nil {
 		resolved.SandboxReadonly = *cfg.SandboxReadonly
@@ -2925,6 +2987,13 @@ func clampProjectPlanning(global, project *PlanningFileConfig) {
 // project values apply freely — they can only deviate from the defaults, not
 // override an operator decision.
 func clampProjectBackground(global, project *BackgroundFileConfig) {
+	// wake_coalesce_ms is global-only in v1: drop any project value before
+	// the early return below (it must be dropped even when the operator
+	// configured no background section at all).
+	if project != nil && project.WakeCoalesceMS != nil {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring background.wake_coalesce_ms=%d from project config (%s) — wake_coalesce_ms is global-only\n", *project.WakeCoalesceMS, ProjectConfigPath())
+		project.WakeCoalesceMS = nil
+	}
 	if project == nil || global == nil {
 		return
 	}
@@ -2936,6 +3005,11 @@ func clampProjectBackground(global, project *BackgroundFileConfig) {
 		project.Notify != nil && *project.Notify == backgroundNotifyObserve {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring background.notify=%q from project config (%s) — notices are off in ~/.odek/config.json\n", *project.Notify, ProjectConfigPath())
 		project.Notify = nil // global-off wins
+	}
+	if global.WakeOnComplete != nil && !*global.WakeOnComplete &&
+		project.WakeOnComplete != nil && *project.WakeOnComplete {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring background.wake_on_complete=true from project config (%s) — wake-on-complete is disabled in ~/.odek/config.json\n", ProjectConfigPath())
+		project.WakeOnComplete = nil // global-off wins
 	}
 	clampInt := func(name string, g, p *int) *int {
 		switch {
@@ -2951,6 +3025,7 @@ func clampProjectBackground(global, project *BackgroundFileConfig) {
 	project.MaxJobs = clampInt("max_jobs", global.MaxJobs, project.MaxJobs)
 	project.MaxOutputBytes = clampInt("max_output_bytes", global.MaxOutputBytes, project.MaxOutputBytes)
 	project.MaxTimeoutSeconds = clampInt("max_timeout_seconds", global.MaxTimeoutSeconds, project.MaxTimeoutSeconds)
+	project.MaxWakesPerHour = clampInt("max_wakes_per_hour", global.MaxWakesPerHour, project.MaxWakesPerHour)
 }
 
 func overlayFile(base, override FileConfig) FileConfig {
@@ -3091,6 +3166,15 @@ func overlayFile(base, override FileConfig) FileConfig {
 		}
 		if o.OnSessionEnd != nil {
 			b.OnSessionEnd = o.OnSessionEnd
+		}
+		if o.WakeOnComplete != nil {
+			b.WakeOnComplete = o.WakeOnComplete
+		}
+		if o.WakeCoalesceMS != nil {
+			b.WakeCoalesceMS = o.WakeCoalesceMS
+		}
+		if o.MaxWakesPerHour != nil {
+			b.MaxWakesPerHour = o.MaxWakesPerHour
 		}
 	}
 	if override.MaxConcurrency > 0 {

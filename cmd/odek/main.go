@@ -1296,7 +1296,10 @@ const globalConfigTemplate = `{
     "max_output_bytes": 1048576,
     "max_timeout_seconds": 0,
     "notify": "observe",
-    "on_session_end": "kill"
+    "on_session_end": "kill",
+    "wake_on_complete": true,
+    "wake_coalesce_ms": 2000,
+    "max_wakes_per_hour": 30
   },
   "interaction_mode": "engaging",
   "no_color": false,

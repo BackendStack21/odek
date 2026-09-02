@@ -2660,7 +2660,7 @@ func lastUserMessage(messages []llm.Message) string {
 	for i := len(messages) - 1; i >= 0; i-- {
 		// Background-notice injections are user-role messages flagged at
 		// append time; user-input hooks must never key on them.
-		if messages[i].Role == "user" && messages[i].Name != "bg-notice" {
+		if messages[i].Role == "user" && !strings.HasPrefix(messages[i].Name, "bg-") {
 			return messages[i].Content
 		}
 	}

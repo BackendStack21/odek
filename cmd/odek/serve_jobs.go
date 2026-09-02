@@ -57,6 +57,9 @@ func backgroundSettingsFrom(resolved config.ResolvedConfig) BackgroundSettings {
 		MaxOutputBytes:    b.MaxOutputBytes,
 		MaxTimeoutSeconds: b.MaxTimeoutSeconds,
 		Notify:            b.Notify == "observe",
+		WakeOnComplete:    b.WakeOnComplete,
+		WakeCoalesceMS:    b.WakeCoalesceMS,
+		MaxWakesPerHour:   b.MaxWakesPerHour,
 	}
 }
 
@@ -88,9 +91,25 @@ func newServeBGManager(resolved config.ResolvedConfig) *bgproc.Manager {
 	// Same sink the agents' EventHandler feeds: the /api/events ring. The
 	// bgEventObserver emits hashes and counters only — never raw command
 	// text or job output.
-	return bgproc.NewManager(cfg, &bgEventObserver{emit: func(ev events.Event) {
+	eventObs := bgproc.Observer(&bgEventObserver{emit: func(ev events.Event) {
 		serveEvents.add(ev)
 	}})
+	// Wake-on-complete: fan the dispatcher and the frame emitter in beside
+	// the event observer so job exits also schedule system-initiated wake
+	// turns and reach bound clients as bg_job frames (serve surface only;
+	// REPL/Telegram/run managers keep their single observers).
+	obs := []bgproc.Observer{eventObs}
+	if s.WakeOnComplete {
+		d := newWakeDispatcher(wsWakeRouter{}, wakeSettings{
+			CoalesceMS:   s.WakeCoalesceMS,
+			MaxWakesHour: s.MaxWakesPerHour,
+		})
+		serveWakeDispatcher.Store(d)
+		obs = append(obs, d)
+	}
+	obs = append(obs, bgFrameEmitter{})
+	eventObs = &bgObserverGroup{list: obs}
+	return bgproc.NewManager(cfg, eventObs)
 }
 
 // setServeBGManager installs the shared manager at serve startup.
@@ -104,8 +123,13 @@ func setServeBGManager(mgr *bgproc.Manager) {
 
 // shutdownServeBG kills every job still running across all sessions
 // (process-exit contract: no detach mode). Idempotent; returns the killed
-// jobs for logging.
+// jobs for logging. The wake dispatcher is stopped first so jobs killed
+// here cannot schedule wakes during teardown.
 func shutdownServeBG() []bgproc.Job {
+	stopServeWake := serveWakeDispatcher.Swap(nil)
+	if stopServeWake != nil {
+		stopServeWake.Stop()
+	}
 	mgr := serveBG.Swap(nil)
 	if mgr == nil {
 		return nil

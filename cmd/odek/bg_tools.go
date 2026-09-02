@@ -31,6 +31,11 @@ type BackgroundSettings struct {
 	MaxOutputBytes    int
 	MaxTimeoutSeconds int  // 0 = uncapped (jobs bounded by session lifetime)
 	Notify            bool // background.notify == "observe"
+
+	// Wake-on-complete (serve surface only — see cmd/odek/bg_wake.go).
+	WakeOnComplete  bool
+	WakeCoalesceMS  int
+	MaxWakesPerHour int
 }
 
 // bgRuntime binds the process-scoped manager to one agent session.
