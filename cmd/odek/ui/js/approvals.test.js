@@ -313,31 +313,57 @@ test('friction mode: typing the word enables approve; click sends', async () => 
   // Disabled buttons dispatch nothing (shim matches browser behavior).
   approve.fire('click');
   assert.deepEqual(sent, []);
-  // The input listener attaches after the 1.5s gate.
-  await new Promise((r) => setTimeout(r, 1600));
-  const input = S.activeApprovalCard.querySelector('.ac-friction-input');
-  input.value = 'Approve '; // case/whitespace-insensitive per spec
-  input.fire('input');
+  // The input listener attaches after the 1.5s gate — poll, don't sleep.
+  const input = () => S.activeApprovalCard.querySelector('.ac-friction-input');
+  await waitFor(() => {
+    const el = input();
+    el.value = 'Approve '; // case/whitespace-insensitive per spec
+    el.fire('input');
+    return !approve.disabled;
+  }, 'friction gate to pass on the correct word');
   assert.equal(approve.disabled, false, 'correct word enables the button');
   approve.click();
   assert.deepEqual(sent, [{ type: 'approval_response', id: 'apr-1', action: 'approve' }]);
 });
 
+// Polls cond until truthy (20 ms cadence). Replaces fixed real-time sleeps,
+// which raced the 1.5s friction gate under CI load.
+async function waitFor(cond, label, timeoutMs = 15000) {
+  const start = Date.now();
+  for (;;) {
+    if (cond()) return;
+    if (Date.now() - start > timeoutMs) {
+      assert.ok(cond(), `timed out after ${timeoutMs}ms waiting for: ${label}`);
+    }
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
 test('friction mode: wrong word keeps approve disabled', async () => {
   const { approve } = queueOne({ friction: true, friction_approvals: 4 });
-  await new Promise((r) => setTimeout(r, 1600));
-  const input = S.activeApprovalCard.querySelector('.ac-friction-input');
-  input.value = 'yes';
-  input.fire('input');
+  const input = () => S.activeApprovalCard.querySelector('.ac-friction-input');
+  // Prove the gate passed first (correct word enables) so the negative
+  // assertion below is not vacuous while the listener is still detached.
+  await waitFor(() => {
+    const el = input();
+    el.value = 'approve';
+    el.fire('input');
+    return !approve.disabled;
+  }, 'friction gate to pass');
+  input().value = 'yes';
+  input().fire('input');
   assert.equal(approve.disabled, true);
 });
 
 test('friction mode: Enter in the input approves once the gate passes', async () => {
   queueOne({ friction: true, friction_approvals: 3 });
-  await new Promise((r) => setTimeout(r, 1600));
-  const input = S.activeApprovalCard.querySelector('.ac-friction-input');
-  input.value = 'approve';
-  input.fire('input');
-  input.fire('keydown', { key: 'Enter' });
+  const input = () => S.activeApprovalCard.querySelector('.ac-friction-input');
+  await waitFor(() => {
+    const el = input();
+    el.value = 'approve';
+    el.fire('input');
+    el.fire('keydown', { key: 'Enter' });
+    return sent.length === 1;
+  }, 'friction gate to pass and Enter to approve');
   assert.deepEqual(sent, [{ type: 'approval_response', id: 'apr-1', action: 'approve' }]);
 });
