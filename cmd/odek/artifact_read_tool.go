@@ -269,8 +269,8 @@ func (t *artifactReadTool) Call(args string) (string, error) {
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "artifact %s (%s, %d bytes, sha256:%s) — bytes %d..%d of %d",
-		entry.Ref.ID, entry.Ref.MediaType, size, shaPrefix, in.Offset, in.Offset+int64(len(data)), total)
+	fmt.Fprintf(&b, "artifact %s (%s, %d bytes, sha256:%s) — task %d — bytes %d..%d of %d",
+		entry.Ref.ID, entry.Ref.MediaType, size, shaPrefix, entry.TaskIdx+1, in.Offset, in.Offset+int64(len(data)), total)
 	if truncated {
 		b.WriteString(" — TRUNCATED, call again with offset to continue")
 	}

@@ -56,7 +56,8 @@ Tool conventions — use the dedicated tool, NOT shell:
 - Reserve shell for builds, installs, git, scripts. Don't run uname/pwd/date/whoami —
   read your Runtime Context header.
 
-Report what you built, what files changed, and any issues. Be concise, then stop.`
+End with a short headline: status, artifact file names, key decisions.
+The files carry the detail. Be concise, then stop.`
 
 // subagentAmendments translates the pillar's principal-facing rules into
 // sub-agent terms: a child has no channel to the principal and no approval
@@ -133,12 +134,12 @@ func neutraliseSubagentInputLiterals(s string) string {
 // optional — old children ignore the flags (version skew keeps the old
 // clamping behavior) and old parents simply never emit them.
 type taskBudget struct {
-	MaxRuntimeSeconds   int64   `json:"max_runtime_seconds,omitempty"`
-	MaxToolCalls        int64   `json:"max_tool_calls,omitempty"`
-	MaxCostUSD          float64 `json:"max_cost_usd,omitempty"`
-	RuntimeExhausted    bool    `json:"runtime_exhausted,omitempty"`
-	ToolCallsExhausted  bool    `json:"tool_calls_exhausted,omitempty"`
-	CostExhausted       bool    `json:"cost_exhausted,omitempty"`
+	MaxRuntimeSeconds  int64   `json:"max_runtime_seconds,omitempty"`
+	MaxToolCalls       int64   `json:"max_tool_calls,omitempty"`
+	MaxCostUSD         float64 `json:"max_cost_usd,omitempty"`
+	RuntimeExhausted   bool    `json:"runtime_exhausted,omitempty"`
+	ToolCallsExhausted bool    `json:"tool_calls_exhausted,omitempty"`
+	CostExhausted      bool    `json:"cost_exhausted,omitempty"`
 }
 
 // clampLimits narrows the operator limits by the parent-supplied task
@@ -537,19 +538,21 @@ type subagentWireContext struct {
 
 // subagentResult is the JSON contract written to stdout.
 type subagentResult struct {
-	Status          string           `json:"status"`                   // "success", "partial", "budget_exhausted" or "error"
-	Error           string           `json:"error,omitempty"`          // error message
-	PartialReason   string           `json:"partial_reason,omitempty"` // time_budget | iteration_budget | execution_budget
-	Summary         string           `json:"summary"`                  // task summary
-	FilesChanged    []string         `json:"files_changed,omitempty"`  // changed files
-	TokensUsed      int              `json:"tokens_used"`              // total tokens consumed
-	Iterations      int              `json:"iterations"`               // think-act cycles used
-	DurationSeconds float64          `json:"duration_seconds"`         // wall-clock runtime
-	Denials         []SubagentDenial `json:"denials,omitempty"`        // policy denials observed (capped)
-	DenialsTotal    int              `json:"denials_total,omitempty"`  // total denials seen
-	ParentSession   string           `json:"parent_session,omitempty"` // correlation id from --parent-session
-	CostUSD         float64          `json:"cost_usd,omitempty"`       // final server-side cost estimate (omitted when no prices configured)
-	Artifacts       []artifact.Ref   `json:"artifacts,omitempty"`      // odek.artifact-ref/v1 — runner-scanned, parent-validated
+	Status           string           `json:"status"`                      // "success", "partial", "budget_exhausted" or "error"
+	Error            string           `json:"error,omitempty"`             // error message
+	PartialReason    string           `json:"partial_reason,omitempty"`    // time_budget | iteration_budget | execution_budget
+	Summary          string           `json:"summary"`                     // task summary (headline channel — capped)
+	SummaryTruncated bool             `json:"summary_truncated,omitempty"` // headline was cut — parent should fetch artifacts (C)
+	SummaryRunes     int              `json:"summary_runes,omitempty"`     // ORIGINAL headline rune count before the cap
+	FilesChanged     []string         `json:"files_changed,omitempty"`     // changed files
+	TokensUsed       int              `json:"tokens_used"`                 // total tokens consumed
+	Iterations       int              `json:"iterations"`                  // think-act cycles used
+	DurationSeconds  float64          `json:"duration_seconds"`            // wall-clock runtime
+	Denials          []SubagentDenial `json:"denials,omitempty"`           // policy denials observed (capped)
+	DenialsTotal     int              `json:"denials_total,omitempty"`     // total denials seen
+	ParentSession    string           `json:"parent_session,omitempty"`    // correlation id from --parent-session
+	CostUSD          float64          `json:"cost_usd,omitempty"`          // final server-side cost estimate (omitted when no prices configured)
+	Artifacts        []artifact.Ref   `json:"artifacts,omitempty"`         // odek.artifact-ref/v1 — runner-scanned, parent-validated
 }
 
 // ── Subagent Command ─────────────────────────────────────────────────
@@ -1084,7 +1087,7 @@ func subagentCmd(args []string) error {
 	// Classify the outcome (M1.3/M2.4 contract): typed budget errors map to
 	// budget_exhausted, partial-summary markers to partial (with reason),
 	// hard timeouts to error+timeout, everything else to success/error.
-	summary := extractSummary(allMessages)
+	summary, summaryRunes, summaryTruncated := extractSummaryInfo(allMessages)
 	reason, partial := loop.PartialSummaryReason(summary)
 	outcome := classifySubagentRun(err, partial, reason, sigCtx)
 
@@ -1097,6 +1100,10 @@ func subagentCmd(args []string) error {
 		Iterations:      iterations,
 		DurationSeconds: latency.Seconds(),
 		ParentSession:   cfg.parentSession,
+	}
+	if summaryTruncated {
+		result.SummaryTruncated = true
+		result.SummaryRunes = summaryRunes
 	}
 
 	if err != nil {
@@ -1298,14 +1305,36 @@ func (e *subagentRunError) Error() string {
 // 500-rune cut.
 const subagentHeadlineMaxRunes = 2048
 
-func extractSummary(messages []llm.Message) string {
-	// Return the last assistant message content as summary
+// extractSummaryInfo returns the child's final answer cut to the headline
+// cap, the ORIGINAL rune count, and whether it was cut (C — the parent
+// render turns this into a visible truncation marker). The bulk channel is
+// the artifact protocol; the headline is a status summary.
+func extractSummaryInfo(messages []llm.Message) (string, int, bool) {
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == "assistant" && messages[i].Content != "" {
-			return truncate(messages[i].Content, subagentHeadlineMaxRunes)
+			s, total := truncateWithLen(messages[i].Content, subagentHeadlineMaxRunes)
+			return s, total, total > subagentHeadlineMaxRunes
 		}
 	}
-	return ""
+	return "", 0, false
+}
+
+func extractSummary(messages []llm.Message) string {
+	s, _, _ := extractSummaryInfo(messages)
+	return s
+}
+
+// truncateWithLen cuts s to n runes (appending "…") and reports the
+// ORIGINAL rune count so callers can surface a truncation marker (C).
+func truncateWithLen(s string, n int) (string, int) {
+	runes := []rune(s)
+	if n <= 0 {
+		return "…", len(runes)
+	}
+	if len(runes) <= n {
+		return s, len(runes)
+	}
+	return string(runes[:n]) + "…", len(runes)
 }
 
 func extractFilesChanged(messages []llm.Message) []string {

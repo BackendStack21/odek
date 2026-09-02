@@ -111,12 +111,22 @@ The `delegate_tasks` tool is available in all odek modes (CLI, REPL, Web UI). Th
 {
   "status": "success",            // "success" or "error"
   "summary": "Built JWT auth middleware with HS256 signing",
+  "summary_truncated": true,      // present only when the headline was cut at 2048 runes
+  "summary_runes": 3120,          // original headline length — present only when truncated
   "files_changed": ["internal/middleware/auth.go"],
   "tokens_used": 4200,
   "iterations": 3,
   "parent_session": "20260519-abc123"  // echoed back when --parent-session was passed
 }
 ```
+
+The `summary` is the headline channel: the child's final answer, capped at
+2048 runes. When `summary_truncated` is set, the parent-side render appends
+`headline truncated (2048 of N runes shown) — fetch artifacts via
+artifact_read or re-run with a narrower goal` (the `artifact_read` half is
+omitted in processes that do not have the tool, i.e. mid-tree parents).
+Both fields are `omitempty`: results that fit the headline produce byte-identical
+JSON to older versions.
 
 The `parent_session` field is omitted when `--parent-session` was not supplied.
 Use it to correlate sub-agent results back to the originating parent session
@@ -480,16 +490,21 @@ Parent synthesizes: "Created 3 files:
 
 ## Result artifacts
 
-When a sub-agent produces output too large for the headline summary (large reports, dumps, generated fixtures), it writes plain files into its per-task staging directory (`.odek-artifacts/<task_id>/` inside the workspace). The runner relocates them to `~/.odek/artifacts/<session>/<task>/`, measures sha256/size, and returns `odek.artifact-ref/v1` references with the result.
+The result contract is two-channel: the headline (≤ 2048 runes) carries status;
+the bulk rides files. The child is told this at request time: deliverables
+larger than a headline go as FLAT files into its per-task staging directory
+(`.odek-artifacts/<task_id>/` inside the workspace — nested directories are
+discarded). The runner relocates them to `~/.odek/artifacts/<session>/<task>/`,
+measures sha256/size, and returns `odek.artifact-ref/v1` references with the result.
 
-The parent sees one metadata line per artifact — id, media type, size, short hash, first-line summary — plus the inlined content of small text artifacts (≤ 32 KiB). Everything larger is readable on demand via `artifact_read`:
+The parent sees one metadata line per artifact — id, media type, size, short hash, owning task, first-line summary — plus inlined content for small text artifacts (≤ 32 KiB) within a 128 KiB per-call inline budget (largest first; the rest degrade to their metadata line, never dropped). Everything larger is readable on demand via `artifact_read`:
 
 ```
 artifact_read({ "id": "report" })                # first 64 KiB
 artifact_read({ "id": "report", "offset": 65536 })  # continue paging
 ```
 
-`artifact_read` is a parent-side tool; the model passes an id, never a path — resolution goes through the session registry of validated refs. Refs that fail validation (wrong hash, path escape) are dropped with an explicit flag and never rendered.
+`artifact_read` is a parent-side tool; the model passes an id, never a path — resolution goes through the session registry of validated refs, and each read reports the owning task. Ids derive from filename stems, and **first occurrence wins**: if two tasks stage files with the same stem (e.g. both write `report.md`), the first task keeps the plain id and later duplicates register under `<id>.t<task>` aliases (`report.t2`, `report.t3`, …) — probing past any live entry, including real stems that collide with the alias namespace. Rendered artifact lines always show the effective id plus the task number, so the parent copies an id `artifact_read` can actually resolve. Refs that fail validation (wrong hash, path escape) are dropped with an explicit flag and never rendered.
 
 Lifecycle: deleting a session deletes its artifacts (all paths — CLI, API, Telegram, retention sweep); the storage janitor backstop sweeps orphans after `maintenance.artifacts_max_age_hours` (default 24 hours, `0` = keep forever).
 

@@ -28,3 +28,6 @@ SUB_AGENTS_IMPROVEMENTS.md
 # opencode agent local memory
 .kai/
 .gotmp/
+
+# Sub-agent artifact staging (delegate_tasks result channel)
+.odek-artifacts/

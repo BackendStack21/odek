@@ -54,19 +54,25 @@ func TestArtifactRegistry_RegisterLookupEvict(t *testing.T) {
 	}
 }
 
-func TestArtifactRegistry_DuplicateIDLastWins(t *testing.T) {
+func TestArtifactRegistry_DuplicateIDFirstWins(t *testing.T) {
 	resetArtifactRegistryForTest()
 	r1, p1 := regRef(t, "dup", "first")
 	registerSubagentArtifact(artifactEntry{Ref: r1, Path: p1, TaskIdx: 0})
 	r2, p2 := regRef(t, "dup", "second")
-	dup := registerSubagentArtifact(artifactEntry{Ref: r2, Path: p2, TaskIdx: 1})
+	alias, dup := registerSubagentArtifact(artifactEntry{Ref: r2, Path: p2, TaskIdx: 1})
 
 	if !dup {
 		t.Error("duplicate registration must be reported")
 	}
 	got, _ := lookupSubagentArtifact("dup")
-	if got.Path != p2 || got.TaskIdx != 1 {
-		t.Errorf("last-wins broken: %+v", got)
+	if got.Path != p1 || got.TaskIdx != 0 {
+		t.Errorf("first-wins broken: %+v", got)
+	}
+	if alias != "dup.t2" {
+		t.Errorf("alias = %q, want dup.t2", alias)
+	}
+	if got, ok := lookupSubagentArtifact(alias); !ok || got.Path != p2 || got.TaskIdx != 1 {
+		t.Errorf("alias lookup broken: (%+v, %v)", got, ok)
 	}
 }
 
