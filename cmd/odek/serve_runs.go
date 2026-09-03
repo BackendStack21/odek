@@ -751,11 +751,22 @@ func startServeRun(
 	run.cancel = cancel
 
 	var deltas wsDeltaCounters
+	// One annotator backs BOTH frame paths of the run: the agent's live
+	// callbacks (tool_call/tool_result/iteration frames below) and
+	// handlePrompt's send — otherwise the recorded tail mixes tagged and
+	// untagged frames for REST consumers (adversarial review finding,
+	// 2026-09-03).
+	var turnTag wsTurnAnnotator
+	recordSend := turnTag.wrap(func(m map[string]any) { _ = run.record(m) })
 	agent, bgRT, sandboxCleanup, mcpCleanup, guardCleanup, injectionGuard, approver, err := newServeAgent(resolved, system, run.ID, func(v any) error {
 		// wsApprover sends its typed approvalRequest struct; everything
 		// else arrives as map[string]any.
 		if ar, ok := v.(approvalRequest); ok {
 			run.recordApprovalRequest(ar)
+			return nil
+		}
+		if m, ok := v.(map[string]any); ok {
+			recordSend(m)
 			return nil
 		}
 		return run.record(v)
@@ -824,8 +835,7 @@ func startServeRun(
 		defer cleanup()
 		var sessionIn, sessionOut int
 		serveLogf("run_started run_id=%s", run.ID)
-		var turnTag wsTurnAnnotator
-		sess := handlePrompt(ctx, turnTag.wrap(func(m map[string]any) { _ = run.record(m) }), store, resources, resolved, agent, injectionGuard, nil, msg, &sessionIn, &sessionOut, cancelWithApproval, &deltas, bgRT, &turnTag)
+		sess := handlePrompt(ctx, recordSend, store, resources, resolved, agent, injectionGuard, nil, msg, &sessionIn, &sessionOut, cancelWithApproval, &deltas, bgRT, &turnTag)
 		run.mu.Lock()
 		if sess != nil {
 			run.SessionID = sess.ID
