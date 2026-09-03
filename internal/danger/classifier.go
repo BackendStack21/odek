@@ -2148,13 +2148,66 @@ func expandShellTokenPath(tok string) string {
 	if home != "" {
 		if strings.HasPrefix(path, "~") {
 			path = home + path[1:]
-		} else if path == "$HOME" || strings.HasPrefix(path, "$HOME/") {
-			path = home + path[len("$HOME"):]
-		} else if path == "${HOME}" || strings.HasPrefix(path, "${HOME}/") {
-			path = home + path[len("${HOME}"):]
 		}
 	}
+	// Expand $VAR / ${VAR} from the process environment — the classifier
+	// runs in the same environment the shell would resolve these from, and
+	// `bash $PWD/evil.sh` must gate exactly like `bash ./evil.sh`
+	// (readledger H-6: $VAR-expanded paths are in scope). Unset variables
+	// stay verbatim and fail the caller's stat.
+	path = expandEnvVars(path)
 	return path
+}
+
+// expandEnvVars replaces $VAR and ${VAR} occurrences with their values from
+// the process environment when set; unset or malformed references are left
+// verbatim.
+func expandEnvVars(path string) string {
+	if !strings.Contains(path, "$") {
+		return path
+	}
+	var b strings.Builder
+	b.Grow(len(path))
+	for i := 0; i < len(path); {
+		if path[i] != '$' {
+			b.WriteByte(path[i])
+			i++
+			continue
+		}
+		rest := path[i:]
+		if strings.HasPrefix(rest, "${") {
+			if end := strings.IndexByte(rest, '}'); end > 2 {
+				if v, ok := os.LookupEnv(rest[2:end]); ok {
+					b.WriteString(v)
+					i += end + 1
+					continue
+				}
+			}
+			// Malformed or unset — verbatim '$', rescan as plain text.
+			b.WriteByte('$')
+			i++
+			continue
+		}
+		// $VAR form: longest [0-9A-Za-z_] run.
+		j := 1
+		for j < len(rest) && isShellVarByte(rest[j]) {
+			j++
+		}
+		if j > 1 {
+			if v, ok := os.LookupEnv(rest[1:j]); ok {
+				b.WriteString(v)
+				i += j
+				continue
+			}
+		}
+		b.WriteByte('$')
+		i++
+	}
+	return b.String()
+}
+
+func isShellVarByte(c byte) bool {
+	return c == '_' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
 // isPersistenceWrite reports whether a shell command writes to a

@@ -477,7 +477,40 @@ func (s *SessionResolver) Load(ctx context.Context, id string) (string, error) {
 	if err := session.ValidateSessionID(id); err != nil {
 		return "", fmt.Errorf("resource: invalid session ID: %w", err)
 	}
-	data, err := os.ReadFile(filepath.Join(s.dir, id+".json"))
+	target := filepath.Join(s.dir, id+".json")
+
+	// Same hardening as FileResolver.Load: resolve symlinks in the path and
+	// refuse anything that escapes the sessions dir — a planted symlink
+	// (sessions/x.json -> ~/.ssh/id_ed25519) must not inline arbitrary
+	// files into model context. O_NOFOLLOW atomically rejects a symlinked
+	// final component (no Lstat/open TOCTOU).
+	resolvedDir, dirErr := filepath.EvalSymlinks(s.dir)
+	if dirErr != nil {
+		return "", dirErr
+	}
+	resolved, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		return "", err
+	}
+	if !pathutil.WithinRoot(resolvedDir, resolved) {
+		return "", fmt.Errorf("resource: session file escapes sessions dir: %q", id)
+	}
+	fd, err := os.OpenFile(resolved, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return "", err
+	}
+	defer fd.Close()
+	info, err := fd.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("resource: session file is not a regular file")
+	}
+	if info.Size() > maxResourceFileBytes {
+		return "", fmt.Errorf("resource: session file too large (%d bytes, max %d)", info.Size(), maxResourceFileBytes)
+	}
+	data, err := io.ReadAll(fd)
 	if err != nil {
 		return "", err
 	}

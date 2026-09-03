@@ -44,7 +44,10 @@ var patterns = []*regexp.Regexp{
 	// OpenAI / generic AI provider keys: sk-<alphanumeric+hyphens+underscores>
 	// sk-proj- variant for project-scoped keys. The underscore is required
 	// because Anthropic keys (sk-ant-...) and some provider keys contain it.
-	regexp.MustCompile(`sk-[a-zA-Z0-9_-]{32,}`),
+	// \b anchors the key start: without it "sk-" inside ordinary words
+	// ("task-notes-...", "risk-assessment-...") matched and surrounding
+	// prose was corrupted to [REDACTED] in sessions and logs.
+	regexp.MustCompile(`\bsk-[a-zA-Z0-9_-]{32,}`),
 
 	// GitHub personal access tokens (classic + fine-grained)
 	regexp.MustCompile(`ghp_[a-zA-Z0-9]{36,}`),
