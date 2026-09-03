@@ -751,7 +751,16 @@ func (s *Store) Latest() (*Session, error) {
 			if _, err := os.Stat(s.path(id)); err != nil {
 				continue // stale entry
 			}
-			return s.Load(id)
+			// The file exists but may still fail to Load (over the size cap,
+			// parse error, ID mismatch). trimToFileCapLocked deliberately
+			// writes an over-cap session rather than losing it, so this is
+			// reachable through normal operation. Skip to the next candidate
+			// instead of failing the lookup — "the first one whose file still
+			// loads".
+			sess, err := s.Load(id)
+			if err == nil {
+				return sess, nil
+			}
 		}
 		// Every indexed entry was stale — fall through to a directory scan.
 	}

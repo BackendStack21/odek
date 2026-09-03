@@ -1948,6 +1948,15 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 						Role:    "system",
 						Content: "[Context survival mode: the conversation was aggressively reduced to fit the model's context window. Continue from where you left off using the most recent context available.]",
 					})
+					// Retry this iteration WITHOUT consuming an iteration slot: a
+					// plain continue runs the loop's i++ post statement, so with
+					// maxIter == 1 (or on the final iteration) this fully
+					// recoverable error would fall through to the
+					// iteration-exhausted partial summary instead of retrying.
+					// Bounded: the retry only fires when trimToSurvival actually
+					// dropped messages, so repeated retries strictly shrink the
+					// history and cannot loop forever.
+					i--
 					continue // retry this iteration
 				}
 			}

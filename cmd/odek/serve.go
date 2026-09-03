@@ -1581,9 +1581,17 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 				continue
 			}
 			currentSession = sess
-			// Restore buffer from the resumed session
-			if mm := agent.Memory(); mm != nil && len(sess.Buffer) > 0 {
-				mm.RestoreBuffer(sess.Buffer)
+			// Reset the in-memory buffer to the resumed session's state.
+			// Without the clear, switching to a session whose saved buffer is
+			// empty keeps the PREVIOUS session's lines live: the turn runs with
+			// the old context and the post-turn save persists those lines into
+			// the new session's file (cross-session buffer bleed). Mirrors the
+			// session_switch handler above.
+			if mm := agent.Memory(); mm != nil {
+				mm.ClearBuffer()
+				if len(sess.Buffer) > 0 {
+					mm.RestoreBuffer(sess.Buffer)
+				}
 			}
 		}
 
