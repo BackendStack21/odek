@@ -137,7 +137,7 @@ func (t *shellTool) Name() string { return "shell" }
 
 func (t *shellTool) Description() string {
 	return `Run a shell command and return its output.
-Use for: reading files, listing directories, running tests, building code, and git operations.
+Use for builds, test suites, git operations, package management, and scripts that need a real process. For file inspection prefer the zero-fork tools: read_file, glob, tree, search_files, head_tail.
 In sandbox mode (--sandbox), commands run inside the Docker container with restricted permissions.
 In host mode (default), commands run with the same permissions as the odek process.
 
@@ -145,8 +145,7 @@ Risk classes: safe, local_write, system_write, destructive, network_egress, code
 High-risk operations may prompt for approval (configurable via dangerous section in odek.json).
 The gate fails closed: an unrecognised command classifies as "unknown" and is denied by default.
 
-Output is fully buffered: nothing is returned until the command finishes. For known long-running
-commands (builds, test suites), set timeout_seconds explicitly so a stuck command fails fast.`
+Output is fully buffered: nothing is returned until the command finishes; set timeout_seconds for known long-running commands so a stuck one fails fast. Work that would block the turn for minutes (builds, full test suites, dev servers, watchers) belongs in bg_start instead.`
 }
 
 func (t *shellTool) Schema() any {

@@ -366,8 +366,7 @@ func (t *writeFileTool) Name() string { return "write_file" }
 func (t *writeFileTool) Description() string {
 	return `Write content to a file, completely replacing existing content.
 Creates parent directories automatically. OVERWRITES the entire file.
-Use patch for targeted edits.
-CRITICAL: Use the EXACT path specified in the task. Do not simplify or drop directories from the path.`
+Use patch for targeted edits; never simplify or drop directories from the path.`
 }
 
 func (t *writeFileTool) Schema() any {
@@ -540,8 +539,9 @@ func (t *searchFilesTool) Description() string {
 Two modes: target="content" searches inside files for a regex pattern,
 target="files" finds files by glob pattern.
 Results are sorted by modification time (newest first).
-For performance, ALWAYS use file_glob (e.g. '*.go', '*.py', '*.md') and a
-narrow path — without file_glob, every file in the tree is scanned.`
+For 2+ patterns at once, use multi_grep instead — one parallel pass.
+Always pass file_glob ('*.go', '*.py', …) and a narrow path; without
+file_glob every file in the tree is scanned.`
 }
 
 func (t *searchFilesTool) Schema() any {
@@ -1552,7 +1552,6 @@ Zero-fork — pure Go filepath walk with no subprocess.
 Examples:
   glob(pattern="*.go")       — all Go files in current directory
   glob(pattern="**/*.py")    — all Python files recursively
-  glob(pattern="*.json", path="config/") — JSON files in config/
   glob(pattern="test_*")     — files starting with test_
 
 Returns an array of {path, size, is_dir} for each match.`

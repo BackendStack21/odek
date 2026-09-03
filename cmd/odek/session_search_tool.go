@@ -27,7 +27,7 @@ func newSessionSearchTool(store *session.Store) *sessionSearchTool {
 
 func (t *sessionSearchTool) Name() string { return "session_search" }
 func (t *sessionSearchTool) Description() string {
-	return `Search and retrieve past agent sessions. Actions: list (recent sessions), search (semantic keyword search through full message content), get (full session by ID including ALL messages), find (sessions by task/title). Uses semantic vector search for the search action — it finds sessions whose conversation content is relevant to your query, even when titles don't match. Use OR between keywords for broad recall.
+	return `Search and retrieve past agent sessions. Actions: list (recent sessions), search (keyword search through full message content), get (full session by ID including ALL messages), find (sessions by task/title). Matching is thresholded keyword scoring — it finds sessions whose conversation content shares your query terms, even when titles don't match; use distinctive words from the original conversation, not paraphrases. Use OR between keywords for broad recall.
 
 IMPORTANT: After search returns matching sessions, use get (not search) to read the actual conversation content. get returns the full session_messages array with every user and assistant message.`
 }

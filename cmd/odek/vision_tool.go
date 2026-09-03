@@ -193,7 +193,7 @@ func newVisionTool(dc danger.DangerousConfig, vc config.VisionConfig) *visionToo
 
 func (t *visionTool) Name() string { return "vision" }
 func (t *visionTool) Description() string {
-	return `Analyze an image or video file using MiniCPM-V 4.6, a local 1.3B multimodal model (llama-mtmd-cli). Images are described directly; videos are sampled into evenly-spaced frames and analyzed together. Supports JPEG, PNG, GIF, WebP, BMP for images and MP4, MOV, AVI, MKV, WebM for video. Requires llama-mtmd-cli and MiniCPM-V 4.6 model files (bundled in the Docker image).`
+	return `Analyze an image or video file using MiniCPM-V 4.6, a local 1.3B multimodal model (llama-mtmd-cli). Images are described directly; videos are sampled into evenly-spaced frames and analyzed together. Image formats: JPEG, PNG, GIF, WebP, BMP. Video formats: MP4, MOV, AVI, MKV, WebM — video analysis additionally requires ffmpeg and ffprobe in PATH; if video fails while images work, convert or extract frames instead of retrying. Requires llama-mtmd-cli and MiniCPM-V 4.6 model files (bundled in the Docker image).`
 }
 
 type visionArgs struct {

@@ -71,6 +71,7 @@ func NewMemoryTool(mm *MemoryManager) *MemoryTool {
 func (t *MemoryTool) Name() string { return "memory" }
 func (t *MemoryTool) Description() string {
 	return "Manage persistent memory across sessions: read, add, update, remove facts, consolidate related entries, or search past episode summaries. " +
+		"For finding past sessions by their conversation content, use session_search — memory targets curated facts and episodes, not full session transcripts. " +
 		"You maintain the user/env fact files: when a target is at cap, remove or replace the lowest-value entries yourself — " +
 		"records recoverable from git/GitHub (release notes, merged PRs) evict first; pointers to untracked local work evict last. " +
 		"Use action=stats to check per-entry sizes and fill before writing."

@@ -164,7 +164,7 @@ func newTranscribeTool(dc danger.DangerousConfig, tc config.TranscriptionConfig)
 
 func (t *transcribeTool) Name() string { return "transcribe" }
 func (t *transcribeTool) Description() string {
-	return `Transcribe an audio file to text using a local whisper model (whisper.cpp CLI). Returns transcribed text with segments and duration. Requires whisper CLI and a model file to be installed locally.`
+	return `Transcribe an audio file to text using a local whisper model (whisper.cpp CLI). Returns transcribed text with segments and duration. Requires whisper CLI and a model file to be installed locally; native audio input is WAV/MP3/FLAC — other containers are auto-converted via ffmpeg, so if conversion fails, supply WAV/MP3/FLAC directly instead of retrying.`
 }
 
 type transcribeArgs struct {
@@ -193,7 +193,7 @@ func (t *transcribeTool) Schema() any {
 		"properties": map[string]any{
 			"path": map[string]any{
 				"type":        "string",
-				"description": "Path to the audio file (OGG, WAV, MP3, etc.).",
+				"description": "Path to the audio file (WAV, MP3, FLAC native; others are converted via ffmpeg).",
 			},
 			"language": map[string]any{
 				"type":        "string",
