@@ -1092,9 +1092,12 @@ func trimToSurvival(msgs []llm.Message) []llm.Message {
 	}
 
 	// Last user message (the current task/input) — always keep it.
+	// Background-notice injections are user-role messages flagged at
+	// append time; the survival set must keep the REAL user input, not
+	// the newest notice (same rule as lastUserMessage).
 	lastUserIdx := -1
 	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == "user" {
+		if msgs[i].Role == "user" && !strings.HasPrefix(msgs[i].Name, "bg-") {
 			lastUserIdx = i
 			break
 		}
@@ -1660,6 +1663,29 @@ func (e *Engine) RunWithMessages(ctx context.Context, messages []llm.Message) (s
 	return e.runLoop(ctx, messages)
 }
 
+// syncDigestFromMessages rebuilds the rolling-compaction digest state from
+// the message history: a persisted digest message (session resume) restores
+// e.compactDigest so refreshDigest extends it instead of restarting and the
+// trim warning keeps advertising a digest that is actually present; no
+// digest message in this run means this conversation owns no digest — stale
+// state from an earlier, unrelated run is cleared so buildTrimWarning never
+// advertises a digest message that is not in the conversation.
+func (e *Engine) syncDigestFromMessages(messages []llm.Message) {
+	e.compactDigest = ""
+	for _, m := range messages {
+		if !isDigestMessage(m) {
+			continue
+		}
+		body := m.Content
+		// The digest message is digestMsgPrefix + fixed header + "]\n" + body.
+		if i := strings.Index(m.Content, "]\n"); i >= 0 {
+			body = m.Content[i+2:]
+		}
+		e.compactDigest = body
+		return
+	}
+}
+
 // resetDedupKeys clears the per-message dedup keys so a repeated user
 // message in a later run (e.g. the REPL sending the same text twice)
 // re-triggers the memory hooks (user-message handler, skill loading,
@@ -1704,6 +1730,16 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 	// (docs/PLANNING.md — Restart Resume). Unparseable plan messages are
 	// removed from the history. No-op when planning is disabled.
 	messages = e.syncPlanFromMessages(messages)
+
+	// Trim statistics and rolling-digest state are per-conversation, not
+	// per-engine: reset the counters and re-derive the digest from THIS
+	// run's history — a fresh Run must not advertise an earlier
+	// conversation's digest or counts, and a resumed history must restore
+	// its digest so refreshDigest extends it instead of restarting.
+	e.trimGroupsTotal = 0
+	e.trimTruncTotal = 0
+	e.trimDroppedTools = nil
+	e.syncDigestFromMessages(messages)
 
 	// Backstop: clear any batch trustAll grant when this run returns, even on
 	// early exit or panic, so it never leaks into a later prompt that reuses

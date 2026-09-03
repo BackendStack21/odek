@@ -2742,7 +2742,7 @@ func handleSessionByID(store *session.Store, trustedProxies []string, wsToken st
 				Name   *string `json:"name"`
 				Pinned *bool   `json:"pinned"`
 			}
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
 				http.Error(w, "invalid JSON", http.StatusBadRequest)
 				return
 			}
