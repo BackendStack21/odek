@@ -3,6 +3,7 @@ package telegram
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // ─── Reserved characters in Telegram MarkdownV2 ───
@@ -346,6 +347,13 @@ func splitChunks(text string, maxBytes int) []string {
 				splitAt := strings.LastIndex(remaining[:maxBytes], " ")
 				if splitAt <= 0 {
 					splitAt = maxBytes
+				}
+				// Never split mid-rune: spaceless text (CJK, URLs, base64)
+				// cut at a raw byte boundary ships invalid UTF-8, which the
+				// Telegram API coerces to U+FFFD — the user receives corrupted
+				// text. Back off to the nearest rune start.
+				for splitAt > 0 && !utf8.RuneStart(remaining[splitAt]) {
+					splitAt--
 				}
 				chunks = append(chunks, remaining[:splitAt])
 				remaining = remaining[splitAt:]

@@ -772,7 +772,12 @@ func isRetryableNetworkError(err error) bool {
 		strings.Contains(s, "connection reset") ||
 		strings.Contains(s, "EOF") ||
 		strings.Contains(s, "timeout") ||
-		strings.Contains(s, "TLS handshake timeout")
+		strings.Contains(s, "TLS handshake timeout") ||
+		// http.Client timeouts read "... (Client.Timeout exceeded while
+		// awaiting headers)" — capital T, so the lowercase "timeout"
+		// match above misses them and a single timed-out request killed
+		// the turn without consuming any of the retry budget.
+		strings.Contains(s, "Client.Timeout exceeded")
 }
 
 func parseResponse(data []byte) (*CallResult, error) {
