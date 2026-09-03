@@ -824,7 +824,8 @@ func startServeRun(
 		defer cleanup()
 		var sessionIn, sessionOut int
 		serveLogf("run_started run_id=%s", run.ID)
-		sess := handlePrompt(ctx, func(m map[string]any) { _ = run.record(m) }, store, resources, resolved, agent, injectionGuard, nil, msg, &sessionIn, &sessionOut, cancelWithApproval, &deltas, bgRT)
+		var turnTag wsTurnAnnotator
+		sess := handlePrompt(ctx, turnTag.wrap(func(m map[string]any) { _ = run.record(m) }), store, resources, resolved, agent, injectionGuard, nil, msg, &sessionIn, &sessionOut, cancelWithApproval, &deltas, bgRT, &turnTag)
 		run.mu.Lock()
 		if sess != nil {
 			run.SessionID = sess.ID

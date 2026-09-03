@@ -1128,6 +1128,67 @@ type wsClientMsg struct {
 	WakeToken string `json:"wake_token,omitempty"`
 }
 
+// ── Turn identity (turn_started wire frame) ───────────────────────────
+
+// newTurnID returns a fresh turn identifier ("t_" + 128-bit random hex).
+// Clients upsert streaming-card state by this id, so a collision would
+// merge two distinct turns; entropy failure panics like newWakeToken —
+// an empty id would silently break card reconciliation.
+func newTurnID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		panic("odek: crypto/rand unavailable for turn id: " + err.Error())
+	}
+	return "t_" + hex.EncodeToString(b)
+}
+
+// turnTaggedFrames lists the frame types that carry turn_id while a turn
+// is active (R3). Lifecycle and sub-agent frames stay untouched so old
+// clients see byte-identical shapes for them.
+var turnTaggedFrames = map[string]bool{
+	"thinking":    true,
+	"token":       true,
+	"tool_call":   true,
+	"tool_result": true,
+	"done":        true,
+	"error":       true,
+}
+
+// wsTurnAnnotator tags outbound frames with the active turn id (R3) so a
+// client that attached mid-turn can attribute strays after a reconnect.
+// One per connection: begin/end bracket each turn on the processor
+// goroutine; wrap is shared with every emitter, including the agent's
+// live tool-event and delta callbacks. Frames sent outside a turn and
+// frame types outside turnTaggedFrames pass through unmodified.
+type wsTurnAnnotator struct {
+	mu     sync.Mutex
+	turnID string
+}
+
+func (a *wsTurnAnnotator) begin(id string) {
+	a.mu.Lock()
+	a.turnID = id
+	a.mu.Unlock()
+}
+
+func (a *wsTurnAnnotator) end() {
+	a.mu.Lock()
+	a.turnID = ""
+	a.mu.Unlock()
+}
+
+func (a *wsTurnAnnotator) wrap(send func(map[string]any)) func(map[string]any) {
+	return func(m map[string]any) {
+		a.mu.Lock()
+		id := a.turnID
+		a.mu.Unlock()
+		if typ, ok := m["type"].(string); ok && id != "" && turnTaggedFrames[typ] {
+			m["turn_id"] = id
+		}
+		send(m)
+	}
+}
+
 // ── WebSocket Handler ──────────────────────────────────────────────────
 
 func handleWS(store *session.Store, resources *resource.Registry, resolved config.ResolvedConfig, system string, state *serveState, conn *golangws.Conn) {
@@ -1182,7 +1243,17 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 
 	// Create ONE agent per WebSocket connection — provides buffer
 	// continuity across turns within the same session.
+	// turnTag tags streamed frames with the active turn id (R3); the same
+	// annotated sender backs the agent's live callbacks (newServeAgent)
+	// and the processor-loop wsSend below, so every frame of a turn is
+	// attributed to it.
+	turnTag := &wsTurnAnnotator{}
+	wsSend := turnTag.wrap(func(m map[string]any) { writeWSJSON(conn, m) })
 	agent, bgRT, sandboxCleanup, mcpCleanup, guardCleanup, injectionGuard, approver, err := newServeAgent(resolved, system, connInfo.ID, func(v any) error {
+		if m, ok := v.(map[string]any); ok {
+			wsSend(m)
+			return nil
+		}
 		writeWSJSON(conn, v)
 		return nil
 	}, &deltas)
@@ -1448,13 +1519,12 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 					approver.Cancel()
 				}
 			}
-			wsSend := func(m map[string]any) { writeWSJSON(conn, m) }
 			connInfo.setLive(wake.SessionID, true)
 			func() {
 				// Panic-safe Busy pairing (review F2): a panic unwinding
 				// through handlePrompt must not latch Busy=true forever.
 				defer connInfo.setLive(wake.SessionID, false)
-				currentSession = handlePrompt(promptCtx, wsSend, store, resources, resolved, agent, injectionGuard, currentSession, wakeMsg, &sessionInputTokens, &sessionOutputTokens, promptCancelWithApproval, &deltas, bgRT)
+				currentSession = handlePrompt(promptCtx, wsSend, store, resources, resolved, agent, injectionGuard, currentSession, wakeMsg, &sessionInputTokens, &sessionOutputTokens, promptCancelWithApproval, &deltas, bgRT, turnTag)
 			}()
 			promptCancel()
 			continue
@@ -1536,12 +1606,11 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 			}
 		}
 
-		wsSend := func(m map[string]any) { writeWSJSON(conn, m) }
 		connInfo.setLive(msg.SessionID, true)
 		func() {
 			// Panic-safe Busy pairing (review F2).
 			defer connInfo.setLive(msg.SessionID, false)
-			currentSession = handlePrompt(promptCtx, wsSend, store, resources, resolved, agent, injectionGuard, currentSession, msg, &sessionInputTokens, &sessionOutputTokens, promptCancelWithApproval, &deltas, bgRT)
+			currentSession = handlePrompt(promptCtx, wsSend, store, resources, resolved, agent, injectionGuard, currentSession, msg, &sessionInputTokens, &sessionOutputTokens, promptCancelWithApproval, &deltas, bgRT, turnTag)
 		}()
 		connInfo.recordPrompt()
 		sid := ""
@@ -1643,6 +1712,7 @@ func handlePrompt(
 	promptCancel context.CancelFunc,
 	deltas *wsDeltaCounters,
 	bg *bgRuntime,
+	turn *wsTurnAnnotator,
 ) *session.Session {
 	prompt := msg.Content
 	sessionID := msg.SessionID
@@ -1832,6 +1902,26 @@ func handlePrompt(
 		sessFrame["system_initiated"] = true // absent on operator turns
 	}
 	send(sessFrame)
+
+	// turn_started (protocol R1): every turn — wake and operator alike —
+	// announces itself immediately after the session frame and before the
+	// first streamed frame, so a client that misses the session frame
+	// (socket raced a reconnect) can still open the streaming card. The
+	// initiated label is computed by the wakeInitiated type gate; client
+	// input cannot influence it (R5). The session frame keeps its legacy
+	// system_initiated stamp for old clients.
+	turnID := newTurnID()
+	send(map[string]any{
+		"type":       "turn_started",
+		"turn_id":    turnID,
+		"session_id": sid,
+		"initiated":  turnInitiatedLabel(msg),
+		"model":      resolved.Model,
+	})
+	if turn != nil {
+		turn.begin(turnID)
+		defer turn.end() // streamed frames stop carrying this id at return
+	}
 	sl := activeServeLog()
 	if sl != nil {
 		sl.logf("turn_started session=%s model=%s", sid, resolved.Model)

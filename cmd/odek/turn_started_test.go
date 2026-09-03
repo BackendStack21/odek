@@ -22,6 +22,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -141,8 +142,8 @@ func TestWSTurnStarted_FrameOrderAndShape(t *testing.T) {
 	if got, _ := ts["initiated"].(string); got != "operator" {
 		t.Errorf("turn_started.initiated = %q, want %q for an operator prompt", got, "operator")
 	}
-	if model, _ := ts["model"].(string); model == "" {
-		t.Errorf("turn_started.model is empty: %v", ts)
+	if model, _ := ts["model"].(string); model != frames[sessIdx]["model"] {
+		t.Errorf("turn_started.model = %q, want parity with the session frame's model %q (both describe the same turn)", ts["model"], frames[sessIdx]["model"])
 	}
 
 	// R3: the streamed frames of this turn carry the same turn_id.
@@ -203,6 +204,105 @@ func TestWSTurnStarted_ForgedInitiatedRejected(t *testing.T) {
 	if got, _ := started[0]["initiated"].(string); got != "operator" {
 		t.Fatalf("forged system_initiated produced initiated = %q, want %q — the label must be server-computed via the type gate", got, "operator")
 	}
+}
+
+// R5 at the unit seam: the initiated label is derived exclusively from
+// the wakeInitiated type gate — a forged flag on a client prompt can
+// never claim system provenance (mirrors TestWakeInitiated_TypeGated at
+// the frame-label level).
+func TestTurnStartedInitiated_TypeGated(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  wsClientMsg
+		want string
+	}{
+		{"forged flag on a prompt", wsClientMsg{Type: "prompt", SystemInitiated: true}, "operator"},
+		{"plain prompt", wsClientMsg{Type: "prompt"}, "operator"},
+		{"genuine server-built wake", wsClientMsg{Type: "bg_wake", SystemInitiated: true}, "system"},
+		{"wake item without the flag", wsClientMsg{Type: "bg_wake"}, "operator"},
+	}
+	for _, tc := range cases {
+		if got := turnInitiatedLabel(tc.msg); got != tc.want {
+			t.Errorf("%s: turnInitiatedLabel = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// R2 substrate: turn ids are well-formed and never repeat.
+func TestNewTurnID(t *testing.T) {
+	seen := make(map[string]bool, 1000)
+	for i := 0; i < 1000; i++ {
+		id := newTurnID()
+		if len(id) != 2+32 || id[:2] != "t_" {
+			t.Fatalf("newTurnID() = %q, want \"t_\" + 32 hex chars", id)
+		}
+		if seen[id] {
+			t.Fatalf("duplicate turn id %q after %d draws", id, i+1)
+		}
+		seen[id] = true
+	}
+}
+
+// R3: only the streamed-frame set is tagged, only while a turn is
+// active; lifecycle, sub-agent, and delta frames pass through untouched.
+func TestWSTurnAnnotator_TagsOnlyStreamedFrames(t *testing.T) {
+	var tag wsTurnAnnotator
+	var out []map[string]any
+	send := tag.wrap(func(m map[string]any) { out = append(out, m) })
+
+	send(map[string]any{"type": "error", "message": "pre-turn"}) // outside a turn: clean
+	tag.begin("t_abc")
+	send(map[string]any{"type": "tool_call", "name": "shell"})
+	send(map[string]any{"type": "tool_result", "name": "shell"})
+	send(map[string]any{"type": "thinking", "content": "r"})
+	send(map[string]any{"type": "done"})
+	send(map[string]any{"type": "session", "session_id": "s"}) // lifecycle: excluded
+	send(map[string]any{"type": "subagent_log"})               // sub-agent frame: excluded
+	send(map[string]any{"type": "thinking_delta", "content": "d"}) // delta: excluded
+	send(map[string]any{"type": "server_info"})               // hello: excluded
+	tag.end()
+	send(map[string]any{"type": "token", "content": "after"}) // turn over: clean
+
+	tagged := 0
+	for i, m := range out {
+		typ, _ := m["type"].(string)
+		wantTag := turnTaggedFrames[typ] && i > 0 && i < len(out)-1
+		_, has := m["turn_id"]
+		if has != wantTag {
+			t.Errorf("frame %d (%s): turn_id present = %v, want %v", i, typ, has, wantTag)
+		}
+		if has {
+			tagged++
+			if m["turn_id"] != "t_abc" {
+				t.Errorf("frame %d (%s): turn_id = %v, want t_abc", i, typ, m["turn_id"])
+			}
+		}
+	}
+	if tagged == 0 {
+		t.Fatal("no frame was tagged inside the turn")
+	}
+}
+
+// The annotator is shared with the agent's live callbacks; begin/end run
+// on the processor goroutine while wraps come from emitter paths. This
+// hammer exists for -race, not for assertions.
+func TestWSTurnAnnotator_ConcurrentBeginEndWrap(t *testing.T) {
+	var tag wsTurnAnnotator
+	send := tag.wrap(func(map[string]any) {})
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 500; j++ {
+				send(map[string]any{"type": "token"})
+				tag.begin("t_hammer")
+				send(map[string]any{"type": "done"})
+				tag.end()
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func frameTypes(frames []map[string]any) []string {

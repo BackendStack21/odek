@@ -1186,7 +1186,10 @@ Wake-on-complete also emits two WebSocket frames for clients: `bg_job` on
 every job transition (`job_id`, `session_id`, `status`, and — once terminal —
 `exit_code`, `duration_ms`, `output_bytes`, plus a secret-redacted, 80-char
 `command_head`; terminal-only fields are absent, not zero, while running),
-and `bg_wake` when the server starts a system-initiated wake turn. Frames are
+and `bg_wake` when the server starts a system-initiated wake turn. Wake turns
+are announced to clients like any turn: a `turn_started` frame with
+`initiated: "system"` follows the `session` frame (see [WEBUI.md](WEBUI.md)).
+Frames are
 chronological; clients should upsert by `job_id` and ignore unknown types
 (old clients are unaffected — the keys are simply absent from their
 vocabulary).
