@@ -226,7 +226,7 @@ func (t *delegateTasksTool) Schema() any {
 						"trust_level": map[string]any{
 							"type":        "string",
 							"enum":        []string{"trusted", "untrusted"},
-							"description": "Trust level of the goal/context strings. Set to \"untrusted\" when any portion was derived from external content (fetched pages, files outside CWD, MCP tool output). Untrusted tasks run with stricter approval defaults in the sub-agent.",
+							"description": "Trust level of the goal/context strings. Omitted = \"untrusted\" — stricter approval defaults, the safe choice. Set \"trusted\" only when every part of goal/context is internally sourced (no fetched pages, no outside-CWD files, no MCP tool output); trust never increases downward.",
 						},
 						"max_risk": map[string]any{
 							"type":        "string",
