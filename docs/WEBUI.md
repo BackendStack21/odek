@@ -617,6 +617,7 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 | `server_info` | Pushed once on connect | `version`, `model`, `sandbox`, `stream`, `uptime_seconds`, `ws_connections` |
 | `pong` | Reply to a client `ping` | `t` (unix ms), plus the `server_info` snapshot fields |
 | `session` | At start of response, and after `session_switch` | `session_id`, `auth_token`, `model`, `sandbox` |
+| `turn_started` | Emitted for **every** turn (operator and system-initiated wake alike) immediately after the matching `session` frame and before the first streamed frame — clients open/upsert the streaming card by `turn_id`, so a missed `session` frame can no longer strand a turn | `turn_id` (`t_<hex>`), `session_id`, `initiated` (`"operator"` or `"system"` — computed server-side via the wake provenance gate; client input cannot influence it), `model` (mirrors the `session` frame's `model`) |
 | `token_delta` | Live streamed answer fragment (streaming on) | `content` (markdown fragment) |
 | `thinking_delta` | Live streamed reasoning fragment (streaming on) | `content` |
 | `cancelled` | After a `cancel` message is honored | `session_id`, `idle` (true when nothing was running) |
@@ -637,15 +638,30 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 | `memory_event` | Memory lifecycle event | `event`, `target`, `session_id`, `content`, `count`, `new_count`, `untrusted` |
 | `agent_signal` | Agent self-observability signal | `event`, `detail`, `tool`, `count` |
 
+Every frame of an active turn — `token`, `thinking`, `tool_call`,
+`tool_result`, `done`, `error` — also carries `turn_id`, matching the
+turn's `turn_started.turn_id`, so a client that attached mid-turn (after a
+reconnect) can attribute stray frames and reconcile card state without
+heuristic idle detection. Lifecycle frames (`session`, `server_info`,
+`pong`, `usage`, `cancelled`, `subagent_*`, `approval_*`, `skill_event`,
+`memory_event`, `agent_signal`) and the live `*_delta` fragments never
+carry it. The `session` frame's legacy `system_initiated: true` stamp
+(wake turns only) remains for old clients; `turn_started.initiated`
+supersedes it. Versioning: all new fields are additive and absent when
+not applicable — old clients ignore the unknown frame and unknown fields,
+and new clients against an old server simply never see `turn_started`
+(and fall back to the `session` stamp or lazy card open).
+
 Example event sequence:
 
 ```jsonc
 {"type":"session","session_id":"20260519-x1y2z3","model":"deepseek-v4-flash"}
-{"type":"token","content":"Let me look at the source directory."}
-{"type":"tool_call","name":"shell","data":"{\"command\":\"ls -la src/\"}"}
-{"type":"tool_result","name":"shell","data":"<untrusted_content_a1b2c3d4 source=\"shell\">\ntotal 24\ndrwxr-xr-x ...\n</untrusted_content_a1b2c3d4>"}
-{"type":"token","content":"The `src/` directory contains 3 files:"}
-{"type":"done","latency":4.2}
+{"type":"turn_started","turn_id":"t_9f86d081884c7d65","session_id":"20260519-x1y2z3","initiated":"operator","model":"deepseek-v4-flash"}
+{"type":"token","content":"Let me look at the source directory.","turn_id":"t_9f86d081884c7d65"}
+{"type":"tool_call","name":"shell","data":"{\"command\":\"ls -la src/\"}","turn_id":"t_9f86d081884c7d65"}
+{"type":"tool_result","name":"shell","data":"<untrusted_content_a1b2c3d4 source=\"shell\">\ntotal 24\ndrwxr-xr-x ...\n</untrusted_content_a1b2c3d4>","turn_id":"t_9f86d081884c7d65"}
+{"type":"token","content":"The `src/` directory contains 3 files:","turn_id":"t_9f86d081884c7d65"}
+{"type":"done","latency":4.2,"turn_id":"t_9f86d081884c7d65"}
 ```
 
 With streaming enabled (`--stream` / `stream: true` / `ODEK_STREAM=true`) the

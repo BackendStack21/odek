@@ -291,6 +291,18 @@ func wakeInitiated(msg wsClientMsg) bool {
 	return msg.Type == "bg_wake" && msg.SystemInitiated
 }
 
+// turnInitiatedLabel maps the type-gated wakeInitiated provenance to the
+// initiated label carried by the turn_started frame. It is computed
+// server-side only — a client prompt that forges SystemInitiated or a
+// wake token can never claim system provenance (same rules as the
+// session frame's system_initiated stamp, review P1-1).
+func turnInitiatedLabel(msg wsClientMsg) string {
+	if wakeInitiated(msg) {
+		return "system"
+	}
+	return "operator"
+}
+
 // ── serve wiring ─────────────────────────────────────────────────────────
 
 // bgJobFrame builds the `bg_job` wire frame for a job transition (M2).
