@@ -245,12 +245,35 @@ func redactEvent(ev *Event) {
 	}
 	data := make(map[string]any, len(ev.Data))
 	for k, v := range ev.Data {
-		if s, ok := v.(string); ok {
-			v = redact.RedactSecrets(s)
-		}
-		data[k] = v
+		data[k] = redactValue(v)
 	}
 	ev.Data = data
+}
+
+// redactValue redacts strings at any nesting depth of map/slice values.
+// Event Data is built at call sites that may embed structured values
+// (sub-agent results, tool outputs); the event stream is a documented
+// redaction surface, so a nested secret must not slip through to
+// handlers, the JSONL sink, or WS consumers by reference.
+func redactValue(v any) any {
+	switch t := v.(type) {
+	case string:
+		return redact.RedactSecrets(t)
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, vv := range t {
+			out[k] = redactValue(vv)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, vv := range t {
+			out[i] = redactValue(vv)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // SetSessionID sets the session identifier stamped on subsequent events.
