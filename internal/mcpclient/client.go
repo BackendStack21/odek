@@ -95,6 +95,7 @@ type request struct {
 type response struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      int             `json:"id"`
+	Method  string          `json:"method,omitempty"`
 	Result  json.RawMessage `json:"result,omitempty"`
 	Error   *rpcError       `json:"error,omitempty"`
 }
@@ -645,6 +646,53 @@ func (c *Client) CallTool(ctx context.Context, name string, argsJSON string) (st
 	if err != nil {
 		return "", fmt.Errorf("mcpclient %s: tool %s: %w", c.name, name, err)
 	}
+	if env == nil && len(parts) > 1 {
+		// A multi-item result carrying an envelope plus trailing notes: the
+		// joined text no longer parses as one JSON document, so the probe
+		// above treats it as plain text — delivering the RAW envelope JSON to
+		// the model and bypassing artifact-ref validation. Parse each item
+		// for the envelope instead; a schema-matched but malformed item still
+		// fails closed.
+		var envErr error
+		for _, p := range parts {
+			e, eerr := artifact.ParseEnvelope(p)
+			if eerr != nil {
+				envErr = eerr
+				continue
+			}
+			if e != nil {
+				env = e
+				break
+			}
+		}
+		if env == nil && envErr != nil {
+			return "", fmt.Errorf("mcpclient %s: tool %s: %w", c.name, name, envErr)
+		}
+		// Preserve the non-envelope items after the rendered form: the
+		// trailing notes are ordinary text the server meant the model to
+		// see alongside the artifact metadata.
+		if env != nil {
+			var extras []string
+			for _, p := range parts {
+				if e, eerr := artifact.ParseEnvelope(p); eerr == nil && e != nil {
+					continue // the envelope item(s) render above
+				}
+				if strings.TrimSpace(p) != "" {
+					extras = append(extras, p)
+				}
+			}
+			suffix := ""
+			if len(extras) > 0 {
+				suffix = "\n" + strings.Join(extras, "\n")
+			}
+			for i := range env.Artifacts {
+				if _, err := artifact.Validate(env.Artifacts[i], c.artifactRoots); err != nil {
+					return "", fmt.Errorf("mcpclient %s: tool %s: artifact ref rejected: %w", c.name, name, err)
+				}
+			}
+			return c.applyResultLimit(name, c.renderCappedEnvelope(name, env)+suffix), nil
+		}
+	}
 	if env != nil {
 		for i := range env.Artifacts {
 			// The resolved path is intentionally discarded here: it is
@@ -876,6 +924,13 @@ func (c *Client) readLoop() {
 		var resp response
 		if err := json.Unmarshal([]byte(line), &resp); err != nil {
 			continue // skip malformed lines
+		}
+		// A line carrying a "method" field is a server→client request or
+		// notification (JSON-RPC 2.0), never a response to one of our calls.
+		// Routing it by id would deliver {result:null} to a waiting caller
+		// whose id collides — and drop the real response when it arrives.
+		if resp.Method != "" {
+			continue
 		}
 
 		// Route to the waiting caller, if any.
