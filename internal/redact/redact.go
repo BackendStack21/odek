@@ -60,6 +60,9 @@ var patterns = []*regexp.Regexp{
 	// PKCS#8 format (default openssl genpkey output) — with optional
 	// ENCRYPTED prefix and optional algorithm label.
 	regexp.MustCompile(`-----BEGIN (RSA |EC |OPENSSH |DSA |ED25519 |ENCRYPTED )?PRIVATE KEY-----[^-]*-----END (RSA |EC |OPENSSH |DSA |ED25519 |ENCRYPTED )?PRIVATE KEY-----`),
+	// PGP armored private keys (gpg --export-secret-keys output) — the
+	// PEM alternation above deliberately does not cover them.
+	regexp.MustCompile(`-----BEGIN PGP PRIVATE KEY BLOCK-----[^-]*-----END PGP PRIVATE KEY BLOCK-----`),
 
 	// JWT tokens (three base64url segments separated by dots)
 	// Minimum ~40 chars to avoid matching short dotted strings
@@ -76,6 +79,8 @@ var patterns = []*regexp.Regexp{
 
 	// Slack bot tokens: xoxb-, xoxp-
 	regexp.MustCompile(`xox[abpos]-[0-9]{10,}-[0-9]{10,}-[a-zA-Z0-9]{24,}`),
+	// Slack app tokens: xapp-1-<app id>-<install id>-<secret>
+	regexp.MustCompile(`xapp-1-[A-Za-z0-9]+-[0-9]{8,}-[0-9a-zA-Z]{24,}`),
 
 	// Telegram bot tokens: <numeric bot id>:<35-char base64url secret>.
 	// e.g. 123456789:AAHfakeTokenValueExample0123456789abcdef
