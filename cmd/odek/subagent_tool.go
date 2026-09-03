@@ -180,25 +180,23 @@ func (t *delegateTasksTool) Description() string {
 Example: decomposing "build a REST API" into "create user model", "create auth middleware", "create route handlers".
 
 Key rules:
-- Each sub-agent has a fresh context (no parent history)
-- Sub-agents run in parallel up to the configured concurrency limit (subagent.max_concurrency, falling back to max_concurrency)
+- Each sub-agent has a fresh context (no parent history) — pass everything it needs in goal/context
+- Sub-agents run in parallel up to the configured concurrency cap
 - Sub-agents NEVER prompt for approvals — denied operations are listed in each result's denials array (tool/class/reason); escalate by performing the operation yourself or asking the user
-- Sub-agents get a wall-clock budget (subagent.timeout_seconds, default 30m, hard max 30m) and an iteration budget (subagent.max_iterations, default 15) — it is told both at spawn and warned as it approaches them
-- Trust is non-increasing downward: a child's effective trust is min(parent trust, declared trust_level) — an untrusted task tree cannot spawn trusted children
-- Sub-agents can use all tools (shell, read/write files, etc.), capped by trust_level and max_risk
-- Delegation depth is capped (subagent.max_depth, default 2) — do leaf work yourself when close to the cap
+- Sub-agents get a wall-clock budget and an iteration budget, and are told both at spawn
+- Trust is non-increasing downward: an untrusted task tree cannot spawn trusted children
+- Delegation depth is capped — do leaf work yourself when close to the cap
 - After all complete, synthesize the results into a cohesive answer
 
 Result delivery — two channels per sub-agent:
 - Headline: the sub-agent's final answer, capped at ~2000 characters. Treat it as a status summary, not the full result; a trailing … means it was cut.
-- Artifacts: deliverables the sub-agent wrote as files (it is instructed to stage anything larger than a headline in its task's artifact dir) are validated and listed under "artifacts:" — id, type, byte size, one-line summary. Text artifacts up to 32 KB are inlined in full; fetch larger ones with artifact_read(id).
+- Artifacts: file deliverables are validated and listed under "artifacts:" — id, type, byte size, one-line summary. Only text/* artifacts ≤32 KB are inlined in full (JSON/binary are metadata-only); fetch anything else with artifact_read(id).
 - For artifact-heavy tasks (reports, audits, reviews, generated files), put it in ` + "`guidance`" + `: "Write the full deliverable as a flat file in your artifact dir; keep the final answer to a short headline." Then read file-backed artifacts with artifact_read before synthesizing.
 
 Output format per sub-agent (headline stays SHORT — status, artifact names, key decisions; the files carry the detail):
 - Status: built / blocked / failed, one line
-- Artifact file names (omit when everything fit inline)
 - Key decisions made
-- artifacts: file-backed deliverables (inlined when ≤32 KB; artifact_read otherwise)`
+- artifacts: file-backed deliverables (inlined when text ≤32 KB; artifact_read otherwise)`
 }
 
 func (t *delegateTasksTool) Schema() any {

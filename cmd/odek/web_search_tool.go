@@ -84,7 +84,7 @@ func (t *webSearchTool) checkRedirect(req *http.Request, via []*http.Request) er
 func (t *webSearchTool) Name() string { return "web_search" }
 
 func (t *webSearchTool) Description() string {
-	return `Search the web via a self-hosted SearXNG metasearch instance. Returns ranked results (title, url, snippet, engine) plus any direct answers. Use this to find pages, then fetch the most relevant URLs with the browser or http_batch tools. Results come from external search engines and are treated as untrusted content.`
+	return `Search the web via a self-hosted SearXNG metasearch instance. Returns ranked results (title, url, snippet, engine) plus any direct answers. Use this to find pages, then fetch the most relevant URLs with the browser (http_batch returns response metadata only, not page content). Results come from external search engines and are treated as untrusted content.`
 }
 
 type webSearchArgs struct {

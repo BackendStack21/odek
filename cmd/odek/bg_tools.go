@@ -323,11 +323,12 @@ func (t *bgStartTool) Name() string { return "bg_start" }
 
 func (t *bgStartTool) Description() string {
 	return `Start a shell command in the background and return immediately.
-Use for long-running work: dev servers, watchers, fuzz runs, batch jobs.
+Use for long-running work: builds, full test suites, dev servers, watchers, fuzz runs, batch jobs.
 The command runs detached from the conversation: you keep working while it
 runs, and a completion notice with the exit status and an output tail is
-delivered to you automatically when it finishes (if notices are enabled).
-If notices are disabled, poll with bg_status / bg_output instead.
+drained into a later iteration when it finishes (if notices are enabled).
+If notices are disabled, or your current turn depends on the result, poll
+with bg_status / bg_output before ending the turn.
 timeout_seconds: optional kill timer; 0 or absent = run until session end
 (operator cap may clamp explicit values). Jobs are killed when the session
 or the process ends. Output is capped; retrieve it with bg_output.`
@@ -415,7 +416,9 @@ func (t *bgStatusTool) Name() string { return "bg_status" }
 func (t *bgStatusTool) Description() string {
 	return `Get the status of one background job: running/exited/failed/timeout/killed,
 exit code, duration, and output size. Returns {"status":"unknown"} for ids
-that never existed, were started by another session, or died with a restart.`
+that never existed, were started by another session, died with a restart,
+or whose finished record was evicted (the oldest finished jobs are pruned
+when the per-session record cap is exceeded).`
 }
 
 func (t *bgStatusTool) Schema() any {

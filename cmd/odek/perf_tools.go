@@ -91,7 +91,7 @@ type batchPatchTool struct {
 
 func (t *batchPatchTool) Name() string { return "batch_patch" }
 func (t *batchPatchTool) Description() string {
-	return `Apply up to 10 find-replace edits across files in a single call. Edits are applied sequentially — this is NOT one atomic transaction: at the first failing edit the remaining edits are skipped (early-stop) and the edits already applied are kept. Each individual edit uses O_NOFOLLOW read + atomic temp+rename write, same as the patch tool.`
+	return `Apply up to 10 find-replace edits in one call — across one or more files, including several edits to the same file; prefer this over N sequential patch calls whenever you have more than one edit. Edits are applied sequentially — this is NOT one atomic transaction: at the first failing edit the remaining edits are skipped (early-stop) and the edits already applied are kept. Each individual edit uses O_NOFOLLOW read + atomic temp+rename write, same as the patch tool.`
 }
 
 type batchPatchArg struct {
@@ -652,7 +652,7 @@ func (t *httpBatchTool) checkRedirect(req *http.Request, via []*http.Request) er
 
 func (t *httpBatchTool) Name() string { return "http_batch" }
 func (t *httpBatchTool) Description() string {
-	return `Fetch multiple URLs in parallel. Returns status code, content length, and error for each URL. Does NOT parse HTML — it's a lightweight parallel fetch for APIs, docs, and data files. Max 10 URLs per call.`
+	return `Check multiple URLs in parallel — returns HTTP status code, content length, and error per URL; response BODIES are NOT returned (read content with browser or shell instead). Best for link-health and availability checks, not content fetching. Max 10 URLs per call.`
 }
 
 type httpBatchReq struct {
@@ -1327,7 +1327,7 @@ type multiGrepTool struct {
 
 func (t *multiGrepTool) Name() string { return "multi_grep" }
 func (t *multiGrepTool) Description() string {
-	return `Search for multiple regex patterns in parallel across files. Each pattern runs its own directory walk with bounded concurrency. Returns structured {pattern, path, line, content} results. Replaces N serial search_files calls. Directly targets the multi_search benchmark.`
+	return `Search for multiple regex patterns in parallel across files. Each pattern runs its own directory walk with bounded concurrency. Returns structured {pattern, path, line, content} results. Replaces N serial search_files calls.`
 }
 
 type grepMatch struct {
