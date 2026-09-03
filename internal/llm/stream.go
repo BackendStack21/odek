@@ -410,6 +410,16 @@ func readSSE(parent, reqCtx context.Context, cancelReq context.CancelFunc, body 
 			continue // SSE keepalive (ADR-6)
 		}
 		if !strings.HasPrefix(trimmed, "data:") {
+			// Spec-legal SSE field lines (event:, id:, retry:) are stream
+			// metadata, not malformed input. Rejecting them before the first
+			// data line (errNotSSE) permanently downgraded the client to
+			// buffered mode on gateways that emit them (e.g. "event:
+			// message").
+			if strings.HasPrefix(trimmed, "event:") ||
+				strings.HasPrefix(trimmed, "id:") ||
+				strings.HasPrefix(trimmed, "retry:") {
+				continue
+			}
 			if !sawData && !emitted {
 				return acc.result(), emitted, errNotSSE
 			}

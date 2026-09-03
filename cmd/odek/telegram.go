@@ -459,7 +459,21 @@ func telegramCmd(args []string) error {
 		// so it can be revisited via `odek session list`.
 		if cmdName == "new" {
 			dropBGRuntimeForChat(chatID)
+			// Stop any in-flight run for this chat BEFORE archiving (same
+			// cancel path as /stop): a live turn's persist callbacks would
+			// otherwise race the archive and resurrect the session under
+			// the old ID. The per-chat mutex is held for the whole run and
+			// released only after the run (including its final persist)
+			// unwinds — taking it here serializes the archive strictly after.
+			if cancelVal, ok := chatCancels.LoadAndDelete(chatID); ok {
+				if cancel, ok := cancelVal.(context.CancelFunc); ok {
+					cancel()
+				}
+			}
+			chatM := getChatMutex(chatID)
+			chatM.Lock()
 			resetChatForNew(chatID, sessionManager, handler, handlerLog)
+			chatM.Unlock()
 			var b strings.Builder
 			b.WriteString("🔄 *Session archived, starting fresh*\n\n")
 			fmt.Fprintf(&b, "• Model: `%s`\n", resolved.Model)

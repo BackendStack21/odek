@@ -27,6 +27,14 @@ type SessionManager struct {
 	BaseDir         string
 	SessionTTL      time.Duration
 	clarifyChannels sync.Map // map[int64]chan string — per-chat clarify response channels
+
+	// archived marks chats whose session was archived by /new while a
+	// turn could still be running (ArchiveAndDelete). Guarded by Mu. A
+	// SaveNoIndex cache-miss for a marked chat is a dying turn's persist
+	// callback — writing would resurrect the archived session under the
+	// old "tg-<chatID>" ID. Cleared by GetOrCreate when the chat starts a
+	// new session.
+	archived map[int64]bool
 }
 
 // ChatSession represents a single Telegram chat's agent conversation.
@@ -53,6 +61,7 @@ func NewSessionManager(store *session.Store, ttl time.Duration) *SessionManager 
 		Store:      store,
 		Cache:      make(map[int64]*ChatSession),
 		SessionTTL: ttl,
+		archived:   make(map[int64]bool),
 	}
 }
 
@@ -103,6 +112,12 @@ func (sm *SessionManager) GetOrCreate(chatID int64) (*ChatSession, error) {
 	}
 
 	sm.Mu.Lock()
+	// Mark the chat archived: a still-running turn's SaveNoIndex must not
+	// resurrect the session under the old "tg-<chatID>" ID. GetOrCreate
+	// clears the marker when the chat establishes its next session.
+	if sm.archived != nil {
+		sm.archived[chatID] = true
+	}
 	sm.Cache[chatID] = cs
 	sm.Mu.Unlock()
 
@@ -172,6 +187,17 @@ func (sm *SessionManager) SaveNoIndex(chatID int64, messages []llm.Message) erro
 		cs = &updated
 		sm.Cache[chatID] = cs
 	} else {
+		// A cache miss alone is legitimate (e.g. a cold-start persist —
+		// pinned by TestSessionManager_SaveNoIndex): create the entry and
+		// checkpoint. But when the chat was ARCHIVED (/new) out from under
+		// a still-running turn, the write would resurrect the archived
+		// session under the old "tg-<chatID>" ID — "starting fresh"
+		// silently resumed the old conversation. Skip the write for
+		// archived chats; GetOrCreate clears the marker on the next turn.
+		if sm.archived[chatID] {
+			sm.Mu.Unlock()
+			return nil
+		}
 		cs = &ChatSession{
 			ChatID:     chatID,
 			SessionID:  fmt.Sprintf("tg-%d", chatID),
@@ -265,6 +291,12 @@ func (sm *SessionManager) ArchiveAndDelete(chatID int64) error {
 	cs, ok := sm.Cache[chatID]
 	if ok {
 		delete(sm.Cache, chatID)
+	}
+	// Mark the chat archived: a still-running turn's SaveNoIndex must not
+	// resurrect the session under the old "tg-<chatID>" ID. GetOrCreate
+	// clears the marker when the chat establishes its next session.
+	if sm.archived != nil {
+		sm.archived[chatID] = true
 	}
 	sm.Mu.Unlock()
 

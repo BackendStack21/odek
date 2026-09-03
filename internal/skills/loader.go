@@ -88,10 +88,12 @@ func parseSkillContent(content, sourcePath string) *Skill {
 	var trigger SkillTrigger
 	autoLoad := false
 	quality := QualityManual
+	hasTrigger := false
 
 	var provenance SkillProvenance
 	if odek, ok := fm["odek"].(map[string]any); ok {
 		if t, ok := odek["trigger"].(map[string]any); ok {
+			hasTrigger = true
 			trigger = SkillTrigger{
 				TopicKeywords:  splitKeywords(fmKeyString(t, "topic")),
 				ActionKeywords: splitKeywords(fmKeyString(t, "action")),
@@ -114,8 +116,12 @@ func parseSkillContent(content, sourcePath string) *Skill {
 				provenance.Sources = splitKeywords(fmScalarString(src))
 			}
 		}
-	} else {
-		// Derive keywords from body if no trigger section
+	}
+	if !hasTrigger {
+		// Derive keywords from the body when no explicit trigger section is
+		// present — an odek section carrying only other fields (e.g.
+		// quality) must not silently disable derivation and leave the
+		// skill with an empty trigger set (description-only scoring).
 		topics, actions := DeriveKeywords(body)
 		trigger = SkillTrigger{
 			TopicKeywords:  topics,
