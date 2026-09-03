@@ -636,8 +636,9 @@ func handleTools(resolved config.ResolvedConfig) http.HandlerFunc {
 
 		out := make([]toolSummary, 0, len(names))
 		for _, n := range names {
-			enabled := !disabledSet[n] && (!whitelistActive || enabledSet[n])
-			out = append(out, toolSummary{Name: n, Enabled: enabled})
+			// Shared filter rule (introspect.go) — the same one the
+			// agent-facing list_tools tool applies.
+			out = append(out, toolSummary{Name: n, Enabled: toolEnabled(n, enabledSet, disabledSet, whitelistActive)})
 		}
 		writeAPIJSON(w, http.StatusOK, map[string]any{
 			"tools":       out,
@@ -696,68 +697,17 @@ func stripUntrustedEnvelopes(s string) string {
 // ── GET /api/config (sanitized) ───────────────────────────────────────
 
 // handleConfigView reports the operator-relevant resolved configuration as
-// scalars and flags ONLY. Secrets (api_key, base_url, env maps, search
-// backends) are deliberately excluded — a config view that leaks the LLM
-// endpoint credentials would turn a read-only endpoint into key
-// exfiltration for any local process that can guess the port.
+// scalars and flags ONLY — the sanitization contract lives on
+// buildConfigView (introspect.go), which excludes secrets structurally. The
+// agent-facing config_view tool renders the same map; parity is pinned by
+// TestRESTConfigViewMatchesToolAll.
 func handleConfigView(resolved config.ResolvedConfig) http.HandlerFunc {
-	boolPtr := func(p *bool) any {
-		if p == nil {
-			return nil
-		}
-		return *p
-	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		writeAPIJSON(w, http.StatusOK, map[string]any{
-			"model":             resolved.Model,
-			"stream":            resolved.Stream,
-			"compaction":        resolved.Compaction,
-			"prompt_caching":    resolved.PromptCaching,
-			"thinking":          resolved.Thinking != "",
-			"max_iterations":    resolved.MaxIter,
-			"max_tool_parallel": resolved.MaxToolParallel,
-			"max_concurrency":   resolved.MaxConcurrency,
-			"interaction_mode":  resolved.InteractionMode,
-			"no_agents_md":      resolved.NoAgents,
-			"sandbox": map[string]any{
-				"enabled":  resolved.Sandbox,
-				"image":    resolved.SandboxImage,
-				"network":  resolved.SandboxNetwork,
-				"readonly": resolved.SandboxReadonly,
-				"memory":   resolved.SandboxMemory,
-				"cpus":     resolved.SandboxCPUs,
-				"user":     resolved.SandboxUser,
-			},
-			"memory": map[string]any{
-				"enabled":                  boolPtr(resolved.Memory.Enabled),
-				"facts_limit_user":         resolved.Memory.FactsLimitUser,
-				"facts_limit_env":          resolved.Memory.FactsLimitEnv,
-				"extract_on_end":           boolPtr(resolved.Memory.ExtractOnEnd),
-				"consolidate_on_end":       boolPtr(resolved.Memory.ConsolidateOnEnd),
-				"min_turns_for_extraction": resolved.Memory.MinTurnsForExtraction,
-			},
-			"skills": map[string]any{
-				"max_auto_load":  resolved.Skills.MaxAutoLoad,
-				"max_lazy_slots": resolved.Skills.MaxLazySlots,
-			},
-			"tools": map[string]any{
-				"enabled":  resolved.Tools.Enabled,
-				"disabled": resolved.Tools.Disabled,
-			},
-			"maintenance": map[string]any{
-				"enabled":               resolved.Maintenance.Enabled,
-				"interval_minutes":      resolved.Maintenance.IntervalMinutes,
-				"sessions_max_age_days": resolved.Maintenance.SessionsMaxAgeDays,
-				"audit_max_age_days":    resolved.Maintenance.AuditMaxAgeDays,
-				"plans_max_age_days":    resolved.Maintenance.PlansMaxAgeDays,
-			},
-			"dangerous_default_action": resolved.Dangerous.DefaultAction,
-			"guard_scan":               guardScanView(resolved.Guard.Scan),
-		})
+		writeAPIJSON(w, http.StatusOK, buildConfigView(resolved))
 	}
 }
 
@@ -778,44 +728,30 @@ func guardScanView(sc *guard.ScanConfig) map[string]any {
 
 // ── GET /api/mcp ──────────────────────────────────────────────────────
 
+// mcpEntry is one sanitized MCP server row shared by GET /api/mcp and the
+// list_tools tool (buildMCPServersView).
+type mcpEntry struct {
+	Name             string   `json:"name"`
+	Command          string   `json:"command"`
+	Args             []string `json:"args,omitempty"`
+	Project          bool     `json:"project,omitempty"`
+	AutoApprove      bool     `json:"auto_approve,omitempty"`
+	TimeoutSeconds   int      `json:"timeout_seconds,omitempty"`
+	MaxResponseBytes int64    `json:"max_response_bytes,omitempty"`
+	MaxResultChars   int      `json:"max_result_chars,omitempty"`
+}
+
 // handleMCPServers lists configured MCP servers with their extension
 // limits. Command/args are operator config (the interactive approval UI
 // already displays them verbatim); env values are withheld — they may carry
-// credentials.
+// credentials. The row shape lives on buildMCPServersView (introspect.go).
 func handleMCPServers(resolved config.ResolvedConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		project := map[string]bool{}
-		for _, n := range resolved.ProjectMCPServerNames {
-			project[n] = true
-		}
-		type mcpEntry struct {
-			Name             string   `json:"name"`
-			Command          string   `json:"command"`
-			Args             []string `json:"args,omitempty"`
-			Project          bool     `json:"project,omitempty"`
-			AutoApprove      bool     `json:"auto_approve,omitempty"`
-			TimeoutSeconds   int      `json:"timeout_seconds,omitempty"`
-			MaxResponseBytes int64    `json:"max_response_bytes,omitempty"`
-			MaxResultChars   int      `json:"max_result_chars,omitempty"`
-		}
-		out := make([]mcpEntry, 0, len(resolved.MCPServers))
-		for name, cfg := range resolved.MCPServers {
-			out = append(out, mcpEntry{
-				Name:             name,
-				Command:          cfg.Command,
-				Args:             cfg.Args,
-				Project:          project[name],
-				AutoApprove:      cfg.AutoApprove,
-				TimeoutSeconds:   cfg.TimeoutSeconds,
-				MaxResponseBytes: cfg.MaxResponseBytes,
-				MaxResultChars:   cfg.MaxResultChars,
-			})
-		}
-		sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+		out := buildMCPServersView(resolved)
 		writeAPIJSON(w, http.StatusOK, map[string]any{"servers": out, "count": len(out)})
 	}
 }
