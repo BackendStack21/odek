@@ -333,7 +333,11 @@ func (f *FileResolver) Load(ctx context.Context, id string) (string, error) {
 	// Open with O_NOFOLLOW to atomically prevent the final component from
 	// being a symlink. If the path is a symlink, the open fails with ELOOP —
 	// closing the TOCTOU window between a separate Lstat check and the read.
-	fd, err := os.OpenFile(resolvedTarget, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	// O_NONBLOCK guards against special files: opening a FIFO with no
+	// writer blocks in the syscall forever (ctx is not observable there),
+	// and the FIFO's zero size would pass the cap below leaving ReadAll
+	// unbounded. For regular files O_NONBLOCK is a no-op.
+	fd, err := os.OpenFile(resolvedTarget, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return "", err
 	}
@@ -342,6 +346,9 @@ func (f *FileResolver) Load(ctx context.Context, id string) (string, error) {
 	info, err := fd.Stat()
 	if err != nil {
 		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("resource: %q is not a regular file", id)
 	}
 	if info.Size() > maxResourceFileBytes {
 		return "", fmt.Errorf("resource: file too large (%d bytes, max %d)", info.Size(), maxResourceFileBytes)
