@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"golang.org/x/term"
 )
@@ -27,6 +28,11 @@ type replEditor struct {
 	// Line buffer
 	line []rune
 	pos  int // cursor position in runes
+
+	// pending buffers a partial UTF-8 sequence: the terminal delivers
+	// multibyte input as separate bytes and each must be held until the
+	// full rune arrives.
+	pending []byte
 
 	// Paste detection
 	bracketed bool
@@ -57,6 +63,7 @@ func (e *replEditor) ReadLine() (string, error) {
 	e.line = nil
 	e.pos = 0
 	e.bracketed = false
+	e.pending = nil
 
 	// Enable bracketed paste mode
 	fmt.Fprint(os.Stderr, "\x1b[?2004h")
@@ -122,8 +129,20 @@ func (e *replEditor) handleByte(b byte) (bool, error) {
 		e.cursorLeft()
 	case b == 0x06: // Ctrl+F — right
 		e.cursorRight()
-	case b >= 0x20: // Printable
-		e.insert(b)
+	case b >= 0x80:
+		// Multibyte UTF-8 (é, CJK, emoji): accumulate bytes until the
+		// full rune arrives — storing single bytes as runes corrupted
+		// typed input ("café" → "cafÃ©").
+		e.pending = append(e.pending, b)
+		if utf8.FullRune(e.pending) {
+			r, _ := utf8.DecodeRune(e.pending)
+			e.insertRune(r)
+			e.pending = nil
+		} else if len(e.pending) > utf8.UTFMax {
+			e.pending = nil // malformed sequence — drop, never wedge
+		}
+	case b >= 0x20: // Printable ASCII
+		e.insertRune(rune(b))
 	}
 	return false, nil
 }
@@ -235,11 +254,11 @@ func (e *replEditor) end() {
 	}
 }
 
-func (e *replEditor) insert(b byte) {
+func (e *replEditor) insertRune(r rune) {
 	// Extend line
 	e.line = append(e.line, 0)
 	copy(e.line[e.pos+1:], e.line[e.pos:])
-	e.line[e.pos] = rune(b)
+	e.line[e.pos] = r
 	e.pos++
 
 	// Redraw from cursor

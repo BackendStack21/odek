@@ -69,6 +69,23 @@ var pendingClarifyReqs sync.Map // map[string]*pendingClarifyReq
 // generateClarifyReqID returns a random request ID for a clarify prompt.
 // The ID is embedded in the callback data so each prompt is independent
 // and stale keyboards cannot answer later clarifies.
+// truncateStrRunes shortens s to at most maxBytes bytes, rune-safe,
+// appending "…" when trimmed. A raw byte cut on multibyte task titles
+// (CJK, é, emoji) ships invalid UTF-8 that Telegram coerces to U+FFFD.
+func truncateStrRunes(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	cut := maxBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	if cut == 0 {
+		cut = maxBytes
+	}
+	return s[:cut] + "…"
+}
+
 func generateClarifyReqID() string {
 	buf := make([]byte, 8)
 	if _, err := rand.Read(buf); err != nil {
@@ -490,11 +507,7 @@ func telegramCmd(args []string) error {
 				ago := time.Since(s.UpdatedAt).Round(time.Minute)
 				fmt.Fprintf(&b, "`%s` — %d turns, %s ago\n", s.ID, s.Turns, ago)
 				if s.Task != "" {
-					taskPreview := s.Task
-					if len(taskPreview) > 50 {
-						taskPreview = taskPreview[:50] + "…"
-					}
-					fmt.Fprintf(&b, "  _%s_\n", taskPreview)
+					fmt.Fprintf(&b, "  _%s_\n", truncateStrRunes(s.Task, 50))
 				}
 			}
 			b.WriteString("\nUse `/resume <id>` to continue a session.")

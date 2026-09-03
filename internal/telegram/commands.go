@@ -3,6 +3,7 @@ package telegram
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // CommandDescriptor describes a slash command and its handler.
@@ -238,9 +239,18 @@ func CommandDescriptors() []BotCommand {
 }
 
 // truncateStr shortens s to maxLen, appending "…" if trimmed.
+// The cut is rune-safe: a byte-level cut on multibyte text (CJK, é, emoji)
+// produces invalid UTF-8 that Telegram coerces to U+FFFD.
 func truncateStr(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "…"
+	cut := maxLen
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	if cut == 0 {
+		cut = maxLen // degenerate: first rune alone exceeds maxLen
+	}
+	return s[:cut] + "…"
 }
