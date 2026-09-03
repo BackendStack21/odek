@@ -48,6 +48,7 @@ Default exposure (no `tools` config, no SearXNG):
 | `session_search`, `transcribe`, `vision` | sessions & media |
 | `plan`* | planning (*only when planning is enabled) |
 | `skill_load`, `skill_list`, `artifact_read`, `list_subagent_profiles` | skills, artifacts, sub-agent profiles |
+| `config_view`, `list_tools` | sanitized config + tool-registry introspection |
 
 ### Sandbox
 

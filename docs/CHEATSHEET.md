@@ -423,4 +423,6 @@ odek mcp                                    # stdio transport
 | `send_message` | Send text/photo/document to Telegram |
 | `skill_load`, `skill_list` | Read the loaded skill / list available skills |
 | `list_subagent_profiles` | Discover operator-defined sub-agent capability profiles (+ built-in default) |
+| `config_view` | Read the sanitized resolved config (security posture, sub-agent budgets, limits; secrets excluded) |
+| `list_tools` | List the live tool registry, filter state, and MCP server posture (credential argv redacted) |
 | `artifact_read` | Read a sub-agent result artifact by id |

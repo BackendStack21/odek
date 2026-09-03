@@ -23,6 +23,10 @@ environment supports:
   is initialized)
 - Sub-agent profiles: `list_subagent_profiles` (operator-defined capability
   profiles + the built-in default)
+- Introspection: `config_view` (sanitized resolved config — security
+  posture, sub-agent budgets, limits; secrets structurally excluded),
+  `list_tools` (live registry + enabled/disabled filter state + MCP server
+  posture with credential argv redacted)
 - Artifacts: `artifact_read` (parent-side reader for sub-agent result artifacts)
 - MCP tools: prefixed as `<server>__<tool_name>` (only when `mcp_servers` are
   configured)
@@ -216,6 +220,7 @@ Use these exact names in config, env vars, and CLI flags:
 | Session search | `session_search` |
 | Skills | `skill_load`, `skill_list` |
 | Sub-agent support | `list_subagent_profiles`, `artifact_read` |
+| Introspection | `config_view`, `list_tools` |
 | Telegram-only | `send_message`, `clarify` (auto-injected by `odek telegram`; ignored by other modes) |
 | MCP | `<server>__<tool_name>` |
 

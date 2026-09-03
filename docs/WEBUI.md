@@ -501,8 +501,11 @@ handler's defers tear down the agent and sandbox cleanly.
 Sanitized resolved-config view: model, sandbox knobs, stream/compaction/
 caching flags, iteration/parallelism limits, memory/skills/tool-filter
 summaries, maintenance retention, dangerous default action, guard scan
-toggles. Secrets (`api_key`, `base_url`, env values, search backends) are
-never included.
+toggles, sub-agent budgets (`subagent`), background-command settings
+(`background`), and execution budgets with effective token prices
+(`limits`). Secrets (`api_key`, `base_url`, env values, search backends)
+are never included. The agent-facing `config_view` tool renders this same
+view (section-filterable); parity is pinned by tests.
 
 ### `GET /api/mcp`
 

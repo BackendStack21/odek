@@ -2775,33 +2775,16 @@ func handleModelList(configuredModel string) http.HandlerFunc {
 // (Limits.ResolvePrices). Clients rendering session costs use
 // effective_prices directly; limits.model_prices lets them price other
 // models. When no prices are configured, effective_prices is 0/0 — clients
-// should treat that as "costs unavailable".
+// should treat that as "costs unavailable". The payload is built by
+// buildLimitsView (introspect.go); the config_view tool renders the same
+// map, pinned equal by TestRESTLimitsMatchesSharedBuilder.
 func handleLimits(configuredModel string, limits budget.Limits) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		type effectivePrices struct {
-			InputCostPerMillionUSD  float64 `json:"input_cost_per_million_usd"`
-			OutputCostPerMillionUSD float64 `json:"output_cost_per_million_usd"`
-		}
-		type limitsResponse struct {
-			Model           string          `json:"model"`
-			Limits          budget.Limits   `json:"limits"`
-			EffectivePrices effectivePrices `json:"effective_prices"`
-		}
-		inPrice, outPrice := limits.ResolvePrices(configuredModel)
-		resp := limitsResponse{
-			Model:  configuredModel,
-			Limits: limits,
-			EffectivePrices: effectivePrices{
-				InputCostPerMillionUSD:  inPrice,
-				OutputCostPerMillionUSD: outPrice,
-			},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		writeAPIJSON(w, http.StatusOK, buildLimitsView(configuredModel, limits))
 	}
 }
 

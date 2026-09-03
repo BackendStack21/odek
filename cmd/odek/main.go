@@ -2276,6 +2276,11 @@ type toolConfig struct {
 	// The store it carries is shared with the loop engine via odek.New's
 	// discovery of *loop.PlanTool in the returned tools slice.
 	Planning *config.PlanningConfig
+	// Introspection carries the pre-built sanitized config view plus the
+	// tool-filter/MCP state for the config_view and list_tools tools.
+	// Built once by toolConfigFromResolved — the tool structs never hold
+	// the raw ResolvedConfig, so the sanitized boundary is structural.
+	Introspection IntrospectionState
 }
 
 // toolConfigFromResolved builds the toolConfig for builtinTools from a
@@ -2293,6 +2298,8 @@ func toolConfigFromResolved(resolved config.ResolvedConfig) toolConfig {
 		Planning:      &resolved.Planning,
 		Subagent:      resolved.Subagent,
 		Profiles:      resolved.Profiles,
+
+		Introspection: buildIntrospectionState(resolved),
 	}
 }
 
@@ -2329,6 +2336,13 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 		dangerousConfig: dc,
 		approver:        approver,
 	}
+	// listTools is held by reference so the live registry can be captured
+	// into it right before return (after all conditional registrations).
+	listTools := &listToolsTool{
+		toolsEnabled:  tcfg.Introspection.ToolsEnabled,
+		toolsDisabled: tcfg.Introspection.ToolsDisabled,
+		mcpServers:    tcfg.Introspection.MCPServers,
+	}
 	tools := []odek.Tool{
 		shell,
 		&delegateTasksTool{
@@ -2348,6 +2362,13 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 			profiles:       tcfg.Profiles,
 			defaultProfile: tcfg.Subagent.DefaultProfile,
 		},
+		// Introspection: sanitized resolved config + live registry state.
+		// Registered unconditionally (like list_subagent_profiles) so every
+		// surface — including sub-agents, which run builtinTools again with
+		// their own resolved config — can see the posture it operates under.
+		// Read-only over pre-built views; no approver, no DangerousConfig.
+		&configViewTool{view: tcfg.Introspection.ConfigView},
+		listTools,
 		&readFileTool{dangerousConfig: dc},
 		&writeFileTool{dangerousConfig: dc, restrictToCWD: true},
 		&searchFilesTool{dangerousConfig: dc},
@@ -2419,6 +2440,15 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 	if len(bg) > 0 {
 		tools = appendBackgroundTools(tools, bg[0])
 	}
+
+	// Capture the live registry into list_tools AFTER all conditional
+	// registrations, so the tool reports exactly what this run constructed
+	// — including config_view and list_tools themselves.
+	names := make([]string, 0, len(tools))
+	for _, t := range tools {
+		names = append(names, t.Name())
+	}
+	listTools.registered = names
 
 	return tools
 }
