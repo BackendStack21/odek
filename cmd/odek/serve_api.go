@@ -111,12 +111,17 @@ func handleSessionListPaged(store *session.Store) http.HandlerFunc {
 			offset = 0
 		}
 
-		// Fetch enough to cover the requested window before slicing. With a
-		// search query the window cannot be known up front: matches may sit
-		// arbitrarily deep in recency order, so scan the whole store and
-		// filter before paginating (List is an index read — cheap).
+		// Paged requests (q/limit/offset) always scan the full store: a
+		// search query's matches may sit arbitrarily deep in recency
+		// order, and pinned sessions must float on the FULL list before
+		// the window is cut. Floating inside a pre-windowed slice
+		// (List(limit+offset)) structurally hides a pin whose recency rank
+		// is beyond the window from every page — it floats to the window
+		// front and the offset slice cuts it off again — and shifts
+		// boundary entries between pages (duplicates across pages).
+		// List is an index read — cheap.
 		var sessions []session.Session
-		if q != "" {
+		if paged {
 			all, err := store.List(0)
 			if err == nil {
 				sessions = all
@@ -163,7 +168,11 @@ func handleSessionListPaged(store *session.Store) http.HandlerFunc {
 		if offset > len(sessions) {
 			sessions = []session.Session{}
 		} else {
-			sessions = sessions[offset:]
+			end := offset + limit
+			if end > len(sessions) {
+				end = len(sessions)
+			}
+			sessions = sessions[offset:end]
 		}
 		if sessions == nil {
 			sessions = []session.Session{}
