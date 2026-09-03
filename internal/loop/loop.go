@@ -1266,7 +1266,14 @@ const timeBudgetFinalization = "time_budget"
 // engine's untrusted-content wrapper when one is configured. On summarizer
 // failure the previous digest (if any) is left untouched.
 func (e *Engine) refreshDigest(ctx context.Context, messages []llm.Message, dropped []llm.Message) []llm.Message {
-	summary := e.summarizeDropped(ctx, dropped)
+	// The digest refresh is an LLM side call: when every configured budget
+	// is already exhausted it must be skipped — same policy as the
+	// post-loop progress summary (budgetAllowsSideCall). An over-budget
+	// run must not keep spending on side calls.
+	var summary string
+	if e.budgetAllowsSideCall() {
+		summary = e.summarizeDropped(ctx, dropped)
+	}
 	if summary == "" {
 		return messages
 	}
@@ -1354,6 +1361,7 @@ func (e *Engine) summarizeDropped(ctx context.Context, dropped []llm.Message) st
 	if err != nil || res == nil {
 		return ""
 	}
+	e.recordSideCallUsage(res)
 	return strings.TrimSpace(res.Content)
 }
 
@@ -1532,6 +1540,7 @@ func (e *Engine) summarizeProgress(ctx context.Context, messages []llm.Message) 
 	if len(res.ToolCalls) > 0 {
 		return ""
 	}
+	e.recordSideCallUsage(res)
 	return strings.TrimSpace(res.Content)
 }
 
@@ -1575,6 +1584,22 @@ func (e *Engine) budgetExceeded(ctx context.Context, messages []llm.Message, ber
 	// Persist the latest safe state so an interrupted run resumes from here.
 	e.emitMessagesPersist(messages)
 	return "", messages, berr
+}
+
+// recordSideCallUsage folds a side call's provider-reported usage into the
+// per-run totals. Totals feed budget enforcement (max_input_tokens /
+// max_output_tokens / cost caps) and usage reporting; a side call invisible
+// to them silently exceeds the caps and under-reports consumption.
+func (e *Engine) recordSideCallUsage(res *llm.CallResult) {
+	if res == nil {
+		return
+	}
+	e.TotalInputTokens += res.InputTokens
+	e.TotalOutputTokens += res.OutputTokens
+	e.TotalCacheCreationTokens += res.CacheCreationTokens
+	e.TotalCacheReadTokens += res.CacheReadTokens
+	e.TotalCachedTokens += res.CachedTokens
+	e.TotalCacheReported = e.TotalCacheReported || res.CacheReported
 }
 
 // budgetAllowsSideCall reports whether one extra bounded LLM side call
