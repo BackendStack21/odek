@@ -229,6 +229,11 @@ func (c *Client) postChatStream(ctx context.Context, reqBytes []byte, cb func(De
 		resp, err := c.streamHTTP.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("llm: %w", err)
+			// Clear the stale provider status: a 429-then-outage sequence
+			// must not exhaust into RateLimitError ("provider throttled") —
+			// same fix as the buffered retry loop.
+			lastStatus = 0
+			lastBody = ""
 			if isRetryableNetworkError(err) {
 				continue
 			}
