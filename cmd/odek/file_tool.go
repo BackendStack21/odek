@@ -218,6 +218,7 @@ func (t *readFileTool) Name() string { return "read_file" }
 
 func (t *readFileTool) Description() string {
 	return `Read a text file with line numbers and pagination.
+Replaces shell cat / sed -n 'X,Yp' / head — zero forks, line-numbered, size-capped output.
 Returns file content prefixed with line numbers (LINE_NUM|CONTENT).
 Use offset and limit to read specific sections of large files.
 Cannot read binary files — use base64 or checksum for binary content.`
@@ -567,7 +568,7 @@ func (t *searchFilesTool) Schema() any {
 			},
 			"limit": map[string]any{
 				"type":        "integer",
-				"description": "Maximum results to return (default: 50).",
+				"description": "Maximum results (default: 50, max: 500). The walk stops silently at the cap — raise to 200+ when completeness matters.",
 			},
 		},
 		"required": []string{"pattern"},
@@ -1554,7 +1555,7 @@ Examples:
   glob(pattern="**/*.py")    — all Python files recursively
   glob(pattern="test_*")     — files starting with test_
 
-Returns an array of {path, size, is_dir} for each match.`
+Returns an array of {path, size, is_dir} for each match, wrapped as {"matches":[…]}; an empty result is {"matches":null} — that means zero matches, not an error.`
 }
 
 type globArgs struct {
@@ -1588,7 +1589,7 @@ func (t *globTool) Schema() any {
 			},
 			"limit": map[string]any{
 				"type":        "integer",
-				"description": "Maximum results to return (default: 50).",
+				"description": "Maximum results (default: 50, max: 1000). Silently truncated, newest first — raise before concluding a file doesn't exist.",
 			},
 		},
 		"required": []string{"pattern"},
@@ -1680,6 +1681,7 @@ func (t *fileInfoTool) Name() string { return "file_info" }
 
 func (t *fileInfoTool) Description() string {
 	return `Get file or directory metadata without reading content.
+Replaces shell stat / du / ls -l metadata checks — exact bytes + mode, zero forks.
 Returns size, modification time, file mode, and type flags.
 Uses Lstat — does NOT follow symlinks.
 Zero-fork — pure Go file stat with no subprocess.`

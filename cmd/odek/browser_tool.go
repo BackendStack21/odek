@@ -279,7 +279,7 @@ func (t *browserTool) doSnaPshot() (string, error) {
 	defer t.state.mu.Unlock()
 
 	if t.state.current == nil {
-		return jsonError("no page loaded — call browser_navigate(url) first")
+		return jsonError("no page loaded — call browser with action \"navigate\" and url first")
 	}
 
 	return jsonResult(browserResult{
@@ -300,7 +300,7 @@ func (t *browserTool) doClick(ref string) (string, error) {
 	t.state.mu.Unlock()
 
 	if current == nil {
-		return jsonError("no page loaded — call browser_navigate(url) first")
+		return jsonError("no page loaded — call browser with action \"navigate\" and url first")
 	}
 
 	// Find the element by ref
@@ -313,7 +313,7 @@ func (t *browserTool) doClick(ref string) (string, error) {
 	}
 
 	if target == nil {
-		return jsonError(fmt.Sprintf("element %q not found on current page. Use browser_snapshot() to see available refs.", ref))
+		return jsonError(fmt.Sprintf("element %q not found on current page. Use the snapshot action to list available refs.", ref))
 	}
 
 	if target.Type == "link" {

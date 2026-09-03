@@ -163,6 +163,14 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 
 	for idx, p := range args.Patches {
 		entry := batchPatchEntry{Path: p.Path}
+		// Early-stop contract (AGENTS.md, tool description): the first
+		// failing edit stops the batch — later edits are skipped, not
+		// attempted, so the model never re-applies against a stale plan.
+		if idx > 0 && results[idx-1].Error != "" {
+			entry.Error = "skipped: an earlier patch failed (early-stop)"
+			results[idx] = entry
+			continue
+		}
 		if p.OldString == "" {
 			entry.Error = "old_string is required"
 			results[idx] = entry
@@ -948,7 +956,7 @@ type diffTool struct {
 
 func (t *diffTool) Name() string { return "diff" }
 func (t *diffTool) Description() string {
-	return `Compare two files and return structured hunks. Each hunk has a type (equal/added/removed) and line-by-line content. Use path_a+path_b for file-vs-file, or path+content for file-vs-string. Zero-fork LCS-based diff — no subprocess spawned.`
+	return `Compare two files and return structured hunks. Replaces shell diff / cmp — and uniquely compares a file against inline content (path + content) without temp files or process substitution. Each hunk has a type (equal/added/removed) and line-by-line content. Zero-fork LCS-based diff — no subprocess spawned.`
 }
 
 type diffArgs struct {
@@ -1154,7 +1162,7 @@ type countLinesTool struct {
 
 func (t *countLinesTool) Name() string { return "count_lines" }
 func (t *countLinesTool) Description() string {
-	return `Count lines, bytes, and characters in one or more files. Streaming scanner — zero-alloc on content, zero subprocess forks. Per-file and aggregate totals.`
+	return `Count lines, bytes, and characters in one or more files. Replaces shell wc -l / wc -c — exact per-file and aggregate totals, zero subprocess forks. Streaming scanner, zero-alloc on content.`
 }
 
 type countFileArg struct {
@@ -1327,7 +1335,7 @@ type multiGrepTool struct {
 
 func (t *multiGrepTool) Name() string { return "multi_grep" }
 func (t *multiGrepTool) Description() string {
-	return `Search for multiple regex patterns in parallel across files. Each pattern runs its own directory walk with bounded concurrency. Returns structured {pattern, path, line, content} results. Replaces N serial search_files calls.`
+	return `Search for multiple regex patterns in parallel across files. Each pattern runs its own directory walk with bounded concurrency. Returns structured {pattern, path, line, content} results. Replaces shell grep -rn / rg as well as N serial search_files calls — structured, capped output, zero subprocess forks.`
 }
 
 type grepMatch struct {
@@ -1368,7 +1376,7 @@ func (t *multiGrepTool) Schema() any {
 			},
 			"path":      map[string]any{"type": "string", "description": "Root directory (default: '.')."},
 			"file_glob": map[string]any{"type": "string", "description": "Filter files by glob (e.g. '*.go')."},
-			"limit":     map[string]any{"type": "integer", "description": "Max matches per pattern (default: 50)."},
+			"limit":     map[string]any{"type": "integer", "description": "Max matches per pattern (default: 50). The walk stops silently at the cap — raise to 200+ when completeness matters."},
 		},
 		"required": []string{"patterns"},
 	}
@@ -1540,7 +1548,7 @@ type jsonQueryTool struct {
 
 func (t *jsonQueryTool) Name() string { return "json_query" }
 func (t *jsonQueryTool) Description() string {
-	return `Parse a JSON file and extract a value using a dot-path query. Supports array indexing with [N]. Empty query returns the entire parsed JSON. Zero-fork — pure Go JSON traversal.`
+	return `Parse a JSON file and extract a value using a dot-path query. Supports array indexing with [N]. Empty query returns the entire parsed JSON. Zero-fork — pure Go JSON traversal. Works inside the sandbox where shell jq may be absent.`
 }
 
 type jsonQueryArgs struct {
@@ -1712,7 +1720,7 @@ type treeTool struct {
 
 func (t *treeTool) Name() string { return "tree" }
 func (t *treeTool) Description() string {
-	return `List the directory tree with file counts, sizes, and nesting. Returns a structured tree: each entry shows path, is_dir, file_count, total_size, children, depth. Zero-fork — pure Go directory walk.`
+	return `List the directory tree with file counts, sizes, and nesting. Returns a structured tree: each entry shows path, is_dir, file_count, total_size, children, depth. Zero-fork — pure Go directory walk. Entries deeper than max_depth (default 3, max 10) are silently cut — pass 10 before concluding a file is absent.`
 }
 
 type treeArgs struct {
@@ -1901,7 +1909,7 @@ type checksumTool struct {
 
 func (t *checksumTool) Name() string { return "checksum" }
 func (t *checksumTool) Description() string {
-	return `Compute cryptographic hashes of files using SHA-256 (default), SHA-1, or MD5. Uses Go crypto stdlib — zero subprocess fork, pure Go implementation.`
+	return `Compute cryptographic hashes of files using SHA-256 (default), SHA-1, or MD5. Uses Go crypto stdlib — zero subprocess fork, pure Go implementation; works inside the sandbox where shell hash tools may be absent.`
 }
 
 type checksumFileArg struct {
@@ -2033,7 +2041,7 @@ type sortTool struct {
 
 func (t *sortTool) Name() string { return "sort" }
 func (t *sortTool) Description() string {
-	return `Sort lines in one or more files. Supports ascending (default), descending, unique (dedup), numeric, case-insensitive, and reverse. For multiple files, results are merged. Zero-fork — pure Go sort with no subprocess.`
+	return `Sort lines in one or more files. Supports ascending (default), descending, unique (dedup), numeric, case-insensitive, and reverse. For multiple files, results are merged. Returns the sorted text in the result — source files are never modified; persist with write_file. Zero-fork — pure Go sort with no subprocess.`
 }
 
 type sortArgs struct {
@@ -2235,7 +2243,7 @@ type headTailTool struct {
 
 func (t *headTailTool) Name() string { return "head_tail" }
 func (t *headTailTool) Description() string {
-	return `Read the first or last N lines of one or more files. Reports the file's exact total line count (the head path scans the whole file, bounded by a 1 MiB line buffer). Supports multiple files in parallel. Zero-fork — pure Go scanner.`
+	return `Read the first or last N lines of one or more files. Reports the file's exact total line count (the head path scans the whole file, bounded by a 1 MiB line buffer). Supports multiple files in parallel. Zero-fork — pure Go scanner. Default 10 lines, max 100 — this is a peek, not the file; for whole content use read_file, and compare the returned count to total_lines before trusting it.`
 }
 
 type headTailFileArg struct {
@@ -2429,7 +2437,7 @@ type base64Tool struct {
 
 func (t *base64Tool) Name() string { return "base64" }
 func (t *base64Tool) Description() string {
-	return `Encode or decode base64. Supports file input (path) or inline string (content). Encode: file or string → base64. Decode: base64 string → decoded string. Zero-fork — pure Go encoding. Use path for file, content for inline string, decode=true to decode.`
+	return `Encode or decode base64. Supports file input (path) or inline string (content). Encode: file or string → base64. Decode: base64 string → decoded string. Zero-fork — pure Go encoding; works inside the sandbox where shell xxd/openssl may be absent. Use path for file, content for inline string, decode=true to decode.`
 }
 
 type base64Args struct {
@@ -2523,7 +2531,7 @@ type trTool struct {
 
 func (t *trTool) Name() string { return "tr" }
 func (t *trTool) Description() string {
-	return `Transform text: case conversion, character replacement, string substitution, character deletion. Operates on a file or inline content. Zero-fork — pure Go strings transformations.`
+	return `Transform text: case conversion, character replacement, string substitution, character deletion. READ-ONLY: operates on a file or inline content and returns the transformed text in the result — the source file is NEVER modified; persist changes with write_file or patch. Zero-fork — pure Go string transformations.`
 }
 
 type trTransform struct {
@@ -2676,7 +2684,7 @@ type wordCountTool struct {
 
 func (t *wordCountTool) Name() string { return "word_count" }
 func (t *wordCountTool) Description() string {
-	return `Count words, lines, and characters in one or more files. Streaming scanner — no full-content load. Returns per-file and aggregate totals. Zero-fork — pure Go scanner.`
+	return `Count words, lines, and characters in one or more files. Replaces shell wc — exact per-file and aggregate totals, zero subprocess forks. Streaming scanner, no full-content load.`
 }
 
 type wordCountFileArg struct {

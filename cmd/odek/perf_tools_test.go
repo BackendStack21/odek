@@ -122,7 +122,11 @@ func TestBatchPatch_MultipleFiles(t *testing.T) {
 	}
 }
 
-func TestBatchPatch_ContinueOnError(t *testing.T) {
+// TestBatchPatch_EarlyStop pins the documented early-stop contract
+// (tool Description(), promised since pre-v1.41.1): the first failing edit
+// stops the batch; later edits are reported skipped and never touch disk,
+// while edits applied before the failure are kept.
+func TestBatchPatch_EarlyStop(t *testing.T) {
 	dir := t.TempDir()
 	path1 := filepath.Join(dir, "a.txt")
 	os.WriteFile(path1, []byte("hello"), 0644)
@@ -152,13 +156,14 @@ func TestBatchPatch_ContinueOnError(t *testing.T) {
 	if r.Results[1].Error == "" {
 		t.Errorf("second patch should have error (file not found)")
 	}
-	if !r.Results[2].Success {
-		t.Errorf("third patch should succeed (independent of second patch failure), got: %s", r.Results[2].Error)
+	if r.Results[2].Success || !strings.Contains(r.Results[2].Error, "skipped") {
+		t.Errorf("third patch should be skipped (early-stop), got: %+v", r.Results[2])
 	}
-	// Verify file content: first patch changed hello→hi, third changed hi→bye
+	// Edits applied BEFORE the failure are kept: hello→hi stuck, and the
+	// skipped third patch never ran (file stays "hi", not "bye").
 	data, _ := os.ReadFile(path1)
-	if string(data) != "bye" {
-		t.Errorf("file content should be 'bye', got: %s", string(data))
+	if string(data) != "hi" {
+		t.Errorf("file content should be 'hi' (first edit kept, third skipped), got: %s", string(data))
 	}
 }
 
