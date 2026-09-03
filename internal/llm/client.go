@@ -569,6 +569,12 @@ func (c *Client) postChatWithRetry(ctx context.Context, reqBytes []byte) ([]byte
 		resp, err := c.http.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("llm: %w", err)
+			// A transport failure is not a provider status: clear the stale
+			// one so a 429-then-outage sequence does not exhaust into
+			// RateLimitError ("provider throttled") — the outage must be
+			// reported as the network error it is.
+			lastStatus = 0
+			lastBody = ""
 			if isRetryableNetworkError(err) {
 				continue
 			}
@@ -729,8 +735,10 @@ func isBillingError(status int, body string) bool {
 // isRetryableHTTPStatus returns true for HTTP status codes that indicate
 // a transient error safe to retry after a backoff: 408 (request timeout),
 // 429 (rate limited), 500 (internal server error), 502/503/504 (gateway
-// errors), and 529 (Anthropic "overloaded" — their most common incident
-// response during capacity events).
+// errors), 529 (Anthropic "overloaded" — their most common incident
+// response during capacity events), and 520-524 (Cloudflare-origin
+// incidents — CF-fronted providers like Z.ai/OpenRouter/Groq emit these
+// during origin hiccups; same transient class as 529).
 func isRetryableHTTPStatus(code int) bool {
 	return code == http.StatusRequestTimeout ||
 		code == http.StatusTooManyRequests ||
@@ -738,7 +746,8 @@ func isRetryableHTTPStatus(code int) bool {
 		code == http.StatusBadGateway ||
 		code == http.StatusServiceUnavailable ||
 		code == http.StatusGatewayTimeout ||
-		code == 529
+		code == 529 ||
+		(code >= 520 && code <= 524)
 }
 
 // validateCompletionBody checks that a 200 response body looks like a chat

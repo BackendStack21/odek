@@ -43,6 +43,10 @@ func parseSkillFile(path string) *Skill {
 
 // parseSkillContent parses SKILL.md content from a string.
 func parseSkillContent(content, sourcePath string) *Skill {
+	// A UTF-8 BOM is not White_Space, so TrimSpace keeps it and the
+	// frontmatter prefix check below would fail — the skill silently
+	// never loaded. Editors on some platforms prepend it; strip it.
+	content = strings.TrimPrefix(content, "\uFEFF")
 	content = strings.TrimSpace(content)
 	if !strings.HasPrefix(content, "---") {
 		return nil
