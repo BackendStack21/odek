@@ -100,6 +100,26 @@ func truncate(s string, n int) string {
 }
 
 func extractPath(args string) string {
+	// Decode the JSON properly: paths routinely contain escaped quotes
+	// ("we\"ird.go"), and a raw first-quote scan truncates at the escape —
+	// the same failure extractShell was fixed for. Falls back to a
+	// best-effort scan only for non-JSON input.
+	var parsed struct {
+		Path string `json:"path"`
+		File string `json:"file"`
+	}
+	if err := json.Unmarshal([]byte(args), &parsed); err == nil {
+		path := parsed.Path
+		if path == "" {
+			path = parsed.File
+		}
+		if path != "" {
+			if lastSlash := strings.LastIndex(path, "/"); lastSlash >= 0 {
+				path = path[lastSlash+1:]
+			}
+			return path
+		}
+	}
 	for _, key := range []string{`"path"`, `"file"`} {
 		if idx := strings.Index(args, key); idx >= 0 {
 			rest := args[idx+len(key):]

@@ -574,16 +574,13 @@ func captureStdout(fn func()) string {
 
 // Test parseRunFlags with a non-numeric --max-iter value.
 func TestParseRunFlags_MaxIterNonNumeric(t *testing.T) {
-	f, err := parseRunFlags([]string{"--max-iter", "abc", "task"})
-	if err != nil {
-		t.Fatalf("parseRunFlags error: %v", err)
-	}
-	// fmt.Sscanf with non-numeric leaves the zero value (not set)
-	if f.MaxIter != 0 {
-		t.Errorf("MaxIter = %d, want 0 (non-numeric should leave zero)", f.MaxIter)
-	}
-	if f.Task != "task" {
-		t.Errorf("Task = %q, want %q", f.Task, "task")
+	// Contract changed (m2 wave-3): a non-numeric --max-iter is an error,
+	// matching every sibling numeric flag (--max-runtime, --max-tool-calls,
+	// …). The old behavior — fmt.Sscanf silently ignoring "abc" and the
+	// run proceeding with the default cap — hid typos from the operator.
+	_, err := parseRunFlags([]string{"--max-iter", "abc", "task"})
+	if err == nil {
+		t.Fatal("--max-iter abc must be rejected, not silently ignored")
 	}
 }
 

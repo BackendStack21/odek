@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -469,8 +470,10 @@ func parseRunFlags(args []string) (runFlags, error) {
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("--max-iter requires a value")
 			}
-			var n int
-			fmt.Sscanf(args[i+1], "%d", &n)
+			n, err := strconv.Atoi(args[i+1])
+			if err != nil {
+				return f, fmt.Errorf("--max-iter requires an integer, got %q", args[i+1])
+			}
 			if n > 0 {
 				f.MaxIter = n
 			}
@@ -491,14 +494,20 @@ func parseRunFlags(args []string) (runFlags, error) {
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("--thinking-budget requires a value")
 			}
-			fmt.Sscanf(args[i+1], "%d", &f.ThinkingBudget)
+			n, err := strconv.Atoi(args[i+1])
+			if err != nil {
+				return f, fmt.Errorf("--thinking-budget requires an integer, got %q", args[i+1])
+			}
+			f.ThinkingBudget = n
 			i += 2
 		case "--temperature":
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("--temperature requires a value")
 			}
-			var t float64
-			fmt.Sscanf(args[i+1], "%f", &t)
+			t, err := strconv.ParseFloat(args[i+1], 64)
+			if err != nil {
+				return f, fmt.Errorf("--temperature requires a number, got %q", args[i+1])
+			}
 			f.Temp = t
 			i += 2
 		case "--sandbox":

@@ -875,10 +875,18 @@ func parseVarName(s string) (string, int) {
 		// ${VAR}
 		for k := 1; k < len(s); k++ {
 			if s[k] == '}' {
+				if k == 1 {
+					// ${} — empty name is not a variable reference; emit
+					// verbatim like an unterminated brace.
+					return "", 0
+				}
 				return s[1:k], k + 1
 			}
 		}
-		return "", len(s) // unterminated — consume everything
+		// Unterminated ${ — not a variable reference: consume only the '$'
+		// (width 0) so the '{' and the rest emit verbatim; consuming the
+		// whole tail silently corrupted config values ("a${b" → "a$").
+		return "", 0
 	}
 	// $VAR or $VAR_NAME123
 	if !isVarStart(s[0]) {
