@@ -52,7 +52,7 @@ Unknown flags are a **hard error** — they are never folded into the task text 
 | `--deliver` | bool | false | Deliver the agent's final response to the configured Telegram `default_chat_id`. Requires `telegram.bot_token` + `telegram.default_chat_id` in config. Handy for host-cron one-shots; for recurring tasks prefer the native scheduler (`odek schedule`, see [Schedules](SCHEDULES.md)). |
 | `--interaction-mode <mode>` | string | `engaging` | Tool-call rendering: `engaging` (emoji narration) or `verbose` (raw tool output) |
 | `--no-color` | bool | false | Disable colored terminal output |
-| `--prompt-caching` | bool | false | Enable Anthropic/OpenAI/DeepSeek prompt caching markers |
+| `--prompt-caching` | bool | false | Enable Anthropic-format `cache_control` markers (system + first user). OpenAI-format providers are unaffected — they rely on prefix stability. See [CACHING.md](CACHING.md) |
 | `--stream` | bool | config | Stream reasoning and answer text to the terminal as it arrives. Run/repl have no `--no-stream` inverse — disable via `stream: false` in config or `ODEK_STREAM=false` (`odek serve` does accept `--no-stream`) |
 | `--compaction` | bool | `true` | Enable LLM-based rolling compaction of trimmed context. On by default |
 | `--no-compaction` | bool | `false` | Disable rolling compaction (overrides config/default) |

@@ -112,10 +112,6 @@ export function getLimits() {
   return apiFetch('/api/limits');
 }
 
-export function getProfiles() {
-  return apiFetch('/api/profiles');
-}
-
 // ── Memory ──
 export function getMemory() {
   return apiFetch('/api/memory');

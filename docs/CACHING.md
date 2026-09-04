@@ -10,11 +10,12 @@ odek supports prompt caching for supported LLM providers. When enabled, the syst
 | **DeepSeek** | Automatic prefix caching (no client markers needed) | ~50-80% reduction | ~50% |
 | **OpenAI** | Automatic prefix caching (GPT-4o, GPT-4o-mini) | ~50% reduction | — |
 
-When caching is enabled, odek:
+When caching is enabled **and** the bound client is Anthropic-format (`Client.IsAnthropic()` — never URL sniffing), odek:
 
-1. Moves the system prompt from the `messages[]` array into a dedicated `system` field with `cache_control: {"type": "ephemeral"}` (Anthropic format — applied only when the bound provider's format is Anthropic)
-2. Marks the first user message with `cache_control: {"type": "ephemeral"}`
-3. Sends the `anthropic-version: 2023-06-01` header (required by Anthropic for caching; ignored by others)
+1. Marks the first system block (`SystemBlock.Cache`)
+2. Marks the first user message (`Message.Cache`)
+
+System messages are always sent as separate `SystemBlock`s (one per system row) via `internal/llmclient.toSDKMessages`. OpenAI-format providers never receive `cache_control` markers; they still benefit from prefix-stable system blocks. go-llm-sdk owns Anthropic request headers.
 
 ## Enabling
 
@@ -98,11 +99,11 @@ Hover over any stat for a tooltip explanation.
 
 ## How It Works
 
-1. **Before each LLM call**, if `PromptCaching` is enabled, the loop calls `llm.ApplyCacheMarkers(messages)` which:
-   - Extracts the first system message and converts it to an Anthropic `SystemBlock` with `cache_control: ephemeral`
-   - Marks the first user message with `cache_control: ephemeral`
+1. **Before each LLM call**, `internal/llmclient` maps the session DTO through `toSDKMessages`. Cache flags are set only when `PromptCache && IsAnthropic()`:
+   - First system block: `SystemBlock.Cache = true`
+   - First user message: `Message.Cache = true`
 
-2. **The request is sent** with the system in the `system` field (not `messages[]`) and the cache markers in place — but only when the client targets an Anthropic endpoint (`Client.IsAnthropic()`). Other providers never receive the markers; some (OpenAI) reject them with a 400 if they were sent.
+2. **The request is sent** with system text in `ChatRequest.System` (one block per system message) on every call. Markers ride on those blocks only for Anthropic-format clients. Other providers never receive markers; some (OpenAI) would 400 if they were sent.
 
 3. **The response is parsed** for cache metrics from both Anthropic (`cache_creation_input_tokens`, `cache_read_input_tokens`) and OpenAI (`prompt_tokens_details.cached_tokens`).
 
@@ -110,7 +111,6 @@ Hover over any stat for a tooltip explanation.
 
 ## Implementation Details
 
-- The `anthropic-version: 2023-06-01` header is sent on every request (it is not gated on caching). It is required by Anthropic and ignored by OpenAI and DeepSeek.
-- Cache markers are applied **per iteration** — the system prompt and first user message are marked on every LLM call. This is safe because the markers reference the same content each time, so the cache is populated on the first iteration and read on subsequent ones.
-- The `max_tokens` field is included in all requests when set via `odek.Config.MaxTokens` or model profile defaults. Some providers (Anthropic) tie caching behavior to this field being present.
-- The system prompt is moved out of `messages[]` into a separate `system` field only when caching is enabled **and** the endpoint is Anthropic. When either is false, it stays in `messages[]` for maximum provider compatibility.
+- Cache markers are applied **per iteration** — the first system block and first user message are marked on every Anthropic-format LLM call. This is safe because the markers reference the same content each time, so the cache is populated on the first iteration and read on subsequent ones.
+- The `max_tokens` field is included when set via `odek.Config.MaxTokens`. Some providers (Anthropic) tie caching behavior to this field being present.
+- System text always travels as `ChatRequest.System` (SDK `SystemBlock`s), not only when caching is on. That is what keeps the prefix stable for automatic caches on OpenAI-format providers.

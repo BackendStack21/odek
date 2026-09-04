@@ -219,7 +219,7 @@ func redactCredentialArgs(args []string) []string {
 // buildConfigView output — TestConfigViewToolSections fails loudly on drift.
 var configViewSections = map[string][]string{
 	"all":         nil, // whole view
-	"core":        {"model", "stream", "compaction", "prompt_caching", "thinking", "max_iterations", "max_tool_parallel", "max_concurrency", "interaction_mode", "no_agents_md"},
+	"core":        {"provider", "model", "stream", "compaction", "prompt_caching", "thinking", "max_iterations", "max_tool_parallel", "max_concurrency", "interaction_mode", "no_agents_md"},
 	"security":    {"sandbox", "dangerous_default_action", "guard_scan", "tools"},
 	"subagent":    {"max_concurrency", "subagent"},
 	"limits":      {"limits"},
@@ -243,8 +243,8 @@ func (t *configViewTool) Name() string { return "config_view" }
 func (t *configViewTool) Description() string {
 	return "Read the sanitized, resolved configuration this odek run operates under — the " +
 		"operator's effective settings after the five-layer merge (secrets.env → global → " +
-		"project → env → flags). Sections: all (default), core (model/stream/iteration " +
-		"limits), security (sandbox, dangerous_default_action, guard_scan, tool filter), " +
+		"project → env → flags). Sections: all (default), core (provider/model/stream/" +
+		"iteration limits), security (sandbox, dangerous_default_action, guard_scan, tool filter), " +
 		"subagent (delegate_tasks budgets, default profile), limits (execution budgets + " +
 		"effective token prices), memory, skills, background, maintenance. Secrets (API " +
 		"keys, base URLs, env values) are structurally excluded. Read-only; renders the " +

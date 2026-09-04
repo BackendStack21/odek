@@ -1,5 +1,5 @@
-github.com/BackendStack21/go-llm-sdk v0.2.1-0.20260904171754-101ee1ae49ff h1:c+BkdQ7iBhRGQtXiTX+6+ZgvAUP4ArhM6sDu/bF+MBM=
-github.com/BackendStack21/go-llm-sdk v0.2.1-0.20260904171754-101ee1ae49ff/go.mod h1:Nhro6plQaVIIFajPhzp2dzz4rv4DFU/yXNEudChllyE=
+github.com/BackendStack21/go-llm-sdk v0.2.1 h1:fnWEYGhh+vi+nN9jjXA/87L1rxBgg9ei4gf6xOyEv3M=
+github.com/BackendStack21/go-llm-sdk v0.2.1/go.mod h1:Nhro6plQaVIIFajPhzp2dzz4rv4DFU/yXNEudChllyE=
 github.com/BackendStack21/go-mcp v1.2.1 h1:KayKcmOQF5BhhseXEZv7sLqjS3bRRWezOUFosp+P7M4=
 github.com/BackendStack21/go-mcp v1.2.1/go.mod h1:RKFw6nrl6ySQqqrR8KtG7HYZ/heyyjT8SjiEtlbTMY8=
 github.com/BackendStack21/go-vector v1.3.0 h1:VT1cwPAUzkg3Rt0fXA+jTzW472jgObqs85/TcPs4N7Q=

@@ -2,7 +2,7 @@
 // thinking toggle, cancel, global keyboard shortcuts. Feature modules
 // self-register their listeners.
 import { S, getSessionToken } from './state.js';
-import { getModels, getProfiles, cancelSession } from './api.js';
+import { getModels, cancelSession } from './api.js';
 import { promptEl, skeletonEl, thinkBtn } from './dom.js';
 import { escapeHtml, escapeAttr, showToast, toggleShortcuts, hideCancel, closeDialog } from './utils.js';
 import { addSystemMessage } from './render.js';
@@ -75,10 +75,9 @@ async function fetchModels() {
   const picker = document.getElementById('model-picker');
   try {
     picker.disabled = true;
-    const [models, profilesData] = await Promise.all([getModels(), getProfiles().catch(() => null)]);
-    S.availableModels = models || [];
-    S.availableProfiles = (profilesData && profilesData.profiles) || [];
-    if (S.availableModels.length === 0 && S.availableProfiles.length === 0) {
+    const models = await getModels();
+    S.availableModels = Array.isArray(models) ? models : [];
+    if (S.availableModels.length === 0) {
       picker.innerHTML = '<option value="">No models</option>';
       return;
     }
@@ -88,17 +87,6 @@ async function fetchModels() {
       const label = m.current ? '★ ' + (m.description || m.id) : (m.description || m.id);
       html += `<option value="${escapeAttr(m.id)}"${sel}>${escapeHtml(label)}</option>`;
     });
-    // Built-in profiles go under an optgroup in the "Other…" section so the
-    // configured model stays the headline entry.
-    if (S.availableProfiles.length > 0) {
-      html += '<optgroup label="known models">';
-      S.availableProfiles.forEach(p => {
-        const sel = S.currentModel === p.id ? ' selected' : '';
-        const ctx = p.max_context ? ' — ' + Math.round(p.max_context / 1024) + 'K ctx' : '';
-        html += `<option value="${escapeAttr(p.id)}"${sel}>${escapeHtml(p.label + ctx)}</option>`;
-      });
-      html += '</optgroup>';
-    }
     // "Other..." sentinel opens the free-text input.
     html += '<option value="__custom__">Other (type model ID)…</option>';
     picker.innerHTML = html;

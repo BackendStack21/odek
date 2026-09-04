@@ -52,6 +52,7 @@ type Session struct {
 	CreatedAt time.Time `json:"created_at"`           // first message time
 	UpdatedAt time.Time `json:"updated_at"`           // last append time
 	Model     string    `json:"model"`                // model name used
+	Provider  string    `json:"provider,omitempty"`   // LLM provider id used (v2; empty on pre-v2 files)
 	Turns     int       `json:"turns"`                // number of user turns
 	Task      string    `json:"task"`                 // first user message (label)
 	Sandbox   bool      `json:"sandbox"`              // was sandboxed — auto-apply on resume

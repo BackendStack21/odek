@@ -4,7 +4,7 @@ package main
 //
 //   REST: /api/health, /api/sessions?q&limit&offset, /api/sessions/{id}/export,
 //         /api/memory (+facts CRUD, episode promote), /api/skills, /api/tools,
-//         /api/profiles
+//         /api/models
 //   WS:   ping/pong heartbeat, cancel message, session_switch message,
 //         server_info hello, token_delta live streaming (incl. the
 //         bulk-re-send suppression and the buffered fallback path).
@@ -488,33 +488,6 @@ func TestHandleTools_FilterStates(t *testing.T) {
 	}
 	if states["write_file"] {
 		t.Error("write_file should be disabled (not in whitelist)")
-	}
-}
-
-// ── GET /api/profiles ────────────────────────────────────────────────
-
-func TestHandleProfiles_NonEmpty(t *testing.T) {
-	w := httptest.NewRecorder()
-	handleProfiles("deepseek-v4-flash")(w, httptest.NewRequest(http.MethodGet, "/api/profiles", nil))
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d", w.Code)
-	}
-	var body struct {
-		Profiles []struct {
-			ID    string `json:"id"`
-			Label string `json:"label"`
-		} `json:"profiles"`
-	}
-	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(body.Profiles) == 0 {
-		t.Fatal("profiles list empty — configured model not exposed")
-	}
-	for _, p := range body.Profiles {
-		if p.ID == "" || p.Label == "" {
-			t.Errorf("profile entry missing id/label: %+v", p)
-		}
 	}
 }
 

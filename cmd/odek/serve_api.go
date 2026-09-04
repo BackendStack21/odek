@@ -12,7 +12,7 @@ package main
 //   POST /api/memory/episodes/promote       promote an episode  {session_id}
 //   GET  /api/skills                        skill listing (source, provenance)
 //   GET  /api/tools                         tool registry + filter state
-//   GET  /api/profiles                      built-in model profiles
+//   GET  /api/models                        provider ListModels + configured model
 //
 // Every handler is mounted behind the apiAuth wrapper in serveCmd (per-instance
 // CSRF token + loopback Host + local-origin on mutations), so anything here is
@@ -652,36 +652,6 @@ func handleTools(resolved config.ResolvedConfig) http.HandlerFunc {
 			"tools":       out,
 			"mcp_servers": len(resolved.MCPServers),
 		})
-	}
-}
-
-// ── GET /api/profiles ───────────────────────────────────────────────────
-
-// handleProfiles exposes the configured model (and any extra ListModels
-// entries cached at serve startup) so the WebUI picker is not a blind
-// free-text field. /api/models is left unchanged — its single-configured-
-// model response shape is pinned by tests and clients.
-func handleProfiles(model string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		type profileEntry struct {
-			ID         string `json:"id"`
-			Label      string `json:"label"`
-			MaxContext int    `json:"max_context"`
-		}
-		label := model
-		if label == "" {
-			label = "configured"
-		}
-		out := []profileEntry{{
-			ID:         model,
-			Label:      label,
-			MaxContext: llmclient.LastResortContext(model),
-		}}
-		writeAPIJSON(w, http.StatusOK, map[string]any{"profiles": out})
 	}
 }
 

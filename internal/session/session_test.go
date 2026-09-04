@@ -97,6 +97,25 @@ func TestStore_CreateAndLoad(t *testing.T) {
 	}
 }
 
+func TestStore_ProviderRoundTrip(t *testing.T) {
+	store := newTestStore(t)
+	sess, err := store.Create([]Message{{Role: "user", Content: "hi"}}, "claude-sonnet-4-5", "hi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.Provider = "anthropic"
+	if err := store.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Load(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Provider != "anthropic" || loaded.Model != "claude-sonnet-4-5" {
+		t.Fatalf("got provider=%q model=%q", loaded.Provider, loaded.Model)
+	}
+}
+
 // TestStore_SaveRedactsTask verifies that secrets in the session Task field
 // are redacted before the session is persisted to disk. This is a regression
 // test for finding #21.

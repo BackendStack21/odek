@@ -24,10 +24,10 @@ import (
 	"strings"
 	"sync"
 
+	sdk "github.com/BackendStack21/go-llm-sdk"
 	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/embedding"
-	sdk "github.com/BackendStack21/go-llm-sdk"
 
 	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/llmclient"
@@ -581,8 +581,8 @@ func (c ResolvedConfig) ProviderOverrides() map[string]llmclient.ProviderOverrid
 // exfiltrate host secrets (via ${VAR} interpolation in sandbox_env), pull an
 // attacker-controlled image, or widen the container's network access.
 type ProjectSandboxOverride struct {
-	HasEnv              bool
-	EnvKeys             []string
+	HasEnv  bool
+	EnvKeys []string
 	// Env carries the RAW configured values. The approval key hashes them:
 	// values are expanded against HOST environment variables at apply time,
 	// so key-names-only hashing let a repo swap a benign value for
@@ -632,7 +632,7 @@ type ResolvedConfig struct {
 	// Background is the resolved background-commands configuration
 	// (bg_* tool family; docs/CONFIG.md). Defaults on.
 	Background BackgroundConfig
-	System   string
+	System     string
 
 	// SandboxImage is the Docker image for the sandbox container.
 	// Default: "alpine:latest" (applied at call site, not here —
@@ -872,6 +872,14 @@ func loadFile(path string) FileConfig {
 	cfg.SandboxMemory = expandEnv(cfg.SandboxMemory)
 	cfg.SandboxCPUs = expandEnv(cfg.SandboxCPUs)
 	cfg.SandboxUser = expandEnv(cfg.SandboxUser)
+	if len(cfg.Providers) > 0 {
+		for id, ov := range cfg.Providers {
+			ov.APIKey = expandEnv(ov.APIKey)
+			ov.BaseURL = expandEnv(ov.BaseURL)
+			ov.Format = expandEnv(ov.Format)
+			cfg.Providers[id] = ov
+		}
+	}
 	return cfg
 }
 
@@ -2280,9 +2288,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		BaseURL:   cfg.BaseURL,
 		APIKey:    cfg.APIKey,
 		Providers: cfg.Providers,
-		Thinking: cfg.Thinking,
-		MaxIter:  cfg.MaxIter,
-		System:   cfg.System,
+		Thinking:  cfg.Thinking,
+		MaxIter:   cfg.MaxIter,
+		System:    cfg.System,
 
 		SandboxImage:           cfg.SandboxImage, // empty = resolve at call site (Dockerfile.odek or alpine:latest)
 		SandboxNetwork:         ifZero(cfg.SandboxNetwork, DefaultSandboxNetwork),
@@ -2558,15 +2566,46 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		resolved.Provider = "deepseek"
 	}
 
-	// API key fallback: selected-provider env, then DeepSeek-compat for the default.
+	// Fill providers.<id>.api_key from the provider env (before Unsetenv)
+	// so NewSDK can authenticate without FromEnv after we scrub the
+	// process environment.
+	providers := resolved.Providers
+	allocated := false
+	if providers == nil {
+		providers = map[string]FileProviderOverride{}
+		allocated = true
+	}
+	for _, id := range []string{resolved.Provider, "deepseek", "openai", "anthropic", "gemini", "zai", "kimi"} {
+		if id == "" {
+			continue
+		}
+		ov := providers[id]
+		if ov.APIKey == "" {
+			ov.APIKey = firstNonEmptyEnv(providerAPIKeyEnv(id)...)
+		}
+		if ov.APIKey != "" || ov.BaseURL != "" || ov.Format != "" {
+			providers[id] = ov
+		}
+	}
+	if allocated && len(providers) > 0 {
+		resolved.Providers = providers
+	}
+
+	// Selected-provider key: explicit api_key → providers.<id> → ODEK_API_KEY
+	// → provider env → DeepSeek-only OPENAI_API_KEY leftover.
+	if resolved.APIKey == "" {
+		if ov := resolved.Providers[resolved.Provider]; ov.APIKey != "" {
+			resolved.APIKey = ov.APIKey
+		}
+	}
 	if resolved.APIKey == "" {
 		resolved.APIKey = os.Getenv("ODEK_API_KEY")
 	}
+	if resolved.APIKey == "" {
+		resolved.APIKey = firstNonEmptyEnv(providerAPIKeyEnv(resolved.Provider)...)
+	}
 	if resolved.APIKey == "" && resolved.Provider == "deepseek" {
-		resolved.APIKey = os.Getenv("DEEPSEEK_API_KEY")
-		if resolved.APIKey == "" {
-			resolved.APIKey = os.Getenv("OPENAI_API_KEY")
-		}
+		resolved.APIKey = os.Getenv("OPENAI_API_KEY")
 	}
 
 	// Clear provider key env vars so they are not visible in /proc/.../environ.
@@ -2579,6 +2618,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 			redact.RegisterSecret(v)
 		}
 		os.Unsetenv(k)
+	}
+	for _, ov := range resolved.Providers {
+		redact.RegisterSecret(ov.APIKey)
 	}
 
 	// Seed the redaction layer with odek's own secrets so they (and their
@@ -2623,6 +2665,38 @@ func ifZero(s, def string) string {
 		return def
 	}
 	return s
+}
+
+// providerAPIKeyEnv lists env vars that authenticate a built-in provider.
+func providerAPIKeyEnv(id string) []string {
+	switch id {
+	case "deepseek":
+		return []string{"DEEPSEEK_API_KEY"}
+	case "openai":
+		return []string{"OPENAI_API_KEY"}
+	case "anthropic":
+		return []string{"ANTHROPIC_API_KEY"}
+	case "gemini":
+		return []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"}
+	case "zai":
+		return []string{"ZAI_API_KEY"}
+	case "kimi":
+		return []string{"KIMI_API_KEY", "MOONSHOT_API_KEY"}
+	case "legacy":
+		// v1 custom OpenAI-compatible endpoints used the DeepSeek leftovers.
+		return []string{"DEEPSEEK_API_KEY", "OPENAI_API_KEY"}
+	default:
+		return nil
+	}
+}
+
+func firstNonEmptyEnv(keys ...string) string {
+	for _, k := range keys {
+		if v := os.Getenv(k); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // maxSkillsInheritedTimeout bounds (seconds) the per-turn query embed when

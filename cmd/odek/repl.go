@@ -91,6 +91,7 @@ func replCmd(args []string) error {
 			return fmt.Errorf("create session: %w", err)
 		}
 		sess.Sandbox = resolved.Sandbox
+		sess.Provider = resolved.Provider
 		store.Save(sess)
 	}
 

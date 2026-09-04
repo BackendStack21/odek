@@ -71,7 +71,7 @@ DeepSeek-only leftover: when `provider` is `deepseek`, `ODEK_API_KEY` → `DEEPS
 
 `ProfileLabel` now returns the model id.
 
-`GET /api/profiles` returns the **configured** model (plus last-resort context), not the old static catalog.
+`GET /api/models` is the picker catalog: provider `ListModels` plus the configured model (`current: true`). `GET /api/profiles` is removed.
 
 ## DeepSeek default URL
 
@@ -82,6 +82,8 @@ The SDK default is `https://api.deepseek.com` (no `/v1`). Operators who pinned `
 On-disk messages stay the **v1 nested** `tool_calls[].function` shape so existing `~/.odek/sessions` load without a rewrite. `thinking_signature` is additive (`omitempty`). v1 odek can still read a session that never stored a signature.
 
 Unknown roles are kept on disk and dropped **with their assistant+tool group** at the call boundary (not rewritten on Load).
+
+New sessions persist `provider`. `odek continue` reloads config with that id plus the stored model. Pre-v2 files with an empty `provider` keep the operator's current default provider (possible model/provider mismatch until the session is recreated).
 
 ## Library embedders
 
@@ -106,4 +108,4 @@ agent, err := odek.New(odek.Config{
 
 ## Cache / cost budgets
 
-Cache usage fields come from the SDK (`Usage.Cache*`). Cost caps that depend on `CheckUsageWithCache` stay honest only when the pinned SDK parses cache tokens (gap-fix SDK, not v0.2.0).
+Cache usage fields come from the SDK (`Usage.Cache*`). Pin **go-llm-sdk v0.2.1+** so cache-token parsing and cost caps stay honest (v0.2.0 lacked those fields).

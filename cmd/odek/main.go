@@ -466,7 +466,7 @@ func parseRunFlags(args []string) (runFlags, error) {
 				return f, fmt.Errorf("--provider requires a value")
 			}
 			f.Provider = args[i+1]
-			i++
+			i += 2
 		case "--base-url":
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("--base-url requires a value")
@@ -1184,7 +1184,7 @@ Run flags:
   --temperature <n>    LLM temperature 0.0–2.0 (default: 0 = deterministic)
   --no-color           Disable colored terminal output
   --no-agents          Skip loading AGENTS.md from working directory
-  --prompt-caching     Enable prompt caching markers (Anthropic/DeepSeek/OpenAI)
+  --prompt-caching     Enable Anthropic-format cache markers (system + first user)
   --compaction         Enable LLM-based rolling compaction of trimmed context (default: on)
   --no-compaction      Disable rolling compaction (overrides config/default)
   --planning           Enable the plan tool and protected plan message (default: on)
@@ -1250,9 +1250,10 @@ Config sources (lowest to highest priority):
   CLI flags            Explicit invocation (highest priority)
 
 Environment variables:
+  ODEK_PROVIDER        LLM provider id (default: deepseek)
   ODEK_MODEL           LLM model name
-  ODEK_BASE_URL        API endpoint URL
-  ODEK_API_KEY         API key (overrides DEEPSEEK_API_KEY/OPENAI_API_KEY)
+  ODEK_BASE_URL        Override the selected provider's API endpoint
+  ODEK_API_KEY         Selected-provider API key (then the provider env key)
   ODEK_THINKING        Reasoning depth setting
   ODEK_MAX_ITER        Max think->act cycles
   ODEK_SANDBOX         true/false — run in Docker sandbox
@@ -1934,6 +1935,7 @@ func run(args []string) error {
 				}
 			}
 			sess.Sandbox = resolved.Sandbox
+			sess.Provider = resolved.Provider
 			store.Save(sess)
 			sessionID = sess.ID
 			runSess = sess
@@ -2939,6 +2941,16 @@ func buildContinueTools(resolved config.ResolvedConfig, sm *skills.SkillManager,
 		toolConfigFromResolved(resolved), store)
 }
 
+// continueCLIFlags restores the session's provider+model so resume does
+// not pair a stored model id with the operator's current default provider.
+// Empty Provider (pre-v2 session files) leaves the config default in place.
+func continueCLIFlags(sess *session.Session) config.CLIFlags {
+	if sess == nil {
+		return config.CLIFlags{}
+	}
+	return config.CLIFlags{Model: sess.Model, Provider: sess.Provider}
+}
+
 func continueCmd(args []string) error {
 	sessionID, refSpecs, task, err := parseContinueArgs(args)
 	if err != nil {
@@ -2971,8 +2983,9 @@ func continueCmd(args []string) error {
 	fmt.Fprintf(os.Stderr, "odek: continuing session %s (turn %d → %d)\n",
 		sess.ID, sess.Turns, sess.Turns+1)
 
-	// Resolve config (no CLI flags for continue — uses session's model)
-	resolved := config.LoadConfig(config.CLIFlags{Model: sess.Model})
+	// Resolve config from the session's provider+model so resume does not
+	// pair a stored model id with the operator's current default provider.
+	resolved := config.LoadConfig(continueCLIFlags(sess))
 
 	// Initialize semantic search index (non-fatal on failure). Sessions use the
 	// shared embedding backend (or a sessions.embedding override).

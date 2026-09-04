@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -571,7 +572,7 @@ func newServeMux(d serveMuxDeps) *http.ServeMux {
 	mux.Handle("/api/resources", apiAuth(handleResourceSearch(resourceReg)))
 	mux.Handle("/api/sessions", apiAuth(handleSessionListPaged(store)))
 	mux.Handle("/api/sessions/", apiAuth(handleSessionByID(store, resolved.TrustedProxies, wsToken)))
-	mux.Handle("/api/models", apiAuth(handleModelList(resolved.Model)))
+	mux.Handle("/api/models", apiAuth(handleModelList(resolved.Model, newServeModelLister(resolved))))
 	mux.Handle("/api/limits", apiAuth(handleLimits(resolved.Model, resolved.Limits)))
 	mux.Handle("/api/cancel", apiAuth(handleCancel(store)))
 	mux.Handle("/api/health", apiAuth(handleHealth(state)))
@@ -590,7 +591,6 @@ func newServeMux(d serveMuxDeps) *http.ServeMux {
 	mux.Handle("/api/skills", apiAuth(handleSkills(resolved.Skills)))
 	mux.Handle("/api/skills/promote", apiAuth(handleSkillPromote()))
 	mux.Handle("/api/tools", apiAuth(handleTools(resolved)))
-	mux.Handle("/api/profiles", apiAuth(handleProfiles(resolved.Model)))
 	mux.Handle("/api/config", apiAuth(handleConfigView(resolved)))
 	mux.Handle("/api/mcp", apiAuth(handleMCPServers(resolved)))
 
@@ -1873,6 +1873,7 @@ func handlePrompt(
 		if err == nil {
 			sess = newSess
 			sess.Sandbox = resolved.Sandbox
+			sess.Provider = resolved.Provider
 			store.Save(sess)
 		}
 	}
@@ -2847,38 +2848,135 @@ func isTrustedProxy(host string, trusted []string) bool {
 	return false
 }
 
-func handleModelList(configuredModel string) http.HandlerFunc {
+// listedModel is one provider-reported id for the /api/models picker.
+type listedModel struct {
+	ID            string
+	DisplayName   string
+	ContextWindow int
+}
+
+// modelLister fetches the provider catalog. Nil means configured-only
+// (tests, or ListModels unavailable).
+type modelLister func(ctx context.Context) ([]listedModel, error)
+
+const maxListedModels = 256
+
+// newServeModelLister lists models from the bound provider once per process
+// (5s bound). Failure yields an empty catalog; the handler still emits the
+// configured model.
+func newServeModelLister(resolved config.ResolvedConfig) modelLister {
+	var (
+		once   sync.Once
+		cached []listedModel
+	)
+	return func(context.Context) ([]listedModel, error) {
+		once.Do(func() {
+			s, err := llmclient.NewSDK(llmclient.Options{
+				Provider:  resolved.Provider,
+				Model:     resolved.Model,
+				APIKey:    resolved.APIKey,
+				BaseURL:   resolved.BaseURL,
+				Providers: resolved.ProviderOverrides(),
+			})
+			if err != nil {
+				return
+			}
+			id := resolved.Provider
+			if id == "" {
+				id = "deepseek"
+			}
+			p, err := s.Provider(id)
+			if err != nil {
+				return
+			}
+			cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			models, err := p.ListModels(cctx)
+			if err != nil {
+				return
+			}
+			for _, m := range models {
+				if m.ID == "" {
+					continue
+				}
+				cached = append(cached, listedModel{
+					ID:            m.ID,
+					DisplayName:   m.DisplayName,
+					ContextWindow: m.ContextWindow,
+				})
+			}
+		})
+		return cached, nil
+	}
+}
+
+type modelEntry struct {
+	ID          string `json:"id"`
+	MaxContext  int    `json:"max_context"`
+	Description string `json:"description,omitempty"`
+	Current     bool   `json:"current,omitempty"`
+}
+
+func modelListEntry(id, display string, maxCtx int, current bool) modelEntry {
+	if display == "" {
+		display = id
+	}
+	e := modelEntry{ID: id, MaxContext: maxCtx, Description: display, Current: current}
+	if maxCtx > 0 {
+		e.Description = fmt.Sprintf("%s — %dK ctx", display, maxCtx/1024)
+	}
+	return e
+}
+
+// handleModelList is GET /api/models. The payload is the provider's
+// ListModels catalog (when the lister is set) plus the configured model,
+// marked current. /api/profiles is retired — this is the picker source.
+func handleModelList(configuredModel string, list modelLister) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		type modelEntry struct {
-			ID          string `json:"id"`
-			MaxContext  int    `json:"max_context"`
-			Description string `json:"description,omitempty"`
-			Current     bool   `json:"current,omitempty"`
+		byID := make(map[string]modelEntry)
+		if list != nil {
+			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+			defer cancel()
+			if found, err := list(ctx); err == nil {
+				for _, m := range found {
+					if m.ID == "" {
+						continue
+					}
+					maxCtx := m.ContextWindow
+					if maxCtx <= 0 {
+						maxCtx = llmclient.LastResortContext(m.ID)
+					}
+					byID[m.ID] = modelListEntry(m.ID, m.DisplayName, maxCtx, m.ID == configuredModel)
+				}
+			}
 		}
-		var models []modelEntry
-
-		// Return only the server's configured model. The UI provides an
-		// "Other…" free-text input for switching to any arbitrary model ID.
 		if configuredModel != "" {
-			maxCtx := llmclient.LastResortContext(configuredModel)
-			entry := modelEntry{
-				ID:          configuredModel,
-				MaxContext:  maxCtx,
-				Description: configuredModel,
-				Current:     true,
+			if existing, ok := byID[configuredModel]; ok {
+				existing.Current = true
+				byID[configuredModel] = existing
+			} else {
+				byID[configuredModel] = modelListEntry(configuredModel, configuredModel, llmclient.LastResortContext(configuredModel), true)
 			}
-			if maxCtx > 0 {
-				entry.Description = fmt.Sprintf("%s — %dK ctx", configuredModel, maxCtx/1024)
-			}
-			models = append(models, entry)
 		}
-
+		models := make([]modelEntry, 0, len(byID))
+		for _, e := range byID {
+			models = append(models, e)
+		}
+		sort.Slice(models, func(i, j int) bool {
+			if models[i].Current != models[j].Current {
+				return models[i].Current
+			}
+			return models[i].ID < models[j].ID
+		})
+		if len(models) > maxListedModels {
+			models = models[:maxListedModels]
+		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(models)
+		_ = json.NewEncoder(w).Encode(models)
 	}
 }
 

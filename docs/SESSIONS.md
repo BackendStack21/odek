@@ -185,6 +185,12 @@ odek continue "Run the test suite"
 
 This prevents accidentally escaping the sandbox on resume. The sandbox image/network/memory still come from the **current** config — only the toggle bit is persisted. To force-disable sandbox on resume, pass `odek continue` in a project with `"sandbox": false` in `./odek.json` and the session flag will be overridden by the explicit config.
 
+## Provider persistence
+
+New sessions also store `provider` (the go-llm-sdk id used for the run). `odek continue` restores **provider + model** so a `--provider anthropic` session does not resume against the operator's current default provider.
+
+Pre-v2 session files have an empty `provider`. Resume then uses the current default provider with the stored model id — rewrite those sessions or pass `--provider` on a new run if the pair would mismatch. REPL and Web UI stamp `provider` on newly created sessions the same way.
+
 ### REPL sandbox flags
 
 `odek repl` accepts the same sandbox CLI flags as `odek run`. You can start a sandboxed REPL session directly from the command line:

@@ -215,11 +215,14 @@ For large prompts that exceed CLI argument length limits, use the `--task` flag 
   "max_risk": "local_write",
   "profile": "",
   "parent_trust": "",
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "base_url": "",
   "budget": {"max_runtime_seconds": 0, "max_tool_calls": 0, "max_input_tokens": 0, "max_output_tokens": 0, "max_cost_usd": 0}
 }
 ```
 
-All keys except `goal` are optional. `trust_level` / `max_risk` / `profile` mirror the `delegate_tasks` task fields; `parent_trust` records the spawning agent's trust; `budget` carries the parent's remaining budget when `subagent.budget_inherit` is `"share"` — the child enforces `min(operator limits, inherited values)` (zero values are ignored).
+All keys except `goal` are optional. `trust_level` / `max_risk` / `profile` mirror the `delegate_tasks` task fields; `parent_trust` records the spawning agent's trust; `provider` / `model` / `base_url` inherit from the parent run (`delegate_tasks` stamps them — they are not model-controlled tool args) and bind the FD-handed API key to that provider; `budget` carries the parent's remaining budget when `subagent.budget_inherit` is `"share"` — the child enforces `min(operator limits, inherited values)` (zero values are ignored).
 
 The `delegate_tasks` tool always uses this file-based approach internally.
 

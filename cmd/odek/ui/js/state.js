@@ -37,8 +37,7 @@ export const S = {
   historyIdx: -1,
   attachedFiles: [], // {name, size, content}
   currentModel: localStorage.getItem('odek_model') || '',
-  availableModels: [],
-  availableProfiles: [], // built-in model profiles (/api/profiles)
+  availableModels: [], // GET /api/models (ListModels + configured)
   // Per-query thinking toggle. Persisted so it survives page refresh.
   thinkingEnabled: localStorage.getItem('odek_thinking') === '1',
 

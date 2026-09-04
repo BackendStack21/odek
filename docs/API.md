@@ -27,8 +27,9 @@ import (
 
 func main() {
     agent, err := odek.New(odek.Config{
-        Model:  "deepseek-v4-flash",
-        APIKey: os.Getenv("ODEK_API_KEY"),
+        Provider: "deepseek",
+        Model:    "deepseek-v4-flash",
+        APIKey:   os.Getenv("DEEPSEEK_API_KEY"),
     })
     if err != nil {
         fmt.Fprintf(os.Stderr, "odek: %v\n", err)
@@ -80,7 +81,7 @@ go run main.go
 The **Agent** manages one ReAct loop: **think** (LLM decides) → **act** (tool executes) → **observe** (result fed back) → repeat until done.
 
 You provide:
-- **`Config`** — model, API key, tools, system message
+- **`Config`** — provider, model, API key, tools, system message
 - **`Tool` implementations** — one interface, one method
 - **`context.Context`** — cancellation, deadlines
 
@@ -96,23 +97,29 @@ All configuration for an agent instance. Zero values fall back to sensible defau
 
 ```go
 type Config struct {
+    // go-llm-sdk registry id (deepseek, openai, anthropic, gemini, zai, kimi).
+    // Empty defaults to "deepseek".
+    Provider string
+
     // Model identifier (e.g. "deepseek-v4-flash", "gpt-4o").
-    // Default: "deepseek-v4-flash"
+    // Default: "deepseek-v4-flash". No auto-thinking / auto-timeout from the name.
     Model string
 
-    // OpenAI-compatible API endpoint.
-    // Default: "https://api.deepseek.com/v1"
+    // Selected-provider URL override. Empty keeps the SDK default
+    // (DeepSeek: "https://api.deepseek.com", no /v1).
     BaseURL string
 
-    // API key for the LLM provider.
-    // Falls back to DEEPSEEK_API_KEY, then OPENAI_API_KEY.
-    // Prefer ODEK_API_KEY for odek-specific configuration.
+    // API key for the selected provider. Empty falls back to the
+    // provider env key (DEEPSEEK_API_KEY for the default provider).
     APIKey string
+
+    // Per-id api_key / base_url / format overrides.
+    Providers map[string]llmclient.ProviderOverride
 
     // Thinking depth — provider-specific semantics:
     //   DeepSeek: "enabled" | "disabled"
     //   OpenAI o-series: "low" | "medium" | "high"
-    //   Empty string → model profile default
+    //   Empty string → omit (provider default). Not inferred from the model name.
     Thinking string
 
     // Tools registered with the agent. The LLM can invoke these
@@ -159,10 +166,9 @@ type Config struct {
     // Default: memory.DefaultMemoryConfig()
     MemoryConfig memory.MemoryConfig
 
-    // PromptCaching enables prompt caching markers for supported
-    // providers (Anthropic, DeepSeek, OpenAI). When enabled, the
-    // system prompt and first user message are annotated for cache.
-    // Default: false (no cache markers)
+    // PromptCaching enables Anthropic-format cache_control markers on
+    // the system prompt and first user message. OpenAI-format providers
+    // are unaffected (prefix stability only). Default: false.
     PromptCaching bool
 
     // MaxToolParallel controls tool call concurrency per iteration.

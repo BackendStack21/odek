@@ -83,8 +83,8 @@ type Config struct {
 	//   Deepseek: "enabled" or "disabled" → {"type": "enabled"}
 	//   OpenAI o-series: "low", "medium", "high" → {"reasoning_effort": "low"}
 	//
-	// When empty, the model's profile default is used. If the profile also
-	// has no default, the field is not sent (provider default behavior).
+	// When empty, the field is omitted (provider default). v2 does not
+	// infer thinking from the model name — set it explicitly.
 	Thinking string
 
 	// Temperature controls LLM output randomness (0.0–2.0).
@@ -181,18 +181,11 @@ type Config struct {
 	// surfaces are scanned. It mirrors the guard instance passed above.
 	GuardConfig guard.Config
 
-	// PromptCaching enables prompt caching markers for supported providers.
-	// When enabled (default: false), the system prompt and first user message
-	// are annotated with cache_control markers, and Anthropic-style system
-	// blocks are used. Supported by:
-	//   - Anthropic (explicit cache_control markers)
-	//   - DeepSeek (automatic — prefix stability helps)
-	//   - OpenAI (automatic — prefix stability helps)
-	//
-	// When disabled (default), no cache markers are sent and the system
-	// prompt stays in the messages array for maximum provider compatibility.
-	// Enable this when using Anthropic models to get ~90% cost reduction
-	// on cached tokens and ~60-80% TTFT latency reduction.
+	// PromptCaching enables Anthropic-format cache_control markers on the
+	// first system block and first user message. Markers are sent only when
+	// the bound client's format is Anthropic (never URL-sniffed). OpenAI-
+	// format providers are unaffected — they rely on prefix-stable separate
+	// system messages. Default: false.
 	PromptCaching bool
 
 	// Stream enables SSE streaming of LLM responses for the main think
@@ -369,7 +362,6 @@ func LoadProjectFile() string {
 // ── Defaults ──────────────────────────────────────────────────────────
 
 const (
-	defaultBaseURL    = "https://api.deepseek.com/v1"
 	defaultModel      = "deepseek-v4-flash"
 	defaultMaxIter    = 90
 	defaultHTTPTimout = 120 // seconds
