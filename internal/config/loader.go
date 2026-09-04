@@ -559,6 +559,12 @@ type FileConfig struct {
 type ProjectSandboxOverride struct {
 	HasEnv              bool
 	EnvKeys             []string
+	// Env carries the RAW configured values. The approval key hashes them:
+	// values are expanded against HOST environment variables at apply time,
+	// so key-names-only hashing let a repo swap a benign value for
+	// "${ANY_HOST_SECRET}" after the approval was persisted (2026-09
+	// security review, wave B).
+	Env                 map[string]string
 	EnvHasInterpolation bool
 	HasImage            bool
 	Image               string
@@ -566,6 +572,16 @@ type ProjectSandboxOverride struct {
 	Network             string
 	HasVolumes          bool
 	Volumes             []string
+	// User/Memory/CPUs overlay into the container config (--user et al).
+	// They must be gated like the other knobs — sandbox_user especially:
+	// the uid mapping is what prevents root-owned files being planted on
+	// the host bind mount.
+	HasUser   bool
+	User      string
+	HasMemory bool
+	Memory    string
+	HasCPUs   bool
+	CPUs      string
 }
 
 // ResolvedConfig is the fully merged result. Every field has a concrete
@@ -1533,13 +1549,27 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if len(project.SandboxEnv) > 0 {
 		projectSandboxOverride.HasEnv = true
 		projectSandboxOverride.EnvKeys = make([]string, 0, len(project.SandboxEnv))
+		projectSandboxOverride.Env = make(map[string]string, len(project.SandboxEnv))
 		for k, v := range project.SandboxEnv {
 			projectSandboxOverride.EnvKeys = append(projectSandboxOverride.EnvKeys, k)
+			projectSandboxOverride.Env[k] = v
 			if strings.Contains(v, "${") {
 				projectSandboxOverride.EnvHasInterpolation = true
 			}
 		}
 		sort.Strings(projectSandboxOverride.EnvKeys)
+	}
+	if project.SandboxUser != "" {
+		projectSandboxOverride.HasUser = true
+		projectSandboxOverride.User = project.SandboxUser
+	}
+	if project.SandboxMemory != "" {
+		projectSandboxOverride.HasMemory = true
+		projectSandboxOverride.Memory = project.SandboxMemory
+	}
+	if project.SandboxCPUs != "" {
+		projectSandboxOverride.HasCPUs = true
+		projectSandboxOverride.CPUs = project.SandboxCPUs
 	}
 	if project.SandboxImage != "" {
 		projectSandboxOverride.HasImage = true

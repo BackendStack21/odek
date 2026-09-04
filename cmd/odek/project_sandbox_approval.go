@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 	"path/filepath"
@@ -54,7 +55,8 @@ func approveProjectSandbox(resolved config.ResolvedConfig, stdin io.Reader, stdo
 // approveProjectSandboxWithTTY is the testable core of approveProjectSandbox.
 func approveProjectSandboxWithTTY(resolved config.ResolvedConfig, stdin io.Reader, stdout io.Writer, tty bool) error {
 	o := resolved.ProjectSandboxOverride
-	hasOverride := o.HasEnv || o.HasImage || o.HasNetwork || o.HasVolumes
+	hasOverride := o.HasEnv || o.HasImage || o.HasNetwork || o.HasVolumes ||
+		o.HasUser || o.HasMemory || o.HasCPUs
 	dfHash, dfRequired := dockerfileBuildRequirement(resolved)
 	if !hasOverride && !dfRequired {
 		return nil
@@ -120,6 +122,15 @@ func approveProjectSandboxWithTTY(resolved config.ResolvedConfig, stdin io.Reade
 		}
 		if o.HasVolumes {
 			fmt.Fprintf(stdout, "  volumes: %s\n", strings.Join(o.Volumes, ", "))
+		}
+		if o.HasUser {
+			fmt.Fprintf(stdout, "  user:    %s\n", o.User)
+		}
+		if o.HasMemory {
+			fmt.Fprintf(stdout, "  memory:  %s\n", o.Memory)
+		}
+		if o.HasCPUs {
+			fmt.Fprintf(stdout, "  cpus:    %s\n", o.CPUs)
 		}
 		fmt.Fprintln(stdout)
 		fmt.Fprintln(stdout, "Allowing this means code in the sandbox can read workspace files and,")
@@ -246,18 +257,35 @@ func sessionDockerfileApproved(key string) bool {
 	return sessionDockerfileApprovals[key]
 }
 
+// hashField appends one length-prefixed field to an approval-key hash.
+// Bare NUL-concatenation allowed boundary-shifting collisions: a "\x00"
+// inside one field could reshape the hash stream into a different,
+// attacker-chosen field split, letting a stale persisted approval
+// auto-apply to a different config (2026-09 security review, wave B).
+// The byte length prefix makes every field self-delimiting.
+func hashField(h hash.Hash, tag, value string) {
+	fmt.Fprintf(h, "\x00%s:%d:", tag, len(value))
+	_, _ = io.WriteString(h, value)
+}
+
 // projectSandboxApprovalKey returns a stable key for the persisted approval
-// store. A change to the project directory, image, network, env keys, or
-// volumes invalidates the prior approval.
+// store. A change to the project directory, image, network, env keys OR
+// VALUES, volumes, user, memory, or cpus invalidates the prior approval.
 func projectSandboxApprovalKey(projectDir string, o config.ProjectSandboxOverride) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "%s\x00%s\x00%s", projectDir, o.Image, o.Network)
+	hashField(h, "dir", projectDir)
+	hashField(h, "image", o.Image)
+	hashField(h, "network", o.Network)
 	for _, k := range o.EnvKeys {
-		fmt.Fprintf(h, "\x00env:%s", k)
+		hashField(h, "env", k)
+		hashField(h, "envval", o.Env[k])
 	}
 	for _, v := range o.Volumes {
-		fmt.Fprintf(h, "\x00vol:%s", v)
+		hashField(h, "vol", v)
 	}
+	hashField(h, "user", o.User)
+	hashField(h, "memory", o.Memory)
+	hashField(h, "cpus", o.CPUs)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -267,7 +295,9 @@ func projectSandboxApprovalKey(projectDir string, o config.ProjectSandboxOverrid
 // approval and forces re-review.
 func dockerfileApprovalKey(projectDir, contentHash string) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "dockerfile\x00%s\x00%s", projectDir, contentHash)
+	hashField(h, "kind", "dockerfile")
+	hashField(h, "dir", projectDir)
+	hashField(h, "content", contentHash)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
