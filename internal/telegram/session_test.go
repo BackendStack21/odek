@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -133,7 +132,7 @@ func TestGetOrCreate_restoresFromStoreAfterRestart(t *testing.T) {
 	const chatID int64 = 777
 
 	// Save a session with history (simulates an active conversation).
-	err := sm.Save(chatID, []llm.Message{
+	err := sm.Save(chatID, []session.Message{
 		{Role: "user", Content: "old question"},
 		{Role: "assistant", Content: "old answer"},
 	})
@@ -186,7 +185,7 @@ func TestGetOrCreate_cached(t *testing.T) {
 
 	// Mutate the cached session to verify we get the same object back.
 	first.TurnCount = 99
-	first.Messages = append(first.Messages, llm.Message{Role: "user", Content: "hi"})
+	first.Messages = append(first.Messages, session.Message{Role: "user", Content: "hi"})
 
 	second, err := sm.GetOrCreate(chatID)
 	if err != nil {
@@ -214,7 +213,7 @@ func TestSave(t *testing.T) {
 
 	const chatID int64 = 77
 
-	messages := []llm.Message{
+	messages := []session.Message{
 		{Role: "user", Content: "Hello"},
 		{Role: "assistant", Content: "Hi there!"},
 	}
@@ -268,7 +267,7 @@ func TestSave_incrementsTurnCount(t *testing.T) {
 	const chatID int64 = 99
 
 	// First save → TurnCount = 1
-	err := sm.Save(chatID, []llm.Message{{Role: "user", Content: "turn 1"}})
+	err := sm.Save(chatID, []session.Message{{Role: "user", Content: "turn 1"}})
 	if err != nil {
 		t.Fatalf("first Save failed: %v", err)
 	}
@@ -278,7 +277,7 @@ func TestSave_incrementsTurnCount(t *testing.T) {
 	}
 
 	// Second save → re-fetch from cache to verify increment
-	err = sm.Save(chatID, []llm.Message{{Role: "user", Content: "turn 2"}})
+	err = sm.Save(chatID, []session.Message{{Role: "user", Content: "turn 2"}})
 	if err != nil {
 		t.Fatalf("second Save failed: %v", err)
 	}
@@ -288,7 +287,7 @@ func TestSave_incrementsTurnCount(t *testing.T) {
 	}
 
 	// Third save → TurnCount = 3
-	err = sm.Save(chatID, []llm.Message{{Role: "user", Content: "turn 3"}})
+	err = sm.Save(chatID, []session.Message{{Role: "user", Content: "turn 3"}})
 	if err != nil {
 		t.Fatalf("third Save failed: %v", err)
 	}
@@ -343,7 +342,7 @@ func TestLoad_cacheMiss_storeHit(t *testing.T) {
 		UpdatedAt: time.Now().UTC(),
 		Turns:     3,
 		Task:      "tg-200",
-		Messages: []llm.Message{
+		Messages: []session.Message{
 			{Role: "user", Content: "stored message"},
 		},
 	}
@@ -409,7 +408,7 @@ func TestDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrCreate failed: %v", err)
 	}
-	err = sm.Save(chatID, []llm.Message{{Role: "user", Content: "to be deleted"}})
+	err = sm.Save(chatID, []session.Message{{Role: "user", Content: "to be deleted"}})
 	if err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
@@ -567,7 +566,7 @@ func TestConcurrentSave(t *testing.T) {
 		chatID := int64(i + 100)
 		go func(id int64) {
 			defer wg.Done()
-			err := sm.Save(id, []llm.Message{{Role: "user", Content: "hello"}})
+			err := sm.Save(id, []session.Message{{Role: "user", Content: "hello"}})
 			if err != nil {
 				t.Errorf("Save(%d) failed: %v", id, err)
 			}
@@ -620,7 +619,7 @@ func TestConcurrentMixed(t *testing.T) {
 		chatID := int64(i + 101)
 		go func(id int64) {
 			defer wg.Done()
-			sm.Save(id, []llm.Message{{Role: "user", Content: "mixed"}}) //nolint:errcheck
+			sm.Save(id, []session.Message{{Role: "user", Content: "mixed"}}) //nolint:errcheck
 		}(chatID)
 	}
 
@@ -719,7 +718,7 @@ func TestListSessions(t *testing.T) {
 	const chatID int64 = 42
 
 	// Current session for the chat.
-	if err := sm.Save(chatID, []llm.Message{{Role: "user", Content: "current"}}); err != nil {
+	if err := sm.Save(chatID, []session.Message{{Role: "user", Content: "current"}}); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
 	// Plus a couple of archived sessions for the same chat.
@@ -781,7 +780,7 @@ func TestResumeSession_DirectID(t *testing.T) {
 	sm, _ := setupTestSessionManager(t)
 	const chatID int64 = 999
 
-	err := sm.Save(chatID, []llm.Message{
+	err := sm.Save(chatID, []session.Message{
 		{Role: "user", Content: "resume test"},
 		{Role: "assistant", Content: "resume response"},
 	})
@@ -835,7 +834,7 @@ func TestPruneSessions(t *testing.T) {
 	sm, _ := setupTestSessionManager(t)
 	const chatID int64 = 1
 
-	err := sm.Save(chatID, []llm.Message{{Role: "user", Content: "keep"}})
+	err := sm.Save(chatID, []session.Message{{Role: "user", Content: "keep"}})
 	if err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
@@ -926,7 +925,7 @@ func TestSessionManager_SaveNoIndex(t *testing.T) {
 	}
 
 	const chatID int64 = 4242
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "user", Content: "quixotic telegram per-turn persistence marker"},
 	}
 	if err := sm.SaveNoIndex(chatID, msgs); err != nil {

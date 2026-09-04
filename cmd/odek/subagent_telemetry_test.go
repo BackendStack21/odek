@@ -374,8 +374,8 @@ func TestSubagentWire_ProgressOmitsCostWhenPricesAbsent(t *testing.T) {
 func TestSubagentWire_FinishedCarriesFinalCost(t *testing.T) {
 	var buf bytes.Buffer
 	tw := newSubagentTelemetryWriterWithWire(&buf, "task-w4", subagentWireContext{
-		Cost:   subagentCostEstimator{inPerMillion: 1.5, outPerMillion: 7.5},
-		Usage:  func() (int64, int64) { return 3_000_000, 1_000_000 }, // 4.5 + 7.5 = 12
+		Cost:  subagentCostEstimator{inPerMillion: 1.5, outPerMillion: 7.5},
+		Usage: func() (int64, int64) { return 3_000_000, 1_000_000 }, // 4.5 + 7.5 = 12
 	})
 	tw.emitFinished("success", 4, 12.5, 900)
 

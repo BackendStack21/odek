@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/config"
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/memory"
 	"github.com/BackendStack21/odek/internal/resource"
 	"github.com/BackendStack21/odek/internal/session"
@@ -91,7 +90,7 @@ func TestHandleHealth_MethodNotAllowed(t *testing.T) {
 
 func TestHandleSessionListPaged_LegacyArrayShape(t *testing.T) {
 	store := newTestSessionStore(t)
-	if _, err := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "alpha"); err != nil {
+	if _, err := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "alpha"); err != nil {
 		t.Fatal(err)
 	}
 	w := httptest.NewRecorder()
@@ -109,7 +108,7 @@ func TestHandleSessionListPaged_LegacyArrayShape(t *testing.T) {
 func TestHandleSessionListPaged_SearchAndOffset(t *testing.T) {
 	store := newTestSessionStore(t)
 	for _, task := range []string{"fix login bug", "write docs", "FIX deploy script", "refactor api"} {
-		if _, err := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", task); err != nil {
+		if _, err := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", task); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -147,7 +146,7 @@ func TestHandleSessionListPaged_SearchAndOffset(t *testing.T) {
 
 func TestHandleSessionListPaged_LimitCapAndTokenStrip(t *testing.T) {
 	store := newTestSessionStore(t)
-	if _, err := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "one"); err != nil {
+	if _, err := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "one"); err != nil {
 		t.Fatal(err)
 	}
 	w := httptest.NewRecorder()
@@ -173,7 +172,7 @@ func TestHandleSessionListPaged_LimitCapAndTokenStrip(t *testing.T) {
 
 func TestHandleSessionExport_MarkdownStripsUntrustedEnvelopes(t *testing.T) {
 	store := newTestSessionStore(t)
-	sess, err := store.Create([]llm.Message{
+	sess, err := store.Create([]session.Message{
 		{Role: "system", Content: ""},
 		{Role: "user", Content: "check this"},
 		{Role: "assistant", Content: "<untrusted_content_0123abcd source=\"tool:browser\">EXTERNAL DATA</untrusted_content_0123abcd>\n\nHere is the answer."},
@@ -204,7 +203,7 @@ func TestHandleSessionExport_MarkdownStripsUntrustedEnvelopes(t *testing.T) {
 
 func TestHandleSessionExport_JSONRoundTrip(t *testing.T) {
 	store := newTestSessionStore(t)
-	sess, err := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "json-export")
+	sess, err := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "json-export")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +228,7 @@ func TestHandleSessionExport_UnsupportedFormat(t *testing.T) {
 
 func TestHandleSessionByID_ExportRoutingWithInstanceToken(t *testing.T) {
 	store := newTestSessionStore(t)
-	sess, err := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "routed")
+	sess, err := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "routed")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -496,7 +495,7 @@ func TestHandleTools_FilterStates(t *testing.T) {
 
 func TestHandleProfiles_NonEmpty(t *testing.T) {
 	w := httptest.NewRecorder()
-	handleProfiles()(w, httptest.NewRequest(http.MethodGet, "/api/profiles", nil))
+	handleProfiles("deepseek-v4-flash")(w, httptest.NewRequest(http.MethodGet, "/api/profiles", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
@@ -510,7 +509,7 @@ func TestHandleProfiles_NonEmpty(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	if len(body.Profiles) == 0 {
-		t.Fatal("profiles list empty — KnownProfiles not exposed")
+		t.Fatal("profiles list empty — configured model not exposed")
 	}
 	for _, p := range body.Profiles {
 		if p.ID == "" || p.Label == "" {
@@ -636,7 +635,7 @@ func TestServe_E2E_SessionSwitchMessage(t *testing.T) {
 	defer envCleanup()
 
 	store := newTestSessionStore(t)
-	sess, err := store.Create([]llm.Message{{Role: "user", Content: "prior"}}, "m", "switch target")
+	sess, err := store.Create([]session.Message{{Role: "user", Content: "prior"}}, "m", "switch target")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -676,7 +675,7 @@ func TestServe_E2E_WSCancelMessage(t *testing.T) {
 	defer envCleanup()
 
 	store := newTestSessionStore(t)
-	sess, err := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "cancel target")
+	sess, err := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "cancel target")
 	if err != nil {
 		t.Fatal(err)
 	}

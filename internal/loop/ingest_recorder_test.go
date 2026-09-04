@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
@@ -72,7 +72,7 @@ func TestEngine_RecordsSkillIngest(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	registry := tool.NewRegistry(nil)
 	engine := New(client, registry, 10, "", nil, 0)
 	engine.SetSkillLoader(func(userInput string) string {
@@ -83,7 +83,7 @@ func TestEngine_RecordsSkillIngest(t *testing.T) {
 		sources = append(sources, source)
 	})
 
-	_, _, err := engine.RunWithMessages(ctx, []llm.Message{
+	_, _, err := engine.RunWithMessages(ctx, []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "hello"},
 	})
@@ -112,7 +112,7 @@ func TestEngine_RecordsEpisodeIngest(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	registry := tool.NewRegistry(nil)
 	engine := New(client, registry, 10, "", nil, 0)
 	engine.SetEpisodeContextFunc(func(userInput string) string {
@@ -123,7 +123,7 @@ func TestEngine_RecordsEpisodeIngest(t *testing.T) {
 		sources = append(sources, source)
 	})
 
-	_, _, err := engine.RunWithMessages(ctx, []llm.Message{
+	_, _, err := engine.RunWithMessages(ctx, []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "hello"},
 	})
@@ -172,7 +172,7 @@ func TestEngine_RecordsToolIngest(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	rec := &recorderTool{}
 	registry := tool.NewRegistry([]tool.Tool{rec})
 	engine := New(client, registry, 2, "", nil, 0)
@@ -182,7 +182,7 @@ func TestEngine_RecordsToolIngest(t *testing.T) {
 		contents = append(contents, content)
 	})
 
-	_, _, _ = engine.RunWithMessages(ctx, []llm.Message{
+	_, _, _ = engine.RunWithMessages(ctx, []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "call recorder"},
 	})
@@ -207,7 +207,9 @@ type recorderTool struct {
 
 func (r *recorderTool) Name() string        { return "recorder" }
 func (r *recorderTool) Description() string { return "records output" }
-func (r *recorderTool) Schema() any         { return map[string]any{"type": "object", "properties": map[string]any{}} }
+func (r *recorderTool) Schema() any {
+	return map[string]any{"type": "object", "properties": map[string]any{}}
+}
 func (r *recorderTool) Call(args string) (string, error) {
 	if fn := IngestRecorderFrom(r.ctx); fn != nil {
 		fn("recorder", "sensitive output")

@@ -13,15 +13,14 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/BackendStack21/odek/internal/session"
 	"strings"
 	"testing"
-
-	"github.com/BackendStack21/odek/internal/llm"
 )
 
 func TestExtractSummary_HeadlineCap(t *testing.T) {
 	long := strings.Repeat("a", 3000)
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "user", Content: "do the thing"},
 		{Role: "assistant", Content: long},
 	}
@@ -35,7 +34,7 @@ func TestExtractSummary_HeadlineCap(t *testing.T) {
 }
 
 func TestExtractSummary_ShortAnswerUnchanged(t *testing.T) {
-	msgs := []llm.Message{{Role: "assistant", Content: "done: 3 files"}}
+	msgs := []session.Message{{Role: "assistant", Content: "done: 3 files"}}
 	if got := extractSummary(msgs); got != "done: 3 files" {
 		t.Errorf("short answers must pass through unchanged, got %q", got)
 	}

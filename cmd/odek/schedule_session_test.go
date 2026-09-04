@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/config"
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/schedule"
 	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/telegram"
@@ -37,7 +36,7 @@ func newTestDeliverer(t *testing.T) (telegramDeliverer, *telegram.SessionManager
 func TestScheduleDeliver_RecordsIntoExistingSession(t *testing.T) {
 	d, sm, recv := newTestDeliverer(t)
 	chatID := int64(5551)
-	if err := sm.Save(chatID, []llm.Message{
+	if err := sm.Save(chatID, []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "hi"},
 		{Role: "assistant", Content: "hello"},
@@ -90,7 +89,7 @@ func TestScheduleDeliver_RecordsIntoExistingSession(t *testing.T) {
 func TestScheduleDeliver_PreservesAlternationAfterUserEndingSession(t *testing.T) {
 	d, sm, recv := newTestDeliverer(t)
 	chatID := int64(5560)
-	if err := sm.Save(chatID, []llm.Message{
+	if err := sm.Save(chatID, []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "an interrupted turn"}, // session ends on user
 	}); err != nil {
@@ -158,7 +157,7 @@ func TestScheduleDeliver_NoSessionNotCreated(t *testing.T) {
 func TestScheduleDeliver_EmptyResultNotRecorded(t *testing.T) {
 	d, sm, _ := newTestDeliverer(t)
 	chatID := int64(5553)
-	if err := sm.Save(chatID, []llm.Message{{Role: "user", Content: "hi"}}); err != nil {
+	if err := sm.Save(chatID, []session.Message{{Role: "user", Content: "hi"}}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 

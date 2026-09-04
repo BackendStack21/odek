@@ -32,10 +32,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/guard"
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/llmclient"
 	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/memory"
 	"github.com/BackendStack21/odek/internal/session"
@@ -658,11 +657,11 @@ func handleTools(resolved config.ResolvedConfig) http.HandlerFunc {
 
 // ── GET /api/profiles ───────────────────────────────────────────────────
 
-// handleProfiles exposes the built-in model profiles (id prefix, label,
-// context window) so the WebUI's "Other model…" picker can offer known
-// models instead of a blind free-text field. /api/models is left unchanged —
-// its single-configured-model response shape is pinned by tests and clients.
-func handleProfiles() http.HandlerFunc {
+// handleProfiles exposes the configured model (and any extra ListModels
+// entries cached at serve startup) so the WebUI picker is not a blind
+// free-text field. /api/models is left unchanged — its single-configured-
+// model response shape is pinned by tests and clients.
+func handleProfiles(model string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -673,14 +672,15 @@ func handleProfiles() http.HandlerFunc {
 			Label      string `json:"label"`
 			MaxContext int    `json:"max_context"`
 		}
-		out := make([]profileEntry, 0, len(odek.KnownProfiles))
-		for _, p := range odek.KnownProfiles {
-			label := p.Profile.Label
-			if label == "" {
-				label = p.Prefix
-			}
-			out = append(out, profileEntry{ID: p.Prefix, Label: label, MaxContext: p.Profile.MaxContext})
+		label := model
+		if label == "" {
+			label = "configured"
 		}
+		out := []profileEntry{{
+			ID:         model,
+			Label:      label,
+			MaxContext: llmclient.LastResortContext(model),
+		}}
 		writeAPIJSON(w, http.StatusOK, map[string]any{"profiles": out})
 	}
 }
@@ -821,10 +821,16 @@ func handleMemoryConsolidate(memoryDir string, resolved config.ResolvedConfig) h
 			return
 		}
 		timeout := 120
-		if p := odek.LookupProfile(resolved.Model); p != nil && p.Timeout > 0 {
-			timeout = p.Timeout
+		if resolved.LLM.RequestTimeoutSeconds > 0 {
+			timeout = resolved.LLM.RequestTimeoutSeconds
 		}
-		client := llm.New(resolved.BaseURL, resolved.APIKey, resolved.Model, resolved.Thinking, 0, time.Duration(timeout)*time.Second)
+		client, err := llmclient.Dial(resolved.Provider, resolved.Model, resolved.APIKey, resolved.BaseURL)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		client.Thinking = resolved.Thinking
+		client.SetRequestTimeout(time.Duration(timeout) * time.Second)
 		cfg := resolved.Memory
 		if cfg.Enabled == nil {
 			t := true

@@ -16,6 +16,7 @@ func TestGlobalConfigTemplate_CoversCurrentSections(t *testing.T) {
 		t.Fatalf("globalConfigTemplate is not valid JSON: %v", err)
 	}
 	for _, section := range []string{
+		"provider", "providers", "llm",
 		"guard", "limits", "planning", "profiles", "transcription", "vision",
 		"trusted_proxies", "dangerous", "tools", "skills", "memory",
 		"subagent", "mcp_servers", "web_search", "schedules", "maintenance",
@@ -87,7 +88,7 @@ func TestGlobalConfigTemplate_NoDeadOrMissingKeys(t *testing.T) {
 // contract so global-template work cannot leak operator-only fields into it.
 func TestLocalConfigTemplate_RemainsProjectSafe(t *testing.T) {
 	for _, op := range []string{
-		`"api_key"`, `"base_url"`, `"system"`, `"dangerous"`, `"memory"`,
+		`"provider"`, `"providers"`, `"api_key"`, `"base_url"`, `"llm"`, `"system"`, `"dangerous"`, `"memory"`,
 		`"guard"`, `"maintenance"`, `"telegram"`, `"web_search"`,
 		`"embedding"`, `"sessions"`, `"trusted_proxies"`, `"profiles"`,
 		`"sandbox"`, `"compaction"`, `"limits"`,

@@ -16,7 +16,6 @@
 package session
 
 import (
-	"github.com/BackendStack21/odek/internal/artifact"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -30,9 +29,9 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/BackendStack21/odek/internal/artifact"
 	"github.com/BackendStack21/odek/internal/embedding"
 	"github.com/BackendStack21/odek/internal/fsatomic"
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/redact"
 )
 
@@ -48,16 +47,16 @@ var MaxSessionFileBytes = 32 * 1024 * 1024 // 32 MiB
 // Session represents a single multi-turn conversation with the agent.
 // All fields are exported for direct manipulation at the CLI layer.
 type Session struct {
-	ID        string        `json:"id"`                   // e.g. "20260518-abc123…" (128-bit random suffix)
-	AuthToken string        `json:"auth_token,omitempty"` // session-scoped secret required by serve handlers
-	CreatedAt time.Time     `json:"created_at"`           // first message time
-	UpdatedAt time.Time     `json:"updated_at"`           // last append time
-	Model     string        `json:"model"`                // model name used
-	Turns     int           `json:"turns"`                // number of user turns
-	Task      string        `json:"task"`                 // first user message (label)
-	Sandbox   bool          `json:"sandbox"`              // was sandboxed — auto-apply on resume
-	Messages  []llm.Message `json:"messages"`             // full conversation history
-	Buffer    []string      `json:"buffer,omitempty"`     // last N turn summaries (memory tier 2)
+	ID        string    `json:"id"`                   // e.g. "20260518-abc123…" (128-bit random suffix)
+	AuthToken string    `json:"auth_token,omitempty"` // session-scoped secret required by serve handlers
+	CreatedAt time.Time `json:"created_at"`           // first message time
+	UpdatedAt time.Time `json:"updated_at"`           // last append time
+	Model     string    `json:"model"`                // model name used
+	Turns     int       `json:"turns"`                // number of user turns
+	Task      string    `json:"task"`                 // first user message (label)
+	Sandbox   bool      `json:"sandbox"`              // was sandboxed — auto-apply on resume
+	Messages  []Message `json:"messages"`             // full conversation history
+	Buffer    []string  `json:"buffer,omitempty"`     // last N turn summaries (memory tier 2)
 
 	// Pinned marks an operator-favorited session. Serve lists pinned
 	// sessions first; it is pure presentation metadata.
@@ -406,7 +405,7 @@ func isSessionFile(name string) bool {
 
 // Create persists a new session with the given messages and metadata.
 // It generates an ID, sets timestamps, counts user turns, and saves.
-func (s *Store) Create(messages []llm.Message, model, task string) (*Session, error) {
+func (s *Store) Create(messages []Message, model, task string) (*Session, error) {
 	sess := &Session{
 		ID:        generateID(),
 		AuthToken: GenerateAuthToken(),
@@ -427,7 +426,7 @@ func (s *Store) Create(messages []llm.Message, model, task string) (*Session, er
 // and turn counts, and saves the result atomically.
 // The full read-modify-write is serialized by s.mu to prevent both
 // concurrent-write data loss and symlink-swap TOCTOU attacks.
-func (s *Store) Append(id string, newMsgs []llm.Message) error {
+func (s *Store) Append(id string, newMsgs []Message) error {
 	s.mu.Lock()
 	sess, err := s.Load(id)
 	if err != nil {
@@ -502,7 +501,7 @@ func (s *Store) addToVectorIndex(sess *Session) error {
 // redactMessageFP fingerprints a message for the RedactBoundary anchor:
 // deterministic over the (already-redacted) persisted form, so an unchanged
 // head matches across saves and any trim/rewrite invalidates the boundary.
-func redactMessageFP(m llm.Message) string {
+func redactMessageFP(m Message) string {
 	h := sha256.Sum256([]byte(m.Role + "\x00" + m.Content + "\x00" + m.ReasoningContent))
 	return hex.EncodeToString(h[:8])
 }
@@ -665,7 +664,7 @@ func (s *Store) trimToFileCapLocked(sess *Session, data []byte) ([]byte, error) 
 	// Persist a marker so a resumed session knows earlier turns were removed
 	// (the stderr warning alone never reaches the transcript).
 	if droppedGroups > 0 {
-		marker := llm.Message{
+		marker := Message{
 			Role: "system",
 			Content: fmt.Sprintf(
 				"[Session storage limit: %d oldest message group(s) were removed from this transcript to stay within the %d-byte file cap. Earlier conversation context is unavailable.]",
@@ -676,7 +675,7 @@ func (s *Store) trimToFileCapLocked(sess *Session, data []byte) ([]byte, error) 
 		if len(sess.Messages) > 0 && sess.Messages[0].Role == "system" {
 			insertAt = 1
 		}
-		withMarker := make([]llm.Message, 0, len(sess.Messages)+1)
+		withMarker := make([]Message, 0, len(sess.Messages)+1)
 		withMarker = append(withMarker, sess.Messages[:insertAt]...)
 		withMarker = append(withMarker, marker)
 		withMarker = append(withMarker, sess.Messages[insertAt:]...)
@@ -990,7 +989,7 @@ func (s *Store) Cleanup(before time.Time) (int, error) {
 
 // countUserTurns returns the number of user messages in a slice.
 // This excludes the system message (which is always first in odek sessions).
-func countUserTurns(messages []llm.Message) int {
+func countUserTurns(messages []Message) int {
 	count := 0
 	for _, m := range messages {
 		if m.Role == "user" {
@@ -1002,9 +1001,9 @@ func countUserTurns(messages []llm.Message) int {
 
 // GetMessages returns the session's message slice. Nil-safe.
 // Returns an empty (non-nil) slice for a session with no messages.
-func (s *Session) GetMessages() []llm.Message {
+func (s *Session) GetMessages() []Message {
 	if s == nil || s.Messages == nil {
-		return []llm.Message{}
+		return []Message{}
 	}
 	return s.Messages
 }

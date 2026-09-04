@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/BackendStack21/odek/internal/session"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/BackendStack21/odek/internal/danger"
-	"github.com/BackendStack21/odek/internal/llm"
 )
 
 // ────────────────────────────────────────────────────────────────────────
@@ -377,7 +377,7 @@ func TestRED_WSApproverCancelConcurrentIdempotent(t *testing.T) {
 // in place during the run — the pre-run histLen can exceed the returned
 // slice and the old inline `allMessages[histLen:]` panicked.
 func TestRED_AuditTurnDeltaClampsTrimmedHistory(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "task"},
 		{Role: "assistant", Content: "answer"},

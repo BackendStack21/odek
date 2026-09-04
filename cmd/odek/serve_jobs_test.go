@@ -27,7 +27,6 @@ import (
 	"github.com/BackendStack21/odek/internal/bgproc"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/events"
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/resource"
 	"github.com/BackendStack21/odek/internal/session"
 )
@@ -83,11 +82,11 @@ func newJobsEnv(t *testing.T) *jobsEnv {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	sessA, err := store.Create([]llm.Message{{Role: "user", Content: "A"}}, "m", "jobs-a")
+	sessA, err := store.Create([]session.Message{{Role: "user", Content: "A"}}, "m", "jobs-a")
 	if err != nil {
 		t.Fatal(err)
 	}
-	sessB, err := store.Create([]llm.Message{{Role: "user", Content: "B"}}, "m", "jobs-b")
+	sessB, err := store.Create([]session.Message{{Role: "user", Content: "B"}}, "m", "jobs-b")
 	if err != nil {
 		t.Fatal(err)
 	}

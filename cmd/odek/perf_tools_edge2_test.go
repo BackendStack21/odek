@@ -360,8 +360,8 @@ func TestTree_MaxDepthLimit(t *testing.T) {
 // the cut backs off to a UTF-8 rune boundary and appends the ellipsis, so
 // multibyte content never renders as U+FFFD mojibake in the diff.
 func TestTruncateDiff_RuneBoundary(t *testing.T) {
-	long := strings.Repeat("æ", 60) // 60 runes × 2 bytes = 120 bytes
-	got := truncatePreviewLine(long, 101)  // 101 lands inside rune 50 (bytes 100..101)
+	long := strings.Repeat("æ", 60)       // 60 runes × 2 bytes = 120 bytes
+	got := truncatePreviewLine(long, 101) // 101 lands inside rune 50 (bytes 100..101)
 	if !utf8.ValidString(got) || strings.ContainsRune(got, utf8.RuneError) {
 		t.Fatalf("truncateDiff produced invalid UTF-8: %q", got)
 	}

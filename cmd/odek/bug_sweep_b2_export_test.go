@@ -9,18 +9,17 @@ package main
 // GET-only for exactly this reason.)
 
 import (
+	"github.com/BackendStack21/odek/internal/session"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/BackendStack21/odek/internal/llm"
 )
 
 func TestSessionExportSuffix_NotAliasedForMutatingMethods(t *testing.T) {
 	store := newTestSessionStore(t)
 
-	sess, err := store.Create([]llm.Message{
+	sess, err := store.Create([]session.Message{
 		{Role: "user", Content: "hello"},
 	}, "test-model", "greeting task")
 	if err != nil {

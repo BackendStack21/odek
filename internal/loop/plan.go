@@ -22,7 +22,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/session"
 )
 
 // ── Types ─────────────────────────────────────────────────────────────
@@ -391,7 +391,7 @@ func normalizePlanText(s string) string {
 const planMsgPrefix = "[Current plan:"
 
 // isPlanMessage reports whether m is the protected plan message.
-func isPlanMessage(m llm.Message) bool {
+func isPlanMessage(m session.Message) bool {
 	return m.Role == "system" && strings.HasPrefix(m.Content, planMsgPrefix)
 }
 
@@ -768,7 +768,7 @@ const extractPlanStepCap = 50
 //
 // Unlike syncPlanFromMessages this never mutates the input history and has
 // no engine state to seed; it is safe to call on any transcript snapshot.
-func ExtractPlan(messages []llm.Message) (*PlanState, bool) {
+func ExtractPlan(messages []session.Message) (*PlanState, bool) {
 	// Backward scan with early exit: the first parseable plan message from
 	// the end IS the newest parseable one — identical outcome to the forward
 	// scan in syncPlanFromMessages without walking the whole transcript.

@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/config"
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/resource"
 	"github.com/BackendStack21/odek/internal/session"
 	golangws "golang.org/x/net/websocket"
@@ -484,7 +483,7 @@ func TestServe_E2E_CancelDuringSetupWindowHonored(t *testing.T) {
 	defer envCleanup()
 
 	store := newTestSessionStore(t)
-	sess, err := store.Create([]llm.Message{{Role: "user", Content: "prior"}}, "m", "setup window")
+	sess, err := store.Create([]session.Message{{Role: "user", Content: "prior"}}, "m", "setup window")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"github.com/BackendStack21/odek/internal/session"
 	"io"
 	"os"
 	"os/signal"
@@ -18,7 +19,6 @@ import (
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/guard"
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/redact"
 	"github.com/BackendStack21/odek/internal/render"
@@ -541,7 +541,7 @@ func (d telegramDeliverer) recordScheduledTurn(chatID int64, job schedule.Job, r
 		label = job.ID
 	}
 
-	msgs := make([]llm.Message, len(cs.Messages), len(cs.Messages)+2)
+	msgs := make([]session.Message, len(cs.Messages), len(cs.Messages)+2)
 	copy(msgs, cs.Messages)
 
 	// Normally append a user turn (clearly marked as scheduler-originated, not
@@ -554,14 +554,14 @@ func (d telegramDeliverer) recordScheduledTurn(chatID int64, job schedule.Job, r
 	// message so roles stay alternating. Either way the session ends on an
 	// assistant turn. Secrets are redacted by Store.Save.
 	if n := len(msgs); n > 0 && msgs[n-1].Role == "user" {
-		msgs = append(msgs, llm.Message{
+		msgs = append(msgs, session.Message{
 			Role:    "assistant",
 			Content: fmt.Sprintf("⏰ [scheduled task %q ran]\n%s", label, result),
 		})
 	} else {
 		msgs = append(msgs,
-			llm.Message{Role: "user", Content: fmt.Sprintf("⏰ [scheduled task %q ran]\n%s", label, job.Task)},
-			llm.Message{Role: "assistant", Content: result},
+			session.Message{Role: "user", Content: fmt.Sprintf("⏰ [scheduled task %q ran]\n%s", label, job.Task)},
+			session.Message{Role: "assistant", Content: result},
 		)
 	}
 	return d.sessions.Save(chatID, msgs)
@@ -715,7 +715,7 @@ func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system
 		SetToolOutputGuard(injectionGuard, resolved.Guard)
 	}
 
-	agent, err := odek.New(odek.Config{
+	schedCfg := odek.Config{
 		Model:             resolved.Model,
 		BaseURL:           resolved.BaseURL,
 		APIKey:            resolved.APIKey,
@@ -741,7 +741,9 @@ func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system
 		// interactive runs (see cmd/odek/main.go).
 		MemoryDir:    expandHome("~/.odek/memory"),
 		MemoryConfig: resolved.Memory,
-	})
+	}
+	applyResolvedProvider(&schedCfg, resolved)
+	agent, err := odek.New(schedCfg)
 	if err != nil {
 		return "", 0, err
 	}

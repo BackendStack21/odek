@@ -23,7 +23,7 @@ import (
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/flock"
 	"github.com/BackendStack21/odek/internal/guard"
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/llmclient"
 
 	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/memory"
@@ -543,8 +543,9 @@ func telegramCmd(args []string) error {
 			// the REPL resume path). A throwaway manager is built here because
 			// the /resume command runs outside any per-message agent.
 			resumeMM := memory.NewMemoryManager(expandHome("~/.odek/memory"), nil, resolved.Memory)
-			resumeMM.InitExtended(llm.New(resolved.BaseURL, resolved.APIKey, resolved.Model, "", 0, 120*time.Second),
-				expandHome("~/.odek/memory"))
+			if resumeLLM, err := llmclient.Dial(resolved.Provider, resolved.Model, resolved.APIKey, resolved.BaseURL); err == nil {
+				resumeMM.InitExtended(resumeLLM, expandHome("~/.odek/memory"))
+			}
 			cs.Messages = injectReturnAfterBreak(context.Background(), resumeMM, cs.Messages)
 			taskPreview := resumeTaskPreview(cs.Messages)
 			if taskPreview == "" {
@@ -681,7 +682,7 @@ func telegramCmd(args []string) error {
 					"Use your tools to implement the next step.",
 				slug, content,
 			)
-			cs.Messages = append(cs.Messages, llm.Message{Role: "user", Content: contextMsg})
+			cs.Messages = append(cs.Messages, session.Message{Role: "user", Content: contextMsg})
 			cs.LastActive = time.Now()
 			if err := sessionManager.Save(chatID, cs.Messages); err != nil {
 				return fmt.Sprintf("❌ Failed to save session: %v", err), nil
@@ -1289,9 +1290,9 @@ func spawnChildWithStarter(starter processStarter) error {
 //
 // New or system-less histories get the prompt prepended; resumed histories get
 // messages[0] refreshed so IDENTITY.md / prompt changes take effect next turn.
-func seedSystemMessage(messages []llm.Message, system string) []llm.Message {
+func seedSystemMessage(messages []session.Message, system string) []session.Message {
 	if len(messages) == 0 || messages[0].Role != "system" {
-		return append([]llm.Message{{Role: "system", Content: system}}, messages...)
+		return append([]session.Message{{Role: "system", Content: system}}, messages...)
 	}
 	messages[0].Content = system
 	return messages
@@ -1369,7 +1370,7 @@ func handleChatMessage(
 	cs.Messages = seedSystemMessage(cs.Messages, systemMessage)
 
 	// Append user message to session.
-	cs.Messages = append(cs.Messages, llm.Message{Role: "user", Content: text})
+	cs.Messages = append(cs.Messages, session.Message{Role: "user", Content: text})
 	cs.LastActive = time.Now()
 
 	// Persist the user message immediately so session_search can find it
@@ -1899,6 +1900,7 @@ func handleChatMessage(
 		GuardConfig:     telegramGuardCfg,
 	}
 
+	applyResolvedProvider(&agentCfg, resolved)
 	agent, err := odek.New(agentCfg)
 	if err != nil {
 		reportError(bot, chatID, messageID, "Failed to create agent: "+err.Error())
@@ -1934,7 +1936,7 @@ func handleChatMessage(
 	// and must not fire every loop iteration — the final Save below still
 	// updates the vector index once per completed turn.
 	persistedLen := len(cs.Messages)
-	agent.SetMessagesPersistCallback(func(snapshot []llm.Message) {
+	agent.SetMessagesPersistCallback(func(snapshot []session.Message) {
 		trimmed := dropDanglingToolCalls(snapshot)
 		if len(trimmed) < persistedLen {
 			// The loop trimmed history in place — keep the richer state

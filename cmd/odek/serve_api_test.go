@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/budget"
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/resource"
 	"github.com/BackendStack21/odek/internal/session"
 	golangws "golang.org/x/net/websocket"
@@ -30,10 +29,10 @@ import (
 
 func TestHandleSessionList_DoesNotLeakAuthTokens(t *testing.T) {
 	store := newTestSessionStore(t)
-	if _, err := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "one"); err != nil {
+	if _, err := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "one"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Create([]llm.Message{{Role: "user", Content: "bye"}}, "m", "two"); err != nil {
+	if _, err := store.Create([]session.Message{{Role: "user", Content: "bye"}}, "m", "two"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -63,7 +62,7 @@ func TestHandleSessionList_DoesNotLeakAuthTokens(t *testing.T) {
 func TestHandleSessionByID_GET_ReturnsSession(t *testing.T) {
 	store := newTestSessionStore(t)
 
-	sess, err := store.Create([]llm.Message{
+	sess, err := store.Create([]session.Message{
 		{Role: "system", Content: "you are helpful"},
 		{Role: "user", Content: "hello"},
 		{Role: "assistant", Content: "hi there!"},
@@ -139,7 +138,7 @@ func TestHandleSessionByID_GET_MessagesArePresent(t *testing.T) {
 	// endpoint must include them so the UI can render conversation history.
 	store := newTestSessionStore(t)
 
-	sess, err := store.Create([]llm.Message{
+	sess, err := store.Create([]session.Message{
 		{Role: "user", Content: "what is 2+2?"},
 		{Role: "assistant", Content: "4"},
 	}, "test-model", "math")
@@ -179,7 +178,7 @@ func TestHandleSessionByID_DELETE_StillWorks(t *testing.T) {
 	// Verify the existing DELETE handler is not broken by the new GET case.
 	store := newTestSessionStore(t)
 
-	sess, err := store.Create([]llm.Message{{Role: "user", Content: "bye"}}, "m", "task")
+	sess, err := store.Create([]session.Message{{Role: "user", Content: "bye"}}, "m", "task")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -206,7 +205,7 @@ func TestHandleSessionByID_DELETE_StillWorks(t *testing.T) {
 func TestHandleSessionByID_POST_RenameStillWorks(t *testing.T) {
 	store := newTestSessionStore(t)
 
-	sess, err := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "original name")
+	sess, err := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "original name")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -232,7 +231,7 @@ func TestHandleSessionByID_POST_RenameStillWorks(t *testing.T) {
 
 func TestHandleSessionByID_GET_InvalidToken(t *testing.T) {
 	store := newTestSessionStore(t)
-	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
+	sess, _ := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "task")
 
 	handler := handleSessionByID(store, nil, "")
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
@@ -247,7 +246,7 @@ func TestHandleSessionByID_GET_InvalidToken(t *testing.T) {
 
 func TestHandleSessionByID_GET_MissingToken(t *testing.T) {
 	store := newTestSessionStore(t)
-	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
+	sess, _ := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "task")
 
 	handler := handleSessionByID(store, nil, "")
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
@@ -264,7 +263,7 @@ func TestHandleSessionByID_GET_LazyTokenBootstrap(t *testing.T) {
 	// The first GET bootstraps a token and returns it so the UI can use it
 	// for subsequent requests.
 	store := newTestSessionStore(t)
-	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
+	sess, _ := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "task")
 	sess.AuthToken = ""
 	if err := store.Save(sess); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -305,7 +304,7 @@ func TestHandleSessionByID_GET_InstanceHeaderBootstrap(t *testing.T) {
 	// proves knowledge of the per-instance CSRF token via the
 	// X-Odek-Ws-Token header, the GET bootstraps the session token.
 	store := newTestSessionStore(t)
-	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
+	sess, _ := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "task")
 	const wsToken = "test-instance-token"
 
 	handler := handleSessionByID(store, nil, wsToken)
@@ -334,7 +333,7 @@ func TestHandleSessionByID_GET_InstanceHeaderBootstrap(t *testing.T) {
 func TestHandleSessionByID_GET_InstanceHeaderBootstrap_WrongInstanceToken(t *testing.T) {
 	// A wrong instance token proves nothing — no bootstrap.
 	store := newTestSessionStore(t)
-	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
+	sess, _ := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "task")
 
 	handler := handleSessionByID(store, nil, "real-token")
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
@@ -353,7 +352,7 @@ func TestHandleSessionByID_GET_NoBootstrapWithoutInstanceHeader(t *testing.T) {
 	// token configured: without the X-Odek-Ws-Token header the request is
 	// indistinguishable from the pre-fix behavior.
 	store := newTestSessionStore(t)
-	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
+	sess, _ := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "task")
 
 	handler := handleSessionByID(store, nil, "real-token")
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
@@ -369,7 +368,7 @@ func TestHandleSessionByID_GET_NoBootstrapWithoutInstanceHeader(t *testing.T) {
 
 func TestHandleSessionByID_DELETE_RequiresToken(t *testing.T) {
 	store := newTestSessionStore(t)
-	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
+	sess, _ := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "task")
 
 	handler := handleSessionByID(store, nil, "")
 	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+sess.ID, nil)
@@ -384,7 +383,7 @@ func TestHandleSessionByID_DELETE_RequiresToken(t *testing.T) {
 
 func TestHandleSessionByID_POST_RequiresToken(t *testing.T) {
 	store := newTestSessionStore(t)
-	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
+	sess, _ := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "task")
 
 	handler := handleSessionByID(store, nil, "")
 	body := strings.NewReader(`{"name":"renamed"}`)
@@ -401,7 +400,7 @@ func TestHandleSessionByID_POST_RequiresToken(t *testing.T) {
 
 func TestHandleSessionByID_GET_RateLimit(t *testing.T) {
 	store := newTestSessionStore(t)
-	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
+	sess, _ := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "task")
 
 	sessionLookupLimiter.reset()
 	defer sessionLookupLimiter.reset()
@@ -1016,8 +1015,8 @@ func TestHandleResourceSearch_LimitCapped(t *testing.T) {
 // messages survive, while dynamically-injected system messages (skills,
 // memory, episodes, trim warnings) are dropped.
 func TestFilterPersistSnapshot(t *testing.T) {
-	head := []llm.Message{{Role: "system", Content: "You are odek."}}
-	snapshot := []llm.Message{
+	head := []session.Message{{Role: "system", Content: "You are odek."}}
+	snapshot := []session.Message{
 		{Role: "system", Content: "You are odek."},
 		{Role: "system", Content: "## Skill: deploy\nDo the deploy dance."},
 		{Role: "system", Content: "[Compacted earlier context: turns 1-8 summarized. User asked about the migration.]"},
@@ -1066,7 +1065,7 @@ func TestFilterPersistSnapshot(t *testing.T) {
 // TestFilterPersistSnapshot_NoHead verifies the filter also keeps digests
 // when the session has no leading system message.
 func TestFilterPersistSnapshot_NoHead(t *testing.T) {
-	snapshot := []llm.Message{
+	snapshot := []session.Message{
 		{Role: "system", Content: "[Compacted earlier context: digest]"},
 		{Role: "user", Content: "hi"},
 	}

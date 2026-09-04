@@ -1,9 +1,8 @@
 package main
 
 import (
+	"github.com/BackendStack21/odek/internal/session"
 	"testing"
-
-	"github.com/BackendStack21/odek/internal/llm"
 )
 
 // TestSeedSystemMessage locks in the fix for the bug where Telegram chats
@@ -21,7 +20,7 @@ func TestSeedSystemMessage(t *testing.T) {
 	})
 
 	t.Run("user-first history prepends system and keeps the user message", func(t *testing.T) {
-		got := seedSystemMessage([]llm.Message{{Role: "user", Content: "hi"}}, sys)
+		got := seedSystemMessage([]session.Message{{Role: "user", Content: "hi"}}, sys)
 		if len(got) != 2 {
 			t.Fatalf("want 2 messages, got %d: %+v", len(got), got)
 		}
@@ -34,7 +33,7 @@ func TestSeedSystemMessage(t *testing.T) {
 	})
 
 	t.Run("resumed history refreshes stale system without duplicating", func(t *testing.T) {
-		got := seedSystemMessage([]llm.Message{
+		got := seedSystemMessage([]session.Message{
 			{Role: "system", Content: "OLD PROMPT"},
 			{Role: "user", Content: "hi"},
 		}, sys)

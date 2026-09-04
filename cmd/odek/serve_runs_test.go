@@ -21,7 +21,6 @@ import (
 
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/events"
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/mcpclient"
 	"github.com/BackendStack21/odek/internal/memory"
 	"github.com/BackendStack21/odek/internal/resource"
@@ -260,11 +259,11 @@ func TestHandleMCPServers_ListsServersWithoutEnv(t *testing.T) {
 
 func TestHandleSessionByID_PostPinAndListOrdering(t *testing.T) {
 	store := newTestSessionStore(t)
-	older, err := store.Create([]llm.Message{{Role: "user", Content: "a"}}, "m", "older")
+	older, err := store.Create([]session.Message{{Role: "user", Content: "a"}}, "m", "older")
 	if err != nil {
 		t.Fatal(err)
 	}
-	newer, err := store.Create([]llm.Message{{Role: "user", Content: "b"}}, "m", "newer")
+	newer, err := store.Create([]session.Message{{Role: "user", Content: "b"}}, "m", "newer")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -718,7 +717,7 @@ func TestHandleMemoryConsolidate_MergesViaLLM(t *testing.T) {
 
 func TestSession_UsageFieldsSerialize(t *testing.T) {
 	store := newTestSessionStore(t)
-	sess, err := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "usage")
+	sess, err := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "usage")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -747,7 +746,7 @@ func TestSession_UsageFieldsSerialize(t *testing.T) {
 func TestAudit_StartServeRun_ValidatesSessionToken(t *testing.T) {
 	store := newTestSessionStore(t)
 
-	sess, err := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "test-model", "test")
+	sess, err := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "test-model", "test")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}

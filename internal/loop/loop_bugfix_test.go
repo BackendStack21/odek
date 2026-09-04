@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
@@ -41,7 +41,7 @@ func runTwoTurnToolEngine(t *testing.T, toolOutput string) *Engine {
 
 	echoTool := &fakeTool{name: "echo", description: "echoes", output: toolOutput}
 	registry := tool.NewRegistry([]tool.Tool{echoTool})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 	if _, err := engine.Run(context.Background(), "run the tool"); err != nil {
 		t.Fatalf("Run() error: %v", err)
@@ -73,7 +73,7 @@ func TestEngine_Run_RealToolErrorStillCounts(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	registry := tool.NewRegistry([]tool.Tool{&failTool{name: "echo"}})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 	if _, err := engine.Run(context.Background(), "run the tool"); err != nil {
 		t.Fatalf("Run() error: %v", err)
@@ -91,27 +91,27 @@ func TestTrimContext_DigestSurvivesSuccessiveTrims(t *testing.T) {
 		fmt.Fprint(w, `{"choices":[{"message":{"content":"compressed summary of earlier turns"}}]}`)
 	}))
 	t.Cleanup(summarizer.Close)
-	client := llm.New(summarizer.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, summarizer.URL)
 	engine := New(client, tool.NewRegistry(nil), 10, "", nil, 3000)
 	engine.SetCompaction(true)
 
 	engine.ctxLeadDroppableFrom = -1
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "task"},
 	}
-	skillMsg := llm.Message{Role: "system", Content: strings.Repeat("SKILL ", 400)}
-	msgs = append(msgs[:1], append([]llm.Message{skillMsg}, msgs[1:]...)...)
+	skillMsg := session.Message{Role: "system", Content: strings.Repeat("SKILL ", 400)}
+	msgs = append(msgs[:1], append([]session.Message{skillMsg}, msgs[1:]...)...)
 	engine.noteLeadingInjection(msgs, 1)
 
-	heavy := func(msgs []llm.Message) []llm.Message {
+	heavy := func(msgs []session.Message) []session.Message {
 		for i := 0; i < 5; i++ {
-			tc := llm.ToolCall{ID: fmt.Sprintf("c%d-%d", i, len(msgs)), Type: "function"}
+			tc := session.ToolCall{ID: fmt.Sprintf("c%d-%d", i, len(msgs)), Type: "function"}
 			tc.Function.Name = "echo"
 			tc.Function.Arguments = "{}"
 			msgs = append(msgs,
-				llm.Message{Role: "assistant", Content: strings.Repeat("x", 2000), ToolCalls: []llm.ToolCall{tc}},
-				llm.Message{Role: "tool", Content: strings.Repeat("y", 2000), ToolCallID: tc.ID},
+				session.Message{Role: "assistant", Content: strings.Repeat("x", 2000), ToolCalls: []session.ToolCall{tc}},
+				session.Message{Role: "tool", Content: strings.Repeat("y", 2000), ToolCallID: tc.ID},
 			)
 		}
 		return msgs

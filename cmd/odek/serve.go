@@ -30,7 +30,7 @@ import (
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/events"
 	"github.com/BackendStack21/odek/internal/guard"
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/llmclient"
 	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/memory"
 	"github.com/BackendStack21/odek/internal/redact"
@@ -76,8 +76,8 @@ const planMessagePrefix = "[Current plan:"
 // don't accumulate internal injections or corrupt future origLen
 // calculations; compaction digest and protected plan system messages are
 // kept so a resumed session retains its compacted history and its plan.
-func filterPersistSnapshot(head, snapshot []llm.Message) []llm.Message {
-	filtered := make([]llm.Message, 0, len(snapshot))
+func filterPersistSnapshot(head, snapshot []session.Message) []session.Message {
+	filtered := make([]session.Message, 0, len(snapshot))
 	filtered = append(filtered, head...)
 	for i, m := range snapshot {
 		if i == 0 && len(head) > 0 {
@@ -99,9 +99,9 @@ func filterPersistSnapshot(head, snapshot []llm.Message) []llm.Message {
 // transcript. Typed llm errors (rate limit) get a precise, actionable line;
 // everything else is truncated to a single line.
 func providerFailureSummary(err error) string {
-	var rle *llm.RateLimitError
+	var rle *llmclient.RateLimitError
 	if errors.As(err, &rle) {
-		return fmt.Sprintf("provider rate limit (HTTP %d) after %d attempts", rle.StatusCode, rle.Attempts)
+		return fmt.Sprintf("provider rate limit (HTTP %d) after %d attempts", rle.Status, rle.Attempts)
 	}
 	if errors.Is(err, context.Canceled) {
 		return "cancelled"
@@ -590,7 +590,7 @@ func newServeMux(d serveMuxDeps) *http.ServeMux {
 	mux.Handle("/api/skills", apiAuth(handleSkills(resolved.Skills)))
 	mux.Handle("/api/skills/promote", apiAuth(handleSkillPromote()))
 	mux.Handle("/api/tools", apiAuth(handleTools(resolved)))
-	mux.Handle("/api/profiles", apiAuth(handleProfiles()))
+	mux.Handle("/api/profiles", apiAuth(handleProfiles(resolved.Model)))
 	mux.Handle("/api/config", apiAuth(handleConfigView(resolved)))
 	mux.Handle("/api/mcp", apiAuth(handleMCPServers(resolved)))
 
@@ -911,7 +911,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 		SetToolOutputGuard(injectionGuard, resolved.Guard)
 	}
 
-	agent, err := odek.New(odek.Config{
+	serveCfg := odek.Config{
 		Model:            resolved.Model,
 		BaseURL:          resolved.BaseURL,
 		APIKey:           resolved.APIKey,
@@ -1010,7 +1010,9 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 				})
 			}
 		},
-	})
+	}
+	applyResolvedProvider(&serveCfg, resolved)
+	agent, err := odek.New(serveCfg)
 	if err != nil {
 		// Container was started but agent construction failed — clean up now
 		// so the container doesn't outlive this call.
@@ -1036,16 +1038,16 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 // reasoning fragments go out as thinking_delta, answer fragments as
 // token_delta. Counted in deltas so handlePrompt can suppress the post-run
 // bulk re-send. Tool-argument fragments are already suppressed by the engine.
-func serveDeltaHandler(sendFn func(v any) error, deltas *wsDeltaCounters) func(llm.Delta) error {
+func serveDeltaHandler(sendFn func(v any) error, deltas *wsDeltaCounters) func(llmclient.Delta) error {
 	if deltas == nil {
 		return nil
 	}
-	return func(d llm.Delta) error {
+	return func(d llmclient.Delta) error {
 		switch d.Kind {
-		case llm.DeltaReasoning:
+		case llmclient.DeltaReasoning:
 			deltas.addReasoning()
 			sendFn(map[string]any{"type": "thinking_delta", "content": d.Text})
-		case llm.DeltaContent:
+		case llmclient.DeltaContent:
 			deltas.addContent()
 			sendFn(map[string]any{"type": "token_delta", "content": d.Text})
 		}
@@ -1840,7 +1842,7 @@ func handlePrompt(
 	}
 
 	// Build message history
-	var messages []llm.Message
+	var messages []session.Message
 	isNewSession := false
 	// System-initiated wake turns carry a Name marker ("bg-wake") so the
 	// loop's user-input hooks skip them exactly like drained bg-notice
@@ -1854,17 +1856,17 @@ func handlePrompt(
 
 	if sess != nil {
 		messages = sess.GetMessages()
-		messages = append(messages, llm.Message{Role: "user", Content: enrichedPrompt, Name: userName})
+		messages = append(messages, session.Message{Role: "user", Content: enrichedPrompt, Name: userName})
 	} else {
 		isNewSession = true
-		messages = []llm.Message{
+		messages = []session.Message{
 			{Role: "system", Content: ""},
 			{Role: "user", Content: enrichedPrompt, Name: userName},
 		}
 
 		// Persist new session
 		newSess, err := store.Create(
-			[]llm.Message{{Role: "system", Content: ""}},
+			[]session.Message{{Role: "system", Content: ""}},
 			resolved.Model,
 			shorten(prompt, 60),
 		)
@@ -1905,7 +1907,7 @@ func handlePrompt(
 	if sid != "" && promptCancel != nil {
 		defer registerPromptCancel(sid, promptCancel)()
 	}
-		sessFrame := map[string]any{"type": "session", "session_id": sid, "auth_token": authToken, "model": resolved.Model, "sandbox": resolved.Sandbox}
+	sessFrame := map[string]any{"type": "session", "session_id": sid, "auth_token": authToken, "model": resolved.Model, "sandbox": resolved.Sandbox}
 	if wakeInitiated(msg) {
 		sessFrame["system_initiated"] = true // absent on operator turns
 	}
@@ -1957,11 +1959,11 @@ func handlePrompt(
 	// compaction digest system messages are preserved (see
 	// filterPersistSnapshot).
 	if sess != nil {
-		var head []llm.Message
+		var head []session.Message
 		if len(sess.Messages) > 0 && sess.Messages[0].Role == "system" {
 			head = sess.Messages[:1]
 		}
-		agent.SetMessagesPersistCallback(func(snapshot []llm.Message) {
+		agent.SetMessagesPersistCallback(func(snapshot []session.Message) {
 			if len(snapshot) < len(sess.Messages) {
 				// The loop trimmed history in place — keep the richer state
 				// already persisted instead of overwriting it.
@@ -1979,7 +1981,7 @@ func handlePrompt(
 	// — observed repeatedly on 2026-08-29. SaveNoIndex skips the remote
 	// vector index; a successful turn re-indexes on the final save below.
 	if sess != nil {
-		sess.Messages = append(sess.Messages, llm.Message{Role: "user", Content: enrichedPrompt, Name: userName})
+		sess.Messages = append(sess.Messages, session.Message{Role: "user", Content: enrichedPrompt, Name: userName})
 		_ = store.SaveNoIndex(sess)
 	}
 
@@ -2009,7 +2011,7 @@ func handlePrompt(
 		// returning sess (not currSess) also keeps the caller's run record
 		// and in-memory session pointer in sync with the persisted state.
 		note := fmt.Sprintf("[Turn aborted: %s. The prompt above was preserved — send another message to retry or continue.]", providerFailureSummary(err))
-		sess.Messages = append(sess.Messages, llm.Message{Role: "assistant", Content: note})
+		sess.Messages = append(sess.Messages, session.Message{Role: "assistant", Content: note})
 		_ = store.SaveNoIndex(sess)
 		return sess
 	}
@@ -2862,25 +2864,17 @@ func handleModelList(configuredModel string) http.HandlerFunc {
 		// Return only the server's configured model. The UI provides an
 		// "Other…" free-text input for switching to any arbitrary model ID.
 		if configuredModel != "" {
-			if p := odek.LookupProfile(configuredModel); p != nil {
-				ctx := p.MaxContext / 1024
-				label := p.Label
-				if label == "" {
-					label = configuredModel
-				}
-				models = append(models, modelEntry{
-					ID:          configuredModel,
-					MaxContext:  p.MaxContext,
-					Description: fmt.Sprintf("%s — %dK ctx", label, ctx),
-					Current:     true,
-				})
-			} else {
-				models = append(models, modelEntry{
-					ID:          configuredModel,
-					Description: configuredModel,
-					Current:     true,
-				})
+			maxCtx := llmclient.LastResortContext(configuredModel)
+			entry := modelEntry{
+				ID:          configuredModel,
+				MaxContext:  maxCtx,
+				Description: configuredModel,
+				Current:     true,
 			}
+			if maxCtx > 0 {
+				entry.Description = fmt.Sprintf("%s — %dK ctx", configuredModel, maxCtx/1024)
+			}
+			models = append(models, entry)
 		}
 
 		w.Header().Set("Content-Type", "application/json")

@@ -11,13 +11,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/BackendStack21/odek/internal/session"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/BackendStack21/odek/internal/artifact"
-	"github.com/BackendStack21/odek/internal/llm"
 )
 
 // ── A: parent tool description carries the two-channel contract ──────
@@ -181,12 +181,12 @@ func TestSubagentResult_OmitEmptyTruncationFields(t *testing.T) {
 
 func TestExtractSummaryInfo(t *testing.T) {
 	long := strings.Repeat("b", 3000)
-	msgs := []llm.Message{{Role: "assistant", Content: long}}
+	msgs := []session.Message{{Role: "assistant", Content: long}}
 	s, total, truncated := extractSummaryInfo(msgs)
 	if !truncated || total != 3000 || len([]rune(s)) != subagentHeadlineMaxRunes+1 {
 		t.Errorf("extractSummaryInfo = (runes %d, total %d, truncated %v)", len([]rune(s)), total, truncated)
 	}
-	s, total, truncated = extractSummaryInfo([]llm.Message{{Role: "assistant", Content: "hi"}})
+	s, total, truncated = extractSummaryInfo([]session.Message{{Role: "assistant", Content: "hi"}})
 	if truncated || total != 2 || s != "hi" {
 		t.Errorf("short: = (%q, %d, %v)", s, total, truncated)
 	}

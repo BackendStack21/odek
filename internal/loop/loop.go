@@ -17,10 +17,11 @@ import (
 	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/events"
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/llmclient"
 	"github.com/BackendStack21/odek/internal/narrate"
 	"github.com/BackendStack21/odek/internal/redact"
 	"github.com/BackendStack21/odek/internal/render"
+	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
@@ -69,7 +70,7 @@ func (e *Engine) startToolHeartbeat(ctx context.Context, toolName string) chan<-
 // scan skipped index 0 and fell back to appending, which put the block
 // AFTER the user message for the common [system, user] history — breaking
 // prompt-cache stability and burying the task below injected context.
-func insertionIndexBeforeLatestUser(messages []llm.Message) int {
+func insertionIndexBeforeLatestUser(messages []session.Message) int {
 	for i := len(messages) - 1; i >= 0; i-- {
 		// bg-notice user messages are synthetic (drained notices/wakes) and
 		// may trail the real task; injections belong before the REAL input —
@@ -165,8 +166,8 @@ type IterationInfo struct {
 // enabled (see SetStream / docs/STREAMING.md). It is invoked synchronously
 // from the SSE reader and must be non-blocking. Returning a non-nil error
 // aborts generation; the loop then fails the turn with the wrapped
-// *llm.StreamAbortedError instead of retrying.
-type DeltaHandler func(llm.Delta) error
+// *llmclient.StreamAbortedError instead of retrying.
+type DeltaHandler func(llmclient.Delta) error
 
 // IterationCallback is an optional callback invoked after each iteration
 // of the agent loop. Used by Telegram/WebUI for progress reporting.
@@ -178,11 +179,11 @@ type IterationCallback func(info IterationInfo)
 // freshly-allocated copy of the current message history so callers can
 // persist per-turn progress; an interrupted run can then be resumed from
 // the last completed step instead of losing the whole in-progress turn.
-type MessagesPersistCallback func(messages []llm.Message)
+type MessagesPersistCallback func(messages []session.Message)
 
 // Engine runs the agent loop: observe → think → act → repeat.
 type Engine struct {
-	client         *llm.Client
+	client         *llmclient.Client
 	registry       *tool.Registry
 	renderer       *render.Renderer // optional: colored terminal output
 	maxIter        int
@@ -399,7 +400,7 @@ type Engine struct {
 // New creates a new loop Engine.
 // maxContext is the model's maximum context window in tokens.
 // Pass 0 for no limit enforcement.
-func New(client *llm.Client, registry *tool.Registry, maxIterations int, systemMessage string, renderer *render.Renderer, maxContext int) *Engine {
+func New(client *llmclient.Client, registry *tool.Registry, maxIterations int, systemMessage string, renderer *render.Renderer, maxContext int) *Engine {
 	return &Engine{
 		client:                   client,
 		registry:                 registry,
@@ -478,7 +479,7 @@ func (e *Engine) SetDeltaHandler(cb DeltaHandler) { e.deltaHandler = cb }
 // docs/STREAMING.md) and dispatches to CallStream when streaming is enabled.
 // Tool-argument deltas are suppressed: they are partial JSON and noise for
 // terminal consumers (the assembled calls still arrive via the result).
-func (e *Engine) callLLM(ctx context.Context, messages []llm.Message, systemBlocks []llm.SystemBlock, tools []llm.ToolDef) (*llm.CallResult, error) {
+func (e *Engine) callLLM(ctx context.Context, messages []session.Message, tools []llmclient.ToolDef) (*llmclient.CallResult, error) {
 	callCtx := ctx
 	if t := e.client.RequestTimeout(); t > 0 {
 		var cancel context.CancelFunc
@@ -488,11 +489,11 @@ func (e *Engine) callLLM(ctx context.Context, messages []llm.Message, systemBloc
 
 	e.streamedThisCall = false
 	if !e.stream || e.deltaHandler == nil {
-		return e.client.Call(callCtx, messages, systemBlocks, tools)
+		return e.client.Call(callCtx, messages, tools)
 	}
 
-	return e.client.CallStream(callCtx, messages, systemBlocks, tools, func(d llm.Delta) error {
-		if d.Kind == llm.DeltaToolArgs {
+	return e.client.CallStream(callCtx, messages, tools, func(d llmclient.Delta) error {
+		if d.Kind == llmclient.DeltaToolArgs {
 			return nil
 		}
 		e.streamedThisCall = true
@@ -682,7 +683,7 @@ const keepRecentToolResults = 4
 const digestMsgPrefix = "[Compacted earlier context:"
 
 // isDigestMessage reports whether m is the rolling compaction digest.
-func isDigestMessage(m llm.Message) bool {
+func isDigestMessage(m session.Message) bool {
 	return m.Role == "system" && strings.HasPrefix(m.Content, digestMsgPrefix)
 }
 
@@ -694,7 +695,7 @@ func estimateTokens(s string) int {
 }
 
 // estimateMessages returns the estimated total tokens for a slice of messages.
-func estimateMessages(messages []llm.Message) int {
+func estimateMessages(messages []session.Message) int {
 	total := 0
 	for _, m := range messages {
 		total += messageOverhead
@@ -716,19 +717,14 @@ func estimateMessages(messages []llm.Message) int {
 // These are sent with every request and count toward the context budget.
 // The parameter schema is the bulk of every definition, so it is marshaled
 // and counted; an unmarshalable schema falls back to a flat allowance.
-func estimateToolDefs(defs []llm.ToolDef) int {
+func estimateToolDefs(defs []llmclient.ToolDef) int {
 	total := 0
 	for _, d := range defs {
 		total += 30 // tool definition overhead
-		total += estimateTokens(d.Type)
-		total += estimateTokens(d.Function.Name)
-		total += estimateTokens(d.Function.Description)
-		if d.Function.Parameters != nil {
-			if schemaJSON, err := json.Marshal(d.Function.Parameters); err == nil {
-				total += estimateTokens(string(schemaJSON))
-			} else {
-				total += 200 // fallback allowance
-			}
+		total += estimateTokens(d.Name)
+		total += estimateTokens(d.Description)
+		if len(d.Parameters) > 0 {
+			total += estimateTokens(string(d.Parameters))
 		}
 	}
 	return total
@@ -757,7 +753,7 @@ func contextBudget(maxContext int) int {
 // where such injections begin, everything from there on is droppable — an
 // oversized injected block must be trimmable before its first API call
 // (see TestTrimContext_PostInjectionBudget), not ride in the cached head.
-func (e *Engine) headLen(messages []llm.Message) int {
+func (e *Engine) headLen(messages []session.Message) int {
 	start := 0
 	seenTask := false
 	for start < len(messages) {
@@ -787,7 +783,7 @@ func (e *Engine) headLen(messages []llm.Message) int {
 // outside the protected head. The memory block never calls this — it stays
 // protected for prompt-cache stability; if memory lands at or before an
 // existing boundary, the boundary shifts past it instead.
-func (e *Engine) noteLeadingInjection(messages []llm.Message, idx int) {
+func (e *Engine) noteLeadingInjection(messages []session.Message, idx int) {
 	if idx <= 0 || idx >= len(messages) {
 		return
 	}
@@ -824,7 +820,7 @@ func (e *Engine) noteLeadingInjection(messages []llm.Message, idx int) {
 //
 // Performance: uses a running token total to avoid O(n²) re-scanning of
 // the full message list on every iteration.
-func (e *Engine) trimContext(ctx context.Context, messages []llm.Message, toolDefs []llm.ToolDef) []llm.Message {
+func (e *Engine) trimContext(ctx context.Context, messages []session.Message, toolDefs []llmclient.ToolDef) []session.Message {
 	budget := contextBudget(e.maxContext)
 	if budget <= 0 {
 		return messages
@@ -892,7 +888,7 @@ func (e *Engine) trimContext(ctx context.Context, messages []llm.Message, toolDe
 		e.trimDroppedTools = make(map[string]int)
 	}
 	droppedGroups := 0
-	var droppedForDigest []llm.Message
+	var droppedForDigest []session.Message
 	// The original task is the first user message at/after the head. When
 	// a leading injection set ctxLeadDroppableFrom, headLen stops BEFORE
 	// the task — without this guard, pass 2 drops the task as the first
@@ -1020,7 +1016,7 @@ func (e *Engine) buildTrimWarning() string {
 // the existing warning in place when one is already present. The warning is
 // never placed at index 0 so a session without a system prompt still starts
 // with the task.
-func upsertTrimWarning(messages []llm.Message, warning string) []llm.Message {
+func upsertTrimWarning(messages []session.Message, warning string) []session.Message {
 	for i := range messages {
 		if messages[i].Role == "system" && strings.HasPrefix(messages[i].Content, "[Context trimmed:") {
 			messages[i].Content = warning
@@ -1042,8 +1038,8 @@ func upsertTrimWarning(messages []llm.Message, warning string) []llm.Message {
 	if insertIdx > len(messages) {
 		insertIdx = len(messages)
 	}
-	trimMsg := llm.Message{Role: "system", Content: warning}
-	newMsgs := make([]llm.Message, 0, len(messages)+1)
+	trimMsg := session.Message{Role: "system", Content: warning}
+	newMsgs := make([]session.Message, 0, len(messages)+1)
 	newMsgs = append(newMsgs, messages[:insertIdx]...)
 	newMsgs = append(newMsgs, trimMsg)
 	newMsgs = append(newMsgs, messages[insertIdx:]...)
@@ -1082,7 +1078,7 @@ func isContextLengthError(err error) bool {
 // Unlike trimContext which gives up when it can't stay under budget,
 // trimToSurvival always produces a drastically reduced message list
 // that nearly every model can handle.
-func trimToSurvival(msgs []llm.Message) []llm.Message {
+func trimToSurvival(msgs []session.Message) []session.Message {
 	if len(msgs) <= 3 {
 		return msgs // already minimal enough
 	}
@@ -1146,11 +1142,11 @@ func trimToSurvival(msgs []llm.Message) []llm.Message {
 	if lastUserIdx < 0 {
 		scanFrom = len(msgs) - 1
 	}
-	var groups [][]llm.Message
+	var groups [][]session.Message
 	seen := 0
 	for i := scanFrom; i > start && seen < 2; i-- {
 		if msgs[i].Role == "assistant" && len(msgs[i].ToolCalls) > 0 {
-			var group []llm.Message
+			var group []session.Message
 
 			// Preceding system messages (corrections, warnings). The walk
 			// stops at the digest/plan messages so they are never absorbed —
@@ -1182,13 +1178,13 @@ func trimToSurvival(msgs []llm.Message) []llm.Message {
 	for _, g := range groups {
 		totalGroupMsgs += len(g)
 	}
-	survival := make([]llm.Message, 0, start+3+totalGroupMsgs+1)
+	survival := make([]session.Message, 0, start+3+totalGroupMsgs+1)
 	if start > 0 {
 		survival = append(survival, msgs[0]) // system message
 	}
 	// Add a context-warning system message
 	warning := "[Context trimmed to survive: the conversation history exceeded the model's context window. Earlier turns have been dropped. If you need information from earlier in the conversation, the agent may ask for a summary.]"
-	survival = append(survival, llm.Message{Role: "system", Content: warning})
+	survival = append(survival, session.Message{Role: "system", Content: warning})
 
 	if digestIdx >= 0 {
 		survival = append(survival, msgs[digestIdx])
@@ -1279,7 +1275,7 @@ const timeBudgetFinalization = "time_budget"
 // potentially untrusted tool output, so its body is wrapped with the
 // engine's untrusted-content wrapper when one is configured. On summarizer
 // failure the previous digest (if any) is left untouched.
-func (e *Engine) refreshDigest(ctx context.Context, messages []llm.Message, dropped []llm.Message) []llm.Message {
+func (e *Engine) refreshDigest(ctx context.Context, messages []session.Message, dropped []session.Message) []session.Message {
 	// The digest refresh is an LLM side call: when every configured budget
 	// is already exhausted it must be skipped — same policy as the
 	// post-loop progress summary (budgetAllowsSideCall). An over-budget
@@ -1310,8 +1306,8 @@ func (e *Engine) refreshDigest(ctx context.Context, messages []llm.Message, drop
 
 	// Otherwise insert right after the protected head.
 	head := e.headLen(messages)
-	digestMsg := llm.Message{Role: "system", Content: content}
-	newMsgs := make([]llm.Message, 0, len(messages)+1)
+	digestMsg := session.Message{Role: "system", Content: content}
+	newMsgs := make([]session.Message, 0, len(messages)+1)
 	newMsgs = append(newMsgs, messages[:head]...)
 	newMsgs = append(newMsgs, digestMsg)
 	newMsgs = append(newMsgs, messages[head:]...)
@@ -1332,7 +1328,7 @@ func (e *Engine) refreshDigest(ctx context.Context, messages []llm.Message, drop
 // the previous digest, then calls the LLM with a bounded timeout (sideTimeout).
 // Returns an empty string on any failure — compaction is best-effort and must
 // never break the agent loop.
-func (e *Engine) summarizeDropped(ctx context.Context, dropped []llm.Message) string {
+func (e *Engine) summarizeDropped(ctx context.Context, dropped []session.Message) string {
 	if e.client == nil {
 		return ""
 	}
@@ -1368,10 +1364,10 @@ func (e *Engine) summarizeDropped(ctx context.Context, dropped []llm.Message) st
 
 	callCtx, cancel := context.WithTimeout(ctx, e.sideTimeout())
 	defer cancel()
-	res, err := e.client.Call(callCtx, []llm.Message{
+	res, err := e.client.Call(callCtx, []session.Message{
 		{Role: "system", Content: compactionSystemPrompt},
 		{Role: "user", Content: b.String()},
-	}, nil, nil)
+	}, nil)
 	if err != nil || res == nil {
 		return ""
 	}
@@ -1389,14 +1385,14 @@ func (e *Engine) summarizeDropped(ctx context.Context, dropped []llm.Message) st
 // rendering as authoritative after its state was dropped), and only a fully
 // parseable message restores engine state. The newest parseable message
 // wins.
-func (e *Engine) syncPlanFromMessages(messages []llm.Message) []llm.Message {
+func (e *Engine) syncPlanFromMessages(messages []session.Message) []session.Message {
 	if e.planStore == nil {
 		return messages
 	}
 	e.planStore.Reset()
 	e.planRenderedVersion = 0
 	e.planRenderedContent = ""
-	out := make([]llm.Message, 0, len(messages))
+	out := make([]session.Message, 0, len(messages))
 	var newest PlanState
 	var newestContent string
 	found := false
@@ -1434,7 +1430,7 @@ func (e *Engine) syncPlanFromMessages(messages []llm.Message) []llm.Message {
 // derived from untrusted inputs (task text, tool results). Fresh renders are
 // recorded via the audit ingest recorder when one is active (the engine-side
 // wrapper runs on a background context, so it cannot do this itself).
-func (e *Engine) refreshPlanMessage(ctx context.Context, messages []llm.Message) []llm.Message {
+func (e *Engine) refreshPlanMessage(ctx context.Context, messages []session.Message) []session.Message {
 	if e.planStore == nil {
 		return messages
 	}
@@ -1456,8 +1452,8 @@ func (e *Engine) refreshPlanMessage(ctx context.Context, messages []llm.Message)
 
 	// Otherwise insert right after the protected head.
 	head := e.headLen(messages)
-	msg := llm.Message{Role: "system", Content: content}
-	newMsgs := make([]llm.Message, 0, len(messages)+1)
+	msg := session.Message{Role: "system", Content: content}
+	newMsgs := make([]session.Message, 0, len(messages)+1)
 	newMsgs = append(newMsgs, messages[:head]...)
 	newMsgs = append(newMsgs, msg)
 	newMsgs = append(newMsgs, messages[head:]...)
@@ -1509,7 +1505,7 @@ func (e *Engine) planMessageContent(ctx context.Context, state PlanState) string
 // Returns an empty string on any failure — including a non-compliant
 // response that still requests tool calls — so the caller can fall back to
 // the plain budget-exhaustion error.
-func (e *Engine) summarizeProgress(ctx context.Context, messages []llm.Message) string {
+func (e *Engine) summarizeProgress(ctx context.Context, messages []session.Message) string {
 	if e.client == nil {
 		return ""
 	}
@@ -1541,10 +1537,10 @@ func (e *Engine) summarizeProgress(ctx context.Context, messages []llm.Message) 
 
 	callCtx, cancel := context.WithTimeout(ctx, e.sideTimeout())
 	defer cancel()
-	res, err := e.client.Call(callCtx, []llm.Message{
+	res, err := e.client.Call(callCtx, []session.Message{
 		{Role: "system", Content: budgetSummarySystemPrompt},
 		{Role: "user", Content: b.String()},
-	}, nil, nil)
+	}, nil)
 	if err != nil || res == nil {
 		return ""
 	}
@@ -1565,7 +1561,7 @@ func (e *Engine) summarizeProgress(ctx context.Context, messages []llm.Message) 
 // partial-progress summary, persist the latest safe state via the per-step
 // callback, and return the typed budget.Error. Callers must pass a messages
 // slice that ends in a safe state (no unanswered assistant tool calls).
-func (e *Engine) budgetExceeded(ctx context.Context, messages []llm.Message, berr *budget.Error, iteration int) (string, []llm.Message, error) {
+func (e *Engine) budgetExceeded(ctx context.Context, messages []session.Message, berr *budget.Error, iteration int) (string, []session.Message, error) {
 	data := map[string]any{
 		"limit_name": berr.Limit,
 		"observed":   berr.Observed,
@@ -1588,7 +1584,7 @@ func (e *Engine) budgetExceeded(ctx context.Context, messages []llm.Message, ber
 	// still has headroom. For runtime/token/cost exhaustion, skip it.
 	if berr.Limit == budget.LimitToolCalls && e.budgetAllowsSideCall() {
 		if summary := e.summarizeProgress(ctx, messages); summary != "" {
-			messages = append(messages, llm.Message{
+			messages = append(messages, session.Message{
 				Role:    "assistant",
 				Content: execBudgetSummaryMarker + "\n\n" + summary,
 			})
@@ -1604,7 +1600,7 @@ func (e *Engine) budgetExceeded(ctx context.Context, messages []llm.Message, ber
 // per-run totals. Totals feed budget enforcement (max_input_tokens /
 // max_output_tokens / cost caps) and usage reporting; a side call invisible
 // to them silently exceeds the caps and under-reports consumption.
-func (e *Engine) recordSideCallUsage(res *llm.CallResult) {
+func (e *Engine) recordSideCallUsage(res *llmclient.CallResult) {
 	if res == nil {
 		return
 	}
@@ -1642,11 +1638,11 @@ func (e *Engine) Run(ctx context.Context, task string) (string, error) {
 	e.TotalCacheReadTokens = 0
 	e.TotalCachedTokens = 0
 	e.TotalCacheReported = false
-	messages := []llm.Message{
+	messages := []session.Message{
 		{Role: "user", Content: task},
 	}
 	if e.system != "" {
-		messages = append([]llm.Message{{Role: "system", Content: e.system}}, messages...)
+		messages = append([]session.Message{{Role: "system", Content: e.system}}, messages...)
 	}
 	result, _, err := e.runLoop(ctx, messages)
 	return result, err
@@ -1660,7 +1656,7 @@ func (e *Engine) Run(ctx context.Context, task string) (string, error) {
 //
 // Use this for multi-turn conversations: load the session, append the
 // new user message, call RunWithMessages, then save the returned messages.
-func (e *Engine) RunWithMessages(ctx context.Context, messages []llm.Message) (string, []llm.Message, error) {
+func (e *Engine) RunWithMessages(ctx context.Context, messages []session.Message) (string, []session.Message, error) {
 	// Reset token accounting for this run
 	e.memMsgIdx = -1
 	e.ctxLeadDroppableFrom = -1
@@ -1681,7 +1677,7 @@ func (e *Engine) RunWithMessages(ctx context.Context, messages []llm.Message) (s
 // digest message in this run means this conversation owns no digest — stale
 // state from an earlier, unrelated run is cleared so buildTrimWarning never
 // advertises a digest message that is not in the conversation.
-func (e *Engine) syncDigestFromMessages(messages []llm.Message) {
+func (e *Engine) syncDigestFromMessages(messages []session.Message) {
 	e.compactDigest = ""
 	for _, m := range messages {
 		if !isDigestMessage(m) {
@@ -1715,7 +1711,7 @@ type trustAllSetter interface{ SetTrustAll(bool) }
 // runLoop is the shared core of Run and RunWithMessages.
 // It runs the ReAct loop on the given messages and returns the final
 // answer plus the complete updated message history.
-func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, []llm.Message, error) {
+func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (string, []session.Message, error) {
 	tools := e.buildToolDefs()
 	startTime := time.Now()
 	// Hard execution budgets (odek-extension/v1): nil when no limits are
@@ -1789,7 +1785,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		// like any other content when the window is tight.
 		if e.bgNoticeProvider != nil {
 			if notice := e.bgNoticeProvider(); notice != "" {
-				messages = append(messages, llm.Message{Role: "user", Content: notice, Name: "bg-notice"})
+				messages = append(messages, session.Message{Role: "user", Content: notice, Name: "bg-notice"})
 				// Audit: the notice carries job output (untrusted);
 				// record the ingest like every other external content.
 				if fn := IngestRecorderFrom(ctx); fn != nil {
@@ -1853,9 +1849,9 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 					} else {
 						wrappedSkill = wrappedContent
 					}
-					skillMsg := llm.Message{Role: "system", Content: wrappedSkill}
+					skillMsg := session.Message{Role: "system", Content: wrappedSkill}
 					// Pre-allocate and copy to avoid nested append allocations
-					newMsgs := make([]llm.Message, 0, len(messages)+1)
+					newMsgs := make([]session.Message, 0, len(messages)+1)
 					newMsgs = append(newMsgs, messages[:insertIdx]...)
 					newMsgs = append(newMsgs, skillMsg)
 					newMsgs = append(newMsgs, messages[insertIdx:]...)
@@ -1885,8 +1881,8 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 					}
 					// Inject episode context as a system message before the user message
 					insertIdx := insertionIndexBeforeLatestUser(messages)
-					epMsg := llm.Message{Role: "system", Content: wrappedContext}
-					newMsgs := make([]llm.Message, 0, len(messages)+1)
+					epMsg := session.Message{Role: "system", Content: wrappedContext}
+					newMsgs := make([]session.Message, 0, len(messages)+1)
 					newMsgs = append(newMsgs, messages[:insertIdx]...)
 					newMsgs = append(newMsgs, epMsg)
 					newMsgs = append(newMsgs, messages[insertIdx:]...)
@@ -1907,7 +1903,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 				if len(messages) > 0 && messages[0].Role == "system" {
 					messages[0].Content = e.baseSystem
 				}
-				memMsg := llm.Message{Role: "system", Content: memBlock}
+				memMsg := session.Message{Role: "system", Content: memBlock}
 				if e.memMsgIdx < 0 && e.lastMemBlock != "" {
 					// A fed-back history (REPL, Telegram, and run persist the full
 					// returned snapshot; only serve filters dynamic injections)
@@ -1935,13 +1931,13 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 				} else if len(messages) == 0 {
 					// Degenerate history (empty slice): the memory message becomes
 					// the whole list rather than panicking on messages[:1].
-					messages = []llm.Message{memMsg}
+					messages = []session.Message{memMsg}
 					e.memMsgIdx = 0
 				} else {
 					// First time: insert memory message after base system.
 					insertAt := 1
 					messages = append(messages[:insertAt],
-						append([]llm.Message{memMsg}, messages[insertAt:]...)...)
+						append([]session.Message{memMsg}, messages[insertAt:]...)...)
 					e.memMsgIdx = insertAt
 					// The memory slot must stay protected even when injected
 					// context already occupies the run after it.
@@ -1971,8 +1967,8 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 						fn("extended_memory", extContext)
 					}
 					insertIdx := insertionIndexBeforeLatestUser(messages)
-					extMsg := llm.Message{Role: "system", Content: wrapped}
-					newMsgs := make([]llm.Message, 0, len(messages)+1)
+					extMsg := session.Message{Role: "system", Content: wrapped}
+					newMsgs := make([]session.Message, 0, len(messages)+1)
 					newMsgs = append(newMsgs, messages[:insertIdx]...)
 					newMsgs = append(newMsgs, extMsg)
 					newMsgs = append(newMsgs, messages[insertIdx:]...)
@@ -1999,17 +1995,10 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		// the model's context window on this very call.
 		messages = e.trimContext(ctx, messages, tools)
 
-		// Apply prompt caching markers when enabled — but only for Anthropic
-		// endpoints. OpenAI rejects the Anthropic request shape (top-level
-		// "system" field) with a 400, and DeepSeek caches automatically,
-		// so markers would be harmful or useless there.
-		var systemBlocks []llm.SystemBlock
-		callMsgs := messages
-		if e.PromptCaching && e.client.IsAnthropic() {
-			callMsgs, systemBlocks = llm.ApplyCacheMarkers(messages)
+		if e.client != nil {
+			e.client.PromptCache = e.PromptCaching
 		}
-
-		result, err := e.callLLM(ctx, callMsgs, systemBlocks, tools)
+		result, err := e.callLLM(ctx, messages, tools)
 		latency := time.Since(start)
 		if err != nil {
 			// Context-length-exceeded errors: don't die — try aggressive
@@ -2038,7 +2027,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 					e.memMsgIdx = -1
 					// Inject survival warning as the final message
 					// so the agent knows context was lost.
-					messages = append(messages, llm.Message{
+					messages = append(messages, session.Message{
 						Role:    "system",
 						Content: "[Context survival mode: the conversation was aggressively reduced to fit the model's context window. Continue from where you left off using the most recent context available.]",
 					})
@@ -2137,7 +2126,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 			}
 			// Append final assistant message so callers (e.g. WebUI) get
 			// the final text in the messages slice and can stream it.
-			messages = append(messages, llm.Message{
+			messages = append(messages, session.Message{
 				Role:             "assistant",
 				Content:          result.Content,
 				ReasoningContent: result.ReasoningContent,
@@ -2168,11 +2157,12 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		}
 
 		// Build assistant message with tool calls
-		assistantMsg := llm.Message{
-			Role:             "assistant",
-			Content:          result.Content,
-			ReasoningContent: result.ReasoningContent,
-			ToolCalls:        result.ToolCalls,
+		assistantMsg := session.Message{
+			Role:              "assistant",
+			Content:           result.Content,
+			ReasoningContent:  result.ReasoningContent,
+			ThinkingSignature: result.ThinkingSignature,
+			ToolCalls:         result.ToolCalls,
 		}
 
 		// Hard execution budget: the tool-call count is checked BEFORE the
@@ -2381,7 +2371,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		} else {
 			for i, tc := range result.ToolCalls {
 				sem <- struct{}{} // acquire — blocks if at cap
-				go func(idx int, tcRef llm.ToolCall) {
+				go func(idx int, tcRef session.ToolCall) {
 					defer func() { <-sem }() // release
 
 					callStart := time.Now()
@@ -2515,7 +2505,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 				tc.Function.Name, nonce, output, tc.Function.Name, nonce,
 			)
 
-			messages = append(messages, llm.Message{
+			messages = append(messages, session.Message{
 				Role:       "tool",
 				Content:    delimited,
 				Name:       tc.Function.Name,
@@ -2630,7 +2620,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 		// Inject all corrections as a single system message
 		if len(corrections) > 0 {
 			msg := strings.Join(corrections, "\n")
-			messages = append(messages, llm.Message{
+			messages = append(messages, session.Message{
 				Role:    "system",
 				Content: msg,
 			})
@@ -2722,7 +2712,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 				HasFinalAnswer:      true,
 			})
 		}
-		messages = append(messages, llm.Message{
+		messages = append(messages, session.Message{
 			Role:    "assistant",
 			Content: final,
 		})
@@ -2742,11 +2732,11 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 // freshly-allocated copy of the message history. The copy is required
 // because trimContext mutates the loop's slice in place — a handed-out
 // snapshot must not change under the caller. Nil callback = no-op.
-func (e *Engine) emitMessagesPersist(messages []llm.Message) {
+func (e *Engine) emitMessagesPersist(messages []session.Message) {
 	if e.messagesPersistCallback == nil {
 		return
 	}
-	snapshot := make([]llm.Message, len(messages))
+	snapshot := make([]session.Message, len(messages))
 	copy(snapshot, messages)
 	e.messagesPersistCallback(snapshot)
 }
@@ -2759,7 +2749,7 @@ func isBGPollTool(name string) bool {
 }
 
 // lastUserMessage returns the content of the most recent user message.
-func lastUserMessage(messages []llm.Message) string {
+func lastUserMessage(messages []session.Message) string {
 	for i := len(messages) - 1; i >= 0; i-- {
 		// Background-notice injections are user-role messages flagged at
 		// append time; user-input hooks must never key on them.
@@ -2771,9 +2761,9 @@ func lastUserMessage(messages []llm.Message) string {
 }
 
 // buildToolDefs converts the registry's tools to LLM-compatible definitions.
-func (e *Engine) buildToolDefs() []llm.ToolDef {
+func (e *Engine) buildToolDefs() []llmclient.ToolDef {
 	all := e.registry.Tools()
-	defs := make([]llm.ToolDef, 0, len(all))
+	defs := make([]llmclient.ToolDef, 0, len(all))
 	for _, t := range all {
 		schema := t.Schema()
 		var params any
@@ -2787,14 +2777,11 @@ func (e *Engine) buildToolDefs() []llm.ToolDef {
 			params = schema
 		}
 
-		defs = append(defs, llm.ToolDef{
-			Type: "function",
-			Function: llm.FunctionDef{
-				Name:        t.Name(),
-				Description: t.Description(),
-				Parameters:  params,
-			},
-		})
+		def, err := llmclient.ToolsFromSchema(t.Name(), t.Description(), params)
+		if err != nil {
+			continue
+		}
+		defs = append(defs, def)
 	}
 	return defs
 }
@@ -3041,7 +3028,11 @@ func (e *Engine) SetModel(model string) {
 	if model == "" || e.client == nil {
 		return
 	}
-	e.client.Model = model
+	n, err := e.client.RebindModel(model)
+	if err != nil {
+		return
+	}
+	e.client = n
 }
 
 // SetThinking updates the thinking/reasoning mode used by this engine at

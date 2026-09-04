@@ -93,10 +93,10 @@ The reasoning block is dimmed with a single 🧠 cue, the answer follows after a
 
 ## Implementation Details
 
-- `llm.Client.CallStream` (`internal/llm/stream.go`) parses the SSE dialect and returns the same `*CallResult` as `Call`; the assembler handles usage on the finish chunk or in a separate empty-choices chunk, `null` content fields, and per-index tool-argument concatenation.
+- Streaming is owned by [`go-llm-sdk`](https://github.com/BackendStack21/go-llm-sdk). odek's `internal/llmclient` forwards `CallStream` and maps deltas.
 - Streaming requests use a pooled HTTP client without a client-level timeout (`transport.NewPooledClientNoDeadline`) — a whole-request `http.Client.Timeout` would kill long body reads — sharing the connection pool with the buffered client. Deadlines are enforced per request via context.
 - The engine wires streaming through `loop.Engine.SetStream` / `SetDeltaHandler`, following the existing optional-callback pattern (`SetSignalHandler`, `SetToolEventHandler`).
-- Offline test coverage lives in `internal/llm/stream_test.go` (the provider-variance and failure-mode matrix) and `internal/loop/loop_test.go` (engine dispatch and the buffered default).
+- Offline test coverage lives in the SDK and `internal/loop/loop_test.go` (engine dispatch and the buffered default).
 
 ## Idle watchdog
 

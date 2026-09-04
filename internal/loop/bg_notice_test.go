@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
@@ -69,7 +69,7 @@ func TestBackgroundNotice_InjectedAsStandaloneUserMessage(t *testing.T) {
 	server := captureServer([]string{toolCallResp("noop", "{}", "c1"), finalResp}, &bodies)
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	registry := tool.NewRegistry([]tool.Tool{&noopTool{}})
 	engine := New(client, registry, 10, "", nil, 0)
 
@@ -82,7 +82,7 @@ func TestBackgroundNotice_InjectedAsStandaloneUserMessage(t *testing.T) {
 		return ""
 	})
 
-	_, _, err := engine.RunWithMessages(context.Background(), []llm.Message{
+	_, _, err := engine.RunWithMessages(context.Background(), []session.Message{
 		{Role: "user", Content: "hello"},
 	})
 	if err != nil {
@@ -115,11 +115,11 @@ func TestBackgroundNotice_NilProvider(t *testing.T) {
 	server := captureServer([]string{finalResp}, &bodies)
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	registry := tool.NewRegistry([]tool.Tool{&noopTool{}})
 	engine := New(client, registry, 10, "", nil, 0)
 
-	_, _, err := engine.RunWithMessages(context.Background(), []llm.Message{
+	_, _, err := engine.RunWithMessages(context.Background(), []session.Message{
 		{Role: "user", Content: "hello"},
 	})
 	if err != nil {
@@ -171,7 +171,7 @@ func TestStallExempt_BGPollTools(t *testing.T) {
 	server := captureServer(responses, &bodies)
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	registry := tool.NewRegistry([]tool.Tool{&namedTool{name: "bg_status", out: `{"status":"running"}`}})
 	engine := New(client, registry, 10, "", nil, 0)
 
@@ -182,7 +182,7 @@ func TestStallExempt_BGPollTools(t *testing.T) {
 		}
 	})
 
-	_, _, err := engine.RunWithMessages(context.Background(), []llm.Message{
+	_, _, err := engine.RunWithMessages(context.Background(), []session.Message{
 		{Role: "user", Content: "poll it"},
 	})
 	if err != nil {
@@ -211,7 +211,7 @@ func TestStallStillFiresForOrdinaryTools(t *testing.T) {
 	server := captureServer(responses, &bodies)
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	registry := tool.NewRegistry([]tool.Tool{&noopTool{}})
 	engine := New(client, registry, 10, "", nil, 0)
 
@@ -222,7 +222,7 @@ func TestStallStillFiresForOrdinaryTools(t *testing.T) {
 		}
 	})
 
-	_, _, err := engine.RunWithMessages(context.Background(), []llm.Message{
+	_, _, err := engine.RunWithMessages(context.Background(), []session.Message{
 		{Role: "user", Content: "loop it"},
 	})
 	if err != nil {
@@ -238,7 +238,7 @@ func TestStallStillFiresForOrdinaryTools(t *testing.T) {
 // drained bg-notice messages — the fixed preamble text must never shadow
 // the operator's last real input for skill/memory/episode triggering.
 func TestLastUserMessage_SkipsBGPrefixedNames(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "user", Content: "real prompt"},
 		{Role: "assistant", Content: "ok"},
 		{Role: "user", Content: "notice text", Name: "bg-notice"},
@@ -248,7 +248,7 @@ func TestLastUserMessage_SkipsBGPrefixedNames(t *testing.T) {
 		t.Fatalf("lastUserMessage = %q, want %q (bg-* messages must not shadow operator input)", got, "real prompt")
 	}
 	// All-systems-noise fallback: no operator user message at all.
-	onlyBG := []llm.Message{
+	onlyBG := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "wake preamble", Name: "bg-wake"},
 	}

@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
@@ -23,18 +23,18 @@ func TestRunWithMessages_MemoryBlockNotDuplicatedAcrossTurns(t *testing.T) {
 	}))
 	defer server.Close()
 
-	engine := New(llm.New(server.URL, "sk-test", "test-model", "", 0, 0),
+	engine := New(testChatClient(t, server.URL),
 		tool.NewRegistry(nil), 10, "sys", nil, 0)
 	engine.SetMemoryPromptFunc(func() string { return "MEM" })
 
-	msgs := []llm.Message{{Role: "system", Content: "sys"}, {Role: "user", Content: "turn 1"}}
+	msgs := []session.Message{{Role: "system", Content: "sys"}, {Role: "user", Content: "turn 1"}}
 	_, msgs, err := engine.RunWithMessages(context.Background(), msgs)
 	if err != nil {
 		t.Fatalf("turn 1: %v", err)
 	}
 
 	// Turn 2: caller feeds the persisted history back plus a new user msg.
-	msgs = append(msgs, llm.Message{Role: "user", Content: "turn 2"})
+	msgs = append(msgs, session.Message{Role: "user", Content: "turn 2"})
 	_, msgs, err = engine.RunWithMessages(context.Background(), msgs)
 	if err != nil {
 		t.Fatalf("turn 2: %v", err)
@@ -59,16 +59,16 @@ func TestRunWithMessages_MemoryBlockUpdatedNotDuplicatedOnContentChange(t *testi
 	}))
 	defer server.Close()
 
-	engine := New(llm.New(server.URL, "sk-test", "test-model", "", 0, 0),
+	engine := New(testChatClient(t, server.URL),
 		tool.NewRegistry(nil), 10, "sys", nil, 0)
 	mem := "mem-old"
 	engine.SetMemoryPromptFunc(func() string { return mem })
 
-	msgs := []llm.Message{{Role: "system", Content: "sys"}, {Role: "user", Content: "turn 1"}}
+	msgs := []session.Message{{Role: "system", Content: "sys"}, {Role: "user", Content: "turn 1"}}
 	_, msgs, _ = engine.RunWithMessages(context.Background(), msgs)
 
 	mem = "mem-new"
-	msgs = append(msgs, llm.Message{Role: "user", Content: "turn 2"})
+	msgs = append(msgs, session.Message{Role: "user", Content: "turn 2"})
 	_, msgs, err := engine.RunWithMessages(context.Background(), msgs)
 	if err != nil {
 		t.Fatalf("turn 2: %v", err)
@@ -88,7 +88,7 @@ func TestRunWithMessages_MemoryBlockUpdatedNotDuplicatedOnContentChange(t *testi
 	}
 }
 
-func summarize(msgs []llm.Message) string {
+func summarize(msgs []session.Message) string {
 	out := ""
 	for i, m := range msgs {
 		if i > 0 {

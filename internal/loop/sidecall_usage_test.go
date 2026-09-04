@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/budget"
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
@@ -30,10 +30,10 @@ func TestSummarizeDropped_UsageCounted(t *testing.T) {
 	}))
 	defer server.Close()
 
-	engine := New(llm.New(server.URL, "sk-test", "test-model", "", 0, 0),
+	engine := New(testChatClient(t, server.URL),
 		tool.NewRegistry(nil), 10, "", nil, 0)
 
-	engine.summarizeDropped(context.Background(), []llm.Message{
+	engine.summarizeDropped(context.Background(), []session.Message{
 		{Role: "assistant", Content: "dropped work"},
 	})
 	if engine.TotalInputTokens != 111 {
@@ -52,10 +52,10 @@ func TestSummarizeProgress_UsageCounted(t *testing.T) {
 	}))
 	defer server.Close()
 
-	engine := New(llm.New(server.URL, "sk-test", "test-model", "", 0, 0),
+	engine := New(testChatClient(t, server.URL),
 		tool.NewRegistry(nil), 10, "", nil, 0)
 
-	engine.summarizeProgress(context.Background(), []llm.Message{
+	engine.summarizeProgress(context.Background(), []session.Message{
 		{Role: "user", Content: "task"},
 		{Role: "assistant", Content: "partial work"},
 	})
@@ -84,7 +84,7 @@ func TestRun_SideCallTokensEnforceBudget(t *testing.T) {
 	}))
 	defer server.Close()
 
-	engine := New(llm.New(server.URL, "sk-test", "test-model", "", 0, 0),
+	engine := New(testChatClient(t, server.URL),
 		tool.NewRegistry(nil), 10, "sys", nil, 3000)
 	engine.SetCompaction(true) // engine default is off; config enables it
 	engine.SetLimits(budget.Limits{MaxInputTokens: 400}, "test-model")
@@ -92,17 +92,17 @@ func TestRun_SideCallTokensEnforceBudget(t *testing.T) {
 	// Heavy old groups force pass-2 group drops at the top of iteration 0
 	// (same shape as TestTrimContext_*): the drop triggers the digest
 	// side call before the first main LLM call.
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "task"},
 	}
 	for i := 0; i < 20; i++ {
-		tc := llm.ToolCall{ID: fmt.Sprintf("c%d", i), Type: "function"}
+		tc := session.ToolCall{ID: fmt.Sprintf("c%d", i), Type: "function"}
 		tc.Function.Name = "echo"
 		tc.Function.Arguments = "{}"
 		msgs = append(msgs,
-			llm.Message{Role: "assistant", Content: strings.Repeat("x", 300), ToolCalls: []llm.ToolCall{tc}},
-			llm.Message{Role: "tool", Content: strings.Repeat("y", 900), ToolCallID: fmt.Sprintf("c%d", i)},
+			session.Message{Role: "assistant", Content: strings.Repeat("x", 300), ToolCalls: []session.ToolCall{tc}},
+			session.Message{Role: "tool", Content: strings.Repeat("y", 900), ToolCallID: fmt.Sprintf("c%d", i)},
 		)
 	}
 
@@ -128,7 +128,7 @@ func TestRefreshDigest_SkipsSideCallWhenBudgetExhausted(t *testing.T) {
 	}))
 	defer server.Close()
 
-	engine := New(llm.New(server.URL, "sk-test", "test-model", "", 0, 0),
+	engine := New(testChatClient(t, server.URL),
 		tool.NewRegistry(nil), 10, "", nil, 0)
 	engine.SetLimits(budget.Limits{MaxInputTokens: 100}, "test-model")
 	// SetLimits stores the limits; the checker itself is built at runLoop
@@ -139,11 +139,11 @@ func TestRefreshDigest_SkipsSideCallWhenBudgetExhausted(t *testing.T) {
 	engine.TotalInputTokens = 10_000
 	engine.TotalOutputTokens = 5_000
 
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "task"},
 	}
-	dropped := []llm.Message{{Role: "assistant", Content: "old work"}}
+	dropped := []session.Message{{Role: "assistant", Content: "old work"}}
 
 	out := engine.refreshDigest(context.Background(), msgs, dropped)
 	if n := calls.Load(); n != 0 {

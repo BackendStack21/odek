@@ -190,7 +190,7 @@ CI (`.github/workflows/test.yml`) runs the unit suite under `-race` on every pus
 |---------|-------|
 | `odek` | Config defaults, API key fallback, thinking passthrough, model profiles, AGENTS.md, Close lifecycle, token tracking, Memory() nil-safety |
 | `internal/config` | Config file loading, env vars, merge chain, variable expansion |
-| `internal/llm` | JSON marshaling, thinking fields, response parsing, usage statistics, SimpleCall, retry/backoff |
+| `internal/llmclient` | Adapter over go-llm-sdk (message DTO mapping, temperature polarity, SimpleCall) |
 | `internal/loop` | ReAct engine with httptest mock server, context budgeting, skill loader |
 | `internal/session` | Session CRUD, trim, cleanup, list, latest, fallback scan, corrupt data, path-traversal protection, concurrent safety, atomic writes, audit log roundtrip |
 | `internal/sandbox` | Image resolution, `docker run` argument construction (security defaults, forbidden-mount filtering), nested-path file injection, build-from-Dockerfile caching |

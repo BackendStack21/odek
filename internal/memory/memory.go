@@ -955,7 +955,7 @@ func (m *MemoryManager) markPromptDirty() {
 //
 // Equivalent to OnSessionEndWithProvenance with a zero-value (trusted)
 // provenance. Prefer the With-Provenance variant from callers that have
-// access to the structured llm.Message slice — that lets us mark
+// access to the structured session.Message slice — that lets us mark
 // episodes derived from sessions that touched untrusted content, so they
 // are never auto-replayed.
 func (m *MemoryManager) OnSessionEnd(sessionID string, turns int, messages []string) {

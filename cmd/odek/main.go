@@ -19,7 +19,7 @@ import (
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/events"
 	"github.com/BackendStack21/odek/internal/guard"
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/llmclient"
 	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/mcpclient"
 	"github.com/BackendStack21/odek/internal/memory"
@@ -301,15 +301,15 @@ type sandboxConfig = sandbox.Config
 // separation on the reasoning→content transition — and the renderer
 // suppresses the duplicate Thinking/FinalAnswer bodies for text that was
 // already streamed (Renderer.SetStreamedOutput).
-func streamDeltaPrinter(enabled bool, rend *render.Renderer) func(llm.Delta) error {
+func streamDeltaPrinter(enabled bool, rend *render.Renderer) func(llmclient.Delta) error {
 	if !enabled {
 		return nil
 	}
-	return func(d llm.Delta) error {
+	return func(d llmclient.Delta) error {
 		switch d.Kind {
-		case llm.DeltaReasoning:
+		case llmclient.DeltaReasoning:
 			rend.StreamReasoning(d.Text)
-		case llm.DeltaContent:
+		case llmclient.DeltaContent:
 			rend.StreamContent(d.Text)
 		}
 		return nil
@@ -334,6 +334,7 @@ func main() {
 // which is critical for boolean flags: --sandbox-readonly absent means
 // "inherit from config", while --sandbox-readonly present means "true".
 type runFlags struct {
+	Provider       string
 	Model          string
 	BaseURL        string
 	System         string
@@ -460,6 +461,12 @@ func parseRunFlags(args []string) (runFlags, error) {
 			}
 			f.Model = args[i+1]
 			i += 2
+		case "--provider":
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--provider requires a value")
+			}
+			f.Provider = args[i+1]
+			i++
 		case "--base-url":
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("--base-url requires a value")
@@ -1165,10 +1172,10 @@ Init flags:
   --force, -f         Overwrite existing file without prompting
 
 Run flags:
+  --provider <id>      LLM provider (default: deepseek)
+                       Built-ins: deepseek, openai, anthropic, gemini, zai, kimi
   --model <name>       LLM model (default: deepseek-v4-flash)
-                       Known profiles: deepseek-v4-flash, deepseek-v4-pro
-                       Profiles auto-set thinking/timeout defaults.
-  --base-url <url>     API endpoint (default: https://api.deepseek.com/v1)
+  --base-url <url>     Override the selected provider's API endpoint
   --max-iter <n>       Max think->act cycles (default: 90)
   --thinking <level>     Reasoning depth: enabled, disabled, low, medium, high
                          Requires a model that supports extended thinking.
@@ -1285,9 +1292,16 @@ Environment variables:
 // vision, embedding, trusted_proxies) are intentionally omitted from the
 // template to keep it maintainable — see docs/CONFIG.md for the full schema.
 const globalConfigTemplate = `{
+  "provider": "deepseek",
   "model": "deepseek-v4-flash",
-  "base_url": "https://api.deepseek.com/v1",
-  "api_key": "${ODEK_API_KEY}",
+  "providers": {
+    "deepseek": { "api_key": "${DEEPSEEK_API_KEY}" }
+  },
+  "llm": {
+    "request_timeout_seconds": 120,
+    "stream_idle_timeout_seconds": 120,
+    "context_window": 0
+  },
   "thinking": "",
   "max_iterations": 90,
   "max_tool_parallel": 4,
@@ -1569,9 +1583,9 @@ func initConfig(args []string) error {
 	fmt.Println()
 	if global {
 		fmt.Println("  Edit this file to set your preferences. Common fields:")
+		fmt.Println("    provider          LLM provider id (default: deepseek)")
 		fmt.Println("    model             LLM model name (default: deepseek-v4-flash)")
-		fmt.Println("    base_url          API endpoint URL")
-		fmt.Println("    api_key           API key (supports ${VAR} substitution)")
+		fmt.Println("    providers         Per-id api_key / base_url / format overrides")
 		fmt.Println("    thinking          Reasoning depth (enabled/disabled/low/medium/high)")
 		fmt.Println("    max_iterations    Max think→act cycles (default: 90)")
 		fmt.Println("    prompt_caching    Provider prompt caching (true/false)")
@@ -1592,7 +1606,8 @@ func initConfig(args []string) error {
 		fmt.Println("  Empty values inherit from your global config.")
 		fmt.Println()
 		fmt.Println("  The loader ignores operator-only fields in ./odek.json:")
-		fmt.Println("    api_key, base_url, system, dangerous, memory, sessions,")
+		fmt.Println("    provider, providers, api_key, base_url, llm, system,")
+		fmt.Println("    dangerous, memory, sessions,")
 		fmt.Println("    embedding, guard, maintenance, telegram, web_search,")
 		fmt.Println("    trusted_proxies, tools.enabled, skills.dirs")
 		fmt.Println("  Set those in ~/.odek/config.json instead: odek init --global")
@@ -1640,6 +1655,7 @@ func run(args []string) error {
 
 	// Load config from all sources (file → env → CLI)
 	resolved := config.LoadConfig(config.CLIFlags{
+		Provider:      f.Provider,
 		Model:         f.Model,
 		BaseURL:       f.BaseURL,
 		Thinking:      f.Thinking,
@@ -1832,7 +1848,7 @@ func run(args []string) error {
 		}
 	}
 
-	agent, err := odek.New(odek.Config{
+	runCfg := odek.Config{
 		Model:             resolved.Model,
 		BaseURL:           resolved.BaseURL,
 		APIKey:            resolved.APIKey,
@@ -1862,7 +1878,9 @@ func run(args []string) error {
 		EventsIncludeArgs: f.EventsIncludeArgs != nil && *f.EventsIncludeArgs,
 		ExternalRefs:      externalRefs,
 		Limits:            resolved.Limits,
-	})
+	}
+	applyResolvedProvider(&runCfg, resolved)
+	agent, err := odek.New(runCfg)
 	if err != nil {
 		return err
 	}
@@ -1877,7 +1895,7 @@ func run(args []string) error {
 	defer cancel()
 
 	// Shared agent run — capture messages for --learn mode
-	var allMessages []llm.Message
+	var allMessages []session.Message
 	var runErr error
 	var result string
 	var sessionID string
@@ -1897,11 +1915,11 @@ func run(args []string) error {
 			if err != nil {
 				return fmt.Errorf("session store: %w", err)
 			}
-			messages := []llm.Message{
+			messages := []session.Message{
 				{Role: "user", Content: f.Task},
 			}
 			if systemMessage != "" {
-				messages = append([]llm.Message{{Role: "system", Content: systemMessage}}, messages...)
+				messages = append([]session.Message{{Role: "system", Content: systemMessage}}, messages...)
 			}
 			sess, err := store.Create(messages, resolved.Model, f.Task)
 			if err != nil {
@@ -1977,11 +1995,11 @@ func run(args []string) error {
 
 	if f.Session != nil && *f.Session {
 		// Multi-turn session mode: save conversation history
-		messages := []llm.Message{
+		messages := []session.Message{
 			{Role: "user", Content: f.Task},
 		}
 		if systemMessage != "" {
-			messages = append([]llm.Message{{Role: "system", Content: systemMessage}}, messages...)
+			messages = append([]session.Message{{Role: "system", Content: systemMessage}}, messages...)
 		}
 
 		// Append user input to buffer (AppendBuffer summarizes raw text).
@@ -1993,7 +2011,7 @@ func run(args []string) error {
 		// crash) can be resumed via `odek continue` from the last completed
 		// step instead of losing the whole in-progress turn.
 		if runSess != nil {
-			agent.SetMessagesPersistCallback(func(snapshot []llm.Message) {
+			agent.SetMessagesPersistCallback(func(snapshot []session.Message) {
 				if len(snapshot) < len(runSess.Messages) {
 					// The loop trimmed history in place — keep the richer
 					// state already persisted instead of overwriting it.
@@ -2032,7 +2050,7 @@ func run(args []string) error {
 			if err != nil {
 				return fmt.Errorf("load session: %w", err)
 			}
-			var newMsgs []llm.Message
+			var newMsgs []session.Message
 			if n := len(latest.GetMessages()); n < len(allMessages) {
 				newMsgs = allMessages[n:]
 			}
@@ -2058,11 +2076,11 @@ func run(args []string) error {
 		}
 	} else {
 		// Single-shot mode (default)
-		messages := []llm.Message{
+		messages := []session.Message{
 			{Role: "user", Content: f.Task},
 		}
 		if systemMessage != "" {
-			messages = append([]llm.Message{{Role: "system", Content: systemMessage}}, messages...)
+			messages = append([]session.Message{{Role: "system", Content: systemMessage}}, messages...)
 		}
 		result, allMessages, runErr = agent.RunWithMessages(ctx, messages)
 	}
@@ -2290,6 +2308,11 @@ type toolConfig struct {
 	// Built once by toolConfigFromResolved — the tool structs never hold
 	// the raw ResolvedConfig, so the sanitized boundary is structural.
 	Introspection IntrospectionState
+
+	// Provider identity for delegate_tasks envelope inheritance.
+	Provider string
+	Model    string
+	BaseURL  string
 }
 
 // toolConfigFromResolved builds the toolConfig for builtinTools from a
@@ -2299,6 +2322,17 @@ type toolConfig struct {
 // the operator's subagent.timeout_seconds) and repl omitted
 // Transcription/Vision. New sections added to toolConfig must be wired
 // here, not per call site.
+// applyResolvedProvider copies the v2 LLM identity (provider registry +
+// timeout/window) onto an odek.Config built from a ResolvedConfig.
+func applyResolvedProvider(cfg *odek.Config, resolved config.ResolvedConfig) {
+	cfg.Provider = resolved.Provider
+	cfg.Providers = resolved.ProviderOverrides()
+	if resolved.LLM.RequestTimeoutSeconds > 0 {
+		cfg.RequestTimeout = time.Duration(resolved.LLM.RequestTimeoutSeconds) * time.Second
+	}
+	cfg.ContextWindow = resolved.LLM.ContextWindow
+}
+
 func toolConfigFromResolved(resolved config.ResolvedConfig) toolConfig {
 	return toolConfig{
 		Transcription: resolved.Transcription,
@@ -2309,6 +2343,9 @@ func toolConfigFromResolved(resolved config.ResolvedConfig) toolConfig {
 		Profiles:      resolved.Profiles,
 
 		Introspection: buildIntrospectionState(resolved),
+		Provider:      resolved.Provider,
+		Model:         resolved.Model,
+		BaseURL:       resolved.BaseURL,
 	}
 }
 
@@ -2366,6 +2403,9 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 			profiles:              tcfg.Profiles,
 			artifactsRoot:         artifactsRoot, // empty ⇒ no artifact dirs created
 			artifactReadAvailable: artifactReadEnabled(tcfg),
+			provider:              tcfg.Provider,
+			model:                 tcfg.Model,
+			baseURL:               tcfg.BaseURL,
 		},
 		&listSubagentProfilesTool{
 			profiles:       tcfg.Profiles,
@@ -2759,7 +2799,10 @@ func skillCmd(args []string) error {
 			if basicOnly {
 				return "", fmt.Errorf("basic mode — no LLM call")
 			}
-			client := llm.New(cfg.BaseURL, cfg.APIKey, cfg.Model, "", 0, 30*time.Second)
+			client, err := llmclient.Dial(cfg.Provider, cfg.Model, cfg.APIKey, cfg.BaseURL)
+			if err != nil {
+				return "", err
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			return client.SimpleCall(ctx,
@@ -2843,7 +2886,7 @@ func expandHome(path string) string {
 // that carry unanswered tool calls removed. Their tool results never
 // completed, and resuming with dangling tool calls is an invalid request for
 // OpenAI-compatible APIs.
-func dropDanglingToolCalls(messages []llm.Message) []llm.Message {
+func dropDanglingToolCalls(messages []session.Message) []session.Message {
 	for len(messages) > 0 &&
 		messages[len(messages)-1].Role == "assistant" &&
 		len(messages[len(messages)-1].ToolCalls) > 0 {
@@ -2857,7 +2900,7 @@ func dropDanglingToolCalls(messages []llm.Message) []llm.Message {
 // completed step. A trailing assistant message with unanswered tool calls
 // is dropped first: its tool results never completed, and resuming with
 // dangling tool calls is an invalid request for OpenAI-compatible APIs.
-func persistPartialMessages(store *session.Store, sess *session.Session, messages []llm.Message) {
+func persistPartialMessages(store *session.Store, sess *session.Session, messages []session.Message) {
 	if store == nil || sess == nil || len(messages) == 0 {
 		return
 	}
@@ -2876,7 +2919,7 @@ func persistPartialMessages(store *session.Store, sess *session.Session, message
 // place during the run — context-limit protection can drop old turn groups,
 // shrinking the returned slice below the pre-run length — it returns nil
 // rather than panicking on a negative-bounds slice.
-func auditTurnDelta(allMessages []llm.Message, histLen int) []llm.Message {
+func auditTurnDelta(allMessages []session.Message, histLen int) []session.Message {
 	if histLen < 0 || len(allMessages) <= histLen {
 		return nil
 	}
@@ -3031,7 +3074,7 @@ func continueCmd(args []string) error {
 		SetToolOutputGuard(injectionGuard, resolved.Guard)
 	}
 
-	agent, err := odek.New(odek.Config{
+	contCfg := odek.Config{
 		Model:            resolved.Model,
 		BaseURL:          resolved.BaseURL,
 		APIKey:           resolved.APIKey,
@@ -3055,7 +3098,9 @@ func continueCmd(args []string) error {
 		MemoryConfig:     resolved.Memory,
 		Guard:            injectionGuard,
 		GuardConfig:      resolved.Guard,
-	})
+	}
+	applyResolvedProvider(&contCfg, resolved)
+	agent, err := odek.New(contCfg)
 	if err != nil {
 		return err
 	}
@@ -3108,7 +3153,7 @@ func continueCmd(args []string) error {
 	// the user left off and the next likely step.
 	messages = injectReturnAfterBreak(ctx, agent.Memory(), messages)
 
-	messages = append(messages, llm.Message{Role: "user", Content: task})
+	messages = append(messages, session.Message{Role: "user", Content: task})
 
 	// Append user input to buffer (AppendBuffer summarizes raw text).
 	if mm := agent.Memory(); mm != nil {
@@ -3120,7 +3165,7 @@ func continueCmd(args []string) error {
 	// Persist per-turn progress so an interrupted run (Ctrl-C, SIGTERM,
 	// crash) can be resumed again from the last completed step instead of
 	// losing the whole in-progress turn.
-	agent.SetMessagesPersistCallback(func(snapshot []llm.Message) {
+	agent.SetMessagesPersistCallback(func(snapshot []session.Message) {
 		if len(snapshot) < len(sess.Messages) {
 			// The loop trimmed history in place — keep the richer state
 			// already persisted instead of overwriting it.
@@ -3412,7 +3457,7 @@ func cleanupSessions(store *session.Store, args []string) error {
 }
 
 // countUserTurnsUpTo counts user messages up to (but not including) index n.
-func countUserTurnsUpTo(messages []llm.Message, n int) int {
+func countUserTurnsUpTo(messages []session.Message, n int) int {
 	count := 0
 	for i := 0; i < n && i < len(messages); i++ {
 		if messages[i].Role == "user" {

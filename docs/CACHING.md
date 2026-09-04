@@ -12,7 +12,7 @@ odek supports prompt caching for supported LLM providers. When enabled, the syst
 
 When caching is enabled, odek:
 
-1. Moves the system prompt from the `messages[]` array into a dedicated `system` field with `cache_control: {"type": "ephemeral"}` (Anthropic format — applied only when the endpoint is Anthropic)
+1. Moves the system prompt from the `messages[]` array into a dedicated `system` field with `cache_control: {"type": "ephemeral"}` (Anthropic format — applied only when the bound provider's format is Anthropic)
 2. Marks the first user message with `cache_control: {"type": "ephemeral"}`
 3. Sends the `anthropic-version: 2023-06-01` header (required by Anthropic for caching; ignored by others)
 

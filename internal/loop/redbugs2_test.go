@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
@@ -24,11 +24,11 @@ func TestRED_SkillContextInjectedBeforeUserMessage(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, tool.NewRegistry(nil), 10, "sys", nil, 0)
 	engine.SetSkillLoader(func(string) string { return "SKILLDATA" })
 
-	_, msgs, err := engine.RunWithMessages(context.Background(), []llm.Message{
+	_, msgs, err := engine.RunWithMessages(context.Background(), []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "hi"},
 	})
@@ -110,7 +110,7 @@ func TestRED_HeartbeatSignalHandlerNotInvokedConcurrently(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, tool.NewRegistry([]tool.Tool{&slowTool{dur: 120 * time.Millisecond}}), 10, "", nil, 0)
 	engine.SetMaxToolParallel(2)
 	engine.SetSignalHandler(func(ev SignalEvent) { detect() })

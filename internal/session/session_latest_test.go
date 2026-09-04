@@ -4,8 +4,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/BackendStack21/odek/internal/llm"
 )
 
 // TestStore_Latest_SkipsUnreadableNewestCandidate pins the documented
@@ -21,7 +19,7 @@ func TestStore_Latest_SkipsUnreadableNewestCandidate(t *testing.T) {
 
 	// Healthy session, pushed into the past so it sorts after the victim.
 	healthy, err := store.Create(
-		[]llm.Message{{Role: "system", Content: "sys"}, {Role: "user", Content: "hello"}},
+		[]Message{{Role: "system", Content: "sys"}, {Role: "user", Content: "hello"}},
 		"test-model", "healthy",
 	)
 	if err != nil {
@@ -43,7 +41,7 @@ func TestStore_Latest_SkipsUnreadableNewestCandidate(t *testing.T) {
 	t.Cleanup(func() { MaxSessionFileBytes = orig })
 	huge := strings.Repeat("x", 8*1024)
 	oversized, err := store.Create(
-		[]llm.Message{{Role: "system", Content: huge}},
+		[]Message{{Role: "system", Content: huge}},
 		"test-model", "oversized",
 	)
 	if err != nil {

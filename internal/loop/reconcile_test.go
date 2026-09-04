@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
@@ -45,7 +44,7 @@ func reconcileServer(t *testing.T, toolName, toolArgs, finalAnswer string) *http
 func newReconcileEngine(t *testing.T, server *httptest.Server, tl tool.Tool) *Engine {
 	t.Helper()
 	registry := tool.NewRegistry([]tool.Tool{tl})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	return New(client, registry, 10, "", nil, 0)
 }
 

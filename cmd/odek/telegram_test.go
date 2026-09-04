@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/guard"
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/render"
 	"github.com/BackendStack21/odek/internal/session"
@@ -1122,7 +1121,7 @@ func TestCountSyncMap(t *testing.T) {
 // TestFormatStats verifies the /stats output formatting.
 func TestFormatStats(t *testing.T) {
 	cs := &telegram.ChatSession{
-		Messages:   make([]llm.Message, 3),
+		Messages:   make([]session.Message, 3),
 		TurnCount:  2,
 		CreatedAt:  time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
 		LastActive: time.Date(2026, 1, 2, 3, 5, 5, 0, time.UTC),

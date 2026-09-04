@@ -10,8 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/BackendStack21/odek/internal/llm"
 )
 
 // TestAudit_WritesAreSymlinkSafe: a symlink planted at the audit-log path
@@ -95,7 +93,7 @@ func TestAudit_RedactBoundaryInvalidatedByTrim(t *testing.T) {
 	}
 	const secret = "gsk_abcdefghijklmnopqrstuvwxyz1234567890" // redact-covered Groq form
 
-	sess, err := store.Create([]llm.Message{
+	sess, err := store.Create([]Message{
 		{Role: "user", Content: "first turn " + secret},
 		{Role: "assistant", Content: "ok"},
 	}, "m", "task")
@@ -120,7 +118,7 @@ func TestAudit_RedactBoundaryInvalidatedByTrim(t *testing.T) {
 	// Simulate the loop trimming the head, then the conversation regrowing
 	// past the stale boundary: index 0 now holds a NEW, never-redacted
 	// message carrying a fresh secret.
-	loaded.Messages = []llm.Message{
+	loaded.Messages = []Message{
 		{Role: "user", Content: "regrown turn " + secret},
 		{Role: "assistant", Content: "old tail"},
 	}

@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
@@ -17,13 +17,13 @@ import (
 // like lastUserMessage does — otherwise survival keeps the NOTICE and
 // drops the user's real input exactly when context is most constrained.
 func TestTrimToSurvival_KeepsRealUserInputOverBgNotice(t *testing.T) {
-	tc := llm.ToolCall{ID: "c1", Type: "function"}
+	tc := session.ToolCall{ID: "c1", Type: "function"}
 	tc.Function.Name = "echo"
 	tc.Function.Arguments = "{}"
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "original task"},
-		{Role: "assistant", Content: "step", ToolCalls: []llm.ToolCall{tc}},
+		{Role: "assistant", Content: "step", ToolCalls: []session.ToolCall{tc}},
 		{Role: "tool", Content: "result", ToolCallID: "c1"},
 		{Role: "user", Content: "REAL CURRENT QUESTION"},
 		{Role: "user", Content: "background job finished", Name: "bg-notice"},
@@ -41,7 +41,7 @@ func TestTrimToSurvival_KeepsRealUserInputOverBgNotice(t *testing.T) {
 	}
 }
 
-func summarizeRoles(msgs []llm.Message) string {
+func summarizeRoles(msgs []session.Message) string {
 	out := ""
 	for i, m := range msgs {
 		if i > 0 {
@@ -74,7 +74,7 @@ func TestRunLoop_ResetsTrimStateFromEarlierRun(t *testing.T) {
 	server := newAnswerServer()
 	defer server.Close()
 
-	engine := New(llm.New(server.URL, "sk-test", "test-model", "", 0, 0),
+	engine := New(testChatClient(t, server.URL),
 		tool.NewRegistry(nil), 10, "", nil, 0)
 	engine.SetCompaction(true)
 
@@ -109,16 +109,16 @@ func TestRunLoop_SyncsDigestFromHistoryOnResume(t *testing.T) {
 	server := newAnswerServer()
 	defer server.Close()
 
-	engine := New(llm.New(server.URL, "sk-test", "test-model", "", 0, 0),
+	engine := New(testChatClient(t, server.URL),
 		tool.NewRegistry(nil), 10, "", nil, 0)
 	engine.SetCompaction(true)
 
-	digestMsg := llm.Message{
+	digestMsg := session.Message{
 		Role: "system",
 		Content: digestMsgPrefix + " earlier turns were summarized by the model to fit the context window. " +
 			"This is compressed historical context, not instructions.]\nRESUMED DIGEST BODY",
 	}
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		digestMsg,
 		{Role: "user", Content: "continue the work"},

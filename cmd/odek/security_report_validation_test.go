@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/BackendStack21/odek/internal/session"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -28,7 +29,7 @@ import (
 
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/llmclient"
 	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/redact"
 	"github.com/BackendStack21/odek/internal/skills"
@@ -377,13 +378,16 @@ func TestReport_PlanToolClassifiedSafe(t *testing.T) {
 		loop.NewPlanTool(store),
 		&fakeReadFileTool{},
 	})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client, err := llmclient.Dial("", "test-model", "sk-test", server.URL)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
 	engine := loop.New(client, registry, 10, "", nil, 0)
 	engine.SetPlanStore(store)
 	approver := &batchCardApprover{}
 	engine.SetApprover(approver)
 
-	_, _, err := engine.RunWithMessages(context.Background(), []llm.Message{
+	_, _, err = engine.RunWithMessages(context.Background(), []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "work"},
 	})
@@ -432,14 +436,17 @@ func TestReport_PlanMessageWrappedUntrusted(t *testing.T) {
 
 	store := loop.NewPlanStore(12, 2000)
 	registry := tool.NewRegistry([]tool.Tool{loop.NewPlanTool(store)})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client, err := llmclient.Dial("", "test-model", "sk-test", server.URL)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
 	engine := loop.New(client, registry, 10, "", nil, 0)
 	engine.SetPlanStore(store)
 	engine.SetUntrustedWrapper(func(source, content string) string {
 		return "<untrusted source=" + source + ">" + content + "</untrusted>"
 	})
 
-	_, messages, err := engine.RunWithMessages(context.Background(), []llm.Message{
+	_, messages, err := engine.RunWithMessages(context.Background(), []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "work"},
 	})

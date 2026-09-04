@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/BackendStack21/odek/internal/budget"
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
@@ -20,7 +20,7 @@ import (
 // silently discarded exactly under context pressure.
 func TestRED_TrimToSurvivalKeepsDigest(t *testing.T) {
 	big := strings.Repeat("x", 4000)
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "original task"},
 		{Role: "system", Content: digestMsgPrefix + " summary of earlier turns.]"}, // digest position per refreshDigest
@@ -58,7 +58,7 @@ func TestRED_RunResetsTokenAccounting(t *testing.T) {
 	server := newUsageServer(t, &calls)
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, tool.NewRegistry(nil), 10, "", nil, 0)
 	engine.SetLimits(budget.Limits{MaxInputTokens: 150}, "test-model")
 
@@ -88,7 +88,7 @@ func TestRED_RunWithMessagesEmptyHistoryNoPanic(t *testing.T) {
 	server := newUsageServer(t, &calls)
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, tool.NewRegistry(nil), 10, "", nil, 0)
 	engine.SetMemoryPromptFunc(func() string { return "memory block" })
 

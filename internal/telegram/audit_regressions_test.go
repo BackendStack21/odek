@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -45,7 +44,7 @@ func TestAudit_ResumeSession_PrefixCollisionRejected(t *testing.T) {
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 		Task:      "victim secrets",
-		Messages:  []llm.Message{{Role: "user", Content: "top secret"}},
+		Messages:  []session.Message{{Role: "user", Content: "top secret"}},
 	}
 	if err := st.Save(sess); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -66,7 +65,7 @@ func TestAudit_ListSessions_PrefixCollisionExcluded(t *testing.T) {
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 		Task:      "victim",
-		Messages:  []llm.Message{{Role: "user", Content: "x"}},
+		Messages:  []session.Message{{Role: "user", Content: "x"}},
 	}
 	if err := st.Save(sess); err != nil {
 		t.Fatalf("seed: %v", err)

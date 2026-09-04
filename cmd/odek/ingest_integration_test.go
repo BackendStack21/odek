@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/BackendStack21/odek/internal/session"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/danger"
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/loop"
 )
 
@@ -90,7 +90,7 @@ func TestAgentRun_RecordsIngestViaContext(t *testing.T) {
 	defer agent.Close()
 
 	ctx := loop.WithIngestRecorder(context.Background(), recorder)
-	messages := []llm.Message{
+	messages := []session.Message{
 		{Role: "system", Content: "You are a test agent."},
 		{Role: "user", Content: "call the recording tool"},
 	}
@@ -147,7 +147,7 @@ func TestAgentRun_SkillIngestRecordedViaContext(t *testing.T) {
 	defer agent.Close()
 
 	ctx := loop.WithIngestRecorder(context.Background(), recorder)
-	messages := []llm.Message{
+	messages := []session.Message{
 		{Role: "system", Content: "You are a test agent."},
 		{Role: "user", Content: "trigger skill"},
 	}

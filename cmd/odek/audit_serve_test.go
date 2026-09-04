@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/session"
 
 	golangws "golang.org/x/net/websocket"
@@ -26,7 +25,7 @@ func TestAudit_ExportMarkdown_FenceBreakout(t *testing.T) {
 	sess := &session.Session{
 		ID:   "audit-fence-test",
 		Task: "fence test",
-		Messages: []llm.Message{
+		Messages: []session.Message{
 			{Role: "user", Content: "check this"},
 			{Role: "assistant", Content: "````\n# FORGED HEADING\n```normal```\n````"},
 			{Role: "tool", Name: "browser", Content: "````\n## forged tool section\n````"},
@@ -172,14 +171,14 @@ func TestAudit_ResumeTaskPreview(t *testing.T) {
 	if got := resumeTaskPreview(nil); got != "" {
 		t.Errorf("resumeTaskPreview(nil) = %q, want \"\"", got)
 	}
-	if got := resumeTaskPreview([]llm.Message{}); got != "" {
+	if got := resumeTaskPreview([]session.Message{}); got != "" {
 		t.Errorf("resumeTaskPreview(empty) = %q, want \"\"", got)
 	}
-	if got := resumeTaskPreview([]llm.Message{{Role: "user", Content: "short task"}}); got != "short task" {
+	if got := resumeTaskPreview([]session.Message{{Role: "user", Content: "short task"}}); got != "short task" {
 		t.Errorf("resumeTaskPreview(short) = %q, want %q", got, "short task")
 	}
 	long := strings.Repeat("x", 200)
-	got := resumeTaskPreview([]llm.Message{{Role: "user", Content: long}})
+	got := resumeTaskPreview([]session.Message{{Role: "user", Content: long}})
 	if runes := len([]rune(got)); runes != 81 || !strings.HasSuffix(got, "…") {
 		t.Errorf("resumeTaskPreview(long) = %d runes, want 81 with ellipsis suffix", runes)
 	}

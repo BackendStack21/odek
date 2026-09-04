@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/BackendStack21/odek/internal/events"
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
@@ -94,7 +93,7 @@ func runEventsEngine(t *testing.T, includeArgs bool) []events.Event {
 	registry := tool.NewRegistry([]tool.Tool{
 		&fakeTool{name: "shell", description: "runs a command", output: "hello"},
 	})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 	engine.SetEventsIncludeArgs(includeArgs)
 

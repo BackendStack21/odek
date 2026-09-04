@@ -2,11 +2,10 @@ package main
 
 import (
 	"bytes"
+	"github.com/BackendStack21/odek/internal/session"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/BackendStack21/odek/internal/llm"
 )
 
 // POST /api/sessions/{id} is the ONLY session mutation without a request
@@ -15,7 +14,7 @@ import (
 // token-holder) streaming a multi-gigabyte body OOMs the server.
 func TestHandleSessionByID_PostBodySizeCapped(t *testing.T) {
 	store := newTestSessionStore(t)
-	sess, err := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
+	sess, err := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "task")
 	if err != nil {
 		t.Fatal(err)
 	}

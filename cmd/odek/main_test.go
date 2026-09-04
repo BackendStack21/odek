@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/BackendStack21/odek/internal/session"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,7 +19,6 @@ import (
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/mcpclient"
 	"github.com/BackendStack21/odek/internal/sandbox"
 	"github.com/BackendStack21/odek/internal/telegram"
@@ -1883,7 +1883,7 @@ func TestCountUserTurnsUpTo_Empty(t *testing.T) {
 }
 
 func TestCountUserTurnsUpTo_Basic(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "system"},
 		{Role: "user", Content: "hello"},
 		{Role: "assistant", Content: "hi"},
@@ -1896,7 +1896,7 @@ func TestCountUserTurnsUpTo_Basic(t *testing.T) {
 }
 
 func TestCountUserTurnsUpTo_Partial(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "system"},
 		{Role: "user", Content: "hello"},
 	}
@@ -1907,7 +1907,7 @@ func TestCountUserTurnsUpTo_Partial(t *testing.T) {
 }
 
 func TestCountUserTurnsUpTo_BeyondLength(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "user", Content: "hello"},
 	}
 	count := countUserTurnsUpTo(msgs, 100)

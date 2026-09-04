@@ -29,9 +29,16 @@ Shared across all projects:
 
 ```json
 {
+  "provider": "deepseek",
   "model": "deepseek-v4-flash",
-  "base_url": "https://api.deepseek.com/v1",
-  "api_key": "${ODEK_API_KEY}",
+  "providers": {
+    "deepseek": { "api_key": "${DEEPSEEK_API_KEY}" }
+  },
+  "llm": {
+    "request_timeout_seconds": 120,
+    "stream_idle_timeout_seconds": 120,
+    "context_window": 0
+  },
   "thinking": "",
   "max_iterations": 90,
   "sandbox": true,

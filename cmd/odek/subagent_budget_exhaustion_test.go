@@ -74,13 +74,13 @@ func TestClampLimits_UnconfiguredParentKeepsUnlimitedChild(t *testing.T) {
 // of 0 is no longer wire-ambiguous with "unconfigured".
 func TestTaskBudgetFromSnapshot_ExhaustedFlags(t *testing.T) {
 	s := budget.Snapshot{
-		MaxRuntimeSeconds:       60,
-		RuntimeExhausted:        true,
-		MaxToolCalls:            10,
-		RemainingToolCalls:      4,
-		MaxCostUSD:              1.0,
-		RemainingCostUSD:        0,
-		CostExhausted:           true,
+		MaxRuntimeSeconds:  60,
+		RuntimeExhausted:   true,
+		MaxToolCalls:       10,
+		RemainingToolCalls: 4,
+		MaxCostUSD:         1.0,
+		RemainingCostUSD:   0,
+		CostExhausted:      true,
 	}
 	got := taskBudgetFromSnapshot(s)
 	if got == nil {

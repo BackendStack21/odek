@@ -27,8 +27,10 @@ import (
 	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/embedding"
+	sdk "github.com/BackendStack21/go-llm-sdk"
+
 	"github.com/BackendStack21/odek/internal/guard"
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/llmclient"
 	"github.com/BackendStack21/odek/internal/maintenance"
 	"github.com/BackendStack21/odek/internal/mcpclient"
 	"github.com/BackendStack21/odek/internal/memory"
@@ -55,6 +57,7 @@ const maxConfigFileBytes = 5 << 20 // 5 MiB
 // explicitly wants writable) vs the field being absent (inherit from lower
 // layer or default).
 type CLIFlags struct {
+	Provider string
 	Model    string
 	BaseURL  string
 	System   string
@@ -388,9 +391,11 @@ func DefaultBackgroundConfig() BackgroundConfig {
 // FileConfig is the JSON schema used by ~/.odek/config.json and ./odek.json.
 // Pointer booleans distinguish "explicitly set to false" from "not set".
 type FileConfig struct {
-	Model   string `json:"model,omitempty"`
-	BaseURL string `json:"base_url,omitempty"`
-	APIKey  string `json:"api_key,omitempty"`
+	Provider  string                          `json:"provider,omitempty"`
+	Model     string                          `json:"model,omitempty"`
+	BaseURL   string                          `json:"base_url,omitempty"`
+	APIKey    string                          `json:"api_key,omitempty"`
+	Providers map[string]FileProviderOverride `json:"providers,omitempty"`
 
 	Thinking string `json:"thinking,omitempty"`
 	MaxIter  int    `json:"max_iterations,omitempty"`
@@ -485,7 +490,7 @@ type FileConfig struct {
 	// Only used by `odek serve`.
 	TrustedProxies []string `json:"trusted_proxies,omitempty"`
 
-	// LLM tunes the shared LLM client (internal/llm). Currently: the SSE
+	// LLM tunes the shared go-llm-sdk client (timeouts + context window). Currently: the SSE
 	// stream idle watchdog — time between events (keepalives count) before
 	// the stream is dropped and retried. Thinking models can spend minutes
 	// before their first event; 0 keeps the built-in default (120s).
@@ -551,6 +556,25 @@ type FileConfig struct {
 	Limits *budget.Limits `json:"limits,omitempty"`
 }
 
+// FileProviderOverride is one providers.<id> entry in config JSON.
+type FileProviderOverride struct {
+	APIKey  string `json:"api_key,omitempty"`
+	BaseURL string `json:"base_url,omitempty"`
+	Format  string `json:"format,omitempty"`
+}
+
+// ProviderOverrides converts the resolved providers map for odek.New.
+func (c ResolvedConfig) ProviderOverrides() map[string]llmclient.ProviderOverride {
+	if len(c.Providers) == 0 {
+		return nil
+	}
+	out := make(map[string]llmclient.ProviderOverride, len(c.Providers))
+	for id, ov := range c.Providers {
+		out[id] = llmclient.ProviderOverride{APIKey: ov.APIKey, BaseURL: ov.BaseURL, Format: ov.Format}
+	}
+	return out
+}
+
 // ProjectSandboxOverride records which sandbox knobs were supplied by the
 // project-level ./odek.json config. These require explicit operator approval
 // before they are applied, because a malicious repo could otherwise
@@ -587,9 +611,11 @@ type ProjectSandboxOverride struct {
 // ResolvedConfig is the fully merged result. Every field has a concrete
 // value — callers can read directly without checking for "not set".
 type ResolvedConfig struct {
+	Provider        string
 	Model           string
 	BaseURL         string
 	APIKey          string
+	Providers       map[string]FileProviderOverride
 	Thinking        string
 	MaxIter         int
 	Sandbox         bool
@@ -758,6 +784,10 @@ type ResolvedConfig struct {
 	// LOWER an existing limit (never raise, never disable); CLI flags are
 	// operator intent and set limits explicitly.
 	Limits budget.Limits
+
+	// LLM is the resolved client-tuning section (timeouts + context window).
+	// Nil/zero fields keep SDK defaults.
+	LLM LLMConfig
 }
 
 // ── Defaults ───────────────────────────────────────────────────────────
@@ -1408,6 +1438,18 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	// the API key, poison the system prompt, or disable safety policy.
 	// Keep global values for these sensitive fields; env vars and CLI flags can
 	// still override below.
+	if project.Provider != "" {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring provider from project config (%s); set it via ~/.odek/config.json, ODEK_PROVIDER, or --provider\n", ProjectConfigPath())
+		project.Provider = ""
+	}
+	if project.Providers != nil {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring providers from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
+		project.Providers = nil
+	}
+	if project.LLM != nil {
+		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring llm from project config (%s); set it via ~/.odek/config.json or ODEK_STREAM_IDLE_TIMEOUT_SECONDS\n", ProjectConfigPath())
+		project.LLM = nil
+	}
 	if project.BaseURL != "" {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring base_url from project config (%s); set it via ~/.odek/config.json, ODEK_BASE_URL, or --base-url\n", ProjectConfigPath())
 		project.BaseURL = ""
@@ -1621,6 +1663,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	sort.Strings(projectMCPNames)
 
 	// Layer 3: ODEK_* env vars
+	if v := envString("PROVIDER"); v != "" {
+		cfg.Provider = v
+	}
 	if v := envString("MODEL"); v != "" {
 		cfg.Model = v
 	}
@@ -1982,6 +2027,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	}
 
 	// Layer 4: CLI flags (highest priority)
+	if cli.Provider != "" {
+		cfg.Provider = cli.Provider
+	}
 	if cli.Model != "" {
 		cfg.Model = cli.Model
 	}
@@ -2227,9 +2275,11 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 
 	// Build resolved config with concrete values
 	resolved := ResolvedConfig{
-		Model:    cfg.Model,
-		BaseURL:  cfg.BaseURL,
-		APIKey:   cfg.APIKey,
+		Provider:  cfg.Provider,
+		Model:     cfg.Model,
+		BaseURL:   cfg.BaseURL,
+		APIKey:    cfg.APIKey,
+		Providers: cfg.Providers,
 		Thinking: cfg.Thinking,
 		MaxIter:  cfg.MaxIter,
 		System:   cfg.System,
@@ -2457,6 +2507,15 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if cfg.Limits != nil {
 		resolved.Limits = *cfg.Limits
 	}
+	if cfg.LLM != nil {
+		resolved.LLM = *cfg.LLM
+	}
+	if v := envInt("REQUEST_TIMEOUT_SECONDS"); v > 0 {
+		resolved.LLM.RequestTimeoutSeconds = v
+	}
+	if v := envInt("CONTEXT_WINDOW"); v > 0 {
+		resolved.LLM.ContextWindow = v
+	}
 	// Cost enforcement needs operator-configured per-million prices — odek
 	// never hard-codes provider prices. Warn loudly when the operator set a
 	// cost cap but neither model_prices[model] nor the flat pair yields
@@ -2473,22 +2532,54 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	// env wins over the file value, per the priority chain. 0/unset keeps
 	// the llm package default (120s).
 	if d := llmStreamIdleTimeoutFrom(cfg.LLM, envIntPtr("ODEK_STREAM_IDLE_TIMEOUT_SECONDS")); d > 0 {
-		llm.SetStreamIdleTimeout(d)
+		sdk.SetStreamIdleTimeout(d)
 	}
 
-	// API key fallback chain: resolved → DEEPSEEK_API_KEY → OPENAI_API_KEY
+	// v1 alias: infer provider from base_url when provider is unset.
+	if resolved.Provider == "" && resolved.BaseURL != "" {
+		if id := llmclient.InferProvider(resolved.BaseURL); id != "" {
+			resolved.Provider = id
+			resolved.BaseURL = llmclient.CanonicalBaseURL(id, resolved.BaseURL)
+			fmt.Fprintf(os.Stderr, "odek: warning: v1 base_url mapped to provider %q; set \"provider\" in ~/.odek/config.json (see docs/MIGRATION.md)\n", id)
+		} else {
+			resolved.Provider = "legacy"
+			if resolved.Providers == nil {
+				resolved.Providers = map[string]FileProviderOverride{}
+			}
+			resolved.Providers["legacy"] = FileProviderOverride{
+				APIKey:  resolved.APIKey,
+				BaseURL: resolved.BaseURL,
+				Format:  "openai",
+			}
+			fmt.Fprintf(os.Stderr, "odek: warning: v1 base_url registered as custom provider \"legacy\"; set \"provider\" + \"providers\" (see docs/MIGRATION.md)\n")
+		}
+	}
+	if resolved.Provider == "" {
+		resolved.Provider = "deepseek"
+	}
+
+	// API key fallback: selected-provider env, then DeepSeek-compat for the default.
 	if resolved.APIKey == "" {
+		resolved.APIKey = os.Getenv("ODEK_API_KEY")
+	}
+	if resolved.APIKey == "" && resolved.Provider == "deepseek" {
 		resolved.APIKey = os.Getenv("DEEPSEEK_API_KEY")
-	}
-	if resolved.APIKey == "" {
-		resolved.APIKey = os.Getenv("OPENAI_API_KEY")
+		if resolved.APIKey == "" {
+			resolved.APIKey = os.Getenv("OPENAI_API_KEY")
+		}
 	}
 
-	// Clear API key env vars to prevent exposure via /proc/pid/environ.
-	// The key is now in the Config struct; the environment shouldn't keep a copy.
-	os.Unsetenv("ODEK_API_KEY")
-	os.Unsetenv("DEEPSEEK_API_KEY")
-	os.Unsetenv("OPENAI_API_KEY")
+	// Clear provider key env vars so they are not visible in /proc/.../environ.
+	for _, k := range []string{
+		"ODEK_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY",
+		"ZAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
+		"KIMI_API_KEY", "MOONSHOT_API_KEY",
+	} {
+		if v := os.Getenv(k); v != "" {
+			redact.RegisterSecret(v)
+		}
+		os.Unsetenv(k)
+	}
 
 	// Seed the redaction layer with odek's own secrets so they (and their
 	// common encodings) are stripped from any tool output, even when the
@@ -3078,6 +3169,20 @@ func clampProjectBackground(global, project *BackgroundFileConfig) {
 }
 
 func overlayFile(base, override FileConfig) FileConfig {
+	if override.Provider != "" {
+		base.Provider = override.Provider
+	}
+	if override.Providers != nil {
+		if base.Providers == nil {
+			base.Providers = make(map[string]FileProviderOverride)
+		}
+		for id, ov := range override.Providers {
+			base.Providers[id] = ov
+		}
+	}
+	if override.LLM != nil {
+		base.LLM = override.LLM
+	}
 	if override.Model != "" {
 		base.Model = override.Model
 	}

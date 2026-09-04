@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/config"
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/llmclient"
 	"github.com/BackendStack21/odek/internal/memory"
 	"github.com/BackendStack21/odek/internal/memory/extended"
 )
@@ -180,7 +180,10 @@ func extendedMemoryCmd(dir string, args []string) error {
 		if resolved.APIKey == "" {
 			return fmt.Errorf("memory extended consolidate requires an LLM backend (no API key resolved)")
 		}
-		llmClient := llm.New(resolved.BaseURL, resolved.APIKey, resolved.Model, "", 0, 120*time.Second)
+		llmClient, err := llmclient.Dial(resolved.Provider, resolved.Model, resolved.APIKey, resolved.BaseURL)
+		if err != nil {
+			return err
+		}
 		emLLM := extended.New(extDir, llmClient, cfg)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
@@ -198,7 +201,10 @@ func extendedMemoryCmd(dir string, args []string) error {
 		if resolved.APIKey == "" {
 			return fmt.Errorf("memory extended nudges requires an LLM backend (no API key resolved)")
 		}
-		llmClient := llm.New(resolved.BaseURL, resolved.APIKey, resolved.Model, "", 0, 120*time.Second)
+		llmClient, err := llmclient.Dial(resolved.Provider, resolved.Model, resolved.APIKey, resolved.BaseURL)
+		if err != nil {
+			return err
+		}
 		emLLM := extended.New(extDir, llmClient, cfg)
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()

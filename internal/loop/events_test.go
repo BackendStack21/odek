@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/BackendStack21/odek/internal/events"
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
@@ -73,7 +72,7 @@ func TestEngine_Events_ToolRunOrderAndShape(t *testing.T) {
 	registry := tool.NewRegistry([]tool.Tool{
 		&fakeTool{name: "echo", description: "echoes input", output: "hello output"},
 	})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 
 	col := &eventCollector{}
@@ -161,7 +160,7 @@ func TestEngine_Events_NeverContainRawArgs(t *testing.T) {
 	registry := tool.NewRegistry([]tool.Tool{
 		&fakeTool{name: "echo", description: "echoes input", output: "hello output"},
 	})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 
 	col := &eventCollector{}
@@ -185,7 +184,7 @@ func TestEngine_Events_ToolFailure(t *testing.T) {
 	registry := tool.NewRegistry([]tool.Tool{
 		&failTool{name: "boom"},
 	})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 
 	col := &eventCollector{}
@@ -232,7 +231,7 @@ func TestEngine_Events_NilHandlerNoPanic(t *testing.T) {
 	registry := tool.NewRegistry([]tool.Tool{
 		&fakeTool{name: "echo", description: "echoes input", output: "ok"},
 	})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 	// No SetEventHandler — emission sites must be no-ops.
 	if _, err := engine.Run(context.Background(), "hi"); err != nil {

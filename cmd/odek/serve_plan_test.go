@@ -6,29 +6,29 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/BackendStack21/odek/internal/session"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/loop"
 )
 
 // planMessageFor renders a real plan message through the store renderer so
 // tests exercise the exact grammar the engine persists.
-func planMessageFor(t *testing.T, args string) llm.Message {
+func planMessageFor(t *testing.T, args string) session.Message {
 	t.Helper()
 	rendered, err := loop.NewPlanStore(12, 2000).Execute(args)
 	if err != nil {
 		t.Fatalf("setup: plan Execute: %v", err)
 	}
-	return llm.Message{Role: "system", Content: rendered}
+	return session.Message{Role: "system", Content: rendered}
 }
 
 func TestHandleSessionByID_GET_Plan_Found(t *testing.T) {
 	store := newTestSessionStore(t)
-	sess, err := store.Create([]llm.Message{
+	sess, err := store.Create([]session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "do the work"},
 		planMessageFor(t, `{"verb":"create","steps":[{"id":"s1","title":"Scaffold"},{"id":"s2","title":"Wire flags","note":"use stdlib flag"}]}`),
@@ -86,7 +86,7 @@ func TestHandleSessionByID_GET_Plan_Found(t *testing.T) {
 
 func TestHandleSessionByID_GET_Plan_NotFound(t *testing.T) {
 	store := newTestSessionStore(t)
-	sess, err := store.Create([]llm.Message{
+	sess, err := store.Create([]session.Message{
 		{Role: "user", Content: "no plans here"},
 	}, "test-model", "plain task")
 	if err != nil {
@@ -138,7 +138,7 @@ func TestHandleSessionByID_GET_Plan_CollapsedAllDone(t *testing.T) {
 	if !strings.HasPrefix(rendered, "[Current plan:") || strings.Contains(rendered, "\n") {
 		t.Fatalf("setup: expected collapsed single-line render, got:\n%s", rendered)
 	}
-	sess, err := store.Create([]llm.Message{{Role: "system", Content: rendered}}, "test-model", "done task")
+	sess, err := store.Create([]session.Message{{Role: "system", Content: rendered}}, "test-model", "done task")
 	if err != nil {
 		t.Fatalf("Create session: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestHandleSessionByID_GET_Plan_UnknownSession(t *testing.T) {
 
 func TestHandleSessionByID_POST_Plan_IsReadOnly(t *testing.T) {
 	store := newTestSessionStore(t)
-	sess, err := store.Create([]llm.Message{
+	sess, err := store.Create([]session.Message{
 		{Role: "user", Content: "original task"},
 	}, "test-model", "before")
 	if err != nil {

@@ -2,11 +2,10 @@ package memory
 
 import (
 	"encoding/json"
+	"github.com/BackendStack21/odek/internal/session"
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/BackendStack21/odek/internal/llm"
 )
 
 // EpisodeProvenance carries the trust signals of the session that
@@ -216,7 +215,7 @@ func pathOutsideRoots(p string, roots []string) bool {
 // the provenance an episode derived from those messages should carry.
 // A message taints the episode if it contains a tool call that crossed
 // the trust boundary per ToolCallTaints.
-func DeriveProvenance(messages []llm.Message) EpisodeProvenance {
+func DeriveProvenance(messages []session.Message) EpisodeProvenance {
 	prov := EpisodeProvenance{}
 	seen := make(map[string]bool)
 	for _, m := range messages {

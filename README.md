@@ -197,6 +197,8 @@ odek run "@README.md what does this project do?"
 | [Planning](docs/PLANNING.md) | Plan tool, protected plan message, security model |
 | [Tool Selection](docs/TOOL_SELECTION.md) | Tool whitelist/blacklist guide and names reference |
 | [Daily Worker](docs/DAILY-WORKER.md) | Headless scheduled-worker patterns |
+| [Providers](docs/PROVIDERS.md) | go-llm-sdk registry, `--provider`, v2 knobs |
+| [Migration (v2)](docs/MIGRATION.md) | v1 → v2 config, deleted profiles, embedder API |
 | [Development](docs/DEVELOPMENT.md) | Building, testing, contributing, project structure |
 
 ---
@@ -207,8 +209,9 @@ odek run "@README.md what does this project do?"
 import "github.com/BackendStack21/odek"
 
 agent, err := odek.New(odek.Config{
+    Provider:       "deepseek",
     Model:          "deepseek-v4-flash",
-    APIKey:         os.Getenv("ODEK_API_KEY"),
+    APIKey:         os.Getenv("DEEPSEEK_API_KEY"),
     MaxIterations:  30,
     Tools:          []odek.Tool{&myCustomTool{}},
     SystemMessage:  "You are an expert at refactoring Go code.",
@@ -218,7 +221,7 @@ defer agent.Close()
 result, err := agent.Run(context.Background(), "Refactor this module")
 ```
 
-The full `Config` struct supports: `BaseURL`, `Thinking`, `SandboxCleanup`, `Renderer`, `MemoryConfig`, `MemoryDir`, `Skills`, `SkillManager`, `NoProjectFile`, plus the extension API — `EventHandler` (structured runtime events), `ExternalRefs` (opaque session references), and `Limits` (execution budgets).
+The full `Config` struct supports: `Provider`, `Providers`, `BaseURL` (selected-provider override), `Thinking`, `SandboxCleanup`, `Renderer`, `MemoryConfig`, `MemoryDir`, `Skills`, `SkillManager`, `NoProjectFile`, plus the extension API — `EventHandler` (structured runtime events), `ExternalRefs` (opaque session references), and `Limits` (execution budgets). v2 depends on [go-llm-sdk](https://github.com/BackendStack21/go-llm-sdk); see [docs/MIGRATION.md](docs/MIGRATION.md).
 
 ---
 

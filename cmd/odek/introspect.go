@@ -45,6 +45,7 @@ func buildConfigView(resolved config.ResolvedConfig) map[string]any {
 		return *p
 	}
 	return map[string]any{
+		"provider":          resolved.Provider,
 		"model":             resolved.Model,
 		"stream":            resolved.Stream,
 		"compaction":        resolved.Compaction,

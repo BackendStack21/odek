@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
@@ -19,16 +19,16 @@ import (
 // Mirrors TestTrimContext_PlanProtectedAfterLeadingInjection's setup.
 
 func TestTrimContext_OriginalTaskProtectedAfterLeadingInjection(t *testing.T) {
-	client := llm.New("http://unused", "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, "http://unused")
 	engine := New(client, tool.NewRegistry(nil), 10, "", nil, 3000)
 
 	engine.ctxLeadDroppableFrom = -1
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "task"},
 	}
-	skillMsg := llm.Message{Role: "system", Content: strings.Repeat("SKILL ", 400)}
-	msgs = append(msgs[:1], append([]llm.Message{skillMsg}, msgs[1:]...)...)
+	skillMsg := session.Message{Role: "system", Content: strings.Repeat("SKILL ", 400)}
+	msgs = append(msgs[:1], append([]session.Message{skillMsg}, msgs[1:]...)...)
 	engine.noteLeadingInjection(msgs, 1)
 	if engine.ctxLeadDroppableFrom != 1 {
 		t.Fatalf("setup: ctxLeadDroppableFrom = %d, want 1", engine.ctxLeadDroppableFrom)
@@ -38,12 +38,12 @@ func TestTrimContext_OriginalTaskProtectedAfterLeadingInjection(t *testing.T) {
 	// toolTruncateMinBytes (2000) so pass 1 cannot absorb the pressure —
 	// pass 2 must be the one that drops groups here.
 	for i := 0; i < 40; i++ {
-		tc := llm.ToolCall{ID: fmt.Sprintf("c%d", i), Type: "function"}
+		tc := session.ToolCall{ID: fmt.Sprintf("c%d", i), Type: "function"}
 		tc.Function.Name = "echo"
 		tc.Function.Arguments = "{}"
 		msgs = append(msgs,
-			llm.Message{Role: "assistant", Content: strings.Repeat("x", 300), ToolCalls: []llm.ToolCall{tc}},
-			llm.Message{Role: "tool", Content: strings.Repeat("y", 900), ToolCallID: fmt.Sprintf("c%d", i)},
+			session.Message{Role: "assistant", Content: strings.Repeat("x", 300), ToolCalls: []session.ToolCall{tc}},
+			session.Message{Role: "tool", Content: strings.Repeat("y", 900), ToolCallID: fmt.Sprintf("c%d", i)},
 		)
 	}
 	got := engine.trimContext(context.Background(), msgs, nil)
@@ -70,27 +70,27 @@ func TestTrimContext_OriginalTaskProtectedAfterLeadingInjection(t *testing.T) {
 // that is the whole point of the droppable boundary (an oversized injected
 // block must be trimmable before its first API call).
 func TestTrimContext_InjectedBlockDroppableBeforeTask(t *testing.T) {
-	client := llm.New("http://unused", "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, "http://unused")
 	engine := New(client, tool.NewRegistry(nil), 10, "", nil, 3000)
 
 	engine.ctxLeadDroppableFrom = -1
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "task"},
 	}
-	skillMsg := llm.Message{Role: "system", Content: strings.Repeat("SKILL ", 400)}
-	msgs = append(msgs[:1], append([]llm.Message{skillMsg}, msgs[1:]...)...)
+	skillMsg := session.Message{Role: "system", Content: strings.Repeat("SKILL ", 400)}
+	msgs = append(msgs[:1], append([]session.Message{skillMsg}, msgs[1:]...)...)
 	engine.noteLeadingInjection(msgs, 1)
 
 	// Force trimming: with enough pressure the injected skill block and
 	// old groups are droppable — but the task itself must survive.
 	for i := 0; i < 5; i++ {
-		tc := llm.ToolCall{ID: fmt.Sprintf("c%d", i), Type: "function"}
+		tc := session.ToolCall{ID: fmt.Sprintf("c%d", i), Type: "function"}
 		tc.Function.Name = "echo"
 		tc.Function.Arguments = "{}"
 		msgs = append(msgs,
-			llm.Message{Role: "assistant", Content: strings.Repeat("x", 2000), ToolCalls: []llm.ToolCall{tc}},
-			llm.Message{Role: "tool", Content: strings.Repeat("y", 2000), ToolCallID: fmt.Sprintf("c%d", i)},
+			session.Message{Role: "assistant", Content: strings.Repeat("x", 2000), ToolCalls: []session.ToolCall{tc}},
+			session.Message{Role: "tool", Content: strings.Repeat("y", 2000), ToolCallID: fmt.Sprintf("c%d", i)},
 		)
 	}
 	got := engine.trimContext(context.Background(), msgs, nil)

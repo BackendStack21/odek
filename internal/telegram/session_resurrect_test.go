@@ -1,10 +1,9 @@
 package telegram
 
 import (
+	"github.com/BackendStack21/odek/internal/session"
 	"testing"
 	"time"
-
-	"github.com/BackendStack21/odek/internal/llm"
 )
 
 // /new archives and deletes the session while a turn may still be running
@@ -19,7 +18,7 @@ func TestSaveNoIndex_DoesNotResurrectArchivedSession(t *testing.T) {
 	var chatID int64 = 42
 
 	// An existing conversation.
-	if err := sm.Save(chatID, []llm.Message{
+	if err := sm.Save(chatID, []session.Message{
 		{Role: "user", Content: "old question"},
 		{Role: "assistant", Content: "old answer"},
 	}); err != nil {
@@ -32,7 +31,7 @@ func TestSaveNoIndex_DoesNotResurrectArchivedSession(t *testing.T) {
 	}
 
 	// The still-running turn's persist callback fires after the archive.
-	if err := sm.SaveNoIndex(chatID, []llm.Message{
+	if err := sm.SaveNoIndex(chatID, []session.Message{
 		{Role: "user", Content: "old question"},
 		{Role: "assistant", Content: "mid-turn partial"},
 	}); err != nil {
@@ -49,7 +48,7 @@ func TestSaveNoIndex_DoesNotResurrectArchivedSession(t *testing.T) {
 	}
 }
 
-func firstOrNil(msgs []llm.Message) *llm.Message {
+func firstOrNil(msgs []session.Message) *session.Message {
 	if len(msgs) == 0 {
 		return nil
 	}
@@ -66,7 +65,7 @@ func TestSaveNoIndex_StillCheckpointsLiveSession(t *testing.T) {
 	if _, err := sm.GetOrCreate(chatID); err != nil {
 		t.Fatalf("GetOrCreate: %v", err)
 	}
-	if err := sm.SaveNoIndex(chatID, []llm.Message{
+	if err := sm.SaveNoIndex(chatID, []session.Message{
 		{Role: "user", Content: "live question"},
 		{Role: "assistant", Content: "live partial"},
 	}); err != nil {

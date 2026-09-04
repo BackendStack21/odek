@@ -24,6 +24,15 @@ var (
 	sharedTransport     *http.Transport
 )
 
+// PooledTransport returns the process-wide shared *http.Transport. Every
+// client built by this package reuses it, so the buffered and streaming LLM
+// clients (and every other API client) share one connection pool, matching
+// the package's documented behavior. Pass it to go-llm-sdk via WithTransport
+// so inference honors HTTP(S)_PROXY and does not open a second pool.
+func PooledTransport() *http.Transport {
+	return pooledTransport()
+}
+
 // pooledTransport returns the process-wide shared *http.Transport. Every
 // client built by this package reuses it, so the buffered and streaming LLM
 // clients (and every other API client) share one connection pool, matching

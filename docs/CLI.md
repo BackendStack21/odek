@@ -40,10 +40,11 @@ Unknown flags are a **hard error** — they are never folded into the task text 
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--model <name>` | string | `deepseek-v4-flash` | LLM model — profiles auto-set thinking/timeout (see [Providers](PROVIDERS.md)). |
-| `--base-url <url>` | string | `https://api.deepseek.com/v1` | OpenAI-compatible API endpoint |
+| `--provider <id>` | string | `deepseek` | LLM provider registry id (`deepseek`, `openai`, `anthropic`, `gemini`, `zai`, `kimi`, or a custom id). See [Providers](PROVIDERS.md). |
+| `--model <name>` | string | `deepseek-v4-flash` | LLM model id. No auto-thinking / auto-timeout from the name. |
+| `--base-url <url>` | string | (SDK default for provider) | Override the **selected** provider's API endpoint |
 | `--max-iter <n>` | int | `90` | Max think→act cycles |
-| `--thinking <level>` | string | profile default | Reasoning depth: `enabled`/`disabled`/`low`/`medium`/`high`. Requires a model that supports extended thinking. |
+| `--thinking <level>` | string | (unset) | Reasoning depth: `enabled`/`disabled`/`low`/`medium`/`high`. Not inferred from the model name. |
 | `--thinking-budget <n>` | int | `5000` | Max thinking tokens for extended thinking (Anthropic budget_tokens). Only applied when `--thinking` is set. |
 | `--temperature <n>` | float | `0` | LLM sampling temperature (0.0–2.0). Forced to 1 when Anthropic extended thinking is active. |
 | `--sandbox` | bool | default on | Execute shell commands inside Docker container. Defaults ON when no layer sets it; degrades loudly to unsandboxed when Docker is unavailable (fatal with `ODEK_REQUIRE_SANDBOX=1`). Explicit `--sandbox` keeps the hard-fail behavior. |
@@ -431,7 +432,7 @@ odek cleanup
 odek cleanup --dry-run
 
 # OpenAI
-odek run --model gpt-4o --base-url https://api.openai.com/v1 "Explain this code"
+odek run --provider openai --model gpt-4o "Explain this code"
 
 # Sandboxed execution
 odek run --sandbox "npm test"

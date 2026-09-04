@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -41,7 +40,7 @@ type SessionManager struct {
 type ChatSession struct {
 	ChatID     int64
 	SessionID  string
-	Messages   []llm.Message
+	Messages   []session.Message
 	CreatedAt  time.Time
 	LastActive time.Time
 	TurnCount  int
@@ -105,7 +104,7 @@ func (sm *SessionManager) GetOrCreate(chatID int64) (*ChatSession, error) {
 	cs = &ChatSession{
 		ChatID:     chatID,
 		SessionID:  fmt.Sprintf("tg-%d", chatID),
-		Messages:   make([]llm.Message, 0),
+		Messages:   make([]session.Message, 0),
 		CreatedAt:  time.Now(),
 		LastActive: time.Now(),
 		TurnCount:  0,
@@ -127,7 +126,7 @@ func (sm *SessionManager) GetOrCreate(chatID int64) (*ChatSession, error) {
 // Save persists the given messages for a chat session to both the cache
 // and the backing session.Store. It updates LastActive, increments
 // TurnCount, and writes a full session.Session to the store.
-func (sm *SessionManager) Save(chatID int64, messages []llm.Message) error {
+func (sm *SessionManager) Save(chatID int64, messages []session.Message) error {
 	sm.Mu.Lock()
 	cs, ok := sm.Cache[chatID]
 	if ok {
@@ -175,7 +174,7 @@ func (sm *SessionManager) Save(chatID int64, messages []llm.Message) error {
 // per completed turn by the final Save. Unlike Save it does NOT increment
 // TurnCount: it checkpoints mid-turn progress, and TurnCount is
 // user-visible in /sessions — only a completed turn may advance it.
-func (sm *SessionManager) SaveNoIndex(chatID int64, messages []llm.Message) error {
+func (sm *SessionManager) SaveNoIndex(chatID int64, messages []session.Message) error {
 	sm.Mu.Lock()
 	cs, ok := sm.Cache[chatID]
 	if ok {
@@ -347,7 +346,7 @@ func (sm *SessionManager) AppendMessage(chatID int64, role string, content strin
 		return err
 	}
 
-	cs.Messages = append(cs.Messages, llm.Message{Role: role, Content: content})
+	cs.Messages = append(cs.Messages, session.Message{Role: role, Content: content})
 	return sm.Save(chatID, cs.Messages)
 }
 

@@ -3,7 +3,7 @@ package loop
 import (
 	"testing"
 
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/session"
 )
 
 // insertions (skill/episode/extended-memory context) and the trim warning
@@ -12,7 +12,7 @@ import (
 // lastUserMessage does. With a notice drained after the task, the plain
 // scan placed injections BETWEEN the task and its notice.
 func TestInsertionIndex_SkipsBgNotices(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "the real task"},
 		{Role: "user", Content: "job finished", Name: "bg-notice"},
@@ -23,7 +23,7 @@ func TestInsertionIndex_SkipsBgNotices(t *testing.T) {
 }
 
 func TestUpsertTrimWarning_SkipsBgNotices(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "the real task"},
 		{Role: "user", Content: "job finished", Name: "bg-notice"},
