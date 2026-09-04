@@ -185,7 +185,7 @@ func authenticateJobsRequest(store *session.Store, r *http.Request) (*session.Se
 	if err != nil || sess == nil {
 		return nil, http.StatusNotFound, "session not found"
 	}
-	if _, ok := validateSessionToken(store, sess, sessionTokenFromRequest(r)); !ok {
+	if !validateSessionTokenStrict(store, sess, sessionTokenFromRequest(r)) {
 		return nil, http.StatusUnauthorized, "invalid session token"
 	}
 	return sess, 0, ""
