@@ -117,6 +117,13 @@ export function pruneMessages() {
 // ── Error message normalization ──
 export function formatErrorMessage(msg) {
   if (!msg) return 'Unknown error';
+  const lower = msg.toLowerCase();
+  if (lower.includes('stream idle') || lower.includes('without an event')) {
+    return 'Provider stream stalled — the model went silent before the idle timeout. Retry, or raise llm.stream_idle_timeout_seconds.';
+  }
+  if (lower.includes('deadline exceeded') || lower.includes('timed out') || lower.includes('context deadline')) {
+    return 'Provider request timed out. Retry, or raise llm.request_timeout_seconds.';
+  }
   // Extract the core message from LiteLLM/provider verbose errors
   const match = msg.match(/"message"\s*:\s*"([^"]{0,200})"/) ||
                 msg.match(/BadRequestError[^:]*:\s*(.{0,200})/);

@@ -1277,6 +1277,15 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 		info["type"] = "server_info"
 		writeWSJSON(conn, info)
 	}
+
+	// Server-initiated keepalive so reverse proxies / NATs with 30–60s idle
+	// timeouts do not drop the socket while a thinking model is silent.
+	// Client pings (20s) cover the odek UI and bodek; this covers every
+	// other WebSocket client and half-open links (a timed-out write tears
+	// the conn down). Interval 0 disables the ticker (tests).
+	keepStop := make(chan struct{})
+	defer close(keepStop)
+	startWSKeepalive(conn, keepStop)
 	defer agent.Close()
 	if guardCleanup != nil {
 		defer guardCleanup()
@@ -2484,7 +2493,37 @@ func validateSessionTokenStrict(store *session.Store, sess *session.Session, tok
 // concurrently — a plain read/write here is a data race (caught by CI).
 var wsWriteTimeout atomic.Int64
 
-func init() { wsWriteTimeout.Store(int64(30 * time.Second)) }
+var wsKeepaliveInterval atomic.Int64
+
+func init() {
+	wsWriteTimeout.Store(int64(30 * time.Second))
+	wsKeepaliveInterval.Store(int64(20 * time.Second))
+}
+
+// startWSKeepalive pushes a lightweight application frame on interval so
+// idle proxies do not close a socket that is waiting on a slow LLM. stop
+// ends the ticker; a non-positive interval is a no-op.
+func startWSKeepalive(conn *golangws.Conn, stop <-chan struct{}) {
+	d := time.Duration(wsKeepaliveInterval.Load())
+	if d <= 0 || conn == nil {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(d)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				writeWSJSON(conn, map[string]any{
+					"type": "keepalive",
+					"t":    time.Now().UnixMilli(),
+				})
+			}
+		}
+	}()
+}
 
 // wsConnWriters gives each connection its own write lock.
 // golang.org/x/net/websocket is not safe for concurrent Sends, and frames

@@ -496,6 +496,12 @@ func TestNew_ExplicitThinkingPreserved(t *testing.T) {
 	}
 }
 
+func TestNew_RequestTimeoutDefault(t *testing.T) {
+	if defaultHTTPTimout != 300 {
+		t.Errorf("defaultHTTPTimout = %d, want 300 (thinking models are slow to first byte)", defaultHTTPTimout)
+	}
+}
+
 func TestNew_SideCallTimeoutDefault(t *testing.T) {
 	for _, model := range []string{"kimi-for-coding", "deepseek-v4-pro", "deepseek-v4-flash", "gpt-4o"} {
 		agent, err := New(Config{APIKey: "sk-test", Model: model})

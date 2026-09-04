@@ -493,7 +493,7 @@ type FileConfig struct {
 	// LLM tunes the shared go-llm-sdk client (timeouts + context window). Currently: the SSE
 	// stream idle watchdog — time between events (keepalives count) before
 	// the stream is dropped and retried. Thinking models can spend minutes
-	// before their first event; 0 keeps the built-in default (120s).
+	// before their first event; 0 keeps the built-in default (300s).
 	// Config: llm.stream_idle_timeout_seconds, ODEK_STREAM_IDLE_TIMEOUT_SECONDS.
 	LLM *LLMConfig `json:"llm,omitempty"`
 
@@ -786,7 +786,7 @@ type ResolvedConfig struct {
 	Limits budget.Limits
 
 	// LLM is the resolved client-tuning section (timeouts + context window).
-	// Nil/zero fields keep SDK defaults.
+	// Nil/zero fields keep the built-in 300s request/idle defaults.
 	LLM LLMConfig
 }
 
@@ -2537,11 +2537,10 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	}
 
 	// LLM client tuning (llm section + ODEK_STREAM_IDLE_TIMEOUT_SECONDS):
-	// env wins over the file value, per the priority chain. 0/unset keeps
-	// the llm package default (120s).
-	if d := llmStreamIdleTimeoutFrom(cfg.LLM, envIntPtr("ODEK_STREAM_IDLE_TIMEOUT_SECONDS")); d > 0 {
-		sdk.SetStreamIdleTimeout(d)
-	}
+	// env wins over the file value, per the priority chain. 0/unset uses
+	// the built-in 300s default so thinking models are not idle-aborted
+	// before the first SSE event.
+	sdk.SetStreamIdleTimeout(resolveStreamIdleTimeout(cfg.LLM, envIntPtr("ODEK_STREAM_IDLE_TIMEOUT_SECONDS")))
 
 	// v1 alias: infer provider from base_url when provider is unset.
 	if resolved.Provider == "" && resolved.BaseURL != "" {

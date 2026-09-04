@@ -77,7 +77,9 @@ Two token layers:
 5. Answer `approval_request` with `{"type":"approval_response","id":…,
    "action":"approve"|"deny"|"trust"}` (default timeout 60s).
 6. Keep alive with `{"type":"ping"}` (answered inline with `pong`, even
-   mid-run); cancel with `{"type":"cancel","session_id":…,"auth_token":…}`.
+   mid-run). The server also pushes `keepalive` every 20s so idle proxies
+   do not drop a socket waiting on a thinking model. Cancel with
+   `{"type":"cancel","session_id":…,"auth_token":…}`.
 7. Continue the session by including `session_id`+`auth_token` on the next
    prompt, or `{"type":"session_switch", …}` to adopt one without prompting.
 
@@ -128,7 +130,7 @@ Two token layers:
 
 ### Server status & heartbeat
 
-The top-bar status group (`connected / reconnecting…`) doubles as a **health popover** — click it for version, uptime, model, sandbox/streaming state, live connection count, WebSocket round-trip latency, and lifetime usage (prompts, tokens, estimated cost when prices are configured). An application-level heartbeat (`ping`/`pong` every 25s) measures RTT and detects dead links early; the latency chip turns amber above 1s.
+The top-bar status group (`connected / reconnecting…`) doubles as a **health popover** — click it for version, uptime, model, sandbox/streaming state, live connection count, WebSocket round-trip latency, and lifetime usage (prompts, tokens, estimated cost when prices are configured). An application-level heartbeat (`ping`/`pong` every 20s) measures RTT and detects dead links early; the server also pushes `keepalive` every 20s so idle proxies do not drop a silent thinking turn. The latency chip turns amber above 1s.
 
 ### Management panels (Alt+M)
 
@@ -617,6 +619,7 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 |------------|------|--------|
 | `server_info` | Pushed once on connect | `version`, `model`, `sandbox`, `stream`, `uptime_seconds`, `ws_connections` |
 | `pong` | Reply to a client `ping` | `t` (unix ms), plus the `server_info` snapshot fields |
+| `keepalive` | Server-initiated idle traffic every 20s (independent of client pings) so proxies/NATs do not close a socket waiting on a slow LLM | `t` (unix ms) |
 | `session` | At start of response, and after `session_switch` | `session_id`, `auth_token`, `model`, `sandbox` |
 | `turn_started` | Emitted for **every** turn (operator and system-initiated wake alike) immediately after the matching `session` frame and before the first streamed frame — clients open/upsert the streaming card by `turn_id`, so a missed `session` frame can no longer strand a turn | `turn_id` (`t_<hex>`), `session_id`, `initiated` (`"operator"` or `"system"` — computed server-side via the wake provenance gate; client input cannot influence it), `model` (mirrors the `session` frame's `model`) |
 | `token_delta` | Live streamed answer fragment (streaming on) | `content` (markdown fragment) |
@@ -644,7 +647,7 @@ Every frame of an active turn — `token`, `thinking`, `tool_call`,
 turn's `turn_started.turn_id`, so a client that attached mid-turn (after a
 reconnect) can attribute stray frames and reconcile card state without
 heuristic idle detection. Lifecycle frames (`session`, `server_info`,
-`pong`, `usage`, `cancelled`, `subagent_*`, `approval_*`, `skill_event`,
+`pong`, `keepalive`, `usage`, `cancelled`, `subagent_*`, `approval_*`, `skill_event`,
 `memory_event`, `agent_signal`) and the live `*_delta` fragments never
 carry it. The `session` frame's legacy `system_initiated: true` stamp
 (wake turns only) remains for old clients; `turn_started.initiated`
@@ -706,7 +709,7 @@ match as plain text. The bundled WebUI implements this in
 |-----------|------|---------|
 | HTTP server + static | `serve.go` (`handleStatic`) | Serves the embedded UI with strict CSP; injects the per-instance token via the `?token=` URL |
 | WebSocket upgrade | `golang.org/x/net/websocket`, wired in `serve.go` | RFC 6455 handshake + framing; `internal/ws/ws.go` holds the shared frame constants |
-| WebSocket handler | `serve.go` (`handleWS`) | Per-connection agent lifecycle, connection registry, ping/pong, `cancel` / `session_switch` |
+| WebSocket handler | `serve.go` (`handleWS`) | Per-connection agent lifecycle, connection registry, ping/pong, server `keepalive`, `cancel` / `session_switch` |
 | Prompt handler | `serve.go` (`handlePrompt`) | Transport-agnostic (event-sink) prompt path: `@` refs, attachments, audit, per-turn persistence, streaming-suppression logic — shared by the socket and headless REST runs |
 | Approvals | `wsapprover.go` | WS approver with friction, class-trust, and a configurable approval timeout |
 | Management REST | `serve_api.go` | health, sessions (search/pagination/pin/export), memory (+consolidate), skills (+promote), tools, profiles, config view, MCP listing, shutdown |
@@ -719,7 +722,7 @@ match as plain text. The bundled WebUI implements this in
 - Messages are JSON over text frames; fragmentation details are handled by the library
 - Frame writes are serialized per connection (`golang.org/x/net/websocket` is not safe for concurrent sends) and bounded by a 30-second write deadline
 - A clean client close surfaces as `io.EOF`; broken connections surface as `net.Error`
-- Per-connection agent lifecycle (registry, ping/pong, `cancel` / `session_switch`) lives in `serve.go` (`handleWS`)
+- Per-connection agent lifecycle (registry, ping/pong, server `keepalive`, `cancel` / `session_switch`) lives in `serve.go` (`handleWS`)
 
 ### Frontend (`cmd/odek/ui/`)
 
@@ -729,7 +732,7 @@ match as plain text. The bundled WebUI implements this in
 - **Design**: self-contained "EMBER" theme — electric amber on layered blue-charcoal surfaces with hairline borders, glass topbar, and ≤200ms micro-interactions. Design tokens are CSS custom properties in `style.css` (`--bg-0…4`, `--amber`, `--line`, spacing/radius/motion scales) with a full light-mode variant and `prefers-reduced-motion` support; the Azeret Mono variable font is self-hosted from `ui/fonts/` so the UI works offline
 - **Streaming**: fragments (`token_delta`/`thinking_delta`) and bulk `token` events share one rAF-batched render pipeline
 - **DOM budget**: the message list is capped at 80 elements (`MAX_MESSAGES`); older messages are pruned
-- **Resilience**: auto-reconnect with exponential backoff (1s doubling to a 30s cap, reset after a stable connection) plus the 25s application heartbeat
+- **Resilience**: auto-reconnect with exponential backoff (1s doubling to a 30s cap, reset after a stable connection) plus the 20s application heartbeat and the server's 20s `keepalive`
 - **Tests**: `node --test cmd/odek/ui/js/` (markdown + untrusted-envelope goldens, and api.js request-shape E2E against a mocked fetch) plus Go-side WebUI E2E (`cmd/odek/webui_e2e_test.go`): asset/header/CSP contract, token injection, JS↔HTML id and JS↔CSS class contracts, and full client journeys (streamed WS run, headless run with the remote-approval bridge, kick, pin/export) through the production mux (`newServeMux` — the same constructor `serveCmd` uses, so tests cannot drift from the real mounting)
 
 ## Tips

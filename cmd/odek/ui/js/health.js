@@ -4,9 +4,10 @@ import { S } from './state.js';
 import { getHealth, getUsage } from './api.js';
 import { showToast } from './utils.js';
 
-// heartbeatInterval cadence; a missed pong (no reply within 2×) is treated
-// as a degraded link — the socket-level reconnect loop stays authoritative.
-const HEARTBEAT_MS = 25000;
+// heartbeatInterval cadence (20s, under typical 30–60s proxy idle
+// timeouts); a missed pong (no reply within 2×) is treated as a degraded
+// link — the socket-level reconnect loop stays authoritative.
+const HEARTBEAT_MS = 20000;
 
 let heartbeatTimer = null;
 let awaitingPong = false;

@@ -53,6 +53,11 @@ type Client struct {
 	PromptCache bool
 }
 
+// DefaultTimeout is the per-request wall-clock budget when Options.Timeout
+// is unset. Matches config.DefaultRequestTimeoutSeconds (300s) so thinking
+// models are not cut off before the first token.
+const DefaultTimeout = 300 * time.Second
+
 // Options builds an SDK from resolved operator config.
 type Options struct {
 	Provider    string
@@ -77,7 +82,7 @@ type ProviderOverride struct {
 func NewSDK(opts Options) (*sdk.SDK, error) {
 	timeout := opts.Timeout
 	if timeout <= 0 {
-		timeout = 120 * time.Second
+		timeout = DefaultTimeout
 	}
 	sdkOpts := []sdk.Option{
 		sdk.WithRequestTimeout(timeout),

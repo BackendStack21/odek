@@ -1299,8 +1299,8 @@ const globalConfigTemplate = `{
     "deepseek": { "api_key": "${DEEPSEEK_API_KEY}" }
   },
   "llm": {
-    "request_timeout_seconds": 120,
-    "stream_idle_timeout_seconds": 120,
+    "request_timeout_seconds": 300,
+    "stream_idle_timeout_seconds": 300,
     "context_window": 0
   },
   "thinking": "",

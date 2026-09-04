@@ -2,19 +2,29 @@ package config
 
 import "time"
 
+// Default LLM client budgets. Thinking/reasoning models are routinely
+// silent for well over two minutes before the first SSE event; the old
+// 120s pair surfaced as "LLM Provider Timeout" / stream-idle errors on
+// WebSocket clients. Operators can still lower these.
+const (
+	DefaultRequestTimeoutSeconds    = 300
+	DefaultStreamIdleTimeoutSeconds = 300
+	minStreamIdleTimeoutSeconds     = 5
+)
+
 // LLMConfig tunes the shared go-llm-sdk client. Nil section = the built-in
-// defaults (120s request + idle timeouts; context window from ListModels
+// defaults (300s request + idle timeouts; context window from ListModels
 // then the last-resort table).
 type LLMConfig struct {
 	// RequestTimeoutSeconds is the per-request wall-clock budget.
-	// 0 keeps the SDK default (120s). Config: llm.request_timeout_seconds,
+	// 0 keeps the built-in default (300s). Config: llm.request_timeout_seconds,
 	// ODEK_REQUEST_TIMEOUT_SECONDS.
 	RequestTimeoutSeconds int `json:"request_timeout_seconds,omitempty"`
 
 	// StreamIdleTimeoutSeconds caps the time between SSE events (keepalive
 	// comment lines count) before the stream is dropped and retried.
 	// Thinking models can legitimately spend minutes before their first
-	// event, so the built-in default is generous (120s). 0 keeps the
+	// event, so the built-in default is generous (300s). 0 keeps the
 	// default. Config: llm.stream_idle_timeout_seconds,
 	// ODEK_STREAM_IDLE_TIMEOUT_SECONDS.
 	StreamIdleTimeoutSeconds int `json:"stream_idle_timeout_seconds,omitempty"`
@@ -38,8 +48,17 @@ func llmStreamIdleTimeoutFrom(llm *LLMConfig, envSeconds *int) time.Duration {
 	if v <= 0 {
 		return 0
 	}
-	if v < 5 {
-		v = 5
+	if v < minStreamIdleTimeoutSeconds {
+		v = minStreamIdleTimeoutSeconds
 	}
 	return time.Duration(v) * time.Second
+}
+
+// resolveStreamIdleTimeout is the effective SSE idle watchdog: operator
+// file/env value when set, otherwise the built-in 300s default.
+func resolveStreamIdleTimeout(llm *LLMConfig, envSeconds *int) time.Duration {
+	if d := llmStreamIdleTimeoutFrom(llm, envSeconds); d > 0 {
+		return d
+	}
+	return time.Duration(DefaultStreamIdleTimeoutSeconds) * time.Second
 }
