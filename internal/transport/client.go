@@ -31,6 +31,11 @@ var (
 func pooledTransport() *http.Transport {
 	sharedTransportOnce.Do(func() {
 		sharedTransport = &http.Transport{
+			// Honor HTTP(S)_PROXY / NO_PROXY: a custom Transport literal with
+			// no Proxy field silently drops the stdlib default
+			// (ProxyFromEnvironment) — corporate-proxy users got failed or
+			// policy-violating direct egress.
+			Proxy:               http.ProxyFromEnvironment,
 			MaxIdleConns:        DefaultMaxIdleConns,
 			MaxIdleConnsPerHost: DefaultMaxIdlePerHost,
 			IdleConnTimeout:     DefaultIdleTimeout,
