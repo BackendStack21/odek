@@ -82,6 +82,15 @@ var patterns = []*regexp.Regexp{
 	// Slack app tokens: xapp-1-<app id>-<install id>-<secret>
 	regexp.MustCompile(`xapp-1-[A-Za-z0-9]+-[0-9]{8,}-[0-9a-zA-Z]{24,}`),
 
+	// Azure storage connection-string account keys (2026-09 posture review:
+	// AccountKey= is a structural prefix — no KEY/TOKEN name segment for the
+	// contextual matcher to catch).
+	regexp.MustCompile(`AccountKey=[A-Za-z0-9+/=]{40,}`),
+	// Stripe webhook signing secrets and live API keys (test-mode tk_/
+	// whsec_ look-alikes in fixtures stay short; live bodies are long).
+	regexp.MustCompile(`whsec_[A-Za-z0-9]{24,}`),
+	regexp.MustCompile(`(?:sk|rk)_live_[A-Za-z0-9]{20,}`),
+
 	// Telegram bot tokens: <numeric bot id>:<35-char base64url secret>.
 	// e.g. 123456789:AAHfakeTokenValueExample0123456789abcdef
 	regexp.MustCompile(`\b[0-9]{5,}:[A-Za-z0-9_-]{30,}\b`),

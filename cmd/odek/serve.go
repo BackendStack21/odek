@@ -2450,6 +2450,26 @@ func validateSessionToken(store *session.Store, sess *session.Session, token str
 	return "", false
 }
 
+// validateSessionTokenStrict is validateSessionToken for MUTATION paths
+// (delete, rename/pin, cancel, job control): a legacy session with no
+// stored token is minted, but the freshly minted token must actually be
+// PRESENTED. The lenient variant's mint-and-pass let an instance-cookie-
+// only holder act on pre-token-defense sessions (2026-09 posture review,
+// wave C). Read paths keep the deliberate GET bootstrap, which RETURNS
+// the minted token to the client.
+func validateSessionTokenStrict(store *session.Store, sess *session.Session, token string) bool {
+	if sess == nil {
+		return false
+	}
+	if sess.AuthToken == "" {
+		sess.AuthToken = session.GenerateAuthToken()
+		if err := store.Save(sess); err != nil {
+			return false
+		}
+	}
+	return subtle.ConstantTimeCompare([]byte(token), []byte(sess.AuthToken)) == 1
+}
+
 // wsWriteTimeout bounds a single WebSocket frame write. A client that
 // stops reading while its run streams (SIGSTOP'd process, or a token
 // holder with --stream enabled) fills its TCP receive window and blocks
@@ -2725,7 +2745,7 @@ func handleSessionByID(store *session.Store, trustedProxies []string, wsToken st
 				return
 			}
 			token := sessionTokenFromRequest(r)
-			if _, ok := validateSessionToken(store, sess, token); !ok {
+			if !validateSessionTokenStrict(store, sess, token) {
 				http.Error(w, "invalid session token", http.StatusUnauthorized)
 				return
 			}
@@ -2756,7 +2776,7 @@ func handleSessionByID(store *session.Store, trustedProxies []string, wsToken st
 				return
 			}
 			token := sessionTokenFromRequest(r)
-			if _, ok := validateSessionToken(store, sess, token); !ok {
+			if !validateSessionTokenStrict(store, sess, token) {
 				http.Error(w, "invalid session token", http.StatusUnauthorized)
 				return
 			}
