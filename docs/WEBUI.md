@@ -209,8 +209,11 @@ The dropdown fetches from `GET /api/resources?q=<query>&limit=8`. Results includ
 
 All three require the same per-instance CSRF token, loopback Host check, and
 session authentication as the other `/api` routes; the POST additionally
-requires the local-origin check. Foreign job ids answer `{"status":"unknown"}`
-(same shape as stale ids — no existence oracle across sessions).
+requires the local-origin check. Session tokens are validated strictly on
+every call — the token must be presented (legacy token-less sessions are
+minted but never bootstrap-passed on jobs routes). Foreign job ids answer
+`{"status":"unknown"}` (same shape as stale ids — no existence oracle across
+sessions).
 
 All `/api/*` endpoints require the per-instance CSRF token (`odek_ws_token` cookie or `X-Odek-Ws-Token` header) and a loopback `Host` header; state-changing methods additionally require a local `Origin`. Missing/invalid credentials return 403.
 
