@@ -71,7 +71,10 @@ func (e *Engine) startToolHeartbeat(ctx context.Context, toolName string) chan<-
 // prompt-cache stability and burying the task below injected context.
 func insertionIndexBeforeLatestUser(messages []llm.Message) int {
 	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == "user" {
+		// bg-notice user messages are synthetic (drained notices/wakes) and
+		// may trail the real task; injections belong before the REAL input —
+		// same skip as lastUserMessage.
+		if messages[i].Role == "user" && !strings.HasPrefix(messages[i].Name, "bg-") {
 			return i
 		}
 	}
@@ -1026,7 +1029,9 @@ func upsertTrimWarning(messages []llm.Message, warning string) []llm.Message {
 	}
 	insertIdx := 1
 	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == "user" {
+		// Skip synthetic bg-notice user messages: the warning belongs
+		// before the user's real input, not before a trailing notice.
+		if messages[i].Role == "user" && !strings.HasPrefix(messages[i].Name, "bg-") {
 			insertIdx = i
 			break
 		}

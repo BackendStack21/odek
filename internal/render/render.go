@@ -499,9 +499,13 @@ func (r *Renderer) ToolResult(output string) {
 		return
 	}
 	// Take first line only, truncate, add ellipsis if there's more.
+	// truncate() already appends its own ellipsis when the FIRST line was
+	// cut — the gate below only marks that MORE lines followed (the old
+	// byte-count gate double-marked every >120-rune line and spuriously
+	// marked short multibyte lines).
 	line, _, _ := strings.Cut(output, "\n")
 	summary := r.truncate(line, 120)
-	if len(output) > len(line) || len(line) > 120 {
+	if len(output) > len(line) {
 		summary += " …"
 	}
 	fmt.Fprintf(r.w, "%s\n", r.style(gray, "   "+summary))
