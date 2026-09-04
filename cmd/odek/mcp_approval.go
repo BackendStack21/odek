@@ -304,14 +304,17 @@ func approveMCPToolsWithTTY(projectDir, serverName string, cfg mcpclient.ServerC
 // re-prompt instead of silently reusing the approval.
 func mcpToolApprovalKey(projectDir, serverName, toolName string, cfg mcpclient.ServerConfig, schemaHash, description string) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s", projectDir, serverName, toolName, cfg.Command)
+	hashField(h, "dir", projectDir)
+	hashField(h, "server", serverName)
+	hashField(h, "tool", toolName)
+	hashField(h, "command", cfg.Command)
 	for _, a := range cfg.Args {
-		fmt.Fprintf(h, "\x00%s", a)
+		hashField(h, "arg", a)
 	}
 	hashEnv(h, cfg.Env)
 	hashServerLimits(h, cfg)
-	fmt.Fprintf(h, "\x00schema\x00%s", schemaHash)
-	fmt.Fprintf(h, "\x00description\x00%s", description)
+	hashField(h, "schema", schemaHash)
+	hashField(h, "description", description)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -361,12 +364,14 @@ func sortedEnvKeys(env map[string]string) []string {
 }
 
 // hashEnv writes a canonical representation of the env map into h.
-// The order is deterministic and key/value pairs are separated by NUL bytes
-// so that distinct key/value boundaries cannot collide.
+// Sorted by key; each key and value is length-prefixed (hashField) so
+// distinct key/value boundaries cannot collide even with NUL bytes in
+// the values.
 func hashEnv(h hash.Hash, env map[string]string) {
 	keys := sortedEnvKeys(env)
 	for _, k := range keys {
-		fmt.Fprintf(h, "\x00env\x00%s\x00%s", k, env[k])
+		hashField(h, "env", k)
+		hashField(h, "envval", env[k])
 	}
 }
 
@@ -378,13 +383,13 @@ func hashEnv(h hash.Hash, env map[string]string) {
 // prior approvals. Artifact roots are sorted so reordering alone does not
 // force a re-prompt.
 func hashServerLimits(h hash.Hash, cfg mcpclient.ServerConfig) {
-	fmt.Fprintf(h, "\x00timeout_seconds\x00%d", cfg.TimeoutSeconds)
-	fmt.Fprintf(h, "\x00max_response_bytes\x00%d", cfg.MaxResponseBytes)
-	fmt.Fprintf(h, "\x00max_result_chars\x00%d", cfg.MaxResultChars)
+	fmt.Fprintf(h, "\x00timeout_seconds:%d", cfg.TimeoutSeconds)
+	fmt.Fprintf(h, "\x00max_response_bytes:%d", cfg.MaxResponseBytes)
+	fmt.Fprintf(h, "\x00max_result_chars:%d", cfg.MaxResultChars)
 	roots := append([]string(nil), cfg.ArtifactRoots...)
 	sort.Strings(roots)
 	for _, r := range roots {
-		fmt.Fprintf(h, "\x00artifact_root\x00%s", r)
+		hashField(h, "artifact_root", r)
 	}
 }
 
