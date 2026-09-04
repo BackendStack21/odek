@@ -1330,11 +1330,6 @@ func classifyArgvComposerSink(upstream [][]string, stage []string) RiskClass {
 	return Safe
 }
 
-// classifyXargsSink is the historical name for classifyArgvComposerSink.
-func classifyXargsSink(upstream [][]string, stage []string) RiskClass {
-	return classifyArgvComposerSink(upstream, stage)
-}
-
 // classifyPipedShellSink composes a statically determinable upstream
 // payload onto a pipe-fed shell and classifies it as a command. Dynamic
 // payloads stay at the CodeExecution floor already set by classifyStage.
@@ -1476,11 +1471,6 @@ var xargsValueFlags = map[string]bool{
 	// (`xargs --eof rm` → empty inner → local_write allow).
 	// GNU parallel value-taking flags (union with xargs).
 	"-j": true, "--jobs": true, "-N": true,
-}
-
-// xargsInnerCommand is the historical name for argvComposerInnerCommand.
-func xargsInnerCommand(tokens []string) ([]string, bool) {
-	return argvComposerInnerCommand(tokens)
 }
 
 // staticPipePayload returns the literal tokens an upstream pipeline feeds
