@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 	"unicode/utf8"
 
 	"github.com/BackendStack21/odek/internal/guard"
@@ -177,18 +180,31 @@ var wrapperSourceReplacer = strings.NewReplacer(
 	"\r", " ",
 )
 
+// wrapperRandRead is the entropy source for wrapper nonces. A package
+// var so tests can force the degraded path.
+var wrapperRandRead = rand.Read
+
 // newWrapperNonce returns an 8-byte hex nonce. Crypto-grade randomness
 // is overkill but cheap.
 func newWrapperNonce() string {
 	var buf [8]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		// Fallback to a fixed-but-still-unguessable string. Failure
-		// here would mean the entire entropy source is broken; we
-		// don't have a useful recovery.
-		return "00000000"
+	if _, err := wrapperRandRead(buf[:]); err != nil {
+		// Entropy source broken. A CONSTANT fallback (the old "00000000")
+		// would hand every wrapper in this degraded mode the same
+		// guessable nonce — a forged tag could pair with a real one
+		// (fail-open). Derive per-call pseudo-entropy from the clock and
+		// pid instead: not cryptographic, but unguessable to an attacker
+		// who cannot already run code in-process.
+		seed := fmt.Sprintf("%d-%d-%d", time.Now().UnixNano(), os.Getpid(), nonceCounter.Add(1))
+		sum := sha256.Sum256([]byte(seed))
+		return hex.EncodeToString(sum[:8])
 	}
 	return hex.EncodeToString(buf[:])
 }
+
+// nonceCounter guarantees distinct degraded-mode nonces even within one
+// clock tick.
+var nonceCounter atomic.Uint64
 
 // reWrapperLiteral matches any literal occurrence of "untrusted_content"
 // (with or without an underscore-suffix) inside body content. We replace
@@ -201,10 +217,14 @@ func neutraliseWrapperLiterals(s string) string {
 	if !strings.Contains(s, "untrusted_content") {
 		return s
 	}
-	// Replace the underscore with a Unicode small-low-line look-alike
-	// (U+02CD MODIFIER LETTER LOW MACRON). Visually similar, semantically
-	// not a tag fragment we will ever emit.
-	return reWrapperLiteral.ReplaceAllString(s, "untrustedˍcontent")
+	// Replace the underscore with a MIDDLE DOT: the neutralized form must
+	// be VISUALLY DISTINCT from a real tag fragment. The previous U+02CD
+	// look-alike replacement was perceptually identical (same glyph shape,
+	// near-identical tokens), so a forged </untrusted_content_...> inside a
+	// body still read as a real closing tag to the model and to human
+	// transcript reviewers — enabling perceive-the-wrapper-closed /
+	// fake-open deception despite the unguessable nonce.
+	return reWrapperLiteral.ReplaceAllString(s, "untrusted·content")
 }
 
 // reWrapper matches a complete nonce'd wrapper so unwrapUntrusted can
