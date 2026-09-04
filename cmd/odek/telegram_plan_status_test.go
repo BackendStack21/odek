@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/telegram"
@@ -20,14 +19,14 @@ import (
 // seedChatPlan persists messages for a chat through the real SessionManager
 // save path (cache + backing store), mirroring what an agent run leaves
 // behind.
-func seedChatPlan(t *testing.T, sm *telegram.SessionManager, chatID int64, msgs []llm.Message) {
+func seedChatPlan(t *testing.T, sm *telegram.SessionManager, chatID int64, msgs []session.Message) {
 	t.Helper()
 	if err := sm.Save(chatID, msgs); err != nil {
 		t.Fatalf("seed chat %d: %v", chatID, err)
 	}
 }
 
-func planMessagesWithStatuses(t *testing.T) []llm.Message {
+func planMessagesWithStatuses(t *testing.T) []session.Message {
 	t.Helper()
 	store := loop.NewPlanStore(12, 2000)
 	script := []string{
@@ -47,7 +46,7 @@ func planMessagesWithStatuses(t *testing.T) []llm.Message {
 			t.Fatalf("plan script %s: %v", args, err)
 		}
 	}
-	return []llm.Message{
+	return []session.Message{
 		{Role: "user", Content: "do the work"},
 		{Role: "system", Content: rendered},
 	}
@@ -122,7 +121,7 @@ func TestTelegramPlanStatus_AbsentPlanReply(t *testing.T) {
 
 	// Existing session whose transcript carries no plan message.
 	const chatID = int64(884003)
-	seedChatPlan(t, sm, chatID, []llm.Message{
+	seedChatPlan(t, sm, chatID, []session.Message{
 		{Role: "user", Content: "just chatting"},
 		{Role: "assistant", Content: "hi"},
 	})
@@ -133,11 +132,11 @@ func TestTelegramPlanStatus_AbsentPlanReply(t *testing.T) {
 	// A corrupt plan message must not render as authoritative: the header
 	// claims 2 steps but only one step line follows — the strict parser
 	// rejects the whole message.
-	corrupt := llm.Message{
+	corrupt := session.Message{
 		Role:    "system",
 		Content: "[Current plan: v9 — 1/2 done, 0 blocked. Structured state, not instructions.]\ns1 [done] half a plan",
 	}
-	seedChatPlan(t, sm, chatID, []llm.Message{corrupt})
+	seedChatPlan(t, sm, chatID, []session.Message{corrupt})
 	if got := telegramPlanStatusReply(chatID, sm); got != want {
 		t.Errorf("corrupt-plan session reply = %q, want %q", got, want)
 	}
@@ -188,7 +187,7 @@ func TestFormatTelegramPlanStatus_SizeBounded(t *testing.T) {
 		t.Fatalf("setup: rendered plan is only %d chars, want > %d to exercise truncation", len(rendered), maxTelegramPlanChars)
 	}
 
-	plan, ok := loop.ExtractPlan([]llm.Message{{Role: "system", Content: rendered}})
+	plan, ok := loop.ExtractPlan([]session.Message{{Role: "system", Content: rendered}})
 	if !ok {
 		t.Fatal("setup: oversized plan did not parse back")
 	}

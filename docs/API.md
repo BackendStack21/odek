@@ -27,8 +27,9 @@ import (
 
 func main() {
     agent, err := odek.New(odek.Config{
-        Model:  "deepseek-v4-flash",
-        APIKey: os.Getenv("ODEK_API_KEY"),
+        Provider: "deepseek",
+        Model:    "deepseek-v4-flash",
+        APIKey:   os.Getenv("DEEPSEEK_API_KEY"),
     })
     if err != nil {
         fmt.Fprintf(os.Stderr, "odek: %v\n", err)
@@ -80,7 +81,7 @@ go run main.go
 The **Agent** manages one ReAct loop: **think** (LLM decides) → **act** (tool executes) → **observe** (result fed back) → repeat until done.
 
 You provide:
-- **`Config`** — model, API key, tools, system message
+- **`Config`** — provider, model, API key, tools, system message
 - **`Tool` implementations** — one interface, one method
 - **`context.Context`** — cancellation, deadlines
 
@@ -96,23 +97,29 @@ All configuration for an agent instance. Zero values fall back to sensible defau
 
 ```go
 type Config struct {
+    // go-llm-sdk registry id (deepseek, openai, anthropic, gemini, zai, kimi).
+    // Empty defaults to "deepseek".
+    Provider string
+
     // Model identifier (e.g. "deepseek-v4-flash", "gpt-4o").
-    // Default: "deepseek-v4-flash"
+    // Default: "deepseek-v4-flash". No auto-thinking / auto-timeout from the name.
     Model string
 
-    // OpenAI-compatible API endpoint.
-    // Default: "https://api.deepseek.com/v1"
+    // Selected-provider URL override. Empty keeps the SDK default
+    // (DeepSeek: "https://api.deepseek.com", no /v1).
     BaseURL string
 
-    // API key for the LLM provider.
-    // Falls back to DEEPSEEK_API_KEY, then OPENAI_API_KEY.
-    // Prefer ODEK_API_KEY for odek-specific configuration.
+    // API key for the selected provider. Empty falls back to the
+    // provider env key (DEEPSEEK_API_KEY for the default provider).
     APIKey string
+
+    // Per-id api_key / base_url / format overrides.
+    Providers map[string]llmclient.ProviderOverride
 
     // Thinking depth — provider-specific semantics:
     //   DeepSeek: "enabled" | "disabled"
     //   OpenAI o-series: "low" | "medium" | "high"
-    //   Empty string → model profile default
+    //   Empty string → omit (provider default). Not inferred from the model name.
     Thinking string
 
     // Tools registered with the agent. The LLM can invoke these
@@ -159,10 +166,9 @@ type Config struct {
     // Default: memory.DefaultMemoryConfig()
     MemoryConfig memory.MemoryConfig
 
-    // PromptCaching enables prompt caching markers for supported
-    // providers (Anthropic, DeepSeek, OpenAI). When enabled, the
-    // system prompt and first user message are annotated for cache.
-    // Default: false (no cache markers)
+    // PromptCaching enables Anthropic-format cache_control markers on
+    // the system prompt and first user message. OpenAI-format providers
+    // are unaffected (prefix stability only). Default: false.
     PromptCaching bool
 
     // MaxToolParallel controls tool call concurrency per iteration.
@@ -322,36 +328,28 @@ type Agent struct { /* unexported */ }
 func New(cfg Config) (*Agent, error)
 
 func (a *Agent) Run(ctx context.Context, task string) (string, error)
-func (a *Agent) RunWithMessages(ctx context.Context, messages []llm.Message) (string, []llm.Message, error)
+func (a *Agent) RunWithMessages(ctx context.Context, messages []session.Message) (string, []session.Message, error)
 func (a *Agent) TotalInputTokens() int
 func (a *Agent) TotalOutputTokens() int
 func (a *Agent) Close() error
 func (a *Agent) Memory() *memory.MemoryManager
 ```
 
-### `odek.ModelProfile` and Friends
+### Model identity (v2)
 
 ```go
-type ModelProfile struct {
-    Label      string // Human-readable name (e.g. "DeepSeek v4 Pro")
-    DefaultThinking string // "enabled" | "disabled" | ""
-    Timeout    int    // Per-request timeout in seconds
-    MaxContext int    // Context window limit in tokens
-}
-
-var KnownProfiles = []struct {
-    Prefix  string
-    Profile ModelProfile
-}{ /* ... */ }
-
-func LookupProfile(model string) *ModelProfile
-func ProfileLabel(model string) string
+func ProfileLabel(model string) string // returns the model id
 func LoadProjectFile() string
 
 const ProjectFileName = "AGENTS.md"
 ```
 
-Model profiles are matched by **longest model-name prefix**. A profile for `deepseek-v4-flash` matches before a broader `deepseek-` profile. Add custom profiles by appending to `KnownProfiles`.
+v2 has no `KnownProfiles` / `LookupProfile` / `ModelProfile`. Context windows
+come from `llm.context_window`, `ListModels`, or a last-resort table for shipped
+ids. See [MIGRATION.md](MIGRATION.md) and [PROVIDERS.md](PROVIDERS.md).
+
+`odek.Config` now has `Provider`, `Providers`, `RequestTimeout`, and
+`ContextWindow`. `BaseURL` / `APIKey` are selected-provider overrides.
 
 ---
 
@@ -598,47 +596,11 @@ if mm := agent.Memory(); mm != nil {
 
 ---
 
-## Model Profiles
+## Model identity (v2)
 
-Profiles provide per-model defaults for thinking depth, timeout, and context window.
-
-### Built-in profiles
-
-| Prefix | Label | Default Thinking | Timeout | Max Context |
-|--------|-------|-----------------|---------|-------------|
-| `deepseek-v4-pro` | DeepSeek v4 Pro | enabled | 180s | 1,000,000 |
-| `deepseek-v4-flash` | DeepSeek v4 Flash | — | 90s | 131,072 |
-| `deepseek-` | DeepSeek (generic) | — | 120s | 131,072 |
-
-### Adding a profile
-
-```go
-odek.KnownProfiles = append(odek.KnownProfiles, struct {
-    Prefix  string
-    Profile odek.ModelProfile
-}{
-    Prefix: "gpt-4o",
-    Profile: odek.ModelProfile{
-        Label:      "GPT-4o",
-        Timeout:    120,
-        MaxContext: 128_000,
-    },
-})
-```
-
-Lookup is by longest prefix match — `deepseek-v4-pro` matches before `deepseek-`.
-
-### Using profiles
-
-```go
-profile := odek.LookupProfile("deepseek-v4-flash")
-if profile != nil {
-    fmt.Println(profile.Label)  // "DeepSeek v4 Flash"
-    fmt.Println(profile.Timeout) // 90
-}
-
-label := odek.ProfileLabel("gpt-4o-mini") // "gpt-4o-mini" (fallback)
-```
+v2 has no static profile table. Set `Config.Provider`, `Config.Model`, and
+optional `Config.ContextWindow` / `llm.request_timeout_seconds`.
+`ProfileLabel` returns the model id. See [MIGRATION.md](MIGRATION.md).
 
 ---
 
@@ -893,8 +855,7 @@ All public symbols exported by `github.com/BackendStack21/odek`:
 | Signature | Description |
 |-----------|-------------|
 | `New(Config) (*Agent, error)` | Create a new agent with the given configuration |
-| `LookupProfile(string) *ModelProfile` | Find the best-matching model profile (longest prefix) |
-| `ProfileLabel(string) string` | Human-readable label for a model name |
+| `ProfileLabel(string) string` | Display name for a model (the model id in v2) |
 | `LoadProjectFile() string` | Read AGENTS.md from working directory |
 
 ### Constants
@@ -907,16 +868,9 @@ All public symbols exported by `github.com/BackendStack21/odek`:
 
 | Type | Description |
 |------|-------------|
-| `Config` | Agent configuration struct (Model, APIKey, Tools, etc.) |
+| `Config` | Agent configuration (Provider, Model, APIKey, Tools, …) |
 | `Agent` | Agent runtime with Run, Close, Memory methods |
 | `Tool` | Plugin interface: Name, Description, Schema, Call |
-| `ModelProfile` | Per-model defaults: Label, DefaultThinking, Timeout, MaxContext |
-
-### Variables
-
-| Variable | Description |
-|----------|-------------|
-| `KnownProfiles` | Slice of `{Prefix, Profile}` pairs for model matching. Append custom profiles here. |
 
 ---
 
@@ -934,5 +888,5 @@ go 1.25.0
 require github.com/BackendStack21/odek v0.16.1
 ```
 
-All `internal/` packages (`internal/llm`, `internal/memory`, `internal/skills`, `internal/config`, `internal/session`, `internal/danger`, `internal/resource`, `internal/render`, `internal/ws`) are not importable outside the module due to Go's `internal` package visibility rules.
+All `internal/` packages (`internal/llmclient`, `internal/memory`, `internal/skills`, `internal/config`, `internal/session`, `internal/danger`, `internal/resource`, `internal/render`, `internal/ws`) are not importable outside the module due to Go's `internal` package visibility rules.
 

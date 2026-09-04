@@ -2,12 +2,13 @@ package main
 
 // Tests for backend API changes:
 //   - GET /api/sessions/:id  (new endpoint)
-//   - handleModelList        (returns only configured model, not KnownProfiles)
+//   - handleModelList        (configured model + optional ListModels catalog)
 //   - handleLimits           (execution-budget config + effective prices)
 //   - serveOnListener        (stops cleanly when listener is closed)
 //   - handlePrompt origLen   (second turn must not repeat first turn's response)
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -20,7 +21,6 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/budget"
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/resource"
 	"github.com/BackendStack21/odek/internal/session"
 	golangws "golang.org/x/net/websocket"
@@ -30,10 +30,10 @@ import (
 
 func TestHandleSessionList_DoesNotLeakAuthTokens(t *testing.T) {
 	store := newTestSessionStore(t)
-	if _, err := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "one"); err != nil {
+	if _, err := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "one"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Create([]llm.Message{{Role: "user", Content: "bye"}}, "m", "two"); err != nil {
+	if _, err := store.Create([]session.Message{{Role: "user", Content: "bye"}}, "m", "two"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -63,7 +63,7 @@ func TestHandleSessionList_DoesNotLeakAuthTokens(t *testing.T) {
 func TestHandleSessionByID_GET_ReturnsSession(t *testing.T) {
 	store := newTestSessionStore(t)
 
-	sess, err := store.Create([]llm.Message{
+	sess, err := store.Create([]session.Message{
 		{Role: "system", Content: "you are helpful"},
 		{Role: "user", Content: "hello"},
 		{Role: "assistant", Content: "hi there!"},
@@ -139,7 +139,7 @@ func TestHandleSessionByID_GET_MessagesArePresent(t *testing.T) {
 	// endpoint must include them so the UI can render conversation history.
 	store := newTestSessionStore(t)
 
-	sess, err := store.Create([]llm.Message{
+	sess, err := store.Create([]session.Message{
 		{Role: "user", Content: "what is 2+2?"},
 		{Role: "assistant", Content: "4"},
 	}, "test-model", "math")
@@ -179,7 +179,7 @@ func TestHandleSessionByID_DELETE_StillWorks(t *testing.T) {
 	// Verify the existing DELETE handler is not broken by the new GET case.
 	store := newTestSessionStore(t)
 
-	sess, err := store.Create([]llm.Message{{Role: "user", Content: "bye"}}, "m", "task")
+	sess, err := store.Create([]session.Message{{Role: "user", Content: "bye"}}, "m", "task")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestHandleSessionByID_DELETE_StillWorks(t *testing.T) {
 func TestHandleSessionByID_POST_RenameStillWorks(t *testing.T) {
 	store := newTestSessionStore(t)
 
-	sess, err := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "original name")
+	sess, err := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "original name")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestHandleSessionByID_POST_RenameStillWorks(t *testing.T) {
 
 func TestHandleSessionByID_GET_InvalidToken(t *testing.T) {
 	store := newTestSessionStore(t)
-	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
+	sess, _ := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "task")
 
 	handler := handleSessionByID(store, nil, "")
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
@@ -247,7 +247,7 @@ func TestHandleSessionByID_GET_InvalidToken(t *testing.T) {
 
 func TestHandleSessionByID_GET_MissingToken(t *testing.T) {
 	store := newTestSessionStore(t)
-	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
+	sess, _ := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "task")
 
 	handler := handleSessionByID(store, nil, "")
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
@@ -264,7 +264,7 @@ func TestHandleSessionByID_GET_LazyTokenBootstrap(t *testing.T) {
 	// The first GET bootstraps a token and returns it so the UI can use it
 	// for subsequent requests.
 	store := newTestSessionStore(t)
-	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
+	sess, _ := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "task")
 	sess.AuthToken = ""
 	if err := store.Save(sess); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -305,7 +305,7 @@ func TestHandleSessionByID_GET_InstanceHeaderBootstrap(t *testing.T) {
 	// proves knowledge of the per-instance CSRF token via the
 	// X-Odek-Ws-Token header, the GET bootstraps the session token.
 	store := newTestSessionStore(t)
-	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
+	sess, _ := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "task")
 	const wsToken = "test-instance-token"
 
 	handler := handleSessionByID(store, nil, wsToken)
@@ -334,7 +334,7 @@ func TestHandleSessionByID_GET_InstanceHeaderBootstrap(t *testing.T) {
 func TestHandleSessionByID_GET_InstanceHeaderBootstrap_WrongInstanceToken(t *testing.T) {
 	// A wrong instance token proves nothing — no bootstrap.
 	store := newTestSessionStore(t)
-	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
+	sess, _ := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "task")
 
 	handler := handleSessionByID(store, nil, "real-token")
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
@@ -353,7 +353,7 @@ func TestHandleSessionByID_GET_NoBootstrapWithoutInstanceHeader(t *testing.T) {
 	// token configured: without the X-Odek-Ws-Token header the request is
 	// indistinguishable from the pre-fix behavior.
 	store := newTestSessionStore(t)
-	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
+	sess, _ := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "task")
 
 	handler := handleSessionByID(store, nil, "real-token")
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sess.ID, nil)
@@ -369,7 +369,7 @@ func TestHandleSessionByID_GET_NoBootstrapWithoutInstanceHeader(t *testing.T) {
 
 func TestHandleSessionByID_DELETE_RequiresToken(t *testing.T) {
 	store := newTestSessionStore(t)
-	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
+	sess, _ := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "task")
 
 	handler := handleSessionByID(store, nil, "")
 	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+sess.ID, nil)
@@ -384,7 +384,7 @@ func TestHandleSessionByID_DELETE_RequiresToken(t *testing.T) {
 
 func TestHandleSessionByID_POST_RequiresToken(t *testing.T) {
 	store := newTestSessionStore(t)
-	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
+	sess, _ := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "task")
 
 	handler := handleSessionByID(store, nil, "")
 	body := strings.NewReader(`{"name":"renamed"}`)
@@ -401,7 +401,7 @@ func TestHandleSessionByID_POST_RequiresToken(t *testing.T) {
 
 func TestHandleSessionByID_GET_RateLimit(t *testing.T) {
 	store := newTestSessionStore(t)
-	sess, _ := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
+	sess, _ := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "task")
 
 	sessionLookupLimiter.reset()
 	defer sessionLookupLimiter.reset()
@@ -432,7 +432,7 @@ func TestHandleSessionByID_GET_RateLimit(t *testing.T) {
 
 func TestHandleModelList_ReturnsOnlyConfiguredModel(t *testing.T) {
 	// Must return exactly one entry — the configured model — not KnownProfiles.
-	handler := handleModelList("deepseek-v4-flash")
+	handler := handleModelList("deepseek-v4-flash", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/models", nil)
 	w := httptest.NewRecorder()
 	handler(w, req)
@@ -460,7 +460,7 @@ func TestHandleModelList_ReturnsOnlyConfiguredModel(t *testing.T) {
 }
 
 func TestHandleModelList_EmptyConfigModel_ReturnsEmptyList(t *testing.T) {
-	handler := handleModelList("")
+	handler := handleModelList("", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/models", nil)
 	w := httptest.NewRecorder()
 	handler(w, req)
@@ -479,7 +479,7 @@ func TestHandleModelList_EmptyConfigModel_ReturnsEmptyList(t *testing.T) {
 
 func TestHandleModelList_UnknownModelStillReturned(t *testing.T) {
 	// A custom model not in KnownProfiles must still appear in the list.
-	handler := handleModelList("my-custom-llm")
+	handler := handleModelList("my-custom-llm", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/models", nil)
 	w := httptest.NewRecorder()
 	handler(w, req)
@@ -499,6 +499,34 @@ func TestHandleModelList_UnknownModelStillReturned(t *testing.T) {
 	// max_context should be zero/absent for an unknown model
 	if ctx, ok := models[0]["max_context"].(float64); ok && ctx != 0 {
 		t.Errorf("max_context = %.0f, want 0 for unknown model", ctx)
+	}
+}
+
+func TestHandleModelList_MergesListedModels(t *testing.T) {
+	list := func(context.Context) ([]listedModel, error) {
+		return []listedModel{
+			{ID: "glm-5.3", DisplayName: "GLM 5.3", ContextWindow: 1_000_000},
+			{ID: "glm-5.3-flash", DisplayName: "GLM 5.3 Flash", ContextWindow: 0},
+		}, nil
+	}
+	handler := handleModelList("glm-5.3-flash", list)
+	w := httptest.NewRecorder()
+	handler(w, httptest.NewRequest(http.MethodGet, "/api/models", nil))
+	var models []modelEntry
+	if err := json.NewDecoder(w.Body).Decode(&models); err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("len = %d, want 2", len(models))
+	}
+	if models[0].ID != "glm-5.3-flash" || !models[0].Current {
+		t.Fatalf("current first = %+v", models[0])
+	}
+	if models[0].MaxContext != 1_000_000 {
+		t.Errorf("flash last-resort ctx = %d, want 1000000 (glm-5.3 prefix)", models[0].MaxContext)
+	}
+	if models[1].ID != "glm-5.3" || models[1].Current || models[1].MaxContext != 1_000_000 {
+		t.Errorf("listed peer = %+v", models[1])
 	}
 }
 
@@ -661,7 +689,7 @@ func TestHandleLimits_MethodNotAllowed(t *testing.T) {
 }
 
 func TestHandleModelList_MethodNotAllowed(t *testing.T) {
-	handler := handleModelList("m")
+	handler := handleModelList("m", nil)
 	for _, method := range []string{http.MethodPost, http.MethodDelete, http.MethodPut} {
 		req := httptest.NewRequest(method, "/api/models", nil)
 		w := httptest.NewRecorder()
@@ -675,7 +703,7 @@ func TestHandleModelList_MethodNotAllowed(t *testing.T) {
 func TestHandleModelList_NoDeepSeekHardcoding(t *testing.T) {
 	// Verify that the list does NOT contain KnownProfiles entries when a
 	// non-deepseek model is configured. The old bug included all KnownProfiles.
-	handler := handleModelList("gpt-4o")
+	handler := handleModelList("gpt-4o", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/models", nil)
 	w := httptest.NewRecorder()
 	handler(w, req)
@@ -1016,8 +1044,8 @@ func TestHandleResourceSearch_LimitCapped(t *testing.T) {
 // messages survive, while dynamically-injected system messages (skills,
 // memory, episodes, trim warnings) are dropped.
 func TestFilterPersistSnapshot(t *testing.T) {
-	head := []llm.Message{{Role: "system", Content: "You are odek."}}
-	snapshot := []llm.Message{
+	head := []session.Message{{Role: "system", Content: "You are odek."}}
+	snapshot := []session.Message{
 		{Role: "system", Content: "You are odek."},
 		{Role: "system", Content: "## Skill: deploy\nDo the deploy dance."},
 		{Role: "system", Content: "[Compacted earlier context: turns 1-8 summarized. User asked about the migration.]"},
@@ -1066,7 +1094,7 @@ func TestFilterPersistSnapshot(t *testing.T) {
 // TestFilterPersistSnapshot_NoHead verifies the filter also keeps digests
 // when the session has no leading system message.
 func TestFilterPersistSnapshot_NoHead(t *testing.T) {
-	snapshot := []llm.Message{
+	snapshot := []session.Message{
 		{Role: "system", Content: "[Compacted earlier context: digest]"},
 		{Role: "user", Content: "hi"},
 	}

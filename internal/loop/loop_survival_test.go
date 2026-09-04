@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
@@ -35,13 +35,13 @@ func TestRunWithMessages_SurvivalRetryDoesNotConsumeIterationSlot(t *testing.T) 
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	registry := tool.NewRegistry(nil)
 	engine := New(client, registry, 1, "sys", nil, 0)
 
 	// History long enough for trimToSurvival to drop something
 	// (len > 3 with droppable middle turns).
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "task one"},
 		{Role: "assistant", Content: "did step one"},

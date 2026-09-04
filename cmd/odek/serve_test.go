@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/config"
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/resource"
 	"github.com/BackendStack21/odek/internal/session"
 	golangws "golang.org/x/net/websocket"
@@ -157,7 +156,7 @@ func (s *testServer) handleWebSocket(conn *golangws.Conn) {
 			// session-scoped auth token.
 			sess, err := s.store.Load("test-session-001")
 			if err != nil {
-				sess, _ = s.store.Create([]llm.Message{}, "test-model", "test")
+				sess, _ = s.store.Create([]session.Message{}, "test-model", "test")
 				sess.ID = "test-session-001"
 				sess.AuthToken = session.GenerateAuthToken()
 				_ = s.store.Save(sess)
@@ -2256,7 +2255,7 @@ func postCancel(t *testing.T, url, sessionID, token string) *http.Response {
 // be exercised by tests.
 func ensureTestSession(t *testing.T, store *session.Store, id string) string {
 	t.Helper()
-	sess, err := store.Create([]llm.Message{}, "test-model", "test")
+	sess, err := store.Create([]session.Message{}, "test-model", "test")
 	if err != nil {
 		t.Fatalf("Create session: %v", err)
 	}

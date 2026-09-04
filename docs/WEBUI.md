@@ -121,7 +121,7 @@ Two token layers:
 - **Inline approvals** — dangerous operations block the run and show a decision card (risk class, plain-language explanation, verbatim command). Friction mode (after 3 same-class approvals in 60s) requires typing the literal word `approve`; `trust session` is hidden for destructive/blocked/unknown classes. Keyboard: `A` approve, `D` deny, `T` trust
 - **Cancel** — the ✕ button cancels the running prompt over the WebSocket (`cancel` message), with the REST endpoint as fallback
 - **Thinking toggle** — `think` button or `Alt+T` toggles extended reasoning for the next prompt (persisted)
-- **Model switching** — the picker lists the configured model plus all built-in profiles (`/api/profiles`, with context sizes) and an "Other…" free-text entry; switches apply from the next prompt
+- **Model switching** — the picker lists `GET /api/models` (provider `ListModels` catalog, configured model marked current, with context sizes) plus an "Other…" free-text entry; switches apply from the next prompt
 - **History navigation** — `↑`/`↓` arrows cycle through your previous prompts (stored in `localStorage`)
 - **Keyboard shortcuts** — `?` toggles the cheat sheet (`Enter`, `@` completion, `⌘R` refresh sessions, `Alt+T` thinking, `Alt+M` panels, `A/D/T` approvals)
 - **File attachments** — drag-and-drop files onto the chat area, or use the paperclip button. Attached files appear as chips with filename, size, and a remove button. 5 MB per file, 10 MB total per prompt; content crosses the trust boundary wrapped in the untrusted-content envelope
@@ -156,7 +156,7 @@ Each response shows **per-message token stats** appended to the assistant bubble
 
 The **top bar carries a consolidated metrics cluster** (appears once a run reports data):
 
-- **Context gauge** — `ctx ▓▓▓░░ 40%`: the live context-window usage from per-iteration `usage` events, against the model's window size (`/api/models` + `/api/profiles`). Amber above 60%, red above 85%; a `context_trimmed` signal flashes the gauge. Without a known window size it shows raw tokens. Hover for exact numbers and the trimming note.
+- **Context gauge** — `ctx ▓▓▓░░ 40%`: the live context-window usage from per-iteration `usage` events, against the model's window size from `/api/models`. Amber above 60%, red above 85%; a `context_trimmed` signal flashes the gauge. Without a known window size it shows raw tokens. Hover for exact numbers and the trimming note.
 - **Session tokens** — `⇥ in ↦ out`, cumulative session totals from `done` events.
 - **Session cost** — `◈ $0.201`, estimated from the session's token totals and the resolved prices (`/api/limits`: `model_prices` per-model override, flat pair fallback — the client-side twin of `limits.ResolvePrices`). Hidden entirely when no prices are configured.
 
@@ -247,14 +247,16 @@ server resolves and wraps it as untrusted content.
 
 ### `GET /api/models`
 
-The server's configured model only (never the full catalog):
+The provider's `ListModels` catalog plus the configured model (always present, `current: true`). Context windows come from the provider, then the last-resort table, else 0. Capped at 256 entries. `/api/profiles` is retired.
 
 ```jsonc
-[{ "id": "glm-5.3", "max_context": 1000000, "description": "GLM 5.3 (Z.ai) — 976K ctx", "current": true }]
+[
+  { "id": "glm-5.3-flash", "max_context": 1000000, "description": "GLM 5.3 Flash — 976K ctx", "current": true },
+  { "id": "glm-5.3", "max_context": 1000000, "description": "GLM 5.3 — 976K ctx" }
+]
 ```
 
-`max_context` is the context window for the metrics gauge; see also
-`/api/profiles` for the built-in catalog.
+`max_context` feeds the metrics gauge. The picker also has an "Other…" free-text entry for ids not in the catalog. If `ListModels` fails, the response is the configured model only.
 
 ### `GET/POST/DELETE /api/sessions/{id}`
 
@@ -421,10 +423,6 @@ Skill listing with provenance: `name`, `description`, `auto_load`, `usage_count`
 
 The built-in tool registry with the resolved enabled/disabled state after `tools.enabled` / `tools.disabled` filtering, plus the configured MCP server count (per-connection tool lists vary with MCP).
 
-### `GET /api/profiles`
-
-The built-in model profiles (`id` prefix, `label`, `max_context`) for pickers offering known models. `/api/models` is unchanged — it still returns only the configured model.
-
 ### `POST /api/prompt` — headless runs
 
 Runs the full agent without a WebSocket. The body is the prompt message:
@@ -501,7 +499,7 @@ handler's defers tear down the agent and sandbox cleanly.
 
 ### `GET /api/config`
 
-Sanitized resolved-config view: model, sandbox knobs, stream/compaction/
+Sanitized resolved-config view: provider id (not the `providers` map), model, sandbox knobs, stream/compaction/
 caching flags, iteration/parallelism limits, memory/skills/tool-filter
 summaries, maintenance retention, dangerous default action, guard scan
 toggles, sub-agent budgets (`subagent`), background-command settings

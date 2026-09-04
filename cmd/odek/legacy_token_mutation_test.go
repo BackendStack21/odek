@@ -2,11 +2,10 @@ package main
 
 import (
 	"bytes"
+	"github.com/BackendStack21/odek/internal/session"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/BackendStack21/odek/internal/llm"
 )
 
 // Security review wave C, F4: validateSessionToken auto-mints a token for
@@ -17,7 +16,7 @@ import (
 func TestSessionMutations_LegacyEmptyTokenFailsClosed(t *testing.T) {
 	store := newTestSessionStore(t)
 	// Legacy session: no auth token on disk.
-	sess, err := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "legacy task")
+	sess, err := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "legacy task")
 	if err != nil {
 		t.Fatal(err)
 	}

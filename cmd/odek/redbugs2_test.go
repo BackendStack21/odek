@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/danger"
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -188,8 +187,8 @@ func TestRED_REPLCompletionsAreImplemented(t *testing.T) {
 }
 
 // llmMessage builds a single user message for session fixtures.
-func llmMessage(content string) []llm.Message {
-	return []llm.Message{{Role: "user", Content: content}}
+func llmMessage(content string) []session.Message {
+	return []session.Message{{Role: "user", Content: content}}
 }
 
 // ────────────────────────────────────────────────────────────────────────

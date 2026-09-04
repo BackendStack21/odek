@@ -5,12 +5,12 @@
 //
 // Data sources:
 //   - /api/limits        → per-million prices (flat pair + model_prices)
-//   - /api/models + /api/profiles → context-window sizes per model
+//   - /api/models        → context-window sizes per listed model
 //   - WS usage events    → live context tokens per iteration
 //   - WS done events     → final session token totals
 //   - session records    → seeding when a stored session is opened
 import { S } from './state.js';
-import { getLimits, getModels, getProfiles } from './api.js';
+import { getLimits, getModels } from './api.js';
 import { formatNum } from './utils.js';
 
 // Metrics state (kept on S so the health popover can read it too).
@@ -32,10 +32,9 @@ S.metrics = {
 // model. Non-fatal on failure — the cluster degrades to token counts.
 export async function initMetrics() {
   try {
-    const [limits, models, profilesData] = await Promise.all([
+    const [limits, models] = await Promise.all([
       getLimits(),
       getModels().catch(() => null),
-      getProfiles().catch(() => null),
     ]);
     if (limits) {
       const lim = limits.limits || {};
@@ -55,18 +54,9 @@ export async function initMetrics() {
         Object.keys(S.metrics.modelPrices).length > 0;
     }
     if (models && Array.isArray(models)) {
-      const cur = models.find(m => m.current || m.id === (S.currentModel || S.metrics.model));
+      const id = S.currentModel || S.metrics.model;
+      const cur = models.find(m => m.current || m.id === id);
       if (cur && cur.max_context) S.metrics.maxContext = cur.max_context;
-    }
-    if (!S.metrics.maxContext && profilesData && Array.isArray(profilesData.profiles)) {
-      // Longest-prefix match against the built-in profiles (mirrors the
-      // server's LookupProfile rule).
-      const id = S.currentModel || '';
-      let best = null;
-      for (const p of profilesData.profiles) {
-        if (id.startsWith(p.id) && (!best || p.id.length > best.id.length)) best = p;
-      }
-      if (best && best.max_context) S.metrics.maxContext = best.max_context;
     }
   } catch { /* degraded mode: tokens only */ }
   S.metrics.model = S.currentModel || S.metrics.model;
@@ -78,17 +68,9 @@ export async function initMetrics() {
 export function setMetricsModel(model) {
   S.metrics.model = model || '';
   if (!model) return;
-  // Context size: check the loaded models list, then profiles by prefix.
   const known = (S.availableModels || []).find(m => m.id === model);
   if (known && known.max_context) {
     S.metrics.maxContext = known.max_context;
-  } else {
-    const profiles = S.availableProfiles || [];
-    let best = null;
-    for (const p of profiles) {
-      if (model.startsWith(p.id) && (!best || p.id.length > best.id.length)) best = p;
-    }
-    if (best && best.max_context) S.metrics.maxContext = best.max_context;
   }
   resolvePrices();
   renderMetrics();

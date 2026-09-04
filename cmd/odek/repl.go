@@ -16,7 +16,6 @@ import (
 	"github.com/BackendStack21/odek/internal/bgproc"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/guard"
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/memory"
 	"github.com/BackendStack21/odek/internal/render"
 	"github.com/BackendStack21/odek/internal/session"
@@ -84,7 +83,7 @@ func replCmd(args []string) error {
 	// session-scoped: they outlive turns and die at session end).
 	if sess == nil {
 		sess, err = store.Create(
-			[]llm.Message{{Role: "system", Content: systemMessage}},
+			[]session.Message{{Role: "system", Content: systemMessage}},
 			resolved.Model,
 			"interactive session",
 		)
@@ -92,6 +91,7 @@ func replCmd(args []string) error {
 			return fmt.Errorf("create session: %w", err)
 		}
 		sess.Sandbox = resolved.Sandbox
+		sess.Provider = resolved.Provider
 		store.Save(sess)
 	}
 
@@ -168,7 +168,7 @@ func replCmd(args []string) error {
 		SetToolOutputGuard(injectionGuard, resolved.Guard)
 	}
 
-	agent, err := odek.New(odek.Config{
+	replCfg := odek.Config{
 		Model:            resolved.Model,
 		BaseURL:          resolved.BaseURL,
 		APIKey:           resolved.APIKey,
@@ -192,7 +192,9 @@ func replCmd(args []string) error {
 		Compaction:       resolved.Compaction,
 		Guard:            injectionGuard,
 		GuardConfig:      resolved.Guard,
-	})
+	}
+	applyResolvedProvider(&replCfg, resolved)
+	agent, err := odek.New(replCfg)
 	if err != nil {
 		return err
 	}
@@ -214,7 +216,7 @@ func replCmd(args []string) error {
 
 	// Persist per-turn progress so an interrupted turn (Ctrl-C) survives up
 	// to the last completed step instead of losing the whole turn.
-	agent.SetMessagesPersistCallback(func(snapshot []llm.Message) {
+	agent.SetMessagesPersistCallback(func(snapshot []session.Message) {
 		if sess == nil || len(snapshot) < len(sess.Messages) {
 			// The loop trimmed history in place — keep the richer state
 			// already persisted instead of overwriting it.
@@ -289,7 +291,7 @@ func replCmd(args []string) error {
 			messages = injectReturnAfterBreak(ctx, agent.Memory(), messages)
 			resumedSession = false
 		}
-		messages = append(messages, llm.Message{Role: "user", Content: input})
+		messages = append(messages, session.Message{Role: "user", Content: input})
 
 		// Append user input to buffer (AppendBuffer summarizes raw text).
 		if mm := agent.Memory(); mm != nil {

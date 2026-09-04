@@ -148,11 +148,11 @@ type captureLogger struct {
 	warnings []string
 }
 
-func (c *captureLogger) Debug(_ string, _ ...any) {}
-func (c *captureLogger) Info(_ string, _ ...any)  {}
-func (c *captureLogger) Warn(msg string, _ ...any)  { c.warnings = append(c.warnings, msg) }
-func (c *captureLogger) Error(_ string, _ ...any) {}
-func (c *captureLogger) With(_ ...any) Logger     { return c }
+func (c *captureLogger) Debug(_ string, _ ...any)  {}
+func (c *captureLogger) Info(_ string, _ ...any)   {}
+func (c *captureLogger) Warn(msg string, _ ...any) { c.warnings = append(c.warnings, msg) }
+func (c *captureLogger) Error(_ string, _ ...any)  {}
+func (c *captureLogger) With(_ ...any) Logger      { return c }
 
 func TestHealthServer_NonLoopbackAddressWarns(t *testing.T) {
 	log := &captureLogger{}

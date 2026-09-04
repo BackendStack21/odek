@@ -3,11 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/BackendStack21/odek/internal/session"
 	"io"
 	"strings"
 	"time"
 
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/memory"
 )
 
@@ -24,7 +24,7 @@ import (
 // message history immediately after the last system message. When there is
 // no summary (extended memory disabled, no atoms, LLM failure) the messages
 // are returned unchanged.
-func injectReturnAfterBreak(ctx context.Context, mm *memory.MemoryManager, messages []llm.Message) []llm.Message {
+func injectReturnAfterBreak(ctx context.Context, mm *memory.MemoryManager, messages []session.Message) []session.Message {
 	if mm == nil {
 		return messages
 	}
@@ -42,11 +42,11 @@ func injectReturnAfterBreak(ctx context.Context, mm *memory.MemoryManager, messa
 		}
 	}
 	wrapped := wrapUntrusted(rbCtx, "return_after_break", rb)
-	rbMsg := llm.Message{Role: "system", Content: wrapped}
+	rbMsg := session.Message{Role: "system", Content: wrapped}
 	if insertIdx >= 0 {
-		messages = append(messages[:insertIdx+1], append([]llm.Message{rbMsg}, messages[insertIdx+1:]...)...)
+		messages = append(messages[:insertIdx+1], append([]session.Message{rbMsg}, messages[insertIdx+1:]...)...)
 	} else {
-		messages = append([]llm.Message{rbMsg}, messages...)
+		messages = append([]session.Message{rbMsg}, messages...)
 	}
 	return messages
 }
@@ -56,7 +56,7 @@ func injectReturnAfterBreak(ctx context.Context, mm *memory.MemoryManager, messa
 // as "" — the handler then reports "(empty)" instead of panicking on
 // messages[0] (audit 2026-08: a persisted zero-message session crashed the
 // update loop on /resume).
-func resumeTaskPreview(messages []llm.Message) string {
+func resumeTaskPreview(messages []session.Message) string {
 	if len(messages) == 0 {
 		return ""
 	}

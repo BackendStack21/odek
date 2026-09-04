@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,7 +31,7 @@ import (
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/events"
 	"github.com/BackendStack21/odek/internal/guard"
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/llmclient"
 	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/memory"
 	"github.com/BackendStack21/odek/internal/redact"
@@ -76,8 +77,8 @@ const planMessagePrefix = "[Current plan:"
 // don't accumulate internal injections or corrupt future origLen
 // calculations; compaction digest and protected plan system messages are
 // kept so a resumed session retains its compacted history and its plan.
-func filterPersistSnapshot(head, snapshot []llm.Message) []llm.Message {
-	filtered := make([]llm.Message, 0, len(snapshot))
+func filterPersistSnapshot(head, snapshot []session.Message) []session.Message {
+	filtered := make([]session.Message, 0, len(snapshot))
 	filtered = append(filtered, head...)
 	for i, m := range snapshot {
 		if i == 0 && len(head) > 0 {
@@ -99,9 +100,9 @@ func filterPersistSnapshot(head, snapshot []llm.Message) []llm.Message {
 // transcript. Typed llm errors (rate limit) get a precise, actionable line;
 // everything else is truncated to a single line.
 func providerFailureSummary(err error) string {
-	var rle *llm.RateLimitError
+	var rle *llmclient.RateLimitError
 	if errors.As(err, &rle) {
-		return fmt.Sprintf("provider rate limit (HTTP %d) after %d attempts", rle.StatusCode, rle.Attempts)
+		return fmt.Sprintf("provider rate limit (HTTP %d) after %d attempts", rle.Status, rle.Attempts)
 	}
 	if errors.Is(err, context.Canceled) {
 		return "cancelled"
@@ -571,7 +572,7 @@ func newServeMux(d serveMuxDeps) *http.ServeMux {
 	mux.Handle("/api/resources", apiAuth(handleResourceSearch(resourceReg)))
 	mux.Handle("/api/sessions", apiAuth(handleSessionListPaged(store)))
 	mux.Handle("/api/sessions/", apiAuth(handleSessionByID(store, resolved.TrustedProxies, wsToken)))
-	mux.Handle("/api/models", apiAuth(handleModelList(resolved.Model)))
+	mux.Handle("/api/models", apiAuth(handleModelList(resolved.Model, newServeModelLister(resolved))))
 	mux.Handle("/api/limits", apiAuth(handleLimits(resolved.Model, resolved.Limits)))
 	mux.Handle("/api/cancel", apiAuth(handleCancel(store)))
 	mux.Handle("/api/health", apiAuth(handleHealth(state)))
@@ -590,7 +591,6 @@ func newServeMux(d serveMuxDeps) *http.ServeMux {
 	mux.Handle("/api/skills", apiAuth(handleSkills(resolved.Skills)))
 	mux.Handle("/api/skills/promote", apiAuth(handleSkillPromote()))
 	mux.Handle("/api/tools", apiAuth(handleTools(resolved)))
-	mux.Handle("/api/profiles", apiAuth(handleProfiles()))
 	mux.Handle("/api/config", apiAuth(handleConfigView(resolved)))
 	mux.Handle("/api/mcp", apiAuth(handleMCPServers(resolved)))
 
@@ -911,7 +911,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 		SetToolOutputGuard(injectionGuard, resolved.Guard)
 	}
 
-	agent, err := odek.New(odek.Config{
+	serveCfg := odek.Config{
 		Model:            resolved.Model,
 		BaseURL:          resolved.BaseURL,
 		APIKey:           resolved.APIKey,
@@ -1010,7 +1010,9 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 				})
 			}
 		},
-	})
+	}
+	applyResolvedProvider(&serveCfg, resolved)
+	agent, err := odek.New(serveCfg)
 	if err != nil {
 		// Container was started but agent construction failed — clean up now
 		// so the container doesn't outlive this call.
@@ -1036,16 +1038,16 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 // reasoning fragments go out as thinking_delta, answer fragments as
 // token_delta. Counted in deltas so handlePrompt can suppress the post-run
 // bulk re-send. Tool-argument fragments are already suppressed by the engine.
-func serveDeltaHandler(sendFn func(v any) error, deltas *wsDeltaCounters) func(llm.Delta) error {
+func serveDeltaHandler(sendFn func(v any) error, deltas *wsDeltaCounters) func(llmclient.Delta) error {
 	if deltas == nil {
 		return nil
 	}
-	return func(d llm.Delta) error {
+	return func(d llmclient.Delta) error {
 		switch d.Kind {
-		case llm.DeltaReasoning:
+		case llmclient.DeltaReasoning:
 			deltas.addReasoning()
 			sendFn(map[string]any{"type": "thinking_delta", "content": d.Text})
-		case llm.DeltaContent:
+		case llmclient.DeltaContent:
 			deltas.addContent()
 			sendFn(map[string]any{"type": "token_delta", "content": d.Text})
 		}
@@ -1840,7 +1842,7 @@ func handlePrompt(
 	}
 
 	// Build message history
-	var messages []llm.Message
+	var messages []session.Message
 	isNewSession := false
 	// System-initiated wake turns carry a Name marker ("bg-wake") so the
 	// loop's user-input hooks skip them exactly like drained bg-notice
@@ -1854,23 +1856,24 @@ func handlePrompt(
 
 	if sess != nil {
 		messages = sess.GetMessages()
-		messages = append(messages, llm.Message{Role: "user", Content: enrichedPrompt, Name: userName})
+		messages = append(messages, session.Message{Role: "user", Content: enrichedPrompt, Name: userName})
 	} else {
 		isNewSession = true
-		messages = []llm.Message{
+		messages = []session.Message{
 			{Role: "system", Content: ""},
 			{Role: "user", Content: enrichedPrompt, Name: userName},
 		}
 
 		// Persist new session
 		newSess, err := store.Create(
-			[]llm.Message{{Role: "system", Content: ""}},
+			[]session.Message{{Role: "system", Content: ""}},
 			resolved.Model,
 			shorten(prompt, 60),
 		)
 		if err == nil {
 			sess = newSess
 			sess.Sandbox = resolved.Sandbox
+			sess.Provider = resolved.Provider
 			store.Save(sess)
 		}
 	}
@@ -1905,7 +1908,7 @@ func handlePrompt(
 	if sid != "" && promptCancel != nil {
 		defer registerPromptCancel(sid, promptCancel)()
 	}
-		sessFrame := map[string]any{"type": "session", "session_id": sid, "auth_token": authToken, "model": resolved.Model, "sandbox": resolved.Sandbox}
+	sessFrame := map[string]any{"type": "session", "session_id": sid, "auth_token": authToken, "model": resolved.Model, "sandbox": resolved.Sandbox}
 	if wakeInitiated(msg) {
 		sessFrame["system_initiated"] = true // absent on operator turns
 	}
@@ -1957,11 +1960,11 @@ func handlePrompt(
 	// compaction digest system messages are preserved (see
 	// filterPersistSnapshot).
 	if sess != nil {
-		var head []llm.Message
+		var head []session.Message
 		if len(sess.Messages) > 0 && sess.Messages[0].Role == "system" {
 			head = sess.Messages[:1]
 		}
-		agent.SetMessagesPersistCallback(func(snapshot []llm.Message) {
+		agent.SetMessagesPersistCallback(func(snapshot []session.Message) {
 			if len(snapshot) < len(sess.Messages) {
 				// The loop trimmed history in place — keep the richer state
 				// already persisted instead of overwriting it.
@@ -1979,7 +1982,7 @@ func handlePrompt(
 	// — observed repeatedly on 2026-08-29. SaveNoIndex skips the remote
 	// vector index; a successful turn re-indexes on the final save below.
 	if sess != nil {
-		sess.Messages = append(sess.Messages, llm.Message{Role: "user", Content: enrichedPrompt, Name: userName})
+		sess.Messages = append(sess.Messages, session.Message{Role: "user", Content: enrichedPrompt, Name: userName})
 		_ = store.SaveNoIndex(sess)
 	}
 
@@ -2009,7 +2012,7 @@ func handlePrompt(
 		// returning sess (not currSess) also keeps the caller's run record
 		// and in-memory session pointer in sync with the persisted state.
 		note := fmt.Sprintf("[Turn aborted: %s. The prompt above was preserved — send another message to retry or continue.]", providerFailureSummary(err))
-		sess.Messages = append(sess.Messages, llm.Message{Role: "assistant", Content: note})
+		sess.Messages = append(sess.Messages, session.Message{Role: "assistant", Content: note})
 		_ = store.SaveNoIndex(sess)
 		return sess
 	}
@@ -2845,46 +2848,135 @@ func isTrustedProxy(host string, trusted []string) bool {
 	return false
 }
 
-func handleModelList(configuredModel string) http.HandlerFunc {
+// listedModel is one provider-reported id for the /api/models picker.
+type listedModel struct {
+	ID            string
+	DisplayName   string
+	ContextWindow int
+}
+
+// modelLister fetches the provider catalog. Nil means configured-only
+// (tests, or ListModels unavailable).
+type modelLister func(ctx context.Context) ([]listedModel, error)
+
+const maxListedModels = 256
+
+// newServeModelLister lists models from the bound provider once per process
+// (5s bound). Failure yields an empty catalog; the handler still emits the
+// configured model.
+func newServeModelLister(resolved config.ResolvedConfig) modelLister {
+	var (
+		once   sync.Once
+		cached []listedModel
+	)
+	return func(context.Context) ([]listedModel, error) {
+		once.Do(func() {
+			s, err := llmclient.NewSDK(llmclient.Options{
+				Provider:  resolved.Provider,
+				Model:     resolved.Model,
+				APIKey:    resolved.APIKey,
+				BaseURL:   resolved.BaseURL,
+				Providers: resolved.ProviderOverrides(),
+			})
+			if err != nil {
+				return
+			}
+			id := resolved.Provider
+			if id == "" {
+				id = "deepseek"
+			}
+			p, err := s.Provider(id)
+			if err != nil {
+				return
+			}
+			cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			models, err := p.ListModels(cctx)
+			if err != nil {
+				return
+			}
+			for _, m := range models {
+				if m.ID == "" {
+					continue
+				}
+				cached = append(cached, listedModel{
+					ID:            m.ID,
+					DisplayName:   m.DisplayName,
+					ContextWindow: m.ContextWindow,
+				})
+			}
+		})
+		return cached, nil
+	}
+}
+
+type modelEntry struct {
+	ID          string `json:"id"`
+	MaxContext  int    `json:"max_context"`
+	Description string `json:"description,omitempty"`
+	Current     bool   `json:"current,omitempty"`
+}
+
+func modelListEntry(id, display string, maxCtx int, current bool) modelEntry {
+	if display == "" {
+		display = id
+	}
+	e := modelEntry{ID: id, MaxContext: maxCtx, Description: display, Current: current}
+	if maxCtx > 0 {
+		e.Description = fmt.Sprintf("%s — %dK ctx", display, maxCtx/1024)
+	}
+	return e
+}
+
+// handleModelList is GET /api/models. The payload is the provider's
+// ListModels catalog (when the lister is set) plus the configured model,
+// marked current. /api/profiles is retired — this is the picker source.
+func handleModelList(configuredModel string, list modelLister) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		type modelEntry struct {
-			ID          string `json:"id"`
-			MaxContext  int    `json:"max_context"`
-			Description string `json:"description,omitempty"`
-			Current     bool   `json:"current,omitempty"`
-		}
-		var models []modelEntry
-
-		// Return only the server's configured model. The UI provides an
-		// "Other…" free-text input for switching to any arbitrary model ID.
-		if configuredModel != "" {
-			if p := odek.LookupProfile(configuredModel); p != nil {
-				ctx := p.MaxContext / 1024
-				label := p.Label
-				if label == "" {
-					label = configuredModel
+		byID := make(map[string]modelEntry)
+		if list != nil {
+			ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+			defer cancel()
+			if found, err := list(ctx); err == nil {
+				for _, m := range found {
+					if m.ID == "" {
+						continue
+					}
+					maxCtx := m.ContextWindow
+					if maxCtx <= 0 {
+						maxCtx = llmclient.LastResortContext(m.ID)
+					}
+					byID[m.ID] = modelListEntry(m.ID, m.DisplayName, maxCtx, m.ID == configuredModel)
 				}
-				models = append(models, modelEntry{
-					ID:          configuredModel,
-					MaxContext:  p.MaxContext,
-					Description: fmt.Sprintf("%s — %dK ctx", label, ctx),
-					Current:     true,
-				})
-			} else {
-				models = append(models, modelEntry{
-					ID:          configuredModel,
-					Description: configuredModel,
-					Current:     true,
-				})
 			}
 		}
-
+		if configuredModel != "" {
+			if existing, ok := byID[configuredModel]; ok {
+				existing.Current = true
+				byID[configuredModel] = existing
+			} else {
+				byID[configuredModel] = modelListEntry(configuredModel, configuredModel, llmclient.LastResortContext(configuredModel), true)
+			}
+		}
+		models := make([]modelEntry, 0, len(byID))
+		for _, e := range byID {
+			models = append(models, e)
+		}
+		sort.Slice(models, func(i, j int) bool {
+			if models[i].Current != models[j].Current {
+				return models[i].Current
+			}
+			return models[i].ID < models[j].ID
+		})
+		if len(models) > maxListedModels {
+			models = models[:maxListedModels]
+		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(models)
+		_ = json.NewEncoder(w).Encode(models)
 	}
 }
 

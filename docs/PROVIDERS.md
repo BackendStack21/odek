@@ -1,154 +1,87 @@
 # Providers & Models
 
-odek is provider-agnostic. Any endpoint that speaks the OpenAI `/chat/completions` protocol works.
+odek v2 talks to LLMs through [`go-llm-sdk`](https://github.com/BackendStack21/go-llm-sdk).
+The source of truth for ids, formats, default base URLs, and env keys is the
+[SDK provider table](https://github.com/BackendStack21/go-llm-sdk#providers).
+This page lists **odek-only** knobs and examples.
 
-## Deepseek
+Built-in ids: `deepseek` (default), `openai`, `anthropic`, `gemini`, `zai`, `kimi`.
+
+## Quick examples
 
 ```bash
-export ODEK_API_KEY=sk-...
-# Or use DEEPSEEK_API_KEY (fallback)
+# DeepSeek (default)
+export DEEPSEEK_API_KEY=sk-...
 odek run --model deepseek-v4-flash "task"
+
+# OpenAI
+export OPENAI_API_KEY=sk-...
+odek run --provider openai --model gpt-4o "task"
+
+# Anthropic
+export ANTHROPIC_API_KEY=sk-...
+odek run --provider anthropic --model claude-sonnet-4-5 "task"
+
+# Z.ai coding plan
+export ZAI_API_KEY=...
+odek run --provider zai --model glm-5.3 \
+  --base-url https://api.z.ai/api/coding/paas/v4 "task"
+
+# Ollama / any OpenAI-compatible gateway
+odek run --provider local --model llama3 \
+  --base-url http://localhost:11434/v1
 ```
 
-## OpenAI
+Custom ids need `providers.<id>.format` (`openai` / `anthropic` / `gemini`) in
+`~/.odek/config.json`. `--base-url` alone on an unknown host registers a
+`legacy` OpenAI-format provider (v1 compat, warned).
 
-```bash
-export ODEK_API_KEY=sk-...
-# Or use OPENAI_API_KEY (final fallback)
-odek run --model gpt-4o --base-url https://api.openai.com/v1 "task"
-```
+## odek knobs (not in the SDK)
 
-## Z.ai (GLM)
+| Knob | Where |
+|---|---|
+| `--provider` / `ODEK_PROVIDER` | Select the registry id |
+| `--model` / `ODEK_MODEL` | Model id passed to `SDK.Chat` |
+| `--base-url` / `ODEK_BASE_URL` | Override **selected** provider URL |
+| `--thinking` / `--thinking-budget` | Passed through on `ChatRequest` |
+| `prompt_caching` | Anthropic: `SystemBlock.Cache` + first-user `Message.Cache`. OpenAI-format: prefix-stable separate system messages (no `cache_control`) |
+| `llm.request_timeout_seconds` | Default 120. No per-model auto-timeout. |
+| `llm.stream_idle_timeout_seconds` | SSE idle watchdog (default 120, floor 5) |
+| `llm.context_window` | Trim budget override. Else last-resort table for shipped ids, else `ListModels`, else 0 |
 
-```bash
-export ODEK_API_KEY=<z.ai api key>
-export ODEK_BASE_URL=https://api.z.ai/api/paas/v4
-odek run --model glm-5.3 "task"
-```
+v1 `base_url` + `api_key` without `provider` still work: the host is inferred
+(`api.deepseek.com` → `deepseek`, …) or registered as `legacy`. See
+[MIGRATION.md](MIGRATION.md).
 
-Notes:
+## Context windows (last-resort table)
 
-- **Thinking control** — GLM models accept a `thinking` object (`{"type": "enabled"|"disabled"}`). odek maps its `--thinking` levels onto it: `low`/`high`/`max` become `thinking: enabled` plus `reasoning_effort` of the same name; `medium` maps to `high` (GLM has no medium level).
-- **GLM-5.3 forces thinking** — per z.ai's platform-API docs, `thinking: disabled` fails requests on GLM-5.3, so odek maps `--thinking disabled` to the documented migration form (`enabled` + `reasoning_effort: low`) instead of risking the failure. (The coding-plan endpoint currently accepts and honors `disabled` even for 5.3; the mapping is kept as the safe behavior on both.) GLM-5.2 and GLM-5-Turbo accept `disabled` normally, and `reasoning_effort` was validated against all three models.
-- **Billing errors fail fast** — an empty balance comes back as HTTP 429 (`Insufficient balance or no resource package`, code 1113). odek detects billing/quota 429s and reports them immediately instead of retrying into an opaque `context deadline exceeded`.
-- Coding Plan subscribers should use the coding endpoint `https://api.z.ai/api/coding/paas/v4` as `ODEK_BASE_URL` instead.
+Used only when `llm.context_window` is unset and `ListModels` did not report a
+window. **No auto-thinking and no auto-timeout.**
 
-## Custom / self-hosted
+| Prefix | Tokens |
+|---|---|
+| `deepseek-v4-pro` | 1M |
+| `deepseek-v4-flash` / `deepseek-` | 128K |
+| `glm-5.3` / `glm-5.2` | 1M |
+| `glm-5-turbo` | 200K |
+| `glm-` | 128K |
+| `kimi-` / `k3-256k` | 256K |
+| `k3` | 1M |
 
-Any endpoint that accepts `POST /chat/completions` with an OpenAI-compatible JSON body works — Ollama, vLLM, LiteLLM, etc. No provider-specific code in odek.
+## Temperature polarity
 
-```bash
-export ODEK_API_KEY=not-needed
-odek run --model llama3 --base-url http://localhost:11434/v1 "task"
-```
+odek `Config.Temperature` / `--temperature`:
 
----
+| Value | Wire |
+|---|---|
+| `0` (default) | send explicit 0 (deterministic) |
+| `< 0` | omit (provider default) |
+| `> 0` | send that value |
 
-## Model Profiles
+The SDK uses the opposite zero: odek maps `0 → -1` at the call boundary.
 
-odek ships with built-in **model profiles** that automatically apply sensible defaults based on the model name. Profiles are matched by longest prefix.
+## Project config
 
-| Model | Family | Default Thinking | Timeout | Max Context | Best For |
-|-------|--------|-----------------|---------|-------------|----------|
-| `deepseek-chat` | DeepSeek (generic prefix match) | (provider default) | 120s | 128K | General — matched by the `deepseek-` prefix, not a dedicated profile |
-| `deepseek-v4-flash` | DeepSeek v4 Flash | — (faster/cheaper) | 90s | 128K | Quick tasks, coding |
-| `deepseek-v4-pro` | DeepSeek v4 Pro | `enabled` | 180s | **1M** | Deep reasoning |
-| `glm-5.3` | GLM 5.3 (Z.ai) | (always on — forced) | 300s | **1M** | Agentic coding |
-| `glm-5.2` | GLM 5.2 (Z.ai) | (provider default) | 300s | **1M** | Agentic coding |
-| `glm-5-turbo` | GLM 5 Turbo (Z.ai) | (provider default) | 180s | 200K | Tool-heavy agents |
-| `glm-…` (other) | GLM (Z.ai) | (provider default) | 180s | 128K | General |
-| `kimi-…` (e.g. `kimi-for-coding`) | Kimi | (provider default) | 300s | 256K | Agentic coding |
-| `k3` | Kimi | (provider default) | 300s | **1M** | Agentic coding |
-| `k3-256k` | Kimi | (provider default) | 300s | 256K | Agentic coding |
-| *(any other)* | — (no profile) | (provider defaults; no profile overrides apply) | 120s | — | Custom models |
-
-### How profiles work
-
-1. Set `--model deepseek-v4-pro` → odek auto-configures `thinking=enabled` + `180s timeout` + 1M context
-2. Explicit `--thinking` always wins over profile defaults
-3. Unknown models get no profile overrides (provider default behavior)
-
-### Adding a profile
-
-Profiles live in `odek.go` as the `KnownProfiles` slice:
-
-```go
-{
-    Prefix: "claude-sonnet-4",
-    Profile: ModelProfile{
-        Label:           "Claude Sonnet 4",
-        DefaultThinking: "",
-        Timeout:         180,
-        MaxContext:      200_000,
-    },
-},
-```
-
-No changes to the LLM client, loop, or CLI parsing needed.
-
-### Examples
-
-```bash
-# DeepSeek v4 Pro — thinking enabled, 180s timeout, 1M context
-odek run --model deepseek-v4-pro "Design a distributed consensus algorithm"
-
-# DeepSeek v4 Flash — no thinking, 90s timeout, 128K
-odek run --model deepseek-v4-flash "List the files"
-
-# Override profile default
-odek run --model deepseek-v4-pro --thinking disabled "Quick status check"
-```
-
----
-
-## Thinking Levels
-
-The `--thinking` flag controls reasoning depth. odek auto-maps to the provider's native format.
-
-| Value | Deepseek sends | OpenAI o-series sends |
-|-------|---------------|----------------------|
-| `enabled` | `{"thinking": {"type": "enabled"}}` | — |
-| `disabled` | `{"thinking": {"type": "disabled"}}` | — |
-| `low` | — | `{"reasoning_effort": "low"}` |
-| `medium` | — | `{"reasoning_effort": "medium"}` |
-| `high` | — | `{"reasoning_effort": "high"}` |
-| (empty) | (not sent) | Provider default |
-
-```bash
-# DeepSeek v4 Pro — profile auto-enables thinking
-odek run --model deepseek-v4-pro "Explain monads"
-
-# OpenAI o1 — deep reasoning
-odek run --model o1 --base-url https://api.openai.com/v1 --thinking high "Optimize this algorithm"
-```
-
----
-
-## Context Window Management
-
-odek automatically trims conversation history to stay within each model's context window.
-
-### How it works
-
-1. **Token estimation**: Conservative heuristic (~4 chars/token + structural overhead) — no tokenizer dependency
-2. **Safety margin**: 75% of available context for input; 25% reserved for output
-3. **Trim strategy**: Before each LLM call, if estimated tokens exceed budget, oldest non-essential pairs (tool call→result) are dropped — system prompt and original task are always preserved
-4. **No limit = no trimming**: Models with `MaxContext: 0` have no enforcement
-
-### Example
-
-```
-Before trim (6 msgs, ~250K estimated, budget=200K):
-  [system] You are odek...
-  [user]   Refactor this module...
-  [assistant]"                       ← DROPPED
-  [tool]                              ← DROPPED
-  [assistant] Let me check...         ← KEPT
-  [tool]  File: main.go...            ← KEPT
-
-After trim (4 msgs, ~180K estimated):
-  [system] You are odek...
-  [user]   Refactor this module...
-  [assistant] Let me check...
-  [tool]  File: main.go...
-```
+`./odek.json` cannot set `provider`, `providers`, `base_url`, `api_key`, or `llm`.
+A cloned repo must not redirect inference. Keys live in `~/.odek/config.json`,
+`~/.odek/secrets.env`, env, or CLI.

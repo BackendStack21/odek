@@ -13,7 +13,7 @@ import (
 
 	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/events"
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
@@ -80,12 +80,12 @@ func TestEngine_Budget_InputTokensExceeded(t *testing.T) {
 	defer server.Close()
 
 	ct := &countingTool{}
-	engine := New(llm.New(server.URL, "sk-test", "test-model", "", 0, 0),
+	engine := New(testChatClient(t, server.URL),
 		tool.NewRegistry([]tool.Tool{ct}), 10, "", nil, 0)
 	engine.SetLimits(budget.Limits{MaxInputTokens: 500}, "test-model")
 
-	var persisted [][]llm.Message
-	engine.SetMessagesPersistCallback(func(msgs []llm.Message) {
+	var persisted [][]session.Message
+	engine.SetMessagesPersistCallback(func(msgs []session.Message) {
 		persisted = append(persisted, msgs)
 	})
 	rec := &eventRecorder{}
@@ -132,7 +132,7 @@ func TestEngine_Budget_OutputTokensExceeded(t *testing.T) {
 	defer server.Close()
 
 	ct := &countingTool{}
-	engine := New(llm.New(server.URL, "sk-test", "test-model", "", 0, 0),
+	engine := New(testChatClient(t, server.URL),
 		tool.NewRegistry([]tool.Tool{ct}), 10, "", nil, 0)
 	engine.SetLimits(budget.Limits{MaxOutputTokens: 500}, "test-model")
 
@@ -166,18 +166,18 @@ func TestEngine_Budget_ToolCallsExceededBeforeExecution(t *testing.T) {
 	defer server.Close()
 
 	ct := &countingTool{}
-	engine := New(llm.New(server.URL, "sk-test", "test-model", "", 0, 0),
+	engine := New(testChatClient(t, server.URL),
 		tool.NewRegistry([]tool.Tool{ct}), 10, "", nil, 0)
 	engine.SetLimits(budget.Limits{MaxToolCalls: 1}, "test-model")
 
-	var persisted [][]llm.Message
-	engine.SetMessagesPersistCallback(func(msgs []llm.Message) {
+	var persisted [][]session.Message
+	engine.SetMessagesPersistCallback(func(msgs []session.Message) {
 		persisted = append(persisted, msgs)
 	})
 	rec := &eventRecorder{}
 	engine.SetEventHandler(rec.add)
 
-	_, messages, err := engine.RunWithMessages(context.Background(), []llm.Message{{Role: "user", Content: "do work"}})
+	_, messages, err := engine.RunWithMessages(context.Background(), []session.Message{{Role: "user", Content: "do work"}})
 	berr, ok := budget.As(err)
 	if !ok {
 		t.Fatalf("expected typed budget.Error, got %v", err)
@@ -226,7 +226,7 @@ func TestEngine_Budget_RuntimeExceeded(t *testing.T) {
 	// Advance the clock from inside the tool: after the first batch the fake
 	// wall clock is 120s in, past the 60s limit.
 	advanceTool := &callbackTool{fn: func() { advance(120 * time.Second) }}
-	engine := New(llm.New(server.URL, "sk-test", "test-model", "", 0, 0),
+	engine := New(testChatClient(t, server.URL),
 		tool.NewRegistry([]tool.Tool{advanceTool}), 10, "", nil, 0)
 	engine.SetLimits(budget.Limits{MaxRuntimeSeconds: 60}, "test-model")
 	engine.budgetNow = func() time.Time {
@@ -280,7 +280,7 @@ func TestEngine_Budget_CostExceededWithPrices(t *testing.T) {
 	defer server.Close()
 
 	ct := &countingTool{}
-	engine := New(llm.New(server.URL, "sk-test", "test-model", "", 0, 0),
+	engine := New(testChatClient(t, server.URL),
 		tool.NewRegistry([]tool.Tool{ct}), 10, "", nil, 0)
 	engine.SetLimits(budget.Limits{
 		MaxCostUSD:              0.10,
@@ -317,7 +317,7 @@ func TestEngine_Budget_CostDisabledWithoutPrices(t *testing.T) {
 	}))
 	defer server.Close()
 
-	engine := New(llm.New(server.URL, "sk-test", "test-model", "", 0, 0),
+	engine := New(testChatClient(t, server.URL),
 		tool.NewRegistry(nil), 10, "", nil, 0)
 	// Absurdly low cost cap, but no prices configured: cost enforcement must
 	// stay off and the run must complete.
@@ -345,7 +345,7 @@ func TestEngine_Budget_IterationSummarySkippedWhenTokensExhausted(t *testing.T) 
 	}))
 	defer server.Close()
 
-	engine := New(llm.New(server.URL, "sk-test", "test-model", "", 0, 0),
+	engine := New(testChatClient(t, server.URL),
 		tool.NewRegistry([]tool.Tool{&countingTool{}}), 10, "", nil, 0)
 	engine.SetLimits(budget.Limits{MaxInputTokens: 500}, "test-model")
 
@@ -368,7 +368,7 @@ func TestEngine_Budget_CostExceededWithModelPrices(t *testing.T) {
 	defer server.Close()
 
 	ct := &countingTool{}
-	engine := New(llm.New(server.URL, "sk-test", "test-model", "", 0, 0),
+	engine := New(testChatClient(t, server.URL),
 		tool.NewRegistry([]tool.Tool{ct}), 10, "", nil, 0)
 	engine.SetLimits(budget.Limits{
 		MaxCostUSD:              0.20,
@@ -407,7 +407,7 @@ func TestEngine_Budget_CostFlatPricesForUnmatchedModel(t *testing.T) {
 	}))
 	defer server.Close()
 
-	engine := New(llm.New(server.URL, "sk-test", "other-model", "", 0, 0),
+	engine := New(testChatClient(t, server.URL),
 		tool.NewRegistry(nil), 10, "", nil, 0)
 	// Same limits as the model-price test above, but the run's model does not
 	// match the model_prices key: the flat pair estimates $0.11 < $0.20 cap,

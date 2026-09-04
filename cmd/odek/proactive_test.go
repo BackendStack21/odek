@@ -5,14 +5,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/BackendStack21/odek/internal/session"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/llmclient"
 	"github.com/BackendStack21/odek/internal/memory"
 	"github.com/BackendStack21/odek/internal/memory/extended"
 )
@@ -174,12 +174,16 @@ func newExtendedBackedManager(t *testing.T, llmSrv *httptest.Server) *memory.Mem
 	cfg := memory.DefaultMemoryConfig()
 	cfg.Extended = &extCfg
 	mm := memory.NewMemoryManager(dir, nil, cfg)
-	mm.InitExtended(llm.New(llmSrv.URL, "sk-mock", "mock-model", "", 0, 30*time.Second), dir)
+	c, err := llmclient.Dial("", "mock-model", "sk-mock", llmSrv.URL)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	mm.InitExtended(c, dir)
 	return mm
 }
 
 func TestInjectReturnAfterBreak_NilManager(t *testing.T) {
-	msgs := []llm.Message{{Role: "system", Content: "sys"}, {Role: "user", Content: "hi"}}
+	msgs := []session.Message{{Role: "system", Content: "sys"}, {Role: "user", Content: "hi"}}
 	out := injectReturnAfterBreak(context.Background(), nil, msgs)
 	if len(out) != len(msgs) {
 		t.Errorf("nil manager should leave messages unchanged, got %d messages", len(out))
@@ -188,7 +192,7 @@ func TestInjectReturnAfterBreak_NilManager(t *testing.T) {
 
 func TestInjectReturnAfterBreak_ExtendedDisabled(t *testing.T) {
 	mm := memory.NewMemoryManager(t.TempDir(), nil, memory.DefaultMemoryConfig())
-	msgs := []llm.Message{{Role: "system", Content: "sys"}, {Role: "user", Content: "hi"}}
+	msgs := []session.Message{{Role: "system", Content: "sys"}, {Role: "user", Content: "hi"}}
 	out := injectReturnAfterBreak(context.Background(), mm, msgs)
 	if len(out) != len(msgs) {
 		t.Errorf("disabled extended memory should leave messages unchanged, got %d messages", len(out))
@@ -199,7 +203,7 @@ func TestInjectReturnAfterBreak_InsertsAfterLastSystem(t *testing.T) {
 	srv := simpleLLMServer(t, "You were reviewing the auth refactor.")
 	mm := newExtendedBackedManager(t, srv)
 
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "identity"},
 		{Role: "user", Content: "first"},
 		{Role: "assistant", Content: "answer"},
@@ -228,7 +232,7 @@ func TestInjectReturnAfterBreak_NoSystemMessagePrepends(t *testing.T) {
 	srv := simpleLLMServer(t, "You were reviewing the auth refactor.")
 	mm := newExtendedBackedManager(t, srv)
 
-	msgs := []llm.Message{{Role: "user", Content: "first"}}
+	msgs := []session.Message{{Role: "user", Content: "first"}}
 	out := injectReturnAfterBreak(context.Background(), mm, msgs)
 	if len(out) != 2 || out[0].Role != "system" {
 		t.Fatalf("expected injected system message at index 0, got %+v", out)

@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -20,7 +19,7 @@ func TestResumeSession_CrossChatRejected(t *testing.T) {
 	const ownerChat int64 = 999
 	const attackerChat int64 = 100
 
-	if err := sm.Save(ownerChat, []llm.Message{{Role: "user", Content: "secret"}}); err != nil {
+	if err := sm.Save(ownerChat, []session.Message{{Role: "user", Content: "secret"}}); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
 
@@ -37,7 +36,7 @@ func TestListSessions_ChatScoped(t *testing.T) {
 	sm, _ := setupTestSessionManager(t)
 
 	for _, chatID := range []int64{111, 222, 333} {
-		if err := sm.Save(chatID, []llm.Message{{Role: "user", Content: "msg"}}); err != nil {
+		if err := sm.Save(chatID, []session.Message{{Role: "user", Content: "msg"}}); err != nil {
 			t.Fatalf("Save(%d) failed: %v", chatID, err)
 		}
 	}

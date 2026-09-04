@@ -7,14 +7,13 @@ import (
 	"testing"
 
 	"github.com/BackendStack21/odek/internal/embedding"
-	"github.com/BackendStack21/odek/internal/llm"
 )
 
 // writeVectorTestSession writes a minimal session JSON for vector-index tests.
-func writeVectorTestSession(t *testing.T, dir, id string, msgs []llm.Message) {
+func writeVectorTestSession(t *testing.T, dir, id string, msgs []Message) {
 	t.Helper()
 	data, err := json.Marshal(struct {
-		Messages []llm.Message `json:"messages"`
+		Messages []Message `json:"messages"`
 	}{Messages: msgs})
 	if err != nil {
 		t.Fatal(err)
@@ -39,10 +38,10 @@ func TestVectorIndexRebuildSkipsSymlink(t *testing.T) {
 
 	felineID := "20260518-abc12345678901234567890123456789"
 	dbID := "20260518-def45678901234567890123456789012"
-	writeVectorTestSession(t, dir, felineID, []llm.Message{
+	writeVectorTestSession(t, dir, felineID, []Message{
 		{Role: "user", Content: "investigated the feline behavior module"},
 	})
-	writeVectorTestSession(t, dir, dbID, []llm.Message{
+	writeVectorTestSession(t, dir, dbID, []Message{
 		{Role: "user", Content: "tuned postgres sql indexes"},
 	})
 
@@ -112,7 +111,7 @@ func TestVectorIndexRebuildSkipsInvalidName(t *testing.T) {
 	dir := t.TempDir()
 
 	validID := "20260518-abc12345678901234567890123456789"
-	writeVectorTestSession(t, dir, validID, []llm.Message{
+	writeVectorTestSession(t, dir, validID, []Message{
 		{Role: "user", Content: "investigated the feline behavior module"},
 	})
 

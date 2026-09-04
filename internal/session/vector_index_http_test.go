@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/BackendStack21/odek/internal/embedding"
-	"github.com/BackendStack21/odek/internal/llm"
 )
 
 // mockEmbedServer serves the OpenAI embeddings wire format with deterministic,
@@ -78,10 +77,10 @@ func httpEmbedConfig(srv *httptest.Server) *embedding.Config {
 }
 
 // writeSessionFile writes a minimal session JSON the index can scan.
-func writeSessionFile(t *testing.T, dir, id string, msgs []llm.Message) {
+func writeSessionFile(t *testing.T, dir, id string, msgs []Message) {
 	t.Helper()
 	data, err := json.Marshal(struct {
-		Messages []llm.Message `json:"messages"`
+		Messages []Message `json:"messages"`
 	}{Messages: msgs})
 	if err != nil {
 		t.Fatal(err)
@@ -98,10 +97,10 @@ func TestVectorIndexHTTPSemantic(t *testing.T) {
 	srv, _ := mockEmbedServer(t)
 	dir := t.TempDir()
 
-	writeSessionFile(t, dir, "sess-cats", []llm.Message{
+	writeSessionFile(t, dir, "sess-cats", []Message{
 		{Role: "user", Content: "investigated the feline behavior module"},
 	})
-	writeSessionFile(t, dir, "sess-db", []llm.Message{
+	writeSessionFile(t, dir, "sess-db", []Message{
 		{Role: "user", Content: "tuned postgres sql indexes"},
 	})
 
@@ -126,7 +125,7 @@ func TestVectorIndexFingerprintInvalidation(t *testing.T) {
 	srv, _ := mockEmbedServer(t)
 	dir := t.TempDir()
 
-	writeSessionFile(t, dir, "sess-1", []llm.Message{
+	writeSessionFile(t, dir, "sess-1", []Message{
 		{Role: "user", Content: "worked on the login credential flow"},
 	})
 
@@ -180,7 +179,7 @@ func TestVectorIndexRebuildBackoff(t *testing.T) {
 	defer srv.Close()
 
 	dir := t.TempDir()
-	writeSessionFile(t, dir, "sess-1", []llm.Message{
+	writeSessionFile(t, dir, "sess-1", []Message{
 		{Role: "user", Content: "some session content"},
 	})
 
@@ -215,7 +214,7 @@ func TestVectorIndexSaveAndReplace(t *testing.T) {
 	}
 
 	add := func(id, content string) {
-		if err := vi.Add(id, []llm.Message{{Role: "user", Content: content}}); err != nil {
+		if err := vi.Add(id, []Message{{Role: "user", Content: content}}); err != nil {
 			t.Fatalf("Add %s: %v", id, err)
 		}
 	}
@@ -226,7 +225,7 @@ func TestVectorIndexSaveAndReplace(t *testing.T) {
 	add("sess-a", "postgres replication and backups")
 
 	// Empty conversation text is a no-op (no user/assistant content).
-	if err := vi.Add("sess-empty", []llm.Message{{Role: "tool", Content: "result"}}); err != nil {
+	if err := vi.Add("sess-empty", []Message{{Role: "tool", Content: "result"}}); err != nil {
 		t.Fatalf("Add empty: %v", err)
 	}
 	results, err := vi.Search("postgres", 10)

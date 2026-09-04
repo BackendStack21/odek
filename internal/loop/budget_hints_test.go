@@ -14,7 +14,6 @@ import (
 
 	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/events"
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
@@ -179,7 +178,7 @@ func TestEngine_RequestFinalization_GracefulTimeBudgetSummary(t *testing.T) {
 	defer server.Close()
 
 	bt := &gateTool{entered: make(chan struct{}), release: make(chan struct{})}
-	engine := New(llm.New(server.URL, "sk-test", "test-model", "", 0, 0),
+	engine := New(testChatClient(t, server.URL),
 		tool.NewRegistry([]tool.Tool{bt}), 10, "", nil, 0)
 
 	type runResult struct {

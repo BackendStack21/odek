@@ -31,7 +31,7 @@ import (
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/events"
 	"github.com/BackendStack21/odek/internal/guard"
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/llmclient"
 	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/memory"
 	"github.com/BackendStack21/odek/internal/memory/extended"
@@ -52,24 +52,39 @@ type Tool interface {
 
 // Config configures an Agent instance.
 type Config struct {
+	// Provider is the go-llm-sdk registry id (deepseek, openai, anthropic,
+	// gemini, zai, kimi, or a custom id from Providers). Empty defaults to
+	// deepseek.
+	Provider string
+
 	// Model is the LLM model identifier (e.g., "deepseek-v4-flash").
 	Model string
 
-	// BaseURL is the OpenAI-compatible API endpoint.
-	// Default: "https://api.deepseek.com/v1"
+	// BaseURL overrides the selected provider's base URL (legacy v1 alias
+	// and embedder override). Empty keeps the SDK default for Provider.
 	BaseURL string
 
-	// APIKey authenticates with the LLM provider.
-	// Falls back to DEEPSEEK_API_KEY, then OPENAI_API_KEY env vars.
+	// APIKey authenticates the selected provider. Empty falls back to the
+	// provider's env key (DEEPSEEK_API_KEY for the default provider).
 	APIKey string
+
+	// Providers holds per-id API key / base URL / format overrides.
+	Providers map[string]llmclient.ProviderOverride
+
+	// RequestTimeout is the per-request wall-clock budget. 0 uses 120s.
+	RequestTimeout time.Duration
+
+	// ContextWindow is an operator override for the trim budget. 0 means
+	// discover via ListModels, then the last-resort table for shipped ids.
+	ContextWindow int
 
 	// Thinking controls the model's reasoning depth. Provider-specific:
 	//
 	//   Deepseek: "enabled" or "disabled" → {"type": "enabled"}
 	//   OpenAI o-series: "low", "medium", "high" → {"reasoning_effort": "low"}
 	//
-	// When empty, the model's profile default is used. If the profile also
-	// has no default, the field is not sent (provider default behavior).
+	// When empty, the field is omitted (provider default). v2 does not
+	// infer thinking from the model name — set it explicitly.
 	Thinking string
 
 	// Temperature controls LLM output randomness (0.0–2.0).
@@ -166,18 +181,11 @@ type Config struct {
 	// surfaces are scanned. It mirrors the guard instance passed above.
 	GuardConfig guard.Config
 
-	// PromptCaching enables prompt caching markers for supported providers.
-	// When enabled (default: false), the system prompt and first user message
-	// are annotated with cache_control markers, and Anthropic-style system
-	// blocks are used. Supported by:
-	//   - Anthropic (explicit cache_control markers)
-	//   - DeepSeek (automatic — prefix stability helps)
-	//   - OpenAI (automatic — prefix stability helps)
-	//
-	// When disabled (default), no cache markers are sent and the system
-	// prompt stays in the messages array for maximum provider compatibility.
-	// Enable this when using Anthropic models to get ~90% cost reduction
-	// on cached tokens and ~60-80% TTFT latency reduction.
+	// PromptCaching enables Anthropic-format cache_control markers on the
+	// first system block and first user message. Markers are sent only when
+	// the bound client's format is Anthropic (never URL-sniffed). OpenAI-
+	// format providers are unaffected — they rely on prefix-stable separate
+	// system messages. Default: false.
 	PromptCaching bool
 
 	// Stream enables SSE streaming of LLM responses for the main think
@@ -190,7 +198,7 @@ type Config struct {
 	// DeltaHandler receives streamed output fragments when Stream is
 	// enabled. It is invoked synchronously and must be non-blocking;
 	// returning an error aborts generation for that call.
-	DeltaHandler func(llm.Delta) error
+	DeltaHandler func(llmclient.Delta) error
 
 	// MaxToolParallel controls how many tool calls run concurrently per
 	// agent iteration. 0 = use default (4). Models that emit multiple
@@ -296,16 +304,6 @@ type Agent struct {
 	emitter        *events.Emitter // non-nil when Config.EventHandler is set
 }
 
-// ── Model Profiles ────────────────────────────────────────────────────
-//
-// A ModelProfile overrides default settings for a particular model or
-// model family. Profiles are matched by longest model-name prefix.
-//
-// To add support for a new model, append an entry to KnownProfiles with
-// the model prefix, a human-readable label, and any defaults (thinking,
-// timeout). The rest of odek picks it up automatically — no changes to
-// the LLM client, loop engine, or CLI parsing needed.
-
 // ToolFilterConfig controls which tools are exposed to the LLM.
 type ToolFilterConfig struct {
 	// Enabled is a whitelist. When non-nil, only tools whose names appear
@@ -316,149 +314,9 @@ type ToolFilterConfig struct {
 	Disabled []string
 }
 
-// ModelProfile holds per-model defaults applied when the user hasn't
-// explicitly provided a value. Zero values leave the system default.
-type ModelProfile struct {
-	// Label is a human-readable name for the model family.
-	Label string
-
-	// DefaultThinking is the thinking value applied when Config.Thinking
-	// is empty. Empty string means don't send the field (provider default).
-	DefaultThinking string
-
-	// Timeout is the default request timeout in seconds.
-	// Zero means use the global default (120s). Increased for
-	// models that take longer to reason (e.g. deepseek-v4-pro).
-	Timeout int
-
-	// MaxContext is the model's maximum context window in tokens.
-	// The loop engine automatically trims conversation history when
-	// estimated tokens approach this limit. Zero means no limit
-	// enforcement (unknown or effectively unlimited models).
-	MaxContext int
-}
-
-// KnownProfiles lists all built-in model profiles. Each entry is matched
-// by longest prefix — "deepseek-v4-flash" matches before "deepseek-" would.
-// Add new profiles here; the rest of odek consumes them automatically.
-var KnownProfiles = []struct {
-	Prefix  string
-	Profile ModelProfile
-}{
-	{
-		// Z.ai GLM-5.3: 1M context, 128K max output, forced thinking with
-		// reasoning_effort low/high/max (mapping in internal/llm).
-		Prefix: "glm-5.3",
-		Profile: ModelProfile{
-			Label:      "GLM 5.3 (Z.ai)",
-			Timeout:    300,       // reasoning is always on; slow to first byte
-			MaxContext: 1_000_000, // 1M token context window
-		},
-	},
-	{
-		// Z.ai GLM-5.2: same 1M/128K window as 5.3 (shared base model,
-		// post-training differs); thinking is disableable, unlike 5.3.
-		Prefix: "glm-5.2",
-		Profile: ModelProfile{
-			Label:      "GLM 5.2 (Z.ai)",
-			Timeout:    300,
-			MaxContext: 1_000_000,
-		},
-	},
-	{
-		// Z.ai GLM-5-Turbo: 200K context / 128K output, optimized for tool
-		// invocation and long execution chains; thinking disableable.
-		Prefix: "glm-5-turbo",
-		Profile: ModelProfile{
-			Label:      "GLM 5 Turbo (Z.ai)",
-			Timeout:    180,
-			MaxContext: 200_000,
-		},
-	},
-	{
-		Prefix: "glm-",
-		Profile: ModelProfile{
-			Label:      "GLM (Z.ai)",
-			Timeout:    180,
-			MaxContext: 131_072, // 128K safe default; /models discovery takes priority
-		},
-	},
-	{
-		Prefix: "kimi-",
-		Profile: ModelProfile{
-			Label:      "Kimi",
-			Timeout:    300,     // reasoning models can be slow to first byte
-			MaxContext: 262_144, // 256K safe default; /models discovery takes priority
-		},
-	},
-	{
-		// Kimi Code also ships models under the "k3" family name, which the
-		// "kimi-" prefix does not match. Longest prefix wins: k3-256k is the
-		// 256K variant, bare k3 has a 1M context window.
-		Prefix: "k3-256k",
-		Profile: ModelProfile{
-			Label:      "Kimi",
-			Timeout:    300,
-			MaxContext: 262_144, // 256K token context window
-		},
-	},
-	{
-		Prefix: "k3",
-		Profile: ModelProfile{
-			Label:      "Kimi",
-			Timeout:    300,
-			MaxContext: 1_000_000, // 1M token context window
-		},
-	},
-	{
-		Prefix: "deepseek-v4-pro",
-		Profile: ModelProfile{
-			Label:           "DeepSeek v4 Pro",
-			DefaultThinking: "enabled", // full reasoning enabled by default
-			Timeout:         180,       // may take longer to think
-			MaxContext:      1_000_000, // 1M token context window
-		},
-	},
-	{
-		Prefix: "deepseek-v4-flash",
-		Profile: ModelProfile{
-			Label:           "DeepSeek v4 Flash",
-			DefaultThinking: "", // no extended thinking (faster / cheaper)
-			Timeout:         90,
-			MaxContext:      131_072, // 128K token context window
-		},
-	},
-	{
-		Prefix: "deepseek-",
-		Profile: ModelProfile{
-			Label:      "DeepSeek (generic)",
-			MaxContext: 131_072, // 128K safe default for unknown DeepSeek models
-		},
-	},
-}
-
-// LookupProfile returns the best-matching ModelProfile for a model name,
-// or nil if no profile matches. Matching uses longest prefix — a model
-// named "deepseek-v4-flash-custom" would match "deepseek-v4-flash".
-func LookupProfile(model string) *ModelProfile {
-	var best *ModelProfile
-	bestLen := 0
-	for _, entry := range KnownProfiles {
-		if strings.HasPrefix(model, entry.Prefix) && len(entry.Prefix) > bestLen {
-			p := entry.Profile // copy (KnownProfiles entries are immutable)
-			best = &p
-			bestLen = len(entry.Prefix)
-		}
-	}
-	return best
-}
-
-// ProfileLabel returns the human-readable label for a model, or the model
-// name itself if no profile matches. Used in CLI headers and status output.
+// ProfileLabel is the display name for a model. v2 has no static profile
+// table — this is the model id. Serve may show ListModels display names.
 func ProfileLabel(model string) string {
-	if p := LookupProfile(model); p != nil && p.Label != "" {
-		return p.Label
-	}
 	return model
 }
 
@@ -504,7 +362,6 @@ func LoadProjectFile() string {
 // ── Defaults ──────────────────────────────────────────────────────────
 
 const (
-	defaultBaseURL    = "https://api.deepseek.com/v1"
 	defaultModel      = "deepseek-v4-flash"
 	defaultMaxIter    = 90
 	defaultHTTPTimout = 120 // seconds
@@ -526,17 +383,20 @@ func New(cfg Config) (*Agent, error) {
 	if cfg.MaxIterations <= 0 {
 		cfg.MaxIterations = defaultMaxIter
 	}
-	if cfg.BaseURL == "" {
-		cfg.BaseURL = defaultBaseURL
+	if cfg.Provider == "" {
+		cfg.Provider = "deepseek"
 	}
 	if cfg.APIKey == "" {
-		cfg.APIKey = os.Getenv("DEEPSEEK_API_KEY")
-		if cfg.APIKey == "" {
-			cfg.APIKey = os.Getenv("OPENAI_API_KEY")
+		cfg.APIKey = os.Getenv("ODEK_API_KEY")
+		if cfg.APIKey == "" && cfg.Provider == "deepseek" {
+			cfg.APIKey = os.Getenv("DEEPSEEK_API_KEY")
+			if cfg.APIKey == "" {
+				cfg.APIKey = os.Getenv("OPENAI_API_KEY")
+			}
 		}
 	}
-	if cfg.APIKey == "" {
-		return nil, fmt.Errorf("odek: no API key provided (set ODEK_API_KEY, DEEPSEEK_API_KEY, or OPENAI_API_KEY)")
+	if cfg.APIKey == "" && (cfg.Providers == nil || cfg.Providers[cfg.Provider].APIKey == "") {
+		return nil, fmt.Errorf("odek: no API key for provider %q (set providers.%s.api_key, ODEK_API_KEY, or the provider env key)", cfg.Provider, cfg.Provider)
 	}
 	if cfg.Model == "" {
 		cfg.Model = defaultModel
@@ -556,29 +416,39 @@ func New(cfg Config) (*Agent, error) {
 		cfg.SystemMessage = cfg.RuntimeContext
 	}
 
-	// Apply model profile defaults (only when user hasn't explicitly set them)
-	if profile := LookupProfile(cfg.Model); profile != nil {
-		if cfg.Thinking == "" && profile.DefaultThinking != "" {
-			cfg.Thinking = profile.DefaultThinking
-		}
+	timeout := time.Duration(defaultHTTPTimout) * time.Second
+	if cfg.RequestTimeout > 0 {
+		timeout = cfg.RequestTimeout
 	}
 
-	// Resolve timeout: profile > default
-	timeout := defaultHTTPTimout
-	if profile := LookupProfile(cfg.Model); profile != nil && profile.Timeout > 0 {
-		timeout = profile.Timeout
+	sdkInst, err := llmclient.NewSDK(llmclient.Options{
+		Provider:  cfg.Provider,
+		Model:     cfg.Model,
+		APIKey:    cfg.APIKey,
+		BaseURL:   llmclient.CanonicalBaseURL(cfg.Provider, cfg.BaseURL),
+		Providers: cfg.Providers,
+		Timeout:   timeout,
+	})
+	if err != nil {
+		return nil, err
 	}
+	client, err := llmclient.New(sdkInst, cfg.Provider, cfg.Model)
+	if err != nil {
+		return nil, fmt.Errorf("odek: llm: %w", err)
+	}
+	client.Thinking = cfg.Thinking
+	client.ThinkingBudget = cfg.ThinkingBudget
+	client.Temperature = cfg.Temperature
 
-	// Resolve max context: discovered API values > profile > 0 (no limit)
-	maxContext := 0
-	// Priority 1: dynamic discovery via GET /models endpoint
-	if discovered := llm.DiscoverModelContext(cfg.BaseURL, cfg.APIKey, cfg.Model); discovered > 0 {
-		maxContext = discovered
-	}
-	// Priority 2: static profile fallback (only if discovery returned nothing)
+	maxContext := cfg.ContextWindow
 	if maxContext == 0 {
-		if profile := LookupProfile(cfg.Model); profile != nil && profile.MaxContext > 0 {
-			maxContext = profile.MaxContext
+		// Shipped-id table first so default New() does not block on ListModels.
+		// Unknown models still ask the provider (5s bound).
+		maxContext = llmclient.LastResortContext(cfg.Model)
+	}
+	if maxContext == 0 {
+		if discovered := llmclient.DiscoverContext(context.Background(), client.Provider, cfg.Model); discovered > 0 {
+			maxContext = discovered
 		}
 	}
 	if maxContext > 0 {
@@ -603,11 +473,6 @@ func New(cfg Config) (*Agent, error) {
 				cfg.SystemMessage = "# Project Instructions\n\n" + projectContent
 			}
 		}
-	}
-
-	client := llm.New(cfg.BaseURL, cfg.APIKey, cfg.Model, cfg.Thinking, cfg.ThinkingBudget, time.Duration(timeout)*time.Second)
-	if cfg.Temperature >= 0 {
-		client.Temperature = cfg.Temperature
 	}
 
 	// Load skills and inject auto-load skills into system message
@@ -751,7 +616,7 @@ func New(cfg Config) (*Agent, error) {
 	// Side calls (compaction digest, progress summary) use the same client and
 	// model, so scale their bound off the resolved request timeout — a slow
 	// provider would otherwise blow the 30s default and silently drop the digest.
-	sideTimeout := time.Duration(timeout) * time.Second
+	sideTimeout := timeout
 	if sideTimeout > 120*time.Second {
 		sideTimeout = 120 * time.Second
 	}
@@ -933,7 +798,7 @@ func (a *Agent) Run(ctx context.Context, task string) (string, error) {
 // Returns the final answer plus the complete updated message history.
 // The caller should persist the history (e.g. to a session file) so
 // the conversation can be continued in a future call.
-func (a *Agent) RunWithMessages(ctx context.Context, messages []llm.Message) (string, []llm.Message, error) {
+func (a *Agent) RunWithMessages(ctx context.Context, messages []session.Message) (string, []session.Message, error) {
 	start := time.Now()
 	result, msgs, err := a.engine.RunWithMessages(ctx, messages)
 	a.emitRunFinished(start, err)

@@ -76,12 +76,12 @@ The reasoning block is dimmed with a single 🧠 cue, the answer follows after a
 
 1. **Only the main think step streams.** Auxiliary LLM calls — context compaction, the iteration-budget progress summary, memory extraction, skill assessment — always use the buffered path.
 2. **Tool calls arrive complete.** The model's tool invocations are assembled from their streamed fragments before execution; tool-argument fragments are not forwarded to delta consumers.
-3. **A handler error aborts generation.** Returning a non-nil error from the delta handler cancels the stream; the loop fails the turn with the wrapped `*llm.StreamAbortedError` instead of retrying.
+3. **A handler error aborts generation.** Returning a non-nil error from the delta handler cancels the stream; the loop fails the turn with the wrapped `*llmclient.StreamAbortedError` instead of retrying.
 4. **Sessions, budgets, and the untrusted-content boundary are unchanged.** Streaming assembles the same result the buffered path returns, so token accounting, cost enforcement, session persistence, and audit operate on identical data.
 
 ## Reliability
 
-- **Hard deadline + idle watchdog.** Every streamed call is bounded by a wall-clock deadline (the model profile's request timeout) covering the whole stream, plus a 60 s idle watchdog that trips when no SSE event — including provider keepalive comments — arrives. A trickling or stalled stream can never run unbounded.
+- **Hard deadline + idle watchdog.** Every streamed call is bounded by a wall-clock deadline (`llm.request_timeout_seconds`, default 120s) covering the whole stream, plus a 120s idle watchdog (`llm.stream_idle_timeout_seconds`, floor 5s) that trips when no SSE event — including provider keepalive comments — arrives. A trickling or stalled stream can never run unbounded.
 - **No duplicated partial output.** Transient failures are retried with the same backoff as the buffered path, but only until the first fragment has been delivered; after that, the failure is terminal and the partial text stays as printed.
 - **Learn-once fallbacks.** A provider that rejects the `stream_options` field is retried once without it (streaming continues); a provider that rejects `stream` outright, or answers a streamed request with a non-SSE body, switches permanently to the buffered path. Both are learned per client, not configured.
 - **Billing errors still fail fast.** A 429 reporting an empty balance or exhausted quota is returned immediately with the provider's message; it is never retried into an opaque timeout.
@@ -93,10 +93,10 @@ The reasoning block is dimmed with a single 🧠 cue, the answer follows after a
 
 ## Implementation Details
 
-- `llm.Client.CallStream` (`internal/llm/stream.go`) parses the SSE dialect and returns the same `*CallResult` as `Call`; the assembler handles usage on the finish chunk or in a separate empty-choices chunk, `null` content fields, and per-index tool-argument concatenation.
+- Streaming is owned by [`go-llm-sdk`](https://github.com/BackendStack21/go-llm-sdk). odek's `internal/llmclient` forwards `CallStream` and maps deltas.
 - Streaming requests use a pooled HTTP client without a client-level timeout (`transport.NewPooledClientNoDeadline`) — a whole-request `http.Client.Timeout` would kill long body reads — sharing the connection pool with the buffered client. Deadlines are enforced per request via context.
 - The engine wires streaming through `loop.Engine.SetStream` / `SetDeltaHandler`, following the existing optional-callback pattern (`SetSignalHandler`, `SetToolEventHandler`).
-- Offline test coverage lives in `internal/llm/stream_test.go` (the provider-variance and failure-mode matrix) and `internal/loop/loop_test.go` (engine dispatch and the buffered default).
+- Offline test coverage lives in the SDK and `internal/loop/loop_test.go` (engine dispatch and the buffered default).
 
 ## Idle watchdog
 

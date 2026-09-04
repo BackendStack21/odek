@@ -103,6 +103,11 @@ test('cancelSession posts to the session-scoped endpoint', async () => {
   assert.equal(req.init.headers['X-Session-Token'], 'tok');
 });
 
+test('getModels hits /api/models', async () => {
+  await api.getModels();
+  assert.equal(last().url, '/api/models');
+});
+
 test('getEvents carries limit and filters', async () => {
   await api.getEvents({ limit: 5, runId: 'r1', sessionId: 's1' });
   const url = new URL(last().url, 'http://x');

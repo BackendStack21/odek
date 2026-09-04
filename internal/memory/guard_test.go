@@ -73,8 +73,8 @@ func TestMemoryManager_GuardDisabled(t *testing.T) {
 	mm := NewMemoryManager(dir, nil, DefaultMemoryConfig())
 	scanMemory := false
 	mm.SetGuard(&mockGuard{}, guard.Config{
-		Provider:        guard.ProviderPiguard,
-		Scan:            &guard.ScanConfig{Memory: &scanMemory},
+		Provider: guard.ProviderPiguard,
+		Scan:     &guard.ScanConfig{Memory: &scanMemory},
 	})
 
 	// Even though the mock guard reports injection, the memory scope is disabled,

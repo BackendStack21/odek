@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/BackendStack21/go-vector/pkg/vector"
-	"github.com/BackendStack21/odek/internal/llm"
 )
 
 // RED #7 (S1): Cleanup passes index IDs straight to the filesystem with
@@ -63,7 +62,7 @@ func TestRED_StaleIndexEntriesHandled(t *testing.T) {
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 		Task:      "real session",
-		Messages:  []llm.Message{{Role: "user", Content: "hi"}},
+		Messages:  []Message{{Role: "user", Content: "hi"}},
 	}
 	if err := store.Save(sess); err != nil {
 		t.Fatal(err)
@@ -116,7 +115,7 @@ type fakeCountingEmbedder struct {
 	calls int
 }
 
-func (f *fakeCountingEmbedder) Fit(corpus []string) error            { return nil }
+func (f *fakeCountingEmbedder) Fit(corpus []string) error { return nil }
 func (f *fakeCountingEmbedder) Embed(text string) (vector.Vector, error) {
 	f.calls++
 	return nil, errFakeDown
@@ -124,8 +123,8 @@ func (f *fakeCountingEmbedder) Embed(text string) (vector.Vector, error) {
 func (f *fakeCountingEmbedder) EmbedAll(texts []string) ([]vector.Vector, error) {
 	return nil, errFakeDown
 }
-func (f *fakeCountingEmbedder) Fingerprint() string       { return "fake" }
-func (f *fakeCountingEmbedder) SaveState(path string)     {}
+func (f *fakeCountingEmbedder) Fingerprint() string        { return "fake" }
+func (f *fakeCountingEmbedder) SaveState(path string)      {}
 func (f *fakeCountingEmbedder) LoadState(path string) bool { return false }
 
 var errFakeDown = errorString("embedding backend down")
@@ -150,7 +149,7 @@ func TestRED_VectorIndexCooldownOnReadyPath(t *testing.T) {
 	emb := vi.emb.(*fakeCountingEmbedder)
 
 	_, _ = vi.Search("query", 5)
-	_ = vi.Add("sess-1", []llm.Message{{Role: "user", Content: "hello"}})
+	_ = vi.Add("sess-1", []Message{{Role: "user", Content: "hello"}})
 	_, _ = vi.Search("query2", 5)
 
 	if emb.calls != 0 {

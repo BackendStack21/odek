@@ -1383,6 +1383,7 @@ func TestBot_CheckDailyBudget_ConcurrentBillingsAreSafe(t *testing.T) {
 		t.Errorf("DailyTokenUsage = %d, want %d (race detected)", used, want)
 	}
 }
+
 // ---------------------------------------------------------------------------
 // DailyTokenUsage
 // ---------------------------------------------------------------------------

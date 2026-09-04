@@ -4,7 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -24,27 +23,27 @@ func saveBatchedSession(t *testing.T) *session.Store {
 	sess := &session.Session{
 		ID:   session.GenerateID(),
 		Task: "batched calls",
-		Messages: []llm.Message{
+		Messages: []session.Message{
 			{Role: "user", Content: "run three things"},
-			{Role: "assistant", Content: "on it", ToolCalls: []llm.ToolCall{
-				func() llm.ToolCall {
-					var tc llm.ToolCall
+			{Role: "assistant", Content: "on it", ToolCalls: []session.ToolCall{
+				func() session.ToolCall {
+					var tc session.ToolCall
 					tc.ID = "call_aaa"
 					tc.Type = "function"
 					tc.Function.Name = "shell"
 					tc.Function.Arguments = `{"command":"echo one"}`
 					return tc
 				}(),
-				func() llm.ToolCall {
-					var tc llm.ToolCall
+				func() session.ToolCall {
+					var tc session.ToolCall
 					tc.ID = "call_bbb"
 					tc.Type = "function"
 					tc.Function.Name = "write_file"
 					tc.Function.Arguments = `{"path":"a.txt","content":"1"}`
 					return tc
 				}(),
-				func() llm.ToolCall {
-					var tc llm.ToolCall
+				func() session.ToolCall {
+					var tc session.ToolCall
 					tc.ID = "" // provider omitted the id — synthetic label path
 					tc.Type = "function"
 					tc.Function.Name = "tree"
@@ -104,7 +103,7 @@ func TestShowSession_UnmatchedResultGetsMarker(t *testing.T) {
 	sess := &session.Session{
 		ID:   session.GenerateID(),
 		Task: "trimmed",
-		Messages: []llm.Message{
+		Messages: []session.Message{
 			{Role: "user", Content: "go"},
 			// Assistant turn with the call was trimmed away; only the result remains.
 			{Role: "tool", Name: "shell", ToolCallID: "call_gone", Content: "orphan"},

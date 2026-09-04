@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -36,9 +35,9 @@ func TestSave_UnblocksOtherChatsDuringDiskIO(t *testing.T) {
 	savedA := make(chan struct{})
 	go func() {
 		defer wg.Done()
-		msgs := make([]llm.Message, 500)
+		msgs := make([]session.Message, 500)
 		for i := range msgs {
-			msgs[i] = llm.Message{Role: "user", Content: "data"}
+			msgs[i] = session.Message{Role: "user", Content: "data"}
 		}
 		err := sm.Save(chatA, msgs)
 		if err != nil {
@@ -87,7 +86,7 @@ func TestSave_SameChatSerialized(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			err := sm.Save(chatID, []llm.Message{{Role: "user", Content: "hello"}})
+			err := sm.Save(chatID, []session.Message{{Role: "user", Content: "hello"}})
 			if err != nil {
 				t.Errorf("Save failed: %v", err)
 			}
@@ -126,7 +125,7 @@ func TestSave_RaceFreeLoadAfterSave(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			err := sm.Save(chatID, []llm.Message{{Role: "user", Content: "data"}})
+			err := sm.Save(chatID, []session.Message{{Role: "user", Content: "data"}})
 			if err != nil {
 				t.Errorf("Save failed: %v", err)
 			}

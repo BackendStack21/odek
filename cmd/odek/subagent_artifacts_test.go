@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/artifact"
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -208,7 +207,7 @@ func TestStore_Delete_CascadesArtifacts(t *testing.T) {
 	var cascaded []string
 	store.OnDelete = func(id string) { cascaded = append(cascaded, id) }
 
-	if err := store.Save(&session.Session{ID: "s1", Messages: []llm.Message{{Role: "user", Content: "hi"}}}); err != nil {
+	if err := store.Save(&session.Session{ID: "s1", Messages: []session.Message{{Role: "user", Content: "hi"}}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Delete("s1"); err != nil {
@@ -235,7 +234,7 @@ func TestStore_Cleanup_CascadesArtifacts(t *testing.T) {
 
 	old := time.Now().Add(-48 * time.Hour)
 	for _, id := range []string{"old1", "old2", "fresh"} {
-		s := &session.Session{ID: id, Messages: []llm.Message{{Role: "user", Content: "x"}}, UpdatedAt: time.Now()}
+		s := &session.Session{ID: id, Messages: []session.Message{{Role: "user", Content: "x"}}, UpdatedAt: time.Now()}
 		if id != "fresh" {
 			s.UpdatedAt = old
 		}

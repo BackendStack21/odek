@@ -17,7 +17,7 @@ It provides context about the project's architecture, conventions, and how to up
 ## Source Layout
 
 ```
-odek.go                       Public API (Config, New, Run, Close, ModelProfile, KnownProfiles, Tool interface)
+odek.go                       Public API (Config, New, Run, Close, ProfileLabel, Tool interface)
 cmd/odek/
   main.go                     CLI entry point, flag parsing, commands, sandbox setup, system prompt,
                               --events-jsonl/--external-ref/budget flag wiring, init config templates
@@ -67,7 +67,7 @@ cmd/odek/
   security_report_validation_test.go  Regression bar for every documented mitigation
   *_test.go                   250+ unit + E2E tests covering all tools
 internal/
-  llm/                        OpenAI-compatible HTTP client with reasoning_content support
+  llmclient/                  Adapter over go-llm-sdk (DTO mapping, temperature polarity, SimpleCall)
   loop/                       ReAct engine: observe → think → parallel-act → repeat. signal.go — SignalEvent observability
                               (context_trimmed, tool_recovery, tool_running heartbeat). Budget enforcement (budget.Checker)
                               + odek.event/v1 emission.
@@ -147,7 +147,7 @@ Layered prompt-injection / approval-fatigue defenses. The full per-mitigation li
 - **Approval friction** — TTY/WS/Telegram approvers engage friction after 3 same-class approvals in 60s (type `approve`, pause, trust shortcut hidden); `destructive`/`blocked`/`unknown` never get trust shortcuts. TTY prompts are process-wide serialized.
 - **Sub-agent caps** — `delegate_tasks` carries trust_level + max_risk enforced via the sub-agent's DangerousConfig; MCP tools withheld from untrusted sub-agents; API keys handed off via unlinked-tempfile FD, never env.
 - **MCP hardening** — subprocess env sanitization (secret-pattern stripping), tool-name/description/inputSchema validation + injection scans, per-tool approval for every server (keys hash command/args/env + schema hash + description text + all four limit fields), per-server limits with absolute ceilings, artifact-ref fail-closed validation.
-- **Config trust split** — `./odek.json` is untrusted: sensitive sections (base_url, api_key, system, dangerous, memory, telegram, web_search, embedding, sessions, skills.dirs) ignored with warnings; sandbox knobs gated behind explicit operator approval (incl. implicit `Dockerfile.odek` builds, content-hash keyed); project limits may only lower global budgets, project prices rejected outright. Global config/secrets permission-checked; config files size-capped.
+- **Config trust split** — `./odek.json` is untrusted: sensitive sections (provider, providers, llm, base_url, api_key, system, dangerous, memory, telegram, web_search, embedding, sessions, skills.dirs) ignored with warnings; sandbox knobs gated behind explicit operator approval (incl. implicit `Dockerfile.odek` builds, content-hash keyed); project limits may only lower global budgets, project prices rejected outright. Global config/secrets permission-checked; config files size-capped.
 - **Serve / network surface** — per-instance CSRF token on `/ws` and all `/api/*`, loopback Host checks, local-origin requirement for mutations, per-session auth tokens + rate limiting, clickjacking headers, WS message-size caps. SSRF dial guard (DNS-rebinding-safe, internal-IP refusal, proxy refusal) on browser/http_batch/web_search.
 - **Budgets, events, refs (v1.24.0)** — budget clamp merge (see above); event stream carries SHA-256 arg hashes + sizes only (never raw args), redact applied, JSONL sink 0600/no-symlink/fsync-per-event, drop-on-full dispatch; external refs validated and never dereferenced.
 - **Resource bounds** — pervasive size caps (shell output 1 MiB/stream, perf-tool files 10 MiB, session files 32 MiB, skill files 1 MiB, browser snapshots/history/elements, tree width, search results, write_file content, patch expansion) to keep hostile input from OOMing the process.

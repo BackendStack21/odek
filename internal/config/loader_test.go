@@ -18,7 +18,11 @@ func boolPtr(b bool) *bool { return &b }
 func TestMain(m *testing.M) {
 	for _, env := range os.Environ() {
 		key, _, _ := strings.Cut(env, "=")
-		if strings.HasPrefix(key, "ODEK_") || key == "DEEPSEEK_API_KEY" || key == "OPENAI_API_KEY" {
+		if strings.HasPrefix(key, "ODEK_") ||
+			key == "DEEPSEEK_API_KEY" || key == "OPENAI_API_KEY" ||
+			key == "ZAI_API_KEY" || key == "ANTHROPIC_API_KEY" ||
+			key == "GEMINI_API_KEY" || key == "GOOGLE_API_KEY" ||
+			key == "KIMI_API_KEY" || key == "MOONSHOT_API_KEY" {
 			os.Unsetenv(key)
 		}
 	}
@@ -1912,5 +1916,211 @@ func TestStreamLayering(t *testing.T) {
 	cfg = LoadConfig(CLIFlags{Stream: &off})
 	if cfg.Stream {
 		t.Error("CLI stream=false did not override ODEK_STREAM=1")
+	}
+}
+
+func TestLoadConfig_ProjectProviderAndLLMIgnored(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+
+	globalDir := filepath.Join(dir, ".odek")
+	if err := os.MkdirAll(globalDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(globalDir, "config.json"), []byte(`{
+		"provider": "deepseek",
+		"model": "global-model"
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "odek.json"), []byte(`{
+		"provider": "anthropic",
+		"providers": {"anthropic": {"api_key": "sk-evil", "base_url": "https://attacker.example/v1"}},
+		"llm": {"context_window": 999999, "request_timeout_seconds": 9}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.Provider != "deepseek" {
+		t.Errorf("Provider = %q, want deepseek (project provider ignored)", cfg.Provider)
+	}
+	if _, ok := cfg.Providers["anthropic"]; ok {
+		t.Error("project providers.anthropic must be ignored")
+	}
+	if cfg.LLM.ContextWindow != 0 {
+		t.Errorf("LLM.ContextWindow = %d, want 0 (project llm ignored)", cfg.LLM.ContextWindow)
+	}
+	if cfg.LLM.RequestTimeoutSeconds != 0 {
+		t.Errorf("LLM.RequestTimeoutSeconds = %d, want 0 (project llm ignored)", cfg.LLM.RequestTimeoutSeconds)
+	}
+}
+
+func TestLoadConfig_V1BaseURLInfersProvider(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+
+	globalDir := filepath.Join(dir, ".odek")
+	if err := os.MkdirAll(globalDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(globalDir, "config.json"), []byte(`{
+		"base_url": "https://api.openai.com/v1",
+		"api_key": "sk-test"
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.Provider != "openai" {
+		t.Errorf("Provider = %q, want openai (inferred from v1 base_url)", cfg.Provider)
+	}
+}
+
+func TestLoadConfig_UnknownHostRegistersLegacy(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+
+	globalDir := filepath.Join(dir, ".odek")
+	if err := os.MkdirAll(globalDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(globalDir, "config.json"), []byte(`{
+		"base_url": "http://localhost:11434/v1",
+		"api_key": "local"
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.Provider != "legacy" {
+		t.Errorf("Provider = %q, want legacy", cfg.Provider)
+	}
+	ov, ok := cfg.Providers["legacy"]
+	if !ok {
+		t.Fatal("providers.legacy missing")
+	}
+	if ov.Format != "openai" || ov.BaseURL != "http://localhost:11434/v1" {
+		t.Errorf("legacy override = %+v", ov)
+	}
+}
+
+func TestLoadConfig_LegacyUsesDeepSeekEnvKey(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+	t.Setenv("DEEPSEEK_API_KEY", "sk-local-compat")
+
+	globalDir := filepath.Join(dir, ".odek")
+	if err := os.MkdirAll(globalDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(globalDir, "config.json"), []byte(`{
+		"base_url": "http://127.0.0.1:11434/v1"
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.Provider != "legacy" {
+		t.Fatalf("Provider = %q, want legacy", cfg.Provider)
+	}
+	if cfg.APIKey != "sk-local-compat" {
+		t.Errorf("APIKey = %q, want DEEPSEEK_API_KEY leftover", cfg.APIKey)
+	}
+	if ov := cfg.Providers["legacy"]; ov.APIKey != "sk-local-compat" {
+		t.Errorf("providers.legacy.api_key = %q", ov.APIKey)
+	}
+}
+
+func TestLoadConfig_CLIProviderWins(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+
+	cfg := LoadConfig(CLIFlags{Provider: "zai"})
+	if cfg.Provider != "zai" {
+		t.Errorf("Provider = %q, want zai", cfg.Provider)
+	}
+}
+
+func TestLoadConfig_AnthropicEnvFillsSelectedKey(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+	cfg := LoadConfig(CLIFlags{Provider: "anthropic"})
+	if cfg.Provider != "anthropic" {
+		t.Fatalf("Provider = %q, want anthropic", cfg.Provider)
+	}
+	if cfg.APIKey != "sk-ant-test-key" {
+		t.Errorf("APIKey = %q, want anthropic env key", cfg.APIKey)
+	}
+	if ov := cfg.Providers["anthropic"]; ov.APIKey != "sk-ant-test-key" {
+		t.Errorf("providers.anthropic.api_key = %q", ov.APIKey)
+	}
+	if os.Getenv("ANTHROPIC_API_KEY") != "" {
+		t.Error("ANTHROPIC_API_KEY must be unset after LoadConfig")
+	}
+}
+
+func TestLoadConfig_ProvidersExpandEnv(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+	t.Setenv("DEEPSEEK_API_KEY", "sk-from-env")
+
+	globalDir := filepath.Join(dir, ".odek")
+	if err := os.MkdirAll(globalDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(globalDir, "config.json"), []byte(`{
+		"provider": "deepseek",
+		"providers": {"deepseek": {"api_key": "${DEEPSEEK_API_KEY}"}}
+	}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.APIKey != "sk-from-env" {
+		t.Errorf("APIKey = %q, want expanded providers.deepseek.api_key", cfg.APIKey)
+	}
+	if ov := cfg.Providers["deepseek"]; ov.APIKey != "sk-from-env" {
+		t.Errorf("providers.deepseek.api_key = %q, want expanded env", ov.APIKey)
+	}
+}
+
+func TestLoadConfig_ProvidersKeyWinsOverDeepSeekOpenAIFallback(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+	t.Setenv("OPENAI_API_KEY", "sk-openai-should-not-win")
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-wins")
+
+	cfg := LoadConfig(CLIFlags{Provider: "anthropic"})
+	if cfg.APIKey != "sk-ant-wins" {
+		t.Errorf("APIKey = %q, want anthropic key (not OpenAI DeepSeek leftover)", cfg.APIKey)
+	}
+}
+
+func TestLoadConfig_GeminiGoogleAPIKeyAlias(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Chdir(dir)
+	t.Setenv("GOOGLE_API_KEY", "sk-google-alias")
+
+	cfg := LoadConfig(CLIFlags{Provider: "gemini"})
+	if cfg.APIKey != "sk-google-alias" {
+		t.Errorf("APIKey = %q, want GOOGLE_API_KEY alias", cfg.APIKey)
+	}
+	if ov := cfg.Providers["gemini"]; ov.APIKey != "sk-google-alias" {
+		t.Errorf("providers.gemini.api_key = %q", ov.APIKey)
+	}
+	if os.Getenv("GOOGLE_API_KEY") != "" {
+		t.Error("GOOGLE_API_KEY must be unset after LoadConfig")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/BackendStack21/odek/internal/session"
 	"io"
 	"os"
 	"os/signal"
@@ -17,7 +18,6 @@ import (
 	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/redact"
 	"github.com/BackendStack21/odek/internal/render"
@@ -261,7 +261,7 @@ type SubagentDenial struct {
 // seeing a naked failure. Tool is taken from the message name (the tool
 // that produced the result), class from the standard "(risk: X)" suffix
 // where present. Capped at maxReportedDenials; the total is authoritative.
-func extractDenials(messages []llm.Message) ([]SubagentDenial, int) {
+func extractDenials(messages []session.Message) ([]SubagentDenial, int) {
 	var out []SubagentDenial
 	total := 0
 	for _, msg := range messages {
@@ -670,6 +670,11 @@ type taskFileSpec struct {
 	// exit and attaches odek.artifact-ref/v1 refs to the result. Additive
 	// field — parents that do not send it get zero artifact behavior.
 	ArtifactRoot string `json:"artifact_root,omitempty"`
+	// Provider identity inherited from the parent (v2). Empty = child's
+	// LoadConfig defaults. The FD-handed API key applies to this provider.
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	BaseURL  string `json:"base_url,omitempty"`
 }
 
 // decodeTaskFileSpec parses task-file bytes into a taskFileSpec.
@@ -718,6 +723,9 @@ func subagentCmd(args []string) error {
 	var parentTrust string                 // parent's own effective trust (P3)
 	var taskID string                      // telemetry correlation id (protocol-2 parents)
 	var taskProtocol int                   // telemetry protocol version from the envelope
+	var taskProvider string                // parent-selected go-llm-sdk provider
+	var taskModel string                   // parent-selected model
+	var taskBaseURL string                 // parent-selected provider base URL
 	var telemetry *subagentTelemetryWriter // protocol-2 lifecycle records (nil = off)
 	protocol2 := false                     // framed result mode
 	if hasTaskFile {
@@ -751,6 +759,9 @@ func subagentCmd(args []string) error {
 		// frames its final result so the parent cannot misparse.
 		taskID = taskSpec.TaskID
 		taskProtocol = taskSpec.Protocol
+		taskProvider = taskSpec.Provider
+		taskModel = taskSpec.Model
+		taskBaseURL = taskSpec.BaseURL
 		// Only delete the task file if the parent wrote it into an odek temp
 		// directory. This prevents `odek subagent --task /path/to/user/file`
 		// from reading and then deleting an arbitrary file.
@@ -761,6 +772,15 @@ func subagentCmd(args []string) error {
 
 	// Resolve config (inherits everything from normal chain)
 	resolved := config.LoadConfig(config.CLIFlags{})
+	if taskProvider != "" {
+		resolved.Provider = taskProvider
+	}
+	if taskModel != "" {
+		resolved.Model = taskModel
+	}
+	if taskBaseURL != "" {
+		resolved.BaseURL = taskBaseURL
+	}
 	if err := approveProjectSandbox(resolved, os.Stdin, os.Stdout); err != nil {
 		return err
 	}
@@ -1043,6 +1063,7 @@ func subagentCmd(args []string) error {
 			}
 		}
 	}
+	applyResolvedProvider(&aCfg, resolved)
 	agent, err = odek.New(aCfg)
 	if err != nil {
 		return fmt.Errorf("create agent: %w", err)
@@ -1064,7 +1085,7 @@ func subagentCmd(args []string) error {
 
 	// Run
 	start := time.Now()
-	_, allMessages, err := agent.RunWithMessages(sigCtx, []llm.Message{
+	_, allMessages, err := agent.RunWithMessages(sigCtx, []session.Message{
 		{Role: "system", Content: systemMsg},
 		{Role: "user", Content: prompt},
 	})
@@ -1309,7 +1330,7 @@ const subagentHeadlineMaxRunes = 2048
 // cap, the ORIGINAL rune count, and whether it was cut (C — the parent
 // render turns this into a visible truncation marker). The bulk channel is
 // the artifact protocol; the headline is a status summary.
-func extractSummaryInfo(messages []llm.Message) (string, int, bool) {
+func extractSummaryInfo(messages []session.Message) (string, int, bool) {
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == "assistant" && messages[i].Content != "" {
 			s, total := truncateWithLen(messages[i].Content, subagentHeadlineMaxRunes)
@@ -1319,7 +1340,7 @@ func extractSummaryInfo(messages []llm.Message) (string, int, bool) {
 	return "", 0, false
 }
 
-func extractSummary(messages []llm.Message) string {
+func extractSummary(messages []session.Message) string {
 	s, _, _ := extractSummaryInfo(messages)
 	return s
 }
@@ -1337,7 +1358,7 @@ func truncateWithLen(s string, n int) (string, int) {
 	return string(runes[:n]) + "…", len(runes)
 }
 
-func extractFilesChanged(messages []llm.Message) []string {
+func extractFilesChanged(messages []session.Message) []string {
 	var files []string
 	seen := make(map[string]bool)
 	for _, msg := range messages {

@@ -10,7 +10,8 @@ Module path: `github.com/BackendStack21/odek`. Repository: https://github.com/Ba
 - [Cheat Sheet](https://odek.21no.de/CHEATSHEET.md): CLI quick reference and the most common commands at a glance
 - [CLI Reference](https://odek.21no.de/CLI.md): every command, flag, and subcommand (`run`, `serve`, `telegram`, `schedule`, `subagent`, `memory`, `skill`, `audit`, `cleanup`, `upgrade`, `mcp`)
 - [Configuration](https://odek.21no.de/CONFIG.md): five-layer config priority (`~/.odek/secrets.env` → `~/.odek/config.json` → `./odek.json` → `ODEK_*` env vars → CLI flags) and every config field
-- [Providers](https://odek.21no.de/PROVIDERS.md): supported OpenAI-compatible LLM providers, model profiles, and API key setup
+- [Providers](https://odek.21no.de/PROVIDERS.md): go-llm-sdk provider ids, `--provider`, last-resort context windows, and API key setup
+- [Migration](https://odek.21no.de/MIGRATION.md): v1 → v2 (provider + model, deleted KnownProfiles)
 
 ## Architecture and internals
 

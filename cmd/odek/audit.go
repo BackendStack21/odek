@@ -6,7 +6,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -26,7 +25,7 @@ import (
 // --ctx, or attachment expansion. Passing the enriched text would make
 // attacker-injected resource literals count as "user-mentioned" and
 // neuter the divergence check.
-func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, userText string, newMsgs []llm.Message) {
+func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, userText string, newMsgs []session.Message) {
 	if store == nil {
 		return
 	}

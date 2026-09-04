@@ -29,9 +29,16 @@ Shared across all projects:
 
 ```json
 {
+  "provider": "deepseek",
   "model": "deepseek-v4-flash",
-  "base_url": "https://api.deepseek.com/v1",
-  "api_key": "${ODEK_API_KEY}",
+  "providers": {
+    "deepseek": { "api_key": "${DEEPSEEK_API_KEY}" }
+  },
+  "llm": {
+    "request_timeout_seconds": 120,
+    "stream_idle_timeout_seconds": 120,
+    "context_window": 0
+  },
   "thinking": "",
   "max_iterations": 90,
   "sandbox": true,
@@ -85,6 +92,8 @@ Same schema as global. Only set the fields you want to override:
 
 > **Security note:** The following fields cannot be set in `./odek.json` because a malicious repository could use them to steal secrets, poison the system prompt, disable safety policy, or redirect data to attacker-controlled backends:
 >
+> - `provider` / `providers` — use `~/.odek/config.json`, `ODEK_PROVIDER`, or `--provider`
+> - `llm` — request timeout, stream idle timeout, and context window are operator-only
 > - `base_url` — use `~/.odek/config.json`, `ODEK_BASE_URL`, or `--base-url`
 > - `api_key` — use `~/.odek/config.json`, `ODEK_API_KEY`, or `~/.odek/secrets.env`
 > - `system` — use `~/.odek/config.json`, `ODEK_SYSTEM`, or `--system`
@@ -133,6 +142,7 @@ Most config knobs have a `ODEK_*` counterpart:
 
 | Variable | Maps to | Type |
 |----------|---------|------|
+| `ODEK_PROVIDER` | `--provider` | string |
 | `ODEK_MODEL` | `--model` | string |
 | `ODEK_BASE_URL` | `--base-url` | string |
 | `ODEK_API_KEY` | config files only | string |
@@ -185,7 +195,13 @@ Most config knobs have a `ODEK_*` counterpart:
 
 ## API key fallback order
 
-`ODEK_API_KEY` → `DEEPSEEK_API_KEY` → `OPENAI_API_KEY`
+Selected provider, then leftovers. After resolution, provider key env vars are **unset** from the process environment (the SDK keeps the key in memory; `printenv` from tools does not see it).
+
+1. Explicit `api_key` / `providers.<id>.api_key` (after `${VAR}` expansion)
+2. `ODEK_API_KEY`
+3. The selected provider's env key (`DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`/`GOOGLE_API_KEY`, `ZAI_API_KEY`, `KIMI_API_KEY`/`MOONSHOT_API_KEY`)
+4. DeepSeek-only leftover: `OPENAI_API_KEY` when `provider` is `deepseek`
+5. `legacy` (v1 unknown `base_url`): `DEEPSEEK_API_KEY` → `OPENAI_API_KEY`
 
 ## Prompt-injection guard
 
@@ -278,9 +294,11 @@ Top-level execution knobs. Every one also exists as a CLI flag and an `ODEK_*` e
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `model` | profile default | LLM model ID. Known profiles auto-set thinking/timeout defaults (see [Providers](PROVIDERS.md)) |
-| `base_url` | profile default | OpenAI-compatible API endpoint |
-| `thinking` | `""` (profile default) | Reasoning depth: `enabled`, `disabled`, `low`, `medium`, `high`. Requires a model that supports extended thinking |
+| `provider` | `deepseek` | go-llm-sdk registry id (`deepseek`, `openai`, `anthropic`, `gemini`, `zai`, `kimi`, or a custom id). See [Providers](PROVIDERS.md) |
+| `providers` | `{}` | Per-id `api_key` / `base_url` / `format` overrides. `${VAR}` expands. Operator-only |
+| `model` | `deepseek-v4-flash` | LLM model ID. No auto-thinking or auto-timeout from the name |
+| `base_url` | SDK default for `provider` | Selected-provider URL override (v1 alias). DeepSeek default is `https://api.deepseek.com` (no `/v1`) |
+| `thinking` | `""` (omit) | Reasoning depth: `enabled`, `disabled`, `low`, `medium`, `high`. Set explicitly — not inferred from the model name |
 | `max_iterations` | `90` | Max think→act cycles per run |
 | `stream` | `false` | Stream reasoning and answer text to the terminal / Web UI as it arrives (`ODEK_STREAM`, `--stream`; `odek serve` also accepts `--no-stream`) |
 | `prompt_caching` | `false` | Enable provider prompt-caching markers — Anthropic endpoints get explicit markers; other providers are unaffected (see [CACHING.md](CACHING.md)) |
@@ -296,14 +314,18 @@ Tunes the shared LLM client (streaming and buffered calls share one retry policy
 ```json
 {
   "llm": {
-    "stream_idle_timeout_seconds": 120
+    "request_timeout_seconds": 120,
+    "stream_idle_timeout_seconds": 120,
+    "context_window": 0
   }
 }
 ```
 
 | Field | Default | Description |
 |-------|---------|-------------|
+| `request_timeout_seconds` | `120` | Per-request wall-clock budget for every model. No per-model auto-timeout. `0` keeps the default. |
 | `stream_idle_timeout_seconds` | `120` | Time between SSE events (keepalives count) before the stream is dropped and retried. Thinking models can spend minutes before their first event — raise it if long-thinking models hit `stream idle` errors. Floor 5s; `0` keeps the default. Eight retry attempts with jittered exponential backoff (and `Retry-After` honor) are shared with the buffered client; billing/quota errors fail fast. |
+| `context_window` | `0` | Trim-budget override. `0` means discover via `ListModels`, then the last-resort table for shipped ids, else no trim. |
 
 ## Dangerous-operations policy (`dangerous`)
 
@@ -1210,9 +1232,9 @@ odek init --global
 odek init --force
 ```
 
-The **global template** covers the full schema: connection (`model`, `base_url`, `api_key`), execution (`max_iterations`, `max_tool_parallel`, `prompt_caching`, `compaction`, `interaction_mode`), sandbox resource knobs (the `sandbox` key itself is deliberately absent — unset inherits the default-on posture), `dangerous` (with `non_interactive` pinned to the documented `read_only` default), `guard`, `tools`, `profiles`, `skills`, `memory` (including the `extract_facts` / `auto_approve_episodes` opt-outs), `subagent` (including `max_depth`, `announce_budget`, `budget_inherit`, `default_profile`), `limits`, `planning`, `mcp_servers`, `web_search`, `transcription`, `vision`, `trusted_proxies`, `schedules`, `maintenance`, and `telegram`. Blocks whose mere presence changes behavior (`embedding`, `memory.embedding`, `sessions.embedding`, `skills.embedding`) are intentionally omitted — add them only when you actually run an embedder.
+The **global template** covers the full schema: connection (`provider`, `providers`, `model`, `llm`), execution (`max_iterations`, `max_tool_parallel`, `prompt_caching`, `compaction`, `interaction_mode`), sandbox resource knobs (the `sandbox` key itself is deliberately absent — unset inherits the default-on posture), `dangerous` (with `non_interactive` pinned to the documented `read_only` default), `guard`, `tools`, `profiles`, `skills`, `memory` (including the `extract_facts` / `auto_approve_episodes` opt-outs), `subagent` (including `max_depth`, `announce_budget`, `budget_inherit`, `default_profile`), `limits`, `planning`, `mcp_servers`, `web_search`, `transcription`, `vision`, `trusted_proxies`, `schedules`, `maintenance`, and `telegram`. Blocks whose mere presence changes behavior (`embedding`, `memory.embedding`, `sessions.embedding`, `skills.embedding`) are intentionally omitted — add them only when you actually run an embedder. Top-level `base_url` / `api_key` remain v1 aliases (see [MIGRATION.md](MIGRATION.md)).
 
-The **local template** contains only fields a project may legitimately set (`model`, `thinking`, iteration/parallelism limits, `prompt_caching`, `interaction_mode`, sandbox resource knobs, `tools.disabled`, `skills` without `dirs`, `subagent`, `mcp_servers`, `schedules`). Operator-only fields (`api_key`, `base_url`, `system`, `dangerous`, `memory`, `sessions`, `embedding`, `guard`, `maintenance`, `telegram`, `web_search`, `trusted_proxies`, `tools.enabled`, `skills.dirs`) belong in `~/.odek/config.json`. Note that project configs may only *enable* the sandbox — `"sandbox": false` is rejected, so neither template pins it locally. `compaction` is likewise omitted from the local template: it defaults to on, and pinning `"compaction": false` in a fresh project config would silently disable it (add the key explicitly if you want it off).
+The **local template** contains only fields a project may legitimately set (`model`, `thinking`, iteration/parallelism limits, `prompt_caching`, `interaction_mode`, sandbox resource knobs, `tools.disabled`, `skills` without `dirs`, `subagent`, `mcp_servers`, `schedules`). Operator-only fields (`provider`, `providers`, `llm`, `api_key`, `base_url`, `system`, `dangerous`, `memory`, `sessions`, `embedding`, `guard`, `maintenance`, `telegram`, `web_search`, `trusted_proxies`, `tools.enabled`, `skills.dirs`) belong in `~/.odek/config.json`. Note that project configs may only *enable* the sandbox — `"sandbox": false` is rejected, so neither template pins it locally. `compaction` is likewise omitted from the local template: it defaults to on, and pinning `"compaction": false` in a fresh project config would silently disable it (add the key explicitly if you want it off).
 
 ## Recommended minimal config
 
@@ -1228,6 +1250,7 @@ ODEK_API_KEY=sk-...
 
 ```json
 {
+  "provider": "deepseek",
   "model": "deepseek-v4-flash",
 
   "stream": true,

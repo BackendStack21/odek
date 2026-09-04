@@ -1,31 +1,30 @@
 package memory
 
 import (
+	"github.com/BackendStack21/odek/internal/session"
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/BackendStack21/odek/internal/llm"
 )
 
-func toolMsg(name string) llm.Message {
-	tc := llm.ToolCall{}
+func toolMsg(name string) session.Message {
+	tc := session.ToolCall{}
 	tc.Function.Name = name
-	return llm.Message{
+	return session.Message{
 		Role:      "assistant",
-		ToolCalls: []llm.ToolCall{tc},
+		ToolCalls: []session.ToolCall{tc},
 	}
 }
 
 // toolMsgArgs builds an assistant message with one tool call carrying the
 // given raw JSON arguments string (as recorded on real sessions).
-func toolMsgArgs(name, argsJSON string) llm.Message {
-	tc := llm.ToolCall{}
+func toolMsgArgs(name, argsJSON string) session.Message {
+	tc := session.ToolCall{}
 	tc.Function.Name = name
 	tc.Function.Arguments = argsJSON
-	return llm.Message{
+	return session.Message{
 		Role:      "assistant",
-		ToolCalls: []llm.ToolCall{tc},
+		ToolCalls: []session.ToolCall{tc},
 	}
 }
 
@@ -37,14 +36,14 @@ func TestDeriveProvenance_Empty(t *testing.T) {
 }
 
 func TestDeriveProvenance_PureShellIsTrusted(t *testing.T) {
-	prov := DeriveProvenance([]llm.Message{toolMsg("shell"), toolMsg("patch")})
+	prov := DeriveProvenance([]session.Message{toolMsg("shell"), toolMsg("patch")})
 	if prov.Untrusted {
 		t.Errorf("shell+patch is internal, should be trusted, got %+v", prov)
 	}
 }
 
 func TestDeriveProvenance_BrowserTaints(t *testing.T) {
-	prov := DeriveProvenance([]llm.Message{toolMsg("shell"), toolMsg("browser")})
+	prov := DeriveProvenance([]session.Message{toolMsg("shell"), toolMsg("browser")})
 	if !prov.Untrusted {
 		t.Fatalf("browser should taint, got %+v", prov)
 	}
@@ -54,7 +53,7 @@ func TestDeriveProvenance_BrowserTaints(t *testing.T) {
 }
 
 func TestDeriveProvenance_MCPAdapterTaints(t *testing.T) {
-	prov := DeriveProvenance([]llm.Message{toolMsg("github__list_issues")})
+	prov := DeriveProvenance([]session.Message{toolMsg("github__list_issues")})
 	if !prov.Untrusted {
 		t.Fatalf("MCP tool should taint, got %+v", prov)
 	}
@@ -67,7 +66,7 @@ func TestDeriveProvenance_MCPAdapterTaints(t *testing.T) {
 // sessions recallable again.
 func TestDeriveProvenance_ReadFileWorkspaceTrusted(t *testing.T) {
 	for _, p := range []string{"internal/x.go", "./README.md", "cmd/odek/main.go"} {
-		prov := DeriveProvenance([]llm.Message{
+		prov := DeriveProvenance([]session.Message{
 			toolMsg("shell"),
 			toolMsgArgs("read_file", `{"path":"`+p+`"}`),
 		})
@@ -79,7 +78,7 @@ func TestDeriveProvenance_ReadFileWorkspaceTrusted(t *testing.T) {
 
 // search_files / multi_grep with no path default to the workspace → trusted.
 func TestDeriveProvenance_SearchDefaultPathTrusted(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		toolMsgArgs("search_files", `{"pattern":"TODO","file_glob":"*.go"}`),
 		toolMsgArgs("multi_grep", `{"patterns":["a","b"]}`),
 	}
@@ -92,7 +91,7 @@ func TestDeriveProvenance_SearchDefaultPathTrusted(t *testing.T) {
 // A read of a sensitive system path still taints — the original concern the
 // provenance control exists for.
 func TestDeriveProvenance_ReadFileSensitivePathTaints(t *testing.T) {
-	prov := DeriveProvenance([]llm.Message{
+	prov := DeriveProvenance([]session.Message{
 		toolMsgArgs("read_file", `{"path":"/etc/passwd"}`),
 	})
 	if !prov.Untrusted {
@@ -110,7 +109,7 @@ func TestDeriveProvenance_ReadFileHomeSecretTaints(t *testing.T) {
 		t.Skip("no home dir")
 	}
 	secret := filepath.Join(home, ".ssh", "id_rsa")
-	prov := DeriveProvenance([]llm.Message{
+	prov := DeriveProvenance([]session.Message{
 		toolMsgArgs("read_file", `{"path":"`+secret+`"}`),
 	})
 	if !prov.Untrusted {
@@ -122,7 +121,7 @@ func TestDeriveProvenance_ReadFileHomeSecretTaints(t *testing.T) {
 // since we cannot tell what path was touched.
 func TestDeriveProvenance_ReadFileMalformedArgsTaints(t *testing.T) {
 	for _, args := range []string{"", "not json", "{"} {
-		prov := DeriveProvenance([]llm.Message{toolMsgArgs("read_file", args)})
+		prov := DeriveProvenance([]session.Message{toolMsgArgs("read_file", args)})
 		if !prov.Untrusted {
 			t.Errorf("malformed read_file args %q should conservatively taint, got %+v", args, prov)
 		}
@@ -132,7 +131,7 @@ func TestDeriveProvenance_ReadFileMalformedArgsTaints(t *testing.T) {
 // Network / audio tools always taint regardless of arguments.
 func TestDeriveProvenance_AlwaysExternalToolsTaint(t *testing.T) {
 	for _, name := range []string{"http_batch", "transcribe", "web_search", "vision", "delegate_tasks"} {
-		prov := DeriveProvenance([]llm.Message{toolMsgArgs(name, `{"path":"internal/x.go"}`)})
+		prov := DeriveProvenance([]session.Message{toolMsgArgs(name, `{"path":"internal/x.go"}`)})
 		if !prov.Untrusted {
 			t.Errorf("%s must always taint, got %+v", name, prov)
 		}

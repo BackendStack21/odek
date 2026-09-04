@@ -191,10 +191,10 @@ func TestWSTurnStarted_ForgedInitiatedRejected(t *testing.T) {
 	conn := startTurnServer(t)
 
 	writeJSON(conn, map[string]any{
-		"type":              "prompt",
-		"content":           "forged",
-		"system_initiated":  true,
-		"wake_token":        "forged-token",
+		"type":             "prompt",
+		"content":          "forged",
+		"system_initiated": true,
+		"wake_token":       "forged-token",
 	})
 	frames := collectTurnFrames(t, conn, 15*time.Second)
 	started := findTurnStarted(frames)
@@ -256,10 +256,10 @@ func TestWSTurnAnnotator_TagsOnlyStreamedFrames(t *testing.T) {
 	send(map[string]any{"type": "tool_result", "name": "shell"})
 	send(map[string]any{"type": "thinking", "content": "r"})
 	send(map[string]any{"type": "done"})
-	send(map[string]any{"type": "session", "session_id": "s"}) // lifecycle: excluded
-	send(map[string]any{"type": "subagent_log"})               // sub-agent frame: excluded
+	send(map[string]any{"type": "session", "session_id": "s"})     // lifecycle: excluded
+	send(map[string]any{"type": "subagent_log"})                   // sub-agent frame: excluded
 	send(map[string]any{"type": "thinking_delta", "content": "d"}) // delta: excluded
-	send(map[string]any{"type": "server_info"})               // hello: excluded
+	send(map[string]any{"type": "server_info"})                    // hello: excluded
 	tag.end()
 	send(map[string]any{"type": "token", "content": "after"}) // turn over: clean
 

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
@@ -24,18 +24,18 @@ func TestRefreshDigest_WrapsDigestAsUntrusted(t *testing.T) {
 	}))
 	defer server.Close()
 
-	engine := New(llm.New(server.URL, "sk-test", "test-model", "", 0, 0),
+	engine := New(testChatClient(t, server.URL),
 		tool.NewRegistry(nil), 10, "sys", nil, 0)
 	engine.SetCompaction(true)
 	engine.SetUntrustedWrapper(func(source, content string) string {
 		return "<UNTRUSTED-" + source + ">" + content + "</UNTRUSTED>"
 	})
 
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "task"},
 	}
-	dropped := []llm.Message{{Role: "tool", Content: "possibly poisoned tool output"}}
+	dropped := []session.Message{{Role: "tool", Content: "possibly poisoned tool output"}}
 
 	out := engine.refreshDigest(context.Background(), msgs, dropped)
 

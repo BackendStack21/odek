@@ -13,7 +13,6 @@ import (
 
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/resource"
 	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/skills"
@@ -872,7 +871,7 @@ func TestSessionSearchGet_CapsAndWrapsMessages(t *testing.T) {
 		UpdatedAt: time.Now(),
 	}
 	for i := 0; i < 150; i++ {
-		sess.Messages = append(sess.Messages, llm.Message{Role: "assistant", Content: fmt.Sprintf("msg %d", i)})
+		sess.Messages = append(sess.Messages, session.Message{Role: "assistant", Content: fmt.Sprintf("msg %d", i)})
 	}
 	if err := store.Save(sess); err != nil {
 		t.Fatalf("Save: %v", err)

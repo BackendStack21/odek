@@ -63,7 +63,7 @@ Five-layer priority chain: `~/.odek/secrets.env` → `global (~/.odek/config.jso
 Hard stop runaway tasks: `--max-runtime`, `--max-tool-calls`, `--max-input-tokens`, `--max-output-tokens`, `--max-cost-usd` (or the `limits` config section, with per-model pricing via `limits.model_prices`). On exhaustion the session is persisted for resume and the CLI exits with dedicated **exit code 4**. Follow any run from an external process with `--events-jsonl` (structured `odek.event/v1` JSONL, secrets-redacted, args hashed) or the `EventHandler` Go API; `GET /api/limits` on `odek serve` exposes limits + effective prices for cost rendering. [docs/EXTENSIONS.md](docs/EXTENSIONS.md)
 
 ### 🔌 LLM-Agnostic
-Any OpenAI-compatible endpoint: Deepseek, OpenAI, Anthropic, Z.ai (GLM), Ollama, vLLM, Groq, Together, Fireworks — anything that speaks `/chat/completions`. Per-model profiles for thinking depth and context windows. [docs/PROVIDERS.md](docs/PROVIDERS.md)
+Multi-provider via [go-llm-sdk](https://github.com/BackendStack21/go-llm-sdk): DeepSeek, OpenAI, Anthropic, Gemini, Z.ai (GLM), Kimi, plus any OpenAI-compatible gateway. Provider id + model — no auto-thinking or auto-timeout from the model name. [docs/PROVIDERS.md](docs/PROVIDERS.md)
 
 ### 🌐 Web UI
 `odek serve` — browser-based agent with `@` resource completion (`@file.go`, `@sess:abc123`), **drag-and-drop file attachments**, WebSocket streaming, and a full IDE-style console. [docs/WEBUI.md](docs/WEBUI.md)
@@ -177,9 +177,9 @@ odek run "@README.md what does this project do?"
 | [CLI Reference](docs/CLI.md) | All commands, subcommands, flags, error codes |
 | [Cheat Sheet](docs/CHEATSHEET.md) | CLI quick reference, key flags, config snippets |
 | [Configuration](docs/CONFIG.md) | Config files, env vars, priority chain, all sections |
-| [Programmatic API](docs/API.md) | **SDK Guide**: import, Agent lifecycle, Tool interface, multi-turn sessions, memory system, model profiles, complete examples |
-| [Providers & Models](docs/PROVIDERS.md) | Supported providers, thinking config, context windows |
-| [Prompt Caching](docs/CACHING.md) | Anthropic/OpenAI/DeepSeek caching support, config, metrics |
+| [Programmatic API](docs/API.md) | **SDK Guide**: import, Agent lifecycle, Tool interface, multi-turn sessions, memory system, complete examples |
+| [Providers & Models](docs/PROVIDERS.md) | go-llm-sdk registry, `--provider`, last-resort context windows |
+| [Prompt Caching](docs/CACHING.md) | Anthropic-format markers; prefix stability on OpenAI-format providers |
 | [Response Streaming](docs/STREAMING.md) | Live streaming of LLM responses, config, reliability semantics |
 | [Memory](docs/MEMORY.md) | Three-tier design, go-vector merge-on-write, `memory` tool |
 | [Sessions](docs/SESSIONS.md) | Multi-turn conversations, save/resume/trim/cleanup |
@@ -197,6 +197,8 @@ odek run "@README.md what does this project do?"
 | [Planning](docs/PLANNING.md) | Plan tool, protected plan message, security model |
 | [Tool Selection](docs/TOOL_SELECTION.md) | Tool whitelist/blacklist guide and names reference |
 | [Daily Worker](docs/DAILY-WORKER.md) | Headless scheduled-worker patterns |
+| [Providers](docs/PROVIDERS.md) | go-llm-sdk registry, `--provider`, v2 knobs |
+| [Migration (v2)](docs/MIGRATION.md) | v1 → v2 config, deleted profiles, embedder API |
 | [Development](docs/DEVELOPMENT.md) | Building, testing, contributing, project structure |
 
 ---
@@ -207,8 +209,9 @@ odek run "@README.md what does this project do?"
 import "github.com/BackendStack21/odek"
 
 agent, err := odek.New(odek.Config{
+    Provider:       "deepseek",
     Model:          "deepseek-v4-flash",
-    APIKey:         os.Getenv("ODEK_API_KEY"),
+    APIKey:         os.Getenv("DEEPSEEK_API_KEY"),
     MaxIterations:  30,
     Tools:          []odek.Tool{&myCustomTool{}},
     SystemMessage:  "You are an expert at refactoring Go code.",
@@ -218,7 +221,7 @@ defer agent.Close()
 result, err := agent.Run(context.Background(), "Refactor this module")
 ```
 
-The full `Config` struct supports: `BaseURL`, `Thinking`, `SandboxCleanup`, `Renderer`, `MemoryConfig`, `MemoryDir`, `Skills`, `SkillManager`, `NoProjectFile`, plus the extension API — `EventHandler` (structured runtime events), `ExternalRefs` (opaque session references), and `Limits` (execution budgets).
+The full `Config` struct supports: `Provider`, `Providers`, `BaseURL` (selected-provider override), `Thinking`, `SandboxCleanup`, `Renderer`, `MemoryConfig`, `MemoryDir`, `Skills`, `SkillManager`, `NoProjectFile`, plus the extension API — `EventHandler` (structured runtime events), `ExternalRefs` (opaque session references), and `Limits` (execution budgets). v2 depends on [go-llm-sdk](https://github.com/BackendStack21/go-llm-sdk); see [docs/MIGRATION.md](docs/MIGRATION.md).
 
 ---
 

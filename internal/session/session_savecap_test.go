@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/BackendStack21/odek/internal/llm"
 )
 
 // Tests for the write-path size-cap wiring in saveLocked and for
@@ -17,7 +15,7 @@ import (
 // Unreachable-by-design branches (left uncovered intentionally):
 //   - session.go:370-372, 448-450, 458-460 (json.Marshal error returns) and
 //     381-383 (the trim-error propagation in saveLocked): every field of
-//     Session and llm.Message is a concrete JSON-marshalable type (strings,
+//     Session and Message is a concrete JSON-marshalable type (strings,
 //     ints, bools, time.Time, nested structs), so json.Marshal cannot fail
 //     for these values; the error branches are dead defensive code and the
 //     trim-error branch therefore cannot fire either.
@@ -37,7 +35,7 @@ func TestSave_IndexWriteError(t *testing.T) {
 
 	sess := &Session{
 		ID:       "20260101-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		Messages: []llm.Message{{Role: "user", Content: "hi"}},
+		Messages: []Message{{Role: "user", Content: "hi"}},
 	}
 	if err := store.Save(sess); err == nil || !strings.Contains(err.Error(), "write index") {
 		t.Errorf("Save() error = %v, want a write index error", err)
@@ -64,7 +62,7 @@ func TestTrimToFileCap_NothingDroppable(t *testing.T) {
 	}
 	sess := &Session{
 		ID:       "20260101-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-		Messages: []llm.Message{{Role: "system", Content: "you are odek"}},
+		Messages: []Message{{Role: "system", Content: "you are odek"}},
 	}
 	oversized := make([]byte, MaxSessionFileBytes+1)
 	data, err := store.trimToFileCapLocked(sess, oversized)
@@ -88,11 +86,11 @@ func TestTrimToFileCap_DropsToolGroups(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStoreWithDir() error: %v", err)
 	}
-	call := llm.Message{Role: "assistant", Content: "calling tools"}
-	call.ToolCalls = append(call.ToolCalls, llm.ToolCall{ID: "c1", Type: "function"})
+	call := Message{Role: "assistant", Content: "calling tools"}
+	call.ToolCalls = append(call.ToolCalls, ToolCall{ID: "c1", Type: "function"})
 	sess := &Session{
 		ID: "20260101-cccccccccccccccccccccccccccccccc",
-		Messages: []llm.Message{
+		Messages: []Message{
 			{Role: "system", Content: "you are odek"},
 			call,
 			{Role: "tool", Name: "shell", Content: "result 1"},
@@ -140,7 +138,7 @@ func TestSave_IncrementalRedaction(t *testing.T) {
 	secret1 := "sk-" + strings.Repeat("a1", 20)
 	secret2 := "sk-" + strings.Repeat("b2", 20)
 
-	sess, err := store.Create([]llm.Message{
+	sess, err := store.Create([]Message{
 		{Role: "system", Content: "you are odek"},
 		{Role: "user", Content: "here is my key " + secret1},
 	}, "test", "redact boundary")
@@ -158,7 +156,7 @@ func TestSave_IncrementalRedaction(t *testing.T) {
 		t.Errorf("RedactBoundary = %d, want %d after first save", loaded.RedactBoundary, len(loaded.Messages))
 	}
 
-	loaded.Messages = append(loaded.Messages, llm.Message{Role: "assistant", Content: "try " + secret2})
+	loaded.Messages = append(loaded.Messages, Message{Role: "assistant", Content: "try " + secret2})
 	if err := store.Save(loaded); err != nil {
 		t.Fatalf("Save() error: %v", err)
 	}
@@ -186,7 +184,7 @@ func TestTrimToFileCap_MarkerSkippedWhenItWouldExceedCap(t *testing.T) {
 	}
 	sess := &Session{
 		ID: "20260101-dddddddddddddddddddddddddddddddd",
-		Messages: []llm.Message{
+		Messages: []Message{
 			{Role: "system", Content: ""}, // sized below
 			{Role: "user", Content: "droppable question"},
 		},

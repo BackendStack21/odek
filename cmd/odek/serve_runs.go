@@ -191,10 +191,10 @@ type wsConnInfo struct {
 	Busy        bool      `json:"busy"`
 
 	// Live state (never serialized; unexported).
-	mu       sync.Mutex
-	conn     *golangws.Conn
-	wakeSlot *connWakeSlot // guarded enqueue for wake-on-complete (nil until bound)
-	wakeToken string       // secret stamp on slot-posted wake items (P1-2)
+	mu        sync.Mutex
+	conn      *golangws.Conn
+	wakeSlot  *connWakeSlot // guarded enqueue for wake-on-complete (nil until bound)
+	wakeToken string        // secret stamp on slot-posted wake items (P1-2)
 }
 
 func (c *wsConnInfo) setLive(session string, busy bool) {

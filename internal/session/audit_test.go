@@ -58,7 +58,7 @@ func TestResourcesIn_FindsQuotedJSONArguments(t *testing.T) {
 	text := `{"path":"README.md","url":"https://x.com/blog"}`
 	got := ResourcesIn(text)
 	want := map[string]bool{
-		"README.md":         true,
+		"README.md":          true,
 		"https://x.com/blog": true,
 	}
 	for _, g := range got {

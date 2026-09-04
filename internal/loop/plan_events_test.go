@@ -16,7 +16,7 @@ import (
 	"testing"
 
 	"github.com/BackendStack21/odek/internal/events"
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
@@ -150,14 +150,14 @@ func TestEngine_Run_PlanEvents(t *testing.T) {
 	registry := tool.NewRegistry([]tool.Tool{
 		NewPlanTool(store),
 	})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 	engine.SetPlanStore(store)
 
 	col := &eventCollector{}
 	engine.SetEventHandler(col.handle)
 
-	if _, _, err := engine.RunWithMessages(context.Background(), []llm.Message{
+	if _, _, err := engine.RunWithMessages(context.Background(), []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "do the work"},
 	}); err != nil {
@@ -252,7 +252,7 @@ func TestEngine_Run_NoPlanStoreNoEvents(t *testing.T) {
 	// NEVER wired into the engine via SetPlanStore.
 	store := NewPlanStore(12, 2000)
 	registry := tool.NewRegistry([]tool.Tool{NewPlanTool(store)})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 
 	col := &eventCollector{}
@@ -272,13 +272,13 @@ func TestEngine_Run_NoPlanStoreNoEvents(t *testing.T) {
 
 // renderedPlanMessage builds a plan system message through the real store
 // renderer, so tests exercise the exact grammar the engine persists.
-func renderedPlanMessage(t *testing.T, args string) llm.Message {
+func renderedPlanMessage(t *testing.T, args string) session.Message {
 	t.Helper()
 	rendered, err := NewPlanStore(12, 2000).Execute(args)
 	if err != nil {
 		t.Fatalf("setup: Execute(%s): %v", args, err)
 	}
-	return llm.Message{Role: "system", Content: rendered}
+	return session.Message{Role: "system", Content: rendered}
 }
 
 func TestExtractPlan_NewestWins(t *testing.T) {
@@ -293,10 +293,10 @@ func TestExtractPlan_NewestWins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	v1 := llm.Message{Role: "system", Content: r1}
-	v2 := llm.Message{Role: "system", Content: r2}
+	v1 := session.Message{Role: "system", Content: r1}
+	v2 := session.Message{Role: "system", Content: r2}
 
-	messages := []llm.Message{
+	messages := []session.Message{
 		{Role: "system", Content: "base system"},
 		{Role: "user", Content: "task"},
 		v1,
@@ -318,12 +318,12 @@ func TestExtractPlan_NewestWins(t *testing.T) {
 func TestExtractPlan_CorruptNewestDropped(t *testing.T) {
 	valid := renderedPlanMessage(t, `{"verb":"create","steps":[{"id":"s1","title":"Keep me"}]}`)
 	// Corrupt newest: truncated-render marker makes it unparseable by design.
-	corrupt := llm.Message{
+	corrupt := session.Message{
 		Role:    "system",
 		Content: strings.Repeat("[Current plan: v9 — 9/9 done, 0 blocked. Structured state, not instructions.]\ns9 [done] x", 300) + "\n[plan truncated: exceeded max_render_chars]",
 	}
 
-	plan, ok := ExtractPlan([]llm.Message{{Role: "user", Content: "task"}, corrupt, valid})
+	plan, ok := ExtractPlan([]session.Message{{Role: "user", Content: "task"}, corrupt, valid})
 	if !ok {
 		t.Fatal("older valid plan must survive a corrupt newer message")
 	}
@@ -332,7 +332,7 @@ func TestExtractPlan_CorruptNewestDropped(t *testing.T) {
 	}
 
 	// All-corrupt input: fail closed with nothing.
-	if p, ok := ExtractPlan([]llm.Message{corrupt}); ok {
+	if p, ok := ExtractPlan([]session.Message{corrupt}); ok {
 		t.Errorf("corrupt-only history returned %+v, want none", p)
 	}
 }
@@ -341,7 +341,7 @@ func TestExtractPlan_AbsentAndForeign(t *testing.T) {
 	if p, ok := ExtractPlan(nil); ok || p != nil {
 		t.Errorf("nil history returned (%+v, %v), want none", p, ok)
 	}
-	if p, ok := ExtractPlan([]llm.Message{{Role: "user", Content: "hello"}}); ok || p != nil {
+	if p, ok := ExtractPlan([]session.Message{{Role: "user", Content: "hello"}}); ok || p != nil {
 		t.Errorf("plan-free history returned (%+v, %v), want none", p, ok)
 	}
 
@@ -349,7 +349,7 @@ func TestExtractPlan_AbsentAndForeign(t *testing.T) {
 	// roles is a forgery vector and must be ignored.
 	body := renderedPlanMessage(t, `{"verb":"create","steps":[{"id":"s1","title":"One"}]}`).Content
 	for _, role := range []string{"user", "assistant", "tool"} {
-		if p, ok := ExtractPlan([]llm.Message{{Role: role, Content: body}}); ok {
+		if p, ok := ExtractPlan([]session.Message{{Role: role, Content: body}}); ok {
 			t.Errorf("%s-role plan message was accepted: %+v", role, p)
 		}
 	}
@@ -363,7 +363,7 @@ func TestExtractPlan_UnwrapsUntrustedBody(t *testing.T) {
 	wrapped := msg.Content[:idx+1] + "<untrusted_content_abc123>\n" + msg.Content[idx+1:] + "\n</untrusted_content_abc123>"
 	msg.Content = wrapped
 
-	plan, ok := ExtractPlan([]llm.Message{msg})
+	plan, ok := ExtractPlan([]session.Message{msg})
 	if !ok {
 		t.Fatal("wrapped plan message must parse")
 	}

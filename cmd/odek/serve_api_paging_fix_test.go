@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -41,7 +40,7 @@ func decodePage(t *testing.T, w *httptest.ResponseRecorder) struct {
 func TestHandleSessionListPaged_SearchLimitClamped(t *testing.T) {
 	store := newTestSessionStore(t)
 	for i := 0; i < 5; i++ {
-		if _, err := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "fixme task"); err != nil {
+		if _, err := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "fixme task"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -66,7 +65,7 @@ func TestHandleSessionListPaged_PinnedFloatsOnFullList(t *testing.T) {
 	// Save() refreshes UpdatedAt, so build recency order by pinning FIRST
 	// and creating newer sessions after: the pinned session ends up at the
 	// oldest recency rank (position 5 of 6).
-	pinned, err := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "oldest task")
+	pinned, err := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "oldest task")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +78,7 @@ func TestHandleSessionListPaged_PinnedFloatsOnFullList(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 5; i++ {
-		sess, err := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "task")
+		sess, err := store.Create([]session.Message{{Role: "user", Content: "hi"}}, "m", "task")
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/BackendStack21/odek/internal/session"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,7 +19,6 @@ import (
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/mcpclient"
 	"github.com/BackendStack21/odek/internal/sandbox"
 	"github.com/BackendStack21/odek/internal/telegram"
@@ -66,6 +66,28 @@ func TestParseRunFlags_Defaults(t *testing.T) {
 	}
 	if f.Sandbox != nil {
 		t.Error("Sandbox should default to nil (not set)")
+	}
+}
+
+func TestParseRunFlags_ProviderConsumesValue(t *testing.T) {
+	f, err := parseRunFlags([]string{"--provider", "anthropic", "--model", "claude-sonnet-4-5", "do the thing"})
+	if err != nil {
+		t.Fatalf("parseRunFlags: %v", err)
+	}
+	if f.Provider != "anthropic" {
+		t.Errorf("Provider = %q, want anthropic", f.Provider)
+	}
+	if f.Model != "claude-sonnet-4-5" {
+		t.Errorf("Model = %q (provider value leaked into next flag)", f.Model)
+	}
+	if f.Task != "do the thing" {
+		t.Errorf("Task = %q, want %q", f.Task, "do the thing")
+	}
+}
+
+func TestParseRunFlags_ProviderRequiresValue(t *testing.T) {
+	if _, err := parseRunFlags([]string{"--provider"}); err == nil {
+		t.Fatal("expected --provider without a value to error")
 	}
 }
 
@@ -260,6 +282,17 @@ func TestBuiltinTools_PlanRegistration(t *testing.T) {
 	}
 }
 
+func TestContinueCLIFlags_UsesSessionProvider(t *testing.T) {
+	f := continueCLIFlags(&session.Session{Model: "claude-sonnet-4-5", Provider: "anthropic"})
+	if f.Provider != "anthropic" || f.Model != "claude-sonnet-4-5" {
+		t.Fatalf("continueCLIFlags = %+v, want session provider+model", f)
+	}
+	empty := continueCLIFlags(&session.Session{Model: "deepseek-v4-flash"})
+	if empty.Provider != "" {
+		t.Fatalf("pre-v2 session must not invent a provider, got %q", empty.Provider)
+	}
+}
+
 // TestContinueCmd_WiresPlanTool pins the `odek continue` planning wiring:
 // the continue path must register a functional plan tool, otherwise a
 // resumed session carries a persisted plan message (and a system prompt
@@ -414,9 +447,8 @@ func TestPrintUsage(t *testing.T) {
 		"odek version",
 		"Commands:",
 		"--model",
-		"Known profiles",
+		"--provider",
 		"deepseek-v4-flash",
-		"deepseek-v4-pro",
 		"--base-url",
 		"--max-iter",
 		"--thinking",
@@ -429,6 +461,7 @@ func TestPrintUsage(t *testing.T) {
 		"--global",
 		"--force",
 		"~/.odek/config.json",
+		"ODEK_PROVIDER",
 		"ODEK_MODEL",
 		"ODEK_API_KEY",
 		"ODEK_SANDBOX",
@@ -1883,7 +1916,7 @@ func TestCountUserTurnsUpTo_Empty(t *testing.T) {
 }
 
 func TestCountUserTurnsUpTo_Basic(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "system"},
 		{Role: "user", Content: "hello"},
 		{Role: "assistant", Content: "hi"},
@@ -1896,7 +1929,7 @@ func TestCountUserTurnsUpTo_Basic(t *testing.T) {
 }
 
 func TestCountUserTurnsUpTo_Partial(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "system"},
 		{Role: "user", Content: "hello"},
 	}
@@ -1907,7 +1940,7 @@ func TestCountUserTurnsUpTo_Partial(t *testing.T) {
 }
 
 func TestCountUserTurnsUpTo_BeyondLength(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "user", Content: "hello"},
 	}
 	count := countUserTurnsUpTo(msgs, 100)

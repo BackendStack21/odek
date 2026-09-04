@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/BackendStack21/odek/internal/events"
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
@@ -50,7 +49,7 @@ func TestEngine_Events_CallIDCorrelatesBatchedCalls(t *testing.T) {
 	registry := tool.NewRegistry([]tool.Tool{
 		&fakeTool{name: "echo", description: "echoes input", output: "out"},
 	})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 
 	col := &eventCollector{}
@@ -119,7 +118,7 @@ func TestEngine_Events_CallIDSyntheticWhenProviderOmits(t *testing.T) {
 	registry := tool.NewRegistry([]tool.Tool{
 		&fakeTool{name: "echo", description: "echoes input", output: "out"},
 	})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 
 	col := &eventCollector{}

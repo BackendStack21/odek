@@ -8,8 +8,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/BackendStack21/odek/internal/llm"
 )
 
 func TestNewStore(t *testing.T) {
@@ -62,7 +60,7 @@ func TestNewStore_InvalidDir(t *testing.T) {
 
 func TestStore_CreateAndLoad(t *testing.T) {
 	store := newTestStore(t)
-	msgs := []llm.Message{
+	msgs := []Message{
 		{Role: "system", Content: "You are a bot."},
 		{Role: "user", Content: "hello"},
 	}
@@ -99,13 +97,32 @@ func TestStore_CreateAndLoad(t *testing.T) {
 	}
 }
 
+func TestStore_ProviderRoundTrip(t *testing.T) {
+	store := newTestStore(t)
+	sess, err := store.Create([]Message{{Role: "user", Content: "hi"}}, "claude-sonnet-4-5", "hi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.Provider = "anthropic"
+	if err := store.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Load(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Provider != "anthropic" || loaded.Model != "claude-sonnet-4-5" {
+		t.Fatalf("got provider=%q model=%q", loaded.Provider, loaded.Model)
+	}
+}
+
 // TestStore_SaveRedactsTask verifies that secrets in the session Task field
 // are redacted before the session is persisted to disk. This is a regression
 // test for finding #21.
 func TestStore_SaveRedactsTask(t *testing.T) {
 	store := newTestStore(t)
 	secret := "sk-live-1234567890abcdef1234567890abcdef"
-	msgs := []llm.Message{
+	msgs := []Message{
 		{Role: "system", Content: "You are a bot."},
 		{Role: "user", Content: "Use key " + secret},
 	}
@@ -145,7 +162,7 @@ func TestStore_SaveRedactsTask(t *testing.T) {
 func TestStore_AppendRedactsTask(t *testing.T) {
 	store := newTestStore(t)
 	secret := "sk-live-1234567890abcdef1234567890abcdef"
-	msgs := []llm.Message{
+	msgs := []Message{
 		{Role: "system", Content: "You are a bot."},
 		{Role: "user", Content: "first"},
 	}
@@ -156,7 +173,7 @@ func TestStore_AppendRedactsTask(t *testing.T) {
 
 	// Simulate a code path that mutates Task after creation.
 	sess.Task = "key is " + secret
-	if err := store.Append(sess.ID, []llm.Message{{Role: "assistant", Content: "ok"}}); err != nil {
+	if err := store.Append(sess.ID, []Message{{Role: "assistant", Content: "ok"}}); err != nil {
 		t.Fatalf("Append() error: %v", err)
 	}
 
@@ -176,7 +193,7 @@ func TestStore_SaveWithVectorIndex(t *testing.T) {
 	if err := store.InitVectorIndex(nil); err != nil {
 		t.Fatalf("InitVectorIndex(nil): %v", err)
 	}
-	msgs := []llm.Message{
+	msgs := []Message{
 		{Role: "system", Content: "You are a bot."},
 		{Role: "user", Content: "semantic search test"},
 	}
@@ -220,7 +237,7 @@ func TestStore_SaveNoIndex(t *testing.T) {
 		CreatedAt: time.Now().UTC(),
 		Model:     "test-model",
 		Task:      "noindex test",
-		Messages: []llm.Message{
+		Messages: []Message{
 			{Role: "user", Content: "quixotic per-turn persistence marker"},
 		},
 	}
@@ -292,7 +309,7 @@ func TestStore_ConcurrentSave(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			msgs := []llm.Message{
+			msgs := []Message{
 				{Role: "system", Content: "You are a bot."},
 				{Role: "user", Content: fmt.Sprintf("concurrent save %d", i)},
 			}
@@ -328,7 +345,7 @@ func TestStore_ConcurrentSave(t *testing.T) {
 
 func TestStore_Append(t *testing.T) {
 	store := newTestStore(t)
-	msgs := []llm.Message{
+	msgs := []Message{
 		{Role: "system", Content: "system"},
 		{Role: "user", Content: "first"},
 	}
@@ -338,7 +355,7 @@ func TestStore_Append(t *testing.T) {
 	}
 
 	// Append new messages
-	newMsgs := []llm.Message{
+	newMsgs := []Message{
 		{Role: "assistant", Content: "response"},
 		{Role: "user", Content: "follow-up"},
 	}
@@ -364,7 +381,7 @@ func TestStore_List(t *testing.T) {
 	}
 
 	// Create a session
-	msgs := []llm.Message{{Role: "user", Content: "task"}}
+	msgs := []Message{{Role: "user", Content: "task"}}
 	store.Create(msgs, "m1", "task")
 
 	sessions, err := store.List(0)
@@ -389,9 +406,9 @@ func TestStore_Latest(t *testing.T) {
 	}
 
 	// Create two sessions
-	msgs1 := []llm.Message{{Role: "user", Content: "first"}}
+	msgs1 := []Message{{Role: "user", Content: "first"}}
 	s1, _ := store.Create(msgs1, "m1", "first")
-	msgs2 := []llm.Message{{Role: "user", Content: "second"}}
+	msgs2 := []Message{{Role: "user", Content: "second"}}
 	s2, _ := store.Create(msgs2, "m2", "second")
 
 	latest, err := store.Latest()
@@ -408,7 +425,7 @@ func TestStore_Latest(t *testing.T) {
 
 func TestStore_Delete(t *testing.T) {
 	store := newTestStore(t)
-	msgs := []llm.Message{{Role: "user", Content: "task"}}
+	msgs := []Message{{Role: "user", Content: "task"}}
 	sess, _ := store.Create(msgs, "m", "task")
 
 	if err := store.Delete(sess.ID); err != nil {
@@ -428,14 +445,14 @@ func TestStore_Cleanup(t *testing.T) {
 	store := newTestStore(t)
 
 	// Create a "current" session
-	msgs := []llm.Message{{Role: "user", Content: "current"}}
+	msgs := []Message{{Role: "user", Content: "current"}}
 	current, err := store.Create(msgs, "m", "current")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Create an "old" session by rewriting its UpdatedAt
-	msgs2 := []llm.Message{{Role: "user", Content: "old"}}
+	msgs2 := []Message{{Role: "user", Content: "old"}}
 	oldSess, err := store.Create(msgs2, "m", "old")
 	if err != nil {
 		t.Fatal(err)
@@ -479,7 +496,7 @@ func TestStore_Cleanup_EmptyStore(t *testing.T) {
 func TestStore_Cleanup_ZeroDays(t *testing.T) {
 	store := newTestStore(t)
 
-	msgs := []llm.Message{{Role: "user", Content: "anything"}}
+	msgs := []Message{{Role: "user", Content: "anything"}}
 	sess, err := store.Create(msgs, "m", "test")
 	if err != nil {
 		t.Fatal(err)
@@ -559,7 +576,7 @@ func TestAppend_ConcurrentSafety(t *testing.T) {
 	// in the final file — no lost writes.
 	store := newTestStore(t)
 	sess, err := store.Create(
-		[]llm.Message{{Role: "user", Content: "start"}},
+		[]Message{{Role: "user", Content: "start"}},
 		"test", "start",
 	)
 	if err != nil {
@@ -568,7 +585,7 @@ func TestAppend_ConcurrentSafety(t *testing.T) {
 
 	done := make(chan error, 2)
 	appendMsg := func(content string) {
-		done <- store.Append(sess.ID, []llm.Message{{Role: "user", Content: content}})
+		done <- store.Append(sess.ID, []Message{{Role: "user", Content: content}})
 	}
 
 	go appendMsg("thread-a")
@@ -594,7 +611,7 @@ func TestSave_AtomicWriteNoPartialFile(t *testing.T) {
 	// not a truncated file) by checking the file path directly.
 	store := newTestStore(t)
 	sess, err := store.Create(
-		[]llm.Message{{Role: "user", Content: "data"}},
+		[]Message{{Role: "user", Content: "data"}},
 		"test", "data",
 	)
 	if err != nil {
@@ -625,7 +642,7 @@ func TestSave_SymlinkNotFollowed(t *testing.T) {
 	// (not follow it) — this is the TOCTOU defense.
 	store := newTestStore(t)
 	sess, err := store.Create(
-		[]llm.Message{{Role: "user", Content: "original"}},
+		[]Message{{Role: "user", Content: "original"}},
 		"test", "original",
 	)
 	if err != nil {
@@ -648,7 +665,7 @@ func TestSave_SymlinkNotFollowed(t *testing.T) {
 	}
 
 	// Save should NOT follow the symlink — it should replace it
-	sess.Messages = append(sess.Messages, llm.Message{Role: "assistant", Content: "response"})
+	sess.Messages = append(sess.Messages, Message{Role: "assistant", Content: "response"})
 	if err := store.Save(sess); err != nil {
 		t.Fatal(err)
 	}
@@ -682,7 +699,7 @@ func TestSave_SymlinkNotFollowed(t *testing.T) {
 }
 
 func TestCountUserTurns(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []Message{
 		{Role: "system", Content: ""},
 		{Role: "user", Content: "a"},
 		{Role: "assistant", Content: "b"},
@@ -710,7 +727,7 @@ func newTestStore(t *testing.T) *Store {
 func TestList_Limit(t *testing.T) {
 	store := newTestStore(t)
 	for i := 0; i < 3; i++ {
-		msgs := []llm.Message{{Role: "user", Content: fmt.Sprintf("task %d", i)}}
+		msgs := []Message{{Role: "user", Content: fmt.Sprintf("task %d", i)}}
 		sess, _ := store.Create(msgs, "test", fmt.Sprintf("task %d", i))
 		// Stagger times so ordering is deterministic
 		sess.UpdatedAt = time.Now().Add(time.Duration(i) * time.Hour)
@@ -809,7 +826,7 @@ func TestGenerateID_Format(t *testing.T) {
 
 func TestCreate_GeneratesAuthToken(t *testing.T) {
 	store := newTestStore(t)
-	sess, err := store.Create([]llm.Message{{Role: "user", Content: "hi"}}, "m", "hi")
+	sess, err := store.Create([]Message{{Role: "user", Content: "hi"}}, "m", "hi")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -833,7 +850,7 @@ func TestStore_Latest_NoIndex(t *testing.T) {
 	store := newTestStore(t)
 
 	// Create a session (this writes both the session file and index.json)
-	msgs := []llm.Message{{Role: "user", Content: "test"}}
+	msgs := []Message{{Role: "user", Content: "test"}}
 	sess, err := store.Create(msgs, "m", "test")
 	if err != nil {
 		t.Fatal(err)
@@ -861,7 +878,7 @@ func TestStore_Latest_NoIndex(t *testing.T) {
 func TestStore_Latest_SingleSession(t *testing.T) {
 	store := newTestStore(t)
 
-	msgs := []llm.Message{{Role: "user", Content: "only one"}}
+	msgs := []Message{{Role: "user", Content: "only one"}}
 	sess, err := store.Create(msgs, "m1", "only one")
 	if err != nil {
 		t.Fatal(err)
@@ -900,7 +917,7 @@ func TestStore_Delete_PathTraversalRejected(t *testing.T) {
 // session whose embedded ID contains path traversal.
 func TestStore_Save_RejectMalformedID(t *testing.T) {
 	store := newTestStore(t)
-	msgs := []llm.Message{{Role: "user", Content: "test"}}
+	msgs := []Message{{Role: "user", Content: "test"}}
 	sess, _ := store.Create(msgs, "m", "test")
 
 	sess.ID = "../config"
@@ -945,7 +962,7 @@ func TestStore_Append_RejectEmbeddedIDMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := store.Append(plantedID, []llm.Message{{Role: "user", Content: "more"}})
+	err := store.Append(plantedID, []Message{{Role: "user", Content: "more"}})
 	if err == nil {
 		t.Fatal("Append() to planted mismatched file should return error")
 	}
@@ -964,7 +981,7 @@ func TestValidateSessionID_NullByte(t *testing.T) {
 
 func TestLoad_CorruptFile(t *testing.T) {
 	store := newTestStore(t)
-	msgs := []llm.Message{{Role: "user", Content: "test"}}
+	msgs := []Message{{Role: "user", Content: "test"}}
 	sess, _ := store.Create(msgs, "m", "test")
 
 	// Overwrite the session file with garbage.
@@ -981,7 +998,7 @@ func TestLoad_CorruptFile(t *testing.T) {
 
 func TestAppend_NonExistentSession(t *testing.T) {
 	store := newTestStore(t)
-	err := store.Append("nonexistent-id", []llm.Message{{Role: "user", Content: "x"}})
+	err := store.Append("nonexistent-id", []Message{{Role: "user", Content: "x"}})
 	if err == nil {
 		t.Fatal("expected error for non-existent session")
 	}
@@ -990,7 +1007,7 @@ func TestAppend_NonExistentSession(t *testing.T) {
 func TestList_FallbackScanNoIndex(t *testing.T) {
 	// Create a store, create a session, then delete the index file.
 	store := newTestStore(t)
-	msgs := []llm.Message{{Role: "user", Content: "test"}}
+	msgs := []Message{{Role: "user", Content: "test"}}
 	sess, _ := store.Create(msgs, "m", "test")
 
 	// Remove the index file so List falls back to scanning individual files.
@@ -1043,7 +1060,7 @@ func TestList_ReadDirError(t *testing.T) {
 
 func TestLatest_FallbackScan(t *testing.T) {
 	store := newTestStore(t)
-	msgs1 := []llm.Message{{Role: "user", Content: "first"}}
+	msgs1 := []Message{{Role: "user", Content: "first"}}
 	s1, _ := store.Create(msgs1, "m1", "first")
 
 	// Remove index to force fallback scan.
@@ -1085,7 +1102,7 @@ func TestLatest_FallbackSkipsNonSessionFiles(t *testing.T) {
 
 func TestDelete_OsRemoveError(t *testing.T) {
 	store := newTestStore(t)
-	msgs := []llm.Message{{Role: "user", Content: "test"}}
+	msgs := []Message{{Role: "user", Content: "test"}}
 	sess, _ := store.Create(msgs, "m", "test")
 
 	// Remove the sessions dir so the file can't be removed properly.
@@ -1100,7 +1117,7 @@ func TestDelete_OsRemoveError(t *testing.T) {
 
 func TestCleanup_FallbackScan(t *testing.T) {
 	store := newTestStore(t)
-	msgs := []llm.Message{{Role: "user", Content: "old"}}
+	msgs := []Message{{Role: "user", Content: "old"}}
 	oldSess, _ := store.Create(msgs, "m", "old")
 	oldSess.UpdatedAt = oldSess.UpdatedAt.AddDate(0, 0, -30)
 	store.Save(oldSess)
@@ -1129,7 +1146,7 @@ func TestCleanup_FallbackScanReadDirError(t *testing.T) {
 
 func TestGetMessages_WithMessages(t *testing.T) {
 	s := &Session{
-		Messages: []llm.Message{{Role: "user", Content: "hello"}},
+		Messages: []Message{{Role: "user", Content: "hello"}},
 	}
 	msgs := s.GetMessages()
 	if len(msgs) != 1 {
@@ -1143,7 +1160,7 @@ func TestGetMessages_WithMessages(t *testing.T) {
 func TestSaveIndexLocked_WriteError(t *testing.T) {
 	// Create a store then make the directory unwritable.
 	store := newTestStore(t)
-	msgs := []llm.Message{{Role: "user", Content: "test"}}
+	msgs := []Message{{Role: "user", Content: "test"}}
 	sess, _ := store.Create(msgs, "m", "test")
 
 	// Remove the sessions dir so saving index fails.
@@ -1171,15 +1188,15 @@ func TestNewVectorIndex_Search(t *testing.T) {
 	}
 
 	// Add two sessions.
-	msgs1 := []llm.Message{
+	msgs1 := []Message{
 		{Role: "user", Content: "Summarize previous odek session"},
 		{Role: "assistant", Content: "Here is a summary of your past sessions including TDD and code review"},
 	}
-	msgs2 := []llm.Message{
+	msgs2 := []Message{
 		{Role: "user", Content: "Deploy the application to production"},
 		{Role: "assistant", Content: "Use kubectl to apply the deployment manifest"},
 	}
-	msgs3 := []llm.Message{
+	msgs3 := []Message{
 		{Role: "user", Content: "say hello"},
 		{Role: "assistant", Content: "hello!"},
 	}
@@ -1241,7 +1258,7 @@ func TestVectorIndex_Remove(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 
-	msgs := []llm.Message{
+	msgs := []Message{
 		{Role: "user", Content: "fix the login bug"},
 		{Role: "assistant", Content: "fixed the authentication issue"},
 	}
@@ -1281,7 +1298,7 @@ func TestVectorIndex_Persistence(t *testing.T) {
 		t.Fatalf("Init vi1: %v", err)
 	}
 
-	msgs := []llm.Message{
+	msgs := []Message{
 		{Role: "user", Content: "how does the memory system work"},
 		{Role: "assistant", Content: "the memory system persists facts and episodes across sessions"},
 	}
@@ -1331,7 +1348,7 @@ func TestVectorIndex_EmptySearch(t *testing.T) {
 }
 
 func TestBuildConversationText(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []Message{
 		{Role: "system", Content: "you are an expert"},
 		{Role: "user", Content: "fix the bug"},
 		{Role: "assistant", Content: "found the off-by-one error"},
@@ -1366,18 +1383,18 @@ func TestSave_TrimsOversizedSession(t *testing.T) {
 	// test cap. Few large messages keep the trim loop's re-marshal cycles
 	// cheap; the small cap (see withFileCap) keeps this fast in CI.
 	big := strings.Repeat("x", 20<<10)
-	msgs := []llm.Message{{Role: "system", Content: "you are odek"}}
+	msgs := []Message{{Role: "system", Content: "you are odek"}}
 	for i := 0; i < 4; i++ {
 		role := "user"
 		if i%2 == 1 {
 			role = "assistant"
 		}
-		msgs = append(msgs, llm.Message{Role: role, Content: big})
+		msgs = append(msgs, Message{Role: role, Content: big})
 	}
 	// Distinct trailing messages we expect to survive the trim.
 	msgs = append(msgs,
-		llm.Message{Role: "user", Content: "final question"},
-		llm.Message{Role: "assistant", Content: "final answer"},
+		Message{Role: "user", Content: "final question"},
+		Message{Role: "assistant", Content: "final answer"},
 	)
 
 	sess, err := store.Create(msgs, "test", "oversized session")
@@ -1440,17 +1457,17 @@ func TestSave_TrimKeepsToolGroupsIntact(t *testing.T) {
 
 	// 6 × 12 KiB ≈ 72 KiB — past the 64 KiB test cap.
 	big := strings.Repeat("y", 12<<10)
-	msgs := []llm.Message{{Role: "system", Content: "you are odek"}}
+	msgs := []Message{{Role: "system", Content: "you are odek"}}
 	for i := 0; i < 3; i++ {
-		call := llm.Message{Role: "assistant", Content: big}
-		call.ToolCalls = append(call.ToolCalls, llm.ToolCall{ID: "c1", Type: "function"})
+		call := Message{Role: "assistant", Content: big}
+		call.ToolCalls = append(call.ToolCalls, ToolCall{ID: "c1", Type: "function"})
 		call.ToolCalls[0].Function.Name = "shell"
 		msgs = append(msgs,
 			call,
-			llm.Message{Role: "tool", Name: "shell", ToolCallID: "c1", Content: big},
+			Message{Role: "tool", Name: "shell", ToolCallID: "c1", Content: big},
 		)
 	}
-	msgs = append(msgs, llm.Message{Role: "user", Content: "latest task"})
+	msgs = append(msgs, Message{Role: "user", Content: "latest task"})
 
 	sess, err := store.Create(msgs, "test", "tool-group trim")
 	if err != nil {
@@ -1475,7 +1492,7 @@ func TestSave_TrimKeepsToolGroupsIntact(t *testing.T) {
 // written verbatim — no trimming, no warning bookkeeping.
 func TestSave_SmallSessionUntouched(t *testing.T) {
 	store := newTestStore(t)
-	msgs := []llm.Message{
+	msgs := []Message{
 		{Role: "system", Content: "you are odek"},
 		{Role: "user", Content: "hello"},
 		{Role: "assistant", Content: "hi there"},

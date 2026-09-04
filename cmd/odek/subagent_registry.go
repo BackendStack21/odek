@@ -41,26 +41,26 @@ type subagentArtifact struct {
 
 // subagentEntry is one delegated task's lifecycle record.
 type subagentEntry struct {
-	TaskID          string             `json:"task_id"`
-	RunKey          string             `json:"run_key"`
-	Goal            string             `json:"goal,omitempty"`
-	Status          string             `json:"status,omitempty"`
-	Phase           string             `json:"phase"` // queued | started | active | finished
-	PID             int                `json:"pid,omitempty"`
-	StartedAt       time.Time          `json:"started_at"`
-	FinishedAt      time.Time          `json:"finished_at,omitempty"`
-	Iterations      int                `json:"iterations,omitempty"`
-	Step            int                `json:"step,omitempty"`
-	LastTool        string             `json:"last_tool,omitempty"`
-	DurationSeconds float64            `json:"duration_seconds,omitempty"`
-	TokensUsed      int                `json:"tokens_used,omitempty"`
-	Profile         string             `json:"profile,omitempty"`    // requested on queued; effective (post-clamp) once the child reports
-	MaxRisk         string             `json:"max_risk,omitempty"`   // requested on queued; effective (post-clamp) once the child reports
-	BudgetSeconds   int                `json:"budget_seconds,omitempty"`
-	BudgetIterations int               `json:"budget_iterations,omitempty"`
-	CostUSD         float64            `json:"cost_usd,omitempty"`         // cumulative child-reported spend
-	BudgetCostUSD   float64            `json:"budget_cost_usd,omitempty"`  // present only when the child reports a cost cap
-	Artifacts       []subagentArtifact `json:"artifacts,omitempty"`        // terminal metadata from the framed result envelope
+	TaskID           string             `json:"task_id"`
+	RunKey           string             `json:"run_key"`
+	Goal             string             `json:"goal,omitempty"`
+	Status           string             `json:"status,omitempty"`
+	Phase            string             `json:"phase"` // queued | started | active | finished
+	PID              int                `json:"pid,omitempty"`
+	StartedAt        time.Time          `json:"started_at"`
+	FinishedAt       time.Time          `json:"finished_at,omitempty"`
+	Iterations       int                `json:"iterations,omitempty"`
+	Step             int                `json:"step,omitempty"`
+	LastTool         string             `json:"last_tool,omitempty"`
+	DurationSeconds  float64            `json:"duration_seconds,omitempty"`
+	TokensUsed       int                `json:"tokens_used,omitempty"`
+	Profile          string             `json:"profile,omitempty"`  // requested on queued; effective (post-clamp) once the child reports
+	MaxRisk          string             `json:"max_risk,omitempty"` // requested on queued; effective (post-clamp) once the child reports
+	BudgetSeconds    int                `json:"budget_seconds,omitempty"`
+	BudgetIterations int                `json:"budget_iterations,omitempty"`
+	CostUSD          float64            `json:"cost_usd,omitempty"`        // cumulative child-reported spend
+	BudgetCostUSD    float64            `json:"budget_cost_usd,omitempty"` // present only when the child reports a cost cap
+	Artifacts        []subagentArtifact `json:"artifacts,omitempty"`       // terminal metadata from the framed result envelope
 }
 
 var subagentReg = struct {

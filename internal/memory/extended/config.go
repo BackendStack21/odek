@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/embedding"
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/llmclient"
 )
 
 // Config controls the Extended Memory subsystem.
@@ -228,40 +228,39 @@ func ResolveLLM(cfg Config, mainLLM LLMClient, thinking string) LLMClient {
 		return mainLLM
 	}
 	lmc := *cfg.LLM
-	if main, ok := mainLLM.(*llm.Client); ok {
-		if lmc.BaseURL == "" {
-			lmc.BaseURL = main.BaseURL
-		}
-		if lmc.APIKey == "" {
-			lmc.APIKey = main.APIKey
-		}
-		if lmc.Model == "" {
-			lmc.Model = main.Model
-		}
-		if lmc.Thinking == "" {
-			lmc.Thinking = main.Thinking
-		}
-		if lmc.MaxTokens == 0 {
-			lmc.MaxTokens = main.MaxTokens
-		}
-		if lmc.Temperature == 0 {
-			lmc.Temperature = main.Temperature
-		}
-	}
-	if lmc.BaseURL == "" || lmc.Model == "" {
-		fmt.Fprintf(os.Stderr, "odek: warning: extended memory llm requires base_url and model; falling back to main LLM\n")
+	main, ok := mainLLM.(*llmclient.Client)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "odek: warning: extended memory llm override requires the main client; falling back\n")
 		return mainLLM
+	}
+	model := lmc.Model
+	if model == "" {
+		model = main.Model()
+	}
+	think := lmc.Thinking
+	if think == "" {
+		think = main.Thinking
+	}
+	// Same SDK / provider so learn-once stays shared. Never SetRequestTimeout
+	// on the main client — mint a second Chat instead.
+	client, err := llmclient.New(main.SDK, main.ProviderID(), model)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "odek: warning: extended memory llm: %v; falling back to main LLM\n", err)
+		return mainLLM
+	}
+	client.Thinking = think
+	client.MaxTokens = lmc.MaxTokens
+	if lmc.MaxTokens == 0 {
+		client.MaxTokens = main.MaxTokens
+	}
+	client.Temperature = lmc.Temperature
+	if lmc.Temperature == 0 {
+		client.Temperature = main.Temperature
 	}
 	timeout := time.Duration(lmc.TimeoutSeconds) * time.Second
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	client := llm.NewWithMaxTokens(
-		lmc.BaseURL, lmc.APIKey, lmc.Model,
-		lmc.Thinking, 0, lmc.MaxTokens, timeout,
-	)
-	if lmc.Temperature >= 0 {
-		client.Temperature = lmc.Temperature
-	}
+	client.SetRequestTimeout(timeout)
 	return client
 }

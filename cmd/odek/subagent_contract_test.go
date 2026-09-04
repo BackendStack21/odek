@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/BackendStack21/odek/internal/session"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,7 +15,6 @@ import (
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
-	"github.com/BackendStack21/odek/internal/llm"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -763,7 +763,7 @@ func TestTruncate_MultiByteEmoji(t *testing.T) {
 // ── 13. extractSummary ──────────────────────────────────────────────
 
 func TestExtractSummary_LastAssistantMessage(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "user", Content: "do something"},
 		{Role: "assistant", Content: "First step"},
 		{Role: "tool", Content: "tool result"},
@@ -781,14 +781,14 @@ func TestExtractSummary_EmptyMessages(t *testing.T) {
 		t.Errorf("extractSummary(nil) = %q, want empty", summary)
 	}
 
-	summary = extractSummary([]llm.Message{})
+	summary = extractSummary([]session.Message{})
 	if summary != "" {
 		t.Errorf("extractSummary(empty) = %q, want empty", summary)
 	}
 }
 
 func TestExtractSummary_NoAssistantMessage(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "user", Content: "hello"},
 		{Role: "tool", Content: "world"},
 	}
@@ -799,7 +799,7 @@ func TestExtractSummary_NoAssistantMessage(t *testing.T) {
 }
 
 func TestExtractSummary_EmptyAssistantContent(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "user", Content: "hello"},
 		{Role: "assistant", Content: ""},
 		{Role: "assistant", Content: "real content"},
@@ -811,8 +811,8 @@ func TestExtractSummary_EmptyAssistantContent(t *testing.T) {
 }
 
 func TestExtractSummary_AssistantWithToolCallsOnly(t *testing.T) {
-	msgs := []llm.Message{
-		{Role: "assistant", Content: "", ToolCalls: []llm.ToolCall{{ID: "call1"}}},
+	msgs := []session.Message{
+		{Role: "assistant", Content: "", ToolCalls: []session.ToolCall{{ID: "call1"}}},
 		{Role: "tool", Content: "result"},
 		{Role: "assistant", Content: "Here is the final output"},
 	}
@@ -826,7 +826,7 @@ func TestExtractSummary_AssistantWithToolCallsOnly(t *testing.T) {
 // extractSummary now carries 2048 runes instead of the old 500-rune cut.
 func TestExtractSummary_TruncatesLongOutput(t *testing.T) {
 	longContent := strings.Repeat("a", 3000)
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "assistant", Content: longContent},
 	}
 	summary := extractSummary(msgs)
@@ -841,7 +841,7 @@ func TestExtractSummary_TruncatesLongOutput(t *testing.T) {
 // ── 14. extractFilesChanged ─────────────────────────────────────────
 
 func TestExtractFilesChanged_NoFiles(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "assistant", Content: "done"},
 	}
 	result := extractFilesChanged(msgs)
@@ -851,7 +851,7 @@ func TestExtractFilesChanged_NoFiles(t *testing.T) {
 }
 
 func TestExtractFilesChanged_SingleFile(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "tool", Content: "wrote main.go"},
 	}
 	result := extractFilesChanged(msgs)
@@ -861,7 +861,7 @@ func TestExtractFilesChanged_SingleFile(t *testing.T) {
 }
 
 func TestExtractFilesChanged_AllPrefixTypes(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "tool", Content: "wrote internal/handler.go\ncreated models/user.go\nmodified pkg/utils.go\nupdated config/defaults.go"},
 	}
 	result := extractFilesChanged(msgs)
@@ -877,7 +877,7 @@ func TestExtractFilesChanged_AllPrefixTypes(t *testing.T) {
 }
 
 func TestExtractFilesChanged_Deduplicates(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "tool", Content: "wrote main.go\nwrote main.go"},
 	}
 	result := extractFilesChanged(msgs)
@@ -887,7 +887,7 @@ func TestExtractFilesChanged_Deduplicates(t *testing.T) {
 }
 
 func TestExtractFilesChanged_DeduplicatesAcrossMessages(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "tool", Content: "wrote main.go"},
 		{Role: "assistant", Content: "thinking"},
 		{Role: "tool", Content: "updated main.go"},
@@ -899,7 +899,7 @@ func TestExtractFilesChanged_DeduplicatesAcrossMessages(t *testing.T) {
 }
 
 func TestExtractFilesChanged_FiltersFilesWithoutExtension(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "tool", Content: "wrote Makefile\nwrote Dockerfile\nwrote internal/handler.go"},
 	}
 	result := extractFilesChanged(msgs)
@@ -914,7 +914,7 @@ func TestExtractFilesChanged_FiltersFilesWithoutExtension(t *testing.T) {
 }
 
 func TestExtractFilesChanged_PrefixNotMatched(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "tool", Content: "deleted main.go\nrenamed old.go new.go"},
 	}
 	result := extractFilesChanged(msgs)
@@ -924,7 +924,7 @@ func TestExtractFilesChanged_PrefixNotMatched(t *testing.T) {
 }
 
 func TestExtractFilesChanged_NoToolRoleMessages(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "user", Content: "wrote main.go"},
 		{Role: "assistant", Content: "created file.go"},
 	}
@@ -935,7 +935,7 @@ func TestExtractFilesChanged_NoToolRoleMessages(t *testing.T) {
 }
 
 func TestExtractFilesChanged_MultipleFilesWithPath(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "tool", Content: "wrote internal/service/auth.go\ncreated internal/middleware/logging.go\nupdated internal/config/defaults.yaml"},
 	}
 	result := extractFilesChanged(msgs)
@@ -951,7 +951,7 @@ func TestExtractFilesChanged_MultipleFilesWithPath(t *testing.T) {
 }
 
 func TestExtractFilesChanged_PreservesOrder(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "tool", Content: "wrote a.go\nwrote b.go\nwrote c.go"},
 	}
 	result := extractFilesChanged(msgs)

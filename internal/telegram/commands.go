@@ -198,8 +198,8 @@ func pruneHandler(args string) (string, error) { return "", nil }
 
 func planHandler(args string) (string, error) { return "", nil }
 
-func plansHandler(args string) (string, error) { return "", nil }
-func planViewHandler(args string) (string, error) { return "", nil }
+func plansHandler(args string) (string, error)      { return "", nil }
+func planViewHandler(args string) (string, error)   { return "", nil }
 func planDeleteHandler(args string) (string, error) { return "", nil }
 func planResumeHandler(args string) (string, error) { return "", nil }
 

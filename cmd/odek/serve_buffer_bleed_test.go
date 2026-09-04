@@ -2,12 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/BackendStack21/odek/internal/session"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/BackendStack21/odek/internal/llm"
 	"golang.org/x/net/websocket"
 )
 
@@ -60,7 +60,7 @@ func TestServe_E2E_PromptPathSessionSwitch_ClearsStaleBuffer(t *testing.T) {
 
 	// Session A carries a distinctive buffer line.
 	sessA, err := store.Create(
-		[]llm.Message{{Role: "system", Content: ""}, {Role: "user", Content: "A prompt"}},
+		[]session.Message{{Role: "system", Content: ""}, {Role: "user", Content: "A prompt"}},
 		"test-model", "A",
 	)
 	if err != nil {
@@ -73,7 +73,7 @@ func TestServe_E2E_PromptPathSessionSwitch_ClearsStaleBuffer(t *testing.T) {
 
 	// Session B has an empty saved buffer.
 	sessB, err := store.Create(
-		[]llm.Message{{Role: "system", Content: ""}, {Role: "user", Content: "B prompt"}},
+		[]session.Message{{Role: "system", Content: ""}, {Role: "user", Content: "B prompt"}},
 		"test-model", "B",
 	)
 	if err != nil {

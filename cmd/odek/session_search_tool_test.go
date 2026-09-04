@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BackendStack21/odek/internal/llm"
 	"github.com/BackendStack21/odek/internal/session"
 )
 
@@ -37,14 +36,14 @@ func seedSessionStore(t *testing.T) (*session.Store, func()) {
 		model string
 		turns int
 		buf   []string
-		msgs  []llm.Message
+		msgs  []session.Message
 		age   time.Duration
 	}{
 		{
 			id: "20260520-auth-fix", task: "fix O_NOFOLLOW in file_tool.go",
 			model: "deepseek-v4-flash", turns: 8,
 			buf: []string{"10:00 user asked about symlink attack", "10:02 agent patched file_tool.go with O_NOFOLLOW"},
-			msgs: []llm.Message{
+			msgs: []session.Message{
 				{Role: "user", Content: "We have a symlink attack in file_tool.go — read_file follows symlinks"},
 				{Role: "assistant", Content: "Adding O_NOFOLLOW to all file opens... done."},
 			},
@@ -54,7 +53,7 @@ func seedSessionStore(t *testing.T) (*session.Store, func()) {
 			id: "20260522-native-tools", task: "add sort/head_tail/base64 native tools",
 			model: "deepseek-v4-flash", turns: 12,
 			buf: []string{"11:00 user requested 5 native perf tools", "11:05 agent implemented sort tool"},
-			msgs: []llm.Message{
+			msgs: []session.Message{
 				{Role: "user", Content: "Add sort, head_tail, base64, tr, word_count as native tools"},
 				{Role: "assistant", Content: "Implemented all 5 tools with tests."},
 			},
@@ -64,7 +63,7 @@ func seedSessionStore(t *testing.T) (*session.Store, func()) {
 			id: "20260524-transcribe", task: "implement audio transcription via whisper.cpp",
 			model: "deepseek-v4-flash", turns: 15,
 			buf: []string{"12:00 discussed transcribe tool proposal", "12:30 implemented transcribe_tool.go"},
-			msgs: []llm.Message{
+			msgs: []session.Message{
 				{Role: "user", Content: "I want a transcribe tool using local whisper.cpp"},
 				{Role: "assistant", Content: "Created transcribe tool with model download, config, and tests."},
 			},
@@ -74,7 +73,7 @@ func seedSessionStore(t *testing.T) (*session.Store, func()) {
 			id: "20260510-old-setup", task: "initial project setup",
 			model: "claude-sonnet-4", turns: 3,
 			buf: []string{"09:00 user set up project structure"},
-			msgs: []llm.Message{
+			msgs: []session.Message{
 				{Role: "user", Content: "Set up the project with Go modules"},
 			},
 			age: 14 * 24 * time.Hour,
@@ -584,7 +583,7 @@ func TestSessionSearch_DeepSearchTwoTokens(t *testing.T) {
 		UpdatedAt: time.Now().Add(-30 * time.Minute),
 		Model:     "deepseek-v4-flash",
 		Turns:     3,
-		Messages: []llm.Message{
+		Messages: []session.Message{
 			{Role: "user", Content: "Analyze the current output"},
 			{Role: "assistant", Content: "Events changed: +8 -8 = 10 total"},
 		},
@@ -602,7 +601,7 @@ func TestSessionSearch_DeepSearchTwoTokens(t *testing.T) {
 		UpdatedAt: time.Now().Add(-1 * time.Hour),
 		Model:     "deepseek-v4-flash",
 		Turns:     5,
-		Messages: []llm.Message{
+		Messages: []session.Message{
 			{Role: "user", Content: "Review our latest changes in go-vector"},
 			{Role: "assistant", Content: "The SaveEmbedder API is now persistent"},
 		},
@@ -659,7 +658,7 @@ func TestSessionSearch_GetReturnsSessionMessages(t *testing.T) {
 		UpdatedAt: time.Now(),
 		Model:     "deepseek-v4-flash",
 		Turns:     2,
-		Messages: []llm.Message{
+		Messages: []session.Message{
 			{Role: "user", Content: "First user message about go-vector"},
 			{Role: "assistant", Content: "Here is the response about SaveEmbedder"},
 			{Role: "user", Content: "Second question about vector dimensions"},
@@ -734,7 +733,7 @@ func TestSessionSearch_PreSavePersistence(t *testing.T) {
 		UpdatedAt: time.Now(),
 		Model:     "deepseek-v4-flash",
 		Turns:     0,
-		Messages: []llm.Message{
+		Messages: []session.Message{
 			{Role: "user", Content: uniqueContent},
 		},
 	}
@@ -786,7 +785,7 @@ func TestSessionSearch_DeepSearchEdgeCases(t *testing.T) {
 		UpdatedAt: time.Now(),
 		Model:     "deepseek-v4-flash",
 		Turns:     0,
-		Messages:  []llm.Message{},
+		Messages:  []session.Message{},
 	}
 	if err := store.Save(emptySess); err != nil {
 		t.Fatalf("save empty session: %v", err)
@@ -800,7 +799,7 @@ func TestSessionSearch_DeepSearchEdgeCases(t *testing.T) {
 		UpdatedAt: time.Now(),
 		Model:     "deepseek-v4-flash",
 		Turns:     1,
-		Messages: []llm.Message{
+		Messages: []session.Message{
 			{Role: "system", Content: "You are a helpful assistant"},
 			{Role: "system", Content: "Memory context block"},
 		},
@@ -817,7 +816,7 @@ func TestSessionSearch_DeepSearchEdgeCases(t *testing.T) {
 		UpdatedAt: time.Now(),
 		Model:     "deepseek-v4-flash",
 		Turns:     2,
-		Messages: []llm.Message{
+		Messages: []session.Message{
 			{Role: "user", Content: "Check the 🚀 emoji and café content"},
 			{Role: "assistant", Content: "Found go-vector persistência in the code"},
 		},

@@ -3,15 +3,13 @@ package session
 import (
 	"strings"
 	"testing"
-
-	"github.com/BackendStack21/odek/internal/llm"
 )
 
 func TestDeepSearch_TokenMatch(t *testing.T) {
 	store := newTestStore(t)
 
 	// Create a session with content that should trigger token matches.
-	msgs := []llm.Message{
+	msgs := []Message{
 		{Role: "user", Content: "what go-vector changes did you make to the modifications?"},
 		{Role: "assistant", Content: "I updated the vector index with new updates and modifications."},
 	}
@@ -68,7 +66,7 @@ func TestDeepSearch_NoMatch(t *testing.T) {
 	store := newTestStore(t)
 
 	// Create a session with unrelated content.
-	msgs := []llm.Message{
+	msgs := []Message{
 		{Role: "user", Content: "hello, how are you today?"},
 		{Role: "assistant", Content: "I'm doing great, thanks for asking!"},
 	}
@@ -109,12 +107,12 @@ func TestDeepSearch_MultiSession(t *testing.T) {
 
 	// Create sessions with different content.
 	sessions := []struct {
-		msgs []llm.Message
+		msgs []Message
 		task string
 	}{
-		{[]llm.Message{{Role: "user", Content: "fix the database migration script"}}, "db fix"},
-		{[]llm.Message{{Role: "user", Content: "add new API endpoint for users"}}, "api work"},
-		{[]llm.Message{{Role: "user", Content: "deploy the latest version to production"}}, "deploy"},
+		{[]Message{{Role: "user", Content: "fix the database migration script"}}, "db fix"},
+		{[]Message{{Role: "user", Content: "add new API endpoint for users"}}, "api work"},
+		{[]Message{{Role: "user", Content: "deploy the latest version to production"}}, "deploy"},
 	}
 	for _, s := range sessions {
 		_, err := store.Create(s.msgs, "test-model", s.task)

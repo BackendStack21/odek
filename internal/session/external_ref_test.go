@@ -7,8 +7,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/BackendStack21/odek/internal/llm"
 )
 
 func validRef() ExternalRef {
@@ -118,7 +116,7 @@ func TestExternalRefRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStoreWithDir: %v", err)
 	}
-	sess, err := store.Create([]llm.Message{
+	sess, err := store.Create([]Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "do the thing"},
 	}, "test-model", "do the thing")
@@ -156,7 +154,7 @@ func TestExternalRefsSurviveAppendAndSaveNoIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStoreWithDir: %v", err)
 	}
-	sess, err := store.Create([]llm.Message{{Role: "user", Content: "task"}}, "m", "task")
+	sess, err := store.Create([]Message{{Role: "user", Content: "task"}}, "m", "task")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -168,7 +166,7 @@ func TestExternalRefsSurviveAppendAndSaveNoIndex(t *testing.T) {
 	}
 
 	// Append path (final save of a turn).
-	if err := store.Append(sess.ID, []llm.Message{{Role: "assistant", Content: "done"}}); err != nil {
+	if err := store.Append(sess.ID, []Message{{Role: "assistant", Content: "done"}}); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	loaded, err := store.Load(sess.ID)
@@ -212,9 +210,9 @@ func TestExternalRefsSurviveTrim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStoreWithDir: %v", err)
 	}
-	msgs := []llm.Message{{Role: "system", Content: "sys"}}
+	msgs := []Message{{Role: "system", Content: "sys"}}
 	for i := 0; i < 20; i++ {
-		msgs = append(msgs, llm.Message{Role: "user", Content: fmt.Sprintf("turn %d: %s", i, strings.Repeat("x", 800))})
+		msgs = append(msgs, Message{Role: "user", Content: fmt.Sprintf("turn %d: %s", i, strings.Repeat("x", 800))})
 	}
 	sess, err := store.Create(msgs, "m", "big")
 	if err != nil {

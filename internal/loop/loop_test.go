@@ -17,8 +17,9 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/danger"
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/llmclient"
 	"github.com/BackendStack21/odek/internal/render"
+	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
@@ -46,7 +47,7 @@ func TestEngine_Run_SimpleAnswer(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	registry := tool.NewRegistry(nil)
 	engine := New(client, registry, 10, "", nil, 0)
 
@@ -89,7 +90,7 @@ func TestEngine_Run_ToolCallLoop(t *testing.T) {
 
 	echoTool := &fakeTool{name: "echo", description: "echoes input", output: "hello output"}
 	registry := tool.NewRegistry([]tool.Tool{echoTool})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 
 	result, err := engine.Run(context.Background(), "Echo hello")
@@ -134,7 +135,7 @@ func TestEngine_Run_MaxIterations(t *testing.T) {
 
 	echoTool := &fakeTool{name: "echo", description: "echo", output: "ok"}
 	registry := tool.NewRegistry([]tool.Tool{echoTool})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 3, "", nil, 0)
 
 	// Budget exhaustion no longer errors: the engine summarizes partial
@@ -185,7 +186,7 @@ func TestEngine_Run_MaxIterationsSummaryFallback(t *testing.T) {
 
 	echoTool := &fakeTool{name: "echo", description: "echo", output: "ok"}
 	registry := tool.NewRegistry([]tool.Tool{echoTool})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 1, "", nil, 0)
 
 	_, err := engine.Run(context.Background(), "Loop forever")
@@ -220,7 +221,7 @@ func TestEngine_Run_MaxIterationsSummaryIgnoresToolCalls(t *testing.T) {
 
 	echoTool := &fakeTool{name: "echo", description: "echo", output: "ok"}
 	registry := tool.NewRegistry([]tool.Tool{echoTool})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 1, "", nil, 0)
 
 	_, err := engine.Run(context.Background(), "Loop forever")
@@ -258,15 +259,15 @@ func TestEngine_Run_MaxIterationsSummaryAppended(t *testing.T) {
 
 	echoTool := &fakeTool{name: "echo", description: "echo", output: "ok"}
 	registry := tool.NewRegistry([]tool.Tool{echoTool})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 1, "", nil, 0)
 
-	var snapshots [][]llm.Message
-	engine.SetMessagesPersistCallback(func(msgs []llm.Message) {
+	var snapshots [][]session.Message
+	engine.SetMessagesPersistCallback(func(msgs []session.Message) {
 		snapshots = append(snapshots, msgs)
 	})
 
-	result, messages, err := engine.RunWithMessages(context.Background(), []llm.Message{
+	result, messages, err := engine.RunWithMessages(context.Background(), []session.Message{
 		{Role: "user", Content: "Loop forever"},
 	})
 	if err != nil {
@@ -319,11 +320,11 @@ func TestEngine_MessagesPersistCallback(t *testing.T) {
 
 	echoTool := &fakeTool{name: "echo", description: "echoes input", output: "hello output"}
 	registry := tool.NewRegistry([]tool.Tool{echoTool})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 
-	var snapshots [][]llm.Message
-	engine.SetMessagesPersistCallback(func(msgs []llm.Message) {
+	var snapshots [][]session.Message
+	engine.SetMessagesPersistCallback(func(msgs []session.Message) {
 		snapshots = append(snapshots, msgs)
 	})
 
@@ -368,7 +369,7 @@ func TestEngine_Run_ContextCancellation(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, tool.NewRegistry(nil), 10, "", nil, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -402,7 +403,7 @@ func TestEngine_Run_SystemMessage(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, tool.NewRegistry(nil), 10, "You are a test bot.", nil, 0)
 
 	result, err := engine.Run(context.Background(), "hi")
@@ -434,7 +435,7 @@ func TestEngine_Run_ToolNotFound(t *testing.T) {
 	defer server.Close()
 
 	// No tools registered — the tool call will fail
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, tool.NewRegistry(nil), 10, "", nil, 0)
 
 	// The loop should handle the missing tool gracefully — the tool error
@@ -451,14 +452,14 @@ func TestLastUserMessage_NoMessages(t *testing.T) {
 	if result != "" {
 		t.Errorf("lastUserMessage(nil) = %q, want empty", result)
 	}
-	result = lastUserMessage([]llm.Message{})
+	result = lastUserMessage([]session.Message{})
 	if result != "" {
 		t.Errorf("lastUserMessage([]) = %q, want empty", result)
 	}
 }
 
 func TestLastUserMessage_FindsLatest(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "user", Content: "first"},
 		{Role: "assistant", Content: "answer"},
 		{Role: "user", Content: "second"},
@@ -475,10 +476,10 @@ func TestEngine_RunWithMessages(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, tool.NewRegistry(nil), 10, "", nil, 0)
 
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "bot"},
 		{Role: "user", Content: "task"},
 	}
@@ -509,11 +510,11 @@ func TestEngine_RunWithMessages_TokenAccumulation(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	registry := tool.NewRegistry([]tool.Tool{&fakeTool{name: "echo", description: "echo", output: "pong"}})
 	engine := New(client, registry, 10, "", nil, 0)
 
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "bot"},
 		{Role: "user", Content: "do it"},
 	}
@@ -560,10 +561,7 @@ func TestEngine_BuildToolDefs(t *testing.T) {
 
 	names := map[string]bool{}
 	for _, d := range defs {
-		if d.Type != "function" {
-			t.Errorf("ToolDef.Type = %q, want %q", d.Type, "function")
-		}
-		names[d.Function.Name] = true
+		names[d.Name] = true
 	}
 
 	if !names["read"] || !names["write"] {
@@ -582,8 +580,8 @@ func TestEngine_BuildToolDefs_StringSchema(t *testing.T) {
 	if len(defs) != 1 {
 		t.Fatalf("expected 1 tool def, got %d", len(defs))
 	}
-	if defs[0].Function.Name != "custom" {
-		t.Errorf("name = %q, want 'custom'", defs[0].Function.Name)
+	if defs[0].Name != "custom" {
+		t.Errorf("name = %q, want 'custom'", defs[0].Name)
 	}
 }
 
@@ -640,7 +638,7 @@ func TestEngine_Run_ContextCancelDuringLoop(t *testing.T) {
 
 	echoTool := &fakeTool{name: "echo", description: "echo", output: "ok"}
 	registry := tool.NewRegistry([]tool.Tool{echoTool})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 
 	_, err := engine.Run(ctx, "task")
@@ -671,7 +669,7 @@ func TestEngine_Run_ToolCallError(t *testing.T) {
 
 	failingTool := &errorTool{name: "failing", description: "always fails"}
 	registry := tool.NewRegistry([]tool.Tool{failingTool})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 
 	// Tool error is fed back as a tool response; server only returns one
@@ -738,13 +736,13 @@ func TestEngine_Run_StallDetection(t *testing.T) {
 
 	echoTool := &fakeTool{name: "echo", description: "echo", output: "ok"}
 	registry := tool.NewRegistry([]tool.Tool{echoTool})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 
 	var signals []SignalEvent
 	engine.SetSignalHandler(func(ev SignalEvent) { signals = append(signals, ev) })
 
-	result, messages, err := engine.RunWithMessages(context.Background(), []llm.Message{
+	result, messages, err := engine.RunWithMessages(context.Background(), []session.Message{
 		{Role: "user", Content: "poll away"},
 	})
 	if err != nil {
@@ -817,7 +815,7 @@ func TestEstimateMessages_Empty(t *testing.T) {
 }
 
 func TestEstimateMessages_Single(t *testing.T) {
-	msg := []llm.Message{{Role: "user", Content: "hello"}}
+	msg := []session.Message{{Role: "user", Content: "hello"}}
 	n := estimateMessages(msg)
 	// 50 overhead + 2 tokens for "hello" = 52
 	if n < 50 || n > 55 {
@@ -826,10 +824,10 @@ func TestEstimateMessages_Single(t *testing.T) {
 }
 
 func TestEstimateMessages_WithToolCalls(t *testing.T) {
-	msg := []llm.Message{{
+	msg := []session.Message{{
 		Role:    "assistant",
 		Content: "Let me check",
-		ToolCalls: []llm.ToolCall{{
+		ToolCalls: []session.ToolCall{{
 			ID:   "call_1",
 			Type: "function",
 			Function: struct {
@@ -859,7 +857,7 @@ func TestContextBudget_WithLimit(t *testing.T) {
 
 func TestTrimContext_NoLimit(t *testing.T) {
 	engine := &Engine{maxContext: 0}
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "You are a bot."},
 		{Role: "user", Content: "hello"},
 	}
@@ -872,7 +870,7 @@ func TestTrimContext_NoLimit(t *testing.T) {
 func TestTrimContext_UnderBudget(t *testing.T) {
 	// Large budget — messages fit easily
 	engine := &Engine{maxContext: 1_000_000}
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "You are a bot."},
 		{Role: "user", Content: "hello"},
 		{Role: "assistant", Content: "Hi there", ToolCalls: nil},
@@ -887,7 +885,7 @@ func TestTrimContext_UnderBudget(t *testing.T) {
 func TestTrimContext_OverBudget(t *testing.T) {
 	// Very tight budget — forces trimming
 	engine := &Engine{maxContext: 200}
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "You are a helpful assistant. Be concise."},
 		{Role: "user", Content: "Explain how the quantum fourier transform works in detail"},
 		{Role: "assistant", Content: strings.Repeat("thinking about this... ", 20)},
@@ -922,7 +920,7 @@ func TestTrimContext_OverBudget(t *testing.T) {
 func TestTrimContext_VeryTightBudget(t *testing.T) {
 	// Extremely tight budget — still should keep system + task
 	engine := &Engine{maxContext: 100}
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "You are a bot."},
 		{Role: "user", Content: "Hello world, this is a task message that is somewhat long"},
 		{Role: "assistant", Content: strings.Repeat("data ", 50)},
@@ -947,7 +945,7 @@ func TestTrimContext_VeryTightBudget(t *testing.T) {
 
 func TestTrimContext_NoSystemMessage(t *testing.T) {
 	engine := &Engine{maxContext: 150}
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "user", Content: "This is a long task message that takes up many tokens"},
 		{Role: "assistant", Content: strings.Repeat("data ", 30)},
 		{Role: "tool", Content: strings.Repeat("result ", 30), ToolCallID: "call_1"},
@@ -970,12 +968,9 @@ func TestEstimateToolDefs_Empty(t *testing.T) {
 }
 
 func TestEstimateToolDefs_Single(t *testing.T) {
-	defs := []llm.ToolDef{{
-		Type: "function",
-		Function: llm.FunctionDef{
-			Name:        "shell",
-			Description: "run a shell command",
-		},
+	defs := []llmclient.ToolDef{{
+		Name:        "shell",
+		Description: "run a shell command",
 	}}
 	n := estimateToolDefs(defs)
 	if n < 30 {
@@ -986,18 +981,15 @@ func TestEstimateToolDefs_Single(t *testing.T) {
 func TestTrimContext_IncludesToolDefTokens(t *testing.T) {
 	// Budget that forces trimming when tool defs are included
 	engine := &Engine{maxContext: 300}
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "You are a bot."},
 		{Role: "user", Content: "do the thing"},
 		{Role: "assistant", Content: strings.Repeat("long thinking ", 30)},
 		{Role: "tool", Content: strings.Repeat("long result ", 30), ToolCallID: "call_1"},
 	}
-	defs := []llm.ToolDef{{
-		Type: "function",
-		Function: llm.FunctionDef{
-			Name:        "shell",
-			Description: strings.Repeat("very long description that takes up tokens ", 10),
-		},
+	defs := []llmclient.ToolDef{{
+		Name:        "shell",
+		Description: strings.Repeat("very long description that takes up tokens ", 10),
 	}}
 
 	result := engine.trimContext(context.Background(), msgs, defs)
@@ -1046,7 +1038,7 @@ func TestEngine_SkillLoader_CalledOncePerInput(t *testing.T) {
 
 	echoTool := &fakeTool{name: "echo", description: "echo", output: "ok"}
 	registry := tool.NewRegistry([]tool.Tool{echoTool})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 	engine.SetSkillLoader(skillLoader)
 
@@ -1117,7 +1109,7 @@ func TestEngine_SkillLoader_NoMatchCalledOncePerInput(t *testing.T) {
 	server := twoIterationServer(t)
 	echoTool := &fakeTool{name: "echo", description: "echo", output: "ok"}
 	registry := tool.NewRegistry([]tool.Tool{echoTool})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 	engine.SetSkillLoader(skillLoader)
 
@@ -1141,7 +1133,7 @@ func TestEngine_EpisodeCtx_NoMatchCalledOncePerInput(t *testing.T) {
 	server := twoIterationServer(t)
 	echoTool := &fakeTool{name: "echo", description: "echo", output: "ok"}
 	registry := tool.NewRegistry([]tool.Tool{echoTool})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 	engine.SetEpisodeContextFunc(episodeCtx)
 
@@ -1175,7 +1167,7 @@ func TestEngine_DedupKeysResetBetweenRuns(t *testing.T) {
 	server := twoIterationServer(t)
 	echoTool := &fakeTool{name: "echo", description: "echo", output: "ok"}
 	registry := tool.NewRegistry([]tool.Tool{echoTool})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 	engine.SetSkillLoader(skillLoader)
 	engine.SetEpisodeContextFunc(episodeCtx)
@@ -1235,7 +1227,7 @@ func TestEngine_ToolEventHandler(t *testing.T) {
 
 	echoTool := &fakeTool{name: "echo", description: "echo", output: "ok"}
 	registry := tool.NewRegistry([]tool.Tool{echoTool})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 	engine.SetToolEventHandler(eventHandler)
 
@@ -1272,7 +1264,7 @@ func TestEngine_Run_CacheAccumulation(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	registry := tool.NewRegistry(nil)
 	engine := New(client, registry, 10, "", nil, 0)
 
@@ -1315,7 +1307,7 @@ func TestEngine_Run_CacheAccumulation_MultiIter(t *testing.T) {
 
 	echoTool := &fakeTool{name: "echo", description: "echoes", output: "ok"}
 	registry := tool.NewRegistry([]tool.Tool{echoTool})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 
 	result, err := engine.Run(context.Background(), "echo")
@@ -1351,7 +1343,7 @@ func TestEngine_Run_CacheAccumulation_OpenAI(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	registry := tool.NewRegistry(nil)
 	engine := New(client, registry, 10, "", nil, 0)
 
@@ -1380,7 +1372,7 @@ func TestEngine_Run_CacheAccumulation_NoCache(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	registry := tool.NewRegistry(nil)
 	engine := New(client, registry, 10, "", nil, 0)
 
@@ -1455,7 +1447,7 @@ func TestPromptTiering_SeparateMemoryMessage(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	echoTool := &fakeTool{name: "echo", description: "echo", output: "ok"}
 	registry := tool.NewRegistry([]tool.Tool{echoTool})
 	engine := New(client, registry, 10, "You are a stable base.", nil, 0)
@@ -1513,7 +1505,7 @@ func TestPromptTiering_NoMemoryDropsMessage(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	echoTool := &fakeTool{name: "echo", description: "echo", output: "ok"}
 	registry := tool.NewRegistry([]tool.Tool{echoTool})
 	engine := New(client, registry, 10, "You are a stable base.", nil, 0)
@@ -1541,7 +1533,7 @@ func TestPromptTiering_MemMsgIdxResets(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registryOrNil(), 10, "base system", nil, 0)
 
 	// Run 1 with memory
@@ -1573,8 +1565,8 @@ func registryOrNil() *tool.Registry { return tool.NewRegistry(nil) }
 func BenchmarkTrimContext(b *testing.B) {
 	// A single message group: assistant turn + tool result.
 	// Each group is ~60 tokens so we can precisely control budget.
-	makeGroup := func(i int) []llm.Message {
-		return []llm.Message{
+	makeGroup := func(i int) []session.Message {
+		return []session.Message{
 			{Role: "assistant", Content: fmt.Sprintf("thinking step %d... debug log data here", i)},
 			{Role: "tool", Content: fmt.Sprintf("result data for step %d with some content", i), ToolCallID: "call_" + fmt.Sprint(i)},
 		}
@@ -1582,7 +1574,7 @@ func BenchmarkTrimContext(b *testing.B) {
 
 	for _, numGroups := range []int{10, 50, 100} {
 		// Build conversation: system + task + N groups
-		msgs := []llm.Message{
+		msgs := []session.Message{
 			{Role: "system", Content: "You are a helpful assistant."},
 			{Role: "user", Content: "Run my analysis pipeline please"},
 		}
@@ -1602,7 +1594,7 @@ func BenchmarkTrimContext(b *testing.B) {
 			b.ResetTimer()
 			for range b.N {
 				// Copy messages each iteration to avoid modifying shared state.
-				cp := make([]llm.Message, len(msgs))
+				cp := make([]session.Message, len(msgs))
 				copy(cp, msgs)
 				engine.trimContext(context.Background(), cp, nil)
 			}
@@ -1612,7 +1604,7 @@ func BenchmarkTrimContext(b *testing.B) {
 
 // BenchmarkTrimContext_NoTrim measures the fast path when no trimming is needed.
 func BenchmarkTrimContext_NoTrim(b *testing.B) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "You are a helpful assistant."},
 		{Role: "user", Content: "Hello"},
 		{Role: "assistant", Content: "Hi there"},
@@ -1725,7 +1717,7 @@ func TestParallelToolExecution(t *testing.T) {
 	server := parallelToolServer(t, 4, "parallel done")
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 	engine.SetMaxToolParallel(4) // match tool count
 
@@ -1767,7 +1759,7 @@ func TestParallelToolOrdering(t *testing.T) {
 	server := parallelToolServer(t, 4, "ordered done")
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 	engine.SetMaxToolParallel(4)
 
@@ -1798,7 +1790,7 @@ func TestParallelToolSemaphore(t *testing.T) {
 	server := parallelToolServer(t, 6, "semaphore done")
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 	engine.SetMaxToolParallel(2) // cap at 2
 
@@ -1836,7 +1828,7 @@ func TestParallelDefaultParallelism(t *testing.T) {
 	server := parallelToolServer(t, 8, "default done")
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 	// Not setting MaxToolParallel — tests the default of 4
 
@@ -1884,7 +1876,7 @@ func TestParallelWithToolError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 	engine.SetMaxToolParallel(3)
 
@@ -1929,7 +1921,7 @@ func TestParallelSingleTool(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 
 	start := time.Now()
@@ -2008,7 +2000,7 @@ func TestBatchApprovalDenied(t *testing.T) {
 	server := batchApprovalServer(t, 3, "done")
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 	engine.SetApprover(approver)
 	engine.SetMaxToolParallel(3)
@@ -2051,7 +2043,7 @@ func TestBatchApprovalApproved(t *testing.T) {
 	server := batchApprovalServer(t, 3, "done")
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 	engine.SetApprover(approver)
 	engine.SetMaxToolParallel(3)
@@ -2144,7 +2136,7 @@ func TestBatchApprovalTrustAllNotLeakedAcrossIterations(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 	engine.SetApprover(approver)
 	engine.SetMaxToolParallel(2)
@@ -2195,7 +2187,7 @@ func TestBatchApprovalSingleTool(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 	engine.SetApprover(approver)
 
@@ -2367,7 +2359,7 @@ func TestEngine_SkillsAndEpisodesBothLoad(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	registry := tool.NewRegistry(nil)
 	engine := New(client, registry, 10, "You are odek.", nil, 0)
 	engine.SetSkillLoader(skillLoader)
@@ -2414,7 +2406,7 @@ func TestEngine_SkillAndEpisode_Wrapped(t *testing.T) {
 	skillLoader := func(string) string { return "injected skill context" }
 	episodeCtx := func(string) string { return "injected episode context" }
 
-	client := llm.New(server.URL, "sk", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, tool.NewRegistry(nil), 10, "You are odek.", nil, 0)
 	engine.SetSkillLoader(skillLoader)
 	engine.SetEpisodeContextFunc(episodeCtx)
@@ -2462,7 +2454,7 @@ func TestEngine_InteractionModeOff_SuppressesAllRenderOutput(t *testing.T) {
 	reg := tool.NewRegistry([]tool.Tool{&fakeTool{name: "echo", output: "echo output"}})
 	rend := render.New(&buf, false)
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, reg, 10, "", rend, 0)
 	engine.SetInteractionMode("off")
 
@@ -2495,7 +2487,7 @@ func TestEngine_InteractionModeDefault_ProducesRenderOutput(t *testing.T) {
 	reg := tool.NewRegistry([]tool.Tool{&fakeTool{name: "echo", output: "echo output"}})
 	rend := render.New(&buf, false)
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, reg, 10, "", rend, 0)
 	// Default interaction mode — no SetInteractionMode, no SetNarrator = verbose mode
 
@@ -2534,7 +2526,7 @@ func TestToolPanic_DoesNotKillAgent(t *testing.T) {
 	var callNum atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Messages []llm.Message `json:"messages"`
+			Messages []session.Message `json:"messages"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatal(err)
@@ -2554,7 +2546,7 @@ func TestToolPanic_DoesNotKillAgent(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, tool.NewRegistry([]tool.Tool{&panicTool{name: "panic_tool"}}), 10, "", nil, 0)
 	result, err := engine.Run(context.Background(), "test task")
 	if err != nil {
@@ -2577,7 +2569,7 @@ func TestToolResultDelimiter_NoncePerCall(t *testing.T) {
 	var callNum atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Messages []llm.Message `json:"messages"`
+			Messages []session.Message `json:"messages"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatal(err)
@@ -2605,7 +2597,7 @@ func TestToolResultDelimiter_NoncePerCall(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, tool.NewRegistry([]tool.Tool{&fakeTool{name: "echo", description: "echo", output: "tool output"}}), 10, "", nil, 0)
 	if _, err := engine.Run(context.Background(), "test task"); err != nil {
 		t.Fatalf("engine.Run: %v", err)
@@ -2686,7 +2678,7 @@ func TestIsContextLengthError_Negative(t *testing.T) {
 // ── trimToSurvival ────────────────────────────────────────────────────
 
 func TestTrimToSurvival_AlreadyMinimal(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "you are a helpful agent"},
 		{Role: "user", Content: "do something"},
 	}
@@ -2703,23 +2695,23 @@ func TestTrimToSurvival_AlreadyMinimal(t *testing.T) {
 }
 
 func TestTrimToSurvival_DropsOldTurns(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "system prompt"},
 		{Role: "user", Content: "original task"},
 		// Turn 1
-		{Role: "assistant", Content: "", ToolCalls: []llm.ToolCall{{ID: "c1", Function: struct {
+		{Role: "assistant", Content: "", ToolCalls: []session.ToolCall{{ID: "c1", Function: struct {
 			Name      string `json:"name"`
 			Arguments string `json:"arguments"`
 		}{Name: "read_file", Arguments: `{"path":"a.go"}`}}}},
 		{Role: "tool", Content: "result 1", Name: "read_file", ToolCallID: "c1"},
 		// Turn 2
-		{Role: "assistant", Content: "", ToolCalls: []llm.ToolCall{{ID: "c2", Function: struct {
+		{Role: "assistant", Content: "", ToolCalls: []session.ToolCall{{ID: "c2", Function: struct {
 			Name      string `json:"name"`
 			Arguments string `json:"arguments"`
 		}{Name: "write_file", Arguments: `{"path":"b.go"}`}}}},
 		{Role: "tool", Content: "result 2", Name: "write_file", ToolCallID: "c2"},
 		// Turn 3 (most recently completed)
-		{Role: "assistant", Content: "", ToolCalls: []llm.ToolCall{{ID: "c3", Function: struct {
+		{Role: "assistant", Content: "", ToolCalls: []session.ToolCall{{ID: "c3", Function: struct {
 			Name      string `json:"name"`
 			Arguments string `json:"arguments"`
 		}{Name: "search_files", Arguments: `{"pattern":"*.go"}`}}}},
@@ -2773,9 +2765,9 @@ func TestTrimToSurvival_DropsOldTurns(t *testing.T) {
 
 func TestTrimToSurvival_NoSystem(t *testing.T) {
 	// Without system message, trimToSurvival still works
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "user", Content: "task"},
-		{Role: "assistant", Content: "", ToolCalls: []llm.ToolCall{{ID: "c1", Function: struct {
+		{Role: "assistant", Content: "", ToolCalls: []session.ToolCall{{ID: "c1", Function: struct {
 			Name      string `json:"name"`
 			Arguments string `json:"arguments"`
 		}{Name: "echo", Arguments: `{}`}}}},
@@ -2857,7 +2849,7 @@ func TestEngine_PromptCaching_NonAnthropicSkipsMarkers(t *testing.T) {
 	defer server.Close()
 
 	// server.URL (127.0.0.1) is not an Anthropic endpoint.
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	registry := tool.NewRegistry(nil)
 	engine := New(client, registry, 10, "You are a test agent.", nil, 0)
 	engine.PromptCaching = true
@@ -2908,14 +2900,14 @@ func TestEngine_Run_StreamsDeltas(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	registry := tool.NewRegistry(nil)
 	engine := New(client, registry, 10, "", nil, 0)
 	engine.SetStream(true)
 
 	var mu sync.Mutex
-	var got []llm.Delta
-	engine.SetDeltaHandler(func(d llm.Delta) error {
+	var got []llmclient.Delta
+	engine.SetDeltaHandler(func(d llmclient.Delta) error {
 		mu.Lock()
 		defer mu.Unlock()
 		got = append(got, d)
@@ -2934,7 +2926,7 @@ func TestEngine_Run_StreamsDeltas(t *testing.T) {
 	if len(got) != 3 { // 1 reasoning + 2 content; tool-args suppressed (none here)
 		t.Errorf("deltas = %d, want 3: %+v", len(got), got)
 	}
-	if got[0].Kind != llm.DeltaReasoning || got[1].Kind != llm.DeltaContent {
+	if got[0].Kind != llmclient.DeltaReasoning || got[1].Kind != llmclient.DeltaContent {
 		t.Errorf("delta order wrong: %+v", got)
 	}
 }
@@ -2954,7 +2946,7 @@ func TestEngine_Run_StreamOffKeepsBuffered(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, tool.NewRegistry(nil), 10, "", nil, 0)
 	result, err := engine.Run(context.Background(), "hi")
 	if err != nil || result != "buffered" {
@@ -2995,11 +2987,11 @@ func TestEngine_Run_PlanLifecycle(t *testing.T) {
 		&fakeTool{name: "echo", description: "echo", output: "ok"},
 		NewPlanTool(store),
 	})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 	engine.SetPlanStore(store)
 
-	result, messages, err := engine.RunWithMessages(context.Background(), []llm.Message{
+	result, messages, err := engine.RunWithMessages(context.Background(), []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "do the work"},
 	})
@@ -3039,7 +3031,7 @@ func TestEngine_Run_PlanLifecycle(t *testing.T) {
 // TestTrimContext_PlanProtected forces graduated trimming with a plan
 // present: old turn groups drop while the plan message survives intact.
 func TestTrimContext_PlanProtected(t *testing.T) {
-	client := llm.New("http://unused", "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, "http://unused")
 	engine := New(client, tool.NewRegistry(nil), 10, "", nil, 3000)
 
 	store := NewPlanStore(12, 2000)
@@ -3048,7 +3040,7 @@ func TestTrimContext_PlanProtected(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "task"},
 	}
@@ -3066,12 +3058,12 @@ func TestTrimContext_PlanProtected(t *testing.T) {
 
 	// Large old groups force trimming; a small recent group stays.
 	for i := 0; i < 5; i++ {
-		tc := llm.ToolCall{ID: fmt.Sprintf("c%d", i), Type: "function"}
+		tc := session.ToolCall{ID: fmt.Sprintf("c%d", i), Type: "function"}
 		tc.Function.Name = "echo"
 		tc.Function.Arguments = "{}"
 		msgs = append(msgs,
-			llm.Message{Role: "assistant", Content: strings.Repeat("x", 2000), ToolCalls: []llm.ToolCall{tc}},
-			llm.Message{Role: "tool", Content: strings.Repeat("y", 2000), ToolCallID: fmt.Sprintf("c%d", i)},
+			session.Message{Role: "assistant", Content: strings.Repeat("x", 2000), ToolCalls: []session.ToolCall{tc}},
+			session.Message{Role: "tool", Content: strings.Repeat("y", 2000), ToolCallID: fmt.Sprintf("c%d", i)},
 		)
 	}
 	got := engine.trimContext(context.Background(), msgs, nil)
@@ -3099,7 +3091,7 @@ func TestTrimContext_PlanProtected(t *testing.T) {
 // boundary. The insertion must shift the boundary past itself (memory-slot
 // fix) or graduated trimming drops the plan first.
 func TestTrimContext_PlanProtectedAfterLeadingInjection(t *testing.T) {
-	client := llm.New("http://unused", "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, "http://unused")
 	engine := New(client, tool.NewRegistry(nil), 10, "", nil, 3000)
 
 	store := NewPlanStore(12, 2000)
@@ -3113,12 +3105,12 @@ func TestTrimContext_PlanProtectedAfterLeadingInjection(t *testing.T) {
 	// resets ctxLeadDroppableFrom to -1 before injections happen; replicate
 	// that here since this engine never ran.)
 	engine.ctxLeadDroppableFrom = -1
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "task"},
 	}
-	skillMsg := llm.Message{Role: "system", Content: strings.Repeat("SKILL ", 400)}
-	msgs = append(msgs[:1], append([]llm.Message{skillMsg}, msgs[1:]...)...)
+	skillMsg := session.Message{Role: "system", Content: strings.Repeat("SKILL ", 400)}
+	msgs = append(msgs[:1], append([]session.Message{skillMsg}, msgs[1:]...)...)
 	engine.noteLeadingInjection(msgs, 1)
 	if engine.ctxLeadDroppableFrom != 1 {
 		t.Fatalf("setup: ctxLeadDroppableFrom = %d, want 1", engine.ctxLeadDroppableFrom)
@@ -3147,12 +3139,12 @@ func TestTrimContext_PlanProtectedAfterLeadingInjection(t *testing.T) {
 	// Force trimming: the injected skill block and old groups are droppable,
 	// the plan is not.
 	for i := 0; i < 5; i++ {
-		tc := llm.ToolCall{ID: fmt.Sprintf("c%d", i), Type: "function"}
+		tc := session.ToolCall{ID: fmt.Sprintf("c%d", i), Type: "function"}
 		tc.Function.Name = "echo"
 		tc.Function.Arguments = "{}"
 		msgs = append(msgs,
-			llm.Message{Role: "assistant", Content: strings.Repeat("x", 2000), ToolCalls: []llm.ToolCall{tc}},
-			llm.Message{Role: "tool", Content: strings.Repeat("y", 2000), ToolCallID: fmt.Sprintf("c%d", i)},
+			session.Message{Role: "assistant", Content: strings.Repeat("x", 2000), ToolCalls: []session.ToolCall{tc}},
+			session.Message{Role: "tool", Content: strings.Repeat("y", 2000), ToolCallID: fmt.Sprintf("c%d", i)},
 		)
 	}
 	got := engine.trimContext(context.Background(), msgs, nil)
@@ -3178,7 +3170,7 @@ func TestTrimToSurvival_KeepsPlan(t *testing.T) {
 		{ID: "s1", Title: "First", Status: StepDone},
 		{ID: "s2", Title: "Second", Status: StepPending},
 	}}, 2000)
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "system", Content: digestMsgPrefix + " summary of old work]\ndigest body"},
 		{Role: "system", Content: planContent},
@@ -3222,7 +3214,7 @@ func TestTrimToSurvival_NoPlanGroupAbsorption(t *testing.T) {
 	planContent := renderPlan(PlanState{Version: 1, Steps: []PlanStep{
 		{ID: "s1", Title: "Only", Status: StepPending},
 	}}, 2000)
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "original task"},
 		{Role: "system", Content: planContent}, // directly precedes the group
@@ -3246,7 +3238,7 @@ func TestTrimToSurvival_NoPlanGroupAbsorption(t *testing.T) {
 	}
 	// The digest gets the same protection.
 	digest := digestMsgPrefix + " old work]\nbody"
-	msgs[2] = llm.Message{Role: "system", Content: digest}
+	msgs[2] = session.Message{Role: "system", Content: digest}
 	got = trimToSurvival(msgs)
 	digestCount := 0
 	for _, m := range got {
@@ -3273,7 +3265,7 @@ func TestEngine_Resume_RestoresPlanFromMessages(t *testing.T) {
 		{ID: "s2", Title: "Second", Status: StepInProgress},
 	}}, 2000)
 
-	transcript := []llm.Message{
+	transcript := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "original task"},
 		{Role: "system", Content: persisted},
@@ -3281,7 +3273,7 @@ func TestEngine_Resume_RestoresPlanFromMessages(t *testing.T) {
 		{Role: "user", Content: "keep going"},
 	}
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	store := NewPlanStore(12, 2000)
 	engine := New(client, tool.NewRegistry(nil), 10, "", nil, 0)
 	engine.SetPlanStore(store)
@@ -3346,7 +3338,7 @@ func TestEngine_Resume_DropsCorruptPlanMessage(t *testing.T) {
 	}}, 2000)
 
 	newEngine := func() (*Engine, *PlanStore) {
-		client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+		client := testChatClient(t, server.URL)
 		store := NewPlanStore(12, 2000)
 		engine := New(client, tool.NewRegistry(nil), 10, "", nil, 0)
 		engine.SetPlanStore(store)
@@ -3355,7 +3347,7 @@ func TestEngine_Resume_DropsCorruptPlanMessage(t *testing.T) {
 
 	t.Run("corrupt only", func(t *testing.T) {
 		engine, store := newEngine()
-		transcript := []llm.Message{
+		transcript := []session.Message{
 			{Role: "system", Content: "sys"},
 			{Role: "user", Content: "task"},
 			{Role: "system", Content: "[Current plan: garbage that parses as nothing]"},
@@ -3378,7 +3370,7 @@ func TestEngine_Resume_DropsCorruptPlanMessage(t *testing.T) {
 
 	t.Run("valid older survives corrupt newer", func(t *testing.T) {
 		engine, store := newEngine()
-		transcript := []llm.Message{
+		transcript := []session.Message{
 			{Role: "system", Content: "sys"},
 			{Role: "user", Content: "task"},
 			{Role: "system", Content: valid},
@@ -3427,7 +3419,7 @@ func TestEngine_Run_PlanIngestRecorded(t *testing.T) {
 
 	store := NewPlanStore(12, 2000)
 	registry := tool.NewRegistry([]tool.Tool{NewPlanTool(store)})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, registry, 10, "", nil, 0)
 	engine.SetPlanStore(store)
 
@@ -3438,7 +3430,7 @@ func TestEngine_Run_PlanIngestRecorded(t *testing.T) {
 		bodies = append(bodies, content)
 	})
 
-	if _, _, err := engine.RunWithMessages(ctx, []llm.Message{
+	if _, _, err := engine.RunWithMessages(ctx, []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "work"},
 	}); err != nil {

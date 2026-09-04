@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/llmclient"
 )
 
 type hintClient struct {
@@ -42,7 +42,10 @@ func TestLLMDeadline(t *testing.T) {
 // real *llm.Client's per-request timeout (its 120s fallback when
 // constructed with 0) becomes the ExtendedMemory background-call deadline.
 func TestNewDerivesLLMDeadlineFromClient(t *testing.T) {
-	c := llm.New("https://api.example.test/v1", "k", "m", "", 0, 0)
+	c, err := llmclient.Dial("", "m", "k", "https://api.example.test/v1")
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
 	em := New(t.TempDir(), c, Config{})
 	if em.llmTimeout != 120*time.Second {
 		t.Errorf("em.llmTimeout = %v, want 120s (client's own fallback timeout)", em.llmTimeout)

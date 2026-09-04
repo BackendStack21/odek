@@ -77,7 +77,7 @@ func TestConfigViewToolSections(t *testing.T) {
 		if err := json.Unmarshal([]byte(out), &m); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
-		for _, key := range []string{"model", "sandbox", "memory", "skills", "tools",
+		for _, key := range []string{"provider", "model", "sandbox", "memory", "skills", "tools",
 			"maintenance", "dangerous_default_action", "guard_scan",
 			"subagent", "background", "limits"} {
 			if _, ok := m[key]; !ok {

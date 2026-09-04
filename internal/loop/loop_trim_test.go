@@ -10,32 +10,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BackendStack21/odek/internal/llm"
+	"github.com/BackendStack21/odek/internal/llmclient"
+	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
 // ── Estimators ─────────────────────────────────────────────────────────
 
 func TestEstimateToolDefs_IncludesParameters(t *testing.T) {
-	without := estimateToolDefs([]llm.ToolDef{{
-		Type:     "function",
-		Function: llm.FunctionDef{Name: "shell", Description: "run a command"},
-	}})
-	with := estimateToolDefs([]llm.ToolDef{{
-		Type: "function",
-		Function: llm.FunctionDef{
-			Name:        "shell",
-			Description: "run a command",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"command": map[string]any{
-						"type":        "string",
-						"description": strings.Repeat("the command to execute ", 20),
-					},
-				},
-			},
-		},
+	without := estimateToolDefs([]llmclient.ToolDef{{Name: "shell", Description: "run a command"}})
+	with := estimateToolDefs([]llmclient.ToolDef{{
+		Name:        "shell",
+		Description: "run a command",
+		Parameters:  []byte(`{"type":"object","properties":{"command":{"type":"string","description":"` + strings.Repeat("the command to execute ", 20) + `"}}}`),
 	}})
 	if with <= without {
 		t.Errorf("estimateToolDefs with schema = %d, want > %d (schema must be counted)", with, without)
@@ -43,8 +30,8 @@ func TestEstimateToolDefs_IncludesParameters(t *testing.T) {
 }
 
 func TestEstimateMessages_CountsReasoningContent(t *testing.T) {
-	plain := estimateMessages([]llm.Message{{Role: "assistant", Content: "answer"}})
-	withReasoning := estimateMessages([]llm.Message{{
+	plain := estimateMessages([]session.Message{{Role: "assistant", Content: "answer"}})
+	withReasoning := estimateMessages([]session.Message{{
 		Role:             "assistant",
 		Content:          "answer",
 		ReasoningContent: strings.Repeat("thinking step by step ", 50),
@@ -58,15 +45,15 @@ func TestEstimateMessages_CountsReasoningContent(t *testing.T) {
 
 // buildToolConversation returns system + task + n groups of
 // (assistant text, tool result of toolBytes bytes).
-func buildToolConversation(n, toolBytes int) []llm.Message {
-	msgs := []llm.Message{
+func buildToolConversation(n, toolBytes int) []session.Message {
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "task"},
 	}
 	for i := 0; i < n; i++ {
 		msgs = append(msgs,
-			llm.Message{Role: "assistant", Content: fmt.Sprintf("thinking %d", i)},
-			llm.Message{Role: "tool", Content: strings.Repeat("x", toolBytes), ToolCallID: fmt.Sprintf("c%d", i)},
+			session.Message{Role: "assistant", Content: fmt.Sprintf("thinking %d", i)},
+			session.Message{Role: "tool", Content: strings.Repeat("x", toolBytes), ToolCallID: fmt.Sprintf("c%d", i)},
 		)
 	}
 	return msgs
@@ -142,13 +129,13 @@ func TestTrimContext_TruncationInsufficient_DropsGroups(t *testing.T) {
 // ── Warning content / placement ────────────────────────────────────────
 
 func TestTrimContext_WarningIncludesDroppedToolNames(t *testing.T) {
-	tc := func(id, name string) []llm.ToolCall {
-		return []llm.ToolCall{{ID: id, Type: "function", Function: struct {
+	tc := func(id, name string) []session.ToolCall {
+		return []session.ToolCall{{ID: id, Type: "function", Function: struct {
 			Name      string `json:"name"`
 			Arguments string `json:"arguments"`
 		}{Name: name, Arguments: "{}"}}}
 	}
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "task"},
 		{Role: "assistant", ToolCalls: tc("c1", "read_file")},
@@ -183,7 +170,7 @@ func TestTrimContext_WarningIncludesDroppedToolNames(t *testing.T) {
 
 func TestTrimContext_WarningUpdatesInPlace(t *testing.T) {
 	engine := &Engine{maxContext: 600}
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "task"},
 		{Role: "assistant", Content: strings.Repeat("a", 3000)},
@@ -192,7 +179,7 @@ func TestTrimContext_WarningUpdatesInPlace(t *testing.T) {
 	result := engine.trimContext(context.Background(), msgs, nil)
 
 	// Second trim on the result with a new oversized message appended.
-	result = append(result, llm.Message{Role: "assistant", Content: strings.Repeat("c", 3000)})
+	result = append(result, session.Message{Role: "assistant", Content: strings.Repeat("c", 3000)})
 	result = engine.trimContext(context.Background(), result, nil)
 
 	count := 0
@@ -226,7 +213,7 @@ func TestTrimContext_MarginCalibration(t *testing.T) {
 
 	// ~68k estimated tokens: fits the default 75% margin (75k) but not the
 	// tightened 65% margin (65k).
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "task"},
 		{Role: "assistant", Content: strings.Repeat("x", 268_000)},
@@ -269,7 +256,7 @@ func TestTrimContext_PostInjectionBudget(t *testing.T) {
 
 	echoTool := &fakeTool{name: "echo", description: "echo", output: "ok"}
 	registry := tool.NewRegistry([]tool.Tool{echoTool})
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	// Budget 1500 tokens — the injected skill block (~2500 tokens) must be
 	// dropped before the very first API call, not one iteration later.
 	engine := New(client, registry, 5, "sys", nil, 2000)
@@ -288,15 +275,15 @@ func TestTrimContext_PostInjectionBudget(t *testing.T) {
 
 // ── trimToSurvival ─────────────────────────────────────────────────────
 
-func survivalTC(id, name string) []llm.ToolCall {
-	return []llm.ToolCall{{ID: id, Type: "function", Function: struct {
+func survivalTC(id, name string) []session.ToolCall {
+	return []session.ToolCall{{ID: id, Type: "function", Function: struct {
 		Name      string `json:"name"`
 		Arguments string `json:"arguments"`
 	}{Name: name, Arguments: "{}"}}}
 }
 
 func TestTrimToSurvival_KeepsOriginalTask(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "original task"},
 		{Role: "assistant", ToolCalls: survivalTC("c1", "read_file")},
@@ -337,7 +324,7 @@ func TestTrimToSurvival_KeepsOriginalTask(t *testing.T) {
 }
 
 func TestTrimToSurvival_NoUserMessage(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "assistant", ToolCalls: survivalTC("c1", "echo")},
 		{Role: "tool", Content: "r1", ToolCallID: "c1"},
@@ -352,7 +339,7 @@ func TestTrimToSurvival_NoUserMessage(t *testing.T) {
 }
 
 func TestTrimToSurvival_PreservesDigest(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "system", Content: digestMsgPrefix + " summary of old work]\ndigest body"},
 		{Role: "user", Content: "task"},
@@ -382,11 +369,11 @@ func TestTrimContext_CompactionCreatesDigest(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, tool.NewRegistry(nil), 10, "", nil, 200)
 	engine.SetCompaction(true)
 
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "task"},
 		{Role: "assistant", Content: strings.Repeat("a", 3000)},
@@ -415,7 +402,7 @@ func TestTrimContext_CompactionCreatesDigest(t *testing.T) {
 	}
 
 	// A second trim updates the existing digest in place.
-	result = append(result, llm.Message{Role: "assistant", Content: strings.Repeat("d", 3000)})
+	result = append(result, session.Message{Role: "assistant", Content: strings.Repeat("d", 3000)})
 	result = engine.trimContext(context.Background(), result, nil)
 	digestCount = 0
 	for _, m := range result {
@@ -434,11 +421,11 @@ func TestTrimContext_CompactionFailureStillTrims(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, tool.NewRegistry(nil), 10, "", nil, 200)
 	engine.SetCompaction(true)
 
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "task"},
 		{Role: "assistant", Content: strings.Repeat("a", 3000)},
@@ -462,14 +449,14 @@ func TestTrimContext_CompactionWrapsUntrusted(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, tool.NewRegistry(nil), 10, "", nil, 200)
 	engine.SetCompaction(true)
 	engine.SetUntrustedWrapper(func(source, content string) string {
 		return "<untrusted source=" + source + ">" + content + "</untrusted>"
 	})
 
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "task"},
 		{Role: "assistant", Content: strings.Repeat("a", 3000)},
@@ -492,28 +479,22 @@ func TestTrimContext_CompactionWrapsUntrusted(t *testing.T) {
 
 // ── Coverage: estimator fallback ───────────────────────────────────────
 
-func TestEstimateToolDefs_UnmarshalableSchema(t *testing.T) {
-	base := estimateToolDefs([]llm.ToolDef{{
-		Type:     "function",
-		Function: llm.FunctionDef{Name: "shell", Description: "run a command"},
+func TestEstimateToolDefs_CountsParameters(t *testing.T) {
+	base := estimateToolDefs([]llmclient.ToolDef{{Name: "shell", Description: "run a command"}})
+	with := estimateToolDefs([]llmclient.ToolDef{{
+		Name:        "shell",
+		Description: "run a command",
+		Parameters:  []byte(strings.Repeat("x", 800)),
 	}})
-	withBad := estimateToolDefs([]llm.ToolDef{{
-		Type: "function",
-		Function: llm.FunctionDef{
-			Name:        "shell",
-			Description: "run a command",
-			Parameters:  map[string]any{"bad": func() {}}, // json.Marshal fails
-		},
-	}})
-	if withBad != base+200 {
-		t.Errorf("unmarshalable schema should add the 200-token fallback: got %d, want %d", withBad, base+200)
+	if with <= base {
+		t.Errorf("parameters must be counted: base=%d with=%d", base, with)
 	}
 }
 
 // ── Coverage: small tool results are never truncated ───────────────────
 
 func TestTrimContext_SmallToolResultNotTruncated(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "task"},
 	}
@@ -522,8 +503,8 @@ func TestTrimContext_SmallToolResultNotTruncated(t *testing.T) {
 	sizes := []int{500, 4000, 4000, 4000, 4000, 4000}
 	for i, sz := range sizes {
 		msgs = append(msgs,
-			llm.Message{Role: "assistant", Content: fmt.Sprintf("thinking %d", i)},
-			llm.Message{Role: "tool", Content: strings.Repeat("x", sz), ToolCallID: fmt.Sprintf("c%d", i)},
+			session.Message{Role: "assistant", Content: fmt.Sprintf("thinking %d", i)},
+			session.Message{Role: "tool", Content: strings.Repeat("x", sz), ToolCallID: fmt.Sprintf("c%d", i)},
 		)
 	}
 	origLen := len(msgs)
@@ -574,7 +555,7 @@ func TestBuildTrimWarning_CapsToolNames(t *testing.T) {
 
 func TestUpsertTrimWarning_EdgeCases(t *testing.T) {
 	// No user message — warning goes to index 1.
-	msgs := []llm.Message{{Role: "assistant", Content: "a"}}
+	msgs := []session.Message{{Role: "assistant", Content: "a"}}
 	got := upsertTrimWarning(msgs, "[Context trimmed: x]")
 	if len(got) != 2 || got[1].Content != "[Context trimmed: x]" {
 		t.Errorf("no-user case: got %+v", got)
@@ -586,7 +567,7 @@ func TestUpsertTrimWarning_EdgeCases(t *testing.T) {
 	}
 	// Task at index 0 (no system prompt) — warning clamps to index 1 so the
 	// session still starts with the task.
-	got = upsertTrimWarning([]llm.Message{{Role: "user", Content: "task"}}, "[Context trimmed: x]")
+	got = upsertTrimWarning([]session.Message{{Role: "user", Content: "task"}}, "[Context trimmed: x]")
 	if len(got) != 2 || got[0].Role != "user" || got[1].Content != "[Context trimmed: x]" {
 		t.Errorf("task-first case: got %+v", got)
 	}
@@ -595,7 +576,7 @@ func TestUpsertTrimWarning_EdgeCases(t *testing.T) {
 // ── Coverage: survival keeps preceding system messages in a group ──────
 
 func TestTrimToSurvival_IncludesPrecedingSystemMessages(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},
 		{Role: "user", Content: "task"},
 		{Role: "system", Content: "correction note"},
@@ -634,7 +615,7 @@ func TestSideTimeout_DefaultAndOverride(t *testing.T) {
 
 func TestSummarizeDropped_NilClient(t *testing.T) {
 	engine := &Engine{}
-	if got := engine.summarizeDropped(context.Background(), []llm.Message{{Role: "assistant", Content: "x"}}); got != "" {
+	if got := engine.summarizeDropped(context.Background(), []session.Message{{Role: "assistant", Content: "x"}}); got != "" {
 		t.Errorf("nil client must return empty, got %q", got)
 	}
 }
@@ -647,8 +628,8 @@ func TestSummarizeDropped_EmptyContent(t *testing.T) {
 	}))
 	defer server.Close()
 
-	engine := New(llm.New(server.URL, "sk-test", "m", "", 0, 0), tool.NewRegistry(nil), 10, "", nil, 0)
-	got := engine.summarizeDropped(context.Background(), []llm.Message{{Role: "assistant", Content: ""}})
+	engine := New(testChatClient(t, server.URL), tool.NewRegistry(nil), 10, "", nil, 0)
+	got := engine.summarizeDropped(context.Background(), []session.Message{{Role: "assistant", Content: ""}})
 	if got != "" {
 		t.Errorf("empty dropped content must return empty, got %q", got)
 	}
@@ -667,12 +648,12 @@ func TestSummarizeDropped_InputBuilding(t *testing.T) {
 	defer server.Close()
 
 	newEngine := func() *Engine {
-		return New(llm.New(server.URL, "sk-test", "m", "", 0, 0), tool.NewRegistry(nil), 10, "", nil, 0)
+		return New(testChatClient(t, server.URL), tool.NewRegistry(nil), 10, "", nil, 0)
 	}
 
 	// Assistant tool-call names are included in the summarizer input.
 	e := newEngine()
-	e.summarizeDropped(context.Background(), []llm.Message{{
+	e.summarizeDropped(context.Background(), []session.Message{{
 		Role:      "assistant",
 		ToolCalls: survivalTC("c1", "read_file"),
 	}})
@@ -682,7 +663,7 @@ func TestSummarizeDropped_InputBuilding(t *testing.T) {
 
 	// Long message content is snippet-truncated.
 	e = newEngine()
-	e.summarizeDropped(context.Background(), []llm.Message{{
+	e.summarizeDropped(context.Background(), []session.Message{{
 		Role:    "tool",
 		Content: strings.Repeat("y", 3000),
 	}})
@@ -693,7 +674,7 @@ func TestSummarizeDropped_InputBuilding(t *testing.T) {
 	// A previous digest is included for rolling extension.
 	e = newEngine()
 	e.compactDigest = "OLD DIGEST"
-	e.summarizeDropped(context.Background(), []llm.Message{{Role: "assistant", Content: "new work"}})
+	e.summarizeDropped(context.Background(), []session.Message{{Role: "assistant", Content: "new work"}})
 	body := bodies[len(bodies)-1]
 	if !strings.Contains(body, "Previous digest") || !strings.Contains(body, "OLD DIGEST") {
 		t.Errorf("previous digest missing from summarizer input: %.200s", body)
@@ -701,9 +682,9 @@ func TestSummarizeDropped_InputBuilding(t *testing.T) {
 
 	// The raw source is capped at compactionMaxSourceBytes.
 	e = newEngine()
-	big := make([]llm.Message, 0, 40)
+	big := make([]session.Message, 0, 40)
 	for i := 0; i < 40; i++ {
-		big = append(big, llm.Message{Role: "assistant", Content: strings.Repeat("z", 1000)})
+		big = append(big, session.Message{Role: "assistant", Content: strings.Repeat("z", 1000)})
 	}
 	e.summarizeDropped(context.Background(), big)
 	if len(bodies[len(bodies)-1]) > compactionMaxSourceBytes+4096 {
@@ -719,12 +700,12 @@ func TestRunLoop_StaleMemMsgIdxReset(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := llm.New(server.URL, "sk-test", "test-model", "", 0, 0)
+	client := testChatClient(t, server.URL)
 	engine := New(client, tool.NewRegistry(nil), 1, "sys", nil, 0)
 	// Simulate a stale memory-message index pointing at a non-system message.
 	engine.memMsgIdx = 1
 
-	_, _, err := engine.runLoop(context.Background(), []llm.Message{
+	_, _, err := engine.runLoop(context.Background(), []session.Message{
 		{Role: "system", Content: "s"},
 		{Role: "user", Content: "task"},
 	})
@@ -743,7 +724,7 @@ func TestRunLoop_StaleMemMsgIdxReset(t *testing.T) {
 // TestTrimToSurvival_PreservesDigest places the digest at index 1, inside
 // the old window, which is why it never caught this.
 func TestAudit_TrimToSurvival_DeepDigest(t *testing.T) {
-	msgs := []llm.Message{
+	msgs := []session.Message{
 		{Role: "system", Content: "sys"},                                // 0
 		{Role: "system", Content: "memory facts"},                       // 1
 		{Role: "system", Content: "skills"},                             // 2

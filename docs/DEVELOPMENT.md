@@ -20,15 +20,15 @@ go build -o odek ./cmd/odek
 ## Source layout
 
 ```
-odek.go                       Public API (Config, New, Run, Close)
-odek_test.go                  Config and model profile tests
+odek.go                       Public API (Config, New, Run, Close, Provider)
+odek_test.go                  Config defaults, API key fallback, Close lifecycle
 internal/
   config/
     loader.go                 Config file loading, env vars, priority merge
     loader_test.go            Config loading tests
-  llm/
-    client.go                 OpenAI-compatible HTTP client
-    client_test.go            JSON marshaling + response parsing tests
+  llmclient/
+    client.go                 Adapter over go-llm-sdk (DTO mapping, temperature polarity)
+    client_test.go            Message conversion, cache gating, Dial/DiscoverContext
   loop/
     loop.go                   ReAct engine (observe → think → act → repeat)
     loop_test.go              Engine tests with mock server
@@ -188,9 +188,9 @@ CI (`.github/workflows/test.yml`) runs the unit suite under `-race` on every pus
 
 | Package | Focus |
 |---------|-------|
-| `odek` | Config defaults, API key fallback, thinking passthrough, model profiles, AGENTS.md, Close lifecycle, token tracking, Memory() nil-safety |
+| `odek` | Config defaults, API key fallback, thinking passthrough, AGENTS.md, Close lifecycle, token tracking, Memory() nil-safety |
 | `internal/config` | Config file loading, env vars, merge chain, variable expansion |
-| `internal/llm` | JSON marshaling, thinking fields, response parsing, usage statistics, SimpleCall, retry/backoff |
+| `internal/llmclient` | Adapter over go-llm-sdk (message DTO mapping, temperature polarity, SimpleCall) |
 | `internal/loop` | ReAct engine with httptest mock server, context budgeting, skill loader |
 | `internal/session` | Session CRUD, trim, cleanup, list, latest, fallback scan, corrupt data, path-traversal protection, concurrent safety, atomic writes, audit log roundtrip |
 | `internal/sandbox` | Image resolution, `docker run` argument construction (security defaults, forbidden-mount filtering), nested-path file injection, build-from-Dockerfile caching |

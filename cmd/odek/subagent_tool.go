@@ -76,6 +76,12 @@ type delegateTasksTool struct {
 	// profiles; the child remains the fail-closed authority in that case.
 	profiles map[string]config.ProfileConfig
 
+	// LLM identity stamped into the task envelope so the child does not
+	// LoadConfig into a different provider than the parent.
+	provider string
+	model    string
+	baseURL  string
+
 	// maxDepth caps delegation nesting (M1.6): a process at depth N (its own
 	// level, stamped by its parent via ODEK_SUBAGENT_DEPTH) may only spawn
 	// children while N+1 <= maxDepth. 0 = uncapped (legacy/test default).
@@ -452,6 +458,9 @@ func (t *delegateTasksTool) runTask(taskIdx int, taskID, goal, taskContext, guid
 
 	task := newTaskEnvelope(taskID, goal, taskContext, guidance, trustLevel, maxRisk, profile, taskBudgetBlock, t.selfTrust)
 	task.ArtifactRoot = artifactDir
+	task.Provider = t.provider
+	task.Model = t.model
+	task.BaseURL = t.baseURL
 	if err := json.NewEncoder(taskFile).Encode(task); err != nil {
 		taskFile.Close()
 		os.Remove(taskPath)
@@ -959,6 +968,9 @@ type taskEnvelope struct {
 	Budget       *taskBudget `json:"budget,omitempty"`
 	ParentTrust  string      `json:"parent_trust,omitempty"`
 	ArtifactRoot string      `json:"artifact_root,omitempty"`
+	Provider     string      `json:"provider,omitempty"`
+	Model        string      `json:"model,omitempty"`
+	BaseURL      string      `json:"base_url,omitempty"`
 }
 
 // subagentProtocolV2 is the telemetry protocol version stamped into task

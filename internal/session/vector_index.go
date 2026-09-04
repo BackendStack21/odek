@@ -10,7 +10,6 @@ import (
 
 	"github.com/BackendStack21/go-vector/pkg/vector"
 	"github.com/BackendStack21/odek/internal/embedding"
-	"github.com/BackendStack21/odek/internal/llm"
 )
 
 // ── Constants ─────────────────────────────────────────────────────────────
@@ -227,7 +226,7 @@ func (vi *VectorIndex) Ready() bool {
 // and a retry cool-down starts. If the index was not ready (e.g. the backend
 // was down at init), a rebuild is attempted first; it already picks up the
 // just-saved session from disk.
-func (vi *VectorIndex) Add(sessionID string, messages []llm.Message) error {
+func (vi *VectorIndex) Add(sessionID string, messages []Message) error {
 	vi.mu.Lock()
 	defer vi.mu.Unlock()
 
@@ -384,7 +383,7 @@ func (vi *VectorIndex) saveLocked() error {
 
 // BuildConversationText extracts user and assistant text from messages
 // for embedding. Tool calls and results are excluded — they add noise.
-func BuildConversationText(messages []llm.Message) string {
+func BuildConversationText(messages []Message) string {
 	var out string
 	for _, m := range messages {
 		switch m.Role {
