@@ -338,7 +338,13 @@ func ScanDirs(projectDir, userDir string, extraDirs []string) *ScanResult {
 			}
 			seen[s.Name] = true
 			if projectDir != "" && dir == projectDir {
-				markProjectSkill(&s)
+				// Project-dir skills are distrusted (markProjectSkill) UNLESS
+				// the operator promoted this exact content: the promotion is
+				// anchored in the trusted user-dir registry, not the
+				// attacker-controllable project frontmatter.
+				if data, err := os.ReadFile(filepath.Join(dir, s.Name, "SKILL.md")); err != nil || !isPromotedContent(userDir, s.Name, data) {
+					markProjectSkill(&s)
+				}
 			}
 			// Provenance gate: a skill whose originating session
 			// ingested untrusted content (browser, MCP, etc.) is

@@ -250,6 +250,12 @@ type Engine struct {
 	// are visible to the agent on the next turn.
 	memoryPromptFunc func() string
 
+	// lastMemBlock is the memory block this engine injected most recently.
+	// It survives across runs so a fed-back history (callers that persist
+	// the full returned snapshot — REPL, Telegram, run) can be recognized
+	// and the memory slot adopted instead of duplicated on the next run.
+	lastMemBlock string
+
 	// memMsgIdx tracks the position of the volatile memory system message
 	// in the messages array. -1 means not yet inserted. Using a separate
 	// message for memory (rather than concatenating into messages[0]) lets
@@ -1897,6 +1903,27 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 					messages[0].Content = e.baseSystem
 				}
 				memMsg := llm.Message{Role: "system", Content: memBlock}
+				if e.memMsgIdx < 0 && e.lastMemBlock != "" {
+					// A fed-back history (REPL, Telegram, and run persist the full
+					// returned snapshot; only serve filters dynamic injections)
+					// still carries the memory block injected by the previous run.
+					// Adopt that slot instead of inserting a second one — and
+					// collapse duplicates written by older versions. The match is
+					// on the exact block this engine injected last run, so stale
+					// content is adopted and refreshed in place. Index 0 is the
+					// base system prompt and never adopted.
+					for i := 1; i < len(messages); i++ {
+						if messages[i].Role == "system" && messages[i].Content == e.lastMemBlock {
+							if e.memMsgIdx < 0 {
+								e.memMsgIdx = i
+							} else {
+								messages = append(messages[:i], messages[i+1:]...)
+								i--
+							}
+						}
+					}
+				}
+				e.lastMemBlock = memBlock
 				if e.memMsgIdx >= 0 && e.memMsgIdx < len(messages) {
 					// Update existing memory slot — keeps position stable.
 					messages[e.memMsgIdx].Content = memBlock
@@ -1921,6 +1948,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []llm.Message) (string, [
 				// No memory block — remove the memory message if present.
 				messages = append(messages[:e.memMsgIdx], messages[e.memMsgIdx+1:]...)
 				e.memMsgIdx = -1
+				e.lastMemBlock = ""
 			}
 		}
 
