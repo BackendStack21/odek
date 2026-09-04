@@ -568,6 +568,8 @@ Use YOLO mode only for:
 
 Defaults: `FrictionThreshold=3`, `FrictionWindow=60s`. To opt out (TTYApprover only), set `FrictionThreshold=0` programmatically; there is no config knob yet — file an issue if you need one.
 
+**Where friction is actually enforced (accuracy note, 2026-09 posture review):** the server enforces typed-`approve` friction on the **TTY approver** only. The WebSocket approver accepts a bare approve and delegates friction to the bundled WebUI (`ui/js/approvals.js`); a custom WS client or the headless REST approval bridge (`POST /api/runs/.../approve`) has **no server-side friction gate** — an auto-approving poller bypasses it by design. If you expose the REST bridge, treat its bearer token as equivalent to "always approve".
+
 ---
 
 ### Background commands (`bg_*`)
