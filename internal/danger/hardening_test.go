@@ -186,7 +186,6 @@ func TestHardening_UnknownFailsClosed(t *testing.T) {
 	unknown := []string{
 		"frobnicate --do-stuff",
 		"mytool subcmd arg",
-		"make",
 		"cat file && mytool",
 		"ls | weirdfilter",
 		"X=rm $Y -rf /", // variable indirection: $Y is an unknown verb
@@ -250,8 +249,8 @@ func TestHardening_DdToCharDeviceNotDestructive(t *testing.T) {
 		"dd if=/dev/urandom of=/dev/stdout count=1",
 	}
 	for _, cmd := range benign {
-		if got := Classify(cmd); got == Destructive || got == Blocked {
-			t.Errorf("Classify(%q) = %s, want non-destructive", cmd, got)
+		if got := Classify(cmd); Rank(got) >= Rank(SystemWrite) {
+			t.Errorf("Classify(%q) = %s, want < system_write (char-device discard)", cmd, got)
 		}
 	}
 	// Real block-device writes stay destructive/blocked.

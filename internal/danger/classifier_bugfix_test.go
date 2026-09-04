@@ -67,6 +67,12 @@ func TestClassify_RawBlockedDoesNotFlagInnocentBraces(t *testing.T) {
 	if got := Classify(`echo "{a}:{b}"`); got == Blocked {
 		t.Errorf(`Classify(echo "{a}:{b}") = %s, want not blocked`, got)
 	}
+	// Unquoted `:{…}:` without a recursive spawn is an argument, not a bomb.
+	for _, cmd := range []string{`echo :{a}:`, `echo :{}:`, `echo :{foo}:`} {
+		if got := Classify(cmd); got == Blocked {
+			t.Errorf("Classify(%q) = %s, want not blocked", cmd, got)
+		}
+	}
 	// Spacing variants of the canonical fork bomb stay blocked.
 	if got := Classify(": () { : | : & } ; :"); got != Blocked {
 		t.Errorf("Classify(spaced fork bomb) = %s, want blocked", got)

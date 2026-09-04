@@ -143,13 +143,15 @@ func TestSecurity_WriteFile_TmpPath(t *testing.T) {
 
 func TestSecurity_WriteFile_DestructivePath(t *testing.T) {
 	tool := &writeFileTool{dangerousConfig: denyNonInteractive()}
-	result := callJSON(t, tool, `{"path":"/dev/null","content":"test"}`)
+	// /dev/null is a benign char device (local_write). A raw block
+	// device still classifies destructive and must be denied.
+	result := callJSON(t, tool, `{"path":"/dev/sda","content":"test"}`)
 	var r struct {
 		Error string `json:"error"`
 	}
 	mustUnmarshal(t, result, &r)
 	if r.Error == "" || !strings.Contains(r.Error, "denied") {
-		t.Errorf("expected denial for /dev path, got: %s", r.Error)
+		t.Errorf("expected denial for /dev/sda, got: %s", r.Error)
 	}
 }
 
