@@ -2499,6 +2499,17 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	redact.RegisterSecret(resolved.APIKey)
 	redact.RegisterSecret(resolved.Telegram.Token)
 	redact.RegisterSecretsFromEnv()
+	// Every secrets.env value is operator-chosen secret material — the
+	// names are NOT required to look sensitive (SMTP_URL, HARBOR_ROBOT,
+	// ...). Register them all so a bare echo of any injected value is
+	// redacted (redact's documented bare-echo contract; 2026-09 posture
+	// review: sensitiveName-only registration left these unredacted).
+	secretsEnvMu.Lock()
+	names := append([]string(nil), secretsEnvNames...)
+	secretsEnvMu.Unlock()
+	for _, name := range names {
+		redact.RegisterSecret(os.Getenv(name))
+	}
 
 	return resolved
 }
