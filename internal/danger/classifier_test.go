@@ -685,6 +685,8 @@ func TestClassify_Tokenize(t *testing.T) {
 		{"quoted", `echo "hello world"`, []string{"echo", "hello world"}},
 		{"single_quoted", `echo 'hello world'`, []string{"echo", "hello world"}},
 		{"redirect", "echo hi > file", []string{"echo", "hi", ">", "file"}},
+		{"here_string", "xargs rm -rf <<</", []string{"xargs", "rm", "-rf", "<<<", "/"}},
+		{"input_redirect", "xargs rm -rf < paths", []string{"xargs", "rm", "-rf", "<", "paths"}},
 		{"append_redirect", "echo hi >> file", []string{"echo", "hi", ">>", "file"}},
 		{"pipe", "cat file | grep foo", []string{"cat", "file", "|", "grep", "foo"}},
 		{"and", "rm -rf / && echo done", []string{"rm", "-rf", "/", "&&", "echo", "done"}},
