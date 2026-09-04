@@ -373,7 +373,9 @@ func TestClassify_EmbeddedShellInterpreterExecution(t *testing.T) {
 	}{
 		// awk variants run shell code from their script argument.
 		{"awk 'BEGIN{system(\"rm -rf ~\")}'", CodeExecution},
-		{"gawk -F: '{print $1}' /etc/passwd", CodeExecution},
+		{"gawk -F: '{print $1}' data.csv", Safe},
+		{"awk '{print $1}' file", Safe},
+		{"awk -f script.awk", CodeExecution},
 		{"awk --version", Safe},
 		{"awk", Safe},
 		{"gawk --version", Safe},
@@ -683,6 +685,8 @@ func TestClassify_Tokenize(t *testing.T) {
 		{"quoted", `echo "hello world"`, []string{"echo", "hello world"}},
 		{"single_quoted", `echo 'hello world'`, []string{"echo", "hello world"}},
 		{"redirect", "echo hi > file", []string{"echo", "hi", ">", "file"}},
+		{"here_string", "xargs rm -rf <<</", []string{"xargs", "rm", "-rf", "<<<", "/"}},
+		{"input_redirect", "xargs rm -rf < paths", []string{"xargs", "rm", "-rf", "<", "paths"}},
 		{"append_redirect", "echo hi >> file", []string{"echo", "hi", ">>", "file"}},
 		{"pipe", "cat file | grep foo", []string{"cat", "file", "|", "grep", "foo"}},
 		{"and", "rm -rf / && echo done", []string{"rm", "-rf", "/", "&&", "echo", "done"}},
@@ -709,10 +713,18 @@ func TestClassify_Tokenize(t *testing.T) {
 }
 
 func TestClassify_RawBlocked_GenericPattern(t *testing.T) {
-	// Test the :{ ... }: pattern (generic fork bomb detection)
-	got := Classify("sh -c ':{ echo boom; }:; echo done'")
-	if got != Blocked {
-		t.Errorf("Classify with :{ } pattern = %s, want blocked", got)
+	// A brace group after `:` is only a fork bomb when it already
+	// contains a recursive spawn (`|` / `&`). A comment-like
+	// `:{ echo boom; }:` is not blocked (that over-match is what
+	// classified `echo :{a}:` as Blocked even in YOLO mode).
+	if got := Classify(":(){ :|:& };:"); got != Blocked {
+		t.Errorf("Classify(canonical fork bomb) = %s, want blocked", got)
+	}
+	if got := Classify("sh -c ': () { : | : & } ; :'"); got != Blocked {
+		t.Errorf("Classify(spaced fork bomb in sh -c) = %s, want blocked", got)
+	}
+	if got := Classify("sh -c ':{ echo boom; }:; echo done'"); got == Blocked {
+		t.Errorf("Classify(innocent :{ echo; }:) = blocked, want not blocked")
 	}
 }
 
@@ -1028,9 +1040,9 @@ func TestNonInteractiveAction_InvalidFailsClosed(t *testing.T) {
 
 func TestParseNonInteractiveAction(t *testing.T) {
 	cases := []struct {
-		input   string
-		want    Action
-		wantOK  bool
+		input  string
+		want   Action
+		wantOK bool
 	}{
 		{"allow", Allow, true},
 		{"deny", Deny, true},
@@ -1265,6 +1277,8 @@ func TestClassifyPath_Destructive_Paths(t *testing.T) {
 	}{
 		{"/boot/vmlinuz", Destructive},
 		{"/dev/sda1", Destructive},
+		{"/dev/null", LocalWrite},
+		{"/dev/stdout", LocalWrite},
 		{"/proc/1/cmdline", Destructive},
 		{"/sys/class/power_supply", Destructive},
 		{"/mnt/backup", Destructive},

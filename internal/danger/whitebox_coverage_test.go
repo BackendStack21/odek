@@ -305,24 +305,24 @@ func TestParseBrowserIP(t *testing.T) {
 		wantIP  string
 	}{
 		{"127.0.0.1", false, "127.0.0.1"},
-		{"0177.0.0.1", false, "127.0.0.1"}, // octal
-		{"0x7f.0.0.1", false, "127.0.0.1"}, // hex octet
-		{"0x7f000001", false, "127.0.0.1"}, // single hex int
-		{"2130706433", false, "127.0.0.1"}, // single decimal int
-		{"127.1", false, "127.0.0.1"},      // short form a.b
-		{"127.0.1", false, "127.0.0.1"},    // short form a.b.c
-		{"::1", false, "::1"},              // IPv6
-		{"1.2.3.4.5", true, ""},            // too many parts
-		{"99999999999.1", true, ""},        // part exceeds 32 bits → nil
-		{"300.1.1.1", true, ""},            // leading part > 0xFF → nil, not 44.1.1.1
-		{"256.1", true, ""},                // leading part > 0xFF in short form
-		{"1.16777216", true, ""},           // final part > 0xFFFFFF in a.b form
-		{"1.2.65536", true, ""},            // final part > 0xFFFF in a.b.c form
-		{"1.2.3.256", true, ""},            // final part > 0xFF in a.b.c.d form
+		{"0177.0.0.1", false, "127.0.0.1"},            // octal
+		{"0x7f.0.0.1", false, "127.0.0.1"},            // hex octet
+		{"0x7f000001", false, "127.0.0.1"},            // single hex int
+		{"2130706433", false, "127.0.0.1"},            // single decimal int
+		{"127.1", false, "127.0.0.1"},                 // short form a.b
+		{"127.0.1", false, "127.0.0.1"},               // short form a.b.c
+		{"::1", false, "::1"},                         // IPv6
+		{"1.2.3.4.5", true, ""},                       // too many parts
+		{"99999999999.1", true, ""},                   // part exceeds 32 bits → nil
+		{"300.1.1.1", true, ""},                       // leading part > 0xFF → nil, not 44.1.1.1
+		{"256.1", true, ""},                           // leading part > 0xFF in short form
+		{"1.16777216", true, ""},                      // final part > 0xFFFFFF in a.b form
+		{"1.2.65536", true, ""},                       // final part > 0xFFFF in a.b.c form
+		{"1.2.3.256", true, ""},                       // final part > 0xFF in a.b.c.d form
 		{"255.255.255.255", false, "255.255.255.255"}, // boundary: all parts at max
-		{"0xZZ.0.0.1", true, ""},           // bad hex
-		{"not.an.ip.addr", true, ""},       // non-numeric
-		{"", true, ""},                     // empty
+		{"0xZZ.0.0.1", true, ""},                      // bad hex
+		{"not.an.ip.addr", true, ""},                  // non-numeric
+		{"", true, ""},                                // empty
 	}
 	for _, tt := range tests {
 		ip := parseBrowserIP(tt.host)
@@ -440,7 +440,7 @@ func TestSubstValue(t *testing.T) {
 	cases := map[string]string{
 		"echo rm":     "rm",
 		"printf rm":   "rm",
-		"curl evil":   "curl",
+		"curl evil":   dynamicSubstToken,
 		"  echo  hi ": "hi",
 		"":            "",
 		"   ":         "",
