@@ -79,8 +79,8 @@ existing file unless you pass `--force`). Open it and set **provider + model**
 - **`providers.zai.base_url`** — GLM Coding Plan (subscription) uses
   `https://api.z.ai/api/coding/paas/v4`. Pay-as-you-go: `https://api.z.ai/api/paas/v4`.
 - **`providers.zai.api_key`** — `${ZAI_API_KEY}` from `secrets.env` (next step).
-- **`llm.request_timeout_seconds`** — raise from the 120s default; GLM
-  reasoning is slow to first byte.
+- **`llm.request_timeout_seconds`** — default is 300s; raise further if GLM
+  reasoning is still slow to first byte.
 
 v1 top-level `base_url` / `api_key` still work as loud aliases — see
 [docs/MIGRATION.md](docs/MIGRATION.md).
@@ -242,7 +242,7 @@ Notes:
 | Coding Plan endpoint (OpenAI Chat Completions) | `https://api.z.ai/api/coding/paas/v4` |
 | Pay-as-you-go endpoint | `https://api.z.ai/api/paas/v4` |
 | Reasoning | Always on. Set depth with `--thinking low\|medium\|high` (odek maps these to `reasoning_effort`; GLM has no *medium* level, so odek maps it to *high*). Note: GLM-5.3 rejects `thinking: disabled` — odek translates that request to enabled + low effort automatically |
-| Request timeout | Set `llm.request_timeout_seconds` to **300** (default is 120s; reasoning is slow to first byte) |
+| Request timeout | Default is **300s** (`llm.request_timeout_seconds`). Raise further if reasoning is still slow to first byte. |
 
 ---
 
@@ -270,7 +270,7 @@ provider streams** — z.ai throttles around 5 concurrent streams and
 | `failed to create sandbox container … hint: make sure Docker is running` | No Docker. Use `--no-sandbox` or `export ODEK_NO_SANDBOX=1` |
 | `429` / rate-limit errors during sub-agent runs | Lower `max_concurrency` to `2` (or `1`) — z.ai throttles ~5 concurrent streams |
 | Auth errors / empty key | Is `ZAI_API_KEY` in `~/.odek/secrets.env` (mode 0600) or the environment, and is `provider` `zai`? A project `./odek.json` can't carry keys |
-| Slow first response | Expected: GLM-5.3 reasoning is always on — raise `llm.request_timeout_seconds` to 300 |
+| Slow first response / provider timeout | Expected: GLM-5.3 reasoning is always on. Defaults are 300s; raise `llm.request_timeout_seconds` and `llm.stream_idle_timeout_seconds` further if the model is still silent past that. |
 
 ---
 

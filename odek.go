@@ -71,7 +71,7 @@ type Config struct {
 	// Providers holds per-id API key / base URL / format overrides.
 	Providers map[string]llmclient.ProviderOverride
 
-	// RequestTimeout is the per-request wall-clock budget. 0 uses 120s.
+	// RequestTimeout is the per-request wall-clock budget. 0 uses 300s.
 	RequestTimeout time.Duration
 
 	// ContextWindow is an operator override for the trim budget. 0 means
@@ -364,7 +364,7 @@ func LoadProjectFile() string {
 const (
 	defaultModel      = "deepseek-v4-flash"
 	defaultMaxIter    = 90
-	defaultHTTPTimout = 120 // seconds
+	defaultHTTPTimout = 300 // seconds — thinking models are slow to first byte
 )
 
 // ── Constructor ───────────────────────────────────────────────────────

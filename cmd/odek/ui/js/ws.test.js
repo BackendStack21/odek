@@ -192,3 +192,22 @@ test('cancelled event still appends the system notice', () => {
   assert.ok(msgs.length >= 1, 'system message appended');
   assert.ok(classNames(msgs[msgs.length - 1]).includes('msg'));
 });
+
+test('keepalive frames are ignored — no system message, no busy change', () => {
+  const before = el('messages').children.length;
+  deliver({ type: 'keepalive', t: Date.now() });
+  assert.equal(el('messages').children.length, before, 'keepalive must not append transcript noise');
+});
+
+test('provider timeout errors render a retry hint, not the raw SDK line', () => {
+  deliver({ type: 'error', message: 'iteration 3: context deadline exceeded' });
+  const html = el('messages').children.at(-1).innerHTML;
+  assert.match(html, /Provider request timed out/);
+  assert.ok(!html.includes('deadline exceeded'), 'raw SDK timeout must not leak');
+});
+
+test('stream-idle errors render a stall hint', () => {
+  deliver({ type: 'error', message: 'llm: stream idle for over 2m0s without an event' });
+  const html = el('messages').children.at(-1).innerHTML;
+  assert.match(html, /Provider stream stalled/);
+});

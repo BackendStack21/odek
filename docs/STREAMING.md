@@ -81,7 +81,7 @@ The reasoning block is dimmed with a single 🧠 cue, the answer follows after a
 
 ## Reliability
 
-- **Hard deadline + idle watchdog.** Every streamed call is bounded by a wall-clock deadline (`llm.request_timeout_seconds`, default 120s) covering the whole stream, plus a 120s idle watchdog (`llm.stream_idle_timeout_seconds`, floor 5s) that trips when no SSE event — including provider keepalive comments — arrives. A trickling or stalled stream can never run unbounded.
+- **Hard deadline + idle watchdog.** Every streamed call is bounded by a wall-clock deadline (`llm.request_timeout_seconds`, default 300s) covering the whole stream, plus a 300s idle watchdog (`llm.stream_idle_timeout_seconds`, floor 5s) that trips when no SSE event — including provider keepalive comments — arrives. A trickling or stalled stream can never run unbounded.
 - **No duplicated partial output.** Transient failures are retried with the same backoff as the buffered path, but only until the first fragment has been delivered; after that, the failure is terminal and the partial text stays as printed.
 - **Learn-once fallbacks.** A provider that rejects the `stream_options` field is retried once without it (streaming continues); a provider that rejects `stream` outright, or answers a streamed request with a non-SSE body, switches permanently to the buffered path. Both are learned per client, not configured.
 - **Billing errors still fail fast.** A 429 reporting an empty balance or exhausted quota is returned immediately with the provider's message; it is never retried into an opaque timeout.
@@ -100,4 +100,4 @@ The reasoning block is dimmed with a single 🧠 cue, the answer follows after a
 
 ## Idle watchdog
 
-A stream that produces no SSE events — keepalive comment lines count — for `llm.stream_idle_timeout_seconds` (default **120s**, env `ODEK_STREAM_IDLE_TIMEOUT_SECONDS`) is dropped and retried like any transient failure, as long as nothing was emitted yet. Once deltas have been delivered, an idle abort is never retried (that would duplicate text); the partial result is surfaced with the error. Eight attempts with jittered exponential backoff are shared with the buffered client.
+A stream that produces no SSE events — keepalive comment lines count — for `llm.stream_idle_timeout_seconds` (default **300s**, env `ODEK_STREAM_IDLE_TIMEOUT_SECONDS`) is dropped and retried like any transient failure, as long as nothing was emitted yet. Once deltas have been delivered, an idle abort is never retried (that would duplicate text); the partial result is surfaced with the error. Eight attempts with jittered exponential backoff are shared with the buffered client.

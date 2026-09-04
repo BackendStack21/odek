@@ -35,8 +35,8 @@ Shared across all projects:
     "deepseek": { "api_key": "${DEEPSEEK_API_KEY}" }
   },
   "llm": {
-    "request_timeout_seconds": 120,
-    "stream_idle_timeout_seconds": 120,
+    "request_timeout_seconds": 300,
+    "stream_idle_timeout_seconds": 300,
     "context_window": 0
   },
   "thinking": "",
@@ -317,8 +317,8 @@ Tunes the shared LLM client (streaming and buffered calls share one retry policy
 ```json
 {
   "llm": {
-    "request_timeout_seconds": 120,
-    "stream_idle_timeout_seconds": 120,
+    "request_timeout_seconds": 300,
+    "stream_idle_timeout_seconds": 300,
     "context_window": 0
   }
 }
@@ -326,8 +326,8 @@ Tunes the shared LLM client (streaming and buffered calls share one retry policy
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `request_timeout_seconds` | `120` | Per-request wall-clock budget for every model. No per-model auto-timeout. `0` keeps the default. |
-| `stream_idle_timeout_seconds` | `120` | Time between SSE events (keepalives count) before the stream is dropped and retried. Thinking models can spend minutes before their first event — raise it if long-thinking models hit `stream idle` errors. Floor 5s; `0` keeps the default. Eight retry attempts with jittered exponential backoff (and `Retry-After` honor) are shared with the buffered client; billing/quota errors fail fast. |
+| `request_timeout_seconds` | `300` | Per-request wall-clock budget for every model. No per-model auto-timeout. `0` keeps the default. Thinking/reasoning models are slow to first byte — 300s avoids the old 120s "provider timeout" on WebSocket clients. |
+| `stream_idle_timeout_seconds` | `300` | Time between SSE events (keepalives count) before the stream is dropped and retried. Thinking models can spend minutes before their first event — raise it further if long-thinking models still hit `stream idle` errors. Floor 5s; `0` keeps the default. Eight retry attempts with jittered exponential backoff (and `Retry-After` honor) are shared with the buffered client; billing/quota errors fail fast. |
 | `context_window` | `0` | Trim-budget override. `0` means discover via `ListModels`, then the last-resort table for shipped ids, else no trim. |
 
 ## Dangerous-operations policy (`dangerous`)

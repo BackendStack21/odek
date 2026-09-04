@@ -45,8 +45,8 @@ Custom ids need `providers.<id>.format` (`openai` / `anthropic` / `gemini`) in
 | `--base-url` / `ODEK_BASE_URL` | Override **selected** provider URL |
 | `--thinking` / `--thinking-budget` | Passed through on `ChatRequest` |
 | `prompt_caching` | Anthropic: `SystemBlock.Cache` + first-user `Message.Cache`. OpenAI-format: prefix-stable separate system messages (no `cache_control`) |
-| `llm.request_timeout_seconds` | Default 120. No per-model auto-timeout. |
-| `llm.stream_idle_timeout_seconds` | SSE idle watchdog (default 120, floor 5) |
+| `llm.request_timeout_seconds` | Default 300. No per-model auto-timeout. |
+| `llm.stream_idle_timeout_seconds` | SSE idle watchdog (default 300, floor 5) |
 | `llm.context_window` | Trim budget override. Else last-resort table for shipped ids, else `ListModels`, else 0 |
 
 v1 `base_url` + `api_key` without `provider` still work: the host is inferred

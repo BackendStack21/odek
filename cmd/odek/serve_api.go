@@ -790,7 +790,7 @@ func handleMemoryConsolidate(memoryDir string, resolved config.ResolvedConfig) h
 			http.Error(w, "target must be \"user\" or \"env\"", http.StatusBadRequest)
 			return
 		}
-		timeout := 120
+		timeout := config.DefaultRequestTimeoutSeconds
 		if resolved.LLM.RequestTimeoutSeconds > 0 {
 			timeout = resolved.LLM.RequestTimeoutSeconds
 		}

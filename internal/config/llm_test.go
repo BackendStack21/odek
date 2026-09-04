@@ -26,4 +26,13 @@ func TestLLMStreamIdleTimeoutFrom(t *testing.T) {
 	}
 }
 
+func TestResolveStreamIdleTimeoutDefault(t *testing.T) {
+	if got := resolveStreamIdleTimeout(nil, nil); got != 300*time.Second {
+		t.Errorf("unset = %v, want 300s default", got)
+	}
+	if got := resolveStreamIdleTimeout(&LLMConfig{StreamIdleTimeoutSeconds: 90}, nil); got != 90*time.Second {
+		t.Errorf("file value = %v, want 90s", got)
+	}
+}
+
 func testIntPtr(v int) *int { return &v }

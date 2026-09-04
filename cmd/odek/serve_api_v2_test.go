@@ -598,6 +598,36 @@ func TestServe_E2E_ServerInfoHelloAndPingPong(t *testing.T) {
 	}
 }
 
+func TestServe_E2E_ServerKeepalive(t *testing.T) {
+	orig := wsKeepaliveInterval.Load()
+	wsKeepaliveInterval.Store(int64(50 * time.Millisecond))
+	defer wsKeepaliveInterval.Store(orig)
+
+	llmSrv := mockLLM(t, func(w http.ResponseWriter, callCount int) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"hi"}}]}`))
+	})
+	defer llmSrv.Close()
+	envCleanup := setTestEnv(t, llmSrv.URL)
+	defer envCleanup()
+
+	store := newTestSessionStore(t)
+	ln, mux := buildServeMuxV2(t, store, nil)
+	defer ln.Close()
+	go func() { _ = serveOnListener(ln, mux) }()
+	waitForHTTP(t, ln.Addr().String())
+
+	wsUpgradeLimiter.reset()
+	conn := dialTestWS(t, ln.Addr().String())
+	defer conn.Close()
+
+	readWSUntil(t, conn, 10*time.Second, func(e map[string]any) bool { return e["type"] == "server_info" })
+	ka := readWSUntil(t, conn, 2*time.Second, func(e map[string]any) bool { return e["type"] == "keepalive" })
+	if ka["t"] == nil {
+		t.Errorf("keepalive missing t field: %v", ka)
+	}
+}
+
 func TestServe_E2E_SessionSwitchMessage(t *testing.T) {
 	llmSrv := mockLLM(t, func(w http.ResponseWriter, callCount int) {
 		w.Header().Set("Content-Type", "application/json")

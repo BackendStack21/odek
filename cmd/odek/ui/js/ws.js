@@ -13,7 +13,7 @@ import {
 } from './render.js';
 import { queueApproval, dismissApproval, clearApprovals, expireApproval } from './approvals.js';
 import { loadSessions } from './sessions.js';
-import { onPong, onServerInfo, startHeartbeat } from './health.js';
+import { onPong, onServerInfo, startHeartbeat, stopHeartbeat } from './health.js';
 import { metricsLiveContext, metricsDone, flashTrim, turnCostUSD, setMetricsModel } from './metrics.js';
 
 // Reconnect backoff: 1s doubling to a 30s cap; reset after a clean interval
@@ -52,6 +52,7 @@ export function connect() {
   };
 
   S.ws.onclose = () => {
+    stopHeartbeat();
     dotEl.className = 'dot disconnected';
     statusEl.textContent = 'reconnecting...';
     sendBtn.disabled = true;
@@ -60,7 +61,11 @@ export function connect() {
     reconnectDelay = Math.min(reconnectDelay * 2, 30000);
   };
 
-  S.ws.onerror = () => { S.ws.close(); };
+  S.ws.onerror = () => {
+    // A transport error is terminal for this socket; close() is idempotent
+    // and onclose owns the reconnect loop so we do not double-schedule.
+    if (S.ws && S.ws.readyState === WebSocket.OPEN) S.ws.close();
+  };
 
   S.ws.onmessage = (e) => {
     let event;
@@ -148,6 +153,10 @@ export function connect() {
 
       case 'pong':
         onPong(event);
+        break;
+
+      case 'keepalive':
+        // Server-initiated idle traffic (proxies). Not a ping reply.
         break;
 
       case 'cancelled':
