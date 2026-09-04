@@ -56,26 +56,34 @@ odek init --global
 ```
 
 This writes `~/.odek/config.json` (permissions `0600`; refuses to overwrite an
-existing file unless you pass `--force`). Open it and change the three
-provider fields at the top:
+existing file unless you pass `--force`). Open it and set **provider + model**
+(not a free-floating `base_url`):
 
 ```json
 {
+  "provider": "zai",
   "model": "glm-5.3-flash",
-  "base_url": "https://api.z.ai/api/coding/paas/v4",
-  "api_key": "${ODEK_API_KEY}",
+  "providers": {
+    "zai": {
+      "api_key": "${ZAI_API_KEY}",
+      "base_url": "https://api.z.ai/api/coding/paas/v4"
+    }
+  },
+  "llm": { "request_timeout_seconds": 300 },
   ...
 }
 ```
 
-- **`model`** — use the lowercase id `glm-5.3-flash` (odek matches model
-  profiles by prefix; `glm-5.3…` picks up the built-in GLM 5.3 profile:
-  1M-token context window, 300 s request timeout, always-on reasoning).
-- **`base_url`** — GLM Coding Plan (subscription) uses the OpenAI
-  Chat-Completions endpoint `https://api.z.ai/api/coding/paas/v4`. On
-  pay-as-you-go instead, use `https://api.z.ai/api/paas/v4`.
-- **`api_key`** — `${ODEK_API_KEY}` references the environment variable; keep
-  the key itself out of the config file (next step).
+- **`provider`** — `zai` (see [docs/PROVIDERS.md](docs/PROVIDERS.md)).
+- **`model`** — lowercase id `glm-5.3-flash` (1M last-resort context window).
+- **`providers.zai.base_url`** — GLM Coding Plan (subscription) uses
+  `https://api.z.ai/api/coding/paas/v4`. Pay-as-you-go: `https://api.z.ai/api/paas/v4`.
+- **`providers.zai.api_key`** — `${ZAI_API_KEY}` from `secrets.env` (next step).
+- **`llm.request_timeout_seconds`** — raise from the 120s default; GLM
+  reasoning is slow to first byte.
+
+v1 top-level `base_url` / `api_key` still work as loud aliases — see
+[docs/MIGRATION.md](docs/MIGRATION.md).
 
 > The exact model ids available to your plan are listed in your
 > [z.ai dashboard](https://z.ai/model-api).
@@ -89,21 +97,22 @@ on startup, so the key never has to appear in your shell history:
 
 ```bash
 cat > ~/.odek/secrets.env <<'EOF'
-ODEK_API_KEY=sk-your-zai-key-here
+ZAI_API_KEY=sk-your-zai-key-here
 EOF
 chmod 600 ~/.odek/secrets.env
 ```
 
-Alternative: `export ODEK_API_KEY=sk-...` per shell session. odek resolves the
-key through a five-layer priority chain:
+Alternative: `export ZAI_API_KEY=sk-...` per shell session. Other providers
+use their own env key (`DEEPSEEK_API_KEY`, `OPENAI_API_KEY`,
+`ANTHROPIC_API_KEY`, …). odek resolves config through a five-layer chain:
 
 ```
 ~/.odek/secrets.env → ~/.odek/config.json → ./odek.json → ODEK_* env vars → CLI flags
 ```
 
 Note: a project-level `./odek.json` is treated as **untrusted** — it cannot
-set `api_key`, `base_url`, or other sensitive fields. Provider settings belong
-in the global config.
+set `provider`, `providers`, `llm`, or other sensitive fields. Provider
+settings belong in the global config.
 
 ---
 
@@ -130,8 +139,8 @@ unsandboxed execution fatal instead. Full model: [docs/SANDBOXING.md](docs/SANDB
 odek run "List the Go files in this directory and count their total lines"
 ```
 
-You should see **GLM 5.3 (Z.ai)** in the run header (the built-in profile
-label) and a short ReAct trace: think → act → answer.
+You should see `glm-5.3-flash` in the run header and a short ReAct
+trace: think → act → answer.
 
 Interactive session:
 
@@ -233,7 +242,7 @@ Notes:
 | Coding Plan endpoint (OpenAI Chat Completions) | `https://api.z.ai/api/coding/paas/v4` |
 | Pay-as-you-go endpoint | `https://api.z.ai/api/paas/v4` |
 | Reasoning | Always on. Set depth with `--thinking low\|medium\|high` (odek maps these to `reasoning_effort`; GLM has no *medium* level, so odek maps it to *high*). Note: GLM-5.3 rejects `thinking: disabled` — odek translates that request to enabled + low effort automatically |
-| Request timeout | 300 s (reasoning is slow to first byte — that's normal) |
+| Request timeout | Set `llm.request_timeout_seconds` to **300** (default is 120s; reasoning is slow to first byte) |
 
 ---
 
@@ -260,9 +269,8 @@ provider streams** — z.ai throttles around 5 concurrent streams and
 |---|---|
 | `failed to create sandbox container … hint: make sure Docker is running` | No Docker. Use `--no-sandbox` or `export ODEK_NO_SANDBOX=1` |
 | `429` / rate-limit errors during sub-agent runs | Lower `max_concurrency` to `2` (or `1`) — z.ai throttles ~5 concurrent streams |
-| Run header shows the raw model id instead of **GLM 5.3 (Z.ai)** | Model id must start with `glm-5.3` (lowercase — matching is case-sensitive) |
-| Auth errors / empty key | Check the priority chain — is `ODEK_API_KEY` in `~/.odek/secrets.env` (mode 0600) or the environment? A project `./odek.json` can't carry keys |
-| Slow first response | Expected: GLM-5.3 reasoning is always on (hence the 300 s default timeout) |
+| Auth errors / empty key | Is `ZAI_API_KEY` in `~/.odek/secrets.env` (mode 0600) or the environment, and is `provider` `zai`? A project `./odek.json` can't carry keys |
+| Slow first response | Expected: GLM-5.3 reasoning is always on — raise `llm.request_timeout_seconds` to 300 |
 
 ---
 

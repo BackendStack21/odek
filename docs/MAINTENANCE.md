@@ -89,8 +89,8 @@ The `[maintenance]` section (all keys optional — defaults shown):
 | `plans_max_age_days` | `30` | Delete plans older than this |
 | `artifacts_max_age_hours` | `24` | Sweep orphaned sub-agent artifacts older than this (`0` keeps them forever; live removal still happens on session delete) |
 
-The maintenance config is **operator-only**: like `base_url`, `api_key`, and
-the `dangerous` section, it is honored from `~/.odek/config.json` (and process
+The maintenance config is **operator-only**: like `provider` / `providers`,
+and the `dangerous` section, it is honored from `~/.odek/config.json` (and process
 environment) but **ignored from a project-level `./odek.json`**, so a checked-
 out repository cannot disable the janitor or relax its own retention.
 

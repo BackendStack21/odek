@@ -18,8 +18,8 @@ Layer 0 is unique: it does not hold config fields directly. Instead it injects
 `KEY=VALUE` pairs into the process environment so they're available for:
 
 - **Layer 1–2** `${VAR}` substitution in config files
-- **Layer 3** `ODEK_*` env var lookups (e.g. `ODEK_API_KEY`)
-- **Legacy fallbacks** like `DEEPSEEK_API_KEY` / `OPENAI_API_KEY`
+- **Layer 3** `ODEK_*` env var lookups (e.g. `ODEK_PROVIDER`, `ODEK_MODEL`)
+- **Provider key env vars** (`DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `ZAI_API_KEY`, …)
 
 ## Config files
 
@@ -94,8 +94,8 @@ Same schema as global. Only set the fields you want to override:
 >
 > - `provider` / `providers` — use `~/.odek/config.json`, `ODEK_PROVIDER`, or `--provider`
 > - `llm` — request timeout, stream idle timeout, and context window are operator-only
-> - `base_url` — use `~/.odek/config.json`, `ODEK_BASE_URL`, or `--base-url`
-> - `api_key` — use `~/.odek/config.json`, `ODEK_API_KEY`, or `~/.odek/secrets.env`
+> - `base_url` — v1 alias; prefer `providers.<id>.base_url` or `ODEK_BASE_URL` / `--base-url` (selected provider only)
+> - `api_key` — v1 alias; prefer `providers.<id>.api_key` or the provider env key in `~/.odek/secrets.env` (`DEEPSEEK_API_KEY`, `ZAI_API_KEY`, …). `ODEK_API_KEY` is a selected-provider override only
 > - `system` — use `~/.odek/config.json`, `ODEK_SYSTEM`, or `--system`
 > - `dangerous` — use `~/.odek/config.json`
 > - `embedding` / `memory` / `sessions` / `skills.dirs` / `skills.embedding` / `web_search` — use `~/.odek/config.json`
@@ -115,14 +115,14 @@ Auto-loaded on every `odek` invocation before any config file or env var is read
 Each `KEY=VALUE` line is injected into the process environment via `os.Setenv`.
 
 ```
-ODEK_API_KEY=sk-...
+DEEPSEEK_API_KEY=sk-...
 GITHUB_TOKEN=ghp_...
 ```
 
 Rules:
 - **File format:** `KEY=VALUE` — one per line, no `export` keyword needed
 - **Blank lines and `#` comments** are skipped
-- **Existing env vars are NOT overwritten** — if `ODEK_API_KEY` is already in the environment, the file is ignored for that key
+- **Existing env vars are NOT overwritten** — if `DEEPSEEK_API_KEY` is already in the environment, the file is ignored for that key
 - **Missing/unreadable file** is silently ignored (not an error)
 - **Permissions:** keep `0600` (`chmod 600 ~/.odek/secrets.env`)
 
@@ -131,8 +131,11 @@ This lets you keep secrets out of config files entirely:
 ```json
 // ~/.odek/config.json — no plaintext secrets
 {
+  "provider": "deepseek",
   "model": "deepseek-v4-flash",
-  "api_key": "${ODEK_API_KEY}"      // ← resolved from secrets.env at runtime
+  "providers": {
+    "deepseek": { "api_key": "${DEEPSEEK_API_KEY}" }
+  }
 }
 ```
 
@@ -145,7 +148,7 @@ Most config knobs have a `ODEK_*` counterpart:
 | `ODEK_PROVIDER` | `--provider` | string |
 | `ODEK_MODEL` | `--model` | string |
 | `ODEK_BASE_URL` | `--base-url` | string |
-| `ODEK_API_KEY` | config files only | string |
+| `ODEK_API_KEY` | selected-provider key override (v1 alias) | string |
 | `ODEK_THINKING` | `--thinking` | string |
 | `ODEK_MAX_ITER` | `--max-iter` | int |
 | `ODEK_SANDBOX` | `--sandbox` | bool |
@@ -614,7 +617,7 @@ The `memory` section controls the persistent memory system (see [docs/MEMORY.md]
 | `nudge_cooldown_hours` | `24` | `ODEK_MEMORY_EXTENDED_NUDGE_COOLDOWN_HOURS` | — | Per-kind cooldown before a nudge of the same kind can fire again. |
 | `nudge_stale_goal_days` | `7` | `ODEK_MEMORY_EXTENDED_NUDGE_STALE_GOAL_DAYS` | — | Days without activity before a goal/intent atom counts as stale for nudges. |
 | `nudge_open_question_min_age_hours` | `24` | `ODEK_MEMORY_EXTENDED_NUDGE_OPEN_QUESTION_MIN_AGE_HOURS` | — | Minimum age before a `question` atom may become a nudge candidate (younger questions are usually about to be answered). |
-| `llm` | omitted | — | — | Dedicated memory LLM. If omitted, the main agent LLM is reused. A warning is emitted if that model has thinking enabled. Fields left empty inside `llm` are inherited from the main agent LLM, so a partial override such as `"llm": {"thinking": "disabled"}` reuses the parent `base_url`/`api_key`/`model`/`max_tokens`/`temperature` while disabling reasoning for memory calls. |
+| `llm` | omitted | — | — | Dedicated memory LLM. If omitted, the main agent LLM is reused. A warning is emitted if that model has thinking enabled. Fields left empty inside `llm` are inherited from the main agent LLM, so a partial override such as `"llm": {"thinking": "disabled"}` reuses the parent provider connection (`model` / `max_tokens` / `temperature`) while disabling reasoning for memory calls. |
 | `embedding` | omitted | — | — | Dedicated embedding backend for atoms. If omitted, inherits `memory.embedding` or the shared top-level `embedding`. |
 
 ### `embedding` — real semantic embeddings (optional)
@@ -1243,7 +1246,7 @@ A complete operator setup needs only **three files**. Everything not pinned belo
 **1. Secrets** — `~/.odek/secrets.env` (chmod 600). Never put keys in config files:
 
 ```bash
-ODEK_API_KEY=sk-...
+DEEPSEEK_API_KEY=sk-...
 ```
 
 **2. Global config** — `~/.odek/config.json` (operator-only settings live here):
@@ -1272,7 +1275,7 @@ ODEK_API_KEY=sk-...
 
 Why each key is pinned:
 
-- **`model`** — the only connection setting you truly need; `api_key` resolves from `secrets.env`, and `base_url` is only required for non-default providers.
+- **`provider` + `model`** — the connection identity. The key comes from the provider env (`DEEPSEEK_API_KEY` for the default) or `providers.<id>.api_key`. A custom URL belongs under `providers.<id>.base_url`, not a top-level `base_url`.
 - **`stream: true`** — reasoning and answers render live in the terminal and Web UI. Purely preference; remove for minimal output.
 - **`interaction_mode: "engaging"`** — the default, pinned so a future odek default change cannot silently alter your output.
 - **`limits`** — a runaway agent stops at the wall-clock, tool-call, token, and spend ceilings instead of your invoice. Cost enforcement activates only because both per-million prices are set; add `model_prices` entries keyed by exact model ID when you use several models.
@@ -1295,17 +1298,17 @@ Deliberately **not** set, because the defaults are the recommendation:
 }
 ```
 
-Projects can only *narrow* things — disable tools, lower limits, tighten skills — never widen them. Sensitive sections (`api_key`, `base_url`, `dangerous`, `memory`, `guard`, …) are ignored with a warning if a cloned repo tries to set them.
+Projects can only *narrow* things — disable tools, lower limits, tighten skills — never widen them. Sensitive sections (`provider`, `providers`, `llm`, `api_key`, `base_url`, `dangerous`, `memory`, `guard`, …) are ignored with a warning if a cloned repo tries to set them.
 
 ## Quick examples
 
 ```bash
 # Set API key via secrets.env (recommended — keeps secrets out of config files)
-echo 'ODEK_API_KEY="sk-..."' >> ~/.odek/secrets.env
+echo 'DEEPSEEK_API_KEY="sk-..."' >> ~/.odek/secrets.env
 chmod 600 ~/.odek/secrets.env
 
-# Global config (model and other settings only, no secrets)
-echo '{"model": "deepseek-v4-flash"}' > ~/.odek/config.json
+# Global config (provider + model; key stays in secrets.env)
+echo '{"provider":"deepseek","model":"deepseek-v4-flash"}' > ~/.odek/config.json
 odek run "list files"
 
 # Per-project override

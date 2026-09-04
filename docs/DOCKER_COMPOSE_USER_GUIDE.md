@@ -21,9 +21,10 @@ two permission profiles:
 ## 1. Prerequisites
 
 - **Docker** and the **Docker Compose v2** plugin (`docker compose version` should work).
-- An **API key** for an OpenAI‑compatible model provider (DeepSeek, OpenAI, Anthropic, a
-  local Ollama endpoint, etc.). Odek reads it from `ODEK_API_KEY` (with legacy fallbacks
-  `DEEPSEEK_API_KEY` → `OPENAI_API_KEY`).
+- An **API key** for your provider (DeepSeek, OpenAI, Anthropic, Z.ai, a
+  local Ollama endpoint, etc.). Set `ODEK_PROVIDER` plus the provider env key
+  (`DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `ZAI_API_KEY`, …).
+  `ODEK_API_KEY` is a v1 selected-provider override only.
 
 All files below live in the **`docker/` directory** — not the repository root. The compose
 file builds with `context: ..` (repo root) and `dockerfile: docker/Dockerfile`, and all
@@ -117,12 +118,10 @@ Compose injects these into the container's environment. Odek's config chain read
 ```dotenv
 # .env  — DO NOT COMMIT
 
-# API key (ODEK_API_KEY wins; DEEPSEEK_API_KEY / OPENAI_API_KEY are fallbacks)
-ODEK_API_KEY=sk-your-key-here
-
-# Model + provider endpoint (examples — pick one)
+# Provider identity + key (examples — pick one)
+ODEK_PROVIDER=deepseek
 ODEK_MODEL=deepseek-v4-flash
-ODEK_BASE_URL=https://api.deepseek.com/v1
+DEEPSEEK_API_KEY=sk-your-key-here
 
 # We run unsandboxed on purpose (the container IS the boundary), so silence
 # the "running without --sandbox" startup warning that run/repl print.
@@ -513,7 +512,7 @@ global `action` → built‑in defaults. The `blocked` class is always denied re
 | `odek serve` exits complaining about sandbox / Docker | You omitted `--no-sandbox`. Odek tried to start nested sandbox containers. Add `--no-sandbox` to the `command`. |
 | Agent says "operation denied by configuration" for normal commands | You're running non‑interactively under the Restricted policy (`non_interactive: "read_only"` — only read‑only commands proceed). Use the Web UI / `repl -it`, or add the command to `allowlist`. |
 | Approval modal never appears; risky commands just run | The Godmode policy is mounted, or `action` is `allow`. Check `/home/odek/.odek/config.json` inside the container. |
-| "no API key" / auth errors | `.env` not loaded or key invalid. Confirm `env_file: .env` is set and `ODEK_API_KEY` is correct. |
+| "no API key" / auth errors | `.env` not loaded or key invalid. Confirm `env_file: .env` is set and the provider env key (`DEEPSEEK_API_KEY`, `ZAI_API_KEY`, …) matches `ODEK_PROVIDER`. |
 | Config changes ignored | The file is mounted read‑only at startup; recreate the container (`docker compose ... up` again) after editing the JSON. |
 | Web UI unreachable | Ensure the service has a `ports:` mapping and the container command binds `--addr 0.0.0.0:8080` (not `127.0.0.1`, which would only listen inside the container). |
 

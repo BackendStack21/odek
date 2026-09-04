@@ -49,7 +49,7 @@ func main() {
 Save, run:
 
 ```bash
-export ODEK_API_KEY=sk-...
+export DEEPSEEK_API_KEY=sk-...
 go mod init my-agent
 go mod tidy
 go run main.go
@@ -231,7 +231,7 @@ import "github.com/BackendStack21/odek/internal/events"
 
 agent, err := odek.New(odek.Config{
     Model:  "deepseek-v4-flash",
-    APIKey: os.Getenv("ODEK_API_KEY"),
+    APIKey: os.Getenv("DEEPSEEK_API_KEY"),
     EventHandler: func(ev events.Event) {
         // e.g. append to your own JSONL sink or metrics pipeline
         fmt.Printf("%s %s\n", ev.Type, ev.RunID)
@@ -254,7 +254,7 @@ import "github.com/BackendStack21/odek/internal/session"
 
 agent, err := odek.New(odek.Config{
     Model:  "deepseek-v4-flash",
-    APIKey: os.Getenv("ODEK_API_KEY"),
+    APIKey: os.Getenv("DEEPSEEK_API_KEY"),
     ExternalRefs: []session.ExternalRef{
         {Kind: "ci-run", URI: "https://ci.example.test/runs/4821", CreatedBy: "ci-orchestrator", ReadOnly: true},
     },
@@ -273,7 +273,7 @@ import "github.com/BackendStack21/odek/internal/budget"
 
 agent, err := odek.New(odek.Config{
     Model:  "deepseek-v4-flash",
-    APIKey: os.Getenv("ODEK_API_KEY"),
+    APIKey: os.Getenv("DEEPSEEK_API_KEY"),
     Limits: budget.Limits{
         MaxRuntimeSeconds: 600,
         MaxToolCalls:      200,
@@ -370,7 +370,7 @@ The agent loop:
 ```go
 agent, err := odek.New(odek.Config{
     Model:  "deepseek-v4-flash",
-    APIKey: os.Getenv("ODEK_API_KEY"),
+    APIKey: os.Getenv("DEEPSEEK_API_KEY"),
     Tools:  []odek.Tool{&slackNotifier{}},
 })
 
@@ -382,7 +382,7 @@ result, err := agent.Run(ctx, "Send a Slack message saying 'Deploy complete'")
 ```go
 agent, err := odek.New(odek.Config{
     Model:         "deepseek-v4-flash",
-    APIKey:        os.Getenv("ODEK_API_KEY"),
+    APIKey:        os.Getenv("DEEPSEEK_API_KEY"),
     SystemMessage: "You are a Go code reviewer. Be concise and specific.",
     MaxIterations: 15,
 })
@@ -503,7 +503,7 @@ func (t *gitLogTool) Call(args string) (string, error) {
 ```go
 agent, _ := odek.New(odek.Config{
     Model: "deepseek-v4-flash",
-    APIKey: os.Getenv("ODEK_API_KEY"),
+    APIKey: os.Getenv("DEEPSEEK_API_KEY"),
     Tools:  []odek.Tool{&gitLogTool{}},
 })
 
@@ -582,7 +582,7 @@ Memory is enabled by default when odek loads a config file with memory settings.
 ```go
 agent, _ := odek.New(odek.Config{
     Model:  "deepseek-v4-flash",
-    APIKey: os.Getenv("ODEK_API_KEY"),
+    APIKey: os.Getenv("DEEPSEEK_API_KEY"),
     // Memory is enabled via config file (~/.odek/config.json or ./odek.json)
     // In CLI mode, the --memory flag enables it automatically
 })
@@ -665,7 +665,7 @@ agent, err := odek.New(odek.Config{
     Model:  "deepseek-v4-flash",
     APIKey: "", // missing!
 })
-// err: "odek: no API key provided (set ODEK_API_KEY, DEEPSEEK_API_KEY, or OPENAI_API_KEY)"
+// err: "odek: no API key for provider \"deepseek\" (set providers.deepseek.api_key, ODEK_API_KEY, or the provider env key)"
 ```
 
 ### Run failures
@@ -816,7 +816,7 @@ func (t *slackNotifyTool) Call(args string) (string, error) {
 func main() {
     agent, err := odek.New(odek.Config{
         Model:         "deepseek-v4-flash",
-        APIKey:        os.Getenv("ODEK_API_KEY"),
+        APIKey:        os.Getenv("DEEPSEEK_API_KEY"),
         SystemMessage: "You are a build engineer analyzing Go projects. Use line_count to examine files and slack_notify to report results.",
         MaxIterations: 10,
         Tools: []odek.Tool{

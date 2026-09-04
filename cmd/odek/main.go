@@ -1253,7 +1253,7 @@ Environment variables:
   ODEK_PROVIDER        LLM provider id (default: deepseek)
   ODEK_MODEL           LLM model name
   ODEK_BASE_URL        Override the selected provider's API endpoint
-  ODEK_API_KEY         Selected-provider API key (then the provider env key)
+  ODEK_API_KEY         Selected-provider key override (prefer DEEPSEEK_API_KEY / ZAI_API_KEY / …)
   ODEK_THINKING        Reasoning depth setting
   ODEK_MAX_ITER        Max think->act cycles
   ODEK_SANDBOX         true/false — run in Docker sandbox

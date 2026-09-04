@@ -41,7 +41,7 @@ All commands are run **from this `docker/` directory** so relative paths and
 
 ```bash
 cd docker
-cp .env.example .env        # then edit .env: set ODEK_API_KEY (+ model/base URL)
+cp .env.example .env        # then edit .env: set ODEK_PROVIDER + the provider key
 ```
 
 ### Restricted (recommended)

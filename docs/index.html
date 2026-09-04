@@ -635,12 +635,12 @@
 
         <!-- Slide 2 — model + API key -->
         <div class="slide">
-          <span class="info"># 2 · Set your model + API key  (.env)</span><br>
-          <span class="output">ODEK_API_KEY=</span><span class="prompt">sk-your-key-here</span><br>
+          <span class="info"># 2 · Set provider + model + key  (.env)</span><br>
+          <span class="output">ODEK_PROVIDER=</span><span class="prompt">deepseek</span><br>
           <span class="output">ODEK_MODEL=</span><span class="prompt">deepseek-v4-flash</span><br>
-          <span class="output">ODEK_BASE_URL=</span><span class="prompt">https://api.deepseek.com/v1</span><br>
+          <span class="output">DEEPSEEK_API_KEY=</span><span class="prompt">sk-your-key-here</span><br>
           <span class="output">ODEK_SUPPRESS_SANDBOX_WARNING=</span><span class="prompt">1</span><br>
-          <span class="info"># any OpenAI-compatible endpoint works</span>
+          <span class="info"># see docs/PROVIDERS.md for openai / anthropic / zai / …</span>
         </div>
 
         <!-- Slide 3 — Telegram credentials -->
@@ -1059,7 +1059,7 @@
     </li>
     <li>
       <span class="n">2</span>
-      <span>Set your API key: <code>export ODEK_API_KEY=sk-...</code> (or <code>DEEPSEEK_API_KEY</code> / <code>OPENAI_API_KEY</code>)</span>
+      <span>Set the provider key: <code>export DEEPSEEK_API_KEY=sk-...</code> (or <code>OPENAI_API_KEY</code> / <code>ANTHROPIC_API_KEY</code> / <code>ZAI_API_KEY</code> — see <a href="https://github.com/BackendStack21/odek/blob/main/docs/PROVIDERS.md">PROVIDERS.md</a>)</span>
     </li>
     <li>
       <span class="n">3</span>

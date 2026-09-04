@@ -330,9 +330,10 @@ odek mcp                                    # stdio transport
 
 | Variable | Maps to |
 |----------|---------|
+| `ODEK_PROVIDER` | provider |
 | `ODEK_MODEL` | model |
-| `ODEK_BASE_URL` | base_url |
-| `ODEK_API_KEY` | api_key |
+| `ODEK_BASE_URL` | selected-provider URL override |
+| `ODEK_API_KEY` | selected-provider key override (v1 alias) |
 | `ODEK_THINKING` | thinking |
 | `ODEK_MAX_ITER` | max_iterations |
 | `ODEK_SANDBOX` | sandbox |
@@ -351,9 +352,12 @@ odek mcp                                    # stdio transport
 | `ODEK_PROMPT_CACHING` | prompt_caching |
 | `ODEK_MAX_CONCURRENCY` | max_concurrency |
 | `ODEK_CTX` | ctx (comma-separated file paths) |
-| `ODEK_API_KEY` | api_key (preferred) |
-| `DEEPSEEK_API_KEY` | api_key (fallback) |
-| `OPENAI_API_KEY` | api_key (final fallback) |
+| `DEEPSEEK_API_KEY` | `providers.deepseek` (default provider) |
+| `OPENAI_API_KEY` | `providers.openai` (also DeepSeek leftover) |
+| `ANTHROPIC_API_KEY` | `providers.anthropic` |
+| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | `providers.gemini` |
+| `ZAI_API_KEY` | `providers.zai` |
+| `KIMI_API_KEY` / `MOONSHOT_API_KEY` | `providers.kimi` |
 
 ## Key Design Properties
 

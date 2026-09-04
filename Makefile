@@ -84,10 +84,10 @@ coverage-total: ## Print total coverage percentage (excludes cmd/odek)
 # ── Test (with LLM) ────────────────────────────────────────────────────
 
 .PHONY: test-integration
-test-integration: ## Run integration tests (requires ODEK_API_KEY or DEEPSEEK_API_KEY)
-	@test -n "$$ODEK_API_KEY$$DEEPSEEK_API_KEY" || { \
-		echo "ERROR: ODEK_API_KEY or DEEPSEEK_API_KEY not set"; \
-		echo "  export ODEK_API_KEY=sk-..."; \
+test-integration: ## Run integration tests (requires DEEPSEEK_API_KEY)
+	@test -n "$$DEEPSEEK_API_KEY$$ODEK_API_KEY" || { \
+		echo "ERROR: DEEPSEEK_API_KEY not set"; \
+		echo "  export DEEPSEEK_API_KEY=sk-..."; \
 		exit 1; \
 	}
 	$(GO) test -tags=integration -count=1 -timeout 300s -run Integration ./...
