@@ -26,6 +26,7 @@ import (
 func promoteSkill(userDir, name string, force bool) error {
 	skillDir := filepath.Join(userDir, name)
 	path := filepath.Join(skillDir, "SKILL.md")
+	fromProject := false
 	if _, err := os.Stat(path); err != nil {
 		projDir := filepath.Join(skills.ProjectSkillsDir(), name)
 		projPath := filepath.Join(projDir, "SKILL.md")
@@ -33,6 +34,7 @@ func promoteSkill(userDir, name string, force bool) error {
 			return fmt.Errorf("promote: skill %q not found at %s", name, path)
 		}
 		skillDir, path = projDir, projPath
+		fromProject = true
 	}
 
 	// We re-parse via the scanner to keep all other fields intact, then
@@ -42,7 +44,7 @@ func promoteSkill(userDir, name string, force bool) error {
 	if loaded == nil {
 		return fmt.Errorf("promote: could not parse skill %q", name)
 	}
-	if !loaded.Provenance.NeedsReview {
+	if !loaded.Provenance.NeedsReview && !fromProject {
 		fmt.Fprintf(os.Stderr, "odek: skill %q is already trusted (NeedsReview=false)\n", name)
 		return nil
 	}
@@ -68,6 +70,15 @@ func promoteSkill(userDir, name string, force bool) error {
 	content := skills.MarshalSkill(*loaded)
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		return fmt.Errorf("promote: write: %w", err)
+	}
+	// Project-dir skills: trust is anchored in the trusted user-dir
+	// registry (content hash), not the project frontmatter — the project
+	// dir is attacker-controllable and every rescan would otherwise re-pin
+	// the skill, silently reverting this promotion.
+	if fromProject {
+		if err := skills.RecordPromotion(userDir, name, []byte(content)); err != nil {
+			return fmt.Errorf("promote: record promotion: %w", err)
+		}
 	}
 	fmt.Printf("odek: promoted skill %q — NeedsReview cleared\n", name)
 	return nil

@@ -3314,7 +3314,12 @@ func loadSecretsEnv() {
 		// `export KEY=...` shell syntax, one pair of surrounding quotes,
 		// and inline comments after whitespace. A quoted value keeps any
 		// '#' inside it; comment stripping applies only to bare values.
-		line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
+		line = strings.TrimSpace(line)
+		// `export KEY=...` — with a space OR a tab separator.
+		if rest, ok := strings.CutPrefix(line, "export"); ok &&
+			(strings.HasPrefix(rest, " ") || strings.HasPrefix(rest, "\t")) {
+			line = strings.TrimSpace(rest)
+		}
 		k, v, ok := strings.Cut(line, "=")
 		if !ok {
 			continue
@@ -3324,8 +3329,17 @@ func loadSecretsEnv() {
 		if k == "" {
 			continue
 		}
-		if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
-			v = v[1 : len(v)-1]
+		if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') {
+			// Quoted value: it ends at the FIRST matching closing quote —
+			// a trailing inline comment after the quote is ignored, and a
+			// '#' inside the quotes stays part of the value.
+			if end := strings.IndexByte(v[1:], v[0]); end >= 0 {
+				v = v[1 : 1+end]
+			} else if i := strings.Index(v, " #"); i >= 0 {
+				// Unterminated quote: fall back to comment stripping
+				// (legacy behavior) rather than keeping the quote char.
+				v = strings.TrimSpace(v[:i])
+			}
 		} else if i := strings.Index(v, " #"); i >= 0 {
 			v = strings.TrimSpace(v[:i])
 		}
