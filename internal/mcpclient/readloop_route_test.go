@@ -18,7 +18,6 @@ import (
 func TestClient_Call_IgnoresServerToClientRequests(t *testing.T) {
 	clientRead, serverWrite := io.Pipe()
 	serverRead, clientWrite := io.Pipe()
-	go io.Copy(io.Discard, serverRead) // drain client→server writes
 
 	c := &Client{
 		name:      "confused",
@@ -38,16 +37,22 @@ func TestClient_Call_IgnoresServerToClientRequests(t *testing.T) {
 		c.closeOnce.Do(func() { close(c.closed) })
 		clientWrite.Close()
 		clientRead.Close()
+		serverWrite.Close()
+		serverRead.Close()
 	}
 	defer cleanup()
 
 	go func() {
-		// 1) Spec-legal server→client request whose id collides with the call
-		// (nextID starts at 0, so the first call is id 0).
-		fmt.Fprint(serverWrite, `{"jsonrpc":"2.0","id":0,"method":"ping","params":{}}`+"\n")
-		time.Sleep(100 * time.Millisecond) // deterministic ordering
-		// 2) The real response to the client's call.
-		fmt.Fprint(serverWrite, `{"jsonrpc":"2.0","id":0,"result":{"ok":true}}`+"\n")
+		// Wait until the call is in-flight (pending registered before write)
+		// so the colliding server→client request actually hits a waiter —
+		// the bug this test pins. An immediate write races readLoop under
+		// -race and can drop the real response before pending[id] exists.
+		id, ok := readJSONRPCID(serverRead)
+		if !ok {
+			return
+		}
+		fmt.Fprintf(serverWrite, `{"jsonrpc":"2.0","id":%d,"method":"ping","params":{}}`+"\n", id)
+		fmt.Fprintf(serverWrite, `{"jsonrpc":"2.0","id":%d,"result":{"ok":true}}`+"\n", id)
 	}()
 
 	res, err := c.call(context.Background(), "tools/call", json.RawMessage(`{}`))

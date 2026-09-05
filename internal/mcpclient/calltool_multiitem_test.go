@@ -3,6 +3,7 @@ package mcpclient
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -18,7 +19,6 @@ import (
 func TestClient_CallTool_EnvelopeWithTrailingContent(t *testing.T) {
 	clientRead, serverWrite := io.Pipe()
 	serverRead, clientWrite := io.Pipe()
-	go io.Copy(io.Discard, serverRead)
 
 	c := &Client{
 		name:      "multiitem",
@@ -38,14 +38,23 @@ func TestClient_CallTool_EnvelopeWithTrailingContent(t *testing.T) {
 		c.closeOnce.Do(func() { close(c.closed) })
 		clientWrite.Close()
 		clientRead.Close()
+		serverWrite.Close()
+		serverRead.Close()
 	}()
 
+	// Reply only after the client's request is on the wire. Writing the
+	// response immediately races readLoop: if the line arrives before
+	// call() registers pending[id], it is dropped and CallTool times out
+	// (seen under -race in CI).
 	go func() {
-		// nextID starts at 0: the first call is id 0.
-		fmt.Fprint(serverWrite, `{"jsonrpc":"2.0","id":0,"result":{"content":[`+
+		id, ok := readJSONRPCID(serverRead)
+		if !ok {
+			return
+		}
+		fmt.Fprintf(serverWrite, `{"jsonrpc":"2.0","id":%d,"result":{"content":[`+
 			`{"type":"text","text":"{\"schema\":\"odek.tool-result/v1\",\"text\":\"report ready\"}"},`+
 			`{"type":"text","text":"(generated 2 artifacts)"}`+
-			`]}}`+"\n")
+			`]}}`+"\n", id)
 	}()
 
 	out, err := c.CallTool(context.Background(), "build_report", `{}`)
@@ -61,4 +70,19 @@ func TestClient_CallTool_EnvelopeWithTrailingContent(t *testing.T) {
 	if !strings.Contains(out, "(generated 2 artifacts)") {
 		t.Fatalf("trailing content note lost: %q", out)
 	}
+}
+
+// readJSONRPCID consumes one JSON-RPC request line from r and returns its id.
+func readJSONRPCID(r io.Reader) (int, bool) {
+	scanner := bufio.NewScanner(r)
+	if !scanner.Scan() {
+		return 0, false
+	}
+	var req struct {
+		ID int `json:"id"`
+	}
+	if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
+		return 0, false
+	}
+	return req.ID, true
 }
