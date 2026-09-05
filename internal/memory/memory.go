@@ -822,6 +822,19 @@ func (m *MemoryManager) Consolidate(target string) error {
 		return fmt.Errorf("memory: consolidation requires LLM client")
 	}
 
+	// Cheap unlocked peek: skip the flock (and the facts.lock file it creates)
+	// when there is nothing to merge. Session-end consolidation runs in a
+	// background goroutine; creating that lock file after a test's TempDir
+	// cleanup has started races RemoveAll ("directory not empty"). Re-check
+	// under the lock below so a concurrent AddFact cannot sneak past.
+	entries, err := m.facts.Entries(target)
+	if err != nil {
+		return err
+	}
+	if len(entries) <= 1 {
+		return nil // nothing to consolidate
+	}
+
 	// Hold the per-dir lock across the whole consolidation (read → LLM merge →
 	// write) so it is atomic vs concurrent AddFact on the same dir. Rare,
 	// agent-triggered, and off the user's hot path, so the LLM call under the
@@ -833,12 +846,12 @@ func (m *MemoryManager) Consolidate(target string) error {
 	var pending []MemoryEvent
 	defer m.fireAfterUnlock(unlock, &pending)
 
-	entries, err := m.facts.Entries(target)
+	entries, err = m.facts.Entries(target)
 	if err != nil {
 		return err
 	}
 	if len(entries) <= 1 {
-		return nil // nothing to consolidate
+		return nil
 	}
 
 	// Use LLM to merge
@@ -1009,8 +1022,9 @@ func (m *MemoryManager) OnSessionEndWithProvenance(sessionID string, turns int, 
 		// a bare goroutine would be silently killed mid-LLM-call by os.Exit.
 		m.RunBackground(func() {
 			for _, target := range []string{"user", "env"} {
-				// Best-effort: errors (e.g. only 1 entry, nothing to consolidate)
-				// are silently ignored — consolidation is a quality pass, not critical.
+				// Best-effort: a single entry is a no-op (and does not create
+				// facts.lock); other errors are ignored — consolidation is a
+				// quality pass, not critical.
 				_ = m.Consolidate(target)
 			}
 		})

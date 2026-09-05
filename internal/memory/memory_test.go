@@ -325,6 +325,38 @@ func TestMemoryManagerConsolidate(t *testing.T) {
 	t.Logf("consolidated entries: %v", entries)
 }
 
+// TestConsolidate_NoLockFileWhenNothingToDo: empty or single-entry targets
+// must return without creating facts.lock. Session-end consolidation is
+// backgrounded; a lock file created during t.TempDir cleanup races RemoveAll.
+func TestConsolidate_NoLockFileWhenNothingToDo(t *testing.T) {
+	dir := t.TempDir()
+	llm := &mockLLM{responses: map[string]string{
+		"Consolidate": `["should not be called"]`,
+	}}
+	mm := NewMemoryManager(dir, llm, DefaultMemoryConfig())
+	lockPath := filepath.Join(dir, "facts.lock")
+
+	if err := mm.Consolidate("user"); err != nil {
+		t.Fatalf("empty facts: %v", err)
+	}
+	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+		t.Fatalf("facts.lock created with nothing to consolidate: err=%v", err)
+	}
+
+	if err := mm.AddFact("user", "only one fact"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if err := mm.Consolidate("user"); err != nil {
+		t.Fatalf("single fact: %v", err)
+	}
+	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+		t.Fatalf("facts.lock created for a single fact: err=%v", err)
+	}
+}
+
 func TestMemoryManagerOnSessionEnd(t *testing.T) {
 	dir := t.TempDir()
 	llm := &mockLLM{
@@ -333,6 +365,7 @@ func TestMemoryManagerOnSessionEnd(t *testing.T) {
 		},
 	}
 	mm := NewMemoryManager(dir, llm, DefaultMemoryConfig())
+	drainBackground(t, mm)
 
 	mm.OnSessionEnd("sess-001", 5, []string{
 		"user: fix the parser",
@@ -365,6 +398,7 @@ func TestOnSessionEnd_StructuredPrompt(t *testing.T) {
 
 	dir := t.TempDir()
 	mm := NewMemoryManager(dir, llm, DefaultMemoryConfig())
+	drainBackground(t, mm)
 
 	mm.OnSessionEnd("sess-002", 5, []string{
 		"user: can you fix the parser",
