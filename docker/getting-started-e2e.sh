@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 EXPECTED_VERSION=${1:-}
+EXPECTED_BODEK_VERSION=${2:-}
 
 echo "==> source install (latest release tag)"
 docker run --rm golang:1.25-alpine sh -euc '
@@ -39,6 +40,30 @@ docker run --rm curlimages/curl:8.16.0 sh -euc '
     grep -F "$1" /tmp/version.txt >/dev/null
   fi
 ' sh "${EXPECTED_VERSION}"
+
+echo "==> checksummed bodek release install"
+docker run --rm curlimages/curl:8.16.0 sh -euc '
+  OS=$(uname -s | tr "[:upper:]" "[:lower:]")
+  ARCH=$(uname -m | sed "s/x86_64/amd64/;s/aarch64/arm64/")
+  LATEST=$(curl -fsSL -o /dev/null -w "%{url_effective}" \
+    https://github.com/BackendStack21/bodek/releases/latest)
+  TAG=${LATEST##*/}
+  VERSION=${TAG#v}
+  ASSET="bodek_${VERSION}_${OS}_${ARCH}.tar.gz"
+  TMP=$(mktemp -d)
+  curl -fsSL -o "${TMP}/${ASSET}" \
+    "https://github.com/BackendStack21/bodek/releases/download/${TAG}/${ASSET}"
+  curl -fsSL -o "${TMP}/checksums.txt" \
+    "https://github.com/BackendStack21/bodek/releases/download/${TAG}/checksums.txt"
+  (cd "${TMP}" && grep "  ${ASSET}$" checksums.txt | sha256sum -c -)
+  tar -xzf "${TMP}/${ASSET}" -C "${TMP}" bodek
+  mkdir -p "${HOME}/.local/bin"
+  install -m 755 "${TMP}/bodek" "${HOME}/.local/bin/bodek"
+  "${HOME}/.local/bin/bodek" version | tee /tmp/bodek-version.txt
+  if [ -n "$1" ]; then
+    grep -F "$1" /tmp/bodek-version.txt >/dev/null
+  fi
+' sh "${EXPECTED_BODEK_VERSION}"
 
 echo "==> current checkout config initialization"
 docker run --rm \

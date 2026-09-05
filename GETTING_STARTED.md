@@ -207,10 +207,27 @@ Prebuilt binaries are on the
 
 ```bash
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-ARCH=$(uname -m); [ "$ARCH" = "x86_64" ] && ARCH=amd64
-URL=$(curl -fsSL https://api.github.com/repos/BackendStack21/bodek/releases/latest \
-  | grep browser_download_url | grep "${OS}_${ARCH}" | cut -d '"' -f 4)
-curl -fsSL "$URL" | tar -xz bodek && install -m 755 bodek ~/.local/bin/
+ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+LATEST=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+  https://github.com/BackendStack21/bodek/releases/latest)
+TAG=${LATEST##*/}
+VERSION=${TAG#v}
+ASSET="bodek_${VERSION}_${OS}_${ARCH}.tar.gz"
+TMP=$(mktemp -d)
+curl -fsSL -o "${TMP}/${ASSET}" \
+  "https://github.com/BackendStack21/bodek/releases/download/${TAG}/${ASSET}"
+curl -fsSL -o "${TMP}/checksums.txt" \
+  "https://github.com/BackendStack21/bodek/releases/download/${TAG}/checksums.txt"
+if command -v sha256sum >/dev/null; then
+  (cd "${TMP}" && grep "  ${ASSET}$" checksums.txt | sha256sum -c -)
+else
+  (cd "${TMP}" && grep "  ${ASSET}$" checksums.txt | shasum -a 256 -c -)
+fi
+tar -xzf "${TMP}/${ASSET}" -C "${TMP}" bodek
+mkdir -p "${HOME}/.local/bin"
+install -m 755 "${TMP}/bodek" "${HOME}/.local/bin/bodek"
+rm -rf "${TMP}"
+export PATH="${HOME}/.local/bin:${PATH}"
 ```
 
 Start chatting:
