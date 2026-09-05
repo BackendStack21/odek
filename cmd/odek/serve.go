@@ -2040,6 +2040,11 @@ func handlePrompt(
 	}
 
 	start := time.Now()
+	if sid != "" {
+		ctx = withReadLedger(ctx, sid)
+	} else if auditSessID != "" {
+		ctx = withReadLedger(ctx, auditSessID)
+	}
 	_, allMessages, err := agent.RunWithMessages(ctx, messages)
 	latency := time.Since(start)
 	if auditSessID != "" {

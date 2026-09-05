@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/session"
 )
@@ -21,6 +22,16 @@ func withAuditRecorder(ctx context.Context, store *session.AuditStore, sessionID
 	return loop.WithIngestRecorder(ctx, func(source, content string) {
 		_ = store.RecordIngest(sessionID, turn, source, content)
 	})
+}
+
+// withReadLedger scopes the unread-script read ledger to sessionID so a
+// read in one serve/telegram session cannot license execution in another.
+// An empty id is a no-op (process-global default ledger).
+func withReadLedger(ctx context.Context, sessionID string) context.Context {
+	if sessionID == "" {
+		return ctx
+	}
+	return danger.WithLedgerKey(ctx, sessionID)
 }
 
 // recordTurnAudit summarises a single agent turn into the audit log:

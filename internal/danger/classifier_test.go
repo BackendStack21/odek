@@ -117,6 +117,18 @@ func TestClassify_SystemWrite_Commands(t *testing.T) {
 		{"GIT_EXTERNAL_DIFF=/tmp/evil git diff", SystemWrite},
 		{"GIT_DIFFTOOL=/tmp/evil git difftool", SystemWrite},
 		{"GIT_PAGER=less git --paginate log", SystemWrite},
+		{"GIT_SSH=/tmp/evil git status", SystemWrite},
+		{"GIT_EXEC_PATH=/tmp/evil git status", SystemWrite},
+		{"GIT_TRACE2=/tmp/trace git status", SystemWrite},
+		{"GIT_TRACE2_EVENT=/tmp/ev git status", SystemWrite},
+		{"GIT_CONFIG_GLOBAL=/tmp/evil git status", SystemWrite},
+		{"ENV=/tmp/x sh", SystemWrite},
+		{"ENV=/tmp/x bash -c echo", SystemWrite},
+		{"env ENV=/tmp/x sh", SystemWrite},
+		{"SHELL=/tmp/evil man ls", SystemWrite},
+		{"SHELL=/tmp/evil echo hi", SystemWrite},
+		{"SHELL=/bin/bash man ls", SystemWrite},
+		{"env SHELL=/tmp/evil man ls", SystemWrite},
 	}
 	for _, tt := range tests {
 		t.Run(tt.cmd, func(t *testing.T) {

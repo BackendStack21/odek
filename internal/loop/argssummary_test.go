@@ -30,7 +30,7 @@ func TestArgv0(t *testing.T) {
 }
 
 func TestArgSummary_Shell(t *testing.T) {
-	s := argSummary("shell", `{"command":"FOO=1 rm -rf /tmp/x"}`)
+	s := argSummary(context.Background(), "shell", `{"command":"FOO=1 rm -rf /tmp/x"}`)
 	if s == nil {
 		t.Fatal("nil summary for shell")
 	}
@@ -43,7 +43,7 @@ func TestArgSummary_Shell(t *testing.T) {
 }
 
 func TestArgSummary_PathTool(t *testing.T) {
-	s := argSummary("write_file", `{"path":"/tmp/out.txt","content":"hi"}`)
+	s := argSummary(context.Background(), "write_file", `{"path":"/tmp/out.txt","content":"hi"}`)
 	if s == nil {
 		t.Fatal("nil summary for write_file")
 	}
@@ -57,7 +57,7 @@ func TestArgSummary_PathTool(t *testing.T) {
 
 func TestArgSummary_BatchPatchListsPaths(t *testing.T) {
 	args := `{"patches":[{"path":"a.py"},{"path":"b.py"}]}`
-	s := argSummary("batch_patch", args)
+	s := argSummary(context.Background(), "batch_patch", args)
 	if s == nil {
 		t.Fatal("nil summary for batch_patch")
 	}
@@ -68,7 +68,7 @@ func TestArgSummary_BatchPatchListsPaths(t *testing.T) {
 }
 
 func TestArgSummary_URLOnlyHost(t *testing.T) {
-	s := argSummary("browser", `{"action":"navigate","url":"https://user:tok@evil.example.com:8443/p?x=1"}`)
+	s := argSummary(context.Background(), "browser", `{"action":"navigate","url":"https://user:tok@evil.example.com:8443/p?x=1"}`)
 	if s == nil {
 		t.Fatal("nil summary for browser")
 	}
@@ -78,7 +78,7 @@ func TestArgSummary_URLOnlyHost(t *testing.T) {
 }
 
 func TestArgSummary_UnknownToolNil(t *testing.T) {
-	if s := argSummary("plan", `{}`); s != nil {
+	if s := argSummary(context.Background(), "plan", `{}`); s != nil {
 		t.Errorf("argSummary(plan) = %v, want nil", s)
 	}
 }
@@ -143,7 +143,7 @@ func TestEngine_Events_IncludeArgsOptIn(t *testing.T) {
 
 // The args_summary values must round-trip through JSON as a usable object.
 func TestArgSummary_JSONRoundTrip(t *testing.T) {
-	s := argSummary("shell", `{"command":"cat /etc/passwd"}`)
+	s := argSummary(context.Background(), "shell", `{"command":"cat /etc/passwd"}`)
 	b, err := json.Marshal(s)
 	if err != nil {
 		t.Fatal(err)

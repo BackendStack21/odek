@@ -759,6 +759,7 @@ func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system
 	auditID := fmt.Sprintf("schedule-%d", time.Now().UnixNano())
 	auditStore := session.NewAuditStore(expandHome("~/.odek/sessions"))
 	ctx = withAuditRecorder(ctx, auditStore, auditID, 1)
+	ctx = withReadLedger(ctx, auditID)
 	result, messages, err := agent.RunWithMessages(ctx, []session.Message{{Role: "user", Content: task}})
 	recordTurnAudit(auditStore, auditID, 1, task, messages)
 	tokens := int64(lastInfo.InputTokens + lastInfo.OutputTokens)

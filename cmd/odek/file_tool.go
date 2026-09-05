@@ -347,7 +347,7 @@ func (t *readFileTool) Call(argsJSON string) (string, error) {
 	// (review HIGH-001): a partial read (offset/limit window over a longer
 	// file) showed the model a prefix — the payload could ride below.
 	if args.Offset <= 1 && args.Limit >= totalLines {
-		danger.RecordRead(resolvedPath)
+		danger.RecordReadCtx(t.toolCtx(), resolvedPath)
 	}
 
 	result := readFileResult{
@@ -466,7 +466,7 @@ func (t *writeFileTool) Call(argsJSON string) (string, error) {
 			return jsonError(fmt.Sprintf("cannot write %q via sandbox: %v", args.Path, err))
 		}
 		// Content authored this session is content the agent has seen (H-6).
-		danger.RecordRead(args.Path)
+		danger.RecordReadCtx(t.toolCtx(), args.Path)
 		return jsonResult(writeFileResult{
 			Success: true,
 			Path:    args.Path,
@@ -513,7 +513,7 @@ func (t *writeFileTool) Call(argsJSON string) (string, error) {
 	}
 
 	// Content authored this session is content the agent has seen (H-6).
-	danger.RecordRead(args.Path)
+	danger.RecordReadCtx(t.toolCtx(), args.Path)
 	return jsonResult(writeFileResult{
 		Success: true,
 		Path:    args.Path,
@@ -1018,7 +1018,7 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 	}
 
 	// Content (re)authored this session is content the agent has seen (H-6).
-	danger.RecordRead(args.Path)
+	danger.RecordReadCtx(t.toolCtx(), args.Path)
 	return jsonResult(patchResult{
 		Success: true,
 		Diff:    wrapUntrusted(t.toolCtx(), "patch:"+args.Path, diff),
@@ -1560,7 +1560,7 @@ func (t *batchReadTool) readSingle(arg batchReadFileArg) batchReadFileResult {
 	// H-6: full-file reads only (review HIGH-001) — same rationale as
 	// read_file.
 	if arg.Offset <= 1 && arg.Limit >= totalLines {
-		danger.RecordRead(resolvedPath)
+		danger.RecordReadCtx(t.toolCtx(), resolvedPath)
 	}
 	return batchReadFileResult{
 		Path:       arg.Path,

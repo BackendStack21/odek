@@ -1992,6 +1992,7 @@ func handleChatMessage(
 		agentCtx, agentCancel = context.WithCancel(context.Background())
 	}
 	agentCtx = withAuditRecorder(agentCtx, auditStore, cs.SessionID, auditTurn)
+	agentCtx = withReadLedger(agentCtx, cs.SessionID)
 	chatCancels.Store(chatID, agentCancel)
 	defer func() {
 		agentCancel()

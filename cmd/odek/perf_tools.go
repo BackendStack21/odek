@@ -288,7 +288,7 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 			}
 			entry.Success = true
 			entry.Diff = wrapUntrusted(t.toolCtx(), "batch_patch:"+p.Path, diff)
-			danger.RecordRead(p.Path) // authored this session (H-6)
+			danger.RecordReadCtx(t.toolCtx(), p.Path) // authored this session (H-6)
 			results[idx] = entry
 			continue
 		}
@@ -334,7 +334,7 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 
 		entry.Success = true
 		entry.Diff = wrapUntrusted(t.toolCtx(), "batch_patch:"+p.Path, diff)
-		danger.RecordRead(p.Path) // authored this session (H-6)
+		danger.RecordReadCtx(t.toolCtx(), p.Path) // authored this session (H-6)
 		results[idx] = entry
 	}
 
@@ -453,7 +453,7 @@ func (t *parallelShellTool) Call(argsJSON string) (result string, err error) {
 	// Pre-check all commands for approval
 	for _, c := range args.Commands {
 		action := t.dangerousConfig.ActionForCommand(c.Command)
-		cls, unreadTargets := danger.ClassifyScriptGate(c.Command)
+		cls, unreadTargets := danger.ClassifyScriptGateCtx(t.toolCtx(), c.Command)
 		// H-6: unread-script execution gates under unread_exec even when
 		// code_execution was allowed or its class trusted (deny wins
 		// outright; both must allow to allow — see shellTool.checkApproval).
@@ -601,7 +601,7 @@ func (t *parallelShellTool) runOne(cmd parallelShellCmd) parallelShellEntry {
 	// H-6: successful read-only viewer runs mark operands as read, same as
 	// the serial shell tool.
 	if err == nil {
-		recordViewerReads(cmd.Command)
+		recordViewerReads(t.toolCtx(), cmd.Command)
 	}
 	entry.Stdout = strings.TrimSpace(stdout.String())
 	entry.Stderr = strings.TrimSpace(stderr.String())
