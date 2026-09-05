@@ -19,6 +19,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"maps"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -3418,12 +3420,16 @@ func overlayFile(base, override FileConfig) FileConfig {
 			base.MCPServers = make(map[string]mcpclient.ServerConfig)
 		}
 		for k, v := range override.MCPServers {
-			// An operator-set auto_approve on the base (global) entry is
-			// trust metadata for the NAME: it survives even when the
-			// project overrides the definition. (Project-side auto_approve
-			// is stripped before this point.)
-			if prev, ok := base.MCPServers[k]; ok && prev.AutoApprove {
-				v.AutoApprove = true
+			// AutoApprove is trust in a specific execution fingerprint
+			// (command/args/env/limits/roots), not in a server name.
+			// A command-less global marker or a project that swaps the
+			// command must not inherit the operator's approval.
+			if prev, ok := base.MCPServers[k]; ok {
+				if prev.AutoApprove && mcpExecEqual(prev, v) {
+					v.AutoApprove = true
+				} else {
+					v.AutoApprove = false
+				}
 			}
 			base.MCPServers[k] = v
 		}
@@ -3464,6 +3470,23 @@ func overlayFile(base, override FileConfig) FileConfig {
 		base.Tools.Disabled = append(base.Tools.Disabled, override.Tools.Disabled...)
 	}
 	return base
+}
+
+// mcpExecEqual reports whether two MCP server configs have the same
+// execution fingerprint. A command-less marker never matches a real
+// server, so name-only global trust cannot bless a project command.
+func mcpExecEqual(a, b mcpclient.ServerConfig) bool {
+	if a.Command == "" || b.Command == "" {
+		return false
+	}
+	if a.Command != b.Command || a.TimeoutSeconds != b.TimeoutSeconds ||
+		a.MaxResponseBytes != b.MaxResponseBytes || a.MaxResultChars != b.MaxResultChars {
+		return false
+	}
+	if !slices.Equal(a.Args, b.Args) || !slices.Equal(a.ArtifactRoots, b.ArtifactRoots) {
+		return false
+	}
+	return maps.Equal(a.Env, b.Env)
 }
 
 // overlaySkills merges a higher-priority SkillsConfig onto a lower-priority one

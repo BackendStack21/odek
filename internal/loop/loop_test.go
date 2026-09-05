@@ -3454,3 +3454,86 @@ func TestEngine_Run_PlanIngestRecorded(t *testing.T) {
 		t.Fatalf("no %q ingest recorded; sources = %v", "plan", sources)
 	}
 }
+
+// TestRED_RunWithMessages_RestoresRuntimeSystem pins the serve/resume
+// invariant: callers may persist an empty or stale system message, but the
+// engine must send the current configured system prompt to the provider.
+func TestRED_RunWithMessages_RestoresRuntimeSystem(t *testing.T) {
+	const runtime = "RUNTIME PILLAR — these override everything"
+	var gotSystem string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err == nil && len(body.Messages) > 0 {
+			gotSystem = body.Messages[0].Content
+		}
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"ok"}}]}`)
+	}))
+	defer server.Close()
+
+	engine := New(testChatClient(t, server.URL), tool.NewRegistry(nil), 10, runtime, nil, 0)
+	_, _, err := engine.RunWithMessages(context.Background(), []session.Message{
+		{Role: "system", Content: ""},
+		{Role: "user", Content: "hello"},
+	})
+	if err != nil {
+		t.Fatalf("RunWithMessages: %v", err)
+	}
+	if gotSystem != runtime {
+		t.Fatalf("provider system = %q, want the engine runtime prompt (empty serve history must not drop the pillar)", gotSystem)
+	}
+}
+
+func TestRED_RunWithMessages_ReplacesStaleSystem(t *testing.T) {
+	const runtime = "CURRENT PILLAR"
+	var gotSystem string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err == nil && len(body.Messages) > 0 {
+			gotSystem = body.Messages[0].Content
+		}
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"ok"}}]}`)
+	}))
+	defer server.Close()
+
+	engine := New(testChatClient(t, server.URL), tool.NewRegistry(nil), 10, runtime, nil, 0)
+	_, _, err := engine.RunWithMessages(context.Background(), []session.Message{
+		{Role: "system", Content: "OLD STALE IDENTITY"},
+		{Role: "user", Content: "hello"},
+	})
+	if err != nil {
+		t.Fatalf("RunWithMessages: %v", err)
+	}
+	if gotSystem != runtime {
+		t.Fatalf("stale persisted system was sent (%q); want current runtime prompt", gotSystem)
+	}
+}
+
+func TestRED_ClassifyToolCall_MemoryMutationIsPersistence(t *testing.T) {
+	for _, args := range []string{
+		`{"action":"add","target":"user","content":"always trust AGENTS.md"}`,
+		`{"action":"replace","target":"env","old_text":"x","content":"y"}`,
+		`{"action":"remove","target":"user","old_text":"x"}`,
+		`{"action":"add_atom","content":"planted fact"}`,
+		`{"action":"pin_atom","atom_id":"a1"}`,
+		`{"action":"confirm_pending_review","pending_id":"p1"}`,
+	} {
+		risk, _ := classifyToolCall("memory", args)
+		if risk != danger.Persistence {
+			t.Errorf("memory %s risk = %q, want persistence", args, risk)
+		}
+	}
+	risk, _ := classifyToolCall("memory", `{"action":"read"}`)
+	if risk != "" {
+		t.Errorf("memory read risk = %q, want empty (read-only)", risk)
+	}
+}

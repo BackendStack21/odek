@@ -1868,6 +1868,10 @@ func handlePrompt(
 		messages = append(messages, session.Message{Role: "user", Content: enrichedPrompt, Name: userName})
 	} else {
 		isNewSession = true
+		// Persist an empty system slot. RunWithMessages restores the
+		// current engine prompt at run time so session files never store
+		// identity, home paths, or the security pillar (and so a stale
+		// stored prompt cannot override the runtime one).
 		messages = []session.Message{
 			{Role: "system", Content: ""},
 			{Role: "user", Content: enrichedPrompt, Name: userName},
@@ -2174,14 +2178,20 @@ func (w *wsStreamWriter) Write(p []byte) (int, error) {
 
 // checkLocalOrigin rejects WebSocket upgrades from non-local origins so a
 // page open elsewhere in the user's browser cannot drive the agent or
-// approve dangerous tool calls. The default policy allows any port on
-// localhost / 127.0.0.1 / [::1] and an empty Origin (curl, native
-// clients). See IMPROVEMENTS_ROADMAP.md S-M1.
+// approve dangerous tool calls. The policy allows the exact request
+// host:port on localhost / 127.0.0.1 / [::1] and an empty Origin (curl,
+// native clients). See IMPROVEMENTS_ROADMAP.md S-M1.
 //
 // Note: this check is now defense-in-depth. The primary CSRF protection is
 // the per-instance wsToken validated by validateServeToken.
 func checkLocalOrigin(_ *golangws.Config, req *http.Request) error {
-	origin := req.Header.Get("Origin")
+	return exactLocalOrigin(req.Header.Get("Origin"), req.Host)
+}
+
+// exactLocalOrigin accepts an empty Origin (non-browser clients) or a
+// loopback Origin whose host:port matches the request Host. Hostname-only
+// matching is not enough: cookies are host-scoped across ports.
+func exactLocalOrigin(origin, reqHost string) error {
 	if origin == "" {
 		return nil // non-browser clients (curl, ws CLI) — no Origin to forge
 	}
@@ -2190,10 +2200,32 @@ func checkLocalOrigin(_ *golangws.Config, req *http.Request) error {
 		return fmt.Errorf("invalid Origin %q", origin)
 	}
 	host := u.Hostname()
-	if host == "localhost" || host == "127.0.0.1" || host == "::1" {
-		return nil
+	if host != "localhost" && host != "127.0.0.1" && host != "::1" {
+		return fmt.Errorf("origin %q not allowed (only localhost is accepted)", origin)
 	}
-	return fmt.Errorf("origin %q not allowed (only localhost is accepted)", origin)
+	if !originHostMatchesRequest(u, reqHost) {
+		return fmt.Errorf("origin %q does not match Host %q", origin, reqHost)
+	}
+	return nil
+}
+
+func originHostMatchesRequest(u *url.URL, reqHost string) bool {
+	if u == nil || reqHost == "" {
+		return false
+	}
+	originHost := u.Host
+	if u.Port() == "" {
+		port := "80"
+		if strings.EqualFold(u.Scheme, "https") {
+			port = "443"
+		}
+		originHost = net.JoinHostPort(u.Hostname(), port)
+	}
+	req := reqHost
+	if _, _, err := net.SplitHostPort(req); err != nil {
+		req = net.JoinHostPort(strings.Trim(req, "[]"), "80")
+	}
+	return originHost == req
 }
 
 const (
@@ -2325,18 +2357,9 @@ func serveWSUpgrades(
 func requireLocalOrigin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if isStateChangingMethod(r.Method) {
-			origin := r.Header.Get("Origin")
-			if origin != "" {
-				u, err := url.Parse(origin)
-				if err != nil {
-					http.Error(w, "invalid Origin", http.StatusForbidden)
-					return
-				}
-				host := u.Hostname()
-				if host != "localhost" && host != "127.0.0.1" && host != "::1" {
-					http.Error(w, "Origin not allowed", http.StatusForbidden)
-					return
-				}
+			if err := exactLocalOrigin(r.Header.Get("Origin"), r.Host); err != nil {
+				http.Error(w, "Origin not allowed", http.StatusForbidden)
+				return
 			}
 		}
 		w.Header().Set("Vary", "Origin")

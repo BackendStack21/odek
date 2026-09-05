@@ -1648,14 +1648,28 @@ func (e *Engine) Run(ctx context.Context, task string) (string, error) {
 	return result, err
 }
 
+// ensureRuntimeSystem makes the engine's current system prompt the first
+// message. Persisted histories (serve, continue, REPL) may carry an empty
+// or stale system entry; those are data, not authority. Digest/plan
+// messages stay intact — they are prepended after the runtime prompt.
+func (e *Engine) ensureRuntimeSystem(messages []session.Message) []session.Message {
+	if e.system == "" {
+		return messages
+	}
+	sys := session.Message{Role: "system", Content: e.system}
+	if len(messages) == 0 {
+		return []session.Message{sys}
+	}
+	if messages[0].Role != "system" || isDigestMessage(messages[0]) || isPlanMessage(messages[0]) {
+		return append([]session.Message{sys}, messages...)
+	}
+	messages[0].Content = e.system
+	return messages
+}
+
 // RunWithMessages executes the agent loop starting from a pre-built
-// message history. The messages must include the system prompt (if any),
-// all prior conversation turns, and the new user message as the last
-// entry. Returns the final answer plus the full updated message history
-// so callers can persist it (e.g. to a session file).
-//
-// Use this for multi-turn conversations: load the session, append the
-// new user message, call RunWithMessages, then save the returned messages.
+// message history. The engine's current system prompt is always applied
+// (empty or stale persisted system entries are replaced).
 func (e *Engine) RunWithMessages(ctx context.Context, messages []session.Message) (string, []session.Message, error) {
 	// Reset token accounting for this run
 	e.memMsgIdx = -1
@@ -1712,6 +1726,7 @@ type trustAllSetter interface{ SetTrustAll(bool) }
 // It runs the ReAct loop on the given messages and returns the final
 // answer plus the complete updated message history.
 func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (string, []session.Message, error) {
+	messages = e.ensureRuntimeSystem(messages)
 	tools := e.buildToolDefs()
 	startTime := time.Now()
 	// Hard execution budgets (odek-extension/v1): nil when no limits are
@@ -3006,6 +3021,21 @@ func classifyToolCall(name, args string) (danger.RiskClass, string) {
 		// network, or subprocess surface. An explicit case documents intent
 		// and survives future default-branch changes (docs/PLANNING.md).
 		return "", ""
+	case "memory":
+		var p struct {
+			Action string `json:"action"`
+		}
+		if err := json.Unmarshal([]byte(args), &p); err != nil || p.Action == "" {
+			return "", ""
+		}
+		switch p.Action {
+		case "add", "replace", "remove", "consolidate",
+			"add_atom", "forget_atom", "pin_atom",
+			"confirm_pending_review", "reject_pending_review":
+			return danger.Persistence, "memory " + p.Action
+		default:
+			return "", ""
+		}
 	default:
 		// MCP tools are registered with names of the form <server>__<tool>.
 		// They bypass the built-in danger classifier because the server, not

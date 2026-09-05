@@ -1015,7 +1015,7 @@ func dialTestWS(t *testing.T, addr string) *golangws.Conn {
 	}
 
 	wsURL := "ws://" + addr + "/ws"
-	conn, err := golangws.Dial(wsURL, wsTokenProtocolPrefix+token, "http://localhost")
+	conn, err := golangws.Dial(wsURL, wsTokenProtocolPrefix+token, "http://"+addr)
 	if err != nil {
 		t.Fatalf("Dial(%q): %v", wsURL, err)
 	}

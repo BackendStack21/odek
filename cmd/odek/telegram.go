@@ -1282,14 +1282,11 @@ func spawnChildWithStarter(starter processStarter) error {
 
 // seedSystemMessage guarantees the system prompt is messages[0].
 //
-// RunWithMessages — unlike Run — does NOT inject the engine's system message,
-// so every caller that resumes a message history must seed it (the run/continue
-// commands do the same). Without this, a fresh Telegram chat reaches the model
-// with no system prompt at all and the agent answers as the provider's base
-// identity (e.g. "I am Claude") instead of from IDENTITY.md / the default.
-//
-// New or system-less histories get the prompt prepended; resumed histories get
-// messages[0] refreshed so IDENTITY.md / prompt changes take effect next turn.
+// RunWithMessages also restores the engine prompt (empty or stale slots
+// are replaced), so this is belt-and-suspenders for Telegram: new or
+// system-less histories get the prompt prepended; resumed histories get
+// messages[0] refreshed so IDENTITY.md / prompt changes take effect this
+// turn even before the loop starts.
 func seedSystemMessage(messages []session.Message, system string) []session.Message {
 	if len(messages) == 0 || messages[0].Role != "system" {
 		return append([]session.Message{{Role: "system", Content: system}}, messages...)

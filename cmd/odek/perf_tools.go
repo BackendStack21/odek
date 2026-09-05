@@ -952,6 +952,7 @@ func evalNode(node ast.Expr) (float64, error) {
 type diffTool struct {
 	ctxTool
 	dangerousConfig danger.DangerousConfig
+	restrictToCWD   bool // sandbox: reject paths that escape the workspace
 }
 
 func (t *diffTool) Name() string { return "diff" }
@@ -1014,6 +1015,9 @@ func (t *diffTool) Call(argsJSON string) (result string, err error) {
 	if args.PathA != "" && args.PathB != "" {
 		pathA, pathB = args.PathA, args.PathB
 		for _, p := range []string{args.PathA, args.PathB} {
+			if err := confineIfRestricted(t.restrictToCWD, p); err != nil {
+				return jsonError(err.Error())
+			}
 			if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
 				Name: "diff", Resource: p, Risk: classifyResolvedPath(p),
 			}, nil); err != nil {
@@ -1032,6 +1036,9 @@ func (t *diffTool) Call(argsJSON string) (result string, err error) {
 		linesB = strings.Split(string(data), "\n")
 	} else if args.Path != "" {
 		pathA, pathB = args.Path, "<inline>"
+		if err := confineIfRestricted(t.restrictToCWD, args.Path); err != nil {
+			return jsonError(err.Error())
+		}
 		if len(args.Content) > maxFileReadBytes {
 			return jsonResult(diffResult{
 				Error: fmt.Sprintf("inline content too large (%d bytes, max %d)", len(args.Content), maxFileReadBytes),
@@ -1158,6 +1165,7 @@ const maxCountFiles = 20
 
 type countLinesTool struct {
 	dangerousConfig danger.DangerousConfig
+	restrictToCWD   bool // sandbox: reject paths that escape the workspace
 }
 
 func (t *countLinesTool) Name() string { return "count_lines" }
@@ -1248,6 +1256,9 @@ func (t *countLinesTool) countFile(path string) (entry countFileEntry) {
 	if path == "" {
 		return countFileEntry{Error: "path is required"}
 	}
+	if err := confineIfRestricted(t.restrictToCWD, path); err != nil {
+		return countFileEntry{Path: path, Error: err.Error()}
+	}
 
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
 		Name: "count_lines", Resource: path, Risk: classifyResolvedPath(path),
@@ -1331,6 +1342,7 @@ const maxGrepPatterns = 10
 type multiGrepTool struct {
 	ctxTool
 	dangerousConfig danger.DangerousConfig
+	restrictToCWD   bool // sandbox: reject roots that escape the workspace
 }
 
 func (t *multiGrepTool) Name() string { return "multi_grep" }
@@ -1401,6 +1413,9 @@ func (t *multiGrepTool) Call(argsJSON string) (string, error) {
 	}
 	if args.Limit > maxSearchLimit {
 		args.Limit = maxSearchLimit
+	}
+	if err := confineIfRestricted(t.restrictToCWD, args.Path); err != nil {
+		return jsonError(err.Error())
 	}
 
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
@@ -1544,6 +1559,7 @@ func (t *multiGrepTool) searchPattern(pattern, root, fileGlob string, limit int)
 type jsonQueryTool struct {
 	ctxTool
 	dangerousConfig danger.DangerousConfig
+	restrictToCWD   bool // sandbox: reject paths that escape the workspace
 }
 
 func (t *jsonQueryTool) Name() string { return "json_query" }
@@ -1588,6 +1604,9 @@ func (t *jsonQueryTool) Call(argsJSON string) (result string, err error) {
 	}
 	if args.Path == "" {
 		return jsonError("path is required")
+	}
+	if err := confineIfRestricted(t.restrictToCWD, args.Path); err != nil {
+		return jsonError(err.Error())
 	}
 
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
@@ -1716,6 +1735,7 @@ func jsonPathQuery(data interface{}, query string) (interface{}, error) {
 type treeTool struct {
 	ctxTool
 	dangerousConfig danger.DangerousConfig
+	restrictToCWD   bool // sandbox: reject roots that escape the workspace
 }
 
 func (t *treeTool) Name() string { return "tree" }
@@ -1774,6 +1794,9 @@ func (t *treeTool) Call(argsJSON string) (result string, err error) {
 	}
 	if args.MaxDepth > 10 {
 		args.MaxDepth = 10
+	}
+	if err := confineIfRestricted(t.restrictToCWD, args.Path); err != nil {
+		return jsonError(err.Error())
 	}
 
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
@@ -1905,6 +1928,7 @@ const maxChecksumFiles = 10
 
 type checksumTool struct {
 	dangerousConfig danger.DangerousConfig
+	restrictToCWD   bool // sandbox: reject paths that escape the workspace
 }
 
 func (t *checksumTool) Name() string { return "checksum" }
@@ -1984,6 +2008,9 @@ func (t *checksumTool) hashFile(arg checksumFileArg) (entry checksumEntry) {
 	if arg.Path == "" {
 		return checksumEntry{Error: "path is required"}
 	}
+	if err := confineIfRestricted(t.restrictToCWD, arg.Path); err != nil {
+		return checksumEntry{Path: arg.Path, Algorithm: strings.ToLower(arg.Algorithm), Error: err.Error()}
+	}
 	algo := strings.ToLower(arg.Algorithm)
 	if algo == "" {
 		algo = "sha256"
@@ -2037,6 +2064,7 @@ func (t *checksumTool) hashFile(arg checksumFileArg) (entry checksumEntry) {
 type sortTool struct {
 	ctxTool
 	dangerousConfig danger.DangerousConfig
+	restrictToCWD   bool // sandbox: reject paths that escape the workspace
 }
 
 func (t *sortTool) Name() string { return "sort" }
@@ -2133,6 +2161,10 @@ func (t *sortTool) Call(argsJSON string) (result string, err error) {
 	var allLines []string
 	var results []sortEntry
 	for _, p := range paths {
+		if err := confineIfRestricted(t.restrictToCWD, p); err != nil {
+			results = append(results, sortEntry{File: p, Error: err.Error()})
+			continue
+		}
 		if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
 			Name: "sort", Resource: p, Risk: classifyResolvedPath(p),
 		}, nil); err != nil {
@@ -2239,6 +2271,7 @@ const maxHeadTailTotalBytes = maxReadBytes // 1 MiB per file
 type headTailTool struct {
 	ctxTool
 	dangerousConfig danger.DangerousConfig
+	restrictToCWD   bool // sandbox: reject paths that escape the workspace
 }
 
 func (t *headTailTool) Name() string { return "head_tail" }
@@ -2324,6 +2357,9 @@ func (t *headTailTool) readPreview(path string, n int, mode string) (result head
 			result = headTailFileResult{Path: path, Error: fmt.Sprintf("internal error: %v", r)}
 		}
 	}()
+	if err := confineIfRestricted(t.restrictToCWD, path); err != nil {
+		return headTailFileResult{Path: path, Error: err.Error()}
+	}
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
 		Name: "head_tail", Resource: path, Risk: classifyResolvedPath(path),
 	}, nil); err != nil {
@@ -2433,6 +2469,7 @@ func truncateHeadTailLines(lines []string) []string {
 type base64Tool struct {
 	ctxTool
 	dangerousConfig danger.DangerousConfig
+	restrictToCWD   bool // sandbox: reject paths that escape the workspace
 }
 
 func (t *base64Tool) Name() string { return "base64" }
@@ -2506,6 +2543,9 @@ func (t *base64Tool) Call(argsJSON string) (result string, err error) {
 	}
 
 	// File mode
+	if err := confineIfRestricted(t.restrictToCWD, args.Path); err != nil {
+		return jsonError(err.Error())
+	}
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
 		Name: "base64", Resource: args.Path, Risk: classifyResolvedPath(args.Path),
 	}, nil); err != nil {
@@ -2527,6 +2567,7 @@ func (t *base64Tool) Call(argsJSON string) (result string, err error) {
 type trTool struct {
 	ctxTool
 	dangerousConfig danger.DangerousConfig
+	restrictToCWD   bool // sandbox: reject paths that escape the workspace
 }
 
 func (t *trTool) Name() string { return "tr" }
@@ -2596,6 +2637,9 @@ func (t *trTool) Call(argsJSON string) (result string, err error) {
 	var text string
 	fromFile := false
 	if args.Path != "" {
+		if err := confineIfRestricted(t.restrictToCWD, args.Path); err != nil {
+			return jsonError(err.Error())
+		}
 		if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
 			Name: "tr", Resource: args.Path, Risk: classifyResolvedPath(args.Path),
 		}, nil); err != nil {
@@ -2680,6 +2724,7 @@ const maxWordCountFiles = 20
 
 type wordCountTool struct {
 	dangerousConfig danger.DangerousConfig
+	restrictToCWD   bool // sandbox: reject paths that escape the workspace
 }
 
 func (t *wordCountTool) Name() string { return "word_count" }
@@ -2763,6 +2808,9 @@ func (t *wordCountTool) countWords(path string) (entry wordCountEntry) {
 			entry = wordCountEntry{Path: path, Error: fmt.Sprintf("internal error: %v", r)}
 		}
 	}()
+	if err := confineIfRestricted(t.restrictToCWD, path); err != nil {
+		return wordCountEntry{Path: path, Error: err.Error()}
+	}
 	if err := t.dangerousConfig.CheckOperation(danger.ToolOperation{
 		Name: "word_count", Resource: path, Risk: classifyResolvedPath(path),
 	}, nil); err != nil {

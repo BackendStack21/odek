@@ -185,6 +185,7 @@ type visionTool struct {
 	ctxTool
 	dangerousConfig danger.DangerousConfig
 	visionCfg       config.VisionConfig
+	restrictToCWD   bool // sandbox: reject paths that escape the workspace
 }
 
 func newVisionTool(dc danger.DangerousConfig, vc config.VisionConfig) *visionTool {
@@ -240,6 +241,9 @@ func (t *visionTool) Call(argsJSON string) (result string, err error) {
 	}
 	if args.Path == "" {
 		return jsonError("path is required")
+	}
+	if err := confineIfRestricted(t.restrictToCWD, args.Path); err != nil {
+		return jsonError(err.Error())
 	}
 	prompt := args.Prompt
 	if prompt == "" {
