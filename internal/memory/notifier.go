@@ -24,7 +24,9 @@ type MemoryEvent struct {
 	//   "episode_stored"        — a session episode was extracted + persisted
 	//                             (SessionID, Count=turns, Content=summary,
 	//                             Untrusted)
-	//   "episode_deduped"       — a new episode replaced a near-duplicate
+	//   "episode_deduped"       — a new episode replaced a near-duplicate,
+	//                             or an untrusted near-duplicate of a trusted
+	//                             episode was dropped without storing
 	//                             (SessionID, Similarity)
 	//   "episode_evicted"       — episodes were pruned by TTL/count cap
 	//                             (Sessions, Count=number evicted)

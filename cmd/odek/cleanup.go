@@ -82,7 +82,7 @@ func startStorageMaintenance(ctx context.Context, resolved config.ResolvedConfig
 // success line when there was nothing to do.
 func printCleanupReport(r maintenance.Report) {
 	if r.SessionsRemoved == 0 && r.AuditRemoved == 0 && r.PlansRemoved == 0 &&
-		r.MediaFreedBytes == 0 && len(r.LogsRotated) == 0 {
+		r.ArtifactsRemoved == 0 && r.MediaFreedBytes == 0 && len(r.LogsRotated) == 0 {
 		fmt.Println("Storage is clean — nothing to remove.")
 		return
 	}
@@ -90,6 +90,7 @@ func printCleanupReport(r maintenance.Report) {
 	fmt.Printf("  sessions removed:      %d\n", r.SessionsRemoved)
 	fmt.Printf("  audit records removed: %d\n", r.AuditRemoved)
 	fmt.Printf("  plans removed:         %d\n", r.PlansRemoved)
+	fmt.Printf("  artifacts removed:     %d\n", r.ArtifactsRemoved)
 	fmt.Printf("  media freed:           %s\n", humanBytes(r.MediaFreedBytes))
 	for _, p := range r.LogsRotated {
 		fmt.Printf("  log rotated:           %s\n", p)
