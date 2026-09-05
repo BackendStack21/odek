@@ -406,7 +406,9 @@ func (r *serveRun) record(v any) error {
 	defer r.mu.Unlock()
 	switch m["type"] {
 	case "approval_request":
-		if req, ok := approvalRequestFromMap(m); ok {
+		// A late frame from a still-draining loop must not resurrect a
+		// terminal (cancelled/completed/failed) run as waiting_approval.
+		if req, ok := approvalRequestFromMap(m); ok && !runStatusTerminal(r.Status) {
 			r.pending[req.ID] = req
 			r.Status = "waiting_approval"
 		}
@@ -491,6 +493,11 @@ func approvalRequestFromMap(m map[string]any) (*approvalRequest, bool) {
 func (r *serveRun) recordApprovalRequest(req approvalRequest) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if runStatusTerminal(r.Status) {
+		// finish() cleared r.pending; never repopulate it for a dead run.
+		r.cond.Broadcast()
+		return
+	}
 	cp := req
 	r.pending[req.ID] = &cp
 	if r.Status == "running" {
