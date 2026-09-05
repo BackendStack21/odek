@@ -1047,6 +1047,18 @@ func TestParseSubagentFlags_UnknownFlag(t *testing.T) {
 	}
 }
 
+func TestParseSubagentFlags_InvalidNumeric(t *testing.T) {
+	if _, err := parseSubagentFlags([]string{"--goal", "t", "--timeout", "nope"}); err == nil {
+		t.Fatal("expected error for non-integer --timeout")
+	}
+	if _, err := parseSubagentFlags([]string{"--goal", "t", "--max-iter", "x"}); err == nil {
+		t.Fatal("expected error for non-integer --max-iter")
+	}
+	if _, err := parseSubagentFlags([]string{"--goal", "t", "--timeout"}); err == nil {
+		t.Fatal("expected error for missing --timeout value")
+	}
+}
+
 func isFlagParseError(err error) bool {
 	if err == nil {
 		return false

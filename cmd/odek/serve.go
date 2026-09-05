@@ -1416,9 +1416,13 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 			case promptCh <- data:
 			default:
 				// Processor is busy and the queue is full — only reachable by a
-				// client sending prompts faster than they can run.
+				// client sending prompts faster than they can run. Always NACK:
+				// silently dropping session_switch / cancel leaves the UI
+				// believing a state change happened.
 				if msgType.Type == "prompt" {
 					writeWSError(conn, "busy: a prompt is already running")
+				} else {
+					writeWSError(conn, "busy: "+msgType.Type+" dropped (queue full)")
 				}
 			}
 		}
@@ -1671,7 +1675,7 @@ func handleWSCancel(store *session.Store, conn *golangws.Conn, msg wsClientMsg) 
 		writeWSError(conn, "cancel: session not found")
 		return
 	}
-	if _, ok := validateSessionToken(store, sess, msg.AuthToken); !ok {
+	if !validateSessionTokenStrict(store, sess, msg.AuthToken) {
 		writeWSError(conn, "cancel: invalid session token")
 		return
 	}
@@ -1701,7 +1705,7 @@ func handleWSSubagentCancel(store *session.Store, conn *golangws.Conn, msg wsCli
 		writeWSError(conn, "subagent_cancel: session not found")
 		return
 	}
-	if _, ok := validateSessionToken(store, sess, msg.AuthToken); !ok {
+	if !validateSessionTokenStrict(store, sess, msg.AuthToken) {
 		writeWSError(conn, "subagent_cancel: invalid session token")
 		return
 	}
@@ -3087,7 +3091,7 @@ func handleCancel(store *session.Store) http.HandlerFunc {
 			http.Error(w, "session not found", http.StatusNotFound)
 			return
 		}
-		if _, ok := validateSessionToken(store, sess, sessionTokenFromRequest(r)); !ok {
+		if !validateSessionTokenStrict(store, sess, sessionTokenFromRequest(r)) {
 			http.Error(w, "invalid session token", http.StatusUnauthorized)
 			return
 		}

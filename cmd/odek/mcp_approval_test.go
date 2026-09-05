@@ -593,3 +593,36 @@ func TestApproveMCPTools_SchemaChangeReprompts(t *testing.T) {
 		t.Errorf("error = %q, want explicit-approval error", err)
 	}
 }
+
+func TestSaveMCPApprovals_DoesNotFollowSymlink(t *testing.T) {
+	home := setupTestHome(t)
+	dir := filepath.Join(home, ".odek")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(t.TempDir(), "victim")
+	if err := os.WriteFile(victim, []byte("keep-me"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, mcpApprovalsFile)
+	if err := os.Symlink(victim, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveMCPApprovals(map[string]bool{"srv": true}); err != nil {
+		t.Fatalf("saveMCPApprovals: %v", err)
+	}
+	got, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "keep-me" {
+		t.Errorf("symlink target overwritten: %q", got)
+	}
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("approval file is still a symlink — fsatomic must replace the directory entry")
+	}
+}

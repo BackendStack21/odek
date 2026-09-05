@@ -114,6 +114,9 @@ func TestClassify_SystemWrite_Commands(t *testing.T) {
 		{"groupadd developers", SystemWrite},
 		{"passwd john", SystemWrite},
 		{"chown root:root /etc/hosts", SystemWrite},
+		{"GIT_EXTERNAL_DIFF=/tmp/evil git diff", SystemWrite},
+		{"GIT_DIFFTOOL=/tmp/evil git difftool", SystemWrite},
+		{"GIT_PAGER=less git --paginate log", SystemWrite},
 	}
 	for _, tt := range tests {
 		t.Run(tt.cmd, func(t *testing.T) {
@@ -135,6 +138,9 @@ func TestClassify_Destructive_Commands(t *testing.T) {
 		{"rm -rf /var", Destructive},
 		{"rm -rf ./", Destructive},
 		{"rm -rf ./..", Destructive},
+		{"rm -rf ./.", Destructive},
+		{"rm -rf ././.", Destructive},
+		{"rm -rf ./././.", Destructive},
 		{"rm ${X:--rf} /", Destructive},
 		{"rm ${X:--rf} ./", Destructive},
 		{"dd if=/dev/zero of=/dev/sda", Destructive},

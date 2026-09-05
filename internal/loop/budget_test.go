@@ -125,6 +125,56 @@ func TestEngine_Budget_InputTokensExceeded(t *testing.T) {
 	}
 }
 
+func TestEngine_Budget_FinalAnswerKeptOnTokenCap(t *testing.T) {
+	// A tool-less completion that crosses the input cap is still a paid
+	// final answer — discard is correct for tool-call turns (dangling
+	// calls) but throws away the only useful artifact here.
+	const answer = "here is the completed report"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, budgetFinalResponse(answer, 1000, 10))
+	}))
+	defer server.Close()
+
+	engine := New(testChatClient(t, server.URL),
+		tool.NewRegistry(nil), 10, "", nil, 0)
+	engine.SetLimits(budget.Limits{MaxInputTokens: 500}, "test-model")
+
+	var persisted [][]session.Message
+	engine.SetMessagesPersistCallback(func(msgs []session.Message) {
+		persisted = append(persisted, msgs)
+	})
+
+	got, messages, err := engine.RunWithMessages(context.Background(), []session.Message{
+		{Role: "user", Content: "summarize"},
+	})
+	berr, ok := budget.As(err)
+	if !ok {
+		t.Fatalf("expected typed budget.Error, got %v", err)
+	}
+	if berr.Limit != budget.LimitInputTokens {
+		t.Errorf("limit = %s, want input_tokens", berr.Limit)
+	}
+	if got != answer {
+		t.Errorf("result = %q, want the paid final answer", got)
+	}
+	if len(persisted) == 0 {
+		t.Fatal("persist callback must fire")
+	}
+	last := persisted[len(persisted)-1]
+	found := false
+	for _, m := range last {
+		if m.Role == "assistant" && m.Content == answer && len(m.ToolCalls) == 0 {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("persisted messages missing final answer: %+v", last)
+	}
+	if len(messages) == 0 || messages[len(messages)-1].Content != answer {
+		t.Errorf("returned messages missing final answer")
+	}
+}
+
 func TestEngine_Budget_OutputTokensExceeded(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, budgetToolCallResponse("call_1", "count", 10, 600))

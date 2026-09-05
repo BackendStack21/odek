@@ -492,10 +492,17 @@ func (t *delegateTasksTool) runTask(taskIdx int, taskID, goal, taskContext, guid
 	// result framing then falls through to the ctx-based status.
 	cmd.WaitDelay = subagentWaitDelay
 
-	stdout, err := cmd.StdoutPipe()
+	// Parent-owned pipe: cmd.StdoutPipe() puts the reader in
+	// closeAfterWait, so Wait() closes it under a not-yet-scheduled
+	// scanner and a fast child (the mixed-profile mock) loses its
+	// result to `read |0: file already closed`. We dup the write end
+	// to the child, close our copy after Start, and only force-close
+	// the reader if the scanner is still blocked (orphaned writers).
+	stdout, stdoutW, err := os.Pipe()
 	if err != nil {
 		return fmt.Sprintf(`{"error":"pipe: %v"}`, err)
 	}
+	cmd.Stdout = stdoutW
 
 	// Capture stderr for optional relay
 	stderrBuf := &strings.Builder{}
@@ -533,8 +540,13 @@ func (t *delegateTasksTool) runTask(taskIdx int, taskID, goal, taskContext, guid
 	}
 
 	if err := cmd.Start(); err != nil {
+		_ = stdoutW.Close()
+		_ = stdout.Close()
 		return fmt.Sprintf(`{"error":"start: %v"}`, err)
 	}
+	// Close the parent write end so we see EOF when the child (and any
+	// inherited writers) close theirs.
+	_ = stdoutW.Close()
 	t.emitSubagentEvent(subagentSpawnedEvent(taskID, cmd.Process.Pid, subagentDepth()+1, int(t.timeout.Seconds()), goal))
 
 	// Read stdout line-by-line — NDJSON progress lines followed by final JSON
@@ -545,12 +557,12 @@ func (t *delegateTasksTool) runTask(taskIdx int, taskID, goal, taskContext, guid
 	if t.OnSubagentLog != nil {
 		onLog = func(line string) { t.OnSubagentLog(taskIdx, taskID, line) }
 	}
-	// Scan the child's stdout concurrently with cmd.Wait. Ordering a
-	// full-drain read BEFORE Wait would let a killed child's orphaned
-	// grandchildren (a backgrounded sleep inheriting the stdout fd) hold
-	// the pipe open past the cancel — the stop would only land when the
-	// fd holder exits. Wait returns at process exit; we then close our
-	// pipe end so the scanner cannot hang on an inherited fd.
+	// Scan the child's stdout concurrently with cmd.Wait. A full-drain
+	// read BEFORE Wait would let a killed child's orphaned grandchildren
+	// (a backgrounded sleep inheriting the stdout fd) hold the pipe open
+	// past the cancel. Wait returns at process exit; the scanner is given
+	// a grace period to observe EOF, then we force-close the parent read
+	// end if it is still blocked.
 	type scanResult struct {
 		result   map[string]any
 		lastLine string
@@ -570,12 +582,18 @@ func (t *delegateTasksTool) runTask(taskIdx int, taskID, goal, taskContext, guid
 	}()
 
 	waitErr := cmd.Wait()
-	// The process is gone; unblock the scanner if it is still reading
-	// (no-op when the scan already hit EOF). Any buffered final line lost
-	// to the close only matters on the cancel path, whose result framing
-	// is "cancelled" regardless.
+	// Child is gone. Prefer letting the scanner observe EOF from the
+	// child's write-end close so a fast result is not dropped. Force-close
+	// the parent read end only if the scanner is still blocked (a
+	// grandchild inherited stdout).
+	var scan scanResult
+	select {
+	case scan = <-scanCh:
+	case <-time.After(subagentStdoutCloseGrace):
+		_ = stdout.Close()
+		scan = <-scanCh
+	}
 	_ = stdout.Close()
-	scan := <-scanCh
 	result, lastLine, scannerErr := scan.result, scan.lastLine, scan.err
 
 	status := subagentExitStatus(result, waitErr, ctx, scannerErr)
@@ -850,6 +868,13 @@ func renderArtifacts(refs []artifact.Ref, roots []string, taskIdx int, taskID st
 // after the child process exits (see the WaitDelay assignment in runTask).
 const subagentWaitDelay = time.Second
 
+// subagentStdoutCloseGrace is how long after the child exits we wait for
+// the scanner to observe EOF before force-closing the parent read end.
+// cmd.StdoutPipe + immediate Close raced a not-yet-scheduled scanner and
+// dropped fast mock results (`file already closed`). Inherited-fd hangs
+// still unblock after this grace.
+const subagentStdoutCloseGrace = 200 * time.Millisecond
+
 // maxSubagentLine caps a single NDJSON line read from a sub-agent's stdout.
 // Streamed tool_call events embed full tool arguments (e.g. a large write_file
 // or patch), which routinely exceed bufio.Scanner's default 64KB token cap.
@@ -927,7 +952,21 @@ func scanSubagentStream(r io.Reader, onLog func(line string)) (result map[string
 			result = rmap
 		}
 	}
-	return result, lastLine, scanner.Err()
+	err = scanner.Err()
+	if closedPipeErr(err) {
+		err = nil
+	}
+	return result, lastLine, err
+}
+
+// closedPipeErr reports a read from a parent pipe whose read end was
+// already closed (cmd.Wait / force-close racing the scanner). Treat as
+// EOF so a result line that already parsed is not discarded.
+func closedPipeErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, os.ErrClosed) || strings.Contains(err.Error(), "file already closed")
 }
 
 // progressLimitExceeded reports whether err was caused by the sub-agent progress

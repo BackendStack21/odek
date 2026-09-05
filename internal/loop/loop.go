@@ -2264,6 +2264,21 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 		// still ends in a safe state here (the assistant message for this
 		// response has not been appended yet).
 		if berr := e.budget.CheckUsageWithCache(int64(e.TotalInputTokens), int64(e.TotalCacheReadTokens), int64(e.TotalCacheCreationTokens), int64(e.TotalOutputTokens)); berr != nil {
+			if len(result.ToolCalls) == 0 {
+				// A tool-less completion is the final answer — keep it. The
+				// tokens/cost are already billed; discarding the content
+				// (the tool-call path's dangling-call protection) throws
+				// away the only useful artifact. Persist the answer, still
+				// return the typed budget error.
+				result.Content = e.reconcileFinalReply(result.Content)
+				messages = append(messages, session.Message{
+					Role:             "assistant",
+					Content:          result.Content,
+					ReasoningContent: result.ReasoningContent,
+				})
+				_, messages, err := e.budgetExceeded(ctx, messages, berr, i+1)
+				return result.Content, messages, err
+			}
 			return e.budgetExceeded(ctx, messages, berr, i+1)
 		}
 

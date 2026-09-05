@@ -32,6 +32,39 @@ const episodeIndexFile = "index.json"
 // an empty result instead of falling back to unranked candidates.
 var errNoRelevantEpisodes = errors.New("memory: ranker found no relevant episodes")
 
+// episodesDirLocks serializes index read-modify-write across every
+// EpisodeStore that shares a directory within this process. The per-instance
+// mutex only guards one store, but `odek serve` builds one MemoryManager
+// (and thus one EpisodeStore) per WebSocket — all pointing at ~/.odek/memory.
+// Without a directory lock, connection B's warm idxCache can rewrite
+// index.json over connection A's promote. Keyed by absolute directory.
+var (
+	episodesDirLocksMu sync.Mutex
+	episodesDirLocks   = map[string]*sync.Mutex{}
+)
+
+func episodesDirLock(dir string) *sync.Mutex {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		abs = dir
+	}
+	episodesDirLocksMu.Lock()
+	defer episodesDirLocksMu.Unlock()
+	mu := episodesDirLocks[abs]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		episodesDirLocks[abs] = mu
+	}
+	return mu
+}
+
+func (e *EpisodeStore) invalidateIndexCache() {
+	e.muCache.Lock()
+	e.idxCache = nil
+	e.idxMtime = time.Time{}
+	e.muCache.Unlock()
+}
+
 // EpisodeMeta holds metadata for a single episode.
 type EpisodeMeta struct {
 	SessionID  string            `json:"session_id"`
@@ -53,12 +86,15 @@ type RankStrategy func(query string, episodes []EpisodeMeta) ([]EpisodeMeta, err
 //
 // The in-memory idxCache avoids reading + unmarshalling index.json from
 // disk on every FormatEpisodeContext call (which fires every loop turn).
-// The cache is invalidated after every write.
+// The cache is invalidated after every write and is also discarded when
+// the on-disk mtime changes, so a sibling EpisodeStore (odek serve builds
+// one MemoryManager per WebSocket) cannot serve a stale promotion bit.
 type EpisodeStore struct {
 	mu       sync.Mutex
 	dir      string
 	rankFn   RankStrategy
 	idxCache []EpisodeMeta // cached index, nil = not loaded
+	idxMtime time.Time     // mtime of index.json when idxCache was loaded
 	muCache  sync.RWMutex  // fine-grained lock for cache reads
 
 	// newEmbedder builds the embedding backend used for per-turn recall
@@ -188,9 +224,13 @@ func (e *EpisodeStore) WriteWithProvenance(sessionID, summary string, turns int,
 		summary = truncateAtRune(summary, maxEpisodeSummaryBytes) + "..."
 	}
 
+	lock := episodesDirLock(e.dir)
+	lock.Lock()
+	e.invalidateIndexCache()
 	e.mu.Lock()
 	events, err := e.writeLocked(sessionID, summary, turns, prov)
 	e.mu.Unlock()
+	lock.Unlock()
 	// Fan out lifecycle events only after releasing the lock (see notifyAll).
 	e.notifyAll(events)
 	return err
@@ -338,18 +378,23 @@ func (e *EpisodeStore) EpisodePendingReview(sessionID string) bool {
 // Uses an in-memory cache to avoid disk I/O on every Search() call.
 // The cache is invalidated after every writeIndex().
 func (e *EpisodeStore) ReadIndex() ([]EpisodeMeta, error) {
-	// Fast path: return cached index if available.
+	idxPath := filepath.Join(e.dir, episodeIndexFile)
+	// Fast path: return cached index if the on-disk mtime still matches.
 	e.muCache.RLock()
 	if e.idxCache != nil {
-		cpy := make([]EpisodeMeta, len(e.idxCache))
-		copy(cpy, e.idxCache)
+		cached := e.idxCache
+		mtime := e.idxMtime
 		e.muCache.RUnlock()
-		return cpy, nil
+		if info, err := os.Stat(idxPath); err == nil && info.ModTime().Equal(mtime) {
+			cpy := make([]EpisodeMeta, len(cached))
+			copy(cpy, cached)
+			return cpy, nil
+		}
+	} else {
+		e.muCache.RUnlock()
 	}
-	e.muCache.RUnlock()
 
 	// Slow path: read from disk.
-	idxPath := filepath.Join(e.dir, episodeIndexFile)
 	data, err := os.ReadFile(idxPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -366,9 +411,15 @@ func (e *EpisodeStore) ReadIndex() ([]EpisodeMeta, error) {
 		return idx[i].CreatedAt.After(idx[j].CreatedAt)
 	})
 
+	var mtime time.Time
+	if info, err := os.Stat(idxPath); err == nil {
+		mtime = info.ModTime()
+	}
+
 	// Populate cache.
 	e.muCache.Lock()
 	e.idxCache = idx
+	e.idxMtime = mtime
 	e.muCache.Unlock()
 
 	// Return a copy to prevent callers from mutating the cache.
@@ -496,11 +547,15 @@ func (e *EpisodeStore) Promote(sessionID string) error {
 	if err := session.ValidateSessionID(sessionID); err != nil {
 		return fmt.Errorf("memory: episodes promote: %w", err)
 	}
+	lock := episodesDirLock(e.dir)
+	lock.Lock()
+	e.invalidateIndexCache()
 	e.mu.Lock()
 
 	idx, err := e.ReadIndex()
 	if err != nil {
 		e.mu.Unlock()
+		lock.Unlock()
 		return err
 	}
 	found := false
@@ -509,6 +564,7 @@ func (e *EpisodeStore) Promote(sessionID string) error {
 			found = true
 			if idx[i].Provenance.UserApproved {
 				e.mu.Unlock()
+				lock.Unlock()
 				return fmt.Errorf("memory: episode %q is already approved", sessionID)
 			}
 			idx[i].Provenance.UserApproved = true
@@ -516,13 +572,16 @@ func (e *EpisodeStore) Promote(sessionID string) error {
 	}
 	if !found {
 		e.mu.Unlock()
+		lock.Unlock()
 		return fmt.Errorf("memory: episode %q not found", sessionID)
 	}
 	if err := e.writeIndex(idx); err != nil {
 		e.mu.Unlock()
+		lock.Unlock()
 		return err
 	}
 	e.mu.Unlock()
+	lock.Unlock()
 	// Fired after releasing the lock (see notifyAll).
 	e.notifyAll([]MemoryEvent{{Type: "episode_promoted", SessionID: sessionID}})
 	return nil
@@ -551,20 +610,26 @@ func (e *EpisodeStore) PendingReview() ([]EpisodeMeta, error) {
 // and removes their summary files. Safe to call at session end or from a CLI.
 // No-op when both the cap and TTL are disabled.
 func (e *EpisodeStore) Prune() error {
+	lock := episodesDirLock(e.dir)
+	lock.Lock()
+	e.invalidateIndexCache()
 	e.mu.Lock()
 
 	if e.maxEpisodes <= 0 && e.ttlDays <= 0 {
 		e.mu.Unlock()
+		lock.Unlock()
 		return nil
 	}
 	idx, err := e.ReadIndex()
 	if err != nil {
 		e.mu.Unlock()
+		lock.Unlock()
 		return err
 	}
 	idx, removed := e.pruneLocked(idx)
 	if len(removed) == 0 {
 		e.mu.Unlock()
+		lock.Unlock()
 		return nil
 	}
 	for _, sid := range removed {
@@ -572,10 +637,12 @@ func (e *EpisodeStore) Prune() error {
 	}
 	if err := e.writeIndex(idx); err != nil {
 		e.mu.Unlock()
+		lock.Unlock()
 		return err
 	}
 	sharedEpisodeIndex(e.dir, e.newEmbedder).markDirty()
 	e.mu.Unlock()
+	lock.Unlock()
 	// Fired after releasing the lock (see notifyAll).
 	e.notifyAll([]MemoryEvent{{Type: "episode_evicted", Sessions: removed, Count: len(removed)}})
 	return nil
@@ -716,6 +783,9 @@ func (e *EpisodeStore) writeIndex(idx []EpisodeMeta) error {
 	})
 	e.muCache.Lock()
 	e.idxCache = sorted
+	if info, err := os.Stat(idxPath); err == nil {
+		e.idxMtime = info.ModTime()
+	}
 	e.muCache.Unlock()
 
 	// The corpus changed — a cached Search result (lastQuery/lastResult) would

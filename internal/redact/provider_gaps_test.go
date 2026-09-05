@@ -30,12 +30,31 @@ func TestRedactSecrets_ProviderPatternGaps(t *testing.T) {
 			"stripe live restricted key",
 			"rk_live_" + strings.Repeat("aB", 24),
 		},
+		{
+			"github oauth token",
+			"gho_" + strings.Repeat("A", 36),
+		},
+		{
+			"npm access token",
+			"npm_" + strings.Repeat("B", 36),
+		},
+		{
+			"gitlab personal token",
+			"glpat-" + strings.Repeat("C", 20),
+		},
+		{
+			"pypi api token",
+			"pypi-" + strings.Repeat("D", 20),
+		},
 	}
 	for _, c := range cases {
 		out := RedactSecrets(c.input)
-		// The long high-entropy body must not survive verbatim.
-		if strings.Contains(out, strings.Repeat("A", 88)) || strings.Contains(out, strings.Repeat("aB", 20)) {
-			t.Errorf("%s: secret body survived redaction: %.60s", c.name, out)
+		if out == c.input {
+			t.Errorf("%s: input survived redaction unchanged: %.60s", c.name, out)
+			continue
+		}
+		if !strings.Contains(out, "[REDACTED]") {
+			t.Errorf("%s: missing [REDACTED] marker: %.60s", c.name, out)
 		}
 	}
 }

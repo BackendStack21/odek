@@ -263,6 +263,35 @@ func TestDelegateTasks_Call_MixedProfilesPartialFailure(t *testing.T) {
 	}
 }
 
+func TestDelegateTasks_Call_FastChildStdoutNotDropped(t *testing.T) {
+	// CI flake: a mock that echoes one JSON line and exits can lose the
+	// result to Wait() closing StdoutPipe under the scanner.
+	dir := t.TempDir()
+	resultJSON := `{"status":"success","summary":"ok","tokens_used":1,"iterations":1,"files_changed":[]}`
+	mock := filepath.Join(dir, "mock-subagent.sh")
+	if err := os.WriteFile(mock, []byte("#!/bin/sh\necho '"+resultJSON+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tool := &delegateTasksTool{
+		maxConcurrency: 2,
+		odekPath:       mock,
+		timeout:        10 * time.Second,
+	}
+	tool.SetContext(context.Background())
+	for i := 0; i < 20; i++ {
+		result, err := tool.Call(`{"tasks":[{"goal":"fast"}],"description":"fast child"}`)
+		if err != nil {
+			t.Fatalf("iter %d: Call() error: %v", i, err)
+		}
+		if !strings.Contains(result, "summary: ok") {
+			t.Fatalf("iter %d: fast child stdout dropped: %s", i, result)
+		}
+		if strings.Contains(result, "file already closed") {
+			t.Fatalf("iter %d: pipe-close race: %s", i, result)
+		}
+	}
+}
+
 // ── Task-file profile wiring (P4) ────────────────────────────────────────
 //
 // The delegate_tasks path passes the profile via the task file, not via

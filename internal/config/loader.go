@@ -17,9 +17,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
-	"maps"
 	"slices"
 	"sort"
 	"strconv"
@@ -1479,6 +1479,30 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if project.Schedules != nil && project.Schedules.Dangerous != nil {
 		fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring schedules.dangerous from project config (%s); set it via ~/.odek/config.json or ODEK_SCHEDULES_DANGEROUS_*\n", ProjectConfigPath())
 		project.Schedules.Dangerous = nil
+	}
+	if project.Schedules != nil {
+		// Privilege-bearing scheduler knobs are operator-only. A full
+		// pointer-replace overlay would also wipe global telegram admin
+		// lists / concurrency caps if the project set any schedules field
+		// (even timezone). Strip the escalating fields here; overlaySchedules
+		// then merges the rest field-by-field.
+		if project.Schedules.MaxConcurrent != 0 {
+			fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring schedules.max_concurrent from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
+			project.Schedules.MaxConcurrent = 0
+		}
+		if project.Schedules.Catchup != nil {
+			fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring schedules.catchup from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
+			project.Schedules.Catchup = nil
+		}
+		if project.Schedules.AllowTelegramManagement != nil {
+			fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring schedules.allow_telegram_management from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
+			project.Schedules.AllowTelegramManagement = nil
+		}
+		if len(project.Schedules.TelegramAdminChats) > 0 || len(project.Schedules.TelegramAdminUsers) > 0 {
+			fmt.Fprintf(os.Stderr, "odek: WARNING: ignoring schedules.telegram_admin_* from project config (%s); set it via ~/.odek/config.json\n", ProjectConfigPath())
+			project.Schedules.TelegramAdminChats = nil
+			project.Schedules.TelegramAdminUsers = nil
+		}
 	}
 	// Backend redirection: a malicious repo must not be able to send memory,
 	// session, or skill embeddings, Telegram messages, or web searches to an
@@ -3458,7 +3482,10 @@ func overlayFile(base, override FileConfig) FileConfig {
 		base.WebSearch = override.WebSearch
 	}
 	if override.Schedules != nil {
-		base.Schedules = override.Schedules
+		if base.Schedules == nil {
+			base.Schedules = &SchedulesConfig{}
+		}
+		overlaySchedules(base.Schedules, override.Schedules)
 	}
 	if override.Tools != nil {
 		if base.Tools == nil {
@@ -3487,6 +3514,39 @@ func mcpExecEqual(a, b mcpclient.ServerConfig) bool {
 		return false
 	}
 	return maps.Equal(a.Env, b.Env)
+}
+
+// overlaySchedules merges a higher-priority SchedulesConfig onto a lower-
+// priority one field-by-field. A pointer replace would let a project file
+// that only sets timezone wipe global telegram_admin_* / max_concurrent.
+func overlaySchedules(base, override *SchedulesConfig) {
+	if override.Enabled != nil {
+		base.Enabled = override.Enabled
+	}
+	if override.MaxConcurrent != 0 {
+		base.MaxConcurrent = override.MaxConcurrent
+	}
+	if override.Timezone != "" {
+		base.Timezone = override.Timezone
+	}
+	if override.Catchup != nil {
+		base.Catchup = override.Catchup
+	}
+	if override.AllowTelegramManagement != nil {
+		base.AllowTelegramManagement = override.AllowTelegramManagement
+	}
+	if len(override.TelegramAdminChats) > 0 {
+		base.TelegramAdminChats = override.TelegramAdminChats
+	}
+	if len(override.TelegramAdminUsers) > 0 {
+		base.TelegramAdminUsers = override.TelegramAdminUsers
+	}
+	if override.Dangerous != nil {
+		if base.Dangerous == nil {
+			base.Dangerous = &danger.DangerousConfig{}
+		}
+		mergeDangerousConfig(base.Dangerous, override.Dangerous)
+	}
 }
 
 // overlaySkills merges a higher-priority SkillsConfig onto a lower-priority one

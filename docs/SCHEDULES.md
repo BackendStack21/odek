@@ -203,8 +203,8 @@ Task definitions in `schedules.json` are owner-authored (same trust level as
 
 ## Configuration
 
-The `schedules` config section (in `~/.odek/config.json` or `./odek.json`) tunes
-the engine. Every field also has an `ODEK_SCHEDULES_*` environment override.
+The `schedules` config section (in `~/.odek/config.json`; project `./odek.json` may only set `enabled`/`timezone`) tunes
+the engine. Every field also has an `ODEK_SCHEDULES_*` environment override. Project files cannot raise `max_concurrent`, set `catchup`, toggle Telegram management, or replace `telegram_admin_*` lists.
 
 ```json
 {

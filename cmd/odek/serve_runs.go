@@ -504,11 +504,11 @@ func (r *serveRun) finish(status, errMsg string) {
 	r.mu.Lock()
 	if !runStatusTerminal(r.Status) {
 		r.Status = status
+		r.EndedAt = time.Now().UTC()
 	}
 	if errMsg != "" && r.Error == "" {
 		r.Error = errMsg
 	}
-	r.EndedAt = time.Now().UTC()
 	r.pending = map[string]*approvalRequest{}
 	r.cond.Broadcast()
 	r.mu.Unlock()
@@ -842,7 +842,13 @@ func startServeRun(
 		}
 		errMsg := run.Error
 		run.mu.Unlock()
-		if errMsg != "" {
+		if ctx.Err() == context.Canceled {
+			run.finish("cancelled", "")
+			sl := activeServeLog()
+			if sl != nil {
+				sl.logf("run_finished run_id=%s session=%s status=cancelled", run.ID, run.SessionID)
+			}
+		} else if errMsg != "" {
 			run.finish("failed", errMsg)
 			sl := activeServeLog()
 			if sl != nil {

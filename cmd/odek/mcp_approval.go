@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/fsatomic"
 	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/mcpclient"
 	"golang.org/x/term"
@@ -196,7 +197,7 @@ func saveMCPApprovals(approvals map[string]bool) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0600)
+	return fsatomic.WriteFile(path, data, 0600)
 }
 
 // mcpToolApprovalsFile is the persistent store for user-approved MCP tools.
@@ -350,7 +351,7 @@ func saveMCPToolApprovals(approvals map[string]bool) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0600)
+	return fsatomic.WriteFile(path, data, 0600)
 }
 
 // sortedEnvKeys returns the keys of an env map in deterministic order.

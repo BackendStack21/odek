@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -604,14 +605,24 @@ func parseSubagentFlags(args []string) (subagentFlags, error) {
 			}
 		case "--timeout":
 			i++
-			if i < len(args) {
-				fmt.Sscanf(args[i], "%d", &cfg.timeout)
+			if i >= len(args) {
+				return cfg, fmt.Errorf("--timeout requires an integer value")
 			}
+			n, err := strconv.Atoi(args[i])
+			if err != nil {
+				return cfg, fmt.Errorf("--timeout: invalid integer %q", args[i])
+			}
+			cfg.timeout = n
 		case "--max-iter":
 			i++
-			if i < len(args) {
-				fmt.Sscanf(args[i], "%d", &cfg.maxIter)
+			if i >= len(args) {
+				return cfg, fmt.Errorf("--max-iter requires an integer value")
 			}
+			n, err := strconv.Atoi(args[i])
+			if err != nil {
+				return cfg, fmt.Errorf("--max-iter: invalid integer %q", args[i])
+			}
+			cfg.maxIter = n
 		case "--quiet":
 			cfg.quiet = true
 		case "--stream":
