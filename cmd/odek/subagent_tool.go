@@ -55,10 +55,14 @@ type delegateTasksTool struct {
 	apiKey    string // re-injected into sub-agent environment
 	timeout   time.Duration
 
-	// sessionID is the parent agent's session id (optional — SetSessionID).
-	// Artifact outputs file under <artifactsRoot>/<sessionID>/<taskID>/;
-	// empty means the unfiled subtree (janitor backstop territory).
+	// sessionID is the parent agent's session id, stamped via SetSessionID
+	// (Agent.SetToolSessionID) at every surface that knows the session —
+	// serve rebinds per prompt because a connection can switch sessions.
+	// Artifact outputs file under <artifactsRoot>/<sessionID>/<taskID>/ so
+	// session deletion cascades; empty or invalid means the defensive
+	// "unfiled" subtree, which the janitor sweeps at task granularity.
 	sessionID string
+	sessMu    sync.Mutex
 
 	// artifactsRoot is the artifacts home (~/.odek/artifacts in production,
 	// wired in builtinTools). When empty, no artifact dirs are created and
@@ -125,6 +129,24 @@ type delegateTasksTool struct {
 	// relay so cards do not stay "running" forever. Not called when the
 	// child reported its own finish. Signature: (taskIdx, taskID, status).
 	OnSubagentDone func(taskIdx int, taskID string, status string)
+}
+
+// SetSessionID records the parent agent's session id so per-task artifact
+// dirs file under artifacts/<session_id>/ (session deletion then cascades
+// over them). Guarded because serve rebinds between prompts — a connection
+// can session_switch while parallel Call goroutines read the current id.
+func (t *delegateTasksTool) SetSessionID(id string) {
+	t.sessMu.Lock()
+	t.sessionID = id
+	t.sessMu.Unlock()
+}
+
+// getSessionID returns the currently bound parent session id ("" when
+// none — tasks then file under the defensive unfiled bucket).
+func (t *delegateTasksTool) getSessionID() string {
+	t.sessMu.Lock()
+	defer t.sessMu.Unlock()
+	return t.sessionID
 }
 
 // CancelTask cancels the running sub-agent for taskID (user-initiated
@@ -331,7 +353,7 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 		// serial keeps 0700 semantics obvious) and captured by the goroutine.
 		// Skipped entirely when no artifacts root is wired (bare-struct tests).
 		if t.artifactsRoot != "" {
-			if d, dirErr := taskArtifactDir(t.artifactsRoot, t.sessionID, taskID); dirErr == nil {
+			if d, dirErr := taskArtifactDir(t.artifactsRoot, t.getSessionID(), taskID); dirErr == nil {
 				dirs[i] = d
 			}
 		}

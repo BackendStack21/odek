@@ -1943,9 +1943,12 @@ func run(args []string) error {
 			sessionID = sess.ID
 			runSess = sess
 			mm.SetSessionContext(sessionID, cwd)
-			// Stamp the session ID on subsequent runtime events; run_started
-			// already fired without it (the session did not exist yet).
-			agent.SetEventSessionID(sessionID)
+		// Stamp the session ID on subsequent runtime events; run_started
+		// already fired without it (the session did not exist yet).
+		agent.SetEventSessionID(sessionID)
+		// File delegate_tasks artifacts under this session so the store's
+		// OnDelete cascade owns their lifecycle.
+		agent.SetToolSessionID(sessionID)
 			fmt.Fprintf(os.Stderr, "odek: session %s created\n", sessionID)
 
 			// Wire the audit recorder now that the session ID is known, so
@@ -3231,6 +3234,9 @@ func continueCmd(args []string) error {
 		return err
 	}
 	defer agent.Close()
+	// File delegate_tasks artifacts under the resumed session so the store's
+	// OnDelete cascade owns their lifecycle.
+	agent.SetToolSessionID(sess.ID)
 
 	// Restore buffer from session
 	if mm := agent.Memory(); mm != nil && len(sess.Buffer) > 0 {

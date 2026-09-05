@@ -32,7 +32,7 @@ type Config struct {
 	AuditMaxAgeDays      int   // delete audit records older than this; default 14; 0 = keep
 	LogMaxMB             int64 // rotate telegram/schedule logs larger than this; default 50; 0 = no rotation
 	PlansMaxAgeDays      int   // delete telegram plans older than this; default 30; 0 = keep
-	ArtifactsMaxAgeHours int   // delete delegate_tasks artifact subtrees older than this; default 24; 0 = keep
+	ArtifactsMaxAgeHours int   // delete delegate_tasks artifact task dirs older than this, in any parent (incl. the shared unfiled bucket; aged session dirs go wholesale); default 24; 0 = keep
 }
 
 // DefaultConfig returns the out-of-the-box maintenance policy.
@@ -50,13 +50,15 @@ func DefaultConfig() Config {
 
 // Report summarises what one Sweep pass removed.
 type Report struct {
-	SessionsRemoved    int
-	AuditRemoved       int
-	PlansRemoved       int
-	ArtifactsRemoved   int
-	ArtifactsFreed     int64
-	MediaFreedBytes int64
-	LogsRotated     []string
+	SessionsRemoved  int
+	AuditRemoved     int
+	PlansRemoved     int
+	// ArtifactsRemoved counts every artifacts removal: expired task
+	// subtrees, wholesale session dirs, and pruned empty parents.
+	ArtifactsRemoved int
+	ArtifactsFreed   int64
+	MediaFreedBytes  int64
+	LogsRotated      []string
 }
 
 // Sweep runs one full maintenance pass over the odek home dir (e.g. ~/.odek).
@@ -129,26 +131,55 @@ func Sweep(ctx context.Context, home string, cfg Config) (Report, error) {
 	return rep, firstErr
 }
 
-// sweepArtifacts removes delegate_tasks artifact subtrees
-// (<home>/artifacts/<session_id>/) whose modtime is older than maxAge.
-// This is the BACKSTOP for subtrees whose session was already removed by
-// other means (crash leftovers, hand deletion) — the primary lifecycle is
-// the Store.OnDelete cascade. Returns (subtrees removed, bytes freed).
-func sweepArtifacts(home string, maxAge time.Duration) (int, int64, error) {
+// UnfiledArtifactsDir is the shared bucket for delegate_tasks artifacts
+// whose parent session id was unknown at spawn time (cmd/odek files them
+// under artifacts/unfiled/<task>/ and aliases this constant for its own
+// path derivation). Unlike session dirs it never ages as a unit — its
+// mtime refreshes on every delegation — so it is swept at task granularity
+// instead.
+const UnfiledArtifactsDir = "unfiled"
+
+// artifactsSweepEntry is one pending artifacts removal.
+type artifactsSweepEntry struct {
+	path string
+	size int64
+	// prune marks an emptied-parent removal: executed with os.Remove so a
+	// parent that gained a fresh task between plan and execute fails the
+	// remove (non-empty dir) instead of deleting it.
+	prune bool
+}
+
+// artifactsSweepPlan computes every artifacts removal a sweep with maxAge
+// would perform, without touching the filesystem — the single source of
+// truth shared by sweepArtifacts (execute) and the `odek cleanup --dry-run`
+// preview (ArtifactsSweepCandidates). Two granularities:
+//
+//   - Session dirs (<home>/artifacts/<session_id>/) age as a unit: the dir
+//     is removed wholesale when its own mtime passes the cutoff. This is
+//     the BACKSTOP for subtrees whose session was already removed by other
+//     means (crash leftovers, hand deletion) — the primary lifecycle is the
+//     Store.OnDelete cascade.
+//   - Task dirs (<parent>/<task_id>/) age individually by their own mtime
+//     inside every surviving parent — including the shared unfiled bucket,
+//     whose parent mtime refreshes on every delegation and therefore never
+//     crosses a whole-dir cutoff under daily use.
+//
+// Parents left empty (by the task sweep or pre-existing) are planned as
+// prunes: an empty session dir or unfiled bucket carries no value.
+func artifactsSweepPlan(home string, maxAge time.Duration) ([]artifactsSweepEntry, error) {
 	if maxAge <= 0 {
-		return 0, 0, nil // 0 = keep forever
+		return nil, nil // 0 = keep forever
 	}
 	dir := filepath.Join(home, "artifacts")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return 0, 0, nil
+			return nil, nil
 		}
-		return 0, 0, fmt.Errorf("maintenance: read artifacts dir: %w", err)
+		return nil, fmt.Errorf("maintenance: read artifacts dir: %w", err)
 	}
 	cutoff := time.Now().Add(-maxAge)
-	var removed int
-	var freed int64
+	var plan []artifactsSweepEntry
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -157,26 +188,104 @@ func sweepArtifacts(home string, maxAge time.Duration) (int, int64, error) {
 		if err != nil {
 			continue
 		}
-		if info.ModTime().After(cutoff) {
+		sub := filepath.Join(dir, e.Name())
+		if info.ModTime().After(cutoff) || e.Name() == UnfiledArtifactsDir {
+			// Fresh parent (or the never-wholesale unfiled bucket): sweep
+			// its task dirs individually by their own mtime.
+			kids, err := os.ReadDir(sub)
+			if err != nil {
+				continue // unreadable parent: leave it alone
+			}
+			emptied := true
+			for _, k := range kids {
+				if !k.IsDir() {
+					emptied = false // stray file keeps the parent alive
+					continue
+				}
+				kinfo, err := k.Info()
+				if err != nil {
+					emptied = false
+					continue
+				}
+				if kinfo.ModTime().After(cutoff) {
+					emptied = false
+					continue
+				}
+				ksub := filepath.Join(sub, k.Name())
+				plan = append(plan, artifactsSweepEntry{path: ksub, size: subtreeBytes(ksub)})
+			}
+			// Prune a parent the plan leaves empty (or that was already
+			// empty) — an empty artifacts/<parent>/ carries no value.
+			if emptied {
+				plan = append(plan, artifactsSweepEntry{path: sub, prune: true})
+			}
 			continue
 		}
-		sub := filepath.Join(dir, e.Name())
-		size := int64(0)
-		_ = filepath.WalkDir(sub, func(_ string, d fs.DirEntry, err error) error {
-			if err == nil && d.Type().IsRegular() {
-				if fi, fiErr := d.Info(); fiErr == nil {
-					size += fi.Size()
-				}
-			}
-			return nil
-		})
-		if err := os.RemoveAll(sub); err != nil {
+		// Aged session-shaped dir: wholesale backstop (its content predates
+		// the cutoff — no fresh task can be inside a dir this old).
+		plan = append(plan, artifactsSweepEntry{path: sub, size: subtreeBytes(sub)})
+	}
+	return plan, nil
+}
+
+// ArtifactsSweepCandidates lists the artifact paths a Sweep with maxAge
+// would remove — the dry-run preview for `odek cleanup --dry-run`. Mirrors
+// sweepArtifacts by construction: both consume artifactsSweepPlan.
+func ArtifactsSweepCandidates(home string, maxAge time.Duration) []string {
+	plan, err := artifactsSweepPlan(home, maxAge)
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(plan))
+	for _, e := range plan {
+		out = append(out, e.path)
+	}
+	return out
+}
+
+// sweepArtifacts removes delegate_tasks artifacts past retention (see
+// artifactsSweepPlan for the semantics). The returned count covers every
+// removal — expired task subtrees, wholesale session dirs, and pruned
+// empty parents; freed counts regular-file bytes under removed subtrees.
+// Returns (subtrees removed, bytes freed).
+func sweepArtifacts(home string, maxAge time.Duration) (int, int64, error) {
+	plan, err := artifactsSweepPlan(home, maxAge)
+	if err != nil {
+		return 0, 0, err
+	}
+	var removed int
+	var freed int64
+	for _, e := range plan {
+		var err error
+		if e.prune {
+			// os.Remove only deletes EMPTY dirs: a parent that gained a
+			// fresh task between plan and execute fails here, uncounted.
+			err = os.Remove(e.path)
+		} else {
+			err = os.RemoveAll(e.path)
+		}
+		if err != nil {
 			continue // one bad subtree shouldn't block the sweep
 		}
 		removed++
-		freed += size
+		freed += e.size
 	}
 	return removed, freed, nil
+}
+
+// subtreeBytes sums regular-file sizes under dir (best-effort; report
+// accounting only).
+func subtreeBytes(dir string) int64 {
+	var size int64
+	_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err == nil && d.Type().IsRegular() {
+			if fi, fiErr := d.Info(); fiErr == nil {
+				size += fi.Size()
+			}
+		}
+		return nil
+	})
+	return size
 }
 
 // tickInterval, when positive, overrides the configured janitor tick. It is

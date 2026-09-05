@@ -115,10 +115,10 @@ func humanBytes(n int64) string {
 //
 // maintenance.Sweep has no dry-run mode, so the CLI builds the same candidate
 // list locally for display only. Media cleanup is not previewed — its
-// retention policy lives inside the maintenance package. Artifact subtree
-// removals ARE previewed (plain age-based deletions), and the log list is
-// shared with maintenance.LogRotationNames so preview and rotation can never
-// drift apart again.
+// retention policy lives inside the maintenance package. Artifact removals
+// ARE previewed via maintenance.ArtifactsSweepCandidates (shared with the
+// sweep itself), and the log list is shared with
+// maintenance.LogRotationNames — so preview and sweep can never drift apart.
 
 // cleanupCandidates lists what a sweep WOULD remove, per category.
 type cleanupCandidates struct {
@@ -146,8 +146,9 @@ func collectCleanupCandidates(home string, cfg maintenance.Config) cleanupCandid
 		c.plans = filesOlderThan(filepath.Join(home, "plans"), maintenance.DaysAgo(now, cfg.PlansMaxAgeDays), true)
 	}
 	if cfg.ArtifactsMaxAgeHours > 0 {
-		// Duration-based cutoff, mirroring sweepArtifacts exactly.
-		c.artifacts = artifactCandidates(home, time.Now().Add(-time.Duration(cfg.ArtifactsMaxAgeHours)*time.Hour))
+		// Duration-based cutoff, mirroring sweepArtifacts by construction
+		// (both consume the same plan inside maintenance).
+		c.artifacts = maintenance.ArtifactsSweepCandidates(home, time.Duration(cfg.ArtifactsMaxAgeHours)*time.Hour)
 	}
 	if cfg.LogMaxMB > 0 {
 		for _, name := range maintenance.LogRotationNames() {
@@ -177,31 +178,6 @@ func sessionCandidates(home string, cutoff time.Time) []string {
 	for _, s := range sessions {
 		if s.UpdatedAt.Before(cutoff) {
 			out = append(out, store.Path(s.ID))
-		}
-	}
-	return out
-}
-
-// artifactCandidates lists delegate_tasks artifact subtrees whose modtime
-// is before cutoff — the same candidates maintenance.sweepArtifacts would
-// remove (<home>/artifacts/<session_id>/ subtrees).
-func artifactCandidates(home string, cutoff time.Time) []string {
-	dir := filepath.Join(home, "artifacts")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil // missing/unreadable dir → no candidates
-	}
-	var out []string
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		if info.ModTime().Before(cutoff) {
-			out = append(out, filepath.Join(dir, e.Name()))
 		}
 	}
 	return out

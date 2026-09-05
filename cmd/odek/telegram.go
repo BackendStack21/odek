@@ -1975,6 +1975,9 @@ func handleChatMessage(
 		return
 	}
 	defer agent.Close()
+	// File delegate_tasks artifacts under the chat's session so the store's
+	// OnDelete cascade owns their lifecycle.
+	agent.SetToolSessionID(sess.ID)
 	if bgRT != nil {
 		agent.SetBackgroundNoticeProvider(bgRT.provider)
 	}

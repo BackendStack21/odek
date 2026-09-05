@@ -25,6 +25,7 @@ import (
 	"strings"
 
 	"github.com/BackendStack21/odek/internal/artifact"
+	"github.com/BackendStack21/odek/internal/maintenance"
 )
 
 const (
@@ -37,7 +38,9 @@ const (
 	// summary; larger ones stay file-backed until artifact_read (M2).
 	maxInlineArtifactBytes = 32 << 10 // 32 KiB
 	// unfiledSessionDir holds tasks whose parent session id is unknown.
-	unfiledSessionDir = "unfiled"
+	// Aliases the maintenance package's bucket constant so the filer and
+	// the sweeper can never disagree on the name.
+	unfiledSessionDir = maintenance.UnfiledArtifactsDir
 	// maxArtifactSummaryLine caps the per-artifact one-line summary.
 	maxArtifactSummaryLine = 120
 )
@@ -61,8 +64,10 @@ func artifactsHome() (string, error) {
 }
 
 // taskArtifactDir returns (and creates, 0700) the per-task artifact
-// directory under the given root. Unknown parent session ids file under
-// "unfiled" (the janitor backstop covers those).
+// directory under the given root. A valid parent session id files under
+// <root>/<sid>/ so the session-delete cascade owns the subtree; anything
+// else falls back to the defensive "unfiled" bucket, which the janitor
+// sweeps at task granularity (internal/maintenance sweepArtifacts).
 func taskArtifactDir(root, parentSessionID, taskID string) (string, error) {
 	sid := parentSessionID
 	if !sessionIDRe.MatchString(sid) {
