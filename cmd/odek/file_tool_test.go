@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/danger"
 )
 
@@ -2452,5 +2453,145 @@ func TestRED_ConfinesProjectSandboxApprovals(t *testing.T) {
 
 	if _, err := confineToCWD(filepath.Join(home, ".odek", "project_sandbox_approvals.json")); err == nil {
 		t.Fatal("confineToCWD(~/.odek/project_sandbox_approvals.json) allowed; want protected-odek rejection")
+	}
+}
+
+// TestRED_SandboxedReadFile_ConfinesToCWD: sandbox mode must not let
+// read_file open host files outside the workspace.
+func TestRED_SandboxedReadFile_ConfinesToCWD(t *testing.T) {
+	ws := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(outside, []byte("host-secret\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(ws)
+
+	tool := &readFileTool{restrictToCWD: true}
+	result := callJSON(t, tool, fmt.Sprintf(`{"path":%q}`, outside))
+	var r struct {
+		Content string `json:"content"`
+		Error   string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" {
+		t.Fatal("sandboxed read_file opened a host path outside the workspace")
+	}
+	if strings.Contains(r.Content, "host-secret") {
+		t.Fatal("sandboxed read_file returned host-secret content")
+	}
+}
+
+func TestRED_SandboxedSearchFiles_ConfinesToCWD(t *testing.T) {
+	ws := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("host-secret\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(ws)
+
+	tool := &searchFilesTool{restrictToCWD: true}
+	result := callJSON(t, tool, fmt.Sprintf(`{"pattern":"secret","path":%q}`, outside))
+	if !strings.Contains(result, "error") && strings.Contains(result, "host-secret") {
+		t.Fatalf("sandboxed search_files escaped the workspace: %s", result)
+	}
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" {
+		t.Fatalf("sandboxed search_files should reject an outside path, got %s", result)
+	}
+}
+
+func TestRED_SandboxedHeadTail_ConfinesToCWD(t *testing.T) {
+	ws := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(outside, []byte("host-secret\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(ws)
+
+	tool := &headTailTool{restrictToCWD: true}
+	result := callJSON(t, tool, fmt.Sprintf(`{"files":[{"path":%q}]}`, outside))
+	if strings.Contains(result, "host-secret") {
+		t.Fatalf("sandboxed head_tail returned host-secret content: %s", result)
+	}
+	var r struct {
+		Results []struct {
+			Error string `json:"error"`
+		} `json:"results"`
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" && (len(r.Results) == 0 || r.Results[0].Error == "") {
+		t.Fatalf("sandboxed head_tail opened a host path outside the workspace: %s", result)
+	}
+}
+
+func TestRED_SandboxedMultiGrep_ConfinesToCWD(t *testing.T) {
+	ws := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("host-secret\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(ws)
+
+	tool := &multiGrepTool{restrictToCWD: true}
+	result := callJSON(t, tool, fmt.Sprintf(`{"patterns":["secret"],"path":%q}`, outside))
+	if strings.Contains(result, "host-secret") {
+		t.Fatalf("sandboxed multi_grep escaped the workspace: %s", result)
+	}
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" {
+		t.Fatalf("sandboxed multi_grep should reject an outside path, got %s", result)
+	}
+}
+
+func TestRED_SandboxedJSONQuery_ConfinesToCWD(t *testing.T) {
+	ws := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret.json")
+	if err := os.WriteFile(outside, []byte(`{"secret":"host-secret"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(ws)
+
+	tool := &jsonQueryTool{restrictToCWD: true}
+	result := callJSON(t, tool, fmt.Sprintf(`{"path":%q,"query":"secret"}`, outside))
+	if strings.Contains(result, "host-secret") {
+		t.Fatalf("sandboxed json_query returned host-secret content: %s", result)
+	}
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" {
+		t.Fatalf("sandboxed json_query opened a host path outside the workspace: %s", result)
+	}
+}
+
+func TestRED_SetupSandbox_ConfinesHostReadTools(t *testing.T) {
+	tools := []odek.Tool{
+		&headTailTool{},
+		&multiGrepTool{},
+		&jsonQueryTool{},
+		&diffTool{},
+		&countLinesTool{},
+		&treeTool{},
+		&checksumTool{},
+		&sortTool{},
+		&wordCountTool{},
+		&base64Tool{},
+		&trTool{},
+		&visionTool{},
+		&transcribeTool{},
+	}
+	applySandboxToolBindings(tools, "odek-test")
+	for _, tool := range tools {
+		if !toolRestrictsToCWD(tool) {
+			t.Errorf("setupSandbox left %s unrestricted — host read bypass", tool.Name())
+		}
 	}
 }

@@ -223,12 +223,12 @@ type ServerConfig struct {
 	// project-server approval prompt and the per-tool registration prompts
 	// (schema guard scans still apply). TRUST RULES: the flag is honored
 	// only when it comes from the operator-owned global config
-	// (~/.odek/config.json) — either on a global server entry or as a
-	// command-less trust marker for a project-defined server name. The
-	// config loader strips auto_approve from project ./odek.json with a
-	// warning: a cloned repo must never be able to approve its own MCP
-	// servers. Trust metadata only — deliberately excluded from approval
-	// keys, which hash execution-relevant fields.
+	// (~/.odek/config.json) AND the resolved command/args/env/limits/roots
+	// still match that global entry. A command-less marker is not a
+	// wildcard for a project-defined command. The loader strips
+	// auto_approve from project ./odek.json with a warning. Trust metadata
+	// only — deliberately excluded from approval keys, which hash
+	// execution-relevant fields.
 	AutoApprove bool `json:"auto_approve,omitempty"`
 }
 

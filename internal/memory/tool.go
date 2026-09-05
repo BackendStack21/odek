@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/memory/extended"
 	"github.com/BackendStack21/odek/internal/session"
 )
@@ -61,11 +62,37 @@ var memoryToolSchema = map[string]any{
 // MemoryTool wraps a MemoryManager as a odek-compatible Tool.
 type MemoryTool struct {
 	manager *MemoryManager
+	dc      *danger.DangerousConfig
 }
 
 // NewMemoryTool creates a tool that exposes memory CRUD + search to the agent.
 func NewMemoryTool(mm *MemoryManager) *MemoryTool {
 	return &MemoryTool{manager: mm}
+}
+
+// SetDangerousConfig installs the persistence gate for mutating actions.
+func (t *MemoryTool) SetDangerousConfig(dc *danger.DangerousConfig) {
+	t.dc = dc
+}
+
+func memoryActionMutates(action string) bool {
+	switch action {
+	case "add", "replace", "remove", "consolidate",
+		"add_atom", "forget_atom", "pin_atom",
+		"confirm_pending_review", "reject_pending_review":
+		return true
+	default:
+		return false
+	}
+}
+
+func (t *MemoryTool) checkPersistence(action string) error {
+	if t.dc == nil {
+		return nil
+	}
+	return t.dc.CheckOperation(danger.ToolOperation{
+		Name: "memory", Resource: action, Risk: danger.Persistence,
+	}, nil)
 }
 
 func (t *MemoryTool) Name() string { return "memory" }
@@ -92,6 +119,12 @@ func (t *MemoryTool) Call(args string) (string, error) {
 	}
 	if err := json.Unmarshal([]byte(args), &params); err != nil {
 		return errorJSON("invalid arguments: " + err.Error()), nil
+	}
+
+	if memoryActionMutates(params.Action) {
+		if err := t.checkPersistence(params.Action); err != nil {
+			return errorJSON(err.Error()), nil
+		}
 	}
 
 	switch params.Action {
@@ -330,7 +363,7 @@ func (t *MemoryTool) handleAddAtom(content, atomType string, confidence float32)
 	}
 	atom := extended.MemoryAtom{
 		Text:        content,
-		SourceClass: extended.SourceUserApproved,
+		SourceClass: extended.SourceAgentGenerated,
 		Type:        atomType,
 		Confidence:  confidence,
 	}

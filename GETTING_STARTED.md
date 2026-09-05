@@ -19,21 +19,46 @@ odek is a single static Go binary (~11 MB, instant startup). No Python, no Node,
 
 ## 1. Install odek
 
-**From source** (recommended if you have Go):
+**From a release tag using source** (requires Go and Git):
 
 ```bash
-go install github.com/BackendStack21/odek/cmd/odek@latest
+TAG=$(git ls-remote --tags --sort=-v:refname \
+  https://github.com/BackendStack21/odek.git \
+  | awk '!/\^\{\}$/ {sub("refs/tags/", "", $2); print $2; exit}')
+TMP=$(mktemp -d)
+git clone --depth 1 --branch "${TAG}" \
+  https://github.com/BackendStack21/odek.git "${TMP}/odek"
+(cd "${TMP}/odek" && go install -ldflags "-X main.version=${TAG}" ./cmd/odek)
+rm -rf "${TMP}"
+export PATH="$(go env GOPATH)/bin:$PATH"
 ```
+
+Do not use `go install …@latest`: Go ignores v2 tags for this repository's
+historical v1 module path and would install an older v1 release.
 
 **Or grab a prebuilt binary** from the
 [releases page](https://github.com/BackendStack21/odek/releases) — binaries for
 Linux and macOS (amd64 & arm64) plus a `checksums.txt` for verification.
-One-liner for Linux / macOS (installs to `~/.local/bin`):
+Linux / macOS (verifies SHA-256, then installs to `~/.local/bin`):
 
 ```bash
-mkdir -p ~/.local/bin && curl -fLo ~/.local/bin/odek \
-  "https://github.com/BackendStack21/odek/releases/latest/download/odek-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')" \
-  && chmod +x ~/.local/bin/odek
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+ASSET="odek-${OS}-${ARCH}"
+TMP=$(mktemp -d)
+curl -fsSL -o "${TMP}/${ASSET}" \
+  "https://github.com/BackendStack21/odek/releases/latest/download/${ASSET}"
+curl -fsSL -o "${TMP}/checksums.txt" \
+  "https://github.com/BackendStack21/odek/releases/latest/download/checksums.txt"
+if command -v sha256sum >/dev/null; then
+  (cd "${TMP}" && grep "  ${ASSET}$" checksums.txt | sha256sum -c -)
+else
+  (cd "${TMP}" && grep "  ${ASSET}$" checksums.txt | shasum -a 256 -c -)
+fi
+mkdir -p "${HOME}/.local/bin"
+install -m 755 "${TMP}/${ASSET}" "${HOME}/.local/bin/odek"
+rm -rf "${TMP}"
+export PATH="${HOME}/.local/bin:${PATH}"
 ```
 
 Verify:
@@ -49,15 +74,16 @@ see [Keeping things up to date](#keeping-things-up-to-date).
 
 ## 2. Create the config
 
-Scaffold the global config — this is where provider settings live:
+Scaffold the global config — this is where provider settings live. The
+generated template defaults to DeepSeek; edit the provider fields for z.ai:
 
 ```bash
 odek init --global
 ```
 
-This writes `~/.odek/config.json` (permissions `0600`; refuses to overwrite an
-existing file unless you pass `--force`). Open it and set **provider + model**
-(not a free-floating `base_url`):
+This writes valid JSON to `~/.odek/config.json` with permissions `0600` and
+refuses to overwrite an existing file unless you pass `--force`. A complete
+minimal z.ai configuration is:
 
 ```json
 {
@@ -69,8 +95,10 @@ existing file unless you pass `--force`). Open it and set **provider + model**
       "base_url": "https://api.z.ai/api/coding/paas/v4"
     }
   },
-  "llm": { "request_timeout_seconds": 300 },
-  ...
+  "llm": {
+    "request_timeout_seconds": 300,
+    "stream_idle_timeout_seconds": 300
+  }
 }
 ```
 

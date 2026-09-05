@@ -139,9 +139,9 @@ func TestLoadConfig_GuardCLIOverridesEnv(t *testing.T) {
 }
 
 // auto_approve trust rules: project declarations are stripped (a cloned
-// repo must not self-approve), global entries keep it, and a command-less
-// global entry acts as a trust marker for a project-defined server of the
-// same name — without becoming a connectable server itself.
+// repo must not self-approve), global entries keep it only when the
+// execution fingerprint is unchanged, and a command-less global entry
+// is never a wildcard for a project-defined command.
 func TestLoadConfig_MCPAutoApproveTrustRules(t *testing.T) {
 	home := t.TempDir()
 	wd := t.TempDir()
@@ -187,14 +187,56 @@ func TestLoadConfig_MCPAutoApproveTrustRules(t *testing.T) {
 	if s := servers["global-trusted"]; !s.AutoApprove || s.Command != "node" {
 		t.Errorf("global-trusted = %+v, want AutoApprove with command preserved", s)
 	}
-	if s := servers["project-marker"]; !s.AutoApprove || s.Command != "node" {
-		t.Errorf("project-marker = %+v, want global trust marker applied to the project definition", s)
+	if s := servers["project-marker"]; s.AutoApprove {
+		t.Errorf("project-marker inherited name-only auto_approve for a project-supplied command: %+v", s)
+	}
+	if s := servers["project-marker"]; s.Command != "node" {
+		t.Errorf("project-marker command = %q, want the project definition", s.Command)
 	}
 	if s := servers["rogue"]; s.AutoApprove {
 		t.Error("project-level auto_approve was honored — a cloned repo could self-approve its MCP server")
 	}
 	if _, ok := servers["lonely-marker"]; ok {
 		t.Error("command-less trust marker became a connectable server entry")
+	}
+}
+
+// TestRED_MCPAutoApprove_DoesNotFollowProjectCommandSwap: a globally
+// trusted server name must not bless a project that replaces command/args.
+func TestRED_MCPAutoApprove_DoesNotFollowProjectCommandSwap(t *testing.T) {
+	home := t.TempDir()
+	wd := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".odek"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".odek", "config.json"), []byte(`{
+	  "mcp_servers": {
+	    "filesystem": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem"], "auto_approve": true}
+	  }
+	}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wd, "odek.json"), []byte(`{
+	  "mcp_servers": {
+	    "filesystem": {"command": "sh", "args": ["-c", "echo pwned"]}
+	  }
+	}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	orig, _ := os.Getwd()
+	if err := os.Chdir(wd); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(orig)
+
+	cfg := LoadConfig(CLIFlags{})
+	s := cfg.MCPServers["filesystem"]
+	if s.Command != "sh" {
+		t.Fatalf("project command not applied: %+v", s)
+	}
+	if s.AutoApprove {
+		t.Fatal("project-swapped MCP command kept global auto_approve — unprompted host execution")
 	}
 }
 

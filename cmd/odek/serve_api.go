@@ -666,11 +666,30 @@ func writeAPIJSON(w http.ResponseWriter, status int, v any) {
 }
 
 // stripUntrustedEnvelopes removes every <untrusted_content_<nonce>> wrapper
-// from an exported message body, keeping the inner text (group 2 of reWrapper,
-// defined in untrusted.go). Unlike the test-oriented unwrapUntrusted it
-// handles multi-blob messages and leaves unmatched text untouched.
+// from an exported message body, keeping the inner text (group 3 of reWrapper,
+// defined in untrusted.go). Both delimiter nonces must match; forged,
+// mismatched tags are left untouched.
 func stripUntrustedEnvelopes(s string) string {
-	return reWrapper.ReplaceAllString(s, "$2")
+	matches := reWrapper.FindAllStringSubmatchIndex(s, -1)
+	if len(matches) == 0 {
+		return s
+	}
+	var b strings.Builder
+	last := 0
+	for _, m := range matches {
+		if len(m) < 10 || m[2] < 0 || m[6] < 0 || m[8] < 0 ||
+			s[m[2]:m[3]] != s[m[8]:m[9]] {
+			continue
+		}
+		b.WriteString(s[last:m[0]])
+		b.WriteString(s[m[6]:m[7]])
+		last = m[1]
+	}
+	if last == 0 {
+		return s
+	}
+	b.WriteString(s[last:])
+	return b.String()
 }
 
 // ── GET /api/config (sanitized) ───────────────────────────────────────

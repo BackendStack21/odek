@@ -88,8 +88,8 @@ func approveMCPServersWithTTY(resolved config.ResolvedConfig, stdin io.Reader, s
 		}
 
 		// Operator-marked trusted: auto_approve granted in the global
-		// config (the loader strips project-level declarations, so a
-		// cloned repo cannot reach this branch for an unvetted server).
+		// config for this exact execution fingerprint (the loader
+		// strips project-level declarations and name-only inheritance).
 		if cfg.AutoApprove {
 			continue
 		}

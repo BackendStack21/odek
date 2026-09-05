@@ -226,7 +226,8 @@ func TestServe_CSRF_AllowsLocalhostOrigin(t *testing.T) {
 	handler := requireLocalOrigin(base)
 
 	for _, origin := range []string{"http://localhost:8080", "http://127.0.0.1:8080"} {
-		req := httptest.NewRequest(http.MethodPost, "/api/cancel", nil)
+		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8080/api/cancel", nil)
+		req.Host = strings.TrimPrefix(strings.TrimPrefix(origin, "http://"), "https://")
 		req.Header.Set("Origin", origin)
 		rr := httptest.NewRecorder()
 		handler.ServeHTTP(rr, req)

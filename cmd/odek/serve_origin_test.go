@@ -71,20 +71,23 @@ func TestCheckLocalOrigin_DirectMatrix(t *testing.T) {
 	cases := []struct {
 		name    string
 		origin  string
+		host    string
 		wantErr bool
 	}{
-		{"empty", "", false},
-		{"localhost", "http://localhost:8080", false},
-		{"127.0.0.1", "http://127.0.0.1:9999", false},
-		{"ipv6_loopback", "http://[::1]:8080", false},
-		{"https_localhost", "https://localhost", false},
-		{"foreign_domain", "http://attacker.example.com", true},
-		{"public_ip", "http://203.0.113.5", true},
-		{"unparseable", "::not a url::", true},
+		{"empty", "", "127.0.0.1:8080", false},
+		{"localhost", "http://localhost:8080", "localhost:8080", false},
+		{"127.0.0.1", "http://127.0.0.1:9999", "127.0.0.1:9999", false},
+		{"ipv6_loopback", "http://[::1]:8080", "[::1]:8080", false},
+		{"https_localhost", "https://localhost", "localhost:443", false},
+		{"cross_port", "http://127.0.0.1:9000", "127.0.0.1:8080", true},
+		{"foreign_domain", "http://attacker.example.com", "127.0.0.1:8080", true},
+		{"public_ip", "http://203.0.113.5", "127.0.0.1:8080", true},
+		{"unparseable", "::not a url::", "127.0.0.1:8080", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/ws", nil)
+			req := httptest.NewRequest(http.MethodGet, "http://"+tc.host+"/ws", nil)
+			req.Host = tc.host
 			if tc.origin != "" {
 				req.Header.Set("Origin", tc.origin)
 			}
@@ -96,5 +99,30 @@ func TestCheckLocalOrigin_DirectMatrix(t *testing.T) {
 				t.Errorf("checkLocalOrigin(%q) = %v, want nil", tc.origin, err)
 			}
 		})
+	}
+}
+
+// TestRED_CheckLocalOrigin_RejectsCrossPortLoopback: SameSite cookies are
+// host-scoped, not port-scoped. Another local port must not drive /ws.
+func TestRED_CheckLocalOrigin_RejectsCrossPortLoopback(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8080/ws", nil)
+	req.Host = "127.0.0.1:8080"
+	req.Header.Set("Origin", "http://127.0.0.1:9000")
+	if err := checkLocalOrigin(nil, req); err == nil {
+		t.Fatal("cross-port loopback Origin was accepted — cookie + Origin bypass")
+	}
+}
+
+func TestRED_RequireLocalOrigin_RejectsCrossPortLoopback(t *testing.T) {
+	handler := requireLocalOrigin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8080/api/shutdown", nil)
+	req.Host = "127.0.0.1:8080"
+	req.Header.Set("Origin", "http://127.0.0.1:9000")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("cross-port localhost POST = %d, want 403", rr.Code)
 	}
 }

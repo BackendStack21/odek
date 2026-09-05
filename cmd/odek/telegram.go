@@ -1282,16 +1282,15 @@ func spawnChildWithStarter(starter processStarter) error {
 
 // seedSystemMessage guarantees the system prompt is messages[0].
 //
-// RunWithMessages — unlike Run — does NOT inject the engine's system message,
-// so every caller that resumes a message history must seed it (the run/continue
-// commands do the same). Without this, a fresh Telegram chat reaches the model
-// with no system prompt at all and the agent answers as the provider's base
-// identity (e.g. "I am Claude") instead of from IDENTITY.md / the default.
-//
-// New or system-less histories get the prompt prepended; resumed histories get
-// messages[0] refreshed so IDENTITY.md / prompt changes take effect next turn.
+// RunWithMessages also restores the engine prompt (empty or stale slots
+// are replaced), so this is belt-and-suspenders for Telegram: new or
+// system-less histories get the prompt prepended; resumed histories get
+// messages[0] refreshed so IDENTITY.md / prompt changes take effect this
+// turn even before the loop starts.
 func seedSystemMessage(messages []session.Message, system string) []session.Message {
-	if len(messages) == 0 || messages[0].Role != "system" {
+	if len(messages) == 0 || messages[0].Role != "system" ||
+		strings.HasPrefix(messages[0].Content, compactionDigestPrefix) ||
+		strings.HasPrefix(messages[0].Content, planMessagePrefix) {
 		return append([]session.Message{{Role: "system", Content: system}}, messages...)
 	}
 	messages[0].Content = system
@@ -1370,6 +1369,15 @@ func handleChatMessage(
 	cs.Messages = seedSystemMessage(cs.Messages, systemMessage)
 
 	// Append user message to session.
+	auditHistLen := len(cs.Messages)
+	auditTurn := cs.TurnCount + 1
+	auditUserText := text
+	if hasUntrustedWrapper(auditUserText) {
+		// Forwarded/media content is external data, not principal-authored
+		// justification. Do not let its resources count as user-mentioned.
+		auditUserText = ""
+	}
+	auditStore := session.NewAuditStore(sessionManager.Store.Dir())
 	cs.Messages = append(cs.Messages, session.Message{Role: "user", Content: text})
 	cs.LastActive = time.Now()
 
@@ -1923,6 +1931,7 @@ func handleChatMessage(
 	} else {
 		agentCtx, agentCancel = context.WithCancel(context.Background())
 	}
+	agentCtx = withAuditRecorder(agentCtx, auditStore, cs.SessionID, auditTurn)
 	chatCancels.Store(chatID, agentCancel)
 	defer func() {
 		agentCancel()
@@ -1951,6 +1960,7 @@ func handleChatMessage(
 
 	// Run the agent with the full message history (multi-turn).
 	response, updatedMessages, err := agent.RunWithMessages(agentCtx, cs.Messages)
+	recordTurnAudit(auditStore, cs.SessionID, auditTurn, auditUserText, auditTurnDelta(updatedMessages, auditHistLen))
 	if err != nil {
 		// Clean up any tool trace messages on error.
 		deleteToolTraceMessages(bot, chatID, &toolMsgIDs)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/BackendStack21/odek/internal/session"
@@ -127,7 +128,8 @@ func TestRunLoop_SyncsDigestFromHistoryOnResume(t *testing.T) {
 	if _, _, err := engine.RunWithMessages(context.Background(), msgs); err != nil {
 		t.Fatalf("RunWithMessages: %v", err)
 	}
-	if engine.compactDigest != "RESUMED DIGEST BODY" {
-		t.Errorf("compactDigest = %q after resume, want the digest body restored from history", engine.compactDigest)
+	if !strings.Contains(engine.compactDigest, "\nRESUMED DIGEST BODY\n") ||
+		!isFullyWrappedUntrusted(engine.compactDigest) {
+		t.Errorf("compactDigest = %q after resume, want wrapped digest body restored from history", engine.compactDigest)
 	}
 }

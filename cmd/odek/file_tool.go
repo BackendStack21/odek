@@ -212,6 +212,7 @@ func globToRegex(pattern string) (*regexp.Regexp, error) {
 type readFileTool struct {
 	ctxTool
 	dangerousConfig danger.DangerousConfig
+	restrictToCWD   bool // sandbox: reject paths that escape the workspace
 }
 
 func (t *readFileTool) Name() string { return "read_file" }
@@ -278,6 +279,12 @@ func (t *readFileTool) Call(argsJSON string) (string, error) {
 	}
 	if args.Limit > maxLines {
 		args.Limit = maxLines
+	}
+
+	if t.restrictToCWD {
+		if _, err := confineToCWD(args.Path); err != nil {
+			return jsonError(err.Error())
+		}
 	}
 
 	// Security: resolve directory symlinks before classification so a path that
@@ -531,6 +538,7 @@ const maxMatches = 50
 type searchFilesTool struct {
 	ctxTool
 	dangerousConfig danger.DangerousConfig
+	restrictToCWD   bool // sandbox: reject roots that escape the workspace
 }
 
 func (t *searchFilesTool) Name() string { return "search_files" }
@@ -614,6 +622,14 @@ func (t *searchFilesTool) Call(argsJSON string) (string, error) {
 	}
 	if args.Limit > maxSearchLimit {
 		args.Limit = maxSearchLimit
+	}
+
+	if t.restrictToCWD {
+		confined, err := confineToCWD(args.Path)
+		if err != nil {
+			return jsonError(err.Error())
+		}
+		args.Path = confined
 	}
 
 	// Security: check search path
@@ -1191,6 +1207,16 @@ func classifyResolvedPath(path string) danger.RiskClass {
 	return danger.ClassifyPath(resolved)
 }
 
+// confineIfRestricted applies confineToCWD when restrict is set (sandbox
+// host-side readers). Empty paths are left to the caller.
+func confineIfRestricted(restrict bool, path string) error {
+	if !restrict || path == "" {
+		return nil
+	}
+	_, err := confineToCWD(path)
+	return err
+}
+
 // confineToCWD resolves path relative to the current working directory and
 // rejects paths that escape the working directory via ".." traversal or are
 // absolute paths outside the CWD. Returns the cleaned absolute path on success.
@@ -1355,6 +1381,7 @@ const maxBatchFiles = 10
 type batchReadTool struct {
 	ctxTool
 	dangerousConfig danger.DangerousConfig
+	restrictToCWD   bool // sandbox: reject paths that escape the workspace
 }
 
 func (t *batchReadTool) Name() string { return "batch_read" }
@@ -1455,6 +1482,11 @@ func (t *batchReadTool) readSingle(arg batchReadFileArg) batchReadFileResult {
 	if arg.Path == "" {
 		return batchReadFileResult{Error: "path is required"}
 	}
+	if t.restrictToCWD {
+		if _, err := confineToCWD(arg.Path); err != nil {
+			return batchReadFileResult{Path: arg.Path, Error: err.Error()}
+		}
+	}
 	// Reject invalid offsets like read_file does — the pagination schema is
 	// identical across both tools, so silently coercing negative values to
 	// line 1 would hide a caller bug.
@@ -1542,6 +1574,7 @@ func (t *batchReadTool) readSingle(arg batchReadFileArg) batchReadFileResult {
 type globTool struct {
 	ctxTool
 	dangerousConfig danger.DangerousConfig
+	restrictToCWD   bool // sandbox: reject roots that escape the workspace
 }
 
 func (t *globTool) Name() string { return "glob" }
@@ -1618,6 +1651,14 @@ func (t *globTool) Call(argsJSON string) (result string, err error) {
 	}
 	if args.Limit > maxGlobMatches {
 		args.Limit = maxGlobMatches
+	}
+
+	if t.restrictToCWD {
+		confined, err := confineToCWD(args.Path)
+		if err != nil {
+			return jsonError(err.Error())
+		}
+		args.Path = confined
 	}
 
 	// Security: classify search root path

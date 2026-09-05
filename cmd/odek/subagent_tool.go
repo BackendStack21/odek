@@ -23,6 +23,7 @@ import (
 	"github.com/BackendStack21/odek/internal/budget"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/events"
+	"github.com/BackendStack21/odek/internal/loop"
 )
 
 // delegateTasksTool is a built-in tool that spawns sub-agent OS processes
@@ -281,6 +282,14 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 	}
 	if len(input.Tasks) > 8 {
 		return `{"error":"max 8 tasks per call"}`, nil
+	}
+	// Trust is provenance-derived, not model-declarable. Once this run has
+	// ingested external content, a tool call cannot label attacker-derived
+	// goal/context as trusted to recover MCP access or a looser child policy.
+	if !loop.IngestProvenanceTracked(t.toolCtx()) || loop.UntrustedIngested(t.toolCtx()) {
+		for i := range input.Tasks {
+			input.Tasks[i].TrustLevel = "untrusted"
+		}
 	}
 
 	// Delegation depth cap (M1.6): refuse to fan out beyond the configured

@@ -153,6 +153,7 @@ type transcribeTool struct {
 	ctxTool
 	dangerousConfig  danger.DangerousConfig
 	transcriptionCfg config.TranscriptionConfig
+	restrictToCWD    bool // sandbox: reject paths that escape the workspace
 }
 
 func newTranscribeTool(dc danger.DangerousConfig, tc config.TranscriptionConfig) *transcribeTool {
@@ -218,6 +219,9 @@ func (t *transcribeTool) Call(argsJSON string) (result string, err error) {
 	}
 	if args.Path == "" {
 		return jsonError("path is required")
+	}
+	if err := confineIfRestricted(t.restrictToCWD, args.Path); err != nil {
+		return jsonError(err.Error())
 	}
 
 	// Security: classify the audio file path

@@ -739,8 +739,9 @@ func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system
 		// Scheduled jobs may analyze memory and past sessions (e.g. proactive
 		// nudges over open goals), so they get the same memory wiring as
 		// interactive runs (see cmd/odek/main.go).
-		MemoryDir:    expandHome("~/.odek/memory"),
-		MemoryConfig: resolved.Memory,
+		MemoryDir:       expandHome("~/.odek/memory"),
+		MemoryConfig:    resolved.Memory,
+		DangerousConfig: &dangerCfg,
 	}
 	applyResolvedProvider(&schedCfg, resolved)
 	agent, err := odek.New(schedCfg)
@@ -752,12 +753,14 @@ func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system
 		agent.SetBackgroundNoticeProvider(bgRT.provider)
 	}
 
-	// Use agent.Run (not RunWithMessages): the engine prepends its stored system
-	// message — which odek.New built as RuntimeContext + SystemMessage — so the
-	// host/cwd/date header actually reaches the model. RunWithMessages would take
-	// our messages verbatim and silently drop that context (breaking date-aware
-	// tasks like "summarize today's calendar").
-	result, err := agent.Run(ctx, task)
+	// RunWithMessages now restores the engine's current system prompt at the
+	// runLoop choke point. Keeping the returned history lets unattended runs
+	// receive the same IPI ingest/divergence audit as interactive surfaces.
+	auditID := fmt.Sprintf("schedule-%d", time.Now().UnixNano())
+	auditStore := session.NewAuditStore(expandHome("~/.odek/sessions"))
+	ctx = withAuditRecorder(ctx, auditStore, auditID, 1)
+	result, messages, err := agent.RunWithMessages(ctx, []session.Message{{Role: "user", Content: task}})
+	recordTurnAudit(auditStore, auditID, 1, task, messages)
 	tokens := int64(lastInfo.InputTokens + lastInfo.OutputTokens)
 	return result, tokens, err
 }
