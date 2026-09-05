@@ -938,9 +938,11 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 		Renderer:     nil, // silent — we stream via WebSocket
 		Skills:       &resolved.Skills,
 		SkillManager: sm,
-		MemoryConfig: resolved.Memory,
-		MemoryDir:    expandHome("~/.odek/memory"),
-		Guard:        injectionGuard,
+		MemoryConfig:    resolved.Memory,
+		MemoryDir:       expandHome("~/.odek/memory"),
+		Approver:        approver,
+		DangerousConfig: &resolved.Dangerous,
+		Guard:           injectionGuard,
 		GuardConfig:  resolved.Guard,
 		// Runtime event stream (odek.event/v1) — feeds /api/events. The
 		// emitter is panic-isolated upstream; args are hashed + redacted

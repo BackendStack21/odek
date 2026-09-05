@@ -1878,6 +1878,7 @@ func run(args []string) error {
 		Compaction:        resolved.Compaction,
 		MemoryDir:         expandHome("~/.odek/memory"),
 		MemoryConfig:      resolved.Memory,
+		DangerousConfig:   &resolved.Dangerous,
 		Guard:             injectionGuard,
 		GuardConfig:       resolved.Guard,
 		EventHandler:      eventHandler,
@@ -3207,6 +3208,7 @@ func continueCmd(args []string) error {
 		Compaction:       resolved.Compaction,
 		MemoryDir:        expandHome("~/.odek/memory"),
 		MemoryConfig:     resolved.Memory,
+		DangerousConfig:  &resolved.Dangerous,
 		Guard:            injectionGuard,
 		GuardConfig:      resolved.Guard,
 	}

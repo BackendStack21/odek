@@ -739,8 +739,9 @@ func runTaskHeadless(ctx context.Context, resolved config.ResolvedConfig, system
 		// Scheduled jobs may analyze memory and past sessions (e.g. proactive
 		// nudges over open goals), so they get the same memory wiring as
 		// interactive runs (see cmd/odek/main.go).
-		MemoryDir:    expandHome("~/.odek/memory"),
-		MemoryConfig: resolved.Memory,
+		MemoryDir:       expandHome("~/.odek/memory"),
+		MemoryConfig:    resolved.Memory,
+		DangerousConfig: &dangerCfg,
 	}
 	applyResolvedProvider(&schedCfg, resolved)
 	agent, err := odek.New(schedCfg)

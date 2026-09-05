@@ -3,8 +3,8 @@ package odek
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
-	"github.com/BackendStack21/odek/internal/session"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,8 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/render"
+	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/skills"
 	"github.com/BackendStack21/odek/internal/tool"
 )
@@ -1187,5 +1189,77 @@ func TestNew_ProjectFileRejectedByGuard(t *testing.T) {
 func TestToolAdapter_SetContextNoPanic(t *testing.T) {
 	adapter := &toolAdapter{t: &nonCtxAwareTool{}}
 	adapter.SetContext(context.Background()) // should not panic
+}
+
+func callMemoryAdd(t *testing.T, agent *Agent, content string) map[string]any {
+	t.Helper()
+	mt := agent.registry.Get("memory")
+	if mt == nil {
+		t.Fatal("memory tool not registered")
+	}
+	res, err := mt.Call(`{"action":"add","target":"user","content":` + fmt.Sprintf("%q", content) + `}`)
+	if err != nil {
+		t.Fatalf("memory.Call: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(res), &out); err != nil {
+		t.Fatalf("memory result %q: %v", res, err)
+	}
+	return out
+}
+
+// TestRED_New_WiresDangerousConfigToMemoryTool is the control: when
+// Config.DangerousConfig denies Persistence, New must install that gate
+// without a manual SetDangerousConfig on the tool.
+func TestRED_New_WiresDangerousConfigToMemoryTool(t *testing.T) {
+	deny := "deny"
+	agent, err := New(Config{
+		APIKey:        "sk-test",
+		MemoryDir:     t.TempDir(),
+		NoProjectFile: true,
+		DangerousConfig: &danger.DangerousConfig{
+			Classes:        map[danger.RiskClass]danger.Action{danger.Persistence: danger.Deny},
+			NonInteractive: &deny,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer agent.Close()
+	out := callMemoryAdd(t, agent, "User prefers dark mode and short answers")
+	if out["success"] != false {
+		t.Fatalf("New with DangerousConfig deny still persisted: %v", out)
+	}
+}
+
+// TestRED_New_CLIStyleConfig_DeniesUnauthoredMemoryAdd is the production
+// shape after the wiring fix: run / serve / repl / schedule / continue
+// pass DangerousConfig into New (not SetDangerousConfig on the tool).
+func TestRED_New_CLIStyleConfig_DeniesUnauthoredMemoryAdd(t *testing.T) {
+	memDir := t.TempDir()
+	deny := "deny"
+	agent, err := New(Config{
+		APIKey:        "sk-test",
+		MemoryDir:     memDir,
+		NoProjectFile: true,
+		DangerousConfig: &danger.DangerousConfig{
+			Classes:        map[danger.RiskClass]danger.Action{danger.Persistence: danger.Deny},
+			NonInteractive: &deny,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer agent.Close()
+
+	planted := "User prefers dark mode and short answers"
+	out := callMemoryAdd(t, agent, planted)
+	if out["success"] != false {
+		t.Fatalf("CLI-style New persisted an unapproved memory write: %v", out)
+	}
+	userFacts, err := os.ReadFile(filepath.Join(memDir, "user.md"))
+	if err == nil && strings.Contains(string(userFacts), planted) {
+		t.Fatalf("planted fact landed in user.md without a persistence gate:\n%s", userFacts)
+	}
 }
 

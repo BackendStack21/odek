@@ -186,6 +186,7 @@ func replCmd(args []string) error {
 		SkillManager:     sm,
 		MemoryConfig:     resolved.Memory,
 		MemoryDir:        expandHome("~/.odek/memory"),
+		DangerousConfig:  &resolved.Dangerous,
 		PromptCaching:    resolved.PromptCaching,
 		Stream:           resolved.Stream,
 		DeltaHandler:     streamDeltaPrinter(resolved.Stream, rend),
