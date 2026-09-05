@@ -331,6 +331,7 @@ func TestWrapUntrusted_GuardScansMiddleOfLargeOutput(t *testing.T) {
 // untrustedToolWrapper.
 type fakeToolForWrapper struct {
 	name string
+	ctx  context.Context
 }
 
 func (f *fakeToolForWrapper) Name() string        { return f.name }
@@ -338,6 +339,7 @@ func (f *fakeToolForWrapper) Description() string { return "desc" }
 func (f *fakeToolForWrapper) Schema() any {
 	return map[string]any{"type": "object", "properties": map[string]any{}}
 }
+func (f *fakeToolForWrapper) SetContext(ctx context.Context)   { f.ctx = ctx }
 func (f *fakeToolForWrapper) Call(args string) (string, error) { return "tool output", nil }
 
 // TestUntrustedToolWrapper_RecordsIngest verifies that the MCP tool wrapper
@@ -349,8 +351,12 @@ func TestUntrustedToolWrapper_RecordsIngest(t *testing.T) {
 		gotContent = content
 	})
 
-	w := &untrustedToolWrapper{inner: &fakeToolForWrapper{name: "mcp:example"}, source: "mcp:server:tool"}
+	inner := &fakeToolForWrapper{name: "mcp:example"}
+	w := &untrustedToolWrapper{inner: inner, source: "mcp:server:tool"}
 	w.SetContext(ctx)
+	if inner.ctx != ctx {
+		t.Fatal("wrapper did not propagate context to inner tool")
+	}
 	out, err := w.Call(`{}`)
 	if err != nil {
 		t.Fatalf("Call error: %v", err)

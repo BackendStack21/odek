@@ -288,7 +288,8 @@ func (c *Client) CallStream(ctx context.Context, messages []session.Message, too
 }
 
 func (c *Client) buildRequest(messages []session.Message, tools []ToolDef) *sdk.ChatRequest {
-	sys, msgs := toSDKMessages(messages, c.PromptCache && c.IsAnthropic())
+	isAnthropic := c.IsAnthropic()
+	sys, msgs := toSDKMessages(messages, c.PromptCache && isAnthropic, isAnthropic)
 	return &sdk.ChatRequest{
 		System:         sys,
 		Messages:       msgs,
@@ -315,7 +316,7 @@ func sdkTemperature(t float64) float64 {
 	return t
 }
 
-func toSDKMessages(in []session.Message, cacheAnthropic bool) ([]sdk.SystemBlock, []sdk.Message) {
+func toSDKMessages(in []session.Message, cacheAnthropic, requireSignedThinking bool) ([]sdk.SystemBlock, []sdk.Message) {
 	var sys []sdk.SystemBlock
 	out := make([]sdk.Message, 0, len(in))
 	// Convert-at-call: drop an unknown-role row together with its
@@ -347,10 +348,18 @@ func toSDKMessages(in []session.Message, cacheAnthropic bool) ([]sdk.SystemBlock
 				Cache:   cacheAnthropic && !hasUser(out),
 			})
 		case "assistant":
+			reasoningContent := m.ReasoningContent
+			if requireSignedThinking && m.ThinkingSignature == "" {
+				// Anthropic rejects replayed thinking without its opaque
+				// signature. Sessions can originate from other providers or
+				// predate signature persistence, so retain the visible answer
+				// and tool calls while dropping only unreplayable reasoning.
+				reasoningContent = ""
+			}
 			out = append(out, sdk.Message{
 				Role:              sdk.RoleAssistant,
 				Content:           m.Content,
-				ReasoningContent:  m.ReasoningContent,
+				ReasoningContent:  reasoningContent,
 				ThinkingSignature: m.ThinkingSignature,
 				ToolCalls:         toSDKToolCalls(m.ToolCalls),
 			})

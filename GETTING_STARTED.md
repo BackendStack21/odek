@@ -12,7 +12,7 @@ odek is a single static Go binary (~11 MB, instant startup). No Python, no Node,
 |---|---|
 | macOS or Linux | Prebuilt binaries, amd64 & arm64. Windows: build from source with Go |
 | A z.ai API key | From the [GLM Coding Plan](https://z.ai/subscribe) subscription or pay-as-you-go. Create/manage keys at [z.ai Open Platform](https://z.ai/manage-apikey/apikey-list) |
-| Go ≥ 1.25.12 | *Only* if installing from source. Not needed for prebuilt binaries |
+| Go ≥ 1.25.13 | *Only* if installing from source. Not needed for prebuilt binaries |
 | Docker | *Optional* — enables the default-on sandbox. Skip it with `ODEK_NO_SANDBOX=1` (see [Step 4](#4-sandbox-docker-optional)) |
 
 ---
