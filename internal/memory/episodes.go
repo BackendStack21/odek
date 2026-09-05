@@ -15,6 +15,7 @@ import (
 
 	"github.com/BackendStack21/go-vector/pkg/vector"
 	"github.com/BackendStack21/odek/internal/embedding"
+	"github.com/BackendStack21/odek/internal/flock"
 	"github.com/BackendStack21/odek/internal/fsatomic"
 	"github.com/BackendStack21/odek/internal/session"
 )
@@ -56,6 +57,23 @@ func episodesDirLock(dir string) *sync.Mutex {
 		episodesDirLocks[abs] = mu
 	}
 	return mu
+}
+
+// lockEpisodes serializes this directory across goroutines AND processes.
+// Lock order is in-process mutex then flock, matching schedule/session.
+// A flock failure aborts the mutation rather than proceeding as last-writer-wins.
+func lockEpisodes(dir string) (func(), error) {
+	mu := episodesDirLock(dir)
+	mu.Lock()
+	rel, err := flock.Lock(filepath.Join(dir, "episodes.lock"))
+	if err != nil {
+		mu.Unlock()
+		return nil, fmt.Errorf("memory: episodes lock: %w", err)
+	}
+	return func() {
+		rel()
+		mu.Unlock()
+	}, nil
 }
 
 func (e *EpisodeStore) invalidateIndexCache() {
@@ -224,13 +242,15 @@ func (e *EpisodeStore) WriteWithProvenance(sessionID, summary string, turns int,
 		summary = truncateAtRune(summary, maxEpisodeSummaryBytes) + "..."
 	}
 
-	lock := episodesDirLock(e.dir)
-	lock.Lock()
+	unlock, err := lockEpisodes(e.dir)
+	if err != nil {
+		return err
+	}
 	e.invalidateIndexCache()
 	e.mu.Lock()
 	events, err := e.writeLocked(sessionID, summary, turns, prov)
 	e.mu.Unlock()
-	lock.Unlock()
+	unlock()
 	// Fan out lifecycle events only after releasing the lock (see notifyAll).
 	e.notifyAll(events)
 	return err
@@ -258,16 +278,26 @@ func (e *EpisodeStore) writeLocked(sessionID, summary string, turns int, prov Ep
 	// but never let an untrusted episode evict a trusted/approved one.
 	if e.dedupThreshold > 0 {
 		if dupIdx, sim := e.findDuplicate(summary, idx); dupIdx >= 0 && sim >= e.dedupThreshold {
-			if trustRank(prov) >= trustRank(idx[dupIdx].Provenance) {
-				deduped := idx[dupIdx].SessionID
-				e.removeEpisodeFile(deduped)
-				idx = append(idx[:dupIdx], idx[dupIdx+1:]...)
+			if trustRank(prov) < trustRank(idx[dupIdx].Provenance) {
+				// Incoming is the untrusted loser: do not store it. Keeping
+				// it used to occupy a cap slot and leave a promote-able
+				// near-copy of trusted knowledge. The session transcript
+				// remains the audit record.
 				events = append(events, MemoryEvent{
 					Type:       "episode_deduped",
-					SessionID:  deduped,
+					SessionID:  sessionID,
 					Similarity: sim,
 				})
+				return events, nil
 			}
+			deduped := idx[dupIdx].SessionID
+			e.removeEpisodeFile(deduped)
+			idx = append(idx[:dupIdx], idx[dupIdx+1:]...)
+			events = append(events, MemoryEvent{
+				Type:       "episode_deduped",
+				SessionID:  deduped,
+				Similarity: sim,
+			})
 		}
 	}
 
@@ -547,15 +577,17 @@ func (e *EpisodeStore) Promote(sessionID string) error {
 	if err := session.ValidateSessionID(sessionID); err != nil {
 		return fmt.Errorf("memory: episodes promote: %w", err)
 	}
-	lock := episodesDirLock(e.dir)
-	lock.Lock()
+	unlock, err := lockEpisodes(e.dir)
+	if err != nil {
+		return err
+	}
 	e.invalidateIndexCache()
 	e.mu.Lock()
 
 	idx, err := e.ReadIndex()
 	if err != nil {
 		e.mu.Unlock()
-		lock.Unlock()
+		unlock()
 		return err
 	}
 	found := false
@@ -564,7 +596,7 @@ func (e *EpisodeStore) Promote(sessionID string) error {
 			found = true
 			if idx[i].Provenance.UserApproved {
 				e.mu.Unlock()
-				lock.Unlock()
+				unlock()
 				return fmt.Errorf("memory: episode %q is already approved", sessionID)
 			}
 			idx[i].Provenance.UserApproved = true
@@ -572,16 +604,16 @@ func (e *EpisodeStore) Promote(sessionID string) error {
 	}
 	if !found {
 		e.mu.Unlock()
-		lock.Unlock()
+		unlock()
 		return fmt.Errorf("memory: episode %q not found", sessionID)
 	}
 	if err := e.writeIndex(idx); err != nil {
 		e.mu.Unlock()
-		lock.Unlock()
+		unlock()
 		return err
 	}
 	e.mu.Unlock()
-	lock.Unlock()
+	unlock()
 	// Fired after releasing the lock (see notifyAll).
 	e.notifyAll([]MemoryEvent{{Type: "episode_promoted", SessionID: sessionID}})
 	return nil
@@ -610,26 +642,28 @@ func (e *EpisodeStore) PendingReview() ([]EpisodeMeta, error) {
 // and removes their summary files. Safe to call at session end or from a CLI.
 // No-op when both the cap and TTL are disabled.
 func (e *EpisodeStore) Prune() error {
-	lock := episodesDirLock(e.dir)
-	lock.Lock()
+	unlock, err := lockEpisodes(e.dir)
+	if err != nil {
+		return err
+	}
 	e.invalidateIndexCache()
 	e.mu.Lock()
 
 	if e.maxEpisodes <= 0 && e.ttlDays <= 0 {
 		e.mu.Unlock()
-		lock.Unlock()
+		unlock()
 		return nil
 	}
 	idx, err := e.ReadIndex()
 	if err != nil {
 		e.mu.Unlock()
-		lock.Unlock()
+		unlock()
 		return err
 	}
 	idx, removed := e.pruneLocked(idx)
 	if len(removed) == 0 {
 		e.mu.Unlock()
-		lock.Unlock()
+		unlock()
 		return nil
 	}
 	for _, sid := range removed {
@@ -637,12 +671,12 @@ func (e *EpisodeStore) Prune() error {
 	}
 	if err := e.writeIndex(idx); err != nil {
 		e.mu.Unlock()
-		lock.Unlock()
+		unlock()
 		return err
 	}
 	sharedEpisodeIndex(e.dir, e.newEmbedder).markDirty()
 	e.mu.Unlock()
-	lock.Unlock()
+	unlock()
 	// Fired after releasing the lock (see notifyAll).
 	e.notifyAll([]MemoryEvent{{Type: "episode_evicted", Sessions: removed, Count: len(removed)}})
 	return nil

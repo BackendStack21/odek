@@ -105,7 +105,7 @@ Cleanup complete:
   sessions removed:      12
   audit records removed: 34
   plans removed:         2
-  skip entries removed:  5
+  artifacts removed:     3
   media freed:           48.2 MB
   log rotated:           /home/you/.odek/schedule.log
 ```
@@ -125,7 +125,7 @@ Dry run — nothing removed. Would remove:
   sessions:            12
   audit records:       34
   plans:               2
-  skip entries:        5
+  artifact subtree:    /home/you/.odek/artifacts/20260101-abc
   log rotated:         /home/you/.odek/schedule.log
 ```
 

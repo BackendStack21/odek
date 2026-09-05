@@ -46,6 +46,7 @@ func TestOnSessionEnd_AutoApproveStamping(t *testing.T) {
 	on := DefaultMemoryConfig()
 	on.AutoApproveEpisodes = boolPtr(true)
 	mOn := NewMemoryManager(t.TempDir(), llm, on)
+	drainBackground(t, mOn)
 	mOn.OnSessionEndWithProvenance("20260303-on", 5, msgs, prov)
 
 	idx, err := mOn.episodes.ReadIndex()
@@ -65,6 +66,7 @@ func TestOnSessionEnd_AutoApproveStamping(t *testing.T) {
 
 	// Flag OFF (default) → stays untrusted, excluded, pending.
 	mOff := NewMemoryManager(t.TempDir(), llm, DefaultMemoryConfig())
+	drainBackground(t, mOff)
 	mOff.OnSessionEndWithProvenance("20260304-off", 5, msgs, prov)
 	if res, _ := mOff.SearchEpisodes("any", 10); len(res) != 0 {
 		t.Errorf("flag-off untrusted episode must be excluded from recall, got %v", res)

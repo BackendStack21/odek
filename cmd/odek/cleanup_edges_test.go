@@ -60,11 +60,12 @@ func TestPrintCleanupReport(t *testing.T) {
 	printCleanupReport(maintenance.Report{})
 	// Every category populated → full breakdown incl. rotated-log listing.
 	printCleanupReport(maintenance.Report{
-		SessionsRemoved: 2,
-		AuditRemoved:    1,
-		PlansRemoved:    3,
-		MediaFreedBytes: 2048,
-		LogsRotated:     []string{filepath.Join("/tmp", "telegram.log")},
+		SessionsRemoved:  2,
+		AuditRemoved:     1,
+		PlansRemoved:     3,
+		ArtifactsRemoved: 4,
+		MediaFreedBytes:  2048,
+		LogsRotated:      []string{filepath.Join("/tmp", "telegram.log")},
 	})
 }
 

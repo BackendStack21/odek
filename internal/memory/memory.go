@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/embedding"
+	"github.com/BackendStack21/odek/internal/flock"
 	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/memory/extended"
 	"github.com/BackendStack21/odek/internal/session"
@@ -24,10 +25,8 @@ import (
 // ~/.odek/memory — so concurrent session-end fact writes would otherwise lose
 // updates (read-modify-write race). Acquired around the FULL read-modify-write
 // in AddFact/ReplaceFact/RemoveFact/Consolidate. Keyed by absolute directory.
-//
-// (Cross-process sharing of one memory dir by multiple odek processes is still
-// best-effort last-writer-wins, but the unique-temp + atomic rename guarantees
-// no corruption — only the in-process serve.go fan-out needed strict ordering.)
+// Cross-process sharing of one memory dir is serialized by flock on
+// facts.lock (see lockFactsDir); a lock failure aborts the mutation.
 var (
 	factsDirLocksMu sync.Mutex
 	factsDirLocks   = map[string]*sync.Mutex{}
@@ -46,6 +45,23 @@ func factsDirLock(dir string) *sync.Mutex {
 		factsDirLocks[abs] = mu
 	}
 	return mu
+}
+
+// lockFactsDir takes the in-process mutex then an exclusive flock so two
+// odek processes cannot last-writer-wins the same user.md/env.md. Lock
+// order is mutex → flock.
+func lockFactsDir(dir string) (func(), error) {
+	mu := factsDirLock(dir)
+	mu.Lock()
+	rel, err := flock.Lock(filepath.Join(dir, "facts.lock"))
+	if err != nil {
+		mu.Unlock()
+		return nil, fmt.Errorf("memory: facts lock: %w", err)
+	}
+	return func() {
+		rel()
+		mu.Unlock()
+	}, nil
 }
 
 // Default memory dir relative to ~/.odek/
@@ -585,8 +601,8 @@ func (m *MemoryManager) notify(ev MemoryEvent) {
 // caller code (a WebSocket send under `odek serve`, or a handler that could
 // re-enter AddFact), and firing under the lock would serialize fact writes
 // across every MemoryManager sharing the dir and risk a reentrancy deadlock.
-func (m *MemoryManager) fireAfterUnlock(lock *sync.Mutex, events *[]MemoryEvent) {
-	lock.Unlock()
+func (m *MemoryManager) fireAfterUnlock(unlock func(), events *[]MemoryEvent) {
+	unlock()
 	for _, ev := range *events {
 		m.notify(ev)
 	}
@@ -606,10 +622,12 @@ func (m *MemoryManager) AddFact(target, content string) error {
 	}
 
 	// Serialize the whole read-modify-write across instances sharing this dir.
-	lock := factsDirLock(m.facts.dir)
-	lock.Lock()
+	unlock, err := lockFactsDir(m.facts.dir)
+	if err != nil {
+		return err
+	}
 	var pending []MemoryEvent
-	defer m.fireAfterUnlock(lock, &pending)
+	defer m.fireAfterUnlock(unlock, &pending)
 
 	// Security scan
 	if err := m.scanContent(context.Background(), content); err != nil {
@@ -731,10 +749,12 @@ func (m *MemoryManager) ReplaceFact(target, oldText, content string) error {
 	if m.cfg.Enabled == nil || !*m.cfg.Enabled {
 		return fmt.Errorf("memory: disabled")
 	}
-	lock := factsDirLock(m.facts.dir)
-	lock.Lock()
+	unlock, err := lockFactsDir(m.facts.dir)
+	if err != nil {
+		return err
+	}
 	var pending []MemoryEvent
-	defer m.fireAfterUnlock(lock, &pending)
+	defer m.fireAfterUnlock(unlock, &pending)
 	if err := m.scanContent(context.Background(), content); err != nil {
 		return err
 	}
@@ -759,10 +779,12 @@ func (m *MemoryManager) RemoveFact(target, oldText string) error {
 	if m.cfg.Enabled == nil || !*m.cfg.Enabled {
 		return fmt.Errorf("memory: disabled")
 	}
-	lock := factsDirLock(m.facts.dir)
-	lock.Lock()
+	unlock, err := lockFactsDir(m.facts.dir)
+	if err != nil {
+		return err
+	}
 	var pending []MemoryEvent
-	defer m.fireAfterUnlock(lock, &pending)
+	defer m.fireAfterUnlock(unlock, &pending)
 	if err := m.facts.Remove(target, oldText); err != nil {
 		return err
 	}
@@ -800,21 +822,36 @@ func (m *MemoryManager) Consolidate(target string) error {
 		return fmt.Errorf("memory: consolidation requires LLM client")
 	}
 
-	// Hold the per-dir lock across the whole consolidation (read → LLM merge →
-	// write) so it is atomic vs concurrent AddFact on the same dir. Rare,
-	// agent-triggered, and off the user's hot path, so the LLM call under the
-	// lock is acceptable.
-	lock := factsDirLock(m.facts.dir)
-	lock.Lock()
-	var pending []MemoryEvent
-	defer m.fireAfterUnlock(lock, &pending)
-
+	// Cheap unlocked peek: skip the flock (and the facts.lock file it creates)
+	// when there is nothing to merge. Session-end consolidation runs in a
+	// background goroutine; creating that lock file after a test's TempDir
+	// cleanup has started races RemoveAll ("directory not empty"). Re-check
+	// under the lock below so a concurrent AddFact cannot sneak past.
 	entries, err := m.facts.Entries(target)
 	if err != nil {
 		return err
 	}
 	if len(entries) <= 1 {
 		return nil // nothing to consolidate
+	}
+
+	// Hold the per-dir lock across the whole consolidation (read → LLM merge →
+	// write) so it is atomic vs concurrent AddFact on the same dir. Rare,
+	// agent-triggered, and off the user's hot path, so the LLM call under the
+	// lock is acceptable.
+	unlock, err := lockFactsDir(m.facts.dir)
+	if err != nil {
+		return err
+	}
+	var pending []MemoryEvent
+	defer m.fireAfterUnlock(unlock, &pending)
+
+	entries, err = m.facts.Entries(target)
+	if err != nil {
+		return err
+	}
+	if len(entries) <= 1 {
+		return nil
 	}
 
 	// Use LLM to merge
@@ -985,8 +1022,9 @@ func (m *MemoryManager) OnSessionEndWithProvenance(sessionID string, turns int, 
 		// a bare goroutine would be silently killed mid-LLM-call by os.Exit.
 		m.RunBackground(func() {
 			for _, target := range []string{"user", "env"} {
-				// Best-effort: errors (e.g. only 1 entry, nothing to consolidate)
-				// are silently ignored — consolidation is a quality pass, not critical.
+				// Best-effort: a single entry is a no-op (and does not create
+				// facts.lock); other errors are ignored — consolidation is a
+				// quality pass, not critical.
 				_ = m.Consolidate(target)
 			}
 		})

@@ -31,6 +31,7 @@ import (
 
 	"github.com/BackendStack21/odek/internal/artifact"
 	"github.com/BackendStack21/odek/internal/embedding"
+	"github.com/BackendStack21/odek/internal/flock"
 	"github.com/BackendStack21/odek/internal/fsatomic"
 	"github.com/BackendStack21/odek/internal/redact"
 )
@@ -364,6 +365,18 @@ func (s *Store) loadIndex() map[string]*IndexEntry {
 	return m
 }
 
+// fileLock acquires an exclusive flock on sessions.lock so index.json
+// read-modify-write is serialized across processes. Caller must hold s.mu
+// first (lock order: mu → flock). A lock failure aborts the mutation
+// rather than proceeding as last-writer-wins.
+func (s *Store) fileLock() (func(), error) {
+	rel, err := flock.Lock(filepath.Join(s.dir, "sessions.lock"))
+	if err != nil {
+		return nil, fmt.Errorf("session: lock: %w", err)
+	}
+	return rel, nil
+}
+
 // saveIndexLocked atomically writes the index to disk.
 // Caller must hold s.mu.
 func (s *Store) saveIndexLocked(idx map[string]*IndexEntry) error {
@@ -515,6 +528,11 @@ func (s *Store) saveLocked(sess *Session) error {
 	if err := ValidateSessionID(sess.ID); err != nil {
 		return fmt.Errorf("session: refusing unsafe save: %w", err)
 	}
+	unlock, err := s.fileLock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 
 	// Redact secrets before writing to disk. This is defense-in-depth: the
 	// loop engine already redacts tool outputs, but this catches any secrets
@@ -884,12 +902,18 @@ func (s *Store) Delete(id string) error {
 	}
 
 	s.mu.Lock()
+	unlock, lockErr := s.fileLock()
+	if lockErr != nil {
+		s.mu.Unlock()
+		return lockErr
+	}
 	err := s.removeLocked(id)
 	if err == nil {
 		idx := s.loadIndex()
 		delete(idx, id)
 		err = s.saveIndexLocked(idx)
 	}
+	unlock()
 	s.mu.Unlock()
 
 	if err == nil && s.OnDelete != nil {
@@ -922,10 +946,14 @@ func (s *Store) removeLocked(id string) error {
 // Uses the session index for efficient batch operations. Falls back to
 // scanning individual session files when no index exists (backward compat).
 func (s *Store) Cleanup(before time.Time) (int, error) {
+	s.mu.Lock()
+	unlock, err := s.fileLock()
+	if err != nil {
+		s.mu.Unlock()
+		return 0, err
+	}
 	idx := s.loadIndex()
 	if len(idx) > 0 {
-		s.mu.Lock()
-
 		var deleted, purged int
 		var cascaded []string
 		for id, e := range idx {
@@ -942,6 +970,7 @@ func (s *Store) Cleanup(before time.Time) (int, error) {
 					continue
 				}
 				if err := s.removeLocked(id); err != nil {
+					unlock()
 					s.mu.Unlock()
 					return deleted, fmt.Errorf("session: delete %q: %w", id, err)
 				}
@@ -952,10 +981,12 @@ func (s *Store) Cleanup(before time.Time) (int, error) {
 		}
 		if deleted > 0 || purged > 0 {
 			if err := s.saveIndexLocked(idx); err != nil {
+				unlock()
 				s.mu.Unlock()
 				return deleted, err
 			}
 		}
+		unlock()
 		s.mu.Unlock()
 		if s.OnDelete != nil {
 			for _, id := range cascaded {
@@ -964,6 +995,8 @@ func (s *Store) Cleanup(before time.Time) (int, error) {
 		}
 		return deleted, nil
 	}
+	unlock()
+	s.mu.Unlock()
 
 	// Fallback: no index — scan directory.
 	entries, err := os.ReadDir(s.dir)

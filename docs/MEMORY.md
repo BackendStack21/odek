@@ -263,7 +263,7 @@ to whichever surfaces are wired:
 | `fact_removed` | a fact is removed | `Target`, `Content` |
 | `fact_consolidated` | LLM consolidation merges entries | `Target`, `Count`→`NewCount` |
 | `episode_stored` | a session episode is extracted + persisted | `SessionID`, `Count` (turns), `Untrusted` |
-| `episode_deduped` | a new episode replaces a near-duplicate | `SessionID`, `Similarity` |
+| `episode_deduped` | a new episode replaces a near-duplicate, or an untrusted near-duplicate of a trusted episode is dropped | `SessionID`, `Similarity` |
 | `episode_evicted` | episodes pruned by TTL / count cap | `Sessions`, `Count` |
 | `episode_promoted` | a tainted episode is user-approved | `SessionID` |
 | `episode_pending_review` | an untrusted episode is stored but excluded from recall | `SessionID` |

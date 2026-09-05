@@ -87,12 +87,14 @@ type indexMeta struct {
 //
 // Multi-process note: two separate odek processes sharing the same memory
 // directory are NOT serialized by this in-process singleton. Concurrent saves
-// from distinct processes can interleave on the .tmp files. The practical
-// impact is limited — the worst case is one process loading a recently-rebuilt
-// gob pair and getting slightly stale recall — but operators running multiple
-// odek processes against a shared ~/.odek/memory should be aware of this.
-// Each process still produces internally-consistent gob pairs (store+emb are
-// rebuilt atomically within one process); the risk is only cross-process.
+// from distinct processes can interleave on the .tmp files. Episode index.json
+// mutations (write/promote/prune) take an exclusive flock on episodes.lock, so
+// two processes cannot last-writer-wins the JSON index; the remaining race is
+// only the vector gob pair used for recall. Operators running multiple odek
+// processes against a shared ~/.odek/memory should still treat recall as
+// eventually consistent across processes. Each process still produces
+// internally-consistent gob pairs (store+emb are rebuilt atomically within one
+// process).
 var (
 	epIdxMu sync.Mutex
 	epIdxes = map[string]*episodeVectorIndex{}

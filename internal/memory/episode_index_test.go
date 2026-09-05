@@ -29,6 +29,16 @@ func writeTestEpisode(t *testing.T, es *EpisodeStore, id, summary string) {
 	}
 }
 
+// drainBackground waits for session-end consolidation (and any other tracked
+// memory work) before t.TempDir RemoveAll. Cleanup is LIFO, so registering
+// this after NewMemoryManager(t.TempDir(), ...) runs the drain first.
+func drainBackground(t *testing.T, mm *MemoryManager) {
+	t.Helper()
+	t.Cleanup(func() {
+		mm.WaitForBackground(15 * time.Second)
+	})
+}
+
 // TestEpisodeIndex_ColdStartAndSearch: write episodes, then call recallByVector
 // on a fresh index (no gobs) and confirm the index rebuilds and returns results.
 func TestEpisodeIndex_ColdStartAndSearch(t *testing.T) {
@@ -170,6 +180,7 @@ func TestEpisodeIndex_FormatEpisodeContextNoLLM(t *testing.T) {
 	cfg := DefaultMemoryConfig()
 	cfg.LLMSearch = boolPtr(true) // explicitly on — FormatEpisodeContext must still skip it
 	mm := NewMemoryManager(dir, countingLLM, cfg)
+	drainBackground(t, mm)
 
 	// Seed episodes via session end (which fires 1 LLM call for the summary).
 	msgs := []string{"user: hi", "assistant: built the postgres schema", "user: ok", "assistant: done"}
@@ -281,6 +292,7 @@ func TestSearchEpisodes_LLMSearchFalse(t *testing.T) {
 	cfg := DefaultMemoryConfig()
 	cfg.LLMSearch = boolPtr(false)
 	mm := NewMemoryManager(t.TempDir(), llm, cfg)
+	drainBackground(t, mm)
 
 	msgs := []string{"user: hi", "assistant: postgres schema done", "user: ok", "assistant: done"}
 	mm.OnSessionEndWithProvenance("20260701-a", 5, msgs, EpisodeProvenance{})
@@ -324,6 +336,7 @@ func TestSearchEpisodes_LimitTruncation(t *testing.T) {
 	cfg := DefaultMemoryConfig()
 	cfg.LLMSearch = boolPtr(false) // use RP only for determinism
 	mm := NewMemoryManager(t.TempDir(), llm, cfg)
+	drainBackground(t, mm)
 
 	for i := 0; i < 5; i++ {
 		msgs := []string{
@@ -393,6 +406,7 @@ func TestSearchEpisodes_OOVFallbackToLLM(t *testing.T) {
 	cfg := DefaultMemoryConfig()
 	cfg.LLMSearch = boolPtr(true)
 	mm := NewMemoryManager(dir, llm, cfg)
+	drainBackground(t, mm)
 
 	msgs := []string{"user: hi", "assistant: postgres schema done", "user: ok", "assistant: done"}
 	mm.OnSessionEndWithProvenance("20260705-a", 5, msgs, EpisodeProvenance{})

@@ -115,18 +115,14 @@ func TestEpisodeDedup_ProvenanceSafety(t *testing.T) {
 		}
 
 		idx, _ := es.ReadIndex()
-		if len(idx) != 2 {
-			t.Fatalf("untrusted near-dup must NOT replace trusted; expected 2, got %d", len(idx))
+		if len(idx) != 1 {
+			t.Fatalf("untrusted near-dup must not be stored; expected 1, got %d", len(idx))
 		}
-		// The trusted episode must still be present.
-		var trustedPresent bool
-		for _, m := range idx {
-			if m.SessionID == "20260101-a" && !m.Provenance.Untrusted {
-				trustedPresent = true
-			}
+		if idx[0].SessionID != "20260101-a" || idx[0].Provenance.Untrusted {
+			t.Errorf("expected trusted 20260101-a to remain alone, got %+v", idx[0])
 		}
-		if !trustedPresent {
-			t.Error("trusted episode 20260101-a was lost")
+		if _, err := os.Stat(filepath.Join(dir, "20260102-b.md")); !os.IsNotExist(err) {
+			t.Error("untrusted loser must not leave a summary file")
 		}
 	})
 
