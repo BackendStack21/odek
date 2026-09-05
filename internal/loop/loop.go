@@ -2995,15 +2995,15 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 // ── Helpers ───────────────────────────────────────────────────────────
 
 // emitMessagesPersist fires the per-step persistence callback with a
-// freshly-allocated copy of the message history. The copy is required
-// because trimContext mutates the loop's slice in place — a handed-out
-// snapshot must not change under the caller. Nil callback = no-op.
+// freshly-allocated deep copy of the message history. The copy is required
+// because trimContext mutates the loop's slice in place and later steps
+// append to shared ToolCalls backing arrays — a handed-out snapshot must
+// not change under the caller. Nil callback = no-op.
 func (e *Engine) emitMessagesPersist(messages []session.Message) {
 	if e.messagesPersistCallback == nil {
 		return
 	}
-	snapshot := make([]session.Message, len(messages))
-	copy(snapshot, messages)
+	snapshot := session.CloneMessages(messages)
 	e.messagesPersistCallback(snapshot)
 }
 

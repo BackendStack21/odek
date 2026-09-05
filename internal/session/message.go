@@ -79,6 +79,29 @@ func (m Message) ToolName() string {
 	return ""
 }
 
+// CloneMessages returns a deep copy of msgs. The slice and each
+// ToolCalls / CacheControl pointer are unique so a persist callback can
+// hold the snapshot while the loop mutates the live history.
+func CloneMessages(msgs []Message) []Message {
+	if msgs == nil {
+		return nil
+	}
+	out := make([]Message, len(msgs))
+	for i, m := range msgs {
+		out[i] = m
+		if len(m.ToolCalls) > 0 {
+			tc := make([]ToolCall, len(m.ToolCalls))
+			copy(tc, m.ToolCalls)
+			out[i].ToolCalls = tc
+		}
+		if m.CacheControl != nil {
+			cc := *m.CacheControl
+			out[i].CacheControl = &cc
+		}
+	}
+	return out
+}
+
 // UnknownRole reports whether the role is outside the canonical set.
 func UnknownRole(role string) bool {
 	switch strings.ToLower(role) {

@@ -232,6 +232,7 @@ type rateLimiter struct {
 	windows map[string][]time.Time
 	max     int
 	window  time.Duration
+	lastGC  time.Time
 }
 
 func newRateLimiter(max int, window time.Duration) *rateLimiter {
@@ -243,7 +244,8 @@ func newRateLimiter(max int, window time.Duration) *rateLimiter {
 }
 
 // allow returns true if the key has not exceeded max requests in the sliding
-// window. It prunes stale entries on each call.
+// window. It prunes stale entries on each call and drops idle keys so a
+// broadly-bound serve cannot grow the map without bound.
 func (rl *rateLimiter) allow(key string) bool {
 	if rl == nil || rl.max <= 0 {
 		return true
@@ -266,13 +268,45 @@ func (rl *rateLimiter) allow(key string) bool {
 			times = append(times, t)
 		}
 	}
+	if len(times) == 0 {
+		delete(rl.windows, key)
+	}
 	if len(times) >= rl.max {
-		rl.windows[key] = times
+		if len(times) > 0 {
+			rl.windows[key] = times
+		}
+		rl.gcLocked(now)
 		return false
 	}
 	times = append(times, now)
 	rl.windows[key] = times
+	rl.gcLocked(now)
 	return true
+}
+
+// gcLocked drops keys whose timestamps all fall outside the window.
+// Throttled to at most once per window so a busy limiter does not scan
+// the whole map on every request.
+func (rl *rateLimiter) gcLocked(now time.Time) {
+	if !rl.lastGC.IsZero() && now.Sub(rl.lastGC) < rl.window && len(rl.windows) < 64 {
+		return
+	}
+	rl.lastGC = now
+	cutoff := now.Add(-rl.window)
+	for k, ts := range rl.windows {
+		n := 0
+		for _, t := range ts {
+			if t.After(cutoff) {
+				ts[n] = t
+				n++
+			}
+		}
+		if n == 0 {
+			delete(rl.windows, k)
+		} else {
+			rl.windows[k] = ts[:n]
+		}
+	}
 }
 
 // reset clears all tracked windows (useful in tests).

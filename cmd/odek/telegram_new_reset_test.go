@@ -1,7 +1,6 @@
 package main
 
 import (
-	"sync"
 	"testing"
 	"time"
 
@@ -24,7 +23,7 @@ func TestResetChatForNew_KeepsMutex(t *testing.T) {
 	withTempHome(t) // session.NewStore writes under a sandbox HOME
 
 	chatID := int64(770001)
-	chatMu = sync.Map{} // isolate from other tests
+	resetChatMutexes() // isolate from other tests
 
 	store, err := session.NewStore()
 	if err != nil {
@@ -63,7 +62,7 @@ func TestResetChatForNew_ResetsApproverTrust(t *testing.T) {
 	withTempHome(t)
 
 	chatID := int64(770002)
-	chatMu = sync.Map{}
+	resetChatMutexes()
 
 	store, err := session.NewStore()
 	if err != nil {

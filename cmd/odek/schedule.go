@@ -524,9 +524,9 @@ func (d telegramDeliverer) recordScheduledTurn(chatID int64, job schedule.Job, r
 		return nil
 	}
 
-	mu := getChatMutex(chatID)
-	mu.Lock()
-	defer mu.Unlock()
+	slot := pinChat(chatID)
+	slot.mu.Lock()
+	defer unpinChat(chatID, slot)
 
 	cs, err := d.sessions.Load(chatID)
 	if err != nil {

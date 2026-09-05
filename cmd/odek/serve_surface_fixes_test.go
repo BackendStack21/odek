@@ -48,6 +48,33 @@ func TestRateLimiter_SkipsEmptyKey(t *testing.T) {
 	}
 }
 
+func TestRateLimiter_GCsIdleKeys(t *testing.T) {
+	rl := newRateLimiter(5, 25*time.Millisecond)
+	if !rl.allow("stale") {
+		t.Fatal("first allow(stale) should pass")
+	}
+	rl.mu.Lock()
+	if _, ok := rl.windows["stale"]; !ok {
+		t.Fatal("stale key should be tracked immediately after allow")
+	}
+	rl.mu.Unlock()
+
+	time.Sleep(40 * time.Millisecond)
+	if !rl.allow("fresh") {
+		t.Fatal("allow(fresh) should pass")
+	}
+	rl.mu.Lock()
+	_, stale := rl.windows["stale"]
+	_, fresh := rl.windows["fresh"]
+	rl.mu.Unlock()
+	if stale {
+		t.Fatal("idle key was not GC'd after its window elapsed")
+	}
+	if !fresh {
+		t.Fatal("fresh key missing after allow")
+	}
+}
+
 // ── F3: clientIP keys on the LAST XFF entry behind a trusted proxy ──────
 
 func TestClientIP_UsesLastForwardedEntryFromTrustedProxy(t *testing.T) {
