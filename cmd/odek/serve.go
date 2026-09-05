@@ -2028,7 +2028,9 @@ func handlePrompt(
 				return
 			}
 			sess.Messages = filterPersistSnapshot(head, snapshot)
-			_ = store.SaveNoIndex(sess)
+			if err := store.SaveNoIndex(sess); err != nil {
+		fmt.Fprintf(os.Stderr, "odek: warning: failed to persist session: %v\n", err)
+	}
 		})
 	}
 
@@ -2040,7 +2042,9 @@ func handlePrompt(
 	// vector index; a successful turn re-indexes on the final save below.
 	if sess != nil {
 		sess.Messages = append(sess.Messages, session.Message{Role: "user", Content: enrichedPrompt, Name: userName})
-		_ = store.SaveNoIndex(sess)
+		if err := store.SaveNoIndex(sess); err != nil {
+		fmt.Fprintf(os.Stderr, "odek: warning: failed to persist session: %v\n", err)
+	}
 	}
 
 	start := time.Now()
@@ -2078,7 +2082,9 @@ func handlePrompt(
 		// and in-memory session pointer in sync with the persisted state.
 		note := fmt.Sprintf("[Turn aborted: %s. The prompt above was preserved — send another message to retry or continue.]", providerFailureSummary(err))
 		sess.Messages = append(sess.Messages, session.Message{Role: "assistant", Content: note})
-		_ = store.SaveNoIndex(sess)
+		if err := store.SaveNoIndex(sess); err != nil {
+		fmt.Fprintf(os.Stderr, "odek: warning: failed to persist session: %v\n", err)
+	}
 		return sess
 	}
 

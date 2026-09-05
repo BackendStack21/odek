@@ -363,16 +363,17 @@ type Engine struct {
 	// LLM keep retrying the same failing tool.
 	maxConsecutiveToolErrors map[string]int
 
-	// lastToolFingerprint + toolRepeatStreak track consecutive identical
-	// successful tool calls (fingerprint = tool name + "\x00" + args). A
-	// model stuck polling the same call with the same arguments burns
-	// iterations undetected — only failures got a corrective hint — so after
-	// a few repeats the loop injects a stall warning (same machinery as the
-	// error-recovery correction) and resets the streak. Any different or
-	// failed call resets it. This is a hint, not enforcement: legitimate
-	// polling is allowed to continue.
-	lastToolFingerprint string
-	toolRepeatStreak    int
+	// toolRepeatCounts tracks successful-call fingerprints (tool + args)
+	// with per-fingerprint counters, so repeated identical calls fire the
+	// stall hint even when the model interleaves two looping calls
+	// (A,B,A,B…) — the previous single-slot fingerprint never accumulated
+	// a streak under alternation and burned the full iteration budget
+	// unhinted. A successful tool call counts (fingerprint = tool name +
+	// "\x00" + args); after stallThreshold repeats the loop injects a
+	// stall warning (same machinery as the error-recovery correction)
+	// and resets that fingerprint's counter. Failed calls clear the map.
+	// This is a hint, not enforcement: legitimate polling is allowed.
+	toolRepeatCounts map[string]int
 
 	// bgNoticeProvider, when set, is drained once at the top of every
 	// iteration; a non-empty return is appended to the context as a
@@ -1902,8 +1903,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 	// Reset per-session tool error tracking
 	e.maxConsecutiveToolErrors = make(map[string]int)
 	// Reset per-session repeated-call (stall) tracking
-	e.lastToolFingerprint = ""
-	e.toolRepeatStreak = 0
+	e.toolRepeatCounts = nil
 	// Reset the run's mutation ledger (H-9)
 	e.runMutations = nil
 	// Finalization requests never carry across runs.
@@ -2794,45 +2794,50 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 
 			if isErr {
 				e.maxConsecutiveToolErrors[toolName]++
-				// A failed call is not an identical successful call — the
-				// stall streak only counts successes.
-				e.lastToolFingerprint = ""
-				e.toolRepeatStreak = 0
+				// A failed call is not an identical successful call — clear
+				// the repeat tracking entirely (conservative reset).
+				e.toolRepeatCounts = nil
 			} else {
 				e.maxConsecutiveToolErrors[toolName] = 0
 
 				// ── Stall detection: repeated identical successful calls ──
 				// A model polling the same tool with the same arguments
 				// burns iterations without failing, so the error tracker
-				// above never fires. Track the fingerprint (name + args) of
-				// the most recent successful call; on enough consecutive
-				// repeats, inject a corrective hint and reset — a hint, not
-				// enforcement, since legitimate polling exists.
+				// above never fires. Count per fingerprint (name + args)
+				// so interleaved looping calls (A,B,A,B…) still trip the
+				// threshold; on enough repeats, inject a corrective hint
+				// and reset — a hint, not enforcement, since legitimate
+				// polling exists.
 				fp := toolName + "\x00" + tc.Function.Arguments
 				if isBGPollTool(toolName) {
-					// Background-job polling tools: leave the fingerprint
-					// and streak untouched — identical polling is normal,
-					// AND interleaved ordinary-call repetition must still
+					// Background-job polling tools: leave the counters
+					// untouched — identical polling is normal, AND
+					// interleaved ordinary-call repetition must still
 					// count toward the threshold.
-				} else if fp == e.lastToolFingerprint {
-					e.toolRepeatStreak++
 				} else {
-					e.lastToolFingerprint = fp
-					e.toolRepeatStreak = 1
-				}
-				if e.toolRepeatStreak >= stallThreshold {
-					correction := fmt.Sprintf(
-						"⚠️ You called %q with identical arguments %d times in a row with no new information. Change approach: vary the arguments, switch to a different tool, or move on to the next step — repeating the same call will not produce a different result.",
-						toolName, e.toolRepeatStreak)
-					corrections = append(corrections, correction)
-					e.emitSignal(SignalEvent{
-						Type:   "tool_recovery",
-						Tool:   toolName,
-						Detail: fmt.Sprintf("repeated identical call (%dx in a row)", e.toolRepeatStreak),
-					})
-					// Reset streak after injecting suggestion (same
-					// semantics as the error-recovery counter).
-					e.toolRepeatStreak = 0
+					if e.toolRepeatCounts == nil {
+						e.toolRepeatCounts = make(map[string]int)
+					}
+					if len(e.toolRepeatCounts) > 64 {
+						// Bound the fingerprint set; forget old ones.
+						e.toolRepeatCounts = make(map[string]int)
+					}
+					e.toolRepeatCounts[fp]++
+					if e.toolRepeatCounts[fp] >= stallThreshold {
+						correction := fmt.Sprintf(
+							"⚠️ You called %q with identical arguments %d times (possibly interleaved with other calls) with no new information. Change approach: vary the arguments, switch to a different tool, or move on to the next step — repeating the same call will not produce a different result.",
+							toolName, e.toolRepeatCounts[fp])
+						corrections = append(corrections, correction)
+						e.emitSignal(SignalEvent{
+							Type:   "tool_recovery",
+							Tool:   toolName,
+							Detail: fmt.Sprintf("repeated identical call (%dx, possibly interleaved)", e.toolRepeatCounts[fp]),
+						})
+						// Reset this fingerprint's counter after injecting
+						// the suggestion (same semantics as the error-recovery
+						// counter).
+						e.toolRepeatCounts[fp] = 0
+					}
 				}
 			}
 

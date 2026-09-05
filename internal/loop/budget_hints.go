@@ -57,6 +57,23 @@ func (e *Engine) BudgetSnapshot() budget.Snapshot {
 	return e.budget.Snapshot(int64(e.TotalInputTokens)+int64(e.TotalCacheReadTokens)+int64(e.TotalCacheCreationTokens), int64(e.TotalOutputTokens))
 }
 
+// ChargeExternalUsage records usage incurred OUTSIDE this engine's own LLM
+// calls — a completed sub-agent's reported token spend — into the cumulative
+// totals, so later BudgetSnapshot values reflect it: the share-mode passdown
+// for the NEXT spawn hands out reduced headroom, and the parent's own token
+// cap counts child spend instead of silently exceeding it (N parallel
+// children each receiving the full pre-spawn headroom could spend up to N×
+// the configured cap). Charged as input tokens: the child result envelope
+// reports one combined number. Safe to call from tool goroutines during a
+// batch — the loop goroutine is blocked (the same invariant BudgetSnapshot
+// relies on).
+func (e *Engine) ChargeExternalUsage(tokens int64) {
+	if e == nil || tokens <= 0 {
+		return
+	}
+	e.TotalInputTokens += int(tokens)
+}
+
 // budgetWarnings returns the budget-awareness hint lines for the given
 // number of completed iterations (empty when no threshold newly crossed).
 // Iteration thresholds use completed*100 >= t*maxIter; wall-clock
