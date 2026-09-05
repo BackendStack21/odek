@@ -37,10 +37,78 @@ import (
 	"unicode/utf8"
 )
 
-// chatMu serializes agent processing per chat to prevent same-chat message
-// racing. Each chat gets its own mutex; messages from the same chat are
-// processed sequentially, preserving session history integrity.
-var chatMu sync.Map // map[int64]*sync.Mutex
+// chatSlot is the per-chat serialization gate. waiters counts goroutines that
+// have pinned the slot (including the current holder and anyone queued on
+// mu.Lock). The slot is removed from chatSlots only when waiters hits 0
+// after Unlock, so an in-flight /new cannot LoadOrStore a fresh mutex.
+type chatSlot struct {
+	mu      sync.Mutex
+	waiters int
+}
+
+var (
+	chatMetaMu sync.Mutex
+	chatSlots  = map[int64]*chatSlot{}
+)
+
+// pinChat returns the per-chat slot and records a waiter. The caller MUST
+// lock s.mu and later call unpinChat (which unlocks and drops the waiter).
+func pinChat(chatID int64) *chatSlot {
+	chatMetaMu.Lock()
+	s := chatSlots[chatID]
+	if s == nil {
+		s = &chatSlot{}
+		chatSlots[chatID] = s
+	}
+	s.waiters++
+	chatMetaMu.Unlock()
+	return s
+}
+
+// unpinChat unlocks the per-chat mutex and drops the waiter. When no waiters
+// remain the slot is removed so long-lived bots do not retain a mutex per
+// chat forever.
+func unpinChat(chatID int64, s *chatSlot) {
+	s.mu.Unlock()
+	chatMetaMu.Lock()
+	s.waiters--
+	if s.waiters <= 0 {
+		delete(chatSlots, chatID)
+	}
+	chatMetaMu.Unlock()
+}
+
+// getChatMutex returns the per-chat mutex for tests and diagnostics without
+// pinning a waiter. Production lock sites use pinChat/unpinChat so idle
+// slots are reaped.
+func getChatMutex(chatID int64) *sync.Mutex {
+	chatMetaMu.Lock()
+	defer chatMetaMu.Unlock()
+	s := chatSlots[chatID]
+	if s == nil {
+		s = &chatSlot{}
+		chatSlots[chatID] = s
+	}
+	return &s.mu
+}
+
+func resetChatMutexes() {
+	chatMetaMu.Lock()
+	chatSlots = map[int64]*chatSlot{}
+	chatMetaMu.Unlock()
+}
+
+func deleteChatMutex(chatID int64) {
+	chatMetaMu.Lock()
+	delete(chatSlots, chatID)
+	chatMetaMu.Unlock()
+}
+
+func chatMutexCount() int {
+	chatMetaMu.Lock()
+	defer chatMetaMu.Unlock()
+	return len(chatSlots)
+}
 
 // chatCancels stores per-chat cancel functions. When /stop is received, the
 // cancel function is called to interrupt the running agent loop.
@@ -222,22 +290,14 @@ func handleRestartCommand(chatID, userID int64, adminChats, adminUsers []int64) 
 // accessible from gracefulRestart so it can release the lock before os.Exit(0).
 var instanceLockRef func()
 
-// getChatMutex returns the per-chat mutex for the given chat ID.
-func getChatMutex(chatID int64) *sync.Mutex {
-	v, _ := chatMu.LoadOrStore(chatID, &sync.Mutex{})
-	return v.(*sync.Mutex)
-}
-
 // resetChatForNew implements the /new command's session reset: it archives the
 // current session and clears the approver's trust state for a fresh start.
 //
-// It deliberately does NOT remove the per-chat mutex from chatMu. Deleting the
-// mutex while an in-flight handleChatMessage goroutine still holds it lets the
-// next message LoadOrStore a *fresh* mutex and TryLock it successfully, so two
-// agent runs execute concurrently for the same chat — corrupting interleaved
-// sessionManager.Save writes and clobbering each other's approver. The per-chat
-// mutex is naturally bounded (one entry per chat ID ever seen), so retaining it
-// is not a meaningful leak.
+// It deliberately does NOT remove the per-chat mutex. Deleting the mutex
+// while an in-flight handleChatMessage goroutine still holds it lets the
+// next message pin a *fresh* mutex and TryLock it successfully, so two
+// agent runs execute concurrently for the same chat. Idle slots are reaped
+// by unpinChat after the last waiter unlocks — never from this reset path.
 func resetChatForNew(chatID int64, sessionManager *telegram.SessionManager, handler *telegram.Handler, log telegram.Logger) {
 	if err := sessionManager.ArchiveAndDelete(chatID); err != nil {
 		log.Warn("archive session", "chat_id", chatID, "error", err)
@@ -470,10 +530,10 @@ func telegramCmd(args []string) error {
 					cancel()
 				}
 			}
-			chatM := getChatMutex(chatID)
-			chatM.Lock()
+			chatM := pinChat(chatID)
+			chatM.mu.Lock()
 			resetChatForNew(chatID, sessionManager, handler, handlerLog)
-			chatM.Unlock()
+			unpinChat(chatID, chatM)
 			var b strings.Builder
 			b.WriteString("🔄 *Session archived, starting fresh*\n\n")
 			fmt.Fprintf(&b, "• Model: `%s`\n", resolved.Model)
@@ -1315,13 +1375,13 @@ func handleChatMessage(
 ) {
 	// Serialize per chat: only one agent loop runs per chat at a time.
 	// Prevents same-chat message racing that would corrupt session history.
-	mu := getChatMutex(chatID)
-	if !mu.TryLock() {
+	slot := pinChat(chatID)
+	if !slot.mu.TryLock() {
 		// Another agent run is in progress — tell the user we're queued.
 		bot.SendMessage(chatID, "⏳ Working on your previous request — queued.", nil)
-		mu.Lock()
+		slot.mu.Lock()
 	}
-	defer mu.Unlock()
+	defer unpinChat(chatID, slot)
 
 	// Recover from panics so a single bad agent run doesn't deadlock the chat.
 	defer func() {

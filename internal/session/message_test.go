@@ -101,3 +101,35 @@ func TestUnknownRole(t *testing.T) {
 		t.Fatal("unknown role not flagged")
 	}
 }
+
+func TestCloneMessages_DeepCopiesToolCalls(t *testing.T) {
+	orig := []Message{{
+		Role:    "assistant",
+		Content: "working",
+		ToolCalls: []ToolCall{{
+			ID:   "c1",
+			Type: "function",
+		}},
+		CacheControl: &CacheControl{Type: "ephemeral"},
+	}}
+	orig[0].ToolCalls[0].Function.Name = "shell"
+	clone := CloneMessages(orig)
+	if clone[0].ToolCalls[0].Function.Name != "shell" {
+		t.Fatal("clone missing tool call")
+	}
+	orig[0].ToolCalls[0].Function.Name = "mutated"
+	orig[0].CacheControl.Type = "other"
+	orig[0].Content = "changed"
+	if clone[0].ToolCalls[0].Function.Name != "shell" {
+		t.Fatal("clone shared ToolCalls backing array with live history")
+	}
+	if clone[0].CacheControl.Type != "ephemeral" {
+		t.Fatal("clone shared CacheControl pointer with live history")
+	}
+	if clone[0].Content != "working" {
+		t.Fatal("clone content mutated")
+	}
+	if CloneMessages(nil) != nil {
+		t.Fatal("nil input should stay nil")
+	}
+}

@@ -52,7 +52,7 @@ func TestHandleChatMessage_RecoversFromPanic(t *testing.T) {
 	messageID := 42
 
 	// Ensure clean chat state.
-	chatMu.Delete(chatID)
+	deleteChatMutex(chatID)
 	chatCancels.Delete(chatID)
 	chatRunInfos.Delete(chatID)
 
@@ -103,7 +103,7 @@ func TestHandleChatMessage_RecoversFromPanic(t *testing.T) {
 		t.Fatal("timed out waiting for error message")
 	}
 
-	chatMu.Delete(chatID)
+	deleteChatMutex(chatID)
 	chatCancels.Delete(chatID)
 	chatRunInfos.Delete(chatID)
 }
@@ -114,7 +114,7 @@ func TestHandleChatMessage_RecoversFromPanic_MidRun(t *testing.T) {
 	chatID := int64(88002)
 	messageID := 99
 
-	chatMu.Delete(chatID)
+	deleteChatMutex(chatID)
 	chatCancels.Delete(chatID)
 	chatRunInfos.Delete(chatID)
 
@@ -164,7 +164,7 @@ func TestHandleChatMessage_RecoversFromPanic_MidRun(t *testing.T) {
 		t.Log("no error message (acceptable for this panic path)")
 	}
 
-	chatMu.Delete(chatID)
+	deleteChatMutex(chatID)
 	chatCancels.Delete(chatID)
 	chatRunInfos.Delete(chatID)
 }
