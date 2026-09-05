@@ -1022,6 +1022,9 @@ type ToolAdapter struct {
 
 	// ParamSchema is the JSON schema for the tool's parameters.
 	ParamSchema any
+
+	ctxMu sync.RWMutex
+	ctx   context.Context
 }
 
 // Name returns the tool's name, prefixed with the server name to avoid
@@ -1041,7 +1044,20 @@ func (a *ToolAdapter) Schema() any {
 	return map[string]any{"type": "object"}
 }
 
+// SetContext records the request context used by the next Call.
+func (a *ToolAdapter) SetContext(ctx context.Context) {
+	a.ctxMu.Lock()
+	a.ctx = ctx
+	a.ctxMu.Unlock()
+}
+
 // Call invokes the tool on the MCP server with the given JSON arguments.
 func (a *ToolAdapter) Call(args string) (string, error) {
-	return a.Client.CallTool(context.Background(), a.ToolName, args)
+	a.ctxMu.RLock()
+	ctx := a.ctx
+	a.ctxMu.RUnlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return a.Client.CallTool(ctx, a.ToolName, args)
 }

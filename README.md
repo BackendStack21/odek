@@ -5,7 +5,7 @@
 One binary. One loop. Zero frameworks. ReAct (Reasoning + Acting) — think, therefore act.
 
 ```bash
-# Install (requires Go ≥ 1.25.12 — see "Build requirements" below)
+# Install (requires Go ≥ 1.25.13 — see "Build requirements" below)
 go install github.com/BackendStack21/odek/cmd/odek@latest
 
 # Use (provider env key — DEEPSEEK_API_KEY for the default provider)
@@ -14,7 +14,7 @@ odek run "How many lines in go.mod?"
 # → 3 lines
 ```
 
-**Build requirements:** Go **1.25.12 or newer**. The `go` directive in `go.mod` pins this floor because earlier 1.25.x toolchains ship reachable standard-library CVEs; CI additionally runs `govulncheck` on every push/PR so new advisories fail the build.
+**Build requirements:** Go **1.25.13 or newer**. The `go` directive in `go.mod` pins this floor because earlier 1.25.x toolchains ship reachable standard-library CVEs; CI additionally runs `govulncheck` on every push/PR so new advisories fail the build.
 
 **New here?** The step-by-step install guide — including the GLM 5.3 Flash (z.ai) setup and the optional bodek TUI — lives in [GETTING_STARTED.md](GETTING_STARTED.md).
 

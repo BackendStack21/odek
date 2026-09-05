@@ -11,7 +11,7 @@
 # (the sandbox runs with --network=none by default).
 #
 # Pins:
-#   - Go minor version follows go.mod ("go 1.25.12") — bump FROM in lockstep.
+#   - Go version follows go.mod ("go 1.25.13") — bump FROM in lockstep.
 #   - golangci-lint matches .github/workflows/test.yml (v2.12.2).
 #   - govulncheck tracks @latest, exactly like CI.
 #
@@ -21,7 +21,7 @@
 #     bumped past the image's Go instead of silently downloading a toolchain
 #     the --network=none sandbox could never fetch.
 
-FROM golang:1.25-alpine
+FROM golang:1.25.13-alpine
 
 ARG GOLANGCI_LINT_VERSION=v2.12.2
 

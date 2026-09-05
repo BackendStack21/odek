@@ -1,9 +1,9 @@
-github.com/BackendStack21/go-llm-sdk v0.2.1 h1:fnWEYGhh+vi+nN9jjXA/87L1rxBgg9ei4gf6xOyEv3M=
-github.com/BackendStack21/go-llm-sdk v0.2.1/go.mod h1:Nhro6plQaVIIFajPhzp2dzz4rv4DFU/yXNEudChllyE=
-github.com/BackendStack21/go-mcp v1.2.1 h1:KayKcmOQF5BhhseXEZv7sLqjS3bRRWezOUFosp+P7M4=
-github.com/BackendStack21/go-mcp v1.2.1/go.mod h1:RKFw6nrl6ySQqqrR8KtG7HYZ/heyyjT8SjiEtlbTMY8=
-github.com/BackendStack21/go-vector v1.3.0 h1:VT1cwPAUzkg3Rt0fXA+jTzW472jgObqs85/TcPs4N7Q=
-github.com/BackendStack21/go-vector v1.3.0/go.mod h1:TkxZEqKGeN38QNWUoQt4xJcf6n2kI1pY7nu6ibXK1Yo=
+github.com/BackendStack21/go-llm-sdk v0.3.0 h1:QMFKUiIGWZ1PP17fFp+PFZpdYYlWXuBDsOpz0TW8SwI=
+github.com/BackendStack21/go-llm-sdk v0.3.0/go.mod h1:Nhro6plQaVIIFajPhzp2dzz4rv4DFU/yXNEudChllyE=
+github.com/BackendStack21/go-mcp v1.3.0 h1:55iJgiAgcptv+mQwWEHNaFqPJksPR6zn4beYjHk/Ea4=
+github.com/BackendStack21/go-mcp v1.3.0/go.mod h1:RKFw6nrl6ySQqqrR8KtG7HYZ/heyyjT8SjiEtlbTMY8=
+github.com/BackendStack21/go-vector v1.4.0 h1:Ssu5RDEt4Cr9A17/ogdfjeuaLFFNHASJBIEGpqKzAV0=
+github.com/BackendStack21/go-vector v1.4.0/go.mod h1:TkxZEqKGeN38QNWUoQt4xJcf6n2kI1pY7nu6ibXK1Yo=
 golang.org/x/net v0.58.0 h1:ynWG7rqYi4ccpTEuPZ2QGWHktVEM9DMCj9yzDE0Q7To=
 golang.org/x/net v0.58.0/go.mod h1:YwCddHnFlT7eLQqVprV19OnhLGtc5xOKgE0RyqgfWAU=
 golang.org/x/sys v0.47.0 h1:o7XGOvZQCADBQQ4Y7VNq2dRWQR7JmOUW8Kxx4ZsNgWs=

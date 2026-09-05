@@ -44,7 +44,7 @@ func TestToSDKMessages_ToolNameFromV1Name(t *testing.T) {
 	_, msgs := toSDKMessages([]session.Message{
 		{Role: "assistant", ToolCalls: []session.ToolCall{{ID: "c1", Type: "function"}}},
 		{Role: "tool", Name: "shell", ToolCallID: "c1", Content: "ok"},
-	}, false)
+	}, false, false)
 	if len(msgs) != 2 {
 		t.Fatalf("len=%d", len(msgs))
 	}
@@ -60,7 +60,7 @@ func TestToSDKMessages_DropsUnknownRoleWithToolGroup(t *testing.T) {
 		{Role: "garbage", Content: "bad"},
 		{Role: "tool", Name: "shell", ToolCallID: "c1", Content: "ok"},
 		{Role: "user", Content: "next"},
-	}, false)
+	}, false, false)
 	for _, m := range msgs {
 		if session.UnknownRole(string(m.Role)) {
 			t.Fatalf("unknown role leaked: %q", m.Role)
@@ -92,7 +92,7 @@ func TestToSDKMessages_AnthropicCacheMarkers(t *testing.T) {
 		{Role: "user", Content: "hi"},
 		{Role: "assistant", Content: "yo"},
 		{Role: "user", Content: "again"},
-	}, true)
+	}, true, true)
 	if len(sys) != 2 || !sys[0].Cache || sys[1].Cache {
 		t.Fatalf("system cache = %+v", sys)
 	}
@@ -105,9 +105,34 @@ func TestToSDKMessages_NoCacheWhenDisabled(t *testing.T) {
 	sys, msgs := toSDKMessages([]session.Message{
 		{Role: "system", Content: "base"},
 		{Role: "user", Content: "hi"},
-	}, false)
+	}, false, false)
 	if sys[0].Cache || msgs[0].Cache {
 		t.Fatal("cache markers must be off when cacheAnthropic is false")
+	}
+}
+
+func TestToSDKMessages_AnthropicDropsUnsignedReasoning(t *testing.T) {
+	_, msgs := toSDKMessages([]session.Message{
+		{
+			Role:             "assistant",
+			Content:          "visible answer",
+			ReasoningContent: "reasoning from another provider",
+			ToolCalls:        []session.ToolCall{{ID: "c1", Type: "function"}},
+		},
+		{
+			Role:              "assistant",
+			Content:           "signed answer",
+			ReasoningContent:  "anthropic reasoning",
+			ThinkingSignature: "sig",
+		},
+	}, false, true)
+	if msgs[0].ReasoningContent != "" || msgs[0].Content != "visible answer" ||
+		len(msgs[0].ToolCalls) != 1 {
+		t.Fatalf("unsigned cross-provider message = %+v", msgs[0])
+	}
+	if msgs[1].ReasoningContent != "anthropic reasoning" ||
+		msgs[1].ThinkingSignature != "sig" {
+		t.Fatalf("signed Anthropic reasoning was not preserved: %+v", msgs[1])
 	}
 }
 

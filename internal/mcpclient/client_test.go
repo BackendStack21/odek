@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -341,6 +342,13 @@ func TestToolAdapter(t *testing.T) {
 	}
 	if result != "ok" {
 		t.Errorf("result = %q, want %q", result, "ok")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	adapter.SetContext(ctx)
+	if _, err := adapter.Call(`{"input":"cancelled"}`); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Call error = %v, want context.Canceled", err)
 	}
 }
 

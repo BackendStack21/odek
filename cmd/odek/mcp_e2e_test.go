@@ -1,16 +1,22 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/mcp"
 	"github.com/BackendStack21/odek/internal/mcpclient"
 )
 
@@ -41,6 +47,76 @@ func skipIfNoMCPE2E(t *testing.T) {
 	t.Helper()
 	if os.Getenv("ODEK_E2E") == "" {
 		t.Skip("ODEK_E2E not set — skipping MCP E2E test")
+	}
+}
+
+type idleSignalReader struct {
+	reader io.Reader
+	once   sync.Once
+}
+
+func (r *idleSignalReader) Read(p []byte) (int, error) {
+	r.once.Do(func() {
+		_, _ = io.WriteString(os.Stdout, "MCP_SIGNAL_READY\n")
+	})
+	return r.reader.Read(p)
+}
+
+func TestMCPServerProcess_SIGTERMExitsWhileIdle(t *testing.T) {
+	if os.Getenv("MCP_SIGNAL_HELPER") == "1" {
+		server := mcp.NewServer("test", nil, &idleSignalReader{reader: os.Stdin}, io.Discard)
+		_ = server.Run(context.Background())
+		os.Exit(0)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestMCPServerProcess_SIGTERMExitsWhileIdle$")
+	cmd.Env = append(os.Environ(), "MCP_SIGNAL_HELPER=1")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatalf("stdin pipe: %v", err)
+	}
+	defer stdin.Close()
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper: %v", err)
+	}
+
+	started := make(chan bool, 1)
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			if scanner.Text() == "MCP_SIGNAL_READY" {
+				started <- true
+				return
+			}
+		}
+		started <- false
+	}()
+	select {
+	case ok := <-started:
+		if !ok {
+			t.Fatal("helper exited before entering idle MCP read")
+		}
+	case <-time.After(2 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("helper did not start MCP server")
+	}
+
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signal helper: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-done:
+		// Termination by SIGTERM is expected; only bounded exit matters.
+	case <-time.After(time.Second):
+		_ = cmd.Process.Kill()
+		<-done
+		t.Fatal("idle MCP server did not exit after SIGTERM")
 	}
 }
 

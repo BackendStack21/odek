@@ -80,11 +80,23 @@ fallback applies (default: deny). Configure per-class overrides in `odek.json`:
 
 Stdio transport with JSON-RPC 2.0:
 
-- `initialize` — protocol handshake (`protocolVersion: "2025-03-26"`)
+- `server/discover` — stateless protocol and capability discovery
+- `initialize` — backward-compatible handshake for `2024-11-05`,
+  `2025-03-26`, `2025-11-25`, and `2026-07-28` clients
 - `tools/list` — returns all available tools with schemas
 - `tools/call` — invokes a tool with the given arguments
+- `resources/templates/list` — returns an empty compatibility catalog
 - `ping` — health check (returns empty object)
 - `initialized` — notification
+
+The default protocol is `2026-07-28`. Modern clients declare that version in
+each request's `_meta`; responses then include current result and cache
+metadata. Legacy clients retain their previous response shapes. Requests are
+bounded to 10 MiB by default, malformed JSON-RPC requests are rejected, and
+tool-handler panics are contained without exposing the panic value to the
+client or stderr. A stateless `tools/call` must include both the modern
+protocol version and client capabilities in `_meta`; metadata-free calls are
+accepted only after a successful legacy `initialize`.
 
 Logging goes to stderr; stdin/stdout are reserved for the MCP protocol.
 
@@ -94,6 +106,8 @@ Logging goes to stderr; stdin/stdout are reserved for the MCP protocol.
 
 odek can connect to **external MCP servers** and expose their tools to the agent
 during `odek run`, `odek repl`, `odek serve`, and `odek mcp`.
+The outbound client currently negotiates `2025-03-26` for compatibility with
+the versioned [`odek-extension/v1`](EXTENSIONS.md) contract.
 
 ### Configuration
 

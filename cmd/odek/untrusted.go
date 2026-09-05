@@ -379,6 +379,12 @@ type untrustedToolWrapper struct {
 func (w *untrustedToolWrapper) Name() string        { return w.inner.Name() }
 func (w *untrustedToolWrapper) Description() string { return w.inner.Description() }
 func (w *untrustedToolWrapper) Schema() any         { return w.inner.Schema() }
+func (w *untrustedToolWrapper) SetContext(ctx context.Context) {
+	w.ctxTool.SetContext(ctx)
+	if contextTool, ok := w.inner.(interface{ SetContext(context.Context) }); ok {
+		contextTool.SetContext(ctx)
+	}
+}
 func (w *untrustedToolWrapper) Call(args string) (string, error) {
 	ctx := w.toolCtx()
 	out, err := w.inner.Call(args)
