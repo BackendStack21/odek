@@ -101,7 +101,7 @@ Unknown flags are a **hard error** — they are never folded into the task text 
 
 `odek run` supports hard execution budgets (odek-extension/v1): wall-clock runtime, total tool calls, cumulative input/output tokens, and estimated cost. Sources: the `limits` section of `~/.odek/config.json` (a project `./odek.json` may only *lower* them — see [CONFIG.md → limits](CONFIG.md#execution-budgets-limits)) and the five `--max-*` flags above. There is no `ODEK_*` env-var layer for limits.
 
-Enforcement points: runtime is checked before every LLM call, token totals and estimated cost after every LLM response, and the tool-call count before each tool batch is scheduled.
+Enforcement points: runtime is checked before every LLM call and around the tool batch (a deadline context cancels context-aware tools when remaining wall-clock budget elapses); token totals and estimated cost after every LLM response; tool-call count before each batch is scheduled — overflow calls in a batch that would exceed the cap are skipped rather than discarding the whole plan.
 
 On exhaustion odek:
 

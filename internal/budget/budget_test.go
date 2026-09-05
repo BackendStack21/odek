@@ -164,6 +164,54 @@ func TestChecker_ToolCalls(t *testing.T) {
 	}
 }
 
+func TestChecker_ToolSlotsRemaining(t *testing.T) {
+	var none *Checker
+	if n, limited := none.ToolSlotsRemaining(); limited || n != 0 {
+		t.Errorf("nil checker: got %d limited=%v, want unlimited", n, limited)
+	}
+	c := NewChecker(Limits{MaxToolCalls: 3}, time.Now())
+	n, limited := c.ToolSlotsRemaining()
+	if !limited || n != 3 {
+		t.Errorf("fresh: got %d limited=%v, want 3 limited", n, limited)
+	}
+	c.RecordToolCalls(2)
+	n, limited = c.ToolSlotsRemaining()
+	if !limited || n != 1 {
+		t.Errorf("after 2: got %d limited=%v, want 1 limited", n, limited)
+	}
+	c.RecordToolCalls(1)
+	n, limited = c.ToolSlotsRemaining()
+	if !limited || n != 0 {
+		t.Errorf("exhausted: got %d limited=%v, want 0 limited", n, limited)
+	}
+}
+
+func TestChecker_RemainingRuntime(t *testing.T) {
+	var none *Checker
+	if d, limited := none.RemainingRuntime(); limited || d != 0 {
+		t.Errorf("nil checker: got %s limited=%v, want unlimited", d, limited)
+	}
+	start := time.Now()
+	now := start
+	c := NewChecker(Limits{MaxRuntimeSeconds: 10}, start)
+	c.SetNowFunc(func() time.Time { return now })
+
+	d, limited := c.RemainingRuntime()
+	if !limited || d != 10*time.Second {
+		t.Errorf("fresh: got %s limited=%v, want 10s", d, limited)
+	}
+	now = now.Add(2500 * time.Millisecond)
+	d, limited = c.RemainingRuntime()
+	if !limited || d != 7500*time.Millisecond {
+		t.Errorf("mid: got %s limited=%v, want 7.5s", d, limited)
+	}
+	now = now.Add(8 * time.Second)
+	d, limited = c.RemainingRuntime()
+	if !limited || d != 0 {
+		t.Errorf("exhausted: got %s limited=%v, want 0 limited", d, limited)
+	}
+}
+
 func TestLimits_ResolvePrices(t *testing.T) {
 	flat := Limits{InputCostPerMillionUSD: 1.0, OutputCostPerMillionUSD: 2.0}
 	withModels := Limits{

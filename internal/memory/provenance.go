@@ -37,8 +37,10 @@ type EpisodeProvenance struct {
 // agent's trust boundary regardless of their arguments: network fetches,
 // search-engine results, opaque transcribed audio, model-described images,
 // sub-agent output (a delegated task runs its own tool calls and returns
-// attacker-influenceable text), and recall of prior-session transcripts
-// (which may themselves carry previously-injected content).
+// attacker-influenceable text), recall of prior-session transcripts
+// (which may themselves carry previously-injected content), and parent-side
+// reads of sub-agent result artifacts (the model supplies an id, never a
+// path; bytes still originated in a child run).
 //
 // `shell` is deliberately NOT in this set even though its output can carry
 // untrusted bytes: it is the agent's primary work tool and tainting it would
@@ -51,6 +53,7 @@ var AlwaysExternalTools = map[string]bool{
 	"web_search":     true,
 	"vision":         true,
 	"delegate_tasks": true,
+	"artifact_read":  true,
 }
 
 // PathReadingTools are tools that read filesystem content (or structure) into

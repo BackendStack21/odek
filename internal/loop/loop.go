@@ -2166,9 +2166,9 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 			}
 		}
 
-		// Hard execution budget: runtime is checked before every LLM call so a
-		// runaway loop stops deterministically instead of burning provider
-		// spend until the iteration cap.
+		// Hard execution budget: runtime is checked before every LLM call
+		// and again around the tool batch (deadline context + post-act
+		// check) so a long tool cannot run past the cap unnoticed.
 		if berr := e.budget.CheckRuntime(); berr != nil {
 			return e.budgetExceeded(ctx, messages, berr, i+1)
 		}
@@ -2367,11 +2367,39 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 			ToolCalls:         result.ToolCalls,
 		}
 
-		// Hard execution budget: the tool-call count is checked BEFORE the
-		// batch is scheduled, so an exhausted budget stops new tool work
-		// entirely. messages has no unanswered tool calls at this point.
-		if berr := e.budget.CheckToolBatch(len(result.ToolCalls)); berr != nil {
+		// Hard execution budget: runtime is re-checked here so a long tool
+		// batch cannot start after the cap already elapsed during the LLM
+		// call. messages has no unanswered tool calls at this point.
+		if berr := e.budget.CheckRuntime(); berr != nil {
 			return e.budgetExceeded(ctx, messages, berr, i+1)
+		}
+
+		// Tool-call cap: if this batch would overflow, keep the remaining
+		// slots instead of discarding the whole paid tool-plan. Zero
+		// remaining still fail-stops before scheduling anything.
+		execN := len(result.ToolCalls)
+		if n, limited := e.budget.ToolSlotsRemaining(); limited {
+			if n <= 0 {
+				return e.budgetExceeded(ctx, messages, e.budget.CheckToolBatch(1), i+1)
+			}
+			if int64(execN) > n {
+				execN = int(n)
+			}
+		}
+
+		// Bound the act phase to remaining wall-clock budget so a 60s
+		// shell cannot run past a 5s cap until the next LLM call.
+		// cancelTool is called after the batch (not deferred): a defer
+		// inside the iteration loop would leak until runLoop returns.
+		toolCtx := ctx
+		cancelTool := func() {}
+		if d, limited := e.budget.RemainingRuntime(); limited {
+			if d <= 0 {
+				return e.budgetExceeded(ctx, messages, e.budget.CheckRuntime(), i+1)
+			}
+			var cancel context.CancelFunc
+			toolCtx, cancel = context.WithTimeout(ctx, d)
+			cancelTool = cancel
 		}
 
 		messages = append(messages, assistantMsg)
@@ -2572,6 +2600,16 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 			}
 		} else {
 			for i, tc := range result.ToolCalls {
+				if i >= execN {
+					results[i] = execResult{
+						output: fmt.Sprintf(
+							"error: skipped — tool-call budget exhausted (kept %d of %d calls in this batch)",
+							execN, len(result.ToolCalls),
+						),
+						errored: true,
+					}
+					continue
+				}
 				sem <- struct{}{} // acquire — blocks if at cap
 				go func(idx int, tcRef session.ToolCall) {
 					defer func() { <-sem }() // release
@@ -2587,15 +2625,16 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 						errored = false
 						// Propagate agent context to tools that support it
 						// (e.g. delegate_tasks kills sub-agents on parent cancel).
+						// toolCtx carries the remaining runtime deadline.
 						if ctxTool, ok := t.(interface{ SetContext(context.Context) }); ok {
-							ctxTool.SetContext(ctx)
+							ctxTool.SetContext(toolCtx)
 						}
 						// Heartbeat watchdog: emit "tool_running" signals while
 						// this call is still executing so long-running tools
 						// (e.g. a shell test suite) don't look like a hang.
 						// Closed when the call returns, on panic paths too, so
 						// the watchdog goroutine always terminates.
-						stopHeartbeat := e.startToolHeartbeat(ctx, tcRef.Function.Name)
+						stopHeartbeat := e.startToolHeartbeat(toolCtx, tcRef.Function.Name)
 						// Capture any panic from the tool so it does not kill the agent.
 						// The recovered message falls through to results[idx] like any
 						// other tool error, so the LLM sees it and the consecutive-error
@@ -2641,10 +2680,13 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 			}
 		}
 
+		cancelTool()
+
 		// Account the executed batch against the tool-call budget. Denied
-		// batches never ran, so they do not count.
+		// batches never ran, so they do not count. Skipped overflow slots
+		// in a shrunk batch also do not count.
 		if !batchDenied {
-			e.budget.RecordToolCalls(len(result.ToolCalls))
+			e.budget.RecordToolCalls(execN)
 		}
 
 		// Reset the batch trustAll grant now that this iteration's tools have
@@ -2859,7 +2901,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 			Data: map[string]any{
 				"input_tokens":  e.TotalInputTokens,
 				"output_tokens": e.TotalOutputTokens,
-				"tools_called":  len(result.ToolCalls),
+				"tools_called":  execN,
 			},
 		})
 
@@ -2878,6 +2920,12 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 				TotalLatency:        time.Since(startTime),
 				HasFinalAnswer:      false,
 			})
+		}
+
+		// Runtime cap after the act phase: tools that ignore context can
+		// still overshoot, but the next LLM call must not start.
+		if berr := e.budget.CheckRuntime(); berr != nil {
+			return e.budgetExceeded(ctx, messages, berr, i+1)
 		}
 	}
 

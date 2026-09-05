@@ -246,6 +246,9 @@ func (c *Checker) CheckUsage(inputTokens, outputTokens int64) *Error {
 // would exceed the tool-call budget. It is consulted BEFORE the batch is
 // scheduled; on exhaustion no new tool work starts. Observed is the
 // would-be total (already executed + this batch). Nil-safe.
+//
+// Callers that can shrink a batch should use ToolSlotsRemaining instead and
+// execute only the remaining slots rather than discarding the whole plan.
 func (c *Checker) CheckToolBatch(n int) *Error {
 	if c == nil || c.limits.MaxToolCalls <= 0 {
 		return nil
@@ -255,6 +258,37 @@ func (c *Checker) CheckToolBatch(n int) *Error {
 		return &Error{Limit: LimitToolCalls, Observed: wouldBe, Maximum: c.limits.MaxToolCalls}
 	}
 	return nil
+}
+
+// ToolSlotsRemaining is how many more tool calls may still execute.
+// limited is false when no tool-call cap is configured (unlimited).
+// When limited is true, n is remaining slots (zero if already exhausted).
+func (c *Checker) ToolSlotsRemaining() (n int64, limited bool) {
+	if c == nil || c.limits.MaxToolCalls <= 0 {
+		return 0, false
+	}
+	r := c.limits.MaxToolCalls - c.toolCalls
+	if r < 0 {
+		r = 0
+	}
+	return r, true
+}
+
+// RemainingRuntime is the unused wall-clock budget at nanosecond precision.
+// limited is false when no runtime cap is configured (unlimited). When
+// limited is true, d is time left (zero if already exhausted). The loop
+// uses this to derive a deadline context around the act phase so a long
+// tool cannot run past the cap until the next LLM call.
+func (c *Checker) RemainingRuntime() (d time.Duration, limited bool) {
+	if c == nil || c.limits.MaxRuntimeSeconds <= 0 {
+		return 0, false
+	}
+	deadline := c.start.Add(time.Duration(c.limits.MaxRuntimeSeconds) * time.Second)
+	rem := deadline.Sub(c.now())
+	if rem < 0 {
+		return 0, true
+	}
+	return rem, true
 }
 
 // RecordToolCalls accounts n executed tool calls against the budget.
