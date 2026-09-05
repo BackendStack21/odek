@@ -200,6 +200,11 @@ func replCmd(args []string) error {
 		return err
 	}
 	defer agent.Close()
+	// File delegate_tasks artifacts under the interactive session so the
+	// store's OnDelete cascade owns their lifecycle.
+	if sess != nil {
+		agent.SetToolSessionID(sess.ID)
+	}
 
 	// Background completion notices: drained at the top of every iteration
 	// and injected as an observe-phase message (background.notify="observe";

@@ -885,6 +885,31 @@ func (a *Agent) SetEventSessionID(id string) {
 	a.emitter.SetSessionID(id)
 }
 
+// sessionToolBinder is implemented by built-in tools that scope persistent
+// side effects to the active session — delegate_tasks files its per-task
+// artifact dirs under artifacts/<session_id>/ so session deletion cascades
+// over them.
+type sessionToolBinder interface {
+	SetSessionID(id string)
+}
+
+// SetToolSessionID stamps id onto every registered tool implementing
+// sessionToolBinder (currently delegate_tasks, for artifact filing). Call it
+// whenever the active session id becomes known or changes — serve binds per
+// prompt because one connection can session_switch mid-flight; the single-
+// session surfaces (run/continue/repl/telegram) bind once at startup or per
+// agent construction. No-op on a nil agent or when no tool qualifies.
+func (a *Agent) SetToolSessionID(id string) {
+	if a == nil || a.registry == nil {
+		return
+	}
+	for _, t := range a.registry.Tools() {
+		if b, ok := t.(sessionToolBinder); ok {
+			b.SetSessionID(id)
+		}
+	}
+}
+
 // EmitEvent emits a caller-originated runtime event (e.g. session_saved from
 // the session persistence layer, budget_exceeded from budget enforcement)
 // through the same non-blocking, run-scoped pipeline as engine events.
@@ -1090,6 +1115,16 @@ func (a *toolAdapter) Call(args string) (string, error) {
 // external data. The loop applies the configured/default nonce wrapper when
 // the tool did not already return one.
 func (a *toolAdapter) RequiresUntrustedOutputBoundary() bool { return true }
+
+// SetSessionID propagates the active session id to tools that implement the
+// session-binder interface (delegate_tasks files its artifact dirs under the
+// session so deletion cascades), same forward-on-assertion shape as
+// SetContext — the public Tool interface stays unchanged.
+func (a *toolAdapter) SetSessionID(id string) {
+	if sb, ok := a.t.(sessionToolBinder); ok {
+		sb.SetSessionID(id)
+	}
+}
 
 // SetContext propagates the agent context to tools that implement the
 // context-aware interface. This lets odek.Tool implementations receive the

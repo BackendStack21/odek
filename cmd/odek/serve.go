@@ -1939,6 +1939,10 @@ func handlePrompt(
 	// can filter by session.
 	if sess != nil {
 		agent.SetEventSessionID(sess.ID)
+		// File delegate_tasks artifacts under this session so the store's
+		// OnDelete cascade owns their lifecycle (rebound every prompt: a
+		// connection can session_switch between turns).
+		agent.SetToolSessionID(sess.ID)
 		// Bind background jobs to the stable store session id so they
 		// outlive this turn, survive across runs in the same session, and
 		// stay visible to /api/jobs under this session's token.
