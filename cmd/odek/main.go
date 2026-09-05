@@ -256,10 +256,7 @@ func buildSystemPrompt(resolved config.ResolvedConfig) string {
 // security pillar is not theirs to drop. Idempotent: an identity that already
 // carries the pillar verbatim is returned unchanged.
 func composeSystem(identity string) string {
-	if strings.Contains(identity, securityPillar) {
-		return identity
-	}
-	return identity + "\n\n" + securityPillar
+	return odek.ComposeSecureSystem(identity)
 }
 
 // maxIdentityFileBytes caps the size of ~/.odek/IDENTITY.md that will be
@@ -1967,15 +1964,25 @@ func run(args []string) error {
 			mm.SetSessionContext(sessionID, cwd)
 		}
 	}
+	if sessionID == "" {
+		sessionID = session.GenerateID()
+	}
+	if auditStore == nil {
+		store, err := session.NewStore()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "odek: warning: audit store unavailable: %v\n", err)
+		} else {
+			auditStore = session.NewAuditStore(store.Dir())
+			sessIDCapture = sessionID
+			currentTurn = 1
+			ctx = withAuditRecorder(ctx, auditStore, sessIDCapture, currentTurn)
+		}
+	}
 
 	// Resolve @references and --ctx file attachments. In session mode this
 	// happens after the audit recorder is attached, so the wrapped content is
 	// recorded in the session's audit log.
-	enrichCtx := ctx
-	if f.Session == nil || !*f.Session {
-		enrichCtx = context.Background()
-	}
-	enriched, err := enrichTask(enrichCtx, originalTask, f.Ctx, cwd)
+	enriched, err := enrichTask(ctx, originalTask, f.Ctx, cwd)
 	if err != nil {
 		return err
 	}
@@ -2077,11 +2084,6 @@ func run(args []string) error {
 			fmt.Fprintf(os.Stderr, "odek: session %s saved — continue with: odek continue \"...\"\n", updated.ID)
 		}
 
-		// Record per-turn divergence assessment. Use the original prompt so
-		// injected resources from @-refs/--ctx do not count as user-mentioned.
-		if auditStore != nil {
-			recordTurnAudit(auditStore, sessIDCapture, currentTurn, originalTask, allMessages[len(messages):])
-		}
 	} else {
 		// Single-shot mode (default)
 		messages := []session.Message{
@@ -2092,6 +2094,9 @@ func run(args []string) error {
 		}
 		result, allMessages, runErr = agent.RunWithMessages(ctx, messages)
 	}
+	// Record successful and failed turns, including non-session runs. The
+	// original prompt excludes resources introduced by @-refs/--ctx.
+	recordTurnAudit(auditStore, sessIDCapture, currentTurn, originalTask, allMessages)
 
 	if runErr != nil && runSess != nil {
 		// Interrupted/failed session run — persist the partial history so
@@ -3021,6 +3026,13 @@ func persistPartialMessages(store *session.Store, sess *session.Session, message
 // shrinking the returned slice below the pre-run length — it returns nil
 // rather than panicking on a negative-bounds slice.
 func auditTurnDelta(allMessages []session.Message, histLen int) []session.Message {
+	// Dynamic system injections and context trimming make the old slice index
+	// unstable. The newest user message is the durable turn boundary.
+	for i := len(allMessages) - 1; i >= 0; i-- {
+		if allMessages[i].Role == "user" && !strings.HasPrefix(allMessages[i].Name, "bg-") {
+			return allMessages[i:]
+		}
+	}
 	if histLen < 0 || len(allMessages) <= histLen {
 		return nil
 	}
@@ -3289,6 +3301,7 @@ func continueCmd(args []string) error {
 	})
 
 	result, allMessages, err := agent.RunWithMessages(ctx, messages)
+	recordTurnAudit(auditStore, sessIDCapture, currentTurn, originalTask, auditTurnDelta(allMessages, histLen))
 	if err != nil {
 		// Persist the partial history so the interrupted turn survives up
 		// to the last completed step (mirrors the Telegram cancel path).
@@ -3302,8 +3315,6 @@ func continueCmd(args []string) error {
 	// not count as user-mentioned. histLen was captured pre-run, but the
 	// engine may have trimmed history in place (context-limit protection),
 	// leaving len(allMessages) < histLen — slice defensively.
-	recordTurnAudit(auditStore, sessIDCapture, currentTurn, originalTask, auditTurnDelta(allMessages, histLen))
-
 	// Append agent response to buffer
 	if len(allMessages) > 0 {
 		if mm := agent.Memory(); mm != nil {

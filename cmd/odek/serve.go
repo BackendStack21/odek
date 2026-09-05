@@ -935,15 +935,15 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 		// Passing it here would cause agent.Close() to call docker rm -f,
 		// and the explicit defer sandboxCleanup() in handleWS to call it
 		// again — a harmless but confusing double-call.
-		Renderer:     nil, // silent — we stream via WebSocket
-		Skills:       &resolved.Skills,
-		SkillManager: sm,
+		Renderer:        nil, // silent — we stream via WebSocket
+		Skills:          &resolved.Skills,
+		SkillManager:    sm,
 		MemoryConfig:    resolved.Memory,
 		MemoryDir:       expandHome("~/.odek/memory"),
 		Approver:        approver,
 		DangerousConfig: &resolved.Dangerous,
 		Guard:           injectionGuard,
-		GuardConfig:  resolved.Guard,
+		GuardConfig:     resolved.Guard,
 		// Runtime event stream (odek.event/v1) — feeds /api/events. The
 		// emitter is panic-isolated upstream; args are hashed + redacted
 		// before they reach this handler, so the ring holds no raw data.
@@ -2004,6 +2004,9 @@ func handlePrompt(
 	start := time.Now()
 	_, allMessages, err := agent.RunWithMessages(ctx, messages)
 	latency := time.Since(start)
+	if auditSessID != "" {
+		recordTurnAudit(auditStore, auditSessID, auditTurn, originalPrompt, auditTurnDelta(allMessages, origLen))
+	}
 	if sl != nil {
 		sl.logf("turn_completed session=%s latency_ms=%d", sid, latency.Milliseconds())
 	}
@@ -2041,12 +2044,6 @@ func handlePrompt(
 			origLen = i
 			break
 		}
-	}
-
-	// Record per-turn divergence assessment. Use the original prompt so
-	// injected resources from @-refs/attachments do not count as user-mentioned.
-	if auditSessID != "" {
-		recordTurnAudit(auditStore, auditSessID, auditTurn, originalPrompt, allMessages[origLen:])
 	}
 
 	// New messages = user message we added + everything the agent appended.

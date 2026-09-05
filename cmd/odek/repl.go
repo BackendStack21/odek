@@ -238,6 +238,7 @@ func replCmd(args []string) error {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
+	auditStore := session.NewAuditStore(store.Dir())
 
 	turn := 0
 	// resumedSession gates the one-shot return-after-break injection on the
@@ -277,10 +278,13 @@ func replCmd(args []string) error {
 			turn++
 			continue
 		}
+		originalInput := input
+		auditTurn := sess.Turns + 1
+		runCtx := withAuditRecorder(ctx, auditStore, sess.ID, auditTurn)
 
 		// Resolve @references in REPL input
 		cwd, _ := os.Getwd()
-		if enriched, err := enrichTask(context.Background(), input, nil, cwd); err == nil {
+		if enriched, err := enrichTask(runCtx, input, nil, cwd); err == nil {
 			input = enriched
 		}
 
@@ -292,6 +296,7 @@ func replCmd(args []string) error {
 			messages = injectReturnAfterBreak(ctx, agent.Memory(), messages)
 			resumedSession = false
 		}
+		histLen := len(messages)
 		messages = append(messages, session.Message{Role: "user", Content: input})
 
 		// Append user input to buffer (AppendBuffer summarizes raw text).
@@ -301,14 +306,16 @@ func replCmd(args []string) error {
 
 		// Run agent with full history
 		rend.Start(input)
-		_, allMessages, err := agent.RunWithMessages(ctx, messages)
+		_, allMessages, err := agent.RunWithMessages(runCtx, messages)
 		if err != nil {
+			recordTurnAudit(auditStore, sess.ID, auditTurn, originalInput, auditTurnDelta(allMessages, histLen))
 			// Persist the partial history so the interrupted turn survives
 			// up to the last completed step (mirrors the Telegram cancel path).
 			persistPartialMessages(store, sess, allMessages)
 			fmt.Fprintf(os.Stderr, "odek: agent error: %v\n", err)
 			continue
 		}
+		recordTurnAudit(auditStore, sess.ID, auditTurn, originalInput, auditTurnDelta(allMessages, histLen))
 
 		// Append agent response to buffer (AppendBuffer summarizes raw text).
 		if mm := agent.Memory(); mm != nil && len(allMessages) > 0 {

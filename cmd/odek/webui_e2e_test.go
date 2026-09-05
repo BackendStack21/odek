@@ -614,7 +614,7 @@ func (e *journeyEnv) do(t *testing.T, method, path, body string, hdr map[string]
 func (e *journeyEnv) dialWS(t *testing.T) *golangws.Conn {
 	t.Helper()
 	wsUpgradeLimiter.reset()
-	cfg, err := golangws.NewConfig("ws://"+e.srv.Listener.Addr().String()+"/ws", "http://127.0.0.1/")
+	cfg, err := golangws.NewConfig("ws://"+e.srv.Listener.Addr().String()+"/ws", e.srv.URL+"/")
 	if err != nil {
 		t.Fatal(err)
 	}

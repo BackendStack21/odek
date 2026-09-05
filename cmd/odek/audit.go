@@ -1,13 +1,27 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 
+	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/session"
 )
+
+// withAuditRecorder attaches the per-run ingest sink used by wrappers and
+// loop-derived context. Keeping this in one helper prevents surfaces from
+// silently omitting the recorder while still calling recordTurnAudit.
+func withAuditRecorder(ctx context.Context, store *session.AuditStore, sessionID string, turn int) context.Context {
+	if store == nil || sessionID == "" {
+		return ctx
+	}
+	return loop.WithIngestRecorder(ctx, func(source, content string) {
+		_ = store.RecordIngest(sessionID, turn, source, content)
+	})
+}
 
 // recordTurnAudit summarises a single agent turn into the audit log:
 // which tools were called, which resources they touched, whether any
@@ -34,8 +48,22 @@ func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, user
 	var actionText strings.Builder // agent actions: tool calls + final response
 	var untrustedBodies strings.Builder
 	var untrustedSources []string
+	var recordedResources []string
 	ingestedUntrusted := false
 	lastAssistantContent := ""
+	// Wrappers injected before the latest user message (stable memory slot,
+	// protected compaction/plan head) may not be present in the message delta.
+	// The ingest recorder is authoritative for whether this turn crossed the
+	// boundary, including failed turns.
+	if prior, err := store.Load(sessionID); err == nil {
+		for _, ingest := range prior.Ingests {
+			if ingest.Turn == turn {
+				ingestedUntrusted = true
+				untrustedSources = append(untrustedSources, ingest.Source)
+				recordedResources = append(recordedResources, ingest.Resources...)
+			}
+		}
+	}
 
 	for _, m := range newMsgs {
 		for _, tc := range m.ToolCalls {
@@ -43,12 +71,11 @@ func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, user
 			actionText.WriteString(tc.Function.Arguments)
 			actionText.WriteByte(' ')
 		}
-		if m.Role == "user" && hasUntrustedWrapper(m.Content) {
-			// @-references, --ctx files, and Web-UI attachments are injected
-			// into the user message as wrapped untrusted content. The audit
-			// must treat them as ingested untrusted input so a later
-			// divergence heuristic can fire, and must consider the resources
-			// they introduce when looking for reused-resource injection.
+		if hasUntrustedWrapper(m.Content) {
+			// Wrappers can occur in user attachments, tool results, derived
+			// assistant summaries, and system-role memory/digest context.
+			// Provenance, not message role, determines whether the turn was
+			// exposed to untrusted content.
 			ingestedUntrusted = true
 			bodies, srcs := extractUntrustedAll(m.Content)
 			for _, body := range bodies {
@@ -56,22 +83,6 @@ func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, user
 				untrustedBodies.WriteByte(' ')
 			}
 			untrustedSources = append(untrustedSources, srcs...)
-		}
-		if m.Role == "tool" {
-			if hasUntrustedWrapper(m.Content) {
-				ingestedUntrusted = true
-				// A tool message may carry several untrusted blobs; aggregate
-				// every body and source, not just the first, so a later blob
-				// cannot smuggle in a reused-resource injection unseen. Extract
-				// both in a single regex pass rather than scanning the payload
-				// twice.
-				bodies, srcs := extractUntrustedAll(m.Content)
-				for _, body := range bodies {
-					untrustedBodies.WriteString(body)
-					untrustedBodies.WriteByte(' ')
-				}
-				untrustedSources = append(untrustedSources, srcs...)
-			}
 		}
 		if m.Role == "assistant" && m.Content != "" {
 			// Track the final assistant response; it can also be used for
@@ -108,6 +119,11 @@ func recordTurnAudit(store *session.AuditStore, sessionID string, turn int, user
 	}
 	untrustedResSet := make(map[string]bool)
 	for _, r := range session.ResourcesIn(untrustedBodies.String()) {
+		if !isSource(r) {
+			untrustedResSet[strings.ToLower(r)] = true
+		}
+	}
+	for _, r := range recordedResources {
 		if !isSource(r) {
 			untrustedResSet[strings.ToLower(r)] = true
 		}

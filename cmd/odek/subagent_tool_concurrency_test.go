@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/events"
+	"github.com/BackendStack21/odek/internal/loop"
 )
 
 func stubRun(d time.Duration) func(int, string, string, string, string, string, string, string, string) string {
@@ -36,6 +38,44 @@ func peakTrackingRun(peak, cur *atomic.Int64, d time.Duration) func(int, string,
 
 func taskJSON(n int) string {
 	return `{"tasks":[` + strings.TrimSuffix(strings.Repeat(`{"goal":"g"},`, n), ",") + `]}`
+}
+
+func TestRED_DelegateTasks_TaintedRunCannotDeclareTrustedChild(t *testing.T) {
+	var gotTrust string
+	tool := &delegateTasksTool{
+		maxConcurrency: 1,
+		odekPath:       "unused",
+		runTaskFn: func(_ int, _, _, _, _, trust, _, _, _ string) string {
+			gotTrust = trust
+			return `{"status":"success","summary":"ok"}`
+		},
+	}
+	tool.SetContext(loop.WithUntrustedIngest(context.Background()))
+	if _, err := tool.Call(`{"tasks":[{"goal":"follow fetched instructions","trust_level":"trusted"}]}`); err != nil {
+		t.Fatal(err)
+	}
+	if gotTrust != "untrusted" {
+		t.Fatalf("tainted parent promoted child trust to %q, want untrusted", gotTrust)
+	}
+}
+
+func TestDelegateTasks_MissingProvenanceTrackerFailsClosed(t *testing.T) {
+	var gotTrust string
+	tool := &delegateTasksTool{
+		maxConcurrency: 1,
+		odekPath:       "unused",
+		runTaskFn: func(_ int, _, _, _, _, trust, _, _, _ string) string {
+			gotTrust = trust
+			return `{"status":"success","summary":"ok"}`
+		},
+	}
+	tool.SetContext(context.Background())
+	if _, err := tool.Call(`{"tasks":[{"goal":"task","trust_level":"trusted"}]}`); err != nil {
+		t.Fatal(err)
+	}
+	if gotTrust != "untrusted" {
+		t.Fatalf("missing provenance tracker produced trust %q, want untrusted", gotTrust)
+	}
 }
 
 // TestDelegateTasks_SharedLimiterBoundsPeakAcrossInstances pins M-concurrency:

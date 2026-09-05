@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/BackendStack21/odek/internal/session"
@@ -42,7 +43,7 @@ func TestRunWithMessages_MemoryBlockNotDuplicatedAcrossTurns(t *testing.T) {
 
 	count := 0
 	for _, m := range msgs {
-		if m.Role == "system" && m.Content == "MEM" {
+		if m.Role == "system" && strings.Contains(m.Content, "\nMEM\n") {
 			count++
 		}
 	}
@@ -76,10 +77,10 @@ func TestRunWithMessages_MemoryBlockUpdatedNotDuplicatedOnContentChange(t *testi
 
 	var old, new int
 	for _, m := range msgs {
-		if m.Role == "system" && m.Content == "mem-old" {
+		if m.Role == "system" && strings.Contains(m.Content, "\nmem-old\n") {
 			old++
 		}
-		if m.Role == "system" && m.Content == "mem-new" {
+		if m.Role == "system" && strings.Contains(m.Content, "\nmem-new\n") {
 			new++
 		}
 	}

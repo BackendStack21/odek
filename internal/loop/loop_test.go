@@ -277,8 +277,9 @@ func TestEngine_Run_MaxIterationsSummaryAppended(t *testing.T) {
 		t.Errorf("result missing partial-summary marker: %q", result)
 	}
 	last := messages[len(messages)-1]
-	if last.Role != "assistant" || last.Content != result {
-		t.Errorf("last message = %+v, want assistant message with the summary", last)
+	if last.Role != "assistant" || !strings.Contains(last.Content, "Progress so far.") ||
+		!strings.Contains(last.Content, "<untrusted_content_") {
+		t.Errorf("last message = %+v, want protected assistant summary", last)
 	}
 	// Persist callback: tool batch + summary answer.
 	if len(snapshots) != 2 {
@@ -1425,7 +1426,7 @@ func TestPromptTiering_SeparateMemoryMessage(t *testing.T) {
 				if body.Messages[1].Role != "system" {
 					t.Errorf("messages[1].Role = %q, want system (memory)", body.Messages[1].Role)
 				}
-				if body.Messages[1].Content != "memory-block-v1" {
+				if !strings.Contains(body.Messages[1].Content, "\nmemory-block-v1\n") {
 					t.Errorf("messages[1].Content = %q, want memory-block-v1", body.Messages[1].Content)
 				}
 			}
@@ -1434,7 +1435,7 @@ func TestPromptTiering_SeparateMemoryMessage(t *testing.T) {
 		} else {
 			// Second call: memory should be updated.
 			if len(body.Messages) >= 2 && body.Messages[1].Role == "system" {
-				if body.Messages[1].Content != "memory-block-v2" {
+				if !strings.Contains(body.Messages[1].Content, "\nmemory-block-v2\n") {
 					t.Errorf("messages[1].Content = %q, want memory-block-v2", body.Messages[1].Content)
 				}
 				// messages[0] must still be the stable base.
@@ -1484,7 +1485,7 @@ func TestPromptTiering_NoMemoryDropsMessage(t *testing.T) {
 		if callCount == 1 {
 			// First call: memory is non-empty, should be at index 1.
 			if len(body.Messages) >= 2 && body.Messages[1].Role == "system" {
-				if body.Messages[1].Content != "initial-memory" {
+				if !strings.Contains(body.Messages[1].Content, "\ninitial-memory\n") {
 					t.Errorf("unexpected memory: %q", body.Messages[1].Content)
 				}
 			}
@@ -3386,8 +3387,11 @@ func TestEngine_Resume_DropsCorruptPlanMessage(t *testing.T) {
 		for _, m := range messages {
 			if isPlanMessage(m) {
 				count++
-				if m.Content != valid {
-					t.Errorf("unexpected surviving plan copy:\n%s", m.Content)
+				if !strings.Contains(m.Content, "<untrusted_content_") {
+					t.Errorf("surviving plan body is not provenance-wrapped:\n%s", m.Content)
+				}
+				if _, err := parsePlanState(m.Content, 10); err != nil {
+					t.Errorf("surviving plan copy no longer parses: %v\n%s", err, m.Content)
 				}
 			}
 		}

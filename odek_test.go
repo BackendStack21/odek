@@ -600,7 +600,6 @@ func TestProfileTimeout_FlashApplied(t *testing.T) {
 	// is that the agent is created successfully with the Flash profile.
 }
 
-
 // ── Project File (AGENTS.md) Tests ───────────────────────────────────
 
 func TestLoadProjectFile_Missing(t *testing.T) {
@@ -1125,6 +1124,13 @@ func TestToolAdapter_SetContextNonContextAware(t *testing.T) {
 	adapter.SetContext(nil) // should not panic and should not affect inner tool
 }
 
+func TestToolAdapter_MarksPublicOutputUntrusted(t *testing.T) {
+	adapter := &toolAdapter{t: &nonCtxAwareTool{}}
+	if !adapter.RequiresUntrustedOutputBoundary() {
+		t.Fatal("public extension tool output must require the loop boundary")
+	}
+}
+
 // nonCtxAwareTool does not implement SetContext.
 type nonCtxAwareTool struct{}
 
@@ -1263,3 +1269,46 @@ func TestRED_New_CLIStyleConfig_DeniesUnauthoredMemoryAdd(t *testing.T) {
 	}
 }
 
+func TestRED_New_AlwaysComposesInvariantSecurityPillar(t *testing.T) {
+	agent, err := New(Config{APIKey: "sk-test", SystemMessage: "Custom library identity", NoProjectFile: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer agent.Close()
+	if !strings.Contains(agent.SystemPrompt(), SecurityPillar) {
+		t.Fatal("library New omitted the invariant security pillar")
+	}
+	if !strings.HasSuffix(agent.SystemPrompt(), SecurityPillar) {
+		t.Fatal("security pillar is not the final authoritative trusted block")
+	}
+}
+
+func TestRED_New_DefaultsUntrustedWrapper(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.WriteFile(ProjectFileName, []byte("project convention"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	agent, err := New(Config{APIKey: "sk-test", SystemMessage: "Identity"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer agent.Close()
+	got := agent.SystemPrompt()
+	if !strings.Contains(got, "<untrusted_content_") || !strings.Contains(got, "project convention") {
+		t.Fatalf("library New injected AGENTS.md without a default untrusted boundary:\n%s", got)
+	}
+}
+
+func TestComposeSecureSystem_RemovesEmbeddedPillarTailAmbiguity(t *testing.T) {
+	got := ComposeSecureSystem("Identity\n\n" + SecurityPillar + "\n\nTrailing trusted directive")
+	if strings.Count(got, SecurityPillar) != 1 {
+		t.Fatalf("pillar count = %d, want 1", strings.Count(got, SecurityPillar))
+	}
+	if !strings.HasSuffix(got, SecurityPillar) {
+		t.Fatalf("pillar must be last, got suffix: %.120s", got[max(0, len(got)-120):])
+	}
+	if !strings.Contains(got, "Trailing trusted directive") {
+		t.Fatal("identity content was discarded while canonicalizing pillar")
+	}
+}

@@ -44,4 +44,12 @@ func TestSeedSystemMessage(t *testing.T) {
 			t.Errorf("messages[0] = %+v, want refreshed system %q", got[0], sys)
 		}
 	})
+
+	t.Run("digest-first corrupted history is preserved behind runtime system", func(t *testing.T) {
+		digest := compactionDigestPrefix + " summary]\nold work"
+		got := seedSystemMessage([]session.Message{{Role: "system", Content: digest}}, sys)
+		if len(got) != 2 || got[0].Content != sys || got[1].Content != digest {
+			t.Fatalf("digest was overwritten instead of preserved: %+v", got)
+		}
+	})
 }

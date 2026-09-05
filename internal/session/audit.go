@@ -31,8 +31,9 @@ import (
 // content blob at the given turn.
 type AuditIngest struct {
 	Turn        int       `json:"turn"`
-	Source      string    `json:"source"`       // e.g. "https://x", "/abs/path", "mcp:server:tool"
-	ContentHash string    `json:"content_hash"` // sha256 of the ingested body (first 16 hex)
+	Source      string    `json:"source"`              // e.g. "https://x", "/abs/path", "mcp:server:tool"
+	ContentHash string    `json:"content_hash"`        // sha256 of the ingested body (first 16 hex)
+	Resources   []string  `json:"resources,omitempty"` // bounded resource indicators for divergence correlation
 	At          time.Time `json:"at"`
 }
 
@@ -66,6 +67,19 @@ func NewAuditStore(dir string) *AuditStore {
 	return &AuditStore{dir: filepath.Join(dir, "audit")}
 }
 
+func boundedAuditResources(content string) []string {
+	resources := ResourcesIn(content)
+	if len(resources) > 64 {
+		resources = resources[:64]
+	}
+	for i := range resources {
+		if len(resources[i]) > 512 {
+			resources[i] = resources[i][:512]
+		}
+	}
+	return resources
+}
+
 // RecordIngest appends an ingest entry for a session.
 func (s *AuditStore) RecordIngest(sessionID string, turn int, source, content string) error {
 	if err := ValidateSessionID(sessionID); err != nil {
@@ -85,6 +99,7 @@ func (s *AuditStore) RecordIngest(sessionID string, turn int, source, content st
 		Turn:        turn,
 		Source:      source,
 		ContentHash: hex.EncodeToString(sum[:8]),
+		Resources:   boundedAuditResources(content),
 		At:          time.Now().UTC(),
 	})
 	return s.saveLocked(sessionID, log)

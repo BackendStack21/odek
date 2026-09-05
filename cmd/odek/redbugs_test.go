@@ -382,8 +382,8 @@ func TestRED_AuditTurnDeltaClampsTrimmedHistory(t *testing.T) {
 		{Role: "user", Content: "task"},
 		{Role: "assistant", Content: "answer"},
 	}
-	if got := auditTurnDelta(msgs, 20); got != nil {
-		t.Errorf("auditTurnDelta(len=%d, histLen=20) = %v, want nil (no panic)", len(msgs), got)
+	if got := auditTurnDelta(msgs, 20); len(got) != 2 || got[0].Content != "task" {
+		t.Errorf("auditTurnDelta(len=%d, histLen=20) = %v, want newest user turn", len(msgs), got)
 	}
 	delta := auditTurnDelta(msgs, 1)
 	if len(delta) != 2 || delta[0].Content != "task" {
@@ -391,5 +391,10 @@ func TestRED_AuditTurnDeltaClampsTrimmedHistory(t *testing.T) {
 	}
 	if got := auditTurnDelta(nil, 0); got != nil {
 		t.Errorf("auditTurnDelta(nil, 0) = %v, want nil", got)
+	}
+	withNotice := append(append([]session.Message{}, msgs...),
+		session.Message{Role: "user", Name: "bg-notice", Content: "background complete"})
+	if got := auditTurnDelta(withNotice, 1); len(got) != 3 || got[0].Content != "task" {
+		t.Errorf("auditTurnDelta selected synthetic background notice: %+v", got)
 	}
 }

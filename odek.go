@@ -425,6 +425,9 @@ func New(cfg Config) (*Agent, error) {
 	} else {
 		cfg.SystemMessage = cfg.RuntimeContext
 	}
+	if cfg.UntrustedWrapper == nil {
+		cfg.UntrustedWrapper = DefaultUntrustedWrapper
+	}
 
 	timeout := time.Duration(defaultHTTPTimout) * time.Second
 	if cfg.RequestTimeout > 0 {
@@ -547,6 +550,10 @@ func New(cfg Config) (*Agent, error) {
 			})
 		}
 	}
+	// Config.SystemMessage is identity/persona, not a way to remove runtime
+	// policy. Canonicalize after all wrapped adjuncts are appended so one
+	// authoritative pillar is always the final trusted block.
+	cfg.SystemMessage = ComposeSecureSystem(cfg.SystemMessage)
 
 	// Create memory manager
 	memoryDir := cfg.MemoryDir
@@ -1078,6 +1085,11 @@ func (a *toolAdapter) Schema() any         { return a.t.Schema() }
 func (a *toolAdapter) Call(args string) (string, error) {
 	return a.t.Call(args)
 }
+
+// RequiresUntrustedOutputBoundary marks public extension-tool output as
+// external data. The loop applies the configured/default nonce wrapper when
+// the tool did not already return one.
+func (a *toolAdapter) RequiresUntrustedOutputBoundary() bool { return true }
 
 // SetContext propagates the agent context to tools that implement the
 // context-aware interface. This lets odek.Tool implementations receive the

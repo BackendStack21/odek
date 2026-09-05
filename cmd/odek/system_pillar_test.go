@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
 )
 
@@ -134,5 +135,21 @@ func TestRED_SecurityPillar_CarriesRuntimeAuthorityRules(t *testing.T) {
 		if !strings.Contains(securityPillar, want) {
 			t.Errorf("securityPillar missing %q", want)
 		}
+	}
+}
+
+func TestSecurityPillar_PublicRuntimeParity(t *testing.T) {
+	if securityPillar != odek.SecurityPillar {
+		t.Fatal("CLI and public runtime security pillars diverged")
+	}
+}
+
+func TestComposeSystem_MovesEmbeddedPillarAfterTrailingIdentity(t *testing.T) {
+	got := composeSystem("Identity\n\n" + securityPillar + "\n\nTrailing persona text")
+	if strings.Count(got, securityPillar) != 1 {
+		t.Fatalf("pillar count = %d, want 1", strings.Count(got, securityPillar))
+	}
+	if !strings.HasSuffix(got, securityPillar) {
+		t.Fatal("canonical pillar is not the final trusted block")
 	}
 }
