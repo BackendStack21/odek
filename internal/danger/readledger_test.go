@@ -1,6 +1,7 @@
 package danger
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -194,5 +195,44 @@ func TestUnreadScriptTargets_NoShebangOperandGates(t *testing.T) {
 	// Bare names without ./: unchanged (ambiguous operand class).
 	if targets := UnreadScriptTargets("bash no-shebang"); len(targets) != 0 {
 		t.Fatalf("targets = %v, want bare extension-less names unchanged", targets)
+	}
+}
+
+func TestReadLedger_KeyedSessionsDoNotShareLicenses(t *testing.T) {
+	ResetReadLedgerForTest()
+	t.Cleanup(ResetReadLedgerForTest)
+	dir := t.TempDir()
+	script := filepath.Join(dir, "env.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho hi\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	ctxA := WithLedgerKey(context.Background(), "sess-a")
+	ctxB := WithLedgerKey(context.Background(), "sess-b")
+
+	RecordReadCtx(ctxA, script)
+	if !WasReadFreshCtx(ctxA, script) {
+		t.Fatal("session A must see its own read")
+	}
+	if WasReadFreshCtx(ctxB, script) {
+		t.Fatal("session B must not inherit session A's license")
+	}
+	if WasReadFresh(script) {
+		t.Fatal("the default ledger must not see a keyed record")
+	}
+
+	clsB, targetsB := ClassifyScriptGateCtx(ctxB, "bash "+script)
+	if clsB != UnreadExec || len(targetsB) != 1 {
+		t.Fatalf("session B gate = %s %v, want unread_exec", clsB, targetsB)
+	}
+	clsA, targetsA := ClassifyScriptGateCtx(ctxA, "bash "+script)
+	if clsA == UnreadExec || len(targetsA) != 0 {
+		t.Fatalf("session A gate = %s %v, want licensed (not unread_exec)", clsA, targetsA)
+	}
+
+	// ClassifyScriptGate without a key stays on the default ledger, so
+	// Classify() callers and existing tests are unchanged.
+	if cls, targets := ClassifyScriptGate("bash " + script); cls != UnreadExec || len(targets) != 1 {
+		t.Fatalf("default gate = %s %v, want unread_exec (keyed record must not leak)", cls, targets)
 	}
 }

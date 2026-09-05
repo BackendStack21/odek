@@ -261,7 +261,7 @@ func (t *shellTool) Call(args string) (string, error) {
 	// same script passes the unread-exec gate. Only success counts — a
 	// failed `cat env.sh` must never license executing env.sh.
 	if err == nil {
-		recordViewerReads(input.Command)
+		recordViewerReads(t.toolCtx(), input.Command)
 	}
 
 	if stderrStr != "" {
@@ -299,7 +299,7 @@ func (t *shellTool) checkApproval(cmd, description string) error {
 	// fix and fired on the verification run. An explicit unread_exec action
 	// participates in the decision: deny wins outright; allow alone does
 	// not bypass a prompting base class — both must allow.
-	if _, targets := danger.ClassifyScriptGate(cmd); len(targets) > 0 {
+	if _, targets := danger.ClassifyScriptGateCtx(t.toolCtx(), cmd); len(targets) > 0 {
 		unreadAction := t.dangerousConfig.ActionFor(danger.UnreadExec)
 		switch {
 		case unreadAction == danger.Deny:
@@ -335,7 +335,7 @@ func (t *shellTool) checkApproval(cmd, description string) error {
 // promptUser classifies the command and asks the user to approve it.
 // Delegates to the configured Approver, or falls back to TTYApprover.
 func (t *shellTool) promptUser(cmd, description string) error {
-	cls, targets := danger.ClassifyScriptGate(cmd)
+	cls, targets := danger.ClassifyScriptGateCtx(t.toolCtx(), cmd)
 	if len(targets) > 0 && cls != danger.UnreadExec {
 		// Stronger finding alongside unread targets: still surface which
 		// scripts would run unread.
@@ -407,7 +407,7 @@ var readViewerCommands = map[string]bool{
 	"bat": true, "zcat": true, "nl": true,
 }
 
-func recordViewerReads(cmd string) {
+func recordViewerReads(ctx context.Context, cmd string) {
 	fields := strings.Fields(cmd)
 	if len(fields) == 0 {
 		return
@@ -435,7 +435,7 @@ func recordViewerReads(cmd string) {
 			continue
 		}
 		if st, err := os.Stat(f); err == nil && !st.IsDir() {
-			danger.RecordRead(f)
+			danger.RecordReadCtx(ctx, f)
 		}
 	}
 }

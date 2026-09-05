@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -17,7 +18,7 @@ func TestRecordViewerReads_PlainViewRecords(t *testing.T) {
 	f := filepath.Join(dir, "notes.txt")
 	os.WriteFile(f, []byte("x"), 0644)
 
-	recordViewerReads("cat " + f)
+	recordViewerReads(context.Background(), "cat "+f)
 	if !danger.WasRead(f) {
 		t.Error("plain `cat file` should record the read")
 	}
@@ -34,7 +35,7 @@ func TestRecordViewerReads_RedirectTargetNeverRecorded(t *testing.T) {
 	os.WriteFile(payload, []byte("#!/bin/sh\nevil\n"), 0755)
 	os.WriteFile(run, []byte("#!/bin/sh\nevil\n"), 0755)
 
-	recordViewerReads("cat " + payload + " > " + run)
+	recordViewerReads(context.Background(), "cat "+payload+" > "+run)
 	if danger.WasRead(payload) {
 		t.Error("redirect-bearing viewer run must not license the source")
 	}
@@ -55,7 +56,7 @@ func TestRecordViewerReads_PipedPartialReadNotRecorded(t *testing.T) {
 	big := filepath.Join(dir, "big.sh")
 	os.WriteFile(big, []byte("#!/bin/sh\nline2\nline3\n"), 0755)
 
-	recordViewerReads("cat " + big + " | head -1")
+	recordViewerReads(context.Background(), "cat "+big+" | head -1")
 	if danger.WasRead(big) {
 		t.Error("piped partial view must not license the whole file")
 	}
@@ -68,11 +69,11 @@ func TestRecordViewerReads_AppendAndDevNullNotRecorded(t *testing.T) {
 	f := filepath.Join(dir, "a.log")
 	os.WriteFile(f, []byte("x"), 0644)
 
-	recordViewerReads("cat " + f + " >> /dev/null")
+	recordViewerReads(context.Background(), "cat "+f+" >> /dev/null")
 	if danger.WasRead(f) {
 		t.Error("`cat f >> sink` never displayed f — must not be licensed")
 	}
-	recordViewerReads("cat " + f + " 2>/dev/null")
+	recordViewerReads(context.Background(), "cat "+f+" 2>/dev/null")
 	if danger.WasRead(f) {
 		t.Error("stderr-redirected viewer run must not be licensed")
 	}

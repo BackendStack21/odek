@@ -1,6 +1,7 @@
 package danger
 
 import (
+	"context"
 	"crypto/sha256"
 	"io"
 	"os"
@@ -48,7 +49,47 @@ type readEntry struct {
 }
 
 var readLedgerMu sync.RWMutex
-var readLedger = make(map[string]readEntry)
+
+// readLedgers is keyed by session (or other caller-supplied) identity, then
+// by absolute path. The empty key is the process-global default used by
+// Classify()/ClassifyScriptGate and by unit tests that call RecordRead
+// without a context — that keeps CLI-shaped tests working. Long-lived
+// surfaces (serve, telegram, schedule) stamp WithLedgerKey on the run
+// context so a read in session A cannot license execution in session B.
+var readLedgers = map[string]map[string]readEntry{}
+
+type ledgerKeyCtx struct{}
+
+// WithLedgerKey scopes subsequent RecordReadCtx / WasReadFreshCtx /
+// ClassifyScriptGateCtx / UnreadScriptTargetsCtx calls on ctx to key.
+// An empty key selects the process-global default ledger.
+func WithLedgerKey(ctx context.Context, key string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, ledgerKeyCtx{}, key)
+}
+
+func ledgerKeyFrom(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if k, ok := ctx.Value(ledgerKeyCtx{}).(string); ok {
+		return k
+	}
+	return ""
+}
+
+// ledgerMapLocked returns the path map for key. Caller must hold
+// readLedgerMu (write lock if the map may be created).
+func ledgerMapLocked(key string) map[string]readEntry {
+	m := readLedgers[key]
+	if m == nil {
+		m = make(map[string]readEntry)
+		readLedgers[key] = m
+	}
+	return m
+}
 
 // readFingerprintMaxBytes caps content hashing. Files beyond this size
 // carry a size+mtime fingerprint only — a documented gap for adversarial
@@ -63,6 +104,17 @@ const readFingerprintMaxBytes = 1 << 20 // 1 MiB
 // The entry is fingerprinted at record time; WasReadFresh re-verifies the
 // on-disk state at gate time so a post-read mutation re-fires the H-6 gate.
 func RecordRead(path string) {
+	recordReadKey("", path)
+}
+
+// RecordReadCtx is RecordRead scoped to the ledger key on ctx (see
+// WithLedgerKey). Tools that run inside the agent loop must use this so
+// concurrent serve/telegram sessions do not share licenses.
+func RecordReadCtx(ctx context.Context, path string) {
+	recordReadKey(ledgerKeyFrom(ctx), path)
+}
+
+func recordReadKey(key, path string) {
 	if path == "" {
 		return
 	}
@@ -75,7 +127,7 @@ func RecordRead(path string) {
 		entry = e
 	}
 	readLedgerMu.Lock()
-	readLedger[filepath.Clean(abs)] = entry
+	ledgerMapLocked(key)[filepath.Clean(abs)] = entry
 	readLedgerMu.Unlock()
 }
 
@@ -83,13 +135,26 @@ func RecordRead(path string) {
 // regardless of whether the bytes have changed since. Licensing checks
 // must use WasReadFresh.
 func WasRead(path string) bool {
+	return wasReadKey("", path)
+}
+
+// WasReadCtx is WasRead scoped to the ledger key on ctx.
+func WasReadCtx(ctx context.Context, path string) bool {
+	return wasReadKey(ledgerKeyFrom(ctx), path)
+}
+
+func wasReadKey(key, path string) bool {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return false
 	}
 	readLedgerMu.RLock()
 	defer readLedgerMu.RUnlock()
-	_, ok := readLedger[filepath.Clean(abs)]
+	m := readLedgers[key]
+	if m == nil {
+		return false
+	}
+	_, ok := m[filepath.Clean(abs)]
 	return ok
 }
 
@@ -100,13 +165,27 @@ func WasRead(path string) bool {
 // execution; the H-6 gate re-fires until the mutated content is re-read
 // (which renews the fingerprint, because now the model has seen THAT).
 func WasReadFresh(path string) bool {
+	return wasReadFreshKey("", path)
+}
+
+// WasReadFreshCtx is WasReadFresh scoped to the ledger key on ctx.
+func WasReadFreshCtx(ctx context.Context, path string) bool {
+	return wasReadFreshKey(ledgerKeyFrom(ctx), path)
+}
+
+func wasReadFreshKey(key, path string) bool {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return false
 	}
 	clean := filepath.Clean(abs)
 	readLedgerMu.RLock()
-	entry, ok := readLedger[clean]
+	m := readLedgers[key]
+	var entry readEntry
+	ok := false
+	if m != nil {
+		entry, ok = m[clean]
+	}
 	readLedgerMu.RUnlock()
 	if !ok || entry.size < 0 {
 		return false
@@ -155,7 +234,7 @@ func fingerprintFile(abs string) (readEntry, bool) {
 // ResetReadLedgerForTest clears the session ledger.
 func ResetReadLedgerForTest() {
 	readLedgerMu.Lock()
-	readLedger = make(map[string]readEntry)
+	readLedgers = map[string]map[string]readEntry{}
 	readLedgerMu.Unlock()
 }
 
@@ -247,6 +326,15 @@ func fileHasShebang(path string) bool {
 // (interpreter, source, direct script invocation) are scanned, so `grep
 // pattern build.sh` — a read — never triggers the gate.
 func UnreadScriptTargets(cmd string) []string {
+	return unreadScriptTargetsKey("", cmd)
+}
+
+// UnreadScriptTargetsCtx is UnreadScriptTargets scoped to the ledger key on ctx.
+func UnreadScriptTargetsCtx(ctx context.Context, cmd string) []string {
+	return unreadScriptTargetsKey(ledgerKeyFrom(ctx), cmd)
+}
+
+func unreadScriptTargetsKey(key, cmd string) []string {
 	cmd = strings.TrimSpace(cmd)
 	if cmd == "" {
 		return nil
@@ -255,7 +343,7 @@ func UnreadScriptTargets(cmd string) []string {
 	var out []string
 	seen := make(map[string]bool)
 	collect := func(c string) {
-		for _, t := range unreadTargetsOne(c) {
+		for _, t := range unreadTargetsOne(key, c) {
 			if !seen[t] {
 				seen[t] = true
 				out = append(out, t)
@@ -269,17 +357,17 @@ func UnreadScriptTargets(cmd string) []string {
 	return out
 }
 
-func unreadTargetsOne(cmd string) []string {
+func unreadTargetsOne(key, cmd string) []string {
 	var out []string
 	for _, seg := range splitSegments(tokenize(cmd)) {
 		for _, stage := range splitPipes(seg) {
-			out = append(out, unreadTargetsStage(stage)...)
+			out = append(out, unreadTargetsStage(key, stage)...)
 		}
 	}
 	return out
 }
 
-func unreadTargetsStage(stage []string) []string {
+func unreadTargetsStage(key string, stage []string) []string {
 	if len(stage) == 0 {
 		return nil
 	}
@@ -329,7 +417,7 @@ func unreadTargetsStage(stage []string) []string {
 				continue
 			}
 			abs = filepath.Clean(abs)
-			if !WasReadFresh(abs) {
+			if !wasReadFreshKey(key, abs) {
 				out = append(out, abs)
 			}
 		}
@@ -344,8 +432,17 @@ func unreadTargetsStage(stage []string) []string {
 // Stronger findings (persistence, unknown, destructive, blocked) keep their
 // own class; they already gate harder and are never trust-shortcuttable.
 func ClassifyScriptGate(cmd string) (RiskClass, []string) {
+	return classifyScriptGateKey("", cmd)
+}
+
+// ClassifyScriptGateCtx is ClassifyScriptGate scoped to the ledger key on ctx.
+func ClassifyScriptGateCtx(ctx context.Context, cmd string) (RiskClass, []string) {
+	return classifyScriptGateKey(ledgerKeyFrom(ctx), cmd)
+}
+
+func classifyScriptGateKey(key, cmd string) (RiskClass, []string) {
 	cls := Classify(cmd)
-	targets := UnreadScriptTargets(cmd)
+	targets := unreadScriptTargetsKey(key, cmd)
 	if len(targets) > 0 && Rank(cls) <= Rank(SystemWrite) {
 		return UnreadExec, targets
 	}

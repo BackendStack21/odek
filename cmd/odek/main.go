@@ -1967,6 +1967,7 @@ func run(args []string) error {
 	if sessionID == "" {
 		sessionID = session.GenerateID()
 	}
+	ctx = withReadLedger(ctx, sessionID)
 	if auditStore == nil {
 		store, err := session.NewStore()
 		if err != nil {
@@ -3266,6 +3267,7 @@ func continueCmd(args []string) error {
 	ctx = loop.WithIngestRecorder(ctx, func(source, content string) {
 		_ = auditStore.RecordIngest(sessIDCapture, currentTurn, source, content)
 	})
+	ctx = withReadLedger(ctx, sessIDCapture)
 
 	// Resolve @references in the continue task now that the audit recorder
 	// is attached, so attached file content is logged as ingested input.

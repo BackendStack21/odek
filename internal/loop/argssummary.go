@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"context"
 	"encoding/json"
 	"net/url"
 	"strings"
@@ -78,7 +79,7 @@ func isEnvAssignment(tok string) bool {
 
 // argSummary builds the args_summary payload for a tool_call_started event.
 // It returns nil when nothing structured could be extracted.
-func argSummary(name, argsJSON string) map[string]any {
+func argSummary(ctx context.Context, name, argsJSON string) map[string]any {
 	switch name {
 	case "shell", "terminal":
 		var p struct {
@@ -87,7 +88,7 @@ func argSummary(name, argsJSON string) map[string]any {
 		if err := json.Unmarshal([]byte(argsJSON), &p); err != nil || p.Command == "" {
 			return nil
 		}
-		cls, _ := danger.ClassifyScriptGate(p.Command)
+		cls, _ := danger.ClassifyScriptGateCtx(ctx, p.Command)
 		return map[string]any{
 			"argv0": argv0(p.Command),
 			"class": string(cls),
@@ -109,7 +110,7 @@ func argSummary(name, argsJSON string) map[string]any {
 				continue
 			}
 			argv0s = append(argv0s, argv0(c.Command))
-			if cls, _ := danger.ClassifyScriptGate(c.Command); danger.Rank(cls) > maxRank {
+			if cls, _ := danger.ClassifyScriptGateCtx(ctx, c.Command); danger.Rank(cls) > maxRank {
 				maxRank = danger.Rank(cls)
 				maxCls = cls
 			}

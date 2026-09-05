@@ -2475,7 +2475,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 			}
 			// Structured audit metadata (P0-4): what would run, on what
 			// target, under what classification — no argument content.
-			if summary := argSummary(tc.Function.Name, tc.Function.Arguments); len(summary) > 0 {
+			if summary := argSummary(ctx, tc.Function.Name, tc.Function.Arguments); len(summary) > 0 {
 				data["args_summary"] = summary
 			}
 			// Opt-in raw arguments (P0-4): --events-include-args. The emitter
@@ -2519,7 +2519,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 			var risky []riskyCall
 			hasUnclassifiable := false
 			for i, tc := range result.ToolCalls {
-				risk, resource := classifyToolCall(tc.Function.Name, tc.Function.Arguments)
+				risk, resource := classifyToolCallCtx(ctx, tc.Function.Name, tc.Function.Arguments)
 				if risk == "" {
 					// Tool not classifiable by this helper. It will be handled
 					// individually by the tool's own Call() method, but because we
@@ -3089,6 +3089,10 @@ func riskClassFromRank(r int) danger.RiskClass {
 }
 
 func classifyToolCall(name, args string) (danger.RiskClass, string) {
+	return classifyToolCallCtx(context.Background(), name, args)
+}
+
+func classifyToolCallCtx(ctx context.Context, name, args string) (danger.RiskClass, string) {
 	switch name {
 	case "shell", "terminal":
 		// Extract the command from JSON args.
@@ -3102,7 +3106,7 @@ func classifyToolCall(name, args string) (danger.RiskClass, string) {
 		// unread_exec in the batch card instead of plain code_execution,
 		// with the gating scripts named in the card entry — the one place
 		// the user looks before granting batch trust.
-		cls, targets := danger.ClassifyScriptGate(cmd.Command)
+		cls, targets := danger.ClassifyScriptGateCtx(ctx, cmd.Command)
 		resource := cmd.Command
 		if len(targets) > 0 {
 			resource = fmt.Sprintf("%s  [unread script: %s]", cmd.Command, strings.Join(targets, ", "))
@@ -3117,7 +3121,7 @@ func classifyToolCall(name, args string) (danger.RiskClass, string) {
 		if err := json.Unmarshal([]byte(args), &cmd); err != nil || cmd.Command == "" {
 			return "", ""
 		}
-		cls, targets := danger.ClassifyScriptGate(cmd.Command)
+		cls, targets := danger.ClassifyScriptGateCtx(ctx, cmd.Command)
 		resource := "bg: " + cmd.Command
 		if len(targets) > 0 {
 			resource = fmt.Sprintf("bg: %s  [unread script: %s]", cmd.Command, strings.Join(targets, ", "))
@@ -3151,7 +3155,7 @@ func classifyToolCall(name, args string) (danger.RiskClass, string) {
 			if c.Command == "" {
 				continue
 			}
-			cls, _ := danger.ClassifyScriptGate(c.Command)
+			cls, _ := danger.ClassifyScriptGateCtx(ctx, c.Command)
 			if r := danger.Rank(cls); r > maxRank {
 				maxRank = r
 				maxCls = cls

@@ -281,6 +281,7 @@ func replCmd(args []string) error {
 		originalInput := input
 		auditTurn := sess.Turns + 1
 		runCtx := withAuditRecorder(ctx, auditStore, sess.ID, auditTurn)
+		runCtx = withReadLedger(runCtx, sess.ID)
 
 		// Resolve @references in REPL input
 		cwd, _ := os.Getwd()
