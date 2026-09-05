@@ -510,3 +510,39 @@ func TestEpisodeSearchQueryCacheInvalidatedOnPromote(t *testing.T) {
 		t.Errorf("query cache not invalidated after promote: got %d episodes, want 2", len(got))
 	}
 }
+
+func TestEpisodeStore_CrossInstancePromoteNotLost(t *testing.T) {
+	dir := t.TempDir()
+	a := NewEpisodeStore(dir, nil)
+	b := NewEpisodeStore(dir, nil)
+
+	if err := a.WriteWithProvenance("20260519-sess1", "tainted summary", 3, EpisodeProvenance{Untrusted: true}); err != nil {
+		t.Fatal(err)
+	}
+	// Warm B's cache from disk (the serve-mode shape: two stores, one dir).
+	if _, err := b.ReadIndex(); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Promote("20260519-sess1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Write("20260519-sess2", "trusted sibling", 4); err != nil {
+		t.Fatal(err)
+	}
+	idx, err := a.ReadIndex()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, ep := range idx {
+		if ep.SessionID == "20260519-sess1" {
+			found = true
+			if !ep.Provenance.UserApproved {
+				t.Fatalf("promote bit lost after sibling store write: %+v", ep.Provenance)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("promoted episode missing from index after sibling write")
+	}
+}

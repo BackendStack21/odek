@@ -249,6 +249,13 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 			results[idx] = entry
 			continue
 		}
+		if !p.ReplaceAll {
+			if n := strings.Count(original, p.OldString); n > 1 {
+				entry.Error = fmt.Sprintf("old_string is not unique in %q (%d occurrences); set replace_all=true or use a larger unique snippet", p.Path, n)
+				results[idx] = entry
+				continue
+			}
+		}
 
 		var modified string
 		if p.ReplaceAll {

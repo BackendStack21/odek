@@ -49,9 +49,17 @@ var patterns = []*regexp.Regexp{
 	// prose was corrupted to [REDACTED] in sessions and logs.
 	regexp.MustCompile(`\bsk-[a-zA-Z0-9_-]{32,}`),
 
-	// GitHub personal access tokens (classic + fine-grained)
+	// GitHub personal access tokens (classic + fine-grained) and the
+	// other ghp_/gho_/ghu_/ghs_/ghr_ families (OAuth, user-to-server,
+	// server-to-server, refresh).
 	regexp.MustCompile(`ghp_[a-zA-Z0-9]{36,}`),
+	regexp.MustCompile(`gh[ours]_[a-zA-Z0-9]{36,}`),
 	regexp.MustCompile(`github_pat_[a-zA-Z0-9]{22,}`),
+
+	// npm, GitLab personal, and PyPI API tokens.
+	regexp.MustCompile(`npm_[a-zA-Z0-9]{36,}`),
+	regexp.MustCompile(`glpat-[a-zA-Z0-9_-]{20,}`),
+	regexp.MustCompile(`pypi-[a-zA-Z0-9_-]{20,}`),
 
 	// AWS access keys: AKIA + 16 uppercase (also ASIA for temp credentials)
 	regexp.MustCompile(`A[SK]IA[0-9A-Z]{16}`),
@@ -78,7 +86,7 @@ var patterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)Authorization:\s*Bearer\s+([a-zA-Z0-9+/=._-]{20,})`),
 
 	// Slack bot tokens: xoxb-, xoxp-
-	regexp.MustCompile(`xox[abpos]-[0-9]{10,}-[0-9]{10,}-[a-zA-Z0-9]{24,}`),
+	regexp.MustCompile(`xox[abpose]-[0-9]{10,}-[0-9]{10,}-[a-zA-Z0-9]{24,}`),
 	// Slack app tokens: xapp-1-<app id>-<install id>-<secret>
 	regexp.MustCompile(`xapp-1-[A-Za-z0-9]+-[0-9]{8,}-[0-9a-zA-Z]{24,}`),
 

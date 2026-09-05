@@ -149,6 +149,19 @@ func TestEngine_BudgetSnapshot(t *testing.T) {
 	if s.MaxInputTokens != 0 || s.MaxOutputTokens != 0 {
 		t.Errorf("unconfigured token caps must stay zero, got %+v", s)
 	}
+
+	// Cache-read / cache-creation tokens count toward the input cap, matching
+	// CheckUsageWithCache enforcement (otherwise sub-agent share-mode
+	// snapshots report headroom the parent would already deny).
+	e.budget = budget.NewChecker(budget.Limits{MaxInputTokens: 1000}, start)
+	e.TotalInputTokens = 400
+	e.TotalCacheReadTokens = 500
+	e.TotalCacheCreationTokens = 200
+	e.TotalOutputTokens = 0
+	s = e.BudgetSnapshot()
+	if !s.InputTokensExhausted {
+		t.Errorf("snapshot with 400+500+200 input/cache tokens against cap 1000: exhausted=%v remaining=%d", s.InputTokensExhausted, s.RemainingInputTokens)
+	}
 }
 func TestPartialSummaryReason_Markers(t *testing.T) {
 	cases := []struct {

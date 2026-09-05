@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/BackendStack21/odek/internal/config"
+	"github.com/BackendStack21/odek/internal/fsatomic"
 	"github.com/BackendStack21/odek/internal/sandbox"
 	"golang.org/x/term"
 )
@@ -335,5 +336,5 @@ func saveProjectSandboxApprovals(approvals map[string]bool) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0600)
+	return fsatomic.WriteFile(path, data, 0600)
 }

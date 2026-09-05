@@ -915,9 +915,10 @@ func (s *Store) removeLocked(id string) error {
 	return nil
 }
 
-// Cleanup deletes all sessions whose UpdatedAt is before the given time.
-// Returns the count of deleted sessions. Idempotent — nonexistent files
-// are skipped silently.
+// Cleanup deletes all unpinned sessions whose UpdatedAt is before the given
+// time. Pinned (favorited) sessions are skipped so operator bookmarks
+// survive retention sweeps. Returns the count of deleted sessions.
+// Idempotent — nonexistent files are skipped silently.
 // Uses the session index for efficient batch operations. Falls back to
 // scanning individual session files when no index exists (backward compat).
 func (s *Store) Cleanup(before time.Time) (int, error) {
@@ -937,6 +938,9 @@ func (s *Store) Cleanup(before time.Time) (int, error) {
 				continue
 			}
 			if e.UpdatedAt.Before(before) {
+				if e.Pinned {
+					continue
+				}
 				if err := s.removeLocked(id); err != nil {
 					s.mu.Unlock()
 					return deleted, fmt.Errorf("session: delete %q: %w", id, err)
@@ -977,6 +981,9 @@ func (s *Store) Cleanup(before time.Time) (int, error) {
 			continue // skip unreadable files
 		}
 		if sess.UpdatedAt.Before(before) {
+			if sess.Pinned {
+				continue
+			}
 			if err := s.Delete(sess.ID); err != nil {
 				return deleted, fmt.Errorf("session: delete %q: %w", sess.ID, err)
 			}

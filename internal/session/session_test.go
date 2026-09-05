@@ -482,6 +482,31 @@ func TestStore_Cleanup(t *testing.T) {
 	}
 }
 
+func TestStore_Cleanup_SkipsPinned(t *testing.T) {
+	store := newTestStore(t)
+	msgs := []Message{{Role: "user", Content: "keep"}}
+	pinned, err := store.Create(msgs, "m", "pinned")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned.Pinned = true
+	pinned.UpdatedAt = pinned.UpdatedAt.AddDate(0, 0, -30)
+	if err := store.Save(pinned); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := store.Cleanup(time.Now().UTC().AddDate(0, 0, -7))
+	if err != nil {
+		t.Fatalf("Cleanup() error: %v", err)
+	}
+	if deleted != 0 {
+		t.Errorf("Cleanup() deleted %d, want 0 (pinned sessions survive)", deleted)
+	}
+	if _, err := store.Load(pinned.ID); err != nil {
+		t.Errorf("pinned session should survive cleanup: %v", err)
+	}
+}
+
 func TestStore_Cleanup_EmptyStore(t *testing.T) {
 	store := newTestStore(t)
 	deleted, err := store.Cleanup(time.Now().UTC())

@@ -683,18 +683,26 @@ func TestPatch_MissingOldString(t *testing.T) {
 }
 
 func TestPatch_ReplaceAllWithoutFlag(t *testing.T) {
-	// Without replace_all, only the first occurrence should be replaced
+	// Schema contract: old_string must be unique unless replace_all=true.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "file.txt")
 	os.WriteFile(path, []byte("a a a\n"), 0644)
 
 	tool := &patchTool{}
 	result := callJSON(t, tool, `{"path":"`+path+`","old_string":"a","new_string":"b"}`)
-	mustSuccess(t, result)
-
+	var r struct {
+		Error string `json:"error"`
+	}
+	mustUnmarshal(t, result, &r)
+	if r.Error == "" {
+		t.Fatal("expected uniqueness error when old_string occurs more than once")
+	}
+	if !strings.Contains(r.Error, "not unique") {
+		t.Errorf("error = %q, want uniqueness complaint", r.Error)
+	}
 	data, _ := os.ReadFile(path)
-	if string(data) != "b a a\n" {
-		t.Errorf("Content = %q, want %q (only first 'a' replaced)", string(data), "b a a\n")
+	if string(data) != "a a a\n" {
+		t.Errorf("file was mutated on uniqueness failure: %q", data)
 	}
 }
 

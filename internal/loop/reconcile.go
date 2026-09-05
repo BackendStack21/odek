@@ -67,7 +67,22 @@ func shellOutputFailed(output string) bool {
 // jsonToolFailed matches the file tools' failure shape: jsonError emits
 // {"error": "..."} while success is {"success":true,...}.
 func jsonToolFailed(output string) bool {
-	return strings.Contains(output, `"error"`)
+	var env struct {
+		Error   string `json:"error"`
+		Success *bool  `json:"success"`
+	}
+	if err := json.Unmarshal([]byte(output), &env); err != nil {
+		// Non-JSON tool output: do not treat a coincidental `"error"`
+		// substring as failure.
+		return false
+	}
+	if env.Error != "" {
+		return true
+	}
+	if env.Success != nil && !*env.Success {
+		return true
+	}
+	return false
 }
 
 // parallelShellEntries extracts per-command outcomes from a parallel_shell

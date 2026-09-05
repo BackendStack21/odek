@@ -950,6 +950,11 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 	if !strings.Contains(original, args.OldString) {
 		return jsonError(fmt.Sprintf("old_string not found in %q. Use search_files to find the correct string.", args.Path))
 	}
+	if !args.ReplaceAll {
+		if n := strings.Count(original, args.OldString); n > 1 {
+			return jsonError(fmt.Sprintf("old_string is not unique in %q (%d occurrences). Provide a larger unique snippet or set replace_all=true.", args.Path, n))
+		}
+	}
 
 	var modified string
 	if args.ReplaceAll {

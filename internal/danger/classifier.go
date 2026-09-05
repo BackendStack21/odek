@@ -1383,6 +1383,11 @@ func xargsHasExternalArgSource(tokens []string) bool {
 		if strings.HasPrefix(t, "-a") && !strings.HasPrefix(t, "--") && t != "-a" {
 			return true
 		}
+		// GNU parallel file-backed argv: `:::: file` (and fused `::::file`).
+		// Distinct from `::: args` which puts the payload on the command line.
+		if t == "::::" || strings.HasPrefix(t, "::::") {
+			return true
+		}
 		// Input redirect of a file. Here-strings (`<<<`) carry their
 		// payload as a later token and are not external sources.
 		if t == "<" || t == "<<" {
@@ -1418,6 +1423,17 @@ func argvComposerInnerCommand(tokens []string) (inner []string, ok bool) {
 			i++
 			for i < len(tokens) {
 				t := tokens[i]
+				// GNU parallel `:::: file` is an argv source, not the inner
+				// command. Skip it (and a fused `::::file`) so the real verb
+				// is classified and the file source is still fail-closed.
+				if t == "::::" && i+1 < len(tokens) {
+					i += 2
+					continue
+				}
+				if strings.HasPrefix(t, "::::") && t != "::::" {
+					i++
+					continue
+				}
 				if !strings.HasPrefix(t, "-") || t == "-" {
 					return tokens[i:], true
 				}
@@ -1620,6 +1636,28 @@ func isStdinExecInterpreter(name string) bool {
 		if rest == "" || rest[0] == '3' || rest[0] == '2' {
 			return true
 		}
+	}
+	if strings.HasPrefix(name, "lua") {
+		rest := strings.TrimPrefix(name, "lua")
+		return rest == "" || (rest[0] >= '0' && rest[0] <= '9')
+	}
+	return false
+}
+
+// isScriptEvalInterpreter reports whether name is a language runtime that
+// executes a script file or an inline -e/-c payload. Distinct from
+// stdinExecInterpreters because that set includes bun/deno, which are
+// package-manager CLIs first — `bun install` must not take the
+// interpreterRunsCode path. lua/osascript/ipython live in the stdin set
+// (pipe-fed execution) but were previously missing from codeEvalPrefixes,
+// so `lua -e '…'` / `osascript -e '…'` / `ipython -c '…'` classified Safe.
+func isScriptEvalInterpreter(name string) bool {
+	if codeEvalPrefixes[name] {
+		return true
+	}
+	switch name {
+	case "luajit", "osascript", "ipython":
+		return true
 	}
 	if strings.HasPrefix(name, "lua") {
 		rest := strings.TrimPrefix(name, "lua")
@@ -2227,6 +2265,8 @@ var envExecNames = map[string]bool{
 	"BASH_ENV": true, "ZDOTDIR": true,
 	"NODE_OPTIONS": true, "PERL5OPT": true, "RUBYOPT": true,
 	"GIT_SSH_COMMAND": true, "GIT_EDITOR": true, "GIT_SEQUENCE_EDITOR": true,
+	"GIT_EXTERNAL_DIFF": true, "GIT_DIFFTOOL": true,
+	"GIT_ASKPASS": true, "GIT_PROXY_COMMAND": true,
 }
 
 // envAssignmentRisk escalates leading VAR=value assignments whose name or
@@ -2926,8 +2966,10 @@ func isWipeTarget(tok string) bool {
 			cleaned == "/workspace" || strings.HasPrefix(cleaned, "/workspace/")
 		return !exempt
 	}
-	// Normalize leading `./` so `./` → `.` and `./..` → `..` for matching.
-	if strings.HasPrefix(tok, "./") {
+	// Strip every leading `./` so `./` → `.`, `./..` → `..`, and
+	// `././.` / `./././.` collapse to `.` (a single-prefix strip left
+	// `././.` as `./.`, which missed the wipe-target match).
+	for strings.HasPrefix(tok, "./") {
 		tok = tok[2:]
 		if tok == "" {
 			return true
@@ -3570,7 +3612,7 @@ func isCodeExecution(first string, tokens []string) bool {
 		return true
 	}
 
-	if !codeEvalPrefixes[first] {
+	if !isScriptEvalInterpreter(first) {
 		// go run / go tool / go generate compile and execute code.
 		if first == "go" {
 			for _, tok := range tokens[1:] {

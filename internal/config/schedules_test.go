@@ -224,6 +224,43 @@ func TestLoadConfig_SchedulesDangerousProjectIgnored(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_SchedulesProjectPrivilegeIgnored(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	globalDir := filepath.Join(home, ".odek")
+	if err := os.MkdirAll(globalDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	global := []byte(`{"schedules":{"max_concurrent":2,"telegram_admin_users":[111],"telegram_admin_chats":[222]}}`)
+	if err := os.WriteFile(filepath.Join(globalDir, "config.json"), global, 0600); err != nil {
+		t.Fatal(err)
+	}
+	wd := t.TempDir()
+	if err := os.Chdir(wd); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	project := []byte(`{"schedules":{"max_concurrent":99,"catchup":true,"telegram_admin_users":[999],"telegram_admin_chats":[888],"timezone":"Europe/Berlin"}}`)
+	if err := os.WriteFile(filepath.Join(wd, "odek.json"), project, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := LoadConfig(CLIFlags{})
+	if cfg.Schedules.MaxConcurrent != 2 {
+		t.Errorf("project max_concurrent must not raise the global cap, got %d", cfg.Schedules.MaxConcurrent)
+	}
+	if cfg.Schedules.Catchup {
+		t.Error("project catchup must be ignored")
+	}
+	if len(cfg.Schedules.TelegramAdminUsers) != 1 || cfg.Schedules.TelegramAdminUsers[0] != 111 {
+		t.Errorf("project telegram_admin_users must not replace global, got %v", cfg.Schedules.TelegramAdminUsers)
+	}
+	if len(cfg.Schedules.TelegramAdminChats) != 1 || cfg.Schedules.TelegramAdminChats[0] != 222 {
+		t.Errorf("project telegram_admin_chats must not replace global, got %v", cfg.Schedules.TelegramAdminChats)
+	}
+	if cfg.Schedules.Timezone != "Europe/Berlin" {
+		t.Errorf("project timezone should still apply, got %q", cfg.Schedules.Timezone)
+	}
+}
+
 func TestLoadConfig_SchedulesDangerousEnvInvalidJSON(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

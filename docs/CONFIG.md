@@ -997,7 +997,7 @@ Safety floor that cannot be overridden:
 - `non_interactive` is always `deny` (no human is present to approve).
 - `destructive`, `blocked`, `persistence` (deferred-execution writes: shell profiles, git hooks, CI workflows, cron, systemd, launchd, lifecycle scripts), and `unread_exec` (executing a script whose contents were not read in the session) classes are always denied.
 
-Project-level `odek.json` cannot set `schedules.dangerous`; configure it via `~/.odek/config.json` or environment variables.
+Project-level `odek.json` cannot set `schedules.dangerous`, `max_concurrent`, `catchup`, `allow_telegram_management`, or `telegram_admin_*` (a project timezone/enabled overlay is merged field-by-field so it cannot wipe global admin lists). Configure privileged scheduler knobs via `~/.odek/config.json` or environment variables.
 
 Full guide: [docs/SCHEDULES.md](SCHEDULES.md).
 

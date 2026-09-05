@@ -177,3 +177,18 @@ func TestReplyDenialClaims_Patterns(t *testing.T) {
 		}
 	}
 }
+
+func TestJSONToolFailed_ParsesEnvelope(t *testing.T) {
+	if !jsonToolFailed(`{"error":"denied"}`) {
+		t.Error("error envelope must count as failed")
+	}
+	if jsonToolFailed(`{"success":true,"diff":"--- a\n+++ b\n- \"error\" in file\n"}`) {
+		t.Error("success envelope whose diff mentions \"error\" must not count as failed")
+	}
+	if jsonToolFailed(`plain text mentioning "error" without JSON`) {
+		t.Error("non-JSON output must not count as failed")
+	}
+	if !jsonToolFailed(`{"success":false}`) {
+		t.Error("success=false must count as failed")
+	}
+}

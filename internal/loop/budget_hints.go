@@ -54,7 +54,7 @@ func (e *Engine) BudgetSnapshot() budget.Snapshot {
 	if e == nil {
 		return budget.Snapshot{}
 	}
-	return e.budget.Snapshot(int64(e.TotalInputTokens), int64(e.TotalOutputTokens))
+	return e.budget.Snapshot(int64(e.TotalInputTokens)+int64(e.TotalCacheReadTokens)+int64(e.TotalCacheCreationTokens), int64(e.TotalOutputTokens))
 }
 
 // budgetWarnings returns the budget-awareness hint lines for the given
