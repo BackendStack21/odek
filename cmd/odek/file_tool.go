@@ -721,18 +721,23 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 		// Skip binary files — single open for check then search
 		f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 		if err != nil {
+			// Surface the miss instead of silently dropping the file —
+			// under fd pressure (or a permissions change) silent drops
+			// make results quietly incomplete.
+			skipped = append(skipped, fmt.Sprintf("%s: %v", path, err))
 			return nil
 		}
-		defer f.Close()
 
 		sample := make([]byte, 512)
 		n, _ := f.Read(sample)
 		if isBinary(sample[:n]) {
+			f.Close()
 			return nil
 		}
 
 		// Seek back to start for content search
 		if _, err := f.Seek(0, 0); err != nil {
+			f.Close()
 			return nil
 		}
 
@@ -752,7 +757,7 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 				}
 				resultBytes += len(trimmed)
 				matches = append(matches, searchMatch{
-					Path:    path,
+					Path:    wrapUntrusted(t.toolCtx(), path, path),
 					Line:    lineNum,
 					Content: wrapUntrusted(t.toolCtx(), fmt.Sprintf("%s:%d", path, lineNum), trimmed),
 				})

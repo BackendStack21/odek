@@ -931,8 +931,8 @@ func TestBase64_Decode(t *testing.T) {
 	}
 	mustUnmarshal(t, result, &r)
 
-	if r.Decoded != "hello" {
-		t.Errorf("decoded = %q, want 'hello'", r.Decoded)
+	if !strings.Contains(r.Decoded, "hello") || !strings.HasPrefix(r.Decoded, "<untrusted") {
+		t.Errorf("decoded = %q, want wrapped 'hello' (decoded output is untrusted data)", r.Decoded)
 	}
 }
 

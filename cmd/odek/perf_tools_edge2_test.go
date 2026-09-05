@@ -156,8 +156,8 @@ func TestBase64_DecodeStringFlag(t *testing.T) {
 	if r.Error != "" {
 		t.Fatalf("error: %s", r.Error)
 	}
-	if r.Decoded != "hello" {
-		t.Errorf("decoded = %q, want 'hello'", r.Decoded)
+	if !strings.Contains(r.Decoded, "hello") || !strings.HasPrefix(r.Decoded, "<untrusted") {
+		t.Errorf("decoded = %q, want wrapped 'hello' (decoded output is untrusted data)", r.Decoded)
 	}
 }
 
@@ -177,8 +177,8 @@ func TestBase64_StringWithoutDecodeFlagEncodes(t *testing.T) {
 	if r.Error != "" {
 		t.Fatalf("error: %s", r.Error)
 	}
-	if r.Decoded != "hello" {
-		t.Errorf("decoded = %q, want 'hello' (string field auto-decodes)", r.Decoded)
+	if !strings.Contains(r.Decoded, "hello") || !strings.HasPrefix(r.Decoded, "<untrusted") {
+		t.Errorf("decoded = %q, want wrapped 'hello' (decoded output is untrusted data)", r.Decoded)
 	}
 }
 
