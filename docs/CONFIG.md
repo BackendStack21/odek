@@ -419,8 +419,8 @@ Hard per-run execution budgets (part of the **odek-extension/v1** contract — s
 
 | Field | Description |
 |-------|-------------|
-| `max_runtime_seconds` | Wall-clock cap for a run; checked before every LLM call |
-| `max_tool_calls` | Total tool calls executed; checked before each tool batch is scheduled (a denied batch does not count) |
+| `max_runtime_seconds` | Wall-clock cap for a run; checked before every LLM call **and** around the tool batch (a deadline context cancels context-aware tools when the remaining budget elapses) |
+| `max_tool_calls` | Total tool calls executed; checked before each tool batch is scheduled. If a batch would overflow, remaining slots still run and the overflow calls are skipped with an error result (a denied batch does not count) |
 | `max_input_tokens` / `max_output_tokens` | Cumulative prompt/completion tokens; checked after every LLM response |
 | `max_cost_usd` | Estimated-spend cap — enforced only when **both** resolved per-million prices are also configured |
 | `input_cost_per_million_usd` / `output_cost_per_million_usd` | Operator-configured token prices for the cost estimate (the flat fallback pair). odek never hard-codes provider prices |

@@ -479,3 +479,129 @@ func TestEngine_Budget_CostFlatPricesForUnmatchedModel(t *testing.T) {
 		t.Errorf("result = %q, want %q", result, "done")
 	}
 }
+
+func budgetMultiToolCallResponse(n int, toolName string, promptTokens, completionTokens int) string {
+	calls := make([]string, n)
+	for i := 0; i < n; i++ {
+		calls[i] = fmt.Sprintf(
+			`{"id":"call_%d","type":"function","function":{"name":%q,"arguments":"{}"}}`,
+			i+1, toolName,
+		)
+	}
+	return fmt.Sprintf(`{
+		"choices":[{"message":{"content":"working","tool_calls":[%s]}}],
+		"usage":{"prompt_tokens":%d,"completion_tokens":%d}
+	}`, strings.Join(calls, ","), promptTokens, completionTokens)
+}
+
+func TestEngine_Budget_PartialToolBatchKeepsRemainingSlots(t *testing.T) {
+	// A 3-call batch against a 2-call cap used to discard the whole plan.
+	// Remaining slots should still execute; overflow calls get a skip error
+	// so the protocol stays balanced, then the model can finish.
+	var callNum atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := callNum.Add(1)
+		if n == 1 {
+			fmt.Fprint(w, budgetMultiToolCallResponse(3, "count", 10, 10))
+			return
+		}
+		fmt.Fprint(w, budgetFinalResponse("used what I could", 10, 10))
+	}))
+	defer server.Close()
+
+	ct := &countingTool{}
+	engine := New(testChatClient(t, server.URL),
+		tool.NewRegistry([]tool.Tool{ct}), 10, "", nil, 0)
+	engine.SetLimits(budget.Limits{MaxToolCalls: 2}, "test-model")
+
+	got, messages, err := engine.RunWithMessages(context.Background(), []session.Message{
+		{Role: "user", Content: "do work"},
+	})
+	if err != nil {
+		t.Fatalf("run should complete after a partial batch: %v", err)
+	}
+	if got != "used what I could" {
+		t.Errorf("result = %q, want the final answer", got)
+	}
+	if n := ct.calls.Load(); n != 2 {
+		t.Errorf("tool executed %d times, want 2 (third call skipped)", n)
+	}
+	var skipHits int
+	for _, m := range messages {
+		if m.Role == "tool" && strings.Contains(m.Content, "skipped — tool-call budget exhausted") {
+			skipHits++
+		}
+	}
+	if skipHits != 1 {
+		t.Errorf("skip results = %d, want 1", skipHits)
+	}
+}
+
+// ctxBlockTool blocks until the context set via SetContext is cancelled.
+type ctxBlockTool struct {
+	mu     sync.Mutex
+	ctx    context.Context
+	calls  atomic.Int64
+	ctxErr error
+}
+
+func (t *ctxBlockTool) Name() string        { return "count" }
+func (t *ctxBlockTool) Description() string { return "blocks until ctx done" }
+func (t *ctxBlockTool) Schema() any {
+	return map[string]any{"type": "object", "properties": map[string]any{}}
+}
+func (t *ctxBlockTool) SetContext(ctx context.Context) {
+	t.mu.Lock()
+	t.ctx = ctx
+	t.mu.Unlock()
+}
+func (t *ctxBlockTool) Call(args string) (string, error) {
+	t.calls.Add(1)
+	t.mu.Lock()
+	ctx := t.ctx
+	t.mu.Unlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	<-ctx.Done()
+	err := ctx.Err()
+	t.mu.Lock()
+	t.ctxErr = err
+	t.mu.Unlock()
+	return "", err
+}
+
+func TestEngine_Budget_RuntimeDeadlineCancelsTool(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, budgetToolCallResponse("call_1", "count", 10, 10))
+	}))
+	defer server.Close()
+
+	bt := &ctxBlockTool{}
+	engine := New(testChatClient(t, server.URL),
+		tool.NewRegistry([]tool.Tool{bt}), 10, "", nil, 0)
+	engine.SetLimits(budget.Limits{MaxRuntimeSeconds: 1}, "test-model")
+
+	start := time.Now()
+	_, err := engine.Run(context.Background(), "do work")
+	elapsed := time.Since(start)
+	berr, ok := budget.As(err)
+	if !ok {
+		t.Fatalf("expected typed budget.Error, got %v", err)
+	}
+	if berr.Limit != budget.LimitRuntime {
+		t.Errorf("limit = %s, want runtime", berr.Limit)
+	}
+	if bt.calls.Load() != 1 {
+		t.Errorf("tool executed %d times, want 1", bt.calls.Load())
+	}
+	bt.mu.Lock()
+	ctxErr := bt.ctxErr
+	bt.mu.Unlock()
+	if ctxErr != context.DeadlineExceeded {
+		t.Errorf("tool ctx err = %v, want DeadlineExceeded", ctxErr)
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("run took %s, want cancellation near the 1s cap", elapsed)
+	}
+}
