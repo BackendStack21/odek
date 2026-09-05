@@ -1145,19 +1145,19 @@ func resolveMaintenance(cfg *MaintenanceConfig) maintenance.Config {
 		def.IntervalMinutes = *cfg.IntervalMinutes
 	}
 	if cfg.SessionsMaxAgeDays != nil {
-		def.SessionsMaxAgeDays = *cfg.SessionsMaxAgeDays
+		def.SessionsMaxAgeDays = maintenance.ClampRetentionDays(*cfg.SessionsMaxAgeDays)
 	}
 	if cfg.AuditMaxAgeDays != nil {
-		def.AuditMaxAgeDays = *cfg.AuditMaxAgeDays
+		def.AuditMaxAgeDays = maintenance.ClampRetentionDays(*cfg.AuditMaxAgeDays)
 	}
 	if cfg.LogMaxMB != nil {
 		def.LogMaxMB = *cfg.LogMaxMB
 	}
 	if cfg.PlansMaxAgeDays != nil {
-		def.PlansMaxAgeDays = *cfg.PlansMaxAgeDays
+		def.PlansMaxAgeDays = maintenance.ClampRetentionDays(*cfg.PlansMaxAgeDays)
 	}
 	if cfg.ArtifactsMaxAgeHours != nil {
-		def.ArtifactsMaxAgeHours = *cfg.ArtifactsMaxAgeHours
+		def.ArtifactsMaxAgeHours = maintenance.ClampRetentionHours(*cfg.ArtifactsMaxAgeHours)
 	}
 	return def
 }
