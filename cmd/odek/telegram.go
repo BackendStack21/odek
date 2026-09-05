@@ -1242,6 +1242,15 @@ func gracefulRestart(bot *telegram.Bot) {
 	// ── Phase 3: Marker + Spawn → Exit or Recover ──────────────────────
 	fmt.Fprintf(os.Stderr, "odek telegram: graceful restart — phase 3: spawning child...\n")
 	writeRestartMarker(activeChatIDs)
+	// Release the schedule lock BEFORE spawning: the child's embedded
+	// scheduler acquires it at startup, and the parent used to still hold
+	// it here — the child then found a (briefly) live owner, skipped the
+	// scheduler, and no scheduled job ran until the next manual restart.
+	// The Telegram singleton lock below stays held until after spawn
+	// (the child's acquisition aggressively takes over stale holders).
+	if scheduleUnlockRef != nil {
+		scheduleUnlockRef()
+	}
 	if err := spawnChild(); err != nil {
 		fmt.Fprintf(os.Stderr, "odek telegram: spawn failed: %v\n", err)
 		restartInProgress.Store(false) // allow new tasks to start
@@ -1267,11 +1276,6 @@ func gracefulRestart(bot *telegram.Bot) {
 	// Playwright/Chromium) would leak across every restart.
 	if mcpCleanupRef != nil {
 		mcpCleanupRef()
-	}
-	// Release the schedule lock too, so the restarted child's embedded
-	// scheduler can re-acquire it instead of finding a (briefly) live owner.
-	if scheduleUnlockRef != nil {
-		scheduleUnlockRef()
 	}
 	os.Exit(0)
 }
