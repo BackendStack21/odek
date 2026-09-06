@@ -80,7 +80,7 @@
 html {
   color-scheme: dark;
   scroll-padding-top: var(--space-5);
-  overflow-x: hidden;
+  background-color: #030304;
 }
 @media (prefers-reduced-motion: no-preference) {
   html { scroll-behavior: smooth; }
@@ -90,40 +90,42 @@ body {
   margin: 0;
   position: relative;
   isolation: isolate;
+  overflow-x: clip;
   font-family: var(--ui);
   font-size: var(--fs-base);
   line-height: 1.6;
   color: var(--text);
-  background: #030304;
+  background-color: #030304;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
 
-/* Fixed field — coals, cool depth, hairline grid. Content sits above. */
+/* Fixed field — CSS only. No SVG filters, blend modes, or transforms:
+   those drop or detach under WebKit (Safari / iOS). */
 body::before,
 body::after {
   content: '';
   position: fixed;
   inset: 0;
   pointer-events: none;
+  z-index: 0;
 }
 
-/* Ember well — a small, faint crown behind the wordmark. Distant coals stay pin-pricks. */
+/* Ember well + coals as radial-gradients (box-shadow + scale was a Safari trap). */
 body::before {
-  background:
-    radial-gradient(ellipse 11% 6% at 50% 10%, rgba(255, 178, 36, .035), transparent 72%);
-  box-shadow:
-    14vw 16vh 0 .7px rgba(255, 178, 36, .48),
-    22vw 28vh 0 .55px rgba(255, 201, 94, .28),
-    71vw 14vh 0 .6px rgba(255, 178, 36, .36),
-    83vw 31vh 0 .5px rgba(255, 138, 61, .26),
-    8vw 62vh 0 .5px rgba(255, 201, 94, .2),
-    41vw 71vh 0 .55px rgba(255, 178, 36, .24),
-    63vw 58vh 0 .45px rgba(255, 201, 94, .18),
-    91vw 67vh 0 .55px rgba(255, 178, 36, .26),
-    33vw 41vh 0 .45px rgba(255, 138, 61, .18);
-  transform-origin: 50% 8%;
-  z-index: -2;
+  background-image:
+    radial-gradient(ellipse at 50% 10%, rgba(255, 178, 36, .04), transparent 14%),
+    radial-gradient(circle at 14% 16%, rgba(255, 178, 36, .48) 0 1px, transparent 1.6px),
+    radial-gradient(circle at 22% 28%, rgba(255, 201, 94, .28) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 71% 14%, rgba(255, 178, 36, .36) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 83% 31%, rgba(255, 138, 61, .26) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 8% 62%, rgba(255, 201, 94, .2) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 41% 71%, rgba(255, 178, 36, .24) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 63% 58%, rgba(255, 201, 94, .18) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 91% 67%, rgba(255, 178, 36, .26) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 33% 41%, rgba(255, 138, 61, .18) 0 1px, transparent 1.5px);
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
 }
 @media (prefers-reduced-motion: no-preference) {
   body::before {
@@ -131,19 +133,16 @@ body::before {
   }
 }
 @keyframes ember-breathe {
-  from { opacity: .85; transform: scale(1); }
-  to { opacity: 1; transform: scale(1.012); }
+  from { opacity: .85; }
+  to { opacity: 1; }
 }
 
-/* Grid + cool grain. No circular vignette — that read as a brown disk. */
+/* Fine grain only — the 48px square grid sat under the type. */
 body::after {
   background-image:
-    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.82  0 0 0 0 0.84  0 0 0 0 0.90  0 0 0 .14 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>"),
-    repeating-linear-gradient(0deg, transparent 0 47px, rgba(152, 170, 200, .045) 47px 48px),
-    repeating-linear-gradient(90deg, transparent 0 47px, rgba(152, 170, 200, .045) 47px 48px);
-  background-size: 160px 160px, auto, auto;
-  background-blend-mode: overlay, normal, normal;
-  z-index: -1;
+    repeating-radial-gradient(circle at 1px 1px, rgba(190, 200, 215, .045) 0 0.4px, transparent 0.8px),
+    repeating-radial-gradient(circle at 2px 0, rgba(20, 18, 16, .05) 0 0.35px, transparent 0.7px);
+  background-size: 3px 3px, 5px 4px;
 }
 
 .topbar,
