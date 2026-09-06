@@ -491,7 +491,7 @@ func (t *delegateTasksTool) runTask(taskIdx int, taskID, goal, taskContext, guid
 				reservedTokens = charger.ReserveExternalUsage(snap.RemainingInputTokens)
 				if reservedTokens <= 0 {
 					return fmt.Sprintf(`{"status":"error","error":%q,"summary":"","files_changed":null,"iterations":0,"tokens_used":0}`,
-						fmt.Sprintf("subagent not spawned: input-token budget fully committed to in-flight sub-agents"))
+						"subagent not spawned: input-token budget fully committed to in-flight sub-agents")
 				}
 				defer func() {
 					t.budgetMu.Lock()
