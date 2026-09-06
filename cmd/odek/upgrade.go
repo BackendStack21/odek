@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -63,9 +65,16 @@ checksums.txt (SHA-256), and installed atomically over the running binary.
 const (
 	// githubAPIBase is the GitHub API root used to resolve the latest
 	// release. Asset downloads follow the browser_download_url returned by
-	// the API. Kept as a variable so tests can point at a fake server.
+	// the API. Tests pass a fake server URL instead.
 	githubAPIBase = "https://api.github.com"
 	githubRepo    = "BackendStack21/odek"
+	// githubPageLatest is the HTML latest-release redirect. GitHub's
+	// anonymous API quota (and occasional IP blocks) return 403 on the
+	// REST latest endpoint; this path is not rate-limited the same way.
+	githubPageLatest = "https://github.com/BackendStack21/odek/releases/latest"
+
+	githubUserAgent = "odek-updater"
+	githubAPIVer    = "2022-11-28"
 )
 
 // ghRelease is the subset of the GitHub release payload upgrade needs.
@@ -88,21 +97,45 @@ func (r *ghRelease) assetURL(name string) string {
 }
 
 // fetchLatestRelease queries the GitHub API for the repository's latest
-// published release.
+// published release. A 401/403/429 against the real API falls back to the
+// HTML latest page.
 func fetchLatestRelease(ctx context.Context, client *http.Client, apiBase string) (*ghRelease, error) {
-	url := strings.TrimSuffix(apiBase, "/") + "/repos/" + githubRepo + "/releases/latest"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	page := ""
+	if apiBase == githubAPIBase {
+		page = githubPageLatest
+	}
+	return fetchLatest(ctx, client, apiBase, page)
+}
+
+func fetchLatest(ctx context.Context, client *http.Client, apiBase, pageURL string) (*ghRelease, error) {
+	rel, err := queryReleaseAPI(ctx, client, apiBase)
+	if err == nil {
+		return rel, nil
+	}
+	if pageURL == "" || !statusRetryable(err) {
+		return nil, err
+	}
+	rel, ferr := queryLatestPage(ctx, client, pageURL)
+	if ferr != nil {
+		return nil, fmt.Errorf("%w; html fallback: %v", err, ferr)
+	}
+	return rel, nil
+}
+
+func queryReleaseAPI(ctx context.Context, client *http.Client, apiBase string) (*ghRelease, error) {
+	apiURL := strings.TrimSuffix(apiBase, "/") + "/repos/" + githubRepo + "/releases/latest"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Accept", "application/vnd.github+json")
+	applyGitHubHeaders(req)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("cannot reach GitHub: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GitHub API returned %s", resp.Status)
+		return nil, &githubStatusError{code: resp.StatusCode, status: resp.Status}
 	}
 	var rel ghRelease
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&rel); err != nil {
@@ -112,6 +145,99 @@ func fetchLatestRelease(ctx context.Context, client *http.Client, apiBase string
 		return nil, fmt.Errorf("GitHub release payload has no tag_name")
 	}
 	return &rel, nil
+}
+
+func queryLatestPage(ctx context.Context, client *http.Client, pageURL string) (*ghRelease, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build latest-page request: %w", err)
+	}
+	req.Header.Set("User-Agent", githubUserAgent)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("query latest page: %w", err)
+	}
+	defer resp.Body.Close()
+	final := resp.Request.URL
+	if loc := resp.Header.Get("Location"); loc != "" && (resp.StatusCode == http.StatusFound ||
+		resp.StatusCode == http.StatusMovedPermanently || resp.StatusCode == http.StatusTemporaryRedirect ||
+		resp.StatusCode == http.StatusPermanentRedirect) {
+		if u, perr := resp.Request.URL.Parse(loc); perr == nil {
+			final = u
+		}
+	}
+	tag, ok := tagFromURL(final)
+	if !ok {
+		return nil, fmt.Errorf("latest page did not redirect to a release tag (%s)", resp.Status)
+	}
+	return conventionalRelease(tag), nil
+}
+
+func tagFromURL(u *url.URL) (string, bool) {
+	if u == nil {
+		return "", false
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	for i := 0; i+1 < len(parts); i++ {
+		if parts[i] == "releases" && parts[i+1] == "tag" && i+2 < len(parts) && parts[i+2] != "" {
+			return parts[i+2], true
+		}
+	}
+	return "", false
+}
+
+func conventionalRelease(tag string) *ghRelease {
+	base := "https://github.com/" + githubRepo + "/releases/download/" + tag + "/"
+	rel := &ghRelease{TagName: tag}
+	add := func(name string) {
+		rel.Assets = append(rel.Assets, struct {
+			Name               string `json:"name"`
+			BrowserDownloadURL string `json:"browser_download_url"`
+		}{Name: name, BrowserDownloadURL: base + name})
+	}
+	add("checksums.txt")
+	for _, goos := range []string{"darwin", "linux"} {
+		for _, arch := range []string{"amd64", "arm64"} {
+			add("odek-" + goos + "-" + arch)
+		}
+	}
+	return rel
+}
+
+func applyGitHubHeaders(req *http.Request) {
+	req.Header.Set("User-Agent", githubUserAgent)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", githubAPIVer)
+	if tok := githubToken(); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+}
+
+func githubToken() string {
+	if t := os.Getenv("GITHUB_TOKEN"); t != "" {
+		return t
+	}
+	return os.Getenv("GH_TOKEN")
+}
+
+type githubStatusError struct {
+	code   int
+	status string
+}
+
+func (e *githubStatusError) Error() string {
+	if e.code == http.StatusUnauthorized || e.code == http.StatusForbidden || e.code == http.StatusTooManyRequests {
+		return fmt.Sprintf("GitHub API returned %s (rate limit or anonymous block — set GITHUB_TOKEN)", e.status)
+	}
+	return fmt.Sprintf("GitHub API returned %s", e.status)
+}
+
+func statusRetryable(err error) bool {
+	var se *githubStatusError
+	if !errors.As(err, &se) {
+		return false
+	}
+	return se.code == http.StatusUnauthorized || se.code == http.StatusForbidden || se.code == http.StatusTooManyRequests
 }
 
 // parseChecksums parses a checksums.txt body ("<sha256>  <name>" per line)
