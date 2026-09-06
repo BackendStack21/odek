@@ -441,6 +441,11 @@ func sendTelegramResult(ctx context.Context, bot *telegram.Bot, chatID int64, re
 // skip starting its scheduler.
 var scheduleUnlockRef func()
 
+// scheduleStopRef stops the embedded scheduler's run loop. Wired at bot
+// startup so the graceful-restart failure path can halt scheduling when it
+// cannot re-acquire the schedule lock (halting beats double-firing).
+var scheduleStopRef func()
+
 // mcpCleanupRef holds the embedded scheduler's MCP-connection cleanup so the
 // graceful-restart path can run it before os.Exit(0). os.Exit skips deferred
 // functions, so without this the MCP child processes (e.g. Playwright/Chromium)

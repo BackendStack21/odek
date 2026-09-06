@@ -990,6 +990,7 @@ func telegramCmd(args []string) error {
 	// the lock, this defers to it instead of double-firing.
 	stopScheduler := startSchedulerForBot(ctx, bot, resolved, systemMessage, handlerLog, scheduleStore, sessionManager)
 	defer stopScheduler()
+	scheduleStopRef = stopScheduler // reachable from the restart failure path
 	defer shutdownAllBGRuntimes()
 
 	// 16c. Start the storage-maintenance janitor (expired sessions, audit
@@ -1250,9 +1251,23 @@ func gracefulRestart(bot *telegram.Bot) {
 	// (the child's acquisition aggressively takes over stale holders).
 	if scheduleUnlockRef != nil {
 		scheduleUnlockRef()
+		scheduleUnlockRef = nil // consumed: no double-release on any later path
 	}
 	if err := spawnChild(); err != nil {
 		fmt.Fprintf(os.Stderr, "odek telegram: spawn failed: %v\n", err)
+		// The schedule lock was already released for the child, but this
+		// parent keeps running its embedded scheduler — re-acquire so a
+		// fresh `odek schedule` daemon cannot double-fire the same jobs.
+		// If re-acquisition fails (another daemon took the lock), stop this
+		// scheduler instead: losing scheduling here beats double-firing.
+		if rel, lerr := acquireScheduleLock(); lerr == nil {
+			scheduleUnlockRef = rel
+		} else {
+			fmt.Fprintf(os.Stderr, "odek telegram: schedule lock re-acquire failed (%v); stopping embedded scheduler to avoid double-fire\n", lerr)
+			if scheduleStopRef != nil {
+				scheduleStopRef()
+			}
+		}
 		restartInProgress.Store(false) // allow new tasks to start
 		return
 	}

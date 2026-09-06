@@ -397,6 +397,11 @@ type Engine struct {
 	TotalInputTokens  int
 	TotalOutputTokens int
 
+	// externalChargeMu serializes ChargeExternalUsage: parallel delegate_tasks
+	// goroutines charge child spend concurrently (the loop goroutine is
+	// blocked during the batch, so tool-vs-tool is the only race).
+	externalChargeMu sync.Mutex
+
 	// Cache metrics accumulated across all iterations.
 	TotalCacheCreationTokens int  // Anthropic: tokens written to cache
 	TotalCacheReadTokens     int  // Anthropic: tokens read from cache

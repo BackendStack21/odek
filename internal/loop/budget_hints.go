@@ -71,6 +71,8 @@ func (e *Engine) ChargeExternalUsage(tokens int64) {
 	if e == nil || tokens <= 0 {
 		return
 	}
+	e.externalChargeMu.Lock()
+	defer e.externalChargeMu.Unlock()
 	e.TotalInputTokens += int(tokens)
 }
 

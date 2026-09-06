@@ -727,17 +727,19 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 			skipped = append(skipped, fmt.Sprintf("%s: %v", path, err))
 			return nil
 		}
+		// Per-invocation close: defers inside a Walk callback run when the
+		// CALLBACK returns, so every path below (binary skip, seek error,
+		// normal scan completion) releases the fd — no stacking across files.
+		defer f.Close()
 
 		sample := make([]byte, 512)
 		n, _ := f.Read(sample)
 		if isBinary(sample[:n]) {
-			f.Close()
 			return nil
 		}
 
 		// Seek back to start for content search
 		if _, err := f.Seek(0, 0); err != nil {
-			f.Close()
 			return nil
 		}
 
