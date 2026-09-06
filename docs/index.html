@@ -1,11 +1,12 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#0a0d12">
-  <title>odek · ~12 MB, zero-framework Go agent runtime</title>
-  <meta name="description" content="The fastest, minimal Go autonomous agent runtime: ~12 MB static binary, zero frameworks. GLM 5.3 Flash (z.ai) setup guide — ReAct, MCP, sandbox.">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#030304">
+  <meta name="color-scheme" content="dark">
+  <title>odek · ~11 MB Go agent runtime</title>
+  <meta name="description" content="Install odek — a ~11 MB static Go agent binary. Provider-agnostic (DeepSeek, OpenAI, Anthropic, Gemini, z.ai, Kimi, or any OpenAI-compatible endpoint). Zero frameworks.">
   <link rel="canonical" href="https://odek.21no.de/">
   <link rel="robots" href="/robots.txt">
   <link rel="sitemap" href="/sitemap.xml">
@@ -13,539 +14,44 @@
   <meta property="og:site_name" content="odek">
   <meta property="og:locale" content="en_US">
   <meta property="og:url" content="https://odek.21no.de/">
-  <meta property="og:title" content="odek — Go Autonomous Agent Runtime">
-  <meta property="og:description" content="The fastest, minimal Go autonomous agent runtime. ~12 MB static binary, zero frameworks. Getting-started guide covers GLM 5.3 Flash (z.ai) and the bodek TUI.">
+  <meta property="og:title" content="odek — ~11 MB Go agent runtime">
+  <meta property="og:description" content="Verified install, a provider key, then odek run. DeepSeek, OpenAI, Anthropic, Gemini, z.ai, Kimi, or any OpenAI-compatible endpoint.">
   <meta property="og:image" content="https://odek.21no.de/og-image.png">
   <meta property="og:image:secure_url" content="https://odek.21no.de/og-image.png">
   <meta property="og:image:type" content="image/png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="odek — ~12 MB static binary, zero-framework Go autonomous agent runtime">
+  <meta property="og:image:alt" content="odek — ~11 MB static binary, zero-framework Go autonomous agent runtime">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="odek — Go Autonomous Agent Runtime">
-  <meta name="twitter:description" content="The fastest, minimal Go autonomous agent runtime. ~12 MB static binary, zero frameworks. GLM 5.3 Flash (z.ai) setup guide inside.">
+  <meta name="twitter:title" content="odek — ~11 MB Go agent runtime">
+  <meta name="twitter:description" content="Verified install, a provider key, then odek run. DeepSeek, OpenAI, Anthropic, Gemini, z.ai, Kimi, or any OpenAI-compatible endpoint.">
   <meta name="twitter:image" content="https://odek.21no.de/og-image.png">
-  <meta name="twitter:image:alt" content="odek — ~12 MB static binary, zero-framework Go autonomous agent runtime">
-  <meta name="keywords" content="Go, autonomous agent, AI agent, LLM, ReAct, MCP, parallel execution, interaction modes, Telegram bot, Docker sandbox, CLI, open-source, getting started, GLM 5.3 Flash, z.ai, GLM Coding Plan, bodek TUI">
+  <meta name="twitter:image:alt" content="odek — ~11 MB static binary, zero-framework Go autonomous agent runtime">
+  <meta name="keywords" content="odek, Go, autonomous agent, ReAct, GLM 5.3 Flash, z.ai, MCP, Docker sandbox, bodek">
   <meta name="robots" content="index, follow">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://assets.21no.de; font-src https://assets.21no.de; img-src 'self' https://21no.de; connect-src 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="icon" type="image/png" href="https://21no.de/logo-v2.png">
-  <link rel="apple-touch-icon" href="https://21no.de/logo-v2.png">
-  <link rel="preconnect" href="https://assets.21no.de" crossorigin>
-  <link rel="dns-prefetch" href="https://assets.21no.de">
-  <link rel="stylesheet" href="https://assets.21no.de/fonts/fonts.css">
-  <link rel="stylesheet" href="https://assets.21no.de/css/tokens.css">
-  <style>
-    /* ── Design tokens — mirror https://assets.21no.de/css/tokens.css so the
-          page keeps its palette even if the shared stylesheet fails to load ── */
-    :root {
-      --bg-primary: #050507;
-      --bg-secondary: #09090b;
-      --bg-card: #11141c;
-      --bg-code: #0d0d10;
-      --border-subtle: rgba(148, 163, 184, 0.12);
-      --border-card: rgba(148, 163, 184, 0.18);
-      --text-primary: #fafafa;
-      --text-secondary: #9f9fa9;
-      --text-tertiary: #6b6b75;
-      --accent: #22d3ee;
-      --accent-hover: #67e8f9;
-      --accent-glow: rgba(34, 211, 238, 0.12);
-      --accent-subtle: rgba(34, 211, 238, 0.08);
-      --green: #4ade80;
-      --green-subtle: rgba(74, 222, 128, 0.1);
-      --yellow: #f5d90a;
-      --purple: #8b5cf6;
-      --purple-subtle: rgba(139, 92, 246, 0.1);
-      --radius-sm: 6px;
-      --radius-md: 8px;
-      --radius-lg: 12px;
-      --font-sans: 'Space Grotesk', system-ui, -apple-system, sans-serif;
-      --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
-      --shadow-card: 0 14px 34px -16px rgba(0, 0, 0, .55);
-      --shadow-term: 0 28px 64px -28px rgba(0, 0, 0, .8);
-    }
-
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    html { scroll-padding-top: 64px; }
-    @media (prefers-reduced-motion: no-preference) {
-      html { scroll-behavior: smooth; }
-    }
-    body {
-      background: var(--bg-primary);
-      color: var(--text-primary);
-      font-family: var(--font-sans);
-      line-height: 1.65;
-      -webkit-font-smoothing: antialiased;
-      text-rendering: optimizeLegibility;
-    }
-    ::selection { background: rgba(34, 211, 238, .28); color: #fff; }
-    .container { max-width: 960px; margin: 0 auto; padding: 0 24px; }
-
-    a, button { -webkit-tap-highlight-color: transparent; }
-    a:focus-visible, button:focus-visible {
-      outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--radius-sm);
-    }
-
-    /* ── Scroll reveal (JS-gated: content stays visible without JS) ── */
-    html.js .reveal { opacity: 0; transform: translateY(18px); }
-    html.js .reveal.visible {
-      opacity: 1; transform: none;
-      transition: opacity .55s ease var(--reveal-delay, 0ms), transform .55s ease var(--reveal-delay, 0ms);
-    }
-
-    /* ── Nav ── */
-    nav {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 18px 24px; max-width: 1008px; margin: 0 auto;
-    }
-    nav .logo { font-weight: 700; font-size: 1.25rem; color: var(--accent); letter-spacing: -.02em; }
-    nav .logo span { color: var(--text-secondary); font-weight: 400; }
-    nav a { color: var(--text-secondary); text-decoration: none; font-size: 0.875rem; transition: color .2s ease; margin-left: 24px; }
-    nav a:hover { color: var(--text-primary); }
-
-    /* ── Hero ── */
-    .hero {
-      text-align: center; padding: 96px 0 72px; position: relative;
-      background:
-        radial-gradient(ellipse 55% 45% at 50% -8%, rgba(34, 211, 238, .14) 0%, transparent 65%),
-        radial-gradient(ellipse 38% 42% at 88% 18%, rgba(139, 92, 246, .07) 0%, transparent 70%),
-        radial-gradient(ellipse 38% 42% at 12% 22%, rgba(34, 211, 238, .05) 0%, transparent 70%);
-    }
-    .hero h1 {
-      font-size: clamp(3rem, 8vw, 4.5rem); font-weight: 800; letter-spacing: -.035em; line-height: 1.05;
-      background: linear-gradient(135deg, var(--accent) 10%, var(--purple) 55%, var(--accent) 100%);
-      background-size: 220% 220%;
-      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-      background-clip: text;
-    }
-    @media (prefers-reduced-motion: no-preference) {
-      .hero h1 { animation: hero-sheen 9s ease-in-out infinite alternate; }
-    }
-    @keyframes hero-sheen {
-      from { background-position: 0% 40%; }
-      to { background-position: 100% 60%; }
-    }
-    .hero .sub {
-      font-size: 1.1875rem; color: var(--text-secondary); margin-top: 18px; max-width: 620px; margin-inline: auto;
-    }
-    .hero .sub .size { color: var(--green); font-weight: 600; }
-    .install-block {
-      display: inline-flex; align-items: center; padding: 5px 5px 5px 22px;
-      background: var(--bg-card); border: 1px solid var(--border-card); border-radius: 14px;
-      font-family: var(--font-mono); font-size: 0.875rem;
-      position: relative; box-shadow: var(--shadow-card);
-      transition: border-color .25s ease, box-shadow .25s ease;
-      max-width: 100%;
-    }
-    .install-block code { overflow-wrap: anywhere; text-align: left; min-width: 0; }
-    .install-block .copy-btn, .install-block .btn { flex-shrink: 0; }
-    .install-block:hover {
-      border-color: rgba(34, 211, 238, .35);
-      box-shadow: 0 14px 38px -16px rgba(34, 211, 238, .2);
-    }
-    .install-block code { color: var(--green); }
-    .btn {
-      background: var(--accent); color: #000; border: none;
-      padding: 10px 20px; border-radius: 9px; font-weight: 600; font-size: 0.8125rem;
-      cursor: pointer; transition: background .2s ease, transform .2s ease; text-decoration: none;
-      white-space: nowrap;
-    }
-    .btn:hover { background: var(--accent-hover); transform: translateY(-1px); text-decoration: none; }
-    .install-block .btn { margin-left: 14px; }
-    .cta-block { margin-top: 0; }
-
-    /* ── Section nav (sticky) ── */
-    .section-nav {
-      position: sticky; top: 0; z-index: 20;
-      display: flex; justify-content: center; gap: 4px; flex-wrap: wrap;
-      padding: 10px 16px;
-      background: rgba(5, 5, 7, .82);
-      background: color-mix(in srgb, var(--bg-primary) 82%, transparent);
-      backdrop-filter: blur(12px) saturate(1.3); -webkit-backdrop-filter: blur(12px) saturate(1.3);
-      border-bottom: 1px solid var(--border-subtle);
-    }
-    @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-      .section-nav { background: rgba(5, 5, 7, .97); }
-    }
-    .section-nav a {
-      color: var(--text-secondary); font-size: 0.75rem; padding: 5px 12px;
-      border-radius: 999px; text-decoration: none;
-      transition: color .2s ease, background .2s ease;
-    }
-    .section-nav a:hover { color: var(--accent); background: var(--accent-subtle); }
-    .section-nav a.active { color: var(--accent); background: var(--accent-glow); }
-
-    /* ── "New" badge ── */
-    .badge-new {
-      display: inline-block; background: var(--green); color: #000;
-      font-size: 0.625rem; font-weight: 700; padding: 2px 7px; border-radius: 4px;
-      margin-left: 8px; vertical-align: middle; letter-spacing: .04em;
-      box-shadow: 0 0 10px var(--green-subtle);
-    }
-
-    /* ── Copy button ── */
-    .copy-btn {
-      background: transparent; border: 1px solid var(--border-subtle); color: var(--text-secondary);
-      padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 0.75rem;
-      font-family: var(--font-sans); transition: color .2s ease, border-color .2s ease, background .2s ease; margin-left: 12px;
-      white-space: nowrap; line-height: 1;
-    }
-    .copy-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-subtle); }
-    .copy-btn.copied { border-color: var(--green); color: var(--green); background: var(--green-subtle); }
-    .copy-btn.ok { border-color: var(--green); color: var(--green); }
-
-    /* ── Sections ── */
-    section { padding: 72px 0; }
-    section + section { border-top: 1px solid var(--border-subtle); }
-    h2 {
-      font-size: clamp(1.5rem, 2.6vw, 1.875rem); font-weight: 700; margin-bottom: 24px;
-      letter-spacing: -.02em;
-    }
-    h2 .hl { color: var(--accent); }
-    h2 .h-anchor {
-      opacity: 0; margin-left: 10px; font-size: .65em; font-weight: 500;
-      color: var(--text-tertiary); text-decoration: none; vertical-align: middle;
-      transition: opacity .2s ease, color .2s ease;
-    }
-    h2:hover .h-anchor, h2 .h-anchor:focus-visible { opacity: 1; }
-    h2 .h-anchor:hover { color: var(--accent); }
-    h3 {
-      font-size: 1.125rem; font-weight: 600; margin-bottom: 8px; margin-top: 28px;
-    }
-    p, li { color: var(--text-secondary); font-size: 0.9375rem; }
-    a { color: var(--accent); text-decoration: none; }
-    a:hover { text-decoration: underline; }
-
-    /* ── Five Whys ── */
-    .whys { list-style: none; }
-    .whys li {
-      padding: 20px 0; border-bottom: 1px solid var(--border-subtle);
-      display: flex; gap: 16px; align-items: flex-start;
-    }
-    .whys li:last-child { border-bottom: none; }
-    .whys li .q { font-weight: 700; color: var(--accent); min-width: 60px; font-size: 1rem; }
-    .whys li .a { color: var(--text-secondary); }
-    .whys li .a strong { color: var(--text-primary); }
-
-    /* ── Feature grid ── */
-    .features { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-    .features .card {
-      background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: 14px;
-      padding: 24px;
-      transition: transform .25s ease, border-color .25s ease, box-shadow .25s ease;
-    }
-    .features .card:hover {
-      transform: translateY(-3px);
-      border-color: rgba(34, 211, 238, .3);
-      box-shadow: 0 16px 36px -18px rgba(34, 211, 238, .14), var(--shadow-card);
-    }
-    .features .card .icon { font-size: 1.5rem; margin-bottom: 8px; }
-    .features .card h4 { font-size: 1rem; font-weight: 600; margin-bottom: 6px; }
-    .features .card p { font-size: 0.8125rem; line-height: 1.55; }
-
-    /* ── Terminal carousel ── */
-    .carousel {
-      background: #0b0b10; border: 1px solid var(--border-card); border-radius: 14px;
-      overflow: hidden; margin: 20px 0; box-shadow: var(--shadow-term);
-    }
-    .carousel .bar {
-      display: flex; align-items: center; gap: 8px;
-      padding: 10px 16px; background: linear-gradient(180deg, #14161d, var(--bg-secondary));
-      border-bottom: 1px solid var(--border-subtle);
-    }
-    .carousel .bar .dot { width: 10px; height: 10px; border-radius: 50%; }
-    .carousel .bar .dot:nth-child(1) { background: #ff5f56; }
-    .carousel .bar .dot:nth-child(2) { background: #ffbd2e; }
-    .carousel .bar .dot:nth-child(3) { background: #27c93f; }
-    .carousel .bar .label {
-      margin-left: auto; font-size: 0.75rem; color: var(--text-secondary);
-      font-family: var(--font-mono);
-    }
-    .carousel .slides {
-      position: relative; min-height: 280px;
-    }
-    .carousel .slide {
-      position: absolute; inset: 0; padding: 20px 24px;
-      opacity: 0; transition: opacity .6s ease;
-      font-family: var(--font-mono); font-size: 0.8125rem;
-      line-height: 1.7; overflow-y: auto;
-      pointer-events: none;
-      scrollbar-width: thin; scrollbar-color: rgba(148, 163, 184, .25) transparent;
-    }
-    .carousel .slide::-webkit-scrollbar { width: 8px; }
-    .carousel .slide::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, .2); border-radius: 4px; }
-    .carousel .slide.active { opacity: 1; position: relative; pointer-events: auto; }
-    .carousel .slide .prompt { color: var(--green); }
-    .carousel .slide .output { color: var(--text-secondary); }
-    .carousel .slide .info { color: #6b7280; font-style: italic; }
-    .carousel .nav {
-      display: flex; justify-content: center; gap: 8px;
-      padding: 10px 0 16px;
-    }
-    .carousel .nav button {
-      background: var(--bg-card); border: 1px solid var(--border-subtle); color: var(--text-secondary);
-      width: 30px; height: 30px; border-radius: 50%; cursor: pointer;
-      font-size: 0.75rem; font-family: var(--font-mono);
-      transition: color .2s ease, border-color .2s ease, background .2s ease, box-shadow .2s ease, transform .2s ease;
-    }
-    .carousel .nav button:hover { border-color: var(--accent); color: var(--accent); transform: translateY(-1px); }
-    .carousel .nav button.active {
-      background: var(--accent); color: #000; border-color: var(--accent);
-      box-shadow: 0 0 0 4px var(--accent-glow);
-    }
-    /* Hero carousel — terminal content is left-aligned even inside the centered hero */
-    .hero-h2 { margin: 48px 0 0; }
-    .hero-carousel { max-width: 680px; margin: 24px auto 0; text-align: left; }
-    .carousel .slide-img { text-align: left; padding: 12px 16px; }
-    .carousel .slide-img img {
-      display: block; margin: 12px auto 10px; max-width: 100%; max-height: 440px;
-      border-radius: 10px; border: 1px solid var(--border-subtle);
-    }
-    .carousel .slide .cap {
-      display: block; color: var(--text-secondary); font-style: normal;
-      font-family: var(--font-sans); font-size: 0.8125rem; line-height: 1.5;
-    }
-    .carousel .slide .cap strong { color: var(--text-primary); }
-    /* Long slides — cap height and scroll inside the terminal */
-    .carousel .slide-scroll { max-height: 440px; }
-
-    /* ── Telegram chat mockup (final hero slide) ── */
-    .tg-wrap { display: flex; width: 100%; padding: 4px 0; }
-    .tg-phone {
-      width: 100%; background: #0e1621; border-radius: 14px;
-      border: 1px solid #1e3448; overflow: hidden;
-      font-family: var(--font-sans); font-size: 0.8rem;
-      display: flex; flex-direction: column;
-    }
-    .tg-hdr {
-      background: #17212b; padding: 9px 14px; display: flex; align-items: center;
-      gap: 10px; border-bottom: 1px solid #0a1929; flex-shrink: 0;
-    }
-    .tg-av {
-      width: 34px; height: 34px; border-radius: 50%; background: #2b5f7e;
-      display: flex; align-items: center; justify-content: center;
-      font-weight: 700; color: #fff; font-size: 0.875rem; flex-shrink: 0;
-    }
-    .tg-hdr-info .tg-bot-name { color: #fff; font-weight: 600; font-size: 0.85rem; }
-    .tg-hdr-info .tg-bot-sub  { color: #8ba9c1; font-size: 0.7rem; }
-    .tg-msgs {
-      flex: 1; overflow-y: auto; padding: 10px 10px 6px;
-      display: flex; flex-direction: column; gap: 5px;
-    }
-    .tg-msg { display: flex; flex-direction: column; max-width: 84%; }
-    .tg-msg.tg-out { align-self: flex-end; align-items: flex-end; }
-    .tg-msg.tg-in  { align-self: flex-start; }
-    .tg-sender { color: #71bafa; font-size: 0.7rem; font-weight: 600; margin-bottom: 2px; padding-left: 2px; }
-    .tg-bbl {
-      padding: 7px 10px; border-radius: 12px; line-height: 1.45; color: #d8e1ea;
-    }
-    .tg-out .tg-bbl { background: #2b5278; border-radius: 12px 12px 4px 12px; }
-    .tg-in  .tg-bbl { background: #182533; border-radius: 12px 12px 12px 4px; }
-    .tg-reply {
-      background: rgba(255,255,255,.06); border-left: 3px solid #71bafa;
-      border-radius: 4px; padding: 3px 7px; margin-bottom: 5px;
-      font-size: 0.68rem; color: #8ba9c1;
-    }
-    .tg-time { font-size: 0.62rem; color: #526a7d; margin-top: 2px; padding: 0 2px; }
-    .tg-code {
-      background: rgba(0,0,0,.35); border-radius: 6px; padding: 5px 8px;
-      font-family: var(--font-mono); font-size: 0.67rem; color: #a8c7fa;
-      margin-top: 4px; white-space: pre-wrap; word-break: break-all; line-height: 1.5;
-    }
-
-    /* ── Install steps ── */
-    .steps { list-style: none; }
-    .steps li {
-      padding: 16px 0; border-bottom: 1px solid var(--border-subtle);
-      display: flex; gap: 16px;
-    }
-    .steps li:last-child { border-bottom: none; }
-    .steps li .n {
-      background: var(--accent); color: #000; width: 28px; height: 28px;
-      border-radius: 50%; display: flex; align-items: center; justify-content: center;
-      font-weight: 700; font-size: 0.8125rem; flex-shrink: 0; margin-top: 2px;
-      box-shadow: 0 0 0 4px var(--accent-glow);
-    }
-    .steps li code {
-      background: var(--bg-card); padding: 2px 8px; border-radius: 4px;
-      font-family: var(--font-mono); font-size: 0.8125rem;
-    }
-
-    /* ── Code blocks ── */
-    pre {
-      background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 12px;
-      padding: 20px; overflow-x: auto; font-size: 0.8125rem; margin: 16px 0;
-      position: relative; box-shadow: var(--shadow-card);
-    }
-    pre code { font-family: var(--font-mono); color: var(--text-primary); }
-    pre .clip {
-      position: absolute; top: 12px; right: 12px;
-      background: var(--bg-secondary); border: 1px solid var(--border-subtle); color: var(--text-secondary);
-      padding: 4px 10px; border-radius: 5px; cursor: pointer; font-size: 0.6875rem;
-      font-family: var(--font-sans);
-      transition: color .2s ease, border-color .2s ease, background .2s ease;
-    }
-    pre .clip:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-subtle); }
-    pre .clip.copied { border-color: var(--green); color: var(--green); background: var(--green-subtle); }
-    .hljs-comment { color: #6b7280; }
-    .hljs-string { color: var(--green); }
-    .hljs-keyword { color: var(--accent); }
-    .hljs-number { color: var(--yellow); }
-
-    /* ── Platform tags ── */
-    .platform-tags {
-      display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px;
-    }
-    .platform-tags .tag {
-      background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 6px;
-      padding: 6px 12px; font-size: 0.75rem; font-family: var(--font-mono);
-      color: var(--text-secondary);
-    }
-    .platform-tags .tag .ok { color: var(--green); }
-
-    /* ── Table comparison ── */
-    .compare { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
-    .compare th, .compare td {
-      text-align: left; padding: 12px 16px; border-bottom: 1px solid var(--border-subtle);
-    }
-    .compare th {
-      color: var(--text-tertiary); font-weight: 600; font-size: 0.75rem;
-      text-transform: uppercase; letter-spacing: .06em;
-    }
-    .compare tbody tr { transition: background .15s ease; }
-    .compare tbody tr:hover { background: var(--accent-subtle); }
-    .compare td:first-child { font-weight: 500; color: var(--text-primary); }
-    .compare .win { color: var(--green); font-weight: 600; }
-
-    /* ── Command list ── */
-    .cmd-list { list-style: none; }
-    .cmd-list li {
-      padding: 10px 8px; display: flex; gap: 16px;
-      border-bottom: 1px solid var(--border-subtle); font-family: var(--font-mono); font-size: 0.8125rem;
-      transition: background .15s ease;
-    }
-    .cmd-list li:hover { background: rgba(148, 163, 184, .05); }
-    .cmd-list li:last-child { border-bottom: none; }
-    .cmd-list li .cmd { color: var(--green); white-space: nowrap; min-width: 220px; }
-    .cmd-list li .desc { color: var(--text-secondary); }
-
-    /* ── Doc links ── */
-    .doc-links { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
-    .doc-links a {
-      background: var(--bg-secondary); border: 1px solid var(--border-subtle); border-radius: 10px;
-      padding: 14px 16px; font-size: 0.8125rem; font-weight: 500;
-      transition: border-color .2s ease, transform .2s ease, box-shadow .2s ease;
-    }
-    .doc-links a:hover {
-      border-color: rgba(34, 211, 238, .4); text-decoration: none;
-      transform: translateY(-2px); box-shadow: var(--shadow-card);
-    }
-    .doc-links a span { display: block; font-weight: 400; color: var(--text-secondary); font-size: 0.75rem; margin-top: 2px; }
-
-    /* ── Footer ── */
-    footer {
-      border-top: 1px solid var(--border-subtle); padding: 32px 0; text-align: center;
-      color: var(--text-secondary); font-size: 0.8125rem;
-    }
-    footer a { color: var(--accent); }
-
-    /* ── Back to top ── */
-    .to-top {
-      position: fixed; right: 24px; bottom: 24px; z-index: 30;
-      width: 44px; height: 44px; border-radius: 50%;
-      background: var(--bg-card); border: 1px solid var(--border-card); color: var(--accent);
-      font-size: 1.125rem; line-height: 1; cursor: pointer;
-      opacity: 0; transform: translateY(12px); pointer-events: none;
-      box-shadow: var(--shadow-card);
-      transition: opacity .3s ease, transform .3s ease, border-color .2s ease, background .2s ease;
-    }
-    .to-top.show { opacity: 1; transform: none; pointer-events: auto; }
-    .to-top:hover { border-color: var(--accent); background: var(--accent-subtle); }
-
-    /* ── Reduced motion: no reveal, no slide fade, minimal transitions ── */
-    @media (prefers-reduced-motion: reduce) {
-      html.js .reveal, html.js .reveal.visible {
-        opacity: 1 !important; transform: none !important; transition: none !important;
-      }
-      .carousel .slide { transition: none; }
-      .to-top { transition: opacity .2s ease; }
-    }
-
-    @media (max-width: 700px) {
-      .hero { padding: 64px 0 48px; }
-      .hero h1 { font-size: 2rem; }
-      .hero .sub { font-size: 1rem; }
-      .install-block {
-        flex-direction: column; padding: 16px; gap: 12px; width: 100%;
-        font-size: 0.75rem; overflow: hidden;
-      }
-      .install-block code { overflow-wrap: anywhere; }
-      .install-block .btn { margin-left: 0; width: 100%; text-align: center; }
-      nav { flex-wrap: wrap; gap: 8px; justify-content: center; }
-      nav div { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px; }
-      nav a { margin-left: 0; font-size: 0.8125rem; padding: 4px 8px; }
-      h2 { font-size: 1.4rem; }
-      .features { grid-template-columns: 1fr; }
-      .doc-links { grid-template-columns: 1fr; }
-      .carousel .slides { min-height: 360px; }
-      .carousel .slide { font-size: 0.6875rem; padding: 12px; line-height: 1.6; }
-      .carousel .bar .label { font-size: 0.65rem; }
-      .whys li { flex-direction: column; gap: 4px; }
-      .whys li .q { min-width: 0; }
-      .cmd-list li { flex-direction: column; gap: 2px; }
-      .cmd-list li .cmd { min-width: 0; white-space: normal; word-break: break-all; }
-      .steps li { flex-direction: column; gap: 8px; }
-      .steps li .n { align-self: flex-start; }
-      pre { padding: 14px; font-size: 0.75rem; }
-      pre .clip { top: 8px; right: 8px; font-size: 0.625rem; padding: 3px 8px; }
-      .compare { font-size: 0.75rem; }
-      .compare th, .compare td { padding: 8px 10px; }
-      .container { padding: 0 16px; }
-      section { padding: 40px 0; }
-      .to-top { right: 16px; bottom: 16px; width: 40px; height: 40px; }
-    }
-  </style>
-<script type="application/ld+json">
+  <link rel="apple-touch-icon" href="/favicon.svg">
+  <link rel="preload" href="/fonts/azeret-mono.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/ember.css">
+  <script type="application/ld+json">
 {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
   "name": "odek",
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "Linux, macOS",
-  "description": "The fastest, minimal Go autonomous agent runtime. ~12 MB static binary, zero frameworks. ReAct agent with parallel tool execution, persistent memory, MCP, sandbox, Web UI, and Telegram bot.",
+  "description": "A ~11 MB static Go binary that runs an autonomous ReAct agent loop. Zero frameworks. Provider-agnostic. Sandbox on by default.",
   "url": "https://odek.21no.de",
-  "downloadUrl": "https://github.com/BackendStack21/odek",
-  "softwareVersion": "1.27.0",
+  "downloadUrl": "https://github.com/BackendStack21/odek/releases",
   "license": "https://github.com/BackendStack21/odek/blob/main/LICENSE",
   "image": "https://odek.21no.de/og-image.png",
-  "screenshot": "https://odek.21no.de/og-image.png",
   "sameAs": ["https://github.com/BackendStack21/odek"],
-  "offers": {
-    "@type": "Offer",
-    "price": "0",
-    "priceCurrency": "USD"
-  },
-  "featureList": [
-    "ReAct agent loop",
-    "Parallel tool execution",
-    "Persistent three-tier memory",
-    "MCP server and client",
-    "Docker sandbox (on by default)",
-    "Structured task planning (plan tool)",
-    "Web UI",
-    "Telegram bot",
-    "Provider-agnostic (any OpenAI-compatible endpoint)"
-  ],
-  "author": {
-    "@type": "Organization",
-    "name": "21no.de",
-    "url": "https://21no.de"
-  }
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "author": { "@type": "Organization", "name": "21no.de", "url": "https://21no.de" }
 }
-</script>
-<script type="application/ld+json">
+  </script>
+  <script type="application/ld+json">
 {
   "@context": "https://schema.org",
   "@type": "FAQPage",
@@ -555,7 +61,7 @@
       "name": "What is odek?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "odek is a ~12 MB static Go binary that runs an autonomous ReAct agent loop. It is provider-agnostic and ships parallel tool execution, persistent memory, an MCP server and client, a Docker sandbox, a Web UI, and a Telegram bot — with no frameworks and no Python venv."
+        "text": "odek is a ~11 MB static Go binary that runs an autonomous ReAct agent loop. It is provider-agnostic and ships parallel tool execution, persistent memory, an MCP server and client, a Docker sandbox (on by default), a Web UI, and a Telegram bot — with no frameworks and no Python venv."
       }
     },
     {
@@ -563,7 +69,7 @@
       "name": "How do I install odek?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Run the one-line binary installer: 'mkdir -p ~/.local/bin && curl -fLo ~/.local/bin/odek https://github.com/BackendStack21/odek/releases/latest/download/odek-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') && chmod +x ~/.local/bin/odek'. It auto-detects your OS and architecture, needs no sudo, and installs in seconds with no Go toolchain, Docker, venv, or npm required. Building from source with 'go install github.com/BackendStack21/odek/cmd/odek@latest' works too."
+        "text": "Download the Linux or macOS binary and checksums.txt from GitHub Releases, verify the SHA-256, then install to ~/.local/bin. Do not use go install …@latest — Go ignores v2 tags for this module path and would install an older v1 release. To build from source, clone the latest release tag and go install with -ldflags that pin that tag."
       }
     },
     {
@@ -571,7 +77,7 @@
       "name": "Which LLM providers does odek support?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Any OpenAI-compatible endpoint: DeepSeek, OpenAI, Anthropic, Ollama, vLLM, Groq, Together, and Fireworks. odek is provider-agnostic, so you are not locked into a single vendor."
+        "text": "Built-in ids: deepseek (engine default), openai, anthropic, gemini, zai, kimi, plus any OpenAI-compatible endpoint. The documented getting-started path is z.ai with model glm-5.3-flash and ZAI_API_KEY."
       }
     },
     {
@@ -579,7 +85,7 @@
       "name": "Can odek run as a Telegram bot?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Yes. 'odek telegram' runs the same agent over a Telegram bot using outbound long-polling, so it needs no open ports and works behind NAT. It supports per-chat sessions and inline Approve / Deny / Trust keyboards for risky commands."
+        "text": "Yes. odek telegram uses outbound long-polling (no open ports). It is fail-closed unless ALLOWED_CHATS or ALLOWED_USERS is set. Risky commands prompt Approve or Deny in chat; Trust Session is hidden for destructive, blocked, unknown, and tool_batch classes, and friction engages after three same-class approvals in 60 seconds."
       }
     },
     {
@@ -592,760 +98,346 @@
     }
   ]
 }
-</script>
+  </script>
 </head>
 <body>
+  <a class="skip" href="#main">Skip to content</a>
 
-<nav>
-  <div>
-    <a href="#five-whys">Why</a>
-    <a href="#features">Features</a>
-    <a href="#install">Install</a>
-    <a href="https://github.com/BackendStack21/odek/blob/main/GETTING_STARTED.md" target="_blank">Get Started</a>
-    <a href="#cheatsheet">Cheatsheet</a>
-    <a href="#docs">Docs</a>
-    <a href="#demos">Demos</a>
-    <a href="https://github.com/BackendStack21/odek" target="_blank">GitHub</a>
-  </div>
-</nav>
+  <header class="topbar">
+    <div class="wrap">
+      <a class="brand" href="#main">odek</a>
+      <nav class="nav" aria-label="Primary">
+        <a href="#install">start</a>
+        <a href="https://github.com/BackendStack21/odek/blob/main/GETTING_STARTED.md" target="_blank" rel="noopener noreferrer">guide</a>
+        <a href="https://bodek.21no.de" target="_blank" rel="noopener noreferrer">bodek</a>
+        <a href="https://github.com/BackendStack21/odek" target="_blank" rel="noopener noreferrer">github</a>
+        <a href="#next">docs</a>
+      </nav>
+    </div>
+  </header>
 
-<section class="hero">
-  <div class="container">
-    <h1>odek</h1>
-    <p class="sub"><span class="size">~12 MB</span> static binary · Zero frameworks.<br>Think, therefore act.</p>
+  <main id="main" class="wrap">
 
-    <!-- ═══ Hero carousel — zero → Telegram bot ═══ -->
-    <h2 class="hero-h2">Getting started — <span class="hl">Docker + Telegram</span></h2>
-    <div class="carousel hero-carousel">
-      <div class="bar">
-        <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-        <span class="label">odek — zero → telegram</span>
+    <header class="hero">
+      <h1>odek</h1>
+      <p class="lede">One <span class="size">~11 MB</span> Go binary: verified install, a provider key, then <code>odek run</code>.</p>
+      <p class="react-line" aria-label="ReAct loop: think, act, answer"><span class="rl-type" aria-hidden="true">think → act → answer</span><span class="stream-cursor" aria-hidden="true"></span></p>
+      <p class="prov">
+        <a href="/PROVIDERS.md">deepseek</a>
+        <a href="/PROVIDERS.md">openai</a>
+        <a href="/PROVIDERS.md">anthropic</a>
+        <a href="/PROVIDERS.md">gemini</a>
+        <a href="/PROVIDERS.md">zai</a>
+        <a href="/PROVIDERS.md">kimi</a>
+        <span class="prov-more">any OpenAI-compatible</span>
+      </p>
+      <p class="meta">macOS and Linux, amd64 and arm64. Windows: build from source with Go. Zero frameworks — no Python, no Node, no venv.</p>
+      <ol class="toc">
+        <li><a href="#install">01 install</a></li>
+        <li><a href="#configure">02 configure</a></li>
+        <li><a href="#sandbox">03 sandbox</a></li>
+        <li><a href="#run">04 first run</a></li>
+        <li><a href="#bodek">bodek</a></li>
+        <li><a href="#breaks">05 if it breaks</a></li>
+      </ol>
+    </header>
+
+    <section class="need" aria-labelledby="need-h">
+      <h2 id="need-h" class="sr-only">What you need</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Requirement</th><th>Notes</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>macOS or Linux</td>
+              <td>Prebuilt binaries, amd64 and arm64. Windows: Go from source.</td>
+            </tr>
+            <tr>
+              <td>A provider API key</td>
+              <td>
+                This walkthrough uses z.ai
+                (<a href="https://z.ai/subscribe" target="_blank" rel="noopener noreferrer">GLM Coding Plan</a>
+                or pay-as-you-go). Same binary for DeepSeek, OpenAI, Anthropic, Gemini, Kimi, or any OpenAI-compatible endpoint —
+                <a href="/PROVIDERS.md">PROVIDERS.md</a>.
+              </td>
+            </tr>
+            <tr>
+              <td>Go ≥ 1.25.13</td>
+              <td>Only if you build from source. Not needed for the prebuilt binary.</td>
+            </tr>
+            <tr>
+              <td>Docker</td>
+              <td>Optional. The sandbox is on by default — opt out in step 03.</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
-      <div class="slides">
+    </section>
 
-        <!-- Slide 1 — start from zero -->
-        <div class="slide active">
-          <span class="info"># 1 · Start from zero — grab the repo</span><br>
-          <span class="prompt">$ git clone https://github.com/BackendStack21/odek</span><br>
-          <span class="prompt">$ cd odek/docker</span><br>
-          <span class="output">The Docker Compose setup ships in docker/:</span><br>
-          <span class="output">  Dockerfile · docker-compose.yml · config.restricted.json</span><br>
-          <span class="info"># the container IS the sandbox — no --sandbox needed</span>
+    <section class="step" id="install" aria-labelledby="install-h">
+      <h2 id="install-h"><span class="mark">▸</span> <span class="n">01</span> · install</h2>
+      <p>Prebuilt binary, SHA-256 checked, then <code>~/.local/bin</code>. If <code>odek version</code> is not found, add that directory to <code>PATH</code>.</p>
+
+      <div class="code-block">
+        <div class="cb-header">
+          <span class="cb-lang">▸ bash · prebuilt</span>
+          <button type="button" class="cb-copy" data-copy>copy</button>
         </div>
+        <pre><code>OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+ASSET="odek-${OS}-${ARCH}"
+TMP=$(mktemp -d)
+curl -fsSL -o "${TMP}/${ASSET}" \
+  "https://github.com/BackendStack21/odek/releases/latest/download/${ASSET}"
+curl -fsSL -o "${TMP}/checksums.txt" \
+  "https://github.com/BackendStack21/odek/releases/latest/download/checksums.txt"
+if command -v sha256sum >/dev/null; then
+  (cd "${TMP}" && grep "  ${ASSET}$" checksums.txt | sha256sum -c -)
+else
+  (cd "${TMP}" && grep "  ${ASSET}$" checksums.txt | shasum -a 256 -c -)
+fi
+mkdir -p "${HOME}/.local/bin"
+install -m 755 "${TMP}/${ASSET}" "${HOME}/.local/bin/odek"
+rm -rf "${TMP}"
+export PATH="${HOME}/.local/bin:${PATH}"
+odek version</code></pre>
+      </div>
+      <p class="copy-hint" hidden>copied — paste in a terminal. if <code>odek: command not found</code>, add <code>~/.local/bin</code> to <code>PATH</code>.</p>
 
-        <!-- Slide 2 — model + API key -->
-        <div class="slide">
-          <span class="info"># 2 · Set provider + model + key  (.env)</span><br>
-          <span class="output">ODEK_PROVIDER=</span><span class="prompt">deepseek</span><br>
-          <span class="output">ODEK_MODEL=</span><span class="prompt">deepseek-v4-flash</span><br>
-          <span class="output">DEEPSEEK_API_KEY=</span><span class="prompt">sk-your-key-here</span><br>
-          <span class="output">ODEK_SUPPRESS_SANDBOX_WARNING=</span><span class="prompt">1</span><br>
-          <span class="info"># see docs/PROVIDERS.md for openai / anthropic / zai / …</span>
-        </div>
+      <p>Later, <code>odek upgrade</code> self-updates from GitHub Releases the same way (SHA-256 verified).</p>
 
-        <!-- Slide 3 — Telegram credentials -->
-        <div class="slide">
-          <span class="info"># 3 · Add your Telegram bot  (append to .env)</span><br>
-          <span class="info"># @BotFather → /newbot → copy the token</span><br>
-          <span class="output">ODEK_TELEGRAM_BOT_TOKEN=</span><span class="prompt">123456:ABC-your-token</span><br>
-          <span class="output">ODEK_TELEGRAM_ALLOWED_CHATS=</span><span class="prompt">11111111</span><span class="info">  # your chat id only</span><br>
-          <span class="output">ODEK_TELEGRAM_DAILY_TOKEN_BUDGET=</span><span class="prompt">2000000</span><br>
-          <span class="info"># ⚠ always allowlist your own chat — the token is a public endpoint</span>
-        </div>
-
-        <!-- Slide 4 — (optional) tune the permission policy (scrolls) -->
-        <div class="slide slide-scroll">
-          <span class="info"># 4 · (optional) Tune the policy  (config.restricted.json)  ↕ scroll</span><br>
-          <span class="prompt">$ $EDITOR config.restricted.json</span><br>
-          <br>
-          <span class="output">"dangerous": {</span><br>
-          <span class="output">&nbsp;&nbsp;"non_interactive": </span><span class="prompt">"read_only"</span><span class="output">,</span><br>
-          <span class="info"># read_only is the v1.27 default — inspection proceeds, writes/exec/egress fail closed ("deny" locks down fully)</span><br>
-          <span class="output">&nbsp;&nbsp;"classes": {</span><br>
-          <span class="output">&nbsp;&nbsp;&nbsp;&nbsp;"safe": "allow",</span><br>
-          <span class="output">&nbsp;&nbsp;&nbsp;&nbsp;"local_write": "allow",</span><br>
-          <span class="output">&nbsp;&nbsp;&nbsp;&nbsp;"install": "prompt",</span><br>
-          <span class="output">&nbsp;&nbsp;&nbsp;&nbsp;<strong>"network_egress": </strong></span><span class="prompt">"allow"</span><span class="output">,</span><span class="info">  ← fetch without a prompt each time</span><br>
-          <span class="output">&nbsp;&nbsp;&nbsp;&nbsp;"code_execution": "prompt",</span><br>
-          <span class="output">&nbsp;&nbsp;&nbsp;&nbsp;"system_write": "prompt",</span><br>
-          <span class="output">&nbsp;&nbsp;&nbsp;&nbsp;"unknown": "deny",</span><br>
-          <span class="output">&nbsp;&nbsp;&nbsp;&nbsp;"destructive": "deny",</span><br>
-          <span class="output">&nbsp;&nbsp;&nbsp;&nbsp;"blocked": "deny"</span><br>
-          <span class="output">&nbsp;&nbsp;},</span><br>
-          <span class="output">&nbsp;&nbsp;"allowlist": [],</span><br>
-          <span class="output">&nbsp;&nbsp;"denylist": ["rm -rf /"]</span><br>
-          <span class="output">}</span><br>
-          <br>
-          <span class="info"># network_egress defaults to "prompt" — every curl/wget asks for Approve in chat. Set "allow" for hands-off web access, or keep "prompt"/"deny" to gate the agent's egress. Destructive stays denied either way.</span>
-        </div>
-
-        <!-- Slide 5 — launch -->
-        <div class="slide">
-          <span class="info"># 5 · Launch the bot — outbound long-polling, no ports</span><br>
-          <span class="prompt">$ docker compose --profile telegram-restricted up --build -d</span><br>
-          <span class="output">✔ odek-telegram-restricted  started</span><br>
-          <span class="prompt">$ docker compose --profile telegram-restricted logs -f</span><br>
-          <span class="info">telegram ⚡  long-polling api.telegram.org</span><br>
-          <span class="output">✅ bot online — message it from your phone</span>
-        </div>
-
-        <!-- Slide 6 — the result -->
-        <div class="slide slide-img">
-          <span class="info"># 6 · Chat with it →</span><br>
-          <div class="tg-wrap" aria-label="Chatting with the odek Telegram bot — it replies in English and Spanish, with token stats per turn">
-            <div class="tg-phone">
-              <div class="tg-hdr">
-                <div class="tg-av">P</div>
-                <div class="tg-hdr-info">
-                  <div class="tg-bot-name">Principal</div>
-                  <div class="tg-bot-sub">bot</div>
-                </div>
-              </div>
-              <div class="tg-msgs">
-                <div class="tg-msg tg-out">
-                  <div class="tg-bbl">Hi</div>
-                  <span class="tg-time">13:10 ✓✓</span>
-                </div>
-                <div class="tg-msg tg-in">
-                  <span class="tg-sender">Principal</span>
-                  <div class="tg-bbl"><div class="tg-reply">Hi</div>🤔 Looking into that…</div>
-                  <span class="tg-time">13:10</span>
-                </div>
-                <div class="tg-msg tg-in">
-                  <span class="tg-sender">Principal</span>
-                  <div class="tg-bbl"><div class="tg-reply">Hi</div>🌐 Buenas! Me saludaron en inglés pero puedo responder en inglés o español.</div>
-                  <span class="tg-time">13:10</span>
-                </div>
-                <div class="tg-msg tg-in">
-                  <span class="tg-sender">Principal</span>
-                  <div class="tg-bbl">
-                    <div class="tg-reply">Hi</div>
-                    ¡Hola! 👋<br><br>
-                    Kyberneees — you caught me in a good mood. What's on your mind?<br><br>
-                    Got a problem to crack, a PR to review, a deploy to babysit, or just testing if I'm alive? I'm here to compress hours into minutes.<br><br>
-                    <em>(Also: I speak Spanish just as well, so tira con confianza.)</em>
-                  </div>
-                  <span class="tg-time">13:10</span>
-                </div>
-                <div class="tg-msg tg-in">
-                  <span class="tg-sender">Principal</span>
-                  <div class="tg-bbl">
-                    <div class="tg-reply">Hi</div>
-                    <div class="tg-code">✅ Done · 1 turn · 10095 in / 155 out · cache: 8143 write / 0 read / 0 total · 2s — tools: none</div>
-                  </div>
-                  <span class="tg-time">13:10</span>
-                </div>
-              </div>
-            </div>
+      <details>
+        <summary>Have Go? Install from the latest tag — never <code>go install …@latest</code></summary>
+        <p>Go ignores v2 tags for this repository’s historical v1 module path and would install an older v1 release.</p>
+        <div class="code-block">
+          <div class="cb-header">
+            <span class="cb-lang">▸ bash · source</span>
+            <button type="button" class="cb-copy" data-copy>copy</button>
           </div>
-          <span class="cap">Same agent, now in your pocket. Risky commands prompt for <strong>Approve / Deny / Trust</strong> right in the chat.</span>
+          <pre><code>TAG=$(git ls-remote --tags --sort=-v:refname \
+  https://github.com/BackendStack21/odek.git \
+  | awk '!/\^\{\}$/ {sub("refs/tags/", "", $2); print $2; exit}')
+TMP=$(mktemp -d)
+git clone --depth 1 --branch "${TAG}" \
+  https://github.com/BackendStack21/odek.git "${TMP}/odek"
+(cd "${TMP}/odek" && go install -ldflags "-X main.version=${TAG}" ./cmd/odek)
+rm -rf "${TMP}"
+export PATH="$(go env GOPATH)/bin:$PATH"
+odek version</code></pre>
         </div>
+      </details>
+    </section>
 
-      </div>
-      <div class="nav"></div>
-    </div>
-  </div>
-</section>
+    <section class="step" id="configure" aria-labelledby="configure-h">
+      <h2 id="configure-h"><span class="mark">▸</span> <span class="n">02</span> · configure</h2>
+      <p><code>odek init --global</code> writes <code>~/.odek/config.json</code> (mode 0600) and refuses to overwrite without <code>--force</code>. Built-in ids: <code>deepseek</code> (what init scaffolds), <code>openai</code>, <code>anthropic</code>, <code>gemini</code>, <code>zai</code>, <code>kimi</code> — plus any OpenAI-compatible gateway. This walkthrough edits the scaffold for z.ai:</p>
 
-<div class="container">
-
-<nav class="section-nav" aria-label="Section navigation">
-  <a href="#five-whys">Why</a>
-  <a href="#demos">Demos</a>
-  <a href="#features">Features</a>
-  <a href="#install">Install</a>
-  <a href="#cheatsheet">Cheatsheet</a>
-  <a href="#docs">Docs</a>
-</nav>
-
-<!-- ═══ Five Whys ═══ -->
-<section id="five-whys">
-  <h2>The <span class="hl">Five Whys</span></h2>
-  <ul class="whys">
-    <li>
-      <span class="q">Why?</span>
-      <span class="a">Because every AI agent framework today ships a <strong>200-package dependency tree</strong> and a fat Python venv. odek is a <strong>small static binary</strong> with a <strong>tiny dependency tree</strong> — everything else is Go stdlib.</span>
-    </li>
-    <li>
-      <span class="q">Why?</span>
-      <span class="a">Because you shouldn't need a PhD in Python packaging just to run <code>go test</code>. odek installs in <strong>5 seconds</strong> with a one-line binary install — no Go toolchain, no Docker, no venv, no npm, no sagas.</span>
-    </li>
-    <li>
-      <span class="q">Why?</span>
-      <span class="a">Because locking into one LLM provider is a strategic mistake. odek is <strong>provider-agnostic</strong> — DeepSeek, OpenAI, Anthropic, Ollama, vLLM, Groq, Together, Fireworks. Any OpenAI-compatible endpoint.</span>
-    </li>
-    <li>
-      <span class="q">Why?</span>
-      <span class="a">Because agents need <strong>real tools</strong>, not abstractions on top of abstractions. odek gives you read_file, write_file, patch, search_files, shell, and browser — all gated by a unified security layer. No plugins. No SDKs. No class hierarchies.</span>
-    </li>
-    <li>
-      <span class="q">Why?</span>
-      <span class="a">Because the agent ecosystem has split into two worlds — tools that <strong>serve</strong> MCP (Claude Code, Cursor) and tools that <strong>consume</strong> MCP. odek does <strong>both</strong> in one binary. Serve your tools to any MCP client, or connect to external MCP servers for Playwright, Fetch, databases, and more.</span>
-    </li>
-  </ul>
-</section>
-
-<!-- ═══ Terminal Demos Carousel ═══ -->
-<section id="demos">
-  <h2>See it in <span class="hl">action</span></h2>
-  <p style="margin-bottom:20px;color:var(--text-secondary);font-size:0.9375rem">
-    Real terminal output from real runs. Click through the examples.
-  </p>
-
-  <div class="carousel">
-    <div class="bar">
-      <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-      <span class="label">odek — agent loop</span>
-    </div>
-    <div class="slides">
-
-      <!-- Slide 1 -->
-      <div class="slide active">
-        <span class="info"># Quick file query</span><br>
-        <span class="prompt">$ odek run "How many lines in go.mod?"</span><br>
-        <span class="info">═══ Iter 1/15 ═══  [456 in · 21 out · 0.8s]</span><br>
-        <span class="output">The <strong>go.mod</strong> file has 3 lines:</span><br>
-        <span class="output">module github.com/BackendStack21/odek</span><br>
-        <span class="output">go 1.25</span><br>
-        <span class="output">require ( ... )</span><br>
-        <span class="info">✅ Done in 0.8s</span>
+      <div class="code-block">
+        <div class="cb-header">
+          <span class="cb-lang">▸ bash · init</span>
+          <button type="button" class="cb-copy" data-copy>copy</button>
+        </div>
+        <pre><code>odek init --global</code></pre>
       </div>
 
-      <!-- Slide 2 -->
-      <div class="slide">
-        <span class="info"># Multi-turn session</span><br>
-        <span class="prompt">$ odek run --session "Refactor the auth module"</span><br>
-        <span class="info">═══ Iter 1/8 ═══  [521 in · 342 out · 3.2s]</span><br>
-        <span class="output">I'll refactor the auth module. Let me start by reading the current code:</span><br>
-        <span class="info">🔧 shell read_file auth.go</span><br>
-        <span class="info">📄 auth.go (142 lines) loaded</span><br>
-        <span class="output">The module uses basic JWT without refresh tokens.</span><br>
-        <span class="output">I'll add: refresh token rotation,</span><br>
-        <span class="output">         rate-limited login, session revocation.</span><br>
-        <span class="info">✅ Session saved: 20260520-a1b2c3</span>
-      </div>
-
-      <!-- Slide 3 -->
-      <div class="slide">
-        <span class="info"># Sandbox — on by default</span><br>
-        <span class="prompt">$ odek run "Check if curl is installed"</span><br>
-        <span class="info">🔒 Sandbox: ephemeral container started</span><br>
-        <span class="info">═══ Iter 1/4 ═══  [389 in · 156 out · 2.1s]</span><br>
-        <span class="output">Running inside a fresh Docker container:</span><br>
-        <span class="prompt">$ which curl</span><br>
-        <span class="output">/usr/bin/curl</span><br>
-        <span class="prompt">$ curl --version</span><br>
-        <span class="output">curl 8.5.0 (x86_64-pc-linux-musl)</span><br>
-        <span class="info">🔒 Container destroyed · opt out: --no-sandbox / ODEK_NO_SANDBOX=1 · enforce in CI: ODEK_REQUIRE_SANDBOX=1</span>
-      </div>
-
-      <!-- Slide 4 -->
-      <div class="slide">
-        <span class="info"># Parallel sub-agents</span><br>
-        <span class="prompt">$ odek run "Audit all Go files for security issues"</span><br>
-        <span class="info">🔄 Delegating 3 sub-agents...</span><br>
-        <span class="info">  └─ agent-1: scan imports (os/exec, crypto, net)</span><br>
-        <span class="info">  └─ agent-2: check error handling</span><br>
-        <span class="info">  └─ agent-3: inspect file permissions</span><br>
-        <span class="info">═══ Parallel · 3 children · 4.7s</span><br>
-        <span class="output">Results:</span><br>
-        <span class="output">  • 2 missing defer file.Close()</span><br>
-        <span class="output">  • 1 hardcoded secret in config.go</span><br>
-        <span class="output">  • All permissions: 0644 ✓</span>
-      </div>
-
-      <!-- Slide 5 -->
-      <div class="slide">
-        <span class="info"># MCP server mode</span><br>
-        <span class="prompt">$ odek mcp</span><br>
-        <span class="info">odek mcp ⚡  MCP server starting</span><br>
-        <span class="output">Connected by Claude Code. Exposing built-in tools:</span><br>
-        <span class="output">  • read_file    — read files with line numbers</span><br>
-        <span class="output">  • write_file   — write files safely</span><br>
-        <span class="output">  • search_files — regex content search</span><br>
-        <span class="output">  • shell        — execute commands</span><br>
-        <span class="output">  • patch        — find-and-replace edits</span><br>
-        <span class="output">  — MCP stdio —</span>
-      </div>
-
-      <!-- Slide 6 -->
-      <div class="slide">
-        <span class="info"># Web UI with token stats</span><br>
-        <span class="prompt">$ odek serve --addr :8080</span><br>
-        <span class="info">odek serve ⚡  http://[::]:8080</span><br>
-        <span class="output">Open in browser. @-completion for files.</span><br>
-        <span class="info">┌─ Session: 20260520-xyz ───────────────────────┐</span><br>
-        <span class="info">│  ∑ ⌂ 1,248 context · ⎇ 342 output            │</span><br>
-        <span class="info">├───────────────────────────────────────────────┤</span><br>
-        <span class="output">│  User: What's in src/?                         │</span><br>
-        <span class="info">│  ⚡ Thinking...                                │</span><br>
-        <span class="output">│  Agent: Let me check the source directory.     │</span><br>
-        <span class="output">│         ⚡ 2.1s · ⌂ 456 · ⎇ 89                │</span><br>
-        <span class="info">└───────────────────────────────────────────────┘</span>
-      </div>
-
-      <!-- Slide 7 -->
-      <div class="slide">
-        <span class="info"># Proactive engagement — the agent anticipates</span><br>
-        <span class="prompt">$ odek run --session "I plan to migrate Postgres 14 → 17 next quarter"</span><br>
-        <span class="output">Good call to plan early. Watch out for: logical replication</span><br>
-        <span class="output">slots, removed GUCs, and driver upgrades…</span><br>
-        <span class="info">── You might also want to ──</span><br>
-        <span class="output">• What are the breaking changes between PG 14 and 17?</span><br>
-        <span class="output">• How do I test the migration with minimal downtime?</span><br>
-        <span class="info"># … days later, via Telegram — an opt-in nudge:</span><br>
-        <span class="output">💡 Your Postgres migration goal has been quiet for a week —</span><br>
-        <span class="output">   want a pg_upgrade dry-run checklist?</span><br>
-        <span class="info"># capped: max/day + per-kind cooldown. Never noisy.</span>
-      </div>
-
-    </div>
-    <div class="nav"></div>
-  </div>
-</section>
-
-<!-- ═══ Features ═══ -->
-<section id="features">
-  <h2>What you <span class="hl">get</span></h2>
-
-  <div class="features">
-
-    <div class="card">
-      <div class="icon">🔒</div>
-      <h4>Sandboxed Execution</h4>
-      <p>Sandboxing is on by default: every <code>odek run</code> / <code>repl</code> session executes in an isolated Docker container — no network, no host mounts beyond the working directory, zero capabilities, destroyed on exit. Opt out with <code>--no-sandbox</code>; make unsandboxed runs fatal in CI with <code>ODEK_REQUIRE_SANDBOX=1</code>.</p>
-    </div>
-
-    <div class="card">
-      <div class="icon">🧩</div>
-      <h4>Sub-Agent Delegation</h4>
-      <p>Parallel OS-process sub-agents via <code>delegate_tasks</code>. True isolation — each sub-agent is a fresh process with its own config, tools, and timeout. Up to 3 concurrent workers.</p>
-    </div>
-
-    <div class="card">
-      <div class="icon">🧠</div>
-      <h4>Skill System</h4>
-      <p>Skill-matched <code>SKILL.md</code> files load on-demand — author them yourself or import from any URI with automatic LLM risk assessment.</p>
-    </div>
-
-    <div class="card">
-      <div class="icon">💾</div>
-      <h4>Extended Memory</h4>
-      <p>Semantic, atomic memory: facts, preferences, goals extracted per turn, deduplicated by meaning, ranked by relevance and recency. Quarantine for untrusted content, associations between atoms, and a stats surface for operators. Legacy three-tier facts/buffer/episodes included too.</p>
-    </div>
-
-    <div class="card">
-      <div class="icon">💡</div>
-      <h4>Proactive Engagement <span class="badge-new">NEW</span></h4>
-      <p>The agent anticipates: follow-up suggestions after answers, open-loop tracking of your questions and goals, and opt-in proactive nudges with anti-annoyance caps. Scheduled jobs are memory-wired, so cron tasks can analyze memory and sessions.</p>
-    </div>
-
-    <div class="card">
-      <div class="icon">🧹</div>
-      <h4>Storage Maintenance <span class="badge-new">NEW</span></h4>
-      <p>Long-lived agents stay clean forever: a janitor handles session, audit-log, log, plan, and media retention on an operator-only config. <code>odek cleanup --dry-run</code> shows exactly what would be removed, first.</p>
-    </div>
-
-    <div class="card">
-      <div class="icon">🛡️</div>
-      <h4>PIGuard Sidecar</h4>
-      <p>Optional ML prompt-injection guard (ONNX, local) as a semantic second opinion on top of the rule-based scan — guarding memory writes, skill bodies, system prompts, and MCP descriptions. Docker Compose sidecar included.</p>
-    </div>
-
-    <div class="card">
-      <div class="icon">🪤</div>
-      <h4>Injection Hardening</h4>
-      <p>Forged against a 22-scenario prompt-injection benchmark. Writes to shell profiles, <code>.envrc</code>, git hooks, CI workflows, cron/systemd gate under a dedicated <strong>persistence</strong> class that is never trust-shortcuttable; <strong>unread_exec</strong> requires reading a repo-supplied script before running it; and if a final reply claims “blocked” while mutations ran, a public consistency notice names what actually executed.</p>
-    </div>
-
-    <div class="card">
-      <div class="icon">🔗</div>
-      <h4>MCP Two-Way</h4>
-      <p><strong>Server:</strong> <code>odek mcp</code> exposes native tools to Claude Code, Cursor, any MCP client. <strong>Client:</strong> odek connects to external MCP servers and makes their tools available to the agent.</p>
-    </div>
-
-    <div class="card">
-      <div class="icon">🌐</div>
-      <h4>Web UI</h4>
-      <p><code>odek serve</code> — browser-based agent with <code>@</code> resource completion, WebSocket streaming, token economics, inline loading, drag-and-drop file attachments, and a full IDE-style console. Built from Go's embed — zero npm.</p>
-    </div>
-
-    <div class="card">
-      <div class="icon">🔍</div>
-      <h4>Session Search</h4>
-      <p><code>session_search</code> — semantic search across your entire agent history: vector matching over full conversation content finds sessions whose messages match your query, even when titles don't. Never lose a past finding, decision, or code review.</p>
-    </div>
-
-    <div class="card">
-      <div class="icon">🗺️</div>
-      <h4>Structured Planning</h4>
-      <p>A native <code>plan</code> tool tracks multi-step work in protected state the engine will not trim away. Plans surface live in Telegram and the Web UI, and a restarted run resumes from its plan instead of guessing where it left off (<code>odek continue</code>).</p>
-    </div>
-
-    <div class="card">
-      <div class="icon">🎤</div>
-      <h4>Audio Transcription</h4>
-      <p><code>transcribe</code> — local whisper-based audio transcription. Drop an OGG, MP3, or WAV file, get text back. Runs entirely offline, no cloud API. Private by design.</p>
-    </div>
-
-    <div class="card">
-      <div class="icon">🛠️</div>
-      <h4>Native Tools</h4>
-      <p>read_file, write_file, search_files, patch, shell, browser — all compiled into a single static Go binary. Zero subprocess overhead, instant startup, thread-safe concurrent execution. Gated by a unified security layer.</p>
-    </div>
-
-    <div class="card">
-      <div class="icon">⚡</div>
-      <h4>Parallel Tool Execution</h4>
-      <p>Tools run concurrently with bounded concurrency. <code>read_file</code>, <code>search_files</code>, and <code>shell</code> calls execute in parallel — cutting iteration time by 40–60%. Batch approval gate shows all risky operations at once.</p>
-    </div>
-
-    <div class="card">
-      <div class="icon">💬</div>
-      <h4>Interaction Modes</h4>
-      <p>Four modes: <strong>engaging</strong> (emoji-rich LLM narration), <strong>enhance</strong> (narration persists after response), <strong>verbose</strong> (raw tool traces), and <strong>off</strong> (clean, machine-friendly). Per-tool trace messages with LLM reasoning content. Works across CLI, Telegram, and Web UI.</p>
-    </div>
-
-    <div class="card">
-      <div class="icon">🤖</div>
-      <h4>Telegram Bot</h4>
-      <p>Full-featured Telegram bot with <code>odek telegram</code>. MarkdownV2 messages, inline keyboards, file attachments, <code>send_message</code> tool, and <code>--deliver</code> flag for cron integration. Interaction mode-aware with per-tool progress traces.</p>
-    </div>
-
-    <div class="card">
-      <div class="icon">⏰</div>
-      <h4>Scheduled Tasks</h4>
-      <p>Native, in-process cron with <code>odek schedule</code> — no external cron daemon. Runs inside <code>odek telegram</code> or a standalone <code>odek schedule daemon</code>, so a scheduled task sees the same resolved config an interactive run does. Stdlib cron parser with Vixie day-of-month/day-of-week semantics, per-job timezones, missed-run catchup, and a singleton lock so jobs never double-fire.</p>
-    </div>
-
-  </div>
-</section>
-
-<!-- ═══ Comparison ═══ -->
-<section>
-  <h2>odek vs <span class="hl">the rest</span></h2>
-
-  <table class="compare">
-    <thead>
-      <tr><th></th><th>odek</th><th>Python agents</th></tr>
-    </thead>
-    <tbody>
-      <tr><td>Direct dependencies</td><td class="win">Minimal — stdlib + a handful of focused pkgs</td><td>200+ packages</td></tr>
-      <tr><td>Binary size</td><td class="win">Small static binary</td><td>50–200 MB (venv)</td></tr>
-      <tr><td>Startup</td><td class="win">Instant</td><td>2–10 seconds</td></tr>
-      <tr><td>Sandbox</td><td class="win">On by default (<code>--no-sandbox</code> opt-out)</td><td>Manual Docker setup</td></tr>
-      <tr><td>Tool interface</td><td class="win">One interface, one method</td><td>Class hierarchies + decorators</td></tr>
-      <tr><td>Parallel tools</td><td class="win">Built-in bounded concurrency</td><td>Sequential only</td></tr>
-      <tr><td>Telegram bot</td><td class="win">Full bot with keyboard, files, --deliver</td><td>Third-party adapters</td></tr>
-      <tr><td>MCP</td><td class="win">Bidirectional (server + client)</td><td>Client-only or adapter needed</td></tr>
-      <tr><td>Language</td><td class="win">Go — native binary</td><td>Python — interpreter required</td></tr>
-    </tbody>
-  </table>
-</section>
-
-<!-- ═══ Install ═══ -->
-<section id="install">
-  <h2>Install in <span class="hl">5 seconds</span></h2>
-
-  <ul class="steps">
-    <li>
-      <span class="n">1</span>
-      <span>
-        Install the binary — auto-detects your OS/arch, no sudo needed (<code>~/.local/bin</code> is on your <code>PATH</code>):
-        <button class="copy-btn" onclick="copyText(this,'mkdir -p ~/.local/bin && curl -fLo ~/.local/bin/odek https://github.com/BackendStack21/odek/releases/latest/download/odek-$(uname -s | tr \'[:upper:]\' \'[:lower:]\')-$(uname -m | sed \'s/x86_64/amd64/;s/aarch64/arm64/\') && chmod +x ~/.local/bin/odek')" style="margin-left:8px;">📋 Copy</button>
-        <br>
-        <code style="margin-top:6px;display:inline-block;">mkdir -p ~/.local/bin &amp;&amp; curl -fLo ~/.local/bin/odek https://github.com/BackendStack21/odek/releases/latest/download/odek-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') &amp;&amp; chmod +x ~/.local/bin/odek</code>
-      </span>
-    </li>
-    <li>
-      <span class="n">2</span>
-      <span>Set the provider key: <code>export DEEPSEEK_API_KEY=sk-...</code> (or <code>OPENAI_API_KEY</code> / <code>ANTHROPIC_API_KEY</code> / <code>ZAI_API_KEY</code> — see <a href="https://github.com/BackendStack21/odek/blob/main/docs/PROVIDERS.md">PROVIDERS.md</a>)</span>
-    </li>
-    <li>
-      <span class="n">3</span>
-      <span>Run your first task: <code>odek run "How many lines in go.mod?"</code></span>
-    </li>
-  </ul>
-
-  <h3>From source (Go 1.25+)</h3>
-  <p style="color:var(--text-secondary);font-size:0.875rem;margin-bottom:16px">
-    Prefer building it yourself? One <code>go install</code>, no Docker, no venv, no npm:
-  </p>
-
-  <pre><code><span class="hljs-comment"># Requires Go 1.25+ — brew install go, or https://go.dev/dl/</span>
-go install github.com/BackendStack21/odek/cmd/odek@latest</code>
-<button class="clip" onclick="copyText(this,'go install github.com/BackendStack21/odek/cmd/odek@latest')">📋 Copy</button>
-</pre>
-
-  <div class="platform-tags">
-    <span class="tag">auto-detect OS/arch <span class="ok">✓</span></span>
-    <span class="tag">static binary <span class="ok">✓</span></span>
-    <span class="tag">no runtime deps <span class="ok">✓</span></span>
-    <span class="tag">works offline <span class="ok">✓</span></span>
-  </div>
-
-  <pre><code><span class="hljs-comment"># Results instantly</span>
-$ odek run <span class="hljs-string">"How many lines in go.mod?"</span>
-<span class="hljs-number">3</span> lines
-
-<span class="hljs-comment"># With session persistence</span>
-$ odek run --session <span class="hljs-string">"Refactor the auth module"</span>
-$ odek continue <span class="hljs-string">"Now add error handling"</span>
-
-<span class="hljs-comment"># Different provider, same binary</span>
-$ odek run --model gpt-4o --base-url https://api.openai.com/v1 <span class="hljs-string">"Explain this"</span>
-
-<span class="hljs-comment"># Attach files for context</span>
-$ odek run --ctx data.csv <span class="hljs-string">"analyze trends"</span>
-$ odek run <span class="hljs-string">"@README.md summarize this project"</span>
-<button class="clip" onclick="copyText(this,'$ odek run \"How many lines in go.mod?\"\n3 lines\n\n$ odek run --session \"Refactor the auth module\"\n$ odek continue \"Now add error handling\"\n\n$ odek run --model gpt-4o --base-url https://api.openai.com/v1 \"Explain this\"')">📋 Copy</button>
-</pre>
-
-  <p style="margin-top:18px;color:var(--text-secondary);font-size:0.9375rem">
-    📖 Full walkthrough — config, GLM 5.3 Flash (z.ai) subscription setup, sandbox, and the optional <strong>bodek</strong> TUI — in the
-    <a href="https://github.com/BackendStack21/odek/blob/main/GETTING_STARTED.md" target="_blank" style="color:var(--accent)">Getting Started guide →</a>
-  </p>
-</section>
-
-<!-- ═══ Cheatsheet ═══ -->
-<section id="cheatsheet">
-  <h2>Cheatsheet</h2>
-
-  <h3>Commands</h3>
-  <ul class="cmd-list">
-    <li><span class="cmd">odek run &lt;task&gt;</span><span class="desc">Single-shot task</span></li>
-    <li><span class="cmd">odek run --sandbox &lt;task&gt;</span><span class="desc">Run in Docker sandbox (on by default since v1.27)</span></li>
-    <li><span class="cmd">odek repl</span><span class="desc">Interactive multi-turn REPL</span></li>
-    <li><span class="cmd">odek repl --id &lt;uuid&gt;</span><span class="desc">Resume a saved session</span></li>
-    <li><span class="cmd">odek serve</span><span class="desc">Start Web UI (sandboxed by default, http://127.0.0.1:8080)</span></li>
-    <li><span class="cmd">odek serve --no-sandbox</span><span class="desc">Web UI without the Docker sandbox</span></li>
-    <li><span class="cmd">odek subagent --goal &lt;s&gt;</span><span class="desc">Run a focused sub-task</span></li>
-    <li><span class="cmd">odek mcp</span><span class="desc">Start MCP server (stdio; --sandbox for Docker)</span></li>
-    <li><span class="cmd">odek telegram</span><span class="desc">Start Telegram bot</span></li>
-    <li><span class="cmd">odek schedule add --cron "&lt;expr&gt;" &lt;task&gt;</span><span class="desc">Schedule a recurring agent task (cron)</span></li>
-    <li><span class="cmd">odek cleanup --dry-run</span><span class="desc">Preview storage maintenance, delete nothing</span></li>
-    <li><span class="cmd">odek cleanup</span><span class="desc">Run one storage maintenance sweep</span></li>
-    <li><span class="cmd">odek memory extended stats</span><span class="desc">Memory store, index, quarantine, recall health</span></li>
-    <li><span class="cmd">odek memory extended nudges</span><span class="desc">Preview proactive nudges (no cap consumed)</span></li>
-    <li><span class="cmd">odek skill list</span><span class="desc">List learned/installed skills</span></li>
-    <li><span class="cmd">odek run --deliver &lt;task&gt;</span><span class="desc">Run task, deliver to Telegram</span></li>
-    <li><span class="cmd">odek init [--global]</span><span class="desc">Create config file</span></li>
-    <li><span class="cmd">odek version</span><span class="desc">Show version</span></li>
-  </ul>
-
-  <h3>Key Flags</h3>
-  <ul class="cmd-list">
-    <li><span class="cmd">--model &lt;name&gt;</span><span class="desc">LLM model (deepseek-v4-flash, gpt-4o, etc.)</span></li>
-    <li><span class="cmd">--base-url &lt;url&gt;</span><span class="desc">API endpoint URL</span></li>
-    <li><span class="cmd">--no-sandbox</span><span class="desc">Disable the default Docker sandbox</span></li>
-    <li><span class="cmd">--thinking &lt;level&gt;</span><span class="desc">Reasoning depth (enabled/disabled/low/medium/high)</span></li>
-    <li><span class="cmd">--max-iter &lt;n&gt;</span><span class="desc">Max think→act cycles (default 90)</span></li>
-    <li><span class="cmd">--ctx &lt;files&gt; / -c</span><span class="desc">Attach files as context blocks (comma-separated)</span></li>
-    <li><span class="cmd">--memory-extended-enabled</span><span class="desc">Enable Extended Memory (opt-in)</span></li>
-    <li><span class="cmd">--system &lt;prompt&gt;</span><span class="desc">Override system prompt</span></li>
-    <li><span class="cmd">--no-color</span><span class="desc">Disable colored output</span></li>
-    <li><span class="cmd">--deliver</span><span class="desc">Deliver result to Telegram default chat</span></li>
-    <li><span class="cmd">--interaction-mode &lt;mode&gt;</span><span class="desc">engaging | verbose | enhance | off</span></li>
-  </ul>
-</section>
-
-<!-- ═══ Docs ═══ -->
-<section id="docs">
-  <h2>Everything else is <span class="hl">documented</span></h2>
-  <p style="margin-bottom:20px">Deep-dive docs for every subsystem. Real detail, no fluff.</p>
-
-  <div class="doc-links">
-    <a href="/llms.txt">llms.txt<span>Machine-readable docs index for coding agents</span></a>
-    <a href="https://github.com/BackendStack21/odek/blob/main/GETTING_STARTED.md">Getting Started<span>Install odek, configure GLM 5.3 Flash (z.ai), add the optional bodek TUI</span></a>
-    <a href="https://github.com/BackendStack21/odek/blob/main/docs/CLI.md">CLI Reference<span>All commands, subcommands, flags, examples</span></a>
-    <a href="https://github.com/BackendStack21/odek/blob/main/docs/CHEATSHEET.md">Cheat Sheet<span>Quick reference: commands, config, memory, subagents, env vars</span></a>
-    <a href="https://github.com/BackendStack21/odek/blob/main/docs/API.md">Go SDK Guide<span>Import, Agent, Tools, memory, multi-turn sessions, examples</span></a>
-    <a href="https://github.com/BackendStack21/odek/blob/main/docs/CONFIG.md">Configuration<span>Config files, env vars, priority chain</span></a>
-    <a href="https://github.com/BackendStack21/odek/blob/main/docs/PROVIDERS.md">Providers & Models<span>DeepSeek, OpenAI, Anthropic, Ollama, vLLM, more</span></a>
-    <a href="https://github.com/BackendStack21/odek/blob/main/docs/CACHING.md">Prompt Caching<span>Cache markers for lower latency and cost on repeats</span></a>
-    <a href="https://github.com/BackendStack21/odek/blob/main/docs/MCP.md">MCP (Two-Way)<span>Serve tools + connect to external MCP servers</span></a>
-    <a href="https://github.com/BackendStack21/odek/blob/main/docs/EXTENSIONS.md">Extension Contract<span>odek-extension/v1: limits, artifact refs, events, budgets</span></a>
-    <a href="https://github.com/BackendStack21/odek/blob/main/docs/MEMORY.md">Memory System<span>Legacy facts, buffer, episodes</span></a>
-    <a href="https://github.com/BackendStack21/odek/blob/main/docs/EXTENDED_MEMORY.md">Extended Memory<span>Semantic atoms, recall, quarantine, proactive engagement</span></a>
-    <a href="https://github.com/BackendStack21/odek/blob/main/docs/MAINTENANCE.md">Storage Maintenance<span>Janitor, retention config, odek cleanup</span></a>
-    <a href="https://github.com/BackendStack21/odek/blob/main/docs/SESSIONS.md">Multi-Turn Sessions<span>Save, resume, list, trim, cleanup</span></a>
-    <a href="https://github.com/BackendStack21/odek/blob/main/docs/SANDBOXING.md">Sandboxing<span>Docker isolation, config, security model</span></a>
-    <a href="https://github.com/BackendStack21/odek/blob/main/docs/DOCKER_COMPOSE_USER_GUIDE.md">Docker Compose<span>Run odek in Docker with Compose, step by step</span></a>
-    <a href="https://github.com/BackendStack21/odek/blob/main/docs/SECURITY.md">Security<span>Prompt injection defense, threat model</span></a>
-    <a href="https://github.com/BackendStack21/odek/blob/main/docs/SUBAGENTS.md">Sub-Agents<span>Task decomposition, delegation protocol</span></a>
-    <a href="https://github.com/BackendStack21/odek/blob/main/docs/WEBUI.md">Web UI<span>odek serve, WebSocket protocol, @ resources</span></a>
-    <a href="https://github.com/BackendStack21/odek/blob/main/docs/SCHEDULES.md">Scheduled Tasks<span>Native cron — run agent tasks and deliver results</span></a>
-    <a href="https://github.com/BackendStack21/odek/blob/main/docs/TELEGRAM.md">Telegram Bot<span>Run agent tasks from Telegram: voice, photos, sessions</span></a>
-    <a href="https://github.com/BackendStack21/odek/blob/main/docs/TOOL_SELECTION.md">Tool Selection<span>Enable/disable tools per profile, MCP naming</span></a>
-    <a href="https://github.com/BackendStack21/odek/blob/main/docs/DAILY-WORKER.md">Daily Worker<span>odek as your daily chief-of-staff assistant</span></a>
-    <a href="https://github.com/BackendStack21/odek/blob/main/docs/DEVELOPMENT.md">Development<span>Building, testing, contributing</span></a>
-  </div>
-</section>
-
-<!-- ═══ CTA ═══ -->
-<section style="text-align:center; padding-bottom: 80px;">
-  <h2>Ship <span class="hl">it</span></h2>
-  <p style="max-width:500px; margin:0 auto 24px">
-    One binary. One loop. Zero frameworks.<br>
-    One curl and go.
-  </p>
-  <div class="install-block cta-block">
-    <code>mkdir -p ~/.local/bin &amp;&amp; curl -fLo ~/.local/bin/odek https://github.com/BackendStack21/odek/releases/latest/download/odek-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') &amp;&amp; chmod +x ~/.local/bin/odek</code>
-    <button class="copy-btn" onclick="copyText(this,'mkdir -p ~/.local/bin && curl -fLo ~/.local/bin/odek https://github.com/BackendStack21/odek/releases/latest/download/odek-$(uname -s | tr \'[:upper:]\' \'[:lower:]\')-$(uname -m | sed \'s/x86_64/amd64/;s/aarch64/arm64/\') && chmod +x ~/.local/bin/odek')">📋 Copy</button>
-    <a class="btn" href="https://github.com/BackendStack21/odek/blob/main/GETTING_STARTED.md" target="_blank">Get Started →</a>
-    <a class="btn" href="https://github.com/BackendStack21/odek" target="_blank">GitHub →</a>
-  </div>
-</section>
-
-</div><!-- /container -->
-
-<footer>
-  <div class="container">
-    &copy; 2024–2026 <a href="https://21no.de">21no.de</a> &middot; MIT License &middot;
-    <a href="https://github.com/BackendStack21/odek">GitHub</a>
-  </div>
-</footer>
-
-<script>
-// ── Progressive enhancement flag: gates scroll-reveal styles (no-JS shows everything) ──
-document.documentElement.classList.add('js');
-
-const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-// ── Copy to clipboard ──
-function copyText(btn, text) {
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).then(() => {
-      btn.textContent = 'Copied ✓';
-      btn.classList.add('copied');
-      setTimeout(() => {
-        btn.textContent = '📋 Copy';
-        btn.classList.remove('copied');
-      }, 2000);
-    }).catch(() => fallbackCopy(btn, text));
-  } else {
-    fallbackCopy(btn, text);
+      <div class="code-block">
+        <div class="cb-header">
+          <span class="cb-lang">▸ json · ~/.odek/config.json</span>
+          <button type="button" class="cb-copy" data-copy>copy</button>
+        </div>
+        <pre><code>{
+  "provider": "zai",
+  "model": "glm-5.3-flash",
+  "providers": {
+    "zai": {
+      "api_key": "${ZAI_API_KEY}",
+      "base_url": "https://api.z.ai/api/coding/paas/v4"
+    }
+  },
+  "llm": {
+    "request_timeout_seconds": 300,
+    "stream_idle_timeout_seconds": 300
   }
-}
-function fallbackCopy(btn, text) {
-  const ta = document.createElement('textarea');
-  ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
-  document.body.appendChild(ta); ta.select();
-  try { document.execCommand('copy');
-    btn.textContent = 'Copied ✓';
-    btn.classList.add('copied');
-    setTimeout(() => { btn.textContent = '📋 Copy'; btn.classList.remove('copied'); }, 2000);
-  } catch(e) {}
-  document.body.removeChild(ta);
-}
+}</code></pre>
+      </div>
 
-// ── Carousels (drives every .carousel on the page) ──
-document.querySelectorAll('.carousel').forEach((carousel) => {
-  const slides = carousel.querySelectorAll('.slide');
-  const nav = carousel.querySelector('.nav');
-  if (!slides.length || !nav) return;
-  let current = 0;
+      <p>That <code>base_url</code> is the GLM Coding Plan. Pay-as-you-go uses <code>https://api.z.ai/api/paas/v4</code>. Model ids for your plan are on the <a href="https://z.ai/model-api" target="_blank" rel="noopener noreferrer">z.ai dashboard</a>.</p>
+      <p>Store the key in <code>~/.odek/secrets.env</code> so it never lands in shell history.</p>
 
-  slides.forEach((_, i) => {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.textContent = i + 1;
-    btn.setAttribute('aria-label', 'Go to slide ' + (i + 1));
-    btn.addEventListener('click', () => goTo(i));
-    if (i === 0) btn.classList.add('active');
-    nav.appendChild(btn);
-  });
+      <div class="code-block">
+        <div class="cb-header">
+          <span class="cb-lang">▸ bash · secrets.env</span>
+          <button type="button" class="cb-copy" data-copy>copy</button>
+        </div>
+        <pre><code>cat &gt; ~/.odek/secrets.env &lt;&lt;'EOF'
+ZAI_API_KEY=sk-your-zai-key-here
+EOF
+chmod 600 ~/.odek/secrets.env</code></pre>
+      </div>
 
-  function goTo(i) {
-    slides[current].classList.remove('active');
-    nav.children[current].classList.remove('active');
-    current = i;
-    slides[current].classList.add('active');
-    nav.children[current].classList.add('active');
-  }
+      <p class="meta">Priority: <code>~/.odek/secrets.env</code> → <code>~/.odek/config.json</code> → <code>./odek.json</code> → <code>ODEK_*</code> env → CLI flags. A project <code>./odek.json</code> cannot set <code>provider</code>, <code>providers</code>, <code>llm</code>, or keys. Env keys follow the provider (<code>DEEPSEEK_API_KEY</code>, <code>OPENAI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code>, …). Full table: <a href="/PROVIDERS.md">PROVIDERS.md</a>.</p>
+    </section>
 
-  // Auto-advance every 8s; pause on hover; off when reduced motion is preferred
-  if (!reduceMotion) {
-    let timer = setInterval(() => goTo((current + 1) % slides.length), 8000);
-    carousel.addEventListener('mouseenter', () => clearInterval(timer));
-    carousel.addEventListener('mouseleave', () => {
-      timer = setInterval(() => goTo((current + 1) % slides.length), 8000);
-    });
-  }
-});
+    <section class="step" id="sandbox" aria-labelledby="sandbox-h">
+      <h2 id="sandbox-h"><span class="mark">▸</span> <span class="n">03</span> · sandbox</h2>
+      <p>Tool execution runs inside an isolated Docker container by default for <code>odek run</code>, <code>odek continue</code>, <code>odek repl</code>, and <code>odek serve</code>. No Docker? Opt out before the first run:</p>
 
-// ── Scroll reveal: staggered fade + rise per section child ──
-(function () {
-  if (!('IntersectionObserver' in window)) return;
-  const els = [];
-  document.querySelectorAll('section').forEach((sec) => {
-    Array.from(sec.children).forEach((el, i) => {
-      el.classList.add('reveal');
-      el.style.setProperty('--reveal-delay', Math.min(i * 70, 420) + 'ms');
-      els.push(el);
-    });
-  });
-  const io = new IntersectionObserver((entries) => {
-    entries.forEach((entry) => {
-      if (!entry.isIntersecting) return;
-      const el = entry.target;
-      el.classList.add('visible');
-      io.unobserve(el);
-      // Drop the reveal classes once the entrance finishes so they can't
-      // interfere with hover transitions (e.g. card lift).
-      el.addEventListener('transitionend', () => el.classList.remove('reveal', 'visible'), { once: true });
-      setTimeout(() => el.classList.remove('reveal', 'visible'), 1600);
-    });
-  }, { rootMargin: '0px 0px -8% 0px', threshold: 0.05 });
-  els.forEach((el) => io.observe(el));
-})();
+      <div class="code-block">
+        <div class="cb-header">
+          <span class="cb-lang">▸ bash · opt-out</span>
+          <button type="button" class="cb-copy" data-copy>copy</button>
+        </div>
+        <pre><code>export ODEK_NO_SANDBOX=1     # add to ~/.zshrc / ~/.bashrc
+# or per-run:
+odek run --no-sandbox "..."</code></pre>
+      </div>
 
-// ── Scrollspy: highlight the current section in the sticky nav ──
-(function () {
-  const links = document.querySelectorAll('.section-nav a[href^="#"]');
-  if (!links.length || !('IntersectionObserver' in window)) return;
-  const bySection = new Map();
-  links.forEach((a) => {
-    const target = document.querySelector(a.getAttribute('href'));
-    if (target) bySection.set(target, a);
-  });
-  const spy = new IntersectionObserver((entries) => {
-    entries.forEach((entry) => {
-      if (!entry.isIntersecting) return;
-      links.forEach((a) => a.classList.remove('active'));
-      bySection.get(entry.target).classList.add('active');
-    });
-  }, { rootMargin: '-40% 0px -55% 0px', threshold: 0 });
-  bySection.forEach((_, sec) => spy.observe(sec));
-})();
+      <p>Unsandboxed runs warn loudly. <code>ODEK_REQUIRE_SANDBOX=1</code> makes them fatal instead. Full model: <a href="/SANDBOXING.md">SANDBOXING.md</a>.</p>
+    </section>
 
-// ── Hover anchor links on section headings ──
-document.querySelectorAll('section[id] > h2').forEach((h) => {
-  const id = h.parentElement.id;
-  const a = document.createElement('a');
-  a.className = 'h-anchor';
-  a.href = '#' + id;
-  a.textContent = '#';
-  a.setAttribute('aria-label', 'Link to section ' + id);
-  h.appendChild(a);
-});
+    <section class="step" id="run" aria-labelledby="run-h">
+      <h2 id="run-h"><span class="mark">▸</span> <span class="n">04</span> · first run</h2>
+      <p>You should see <code>glm-5.3-flash</code> in the run header and a short ReAct trace: think → act → answer.</p>
 
-// ── Back to top ──
-(function () {
-  const btn = document.createElement('button');
-  btn.type = 'button';
-  btn.className = 'to-top';
-  btn.textContent = '↑';
-  btn.setAttribute('aria-label', 'Back to top');
-  document.body.appendChild(btn);
-  const onScroll = () => btn.classList.toggle('show', window.scrollY > 600);
-  window.addEventListener('scroll', onScroll, { passive: true });
-  onScroll();
-  btn.addEventListener('click', () => {
-    window.scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'smooth' });
-  });
-})();
-</script>
+      <div class="code-block">
+        <div class="cb-header">
+          <span class="cb-lang">▸ bash · run</span>
+          <button type="button" class="cb-copy" data-copy>copy</button>
+        </div>
+        <pre><code>odek run "List the Go files in this directory and count their total lines"</code></pre>
+      </div>
+      <p class="run-shape">
+        <span class="run-shape-k">illustration</span>
+        glm-5.3-flash · think → act → answer
+        <span class="stream-cursor" aria-hidden="true"></span>
+      </p>
 
+      <div class="code-block">
+        <div class="cb-header">
+          <span class="cb-lang">▸ bash · repl</span>
+          <button type="button" class="cb-copy" data-copy>copy</button>
+        </div>
+        <pre><code>odek repl</code></pre>
+      </div>
+
+      <p>Web UI — streams tokens, tools, and approvals. It binds <code>127.0.0.1:8080</code> and prints a <strong>token URL</strong>. Open that URL; a bare <code>http://127.0.0.1:8080</code> loads the chrome but cannot connect.</p>
+
+      <div class="code-block">
+        <div class="cb-header">
+          <span class="cb-lang">▸ bash · serve</span>
+          <button type="button" class="cb-copy" data-copy>copy</button>
+        </div>
+        <pre><code>odek serve
+# → http://127.0.0.1:8080/?token=…</code></pre>
+      </div>
+
+    </section>
+
+    <section class="step opt" id="bodek" aria-labelledby="bodek-h">
+      <h2 id="bodek-h"><span class="mark">▸</span> optional · bodek</h2>
+      <p><a href="https://bodek.21no.de" target="_blank" rel="noopener noreferrer">bodek</a> is a Bubble Tea TUI over <code>odek serve</code> — live reasoning, tool steps, approvals, and sub-agent chips. The engine stays odek; bodek only renders the stream. For operators who want a terminal UI and can accept that extra dependency.</p>
+
+      <div class="code-block">
+        <div class="cb-header">
+          <span class="cb-lang">▸ bash · bodek</span>
+          <button type="button" class="cb-copy" data-copy>copy</button>
+        </div>
+        <pre><code>bodek
+# spawns odek serve, or attach: bodek --url 'http://127.0.0.1:8080/?token=…'</code></pre>
+      </div>
+
+      <p class="meta">Install and themes: <a href="https://bodek.21no.de" target="_blank" rel="noopener noreferrer">bodek.21no.de</a>. Prebuilt binaries on <a href="https://github.com/BackendStack21/bodek/releases" target="_blank" rel="noopener noreferrer">GitHub Releases</a> (Linux, macOS, Windows).</p>
+    </section>
+
+    <section class="step" id="breaks" aria-labelledby="breaks-h">
+      <h2 id="breaks-h"><span class="mark">▸</span> <span class="n">05</span> · if it breaks</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Symptom</th><th>Fix</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>odek: command not found</code></td>
+              <td><code>~/.local/bin</code> (or <code>$(go env GOPATH)/bin</code>) is not on <code>PATH</code>.</td>
+            </tr>
+            <tr>
+              <td><code>failed to create sandbox container</code></td>
+              <td>No Docker. Use <code>--no-sandbox</code> or <code>export ODEK_NO_SANDBOX=1</code>.</td>
+            </tr>
+            <tr>
+              <td>Auth errors / empty key</td>
+              <td><code>ZAI_API_KEY</code> in <code>~/.odek/secrets.env</code> (mode 0600), and <code>provider</code> is <code>zai</code> — not the DeepSeek scaffold. <code>./odek.json</code> cannot carry keys.</td>
+            </tr>
+            <tr>
+              <td><code>429</code> on sub-agent runs</td>
+              <td>z.ai throttles around 5 concurrent streams. Set top-level <code>max_concurrency</code> to <code>2</code> in <code>~/.odek/config.json</code>, or <code>ODEK_MAX_CONCURRENCY</code>.</td>
+            </tr>
+            <tr>
+              <td>Slow first byte / timeout</td>
+              <td>GLM 5.3 reasoning is always on. Defaults are 300s; raise <code>llm.request_timeout_seconds</code> and <code>llm.stream_idle_timeout_seconds</code> if it is still silent.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="step" id="next" aria-labelledby="next-h">
+      <h2 id="next-h"><span class="mark">▸</span> next</h2>
+      <p>The page is the short path. Depth lives in the docs.</p>
+      <ul class="next">
+        <li>
+          <a class="k" href="https://bodek.21no.de" target="_blank" rel="noopener noreferrer">bodek</a>
+          <span class="v">optional TUI — Bubble Tea client for odek serve</span>
+        </li>
+        <li>
+          <a class="k" href="https://github.com/BackendStack21/odek/blob/main/GETTING_STARTED.md" target="_blank" rel="noopener noreferrer">full guide</a>
+          <span class="v">GETTING_STARTED — source install, bodek, GLM reference</span>
+        </li>
+        <li>
+          <a class="k" href="/CHEATSHEET.md">cheatsheet</a>
+          <span class="v">every command and flag, one page</span>
+        </li>
+        <li>
+          <a class="k" href="/CONFIG.md">config</a>
+          <span class="v">five-layer chain, every field</span>
+        </li>
+        <li>
+          <a class="k" href="/CLI.md">cli</a>
+          <span class="v">run, serve, telegram, schedule, upgrade</span>
+        </li>
+        <li>
+          <a class="k" href="/PROVIDERS.md">providers</a>
+          <span class="v">deepseek, openai, anthropic, gemini, zai, kimi</span>
+        </li>
+        <li>
+          <a class="k" href="/SANDBOXING.md">sandbox</a>
+          <span class="v">Docker isolation and the opt-out</span>
+        </li>
+        <li>
+          <a class="k" href="/SECURITY.md">security</a>
+          <span class="v">approvals, untrusted content, injection defenses</span>
+        </li>
+        <li>
+          <a class="k" href="/WEBUI.md">web ui</a>
+          <span class="v">odek serve — token URL, WebSocket, inspector</span>
+        </li>
+      </ul>
+    </section>
+
+  </main>
+
+  <footer>
+    <div class="wrap">
+      © 2024–2026 <a href="https://21no.de">21no.de</a> · MIT ·
+      <a href="https://github.com/BackendStack21/odek" target="_blank" rel="noopener noreferrer">GitHub</a> ·
+      <a href="/llms.txt">llms.txt</a>
+    </div>
+  </footer>
+
+  <script src="/copy.js"></script>
+  <script src="/motion.js"></script>
 </body>
 </html>

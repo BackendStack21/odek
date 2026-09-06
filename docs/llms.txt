@@ -1,6 +1,6 @@
 # odek
 
-> odek is a minimal autonomous agent runtime written in Go — a ReAct (Reasoning + Acting) loop with zero frameworks (stdlib plus a few focused packages), shipped as a single ~12 MB static binary with instant startup. It runs tasks from the CLI, an interactive REPL, a web UI, a Telegram bot, scheduled jobs, or as a Go library, and can execute shell commands, edit files, browse the web, transcribe audio, analyze images, spawn sub-agents, and connect to MCP servers.
+> odek is a minimal autonomous agent runtime written in Go — a ReAct (Reasoning + Acting) loop with zero frameworks (stdlib plus a few focused packages), shipped as a single ~11 MB static binary with instant startup. It runs tasks from the CLI, an interactive REPL, a web UI, a Telegram bot, scheduled jobs, or as a Go library, and can execute shell commands, edit files, browse the web, transcribe audio, analyze images, spawn sub-agents, and connect to MCP servers.
 
 Module path: `github.com/BackendStack21/odek`. Repository: https://github.com/BackendStack21/odek
 
