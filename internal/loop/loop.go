@@ -216,6 +216,8 @@ type IterationInfo struct {
 	CacheReadTokens     int           // cumulative cache read tokens
 	CachedTokens        int           // cumulative cached tokens (OpenAI)
 	CacheReported       bool          // provider returned cache metrics at least once
+	WindowTokens        int           // parent conversation window: last parent call's provider-normalized prompt size (input + cache-read + cache-creation)
+	MaxContextTokens    int           // resolved model context limit (0 = unknown)
 	TotalLatency        time.Duration // cumulative wall time
 	HasFinalAnswer      bool          // true when the agent reached a final answer
 	ReasoningContent    string        // LLM reasoning before tool calls (empty if none)
@@ -423,6 +425,13 @@ type Engine struct {
 	lastReportedInputTokens int
 	lastEstimatedTotal      int
 	tightMargin             bool
+
+	// lastPromptTokens is the provider-normalized full prompt size of the
+	// LAST main-path LLM call (input + cache-read + cache-creation) — the
+	// parent conversation window for the ctx gauge. Not a cumulative;
+	// side calls (compaction/budget summaries) and child spend charged via
+	// ChargeExternalUsage never touch it.
+	lastPromptTokens int
 
 	// compaction enables LLM-based rolling summarization of dropped turn
 	// groups (Config.Compaction). compactDigest holds the current summary.
@@ -1705,6 +1714,41 @@ func (e *Engine) recordSideCallUsage(res *llmclient.CallResult) {
 	e.TotalCacheReadTokens += res.CacheReadTokens
 	e.TotalCachedTokens += res.CachedTokens
 	e.TotalCacheReported = e.TotalCacheReported || res.CacheReported
+	// Note: side calls (compaction/budget summaries) deliberately do NOT
+	// update lastPromptTokens — their prompts are tiny {system, snippet},
+	// not the conversation window.
+}
+
+// promptWindowTokens normalizes a call's provider-reported usage into the
+// full prompt size the model actually saw. CallResult carries EXCLUSIVE
+// cache semantics (the llmclient adapters subtract cached tokens from
+// InputTokens into CacheReadTokens/CacheCreationTokens — an adapter must
+// never report them inside InputTokens), so the full window is the simple
+// sum of the three fields.
+func promptWindowTokens(res *llmclient.CallResult) int {
+	if res == nil {
+		return 0
+	}
+	return res.InputTokens + res.CacheReadTokens + res.CacheCreationTokens
+}
+
+// LastPromptTokens returns the provider-normalized prompt size of the last
+// main-path LLM call — the current conversation window, not a cumulative.
+// Side calls and sub-agent usage charged via ChargeExternalUsage never
+// affect it.
+func (e *Engine) LastPromptTokens() int {
+	if e == nil {
+		return 0
+	}
+	return e.lastPromptTokens
+}
+
+// MaxContext returns the resolved model context limit (0 = unknown).
+func (e *Engine) MaxContext() int {
+	if e == nil {
+		return 0
+	}
+	return e.maxContext
 }
 
 // budgetAllowsSideCall reports whether one extra bounded LLM side call
@@ -2260,6 +2304,9 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 		// Feed the margin calibration in trimContext: provider-reported input
 		// tokens are ground truth for how accurate the local estimate is.
 		e.lastReportedInputTokens = result.InputTokens
+		// Parent conversation window for the ctx gauge (wire v3): the last
+		// parent call's provider-normalized prompt size.
+		e.lastPromptTokens = promptWindowTokens(result)
 
 		// Accumulate cache metrics
 		// Accumulate cache metrics across iterations
@@ -2330,6 +2377,8 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 					CacheReadTokens:     e.TotalCacheReadTokens,
 					CachedTokens:        e.TotalCachedTokens,
 					CacheReported:       e.TotalCacheReported,
+					WindowTokens:        e.lastPromptTokens,
+					MaxContextTokens:    e.maxContext,
 					TotalLatency:        time.Since(startTime),
 					HasFinalAnswer:      true,
 					ReasoningContent:    result.ReasoningContent,
@@ -2432,6 +2481,8 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 				CacheReadTokens:     e.TotalCacheReadTokens,
 				CachedTokens:        e.TotalCachedTokens,
 				CacheReported:       e.TotalCacheReported,
+				WindowTokens:        e.lastPromptTokens,
+				MaxContextTokens:    e.maxContext,
 				TotalLatency:        time.Since(startTime),
 				HasFinalAnswer:      false,
 				ReasoningContent:    result.ReasoningContent,
@@ -2931,6 +2982,8 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 				CacheReadTokens:     e.TotalCacheReadTokens,
 				CachedTokens:        e.TotalCachedTokens,
 				CacheReported:       e.TotalCacheReported,
+				WindowTokens:        e.lastPromptTokens,
+				MaxContextTokens:    e.maxContext,
 				TotalLatency:        time.Since(startTime),
 				HasFinalAnswer:      false,
 			})
@@ -2988,6 +3041,8 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 				CacheReadTokens:     e.TotalCacheReadTokens,
 				CachedTokens:        e.TotalCachedTokens,
 				CacheReported:       e.TotalCacheReported,
+				WindowTokens:        e.lastPromptTokens,
+				MaxContextTokens:    e.maxContext,
 				TotalLatency:        time.Since(startTime),
 				HasFinalAnswer:      true,
 			})

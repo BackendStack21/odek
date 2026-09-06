@@ -1036,15 +1036,22 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 					})
 				}
 			}
-			// Stream per-iteration token usage so clients can refresh their
-			// context gauge live during a run instead of waiting for "done"
-			// (which only fires once, after the whole agent loop).
-			if info.InputTokens > 0 {
-				sendFn(map[string]any{
-					"type":          "usage",
-					"contextTokens": info.InputTokens,
-					"outputTokens":  info.OutputTokens,
-				})
+			// Stream the parent conversation window so clients can render an
+			// exact ctx gauge (windowTokens = the last main-path call's
+			// provider-normalized prompt size — NOT the run-cumulative;
+			// sub-agent spend never appears here). maxContextTokens (omitted
+			// when the model limit is unknown) lets clients drop their
+			// model→limit tables. outputTokens stays run-cumulative.
+			if info.WindowTokens > 0 {
+				frame := map[string]any{
+					"type":         "usage",
+					"windowTokens": info.WindowTokens,
+					"outputTokens": info.OutputTokens,
+				}
+				if info.MaxContextTokens > 0 {
+					frame["maxContextTokens"] = info.MaxContextTokens
+				}
+				sendFn(frame)
 			}
 		},
 	}
@@ -2192,17 +2199,29 @@ func handlePrompt(
 	// done is sent only AFTER the final save: clients refresh their session
 	// list the moment they see done, and a save-after-send race would hand
 	// them stale state (usage, turns, updated_at).
-	send(map[string]any{
-		"type":                 "done",
-		"latency":              latency.Seconds(),
-		"contextTokens":        contextTokens,
-		"outputTokens":         outputTokens,
-		"cacheCreationTokens":  cacheCreate,
-		"cacheReadTokens":      cacheRead,
-		"cachedTokens":         cached,
-		"sessionContextTokens": *sessionInputTokens,
-		"sessionOutputTokens":  *sessionOutputTokens,
-	})
+	send(func() map[string]any {
+		m := map[string]any{
+			"type":                 "done",
+			"latency":              latency.Seconds(),
+			// windowTokens: the final PARENT conversation window (same meaning
+			// as the last usage frame) — child LLM rounds and side-call
+			// summaries never affect it. inputTokens (renamed from
+			// contextTokens) stays the run-cumulative input across ALL calls
+			// incl. charged sub-agent spend — a billing number, not a gauge.
+			"windowTokens":         agent.LastPromptTokens(),
+			"inputTokens":          contextTokens,
+			"outputTokens":         outputTokens,
+			"cacheCreationTokens":  cacheCreate,
+			"cacheReadTokens":      cacheRead,
+			"cachedTokens":         cached,
+			"sessionContextTokens": *sessionInputTokens,
+			"sessionOutputTokens":  *sessionOutputTokens,
+		}
+		if mc := agent.MaxContextTokens(); mc > 0 {
+			m["maxContextTokens"] = mc // omitted when the model limit is unknown
+		}
+		return m
+	}())
 
 	// If we started a new session, return it so the WebSocket loop
 	// tracks it for future turns and OnSessionEnd.

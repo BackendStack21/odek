@@ -86,10 +86,12 @@ function resolvePrices() {
 
 // ── Event entry points ──
 
-// liveContext: a per-iteration usage event — the freshest context size.
-export function metricsLiveContext(tokens) {
-  if (!tokens || tokens <= 0) return;
-  S.metrics.ctxTokens = tokens;
+// liveContext: a per-iteration usage event — the freshest parent window
+// size plus the server-resolved model limit (when reported).
+export function metricsLiveContext(windowTokens, maxContextTokens) {
+  if (maxContextTokens > 0) S.metrics.maxContext = maxContextTokens;
+  if (!windowTokens || windowTokens <= 0) { renderMetrics(); return; }
+  S.metrics.ctxTokens = windowTokens;
   renderMetrics();
 }
 
@@ -99,9 +101,15 @@ export function metricsDone(evt) {
   // the server's configured model adopted on the first session event).
   const model = S.currentModel || S.metrics.model;
   if (model && model !== S.metrics.model) setMetricsModel(model);
+  // Server-reported model limit wins over the models-table re-resolve
+  // above (it reflects runtime overrides like llm.context_window).
+  if (evt && evt.maxContextTokens > 0) S.metrics.maxContext = evt.maxContextTokens;
   if (evt && evt.sessionContextTokens != null) S.metrics.sessIn = evt.sessionContextTokens;
   if (evt && evt.sessionOutputTokens != null) S.metrics.sessOut = evt.sessionOutputTokens;
-  if (evt && evt.contextTokens != null) S.metrics.ctxTokens = evt.contextTokens;
+  // windowTokens (parent window) seeds the gauge — NOT inputTokens, which
+  // is the run-cumulative billing total incl. sub-agent spend. 0/absent =
+  // "not reported": hold the last known value instead of zeroing.
+  if (evt && evt.windowTokens > 0) S.metrics.ctxTokens = evt.windowTokens;
   renderMetrics();
 }
 

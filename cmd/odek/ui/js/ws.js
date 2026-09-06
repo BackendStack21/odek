@@ -146,9 +146,12 @@ export function connect() {
 
       case 'usage':
         // Per-iteration usage — feeds the live context gauge while the
-        // run is in flight (final totals arrive on done).
+        // run is in flight (final totals arrive on done). windowTokens is
+        // the PARENT conversation window (last parent call's prompt);
+        // sub-agent spend never appears in it. maxContextTokens is the
+        // server-resolved model limit — beats the /api/models table.
         S.runIterations = (S.runIterations || 0) + 1;
-        metricsLiveContext(event.contextTokens);
+        metricsLiveContext(event.windowTokens, event.maxContextTokens);
         break;
 
       case 'pong':
@@ -193,13 +196,13 @@ export function connect() {
             const latSafe = isFinite(lat) ? lat : 0;
             const spans = [];
             spans.push('<span title="Response time">⚡ ' + (latSafe < 1 ? (latSafe * 1000).toFixed(0) + 'ms' : latSafe.toFixed(1) + 's') + '</span>');
-            if (event.contextTokens != null) spans.push('<span title="Input tokens (prompt)">' + formatNum(event.contextTokens) + ' in</span>');
+            if (event.inputTokens != null) spans.push('<span title="Input tokens (run total, incl. sub-agents)">' + formatNum(event.inputTokens) + ' in</span>');
             if (event.outputTokens != null) spans.push('<span title="Output tokens (completion)">' + formatNum(event.outputTokens) + ' out</span>');
             // Cache metrics — show only when non-zero
             if (event.cacheCreationTokens > 0) spans.push('<span title="Cache write: tokens stored on first cache-controlled request">' + formatNum(event.cacheCreationTokens) + ' stored</span>');
             if (event.cacheReadTokens > 0) spans.push('<span title="Cache hit: tokens served from cache on subsequent requests">' + formatNum(event.cacheReadTokens) + ' read</span>');
             if (event.cachedTokens > 0) spans.push('<span title="Cached tokens (automatic prefix match)">' + formatNum(event.cachedTokens) + ' cached</span>');
-            const turnCost = turnCostUSD(event.contextTokens || 0, event.outputTokens || 0);
+            const turnCost = turnCostUSD(event.inputTokens || 0, event.outputTokens || 0);
             if (turnCost != null && turnCost > 0) {
               spans.push('<span title="Estimated cost of this turn at current prices">◈ $' + turnCost.toFixed(4) + '</span>');
             }

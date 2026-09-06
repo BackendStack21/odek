@@ -107,8 +107,14 @@ Two token layers:
   bodies ≤ 2 MiB on the runs surface (`POST /api/prompt`), ≤ 1 MiB on the
   management endpoints (`/api/*` in `serve_api.go`).
 - **Token field naming**: WS event fields are camelCase
-  (`contextTokens`, `outputTokens`); REST JSON is snake_case
+  (`windowTokens`, `inputTokens`, `outputTokens`); REST JSON is snake_case
   (`input_tokens`, `session_id`). Don't mix them up.
+- **Window vs spend**: `windowTokens` is the PARENT conversation window
+  (last parent LLM call's provider-normalized prompt size — input + cache
+  read + cache creation). It drives the ctx gauge. `inputTokens` (on
+  `done`) is the run-cumulative billing total across ALL LLM calls
+  including charged sub-agent spend — never render it as a gauge. Sub-agent
+  spend lives on `subagent_state` (`tokens_used`, `cost_usd`).
 
 ## Features
 
@@ -632,8 +638,8 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 | `tool_result` | Tool returns output | `name`, `data` (full, untruncated output) |
 | `subagent_log` | Sub-agent progress within `delegate_tasks` | `task_idx`, `task_id`, `name`, `event`, `data` (redacted, capped 8 KiB) |
 | `subagent_state` | Per-task sub-agent lifecycle transition (`started`/`active`/`finished`); child emits `subagent_started`/`subagent_progress`/`subagent_finished` records over the same protocol. A sub-agent killed without reporting (user stop, turn cancel, timeout, flood-kill, crash) gets its terminal `finished` transition emitted by the parent instead, so cards never stay `running` | `task_idx`, `task_id`, `run_key`, `phase`, `status`, `step`, `iterations`, `tool`, `duration_seconds`, `tokens_used` |
-| `done` | Agent finishes — **emitted only after the session is persisted**, so refreshing session state on `done` is race-free | `latency` (seconds), `contextTokens`, `outputTokens`, `cacheCreationTokens`, `cacheReadTokens`, `cachedTokens`, `sessionContextTokens`, `sessionOutputTokens` |
-| `usage` | After each LLM iteration of a running turn | `contextTokens`, `outputTokens` (camelCase — the per-iteration context size drives the metrics gauge) |
+| `done` | Agent finishes — **emitted only after the session is persisted**, so refreshing session state on `done` is race-free | `latency` (seconds), `windowTokens` (final parent conversation window), `maxContextTokens` (resolved model limit; omitted when unknown), `inputTokens` (run-cumulative input across all calls, incl. sub-agent spend — billing), `outputTokens`, `cacheCreationTokens`, `cacheReadTokens`, `cachedTokens`, `sessionContextTokens`, `sessionOutputTokens` |
+| `usage` | After each LLM iteration of a running turn | `windowTokens`, `maxContextTokens` (omitted when the model limit is unknown), `outputTokens` (run-cumulative) (camelCase — `windowTokens` is the parent-only window size that drives the metrics gauge; child rounds and side-call summaries never move it) |
 | `error` | Agent or server error | `message` |
 | `approval_request` | Agent needs user approval for dangerous operation; blocks the run up to `timeout_seconds` (60s default) | `id`, `risk` (class name), `command` (or resource), `description`, `is_operation`, `allow_trust`, `friction`, `friction_approvals`, `timeout_seconds` (the effective server-enforced wait in seconds — render the card's countdown from it) |
 | `approval_ack` | Server confirms an approval response | `id`, `action` |
