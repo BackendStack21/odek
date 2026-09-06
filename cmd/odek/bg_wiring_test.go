@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/BackendStack21/odek"
@@ -76,4 +77,46 @@ func countBgTools(tools []odek.Tool) int {
 		}
 	}
 	return n
+}
+
+// ── background-commands tool descriptions (anti-sleep contract) ────────
+
+// TestBGToolDescriptions_NoSleepWait_AutoWake pins the guidance that stops
+// the model from burning iterations on `sleep` after starting a bg job:
+// completion is already delivered automatically (notice injection into a
+// running turn, wake turn / next-turn delivery once idle), so pausing is
+// never needed. Every bg_* description must carry the no-sleep hint;
+// bg_start must carry the full wake/poll contract.
+func TestBGToolDescriptions_NoSleepWait_AutoWake(t *testing.T) {
+	rt := newBackgroundRuntime(BackgroundSettings{Enabled: true}, "sess-test", "", nil)
+	if rt == nil {
+		t.Fatal("newBackgroundRuntime(Enabled=true, session) = nil, want runtime")
+	}
+	desc := map[string]string{}
+	for _, tl := range builtinTools(danger.DangerousConfig{}, nil, nil, 4, "", toolConfig{}, nil, rt) {
+		if bgToolNames[tl.Name()] {
+			desc[tl.Name()] = tl.Description()
+		}
+	}
+	if len(desc) != len(bgToolNames) {
+		t.Fatalf("bg tool descriptions collected = %d, want %d", len(desc), len(bgToolNames))
+	}
+	for name, d := range desc {
+		if !strings.Contains(strings.ToLower(d), "sleep") {
+			t.Errorf("%s description lacks the no-sleep-wait guidance:\n%s", name, d)
+		}
+	}
+	start := strings.ToLower(desc["bg_start"])
+	// Required bg_start guidance: auto-delivery statement, wake wording,
+	// explicit no-sleep prohibition, and the preserved poll fallback.
+	for _, want := range []string{
+		"completion is delivered automatically",
+		"wake",
+		"never call sleep",
+		"bg_status",
+	} {
+		if !strings.Contains(start, want) {
+			t.Errorf("bg_start description lacks %q:\n%s", want, desc["bg_start"])
+		}
+	}
 }

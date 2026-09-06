@@ -333,10 +333,12 @@ func (t *bgStartTool) Description() string {
 	return `Start a shell command in the background and return immediately.
 Use for long-running work: builds, full test suites, dev servers, watchers, fuzz runs, batch jobs.
 The command runs detached from the conversation: you keep working while it
-runs, and a completion notice with the exit status and an output tail is
-drained into a later iteration when it finishes (if notices are enabled).
-If notices are disabled, or your current turn depends on the result, poll
-with bg_status / bg_output before ending the turn.
+runs. Completion is delivered automatically: the exit notice is injected into
+a later iteration of a running turn, and when the turn has ended the client
+wakes the session on job completion (or the notice is delivered on the next
+turn). Never call sleep or otherwise pause to wait for a job — it blocks the
+loop for nothing. Poll with bg_status / bg_output only if notices are
+disabled or your current turn depends on the result.
 timeout_seconds: optional kill timer; 0 or absent = run until session end
 (operator cap may clamp explicit values). Jobs are killed when the session
 or the process ends. Output is capped; retrieve it with bg_output.`
@@ -389,7 +391,7 @@ type bgListTool struct{ rt *bgRuntime }
 
 func (t *bgListTool) Name() string { return "bg_list" }
 func (t *bgListTool) Description() string {
-	return "List this session's background jobs with id, status, runtime, and exit code."
+	return "List this session's background jobs with id, status, runtime, and exit code. Never sleep-wait for a job — completion is delivered automatically (see bg_start)."
 }
 func (t *bgListTool) Schema() any {
 	return map[string]any{"type": "object", "properties": map[string]any{}}
@@ -426,7 +428,8 @@ func (t *bgStatusTool) Description() string {
 exit code, duration, and output size. Returns {"status":"unknown"} for ids
 that never existed, were started by another session, died with a restart,
 or whose finished record was evicted (the oldest finished jobs are pruned
-when the per-session record cap is exceeded).`
+when the per-session record cap is exceeded). Never sleep-wait for a job —
+completion is delivered automatically (see bg_start).`
 }
 
 func (t *bgStatusTool) Schema() any {
@@ -475,7 +478,8 @@ func (t *bgOutputTool) Description() string {
 	return `Read a background job's captured output (stdout+stderr interleaved).
 Pass the returned next_cursor as since to continue reading; output older
 than the ring buffer is marked as truncated. Chunks are capped at 32 KiB.
-Only the job's own session can read it.`
+Only the job's own session can read it. Never sleep-wait for a job —
+completion is delivered automatically (see bg_start).`
 }
 
 func (t *bgOutputTool) Schema() any {
@@ -513,7 +517,8 @@ func (t *bgStopTool) Name() string { return "bg_stop" }
 func (t *bgStopTool) Description() string {
 	return `Stop a background job (SIGTERM to the process group, SIGKILL after a
 grace window). Returns the job's terminal status; stopping an
-already-finished job is not an error.`
+already-finished job is not an error. Never sleep-wait for a job —
+completion is delivered automatically (see bg_start).`
 }
 
 func (t *bgStopTool) Schema() any {
