@@ -36,6 +36,10 @@ type replEditor struct {
 
 	// Paste detection
 	bracketed bool
+
+	// draft preserves the typed-but-unsent line while navigating history,
+	// restored when historyNext moves past the newest entry.
+	draft *string
 }
 
 // newReplEditor creates a line editor reading from stdin.
@@ -64,6 +68,7 @@ func (e *replEditor) ReadLine() (string, error) {
 	e.pos = 0
 	e.bracketed = false
 	e.pending = nil
+	e.draft = nil
 
 	// Enable bracketed paste mode
 	fmt.Fprint(os.Stderr, "\x1b[?2004h")
@@ -111,9 +116,11 @@ func (e *replEditor) handleByte(b byte) (bool, error) {
 	case b == 0x09: // TAB
 		e.tabComplete()
 	case b == 0x04: // Ctrl+D
+		e.exitPasteMode()
 		return false, fmt.Errorf("EOF")
 	case b == 0x03: // Ctrl+C
 		fmt.Fprintln(os.Stderr, "^C")
+		e.exitPasteMode()
 		return false, fmt.Errorf("interrupt")
 	case b == 0x0c: // Ctrl+L — clear screen
 		e.clearScreen()
@@ -198,6 +205,41 @@ func (e *replEditor) handleEscape() (bool, error) {
 	return false, nil
 }
 
+// displayWidth returns the terminal column width of runes (wide CJK runes
+// occupy two columns). Covers the common wide ranges without dependencies.
+func displayWidth(runes []rune) int {
+	w := 0
+	for _, r := range runes {
+		w += runeWidth(r)
+	}
+	return w
+}
+
+func runeWidth(r rune) int {
+	switch {
+	case r == 0:
+		return 0
+	case r < 0x20 || (r >= 0x7f && r < 0xa0):
+		return 0 // control
+	case r >= 0x1100 && r <= 0x115f, // Hangul Jamo
+		r >= 0x2e80 && r <= 0x303e, // CJK radicals, Kangxi
+		r >= 0x3041 && r <= 0x33ff, // Hiragana .. CJK compat
+		r >= 0x3400 && r <= 0x4dbf, // CJK ext A
+		r >= 0x4e00 && r <= 0x9fff, // CJK unified
+		r >= 0xa000 && r <= 0xa4cf, // Yi
+		r >= 0xac00 && r <= 0xd7a3, // Hangul syllables
+		r >= 0xf900 && r <= 0xfaff, // CJK compat ideographs
+		r >= 0xfe30 && r <= 0xfe4f, // CJK compat forms
+		r >= 0xff00 && r <= 0xff60, // fullwidth forms
+		r >= 0xffe0 && r <= 0xffe6,
+		r >= 0x1f300 && r <= 0x1f64f, // emoji
+		r >= 0x1f900 && r <= 0x1f9ff,
+		r >= 0x20000 && r <= 0x3fffd: // CJK ext B+
+		return 2
+	}
+	return 1
+}
+
 // ── Cursor / Editing Operations ────────────────────────────────────────
 
 // readTildeOrBracketed reads remaining bytes after a CSI sequence like
@@ -223,33 +265,51 @@ func (e *replEditor) readTildeOrBracketed(_ string) {
 		} else if end[0] == '1' && end[1] == '~' {
 			e.bracketed = false // end paste
 		}
+		return
 	}
+	// Parameterized sequence (e.g. \x1b[3;5~ ctrl+Delete, \x1b[1;5C
+	// ctrl+Right): consume parameter bytes ('0'-'9', ';') until a final
+	// byte ('~' or a letter) so the tail never leaks into the edit buffer.
+	for (more[0] >= '0' && more[0] <= '9') || more[0] == ';' {
+		n, _ := os.Stdin.Read(more)
+		if n < 1 {
+			return
+		}
+	}
+}
+
+func (e *replEditor) exitPasteMode() {
+	// Leave bracketed-paste mode and newline before bailing (^C/^D),
+	// mirroring the done path.
+	fmt.Fprint(os.Stderr, "\x1b[?2004l")
+	fmt.Fprint(os.Stderr, "\r\n")
 }
 
 func (e *replEditor) cursorLeft() {
 	if e.pos > 0 {
 		e.pos--
-		fmt.Fprint(os.Stderr, "\b")
+		fmt.Fprint(os.Stderr, strings.Repeat("\b", displayWidth(e.line[e.pos:e.pos+1])))
 	}
 }
 
 func (e *replEditor) cursorRight() {
 	if e.pos < len(e.line) {
+		w := displayWidth(e.line[e.pos : e.pos+1])
 		e.pos++
-		fmt.Fprint(os.Stderr, "\x1b[C")
+		fmt.Fprintf(os.Stderr, "\x1b[%dC", w)
 	}
 }
 
 func (e *replEditor) home() {
 	if e.pos > 0 {
-		fmt.Fprintf(os.Stderr, "\r\x1b[%dC", len(e.prompt))
+		fmt.Fprintf(os.Stderr, "\r\x1b[%dC", utf8.RuneCountInString(e.prompt))
 		e.pos = 0
 	}
 }
 
 func (e *replEditor) end() {
 	if e.pos < len(e.line) {
-		fmt.Fprintf(os.Stderr, "\r\x1b[%dC", len(e.prompt)+len(e.line))
+		fmt.Fprintf(os.Stderr, "\r\x1b[%dC", utf8.RuneCountInString(e.prompt)+displayWidth(e.line))
 		e.pos = len(e.line)
 	}
 }
@@ -298,6 +358,11 @@ func (e *replEditor) deleteToEnd() {
 func (e *replEditor) historyPrev() {
 	entry := e.history.Prev()
 	if entry != nil {
+		if e.draft == nil {
+			// First navigation away from the typed line — preserve it.
+			d := string(e.line)
+			e.draft = &d
+		}
 		e.loadHistoryLine(*entry)
 	}
 }
@@ -306,6 +371,10 @@ func (e *replEditor) historyNext() {
 	entry := e.history.Next()
 	if entry != nil {
 		e.loadHistoryLine(*entry)
+	} else if e.draft != nil {
+		// Moved past the newest entry — restore the typed draft.
+		e.loadHistoryLine(*e.draft)
+		e.draft = nil
 	}
 }
 
@@ -371,8 +440,8 @@ func (e *replEditor) drawLine() {
 	fmt.Fprint(os.Stderr, "\r", e.prompt, string(e.line))
 	// Clear to end of line
 	fmt.Fprint(os.Stderr, "\x1b[K")
-	// Position cursor
-	offset := len(e.prompt) + e.pos
+	// Position cursor (display columns, wide runes count twice)
+	offset := utf8.RuneCountInString(e.prompt) + displayWidth(e.line[:e.pos])
 	fmt.Fprintf(os.Stderr, "\r\x1b[%dC", offset)
 }
 

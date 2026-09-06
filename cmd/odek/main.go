@@ -2037,7 +2037,9 @@ func run(args []string) error {
 					return
 				}
 				runSess.Messages = snapshot
-				_ = sessionStore.SaveNoIndex(runSess)
+				if err := sessionStore.SaveNoIndex(runSess); err != nil {
+		fmt.Fprintf(os.Stderr, "odek: warning: failed to persist run session: %v\n", err)
+	}
 				agent.EmitEvent(events.Event{
 					Type:      events.TypeSessionSaved,
 					SessionID: sessionID,
@@ -2489,8 +2491,9 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 	artifactsRoot, _ := artifactsHome()
 
 	shell := &shellTool{
-		dangerousConfig: dc,
-		approver:        approver,
+		dangerousConfig:     dc,
+		approver:            approver,
+		stripChildSecretEnv: dc.StripSecretsEnvChildrenEnabled(),
 	}
 	// listTools is held by reference so the live registry can be captured
 	// into it right before return (after all conditional registrations).
@@ -3021,7 +3024,9 @@ func persistPartialMessages(store *session.Store, sess *session.Session, message
 		return
 	}
 	sess.Messages = messages
-	_ = store.SaveNoIndex(sess)
+	if err := store.SaveNoIndex(sess); err != nil {
+		fmt.Fprintf(os.Stderr, "odek: warning: failed to persist session: %v\n", err)
+	}
 }
 
 // auditTurnDelta returns this turn's new messages (those appended after the
@@ -3305,7 +3310,9 @@ func continueCmd(args []string) error {
 			return
 		}
 		sess.Messages = snapshot
-		_ = store.SaveNoIndex(sess)
+		if err := store.SaveNoIndex(sess); err != nil {
+		fmt.Fprintf(os.Stderr, "odek: warning: failed to persist session: %v\n", err)
+	}
 	})
 
 	result, allMessages, err := agent.RunWithMessages(ctx, messages)

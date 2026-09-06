@@ -16,9 +16,14 @@
 package flock
 
 import (
+	"errors"
 	"fmt"
 	"os"
 )
+
+// ErrLocked is returned by TryLock when another process already holds the
+// lock. errors.Is-compatible.
+var ErrLocked = errors.New("flock: already locked")
 
 // Lock acquires an exclusive advisory lock on path. It creates the lock file
 // with 0600 permissions if it does not exist. The returned release function
@@ -31,6 +36,29 @@ func Lock(path string) (func(), error) {
 	if err := lockFile(int(f.Fd())); err != nil {
 		f.Close()
 		return nil, fmt.Errorf("flock: lock: %w", err)
+	}
+	return func() {
+		unlockFile(int(f.Fd()))
+		f.Close()
+	}, nil
+}
+
+// TryLock acquires the exclusive advisory lock like Lock, but fails with
+// ErrLocked (wrapped or bare — match with errors.Is) instead of blocking
+// when another process already holds it. The kernel arbitrates: two
+// concurrent TryLocks can never both succeed, unlike read-check-write
+// pidfile protocols.
+func TryLock(path string) (func(), error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("flock: open: %w", err)
+	}
+	if err := tryLockFile(int(f.Fd())); err != nil {
+		f.Close()
+		if errors.Is(err, ErrLocked) {
+			return nil, ErrLocked
+		}
+		return nil, fmt.Errorf("flock: try-lock: %w", err)
 	}
 	return func() {
 		unlockFile(int(f.Fd()))

@@ -138,9 +138,11 @@ type taskBudget struct {
 	MaxRuntimeSeconds  int64   `json:"max_runtime_seconds,omitempty"`
 	MaxToolCalls       int64   `json:"max_tool_calls,omitempty"`
 	MaxCostUSD         float64 `json:"max_cost_usd,omitempty"`
+	MaxInputTokens     int64   `json:"max_input_tokens,omitempty"`
 	RuntimeExhausted   bool    `json:"runtime_exhausted,omitempty"`
 	ToolCallsExhausted bool    `json:"tool_calls_exhausted,omitempty"`
 	CostExhausted      bool    `json:"cost_exhausted,omitempty"`
+	InputTokensExhausted bool  `json:"input_tokens_exhausted,omitempty"`
 }
 
 // clampLimits narrows the operator limits by the parent-supplied task
@@ -163,6 +165,9 @@ func clampLimits(op budget.Limits, tb *taskBudget) budget.Limits {
 	if tb.CostExhausted {
 		op.MaxCostUSD = 0
 	}
+	if tb.InputTokensExhausted {
+		op.MaxInputTokens = 0
+	}
 	if tb.MaxRuntimeSeconds > 0 && (op.MaxRuntimeSeconds <= 0 || tb.MaxRuntimeSeconds < op.MaxRuntimeSeconds) {
 		op.MaxRuntimeSeconds = tb.MaxRuntimeSeconds
 	}
@@ -171,6 +176,9 @@ func clampLimits(op budget.Limits, tb *taskBudget) budget.Limits {
 	}
 	if tb.MaxCostUSD > 0 && (op.MaxCostUSD <= 0 || tb.MaxCostUSD < op.MaxCostUSD) {
 		op.MaxCostUSD = tb.MaxCostUSD
+	}
+	if tb.MaxInputTokens > 0 && (op.MaxInputTokens <= 0 || tb.MaxInputTokens < op.MaxInputTokens) {
+		op.MaxInputTokens = tb.MaxInputTokens
 	}
 	return op
 }

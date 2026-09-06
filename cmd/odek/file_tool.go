@@ -721,8 +721,15 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 		// Skip binary files — single open for check then search
 		f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 		if err != nil {
+			// Surface the miss instead of silently dropping the file —
+			// under fd pressure (or a permissions change) silent drops
+			// make results quietly incomplete.
+			skipped = append(skipped, fmt.Sprintf("%s: %v", path, err))
 			return nil
 		}
+		// Per-invocation close: defers inside a Walk callback run when the
+		// CALLBACK returns, so every path below (binary skip, seek error,
+		// normal scan completion) releases the fd — no stacking across files.
 		defer f.Close()
 
 		sample := make([]byte, 512)
@@ -752,7 +759,7 @@ func (t *searchFilesTool) searchContent(args searchFilesArgs) (string, error) {
 				}
 				resultBytes += len(trimmed)
 				matches = append(matches, searchMatch{
-					Path:    path,
+					Path:    wrapUntrusted(t.toolCtx(), path, path),
 					Line:    lineNum,
 					Content: wrapUntrusted(t.toolCtx(), fmt.Sprintf("%s:%d", path, lineNum), trimmed),
 				})

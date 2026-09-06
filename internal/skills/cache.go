@@ -38,7 +38,15 @@ func scanDirsCached(projectDir, userDir string, extraDirs []string, fc fileCache
 			}
 			seen[s.Name] = true
 			if projectDir != "" && dir == projectDir {
-				markProjectSkill(&s)
+				// Mirror ScanDirs: project skills stay distrusted UNLESS
+				// the operator promoted this exact content (hash anchored
+				// in the trusted user-dir registry, not the attacker-
+				// controllable project frontmatter). The cached path used
+				// to re-pin unconditionally, making `odek skill promote`
+				// a persistent no-op across SkillManager reloads.
+				if data, err := os.ReadFile(filepath.Join(dir, s.Name, "SKILL.md")); err != nil || !isPromotedContent(userDir, s.Name, data) {
+					markProjectSkill(&s)
+				}
 			}
 			// Provenance gate — see loader.go ScanDirs for rationale.
 			if s.AutoLoad && !s.Provenance.NeedsReview {

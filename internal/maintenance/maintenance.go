@@ -253,8 +253,12 @@ func sweepArtifacts(home string, maxAge time.Duration) (int, int64, error) {
 	if err != nil {
 		return 0, 0, err
 	}
+	if sweepArtifactsHook != nil {
+		sweepArtifactsHook() // test-only injection point (see tickInterval)
+	}
 	var removed int
 	var freed int64
+	cutoff := time.Now().Add(-maxAge)
 	for _, e := range plan {
 		var err error
 		if e.prune {
@@ -262,6 +266,12 @@ func sweepArtifacts(home string, maxAge time.Duration) (int, int64, error) {
 			// fresh task between plan and execute fails here, uncounted.
 			err = os.Remove(e.path)
 		} else {
+			// Re-verify staleness at execute time: a fresh task created in
+			// this parent after planning freshens its mtime, and wholesale
+			// RemoveAll must not destroy what the per-child path protects.
+			if info, statErr := os.Stat(e.path); statErr == nil && info.ModTime().After(cutoff) {
+				continue
+			}
 			err = os.RemoveAll(e.path)
 		}
 		if err != nil {
@@ -292,6 +302,11 @@ func subtreeBytes(dir string) int64 {
 // a test hook so the janitor loop can be exercised without waiting a full
 // minute; production code never sets it.
 var tickInterval time.Duration
+
+// sweepArtifactsHook, when non-nil, runs between plan construction and
+// execution inside sweepArtifacts. Production code never sets it; tests use
+// it to inject filesystem changes into the plan→execute window.
+var sweepArtifactsHook func()
 
 // Start runs Sweep on an interval until ctx is cancelled. It launches a
 // background janitor goroutine and returns immediately. The first sweep runs
@@ -332,14 +347,39 @@ func Start(ctx context.Context, home string, cfg Config) {
 // math as the sweep; preview and deletion set can no longer disagree about
 // what "3 days old" means.
 func DaysAgo(now time.Time, days int) time.Time {
-	return now.Add(-time.Duration(days) * 24 * time.Hour)
+	return now.Add(-time.Duration(ClampRetentionDays(days)) * 24 * time.Hour)
+}
+
+// MaxRetentionDays caps operator-configured day retention. Duration math is
+// int64 nanoseconds, so anything past ~106751 days wraps NEGATIVE and flips
+// the cutoff into the future — the first janitor tick would then delete every
+// unpinned session. 36500 days (100 years) is "forever" for retention.
+const MaxRetentionDays = 36500
+
+// ClampRetentionDays bounds a day-based retention value to [0, MaxRetentionDays].
+// 0 keeps the documented "keep forever / disabled" semantics; a negative
+// value (future cutoff = delete everything) clamps to 0 for the same reason.
+func ClampRetentionDays(days int) int {
+	if days > MaxRetentionDays {
+		return MaxRetentionDays
+	}
+	if days < 0 {
+		return 0
+	}
+	return days
+}
+
+// ClampRetentionHours bounds an hour-based retention value the same way
+// (same int64-ns overflow class, reached at ~2.6e9 hours).
+func ClampRetentionHours(hours int) int {
+	return ClampRetentionDays(hours) // same bound class; hours bound is looser but safe
 }
 
 // daysAgo returns the cutoff time for a day-based retention policy. Duration
 // arithmetic (instead of AddDate) avoids DST-sensitive behaviour where a
 // "day" isn't always 24 hours.
 func daysAgo(days int) time.Time {
-	return time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+	return DaysAgo(time.Now(), days)
 }
 
 // sweepSessions deletes sessions older than maxAgeDays via the session

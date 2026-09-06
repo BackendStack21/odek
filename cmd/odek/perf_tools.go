@@ -1507,13 +1507,17 @@ func (t *multiGrepTool) searchPattern(pattern, root, fileGlob string, limit int)
 
 		f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 		if err != nil {
+			// Surface the miss instead of silently returning nil — under fd
+			// pressure (or a permissions change) silent drops make results
+			// quietly incomplete.
+			skipped = append(skipped, fmt.Sprintf("%s: %v", path, err))
 			return nil
 		}
-		defer f.Close()
 
 		sample := make([]byte, 512)
 		n, _ := f.Read(sample)
 		if isBinary(sample[:n]) {
+			f.Close()
 			return nil
 		}
 		f.Seek(0, 0)
@@ -1527,15 +1531,17 @@ func (t *multiGrepTool) searchPattern(pattern, root, fileGlob string, limit int)
 			if re.MatchString(line) {
 				trimmed := strings.TrimSpace(line)
 				if resultBytes+len(trimmed) > maxSearchResultBytes {
+					f.Close()
 					return filepath.SkipAll
 				}
 				resultBytes += len(trimmed)
 				matches = append(matches, grepMatch{
-					Path:    path,
+					Path:    wrapUntrusted(t.toolCtx(), path, path),
 					Line:    lineNum,
 					Content: wrapUntrusted(t.toolCtx(), fmt.Sprintf("%s:%d", path, lineNum), trimmed),
 				})
 				if len(matches) >= limit {
+					f.Close()
 					return filepath.SkipAll
 				}
 			}
@@ -1545,6 +1551,7 @@ func (t *multiGrepTool) searchPattern(pattern, root, fileGlob string, limit int)
 			// report the file instead of silently missing matches.
 			skipped = append(skipped, fmt.Sprintf("%s: %v", path, err))
 		}
+		f.Close()
 		if len(matches) >= limit {
 			return filepath.SkipAll
 		}
@@ -2537,7 +2544,10 @@ func (t *base64Tool) Call(argsJSON string) (result string, err error) {
 		if err != nil {
 			return jsonResult(base64Result{Error: fmt.Sprintf("decode error: %v", err)})
 		}
-		return jsonResult(base64Result{Decoded: string(decoded), Size: len(decoded)})
+		// Decoded input is externally-sourced data like every other tool
+		// output — wrap it in the untrusted boundary (base64 is a classic
+		// carrier for obfuscated injection payloads).
+		return jsonResult(base64Result{Decoded: wrapUntrusted(t.toolCtx(), "base64:decode", string(decoded)), Size: len(decoded)})
 	}
 
 	if args.Path == "" && args.Content == "" {
@@ -2700,6 +2710,18 @@ func (t *trTool) Call(argsJSON string) (result string, err error) {
 		case "string":
 			if tf.From == "" {
 				return jsonResult(trResult{Error: "from is required for string transformation"})
+			}
+			if len(tf.To) > len(tf.From) {
+				// Cap the projected output: ReplaceAll with a large `to`
+				// can expand a bounded input unboundedly — reject before
+				// expanding instead of risking an OOM.
+				occ := strings.Count(text, tf.From)
+				projected := len(text) + occ*(len(tf.To)-len(tf.From))
+				if projected > maxFileReadBytes {
+					return jsonResult(trResult{Error: fmt.Sprintf(
+						"string transformation would expand %d bytes to ~%d bytes (max %d); use a smaller replacement",
+						len(text), projected, maxFileReadBytes)})
+				}
 			}
 			text = strings.ReplaceAll(text, tf.From, tf.To)
 		case "delete":

@@ -18,8 +18,9 @@ import (
 // statuses, and short failure classifications — never prompt or completion
 // content.
 type serveFileLog struct {
-	mu sync.Mutex
-	f  *os.File
+	mu   sync.Mutex
+	f    *os.File
+	path string // remembered so writes can detect rotation swaps
 }
 
 var (
@@ -45,7 +46,7 @@ func openServeLog(path string) (*serveFileLog, error) {
 		_ = f.Close()
 		return nil, err
 	}
-	return &serveFileLog{f: f}, nil
+	return &serveFileLog{f: f, path: path}, nil
 }
 
 // setServeLog installs the process-wide serve log (nil disables logging).
@@ -75,9 +76,29 @@ func serveLogf(format string, args ...any) {
 	l.logf(format, args...)
 }
 
+// reopenIfRotated reopens the log when maintenance.rotateLogs swapped the
+// file at path out from under the held fd (rename+recreate). Without this
+// the fd keeps writing to the renamed — and after a second rotation,
+// unlinked — inode, silently discarding every subsequent line.
+func (l *serveFileLog) reopenIfRotated() {
+	if l.path == "" || l.f == nil {
+		return
+	}
+	pathInfo, err1 := os.Stat(l.path)
+	fdInfo, err2 := l.f.Stat()
+	if err1 != nil || err2 != nil || os.SameFile(pathInfo, fdInfo) {
+		return // same inode (or unknowable): keep writing
+	}
+	if nl, err := openServeLog(l.path); err == nil {
+		_ = l.f.Close()
+		l.f = nl.f
+	}
+}
+
 func (l *serveFileLog) logf(format string, args ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.reopenIfRotated()
 	fmt.Fprintf(l.f, "%s %s\n", time.Now().Format(time.RFC3339), fmt.Sprintf(format, args...))
 }
 

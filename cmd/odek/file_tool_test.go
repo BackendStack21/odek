@@ -380,7 +380,8 @@ func TestSearchFiles_Grep(t *testing.T) {
 	// a.txt: "foo bar" on line 2, b.txt: "foo bar" on line 1
 	files := map[string]int{}
 	for _, m := range r.Matches {
-		files[filepath.Base(m.Path)] = m.Line
+		// Match paths are wrapped in the untrusted boundary.
+		files[filepath.Base(unwrapUntrusted(m.Path))] = m.Line
 	}
 	if files["a.txt"] != 2 {
 		t.Errorf("a.txt expected line 2, got %d", files["a.txt"])
@@ -447,7 +448,7 @@ func TestSearchFiles_FileGlob(t *testing.T) {
 	}
 	mustUnmarshal(t, result, &r)
 
-	if len(r.Matches) != 1 || !strings.HasSuffix(r.Matches[0].Path, ".go") {
+	if len(r.Matches) != 1 || !strings.HasSuffix(unwrapUntrusted(r.Matches[0].Path), ".go") {
 		t.Errorf("expected 1 match in .go file, got %d matches", len(r.Matches))
 	}
 }
@@ -2062,7 +2063,8 @@ func TestSearchFiles_SkipsBuildDirs(t *testing.T) {
 		t.Fatal("expected at least 1 match (work.go)")
 	}
 	for _, m := range r.Matches {
-		rel, _ := filepath.Rel(dir, m.Path)
+		// Match paths are wrapped in the untrusted boundary now.
+		rel, _ := filepath.Rel(dir, unwrapUntrusted(m.Path))
 		if strings.Contains(rel, "node_modules") ||
 			strings.Contains(rel, "__pycache__") ||
 			strings.Contains(rel, "vendor") {
@@ -2072,7 +2074,7 @@ func TestSearchFiles_SkipsBuildDirs(t *testing.T) {
 	// Verify work.go IS found
 	foundWork := false
 	for _, m := range r.Matches {
-		if strings.HasSuffix(m.Path, "work.go") {
+		if strings.HasSuffix(unwrapUntrusted(m.Path), "work.go") {
 			foundWork = true
 			break
 		}

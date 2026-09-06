@@ -21,7 +21,7 @@ func TestNewFileLogger_stderr(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *fileLogger, got %T", l)
 	}
-	if fl.file != os.Stderr {
+	if *fl.fileP != os.Stderr {
 		t.Error("expected stderr for empty path")
 	}
 	if fl.level != LogDebug {
@@ -41,10 +41,10 @@ func TestNewFileLogger_filePath(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *fileLogger, got %T", l)
 	}
-	if fl.file == nil || fl.file == os.Stderr {
+	if *fl.fileP == nil || *fl.fileP == os.Stderr {
 		t.Error("expected a real file, not stderr")
 	}
-	fl.file.Close()
+	(*fl.fileP).Close()
 
 	// Verify file exists.
 	if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -72,7 +72,7 @@ func TestNewFileLogger_hardensExistingFile(t *testing.T) {
 
 	l := NewFileLogger(LogInfo, path)
 	fl := l.(*fileLogger)
-	fl.file.Close()
+	(*fl.fileP).Close()
 
 	info, err := os.Stat(path)
 	if err != nil {
@@ -93,7 +93,7 @@ func TestNewFileLogger_invalidPath(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *fileLogger, got %T", l)
 	}
-	if fl.file != os.Stderr {
+	if *fl.fileP != os.Stderr {
 		t.Error("expected fallback to stderr on invalid path")
 	}
 }
@@ -129,7 +129,7 @@ func TestFileLogger_levelFiltering(t *testing.T) {
 	l.Error("should appear")
 
 	fl := l.(*fileLogger)
-	fl.file.Close()
+	(*fl.fileP).Close()
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -154,7 +154,7 @@ func TestFileLogger_levelFiltering_Debug(t *testing.T) {
 	l.Info("info msg")
 
 	fl := l.(*fileLogger)
-	fl.file.Close()
+	(*fl.fileP).Close()
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -181,7 +181,7 @@ func TestFileLogger_levelFiltering_WarnOnly(t *testing.T) {
 	l.Error("error msg")
 
 	fl := l.(*fileLogger)
-	fl.file.Close()
+	(*fl.fileP).Close()
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -212,7 +212,7 @@ func TestFileLogger_fieldFormatting(t *testing.T) {
 	l.Info("test message", "chat_id", 42, "error", "something went wrong")
 
 	fl := l.(*fileLogger)
-	fl.file.Close()
+	(*fl.fileP).Close()
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -243,7 +243,7 @@ func TestFileLogger_fieldFormatting_missingValue(t *testing.T) {
 	l.Info("odd fields", "key1", "val1", "key2") // odd number — key2 is missing
 
 	fl := l.(*fileLogger)
-	fl.file.Close()
+	(*fl.fileP).Close()
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -264,7 +264,7 @@ func TestFileLogger_fieldFormatting_nonStringKey(t *testing.T) {
 	l.Info("non-string key", 42, "value") // non-string key
 
 	fl := l.(*fileLogger)
-	fl.file.Close()
+	(*fl.fileP).Close()
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -298,7 +298,7 @@ func TestFileLogger_concurrentWrites(t *testing.T) {
 	wg.Wait()
 
 	fl := l.(*fileLogger)
-	fl.file.Close()
+	(*fl.fileP).Close()
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -324,7 +324,7 @@ func TestFileLogger_With(t *testing.T) {
 	child.Info("child message", "chat_id", 42)
 
 	fl := l.(*fileLogger)
-	fl.file.Close()
+	(*fl.fileP).Close()
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -351,7 +351,7 @@ func TestFileLogger_With_chaining(t *testing.T) {
 	l2.Info("chained")
 
 	fl := l.(*fileLogger)
-	fl.file.Close()
+	(*fl.fileP).Close()
 
 	data, err := os.ReadFile(path)
 	if err != nil {

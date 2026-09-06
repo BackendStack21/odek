@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -256,21 +257,25 @@ func TestAcquireScheduleLock(t *testing.T) {
 		t.Fatalf("acquireScheduleLock: %v", err)
 	}
 	pidPath := filepath.Join(home, ".odek", "schedule.pid")
-	if _, err := os.Stat(pidPath); err != nil {
+	if data, err := os.ReadFile(pidPath); err != nil {
 		t.Errorf("pid file not written: %v", err)
+	} else if p := strings.TrimSpace(string(data)); p != strconv.Itoa(os.Getpid()) {
+		t.Errorf("pid file = %q, want our pid %d", p, os.Getpid())
 	}
 
-	// A second acquire while this (live, odek-owned) process holds the lock must
-	// be refused — but only when /proc reports an odek cmdline for our PID.
-	if cmdline, err := os.ReadFile("/proc/self/cmdline"); err == nil && strings.Contains(string(cmdline), "odek") {
-		if _, err := acquireScheduleLock(); err == nil {
-			t.Error("expected refusal while a live owned daemon holds the lock")
-		}
+	// A second acquire while this process holds the lock must be refused,
+	// unconditionally: exclusion is kernel-arbitrated (flock), so there is
+	// no /proc-dependent escape hatch (which never existed on macOS anyway).
+	if _, err := acquireScheduleLock(); err == nil {
+		t.Error("expected refusal while a live daemon holds the lock")
 	}
 
 	unlock()
-	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
-		t.Error("unlock did not remove the pid file")
+	// The lock file intentionally persists after release: it anchors the
+	// flock inode (removal races a concurrent opener into locking a fresh
+	// inode) and doubles as the best-effort holder diagnostic.
+	if _, err := os.Stat(pidPath); err != nil {
+		t.Errorf("lock/pid file should persist after release: %v", err)
 	}
 	// After release, re-acquiring succeeds.
 	u2, err := acquireScheduleLock()

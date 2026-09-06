@@ -41,8 +41,9 @@ type Logger interface {
 // fileLogger implements Logger by writing to a file (or stderr).
 type fileLogger struct {
 	mu     *sync.Mutex
+	fileP  **os.File // shared indirection so With() clones see rotations
+	path   string    // remembered so writes can detect rotation swaps
 	level  LogLevel
-	file   *os.File
 	fields []any // pre-pended fields from With()
 }
 
@@ -54,23 +55,23 @@ type fileLogger struct {
 // The file is opened in append mode, created if missing.
 // Thread-safe via sync.Mutex.
 func NewFileLogger(level LogLevel, path string) Logger {
-	fl := &fileLogger{level: level, mu: &sync.Mutex{}}
+	m := &sync.Mutex{}
 	if path != "" {
 		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 		if err != nil {
 			// Fall back to stderr if we can't open the file.
 			fmt.Fprintf(os.Stderr, "telegram: failed to open log file %s: %v\n", path, err)
-			fl.file = os.Stderr
-		} else {
-			// Harden existing files that were created with 0644 in earlier
-			// versions; ignore chmod errors (e.g. read-only FS).
-			_ = os.Chmod(path, 0600)
-			fl.file = f
+			fp := os.Stderr
+			return &fileLogger{level: level, mu: m, fileP: &fp}
 		}
-	} else {
-		fl.file = os.Stderr
+		// Harden existing files that were created with looser permissions
+		// in earlier versions; ignore chmod errors (e.g. read-only FS).
+		_ = os.Chmod(path, 0600)
+		fp := f
+		return &fileLogger{level: level, mu: m, fileP: &fp, path: path}
 	}
-	return fl
+	fp := os.Stderr
+	return &fileLogger{level: level, mu: m, fileP: &fp}
 }
 
 // NewNopLogger returns a Logger that discards all messages (for tests).
@@ -95,6 +96,7 @@ func (fl *fileLogger) log(level LogLevel, msg string, fields ...any) {
 
 	fl.mu.Lock()
 	defer fl.mu.Unlock()
+	reopenIfRotated(fl.path, fl.fileP)
 
 	// Format: 2006-01-02T15:04:05.000Z [LEVEL] telegram: message key=value
 	ts := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
@@ -123,7 +125,28 @@ func (fl *fileLogger) log(level LogLevel, msg string, fields ...any) {
 	}
 
 	line += "\n"
-	fmt.Fprint(fl.file, line)
+	fmt.Fprint(*fl.fileP, line)
+}
+
+// reopenIfRotated reopens the log file when maintenance.rotateLogs swapped
+// the file at path out from under the held fd (rename+recreate). Without
+// this the fd keeps writing to the renamed — and after a second rotation,
+// unlinked — inode, silently discarding every subsequent line. fileP is the
+// shared indirection so every With() clone observes the reopened file.
+func reopenIfRotated(path string, fileP **os.File) {
+	if path == "" || fileP == nil || *fileP == nil {
+		return
+	}
+	cur := *fileP
+	pathInfo, err1 := os.Stat(path)
+	fdInfo, err2 := cur.Stat()
+	if err1 != nil || err2 != nil || os.SameFile(pathInfo, fdInfo) {
+		return // same inode (or unknowable): keep writing
+	}
+	if nf, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600); err == nil {
+		_ = cur.Close()
+		*fileP = nf
+	}
 }
 
 func (fl *fileLogger) Debug(msg string, fields ...any) { fl.log(LogDebug, msg, fields...) }
@@ -135,8 +158,9 @@ func (fl *fileLogger) Error(msg string, fields ...any) { fl.log(LogError, msg, f
 func (fl *fileLogger) With(fields ...any) Logger {
 	return &fileLogger{
 		mu:     fl.mu,
+		fileP:  fl.fileP,
+		path:   fl.path,
 		level:  fl.level,
-		file:   fl.file,
 		fields: append(append([]any(nil), fl.fields...), fields...),
 	}
 }

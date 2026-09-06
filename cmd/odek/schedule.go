@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"github.com/BackendStack21/odek/internal/session"
@@ -18,6 +19,7 @@ import (
 	"github.com/BackendStack21/odek"
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
+	"github.com/BackendStack21/odek/internal/flock"
 	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/loop"
 	"github.com/BackendStack21/odek/internal/redact"
@@ -403,7 +405,11 @@ func (d cliDeliverer) deliverTelegram(ctx context.Context, job schedule.Job, res
 // literal asterisks. Uses the context-aware send so a stuck delivery doesn't
 // block the scheduler's graceful shutdown.
 func sendTelegramResult(ctx context.Context, bot *telegram.Bot, chatID int64, result string) error {
-	chunks, err := telegram.FormatResponse(result)
+	// Redact before formatting: this sink leaves the machine, and the
+	// sibling cliDeliverer log-file path already redacts the same result —
+	// delivery sinks must not disagree about secrets (a scheduled run that
+	// echoed a credential used to ship it to Telegram in clear).
+	chunks, err := telegram.FormatResponse(redact.RedactSecrets(result))
 	if err != nil {
 		return fmt.Errorf("format response: %w", err)
 	}
@@ -434,6 +440,11 @@ func sendTelegramResult(ctx context.Context, bot *telegram.Bot, chatID int64, re
 // instanceLockRef. Without this the restarted child would see a live lock and
 // skip starting its scheduler.
 var scheduleUnlockRef func()
+
+// scheduleStopRef stops the embedded scheduler's run loop. Wired at bot
+// startup so the graceful-restart failure path can halt scheduling when it
+// cannot re-acquire the schedule lock (halting beats double-firing).
+var scheduleStopRef func()
 
 // mcpCleanupRef holds the embedded scheduler's MCP-connection cleanup so the
 // graceful-restart path can run it before os.Exit(0). os.Exit skips deferred
@@ -908,35 +919,55 @@ func appendScheduleLog(job schedule.Job, result string) error {
 }
 
 // acquireScheduleLock prevents two schedule daemons from firing the same jobs.
-// Unlike the Telegram lock it refuses to start when a live daemon is found
-// rather than killing it — a running scheduler should not be silently usurped.
+// Unlike the Telegram lock it refuses to start when a live daemon holds the
+// lock rather than killing it — a running scheduler should not be silently
+// usurped. Exclusion is a kernel-arbitrated non-blocking flock (flock.TryLock):
+// the previous read-check-write pidfile protocol TOCTOU'd, letting two
+// daemons start together and double-fire every job. The pidfile remains as
+// a diagnostic (best-effort holder PID), never as the exclusion mechanism;
+// the lock file itself persists so concurrent opens always map to the same
+// inode (removing it would let a new opener lock a fresh inode).
 func acquireScheduleLock() (func(), error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
 	}
-	pidFile := filepath.Join(home, ".odek", "schedule.pid")
-	if err := os.MkdirAll(filepath.Dir(pidFile), 0755); err != nil {
+	lockPath := filepath.Join(home, ".odek", "schedule.pid")
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0755); err != nil {
 		return nil, err
 	}
-	if data, err := os.ReadFile(pidFile); err == nil {
-		if pid, _ := strconv.Atoi(strings.TrimSpace(string(data))); pid > 1 && syscall.Kill(pid, 0) == nil {
-			// The PID is alive, but after an unclean exit the OS may have recycled
-			// it onto an unrelated process. Confirm it's actually an odek process
-			// (mirrors the Telegram instance lock) before refusing — otherwise a
-			// recycled PID would make us refuse to start forever. On platforms
-			// without /proc the read fails and we stay conservative (treat as live).
-			owned := true
-			if cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid)); err == nil {
-				owned = strings.Contains(string(cmdline), "odek")
+	release, err := flock.TryLock(lockPath)
+	if err != nil {
+		if errors.Is(err, flock.ErrLocked) {
+			if data, rerr := os.ReadFile(lockPath); rerr == nil {
+				return nil, fmt.Errorf("another schedule daemon is already running (PID %s)", strings.TrimSpace(string(data)))
 			}
-			if owned {
-				return nil, fmt.Errorf("another schedule daemon is already running (PID %d)", pid)
+			return nil, fmt.Errorf("another schedule daemon is already running")
+		}
+		return nil, err
+	}
+	// Mixed-version gate: a pre-flock daemon (≤ previous release) holds no
+	// flock, so TryLock above succeeds even though it is alive and ticking.
+	// If the pidfile names a live process other than us, refuse rather than
+	// double-fire — the exact failure the flock migration exists to close.
+	// Conservative on platforms without /proc (any live non-self pid
+	// refuses), matching the pre-flock stance; on Linux the cmdline check
+	// keeps a recycled unrelated PID from blocking fresh starts.
+	if data, rerr := os.ReadFile(lockPath); rerr == nil {
+		if old, perr := strconv.Atoi(strings.TrimSpace(string(data))); perr == nil && old > 1 && old != os.Getpid() {
+			alive := syscall.Kill(old, 0) == nil
+			if alive {
+				owned := true
+				if cmdline, cerr := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", old)); cerr == nil {
+					owned = strings.Contains(string(cmdline), "odek")
+				}
+				if owned {
+					release() // do not strand our flock while refusing
+					return nil, fmt.Errorf("another schedule daemon is already running (PID %d, pre-flock)", old)
+				}
 			}
 		}
 	}
-	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())), 0600); err != nil {
-		return nil, err
-	}
-	return func() { os.Remove(pidFile) }, nil
+	_ = os.WriteFile(lockPath, []byte(strconv.Itoa(os.Getpid())), 0600)
+	return release, nil
 }
