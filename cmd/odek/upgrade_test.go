@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -196,7 +197,14 @@ func TestPerformUpgrade_ChecksumMismatch(t *testing.T) {
 	}
 }
 
+func isolateGitHubEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+}
+
 func TestFetchLatestRelease(t *testing.T) {
+	isolateGitHubEnv(t)
 	srv := fakeReleaseServer(t, "v1.16.0", []byte("bin"), "")
 	rel, err := fetchLatestRelease(context.Background(), srv.Client(), srv.URL)
 	if err != nil {
@@ -207,5 +215,172 @@ func TestFetchLatestRelease(t *testing.T) {
 	}
 	if rel.assetURL("checksums.txt") == "" {
 		t.Error("checksums.txt asset URL missing")
+	}
+}
+
+func TestFetchLatestReleaseSendsHeaders(t *testing.T) {
+	isolateGitHubEnv(t)
+	var gotUA, gotAccept, gotVer, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA = r.Header.Get("User-Agent")
+		gotAccept = r.Header.Get("Accept")
+		gotVer = r.Header.Get("X-GitHub-Api-Version")
+		gotAuth = r.Header.Get("Authorization")
+		fmt.Fprint(w, `{"tag_name":"v1.0.0","assets":[]}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	rel, err := fetchLatestRelease(context.Background(), srv.Client(), srv.URL)
+	if err != nil {
+		t.Fatalf("fetchLatestRelease: %v", err)
+	}
+	if rel.TagName != "v1.0.0" {
+		t.Errorf("tag = %q", rel.TagName)
+	}
+	if gotUA != "odek-updater" {
+		t.Errorf("User-Agent = %q, want odek-updater", gotUA)
+	}
+	if gotAccept != "application/vnd.github+json" {
+		t.Errorf("Accept = %q", gotAccept)
+	}
+	if gotVer != "2022-11-28" {
+		t.Errorf("X-GitHub-Api-Version = %q", gotVer)
+	}
+	if gotAuth != "" {
+		t.Errorf("Authorization leaked without token: %q", gotAuth)
+	}
+}
+
+func TestFetchLatestReleaseSendsToken(t *testing.T) {
+	isolateGitHubEnv(t)
+	t.Setenv("GITHUB_TOKEN", "ghs_test_token")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer ghs_test_token" {
+			t.Errorf("Authorization = %q, want Bearer token", got)
+		}
+		fmt.Fprint(w, `{"tag_name":"v1.0.0","assets":[]}`)
+	}))
+	t.Cleanup(srv.Close)
+	rel, err := fetchLatestRelease(context.Background(), srv.Client(), srv.URL)
+	if err != nil {
+		t.Fatalf("fetchLatestRelease: %v", err)
+	}
+	if rel.TagName != "v1.0.0" {
+		t.Errorf("tag = %q", rel.TagName)
+	}
+}
+
+func TestFetchLatestReleasePrefersGITHUBToken(t *testing.T) {
+	isolateGitHubEnv(t)
+	t.Setenv("GITHUB_TOKEN", "from-github")
+	t.Setenv("GH_TOKEN", "from-gh")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer from-github" {
+			t.Errorf("Authorization = %q, want GITHUB_TOKEN", got)
+		}
+		fmt.Fprint(w, `{"tag_name":"v1.0.0","assets":[]}`)
+	}))
+	t.Cleanup(srv.Close)
+	if _, err := fetchLatestRelease(context.Background(), srv.Client(), srv.URL); err != nil {
+		t.Fatalf("fetchLatestRelease: %v", err)
+	}
+}
+
+func TestFetchLatestReleaseFallsBackOnForbidden(t *testing.T) {
+	isolateGitHubEnv(t)
+	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/releases/latest") || r.URL.Path == "/" {
+			http.Redirect(w, r, "/owner/repo/releases/tag/v9.9.9", http.StatusFound)
+			return
+		}
+		if strings.Contains(r.URL.Path, "/releases/tag/") {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(page.Close)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	t.Cleanup(api.Close)
+
+	rel, err := fetchLatest(context.Background(), page.Client(), api.URL, page.URL+"/releases/latest")
+	if err != nil {
+		t.Fatalf("fallback: %v", err)
+	}
+	if rel.TagName != "v9.9.9" {
+		t.Errorf("tag = %q, want v9.9.9", rel.TagName)
+	}
+	if rel.assetURL("checksums.txt") == "" || rel.assetURL("odek-darwin-arm64") == "" {
+		t.Errorf("conventional assets missing: %+v", rel.Assets)
+	}
+	want := "https://github.com/BackendStack21/odek/releases/download/v9.9.9/odek-linux-amd64"
+	if got := rel.assetURL("odek-linux-amd64"); got != want {
+		t.Errorf("odek-linux-amd64 = %q, want %q", got, want)
+	}
+}
+
+func TestFetchLatestReleaseForbiddenWithoutFallback(t *testing.T) {
+	isolateGitHubEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := fetchLatestRelease(context.Background(), srv.Client(), srv.URL)
+	if err == nil || !strings.Contains(err.Error(), "403") {
+		t.Fatalf("expected 403 status error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "GITHUB_TOKEN") {
+		t.Errorf("403 error should mention GITHUB_TOKEN, got %v", err)
+	}
+}
+
+func TestTagFromURL(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want string
+		ok   bool
+	}{
+		{"https://github.com/BackendStack21/odek/releases/tag/v2.4.0", "v2.4.0", true},
+		{"https://github.com/BackendStack21/odek/releases/tag/v2.4.0/", "v2.4.0", true},
+		{"https://github.com/BackendStack21/odek/releases/latest", "", false},
+		{"https://github.com/BackendStack21/odek", "", false},
+	}
+	for _, tc := range cases {
+		u, err := url.Parse(tc.raw)
+		if err != nil {
+			t.Fatalf("parse %q: %v", tc.raw, err)
+		}
+		got, ok := tagFromURL(u)
+		if ok != tc.ok || got != tc.want {
+			t.Errorf("tagFromURL(%q) = (%q, %v), want (%q, %v)", tc.raw, got, ok, tc.want, tc.ok)
+		}
+	}
+	if tag, ok := tagFromURL(nil); ok || tag != "" {
+		t.Errorf("tagFromURL(nil) = (%q, %v)", tag, ok)
+	}
+}
+
+func TestFetchLatestReleaseDoesNotFallbackOnServerError(t *testing.T) {
+	isolateGitHubEnv(t)
+	pageHits := 0
+	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		pageHits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(page.Close)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(api.Close)
+
+	_, err := fetchLatest(context.Background(), page.Client(), api.URL, page.URL+"/releases/latest")
+	if err == nil || !strings.Contains(err.Error(), "500") {
+		t.Fatalf("expected 500 status error, got %v", err)
+	}
+	if pageHits != 0 {
+		t.Errorf("html fallback ran on 500 (hits=%d)", pageHits)
 	}
 }

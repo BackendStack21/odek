@@ -31,7 +31,7 @@
 | `odek mcp [--sandbox]` | Start MCP server (expose tools to Claude Code) or connect to external MCP servers (via `mcp_servers` config) |
 | `odek telegram` | Start the Telegram bot (long-polling). Hosts the embedded scheduler unless `schedules.enabled=false` |
 | `odek schedule <subcommand>` | Manage native in-process scheduled tasks (cron): `list`, `add`, `rm`, `enable`, `disable`, `run`, `next`, `daemon`. See [Schedules](SCHEDULES.md) |
-| `odek upgrade [--check]` | Self-upgrade to the latest GitHub release. Auto-detects OS/arch (`odek-<goos>-<goarch>` asset), verifies the download against the release `checksums.txt` (SHA-256), and installs it atomically over the current binary. `--check` reports the latest version without installing |
+| `odek upgrade [--check]` | Self-upgrade to the latest GitHub release. Auto-detects OS/arch (`odek-<goos>-<goarch>` asset), verifies the download against the release `checksums.txt` (SHA-256), and installs it atomically over the current binary. `--check` reports the latest version without installing. A GitHub 401/403/429 on the REST latest endpoint falls back to the HTML releases page; set `GITHUB_TOKEN` / `GH_TOKEN` to authenticate the API lookup |
 | `odek version` / `odek --version` / `odek -v` | Print version and exit |
 
 ## Run flags

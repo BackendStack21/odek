@@ -275,6 +275,10 @@ Notes:
 - Upgrade **odek first, then bodek**: bodek is only a front-end for odek's
   serve protocol, so it always benefits from the engine's new behaviour.
 - `--check` is odek-only; bodek's upgrade has no flags.
+- If `odek upgrade` reports a GitHub **403**, the anonymous API quota (or
+  an IP block) rejected the lookup. Retry, or set `GITHUB_TOKEN` /
+  `GH_TOKEN` (`gh auth token`). odek also falls back to the HTML
+  latest-release page.
 
 ---
 

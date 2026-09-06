@@ -457,7 +457,7 @@ All security-relevant state under `~/.odek` is written through `internal/fsatomi
 
 `internal/flock` provides advisory locking only: it serializes cooperating callers but does not prevent a non-cooperating process with filesystem access from reading or writing the protected file. File and directory permissions are the primary access control for sensitive data.
 
-`odek upgrade` verifies the downloaded release against the published `checksums.txt` (SHA-256) and refuses to install a binary with no checksum entry, swapping it in atomically over the running executable.
+`odek upgrade` verifies the downloaded release against the published `checksums.txt` (SHA-256) and refuses to install a binary with no checksum entry, swapping it in atomically over the running executable. The latest-release lookup authenticates with `GITHUB_TOKEN` / `GH_TOKEN` when set; a 401/403/429 from the REST API falls back to the public HTML latest-release redirect and synthesized `browser_download_url`s (checksum verification is unchanged).
 
 ### Resource bounds
 
