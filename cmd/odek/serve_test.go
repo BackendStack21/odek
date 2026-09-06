@@ -204,7 +204,9 @@ func (s *testServer) handleWebSocket(conn *golangws.Conn) {
 			writeJSON(conn, map[string]any{
 				"type":                 "done",
 				"latency":              0.5,
-				"contextTokens":        150,
+				"windowTokens":         150,
+				"maxContextTokens":     200000,
+				"inputTokens":          150,
 				"outputTokens":         30,
 				"cacheCreationTokens":  50,
 				"cacheReadTokens":      100,
@@ -1402,13 +1404,25 @@ statsCheck:
 	}
 	t.Logf("  latency: %.2fs", latency)
 
-	ctxTokens, ok := doneEvent["contextTokens"].(float64)
+	ctxWin, ok := doneEvent["windowTokens"].(float64)
 	if !ok {
-		t.Error("done event missing 'contextTokens' field")
-	} else if ctxTokens != 500 { // 200 + 300
-		t.Errorf("contextTokens = %.0f, want 500", ctxTokens)
+		t.Error("done event missing 'windowTokens' field")
+	} else if ctxWin != 300 { // last parent call's prompt (200 then 300)
+		t.Errorf("windowTokens = %.0f, want 300 (final parent window, not cumulative 500)", ctxWin)
 	}
-	t.Logf("  contextTokens: %.0f", ctxTokens)
+	if mx, ok := doneEvent["maxContextTokens"].(float64); !ok || mx <= 0 {
+		t.Errorf("done maxContextTokens = %v, want the resolved model context limit (> 0)", doneEvent["maxContextTokens"])
+	}
+	inTok, ok := doneEvent["inputTokens"].(float64)
+	if !ok {
+		t.Error("done event missing 'inputTokens' field (renamed from contextTokens)")
+	} else if inTok != 500 { // 200 + 300
+		t.Errorf("inputTokens = %.0f, want 500", inTok)
+	}
+	if _, legacy := doneEvent["contextTokens"]; legacy {
+		t.Error("done event still carries legacy 'contextTokens' — must be renamed to inputTokens")
+	}
+	t.Logf("  windowTokens: %.0f, inputTokens: %.0f", ctxWin, inTok)
 
 	outTokens, ok := doneEvent["outputTokens"].(float64)
 	if !ok {
@@ -1479,9 +1493,15 @@ sessionCheck:
 	}
 
 	// Turn-level stats should reflect only this turn's tokens
-	ctx2, _ := done2["contextTokens"].(float64)
+	ctx2, ok := done2["inputTokens"].(float64)
+	if !ok {
+		t.Fatal("prompt 2 done event missing 'inputTokens'")
+	}
 	if ctx2 != 500 {
-		t.Errorf("prompt 2 contextTokens = %.0f, want 500", ctx2)
+		t.Errorf("prompt 2 inputTokens = %.0f, want 500", ctx2)
+	}
+	if w2, ok := done2["windowTokens"].(float64); !ok || w2 <= 0 {
+		t.Errorf("prompt 2 done windowTokens = %v, want the final parent window (> 0)", done2["windowTokens"])
 	}
 	out2, _ := done2["outputTokens"].(float64)
 	if out2 != 90 {
@@ -1571,17 +1591,18 @@ usageCheck:
 	if len(usages) < 2 {
 		t.Fatalf("got %d usage events before done, want at least 2 (one per LLM turn)", len(usages))
 	}
-	// First iteration: 100 in / 20 out.
-	if got := usages[0]["contextTokens"]; got != float64(100) {
-		t.Errorf("usage[0].contextTokens = %v, want 100", got)
+	// First iteration: window = first parent call's prompt.
+	if got := usages[0]["windowTokens"]; got != float64(100) {
+		t.Errorf("usage[0].windowTokens = %v, want 100", got)
 	}
 	if got := usages[0]["outputTokens"]; got != float64(20) {
 		t.Errorf("usage[0].outputTokens = %v, want 20", got)
 	}
-	// Final iteration: cumulative 300 in / 60 out.
+	// Final iteration: window = last parent call's prompt (200), NOT the
+	// run-cumulative (300). Billing totals move to done.inputTokens.
 	last := usages[len(usages)-1]
-	if got := last["contextTokens"]; got != float64(300) {
-		t.Errorf("usage[last].contextTokens = %v, want 300", got)
+	if got := last["windowTokens"]; got != float64(200) {
+		t.Errorf("usage[last].windowTokens = %v, want 200 (last parent call's prompt)", got)
 	}
 	if got := last["outputTokens"]; got != float64(60) {
 		t.Errorf("usage[last].outputTokens = %v, want 60", got)

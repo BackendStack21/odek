@@ -933,6 +933,19 @@ func (a *Agent) TotalOutputTokens() int {
 	return a.engine.TotalOutputTokens
 }
 
+// LastPromptTokens returns the provider-normalized prompt size of the last
+// parent-side LLM call — the parent conversation window (input + cache-read
+// + cache-creation). Not a cumulative; sub-agent usage charged via
+// ChargeExternalUsage never affects it.
+func (a *Agent) LastPromptTokens() int {
+	return a.engine.LastPromptTokens()
+}
+
+// MaxContextTokens returns the resolved model context limit (0 = unknown).
+func (a *Agent) MaxContextTokens() int {
+	return a.engine.MaxContext()
+}
+
 // TotalCacheCreationTokens returns the cumulative Anthropic cache creation
 // tokens across all iterations of the most recent run.
 func (a *Agent) TotalCacheCreationTokens() int {

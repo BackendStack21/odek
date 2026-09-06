@@ -430,7 +430,7 @@ func (r *serveRun) record(v any) error {
 	case "done":
 		// Numeric fields arrive as Go ints inside the event map (they are
 		// only float64 after a JSON round trip) — accept both.
-		r.InputTokens = numberOf(m["contextTokens"])
+		r.InputTokens = numberOf(m["inputTokens"])
 		r.OutputTokens = numberOf(m["outputTokens"])
 	case "session":
 		// The session event carries the session auth token for live WS

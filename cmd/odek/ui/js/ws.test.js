@@ -211,3 +211,36 @@ test('stream-idle errors render a stall hint', () => {
   const html = el('messages').children.at(-1).innerHTML;
   assert.match(html, /Provider stream stalled/);
 });
+
+// ── usage/done feed the ctx gauge with the parent window (wire v3) ──
+
+test('usage event seeds the gauge with the parent window and server model limit', () => {
+  deliver({ type: 'usage', windowTokens: 38412, maxContextTokens: 200000, outputTokens: 512 });
+  assert.equal(S.metrics.ctxTokens, 38412, 'gauge must show the parent window, not a cumulative');
+  assert.equal(S.metrics.maxContext, 200000, 'server-reported model limit must override the models table');
+});
+
+test('usage without windowTokens never moves the gauge', () => {
+  S.metrics.ctxTokens = 1234;
+  deliver({ type: 'usage', outputTokens: 10 });
+  assert.equal(S.metrics.ctxTokens, 1234, 'absent windowTokens means "not reported" — gauge holds');
+});
+
+test('done seeds the gauge from windowTokens, totals from session fields', () => {
+  deliver({
+    type: 'done', latency: 0.5,
+    windowTokens: 41000, maxContextTokens: 200000,
+    inputTokens: 152300, outputTokens: 8231,
+    sessionContextTokens: 300000, sessionOutputTokens: 40000,
+  });
+  assert.equal(S.metrics.ctxTokens, 41000, 'gauge must take the final PARENT window from done — never inputTokens');
+  assert.equal(S.metrics.maxContext, 200000, 'done maxContextTokens must override the models table');
+  assert.equal(S.metrics.sessIn, 300000);
+  assert.equal(S.metrics.sessOut, 40000);
+});
+
+test('done without windowTokens holds the last gauge value — no zeroing', () => {
+  S.metrics.ctxTokens = 41000;
+  deliver({ type: 'done', latency: 0.5, inputTokens: 100, outputTokens: 10 });
+  assert.equal(S.metrics.ctxTokens, 41000, 'absent windowTokens means "not reported" — gauge holds');
+});
