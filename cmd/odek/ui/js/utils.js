@@ -66,12 +66,26 @@ export function copyTextToClipboard(text) {
 }
 
 // ── Toast ──
-export function showToast(msg) {
+export function showToast(msg, ms) {
   const el = document.getElementById('toast');
+  if (!el) return;
   el.textContent = msg;
   el.classList.add('show');
   clearTimeout(S.toastTimer);
-  S.toastTimer = setTimeout(() => el.classList.remove('show'), 2500);
+  S.toastTimer = setTimeout(() => el.classList.remove('show'), ms || 3000);
+}
+
+// Bodek hintTTL = noticeTTL (3s) + 5s. Tips dwell long enough to read a chord.
+const HINT_TTL_MS = 8000;
+
+// teach fires a one-time, state-triggered tip (Bodek JIT hints). Each key
+// shows once per tab; sessionStorage remembers so a reload does not nag.
+export function teach(key, text) {
+  if (!S.hintsShown) S.hintsShown = {};
+  if (S.hintsShown[key]) return;
+  S.hintsShown[key] = true;
+  try { sessionStorage.setItem('odek_hints', JSON.stringify(S.hintsShown)); } catch { /* ignore */ }
+  showToast('💡 ' + text, HINT_TTL_MS);
 }
 
 // ── Smart Scroll ──

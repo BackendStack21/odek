@@ -1,9 +1,9 @@
-// Sessions sidebar: server-side search (debounced), pagination ("load
-// more"), session switch (WS session_switch), rename/delete, and transcript
-// export (markdown / json download).
+// Sessions inspector tab: server-side search (debounced), pagination
+// ("more"), session switch (WS session_switch), rename/delete, and
+// transcript export (markdown / json download).
 import { S, getSessionToken, clearSessionToken, ensureSessionToken } from './state.js';
 import { listSessions, getSession, renameSession as renameSessionAPI, deleteSession, downloadExport, pinSession } from './api.js';
-import { messagesEl, promptEl, sendBtn, sessionListEl, sidebarSearch, sidebarOverlay, cancelBtn } from './dom.js';
+import { messagesEl, promptEl, sendBtn, sessionListEl, sidebarSearch, cancelBtn } from './dom.js';
 import { escapeHtml, escapeAttr, relativeTime, formatNum, showToast, forceScrollBottom, hideCancel, announce, openDialog, closeDialog, isDialogOpen } from './utils.js';
 import { resetTurnState, hideLoading, renderSessionHistory } from './render.js';
 import { clearApprovals } from './approvals.js';
@@ -37,6 +37,7 @@ export async function loadSessions() {
   S.sessionsExhausted = false;
   await loadSessionsPage(true);
 }
+S.refreshSessions = loadSessions;
 
 // loadSessionsMore appends the next page (if any).
 export async function loadSessionsMore() {
@@ -96,8 +97,9 @@ function renderSessionItems() {
 
   if (!sessions.length) {
     sessionListEl.innerHTML = '<div class="sessions-empty">' +
-      (S.sessionSearch ? 'no sessions match “' + escapeHtml(S.sessionSearch) + '”' : 'no sessions yet') + '</div>';
+      (S.sessionSearch ? 'no match' : 'none yet') + '</div>';
     syncMoreButton();
+    syncSidebarCount();
     return;
   }
 
@@ -109,19 +111,19 @@ function renderSessionItems() {
     const whenFull = s.updated_at ? new Date(s.updated_at).toLocaleString() : '';
     return `<div class="session-item${s.id === S.sessionId ? ' active' : ''}${s.pinned ? ' pinned' : ''}" data-id="${escapeAttr(s.id)}">
         <button class="si-body" type="button" title="Open session">
-          <span class="id">${s.pinned ? '📌 ' : ''}${escapeHtml(s.id.slice(0, 8))}</span>
+          <span class="id">${escapeHtml(s.id.slice(0, 8))}</span>
           <span class="task${!s.task ? ' untitled' : ''}">${escapeHtml(s.task || 'untitled')}</span>
           <span class="meta">
-            <span>${s.turns || 0} turn${s.turns !== 1 ? 's' : ''}</span>
-            <span${whenFull ? ` title="${escapeAttr(whenFull)}"` : ''}>${when}</span>
+            <span class="si-turns">${s.turns || 0} turn${s.turns !== 1 ? 's' : ''}</span>
+            <span class="si-when"${whenFull ? ` title="${escapeAttr(whenFull)}"` : ''}>${when}</span>
             ${usage.join('')}
             ${s.model ? `<span class="model-chip">${escapeHtml(s.model)}</span>` : ''}
           </span>
         </button>
         <span class="si-actions">
           <button class="pin-btn${s.pinned ? ' on' : ''}" type="button" title="${s.pinned ? 'Unpin' : 'Pin to top'}" aria-label="${s.pinned ? 'Unpin session' : 'Pin session to top'}">📌</button>
-          <button class="export-btn" type="button" title="Export transcript (Shift: JSON)" aria-label="Export transcript">⇩</button>
           <button class="rename-btn" type="button" title="Rename" aria-label="Rename session">✎</button>
+          <button class="export-btn" type="button" title="Export transcript (Shift: JSON)" aria-label="Export transcript">⇩</button>
           <button class="del-btn" type="button" title="Delete" aria-label="Delete session">✕</button>
         </span>
       </div>`;
@@ -190,7 +192,8 @@ export function newSession() {
   }
   S.sessionId = null;
   resetMetrics();
-  // The plan belongs to the previous session — drop it from the panel.
+  // Plan and jobs are session-scoped — drop both before the next attach.
+  S.jobs = [];
   resetPlanPanel();
 
   // Reset all streaming + tool state.
@@ -212,6 +215,7 @@ export function newSession() {
   promptEl.value = '';
   promptEl.style.height = 'auto';
   promptEl.focus();
+  if (typeof S.closePanels === 'function') S.closePanels();
 }
 
 // switchSession tells the server to load the session into this connection's
@@ -240,6 +244,7 @@ export async function loadAndRenderSession(sid) {
     metricsFromSession(sess);
     // Swap the plan panel over to the newly loaded session (clears the
     // previous session's rows synchronously, then refetches if visible).
+    S.jobs = [];
     resetPlanPanel();
 
     // Ask the server to adopt the session on this connection (restores the
@@ -280,6 +285,7 @@ export async function loadAndRenderSession(sid) {
     forceScrollBottom();
     showToast('Session loaded');
     announce('Session loaded');
+    if (typeof S.closePanels === 'function') S.closePanels();
   } catch (err) {
     showToast('Error loading session');
   }
@@ -404,14 +410,15 @@ export async function executeDeleteSession() {
   }
 }
 
-// ── Sidebar Toggle (mobile) ──
+// ── Open the inspector sessions tab ──
 export function toggleSidebar() {
-  const sidebar = document.getElementById('sidebar');
-  if (!sidebar) return;
-  sidebar.classList.toggle('active');
-  if (sidebarOverlay) sidebarOverlay.classList.toggle('active');
-  const hamburger = document.getElementById('hamburger-btn');
-  if (hamburger) hamburger.setAttribute('aria-expanded', sidebar.classList.contains('active'));
+  const drawer = document.getElementById('panels');
+  const tab = drawer && drawer.querySelector('.ptab.active');
+  if (drawer && drawer.classList.contains('active') && tab && tab.dataset.tab === 'sessions') {
+    if (typeof S.closePanels === 'function') S.closePanels();
+    return;
+  }
+  if (typeof S.openSessionsPanel === 'function') S.openSessionsPanel();
 }
 
 // ── Session list click delegation ──
@@ -462,7 +469,6 @@ sessionListEl.addEventListener('click', (e) => {
 
 // ── Static sidebar / confirm-dialog buttons (formerly inline handlers) ──
 document.getElementById('hamburger-btn').addEventListener('click', toggleSidebar);
-sidebarOverlay.addEventListener('click', toggleSidebar);
 document.querySelector('.new-session-btn').addEventListener('click', newSession);
 document.querySelector('#confirm-actions .cancel').addEventListener('click', hideConfirmDialog);
 document.getElementById('confirm-delete-btn').addEventListener('click', executeDeleteSession);

@@ -128,6 +128,12 @@ beforeEach(() => {
   responses = [];
   S.sessionId = 'sess-1';
   S.sessionTokens = { 'sess-1': 'tok-1' };
+  S.busy = false;
+  S.jobs = [];
+  S.plan = null;
+  S.planDirty = false;
+  S.planVer = 0;
+  S.planAvail = 'unknown';
   document.hidden = false;
   plan.stopPlanPolling();
   el('plan-list').textContent = '';
@@ -406,4 +412,116 @@ test('toolEmoji maps plan to 📋 and retires the dead todo arm to the default',
   assert.equal(render.toolEmoji('skill_view'), '➕');
   assert.equal(render.toolEmoji('clarify'), '➕');
   assert.equal(render.toolEmoji('shell'), '💻');
+});
+
+test('toolGlyph follows Bodek monochrome heads', () => {
+  assert.equal(render.toolGlyph('shell'), '❯');
+  assert.equal(render.toolGlyph('read_file'), '◰');
+  assert.equal(render.toolGlyph('write_file'), '✎');
+  assert.equal(render.toolGlyph('search_files'), '⌕');
+  assert.equal(render.toolGlyph('delegate_tasks'), '⑂');
+  assert.equal(render.toolGlyph('unknown_mcp'), '✦');
+});
+
+// ── Live plan / jobs chrome (Bodek plan.go + chrome.go) ──
+
+function seedPlan(steps, version = 1) {
+  S.plan = { found: true, version, steps };
+  S.planVer = version;
+  S.planAvail = 'available';
+  S.planDirty = false;
+}
+
+test('applyPlanMutation create patches steps and marks dirty', () => {
+  const ok = plan.applyPlanMutation(JSON.stringify({
+    verb: 'create',
+    steps: [
+      { id: 'p1', title: 'wire flag parsing', status: 'in_progress' },
+      { id: 'p2', title: 'next' },
+    ],
+  }));
+  assert.equal(ok, true);
+  assert.equal(S.planDirty, true);
+  assert.equal(S.planAvail, 'available');
+  assert.equal(S.plan.steps.length, 2);
+  assert.equal(S.plan.steps[0].status, 'in_progress');
+  assert.equal(S.plan.steps[1].status, 'pending');
+});
+
+test('applyPlanMutation update/complete move the strip on the same frame', () => {
+  seedPlan([
+    { id: 'p1', title: 'done work', status: 'done' },
+    { id: 'p2', title: 'wire flag parsing', status: 'in_progress' },
+    { id: 'p3', title: 'later', status: 'pending' },
+    { id: 'p4', title: 'blocked one', status: 'blocked' },
+  ], 4);
+  S.busy = true;
+  assert.match(render.planStripLabel(), /plan 1\/4/);
+  assert.match(render.planStripLabel(), /wire flag parsing/);
+  assert.match(render.planStripLabel(), /⛔1/);
+
+  assert.equal(plan.applyPlanMutation(JSON.stringify({ verb: 'complete', step_id: 'p2' })), true);
+  let strip = render.planStripLabel();
+  assert.match(strip, /plan 2\/4/);
+  assert.equal(strip.includes('wire flag parsing'), false);
+
+  assert.equal(plan.applyPlanMutation(JSON.stringify({
+    verb: 'update',
+    updates: [{ id: 'p3', status: 'in_progress' }],
+  })), true);
+  strip = render.planStripLabel();
+  assert.match(strip, /plan 2\/4/);
+  assert.match(strip, /later/);
+});
+
+test('applyPlanMutation is a no-op when the plan route is unavailable', () => {
+  S.planAvail = 'unavailable';
+  assert.equal(plan.applyPlanMutation(JSON.stringify({
+    verb: 'create',
+    steps: [{ id: 'a', title: 'ghost' }],
+  })), false);
+  assert.equal(S.plan, null);
+});
+
+test('planStripLabel is silent when idle or collapsed', () => {
+  seedPlan([{ id: 'a', title: 'x', status: 'in_progress' }]);
+  assert.equal(render.planStripLabel(), '');
+  S.busy = true;
+  S.plan.steps = [];
+  assert.equal(render.planStripLabel(), '');
+});
+
+test('header chips follow Bodek headerPlanLabel / headerJobsLabel', () => {
+  seedPlan([
+    { id: 'a', title: 'one', status: 'done' },
+    { id: 'b', title: 'two', status: 'pending' },
+  ]);
+  assert.equal(render.headerPlanLabel(), 'plan 1/2');
+  S.jobs = [{ status: 'running' }, { status: 'running' }];
+  assert.equal(render.headerJobsLabel(), '● 2 jobs');
+  S.jobs = [{ status: 'failed' }];
+  assert.equal(render.headerJobsLabel(), '✗ job');
+  S.jobs = [{ status: 'exited' }];
+  assert.equal(render.headerJobsLabel(), '');
+});
+
+test('a dirty optimistic patch is not overwritten by a non-confirm snapshot', () => {
+  plan.applyPlanMutation(JSON.stringify({
+    verb: 'create',
+    steps: [{ id: 'a', title: 'first task', status: 'in_progress' }],
+  }));
+  S.busy = true;
+  plan.adoptPlan({
+    found: true,
+    version: 0,
+    steps: [{ id: 'old', title: 'stale store', status: 'pending' }],
+  }, { confirm: false });
+  assert.match(render.planStripLabel(), /first task/);
+  plan.adoptPlan({
+    found: true,
+    version: 1,
+    steps: [{ id: 'a', title: 'first task', status: 'done' }],
+  }, { confirm: true });
+  assert.equal(S.planDirty, false);
+  assert.equal(S.plan.steps[0].status, 'done');
 });

@@ -35,6 +35,7 @@ class FakeEl {
     this.textContent = '';
     this.title = '';
     this.disabled = false;
+    this.hidden = false;
     this.scrollTop = 0;
     this.scrollHeight = 100;
     this.clientHeight = 50;
@@ -105,12 +106,24 @@ class FakeEl {
     walk(this);
     return out;
   }
-  appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
+  appendChild(c) {
+    if (c.parentNode) {
+      const i = c.parentNode.children.indexOf(c);
+      if (i >= 0) c.parentNode.children.splice(i, 1);
+    }
+    c.parentNode = this;
+    this.children.push(c);
+    return c;
+  }
   append(...cs) { cs.forEach(c => this.appendChild(c)); }
   // Mirrors ws.test.js: position ignored, node lands as a child — enough
   // for sessions.js's top-level search-clear bootstrap to survive import.
   insertAdjacentElement(_pos, node) { return this.appendChild(node); }
   insertBefore(c, ref) {
+    if (c.parentNode) {
+      const i = c.parentNode.children.indexOf(c);
+      if (i >= 0) c.parentNode.children.splice(i, 1);
+    }
     c.parentNode = this;
     const i = ref ? this.children.indexOf(ref) : -1;
     if (i >= 0) this.children.splice(i, 0, c); else this.children.push(c);
@@ -156,7 +169,7 @@ const bySelector = {};
 const ids = ['messages', 'prompt', 'send-btn', 'completion', 'ws-status', 'ws-dot',
   'model-label', 'session-list', 'sidebar-search', 'empty-state', 'cancel-btn',
   'scroll-bottom-btn', 'loading-skeleton', 'sidebar-overlay', 'file-input',
-  'attach-btn', 'file-chips', 'think-btn', 'toast', 'announcer', 'model-picker',
+  'attach-btn', 'file-chips', 'toast', 'announcer', 'model-picker',
   'custom-model-input', 'theme-btn', 'panels-btn', 'shortcuts-overlay',
   'status-group', 'ping-latency', 'stream-badge', 'sessions-more', 'sidebar-count',
   'sandbox-badge', 'plan-panel'];
@@ -205,6 +218,7 @@ const sessions = await import('./sessions.js');
 const ws = await import('./ws.js');
 const approvals = await import('./approvals.js');
 const health = await import('./health.js');
+const plan = await import('./plan.js');
 
 function deliver(event) {
   S.ws.onmessage({ data: JSON.stringify(event) });
@@ -227,9 +241,13 @@ beforeEach(() => {
   byId.messages.children.length = 0;
   // Render-module singleton state survives the DOM wipe — stale references
   // make addSubagentGroup early-return and orphan the next group.
+  render.resetTurnState();
   S.subagentGroup = null;
   S.currentToolBlock = null;
+  S.currentTurnId = null;
   S.busy = false;
+  render.hideLoading();
+  plan.stopPlanLiveIfIdle();
   S.attachedFiles.length = 0;
   promptReset();
 });
@@ -258,13 +276,19 @@ test('corrupt odek_history falls back to [] and purges the corrupt key', () => {
 });
 
 // ── F-B2: guards before clearAttachedFiles. ──
-test('rejected send keeps attached files (busy guard runs first)', () => {
+test('busy send queues the prompt and captures attachments', () => {
   S.attachedFiles.push({ name: 'a.txt', size: 1, content: 'x' });
   byId.prompt.value = 'hello';
   S.busy = true;
+  S.promptQueue.length = 0;
   input.send();
-  assert.equal(S.attachedFiles.length, 1, 'attachments survive a busy-rejected send');
+  assert.equal(S.promptQueue.length, 1, 'busy send queues instead of dropping');
+  assert.equal(S.attachedFiles.length, 0, 'attachments move onto the queued item');
+  assert.equal(S.promptQueue[0].attachments.length, 1);
+  S.promptQueue.length = 0;
   S.busy = false;
+  S.attachedFiles.push({ name: 'b.txt', size: 1, content: 'y' });
+  byId.prompt.value = 'hello';
   S.ws = null;
   input.send();
   assert.equal(S.attachedFiles.length, 1, 'attachments survive a socket-rejected send');
@@ -351,6 +375,67 @@ test('delegate_tasks tool_result completes the group without touching other bloc
     'delegate_tasks result must not leak into other tool blocks — the subagent group renders it');
   const group = byId.messages.querySelector('.subagent-group');
   assert.ok(group, 'subagent group present');
+});
+
+function spine() {
+  return byId.messages.children.map((c) => {
+    if (c.classList.contains('thinking-block')) return 'thinking';
+    if (c.classList.contains('tool-block')) return 'tool';
+    if (c.classList.contains('subagent-group')) return 'subagent';
+    if (c.classList.contains('approval-card')) return 'approval';
+    if (c.classList.contains('msg') && c.classList.contains('assistant')) return 'answer';
+    if (c.classList.contains('msg') && c.classList.contains('user')) return 'user';
+    return c.className || c.tagName;
+  });
+}
+
+// The model emits answer tokens in the same LLM message as tool_calls.
+// token_delta must not win the append race — live spine is thinking → tools → answer.
+test('token then tool_call paints tools before the answer', () => {
+  deliver({ type: 'turn_started', turn_id: 't-order-1' });
+  deliver({ type: 'token_delta', turn_id: 't-order-1', content: 'Running.' });
+  deliver({ type: 'tool_call', turn_id: 't-order-1', name: 'shell', data: '{"command":"echo hi"}' });
+  assert.deepEqual(spine(), ['tool', 'answer']);
+});
+
+test('thinking, token, tool_call stays thinking → tools → answer', () => {
+  deliver({ type: 'turn_started', turn_id: 't-order-2' });
+  deliver({ type: 'thinking_delta', turn_id: 't-order-2', content: 'plan' });
+  deliver({ type: 'token_delta', turn_id: 't-order-2', content: 'Running.' });
+  deliver({ type: 'tool_call', turn_id: 't-order-2', name: 'read_file', data: '{"path":"a.go"}' });
+  assert.deepEqual(spine(), ['thinking', 'tool', 'answer']);
+});
+
+test('late first thinking slides in front of tools that raced ahead', () => {
+  deliver({ type: 'turn_started', turn_id: 't-order-3' });
+  deliver({ type: 'tool_call', turn_id: 't-order-3', name: 'shell', data: '{}' });
+  deliver({ type: 'thinking_delta', turn_id: 't-order-3', content: 'late' });
+  assert.deepEqual(spine(), ['thinking', 'tool']);
+});
+
+test('a second iteration keeps answer last: think → tool → think → tool → answer', () => {
+  deliver({ type: 'turn_started', turn_id: 't-order-4' });
+  deliver({ type: 'thinking_delta', turn_id: 't-order-4', content: 'one' });
+  deliver({ type: 'token_delta', turn_id: 't-order-4', content: 'Running 1.' });
+  deliver({ type: 'tool_call', turn_id: 't-order-4', name: 'shell', data: '{}' });
+  render.endThinking();
+  deliver({ type: 'thinking_delta', turn_id: 't-order-4', content: 'two' });
+  deliver({ type: 'token_delta', turn_id: 't-order-4', content: 'Running 2.' });
+  deliver({ type: 'tool_call', turn_id: 't-order-4', name: 'read_file', data: '{}' });
+  assert.deepEqual(spine(), ['thinking', 'tool', 'thinking', 'tool', 'answer']);
+});
+
+test('latest assistant reply is never folded; the previous long one is', () => {
+  render.addMessage('assistant', 'first long answer');
+  const first = byId.messages.children.find((c) => c.classList.contains('assistant'));
+  first.querySelector('.content').scrollHeight = 800;
+  render.addMessage('assistant', 'second long answer');
+  const all = byId.messages.children.filter((c) => c.classList.contains('assistant'));
+  assert.equal(all.length, 2);
+  assert.ok(all[0].querySelector('.bubble').classList.contains('collapsible'), 'older reply folded');
+  assert.ok(all[0].querySelector('.collapse-toggle'), 'Show more on the older reply');
+  assert.equal(all[1].querySelector('.bubble').classList.contains('collapsible'), false, 'latest stays open');
+  assert.equal(all[1].querySelector('.collapse-toggle'), null, 'no fold on the latest');
 });
 
 // ── F-C1: the dead .sa-stop control gets its delegation arm. ──

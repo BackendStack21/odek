@@ -4,7 +4,7 @@
 import { apiHeaders } from './net.js';
 
 // Migrate legacy kode_* keys to odek_*
-['history', 'model', 'theme', 'thinking'].forEach(k => {
+['history', 'model', 'theme'].forEach(k => {
   if (!localStorage.getItem('odek_' + k) && localStorage.getItem('kode_' + k)) {
     localStorage.setItem('odek_' + k, localStorage.getItem('kode_' + k));
     localStorage.removeItem('kode_' + k);
@@ -26,6 +26,14 @@ function loadHistory() {
   return [];
 }
 
+function migrateTheme(raw) {
+  if (raw === 'light') return 'ember-light';
+  if (raw === 'dark') return 'ember-dark';
+  if (raw === 'classic') return 'ember-dark';
+  if (raw === 'ember-dark' || raw === 'ember-light' || raw === 'high-contrast') return raw;
+  return 'ember-dark';
+}
+
 export const S = {
   // ── Connection / session ──
   ws: null,
@@ -38,8 +46,6 @@ export const S = {
   attachedFiles: [], // {name, size, content}
   currentModel: localStorage.getItem('odek_model') || '',
   availableModels: [], // GET /api/models (ListModels + configured)
-  // Per-query thinking toggle. Persisted so it survives page refresh.
-  thinkingEnabled: localStorage.getItem('odek_thinking') === '1',
 
   // ── Sessions sidebar (server-side search + pagination) ──
   sessionSearch: '',   // current server-side query
@@ -97,7 +103,46 @@ export const S = {
   // ── Saved nodes for restoring the empty state after clearing ──
   savedEmptyStateNode: null,
   savedScrollBtnNode: null,
+
+  // ── Prompt queue (prompts held while a turn is running) ──
+  promptQueue: [], // {id, text, attachments, model}
+
+  // ── Theme: ember-dark | ember-light | high-contrast ──
+  theme: migrateTheme(localStorage.getItem('odek_theme')),
+
+  // ── Wake provenance (chip on the next assistant turn, not a system bubble) ──
+  pendingWakeChip: null,
+
+  // ── Desktop notifications (permission-gated; never carry raw args) ──
+  notifyEnabled: localStorage.getItem('odek_notify') === '1',
+
+  // ── Live turn / wake / jobs ──
+  currentTurnId: null,
+  currentTurnInitiated: 'operator',
+  jobs: [],          // latest /api/jobs or bg_job upserts
+  plan: null,        // last adopted GET /api/sessions/{id}/plan snapshot
+  planDirty: false,  // optimistic tool_call patch awaiting REST confirm
+  planVer: 0,
+  planAvail: 'unknown', // unknown | available | unavailable
+  planSummary: '',   // compact plan chip text
+  lastPrompt: '',    // for /retry
+  lastFailedPrompt: '',
+
+  // ── JIT tips already delivered this tab (sessionStorage-backed) ──
+  hintsShown: loadHintsShown(),
+  currentIntent: '',
 };
+
+function loadHintsShown() {
+  try {
+    const raw = sessionStorage.getItem('odek_hints');
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
 
 // ── Session token persistence (odek_* localStorage keys) ──
 

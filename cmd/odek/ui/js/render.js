@@ -1,4 +1,4 @@
-// Message rendering: streaming, thinking, tool blocks, sub-agent cards,
+// Message rendering: streaming, thinking, tool blocks, sub-agent swarm,
 // session-history rendering, collapse/copy affordances, and the loading
 // indicator. Imports only from state/dom/utils/markdown/untrusted.
 import { S } from './state.js';
@@ -6,18 +6,18 @@ import { messagesEl, promptEl, sendBtn, emptyState } from './dom.js';
 import {
   escapeHtml, escapeAttr, truncateStr, copyTextToClipboard,
   pruneMessages, scrollBottom, forceScrollBottom, stripAttachmentBodies,
-  showCancel, hideCancel, announce,
+  showCancel, hideCancel, teach,
 } from './utils.js';
 import { markdownToHtml } from './markdown.js';
 import { parseUntrusted } from './untrusted.js';
+import { classifyToolResult, chipsHtml, prettyToolBody, collectReceipt, formatReceipt } from './tools.js';
 
 // ── Turn state ──
 // resetTurnState clears all per-turn streaming/tool/sub-agent state. Called
 // before a new turn (send), on new session, and when loading a session.
 export function resetTurnState() {
-  // The finished turn's reasoning blocks were auto-expanded while it ran;
-  // collapse them now (next prompt or session switch). Only blocks this
-  // renderer opened itself (.live) are touched.
+  // Finished-turn reasoning stays collapsed (Bodek calm default).
+  // Only blocks this renderer marked .live are touched.
   messagesEl.querySelectorAll('.thinking-block.live').forEach(block => {
     const content = block.querySelector('.thinking-content');
     const toggle = block.querySelector('.thinking-toggle');
@@ -52,41 +52,215 @@ export function hideEmptyState() {
   }
 }
 
-// ── Inline Loading Indicator — typographic, no emoji ──
-const loadingMessages = [
-  'thinking',
-  'reasoning',
-  'considering',
-  'planning',
-  'tracing',
-  'searching',
-  'composing',
-];
+export function setIntent(text) {
+  if (arguments.length) S.currentIntent = String(text || '').trim();
+  paintIntent();
+}
 
+// Bodek status line: braille spinner + one stable label + elapsed +
+// queued count. The label only changes on phase (reasoning → tool →
+// composing), never as a ticker — a 1s verb cycle made the rail frantic.
+const SPIN_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const SPIN_MS = 83; // Bodek: 12 fps
+let spinTimer = null;
+let spinIdx = 0;
+
+function reduceMotion() {
+  return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+function spinGlyph() {
+  return reduceMotion() ? '⠿' : SPIN_FRAMES[spinIdx % SPIN_FRAMES.length];
+}
+
+function spinNodes() {
+  const out = [];
+  const railSpin = document.getElementById('intent-rail');
+  if (railSpin && railSpin.querySelector) {
+    const n = railSpin.querySelector('.ir-spin');
+    if (n) out.push(n);
+  }
+  const top = document.getElementById('busy-spin');
+  if (top) out.push(top);
+  if (S.loadingEl && S.loadingEl.querySelector) {
+    const n = S.loadingEl.querySelector('.ir-spin');
+    if (n) out.push(n);
+  }
+  return out;
+}
+
+function paintSpin() {
+  const ch = spinGlyph();
+  spinNodes().forEach((n) => { n.textContent = ch; });
+}
+
+function startSpin() {
+  paintSpin();
+  if (spinTimer || reduceMotion()) return;
+  spinTimer = setInterval(() => {
+    if (!S.busy) { stopSpin(); return; }
+    spinIdx++;
+    paintSpin();
+  }, SPIN_MS);
+  if (spinTimer && typeof spinTimer.unref === 'function') spinTimer.unref();
+}
+
+function stopSpin() {
+  if (spinTimer) { clearInterval(spinTimer); spinTimer = null; }
+  spinIdx = 0;
+}
+
+export function paintIntent() {
+  syncLiveChrome();
+  const label = S.currentIntent || (S.busy ? 'reasoning' : '');
+  const rail = document.getElementById('intent-rail');
+  const top = document.getElementById('busy-spin');
+  if (!label) {
+    stopSpin();
+    if (rail) rail.hidden = true;
+    if (top) top.hidden = true;
+    return;
+  }
+  let line = label;
+  if (S.runStartedAt) {
+    const secs = Math.floor((Date.now() - S.runStartedAt) / 1000);
+    if (secs > 0) {
+      line += ' · ' + (secs < 60 ? secs + 's' : Math.floor(secs / 60) + 'm' + (secs % 60) + 's');
+    }
+  }
+  const q = (S.promptQueue || []).length;
+  if (q) line += ' · ' + q + ' queued';
+  const strip = planStripLabel();
+  if (strip) line += '   ▸ ' + strip;
+  if (rail) {
+    rail.hidden = false;
+    const text = rail.querySelector && rail.querySelector('.ir-text');
+    if (text) text.textContent = line;
+    else rail.textContent = line;
+  }
+  if (top) top.hidden = false;
+  if (S.loadingEl) {
+    const textEl = S.loadingEl.querySelector('.li-text');
+    if (textEl) textEl.textContent = line;
+  }
+  startSpin();
+}
+
+// Bodek header instruments + busy-run plan strip. Chips stay visible
+// when idle; the ▸ strip only rides the status line during a turn.
+export function planStripLabel() {
+  if (!S.busy || S.planAvail !== 'available') return '';
+  const plan = S.plan;
+  if (!plan || !plan.found) return '';
+  const steps = plan.steps || [];
+  if (!steps.length) return '';
+  let done = 0, blocked = 0, active = '';
+  steps.forEach((st) => {
+    if (st.status === 'done') done++;
+    else if (st.status === 'blocked') blocked++;
+    else if (st.status === 'in_progress' && !active) active = String(st.title || '').replace(/\s+/g, ' ').trim();
+  });
+  let s = 'plan ' + done + '/' + steps.length;
+  if (active) s += ' · ' + (active.length > 32 ? active.slice(0, 32) + '…' : active);
+  if (blocked) s += ' · ⛔' + blocked;
+  return s;
+}
+
+export function headerPlanLabel() {
+  if (S.planAvail !== 'available') return '';
+  const plan = S.plan;
+  if (!plan || !plan.found) return '';
+  const steps = plan.steps || [];
+  if (!steps.length) return '';
+  const done = steps.filter((st) => st.status === 'done').length;
+  return 'plan ' + done + '/' + steps.length;
+}
+
+export function headerJobsLabel() {
+  const jobs = S.jobs || [];
+  let n = 0, failed = false;
+  jobs.forEach((j) => {
+    if (j.status === 'running') n++;
+    if (j.status === 'failed' || j.status === 'timeout' || j.status === 'killed') failed = true;
+  });
+  if (n > 0) return '● ' + n + (n === 1 ? ' job' : ' jobs');
+  if (failed) return '✗ job';
+  return '';
+}
+
+export function syncLiveChrome() {
+  const planChip = document.getElementById('plan-chip');
+  if (planChip) {
+    const lab = headerPlanLabel();
+    planChip.hidden = !lab;
+    planChip.textContent = lab;
+  }
+  const jobsChip = document.getElementById('jobs-chip');
+  if (jobsChip) {
+    const lab = headerJobsLabel();
+    jobsChip.hidden = !lab;
+    jobsChip.textContent = lab;
+    if (jobsChip.classList && typeof jobsChip.classList.toggle === 'function') {
+      jobsChip.classList.toggle('hot', lab.startsWith('✗'));
+    }
+  }
+}
+
+export function openTurn(event) {
+  S.currentTurnId = (event && event.turn_id) || S.currentTurnId;
+  S.currentTurnInitiated = (event && event.initiated) || 'operator';
+  S.turnReceipt = { files: [], plus: 0, minus: 0, tests: '', tools: 0 };
+}
+
+export function markWakeTurn(event) {
+  hideEmptyState();
+  S.pendingWakeChip = (event && event.initiated === 'system') ? 'wake' : 'remote';
+  S.currentTurnInitiated = (event && event.initiated) || 'system';
+}
+
+function assistantSender() {
+  return S.pendingWakeChip ? '⬡ odek · wake' : '⬡ odek';
+}
+
+function attachWakeChip(wrapper) {
+  if (!S.pendingWakeChip || !wrapper) return;
+  wrapper.classList.add('wake-turn');
+  const sender = wrapper.querySelector('.sender');
+  if (sender) sender.textContent = '⬡ odek · wake';
+  S.pendingWakeChip = null;
+}
+
+export function sealTurn(event) {
+  const tid = event && event.turn_id;
+  const last = (tid && messagesEl.querySelector('.msg.assistant[data-turn-id="' + tid + '"] .bubble'))
+    || messagesEl.querySelector('.msg.assistant:last-child .bubble');
+  if (!last || !S.turnReceipt) return;
+  const line = formatReceipt(S.turnReceipt);
+  if (!line) return;
+  if (last.querySelector('.turn-receipt')) return;
+  const rec = document.createElement('span');
+  rec.className = 'turn-receipt';
+  rec.textContent = line;
+  const sender = last.querySelector('.sender');
+  if (sender) sender.appendChild(rec);
+  else last.appendChild(rec);
+  void event;
+}
+
+// ── Inline Loading Indicator — Bodek status-line copy ──
 export function showLoading() {
+  if (S.loadingEl) {
+    setIntent(S.currentIntent || 'reasoning');
+    return;
+  }
   const el = document.createElement('div');
   el.className = 'loading-indicator';
-  el.innerHTML = '<div class="li-dots"><span></span></div><div class="li-text">thinking</div>';
-  // Insert after the last message (the user message we just added)
+  el.innerHTML = '<span class="ir-spin" aria-hidden="true"></span><div class="li-text">reasoning</div>';
   messagesEl.appendChild(el);
   S.loadingEl = el;
-  // Cycle messages with live elapsed time and iteration count.
-  let idx = 0;
-  S.loadingTimer = setInterval(() => {
-    if (!S.loadingEl) return;
-    const textEl = S.loadingEl.querySelector('.li-text');
-    if (!textEl) return;
-    let text = loadingMessages[idx % loadingMessages.length];
-    idx++;
-    if (S.runStartedAt) {
-      const secs = Math.floor((Date.now() - S.runStartedAt) / 1000);
-      text += ' · ' + (secs < 60 ? secs + 's' : Math.floor(secs / 60) + 'm' + (secs % 60) + 's');
-    }
-    if (S.runIterations > 0) text += ' · iter ' + S.runIterations;
-    textEl.textContent = text;
-  }, 1000);
+  setIntent('reasoning');
+  S.loadingTimer = setInterval(paintIntent, 1000);
   pruneMessages();
-  // Force scroll to show the indicator (user just sent — they're at bottom)
   forceScrollBottom();
 }
 
@@ -99,6 +273,77 @@ export function hideLoading() {
     clearInterval(S.loadingTimer);
     S.loadingTimer = null;
   }
+  stopSpin();
+}
+
+// ── Live turn spine ──
+// The model often emits answer tokens in the same LLM message as tool_calls
+// (serve E2E: token → tool_call). token_delta would otherwise create the
+// answer bubble first and a naive append would paint answer → tools.
+// History already uses thinking → tools → answer; insertTurnWork keeps
+// the live path on that same spine even when events race.
+function hasClass(el, name) {
+  if (!el) return false;
+  if (el.classList && el.classList.contains) return el.classList.contains(name);
+  return (' ' + (el.className || '') + ' ').indexOf(' ' + name + ' ') !== -1;
+}
+
+function liveAnswerEl() {
+  const el = S.streamBubbleEl;
+  return (el && el.parentNode === messagesEl) ? el : null;
+}
+
+function firstTurnOfKind(kindClass) {
+  const kids = messagesEl.children || [];
+  for (let i = 0; i < kids.length; i++) {
+    const el = kids[i];
+    if (!hasClass(el, kindClass)) continue;
+    if (S.currentTurnId) {
+      if (el.dataset && el.dataset.turnId === S.currentTurnId) return el;
+      continue;
+    }
+    if (hasClass(el, 'live') || el === S.streamBubbleEl) return el;
+  }
+  return null;
+}
+
+function turnHasThinking(except) {
+  const kids = messagesEl.children || [];
+  for (let i = 0; i < kids.length; i++) {
+    const el = kids[i];
+    if (el === except) continue;
+    if (!hasClass(el, 'thinking-block')) continue;
+    if (S.currentTurnId) {
+      if (el.dataset && el.dataset.turnId === S.currentTurnId) return true;
+      continue;
+    }
+    if (hasClass(el, 'live')) return true;
+  }
+  return false;
+}
+
+function parkAnswerLast() {
+  const answer = liveAnswerEl();
+  if (answer) messagesEl.appendChild(answer);
+}
+
+export function insertTurnWork(el, kind) {
+  if (S.currentTurnId && el.dataset) el.dataset.turnId = S.currentTurnId;
+  hideLoading();
+  if (kind === 'thinking' && !turnHasThinking(el)) {
+    const firstTool = firstTurnOfKind('tool-block') || firstTurnOfKind('subagent-group');
+    if (firstTool) {
+      messagesEl.insertBefore(el, firstTool);
+      parkAnswerLast();
+      return;
+    }
+  }
+  const answer = liveAnswerEl();
+  if (answer) {
+    messagesEl.insertBefore(el, answer);
+    return;
+  }
+  messagesEl.appendChild(el);
 }
 
 // ── Thinking ──
@@ -107,17 +352,16 @@ export function streamThinking(content) {
     // Remove cursor from any active stream
     removeStreamCursor();
 
-    // Live reasoning opens expanded (marked .live so the next turn can
-    // collapse exactly the blocks it auto-opened — manually opened
-    // historical blocks are never touched).
+    // Live reasoning stays collapsed (Bodek calm default). .live marks
+    // this turn's block so the next prompt can leave history alone.
     const block = document.createElement('div');
     block.className = 'thinking-block live';
     block.innerHTML =
-      '<div class="thinking-toggle" role="button" tabindex="0" aria-expanded="true">' +
-        '<span class="arrow open">▶</span> reasoning' +
+      '<div class="thinking-toggle" role="button" tabindex="0" aria-expanded="false">' +
+        '<span class="arrow">▶</span> thinking' +
       '</div>' +
-      '<div class="thinking-content open">' + escapeHtml(content) + '</div>';
-    messagesEl.appendChild(block);
+      '<div class="thinking-content">' + escapeHtml(content) + '</div>';
+    insertTurnWork(block, 'thinking');
 
     S.thinkingContentEl = block.querySelector('.thinking-content');
     hideEmptyState();
@@ -228,12 +472,14 @@ function startStream() {
 
   const wrapper = document.createElement('div');
   wrapper.className = 'msg assistant';
+  if (S.currentTurnId) wrapper.dataset.turnId = S.currentTurnId;
   wrapper.style.opacity = '1';
   wrapper.innerHTML =
     '<div class="bubble">' +
-      '<div class="sender">assistant</div>' +
+      '<div class="sender">' + assistantSender() + '</div>' +
       '<div class="content" id="stream-content"></div>' +
     '</div>';
+  attachWakeChip(wrapper);
   messagesEl.appendChild(wrapper);
 
   S.streamText = '';
@@ -242,21 +488,17 @@ function startStream() {
   S.streamBubbleEl = wrapper;
   S.streamContentEl = wrapper.querySelector('#stream-content');
   S.streamContentEl.appendChild(S.streamCursorEl);
-  // Add copy button and collapse check to the stream bubble
+  compactOlderAnswers(wrapper);
   const bubble = wrapper.querySelector('.bubble');
-  if (bubble) {
-    addCopyButton(bubble);
-    checkCollapse(bubble);
-  }
+  if (bubble) addCopyButton(bubble);
   pruneMessages();
   scrollBottom();
 }
 
 export function endStream() {
   removeStreamCursor();
-  // F-C7: history renders re-check collapse, the live path didn't — a long
-  // streamed answer had no "Show more" until the session was reloaded.
-  if (S.streamBubbleEl) checkCollapse(S.streamBubbleEl);
+  // The live answer is the latest — never fold it. Older long replies
+  // were already compacted when this bubble opened.
   S.streamBubbleEl = null;
   S.streamContentEl = null;
   S.streamText = '';
@@ -280,21 +522,19 @@ export function addMessage(role, content) {
   const wrapper = document.createElement('div');
   wrapper.className = 'msg ' + role;
 
-  let sender = role;
-  if (role === 'user') sender = 'you';
+  const sender = role === 'user' ? '❯ you' : assistantSender();
 
   wrapper.innerHTML =
     '<div class="bubble">' +
       '<div class="sender">' + sender + '</div>' +
       '<div class="content">' + markdownToHtml(content) + '</div>' +
     '</div>';
+  if (role === 'assistant') attachWakeChip(wrapper);
   messagesEl.appendChild(wrapper);
-  // Copy button and collapse check on the freshly appended bubble.
   const bubble = wrapper.querySelector('.bubble');
-  if (bubble) {
-    addCopyButton(bubble);
-    checkCollapse(bubble);
-  }
+  if (bubble) addCopyButton(bubble);
+  if (role === 'assistant') compactOlderAnswers(wrapper);
+  else if (bubble) checkCollapse(bubble, { latest: false });
   pruneMessages();
   scrollBottom();
 }
@@ -305,7 +545,6 @@ export function addSystemMessage(content) {
   el.className = 'msg system';
   el.innerHTML = '<div class="bubble"><div class="content">' + escapeHtml(content) + '</div></div>';
   messagesEl.appendChild(el);
-  announce(content);
   pruneMessages();
   scrollBottom();
 }
@@ -325,12 +564,14 @@ export function renderAssistantMessage(content) {
   wrapper.className = 'msg assistant';
   wrapper.innerHTML =
     '<div class="bubble">' +
-      '<div class="sender">assistant</div>' +
+      '<div class="sender">' + assistantSender() + '</div>' +
       '<div class="content">' + markdownToHtml(content) + '</div>' +
     '</div>';
+  attachWakeChip(wrapper);
   messagesEl.appendChild(wrapper);
   const bubble = wrapper.querySelector('.bubble');
-  if (bubble) { addCopyButton(bubble); checkCollapse(bubble); }
+  if (bubble) addCopyButton(bubble);
+  compactOlderAnswers(wrapper);
   pruneMessages();
 }
 
@@ -338,6 +579,20 @@ export function renderAssistantMessage(content) {
 
 // Matches Go's render.ToolEmoji for consistency. Exported so tests can pin
 // the mirror (internal/render/render.go is the source of truth).
+export function toolGlyph(name) {
+  const n = String(name || '').toLowerCase();
+  if (n.includes('shell') || n.includes('bash') || n.includes('exec')) return '❯';
+  if (n.includes('write') || n.includes('patch') || n.includes('edit')) return '✎';
+  if (n.includes('read')) return '◰';
+  if (n.includes('list') || n.includes('dir') || n.includes('ls')) return '▤';
+  if (n.includes('search') || n.includes('grep') || n.includes('find')) return '⌕';
+  if (n.includes('browser') || n.includes('http') || n.includes('fetch') || n.includes('web')) return '◉';
+  if (n.includes('delegate') || n.includes('subagent') || n.includes('task')) return '⑂';
+  if (n.includes('memory') || n.includes('recall')) return '❖';
+  if (n.includes('vision') || n.includes('image') || n.includes('transcribe')) return '◎';
+  return '✦';
+}
+
 export function toolEmoji(name) {
   if (name === 'read_file' || name === 'write_file' || name === 'search_files' ||
       name === 'patch' || name === 'execute_code' || name === 'multi_grep') return '📝';
@@ -397,13 +652,8 @@ function formatToolArgs(data) {
 // ── Tool Calls ──
 export function addToolCall(name, data) {
   removeStreamCursor();
-  // Only add the "tool calls" divider once per tool group per turn.
-  if (!S.inToolGroup) {
-    addDivider('tool calls');
-    S.inToolGroup = true;
-  }
+  S.inToolGroup = true;
 
-  const emoji = toolEmoji(name);
   const preview = buildToolPreview(name, data);
 
   const el = document.createElement('div');
@@ -411,7 +661,8 @@ export function addToolCall(name, data) {
   el.innerHTML =
     '<div class="tb-header" role="button" tabindex="0" aria-expanded="false">' +
       '<span class="arrow">▶</span>' +
-      ' <span class="tb-emoji">' + emoji + '</span>' +
+      ' <span class="tb-status">▸</span>' +
+      ' <span class="tb-emoji">' + toolGlyph(name) + '</span>' +
       ' <span class="tb-name">' + escapeHtml(name) + '</span>' +
       (preview ? ' <span class="tb-preview">' + escapeHtml(preview) + '</span>' : '') +
       ' <span class="tb-spinner running"></span>' +
@@ -419,8 +670,9 @@ export function addToolCall(name, data) {
     '</div>' +
     '<div class="tb-body">' + escapeHtml(formatToolArgs(data)) + '</div>';
 
-  messagesEl.appendChild(el);
+  insertTurnWork(el, 'tool');
   S.currentToolBlock = el;
+  teach('steps', 'tip: click a tool head to expand its output · thinking stays folded');
 
   // Push into per-name FIFO queues so parallel results route correctly.
   if (!S.toolBlockQueues.has(name)) S.toolBlockQueues.set(name, []);
@@ -432,33 +684,27 @@ export function addToolCall(name, data) {
   scrollBottom();
 }
 
-// appendToolResultContent renders a tool result into a block, truncating
-// long output behind a "show all" expander. Shared by the live path
-// (addToolResult) and session-history rendering.
+// appendToolResultContent renders a tool result into the collapsed .tb-body
+// (same toggle as args), truncating long output behind a "show all" expander.
+// Shared by the live path (addToolResult) and session-history rendering.
 function appendToolResultContent(block, output) {
   const resultEl = document.createElement('div');
   resultEl.className = 'tb-result';
-  block.appendChild(resultEl);
+  const body = block.querySelector('.tb-body');
+  (body || block).appendChild(resultEl);
   fillToolResult(resultEl, output || '', true);
 }
 
 // fillToolResult renders tool output into resultEl. The server sends raw,
 // unsanitized content; tool output may embed the model-facing
 // <untrusted_content_*> envelope, which is unwrapped for display — the body
-// is inserted as text (never HTML) and the envelope source is shown as a
-// badge instead of the literal tag text. When truncate is true, long bodies
-// are cut behind a "show all" expander carrying the full output.
+// is inserted as text (never HTML). Envelope source is model-facing trust
+// metadata and is not shown. When truncate is true, long bodies are cut
+// behind a "show all" expander carrying the full output.
 function fillToolResult(resultEl, output, truncate) {
   const MAX_RESULT = 600;
   const segments = parseUntrusted(output);
   for (const seg of segments) {
-    if (seg.source) {
-      const badge = document.createElement('span');
-      badge.className = 'tb-source';
-      badge.textContent = '🔒 ' + seg.source;
-      resultEl.appendChild(badge);
-      resultEl.appendChild(document.createTextNode('\n'));
-    }
     const body = seg.body;
     if (truncate && body.length > MAX_RESULT) {
       resultEl.appendChild(document.createTextNode(body.slice(0, MAX_RESULT)));
@@ -492,7 +738,34 @@ export function addToolResult(name, output) {
     if (latEl) latEl.textContent = ms < 1000 ? Math.round(ms) + 'ms' : (ms / 1000).toFixed(1) + 's';
   }
 
+  const status = block.querySelector('.tb-status');
+  if (status) {
+    const failed = /(?:^|\n)(?:error|failed|denied|fatal)[:\s]/i.test(output || '');
+    status.textContent = failed ? '✗' : '✓';
+    status.classList.toggle('err', failed);
+    status.classList.toggle('ok', !failed);
+  }
+
   appendToolResultContent(block, output || '');
+
+  const chips = classifyToolResult(name, prettyToolBody(output || ''));
+  if (chips.length) {
+    const host = block.querySelector('.tb-header');
+    if (host && !host.querySelector('.tb-chip')) {
+      const wrap = document.createElement('span');
+      wrap.className = 'tb-chips';
+      wrap.innerHTML = chipsHtml(chips);
+      host.appendChild(wrap);
+    }
+  }
+  if (S.turnReceipt) {
+    const piece = collectReceipt(name, '', output || '');
+    S.turnReceipt.tools = (S.turnReceipt.tools || 0) + 1;
+    S.turnReceipt.plus += piece.plus;
+    S.turnReceipt.minus += piece.minus;
+    if (piece.tests) S.turnReceipt.tests = piece.tests;
+    S.turnReceipt.files.push(...piece.files);
+  }
   scrollBottom();
 }
 
@@ -515,12 +788,52 @@ function toggleToolBody(header) {
   }
 }
 
-// ── Sub-agent Cards ──
+// ── Sub-agent swarm (Bodek transcript) ──
+// Same spine as a tool step: ▶ ▸ ⑂ delegate_tasks · 1/2 agents
+// then an always-on chip strip (⟳ SA1 <goal|tool>). Details sit behind
+// the chip / head, with a ⎿ tree — not a bordered card grid.
+
+function saChipLabel(idx, text) {
+  const body = String(text || '').trim() || ('Task ' + (idx + 1));
+  return 'SA' + (idx + 1) + ' ' + body;
+}
+
+function saFinishGlyph(status) {
+  if (status === 'cancelled') return '⊘';
+  if (status === 'timeout') return '⏱';
+  if (status === 'partial' || status === 'budget_exhausted') return '◐';
+  if (status && status !== 'success') return '✗';
+  return '✓';
+}
+
+function subagentHeadHTML(n) {
+  return '<div class="sg-header" role="button" tabindex="0" aria-expanded="false">' +
+    '<span class="arrow">▶</span>' +
+    ' <span class="tb-status">▸</span>' +
+    ' <span class="tb-emoji">⑂</span>' +
+    ' <span class="tb-name">delegate_tasks</span>' +
+    ' <span class="sg-rollup">0/' + n + ' agents</span>' +
+  '</div>';
+}
+
+function subagentCardHTML(i, goal, withStop) {
+  const title = goal || ('Task ' + (i + 1));
+  return '<div class="sa-top" role="button" tabindex="0" aria-expanded="false">' +
+      '<div class="sa-icon">⟳</div>' +
+      '<div class="sa-goal" title="' + escapeAttr(title) + '">' + escapeHtml(saChipLabel(i, title)) + '</div>' +
+      '<div class="sa-status">running</div>' +
+      (withStop ? '<button class="sa-stop" title="Stop this sub-agent">■</button>' : '') +
+    '</div>' +
+    '<div class="sa-details">' +
+      '<div class="sa-meta"></div>' +
+      '<div class="sa-summary"></div>' +
+      '<div class="sa-files"></div>' +
+    '</div>';
+}
+
 export function addSubagentGroup(command) {
   removeStreamCursor();
   if (S.subagentGroup) return; // only one group at a time
-
-  addDivider('delegated tasks');
 
   let tasks = [];
   try {
@@ -530,27 +843,18 @@ export function addSubagentGroup(command) {
 
   const group = document.createElement('div');
   group.className = 'subagent-group';
-  group.innerHTML = '<div class="sg-header">Sub-agents</div><div class="subagent-grid" id="sa-grid"></div>';
-  messagesEl.appendChild(group);
+  group.innerHTML = subagentHeadHTML(tasks.length) + '<div class="subagent-grid" id="sa-grid"></div>';
+  insertTurnWork(group, 'tool');
   S.subagentGroup = group;
+  teach('swarm', 'tip: click a chip for the agent log · inspector Now lists every agent');
 
   const grid = group.querySelector('#sa-grid');
   tasks.forEach((task, i) => {
     const card = document.createElement('div');
     card.className = 'subagent-card running';
     card.dataset.index = i;
-    card.innerHTML =
-      '<div class="sa-top" role="button" tabindex="0" aria-expanded="false">' +
-        '<div class="sa-icon">⟳</div>' +
-        '<div class="sa-goal" title="' + escapeAttr(task.goal || 'Task ' + (i+1)) + '">' + escapeHtml(task.goal || 'Task ' + (i+1)) + '</div>' +
-        '<div class="sa-status">running</div>' +
-        '<button class="sa-stop" title="Stop this sub-agent">■</button>' +
-      '</div>' +
-      '<div class="sa-details">' +
-        '<div class="sa-meta"></div>' +
-        '<div class="sa-summary"></div>' +
-        '<div class="sa-files"></div>' +
-      '</div>';
+    card.dataset.goal = task.goal || '';
+    card.innerHTML = subagentCardHTML(i, task.goal, true);
     // Disarmed until the subagent_state started record delivers the
     // task_id — the task may still be queued behind the concurrency
     // semaphore, in which case there is nothing to cancel yet.
@@ -602,7 +906,7 @@ function finalizeSubagentCard(card, result, keepStatus = false) {
   const stopBtn = card.querySelector('.sa-stop');
   if (stopBtn) stopBtn.remove();
   if (!keepStatus) {
-    card.querySelector('.sa-icon').textContent = '✓';
+    card.querySelector('.sa-icon').textContent = saFinishGlyph(result && result.status);
     card.classList.remove('running');
     card.querySelector('.sa-status').textContent = 'done';
   }
@@ -617,37 +921,49 @@ function finalizeSubagentCard(card, result, keepStatus = false) {
   if (!keepStatus) {
     if (status === 'error') {
       card.classList.add('error');
-      card.querySelector('.sa-icon').textContent = '✗';
+      card.querySelector('.sa-icon').textContent = saFinishGlyph(status);
       card.querySelector('.sa-status').textContent = 'error';
+    } else if (status === 'cancelled') {
+      card.classList.add('stopped');
+      card.querySelector('.sa-icon').textContent = saFinishGlyph(status);
+      card.querySelector('.sa-status').textContent = 'stopped';
     } else {
       card.classList.add('completed');
+      card.querySelector('.sa-icon').textContent = saFinishGlyph(status);
     }
   } else if (status === 'error') {
     card.classList.add('error');
+  } else if (status === 'cancelled' || card.classList.contains('stopped')) {
+    card.classList.add('stopped');
   } else {
     card.classList.add('completed');
   }
 
-  // Auto-open details for error or when there's a summary
   const details = card.querySelector('.sa-details');
   const summary = result.summary || '';
   const files = result.files_changed || [];
   const tokens = result.tokens_used || 0;
   const iters = result.iterations || 0;
 
-  if (summary || files.length > 0) {
+  if (summary || files.length > 0 || tokens || iters) {
     const meta = details.querySelector('.sa-meta');
-    if (tokens) meta.textContent = tokens + ' tokens' + (iters ? ' · ' + iters + ' iters' : '');
+    if (tokens) {
+      card.dataset.tokens = String(tokens);
+      meta.textContent = tokens + ' tok' + (iters ? ' · ' + iters + ' it' : '');
+    } else if (iters) {
+      meta.textContent = iters + ' it';
+    }
 
     const summaryEl = details.querySelector('.sa-summary');
     summaryEl.textContent = typeof summary === 'string' ? summary : '';
 
     if (files.length > 0) {
       const filesEl = details.querySelector('.sa-files');
-      filesEl.innerHTML = files.map(f => '<span class="file-chip"><span class="icon">📄</span>' + escapeHtml(f) + '</span>').join('');
+      filesEl.innerHTML = files.map(f => '<span class="file-chip">' + escapeHtml(f) + '</span>').join('');
     }
 
-    details.classList.add('open');
+    // Bodek: details stay collapsed unless the agent failed.
+    if (status === 'error') details.classList.add('open');
   }
 }
 
@@ -662,6 +978,7 @@ export function completeSubagents(output) {
     // files, tokens) which only the batch result carries.
     finalizeSubagentCard(card, taskResults[i], card.dataset.finalized === '1');
   });
+  refreshSubagentHead(S.subagentGroup);
 
   pruneMessages();
   scrollBottom();
@@ -694,11 +1011,14 @@ export function updateSubagentState(ev) {
       statusEl.textContent = 'running';
       armStop();
       break;
-    case 'active':
+    case 'active': {
       statusEl.textContent = '⟳ ' + (ev.tool || 'working') + (ev.step ? ' · ' + ev.step : '');
+      const goalEl = card.querySelector('.sa-goal');
+      if (goalEl && ev.tool) goalEl.textContent = saChipLabel(ev.task_idx, ev.tool);
       if (meta && ev.step) meta.textContent = 'step ' + ev.step + (ev.tool ? ' · ' + ev.tool : '');
       armStop();
       break;
+    }
     case 'finished': {
       card.dataset.finalized = '1';
       card.classList.remove('running');
@@ -706,21 +1026,25 @@ export function updateSubagentState(ev) {
       if (stopBtn) stopBtn.remove();
       const cancelled = ev.status === 'cancelled';
       const failed = !cancelled && ev.status && ev.status !== 'success' && ev.status !== 'partial';
-      card.querySelector('.sa-icon').textContent = cancelled ? '⊘' : (failed ? '✗' : '✓');
+      card.querySelector('.sa-icon').textContent = saFinishGlyph(ev.status);
       card.classList.add(cancelled ? 'stopped' : (failed ? 'error' : 'completed'));
       statusEl.textContent = cancelled ? 'stopped'
         : failed ? (ev.status || 'failed')
         : (ev.status === 'partial' ? 'partial' : 'done');
+      if (ev.tokens_used) card.dataset.tokens = String(ev.tokens_used);
       if (meta) {
         const parts = [];
-        if (ev.tokens_used) parts.push(ev.tokens_used + ' tokens');
-        if (ev.iterations) parts.push(ev.iterations + ' iters');
+        if (ev.step) parts.push('step ' + ev.step);
+        if (ev.tool) parts.push(ev.tool);
+        if (ev.iterations) parts.push(ev.iterations + ' it');
+        if (ev.tokens_used) parts.push(ev.tokens_used + ' tok');
         if (ev.duration_seconds) parts.push(ev.duration_seconds.toFixed(1) + 's');
         meta.textContent = parts.join(' · ');
       }
       if (failed) {
         const d = card.querySelector('.sa-details');
         if (d) d.classList.add('open');
+        syncSubagentArrow(S.subagentGroup);
       }
       updateSubagentHeader();
       break;
@@ -747,32 +1071,77 @@ export function requestSubagentStop(taskIdx) {
   S.onSubagentStop(taskID);
 }
 
-// updateSubagentHeader shows wave progress on the group header:
-// "Sub-agents · N/M complete · F failed".
-function updateSubagentHeader() {
-  if (!S.subagentGroup) return;
-  const cards = S.subagentGroup.querySelectorAll('.subagent-card');
+// refreshSubagentHead writes Bodek's agentRollup onto the swarm head:
+// "1/2 agents · 1 ✗ · 3.2k tok". Live/pending keep a static ▸ — the
+// status rail is the only spinner.
+function refreshSubagentHead(group) {
+  if (!group) return;
+  const cards = group.querySelectorAll('.subagent-card');
   if (!cards.length) return;
-  let done = 0, failed = 0, stopped = 0;
+  let done = 0, failed = 0, tokens = 0, live = 0;
   cards.forEach(c => {
-    if (c.classList.contains('completed')) done++;
-    else if (c.classList.contains('stopped')) stopped++;
-    else if (c.classList.contains('error')) failed++;
+    const finished = c.dataset.finalized === '1'
+      || c.classList.contains('completed')
+      || c.classList.contains('error')
+      || c.classList.contains('stopped');
+    if (finished) done++;
+    else live++;
+    if (c.classList.contains('error') || c.classList.contains('stopped')) failed++;
+    tokens += parseInt(c.dataset.tokens || '0', 10) || 0;
   });
-  const header = S.subagentGroup.querySelector('.sg-header');
-  if (header && (done || failed || stopped)) {
-    header.textContent = 'Sub-agents · ' + done + '/' + cards.length + ' complete' +
-      (failed ? ' · ' + failed + ' failed' : '') +
-      (stopped ? ' · ' + stopped + ' stopped' : '');
+  const parts = [done + '/' + cards.length + ' agents'];
+  if (failed) parts.push(failed + ' ✗');
+  if (tokens) parts.push(tokens >= 1000 ? (tokens / 1000).toFixed(1).replace(/\.0$/, '') + 'k tok' : tokens + ' tok');
+  const rollup = group.querySelector('.sg-rollup');
+  if (rollup) rollup.textContent = parts.join(' · ');
+  const mark = group.querySelector('.sg-header .tb-status');
+  if (mark) {
+    mark.textContent = live ? '▸' : (failed ? '✗' : '✓');
+    mark.classList.toggle('ok', !live && !failed);
+    mark.classList.toggle('err', !live && !!failed);
   }
+}
+
+function updateSubagentHeader() {
+  refreshSubagentHead(S.subagentGroup);
 }
 
 function toggleSaDetails(el) {
   el.classList.toggle('open');
-  // Mirror state for keyboard/AT users (the header row is role="button").
+  // Mirror state for keyboard/AT users (the chip row is role="button").
   const card = el.closest('.subagent-card');
   const top = card && card.querySelector('.sa-top');
-  if (top) top.setAttribute('aria-expanded', el.classList.contains('open') ? 'true' : 'false');
+  if (top && top.setAttribute) top.setAttribute('aria-expanded', el.classList.contains('open') ? 'true' : 'false');
+  syncSubagentArrow(card && card.closest('.subagent-group'));
+}
+
+function toggleSubagentGroup(header) {
+  const group = header.closest('.subagent-group');
+  if (!group) return;
+  const details = group.querySelectorAll('.sa-details');
+  let anyClosed = false;
+  details.forEach(d => { if (!d.classList.contains('open')) anyClosed = true; });
+  details.forEach(d => {
+    if (anyClosed) d.classList.add('open');
+    else d.classList.remove('open');
+    const card = d.closest('.subagent-card');
+    const top = card && card.querySelector('.sa-top');
+    if (top && top.setAttribute) top.setAttribute('aria-expanded', d.classList.contains('open') ? 'true' : 'false');
+  });
+  syncSubagentArrow(group);
+}
+
+function syncSubagentArrow(group) {
+  if (!group) return;
+  const header = group.querySelector('.sg-header');
+  if (!header) return;
+  let anyOpen = false;
+  group.querySelectorAll('.sa-details').forEach(d => {
+    if (d.classList.contains('open')) anyOpen = true;
+  });
+  const arrow = header.querySelector('.arrow');
+  if (arrow) arrow.classList.toggle('open', anyOpen);
+  if (header.setAttribute) header.setAttribute('aria-expanded', anyOpen ? 'true' : 'false');
 }
 
 export function appendSubagentLog(taskIdx, event) {
@@ -786,16 +1155,18 @@ export function appendSubagentLog(taskIdx, event) {
   if (!details) return;
   const summaryEl = details.querySelector('.sa-summary');
 
-  // Format the log line
+  // Bodek log grammar: glyph + name on calls, ⎿ excerpt on results.
+  // Details stay collapsed until the operator opens a chip — a live swarm
+  // must not strobe the transcript open on every tool beat.
   let text = '';
   if (event.event === 'tool_call') {
-    text = '🔧 ' + event.name + (event.data ? '(' + truncateStr(event.data, 60) + ')' : '');
+    text = toolGlyph(event.name) + ' ' + (event.name || 'tool') +
+      (event.data ? ' · ' + truncateStr(event.data, 60) : '');
   } else if (event.event === 'tool_result') {
-    text = '📄 ' + truncateStr(event.data || '', 100);
+    text = '⎿ ' + truncateStr(event.data || '', 100);
   }
   if (!text) return;
 
-  // Append to existing summary content (or create a log container)
   let logContainer = card.querySelector('.sa-log');
   if (!logContainer) {
     logContainer = document.createElement('div');
@@ -806,9 +1177,6 @@ export function appendSubagentLog(taskIdx, event) {
   lineEl.className = 'log-line';
   lineEl.textContent = text;
   logContainer.appendChild(lineEl);
-
-  details.classList.add('open');
-  scrollBottom();
 }
 
 // ── Session history rendering ──
@@ -823,11 +1191,9 @@ export function renderSessionHistory(messages) {
     if (m.role === 'tool' && m.tool_call_id) resultsById.set(m.tool_call_id, m.content || '');
   });
 
-  let toolDividerShown = false;
   messages.forEach(msg => {
     if (msg.role === 'user') {
       addMessage('user', stripAttachmentBodies(msg.content || ''));
-      toolDividerShown = false;
       return;
     }
     if (msg.role !== 'assistant') return; // skip system/tool internals
@@ -835,14 +1201,7 @@ export function renderSessionHistory(messages) {
     if (msg.reasoning_content) renderHistoricalThinking(msg.reasoning_content);
 
     const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
-    if (msg.content) {
-      renderAssistantMessage(msg.content);
-    }
     if (toolCalls.length > 0) {
-      if (!toolDividerShown) {
-        addDivider('tool calls');
-        toolDividerShown = true;
-      }
       toolCalls.forEach(tc => {
         const name = (tc.function && tc.function.name) || 'tool';
         const args = (tc.function && tc.function.arguments) || '';
@@ -854,6 +1213,9 @@ export function renderSessionHistory(messages) {
         }
       });
     }
+    if (msg.content) {
+      renderAssistantMessage(msg.content);
+    }
   });
 }
 
@@ -863,7 +1225,7 @@ function renderHistoricalThinking(content) {
   block.className = 'thinking-block';
   block.innerHTML =
     '<div class="thinking-toggle" role="button" tabindex="0" aria-expanded="false">' +
-      '<span class="arrow">▶</span> reasoning' +
+        '<span class="arrow">▶</span> thinking' +
     '</div>' +
     '<div class="thinking-content">' + escapeHtml(content) + '</div>';
   messagesEl.appendChild(block);
@@ -878,7 +1240,8 @@ function renderHistoricalToolBlock(name, args, result) {
   el.innerHTML =
     '<div class="tb-header" role="button" tabindex="0" aria-expanded="false">' +
       '<span class="arrow">▶</span>' +
-      ' <span class="tb-emoji">' + toolEmoji(name) + '</span>' +
+      ' <span class="tb-status ok">✓</span>' +
+      ' <span class="tb-emoji">' + toolGlyph(name) + '</span>' +
       ' <span class="tb-name">' + escapeHtml(name) + '</span>' +
       (preview ? ' <span class="tb-preview">' + escapeHtml(preview) + '</span>' : '') +
     '</div>' +
@@ -890,15 +1253,13 @@ function renderHistoricalToolBlock(name, args, result) {
 // renderHistoricalSubagents renders a completed delegate_tasks group with
 // per-task final states parsed from the tool result.
 function renderHistoricalSubagents(args, output) {
-  addDivider('delegated tasks');
-
   let tasks = [];
   try { tasks = JSON.parse(args).tasks || []; } catch { tasks = []; }
   const taskResults = parseSubagentResults(output);
 
   const group = document.createElement('div');
   group.className = 'subagent-group';
-  group.innerHTML = '<div class="sg-header">Sub-agents</div><div class="subagent-grid"></div>';
+  group.innerHTML = subagentHeadHTML(tasks.length) + '<div class="subagent-grid"></div>';
   messagesEl.appendChild(group);
   const grid = group.querySelector('.subagent-grid');
 
@@ -906,43 +1267,107 @@ function renderHistoricalSubagents(args, output) {
     const card = document.createElement('div');
     card.className = 'subagent-card running';
     card.dataset.index = i;
-    card.innerHTML =
-      '<div class="sa-top" role="button" tabindex="0" aria-expanded="false">' +
-        '<div class="sa-icon">⟳</div>' +
-        '<div class="sa-goal" title="' + escapeAttr(task.goal || 'Task ' + (i+1)) + '">' + escapeHtml(task.goal || 'Task ' + (i+1)) + '</div>' +
-        '<div class="sa-status">running</div>' +
-      '</div>' +
-      '<div class="sa-details">' +
-        '<div class="sa-meta"></div>' +
-        '<div class="sa-summary"></div>' +
-        '<div class="sa-files"></div>' +
-      '</div>';
+    card.dataset.goal = task.goal || '';
+    card.innerHTML = subagentCardHTML(i, task.goal, false);
     grid.appendChild(card);
     finalizeSubagentCard(card, taskResults[i]);
   });
+  refreshSubagentHead(group);
 }
 
 // ── Collapse long messages ──
 // Must match the max-height of .bubble.collapsible in style.css.
 export const COLLAPSE_MAX_HEIGHT_PX = 460;
 
-function toggleCollapse(el) {
-  const bubble = el.closest('.bubble');
-  if (!bubble) return;
-  bubble.classList.toggle('expanded');
-  el.textContent = bubble.classList.contains('expanded') ? 'Show less ▲' : 'Show more ▼';
+function resolveBubble(el) {
+  if (!el) return null;
+  return el.classList.contains('bubble') ? el : el.querySelector('.bubble');
 }
 
-function checkCollapse(bubble) {
+function nodeHolds(parent, node) {
+  if (!parent || !node) return false;
+  if (parent === node) return true;
+  if (parent.contains) return parent.contains(node);
+  let el = node;
+  while (el) {
+    if (el === parent) return true;
+    el = el.parentNode;
+  }
+  return false;
+}
+
+function assistantMessages() {
+  const out = [];
+  const kids = messagesEl.children || [];
+  for (let i = 0; i < kids.length; i++) {
+    const el = kids[i];
+    if (hasClass(el, 'msg') && hasClass(el, 'assistant')) out.push(el);
+  }
+  return out;
+}
+
+function releaseCollapse(bubble) {
+  if (!bubble) return;
+  bubble.classList.remove('collapsible', 'expanded');
+  const existing = bubble.querySelector('.collapse-toggle');
+  if (existing) existing.remove();
+}
+
+function setToggleLabel(toggle, open) {
+  toggle.textContent = open ? 'Show less ↑' : 'Show more ↓';
+  toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+function toggleCollapse(el) {
+  const bubble = resolveBubble(el.closest('.bubble') || el.closest('.msg'));
+  if (!bubble) return;
+  const open = bubble.classList.toggle('expanded');
+  setToggleLabel(el, open);
+  if (!open) {
+    const msg = bubble.closest('.msg') || bubble;
+    if (msg.scrollIntoView) msg.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+}
+
+// checkCollapse folds a bubble that overflows the threshold. The latest
+// assistant reply is never folded — pass { latest: true } or let
+// compactOlderAnswers skip the keep node.
+function checkCollapse(host, opts) {
+  const bubble = resolveBubble(host);
+  if (!bubble) return;
+  if (opts && opts.latest) {
+    releaseCollapse(bubble);
+    return;
+  }
   const content = bubble.querySelector('.content');
-  if (!content || content.scrollHeight <= COLLAPSE_MAX_HEIGHT_PX) return;
+  if (!content) return;
+  const existing = bubble.querySelector('.collapse-toggle');
+  if (content.scrollHeight <= COLLAPSE_MAX_HEIGHT_PX) {
+    releaseCollapse(bubble);
+    return;
+  }
   bubble.classList.add('collapsible');
-  const toggle = document.createElement('div');
+  const open = bubble.classList.contains('expanded');
+  if (existing) {
+    setToggleLabel(existing, open);
+    return;
+  }
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
   toggle.className = 'collapse-toggle';
-  toggle.setAttribute('role', 'button');
-  toggle.setAttribute('tabindex', '0');
-  toggle.textContent = 'Show more ▼';
+  setToggleLabel(toggle, false);
   bubble.appendChild(toggle);
+}
+
+// compactOlderAnswers folds every assistant bubble except `keep` (the
+// current latest). Call when a new assistant reply opens so history
+// shrinks and the live answer stays full-height.
+export function compactOlderAnswers(keep) {
+  assistantMessages().forEach((msg) => {
+    if (keep && (msg === keep || nodeHolds(msg, keep))) return;
+    const bubble = msg.querySelector('.bubble');
+    if (bubble) checkCollapse(bubble, { latest: false });
+  });
 }
 
 // ── Copy message / code ──
@@ -1013,7 +1438,10 @@ messagesEl.addEventListener('click', (e) => {
   const thinkingToggle = t.closest('.thinking-toggle');
   if (thinkingToggle) { toggleThinking(thinkingToggle); return; }
 
-  // F-C7: toggle from the header row only — .sa-details is a content
+  const sgHeader = t.closest('.sg-header');
+  if (sgHeader) { toggleSubagentGroup(sgHeader); return; }
+
+  // F-C7: toggle from the chip row only — .sa-details is a content
   // region; click-anywhere-to-collapse destroyed text selection and made
   // .sa-log scrolling self-closing. The stop button never toggles.
   const saTop = t.closest('.sa-top');

@@ -11,7 +11,7 @@ const el = () => ({
   insertAdjacentElement(){ return arguments[1]; }, insertBefore(){ return arguments[0]; },
   querySelector(){ return null; }, querySelectorAll(){ return []; }, closest(){ return null; },
   focus(){}, select(){}, click(){},
-  innerHTML: '', textContent: '', value: '', contains(){ return false; },
+  innerHTML: '', textContent: '', value: '', hidden: false, contains(){ return false; },
 });
 globalThis.document = {
   getElementById: () => el(),
@@ -20,8 +20,10 @@ globalThis.document = {
   createElement: () => el(),
   addEventListener: () => {},
   body: el(),
+  documentElement: el(),
 };
 globalThis.localStorage = { getItem: () => null, setItem(){}, removeItem(){} };
+globalThis.sessionStorage = { getItem: () => null, setItem(){}, removeItem(){} };
 globalThis.window = globalThis;
 globalThis.WebSocket = class { constructor(){} send(){} close(){} };
 globalThis.requestAnimationFrame = (fn) => setTimeout(fn, 16);
