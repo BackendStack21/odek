@@ -401,6 +401,10 @@ type Engine struct {
 	// goroutines charge child spend concurrently (the loop goroutine is
 	// blocked during the batch, so tool-vs-tool is the only race).
 	externalChargeMu sync.Mutex
+	// externalReserved is the sum of input-token headroom granted to
+	// currently in-flight sub-agents (ReserveExternalUsage), released on
+	// SettleExternalUsage. Guarded by externalChargeMu.
+	externalReserved int64
 
 	// Cache metrics accumulated across all iterations.
 	TotalCacheCreationTokens int  // Anthropic: tokens written to cache

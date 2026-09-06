@@ -2491,8 +2491,9 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 	artifactsRoot, _ := artifactsHome()
 
 	shell := &shellTool{
-		dangerousConfig: dc,
-		approver:        approver,
+		dangerousConfig:     dc,
+		approver:            approver,
+		stripChildSecretEnv: dc.StripSecretsEnvChildrenEnabled(),
 	}
 	// listTools is held by reference so the live registry can be captured
 	// into it right before return (after all conditional registrations).

@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+
+	"github.com/BackendStack21/odek/internal/config"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -111,6 +113,10 @@ type shellTool struct {
 
 	// dangerousConfig controls per-class actions and allow/denylists.
 	dangerousConfig danger.DangerousConfig
+
+	// stripChildSecretEnv: operator opt-in (dangerous.strip_secrets_env_children)
+	// — host-mode children get secrets.env names stripped from their env.
+	stripChildSecretEnv bool
 
 	// approver handles interactive approval prompts. When nil, falls back
 	// to TTYApprover (CLI-compatible default).
@@ -373,6 +379,10 @@ func (t *shellTool) promptUser(cmd, description string) error {
 	return err
 }
 
+// secretsEnvNames is the env-name source for child secret stripping
+// (test seam over config.SecretsEnvNames).
+var secretsEnvNames = config.SecretsEnvNames
+
 // buildCmd constructs the exec.Cmd for the given shell command.
 //
 // When sandbox mode is active (containerName is non-empty), the command
@@ -390,7 +400,15 @@ func (t *shellTool) buildCmd(ctx context.Context, command string) (*exec.Cmd, fu
 		argv, followUp := wrapSandboxCommand(t.containerName, command)
 		return exec.CommandContext(ctx, "docker", argv...), followUp
 	}
-	return exec.CommandContext(ctx, "sh", "-c", command), nil
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	if t.stripChildSecretEnv {
+		// Operator opt-in (dangerous.strip_secrets_env_children): host-mode
+		// children get secrets.env names stripped, matching the unconditional
+		// strip on sub-agent and MCP stdio spawns. Sandbox mode needs no strip:
+		// the container never sees host secrets.env values.
+		cmd.Env = childEnvWithout(secretsEnvNames())
+	}
+	return cmd, nil
 }
 
 // sandboxCmdSeq numbers sandboxed command invocations so each gets a unique

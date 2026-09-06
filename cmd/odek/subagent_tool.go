@@ -471,12 +471,43 @@ func (t *delegateTasksTool) runTask(taskIdx int, taskID, goal, taskContext, guid
 	// fix). Live headroom rides the task file via the exhaustion-aware
 	// flags; an unconfigured parent dimension stays unlimited.
 	var taskBudgetBlock *taskBudget
+	var reservedTokens int64
+	var chargedTokens int64
 	if t.budgetInherit == config.BudgetInheritShare {
 		t.budgetMu.Lock()
 		view := t.budgetView
 		t.budgetMu.Unlock()
 		if view != nil {
-			taskBudgetBlock = taskBudgetFromSnapshot(view.BudgetSnapshot())
+			snap := view.BudgetSnapshot()
+			// Reserve this child's input-token slice up front so SIMULTANEOUS
+			// spawns share the headroom instead of each snapshotting the full
+			// remaining budget (charge-back alone lands only on completion).
+			// The child is capped at the grant via the task file's
+			// max_input_tokens; settle reconciles actual vs granted on every
+			// exit path, including cancel/timeout (full release, no charge).
+			if charger, ok := view.(interface {
+				ReserveExternalUsage(int64) int64
+			}); ok && snap.MaxInputTokens > 0 {
+				reservedTokens = charger.ReserveExternalUsage(snap.RemainingInputTokens)
+				if reservedTokens <= 0 {
+					return fmt.Sprintf(`{"status":"error","error":%q,"summary":"","files_changed":null,"iterations":0,"tokens_used":0}`,
+						fmt.Sprintf("subagent not spawned: input-token budget fully committed to in-flight sub-agents"))
+				}
+				defer func() {
+					t.budgetMu.Lock()
+					v := t.budgetView
+					t.budgetMu.Unlock()
+					if settler, ok := v.(interface {
+						SettleExternalUsage(granted, actual int64)
+					}); ok {
+						settler.SettleExternalUsage(reservedTokens, chargedTokens)
+					}
+				}()
+			}
+			taskBudgetBlock = taskBudgetFromSnapshot(snap)
+			if reservedTokens > 0 {
+				taskBudgetBlock.MaxInputTokens = reservedTokens
+			}
 			if berr := exhaustedTaskBudget(taskBudgetBlock); berr != nil {
 				return fmt.Sprintf(`{"status":"error","error":%q,"summary":"","files_changed":null,"iterations":0,"tokens_used":0}`,
 					fmt.Sprintf("subagent not spawned: %v", berr))
@@ -649,7 +680,11 @@ func (t *delegateTasksTool) runTask(taskIdx int, taskID, goal, taskContext, guid
 		// snapshot and the parent's own caps reflect sub-agent spend,
 		// instead of every child inheriting the full pre-spawn headroom.
 		if tu, ok := result["tokens_used"].(float64); ok && tu > 0 {
-			t.chargeParentUsage(int64(tu))
+			chargedTokens = int64(tu)
+			if reservedTokens <= 0 {
+				// Unreserved view (no reservation hook): plain charge-back.
+				t.chargeParentUsage(int64(tu))
+			}
 		}
 		summary, _ := json.MarshalIndent(result, "", "  ")
 		return string(summary)
@@ -1034,9 +1069,11 @@ func taskBudgetFromSnapshot(s budget.Snapshot) *taskBudget {
 		MaxRuntimeSeconds:  s.RemainingRuntimeSeconds,
 		MaxToolCalls:       s.RemainingToolCalls,
 		MaxCostUSD:         s.RemainingCostUSD,
+		MaxInputTokens:     s.RemainingInputTokens,
 		RuntimeExhausted:   s.RuntimeExhausted,
 		ToolCallsExhausted: s.ToolCallsExhausted,
 		CostExhausted:      s.CostExhausted,
+		InputTokensExhausted: s.InputTokensExhausted,
 	}
 	if tb.MaxRuntimeSeconds <= 0 && tb.MaxToolCalls <= 0 && tb.MaxCostUSD <= 0 &&
 		!tb.RuntimeExhausted && !tb.ToolCallsExhausted && !tb.CostExhausted {

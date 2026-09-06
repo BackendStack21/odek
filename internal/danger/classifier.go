@@ -725,6 +725,36 @@ type DangerousConfig struct {
 	// Tools can inject their own approver (e.g., WebSocket-based for odek serve).
 	// When nil, CheckOperation falls back to /dev/tty (CLI-compatible default).
 	Approver Approver `json:"-"`
+
+	// StripSecretsEnvChildren, when true, strips secrets.env names from the
+	// environment of host-mode child processes spawned by the shell tool
+	// and background jobs (sub-agents and MCP stdio spawns already strip
+	// unconditionally). Default false: children inherit, preserving
+	// operator workflows that legitimately need credentials in shell
+	// children (gh, curl). Operator-only: the project config's dangerous
+	// section is ignored by design.
+	StripSecretsEnvChildren *bool `json:"strip_secrets_env_children,omitempty"`
+
+	// RESTApprovalFriction, when true, requires a typed `confirm` field
+	// matching the action on approve/trust decisions submitted through the
+	// headless REST approval bridge (POST /api/runs/{id}/approvals/{aid})
+	// — the server-side friction the bridge otherwise lacks. Default
+	// false: auto-approving clients (bodek) keep the single-field
+	// contract. Deny stays single-field: friction protects against
+	// accidental approvals, not denials.
+	RESTApprovalFriction *bool `json:"rest_approval_friction,omitempty"`
+}
+
+// StripSecretsEnvChildrenEnabled reports whether host-mode shell/bg
+// children must have secrets.env names stripped from their env. Nil-safe.
+func (c *DangerousConfig) StripSecretsEnvChildrenEnabled() bool {
+	return c != nil && c.StripSecretsEnvChildren != nil && *c.StripSecretsEnvChildren
+}
+
+// RESTApprovalFrictionEnabled reports whether the REST approval bridge must
+// require a typed confirm field on approve/trust decisions. Nil-safe.
+func (c *DangerousConfig) RESTApprovalFrictionEnabled() bool {
+	return c != nil && c.RESTApprovalFriction != nil && *c.RESTApprovalFriction
 }
 
 // defaultActions defines the base per-class behavior.

@@ -341,6 +341,8 @@ The `dangerous` section is the operator's safety policy for tool calls. Every sh
 | `denylist` | `[]` | Command strings that are **always denied** regardless of classification. **Prefix match** (after trimming) |
 | `action` | *(per-class defaults)* | Global default action for **all** classes — `"allow"` (everything runs unprompted) or `"deny"` (lockdown: nothing runs unless explicitly allowed). Per-class `classes` entries still win |
 | `non_interactive` | `"read_only"` | What happens to prompt-class operations when no TTY is available (CI, headless, piped input): `"read_only"` (safe inspection proceeds; writes/exec/egress denied), `"deny"` (block all prompted operations), `"allow"` (run everything — not recommended) |
+| `strip_secrets_env_children` | `false` | Remove `secrets.env` names from the environment of **host-mode** child processes spawned by `shell` and background jobs. Default `false`: children inherit, so workflows that legitimately need credentials in shell children (`gh`, `curl`) keep working. Sub-agent and MCP stdio spawns strip unconditionally regardless of this knob; sandbox-mode containers never see host secrets |
+| `rest_approval_friction` | `false` | Server-side friction for the headless **REST approval bridge** (`POST /api/runs/{id}/approvals/{aid}`): `approve` and `trust` decisions must repeat the action in a typed `confirm` field, mirroring the TTY friction. Default `false`: auto-approving clients keep the single-field contract. `deny` stays single-field — friction guards accidental approvals, not denials |
 
 Risk classes and their built-in default actions:
 

@@ -987,6 +987,11 @@ func handleRunApprovalList() http.HandlerFunc {
 // The answer is delivered through wsApprover.HandleResponse — the same path
 // the WebSocket reader uses — so trust caching and friction behave
 // identically for REST and socket clients.
+// restApprovalFrictionEnabled mirrors dangerous.rest_approval_friction,
+// set once at serve startup from the resolved config. Opt-in server-side
+// friction for the REST approval bridge (typed confirm on approve/trust).
+var restApprovalFrictionEnabled bool
+
 func handleRunApprovalAnswer() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -1006,7 +1011,8 @@ func handleRunApprovalAnswer() http.HandlerFunc {
 			return
 		}
 		var body struct {
-			Action string `json:"action"`
+			Action  string `json:"action"`
+			Confirm string `json:"confirm"`
 		}
 		if err := decodeJSONBody(w, r, &body); err != nil {
 			http.Error(w, "invalid JSON", http.StatusBadRequest)
@@ -1016,6 +1022,16 @@ func handleRunApprovalAnswer() http.HandlerFunc {
 		case "approve", "deny", "trust":
 		default:
 			http.Error(w, "action must be approve, deny, or trust", http.StatusBadRequest)
+			return
+		}
+		// Opt-in server-side friction (dangerous.rest_approval_friction):
+		// approve/trust must repeat the action in a `confirm` field — the
+		// typed confirmation the TTY friction provides and the headless
+		// bridge otherwise lacks. Deny stays single-field (friction guards
+		// accidental approvals, not denials). Default off: auto-approving
+		// clients keep the single-field contract.
+		if restApprovalFrictionEnabled && body.Action != "deny" && body.Confirm != body.Action {
+			http.Error(w, "confirm field must repeat the action (rest_approval_friction is enabled)", http.StatusConflict)
 			return
 		}
 		run.mu.Lock()

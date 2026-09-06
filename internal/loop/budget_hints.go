@@ -76,6 +76,68 @@ func (e *Engine) ChargeExternalUsage(tokens int64) {
 	e.TotalInputTokens += int(tokens)
 }
 
+// ReserveExternalUsage atomically reserves input-token headroom for an
+// about-to-spawn sub-agent and returns the granted amount (0 = nothing
+// available). The committed total (charged usage + outstanding reservations)
+// never exceeds the configured input cap, so N SIMULTANEOUS spawns share the
+// headroom instead of each snapshotting the full remaining budget — closing
+// the parallel-spawn window charge-back alone leaves open (charge-back only
+// lands on completion). The child is capped at its grant via the task file.
+// Unconfigured input cap → the request is granted in full (nothing to
+// reserve against); settle is then a no-op beyond the normal charge.
+func (e *Engine) ReserveExternalUsage(tokens int64) int64 {
+	if e == nil || tokens <= 0 {
+		return 0
+	}
+	e.externalChargeMu.Lock()
+	defer e.externalChargeMu.Unlock()
+	var max int64
+	if e.budget != nil {
+		max = e.budget.Snapshot(int64(e.TotalInputTokens)+int64(e.TotalCacheReadTokens)+int64(e.TotalCacheCreationTokens), int64(e.TotalOutputTokens)).MaxInputTokens
+	}
+	if max <= 0 {
+		return tokens // unconfigured: pass-through, nothing to reserve against
+	}
+	charged := int64(e.TotalInputTokens) + int64(e.TotalCacheReadTokens) + int64(e.TotalCacheCreationTokens)
+	available := max - charged - e.externalReserved
+	if available <= 0 {
+		return 0
+	}
+	if tokens > available {
+		tokens = available
+	}
+	e.externalReserved += tokens
+	return tokens
+}
+
+// SettleExternalUsage reconciles a completed reservation: releases the
+// grant and charges the ACTUAL reported usage (clamped to the grant — the
+// child cannot exceed the cap it was handed). granted=0 (unreserved spawn)
+// falls back to a plain charge.
+func (e *Engine) SettleExternalUsage(granted, actual int64) {
+	if e == nil {
+		return
+	}
+	if granted < 0 {
+		granted = 0
+	}
+	if actual < 0 {
+		actual = 0
+	}
+	if actual > granted {
+		actual = granted
+	}
+	e.externalChargeMu.Lock()
+	defer e.externalChargeMu.Unlock()
+	e.externalReserved -= granted
+	if e.externalReserved < 0 {
+		e.externalReserved = 0
+	}
+	if actual > 0 {
+		e.TotalInputTokens += int(actual)
+	}
+}
+
 // budgetWarnings returns the budget-awareness hint lines for the given
 // number of completed iterations (empty when no threshold newly crossed).
 // Iteration thresholds use completed*100 >= t*maxIter; wall-clock

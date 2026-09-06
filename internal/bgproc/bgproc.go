@@ -28,7 +28,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -111,6 +113,11 @@ type Config struct {
 	// follow-up func invoked after the job is forcibly stopped. When nil,
 	// commands run on the host via "sh -c".
 	SandboxWrap func(command string) (argv []string, followUp func(), err error)
+	// StripEnvNames, when non-empty, is removed from the child process
+	// environment (host and sandbox-client processes alike; the operator
+	// dangerous.strip_secrets_env_children knob feeds secrets.env names
+	// here). Empty/nil inherits the parent environment unchanged.
+	StripEnvNames []string
 }
 
 type jobEntry struct {
@@ -223,6 +230,24 @@ func (m *Manager) Start(sessionID, command, cwd string, timeout time.Duration) (
 
 // buildCommand assembles the exec.Cmd for host or sandbox mode.
 func (m *Manager) buildCommand(command, cwd string) (*exec.Cmd, func(), error) {
+	stripEnv := func(c *exec.Cmd) {
+		if len(m.cfg.StripEnvNames) == 0 {
+			return
+		}
+		strip := make(map[string]bool, len(m.cfg.StripEnvNames))
+		for _, n := range m.cfg.StripEnvNames {
+			strip[n] = true
+		}
+		env := os.Environ()
+		out := make([]string, 0, len(env))
+		for _, kv := range env {
+			name, _, _ := strings.Cut(kv, "=")
+			if !strip[name] {
+				out = append(out, kv)
+			}
+		}
+		c.Env = out
+	}
 	// Both host and sandbox children run as their own process-group leader
 	// so Stop can tear the whole tree down with one group signal (mirrors
 	// the shell tool's Setpgid semantics).
@@ -242,6 +267,7 @@ func (m *Manager) buildCommand(command, cwd string) (*exec.Cmd, func(), error) {
 		return cmd, followUp, nil
 	}
 	cmd := exec.Command("sh", "-c", command)
+	stripEnv(cmd)
 	cmd.SysProcAttr = attrs
 	cmd.Dir = cwd
 	cmd.WaitDelay = 3 * time.Second

@@ -32,6 +32,10 @@ type BackgroundSettings struct {
 	MaxTimeoutSeconds int  // 0 = uncapped (jobs bounded by session lifetime)
 	Notify            bool // background.notify == "observe"
 
+	// StripChildSecretEnv: operator opt-in (dangerous.strip_secrets_env_children)
+	// — host-mode job children get secrets.env names stripped from their env.
+	StripChildSecretEnv bool
+
 	// Wake-on-complete (serve surface only — see cmd/odek/bg_wake.go).
 	WakeOnComplete  bool
 	WakeCoalesceMS  int
@@ -62,6 +66,7 @@ func backgroundSettingsFromResolved(resolved config.ResolvedConfig) BackgroundSe
 		MaxOutputBytes:    b.MaxOutputBytes,
 		MaxTimeoutSeconds: b.MaxTimeoutSeconds,
 		Notify:            b.Notify == "observe",
+		StripChildSecretEnv: resolved.Dangerous.StripSecretsEnvChildrenEnabled(),
 	}
 }
 
@@ -89,6 +94,9 @@ func newBackgroundRuntime(s BackgroundSettings, sessionID, containerName string,
 	}
 	if s.MaxTimeoutSeconds > 0 {
 		cfg.MaxTimeout = time.Duration(s.MaxTimeoutSeconds) * time.Second
+	}
+	if s.StripChildSecretEnv {
+		cfg.StripEnvNames = secretsEnvNames()
 	}
 	rt := &bgRuntime{session: sessionID}
 	if containerName != "" {

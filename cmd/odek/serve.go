@@ -630,6 +630,7 @@ func newServeMux(d serveMuxDeps) *http.ServeMux {
 
 	// Headless runs — same handlePrompt path as WebSocket prompts, with a
 	// REST approval bridge. See serve_runs.go.
+	restApprovalFrictionEnabled = resolved.Dangerous.RESTApprovalFrictionEnabled()
 	mux.Handle("/api/prompt", apiAuth(handlePromptStart(state, store, resourceReg, systemMessage)))
 	mux.Handle("/api/runs", apiAuth(handleRunList()))
 	mux.Handle("/api/runs/", apiAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -946,6 +946,28 @@ func acquireScheduleLock() (func(), error) {
 		}
 		return nil, err
 	}
+	// Mixed-version gate: a pre-flock daemon (≤ previous release) holds no
+	// flock, so TryLock above succeeds even though it is alive and ticking.
+	// If the pidfile names a live process other than us, refuse rather than
+	// double-fire — the exact failure the flock migration exists to close.
+	// Conservative on platforms without /proc (any live non-self pid
+	// refuses), matching the pre-flock stance; on Linux the cmdline check
+	// keeps a recycled unrelated PID from blocking fresh starts.
+	if data, rerr := os.ReadFile(lockPath); rerr == nil {
+		if old, perr := strconv.Atoi(strings.TrimSpace(string(data))); perr == nil && old > 1 && old != os.Getpid() {
+			alive := syscall.Kill(old, 0) == nil
+			if alive {
+				owned := true
+				if cmdline, cerr := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", old)); cerr == nil {
+					owned = strings.Contains(string(cmdline), "odek")
+				}
+				if owned {
+					release() // do not strand our flock while refusing
+					return nil, fmt.Errorf("another schedule daemon is already running (PID %d, pre-flock)", old)
+				}
+			}
+		}
+	}
 	_ = os.WriteFile(lockPath, []byte(strconv.Itoa(os.Getpid())), 0600)
 	return release, nil
 }
