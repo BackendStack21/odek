@@ -26,8 +26,10 @@ func TestAcquireScheduleLock_RefusesLiveForeignPid(t *testing.T) {
 	}
 
 	// Simulate a pre-flock daemon: a live process that holds no flock,
-	// recorded in the pidfile.
-	cmd := exec.Command("sleep", "30")
+	// recorded in the pidfile. Its cmdline contains "odek" so the Linux
+	// /proc-owned check classifies it as an odek process (on non-Linux
+	// platforms the check degrades to conservative-owned).
+	cmd := exec.Command("sh", "-c", "sleep 30 # odek")
 	if err := cmd.Start(); err != nil {
 		t.Skipf("cannot spawn sleep: %v", err)
 	}
