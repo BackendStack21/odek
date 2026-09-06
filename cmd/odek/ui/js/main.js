@@ -1,18 +1,21 @@
 // Entry point: init sequence, theme, model picker (with built-in profiles),
-// thinking toggle, cancel, global keyboard shortcuts. Feature modules
-// self-register their listeners.
+// cancel, global keyboard shortcuts. Feature modules self-register their listeners.
 import { S, getSessionToken } from './state.js';
-import { getModels, cancelSession } from './api.js';
-import { promptEl, skeletonEl, thinkBtn } from './dom.js';
-import { escapeHtml, escapeAttr, showToast, toggleShortcuts, hideCancel, closeDialog } from './utils.js';
+import { promptEl, skeletonEl } from './dom.js';
+import { escapeHtml, escapeAttr, showToast, toggleShortcuts, hideCancel, closeDialog, formatNum } from './utils.js';
 import { addSystemMessage } from './render.js';
-import { loadSessions } from './sessions.js';
+import { loadSessions, loadAndRenderSession } from './sessions.js';
 import { connect, wsSend } from './ws.js';
 import { togglePanels } from './panels.js';
-import { initMetrics, setMetricsModel } from './metrics.js';
+import { initMetrics, setMetricsModel, sessionCostUSD } from './metrics.js';
+import { setCommandHandlers, togglePalette, isPaletteOpen, copyLastReply, exportActiveSession, openTab } from './commands.js';
+import { retryLast } from './input.js';
+import { requestNotify, syncNotifyBtn, togglePopover } from './health.js';
+import { getModels, cancelSession, shutdownServer } from './api.js';
 import './input.js';
 import './approvals.js';
 import './health.js';
+import './commands.js';
 
 // ── Init ──
 // Save references so newSession() can restore the empty state after clearing.
@@ -29,44 +32,47 @@ function activateOnKey(el, fn) {
   });
 }
 if (S.savedEmptyStateNode) {
-  const hints = S.savedEmptyStateNode.querySelectorAll('.es-hints span');
-  if (hints[0]) activateOnKey(hints[0], toggleShortcuts);
-  if (hints[1]) activateOnKey(hints[1], loadSessions);
-  if (hints[2]) activateOnKey(hints[2], () => togglePanels(true));
+  const hintFn = {
+    palette: () => togglePalette(true),
+    at: () => { promptEl.focus(); if (!promptEl.value.includes('@')) promptEl.value += '@'; },
+    slash: () => { promptEl.focus(); if (!promptEl.value.startsWith('/')) promptEl.value = '/'; },
+    inspector: () => togglePanels(true),
+    sessions: () => openTab('sessions'),
+  };
+  S.savedEmptyStateNode.querySelectorAll('[data-hint]').forEach((el) => {
+    const fn = hintFn[el.getAttribute('data-hint')];
+    if (fn) activateOnKey(el, fn);
+  });
 }
 
-// ── Theme Toggle ──
-function toggleTheme() {
-  document.body.classList.toggle('light');
-  const isLight = document.body.classList.contains('light');
-  localStorage.setItem('odek_theme', isLight ? 'light' : 'dark');
-  document.getElementById('theme-btn').textContent = isLight ? '☀️' : '🌙';
-}
-document.getElementById('theme-btn').addEventListener('click', toggleTheme);
-// Restore theme on load
-if (localStorage.getItem('odek_theme') === 'light') {
-  document.body.classList.add('light');
-  document.getElementById('theme-btn').textContent = '☀️';
+const THEMES = ['ember-dark', 'ember-light', 'high-contrast'];
+const THEME_GLYPH = { 'ember-dark': '◐', 'ember-light': '☀', 'high-contrast': '▣' };
+
+function applyTheme(name) {
+  const theme = THEMES.includes(name) ? name : 'ember-dark';
+  S.theme = theme;
+  document.body.classList.remove('light', 'theme-ember-dark', 'theme-ember-light', 'theme-high-contrast', 'theme-classic');
+  document.body.classList.add('theme-' + theme);
+  if (theme === 'ember-light') document.body.classList.add('light');
+  const root = document.documentElement;
+  if (root && root.style) root.style.colorScheme = theme === 'ember-light' ? 'light' : 'dark';
+  localStorage.setItem('odek_theme', theme);
+  const btn = document.getElementById('theme-btn');
+  if (btn) {
+    btn.textContent = THEME_GLYPH[theme] || '◐';
+    btn.title = 'Theme: ' + theme + ' (click to cycle)';
+  }
 }
 
-// ── Thinking mode toggle ──────────────────────────────────────────────
-function syncThinkBtn() {
-  if (!thinkBtn) return;
-  thinkBtn.classList.toggle('active', S.thinkingEnabled);
-  thinkBtn.title = S.thinkingEnabled
-    ? 'Thinking ON — click to disable extended reasoning'
-    : 'Thinking OFF — click to enable extended reasoning';
+function cycleTheme(want) {
+  if (want && THEMES.includes(want)) { applyTheme(want); return; }
+  const i = THEMES.indexOf(S.theme);
+  applyTheme(THEMES[(i + 1) % THEMES.length]);
+  showToast('Theme: ' + S.theme);
 }
 
-function toggleThinkingMode() {
-  S.thinkingEnabled = !S.thinkingEnabled;
-  localStorage.setItem('odek_thinking', S.thinkingEnabled ? '1' : '0');
-  syncThinkBtn();
-  showToast(S.thinkingEnabled ? '🧠 Thinking enabled' : 'Thinking off');
-}
-thinkBtn.addEventListener('click', toggleThinkingMode);
-
-syncThinkBtn(); // restore persisted state on load
+applyTheme(S.theme);
+document.getElementById('theme-btn').addEventListener('click', () => cycleTheme());
 
 // ── Model Picker ──
 const customModelInput = document.getElementById('custom-model-input');
@@ -209,43 +215,186 @@ S.onSubagentStop = (taskID) => {
 
 // ── Management panels ──
 document.getElementById('panels-btn').addEventListener('click', () => togglePanels());
+const paletteBtn = document.getElementById('palette-btn');
+if (paletteBtn) paletteBtn.addEventListener('click', () => togglePalette(true));
+const notifyBtn = document.getElementById('notify-btn');
+if (notifyBtn) notifyBtn.addEventListener('click', () => {
+  if (S.notifyEnabled) {
+    S.notifyEnabled = false;
+    localStorage.setItem('odek_notify', '0');
+    syncNotifyBtn();
+    showToast('Notifications off');
+  } else {
+    requestNotify();
+  }
+});
+syncNotifyBtn();
+
+function openNowFromChip() {
+  openTab('now');
+}
+['plan-chip', 'jobs-chip'].forEach((id) => {
+  const chip = document.getElementById(id);
+  if (!chip) return;
+  chip.addEventListener('click', openNowFromChip);
+  chip.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      openNowFromChip();
+    }
+  });
+});
+
+const costChip = document.getElementById('cost-chip');
+if (costChip) {
+  const openCost = (e) => {
+    e.stopPropagation();
+    togglePopover();
+  };
+  costChip.addEventListener('click', openCost);
+  costChip.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault();
+    openCost(e);
+  });
+}
 
 // ── Shortcuts overlay ──
 document.getElementById('shortcuts-overlay').addEventListener('click', (e) => {
   if (e.target === e.currentTarget) toggleShortcuts();
 });
 
+function showStats() {
+  const m = S.metrics || {};
+  const cost = sessionCostUSD();
+  addSystemMessage(
+    'stats · ctx ' + formatNum(m.ctxTokens || 0) +
+    (m.maxContext ? '/' + formatNum(m.maxContext) : '') +
+    ' · ⇥ ' + formatNum(m.sessIn || 0) + ' ↦ ' + formatNum(m.sessOut || 0) +
+    (cost != null ? ' · ◈ $' + cost.toFixed(4) : '')
+  );
+}
+
+function clearTranscript() {
+  if (S.busy) { showToast('Finish or cancel the turn first'); return; }
+  if (!confirm('Clear the visible transcript? The session stays on disk.')) return;
+  messagesElClear();
+}
+
+function messagesElClear() {
+  const messages = document.getElementById('messages');
+  if (!messages) return;
+  messages.innerHTML = '';
+  if (S.savedScrollBtnNode) messages.appendChild(S.savedScrollBtnNode);
+  if (S.savedEmptyStateNode) messages.appendChild(S.savedEmptyStateNode);
+}
+
+function openShutdown() {
+  const o = document.getElementById('shutdown-overlay');
+  if (o) o.classList.add('active');
+  const inp = document.getElementById('shutdown-input');
+  const btn = document.getElementById('shutdown-confirm');
+  if (inp) { inp.value = ''; inp.focus(); }
+  if (btn) btn.disabled = true;
+}
+
+function closeShutdown() {
+  const o = document.getElementById('shutdown-overlay');
+  if (o) o.classList.remove('active');
+}
+
+const shutdownInput = document.getElementById('shutdown-input');
+const shutdownConfirm = document.getElementById('shutdown-confirm');
+const shutdownCancel = document.getElementById('shutdown-cancel');
+if (shutdownInput && shutdownConfirm) {
+  shutdownInput.addEventListener('input', () => {
+    shutdownConfirm.disabled = shutdownInput.value.trim() !== 'shutdown';
+  });
+  shutdownConfirm.addEventListener('click', async () => {
+    if (shutdownInput.value.trim() !== 'shutdown') return;
+    try {
+      await shutdownServer();
+      showToast('Shutting down…');
+      closeShutdown();
+    } catch (err) {
+      showToast('shutdown failed: ' + err.message);
+    }
+  });
+}
+if (shutdownCancel) shutdownCancel.addEventListener('click', closeShutdown);
+
+setCommandHandlers({
+  help: toggleShortcuts,
+  clear: clearTranscript,
+  copyLast: copyLastReply,
+  exportSession: exportActiveSession,
+  retry: retryLast,
+  cycleTheme,
+  stats: showStats,
+  cancel: cancelAgent,
+  toggleNotify: () => notifyBtn && notifyBtn.click(),
+  shutdown: openShutdown,
+  switchModel,
+  openSession: (id) => loadAndRenderSession(id),
+});
+
 // ── Connect + initial load ──
 connect();
-// Show skeleton while connecting
 if (skeletonEl) skeletonEl.classList.add('visible');
 loadSessions();
 fetchModels();
 initMetrics();
 promptEl.focus();
 
-// Handle keyboard shortcuts globally
 document.addEventListener('keydown', (e) => {
-  // Escape closes overlays. Approval cards are deliberately NOT dismissed —
-  // a decision must be made explicitly.
   if (e.key === 'Escape') {
-    closeDialog(); // whichever overlay dialog is open (shortcuts / confirm)
+    closeShutdown();
+    closeDialog();
     S.pendingDeleteId = null;
+    return;
   }
-  // Ctrl+R refreshes sessions
-  if (e.key === 'r' && (e.ctrlKey || e.metaKey)) {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
     e.preventDefault();
-    loadSessions();
-    showToast('Sessions refreshed');
+    togglePalette(!isPaletteOpen());
+    return;
   }
-  // Alt+T toggles thinking mode
-  if (e.key === 't' && e.altKey && !S.busy) {
+  if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'c') {
     e.preventDefault();
-    toggleThinkingMode();
+    copyLastReply();
+    return;
   }
-  // Alt+M toggles the management panels
-  if (e.key === 'm' && e.altKey) {
+  if ((e.metaKey || e.ctrlKey) && e.key === '.') {
     e.preventDefault();
     togglePanels();
+    return;
+  }
+  const tag = (e.target && e.target.tagName) || '';
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+    if (e.key === 'r' && e.altKey && e.target.id === 'prompt') {
+      e.preventDefault();
+      retryLast();
+    }
+    return;
+  }
+  if (e.key === 'r' && e.altKey) {
+    e.preventDefault();
+    retryLast();
+  }
+  if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+    e.preventDefault();
+    jumpTurn(e.key === 'ArrowUp' ? -1 : 1);
   }
 });
+
+function jumpTurn(dir) {
+  const turns = Array.from(document.querySelectorAll('#messages .msg.assistant, #messages .msg.user'));
+  if (!turns.length) return;
+  const mid = window.innerHeight / 3;
+  let idx = 0;
+  turns.forEach((el, i) => {
+    const r = el.getBoundingClientRect ? el.getBoundingClientRect() : { top: 0 };
+    if (r.top <= mid) idx = i;
+  });
+  idx = Math.max(0, Math.min(turns.length - 1, idx + dir));
+  if (turns[idx].scrollIntoView) turns[idx].scrollIntoView({ block: 'start' });
+}

@@ -154,12 +154,16 @@ export function flashTrim() {
 
 // ── Rendering ──
 
-function fmtCost(usd) {
+// Bodek formatUSD: cents at $1+, up to four decimals below (trailing
+// zeros trimmed, two-decimal floor) so small spends stay visible.
+export function formatUSD(usd) {
   if (usd == null) return '';
-  if (usd === 0) return '$0';
-  if (usd < 0.01) return '$' + usd.toFixed(4);
-  if (usd < 1) return '$' + usd.toFixed(3);
-  return '$' + usd.toFixed(2);
+  if (usd <= 0) return '$0';
+  if (usd >= 1) return '$' + usd.toFixed(2);
+  let s = usd.toFixed(4).replace(/0+$/, '');
+  const dot = s.indexOf('.');
+  if (dot >= 0 && s.length - dot < 3) s += '00'.slice(0, 3 - (s.length - dot));
+  return '$' + s;
 }
 
 export function renderMetrics() {
@@ -202,13 +206,24 @@ export function renderMetrics() {
     tok.title = 'Session totals: ' + formatNum(m.sessIn) + ' in · ' + formatNum(m.sessOut) + ' out';
   }
 
+  const usd = sessionCostUSD();
+  const priced = usd != null && (m.inPrice > 0 || m.outPrice > 0);
+  const label = priced ? formatUSD(usd) : '';
+  const tip = priced
+    ? 'Estimated session cost at current prices ($' + m.inPrice + '/M in · $' + m.outPrice + '/M out)'
+    : '';
+
   const cost = document.getElementById('m-cost');
   if (cost) {
-    const usd = sessionCostUSD();
-    cost.textContent = usd != null ? fmtCost(usd) : '';
-    cost.title = usd != null
-      ? 'Estimated session cost at current prices ($' + S.metrics.inPrice + '/M in · $' + S.metrics.outPrice + '/M out)'
-      : '';
-    cost.classList.toggle('on', usd != null);
+    cost.textContent = label || '—';
+    cost.title = tip;
+    cost.classList.toggle('on', priced);
+  }
+
+  const chip = document.getElementById('cost-chip');
+  if (chip) {
+    chip.hidden = !priced;
+    chip.textContent = label;
+    chip.title = tip || 'Session cost';
   }
 }

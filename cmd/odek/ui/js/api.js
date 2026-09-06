@@ -207,3 +207,50 @@ export function getMCPServers() {
 export function getConnections() {
   return apiFetch('/api/connections');
 }
+
+export function kickConnection(id) {
+  return apiFetch('/api/connections/' + encodeURIComponent(id), { method: 'DELETE' });
+}
+
+export function promoteSkill(name, force) {
+  return apiFetch('/api/skills/promote', {
+    method: 'POST',
+    body: JSON.stringify({ name, force: !!force }),
+  });
+}
+
+export function consolidateMemory(target) {
+  return apiFetch('/api/memory/consolidate', {
+    method: 'POST',
+    body: JSON.stringify({ target }),
+  });
+}
+
+export function shutdownServer() {
+  return apiFetch('/api/shutdown', { method: 'POST' });
+}
+
+// ── Background jobs (session-scoped) ──
+export function listJobs(sessionToken) {
+  return apiFetch('/api/jobs', { sessionToken });
+}
+
+export function getJobOutput(id, sessionToken, { since = 0, limit } = {}) {
+  const params = new URLSearchParams();
+  if (since) params.set('since', String(since));
+  if (limit) params.set('limit', String(limit));
+  const q = params.toString();
+  return apiFetch('/api/jobs/' + encodeURIComponent(id) + '/output' + (q ? '?' + q : ''), { sessionToken });
+}
+
+export function stopJob(id, sessionToken) {
+  return apiFetch('/api/jobs/' + encodeURIComponent(id) + '/stop', {
+    method: 'POST',
+    sessionToken,
+  });
+}
+
+export function listSubagents(key) {
+  const q = key ? '?key=' + encodeURIComponent(key) : '';
+  return apiFetch('/api/subagents' + q);
+}

@@ -1,16 +1,19 @@
-// Management panels drawer: tabbed shell on the right side with three
-// panels — memory (facts + pending episodes), skills, and tools. Opened via
-// the topbar button or Alt+M. All data flows through js/api.js.
+// Inspector drawer: four workspaces (sessions / now / memory / ops).
+// Opened via the topbar button or ⌘. All data flows through js/api.js.
+import { S, getSessionToken } from './state.js';
 import { showToast, announce, escapeHtml } from './utils.js';
 import {
-  getMemory, addMemoryFact, removeMemoryFact, promoteEpisode,
-  getSkills, getTools,
+  getMemory, addMemoryFact, removeMemoryFact, promoteEpisode, consolidateMemory,
+  getSkills, getTools, promoteSkill,
   listRuns, cancelRun, answerRunApproval, getEvents,
+  listJobs, getJobOutput, stopJob, listSubagents,
+  getConfig, getMCPServers, getConnections, kickConnection, getUsage,
 } from './api.js';
 // Plan panel lives in its own module (session-switch hooks from sessions.js
 // need it without dragging the whole drawer along); its lifecycle is wired
 // into the tab dispatch here like every other panel.
 import { refreshPlanPanel, startPlanPolling, stopPlanPolling } from './plan.js';
+import { paintIntent } from './render.js';
 
 const drawer = document.getElementById('panels');
 const overlay = document.getElementById('panels-overlay');
@@ -20,26 +23,71 @@ export function togglePanels(force) {
   const want = force != null ? force : !drawer.classList.contains('active');
   drawer.classList.toggle('active', want);
   overlay.classList.toggle('active', want);
+  drawer.setAttribute('aria-hidden', want ? 'false' : 'true');
+  const pbtn = document.getElementById('panels-btn');
+  if (pbtn) pbtn.setAttribute('aria-expanded', String(want));
   if (want) {
     refreshActivePanel();
+    const tab = drawer.querySelector('.ptab.active');
+    if (tab && tab.focus) tab.focus();
   } else {
     stopRunPolling();
     stopPlanPolling();
+    stopJobsPolling();
+    stopAgentsPolling();
+    if (pbtn && pbtn.focus) pbtn.focus();
   }
+  const hamburger = document.getElementById('hamburger-btn');
+  if (hamburger) hamburger.setAttribute('aria-expanded', String(want && activeWorkspace() === 'sessions'));
+}
+S.closePanels = () => togglePanels(false);
+
+function activeWorkspace() {
+  const tab = drawer.querySelector('.ptab.active');
+  return tab ? tab.dataset.tab : '';
+}
+
+export function badgeNow() {
+  const tab = document.getElementById('ptab-now');
+  if (!tab) return;
+  const jobs = S.jobs || [];
+  const live = !!S.busy || jobs.some((j) => j.status === 'running');
+  tab.classList.toggle('live', live);
+}
+
+function workspaceOpen(name) {
+  if (typeof document.hidden === 'boolean' && document.hidden) return false;
+  if (!drawer || !drawer.classList.contains('active')) return false;
+  const tab = drawer.querySelector('.ptab.active');
+  return !!(tab && tab.dataset.tab === name);
 }
 
 function refreshActivePanel() {
-  const tab = drawer.querySelector('.ptab.active');
-  if (!tab) return;
-  const name = tab.dataset.tab;
-  // The plan panel polls while visible — switching to any other tab stops it.
-  if (name !== 'plan') stopPlanPolling();
-  if (name === 'memory') loadMemory();
-  else if (name === 'skills') loadSkills();
-  else if (name === 'tools') loadTools();
-  else if (name === 'runs') loadRuns();
-  else if (name === 'events') loadEvents();
-  else if (name === 'plan') { refreshPlanPanel(); startPlanPolling(); }
+  const name = activeWorkspace();
+  if (!name) return;
+  if (name !== 'now') {
+    stopPlanPolling();
+    stopJobsPolling();
+    stopAgentsPolling();
+  }
+  if (name !== 'ops') stopRunPolling();
+  if (name === 'sessions') {
+    if (typeof S.refreshSessions === 'function') S.refreshSessions();
+  } else if (name === 'now') {
+    refreshPlanPanel();
+    startPlanPolling();
+    loadJobs();
+    loadAgents();
+    badgeNow();
+  } else if (name === 'memory') {
+    loadMemory();
+    loadSkills();
+    loadTools();
+  } else if (name === 'ops') {
+    loadRuns();
+    loadEvents();
+    loadConfig();
+  }
 }
 
 drawer.querySelectorAll('.ptab').forEach(btn => {
@@ -47,13 +95,38 @@ drawer.querySelectorAll('.ptab').forEach(btn => {
     drawer.querySelectorAll('.ptab').forEach(b => {
       b.classList.toggle('active', b === btn);
       b.setAttribute('aria-selected', String(b === btn));
+      b.tabIndex = b === btn ? 0 : -1;
     });
     drawer.querySelectorAll('.ppanel').forEach(p => {
-      p.classList.toggle('active', p.dataset.panel === btn.dataset.tab);
+      const on = p.dataset.panel === btn.dataset.tab;
+      p.classList.toggle('active', on);
+      p.hidden = !on;
+      p.setAttribute('aria-hidden', String(!on));
     });
     refreshActivePanel();
+    const hamburger = document.getElementById('hamburger-btn');
+    if (hamburger) {
+      hamburger.setAttribute('aria-expanded', String(drawer.classList.contains('active') && btn.dataset.tab === 'sessions'));
+    }
   });
 });
+const tabsEl = document.getElementById('panels-tabs');
+if (tabsEl) {
+  tabsEl.addEventListener('keydown', (e) => {
+    const tabs = Array.from(drawer.querySelectorAll('.ptab'));
+    const i = tabs.indexOf(document.activeElement);
+    if (i < 0) return;
+    let next = -1;
+    if (e.key === 'ArrowRight') next = (i + 1) % tabs.length;
+    else if (e.key === 'ArrowLeft') next = (i - 1 + tabs.length) % tabs.length;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = tabs.length - 1;
+    if (next < 0) return;
+    e.preventDefault();
+    tabs[next].click();
+    if (tabs[next].focus) tabs[next].focus();
+  });
+}
 document.getElementById('panels-close').addEventListener('click', () => togglePanels(false));
 overlay.addEventListener('click', () => togglePanels(false));
 
@@ -190,6 +263,25 @@ function wireFactAdd(inputId, btnId, target) {
 wireFactAdd('mf-user-input', 'mf-user-add', 'user');
 wireFactAdd('mf-env-input', 'mf-env-add', 'env');
 
+function wireConsolidate(btnId, target) {
+  const btn = document.getElementById(btnId);
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    try {
+      await consolidateMemory(target);
+      showToast('consolidated ' + target);
+      loadMemory();
+    } catch (err) {
+      showToast('consolidate failed: ' + err.message);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+wireConsolidate('mf-user-consolidate', 'user');
+wireConsolidate('mf-env-consolidate', 'env');
+
 // ── Skills panel ──
 async function loadSkills() {
   const list = document.getElementById('skills-list');
@@ -246,6 +338,26 @@ async function loadSkills() {
       src.className = 'sk-src';
       src.textContent = sk.source || '';
       row.append(head, desc, src);
+      if (sk.needs_review) {
+        const actions = document.createElement('div');
+        actions.className = 'sk-actions';
+        const promo = document.createElement('button');
+        promo.className = 'sk-promote';
+        promo.textContent = sk.untrusted ? 'force promote' : 'promote';
+        promo.addEventListener('click', async () => {
+          promo.disabled = true;
+          try {
+            await promoteSkill(sk.name, !!sk.untrusted);
+            showToast('skill promoted');
+            loadSkills();
+          } catch (err) {
+            promo.disabled = false;
+            showToast('promote failed: ' + err.message);
+          }
+        });
+        actions.appendChild(promo);
+        row.appendChild(actions);
+      }
       list.appendChild(row);
     });
   } catch (err) {
@@ -310,9 +422,7 @@ const RUN_STATUS_CLASS = {
 
 async function refreshRuns() {
   const list = document.getElementById('runs-list');
-  // Only poll while the runs tab is actually shown.
-  const tab = drawer.querySelector('.ptab.active');
-  if (!tab || tab.dataset.tab !== 'runs') {
+  if (!workspaceOpen('ops')) {
     stopRunPolling();
     return;
   }
@@ -473,6 +583,310 @@ async function loadEvents() {
       row.append(t, ctx, when);
       list.appendChild(row);
     });
+  } catch (err) {
+    list.innerHTML = '<div class="mf-empty">failed to load: ' + escapeHtml(err.message) + '</div>';
+  }
+}
+
+// ── Jobs / agents / config ────────────────────────────────────────────
+
+let jobsPollTimer = null;
+let agentsPollTimer = null;
+
+function stopJobsPolling() {
+  if (jobsPollTimer) clearInterval(jobsPollTimer);
+  jobsPollTimer = null;
+}
+function stopAgentsPolling() {
+  if (agentsPollTimer) clearInterval(agentsPollTimer);
+  agentsPollTimer = null;
+}
+
+async function loadJobs() {
+  stopJobsPolling();
+  await refreshJobs();
+  jobsPollTimer = setInterval(refreshJobs, 3000);
+}
+
+async function refreshJobs() {
+  const list = document.getElementById('jobs-list');
+  if (!list) return;
+  if (!workspaceOpen('now')) { stopJobsPolling(); return; }
+  if (!S.sessionId) {
+    S.jobs = [];
+    paintIntent();
+    list.textContent = '';
+    const el = document.createElement('div');
+    el.className = 'mf-empty';
+    el.textContent = 'no session — jobs are session-scoped';
+    list.appendChild(el);
+    return;
+  }
+  try {
+    const data = await listJobs(getSessionToken(S.sessionId) || undefined);
+    const jobs = (data && data.jobs) || [];
+    S.jobs = jobs;
+    paintIntent();
+    list.textContent = '';
+    const header = document.createElement('div');
+    header.className = 'tools-summary';
+    header.textContent = jobs.length + ' job(s)';
+    list.appendChild(header);
+    if (!jobs.length) {
+      const el = document.createElement('div');
+      el.className = 'mf-empty';
+      el.textContent = 'no background jobs in this session';
+      list.appendChild(el);
+      badgeNow();
+      return;
+    }
+    jobs.forEach((j) => list.appendChild(renderJobRow(j)));
+    badgeNow();
+  } catch (err) {
+    list.innerHTML = '<div class="mf-empty">failed to load: ' + escapeHtml(err.message) + '</div>';
+  }
+}
+
+function renderJobRow(job) {
+  const row = document.createElement('div');
+  row.className = 'job-row';
+  const head = document.createElement('div');
+  head.className = 'job-head';
+  const st = document.createElement('span');
+  st.className = 'job-status job-st-' + (job.status || 'unknown');
+  st.textContent = job.status || '?';
+  const cmd = document.createElement('span');
+  cmd.className = 'job-cmd';
+  cmd.textContent = job.command || job.id;
+  head.append(st, cmd);
+  row.appendChild(head);
+  const meta = document.createElement('div');
+  meta.className = 'job-meta';
+  meta.textContent = [
+    job.id,
+    job.runtime_s != null ? Number(job.runtime_s).toFixed(1) + 's' : '',
+    job.exit_code != null ? 'exit ' + job.exit_code : '',
+  ].filter(Boolean).join(' · ');
+  row.appendChild(meta);
+  const actions = document.createElement('div');
+  actions.className = 'job-actions';
+  const out = document.createElement('button');
+  out.className = 'job-out';
+  out.textContent = 'output';
+  out.addEventListener('click', () => showJobOutput(job.id, row));
+  actions.appendChild(out);
+  if (job.status === 'running') {
+    const stop = document.createElement('button');
+    stop.className = 'job-stop';
+    stop.textContent = 'stop';
+    stop.addEventListener('click', async () => {
+      if (!confirm('Stop this background job?')) return;
+      stop.disabled = true;
+      try {
+        await stopJob(job.id, getSessionToken(S.sessionId) || undefined);
+        refreshJobs();
+      } catch (err) {
+        stop.disabled = false;
+        showToast('stop failed: ' + err.message);
+      }
+    });
+    actions.appendChild(stop);
+  }
+  row.appendChild(actions);
+  return row;
+}
+
+async function showJobOutput(id, row) {
+  let pre = row.querySelector('.job-output');
+  if (pre) { pre.remove(); return; }
+  pre = document.createElement('pre');
+  pre.className = 'job-output';
+  pre.textContent = 'loading…';
+  row.appendChild(pre);
+  try {
+    const data = await getJobOutput(id, getSessionToken(S.sessionId) || undefined);
+    pre.textContent = (data && data.output) || '(empty)';
+  } catch (err) {
+    pre.textContent = err.message;
+  }
+}
+
+async function loadAgents() {
+  stopAgentsPolling();
+  await refreshAgents();
+  agentsPollTimer = setInterval(refreshAgents, 3000);
+}
+
+async function refreshAgents() {
+  const list = document.getElementById('agents-list');
+  if (!list) return;
+  if (!workspaceOpen('now')) { stopAgentsPolling(); return; }
+  try {
+    const data = await listSubagents();
+    const entries = (data && data.entries) || [];
+    list.textContent = '';
+    const header = document.createElement('div');
+    header.className = 'tools-summary';
+    header.textContent = entries.length + ' sub-agent(s)';
+    list.appendChild(header);
+    if (!entries.length) {
+      const el = document.createElement('div');
+      el.className = 'mf-empty';
+      el.textContent = 'no recent sub-agents';
+      list.appendChild(el);
+      return;
+    }
+    entries.forEach((a) => {
+      const row = document.createElement('div');
+      row.className = 'agent-row';
+      const phase = document.createElement('span');
+      phase.className = 'agent-phase agent-ph-' + (a.phase || 'unknown');
+      phase.textContent = a.phase || '?';
+      const goal = document.createElement('div');
+      goal.className = 'agent-goal';
+      goal.textContent = a.goal || a.task_id || '';
+      const meta = document.createElement('div');
+      meta.className = 'agent-meta';
+      meta.textContent = [
+        a.status,
+        a.step,
+        a.iterations != null ? 'it ' + a.iterations : '',
+        a.tokens_used != null ? formatTok(a.tokens_used) : '',
+        a.last_tool,
+      ].filter(Boolean).join(' · ');
+      row.append(phase, goal, meta);
+      if (a.phase === 'started' || a.phase === 'active') {
+        const stop = document.createElement('button');
+        stop.className = 'agent-stop';
+        stop.textContent = 'stop';
+        stop.addEventListener('click', () => {
+          if (!confirm('Stop this sub-agent?')) return;
+          if (S.onSubagentStop && a.task_id) S.onSubagentStop(a.task_id);
+        });
+        row.appendChild(stop);
+      }
+      list.appendChild(row);
+    });
+  } catch (err) {
+    list.innerHTML = '<div class="mf-empty">failed to load: ' + escapeHtml(err.message) + '</div>';
+  }
+}
+
+function formatTok(n) {
+  n = Number(n) || 0;
+  return n >= 1000 ? (n / 1000).toFixed(1) + 'k tok' : n + ' tok';
+}
+
+async function loadConfig() {
+  const list = document.getElementById('config-list');
+  if (!list) return;
+  try {
+    const [cfg, mcp, conns, usage] = await Promise.all([
+      getConfig(),
+      getMCPServers().catch(() => null),
+      getConnections().catch(() => null),
+      getUsage().catch(() => null),
+    ]);
+    list.textContent = '';
+    const dump = document.createElement('pre');
+    dump.className = 'cfg-dump';
+    dump.textContent = JSON.stringify(cfg, null, 2);
+    list.appendChild(dump);
+
+    if (mcp) {
+      const servers = mcp.servers || (Array.isArray(mcp) ? mcp : []);
+      if (servers.length) {
+        const h = document.createElement('div');
+        h.className = 'tools-summary';
+        h.textContent = 'MCP servers';
+        list.appendChild(h);
+        servers.forEach((s) => {
+          const row = document.createElement('div');
+          row.className = 'mcp-row';
+          row.textContent = (s.name || s.command || 'mcp') + (s.project ? ' · project' : '');
+          list.appendChild(row);
+        });
+      }
+    }
+
+    if (usage) {
+      const h = document.createElement('div');
+      h.className = 'tools-summary';
+      h.textContent = 'lifetime usage';
+      list.appendChild(h);
+      const u = document.createElement('div');
+      u.className = 'cfg-usage';
+      u.textContent = (usage.prompts_completed || 0) + '/' + (usage.prompts_started || 0) +
+        ' prompts · ' + (usage.tokens_in || 0) + ' in · ' + (usage.tokens_out || 0) + ' out';
+      list.appendChild(u);
+    }
+
+    const ch = document.createElement('div');
+    ch.className = 'tools-summary';
+    ch.textContent = 'connections';
+    list.appendChild(ch);
+    const connections = (conns && conns.connections) || [];
+    if (!connections.length) {
+      const el = document.createElement('div');
+      el.className = 'mf-empty';
+      el.textContent = 'no live connections';
+      list.appendChild(el);
+    }
+    connections.forEach((c) => {
+      const row = document.createElement('div');
+      row.className = 'conn-row';
+      const info = document.createElement('span');
+      info.className = 'conn-info';
+      info.textContent = (c.id || '') + ' · ' + (c.session_id || '—') + (c.busy ? ' · busy' : '');
+      const kick = document.createElement('button');
+      kick.className = 'conn-kick';
+      kick.textContent = 'kick';
+      kick.addEventListener('click', async () => {
+        if (kick.dataset.armed !== '1') {
+          list.querySelectorAll('.conn-kick').forEach((other) => {
+            if (other === kick) return;
+            other.dataset.armed = '';
+            other.classList.remove('armed');
+            other.textContent = 'kick';
+          });
+          kick.dataset.armed = '1';
+          kick.classList.add('armed');
+          kick.textContent = 'confirm kick';
+          setTimeout(() => {
+            if (kick.dataset.armed === '1') {
+              kick.dataset.armed = '';
+              kick.classList.remove('armed');
+              kick.textContent = 'kick';
+            }
+          }, 4000);
+          return;
+        }
+        kick.dataset.armed = '';
+        kick.classList.remove('armed');
+        try {
+          await kickConnection(c.id);
+          showToast('kicked');
+          loadConfig();
+        } catch (err) {
+          showToast('kick failed: ' + err.message);
+        }
+      });
+      row.append(info, kick);
+      list.appendChild(row);
+    });
+
+    const shut = document.createElement('button');
+    shut.className = 'cfg-shutdown';
+    shut.textContent = 'shut down serve';
+    shut.addEventListener('click', () => {
+      const o = document.getElementById('shutdown-overlay');
+      if (o) o.classList.add('active');
+      const inp = document.getElementById('shutdown-input');
+      const btn = document.getElementById('shutdown-confirm');
+      if (inp) { inp.value = ''; inp.focus(); }
+      if (btn) btn.disabled = true;
+    });
+    list.appendChild(shut);
   } catch (err) {
     list.innerHTML = '<div class="mf-empty">failed to load: ' + escapeHtml(err.message) + '</div>';
   }

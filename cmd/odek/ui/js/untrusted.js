@@ -3,8 +3,8 @@
 // mirroring the grammar produced by wrapUntrusted in cmd/odek/untrusted.go.
 //
 // The envelope is model-facing trust metadata, not user content: the WebUI
-// unwraps it for display (body shown escaped, source as a badge) instead of
-// rendering the literal tag text. Sanitization itself stays client-side —
+// unwraps it for display (body shown escaped; source is discarded) instead
+// of rendering the literal tag text. Sanitization itself stays client-side —
 // the server always sends raw content.
 //
 // Server-side neutraliseWrapperLiterals guarantees bodies contain no literal

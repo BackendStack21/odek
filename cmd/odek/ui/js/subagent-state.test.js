@@ -83,8 +83,20 @@ class FakeEl {
     walk(this);
     return out;
   }
-  appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
+  appendChild(c) {
+    if (c.parentNode) {
+      const i = c.parentNode.children.indexOf(c);
+      if (i >= 0) c.parentNode.children.splice(i, 1);
+    }
+    c.parentNode = this;
+    this.children.push(c);
+    return c;
+  }
   insertBefore(c, ref) {
+    if (c.parentNode) {
+      const i = c.parentNode.children.indexOf(c);
+      if (i >= 0) c.parentNode.children.splice(i, 1);
+    }
     c.parentNode = this;
     const i = ref ? this.children.indexOf(ref) : -1;
     if (i >= 0) this.children.splice(i, 0, c); else this.children.push(c);
@@ -98,13 +110,15 @@ class FakeEl {
     }
   }
   addEventListener() {}
+  setAttribute() {}
+  getAttribute() { return null; }
 }
 
 const byId = {};
 const ids = ['messages', 'prompt', 'send-btn', 'completion', 'ws-status', 'ws-dot',
   'model-label', 'session-list', 'sidebar-search', 'empty-state', 'cancel-btn',
   'scroll-bottom-btn', 'loading-skeleton', 'sidebar-overlay', 'file-input',
-  'attach-btn', 'file-chips', 'think-btn'];
+  'attach-btn', 'file-chips'];
 ids.forEach(id => { byId[id] = new FakeEl('div'); byId[id].id = id; });
 
 globalThis.document = {
@@ -153,12 +167,16 @@ beforeEach(() => {
 test('started keeps the card running; active shows tool + step', () => {
   const cs = delegateTwoTasks();
 
+  assert.ok(cs[0].querySelector('.sa-goal').textContent.startsWith('SA1 '), 'chip is SA1 + goal');
+  assert.ok(cs[1].querySelector('.sa-goal').textContent.startsWith('SA2 '), 'chip is SA2 + goal');
+
   render.updateSubagentState({ task_idx: 0, phase: 'started', status: 'running' });
   assert.equal(cs[0].querySelector('.sa-status').textContent, 'running');
   assert.equal(cs[0].dataset.finalized, undefined);
 
   render.updateSubagentState({ task_idx: 0, phase: 'active', step: 3, tool: 'read_file' });
   assert.equal(cs[0].querySelector('.sa-status').textContent, '⟳ read_file · 3');
+  assert.equal(cs[0].querySelector('.sa-goal').textContent, 'SA1 read_file', 'live chip prefers the current tool');
 
   // Sibling untouched.
   assert.equal(cs[1].querySelector('.sa-status').textContent, 'running');
@@ -177,8 +195,8 @@ test('finished flips only its own card and updates the wave header', () => {
   assert.equal(cs[0].dataset.finalized, '1');
   assert.equal(cs[1].dataset.finalized, undefined, 'sibling not finalized');
 
-  const header = byId.messages.querySelector('.sg-header');
-  assert.ok(header.textContent.includes('1/2 complete'), 'header shows 1/2, got: ' + header.textContent);
+  const rollup = byId.messages.querySelector('.sg-rollup');
+  assert.ok(rollup && rollup.textContent.includes('1/2 agents'), 'header shows 1/2 agents, got: ' + (rollup && rollup.textContent));
 });
 
 test('failed finish marks the card error and opens details', () => {
@@ -186,7 +204,7 @@ test('failed finish marks the card error and opens details', () => {
   render.updateSubagentState({ task_idx: 1, phase: 'finished', status: 'timeout' });
 
   assert.ok(cs[1].classList.contains('error'), 'timeout card carries error class');
-  assert.equal(cs[1].querySelector('.sa-icon').textContent, '✗');
+  assert.equal(cs[1].querySelector('.sa-icon').textContent, '⏱');
   assert.equal(cs[1].querySelector('.sa-status').textContent, 'timeout');
   assert.equal(cs[1].dataset.finalized, '1');
 });

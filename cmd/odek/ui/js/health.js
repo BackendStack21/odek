@@ -68,7 +68,7 @@ export function onServerInfo(event) {
     source: 'server_info',
   };
   const streamBadge = document.getElementById('stream-badge');
-  if (streamBadge) streamBadge.style.display = event.stream ? 'inline-flex' : 'none';
+  if (streamBadge) streamBadge.hidden = !event.stream;
   renderPopover();
 }
 
@@ -183,6 +183,44 @@ function escDismiss(e) {
   const p = popover();
   if (e.key !== 'Escape' || !p || p.hidden) return;
   p.hidden = true;
+}
+
+function sanitizeNotify(s, max) {
+  return String(s || '')
+    .replace(/[\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/g, '')
+    .replace(/[\r\n\t]+/g, ' ')
+    .trim()
+    .slice(0, max);
+}
+
+export function notifyUser(title, body) {
+  if (!S.notifyEnabled) return;
+  const safeTitle = sanitizeNotify(title || 'odek', 64);
+  const safeBody = sanitizeNotify(body || '', 80);
+  try { document.title = '(1) odek'; } catch { /* ignore */ }
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  try { new Notification(safeTitle, { body: safeBody }); } catch { /* ignore */ }
+}
+
+export async function requestNotify() {
+  if (typeof Notification === 'undefined') {
+    showToast('Notifications unavailable');
+    return false;
+  }
+  const perm = await Notification.requestPermission();
+  S.notifyEnabled = perm === 'granted';
+  localStorage.setItem('odek_notify', S.notifyEnabled ? '1' : '0');
+  syncNotifyBtn();
+  showToast(S.notifyEnabled ? 'Notifications on' : 'Notifications off');
+  return S.notifyEnabled;
+}
+
+export function syncNotifyBtn() {
+  const btn = document.getElementById('notify-btn');
+  if (!btn) return;
+  btn.classList.toggle('active', S.notifyEnabled);
+  btn.setAttribute('aria-pressed', String(!!S.notifyEnabled));
+  btn.textContent = S.notifyEnabled ? '●' : '◌';
 }
 
 const statusGroup = document.getElementById('status-group');

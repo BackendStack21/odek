@@ -19,4 +19,3 @@ export const sidebarOverlay = document.getElementById('sidebar-overlay');
 export const fileInput = document.getElementById('file-input');
 export const attachBtn = document.getElementById('attach-btn');
 export const fileChips = document.getElementById('file-chips');
-export const thinkBtn = document.getElementById('think-btn');

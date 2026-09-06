@@ -131,6 +131,35 @@ test('run endpoints use the right verbs and paths', async () => {
   assert.equal(req.init.body, JSON.stringify({ action: 'deny' }));
 });
 
+test('jobs and subagents hit their endpoints', async () => {
+  await api.listJobs('tok');
+  assert.equal(last().url, '/api/jobs');
+  assert.equal(last().init.headers['X-Session-Token'], 'tok');
+  await api.getJobOutput('j1', 'tok', { since: 10, limit: 32 });
+  const out = new URL(last().url, 'http://x');
+  assert.equal(out.pathname, '/api/jobs/j1/output');
+  assert.equal(out.searchParams.get('since'), '10');
+  await api.stopJob('j1', 'tok');
+  assert.equal(last().init.method, 'POST');
+  assert.equal(last().url, '/api/jobs/j1/stop');
+  await api.listSubagents('rk');
+  assert.equal(last().url, '/api/subagents?key=rk');
+});
+
+test('promote, consolidate, kick, shutdown hit their endpoints', async () => {
+  await api.promoteSkill('demo', true);
+  assert.equal(last().url, '/api/skills/promote');
+  assert.equal(last().init.body, JSON.stringify({ name: 'demo', force: true }));
+  await api.consolidateMemory('user');
+  assert.equal(last().url, '/api/memory/consolidate');
+  await api.kickConnection('c1');
+  assert.equal(last().init.method, 'DELETE');
+  assert.equal(last().url, '/api/connections/c1');
+  await api.shutdownServer();
+  assert.equal(last().init.method, 'POST');
+  assert.equal(last().url, '/api/shutdown');
+});
+
 test('memory mutations hit their endpoints', async () => {
   await api.removeMemoryFact('env', 'old');
   const req = last();

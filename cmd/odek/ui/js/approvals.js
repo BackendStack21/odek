@@ -3,7 +3,7 @@
 import { S } from './state.js';
 import { messagesEl } from './dom.js';
 import { forceScrollBottom, announce } from './utils.js';
-import { hideEmptyState, addSystemMessage } from './render.js';
+import { hideEmptyState, addSystemMessage, insertTurnWork } from './render.js';
 import { wsSend } from './net.js';
 
 // Approval requests are queued and rendered one at a time as an inline
@@ -149,6 +149,7 @@ function showNextApproval() {
   if (!event) {
     S.activeApprovalId = null;
     S.activeApprovalCard = null;
+    if (S.drainQueue) S.drainQueue();
     return;
   }
   S.activeApprovalId = event.id;
@@ -177,6 +178,7 @@ export function clearApprovals() {
   removeActiveApprovalCard();
   S.activeApprovalId = null;
   syncSweep();
+  if (S.drainQueue) S.drainQueue();
 }
 
 function renderApprovalCard(event) {
@@ -307,7 +309,7 @@ function renderApprovalCard(event) {
   // enforces the same 1.5s friction cool-down.
   card.dataset.shownAt = String(Date.now());
   hideEmptyState();
-  messagesEl.appendChild(card);
+  insertTurnWork(card, 'tool');
   forceScrollBottom();
   card.focus({ preventScroll: true });
   announce('Approval required: ' + (event.risk || 'unknown') + ' risk operation');
@@ -353,6 +355,10 @@ document.addEventListener('keydown', (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   const tag = (e.target && e.target.tagName) || '';
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  // A/D/T only when the card (or nothing — test shim) holds focus.
+  // Palette, find, composer, and inspector inputs must never misfire.
+  const active = document.activeElement;
+  if (active && S.activeApprovalCard && !S.activeApprovalCard.contains(active)) return;
   const trustVisible = S.activeApprovalCard &&
     !S.activeApprovalCard.querySelector('.trust').style.display;
   if (e.key === 'a' || e.key === 'A') {

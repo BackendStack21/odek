@@ -2,7 +2,7 @@
 // Run: node --test cmd/odek/ui/js/
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { markdownToHtml } from './markdown.js';
+import { markdownToHtml, isSafeHref } from './markdown.js';
 
 // ── Blocks ──
 
@@ -148,6 +148,26 @@ test('data: link renders as plain text', () => {
   assert.equal(html, '<p>click</p>');
 });
 
+test('protocol-relative and token/api links render as plain text', () => {
+  for (const url of ['//evil.example', '/api/shutdown', '/?token=abc', 'blob:https://x', 'javascript:alert(1)']) {
+    const html = markdownToHtml('[x](' + url + ')');
+    assert.ok(!html.includes('<a'), url);
+  }
+});
+
+test('isSafeHref rejects api/token bypasses and encoded paths', () => {
+  for (const url of [
+    './api/shutdown', '../api/shutdown', '/API/health', '/%61pi/shutdown',
+    '/?TOKEN=abc', '/docs?token=x', 'https://example.com/api/x?token=1',
+    '\\\\evil', 'javascript:alert', 'data:text/html,x',
+  ]) {
+    assert.equal(isSafeHref(url), false, url);
+  }
+  assert.equal(isSafeHref('https://example.com'), true);
+  assert.equal(isSafeHref('/abs/path'), true);
+  assert.equal(isSafeHref('#frag'), true);
+});
+
 // ── Escaping & paragraphs ──
 
 test('raw HTML in input is escaped', () => {
@@ -169,6 +189,84 @@ test('empty input', () => {
 });
 
 // ── Golden multi-feature document ──
+
+test('plus-sign bullets are unordered lists', () => {
+  assert.equal(markdownToHtml('+ one\n+ two'), '<ul><li>one</li><li>two</li></ul>');
+});
+
+test('underscore emphasis matches star emphasis', () => {
+  assert.equal(markdownToHtml('a __b__ c'), '<p>a <strong>b</strong> c</p>');
+  assert.equal(markdownToHtml('a _b_ c'), '<p>a <em>b</em> c</p>');
+  assert.equal(markdownToHtml('a_b_c'), '<p>a_b_c</p>');
+});
+
+test('blockquote wraps quoted lines and keeps a blank between them', () => {
+  assert.equal(
+    markdownToHtml('> one\n> two'),
+    '<blockquote><p>one<br>two</p></blockquote>'
+  );
+  assert.equal(
+    markdownToHtml('> one\n>\n> two'),
+    '<blockquote><p>one</p>\n<p>two</p></blockquote>'
+  );
+});
+
+test('nested quotes recurse', () => {
+  const html = markdownToHtml('> outer\n> > inner');
+  assert.equal(html, '<blockquote><p>outer</p>\n<blockquote><p>inner</p></blockquote></blockquote>');
+});
+
+test('task list items stay inert and mark checked state', () => {
+  assert.equal(
+    markdownToHtml('- [ ] open\n- [x] done\n- [X] also'),
+    '<ul class="task-list">' +
+      '<li class="task"><span class="task-mark" aria-hidden="true">☐</span>open</li>' +
+      '<li class="task"><span class="task-mark on" aria-hidden="true">☑</span>done</li>' +
+      '<li class="task"><span class="task-mark on" aria-hidden="true">☑</span>also</li>' +
+    '</ul>'
+  );
+});
+
+test('GFM table renders escaped cells and alignment classes', () => {
+  const html = markdownToHtml('| A | B |\n| :--- | ---: |\n| **x** | <y> |');
+  assert.equal(
+    html,
+    '<div class="md-table-wrap"><table><thead><tr>' +
+      '<th class="ta-l">A</th><th class="ta-r">B</th>' +
+    '</tr></thead><tbody><tr>' +
+      '<td class="ta-l"><strong>x</strong></td><td class="ta-r">&lt;y&gt;</td>' +
+    '</tr></tbody></table></div>'
+  );
+});
+
+test('a table header without a separator stays a paragraph (streaming)', () => {
+  assert.equal(markdownToHtml('| A | B |'), '<p>| A | B |</p>');
+});
+
+test('angle and bare autolinks use the same href allowlist', () => {
+  assert.equal(
+    markdownToHtml('see <https://example.com> now'),
+    '<p>see <a href="https://example.com" target="_blank" rel="noopener noreferrer">https://example.com</a> now</p>'
+  );
+  assert.equal(
+    markdownToHtml('see https://example.com.'),
+    '<p>see <a href="https://example.com" target="_blank" rel="noopener noreferrer">https://example.com</a>.</p>'
+  );
+  const bad = markdownToHtml('see <javascript:alert(1)>');
+  assert.ok(!bad.includes('<a'));
+});
+
+test('images never become img tags — safe URLs are caption links', () => {
+  const html = markdownToHtml('![diagram](https://example.com/a.png)');
+  assert.ok(!html.includes('<img'));
+  assert.equal(
+    html,
+    '<p><a href="https://example.com/a.png" target="_blank" rel="noopener noreferrer" class="md-img">diagram</a></p>'
+  );
+  const unsafe = markdownToHtml('![x](javascript:alert(1))');
+  assert.ok(!unsafe.includes('<a'));
+  assert.ok(!unsafe.includes('<img'));
+});
 
 test('golden document', () => {
   const doc = [

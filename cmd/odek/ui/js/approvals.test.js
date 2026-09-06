@@ -32,7 +32,25 @@ class FakeElement {
     this.value = '';
     this._attrs = {};
   }
-  appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
+  appendChild(c) {
+    if (c.parentNode) {
+      const i = c.parentNode.children.indexOf(c);
+      if (i >= 0) c.parentNode.children.splice(i, 1);
+    }
+    c.parentNode = this;
+    this.children.push(c);
+    return c;
+  }
+  insertBefore(c, ref) {
+    if (c.parentNode) {
+      const i = c.parentNode.children.indexOf(c);
+      if (i >= 0) c.parentNode.children.splice(i, 1);
+    }
+    c.parentNode = this;
+    const i = ref ? this.children.indexOf(ref) : -1;
+    if (i >= 0) this.children.splice(i, 0, c); else this.children.push(c);
+    return c;
+  }
   append(...cs) { cs.forEach(c => this.appendChild(c)); }
   remove() {
     if (this.parentNode) {

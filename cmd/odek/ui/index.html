@@ -4,52 +4,54 @@
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <meta name="odek-ws-token" content="{{ODEK_WS_TOKEN}}"/>
-<title>odek ⚡</title>
+<title>odek</title>
 <link rel="stylesheet" href="/style.css"/>
 <link rel="preload" href="/fonts/azeret-mono.woff2" as="font" type="font/woff2" crossorigin>
 </head>
 <body>
 <div id="app">
-  <!-- Top Bar -->
   <header id="topbar">
-    <button id="hamburger-btn" aria-label="Toggle sidebar">
+    <button id="hamburger-btn" type="button" aria-label="Sessions" aria-expanded="false">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
     </button>
-    <span class="top-brand"><span class="top-brand-text">odek</span></span>
+    <span class="top-brand" title="odek"><span class="top-brand-mark" aria-hidden="true"></span><span class="top-brand-text">odek</span></span>
     <span class="top-status-group" id="status-group" role="button" tabindex="0" title="Server status">
       <span class="dot" id="ws-dot"></span>
       <span class="status" id="ws-status">connecting</span>
-      <span id="ping-latency"></span>
-      <span id="sandbox-badge" style="display:none" title="Sandbox mode — shell commands run in an isolated Docker container">🔒</span>
-      <span id="stream-badge" style="display:none" title="Live streaming — tokens arrive as they are generated">⚡</span>
+      <span id="ping-latency" hidden></span>
+      <span id="sandbox-badge" hidden title="Sandbox — tools run in Docker">sandbox</span>
+      <span id="stream-badge" hidden title="Live token streaming">stream</span>
     </span>
     <div class="top-spacer"></div>
+    <span class="ir-spin" id="busy-spin" hidden aria-hidden="true" title="Agent is working"></span>
     <div id="metrics" aria-live="off">
       <div class="ctx-gauge" id="ctx-gauge">
         <span class="ctx-label" title="Context window usage">ctx</span>
         <div class="ctx-bar"><div class="ctx-fill" id="ctx-fill"></div></div>
         <span class="ctx-pct" id="ctx-pct">—</span>
       </div>
-      <span class="m-tok" id="m-tok"></span>
-      <span class="m-cost" id="m-cost"></span>
+      <span class="m-chip" id="plan-chip" hidden role="button" tabindex="0" title="Open plan"></span>
+      <span class="m-chip" id="jobs-chip" hidden role="button" tabindex="0" title="Open jobs"></span>
     </div>
+    <span class="m-chip" id="cost-chip" hidden role="button" tabindex="0" title="Session cost"></span>
     <span class="model" id="model-label"></span>
     <div class="top-controls">
       <select id="model-picker" title="Switch model">
         <option value="">Loading...</option>
       </select>
       <input id="custom-model-input" type="text" placeholder="model id…" title="Custom model ID — press Enter to apply" />
-      <button id="panels-btn" title="Management panels (Alt+M)" aria-label="Management panels">
+      <button id="palette-btn" type="button" title="Command palette (⌘K)" aria-label="Command palette">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      </button>
+      <button id="panels-btn" type="button" title="Inspector (⌘.)" aria-label="Inspector" aria-expanded="false">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
       </button>
-      <button id="theme-btn" title="Toggle theme" aria-label="Toggle theme">◐</button>
-      <button id="cancel-btn" aria-label="Stop">
+      <button id="cancel-btn" type="button" aria-label="Stop">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </button>
     </div>
   </header>
 
-  <!-- Server Health Popover -->
   <div id="health-popover" hidden>
     <div class="hp-row"><span class="hp-k">version</span><span class="hp-v" id="hp-version">—</span></div>
     <div class="hp-row"><span class="hp-k">uptime</span><span class="hp-v" id="hp-uptime">—</span></div>
@@ -59,36 +61,51 @@
     <div class="hp-row"><span class="hp-k">connections</span><span class="hp-v" id="hp-conns">—</span></div>
     <div class="hp-row"><span class="hp-k">latency</span><span class="hp-v" id="hp-latency">—</span></div>
     <div class="hp-row"><span class="hp-k">usage</span><span class="hp-v" id="hp-usage">—</span></div>
-  </div>
-
-  <!-- Sidebar -->
-  <nav id="sidebar" aria-label="Sessions">
-    <div id="sidebar-header">
-      <h3>Sessions <span id="sidebar-count" class="sidebar-count"></span></h3>
-      <button class="new-session-btn" title="New session">＋</button>
+    <div class="hp-row"><span class="hp-k">tokens</span><span class="hp-v" id="m-tok">—</span></div>
+    <div class="hp-row"><span class="hp-k">cost</span><span class="hp-v" id="m-cost">—</span></div>
+    <div class="hp-actions">
+      <button id="theme-btn" title="Cycle theme" aria-label="Cycle theme">◐</button>
+      <button id="notify-btn" title="Desktop notifications" aria-label="Desktop notifications" aria-pressed="false">◌</button>
     </div>
-    <input id="sidebar-search" type="text" placeholder="Search server-side…" autocomplete="off" />
-    <div id="session-list"></div>
-    <button id="sessions-more" hidden>load more</button>
-  </nav>
+  </div>
 
   <div id="sidebar-overlay"></div>
 
-  <!-- Management Panels Drawer -->
-  <aside id="panels" aria-label="Management panels">
+  <aside id="panels" role="complementary" aria-label="Inspector" aria-hidden="true">
     <div id="panels-header">
-      <div id="panels-tabs" role="tablist">
-        <button class="ptab active" data-tab="memory" role="tab" aria-selected="true">memory</button>
-        <button class="ptab" data-tab="skills" role="tab" aria-selected="false">skills</button>
-        <button class="ptab" data-tab="tools" role="tab" aria-selected="false">tools</button>
-        <button class="ptab" data-tab="runs" role="tab" aria-selected="false">runs</button>
-        <button class="ptab" data-tab="events" role="tab" aria-selected="false">events</button>
-        <button class="ptab" data-tab="plan" role="tab" aria-selected="false">plan</button>
+      <div id="panels-tabs" role="tablist" aria-label="Inspector workspaces">
+        <button class="ptab" id="ptab-sessions" data-tab="sessions" role="tab" aria-selected="false" aria-controls="ppanel-sessions" tabindex="-1">sessions</button>
+        <button class="ptab active" id="ptab-now" data-tab="now" role="tab" aria-selected="true" aria-controls="ppanel-now" tabindex="0">now</button>
+        <button class="ptab" id="ptab-memory" data-tab="memory" role="tab" aria-selected="false" aria-controls="ppanel-memory" tabindex="-1">memory</button>
+        <button class="ptab" id="ptab-ops" data-tab="ops" role="tab" aria-selected="false" aria-controls="ppanel-ops" tabindex="-1">ops</button>
       </div>
-      <button id="panels-close" title="Close" aria-label="Close panels">✕</button>
+      <button id="panels-close" title="Close" aria-label="Close inspector">✕</button>
     </div>
     <div id="panels-body">
-      <section class="ppanel active" data-panel="memory">
+      <section class="ppanel" id="ppanel-sessions" data-panel="sessions" role="tabpanel" aria-labelledby="ptab-sessions" hidden aria-hidden="true">
+        <nav id="sidebar" aria-label="Sessions">
+          <div id="sidebar-header">
+            <h3><span class="sr-only">Sessions</span> <span id="sidebar-count" class="sidebar-count"></span></h3>
+            <button class="new-session-btn" type="button" title="New session">＋</button>
+          </div>
+          <div class="sidebar-search-wrap">
+            <input id="sidebar-search" type="text" placeholder="find…" autocomplete="off" />
+          </div>
+          <div id="session-list"></div>
+          <button id="sessions-more" type="button" hidden>more</button>
+        </nav>
+      </section>
+      <section class="ppanel active" id="ppanel-now" data-panel="now" role="tabpanel" aria-labelledby="ptab-now">
+        <div class="ppanel-scroll">
+          <h4 class="ws-head">plan</h4>
+          <div id="plan-list"></div>
+          <h4 class="ws-head">jobs</h4>
+          <div id="jobs-list"></div>
+          <h4 class="ws-head">agents</h4>
+          <div id="agents-list"></div>
+        </div>
+      </section>
+      <section class="ppanel" id="ppanel-memory" data-panel="memory" role="tabpanel" aria-labelledby="ptab-memory" hidden aria-hidden="true">
         <div class="ppanel-scroll">
           <div class="mf-section">
             <div class="mf-head"><h4>user facts</h4><span class="mf-count" id="mf-user-count"></span></div>
@@ -97,6 +114,7 @@
               <input id="mf-user-input" type="text" placeholder="add a user fact…" maxlength="2000" />
               <button id="mf-user-add" title="Add fact">＋</button>
             </div>
+            <button class="mf-consolidate" id="mf-user-consolidate" type="button">consolidate user</button>
           </div>
           <div class="mf-section">
             <div class="mf-head"><h4>env facts</h4><span class="mf-count" id="mf-env-count"></span></div>
@@ -105,100 +123,110 @@
               <input id="mf-env-input" type="text" placeholder="add an env fact…" maxlength="2000" />
               <button id="mf-env-add" title="Add fact">＋</button>
             </div>
+            <button class="mf-consolidate" id="mf-env-consolidate" type="button">consolidate env</button>
           </div>
           <div class="mf-section">
             <div class="mf-head"><h4>episodes pending review</h4><span class="mf-count" id="mf-pending-count"></span></div>
             <div class="mf-list" id="mf-pending-list"></div>
           </div>
+          <h4 class="ws-head">skills</h4>
+          <div id="skills-list"></div>
+          <h4 class="ws-head">tools</h4>
+          <div id="tools-list"></div>
         </div>
       </section>
-      <section class="ppanel" data-panel="skills">
-        <div class="ppanel-scroll" id="skills-list"></div>
-      </section>
-      <section class="ppanel" data-panel="tools">
-        <div class="ppanel-scroll" id="tools-list"></div>
-      </section>
-      <section class="ppanel" data-panel="runs">
-        <div class="ppanel-scroll" id="runs-list"></div>
-      </section>
-      <section class="ppanel" data-panel="events">
-        <div class="ppanel-scroll" id="events-list"></div>
-      </section>
-      <section class="ppanel" data-panel="plan">
-        <div class="ppanel-scroll" id="plan-list"></div>
+      <section class="ppanel" id="ppanel-ops" data-panel="ops" role="tabpanel" aria-labelledby="ptab-ops" hidden aria-hidden="true">
+        <div class="ppanel-scroll">
+          <h4 class="ws-head">runs</h4>
+          <div id="runs-list"></div>
+          <h4 class="ws-head">events</h4>
+          <div id="events-list"></div>
+          <h4 class="ws-head">config</h4>
+          <div id="config-list"></div>
+        </div>
       </section>
     </div>
   </aside>
   <div id="panels-overlay"></div>
 
-  <!-- Main Chat -->
   <main id="main">
     <div id="loading-skeleton">
       <div class="skeleton-bar"></div>
       <div class="skeleton-bar"></div>
       <div class="skeleton-bar"></div>
     </div>
-    <div id="messages" role="log" aria-live="polite" aria-relevant="additions">
+    <div id="messages" role="log" aria-live="off">
       <button id="scroll-bottom-btn" aria-label="Scroll to bottom">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
       </button>
       <div id="empty-state">
         <div id="empty-state-inner">
-          <div class="es-mark">⚡</div>
+          <div class="es-mark" aria-hidden="true"></div>
           <div class="es-name">odek</div>
-          <p class="es-sub">autonomous agent runtime</p>
+          <p class="es-sub">Ask anything. odek will read, edit, and run from here.</p>
           <div class="es-hints">
-            <span role="button" tabindex="0">shortcuts /?/</span>
-            <span role="button" tabindex="0">refresh sessions</span>
-            <span role="button" tabindex="0">manage /Alt+M/</span>
+            <button type="button" class="es-tip" data-hint="palette"><kbd>⌘K</kbd> commands, sessions, models</button>
+            <button type="button" class="es-tip" data-hint="at"><kbd>@</kbd> mention a file or past session</button>
+            <button type="button" class="es-tip" data-hint="slash"><kbd>/</kbd> new · clear · retry · cancel</button>
+            <button type="button" class="es-tip" data-hint="inspector"><kbd>⌘.</kbd> inspector · <kbd>?</kbd> shortcuts</button>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- Input -->
+    <div id="intent-rail" hidden>
+      <span class="ir-spin" aria-hidden="true"></span>
+      <span class="ir-text"></span>
+    </div>
+
     <div id="input-area">
       <div class="input-inner">
+        <div id="queue-strip" hidden></div>
         <div id="file-chips"></div>
         <div id="completion" role="listbox" aria-label="Resource completion"></div>
         <div id="input-row">
-          <button id="attach-btn" title="Attach files">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
-          </button>
-          <input type="file" id="file-input" multiple style="display:none"/>
           <div id="input-wrap">
-            <span class="input-prompt">❯</span>
-            <textarea id="prompt" rows="1" placeholder="ask anything…  (@ to reference)"></textarea>
+            <textarea id="prompt" rows="1" placeholder="What should odek do?"></textarea>
           </div>
-          <button id="think-btn" title="Toggle extended thinking for next prompt (Alt+T)">think</button>
-          <button id="send-btn" disabled>↵</button>
+          <div class="composer-bar">
+            <button id="attach-btn" type="button" title="Attach files">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+            </button>
+            <input type="file" id="file-input" multiple style="display:none"/>
+            <span class="composer-hint">@ mention a file or session · /new /clear /retry · ⌘K commands</span>
+            <button id="send-btn" type="button" disabled>↵</button>
+          </div>
         </div>
       </div>
     </div>
   </main>
 </div>
 
-<!-- Keyboard Shortcuts -->
-<div id="shortcuts-overlay">
-  <div id="shortcuts-dialog" role="dialog" aria-modal="true" aria-labelledby="shortcuts-title" tabindex="-1">
-    <h3 id="shortcuts-title">Keyboard shortcuts</h3>
-    <div class="shortcut-row"><span class="sc-label">Send message</span><span class="sc-key">Enter</span></div>
-    <div class="shortcut-row"><span class="sc-label">New line</span><span class="sc-key">Shift+Enter</span></div>
-    <div class="shortcut-row"><span class="sc-label">History up</span><span class="sc-key">↑</span></div>
-    <div class="shortcut-row"><span class="sc-label">History down</span><span class="sc-key">↓</span></div>
-    <div class="shortcut-row"><span class="sc-label">File/session reference</span><span class="sc-key">@</span></div>
-    <div class="shortcut-row"><span class="sc-label">Completion navigation</span><span class="sc-key">↑↓ · Enter/Tab · Esc</span></div>
-    <div class="shortcut-row"><span class="sc-label">Toggle shortcuts</span><span class="sc-key">?</span></div>
-    <div class="shortcut-row"><span class="sc-label">Refresh sessions</span><span class="sc-key">⌘R</span></div>
-    <div class="shortcut-row"><span class="sc-label">Toggle thinking</span><span class="sc-key">Alt+T</span></div>
-    <div class="shortcut-row"><span class="sc-label">Management panels</span><span class="sc-key">Alt+M</span></div>
-    <div class="shortcut-row"><span class="sc-label">Approve (when prompted)</span><span class="sc-key">A</span></div>
-    <div class="shortcut-row"><span class="sc-label">Deny (when prompted)</span><span class="sc-key">D</span></div>
-    <div class="shortcut-row"><span class="sc-label">Trust session (when prompted)</span><span class="sc-key">T</span></div>
+<div id="palette-overlay">
+  <div id="palette-dialog" role="dialog" aria-modal="true" aria-labelledby="palette-title" tabindex="-1">
+    <h3 id="palette-title" class="sr-only">Command palette</h3>
+    <input id="palette-input" type="text" role="combobox" aria-haspopup="listbox" aria-autocomplete="list" aria-expanded="false" aria-controls="palette-results" placeholder="Jump to a command, session, model, or workspace…" autocomplete="off" />
+    <div id="palette-results" role="listbox" aria-label="Palette results"></div>
   </div>
 </div>
 
-<!-- Confirm Dialog -->
+<div id="shortcuts-overlay">
+  <div id="shortcuts-dialog" role="dialog" aria-modal="true" aria-labelledby="shortcuts-title" tabindex="-1">
+    <h3 id="shortcuts-title">Keyboard shortcuts</h3>
+    <div class="shortcut-row"><span class="sc-label">Command palette</span><span class="sc-key">⌘K</span></div>
+    <div class="shortcut-row"><span class="sc-label">Send / queue while busy</span><span class="sc-key">Enter</span></div>
+    <div class="shortcut-row"><span class="sc-label">New line</span><span class="sc-key">Shift+Enter</span></div>
+    <div class="shortcut-row"><span class="sc-label">Slash verbs</span><span class="sc-key">/new /clear /retry /cancel /stop</span></div>
+    <div class="shortcut-row"><span class="sc-label">File/session reference</span><span class="sc-key">@</span></div>
+    <div class="shortcut-row"><span class="sc-label">Copy last reply</span><span class="sc-key">⌘⇧C</span></div>
+    <div class="shortcut-row"><span class="sc-label">Retry last prompt</span><span class="sc-key">Alt+R</span></div>
+    <div class="shortcut-row"><span class="sc-label">Jump turns</span><span class="sc-key">Alt+↑↓</span></div>
+    <div class="shortcut-row"><span class="sc-label">Inspector</span><span class="sc-key">⌘.</span></div>
+    <div class="shortcut-row"><span class="sc-label">Approve / deny / trust</span><span class="sc-key">A · D · T</span></div>
+    <div class="shortcut-row"><span class="sc-label">This sheet</span><span class="sc-key">?</span></div>
+  </div>
+</div>
+
 <div id="confirm-overlay">
   <div id="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
     <div class="confirm-icon">⚠</div>
@@ -211,9 +239,20 @@
   </div>
 </div>
 
-<!-- Screen-reader-only live status region (announce() in js/utils.js) -->
-<div id="sr-status" class="sr-only" role="status" aria-live="polite"></div>
+<div id="shutdown-overlay">
+  <div id="shutdown-dialog" role="dialog" aria-modal="true" aria-labelledby="shutdown-title">
+    <div class="confirm-icon">⚠</div>
+    <h3 id="shutdown-title">Shut down serve?</h3>
+    <p>Type <strong>shutdown</strong> to confirm. Open connections and sandboxes will drain.</p>
+    <input id="shutdown-input" type="text" autocomplete="off" spellcheck="false" />
+    <div id="shutdown-actions" class="confirm-actions">
+      <button class="cancel" id="shutdown-cancel" type="button">Cancel</button>
+      <button class="delete-confirm" id="shutdown-confirm" type="button" disabled>Shut down</button>
+    </div>
+  </div>
+</div>
 
+<div id="sr-status" class="sr-only" role="status" aria-live="polite"></div>
 <div class="toast" id="toast"></div>
 
 <script type="module" src="/app.js"></script>
