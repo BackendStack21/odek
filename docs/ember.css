@@ -108,15 +108,10 @@ body::after {
   pointer-events: none;
 }
 
-/* Ember wells + distant coals */
+/* Ember well — a small, faint crown behind the wordmark. Distant coals stay pin-pricks. */
 body::before {
   background:
-    radial-gradient(ellipse 34% 20% at 50% 22%, rgba(255, 201, 94, .12), transparent 68%),
-    radial-gradient(ellipse 92% 55% at 50% 14%, rgba(255, 178, 36, .14), transparent 55%),
-    radial-gradient(ellipse 52% 38% at 4% 28%, rgba(255, 138, 61, .08), transparent 64%),
-    radial-gradient(ellipse 46% 34% at 96% 24%, rgba(255, 201, 94, .06), transparent 60%),
-    radial-gradient(ellipse 60% 48% at 88% 88%, rgba(106, 173, 255, .04), transparent 62%),
-    radial-gradient(ellipse 40% 28% at 12% 78%, rgba(255, 178, 36, .05), transparent 58%);
+    radial-gradient(ellipse 11% 6% at 50% 10%, rgba(255, 178, 36, .035), transparent 72%);
   box-shadow:
     14vw 16vh 0 .7px rgba(255, 178, 36, .48),
     22vw 28vh 0 .55px rgba(255, 201, 94, .28),
@@ -127,7 +122,7 @@ body::before {
     63vw 58vh 0 .45px rgba(255, 201, 94, .18),
     91vw 67vh 0 .55px rgba(255, 178, 36, .26),
     33vw 41vh 0 .45px rgba(255, 138, 61, .18);
-  transform-origin: 50% 6%;
+  transform-origin: 50% 8%;
   z-index: -2;
 }
 @media (prefers-reduced-motion: no-preference) {
@@ -136,19 +131,18 @@ body::before {
   }
 }
 @keyframes ember-breathe {
-  from { opacity: .78; transform: scale(1); }
-  to { opacity: 1; transform: scale(1.045); }
+  from { opacity: .85; transform: scale(1); }
+  to { opacity: 1; transform: scale(1.012); }
 }
 
-/* Grid + phosphor grain + vignette — static, sits on the wells */
+/* Grid + cool grain. No circular vignette — that read as a brown disk. */
 body::after {
   background-image:
-    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.95  0 0 0 0 0.72  0 0 0 0 0.22  0 0 0 .45 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>"),
-    radial-gradient(ellipse 75% 65% at 50% 36%, transparent 42%, rgba(3, 3, 4, .82) 100%),
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.82  0 0 0 0 0.84  0 0 0 0 0.90  0 0 0 .14 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>"),
     repeating-linear-gradient(0deg, transparent 0 47px, rgba(152, 170, 200, .045) 47px 48px),
     repeating-linear-gradient(90deg, transparent 0 47px, rgba(152, 170, 200, .045) 47px 48px);
-  background-size: 160px 160px, auto, auto, auto;
-  background-blend-mode: overlay, normal, normal, normal;
+  background-size: 160px 160px, auto, auto;
+  background-blend-mode: overlay, normal, normal;
   z-index: -1;
 }
 
