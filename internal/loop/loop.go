@@ -450,6 +450,10 @@ type Engine struct {
 	// content-equality no-op).
 	planRenderedVersion int
 	planRenderedContent string
+	// blockedHintPending is set from the plan OnChange path (tool
+	// goroutine) when the blocked-step streak fires, then consumed on
+	// the loop goroutine after the batch joins.
+	blockedHintPending atomic.Bool
 
 	// sideCallTimeout bounds the compaction and progress-summary side calls.
 	// Zero means use the default (30s). Callers scale it off the resolved
@@ -676,11 +680,9 @@ func (e *Engine) SetPlanStore(s *PlanStore) {
 
 // emitPlanChangeEvent maps one PlanStore mutation onto the structured
 // runtime event stream. create → plan_created; every other version-bumping
-// mutation → plan_updated. Payloads carry counts and version ONLY — never
-// step titles or notes (the event stream's minimality invariant, mirroring
-// the args-digest rule on tool events). Iteration is deliberately unset:
-// mutations fire inside parallel tool goroutines with no iteration context;
-// consumers correlate via the surrounding tool_call_started/completed pair.
+// mutation → plan_updated. Three consecutive blocked transitions also
+// emit plan_blocked. Payloads carry counts and version ONLY — never
+// step titles or notes.
 func (e *Engine) emitPlanChangeEvent(ch PlanChange) {
 	if ch.Created {
 		e.emitEvent(events.Event{
@@ -690,19 +692,30 @@ func (e *Engine) emitPlanChangeEvent(ch PlanChange) {
 				"version": ch.Version,
 			},
 		})
-		return
+	} else {
+		e.emitEvent(events.Event{
+			Type: events.TypePlanUpdated,
+			Data: map[string]any{
+				"steps":       ch.Steps,
+				"done":        ch.Done,
+				"in_progress": ch.InProgress,
+				"blocked":     ch.Blocked,
+				"pending":     ch.Pending,
+				"version":     ch.Version,
+			},
+		})
 	}
-	e.emitEvent(events.Event{
-		Type: events.TypePlanUpdated,
-		Data: map[string]any{
-			"steps":       ch.Steps,
-			"done":        ch.Done,
-			"in_progress": ch.InProgress,
-			"blocked":     ch.Blocked,
-			"pending":     ch.Pending,
-			"version":     ch.Version,
-		},
-	})
+	if ch.BlockedStreak {
+		e.blockedHintPending.Store(true)
+		e.emitEvent(events.Event{
+			Type: events.TypePlanBlocked,
+			Data: map[string]any{
+				"steps":   ch.Steps,
+				"blocked": ch.Blocked,
+				"version": ch.Version,
+			},
+		})
+	}
 }
 
 // SetSideCallTimeout sets the bound for the compaction digest and
@@ -1695,6 +1708,8 @@ func (e *Engine) budgetExceeded(ctx context.Context, messages []session.Message,
 		}
 	}
 
+	messages = e.appendRemainingPlan(ctx, messages)
+
 	// Persist the latest safe state so an interrupted run resumes from here.
 	e.emitMessagesPersist(messages)
 	return "", messages, berr
@@ -1961,6 +1976,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 	e.runMutations = nil
 	// Finalization requests never carry across runs.
 	e.finalizeReq.Store(false)
+	e.blockedHintPending.Store(false)
 	// Budget-awareness hint state is per-run.
 	hints := budgetHintState{}
 
@@ -2887,6 +2903,24 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 						correction := fmt.Sprintf(
 							"⚠️ You called %q with identical arguments %d times (possibly interleaved with other calls) with no new information. Change approach: vary the arguments, switch to a different tool, or move on to the next step — repeating the same call will not produce a different result.",
 							toolName, e.toolRepeatCounts[fp])
+						if e.planStore != nil {
+							if state, ok := e.planStore.Snapshot(); ok {
+								cls, _ := classifyToolCall(toolName, tc.Function.Arguments)
+								escalate := danger.Rank(cls) >= danger.Rank(danger.LocalWrite) ||
+									e.planStore.LastTransitionBlocked()
+								if !escalate {
+									for _, r := range results {
+										if r.errored {
+											escalate = true
+											break
+										}
+									}
+								}
+								if suffix := formatPlanStallSuffix(state, escalate, string(cls)); suffix != "" {
+									correction += " " + suffix
+								}
+							}
+						}
 						corrections = append(corrections, correction)
 						e.emitSignal(SignalEvent{
 							Type:   "tool_recovery",
@@ -2940,6 +2974,9 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 		// message so the model paces itself and concludes cleanly.
 		if e.budgetHints {
 			corrections = append(corrections, e.budgetWarnings(i+1, startTime, ctx, &hints)...)
+		}
+		if e.blockedHintPending.Swap(false) {
+			corrections = append(corrections, "⚠️ Plan has 3 consecutive blocked steps. Decompose the blocked work or `create` a new plan — do not keep marking steps blocked.")
 		}
 		// Inject all corrections as a single system message
 		if len(corrections) > 0 {
@@ -3005,6 +3042,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 	// normal completion. On summarizer failure, fall back to the error.
 	// The summary side call is skipped when a configured execution budget is
 	// already exhausted — it would itself consume runtime/tokens/cost.
+	messages = e.appendRemainingPlan(ctx, messages)
 	var progressSummary string
 	if e.budgetAllowsSideCall() {
 		progressSummary = e.summarizeProgress(ctx, messages)
@@ -3056,8 +3094,10 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 	}
 
 	if finalizeReason == timeBudgetFinalization {
+		e.emitMessagesPersist(messages)
 		return "", messages, fmt.Errorf("time budget reached after %d iterations without final answer", e.maxIter)
 	}
+	e.emitMessagesPersist(messages)
 	return "", messages, fmt.Errorf("reached max iterations (%d) without final answer", e.maxIter)
 }
 
@@ -3074,6 +3114,27 @@ func (e *Engine) emitMessagesPersist(messages []session.Message) {
 	}
 	snapshot := session.CloneMessages(messages)
 	e.messagesPersistCallback(snapshot)
+}
+
+// appendRemainingPlan attaches an ID-only remaining-steps block (pending /
+// in_progress / blocked) as wrapped derived context. No-op when planning is
+// off, no plan exists, or every step is done. Titles/notes never enter.
+func (e *Engine) appendRemainingPlan(ctx context.Context, messages []session.Message) []session.Message {
+	if e == nil || e.planStore == nil {
+		return messages
+	}
+	state, ok := e.planStore.Snapshot()
+	if !ok {
+		return messages
+	}
+	body := formatRemainingPlanSteps(state)
+	if body == "" {
+		return messages
+	}
+	return append(messages, session.Message{
+		Role:    "system",
+		Content: e.protectDerivedContext(ctx, "plan_remaining", body),
+	})
 }
 
 // isBGPollTool reports whether the tool is a read-only background-job

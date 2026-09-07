@@ -69,13 +69,14 @@ type PlanState struct {
 // be mapped straight onto the minimality-constrained odek.event/v1 stream
 // (plan_created / plan_updated).
 type PlanChange struct {
-	Created    bool // true when the mutation was a create verb (wholesale replace)
-	Steps      int  // total step count after the mutation
-	Done       int
-	InProgress int
-	Blocked    int
-	Pending    int
-	Version    int // store version after the mutation
+	Created       bool // true when the mutation was a create verb (wholesale replace)
+	Steps         int  // total step count after the mutation
+	Done          int
+	InProgress    int
+	Blocked       int
+	Pending       int
+	Version       int  // store version after the mutation
+	BlockedStreak bool // true when this mutation tripped the 3-blocked streak
 }
 
 // Structural caps enforced by validation (docs/PLANNING.md — Fail-Closed
@@ -106,6 +107,9 @@ type PlanStore struct {
 	maxSteps       int
 	maxRenderChars int
 	onChange       func(PlanChange) // optional; fired under mu after each effective mutation
+	blockedStreak  int              // consecutive blocked status transitions
+	lastBlocked    bool             // last status transition was to blocked
+	blockedFired   bool             // this mutation tripped the streak (consumed by notify)
 }
 
 // NewPlanStore creates a store with the given resolved caps. Degenerate
@@ -130,6 +134,15 @@ func (s *PlanStore) Snapshot() (PlanState, bool) {
 	return *s.plan, true
 }
 
+// LastTransitionBlocked reports whether the most recent status transition
+// was to blocked (reset by create / done / in_progress). Used by the stall
+// hint to escalate "stop retrying that class".
+func (s *PlanStore) LastTransitionBlocked() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastBlocked
+}
+
 // Restore replaces the state wholesale (restart-resume path). The caller
 // owns validation — see parsePlanState.
 func (s *PlanStore) Restore(st PlanState) {
@@ -137,6 +150,9 @@ func (s *PlanStore) Restore(st PlanState) {
 	defer s.mu.Unlock()
 	cp := st
 	s.plan = &cp
+	s.blockedStreak = 0
+	s.lastBlocked = false
+	s.blockedFired = false
 }
 
 // Reset clears the state (run start with no persisted plan).
@@ -144,6 +160,9 @@ func (s *PlanStore) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.plan = nil
+	s.blockedStreak = 0
+	s.lastBlocked = false
+	s.blockedFired = false
 }
 
 // SetOnChange registers an optional callback fired exactly once per
@@ -201,6 +220,7 @@ func (s *PlanStore) Execute(argsJSON string) (string, error) {
 	}
 	var res string
 	var err error
+	s.blockedFired = false
 	switch args.Verb {
 	case "create":
 		res, err = s.create(args.Steps)
@@ -218,21 +238,22 @@ func (s *PlanStore) Execute(argsJSON string) (string, error) {
 	// stay silent. create always bumps (fresh state), so it maps onto
 	// plan_created; every other bumping mutation is plan_updated.
 	if err == nil && s.plan != nil && s.plan.Version != prevVersion {
-		s.notifyLocked(args.Verb == "create")
+		s.notifyLocked(args.Verb == "create", s.blockedFired)
 	}
 	return res, err
 }
 
 // notifyLocked snapshots the post-mutation state into a PlanChange and fires
 // the change callback. Caller holds s.mu (see SetOnChange for the contract).
-func (s *PlanStore) notifyLocked(created bool) {
+func (s *PlanStore) notifyLocked(created, blockedStreak bool) {
 	if s.onChange == nil || s.plan == nil {
 		return
 	}
 	ch := PlanChange{
-		Created: created,
-		Steps:   len(s.plan.Steps),
-		Version: s.plan.Version,
+		Created:       created,
+		Steps:         len(s.plan.Steps),
+		Version:       s.plan.Version,
+		BlockedStreak: blockedStreak,
 	}
 	for _, st := range s.plan.Steps {
 		switch st.Status {
@@ -291,6 +312,9 @@ func (s *PlanStore) create(steps []planStepArg) (string, error) {
 		}
 		out = append(out, PlanStep{ID: id, Title: title, Status: StepPending, Note: normalizePlanText(in.Note)})
 	}
+	s.blockedStreak = 0
+	s.lastBlocked = false
+	s.blockedFired = false
 	s.plan = &PlanState{Version: s.nextVersion(), Steps: out}
 	return s.renderLocked(), nil
 }
@@ -333,6 +357,11 @@ func (s *PlanStore) update(updates []planUpdateArg) (string, error) {
 		// Status already terminal-equal — allowed, idempotent, no version bump.
 		return s.renderLocked(), nil
 	}
+	var old []PlanStep
+	if s.plan != nil {
+		old = s.plan.Steps
+	}
+	s.noteStatusTransitionsLocked(old, working)
 	s.plan = &PlanState{Version: s.nextVersion(), Steps: working}
 	return s.renderLocked(), nil
 }
@@ -351,6 +380,7 @@ func (s *PlanStore) complete(stepID string) (string, error) {
 	}
 	working := append([]PlanStep(nil), s.plan.Steps...)
 	working[idx].Status = StepDone
+	s.noteStatusTransitionsLocked(s.plan.Steps, working)
 	s.plan = &PlanState{Version: s.nextVersion(), Steps: working}
 	return s.renderLocked(), nil
 }
@@ -369,6 +399,112 @@ func indexOfStep(steps []PlanStep, id string) int {
 		}
 	}
 	return -1
+}
+
+// noteStatusTransitionsLocked updates the blocked-step streak. Consecutive
+// transitions TO blocked increment the streak; create is handled separately;
+// any transition TO done or in_progress resets it. After 3 blocked
+// transitions the streak fires once and resets. Caller holds s.mu.
+func (s *PlanStore) noteStatusTransitionsLocked(oldSteps, newSteps []PlanStep) {
+	oldByID := make(map[string]StepStatus, len(oldSteps))
+	for _, st := range oldSteps {
+		oldByID[st.ID] = st.Status
+	}
+	reset := false
+	blockedN := 0
+	for _, st := range newSteps {
+		old, ok := oldByID[st.ID]
+		if !ok || old == st.Status {
+			continue
+		}
+		switch st.Status {
+		case StepBlocked:
+			blockedN++
+		case StepDone, StepInProgress:
+			reset = true
+		}
+	}
+	if reset {
+		s.blockedStreak = 0
+		s.lastBlocked = false
+		return
+	}
+	if blockedN == 0 {
+		return
+	}
+	s.blockedStreak += blockedN
+	s.lastBlocked = true
+	if s.blockedStreak >= 3 {
+		s.blockedFired = true
+		s.blockedStreak = 0
+	}
+}
+
+// planHintIDs returns ID-only pointers into the plan for engine hints.
+// Titles and notes are never included.
+func planHintIDs(state PlanState) (inProgress, nextPending string) {
+	for _, st := range state.Steps {
+		switch st.Status {
+		case StepInProgress:
+			if inProgress == "" {
+				inProgress = st.ID
+			}
+		case StepPending:
+			if nextPending == "" {
+				nextPending = st.ID
+			}
+		}
+	}
+	return inProgress, nextPending
+}
+
+// formatPlanStallSuffix is the ID-only stall hint. escalate (local_write+
+// or last outcome denied/blocked) tells the model to stop retrying that
+// class and names the next pending step as next_non_mutating.
+func formatPlanStallSuffix(state PlanState, escalate bool, class string) string {
+	inProgress, nextPending := planHintIDs(state)
+	if !escalate {
+		var parts []string
+		if inProgress != "" {
+			parts = append(parts, "in_progress="+inProgress)
+		}
+		if nextPending != "" {
+			parts = append(parts, "next_pending="+nextPending)
+		}
+		if len(parts) == 0 {
+			return ""
+		}
+		return "plan: " + strings.Join(parts, ", ")
+	}
+	if class == "" {
+		class = "mutating"
+	}
+	var b strings.Builder
+	b.WriteString("plan:")
+	if inProgress != "" {
+		b.WriteString(" in_progress=")
+		b.WriteString(inProgress)
+	}
+	b.WriteString(" stop retrying ")
+	b.WriteString(class)
+	if nextPending != "" {
+		b.WriteString("; next_non_mutating=")
+		b.WriteString(nextPending)
+	}
+	return b.String()
+}
+
+// formatRemainingPlanSteps lists pending / in_progress / blocked IDs with
+// statuses. Done steps are omitted. No titles or notes.
+func formatRemainingPlanSteps(state PlanState) string {
+	var parts []string
+	for _, st := range state.Steps {
+		if st.Status == StepDone {
+			continue
+		}
+		parts = append(parts, st.ID+"="+string(st.Status))
+	}
+	return strings.Join(parts, " ")
 }
 
 // normalizePlanText flattens text so the rendered line grammar stays

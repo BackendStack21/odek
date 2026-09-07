@@ -228,8 +228,8 @@ type Config struct {
 	// EventHandler, if set, receives the structured runtime event stream
 	// (schema odek.event/v1 — see docs/EXTENSIONS.md): run_started,
 	// iteration_completed, tool_call_started/completed/failed,
-	// session_saved, context_trimmed, budget_exceeded, run_completed,
-	// run_failed.
+	// session_saved, context_trimmed, budget_exceeded, plan_created,
+	// plan_updated, plan_blocked, run_completed, run_failed.
 	//
 	// Dispatch is non-blocking (buffered channel, drop-on-full) and
 	// panic-isolated: a slow or panicking handler can never stall or crash

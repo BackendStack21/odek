@@ -473,6 +473,72 @@ func TestReport_PlanMessageWrappedUntrusted(t *testing.T) {
 	}
 }
 
+// TestReport_PlanLoopHintsOmitTitles pins that engine-trusted plan hints
+// (stall suffix, blocked-streak decompose, remaining-steps) never copy
+// step titles or notes — only IDs and statuses. Remaining-steps re-enter
+// as wrapped derived context (source=plan_remaining).
+func TestReport_PlanLoopHintsOmitTitles(t *testing.T) {
+	const secret = "TOPSECRET-report-title"
+	store := loop.NewPlanStore(12, 2000)
+	if _, err := store.Execute(`{"verb":"create","steps":[{"id":"s1","title":"Done"},{"id":"s2","title":"` + secret + `"},{"id":"s3","title":"Next"}]}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Execute(`{"verb":"update","updates":[{"id":"s1","status":"done"},{"id":"s2","status":"in_progress"}]}`); err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := store.Execute(`{"verb":"get"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	args := `{"path":"README.md"}`
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount <= 3 {
+			fmt.Fprintf(w, `{"choices":[{"message":{"tool_calls":[{"id":"c%d","function":{"name":"read_file","arguments":%q}}]}}]}`, callCount, args)
+			return
+		}
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"done"}}]}`)
+	}))
+	defer server.Close()
+
+	client, err := llmclient.Dial("", "test-model", "sk-test", server.URL)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	engine := loop.New(client, tool.NewRegistry([]tool.Tool{
+		&fakeReadFileTool{},
+		loop.NewPlanTool(store),
+	}), 10, "", nil, 0)
+	engine.SetPlanStore(store)
+
+	_, messages, err := engine.RunWithMessages(context.Background(), []session.Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "read it"},
+		{Role: "system", Content: rendered},
+	})
+	if err != nil {
+		t.Fatalf("RunWithMessages: %v", err)
+	}
+
+	var hint string
+	for _, m := range messages {
+		if m.Role == "system" && strings.Contains(m.Content, "identical arguments") {
+			hint = m.Content
+		}
+	}
+	if hint == "" {
+		t.Fatal("stall hint missing")
+	}
+	if !strings.Contains(hint, "s2") || !strings.Contains(hint, "s3") {
+		t.Errorf("stall hint missing plan IDs: %s", hint)
+	}
+	if strings.Contains(hint, secret) {
+		t.Errorf("stall hint leaked step title: %s", hint)
+	}
+}
+
 // TestReport_PlanningProjectClamp pins the planning config trust split:
 // project ./odek.json may opt out and may lower caps, but cannot raise an
 // operator-set cap or re-enable a globally-disabled feature.

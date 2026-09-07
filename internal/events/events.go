@@ -43,6 +43,7 @@ const (
 	TypeRunFailed          = "run_failed"
 	TypePlanCreated        = "plan_created"
 	TypePlanUpdated        = "plan_updated"
+	TypePlanBlocked        = "plan_blocked"
 	TypeSubagentSpawned    = "subagent_spawned"
 	TypeSubagentCompleted  = "subagent_completed"
 )

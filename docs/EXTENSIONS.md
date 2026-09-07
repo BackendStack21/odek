@@ -162,7 +162,7 @@ odek can emit a structured runtime event stream: **one JSON object per line
 - `type` is one of: `run_started`, `iteration_completed`,
   `tool_call_started`, `tool_call_completed`, `tool_call_failed`,
   `session_saved`, `context_trimmed`, `budget_exceeded`, `run_completed`,
-  `run_failed`, `plan_created`, `plan_updated`, `subagent_denied`,
+  `run_failed`, `plan_created`, `plan_updated`, `plan_blocked`, `subagent_denied`,
   `subagent_spawned`, `subagent_completed`, `subagent_concurrency_wait`.
 - `run_id` is a random 128-bit hex identifier generated per agent run and
   stamped on every event of that run. `session_id` appears once the session
@@ -193,6 +193,7 @@ Per-type `data` fields:
 | `run_failed` | `duration_ms`, `error_class` |
 | `plan_created` | `steps` (total count), `version` |
 | `plan_updated` | `steps`, `done`, `in_progress`, `blocked`, `pending`, `version` |
+| `plan_blocked` | `steps`, `blocked`, `version` |
 | `subagent_denied` | `task_index`, `class`, `reason` (emitted by `delegate_tasks` for each policy denial a child reports) |
 
 `call_id` is the stable correlation key between a `tool_call_started` and
@@ -218,7 +219,8 @@ surfaces that persist sessions per completed step (currently the `odek run
 emitted once per effective version-bumping mutation of the built-in `plan`
 tool (see [PLANNING.md](PLANNING.md)): `create` — including wholesale
 replace — maps to `plan_created`, every other bumping mutation to
-`plan_updated`. Payloads carry aggregate counts and the version ONLY — never
+`plan_updated`. Three consecutive `blocked` status transitions also emit
+`plan_blocked`. Payloads carry aggregate counts and the version ONLY — never
 step titles or notes. A note-only update bumps the version and therefore
 emits `plan_updated` with unchanged counts (the version stream stays
 gapless). Plan events carry no `iteration`: mutations fire inside parallel

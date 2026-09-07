@@ -342,6 +342,7 @@ stream (`Config.EventHandler`, `odek run --events-jsonl`, `/api/events`):
 |-------|------------|---------------|
 | `plan_created` | `create` — including wholesale replace over an existing plan | `steps`, `version` |
 | `plan_updated` | every other version-bumping mutation (`update`, `complete`) | `steps`, `done`, `in_progress`, `blocked`, `pending`, `version` |
+| `plan_blocked` | three consecutive `blocked` status transitions | `steps`, `blocked`, `version` |
 
 Emission: `PlanStore.SetOnChange` wires the engine's emitter at
 `SetPlanStore` time; the store fires exactly once per effective mutation
@@ -521,13 +522,25 @@ semantics, payload minimality, `ExtractPlan`), `cmd/odek/serve_plan_test.go`
   mirror `cmd/odek/ui/js/render.js`; the vestigial `todo` special-case was
   retired in both (falls through to the default 🔧).
 
-### Planned (not yet implemented)
+### Shipped (Phase 4 — loop integrations)
 
-**Loop integrations:** plan-aware stall-recovery hint suffix naming
-the current step and next pending step; blocked-step streak trigger
-(consecutive `blocked` transitions fire a decompose-or-reorder hint and a
-`plan_blocked` signal); remaining-steps blocks appended locally on
-iteration-budget and execution-budget exhaustion paths.
+- **Plan-aware stall suffix.** When stall detection fires, the engine-trusted
+  hint appends ID-only pointers (`in_progress=s2, next_pending=s3`). Titles
+  and notes stay in the already-wrapped plan message. A stall whose
+  fingerprint classified `local_write` or higher (or whose last outcome was
+  denied/blocked) escalates to “stop retrying that class” and names the next
+  pending step as `next_non_mutating`. Still a hint — never an auto-exec.
+- **Blocked-step streak.** Three consecutive transitions to `blocked` inject
+  a decompose-or-`create` hint and emit `plan_blocked` (`steps`, `blocked`,
+  `version` only). The streak resets on `create` or a `done` / `in_progress`
+  transition, and after firing (once then reset).
+- **Remaining-steps on exhaustion.** Pending / in_progress / blocked IDs and
+  statuses are appended as wrapped derived context (`plan_remaining`, ingest
+  recorded) on iteration-cap, `budgetExceeded` (even when the summary side
+  call is skipped), and `RequestFinalization` / time-budget paths. No extra
+  LLM call. Sub-agents still do not inherit the parent plan store.
+
+### Planned (not yet implemented)
 
 **Telemetry:** adoption/overhead aggregation surfaced via
 `/api/usage`.
