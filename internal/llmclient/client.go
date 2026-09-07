@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	sdk "github.com/BackendStack21/go-llm-sdk"
@@ -538,28 +539,31 @@ func ToolsFromSchema(name, desc string, schema any) (ToolDef, error) {
 	return ToolDef{Name: name, Description: desc, Parameters: params}, nil
 }
 
-// builtinProviderIDs lists the SDK's built-in registry ids. Overrides on
-// these keep their registry quirks; only custom ids get format defaults.
-var builtinProviderIDs = map[string]bool{
-	"openai":    true,
-	"gemini":    true,
-	"deepseek":  true,
-	"zai":       true,
-	"kimi":      true,
-	"anthropic": true,
-}
+// registryProbe is a no-option SDK used only to ask "is this id a built-in?".
+// New() always seeds the registry, so a successful Provider lookup means the
+// id ships with the SDK — custom ids must not overwrite those quirks.
+var (
+	registryProbeOnce sync.Once
+	registryProbe     *sdk.SDK
+)
 
-func isBuiltinProviderID(id string) bool { return builtinProviderIDs[id] }
+func isBuiltinProviderID(id string) bool {
+	registryProbeOnce.Do(func() { registryProbe = sdk.New() })
+	_, err := registryProbe.Provider(id)
+	return err == nil
+}
 
 // formatDefaultQuirks returns the safe default quirks for a wire format —
 // what every mainstream OpenAI-compatible gateway (and the official
-// Anthropic API) accepts. gemini needs no quirks.
+// Anthropic API) accepts. Gemini needs none; unknown formats are left alone.
 func formatDefaultQuirks(f sdk.Format) (sdk.Quirks, bool) {
 	switch f {
 	case sdk.FormatOpenAI:
 		return sdk.Quirks{ReasoningEffort: true}, true
 	case sdk.FormatAnthropic:
 		return sdk.Quirks{ThinkingObject: true, AnthropicVersion: "2023-06-01"}, true
+	case sdk.FormatGemini:
+		return sdk.Quirks{}, false
 	default:
 		return sdk.Quirks{}, false
 	}
