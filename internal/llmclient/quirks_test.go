@@ -110,6 +110,19 @@ func TestIsBuiltinProviderID_MatchesSDKRegistry(t *testing.T) {
 
 // Dial of an unknown host registers the v1 "legacy" OpenAI-format provider
 // and overlays selected-provider key/URL — the same path as a custom gateway.
+
+
+func TestTemperatureForModel_OmitsUnsupportedGPT6Temperature(t *testing.T) {
+	for _, model := range []string{"gpt-6-astra", "openai/gpt-6-astra", "GPT-6-ASTRA"} {
+		if got := temperatureForModel(model, 0); got != 0 {
+			t.Errorf("temperatureForModel(%q, 0) = %v, want SDK omit sentinel 0", model, got)
+		}
+	}
+	if got := temperatureForModel("gpt-4o", 0); got != -1 {
+		t.Errorf("temperatureForModel(gpt-4o, 0) = %v, want explicit-zero sentinel -1", got)
+	}
+}
+
 func TestDial_LegacyGetsOpenAIReasoningQuirks(t *testing.T) {
 	c, err := Dial("", "llama3", "local", "http://127.0.0.1:9/v1")
 	if err != nil {

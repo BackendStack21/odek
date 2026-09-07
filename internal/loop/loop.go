@@ -2049,12 +2049,7 @@ func (e *Engine) planMessageContent(ctx context.Context, state PlanState) string
 		// Header stays outside the wrapper (prefix recognition depends on
 		// it); the model-derived step lines are the wrapped payload.
 		header, body := rendered[:idx], rendered[idx+1:]
-		if fn := IngestRecorderFrom(ctx); fn != nil {
-			fn("plan", body)
-		}
-		if e.wrapUntrusted != nil {
-			body = e.wrapUntrusted("plan", body)
-		}
+		body = e.protectDerivedContext(ctx, "plan", body)
 		content = header + "\n" + body
 	}
 	e.planRenderedVersion = state.Version
@@ -2257,18 +2252,21 @@ func (e *Engine) Run(ctx context.Context, task string) (string, error) {
 // or stale system entry; those are data, not authority. Digest/plan
 // messages stay intact — they are prepended after the runtime prompt.
 func (e *Engine) ensureRuntimeSystem(messages []session.Message) []session.Message {
-	if e.system == "" {
-		return messages
+	out := make([]session.Message, 0, len(messages)+1)
+	if e.system != "" {
+		out = append(out, session.Message{Role: "system", Content: e.system})
 	}
-	sys := session.Message{Role: "system", Content: e.system}
-	if len(messages) == 0 {
-		return []session.Message{sys}
+	for i, m := range messages {
+		if m.Role == "system" {
+			if i == 0 && !isDigestMessage(m) && !isPlanMessage(m) {
+				continue
+			}
+			out = append(out, m)
+			continue
+		}
+		out = append(out, m)
 	}
-	if messages[0].Role != "system" || isDigestMessage(messages[0]) || isPlanMessage(messages[0]) {
-		return append([]session.Message{sys}, messages...)
-	}
-	messages[0].Content = e.system
-	return messages
+	return out
 }
 
 // sanitizePersistedSystemMessages prevents a modified session file from
@@ -2281,8 +2279,11 @@ func (e *Engine) sanitizePersistedSystemMessages(ctx context.Context, messages [
 	if e.planStore != nil {
 		planMaxSteps = e.planStore.maxSteps
 	}
-	for i := 1; i < len(messages); i++ {
+	for i := 0; i < len(messages); i++ {
 		if messages[i].Role != "system" {
+			continue
+		}
+		if e.system != "" && i == 0 && messages[i].Content == e.system {
 			continue
 		}
 		content := messages[i].Content

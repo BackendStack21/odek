@@ -250,7 +250,7 @@ func (c *Client) SimpleCall(ctx context.Context, systemPrompt, userPrompt string
 		System:      []sdk.SystemBlock{{Text: systemPrompt}},
 		Messages:    []sdk.Message{{Role: sdk.RoleUser, Content: userPrompt}},
 		Thinking:    "disabled",
-		Temperature: sdkTemperature(c.Temperature),
+		Temperature: temperatureForModel(c.Model(), c.Temperature),
 		MaxTokens:   c.MaxTokens,
 	})
 	if err != nil {
@@ -349,7 +349,7 @@ func (c *Client) buildRequest(messages []session.Message, tools []ToolDef) *sdk.
 		Thinking:       c.Thinking,
 		ThinkingBudget: c.ThinkingBudget,
 		MaxTokens:      c.MaxTokens,
-		Temperature:    sdkTemperature(c.Temperature),
+		Temperature:    temperatureForModel(c.Model(), c.Temperature),
 	}
 }
 
@@ -370,6 +370,17 @@ func markLastToolCache(tools []ToolDef) []ToolDef {
 //	odek 0  (default, send explicit 0) → SDK -1
 //	odek <0 (omit)                     → SDK 0
 //	odek >0                            → same
+func temperatureForModel(model string, temperature float64) float64 {
+	name := strings.ToLower(model)
+	if slash := strings.LastIndexByte(name, '/'); slash >= 0 {
+		name = name[slash+1:]
+	}
+	if strings.HasPrefix(name, "gpt-6-") || name == "gpt-6" {
+		return 0 // SDK zero omits temperature from the wire request.
+	}
+	return sdkTemperature(temperature)
+}
+
 func sdkTemperature(t float64) float64 {
 	if t == 0 {
 		return -1
