@@ -139,6 +139,7 @@ func TestConfigThinkingPassthrough(t *testing.T) {
 		{"max", "high"},
 		{"off", "disabled"},
 		{"", ""},
+		{"banana", ""},
 	}
 
 	for _, tt := range tests {
@@ -153,6 +154,19 @@ func TestConfigThinkingPassthrough(t *testing.T) {
 		if agent.config.Thinking != tt.want {
 			t.Errorf("Thinking = %q, want %q (in %q)", agent.config.Thinking, tt.want, tt.in)
 		}
+	}
+
+	agent, err := New(Config{APIKey: "sk-test", Thinking: "high"})
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	agent.SwitchThinking("banana")
+	if agent.Thinking() != "high" {
+		t.Errorf("SwitchThinking(unknown) = %q, want high (unchanged)", agent.Thinking())
+	}
+	agent.SwitchThinking("")
+	if agent.Thinking() != "" {
+		t.Errorf("SwitchThinking(\"\") = %q, want empty inherit", agent.Thinking())
 	}
 }
 

@@ -334,7 +334,7 @@ odek mcp                                    # stdio transport
 | `ODEK_MODEL` | model |
 | `ODEK_BASE_URL` | selected-provider URL override |
 | `ODEK_API_KEY` | selected-provider key override (v1 alias) |
-| `ODEK_THINKING` | thinking |
+| `ODEK_THINKING` | thinking (`disabled`/`low`/`medium`/`high`; `enabled`/`on` → `medium`) |
 | `ODEK_MAX_ITER` | max_iterations |
 | `ODEK_SANDBOX` | sandbox |
 | `ODEK_SANDBOX_IMAGE` | sandbox_image |

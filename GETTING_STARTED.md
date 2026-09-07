@@ -290,7 +290,7 @@ Notes:
 | Context / max output | 1M tokens / 128K tokens |
 | Coding Plan endpoint (OpenAI Chat Completions) | `https://api.z.ai/api/coding/paas/v4` |
 | Pay-as-you-go endpoint | `https://api.z.ai/api/paas/v4` |
-| Reasoning | Always on. Set depth with `--thinking low\|medium\|high` (odek maps these to `reasoning_effort`; GLM has no *medium* level, so odek maps it to *high*). Note: GLM-5.3 rejects `thinking: disabled` — odek translates that request to enabled + low effort automatically |
+| Reasoning | Always on. Set depth with `--thinking disabled\|low\|medium\|high` (odek maps these to `reasoning_effort`; GLM has no *medium* level, so odek maps it to *high*). GLM-5.3 rejects `thinking: disabled` — odek translates that request to `low` automatically |
 | Request timeout | Default is **300s** (`llm.request_timeout_seconds`). Raise further if reasoning is still slow to first byte. |
 
 ---

@@ -411,9 +411,7 @@ func New(cfg Config) (*Agent, error) {
 	if cfg.Model == "" {
 		cfg.Model = defaultModel
 	}
-	if canon, ok := config.NormalizeThinking(cfg.Thinking); ok {
-		cfg.Thinking = canon
-	}
+	cfg.Thinking = config.CanonicalThinking(cfg.Thinking)
 
 	// ── Runtime Context ─────────────────────────────────────────────
 	// Prepend environment awareness so the agent knows its host, cwd,
@@ -1042,17 +1040,19 @@ func (a *Agent) Thinking() string {
 // SwitchThinking updates the reasoning/thinking mode used by this agent at
 // runtime. Accepts Config.Thinking values: "disabled", "low", "medium",
 // "high", aliases (enabled/on/off/mid/max), or "" (provider default).
-// Safe to call between RunWithMessages calls to toggle thinking per-query.
+// Unrecognized values are ignored (the current level stays). Safe to call
+// between RunWithMessages calls to toggle thinking per-query.
 func (a *Agent) SwitchThinking(thinking string) {
 	if a == nil {
 		return
 	}
-	if canon, ok := config.NormalizeThinking(thinking); ok {
-		thinking = canon
+	canon, ok := config.NormalizeThinking(thinking)
+	if !ok {
+		return
 	}
-	a.config.Thinking = thinking
+	a.config.Thinking = canon
 	if a.engine != nil {
-		a.engine.SetThinking(thinking)
+		a.engine.SetThinking(canon)
 	}
 }
 
