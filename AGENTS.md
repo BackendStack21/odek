@@ -67,7 +67,7 @@ cmd/odek/
   security_report_validation_test.go  Regression bar for every documented mitigation
   *_test.go                   250+ unit + E2E tests covering all tools
 internal/
-  llmclient/                  Adapter over go-llm-sdk (DTO mapping, temperature polarity, SimpleCall)
+  llmclient/                  Adapter over go-llm-sdk (DTO mapping, temperature polarity, SimpleCall, SideCall)
   loop/                       ReAct engine: observe → think → parallel-act → repeat. signal.go — SignalEvent observability
                               (context_trimmed, tool_recovery, tool_running heartbeat). Budget enforcement (budget.Checker)
                               + odek.event/v1 emission.

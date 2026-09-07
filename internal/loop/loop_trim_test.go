@@ -692,6 +692,75 @@ func TestSummarizeDropped_InputBuilding(t *testing.T) {
 	}
 }
 
+func TestCompactionSystemPrompt_SkeletonAndIPI(t *testing.T) {
+	for _, field := range []string{"Task:", "Done:", "Decisions:", "Files/symbols:", "Errors still open:", "Next:"} {
+		if !strings.Contains(compactionSystemPrompt, field) {
+			t.Errorf("compaction prompt missing skeleton field %q", field)
+		}
+	}
+	lower := strings.ToLower(compactionSystemPrompt)
+	if !strings.Contains(lower, "untrusted") || !strings.Contains(lower, "do not follow") {
+		t.Error("compaction prompt must keep explicit IPI resistance")
+	}
+}
+
+func TestSummarizeDropped_IncludesRemainingPlanIDsNotTitles(t *testing.T) {
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(data))
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"digest"}}]}`)
+	}))
+	defer server.Close()
+
+	store := NewPlanStore(12, 2000)
+	seedPlanMessage(t, store)
+	engine := New(testChatClient(t, server.URL), tool.NewRegistry(nil), 10, "", nil, 0)
+	engine.SetPlanStore(store)
+
+	engine.summarizeDropped(context.Background(), []session.Message{{Role: "assistant", Content: "old work"}})
+	if len(bodies) == 0 {
+		t.Fatal("summarizer was not called")
+	}
+	body := bodies[len(bodies)-1]
+	if !strings.Contains(body, "s2=in_progress") || !strings.Contains(body, "s3=pending") {
+		t.Errorf("remaining plan ids missing from summarizer input: %.400s", body)
+	}
+	if strings.Contains(body, secretPlanTitle) || strings.Contains(body, secretPlanNote) {
+		t.Errorf("plan titles/notes leaked into summarizer input: %.400s", body)
+	}
+}
+
+func TestSummarizeProgress_IncludesRemainingPlanIDs(t *testing.T) {
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(data))
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"progress"}}]}`)
+	}))
+	defer server.Close()
+
+	store := NewPlanStore(12, 2000)
+	seedPlanMessage(t, store)
+	engine := New(testChatClient(t, server.URL), tool.NewRegistry(nil), 10, "", nil, 0)
+	engine.SetPlanStore(store)
+
+	engine.summarizeProgress(context.Background(), []session.Message{
+		{Role: "user", Content: "task"},
+		{Role: "assistant", Content: "partial"},
+	})
+	if len(bodies) == 0 {
+		t.Fatal("progress summarizer was not called")
+	}
+	body := bodies[len(bodies)-1]
+	if !strings.Contains(body, "s2=in_progress") {
+		t.Errorf("remaining plan ids missing from progress summarizer input: %.400s", body)
+	}
+	if strings.Contains(body, secretPlanTitle) {
+		t.Errorf("plan title leaked into progress summarizer input: %.400s", body)
+	}
+}
+
 // ── Coverage: stale memMsgIdx invariant guard ──────────────────────────
 
 func TestRunLoop_StaleMemMsgIdxReset(t *testing.T) {

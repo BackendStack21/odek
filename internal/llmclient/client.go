@@ -1,7 +1,7 @@
 // Package llmclient adapts go-llm-sdk for odek. It is not an HTTP client:
 // all wire, retry, and streaming logic lives in the SDK. This package
 // owns odek's conversation DTO ↔ SDK request mapping, temperature polarity,
-// and the SimpleCall helper used by memory/titles.
+// SimpleCall (memory/titles), and SideCall (compaction / progress summaries).
 package llmclient
 
 import (
@@ -246,6 +246,41 @@ func (c *Client) SimpleCall(ctx context.Context, systemPrompt, userPrompt string
 		return "", fmt.Errorf("llm: empty response")
 	}
 	return res.Content, nil
+}
+
+// SideCallMaxTokens caps auxiliary completions (compaction digest, budget
+// progress summaries). Tight enough for a ~200-word digest; the main think
+// step keeps Client.MaxTokens. A lower positive Client.MaxTokens still wins.
+const SideCallMaxTokens = 1024
+
+// prepareSideCall builds a tool-less, thinking-disabled request with a
+// tighter output cap than the main think step.
+func (c *Client) prepareSideCall(messages []session.Message) *sdk.ChatRequest {
+	req := c.buildRequest(messages, nil)
+	req.Thinking = "disabled"
+	req.ThinkingBudget = 0
+	req.Tools = nil
+	maxTok := SideCallMaxTokens
+	if c.MaxTokens > 0 && c.MaxTokens < maxTok {
+		maxTok = c.MaxTokens
+	}
+	req.MaxTokens = maxTok
+	return req
+}
+
+// SideCall is the compaction / progress-summary helper: one buffered turn,
+// thinking off, no tools, capped MaxTokens. Usage still comes back on
+// CallResult so the loop can charge budgets.
+func (c *Client) SideCall(ctx context.Context, messages []session.Message) (*CallResult, error) {
+	if c == nil || c.Chat == nil {
+		return nil, fmt.Errorf("llm: no client")
+	}
+	req := c.prepareSideCall(messages)
+	res, err := c.Chat.Call(ctx, req)
+	if err != nil {
+		return mapResult(res), err
+	}
+	return mapResult(res), nil
 }
 
 // CallResult is the loop-facing result. Cache fields come from SDK Usage

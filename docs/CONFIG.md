@@ -383,6 +383,8 @@ The schedule-specific override of this policy is documented in [Schedule-specifi
 
 When context trimming drops old conversation turns to stay within the model's context window, those turns are normally lost. With `compaction` enabled (the default), the dropped turns are instead summarized by the model into a rolling digest message, preserving a compressed history of the session.
 
+Compaction and iteration-budget progress summaries are **auxiliary** LLM calls: thinking is disabled, no tools are offered, and output is capped independently of the main think step. The digest uses a fixed skeleton (Task / Done / Decisions / Files/symbols / Errors still open / Next) and re-enters history as untrusted derived context.
+
 | Field | Default | Env var | CLI flag | Description |
 |-------|---------|---------|----------|-------------|
 | `compaction` | `true` | `ODEK_COMPACTION` | `--compaction` / `--no-compaction` | Enable LLM-based rolling compaction of trimmed context. Each compaction costs one extra LLM call per trim. Set to `false` (or pass `--no-compaction`) to disable. |

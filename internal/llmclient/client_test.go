@@ -225,3 +225,28 @@ func TestMapResult_FlattensToolCalls(t *testing.T) {
 		t.Fatalf("usage = %+v", res)
 	}
 }
+
+func TestPrepareSideCall_DisablesThinkingAndTools(t *testing.T) {
+	c := &Client{Thinking: "high", ThinkingBudget: 8000, MaxTokens: 16000}
+	req := c.prepareSideCall([]session.Message{{Role: "user", Content: "digest this"}})
+	if req.Thinking != "disabled" {
+		t.Errorf("Thinking = %q, want disabled", req.Thinking)
+	}
+	if req.ThinkingBudget != 0 {
+		t.Errorf("ThinkingBudget = %d, want 0", req.ThinkingBudget)
+	}
+	if req.Tools != nil {
+		t.Errorf("Tools = %v, want nil", req.Tools)
+	}
+	if req.MaxTokens != SideCallMaxTokens {
+		t.Errorf("MaxTokens = %d, want %d", req.MaxTokens, SideCallMaxTokens)
+	}
+}
+
+func TestPrepareSideCall_HonorsLowerClientMaxTokens(t *testing.T) {
+	c := &Client{MaxTokens: 128}
+	req := c.prepareSideCall(nil)
+	if req.MaxTokens != 128 {
+		t.Errorf("MaxTokens = %d, want 128", req.MaxTokens)
+	}
+}

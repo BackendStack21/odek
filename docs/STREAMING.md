@@ -75,7 +75,7 @@ The reasoning block is dimmed with a single 🧠 cue, the answer follows after a
 
 ## Behavior
 
-1. **Only the main think step streams.** Auxiliary LLM calls — context compaction, the iteration-budget progress summary, memory extraction, skill assessment — always use the buffered path.
+1. **Only the main think step streams.** Auxiliary LLM calls — context compaction, the iteration-budget progress summary, memory extraction, skill assessment — always use the buffered path, with thinking disabled and no tools.
 2. **Tool calls arrive complete.** The model's tool invocations are assembled from their streamed fragments before execution; tool-argument fragments are not forwarded to delta consumers.
 3. **A handler error aborts generation.** Returning a non-nil error from the delta handler cancels the stream; the loop fails the turn with the wrapped `*llmclient.StreamAbortedError` instead of retrying.
 4. **Sessions, budgets, and the untrusted-content boundary are unchanged.** Streaming assembles the same result the buffered path returns, so token accounting, cost enforcement, session persistence, and audit operate on identical data.

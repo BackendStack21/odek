@@ -82,7 +82,7 @@ Browser attribution follows the **final post-redirect URL** (`resp.Request.URL`)
 
 The agent loop additionally wraps each tool result in a per-call nonce'd visual delimiter (`┌── TOOL RESULT: <name> [<nonce>] … └── END TOOL RESULT: <name> [<nonce>]`) before appending it to the conversation. Because the nonce is generated inside the loop and differs for every tool call, output cannot forge the closing delimiter and inject instructions after it.
 
-The rolling **compaction digest**, iteration/tool-budget progress summaries, and legacy memory block are derived from potentially hostile history. They pass through the same untrusted wrapper before re-entering conversation history, and side-call prompts explicitly forbid following embedded instructions. Their derived ingests are audit-recorded; summarization does not reset provenance.
+The rolling **compaction digest**, iteration/tool-budget progress summaries, and legacy memory block are derived from potentially hostile history. They pass through the same untrusted wrapper before re-entering conversation history, and side-call prompts explicitly forbid following embedded instructions. Compaction and progress-summary side calls disable thinking and offer no tools. Their derived ingests are audit-recorded; summarization does not reset provenance.
 
 At run start, the configured runtime system prompt replaces any stale persisted head. Additional persisted `system` messages are wrapped as untrusted unless they are strictly parsed engine-owned digest/plan records or already carry a valid boundary. Library users receive the same invariant security pillar and default nonce wrapper from `odek.New`; these protections are not CLI-only.
 
