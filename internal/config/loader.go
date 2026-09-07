@@ -77,11 +77,12 @@ type CLIFlags struct {
 	ToolsDisabled []string
 
 	// PromptCaching enables prompt caching markers for supported providers.
-	// Config: prompt_caching, ODEK_PROMPT_CACHING, --prompt-caching.
+	// Default: on. Config: prompt_caching, ODEK_PROMPT_CACHING,
+	// --prompt-caching / --no-prompt-caching.
 	PromptCaching *bool // nil = not set
 
 	// Stream enables SSE streaming of LLM responses for the main think
-	// step (default: off). Config: stream, ODEK_STREAM, --stream.
+	// step (default: on). Config: stream, ODEK_STREAM, --stream / --no-stream.
 	Stream *bool // nil = not set
 
 	// Compaction enables LLM-based rolling compaction of trimmed context
@@ -410,7 +411,7 @@ type FileConfig struct {
 	PromptCaching *bool `json:"prompt_caching,omitempty"`
 
 	// Stream enables SSE streaming of LLM responses for the main think
-	// step (default: off). Config: stream, ODEK_STREAM, --stream.
+	// step (default: on). Config: stream, ODEK_STREAM, --stream / --no-stream.
 	Stream *bool `json:"stream,omitempty"`
 
 	// Compaction enables LLM-based rolling compaction of trimmed context
@@ -2396,9 +2397,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	// MaxToolParallel: 0 = use loop engine default (4)
 	resolved.MaxToolParallel = cfg.MaxToolParallel
 
-	// Booleans: default to false if not set (Compaction below is the
-	// exception — it defaults to true).
-	// Sandbox is the second exception in effect: the loader records whether
+	// Booleans: default to false if not set (Compaction / PromptCaching /
+	// Stream below are the exceptions — they default to true).
+	// Sandbox is another exception in effect: the loader records whether
 	// any layer set it (SandboxExplicit); when nobody did, the CLI surfaces
 	// default it ON with a loud unsandboxed fallback (H-8, cmd/odek).
 	if cfg.Sandbox != nil {
@@ -2411,9 +2412,20 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if cfg.NoAgents != nil {
 		resolved.NoAgents = *cfg.NoAgents
 	}
+	// Prompt caching defaults to ON: Anthropic markers and prefix-stable
+	// system blocks are cheap when the provider supports them and no-ops
+	// otherwise (Client.IsAnthropic). An explicit false from any layer
+	// (config file, ODEK_PROMPT_CACHING=false, --no-prompt-caching) disables it.
+	resolved.PromptCaching = true
 	if cfg.PromptCaching != nil {
 		resolved.PromptCaching = *cfg.PromptCaching
 	}
+	// Streaming defaults to ON for the main think step (docs/STREAMING.md).
+	// Auxiliary calls stay buffered. An explicit false from any layer
+	// (config file, ODEK_STREAM=false, --no-stream) disables it. Surfaces
+	// that do not wire a DeltaHandler (Telegram) still assemble the same
+	// CallResult — they just do not print incrementally.
+	resolved.Stream = true
 	if cfg.Stream != nil {
 		resolved.Stream = *cfg.Stream
 	}

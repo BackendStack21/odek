@@ -233,7 +233,7 @@ func TestStartServeRun_TrackedByDrainServeWork(t *testing.T) {
 	defer envCleanup()
 
 	store := newTestSessionStore(t)
-	resolved := config.LoadConfig(config.CLIFlags{})
+	resolved := loadJSONMockResolved()
 	run, err := startServeRun(resolved, defaultSystem, store, nil, promptRequest{Content: "hello"})
 	if err != nil {
 		t.Fatalf("startServeRun: %v", err)

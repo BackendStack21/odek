@@ -502,7 +502,7 @@ func buildServeMuxV2(t *testing.T, store *session.Store, mutate func(*config.Res
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	resolved := config.LoadConfig(config.CLIFlags{})
+	resolved := loadJSONMockResolved()
 	if resolved.System == "" {
 		resolved.System = defaultSystem
 	}

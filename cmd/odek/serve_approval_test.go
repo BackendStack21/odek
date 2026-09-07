@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/resource"
 	"github.com/BackendStack21/odek/internal/session"
@@ -29,7 +28,7 @@ func buildServeMuxPromptAll(t *testing.T, store *session.Store) (net.Listener, *
 		t.Fatalf("listen: %v", err)
 	}
 
-	resolved := config.LoadConfig(config.CLIFlags{})
+	resolved := loadJSONMockResolved()
 	systemMessage := resolved.System
 	if systemMessage == "" {
 		systemMessage = defaultSystem

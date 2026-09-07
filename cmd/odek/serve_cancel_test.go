@@ -42,7 +42,7 @@ func buildServeMuxWithResolvers(t *testing.T, store *session.Store, resReg *reso
 		t.Fatalf("listen: %v", err)
 	}
 
-	resolved := config.LoadConfig(config.CLIFlags{})
+	resolved := loadJSONMockResolved()
 	systemMessage := resolved.System
 	if systemMessage == "" {
 		systemMessage = defaultSystem

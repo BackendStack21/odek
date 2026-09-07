@@ -25,7 +25,6 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/bgproc"
-	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/events"
 	"github.com/BackendStack21/odek/internal/resource"
 	"github.com/BackendStack21/odek/internal/session"
@@ -54,7 +53,7 @@ func newJobsEnv(t *testing.T) *jobsEnv {
 		serveEvents.add(ev)
 	}})
 
-	resolved := config.LoadConfig(config.CLIFlags{})
+	resolved := loadJSONMockResolved()
 	if resolved.System == "" {
 		resolved.System = defaultSystem
 	}
@@ -491,7 +490,7 @@ func TestAPIJobs_DisabledManager_YieldsEmptyList(t *testing.T) {
 	env := newJobsEnv(t)
 	// Simulate the disabled state by removing the manager from the mux deps:
 	// build a second mux without BGManager.
-	resolved := config.LoadConfig(config.CLIFlags{})
+	resolved := loadJSONMockResolved()
 	if resolved.System == "" {
 		resolved.System = defaultSystem
 	}

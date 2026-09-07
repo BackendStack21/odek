@@ -369,7 +369,7 @@ func newRestRunEnv(t *testing.T, llmURL string, mutate func(*config.ResolvedConf
 	cleanup := setTestEnv(t, llmURL)
 	t.Cleanup(cleanup)
 	store := newTestSessionStore(t)
-	resolved := config.LoadConfig(config.CLIFlags{})
+	resolved := loadJSONMockResolved()
 	if resolved.System == "" {
 		resolved.System = defaultSystem
 	}

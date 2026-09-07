@@ -379,6 +379,8 @@ func serveCmd(args []string) error {
 			}
 		case "--prompt-caching":
 			promptCaching = boolPtr(true)
+		case "--no-prompt-caching":
+			promptCaching = boolPtr(false)
 		case "--compaction":
 			compaction = boolPtr(true)
 		case "--planning":
@@ -682,8 +684,10 @@ Flags:
   --sandbox-memory limit   Container memory limit (e.g. 512m, 2g)
   --sandbox-cpus limit     Container CPU limit (e.g. 0.5, 2, 4)
   --sandbox-user user      Container user (e.g. 1000:1000)
-  --stream                 Stream LLM responses live to the Web UI (token deltas)
-  --no-stream              Disable streaming (config/env may enable it)
+  --prompt-caching         Enable prompt caching (default: on)
+  --no-prompt-caching      Disable prompt caching
+  --stream                 Stream LLM responses live to the Web UI (default: on)
+  --no-stream              Disable streaming (overrides config/env/default)
   --tool name              Enable a tool for the LLM (repeatable)
   --no-tool name           Disable a tool for the LLM (repeatable)
   --trusted-proxies list   Comma-separated IPs/CIDRs whose X-Forwarded-For headers are trusted
@@ -958,9 +962,13 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 		NoProjectFile:    resolved.NoAgents,
 		Thinking:         resolved.Thinking,
 		InteractionMode:  resolved.InteractionMode,
+		// Prompt caching follows the CLI default-on (docs/CACHING.md).
+		// Disable with --no-prompt-caching / ODEK_PROMPT_CACHING=false /
+		// config "prompt_caching": false. Library odek.New stays opt-in.
+		PromptCaching: resolved.PromptCaching,
 		// Live streaming: forward SSE fragments to the browser as
-		// thinking_delta / token_delta events (docs/STREAMING.md). Off by
-		// default; enabled with --stream / ODEK_STREAM / config "stream".
+		// thinking_delta / token_delta events (docs/STREAMING.md). Default
+		// on; disable with --no-stream / ODEK_STREAM=false / config "stream": false.
 		Stream:       resolved.Stream,
 		DeltaHandler: serveDeltaHandler(sendFn, deltas),
 		Tools:        tools,
@@ -2036,8 +2044,8 @@ func handlePrompt(
 			}
 			sess.Messages = filterPersistSnapshot(head, snapshot)
 			if err := store.SaveNoIndex(sess); err != nil {
-		fmt.Fprintf(os.Stderr, "odek: warning: failed to persist session: %v\n", err)
-	}
+				fmt.Fprintf(os.Stderr, "odek: warning: failed to persist session: %v\n", err)
+			}
 		})
 	}
 
@@ -2050,8 +2058,8 @@ func handlePrompt(
 	if sess != nil {
 		sess.Messages = append(sess.Messages, session.Message{Role: "user", Content: enrichedPrompt, Name: userName})
 		if err := store.SaveNoIndex(sess); err != nil {
-		fmt.Fprintf(os.Stderr, "odek: warning: failed to persist session: %v\n", err)
-	}
+			fmt.Fprintf(os.Stderr, "odek: warning: failed to persist session: %v\n", err)
+		}
 	}
 
 	start := time.Now()
@@ -2090,8 +2098,8 @@ func handlePrompt(
 		note := fmt.Sprintf("[Turn aborted: %s. The prompt above was preserved — send another message to retry or continue.]", providerFailureSummary(err))
 		sess.Messages = append(sess.Messages, session.Message{Role: "assistant", Content: note})
 		if err := store.SaveNoIndex(sess); err != nil {
-		fmt.Fprintf(os.Stderr, "odek: warning: failed to persist session: %v\n", err)
-	}
+			fmt.Fprintf(os.Stderr, "odek: warning: failed to persist session: %v\n", err)
+		}
 		return sess
 	}
 
@@ -2200,8 +2208,8 @@ func handlePrompt(
 	// them stale state (usage, turns, updated_at).
 	send(func() map[string]any {
 		m := map[string]any{
-			"type":                 "done",
-			"latency":              latency.Seconds(),
+			"type":    "done",
+			"latency": latency.Seconds(),
 			// windowTokens: the final PARENT conversation window (same meaning
 			// as the last usage frame) — child LLM rounds and side-call
 			// summaries never affect it. inputTokens (renamed from

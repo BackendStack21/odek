@@ -303,8 +303,8 @@ Top-level execution knobs. Every one also exists as a CLI flag and an `ODEK_*` e
 | `base_url` | SDK default for `provider` | Selected-provider URL override (v1 alias). DeepSeek default is `https://api.deepseek.com` (no `/v1`) |
 | `thinking` | `""` (omit) | Reasoning depth: `disabled`, `low`, `medium`, `high`. Aliases: `enabled`/`on` → `medium`, `off` → `disabled`, `mid` → `medium`, `max` → `high`. Set explicitly — not inferred from the model name |
 | `max_iterations` | `90` | Max think→act cycles per run |
-| `stream` | `false` | Stream reasoning and answer text to the terminal / Web UI as it arrives (`ODEK_STREAM`, `--stream`; `odek serve` also accepts `--no-stream`) |
-| `prompt_caching` | `false` | Enable provider prompt-caching markers — Anthropic endpoints get explicit markers; other providers are unaffected (see [CACHING.md](CACHING.md)) |
+| `stream` | `true` | Stream reasoning and answer text to the terminal / Web UI as it arrives (`ODEK_STREAM`, `--stream` / `--no-stream`). Telegram does not print incrementally (no DeltaHandler). See [STREAMING.md](STREAMING.md) |
+| `prompt_caching` | `true` | Provider prompt-caching markers — Anthropic endpoints get explicit markers; other providers are unaffected (see [CACHING.md](CACHING.md)). Disable with `ODEK_PROMPT_CACHING=false` / `--no-prompt-caching` |
 | `interaction_mode` | `"engaging"` | Tool-call presentation: `"engaging"` (emoji narration) · `"enhance"` (per-tool narrated messages) · `"verbose"` (raw tool names, args, results) · `"off"` (no progress output, clean answer only) |
 | `no_color` | `false` | Disable colored terminal output |
 | `no_agents` | `false` | Skip loading project `AGENTS.md` |
@@ -1239,11 +1239,11 @@ odek init --force
 
 The **global template** covers the full schema: connection (`provider`, `providers`, `model`, `llm`), execution (`max_iterations`, `max_tool_parallel`, `prompt_caching`, `compaction`, `interaction_mode`), sandbox resource knobs (the `sandbox` key itself is deliberately absent — unset inherits the default-on posture), `dangerous` (with `non_interactive` pinned to the documented `read_only` default), `guard`, `tools`, `profiles`, `skills`, `memory` (including the `extract_facts` / `auto_approve_episodes` opt-outs), `subagent` (including `max_depth`, `announce_budget`, `budget_inherit`, `default_profile`), `limits`, `planning`, `mcp_servers`, `web_search`, `transcription`, `vision`, `trusted_proxies`, `schedules`, `maintenance`, and `telegram`. Blocks whose mere presence changes behavior (`embedding`, `memory.embedding`, `sessions.embedding`, `skills.embedding`) are intentionally omitted — add them only when you actually run an embedder. Top-level `base_url` / `api_key` remain v1 aliases (see [MIGRATION.md](MIGRATION.md)).
 
-The **local template** contains only fields a project may legitimately set (`model`, `thinking`, iteration/parallelism limits, `prompt_caching`, `interaction_mode`, sandbox resource knobs, `tools.disabled`, `skills` without `dirs`, `subagent`, `mcp_servers`, `schedules`). Operator-only fields (`provider`, `providers`, `llm`, `api_key`, `base_url`, `system`, `dangerous`, `memory`, `sessions`, `embedding`, `guard`, `maintenance`, `telegram`, `web_search`, `trusted_proxies`, `tools.enabled`, `skills.dirs`) belong in `~/.odek/config.json`. Note that project configs may only *enable* the sandbox — `"sandbox": false` is rejected, so neither template pins it locally. `compaction` is likewise omitted from the local template: it defaults to on, and pinning `"compaction": false` in a fresh project config would silently disable it (add the key explicitly if you want it off).
+The **local template** contains only fields a project may legitimately set (`model`, `thinking`, iteration/parallelism limits, `interaction_mode`, sandbox resource knobs, `tools.disabled`, `skills` without `dirs`, `subagent`, `mcp_servers`, `schedules`). Operator-only fields (`provider`, `providers`, `llm`, `api_key`, `base_url`, `system`, `dangerous`, `memory`, `sessions`, `embedding`, `guard`, `maintenance`, `telegram`, `web_search`, `trusted_proxies`, `tools.enabled`, `skills.dirs`) belong in `~/.odek/config.json`. Note that project configs may only *enable* the sandbox — `"sandbox": false` is rejected, so neither template pins it locally. `compaction`, `prompt_caching`, and `stream` are likewise omitted from the local template: they default to on, and pinning `"…": false` in a fresh project config would silently disable them (add the key explicitly if you want any of them off).
 
 ## Recommended minimal config
 
-A complete operator setup needs only **three files**. Everything not pinned below keeps its safe default (sandbox on, `extract_facts` off, episodes require manual approval, compaction and planning on). The sample deliberately pins the few keys whose defaults are worth making explicit, and leaves the rest out — a shorter config is easier to audit.
+A complete operator setup needs only **three files**. Everything not pinned below keeps its safe default (sandbox on, `extract_facts` off, episodes require manual approval, compaction, planning, prompt caching, and streaming on). The sample deliberately pins the few keys whose defaults are worth making explicit, and leaves the rest out — a shorter config is easier to audit.
 
 **1. Secrets** — `~/.odek/secrets.env` (chmod 600). Never put keys in config files:
 
@@ -1258,7 +1258,6 @@ DEEPSEEK_API_KEY=sk-...
   "provider": "deepseek",
   "model": "deepseek-v4-flash",
 
-  "stream": true,
   "interaction_mode": "engaging",
 
   "limits": {

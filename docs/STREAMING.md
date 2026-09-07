@@ -1,6 +1,6 @@
 # Response Streaming
 
-odek can stream LLM responses to the terminal as they are generated, instead of waiting for the complete response before printing anything. Streaming is **opt-in and off by default**; with it disabled, behavior is identical to previous releases. It works with every odek-supported provider: streaming is implemented once against the OpenAI-compatible SSE protocol that all backends speak on `/chat/completions`, and any endpoint that rejects streaming or answers with a non-SSE body transparently falls back to the buffered path.
+odek can stream LLM responses to the terminal as they are generated, instead of waiting for the complete response before printing anything. Streaming is **on by default** for `odek run`, `odek repl`, and `odek serve`. Disable with `--no-stream`, `ODEK_STREAM=false`, or `"stream": false`. Telegram does not print incrementally (it does not wire a DeltaHandler). It works with every odek-supported provider: streaming is implemented once against the OpenAI-compatible SSE protocol that all backends speak on `/chat/completions`, and any endpoint that rejects streaming or answers with a non-SSE body transparently falls back to the buffered path.
 
 Streaming matters most for thinking-default models (GLM-5.x, DeepSeek v4 Pro, Kimi, OpenAI reasoning models), which spend most of their wall clock reasoning before the first answer token — a trivial turn can take 5–30 s of silent waiting without it.
 
@@ -17,28 +17,29 @@ All providers stream; the differences below are absorbed by the client and never
 | **Kimi / Moonshot** | final chunk | on thinking variants | |
 | **Ollama / vLLM / LiteLLM / Groq / Together / Fireworks** | often absent | implementation-dependent | absent usage leaves token accounting at zero, same as the buffered path |
 
-## Enabling
+## Disabling
 
 ### CLI
 ```bash
-odek run --stream "task"
-odek repl --stream
+odek run --no-stream "task"
+odek repl --no-stream
+odek serve --no-stream
 ```
 
-The `--stream` flag is available on `odek run`, `odek repl`, and `odek serve` — the Web UI consumes the stream live as `thinking_delta` / `token_delta` fragments when streaming is on (see [WEBUI.md](WEBUI.md)).
+`--stream` / `--no-stream` are available on `odek run`, `odek repl`, and `odek serve`. The Web UI consumes the stream live as `thinking_delta` / `token_delta` fragments when streaming is on (see [WEBUI.md](WEBUI.md)).
 
 ### Config file (`~/.odek/config.json` or `./odek.json`)
 ```json
 {
-  "stream": true
+  "stream": false
 }
 ```
 
-`stream` follows the standard five-layer priority (config → env → CLI) and may be set in project configs, like `prompt_caching`.
+`stream` follows the standard five-layer priority (config → env → CLI). A fresh project `./odek.json` from `odek init` omits the key so it inherits the default-on.
 
 ### Environment variable
 ```bash
-export ODEK_STREAM=true
+export ODEK_STREAM=false
 ```
 
 ### Programmatic API
@@ -88,15 +89,14 @@ The reasoning block is dimmed with a single 🧠 cue, the answer follows after a
 
 ## Not Yet Streamed
 
-- **Telegram** — completed iterations are sent as messages today; throttled in-place editing is a possible follow-up.
-- **Default** — streaming stays opt-in until it has soaked for a release; the buffered path remains the automatic fallback.
+- **Telegram** — completed iterations are sent as messages today; throttled in-place editing is a possible follow-up. The buffered path remains the automatic fallback when a provider rejects SSE.
 
 ## Implementation Details
 
 - Streaming is owned by [`go-llm-sdk`](https://github.com/BackendStack21/go-llm-sdk). odek's `internal/llmclient` forwards `CallStream` and maps deltas.
 - Streaming requests use a pooled HTTP client without a client-level timeout (`transport.NewPooledClientNoDeadline`) — a whole-request `http.Client.Timeout` would kill long body reads — sharing the connection pool with the buffered client. Deadlines are enforced per request via context.
 - The engine wires streaming through `loop.Engine.SetStream` / `SetDeltaHandler`, following the existing optional-callback pattern (`SetSignalHandler`, `SetToolEventHandler`).
-- Offline test coverage lives in the SDK and `internal/loop/loop_test.go` (engine dispatch and the buffered default).
+- Offline test coverage lives in the SDK and `internal/loop/loop_test.go` (engine dispatch and the streaming default).
 
 ## Idle watchdog
 

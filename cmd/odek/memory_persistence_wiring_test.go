@@ -74,3 +74,44 @@ func TestRED_HeadlessDangerFloor_IsDroppedBeforeNew(t *testing.T) {
 		t.Fatal("schedCfg drops the headless persistence floor: builtinTools get dangerCfg, odek.New does not")
 	}
 }
+
+// TestCLIAgentConfigs_WirePromptCaching pins default-on caching: LoadConfig
+// resolves prompt_caching, but odek.New still defaults the field to false.
+// Every CLI surface that honors --no-prompt-caching / ODEK_PROMPT_CACHING
+// must pass resolved.PromptCaching into the agent.
+func TestCLIAgentConfigs_WirePromptCaching(t *testing.T) {
+	cases := []struct {
+		file string
+		name string
+	}{
+		{"main.go", "runCfg"},
+		{"main.go", "contCfg"},
+		{"serve.go", "serveCfg"},
+		{"repl.go", "replCfg"},
+		{"schedule.go", "schedCfg"},
+		{"telegram.go", "agentCfg"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src, err := os.ReadFile(tc.file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := string(src)
+			marker := tc.name + " := odek.Config{"
+			start := strings.Index(text, marker)
+			if start < 0 {
+				t.Fatalf("could not find %q", marker)
+			}
+			newCall := "odek.New(" + tc.name + ")"
+			end := strings.Index(text[start:], newCall)
+			if end < 0 {
+				t.Fatalf("could not find %q after %s", newCall, tc.name)
+			}
+			block := text[start : start+end]
+			if !strings.Contains(block, "PromptCaching:") {
+				t.Errorf("%s %s is passed to odek.New without PromptCaching — serve/run would ignore the default-on and --no-prompt-caching", tc.file, tc.name)
+			}
+		})
+	}
+}

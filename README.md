@@ -160,7 +160,8 @@ odek run "@README.md what does this project do?"
 | `--thinking <level>` | Reasoning depth (`disabled`/`low`/`medium`/`high`; `enabled`/`on` → `medium`) |
 | `--system <prompt>` | Override system prompt |
 | `--max-iter <n>` | Max think→act cycles (default 90) |
-| `--prompt-caching` | Enable Anthropic/OpenAI/DeepSeek prompt caching markers |
+| `--prompt-caching` | Enable prompt caching (default on; `--no-prompt-caching` to disable) |
+| `--stream` | Stream reasoning/answer live (default on; `--no-stream` to disable) |
 | `--no-color` | Disable colored output |
 | `--ctx <files>` / `-c` | Attach files as context blocks (comma-separated) |
 | `--no-agents` | Skip AGENTS.md project file |

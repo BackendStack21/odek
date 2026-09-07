@@ -10,7 +10,6 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/memory/extended"
 )
 
@@ -58,7 +57,7 @@ func TestRunTaskHeadless_MemoryWired(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	resolved := config.LoadConfig(config.CLIFlags{})
+	resolved := loadJSONMockResolved()
 	resolved.BaseURL = srv.URL + "/v1"
 	resolved.APIKey = "test"
 	resolved.Model = "mock-model"

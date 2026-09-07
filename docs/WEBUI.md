@@ -141,7 +141,7 @@ The bundled client is a **zero-framework command center** — same EMBER languag
 - **Busy spinner** — Bodek braille spinner in the top bar, composer rail, and transcript while a turn runs (`reasoning · 4s`), so the default view always shows the agent is working
 - **Live plan & jobs** — Bodek header chips (`plan 1/4`, `● 2 jobs` / `✗ job`) stay visible when idle; click opens the inspector Now tab. While a turn runs the status rail appends `▸ plan 2/5 · <active step> · ⛔N`. A `plan` tool_call patches the snapshot on that frame; REST confirms after `tool_result`.
 - **Markdown** — hand-written tokenizer (zero deps, no CDN): headings, lists, task lists, quotes, GFM tables, fenced code with copy, emphasis, strikethrough, allowlisted links/autolinks. Images are caption links, never `<img>` (CSP + no remote fetch). Streaming-safe: an open fence still renders; an open `**` stays literal.
-- **Live streaming** *(opt-in: `--stream` / `stream: true` / `ODEK_STREAM=true`)* — answer and reasoning fragments arrive as they are generated (`token_delta` / `thinking_delta`) and render through the same rAF-batched pipeline; streaming state is in the health popover. Providers that reject SSE fall back silently to the bulk path.
+- **Live streaming** *(on by default; `--no-stream` / `stream: false` / `ODEK_STREAM=false`)* — answer and reasoning fragments arrive as they are generated (`token_delta` / `thinking_delta`) and render through the same rAF-batched pipeline; streaming state is in the health popover. Providers that reject SSE fall back silently to the bulk path.
 - **Reasoning blocks** — calm default: collapsed `thinking` toggle (Bodek `^E` model). Opened blocks stay open; history starts collapsed
 - **Tool call blocks** — Bodek heads: `▶` + `▸/✓/✗` + monochrome glyph + steel name + faint args. Live and history share one spine: thinking → tools → answer (token_delta cannot race ahead of `tool_call`). Args and results stay collapsed until the head is opened; long results truncate behind “show all”
 - **Sub-agent swarm** — `delegate_tasks` uses the same spine as a tool step (`▶ ▸ ⑂ delegate_tasks · 1/2 agents`) plus an always-on chip strip (`⟳ SA1 <goal|tool>`). Click a chip (or the head) for the `⎿` log and summary; the inspector Now tab still lists every agent.
@@ -563,8 +563,10 @@ listings return pinned sessions first, and both list and detail carry
 | `--no-tool <name>` | — | Disable a specific tool for served runs (repeatable; merged with lower-priority disabled lists) |
 | `--trusted-proxies <ips/cidrs>` | — | Client IPs trusted for `X-Forwarded-For` / `X-Real-Ip` resolution, used by rate limiting. **Only set this for proxies you control** — a spoofed header from an untrusted client defeats per-IP rate limits |
 | `--log-file <path>` | `~/.odek/serve.log` | Durable run/turn log (mode 0600, symlink-resistant). Lifecycle lines only — never prompt or completion content. Rotated by the storage janitor |
-| `--stream` | config | Stream LLM responses live to the WebUI (`token_delta` / `thinking_delta` events) |
-| `--no-stream` | config | Disable live streaming (bulk `token` events only) |
+| `--stream` | on | Stream LLM responses live to the WebUI (`token_delta` / `thinking_delta` events) |
+| `--no-stream` | — | Disable live streaming (bulk `token` events only) |
+| `--prompt-caching` | on | Enable prompt-caching markers |
+| `--no-prompt-caching` | — | Disable prompt caching |
 | `--help`, `-h` | — | Show usage |
 
 Plus the shared sandbox flags (`--sandbox`, `--no-sandbox`, `--sandbox-image`, …) — see `odek serve --help`.
@@ -757,6 +759,6 @@ match as plain text. The bundled WebUI implements this in
 
 - **Security sandbox**: `odek serve --addr 127.0.0.1:8080` restricts to localhost. Use a reverse proxy (Caddy, nginx) for remote access. Serve mode enables the Docker sandbox by default — opt out with `--no-sandbox`.
 - **Config inheritance**: `odek serve` reads the same config chain (`~/.odek/config.json` → `./odek.json` → env vars) as `odek run`. Set your model, API key, and sandbox settings there.
-- **Live streaming**: thinking-default models feel dramatically faster with `--stream` — reasoning and answer render as they generate instead of after the full run.
+- **Live streaming**: on by default — thinking-default models render reasoning and answer as they generate. Disable with `--no-stream` if a gateway mishandles SSE.
 - **Headless clients**: scripts and TUIs don't need the WebSocket — `POST /api/prompt` + poll `GET /api/runs/{id}`, and answer approvals through `/api/runs/{id}/approvals/{aid}`. The bundled WebUI's *runs* tab uses exactly this surface.
 - **Session discovery**: reference any saved session via `@sess:ID` in your prompt to give the agent full context from previous conversations.

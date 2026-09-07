@@ -25,6 +25,9 @@ sec_findings.md
 docs_findings.md
 SUB_AGENTS_IMPROVEMENTS.md
 
+# Implementation plans — local only, not product docs
+docs/INTELLIGENCE.md
+
 # opencode agent local memory
 .kai/
 .gotmp/

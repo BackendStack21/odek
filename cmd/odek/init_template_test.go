@@ -92,9 +92,29 @@ func TestLocalConfigTemplate_RemainsProjectSafe(t *testing.T) {
 		`"guard"`, `"maintenance"`, `"telegram"`, `"web_search"`,
 		`"embedding"`, `"sessions"`, `"trusted_proxies"`, `"profiles"`,
 		`"sandbox"`, `"compaction"`, `"limits"`,
+		`"prompt_caching"`, `"stream"`,
 	} {
 		if strings.Contains(localConfigTemplate, op) {
 			t.Errorf("localConfigTemplate contains operator-only or default-pinning key %s", op)
 		}
+	}
+}
+
+// TestGlobalConfigTemplate_PromptCachingAndStreamDefaultOn pins the
+// intelligence-milestone defaults: a fresh `odek init --global` must not
+// silently disable prompt caching or streaming.
+func TestGlobalConfigTemplate_PromptCachingAndStreamDefaultOn(t *testing.T) {
+	var fc struct {
+		PromptCaching bool `json:"prompt_caching"`
+		Stream        bool `json:"stream"`
+	}
+	if err := json.Unmarshal([]byte(globalConfigTemplate), &fc); err != nil {
+		t.Fatalf("globalConfigTemplate is not valid JSON: %v", err)
+	}
+	if !fc.PromptCaching {
+		t.Error(`globalConfigTemplate pins prompt_caching false — want true (default-on)`)
+	}
+	if !fc.Stream {
+		t.Error(`globalConfigTemplate pins stream false — want true (default-on)`)
 	}
 }

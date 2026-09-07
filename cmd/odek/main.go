@@ -558,8 +558,14 @@ func parseRunFlags(args []string) (runFlags, error) {
 		case "--prompt-caching":
 			f.PromptCaching = boolPtr(true)
 			i++
+		case "--no-prompt-caching":
+			f.PromptCaching = boolPtr(false)
+			i++
 		case "--stream":
 			f.Stream = boolPtr(true)
+			i++
+		case "--no-stream":
+			f.Stream = boolPtr(false)
 			i++
 		case "--compaction":
 			f.Compaction = boolPtr(true)
@@ -886,8 +892,16 @@ done:
 				f.PromptCaching = boolPtr(true)
 				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
 				j--
+			case "--no-prompt-caching":
+				f.PromptCaching = boolPtr(false)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
 			case "--stream":
 				f.Stream = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--no-stream":
+				f.Stream = boolPtr(false)
 				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
 				j--
 			case "--compaction":
@@ -1037,8 +1051,12 @@ func parseReplFlags(args []string) (replFlags, error) {
 				f.SandboxReadonly = boolPtr(true)
 			case "--prompt-caching":
 				f.PromptCaching = boolPtr(true)
+			case "--no-prompt-caching":
+				f.PromptCaching = boolPtr(false)
 			case "--stream":
 				f.Stream = boolPtr(true)
+			case "--no-stream":
+				f.Stream = boolPtr(false)
 			case "--compaction":
 				f.Compaction = boolPtr(true)
 			case "--no-compaction":
@@ -1101,8 +1119,14 @@ func parseReplFlags(args []string) (replFlags, error) {
 		case "--prompt-caching":
 			f.PromptCaching = boolPtr(true)
 			i++
+		case "--no-prompt-caching":
+			f.PromptCaching = boolPtr(false)
+			i++
 		case "--stream":
 			f.Stream = boolPtr(true)
+			i++
+		case "--no-stream":
+			f.Stream = boolPtr(false)
 			i++
 		case "--compaction":
 			f.Compaction = boolPtr(true)
@@ -1156,7 +1180,8 @@ Commands:
   run --session       Execute and save conversation as a session
   continue            Continue the most recent session (or by --id)
   repl                Interactive REPL mode (multi-turn session)
-                       Accepts --model, --thinking, --sandbox, --prompt-caching, and
+                       Accepts --model, --thinking, --sandbox, --prompt-caching /
+                       --no-prompt-caching, --stream / --no-stream, and
                        --sandbox-* flags just like odek run.
   serve               Web UI server with WebSocket streaming
                        Open http://localhost:8080 in your browser.
@@ -1206,7 +1231,10 @@ Run flags:
   --temperature <n>    LLM temperature 0.0–2.0 (default: 0 = deterministic)
   --no-color           Disable colored terminal output
   --no-agents          Skip loading AGENTS.md from working directory
-  --prompt-caching     Enable Anthropic-format cache markers (system + first user)
+  --prompt-caching     Enable Anthropic-format cache markers (default: on)
+  --no-prompt-caching  Disable prompt caching (overrides config/default)
+  --stream             Stream reasoning and answer text as it arrives (default: on)
+  --no-stream          Disable streaming (overrides config/default)
   --compaction         Enable LLM-based rolling compaction of trimmed context (default: on)
   --no-compaction      Disable rolling compaction (overrides config/default)
   --planning           Enable the plan tool and protected plan message (default: on)
@@ -1328,8 +1356,8 @@ const globalConfigTemplate = `{
   "thinking": "",
   "max_iterations": 90,
   "max_tool_parallel": 4,
-  "prompt_caching": false,
-  "stream": false,
+  "prompt_caching": true,
+  "stream": true,
   "compaction": true,
   "planning": {
     "enabled": true,
@@ -1506,8 +1534,6 @@ const localConfigTemplate = `{
   "thinking": "",
   "max_iterations": 0,
   "max_tool_parallel": 0,
-  "prompt_caching": false,
-  "stream": false,
   "interaction_mode": "",
   "no_color": false,
   "no_agents": false,

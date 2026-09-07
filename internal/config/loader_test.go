@@ -1897,14 +1897,15 @@ func TestCompaction_ExplicitFalseWins(t *testing.T) {
 
 func TestStreamLayering(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
 
-	// Default: off.
+	// Default: on (docs/STREAMING.md).
 	cfg := LoadConfig(CLIFlags{})
-	if cfg.Stream {
-		t.Error("default Stream = true, want false")
+	if !cfg.Stream {
+		t.Error("default Stream = false, want true")
 	}
 
-	// Env enables.
+	// Env still enables when already on (idempotent).
 	t.Setenv("ODEK_STREAM", "1")
 	cfg = LoadConfig(CLIFlags{})
 	if !cfg.Stream {
@@ -1917,6 +1918,115 @@ func TestStreamLayering(t *testing.T) {
 	if cfg.Stream {
 		t.Error("CLI stream=false did not override ODEK_STREAM=1")
 	}
+}
+
+// TestPromptCaching_DefaultOn verifies prompt_caching resolves to true when
+// no layer (config file, env, CLI) sets it.
+func TestPromptCaching_DefaultOn(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+
+	cfg := LoadConfig(CLIFlags{})
+	if !cfg.PromptCaching {
+		t.Error("PromptCaching should default to true when no layer sets it")
+	}
+}
+
+// TestPromptCaching_ExplicitFalseWins verifies an explicit false from any
+// layer disables prompt caching despite the default-on.
+func TestPromptCaching_ExplicitFalseWins(t *testing.T) {
+	t.Run("env", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		t.Chdir(t.TempDir())
+		t.Setenv("ODEK_PROMPT_CACHING", "false")
+
+		cfg := LoadConfig(CLIFlags{})
+		if cfg.PromptCaching {
+			t.Error("PromptCaching should be false when ODEK_PROMPT_CACHING=false")
+		}
+	})
+	t.Run("cli", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		t.Chdir(t.TempDir())
+
+		disabled := false
+		cfg := LoadConfig(CLIFlags{PromptCaching: &disabled})
+		if cfg.PromptCaching {
+			t.Error("PromptCaching should be false when CLIFlags.PromptCaching is explicitly false")
+		}
+	})
+	t.Run("file", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Chdir(t.TempDir())
+
+		odekDir := filepath.Join(home, ".odek")
+		if err := os.MkdirAll(odekDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(odekDir, "config.json"), []byte(`{"prompt_caching": false}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg := LoadConfig(CLIFlags{})
+		if cfg.PromptCaching {
+			t.Error("PromptCaching should be false when config.json sets prompt_caching=false")
+		}
+	})
+}
+
+// TestStream_DefaultOn verifies stream resolves to true when no layer sets it.
+func TestStream_DefaultOn(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+
+	cfg := LoadConfig(CLIFlags{})
+	if !cfg.Stream {
+		t.Error("Stream should default to true when no layer sets it")
+	}
+}
+
+// TestStream_ExplicitFalseWins verifies an explicit false from any layer
+// disables streaming despite the default-on.
+func TestStream_ExplicitFalseWins(t *testing.T) {
+	t.Run("env", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		t.Chdir(t.TempDir())
+		t.Setenv("ODEK_STREAM", "false")
+
+		cfg := LoadConfig(CLIFlags{})
+		if cfg.Stream {
+			t.Error("Stream should be false when ODEK_STREAM=false")
+		}
+	})
+	t.Run("cli", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		t.Chdir(t.TempDir())
+
+		disabled := false
+		cfg := LoadConfig(CLIFlags{Stream: &disabled})
+		if cfg.Stream {
+			t.Error("Stream should be false when CLIFlags.Stream is explicitly false")
+		}
+	})
+	t.Run("file", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Chdir(t.TempDir())
+
+		odekDir := filepath.Join(home, ".odek")
+		if err := os.MkdirAll(odekDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(odekDir, "config.json"), []byte(`{"stream": false}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg := LoadConfig(CLIFlags{})
+		if cfg.Stream {
+			t.Error("Stream should be false when config.json sets stream=false")
+		}
+	})
 }
 
 func TestLoadConfig_ProjectProviderAndLLMIgnored(t *testing.T) {

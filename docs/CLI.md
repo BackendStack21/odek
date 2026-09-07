@@ -7,7 +7,7 @@
 | `odek run [flags] <task>` | Execute a task with the agent loop (single-shot by default) |
 | `odek run --session [flags] <task>` | Execute and save conversation as a multi-turn session |
 | `odek continue [--id <id>] [--external-ref <ref>] <task>` | Continue the most recent session (or by `--id`). Sessions persist per completed step: Ctrl-C/SIGTERM resumes from the last step; SIGKILL may lose the in-flight step |
-| `odek repl [flags]` | Interactive REPL mode (persistent multi-turn session). Flags: `--id`, `--model`, `--thinking`, `--thinking-budget`, `--sandbox`, `--sandbox-*`, `--prompt-caching`, `--stream`, `--compaction`, `--planning` / `--no-planning`, `--interaction-mode`. Unrecognized flags are rejected with an error — in particular `--tool` / `--no-tool` are **not** supported in repl (use `odek run`, `serve`, or the `tools` config instead). |
+| `odek repl [flags]` | Interactive REPL mode (persistent multi-turn session). Flags: `--id`, `--model`, `--thinking`, `--thinking-budget`, `--sandbox`, `--sandbox-*`, `--prompt-caching` / `--no-prompt-caching`, `--stream` / `--no-stream`, `--compaction`, `--planning` / `--no-planning`, `--interaction-mode`. Unrecognized flags are rejected with an error — in particular `--tool` / `--no-tool` are **not** supported in repl (use `odek run`, `serve`, or the `tools` config instead). |
 | `odek session list` | List sessions |
 | `odek session show [id]` | Show session details (default: latest) |
 | `odek session delete <id>` | Delete a session |
@@ -25,7 +25,7 @@
 | `odek memory extended <forget|promote|pin|quarantine|compact|stats|consolidate|nudges|pending|confirm|reject> [args]` | Extended-memory operations: delete/promote/pin atoms, list or confirm/reject pending-review atoms, quarantine listing, manual compaction, store stats, consolidate, and proactive-nudge management |
 | `odek audit <session-id>` | Print the prompt-injection audit log for a session (JSON) |
 | `odek audit --list` | List sessions with non-zero ingest counts and divergence flags |
-| `odek serve [--addr <addr>] [--open] [--no-sandbox] [--trusted-proxies <ips/cidrs>] [--log-file <path>]` | Web UI server (default `127.0.0.1:8080`). Sandbox is on by default; pass `--no-sandbox` to disable. Flags: `--tool` / `--no-tool` (repeatable), `--prompt-caching`, `--compaction`, `--planning` / `--no-planning`, `--stream` / `--no-stream`, `--log-file` (durable run/turn log, default `~/.odek/serve.log`). Binding to a non-loopback address prints a loud warning because anyone with the token can drive the agent. `--trusted-proxies` honours `X-Forwarded-For`/`X-Real-Ip` only from those addresses. |
+| `odek serve [--addr <addr>] [--open] [--no-sandbox] [--trusted-proxies <ips/cidrs>] [--log-file <path>]` | Web UI server (default `127.0.0.1:8080`). Sandbox is on by default; pass `--no-sandbox` to disable. Flags: `--tool` / `--no-tool` (repeatable), `--prompt-caching` / `--no-prompt-caching`, `--compaction`, `--planning` / `--no-planning`, `--stream` / `--no-stream`, `--log-file` (durable run/turn log, default `~/.odek/serve.log`). Binding to a non-loopback address prints a loud warning because anyone with the token can drive the agent. `--trusted-proxies` honours `X-Forwarded-For`/`X-Real-Ip` only from those addresses. |
 | `odek subagent --goal <string> [flags]` | Run a focused sub-task; outputs JSON on stdout. Spawned by `delegate_tasks` tool. Flags: `--goal`, `--task <file>`, `--context`, `--timeout` (≤1800s), `--max-iter` (≤100), `--profile <name>`, `--parent-session <id>`, `--quiet`, `--stream`. |
 | `odek init [--global|--local] [--force]` | Create a config file template (scope-aware: full schema globally, project-safe fields locally) |
 | `odek mcp [--sandbox]` | Start MCP server (expose tools to Claude Code) or connect to external MCP servers (via `mcp_servers` config) |
@@ -52,8 +52,10 @@ Unknown flags are a **hard error** — they are never folded into the task text 
 | `--deliver` | bool | false | Deliver the agent's final response to the configured Telegram `default_chat_id`. Requires `telegram.bot_token` + `telegram.default_chat_id` in config. Handy for host-cron one-shots; for recurring tasks prefer the native scheduler (`odek schedule`, see [Schedules](SCHEDULES.md)). |
 | `--interaction-mode <mode>` | string | `engaging` | Tool-call rendering: `engaging` (emoji narration) or `verbose` (raw tool output) |
 | `--no-color` | bool | false | Disable colored terminal output |
-| `--prompt-caching` | bool | false | Enable Anthropic-format `cache_control` markers (system + first user). OpenAI-format providers are unaffected — they rely on prefix stability. See [CACHING.md](CACHING.md) |
-| `--stream` | bool | config | Stream reasoning and answer text to the terminal as it arrives. Run/repl have no `--no-stream` inverse — disable via `stream: false` in config or `ODEK_STREAM=false` (`odek serve` does accept `--no-stream`) |
+| `--prompt-caching` | bool | `true` | Enable Anthropic-format `cache_control` markers (system + first user). On by default. OpenAI-format providers are unaffected — they rely on prefix stability. See [CACHING.md](CACHING.md) |
+| `--no-prompt-caching` | bool | `false` | Disable prompt caching (overrides config/default) |
+| `--stream` | bool | `true` | Stream reasoning and answer text to the terminal as it arrives. On by default for `run` / `repl` / `serve`. Telegram does not print incrementally. See [STREAMING.md](STREAMING.md) |
+| `--no-stream` | bool | `false` | Disable streaming (overrides config/default). Accepted by `run`, `repl`, and `serve` |
 | `--compaction` | bool | `true` | Enable LLM-based rolling compaction of trimmed context. On by default |
 | `--no-compaction` | bool | `false` | Disable rolling compaction (overrides config/default) |
 | `--planning` | bool | `true` | Enable the plan tool and protected plan message. On by default; accepted by `run`, `repl`, and `serve` |

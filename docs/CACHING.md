@@ -1,6 +1,6 @@
 # Prompt Caching
 
-odek supports prompt caching for supported LLM providers. When enabled, the system prompt and first user message are annotated with cache markers, reducing both latency and cost on repeated interactions.
+odek supports prompt caching for supported LLM providers. Caching is **on by default**. When enabled, the system prompt and first user message are annotated with cache markers, reducing both latency and cost on repeated interactions. Disable with `--no-prompt-caching`, `ODEK_PROMPT_CACHING=false`, or `"prompt_caching": false`. Library callers of `odek.New` still opt in via `Config.PromptCaching`.
 
 ## Supported Providers
 
@@ -17,25 +17,27 @@ When caching is enabled **and** the bound client is Anthropic-format (`Client.Is
 
 System messages are always sent as separate `SystemBlock`s (one per system row) via `internal/llmclient.toSDKMessages`. OpenAI-format providers never receive `cache_control` markers; they still benefit from prefix-stable system blocks. go-llm-sdk owns Anthropic request headers.
 
-## Enabling
+## Disabling
 
 ### CLI
 ```bash
-odek run --prompt-caching "Does this work with caching?"
+odek run --no-prompt-caching "Does this work with caching?"
 ```
 
-The `--prompt-caching` flag is available on `odek run`, `odek repl`, and `odek serve`.
+`--prompt-caching` / `--no-prompt-caching` are available on `odek run`, `odek repl`, and `odek serve`.
 
 ### Config file (`~/.odek/config.json` or `./odek.json`)
 ```json
 {
-  "prompt_caching": true
+  "prompt_caching": false
 }
 ```
 
+A fresh project `./odek.json` from `odek init` omits the key so it inherits the default-on.
+
 ### Environment variable
 ```bash
-export ODEK_PROMPT_CACHING=true
+export ODEK_PROMPT_CACHING=false
 ```
 
 ### Programmatic API
@@ -48,16 +50,16 @@ agent, err := odek.New(odek.Config{
 })
 ```
 
-## When to Enable
+## When it helps
 
-**Enable for:**
+**Leave on for:**
 - Anthropic models (Claude family) — explicit cache markers provide the largest benefit
 - DeepSeek models — automatic prefix caching works best when the conversation prefix is stable; cache markers are never sent to DeepSeek (they are Anthropic-only)
 - Any multi-turn session where the system prompt is large (e.g., AGENTS.md files, loaded skills) — the system prompt is cached after the first iteration
 
 **Disable for:**
 - One-shot tasks where the agent runs exactly one iteration
-- Providers that don't support caching and have unusual request parsing (safety: unknown fields are ignored by all major providers, but caching is always opt-in via `--prompt-caching`)
+- Providers that don't support caching and have unusual request parsing (unknown fields are ignored by all major providers; markers are Anthropic-format only)
 
 ## Cache Metrics
 

@@ -349,7 +349,8 @@ odek mcp                                    # stdio transport
 | `ODEK_SYSTEM` | system |
 | `ODEK_NO_COLOR` | no_color |
 | `ODEK_NO_AGENTS` | no_agents |
-| `ODEK_PROMPT_CACHING` | prompt_caching |
+| `ODEK_PROMPT_CACHING` | prompt_caching (default on) |
+| `ODEK_STREAM` | stream (default on) |
 | `ODEK_MAX_CONCURRENCY` | max_concurrency |
 | `ODEK_CTX` | ctx (comma-separated file paths) |
 | `DEEPSEEK_API_KEY` | `providers.deepseek` (default provider) |

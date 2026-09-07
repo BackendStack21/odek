@@ -542,8 +542,9 @@ func TestServe_E2E_WebSocketPipeline(t *testing.T) {
 	}
 	addr := ln.Addr().String()
 
-	// Load config and build the mux (same setup as serveCmd)
-	resolved := config.LoadConfig(config.CLIFlags{})
+	// Load config and build the mux (same setup as serveCmd, Stream off
+	// because this test's mock LLM returns JSON, not SSE).
+	resolved := loadJSONMockResolved()
 	systemMessage := resolved.System
 	if systemMessage == "" {
 		systemMessage = defaultSystem
@@ -920,6 +921,16 @@ func mockLLM(t *testing.T, chatHandler func(w http.ResponseWriter, callCount int
 	return m
 }
 
+// loadJSONMockResolved loads CLI-equivalent config with Stream forced off.
+// Serve/schedule E2E helpers drive application/json mock LLM servers, not
+// SSE; the production default (stream on) would hang or skip assemble-then-act
+// assertions those tests were written against. Tests that need streaming set
+// resolved.Stream = true after this (webui_e2e, protocol v2).
+func loadJSONMockResolved() config.ResolvedConfig {
+	off := false
+	return config.LoadConfig(config.CLIFlags{Stream: &off})
+}
+
 // buildServeMux creates a listener on a random port and builds the
 // odek serve HTTP mux with a pre-configured session store.
 func buildServeMux(t *testing.T, store *session.Store) (net.Listener, *http.ServeMux) {
@@ -929,7 +940,7 @@ func buildServeMux(t *testing.T, store *session.Store) (net.Listener, *http.Serv
 		t.Fatalf("listen: %v", err)
 	}
 
-	resolved := config.LoadConfig(config.CLIFlags{})
+	resolved := loadJSONMockResolved()
 	systemMessage := resolved.System
 	if systemMessage == "" {
 		systemMessage = defaultSystem

@@ -201,6 +201,85 @@ func TestParseReplFlags_NoCompaction(t *testing.T) {
 	}
 }
 
+func TestParseRunFlags_PromptCachingAndStreamFlags(t *testing.T) {
+	f, err := parseRunFlags([]string{"--prompt-caching", "do the thing"})
+	if err != nil {
+		t.Fatalf("parseRunFlags error: %v", err)
+	}
+	if f.PromptCaching == nil || !*f.PromptCaching {
+		t.Error("--prompt-caching should set PromptCaching to true")
+	}
+
+	f, err = parseRunFlags([]string{"--no-prompt-caching", "do the thing"})
+	if err != nil {
+		t.Fatalf("parseRunFlags error: %v", err)
+	}
+	if f.PromptCaching == nil || *f.PromptCaching {
+		t.Error("--no-prompt-caching should set PromptCaching to false")
+	}
+
+	f, err = parseRunFlags([]string{"do the thing", "--no-prompt-caching"})
+	if err != nil {
+		t.Fatalf("parseRunFlags error: %v", err)
+	}
+	if f.PromptCaching == nil || *f.PromptCaching {
+		t.Error("trailing --no-prompt-caching should set PromptCaching to false")
+	}
+
+	f, err = parseRunFlags([]string{"--stream", "do the thing"})
+	if err != nil {
+		t.Fatalf("parseRunFlags error: %v", err)
+	}
+	if f.Stream == nil || !*f.Stream {
+		t.Error("--stream should set Stream to true")
+	}
+
+	f, err = parseRunFlags([]string{"--no-stream", "do the thing"})
+	if err != nil {
+		t.Fatalf("parseRunFlags error: %v", err)
+	}
+	if f.Stream == nil || *f.Stream {
+		t.Error("--no-stream should set Stream to false")
+	}
+
+	f, err = parseRunFlags([]string{"do the thing", "--no-stream"})
+	if err != nil {
+		t.Fatalf("parseRunFlags error: %v", err)
+	}
+	if f.Stream == nil || *f.Stream {
+		t.Error("trailing --no-stream should set Stream to false")
+	}
+
+	f, err = parseRunFlags([]string{"do the thing"})
+	if err != nil {
+		t.Fatalf("parseRunFlags error: %v", err)
+	}
+	if f.PromptCaching != nil {
+		t.Error("absent --prompt-caching should leave PromptCaching nil")
+	}
+	if f.Stream != nil {
+		t.Error("absent --stream should leave Stream nil")
+	}
+}
+
+func TestParseReplFlags_NoPromptCachingNoStream(t *testing.T) {
+	f, err := parseReplFlags([]string{"--no-prompt-caching", "x"})
+	if err != nil {
+		t.Fatalf("parseReplFlags error: %v", err)
+	}
+	if f.PromptCaching == nil || *f.PromptCaching {
+		t.Error("--no-prompt-caching should set PromptCaching to false")
+	}
+
+	f, err = parseReplFlags([]string{"--no-stream", "x"})
+	if err != nil {
+		t.Fatalf("parseReplFlags error: %v", err)
+	}
+	if f.Stream == nil || *f.Stream {
+		t.Error("--no-stream should set Stream to false")
+	}
+}
+
 func TestParseRunFlags_PlanningFlags(t *testing.T) {
 	// --planning and --no-planning are explicit overrides; absent means
 	// "not set" (nil), so config/default resolution decides.
@@ -456,6 +535,8 @@ func TestPrintUsage(t *testing.T) {
 		"--sandbox",
 		"--no-color",
 		"--no-agents",
+		"--no-prompt-caching",
+		"--no-stream",
 		"--session",
 		"--system",
 		"--global",
@@ -2499,5 +2580,21 @@ func TestParseReplFlags_TrailingBooleanFlags(t *testing.T) {
 	}
 	if f.Compaction == nil || *f.Compaction {
 		t.Errorf("trailing --no-compaction = %v, want false", f.Compaction)
+	}
+
+	f, err = parseReplFlags([]string{"--no-stream"})
+	if err != nil {
+		t.Fatalf("parseReplFlags: %v", err)
+	}
+	if f.Stream == nil || *f.Stream {
+		t.Errorf("trailing --no-stream = %v, want false", f.Stream)
+	}
+
+	f, err = parseReplFlags([]string{"--no-prompt-caching"})
+	if err != nil {
+		t.Fatalf("parseReplFlags: %v", err)
+	}
+	if f.PromptCaching == nil || *f.PromptCaching {
+		t.Errorf("trailing --no-prompt-caching = %v, want false", f.PromptCaching)
 	}
 }

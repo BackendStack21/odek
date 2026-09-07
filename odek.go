@@ -185,14 +185,16 @@ type Config struct {
 	// first system block and first user message. Markers are sent only when
 	// the bound client's format is Anthropic (never URL-sniffed). OpenAI-
 	// format providers are unaffected — they rely on prefix-stable separate
-	// system messages. Default: false.
+	// system messages. Library default: false (opt in). The CLI resolves
+	// this to ON when unset; pass --no-prompt-caching to disable.
 	PromptCaching bool
 
 	// Stream enables SSE streaming of LLM responses for the main think
-	// step (default: false). Requires DeltaHandler to display anything
-	// incrementally; without one the behavior matches the buffered path.
-	// Auxiliary LLM calls (compaction, progress summaries, memory) always
-	// stay buffered. See docs/STREAMING.md.
+	// step. Requires DeltaHandler to display anything incrementally;
+	// without one the behavior matches the buffered path. Auxiliary LLM
+	// calls (compaction, progress summaries, memory) always stay buffered.
+	// Library default: false (opt in). The CLI resolves this to ON when
+	// unset; pass --no-stream to disable. See docs/STREAMING.md.
 	Stream bool
 
 	// DeltaHandler receives streamed output fragments when Stream is
