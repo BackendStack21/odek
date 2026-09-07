@@ -19,6 +19,9 @@ func TestParseRunFlags_NumericFlagsRejectGarbage(t *testing.T) {
 	if _, err := parseRunFlags([]string{"--thinking-budget", "x", "do-work"}); err == nil {
 		t.Fatal("--thinking-budget x accepted silently")
 	}
+	if _, err := parseRunFlags([]string{"--thinking", "banana", "do-work"}); err == nil {
+		t.Fatal("--thinking banana accepted")
+	}
 
 	// Valid values still parse.
 	f, err := parseRunFlags([]string{"--max-iter", "42", "--temperature", "0.7", "--thinking-budget", "1024", "do-work"})

@@ -65,7 +65,7 @@ DeepSeek-only leftover: when `provider` is `deepseek`, `ODEK_API_KEY` → `DEEPS
 
 `KnownProfiles`, `LookupProfile`, and `ModelProfile` are gone. v1 auto-set thinking and timeouts from the model name (`deepseek-v4-pro` → thinking on, 180s). v2 does not:
 
-- Thinking: set `--thinking enabled` (or config `thinking`) when you want it.
+- Thinking: set `--thinking medium` (or `low`/`high`/`disabled`; `enabled` still works as an alias for `medium`).
 - Timeout: default **300s** for every model. Raise with `llm.request_timeout_seconds`.
 - Context window: `llm.context_window` → `ListModels` → last-resort table for shipped ids (`deepseek-v4-flash` 128K, `deepseek-v4-pro` 1M, GLM/Kimi prefixes) → else 0 (no trim).
 

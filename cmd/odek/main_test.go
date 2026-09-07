@@ -122,8 +122,8 @@ func TestParseRunFlags_AllFlags(t *testing.T) {
 	if f.System != "You are a bot." {
 		t.Errorf("System = %q", f.System)
 	}
-	if f.Thinking != "enabled" {
-		t.Errorf("Thinking = %q", f.Thinking)
+	if f.Thinking != "medium" {
+		t.Errorf("Thinking = %q, want medium (enabled alias)", f.Thinking)
 	}
 	if f.Sandbox == nil || !*f.Sandbox {
 		t.Error("Sandbox should be true")
@@ -1626,8 +1626,8 @@ func TestParseReplFlags_ModelAndThinking(t *testing.T) {
 	if f.Model != "deepseek-v4-pro" {
 		t.Errorf("Model = %q, want %q", f.Model, "deepseek-v4-pro")
 	}
-	if f.Thinking != "enabled" {
-		t.Errorf("Thinking = %q, want %q", f.Thinking, "enabled")
+	if f.Thinking != "medium" {
+		t.Errorf("Thinking = %q, want %q (enabled alias)", f.Thinking, "medium")
 	}
 }
 
@@ -1796,8 +1796,8 @@ func TestParseReplFlags_AllFlags(t *testing.T) {
 	if f.Model != "gpt-4" {
 		t.Errorf("Model = %q", f.Model)
 	}
-	if f.Thinking != "enabled" {
-		t.Errorf("Thinking = %q", f.Thinking)
+	if f.Thinking != "medium" {
+		t.Errorf("Thinking = %q, want medium (enabled alias)", f.Thinking)
 	}
 	if f.Sandbox == nil || !*f.Sandbox {
 		t.Error("Sandbox should be true")

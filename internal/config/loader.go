@@ -2307,6 +2307,16 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		}
 	}
 
+	thinking := cfg.Thinking
+	if thinking != "" {
+		if canon, ok := NormalizeThinking(thinking); ok {
+			thinking = canon
+		} else {
+			fmt.Fprintf(os.Stderr, "odek: warning: unknown thinking %q — ignoring (want disabled, low, medium, high)\n", thinking)
+			thinking = ""
+		}
+	}
+
 	// Build resolved config with concrete values
 	resolved := ResolvedConfig{
 		Provider:  cfg.Provider,
@@ -2314,7 +2324,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		BaseURL:   cfg.BaseURL,
 		APIKey:    cfg.APIKey,
 		Providers: cfg.Providers,
-		Thinking:  cfg.Thinking,
+		Thinking:  thinking,
 		MaxIter:   cfg.MaxIter,
 		System:    cfg.System,
 

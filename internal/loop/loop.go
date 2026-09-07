@@ -3390,8 +3390,8 @@ func (e *Engine) SetModel(model string) {
 }
 
 // SetThinking updates the thinking/reasoning mode used by this engine at
-// runtime. Accepts the same values as Config.Thinking: "enabled",
-// "disabled", "low", "medium", "high", or "" (provider default).
+// runtime. Accepts the same values as Config.Thinking: "disabled",
+// "low", "medium", "high", aliases, or "" (provider default).
 // Safe to call between RunWithMessages calls.
 func (e *Engine) SetThinking(thinking string) {
 	if e.client == nil {

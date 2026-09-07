@@ -1161,7 +1161,7 @@ type wsClientMsg struct {
 	SessionID   string         `json:"session_id"`
 	AuthToken   string         `json:"auth_token,omitempty"`
 	Model       string         `json:"model,omitempty"`
-	Thinking    string         `json:"thinking,omitempty"` // "enabled" | "" — per-query toggle
+	Thinking    string         `json:"thinking,omitempty"` // disabled|low|medium|high; omit/"" = inherit
 	Attachments []wsAttachment `json:"attachments,omitempty"`
 	TaskID      string         `json:"task_id,omitempty"` // subagent_cancel target
 	// SystemInitiated marks server-initiated turns (wake-on-complete).
@@ -1622,11 +1622,10 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 			agent.SwitchModel(msg.Model)
 		}
 
-		// Handle per-query thinking toggle. The UI sends "enabled" to turn
-		// thinking on for this prompt, or "" to use the server default.
-		// This is applied before every RunWithMessages call so the model
-		// uses the user's current toggle state, not just the startup config.
-		agent.SwitchThinking(msg.Thinking)
+		if err := applyServeThinking(agent, msg.Thinking); err != nil {
+			writeWSJSON(conn, map[string]any{"type": "error", "message": err.Error()})
+			continue
+		}
 
 		// Handle session switch mid-connection (new conversation)
 		if msg.SessionID != "" && (currentSession == nil || currentSession.ID != msg.SessionID) {
@@ -2685,6 +2684,31 @@ func writeWSJSON(conn *golangws.Conn, data any) {
 
 func writeWSError(conn *golangws.Conn, msg string) {
 	writeWSJSON(conn, map[string]string{"type": "error", "message": msg})
+}
+
+// applyServeThinking applies a per-prompt thinking override. Empty/omitted
+// means inherit — the agent's current (startup / last explicit) level stays.
+// Unknown values are rejected so a typo cannot silently wipe the default.
+func applyServeThinking(agent *odek.Agent, raw string) error {
+	canon, apply, err := resolveServeThinking(raw)
+	if err != nil {
+		return err
+	}
+	if apply {
+		agent.SwitchThinking(canon)
+	}
+	return nil
+}
+
+func resolveServeThinking(raw string) (canonical string, apply bool, err error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", false, nil
+	}
+	canon, ok := config.NormalizeThinking(raw)
+	if !ok {
+		return "", false, fmt.Errorf("invalid thinking %q: want disabled, low, medium, or high", raw)
+	}
+	return canon, true, nil
 }
 
 // sendError emits an error event through a generic send sink (used by the

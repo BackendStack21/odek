@@ -138,8 +138,8 @@ func TestLoadConfig_EnvVars(t *testing.T) {
 	if cfg.APIKey != "sk-env-key" {
 		t.Errorf("APIKey = %q", cfg.APIKey)
 	}
-	if cfg.Thinking != "enabled" {
-		t.Errorf("Thinking = %q", cfg.Thinking)
+	if cfg.Thinking != "medium" {
+		t.Errorf("Thinking = %q, want medium (enabled alias)", cfg.Thinking)
 	}
 	if cfg.MaxIter != 50 {
 		t.Errorf("MaxIter = %d, want 50", cfg.MaxIter)
@@ -230,8 +230,8 @@ func TestLoadConfig_GlobalFile(t *testing.T) {
 	if cfg.BaseURL != "https://global.example.com/v1" {
 		t.Errorf("BaseURL = %q", cfg.BaseURL)
 	}
-	if cfg.Thinking != "enabled" {
-		t.Errorf("Thinking = %q", cfg.Thinking)
+	if cfg.Thinking != "medium" {
+		t.Errorf("Thinking = %q, want medium (enabled alias)", cfg.Thinking)
 	}
 	if cfg.MaxIter != 30 {
 		t.Errorf("MaxIter = %d, want 30", cfg.MaxIter)

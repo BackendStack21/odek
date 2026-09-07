@@ -442,6 +442,14 @@ func unknownFlagError(flag string) error {
 		"(e.g. odek run -- \"-dash-prefixed task\")", flag)
 }
 
+func parseThinkingArg(raw string) (string, error) {
+	canon, ok := config.NormalizeThinking(raw)
+	if !ok {
+		return "", fmt.Errorf("--thinking %q: want disabled, low, medium, or high", raw)
+	}
+	return canon, nil
+}
+
 func parseRunFlags(args []string) (runFlags, error) {
 	var f runFlags
 
@@ -497,7 +505,11 @@ func parseRunFlags(args []string) (runFlags, error) {
 			if i+1 >= len(args) {
 				return f, fmt.Errorf("--thinking requires a value")
 			}
-			f.Thinking = args[i+1]
+			level, err := parseThinkingArg(args[i+1])
+			if err != nil {
+				return f, err
+			}
+			f.Thinking = level
 			i += 2
 		case "--thinking-budget":
 			if i+1 >= len(args) {
@@ -1050,7 +1062,14 @@ func parseReplFlags(args []string) (replFlags, error) {
 			f.Model = args[i+1]
 			i += 2
 		case "--thinking":
-			f.Thinking = args[i+1]
+			if i+1 >= len(args) {
+				return f, fmt.Errorf("--thinking requires a value")
+			}
+			level, err := parseThinkingArg(args[i+1])
+			if err != nil {
+				return f, err
+			}
+			f.Thinking = level
 			i += 2
 		case "--thinking-budget":
 			fmt.Sscanf(args[i+1], "%d", &f.ThinkingBudget)
@@ -1179,7 +1198,8 @@ Run flags:
   --model <name>       LLM model (default: deepseek-v4-flash)
   --base-url <url>     Override the selected provider's API endpoint
   --max-iter <n>       Max think->act cycles (default: 90)
-  --thinking <level>     Reasoning depth: enabled, disabled, low, medium, high
+  --thinking <level>     Reasoning depth: disabled, low, medium, high
+                         Aliases: enabled/on → medium, off → disabled, mid → medium, max → high.
                          Requires a model that supports extended thinking.
                          Anthropic: forces temperature=1 and needs budget_tokens.
   --thinking-budget <n>  Max thinking tokens for extended thinking (default: 5000).
@@ -1589,7 +1609,7 @@ func initConfig(args []string) error {
 		fmt.Println("    provider          LLM provider id (default: deepseek)")
 		fmt.Println("    model             LLM model name (default: deepseek-v4-flash)")
 		fmt.Println("    providers         Per-id api_key / base_url / format overrides")
-		fmt.Println("    thinking          Reasoning depth (enabled/disabled/low/medium/high)")
+		fmt.Println("    thinking          Reasoning depth (disabled/low/medium/high)")
 		fmt.Println("    max_iterations    Max think→act cycles (default: 90)")
 		fmt.Println("    prompt_caching    Provider prompt caching (true/false)")
 		fmt.Println("    stream            Stream LLM responses live (true/false)")

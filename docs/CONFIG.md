@@ -301,7 +301,7 @@ Top-level execution knobs. Every one also exists as a CLI flag and an `ODEK_*` e
 | `providers` | `{}` | Per-id `api_key` / `base_url` / `format` overrides. `${VAR}` expands. Operator-only |
 | `model` | `deepseek-v4-flash` | LLM model ID. No auto-thinking or auto-timeout from the name |
 | `base_url` | SDK default for `provider` | Selected-provider URL override (v1 alias). DeepSeek default is `https://api.deepseek.com` (no `/v1`) |
-| `thinking` | `""` (omit) | Reasoning depth: `enabled`, `disabled`, `low`, `medium`, `high`. Set explicitly — not inferred from the model name |
+| `thinking` | `""` (omit) | Reasoning depth: `disabled`, `low`, `medium`, `high`. Aliases: `enabled`/`on` → `medium`, `off` → `disabled`, `mid` → `medium`, `max` → `high`. Set explicitly — not inferred from the model name |
 | `max_iterations` | `90` | Max think→act cycles per run |
 | `stream` | `false` | Stream reasoning and answer text to the terminal / Web UI as it arrives (`ODEK_STREAM`, `--stream`; `odek serve` also accepts `--no-stream`) |
 | `prompt_caching` | `false` | Enable provider prompt-caching markers — Anthropic endpoints get explicit markers; other providers are unaffected (see [CACHING.md](CACHING.md)) |

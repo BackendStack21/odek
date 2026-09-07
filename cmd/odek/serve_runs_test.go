@@ -500,6 +500,7 @@ func TestServe_E2E_RestRunValidation(t *testing.T) {
 		"empty content": `{}`,
 		"oversized":     `{"content":"` + strings.Repeat("x", maxPromptBytes+10) + `"}`,
 		"bad model":     `{"content":"hi","model":"bad id!"}`,
+		"bad thinking":  `{"content":"hi","thinking":"banana"}`,
 		"invalid json":  `not json`,
 	} {
 		w := httptest.NewRecorder()

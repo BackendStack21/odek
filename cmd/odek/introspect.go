@@ -50,7 +50,7 @@ func buildConfigView(resolved config.ResolvedConfig) map[string]any {
 		"stream":            resolved.Stream,
 		"compaction":        resolved.Compaction,
 		"prompt_caching":    resolved.PromptCaching,
-		"thinking":          resolved.Thinking != "",
+		"thinking":          config.CanonicalThinking(resolved.Thinking),
 		"max_iterations":    resolved.MaxIter,
 		"max_tool_parallel": resolved.MaxToolParallel,
 		"max_concurrency":   resolved.MaxConcurrency,

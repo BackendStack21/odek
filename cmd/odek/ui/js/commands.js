@@ -22,6 +22,7 @@ const COMMANDS = [
   { id: 'stop', title: 'Stop running turn', hint: '/stop', run: () => dispatchSlash('/stop') },
   { id: 'theme', title: 'Cycle theme', hint: 'palette', run: () => dispatchSlash('/theme') },
   { id: 'notify', title: 'Toggle notifications', hint: 'palette', run: () => dispatchSlash('/notify') },
+  { id: 'thinking', title: 'Reasoning depth', hint: '/thinking', run: () => dispatchSlash('/thinking') },
   { id: 'help', title: 'Keyboard shortcuts', hint: '?', run: () => dispatchSlash('/help') },
   { id: 'stats', title: 'Session stats', hint: 'palette', run: () => dispatchSlash('/stats') },
   { id: 'sessions', title: 'Sessions', hint: '⌘.', run: () => openTab('sessions') },
@@ -208,6 +209,10 @@ export function dispatchSlash(raw) {
     case 'notify': onDispatch.toggleNotify(); break;
     case 'shutdown': onDispatch.shutdown(); break;
     case 'model': if (arg) onDispatch.switchModel(arg); else togglePalette(true); break;
+    case 'thinking':
+      if (arg && onDispatch.switchThinking) onDispatch.switchThinking(arg);
+      else togglePalette(true);
+      break;
     case 'now':
     case 'memory':
     case 'ops':

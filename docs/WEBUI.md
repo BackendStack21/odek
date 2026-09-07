@@ -122,6 +122,7 @@ Two token layers:
 
 The bundled client is a **zero-framework command center** — same EMBER language as bodek, but built for a pointer, a persistent inspector, and a command palette.
 
+- **Model + thinking pickers** — top-bar selects for the active model and reasoning depth (`disabled` / `low` / `medium` / `high`). Thinking is persisted as `odek_thinking` and sent on every prompt.
 - **Command palette (`⌘K` / `Ctrl+K`)** — fuzzy jump to commands, sessions, models, and inspector workspaces
 - **Slash verbs** — composer handles only `/new` `/clear` `/retry` `/cancel` `/stop`; everything else lives in the palette (typed `shutdown` death-gate stays a modal)
 - **Prompt queue** — `Enter` while a turn is running holds the next prompt (reorder / delete in the strip above the composer); the queue drains automatically on `done`
@@ -450,7 +451,7 @@ Runs the full agent without a WebSocket. The body is the prompt message:
   "session_id": "2026…",             // optional — omit to create a session
   "auth_token": "…",                 // session token when continuing
   "model": "glm-5.3",                // optional per-run model override
-  "thinking": "enabled",             // optional per-run thinking toggle
+  "thinking": "medium",              // optional per-run depth: disabled|low|medium|high (omit = inherit)
   "approval_timeout_seconds": 300,   // approval wait (default 60s, cap 600s)
   "attachments": [{ "name": "f.txt", "content": "…" }]
 }
@@ -517,7 +518,7 @@ handler's defers tear down the agent and sandbox cleanly.
 ### `GET /api/config`
 
 Sanitized resolved-config view: provider id (not the `providers` map), model, sandbox knobs, stream/compaction/
-caching flags, iteration/parallelism limits, memory/skills/tool-filter
+caching flags, `thinking` as `""` / `disabled` / `low` / `medium` / `high` (not a boolean), iteration/parallelism limits, memory/skills/tool-filter
 summaries, maintenance retention, dangerous default action, guard scan
 toggles, sub-agent budgets (`subagent`), background-command settings
 (`background`), and execution budgets with effective token prices
@@ -583,7 +584,7 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
   "session_id": "20260519-abc123",  // optional — omit for new session
   "auth_token": "…",                // when continuing a session
   "model": "glm-5.3",               // optional per-run model override
-  "thinking": "enabled",            // optional per-run thinking toggle
+  "thinking": "medium",             // optional per-run depth: disabled|low|medium|high (omit = inherit)
   "attachments": [{ "name": "f.txt", "content": "…" }]
 }
 
