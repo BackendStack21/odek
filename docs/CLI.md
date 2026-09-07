@@ -56,7 +56,7 @@ Unknown flags are a **hard error** — they are never folded into the task text 
 | `--no-prompt-caching` | bool | `false` | Disable prompt caching (overrides config/default) |
 | `--stream` | bool | `true` | Stream reasoning and answer text to the terminal as it arrives. On by default for `run` / `repl` / `serve`. Telegram does not print incrementally. See [STREAMING.md](STREAMING.md) |
 | `--no-stream` | bool | `false` | Disable streaming (overrides config/default). Accepted by `run`, `repl`, and `serve` |
-| `--compaction` | bool | `true` | Enable LLM-based rolling compaction of trimmed context. On by default |
+| `--compaction` | bool | `true` | Enable rolling compaction of trimmed context (extractive sketch now, model digest later). On by default |
 | `--no-compaction` | bool | `false` | Disable rolling compaction (overrides config/default) |
 | `--announce-budget` | bool | `true` | Enable parent 50/75/90% budget-awareness hints (iteration, wall-clock, tool-calls, tokens, cost). On by default. Distinct from `subagent.announce_budget`. |
 | `--no-announce-budget` | bool | `false` | Disable parent budget-awareness hints (overrides config/default) |

@@ -286,14 +286,16 @@ type Config struct {
 	// production surfaces).
 	UntrustedWrapper func(source, content string) string
 
-	// Compaction enables LLM-based rolling compaction. When enabled,
-	// conversation turn groups dropped by context trimming are
-	// summarized by the model into a rolling digest system message instead of
-	// vanishing entirely, so long sessions retain a compressed memory of
-	// earlier work. Each compaction costs one extra LLM call per trim.
-	// The CLI resolves it to ON by default (an explicit compaction=false,
-	// ODEK_COMPACTION=false, or --no-compaction disables it); library
-	// users of New must opt in explicitly here.
+	// Compaction enables rolling compaction. When enabled, conversation
+	// turn groups dropped by context trimming are sketched extractively
+	// into a digest system message immediately, then a thinking-off side
+	// call replaces that sketch with a model digest on a later iteration
+	// if it succeeds. Long sessions retain a compressed memory of earlier
+	// work without stalling the next think step. Each compaction still
+	// costs one extra LLM call per trim. The CLI resolves it to ON by
+	// default (an explicit compaction=false, ODEK_COMPACTION=false, or
+	// --no-compaction disables it); library users of New must opt in
+	// explicitly here.
 	Compaction bool
 }
 

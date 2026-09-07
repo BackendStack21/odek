@@ -381,9 +381,9 @@ The schedule-specific override of this policy is documented in [Schedule-specifi
 
 ## Rolling compaction (`compaction`)
 
-When context trimming drops old conversation turns to stay within the model's context window, those turns are normally lost. With `compaction` enabled (the default), the dropped turns are instead summarized by the model into a rolling digest message, preserving a compressed history of the session.
+When context trimming drops old conversation turns to stay within the model's context window, those turns are normally lost. With `compaction` enabled (the default), the dropped turns are sketched extractively into a rolling digest immediately (so the next think step is not blocked), then a thinking-off side call replaces that sketch with a model digest on a later iteration if it succeeds.
 
-Compaction and iteration-budget progress summaries are **auxiliary** LLM calls: thinking is disabled, no tools are offered, and output is capped independently of the main think step. The digest uses a fixed skeleton (Task / Done / Decisions / Files/symbols / Errors still open / Next) and re-enters history as untrusted derived context.
+Compaction and iteration-budget progress summaries are **auxiliary** LLM calls: thinking is disabled, no tools are offered, and output is capped independently of the main think step. The digest uses a fixed skeleton (Task / Done / Decisions / Files/symbols / Errors still open / Next) and re-enters history as untrusted derived context. The extractive placeholder uses the same wrapper and audit ingest.
 
 | Field | Default | Env var | CLI flag | Description |
 |-------|---------|---------|----------|-------------|

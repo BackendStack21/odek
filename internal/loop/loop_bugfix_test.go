@@ -84,9 +84,8 @@ func TestEngine_Run_RealToolErrorStillCounts(t *testing.T) {
 }
 
 func TestTrimContext_DigestSurvivesSuccessiveTrims(t *testing.T) {
-	// Live LLM endpoint: refreshDigest's summarizer side-call must succeed
-	// for the digest message to be created at all (summarizer failure leaves
-	// the previous digest untouched by design).
+	// Compaction installs an extractive digest immediately; the side call
+	// is not required for the digest message to exist.
 	summarizer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"choices":[{"message":{"content":"compressed summary of earlier turns"}}]}`)
 	}))

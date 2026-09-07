@@ -382,10 +382,30 @@ func TestTrimContext_CompactionCreatesDigest(t *testing.T) {
 	}
 	result := engine.trimContext(context.Background(), msgs, nil)
 
-	if engine.compactDigest != "SUMMARY: earlier work condensed" {
-		t.Errorf("compactDigest = %q, want summary", engine.compactDigest)
-	}
 	digestCount := 0
+	extractive := ""
+	for _, m := range result {
+		if isDigestMessage(m) {
+			digestCount++
+			extractive = m.Content
+		}
+	}
+	if digestCount != 1 {
+		t.Fatalf("expected exactly 1 digest message immediately, got %d", digestCount)
+	}
+	if !strings.Contains(extractive, "Dropped turns:") {
+		t.Errorf("immediate digest must be extractive, got: %.200s", extractive)
+	}
+	if engine.compactDigest == "SUMMARY: earlier work condensed" {
+		t.Error("trimContext must not block for the LLM digest")
+	}
+
+	engine.waitDigestSideCall(context.Background())
+	result = engine.applyPendingDigest(context.Background(), result)
+	if engine.compactDigest != "SUMMARY: earlier work condensed" {
+		t.Errorf("compactDigest = %q, want summary after apply", engine.compactDigest)
+	}
+	digestCount = 0
 	for _, m := range result {
 		if isDigestMessage(m) {
 			digestCount++
@@ -395,7 +415,7 @@ func TestTrimContext_CompactionCreatesDigest(t *testing.T) {
 		}
 	}
 	if digestCount != 1 {
-		t.Fatalf("expected exactly 1 digest message, got %d", digestCount)
+		t.Fatalf("expected exactly 1 digest message after apply, got %d", digestCount)
 	}
 	if summaryCalls == 0 {
 		t.Error("summarizer was never called")
@@ -433,13 +453,30 @@ func TestTrimContext_CompactionFailureStillTrims(t *testing.T) {
 	}
 	result := engine.trimContext(context.Background(), msgs, nil)
 
+	found := false
 	for _, m := range result {
 		if isDigestMessage(m) {
-			t.Error("no digest should be inserted when the summarizer fails")
+			found = true
+			if !strings.Contains(m.Content, "Dropped turns:") {
+				t.Errorf("summarizer failure must leave the extractive digest, got: %.200s", m.Content)
+			}
 		}
 	}
-	if len(result) >= len(msgs) {
-		t.Errorf("trimming must still happen on summarizer failure, got %d messages", len(result))
+	if !found {
+		t.Error("extractive digest must be inserted even when the summarizer fails")
+	}
+	engine.cancelDigestSideCall()
+	if engine.compactDigest != "" {
+		t.Errorf("failed side call must not replace extractive with an LLM digest, compactDigest=%q", engine.compactDigest)
+	}
+	heavyKept := 0
+	for _, m := range result {
+		if m.Role == "assistant" && len(m.Content) >= 3000 {
+			heavyKept++
+		}
+	}
+	if heavyKept >= 2 {
+		t.Errorf("trimming must still drop oversized turns on summarizer failure, kept %d heavy assistants", heavyKept)
 	}
 }
 
@@ -728,6 +765,22 @@ func TestSummarizeDropped_IncludesRemainingPlanIDsNotTitles(t *testing.T) {
 	}
 	if strings.Contains(body, secretPlanTitle) || strings.Contains(body, secretPlanNote) {
 		t.Errorf("plan titles/notes leaked into summarizer input: %.400s", body)
+	}
+}
+
+func TestExtractiveDigest_IncludesRemainingPlanIDsNotTitles(t *testing.T) {
+	store := NewPlanStore(12, 2000)
+	seedPlanMessage(t, store)
+	engine := &Engine{planStore: store}
+	got := engine.extractiveDigest([]session.Message{{Role: "assistant", Content: "old work"}})
+	if !strings.Contains(got, "s2=in_progress") || !strings.Contains(got, "s3=pending") {
+		t.Errorf("remaining plan ids missing from extractive digest: %.400s", got)
+	}
+	if strings.Contains(got, secretPlanTitle) || strings.Contains(got, secretPlanNote) {
+		t.Errorf("plan titles/notes leaked into extractive digest: %.400s", got)
+	}
+	if !strings.Contains(got, "old work") {
+		t.Errorf("dropped content missing from extractive digest: %.400s", got)
 	}
 }
 
