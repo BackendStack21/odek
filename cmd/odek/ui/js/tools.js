@@ -1,7 +1,7 @@
 // Typed tool-result chips. Every renderer treats output as PLAIN TEXT —
 // never HTML. Structured chips fire only on machine-shaped output
 // (go test, git, HTTP status lines). Prose like "Build passed" stays quiet.
-import { escapeHtml } from './escape.js';
+import { escapeHtml, escapeAttr } from './escape.js';
 
 const DIFF_LINE = /^(?:diff --git |@@ |[+-](?![+-]{2}))/m;
 const HTTP_STATUS = /\bHTTP\/\d(?:\.\d)?\s+(\d{3})\b/;
@@ -83,7 +83,7 @@ export function prettyToolBody(output) {
 export function chipsHtml(chips) {
   if (!chips || !chips.length) return '';
   return chips.map((c) =>
-    '<span class="tb-chip tb-chip-' + escapeHtml(c.tone || 'ok') + '">' + escapeHtml(c.label) + '</span>'
+    '<span class="tb-chip tb-chip-' + escapeAttr(c.tone || 'ok') + '">' + escapeHtml(c.label) + '</span>'
   ).join('');
 }
 

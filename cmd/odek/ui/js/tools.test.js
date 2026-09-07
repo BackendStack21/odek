@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyToolResult, prettyToolBody, formatReceipt } from './tools.js';
+import { classifyToolResult, prettyToolBody, formatReceipt, chipsHtml } from './tools.js';
 
 test('diff output earns a +/− chip and never treats prose as a pass', () => {
   const chips = classifyToolResult('patch', '--- a\n+++ b\n+ok\n-old\n');
@@ -16,6 +16,11 @@ test('HTTP status and JSON pretty-print stay text-safe', () => {
   assert.equal(http.find((c) => c.kind === 'http').label, '404');
   assert.equal(http.find((c) => c.kind === 'http').tone, 'warn');
   assert.equal(prettyToolBody('{"a":1}'), '{\n  "a": 1\n}');
+});
+
+test('chip class attribute is quote-safe (escapeAttr, not escapeHtml)', () => {
+  const html = chipsHtml([{ kind: 'json', label: 'json', tone: 'ok" onmouseover="alert(1)' }]);
+  assert.ok(!html.includes('" onmouseover='), 'raw double quote must not survive into the class attribute: ' + html);
 });
 
 test('receipt formatter joins structured bits', () => {

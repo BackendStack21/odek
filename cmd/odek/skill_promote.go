@@ -24,6 +24,13 @@ import (
 // force is true. This prevents a prompt-injection-derived skill from
 // being accidentally auto-loaded after a cursory review.
 func promoteSkill(userDir, name string, force bool) error {
+	// Skill names are directory components; reject anything with path
+	// structure so the joins below can never escape userDir or the
+	// project skills dir (defense in depth; CodeQL go/path-injection).
+	cleaned := filepath.Clean(name)
+	if name == "" || cleaned == "." || cleaned == ".." || cleaned != filepath.Base(cleaned) || strings.ContainsAny(name, "\\") {
+		return fmt.Errorf("promote: invalid skill name %q", name)
+	}
 	skillDir := filepath.Join(userDir, name)
 	path := filepath.Join(skillDir, "SKILL.md")
 	fromProject := false

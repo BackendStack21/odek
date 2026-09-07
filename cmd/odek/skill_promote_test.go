@@ -23,6 +23,26 @@ func writeTestSkill(t *testing.T, userDir, name, frontmatter, body string) strin
 	return dir
 }
 
+func TestPromoteSkill_RejectsPathTraversalName(t *testing.T) {
+	userDir := t.TempDir()
+	for _, name := range []string{"../escape", "sub/dir", "..", "."} {
+		err := promoteSkill(userDir, name, false)
+		if err == nil {
+			t.Errorf("promoteSkill(%q): expected error for non-plain skill name", name)
+		} else if !strings.Contains(err.Error(), "invalid skill name") {
+			t.Errorf("promoteSkill(%q): error = %v, want 'invalid skill name'", name, err)
+		}
+	}
+	// The traversal attempt must not have created anything outside userDir.
+	parent := filepath.Dir(userDir)
+	entries, _ := os.ReadDir(parent)
+	for _, e := range entries {
+		if e.Name() == "escape" {
+			t.Error("promoteSkill('../escape') escaped the user dir")
+		}
+	}
+}
+
 func TestPromoteSkill_NotFound(t *testing.T) {
 	userDir := t.TempDir()
 	err := promoteSkill(userDir, "nope", false)
