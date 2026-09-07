@@ -99,6 +99,19 @@ func NewSDK(opts Options) (*sdk.SDK, error) {
 		if ov.Format != "" {
 			popts = append(popts, sdk.WithFormat(sdk.Format(ov.Format)))
 		}
+		// Custom (non built-in) providers get per-format default quirks;
+		// with zero quirks the SDK silently drops ChatRequest.Thinking on
+		// OpenAI-format gateways (LiteLLM, OpenRouter, vLLM) and reasoning
+		// tokens never come back. Built-ins keep their registry quirks.
+		if !isBuiltinProviderID(id) {
+			format := sdk.Format(ov.Format)
+			if format == "" {
+				format = sdk.FormatOpenAI
+			}
+			if q, ok := formatDefaultQuirks(format); ok {
+				popts = append(popts, sdk.WithQuirks(q))
+			}
+		}
 		if len(popts) > 0 {
 			sdkOpts = append(sdkOpts, sdk.WithProvider(id, popts...))
 		}
@@ -523,6 +536,33 @@ func ToolsFromSchema(name, desc string, schema any) (ToolDef, error) {
 		params = json.RawMessage(`{"type":"object","properties":{}}`)
 	}
 	return ToolDef{Name: name, Description: desc, Parameters: params}, nil
+}
+
+// builtinProviderIDs lists the SDK's built-in registry ids. Overrides on
+// these keep their registry quirks; only custom ids get format defaults.
+var builtinProviderIDs = map[string]bool{
+	"openai":    true,
+	"gemini":    true,
+	"deepseek":  true,
+	"zai":       true,
+	"kimi":      true,
+	"anthropic": true,
+}
+
+func isBuiltinProviderID(id string) bool { return builtinProviderIDs[id] }
+
+// formatDefaultQuirks returns the safe default quirks for a wire format —
+// what every mainstream OpenAI-compatible gateway (and the official
+// Anthropic API) accepts. gemini needs no quirks.
+func formatDefaultQuirks(f sdk.Format) (sdk.Quirks, bool) {
+	switch f {
+	case sdk.FormatOpenAI:
+		return sdk.Quirks{ReasoningEffort: true}, true
+	case sdk.FormatAnthropic:
+		return sdk.Quirks{ThinkingObject: true, AnthropicVersion: "2023-06-01"}, true
+	default:
+		return sdk.Quirks{}, false
+	}
 }
 
 // InferProvider maps a v1 base URL host onto a built-in SDK id.
