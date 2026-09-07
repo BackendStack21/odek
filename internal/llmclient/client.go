@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	sdk "github.com/BackendStack21/go-llm-sdk"
@@ -98,6 +99,19 @@ func NewSDK(opts Options) (*sdk.SDK, error) {
 		}
 		if ov.Format != "" {
 			popts = append(popts, sdk.WithFormat(sdk.Format(ov.Format)))
+		}
+		// Custom (non built-in) providers get per-format default quirks;
+		// with zero quirks the SDK silently drops ChatRequest.Thinking on
+		// OpenAI-format gateways (LiteLLM, OpenRouter, vLLM) and reasoning
+		// tokens never come back. Built-ins keep their registry quirks.
+		if !isBuiltinProviderID(id) {
+			format := sdk.Format(ov.Format)
+			if format == "" {
+				format = sdk.FormatOpenAI
+			}
+			if q, ok := formatDefaultQuirks(format); ok {
+				popts = append(popts, sdk.WithQuirks(q))
+			}
 		}
 		if len(popts) > 0 {
 			sdkOpts = append(sdkOpts, sdk.WithProvider(id, popts...))
@@ -523,6 +537,36 @@ func ToolsFromSchema(name, desc string, schema any) (ToolDef, error) {
 		params = json.RawMessage(`{"type":"object","properties":{}}`)
 	}
 	return ToolDef{Name: name, Description: desc, Parameters: params}, nil
+}
+
+// registryProbe is a no-option SDK used only to ask "is this id a built-in?".
+// New() always seeds the registry, so a successful Provider lookup means the
+// id ships with the SDK — custom ids must not overwrite those quirks.
+var (
+	registryProbeOnce sync.Once
+	registryProbe     *sdk.SDK
+)
+
+func isBuiltinProviderID(id string) bool {
+	registryProbeOnce.Do(func() { registryProbe = sdk.New() })
+	_, err := registryProbe.Provider(id)
+	return err == nil
+}
+
+// formatDefaultQuirks returns the safe default quirks for a wire format —
+// what every mainstream OpenAI-compatible gateway (and the official
+// Anthropic API) accepts. Gemini needs none; unknown formats are left alone.
+func formatDefaultQuirks(f sdk.Format) (sdk.Quirks, bool) {
+	switch f {
+	case sdk.FormatOpenAI:
+		return sdk.Quirks{ReasoningEffort: true}, true
+	case sdk.FormatAnthropic:
+		return sdk.Quirks{ThinkingObject: true, AnthropicVersion: "2023-06-01"}, true
+	case sdk.FormatGemini:
+		return sdk.Quirks{}, false
+	default:
+		return sdk.Quirks{}, false
+	}
 }
 
 // InferProvider maps a v1 base URL host onto a built-in SDK id.

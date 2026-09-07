@@ -34,7 +34,11 @@ odek run --provider local --model llama3 \
 
 Custom ids need `providers.<id>.format` (`openai` / `anthropic` / `gemini`) in
 `~/.odek/config.json`. `--base-url` alone on an unknown host registers a
-`legacy` OpenAI-format provider (v1 compat, warned).
+`legacy` OpenAI-format provider (v1 compat, warned). Custom OpenAI-format
+gateways (LiteLLM, OpenRouter, vLLM, `legacy`) send `reasoning_effort` when
+`--thinking` is set; custom Anthropic-format proxies send the thinking object
+plus `anthropic-version`. Gemini-format customs need no extra flags. Built-in
+ids keep their SDK registry quirks.
 
 ## odek knobs (not in the SDK)
 
