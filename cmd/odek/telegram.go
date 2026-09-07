@@ -1798,6 +1798,7 @@ func handleChatMessage(
 		ToolFilter:       odek.ToolFilterConfig{Enabled: resolved.Tools.Enabled, Disabled: resolved.Tools.Disabled},
 		Renderer:         rend,
 		PromptCaching:    resolved.PromptCaching,
+		AnnounceBudget:   &resolved.AnnounceBudget,
 		MemoryConfig:     resolved.Memory,
 		MemoryDir:        expandHome("~/.odek/memory"),
 		ToolEventHandler: func(event string, name string, data string) {

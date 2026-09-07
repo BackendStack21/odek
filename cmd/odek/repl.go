@@ -57,6 +57,7 @@ func replCmd(args []string) error {
 		PromptCaching:   f.PromptCaching,
 		Stream:          f.Stream,
 		Compaction:      f.Compaction,
+		AnnounceBudget:  f.AnnounceBudget,
 		Planning:        f.Planning,
 		InteractionMode: f.InteractionMode,
 
@@ -191,6 +192,7 @@ func replCmd(args []string) error {
 		Stream:           resolved.Stream,
 		DeltaHandler:     streamDeltaPrinter(resolved.Stream, rend),
 		Compaction:       resolved.Compaction,
+		AnnounceBudget:   &resolved.AnnounceBudget,
 		Guard:            injectionGuard,
 		GuardConfig:      resolved.Guard,
 	}

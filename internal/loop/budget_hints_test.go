@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -69,6 +70,34 @@ func TestBudgetWarnings_FiresOncePerThreshold(t *testing.T) {
 	}
 	if got := e.budgetWarnings(10, start, ctx, &st); len(got) != 0 {
 		t.Fatalf("all thresholds fired, got %d more", len(got))
+	}
+}
+
+func TestBudgetWarnings_ToolCallBand(t *testing.T) {
+	e := &Engine{maxIter: 100}
+	e.budget = budget.NewChecker(budget.Limits{MaxToolCalls: 10}, time.Now())
+	e.budget.RecordToolCalls(5) // 50%
+	st := budgetHintState{}
+	got := e.budgetWarnings(1, time.Now(), context.Background(), &st)
+	if len(got) != 1 {
+		t.Fatalf("5/10 tool calls: got %d hints, want 1 (50%%)", len(got))
+	}
+	if !strings.Contains(got[0], "stay on plan") {
+		t.Errorf("50%% wording = %q", got[0])
+	}
+	if strings.Contains(strings.ToLower(got[0]), "skip approval") {
+		t.Errorf("budget hint must never tell the model to skip approvals: %q", got[0])
+	}
+	if got := e.budgetWarnings(1, time.Now(), context.Background(), &st); len(got) != 0 {
+		t.Fatalf("same 50%% tool-call band must not refire, got %d", len(got))
+	}
+	e.budget.RecordToolCalls(3) // 8/10 = 80% → 75%
+	if got := e.budgetWarnings(1, time.Now(), context.Background(), &st); len(got) != 1 {
+		t.Fatalf("8/10 tool calls: got %d hints, want 1 (75%%)", len(got))
+	}
+	e.budget.RecordToolCalls(1) // 9/10 = 90%
+	if got := e.budgetWarnings(1, time.Now(), context.Background(), &st); len(got) != 1 {
+		t.Fatalf("9/10 tool calls: got %d hints, want 1 (90%%)", len(got))
 	}
 }
 

@@ -109,10 +109,12 @@ type Config struct {
 	// MaxIterations caps the number of think→act cycles (default: 90).
 	MaxIterations int
 
-	// AnnounceBudget, when set to true, enables budget-awareness telemetry:
-	// the engine injects one-line hints at 50/75/90% of the iteration or
-	// wall-clock budget and emits budget_warning signals. Intended for
-	// budgeted runs (sub-agents); nil/false leaves top-level runs unchanged.
+	// AnnounceBudget, when set, enables or disables budget-awareness
+	// telemetry: the engine injects one-line hints at 50/75/90% of the
+	// iteration, wall-clock, tool-call, token, or cost budget and emits
+	// budget_warning signals. Nil defaults on after MaxIterations is
+	// filled (90). Distinct from subagent.announce_budget, which still
+	// controls children. Set false to opt out.
 	AnnounceBudget *bool `json:"announce_budget,omitempty"`
 
 	// SystemMessage is the system prompt injected at the start of every run.
@@ -663,6 +665,8 @@ func New(cfg Config) (*Agent, error) {
 	}
 	if cfg.AnnounceBudget != nil {
 		engine.SetBudgetHints(*cfg.AnnounceBudget)
+	} else {
+		engine.SetBudgetHints(true)
 	}
 	if cfg.MaxToolParallel > 0 {
 		engine.SetMaxToolParallel(cfg.MaxToolParallel)

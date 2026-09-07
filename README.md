@@ -161,6 +161,7 @@ odek run "@README.md what does this project do?"
 | `--system <prompt>` | Override system prompt |
 | `--max-iter <n>` | Max think→act cycles (default 90) |
 | `--prompt-caching` | Enable prompt caching (default on; `--no-prompt-caching` to disable) |
+| `--announce-budget` | Parent 50/75/90% budget hints (default on; `--no-announce-budget` to disable) |
 | `--stream` | Stream reasoning/answer live (default on; `--no-stream` to disable) |
 | `--no-color` | Disable colored output |
 | `--ctx <files>` / `-c` | Attach files as context blocks (comma-separated) |

@@ -254,10 +254,13 @@ Emoji-prefixed progress for terminal users:
 Suppressed with `--quiet`.
 
 - At iteration boundaries, when the run crosses 50% / 75% / 90% of its
-  iteration or wall-clock budget, the engine appends a one-line budget hint
-  to the corrections message and emits a `budget_warning` signal, so the
-  model can pace itself and conclude cleanly instead of being cut off
-  mid-work (`subagent.announce_budget`, default on).
+  iteration, wall-clock, tool-call, token, or cost budget, the engine
+  appends a one-line budget hint to the corrections message and emits a
+  `budget_warning` signal, so the model can pace itself and conclude
+  cleanly instead of being cut off mid-work (`subagent.announce_budget`,
+  default on). Parent runs use the top-level `announce_budget` toggle
+  (also default on; `--no-announce-budget` / `ODEK_ANNOUNCE_BUDGET=false`);
+  the two keys are independent.
 - The wall-clock budget is two-stage: a finalization window (min(15s,
   timeout/8)) before the hard kill is reserved for a bounded
   partial-progress summary — a timed-out sub-agent returns
@@ -414,7 +417,7 @@ Config in `odek.json`:
 | `timeout_seconds` | 1800 | Default timeout per sub-agent; hard max 1800 (values above are clamped) |
 | `max_iterations` | 15 | Default max think→act cycles per sub-agent |
 | `max_depth` | 2 | Delegation nesting cap (1 = a sub-agent may not delegate further) |
-| `announce_budget` | `true` | Inject budget-awareness hints (50/75/90% of budget) and announce effective limits in the sub-agent system prompt |
+| `announce_budget` | `true` | Inject budget-awareness hints (50/75/90% of budget) and announce effective limits in the sub-agent system prompt. Independent of the parent `announce_budget` config key |
 | `budget_inherit` | `"operator"` | Budget inheritance for child runs: `"operator"` (full operator limits) or `"share"` (child enforces min of operator limits and the parent's remaining budget) |
 
 > The `subagent` section is **operator-only**: a project-level `./odek.json` cannot set it (ignored with a warning), so a cloned repository cannot relax sub-agent guards.

@@ -30,6 +30,59 @@ import (
 // override it.
 var toolHeartbeatInterval = time.Minute
 
+// longToolRuntimeMs is the engine-measured duration at or above which a
+// tool result gets a runtime footer suggesting timeout_seconds / bg_start.
+// Package-level so tests can lower it without sleeping a full minute.
+var longToolRuntimeMs int64 = 60_000
+
+func formatLongToolRuntimeFooter(ms int64) string {
+	return fmt.Sprintf("[runtime: %s — for work that blocks the turn this long, set timeout_seconds or use bg_start]", formatLongToolRuntime(ms))
+}
+
+func formatLongToolRuntime(ms int64) string {
+	if ms < 1000 {
+		return fmt.Sprintf("%dms", ms)
+	}
+	sec := (ms + 500) / 1000
+	if sec < 60 {
+		return fmt.Sprintf("%ds", sec)
+	}
+	return fmt.Sprintf("%dm%02ds", sec/60, sec%60)
+}
+
+// dropStallFingerprints removes stall-map entries for one tool name so a
+// failing sibling cannot wipe a looping successful call's streak.
+func dropStallFingerprints(m map[string]int, toolName string) {
+	if m == nil {
+		return
+	}
+	prefix := toolName + "\x00"
+	for k := range m {
+		if strings.HasPrefix(k, prefix) {
+			delete(m, k)
+		}
+	}
+}
+
+// evictLowestStallCount drops one fingerprint with the lowest repeat count
+// (key tie-break) so the 64-entry bound does not wipe the whole map.
+func evictLowestStallCount(m map[string]int) {
+	if len(m) == 0 {
+		return
+	}
+	minK := ""
+	minV := 0
+	first := true
+	for k, v := range m {
+		if first || v < minV || (v == minV && k < minK) {
+			minK = k
+			minV = v
+			first = false
+		}
+	}
+	delete(m, minK)
+}
+
 // startToolHeartbeat launches a watchdog goroutine that emits a
 // "tool_running" SignalEvent every toolHeartbeatInterval until the returned
 // channel is closed or ctx is cancelled. The SignalHandler contract is
@@ -294,6 +347,15 @@ type Engine struct {
 	// goroutine.
 	runMutations []string
 
+	// completionNudged is the one-shot completion-nudge flag: a tool-less
+	// assistant turn with open plan steps or uncaught mutations gets one
+	// extra iteration with an engine-trusted hint. After that the loop
+	// accepts stop even if the plan/ledger is still open.
+	completionNudged bool
+	// sawReadAfterMutation is true when a successful read-only check tool
+	// ran after the latest mutation this run. Reset on each new mutation.
+	sawReadAfterMutation bool
+
 	// interactionMode controls how progress is surfaced to the user.
 	// "engaging" (default), "verbose", "enhance", or "off" (silent).
 	// When "off", all per-iteration render output is suppressed.
@@ -373,8 +435,10 @@ type Engine struct {
 	// unhinted. A successful tool call counts (fingerprint = tool name +
 	// "\x00" + args); after stallThreshold repeats the loop injects a
 	// stall warning (same machinery as the error-recovery correction)
-	// and resets that fingerprint's counter. Failed calls clear the map.
-	// This is a hint, not enforcement: legitimate polling is allowed.
+	// and resets that fingerprint's counter. Failed calls drop fingerprints
+	// for that tool name only; the 64-entry bound evicts lowest counts
+	// instead of wiping the map. This is a hint, not enforcement:
+	// legitimate polling is allowed.
 	toolRepeatCounts map[string]int
 
 	// bgNoticeProvider, when set, is drained once at the top of every
@@ -470,11 +534,12 @@ type Engine struct {
 	budgetNow func() time.Time
 
 	// budgetHints enables budget-awareness telemetry: when a run crosses
-	// 50/75/90% of its iteration or wall-clock budget, the engine injects
-	// a one-line hint (engine-trusted, like the stall-detection hints) and
-	// emits a budget_warning signal, so the model can pace itself and
-	// conclude cleanly instead of being cut off mid-work. Sub-agents
-	// enable this via the subagent config section.
+	// 50/75/90% of its iteration, wall-clock, tool-call, token, or cost
+	// budget, the engine injects a one-line hint (engine-trusted, like the
+	// stall-detection hints) and emits a budget_warning signal, so the
+	// model can pace itself and conclude cleanly instead of being cut off
+	// mid-work. Parent runs default on; sub-agents follow
+	// subagent.announce_budget.
 	budgetHints bool
 
 	// finalizeReq is set by RequestFinalization: at the next iteration
@@ -1972,8 +2037,10 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 	e.maxConsecutiveToolErrors = make(map[string]int)
 	// Reset per-session repeated-call (stall) tracking
 	e.toolRepeatCounts = nil
-	// Reset the run's mutation ledger (H-9)
+	// Reset the run's mutation ledger (H-9) and completion-nudge state.
 	e.runMutations = nil
+	e.completionNudged = false
+	e.sawReadAfterMutation = false
 	// Finalization requests never carry across runs.
 	e.finalizeReq.Store(false)
 	e.blockedHintPending.Store(false)
@@ -2356,6 +2423,23 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 
 		// No tool calls = final answer
 		if len(result.ToolCalls) == 0 {
+			if e.needsCompletionNudge() {
+				e.completionNudged = true
+				if i+1 >= e.maxIter {
+					e.maxIter = i + 2
+				}
+				messages = append(messages, session.Message{
+					Role:             "assistant",
+					Content:          result.Content,
+					ReasoningContent: result.ReasoningContent,
+				})
+				messages = append(messages, session.Message{
+					Role:    "system",
+					Content: e.completionNudgeText(),
+				})
+				e.emitMessagesPersist(messages)
+				continue
+			}
 			// H-9: reconcile the reply against the action ledger before it
 			// goes out. A reply that misreports side effects ("blocked",
 			// "no changes made") after they happened is worse than silence.
@@ -2780,6 +2864,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 			// H-9: ledger the mutating calls that completed this run so the
 			// final reply can be reconciled against what actually happened.
 			e.recordMutation(tc.Function.Name, tc.Function.Arguments, output)
+			e.recordReadCheck(tc.Function.Name, tc.Function.Arguments, output, results[i].errored)
 
 			// Tool results: only shown in verbose mode.
 			if e.narrator == nil && e.renderer != nil && e.interactionMode != "off" {
@@ -2827,6 +2912,9 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 						len(output)-head-tail, len(output)) +
 					output[len(output)-tail:]
 			}
+			if results[i].durationMs >= longToolRuntimeMs {
+				output += "\n" + formatLongToolRuntimeFooter(results[i].durationMs)
+			}
 
 			// Wrap tool output in unbreakable delimiters so the model
 			// treats it as DATA, never as instructions. The header and
@@ -2870,9 +2958,10 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 
 			if isErr {
 				e.maxConsecutiveToolErrors[toolName]++
-				// A failed call is not an identical successful call — clear
-				// the repeat tracking entirely (conservative reset).
-				e.toolRepeatCounts = nil
+				// A failed call is not an identical successful call — drop
+				// this tool's fingerprints only so a looping sibling still
+				// accumulates toward the stall threshold.
+				dropStallFingerprints(e.toolRepeatCounts, toolName)
 			} else {
 				e.maxConsecutiveToolErrors[toolName] = 0
 
@@ -2894,9 +2983,8 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 					if e.toolRepeatCounts == nil {
 						e.toolRepeatCounts = make(map[string]int)
 					}
-					if len(e.toolRepeatCounts) > 64 {
-						// Bound the fingerprint set; forget old ones.
-						e.toolRepeatCounts = make(map[string]int)
+					if _, ok := e.toolRepeatCounts[fp]; !ok && len(e.toolRepeatCounts) >= 64 {
+						evictLowestStallCount(e.toolRepeatCounts)
 					}
 					e.toolRepeatCounts[fp]++
 					if e.toolRepeatCounts[fp] >= stallThreshold {
@@ -3459,4 +3547,47 @@ func (e *Engine) SetThinking(thinking string) {
 		return
 	}
 	e.client.Thinking = thinking
+}
+
+func (e *Engine) openPlanStepCount() int {
+	if e == nil || e.planStore == nil {
+		return 0
+	}
+	state, ok := e.planStore.Snapshot()
+	if !ok {
+		return 0
+	}
+	n := 0
+	for _, s := range state.Steps {
+		if s.Status != StepDone {
+			n++
+		}
+	}
+	return n
+}
+
+func (e *Engine) needsCompletionNudge() bool {
+	if e == nil || e.completionNudged {
+		return false
+	}
+	open := e.openPlanStepCount()
+	uncaught := len(e.runMutations) > 0 && !e.sawReadAfterMutation
+	return open > 0 || uncaught
+}
+
+func (e *Engine) completionNudgeText() string {
+	open := e.openPlanStepCount()
+	uncaught := len(e.runMutations) > 0 && !e.sawReadAfterMutation
+	var b strings.Builder
+	b.WriteString("⚠️ ")
+	switch {
+	case open > 0 && uncaught:
+		fmt.Fprintf(&b, "Plan still has %d open steps and uncaught mutations. ", open)
+	case open > 0:
+		fmt.Fprintf(&b, "Plan still has %d open steps. ", open)
+	default:
+		b.WriteString("Uncaught mutations remain. ")
+	}
+	b.WriteString("Either call the check, update the plan, or tell the principal what remains. Do not claim done.")
+	return b.String()
 }

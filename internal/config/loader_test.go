@@ -1975,6 +1975,65 @@ func TestPromptCaching_ExplicitFalseWins(t *testing.T) {
 	})
 }
 
+// TestAnnounceBudget_DefaultOn verifies parent announce_budget resolves to
+// true when no layer (config file, env, CLI) sets it.
+func TestAnnounceBudget_DefaultOn(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+
+	cfg := LoadConfig(CLIFlags{})
+	if !cfg.AnnounceBudget {
+		t.Error("AnnounceBudget should default to true when no layer sets it")
+	}
+}
+
+// TestAnnounceBudget_ExplicitFalseWins verifies an explicit false from any
+// layer disables parent budget-awareness despite the default-on. Distinct
+// from subagent.announce_budget.
+func TestAnnounceBudget_ExplicitFalseWins(t *testing.T) {
+	t.Run("env", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		t.Chdir(t.TempDir())
+		t.Setenv("ODEK_ANNOUNCE_BUDGET", "false")
+
+		cfg := LoadConfig(CLIFlags{})
+		if cfg.AnnounceBudget {
+			t.Error("AnnounceBudget should be false when ODEK_ANNOUNCE_BUDGET=false")
+		}
+	})
+	t.Run("cli", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		t.Chdir(t.TempDir())
+
+		disabled := false
+		cfg := LoadConfig(CLIFlags{AnnounceBudget: &disabled})
+		if cfg.AnnounceBudget {
+			t.Error("AnnounceBudget should be false when CLIFlags.AnnounceBudget is explicitly false")
+		}
+	})
+	t.Run("file", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Chdir(t.TempDir())
+
+		odekDir := filepath.Join(home, ".odek")
+		if err := os.MkdirAll(odekDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(odekDir, "config.json"), []byte(`{"announce_budget": false}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		cfg := LoadConfig(CLIFlags{})
+		if cfg.AnnounceBudget {
+			t.Error("AnnounceBudget should be false when config.json sets announce_budget=false")
+		}
+		if !cfg.Subagent.AnnounceBudget {
+			t.Error("parent announce_budget:false must not flip subagent.announce_budget")
+		}
+	})
+}
+
 // TestStream_DefaultOn verifies stream resolves to true when no layer sets it.
 func TestStream_DefaultOn(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())

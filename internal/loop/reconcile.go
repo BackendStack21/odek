@@ -110,6 +110,7 @@ func parallelShellEntries(output string) []struct{ Command string } {
 // recordMutation updates the run ledger for one completed tool call.
 // Called from the loop's result phase, where success/failure is known.
 func (e *Engine) recordMutation(name, args, output string) {
+	before := len(e.runMutations)
 	switch {
 	case mutatingToolNames[name]:
 		if jsonToolFailed(output) {
@@ -143,6 +144,60 @@ func (e *Engine) recordMutation(name, args, output string) {
 				e.runMutations = append(e.runMutations, "shell: "+r.Command)
 			}
 		}
+	}
+	if len(e.runMutations) > before {
+		e.sawReadAfterMutation = false
+	}
+}
+
+// readCheckToolNames are successful read-only tools that count as a
+// post-mutation verification for the completion nudge. Shell is handled
+// separately so a mutating command cannot clear the uncaught-mutation flag.
+var readCheckToolNames = map[string]bool{
+	"read_file": true, "batch_read": true, "search_files": true,
+	"glob": true, "file_info": true, "diff": true, "multi_grep": true,
+	"json_query": true, "tree": true, "count_lines": true,
+	"checksum": true, "session_search": true,
+}
+
+// recordReadCheck marks that a successful read-only check ran after the
+// latest mutation. Failed calls never count. Mutating shell stays a mutation.
+func (e *Engine) recordReadCheck(name, args, output string, errored bool) {
+	if errored {
+		return
+	}
+	if readCheckToolNames[name] {
+		if jsonToolFailed(output) {
+			return
+		}
+		e.sawReadAfterMutation = true
+		return
+	}
+	switch name {
+	case "shell", "terminal":
+		if shellOutputFailed(output) {
+			return
+		}
+		var p struct {
+			Command string `json:"command"`
+		}
+		if err := json.Unmarshal([]byte(args), &p); err != nil || p.Command == "" {
+			return
+		}
+		if !mutatingShellCommand(p.Command) {
+			e.sawReadAfterMutation = true
+		}
+	case "parallel_shell":
+		entries := parallelShellEntries(output)
+		if len(entries) == 0 {
+			return
+		}
+		for _, r := range entries {
+			if mutatingShellCommand(r.Command) {
+				return
+			}
+		}
+		e.sawReadAfterMutation = true
 	}
 }
 

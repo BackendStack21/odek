@@ -32,8 +32,8 @@ type budgetHintState struct {
 }
 
 // SetBudgetHints enables budget-awareness telemetry for runs of this
-// engine. Sub-agents enable it via the operator subagent config section;
-// top-level runs default to off so interactive behaviour is unchanged.
+// engine. Parent runs default on (max_iterations is always filled);
+// sub-agents follow subagent.announce_budget. Pass false to opt out.
 func (e *Engine) SetBudgetHints(on bool) { e.budgetHints = on }
 
 // RequestFinalization asks the active run to conclude at the next iteration
@@ -142,7 +142,9 @@ func (e *Engine) SettleExternalUsage(granted, actual int64) {
 // number of completed iterations (empty when no threshold newly crossed).
 // Iteration thresholds use completed*100 >= t*maxIter; wall-clock
 // thresholds compare elapsed runtime against the context deadline (when
-// one is set) relative to the run start.
+// one is set) relative to the run start. Tool-call, token, and cost
+// fractions come from BudgetSnapshot() and fire the same 50/75/90 bands
+// once each (first dimension to cross a band wins that threshold).
 func (e *Engine) budgetWarnings(completed int, start time.Time, ctx context.Context, st *budgetHintState) []string {
 	nowFn := e.budgetNow
 	if nowFn == nil {
@@ -171,6 +173,12 @@ func (e *Engine) budgetWarnings(completed int, start time.Time, ctx context.Cont
 			}
 		}
 		if !crossed {
+			if d := snapshotBudgetBand(e.BudgetSnapshot(), t); d != "" {
+				crossed = true
+				detail = d
+			}
+		}
+		if !crossed {
 			continue
 		}
 		st.fired[ti] = true
@@ -190,6 +198,42 @@ func (e *Engine) budgetWarnings(completed int, start time.Time, ctx context.Cont
 		})
 	}
 	return out
+}
+
+func snapshotBudgetBand(snap budget.Snapshot, t int) string {
+	if d := intBudgetBand(snap.MaxToolCalls, snap.RemainingToolCalls, snap.ToolCallsExhausted, t, "tool calls"); d != "" {
+		return d
+	}
+	if d := intBudgetBand(snap.MaxInputTokens, snap.RemainingInputTokens, snap.InputTokensExhausted, t, "input tokens"); d != "" {
+		return d
+	}
+	if d := intBudgetBand(snap.MaxOutputTokens, snap.RemainingOutputTokens, snap.OutputTokensExhausted, t, "output tokens"); d != "" {
+		return d
+	}
+	if snap.MaxCostUSD > 0 && (snap.CostExhausted || snap.RemainingCostUSD > 0) {
+		used := snap.MaxCostUSD - snap.RemainingCostUSD
+		if snap.CostExhausted {
+			used = snap.MaxCostUSD
+		}
+		if used*100 >= float64(t)*snap.MaxCostUSD {
+			return fmt.Sprintf("%.4f/%.4f USD", used, snap.MaxCostUSD)
+		}
+	}
+	return ""
+}
+
+func intBudgetBand(max, remaining int64, exhausted bool, t int, label string) string {
+	if max <= 0 {
+		return ""
+	}
+	used := max - remaining
+	if exhausted {
+		used = max
+	}
+	if used*100 >= int64(t)*max {
+		return fmt.Sprintf("%d/%d %s", used, max, label)
+	}
+	return ""
 }
 
 // PartialSummaryReason classifies a final answer produced by one of the

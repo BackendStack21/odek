@@ -50,6 +50,7 @@ func buildConfigView(resolved config.ResolvedConfig) map[string]any {
 		"stream":            resolved.Stream,
 		"compaction":        resolved.Compaction,
 		"prompt_caching":    resolved.PromptCaching,
+		"announce_budget":   resolved.AnnounceBudget,
 		"thinking":          config.CanonicalThinking(resolved.Thinking),
 		"max_iterations":    resolved.MaxIter,
 		"max_tool_parallel": resolved.MaxToolParallel,
@@ -219,7 +220,7 @@ func redactCredentialArgs(args []string) []string {
 // buildConfigView output — TestConfigViewToolSections fails loudly on drift.
 var configViewSections = map[string][]string{
 	"all":         nil, // whole view
-	"core":        {"provider", "model", "stream", "compaction", "prompt_caching", "thinking", "max_iterations", "max_tool_parallel", "max_concurrency", "interaction_mode", "no_agents_md"},
+	"core":        {"provider", "model", "stream", "compaction", "prompt_caching", "announce_budget", "thinking", "max_iterations", "max_tool_parallel", "max_concurrency", "interaction_mode", "no_agents_md"},
 	"security":    {"sandbox", "dangerous_default_action", "guard_scan", "tools"},
 	"subagent":    {"max_concurrency", "subagent"},
 	"limits":      {"limits"},

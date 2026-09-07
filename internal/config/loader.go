@@ -90,6 +90,12 @@ type CLIFlags struct {
 	// --compaction / --no-compaction.
 	Compaction *bool // nil = not set
 
+	// AnnounceBudget enables parent-run budget-awareness hints at 50/75/90%
+	// of iteration, wall-clock, tool-call, token, or cost budget (default:
+	// on). Distinct from subagent.announce_budget. Config: announce_budget,
+	// ODEK_ANNOUNCE_BUDGET, --announce-budget / --no-announce-budget.
+	AnnounceBudget *bool // nil = not set
+
 	// Planning enables the built-in plan tool and its protected plan message
 	// (default: on). Config: planning.enabled, ODEK_PLANNING,
 	// --planning / --no-planning.
@@ -418,6 +424,10 @@ type FileConfig struct {
 	// (default: on; set false to explicitly disable).
 	Compaction *bool `json:"compaction,omitempty"`
 
+	// AnnounceBudget enables parent-run budget-awareness hints (default on).
+	// Distinct from subagent.announce_budget.
+	AnnounceBudget *bool `json:"announce_budget,omitempty"`
+
 	// Planning configures the built-in plan tool (docs/PLANNING.md).
 	// The global config may set anything; the project config may set
 	// enabled:false and may only LOWER the caps (see clampProjectPlanning).
@@ -628,6 +638,7 @@ type ResolvedConfig struct {
 	Stream          bool
 	PromptCaching   bool
 	Compaction      bool
+	AnnounceBudget  bool
 
 	// Planning is the resolved planning configuration (docs/PLANNING.md).
 	Planning PlanningConfig
@@ -1734,6 +1745,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if v := envBool("COMPACTION"); v != nil {
 		cfg.Compaction = v
 	}
+	if v := envBool("ANNOUNCE_BUDGET"); v != nil {
+		cfg.AnnounceBudget = v
+	}
 	if v := envBool("PLANNING"); v != nil {
 		if cfg.Planning == nil {
 			cfg.Planning = &PlanningFileConfig{}
@@ -2095,6 +2109,9 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	if cli.Compaction != nil {
 		cfg.Compaction = cli.Compaction
 	}
+	if cli.AnnounceBudget != nil {
+		cfg.AnnounceBudget = cli.AnnounceBudget
+	}
 	if cli.Planning != nil {
 		if cfg.Planning == nil {
 			cfg.Planning = &PlanningFileConfig{}
@@ -2398,7 +2415,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	resolved.MaxToolParallel = cfg.MaxToolParallel
 
 	// Booleans: default to false if not set (Compaction / PromptCaching /
-	// Stream below are the exceptions — they default to true).
+	// Stream / AnnounceBudget below are the exceptions — they default to true).
 	// Sandbox is another exception in effect: the loader records whether
 	// any layer set it (SandboxExplicit); when nobody did, the CLI surfaces
 	// default it ON with a loud unsandboxed fallback (H-8, cmd/odek).
@@ -2436,6 +2453,15 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	resolved.Compaction = true
 	if cfg.Compaction != nil {
 		resolved.Compaction = *cfg.Compaction
+	}
+	// Parent budget-awareness defaults to ON: every run has max_iterations
+	// (90) and optional limits.* caps, so 50/75/90 hints fire unless the
+	// operator opts out. Distinct from subagent.announce_budget. An explicit
+	// false from any layer (config file, ODEK_ANNOUNCE_BUDGET=false,
+	// --no-announce-budget) disables it.
+	resolved.AnnounceBudget = true
+	if cfg.AnnounceBudget != nil {
+		resolved.AnnounceBudget = *cfg.AnnounceBudget
 	}
 	// Planning defaults to ON (docs/PLANNING.md): the plan tool registers and
 	// the protected plan message logic runs. An explicit false from any layer
@@ -3403,6 +3429,9 @@ func overlayFile(base, override FileConfig) FileConfig {
 	}
 	if override.Compaction != nil {
 		base.Compaction = override.Compaction
+	}
+	if override.AnnounceBudget != nil {
+		base.AnnounceBudget = override.AnnounceBudget
 	}
 	if override.Planning != nil {
 		if base.Planning == nil {

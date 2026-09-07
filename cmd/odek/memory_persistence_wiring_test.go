@@ -115,3 +115,40 @@ func TestCLIAgentConfigs_WirePromptCaching(t *testing.T) {
 		})
 	}
 }
+
+func TestCLIAgentConfigs_WireAnnounceBudget(t *testing.T) {
+	cases := []struct {
+		file string
+		name string
+	}{
+		{"main.go", "runCfg"},
+		{"main.go", "contCfg"},
+		{"serve.go", "serveCfg"},
+		{"repl.go", "replCfg"},
+		{"schedule.go", "schedCfg"},
+		{"telegram.go", "agentCfg"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src, err := os.ReadFile(tc.file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := string(src)
+			marker := tc.name + " := odek.Config{"
+			start := strings.Index(text, marker)
+			if start < 0 {
+				t.Fatalf("could not find %q", marker)
+			}
+			newCall := "odek.New(" + tc.name + ")"
+			end := strings.Index(text[start:], newCall)
+			if end < 0 {
+				t.Fatalf("could not find %q after %s", newCall, tc.name)
+			}
+			block := text[start : start+end]
+			if !strings.Contains(block, "AnnounceBudget:") {
+				t.Errorf("%s %s is passed to odek.New without AnnounceBudget — parent budget hints would ignore --no-announce-budget", tc.file, tc.name)
+			}
+		})
+	}
+}

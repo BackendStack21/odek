@@ -262,6 +262,48 @@ func TestParseRunFlags_PromptCachingAndStreamFlags(t *testing.T) {
 	}
 }
 
+func TestParseRunFlags_AnnounceBudgetFlags(t *testing.T) {
+	f, err := parseRunFlags([]string{"--announce-budget", "do the thing"})
+	if err != nil {
+		t.Fatalf("parseRunFlags error: %v", err)
+	}
+	if f.AnnounceBudget == nil || !*f.AnnounceBudget {
+		t.Error("--announce-budget should set AnnounceBudget to true")
+	}
+
+	f, err = parseRunFlags([]string{"--no-announce-budget", "do the thing"})
+	if err != nil {
+		t.Fatalf("parseRunFlags error: %v", err)
+	}
+	if f.AnnounceBudget == nil || *f.AnnounceBudget {
+		t.Error("--no-announce-budget should set AnnounceBudget to false")
+	}
+
+	f, err = parseRunFlags([]string{"do the thing", "--no-announce-budget"})
+	if err != nil {
+		t.Fatalf("parseRunFlags error: %v", err)
+	}
+	if f.AnnounceBudget == nil || *f.AnnounceBudget {
+		t.Error("trailing --no-announce-budget should set AnnounceBudget to false")
+	}
+
+	f, err = parseRunFlags([]string{"do the thing"})
+	if err != nil {
+		t.Fatalf("parseRunFlags error: %v", err)
+	}
+	if f.AnnounceBudget != nil {
+		t.Error("absent --announce-budget should leave AnnounceBudget nil")
+	}
+
+	rf, err := parseReplFlags([]string{"--no-announce-budget", "x"})
+	if err != nil {
+		t.Fatalf("parseReplFlags error: %v", err)
+	}
+	if rf.AnnounceBudget == nil || *rf.AnnounceBudget {
+		t.Error("--no-announce-budget should set AnnounceBudget to false")
+	}
+}
+
 func TestParseReplFlags_NoPromptCachingNoStream(t *testing.T) {
 	f, err := parseReplFlags([]string{"--no-prompt-caching", "x"})
 	if err != nil {
@@ -2596,5 +2638,13 @@ func TestParseReplFlags_TrailingBooleanFlags(t *testing.T) {
 	}
 	if f.PromptCaching == nil || *f.PromptCaching {
 		t.Errorf("trailing --no-prompt-caching = %v, want false", f.PromptCaching)
+	}
+
+	f, err = parseReplFlags([]string{"--no-announce-budget"})
+	if err != nil {
+		t.Fatalf("parseReplFlags: %v", err)
+	}
+	if f.AnnounceBudget == nil || *f.AnnounceBudget {
+		t.Errorf("trailing --no-announce-budget = %v, want false", f.AnnounceBudget)
 	}
 }

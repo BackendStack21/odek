@@ -537,6 +537,11 @@ func TestReport_PlanLoopHintsOmitTitles(t *testing.T) {
 	if strings.Contains(hint, secret) {
 		t.Errorf("stall hint leaked step title: %s", hint)
 	}
+	for _, m := range messages {
+		if m.Role == "system" && strings.Contains(m.Content, "open steps") && strings.Contains(m.Content, secret) {
+			t.Errorf("completion nudge leaked step title: %s", m.Content)
+		}
+	}
 }
 
 // TestReport_PlanningProjectClamp pins the planning config trust split:

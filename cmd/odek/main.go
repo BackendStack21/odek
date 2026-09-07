@@ -350,6 +350,7 @@ type runFlags struct {
 	PromptCaching  *bool   // nil = not set; true = enable prompt caching
 	Stream         *bool   // nil = not set; true = stream LLM responses live
 	Compaction     *bool   // nil = not set; true = enable rolling compaction
+	AnnounceBudget *bool   // nil = not set; false disables parent budget hints
 	Planning       *bool   // nil = not set; false disables the plan tool
 	Session        *bool   // nil = not set; true = save session after run
 	Task           string
@@ -572,6 +573,12 @@ func parseRunFlags(args []string) (runFlags, error) {
 			i++
 		case "--no-compaction":
 			f.Compaction = boolPtr(false)
+			i++
+		case "--announce-budget":
+			f.AnnounceBudget = boolPtr(true)
+			i++
+		case "--no-announce-budget":
+			f.AnnounceBudget = boolPtr(false)
 			i++
 		case "--planning":
 			f.Planning = boolPtr(true)
@@ -912,6 +919,14 @@ done:
 				f.Compaction = boolPtr(false)
 				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
 				j--
+			case "--announce-budget":
+				f.AnnounceBudget = boolPtr(true)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
+			case "--no-announce-budget":
+				f.AnnounceBudget = boolPtr(false)
+				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
+				j--
 			case "--planning":
 				f.Planning = boolPtr(true)
 				taskArgs = append(taskArgs[:j], taskArgs[j+1:]...)
@@ -1015,6 +1030,7 @@ type replFlags struct {
 	PromptCaching   *bool // nil = not set; true = enable prompt caching
 	Stream          *bool // nil = not set; true = stream LLM responses live
 	Compaction      *bool // nil = not set; true = enable rolling compaction
+	AnnounceBudget  *bool // nil = not set; false disables parent budget hints
 	Planning        *bool // nil = not set; false disables the plan tool
 	InteractionMode string
 
@@ -1061,6 +1077,10 @@ func parseReplFlags(args []string) (replFlags, error) {
 				f.Compaction = boolPtr(true)
 			case "--no-compaction":
 				f.Compaction = boolPtr(false)
+			case "--announce-budget":
+				f.AnnounceBudget = boolPtr(true)
+			case "--no-announce-budget":
+				f.AnnounceBudget = boolPtr(false)
 			case "--planning":
 				f.Planning = boolPtr(true)
 			case "--no-planning":
@@ -1134,6 +1154,12 @@ func parseReplFlags(args []string) (replFlags, error) {
 		case "--no-compaction":
 			f.Compaction = boolPtr(false)
 			i++
+		case "--announce-budget":
+			f.AnnounceBudget = boolPtr(true)
+			i++
+		case "--no-announce-budget":
+			f.AnnounceBudget = boolPtr(false)
+			i++
 		case "--planning":
 			f.Planning = boolPtr(true)
 			i++
@@ -1181,7 +1207,8 @@ Commands:
   continue            Continue the most recent session (or by --id)
   repl                Interactive REPL mode (multi-turn session)
                        Accepts --model, --thinking, --sandbox, --prompt-caching /
-                       --no-prompt-caching, --stream / --no-stream, and
+                       --no-prompt-caching, --stream / --no-stream,
+                       --announce-budget / --no-announce-budget, and
                        --sandbox-* flags just like odek run.
   serve               Web UI server with WebSocket streaming
                        Open http://localhost:8080 in your browser.
@@ -1237,6 +1264,8 @@ Run flags:
   --no-stream          Disable streaming (overrides config/default)
   --compaction         Enable LLM-based rolling compaction of trimmed context (default: on)
   --no-compaction      Disable rolling compaction (overrides config/default)
+  --announce-budget    Enable parent budget-awareness hints at 50/75/90% (default: on)
+  --no-announce-budget Disable parent budget-awareness hints (overrides config/default)
   --planning           Enable the plan tool and protected plan message (default: on)
   --no-planning        Disable planning (overrides config/default)
   --session            Save conversation as a multi-turn session
@@ -1359,6 +1388,7 @@ const globalConfigTemplate = `{
   "prompt_caching": true,
   "stream": true,
   "compaction": true,
+  "announce_budget": true,
   "planning": {
     "enabled": true,
     "max_steps": 12,
@@ -1640,6 +1670,7 @@ func initConfig(args []string) error {
 		fmt.Println("    prompt_caching    Provider prompt caching (true/false)")
 		fmt.Println("    stream            Stream LLM responses live (true/false)")
 		fmt.Println("    compaction        Rolling LLM context compaction (default: true)")
+		fmt.Println("    announce_budget   Parent 50/75/90% budget hints (default: true)")
 		fmt.Println("    interaction_mode  engaging | enhance | verbose | off")
 		fmt.Println("    sandbox           Run in Docker sandbox (true/false)")
 		fmt.Println("    system            System prompt override")
@@ -1704,22 +1735,23 @@ func run(args []string) error {
 
 	// Load config from all sources (file → env → CLI)
 	resolved := config.LoadConfig(config.CLIFlags{
-		Provider:      f.Provider,
-		Model:         f.Model,
-		BaseURL:       f.BaseURL,
-		Thinking:      f.Thinking,
-		MaxIter:       f.MaxIter,
-		Sandbox:       f.Sandbox,
-		NoColor:       f.NoColor,
-		NoAgents:      f.NoAgents,
-		PromptCaching: f.PromptCaching,
-		Stream:        f.Stream,
-		Compaction:    f.Compaction,
-		Planning:      f.Planning,
-		System:        f.System,
-		Task:          f.Task,
-		ToolsEnabled:  f.ToolsEnabled,
-		ToolsDisabled: f.ToolsDisabled,
+		Provider:       f.Provider,
+		Model:          f.Model,
+		BaseURL:        f.BaseURL,
+		Thinking:       f.Thinking,
+		MaxIter:        f.MaxIter,
+		Sandbox:        f.Sandbox,
+		NoColor:        f.NoColor,
+		NoAgents:       f.NoAgents,
+		PromptCaching:  f.PromptCaching,
+		Stream:         f.Stream,
+		Compaction:     f.Compaction,
+		AnnounceBudget: f.AnnounceBudget,
+		Planning:       f.Planning,
+		System:         f.System,
+		Task:           f.Task,
+		ToolsEnabled:   f.ToolsEnabled,
+		ToolsDisabled:  f.ToolsDisabled,
 
 		SandboxImage:    f.SandboxImage,
 		SandboxNetwork:  f.SandboxNetwork,
@@ -1919,6 +1951,7 @@ func run(args []string) error {
 		Stream:            resolved.Stream,
 		DeltaHandler:      streamDeltaPrinter(resolved.Stream, rend),
 		Compaction:        resolved.Compaction,
+		AnnounceBudget:    &resolved.AnnounceBudget,
 		MemoryDir:         expandHome("~/.odek/memory"),
 		MemoryConfig:      resolved.Memory,
 		DangerousConfig:   &resolved.Dangerous,
@@ -1989,12 +2022,12 @@ func run(args []string) error {
 			sessionID = sess.ID
 			runSess = sess
 			mm.SetSessionContext(sessionID, cwd)
-		// Stamp the session ID on subsequent runtime events; run_started
-		// already fired without it (the session did not exist yet).
-		agent.SetEventSessionID(sessionID)
-		// File delegate_tasks artifacts under this session so the store's
-		// OnDelete cascade owns their lifecycle.
-		agent.SetToolSessionID(sessionID)
+			// Stamp the session ID on subsequent runtime events; run_started
+			// already fired without it (the session did not exist yet).
+			agent.SetEventSessionID(sessionID)
+			// File delegate_tasks artifacts under this session so the store's
+			// OnDelete cascade owns their lifecycle.
+			agent.SetToolSessionID(sessionID)
 			fmt.Fprintf(os.Stderr, "odek: session %s created\n", sessionID)
 
 			// Wire the audit recorder now that the session ID is known, so
@@ -2084,8 +2117,8 @@ func run(args []string) error {
 				}
 				runSess.Messages = snapshot
 				if err := sessionStore.SaveNoIndex(runSess); err != nil {
-		fmt.Fprintf(os.Stderr, "odek: warning: failed to persist run session: %v\n", err)
-	}
+					fmt.Fprintf(os.Stderr, "odek: warning: failed to persist run session: %v\n", err)
+				}
 				agent.EmitEvent(events.Event{
 					Type:      events.TypeSessionSaved,
 					SessionID: sessionID,
@@ -3273,6 +3306,7 @@ func continueCmd(args []string) error {
 		PromptCaching:    resolved.PromptCaching,
 		Stream:           resolved.Stream,
 		Compaction:       resolved.Compaction,
+		AnnounceBudget:   &resolved.AnnounceBudget,
 		MemoryDir:        expandHome("~/.odek/memory"),
 		MemoryConfig:     resolved.Memory,
 		DangerousConfig:  &resolved.Dangerous,
@@ -3357,8 +3391,8 @@ func continueCmd(args []string) error {
 		}
 		sess.Messages = snapshot
 		if err := store.SaveNoIndex(sess); err != nil {
-		fmt.Fprintf(os.Stderr, "odek: warning: failed to persist session: %v\n", err)
-	}
+			fmt.Fprintf(os.Stderr, "odek: warning: failed to persist session: %v\n", err)
+		}
 	})
 
 	result, allMessages, err := agent.RunWithMessages(ctx, messages)

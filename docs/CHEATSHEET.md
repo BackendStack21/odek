@@ -350,6 +350,7 @@ odek mcp                                    # stdio transport
 | `ODEK_NO_COLOR` | no_color |
 | `ODEK_NO_AGENTS` | no_agents |
 | `ODEK_PROMPT_CACHING` | prompt_caching (default on) |
+| `ODEK_ANNOUNCE_BUDGET` | announce_budget (default on; parent hints, not `subagent.announce_budget`) |
 | `ODEK_STREAM` | stream (default on) |
 | `ODEK_MAX_CONCURRENCY` | max_concurrency |
 | `ODEK_CTX` | ctx (comma-separated file paths) |

@@ -327,6 +327,7 @@ func serveCmd(args []string) error {
 	var sandboxReadonly *bool
 	var promptCaching *bool
 	var compaction *bool
+	var announceBudget *bool
 	var planning *bool
 	var stream *bool
 	var sandboxImage, sandboxNetwork, sandboxMemory, sandboxCPUs, sandboxUser string
@@ -383,6 +384,10 @@ func serveCmd(args []string) error {
 			promptCaching = boolPtr(false)
 		case "--compaction":
 			compaction = boolPtr(true)
+		case "--announce-budget":
+			announceBudget = boolPtr(true)
+		case "--no-announce-budget":
+			announceBudget = boolPtr(false)
 		case "--planning":
 			planning = boolPtr(true)
 		case "--no-planning":
@@ -427,6 +432,7 @@ func serveCmd(args []string) error {
 		Sandbox:         sandbox,
 		PromptCaching:   promptCaching,
 		Compaction:      compaction,
+		AnnounceBudget:  announceBudget,
 		Planning:        planning,
 		Stream:          stream,
 		SandboxImage:    sandboxImage,
@@ -686,6 +692,8 @@ Flags:
   --sandbox-user user      Container user (e.g. 1000:1000)
   --prompt-caching         Enable prompt caching (default: on)
   --no-prompt-caching      Disable prompt caching
+  --announce-budget        Enable parent budget-awareness hints (default: on)
+  --no-announce-budget     Disable parent budget-awareness hints
   --stream                 Stream LLM responses live to the Web UI (default: on)
   --no-stream              Disable streaming (overrides config/env/default)
   --tool name              Enable a tool for the LLM (repeatable)
@@ -965,7 +973,8 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 		// Prompt caching follows the CLI default-on (docs/CACHING.md).
 		// Disable with --no-prompt-caching / ODEK_PROMPT_CACHING=false /
 		// config "prompt_caching": false. Library odek.New stays opt-in.
-		PromptCaching: resolved.PromptCaching,
+		PromptCaching:  resolved.PromptCaching,
+		AnnounceBudget: &resolved.AnnounceBudget,
 		// Live streaming: forward SSE fragments to the browser as
 		// thinking_delta / token_delta events (docs/STREAMING.md). Default
 		// on; disable with --no-stream / ODEK_STREAM=false / config "stream": false.

@@ -2999,8 +2999,8 @@ func TestEngine_Run_PlanLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunWithMessages: %v", err)
 	}
-	if result != "all done" || callCount != 4 {
-		t.Fatalf("result = %q after %d calls, want completion after 4", result, callCount)
+	if result != "all done" || callCount != 5 {
+		t.Fatalf("result = %q after %d calls, want completion after 5 (nudge for remaining pending s2)", result, callCount)
 	}
 
 	// Exactly one plan message, inside the protected head region.

@@ -9,6 +9,7 @@ package loop
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/BackendStack21/odek/internal/session"
@@ -62,5 +63,53 @@ func TestStallFiresForInterleavedIdenticalCalls(t *testing.T) {
 	}
 	if !fired {
 		t.Fatal("interleaved identical calls (A,B,A,B,…) never fired tool_recovery — stall detection alternation gap burns the iteration budget unhinted")
+	}
+}
+
+type boomTool struct{}
+
+func (boomTool) Name() string        { return "boom" }
+func (boomTool) Description() string { return "always fails" }
+func (boomTool) Schema() any {
+	return map[string]any{"type": "object"}
+}
+func (boomTool) Call(args string) (string, error) {
+	return "", fmt.Errorf("boom")
+}
+
+// TestStallSurvivesInterleavedFailure: a looping successful call interleaved
+// with a failing different tool must still reach stallThreshold. Wiping the
+// whole fingerprint map on one error lets A,B-fail,A,A burn iterations.
+func TestStallSurvivesInterleavedFailure(t *testing.T) {
+	responses := []string{
+		toolCallResp("noop", `{"a":1}`, "c1"),
+		toolCallResp("boom", `{}`, "c2"),
+		toolCallResp("noop", `{"a":1}`, "c3"),
+		toolCallResp("noop", `{"a":1}`, "c4"),
+		finalResp,
+	}
+	var bodies []string
+	server := captureServer(responses, &bodies)
+	defer server.Close()
+
+	client := testChatClient(t, server.URL)
+	registry := tool.NewRegistry([]tool.Tool{&noopTool{}, boomTool{}})
+	engine := New(client, registry, 10, "", nil, 0)
+
+	fired := false
+	engine.SetSignalHandler(func(ev SignalEvent) {
+		if ev.Type == "tool_recovery" && ev.Tool == "noop" {
+			fired = true
+		}
+	})
+
+	_, _, err := engine.RunWithMessages(context.Background(), []session.Message{
+		{Role: "user", Content: "loop around a failure"},
+	})
+	if err != nil {
+		t.Fatalf("RunWithMessages: %v", err)
+	}
+	if !fired {
+		t.Fatal("successful identical calls interleaved with a failing other tool never stalled — one error wiped the whole fingerprint map")
 	}
 }
