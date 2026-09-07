@@ -67,7 +67,7 @@ DeepSeek-only leftover: when `provider` is `deepseek`, `ODEK_API_KEY` → `DEEPS
 
 - Thinking: set `--thinking medium` (or `low`/`high`/`disabled`; `enabled` still works as an alias for `medium`).
 - Timeout: default **300s** for every model. Raise with `llm.request_timeout_seconds`.
-- Context window: `llm.context_window` → `ListModels` → last-resort table for shipped ids (`deepseek-v4-flash` 128K, `deepseek-v4-pro` 1M, GLM/Kimi prefixes) → else 0 (no trim).
+- Context window: `llm.context_window` → `ListModels` → last-resort table for shipped ids (`deepseek-v4-flash` 128K, `deepseek-v4-pro` 1M, GLM/Kimi/OpenAI prefixes) → else 0 (no trim).
 
 `ProfileLabel` now returns the model id.
 

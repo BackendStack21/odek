@@ -624,7 +624,9 @@ func CanonicalBaseURL(providerID, baseURL string) string {
 }
 
 // LastResortContext is the safety-net window when ListModels reports 0.
-// No thinking/timeout defaults live here.
+// Official OpenAI /v1/models never includes a window field, so gpt-*
+// prefixes live here — otherwise Bodek and the WebUI hide the ctx gauge
+// and the engine skips trimming. No thinking/timeout defaults live here.
 func LastResortContext(model string) int {
 	type entry struct {
 		prefix string
@@ -642,7 +644,22 @@ func LastResortContext(model string) int {
 		{"deepseek-v4-pro", 1_000_000},
 		{"deepseek-v4-flash", 131_072},
 		{"deepseek-", 131_072},
+		// OpenAI — api.openai.com ListModels omits context_length.
+		{"gpt-6", 1_050_000},
+		{"gpt-5.6", 1_050_000},
+		{"gpt-5.5", 1_050_000},
+		{"gpt-5.4-mini", 400_000},
+		{"gpt-5.4-nano", 400_000},
+		{"gpt-5.4", 1_050_000},
+		{"gpt-5", 400_000},
+		{"gpt-4.1", 1_047_576},
+		{"gpt-4o", 128_000},
+		{"gpt-4-turbo", 128_000},
+		{"o4", 200_000},
+		{"o3", 200_000},
+		{"o1", 200_000},
 	}
+	model = strings.ToLower(strings.TrimSpace(model))
 	best, bestLen := 0, 0
 	for _, e := range table {
 		if strings.HasPrefix(model, e.prefix) && len(e.prefix) > bestLen {

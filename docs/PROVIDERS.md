@@ -78,6 +78,11 @@ window. **No auto-thinking and no auto-timeout.**
 | `glm-` | 128K |
 | `kimi-` / `k3-256k` | 256K |
 | `k3` | 1M |
+| `gpt-6` / `gpt-5.6` / `gpt-5.5` / `gpt-5.4` | 1.05M |
+| `gpt-5.4-mini` / `gpt-5.4-nano` / `gpt-5` | 400K |
+| `gpt-4.1` | 1.05M |
+| `gpt-4o` / `gpt-4-turbo` | 128K |
+| `o4` / `o3` / `o1` | 200K |
 
 ## Temperature polarity
 
