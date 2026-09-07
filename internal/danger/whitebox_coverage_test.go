@@ -574,7 +574,7 @@ func TestActionForCommand_EmptyAndClass(t *testing.T) {
 
 func TestNonInteractiveAction(t *testing.T) {
 	if (&DangerousConfig{}).NonInteractiveAction() != ReadOnly {
-		t.Error("default non-interactive action should be read_only (H-7)")
+		t.Error("default non-interactive action should be read_only")
 	}
 	if (&DangerousConfig{NonInteractive: strPtr("allow")}).NonInteractiveAction() != Allow {
 		t.Error("configured non-interactive allow should be honored")

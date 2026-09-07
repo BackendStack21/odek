@@ -1,6 +1,6 @@
 package loop
 
-// Slice B — plan ↔ loop hints (docs/PLANNING.md Planned loop integrations):
+// plan ↔ loop hints (docs/PLANNING.md Planned loop integrations):
 // stall suffix names IDs only, blocked-step streak emits plan_blocked, and
 // remaining-steps attach on exhaustion as wrapped derived context.
 

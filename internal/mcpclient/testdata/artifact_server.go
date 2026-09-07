@@ -153,7 +153,7 @@ func handleArtifactCall(req request) bool {
 			return true
 		}
 		ref := artifactRef("report-1", path, "Full CI test results (JUnit XML)")
-		// Test knobs: corrupt a verifiable field (WP3 fail-closed tests),
+		// Test knobs: corrupt a verifiable field (fail-closed tests)
 		// override the envelope text (envelope truncation tests), or
 		// inflate server-controlled fields (rendered-output cap tests).
 		switch os.Getenv("FAKE_ARTIFACT_TAMPER") {

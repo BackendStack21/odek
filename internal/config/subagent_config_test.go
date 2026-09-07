@@ -1,7 +1,7 @@
 package config
 
-// Tests for the operator-only "subagent" section (SUB_AGENTS_IMPROVEMENTS.md
-// M1.4/M1.5/M1.6): defaults, documented clamp ceilings, JSON parsing, and the
+// Tests for the operator-only "subagent" section (SUB_AGENTS_IMPROVEMENTS.md):
+// defaults, documented clamp ceilings, JSON parsing, and the
 // project-config trust split (a cloned repo must not be able to extend its
 // own sub-agents' lifespans or re-widen budget inheritance).
 

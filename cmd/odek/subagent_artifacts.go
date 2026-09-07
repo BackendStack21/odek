@@ -1,6 +1,6 @@
 package main
 
-// Sub-agent result artifacts — M1 core protocol
+// Sub-agent result artifacts — core protocol
 // (SUBAGENT_RESULT_ARTIFACTS_PLAN.md).
 //
 // Layout: ~/.odek/artifacts/<session_id>/<task_id>/<file>. The parent
@@ -35,7 +35,7 @@ const (
 	// deliver (largest-first drop at scan time).
 	maxArtifactTaskBudget = int64(64 << 20) // 64 MiB
 	// maxInlineArtifactBytes caps text artifacts inlined into the parent
-	// summary; larger ones stay file-backed until artifact_read (M2).
+	// summary; larger ones stay file-backed until artifact_read.
 	maxInlineArtifactBytes = 32 << 10 // 32 KiB
 	// unfiledSessionDir holds tasks whose parent session id is unknown.
 	// Aliases the maintenance package's bucket constant so the filer and

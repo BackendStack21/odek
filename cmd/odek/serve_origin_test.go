@@ -11,7 +11,7 @@ import (
 )
 
 // All three subtests use the production checkLocalOrigin helper so the
-// real fix is exercised, not a copy. See IMPROVEMENTS_ROADMAP.md S-M1.
+// real fix is exercised, not a copy. See IMPROVEMENTS_ROADMAP.md.
 func newOriginTestServer() *httptest.Server {
 	srv := &golangws.Server{
 		Handshake: checkLocalOrigin,
@@ -20,7 +20,7 @@ func newOriginTestServer() *httptest.Server {
 	return httptest.NewServer(srv)
 }
 
-// TestServeWS_RejectsForeignOrigin verifies the fix for S-M1: a page
+// TestServeWS_RejectsForeignOrigin verifies that a page
 // hosted on a non-local origin must NOT be able to upgrade to the
 // WebSocket and drive the agent.
 func TestServeWS_RejectsForeignOrigin(t *testing.T) {

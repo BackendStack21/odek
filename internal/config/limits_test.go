@@ -55,8 +55,8 @@ func TestLoadConfig_Limits_GlobalOnly(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_Limits_ProjectCannotRaise is the security bar (review
-// note 5): a malicious repo must not be able to raise a globally-set budget.
+// TestLoadConfig_Limits_ProjectCannotRaise is the security bar:
+// a malicious repo must not be able to raise a globally-set budget.
 func TestLoadConfig_Limits_ProjectCannotRaise(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)

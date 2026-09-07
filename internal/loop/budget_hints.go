@@ -9,7 +9,7 @@ import (
 	"github.com/BackendStack21/odek/internal/budget"
 )
 
-// Budget-awareness telemetry (SUB_AGENTS_IMPROVEMENTS.md M1.2): the engine
+// Budget-awareness telemetry (SUB_AGENTS_IMPROVEMENTS.md): the engine
 // tells the model how much of its run budget is spent, so a budgeted agent
 // (sub-agents especially) can pace itself and conclude cleanly instead of
 // discovering its limits by being killed.

@@ -301,7 +301,7 @@ func TestAgent_Events_BudgetExceededPrecedesRunFailed(t *testing.T) {
 	}
 	defer agent.Close()
 
-	// WP6 wires the enforcement trigger; the emission site and constants are
+	// wires the enforcement trigger; the emission site and constants are
 	// exercised here via a direct emitter call, as a budget stop would do
 	// right before returning its typed error.
 	agent.EmitEvent(events.Event{

@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// Security review wave C, F1: provider credential formats the pattern set
+// Provider credential formats the pattern set
 // missed — Azure storage AccountKey (connection strings), Stripe webhook
 // signing + live API keys. Assemble at runtime where possible; these
 // formats are structural (not real secrets).

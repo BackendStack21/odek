@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// ── P0-1: unknown CLI flags must never fold into the task text ──────────
+// ── unknown CLI flags must never fold into the task text ──────────
 //
 // Regression bar for the sec-benchmark finding: `odek run --session
 // --no-color --interaction-mode verbose "task"` used to prepend the
@@ -120,7 +120,7 @@ func TestParseReplFlags_UnknownFlagErrors(t *testing.T) {
 	}
 }
 
-// ── P0-2: `odek --version` must work like `odek version` ────────────────
+// ── `odek --version` must work like `odek version` ────────────────
 
 func TestDispatch_VersionFlagAlias(t *testing.T) {
 	for _, cmd := range []string{"--version", "-v"} {

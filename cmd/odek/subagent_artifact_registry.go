@@ -1,6 +1,6 @@
 package main
 
-// Registry of validated sub-agent result artifacts (M2). delegate_tasks
+// Registry of validated sub-agent result artifacts. delegate_tasks
 // registers every ref that passed fail-closed validation at collation time,
 // together with the validated path; artifact_read resolves ids against this
 // registry. The model supplies only the id — paths never cross the model
@@ -310,7 +310,7 @@ func artifactIDList() string {
 	return list
 }
 
-// ── M3: child staging + trusted-runner relocation ────────────────────
+// ── child staging + trusted-runner relocation ────────────────────
 
 // The canonical artifact dir (~/.odek/artifacts) is doubly protected from
 // child writes: confineToCWD rejects absolute paths, and the danger

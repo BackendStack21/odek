@@ -10,7 +10,7 @@ import (
 	"sync"
 )
 
-// ── Read ledger + unread-script execution gate (H-6) ────────────────────
+// ── Read ledger + unread-script execution gate ────────────────────
 //
 // Scenarios 21/22 of the injection study were the only two that executed on
 // the capable tier: the payload sits inside the *correct, documented fix*
@@ -102,7 +102,7 @@ const readFingerprintMaxBytes = 1 << 20 // 1 MiB
 // record here — content the agent authored is content it has seen.
 //
 // The entry is fingerprinted at record time; WasReadFresh re-verifies the
-// on-disk state at gate time so a post-read mutation re-fires the H-6 gate.
+// on-disk state at gate time so a post-read mutation re-fires the gate.
 func RecordRead(path string) {
 	recordReadKey("", path)
 }
@@ -162,7 +162,7 @@ func wasReadKey(key, path string) bool {
 // disk are still the state that was displayed (or authored) at record
 // time: same size, same mtime, and — for files up to readFingerprintMaxBytes
 // — the same sha256 digest. A read that is no longer fresh does not license
-// execution; the H-6 gate re-fires until the mutated content is re-read
+// execution; the gate re-fires until the mutated content is re-read
 // (which renews the fingerprint, because now the model has seen THAT).
 func WasReadFresh(path string) bool {
 	return wasReadFreshKey("", path)
@@ -269,7 +269,7 @@ func looksLikeScriptFile(tok string, interpreterOperand bool) bool {
 	}
 	// URLs are never script files. $-prefixed tokens are NOT skipped:
 	// `bash $HOME/evil.sh` executes exactly like `bash ~/evil.sh`, so the
-	// old "variable ref" early-out was an H-6 gate bypass. Expand and gate
+	// old "variable ref" early-out was an gate bypass. Expand and gate
 	// on the resolved file instead; unresolvable variables fail the stat
 	// below and stay ungated.
 	if strings.Contains(tok, "://") {

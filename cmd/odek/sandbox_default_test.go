@@ -7,7 +7,7 @@ import (
 	"github.com/BackendStack21/odek/internal/config"
 )
 
-// ── H-8: the sandbox defaults on — with a loud, explicit fallback ────────
+// ── the sandbox defaults on — with a loud, explicit fallback ────────
 //
 // The warning was honest but the feature was opt-in: users had to discover
 // the one control that actually contains the "ran attacker-controlled
@@ -116,7 +116,7 @@ func TestEnsureSandbox_OptOutWarnsOnce(t *testing.T) {
 }
 
 func TestEnsureSandbox_RequireOutranksOptOut(t *testing.T) {
-	// Review MED-003: the operator's hard constraint beats every opt-out,
+	// The operator's hard constraint beats every opt-out,
 	// including an explicit one — contradictory instructions fail loudly.
 	t.Setenv("ODEK_NO_SANDBOX", "1")
 	t.Setenv("ODEK_REQUIRE_SANDBOX", "1")

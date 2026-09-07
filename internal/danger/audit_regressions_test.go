@@ -231,7 +231,7 @@ func TestAudit_GitWorktreeRemove(t *testing.T) {
 	}
 }
 
-// TestAudit_ClassifyPath_CaseInsensitiveDirectories audits the H-5 residual:
+// TestAudit_ClassifyPath_CaseInsensitiveDirectories audits the residual:
 // the case-folding fix covered only the path suffix. The `.ssh`/`.aws`/… and
 // `.odek` directory components were matched case-sensitively, so on
 // case-insensitive filesystems (macOS APFS default, Windows) `~/.SSH/id_rsa`

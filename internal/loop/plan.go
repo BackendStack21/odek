@@ -1,6 +1,6 @@
 package loop
 
-// Structured plan state for the agent loop (docs/PLANNING.md, Phase 1 MVP).
+// Structured plan state for the agent loop (docs/PLANNING.md).
 //
 // The model maintains an advisory plan through one built-in `plan` tool.
 // State lives in a PlanStore shared between the tool and the engine (the

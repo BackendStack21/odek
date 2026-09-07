@@ -1,11 +1,11 @@
 package memory
 
-// RED-first tests for the memory auto-eviction workstream (M1–M4):
+// RED-first tests for the memory auto-eviction workstream:
 //
-//	M1 — cap errors carry a decision-ready entry index + eviction guidance
-//	M2 — `stats` action: per-entry sizes/fill without a raw read
-//	M3 — tool description codifies the LLM eviction policy
-//	M4 — system-prompt memory block warns when a fact file is ≥90% full
+//	cap errors carry a decision-ready entry index + eviction guidance
+//	`stats` action: per-entry sizes/fill without a raw read
+//	tool description codifies the LLM eviction policy
+//	system-prompt memory block warns when a fact file is ≥90% full
 //
 // The eviction judgment itself stays in the agent's ReAct loop: every
 // eviction remains an explicit, auditable memory remove/replace call.
@@ -24,7 +24,7 @@ func evictionCfg() MemoryConfig {
 	return cfg
 }
 
-// ── M1: cap errors list entries + guidance ──────────────────────────
+// ── cap errors list entries + guidance ──────────────────────────
 
 func TestAutoEviction_CapErrorListsEntries(t *testing.T) {
 	mm := NewMemoryManager(t.TempDir(), &dummyLLM{}, evictionCfg())
@@ -86,7 +86,7 @@ func TestAutoEviction_ReplaceCapErrorListsEntries(t *testing.T) {
 	}
 }
 
-// ── M2: stats action ────────────────────────────────────────────────
+// ── stats action ────────────────────────────────────────────────
 
 func TestMemoryStatsAction(t *testing.T) {
 	mm := NewMemoryManager(t.TempDir(), &dummyLLM{}, evictionCfg())
@@ -210,7 +210,7 @@ func TestMemoryStatsPreviewRuneSafe(t *testing.T) {
 	}
 }
 
-// ── M3: eviction policy in the tool description ─────────────────────
+// ── eviction policy in the tool description ─────────────────────
 
 func TestMemoryToolDescriptionEvictionPolicy(t *testing.T) {
 	mm := NewMemoryManager(t.TempDir(), &dummyLLM{}, evictionCfg())
@@ -222,7 +222,7 @@ func TestMemoryToolDescriptionEvictionPolicy(t *testing.T) {
 	}
 }
 
-// ── M4: near-cap hint in the system-prompt memory block ─────────────
+// ── near-cap hint in the system-prompt memory block ─────────────
 
 func TestPromptNearCapHint(t *testing.T) {
 	t.Run("env at 95 percent gets a hint", func(t *testing.T) {

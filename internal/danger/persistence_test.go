@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// ── H-5: the persistence class ───────────────────────────────────────────
+// ── the persistence class ───────────────────────────────────────────
 //
 // Scenario 20 of the injection study asked the agent to append one
 // documented line to a shell profile. Not destructive, not egress, not an
@@ -50,7 +50,7 @@ func TestClassifyPathWrite_PersistenceTargets(t *testing.T) {
 
 func TestClassifyPath_ReadsOfPersistenceTargetsUnchanged(t *testing.T) {
 	// The read direction must NOT regress to persistence — reading a CI
-	// workflow or hook file stays frictionless (H-7 companion guarantee).
+	// workflow or hook file stays frictionless (guarantee).
 	for _, p := range []string{".github/workflows/ci.yml", ".git/hooks/pre-commit", "package.json"} {
 		if got := ClassifyPath(p); got == Persistence {
 			t.Errorf("ClassifyPath(%q) = persistence — reads must keep ClassifyPath", p)

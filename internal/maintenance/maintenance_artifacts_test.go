@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// M1 backstop: the janitor sweeps artifact subtrees past retention
+// backstop: the janitor sweeps artifact subtrees past retention
 // (crash leftovers, hand-deleted sessions) and reports the removals.
 func TestSweepArtifacts_RemovesAgedKeepsFresh(t *testing.T) {
 	home := t.TempDir()
@@ -234,11 +234,11 @@ func TestArtifactsSweepCandidates_PreviewMatchesSweep(t *testing.T) {
 				}
 			}
 		}
-		mk("unfiled/task-old", 48*time.Hour)     // expired task in shared bucket
-		mk("unfiled/task-fresh", 0)              // survives; keeps unfiled alive
-		mk("sess-aged/task-1", 0)                // parent aged below → wholesale
-		mk("sess-live/task-old", 48*time.Hour)   // expired task in live session
-		mk("sess-live/task-new", 0)              // survives
+		mk("unfiled/task-old", 48*time.Hour)   // expired task in shared bucket
+		mk("unfiled/task-fresh", 0)            // survives; keeps unfiled alive
+		mk("sess-aged/task-1", 0)              // parent aged below → wholesale
+		mk("sess-live/task-old", 48*time.Hour) // expired task in live session
+		mk("sess-live/task-new", 0)            // survives
 		aged := time.Now().Add(-48 * time.Hour)
 		if err := os.Chtimes(filepath.Join(artDir, "sess-aged"), aged, aged); err != nil {
 			t.Fatal(err)

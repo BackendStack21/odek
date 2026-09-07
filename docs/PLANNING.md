@@ -488,7 +488,7 @@ semantics, payload minimality, `ExtractPlan`), `cmd/odek/serve_plan_test.go`
 
 ## Status & Roadmap
 
-### Shipped (Phase 1 — implemented)
+### Shipped — plan tool
 
 - `internal/loop/plan.go`: types, mutex-serialized `PlanStore`, fail-closed
   validation, deterministic renderer, strict total parser.
@@ -503,7 +503,7 @@ semantics, payload minimality, `ExtractPlan`), `cmd/odek/serve_plan_test.go`
   `ODEK_PLANNING`, `--planning`/`--no-planning` on run/repl/serve; system-prompt
   guidance sentence; test coverage as listed above.
 
-### Shipped (Phase 2/3 — events & surfaces)
+### Shipped — events and surfaces
 
 - `odek.event/v1` types `plan_created` / `plan_updated` — once per effective
   version-bumping mutation via `PlanStore.SetOnChange` → the engine emit
@@ -522,7 +522,7 @@ semantics, payload minimality, `ExtractPlan`), `cmd/odek/serve_plan_test.go`
   mirror `cmd/odek/ui/js/render.js`; the vestigial `todo` special-case was
   retired in both (falls through to the default 🔧).
 
-### Shipped (Phase 4 — loop integrations)
+### Shipped — loop integrations
 
 - **Plan-aware stall suffix.** When stall detection fires, the engine-trusted
   hint appends ID-only pointers (`in_progress=s2, next_pending=s3`). Titles

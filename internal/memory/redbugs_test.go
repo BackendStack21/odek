@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// RED #18 (K4): FactStore joins entries with "\n§\n" but Add accepts
+// FactStore joins entries with "\n§\n" but Add accepts
 // content containing the separator, so one Add silently becomes multiple
 // entries on read-back — injected content can reshape always-injected
 // fact files.
@@ -21,7 +21,7 @@ func TestRED_FactAddRejectsSeparatorInjection(t *testing.T) {
 	}
 }
 
-// RED #19 (K7): Remove swaps with the last element, so removing a fact
+// Remove swaps with the last element, so removing a fact
 // reorders the remaining ones — user-visible ordering of facts injected
 // into every system prompt changes unpredictably and ReplaceAt indices
 // from Entries() shift.

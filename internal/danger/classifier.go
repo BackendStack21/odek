@@ -126,7 +126,7 @@ const (
 	Unknown RiskClass = "unknown"
 )
 
-// Persistence (H-5): writes aimed at targets whose entire purpose is
+// Persistence: writes aimed at targets whose entire purpose is
 // deferred execution — shell profiles, direnv files, git hooks, CI
 // workflow files, cron/systemd/launchd definitions, and package-manager
 // lifecycle scripts. The write is neither destructive, nor egress, nor an
@@ -143,7 +143,7 @@ const (
 	Prompt Action = "prompt"
 	Deny   Action = "deny"
 	// ReadOnly is not a per-class action — it is a non_interactive mode
-	// (H-7): without a TTY, read-only inspection proceeds while writes,
+	// without a TTY, read-only inspection proceeds while writes,
 	// execution, and egress stay denied. Containment via inability is not
 	// safe-and-useful; read_only keeps headless agents useful enough that
 	// nobody reaches for "allow".
@@ -303,7 +303,7 @@ var shellRCFilesLower = func() map[string]bool {
 	return m
 }()
 
-// ── Persistence targets (H-5) ───────────────────────────────────────────
+// ── Persistence targets ───────────────────────────────────────────
 //
 // Targets whose entire purpose is deferred execution: the write itself is
 // quiet, the payload runs later in a context the user trusts (next shell,
@@ -414,7 +414,7 @@ var lifecycleHookPatterns = []*regexp.Regexp{
 }
 
 // LifecycleContentClass inspects content written to path for lifecycle
-// hooks (H-5). It returns (Persistence, true) when the content plants
+// hooks. It returns (Persistence, true) when the content plants
 // deferred execution into package.json / conftest.py, else (base, false).
 // Only ever escalates — base is returned unchanged otherwise.
 func LifecycleContentClass(path, content string, base RiskClass) (RiskClass, bool) {
@@ -716,7 +716,7 @@ type DangerousConfig struct {
 	// egress are denied; "deny" — block all prompted ops; "allow" — run
 	// everything. The read_only default keeps headless/CI usage useful
 	// enough that flipping to "allow" is never the path of least
-	// resistance (H-7): under deny, an agent under a restrictive posture
+	// resistance: under deny, an agent under a restrictive posture
 	// cannot even `ls`, and containment via inability just gets turned off.
 	NonInteractive *string `json:"non_interactive,omitempty"`
 
@@ -830,7 +830,7 @@ func (c *DangerousConfig) ActionForCommand(cmd string) Action {
 
 // NonInteractiveAction returns the action to use when no TTY is available.
 //
-// Unset → ReadOnly (H-7): read-only inspection proceeds, every mutation
+// Unset → ReadOnly: read-only inspection proceeds, every mutation
 // fails closed — useful enough that flipping to "allow" is never the path
 // of least resistance.
 //
@@ -2595,7 +2595,7 @@ func expandShellTokenPath(tok string) string {
 	// Expand $VAR / ${VAR} from the process environment — the classifier
 	// runs in the same environment the shell would resolve these from, and
 	// `bash $PWD/evil.sh` must gate exactly like `bash ./evil.sh`
-	// (readledger H-6: $VAR-expanded paths are in scope). Unset variables
+	// (readledger $VAR-expanded paths are in scope). Unset variables
 	// stay verbatim and fail the caller's stat.
 	path = expandEnvVars(path)
 	return path
@@ -2654,7 +2654,7 @@ func isShellVarByte(c byte) bool {
 
 // isPersistenceWrite reports whether a shell command writes to a
 // deferred-execution target or mutates a package-manager lifecycle hook
-// (H-5). Checked before isSystemWrite so persistence targets keep their
+// . Checked before isSystemWrite so persistence targets keep their
 // distinct, never-trust-shortcut class.
 func isPersistenceWrite(first string, tokens []string) bool {
 	// crontab: anything other than a pure listing installs/replaces the
@@ -2908,7 +2908,7 @@ func classifyCommand(tokens []string) RiskClass {
 		return Destructive
 	}
 
-	// Persistence: writes aimed at deferred-execution targets (H-5).
+	// Persistence: writes aimed at deferred-execution targets.
 	// Checked before SystemWrite so shell-profile and hook writes keep the
 	// distinct persistence class instead of collapsing into system_write.
 	if isPersistenceWrite(first, tokens) {

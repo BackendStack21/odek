@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// Security review wave B: project sandbox_user/memory/cpus must be part of
+// Project sandbox_user/memory/cpus must be part of
 // the approval override — they overlay into the container config
 // (--user/--memory/--cpus) and user especially breaks the uid-mapping
 // protection against root-owned files planted on the host bind mount.

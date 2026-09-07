@@ -534,7 +534,7 @@ type FileConfig struct {
 	// Operator-controlled: rejected from project-level ./odek.json.
 	Subagent *SubagentConfig `json:"subagent,omitempty"`
 
-	// Profiles are named capability profiles (P4): when a task selects one,
+	// Profiles are named capability profiles: when a task selects one
 	// its settings OVERRIDE the corresponding operator permissions
 	// (max_risk clamp, allowlist, tool filter) for that sub-agent.
 	// Operator-controlled: rejected from project-level ./odek.json — a
@@ -600,7 +600,7 @@ type ProjectSandboxOverride struct {
 	// values are expanded against HOST environment variables at apply time,
 	// so key-names-only hashing let a repo swap a benign value for
 	// "${ANY_HOST_SECRET}" after the approval was persisted (2026-09
-	// security review, wave B).
+	// security review).
 	Env                 map[string]string
 	EnvHasInterpolation bool
 	HasImage            bool
@@ -767,7 +767,7 @@ type ResolvedConfig struct {
 	Subagent SubagentResolved
 
 	// Profiles is the resolved set of operator-defined capability profiles
-	// (P4). nil when none are defined. Selecting an unknown profile name
+	// . nil when none are defined. Selecting an unknown profile name
 	// fails closed at the consumer.
 	Profiles map[string]ProfileConfig
 
@@ -1186,7 +1186,7 @@ const (
 	BudgetInheritShare = "share"
 
 	// DefaultProfileName is the built-in default sub-agent capability
-	// profile (P4). Materialized into ResolvedConfig.Profiles by
+	// profile. Materialized into ResolvedConfig.Profiles by
 	// injectBuiltinDefaultProfile unless the operator defines their own
 	// profile with this name or opts out via subagent.default_profile="none".
 	DefaultProfileName = "default"
@@ -1298,7 +1298,7 @@ func resolveSubagent(cfg *SubagentConfig) SubagentResolved {
 }
 
 // injectBuiltinDefaultProfile materializes the built-in default sub-agent
-// capability profile (P4) unless the operator disabled it via
+// capability profile unless the operator disabled it via
 // subagent.default_profile="none" or defined their own profile with the
 // reserved name. The built-in caps delegated sub-agents at local_write:
 // the long-standing effective ceiling for untrusted children, now also
@@ -1321,13 +1321,13 @@ func injectBuiltinDefaultProfile(r *ResolvedConfig) {
 	}
 }
 
-// ProfileConfig is one named capability profile (P4). When a task
+// ProfileConfig is one named capability profile. When a task
 // selects the profile, its settings OVERRIDE the corresponding operator
 // config for that sub-agent: max_risk clamps every higher-ranked class to
 // deny, allowlist REPLACES the global allowlist, and the tools filter
 // replaces the global one. Operator-authored only (project config is
-// stripped), so the override is policy rather than escalation — the P2
-// non-interactive deny and the P3 trust lockdown are applied afterwards
+// stripped), so the override is policy rather than escalation — the
+// non-interactive deny and the trust lockdown are applied afterwards
 // and cannot be lifted by selecting a profile.
 type ProfileConfig struct {
 	// Description is a short human/model-readable summary of what the
@@ -2374,7 +2374,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 		ToolProgress:           ifZero(cfg.ToolProgress, "all"),
 	}
 
-	// Built-in default sub-agent capability profile (P4): unless the
+	// Built-in default sub-agent capability profile: unless the
 	// operator disabled it or defined their own "default" profile,
 	// materialize the local_write-capped envelope so delegate_tasks and
 	// list_subagent_profiles see one consistent set.
@@ -2418,7 +2418,7 @@ func LoadConfig(cli CLIFlags) ResolvedConfig {
 	// Stream / AnnounceBudget below are the exceptions — they default to true).
 	// Sandbox is another exception in effect: the loader records whether
 	// any layer set it (SandboxExplicit); when nobody did, the CLI surfaces
-	// default it ON with a loud unsandboxed fallback (H-8, cmd/odek).
+	// default it ON with a loud unsandboxed fallback (cmd/odek).
 	if cfg.Sandbox != nil {
 		resolved.Sandbox = *cfg.Sandbox
 		resolved.SandboxExplicit = true
@@ -3169,8 +3169,8 @@ func resolveSchedules(cfg *SchedulesConfig) ScheduleConfig {
 // overlayFile overlays a higher-priority FileConfig onto a lower-priority one.
 // Only fields that are explicitly set (non-zero for scalars, non-nil for
 // pointers) override the base value.
-// clampProjectLimits enforces the execution-budget merge rule (review note 5
-// of the extension MVP): the global (operator) config may set any limit, but
+// clampProjectLimits enforces the execution-budget merge rule of the
+// extension MVP: the global (operator) config may set any limit, but
 // the untrusted project ./odek.json may only LOWER an existing limit — never
 // raise it and never disable (zero-out) a globally-set limit. A project may
 // still set a limit the global config does not have (that only tightens the

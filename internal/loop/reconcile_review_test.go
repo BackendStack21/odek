@@ -9,7 +9,7 @@ import (
 // ── Review fixes: ledger fidelity and notice attribution ────────────────
 
 func TestRecordMutation_PerEntryParallelShell(t *testing.T) {
-	// HIGH-003: one failed sibling must not erase its successful neighbors.
+	// one failed sibling must not erase its successful neighbors.
 	e := &Engine{}
 	output, _ := json.Marshal(map[string]any{"results": []map[string]any{
 		{"command": "echo a >> ~/.zshrc", "error": ""},
@@ -28,7 +28,7 @@ func TestRecordMutation_PerEntryParallelShell(t *testing.T) {
 }
 
 func TestRecordMutation_ShellStdoutContainingErrorWordStillLedgered(t *testing.T) {
-	// HIGH-003: successful mutating command whose stdout mentions "error"
+	// successful mutating command whose stdout mentions "error"
 	// (build logs, JSON) stays in the ledger.
 	e := &Engine{}
 	args := `{"command":"python build.py out.bin"}`
@@ -47,7 +47,7 @@ func TestRecordMutation_JsonToolFailureExcluded(t *testing.T) {
 }
 
 func TestReconcileFinalReply_NoticeCarriesUnpredictableRef(t *testing.T) {
-	// HIGH-002: the notice header includes a nonce the model cannot
+	// the notice header includes a nonce the model cannot
 	// pre-forge.
 	e := &Engine{runMutations: []string{"shell: echo hook >> ~/.zshrc"}}
 	out := e.reconcileFinalReply("Nothing was executed.")

@@ -1,7 +1,7 @@
 package main
 
 // Tests for GET /api/sessions/{id}/plan — the read-only structured plan
-// view (docs/PLANNING.md Phase 3 surfaces, backend half). Auth treatment
+// view (docs/PLANNING.md, backend half). Auth treatment
 // mirrors handleSessionByID because the handler is reached through it.
 
 import (

@@ -1,6 +1,6 @@
 package main
 
-// TDD RED phase — M3 (SUBAGENT_RESULT_ARTIFACTS_PLAN.md): staging +
+// TDD RED phase — (SUBAGENT_RESULT_ARTIFACTS_PLAN.md): staging +
 // relocation, artifact counts on the completed event.
 //
 // The canonical artifact dir (~/.odek/artifacts) is doubly protected from

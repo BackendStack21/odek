@@ -113,7 +113,7 @@ func TestApplySubagentTrust_MaxRiskUnknown_KeepsSafeOpen(t *testing.T) {
 	}
 }
 
-// TestSubagentAllowsMCP_UntrustedDeniesLoading verifies the M5 mitigation:
+// TestSubagentAllowsMCP_UntrustedDeniesLoading verifies the mitigation:
 // untrusted sub-agents must not load MCP servers, because MCP tool adapters
 // do not perform their own danger classification and the parent-controlled
 // trust cap would otherwise be illusory.

@@ -126,7 +126,7 @@ func neutraliseSubagentInputLiterals(s string) string {
 }
 
 // taskBudget carries the parent's remaining budget into the child when
-// subagent.budget_inherit is "share" (SUB_AGENTS_IMPROVEMENTS.md M1.5).
+// subagent.budget_inherit is "share" (SUB_AGENTS_IMPROVEMENTS.md).
 // The child enforces min(operator limits, these values) and announces the
 // effective numbers in its lifespan block. An EXHAUSTED parent dimension is
 // a hard cap of 0, not "unlimited": remaining values of 0 are
@@ -135,14 +135,14 @@ func neutraliseSubagentInputLiterals(s string) string {
 // optional — old children ignore the flags (version skew keeps the old
 // clamping behavior) and old parents simply never emit them.
 type taskBudget struct {
-	MaxRuntimeSeconds  int64   `json:"max_runtime_seconds,omitempty"`
-	MaxToolCalls       int64   `json:"max_tool_calls,omitempty"`
-	MaxCostUSD         float64 `json:"max_cost_usd,omitempty"`
-	MaxInputTokens     int64   `json:"max_input_tokens,omitempty"`
-	RuntimeExhausted   bool    `json:"runtime_exhausted,omitempty"`
-	ToolCallsExhausted bool    `json:"tool_calls_exhausted,omitempty"`
-	CostExhausted      bool    `json:"cost_exhausted,omitempty"`
-	InputTokensExhausted bool  `json:"input_tokens_exhausted,omitempty"`
+	MaxRuntimeSeconds    int64   `json:"max_runtime_seconds,omitempty"`
+	MaxToolCalls         int64   `json:"max_tool_calls,omitempty"`
+	MaxCostUSD           float64 `json:"max_cost_usd,omitempty"`
+	MaxInputTokens       int64   `json:"max_input_tokens,omitempty"`
+	RuntimeExhausted     bool    `json:"runtime_exhausted,omitempty"`
+	ToolCallsExhausted   bool    `json:"tool_calls_exhausted,omitempty"`
+	CostExhausted        bool    `json:"cost_exhausted,omitempty"`
+	InputTokensExhausted bool    `json:"input_tokens_exhausted,omitempty"`
 }
 
 // clampLimits narrows the operator limits by the parent-supplied task
@@ -206,7 +206,7 @@ func exhaustedTaskBudget(tb *taskBudget) *budget.Error {
 }
 
 // buildLifespanBlock assembles the Runtime Constraints section appended to
-// the sub-agent system prompt (M1.1 — static lifespan awareness).
+// the sub-agent system prompt (static lifespan awareness).
 //
 // SECURITY: this block is assembled exclusively from code-computed numeric
 // limits. The parent-supplied goal/context/guidance strings are never
@@ -246,7 +246,7 @@ func buildLifespanBlock(timeoutSeconds, maxIterations int, limits budget.Limits)
 	return b.String()
 }
 
-// ── Denial reporting (P1 — deny loudly) ─────────────────────────────
+// ── Denial reporting (deny loudly) ─────────────────────────────
 
 // denialMarker is the uniform prefix produced by
 // danger.DangerousConfig.CheckOperation and the shell tool when an
@@ -298,7 +298,7 @@ func extractDenials(messages []session.Message) ([]SubagentDenial, int) {
 	return out, total
 }
 
-// effectiveTrust computes a child's effective trust level (P3 — trust is
+// effectiveTrust computes a child's effective trust level (trust is
 // non-increasing downward): min(parent's effective trust, declared
 // trust_level). The parent stamps its own effective trust into the task
 // file; an empty parent trust means a top-level operator run (trusted).
@@ -328,7 +328,7 @@ type subagentTelemetryWriter struct {
 	taskID string
 	step   int
 	mu     sync.Mutex
-	wire   subagentWireContext // P1/P3 decorations; zero value = legacy records
+	wire   subagentWireContext // decorations; zero value = legacy records
 }
 
 func newSubagentTelemetryWriter(w io.Writer, taskID string) *subagentTelemetryWriter {
@@ -336,7 +336,7 @@ func newSubagentTelemetryWriter(w io.Writer, taskID string) *subagentTelemetryWr
 }
 
 // newSubagentTelemetryWriterWithWire attaches the child's post-resolution
-// wire context (P1 profile/risk identity, P3 budget block, cost estimator
+// wire context (profile/risk identity, budget block, cost estimator
 // and the engine usage probe) to the lifecycle records.
 func newSubagentTelemetryWriterWithWire(w io.Writer, taskID string, wire subagentWireContext) *subagentTelemetryWriter {
 	if w == nil || taskID == "" {
@@ -346,9 +346,9 @@ func newSubagentTelemetryWriterWithWire(w io.Writer, taskID string, wire subagen
 }
 
 // emitStarted reports the lifecycle start record: the pre-existing
-// pid/depth/timeout/max_iter fields plus the P1 identity fields (resolved
+// pid/depth/timeout/max_iter fields plus the identity fields (resolved
 // profile id, effective post-clamp risk cap — each omitted when empty) and
-// the P3 budget block. cost_usd is deliberately absent: nothing has been
+// the budget block. cost_usd is deliberately absent: nothing has been
 // spent at start.
 func (t *subagentTelemetryWriter) emitStarted(pid, depth, timeoutSeconds, maxIterations int) {
 	rec := map[string]any{
@@ -386,7 +386,7 @@ func (t *subagentTelemetryWriter) emit(record map[string]any) {
 // emitProgress reports a tool-start step. The tool NAME is included;
 // arguments and outputs never are — they are model-controlled content and
 // the telemetry path must stay argument-free (telemetry plan, security §4).
-// P3: each record also carries the budget block and the cumulative cost
+// each record also carries the budget block and the cumulative cost
 // estimate (cost_usd) so a client can render %-of-budget per step without
 // remembering the started record.
 func (t *subagentTelemetryWriter) emitProgress(tool string) {
@@ -410,7 +410,7 @@ func (t *subagentTelemetryWriter) emitProgress(tool string) {
 }
 
 // emitFinished reports the terminal lifecycle record with the final
-// estimated cost (P6). The cost rides the same /api/usage math over the
+// estimated cost. The cost rides the same /api/usage math over the
 // engine's provider-reported token totals and is omitted when no price
 // side is configured — the wire never emits a fabricated $0.
 func (t *subagentTelemetryWriter) emitFinished(status string, iterations int, durationSeconds float64, tokensUsed int) {
@@ -428,10 +428,10 @@ func (t *subagentTelemetryWriter) emitFinished(status string, iterations int, du
 	t.emit(rec)
 }
 
-// ── Wire additions (P1/P3/P4/P6 — child half) ────────────────────────
+// ── Wire additions ────────────────────────
 
 // subagentWireBudget is the child's effective post-resolution budget block
-// (P3): the wall-clock budget, the iteration budget, and the enforced cost
+// the wall-clock budget, the iteration budget, and the enforced cost
 // cap. It mirrors the three headline numbers the lifespan block
 // (buildLifespanBlock) announces to the child itself, so parents and UIs
 // render progress against exactly the budgets the child enforces.
@@ -487,7 +487,7 @@ var subagentRiskCapOrder = []danger.RiskClass{
 	danger.Safe,
 }
 
-// effectiveMaxRisk returns the child's effective post-clamp risk cap (P1):
+// effectiveMaxRisk returns the child's effective post-clamp risk cap:
 // the highest-ranked class the resolved danger config does not outright
 // deny, after the operator profile (applyProfile) and the trust lockdown
 // (applySubagentTrust) ran. Under the default untrusted envelope this
@@ -528,7 +528,7 @@ func (e subagentCostEstimator) estimate(inputTokens, outputTokens int64) float64
 }
 
 // subagentWireContext carries everything the telemetry writer needs to
-// decorate lifecycle records with the P1/P3/P6 wire fields: the resolved
+// decorate lifecycle records with the wire fields: the resolved
 // profile id ("" = built-in default envelope, omitted), the effective
 // post-clamp risk cap, the effective budget block, the model-resolved cost
 // estimator, and the engine usage probe for cost-so-far / final cost.
@@ -670,7 +670,7 @@ func parseSubagentFlags(args []string) (subagentFlags, error) {
 }
 
 // taskFileSpec is the JSON contract of a parent-supplied task file
-// (`odek subagent --task`). The profile field (P4) selects an
+// (`odek subagent --task`). The profile field selects an
 // operator-defined capability profile; it was previously dropped by the
 // inline parser, so profiled delegate_tasks tasks silently ran bare.
 type taskFileSpec struct {
@@ -703,7 +703,7 @@ func decodeTaskFileSpec(data []byte) (taskFileSpec, error) {
 	return spec, err
 }
 
-// resolveProfileName picks the effective capability profile (P4): the
+// resolveProfileName picks the effective capability profile: the
 // operator's direct --profile invocation outranks the parent's task-file
 // declaration. Empty when neither selects one.
 func resolveProfileName(cliFlag, taskFile string) string {
@@ -735,11 +735,11 @@ func subagentCmd(args []string) error {
 	var taskGuidance string // how-to-approach guidance from the parent (if any)
 	var taskTrust string    // "trusted" or "untrusted" (from parent agent)
 	var taskMaxRisk string
-	var taskProfile string                 // capability profile selected by the parent (P4)
+	var taskProfile string                 // capability profile selected by the parent
 	var taskBudgetBlock *taskBudget        // parent's remaining budget (share mode)
-	var taskArtifactRoot string            // per-task artifact dir from the envelope (M1)
-	var taskTaskID string                  // envelope task id (M3 staging key)
-	var parentTrust string                 // parent's own effective trust (P3)
+	var taskArtifactRoot string            // per-task artifact dir from the envelope
+	var taskTaskID string                  // envelope task id (staging key)
+	var parentTrust string                 // parent's own effective trust
 	var taskID string                      // telemetry correlation id (protocol-2 parents)
 	var taskProtocol int                   // telemetry protocol version from the envelope
 	var taskProvider string                // parent-selected go-llm-sdk provider
@@ -773,7 +773,7 @@ func subagentCmd(args []string) error {
 		parentTrust = taskSpec.ParentTrust
 		taskArtifactRoot = taskSpec.ArtifactRoot
 		taskTaskID = taskSpec.TaskID
-		// Telemetry correlation (sub-agent telemetry M1): protocol-2 parents
+		// Telemetry correlation (sub-agent telemetry): protocol-2 parents
 		// stamp a task id; the child echoes it on every stdout record and
 		// frames its final result so the parent cannot misparse.
 		taskID = taskSpec.TaskID
@@ -805,7 +805,7 @@ func subagentCmd(args []string) error {
 	}
 
 	// Apply defaults — CLI flag > operator subagent section > built-in
-	// default. The subagent config section (M1.4) replaces the old
+	// default. The subagent config section replaces the old
 	// hardcoded 120s/15 values; the parseSubagentConfig dead code it
 	// orphans was removed with this wiring.
 	if cfg.timeout <= 0 {
@@ -837,17 +837,17 @@ func subagentCmd(args []string) error {
 	// page or unfamiliar file), force non-interactive denials so no
 	// dangerous operation slips through without a fresh approval. When
 	// max_risk is set, clamp every class above it to Deny.
-	// P4: a selected capability profile OVERRIDES the corresponding
+	// a selected capability profile OVERRIDES the corresponding
 	// operator permissions (max_risk clamp, allowlist, tool filter) for
 	// this run. Unknown names fail closed. The profile is applied BEFORE
-	// the trust lockdown (P2/P3), which is applied on top and cannot be
+	// the trust lockdown, which is applied on top and cannot be
 	// lifted by profile selection.
 	var profileTools *config.ToolConfig
-	// P4: a profile may be selected by the operator's direct --profile flag
+	// a profile may be selected by the operator's direct --profile flag
 	// or by the parent via the task file; the flag outranks the file.
 	profileName := resolveProfileName(cfg.profile, taskProfile)
 	if profileName == "" && resolved.Subagent.DefaultProfile != config.DefaultProfileDisabled {
-		// Operator's default envelope (P4): the built-in "default" profile
+		// Operator's default envelope: the built-in "default" profile
 		// unless the operator overrode the name. Explicit task/flag
 		// selection outranks it, and "none" is honored only from the
 		// operator's own config — a task file or flag can never strip the
@@ -863,13 +863,13 @@ func subagentCmd(args []string) error {
 		profileTools = prof.Tools
 	}
 
-	// P3: trust is non-increasing downward — effective trust is
+	// trust is non-increasing downward — effective trust is
 	// min(parent's effective trust, declared trust_level). A task tree
 	// rooted in untrusted content cannot spawn trusted children.
 	effectiveTrustLevel := effectiveTrust(parentTrust, taskTrust)
 	applySubagentTrust(&resolved.Dangerous, effectiveTrustLevel, taskMaxRisk)
 
-	// Budget inheritance (subagent.budget_inherit="share", M1.5): the
+	// Budget inheritance (subagent.budget_inherit="share"): the
 	// parent wrote its remaining budget into the task file; the child
 	// spends at most min(operator limits, parent remaining).
 	resolved.Limits = clampLimits(resolved.Limits, taskBudgetBlock)
@@ -881,10 +881,10 @@ func subagentCmd(args []string) error {
 		return fmt.Errorf("parent budget exhausted before start: %w", berr)
 	}
 
-	// P1/P3/P6 wire context: everything the protocol-2 telemetry records
+	//  wire context: everything the protocol-2 telemetry records
 	// and the result envelope report about this child's run posture. All
-	// values are RESOLVED — post operator-profile application (P4), post
-	// trust lockdown (P2/P3), and post task-budget clamp (M1.5). The Usage
+	// values are RESOLVED — post operator-profile application, post
+	// trust lockdown, and post task-budget clamp. The Usage
 	// probe reads the engine's provider-reported cumulative totals so the
 	// cost fields use the exact /api/usage estimate; agent is assigned
 	// below, before any event can fire.
@@ -906,7 +906,7 @@ func subagentCmd(args []string) error {
 	// parent cannot write to. Parent-supplied goal/guidance/context are
 	// delivered in the user request instead (fenced when untrusted), so they
 	// can never redefine the agent or strip its SAFETY rules. The Runtime
-	// Constraints block appended below (M1.1 — lifespan awareness) is built
+	// Constraints block appended below (lifespan awareness) is built
 	// exclusively from code-computed numeric limits; no parent-supplied
 	// string ever enters the system prompt.
 	systemMsg := subagentSystem + "\n\n" + buildLifespanBlock(cfg.timeout, cfg.maxIter, resolved.Limits)
@@ -971,7 +971,7 @@ func subagentCmd(args []string) error {
 	// so disabled/enabled lists can reference MCP tool names too).
 	toolFilter := resolved.Tools
 	if profileTools != nil {
-		// P4: the profile's tool filter overrides the global one.
+		// the profile's tool filter overrides the global one.
 		toolFilter = *profileTools
 	}
 	tools = filterBuiltinTools(tools, toolFilter, nil)
@@ -999,7 +999,7 @@ func subagentCmd(args []string) error {
 		sandboxCleanup = cleanup
 	}
 
-	// Two-stage deadline (M1.3 — graceful finalization): the soft deadline
+	// Two-stage deadline (graceful finalization): the soft deadline
 	// fires RequestFinalization one finalization window before the hard
 	// kill, so the engine stops starting new tool batches and produces a
 	// bounded partial-progress summary instead of being SIGKILLed with
@@ -1124,7 +1124,7 @@ func subagentCmd(args []string) error {
 		tokensUsed += len(msg.Content) / 4 // rough estimate
 	}
 
-	// Classify the outcome (M1.3/M2.4 contract): typed budget errors map to
+	// Classify the outcome (contract): typed budget errors map to
 	// budget_exhausted, partial-summary markers to partial (with reason),
 	// hard timeouts to error+timeout, everything else to success/error.
 	summary, summaryRunes, summaryTruncated := extractSummaryInfo(allMessages)
@@ -1154,7 +1154,7 @@ func subagentCmd(args []string) error {
 		}
 	}
 
-	// P1: surface policy denials so the parent can adapt or escalate.
+	// surface policy denials so the parent can adapt or escalate.
 	denials, denialsTotal := extractDenials(allMessages)
 	result.Denials = denials
 	result.DenialsTotal = denialsTotal
@@ -1162,7 +1162,7 @@ func subagentCmd(args []string) error {
 	// Extract files changed from tool calls
 	result.FilesChanged = extractFilesChanged(allMessages)
 
-	// M1/M3 artifact scan: the child staged deliverables inside the
+	// Artifact scan: the child staged deliverables inside the
 	// workspace (.odek-artifacts/<task_id>/ — the only location both
 	// confineToCWD and the classifier allow it to write); the trusted
 	// runner relocates them to the canonical dir, then hashes/sizes there
@@ -1189,7 +1189,7 @@ func subagentCmd(args []string) error {
 		}
 	}
 
-	// P6: final estimated cost on the result envelope — the same
+	// final estimated cost on the result envelope — the same
 	// /api/usage estimate (model-resolved per-million prices) over the
 	// engine's provider-reported token totals. Zero (omitted on the wire)
 	// when no price side is configured: clients must render cost as
@@ -1211,12 +1211,12 @@ func subagentCmd(args []string) error {
 			"duration_s":  result.DurationSeconds,
 			"tokens_used": result.TokensUsed,
 		}
-		// Wire v2 (P6): final cost estimate — omitted when no price side is
+		// Wire v2: final cost estimate — omitted when no price side is
 		// configured, never a fabricated $0.
 		if result.CostUSD > 0 {
 			fin["cost_usd"] = result.CostUSD
 		}
-		// Wire v2 (P4): terminal artifact metadata in the spec shape
+		// Wire v2: terminal artifact metadata in the spec shape
 		// {id, path, bytes} — bounded metadata only; artifact content never
 		// rides the telemetry wire. Mirrors the framed envelope's refs so a
 		// client that only watches state frames still sees the artifact list.
@@ -1340,7 +1340,7 @@ func (e *subagentRunError) Error() string {
 
 // subagentHeadlineMaxRunes caps the headline channel: the child's final
 // answer as returned to the parent in the result summary. The bulk-report
-// channel is the artifact protocol (SUBAGENT_RESULT_ARTIFACTS_PLAN.md M1);
+// channel is the artifact protocol (SUBAGENT_RESULT_ARTIFACTS_PLAN.md);
 // until it ships this is the only content channel, so it carries 4× the old
 // 500-rune cut.
 const subagentHeadlineMaxRunes = 2048
@@ -1436,12 +1436,12 @@ func subagentAllowsMCP(trustLevel string) bool {
 // from external content the parent ingested (a fetched page, a file
 // outside CWD, an MCP server response). We:
 //
-//	P2: NonInteractive is forced to deny for EVERY sub-agent — trusted
+//	NonInteractive is forced to deny for EVERY sub-agent — trusted
 //	included. Sub-agents never prompt for approvals (a trusted child
 //	would otherwise surface a context-free /dev/tty prompt or die
 //	silently headless); the operator allowlist remains the only path to
 //	prompt-class operations, and denials are reported in the result
-//	contract (P1) for the parent to adapt on or escalate.
+//	contract for the parent to adapt on or escalate.
 func applySubagentTrust(dc *danger.DangerousConfig, trustLevel, maxRisk string) {
 	if dc == nil {
 		return
@@ -1458,7 +1458,7 @@ func applySubagentTrust(dc *danger.DangerousConfig, trustLevel, maxRisk string) 
 		trustLevel = "untrusted"
 	}
 
-	// P2 — never prompt, trusted included.
+	// never prompt, trusted included.
 	deny := "deny"
 	dc.NonInteractive = &deny
 
@@ -1490,7 +1490,7 @@ func applySubagentTrust(dc *danger.DangerousConfig, trustLevel, maxRisk string) 
 }
 
 // clampClassesAboveMaxRisk denies every class ranked strictly above
-// maxRisk (shared by the sub-agent max_risk cap and the P4 profile
+// maxRisk (shared by the sub-agent max_risk cap and the profile
 // override). Empty maxRisk is a no-op — no cap expressed. The class list
 // is derived from danger.Rank's documented ordering; new classes must be
 // added there AND here (the compiler will not catch a missed literal, so
@@ -1521,13 +1521,13 @@ func clampClassesAboveMaxRisk(dc *danger.DangerousConfig, maxRisk string) {
 	}
 }
 
-// applyProfile overlays an operator-defined capability profile (P4) onto
+// applyProfile overlays an operator-defined capability profile onto
 // a danger config. The profile OVERRIDES the corresponding operator
 // config: its max_risk clamps every higher-ranked class to deny and its
 // allowlist REPLACES the global allowlist wholesale. Profiles are
 // operator-authored (project config cannot define them), so the override
 // is policy rather than escalation — applySubagentTrust runs afterwards
-// and the P2 non-interactive deny and P3 trust lockdown cannot be lifted
+// and the non-interactive deny and trust lockdown cannot be lifted
 // by profile selection.
 func applyProfile(dc *danger.DangerousConfig, prof config.ProfileConfig) {
 	if dc == nil {

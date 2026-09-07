@@ -337,11 +337,11 @@ type Engine struct {
 
 	// eventsIncludeArgs opts tool_call_started events into carrying the raw
 	// (secret-redacted) arguments in addition to the digest + structured
-	// summary. Off by default (P0-4).
+	// summary. Off by default.
 	eventsIncludeArgs bool
 
 	// runMutations records mutating tool calls completed during the current
-	// run (H-9): the final reply is reconciled against this ledger so a
+	// run: the final reply is reconciled against this ledger so a
 	// confident all-clear cannot misreport side effects that already
 	// happened. Reset at runLoop entry; only touched from the loop
 	// goroutine.
@@ -2037,7 +2037,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 	e.maxConsecutiveToolErrors = make(map[string]int)
 	// Reset per-session repeated-call (stall) tracking
 	e.toolRepeatCounts = nil
-	// Reset the run's mutation ledger (H-9) and completion-nudge state.
+	// Reset the run's mutation ledger and completion-nudge state.
 	e.runMutations = nil
 	e.completionNudged = false
 	e.sawReadAfterMutation = false
@@ -2440,7 +2440,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 				e.emitMessagesPersist(messages)
 				continue
 			}
-			// H-9: reconcile the reply against the action ledger before it
+			// reconcile the reply against the action ledger before it
 			// goes out. A reply that misreports side effects ("blocked",
 			// "no changes made") after they happened is worse than silence.
 			result.Content = e.reconcileFinalReply(result.Content)
@@ -2594,7 +2594,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 		// the Phase 3 range loop shadows the outer i, so capture it here.
 		iterNum := i + 1
 
-		// Stable per-call correlation IDs (P0-3): batched parallel calls are
+		// Stable per-call correlation IDs: batched parallel calls are
 		// otherwise emitted as started,started,…,completed,completed,… with
 		// nothing tying each result to its call — which quietly corrupts any
 		// audit/replay tooling that pairs them sequentially. Prefer the
@@ -2625,7 +2625,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 			}
 			data := map[string]any{
 				// Stable correlation ID shared with the matching
-				// completed/failed event (P0-3).
+				// completed/failed event.
 				"call_id": callIDs[idx],
 				// Never raw args by default: digest + size correlate
 				// start/complete without leaking argument content into the
@@ -2633,12 +2633,12 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 				"args_sha256": events.ArgsDigest(tc.Function.Arguments),
 				"args_bytes":  len(tc.Function.Arguments),
 			}
-			// Structured audit metadata (P0-4): what would run, on what
+			// Structured audit metadata: what would run, on what
 			// target, under what classification — no argument content.
 			if summary := argSummary(ctx, tc.Function.Name, tc.Function.Arguments); len(summary) > 0 {
 				data["args_summary"] = summary
 			}
-			// Opt-in raw arguments (P0-4): --events-include-args. The emitter
+			// Opt-in raw arguments: --events-include-args. The emitter
 			// still applies secret redaction to string values, but this can
 			// capture sensitive task content — off unless asked for.
 			if e.eventsIncludeArgs {
@@ -2861,7 +2861,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 		for i, tc := range result.ToolCalls {
 			output := results[i].output
 
-			// H-9: ledger the mutating calls that completed this run so the
+			// ledger the mutating calls that completed this run so the
 			// final reply can be reconciled against what actually happened.
 			e.recordMutation(tc.Function.Name, tc.Function.Arguments, output)
 			e.recordReadCheck(tc.Function.Name, tc.Function.Arguments, output, results[i].errored)
@@ -2885,7 +2885,7 @@ func (e *Engine) runLoop(ctx context.Context, messages []session.Message) (strin
 					Iteration: iterNum,
 					Tool:      tc.Function.Name,
 					Data: map[string]any{
-						// Correlates with the tool_call_started event (P0-3).
+						// Correlates with the tool_call_started event.
 						"call_id":     callIDs[i],
 						"duration_ms": results[i].durationMs,
 					},
@@ -3320,7 +3320,7 @@ func classifyToolCallCtx(ctx context.Context, name, args string) (danger.RiskCla
 		if err := json.Unmarshal([]byte(args), &cmd); err != nil || cmd.Command == "" {
 			return "", ""
 		}
-		// Script gate (H-6): executing an unread repo script surfaces as
+		// Script gate: executing an unread repo script surfaces as
 		// unread_exec in the batch card instead of plain code_execution,
 		// with the gating scripts named in the card entry — the one place
 		// the user looks before granting batch trust.

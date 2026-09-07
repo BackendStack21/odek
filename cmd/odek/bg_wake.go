@@ -22,15 +22,15 @@ package main
 // Deliberate limits:
 //   - The wake preamble is a generic poke; job details arrive via the
 //     normal per-iteration notice drain in the wake turn itself. A preamble
-//     listing job ids would DUPLICATE the drained notice (W1).
+//     listing job ids would DUPLICATE the drained notice.
 //   - Busy exclusion is per-SESSION (any bound connection busy ⇒ drop): two
 //     clients may bind one session, and a wake turn must never run
 //     concurrently with the other connection's turn on the same session
-//     store (W3).
+//     store.
 //   - Enqueue goes through connWakeSlot: the reader closes the prompt
 //     channel on disconnect, and a timer-goroutine send on a closed channel
 //     would panic the process. Slot close and channel close happen under
-//     the same mutex (W2).
+//     the same mutex.
 //   - max_wakes_per_hour is a per-session spend control backed by a
 //     timestamp window; the config layer clamps it to ≤240/h absolute.
 
@@ -171,7 +171,7 @@ func (d *wakeDispatcher) dispatch(session string) {
 	}
 	d.mu.Lock()
 	d.wakes[session] = append(d.wakes[session], now)
-	// Prune stale windows across ALL sessions (review F3): sessions that
+	// Prune stale windows across ALL sessions: sessions that
 	// never wake again must not leak their timestamp slices.
 	for s, ts := range d.wakes {
 		kept := ts[:0]
@@ -203,7 +203,7 @@ func (d *wakeDispatcher) Stop() {
 	}
 }
 
-// ── guarded enqueue slot (W2) ────────────────────────────────────────────
+// ── guarded enqueue slot ────────────────────────────────────────────
 
 // connWakeSlot guards posts into a connection's prompt channel. The reader
 // goroutine closes the channel when the socket dies; a dispatcher timer
@@ -213,7 +213,7 @@ func (d *wakeDispatcher) Stop() {
 // post always precedes the channel close.
 //
 // Every posted item is stamped with the connection's secret wake token
-// (review P1-2): the socket reader forwards arbitrary client messages into
+// the socket reader forwards arbitrary client messages into
 // the same channel, and the processor drops bg_wake items whose token does
 // not match — a client cannot forge a wake or bypass max_wakes_per_hour.
 type connWakeSlot struct {
@@ -283,7 +283,7 @@ func validWakeToken(sent, want string) bool {
 }
 
 // wakeInitiated decides whether a message carries server-initiated
-// provenance. Type-gated by design (review P1-1): a client prompt — even
+// provenance. Type-gated by design: a client prompt — even
 // one that forges SystemInitiated — can never claim it, because client
 // prompts always arrive with Type "prompt" and the processor sanitizes the
 // flag before handlePrompt sees them.
@@ -295,7 +295,7 @@ func wakeInitiated(msg wsClientMsg) bool {
 // initiated label carried by the turn_started frame. It is computed
 // server-side only — a client prompt that forges SystemInitiated or a
 // wake token can never claim system provenance (same rules as the
-// session frame's system_initiated stamp, review P1-1).
+// session frame's system_initiated stamp).
 func turnInitiatedLabel(msg wsClientMsg) string {
 	if wakeInitiated(msg) {
 		return "system"
@@ -305,8 +305,8 @@ func turnInitiatedLabel(msg wsClientMsg) string {
 
 // ── serve wiring ─────────────────────────────────────────────────────────
 
-// bgJobFrame builds the `bg_job` wire frame for a job transition (M2).
-// Model/operator-borne text is server-clamped and secret-redacted (W4):
+// bgJobFrame builds the `bg_job` wire frame for a job transition.
+// Model/operator-borne text is server-clamped and secret-redacted:
 // command_head runs through the same headString clamp as notices plus
 // redact.RedactSecrets — a command like `curl -H "Authorization: Bearer
 // sk-..."` must not leak its secret into any client. Optional facts are
@@ -365,7 +365,7 @@ func (wsWakeRouter) State(sessionID string) wakeConnState {
 	}
 	for _, c := range conns {
 		if c.isBusy() {
-			return wakeBusy // per-SESSION exclusion (W3)
+			return wakeBusy // per-SESSION exclusion
 		}
 	}
 	return wakeIdle

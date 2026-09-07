@@ -161,7 +161,7 @@ func TestSubagentExitStatus_PriorityOrder(t *testing.T) {
 	}
 }
 
-// ── Serve relay: redact + cap (M1 step 0) ────────────────────────────
+// ── Serve relay: redact + cap ────────────────────────────
 
 func TestSubagentLogRelay_RedactsAndCapsAndCorrelates(t *testing.T) {
 	var got map[string]any
@@ -240,7 +240,7 @@ func TestNewSubagentTelemetryWriter_NilWithoutTaskID(t *testing.T) {
 	}
 }
 
-// ── Wire additions (P1/P3 — child half) ──────────────────────────────
+// ── Wire additions ──────────────────────────────
 
 // wireHarness builds a writer with a fully configured wire context and a
 // usage probe that counts consultations (the cost fields must be derived
@@ -277,8 +277,8 @@ func decodeRecord(t *testing.T, buf *bytes.Buffer) map[string]any {
 	return m
 }
 
-// P1: the started record carries the resolved profile id, the effective
-// post-clamp risk cap, and the P3 budget block. cost_usd is deliberately
+// the started record carries the resolved profile id, the effective
+// post-clamp risk cap, and the budget block. cost_usd is deliberately
 // absent — nothing has been spent at start.
 func TestSubagentWire_StartedCarriesProfileRiskAndBudgets(t *testing.T) {
 	var buf bytes.Buffer
@@ -327,7 +327,7 @@ func TestSubagentWire_StartedOmitsUnconfiguredWireFields(t *testing.T) {
 	}
 }
 
-// P3: progress records carry the cumulative cost estimate (the same
+// progress records carry the cumulative cost estimate (the same
 // /api/usage math over the engine's provider-reported totals) plus the
 // budget block, so a client can render % budget used per step.
 func TestSubagentWire_ProgressCarriesCostSoFarAndBudgets(t *testing.T) {

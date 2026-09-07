@@ -408,7 +408,7 @@ type runFlags struct {
 
 	// EventsIncludeArgs opts the event stream into carrying raw
 	// (secret-redacted) tool-call arguments in tool_call_started events.
-	// Pairs with --events-jsonl for incident review (P0-4).
+	// Pairs with --events-jsonl for incident investigation.
 	EventsIncludeArgs *bool // nil = not set
 
 	// ExternalRefs holds the raw repeatable --external-ref values
@@ -853,7 +853,7 @@ func parseRunFlags(args []string) (runFlags, error) {
 			i++
 
 		default:
-			// Unknown flags are a hard error, never task text (P0-1): a
+			// Unknown flags are a hard error, never task text: a
 			// typo'd flag must not silently corrupt the prompt.
 			if isFlagLike(args[i]) {
 				return f, unknownFlagError(args[i])
@@ -1002,7 +1002,7 @@ done:
 			default:
 				// Unknown flag-shaped token after the task starts: hard error.
 				// Silently leaving it in the task is what let a drifted
-				// `--interaction-mode` end up prepended to a prompt (P0-1).
+				// `--interaction-mode` end up prepended to a prompt.
 				if isFlagLike(taskArgs[j]) {
 					return f, unknownFlagError(taskArgs[j])
 				}
@@ -1170,7 +1170,7 @@ func parseReplFlags(args []string) (replFlags, error) {
 			f.InteractionMode = args[i+1]
 			i += 2
 		default:
-			// Unknown flags are a hard error (P0-1): silently skipping a
+			// Unknown flags are a hard error: silently skipping a
 			// typo'd flag leaves the operator believing it took effect.
 			// Bare positionals are still ignored — repl takes no task text.
 			if isFlagLike(args[i]) {
@@ -1857,7 +1857,7 @@ func run(args []string) error {
 	// so disabled/enabled lists can reference MCP tool names too).
 	tools = filterBuiltinTools(tools, resolved.Tools, nil)
 
-	// Sandbox (H-8): defaults ON with a loud unsandboxed fallback when
+	// Sandbox: defaults ON with a loud unsandboxed fallback when
 	// Docker is unavailable; explicit --sandbox/"sandbox": true keeps the
 	// hard-fail behavior.
 	var runContainerName string
@@ -2268,7 +2268,7 @@ func deliverToTelegram(text string, resolved config.ResolvedConfig) error {
 // The returned cleanup function destroys the container; always invoke it
 // via Agent.Close().
 // sandboxIntent resolves whether this run wants the sandbox and whether
-// that desire is explicit (H-8). The sandbox defaults ON for the CLI
+// that desire is explicit. The sandbox defaults ON for the CLI
 // surfaces (run/continue/repl) — the actual control for the
 // "ran attacker-controlled code" class is something users must now
 // deliberately give up, not discover. Opt-outs: --no-sandbox flag or
@@ -2284,7 +2284,7 @@ func sandboxIntent(resolved config.ResolvedConfig) (want, explicit bool) {
 	return true, false
 }
 
-// ensureSandbox starts the sandbox under H-8 semantics:
+// ensureSandbox starts the sandbox under default-on semantics:
 //   - wanted + success        → container started, sandboxed=true
 //   - wanted + failure        → explicit want (or ODEK_REQUIRE_SANDBOX=1)
 //     is fatal; the implicit default degrades to
@@ -2297,7 +2297,7 @@ func ensureSandbox(resolved config.ResolvedConfig, tools []odek.Tool, cfg sandbo
 		if os.Getenv("ODEK_REQUIRE_SANDBOX") == "1" {
 			// The operator's hard constraint outranks every opt-out,
 			// including an explicit --no-sandbox: contradictory
-			// instructions fail loudly instead of guessing (review MED-003).
+			// instructions fail loudly instead of guessing.
 			return "", nil, false, fmt.Errorf("sandbox required (ODEK_REQUIRE_SANDBOX=1) but sandboxing is disabled by flag/config")
 		}
 		warnSandboxDisabled()
@@ -2483,11 +2483,11 @@ type toolConfig struct {
 	// Subagent carries the resolved subagent section for delegate_tasks
 	// (timeout/concurrency/depth defaults + budget inheritance mode).
 	Subagent config.SubagentResolved
-	// Profiles carries the operator's resolved capability profiles (P4) so
+	// Profiles carries the operator's resolved capability profiles so
 	// delegate_tasks can fail closed on unknown profile names before
 	// spawning a child.
 	Profiles map[string]config.ProfileConfig
-	// SelfTrust is THIS process's own effective trust level (P3); stamped
+	// SelfTrust is THIS process's own effective trust level; stamped
 	// into spawned task files. Empty = top-level operator run (trusted).
 	SelfTrust string
 	// Planning, when non-nil and Enabled, registers the built-in plan tool.
@@ -2541,7 +2541,7 @@ func toolConfigFromResolved(resolved config.ResolvedConfig) toolConfig {
 }
 
 func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver danger.Approver, maxConcurrency int, apiKey string, tcfg toolConfig, store *session.Store, bg ...*bgRuntime) []odek.Tool {
-	// Sub-agent execution defaults (M1.4): the operator subagent section
+	// Sub-agent execution defaults: the operator subagent section
 	// overrides the built-in defaults; concurrency falls back to the
 	// global max_concurrency when the section does not set it.
 	subTimeout := tcfg.Subagent.TimeoutSeconds
@@ -2644,7 +2644,7 @@ func builtinTools(dc danger.DangerousConfig, sm *skills.SkillManager, approver d
 
 	// artifact_read is registered only for top-level runs (SelfTrust empty):
 	// sub-agents run in their own process whose artifact registry is always
-	// empty — parent-only by design (SUBAGENT_RESULT_ARTIFACTS_PLAN.md M2).
+	// empty — parent-only by design (SUBAGENT_RESULT_ARTIFACTS_PLAN.md).
 	if artifactReadEnabled(tcfg) {
 		tools = append(tools, &artifactReadTool{})
 	}
@@ -3205,7 +3205,7 @@ func continueCmd(args []string) error {
 		}
 	}
 
-	// Continuations preserve the session's sandbox posture exactly (H-8):
+	// Continuations preserve the session's sandbox posture exactly:
 	// a sandboxed session re-sandboxes (explicit intent), an unsandboxed
 	// session stays unsandboxed even under the new default-on — flipping
 	// containment mid-conversation would surprise both user and agent.
@@ -3528,7 +3528,7 @@ func showSession(store *session.Store, args []string) error {
 	fmt.Printf("Task:    %s\n", sess.Task)
 	fmt.Println()
 
-	// Call-ID correlation (P0-3): parallel tool calls are stored as
+	// Call-ID correlation: parallel tool calls are stored as
 	// CALL,CALL,…,RESULT,RESULT,… with no implicit ordering link between a
 	// result and its call. Emit a stable label on both halves so audit,
 	// replay, and compliance tooling can pair them without guessing.

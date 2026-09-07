@@ -1395,8 +1395,8 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 	promptCh := make(chan []byte, 8)
 	// Wake-on-complete delivery slot: the dispatcher posts bg_wake items
 	// here from timer goroutines; the slot's lock guarantees no post lands
-	// after the channel close below (see cmd/odek/bg_wake.go, W2). The
-	// secret wake token makes wire-injected bg_wake items invalid (P1-2).
+	// after the channel close below (see cmd/odek/bg_wake.go). The
+	// secret wake token makes wire-injected bg_wake items invalid.
 	connInfo.wakeToken = newWakeToken()
 	connInfo.wakeSlot = newConnWakeSlot(promptCh, connInfo.wakeToken)
 	go func() {
@@ -1566,7 +1566,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 			if err := json.Unmarshal(data, &wake); err != nil || wake.SessionID == "" {
 				continue
 			}
-			// Spend-control gate (review P1-2): the socket reader forwards
+			// Spend-control gate: the socket reader forwards
 			// every non-inline client message into promptCh, so a client
 			// could inject bg_wake items and bypass max_wakes_per_hour.
 			// Only items stamped by the connection's slot carry the secret
@@ -1597,7 +1597,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 			}
 			connInfo.setLive(wake.SessionID, true)
 			func() {
-				// Panic-safe Busy pairing (review F2): a panic unwinding
+				// Panic-safe Busy pairing: a panic unwinding
 				// through handlePrompt must not latch Busy=true forever.
 				defer connInfo.setLive(wake.SessionID, false)
 				currentSession = handlePrompt(promptCtx, wsSend, store, resources, resolved, agent, injectionGuard, currentSession, wakeMsg, &sessionInputTokens, &sessionOutputTokens, promptCancelWithApproval, &deltas, bgRT, turnTag)
@@ -1616,7 +1616,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 			writeWSError(conn, "invalid JSON")
 			continue
 		}
-		// Client prompts are never system-initiated (review P1-1): the flag
+		// Client prompts are never system-initiated: the flag
 		// and token are server-side provenance; strip them unconditionally.
 		msg.SystemInitiated = false
 		msg.WakeToken = ""
@@ -1691,7 +1691,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 
 		connInfo.setLive(msg.SessionID, true)
 		func() {
-			// Panic-safe Busy pairing (review F2).
+			// Panic-safe Busy pairing.
 			defer connInfo.setLive(msg.SessionID, false)
 			currentSession = handlePrompt(promptCtx, wsSend, store, resources, resolved, agent, injectionGuard, currentSession, msg, &sessionInputTokens, &sessionOutputTokens, promptCancelWithApproval, &deltas, bgRT, turnTag)
 		}()
@@ -1921,7 +1921,7 @@ func handlePrompt(
 	// loop's user-input hooks skip them exactly like drained bg-notice
 	// messages, and so the transcript exposes their provenance. The gate is
 	// Type-based (wakeInitiated): a client prompt that forges the flag on
-	// Type "prompt" can never claim system provenance (review P1-1).
+	// Type "prompt" can never claim system provenance.
 	userName := ""
 	if wakeInitiated(msg) {
 		userName = "bg-wake"
@@ -2268,7 +2268,7 @@ func (w *wsStreamWriter) Write(p []byte) (int, error) {
 // page open elsewhere in the user's browser cannot drive the agent or
 // approve dangerous tool calls. The policy allows the exact request
 // host:port on localhost / 127.0.0.1 / [::1] and an empty Origin (curl,
-// native clients). See IMPROVEMENTS_ROADMAP.md S-M1.
+// native clients). See IMPROVEMENTS_ROADMAP.md.
 //
 // Note: this check is now defense-in-depth. The primary CSRF protection is
 // the per-instance wsToken validated by validateServeToken.
@@ -2577,8 +2577,8 @@ func validateSessionToken(store *session.Store, sess *session.Session, token str
 // (delete, rename/pin, cancel, job control): a legacy session with no
 // stored token is minted, but the freshly minted token must actually be
 // PRESENTED. The lenient variant's mint-and-pass let an instance-cookie-
-// only holder act on pre-token-defense sessions (2026-09 posture review,
-// wave C). Read paths keep the deliberate GET bootstrap, which RETURNS
+// only holder act on pre-token-defense sessions (2026-09 posture review).
+// Read paths keep the deliberate GET bootstrap, which RETURNS
 // the minted token to the client.
 func validateSessionTokenStrict(store *session.Store, sess *session.Session, token string) bool {
 	if sess == nil {
@@ -2736,7 +2736,7 @@ func resolveServeThinking(raw string) (canonical string, apply bool, err error) 
 const maxSubagentRelayDataBytes = 8 << 10 // 8 KiB
 
 // newSubagentLogRelay converts raw sub-agent NDJSON lines into redacted,
-// size-capped, task-correlated WS messages (sub-agent telemetry M1 step 0:
+// size-capped, task-correlated WS messages (sub-agent telemetry step 0:
 // child stdout is model-controlled content — it must never reach a browser
 // unredacted; loop.go tool_result data is raw tool output).
 func newSubagentLogRelay(send func(v any) error) func(taskIdx int, taskID string, line string) {

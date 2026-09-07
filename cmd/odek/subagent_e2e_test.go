@@ -41,7 +41,7 @@ var e2eBinary string // path to the once-built binary (stable, not per-test)
 var e2eBinDir string
 
 func TestMain(m *testing.M) {
-	// H-8: the sandbox now defaults ON for CLI runs. Tests must be
+	// the sandbox now defaults ON for CLI runs. Tests must be
 	// hermetic and machine-independent (a Docker-capable CI host must not
 	// sandbox spawned binaries while a laptop without Docker cannot), so
 	// opt the whole test process — and every subprocess it spawns, which
@@ -268,7 +268,7 @@ func TestE2E_QuietSuppressesStderr(t *testing.T) {
 	}
 }
 
-// ── Task-file profile fail-closed (P4) ──────────────────────────────────
+// ── Task-file profile fail-closed ──────────────────────────────────
 
 // TestE2E_TaskFileProfile_FailClosed verifies the delegate_tasks → task
 // file → child profile wiring end to end: a profile named in the task

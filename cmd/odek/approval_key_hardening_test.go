@@ -7,7 +7,7 @@ import (
 	"github.com/BackendStack21/odek/internal/mcpclient"
 )
 
-// Security review wave B: persisted-approval keys must be collision-free
+// Persisted-approval keys must be collision-free
 // and complete. Three pinned properties:
 //
 // 1. NUL-boundary safety — fields are length-prefixed, so a "\x00" inside

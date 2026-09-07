@@ -11,7 +11,7 @@ import (
 )
 
 // These tests verify the high-severity correctness findings against the
-// batch_patch tool documented in IMPROVEMENTS_ROADMAP.md (B-H1, B-H2).
+// batch_patch tool documented in IMPROVEMENTS_ROADMAP.md.
 // They are expected to FAIL on the current code and to pass once the
 // underlying fixes land. Each test documents the exact line in
 // cmd/odek/perf_tools.go that needs to change.
@@ -25,7 +25,7 @@ type bpResult struct {
 	} `json:"results"`
 }
 
-// TestBatchPatch_PreservesFileMode verifies finding B-H2:
+// TestBatchPatch_PreservesFileMode verifies
 // perf_tools.go:192 unconditionally chmod()s the temp file to 0644,
 // so a patch to a 0600 secrets file widens it to world-readable.
 //
@@ -64,7 +64,7 @@ func TestBatchPatch_PreservesFileMode(t *testing.T) {
 	}
 }
 
-// TestBatchPatch_FailsLoudlyOnWriteError verifies finding B-H1:
+// TestBatchPatch_FailsLoudlyOnWriteError verifies
 // perf_tools.go:191 discards the error returned by tmpFile.Write, so a
 // truncated write is then atomically renamed over the target — silent
 // file corruption.
@@ -74,7 +74,7 @@ func TestBatchPatch_PreservesFileMode(t *testing.T) {
 // same code path already supports: an unwritable directory. The tmp
 // file creation will fail (line 184) and the Error field MUST be
 // populated AND the original file MUST be untouched. This pins down
-// the contract; the B-H1 fix is to add the same contract to the
+// the contract; the fix is to add the same contract to the
 // Write() error path on line 191.
 func TestBatchPatch_AbortsOnTempFailureAndPreservesOriginal(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -91,7 +91,7 @@ func TestBatchPatch_AbortsOnTempFailureAndPreservesOriginal(t *testing.T) {
 	}
 	// Make the directory unwritable so CreateTemp() fails — this exercises
 	// the same "abort before rename, preserve target" contract that the
-	// Write() error path should follow once B-H1 is fixed.
+	// Write() error path should follow once that path is fixed.
 	if err := os.Chmod(dir, 0500); err != nil {
 		t.Fatalf("chmod dir: %v", err)
 	}

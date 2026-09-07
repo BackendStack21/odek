@@ -288,14 +288,14 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 			}
 			entry.Success = true
 			entry.Diff = wrapUntrusted(t.toolCtx(), "batch_patch:"+p.Path, diff)
-			danger.RecordReadCtx(t.toolCtx(), p.Path) // authored this session (H-6)
+			danger.RecordReadCtx(t.toolCtx(), p.Path) // authored this session
 			results[idx] = entry
 			continue
 		}
 
 		// Atomic write — preserve the original file's mode and surface any
 		// write error so a short or failed write cannot silently corrupt
-		// the target (see IMPROVEMENTS_ROADMAP.md B-H1, B-H2).
+		// the target (see IMPROVEMENTS_ROADMAP.md).
 		dir := filepath.Dir(p.Path)
 		tmpFile, err := os.CreateTemp(dir, ".tmp_batchpatch_*")
 		if err != nil {
@@ -334,7 +334,7 @@ func (t *batchPatchTool) Call(argsJSON string) (result string, err error) {
 
 		entry.Success = true
 		entry.Diff = wrapUntrusted(t.toolCtx(), "batch_patch:"+p.Path, diff)
-		danger.RecordReadCtx(t.toolCtx(), p.Path) // authored this session (H-6)
+		danger.RecordReadCtx(t.toolCtx(), p.Path) // authored this session
 		results[idx] = entry
 	}
 
@@ -454,7 +454,7 @@ func (t *parallelShellTool) Call(argsJSON string) (result string, err error) {
 	for _, c := range args.Commands {
 		action := t.dangerousConfig.ActionForCommand(c.Command)
 		cls, unreadTargets := danger.ClassifyScriptGateCtx(t.toolCtx(), c.Command)
-		// H-6: unread-script execution gates under unread_exec even when
+		// unread-script execution gates under unread_exec even when
 		// code_execution was allowed or its class trusted (deny wins
 		// outright; both must allow to allow — see shellTool.checkApproval).
 		if len(unreadTargets) > 0 {
@@ -598,7 +598,7 @@ func (t *parallelShellTool) runOne(cmd parallelShellCmd) parallelShellEntry {
 	if ctx.Err() != nil && killInContainer != nil {
 		killInContainer()
 	}
-	// H-6: successful read-only viewer runs mark operands as read, same as
+	// successful read-only viewer runs mark operands as read, same as
 	// the serial shell tool.
 	if err == nil {
 		recordViewerReads(t.toolCtx(), cmd.Command)

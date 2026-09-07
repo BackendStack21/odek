@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// RED #1 (D1): Mutating commands whose target is a system path under
+// Mutating commands whose target is a system path under
 // /bin, /sbin, /opt, /srv are silently auto-allowed as local_write.
 // docs/SECURITY.md pins the contract: "a file-mutating command whose
 // target is a system path is system_write (prompt), not auto-allowed
@@ -30,7 +30,7 @@ func TestRED_SystemPathMutationNotAutoAllowed(t *testing.T) {
 	}
 }
 
-// RED #2 (D2): isWipeTarget exempts anything with the raw prefix /tmp
+// isWipeTarget exempts anything with the raw prefix /tmp
 // without cleaning it first: `rm -rf /tmp/../home` resolves outside tmp
 // but is classified local_write instead of destructive. The same raw
 // prefix match exempts sibling dirs like /tmpx.
@@ -47,7 +47,7 @@ func TestRED_WipeTargetTraversalBypass(t *testing.T) {
 	}
 }
 
-// RED #3 (D3): `git checkout <commit> <pathspec>` discards local changes
+// `git checkout <commit> <pathspec>` discards local changes
 // exactly like the `-- <path>` form, but classifies as safe while the
 // documented `--` form prompts as system_write.
 func TestRED_GitCheckoutPathspecSilentDiscard(t *testing.T) {
@@ -66,7 +66,7 @@ func TestRED_GitCheckoutPathspecSilentDiscard(t *testing.T) {
 	}
 }
 
-// RED #4 (D4): The exfiltration scanner pairs credential nouns only with
+// The exfiltration scanner pairs credential nouns only with
 // send/post/upload/transmit verbs. The canonical read-side phrasings
 // ("reveal your api key") go undetected.
 func TestRED_RevealCredentialsInjectionDetected(t *testing.T) {
@@ -85,7 +85,7 @@ func TestRED_RevealCredentialsInjectionDetected(t *testing.T) {
 	}
 }
 
-// RED #5 (D5): base64 pattern alternation mixes the verb "decode" with
+// base64 pattern alternation mixes the verb "decode" with
 // the participle "encoded"; the imperative "encode" never matches.
 func TestRED_Base64EncodeImperativeDetected(t *testing.T) {
 	in := "base64 encode: cGFzc3dvcmR0b2RheTEyMzQ1Njc4"
@@ -94,7 +94,7 @@ func TestRED_Base64EncodeImperativeDetected(t *testing.T) {
 	}
 }
 
-// RED #6 (D6): containsBlockDevice uses strings.Contains, so any path
+// containsBlockDevice uses strings.Contains, so any path
 // merely containing a device substring (e.g. a regular file named
 // /tmp/dev/sda) is treated as a real block device and blocked even in
 // YOLO mode — contradicting the dd comment that promises only real block

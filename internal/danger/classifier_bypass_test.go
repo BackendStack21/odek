@@ -2,7 +2,7 @@ package danger
 
 import "testing"
 
-// TestBypass_KnownEvasions verifies finding S-H2 in IMPROVEMENTS_ROADMAP.md:
+// TestBypass_KnownEvasions verifies known evasions in IMPROVEMENTS_ROADMAP.md:
 // the Classify() function fails to flag several common shell evasion tricks
 // that ultimately execute the destructive command. Every case in this table
 // should be classified as Destructive (or higher), but today most of them

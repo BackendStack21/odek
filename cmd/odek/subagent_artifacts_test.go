@@ -1,6 +1,6 @@
 package main
 
-// TDD RED phase — sub-agent result artifacts M1: the core protocol.
+// TDD RED phase — sub-agent result artifacts: the core protocol.
 // (SUBAGENT_RESULT_ARTIFACTS_PLAN.md)
 
 import (
@@ -254,10 +254,10 @@ func TestStore_Cleanup_CascadesArtifacts(t *testing.T) {
 	}
 }
 
-// ── P4/P6 child half: the result envelope carries cost + artifacts ───
+// ── child half: the result envelope carries cost + artifacts ───
 
-// The framed result envelope carries the final estimated cost (P6) and the
-// runner-scanned artifact refs (P4 — the registry the artifact_read surface
+// The framed result envelope carries the final estimated cost and the
+// runner-scanned artifact refs (the registry the artifact_read surface
 // resolves against). Artifact entries travel in the odek.artifact-ref/v1
 // shape the parent validates fail-closed: id + size_bytes (the wire's
 // "id"/"bytes") plus the file:// uri.

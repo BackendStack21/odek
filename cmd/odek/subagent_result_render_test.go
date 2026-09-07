@@ -1,11 +1,11 @@
 package main
 
-// TDD RED phase — sub-agent result artifacts, M0 (SUBAGENT_RESULT_ARTIFACTS_PLAN.md).
+// TDD RED phase — sub-agent result artifacts (SUBAGENT_RESULT_ARTIFACTS_PLAN.md).
 //
 // Two fixes under test:
 //  1. extractSummary hard-cut the child's final answer at 500 runes — the
 //     primary data-loss point. The headline cap is now 2048 runes
-//     (subagentHeadlineMaxRunes); the bulk-report channel arrives in M1.
+//     (subagentHeadlineMaxRunes); the bulk-report channel is the remainder.
 //  2. The parent collated the child's RAW JSON envelope into its context.
 //     formatTaskResult renders parsed fields (status/headline/files/denials)
 //     as compact text and falls back to the raw payload only when the JSON

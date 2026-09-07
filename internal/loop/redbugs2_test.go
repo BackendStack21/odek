@@ -14,7 +14,7 @@ import (
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
-// RED #B7 (L4): Skill context is documented to be injected "right before
+// Skill context is documented to be injected "right before
 // the user message", but the insertion scan skips index 0 and falls back
 // to appending — so with the common [system, user] history the block lands
 // AFTER the user message.
@@ -65,7 +65,7 @@ func (s *slowTool) Call(args string) (string, error) {
 	return "done", nil
 }
 
-// RED #B8 (L3): Each parallel tool spawns its own heartbeat watchdog that
+// Each parallel tool spawns its own heartbeat watchdog that
 // invokes SignalHandler from a separate goroutine with no serialization —
 // concurrent handler calls race non-thread-safe consumers (the production
 // renderer holds no mutex). Validate under `go test -race`: the

@@ -9,7 +9,7 @@ import (
 	"github.com/BackendStack21/odek/internal/danger"
 )
 
-// ── Event argument summaries (P0-4) ────────────────────────────────────
+// ── Event argument summaries ────────────────────────────────────
 //
 // The event stream redacts tool arguments to args_bytes + args_sha256 by
 // default — right for secret hygiene, but it means the stream alone cannot
@@ -27,7 +27,7 @@ const (
 
 func clampSummaryStr(s string) string {
 	// Truncate on a rune boundary: byte slicing mid-rune would emit U+FFFD
-	// into the JSONL stream (review LOW-2).
+	// into the JSONL stream.
 	if len(s) <= summaryMaxStr {
 		return s
 	}
@@ -126,7 +126,7 @@ func argSummary(ctx context.Context, name, argsJSON string) map[string]any {
 			"class": string(maxCls),
 		}
 	case "write_file", "patch":
-		// Write tools: the class the write gate actually uses (review LOW-1).
+		// Write tools: the class the write gate actually uses.
 		var p struct {
 			Path string `json:"path"`
 		}

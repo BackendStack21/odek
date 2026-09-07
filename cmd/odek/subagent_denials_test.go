@@ -1,13 +1,13 @@
 package main
 
-// Tests for the P1-P3 sub-agent trust improvements (operator-approved
+// Tests for the sub-agent trust improvements (operator-approved
 // proposal, 2026-08-29):
 //
-//   P1 deny loudly:  denials are extracted from tool results into the
+//   deny loudly: denials are extracted from tool results into the
 //                    result contract (tool/class/reason, capped).
-//   P2 never prompt: ALL sub-agents run non-interactive — prompt-class
+//   never prompt: ALL sub-agents run non-interactive — prompt-class
 //                    operations are denied, never surfaced on a TTY.
-//   P3 trust non-increasing downward: a child's effective trust is
+//   trust non-increasing downward: a child's effective trust is
 //                    min(parent's effective trust, declared trust_level).
 
 import (
@@ -118,7 +118,7 @@ func TestEffectiveTrust_NonIncreasingDownward(t *testing.T) {
 }
 
 func TestApplySubagentTrust_TrustedStillNonInteractive(t *testing.T) {
-	// P2: trusted sub-agents never prompt either — the operator allowlist
+	// trusted sub-agents never prompt either — the operator allowlist
 	// is the only path to prompt-class operations.
 	dc := danger.DangerousConfig{}
 	applySubagentTrust(&dc, "trusted", "")
@@ -144,7 +144,7 @@ func TestApplySubagentTrust_TrustedStillNonInteractive(t *testing.T) {
 		}
 	}
 
-	// P3: an untrusted parent cannot raise a declared-trusted child.
+	// an untrusted parent cannot raise a declared-trusted child.
 	dc3 := danger.DangerousConfig{}
 	applySubagentTrust(&dc3, effectiveTrust("untrusted", "trusted"), "")
 	if dc3.Classes[danger.NetworkEgress] != danger.Deny {

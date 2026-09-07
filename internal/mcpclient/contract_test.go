@@ -212,9 +212,9 @@ func TestContract_ArtifactResultEnvelope(t *testing.T) {
 }
 
 func TestContract_BadArtifactRejectedFailClosed(t *testing.T) {
-	// WP3: artifact refs are validated before the result is rendered. A ref
+	// artifact refs are validated before the result is rendered. A ref
 	// pointing outside every configured root fails the whole call instead of
-	// being delivered unvalidated (this flips the pre-WP3 fail-open pin).
+	// being delivered unvalidated (this flips the previous fail-open pin).
 	t.Run("outside configured roots", func(t *testing.T) {
 		root := t.TempDir()
 		outside := writeTempArtifact(t, "outside the allowed roots\n")
@@ -232,7 +232,7 @@ func TestContract_BadArtifactRejectedFailClosed(t *testing.T) {
 
 	t.Run("no roots configured", func(t *testing.T) {
 		// Empty artifact_roots ⇒ every artifact ref is rejected, even for a
-		// well-formed ref to a real file (WP2 fail-closed semantic).
+		// well-formed ref to a real file (fail-closed semantic).
 		path := writeTempArtifact(t, "ok pkg/a 0.3s\n")
 		client := artifactClient(t, map[string]string{"FAKE_ARTIFACT_PATH": path})
 		_, err := client.CallTool(context.Background(), "artifact_result", `{}`)

@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// RED #10 (S2): A handler that calls Emitter.Close runs on the dispatch
+// A handler that calls Emitter.Close runs on the dispatch
 // goroutine; Close blocks on wg.Wait() for that same goroutine's Done,
 // so the dispatch goroutine deadlocks forever.
 func TestRED_CloseFromHandlerDoesNotDeadlock(t *testing.T) {
@@ -36,7 +36,7 @@ func TestRED_CloseFromHandlerDoesNotDeadlock(t *testing.T) {
 	}
 }
 
-// RED #11 (S5): Emit redacts string values by writing through the
+// Emit redacts string values by writing through the
 // caller's Data map, mutating state the caller still owns (and racing
 // if the same map is emitted twice concurrently).
 func TestRED_EmitDoesNotMutateCallerData(t *testing.T) {

@@ -51,7 +51,7 @@ const (
 // Budget limit names carried in budget_exceeded events (data.limit_name).
 // The constants are defined now so producers and consumers share one
 // vocabulary; the enforcement that triggers these events lands with the
-// execution-budget work (WP6).
+// execution-budget work.
 const (
 	LimitRuntime      = "runtime"
 	LimitToolCalls    = "tool_calls"

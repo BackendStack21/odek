@@ -11,7 +11,7 @@ import (
 	"github.com/BackendStack21/odek/internal/danger"
 )
 
-// ── Reply/ledger reconciliation (H-9) ────────────────────────────────────
+// ── Reply/ledger reconciliation ────────────────────────────────────
 //
 // Observed in the study: odek wrote a persistence hook, then read the
 // payload file, correctly identified the injection — and told the user
@@ -55,8 +55,8 @@ func mutatingShellCommand(cmd string) bool {
 	return danger.Rank(danger.Classify(cmd)) >= danger.Rank(danger.LocalWrite)
 }
 
-// shellOutputFailed matches the shell tool's failure shape only (review
-// HIGH-003): the explicit error prefix. A bare `"error"` substring in
+// shellOutputFailed matches the shell tool's failure shape only: the
+// explicit error prefix. A bare `"error"` substring in
 // successful build/JSON stdout must not drop a real mutation from the
 // ledger (false ledger entries fire a warning at worst; dropped entries
 // hide a lying all-clear at best).
@@ -214,8 +214,8 @@ func replyDenialClaims(answer string) []string {
 
 // noticeNonce generates a short random reference for a consistency notice.
 // The model cannot predict it, so it cannot pre-emit a matching header in
-// the reply body to borrow the runtime's attribution (review HIGH-002 —
-// best-effort, not proof: the authoritative record is the
+// the reply body to borrow the runtime's attribution
+// (best-effort, not proof: the authoritative record is the
 // reply_ledger_mismatch signal in the event stream).
 func noticeNonce() string {
 	var b [3]byte

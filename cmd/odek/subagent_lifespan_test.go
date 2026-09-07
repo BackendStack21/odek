@@ -1,9 +1,9 @@
 package main
 
-// Tests for sub-agent lifespan awareness (SUB_AGENTS_IMPROVEMENTS.md M1):
-// the Runtime Constraints block (M1.1), budget-inheritance clamping (M1.5),
-// the delegation depth cap (M1.6), and the run-outcome classification
-// (M1.3/M2.4 result contract).
+// Tests for sub-agent lifespan awareness (SUB_AGENTS_IMPROVEMENTS.md):
+// the Runtime Constraints block, budget-inheritance clamping,
+// the delegation depth cap, and the run-outcome classification
+// (result contract).
 
 import (
 	"context"
@@ -53,7 +53,7 @@ func TestBuildLifespanBlock_Unlimited(t *testing.T) {
 	}
 }
 
-// TestBuildLifespanBlock_HostileGoal pins the M1.1 security invariant: the
+// TestBuildLifespanBlock_HostileGoal pins the security invariant: the
 // block is assembled exclusively from numeric limits — parent-supplied task
 // text can never leak into the system prompt through it.
 func TestBuildLifespanBlock_HostileGoal(t *testing.T) {
@@ -162,7 +162,7 @@ func TestSubagentDepth_Env(t *testing.T) {
 	}
 }
 
-// TestDelegateTasksTool_DepthCapRefusal pins M1.6: at the configured depth
+// TestDelegateTasksTool_DepthCapRefusal pins that at the configured depth
 // the whole call fails closed BEFORE any sub-agent process is spawned.
 func TestDelegateTasksTool_DepthCapRefusal(t *testing.T) {
 	t.Setenv("ODEK_SUBAGENT_DEPTH", "2")

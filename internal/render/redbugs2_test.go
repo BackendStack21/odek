@@ -2,7 +2,7 @@ package render
 
 import "testing"
 
-// RED #B5 (M5): FirstSentence iterates separator TYPES in order, not
+// FirstSentence iterates separator TYPES in order, not
 // boundary positions — a ". " anywhere wins over an earlier "! "/"? ",
 // so the "first" sentence can be the second one.
 func TestRED_FirstSentencePicksEarliestBoundary(t *testing.T) {

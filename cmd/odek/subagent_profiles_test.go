@@ -1,8 +1,8 @@
 package main
 
-// Tests for P4 capability profiles: operator-defined, top-level config,
+// Tests for capability profiles: operator-defined, top-level config
 // overriding the corresponding permissions when selected (profile is
-// policy, not escalation — P2/P3 invariants still apply on top).
+// policy, not escalation — invariants still apply on top).
 
 import (
 	"context"
@@ -292,7 +292,7 @@ func TestDelegateTasks_Call_FastChildStdoutNotDropped(t *testing.T) {
 	}
 }
 
-// ── Task-file profile wiring (P4) ────────────────────────────────────────
+// ── Task-file profile wiring ────────────────────────────────────────
 //
 // The delegate_tasks path passes the profile via the task file, not via
 // the --profile flag. Regression: the child-side task-file parser dropped
@@ -474,7 +474,7 @@ func TestDefaultProfileEnvelope_TrustedChildClamped(t *testing.T) {
 	}
 }
 
-// ── P1: effective post-clamp risk cap on the wire ────────────────────
+// ── effective post-clamp risk cap on the wire ────────────────────
 
 // The untrusted trust lockdown denies everything above local_write, so the
 // effective cap the child reports must be local_write — exactly the

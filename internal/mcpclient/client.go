@@ -696,7 +696,7 @@ func (c *Client) CallTool(ctx context.Context, name string, argsJSON string) (st
 	if env != nil {
 		for i := range env.Artifacts {
 			// The resolved path is intentionally discarded here: it is
-			// local bookkeeping for a future event log (WP4) and must
+			// local bookkeeping for a future event log and must
 			// never reach the model-facing result.
 			if _, err := artifact.Validate(env.Artifacts[i], c.artifactRoots); err != nil {
 				return "", fmt.Errorf("mcpclient %s: tool %s: artifact ref rejected: %w", c.name, name, err)

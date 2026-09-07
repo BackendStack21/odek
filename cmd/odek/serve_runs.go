@@ -194,7 +194,7 @@ type wsConnInfo struct {
 	mu        sync.Mutex
 	conn      *golangws.Conn
 	wakeSlot  *connWakeSlot // guarded enqueue for wake-on-complete (nil until bound)
-	wakeToken string        // secret stamp on slot-posted wake items (P1-2)
+	wakeToken string        // secret stamp on slot-posted wake items
 }
 
 func (c *wsConnInfo) setLive(session string, busy bool) {
@@ -204,7 +204,7 @@ func (c *wsConnInfo) setLive(session string, busy bool) {
 }
 
 // isBusy reports the connection's busy flag (wake dispatcher's per-session
-// exclusion reads this — see cmd/odek/bg_wake.go W3).
+// exclusion reads this — see cmd/odek/bg_wake.go).
 func (c *wsConnInfo) isBusy() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()

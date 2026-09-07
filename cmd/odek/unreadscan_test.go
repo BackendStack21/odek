@@ -15,7 +15,7 @@ import (
 
 // ── Audit-then-exec: pre-execution content audit of unread scripts ──────
 //
-// The H-6 gate turns "execute a script you have not read this session"
+// The gate turns "execute a script you have not read this session"
 // into an approval prompt — but the prompt described the *file path*,
 // never its *contents*, and no content scan of the script happens before
 // execution. The only injection scanning in the pipeline runs on tool

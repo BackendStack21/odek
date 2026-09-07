@@ -684,7 +684,7 @@ func TestClassify_Config_NonInteractive(t *testing.T) {
 
 	cfg3 := DangerousConfig{}
 	if got := cfg3.NonInteractiveAction(); got != ReadOnly {
-		t.Errorf("default NonInteractiveAction() = %s, want read_only (H-7)", got)
+		t.Errorf("default NonInteractiveAction() = %s, want read_only", got)
 	}
 
 	cfg4 := DangerousConfig{NonInteractive: strPtr("read_only")}
@@ -792,7 +792,7 @@ func TestClassify_RsyncRemote(t *testing.T) {
 	}
 }
 
-// TestClassify_GitConfigCodeExecution verifies H-1: git -c/--config-env and
+// TestClassify_GitConfigCodeExecution verifies git -c/--config-env and
 // git config can inject arbitrary shell commands through aliases, pager, and
 // credential helpers, so they must classify as code_execution.
 func TestClassify_GitConfigCodeExecution(t *testing.T) {
@@ -823,7 +823,7 @@ func TestClassify_GitConfigCodeExecution(t *testing.T) {
 	}
 }
 
-// TestClassify_FindRsyncDestructive verifies H-2: find -delete and rsync
+// TestClassify_FindRsyncDestructive verifies find -delete and rsync
 // --delete / --remove-source-files can wipe directory trees, so they are
 // destructive; find -fprint/-fprintf are local writes.
 func TestClassify_FindRsyncDestructive(t *testing.T) {
@@ -851,7 +851,7 @@ func TestClassify_FindRsyncDestructive(t *testing.T) {
 	}
 }
 
-// TestClassify_ShellRCTargets verifies H-3: shell writes to shell rc files
+// TestClassify_ShellRCTargets verifies shell writes to shell rc files
 // and other home-sensitive paths are escalated to system_write using the same
 // ClassifyPath lists that gate the file tools.
 func TestClassify_ShellRCTargets(t *testing.T) {
@@ -859,7 +859,7 @@ func TestClassify_ShellRCTargets(t *testing.T) {
 		cmd  string
 		want RiskClass
 	}{
-		// Writing rc files is persistence (H-5): ranked above system_write,
+		// Writing rc files is persistence: ranked above system_write
 		// prompts by default, never eligible for trust shortcuts.
 		{"echo x >> ~/.bashrc", Persistence},
 		{"echo x >> ~/.zshrc", Persistence},
@@ -1023,7 +1023,7 @@ func TestParseAction(t *testing.T) {
 }
 
 func TestNonInteractiveAction_Default(t *testing.T) {
-	// H-7: the unset default is read_only — inspection proceeds headless,
+	// the unset default is read_only — inspection proceeds headless
 	// mutations fail closed. Containment via inability (deny) is not
 	// safe-and-useful: teams flip it to allow, losing every protection.
 	cfg := &DangerousConfig{}

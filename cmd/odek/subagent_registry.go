@@ -12,7 +12,7 @@ import (
 	"github.com/BackendStack21/odek/internal/redact"
 )
 
-// ── Sub-agent registry (telemetry M2) ────────────────────────────────
+// ── Sub-agent registry (telemetry) ────────────────────────────────
 //
 // A serve-global, bounded ring of sub-agent lifecycle entries. The Web UI's
 // cards are driven by live WS subagent_state messages; this registry is the
@@ -205,7 +205,7 @@ func subagentRegistrySnapshot(runKey string) []subagentEntry {
 
 // ── Telemetry relay: log fan-out + state fan-out + registry ──────────
 
-// newSubagentTelemetryRelay wraps the M1 log relay: every line is relayed
+// newSubagentTelemetryRelay wraps the log relay: every line is relayed
 // as a (redacted, capped) subagent_log message; lifecycle records
 // additionally update the registry and emit a subagent_state WS message.
 func newSubagentTelemetryRelay(send func(v any) error, runKey string) func(taskIdx int, taskID string, line string) {
@@ -514,7 +514,7 @@ func newSubagentDoneRelay(send func(v any) error, runKey string) func(taskIdx in
 	}
 }
 
-// ── Lifetime sub-agent counters (telemetry M3) ──────────────────────
+// ── Lifetime sub-agent counters (telemetry) ──────────────────────
 
 var subagentStats struct {
 	completed atomic.Int64

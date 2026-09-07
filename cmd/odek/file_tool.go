@@ -343,8 +343,8 @@ func (t *readFileTool) Call(argsJSON string) (string, error) {
 		return jsonError(fmt.Sprintf("cannot read %q: %v", args.Path, err))
 	}
 
-	// H-6: only a FULL-file read licenses later execution of this file
-	// (review HIGH-001): a partial read (offset/limit window over a longer
+	// Only a FULL-file read licenses later execution of this file:
+	// a partial read (offset/limit window over a longer
 	// file) showed the model a prefix — the payload could ride below.
 	if args.Offset <= 1 && args.Limit >= totalLines {
 		danger.RecordReadCtx(t.toolCtx(), resolvedPath)
@@ -439,7 +439,7 @@ func (t *writeFileTool) Call(argsJSON string) (string, error) {
 	// Security: classify and check write operation. Write targets use the
 	// write-aware classifier: deferred-execution targets (shell profiles,
 	// git hooks, CI workflows, cron/systemd/launchd definitions) escalate
-	// to the persistence class (H-5), and content sniffing catches
+	// to the persistence class, and content sniffing catches
 	// lifecycle hooks planted into package.json.
 	risk := danger.ClassifyPathWrite(args.Path)
 	if escalated, isHook := danger.LifecycleContentClass(args.Path, args.Content, risk); isHook {
@@ -465,7 +465,7 @@ func (t *writeFileTool) Call(argsJSON string) (string, error) {
 		if err := sandboxWriteFile(t.containerName, args.Path, []byte(args.Content), origMode); err != nil {
 			return jsonError(fmt.Sprintf("cannot write %q via sandbox: %v", args.Path, err))
 		}
-		// Content authored this session is content the agent has seen (H-6).
+		// Content authored this session is content the agent has seen.
 		danger.RecordReadCtx(t.toolCtx(), args.Path)
 		return jsonResult(writeFileResult{
 			Success: true,
@@ -512,7 +512,7 @@ func (t *writeFileTool) Call(argsJSON string) (string, error) {
 		return jsonError(fmt.Sprintf("cannot rename %q: %v", args.Path, err))
 	}
 
-	// Content authored this session is content the agent has seen (H-6).
+	// Content authored this session is content the agent has seen.
 	danger.RecordReadCtx(t.toolCtx(), args.Path)
 	return jsonResult(writeFileResult{
 		Success: true,
@@ -912,7 +912,7 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 	args.Path = resolved
 
 	// Security: classify and check patch operation. Write-aware classifier
-	// (H-5): deferred-execution targets escalate to persistence, and the
+	// deferred-execution targets escalate to persistence, and the
 	// new content is sniffed for lifecycle hooks (package.json scripts,
 	// conftest.py autouse).
 	risk := danger.ClassifyPathWrite(args.Path)
@@ -1024,7 +1024,7 @@ func (t *patchTool) Call(argsJSON string) (string, error) {
 		return jsonError(fmt.Sprintf("cannot write %q: %v", args.Path, err))
 	}
 
-	// Content (re)authored this session is content the agent has seen (H-6).
+	// Content (re)authored this session is content the agent has seen.
 	danger.RecordReadCtx(t.toolCtx(), args.Path)
 	return jsonResult(patchResult{
 		Success: true,
@@ -1564,7 +1564,7 @@ func (t *batchReadTool) readSingle(arg batchReadFileArg) batchReadFileResult {
 		return batchReadFileResult{Path: arg.Path, Error: fmt.Sprintf("cannot read %q: %v", arg.Path, err)}
 	}
 
-	// H-6: full-file reads only (review HIGH-001) — same rationale as
+	// full-file reads only — same rationale as
 	// read_file.
 	if arg.Offset <= 1 && arg.Limit >= totalLines {
 		danger.RecordReadCtx(t.toolCtx(), resolvedPath)

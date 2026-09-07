@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// Security review wave A, F3: on entropy-source failure newWrapperNonce
+// On entropy-source failure newWrapperNonce
 // returned the CONSTANT "00000000" — every wrapper in that degraded mode
 // would share one guessable nonce, letting forged tags pair with real
 // ones. Fail-open. The fallback must still differ per call.

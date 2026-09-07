@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// ── H-7: non_interactive "read_only" — useful containment ────────────────
+// ── non_interactive "read_only" — useful containment ────────────────
 //
 // The study's deny posture produced 51 runs that never reached the payload
 // because the agent couldn't ls/tree/cat. Real containment, but not

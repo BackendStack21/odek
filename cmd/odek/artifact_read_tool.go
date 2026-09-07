@@ -1,6 +1,6 @@
 package main
 
-// artifact_read (M2) — parent-only built-in that resolves a registered
+// artifact_read — parent-only built-in that resolves a registered
 // artifact id to validated content. The model supplies ONLY the id (plus an
 // optional byte offset/limit); path resolution happens exclusively through
 // the collation-time registry, so no model input ever reaches the

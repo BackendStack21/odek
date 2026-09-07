@@ -172,7 +172,7 @@ func TestWakeDispatcher_StopPreventsFurtherWakes(t *testing.T) {
 	}
 }
 
-// ── guarded slot (W2: enqueue-after-close must never panic) ─────────────
+// ── guarded slot (enqueue-after-close must never panic) ─────────────
 
 func TestConnWakeSlot_PostAfterCloseIsSafe(t *testing.T) {
 	ch := make(chan []byte, 1)
@@ -217,7 +217,7 @@ func TestConnWakeSlot_ConcurrentPostDuringCloseIsSafe(t *testing.T) {
 
 func TestConnWakeSlot_StampsWakeToken(t *testing.T) {
 	// The slot stamps every posted item with the connection's secret token
-	// (review P1-2): the processor drops bg_wake items whose token does not
+	// the processor drops bg_wake items whose token does not
 	// match, so a client-injected item — which can never carry the token —
 	// is inert.
 	ch := make(chan []byte, 1)
@@ -235,7 +235,7 @@ func TestConnWakeSlot_StampsWakeToken(t *testing.T) {
 	}
 }
 
-// ── provenance + token gates (review P1-1 / P1-2 regressions) ───────────
+// ── provenance + token gates ───────────
 
 func TestWakeInitiated_TypeGated(t *testing.T) {
 	// A client prompt that forges SystemInitiated must NOT get system
@@ -288,7 +288,7 @@ func TestWSWakeRouter_StatePerSession(t *testing.T) {
 	}
 
 	// A SECOND connection bound to the same session going busy makes the
-	// whole session busy (W3: per-session exclusion — a wake turn must
+	// whole session busy (per-session exclusion — a wake turn must
 	// never run concurrently with the other connection's turn).
 	info2 := &wsConnInfo{ID: newWSConnID()}
 	info2.setLive("sess-1", true)
@@ -340,7 +340,7 @@ func TestWSWakeRouter_PostWithoutSlotDrops(t *testing.T) {
 	}
 }
 
-// ── bg_job frame (M2) ────────────────────────────────────────────────────
+// ── bg_job frame ────────────────────────────────────────────────────
 
 func TestBGJobFrame_TerminalFieldsAndRedaction(t *testing.T) {
 	secret := "AKIA" + "IOSFODNN7EXAMPL" + "E"

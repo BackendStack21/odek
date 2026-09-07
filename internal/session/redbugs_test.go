@@ -10,7 +10,7 @@ import (
 	"github.com/BackendStack21/go-vector/pkg/vector"
 )
 
-// RED #7 (S1): Cleanup passes index IDs straight to the filesystem with
+// Cleanup passes index IDs straight to the filesystem with
 // no ValidateSessionID check. A planted/tampered index.json entry with
 // id "../victim" makes Cleanup delete files outside the sessions dir —
 // the exact threat model Load/Delete/saveLocked already defend against.
@@ -48,7 +48,7 @@ func TestRED_CleanupValidatesSessionIDs(t *testing.T) {
 	}
 }
 
-// RED #8 (S4): A stale index entry (file deleted before the index was
+// A stale index entry (file deleted before the index was
 // rewritten — Delete removes the file first) breaks Latest() entirely
 // and surfaces phantom rows in List(), even though valid sessions exist.
 func TestRED_StaleIndexEntriesHandled(t *testing.T) {
@@ -133,7 +133,7 @@ type errorString string
 
 func (e errorString) Error() string { return string(e) }
 
-// RED #9 (S3): The failedAt cool-down is only consulted in rebuildLocked.
+// The failedAt cool-down is only consulted in rebuildLocked.
 // Once the index is ready, Add/Search hit the embedding backend on every
 // call even during the cool-down, hammering a down server — contradicting
 // the package docs ("a down server must not be re-hit on every search or

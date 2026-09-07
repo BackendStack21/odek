@@ -1,7 +1,7 @@
 package main
 
-// Tests for the Telegram /plan_status command (docs/PLANNING.md Phase 3
-// surfaces): chat-scoped resolution through the SessionManager path,
+// Tests for the Telegram /plan_status command (docs/PLANNING.md):
+// chat-scoped resolution through the SessionManager path,
 // absent-plan reply, compact status rendering, and the size bound that
 // keeps the reply under Telegram's 4096-char message cap.
 

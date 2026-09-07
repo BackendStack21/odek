@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// ── H-6: executing an unread repo-supplied script is its own gate ────────
+// ── executing an unread repo-supplied script is its own gate ────────
 //
 // Scenarios 21/22 were the only ones that executed on the capable tier:
 // the payload sat inside the correct, documented fix and fired on the

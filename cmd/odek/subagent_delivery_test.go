@@ -312,7 +312,7 @@ func TestFormatTaskResult_ArtifactProvenanceLine(t *testing.T) {
 	}
 	registerTaskArtifacts(fmt.Sprintf(`{"status":"success","artifacts":[%s]}`, refJSON(p1, c1)), dir, 0, "task-a")
 	raw2 := fmt.Sprintf(`{"status":"success","artifacts":[%s]}`, refJSON(p2, c2))
-	// Production order (judge P1): register first, THEN render — the render
+	// Production order (judge): register first, THEN render — the render
 	// must resolve the aliased id through the registry.
 	registerTaskArtifacts(raw2, dir, 1, "task-b")
 

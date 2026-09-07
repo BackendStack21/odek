@@ -9,7 +9,7 @@ import (
 	"github.com/BackendStack21/odek/internal/redact"
 )
 
-// Security review wave C, F2: RegisterSecretsFromEnv gates on
+// RegisterSecretsFromEnv gates on
 // sensitive-looking NAMES, but every value in secrets.env is by definition
 // a secret the operator chose to inject — a bare echo of SMTP_URL or
 // HARBOR_ROBOT content must be redacted like any other known secret

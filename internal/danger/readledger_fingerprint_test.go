@@ -8,13 +8,13 @@ import (
 	"testing"
 )
 
-// ── H-6 hardening: read-ledger fingerprints (TOCTOU re-gate) ────────────
+// ── hardening: read-ledger fingerprints (TOCTOU re-gate) ────────────
 //
 // The read ledger records that a path was displayed once this session.
 // If the file mutates AFTER that read — via an MCP tool, `curl -o`,
 // an npm lifecycle hook, or any other process — the stale entry still
 // licenses execution of content the model never saw. That re-creates
-// exactly the timing failure the H-6 study identified ("detection is
+// exactly the timing failure the study identified ("detection is
 // not the failing control, timing is"), inside the gate itself.
 //
 // The fix: RecordRead stores a fingerprint of the file state at display
@@ -167,7 +167,7 @@ func TestWasReadFresh_LargeFileFallsBackToStat(t *testing.T) {
 // it separately — a swap window between two path resolutions — and an
 // unreadable-but-stat-able file yielded a stat-only size+mtime license. A
 // file the process cannot open can never have been displayed to the model,
-// so it must fail closed instead (the H-6 corollary: a failed read never
+// so it must fail closed instead (the corollary: a failed read never
 // licenses).
 func TestFingerprintFile_UnreadableFileFailsClosed(t *testing.T) {
 	if runtime.GOOS == "windows" {

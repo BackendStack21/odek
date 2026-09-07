@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// Security review wave A, F1: neutraliseWrapperLiterals replaced a forged
+// NeutraliseWrapperLiterals replaced a forged
 // "untrusted_content" with a U+02CD homoglyph — visually and
 // tokenization-identical to a real tag fragment. A forged
 // </untrusted_content_deadbeef> inside a body still LOOKED like a real

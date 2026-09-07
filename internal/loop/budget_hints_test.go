@@ -1,7 +1,7 @@
 package loop
 
 // Tests for budget-awareness telemetry and graceful finalization
-// (SUB_AGENTS_IMPROVEMENTS.md M1.2/M1.3).
+// (SUB_AGENTS_IMPROVEMENTS.md).
 
 import (
 	"context"

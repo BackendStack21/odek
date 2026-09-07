@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// Wire v2 (P2/P6) — queued phase + cost sub-total. These pin the
+// Wire v2 — queued phase + cost sub-total. These pin the
 // delegate_tasks pre-spawn emission path and the /api/usage sub-agent
 // cost sub-total introduced with the sub-agent wire contract.
 

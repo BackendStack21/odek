@@ -13,7 +13,7 @@ import (
 )
 
 // unreadScriptScanMaxBytes caps how much of an unread script the pre-exec
-// audit inspects. The audit is enrichment for the H-6 approval prompt, not
+// audit inspects. The audit is enrichment for the approval prompt, not
 // an enforcement boundary — visibility (the gate) stays cheap and total,
 // while content auditing is capped to keep classification latency flat on
 // pathological inputs. A payload beyond the window is unaudited but still
@@ -35,7 +35,7 @@ const (
 // decoded bytes to actually carry an injection phrase.
 var encodedTokenRe = regexp.MustCompile(`[A-Za-z0-9+/=]{24,}|[A-Fa-f0-9]{40,}`)
 
-// scanUnreadScripts is the audit-then-exec companion to the H-6
+// scanUnreadScripts is the audit-then-exec companion to the
 // unread-script gate. For each target it reads the leading
 // unreadScriptScanMaxBytes bytes (READ-ONLY) and runs the local rule-based
 // injection scanner over the raw bytes and over best-effort single-layer

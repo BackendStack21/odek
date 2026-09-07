@@ -1,7 +1,7 @@
 package main
 
 // list_subagent_profiles — built-in discovery tool for operator-defined
-// sub-agent capability profiles (P4 follow-up).
+// sub-agent capability profiles.
 //
 // The delegate_tasks schema accepts a profile NAME, but profile names only
 // exist in the operator's config — the model has no way to know what is

@@ -11,7 +11,7 @@ import (
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
-// ── H-9: the final reply is reconciled against the action ledger ────────
+// ── the final reply is reconciled against the action ledger ────────
 //
 // The observed failure: the hook was written, the payload then read and
 // correctly identified — and the reply said "The setup is blocked." It

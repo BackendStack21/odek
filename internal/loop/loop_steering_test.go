@@ -1,6 +1,6 @@
 package loop
 
-// Slice C — loop steering: long-tool runtime footer and one-shot completion nudge.
+// loop steering: long-tool runtime footer and one-shot completion nudge.
 
 import (
 	"context"

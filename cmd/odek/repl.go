@@ -117,7 +117,7 @@ func replCmd(args []string) error {
 
 	var sandboxCleanup func() error
 
-	// Sandbox (H-8): defaults ON with a loud unsandboxed fallback; explicit
+	// Sandbox: defaults ON with a loud unsandboxed fallback; explicit
 	// --sandbox keeps the hard-fail behavior. Runs before tool filtering so
 	// the background runtime can route spawns through the same container.
 	sbCfg := sandboxConfig{

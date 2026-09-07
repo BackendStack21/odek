@@ -1,0 +1,22 @@
+---
+description: Never put plan/review milestone IDs in comments or product docs
+alwaysApply: true
+---
+
+# No plan milestones in comments or docs
+
+Do not put planning, review, or ticket shorthand in comments, test names, or product documentation.
+
+Forbidden in comments and shipped docs: `Slice A`–`G`, `M1` / `M1.2`, `P0-1` / `P2` / `P4`, `WP6`, `H-9`, `HIGH-001`, `S-M1`, `B-H1`, `F2`, `LOW-2`, `finding 7`, review-wave labels, and similar IDs. Describe the behavior instead.
+
+```go
+// BAD
+// Stall map (Slice C): drop fingerprints for that tool only (P0-3).
+
+// GOOD
+// A failed call drops stall fingerprints for that tool name only.
+```
+
+Keep operational sequence labels that name runtime steps (`Phase 1: execute tools`, shutdown notify/drain/spawn). Those are not plan IDs.
+
+This applies to every repository, not only odek.

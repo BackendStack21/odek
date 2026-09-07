@@ -13,7 +13,7 @@ import (
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
-// RED #12 (L1): refreshDigest inserts the digest right after the protected
+// refreshDigest inserts the digest right after the protected
 // head — i.e. AFTER the first user message (headLen includes the task).
 // trimToSurvival only scans for the digest BEFORE the first user message,
 // so a freshly created digest is never found and the compacted history is
@@ -49,7 +49,7 @@ func newUsageServer(t *testing.T, calls *int) *httptest.Server {
 	}))
 }
 
-// RED #13 (L2): Engine.Run does not reset token accounting even though its
+// Engine.Run does not reset token accounting even though its
 // own field contract says "Reset on each Run/RunWithMessages call". A second
 // Run accumulates totals from the first, so a per-run input-token budget
 // trips early (or callers read cross-run sums).
@@ -75,7 +75,7 @@ func TestRED_RunResetsTokenAccounting(t *testing.T) {
 	}
 }
 
-// RED #14 (L5): RunWithMessages with an empty history plus a memory
+// RunWithMessages with an empty history plus a memory
 // callback panics: insertAt := 1 slices past an empty message list.
 func TestRED_RunWithMessagesEmptyHistoryNoPanic(t *testing.T) {
 	defer func() {

@@ -822,7 +822,7 @@ func TestExtractSummary_AssistantWithToolCallsOnly(t *testing.T) {
 	}
 }
 
-// Updated for the M0 headline cap (SUBAGENT_RESULT_ARTIFACTS_PLAN.md):
+// Updated for the headline cap (SUBAGENT_RESULT_ARTIFACTS_PLAN.md):
 // extractSummary now carries 2048 runes instead of the old 500-rune cut.
 func TestExtractSummary_TruncatesLongOutput(t *testing.T) {
 	longContent := strings.Repeat("a", 3000)

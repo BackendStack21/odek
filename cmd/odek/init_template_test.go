@@ -101,7 +101,7 @@ func TestLocalConfigTemplate_RemainsProjectSafe(t *testing.T) {
 }
 
 // TestGlobalConfigTemplate_PromptCachingAndStreamDefaultOn pins the
-// intelligence-milestone defaults: a fresh `odek init --global` must not
+// init-template defaults: a fresh `odek init --global` must not
 // silently disable prompt caching or streaming.
 func TestGlobalConfigTemplate_PromptCachingAndStreamDefaultOn(t *testing.T) {
 	var fc struct {

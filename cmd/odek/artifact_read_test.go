@@ -1,6 +1,6 @@
 package main
 
-// TDD RED phase — M2 artifact_read (SUBAGENT_RESULT_ARTIFACTS_PLAN.md):
+// TDD RED phase — artifact_read (SUBAGENT_RESULT_ARTIFACTS_PLAN.md):
 // validated artifact refs registered at collation become readable content
 // via a parent-only built-in tool. The model supplies ONLY the id — path
 // resolution is internal to the registry, so no model input ever reaches

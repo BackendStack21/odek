@@ -1237,7 +1237,7 @@ func TestWriteFile_SecurityDenied(t *testing.T) {
 	}
 }
 
-// ── Search path classification tests (H-4 / H-5) ────────────────────────
+// ── Search path classification tests ────────────────────────
 
 // countingApprover is a test double that approves the first N prompt requests
 // and denies the rest. It lets us approve a search root while denying the

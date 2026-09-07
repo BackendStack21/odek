@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// Security review wave C, F4: validateSessionToken auto-mints a token for
+// validateSessionToken auto-mints a token for
 // legacy (pre-token-defense) sessions and returns ok regardless of what
 // the caller presented — so on MUTATION paths (rename/pin, delete, cancel)
 // an instance-cookie-only holder could act on any legacy session. Mutations

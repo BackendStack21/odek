@@ -11,7 +11,7 @@ import (
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
-// ── P0-3: tool_call events must carry a stable call_id ──────────────────
+// ── tool_call events must carry a stable call_id ──────────────────
 //
 // started,started,…,completed,completed,… with no correlation id cannot be
 // paired by audit/replay consumers; args_sha256 only works when arguments

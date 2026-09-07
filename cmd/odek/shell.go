@@ -262,7 +262,7 @@ func (t *shellTool) Call(args string) (string, error) {
 	output := strings.TrimSpace(outBuf.String())
 	stderrStr := strings.TrimSpace(errBuf.String())
 
-	// H-6: a successful read-only viewer run (cat/head/tail/…) marks its
+	// a successful read-only viewer run (cat/head/tail/…) marks its
 	// file operands as read for the session, so a later execution of the
 	// same script passes the unread-exec gate. Only success counts — a
 	// failed `cat env.sh` must never license executing env.sh.
@@ -298,7 +298,7 @@ func (t *shellTool) checkApproval(cmd, description string) error {
 	// Check allowlist/denylist + risk class via dangerous config
 	action := t.dangerousConfig.ActionForCommand(cmd)
 
-	// H-6: executing a repo-supplied script whose contents have not been
+	// executing a repo-supplied script whose contents have not been
 	// read this session gates under unread_exec — even when code_execution
 	// was allowed or its class trusted. The whole point is per-script
 	// review: the payload in the study sat inside the correct, documented
@@ -317,7 +317,7 @@ func (t *shellTool) checkApproval(cmd, description string) error {
 			if description == "" {
 				description = fmt.Sprintf("executes a script whose contents have not been read this session: %s", strings.Join(targets, ", "))
 			}
-			// Audit-then-exec (H-6 companion): the human decides with the
+			// Audit-then-exec: the human decides with the
 			// bytes. Content evidence from the local injection scanner —
 			// read-only, ledger-neutral — rides in the approval description.
 			if findings := scanUnreadScripts(targets); len(findings) > 0 {
@@ -417,7 +417,7 @@ var sandboxCmdSeq atomic.Uint64
 
 // readViewerCommands are commands whose only effect on a file operand is to
 // show its contents. A successful run of one of these marks the operands as
-// read for the session read ledger (H-6). Best-effort field parsing: the
+// read for the session read ledger. Best-effort field parsing: the
 // ledger is an approval affordance, not a security boundary — recording a
 // false positive would only loosen a gate, never tighten one incorrectly.
 var readViewerCommands = map[string]bool{

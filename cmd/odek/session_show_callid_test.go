@@ -7,7 +7,7 @@ import (
 	"github.com/BackendStack21/odek/internal/session"
 )
 
-// ── P0-3: batched tool calls must be correlatable in `odek session show` ─
+// ── batched tool calls must be correlatable in `odek session show` ─
 //
 // Parallel tool calls are stored CALL,CALL,…,RESULT,RESULT,… A transcript
 // parser that pairs them sequentially attaches another call's output to a

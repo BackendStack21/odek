@@ -1,20 +1,20 @@
 package main
 
-// Tests for the serve-surface fix sweep (F8, F2, F7, F3/F4):
+// Tests for the serve-surface fix sweep:
 //
-//   F8 — headless REST-run goroutines are tracked in serveRunsWG and
+//   Headless REST-run goroutines are tracked in serveRunsWG and
 //        drainServeWork waits (bounded) for them at shutdown; previously a
 //        blocking run outlived listener shutdown and died at process exit
 //        with its cleanup defers (agent.Close → docker rm -f) never running.
-//   F2 — the ping/pong heartbeat ran on the socket-reader goroutine while
+//   The ping/pong heartbeat ran on the socket-reader goroutine while
 //        the processor loop wrote resolved.Model (per-prompt model switch);
 //        the reader now uses an immutable per-connection snapshot.
-//   F7 — the wsConnSem slot acquired in the Handshake callback leaked when
+//   The wsConnSem slot acquired in the Handshake callback leaked when
 //        x/net/websocket failed the upgrade after that callback returned
 //        (newServerConn → AcceptHandshake error): the Handler — and with it
 //        handleWS's release defer — never ran. serveWSUpgrades closes that
 //        window.
-//   F3/F4 — rate-limit keying: clientIP takes the LAST X-Forwarded-For
+//   Rate-limit keying: clientIP takes the LAST X-Forwarded-For
 //        entry (left-most is client-supplied and spoofable behind a trusted
 //        proxy), and rateLimiter.allow skips empty keys instead of
 //        inserting an never-evicted "" bucket.
@@ -31,7 +31,7 @@ import (
 	golangws "golang.org/x/net/websocket"
 )
 
-// ── F4: empty rate-limit keys are skipped, not tracked ──────────────────
+// ── empty rate-limit keys are skipped, not tracked ──────────────────
 
 func TestRateLimiter_SkipsEmptyKey(t *testing.T) {
 	rl := newRateLimiter(1, time.Minute)
@@ -75,7 +75,7 @@ func TestRateLimiter_GCsIdleKeys(t *testing.T) {
 	}
 }
 
-// ── F3: clientIP keys on the LAST XFF entry behind a trusted proxy ──────
+// ── clientIP keys on the LAST XFF entry behind a trusted proxy ──────
 
 func TestClientIP_UsesLastForwardedEntryFromTrustedProxy(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -88,7 +88,7 @@ func TestClientIP_UsesLastForwardedEntryFromTrustedProxy(t *testing.T) {
 	}
 }
 
-// ── F7: the handshake-acquired slot survives post-handshake failures ────
+// ── the handshake-acquired slot survives post-handshake failures ────
 
 // wsSemInFlight reports how many wsConnSem slots are currently held. Tests
 // using it must stay sequential with anything that touches wsConnSem (the
@@ -186,7 +186,7 @@ func TestServeWSUpgrades_NoReleaseWhenHandshakeRejects(t *testing.T) {
 	}
 }
 
-// ── F8: headless runs are tracked and drained at shutdown ───────────────
+// ── headless runs are tracked and drained at shutdown ───────────────
 
 func TestDrainServeWork_WaitsForTrackedGoroutines(t *testing.T) {
 	var finished atomic.Bool
@@ -255,7 +255,7 @@ func TestStartServeRun_TrackedByDrainServeWork(t *testing.T) {
 	}
 }
 
-// ── F2: pong reads the immutable snapshot, not the live config ──────────
+// ── pong reads the immutable snapshot, not the live config ──────────
 
 // The socket-reader goroutine answers pings while the processor loop may be
 // writing resolved.Model (per-prompt model switch). The pong must carry the

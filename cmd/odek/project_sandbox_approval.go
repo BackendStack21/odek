@@ -262,7 +262,7 @@ func sessionDockerfileApproved(key string) bool {
 // Bare NUL-concatenation allowed boundary-shifting collisions: a "\x00"
 // inside one field could reshape the hash stream into a different,
 // attacker-chosen field split, letting a stale persisted approval
-// auto-apply to a different config (2026-09 security review, wave B).
+// auto-apply to a different config (2026-09 security review).
 // The byte length prefix makes every field self-delimiting.
 func hashField(h hash.Hash, tag, value string) {
 	fmt.Fprintf(h, "\x00%s:%d:", tag, len(value))

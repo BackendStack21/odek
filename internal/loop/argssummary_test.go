@@ -12,7 +12,7 @@ import (
 	"github.com/BackendStack21/odek/internal/tool"
 )
 
-// ── P0-4: the event stream must be able to answer "what actually ran" ───
+// ── the event stream must be able to answer "what actually ran" ───
 
 func TestArgv0(t *testing.T) {
 	cases := []struct{ cmd, want string }{

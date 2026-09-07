@@ -219,7 +219,7 @@ func TestE2E_SandboxFileInjection_MultipleFiles(t *testing.T) {
 	}
 }
 
-// TestE2E_SandboxTimeoutKillsInContainerProcesses verifies finding 7's fix:
+// TestE2E_SandboxTimeoutKillsInContainerProcesses verifies that
 // when a sandboxed shell command times out, the in-container process group
 // is killed — not just the host-side `docker exec` client. Before the fix,
 // the in-container processes kept running until the container was destroyed.

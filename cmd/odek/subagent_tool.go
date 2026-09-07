@@ -75,7 +75,7 @@ type delegateTasksTool struct {
 	// this process actually has the tool (mid-tree parents don't — R2-3).
 	artifactReadAvailable bool
 
-	// profiles carries the operator's resolved capability profiles (P4)
+	// profiles carries the operator's resolved capability profiles
 	// for parent-side fail-closed validation: an unknown profile name must
 	// fail the task BEFORE a child is spawned. Nil = operator defined no
 	// profiles; the child remains the fail-closed authority in that case.
@@ -87,13 +87,13 @@ type delegateTasksTool struct {
 	model    string
 	baseURL  string
 
-	// maxDepth caps delegation nesting (M1.6): a process at depth N (its own
+	// maxDepth caps delegation nesting: a process at depth N (its own
 	// level, stamped by its parent via ODEK_SUBAGENT_DEPTH) may only spawn
 	// children while N+1 <= maxDepth. 0 = uncapped (legacy/test default).
 	maxDepth int
 
 	// budgetInherit is config.BudgetInheritOperator (default) or
-	// config.BudgetInheritShare (M1.5): in share mode the run's remaining
+	// config.BudgetInheritShare: in share mode the run's remaining
 	// budget is written into each task file so the child enforces
 	// min(operator limits, parent remaining).
 	budgetInherit string
@@ -104,14 +104,14 @@ type delegateTasksTool struct {
 	budgetMu   sync.Mutex
 	budgetView budget.View
 
-	// selfTrust is THIS process's own effective trust level (P3): stamped
+	// selfTrust is THIS process's own effective trust level: stamped
 	// into every spawned task file so trust cannot increase downward.
 	// Empty = top-level operator run (trusted).
 	selfTrust string
 
 	// eventMu/emitEventFn carry the runtime event emitter injected by
 	// odek.New (SetEventEmitter); used to surface child denials as
-	// subagent_denied events (P1).
+	// subagent_denied events.
 	eventMu     sync.Mutex
 	emitEventFn func(events.Event)
 
@@ -196,7 +196,7 @@ func (t *delegateTasksTool) SetBudgetView(v budget.View) {
 
 // SetEventEmitter is called by odek.New for tools implementing the
 // emitter interface: it hands the tool the runtime event stream so child
-// denials surface as subagent_denied events (P1).
+// denials surface as subagent_denied events.
 func (t *delegateTasksTool) SetEventEmitter(fn func(events.Event)) {
 	t.eventMu.Lock()
 	defer t.eventMu.Unlock()
@@ -314,7 +314,7 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 		}
 	}
 
-	// Delegation depth cap (M1.6): refuse to fan out beyond the configured
+	// Delegation depth cap: refuse to fan out beyond the configured
 	// nesting limit. Fail the whole call — every task would hit the same
 	// wall, and the parent is better served by the error than by N
 	// identical failures.
@@ -345,7 +345,7 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 		// the child echoes on every telemetry record.
 		taskID := newTaskID()
 		taskIDs[i] = taskID
-		// Wire v2 (P2): record + emit the queued phase BEFORE acquiring a
+		// Wire v2: record + emit the queued phase BEFORE acquiring a
 		// limiter slot, so clients see every accepted task immediately —
 		// including the ones still waiting for a concurrency slot.
 		t.emitSubagentQueued(i, taskID, task.Goal, task.Profile, task.MaxRisk)
@@ -378,7 +378,7 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 	// later calls sharing the same limiter.
 	wg.Wait()
 
-	// P1: surface child denials on the runtime event stream (best effort —
+	// surface child denials on the runtime event stream (best effort
 	// unparseable results simply carry no denials).
 	t.eventMu.Lock()
 	emit := t.emitEventFn
@@ -409,13 +409,13 @@ func (t *delegateTasksTool) Call(args string) (string, error) {
 	buf.WriteString("📋 Sub-agent results:\n\n")
 	for i, r := range results {
 		fmt.Fprintf(&buf, "─── Task %d: %s ───\n", i+1, truncate(input.Tasks[i].Goal, 60))
-		// Register BEFORE rendering (judge P1): the render resolves effective
+		// Register BEFORE rendering (judge): the render resolves effective
 		// (aliased) ids through the registry, so an aliased duplicate must
 		// already be registered or the artifacts line advertises the plain
 		// id and artifact_read resolves it to the WRONG task's bytes.
 		notes := registerTaskArtifacts(r, dirs[i], i, taskIDs[i])
 		buf.WriteString(formatTaskResultDetailed(r, i, t.artifactReadAvailable, taskIDs[i], dirs[i]))
-		// M2: ambiguity notes render after the artifacts block, same shape as
+		// ambiguity notes render after the artifacts block, same shape as
 		// the pre-aliasing output.
 		if len(notes) > 0 {
 			buf.WriteString(strings.Join(notes, "\n") + "\n")
@@ -442,7 +442,7 @@ func (t *delegateTasksTool) chargeParentUsage(tokens int64) {
 }
 
 func (t *delegateTasksTool) runTask(taskIdx int, taskID, goal, taskContext, guidance, trustLevel, maxRisk, profile, artifactDir string) string {
-	// Parent-side fail-closed validation (P4): an unknown profile name must
+	// Parent-side fail-closed validation: an unknown profile name must
 	// fail the task BEFORE a child is spawned — the tool schema promises
 	// "unknown names fail the task", and a silently-bare child would run
 	// without the operator's permission envelope. The child re-validates
@@ -463,7 +463,7 @@ func (t *delegateTasksTool) runTask(taskIdx int, taskID, goal, taskContext, guid
 	ctx, cancel := context.WithTimeout(parentCtx, t.timeout)
 	defer cancel()
 
-	// Share-mode budget passdown (M1.5): snapshot the parent's remaining
+	// Share-mode budget passdown: snapshot the parent's remaining
 	// budget BEFORE any per-task resource is allocated. An exhausted parent
 	// dimension leaves the child min(operator cap, 0) = 0 of headroom, so
 	// the task fails fast with the typed budget error instead of spawning a
@@ -523,8 +523,8 @@ func (t *delegateTasksTool) runTask(taskIdx int, taskID, goal, taskContext, guid
 	taskPath := taskFile.Name()
 
 	// Typed task envelope: the parent's remaining budget rides along in
-	// share mode (M1.5) and the parent's effective trust is stamped for
-	// the non-increasing-downward invariant (P3). taskID is minted by the
+	// share mode and the parent's effective trust is stamped for
+	// the non-increasing-downward invariant. taskID is minted by the
 	// caller (delegate_tasks loop) and doubles as the artifact-dir name.
 	// Register the per-task cancel func in the process-global stop control
 	// registry (WS subagent_cancel resolves task ids through it, mirroring
@@ -1059,20 +1059,20 @@ func progressLimitExceeded(err error) bool {
 var _ odek.Tool = (*delegateTasksTool)(nil)
 
 // taskBudgetFromSnapshot maps a budget snapshot to the task-file budget
-// block (M1.5 passdown); nil when no limit is configured AND none is
+// block; nil when no limit is configured AND none is
 // exhausted — there is nothing to pass down, so the child keeps its operator
 // caps. Exhausted dimensions ride the *_exhausted flags: a remaining of 0 is
 // wire-ambiguous with "unconfigured", and the child clamps those dimensions
 // to a hard cap of 0 (exhaustedTaskBudget then fails the spawn).
 func taskBudgetFromSnapshot(s budget.Snapshot) *taskBudget {
 	tb := &taskBudget{
-		MaxRuntimeSeconds:  s.RemainingRuntimeSeconds,
-		MaxToolCalls:       s.RemainingToolCalls,
-		MaxCostUSD:         s.RemainingCostUSD,
-		MaxInputTokens:     s.RemainingInputTokens,
-		RuntimeExhausted:   s.RuntimeExhausted,
-		ToolCallsExhausted: s.ToolCallsExhausted,
-		CostExhausted:      s.CostExhausted,
+		MaxRuntimeSeconds:    s.RemainingRuntimeSeconds,
+		MaxToolCalls:         s.RemainingToolCalls,
+		MaxCostUSD:           s.RemainingCostUSD,
+		MaxInputTokens:       s.RemainingInputTokens,
+		RuntimeExhausted:     s.RuntimeExhausted,
+		ToolCallsExhausted:   s.ToolCallsExhausted,
+		CostExhausted:        s.CostExhausted,
 		InputTokensExhausted: s.InputTokensExhausted,
 	}
 	if tb.MaxRuntimeSeconds <= 0 && tb.MaxToolCalls <= 0 && tb.MaxCostUSD <= 0 &&
@@ -1101,7 +1101,7 @@ type taskEnvelope struct {
 }
 
 // subagentProtocolV2 is the telemetry protocol version stamped into task
-// envelopes (M1 of the sub-agent telemetry plan). Protocol-2 children echo
+// envelopes (sub-agent telemetry plan). Protocol-2 children echo
 // the task_id on every stdout record, emit lifecycle records
 // (subagent_started/progress/finished), and frame the final result as
 // {"type":"result","task_id":…,"result":{…}} so result detection no longer
@@ -1122,10 +1122,10 @@ func newTaskID() string {
 }
 
 // newTaskEnvelope builds the task-file envelope. parentTrust is the
-// PARENT's own effective trust (P3 — trust is non-increasing downward):
+// PARENT's own effective trust (trust is non-increasing downward):
 // the child computes min(parentTrust, trustLevel) as its effective trust,
 // so an untrusted task tree can never spawn trusted children. profile
-// selects an operator-defined capability profile (P4) whose settings
+// selects an operator-defined capability profile whose settings
 // override the corresponding operator config for the child.
 func newTaskEnvelope(taskID, goal, context, guidance, trustLevel, maxRisk, profile string, budget *taskBudget, parentTrust string) taskEnvelope {
 	return taskEnvelope{
@@ -1143,7 +1143,7 @@ func newTaskEnvelope(taskID, goal, context, guidance, trustLevel, maxRisk, profi
 }
 
 // subagentDeniedEvent is emitted on the runtime event stream for every
-// policy denial observed by a child sub-agent (P1).
+// policy denial observed by a child sub-agent.
 // subagentWaitEventThreshold is how long a task may queue on the shared
 // child limiter before odek emits subagent_concurrency_wait. Var so tests
 // can shrink it.
@@ -1301,7 +1301,7 @@ func subagentExitStatus(result map[string]any, waitErr error, ctx context.Contex
 
 // subagentDepthEnvVar carries the delegation depth down the process tree.
 // Each delegate_tasks spawn stamps its children with depth+1; a child at
-// the configured max depth refuses to delegate further (M1.6).
+// the configured max depth refuses to delegate further.
 const subagentDepthEnvVar = "ODEK_SUBAGENT_DEPTH"
 
 // subagentDepth returns this process's delegation depth (0 = top-level

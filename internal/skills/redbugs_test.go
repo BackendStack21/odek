@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// RED #15 (K1): Skill tools read t.Manager.Result.AutoLoad/Lazy with no
+// Skill tools read t.Manager.Result.AutoLoad/Lazy with no
 // lock while RecordUsage mutates the same slices under sm.mu — a data
 // race (validate with `go test -race`). The manager exposes locked
 // accessors; the tools bypass them.

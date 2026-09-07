@@ -336,7 +336,7 @@ func TestConfigViewToolToleratesNilView(t *testing.T) {
 // ── wiring: builtinTools must populate the live registry ────────────────
 
 func TestBuiltinToolsWiresListToolsRegistry(t *testing.T) {
-	// P1 regression: the live-name capture was silently missing, so
+	// regression: the live-name capture was silently missing, so
 	// production list_tools always reported an empty registry while the
 	// hand-built test struct stayed green.
 	tc := toolConfigFromResolved(introspectionFixture())
@@ -376,7 +376,7 @@ func (t *listToolsTool) registeredWant(name string) bool {
 // ── MCP argv redaction on the tool face ─────────────────────────────────
 
 func TestMCPServerArgsRedactedOnToolFace(t *testing.T) {
-	// P2: MCP argv can carry credentials (--api-key sk-…). The REST face
+	// MCP argv can carry credentials (--api-key sk-…). The REST face
 	// keeps verbatim argv (CSRF-gated, operator-only); the tool face must
 	// redact credential-ish values before they enter model context.
 	resolved := introspectionFixture()

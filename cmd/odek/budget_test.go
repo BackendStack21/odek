@@ -7,7 +7,7 @@ import (
 	"github.com/BackendStack21/odek/internal/budget"
 )
 
-// TestParseRunFlags_BudgetFlags covers the WP6 execution-budget flags.
+// TestParseRunFlags_BudgetFlags covers the execution-budget flags.
 func TestParseRunFlags_BudgetFlags(t *testing.T) {
 	f, err := parseRunFlags([]string{
 		"--max-runtime", "300",

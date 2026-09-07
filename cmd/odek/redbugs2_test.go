@@ -15,7 +15,7 @@ import (
 )
 
 // ────────────────────────────────────────────────────────────────────────
-// RED #B1 (U2): The sandbox kill follow-up runs `docker exec` with no
+// The sandbox kill follow-up runs `docker exec` with no
 // deadline, synchronously after the command's own timeout already fired.
 // A hung Docker daemon wedges the tool call forever — voiding the shell
 // tool's contract that a stuck command can never wedge the agent.
@@ -62,7 +62,7 @@ func TestRED_ShellSandboxKillFollowUpHasDeadline(t *testing.T) {
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// RED #B2 (V3): /api/sessions search filters against the pre-fetched
+// /api/sessions search filters against the pre-fetched
 // recency window, so matches deeper in the store are silently dropped:
 // a query whose only match is older than limit+offset returns count=0
 // even though the session exists.
@@ -118,7 +118,7 @@ func TestRED_SessionSearchSearchesWholeStore(t *testing.T) {
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// RED #B3 (V4): Concurrent prompts on one session overwrite each other's
+// Concurrent prompts on one session overwrite each other's
 // cancel registration and unregisterPromptCancel deletes unconditionally —
 // when the FIRST prompt finishes it removes the SECOND prompt's cancel
 // func, making /api/cancel a silent no-op while the newer prompt runs.
@@ -142,7 +142,7 @@ func TestRED_PromptCancelSurvivesEarlierPromptFinishing(t *testing.T) {
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// RED #B6 (M6): The REPL editor advertises slash commands via
+// The REPL editor advertises slash commands via
 // tab-completion that handleREPLCommand doesn't implement — completing one
 // and pressing enter yields "Unknown command". Every advertised command
 // must be implemented.
@@ -193,7 +193,7 @@ func llmMessage(content string) []session.Message {
 
 // ────────────────────────────────────────────────────────────────────────
 
-// Regression #M4: sub-agent exit codes. docs/EXTENSIONS.md pins
+// Regression: sub-agent exit codes. docs/EXTENSIONS.md pins
 // 0=success, 1=task error, 2=timeout, 3=setup error. Task errors and
 // timeouts previously returned nil from subagentCmd — every run exited 0.
 func TestRED_SubagentExitCodeContract(t *testing.T) {

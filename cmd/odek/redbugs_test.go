@@ -14,7 +14,7 @@ import (
 )
 
 // ────────────────────────────────────────────────────────────────────────
-// RED #20 (T1): tr "char" mode falls back to whole-string ReplaceAll when
+// tr "char" mode falls back to whole-string ReplaceAll when
 // from/to have equal length or to is a single char — so the classic POSIX
 // char map tr 'abc' 'xyz' is a no-op. The Map path also indexes To by
 // BYTE offset with a RUNE index.
@@ -60,7 +60,7 @@ func TestRED_TrCharModePerRuneMapping(t *testing.T) {
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// RED #21 (T2): count_lines/word_count swallow bufio.Scanner errors. Any
+// count_lines/word_count swallow bufio.Scanner errors. Any
 // file containing a line longer than the 1 MiB scanner cap silently
 // returns zeroed counts with no error.
 func TestRED_CountLinesSurfacesScannerError(t *testing.T) {
@@ -87,7 +87,7 @@ func TestRED_CountLinesSurfacesScannerError(t *testing.T) {
 	}
 }
 
-// RED #22 (T2b): same silent-truncation class for word_count.
+// same silent-truncation class for word_count.
 func TestRED_WordCountSurfacesScannerError(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "big.txt")
@@ -112,7 +112,7 @@ func TestRED_WordCountSurfacesScannerError(t *testing.T) {
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// RED #23 (T3): globToRegex turns **/ into .*/ which requires at least one
+// globToRegex turns **/ into .*/ which requires at least one
 // slash — so "**/*.txt" never matches root-level files.
 func TestRED_GlobStarStarMatchesRootFiles(t *testing.T) {
 	re, err := globToRegex("**/*.txt")
@@ -164,7 +164,7 @@ func TestRED_GlobStarStarMatchesRootFiles(t *testing.T) {
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// RED #24 (T4): file_info classifies the RAW path while every sibling read
+// file_info classifies the RAW path while every sibling read
 // tool classifies the symlink-resolved one — a directory symlink into a
 // sensitive tree bypasses the approval gate for metadata access.
 func TestRED_FileInfoClassifiesResolvedSymlinkPath(t *testing.T) {
@@ -194,7 +194,7 @@ func TestRED_FileInfoClassifiesResolvedSymlinkPath(t *testing.T) {
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// RED #25 (T6): buildTree truncates entries BEFORE the hidden-file filter,
+// buildTree truncates entries BEFORE the hidden-file filter,
 // so in hidden-heavy directories the truncation budget is consumed by
 // entries that are filtered out anyway and visible files vanish; the
 // notice also claims entries were shown that were not.
@@ -247,7 +247,7 @@ func TestRED_TreeFiltersHiddenBeforeTruncating(t *testing.T) {
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// RED #26 (T7): count_lines adds +1 per scanned line unconditionally, so
+// count_lines adds +1 per scanned line unconditionally, so
 // files without a trailing newline overcount chars vs their own bytes.
 func TestRED_CountLinesCharsWithoutTrailingNewline(t *testing.T) {
 	dir := t.TempDir()
@@ -279,7 +279,7 @@ func TestRED_CountLinesCharsWithoutTrailingNewline(t *testing.T) {
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// RED #27 (T8): batch_read silently coerces a negative offset to 1 while
+// batch_read silently coerces a negative offset to 1 while
 // read_file rejects the identical input — pagination schemas must agree.
 func TestRED_BatchReadRejectsNegativeOffset(t *testing.T) {
 	dir := t.TempDir()
@@ -303,7 +303,7 @@ func TestRED_BatchReadRejectsNegativeOffset(t *testing.T) {
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// RED #28 (M3): Repeatable --ctx flags overwrite instead of accumulate,
+// Repeatable --ctx flags overwrite instead of accumulate
 // so `odek run --ctx a.txt --ctx b.txt` silently drops a.txt.
 func TestRED_ParseRunFlagsCtxAccumulates(t *testing.T) {
 	f, err := parseRunFlags([]string{"--ctx", "a.txt", "--ctx", "b.txt", "do work"})
@@ -316,7 +316,7 @@ func TestRED_ParseRunFlagsCtxAccumulates(t *testing.T) {
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// RED #29 (U1): The wrapper-source desanitiser maps ' → " even though the
+// The wrapper-source desanitiser maps ' → " even though the
 // sanitiser never maps " → anything but '. Every literal apostrophe in a
 // shell command source is corrupted, breaking audit source matching.
 func TestRED_UntrustedSourceDesanitiseLossless(t *testing.T) {
@@ -332,7 +332,7 @@ func TestRED_UntrustedSourceDesanitiseLossless(t *testing.T) {
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// RED #30 (V2): wsApprover.Cancel closes the cancel channel under a
+// wsApprover.Cancel closes the cancel channel under a
 // select/default race guard — concurrent calls can double-close and panic
 // the serve process ("Safe to call multiple times" only holds
 // sequentially).
@@ -373,7 +373,7 @@ func TestRED_WSApproverCancelConcurrentIdempotent(t *testing.T) {
 	}
 }
 
-// Regression #M1: auditTurnDelta must clamp when the engine trimmed history
+// Regression: auditTurnDelta must clamp when the engine trimmed history
 // in place during the run — the pre-run histLen can exceed the returned
 // slice and the old inline `allMessages[histLen:]` panicked.
 func TestRED_AuditTurnDeltaClampsTrimmedHistory(t *testing.T) {

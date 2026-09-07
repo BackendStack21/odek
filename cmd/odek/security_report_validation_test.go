@@ -611,7 +611,7 @@ func writeFile(t *testing.T, path, content string) {
 
 // ── Regression bar: read-ledger fingerprints (TOCTOU re-gate) ───────────
 //
-// The H-6 unread-script gate licenses execution from a session ledger
+// The unread-script gate licenses execution from a session ledger
 // entry. Without state fingerprints, a file mutated AFTER its display
 // read (MCP tool, curl -o, npm lifecycle hook, background process) stays
 // licensed — the study's timing failure re-created inside the gate.

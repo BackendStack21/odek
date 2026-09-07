@@ -74,7 +74,7 @@ func parseExternalRefFlags(specs []string) ([]session.ExternalRef, error) {
 // --id / --external-ref flags (front-positioned, repeatable for the
 // latter) and the trailing task text.
 //
-// Unknown flags are a hard error (P0-1): they must never be folded into
+// Unknown flags are a hard error: they must never be folded into
 // the task text, where a typo'd or version-drifted flag silently corrupts
 // the prompt. An explicit "--" separator passes everything after it
 // through verbatim.

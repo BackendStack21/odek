@@ -12,7 +12,7 @@ import (
 	"github.com/BackendStack21/odek/internal/danger"
 )
 
-// F1 (Bug A): delegate_tasks must file per-task artifact dirs under
+// delegate_tasks must file per-task artifact dirs under
 // artifacts/<session_id>/ once the parent session id is wired, so the
 // session-delete cascade owns the artifact lifecycle. Before the fix the
 // session id never reached the tool and every task landed under unfiled/.
@@ -50,7 +50,7 @@ func TestDelegateTasks_SessionIDFilesUnderSessionDir(t *testing.T) {
 	}
 }
 
-// F1 serve wrinkle: a Web UI connection can switch sessions mid-flight, so
+// Serve wrinkle: a Web UI connection can switch sessions mid-flight, so
 // the session id must rebind between delegations — earlier filings stay
 // under the session they were created for. Each Call is synchronous, so
 // captures are naturally ordered.
@@ -92,7 +92,7 @@ func TestDelegateTasks_SessionIDRebindsBetweenDelegations(t *testing.T) {
 	}
 }
 
-// F1 wiring seam: Agent.SetToolSessionID must stamp the id onto the very
+// Wiring seam: Agent.SetToolSessionID must stamp the id onto the very
 // tool instances builtinTools registered (serve/run/repl/telegram/continue
 // all bind through this public method, serve per prompt).
 func TestAgentSetToolSessionID_StampsDelegateTool(t *testing.T) {
@@ -120,7 +120,7 @@ func TestAgentSetToolSessionID_StampsDelegateTool(t *testing.T) {
 	}
 }
 
-// F1 defensive fallback: an unset or invalid session id still files under
+// Defensive fallback: an unset or invalid session id still files under
 // unfiled/ (the janitor sweeps that bucket per task).
 func TestDelegateTasks_InvalidSessionIDFallsBackToUnfiled(t *testing.T) {
 	root := t.TempDir()

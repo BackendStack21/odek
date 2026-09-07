@@ -7,7 +7,7 @@ import (
 	"github.com/BackendStack21/odek/internal/session"
 )
 
-// RED #B4 (V5): Session TTL expiry is dead code. GetOrCreate skips the
+// Session TTL expiry is dead code. GetOrCreate skips the
 // fresh-hit branch for an expired cache entry and calls Load — which finds
 // the SAME stale pointer still in the cache and returns it unchecked, so
 // an in-memory session lives forever regardless of the configured TTL.

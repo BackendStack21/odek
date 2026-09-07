@@ -1,7 +1,7 @@
 package mcpclient
 
 // Tests for the odek-extension/v1 per-server timeout and limit fields
-// (WP2 — see docs/EXTENSIONS.md and odek-ext.md). Behavioral tests run
+// (see docs EXTENSIONS.md and odek-ext.md). Behavioral tests run
 // against the mock extension server in testdata/artifact_server.go via the
 // same fakeServerPath build idiom as the other client tests.
 
@@ -237,7 +237,7 @@ func TestLimits_EnvelopeTruncationRetainsArtifacts(t *testing.T) {
 		t.Fatalf("CallTool artifact_result: %v", err)
 	}
 
-	// WP3: the model-facing form of an envelope is the rendered compact text
+	// the model-facing form of an envelope is the rendered compact text
 	// plus metadata lines — not the envelope JSON. An oversized envelope text
 	// gets the structured truncation notice while the artifact metadata (the
 	// resolvable reference) is retained.

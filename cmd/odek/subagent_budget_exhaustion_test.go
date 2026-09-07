@@ -1,7 +1,7 @@
 package main
 
 // Tests for the share-mode budget-exhaustion fix (SUB_AGENTS_IMPROVEMENTS.md
-// M1.5 invariant — child = min(operator cap, parent remaining)): an EXHAUSTED
+// invariant — child = min(operator cap, parent remaining)): an EXHAUSTED
 // parent budget must clamp the child to a hard cap of 0 and fail the spawn
 // fast with a typed budget error, while an UNCONFIGURED parent budget keeps
 // the child unlimited. Before the fix, budget.Snapshot read "exhausted" and

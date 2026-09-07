@@ -9,7 +9,7 @@ import (
 	"github.com/BackendStack21/odek/internal/config"
 )
 
-// Tests for the list_subagent_profiles built-in tool (P4 follow-up): the
+// Tests for the list_subagent_profiles built-in tool: the
 // parent LLM must be able to discover the operator-defined capability
 // profiles (plus the built-in default) on demand, so it can pick the right
 // profile name for delegate_tasks. The tool is read-only and argument-free.
