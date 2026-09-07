@@ -291,7 +291,9 @@ Episode search uses **RandomProjections** (go-vector) for similarity by default:
 3. Score by cosine similarity between query vector and each summary vector
 4. Return top-3 results sorted by score
 
-This is zero LLM calls per search, ~1ms per search — available with `llm_search: false`. By default (`llm_search: true`) ranking uses an LLM SimpleCall to order episodes by relevance to the query — higher quality, higher latency + token cost.
+Per-turn auto-recall (`FormatEpisodeContext`) over-fetches 8 vector hits and keeps the top 3. The query is the latest user message, plus remaining plan step titles when a plan exists (titles only — notes stay out). Untrusted, unpromoted episodes are excluded. This path never calls the LLM, even when `llm_search` is on.
+
+Explicit `memory search` is separate: zero LLM calls with `llm_search: false`; by default (`llm_search: true`) ranking uses an LLM SimpleCall to order episodes by relevance to the query — higher quality, higher latency + token cost.
 
 ### Pluggable Embeddings (`memory.embedding`)
 

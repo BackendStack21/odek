@@ -148,6 +148,7 @@ func replCmd(args []string) error {
 	// Apply tool filtering based on configuration (after MCP tools are loaded
 	// so disabled/enabled lists can reference MCP tool names too).
 	tools = filterBuiltinTools(tools, resolved.Tools, nil)
+	tools = appendTTYClarify(tools)
 
 	// Renderer
 	modelLabel := odek.ProfileLabel(resolved.Model)

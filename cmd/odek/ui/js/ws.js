@@ -12,6 +12,7 @@ import {
   appendSubagentLog, addSystemMessage, updateSubagentState,
 } from './render.js';
 import { queueApproval, dismissApproval, clearApprovals, expireApproval } from './approvals.js';
+import { queueClarify, dismissClarify, clearClarify, expireClarify } from './clarify.js';
 import { loadSessions } from './sessions.js';
 import { onPong, onServerInfo, startHeartbeat, stopHeartbeat, notifyUser } from './health.js';
 import { metricsLiveContext, metricsDone, flashTrim, turnCostUSD, setMetricsModel } from './metrics.js';
@@ -236,6 +237,7 @@ export function connect() {
         // cancel, but the card would stay rendered waiting for an ack that
         // never comes). Same teardown approval_ack uses, minus the ack.
         clearApprovals();
+        clearClarify();
         stopPlanLiveIfIdle();
         addSystemMessage(event.idle ? '⏹ Nothing to cancel' : '⏹ Cancelled');
         badgeNow();
@@ -297,6 +299,7 @@ export function connect() {
         // 'cancelled': a pending card would wait for an ack that never
         // comes and block the queue.
         clearApprovals();
+        clearClarify();
         addSystemMessage('⚠ ' + formatErrorMessage(event.message) + ' — Alt+R to retry');
         stopPlanLiveIfIdle();
         notifyUser('turn failed', 'A turn failed');
@@ -320,6 +323,19 @@ export function connect() {
         // the matching card; ids already answered or swept are no-ops, so
         // late or duplicate frames can never resurrect a closed card.
         expireApproval(event.id);
+        break;
+
+      case 'clarify_request':
+        queueClarify(event);
+        notifyUser('question', 'The agent is asking a question');
+        break;
+
+      case 'clarify_ack':
+        dismissClarify(event.id);
+        break;
+
+      case 'clarify_expired':
+        expireClarify(event.id);
         break;
 
       case 'skill_event':

@@ -142,6 +142,23 @@ var serveStats struct {
 	PromptsFailed    int64
 	TokensIn         int64
 	TokensOut        int64
+	PlansCreated     int64
+	PlansUpdated     int64
+	PlansBlocked     int64
+}
+
+// recordPlanUsage folds plan lifecycle events into the lifetime usage
+// counters. Counts and version stay on the event stream; this is the
+// dashboard rollup only.
+func recordPlanUsage(ev events.Event) {
+	switch ev.Type {
+	case events.TypePlanCreated:
+		atomic.AddInt64(&serveStats.PlansCreated, 1)
+	case events.TypePlanUpdated:
+		atomic.AddInt64(&serveStats.PlansUpdated, 1)
+	case events.TypePlanBlocked:
+		atomic.AddInt64(&serveStats.PlansBlocked, 1)
+	}
 }
 
 // handleUsage reports server-lifetime usage plus an estimated spend from the
@@ -164,6 +181,9 @@ func handleUsage(resolved config.ResolvedConfig) http.HandlerFunc {
 			"prompts_failed":     atomic.LoadInt64(&serveStats.PromptsFailed),
 			"tokens_in":          in,
 			"tokens_out":         out,
+			"plans_created":      atomic.LoadInt64(&serveStats.PlansCreated),
+			"plans_updated":      atomic.LoadInt64(&serveStats.PlansUpdated),
+			"plans_blocked":      atomic.LoadInt64(&serveStats.PlansBlocked),
 			"estimated_cost_usd": cost,
 			"prices_configured":  inPrice > 0 || outPrice > 0,
 			"model":              resolved.Model,
@@ -780,7 +800,7 @@ func startServeRun(
 			return nil
 		}
 		return run.record(v)
-	}, &deltas)
+	}, &deltas, false)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("agent: %w", err)

@@ -382,10 +382,30 @@ func TestTrimContext_CompactionCreatesDigest(t *testing.T) {
 	}
 	result := engine.trimContext(context.Background(), msgs, nil)
 
-	if engine.compactDigest != "SUMMARY: earlier work condensed" {
-		t.Errorf("compactDigest = %q, want summary", engine.compactDigest)
-	}
 	digestCount := 0
+	extractive := ""
+	for _, m := range result {
+		if isDigestMessage(m) {
+			digestCount++
+			extractive = m.Content
+		}
+	}
+	if digestCount != 1 {
+		t.Fatalf("expected exactly 1 digest message immediately, got %d", digestCount)
+	}
+	if !strings.Contains(extractive, "Dropped turns:") {
+		t.Errorf("immediate digest must be extractive, got: %.200s", extractive)
+	}
+	if engine.compactDigest == "SUMMARY: earlier work condensed" {
+		t.Error("trimContext must not block for the LLM digest")
+	}
+
+	engine.waitDigestSideCall(context.Background())
+	result = engine.applyPendingDigest(context.Background(), result)
+	if engine.compactDigest != "SUMMARY: earlier work condensed" {
+		t.Errorf("compactDigest = %q, want summary after apply", engine.compactDigest)
+	}
+	digestCount = 0
 	for _, m := range result {
 		if isDigestMessage(m) {
 			digestCount++
@@ -395,7 +415,7 @@ func TestTrimContext_CompactionCreatesDigest(t *testing.T) {
 		}
 	}
 	if digestCount != 1 {
-		t.Fatalf("expected exactly 1 digest message, got %d", digestCount)
+		t.Fatalf("expected exactly 1 digest message after apply, got %d", digestCount)
 	}
 	if summaryCalls == 0 {
 		t.Error("summarizer was never called")
@@ -433,13 +453,30 @@ func TestTrimContext_CompactionFailureStillTrims(t *testing.T) {
 	}
 	result := engine.trimContext(context.Background(), msgs, nil)
 
+	found := false
 	for _, m := range result {
 		if isDigestMessage(m) {
-			t.Error("no digest should be inserted when the summarizer fails")
+			found = true
+			if !strings.Contains(m.Content, "Dropped turns:") {
+				t.Errorf("summarizer failure must leave the extractive digest, got: %.200s", m.Content)
+			}
 		}
 	}
-	if len(result) >= len(msgs) {
-		t.Errorf("trimming must still happen on summarizer failure, got %d messages", len(result))
+	if !found {
+		t.Error("extractive digest must be inserted even when the summarizer fails")
+	}
+	engine.cancelDigestSideCall()
+	if engine.compactDigest != "" {
+		t.Errorf("failed side call must not replace extractive with an LLM digest, compactDigest=%q", engine.compactDigest)
+	}
+	heavyKept := 0
+	for _, m := range result {
+		if m.Role == "assistant" && len(m.Content) >= 3000 {
+			heavyKept++
+		}
+	}
+	if heavyKept >= 2 {
+		t.Errorf("trimming must still drop oversized turns on summarizer failure, kept %d heavy assistants", heavyKept)
 	}
 }
 
@@ -492,6 +529,71 @@ func TestEstimateToolDefs_CountsParameters(t *testing.T) {
 }
 
 // ── Coverage: small tool results are never truncated ───────────────────
+
+func TestTrimContext_ProtectsLastTwoActBatches(t *testing.T) {
+	msgs := []session.Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "task"},
+	}
+	// Three 4-wide act batches. The last two stay intact; the oldest
+	// batch's large results are eligible for graduated truncation.
+	for batch := 0; batch < 3; batch++ {
+		var calls []session.ToolCall
+		for i := 0; i < 4; i++ {
+			tc := session.ToolCall{ID: fmt.Sprintf("b%d-c%d", batch, i)}
+			tc.Function.Name = "read_file"
+			tc.Function.Arguments = "{}"
+			calls = append(calls, tc)
+		}
+		msgs = append(msgs, session.Message{Role: "assistant", ToolCalls: calls})
+		for i := 0; i < 4; i++ {
+			msgs = append(msgs, session.Message{
+				Role:       "tool",
+				Content:    strings.Repeat("x", 4000),
+				ToolCallID: fmt.Sprintf("b%d-c%d", batch, i),
+			})
+		}
+	}
+	engine := &Engine{maxContext: 9000}
+	result := engine.trimContext(context.Background(), msgs, nil)
+
+	for _, m := range result {
+		if m.Role != "tool" {
+			continue
+		}
+		id := m.ToolCallID
+		truncated := strings.Contains(m.Content, "[tool output trimmed:")
+		switch {
+		case strings.HasPrefix(id, "b0-"):
+			if !truncated {
+				t.Errorf("oldest batch result %s should be truncated", id)
+			}
+		case strings.HasPrefix(id, "b1-"), strings.HasPrefix(id, "b2-"):
+			if truncated || len(m.Content) != 4000 {
+				t.Errorf("protected batch result %s must stay intact, len=%d truncated=%v", id, len(m.Content), truncated)
+			}
+		}
+	}
+}
+
+func TestTrimContext_CatalogSurvivesInProtectedHead(t *testing.T) {
+	catalog := "# Skills catalog\n- docker-build — Build images\n"
+	msgs := []session.Message{
+		{Role: "system", Content: "identity\n\n" + catalog + "\n\npillar"},
+		{Role: "user", Content: "task"},
+	}
+	for i := 0; i < 8; i++ {
+		msgs = append(msgs,
+			session.Message{Role: "assistant", Content: fmt.Sprintf("t%d", i), ToolCalls: []session.ToolCall{{ID: fmt.Sprintf("c%d", i)}}},
+			session.Message{Role: "tool", Content: strings.Repeat("y", 5000), ToolCallID: fmt.Sprintf("c%d", i)},
+		)
+	}
+	engine := &Engine{maxContext: 4000}
+	result := engine.trimContext(context.Background(), msgs, nil)
+	if !strings.Contains(result[0].Content, "# Skills catalog") {
+		t.Errorf("first system message lost the skills catalog after trim:\n%s", result[0].Content)
+	}
+}
 
 func TestTrimContext_SmallToolResultNotTruncated(t *testing.T) {
 	msgs := []session.Message{
@@ -689,6 +791,91 @@ func TestSummarizeDropped_InputBuilding(t *testing.T) {
 	e.summarizeDropped(context.Background(), big)
 	if len(bodies[len(bodies)-1]) > compactionMaxSourceBytes+4096 {
 		t.Errorf("summarizer input exceeds source cap: %d bytes", len(bodies[len(bodies)-1]))
+	}
+}
+
+func TestCompactionSystemPrompt_SkeletonAndIPI(t *testing.T) {
+	for _, field := range []string{"Task:", "Done:", "Decisions:", "Files/symbols:", "Errors still open:", "Next:"} {
+		if !strings.Contains(compactionSystemPrompt, field) {
+			t.Errorf("compaction prompt missing skeleton field %q", field)
+		}
+	}
+	lower := strings.ToLower(compactionSystemPrompt)
+	if !strings.Contains(lower, "untrusted") || !strings.Contains(lower, "do not follow") {
+		t.Error("compaction prompt must keep explicit IPI resistance")
+	}
+}
+
+func TestSummarizeDropped_IncludesRemainingPlanIDsNotTitles(t *testing.T) {
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(data))
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"digest"}}]}`)
+	}))
+	defer server.Close()
+
+	store := NewPlanStore(12, 2000)
+	seedPlanMessage(t, store)
+	engine := New(testChatClient(t, server.URL), tool.NewRegistry(nil), 10, "", nil, 0)
+	engine.SetPlanStore(store)
+
+	engine.summarizeDropped(context.Background(), []session.Message{{Role: "assistant", Content: "old work"}})
+	if len(bodies) == 0 {
+		t.Fatal("summarizer was not called")
+	}
+	body := bodies[len(bodies)-1]
+	if !strings.Contains(body, "s2=in_progress") || !strings.Contains(body, "s3=pending") {
+		t.Errorf("remaining plan ids missing from summarizer input: %.400s", body)
+	}
+	if strings.Contains(body, secretPlanTitle) || strings.Contains(body, secretPlanNote) {
+		t.Errorf("plan titles/notes leaked into summarizer input: %.400s", body)
+	}
+}
+
+func TestExtractiveDigest_IncludesRemainingPlanIDsNotTitles(t *testing.T) {
+	store := NewPlanStore(12, 2000)
+	seedPlanMessage(t, store)
+	engine := &Engine{planStore: store}
+	got := engine.extractiveDigest([]session.Message{{Role: "assistant", Content: "old work"}})
+	if !strings.Contains(got, "s2=in_progress") || !strings.Contains(got, "s3=pending") {
+		t.Errorf("remaining plan ids missing from extractive digest: %.400s", got)
+	}
+	if strings.Contains(got, secretPlanTitle) || strings.Contains(got, secretPlanNote) {
+		t.Errorf("plan titles/notes leaked into extractive digest: %.400s", got)
+	}
+	if !strings.Contains(got, "old work") {
+		t.Errorf("dropped content missing from extractive digest: %.400s", got)
+	}
+}
+
+func TestSummarizeProgress_IncludesRemainingPlanIDs(t *testing.T) {
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(data))
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"progress"}}]}`)
+	}))
+	defer server.Close()
+
+	store := NewPlanStore(12, 2000)
+	seedPlanMessage(t, store)
+	engine := New(testChatClient(t, server.URL), tool.NewRegistry(nil), 10, "", nil, 0)
+	engine.SetPlanStore(store)
+
+	engine.summarizeProgress(context.Background(), []session.Message{
+		{Role: "user", Content: "task"},
+		{Role: "assistant", Content: "partial"},
+	})
+	if len(bodies) == 0 {
+		t.Fatal("progress summarizer was not called")
+	}
+	body := bodies[len(bodies)-1]
+	if !strings.Contains(body, "s2=in_progress") {
+		t.Errorf("remaining plan ids missing from progress summarizer input: %.400s", body)
+	}
+	if strings.Contains(body, secretPlanTitle) {
+		t.Errorf("plan title leaked into progress summarizer input: %.400s", body)
 	}
 }
 

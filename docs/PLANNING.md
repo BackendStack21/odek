@@ -273,10 +273,11 @@ Notes:
 
 ### Classification
 
-`classifyToolCall` carries an explicit `case "plan"` returning the Safe class
-with no resource: plan calls mutate engine-held state only — no filesystem,
-network, or subprocess surface — and never prompt for approval, individually
-or in the batch gate.
+`classifyToolCall` carries an explicit `case "plan", "clarify"` returning the
+Safe class with no resource: plan calls mutate engine-held state only, and
+clarify is a principal-channel question — neither has a filesystem, network,
+or subprocess surface, and neither prompts for approval, individually or in
+the batch gate.
 
 ---
 
@@ -540,10 +541,11 @@ semantics, payload minimality, `ExtractPlan`), `cmd/odek/serve_plan_test.go`
   call is skipped), and `RequestFinalization` / time-budget paths. No extra
   LLM call. Sub-agents still do not inherit the parent plan store.
 
-### Planned (not yet implemented)
+### Usage rollup
 
-**Telemetry:** adoption/overhead aggregation surfaced via
-`/api/usage`.
+`GET /api/usage` includes lifetime `plans_created`, `plans_updated`, and
+`plans_blocked` — the same counts the event stream already emits, rolled up
+for dashboards. No titles, notes, or loop behavior.
 
 ### Non-goals
 

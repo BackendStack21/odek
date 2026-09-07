@@ -7,6 +7,40 @@ import (
 	"testing"
 )
 
+func TestFormatCatalog_PromotedAndNeedsReview(t *testing.T) {
+	got := FormatCatalog([]Skill{
+		{Name: "zeta", Description: "Last alphabetically", Provenance: SkillProvenance{}},
+		{Name: "alpha", Description: "First\nline", Provenance: SkillProvenance{}},
+		{Name: "tainted", Description: "SECRET-BODY-MUST-NOT-APPEAR", Body: "do not leak this", Provenance: SkillProvenance{NeedsReview: true}},
+	}, 0)
+	if got == "" {
+		t.Fatal("catalog empty")
+	}
+	if !strings.Contains(got, "# Skills catalog") {
+		t.Error("missing catalog header")
+	}
+	if !strings.Contains(got, "- alpha — First line") {
+		t.Errorf("promoted skill missing flattened description:\n%s", got)
+	}
+	if !strings.Contains(got, "- tainted — [needs review]") {
+		t.Errorf("NeedsReview skill should list name only:\n%s", got)
+	}
+	if strings.Contains(got, "SECRET-BODY-MUST-NOT-APPEAR") || strings.Contains(got, "do not leak this") {
+		t.Errorf("NeedsReview catalog line leaked a body:\n%s", got)
+	}
+	alpha := strings.Index(got, "- alpha")
+	zeta := strings.Index(got, "- zeta")
+	if alpha < 0 || zeta < 0 || alpha > zeta {
+		t.Errorf("catalog must be sorted by name:\n%s", got)
+	}
+}
+
+func TestFormatCatalog_Empty(t *testing.T) {
+	if FormatCatalog(nil, 0) != "" {
+		t.Error("empty list must render as empty string")
+	}
+}
+
 func TestSkillLoadTool_NameDescSchema(t *testing.T) {
 	tool := &SkillLoadTool{}
 	if tool.Name() != "skill_load" {

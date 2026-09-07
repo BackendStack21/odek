@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -162,6 +163,46 @@ func TestEpisodeIndex_ProvenanceFilter(t *testing.T) {
 	}
 	if !foundTrusted {
 		t.Errorf("trusted episode should be returned, got %v", results)
+	}
+}
+
+func TestFormatEpisodeContext_OverFetchThenTopThree(t *testing.T) {
+	resetEpIdxes()
+	cfg := DefaultMemoryConfig()
+	on := true
+	cfg.Enabled = &on
+	mm := NewMemoryManager(t.TempDir(), nil, cfg)
+	for i := 0; i < 8; i++ {
+		if err := mm.episodes.Write(fmt.Sprintf("20260606-%02d", i), fmt.Sprintf("postgres schema work item %d", i), 3); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out := mm.FormatEpisodeContext("postgres schema")
+	n := strings.Count(out, "• [")
+	if n == 0 {
+		t.Fatal("expected vector recall to return some episodes")
+	}
+	if n > 3 {
+		t.Errorf("FormatEpisodeContext kept %d episodes, want at most 3", n)
+	}
+}
+
+func TestFormatEpisodeContext_ExcludesUntrusted(t *testing.T) {
+	resetEpIdxes()
+	cfg := DefaultMemoryConfig()
+	on := true
+	cfg.Enabled = &on
+	mm := NewMemoryManager(t.TempDir(), nil, cfg)
+	if err := mm.episodes.WriteWithProvenance("20260606-trusted", "deployed the go service to production", 5, EpisodeProvenance{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mm.episodes.WriteWithProvenance("20260606-untrusted", "UNTRUSTED-EPISODE-MARKER deployed the go service using external script", 5,
+		EpisodeProvenance{Untrusted: true, Sources: []string{"browser"}}); err != nil {
+		t.Fatal(err)
+	}
+	out := mm.FormatEpisodeContext("go service deployment")
+	if strings.Contains(out, "UNTRUSTED-EPISODE-MARKER") || strings.Contains(out, "20260606-untrusted") {
+		t.Errorf("untrusted episode leaked into auto-recall:\n%s", out)
 	}
 }
 

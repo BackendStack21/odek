@@ -67,7 +67,7 @@ cmd/odek/
   security_report_validation_test.go  Regression bar for every documented mitigation
   *_test.go                   250+ unit + E2E tests covering all tools
 internal/
-  llmclient/                  Adapter over go-llm-sdk (DTO mapping, temperature polarity, SimpleCall)
+  llmclient/                  Adapter over go-llm-sdk (DTO mapping, temperature polarity, SimpleCall, SideCall)
   loop/                       ReAct engine: observe → think → parallel-act → repeat. signal.go — SignalEvent observability
                               (context_trimmed, tool_recovery, tool_running heartbeat). Budget enforcement (budget.Checker)
                               + odek.event/v1 emission.
@@ -111,7 +111,7 @@ ReAct cycle: observe → think → act → repeat.
 - **Parallel tool execution** — independent tool calls run concurrently (`max_tool_parallel`, default: 4).
 - **Batch approval gate** — multiple risky tools shown in one prompt. `classifyToolCall` classifies every command inside `parallel_shell`, every path inside `batch_patch`, and the `browser` tool; shows full commands; withholds blanket `SetTrustAll` when unclassifiable tools (incl. MCP tools, classified `unknown`) remain.
 - **Tool-failure recovery** — retry transient errors, skip permanent failures, continue without crashing. Stall detection: 3 consecutive identical tool calls inject a corrective hint + fire `tool_recovery` — a hint, never aborts the run.
-- **Context-limit protection** — graduated trimming near the context window: old large tool results replaced with markers (4 most recent kept intact), then oldest turn groups dropped atomically (tool messages stay grouped with their parent). The protected head (system prompt, memory block, compaction digest, original task) is never dropped. Token estimator counts tool schemas + reasoning content; safety margin self-tightens when provider-reported tokens exceed estimates (`margin_calibrated` signal). `trimToSurvival` handles provider context-length errors. **Rolling compaction** (on by default; `compaction: false` / `ODEK_COMPACTION=false` / `--no-compaction`) summarizes dropped groups into a rolling digest instead of losing them.
+- **Context-limit protection** — graduated trimming near the context window: old large tool results replaced with markers (4 most recent kept intact), then oldest turn groups dropped atomically (tool messages stay grouped with their parent). The protected head (system prompt, memory block, compaction digest, original task) is never dropped. Token estimator counts tool schemas + reasoning content; safety margin self-tightens when provider-reported tokens exceed estimates (`margin_calibrated` signal). `trimToSurvival` handles provider context-length errors. **Rolling compaction** (on by default; `compaction: false` / `ODEK_COMPACTION=false` / `--no-compaction`) sketches dropped groups extractively into a rolling digest immediately, then a thinking-off side call replaces that sketch with a model digest on a later iteration if it arrives.
 - **Interaction modes** — engaging (narrated), enhance (persistent), verbose (raw), off.
 - Max 90 iterations by default. On iteration-budget exhaustion the engine makes one final tool-less LLM call for a partial-progress summary (30s bound), returned marked `[Iteration budget reached — partial summary]`.
 - **Post-response async processing** — episode extraction and extended-memory extraction run in background goroutines; `Agent.Close` drains them (~15s bound).

@@ -425,7 +425,7 @@ odek mcp                                    # stdio transport
 | `delegate_tasks` | Spawn sub-agent OS processes |
 | `memory` | Persistent fact CRUD with cosine-merge |
 | `session_search` | Browse, search, and recall past sessions (semantic vector search) |
-| `clarify` | Ask the user for clarification |
+| `clarify` | Ask the user a question (CLI/REPL TTY, Web UI, Telegram) |
 | `send_message` | Send text/photo/document to Telegram |
 | `skill_load`, `skill_list` | Read the loaded skill / list available skills |
 | `list_subagent_profiles` | Discover operator-defined sub-agent capability profiles (+ built-in default) |

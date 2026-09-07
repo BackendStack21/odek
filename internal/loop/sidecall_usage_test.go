@@ -3,6 +3,7 @@ package loop
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -71,15 +72,15 @@ func TestSummarizeProgress_UsageCounted(t *testing.T) {
 // run over max_input_tokens must trip the typed budget error on the next
 // main-path check — not slip through invisibly.
 func TestRun_SideCallTokensEnforceBudget(t *testing.T) {
-	var calls atomic.Int64
+	var sideCalls, mainCalls atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n := calls.Add(1)
-		if n == 1 {
-			// Compaction digest side call: heavy usage.
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "You are a compaction assistant") {
+			sideCalls.Add(1)
 			fmt.Fprint(w, budgetFinalResponse("digest summary", 200, 5))
 			return
 		}
-		// Main-path responses.
+		mainCalls.Add(1)
 		fmt.Fprint(w, budgetFinalResponse("the answer", 250, 5))
 	}))
 	defer server.Close()
@@ -114,12 +115,19 @@ func TestRun_SideCallTokensEnforceBudget(t *testing.T) {
 	if berr.Limit != budget.LimitInputTokens {
 		t.Errorf("budget limit = %v, want input_tokens", berr.Limit)
 	}
+	if sideCalls.Load() < 1 {
+		t.Fatal("expected a compaction side call")
+	}
+	if mainCalls.Load() < 1 {
+		t.Fatal("expected a main think call")
+	}
 }
 
 // TestRefreshDigest_SkipsSideCallWhenBudgetExhausted: the digest refresh
 // must respect budgetAllowsSideCall — the post-loop summary already does;
 // the in-loop digest side call must too, or an exhausted run keeps
-// spending on side calls.
+// spending on side calls. The extractive sketch still lands so the think
+// step has compressed history.
 func TestRefreshDigest_SkipsSideCallWhenBudgetExhausted(t *testing.T) {
 	var calls atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -149,7 +157,16 @@ func TestRefreshDigest_SkipsSideCallWhenBudgetExhausted(t *testing.T) {
 	if n := calls.Load(); n != 0 {
 		t.Fatalf("digest side call fired %d times with budget exhausted, want 0", n)
 	}
-	if len(out) != len(msgs) {
-		t.Errorf("refreshDigest with skipped side call must return messages unchanged: got %d msgs, want %d", len(out), len(msgs))
+	found := false
+	for _, m := range out {
+		if isDigestMessage(m) {
+			found = true
+			if !strings.Contains(m.Content, "old work") {
+				t.Errorf("extractive digest missing dropped content: %.200s", m.Content)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("budget-exhausted refresh must still install an extractive digest")
 	}
 }

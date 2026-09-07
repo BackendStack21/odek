@@ -1,7 +1,7 @@
 // Package llmclient adapts go-llm-sdk for odek. It is not an HTTP client:
 // all wire, retry, and streaming logic lives in the SDK. This package
 // owns odek's conversation DTO ↔ SDK request mapping, temperature polarity,
-// and the SimpleCall helper used by memory/titles.
+// SimpleCall (memory/titles), and SideCall (compaction / progress summaries).
 package llmclient
 
 import (
@@ -248,6 +248,41 @@ func (c *Client) SimpleCall(ctx context.Context, systemPrompt, userPrompt string
 	return res.Content, nil
 }
 
+// SideCallMaxTokens caps auxiliary completions (compaction digest, budget
+// progress summaries). Tight enough for a ~200-word digest; the main think
+// step keeps Client.MaxTokens. A lower positive Client.MaxTokens still wins.
+const SideCallMaxTokens = 1024
+
+// prepareSideCall builds a tool-less, thinking-disabled request with a
+// tighter output cap than the main think step.
+func (c *Client) prepareSideCall(messages []session.Message) *sdk.ChatRequest {
+	req := c.buildRequest(messages, nil)
+	req.Thinking = "disabled"
+	req.ThinkingBudget = 0
+	req.Tools = nil
+	maxTok := SideCallMaxTokens
+	if c.MaxTokens > 0 && c.MaxTokens < maxTok {
+		maxTok = c.MaxTokens
+	}
+	req.MaxTokens = maxTok
+	return req
+}
+
+// SideCall is the compaction / progress-summary helper: one buffered turn,
+// thinking off, no tools, capped MaxTokens. Usage still comes back on
+// CallResult so the loop can charge budgets.
+func (c *Client) SideCall(ctx context.Context, messages []session.Message) (*CallResult, error) {
+	if c == nil || c.Chat == nil {
+		return nil, fmt.Errorf("llm: no client")
+	}
+	req := c.prepareSideCall(messages)
+	res, err := c.Chat.Call(ctx, req)
+	if err != nil {
+		return mapResult(res), err
+	}
+	return mapResult(res), nil
+}
+
 // CallResult is the loop-facing result. Cache fields come from SDK Usage
 // when the gap-fix SDK is pinned.
 type CallResult struct {
@@ -290,6 +325,9 @@ func (c *Client) CallStream(ctx context.Context, messages []session.Message, too
 func (c *Client) buildRequest(messages []session.Message, tools []ToolDef) *sdk.ChatRequest {
 	isAnthropic := c.IsAnthropic()
 	sys, msgs := toSDKMessages(messages, c.PromptCache && isAnthropic, isAnthropic)
+	if c.PromptCache && isAnthropic {
+		tools = markLastToolCache(tools)
+	}
 	return &sdk.ChatRequest{
 		System:         sys,
 		Messages:       msgs,
@@ -299,6 +337,18 @@ func (c *Client) buildRequest(messages []session.Message, tools []ToolDef) *sdk.
 		MaxTokens:      c.MaxTokens,
 		Temperature:    sdkTemperature(c.Temperature),
 	}
+}
+
+// markLastToolCache copies tools and sets Cache on the last entry so the
+// catalog is a stable Anthropic cache prefix. The caller's slice is not
+// mutated — buildToolDefs is once per run and must stay identity-stable.
+func markLastToolCache(tools []ToolDef) []ToolDef {
+	if len(tools) == 0 {
+		return tools
+	}
+	out := append([]ToolDef(nil), tools...)
+	out[len(out)-1].Cache = true
+	return out
 }
 
 // sdkTemperature maps odek polarity onto the SDK:

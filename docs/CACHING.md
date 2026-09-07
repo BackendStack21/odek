@@ -14,6 +14,7 @@ When caching is enabled **and** the bound client is Anthropic-format (`Client.Is
 
 1. Marks the first system block (`SystemBlock.Cache`)
 2. Marks the first user message (`Message.Cache`)
+3. Marks the last tool definition (`ToolDef.Cache`) so the tool-list prefix is a third Anthropic breakpoint. The run's tool catalog is copied before the marker is set — the live registry is not mutated.
 
 System messages are always sent as separate `SystemBlock`s (one per system row) via `internal/llmclient.toSDKMessages`. OpenAI-format providers never receive `cache_control` markers; they still benefit from prefix-stable system blocks. go-llm-sdk owns Anthropic request headers.
 
@@ -104,6 +105,7 @@ Hover over any stat for a tooltip explanation.
 1. **Before each LLM call**, `internal/llmclient` maps the session DTO through `toSDKMessages`. Cache flags are set only when `PromptCache && IsAnthropic()`:
    - First system block: `SystemBlock.Cache = true`
    - First user message: `Message.Cache = true`
+   - Last tool: `ToolDef.Cache = true` (copy of the catalog; the caller's slice is unchanged)
 
 2. **The request is sent** with system text in `ChatRequest.System` (one block per system message) on every call. Markers ride on those blocks only for Anthropic-format clients. Other providers never receive markers; some (OpenAI) would 400 if they were sent.
 
@@ -113,6 +115,6 @@ Hover over any stat for a tooltip explanation.
 
 ## Implementation Details
 
-- Cache markers are applied **per iteration** — the first system block and first user message are marked on every Anthropic-format LLM call. This is safe because the markers reference the same content each time, so the cache is populated on the first iteration and read on subsequent ones.
+- Cache markers are applied **per iteration** — the first system block, first user message, and last tool are marked on every Anthropic-format LLM call. This is safe because the markers reference the same content each time, so the cache is populated on the first iteration and read on subsequent ones.
 - The `max_tokens` field is included when set via `odek.Config.MaxTokens`. Some providers (Anthropic) tie caching behavior to this field being present.
 - System text always travels as `ChatRequest.System` (SDK `SystemBlock`s), not only when caching is on. That is what keeps the prefix stable for automatic caches on OpenAI-format providers.

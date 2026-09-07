@@ -221,7 +221,8 @@ Use these exact names in config, env vars, and CLI flags:
 | Skills | `skill_load`, `skill_list` |
 | Sub-agent support | `list_subagent_profiles`, `artifact_read` |
 | Introspection | `config_view`, `list_tools` |
-| Telegram-only | `send_message`, `clarify` (auto-injected by `odek telegram`; ignored by other modes) |
+| Principal channel | `clarify` (CLI / REPL when `/dev/tty` is available; Web UI over WebSocket; Telegram). Not registered for sub-agents, schedule, MCP, or headless REST runs. |
+| Telegram-only | `send_message` (auto-injected by `odek telegram`) |
 | MCP | `<server>__<tool_name>` |
 
 Unknown names are silently ignored, so typos do not crash startup.
@@ -237,10 +238,15 @@ Some odek modes preserve tools they need to function:
 
 - **Telegram** always keeps `send_message` and `clarify` so the bot can respond
   and ask clarifications, even if you disable them.
+- **CLI / REPL / serve (WebSocket)** append `clarify` after the configured
+  filter when a principal channel exists (`/dev/tty` or the connection's
+  WebSocket). Sub-agents, `odek schedule`, MCP, and headless REST runs do not
+  register it.
 - Other modes respect the filter exactly as configured.
 
-`send_message` and `clarify` are only meaningful in `odek telegram`; in other
-modes they are not registered, so including them in a whitelist has no effect.
+`send_message` is only registered in `odek telegram`. `clarify` is registered
+on interactive surfaces (TTY, Web UI, Telegram); including it in a whitelist
+has no effect on surfaces that do not append it.
 
 ## Choosing between whitelist and blacklist
 

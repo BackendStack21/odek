@@ -817,7 +817,10 @@ async function loadConfig() {
       const u = document.createElement('div');
       u.className = 'cfg-usage';
       u.textContent = (usage.prompts_completed || 0) + '/' + (usage.prompts_started || 0) +
-        ' prompts · ' + (usage.tokens_in || 0) + ' in · ' + (usage.tokens_out || 0) + ' out';
+        ' prompts · ' + (usage.tokens_in || 0) + ' in · ' + (usage.tokens_out || 0) + ' out' +
+        ((usage.plans_created || usage.plans_updated || usage.plans_blocked)
+          ? ' · plan ' + (usage.plans_created || 0) + '/' + (usage.plans_updated || 0) + '/' + (usage.plans_blocked || 0)
+          : '');
       list.appendChild(u);
     }
 

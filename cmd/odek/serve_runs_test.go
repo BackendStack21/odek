@@ -102,6 +102,9 @@ func TestHandleUsage_CountersAndCostFlag(t *testing.T) {
 	atomic.AddInt64(&serveStats.PromptsCompleted, 2)
 	atomic.AddInt64(&serveStats.TokensIn, 1_000_000)
 	atomic.AddInt64(&serveStats.TokensOut, 500_000)
+	atomic.AddInt64(&serveStats.PlansCreated, 2)
+	atomic.AddInt64(&serveStats.PlansUpdated, 5)
+	atomic.AddInt64(&serveStats.PlansBlocked, 1)
 
 	resolved := config.ResolvedConfig{Model: "m"}
 	w := httptest.NewRecorder()
@@ -112,6 +115,9 @@ func TestHandleUsage_CountersAndCostFlag(t *testing.T) {
 	}
 	if body["prompts_started"].(float64) != 3 || body["tokens_in"].(float64) != 1e6 {
 		t.Errorf("usage body = %v", body)
+	}
+	if body["plans_created"].(float64) != 2 || body["plans_updated"].(float64) != 5 || body["plans_blocked"].(float64) != 1 {
+		t.Errorf("plan usage body = %v", body)
 	}
 	if body["prices_configured"] != false {
 		t.Errorf("prices_configured = %v, want false without prices", body["prices_configured"])
@@ -124,6 +130,27 @@ func resetServeUsageForTest() {
 	atomic.StoreInt64(&serveStats.PromptsFailed, 0)
 	atomic.StoreInt64(&serveStats.TokensIn, 0)
 	atomic.StoreInt64(&serveStats.TokensOut, 0)
+	atomic.StoreInt64(&serveStats.PlansCreated, 0)
+	atomic.StoreInt64(&serveStats.PlansUpdated, 0)
+	atomic.StoreInt64(&serveStats.PlansBlocked, 0)
+}
+
+func TestRecordPlanUsage_CountsOnlyKnownTypes(t *testing.T) {
+	resetServeUsageForTest()
+	t.Cleanup(resetServeUsageForTest)
+	recordPlanUsage(events.Event{Type: events.TypePlanCreated})
+	recordPlanUsage(events.Event{Type: events.TypePlanUpdated})
+	recordPlanUsage(events.Event{Type: events.TypePlanUpdated})
+	recordPlanUsage(events.Event{Type: events.TypePlanBlocked})
+	recordPlanUsage(events.Event{Type: events.TypeIterationCompleted})
+	if atomic.LoadInt64(&serveStats.PlansCreated) != 1 ||
+		atomic.LoadInt64(&serveStats.PlansUpdated) != 2 ||
+		atomic.LoadInt64(&serveStats.PlansBlocked) != 1 {
+		t.Fatalf("created=%d updated=%d blocked=%d",
+			atomic.LoadInt64(&serveStats.PlansCreated),
+			atomic.LoadInt64(&serveStats.PlansUpdated),
+			atomic.LoadInt64(&serveStats.PlansBlocked))
+	}
 }
 
 // ── Connection registry ───────────────────────────────────────────────

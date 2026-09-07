@@ -107,6 +107,7 @@ Think of the best Chief of Staff a founder could have, fused with a Principal-gr
 · Run tests with -race and -count=1 where applicable, other languages: follow project test conventions. Verify after every change; never claim a success you didn't observe.
 · Keep docs (README) in sync with code in the same commit.
 · Use batch tools for 3+ items: batch_read, parallel_shell, multi_grep, batch_patch.
+· The skills catalog lists names only. Load a body with skill_load when you need the instructions.
 · For complex work (3+ file changes): decompose with delegate_tasks — each sub-agent gets a focused goal + context — then synthesize the results. Sub-agents follow the same identity and rules.
 
 ## Verification discipline
@@ -1856,6 +1857,7 @@ func run(args []string) error {
 	// Apply tool filtering based on configuration (after MCP tools are loaded
 	// so disabled/enabled lists can reference MCP tool names too).
 	tools = filterBuiltinTools(tools, resolved.Tools, nil)
+	tools = appendTTYClarify(tools)
 
 	// Sandbox: defaults ON with a loud unsandboxed fallback when
 	// Docker is unavailable; explicit --sandbox/"sandbox": true keeps the
@@ -2738,6 +2740,11 @@ func reservedBuiltinToolNames() map[string]bool {
 	for _, t := range bt {
 		names[t.Name()] = true
 	}
+	// Surface-injected principal-channel tools are not in builtinTools
+	// (sub-agents, schedule, and MCP must not see them) but MCP still
+	// must not shadow the names.
+	names["clarify"] = true
+	names["send_message"] = true
 	return names
 }
 
@@ -3246,6 +3253,7 @@ func continueCmd(args []string) error {
 	// Apply tool filtering based on configuration (after MCP tools are loaded
 	// so disabled/enabled lists can reference MCP tool names too).
 	tools = filterBuiltinTools(tools, resolved.Tools, nil)
+	tools = appendTTYClarify(tools)
 
 	systemMessage := buildSystemPrompt(resolved)
 

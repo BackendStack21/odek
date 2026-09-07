@@ -89,6 +89,18 @@ func ResetTTYFrictionStateForTest() {
 	ttyApprovalMu.Unlock()
 }
 
+// TTYDevicePath is the /dev/tty path TTYApprover and principal-channel
+// prompts open. Tests may override it via SetTTYPathForTest.
+func TTYDevicePath() string { return ttyPath() }
+
+// WithTTYPrompt runs fn while holding the process-wide TTY prompt lock so
+// clarify questions and approval prompts never race for keystrokes.
+func WithTTYPrompt(fn func() error) error {
+	ttyPromptMu.Lock()
+	defer ttyPromptMu.Unlock()
+	return fn()
+}
+
 // TTYApprover implements Approver by reading from /dev/tty.
 // This is the default approver used in CLI mode (odek run, odek repl).
 // When /dev/tty is not available (piped stdin, CI), it falls back to

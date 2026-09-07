@@ -117,7 +117,10 @@ export function renderPopover() {
   const u = h.usage;
   set('hp-usage', u
     ? u.promptsCompleted + '/' + u.promptsStarted + ' prompts · ' + fmtTokens(u.tokensIn) + ' in · ' + fmtTokens(u.tokensOut) + ' out' +
-      (u.pricesConfigured ? ' · ≈$' + u.costUsd.toFixed(4) : '')
+      (u.pricesConfigured ? ' · ≈$' + u.costUsd.toFixed(4) : '') +
+      (u.plansCreated || u.plansUpdated || u.plansBlocked
+        ? ' · plan ' + (u.plansCreated || 0) + '/' + (u.plansUpdated || 0) + '/' + (u.plansBlocked || 0)
+        : '')
     : '—');
 }
 
@@ -142,6 +145,9 @@ async function refreshFromRest() {
         tokensOut: usage.tokens_out,
         costUsd: usage.estimated_cost_usd,
         pricesConfigured: usage.prices_configured,
+        plansCreated: usage.plans_created,
+        plansUpdated: usage.plans_updated,
+        plansBlocked: usage.plans_blocked,
       };
     }
     renderPopover();

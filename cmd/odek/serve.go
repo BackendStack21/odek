@@ -38,6 +38,7 @@ import (
 	"github.com/BackendStack21/odek/internal/resource"
 	"github.com/BackendStack21/odek/internal/session"
 	"github.com/BackendStack21/odek/internal/skills"
+	toolpkg "github.com/BackendStack21/odek/internal/tool"
 	golangws "golang.org/x/net/websocket"
 )
 
@@ -858,7 +859,7 @@ func (c *wsDeltaCounters) snapshot() (reasoning, content int) {
 	return c.reasoning, c.content
 }
 
-func newServeAgent(resolved config.ResolvedConfig, system string, runKey string, sendFn func(v any) error, deltas *wsDeltaCounters) (*odek.Agent, *bgRuntime, func() error, func(), func() error, guard.Guard, *wsApprover, error) {
+func newServeAgent(resolved config.ResolvedConfig, system string, runKey string, sendFn func(v any) error, deltas *wsDeltaCounters, principalClarify bool) (*odek.Agent, *bgRuntime, func() error, func(), func() error, guard.Guard, *wsApprover, error) {
 	sm := skills.NewSkillManagerWithEmbedding(
 		expandHome("~/.odek/skills"),
 		"./.odek/skills",
@@ -889,6 +890,9 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 	// Apply tool filtering based on configuration (after MCP tools are loaded
 	// so disabled/enabled lists can reference MCP tool names too).
 	tools = filterBuiltinTools(tools, resolved.Tools, nil)
+	if principalClarify {
+		tools = append(tools, toolpkg.NewClarifyTool(approver.PromptClarify))
+	}
 
 	// Find the delegateTasksTool to wire up sub-agent log streaming
 	var subagentTool *delegateTasksTool
@@ -1000,6 +1004,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 		// emitter is panic-isolated upstream; args are hashed + redacted
 		// before they reach this handler, so the ring holds no raw data.
 		EventHandler: func(ev events.Event) {
+			recordPlanUsage(ev)
 			serveEvents.add(ev)
 		},
 		ToolEventHandler: func(event, name, data string) {
@@ -1319,7 +1324,7 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 		}
 		writeWSJSON(conn, v)
 		return nil
-	}, &deltas)
+	}, &deltas, true)
 	if err != nil {
 		writeWSError(conn, fmt.Sprintf("agent: %v", err))
 		return
@@ -1467,6 +1472,14 @@ func handleWS(store *session.Store, resources *resource.Registry, resolved confi
 				var resp approvalResponse
 				if err := json.Unmarshal(data, &resp); err == nil {
 					approver.HandleResponse(resp.ID, resp.Action)
+				}
+				continue
+			}
+
+			if msgType.Type == "clarify_response" {
+				var resp clarifyResponse
+				if err := json.Unmarshal(data, &resp); err == nil {
+					approver.HandleClarifyResponse(resp.ID, resp.Answer)
 				}
 				continue
 			}

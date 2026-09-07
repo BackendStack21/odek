@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -62,16 +63,32 @@ type approvalResponse struct {
 	Action string `json:"action"` // "approve", "deny", "trust"
 }
 
+// clarifyRequest is sent to the browser when the agent asks a question.
+type clarifyRequest struct {
+	Type           string `json:"type"`
+	ID             string `json:"id"`
+	Question       string `json:"question"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+}
+
+// clarifyResponse is received from the browser with the principal's answer.
+type clarifyResponse struct {
+	Type   string `json:"type"`
+	ID     string `json:"id"`
+	Answer string `json:"answer"`
+}
+
 // wsApprover implements danger.Approver over a WebSocket channel.
 // It blocks the agent loop until the browser user responds to the
 // approval prompt. The caller must call HandleResponse() when a
 // matching response arrives from the WebSocket.
 type wsApprover struct {
-	sendFn     func(v any) error      // sends JSON to WebSocket
-	pending    map[string]chan string // request ID → response channel
-	mu         sync.Mutex
-	approveAll map[danger.RiskClass]bool // trust-cached risk classes
-	trustAll   bool                      // when true, all PromptCommand calls auto-approve
+	sendFn         func(v any) error      // sends JSON to WebSocket
+	pending        map[string]chan string // request ID → response channel
+	pendingClarify map[string]chan string // clarify ID → answer channel
+	mu             sync.Mutex
+	approveAll     map[danger.RiskClass]bool // trust-cached risk classes
+	trustAll       bool                      // when true, all PromptCommand calls auto-approve
 
 	// cancel is closed by Cancel() to interrupt waiting PromptCommand calls.
 	// Cancel() closes the active channel and installs a fresh one, so a
@@ -99,6 +116,7 @@ func newWSApprover(sendFn func(v any) error) *wsApprover {
 	return &wsApprover{
 		sendFn:            sendFn,
 		pending:           make(map[string]chan string),
+		pendingClarify:    make(map[string]chan string),
 		approveAll:        make(map[danger.RiskClass]bool),
 		cancel:            make(chan struct{}),
 		frictionThreshold: 3,
@@ -303,13 +321,99 @@ func (a *wsApprover) HandleResponse(id, action string) bool {
 }
 
 func (a *wsApprover) newID() string {
+	return a.newPrefixedID("apr-")
+}
+
+func (a *wsApprover) newClarifyID() string {
+	return a.newPrefixedID("clr-")
+}
+
+func (a *wsApprover) newPrefixedID(prefix string) string {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
-		// Fail closed: on entropy failure every approval would share the
+		// Fail closed: on entropy failure every request would share the
 		// zero ID, letting one response satisfy another pending request.
-		panic("odek: crypto/rand unavailable for approval ID: " + err.Error())
+		panic("odek: crypto/rand unavailable for request ID: " + err.Error())
 	}
-	return "apr-" + hex.EncodeToString(b)
+	return prefix + hex.EncodeToString(b)
+}
+
+// PromptClarify sends a principal-channel question to the bound WebSocket
+// session and blocks until the user answers, the wait expires, or the run
+// is cancelled. A failed send returns immediately so the loop can continue.
+func (a *wsApprover) PromptClarify(question string) (string, error) {
+	id := a.newClarifyID()
+	resp := make(chan string, 1)
+
+	a.mu.Lock()
+	if a.pendingClarify == nil {
+		a.pendingClarify = make(map[string]chan string)
+	}
+	a.pendingClarify[id] = resp
+	a.mu.Unlock()
+
+	defer func() {
+		a.mu.Lock()
+		delete(a.pendingClarify, id)
+		a.mu.Unlock()
+	}()
+
+	cancelCh := a.cancelChan()
+	timeout := clarifyTimeout
+
+	err := a.sendFn(clarifyRequest{
+		Type:           "clarify_request",
+		ID:             id,
+		Question:       question,
+		TimeoutSeconds: int(timeout / time.Second),
+	})
+	if err != nil {
+		return "", fmt.Errorf("send failed: %w", err)
+	}
+
+	select {
+	case answer := <-resp:
+		select {
+		case <-cancelCh:
+			return "", fmt.Errorf("cancelled")
+		default:
+		}
+		answer = strings.TrimSpace(answer)
+		if answer == "" {
+			return "", fmt.Errorf("empty answer")
+		}
+		a.sendFn(map[string]any{
+			"type": "clarify_ack",
+			"id":   id,
+		})
+		return answer, nil
+	case <-cancelCh:
+		return "", fmt.Errorf("cancelled")
+	case <-time.After(timeout):
+		a.sendFn(map[string]any{
+			"type": "clarify_expired",
+			"id":   id,
+		})
+		return "", fmt.Errorf("timed out waiting for response")
+	}
+}
+
+// HandleClarifyResponse delivers a browser answer to a pending PromptClarify.
+// Empty answers are ignored so a blank card cannot complete the wait.
+func (a *wsApprover) HandleClarifyResponse(id, answer string) bool {
+	if strings.TrimSpace(answer) == "" {
+		return false
+	}
+	a.mu.Lock()
+	resp, ok := a.pendingClarify[id]
+	a.mu.Unlock()
+	if ok {
+		select {
+		case resp <- answer:
+		default:
+		}
+	}
+	return ok
 }
 
 // Cancel interrupts any pending PromptCommand by closing the active cancel
