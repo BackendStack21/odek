@@ -108,4 +108,4 @@ agent, err := odek.New(odek.Config{
 
 ## Cache / cost budgets
 
-Cache usage fields come from the SDK (`Usage.Cache*`). Pin **go-llm-sdk v0.2.1+** so cache-token parsing and cost caps stay honest (v0.2.0 lacked those fields).
+Cache usage fields come from the SDK (`Usage.Cache*`). Pin **go-llm-sdk v0.3.2+** so GPT-5.6 tools+reasoning stays on (`POST /v1/responses`) and cache-token parsing remains honest.

@@ -34,3 +34,7 @@ docs/INTELLIGENCE.md
 
 # Sub-agent artifact staging (delegate_tasks result channel)
 .odek-artifacts/
+
+# Local multi-module workspace (points at sibling go-llm-sdk)
+go.work
+go.work.sum
