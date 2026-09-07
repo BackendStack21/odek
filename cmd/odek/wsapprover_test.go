@@ -699,10 +699,18 @@ func TestWSApprover_TimeoutEmitsExpiredFrame(t *testing.T) {
 }
 
 func TestWSApprover_PromptClarify_Answers(t *testing.T) {
+	var mu sync.Mutex
 	var sent clarifyRequest
+	ready := make(chan struct{}, 1)
 	a := newWSApprover(func(v any) error {
 		if req, ok := v.(clarifyRequest); ok {
+			mu.Lock()
 			sent = req
+			mu.Unlock()
+			select {
+			case ready <- struct{}{}:
+			default:
+			}
 		}
 		return nil
 	})
@@ -716,21 +724,19 @@ func TestWSApprover_PromptClarify_Answers(t *testing.T) {
 		}
 		done <- ans
 	}()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		a.mu.Lock()
-		id := sent.ID
-		a.mu.Unlock()
-		if id != "" {
-			if !strings.HasPrefix(id, "clr-") {
-				t.Errorf("clarify id = %q, want clr- prefix", id)
-			}
-			if !a.HandleClarifyResponse(id, "the first") {
-				t.Fatal("HandleClarifyResponse missed pending request")
-			}
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
+	select {
+	case <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("clarify_request was not sent")
+	}
+	mu.Lock()
+	id := sent.ID
+	mu.Unlock()
+	if !strings.HasPrefix(id, "clr-") {
+		t.Errorf("clarify id = %q, want clr- prefix", id)
+	}
+	if !a.HandleClarifyResponse(id, "the first") {
+		t.Fatal("HandleClarifyResponse missed pending request")
 	}
 	select {
 	case ans := <-done:
