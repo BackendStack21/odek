@@ -526,8 +526,8 @@ func New(cfg Config) (*Agent, error) {
 		// when the skills scan scope is enabled.
 		sm.SetGuard(cfg.Guard, cfg.GuardConfig)
 
-		// Names-only catalog sits in the first system block, unwrapped —
-		// a nonce would bust the Anthropic/OpenAI prefix cache every run.
+		// Catalog sits in the first system block, unwrapped — a nonce
+		// would bust the Anthropic/OpenAI prefix cache every run.
 		if catalog := skills.FormatCatalog(sm.AllSkills(), 0); catalog != "" {
 			cfg.SystemMessage += "\n\n" + catalog
 		}
@@ -535,22 +535,23 @@ func New(cfg Config) (*Agent, error) {
 		// Append auto-load skills to system message. Skill bodies are
 		// externally-sourced content, so they pass through the caller's
 		// untrusted wrapper (same as lazy skill context in the loop).
-		var skillContext string
-		var autoLoadNames []string
-		count := 0
-		for _, s := range sm.Result.AutoLoad {
-			if count >= cfg.Skills.MaxAutoLoad {
-				break
-			}
-			content := skills.FormatAsContext(s)
-			if cfg.UntrustedWrapper != nil {
-				content = cfg.UntrustedWrapper("skill", content)
-			}
-			skillContext += "\n\n" + content
-			autoLoadNames = append(autoLoadNames, s.Name)
-			count++
+		var autoLoad []skills.Skill
+		switch n := cfg.Skills.MaxAutoLoad; {
+		case n <= 0:
+			autoLoad = nil
+		case n < len(sm.Result.AutoLoad):
+			autoLoad = sm.Result.AutoLoad[:n]
+		default:
+			autoLoad = sm.Result.AutoLoad
 		}
-		if skillContext != "" {
+		var autoLoadNames []string
+		for _, s := range autoLoad {
+			autoLoadNames = append(autoLoadNames, s.Name)
+		}
+		if skillContext := skills.FormatSkills(autoLoad, 0); skillContext != "" {
+			if cfg.UntrustedWrapper != nil {
+				skillContext = cfg.UntrustedWrapper("skill", skillContext)
+			}
 			cfg.SystemMessage += "\n\n# Loaded Skills\n\n" + skillContext
 		}
 
@@ -708,11 +709,9 @@ func New(cfg Config) (*Agent, error) {
 			if len(matched) == 0 {
 				return ""
 			}
-			var context string
 			names := make([]string, 0, len(matched))
 			for _, sk := range matched {
 				sm.RecordUsage(sk.Name)
-				context += "\n" + skills.FormatAsContext(sk)
 				names = append(names, sk.Name)
 			}
 
@@ -723,7 +722,7 @@ func New(cfg Config) (*Agent, error) {
 				Timestamp: time.Now().UTC(),
 			})
 
-			return context
+			return skills.FormatSkills(matched, 0)
 		})
 	}
 

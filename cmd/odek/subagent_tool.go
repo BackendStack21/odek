@@ -204,28 +204,11 @@ func (t *delegateTasksTool) SetEventEmitter(fn func(events.Event)) {
 }
 
 func (t *delegateTasksTool) Description() string {
-	return `Spawn one or more sub-agent OS processes to work on focused sub-tasks in parallel. Each sub-agent gets its own process, config, and context window. Use this when the task has clear independent sub-tasks that can be worked on simultaneously.
-
-Example: decomposing "build a REST API" into "create user model", "create auth middleware", "create route handlers".
-
-Key rules:
-- Each sub-agent has a fresh context (no parent history) — pass everything it needs in goal/context
-- Sub-agents run in parallel up to the configured concurrency cap
-- Sub-agents NEVER prompt for approvals — denied operations are listed in each result's denials array (tool/class/reason); escalate by performing the operation yourself or asking the user
-- Sub-agents get a wall-clock budget and an iteration budget, and are told both at spawn
-- Trust is non-increasing downward: an untrusted task tree cannot spawn trusted children
-- Delegation depth is capped — do leaf work yourself when close to the cap
-- After all complete, synthesize the results into a cohesive answer
+	return `Spawn sub-agent processes for independent sub-tasks. Each child has a fresh context — put everything it needs in goal/context. Children never prompt for approvals (denials are listed). Trust never increases downward. Depth is capped.
 
 Result delivery — two channels per sub-agent:
-- Headline: the sub-agent's final answer, capped at ~2000 characters. Treat it as a status summary, not the full result; a trailing … means it was cut.
-- Artifacts: file deliverables are validated and listed under "artifacts:" — id, type, byte size, one-line summary. Only text/* artifacts ≤32 KB are inlined in full (JSON/binary are metadata-only); fetch anything else with artifact_read(id).
-- For artifact-heavy tasks (reports, audits, reviews, generated files), put it in ` + "`guidance`" + `: "Write the full deliverable as a flat file in your artifact dir; keep the final answer to a short headline." Then read file-backed artifacts with artifact_read before synthesizing.
-
-Output format per sub-agent (headline stays SHORT — status, artifact names, key decisions; the files carry the detail):
-- Status: built / blocked / failed, one line
-- Key decisions made
-- artifacts: file-backed deliverables (inlined when text ≤32 KB; artifact_read otherwise)`
+- Headline: the sub-agent's final answer, capped at ~2000 characters. Treat it as a status summary; a trailing … means it was cut.
+- Artifacts: validated file deliverables (id, type, size, one-line summary). text/* ≤32 KB is inlined; fetch the rest with artifact_read(id). For artifact-heavy work, set guidance to write a flat file in your artifact dir and keep the final answer to a short headline.`
 }
 
 func (t *delegateTasksTool) Schema() any {
@@ -250,7 +233,7 @@ func (t *delegateTasksTool) Schema() any {
 						},
 						"guidance": map[string]any{
 							"type":        "string",
-							"description": "Optional. How the sub-agent should approach the task — delivered as part of its request, NOT as its system prompt. The sub-agent's identity and safety rules are fixed and cannot be overridden. Use this to steer the approach, e.g. \"Review for token-validation gaps and timing attacks\" or \"Find the root cause before changing code\". For output-heavy tasks, instruct: \"Write the full deliverable as a flat file in your artifact dir; keep the final answer to a short headline.\"",
+							"description": "Optional. How the child should approach the task (not a system-prompt override). For output-heavy work: \"Write the full deliverable as a flat file in your artifact dir; keep the final answer to a short headline.\"",
 						},
 						"trust_level": map[string]any{
 							"type":        "string",

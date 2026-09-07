@@ -22,7 +22,12 @@ import (
 // Each tool implements a Name/Description/Schema/Call contract.
 
 // MaxSkillBodySize is the maximum allowed body size for a skill, in bytes.
+// FormatAsContext truncates bodies that exceed it before fencing.
 const MaxSkillBodySize = 1_048_576 // 1MB
+
+// MaxSkillInjectionBytes caps the combined fenced skill text injected in
+// one turn (auto-load + lazy + rematch share this budget).
+const MaxSkillInjectionBytes = 16 * 1024
 
 // SkillManager holds the state needed by skill management tools.
 // It wraps the skill store and provides access to the scan result.
@@ -134,22 +139,30 @@ func (sm *SkillManager) SetGuard(g guard.Guard, cfg guard.Config) {
 	sm.guardCfg = cfg
 }
 
-// scanSkill checks a skill body for prompt-injection patterns. The fast
-// local rule scan always runs (even when the skills scope or the guard
-// itself is disabled); the sidecar second opinion only runs when the
-// "skills" scope is enabled. If the body is flagged, it sets
-// Provenance.NeedsReview so the skill cannot be auto-loaded without
-// explicit promotion.
+// scanSkill checks a skill body and description for prompt-injection
+// patterns. The fast local rule scan always runs (even when the skills
+// scope or the guard itself is disabled); the sidecar second opinion
+// only runs when the "skills" scope is enabled. If either field is
+// flagged, it sets Provenance.NeedsReview so the skill cannot be
+// auto-loaded or listed with a description without explicit promotion.
 func (sm *SkillManager) scanSkill(ctx context.Context, s *Skill) bool {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	flagged := false
 	if err := guard.ScanContentWithScope(ctx, s.Body, sm.guard, &sm.guardCfg, "skills"); err != nil {
 		log.Printf("guard: skill %q body flagged: %v", s.Name, err)
 		s.Provenance.NeedsReview = true
-		return true
+		flagged = true
 	}
-	return false
+	if strings.TrimSpace(s.Description) != "" {
+		if err := guard.ScanContentWithScope(ctx, s.Description, sm.guard, &sm.guardCfg, "skills"); err != nil {
+			log.Printf("guard: skill %q description flagged: %v", s.Name, err)
+			s.Provenance.NeedsReview = true
+			flagged = true
+		}
+	}
+	return flagged
 }
 
 // applyGuardToSkills scans loaded skills and moves flagged auto-load skills to

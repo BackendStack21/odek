@@ -242,15 +242,9 @@ type configViewTool struct {
 func (t *configViewTool) Name() string { return "config_view" }
 
 func (t *configViewTool) Description() string {
-	return "Read the sanitized, resolved configuration this odek run operates under — the " +
-		"operator's effective settings after the five-layer merge (secrets.env → global → " +
-		"project → env → flags). Sections: all (default), core (provider/model/stream/" +
-		"iteration limits), security (sandbox, dangerous_default_action, guard_scan, tool filter), " +
-		"subagent (delegate_tasks budgets, default profile), limits (execution budgets + " +
-		"effective token prices), memory, skills, background, maintenance. Secrets (API " +
-		"keys, base URLs, env values) are structurally excluded. Read-only; renders the " +
-		"same view as the operator's GET /api/config. Use it to understand the security " +
-		"posture and budgets you and your sub-agents are running under."
+	return "Read this run's sanitized config after the five-layer merge. " +
+		"section: all (default), core, security, subagent, limits, memory, skills, " +
+		"background, maintenance. Secrets excluded. Same view as GET /api/config."
 }
 
 func (t *configViewTool) Schema() any {
@@ -331,13 +325,9 @@ type listToolsTool struct {
 func (t *listToolsTool) Name() string { return "list_tools" }
 
 func (t *listToolsTool) Description() string {
-	return "List the tools actually registered for this run with their enabled/disabled " +
-		"state after the operator's tools.enabled/tools.disabled filter, plus the " +
-		"configured MCP servers (command, approval mode, per-server limits; env values " +
-		"withheld). Use it to reason about your own capabilities and what delegate_tasks " +
-		"sub-agents can access. Note: MCP tools are additionally withheld from untrusted " +
-		"sub-agents. Read-only; complements config_view (settings) and " +
-		"list_subagent_profiles (capability profiles)."
+	return "List tools registered for this run (after tools.enabled/disabled) and " +
+		"configured MCP servers (command, approval, limits; env withheld). " +
+		"MCP tools are withheld from untrusted sub-agents. Read-only."
 }
 
 func (t *listToolsTool) Schema() any {

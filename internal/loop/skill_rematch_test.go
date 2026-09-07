@@ -94,6 +94,55 @@ func TestEngine_SkillRematch_OnPlanCreateTitlesOnly(t *testing.T) {
 	}
 }
 
+func TestEngine_SkillRematch_UpsertsExistingSlot(t *testing.T) {
+	skillLoader := func(q string) string {
+		return "LAZY-SKILL-BODY"
+	}
+
+	callCount := 0
+	var secondCopies int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			fmt.Fprint(w, planTC("c1", `{"verb":"create","steps":[{"id":"s1","title":"Docker build pipeline"}]}`))
+			return
+		}
+		if callCount == 2 {
+			var body struct {
+				Messages []struct {
+					Role    string `json:"role"`
+					Content string `json:"content"`
+				} `json:"messages"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			for _, msg := range body.Messages {
+				secondCopies += strings.Count(msg.Content, "WRAPPED:skill:LAZY-SKILL-BODY")
+			}
+		}
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"done"}}]}`)
+	}))
+	defer server.Close()
+
+	store := NewPlanStore(12, 2000)
+	client := testChatClient(t, server.URL)
+	engine := New(client, tool.NewRegistry([]tool.Tool{NewPlanTool(store)}), 10, "sys", nil, 0)
+	engine.SetPlanStore(store)
+	engine.SetSkillLoader(skillLoader)
+	engine.SetUntrustedWrapper(func(source, content string) string {
+		return "WRAPPED:" + source + ":" + content
+	})
+
+	if _, _, err := engine.RunWithMessages(context.Background(), []session.Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "ship the service"},
+	}); err != nil {
+		t.Fatalf("RunWithMessages: %v", err)
+	}
+	if secondCopies != 1 {
+		t.Fatalf("skill copies on the think-after-plan call = %d, want 1 (rematch upserts)", secondCopies)
+	}
+}
+
 func TestEngine_SkillRematch_NotOnPlanUpdate(t *testing.T) {
 	var queries []string
 	skillLoader := func(q string) string {

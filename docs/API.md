@@ -168,7 +168,7 @@ type Config struct {
     MemoryConfig memory.MemoryConfig
 
     // PromptCaching enables Anthropic-format cache_control markers on
-    // the system prompt, first user message, and last tool. OpenAI-format providers
+    // the system prompt, unchanged memory block, first user message, and last tool. OpenAI-format providers
     // are unaffected (prefix stability only). Default: false.
     PromptCaching bool
 

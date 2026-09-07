@@ -432,7 +432,8 @@ func FormatAsContext(s Skill) string {
 	// attacker-controlled text. FenceBegin must also be removed — an
 	// embedded opening marker would start a nested fence that confuses the
 	// model about where its core identity ends.
-	body := strings.ReplaceAll(s.Body, FenceEnd, "[FENCE-END-MARKER-REMOVED]")
+	body := capSkillBody(s.Body)
+	body = strings.ReplaceAll(body, FenceEnd, "[FENCE-END-MARKER-REMOVED]")
 	body = strings.ReplaceAll(body, FenceBegin, "[FENCE-BEGIN-MARKER-REMOVED]")
 
 	var b strings.Builder
@@ -452,6 +453,55 @@ func FormatAsContext(s Skill) string {
 	}
 	b.WriteString(FenceEnd)
 	b.WriteString("\n")
+	return b.String()
+}
+
+func capSkillBody(body string) string {
+	if len(body) <= MaxSkillBodySize {
+		return body
+	}
+	return body[:MaxSkillBodySize] + "\n[skill body truncated to fit size cap]\n"
+}
+
+// FormatSkills fences one or more skill bodies for injection. Each body is
+// capped at MaxSkillBodySize; the combined output stops at maxBytes
+// (default MaxSkillInjectionBytes). A single skill that still overflows
+// is body-truncated so something useful lands.
+func FormatSkills(list []Skill, maxBytes int) string {
+	if maxBytes <= 0 {
+		maxBytes = MaxSkillInjectionBytes
+	}
+	var b strings.Builder
+	for _, s := range list {
+		chunk := FormatAsContext(s)
+		sep := ""
+		if b.Len() > 0 {
+			sep = "\n"
+		}
+		if b.Len()+len(sep)+len(chunk) <= maxBytes {
+			b.WriteString(sep)
+			b.WriteString(chunk)
+			continue
+		}
+		if b.Len() > 0 {
+			break
+		}
+		s.Body = capSkillBody(s.Body)
+		notice := "\n[skill body truncated to fit injection budget]\n"
+		overhead := len(FormatAsContext(Skill{Name: s.Name, Version: s.Version, Body: ""})) + len(notice)
+		room := maxBytes - overhead
+		if room < 0 {
+			room = 0
+		}
+		if len(s.Body) > room {
+			s.Body = s.Body[:room] + notice
+		}
+		out := FormatAsContext(s)
+		if len(out) > maxBytes {
+			return out[:maxBytes]
+		}
+		return out
+	}
 	return b.String()
 }
 

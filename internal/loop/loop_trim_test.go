@@ -41,6 +41,28 @@ func TestEstimateMessages_CountsReasoningContent(t *testing.T) {
 	}
 }
 
+func TestTrimContext_StripsOldReasoning(t *testing.T) {
+	msgs := []session.Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "task"},
+		{Role: "assistant", Content: "a1", ReasoningContent: "old-think-1", ThinkingSignature: "sig-1"},
+		{Role: "assistant", Content: "a2", ReasoningContent: "old-think-2", ThinkingSignature: "sig-2"},
+		{Role: "assistant", Content: "a3", ReasoningContent: "keep-3", ThinkingSignature: "sig-3"},
+		{Role: "assistant", Content: "a4", ReasoningContent: "keep-4", ThinkingSignature: "sig-4"},
+	}
+	engine := &Engine{maxContext: 0}
+	got := engine.trimContext(context.Background(), msgs, nil)
+	if got[2].ReasoningContent != "" || got[2].ThinkingSignature != "" {
+		t.Errorf("oldest reasoning kept: %+v", got[2])
+	}
+	if got[3].ReasoningContent != "" || got[3].ThinkingSignature != "" {
+		t.Errorf("second-oldest reasoning kept: %+v", got[3])
+	}
+	if got[4].ReasoningContent != "keep-3" || got[5].ReasoningContent != "keep-4" {
+		t.Errorf("newest reasoning dropped: %q / %q", got[4].ReasoningContent, got[5].ReasoningContent)
+	}
+}
+
 // ── Graduated truncation ───────────────────────────────────────────────
 
 // buildToolConversation returns system + task + n groups of

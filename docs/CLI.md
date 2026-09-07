@@ -52,7 +52,7 @@ Unknown flags are a **hard error** — they are never folded into the task text 
 | `--deliver` | bool | false | Deliver the agent's final response to the configured Telegram `default_chat_id`. Requires `telegram.bot_token` + `telegram.default_chat_id` in config. Handy for host-cron one-shots; for recurring tasks prefer the native scheduler (`odek schedule`, see [Schedules](SCHEDULES.md)). |
 | `--interaction-mode <mode>` | string | `engaging` | Tool-call rendering: `engaging` (emoji narration) or `verbose` (raw tool output) |
 | `--no-color` | bool | false | Disable colored terminal output |
-| `--prompt-caching` | bool | `true` | Enable Anthropic-format `cache_control` markers (system + first user + last tool). On by default. OpenAI-format providers are unaffected — they rely on prefix stability. See [CACHING.md](CACHING.md) |
+| `--prompt-caching` | bool | `true` | Enable Anthropic-format `cache_control` markers (system + memory + first user + last tool). On by default. OpenAI-format providers are unaffected — they rely on prefix stability. See [CACHING.md](CACHING.md) |
 | `--no-prompt-caching` | bool | `false` | Disable prompt caching (overrides config/default) |
 | `--stream` | bool | `true` | Stream reasoning and answer text to the terminal as it arrives. On by default for `run` / `repl` / `serve`. Telegram does not print incrementally. See [STREAMING.md](STREAMING.md) |
 | `--no-stream` | bool | `false` | Disable streaming (overrides config/default). Accepted by `run`, `repl`, and `serve` |
