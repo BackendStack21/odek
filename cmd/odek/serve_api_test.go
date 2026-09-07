@@ -530,6 +530,33 @@ func TestHandleModelList_MergesListedModels(t *testing.T) {
 	}
 }
 
+func TestHandleModelList_OpenAILastResortContext(t *testing.T) {
+	// Official OpenAI /v1/models omits context_length; the picker and Bodek
+	// gauge still need a window so they do not stay hidden.
+	list := func(context.Context) ([]listedModel, error) {
+		return []listedModel{
+			{ID: "gpt-5.6-luna", DisplayName: "GPT-5.6 Luna", ContextWindow: 0},
+			{ID: "gpt-4o", DisplayName: "GPT-4o", ContextWindow: 0},
+		}, nil
+	}
+	handler := handleModelList("gpt-5.6-luna", list)
+	w := httptest.NewRecorder()
+	handler(w, httptest.NewRequest(http.MethodGet, "/api/models", nil))
+	var models []modelEntry
+	if err := json.NewDecoder(w.Body).Decode(&models); err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("len = %d, want 2", len(models))
+	}
+	if models[0].ID != "gpt-5.6-luna" || !models[0].Current || models[0].MaxContext != 1_050_000 {
+		t.Errorf("luna = %+v, want current + 1050000", models[0])
+	}
+	if models[1].ID != "gpt-4o" || models[1].MaxContext != 128_000 {
+		t.Errorf("gpt-4o = %+v, want 128000", models[1])
+	}
+}
+
 // ── handleLimits ─────────────────────────────────────────────────────
 
 // wrapLimitsAPI mirrors the production apiAuth stack (per-instance token +

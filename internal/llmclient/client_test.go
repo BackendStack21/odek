@@ -74,14 +74,34 @@ func TestToSDKMessages_DropsUnknownRoleWithToolGroup(t *testing.T) {
 }
 
 func TestLastResortContext(t *testing.T) {
-	if LastResortContext("deepseek-v4-flash") != 131_072 {
-		t.Fatal("flash")
+	cases := []struct {
+		model string
+		want  int
+	}{
+		{"deepseek-v4-flash", 131_072},
+		{"deepseek-v4-pro", 1_000_000},
+		{"gpt-6-astra", 1_050_000},
+		{"gpt-6", 1_050_000},
+		{"gpt-5.6-luna", 1_050_000},
+		{"gpt-5.6-terra", 1_050_000},
+		{"gpt-5.6-sol", 1_050_000},
+		{"GPT-5.6-Luna", 1_050_000},
+		{"gpt-5.5", 1_050_000},
+		{"gpt-5.4", 1_050_000},
+		{"gpt-5.4-mini", 400_000},
+		{"gpt-5.4-nano", 400_000},
+		{"gpt-5", 400_000},
+		{"gpt-5-mini", 400_000},
+		{"gpt-4.1", 1_047_576},
+		{"gpt-4o", 128_000},
+		{"gpt-4o-mini", 128_000},
+		{"o3-mini", 200_000},
+		{"my-custom-llm", 0},
 	}
-	if LastResortContext("deepseek-v4-pro") != 1_000_000 {
-		t.Fatal("pro")
-	}
-	if LastResortContext("gpt-4o") != 0 {
-		t.Fatal("unknown must be 0")
+	for _, tc := range cases {
+		if got := LastResortContext(tc.model); got != tc.want {
+			t.Errorf("LastResortContext(%q) = %d, want %d", tc.model, got, tc.want)
+		}
 	}
 }
 
