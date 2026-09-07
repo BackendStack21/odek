@@ -45,6 +45,7 @@ export const S = {
   historyIdx: -1,
   attachedFiles: [], // {name, size, content}
   currentModel: localStorage.getItem('odek_model') || '',
+  currentThinking: localStorage.getItem('odek_thinking') || '',
   availableModels: [], // GET /api/models (ListModels + configured)
 
   // ── Sessions sidebar (server-side search + pagination) ──

@@ -116,10 +116,11 @@ type Config struct {
     // Per-id api_key / base_url / format overrides.
     Providers map[string]llmclient.ProviderOverride
 
-    // Thinking depth — provider-specific semantics:
-    //   DeepSeek: "enabled" | "disabled"
-    //   OpenAI o-series: "low" | "medium" | "high"
-    //   Empty string → omit (provider default). Not inferred from the model name.
+    // Reasoning depth. Public values: "disabled", "low", "medium", "high".
+    // Empty omits the field (provider default). Aliases (enabled/on → medium,
+    // off → disabled, mid → medium, max → high) are accepted inbound.
+    // go-llm-sdk maps the canonical values onto provider fields.
+    // Not inferred from the model name.
     Thinking string
 
     // Tools registered with the agent. The LLM can invoke these
@@ -329,6 +330,8 @@ func New(cfg Config) (*Agent, error)
 
 func (a *Agent) Run(ctx context.Context, task string) (string, error)
 func (a *Agent) RunWithMessages(ctx context.Context, messages []session.Message) (string, []session.Message, error)
+func (a *Agent) Thinking() string
+func (a *Agent) SwitchThinking(thinking string)
 func (a *Agent) TotalInputTokens() int
 func (a *Agent) TotalOutputTokens() int
 func (a *Agent) Close() error

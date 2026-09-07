@@ -157,7 +157,7 @@ odek run "@README.md what does this project do?"
 | `--model <name>` | LLM model (e.g. deepseek-v4-flash, gpt-4o) |
 | `--base-url <url>` | API endpoint URL |
 | `--sandbox` | Run in Docker sandbox |
-| `--thinking <level>` | Reasoning depth (enabled/disabled/low/medium/high) |
+| `--thinking <level>` | Reasoning depth (`disabled`/`low`/`medium`/`high`; `enabled`/`on` → `medium`) |
 | `--system <prompt>` | Override system prompt |
 | `--max-iter <n>` | Max think→act cycles (default 90) |
 | `--prompt-caching` | Enable Anthropic/OpenAI/DeepSeek prompt caching markers |

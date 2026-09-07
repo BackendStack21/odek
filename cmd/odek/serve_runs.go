@@ -719,6 +719,9 @@ func startServeRun(
 	if req.Model != "" && (len(req.Model) > maxModelIDBytes || !modelIDPattern.MatchString(req.Model)) {
 		return nil, fmt.Errorf("invalid model ID")
 	}
+	if _, _, err := resolveServeThinking(req.Thinking); err != nil {
+		return nil, err
+	}
 	// Resource bound first: refuse before spawning an agent, MCP clients,
 	// or a sandbox container. Count-then-register has a benign race — the
 	// cap defends a local management surface against runaway scripts, not
@@ -781,6 +784,11 @@ func startServeRun(
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("agent: %w", err)
+	}
+	if err := applyServeThinking(agent, req.Thinking); err != nil {
+		cancel()
+		agent.Close() //nolint:errcheck
+		return nil, err
 	}
 
 	// Headless runs may wait longer than the socket default for approvals.

@@ -43,7 +43,7 @@ Custom ids need `providers.<id>.format` (`openai` / `anthropic` / `gemini`) in
 | `--provider` / `ODEK_PROVIDER` | Select the registry id |
 | `--model` / `ODEK_MODEL` | Model id passed to `SDK.Chat` |
 | `--base-url` / `ODEK_BASE_URL` | Override **selected** provider URL |
-| `--thinking` / `--thinking-budget` | Passed through on `ChatRequest` |
+| `--thinking` / `--thinking-budget` | Reasoning depth on `ChatRequest`: `disabled`/`low`/`medium`/`high` (aliases inbound). Budget is Anthropic tokens |
 | `prompt_caching` | Anthropic: `SystemBlock.Cache` + first-user `Message.Cache`. OpenAI-format: prefix-stable separate system messages (no `cache_control`) |
 | `llm.request_timeout_seconds` | Default 300. No per-model auto-timeout. |
 | `llm.stream_idle_timeout_seconds` | SSE idle watchdog (default 300, floor 5) |

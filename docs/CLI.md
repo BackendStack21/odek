@@ -44,7 +44,7 @@ Unknown flags are a **hard error** — they are never folded into the task text 
 | `--model <name>` | string | `deepseek-v4-flash` | LLM model id. No auto-thinking / auto-timeout from the name. |
 | `--base-url <url>` | string | (SDK default for provider) | Override the **selected** provider's API endpoint |
 | `--max-iter <n>` | int | `90` | Max think→act cycles |
-| `--thinking <level>` | string | (unset) | Reasoning depth: `enabled`/`disabled`/`low`/`medium`/`high`. Not inferred from the model name. |
+| `--thinking <level>` | string | (unset) | Reasoning depth: `disabled`/`low`/`medium`/`high`. Aliases: `enabled`/`on` → `medium`, `off` → `disabled`, `mid` → `medium`, `max` → `high`. Not inferred from the model name. |
 | `--thinking-budget <n>` | int | `5000` | Max thinking tokens for extended thinking (Anthropic budget_tokens). Only applied when `--thinking` is set. |
 | `--temperature <n>` | float | `0` | LLM sampling temperature (0.0–2.0). Forced to 1 when Anthropic extended thinking is active. |
 | `--sandbox` | bool | default on | Execute shell commands inside Docker container. Defaults ON when no layer sets it; degrades loudly to unsandboxed when Docker is unavailable (fatal with `ODEK_REQUIRE_SANDBOX=1`). Explicit `--sandbox` keeps the hard-fail behavior. |

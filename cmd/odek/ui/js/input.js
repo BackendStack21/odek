@@ -72,7 +72,7 @@ export function drainQueue() {
   if (S.busy || S.activeApprovalId || !S.promptQueue.length) return;
   const next = S.promptQueue.shift();
   renderQueueStrip();
-  sendPayload(next.text, next.attachments, next.display);
+  sendPayload(next.text, next.attachments, next.display, next.model, next.thinking);
 }
 S.drainQueue = drainQueue;
 
@@ -112,6 +112,7 @@ export function send() {
       display,
       attachments,
       model: S.currentModel || undefined,
+      thinking: S.currentThinking || undefined,
     });
     renderQueueStrip();
     teach('queue', 'tip: Enter queues the next prompt · reorder in the strip above');
@@ -121,7 +122,7 @@ export function send() {
   sendPayload(text, attachments, display);
 }
 
-function sendPayload(text, attachments, display) {
+function sendPayload(text, attachments, display, model, thinking) {
   addMessage('user', display);
   resetTurnState();
   S.lastPrompt = text;
@@ -139,7 +140,8 @@ function sendPayload(text, attachments, display) {
     attachments: attachments,
     session_id: S.sessionId,
     auth_token: getSessionToken(S.sessionId) || undefined,
-    model: S.currentModel || undefined,
+    model: model || S.currentModel || undefined,
+    thinking: thinking || S.currentThinking || undefined,
   }));
 }
 

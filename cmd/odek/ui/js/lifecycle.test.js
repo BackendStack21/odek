@@ -169,7 +169,7 @@ const bySelector = {};
 const ids = ['messages', 'prompt', 'send-btn', 'completion', 'ws-status', 'ws-dot',
   'model-label', 'session-list', 'sidebar-search', 'empty-state', 'cancel-btn',
   'scroll-bottom-btn', 'loading-skeleton', 'sidebar-overlay', 'file-input',
-  'attach-btn', 'file-chips', 'toast', 'announcer', 'model-picker',
+  'attach-btn', 'file-chips', 'toast', 'announcer', 'model-picker', 'thinking-picker',
   'custom-model-input', 'theme-btn', 'panels-btn', 'shortcuts-overlay',
   'status-group', 'ping-latency', 'stream-badge', 'sessions-more', 'sidebar-count',
   'sandbox-badge', 'plan-panel'];

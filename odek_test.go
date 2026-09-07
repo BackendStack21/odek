@@ -127,28 +127,46 @@ func TestConfigCustomMaxIterations(t *testing.T) {
 
 func TestConfigThinkingPassthrough(t *testing.T) {
 	tests := []struct {
-		thinking string
+		in, want string
 	}{
-		{"enabled"},
-		{"disabled"},
-		{"low"},
-		{"medium"},
-		{"high"},
-		{""},
+		{"enabled", "medium"},
+		{"on", "medium"},
+		{"disabled", "disabled"},
+		{"low", "low"},
+		{"medium", "medium"},
+		{"high", "high"},
+		{"mid", "medium"},
+		{"max", "high"},
+		{"off", "disabled"},
+		{"", ""},
+		{"banana", ""},
 	}
 
 	for _, tt := range tests {
 		cfg := Config{
 			APIKey:   "sk-test",
-			Thinking: tt.thinking,
+			Thinking: tt.in,
 		}
 		agent, err := New(cfg)
 		if err != nil {
-			t.Fatalf("New() with thinking=%q: %v", tt.thinking, err)
+			t.Fatalf("New() with thinking=%q: %v", tt.in, err)
 		}
-		if agent.config.Thinking != tt.thinking {
-			t.Errorf("Thinking = %q, want %q", agent.config.Thinking, tt.thinking)
+		if agent.config.Thinking != tt.want {
+			t.Errorf("Thinking = %q, want %q (in %q)", agent.config.Thinking, tt.want, tt.in)
 		}
+	}
+
+	agent, err := New(Config{APIKey: "sk-test", Thinking: "high"})
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	agent.SwitchThinking("banana")
+	if agent.Thinking() != "high" {
+		t.Errorf("SwitchThinking(unknown) = %q, want high (unchanged)", agent.Thinking())
+	}
+	agent.SwitchThinking("")
+	if agent.Thinking() != "" {
+		t.Errorf("SwitchThinking(\"\") = %q, want empty inherit", agent.Thinking())
 	}
 }
 

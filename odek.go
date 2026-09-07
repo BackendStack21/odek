@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/BackendStack21/odek/internal/budget"
+	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/danger"
 	"github.com/BackendStack21/odek/internal/events"
 	"github.com/BackendStack21/odek/internal/guard"
@@ -78,13 +79,12 @@ type Config struct {
 	// discover via ListModels, then the last-resort table for shipped ids.
 	ContextWindow int
 
-	// Thinking controls the model's reasoning depth. Provider-specific:
-	//
-	//   Deepseek: "enabled" or "disabled" → {"type": "enabled"}
-	//   OpenAI o-series: "low", "medium", "high" → {"reasoning_effort": "low"}
-	//
-	// When empty, the field is omitted (provider default). v2 does not
-	// infer thinking from the model name — set it explicitly.
+	// Thinking controls the model's reasoning depth. Public values:
+	// "disabled", "low", "medium", "high". Empty omits the field (provider
+	// default). Aliases (enabled/on → medium, off → disabled, mid → medium,
+	// max → high) are accepted inbound. go-llm-sdk maps the canonical
+	// values onto provider fields. v2 does not infer thinking from the
+	// model name — set it explicitly.
 	Thinking string
 
 	// Temperature controls LLM output randomness (0.0–2.0).
@@ -411,6 +411,7 @@ func New(cfg Config) (*Agent, error) {
 	if cfg.Model == "" {
 		cfg.Model = defaultModel
 	}
+	cfg.Thinking = config.CanonicalThinking(cfg.Thinking)
 
 	// ── Runtime Context ─────────────────────────────────────────────
 	// Prepend environment awareness so the agent knows its host, cwd,
@@ -1027,17 +1028,31 @@ func (a *Agent) SwitchModel(model string) {
 	}
 }
 
+// Thinking returns the agent's current reasoning depth (canonical, or
+// empty when using the provider default).
+func (a *Agent) Thinking() string {
+	if a == nil {
+		return ""
+	}
+	return a.config.Thinking
+}
+
 // SwitchThinking updates the reasoning/thinking mode used by this agent at
-// runtime. Accepts the same values as Config.Thinking: "enabled",
-// "disabled", "low", "medium", "high", or "" (provider default / off).
-// Safe to call between RunWithMessages calls to toggle thinking per-query.
+// runtime. Accepts Config.Thinking values: "disabled", "low", "medium",
+// "high", aliases (enabled/on/off/mid/max), or "" (provider default).
+// Unrecognized values are ignored (the current level stays). Safe to call
+// between RunWithMessages calls to toggle thinking per-query.
 func (a *Agent) SwitchThinking(thinking string) {
 	if a == nil {
 		return
 	}
-	a.config.Thinking = thinking
+	canon, ok := config.NormalizeThinking(thinking)
+	if !ok {
+		return
+	}
+	a.config.Thinking = canon
 	if a.engine != nil {
-		a.engine.SetThinking(thinking)
+		a.engine.SetThinking(canon)
 	}
 }
 

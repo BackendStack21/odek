@@ -11,7 +11,8 @@ import { initMetrics, setMetricsModel, sessionCostUSD } from './metrics.js';
 import { setCommandHandlers, togglePalette, isPaletteOpen, copyLastReply, exportActiveSession, openTab } from './commands.js';
 import { retryLast } from './input.js';
 import { requestNotify, syncNotifyBtn, togglePopover } from './health.js';
-import { getModels, cancelSession, shutdownServer } from './api.js';
+import { getModels, getConfig, cancelSession, shutdownServer } from './api.js';
+import { normalizeThinking, seedThinking, persistThinking } from './thinking.js';
 import './input.js';
 import './approvals.js';
 import './health.js';
@@ -126,6 +127,28 @@ function onPickerChange(value) {
   if (value) switchModel(value);
 }
 document.getElementById('model-picker').addEventListener('change', (e) => onPickerChange(e.target.value));
+
+function applyThinking(level, toast, persist) {
+  const canon = normalizeThinking(level) || 'disabled';
+  S.currentThinking = canon;
+  if (persist !== false) persistThinking(canon);
+  const picker = document.getElementById('thinking-picker');
+  if (picker && picker.value !== canon) picker.value = canon;
+  if (toast !== false) showToast('Thinking: ' + canon);
+}
+
+function initThinkingPicker() {
+  const picker = document.getElementById('thinking-picker');
+  if (!picker) return;
+  const stored = localStorage.getItem('odek_thinking') || '';
+  applyThinking(seedThinking(stored, ''), false, !!stored);
+  picker.addEventListener('change', (e) => applyThinking(e.target.value));
+  getConfig().then((cfg) => {
+    if (localStorage.getItem('odek_thinking')) return;
+    applyThinking(seedThinking('', cfg && cfg.thinking), false, false);
+  }).catch(() => { /* picker already has a default */ });
+}
+initThinkingPicker();
 
 // Commit a custom model ID from the text input on Enter or blur.
 customModelInput.addEventListener('keydown', (e) => {
@@ -335,6 +358,7 @@ setCommandHandlers({
   toggleNotify: () => notifyBtn && notifyBtn.click(),
   shutdown: openShutdown,
   switchModel,
+  switchThinking: applyThinking,
   openSession: (id) => loadAndRenderSession(id),
 });
 

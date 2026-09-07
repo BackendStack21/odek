@@ -379,6 +379,20 @@ button:disabled { cursor: not-allowed; }
 #model-picker:disabled { opacity: .5; }
 #model-picker optgroup { color: var(--text-3); font-style: normal; }
 
+#thinking-picker {
+  background: transparent;
+  color: var(--text-3);
+  border: none;
+  border-radius: 0;
+  font-size: var(--fs-xs);
+  padding: 4px 0;
+  max-width: 88px;
+  cursor: pointer;
+  transition: color var(--dur) var(--ease);
+}
+#thinking-picker:hover { color: var(--text); }
+#thinking-picker:focus-visible { box-shadow: var(--ring); }
+
 #custom-model-input {
   display: none;
   background: none;
@@ -2478,7 +2492,7 @@ body.light .composer-bar { border-top-color: rgba(0, 0, 0, .06); }
     flex-wrap: wrap;
     row-gap: 4px;
   }
-  #model-picker, #custom-model-input {
+  #model-picker, #thinking-picker, #custom-model-input {
     order: 10;
     flex: 1 1 100%;
     max-width: none;
