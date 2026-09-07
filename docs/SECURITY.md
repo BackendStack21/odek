@@ -307,7 +307,7 @@ Pinned by `cmd/odek/subagent_profiles_test.go` (override/clamp semantics, allowl
 
 The plan tool gives the agent a protected plan message that survives context trimming. Three security properties are pinned by the regression bar and detailed in [PLANNING.md → Security Model](PLANNING.md#security-model):
 
-- **Never in the approval UI.** `classifyToolCall` returns an explicit safe class for `plan`, so plan calls (and their step titles, which may quote task content) never surface in approval prompts or batch cards (`TestReport_PlanToolClassifiedSafe`).
+- **Never in the approval UI.** `classifyToolCall` returns an explicit safe class for `plan` and `clarify`, so those calls never surface in approval prompts or batch cards (`TestReport_PlanToolClassifiedSafe`, `TestReport_ClarifyToolClassifiedSafe`).
 - **Untrusted wrapping.** Plan step bodies derive from task/tool content and are re-injected as system context every iteration — they ride the same untrusted-content wrapper as other engine-injected context, with the audit ingest recorder recording the injection.
 - **Forgery resistance.** A hostile tool result containing a literal plan header cannot become the plan message: recognition requires the `system` role, and only the engine writes that role/content pair (enforced by plan-message construction in `internal/loop`).
 

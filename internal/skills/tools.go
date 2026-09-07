@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -305,6 +306,46 @@ func (sm *SkillManager) AllSkills() []Skill {
 		all = append(all, sm.Result.Lazy...)
 	}
 	return all
+}
+
+// catalogMaxBytes caps the stable skills catalog in the system head.
+const catalogMaxBytes = 4 * 1024
+
+// FormatCatalog renders a cache-stable skills list for the system prompt:
+// name plus one-line description for promoted skills; NeedsReview skills
+// appear as a name with "[needs review]" and no body. Empty when there are
+// no skills. Truncates at maxBytes (default 4 KiB).
+func FormatCatalog(list []Skill, maxBytes int) string {
+	if maxBytes <= 0 {
+		maxBytes = catalogMaxBytes
+	}
+	sorted := append([]Skill(nil), list...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+	var b strings.Builder
+	header := "# Skills catalog\nNames and one-line descriptions only. Load a body with skill_load when you need the instructions.\n"
+	b.WriteString(header)
+	n := 0
+	for _, s := range sorted {
+		var line string
+		if s.Provenance.NeedsReview {
+			line = fmt.Sprintf("- %s — [needs review]\n", s.Name)
+		} else {
+			desc := strings.TrimSpace(strings.ReplaceAll(s.Description, "\n", " "))
+			if desc == "" {
+				desc = "(no description)"
+			}
+			line = fmt.Sprintf("- %s — %s\n", s.Name, desc)
+		}
+		if b.Len()+len(line) > maxBytes {
+			break
+		}
+		b.WriteString(line)
+		n++
+	}
+	if n == 0 {
+		return ""
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // ── skill_load ─────────────────────────────────────────────────────────

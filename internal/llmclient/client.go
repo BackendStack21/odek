@@ -325,6 +325,9 @@ func (c *Client) CallStream(ctx context.Context, messages []session.Message, too
 func (c *Client) buildRequest(messages []session.Message, tools []ToolDef) *sdk.ChatRequest {
 	isAnthropic := c.IsAnthropic()
 	sys, msgs := toSDKMessages(messages, c.PromptCache && isAnthropic, isAnthropic)
+	if c.PromptCache && isAnthropic {
+		tools = markLastToolCache(tools)
+	}
 	return &sdk.ChatRequest{
 		System:         sys,
 		Messages:       msgs,
@@ -334,6 +337,18 @@ func (c *Client) buildRequest(messages []session.Message, tools []ToolDef) *sdk.
 		MaxTokens:      c.MaxTokens,
 		Temperature:    sdkTemperature(c.Temperature),
 	}
+}
+
+// markLastToolCache copies tools and sets Cache on the last entry so the
+// catalog is a stable Anthropic cache prefix. The caller's slice is not
+// mutated — buildToolDefs is once per run and must stay identity-stable.
+func markLastToolCache(tools []ToolDef) []ToolDef {
+	if len(tools) == 0 {
+		return tools
+	}
+	out := append([]ToolDef(nil), tools...)
+	out[len(out)-1].Cache = true
+	return out
 }
 
 // sdkTemperature maps odek polarity onto the SDK:

@@ -75,7 +75,9 @@ Two token layers:
    **`done` is emitted only after the session is persisted** — refreshing
    session state on `done` is race-free by contract.
 5. Answer `approval_request` with `{"type":"approval_response","id":…,
-   "action":"approve"|"deny"|"trust"}` (default timeout 60s).
+   "action":"approve"|"deny"|"trust"}` (default timeout 60s). Answer
+   `clarify_request` with `{"type":"clarify_response","id":…,"answer":"…"}`
+   (default timeout 300s).
 6. Keep alive with `{"type":"ping"}` (answered inline with `pong`, even
    mid-run). The server also pushes `keepalive` every 20s so idle proxies
    do not drop a socket waiting on a thinking model. Cancel with
@@ -146,6 +148,7 @@ The bundled client is a **zero-framework command center** — same EMBER languag
 - **Tool call blocks** — Bodek heads: `▶` + `▸/✓/✗` + monochrome glyph + steel name + faint args. Live and history share one spine: thinking → tools → answer (token_delta cannot race ahead of `tool_call`). Args and results stay collapsed until the head is opened; long results truncate behind “show all”
 - **Sub-agent swarm** — `delegate_tasks` uses the same spine as a tool step (`▶ ▸ ⑂ delegate_tasks · 1/2 agents`) plus an always-on chip strip (`⟳ SA1 <goal|tool>`). Click a chip (or the head) for the `⎿` log and summary; the inspector Now tab still lists every agent.
 - **Inline approvals** — dangerous operations block the run and show a decision card (risk class, plain-language explanation, verbatim command). Friction mode (after 3 same-class approvals in 60s) requires typing the literal word `approve`; `trust session` is hidden for destructive/blocked/unknown classes. Keyboard: `A` approve, `D` deny, `T` trust
+- **Clarify** — when the agent needs a decision, a question card waits for a typed answer (5 minute wait). Bound to that WebSocket session; headless REST runs do not register the tool.
 - **Cancel** — the ✕ button cancels the running prompt over the WebSocket (`cancel` message), with the REST endpoint as fallback
 - **Model switching** — the picker lists `GET /api/models` (provider `ListModels` catalog, configured model marked current, with context sizes) plus an "Other…" free-text entry; switches apply from the next prompt
 - **History navigation** — `↑`/`↓` arrows cycle through your previous prompts (stored in `localStorage`)
@@ -496,9 +499,11 @@ tool arguments. Every WS prompt and REST run feeds the same ring.
 ### `GET /api/usage`
 
 Server-lifetime aggregates: `prompts_started/completed/failed`,
-`tokens_in/out`, `estimated_cost_usd` via `limits.ResolvePrices`, and
-`prices_configured` (false ⇒ render costs as "unavailable"). Sessions also
-carry cumulative `input_tokens`/`output_tokens` (shown in list/detail).
+`tokens_in/out`, `estimated_cost_usd` via `limits.ResolvePrices`,
+`prices_configured` (false ⇒ render costs as "unavailable"), and plan
+rollup `plans_created` / `plans_updated` / `plans_blocked` (counts only).
+Sessions also carry cumulative `input_tokens`/`output_tokens` (shown in
+list/detail).
 
 ### `GET /api/subagents?key=`
 
@@ -656,6 +661,9 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 | `approval_request` | Agent needs user approval for dangerous operation; blocks the run up to `timeout_seconds` (60s default) | `id`, `risk` (class name), `command` (or resource), `description`, `is_operation`, `allow_trust`, `friction`, `friction_approvals`, `timeout_seconds` (the effective server-enforced wait in seconds — render the card's countdown from it) |
 | `approval_ack` | Server confirms an approval response | `id`, `action` |
 | `approval_expired` | Server declares the approval dead after `timeout_seconds` elapsed with no response — autoclose the matching card; late `approval_response` frames for the id are dropped | `id` |
+| `clarify_request` | Agent asked a principal-channel question; blocks the run up to `timeout_seconds` (300s) | `id`, `question`, `timeout_seconds` |
+| `clarify_ack` | Server confirms a clarify answer | `id` |
+| `clarify_expired` | Server declares the question dead after `timeout_seconds` with no answer | `id` |
 | `skill_event` | Skill lifecycle event (`loaded`/`autoloaded`/`used`/`deleted` — `skill_save`/`skill_patch` were removed with the self-learning feature) | `event`, `skill_name`, `skills`, `heuristic` |
 | `memory_event` | Memory lifecycle event | `event`, `target`, `session_id`, `content`, `count`, `new_count`, `untrusted` |
 | `agent_signal` | Agent self-observability signal | `event`, `detail`, `tool`, `count` |
@@ -667,7 +675,7 @@ Every frame of an active turn — `token`, `thinking`, `tool_call`,
 turn's `turn_started.turn_id`, so a client that attached mid-turn (after a
 reconnect) can attribute stray frames and reconcile card state without
 heuristic idle detection. Lifecycle frames (`session`, `server_info`,
-`pong`, `keepalive`, `usage`, `cancelled`, `subagent_*`, `approval_*`, `skill_event`,
+`pong`, `keepalive`, `usage`, `cancelled`, `subagent_*`, `approval_*`, `clarify_*`, `skill_event`,
 `memory_event`, `agent_signal`) and the live `*_delta` fragments never
 carry it. The `session` frame's legacy `system_initiated: true` stamp
 (wake turns only) remains for old clients; `turn_started.initiated`

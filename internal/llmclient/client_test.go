@@ -250,3 +250,23 @@ func TestPrepareSideCall_HonorsLowerClientMaxTokens(t *testing.T) {
 		t.Errorf("MaxTokens = %d, want 128", req.MaxTokens)
 	}
 }
+
+func TestMarkLastToolCache_CopiesAndMarksLast(t *testing.T) {
+	orig := []sdk.ToolDef{
+		{Name: "a"},
+		{Name: "b"},
+	}
+	got := markLastToolCache(orig)
+	if len(got) != 2 || !got[1].Cache || got[0].Cache {
+		t.Fatalf("got %+v", got)
+	}
+	if orig[1].Cache {
+		t.Fatal("markLastToolCache must not mutate the caller's slice")
+	}
+}
+
+func TestMarkLastToolCache_Empty(t *testing.T) {
+	if markLastToolCache(nil) != nil {
+		t.Fatal("nil in → nil out")
+	}
+}

@@ -52,7 +52,7 @@ Unknown flags are a **hard error** — they are never folded into the task text 
 | `--deliver` | bool | false | Deliver the agent's final response to the configured Telegram `default_chat_id`. Requires `telegram.bot_token` + `telegram.default_chat_id` in config. Handy for host-cron one-shots; for recurring tasks prefer the native scheduler (`odek schedule`, see [Schedules](SCHEDULES.md)). |
 | `--interaction-mode <mode>` | string | `engaging` | Tool-call rendering: `engaging` (emoji narration) or `verbose` (raw tool output) |
 | `--no-color` | bool | false | Disable colored terminal output |
-| `--prompt-caching` | bool | `true` | Enable Anthropic-format `cache_control` markers (system + first user). On by default. OpenAI-format providers are unaffected — they rely on prefix stability. See [CACHING.md](CACHING.md) |
+| `--prompt-caching` | bool | `true` | Enable Anthropic-format `cache_control` markers (system + first user + last tool). On by default. OpenAI-format providers are unaffected — they rely on prefix stability. See [CACHING.md](CACHING.md) |
 | `--no-prompt-caching` | bool | `false` | Disable prompt caching (overrides config/default) |
 | `--stream` | bool | `true` | Stream reasoning and answer text to the terminal as it arrives. On by default for `run` / `repl` / `serve`. Telegram does not print incrementally. See [STREAMING.md](STREAMING.md) |
 | `--no-stream` | bool | `false` | Disable streaming (overrides config/default). Accepted by `run`, `repl`, and `serve` |
@@ -268,8 +268,9 @@ with YAML frontmatter that define trigger keywords, quality metadata, and markdo
 ### How skills work
 
 1. Skills are stored in `~/.odek/skills/<name>/SKILL.md` (user-global) or `./.odek/skills/<name>/SKILL.md` (project)
-2. Skills with `auto_load: true` are injected into the system prompt on start
-3. Lazy skills are loaded on demand when the user's input matches their trigger keywords (topic × action)
+2. A names-only catalog (promoted: name + one-line description; NeedsReview: name + `[needs review]`, no body) is appended to the first system block so the model can see what exists without busting the prompt-cache prefix
+3. Skills with `auto_load: true` are injected into the system prompt on start
+4. Lazy skills are loaded on demand when the user's input matches their trigger keywords (topic × action), and rematched against remaining plan step titles after `plan(create)` — titles only, not notes. Load a body with `skill_load`.
 
 ### Skill commands
 

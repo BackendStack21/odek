@@ -526,6 +526,12 @@ func New(cfg Config) (*Agent, error) {
 		// when the skills scan scope is enabled.
 		sm.SetGuard(cfg.Guard, cfg.GuardConfig)
 
+		// Names-only catalog sits in the first system block, unwrapped —
+		// a nonce would bust the Anthropic/OpenAI prefix cache every run.
+		if catalog := skills.FormatCatalog(sm.AllSkills(), 0); catalog != "" {
+			cfg.SystemMessage += "\n\n" + catalog
+		}
+
 		// Append auto-load skills to system message. Skill bodies are
 		// externally-sourced content, so they pass through the caller's
 		// untrusted wrapper (same as lazy skill context in the loop).
@@ -557,6 +563,7 @@ func New(cfg Config) (*Agent, error) {
 			})
 		}
 	}
+
 	// Config.SystemMessage is identity/persona, not a way to remove runtime
 	// policy. Canonicalize after all wrapped adjuncts are appended so one
 	// authoritative pillar is always the final trusted block.

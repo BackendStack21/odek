@@ -528,6 +528,10 @@ type Engine struct {
 	// goroutine) when the blocked-step streak fires, then consumed on
 	// the loop goroutine after the batch joins.
 	blockedHintPending atomic.Bool
+	// skillRematchPending is set from the plan OnChange path when a
+	// plan(create) lands, then consumed on the loop goroutine so lazy
+	// skills rematch on step titles without blocking the store mutex.
+	skillRematchPending atomic.Bool
 
 	// sideCallTimeout bounds the compaction and progress-summary side calls.
 	// Zero means use the default (30s). Callers scale it off the resolved
@@ -760,6 +764,7 @@ func (e *Engine) SetPlanStore(s *PlanStore) {
 // step titles or notes.
 func (e *Engine) emitPlanChangeEvent(ch PlanChange) {
 	if ch.Created {
+		e.skillRematchPending.Store(true)
 		e.emitEvent(events.Event{
 			Type: events.TypePlanCreated,
 			Data: map[string]any{
@@ -844,10 +849,41 @@ const contextSafetyMarginTight = 0.65
 // truncating them saves little and destroys information.
 const toolTruncateMinBytes = 2000
 
-// keepRecentToolResults is the number of most recent tool result messages
-// that graduated truncation never touches, so the agent always sees its
-// latest tool output in full.
-const keepRecentToolResults = 4
+// keepRecentActBatches is how many complete assistant+tool groups at the
+// tail of history are exempt from graduated truncation. Protecting two
+// batches keeps the previous parallel act's results intact when a 4-wide
+// batch would otherwise fill a per-result window.
+const keepRecentActBatches = 2
+
+// protectRecentActBatches marks tool-result indices that belong to the last
+// n complete assistant+tool groups. Graduated truncation never touches them.
+func protectRecentActBatches(messages []session.Message, n int) map[int]struct{} {
+	protected := make(map[int]struct{})
+	if n <= 0 {
+		return protected
+	}
+	batches := 0
+	i := len(messages) - 1
+	for i >= 0 && batches < n {
+		if messages[i].Role != "tool" {
+			i--
+			continue
+		}
+		end := i
+		for i >= 0 && messages[i].Role == "tool" {
+			i--
+		}
+		if i >= 0 && messages[i].Role == "assistant" && len(messages[i].ToolCalls) > 0 {
+			for j := i + 1; j <= end; j++ {
+				protected[j] = struct{}{}
+			}
+			batches++
+			i--
+			continue
+		}
+	}
+	return protected
+}
 
 // digestMsgPrefix marks the rolling compaction digest system message so
 // trimming can recognize, preserve, and update it.
@@ -974,6 +1010,70 @@ func (e *Engine) noteLeadingInjection(messages []session.Message, idx int) {
 	}
 }
 
+// injectSkillContext inserts a wrapped skill body before the latest user
+// message. Derived from on-disk skills, so wrap + audit ingest apply.
+func (e *Engine) injectSkillContext(ctx context.Context, messages []session.Message, skillContext string) []session.Message {
+	wrapped := skillContext
+	if e.wrapUntrusted != nil {
+		wrapped = e.wrapUntrusted("skill", skillContext)
+	}
+	if fn := IngestRecorderFrom(ctx); fn != nil {
+		fn("skill", skillContext)
+	}
+	if e.skillVerbose {
+		wrapped = "═══ SKILL LOADED (reference) ═══\n" + wrapped + "\n═══ END SKILL ═══"
+	}
+	return e.insertBeforeLatestUser(messages, wrapped)
+}
+
+// injectEpisodeContext inserts wrapped episode recall before the latest user
+// message. Provenance filtering happens in the recall callback.
+func (e *Engine) injectEpisodeContext(ctx context.Context, messages []session.Message, episodeContext string) []session.Message {
+	wrapped := episodeContext
+	if e.wrapUntrusted != nil {
+		wrapped = e.wrapUntrusted("episode", episodeContext)
+	}
+	if fn := IngestRecorderFrom(ctx); fn != nil {
+		fn("episode", episodeContext)
+	}
+	return e.insertBeforeLatestUser(messages, wrapped)
+}
+
+func (e *Engine) insertBeforeLatestUser(messages []session.Message, content string) []session.Message {
+	insertIdx := insertionIndexBeforeLatestUser(messages)
+	msg := session.Message{Role: "system", Content: content}
+	newMsgs := make([]session.Message, 0, len(messages)+1)
+	newMsgs = append(newMsgs, messages[:insertIdx]...)
+	newMsgs = append(newMsgs, msg)
+	newMsgs = append(newMsgs, messages[insertIdx:]...)
+	e.noteLeadingInjection(newMsgs, insertIdx)
+	return newMsgs
+}
+
+// planTitleQuery concatenates remaining plan step titles for skill rematch
+// and episode recall. Notes stay out — they are not a rematch signal.
+func (e *Engine) planTitleQuery() string {
+	if e == nil || e.planStore == nil {
+		return ""
+	}
+	state, ok := e.planStore.Snapshot()
+	if !ok {
+		return ""
+	}
+	parts := make([]string, 0, len(state.Steps))
+	for _, step := range state.Steps {
+		title := strings.TrimSpace(step.Title)
+		if title == "" {
+			continue
+		}
+		if len(title) > maxPlanTitleChars {
+			title = title[:maxPlanTitleChars]
+		}
+		parts = append(parts, title)
+	}
+	return strings.Join(parts, "\n")
+}
+
 // trimContext trims the message history to stay within the context budget.
 //
 // It preserves the protected head (see headLen): system prompt, leading
@@ -983,7 +1083,7 @@ func (e *Engine) noteLeadingInjection(messages []session.Message, idx int) {
 // Trimming is graduated:
 //  1. Old, large tool result bodies (the token hogs) are replaced with a
 //     short marker, preserving the assistant's reasoning and the fact that
-//     the tool ran. The most recent tool results are never truncated.
+//     the tool ran. The most recent complete act batches are never truncated.
 //  2. If still over budget, the oldest complete turn groups (assistant
 //     tool-call message + its tool result(s)) are dropped atomically to
 //     avoid orphaning tool results — DeepSeek rejects orphaned tool messages.
@@ -1031,16 +1131,10 @@ func (e *Engine) trimContext(ctx context.Context, messages []session.Message, to
 
 	// Pass 1 — graduated truncation: replace old, large tool results with a
 	// short marker before resorting to deleting whole turn groups. The most
-	// recent tool results and the protected head are never touched.
+	// recent complete act batches and the protected head are never touched.
 	truncated := 0
 	if totalTokens > budget {
-		protected := make(map[int]struct{}, keepRecentToolResults)
-		for i, n := len(messages)-1, 0; i >= 0 && n < keepRecentToolResults; i-- {
-			if messages[i].Role == "tool" {
-				protected[i] = struct{}{}
-				n++
-			}
-		}
+		protected := protectRecentActBatches(messages, keepRecentActBatches)
 		for i := head; i < len(messages) && totalTokens > budget; i++ {
 			if messages[i].Role != "tool" {
 				continue
@@ -2273,6 +2367,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 	// Finalization requests never carry across runs.
 	e.finalizeReq.Store(false)
 	e.blockedHintPending.Store(false)
+	e.skillRematchPending.Store(false)
 	// Budget-awareness hint state is per-run.
 	hints := budgetHintState{}
 
@@ -2382,34 +2477,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 				// slow) skill matcher on every remaining iteration of the turn.
 				e.lastSkillMsg = userMsg
 				if skillContext := e.skillLoader(userMsg); skillContext != "" {
-					// Inject skill context as a system message right before the user message.
-					// The skill manager gates NeedsReview/tainted skills, but we treat any
-					// loaded skill content as externally-sourced and wrap it with the
-					// caller-provided untrusted wrapper as defense in depth.
-					wrappedContent := skillContext
-					if e.wrapUntrusted != nil {
-						wrappedContent = e.wrapUntrusted("skill", skillContext)
-					}
-					if fn := IngestRecorderFrom(ctx); fn != nil {
-						fn("skill", skillContext)
-					}
-					insertIdx := insertionIndexBeforeLatestUser(messages)
-					var wrappedSkill string
-					if e.skillVerbose {
-						wrappedSkill = "═══ SKILL LOADED (reference) ═══\n" +
-							wrappedContent +
-							"\n═══ END SKILL ═══"
-					} else {
-						wrappedSkill = wrappedContent
-					}
-					skillMsg := session.Message{Role: "system", Content: wrappedSkill}
-					// Pre-allocate and copy to avoid nested append allocations
-					newMsgs := make([]session.Message, 0, len(messages)+1)
-					newMsgs = append(newMsgs, messages[:insertIdx]...)
-					newMsgs = append(newMsgs, skillMsg)
-					newMsgs = append(newMsgs, messages[insertIdx:]...)
-					messages = newMsgs
-					e.noteLeadingInjection(messages, insertIdx)
+					messages = e.injectSkillContext(ctx, messages, skillContext)
 				}
 			}
 		}
@@ -2422,25 +2490,12 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 				// no match — so a no-match doesn't re-run the (potentially slow
 				// HTTP embed) episode search on every iteration of the turn.
 				e.lastEpiMsg = userMsg
-				if episodeContext := e.episodeCtx(userMsg); episodeContext != "" {
-					// Episode context comes from past session content and crosses the
-					// trust boundary; wrap it as untrusted before injecting.
-					wrappedContext := episodeContext
-					if e.wrapUntrusted != nil {
-						wrappedContext = e.wrapUntrusted("episode", episodeContext)
-					}
-					if fn := IngestRecorderFrom(ctx); fn != nil {
-						fn("episode", episodeContext)
-					}
-					// Inject episode context as a system message before the user message
-					insertIdx := insertionIndexBeforeLatestUser(messages)
-					epMsg := session.Message{Role: "system", Content: wrappedContext}
-					newMsgs := make([]session.Message, 0, len(messages)+1)
-					newMsgs = append(newMsgs, messages[:insertIdx]...)
-					newMsgs = append(newMsgs, epMsg)
-					newMsgs = append(newMsgs, messages[insertIdx:]...)
-					messages = newMsgs
-					e.noteLeadingInjection(messages, insertIdx)
+				query := userMsg
+				if titles := e.planTitleQuery(); titles != "" {
+					query = titles + "\n" + userMsg
+				}
+				if episodeContext := e.episodeCtx(query); episodeContext != "" {
+					messages = e.injectEpisodeContext(ctx, messages, episodeContext)
 				}
 			}
 		}
@@ -3316,6 +3371,17 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		// the persisted snapshot always carries the current plan.
 		messages = e.refreshPlanMessage(ctx, messages)
 
+		// After plan(create), rematch lazy skills on step titles only so a
+		// plan that names work the original user line missed can still load
+		// a promoted skill. Titles are query text, not instructions.
+		if e.skillRematchPending.Swap(false) {
+			if titles := e.planTitleQuery(); titles != "" && e.skillLoader != nil {
+				if skillContext := e.skillLoader(titles); skillContext != "" {
+					messages = e.injectSkillContext(ctx, messages, skillContext)
+				}
+			}
+		}
+
 		// Persist per-turn progress now that the tool batch's result
 		// messages are appended — an interrupted run can resume from here.
 		e.emitMessagesPersist(messages)
@@ -3724,10 +3790,9 @@ func classifyToolCallCtx(ctx context.Context, name, args string) (danger.RiskCla
 		// running commands in a child that shares the parent's terminal. Treat
 		// the call itself as system_write so it requires explicit approval.
 		return danger.SystemWrite, args
-	case "plan":
-		// Safe: plan calls mutate engine-held state only — no filesystem,
-		// network, or subprocess surface. An explicit case documents intent
-		// and survives future default-branch changes (docs/PLANNING.md).
+	case "plan", "clarify":
+		// Safe: engine-held plan state or a principal-channel question —
+		// no filesystem, network, or subprocess surface.
 		return "", ""
 	case "memory":
 		var p struct {

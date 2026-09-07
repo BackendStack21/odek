@@ -530,6 +530,71 @@ func TestEstimateToolDefs_CountsParameters(t *testing.T) {
 
 // ── Coverage: small tool results are never truncated ───────────────────
 
+func TestTrimContext_ProtectsLastTwoActBatches(t *testing.T) {
+	msgs := []session.Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "task"},
+	}
+	// Three 4-wide act batches. The last two stay intact; the oldest
+	// batch's large results are eligible for graduated truncation.
+	for batch := 0; batch < 3; batch++ {
+		var calls []session.ToolCall
+		for i := 0; i < 4; i++ {
+			tc := session.ToolCall{ID: fmt.Sprintf("b%d-c%d", batch, i)}
+			tc.Function.Name = "read_file"
+			tc.Function.Arguments = "{}"
+			calls = append(calls, tc)
+		}
+		msgs = append(msgs, session.Message{Role: "assistant", ToolCalls: calls})
+		for i := 0; i < 4; i++ {
+			msgs = append(msgs, session.Message{
+				Role:       "tool",
+				Content:    strings.Repeat("x", 4000),
+				ToolCallID: fmt.Sprintf("b%d-c%d", batch, i),
+			})
+		}
+	}
+	engine := &Engine{maxContext: 9000}
+	result := engine.trimContext(context.Background(), msgs, nil)
+
+	for _, m := range result {
+		if m.Role != "tool" {
+			continue
+		}
+		id := m.ToolCallID
+		truncated := strings.Contains(m.Content, "[tool output trimmed:")
+		switch {
+		case strings.HasPrefix(id, "b0-"):
+			if !truncated {
+				t.Errorf("oldest batch result %s should be truncated", id)
+			}
+		case strings.HasPrefix(id, "b1-"), strings.HasPrefix(id, "b2-"):
+			if truncated || len(m.Content) != 4000 {
+				t.Errorf("protected batch result %s must stay intact, len=%d truncated=%v", id, len(m.Content), truncated)
+			}
+		}
+	}
+}
+
+func TestTrimContext_CatalogSurvivesInProtectedHead(t *testing.T) {
+	catalog := "# Skills catalog\n- docker-build — Build images\n"
+	msgs := []session.Message{
+		{Role: "system", Content: "identity\n\n" + catalog + "\n\npillar"},
+		{Role: "user", Content: "task"},
+	}
+	for i := 0; i < 8; i++ {
+		msgs = append(msgs,
+			session.Message{Role: "assistant", Content: fmt.Sprintf("t%d", i), ToolCalls: []session.ToolCall{{ID: fmt.Sprintf("c%d", i)}}},
+			session.Message{Role: "tool", Content: strings.Repeat("y", 5000), ToolCallID: fmt.Sprintf("c%d", i)},
+		)
+	}
+	engine := &Engine{maxContext: 4000}
+	result := engine.trimContext(context.Background(), msgs, nil)
+	if !strings.Contains(result[0].Content, "# Skills catalog") {
+		t.Errorf("first system message lost the skills catalog after trim:\n%s", result[0].Content)
+	}
+}
+
 func TestTrimContext_SmallToolResultNotTruncated(t *testing.T) {
 	msgs := []session.Message{
 		{Role: "system", Content: "sys"},

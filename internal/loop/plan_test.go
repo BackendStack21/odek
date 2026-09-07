@@ -439,3 +439,11 @@ func TestClassifyToolCall_PlanSafe(t *testing.T) {
 		}
 	}
 }
+
+func TestClassifyToolCall_ClarifySafe(t *testing.T) {
+	for _, a := range []string{`{"question":"which one?"}`, "", "{bad json"} {
+		if cls, resource := classifyToolCall("clarify", a); cls != "" || resource != "" {
+			t.Errorf("classifyToolCall(clarify, %q) = (%q, %q), want empty both", a, cls, resource)
+		}
+	}
+}

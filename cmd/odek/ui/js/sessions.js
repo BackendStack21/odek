@@ -7,6 +7,7 @@ import { messagesEl, promptEl, sendBtn, sessionListEl, sidebarSearch, cancelBtn 
 import { escapeHtml, escapeAttr, relativeTime, formatNum, showToast, forceScrollBottom, hideCancel, announce, openDialog, closeDialog, isDialogOpen } from './utils.js';
 import { resetTurnState, hideLoading, renderSessionHistory } from './render.js';
 import { clearApprovals } from './approvals.js';
+import { clearClarify } from './clarify.js';
 import { metricsFromSession, resetMetrics } from './metrics.js';
 import { resetPlanPanel } from './plan.js';
 
@@ -200,6 +201,7 @@ export function newSession() {
   resetTurnState();
   // Any pending approval belongs to the previous session's run — drop it.
   clearApprovals();
+  clearClarify();
   S.busy = false;
   hideLoading(); hideCancel();
   sendBtn.disabled = !S.ws || S.ws.readyState !== WebSocket.OPEN;
@@ -262,6 +264,7 @@ export async function loadAndRenderSession(sid) {
     // Pending approvals belong to the previous view — drop them (the
     // server-side request times out on its own).
     clearApprovals();
+    clearClarify();
     S.busy = false; hideLoading(); hideCancel();
     sendBtn.disabled = !S.ws || S.ws.readyState !== WebSocket.OPEN;
     promptEl.disabled = false;

@@ -697,3 +697,65 @@ func TestWSApprover_TimeoutEmitsExpiredFrame(t *testing.T) {
 		t.Error("late approval_response for expired id matched a pending request")
 	}
 }
+
+func TestWSApprover_PromptClarify_Answers(t *testing.T) {
+	var sent clarifyRequest
+	a := newWSApprover(func(v any) error {
+		if req, ok := v.(clarifyRequest); ok {
+			sent = req
+		}
+		return nil
+	})
+	done := make(chan string, 1)
+	go func() {
+		ans, err := a.PromptClarify("which one?")
+		if err != nil {
+			t.Errorf("PromptClarify: %v", err)
+			done <- ""
+			return
+		}
+		done <- ans
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		a.mu.Lock()
+		id := sent.ID
+		a.mu.Unlock()
+		if id != "" {
+			if !strings.HasPrefix(id, "clr-") {
+				t.Errorf("clarify id = %q, want clr- prefix", id)
+			}
+			if !a.HandleClarifyResponse(id, "the first") {
+				t.Fatal("HandleClarifyResponse missed pending request")
+			}
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	select {
+	case ans := <-done:
+		if ans != "the first" {
+			t.Errorf("answer = %q, want the first", ans)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("PromptClarify did not return")
+	}
+}
+
+func TestWSApprover_PromptClarify_SendFailed(t *testing.T) {
+	a := newWSApprover(func(v any) error { return errors.New("ws down") })
+	_, err := a.PromptClarify("q")
+	if err == nil {
+		t.Fatal("expected send failure")
+	}
+}
+
+func TestWSApprover_HandleClarifyResponse_EmptyIgnored(t *testing.T) {
+	a := newWSApprover(func(v any) error { return nil })
+	a.mu.Lock()
+	a.pendingClarify["clr-1"] = make(chan string, 1)
+	a.mu.Unlock()
+	if a.HandleClarifyResponse("clr-1", "   ") {
+		t.Error("empty answer must not complete a clarify wait")
+	}
+}

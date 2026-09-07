@@ -407,6 +407,49 @@ func TestReport_PlanToolClassifiedSafe(t *testing.T) {
 	}
 }
 
+func TestReport_ClarifyToolClassifiedSafe(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			fmt.Fprint(w, `{"choices":[{"message":{"content":"","tool_calls":[
+				{"id":"c1","function":{"name":"clarify","arguments":"{\"question\":\"Which approach?\"}"}},
+				{"id":"c2","function":{"name":"read_file","arguments":"{\"path\":\"/tmp/odek-batch-check.txt\"}"}}
+			]}}]}`)
+			return
+		}
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"batch done"}}]}`)
+	}))
+	defer server.Close()
+
+	registry := tool.NewRegistry([]tool.Tool{
+		tool.NewClarifyTool(func(string) (string, error) { return "the first one", nil }),
+		&fakeReadFileTool{},
+	})
+	client, err := llmclient.Dial("", "test-model", "sk-test", server.URL)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	engine := loop.New(client, registry, 10, "", nil, 0)
+	approver := &batchCardApprover{}
+	engine.SetApprover(approver)
+
+	_, _, err = engine.RunWithMessages(context.Background(), []session.Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "work"},
+	})
+	if err != nil {
+		t.Fatalf("RunWithMessages: %v", err)
+	}
+
+	if len(approver.prompts) != 1 {
+		t.Fatalf("approval prompts = %d (%v), want exactly 1 for the batch card", len(approver.prompts), approver.prompts)
+	}
+	if strings.Contains(approver.prompts[0], "clarify") || strings.Contains(approver.prompts[0], "Which approach") {
+		t.Errorf("batch card leaked the clarify call: %q", approver.prompts[0])
+	}
+}
+
 // fakeReadFileTool is name-classifiable by classifyToolCall ("read_file" +
 // JSON path arg) but performs no I/O — used to force a real batch prompt.
 type fakeReadFileTool struct{}

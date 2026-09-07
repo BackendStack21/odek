@@ -1295,9 +1295,12 @@ func (m *MemoryManager) FormatEpisodeContext(query string) string {
 		return ""
 	}
 
-	episodes, err := m.episodes.recallByVector(query, 3)
+	episodes, err := m.episodes.recallByVector(query, 8)
 	if err != nil || len(episodes) == 0 {
 		return ""
+	}
+	if len(episodes) > 3 {
+		episodes = episodes[:3]
 	}
 
 	var b strings.Builder
