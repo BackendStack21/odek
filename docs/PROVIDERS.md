@@ -40,6 +40,13 @@ gateways (LiteLLM, OpenRouter, vLLM, `legacy`) send `reasoning_effort` when
 plus `anthropic-version`. Gemini-format customs need no extra flags. Built-in
 ids keep their SDK registry quirks.
 
+**GPT-5.6 family (`gpt-5.6`, `gpt-5.6-luna`, `gpt-5.6-terra`, `gpt-5.6-sol`):**
+Chat Completions rejects function tools combined with reasoning. odek (via
+go-llm-sdk) sends those turns to `POST /v1/responses` so `thinking=medium`
+actually reasons, and a reasoning summary is streamed back. `thinking=disabled`
+stays on Chat Completions with `reasoning_effort: none`. The same Responses
+route is used for GPT-5.4/5.5 when an explicit thinking level is set.
+
 ## odek knobs (not in the SDK)
 
 | Knob | Where |

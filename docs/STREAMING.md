@@ -1,6 +1,6 @@
 # Response Streaming
 
-odek can stream LLM responses to the terminal as they are generated, instead of waiting for the complete response before printing anything. Streaming is **on by default** for `odek run`, `odek repl`, and `odek serve`. Disable with `--no-stream`, `ODEK_STREAM=false`, or `"stream": false`. Telegram does not print incrementally (it does not wire a DeltaHandler). It works with every odek-supported provider: streaming is implemented once against the OpenAI-compatible SSE protocol that all backends speak on `/chat/completions`, and any endpoint that rejects streaming or answers with a non-SSE body transparently falls back to the buffered path.
+odek can stream LLM responses to the terminal as they are generated, instead of waiting for the complete response before printing anything. Streaming is **on by default** for `odek run`, `odek repl`, and `odek serve`. Disable with `--no-stream`, `ODEK_STREAM=false`, or `"stream": false`. Telegram does not print incrementally (it does not wire a DeltaHandler). It works with every odek-supported provider: streaming is implemented once against each provider's SSE protocol (OpenAI Chat Completions, OpenAI Responses for GPT-5.6+ tools+reasoning, Anthropic, Gemini), and any endpoint that rejects streaming or answers with a non-SSE body transparently falls back to the buffered path.
 
 Streaming matters most for thinking-default models (GLM-5.x, DeepSeek v4 Pro, Kimi, OpenAI reasoning models), which spend most of their wall clock reasoning before the first answer token — a trivial turn can take 5–30 s of silent waiting without it.
 
@@ -11,7 +11,7 @@ All providers stream; the differences below are absorbed by the client and never
 | Provider | Usage in stream | Reasoning deltas | Notes |
 |---|---|---|---|
 | **Z.ai** (GLM) | finish chunk | `reasoning_content` | validated live |
-| **OpenAI** | separate usage-only chunk (behind `stream_options`, sent automatically) | none via chat/completions | |
+| **OpenAI** | separate usage-only chunk (chat/completions) or `response.completed` (Responses) | GPT-5.6+ tools+reasoning: `response.reasoning_summary_text.delta` via `/v1/responses`; other models: none on chat/completions | |
 | **DeepSeek** | final chunk, incl. cache hit/miss tokens | `reasoning_content` | cache metrics preserved |
 | **Anthropic** (compat endpoint) | final chunk | where exposed | |
 | **Kimi / Moonshot** | final chunk | on thinking variants | |
