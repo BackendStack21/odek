@@ -44,7 +44,7 @@ Custom ids need `providers.<id>.format` (`openai` / `anthropic` / `gemini`) in
 | `--model` / `ODEK_MODEL` | Model id passed to `SDK.Chat` |
 | `--base-url` / `ODEK_BASE_URL` | Override **selected** provider URL |
 | `--thinking` / `--thinking-budget` | Reasoning depth on `ChatRequest`: `disabled`/`low`/`medium`/`high` (aliases inbound). Budget is Anthropic tokens |
-| `prompt_caching` | Anthropic: `SystemBlock.Cache` + first-user `Message.Cache` + last-tool `ToolDef.Cache`. OpenAI-format: prefix-stable separate system messages (no `cache_control`) |
+| `prompt_caching` | Anthropic: first system + memory (`CacheControl`) + first-user `Message.Cache` + last-tool `ToolDef.Cache`. OpenAI-format: prefix-stable separate system messages (no `cache_control`) |
 | `llm.request_timeout_seconds` | Default 300. No per-model auto-timeout. |
 | `llm.stream_idle_timeout_seconds` | SSE idle watchdog (default 300, floor 5) |
 | `llm.context_window` | Trim budget override. Else last-resort table for shipped ids, else `ListModels`, else 0 |

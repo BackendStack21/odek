@@ -2450,6 +2450,15 @@ func TestDefaultSystem_AntiPatternIsConcise(t *testing.T) {
 
 // ── Plan tool guidance ───────────────────────────────────────────────
 
+func TestDefaultSystem_CatalogMentionsDescriptions(t *testing.T) {
+	if !strings.Contains(defaultSystem, "names and one-line descriptions for promoted skills") {
+		t.Error("defaultSystem must say the catalog includes promoted descriptions")
+	}
+	if strings.Contains(defaultSystem, "The skills catalog lists names only.") {
+		t.Error("defaultSystem still claims the catalog is names-only")
+	}
+}
+
 // TestDefaultSystem_MentionsPlanTool pins the planning sentence: the model
 // must be told to maintain plans via the plan tool and to trust the plan
 // message over its memory of earlier turns (docs/PLANNING.md).

@@ -395,6 +395,13 @@ type Engine struct {
 	// across turns — only the memory message changes each iteration.
 	memMsgIdx int
 
+	// skillMsgIdx / lastSkillBlock / lastSkillRaw track the lazy-skill
+	// injection slot so a plan-title rematch replaces that message
+	// instead of appending a second copy of the same body.
+	skillMsgIdx    int
+	lastSkillBlock string
+	lastSkillRaw   string
+
 	// ctxLeadDroppableFrom marks where droppable injected context (skill/
 	// episode/extended-memory blocks) begins inside the leading system run;
 	// <=0 = no injections recorded, all leading systems protected (the zero
@@ -576,6 +583,8 @@ func New(client *llmclient.Client, registry *tool.Registry, maxIterations int, s
 		maxContext:               maxContext,
 		maxConsecutiveToolErrors: make(map[string]int),
 		trimDroppedTools:         make(map[string]int),
+		memMsgIdx:                -1,
+		skillMsgIdx:              -1,
 	}
 }
 
@@ -855,6 +864,11 @@ const toolTruncateMinBytes = 2000
 // batch would otherwise fill a per-result window.
 const keepRecentActBatches = 2
 
+// keepRecentReasoning is how many of the newest assistant reasoning
+// blocks stay intact. Older ReasoningContent is dropped on every trim
+// pass so thinking-model replay does not grow without bound.
+const keepRecentReasoning = 2
+
 // protectRecentActBatches marks tool-result indices that belong to the last
 // n complete assistant+tool groups. Graduated truncation never touches them.
 func protectRecentActBatches(messages []session.Message, n int) map[int]struct{} {
@@ -883,6 +897,30 @@ func protectRecentActBatches(messages []session.Message, n int) map[int]struct{}
 		}
 	}
 	return protected
+}
+
+// stripOldReasoning clears ReasoningContent (and its thinking signature)
+// on older assistant messages, keeping the newest keep blocks. Mutates
+// messages in place.
+func stripOldReasoning(messages []session.Message, keep int) {
+	if keep < 0 {
+		keep = 0
+	}
+	kept := 0
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != "assistant" {
+			continue
+		}
+		if messages[i].ReasoningContent == "" && messages[i].ThinkingSignature == "" {
+			continue
+		}
+		if kept < keep {
+			kept++
+			continue
+		}
+		messages[i].ReasoningContent = ""
+		messages[i].ThinkingSignature = ""
+	}
 }
 
 // digestMsgPrefix marks the rolling compaction digest system message so
@@ -1010,9 +1048,30 @@ func (e *Engine) noteLeadingInjection(messages []session.Message, idx int) {
 	}
 }
 
+// findSkillSlot returns the index of the lazy-skill injection written
+// this run, or -1 if a later insert (memory, plan) shifted it away.
+func (e *Engine) findSkillSlot(messages []session.Message) int {
+	if e.lastSkillBlock == "" {
+		return -1
+	}
+	for i, m := range messages {
+		if m.Role == "system" && m.Content == e.lastSkillBlock {
+			return i
+		}
+	}
+	return -1
+}
+
 // injectSkillContext inserts a wrapped skill body before the latest user
-// message. Derived from on-disk skills, so wrap + audit ingest apply.
+// message, or replaces the existing skill slot when rematch fires in the
+// same turn. Derived from on-disk skills, so wrap + audit ingest apply.
 func (e *Engine) injectSkillContext(ctx context.Context, messages []session.Message, skillContext string) []session.Message {
+	e.skillMsgIdx = e.findSkillSlot(messages)
+	if e.skillMsgIdx >= 0 {
+		if skillContext == e.lastSkillRaw || strings.Contains(e.lastSkillRaw, skillContext) {
+			return messages
+		}
+	}
 	wrapped := skillContext
 	if e.wrapUntrusted != nil {
 		wrapped = e.wrapUntrusted("skill", skillContext)
@@ -1023,7 +1082,18 @@ func (e *Engine) injectSkillContext(ctx context.Context, messages []session.Mess
 	if e.skillVerbose {
 		wrapped = "═══ SKILL LOADED (reference) ═══\n" + wrapped + "\n═══ END SKILL ═══"
 	}
-	return e.insertBeforeLatestUser(messages, wrapped)
+	if e.skillMsgIdx >= 0 {
+		messages[e.skillMsgIdx].Content = wrapped
+		e.lastSkillBlock = wrapped
+		e.lastSkillRaw = skillContext
+		return messages
+	}
+	idx := insertionIndexBeforeLatestUser(messages)
+	messages = e.insertBeforeLatestUser(messages, wrapped)
+	e.skillMsgIdx = idx
+	e.lastSkillBlock = wrapped
+	e.lastSkillRaw = skillContext
+	return messages
 }
 
 // injectEpisodeContext inserts wrapped episode recall before the latest user
@@ -1081,9 +1151,10 @@ func (e *Engine) planTitleQuery() string {
 // message (the original task).
 //
 // Trimming is graduated:
-//  1. Old, large tool result bodies (the token hogs) are replaced with a
-//     short marker, preserving the assistant's reasoning and the fact that
-//     the tool ran. The most recent complete act batches are never truncated.
+//  1. Old thinking-model replay is dropped (newest keepRecentReasoning
+//     assistant blocks stay). Then old, large tool result bodies are
+//     replaced with a short marker. The most recent complete act batches
+//     are never truncated.
 //  2. If still over budget, the oldest complete turn groups (assistant
 //     tool-call message + its tool result(s)) are dropped atomically to
 //     avoid orphaning tool results — DeepSeek rejects orphaned tool messages.
@@ -1101,6 +1172,9 @@ func (e *Engine) planTitleQuery() string {
 // the full message list on every iteration.
 func (e *Engine) trimContext(ctx context.Context, messages []session.Message, toolDefs []llmclient.ToolDef) []session.Message {
 	messages = e.applyPendingDigest(ctx, messages)
+	// Always drop old thinking-model replay, even when no token budget is
+	// set — those blocks otherwise grow without bound on reasoner models.
+	stripOldReasoning(messages, keepRecentReasoning)
 	budget := contextBudget(e.maxContext)
 	if budget <= 0 {
 		return messages
@@ -2157,6 +2231,9 @@ func (e *Engine) Run(ctx context.Context, task string) (string, error) {
 	// Run/RunWithMessages call"): totals are per-run and feed budget
 	// enforcement, so they must not accumulate across runs.
 	e.memMsgIdx = -1
+	e.skillMsgIdx = -1
+	e.lastSkillBlock = ""
+	e.lastSkillRaw = ""
 	e.ctxLeadDroppableFrom = -1
 	e.resetDedupKeys()
 	e.TotalInputTokens = 0
@@ -2275,6 +2352,9 @@ func isFullyWrappedUntrusted(content string) bool {
 func (e *Engine) RunWithMessages(ctx context.Context, messages []session.Message) (string, []session.Message, error) {
 	// Reset token accounting for this run
 	e.memMsgIdx = -1
+	e.skillMsgIdx = -1
+	e.lastSkillBlock = ""
+	e.lastSkillRaw = ""
 	e.ctxLeadDroppableFrom = -1
 	e.resetDedupKeys()
 	e.TotalInputTokens = 0
@@ -2458,6 +2538,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 				e.memMsgIdx = -1
 			}
 		}
+		e.skillMsgIdx = e.findSkillSlot(messages)
 
 		// Notify callers when a new user message arrives. This triggers
 		// Extended Memory atom extraction without coupling the loop to the
@@ -2517,7 +2598,11 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 				if len(messages) > 0 && messages[0].Role == "system" {
 					messages[0].Content = e.baseSystem
 				}
-				memMsg := session.Message{Role: "system", Content: memBlock}
+				memMsg := session.Message{
+					Role:         "system",
+					Content:      memBlock,
+					CacheControl: &session.CacheControl{Type: "ephemeral"},
+				}
 				if e.memMsgIdx < 0 && e.lastMemBlock != "" {
 					// A fed-back history (REPL, Telegram, and run persist the full
 					// returned snapshot; only serve filters dynamic injections)
@@ -2543,6 +2628,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 				if e.memMsgIdx >= 0 && e.memMsgIdx < len(messages) {
 					// Update existing memory slot — keeps position stable.
 					messages[e.memMsgIdx].Content = memBlock
+					messages[e.memMsgIdx].CacheControl = &session.CacheControl{Type: "ephemeral"}
 				} else if len(messages) == 0 {
 					// Degenerate history (empty slice): the memory message becomes
 					// the whole list rather than panicking on messages[:1].

@@ -94,10 +94,21 @@ func TestToSDKMessages_AnthropicCacheMarkers(t *testing.T) {
 		{Role: "user", Content: "again"},
 	}, true, true)
 	if len(sys) != 2 || !sys[0].Cache || sys[1].Cache {
-		t.Fatalf("system cache = %+v", sys)
+		t.Fatalf("unmarked second system must not be cached: %+v", sys)
 	}
 	if len(msgs) != 3 || !msgs[0].Cache || msgs[1].Cache || msgs[2].Cache {
 		t.Fatalf("message cache = %+v", msgs)
+	}
+}
+
+func TestToSDKMessages_MemoryBlockCache(t *testing.T) {
+	sys, _ := toSDKMessages([]session.Message{
+		{Role: "system", Content: "base"},
+		{Role: "system", Content: "memory", CacheControl: &session.CacheControl{Type: "ephemeral"}},
+		{Role: "user", Content: "hi"},
+	}, true, true)
+	if len(sys) != 2 || !sys[0].Cache || !sys[1].Cache {
+		t.Fatalf("memory CacheControl must mark the second system block: %+v", sys)
 	}
 }
 

@@ -397,6 +397,29 @@ func TestScanDir_RefusesSymlinks(t *testing.T) {
 	}
 }
 
+func TestFormatAsContext_CapsBody(t *testing.T) {
+	s := Skill{Name: "huge", Body: strings.Repeat("x", MaxSkillBodySize+64)}
+	got := FormatAsContext(s)
+	if strings.Count(got, "x") > MaxSkillBodySize {
+		t.Fatalf("fenced body still over MaxSkillBodySize: %d", strings.Count(got, "x"))
+	}
+	if !strings.Contains(got, "[skill body truncated to fit size cap]") {
+		t.Fatal("missing body-size truncation notice")
+	}
+}
+
+func TestFormatSkills_Budget(t *testing.T) {
+	a := Skill{Name: "a", Body: strings.Repeat("A", 80)}
+	b := Skill{Name: "b", Body: strings.Repeat("B", 80)}
+	got := FormatSkills([]Skill{a, b}, 120)
+	if !strings.Contains(got, "## Skill: a") {
+		t.Fatal("first skill must be included")
+	}
+	if strings.Contains(got, "## Skill: b") {
+		t.Fatal("second skill must not exceed the injection budget")
+	}
+}
+
 func writeTestSkill(t *testing.T, dir, name, body string) {
 	t.Helper()
 	skillDir := filepath.Join(dir, name)

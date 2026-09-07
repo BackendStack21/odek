@@ -387,7 +387,7 @@ func toSDKMessages(in []session.Message, cacheAnthropic, requireSignedThinking b
 		switch m.Role {
 		case "system":
 			sb := sdk.SystemBlock{Text: m.Content}
-			if cacheAnthropic && len(sys) == 0 {
+			if cacheAnthropic && (len(sys) == 0 || m.CacheControl != nil) {
 				sb.Cache = true
 			}
 			sys = append(sys, sb)
