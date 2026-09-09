@@ -634,7 +634,7 @@ ls -la ~/.odek/config.json
 | Config field | Env var | Description |
 |---|---|---|
 | `telegram.bot_token` | `ODEK_TELEGRAM_BOT_TOKEN` | Telegram bot API token (required) |
-| `telegram.default_chat_id` | — | Numeric chat ID to deliver results to (required) |
+| `telegram.default_chat_id` | `ODEK_TELEGRAM_DEFAULT_CHAT_ID` | Numeric chat ID to deliver results to (required) |
 
 ## Testing
 
