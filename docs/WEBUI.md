@@ -241,7 +241,7 @@ All `/api/*` endpoints require the per-instance CSRF token (`odek_ws_token` cook
 Every response carries `Cache-Control: no-store`. The surface covers six
 groups, detailed below: **sessions** (search/list, detail, rename/pin,
 export, delete, cancel), **budgets** (`/api/limits`), **agent state**
-(models, profiles, resources, tools, memory, skills), **headless runs**
+(models, resources, tools, memory, skills), **headless runs**
 (`/api/prompt` + `/api/runs/*`), **observability** (health, usage, events,
 connections), and **administration** (config view, MCP listing, memory
 consolidate, skills promote, shutdown). Session-scoped reads and mutations
@@ -253,8 +253,8 @@ never holds the instance token.
 
 ### `GET /api/resources?q=&limit=`
 
-`@`-reference search over workspace files, saved sessions, and skills — the
-completion backend. `limit` defaults to 10, capped at 100.
+`@`-reference search over workspace files and saved sessions — the
+completion backend. Skills are not included. `limit` defaults to 10, capped at 100.
 
 ```jsonc
 [
@@ -474,8 +474,11 @@ answerable over REST:
 | `/api/runs/{id}/approvals` | GET | Pending approval requests (risk, command) |
 | `/api/runs/{id}/approvals/{aid}` | POST | `{action: "approve" \| "deny" \| "trust"}` |
 
-Answers flow through the same `wsApprover` path as the WebUI — trust caching
-and friction behave identically. Tainted/dangerous classes still never offer
+Answers flow through the same `wsApprover` path as the WebUI — trust
+caching matches, and friction flags are exposed the same way. Typed
+confirm on this REST bridge is **opt-in**: default `approve`/`trust` stay
+single-field; set `dangerous.rest_approval_friction` to require a
+`confirm` field that repeats the action. Tainted/dangerous classes still never offer
 `trust`. The registry keeps the newest ~100 runs (≥20 completed) and evicts
 oldest completed first.
 
@@ -523,7 +526,7 @@ handler's defers tear down the agent and sandbox cleanly.
 ### `GET /api/config`
 
 Sanitized resolved-config view: provider id (not the `providers` map), model, sandbox knobs, stream/compaction/
-caching flags, parent `announce_budget`, `thinking` as `""` / `disabled` / `low` / `medium` / `high` (not a boolean), iteration/parallelism limits, memory/skills/tool-filter
+caching flags (`compaction` reports the resolved config bit; serve agents currently leave rolling compaction off — see Flags), parent `announce_budget`, `thinking` as `""` / `disabled` / `low` / `medium` / `high` (not a boolean), iteration/parallelism limits, memory/skills/tool-filter
 summaries, maintenance retention, dangerous default action, guard scan
 toggles, sub-agent budgets (`subagent`), background-command settings
 (`background`), and execution budgets with effective token prices
@@ -572,6 +575,9 @@ listings return pinned sessions first, and both list and detail carry
 | `--no-stream` | — | Disable live streaming (bulk `token` events only) |
 | `--prompt-caching` | on | Enable prompt-caching markers |
 | `--no-prompt-caching` | — | Disable prompt caching |
+| `--compaction` | on (parsed) | Parsed into resolved config and shown on `GET /api/config`. Serve agents currently do **not** copy this onto `odek.Config`, so rolling compaction stays at the library default (`false`). CLI `run` / `continue` / `repl` honor the flag. |
+| `--announce-budget` / `--no-announce-budget` | on | Parent 50/75/90% budget-awareness hints |
+| `--planning` / `--no-planning` | on | Register the built-in `plan` tool |
 | `--help`, `-h` | — | Show usage |
 
 Plus the shared sandbox flags (`--sandbox`, `--no-sandbox`, `--sandbox-image`, …) — see `odek serve --help`.
@@ -784,7 +790,7 @@ match as plain text. The bundled WebUI implements this in
 | WebSocket handler | `serve.go` (`handleWS`) | Per-connection agent lifecycle, connection registry, ping/pong, server `keepalive`, `cancel` / `session_switch` |
 | Prompt handler | `serve.go` (`handlePrompt`) | Transport-agnostic (event-sink) prompt path: `@` refs, attachments, audit, per-turn persistence, streaming-suppression logic — shared by the socket and headless REST runs |
 | Approvals | `wsapprover.go` | WS approver with friction, class-trust, and a configurable approval timeout |
-| Management REST | `serve_api.go` | health, sessions (search/pagination/pin/export), memory (+consolidate), skills (+promote), tools, profiles, config view, MCP listing, shutdown |
+| Management REST | `serve_api.go` | health, sessions (search/pagination/pin/export), memory (+consolidate), skills (+promote), tools, config view, MCP listing, shutdown |
 | Runs + observability | `serve_runs.go` | headless run engine (`POST /api/prompt`), remote approval bridge, events ring, usage stats, connection registry |
 | Resource API | `serve.go` (`handleResourceSearch`) | `@` completion search endpoint |
 

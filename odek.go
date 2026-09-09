@@ -211,7 +211,7 @@ type Config struct {
 	MaxToolParallel int
 
 	// SkillEventHandler, if set, is invoked when a skill lifecycle event
-	// occurs (loaded, autoloaded, saved, deleted, etc.). Used by WebUI
+	// occurs (loaded, autoloaded, used, deleted, etc.). Used by WebUI
 	// (WebSocket streaming) and Telegram (inline messages).
 	SkillEventHandler func(event skills.SkillEvent)
 
@@ -231,7 +231,9 @@ type Config struct {
 	// (schema odek.event/v1 — see docs/EXTENSIONS.md): run_started,
 	// iteration_completed, tool_call_started/completed/failed,
 	// session_saved, context_trimmed, budget_exceeded, plan_created,
-	// plan_updated, plan_blocked, run_completed, run_failed.
+	// plan_updated, plan_blocked, subagent_denied, subagent_spawned,
+	// subagent_completed, subagent_concurrency_wait, run_completed,
+	// run_failed.
 	//
 	// Dispatch is non-blocking (buffered channel, drop-on-full) and
 	// panic-isolated: a slow or panicking handler can never stall or crash

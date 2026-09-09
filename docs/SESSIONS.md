@@ -104,10 +104,12 @@ From inside the Telegram bot, session recall is seamless: the current user messa
 ## Programmatic API
 
 ```go
+import "github.com/BackendStack21/odek/internal/session"
+
 agent, err := odek.New(odek.Config{...})
 
 // Multi-turn with explicit message history
-messages := []llm.Message{
+messages := []session.Message{
     {Role: "system", Content: systemPrompt},
     {Role: "user", Content: task},
 }
@@ -183,7 +185,7 @@ odek continue "Run the test suite"
 # → odek: session was sandboxed — enabling sandbox for this continuation
 ```
 
-This prevents accidentally escaping the sandbox on resume. The sandbox image/network/memory still come from the **current** config — only the toggle bit is persisted. To force-disable sandbox on resume, pass `odek continue` in a project with `"sandbox": false` in `./odek.json` and the session flag will be overridden by the explicit config.
+This prevents accidentally escaping the sandbox on resume. The sandbox image/network/memory still come from the **current** config — only the toggle bit is persisted. To force-disable sandbox on resume, set `"sandbox": false` in **trusted** config (`~/.odek/config.json`) or `ODEK_NO_SANDBOX=1` / `ODEK_SANDBOX=false`. `odek continue` does not accept `--no-sandbox`, and `"sandbox": false` in `./odek.json` is ignored.
 
 ## Provider persistence
 

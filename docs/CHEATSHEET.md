@@ -29,7 +29,7 @@ odek memory extended pending         # List atoms pending review
 odek memory extended confirm <id>    # Approve a pending-review atom
 odek memory extended forget <id>     # Delete an atom
 
-# Sandbox (ON by default for run/continue/repl — see Sandbox section)
+# Sandbox (ON by default for run/continue/repl/serve — see Sandbox section)
 odek run --sandbox "build safely"     # Explicit: hard-fails if Docker is unavailable
 odek run --no-sandbox "quick task"    # Explicit opt-out
 odek serve --sandbox --sandbox-readonly --sandbox-network none
@@ -86,7 +86,7 @@ odek run --events-jsonl events.jsonl --events-include-args "task"  # + raw (reda
 }
 ```
 
-Priority: `~/.odek/config.json` ← `./odek.json` ← `ODEK_*` env ← CLI flags. (The `dangerous` section is operator-only: a project `./odek.json` cannot set it, so a cloned repo can't lower its own guardrails.)
+Priority: `~/.odek/secrets.env` ← `~/.odek/config.json` ← `./odek.json` ← `ODEK_*` env ← CLI flags. (The `dangerous` section is operator-only: a project `./odek.json` cannot set it, so a cloned repo can't lower its own guardrails.)
 
 ### Risk Classes & Approvals
 
@@ -184,7 +184,7 @@ docker run -d --name searxng -p 8888:8080 \
   searxng/searxng:2026.6.8-f3fab143b
 ```
 
-Then point odek at it (global `~/.odek/config.json` or project `./odek.json`):
+Then point odek at it in global `~/.odek/config.json` (`web_search` in `./odek.json` is ignored):
 
 ```json
 { "web_search": { "base_url": "http://127.0.0.1:8888" } }
@@ -201,8 +201,8 @@ instance, `server.limiter: false` (drops the Redis/Valkey dependency).
 ```
 ~/.odek/memory/
 ├── facts/
-│   ├── user.md          → User profile (cap: 1,500 chars)
-│   └── env.md           → Environment facts (cap: 2,500 chars)
+│   ├── user.md          → User profile (default cap: 4,000 chars)
+│   └── env.md           → Environment facts (default cap: 8,000 chars)
 ├── project-facts/       → Per-project overlays (optional)
 └── episodes/
     ├── <session-id>.md  → LLM-extracted session summaries
@@ -273,21 +273,21 @@ odek repl --sandbox --sandbox-memory 2g --sandbox-cpus 2
 
 - **Implicit default + Docker unavailable** (or unapproved project `Dockerfile.odek`) → degrades to unsandboxed with a loud notice, instead of breaking Docker-less machines.
 - **`ODEK_REQUIRE_SANDBOX=1`** → any unsandboxed outcome is fatal, including explicit opt-outs (the hard constraint outranks contradictory flags).
-- `odek continue` pins the session's original sandbox posture — no mid-conversation containment flips.
+- `odek continue` pins the session's original sandbox posture — no mid-conversation containment flips. It does not accept `--no-sandbox`; override with `ODEK_NO_SANDBOX=1` / trusted `"sandbox": false`.
 
-Flags: `--sandbox`, `--no-sandbox`, `--sandbox-image`, `--sandbox-network`, `--sandbox-readonly`, `--sandbox-memory`, `--sandbox-cpus`, `--sandbox-user`.
+Flags (`run` / `repl` / `serve`): `--sandbox`, `--no-sandbox`, `--sandbox-image`, `--sandbox-network`, `--sandbox-readonly`, `--sandbox-memory`, `--sandbox-cpus`, `--sandbox-user`.
 
 Env vars: `ODEK_SANDBOX=true`, `ODEK_SANDBOX_IMAGE`, `ODEK_SANDBOX_NETWORK`, `ODEK_NO_SANDBOX=1`, `ODEK_REQUIRE_SANDBOX=1`, etc.
 
 > **Project config approval:** sandbox knobs set in `./odek.json` (`sandbox_env`, `sandbox_image`, `sandbox_network`, `sandbox_volumes`) require an interactive approval prompt. Use `ODEK_APPROVE_PROJECT_SANDBOX=1` in CI/scripts, or set sandbox config via `~/.odek/config.json` / env vars / CLI flags instead. A project config can enable the sandbox but never disable it.
 
-Default network: `bridge` (internet access). Set `none` for air-gapped execution.
+Default network: `none` (air-gapped). Set `bridge` for internet access.
 
 ## Telegram Bot
 
 - Requires `ODEK_TELEGRAM_BOT_TOKEN` env var
-- Slash commands: `/start`, `/help`, `/new`, `/plan`, `/plans`, `/plan_view`, `/plan_delete`, `/plan_resume`, `/plan_status`, `/sessions`, `/resume`, `/prune`, `/stats`, `/stop`, `/mode`, `/restart`
-- Plans: stored as `~/.odek/plans/<slug>.md`; `/plan` generates via agent, `/plan_resume` injects most recent plan into session; `/plan_status` shows the agent's structured loop plan (distinct concept — see docs/PLANNING.md)
+- Slash commands: `/start`, `/help`, `/new`, `/plan`, `/plans`, `/plan_view`, `/plan_delete`, `/plan_resume`, `/plan_status`, `/sessions`, `/resume`, `/prune`, `/stats`, `/jobs`, `/stop`, `/mode`, `/restart`, `/schedules`, `/schedule`
+- Plans: stored as `~/.odek/plans/chat<chatID>/<slug>.md`; `/plan` generates via agent, `/plan_resume` injects most recent plan into session; `/plan_status` shows the agent's structured loop plan (distinct concept — see docs/PLANNING.md)
 - Voice messages: automatically processed via `DownloadVoice` → OGG files in `~/.odek/media/`
 - Photos: automatically processed via `DownloadPhoto` → JPG files in `~/.odek/media/`
 - Conversations persist across bot restarts (`tg-<chatID>` sessions)
@@ -351,7 +351,6 @@ odek mcp --sandbox
 | `ODEK_ANNOUNCE_BUDGET` | announce_budget (default on; parent hints, not `subagent.announce_budget`) |
 | `ODEK_STREAM` | stream (default on) |
 | `ODEK_MAX_CONCURRENCY` | max_concurrency |
-| `ODEK_CTX` | ctx (comma-separated file paths) |
 | `DEEPSEEK_API_KEY` | `providers.deepseek` (default provider) |
 | `OPENAI_API_KEY` | `providers.openai` (also DeepSeek leftover) |
 | `ANTHROPIC_API_KEY` | `providers.anthropic` |

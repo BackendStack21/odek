@@ -256,7 +256,7 @@ Every field also has an `ODEK_SCHEDULES_DANGEROUS_*` environment override:
 | `ODEK_SCHEDULES_DANGEROUS_ALLOWLIST` | Comma-separated command strings |
 | `ODEK_SCHEDULES_DANGEROUS_DENYLIST` | Comma-separated command strings |
 | `ODEK_SCHEDULES_DANGEROUS_ACTION` | Global default action: `allow`, `deny`, or `prompt` |
-| `ODEK_SCHEDULES_DANGEROUS_NON_INTERACTIVE` | `allow`, `deny`, or `prompt` (ignored: scheduled runs force `deny`) |
+| `ODEK_SCHEDULES_DANGEROUS_NON_INTERACTIVE` | `allow`, `deny`, or `read_only` (ignored: scheduled runs force `deny`) |
 
 See [CONFIG.md](CONFIG.md) for the full field reference.
 

@@ -61,7 +61,7 @@ Each sub-agent gets a **fresh context** — no parent history, no conversation s
 
 ## Tool: `delegate_tasks`
 
-The `delegate_tasks` tool is available in all odek modes (CLI, REPL, Web UI). The agent calls it automatically when it identifies independent sub-tasks.
+The `delegate_tasks` tool is available in CLI, REPL, Web UI, and Telegram. The agent calls it automatically when it identifies independent sub-tasks. Headless `odek schedule` and `odek mcp` do not register it.
 
 ### Schema
 
@@ -90,7 +90,10 @@ The `delegate_tasks` tool is available in all odek modes (CLI, REPL, Web UI). Th
                                    "code_execution", "network_egress", "install", "blocked"] },
                                                // Optional cap on the allowed risk class. Calls above the
                                                //   cap are denied without prompting — use for read-only
-                                               //   fan-out tasks.
+                                               //   fan-out tasks. Operator profiles.*.max_risk also
+                                               //   accepts persistence, unknown, and unread_exec
+                                               //   (validated at load; unread_exec is enforced by the
+                                               //   trust lockdown, not this clamp).
           "profile":    { "type": "string" }   // Optional. Operator-defined capability profile name
                                                //   (top-level `profiles` config). Its max_risk, allowlist,
                                                //   and tool filter OVERRIDE the operator's global config

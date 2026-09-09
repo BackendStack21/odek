@@ -55,12 +55,14 @@ Shared across all projects:
 ```
 
 > **Sandbox default (changed):** when no layer sets `sandbox`, `odek run` /
-> `odek continue` / `odek repl` now default it **on**, degrading loudly to
+> `odek repl` / `odek serve` default it **on**, degrading loudly to
 > unsandboxed only when Docker is unavailable or a project
-> `Dockerfile.odek`/sandbox knob lacks approval. Opt out explicitly with
-> `--no-sandbox`, `ODEK_NO_SANDBOX=1`, or `"sandbox": false`; make any
-> fallback fatal with `ODEK_REQUIRE_SANDBOX=1`. An explicit `--sandbox`
-> keeps the hard-fail-on-error behavior.
+> `Dockerfile.odek`/sandbox knob lacks approval (`serve` hard-fails instead).
+> Opt out explicitly with `--no-sandbox`, `ODEK_NO_SANDBOX=1`, or `"sandbox": false`
+> in trusted config. `odek continue` pins the session's stored sandbox bit and
+> does not accept `--no-sandbox`. Make any fallback fatal with
+> `ODEK_REQUIRE_SANDBOX=1`. An explicit `--sandbox` keeps the hard-fail-on-error
+> behavior.
 >
 > Sandbox resource keys (`sandbox_image`, `sandbox_network`, `sandbox_readonly`,
 > `sandbox_memory`, `sandbox_cpus`, `sandbox_user`) follow the standard
@@ -98,10 +100,11 @@ Same schema as global. Only set the fields you want to override:
 > - `api_key` — v1 alias; prefer `providers.<id>.api_key` or the provider env key in `~/.odek/secrets.env` (`DEEPSEEK_API_KEY`, `ZAI_API_KEY`, …). `ODEK_API_KEY` is a selected-provider override only
 > - `system` — use `~/.odek/config.json`, `ODEK_SYSTEM`, or `--system`
 > - `dangerous` — use `~/.odek/config.json`
-> - `embedding` / `memory` / `sessions` / `skills.dirs` / `skills.embedding` / `web_search` — use `~/.odek/config.json`
+> - `embedding` / `memory` / `sessions` / `skills.dirs` / `skills.embedding` / `web_search` / `transcription` / `vision` — use `~/.odek/config.json`
 > - `telegram` — use `~/.odek/config.json` or `ODEK_TELEGRAM_*` env vars
 > - `guard` — use `~/.odek/config.json` or `ODEK_GUARD_*` env vars
 > - `trusted_proxies` — use `~/.odek/config.json` or `ODEK_TRUSTED_PROXIES`
+> - `subagent` / `profiles` / `maintenance` — use `~/.odek/config.json`
 >
 > If any of these appear in `./odek.json`, odek ignores them and prints a warning.
 >
@@ -444,7 +447,7 @@ On exhaustion odek emits a `budget_exceeded` runtime event, persists the latest 
 
 **Cost-disabled warning:** when `max_cost_usd` is set but neither `model_prices[model]` nor the flat pair yields both positive prices for the run's model, odek prints a stderr warning that cost enforcement is disabled (token budgets stay active) — the gap is never silent.
 
-**Current limitation:** budget enforcement is wired into `odek run` only. `odek continue`, the REPL, `odek serve`, and the Telegram bot do not yet enforce limits.
+**Current limitation:** budget enforcement is wired into `odek run` and `odek subagent` only. `odek continue`, the REPL, `odek serve`, and the Telegram bot do not yet enforce limits.
 
 Tests: `internal/budget/`, `internal/config/limits_test.go`, `internal/loop/budget_test.go`, `cmd/odek/budget_test.go`.
 
@@ -995,7 +998,7 @@ Environment overrides:
 | `ODEK_SCHEDULES_DANGEROUS_ALLOWLIST` | Comma-separated command strings |
 | `ODEK_SCHEDULES_DANGEROUS_DENYLIST` | Comma-separated command strings |
 | `ODEK_SCHEDULES_DANGEROUS_ACTION` | Global default action: `allow`, `deny`, or `prompt` |
-| `ODEK_SCHEDULES_DANGEROUS_NON_INTERACTIVE` | `allow`, `deny`, or `prompt` (ignored: scheduled runs force `deny`) |
+| `ODEK_SCHEDULES_DANGEROUS_NON_INTERACTIVE` | `allow`, `deny`, or `read_only` (ignored: scheduled runs force `deny`) |
 
 Safety floor that cannot be overridden:
 - `non_interactive` is always `deny` (no human is present to approve).
@@ -1032,7 +1035,7 @@ Every field has an `ODEK_MAINTENANCE_*` environment override.
 | `interval_minutes` | `ODEK_MAINTENANCE_INTERVAL_MINUTES` | `60` | Minutes between sweeps. The first sweep runs after one interval, never at startup. |
 | `sessions_max_age_days` | `ODEK_MAINTENANCE_SESSIONS_MAX_AGE_DAYS` | `30` | Delete sessions (and their index/vector-index entries) older than this. `0` = keep forever. |
 | `audit_max_age_days` | `ODEK_MAINTENANCE_AUDIT_MAX_AGE_DAYS` | `14` | Delete `~/.odek/sessions/audit/*.json` records older than this. `0` = keep forever. |
-| `log_max_mb` | `ODEK_MAINTENANCE_LOG_MAX_MB` | `50` | Rotate `~/.odek/telegram.log` and `~/.odek/schedule.log` larger than this: current log becomes `<name>.1` (one backup generation) and a fresh empty log is started. `0` = no rotation. |
+| `log_max_mb` | `ODEK_MAINTENANCE_LOG_MAX_MB` | `50` | Rotate `~/.odek/telegram.log`, `~/.odek/schedule.log`, and `~/.odek/serve.log` larger than this: current log becomes `<name>.1` (one backup generation) and a fresh empty log is started. `0` = no rotation. |
 | `plans_max_age_days` | `ODEK_MAINTENANCE_PLANS_MAX_AGE_DAYS` | `30` | Delete Telegram plan files (`~/.odek/plans/**/*.md`) older than this; emptied chat directories are removed. `0` = keep forever. |
 | `artifacts_max_age_hours` | `ODEK_MAINTENANCE_ARTIFACTS_MAX_AGE_HOURS` | `24` | Delete sub-agent result artifact subtrees (`~/.odek/artifacts/<session>/`) older than this. This is the **backstop** — the primary lifecycle is the session-cleanup cascade (deleting a session removes its artifacts immediately). `0` = keep forever. |
 
@@ -1241,7 +1244,7 @@ odek init --force
 
 The **global template** covers the full schema: connection (`provider`, `providers`, `model`, `llm`), execution (`max_iterations`, `max_tool_parallel`, `prompt_caching`, `compaction`, `announce_budget`, `interaction_mode`), sandbox resource knobs (the `sandbox` key itself is deliberately absent — unset inherits the default-on posture), `dangerous` (with `non_interactive` pinned to the documented `read_only` default), `guard`, `tools`, `profiles`, `skills`, `memory` (including the `extract_facts` / `auto_approve_episodes` opt-outs), `subagent` (including `max_depth`, `announce_budget`, `budget_inherit`, `default_profile`), `limits`, `planning`, `mcp_servers`, `web_search`, `transcription`, `vision`, `trusted_proxies`, `schedules`, `maintenance`, and `telegram`. Blocks whose mere presence changes behavior (`embedding`, `memory.embedding`, `sessions.embedding`, `skills.embedding`) are intentionally omitted — add them only when you actually run an embedder. Top-level `base_url` / `api_key` remain v1 aliases (see [MIGRATION.md](MIGRATION.md)).
 
-The **local template** contains only fields a project may legitimately set (`model`, `thinking`, iteration/parallelism limits, `interaction_mode`, sandbox resource knobs, `tools.disabled`, `skills` without `dirs`, `subagent`, `mcp_servers`, `schedules`). Operator-only fields (`provider`, `providers`, `llm`, `api_key`, `base_url`, `system`, `dangerous`, `memory`, `sessions`, `embedding`, `guard`, `maintenance`, `telegram`, `web_search`, `trusted_proxies`, `tools.enabled`, `skills.dirs`) belong in `~/.odek/config.json`. Note that project configs may only *enable* the sandbox — `"sandbox": false` is rejected, so neither template pins it locally. `compaction`, `prompt_caching`, `stream`, and `announce_budget` are likewise omitted from the local template: they default to on, and pinning `"…": false` in a fresh project config would silently disable them (add the key explicitly if you want any of them off).
+The **local template** contains only fields a project may legitimately set (`model`, `thinking`, iteration/parallelism limits, `interaction_mode`, sandbox resource knobs, `tools.disabled`, `skills` without `dirs`, `mcp_servers`, `schedules` timezone/enabled). Operator-only fields (`provider`, `providers`, `llm`, `api_key`, `base_url`, `system`, `dangerous`, `memory`, `sessions`, `embedding`, `guard`, `maintenance`, `telegram`, `web_search`, `transcription`, `vision`, `trusted_proxies`, `tools.enabled`, `skills.dirs`, `subagent`, `profiles`) belong in `~/.odek/config.json`. Note that project configs may only *enable* the sandbox — `"sandbox": false` is rejected, so neither template pins it locally. `compaction`, `prompt_caching`, `stream`, and `announce_budget` are likewise omitted from the local template: they default to on, and pinning `"…": false` in a fresh project config would silently disable them (add the key explicitly if you want any of them off).
 
 ## Recommended minimal config
 
@@ -1286,7 +1289,7 @@ Why each key is pinned:
 
 Deliberately **not** set, because the defaults are the recommendation:
 
-- `sandbox` — on by default for `run`/`continue`/`repl`; never turn it off on a host that runs untrusted code.
+- `sandbox` — on by default for `run`/`continue`/`repl`/`serve`; never turn it off on a host that runs untrusted code.
 - `memory.extract_facts: false` and `memory.auto_approve_episodes: false` — the secure defaults; flip only with the trade-offs understood (see [`extract_facts`](#extract_facts--automatic-fact-learning-opt-in-off-by-default)).
 - `dangerous` — the built-in class defaults (destructive/blocked/unknown denied, writes and egress prompted) are the right posture; tighten per-project with an `allowlist`/`denylist` only when needed.
 - `web_search.base_url` — empty hides the tool; set it only if you run a SearXNG instance.
@@ -1337,8 +1340,8 @@ odek run --memory-extended-enabled "remember that I prefer Go over Python"
 # Or configure it globally in ~/.odek/config.json (memory cannot be set in ./odek.json)
 # { "memory": { "extended": { "enabled": true } } }
 
-# Sub-agent config (project-level)
-echo '{"subagent": {"max_concurrency": 5, "timeout_seconds": 300}}' > ./odek.json
+# Sub-agent config is operator-only (ignored from ./odek.json)
+# { "subagent": { "max_concurrency": 5, "timeout_seconds": 300 } }  → ~/.odek/config.json
 
 # CLI flag always wins
 odek run --model gpt-4o --base-url https://api.openai.com/v1 "task"

@@ -50,7 +50,7 @@ Unknown flags are a **hard error** — they are never folded into the task text 
 | `--sandbox` | bool | default on | Execute shell commands inside Docker container. Defaults ON when no layer sets it; degrades loudly to unsandboxed when Docker is unavailable (fatal with `ODEK_REQUIRE_SANDBOX=1`). Explicit `--sandbox` keeps the hard-fail behavior. |
 | `--no-sandbox` | bool | — | Explicitly disable the sandbox (same as `ODEK_NO_SANDBOX=1`); silences the default-on behavior. |
 | `--deliver` | bool | false | Deliver the agent's final response to the configured Telegram `default_chat_id`. Requires `telegram.bot_token` + `telegram.default_chat_id` in config. Handy for host-cron one-shots; for recurring tasks prefer the native scheduler (`odek schedule`, see [Schedules](SCHEDULES.md)). |
-| `--interaction-mode <mode>` | string | `engaging` | Tool-call rendering: `engaging` (emoji narration) or `verbose` (raw tool output) |
+| `--interaction-mode <mode>` | string | `engaging` | Tool-call rendering: `engaging` (emoji narration), `enhance` (persistent), `verbose` (raw tool output), or `off` |
 | `--no-color` | bool | false | Disable colored terminal output |
 | `--prompt-caching` | bool | `true` | Enable Anthropic-format `cache_control` markers (system + memory + first user + last tool). On by default. OpenAI-format providers are unaffected — they rely on prefix stability. See [CACHING.md](CACHING.md) |
 | `--no-prompt-caching` | bool | `false` | Disable prompt caching (overrides config/default) |
@@ -117,7 +117,7 @@ A partial-progress summary is produced only when the tool-call budget fired and 
 
 Cost enforcement is active only when `max_cost_usd` **and** both per-million prices (`input_cost_per_million_usd`, `output_cost_per_million_usd`) are configured; otherwise a stderr warning is printed and the token budgets stay active. odek never hard-codes provider prices.
 
-**Current limitation:** budgets apply to `odek run` only — not `continue`, the REPL, `serve`, or Telegram.
+**Current limitation:** budgets apply to `odek run` and `odek subagent` only — not `continue`, the REPL, `serve`, or Telegram.
 
 ## Exit codes
 
@@ -225,6 +225,8 @@ When running without `--sandbox`, odek classifies every shell command by risk an
 | 🔴 network_egress | **prompt** | `curl`, `git push`, `ssh`, `scp` |
 | 🔴 code_execution | **prompt** | `curl url \| bash`, `eval`, `node -e`, `go run` |
 | 🟠 install | **prompt** | `npm install`, `pip install`, `go install <path>` |
+| 🟠 persistence | **prompt** | writes to shell profiles, git hooks, CI workflows, cron/systemd |
+| 🟠 unread_exec | **prompt** | executing a script whose contents were not read this session |
 | 🔴 unknown | **deny** | any command whose program name isn't recognised; MCP tools (`<server>__<tool>`); pipe-fed `xargs <verb>` whose stdin payload isn't statically determinable |
 | ⬛ blocked | **deny** | Fork bombs, `dd` to block devices |
 
@@ -239,13 +241,13 @@ The approval prompt accepts:
 - `T` — Trust all commands of this class for this session
 - `?` — Show full context
 
-Configurable via `dangerous` section in `~/.odek/config.json` or `./odek.json`:
+Configurable via the `dangerous` section in `~/.odek/config.json` (operator-only; `./odek.json` is ignored with a warning):
 
 ```json
 {
   "dangerous": {
     "action": "prompt",
-    "non_interactive": "deny",
+    "non_interactive": "read_only",
     "classes": {
       "destructive": "prompt",
       "network_egress": "allow"
@@ -256,7 +258,7 @@ Configurable via `dangerous` section in `~/.odek/config.json` or `./odek.json`:
 }
 ```
 
-Only `"allow"` and `"deny"` are valid `non_interactive` values; anything else (including the previously accepted `"prompt"`) is rejected at load time with a warning and treated as `"deny"`, because a non-interactive environment cannot prompt.
+Valid `non_interactive` values are `"read_only"` (built-in default: inspection proceeds, writes/exec/egress deny), `"deny"` (block all prompted operations), and `"allow"` (run everything). Anything else — including the previously accepted `"prompt"` — is rejected at load time with a warning and treated as `"deny"`.
 
 See [docs/SECURITY.md](SECURITY.md) for details.
 
@@ -347,9 +349,9 @@ Procedure for building optimized Docker images.
 | `--sandbox-memory <s>` | — | Memory limit (e.g. `512m`, `2g`) |
 | `--sandbox-cpus <n>` | — | CPU limit (e.g. `0.5`, `2`) |
 | `--sandbox-user <s>` | — | Run as user (`uid:gid`) |
-| `--no-sandbox` | — | (serve only) Disable the default-on sandbox. Prints a warning. |
+| `--no-sandbox` | — | Disable the default-on sandbox for `run` / `repl` / `serve` (same as `ODEK_NO_SANDBOX=1`). Prints a warning unless `ODEK_SUPPRESS_SANDBOX_WARNING=1`. `odek continue` does **not** accept this flag. |
 
-`odek serve` enables `--sandbox` by default. `odek run` and `odek repl` keep sandbox opt-in but print a startup warning when running unsandboxed. Set `ODEK_SUPPRESS_SANDBOX_WARNING=1` to silence the warning if you've made an informed decision.
+`odek run`, `repl`, and `serve` default the sandbox **on**. `odek continue` pins the session's stored sandbox bit (it does not inherit a new default-on). To override that pin, set `ODEK_NO_SANDBOX=1` / `ODEK_SANDBOX=false` or `"sandbox": false` in **trusted** config (`~/.odek/config.json`) — project `./odek.json` `"sandbox": false` is ignored. `odek mcp` is opt-in (`--sandbox`). `odek serve` hard-fails if Docker is missing; `run` / `repl` / `continue` degrade loudly to unsandboxed unless `ODEK_REQUIRE_SANDBOX=1`.
 
 **Project-level sandbox approval:** if `./odek.json` sets `sandbox_env`, `sandbox_image`, `sandbox_network`, or `sandbox_volumes`, odek prompts for approval before applying them. In CI or scripted invocations, set `ODEK_APPROVE_PROJECT_SANDBOX=1` to auto-approve, or place sandbox config in `~/.odek/config.json` / `ODEK_*` env vars / CLI flags instead, which do not require approval.
 
@@ -384,6 +386,7 @@ See [SECURITY.md](SECURITY.md) for the full threat model.
 | Flag | Description |
 |------|-------------|
 | `--global`, `-g` | Create global config at `~/.odek/config.json` |
+| `--local`, `-l` | Create project config at `./odek.json` |
 | `--force`, `-f` | Overwrite existing file without prompting |
 
 ## Background commands
@@ -484,10 +487,11 @@ odek run --deliver "Check the CI pipeline status"
 Config sources from lowest to highest priority:
 
 ```
-1.  ~/.odek/config.json    ← Global defaults
-2.  ./odek.json           ← Project overrides
-3.  ODEK_* env vars       ← Runtime overrides
-4.  CLI flags             ← Explicit invocation (highest)
+1.  ~/.odek/secrets.env    ← API keys (never committed)
+2.  ~/.odek/config.json    ← Global defaults
+3.  ./odek.json            ← Project overrides (untrusted; sensitive sections ignored)
+4.  ODEK_* env vars        ← Runtime overrides
+5.  CLI flags              ← Explicit invocation (highest)
 ```
 
 See [Configuration](CONFIG.md) for details.

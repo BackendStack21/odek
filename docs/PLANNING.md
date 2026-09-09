@@ -234,7 +234,7 @@ update (can ride the same parallel batch)."
           "required": ["id"]
         },
         "description": "update only: applied in array order; unknown id or
-invalid transition fails the whole call (atomic)."
+unknown status fails the whole call (atomic)."
       },
       "step_id": { "type": "string", "description": "complete only" }
     },
@@ -407,17 +407,16 @@ uncoupled by design.
 
 ### WebUI — plan panel
 
-A `plan` tab in the management drawer (Alt+M) shows the active session's
-structured plan: a summary header plus glyph/id/title/note rows mirroring
-the Telegram renderer. Strictly read-only — no mutation controls — and
-model-derived step text reaches the DOM exclusively via `textContent`. The
-panel polls `GET /api/sessions/{id}/plan` every 5 s while visible (drawer
-open + plan tab active + document visible), refreshes instantly on tab
-activation, session switch, and `visibilitychange`, and stops otherwise.
-Polling — not WebSocket push — because runtime events currently land only
-in the `/api/events` ring; nothing relays them over WS today. Polling is
-the documented transport until such a relay lands; responses are tiny, so
-the cadence is cheap.
+The inspector **Now** workspace (`⌘.`) shows the active session's structured
+plan: a summary header plus glyph/id/title/note rows mirroring the Telegram
+renderer. Strictly read-only — no mutation controls — and model-derived step
+text reaches the DOM exclusively via `textContent`. The panel polls
+`GET /api/sessions/{id}/plan` at **1 s** while a turn is running and **3 s**
+while Now is visible and idle, refreshes instantly on tab activation, session
+switch, and `visibilitychange`, and stops otherwise. Polling — not WebSocket
+push — because runtime events currently land only in the `/api/events` ring;
+nothing relays them over WS today. Polling is the documented transport until
+such a relay lands; responses are tiny, so the cadence is cheap.
 
 ---
 
@@ -510,15 +509,14 @@ semantics, payload minimality, `ExtractPlan`), `cmd/odek/serve_plan_test.go`
   version-bumping mutation via `PlanStore.SetOnChange` → the engine emit
   path; counts + version only, never titles/notes (see Observability);
   `docs/EXTENSIONS.md` rows added.
-- Exported extractor `loop.ExtractPlan([]llm.Message) (*PlanState, bool)` —
+- Exported extractor `loop.ExtractPlan([]session.Message) (*PlanState, bool)` —
   newest-parseable-wins, fail-closed corrupt-drop, unwraps the nonce'd
   wrapper; shared by REST and Telegram.
 - Read-only REST view `GET /api/sessions/{id}/plan` (`found:false` when
   absent; GET-only; see Surface Integration).
 - Telegram `/plan_status` — structured plan for the chat-scoped session,
   coexisting with the markdown-file `/plan` family.
-- WebUI plan panel — session-drawer tab polling `GET …/plan` every 5 s while
-  visible.
+- WebUI plan panel — inspector Now workspace (`⌘.`), polling `GET …/plan` at 1 s live / 3 s idle.
 - Emoji mapping `plan` → 📋 in `internal/render/render.go` and the WebUI
   mirror `cmd/odek/ui/js/render.js`; the vestigial `todo` special-case was
   retired in both (falls through to the default 🔧).

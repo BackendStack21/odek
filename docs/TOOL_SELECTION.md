@@ -28,6 +28,7 @@ environment supports:
   `list_tools` (live registry + enabled/disabled filter state + MCP server
   posture with credential argv redacted)
 - Artifacts: `artifact_read` (parent-side reader for sub-agent result artifacts)
+- Background: `bg_start`, `bg_list`, `bg_status`, `bg_output`, `bg_stop` (on by default when `background.enabled` is true)
 - MCP tools: prefixed as `<server>__<tool_name>` (only when `mcp_servers` are
   configured)
 
@@ -220,6 +221,7 @@ Use these exact names in config, env vars, and CLI flags:
 | Session search | `session_search` |
 | Skills | `skill_load`, `skill_list` |
 | Sub-agent support | `list_subagent_profiles`, `artifact_read` |
+| Background | `bg_start`, `bg_list`, `bg_status`, `bg_output`, `bg_stop` (default on) |
 | Introspection | `config_view`, `list_tools` |
 | Principal channel | `clarify` (CLI / REPL when `/dev/tty` is available; Web UI over WebSocket; Telegram). Not registered for sub-agents, schedule, MCP, or headless REST runs. |
 | Telegram-only | `send_message` (auto-injected by `odek telegram`) |

@@ -1583,17 +1583,10 @@ const localConfigTemplate = `{
     "max_lazy_slots": 5,
     "verbose": false
   },
-  "subagent": {
-    "max_concurrency": 3,
-    "timeout_seconds": 1800,
-    "max_iterations": 15
-  },
   "mcp_servers": {},
   "schedules": {
     "enabled": true,
-    "max_concurrent": 2,
-    "timezone": "UTC",
-    "catchup": false
+    "timezone": "UTC"
   }
 }`
 

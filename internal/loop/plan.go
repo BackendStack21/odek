@@ -978,7 +978,7 @@ func (t *PlanTool) Schema() any {
 					},
 					"required": []string{"id"},
 				},
-				"description": "update only: applied in array order; unknown id or invalid transition fails the whole call (atomic).",
+				"description": "update only: applied in array order; unknown id or unknown status fails the whole call (atomic).",
 			},
 			"step_id": map[string]any{
 				"type":        "string",

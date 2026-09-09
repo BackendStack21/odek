@@ -67,7 +67,7 @@ internal/
     buffer.go                 Ring buffer for turn summaries
     episodes.go               EpisodeStore with search + LLM ranking
     scan.go                   Security scan (invisible Unicode, injection, credentials)
-    tool.go                   memory tool for the agent (6 actions)
+    tool.go                   memory tool for the agent (16 actions)
     provenance.go             Episode trust-signal derivation (untrusted-source taint)
     *_test.go                 Tests across all subsystems
   skills/

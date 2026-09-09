@@ -188,7 +188,9 @@ type Config struct {
     // stream (schema odek.event/v1): run_started, iteration_completed,
     // tool_call_started/completed/failed, session_saved,
     // context_trimmed, budget_exceeded, plan_created, plan_updated,
-    // plan_blocked, run_completed, run_failed.
+    // plan_blocked, subagent_denied, subagent_spawned,
+    // subagent_completed, subagent_concurrency_wait,
+    // run_completed, run_failed.
     // Dispatch is non-blocking (buffered, drop-on-full) and
     // panic-isolated — a slow or panicking handler can never stall
     // or crash the loop. Events never contain raw tool arguments
@@ -400,17 +402,19 @@ agent, err := odek.New(odek.Config{
 Use `RunWithMessages` to continue conversations across turns, loading prior message history:
 
 ```go
+import "github.com/BackendStack21/odek/internal/session"
+
 // First turn
-answer, messages, err := agent.RunWithMessages(ctx, []llm.Message{
+answer, messages, err := agent.RunWithMessages(ctx, []session.Message{
     {Role: "user", Content: "Read the main.go file"},
 })
 
 // Second turn — continue the conversation
-messages = append(messages, llm.Message{Role: "user", Content: "Now refactor it"})
+messages = append(messages, session.Message{Role: "user", Content: "Now refactor it"})
 answer, messages, err = agent.RunWithMessages(ctx, messages)
 
 // Third turn — continue again
-messages = append(messages, llm.Message{Role: "user", Content: "Add error handling"})
+messages = append(messages, session.Message{Role: "user", Content: "Add error handling"})
 answer, messages, err = agent.RunWithMessages(ctx, messages)
 ```
 
@@ -427,7 +431,7 @@ sess, _ := store.Create(messages, "deepseek-v4-flash", "Refactor auth")
 // Later...
 sess, _ := store.Load("20260520-abc123")
 msgs := sess.GetMessages()
-msgs = append(msgs, llm.Message{Role: "user", Content: "Add tests"})
+msgs = append(msgs, session.Message{Role: "user", Content: "Add tests"})
 answer, allMsgs, err := agent.RunWithMessages(ctx, msgs)
 store.Append(sess.ID, allMsgs[len(msgs):])
 ```
@@ -588,8 +592,8 @@ Memory is enabled by default when odek loads a config file with memory settings.
 agent, _ := odek.New(odek.Config{
     Model:  "deepseek-v4-flash",
     APIKey: os.Getenv("DEEPSEEK_API_KEY"),
-    // Memory is enabled via config file (~/.odek/config.json or ./odek.json)
-    // In CLI mode, the --memory flag enables it automatically
+    // Memory is enabled via ~/.odek/config.json (the memory section is
+    // operator-only — ./odek.json cannot set it)
 })
 
 // Each turn — memory manager is nil if disabled

@@ -273,7 +273,9 @@ fire from the post-session background goroutines.
 
 The agent loop also emits `loop.SignalEvent`s for previously-silent self-healing
 (`context_trimmed` when message groups are dropped to fit the context window,
-`tool_recovery` when a repeatedly-failing tool triggers a corrective hint),
+`tool_recovery` when a repeatedly-failing tool triggers a corrective hint,
+`tool_running` while a call is still executing, `budget_warning` at 50/75/90% of
+a budget, `reply_ledger_mismatch` when a final reply denies completed mutations),
 surfaced the same way via `Config.AgentSignalHandler`.
 
 ## Architecture
@@ -284,16 +286,18 @@ The episode index (`episodes/index.json`) is cached in memory after the first re
 
 ### Search Ranking
 
-Episode search uses **RandomProjections** (go-vector) for similarity by default:
+Episode **auto-recall** (`FormatEpisodeContext`, once per turn) uses
+**RandomProjections** (go-vector) for similarity — never an LLM call, even
+when `llm_search` is on:
 
 1. Fit RP embedder on episode summaries + query (64 dims, ~1ms)
 2. Embed each summary and the query into 64-dimensional vectors
 3. Score by cosine similarity between query vector and each summary vector
-4. Return top-3 results sorted by score
+4. Over-fetch 8 vector hits and keep the top 3
 
-Per-turn auto-recall (`FormatEpisodeContext`) over-fetches 8 vector hits and keeps the top 3. The query is the latest user message, plus remaining plan step titles when a plan exists (titles only — notes stay out). Untrusted, unpromoted episodes are excluded. This path never calls the LLM, even when `llm_search` is on.
+The query is the latest user message, plus remaining plan step titles when a plan exists (titles only — notes stay out). Untrusted, unpromoted episodes are excluded.
 
-Explicit `memory search` is separate: zero LLM calls with `llm_search: false`; by default (`llm_search: true`) ranking uses an LLM SimpleCall to order episodes by relevance to the query — higher quality, higher latency + token cost.
+Explicit `memory search` is separate: by default (`llm_search: true`) ranking uses an LLM SimpleCall to order episodes by relevance to the query — higher quality, higher latency + token cost. Set `llm_search: false` to use the same RP cosine ranker (zero LLM calls).
 
 ### Pluggable Embeddings (`memory.embedding`)
 
