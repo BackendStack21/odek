@@ -647,9 +647,8 @@ func LastResortContext(model string) int {
 		{"kimi-", 262_144},
 		{"k3-256k", 262_144},
 		{"k3", 1_000_000},
-		{"deepseek-v4-pro", 1_000_000},
-		{"deepseek-v4-flash", 131_072},
-		{"deepseek-", 131_072},
+		{"deepseek-v4", 1_000_000}, // pro, flash, v4.1-* (official 1M window)
+		{"deepseek-", 131_072},     // v3 chat / reasoner
 		// OpenAI — api.openai.com ListModels omits context_length.
 		{"gpt-6", 1_050_000},
 		{"gpt-5.6", 1_050_000},

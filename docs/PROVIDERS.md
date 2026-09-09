@@ -71,8 +71,8 @@ window. **No auto-thinking and no auto-timeout.**
 
 | Prefix | Tokens |
 |---|---|
-| `deepseek-v4-pro` | 1M |
-| `deepseek-v4-flash` / `deepseek-` | 128K |
+| `deepseek-v4` (pro, flash, v4.1-*) | 1M |
+| `deepseek-` (v3 chat / reasoner) | 128K |
 | `glm-5.3` / `glm-5.2` | 1M |
 | `glm-5-turbo` | 200K |
 | `glm-` | 128K |

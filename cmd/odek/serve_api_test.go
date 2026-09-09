@@ -457,6 +457,25 @@ func TestHandleModelList_ReturnsOnlyConfiguredModel(t *testing.T) {
 	if models[0]["description"] == "" {
 		t.Error("description should be non-empty for a known model")
 	}
+	if ctx, ok := models[0]["max_context"].(float64); !ok || ctx != 1_000_000 {
+		t.Errorf("max_context = %v, want 1000000 (deepseek-v4 1M window)", models[0]["max_context"])
+	}
+}
+
+func TestHandleModelList_DeepSeekV41UsesV4Window(t *testing.T) {
+	handler := handleModelList("deepseek-v4.1-flash-expires-on-0910", nil)
+	w := httptest.NewRecorder()
+	handler(w, httptest.NewRequest(http.MethodGet, "/api/models", nil))
+	var models []modelEntry
+	if err := json.NewDecoder(w.Body).Decode(&models); err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("len = %d, want 1", len(models))
+	}
+	if models[0].MaxContext != 1_000_000 {
+		t.Errorf("v4.1 last-resort ctx = %d, want 1000000", models[0].MaxContext)
+	}
 }
 
 func TestHandleModelList_EmptyConfigModel_ReturnsEmptyList(t *testing.T) {
