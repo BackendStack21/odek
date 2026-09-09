@@ -430,6 +430,9 @@ func TestRenderer_Iteration_WithStats(t *testing.T) {
 	if !strings.Contains(out, "5.0s") {
 		t.Errorf("missing latency: %q", out)
 	}
+	if !strings.Contains(out, "68.4 tok/s") {
+		t.Errorf("missing tok/s (342 tokens / 5s): %q", out)
+	}
 }
 
 func TestRenderer_Iteration_StatsSuppressedWhenZero(t *testing.T) {

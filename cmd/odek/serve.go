@@ -1073,6 +1073,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 				if info.MaxContextTokens > 0 {
 					frame["maxContextTokens"] = info.MaxContextTokens
 				}
+				info.CallMetricsSnapshot().AppendWSFrame(frame)
 				sendFn(frame)
 			}
 		},
@@ -2248,6 +2249,10 @@ func handlePrompt(
 		}
 		if mc := agent.MaxContextTokens(); mc > 0 {
 			m["maxContextTokens"] = mc // omitted when the model limit is unknown
+		}
+		agent.LastCallMetrics().AppendWSFrame(m)
+		if ms := agent.TotalLLMDurationMs(); ms > 0 {
+			m["llmDurationMs"] = ms
 		}
 		return m
 	}())

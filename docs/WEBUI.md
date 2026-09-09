@@ -655,8 +655,8 @@ The UI communicates entirely over a single WebSocket at `/ws`. Messages are newl
 | `tool_result` | Tool returns output | `name`, `data` (full, untruncated output) |
 | `subagent_log` | Sub-agent progress within `delegate_tasks` | `task_idx`, `task_id`, `name`, `event`, `data` (redacted, capped 8 KiB) |
 | `subagent_state` | Per-task sub-agent lifecycle transition (`started`/`active`/`finished`); child emits `subagent_started`/`subagent_progress`/`subagent_finished` records over the same protocol. A sub-agent killed without reporting (user stop, turn cancel, timeout, flood-kill, crash) gets its terminal `finished` transition emitted by the parent instead, so cards never stay `running` | `task_idx`, `task_id`, `run_key`, `phase`, `status`, `step`, `iterations`, `tool`, `duration_seconds`, `tokens_used` |
-| `done` | Agent finishes — **emitted only after the session is persisted**, so refreshing session state on `done` is race-free | `latency` (seconds), `windowTokens` (final parent conversation window), `maxContextTokens` (resolved model limit; omitted when unknown), `inputTokens` (run-cumulative input across all calls, incl. sub-agent spend — billing), `outputTokens`, `cacheCreationTokens`, `cacheReadTokens`, `cachedTokens`, `sessionContextTokens`, `sessionOutputTokens` |
-| `usage` | After each LLM iteration of a running turn | `windowTokens`, `maxContextTokens` (omitted when the model limit is unknown), `outputTokens` (run-cumulative) (camelCase — `windowTokens` is the parent-only window size that drives the metrics gauge; child rounds and side-call summaries never move it) |
+| `done` | Agent finishes — **emitted only after the session is persisted**, so refreshing session state on `done` is race-free | `latency` (seconds), `windowTokens` (final parent conversation window), `maxContextTokens` (resolved model limit; omitted when unknown), `inputTokens` (run-cumulative input across all calls, incl. sub-agent spend — billing), `outputTokens`, `cacheCreationTokens`, `cacheReadTokens`, `cachedTokens`, `sessionContextTokens`, `sessionOutputTokens`, plus optional last-call speed fields (see [Generation speed](#generation-speed-external-clients)) and `llmDurationMs` (sum of main think-step LLM calls this run) |
+| `usage` | After each LLM iteration of a running turn | `windowTokens`, `maxContextTokens` (omitted when the model limit is unknown), `outputTokens` (run-cumulative) (camelCase — `windowTokens` is the parent-only window size that drives the metrics gauge; child rounds and side-call summaries never move it), plus optional this-call speed fields (see [Generation speed](#generation-speed-external-clients)) |
 | `error` | Agent or server error | `message` |
 | `approval_request` | Agent needs user approval for dangerous operation; blocks the run up to `timeout_seconds` (60s default) | `id`, `risk` (class name), `command` (or resource), `description`, `is_operation`, `allow_trust`, `friction`, `friction_approvals`, `timeout_seconds` (the effective server-enforced wait in seconds — render the card's countdown from it) |
 | `approval_ack` | Server confirms an approval response | `id`, `action` |
@@ -701,6 +701,39 @@ answer arrives as `token_delta` / `thinking_delta` fragments as the provider
 generates them, and the bulk `token` / final-answer `thinking` re-sends are
 suppressed. Providers that reject SSE transparently fall back to the buffered
 path — no deltas fire and the bulk events return. See docs/STREAMING.md.
+
+### Generation speed (external clients)
+
+`usage` and `done` frames carry optional **this-call** generation-speed
+fields so bodek and other protocol-v2 clients can render tokens/second
+without a protocol bump. The bundled Web UI does not display these yet —
+they are on the wire for later UI work. All fields are additive and
+**omitted when unknown** (buffered calls have no TTFT; rates stay off when
+the provider sent no output tokens or the call was shorter than 50ms).
+
+Do **not** divide cumulative `outputTokens` by call duration. That total
+grows every iteration; the per-call counts are the `call*` fields.
+
+| Field | Frame | Meaning |
+|-------|-------|---------|
+| `callDurationMs` | `usage`, `done` | Wall time of the last main think-step LLM call |
+| `ttftMs` | `usage`, `done` | Call start → first streamed reasoning/content delta. Absent on the buffered path |
+| `generationMs` | `usage`, `done` | First delta → call end. Absent on the buffered path |
+| `callInputTokens` | `usage`, `done` | Prompt tokens for that call only |
+| `callOutputTokens` | `usage`, `done` | Completion tokens for that call only |
+| `tokensPerSecond` | `usage`, `done` | `callOutputTokens / (callDurationMs/1000)` — end-to-end (prefill + TTFT + decode) |
+| `generationTokensPerSecond` | `usage`, `done` | `callOutputTokens / (generationMs/1000)` — closer to decode speed; prefer this in UIs when present |
+| `llmDurationMs` | `done` only | Sum of main think-step LLM durations this run (tools and side calls excluded) |
+
+`tokensPerSecond` on thinking models will look slow because most of the
+wait is before the first visible token; `generationTokensPerSecond` is the
+"how fast is it typing" number. Side calls (compaction, titles, progress
+summaries) never update these fields. `GET /api/usage` stays process-lifetime
+counts and does **not** grow a tok/s average.
+
+The same numbers are on `odek.event/v1` `iteration_completed` /
+`run_completed` (snake_case; see [EXTENSIONS.md](EXTENSIONS.md)) and on
+`Agent.LastCallMetrics()` / `IterationInfo` for Go embedders.
 
 ### Content sanitization contract
 

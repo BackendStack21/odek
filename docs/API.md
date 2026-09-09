@@ -334,6 +334,8 @@ func (a *Agent) Thinking() string
 func (a *Agent) SwitchThinking(thinking string)
 func (a *Agent) TotalInputTokens() int
 func (a *Agent) TotalOutputTokens() int
+func (a *Agent) LastCallMetrics() CallMetrics
+func (a *Agent) TotalLLMDurationMs() int64
 func (a *Agent) Close() error
 func (a *Agent) Memory() *memory.MemoryManager
 ```
@@ -641,7 +643,16 @@ result, err := agent.Run(ctx, "Refactor the auth module")
 fmt.Printf("Input tokens:  %d\n", agent.TotalInputTokens())
 fmt.Printf("Output tokens: %d\n", agent.TotalOutputTokens())
 fmt.Printf("Total tokens:  %d\n", agent.TotalInputTokens()+agent.TotalOutputTokens())
+
+m := agent.LastCallMetrics()
+if m.GenerationTokensPerSecond > 0 {
+    fmt.Printf("Generation:    %.1f tok/s\n", m.GenerationTokensPerSecond)
+} else if m.TokensPerSecond > 0 {
+    fmt.Printf("Throughput:    %.1f tok/s\n", m.TokensPerSecond)
+}
 ```
+
+`LastCallMetrics` is the last **main think-step** LLM call only (not tools, not side calls). `TokensPerSecond` is end-to-end (`call output / call wall time`); `GenerationTokensPerSecond` is streaming-only (`call output / time after first delta`) and is omitted on the buffered path. Cumulative `TotalOutputTokens` must not be divided by `TotalLLMDurationMs` if you also charged sub-agent or side-call tokens — use `LastCallMetrics` for a single call, or the `tokens_per_second` field on `run_completed` events for think-step output over summed think-step duration.
 
 Token counts reset on each `Run` / `RunWithMessages` call. For session-level tracking, accumulate across turns:
 

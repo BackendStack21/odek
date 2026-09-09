@@ -871,13 +871,20 @@ func (a *Agent) emitRunFinished(start time.Time, err error) {
 		})
 		return
 	}
+	data := map[string]any{
+		"duration_ms":   durationMs,
+		"input_tokens":  a.engine.TotalInputTokens,
+		"output_tokens": a.engine.TotalOutputTokens,
+	}
+	if ms := a.engine.TotalLLMDuration(); ms > 0 {
+		data["llm_duration_ms"] = ms
+	}
+	if tps := a.engine.ThinkTokensPerSecond(); tps > 0 {
+		data["tokens_per_second"] = tps
+	}
 	a.emitter.Emit(events.Event{
 		Type: events.TypeRunCompleted,
-		Data: map[string]any{
-			"duration_ms":   durationMs,
-			"input_tokens":  a.engine.TotalInputTokens,
-			"output_tokens": a.engine.TotalOutputTokens,
-		},
+		Data: data,
 	})
 }
 
@@ -946,6 +953,33 @@ func (a *Agent) TotalInputTokens() int {
 // across all iterations of the most recent RunWithMessages call.
 func (a *Agent) TotalOutputTokens() int {
 	return a.engine.TotalOutputTokens
+}
+
+// CallMetrics is the last main think-step LLM call's timing and derived
+// rates. Zero-valued fields mean "not measured" (buffered calls have no
+// TTFT; rates stay 0 when the provider reported no output tokens or the
+// call was shorter than 50ms). Side calls never update this snapshot.
+type CallMetrics = loop.CallMetrics
+
+// LastCallMetrics returns timing and per-call token counts for the most
+// recent main think-step LLM call of the last Run / RunWithMessages.
+// Totals such as TotalOutputTokens remain cumulative; these fields are
+// this-call only so clients can compute tokens/second without mixing
+// denominators.
+func (a *Agent) LastCallMetrics() CallMetrics {
+	if a == nil || a.engine == nil {
+		return CallMetrics{}
+	}
+	return a.engine.LastCallMetrics()
+}
+
+// TotalLLMDurationMs is the sum of main think-step LLM call wall times
+// for the most recent run, excluding tool time and side calls.
+func (a *Agent) TotalLLMDurationMs() int64 {
+	if a == nil || a.engine == nil {
+		return 0
+	}
+	return a.engine.TotalLLMDuration()
 }
 
 // LastPromptTokens returns the provider-normalized prompt size of the last
