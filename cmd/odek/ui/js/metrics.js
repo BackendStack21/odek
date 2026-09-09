@@ -216,16 +216,6 @@ export function turnCostUSD(inTok, outTok) {
   return inTok / 1e6 * S.metrics.inPrice + outTok / 1e6 * S.metrics.outPrice;
 }
 
-// flashTrim draws attention to the gauge when the engine trims history.
-export function flashTrim() {
-  const gauge = document.getElementById('ctx-gauge');
-  if (!gauge) return;
-  gauge.classList.remove('trim');
-  void gauge.offsetWidth; // restart the animation
-  gauge.classList.add('trim');
-  setTimeout(() => gauge.classList.remove('trim'), 1200);
-}
-
 // ── Rendering ──
 
 // Bodek formatUSD: cents at $1+, up to four decimals below (trailing
