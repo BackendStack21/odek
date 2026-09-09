@@ -185,7 +185,7 @@ odek continue "Run the test suite"
 # → odek: session was sandboxed — enabling sandbox for this continuation
 ```
 
-This prevents accidentally escaping the sandbox on resume. The sandbox image/network/memory still come from the **current** config — only the toggle bit is persisted. To force-disable sandbox on resume, set `"sandbox": false` in **trusted** config (`~/.odek/config.json`) or `ODEK_NO_SANDBOX=1` / `ODEK_SANDBOX=false`. `odek continue` does not accept `--no-sandbox`, and `"sandbox": false` in `./odek.json` is ignored.
+This prevents accidentally escaping the sandbox on resume. The sandbox image/network/memory still come from the **current** config — only the toggle bit is persisted. To force-disable sandbox on resume, set `"sandbox": false` in **trusted** config (`~/.odek/config.json`) or `ODEK_SANDBOX=false` — those mark the policy explicit *before* the pin. `ODEK_NO_SANDBOX=1` does **not** override a sandboxed session. `odek continue` does not accept `--no-sandbox`, and `"sandbox": false` in `./odek.json` is ignored. A sandboxed resume hard-fails if Docker is unavailable (the pin is an explicit want).
 
 ## Provider persistence
 

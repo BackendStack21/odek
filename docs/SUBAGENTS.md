@@ -61,7 +61,7 @@ Each sub-agent gets a **fresh context** — no parent history, no conversation s
 
 ## Tool: `delegate_tasks`
 
-The `delegate_tasks` tool is available in CLI, REPL, Web UI, and Telegram. The agent calls it automatically when it identifies independent sub-tasks. Headless `odek schedule` and `odek mcp` do not register it.
+The `delegate_tasks` tool is available in CLI, REPL, Web UI, Telegram, and headless scheduled runs. The agent calls it automatically when it identifies independent sub-tasks. `odek mcp` does not register it.
 
 ### Schema
 

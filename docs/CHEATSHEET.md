@@ -273,7 +273,7 @@ odek repl --sandbox --sandbox-memory 2g --sandbox-cpus 2
 
 - **Implicit default + Docker unavailable** (or unapproved project `Dockerfile.odek`) → degrades to unsandboxed with a loud notice, instead of breaking Docker-less machines.
 - **`ODEK_REQUIRE_SANDBOX=1`** → any unsandboxed outcome is fatal, including explicit opt-outs (the hard constraint outranks contradictory flags).
-- `odek continue` pins the session's original sandbox posture — no mid-conversation containment flips. It does not accept `--no-sandbox`; override with `ODEK_NO_SANDBOX=1` / trusted `"sandbox": false`.
+- `odek continue` pins the session's original sandbox posture — no mid-conversation containment flips. It does not accept `--no-sandbox`; override with `ODEK_SANDBOX=false` / trusted `"sandbox": false`. `ODEK_NO_SANDBOX=1` does not override the pin.
 
 Flags (`run` / `repl` / `serve`): `--sandbox`, `--no-sandbox`, `--sandbox-image`, `--sandbox-network`, `--sandbox-readonly`, `--sandbox-memory`, `--sandbox-cpus`, `--sandbox-user`.
 

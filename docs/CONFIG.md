@@ -60,7 +60,8 @@ Shared across all projects:
 > `Dockerfile.odek`/sandbox knob lacks approval (`serve` hard-fails instead).
 > Opt out explicitly with `--no-sandbox`, `ODEK_NO_SANDBOX=1`, or `"sandbox": false`
 > in trusted config. `odek continue` pins the session's stored sandbox bit and
-> does not accept `--no-sandbox`. Make any fallback fatal with
+> does not accept `--no-sandbox`. Override the pin with `ODEK_SANDBOX=false` or
+> trusted `"sandbox": false` (`ODEK_NO_SANDBOX=1` does not). Make any fallback fatal with
 > `ODEK_REQUIRE_SANDBOX=1`. An explicit `--sandbox` keeps the hard-fail-on-error
 > behavior.
 >
