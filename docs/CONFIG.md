@@ -1202,7 +1202,7 @@ ends — there is no detach mode in v1.
 | `max_timeout_seconds` | `0` | Cap for explicit `timeout_seconds` on `bg_start`; `0` = uncapped (session lifetime is the bound). |
 | `notify` | `"observe"` | `"observe"` injects a drained completion summary at the agent's next iteration; `"off"` requires polling with `bg_status`. |
 | `on_session_end` | `"kill"` | Job fate at session end. Only `"kill"` is supported; there is no detach. |
-| `wake_on_complete` | `true` | Serve surface: when a job finishes while its session is idle **and** a WebUI connection is attached, start a system-initiated turn so the model reads `bg_output` and reports unprompted. Busy sessions rely on the normal notice drain; `notify: "off"` forces this off (a wake would point at notices that are never delivered). |
+| `wake_on_complete` | `true` | Serve surface: when a job finishes while its session is idle **and** a WebUI connection is attached, start a system-initiated turn so the model reads `bg_output` and reports unprompted. Telegram surface: the same setting wakes idle chats with a system-initiated turn (exits within `wake_coalesce_ms` coalesce into one; busy chats keep the raw exit line). Wake turns are system messages. Forced off by `notify: "off"` (a wake would point at notices that are never delivered); bounded per chat/session by `max_wakes_per_hour`. |
 | `wake_coalesce_ms` | `2000` | Window in which jobs finishing together share one wake turn. Global-only: project configs may not set it. |
 | `max_wakes_per_hour` | `30` | Per-session ceiling on system-initiated wake turns (spend control). `0` disables waking; values above `240` clamp to `240` regardless of config source. Project configs may only lower an operator-set value. |
 

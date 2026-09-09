@@ -12,12 +12,15 @@ import (
 	"github.com/BackendStack21/odek/internal/telegram"
 )
 
-// bgChatNotifier pushes a human-readable line to the chat the moment a job
-// exits (observer callback — the agent's own notice queue is untouched).
-// BGStarted is deliberately silent: the chat already saw the request.
+// bgChatNotifier handles background-job exit events for a chat. With wake
+// enabled (wake != nil), an exit on an idle chat routes to a system-initiated
+// wake turn (see bg_telegram_wake.go) and the raw push is suppressed; busy
+// chats and wake-disabled setups keep the legacy push. BGStarted is
+// deliberately silent: the chat already saw the request.
 type bgChatNotifier struct {
 	chatID int64
 	bot    *telegram.Bot
+	wake   *tgWakeController
 }
 
 func (n *bgChatNotifier) BGStarted(j bgproc.Job) {}
@@ -26,11 +29,20 @@ func (n *bgChatNotifier) BGExited(ex bgproc.Notice) {
 	if n.bot == nil {
 		return
 	}
-	if text := formatOneNotice(ex); text != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		_, _ = n.bot.SendMessageContext(ctx, n.chatID, "📋 "+text, nil)
+	text := formatOneNotice(ex)
+	if text == "" {
+		return
 	}
+	// Wake path: idle chat + wake enabled + under the spend cap → dispatch
+	// one coalesced system-initiated turn; the model reads the completion
+	// notice from the loop's drain during that turn. A raw push would
+	// duplicate the notice in the chat without ever reaching the model.
+	if n.wake != nil && n.wake.reserve(ex.JobID) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	_, _ = n.bot.SendMessageContext(ctx, n.chatID, "📋 "+text, nil)
 }
 
 // bgChatRuntimes tracks one background runtime per Telegram chat. Chats run
@@ -40,17 +52,37 @@ var bgChatRuntimes sync.Map // chatID int64 -> *bgRuntime
 
 var bgWatchers sync.Map // chatID int64 -> bool (watcher running)
 
+// wakeControllers tracks the per-chat wake controller so /new and shutdown
+// can stop pending coalesce timers.
+var wakeControllers sync.Map // chatID int64 -> *tgWakeController
+
+func stopWakeControllerForChat(chatID int64) {
+	if ctl, ok := wakeControllers.LoadAndDelete(chatID); ok {
+		ctl.(*tgWakeController).stop()
+	}
+}
+
 // bgRuntimeForChat returns the chat's long-lived background runtime, creating
 // it (and the exit-notification watcher) on first use. Returns nil when the
-// background section is disabled.
-func bgRuntimeForChat(chatID int64, resolved config.ResolvedConfig, sessID string, bot *telegram.Bot) *bgRuntime {
+// background section is disabled. wakeDispatch (may be nil) starts the wake
+// turn for the chat when background.wake_on_complete routes an exit to a
+// system-initiated turn.
+func bgRuntimeForChat(chatID int64, resolved config.ResolvedConfig, sessID string, bot *telegram.Bot,
+	wakeDispatch func(chatID int64, text string)) *bgRuntime {
 	if cached, ok := bgChatRuntimes.Load(chatID); ok {
 		rt := cached.(*bgRuntime)
 		ensureBGWatcher(chatID, rt, bot)
 		return rt
 	}
+	var wake *tgWakeController
+	if wakeDispatch != nil && telegramWakeAllowed(resolved) {
+		wake = newTGWakeController(chatID,
+			time.Duration(resolved.Background.WakeCoalesceMS)*time.Millisecond,
+			resolved.Background.MaxWakesPerHour, 2*time.Second, wakeDispatch)
+		wakeControllers.Store(chatID, wake)
+	}
 	rt := newBackgroundRuntime(backgroundSettingsFromResolved(resolved), sessID, "", nil, nil,
-		&bgChatNotifier{chatID: chatID, bot: bot})
+		&bgChatNotifier{chatID: chatID, bot: bot, wake: wake})
 	if rt == nil {
 		return nil
 	}
@@ -61,6 +93,11 @@ func bgRuntimeForChat(chatID int64, resolved config.ResolvedConfig, sessID strin
 
 // shutdownAllBGRuntimes kills every chat's running jobs at bot shutdown.
 func shutdownAllBGRuntimes() {
+	wakeControllers.Range(func(k, v any) bool {
+		v.(*tgWakeController).stop()
+		wakeControllers.Delete(k)
+		return true
+	})
 	bgChatRuntimes.Range(func(_, v any) bool {
 		v.(*bgRuntime).Shutdown()
 		return true
@@ -74,6 +111,7 @@ func dropBGRuntimeForChat(chatID int64) {
 		cached.(*bgRuntime).Shutdown()
 	}
 	bgWatchers.Delete(chatID)
+	stopWakeControllerForChat(chatID)
 }
 
 // ensureBGWatcher starts the single per-chat exit-pusher goroutine if none
@@ -87,15 +125,23 @@ func ensureBGWatcher(chatID int64, rt *bgRuntime, bot *telegram.Bot) {
 	}
 	go func() {
 		defer bgWatchers.Delete(chatID)
-		watchBGNotices(chatID, rt, bot)
+		watchBGNotices(chatID, rt, bot, wakeControllerForChat(chatID))
 	}()
+}
+
+// wakeControllerForChat returns the chat's wake controller, or nil.
+func wakeControllerForChat(chatID int64) *tgWakeController {
+	if ctl, ok := wakeControllers.Load(chatID); ok {
+		return ctl.(*tgWakeController)
+	}
+	return nil
 }
 
 // watchBGNotices pushes a human-readable line to the chat when a job exits,
 // so the user hears about completions between messages. The agent still gets
 // the full observe-phase notice from its own drain — this watcher never
 // touches the agent's notice queue. It stops after ~30s with nothing running.
-func watchBGNotices(chatID int64, rt *bgRuntime, bot *telegram.Bot) {
+func watchBGNotices(chatID int64, rt *bgRuntime, bot *telegram.Bot, wake *tgWakeController) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 	// Snapshot the exit states the watcher has already announced so a job is
@@ -109,6 +155,12 @@ func watchBGNotices(chatID int64, rt *bgRuntime, bot *telegram.Bot) {
 				continue
 			}
 			announced[j.ID] = true
+			// Jobs routed to a wake turn are covered: the wake turn's
+			// notice drain delivers the facts to the model and the wake
+			// reply reaches the chat — a raw line here would duplicate it.
+			if wake != nil && wake.wakeRouted(j.ID) {
+				continue
+			}
 			end := j.EndedAt
 			if end.IsZero() {
 				end = time.Now()

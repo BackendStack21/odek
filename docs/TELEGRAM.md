@@ -252,6 +252,27 @@ defense-in-depth.
 | `/stats` | Show session statistics (turn count, model used, etc.) |
 | `/jobs` | List background jobs for this chat |
 | `/stop` | Cancel a running agent task |
+
+### Wake-on-complete (background jobs)
+
+When a background job started from a chat finishes while the chat is idle,
+the bot starts a **system-initiated wake turn**: the model reads the job's
+output (`bg_output`) and reports the results to the chat unprompted. Wake
+turns are marked as system messages — they never appear as if the user had
+sent something.
+
+Routing per job exit:
+
+| State | Behavior |
+|---|---|
+| Chat idle, wake enabled | One coalesced wake turn (exits within `wake_coalesce_ms` share one turn); the raw exit line is suppressed — the notice is delivered to the model inside the wake turn |
+| Chat busy (a turn is running) | Legacy raw 📋 exit line only — the running turn's notice drain already reaches the model |
+| Wake disabled / spend cap hit | Legacy raw 📋 exit line only |
+
+Wake is controlled by the shared `background.wake_on_complete` setting
+(default `true`), forced off when `background.notify: "off"`, and bounded by
+`background.max_wakes_per_hour` per chat (spend control). See
+[docs/CONFIG.md](CONFIG.md) for the `background` section.
 | `/mode` | Show current agent modes (interaction_mode, tool_progress, sandbox) |
 | `/restart` | Gracefully restart the bot process. Restricted to operator chats/users and rate-limited to once per 60 seconds. |
 | `/plan <description>` | Create a new plan from a natural language description |

@@ -1479,7 +1479,11 @@ func handleChatMessage(
 	}
 
 	// Build the agent with Telegram approver.
-	bgRT := bgRuntimeForChat(chatID, resolved, sess.ID, bot)
+	bgRT := bgRuntimeForChat(chatID, resolved, sess.ID, bot,
+		func(wakeChatID int64, wakeText string) {
+			go handleChatMessage(wakeChatID, 0, 0, wakeText, bot, handler,
+				sessionManager, resolved, systemMessage, log)
+		})
 	tools := builtinTools(resolved.Dangerous, nil, approver, resolved.MaxConcurrency, resolved.APIKey, toolConfigFromResolved(resolved), sessionManager.Store)
 	tools = appendBackgroundTools(tools, bgRT)
 

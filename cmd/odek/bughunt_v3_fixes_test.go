@@ -115,7 +115,7 @@ func TestMultiGrep_ReportsUnopenableFile(t *testing.T) {
 	result := callJSON(t, tool, args)
 	var r struct {
 		Results []struct {
-			Pattern string   `json:"pattern"`
+			Pattern string `json:"pattern"`
 			Matches []struct {
 				Path string `json:"path"`
 			} `json:"matches"`
