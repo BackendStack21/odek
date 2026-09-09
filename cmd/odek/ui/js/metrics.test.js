@@ -34,7 +34,9 @@ const byId = {
   'ctx-pct': new FakeEl(),
   'm-tok': new FakeEl(),
   'm-cost': new FakeEl(),
+  'm-speed': new FakeEl(),
   'cost-chip': new FakeEl(),
+  'speed-chip': new FakeEl(),
 };
 globalThis.document = {
   getElementById: (id) => byId[id] || null,
@@ -51,7 +53,7 @@ globalThis.localStorage = (() => {
 })();
 
 const { S } = await import('./state.js');
-const { formatUSD, sessionCostUSD, renderMetrics, metricsDone, resetMetrics } = await import('./metrics.js');
+const { formatUSD, sessionCostUSD, renderMetrics, metricsDone, resetMetrics, pickTokPerSec, formatTokPerSec, metricsApplySpeed, metricsResetSpeed, turnStatsHTML } = await import('./metrics.js');
 
 beforeEach(() => {
   S.metrics.pricesConfigured = false;
@@ -60,8 +62,13 @@ beforeEach(() => {
   S.metrics.sessIn = 0;
   S.metrics.sessOut = 0;
   S.metrics.ctxTokens = 0;
+  S.metrics.tokPerSec = 0;
+  S.metrics.tokPerSecKind = '';
   byId['cost-chip'].hidden = true;
   byId['cost-chip'].textContent = '';
+  byId['speed-chip'].hidden = true;
+  byId['speed-chip'].textContent = '';
+  byId['m-speed'].textContent = '—';
 });
 
 test('formatUSD matches Bodek compact dollars', () => {
@@ -100,4 +107,73 @@ test('reset keeps the chip when prices exist ($0, not a guessed hide)', () => {
   resetMetrics();
   assert.equal(byId['cost-chip'].hidden, false);
   assert.equal(byId['cost-chip'].textContent, '$0');
+});
+
+test('pickTokPerSec prefers generation rate and omits zeros', () => {
+  assert.deepEqual(pickTokPerSec(null), { rate: 0, kind: '' });
+  assert.deepEqual(pickTokPerSec({}), { rate: 0, kind: '' });
+  assert.deepEqual(pickTokPerSec({ tokensPerSecond: 9.6 }), { rate: 9.6, kind: 'e2e' });
+  assert.deepEqual(
+    pickTokPerSec({ tokensPerSecond: 9.6, generationTokensPerSecond: 25.2 }),
+    { rate: 25.2, kind: 'generation' },
+  );
+  assert.deepEqual(pickTokPerSec({ outputTokens: 800, latency: 0.5 }), { rate: 0, kind: '' });
+});
+
+test('formatTokPerSec matches the CLI one-decimal suffix', () => {
+  assert.equal(formatTokPerSec(0), '');
+  assert.equal(formatTokPerSec(9.6), '9.6 tok/s');
+  assert.equal(formatTokPerSec(100), '100.0 tok/s');
+});
+
+test('speed chip stays hidden until a think-step rate arrives', () => {
+  renderMetrics();
+  assert.equal(byId['speed-chip'].hidden, true);
+  assert.equal(byId['m-speed'].textContent, '—');
+});
+
+test('usage-style applySpeed shows generation rate on the chip and popover', () => {
+  metricsApplySpeed({ generationTokensPerSecond: 25.2, tokensPerSecond: 9.6 });
+  assert.equal(byId['speed-chip'].hidden, false);
+  assert.equal(byId['speed-chip'].textContent, '25.2 tok/s');
+  assert.equal(byId['m-speed'].textContent, '25.2 tok/s');
+  assert.match(byId['speed-chip'].title, /first streamed token/);
+});
+
+test('a usage frame without a rate holds the last chip', () => {
+  metricsApplySpeed({ tokensPerSecond: 9.6 });
+  metricsApplySpeed({ outputTokens: 10 });
+  assert.equal(S.metrics.tokPerSec, 9.6);
+  assert.equal(byId['speed-chip'].textContent, '9.6 tok/s');
+});
+
+test('resetSpeed and resetMetrics hide the chip', () => {
+  metricsApplySpeed({ tokensPerSecond: 9.6 });
+  metricsResetSpeed();
+  assert.equal(byId['speed-chip'].hidden, true);
+  metricsApplySpeed({ tokensPerSecond: 9.6 });
+  resetMetrics();
+  assert.equal(S.metrics.tokPerSec, 0);
+  assert.equal(byId['speed-chip'].hidden, true);
+});
+
+test('done applies last-call speed without using cumulative outputTokens', () => {
+  metricsDone({
+    sessionContextTokens: 10000, sessionOutputTokens: 2000, windowTokens: 1000,
+    tokensPerSecond: 9.6, outputTokens: 800, latency: 0.05,
+  });
+  assert.equal(S.metrics.tokPerSec, 9.6);
+  assert.equal(byId['speed-chip'].textContent, '9.6 tok/s');
+});
+
+test('turnStatsHTML includes tok/s from this-call fields, never invented from totals', () => {
+  const html = turnStatsHTML({
+    latency: 8.1, inputTokens: 18432, outputTokens: 78,
+    generationTokensPerSecond: 25.2, tokensPerSecond: 9.6,
+  });
+  assert.match(html, /8\.1s/);
+  assert.match(html, /↗ 25\.2 tok\/s/);
+  assert.equal(html.includes('9.6 tok/s'), false, 'generation rate wins over end-to-end');
+  const none = turnStatsHTML({ latency: 0.5, inputTokens: 10, outputTokens: 800 });
+  assert.equal(none.includes('tok/s'), false);
 });

@@ -862,22 +862,26 @@ func (a *Agent) emitRunFinished(start time.Time, err error) {
 	}
 	durationMs := time.Since(start).Milliseconds()
 	if err != nil {
+		data := map[string]any{
+			"duration_ms": durationMs,
+			"error_class": events.ErrorClass(err),
+		}
+		a.engine.AppendRunLLMMetrics(data)
 		a.emitter.Emit(events.Event{
 			Type: events.TypeRunFailed,
-			Data: map[string]any{
-				"duration_ms": durationMs,
-				"error_class": events.ErrorClass(err),
-			},
+			Data: data,
 		})
 		return
 	}
+	data := map[string]any{
+		"duration_ms":   durationMs,
+		"input_tokens":  a.engine.TotalInputTokens,
+		"output_tokens": a.engine.TotalOutputTokens,
+	}
+	a.engine.AppendRunLLMMetrics(data)
 	a.emitter.Emit(events.Event{
 		Type: events.TypeRunCompleted,
-		Data: map[string]any{
-			"duration_ms":   durationMs,
-			"input_tokens":  a.engine.TotalInputTokens,
-			"output_tokens": a.engine.TotalOutputTokens,
-		},
+		Data: data,
 	})
 }
 
@@ -946,6 +950,33 @@ func (a *Agent) TotalInputTokens() int {
 // across all iterations of the most recent RunWithMessages call.
 func (a *Agent) TotalOutputTokens() int {
 	return a.engine.TotalOutputTokens
+}
+
+// CallMetrics is the last main think-step LLM call's timing and derived
+// rates. Zero-valued fields mean "not measured" (buffered calls have no
+// TTFT; rates stay 0 when the provider reported no output tokens or the
+// call was shorter than 50ms). Side calls never update this snapshot.
+type CallMetrics = loop.CallMetrics
+
+// LastCallMetrics returns timing and per-call token counts for the most
+// recent main think-step LLM call of the last Run / RunWithMessages.
+// Totals such as TotalOutputTokens remain cumulative; these fields are
+// this-call only so clients can compute tokens/second without mixing
+// denominators.
+func (a *Agent) LastCallMetrics() CallMetrics {
+	if a == nil || a.engine == nil {
+		return CallMetrics{}
+	}
+	return a.engine.LastCallMetrics()
+}
+
+// TotalLLMDurationMs is the sum of main think-step LLM call wall times
+// for the most recent run, excluding tool time and side calls.
+func (a *Agent) TotalLLMDurationMs() int64 {
+	if a == nil || a.engine == nil {
+		return 0
+	}
+	return a.engine.TotalLLMDuration()
 }
 
 // LastPromptTokens returns the provider-normalized prompt size of the last

@@ -66,7 +66,7 @@ With streaming enabled, `odek run` and `odek repl` print reasoning and the answe
 🧠 Simple question — the relevant context is already loaded. Answer directly…
 
 Morning! The build is green and yesterday's fixes are merged. What's next?
-═══ Iter 1/90 · GLM 5.3 (Z.ai) ═══  [18432 in · 78 out · 8.1s]
+═══ Iter 1/90 · GLM 5.3 (Z.ai) ═══  [18432 in · 78 out · 8.1s · 9.6 tok/s]
 
 ── 18432 in · 78 out · 51 cached
 ```

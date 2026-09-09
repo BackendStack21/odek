@@ -182,15 +182,15 @@ Per-type `data` fields:
 | `type` | `data` fields |
 |--------|---------------|
 | `run_started` | `model`, `sandbox` (bool), `max_iterations` |
-| `iteration_completed` | `input_tokens`, `output_tokens` (cumulative), `tools_called` |
+| `iteration_completed` | `input_tokens`, `output_tokens` (cumulative), `tools_called`, plus per-call speed fields when measured: `call_duration_ms`, `ttft_ms`, `generation_ms`, `call_input_tokens`, `call_output_tokens`, `tokens_per_second`, `generation_tokens_per_second` (all omitted when zero / unknown — do not divide cumulative `output_tokens` by `call_duration_ms`) |
 | `tool_call_started` | `call_id`, `args_sha256`, `args_bytes`, `args_summary`, `args` (opt-in) |
 | `tool_call_completed` | `call_id`, `duration_ms`, `result_bytes`, `artifact_count` |
 | `tool_call_failed` | `call_id`, `duration_ms`, `error_class` |
 | `session_saved` | `message_count` |
 | `context_trimmed` | `mode` (`proactive`/`survival`), `dropped_groups`, `truncated_results` |
 | `budget_exceeded` | `limit_name` (`runtime`/`tool_calls`/`input_tokens`/`output_tokens`/`cost_usd`), `observed`, `limit` |
-| `run_completed` | `duration_ms`, `input_tokens`, `output_tokens` (run totals) |
-| `run_failed` | `duration_ms`, `error_class` |
+| `run_completed` | `duration_ms` (run wall clock, tools included), `input_tokens`, `output_tokens` (run totals), `llm_duration_ms` (sum of main think-step LLM calls), `tokens_per_second` (think-step output / `llm_duration_ms`; omitted when unknown) |
+| `run_failed` | `duration_ms`, `error_class`, plus the same `llm_duration_ms` / `tokens_per_second` as `run_completed` when at least one think step was measured before the failure |
 | `plan_created` | `steps` (total count), `version` |
 | `plan_updated` | `steps`, `done`, `in_progress`, `blocked`, `pending`, `version` |
 | `plan_blocked` | `steps`, `blocked`, `version` |

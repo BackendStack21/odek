@@ -1,13 +1,14 @@
 // Metrics cluster: the consolidated telemetry surface in the topbar —
-// live context-window gauge, session token totals, and estimated session
-// cost. All state flows through here so the numbers can never disagree
-// between the topbar, the health popover, and per-message stats.
+// live context-window gauge, session token totals, generation speed,
+// and estimated session cost. All state flows through here so the
+// numbers can never disagree between the topbar, the health popover,
+// and per-message stats.
 //
 // Data sources:
 //   - /api/limits        → per-million prices (flat pair + model_prices)
 //   - /api/models        → context-window sizes per listed model
-//   - WS usage events    → live context tokens per iteration
-//   - WS done events     → final session token totals
+//   - WS usage events    → live context tokens + this-call tok/s per iteration
+//   - WS done events     → final session token totals + last-call tok/s
 //   - session records    → seeding when a stored session is opened
 import { S } from './state.js';
 import { getLimits, getModels } from './api.js';
@@ -25,6 +26,8 @@ S.metrics = {
   ctxTokens: 0,         // latest reported context size (this run)
   sessIn: 0,            // session cumulative input tokens
   sessOut: 0,           // session cumulative output tokens
+  tokPerSec: 0,         // last think-step rate; 0 = unknown / omit
+  tokPerSecKind: '',    // 'generation' | 'e2e' | ''
   model: '',
 };
 
@@ -95,6 +98,50 @@ export function metricsLiveContext(windowTokens, maxContextTokens) {
   renderMetrics();
 }
 
+// pickTokPerSec prefers decode-ish generation rate when the stream measured
+// TTFT separately; otherwise end-to-end. 0 / absent means unknown — callers
+// must not invent a rate from cumulative outputTokens / wall latency.
+export function pickTokPerSec(src) {
+  if (!src) return { rate: 0, kind: '' };
+  const gen = Number(src.generationTokensPerSecond);
+  if (gen > 0) return { rate: gen, kind: 'generation' };
+  const e2e = Number(src.tokensPerSecond);
+  if (e2e > 0) return { rate: e2e, kind: 'e2e' };
+  return { rate: 0, kind: '' };
+}
+
+export function formatTokPerSec(rate) {
+  if (!(rate > 0)) return '';
+  return rate.toFixed(1) + ' tok/s';
+}
+
+export function tokPerSecTitle(kind) {
+  return kind === 'generation'
+    ? 'Generation speed — completion tokens after the first streamed token'
+    : 'Think-step throughput — completion tokens over the full call (prefill + wait + decode)';
+}
+
+// metricsApplySpeed records a this-call rate from a usage/done frame.
+// Missing / zero rates are held, not zeroed, so a silent provider frame
+// does not blank the chip mid-run.
+export function metricsApplySpeed(src) {
+  const picked = pickTokPerSec(src);
+  if (picked.rate > 0) {
+    S.metrics.tokPerSec = picked.rate;
+    S.metrics.tokPerSecKind = picked.kind;
+  }
+  renderMetrics();
+}
+
+// metricsResetSpeed clears the live chip at the start of a new turn so
+// the previous turn's rate is not shown as current while the first
+// think step is still in flight.
+export function metricsResetSpeed() {
+  S.metrics.tokPerSec = 0;
+  S.metrics.tokPerSecKind = '';
+  renderMetrics();
+}
+
 // metricsDone: final totals for the turn (cumulative for the session).
 export function metricsDone(evt) {
   // Re-resolve prices if the run's model differs from the loaded one (e.g.
@@ -110,7 +157,7 @@ export function metricsDone(evt) {
   // is the run-cumulative billing total incl. sub-agent spend. 0/absent =
   // "not reported": hold the last known value instead of zeroing.
   if (evt && evt.windowTokens > 0) S.metrics.ctxTokens = evt.windowTokens;
-  renderMetrics();
+  metricsApplySpeed(evt);
 }
 
 // metricsFromSession seeds totals when a stored session is opened.
@@ -119,6 +166,8 @@ export function metricsFromSession(sess) {
   S.metrics.sessIn = sess.input_tokens || 0;
   S.metrics.sessOut = sess.output_tokens || 0;
   S.metrics.ctxTokens = 0; // unknown until the next run reports it
+  S.metrics.tokPerSec = 0;
+  S.metrics.tokPerSecKind = '';
   if (sess.model) setMetricsModel(sess.model);
   renderMetrics();
 }
@@ -127,7 +176,32 @@ export function resetMetrics() {
   S.metrics.ctxTokens = 0;
   S.metrics.sessIn = 0;
   S.metrics.sessOut = 0;
+  S.metrics.tokPerSec = 0;
+  S.metrics.tokPerSecKind = '';
   renderMetrics();
+}
+
+// turnStatsHTML is the per-message footer on done. Speed uses this-call
+// fields only — never cumulative outputTokens / run latency.
+export function turnStatsHTML(event) {
+  if (!event || event.latency == null) return '';
+  const lat = Number(event.latency);
+  const latSafe = Number.isFinite(lat) ? lat : 0;
+  const spans = [];
+  spans.push('<span title="Response time">⚡ ' + (latSafe < 1 ? (latSafe * 1000).toFixed(0) + 'ms' : latSafe.toFixed(1) + 's') + '</span>');
+  if (event.inputTokens != null) spans.push('<span title="Input tokens (run total, incl. sub-agents)">⌂ ' + formatNum(event.inputTokens) + '</span>');
+  if (event.outputTokens != null) spans.push('<span title="Output tokens (completion)">↳ ' + formatNum(event.outputTokens) + '</span>');
+  const cache = (event.cacheReadTokens || 0) + (event.cacheCreationTokens || 0) + (event.cachedTokens || 0);
+  if (cache > 0) spans.push('<span title="Cached tokens">⛁ ' + formatNum(cache) + '</span>');
+  const picked = pickTokPerSec(event);
+  if (picked.rate > 0) {
+    spans.push('<span title="' + tokPerSecTitle(picked.kind) + '">↗ ' + formatTokPerSec(picked.rate) + '</span>');
+  }
+  const turnCost = turnCostUSD(event.inputTokens || 0, event.outputTokens || 0);
+  if (turnCost != null && turnCost > 0) {
+    spans.push('<span title="Estimated cost of this turn at current prices">$ ' + turnCost.toFixed(4) + '</span>');
+  }
+  return spans.join('  ·  ');
 }
 
 // sessionCostUSD estimates the current session's spend from its totals.
@@ -170,7 +244,7 @@ export function renderMetrics() {
   const cluster = document.getElementById('metrics');
   if (!cluster) return;
   const m = S.metrics;
-  const hasAny = m.ctxTokens > 0 || m.sessIn > 0 || m.sessOut > 0;
+  const hasAny = m.ctxTokens > 0 || m.sessIn > 0 || m.sessOut > 0 || m.tokPerSec > 0;
   cluster.classList.toggle('visible', hasAny);
 
   // Context gauge: percentage against the model's window when known,
@@ -225,5 +299,20 @@ export function renderMetrics() {
     chip.hidden = !priced;
     chip.textContent = label;
     chip.title = tip || 'Session cost';
+  }
+
+  const speedLabel = formatTokPerSec(m.tokPerSec);
+  const speedTip = speedLabel ? tokPerSecTitle(m.tokPerSecKind) : '';
+  const speed = document.getElementById('m-speed');
+  if (speed) {
+    speed.textContent = speedLabel || '—';
+    speed.title = speedTip;
+    speed.classList.toggle('on', !!speedLabel);
+  }
+  const speedChip = document.getElementById('speed-chip');
+  if (speedChip) {
+    speedChip.hidden = !speedLabel;
+    speedChip.textContent = speedLabel;
+    speedChip.title = speedTip || 'Generation speed';
   }
 }

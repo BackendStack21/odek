@@ -1058,21 +1058,11 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 					})
 				}
 			}
-			// Stream the parent conversation window so clients can render an
-			// exact ctx gauge (windowTokens = the last main-path call's
-			// provider-normalized prompt size — NOT the run-cumulative;
-			// sub-agent spend never appears here). maxContextTokens (omitted
-			// when the model limit is unknown) lets clients drop their
-			// model→limit tables. outputTokens stays run-cumulative.
-			if info.WindowTokens > 0 {
-				frame := map[string]any{
-					"type":         "usage",
-					"windowTokens": info.WindowTokens,
-					"outputTokens": info.OutputTokens,
-				}
-				if info.MaxContextTokens > 0 {
-					frame["maxContextTokens"] = info.MaxContextTokens
-				}
+			// Live usage: parent window for the ctx gauge, plus this-call
+			// speed fields. Providers that omit usage still emit a frame
+			// when the think step was timed so clients can render tok/s;
+			// windowTokens is omitted (not zeroed) so the gauge holds.
+			if frame, ok := usageFrame(info); ok {
 				sendFn(frame)
 			}
 		},
@@ -1098,6 +1088,30 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 	}
 
 	return agent, bgRT, sandboxCleanup, mcpCleanup, guardCleanup, injectionGuard, approver, nil
+}
+
+// serveDeltaHandler builds the loop DeltaHandler for a serve connection:
+// usageFrame builds a protocol-v2 usage event from an iteration callback.
+// The frame is emitted when the parent window is known or the think step
+// was timed / produced completion tokens — so providers that omit usage
+// (Ollama, vLLM) still ship live tok/s. windowTokens is omitted when 0
+// so clients that treat absence as "hold" do not zero the ctx gauge.
+func usageFrame(info loop.IterationInfo) (map[string]any, bool) {
+	if info.WindowTokens <= 0 && info.CallDurationMs <= 0 && info.CallOutputTokens <= 0 {
+		return nil, false
+	}
+	frame := map[string]any{
+		"type":         "usage",
+		"outputTokens": info.OutputTokens,
+	}
+	if info.WindowTokens > 0 {
+		frame["windowTokens"] = info.WindowTokens
+	}
+	if info.MaxContextTokens > 0 {
+		frame["maxContextTokens"] = info.MaxContextTokens
+	}
+	info.CallMetricsSnapshot().AppendWSFrame(frame)
+	return frame, true
 }
 
 // serveDeltaHandler builds the loop DeltaHandler for a serve connection:
@@ -2248,6 +2262,10 @@ func handlePrompt(
 		}
 		if mc := agent.MaxContextTokens(); mc > 0 {
 			m["maxContextTokens"] = mc // omitted when the model limit is unknown
+		}
+		agent.LastCallMetrics().AppendWSFrame(m)
+		if ms := agent.TotalLLMDurationMs(); ms > 0 {
+			m["llmDurationMs"] = ms
 		}
 		return m
 	}())

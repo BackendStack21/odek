@@ -861,6 +861,29 @@ func TestAgent_TotalOutputTokens(t *testing.T) {
 	}
 }
 
+func TestAgent_LastCallMetrics_NilSafe(t *testing.T) {
+	var agent *Agent
+	if got := agent.LastCallMetrics(); got != (CallMetrics{}) {
+		t.Errorf("nil agent LastCallMetrics = %+v", got)
+	}
+	if got := agent.TotalLLMDurationMs(); got != 0 {
+		t.Errorf("nil agent TotalLLMDurationMs = %d", got)
+	}
+}
+
+func TestAgent_LastCallMetrics(t *testing.T) {
+	agent, err := New(Config{APIKey: "sk-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := agent.LastCallMetrics(); got != (CallMetrics{}) {
+		t.Errorf("LastCallMetrics() = %+v, want zero", got)
+	}
+	if got := agent.TotalLLMDurationMs(); got != 0 {
+		t.Errorf("TotalLLMDurationMs() = %d, want 0", got)
+	}
+}
+
 func TestAgent_TotalCacheCreationTokens(t *testing.T) {
 	agent, err := New(Config{APIKey: "sk-test"})
 	if err != nil {

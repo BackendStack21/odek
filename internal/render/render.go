@@ -200,7 +200,7 @@ func (r *Renderer) Start(task string) {}
 // Iteration prints the cycle header with optional turn statistics and
 // turn number. When turn > 0, shows "Turn N" in the header.
 // When latency > 0 or tokens are reported, a compact stats suffix
-// appears on the same line: [1,247 in · 342 out · 4.1s]
+// appears on the same line: [1,247 in · 342 out · 4.1s · 83.4 tok/s]
 func (r *Renderer) Iteration(n, maxN int, latency time.Duration, inTokens, outTokens int, turn int) {
 	if r.disable() {
 		return
@@ -220,10 +220,15 @@ func (r *Renderer) Iteration(n, maxN int, latency time.Duration, inTokens, outTo
 	if turn > 0 {
 		prefix += fmt.Sprintf(" · Turn %d", turn)
 	}
-	// Build stats suffix only when data is available
+	// tok/s is end-to-end (this call's output tokens / think-step wall
+	// time) and is omitted when the call is too short to be a meaningful rate.
 	stats := ""
 	if inTokens > 0 || outTokens > 0 || latency > 0 {
-		stats = fmt.Sprintf("  [%d in · %d out · %.1fs]", inTokens, outTokens, latency.Seconds())
+		stats = fmt.Sprintf("  [%d in · %d out · %.1fs", inTokens, outTokens, latency.Seconds())
+		if outTokens > 0 && latency >= 50*time.Millisecond {
+			stats += fmt.Sprintf(" · %.1f tok/s", float64(outTokens)/latency.Seconds())
+		}
+		stats += "]"
 	}
 	// Double-line rule framing
 	rule := strings.Repeat("═", 3)

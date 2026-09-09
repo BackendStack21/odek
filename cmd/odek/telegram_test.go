@@ -1180,6 +1180,30 @@ func TestFormatTelegramStats(t *testing.T) {
 	}
 }
 
+func TestFormatTelegramStats_TokPerSec(t *testing.T) {
+	info := loop.IterationInfo{
+		Turn:                      1,
+		InputTokens:               10,
+		OutputTokens:              20,
+		GenerationTokensPerSecond: 25.2,
+	}
+	out := formatTelegramStats(info, nil)
+	if !strings.Contains(out, "25.2 tok/s") {
+		t.Errorf("missing generation tok/s: %s", out)
+	}
+	info.GenerationTokensPerSecond = 0
+	info.TokensPerSecond = 9.6
+	out = formatTelegramStats(info, nil)
+	if !strings.Contains(out, "9.6 tok/s") {
+		t.Errorf("missing end-to-end tok/s fallback: %s", out)
+	}
+	info.TokensPerSecond = 0
+	out = formatTelegramStats(info, nil)
+	if strings.Contains(out, "tok/s") {
+		t.Errorf("tok/s must be omitted when both rates are unknown: %s", out)
+	}
+}
+
 // TestFormatTelegramStats_SingularTurn verifies singular/plural turn handling.
 func TestFormatTelegramStats_SingularTurn(t *testing.T) {
 	info := loop.IterationInfo{Turn: 1}

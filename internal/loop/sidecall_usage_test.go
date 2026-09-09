@@ -43,6 +43,37 @@ func TestSummarizeDropped_UsageCounted(t *testing.T) {
 	if engine.TotalOutputTokens != 222 {
 		t.Errorf("TotalOutputTokens = %d, want 222 (side-call usage must be counted)", engine.TotalOutputTokens)
 	}
+	if engine.LastCallMetrics() != (CallMetrics{}) {
+		t.Errorf("side call must not write lastCall: %+v", engine.LastCallMetrics())
+	}
+	if engine.TotalLLMDurationMs != 0 || engine.TotalThinkOutputTokens != 0 {
+		t.Errorf("side call must not count toward think-step duration/tokens: dur=%d out=%d",
+			engine.TotalLLMDurationMs, engine.TotalThinkOutputTokens)
+	}
+}
+
+func TestSummarizeDropped_DoesNotClobberThinkMetrics(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, budgetFinalResponse("digest summary", 111, 222))
+	}))
+	defer server.Close()
+
+	engine := New(testChatClient(t, server.URL),
+		tool.NewRegistry(nil), 10, "", nil, 0)
+	engine.lastCall = CallMetrics{DurationMs: 80, OutputTokens: 16, TokensPerSecond: 200}
+	engine.TotalLLMDurationMs = 80
+	engine.TotalThinkOutputTokens = 16
+
+	engine.summarizeDropped(context.Background(), []session.Message{
+		{Role: "assistant", Content: "dropped work"},
+	})
+	got := engine.LastCallMetrics()
+	if got.DurationMs != 80 || got.OutputTokens != 16 || got.TokensPerSecond != 200 {
+		t.Errorf("side call clobbered lastCall: %+v", got)
+	}
+	if engine.TotalLLMDurationMs != 80 || engine.TotalThinkOutputTokens != 16 {
+		t.Errorf("side call mutated think-step totals: dur=%d out=%d", engine.TotalLLMDurationMs, engine.TotalThinkOutputTokens)
+	}
 }
 
 // TestSummarizeProgress_UsageCounted: the post-loop progress-summary side

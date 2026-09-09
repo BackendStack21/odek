@@ -2321,7 +2321,7 @@ func formatTelegramStats(info loop.IterationInfo, toolList []string) string {
 	// Show real numbers when the provider reports cache metrics; otherwise
 	// say so — "0 write / 0 read" would wrongly imply caching ran and
 	// missed, when in fact the provider returned no data at all.
-	var cacheStr string
+	cacheStr := ""
 	if info.CacheReported {
 		cacheStr = fmt.Sprintf(" · cache: %d write / %d read / %d total",
 			info.CacheCreationTokens, info.CacheReadTokens, info.CachedTokens)
@@ -2330,8 +2330,8 @@ func formatTelegramStats(info loop.IterationInfo, toolList []string) string {
 	}
 
 	return fmt.Sprintf(
-		"```\n✅ Done · %s · %d in / %d out%s · %s — tools: %s\n```",
-		iters, info.InputTokens, info.OutputTokens, cacheStr, latency.String(), toolStr,
+		"```\n✅ Done · %s · %d in / %d out%s%s · %s — tools: %s\n```",
+		iters, info.InputTokens, info.OutputTokens, cacheStr, formatTokPerSec(info), latency.String(), toolStr,
 	)
 }
 
@@ -2362,9 +2362,22 @@ func formatStopSummary(info loop.IterationInfo) string {
 
 	return fmt.Sprintf(
 		"⏹️ *Task Interrupted*\n\n"+
-			"%s · %d in / %d out · %s — tools: %s",
-		iters, info.InputTokens, info.OutputTokens, latency.String(), toolStr,
+			"%s · %d in / %d out%s · %s — tools: %s",
+		iters, info.InputTokens, info.OutputTokens, formatTokPerSec(info), latency.String(), toolStr,
 	)
+}
+
+// formatTokPerSec returns a compact speed suffix from last-call metrics.
+// Prefers generation (decode) rate when the stream measured TTFT separately.
+func formatTokPerSec(info loop.IterationInfo) string {
+	tps := info.GenerationTokensPerSecond
+	if tps <= 0 {
+		tps = info.TokensPerSecond
+	}
+	if tps <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(" · %.1f tok/s", tps)
 }
 
 // reportError sends an error message to the given chat and logs to stderr.

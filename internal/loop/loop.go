@@ -260,21 +260,28 @@ type ToolEventHandler func(event string, name string, data string)
 // IterationInfo holds data about a single agent loop iteration, passed to
 // the IterationCallback after each turn. Used for progress reporting.
 type IterationInfo struct {
-	Turn                int           // current iteration (1-indexed)
-	MaxTurns            int           // max iterations configured
-	ToolNames           []string      // tools called this turn (duplicates possible)
-	InputTokens         int           // cumulative input tokens
-	OutputTokens        int           // cumulative output tokens
-	CacheCreationTokens int           // cumulative cache creation tokens
-	CacheReadTokens     int           // cumulative cache read tokens
-	CachedTokens        int           // cumulative cached tokens (OpenAI)
-	CacheReported       bool          // provider returned cache metrics at least once
-	WindowTokens        int           // parent conversation window: last parent call's provider-normalized prompt size (input + cache-read + cache-creation)
-	MaxContextTokens    int           // resolved model context limit (0 = unknown)
-	TotalLatency        time.Duration // cumulative wall time
-	HasFinalAnswer      bool          // true when the agent reached a final answer
-	ReasoningContent    string        // LLM reasoning before tool calls (empty if none)
-	IsPreTool           bool          // true when fired BEFORE tool execution (shows reasoning + tools)
+	Turn                      int           // current iteration (1-indexed)
+	MaxTurns                  int           // max iterations configured
+	ToolNames                 []string      // tools called this turn (duplicates possible)
+	InputTokens               int           // cumulative input tokens
+	OutputTokens              int           // cumulative output tokens
+	CacheCreationTokens       int           // cumulative cache creation tokens
+	CacheReadTokens           int           // cumulative cache read tokens
+	CachedTokens              int           // cumulative cached tokens (OpenAI)
+	CacheReported             bool          // provider returned cache metrics at least once
+	WindowTokens              int           // parent conversation window: last parent call's provider-normalized prompt size (input + cache-read + cache-creation)
+	MaxContextTokens          int           // resolved model context limit (0 = unknown)
+	TotalLatency              time.Duration // cumulative wall time
+	CallDurationMs            int64         // wall time of this iteration's main LLM call
+	TTFTMs                    int64         // start → first streamed delta; 0 = unknown (buffered / no deltas)
+	GenerationMs              int64         // first delta → call end; 0 = unknown
+	CallInputTokens           int           // this call's prompt tokens (not cumulative)
+	CallOutputTokens          int           // this call's completion tokens (not cumulative)
+	TokensPerSecond           float64       // call output / call duration; 0 = omitted
+	GenerationTokensPerSecond float64       // call output / generation_ms; 0 = omitted
+	HasFinalAnswer            bool          // true when the agent reached a final answer
+	ReasoningContent          string        // LLM reasoning before tool calls (empty if none)
+	IsPreTool                 bool          // true when fired BEFORE tool execution (shows reasoning + tools)
 }
 
 // DeltaHandler receives streamed LLM output fragments when streaming is
@@ -470,6 +477,15 @@ type Engine struct {
 	TotalInputTokens  int
 	TotalOutputTokens int
 
+	// lastCall is the most recent main think-step LLM call's timing and
+	// per-call token counts. Side calls never write it. Reset per run.
+	lastCall CallMetrics
+	// TotalLLMDurationMs sums main think-step call durations this run
+	// (side calls excluded). TotalThinkOutputTokens is the matching
+	// output-token sum used for run-level tokens_per_second.
+	TotalLLMDurationMs     int64
+	TotalThinkOutputTokens int
+
 	// externalChargeMu serializes ChargeExternalUsage: parallel delegate_tasks
 	// goroutines charge child spend concurrently (the loop goroutine is
 	// blocked during the batch, so tool-vs-tool is the only race).
@@ -663,17 +679,38 @@ func (e *Engine) callLLM(ctx context.Context, messages []session.Message, tools 
 	}
 
 	e.streamedThisCall = false
-	if !e.stream || e.deltaHandler == nil {
-		return e.client.Call(callCtx, messages, tools)
+	start := time.Now()
+	stamp := func(res *llmclient.CallResult, firstDelta time.Time) {
+		if res == nil {
+			return
+		}
+		end := time.Now()
+		res.DurationMs = elapsedMs(start, end)
+		if !firstDelta.IsZero() {
+			res.TTFTMs = elapsedMs(start, firstDelta)
+			res.GenerationMs = elapsedMs(firstDelta, end)
+		}
 	}
 
-	return e.client.CallStream(callCtx, messages, tools, func(d llmclient.Delta) error {
+	if !e.stream || e.deltaHandler == nil {
+		res, err := e.client.Call(callCtx, messages, tools)
+		stamp(res, time.Time{})
+		return res, err
+	}
+
+	var firstDelta time.Time
+	res, err := e.client.CallStream(callCtx, messages, tools, func(d llmclient.Delta) error {
 		if d.Kind == llmclient.DeltaToolArgs {
 			return nil
+		}
+		if firstDelta.IsZero() {
+			firstDelta = time.Now()
 		}
 		e.streamedThisCall = true
 		return e.deltaHandler(d)
 	})
+	stamp(res, firstDelta)
+	return res, err
 }
 
 // SetEventHandler sets the optional structured runtime event sink
@@ -2237,6 +2274,9 @@ func (e *Engine) Run(ctx context.Context, task string) (string, error) {
 	e.TotalCacheReadTokens = 0
 	e.TotalCachedTokens = 0
 	e.TotalCacheReported = false
+	e.lastCall = CallMetrics{}
+	e.TotalLLMDurationMs = 0
+	e.TotalThinkOutputTokens = 0
 	messages := []session.Message{
 		{Role: "user", Content: task},
 	}
@@ -2364,6 +2404,9 @@ func (e *Engine) RunWithMessages(ctx context.Context, messages []session.Message
 	e.TotalCacheReadTokens = 0
 	e.TotalCachedTokens = 0
 	e.TotalCacheReported = false
+	e.lastCall = CallMetrics{}
+	e.TotalLLMDurationMs = 0
+	e.TotalThinkOutputTokens = 0
 	return e.runLoop(ctx, messages)
 }
 
@@ -2689,9 +2732,6 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			return e.budgetExceeded(ctx, messages, berr, i+1)
 		}
 
-		// THINK (timed)
-		start := time.Now()
-
 		// Re-check the budget after all context injections (memory block,
 		// skills, episodes, extended memory) — those are added after the
 		// top-of-loop trim and can push an already-near-budget request over
@@ -2699,7 +2739,6 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		messages = e.trimContext(ctx, messages, tools)
 
 		result, err := e.callLLM(ctx, messages, tools)
-		latency := time.Since(start)
 		if err != nil {
 			// Context-length-exceeded errors: don't die — try aggressive
 			// trimming and retry once. The trimContext at the top of the
@@ -2753,6 +2792,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		if e.renderer != nil {
 			e.renderer.SetStreamedOutput(e.streamedThisCall)
 			if e.interactionMode != "off" {
+				latency := time.Duration(result.DurationMs) * time.Millisecond
 				e.renderer.Iteration(i+1, e.maxIter, latency, result.InputTokens, result.OutputTokens, 0)
 			}
 		}
@@ -2760,6 +2800,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		// Accumulate token usage across iterations
 		e.TotalInputTokens += result.InputTokens
 		e.TotalOutputTokens += result.OutputTokens
+		e.recordThinkCall(result)
 
 		// Feed the margin calibration in trimContext: provider-reported input
 		// tokens are ground truth for how accurate the local estimate is.
@@ -2844,7 +2885,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			// can display the model's reasoning for the final turn — previously
 			// it was omitted, causing thinking to be silently dropped.
 			if e.iterationCallback != nil {
-				e.iterationCallback(IterationInfo{
+				e.iterationCallback(e.withCallMetrics(IterationInfo{
 					Turn:                i + 1,
 					MaxTurns:            e.maxIter,
 					ToolNames:           nil,
@@ -2859,7 +2900,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 					TotalLatency:        time.Since(startTime),
 					HasFinalAnswer:      true,
 					ReasoningContent:    result.ReasoningContent,
-				})
+				}))
 			}
 			// Append final assistant message so callers (e.g. WebUI) get
 			// the final text in the messages slice and can stream it.
@@ -2868,15 +2909,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 				Content:          result.Content,
 				ReasoningContent: result.ReasoningContent,
 			})
-			e.emitEvent(events.Event{
-				Type:      events.TypeIterationCompleted,
-				Iteration: i + 1,
-				Data: map[string]any{
-					"input_tokens":  e.TotalInputTokens,
-					"output_tokens": e.TotalOutputTokens,
-					"tools_called":  0,
-				},
-			})
+			e.emitIterationCompleted(i+1, 0)
 			e.emitMessagesPersist(messages)
 			return result.Content, messages, nil
 		}
@@ -2948,7 +2981,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		// Fire iteration callback BEFORE tool execution so UIs can show
 		// the LLM's reasoning and which tools are about to run.
 		if e.iterationCallback != nil {
-			e.iterationCallback(IterationInfo{
+			e.iterationCallback(e.withCallMetrics(IterationInfo{
 				Turn:                i + 1,
 				MaxTurns:            e.maxIter,
 				ToolNames:           toolNames,
@@ -2964,7 +2997,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 				HasFinalAnswer:      false,
 				ReasoningContent:    result.ReasoningContent,
 				IsPreTool:           true,
-			})
+			}))
 		}
 
 		// iterNum is the 1-based iteration number for events emitted below —
@@ -3473,19 +3506,11 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 		// messages are appended — an interrupted run can resume from here.
 		e.emitMessagesPersist(messages)
 
-		e.emitEvent(events.Event{
-			Type:      events.TypeIterationCompleted,
-			Iteration: i + 1,
-			Data: map[string]any{
-				"input_tokens":  e.TotalInputTokens,
-				"output_tokens": e.TotalOutputTokens,
-				"tools_called":  execN,
-			},
-		})
+		e.emitIterationCompleted(i+1, execN)
 
 		// Fire iteration callback with tool call results
 		if e.iterationCallback != nil {
-			e.iterationCallback(IterationInfo{
+			e.iterationCallback(e.withCallMetrics(IterationInfo{
 				Turn:                i + 1,
 				MaxTurns:            e.maxIter,
 				ToolNames:           toolNames,
@@ -3499,7 +3524,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 				MaxContextTokens:    e.maxContext,
 				TotalLatency:        time.Since(startTime),
 				HasFinalAnswer:      false,
-			})
+			}))
 		}
 
 		// Runtime cap after the act phase: tools that ignore context can
@@ -3545,7 +3570,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			)
 		}
 		if e.iterationCallback != nil {
-			e.iterationCallback(IterationInfo{
+			e.iterationCallback(e.withCallMetrics(IterationInfo{
 				Turn:                e.maxIter,
 				MaxTurns:            e.maxIter,
 				ToolNames:           nil,
@@ -3559,7 +3584,7 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 				MaxContextTokens:    e.maxContext,
 				TotalLatency:        time.Since(startTime),
 				HasFinalAnswer:      true,
-			})
+			}))
 		}
 		messages = append(messages, session.Message{
 			Role:    "assistant",

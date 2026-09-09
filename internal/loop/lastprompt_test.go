@@ -82,9 +82,15 @@ func TestEngine_LastPromptTokens_ParentOnly(t *testing.T) {
 	}
 
 	// Charge-back isolation: child spend feeds billing totals only.
+	before := engine.LastCallMetrics()
+	thinkOut := engine.TotalThinkOutputTokens
 	engine.ChargeExternalUsage(9000)
 	if got := engine.LastPromptTokens(); got != 200 {
 		t.Errorf("LastPromptTokens after ChargeExternalUsage = %d, want 200 (window must ignore child spend)", got)
+	}
+	if engine.LastCallMetrics() != before || engine.TotalThinkOutputTokens != thinkOut {
+		t.Errorf("ChargeExternalUsage must not write think-step metrics: last=%+v thinkOut=%d",
+			engine.LastCallMetrics(), engine.TotalThinkOutputTokens)
 	}
 	if engine.TotalInputTokens != 9300 {
 		t.Errorf("TotalInputTokens after charge-back = %d, want 9300 (billing keeps child spend)", engine.TotalInputTokens)

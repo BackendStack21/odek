@@ -311,6 +311,12 @@ type CallResult struct {
 	CachedTokens        int
 	CacheReported       bool
 	FinishReason        string
+	// DurationMs is wall time of this call, stamped by the engine's think
+	// path. TTFTMs / GenerationMs are streaming-only (0 on the buffered
+	// path or when no non-tool-args delta arrived).
+	DurationMs   int64
+	TTFTMs       int64
+	GenerationMs int64
 }
 
 // Call runs a buffered completion.
