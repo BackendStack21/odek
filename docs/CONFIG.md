@@ -1290,7 +1290,7 @@ Why each key is pinned:
 
 Deliberately **not** set, because the defaults are the recommendation:
 
-- `sandbox` — on by default for `run`/`continue`/`repl`/`serve`; never turn it off on a host that runs untrusted code.
+- `sandbox` — on by default for `run`/`repl`/`serve`; `continue` pins the session bit; never turn it off on a host that runs untrusted code.
 - `memory.extract_facts: false` and `memory.auto_approve_episodes: false` — the secure defaults; flip only with the trade-offs understood (see [`extract_facts`](#extract_facts--automatic-fact-learning-opt-in-off-by-default)).
 - `dangerous` — the built-in class defaults (destructive/blocked/unknown denied, writes and egress prompted) are the right posture; tighten per-project with an `allowlist`/`denylist` only when needed.
 - `web_search.base_url` — empty hides the tool; set it only if you run a SearXNG instance.

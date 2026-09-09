@@ -29,7 +29,7 @@ odek memory extended pending         # List atoms pending review
 odek memory extended confirm <id>    # Approve a pending-review atom
 odek memory extended forget <id>     # Delete an atom
 
-# Sandbox (ON by default for run/continue/repl/serve — see Sandbox section)
+# Sandbox (ON by default for run/repl/serve; continue pins — see Sandbox section)
 odek run --sandbox "build safely"     # Explicit: hard-fails if Docker is unavailable
 odek run --no-sandbox "quick task"    # Explicit opt-out
 odek serve --sandbox --sandbox-readonly --sandbox-network none
@@ -261,7 +261,7 @@ delegate_tasks tasks=[{goal: "task A", context: "..."}, {goal: "task B"}]
 
 ## Sandbox
 
-**On by default** for `odek run` / `odek continue` / `odek repl` — the container is the control for "agent ran attacker-controlled code", so isolation is what you get unless you deliberately give it up.
+**On by default** for `odek run` / `odek repl` / `odek serve` — the container is the control for "agent ran attacker-controlled code", so isolation is what you get unless you deliberately give it up.
 
 ```bash
 odek run "install deps"                        # default-on: sandboxed when Docker is up

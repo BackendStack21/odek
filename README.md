@@ -8,7 +8,7 @@ One binary. One loop. Zero frameworks. ReAct (Reasoning + Acting) — think, the
 # Install from a v2 release tag (requires Go ≥ 1.25.13 — see GETTING_STARTED.md).
 # Do not use @latest: Go ignores v2 tags on this module path and would
 # install an older v1 release.
-go install github.com/BackendStack21/odek/cmd/odek@v2.11.1
+go install github.com/BackendStack21/odek/cmd/odek@v2.11.2
 
 # Use (provider env key — DEEPSEEK_API_KEY for the default provider)
 export DEEPSEEK_API_KEY=sk-...

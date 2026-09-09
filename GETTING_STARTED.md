@@ -147,8 +147,9 @@ settings belong in the global config.
 ## 4. Sandbox (Docker, optional)
 
 Tool execution runs inside an isolated Docker container **by default** for
-`odek run`, `odek continue`, `odek repl`, and `odek serve`. If you don't have
-Docker installed, opt out explicitly:
+`odek run`, `odek repl`, and `odek serve`. `odek continue` pins the session's
+stored sandbox bit rather than applying a new default. If you don't have
+Docker installed, opt out explicitly on `run`/`repl`/`serve`:
 
 ```bash
 export ODEK_NO_SANDBOX=1     # add to ~/.zshrc / ~/.bashrc

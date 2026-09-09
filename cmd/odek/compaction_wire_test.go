@@ -16,7 +16,15 @@ func TestLongLivedAgents_CopyResolvedCompaction(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
-		if !strings.Contains(string(b), "Compaction:") || !strings.Contains(string(b), "resolved.Compaction") {
+		found := false
+		for _, line := range strings.Split(string(b), "\n") {
+			s := strings.TrimSpace(line)
+			if strings.HasPrefix(s, "Compaction:") && strings.Contains(s, "resolved.Compaction") {
+				found = true
+				break
+			}
+		}
+		if !found {
 			t.Errorf("%s must copy resolved.Compaction onto odek.Config", name)
 		}
 	}
