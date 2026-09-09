@@ -526,7 +526,7 @@ handler's defers tear down the agent and sandbox cleanly.
 ### `GET /api/config`
 
 Sanitized resolved-config view: provider id (not the `providers` map), model, sandbox knobs, stream/compaction/
-caching flags (`compaction` reports the resolved config bit; serve agents currently leave rolling compaction off — see Flags), parent `announce_budget`, `thinking` as `""` / `disabled` / `low` / `medium` / `high` (not a boolean), iteration/parallelism limits, memory/skills/tool-filter
+caching flags, parent `announce_budget`, `thinking` as `""` / `disabled` / `low` / `medium` / `high` (not a boolean), iteration/parallelism limits, memory/skills/tool-filter
 summaries, maintenance retention, dangerous default action, guard scan
 toggles, sub-agent budgets (`subagent`), background-command settings
 (`background`), and execution budgets with effective token prices
@@ -575,7 +575,7 @@ listings return pinned sessions first, and both list and detail carry
 | `--no-stream` | — | Disable live streaming (bulk `token` events only) |
 | `--prompt-caching` | on | Enable prompt-caching markers |
 | `--no-prompt-caching` | — | Disable prompt caching |
-| `--compaction` | on (parsed) | Parsed into resolved config and shown on `GET /api/config`. Serve agents currently do **not** copy this onto `odek.Config`, so rolling compaction stays at the library default (`false`). CLI `run` / `continue` / `repl` honor the flag. |
+| `--compaction` / `--no-compaction` | on | Rolling compaction (dropped-turn digest). Copied onto serve agents from resolved config. |
 | `--announce-budget` / `--no-announce-budget` | on | Parent 50/75/90% budget-awareness hints |
 | `--planning` / `--no-planning` | on | Register the built-in `plan` tool |
 | `--help`, `-h` | — | Show usage |

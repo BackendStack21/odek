@@ -215,10 +215,10 @@ The handler uses `sync.Map` for `TelegramApprover` instances, keyed by `chatID`.
 
 Each approval prompt shows the full command and risk class. The **Trust Session**
 shortcut is hidden for the highest-impact classes (`destructive`, `blocked`,
-`unknown`, and the synthetic `tool_batch` class) so they must be approved
-per-call. After three approvals of the same class within 60 seconds, friction
-mode hides the Trust Session shortcut and adds a warning, breaking reflexive
-tap-through.
+`unknown`, `persistence`, `unread_exec`, and the synthetic `tool_batch` class)
+so they must be approved per-call. After three approvals of the same class
+within 60 seconds, friction mode hides the Trust Session shortcut and adds a
+warning, breaking reflexive tap-through.
 
 ### Outbound Media
 
