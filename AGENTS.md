@@ -178,7 +178,7 @@ go test -race ./... -count=1
 ODEK_E2E=true go test -v -count=1 ./cmd/odek/ -run "TestE2E_"
 
 # MCP E2E tests (builds fakeserver from source at test time)
-ODEK_E2E=true go test -v -count=1 ./cmd/odek/ -run "TestMCPE2E_"
+ODEK_E2E=true go test -v -count=1 ./cmd/odek/ -run "TestMCPClientE2E_"
 
 # Sandbox integration tests (requires Docker)
 go test -v -count=1 ./cmd/odek/ -run "TestSandbox"

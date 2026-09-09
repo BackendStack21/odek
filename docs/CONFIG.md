@@ -174,7 +174,6 @@ Most config knobs have a `ODEK_*` counterpart:
 | `ODEK_APPROVE_PROJECT_SANDBOX` | — | bool | approve project-level `./odek.json` sandbox config and implicit `Dockerfile.odek` builds without prompting |
 | `ODEK_SANDBOX_BUILD_NETWORK` | — | bool | allow networked `Dockerfile.odek` builds (default: builds run with `--network=none`) |
 | `ODEK_MAX_CONCURRENCY` | `max_concurrency` | int |
-| `ODEK_MAX_TOOL_PARALLEL` | `max_tool_parallel` | int |
 | `ODEK_TRUSTED_PROXIES` | `trusted_proxies` | string (comma-separated IPs/CIDRs) |
 | `ODEK_MEMORY_EXTENDED_ENABLED` | `--memory-extended-enabled` | bool |
 | `ODEK_MEMORY_EXTENDED_MAX_SIZE_MB` | `--memory-extended-max-size-mb` | int |
@@ -290,7 +289,7 @@ When a model emits multiple tool calls in one response (`tool_calls` array with 
 
 | Field | Default | Env var | Description |
 |-------|---------|---------|-------------|
-| `max_tool_parallel` | `4` | `ODEK_MAX_TOOL_PARALLEL` | Max concurrent tool calls per iteration. 0 = default 4. Set to 1 for sequential execution. |
+| `max_tool_parallel` | `4` | — | Max concurrent tool calls per iteration. 0 = default 4. Set to 1 for sequential execution. |
 
 I/O-bound tools (read_file, search_files, shell) benefit most — latency drops from `sum(latencies)` to `max(latency)`.
 
@@ -1283,7 +1282,6 @@ DEEPSEEK_API_KEY=sk-...
 Why each key is pinned:
 
 - **`provider` + `model`** — the connection identity. The key comes from the provider env (`DEEPSEEK_API_KEY` for the default) or `providers.<id>.api_key`. A custom URL belongs under `providers.<id>.base_url`, not a top-level `base_url`.
-- **`stream: true`** — reasoning and answers render live in the terminal and Web UI. Purely preference; remove for minimal output.
 - **`interaction_mode: "engaging"`** — the default, pinned so a future odek default change cannot silently alter your output.
 - **`limits`** — a runaway agent stops at the wall-clock, tool-call, token, and spend ceilings instead of your invoice. Cost enforcement activates only because both per-million prices are set; add `model_prices` entries keyed by exact model ID when you use several models.
 - **`maintenance.enabled`** — sessions, audit records, and logs get retention-swept automatically.

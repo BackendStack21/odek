@@ -584,7 +584,7 @@ Plus the shared sandbox flags (`--sandbox`, `--no-sandbox`, `--sandbox-image`, �
 
 ## WebSocket Protocol
 
-The UI communicates entirely over a single WebSocket at `/ws`. Messages are newline-delimited JSON. The protocol is a simplex prompt → stream → done flow: the client sends one prompt, and the server streams back events until done.
+The UI communicates entirely over a single WebSocket at `/ws`. Messages are newline-delimited JSON. The server streams events for a prompt until `done`, and the client may send control frames on the same socket (`cancel`, `subagent_cancel`, `ping`, `approval_response`, `session_switch` — see [Client → Server](#client--server)).
 
 ### Client → Server
 

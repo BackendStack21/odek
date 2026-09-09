@@ -57,7 +57,7 @@ See [PROVIDERS.md](PROVIDERS.md) and the [SDK provider table](https://github.com
 | `--provider` / `ODEK_PROVIDER` | New. Default `deepseek`. |
 | `--model` / `ODEK_MODEL` | Unchanged. |
 | `--base-url` / `ODEK_BASE_URL` | Override for the **selected** provider only. |
-| `--api-key` / `ODEK_API_KEY` | Override for the **selected** provider only. |
+| `ODEK_API_KEY` | Override for the **selected** provider only. |
 
 DeepSeek-only leftover: when `provider` is `deepseek`, `ODEK_API_KEY` → `DEEPSEEK_API_KEY` → `OPENAI_API_KEY`. That hop does **not** apply to `--provider openai`.
 

@@ -31,7 +31,7 @@ Unsandboxed runs print a one-time stderr warning that the agent has full host ac
 
 - No filesystem access beyond the working directory (mounted read-only when configured).
 - `write_file`, `patch`, and `batch_patch` do not touch the host filesystem when `--sandbox` is active; they translate the host path to `/workspace/...` and copy content into the running container with `docker cp`. This makes `--sandbox-readonly` enforceable for the agent's own file tools, not only for commands run through `shell`.
-- Extra bind volumes supplied with `--sandbox-volume` are confined to the working directory: the host path must resolve to a location under the working directory, cannot contain `..` or symlink escapes, and cannot match sensitive prefixes such as `/`, `/boot`, `/etc`, `/proc`, `/sys`, `/dev`, `/root`, `/home`, `/var`, `/run`, or `/var/run/docker.sock` (a forbidden volume is dropped with a warning).
+- Extra bind volumes supplied with the `sandbox_volumes` config key are confined to the working directory: the host path must resolve to a location under the working directory, cannot contain `..` or symlink escapes, and cannot match sensitive prefixes such as `/`, `/boot`, `/etc`, `/proc`, `/sys`, `/dev`, `/root`, `/home`, `/var`, `/run`, or `/var/run/docker.sock` (a forbidden volume is dropped with a warning).
 - No network by default. `sandbox_network` defaults to `none`; `host` is coerced back to `none` with a warning, and `bridge` is available only as an explicit choice.
 - Zero kernel capabilities even as root inside the container.
 - No privilege escalation: `--security-opt no-new-privileges` blocks setuid/setgid, and `/tmp` is a `noexec` tmpfs.

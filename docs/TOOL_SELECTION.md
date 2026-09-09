@@ -231,7 +231,7 @@ Unknown names are silently ignored, so typos do not crash startup.
 
 There is only one session-related tool: `session_search`. Session
 management (save, list, delete, trim, continue) is handled by the `odek
-session` command and by flags such as `--session` and `--continue`, not by
+session` and `odek continue` commands and by the `--session` flag, not by
 tools exposed to the LLM.
 
 ## Mode-specific required tools

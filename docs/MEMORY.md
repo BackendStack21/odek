@@ -148,22 +148,21 @@ When `facts/user.md` and `facts/env.md` are empty (fresh install), `Fit()` produ
 
 ## Subagent Memory
 
-Subagents (separate OS processes via `odek subagent`) inherit a **read-only snapshot** of facts:
+Subagents are separate OS processes (`odek subagent`, spawned by `delegate_tasks`) that receive
+the resolved `memory` config. They read the same on-disk store (`~/.odek/memory`), so the memory
+block in their system prompt carries the current facts — there is no snapshot file or flag:
 
 ```
-odek subagent --memory-snapshot /tmp/kode-mem-<rand>.json
-```
-
-The subagent's system prompt includes:
-```
-# Memory Context (read-only)
+═══ MEMORY [N% — X/Y chars] ═══
 ── User Profile ──
 ... (facts/user.md)
 ── Environment ──
 ... (facts/env.md)
 ```
 
-Subagents do NOT get a `memory` tool — they cannot modify parent memory.
+The `memory` tool is registered for subagents under the same `tools` filter as any other agent,
+so they can write facts. Add `memory` to `tools.disabled` to withhold it from every agent,
+subagents included.
 
 ## Config
 
@@ -249,7 +248,7 @@ Every memory lifecycle moment emits a `memory.MemoryEvent` so operators can see
 activity that was previously silent. Events fan out (via `MultiMemoryNotifier`)
 to whichever surfaces are wired:
 
-- **Terminal** — shown in verbose interaction mode (`--interaction verbose`),
+- **Terminal** — shown in verbose interaction mode (`--interaction-mode verbose`),
   e.g. `🧠 memory[user] added: ...`, `🧠 consolidated memory[env] (5 → 2 entries)`.
 - **Web UI** — streamed over the WebSocket as `memory_event` and surfaced as toasts.
 - **Telegram** — posted in the chat when the bot runs verbose.

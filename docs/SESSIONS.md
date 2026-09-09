@@ -103,8 +103,13 @@ From inside the Telegram bot, session recall is seamless: the current user messa
 
 ## Programmatic API
 
+> **In-module only.** The snippet below imports `internal/session`, which Go only allows
+> inside this module. External programs should use `agent.Run` and the other public-type
+> methods; `RunWithMessages` and the session store are in-module APIs. For external session
+> handling, use `odek run` / `odek continue` or the REST API ([API.md](API.md)).
+
 ```go
-import "github.com/BackendStack21/odek/internal/session"
+import "github.com/BackendStack21/odek/internal/session" // in-module only
 
 agent, err := odek.New(odek.Config{...})
 
