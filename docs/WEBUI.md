@@ -714,6 +714,11 @@ the provider sent no output tokens or the call was shorter than 50ms).
 Do **not** divide cumulative `outputTokens` by call duration. That total
 grows every iteration; the per-call counts are the `call*` fields.
 
+`usage` is also sent when the provider omitted prompt size but the think
+step was timed (so live tok/s still arrives). In that case `windowTokens`
+is **absent**, not `0`. Clients must treat a missing window as "hold the
+last gauge" — the bundled UI already does.
+
 | Field | Frame | Meaning |
 |-------|-------|---------|
 | `callDurationMs` | `usage`, `done` | Wall time of the last main think-step LLM call |

@@ -652,7 +652,7 @@ if m.GenerationTokensPerSecond > 0 {
 }
 ```
 
-`LastCallMetrics` is the last **main think-step** LLM call only (not tools, not side calls). `TokensPerSecond` is end-to-end (`call output / call wall time`); `GenerationTokensPerSecond` is streaming-only (`call output / time after first delta`) and is omitted on the buffered path. Cumulative `TotalOutputTokens` must not be divided by `TotalLLMDurationMs` if you also charged sub-agent or side-call tokens — use `LastCallMetrics` for a single call, or the `tokens_per_second` field on `run_completed` events for think-step output over summed think-step duration.
+`LastCallMetrics` is the last **main think-step** LLM call only (not tools, not side calls). `TokensPerSecond` is end-to-end (`call output / call wall time`); `GenerationTokensPerSecond` is streaming-only (`call output / time after first delta`) and is omitted on the buffered path. Cumulative `TotalOutputTokens` must not be divided by `TotalLLMDurationMs` if you also charged sub-agent or side-call tokens — use `LastCallMetrics` for a single call, or the `tokens_per_second` field on `run_completed` / `run_failed` events for think-step output over summed think-step duration.
 
 Token counts reset on each `Run` / `RunWithMessages` call. For session-level tracking, accumulate across turns:
 

@@ -1197,6 +1197,11 @@ func TestFormatTelegramStats_TokPerSec(t *testing.T) {
 	if !strings.Contains(out, "9.6 tok/s") {
 		t.Errorf("missing end-to-end tok/s fallback: %s", out)
 	}
+	info.TokensPerSecond = 0
+	out = formatTelegramStats(info, nil)
+	if strings.Contains(out, "tok/s") {
+		t.Errorf("tok/s must be omitted when both rates are unknown: %s", out)
+	}
 }
 
 // TestFormatTelegramStats_SingularTurn verifies singular/plural turn handling.

@@ -2,6 +2,7 @@ package loop
 
 import (
 	"math"
+	"time"
 
 	"github.com/BackendStack21/odek/internal/events"
 	"github.com/BackendStack21/odek/internal/llmclient"
@@ -24,6 +25,20 @@ type CallMetrics struct {
 	OutputTokens              int
 	TokensPerSecond           float64
 	GenerationTokensPerSecond float64
+}
+
+// elapsedMs is the wall time from start to end in whole milliseconds.
+// A positive interval shorter than 1ms rounds up to 1 so a measured
+// instant is not stored as 0 (which Append* treats as "unknown").
+func elapsedMs(start, end time.Time) int64 {
+	d := end.Sub(start)
+	if d <= 0 {
+		return 0
+	}
+	if ms := d.Milliseconds(); ms > 0 {
+		return ms
+	}
+	return 1
 }
 
 // tokensPerSecond is output tokens divided by duration. Returns 0 when the
@@ -149,10 +164,13 @@ func (e *Engine) recordThinkCall(res *llmclient.CallResult) {
 		GenerationTokensPerSecond: tokensPerSecond(res.OutputTokens, res.GenerationMs),
 	}
 	e.lastCall = m
+	// Run-level rate is think-step tokens over think-step duration. A
+	// sub-millisecond call (DurationMs == 0) must not add tokens without
+	// duration — that inflates tokens_per_second on run_completed.
 	if res.DurationMs > 0 {
 		e.TotalLLMDurationMs += res.DurationMs
+		e.TotalThinkOutputTokens += res.OutputTokens
 	}
-	e.TotalThinkOutputTokens += res.OutputTokens
 }
 
 func (e *Engine) withCallMetrics(info IterationInfo) IterationInfo {
@@ -179,4 +197,18 @@ func (e *Engine) emitIterationCompleted(iteration, toolsCalled int) {
 		Iteration: iteration,
 		Data:      data,
 	})
+}
+
+// AppendRunLLMMetrics writes run-level think-step duration and throughput
+// onto an event data map (run_completed / run_failed). Zeros are omitted.
+func (e *Engine) AppendRunLLMMetrics(data map[string]any) {
+	if e == nil || data == nil {
+		return
+	}
+	if ms := e.TotalLLMDuration(); ms > 0 {
+		data["llm_duration_ms"] = ms
+	}
+	if tps := e.ThinkTokensPerSecond(); tps > 0 {
+		data["tokens_per_second"] = tps
+	}
 }

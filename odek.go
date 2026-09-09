@@ -862,12 +862,14 @@ func (a *Agent) emitRunFinished(start time.Time, err error) {
 	}
 	durationMs := time.Since(start).Milliseconds()
 	if err != nil {
+		data := map[string]any{
+			"duration_ms": durationMs,
+			"error_class": events.ErrorClass(err),
+		}
+		a.engine.AppendRunLLMMetrics(data)
 		a.emitter.Emit(events.Event{
 			Type: events.TypeRunFailed,
-			Data: map[string]any{
-				"duration_ms": durationMs,
-				"error_class": events.ErrorClass(err),
-			},
+			Data: data,
 		})
 		return
 	}
@@ -876,12 +878,7 @@ func (a *Agent) emitRunFinished(start time.Time, err error) {
 		"input_tokens":  a.engine.TotalInputTokens,
 		"output_tokens": a.engine.TotalOutputTokens,
 	}
-	if ms := a.engine.TotalLLMDuration(); ms > 0 {
-		data["llm_duration_ms"] = ms
-	}
-	if tps := a.engine.ThinkTokensPerSecond(); tps > 0 {
-		data["tokens_per_second"] = tps
-	}
+	a.engine.AppendRunLLMMetrics(data)
 	a.emitter.Emit(events.Event{
 		Type: events.TypeRunCompleted,
 		Data: data,

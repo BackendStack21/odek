@@ -685,10 +685,10 @@ func (e *Engine) callLLM(ctx context.Context, messages []session.Message, tools 
 			return
 		}
 		end := time.Now()
-		res.DurationMs = end.Sub(start).Milliseconds()
+		res.DurationMs = elapsedMs(start, end)
 		if !firstDelta.IsZero() {
-			res.TTFTMs = firstDelta.Sub(start).Milliseconds()
-			res.GenerationMs = end.Sub(firstDelta).Milliseconds()
+			res.TTFTMs = elapsedMs(start, firstDelta)
+			res.GenerationMs = elapsedMs(firstDelta, end)
 		}
 	}
 

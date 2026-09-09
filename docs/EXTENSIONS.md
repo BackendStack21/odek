@@ -190,7 +190,7 @@ Per-type `data` fields:
 | `context_trimmed` | `mode` (`proactive`/`survival`), `dropped_groups`, `truncated_results` |
 | `budget_exceeded` | `limit_name` (`runtime`/`tool_calls`/`input_tokens`/`output_tokens`/`cost_usd`), `observed`, `limit` |
 | `run_completed` | `duration_ms` (run wall clock, tools included), `input_tokens`, `output_tokens` (run totals), `llm_duration_ms` (sum of main think-step LLM calls), `tokens_per_second` (think-step output / `llm_duration_ms`; omitted when unknown) |
-| `run_failed` | `duration_ms`, `error_class` |
+| `run_failed` | `duration_ms`, `error_class`, plus the same `llm_duration_ms` / `tokens_per_second` as `run_completed` when at least one think step was measured before the failure |
 | `plan_created` | `steps` (total count), `version` |
 | `plan_updated` | `steps`, `done`, `in_progress`, `blocked`, `pending`, `version` |
 | `plan_blocked` | `steps`, `blocked`, `version` |

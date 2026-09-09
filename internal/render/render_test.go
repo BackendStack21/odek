@@ -435,6 +435,24 @@ func TestRenderer_Iteration_WithStats(t *testing.T) {
 	}
 }
 
+func TestRenderer_Iteration_OmitsTokPerSecUnderFloor(t *testing.T) {
+	var buf bytes.Buffer
+	r := New(&buf, true)
+
+	r.Iteration(1, 10, 49*time.Millisecond, 10, 20, 0)
+	out := buf.String()
+	if strings.Contains(out, "tok/s") {
+		t.Errorf("tok/s must be omitted under 50ms: %q", out)
+	}
+
+	buf.Reset()
+	r.Iteration(1, 10, 50*time.Millisecond, 10, 20, 0)
+	out = buf.String()
+	if !strings.Contains(out, "tok/s") {
+		t.Errorf("tok/s must appear at the 50ms floor: %q", out)
+	}
+}
+
 func TestRenderer_Iteration_StatsSuppressedWhenZero(t *testing.T) {
 	var buf bytes.Buffer
 	r := New(&buf, true).WithModel("test")

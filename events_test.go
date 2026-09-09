@@ -141,6 +141,9 @@ func TestAgent_Events_FullRunLifecycle(t *testing.T) {
 	if _, ok := completed.Data["duration_ms"]; !ok {
 		t.Error("run_completed missing duration_ms")
 	}
+	if _, ok := completed.Data["llm_duration_ms"]; !ok {
+		t.Error("run_completed missing llm_duration_ms (think steps were measured)")
+	}
 
 	// The loop-level events flow through the same pipeline.
 	seen := map[string]bool{}
@@ -184,6 +187,70 @@ func TestAgent_Events_RunFailed(t *testing.T) {
 	last := col.all()[len(types)-1]
 	if last.Data["error_class"] != "context_canceled" {
 		t.Errorf("run_failed error_class = %v, want context_canceled", last.Data["error_class"])
+	}
+	if _, ok := last.Data["llm_duration_ms"]; ok {
+		t.Errorf("cancelled-before-call run_failed must omit llm_duration_ms, got %v", last.Data["llm_duration_ms"])
+	}
+}
+
+func TestAgent_Events_RunFailed_IncludesThinkMetrics(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/models") {
+			fmt.Fprint(w, `{"data":[]}`)
+			return
+		}
+		callCount++
+		if callCount == 1 {
+			time.Sleep(60 * time.Millisecond)
+			fmt.Fprint(w, `{
+				"choices":[{"message":{
+					"content":"Working.",
+					"tool_calls":[{"id":"call_1","function":{"name":"echo","arguments":"{\"text\":\"hi\"}"}}]
+				}}],
+				"usage":{"prompt_tokens":10,"completion_tokens":8}
+			}`)
+			return
+		}
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	col := &eventList{}
+	agent, err := New(Config{
+		APIKey:        "sk-test",
+		BaseURL:       server.URL,
+		Model:         "test-model",
+		NoProjectFile: true,
+		Tools:         []Tool{echoTool{}},
+		EventHandler:  col.handle,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := agent.Run(context.Background(), "test task"); err == nil {
+		t.Fatal("expected error from LLM failure after a think step")
+	}
+	agent.Close()
+
+	types := col.types()
+	if len(types) == 0 || types[len(types)-1] != events.TypeRunFailed {
+		t.Fatalf("event types = %v, want last run_failed", types)
+	}
+	last := col.all()[len(types)-1]
+	ms, ok := last.Data["llm_duration_ms"].(int64)
+	if !ok {
+		t.Fatalf("run_failed missing llm_duration_ms: %v", last.Data)
+	}
+	if ms < 50 {
+		t.Errorf("llm_duration_ms = %d, want >= 50 (think step delayed 60ms)", ms)
+	}
+	if last.Data["tokens_per_second"] == nil {
+		t.Error("run_failed missing tokens_per_second after a timed think step with output tokens")
+	}
+	if agent.LastCallMetrics().OutputTokens != 8 {
+		t.Errorf("LastCallMetrics output = %d, want 8 from the successful think step", agent.LastCallMetrics().OutputTokens)
 	}
 }
 
