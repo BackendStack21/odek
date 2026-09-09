@@ -5,7 +5,7 @@
 import { S, setSessionToken, getSessionToken } from './state.js';
 import { getWsToken } from './net.js';
 import { dotEl, statusEl, sendBtn, skeletonEl, messagesEl, modelLabel, promptEl } from './dom.js';
-import { formatNum, formatErrorMessage, showToast, announce, showCancel } from './utils.js';
+import { formatErrorMessage, showToast, announce, showCancel } from './utils.js';
 import {
   streamToken, streamThinking, streamFlush, endThinking, endStream,
   addToolCall, addToolResult, addSubagentGroup, completeSubagents,
@@ -15,7 +15,7 @@ import { queueApproval, dismissApproval, clearApprovals, expireApproval } from '
 import { queueClarify, dismissClarify, clearClarify, expireClarify } from './clarify.js';
 import { loadSessions } from './sessions.js';
 import { onPong, onServerInfo, startHeartbeat, stopHeartbeat, notifyUser } from './health.js';
-import { metricsLiveContext, metricsDone, flashTrim, turnCostUSD, setMetricsModel } from './metrics.js';
+import { metricsLiveContext, metricsDone, metricsApplySpeed, metricsResetSpeed, flashTrim, turnStatsHTML, setMetricsModel } from './metrics.js';
 import { drainQueue } from './input.js';
 import { setIntent, openTurn, markWakeTurn, sealTurn, paintIntent } from './render.js';
 import { badgeNow } from './panels.js';
@@ -96,6 +96,7 @@ export function connect() {
       case 'turn_started':
         S.currentTurnId = event.turn_id || null;
         S.currentTurnInitiated = event.initiated || 'operator';
+        metricsResetSpeed();
         openTurn(event);
         if (event.initiated === 'system') markWakeTurn(event);
         // Wake/remote turns never go through sendPayload — arm busy so
@@ -216,6 +217,7 @@ export function connect() {
         // server-resolved model limit — beats the /api/models table.
         S.runIterations = (S.runIterations || 0) + 1;
         metricsLiveContext(event.windowTokens, event.maxContextTokens);
+        metricsApplySpeed(event);
         break;
 
       case 'pong':
@@ -264,24 +266,13 @@ export function connect() {
         announce('Turn complete');
         drainQueue();
         // Append per-message stats to the last assistant bubble
-        if (event.latency != null) {
+        const statsHTML = turnStatsHTML(event);
+        if (statsHTML) {
           const lastAssistant = messagesEl.querySelector('.msg.assistant:last-child .bubble');
           if (lastAssistant) {
             const stats = document.createElement('div');
             stats.className = 'msg-stats';
-            const lat = Number(event.latency);
-            const latSafe = isFinite(lat) ? lat : 0;
-            const spans = [];
-            spans.push('<span title="Response time">⚡ ' + (latSafe < 1 ? (latSafe * 1000).toFixed(0) + 'ms' : latSafe.toFixed(1) + 's') + '</span>');
-            if (event.inputTokens != null) spans.push('<span title="Input tokens (run total, incl. sub-agents)">⌂ ' + formatNum(event.inputTokens) + '</span>');
-            if (event.outputTokens != null) spans.push('<span title="Output tokens (completion)">↳ ' + formatNum(event.outputTokens) + '</span>');
-            const cache = (event.cacheReadTokens || 0) + (event.cacheCreationTokens || 0) + (event.cachedTokens || 0);
-            if (cache > 0) spans.push('<span title="Cached tokens">⛁ ' + formatNum(cache) + '</span>');
-            const turnCost = turnCostUSD(event.inputTokens || 0, event.outputTokens || 0);
-            if (turnCost != null && turnCost > 0) {
-              spans.push('<span title="Estimated cost of this turn at current prices">$ ' + turnCost.toFixed(4) + '</span>');
-            }
-            stats.innerHTML = spans.join('  ·  ');
+            stats.innerHTML = statsHTML;
             lastAssistant.appendChild(stats);
           }
         }

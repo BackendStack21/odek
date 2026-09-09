@@ -7,7 +7,7 @@ import { addSystemMessage } from './render.js';
 import { loadSessions, loadAndRenderSession } from './sessions.js';
 import { connect, wsSend } from './ws.js';
 import { togglePanels } from './panels.js';
-import { initMetrics, setMetricsModel, sessionCostUSD } from './metrics.js';
+import { initMetrics, setMetricsModel, sessionCostUSD, formatTokPerSec } from './metrics.js';
 import { setCommandHandlers, togglePalette, isPaletteOpen, copyLastReply, exportActiveSession, openTab } from './commands.js';
 import { retryLast } from './input.js';
 import { requestNotify, syncNotifyBtn, togglePopover } from './health.js';
@@ -269,13 +269,15 @@ function openNowFromChip() {
 });
 
 const costChip = document.getElementById('cost-chip');
-if (costChip) {
+const speedChip = document.getElementById('speed-chip');
+for (const chip of [costChip, speedChip]) {
+  if (!chip) continue;
   const openCost = (e) => {
     e.stopPropagation();
     togglePopover();
   };
-  costChip.addEventListener('click', openCost);
-  costChip.addEventListener('keydown', (e) => {
+  chip.addEventListener('click', openCost);
+  chip.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' && e.key !== ' ') return;
     e.preventDefault();
     openCost(e);
@@ -294,7 +296,8 @@ function showStats() {
     'stats · ctx ' + formatNum(m.ctxTokens || 0) +
     (m.maxContext ? '/' + formatNum(m.maxContext) : '') +
     ' · ⇥ ' + formatNum(m.sessIn || 0) + ' ↦ ' + formatNum(m.sessOut || 0) +
-    (cost != null ? ' · ◈ $' + cost.toFixed(4) : '')
+    (cost != null ? ' · ◈ $' + cost.toFixed(4) : '') +
+    (m.tokPerSec > 0 ? ' · ↗ ' + formatTokPerSec(m.tokPerSec) : '')
   );
 }
 

@@ -262,3 +262,41 @@ test('done without windowTokens holds the last gauge value — no zeroing', () =
   deliver({ type: 'done', latency: 0.5, inputTokens: 100, outputTokens: 10 });
   assert.equal(S.metrics.ctxTokens, 41000, 'absent windowTokens means "not reported" — gauge holds');
 });
+
+test('usage event with this-call rate updates the live tok/s chip', () => {
+  S.metrics.tokPerSec = 0;
+  deliver({ type: 'usage', windowTokens: 100, tokensPerSecond: 9.6 });
+  assert.equal(S.metrics.tokPerSec, 9.6);
+  assert.equal(S.metrics.tokPerSecKind, 'e2e');
+});
+
+test('usage prefers generationTokensPerSecond when both rates are present', () => {
+  deliver({ type: 'usage', generationTokensPerSecond: 25.2, tokensPerSecond: 9.6 });
+  assert.equal(S.metrics.tokPerSec, 25.2);
+  assert.equal(S.metrics.tokPerSecKind, 'generation');
+});
+
+test('usage without a rate holds the last tok/s', () => {
+  S.metrics.tokPerSec = 9.6;
+  S.metrics.tokPerSecKind = 'e2e';
+  deliver({ type: 'usage', windowTokens: 200, outputTokens: 10 });
+  assert.equal(S.metrics.tokPerSec, 9.6);
+});
+
+test('turn_started clears the previous turn tok/s chip', () => {
+  S.metrics.tokPerSec = 9.6;
+  S.metrics.tokPerSecKind = 'e2e';
+  deliver({ type: 'turn_started', turn_id: 't_speed' });
+  assert.equal(S.metrics.tokPerSec, 0);
+  assert.equal(S.metrics.tokPerSecKind, '');
+});
+
+test('done applies last-call tok/s from this-call fields', () => {
+  S.metrics.tokPerSec = 0;
+  deliver({
+    type: 'done', latency: 0.5,
+    windowTokens: 41000, tokensPerSecond: 9.6,
+    sessionContextTokens: 100, sessionOutputTokens: 20,
+  });
+  assert.equal(S.metrics.tokPerSec, 9.6);
+});

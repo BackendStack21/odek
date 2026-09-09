@@ -2533,11 +2533,11 @@ body.light .composer-bar { border-top-color: rgba(0, 0, 0, .06); }
   padding: 1px 8px;
 }
 .m-chip.hot { color: var(--red); border-color: var(--red); }
-#plan-chip, #jobs-chip, #cost-chip {
+#plan-chip, #jobs-chip, #cost-chip, #speed-chip {
   cursor: pointer;
   user-select: none;
 }
-#plan-chip[hidden], #jobs-chip[hidden], #cost-chip[hidden] { display: none; }
+#plan-chip[hidden], #jobs-chip[hidden], #cost-chip[hidden], #speed-chip[hidden] { display: none; }
 #sandbox-badge, #stream-badge {
   font-size: var(--fs-xs);
   letter-spacing: .04em;

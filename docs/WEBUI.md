@@ -702,22 +702,28 @@ generates them, and the bulk `token` / final-answer `thinking` re-sends are
 suppressed. Providers that reject SSE transparently fall back to the buffered
 path — no deltas fire and the bulk events return. See docs/STREAMING.md.
 
-### Generation speed (external clients)
+### Generation speed
 
 `usage` and `done` frames carry optional **this-call** generation-speed
-fields so bodek and other protocol-v2 clients can render tokens/second
-without a protocol bump. The bundled Web UI does not display these yet —
-they are on the wire for later UI work. All fields are additive and
-**omitted when unknown** (buffered calls have no TTFT; rates stay off when
-the provider sent no output tokens or the call was shorter than 50ms).
+fields. All fields are additive and **omitted when unknown** (buffered
+calls have no TTFT; rates stay off when the provider sent no output
+tokens or the call was shorter than 50ms).
+
+The bundled Web UI renders them in three places:
+
+- **Topbar chip** (`#speed-chip`) — live during the run from `usage`, last think-step rate after `done`. Prefers `generationTokensPerSecond` when present.
+- **Health popover** — the same rate under **speed**.
+- **Per-message stats** — on the assistant bubble after `done`.
 
 Do **not** divide cumulative `outputTokens` by call duration. That total
-grows every iteration; the per-call counts are the `call*` fields.
+grows every iteration; the per-call counts are the `call*` fields. The
+bundled client never does this.
 
 `usage` is also sent when the provider omitted prompt size but the think
 step was timed (so live tok/s still arrives). In that case `windowTokens`
 is **absent**, not `0`. Clients must treat a missing window as "hold the
-last gauge" — the bundled UI already does.
+last gauge" — the bundled UI already does. A missing rate is held the
+same way (not blanked mid-run); a new `turn_started` clears the chip.
 
 | Field | Frame | Meaning |
 |-------|-------|---------|
