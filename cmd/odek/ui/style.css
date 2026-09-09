@@ -332,13 +332,6 @@ button:disabled { cursor: not-allowed; }
   min-width: 34px;
   text-align: right;
 }
-/* History was trimmed — draw the eye to the gauge once. */
-.ctx-gauge.trim .ctx-bar { animation: ctx-flash 1.2s var(--ease) 2; }
-@keyframes ctx-flash {
-  0%, 100% { box-shadow: 0 0 0 0 transparent; }
-  50%      { box-shadow: 0 0 0 3px var(--amber-glow); }
-}
-
 .m-tok {
   font-size: var(--fs-xs);
   color: var(--text-3);

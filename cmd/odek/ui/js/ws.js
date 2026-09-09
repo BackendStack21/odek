@@ -15,7 +15,7 @@ import { queueApproval, dismissApproval, clearApprovals, expireApproval } from '
 import { queueClarify, dismissClarify, clearClarify, expireClarify } from './clarify.js';
 import { loadSessions } from './sessions.js';
 import { onPong, onServerInfo, startHeartbeat, stopHeartbeat, notifyUser } from './health.js';
-import { metricsLiveContext, metricsDone, metricsApplySpeed, metricsResetSpeed, flashTrim, turnStatsHTML, setMetricsModel } from './metrics.js';
+import { metricsLiveContext, metricsDone, metricsApplySpeed, metricsResetSpeed, turnStatsHTML, setMetricsModel } from './metrics.js';
 import { drainQueue } from './input.js';
 import { setIntent, openTurn, markWakeTurn, sealTurn, paintIntent } from './render.js';
 import { badgeNow } from './panels.js';
@@ -524,11 +524,6 @@ function kickJobsFetch() {
 
 function handleAgentSignal(event) {
   switch (event.event) {
-    case 'context_trimmed':
-      flashTrim();
-      showToast('✂️ Context trimmed (' + (event.detail || '') + '): ' +
-        (event.count || 0) + ' group(s) dropped');
-      break;
     case 'tool_recovery':
       showToast('🔁 Tool recovery: ' + (event.tool || ''));
       break;
