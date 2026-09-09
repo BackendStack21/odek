@@ -61,11 +61,11 @@ type bgRuntime struct {
 func backgroundSettingsFromResolved(resolved config.ResolvedConfig) BackgroundSettings {
 	b := resolved.Background
 	return BackgroundSettings{
-		Enabled:           b.Enabled,
-		MaxJobs:           b.MaxJobs,
-		MaxOutputBytes:    b.MaxOutputBytes,
-		MaxTimeoutSeconds: b.MaxTimeoutSeconds,
-		Notify:            b.Notify == "observe",
+		Enabled:             b.Enabled,
+		MaxJobs:             b.MaxJobs,
+		MaxOutputBytes:      b.MaxOutputBytes,
+		MaxTimeoutSeconds:   b.MaxTimeoutSeconds,
+		Notify:              b.Notify == "observe",
 		StripChildSecretEnv: resolved.Dangerous.StripSecretsEnvChildrenEnabled(),
 	}
 }

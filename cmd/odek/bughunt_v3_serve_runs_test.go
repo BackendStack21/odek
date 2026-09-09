@@ -7,9 +7,9 @@ import (
 
 func newTerminalTestRun() *serveRun {
 	r := &serveRun{
-		ID:       "run-terminal-guard",
-		Status:   "running",
-		pending:  map[string]*approvalRequest{},
+		ID:      "run-terminal-guard",
+		Status:  "running",
+		pending: map[string]*approvalRequest{},
 	}
 	r.cond = sync.NewCond(&r.mu)
 	return r
