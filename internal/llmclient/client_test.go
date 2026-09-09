@@ -78,8 +78,12 @@ func TestLastResortContext(t *testing.T) {
 		model string
 		want  int
 	}{
-		{"deepseek-v4-flash", 131_072},
+		{"deepseek-v4-flash", 1_000_000},
 		{"deepseek-v4-pro", 1_000_000},
+		{"deepseek-v4.1", 1_000_000},
+		{"deepseek-v4.1-flash-expires-on-0910", 1_000_000},
+		{"deepseek-chat", 131_072},
+		{"deepseek-reasoner", 131_072},
 		{"gpt-6-astra", 1_050_000},
 		{"gpt-6", 1_050_000},
 		{"gpt-5.6-luna", 1_050_000},
