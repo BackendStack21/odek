@@ -90,7 +90,7 @@ internal/
   render/                     Terminal output and narrator support
   narrate/                    LLM-powered emoji-rich progress messages
   redact/                     Secret redaction (20+ patterns)
-  mcp/                        MCP server handler (tools/list, tools/call, SSE streaming)
+  mcp/                        MCP server handler (stdio JSON-RPC: tools/list, tools/call)
   mcpclient/                  MCP client (connect to external MCP servers); per-server limits (timeout/response bytes/result
                               chars/artifact roots) + odek-extension/v1 contract (contract.go), artifact-ref enforcement in CallTool
   sandbox/                    Docker sandbox lifecycle

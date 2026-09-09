@@ -130,7 +130,7 @@ docs/                         Documentation
   SUBAGENTS.md                Task decomposition + sub-agents + delegate_tasks tool
   SECURITY.md                 Prompt injection, security model
   SANDBOXING.md               Sandbox configuration
-  MCP.md                      MCP server over stdio (Model Context Protocol)
+  MCP.md                      Two-way MCP: `odek mcp` server + `mcp_servers` client
   EXTENSIONS.md               odek-extension/v1: limits, artifacts, events, refs, budgets
   EXTENDED_MEMORY.md          Atom store, quarantine, consolidation, nudges
   MEMORY.md                   Facts, buffer, episodes, promotion

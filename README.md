@@ -78,7 +78,7 @@ Run agent tasks on a cron schedule and deliver results to Telegram, stdout, or a
 Attach files to any prompt with `--ctx` / `-c` (CLI), `@filename` inline references (CLI + REPL + Web UI), or drag-and-drop (Web UI). File content is injected as context blocks before the task — no tool calls needed. Comma-separate multiple files: `--ctx main.go,lib.go`. [docs/CLI.md#file-attachments](docs/CLI.md#file-attachments)
 
 ### 🔗 MCP (Two-Way)
-**Server** (`odek mcp`) — expose odek's native tools (shell, read/write/search files, patch, browser) to Claude Code, Cursor, and any MCP client. **Client** (`mcp_servers` config) — odek connects to external MCP servers (Playwright, Fetch, GitHub, SQLite, etc.) and makes their tools available to the agent as `<server>__<tool>`. Per-server limits (`timeout_seconds`, `max_response_bytes`, `max_result_chars`, `artifact_roots`) and validated `file://` artifact references keep large tool outputs out of the model context — see the versioned `odek-extension/v1` contract in [docs/EXTENSIONS.md](docs/EXTENSIONS.md). Both directions in one binary. [docs/MCP.md](docs/MCP.md)
+**Server** (`odek mcp`) — expose odek's built-in tools over stdio to Claude Code, Cursor, or any MCP client. **Client** (`mcp_servers` in `~/.odek/config.json` or `./odek.json`) — spawn external MCP servers and register their tools as `<server>__<tool>`. Per-server limits and fail-closed `file://` artifact refs: [odek-extension/v1](docs/EXTENSIONS.md). Both directions in one binary. [docs/MCP.md](docs/MCP.md)
 
 ### 🔍 Native Tools
 Built-in `read_file`, `write_file`, `search_files`, `patch`, `shell`, and `browser` tools. All gated by a unified security layer (`dangerous` config) — classify operations as `allow` / `deny` / `prompt` per risk class. No third-party dependencies. [docs/SECURITY.md](docs/SECURITY.md)
@@ -140,7 +140,7 @@ odek run "@README.md what does this project do?"
 | `odek serve [--addr <addr>]` | Start Web UI server (loopback by default; sandbox on by default, `--no-sandbox` to disable) |
 | `odek subagent --goal <string>` | Run a focused sub-task |
 | `odek init [--global]` | Create config file |
-| `odek mcp [--sandbox]` | Start MCP server — expose tools to Claude Code |
+| `odek mcp [--sandbox]` | Start MCP server (stdio); also loads `mcp_servers` |
 | `odek memory list` | List pending memory facts (aliases: `ls`, `pending`) |
 | `odek memory promote <session-id>` | Promote a session's pending facts to durable facts |
 | `odek memory extended <subcommand>` | Extended-memory atom management (`forget`, `promote`, `pin`, `quarantine`, `compact`, `stats`, `consolidate`, `nudges`, `pending`, `confirm`, `reject`) |
@@ -192,7 +192,7 @@ odek run "@README.md what does this project do?"
 | [Sub-Agents](docs/SUBAGENTS.md) | Task decomposition, delegation tool, subagent protocol, capability profiles |
 | [Web UI](docs/WEBUI.md) | `odek serve`, WebSocket protocol, `@` resource resolution |
 | [Skills](docs/CLI.md#skills) | Trigger-matched skills, import |
-| [MCP](docs/MCP.md) | Serve tools to Claude Code + connect to external MCP servers |
+| [MCP](docs/MCP.md) | `odek mcp` server + `mcp_servers` client |
 | [Extensions](docs/EXTENSIONS.md) | `odek-extension/v1` contract: MCP limits, artifact refs, event stream, external refs, budgets |
 | [Maintenance](docs/MAINTENANCE.md) | Storage janitor: retention, log rotation, `odek cleanup` |
 | [Extended Memory](docs/EXTENDED_MEMORY.md) | Atomic long-term memory layer (opt-in) |

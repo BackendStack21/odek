@@ -844,8 +844,9 @@ Rules:
 
 ## MCP server configuration
 
-Connect to **external MCP servers** and expose their tools to the agent.
-Any MCP server that works with Claude Code works with odek — same config format.
+Connect to **external MCP servers** and register their tools as `<server>__<tool>`
+(e.g. `playwright__navigate`). The `command` / `args` / `env` shape matches Claude
+Code's `mcpServers` object; odek does not expand `${VAR}` in `env`.
 
 ```json
 {
@@ -864,21 +865,18 @@ Any MCP server that works with Claude Code works with odek — same config forma
 
 | Field | Description |
 |-------|-------------|
-| `command` | The executable to run |
+| `command` | Executable to spawn (required) |
 | `args` | Optional command-line arguments |
-| `env` | Optional environment variable overrides (empty string removes from env) |
-| `timeout_seconds` | Optional per-request timeout (default `30`; values above the hard cap of `3600` are clamped with a warning) |
-| `max_response_bytes` | Optional cap on a single JSON-RPC response line (default `10485760` = 10 MiB; absolute ceiling 64 MiB — exceeding it is rejected) |
-| `max_result_chars` | Optional cap on tool result text forwarded to the model (default `200000`; hard cap `1000000`, clamped with a warning). Oversized valid results get a structured truncation notice, never a silent cut |
-| `artifact_roots` | Optional list of directories under which `file://` artifact refs from this server are accepted. **Empty (default) ⇒ every artifact ref is rejected (fail closed).** |
+| `env` | Optional overrides (empty string unsets). Secret-looking keys are stripped even here |
+| `timeout_seconds` | Per-request timeout (default `30`; clamped to `3600` with a warning) |
+| `max_response_bytes` | Cap on one JSON-RPC response line (default 10 MiB; config above 64 MiB is rejected) |
+| `max_result_chars` | Cap on model-facing result text (default `200000`; clamped to `1000000` with a warning) |
+| `artifact_roots` | Directories that may host `file://` artifact refs. **Empty (default) rejects every ref.** |
+| `auto_approve` | Skip server and per-tool prompts. Honored only from `~/.odek/config.json`; stripped from `./odek.json` with a warning. Trusts the execution fingerprint (command/args/env/limits/roots), not the server name |
 
-These per-server limit fields are part of the **odek-extension/v1** contract;
-see [docs/EXTENSIONS.md](EXTENSIONS.md) for the full semantics.
-
-Tools are registered as `<server_name>__<tool_name>` (e.g., `playwright__navigate`)
-and are available in `odek run`, `odek repl`, `odek continue`, and `odek serve`.
-
-See [docs/MCP.md](MCP.md#odek-as-mcp-client) for detailed instructions.
+Limit-field semantics: [EXTENSIONS.md](EXTENSIONS.md). Approvals, surfaces that load MCP
+(and those that do not — Telegram chat, untrusted sub-agents), and `odek mcp` server
+mode: [MCP.md](MCP.md).
 
 ## Telegram
 
