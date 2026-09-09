@@ -66,7 +66,8 @@ type tgWakeController struct {
 	mu      sync.Mutex
 	timer   *time.Timer
 	pending int
-	wakes   []time.Time // wake timestamps inside the spend window
+	wakes   []time.Time     // wake timestamps inside the spend window
+	routed  map[string]bool // job ids routed to a wake (watcher suppression)
 	done    chan struct{}
 }
 
@@ -84,30 +85,36 @@ func newTGWakeController(chatID int64, coalesce time.Duration, maxPerHour int,
 		maxPerHour: maxPerHour,
 		idleWait:   idleWait,
 		dispatch:   dispatch,
+		routed:     map[string]bool{},
 		done:       make(chan struct{}),
 	}
 }
 
 // stop tears the controller down, cancelling any pending coalesce timer.
+// Safe under concurrent callers (dropBGRuntimeForChat can race
+// shutdownAllBGRuntimes): the close happens under the mutex, so exactly
+// one caller closes.
 func (c *tgWakeController) stop() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	select {
 	case <-c.done:
 		return
 	default:
 	}
 	close(c.done)
-	c.mu.Lock()
 	if c.timer != nil {
 		c.timer.Stop()
 	}
-	c.mu.Unlock()
 }
 
-// reserve attempts to route this exit to a wake turn. It returns true when
-// a wake turn is (or will be) dispatched for it — the caller must suppress
-// the legacy raw push — and false when the exit falls back to the raw push
-// (controller stopped, spend cap reached, or the chat is busy).
-func (c *tgWakeController) reserve() bool {
+// reserve attempts to route this exit to a wake turn. jobID is recorded so
+// the chat's exit-watcher can suppress its raw push for jobs the wake turn
+// already covers (see watchBGNotices). It returns true when a wake turn is
+// (or will be) dispatched for it — the caller must suppress the legacy raw
+// push — and false when the exit falls back to the raw push (controller
+// stopped, spend cap reached, or the chat is busy).
+func (c *tgWakeController) reserve(jobID string) bool {
 	c.mu.Lock()
 	select {
 	case <-c.done:
@@ -129,10 +136,26 @@ func (c *tgWakeController) reserve() bool {
 	}
 	c.mu.Unlock()
 
+	// Mark the job routed BEFORE the busy probe: the exit-watcher polls on
+	// a 10s tick and must never see wakeRouted=false for a job that is
+	// about to be covered by a wake turn (otherwise it pushes the raw line
+	// and the wake duplicates it). Rolled back below if reserve fails.
+	if jobID != "" {
+		c.mu.Lock()
+		c.pruneRoutedLocked()
+		c.routed[jobID] = true
+		c.mu.Unlock()
+	}
+
 	// Busy check: a chat running a turn keeps the legacy push (the
 	// running turn's notice drain reaches the model already). Bounded
 	// wait so the observer goroutine never queues behind a long turn.
 	if !chatIsIdle(c.chatID, c.idleWait) {
+		if jobID != "" {
+			c.mu.Lock()
+			delete(c.routed, jobID)
+			c.mu.Unlock()
+		}
 		return false
 	}
 
@@ -152,8 +175,21 @@ func (c *tgWakeController) reserve() bool {
 	return true
 }
 
+// pruneRoutedLocked bounds the routed map: watcher suppression only
+// matters while the watcher is live (~30s window), so on overflow the map
+// is simply reset — long-since-announced jobs never need suppression again.
+// Caller holds c.mu.
+func (c *tgWakeController) pruneRoutedLocked() {
+	if len(c.routed) >= 1024 {
+		c.routed = map[string]bool{}
+	}
+}
+
 // fire runs after the coalesce window and dispatches one wake turn for all
-// reserved exits.
+// reserved exits. If the chat became busy between reserve and fire (a user
+// message took the slot), the wake is dropped and the spend refunded: the
+// user's queued turn drains the completion notices at its first iteration,
+// so a queued stale wake would only duplicate it.
 func (c *tgWakeController) fire() {
 	c.mu.Lock()
 	c.timer = nil
@@ -169,7 +205,26 @@ func (c *tgWakeController) fire() {
 		return
 	default:
 	}
+	if !chatIsIdle(c.chatID, c.idleWait) {
+		c.mu.Lock()
+		if len(c.wakes) > 0 {
+			c.wakes = c.wakes[:len(c.wakes)-1] // refund the unused wake
+		}
+		c.mu.Unlock()
+		return
+	}
 	c.dispatch(c.chatID, tgWakePreamble)
+}
+
+// wakeRouted reports whether the job's exit was routed to a wake turn, so
+// the exit-watcher must not push a raw line for it.
+func (c *tgWakeController) wakeRouted(jobID string) bool {
+	if jobID == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.routed[jobID]
 }
 
 // wakeSpend reports how many wake turns the chat has spent in the last hour

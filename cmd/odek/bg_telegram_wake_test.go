@@ -223,8 +223,8 @@ func TestTGWakeController_CoalesceWindow(t *testing.T) {
 	ctl := newTGWakeController(910005, 80*time.Millisecond, 10, 100*time.Millisecond, rec.add)
 	t.Cleanup(ctl.stop)
 
-	ctl.reserve()
-	ctl.reserve()
+	ctl.reserve("x")
+	ctl.reserve("y")
 
 	waitDispatched(t, rec, 1, 2*time.Second)
 	time.Sleep(150 * time.Millisecond) // let any second timer fire
@@ -236,4 +236,53 @@ func TestTGWakeController_CoalesceWindow(t *testing.T) {
 func TestBGChatNotifier_NilBotNoop(t *testing.T) {
 	n := &bgChatNotifier{chatID: 910006, bot: nil}
 	n.BGExited(bgproc.Notice{JobID: "z", ExitCode: 0}) // must not panic
+}
+
+// F1 regression: jobs routed to a wake turn must be invisible to the
+// exit-watcher, or the watcher re-pushes the raw line the wake turn already
+// covered (the duplication the suppression exists to prevent).
+func TestTGWakeController_WakeRoutedSuppressesWatcher(t *testing.T) {
+	ctl := newTGWakeController(910007, 5*time.Millisecond, 10, 100*time.Millisecond,
+		func(int64, string) {})
+	t.Cleanup(ctl.stop)
+	if ctl.wakeRouted("jw") {
+		t.Fatal("wakeRouted = true before any reserve")
+	}
+	if !ctl.reserve("jw") {
+		t.Fatal("reserve = false, want true (idle chat under cap)")
+	}
+	if !ctl.wakeRouted("jw") {
+		t.Error("wakeRouted(jw) = false after reserve, want true")
+	}
+	if ctl.wakeRouted("other") {
+		t.Error("wakeRouted(other) = true for an unrouted job")
+	}
+}
+
+// F2 regression: when the chat turns busy between reserve and fire, the wake
+// must be dropped (not queued behind the user's turn) and the spend refunded.
+func TestTGWakeController_BusyAtFireDropsAndRefunds(t *testing.T) {
+	rec := &dispatchedRecorder{}
+	ctl := newTGWakeController(910008, 10*time.Millisecond, 1, 100*time.Millisecond, rec.add)
+	t.Cleanup(ctl.stop)
+	if !ctl.reserve("jb") {
+		t.Fatal("reserve = false, want true")
+	}
+	// Occupy the slot before the coalesce timer fires.
+	slot := getChatMutex(910008)
+	slot.Lock()
+	t.Cleanup(slot.Unlock)
+
+	waitDispatched(t, rec, 0, 0)
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for ctl.wakeSpend() != 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if rec.len() != 0 {
+		t.Errorf("wake dispatched on busy-at-fire chat, want 0")
+	}
+	if ctl.wakeSpend() != 0 {
+		t.Errorf("wakeSpend = %d after refund, want 0", ctl.wakeSpend())
+	}
 }

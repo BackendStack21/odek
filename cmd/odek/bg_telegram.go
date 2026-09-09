@@ -37,7 +37,7 @@ func (n *bgChatNotifier) BGExited(ex bgproc.Notice) {
 	// one coalesced system-initiated turn; the model reads the completion
 	// notice from the loop's drain during that turn. A raw push would
 	// duplicate the notice in the chat without ever reaching the model.
-	if n.wake != nil && n.wake.reserve() {
+	if n.wake != nil && n.wake.reserve(ex.JobID) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -125,15 +125,23 @@ func ensureBGWatcher(chatID int64, rt *bgRuntime, bot *telegram.Bot) {
 	}
 	go func() {
 		defer bgWatchers.Delete(chatID)
-		watchBGNotices(chatID, rt, bot)
+		watchBGNotices(chatID, rt, bot, wakeControllerForChat(chatID))
 	}()
+}
+
+// wakeControllerForChat returns the chat's wake controller, or nil.
+func wakeControllerForChat(chatID int64) *tgWakeController {
+	if ctl, ok := wakeControllers.Load(chatID); ok {
+		return ctl.(*tgWakeController)
+	}
+	return nil
 }
 
 // watchBGNotices pushes a human-readable line to the chat when a job exits,
 // so the user hears about completions between messages. The agent still gets
 // the full observe-phase notice from its own drain — this watcher never
 // touches the agent's notice queue. It stops after ~30s with nothing running.
-func watchBGNotices(chatID int64, rt *bgRuntime, bot *telegram.Bot) {
+func watchBGNotices(chatID int64, rt *bgRuntime, bot *telegram.Bot, wake *tgWakeController) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 	// Snapshot the exit states the watcher has already announced so a job is
@@ -147,6 +155,12 @@ func watchBGNotices(chatID int64, rt *bgRuntime, bot *telegram.Bot) {
 				continue
 			}
 			announced[j.ID] = true
+			// Jobs routed to a wake turn are covered: the wake turn's
+			// notice drain delivers the facts to the model and the wake
+			// reply reaches the chat — a raw line here would duplicate it.
+			if wake != nil && wake.wakeRouted(j.ID) {
+				continue
+			}
 			end := j.EndedAt
 			if end.IsZero() {
 				end = time.Now()
