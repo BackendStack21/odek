@@ -29,7 +29,6 @@ package main
 //     queues behind a long turn.
 
 import (
-	"strconv"
 	"sync"
 	"time"
 
@@ -252,6 +251,3 @@ func chatIsIdle(chatID int64, wait time.Duration) bool {
 		return false
 	}
 }
-
-// chatIDString formats a chat id for logs.
-func chatIDString(id int64) string { return strconv.FormatInt(id, 10) }
