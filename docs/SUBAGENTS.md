@@ -312,6 +312,9 @@ Sub-agents are autonomous by design and **never prompt for approvals** —
 not even trusted ones. Prompt-class operations are denied (`non_interactive:
 deny` is forced for every sub-agent); the operator `allowlist` (exact
 pre-approved invocations) is the only path to prompt-class operations.
+Untrusted sub-agents never load `mcp_servers` (MCP adapters do not
+danger-classify). Trusted and capped children do, under the child's
+`DangerousConfig` cap. See [MCP.md](MCP.md#where-it-loads).
 
 Denials are not silent: each child reports the policy denials it observed
 in its result (`denials: [{tool, class, reason}]`, capped at 20 with

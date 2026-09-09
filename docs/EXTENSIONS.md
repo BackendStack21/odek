@@ -51,8 +51,10 @@ rule).
 ## Server configuration
 
 Extension servers are declared in `mcp_servers` in `~/.odek/config.json`
-(operator-trusted) or `./odek.json` (project-level; per-tool approval
-required — see [MCP.md](MCP.md)):
+(operator-trusted) or `./odek.json` (project-level). Server-spawn approval
+applies to project entries; per-tool approval applies to every server —
+see [MCP.md](MCP.md). `auto_approve` is operator config, not part of this
+contract.
 
 ```json
 {

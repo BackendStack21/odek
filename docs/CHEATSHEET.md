@@ -316,14 +316,12 @@ See [docs/TELEGRAM.md](TELEGRAM.md) for full documentation.
 ## MCP
 
 ```bash
-# Client mode — connect to external MCP servers
+# Client — uses mcp_servers from ~/.odek/config.json and/or ./odek.json
 odek run "analyze this page"
 
-# → Uses MCP servers defined in odek.json:
-#   "mcp_servers": { "playwright": { "command": "npx", "args": ["@playwright/mcp"] } }
-
-# Server mode — expose tools to other clients
-odek mcp                                    # stdio transport
+# Server — expose odek tools over stdio (sandbox opt-in)
+odek mcp
+odek mcp --sandbox
 ```
 
 ## Env Vars
