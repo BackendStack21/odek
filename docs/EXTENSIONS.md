@@ -197,6 +197,11 @@ Per-type `data` fields:
 | `plan_updated` | `steps`, `done`, `in_progress`, `blocked`, `pending`, `version` |
 | `plan_blocked` | `steps`, `blocked`, `version` |
 | `subagent_denied` | `task_index`, `class`, `reason` (emitted by `delegate_tasks` for each policy denial a child reports) |
+| `subagent_spawned` | `task_id`, `pid`, `depth`, `timeout_seconds`, `goal_sha256` (16 hex chars: first 8 bytes of SHA-256 of the goal; the goal itself is never logged) |
+| `subagent_completed` | `task_id`, `status`, plus optional `iterations`, `duration_seconds`, `tokens_used`, `artifact_count` when the child result carried them |
+| `subagent_concurrency_wait` | `task_index`, `waited_ms` |
+
+`budget_warning` and `reply_ledger_mismatch` are **not** `odek.event/v1` types. They are `loop.SignalEvent`s (`Config.AgentSignalHandler`, WebSocket `agent_signal`).
 
 `call_id` is the stable correlation key between a `tool_call_started` and
 its matching `tool_call_completed`/`tool_call_failed` event: the provider's
@@ -317,4 +322,4 @@ metadata-only lines in the model context, content inlined for text artifacts
 ≤ 32 KiB, everything else readable by the parent via the `artifact_read`
 tool (id-keyed; paths never enter the model context). See
 `docs/SUBAGENTS.md — Result artifacts` and `docs/SECURITY.md` for the
-invariants; `SUBAGENT_RESULT_ARTIFACTS_PLAN.md` documents the design.
+invariants.

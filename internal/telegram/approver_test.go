@@ -538,40 +538,65 @@ func TestTelegramApprover_TrustDisabledForHighImpactClasses(t *testing.T) {
 
 	a := NewTelegramApprover(bot, 1, 0)
 
-	done := make(chan error, 1)
-	go func() {
-		done <- a.PromptCommand(danger.Destructive, "rm -rf /", "")
-	}()
+	for _, cls := range []danger.RiskClass{danger.Destructive, danger.Persistence, danger.UnreadExec} {
+		done := make(chan error, 1)
+		go func(cls danger.RiskClass) {
+			done <- a.PromptCommand(cls, "probe", "")
+		}(cls)
 
-	// Wait for the prompt request to be sent.
-	var body string
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+		var body string
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			rec.mu.Lock()
+			if len(rec.requests) > 0 {
+				body = rec.requests[len(rec.requests)-1].Body
+			}
+			rec.mu.Unlock()
+			if body != "" {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if body == "" {
+			t.Fatalf("%s: prompt request was not sent", cls)
+		}
+		if strings.Contains(body, "Trust Session") {
+			t.Errorf("%s prompt should not offer Trust Session: %q", cls, body)
+		}
+
+		id := extractCallbackID(body, cbPrefixApprove)
+		if id == "" {
+			t.Fatalf("%s: could not extract approve callback id", cls)
+		}
+		a.HandleCallback(cbPrefixApprove+id, 0)
+		if err := <-done; err != nil {
+			t.Fatalf("%s: approve should succeed: %v", cls, err)
+		}
 		rec.mu.Lock()
-		if len(rec.requests) > 0 {
-			body = rec.requests[len(rec.requests)-1].Body
-		}
+		rec.requests = nil
 		rec.mu.Unlock()
-		if body != "" {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
 	}
-	if body == "" {
-		t.Fatal("prompt request was not sent")
-	}
-	if strings.Contains(body, "Trust Session") {
-		t.Errorf("destructive prompt should not offer Trust Session: %q", body)
-	}
+}
 
-	// Extract the callback ID and send an approve so PromptCommand returns.
-	id := extractCallbackID(body, cbPrefixApprove)
-	if id == "" {
-		t.Fatal("could not extract approve callback id")
+func TestAllowTrustForClass_MatchesTrustShortcutAllowed(t *testing.T) {
+	classes := []danger.RiskClass{
+		danger.Safe,
+		danger.LocalWrite,
+		danger.SystemWrite,
+		danger.Persistence,
+		danger.Destructive,
+		danger.NetworkEgress,
+		danger.CodeExecution,
+		danger.Install,
+		danger.Unknown,
+		danger.Blocked,
+		danger.UnreadExec,
+		"tool_batch",
 	}
-	a.HandleCallback(cbPrefixApprove+id, 0)
-	if err := <-done; err != nil {
-		t.Fatalf("approve should succeed: %v", err)
+	for _, cls := range classes {
+		if got, want := allowTrustForClass(cls), danger.TrustShortcutAllowed(cls); got != want {
+			t.Errorf("allowTrustForClass(%s) = %v, want %v", cls, got, want)
+		}
 	}
 }
 

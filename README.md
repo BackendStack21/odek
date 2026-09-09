@@ -5,8 +5,10 @@
 One binary. One loop. Zero frameworks. ReAct (Reasoning + Acting) — think, therefore act.
 
 ```bash
-# Install (requires Go ≥ 1.25.13 — see "Build requirements" below)
-go install github.com/BackendStack21/odek/cmd/odek@latest
+# Install from a v2 release tag (requires Go ≥ 1.25.13 — see GETTING_STARTED.md).
+# Do not use @latest: Go ignores v2 tags on this module path and would
+# install an older v1 release.
+go install github.com/BackendStack21/odek/cmd/odek@v2.11.2
 
 # Use (provider env key — DEEPSEEK_API_KEY for the default provider)
 export DEEPSEEK_API_KEY=sk-...
@@ -26,7 +28,7 @@ odek is not a framework. It's a **runtime** — the smallest possible surface ar
 
 | | odek | Python agents (LangChain, CrewAI, etc.) |
 |---|---|---|
-| Dependencies | **5.** 2× 21no.de, 3× golang.org/x | 200+ packages |
+| Dependencies | **6.** 3× 21no.de, 3× golang.org/x | 200+ packages |
 | Binary size | ~11 MB static | 50-200 MB with venv |
 | Startup | **Instant** | 2-10s (Python imports) |
 | Sandbox | **Default-on** Docker sandbox (`--no-sandbox` to opt out) | Requires manual Docker setup |

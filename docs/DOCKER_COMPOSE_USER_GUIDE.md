@@ -342,10 +342,7 @@ services:
 
 Notes:
 
-- `--no-sandbox` is required **for `serve` only**: `odek serve` turns the nested‑Docker
-  sandbox on by default, so without this flag it would try to launch sandbox containers and
-  fail. `odek run`, `odek repl`, and `odek telegram` are already unsandboxed by default and
-  do **not** accept a `--no-sandbox` flag (it would be parsed as part of the task).
+- `--no-sandbox` is required when odek itself runs **inside** a container and would otherwise try nested Docker: `odek serve`, `odek run`, and `odek repl` all default the sandbox **on**. `odek telegram` does not start a sandbox container (and ignores extra argv). Without `--no-sandbox`, `serve` / `run` / `repl` try to launch sandbox containers and fail.
 - The Web UI binds to `0.0.0.0:8080` *inside* the container; the `ports` mapping exposes
   it only on the host's `127.0.0.1`. Use a reverse proxy (Caddy/nginx) if you need remote
   access.
@@ -395,9 +392,10 @@ docker compose run --rm -it \
   odek-restricted repl
 ```
 
-> `repl` (like `run`) is unsandboxed by default, so no `--no-sandbox` is needed — only
-> `serve` requires it. The `command:` in the Compose service is overridden by the `repl`
-> argument here.
+> `repl` and `run` default the sandbox **on**, so pass `--no-sandbox` when
+> odek itself is already in a container (nested Docker will fail). Only
+> `serve` required it historically; that is no longer unique. The `command:`
+> in the Compose service is overridden by the `repl` argument here.
 
 > One‑shot `odek run "<task>"` works too, but it is non‑interactive: with the Restricted
 > policy above, `non_interactive: "read_only"` lets read‑only/inspection commands proceed
@@ -417,11 +415,10 @@ No prompts, no human in the loop. Best for disposable containers.
 mkdir -p workspace
 
 docker compose --profile godmode run --rm odek-godmode \
-  run "Clone nothing — just create build.sh, make it executable, and run it."
+  run --no-sandbox "Clone nothing — just create build.sh, make it executable, and run it."
 ```
 
-The trailing `run "<task>"` overrides the service's default `command:` (`serve`). No
-`--no-sandbox` is needed — `run` is unsandboxed by default.
+The trailing `run --no-sandbox "<task>"` overrides the service's default `command:` (`serve`). Nested Docker is not available inside the Compose service, so `--no-sandbox` is required — `run` defaults the sandbox on.
 
 Every command the agent issues runs immediately. The blast radius is the container: the
 only writable host mount is `./workspace`, everything else is the container's ephemeral
@@ -509,7 +506,7 @@ global `action` → built‑in defaults. The `blocked` class is always denied re
 
 | Symptom | Likely cause / fix |
 | --- | --- |
-| `odek serve` exits complaining about sandbox / Docker | You omitted `--no-sandbox`. Odek tried to start nested sandbox containers. Add `--no-sandbox` to the `command`. |
+| `odek serve` / `odek run` / `odek repl` exits complaining about sandbox / Docker | You omitted `--no-sandbox`. Odek tried to start nested sandbox containers. Add `--no-sandbox` to the `command`. |
 | Agent says "operation denied by configuration" for normal commands | You're running non‑interactively under the Restricted policy (`non_interactive: "read_only"` — only read‑only commands proceed). Use the Web UI / `repl -it`, or add the command to `allowlist`. |
 | Approval modal never appears; risky commands just run | The Godmode policy is mounted, or `action` is `allow`. Check `/home/odek/.odek/config.json` inside the container. |
 | "no API key" / auth errors | `.env` not loaded or key invalid. Confirm `env_file: .env` is set and the provider env key (`DEEPSEEK_API_KEY`, `ZAI_API_KEY`, …) matches `ODEK_PROVIDER`. |

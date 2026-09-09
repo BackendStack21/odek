@@ -91,6 +91,7 @@ func TestLocalConfigTemplate_RemainsProjectSafe(t *testing.T) {
 		`"provider"`, `"providers"`, `"api_key"`, `"base_url"`, `"llm"`, `"system"`, `"dangerous"`, `"memory"`,
 		`"guard"`, `"maintenance"`, `"telegram"`, `"web_search"`,
 		`"embedding"`, `"sessions"`, `"trusted_proxies"`, `"profiles"`,
+		`"subagent"`, `"max_concurrent"`, `"catchup"`,
 		`"sandbox"`, `"compaction"`, `"limits"`,
 		`"prompt_caching"`, `"stream"`, `"announce_budget"`,
 	} {

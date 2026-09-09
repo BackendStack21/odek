@@ -385,6 +385,8 @@ func serveCmd(args []string) error {
 			promptCaching = boolPtr(false)
 		case "--compaction":
 			compaction = boolPtr(true)
+		case "--no-compaction":
+			compaction = boolPtr(false)
 		case "--announce-budget":
 			announceBudget = boolPtr(true)
 		case "--no-announce-budget":
@@ -693,6 +695,8 @@ Flags:
   --sandbox-user user      Container user (e.g. 1000:1000)
   --prompt-caching         Enable prompt caching (default: on)
   --no-prompt-caching      Disable prompt caching
+  --compaction             Enable rolling compaction (default: on)
+  --no-compaction          Disable rolling compaction
   --announce-budget        Enable parent budget-awareness hints (default: on)
   --no-announce-budget     Disable parent budget-awareness hints
   --stream                 Stream LLM responses live to the Web UI (default: on)
@@ -978,6 +982,7 @@ func newServeAgent(resolved config.ResolvedConfig, system string, runKey string,
 		// Disable with --no-prompt-caching / ODEK_PROMPT_CACHING=false /
 		// config "prompt_caching": false. Library odek.New stays opt-in.
 		PromptCaching:  resolved.PromptCaching,
+		Compaction:     resolved.Compaction,
 		AnnounceBudget: &resolved.AnnounceBudget,
 		// Live streaming: forward SSE fragments to the browser as
 		// thinking_delta / token_delta events (docs/STREAMING.md). Default

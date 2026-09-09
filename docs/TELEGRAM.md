@@ -215,10 +215,10 @@ The handler uses `sync.Map` for `TelegramApprover` instances, keyed by `chatID`.
 
 Each approval prompt shows the full command and risk class. The **Trust Session**
 shortcut is hidden for the highest-impact classes (`destructive`, `blocked`,
-`unknown`, and the synthetic `tool_batch` class) so they must be approved
-per-call. After three approvals of the same class within 60 seconds, friction
-mode hides the Trust Session shortcut and adds a warning, breaking reflexive
-tap-through.
+`unknown`, `persistence`, `unread_exec`, and the synthetic `tool_batch` class)
+so they must be approved per-call. After three approvals of the same class
+within 60 seconds, friction mode hides the Trust Session shortcut and adds a
+warning, breaking reflexive tap-through.
 
 ### Outbound Media
 
@@ -250,6 +250,7 @@ defense-in-depth.
 | `/help` | Show all available commands with descriptions |
 | `/new` | Archive the current session and start a fresh conversation. Archived sessions are timestamped (`tg-<chatID>-<YYYYMMDD>-<HHMMSS>`) and remain visible via `odek session list` |
 | `/stats` | Show session statistics (turn count, model used, etc.) |
+| `/jobs` | List background jobs for this chat |
 | `/stop` | Cancel a running agent task |
 | `/mode` | Show current agent modes (interaction_mode, tool_progress, sandbox) |
 | `/restart` | Gracefully restart the bot process. Restricted to operator chats/users and rate-limited to once per 60 seconds. |

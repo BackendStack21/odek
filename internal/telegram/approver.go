@@ -152,12 +152,12 @@ func (a *TelegramApprover) recordApproval(cls danger.RiskClass) {
 
 // PromptCommand sends an approval request with inline keyboard and waits
 // for the user to respond. Returns nil on approve/trust, error on deny/timeout.
-// allowTrustForClass mirrors the TTY/Web approver policy: the highest-impact
-// classes must never be session-trusted, and the synthetic `tool_batch` class
-// must not be trusted because a single batch approval could hide multiple
-// unrelated dangerous tools.
+// allowTrustForClass is the Telegram face of danger.TrustShortcutAllowed:
+// destructive, blocked, unknown, persistence, unread_exec, and the synthetic
+// tool_batch class must never be session-trusted. A forged or stale Trust
+// callback for those classes is denied (same as a tap on Deny).
 func allowTrustForClass(cls danger.RiskClass) bool {
-	return cls != danger.Destructive && cls != danger.Blocked && cls != danger.Unknown && cls != "tool_batch"
+	return danger.TrustShortcutAllowed(cls)
 }
 
 func (a *TelegramApprover) PromptCommand(cls danger.RiskClass, cmd, description string) error {
