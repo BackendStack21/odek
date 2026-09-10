@@ -25,6 +25,7 @@
 package bgproc
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -101,6 +102,8 @@ type Observer interface {
 
 // Config bounds the manager.
 type Config struct {
+	// RequireSandbox rejects launches without a trusted command wrapper.
+	RequireSandbox bool
 	// MaxJobsPerSession caps concurrently running jobs per session.
 	// <= 0 means unlimited (not recommended; callers should clamp).
 	MaxJobsPerSession int
@@ -120,12 +123,21 @@ type Config struct {
 	StripEnvNames []string
 }
 
+// SpawnOptions is supplied by the trusted runtime, never by tool arguments.
+// Release runs exactly once, on launch failure or after process cleanup.
+type SpawnOptions struct {
+	Wrap    func(string) ([]string, func(), error)
+	Release func()
+}
+
 type jobEntry struct {
-	job      Job
-	reason   Status // pending terminal reason for a forced stop (killed/timeout)
-	ring     outputRing
-	stopping bool
-	exited   chan struct{} // closed once by the waiter
+	release       func()
+	job           Job
+	reason        Status // pending terminal reason for a forced stop (killed/timeout)
+	ring          outputRing
+	stopping      bool
+	exited        chan struct{} // closed once cleanup completes
+	processExited chan struct{} // closed immediately after Wait, before cleanup
 
 	cmd      *exec.Cmd
 	followUp func()
@@ -134,12 +146,15 @@ type jobEntry struct {
 
 // Manager owns every background job of the process.
 type Manager struct {
-	cfg  Config
-	obs  Observer
-	mu   sync.Mutex
-	sess map[string][]*jobEntry // session -> jobs in creation order
-	out  map[string][]Notice    // session -> pending completion notices
-	seq  int
+	cfg      Config
+	obs      Observer
+	mu       sync.Mutex
+	sess     map[string][]*jobEntry // session -> jobs in creation order
+	out      map[string][]Notice    // session -> pending completion notices
+	closed   bool
+	deleted  map[string]bool
+	draining map[*jobEntry]string
+	seq      int
 }
 
 // NewManager returns a manager with the given bounds and observer (both may
@@ -160,6 +175,24 @@ func NewManager(cfg Config, obs Observer) *Manager {
 // timeout > 0 kills the job (StatusTimeout) when it elapses; 0 means the job
 // runs until session end. The returned snapshot has Status running.
 func (m *Manager) Start(sessionID, command, cwd string, timeout time.Duration) (*Job, error) {
+	return m.StartWithOptions(sessionID, command, cwd, timeout, SpawnOptions{})
+}
+
+// StartWithOptions pins execution routing and resource ownership to this job.
+func (m *Manager) StartWithOptions(sessionID, command, cwd string, timeout time.Duration, opts SpawnOptions) (*Job, error) {
+	started := false
+	defer func() {
+		if !started && opts.Release != nil {
+			opts.Release()
+		}
+	}()
+	wrap := opts.Wrap
+	if wrap == nil {
+		wrap = m.cfg.SandboxWrap
+	}
+	if m.cfg.RequireSandbox && wrap == nil {
+		return nil, errors.New("bgproc: sandbox routing required")
+	}
 	if sessionID == "" {
 		return nil, errors.New("bgproc: empty session id")
 	}
@@ -173,12 +206,16 @@ func (m *Manager) Start(sessionID, command, cwd string, timeout time.Duration) (
 		timeout = 0
 	}
 
-	cmd, followUp, err := m.buildCommand(command, cwd)
+	cmd, followUp, err := m.buildCommand(command, cwd, wrap)
 	if err != nil {
 		return nil, fmt.Errorf("bgproc: %w", err)
 	}
 
 	m.mu.Lock()
+	if m.closed || m.deleted[sessionID] {
+		m.mu.Unlock()
+		return nil, errors.New("bgproc: manager shut down")
+	}
 	// Enforce the per-session concurrency cap under the lock so concurrent
 	// Starts cannot race past it.
 	running := 0
@@ -202,10 +239,12 @@ func (m *Manager) Start(sessionID, command, cwd string, timeout time.Duration) (
 			StartedAt: time.Now().UTC(),
 			Timeout:   timeout,
 		},
-		reason:   StatusRunning, // sentinel: no forced stop pending
-		exited:   make(chan struct{}),
-		cmd:      cmd,
-		followUp: followUp,
+		reason:        StatusRunning, // sentinel: no forced stop pending
+		exited:        make(chan struct{}),
+		processExited: make(chan struct{}),
+		cmd:           cmd,
+		followUp:      followUp,
+		release:       opts.Release,
 	}
 	e.ring.limit = m.cfg.MaxOutputBytes
 	cmd.Stdout = &e.ring
@@ -214,7 +253,12 @@ func (m *Manager) Start(sessionID, command, cwd string, timeout time.Duration) (
 		m.mu.Unlock()
 		return nil, fmt.Errorf("bgproc: spawn: %w", err)
 	}
+	started = true
 	m.sess[sessionID] = append(m.sess[sessionID], e)
+	if m.draining == nil {
+		m.draining = make(map[*jobEntry]string)
+	}
+	m.draining[e] = sessionID
 	snapshot := e.job
 	m.mu.Unlock()
 
@@ -229,7 +273,7 @@ func (m *Manager) Start(sessionID, command, cwd string, timeout time.Duration) (
 }
 
 // buildCommand assembles the exec.Cmd for host or sandbox mode.
-func (m *Manager) buildCommand(command, cwd string) (*exec.Cmd, func(), error) {
+func (m *Manager) buildCommand(command, cwd string, wrap func(string) ([]string, func(), error)) (*exec.Cmd, func(), error) {
 	stripEnv := func(c *exec.Cmd) {
 		if len(m.cfg.StripEnvNames) == 0 {
 			return
@@ -252,8 +296,8 @@ func (m *Manager) buildCommand(command, cwd string) (*exec.Cmd, func(), error) {
 	// so Stop can tear the whole tree down with one group signal (mirrors
 	// the shell tool's Setpgid semantics).
 	attrs := &syscall.SysProcAttr{Setpgid: true}
-	if m.cfg.SandboxWrap != nil {
-		argv, followUp, err := m.cfg.SandboxWrap(command)
+	if wrap != nil {
+		argv, followUp, err := wrap(command)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -261,6 +305,7 @@ func (m *Manager) buildCommand(command, cwd string) (*exec.Cmd, func(), error) {
 			return nil, nil, errors.New("sandbox wrapper returned empty argv")
 		}
 		cmd := exec.Command(argv[0], argv[1:]...)
+		stripEnv(cmd)
 		cmd.SysProcAttr = attrs
 		cmd.Dir = cwd
 		cmd.WaitDelay = 3 * time.Second
@@ -277,6 +322,7 @@ func (m *Manager) buildCommand(command, cwd string) (*exec.Cmd, func(), error) {
 // wait reaps the process and finalizes the job exactly once.
 func (m *Manager) wait(sessionID string, e *jobEntry) {
 	err := e.cmd.Wait()
+	close(e.processExited)
 	if e.timer != nil {
 		e.timer.Stop()
 	}
@@ -339,7 +385,17 @@ func (m *Manager) wait(sessionID string, e *jobEntry) {
 	if e.reason == StatusKilled || e.reason == StatusTimeout {
 		m.runFollowUp(e)
 	}
+	if e.release != nil {
+		e.release()
+	}
+	m.mu.Lock()
+	delete(m.draining, e)
+	if m.deleted[sessionID] {
+		delete(m.sess, sessionID)
+		delete(m.out, sessionID)
+	}
 	close(e.exited)
+	m.mu.Unlock()
 	if obs != nil {
 		obs.BGExited(notice)
 	}
@@ -377,8 +433,13 @@ func (m *Manager) forceStop(sessionID string, e *jobEntry, reason Status) {
 	signal(syscall.SIGTERM)
 	go func() {
 		select {
-		case <-e.exited:
+		case <-e.processExited:
 		case <-time.After(stopGrace):
+			select {
+			case <-e.processExited:
+				return
+			default:
+			}
 			signal(syscall.SIGKILL)
 		}
 	}()
@@ -421,17 +482,67 @@ func (m *Manager) StopAll(sessionID string) []Job {
 
 // Shutdown stops every running job across all sessions (process exit).
 func (m *Manager) Shutdown() []Job {
-	var all []Job
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	jobs, err := m.ShutdownContext(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bgproc: cleanup drain: %v\n", err)
+	}
+	return jobs
+}
+
+// ShutdownContext rejects new jobs and drains process and resource cleanup,
+// including jobs whose status is terminal or whose stop is already underway.
+func (m *Manager) ShutdownContext(ctx context.Context) ([]Job, error) {
 	m.mu.Lock()
-	sessions := make([]string, 0, len(m.sess))
-	for s := range m.sess {
-		sessions = append(sessions, s)
+	m.closed = true
+	targets := make(map[*jobEntry]string, len(m.draining))
+	for e, sid := range m.draining {
+		targets[e] = sid
 	}
 	m.mu.Unlock()
-	for _, s := range sessions {
-		all = append(all, m.StopAll(s)...)
+	return m.drain(ctx, targets)
+}
+
+// DeleteSession makes deletion final for job launches, even if a tool was
+// awaiting approval when its session was removed. Other sessions are untouched.
+func (m *Manager) DeleteSession(ctx context.Context, sid string) error {
+	m.mu.Lock()
+	if m.deleted == nil {
+		m.deleted = make(map[string]bool)
 	}
-	return all
+	m.deleted[sid] = true
+	// Active entries remain owned by draining until their waiters finish.
+	delete(m.sess, sid)
+	delete(m.out, sid)
+	targets := make(map[*jobEntry]string)
+	for e, owner := range m.draining {
+		if owner == sid {
+			targets[e] = owner
+		}
+	}
+	m.mu.Unlock()
+	_, err := m.drain(ctx, targets)
+	return err
+}
+
+func (m *Manager) drain(ctx context.Context, targets map[*jobEntry]string) ([]Job, error) {
+	// Signal all jobs first: shutdown latency must not scale with job count.
+	for e, sid := range targets {
+		m.forceStop(sid, e, StatusKilled)
+	}
+	var jobs []Job
+	for e := range targets {
+		select {
+		case <-e.exited:
+		case <-ctx.Done():
+			return jobs, ctx.Err()
+		}
+		m.mu.Lock()
+		jobs = append(jobs, e.job)
+		m.mu.Unlock()
+	}
+	return jobs, nil
 }
 
 // stopMany stops running jobs of sessionID matched by the entry filter.
@@ -688,4 +799,19 @@ func (r *outputRing) tail(n int) string {
 		cut++
 	}
 	return string(r.buf[cut:])
+}
+
+// ActiveSessions returns owners of jobs whose process or cleanup is unfinished.
+func (m *Manager) ActiveSessions() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	seen := make(map[string]bool)
+	for _, sid := range m.draining {
+		seen[sid] = true
+	}
+	sessions := make([]string, 0, len(seen))
+	for sid := range seen {
+		sessions = append(sessions, sid)
+	}
+	return sessions
 }

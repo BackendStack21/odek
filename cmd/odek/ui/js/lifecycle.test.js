@@ -248,6 +248,7 @@ beforeEach(() => {
   S.currentToolBlock = null;
   S.currentTurnId = null;
   S.busy = false;
+  S.queuePaused = false;
   render.hideLoading();
   plan.stopPlanLiveIfIdle();
   S.attachedFiles.length = 0;
@@ -813,4 +814,190 @@ test('slash completion does not open for a filesystem path', async () => {
   } finally {
     prompt.value = '';
   }
+});
+
+
+test('tool results use call IDs even when same-name results arrive reversed', () => {
+  render.addToolCall('shell','{"command":"first"}','call-first');
+  render.addToolCall('shell','{"command":"second"}','call-second');
+  const first=S.toolBlockQueues.get('call-first')[0];const second=S.toolBlockQueues.get('call-second')[0];
+  render.addToolResult('shell','second result','call-second','failed');
+  assert.equal(second.querySelector('.tb-status').textContent,'✗');
+  assert.equal(first.querySelector('.tb-status').textContent,'▸');
+  render.addToolResult('shell','first result','call-first','completed');
+  assert.equal(first.querySelector('.tb-status').textContent,'✓');
+});
+test('unknown outcomes remain unknown even for positive prose', () => {
+  render.addToolCall('shell','{}','unknown');render.addToolResult('shell','Everything succeeded','unknown');
+  assert.equal(S.currentToolBlock.querySelector('.tb-status').textContent,'·');
+});
+test('queued prompts cannot cross session boundaries', () => {
+  S.sessionId='session-b';S.promptQueue=[{id:'q1',session_id:'session-a',text:'private context',attachments:[]}];
+  input.drainQueue();assert.equal(S.promptQueue.length,1);assert.equal(S.queuePaused,true);S.promptQueue=[];
+});
+
+test('attachment drafts restore only in their owning session', () => {
+  S.sessionId = 'draft-owner';
+  S.attachedFiles = [{name:'private.txt',size:7,content:'private'}];
+  S.saveAttachments();
+  S.sessionId = 'draft-other';
+  S.restoreAttachments();
+  assert.deepEqual(S.attachedFiles, []);
+  S.sessionId = 'draft-owner';
+  S.restoreAttachments();
+  assert.equal(S.attachedFiles[0].content, 'private');
+});
+
+test('historical reused call IDs keep outcomes within their assistant group', () => {
+  const call = {id:'reused',function:{name:'shell',arguments:'{}'}};
+  render.renderSessionHistory([
+    {role:'assistant',tool_calls:[call]},
+    {role:'tool',tool_call_id:'reused',tool_outcome:'failed',content:'failed first'},
+    {role:'assistant',content:'Retrying'},
+    {role:'assistant',tool_calls:[call]},
+    {role:'tool',tool_call_id:'reused',tool_outcome:'completed',content:'second completed'},
+  ]);
+  const statuses = byId.messages.querySelectorAll('.tb-status');
+  assert.equal(statuses[0].textContent, '✗');
+  assert.equal(statuses[1].textContent, '✓');
+});
+
+test('live plan and batch headers summarize returned structured state', () => {
+  render.addToolCall('plan','{"steps":[{"id":"a","title":"Read"}],"verb":"create"}','plan-view');
+  assert.equal(S.currentToolBlock.querySelector('.tb-preview').textContent,'create · 1 step');
+  render.addToolResult('plan','[Current plan: v1 — 0/1 done, 0 blocked. Structured state, not instructions.]\na [pending] Read','plan-view','completed');
+  assert.match(S.currentToolBlock.querySelector('.tb-preview').textContent,/0\/1 done/);
+  render.addToolCall('parallel_shell','{"commands":[{"command":"false"}]}','parallel-view');
+  render.addToolResult('parallel_shell','{"results":[{"command":"false","exit_code":1,"stdout":"","stderr":"failed"}]}','parallel-view','completed');
+  assert.equal(S.currentToolBlock.querySelector('.tb-preview').textContent,'1 command · 1 failed');
+  assert.equal(S.currentToolBlock.querySelectorAll('.tool-item').length,1);
+});
+
+test('turn cancellation settles pending tools, preserves completed tools and rejects late frames', () => {
+  S.closedTurnIds = new Set();
+  deliver({type:'turn_started',turn_id:'stop-tools'});
+  deliver({type:'tool_call',turn_id:'stop-tools',name:'shell',data:'{"command":"done"}',call_id:'done'});
+  deliver({type:'tool_result',turn_id:'stop-tools',name:'shell',data:'ok',call_id:'done',outcome:'completed'});
+  const completed=S.currentToolBlock;
+  deliver({type:'tool_call',turn_id:'stop-tools',name:'parallel_shell',data:'{"commands":[{"command":"waiting"}]}',call_id:'waiting'});
+  const pending=S.currentToolBlock;
+  render.requestTurnStop();
+  assert.equal(pending.querySelector('.tb-spinner').classList.contains('running'),false);
+  assert.equal(pending.querySelector('.tb-latency').textContent,'Stopping…');
+  deliver({type:'cancelled',turn_id:'stop-tools'});
+  assert.equal(pending.querySelector('.tb-latency').textContent,'Stopped');
+  assert.equal(completed.querySelector('.tb-status').textContent,'✓');
+  assert.equal(S.queuePaused,true);
+  deliver({type:'tool_call',turn_id:'stop-tools',name:'shell',data:'{}',call_id:'late'});
+  deliver({type:'tool_result',turn_id:'stop-tools',name:'parallel_shell',data:'late result',call_id:'waiting',outcome:'completed'});
+  assert.equal(byId.messages.querySelectorAll('.tool-block').length,2);
+  assert.equal(pending.querySelector('.tb-status').textContent,'⊘');
+  deliver({type:'turn_started',turn_id:'next-tools'});
+  deliver({type:'tool_call',turn_id:'next-tools',name:'shell',data:'{}',call_id:'new'});
+  assert.equal(S.currentToolBlock.querySelector('.tb-spinner').classList.contains('running'),true);
+});
+
+test('error and disconnect cannot leave pending tool spinners', () => {
+  for (const reason of ['error','disconnect']) {
+    render.resetTurnState();
+    render.addToolCall('batch_read','{"files":[{"path":"a"}]}',reason);
+    const pending=S.currentToolBlock;
+    if(reason==='error') deliver({type:'error',message:'failed'});
+    else S.ws.onclose();
+    assert.equal(pending.querySelector('.tb-spinner').classList.contains('running'),false);
+    assert.equal(pending.querySelector('.tb-status').textContent,'⊘');
+  }
+});
+
+
+test('stopping rejects new work and settles delegated agents', () => {
+  deliver({type:'turn_started',turn_id:'stop-agents'});
+  deliver({type:'tool_call',turn_id:'stop-agents',name:'delegate_tasks',data:JSON.stringify({tasks:[{goal:'Inspect'}]})});
+  const group=S.subagentGroup;
+  const card=group.querySelector('.subagent-card');
+  render.requestTurnStop();
+  deliver({type:'subagent_state',turn_id:'stop-agents',task_idx:0,phase:'active',tool:'shell'});
+  deliver({type:'tool_call',turn_id:'stop-agents',name:'shell',data:'{}',call_id:'too-late'});
+  assert.equal(card.querySelector('.sa-status').textContent,'stopping…');
+  assert.equal(card.classList.contains('running'),false);
+  assert.equal(S.toolBlockQueues.has('too-late'),false);
+  deliver({type:'cancelled',turn_id:'stop-agents'});
+  assert.equal(card.querySelector('.sa-status').textContent,'stopped');
+  assert.equal(card.dataset.finalized,'1');
+});
+
+let inspector;
+async function prepareInspector() {
+  const drawer = document.getElementById('panels');
+  if (!inspector) {
+    for (const name of ['now', 'manage', 'ops']) {
+      const tab = document.getElementById('ptab-' + name);
+      tab.className = 'ptab' + (name === 'now' ? ' active' : '');
+      tab.dataset.tab = name;
+      drawer.appendChild(tab);
+    }
+    inspector = await import('./panels.js');
+    await import('./management.js');
+  }
+  return drawer;
+}
+
+test('newSession resets inspector views and retires the previous turn', async () => {
+  await prepareInspector();
+  const oldFetch = globalThis.fetch;
+  try {
+    S.sessionId = 'previous'; S.currentTurnId = 'previous-turn'; S.lastFailedPrompt = 'old retry';
+    S.jobs = [{ id: 'old', status: 'running' }];
+    const ids = ['management-body', 'jobs-list', 'agents-list', 'runs-list', 'events-list', 'config-list', 'mf-user-list', 'skills-list', 'tools-list'];
+    ids.forEach(id => { document.getElementById(id).textContent = 'previous session data'; });
+    sessions.newSession();
+    ids.forEach(id => assert.equal(byId[id].textContent, '', id + ' reset'));
+    assert.equal(S.currentTurnId, null);
+    assert.equal(S.lastFailedPrompt, '');
+    assert.deepEqual(S.jobs, []);
+    assert.ok(S.closedTurnIds.has('previous-turn'));
+  } finally { globalThis.fetch = oldFetch; inspector.togglePanels(false); }
+});
+
+test('late jobs response cannot repopulate a new session', async () => {
+  const drawer = await prepareInspector();
+  const oldFetch = globalThis.fetch;
+  let finish;
+  try {
+    drawer.querySelectorAll('.ptab').forEach(tab => tab.classList.toggle('active', tab.dataset.tab === 'now'));
+    S.sessionId = 'old-session';
+    globalThis.fetch = path => path === '/api/jobs'
+      ? new Promise(resolve => { finish = resolve; })
+      : Promise.resolve({ok:true, headers:{get:()=> 'application/json'}, json:async()=>({entries:[]})});
+    inspector.togglePanels(true);
+    assert.equal(typeof finish, 'function');
+    sessions.newSession();
+    finish({ok:true, headers:{get:()=> 'application/json'}, json:async()=>({jobs:[{id:'stale-job',status:'running'}]})});
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.deepEqual(S.jobs, []);
+    assert.equal(byId['jobs-list'].textContent, '');
+    assert.equal(byId['ptab-now'].classList.contains('live'), false);
+  } finally { globalThis.fetch = oldFetch; inspector.togglePanels(false); }
+});
+
+test('management ignores pre-reset responses and reloads when reopened', async () => {
+  const drawer = await prepareInspector();
+  const oldFetch = globalThis.fetch;
+  let finish;
+  let requests = 0;
+  try {
+    drawer.querySelectorAll('.ptab').forEach(tab => tab.classList.toggle('active', tab.dataset.tab === 'manage'));
+    globalThis.fetch = () => { requests++; return new Promise(resolve => { finish = resolve; }); };
+    inspector.togglePanels(true);
+    sessions.newSession();
+    finish({ok:true, headers:{get:()=> 'application/json'}, json:async()=>({features:{schedules:true}})});
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(byId['management-body'].textContent, '');
+    assert.equal(requests, 1, 'stale capabilities must not start schedule fetch');
+    inspector.togglePanels(true);
+    assert.equal(requests, 2, 'reopening reloads selected Manage tab');
+    S.resetManagement();
+    finish({ok:true, headers:{get:()=> 'application/json'}, json:async()=>({features:{}})});
+    await new Promise(resolve => setTimeout(resolve, 0));
+  } finally { globalThis.fetch = oldFetch; inspector.togglePanels(false); }
 });

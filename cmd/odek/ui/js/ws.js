@@ -77,6 +77,7 @@ function noteDisconnect() {
   sendBtn.disabled = true;
 
   droppedBusy = !!S.busy;
+  if (droppedBusy) S.pauseQueue?.();
   streamFlush();
   endThinking();
   endStream();
@@ -170,6 +171,10 @@ export function connect() {
     let event;
     try { event = JSON.parse(e.data); } catch { return; }
 
+    if (event.turn_id && S.closedTurnIds?.has(event.turn_id)) return;
+    if (S.turnEnded && ['tool_call','tool_result','thinking','thinking_delta','token','token_delta','subagent_state','subagent_log','approval_request','clarify_request','done'].includes(event.type)) return;
+    if (S.stopRequested && ['tool_call','subagent_log','thinking','thinking_delta','approval_request','clarify_request'].includes(event.type)) return;
+    if (S.stopRequested && event.type === 'subagent_state' && event.phase !== 'finished') return;
     const sameTurn = !event.turn_id || !S.currentTurnId || event.turn_id === S.currentTurnId;
 
     switch (event.type) {
@@ -197,6 +202,14 @@ export function connect() {
         announce('Turn started');
         break;
 
+      case 'artifact':
+        if (sameTurn) S.onArtifact?.(event.artifact);
+        break;
+
+      case 'runtime_event':
+        if (sameTurn && typeof S.onRuntimeEvent === 'function') S.onRuntimeEvent(event.event);
+        break;
+
       case 'bg_job':
         upsertJob(event);
         kickJobsFetch();
@@ -209,6 +222,7 @@ export function connect() {
       case 'session': {
         const prevSid = S.sessionId;
         S.sessionId = event.session_id || null;
+        if (!prevSid && S.sessionId) S.promptQueue.forEach(item => { if (item.session_id == null) item.session_id = S.sessionId; });
         if (prevSid && prevSid !== S.sessionId) {
           S.jobs = [];
           resetPlanPanel();
@@ -269,7 +283,7 @@ export function connect() {
         if (event.name === 'delegate_tasks') {
           addSubagentGroup(event.data);
         } else {
-          addToolCall(event.name, event.data);
+          addToolCall(event.name, event.data, event.call_id);
         }
         break;
 
@@ -282,7 +296,7 @@ export function connect() {
         if (event.name === 'delegate_tasks' && S.subagentGroup) {
           completeSubagents(event.data);
         } else {
-          addToolResult(event.name, event.data);
+          addToolResult(event.name, event.data, event.call_id, event.outcome);
         }
         break;
 
@@ -315,9 +329,11 @@ export function connect() {
         break;
 
       case 'cancelled':
+        if (!sameTurn || (event.session_id && S.sessionId && event.session_id !== S.sessionId)) break;
+        S.pauseQueue?.();
         streamFlush();
         endThinking();
-        endStream();
+        endStream('cancelled');
         setIntent('');
         // The run is unwinding — drop every pending approval card so a
         // stray click cannot approve an operation whose execution context
@@ -369,6 +385,7 @@ export function connect() {
 
       case 'error':
         if (!sameTurn) break;
+        S.pauseQueue?.();
         streamFlush(); endThinking(); endStream();
         setIntent('');
         S.lastFailedPrompt = S.lastPrompt;

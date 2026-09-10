@@ -107,6 +107,7 @@ export function renderPlan(plan, root) {
       body.appendChild(el('div', 'plan-note', truncateLine(step.note, NOTE_MAX_CHARS)));
     }
 
+    const results=el('button','plan-results','Related results');results.type='button';results.addEventListener('click',()=>S.showStepResults?.(step.id));body.appendChild(results);
     row.append(glyph, body);
     target.appendChild(row);
   });

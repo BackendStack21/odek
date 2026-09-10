@@ -53,7 +53,8 @@ type bgRuntime struct {
 	// container is the sandbox container name, readable after construction
 	// (surfaces that start the sandbox after building tools bind it late,
 	// before the agent runs — jobs only spawn once the agent iterates).
-	container atomic.Value
+	container    atomic.Value
+	serveSandbox *serveSandboxLease
 }
 
 // backgroundSettingsFromResolved maps the resolved background config onto
@@ -111,8 +112,8 @@ func newBackgroundRuntime(s BackgroundSettings, sessionID, containerName string,
 		if name == "" {
 			return []string{"sh", "-c", command}, nil, nil
 		}
-		argv, followUp := wrapSandboxCommand(name, command)
-		return argv, followUp, nil
+		argv, followUp := wrapBackgroundSandboxCommand(name, command)
+		return append([]string{"docker"}, argv...), followUp, nil
 	}
 	var obs bgproc.Observer
 	if emit != nil {
@@ -379,7 +380,15 @@ func (t *bgStartTool) Call(args string) (string, error) {
 	if err := t.shell.checkApproval(p.Command, "background job"); err != nil {
 		return "", err
 	}
-	job, err := t.rt.mgr.Start(t.rt.session, p.Command, "", time.Duration(p.TimeoutSeconds)*time.Second)
+	opts := bgproc.SpawnOptions{}
+	if t.rt.serveSandbox != nil {
+		var err error
+		opts, err = t.rt.serveSandbox.acquire()
+		if err != nil {
+			return "", err
+		}
+	}
+	job, err := t.rt.mgr.StartWithOptions(t.rt.session, p.Command, "", time.Duration(p.TimeoutSeconds)*time.Second, opts)
 	if err != nil {
 		return "", err
 	}
@@ -554,4 +563,15 @@ func jobRuntimeSeconds(j bgproc.Job) float64 {
 		end = time.Now()
 	}
 	return end.Sub(j.StartedAt).Seconds()
+}
+
+// Background commands need their own process group inside the container so
+// the pidfile follow-up can kill descendants without affecting other jobs.
+// Run setsid as a child of a waiting shell so it is not already a process-group
+// leader and does not fork away from docker exec. This also supports BusyBox
+// setsid, which has no --wait option.
+func wrapBackgroundSandboxCommand(name, command string) ([]string, func()) {
+	argv, followUp := wrapSandboxCommand(name, command)
+	argv = append(append(append([]string{}, argv[:4]...), "sh", "-c", `setsid "$@" & wait $!`, "odek-bg"), argv[4:]...)
+	return argv, followUp
 }

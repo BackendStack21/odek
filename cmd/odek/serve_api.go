@@ -32,6 +32,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/BackendStack21/odek"
+	"github.com/BackendStack21/odek/internal/danger"
+
 	"github.com/BackendStack21/odek/internal/config"
 	"github.com/BackendStack21/odek/internal/guard"
 	"github.com/BackendStack21/odek/internal/llmclient"
@@ -581,7 +584,7 @@ func handleSkills(sc skills.SkillsConfig) http.HandlerFunc {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		extra := sc.Dirs
+		extra := append([]string(nil), sc.Dirs...)
 		for i := range extra {
 			extra[i] = expandHome(extra[i])
 		}
@@ -589,6 +592,13 @@ func handleSkills(sc skills.SkillsConfig) http.HandlerFunc {
 
 		var out []skillSummary
 		for _, s := range append(append([]skills.Skill{}, res.AutoLoad...), res.Lazy...) {
+			if name := r.URL.Query().Get("name"); name != "" {
+				if s.Name == name {
+					writeAPIJSON(w, http.StatusOK, s)
+					return
+				}
+				continue
+			}
 			out = append(out, skillSummary{
 				Name:        s.Name,
 				Description: s.Description,
@@ -598,6 +608,10 @@ func handleSkills(sc skills.SkillsConfig) http.HandlerFunc {
 				NeedsReview: s.Provenance.NeedsReview,
 				Untrusted:   s.Provenance.Untrusted,
 			})
+		}
+		if r.URL.Query().Get("name") != "" {
+			http.Error(w, "skill not found", http.StatusNotFound)
+			return
 		}
 		sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 		if out == nil {
@@ -612,8 +626,11 @@ func handleSkills(sc skills.SkillsConfig) http.HandlerFunc {
 // toolSummary names one tool and whether the resolved tool filter exposes it
 // to the model.
 type toolSummary struct {
-	Name    string `json:"name"`
-	Enabled bool   `json:"enabled"`
+	Description string `json:"description,omitempty"`
+	Schema      any    `json:"schema,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+	Name        string `json:"name"`
+	Enabled     bool   `json:"enabled"`
 }
 
 // handleTools lists the built-in tool registry with its enabled/disabled
@@ -642,11 +659,24 @@ func handleTools(resolved config.ResolvedConfig) http.HandlerFunc {
 		}
 		whitelistActive := resolved.Tools.Enabled != nil
 
+		pc := config.DefaultPlanningConfig()
+		descriptors := map[string]odek.Tool{}
+		for _, t := range builtinTools(danger.DangerousConfig{}, nil, nil, 1, "", toolConfig{Planning: &pc}, nil) {
+			descriptors[t.Name()] = t
+		}
 		out := make([]toolSummary, 0, len(names))
 		for _, n := range names {
 			// Shared filter rule (introspect.go) — the same one the
 			// agent-facing list_tools tool applies.
-			out = append(out, toolSummary{Name: n, Enabled: toolEnabled(n, enabledSet, disabledSet, whitelistActive)})
+			entry := toolSummary{Name: n, Enabled: toolEnabled(n, enabledSet, disabledSet, whitelistActive)}
+			if t := descriptors[n]; t != nil {
+				entry.Description = t.Description()
+				entry.Schema = t.Schema()
+			}
+			if !entry.Enabled {
+				entry.Reason = "Disabled by the operator tool filter"
+			}
+			out = append(out, entry)
 		}
 		writeAPIJSON(w, http.StatusOK, map[string]any{
 			"tools":       out,
@@ -799,7 +829,9 @@ func handleMemoryConsolidate(memoryDir string, resolved config.ResolvedConfig) h
 			return
 		}
 		var body struct {
-			Target string `json:"target"`
+			Target  string                      `json:"target"`
+			Mode    string                      `json:"mode"`
+			Preview memory.ConsolidationPreview `json:"preview"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
 			http.Error(w, "invalid JSON", http.StatusBadRequest)
@@ -813,6 +845,15 @@ func handleMemoryConsolidate(memoryDir string, resolved config.ResolvedConfig) h
 		if resolved.LLM.RequestTimeoutSeconds > 0 {
 			timeout = resolved.LLM.RequestTimeoutSeconds
 		}
+		if body.Mode == "apply" {
+			mm := memory.NewMemoryManager(memoryDir, nil, resolved.Memory)
+			if err := mm.ApplyConsolidation(body.Target, body.Preview); err != nil {
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		client, err := llmclient.Dial(resolved.Provider, resolved.Model, resolved.APIKey, resolved.BaseURL)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -825,7 +866,21 @@ func handleMemoryConsolidate(memoryDir string, resolved config.ResolvedConfig) h
 			t := true
 			cfg.Enabled = &t
 		}
-		if err := memory.NewMemoryManager(memoryDir, client, cfg).Consolidate(body.Target); err != nil {
+		mm := memory.NewMemoryManager(memoryDir, client, cfg)
+		if body.Mode == "preview" {
+			preview, err := mm.PreviewConsolidation(body.Target)
+			if err != nil {
+				http.Error(w, err.Error(), 400)
+				return
+			}
+			writeAPIJSON(w, 200, preview)
+			return
+		}
+		if body.Mode != "" {
+			http.Error(w, "invalid consolidation mode", 400)
+			return
+		}
+		if err := mm.Consolidate(body.Target); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}

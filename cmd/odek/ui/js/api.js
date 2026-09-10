@@ -177,10 +177,10 @@ export function cancelRun(id) {
   return apiFetch('/api/runs/' + encodeURIComponent(id) + '/cancel', { method: 'POST' });
 }
 
-export function answerRunApproval(runId, approvalId, action) {
+export function answerRunApproval(runId, approvalId, action, confirm) {
   return apiFetch('/api/runs/' + encodeURIComponent(runId) + '/approvals/' + encodeURIComponent(approvalId), {
     method: 'POST',
-    body: JSON.stringify({ action }),
+    body: JSON.stringify({ action, ...(confirm ? {confirm} : {}) }),
   });
 }
 
@@ -254,3 +254,21 @@ export function listSubagents(key) {
   const q = key ? '?key=' + encodeURIComponent(key) : '';
   return apiFetch('/api/subagents' + q);
 }
+
+export function getCapabilities() { return apiFetch('/api/capabilities'); }
+export function startRun(content) { return apiFetch('/api/prompt', {method:'POST', body:JSON.stringify({content})}); }
+export function getSkill(name) { return apiFetch('/api/skills?name=' + encodeURIComponent(name)); }
+export function listSchedules() { return apiFetch('/api/schedules'); }
+export function saveSchedule(job) { return apiFetch('/api/schedules' + (job.id ? '/' + encodeURIComponent(job.id) : ''), {method:'POST',body:JSON.stringify(job)}); }
+export function removeSchedule(id) { return apiFetch('/api/schedules/' + encodeURIComponent(id), {method:'DELETE'}); }
+export function getMaintenance() { return apiFetch('/api/maintenance'); }
+export function runMaintenance(confirm) { return apiFetch('/api/maintenance', {method:'POST',body:JSON.stringify({confirm})}); }
+
+export async function uploadMedia(file, sessionId, sessionToken) {
+  const query = new URLSearchParams({name:file.name}); if(sessionId)query.set('session_id',sessionId);
+  const response=await fetch('/api/uploads?'+query,{method:'POST',headers:apiHeaders(sessionToken?{'X-Session-Token':sessionToken}:{}),body:file});
+  if(!response.ok)throw new Error(await response.text());return response.json();
+}
+
+export function previewMemory(target) { return apiFetch('/api/memory/consolidate',{method:'POST',body:JSON.stringify({target,mode:'preview'})}); }
+export function applyMemoryPreview(target,preview) { return apiFetch('/api/memory/consolidate',{method:'POST',body:JSON.stringify({target,mode:'apply',preview})}); }

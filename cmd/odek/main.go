@@ -2352,10 +2352,9 @@ func setupSandbox(tools []odek.Tool, cfg sandboxConfig) (containerName string, c
 		return "", nil, fmt.Errorf("failed to create sandbox container %q: %w\n  hint: make sure Docker is running, or disable sandbox with --no-sandbox", containerName, err)
 	}
 
-	cleanup = func() error {
-		fmt.Fprintf(os.Stderr, "odek: destroying sandbox container %s...\n", containerName)
-		return exec.Command("docker", "rm", "-f", containerName).Run()
-	}
+	cleanup = newSandboxCleanup(containerName, func(ctx context.Context) error {
+		return exec.CommandContext(ctx, "docker", "rm", "-f", containerName).Run()
+	})
 
 	applySandboxToolBindings(tools, containerName)
 	return containerName, cleanup, nil

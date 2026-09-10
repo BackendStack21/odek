@@ -1,6 +1,8 @@
 package bgproc
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -415,3 +417,155 @@ type funcObserver struct {
 
 func (f *funcObserver) BGStarted(j Job)   { f.started(j) }
 func (f *funcObserver) BGExited(n Notice) { f.exited(n) }
+
+func TestPerLaunchRoutingAndRelease(t *testing.T) {
+	m := NewManager(Config{RequireSandbox: true}, nil)
+	defer m.Shutdown()
+	if _, err := m.Start("a", "echo forbidden", "", 0); err == nil {
+		t.Fatal("missing sandbox routing accepted")
+	}
+	var wg sync.WaitGroup
+	for _, session := range []string{"a", "b"} {
+		session := session
+		wg.Add(1)
+		j, err := m.StartWithOptions(session, "ignored", "", 0, SpawnOptions{
+			Wrap:    func(string) ([]string, func(), error) { return []string{"sh", "-c", "printf " + session}, nil, nil },
+			Release: wg.Done,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, 5*time.Second, func() bool { job, _ := m.Get(session, j.ID); return job.Status != StatusRunning })
+		out, _, err := m.Output(session, j.ID, 0, 0)
+		if err != nil || out != session {
+			t.Fatalf("routing: %q %v", out, err)
+		}
+		if _, ok := m.Get("foreign", j.ID); ok {
+			t.Fatal("cross-session job exposed")
+		}
+	}
+	wg.Wait()
+}
+
+func TestLaunchFailureReleasesResources(t *testing.T) {
+	m := NewManager(Config{MaxJobsPerSession: 1}, nil)
+	defer m.Shutdown()
+	j, err := m.Start("s", "sleep 30", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := 0
+	release := func() { released++ }
+	if _, err = m.StartWithOptions("s", "echo capped", "", 0, SpawnOptions{Release: release}); err != ErrTooManyJobs {
+		t.Fatalf("cap: %v", err)
+	}
+	m.Stop("s", j.ID)
+	if _, err = m.StartWithOptions("s", "bad", "", 0, SpawnOptions{Wrap: func(string) ([]string, func(), error) { return []string{"/missing-odek-test-executable"}, nil, nil }, Release: release}); err == nil {
+		t.Fatal("missing executable accepted")
+	}
+	if _, err = m.StartWithOptions("", "bad", "", 0, SpawnOptions{Release: release}); err == nil {
+		t.Fatal("empty session accepted")
+	}
+	m.Shutdown()
+	if _, err = m.StartWithOptions("s", "echo late", "", 0, SpawnOptions{Release: release}); err == nil {
+		t.Fatal("launch after shutdown accepted")
+	}
+	if released != 4 {
+		t.Fatalf("released %d times", released)
+	}
+}
+
+func TestShutdownDrainsTerminalCleanup(t *testing.T) {
+	m := NewManager(Config{}, nil)
+	entered, release := make(chan struct{}), make(chan struct{})
+	_, err := m.StartWithOptions("s", "true", "", 0, SpawnOptions{Release: func() { close(entered); <-release }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-entered
+	done := make(chan struct{})
+	go func() { m.Shutdown(); close(done) }()
+	select {
+	case <-done:
+		t.Fatal("shutdown skipped pending cleanup")
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("shutdown failed to drain")
+	}
+}
+
+func TestShutdownDeadlineAndDeletedSession(t *testing.T) {
+	m := NewManager(Config{}, nil)
+	entered, release := make(chan struct{}), make(chan struct{})
+	_, err := m.StartWithOptions("s", "true", "", 0, SpawnOptions{Release: func() { close(entered); <-release }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-entered
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err = m.DeleteSession(ctx, "s"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("deadline: %v", err)
+	}
+	if _, err = m.Start("s", "echo stale", "", 0); err == nil {
+		t.Fatal("deleted session accepted launch")
+	}
+	if _, err = m.Start("other", "true", "", 0); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	m.Shutdown()
+}
+
+func TestDeletedSessionReleasesRecordsDuringCleanup(t *testing.T) {
+	m := newTestManager(t, nil)
+	entered, unblock := make(chan struct{}), make(chan struct{})
+	defer m.Shutdown()
+	defer close(unblock)
+	_, err := m.StartWithOptions("deleted", "printf retained", "", 0, SpawnOptions{Release: func() { close(entered); <-unblock }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("process did not exit")
+	}
+	m.mu.Lock()
+	var e *jobEntry
+	for job := range m.draining {
+		e = job
+	}
+	m.mu.Unlock()
+	if e == nil {
+		t.Fatal("cleanup ownership lost")
+	}
+	select {
+	case <-e.processExited:
+	default:
+		t.Fatal("process exit delayed by cleanup")
+	}
+	select {
+	case <-e.exited:
+		t.Fatal("cleanup reported complete too early")
+	default:
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := m.DeleteSession(ctx, "deleted"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	records, notices := len(m.sess["deleted"]), len(m.out["deleted"])
+	m.mu.Unlock()
+	if records != 0 || notices != 0 {
+		t.Fatalf("retained records=%d notices=%d", records, notices)
+	}
+	if _, err := m.Start("deleted", "true", "", 0); err == nil {
+		t.Fatal("stale launch accepted")
+	}
+}

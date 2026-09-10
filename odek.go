@@ -152,6 +152,9 @@ type Config struct {
 	// after each tool invocation. Used by the WebUI for live streaming.
 	ToolEventHandler func(event string, name string, data string)
 
+	// ToolDetailHandler receives correlated tool calls with explicit outcomes.
+	ToolDetailHandler func(ToolDetailEvent)
+
 	// InteractionMode controls tool-call rendering: "engaging" (default), "enhance", "verbose", or "off".
 	InteractionMode string
 
@@ -732,6 +735,7 @@ func New(cfg Config) (*Agent, error) {
 	if cfg.ToolEventHandler != nil {
 		engine.SetToolEventHandler(cfg.ToolEventHandler)
 	}
+	engine.SetToolDetailHandler(cfg.ToolDetailHandler)
 
 	// Wire agent-loop signal observability (context trim, tool recovery): fan
 	// out to the programmatic handler and the terminal renderer.
@@ -1292,3 +1296,6 @@ func (n *memoryRenderNotifier) Notify(event memory.MemoryEvent) {
 		n.r.MemoryEpisode("pending_review", event.SessionID)
 	}
 }
+
+// ToolDetailEvent carries correlated tool execution metadata to clients.
+type ToolDetailEvent = loop.ToolDetailEvent

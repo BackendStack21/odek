@@ -257,6 +257,17 @@ type UserMessageHandler func(ctx context.Context, msg string)
 // each tool invocation. Used by the WebUI for live streaming of tool events.
 type ToolEventHandler func(event string, name string, data string)
 
+// ToolDetailEvent carries execution identity and outcome to interactive clients.
+// Completed means the tool returned without a Go error, not that its output
+// proves the user's task succeeded. Output is untrusted data.
+type ToolDetailEvent struct {
+	Type    string `json:"type"`
+	Name    string `json:"name"`
+	Data    string `json:"data"`
+	CallID  string `json:"call_id"`
+	Outcome string `json:"outcome,omitempty"`
+}
+
 // IterationInfo holds data about a single agent loop iteration, passed to
 // the IterationCallback after each turn. Used for progress reporting.
 type IterationInfo struct {
@@ -323,9 +334,10 @@ type Engine struct {
 	userMsgHandler UserMessageHandler                  // optional: called once per new user message
 	wrapUntrusted  func(source, content string) string // optional: wraps skill/episode content
 
-	toolEventHandler ToolEventHandler // optional: fires during tool execution
-	signalHandler    SignalHandler    // optional: fires on internal loop signals
-	signalMu         sync.Mutex       // serializes handler invocation (parallel heartbeats)
+	toolEventHandler  ToolEventHandler // optional: fires during tool execution
+	toolDetailHandler func(ToolDetailEvent)
+	signalHandler     SignalHandler // optional: fires on internal loop signals
+	signalMu          sync.Mutex    // serializes handler invocation (parallel heartbeats)
 
 	// stream enables SSE streaming for the main think step (docs/STREAMING.md).
 	// Auxiliary LLM calls (compaction, iteration summary) stay buffered.
@@ -654,6 +666,9 @@ func (e *Engine) SetMemoryPromptFunc(fn func() string) {
 
 // SetToolEventHandler sets the optional tool event callback for live streaming.
 func (e *Engine) SetToolEventHandler(cb ToolEventHandler) { e.toolEventHandler = cb }
+
+// SetToolDetailHandler installs the correlated interactive tool callback.
+func (e *Engine) SetToolDetailHandler(cb func(ToolDetailEvent)) { e.toolDetailHandler = cb }
 
 // SetStream enables SSE streaming of the main think step (docs/STREAMING.md).
 // Requires a delta handler (SetDeltaHandler) to change anything user-visible;
@@ -3033,6 +3048,9 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			if e.toolEventHandler != nil {
 				e.toolEventHandler("tool_call", tc.Function.Name, tc.Function.Arguments)
 			}
+			if e.toolDetailHandler != nil {
+				e.toolDetailHandler(ToolDetailEvent{Type: "tool_call", Name: tc.Function.Name, Data: tc.Function.Arguments, CallID: callIDs[idx]})
+			}
 			data := map[string]any{
 				// Stable correlation ID shared with the matching
 				// completed/failed event.
@@ -3283,6 +3301,13 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			if e.toolEventHandler != nil {
 				e.toolEventHandler("tool_result", tc.Function.Name, output)
 			}
+			if e.toolDetailHandler != nil {
+				outcome := "completed"
+				if results[i].errored {
+					outcome = "failed"
+				}
+				e.toolDetailHandler(ToolDetailEvent{Type: "tool_result", Name: tc.Function.Name, Data: output, CallID: callIDs[i], Outcome: outcome})
+			}
 
 			// Structured runtime event for this call. Failure classification
 			// uses the real execution outcome recorded in Phase 2 — output
@@ -3339,8 +3364,14 @@ func (e *Engine) runLoop(ctx context.Context, in []session.Message) (answer stri
 			)
 
 			messages = append(messages, session.Message{
-				Role:       "tool",
-				Content:    delimited,
+				Role:    "tool",
+				Content: delimited,
+				ToolOutcome: func() string {
+					if results[i].errored {
+						return "failed"
+					}
+					return "completed"
+				}(),
 				Name:       tc.Function.Name,
 				ToolCallID: tc.ID,
 			})

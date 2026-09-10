@@ -810,10 +810,10 @@ match as plain text. The bundled WebUI implements this in
 
 ### Frontend (`cmd/odek/ui/`)
 
-- Vanilla JS + CSS SPA split into native ES modules under `js/` — no build step, no bundler, no CDN. Module map: `main` (init/theme/keyboard) · `commands` (⌘K palette + 5 composer slash verbs) · `tools` (typed result chips) · `ws` (protocol v2 + `turn_started`/`bg_job`) · `api` (typed REST client) · `sessions` · `panels` (inspector workspaces: sessions / now / memory / ops) · `plan` · `health` (heartbeat + notifications) · `render`/`markdown`/`untrusted` · `approvals` · `input` (send, queue, `@`, attachments) · `state`/`dom`/`utils`/`net`/`escape`
+- Vanilla JS + CSS SPA split into native ES modules under `js/` — no build step, no bundler, no CDN. Module map: `main` (init/theme/keyboard) · `commands` (⌘K palette + 5 composer slash verbs) · `tools` (typed result chips) · `ws` (protocol v2 + `turn_started`/`bg_job`) · `api` (typed REST client) · `sessions` · `panels` (inspector workspaces: sessions / now / results / memory / ops / manage) · `plan` · `health` (heartbeat + notifications) · `render`/`markdown`/`untrusted` · `approvals` · `input` (send, queue, `@`, attachments) · `state`/`dom`/`utils`/`net`/`escape`
 - **Escaping**: all server-controlled strings are inserted escaped (`escapeHtml`/`escapeAttr`/`textContent`); `markdownToHtml` HTML-escapes all input by default and allowlists link schemes — see "Content sanitization contract" above. No inline scripts or handlers anywhere (CSP `script-src 'self'`); generated content uses event delegation
 - **Untrusted envelope**: `js/untrusted.js` unwraps the model-facing `<untrusted_content_*>` envelope before display (body shown; source discarded)
-- **Design**: self-contained "EMBER" theme — electric amber on a near-void page, type instead of cards, a 36px status-strip topbar, inspector workspaces (sessions / now / memory / ops), and ≤200ms color/opacity answers. Design tokens are CSS custom properties in `style.css` (`--bg-0…4`, `--amber`, `--line`, spacing/radius/motion scales) with a full light-mode variant and `prefers-reduced-motion` support; the Azeret Mono variable font is self-hosted from `ui/fonts/` so the UI works offline. Reading text caps at 13px (`--fs-base`) — user and assistant share it; markdown headings stay at that size; chrome is 11–12px. Display sizes (`--fs-lg` / `--fs-xl`) are wordmarks only. Inputs use 16px on coarse pointers so iOS Safari does not zoom.
+- **Design**: self-contained EMBER dark, light and high-contrast themes. Locally bundled Geist Sans serves reading/interface text and Geist Mono serves code. Comfortable density uses 16px reading text; compact uses 13px. The 56px desktop header becomes two rows on mobile, with a collapsible session rail from 1100px, hidden by default, and a resizable inspector. CSS variables define colors, spacing and typography; reduced motion is respected. No CDN or font network request is required.
 - **Streaming**: fragments (`token_delta`/`thinking_delta`) and bulk `token` events share one rAF-batched render pipeline
 - **DOM budget**: the message list is capped at 80 elements (`MAX_MESSAGES`); older messages are pruned
 - **Resilience**: auto-reconnect with exponential backoff (1s doubling to a 30s cap, reset after a stable connection) plus the 20s application heartbeat and the server's 20s `keepalive`. A drop is visible: amber top-bar word, sticky `#conn-banner` with retry countdown, one transcript line per outage, and a composer toast if you send while down.
@@ -826,3 +826,139 @@ match as plain text. The bundled WebUI implements this in
 - **Live streaming**: on by default — thinking-default models render reasoning and answer as they generate. Disable with `--no-stream` if a gateway mishandles SSE.
 - **Headless clients**: scripts and TUIs don't need the WebSocket — `POST /api/prompt` + poll `GET /api/runs/{id}`, and answer approvals through `/api/runs/{id}/approvals/{aid}`. The bundled WebUI's *runs* tab uses exactly this surface.
 - **Session discovery**: reference any saved session via `@sess:ID` in your prompt to give the agent full context from previous conversations.
+
+## Reference workspace additions
+
+The desktop client provides a collapsible session rail above 1100px, hidden by default, and a resizable
+inspector (320–700px). Comfortable and compact density are available in server
+status. Draft text is retained per session in tab-scoped session storage. Tool
+results share bounded, searchable renderers between live and historical views;
+Results collects outputs and links back to their conversation position.
+
+Tool frames add `call_id` and `outcome` (`completed` or `failed`). Completion means
+the tool returned without a Go error, not that its output proves task success.
+Historical messages retain `tool_outcome`; older records display unknown status.
+The legacy public tool callback remains supported alongside `ToolDetailHandler`.
+
+New operator-authenticated endpoints:
+
+| Endpoint | Behavior |
+| --- | --- |
+| `GET /api/capabilities` | Additive feature flags and result renderer families. Missing flags mean unavailable. |
+| `GET /api/skills?name=NAME` | Full discovered skill body and provenance for human review. |
+| `GET /api/tools` | Adds descriptions and JSON schemas to built-in registry entries. |
+| `GET /api/schedules` | Shared scheduler definitions, runtime states and next-fire previews. |
+| `POST /api/schedules` | Create a schedule using the CLI's validation and file locks. |
+| `POST /api/schedules/{id}` | Replace a schedule definition, preserving identity and creation time. |
+| `DELETE /api/schedules/{id}` | Delete a schedule. |
+| `GET /api/maintenance` | Operator-resolved retention policy. |
+| `POST /api/maintenance` | Apply that policy with `{"confirm":"cleanup"}`; returns a report. |
+| `POST /api/uploads?name=NAME&session_id=ID` | Raw passive-media upload, 5 MiB limit, detected MIME. Existing sessions require their token; omitting ID creates an upload session and returns its token. |
+| `GET /api/artifacts?session_id=ID` | Session-scoped cached artifact metadata; requires session token. |
+| `GET /api/artifacts/{id}?session_id=ID` | Authenticated download of immutable cached bytes; requires session token. |
+
+Schedules are executed by a running `odek schedule daemon` or Telegram scheduler;
+the management API does not start another scheduler. New schedules in the UI are
+paused by default. Maintenance never accepts filesystem roots or replacement
+policies from the client.
+
+Uploads return `upload_id`, `session_id` and `auth_token`. Send the opaque
+`upload_id` in a prompt attachment. The server validates session ownership and
+supplies the local uploaded file reference inside an untrusted attachment boundary;
+image/audio interpretation uses the configured vision/transcription tools. Files
+are stored under the serving workspace’s `.odek-artifacts/uploads/`, with a suffix
+derived from detected MIME, so workspace-confined tools can read them. Uploads are removed with their sessions and swept at startup and every minute.
+The workspace retains at most 128 uploads / 256 MiB for seven days, evicting the
+oldest first. Attachments in active turns are pinned against retention until the
+turn ends; new uploads are rejected if pinned files leave insufficient capacity.
+Session deletion still removes its uploads immediately. Upload handles are process-local; pending uploads must be reattached
+after a restart. Existing files count toward retention without being trusted as
+new user uploads. Binary uploads are not silently decoded as text or sent as native model image parts.
+
+The `artifact` WebSocket event carries session-bound metadata for a validated MCP
+artifact. Preview capture revalidates roots and digest and opens through `os.Root`.
+Preview reads share a 40 MiB per-turn budget, including failed captures.
+Each copy is capped at 10 MiB; the process cache is capped at 40 MiB/128 entries and
+is cleared on restart. Missing/evicted artifacts return 404. Original extension
+files are unaffected. Media rendering uses authenticated Blob URLs; HTML/SVG and
+unknown content remain download-only, and PDF previews are sandboxed.
+
+`runtime_event` relays iteration and budget-exhaustion events. Iteration data adds
+an authoritative `budget` snapshot with configured maxima and remaining amounts;
+zero maxima mean unconfigured. The Now inspector displays remaining allowances.
+
+For repeatable visual review without provider credentials, run
+`node scripts/webui/fixture-server.mjs` and open `http://127.0.0.1:4173`.
+This fixture uses the real UI assets and synthetic sessions, never a real agent.
+
+
+Consolidation supports `POST /api/memory/consolidate` with `target` and
+`mode: "preview"` to propose `{before, after}`. `mode: "apply"` accepts the reviewed
+`preview` object and rejects concurrent changes. Preview runs the existing scanner
+and consolidation logic against an isolated temporary store. Legacy callers can
+omit mode to retain immediate consolidation.
+
+Text drafts survive reloads within the browser tab. Attachment drafts survive
+session switches in memory; reattach them after a reload. Queues pause on
+interruption and session changes and require an explicit resume in their owning
+session. Uploads that finish after a session switch cannot attach to the new
+conversation. Plan result links show temporal association with an active step;
+they do not claim that a tool result validates the step.
+
+The result registry supports code, aligned split/unified diffs, terminal output,
+file-search references, source links, HTTP status cards and expandable JSON.
+Unknown tools keep the searchable raw-text fallback. Views start with 12 inline
+or 200 detail lines and expand in bounded pages. The Results collection retains
+up to 300 entries/16 MiB of text per visible session. Historical outcomes from
+older servers remain unknown instead of being inferred from optimistic output.
+
+REST run approvals expose `requires_confirmation` when the operator's REST
+friction setting requires a typed response. The UI asks for that response before
+submitting. Full run details can be refreshed without closing the inspected view.
+
+### Visual regression review
+
+Use the fixture with a current browser at 1440×1000, 1024×768 and 390×844:
+
+1. Open a fixture session; inspect code, unified/split diff and terminal output.
+   Search output, switch Raw, and navigate back to the conversation.
+2. Open the inspector and resize it with pointer and arrow keys. Tab through
+   inspector controls and use arrow keys to change tabs. Check both densities.
+3. Switch between EMBER dark, light and high contrast. Verify readable contrast,
+   no page-level horizontal overflow, and visible keyboard focus.
+4. At mobile width, open Sessions, Results and Manage. Open the schedule editor;
+   verify labeled inputs, scrolling and controls remain within the viewport.
+5. Type a draft, switch sessions and return. Submit a fixture prompt to exercise
+   correlated tool frames and the live result collection.
+
+The fixture serves synthetic responses, so it validates presentation and client
+interaction only. Go tests exercise production routing, auth, artifacts, uploads,
+schedules and WebSocket journeys; the JS suite covers renderer and lifecycle
+regressions. Actual provider execution remains a separate integration check.
+
+### Tool-specific views
+
+Tool headers use semantic argument summaries (`create · 3 steps`, `2 commands`,
+`2 files`, `2 edits`) and switch to returned result summaries when available.
+Unknown object arguments are serialized instead of becoming `[object Object]`.
+Live, historical and Results inspector views use the same presentation models.
+
+| Tools | Structured presentation |
+| --- | --- |
+| `plan` | Version/progress summary and step states: pending, in progress, done, blocked. Requested changes remain distinct from returned state. |
+| `parallel_shell` | Expandable commands with individual exit codes, duration, stdout, stderr and errors; partial failure counts in the collapsed header. |
+| `batch_read` | Separate file contents, total lines and per-file errors. |
+| `batch_patch` | Separate edit outcomes and expandable diffs/errors. |
+| `read_file`, `write_file`, `patch`, `diff` | Content extracted from the actual tool DTO, write outcomes, and unified/split diff rendering. |
+| `http_batch` | Individual request statuses and errors. |
+| `search_files`, `multi_grep` | File matches and per-pattern result groups with counts/skipped paths. |
+| `count_lines`, `word_count`, `checksum`, `sort`, `head_tail` | Per-file detail groups. |
+| Other `batch_*` tools | Generic per-item inspection when the tool returns a `results` array, without inventing success status. |
+
+Nested result bodies are built only when opened. Inline collections initially
+show three items; additional items are paged. Search includes child output.
+Raw, copy and save retain the complete received payload. Malformed or truncated
+JSON falls back to text rather than presenting requested work as completed.
+A successful tool callback is distinct from the individual outcomes within a
+batch, which are displayed explicitly. Go test failure lines remain terminal
+output and are not mistaken for diff headers.

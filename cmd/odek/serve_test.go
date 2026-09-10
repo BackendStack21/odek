@@ -1272,8 +1272,10 @@ func TestServe_E2E_MultiToolCall(t *testing.T) {
 	var events []map[string]any
 	var sawSession, sawToken, sawToolCall, sawToolResult, sawDone bool
 	var toolCallCount, toolResultCount int
+	callIDs := map[string]bool{}
 
-	for i := 0; i < 15; i++ {
+	// Additive protocol frames may precede done; the read deadline bounds the wait.
+	for i := 0; i < 100; i++ {
 		var raw []byte
 		if err := golangws.Message.Receive(conn, &raw); err != nil {
 			t.Fatalf("Receive event %d: %v (collected %d events)", i, err, len(events))
@@ -1294,9 +1296,18 @@ func TestServe_E2E_MultiToolCall(t *testing.T) {
 		case "tool_call":
 			sawToolCall = true
 			toolCallCount++
+			id, _ := evt["call_id"].(string)
+			if id == "" || callIDs[id] {
+				t.Fatalf("tool call has missing or duplicate identity: %v", evt)
+			}
+			callIDs[id] = true
 		case "tool_result":
 			sawToolResult = true
 			toolResultCount++
+			id, _ := evt["call_id"].(string)
+			if !callIDs[id] || evt["outcome"] != "completed" {
+				t.Fatalf("tool result lacks correlated successful outcome: %v", evt)
+			}
 		case "done":
 			sawDone = true
 			goto multiDone
@@ -1662,7 +1673,8 @@ func TestServe_E2E_LiveToolEvents(t *testing.T) {
 	var eventOrder []string
 	var doneAt time.Time
 
-	for i := 0; i < 10; i++ {
+	// Additive protocol frames may precede done; the read deadline bounds the wait.
+	for i := 0; i < 100; i++ {
 		var raw []byte
 		if err := golangws.Message.Receive(conn, &raw); err != nil {
 			t.Fatalf("Receive event %d: %v", i, err)

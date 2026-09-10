@@ -3,7 +3,7 @@
 import { S, getSessionToken } from './state.js';
 import { promptEl, skeletonEl } from './dom.js';
 import { escapeHtml, escapeAttr, showToast, toggleShortcuts, hideCancel, closeDialog, formatNum } from './utils.js';
-import { addSystemMessage } from './render.js';
+import { addSystemMessage, requestTurnStop, endStream } from './render.js';
 import { loadSessions, loadAndRenderSession } from './sessions.js';
 import { connect, wsSend } from './ws.js';
 import { togglePanels } from './panels.js';
@@ -17,6 +17,9 @@ import './input.js';
 import './approvals.js';
 import './health.js';
 import './commands.js';
+import './workspace.js';
+import './management.js';
+import './artifacts.js';
 
 // ── Init ──
 // Save references so newSession() can restore the empty state after clearing.
@@ -46,13 +49,15 @@ if (S.savedEmptyStateNode) {
   });
 }
 
-const THEMES = ['ember-dark', 'ember-light', 'high-contrast'];
-const THEME_GLYPH = { 'ember-dark': '◐', 'ember-light': '☀', 'high-contrast': '▣' };
+const THEMES = ['ember-dark', 'ember-light', 'midnight', 'high-contrast'];
+const THEME_GLYPH = { 'ember-dark': '◐', 'ember-light': '☀', 'midnight': '☾', 'high-contrast': '▣' };
+
+const THEME_NAME = { 'ember-dark': 'Ember', 'ember-light': 'Porcelain', midnight: 'Midnight', 'high-contrast': 'High contrast' };
 
 function applyTheme(name) {
   const theme = THEMES.includes(name) ? name : 'ember-dark';
   S.theme = theme;
-  document.body.classList.remove('light', 'theme-ember-dark', 'theme-ember-light', 'theme-high-contrast', 'theme-classic');
+  document.body.classList.remove('light', 'theme-ember-dark', 'theme-ember-light', 'theme-high-contrast', 'theme-classic', 'theme-midnight');
   document.body.classList.add('theme-' + theme);
   if (theme === 'ember-light') document.body.classList.add('light');
   const root = document.documentElement;
@@ -61,7 +66,8 @@ function applyTheme(name) {
   const btn = document.getElementById('theme-btn');
   if (btn) {
     btn.textContent = THEME_GLYPH[theme] || '◐';
-    btn.title = 'Theme: ' + theme + ' (click to cycle)';
+    btn.title = 'Theme: ' + THEME_NAME[theme] + ' (click to cycle)';
+    btn.setAttribute('aria-label', btn.title);
   }
 }
 
@@ -69,7 +75,7 @@ function cycleTheme(want) {
   if (want && THEMES.includes(want)) { applyTheme(want); return; }
   const i = THEMES.indexOf(S.theme);
   applyTheme(THEMES[(i + 1) % THEMES.length]);
-  showToast('Theme: ' + S.theme);
+  showToast('Theme: ' + THEME_NAME[S.theme]);
 }
 
 applyTheme(S.theme);
@@ -202,6 +208,7 @@ function switchModel(modelId) {
 // the REST endpoint when the socket is down but the session is known.
 function cancelAgent() {
   if (!S.sessionId) {
+    if (S.busy) { requestTurnStop(); S.ws?.close(); endStream('cancelled'); addSystemMessage('⏹ Cancelled'); return; }
     hideCancel();
     addSystemMessage('⏹ No active session to cancel');
     return;
@@ -212,13 +219,18 @@ function cancelAgent() {
     session_id: S.sessionId,
     auth_token: token || undefined,
   })) {
+    requestTurnStop();
     hideCancel();
     addSystemMessage('⏹ Cancel requested');
     return;
   }
-  cancelSession(S.sessionId, token || undefined).catch(() => {});
-  hideCancel();
-  addSystemMessage('⏹ Canceled');
+  const sid = S.sessionId;
+  requestTurnStop();
+  cancelSession(sid, token || undefined).then(() => {
+    if (S.sessionId !== sid) return;
+    endStream('cancelled');
+    addSystemMessage('⏹ Cancelled');
+  }).catch(err => { showToast('Cancel failed: ' + err.message); });
 }
 document.getElementById('cancel-btn').addEventListener('click', cancelAgent);
 

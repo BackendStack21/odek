@@ -568,6 +568,7 @@ func (r *serveRun) snapshot(includeEvents bool) map[string]any {
 			"id": p.ID, "risk": p.Risk, "command": p.Command,
 			"description": p.Description, "allow_trust": p.AllowTrust,
 			"friction": p.Friction, "friction_approvals": p.FrictionApprovals,
+			"requires_confirmation": restApprovalFrictionEnabled || p.Friction,
 		})
 	}
 	out["pending_approvals"] = pending

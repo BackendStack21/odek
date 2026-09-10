@@ -73,6 +73,7 @@ const TAB_ID = {
 };
 
 export function openTab(name) {
+  if ((name === 'sessions' || name === 'session') && document.body.classList.contains('workspace-wide')) { if (!S.sessionRailOpen) S.toggleSessionRail?.(); document.getElementById('sidebar-search')?.focus(); return; }
   togglePanels(true);
   const ws = TAB_WS[name] || name;
   const btn = document.getElementById(TAB_ID[ws] || 'ptab-now');
