@@ -315,6 +315,14 @@ Top-level execution knobs. Every one also exists as a CLI flag and an `ODEK_*` e
 | `no_agents` | `false` | Skip loading project `AGENTS.md` |
 | `system` | built-in | Override the system-prompt identity layer — name/mission/persona (operator-only; rejected from project configs). The invariant security pillar is always composed on top and cannot be overridden. |
 
+With `provider: "deepseek"`, the model picker includes `deepseek-flash` and
+`deepseek-pro`, each with a 1,000,000-token context fallback. These IDs also work
+with `--model` and runtime model switching. Flash is sent directly; the Pro
+shortcut sends `deepseek-v4-pro` to DeepSeek. Existing versioned IDs remain valid.
+Custom providers receive model IDs unchanged. See
+[DeepSeek's model documentation](https://api-docs.deepseek.com/quick_start/pricing/)
+for current provider routing and availability.
+
 ## LLM client (`llm`)
 
 Tunes the shared LLM client (streaming and buffered calls share one retry policy):
