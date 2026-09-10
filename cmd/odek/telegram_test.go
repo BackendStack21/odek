@@ -1126,7 +1126,7 @@ func TestFormatStats(t *testing.T) {
 		CreatedAt:  time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
 		LastActive: time.Date(2026, 1, 2, 3, 5, 5, 0, time.UTC),
 	}
-	out := formatStats(cs)
+	out := formatStats(cs, 0, 0)
 	if !strings.Contains(out, "Messages: 3") {
 		t.Errorf("missing message count: %s", out)
 	}

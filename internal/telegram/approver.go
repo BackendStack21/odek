@@ -17,7 +17,15 @@ import (
 // approvalTimeout is how long the agent blocks waiting for a user response
 // via inline keyboard. If the user doesn't respond in time, the operation
 // is denied with a timeout error.
-const approvalTimeout = 120 * time.Second
+// approvalTimeout is how long an approval prompt waits for a response.
+// A variable so tests can shrink it. On expiry the prompt message is
+// visibly marked expired and its buttons removed.
+var approvalTimeout = 120 * time.Second
+
+// approvalDeadlineText renders the human-readable deadline shown in prompts.
+func approvalDeadlineText() string {
+	return approvalTimeout.Truncate(time.Second).String()
+}
 
 // callbackDataPrefixes
 const (
@@ -274,6 +282,13 @@ func (a *TelegramApprover) PromptCommand(cls danger.RiskClass, cmd, description 
 	case <-a.cancel:
 		return fmt.Errorf("approval cancelled: %s", cmd)
 	case <-time.After(approvalTimeout):
+		// Mark the prompt visibly expired and strip the buttons so a stale
+		// keyboard can't be tapped after the wait window closed.
+		if err := a.bot.EditMessageText(a.ChatID, pr.messageID,
+			fmt.Sprintf("⏰ *Expired* — no response within %s · the operation was not executed", approvalDeadlineText()),
+			&SendOpts{ParseMode: ParseModeMarkdownV2, ReplyMarkup: &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{}}}); err != nil {
+			a.log.Warn("telegram approver: expire prompt edit failed", "message_id", pr.messageID, "error", err)
+		}
 		return fmt.Errorf("approval timeout: %s", cmd)
 	}
 }
@@ -358,12 +373,13 @@ func buildApprovalText(cls danger.RiskClass, cmd, description string) string {
 		b.WriteString("Why: " + EscapeMarkdown(d) + "\n")
 	}
 
-	// Reserve room for the fixed parts so the command body can be budgeted
-	// against Telegram's hard limit. The fences and a possible truncation
-	// marker are accounted for here.
+	// Reserve room for the fixed parts (including the expiry footer) so the
+	// command body can be budgeted against Telegram's hard limit. The fences
+	// and a possible truncation marker are accounted for here.
 	const openFence = "```\n"
 	const closeFence = "\n```"
-	overhead := b.Len() + len(openFence) + len(closeFence)
+	footer := fmt.Sprintf("\n\n⏳ _This request expires in %s — after that it is denied and nothing runs_", approvalDeadlineText())
+	overhead := b.Len() + len(openFence) + len(closeFence) + len(footer)
 
 	body := escapeCodeBlock(cmd)
 	if budget := telegramMaxMsgLen - overhead; len(body) > budget {
@@ -378,6 +394,7 @@ func buildApprovalText(cls danger.RiskClass, cmd, description string) string {
 	b.WriteString(openFence)
 	b.WriteString(body)
 	b.WriteString(closeFence)
+	b.WriteString(footer)
 	return b.String()
 }
 
