@@ -2221,7 +2221,7 @@ func friendlyRunError(err error) string {
 	var rle *llmclient.RateLimitError
 	if errors.As(err, &rle) {
 		msg := fmt.Sprintf("Agent error: rate-limited by the model provider after %d attempt(s). "+
-			"Nothing was executed and your session is intact. "+
+			"Your session is intact and any completed work is saved. "+
 			"Wait a moment and resend, or use /stats to check daily usage.", rle.Attempts)
 		if rle.RetryAfter > 0 {
 			msg += fmt.Sprintf(" Provider asked to retry in %s.", rle.RetryAfter.Truncate(time.Second))
@@ -2229,7 +2229,7 @@ func friendlyRunError(err error) string {
 		return msg
 	}
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
-		return "Agent error: the model request timed out. Nothing was executed and your session is intact. "+
+		return "Agent error: the model request timed out. Your session is intact and any completed work is saved. "+
 			"Resend your message to try again; if this keeps happening, check the provider status or raise the timeout in config."
 	}
 	return "Agent error: " + err.Error()

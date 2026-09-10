@@ -285,7 +285,7 @@ func (a *TelegramApprover) PromptCommand(cls danger.RiskClass, cmd, description 
 		// Mark the prompt visibly expired and strip the buttons so a stale
 		// keyboard can't be tapped after the wait window closed.
 		a.bot.EditMessageText(a.ChatID, pr.messageID,
-			fmt.Sprintf("⏰ *Expired* — no response within %s. The operation was not executed.", approvalDeadlineText()),
+			fmt.Sprintf("⏰ *Expired* — no response within %s · the operation was not executed", approvalDeadlineText()),
 			&SendOpts{ParseMode: ParseModeMarkdownV2, ReplyMarkup: &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{}}})
 		return fmt.Errorf("approval timeout: %s", cmd)
 	}
@@ -376,7 +376,7 @@ func buildApprovalText(cls danger.RiskClass, cmd, description string) string {
 	// and a possible truncation marker are accounted for here.
 	const openFence = "```\n"
 	const closeFence = "\n```"
-	footer := fmt.Sprintf("\n\n⏳ _This request expires in %s — after that it is denied and nothing runs._", approvalDeadlineText())
+	footer := fmt.Sprintf("\n\n⏳ _This request expires in %s — after that it is denied and nothing runs_", approvalDeadlineText())
 	overhead := b.Len() + len(openFence) + len(closeFence) + len(footer)
 
 	body := escapeCodeBlock(cmd)
@@ -392,7 +392,7 @@ func buildApprovalText(cls danger.RiskClass, cmd, description string) string {
 	b.WriteString(openFence)
 	b.WriteString(body)
 	b.WriteString(closeFence)
-	fmt.Fprintf(&b, "\n\n⏳ _This request expires in %s — after that it is denied and nothing runs._", approvalDeadlineText())
+	b.WriteString(footer)
 	return b.String()
 }
 

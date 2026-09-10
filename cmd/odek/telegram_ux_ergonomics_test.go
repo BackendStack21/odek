@@ -68,8 +68,8 @@ func TestFriendlyRunError_Timeout(t *testing.T) {
 	if !strings.Contains(out, "timed out") {
 		t.Fatalf("deadline error should be explained as a timeout, got:\n%s", out)
 	}
-	if !strings.Contains(strings.ToLower(out), "was executed") {
-		t.Fatalf("timeout message must state nothing was executed, got:\n%s", out)
+	if !strings.Contains(out, "session is intact") {
+		t.Fatalf("timeout message must reassure about session state, got:\n%s", out)
 	}
 }
 
