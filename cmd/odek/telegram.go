@@ -563,7 +563,8 @@ func telegramCmd(args []string) error {
 			if err != nil || cs == nil {
 				return "📊 *Session Stats*\n\nNo active session yet. Send a message to start one.", nil
 			}
-			return formatStats(cs), nil
+			used, limit := bot.DailyTokenUsage()
+			return formatStats(cs, used, limit), nil
 		}
 
 		// Handle /sessions — list recent sessions belonging to this chat.
@@ -2081,7 +2082,7 @@ func handleChatMessage(
 			return
 		}
 
-		reportError(bot, chatID, messageID, "Agent error: "+err.Error())
+		reportError(bot, chatID, messageID, friendlyRunError(err))
 		return
 	}
 
@@ -2168,8 +2169,15 @@ func handleChatMessage(
 }
 
 // formatStats formats session statistics for the Telegram stats command.
-func formatStats(cs *telegram.ChatSession) string {
+func formatStats(cs *telegram.ChatSession, dailyUsed, dailyLimit int64) string {
 	duration := time.Since(cs.CreatedAt).Truncate(time.Second)
+
+	budgetLine := fmt.Sprintf("Daily tokens: %s (unlimited)", formatThousands(dailyUsed))
+	if dailyLimit > 0 {
+		pct := dailyUsed * 100 / dailyLimit
+		budgetLine = fmt.Sprintf("Daily tokens: %s / %s (%d%%)",
+			formatThousands(dailyUsed), formatThousands(dailyLimit), pct)
+	}
 
 	return fmt.Sprintf(
 		"📊 *Session Stats*\n\n"+
@@ -2177,13 +2185,54 @@ func formatStats(cs *telegram.ChatSession) string {
 			"Turns: %d\n"+
 			"Started: %s\n"+
 			"Duration: %s\n"+
-			"Last active: %s",
+			"Last active: %s\n\n"+
+			"%s",
 		len(cs.Messages),
 		cs.TurnCount,
 		cs.CreatedAt.Format("Jan 02, 2006 15:04 UTC"),
 		duration.String(),
 		cs.LastActive.Format("15:04 UTC"),
+		budgetLine,
 	)
+}
+
+// formatThousands groups a number with comma separators for readability.
+func formatThousands(n int64) string {
+	s := strconv.FormatInt(n, 10)
+	start := 0
+	if n < 0 {
+		start = 1
+	}
+	var b strings.Builder
+	for i, c := range s {
+		if i > start && (len(s)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteRune(c)
+	}
+	return b.String()
+}
+
+// friendlyRunError translates raw agent-run failures into actionable chat
+// messages. Rate limits and timeouts are the two failure modes a phone user
+// actually hits; both deserve an explanation and a next step, not a raw
+// provider error string.
+func friendlyRunError(err error) string {
+	var rle *llmclient.RateLimitError
+	if errors.As(err, &rle) {
+		msg := fmt.Sprintf("Agent error: rate-limited by the model provider after %d attempt(s). "+
+			"Nothing was executed and your session is intact. "+
+			"Wait a moment and resend, or use /stats to check daily usage.", rle.Attempts)
+		if rle.RetryAfter > 0 {
+			msg += fmt.Sprintf(" Provider asked to retry in %s.", rle.RetryAfter.Truncate(time.Second))
+		}
+		return msg
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
+		return "Agent error: the model request timed out. Nothing was executed and your session is intact. "+
+			"Resend your message to try again; if this keeps happening, check the provider status or raise the timeout in config."
+	}
+	return "Agent error: " + err.Error()
 }
 
 // ── /plan_status (structured plan view) ────────────────────────────────

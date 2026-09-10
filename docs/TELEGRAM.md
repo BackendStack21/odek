@@ -220,6 +220,12 @@ so they must be approved per-call. After three approvals of the same class
 within 60 seconds, friction mode hides the Trust Session shortcut and adds a
 warning, breaking reflexive tap-through.
 
+Every approval prompt states its deadline ("expires in 2m0s"). When the wait
+window closes without a response, the prompt message is edited in place to an
+**Expired** state with its inline buttons removed, so a stale keyboard can
+never be tapped after the request is dead. An expired request is denied — the
+operation is not executed.
+
 ### Outbound Media
 
 The agent can send files back to the chat either by emitting a `MEDIA:` prefix in its final answer (`MEDIA:photo:/path`, `MEDIA:voice:/path`, `MEDIA:document:/path`) or by calling `send_message` with the `file` parameter. Before any upload, the user must explicitly approve the operation, and the path is validated by `internal/telegram.ResolveMediaPathForChat`:
@@ -249,7 +255,7 @@ defense-in-depth.
 | `/start` | Welcome message and bot introduction |
 | `/help` | Show all available commands with descriptions |
 | `/new` | Archive the current session and start a fresh conversation. Archived sessions are timestamped (`tg-<chatID>-<YYYYMMDD>-<HHMMSS>`) and remain visible via `odek session list` |
-| `/stats` | Show session statistics (turn count, model used, etc.) |
+| `/stats` | Show session statistics (messages, turns, duration) plus daily token usage against the configured `daily_token_budget` |
 | `/jobs` | List background jobs for this chat |
 | `/stop` | Cancel a running agent task |
 
