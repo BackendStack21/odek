@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#030304">
   <meta name="color-scheme" content="dark">
-  <title>odek · ~11 MB Go agent runtime</title>
-  <meta name="description" content="Install odek — a ~11 MB static Go agent binary. Provider-agnostic (DeepSeek, OpenAI, Anthropic, Gemini, z.ai, Kimi, or any OpenAI-compatible endpoint). Zero frameworks.">
+  <title>odek · Move fast. Stay in control.</title>
+  <meta name="description" content="An autonomous agent workspace in one ~11 MB Go binary. Plan, build, inspect results, and keep working across sessions. Your models, your machine, zero frameworks.">
   <link rel="canonical" href="https://odek.21no.de/">
   <link rel="robots" href="/robots.txt">
   <link rel="sitemap" href="/sitemap.xml">
@@ -107,6 +107,8 @@
     <div class="wrap">
       <a class="brand" href="#main">odek</a>
       <nav class="nav" aria-label="Primary">
+        <a href="#gallery">web ui</a>
+        <a href="#why-odek">why odek</a>
         <a href="#install">start</a>
         <a href="https://github.com/BackendStack21/odek/blob/main/GETTING_STARTED.md" target="_blank" rel="noopener noreferrer">guide</a>
         <a href="https://bodek.21no.de" target="_blank" rel="noopener noreferrer">bodek</a>
@@ -119,28 +121,105 @@
   <main id="main" class="wrap">
 
     <header class="hero">
-      <h1>odek</h1>
-      <p class="lede">One <span class="size">~11 MB</span> Go binary: verified install, a provider key, then <code>odek run</code>.</p>
-      <p class="react-line" aria-label="ReAct loop: think, act, answer"><span class="rl-type" aria-hidden="true">think → act → answer</span><span class="stream-cursor" aria-hidden="true"></span></p>
-      <p class="prov">
-        <a href="/PROVIDERS.md">deepseek</a>
-        <a href="/PROVIDERS.md">openai</a>
-        <a href="/PROVIDERS.md">anthropic</a>
-        <a href="/PROVIDERS.md">gemini</a>
-        <a href="/PROVIDERS.md">zai</a>
-        <a href="/PROVIDERS.md">kimi</a>
-        <span class="prov-more">any OpenAI-compatible</span>
-      </p>
-      <p class="meta">macOS and Linux, amd64 and arm64. Windows: build from source with Go. Zero frameworks — no Python, no Node, no venv.</p>
-      <ol class="toc">
-        <li><a href="#install">01 install</a></li>
-        <li><a href="#configure">02 configure</a></li>
-        <li><a href="#sandbox">03 sandbox</a></li>
-        <li><a href="#run">04 first run</a></li>
-        <li><a href="#bodek">bodek</a></li>
-        <li><a href="#breaks">05 if it breaks</a></li>
-      </ol>
+      <p class="eyebrow">GO SMALL. BUILD BIG.</p>
+      <h1>Move fast.<br><span>Stay in control.</span></h1>
+      <p class="lede">An autonomous agent with a small footprint and a clear set of boundaries. Odek plans, runs tools, and follows through—in one <span class="size">~11 MB</span> Go binary you can inspect from the inside out.</p>
+      <div class="hero-actions">
+        <a class="button primary" href="#install">Get started <span aria-hidden="true">↗</span></a>
+        <a class="button secondary" href="#gallery">Explore the Web UI <span aria-hidden="true">↓</span></a>
+      </div>
+      <p class="hero-note">MIT licensed · Open to inspection · Zero frameworks</p>
     </header>
+
+    <div class="posture-strip" aria-label="Odek engineering principles">
+      <p><strong>Travel light.</strong><span>Compiled Go. Zero frameworks. Focused dependencies.</span></p>
+      <p><strong>Work in parallel.</strong><span>Independent tools run together. Your task moves forward.</span></p>
+      <p><strong>Keep the keys.</strong><span>You choose the model, approve the risks, and set the limits.</span></p>
+    </div>
+
+    <section class="gallery" id="gallery" aria-labelledby="gallery-h">
+      <div class="gallery-heading">
+        <div><p class="eyebrow">ONE BINARY. A WHOLE WORKSPACE.</p><h2 id="gallery-h">See the work take shape.</h2></div>
+        <a href="/WEBUI.md">Explore Web UI docs ↗</a>
+      </div>
+      <div class="gallery-controls" aria-label="Choose a Web UI view" hidden>
+        <button type="button" aria-pressed="true" aria-controls="view-results" data-view="results">01 <span>Rich results</span></button>
+        <button type="button" aria-pressed="false" aria-controls="view-plan" data-view="plan">02 <span>Plans &amp; progress</span></button>
+        <button type="button" aria-pressed="false" aria-controls="view-workspace" data-view="workspace">03 <span>Your workspace</span></button>
+        <button type="button" aria-pressed="false" aria-controls="view-commands" data-view="commands">04 <span>Command palette</span></button>
+      </div>
+      <div class="gallery-stage">
+        <figure id="view-results" data-gallery-view="results">
+          <a href="/gallery/results.png" target="_blank" rel="noopener" aria-label="Open full-size rich results screenshot"><img src="/gallery/results.png" width="1280" height="720" fetchpriority="high" alt="Odek Web UI with session navigation, a conversation, and a diff inspector showing added and removed CSS lines."></a>
+          <figcaption><div><h3>Every result, ready to inspect.</h3><p>Explore code, diffs, and terminal output alongside the conversation. Search the output, switch to raw, or save it for later.</p></div><a href="/gallery/results.png" target="_blank" rel="noopener">View full size ↗</a></figcaption>
+        </figure>
+        <figure id="view-plan" data-gallery-view="plan">
+          <a href="/gallery/plan.png" target="_blank" rel="noopener" aria-label="Open full-size plans screenshot"><img src="/gallery/plan.png" width="1280" height="720" loading="lazy" alt="The Now inspector shows a three-step plan with two steps done and verification in progress, beside the session transcript."></a>
+          <figcaption><div><h3>Keep the bigger picture in view.</h3><p>Follow the plan, check background jobs, and track sub-agents from the Now inspector without leaving your session.</p></div><a href="/gallery/plan.png" target="_blank" rel="noopener">View full size ↗</a></figcaption>
+        </figure>
+        <figure id="view-workspace" data-gallery-view="workspace">
+          <a href="/gallery/workspace.png" target="_blank" rel="noopener" aria-label="Open full-size workspace screenshot"><img src="/gallery/workspace.png" width="1280" height="720" loading="lazy" alt="Odek’s new-session workspace with model and reasoning pickers, keyboard hints, file attachments, and a message composer."></a>
+          <figcaption><div><h3>A little space for your next big idea.</h3><p>Choose a model and reasoning depth. Attach files, reference a past session, and start with what you want to accomplish.</p></div><a href="/gallery/workspace.png" target="_blank" rel="noopener">View full size ↗</a></figcaption>
+        </figure>
+        <figure id="view-commands" data-gallery-view="commands">
+          <a href="/gallery/commands.png" target="_blank" rel="noopener" aria-label="Open full-size command palette screenshot"><img src="/gallery/commands.png" width="1280" height="720" loading="lazy" alt="The command palette lists sessions, commands, model selection, and inspector shortcuts above the workspace."></a>
+          <figcaption><div><h3>Stay in your flow.</h3><p>Jump between sessions, models, and commands with the command palette. Your next action is a few keystrokes away.</p></div><a href="/gallery/commands.png" target="_blank" rel="noopener">View full size ↗</a></figcaption>
+        </figure>
+      </div>
+      <p class="gallery-note">Actual odek Web UI · Example sessions from the bundled fixture · Select an image to explore it at full size.</p>
+      <div class="serve-launch"><div><strong>Already have odek?</strong><span>Your workspace is built in. Start the server and open the token URL it prints.</span></div><div class="code-block"><div class="cb-header"><span class="cb-lang">terminal</span><button type="button" class="cb-copy" data-copy>copy</button></div><pre><code>odek serve</code></pre></div></div>
+    </section>
+
+    <section class="five-whys" id="why-odek" aria-labelledby="why-h">
+      <div class="why-intro">
+        <p class="eyebrow">FIVE WHYS / THE ODEK PHILOSOPHY</p>
+        <h2 id="why-h">Small by choice.<br><span>Capable by design.</span></h2>
+        <p>Every dependency is code you inherit. Every permission is reach you grant. Every extra layer is something to understand.</p>
+        <p>Odek keeps those decisions close to you.</p>
+        <a href="#install">Make it yours ↗</a>
+      </div>
+      <ol class="why-list">
+        <li>
+          <span class="why-number" aria-hidden="true">01</span>
+          <div><p class="eyebrow">WHY FEWER DEPENDENCIES?</p><h3>Ship ideas.<br><span>Travel light.</span></h3>
+          <p>Your agent should earn its place on your machine. Odek uses Go’s standard library and a focused set of packages. One compiled binary, with the Web UI built in. Fewer moving parts to install, update, and investigate when something breaks.</p>
+          <p class="why-detail">A smaller dependency graph means fewer external components to review and maintain. Each one still deserves scrutiny.</p>
+          <a href="https://github.com/BackendStack21/odek/blob/main/go.mod" target="_blank" rel="noopener noreferrer">Count the dependencies yourself ↗</a></div>
+        </li>
+        <li>
+          <span class="why-number" aria-hidden="true">02</span>
+          <div><p class="eyebrow">WHY A LEAN RUNTIME?</p><h3>Give the work<br><span>a head start.</span></h3>
+          <p>Start a binary. Get to work. Independent tool calls run concurrently, while built-in file and text tools do their work without spawning a process for every operation. Less setup. Less orchestration overhead. More room for the task.</p>
+          <p class="why-detail">Task speed still depends on your model and workload. The runtime’s job is to keep its own overhead down.</p>
+          <a href="/TOOL_SELECTION.md">Look under the hood ↗</a></div>
+        </li>
+        <li>
+          <span class="why-number" aria-hidden="true">03</span>
+          <div><p class="eyebrow">WHY SECURITY GUARDRAILS?</p><h3>Ambitious tasks.<br><span>Explicit boundaries.</span></h3>
+          <p>Give your agent room to work with Docker sandboxing on by default, approval gates for risky actions, and hard execution budgets. Untrusted content stays behind a trust boundary. Injection scanning, secret redaction, and MCP limits add layers of defense.</p>
+          <p class="why-detail">You define its reach through configuration, connected tools, and approvals. Guardrails reduce risk; they do not make every action safe.</p>
+          <a href="/SECURITY.md">Inspect the guardrails ↗</a></div>
+        </li>
+        <li>
+          <span class="why-number" aria-hidden="true">04</span>
+          <div><p class="eyebrow">WHY OPEN SOURCE?</p><h3>Trust has<br><span>source code.</span></h3>
+          <p>Follow a tool call from decision to execution. Trace an approval. Read the redaction logic and the tests behind the defenses. Odek’s MIT-licensed Go source puts the implementation within reach: read it, audit it, change it, build it.</p>
+          <p class="why-detail">Auditable means you can examine the implementation. It is not a claim of independent security certification.</p>
+          <a href="https://github.com/BackendStack21/odek" target="_blank" rel="noopener noreferrer">Read what you run ↗</a></div>
+        </li>
+        <li>
+          <span class="why-number" aria-hidden="true">05</span>
+          <div><p class="eyebrow">WHY OWN YOUR AGENT WORKFLOW?</p><h3>Your machine.<br><span>Your call.</span></h3>
+          <p>Choose the model. Bring your tools through MCP. Move between the terminal, Web UI, and Telegram. Sessions, memory, and skills carry the work forward. Set time, tool-call, and token limits; add cost caps when model prices are configured.</p>
+          <p class="why-detail">The runtime lives on your machine. Model requests go to your configured provider.</p>
+          <a href="/EXTENSIONS.md">Build on your terms ↗</a></div>
+        </li>
+      </ol>
+    </section>
+
+    <div class="provider-strip"><p class="eyebrow">BRING YOUR MODEL</p><p class="prov"><a href="/PROVIDERS.md">DeepSeek</a><a href="/PROVIDERS.md">OpenAI</a><a href="/PROVIDERS.md">Anthropic</a><a href="/PROVIDERS.md">Gemini</a><a href="/PROVIDERS.md">z.ai</a><a href="/PROVIDERS.md">Kimi</a><span class="prov-more">+ OpenAI-compatible endpoints</span></p></div>
+
+    <div class="setup-heading"><p class="eyebrow">FROM DOWNLOAD TO FIRST TASK</p><h2>A small install.<br>A running start.</h2><p>macOS and Linux · amd64 and arm64 · No Python, Node, or venv.</p><ol class="toc"><li><a href="#install">01 install</a></li><li><a href="#configure">02 configure</a></li><li><a href="#sandbox">03 sandbox</a></li><li><a href="#run">04 first run</a></li><li><a href="#breaks">05 troubleshooting</a></li></ol></div>
 
     <section class="need" aria-labelledby="need-h">
       <h2 id="need-h" class="sr-only">What you need</h2>
@@ -157,7 +236,7 @@
             <tr>
               <td>A provider API key</td>
               <td>
-                This walkthrough uses z.ai
+                Choose z.ai, DeepSeek, OpenAI, or OpenRouter in step 02. For z.ai, use
                 (<a href="https://z.ai/subscribe" target="_blank" rel="noopener noreferrer">GLM Coding Plan</a>
                 or pay-as-you-go). Same binary for DeepSeek, OpenAI, Anthropic, Gemini, Kimi, or any OpenAI-compatible endpoint —
                 <a href="/PROVIDERS.md">PROVIDERS.md</a>.
@@ -232,52 +311,81 @@ odek version</code></pre>
 
     <section class="step" id="configure" aria-labelledby="configure-h">
       <h2 id="configure-h"><span class="mark">▸</span> <span class="n">02</span> · configure</h2>
-      <p><code>odek init --global</code> writes <code>~/.odek/config.json</code> (mode 0600) and refuses to overwrite without <code>--force</code>. Built-in ids: <code>deepseek</code> (what init scaffolds), <code>openai</code>, <code>anthropic</code>, <code>gemini</code>, <code>zai</code>, <code>kimi</code> — plus any OpenAI-compatible gateway. This walkthrough edits the scaffold for z.ai:</p>
-
-      <div class="code-block">
-        <div class="cb-header">
-          <span class="cb-lang">▸ bash · init</span>
-          <button type="button" class="cb-copy" data-copy>copy</button>
-        </div>
-        <pre><code>odek init --global</code></pre>
+      <p>Initialize once, then choose your provider below. <code>odek init --global</code> creates <code>~/.odek/config.json</code> with restricted permissions and refuses to overwrite an existing configuration without <code>--force</code>.</p>
+<div class="code-block"><div class="cb-header"><span class="cb-lang">bash · initialize</span><button type="button" class="cb-copy" data-copy>copy</button></div><pre><code>odek init --global</code></pre></div>
+      <p>Merge the selected example into <code>~/.odek/config.json</code>, preserving your other settings. Keep API keys in <code>~/.odek/secrets.env</code>.</p>
+      <div class="provider-tabs" role="tablist" aria-label="Configuration provider" hidden>
+        <button type="button" role="tab" id="config-tab-deepseek" aria-controls="config-deepseek" aria-selected="true" tabindex="0">DeepSeek</button>
+        <button type="button" role="tab" id="config-tab-zai" aria-controls="config-zai" aria-selected="false" tabindex="-1">z.ai</button>
+        <button type="button" role="tab" id="config-tab-openai" aria-controls="config-openai" aria-selected="false" tabindex="-1">OpenAI</button>
+        <button type="button" role="tab" id="config-tab-openrouter" aria-controls="config-openrouter" aria-selected="false" tabindex="-1">OpenRouter</button>
       </div>
-
-      <div class="code-block">
-        <div class="cb-header">
-          <span class="cb-lang">▸ json · ~/.odek/config.json</span>
-          <button type="button" class="cb-copy" data-copy>copy</button>
-        </div>
-        <pre><code>{
-  "provider": "zai",
-  "model": "glm-5.3-flash",
-  "providers": {
-    "zai": {
-      "api_key": "${ZAI_API_KEY}",
-      "base_url": "https://api.z.ai/api/coding/paas/v4"
+      <div class="provider-example" id="config-deepseek" data-provider-panel>
+        <h3>DeepSeek</h3>
+<div class="code-block"><div class="cb-header"><span class="cb-lang">json · ~/.odek/config.json</span><button type="button" class="cb-copy" data-copy>copy</button></div><pre><code>{
+  &quot;provider&quot;: &quot;deepseek&quot;,
+  &quot;model&quot;: &quot;deepseek-flash&quot;,
+  &quot;providers&quot;: {
+    &quot;deepseek&quot;: {
+      &quot;api_key&quot;: &quot;${DEEPSEEK_API_KEY}&quot;
+    }
+  }
+}</code></pre></div>
+        <p>Uses Odek’s built-in DeepSeek provider and endpoint. Choose a model available to your API account.</p>
+<div class="code-block"><div class="cb-header"><span class="cb-lang">env · ~/.odek/secrets.env</span><button type="button" class="cb-copy" data-copy>copy</button></div><pre><code>DEEPSEEK_API_KEY=your-api-key-here</code></pre></div>
+      </div>
+      <div class="provider-example" id="config-zai" data-provider-panel>
+        <h3>z.ai</h3>
+<div class="code-block"><div class="cb-header"><span class="cb-lang">json · ~/.odek/config.json</span><button type="button" class="cb-copy" data-copy>copy</button></div><pre><code>{
+  &quot;provider&quot;: &quot;zai&quot;,
+  &quot;model&quot;: &quot;glm-5.3-flash&quot;,
+  &quot;providers&quot;: {
+    &quot;zai&quot;: {
+      &quot;api_key&quot;: &quot;${ZAI_API_KEY}&quot;,
+      &quot;base_url&quot;: &quot;https://api.z.ai/api/coding/paas/v4&quot;
     }
   },
-  "llm": {
-    "request_timeout_seconds": 300,
-    "stream_idle_timeout_seconds": 300
+  &quot;llm&quot;: {
+    &quot;request_timeout_seconds&quot;: 300,
+    &quot;stream_idle_timeout_seconds&quot;: 300
   }
-}</code></pre>
+}</code></pre></div>
+        <p>The endpoint shown is for the GLM Coding Plan. For pay-as-you-go, use <code>https://api.z.ai/api/paas/v4</code>. Check your plan’s model IDs in the <a href="https://z.ai/model-api" target="_blank" rel="noopener noreferrer">z.ai dashboard</a>.</p>
+<div class="code-block"><div class="cb-header"><span class="cb-lang">env · ~/.odek/secrets.env</span><button type="button" class="cb-copy" data-copy>copy</button></div><pre><code>ZAI_API_KEY=your-api-key-here</code></pre></div>
       </div>
-
-      <p>That <code>base_url</code> is the GLM Coding Plan. Pay-as-you-go uses <code>https://api.z.ai/api/paas/v4</code>. Model ids for your plan are on the <a href="https://z.ai/model-api" target="_blank" rel="noopener noreferrer">z.ai dashboard</a>.</p>
-      <p>Store the key in <code>~/.odek/secrets.env</code> so it never lands in shell history.</p>
-
-      <div class="code-block">
-        <div class="cb-header">
-          <span class="cb-lang">▸ bash · secrets.env</span>
-          <button type="button" class="cb-copy" data-copy>copy</button>
-        </div>
-        <pre><code>cat &gt; ~/.odek/secrets.env &lt;&lt;'EOF'
-ZAI_API_KEY=sk-your-zai-key-here
-EOF
-chmod 600 ~/.odek/secrets.env</code></pre>
+      <div class="provider-example" id="config-openai" data-provider-panel>
+        <h3>OpenAI</h3>
+<div class="code-block"><div class="cb-header"><span class="cb-lang">json · ~/.odek/config.json</span><button type="button" class="cb-copy" data-copy>copy</button></div><pre><code>{
+  &quot;provider&quot;: &quot;openai&quot;,
+  &quot;model&quot;: &quot;gpt-5.6-luna&quot;,
+  &quot;providers&quot;: {
+    &quot;openai&quot;: {
+      &quot;api_key&quot;: &quot;${OPENAI_API_KEY}&quot;
+    }
+  }
+}</code></pre></div>
+        <p>Uses Odek’s built-in OpenAI provider and endpoint. The model is an example; change it to a supported model available to your API account.</p>
+<div class="code-block"><div class="cb-header"><span class="cb-lang">env · ~/.odek/secrets.env</span><button type="button" class="cb-copy" data-copy>copy</button></div><pre><code>OPENAI_API_KEY=your-api-key-here</code></pre></div>
       </div>
-
-      <p class="meta">Priority: <code>~/.odek/secrets.env</code> → <code>~/.odek/config.json</code> → <code>./odek.json</code> → <code>ODEK_*</code> env → CLI flags. A project <code>./odek.json</code> cannot set <code>provider</code>, <code>providers</code>, <code>llm</code>, or keys. Env keys follow the provider (<code>DEEPSEEK_API_KEY</code>, <code>OPENAI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code>, …). Full table: <a href="/PROVIDERS.md">PROVIDERS.md</a>.</p>
+      <div class="provider-example" id="config-openrouter" data-provider-panel>
+        <h3>OpenRouter</h3>
+<div class="code-block"><div class="cb-header"><span class="cb-lang">json · ~/.odek/config.json</span><button type="button" class="cb-copy" data-copy>copy</button></div><pre><code>{
+  &quot;provider&quot;: &quot;openrouter&quot;,
+  &quot;model&quot;: &quot;openai/gpt-4o&quot;,
+  &quot;providers&quot;: {
+    &quot;openrouter&quot;: {
+      &quot;api_key&quot;: &quot;${OPENROUTER_API_KEY}&quot;,
+      &quot;format&quot;: &quot;openai&quot;,
+      &quot;base_url&quot;: &quot;https://openrouter.ai/api/v1&quot;
+    }
+  }
+}</code></pre></div>
+        <p>OpenRouter is a custom provider using the OpenAI format. Keep the <code>format</code> field and use a model ID with its publisher prefix. Choose a model that supports tool calling. <a href="https://openrouter.ai/docs/guides/community/openai-sdk" target="_blank" rel="noopener noreferrer">OpenRouter API guide ↗</a></p>
+<div class="code-block"><div class="cb-header"><span class="cb-lang">env · ~/.odek/secrets.env</span><button type="button" class="cb-copy" data-copy>copy</button></div><pre><code>OPENROUTER_API_KEY=your-api-key-here</code></pre></div>
+      </div>
+      <p>Open <code>~/.odek/secrets.env</code> in your editor and add or update the selected key entry. Replace the placeholder with your actual key, preserve any other entries, then restrict file permissions:</p>
+<div class="code-block"><div class="cb-header"><span class="cb-lang">bash · file permissions</span><button type="button" class="cb-copy" data-copy>copy</button></div><pre><code>chmod 600 ~/.odek/secrets.env</code></pre></div>
+      <p class="meta">Provider settings belong in your global configuration. A project <code>./odek.json</code> cannot set providers, endpoints, or keys. The examples reference key variables explicitly, including <code>OPENROUTER_API_KEY</code> for the custom provider. More options: <a href="/PROVIDERS.md">PROVIDERS.md</a>.</p>
     </section>
 
     <section class="step" id="sandbox" aria-labelledby="sandbox-h">
@@ -299,7 +407,7 @@ odek run --no-sandbox "..."</code></pre>
 
     <section class="step" id="run" aria-labelledby="run-h">
       <h2 id="run-h"><span class="mark">▸</span> <span class="n">04</span> · first run</h2>
-      <p>You should see <code>glm-5.3-flash</code> in the run header and a short ReAct trace: think → act → answer.</p>
+      <p>You should see your configured model in the run header and a short ReAct trace: think → act → answer.</p>
 
       <div class="code-block">
         <div class="cb-header">
@@ -310,7 +418,7 @@ odek run --no-sandbox "..."</code></pre>
       </div>
       <p class="run-shape">
         <span class="run-shape-k">illustration</span>
-        glm-5.3-flash · think → act → answer
+        your model · think → act → answer
         <span class="stream-cursor" aria-hidden="true"></span>
       </p>
 
@@ -369,7 +477,7 @@ odek run --no-sandbox "..."</code></pre>
             </tr>
             <tr>
               <td>Auth errors / empty key</td>
-              <td><code>ZAI_API_KEY</code> in <code>~/.odek/secrets.env</code> (mode 0600), and <code>provider</code> is <code>zai</code> — not the DeepSeek scaffold. <code>./odek.json</code> cannot carry keys.</td>
+              <td>Check that your selected provider’s key is in <code>~/.odek/secrets.env</code> (mode 0600) and matches the variable referenced by <code>providers</code> in your global config. <code>./odek.json</code> cannot carry keys.</td>
             </tr>
             <tr>
               <td><code>429</code> on sub-agent runs</td>
@@ -439,5 +547,7 @@ odek run --no-sandbox "..."</code></pre>
 
   <script src="/copy.js"></script>
   <script src="/motion.js"></script>
+  <script src="/gallery.js"></script>
+  <script src="/configure.js"></script>
 </body>
 </html>

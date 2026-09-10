@@ -1,6 +1,12 @@
-/* Ember — public landing subset of the odek Web UI language.
-   Azeret Mono, amber on blue-charcoal, 13px reading cap.
-   No app chrome, no cards, no hover-lift, no CDN. */
+/* Ember landing page: warm amber, generous type, and the real workspace. */
+
+@font-face {
+  font-family: Geist;
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url(/fonts/geist.woff2) format("woff2");
+}
 
 @font-face {
   font-family: 'Azeret Mono';
@@ -35,7 +41,7 @@
   --red:   #ff6b6b;
   --blue:  #6aadff;
 
-  --ui:   'Azeret Mono', 'JetBrains Mono', 'Fira Mono', ui-monospace, monospace;
+  --ui: 'Geist', system-ui, sans-serif;
   --code: 'Azeret Mono', 'JetBrains Mono', 'Fira Mono', ui-monospace, monospace;
   --code-ink: #9ec8ff;
   --code-fg:  #c9daf0;
@@ -43,9 +49,9 @@
   --code-chip: rgba(106, 173, 255, .10);
   --code-line: rgba(106, 173, 255, .18);
 
-  --fs-xs:   11px;
-  --fs-sm:   12px;
-  --fs-base: 13px;
+  --fs-xs:   12px;
+  --fs-sm:   14px;
+  --fs-base: 16px;
   --fs-lg:   18px;
   --fs-xl:   24px;
   --fs-hero: 32px;
@@ -71,8 +77,8 @@
 
   --ring: 0 0 0 2px rgba(255, 178, 36, .45), 0 0 0 5px rgba(255, 178, 36, .10);
 
-  --topbar-h: 36px;
-  --content-w: 680px;
+  --topbar-h: 76px;
+  --content-w: 1200px;
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -577,3 +583,113 @@ footer a:hover { color: var(--amber); }
     animation: none !important;
   }
 }
+
+/* Product introduction and screenshot gallery. */
+[hidden] { display: none !important; }
+body::before { background-image: radial-gradient(ellipse at 50% 0%, rgba(255,178,36,.08), transparent 42%); }
+body::after { opacity: .3; }
+.topbar .wrap { max-width: var(--content-w); }
+.brand { font-size: 26px; letter-spacing: -.06em; }
+.nav { font-size: 14px; gap: 26px; }
+.nav a, .nav a:visited { color: var(--text-2); }
+.hero { padding: 92px 0 64px; max-width: 880px; }
+.eyebrow { font-family: var(--code); font-size: 12px; font-weight: 500; letter-spacing: .1em; color: var(--amber); margin-bottom: 20px; }
+.hero h1 { font-size: clamp(56px, 8vw, 104px); line-height: 1.02; letter-spacing: -.065em; color: var(--text); font-weight: 550; margin-bottom: 30px; }
+.hero h1 span { color: var(--amber); }
+.hero .lede { max-width: 650px; font-size: 21px; line-height: 1.65; color: var(--text-2); }
+.hero .size { color: var(--text); white-space: nowrap; }
+.hero-actions { display: flex; flex-wrap: wrap; gap: 14px; margin: 30px 0 20px; }
+.button { display: inline-flex; justify-content: space-between; align-items: center; gap: 32px; padding: 13px 20px; border-radius: 8px; font-size: 16px; font-weight: 550; border: 1px solid var(--line-3); }
+.button.primary, .button.primary:visited { color: #201500; background: var(--amber); border-color: var(--amber); }
+.button.secondary, .button.secondary:visited { color: var(--text); background: #151517; }
+.button:hover { text-decoration: none; filter: brightness(1.12); }
+.hero-note { font-size: 14px; color: var(--text-3); }
+.gallery { padding: 24px 0 64px; scroll-margin-top: 24px; }
+.gallery-heading { display: flex; justify-content: space-between; align-items: end; gap: 24px; margin-bottom: 28px; }
+.gallery-heading .eyebrow { margin-bottom: 10px; }
+.gallery-heading h2, .setup-heading h2 { color: var(--text); font-size: clamp(30px, 4vw, 44px); font-weight: 500; letter-spacing: -.04em; line-height: 1.15; margin: 0; }
+.gallery-heading > a { font-size: 14px; white-space: nowrap; }
+.gallery-controls { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 18px; }
+.gallery-controls button { cursor: pointer; text-align: left; border: 1px solid var(--line-2); border-radius: 7px; padding: 16px; color: var(--text-3); background: #0d0d0f; font-family: var(--code); font-size: 12px; }
+.gallery-controls button span { font-family: var(--ui); color: var(--text-2); font-size: 15px; margin-left: 10px; }
+.gallery-controls button[aria-pressed="true"] { border-color: var(--amber); background: var(--amber-dim); color: var(--amber); }
+.gallery-controls button[aria-pressed="true"] span { color: var(--amber-hi); }
+.gallery-controls button:hover { border-color: var(--amber-hi); }
+.gallery-stage { border: 1px solid var(--line-3); border-radius: 12px; overflow: hidden; background: #111114; box-shadow: 0 30px 100px -45px #a3671733; }
+.gallery figure { margin: 0; }
+.gallery figure > a { display: block; }
+.gallery img { width: 100%; height: auto; display: block; background: #101114; }
+.gallery figcaption { display: flex; justify-content: space-between; gap: 32px; align-items: center; padding: 26px 30px; border-top: 1px solid var(--line-2); }
+.gallery figcaption h3 { color: var(--text); font-size: 21px; font-weight: 500; margin: 0 0 8px; letter-spacing: -.02em; }
+.gallery figcaption p { max-width: 700px; margin: 0; }
+.gallery figcaption > a { font-size: 14px; white-space: nowrap; }
+.gallery-note { font-size: 12px; color: var(--text-3); margin: 16px 0 28px; }
+.serve-launch { display: flex; justify-content: space-between; align-items: center; gap: 24px; padding: 24px 28px; border: 1px solid var(--line-2); border-radius: 10px; }
+.serve-launch strong, .serve-launch span { display: block; }
+.serve-launch strong { font-weight: 500; margin-bottom: 4px; }
+.serve-launch > div > span { color: var(--text-2); font-size: 14px; }
+.serve-launch .code-block { margin: 0; min-width: 245px; }
+.serve-launch .code-block pre { font-size: 16px; }
+.five-whys { display: grid; grid-template-columns: minmax(0, .85fr) minmax(0, 1.6fr); gap: 72px; border-top: 1px solid var(--line-2); padding: 72px 0; scroll-margin-top: 24px; }
+.why-intro h2 { display: block; color: var(--text); font-size: clamp(32px, 4vw, 48px); line-height: 1.12; font-weight: 500; letter-spacing: -.045em; margin-bottom: 24px; }
+.why-intro > p:not(.eyebrow) { line-height: 1.8; margin-bottom: 24px; }
+.five-whys a { font-size: 14px; }
+.why-list { list-style: none; padding: 0; margin: 0; }
+.why-list li { display: grid; grid-template-columns: 36px minmax(0,1fr); gap: 20px; padding: 40px 0; border-top: 1px solid var(--line-2); }
+.why-list li:first-child { padding-top: 0; border-top: 0; }
+.why-list li:last-child { padding-bottom: 0; }
+.why-number { font-family: var(--code); font-size: 14px; color: var(--amber); padding-top: 1px; }
+.why-list .eyebrow { font-size: 12px; color: var(--text-3); margin-bottom: 12px; }
+.why-list h3 { font-size: clamp(30px, 3.5vw, 44px); font-weight: 500; color: var(--text); line-height: 1.1; letter-spacing: -.04em; margin: 0 0 24px; }
+.why-list h3 span { color: var(--amber-hi); }
+.why-intro h2 span { color: var(--text-2); }
+.why-list p { line-height: 1.75; }
+.why-list .why-detail { font-size: 14px; color: var(--text-2); border-left: 2px solid var(--line-3); padding-left: 14px; margin: 16px 0; }
+.provider-strip { padding: 30px 0; border-top: 1px solid var(--line-2); border-bottom: 1px solid var(--line-2); }
+.provider-strip .eyebrow { color: var(--text-3); }
+.provider-strip .prov { margin: 0; font-size: 16px; }
+.setup-heading, .need, .step { max-width: 800px; margin-left: auto; margin-right: auto; }
+.setup-heading { padding: 80px 0 32px; }
+.setup-heading h2 { display: block; margin-bottom: 20px; }
+.setup-heading > p:not(.eyebrow) { font-size: 14px; }
+.step h2 { color: var(--text); font-size: 18px; }
+.step code { overflow-wrap: anywhere; }
+.step pre code { overflow-wrap: normal; }
+.step { padding-left: 22px; }
+@media (max-width: 760px) {
+  .hero { padding-top: 56px; }
+  .hero .lede { font-size: 18px; }
+  .gallery-heading { align-items: start; flex-direction: column; gap: 16px; }
+  .gallery-controls { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  .gallery-controls button { padding: 12px; }
+  .gallery-controls button span { margin-left: 5px; font-size: 14px; }
+  .gallery figcaption { flex-direction: column; align-items: start; gap: 16px; padding: 20px; }
+  .serve-launch { flex-direction: column; align-items: stretch; padding: 20px; }
+  .five-whys { grid-template-columns: 1fr; gap: 40px; padding: 48px 0; }
+  .why-list li { gap: 12px; grid-template-columns: 28px minmax(0,1fr); }
+  .nav { gap: 14px; flex-wrap: wrap; }
+  .topbar .wrap { gap: 12px; padding-top: 14px; padding-bottom: 14px; }
+}
+@media (max-width: 400px) {
+  .nav { font-size: 12px; gap: 12px; }
+  .hero h1 { font-size: 54px; }
+  .eyebrow { letter-spacing: .04em; }
+  .button { width: 100%; }
+}
+
+/* Engineering principles stay visible before the product tour. */
+.posture-strip { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 32px; padding: 26px 0 32px; margin-bottom: 40px; border-top: 1px solid var(--line-2); border-bottom: 1px solid var(--line-2); }
+.posture-strip p { margin: 0; }
+.posture-strip strong { display: block; color: var(--text); font-size: 20px; font-weight: 550; letter-spacing: -.025em; margin-bottom: 8px; }
+.posture-strip span { display: block; font-size: 14px; color: var(--text-2); }
+@media (max-width: 760px) {
+  .posture-strip { grid-template-columns: 1fr; gap: 24px; margin-bottom: 24px; }
+}
+
+/* Provider configuration tabs share the gallery's amber selection language. */
+.provider-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 24px 0 20px; }
+.provider-tabs button { flex: 1 1 120px; padding: 12px 16px; font: 500 15px var(--ui); color: var(--text-2); background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 7px; cursor: pointer; }
+.provider-tabs button[aria-selected="true"] { color: var(--amber-hi); border-color: var(--amber); background: var(--amber-dim); }
+.provider-tabs button:hover { border-color: var(--amber-hi); }
+.provider-example h3 { font-size: 18px; color: var(--text); margin-bottom: 16px; }
+.provider-example:focus-visible { outline: 2px solid var(--amber); outline-offset: 5px; }
