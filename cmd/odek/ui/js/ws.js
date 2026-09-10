@@ -80,6 +80,11 @@ function noteDisconnect() {
   streamFlush();
   endThinking();
   endStream();
+  // Same teardown as cancelled/error: the approval/clarify wait died with
+  // the socket. Leave the prompt queue; drainQueue no-ops until restore.
+  clearApprovals({ drain: false });
+  clearClarify();
+  stopPlanLiveIfIdle();
 
   stopRetryTick();
   retryDeadline = Date.now() + reconnectDelay;
@@ -139,6 +144,7 @@ export function connect() {
           auth_token: getSessionToken(S.sessionId) || undefined,
         });
       }
+      drainQueue();
     }
     wasConnected = true;
     startHeartbeat();

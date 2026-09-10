@@ -39,6 +39,26 @@ const SLASH_VERBS = new Set([
   'now', 'memory', 'ops', 'plan', 'jobs', 'agents', 'skills', 'tools',
   'runs', 'events', 'config', 'sessions', 'session', 'stop',
 ]);
+
+// isComposerSlashInput is true for a leading command token (`/` or `/ne`)
+// and false for filesystem paths (`/Users/...`, `\Windows\...`). Extra
+// slashes or a token that is not a prefix of a known verb are paths, so
+// Enter/Tab send the line instead of running the first palette row.
+export function isComposerSlashInput(val, cursor) {
+  if (!val || !val.startsWith('/') || val.includes('\n')) return false;
+  const end = cursor == null ? val.length : cursor;
+  const before = val.slice(0, end);
+  if (!before.startsWith('/')) return false;
+  const rest = before.slice(1);
+  if (/\s/.test(rest)) return false;
+  if (rest.includes('/') || rest.includes('\\')) return false;
+  if (!rest) return true;
+  const token = rest.toLowerCase();
+  for (const v of SLASH_VERBS) {
+    if (v.startsWith(token)) return true;
+  }
+  return false;
+}
 const TAB_WS = {
   sessions: 'sessions', session: 'sessions',
   plan: 'now', jobs: 'now', agents: 'now', now: 'now',

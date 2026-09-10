@@ -397,6 +397,20 @@ test('send while disconnected toasts instead of failing silently', () => {
   assert.ok(byId.toast.classList.contains('show'));
 });
 
+test('disconnect drops pending approval and clarify cards', () => {
+  const sock = S.ws;
+  sock.onopen();
+  deliver({ type: 'approval_request', id: 'apr-drop', risk: 'local_write', command: 'echo hi', allow_trust: true });
+  assert.equal(S.activeApprovalId, 'apr-drop');
+  deliver({ type: 'clarify_request', id: 'cl-drop', question: 'which one?', timeout_seconds: 30 });
+  sock.onclose();
+  assert.equal(S.activeApprovalId, null, 'approval card must not outlive the socket');
+  assert.equal(S.approvalQueue.length, 0);
+  assert.equal(S.activeApprovalCard, null);
+  assert.equal(byId.messages.querySelectorAll('.approval-card').length, 0, 'clarify card gone too');
+  health.stopHeartbeat();
+});
+
 // ── F-B1: delegate_tasks tool_result must not route into other tool blocks. ──
 test('delegate_tasks tool_result completes the group without touching other blocks', () => {
   deliver({ type: 'tool_call', name: 'shell', data: '"ls"' });
@@ -781,4 +795,22 @@ test('composer Enter dispatches palette slash verbs, not filesystem paths', () =
   assert.deepEqual(calls, ['help']);
   assert.equal(commands.maybeHandleComposerEnter('/Users/src/main.go'), false);
   assert.ok(commands.paletteItems('new').some((i) => i.id === 'new'));
+  assert.equal(commands.isComposerSlashInput('/new', 4), true);
+  assert.equal(commands.isComposerSlashInput('/Users/src/main.go', 18), false);
+  assert.equal(commands.isComposerSlashInput('/tmp', 4), false);
+  assert.equal(commands.isComposerSlashInput('/', 1), true);
+});
+
+test('slash completion does not open for a filesystem path', async () => {
+  const prompt = byId.prompt;
+  prompt.value = '/Users/src/main.go';
+  prompt.selectionStart = prompt.value.length;
+  try {
+    prompt.dispatch('input');
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(byId.completion.classList.contains('visible'), false, 'path must not open slash popup');
+    assert.notEqual(S.compMode, 'slash');
+  } finally {
+    prompt.value = '';
+  }
 });

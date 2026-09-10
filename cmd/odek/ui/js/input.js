@@ -11,7 +11,7 @@ import {
   showCancel, toggleShortcuts, SCROLL_THRESHOLD, teach, showToast,
 } from './utils.js';
 import { addMessage, resetTurnState, showLoading, paintIntent } from './render.js';
-import { maybeHandleComposerEnter, paletteItems } from './commands.js';
+import { maybeHandleComposerEnter, paletteItems, isComposerSlashInput } from './commands.js';
 
 function queueId() {
   return 'q' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -69,7 +69,9 @@ function moveQueue(i, delta) {
 
 export function drainQueue() {
   // Do not auto-send through a live approval — the operator is still deciding.
+  // A dead socket must not consume the queue either; reconnect drains it.
   if (S.busy || S.activeApprovalId || !S.promptQueue.length) return;
+  if (!S.ws || S.ws.readyState !== WebSocket.OPEN) return;
   const next = S.promptQueue.shift();
   renderQueueStrip();
   sendPayload(next.text, next.attachments, next.display, next.model, next.thinking);
@@ -329,9 +331,13 @@ promptEl.addEventListener('keydown', (e) => {
       return;
     }
     if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      selectCompletion();
-      return;
+      if (S.compMode === 'slash' && !isComposerSlashInput(promptEl.value, promptEl.selectionStart)) {
+        hideCompletion();
+      } else {
+        e.preventDefault();
+        selectCompletion();
+        return;
+      }
     }
     if (e.key === 'Escape') {
       e.preventDefault();
@@ -402,9 +408,13 @@ promptEl.addEventListener('keydown', (e) => {
 
   // Tab for completion selection
   if (e.key === 'Tab' && completionEl.classList.contains('visible')) {
-    e.preventDefault();
-    selectCompletion();
-    return;
+    if (S.compMode === 'slash' && !isComposerSlashInput(promptEl.value, promptEl.selectionStart)) {
+      hideCompletion();
+    } else {
+      e.preventDefault();
+      selectCompletion();
+      return;
+    }
   }
 });
 
@@ -442,14 +452,8 @@ function hideCompletion() {
 }
 
 function trySlashCompletion(val, cursor) {
-  if (!val.startsWith('/') || val.includes('\n')) return false;
-  const before = val.slice(0, cursor);
-  if (!before.startsWith('/')) return false;
-  if (/\s/.test(before.slice(1))) {
-    hideCompletion();
-    return true;
-  }
-  const q = before.slice(1);
+  if (!isComposerSlashInput(val, cursor)) return false;
+  const q = val.slice(1, cursor);
   slashRows = paletteItems(q);
   S.compMode = 'slash';
   S.lastAtIdx = 0;

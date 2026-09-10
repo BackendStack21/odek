@@ -172,12 +172,15 @@ export function removeActiveApprovalCard() {
 // clearApprovals drops every pending request and the rendered card — used on
 // session switch / new session, where pending approvals belong to the
 // previous run. This is the only teardown that resets all three pieces of
-// approval state together (queue + card + active id).
-export function clearApprovals() {
+// approval state together (queue + card + active id). Pass { drain: false }
+// when the socket is already dead so a queued prompt is not sent into the
+// void; reconnect calls drainQueue once the link is up.
+export function clearApprovals(opts) {
   S.approvalQueue.length = 0;
   removeActiveApprovalCard();
   S.activeApprovalId = null;
   syncSweep();
+  if (opts && opts.drain === false) return;
   if (S.drainQueue) S.drainQueue();
 }
 
