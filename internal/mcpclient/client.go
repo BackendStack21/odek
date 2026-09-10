@@ -263,7 +263,7 @@ type Client struct {
 	// permanently wedge serve/telegram instances that share one Client per
 	// server for the process lifetime). Enqueueing under ctx keeps every
 	// caller bounded by the per-server timeout.
-	writeCh   chan []byte
+	writeCh   chan *queuedRequest
 	writeDone chan struct{} // closed when the writer goroutine exits
 	closed    chan struct{} // closed by Close to unblock an idle writer
 
@@ -403,7 +403,7 @@ func New(name string, cfg ServerConfig) (*Client, error) {
 		stdout:           bufio.NewReader(stdout),
 		lineCh:           make(chan lineResult, 10),
 		done:             make(chan struct{}),
-		writeCh:          make(chan []byte, 32),
+		writeCh:          make(chan *queuedRequest, 32),
 		writeDone:        make(chan struct{}),
 		closed:           make(chan struct{}),
 		pending:          make(map[int]chan callResponse),
@@ -835,15 +835,18 @@ func (c *Client) call(ctx context.Context, method string, params json.RawMessage
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
+	queued := &queuedRequest{ctx: ctx, data: append(reqRaw, '\n')}
 
 	// Hand the request to the single writer goroutine. Enqueueing is
 	// ctx-bounded: when a malicious server stops reading stdin and the
 	// pipe + channel buffers fill, callers fail with the per-server
 	// timeout instead of wedging on a mutex (see writeCh doc comment).
 	select {
-	case c.writeCh <- append(reqRaw, '\n'):
+	case c.writeCh <- queued:
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, queued.fail(ctx.Err())
+	case <-c.closed:
+		return nil, queued.fail(fmt.Errorf("connection closed before dispatch"))
 	}
 	// Surface a sticky writer failure promptly (the enqueued request would
 	// otherwise just time out later).
@@ -851,16 +854,18 @@ func (c *Client) call(ctx context.Context, method string, params json.RawMessage
 	werr := c.writeErr
 	c.mu.Unlock()
 	if werr != nil {
-		return nil, fmt.Errorf("write: %w", werr)
+		return nil, queued.fail(fmt.Errorf("write: %w", werr))
 	}
 
 	// Wait for response via channel (dispatched by readLoop).
 	select {
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, queued.fail(ctx.Err())
+	case <-c.closed:
+		return nil, queued.fail(fmt.Errorf("connection closed before response received"))
 	case cr, ok := <-respCh:
 		if !ok {
-			return nil, fmt.Errorf("connection closed before response received")
+			return nil, queued.fail(fmt.Errorf("connection closed before response received"))
 		}
 		if cr.err != nil {
 			return nil, cr.err
@@ -882,7 +887,15 @@ func (c *Client) writeLoop() {
 	for {
 		select {
 		case req := <-c.writeCh:
-			if _, err := c.stdin.Write(req); err != nil {
+			select {
+			case <-c.closed:
+				return
+			default:
+			}
+			if !req.begin() {
+				continue
+			}
+			if _, err := c.stdin.Write(req.data); err != nil {
 				c.mu.Lock()
 				if c.writeErr == nil {
 					c.writeErr = err

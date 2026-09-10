@@ -17,7 +17,7 @@ func TestCallIntersectsServerAndParentDeadlines(t *testing.T) {
 		{"shorter parent deadline", time.Second, 25 * time.Millisecond},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			c := &Client{timeout: tc.server, pending: make(map[int]chan callResponse), writeCh: make(chan []byte, 1)}
+			c := &Client{timeout: tc.server, pending: make(map[int]chan callResponse), writeCh: make(chan *queuedRequest, 1)}
 			ctx := context.Background()
 			if tc.parent > 0 {
 				var cancel context.CancelFunc
