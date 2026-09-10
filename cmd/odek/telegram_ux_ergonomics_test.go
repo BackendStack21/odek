@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -77,5 +78,42 @@ func TestFriendlyRunError_Generic(t *testing.T) {
 	out := friendlyRunError(errors.New("boom"))
 	if !strings.Contains(out, "Agent error") || !strings.Contains(out, "boom") {
 		t.Fatalf("generic errors keep the raw message, got:\n%s", out)
+	}
+}
+
+func TestFriendlyRunError_WrappedTimeout(t *testing.T) {
+	// Providers wrap deadlines in transport errors; the mapping must
+	// traverse the wrap chain, not just match the bare sentinel.
+	wrapped := fmt.Errorf("do request: %w", fmt.Errorf("post: %w", context.DeadlineExceeded))
+	out := friendlyRunError(wrapped)
+	if !strings.Contains(out, "timed out") {
+		t.Fatalf("wrapped deadline should map to the timeout message, got:\n%s", out)
+	}
+}
+
+func TestFormatThousands(t *testing.T) {
+	cases := []struct {
+		in   int64
+		want string
+	}{
+		{0, "0"},
+		{999, "999"},
+		{1000, "1,000"},
+		{4200, "4,200"},
+		{1234567, "1,234,567"},
+		{-1234, "-1,234"},
+	}
+	for _, c := range cases {
+		if got := formatThousands(c.in); got != c.want {
+			t.Errorf("formatThousands(%d) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestFormatStats_OverBudget(t *testing.T) {
+	cs := &telegram.ChatSession{CreatedAt: time.Now(), LastActive: time.Now()}
+	out := formatStats(cs, 12000, 10000)
+	if !strings.Contains(out, "120%") {
+		t.Fatalf("over-budget usage should show >100%%, got:\n%s", out)
 	}
 }

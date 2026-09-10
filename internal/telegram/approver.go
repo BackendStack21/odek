@@ -284,9 +284,11 @@ func (a *TelegramApprover) PromptCommand(cls danger.RiskClass, cmd, description 
 	case <-time.After(approvalTimeout):
 		// Mark the prompt visibly expired and strip the buttons so a stale
 		// keyboard can't be tapped after the wait window closed.
-		a.bot.EditMessageText(a.ChatID, pr.messageID,
+		if err := a.bot.EditMessageText(a.ChatID, pr.messageID,
 			fmt.Sprintf("⏰ *Expired* — no response within %s · the operation was not executed", approvalDeadlineText()),
-			&SendOpts{ParseMode: ParseModeMarkdownV2, ReplyMarkup: &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{}}})
+			&SendOpts{ParseMode: ParseModeMarkdownV2, ReplyMarkup: &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{}}}); err != nil {
+			a.log.Warn("telegram approver: expire prompt edit failed", "message_id", pr.messageID, "error", err)
+		}
 		return fmt.Errorf("approval timeout: %s", cmd)
 	}
 }

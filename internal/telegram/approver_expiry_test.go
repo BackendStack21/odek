@@ -48,7 +48,9 @@ func TestPromptCommand_TimeoutExpiresPrompt(t *testing.T) {
 	found := false
 	for _, r := range rec.requests {
 		if strings.HasSuffix(r.Path, "/editMessageText") &&
-			strings.Contains(r.Body, "Expired") {
+			strings.Contains(r.Body, "Expired") &&
+			strings.Contains(r.Body, "reply_markup") &&
+			strings.Contains(r.Body, `"inline_keyboard":[]`) {
 			found = true
 		}
 	}
